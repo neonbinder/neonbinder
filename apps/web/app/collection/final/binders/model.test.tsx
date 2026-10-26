@@ -8,7 +8,9 @@ import { NO_BROWSE_FILTER } from "../store";
 import {
   EXTRAS,
   binderPages,
+  boxOrder,
   boxRows,
+  compareBoxCards,
   cardCount,
   cardPages,
   cardsOnPages,
@@ -340,6 +342,80 @@ describe("a box's rows", () => {
 
   it("counts rows the way a collector does", () => {
     expect([0, 4].map(rowName)).toEqual(["Row 1", "Row 5"]);
+  });
+});
+
+describe("box order (NEO-364 D18): set year and name, natural card number, then variant", () => {
+  /** A card of `c0`'s shape in the set and at the number given. */
+  const made = (
+    id: string,
+    over: { year?: number; setName?: string; number?: string; kind?: Card["variant"]["kind"]; order?: number; name?: string | null; variation?: string | null },
+  ): Card => ({
+    ...c0,
+    id,
+    set: { ...c0.set, id: `set-${over.year ?? 2000}-${over.setName ?? "A"}`, year: over.year ?? 2000, name: over.setName ?? "A" },
+    cardNumber: over.number ?? "1",
+    variant: { ...c0.variant, id: `v-${id}`, kind: over.kind ?? "base", order: over.order ?? 0, name: over.name ?? null },
+    cardVariation: over.variation ?? null,
+  });
+  const order = (...cards: Card[]) => [...cards].sort(compareBoxCards).map((c) => c.id);
+
+  it("puts an earlier set year first, then the set name", () => {
+    expect(order(made("new", { year: 2024 }), made("old", { year: 1996 }))).toEqual(["old", "new"]);
+    expect(order(made("b", { setName: "Topps" }), made("a", { setName: "Score" }))).toEqual(["a", "b"]);
+  });
+
+  it("keeps a set together: its cards never interleave with another set's", () => {
+    const a1 = made("a1", { setName: "A", number: "1" });
+    const a2 = made("a2", { setName: "A", number: "200" });
+    const b1 = made("b1", { setName: "B", number: "1" });
+    expect(order(b1, a2, a1)).toEqual(["a1", "a2", "b1"]);
+  });
+
+  it("orders card numbers naturally: 2 before 10, and 10a after 10", () => {
+    expect(order(made("ten-a", { number: "10a" }), made("ten", { number: "10" }), made("two", { number: "2" }))).toEqual([
+      "two",
+      "ten",
+      "ten-a",
+    ]);
+  });
+
+  it("stands a base card and then its insert and parallels by the same number together", () => {
+    expect(
+      order(
+        made("gold", { kind: "parallel", order: 2, name: "Gold" }),
+        made("insert", { kind: "insert", order: 1, name: "Stars" }),
+        made("base", { kind: "base" }),
+        made("next", { number: "2" }),
+      ),
+    ).toEqual(["base", "insert", "gold", "next"]);
+  });
+
+  it("orders variants of one kind by their order, and an image variation after its plain card", () => {
+    expect(
+      order(
+        made("blue", { kind: "parallel", order: 3, name: "Blue" }),
+        made("gold", { kind: "parallel", order: 2, name: "Gold" }),
+      ),
+    ).toEqual(["gold", "blue"]);
+    const plain = made("plain", { number: "13" });
+    const sliding = { ...plain, id: "sliding", cardVariation: "Sliding", variant: plain.variant };
+    expect(order(sliding, plain)).toEqual(["plain", "sliding"]);
+  });
+
+  it("boxRows and boxOrder use it: a row reads in box order whatever order the copies came in", () => {
+    const early = made("early", { year: 1996, number: "2" });
+    const late = made("late", { year: 2024, number: "1" });
+    const cardsById = new Map([early, late].map((c) => [c.id, c]));
+    const lines = [copy(late, { homeId: BOX, homeKind: "box", slot: 1 }), copy(early, { homeId: BOX, homeKind: "box", slot: 1 })];
+    expect(boxRows(lines, cardsById).rows[1].map((l) => l.cardId)).toEqual(["early", "late"]);
+    expect(boxOrder(lines, cardsById).map((l) => l.cardId)).toEqual(["early", "late"]);
+  });
+
+  it("a copy whose card has not loaded goes last", () => {
+    const known = made("known", {});
+    const lines = [copy(made("ghost", {}), { homeId: BOX, homeKind: "box" }), copy(known, { homeId: BOX, homeKind: "box" })];
+    expect(boxOrder(lines, new Map([[known.id, known]])).map((l) => l.cardId)).toEqual(["known", "ghost"]);
   });
 });
 

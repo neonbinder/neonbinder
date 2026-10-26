@@ -21,7 +21,7 @@ by hand, not by reviving the backfill.
 |---|---|---|---|
 | team links | `cardTeamLinks`, from each card's `teamOnCardIds` | `ALLOW_CARD_TEAM_LINKS_BACKFILL` | `cardTeamLinks:backfillCardTeamLinks` |
 | card counts | `selectorOptions.cardCount` and `nonVariationCardCount` on every variant type, insert and parallel | `ALLOW_CARD_COUNT_BACKFILL` | `cardCounts:backfillVariantCardCounts` |
-| subtree counts | `selectorOptions.subtreeCardCount` and `subtreeNonVariationCardCount` on every row, sport down to parallel | `ALLOW_SUBTREE_CARD_COUNT_BACKFILL` | `cardCounts:backfillSubtreeCardCounts` |
+| subtree counts + has-cards flags | `selectorOptions.subtreeCardCount` and `subtreeNonVariationCardCount` from the set down to parallel; `hasCards` on every sport, year and brand (NEO-364) | `ALLOW_SUBTREE_CARD_COUNT_BACKFILL` | `cardCounts:backfillSubtreeCardCounts` |
 
 All three are idempotent: a second run reports zeros. All three are internal
 functions, so **no `--identity`** (it hides internal functions from
@@ -79,11 +79,15 @@ card that lists one team twice gets one row.
 A row with more than 10,000 cards refuses its page ("count it by hand"); no
 real checklist is that large.
 
-**Subtree counts** — `{ scanned, filled, disagreed, repaired, waiting }`
+**Subtree counts** — `{ scanned, filled, disagreed, repaired, waiting, flagsSet, flagsCleared, staleCountsCleared }`
 
 Run only after the card counts backfill reports `"complete": true`. It walks
 the levels deepest first (parallel, insert, variant type, set, brand, year,
-sport) and writes each row's own counts plus its children's subtree counts.
+sport) and writes each set-and-below row's own counts plus its children's
+subtree counts. Above the set (NEO-364) it writes no count: a brand, year or
+sport gets `hasCards: true` when anything beneath it may hold cards (a set
+with cards or of unknown count, or a flagged brand or year), and loses the
+flag otherwise.
 
 - `filled`: rows missing either subtree count; both are written together.
 - `waiting`: rows left alone because a child's subtree count was still
@@ -91,6 +95,10 @@ sport) and writes each row's own counts plus its children's subtree counts.
   always reports waiting rows** above the deepest level it could not fill (it
   writes nothing for the next level to read), so judge a dry run by `filled`
   at the leaves, not by `waiting`.
+- `flagsSet` / `flagsCleared`: sport, year and brand flags written or
+  removed. Flags are judged on every run, not only with `repair`.
+- `staleCountsCleared`: sport, year and brand rows that still carried a
+  subtree count from before NEO-364; it is removed.
 - `disagreed` / `repaired`: as for the card counts; `"repair": true` rewrites
   a stored subtree count that disagrees with the sum of its children.
 
@@ -102,9 +110,11 @@ A `repair` of the card counts above is always followed by a `repair` run of
 this one: a writer that missed its ledger left both wrong, and the subtree
 counts are summed from the repaired card counts.
 
-Until this has run, the collector's drill shows every level (an unknown count
-is never hidden); after it, a level with no cards anywhere beneath it is
-hidden. A row with more than 5,000 rows beneath it refuses its page ("sum it
+**Run it straight after the NEO-364 deploy.** A sport, year or brand without
+the flag is hidden from the collector's drill, so until this has run the drill
+shows only the levels a card has landed under since the deploy. From the set
+down, an unknown count is never hidden; after the run, a set or variant with
+no cards is hidden. A row with more than 5,000 rows beneath it refuses its page ("sum it
 by hand").
 
 ## What keeps them right afterwards
@@ -121,9 +131,14 @@ by hand").
   insert, delete and move, and every change of a card's variation parent. A
   row whose count is absent is recounted in place on its next write, so a row
   the backfill has not reached yet is never written wrong.
-- The subtree counts are kept by the same ledger flush, up every row's
-  `parentId` chain, and moved with a row re-parented under a new brand or
-  insert. New rows are born at 0. An absent subtree count stays absent (it is
+- The subtree counts are kept by the same ledger flush, up each row's
+  `parentId` chain as far as the set, and moved with a row re-parented under
+  a new brand or insert. New set-and-below rows are born at 0. Above the set
+  the flush only reads: the first card to land under a sport, year or brand
+  sets its `hasCards` once, and nothing in a mutation writes or clears it
+  again (NEO-364: a count there wrote the sport row on every card write and
+  made concurrent card writes collide). A sport whose cards are all deleted
+  stays offered until a backfill run clears its flag. An absent subtree count stays absent (it is
   never recounted inside a mutation) until this backfill fills it; a stored
   one that would go negative is cleared to absent and logged
   `subtree_card_count_drift`, so a re-run (with `repair` if `disagreed` is

@@ -29,6 +29,7 @@ import {
   BUNDLE_FORMAT,
   STRIP_FIELDS,
   SPORT_ROW_CLEARED_ARRAYS,
+  SPORT_ROW_DERIVED_FIELDS,
   SUSPICIOUS_KEY,
   decodeId,
   walkIds,
@@ -147,6 +148,12 @@ export async function buildBundle(exportZip, outZip, { log = console.log } = {})
         if (Array.isArray(o[f]) && o[f].length) {
           bump(cleared, `${SPORT_TABLE}.${f}`, o[f].length);
           o[f] = [];
+        }
+      }
+      for (const f of SPORT_ROW_DERIVED_FIELDS) {
+        if (f in o) {
+          delete o[f];
+          bump((stripped[SPORT_TABLE] ??= {}), f);
         }
       }
       noteRow(SPORT_TABLE, o);

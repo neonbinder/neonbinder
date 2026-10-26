@@ -229,7 +229,8 @@ export function PublicBinderPage() {
     taken.add(copy.slot);
   }
   // After the last filled pocket, where the backfill will put it.
-  let next = Math.max(-1, ...taken) + 1;
+  let next = 0;
+  for (const n of taken) if (n + 1 > next) next = n + 1;
   for (const copy of results) {
     if (copy.slot === undefined) put(copy, next++);
   }

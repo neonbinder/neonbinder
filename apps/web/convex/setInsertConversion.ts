@@ -65,7 +65,7 @@ import {
   inheritableFeatures,
 } from "./features/deriveCardFeatures";
 import { inheritedTeamIds } from "./lib/selectorTeams";
-import { NEW_ROW_SUBTREE_COUNTS } from "./cardCounts";
+import { newRowSubtreeCounts } from "./cardCounts";
 import { allocateSlots, initialSlots, slotIds } from "./platformSlots";
 import { deleteEmptySelectorOptionRow } from "./selectorOptions";
 import {
@@ -976,7 +976,7 @@ async function insertChildRow(
     sportlots: links.map((l) => ({ id: l.id, label: l.label })),
   });
   const id = await ctx.db.insert("selectorOptions", {
-    ...NEW_ROW_SUBTREE_COUNTS,
+    ...newRowSubtreeCounts(level),
     level,
     value,
     platformData: alloc.platformData,

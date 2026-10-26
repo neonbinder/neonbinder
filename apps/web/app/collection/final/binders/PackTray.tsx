@@ -72,6 +72,13 @@ export interface MoveTarget {
 
 export type TrayMode = "file" | "want" | "trade";
 
+/**
+ * The screen the tray is on. My Boxes (`"inventory"`) speaks stock, not
+ * binders: "In your boxes", "Not in stock", "N in your boxes", and a card
+ * you don't hold is never a "Need" (the trade pile keeps its own words).
+ */
+export type TraySide = "collection" | "inventory";
+
 /** An owned card waiting on "which copy?": to move into the open home, or to put up for trade. */
 export interface Choosing {
   card: Card;
@@ -80,6 +87,8 @@ export interface Choosing {
 
 interface PackTrayProps {
   mode: TrayMode;
+  /** The screen it is on (default: the collection's My Binders). */
+  side?: TraySide;
   query: string;
   onQuery: (q: string) => void;
   /** Every match, best first (the tray shows the first few); undefined while searching. */
@@ -207,6 +216,9 @@ export default function PackTray(props: PackTrayProps) {
 
   const wantMode = mode === "want";
   const tradeMode = mode === "trade";
+  /** My Boxes filing into a box: stock words, never binder ones. */
+  const stock = props.side === "inventory" && mode === "file";
+  const held = stock ? "your boxes" : "your binders";
   const mineOf = (cardId: CardId) => (copiesByCard?.[cardId] ?? []).filter((c) => c.quantity > 0);
   const owned = (cardId: CardId) => mineOf(cardId).length > 0;
   // On the trade pile the tray sees box copies too: say so wherever it names where yours are.
@@ -280,9 +292,9 @@ export default function PackTray(props: PackTrayProps) {
           ? `None of these are yours yet. Only cards you own can go up for trade.${more}`
           : `${mine.length} in ${yours}. Press Up for trade on the one you'd swap.${more}`;
     else if (mine.length === 0)
-      summary = `None in your binders yet. ${others.length} in the catalog: drag one into a pocket, or press Slot in.${more}`;
+      summary = `None in ${held} yet. ${others.length} in the catalog: drag one into a ${stock ? "row" : "pocket"}, or press Slot in.${more}`;
     else
-      summary = `${mine.length} in your binders${
+      summary = `${mine.length} in ${held}${
         others.length ? `, ${others.length} more in the catalog` : ""
       }. Press where one lives to go straight to it.${more}`;
   }
@@ -417,7 +429,7 @@ export default function PackTray(props: PackTrayProps) {
               {mine.length > 0 && (
                 <>
                   <h3 id={ownedHeadingId} className="mt-1 text-sm font-bold text-ink">
-                    {withBoxes ? "In your binders and boxes" : "In your binders"}
+                    {withBoxes ? "In your binders and boxes" : stock ? "In your boxes" : "In your binders"}
                   </h3>
                   <ul className="nb-owned-results" aria-labelledby={ownedHeadingId}>
                     {mine.slice(0, TRAY_LIMIT).map((card) => {
@@ -448,7 +460,7 @@ export default function PackTray(props: PackTrayProps) {
               {others.length > 0 && !tradeMode && (
                 <>
                   <h3 id={catalogHeadingId} className="mt-2 text-sm font-bold text-ink">
-                    Not in your binders yet
+                    {stock ? "Not in stock" : "Not in your binders yet"}
                   </h3>
                   <ul className="p2-results" aria-labelledby={catalogHeadingId}>
                     {others.slice(0, TRAY_LIMIT).map((card) => (
@@ -457,6 +469,7 @@ export default function PackTray(props: PackTrayProps) {
                         card={card}
                         wanted={wantMode && props.isWanted(card.id)}
                         verb={verb}
+                        stock={stock}
                         lifted={props.draggingId === card.id}
                         onAct={() => add(card)}
                         buttonRef={registerAct(card)}
@@ -699,6 +712,7 @@ function TrayCard({
   card,
   wanted,
   verb,
+  stock = false,
   lifted,
   onAct,
   buttonRef,
@@ -706,6 +720,8 @@ function TrayCard({
   card: Card;
   wanted: boolean;
   verb: "Want it" | "Put here" | "Slot in";
+  /** On My Boxes: a card you don't hold is not in stock, never a "Need". */
+  stock?: boolean;
   lifted: boolean;
   onAct: () => void;
   buttonRef: (el: HTMLButtonElement | null) => void;
@@ -714,11 +730,11 @@ function TrayCard({
   const name = verb === "Want it" ? `Want it: ${label}` : verb === "Put here" ? `Put here: ${label}` : `Slot in ${label}`;
   return (
     <li className="flex w-[88px] flex-none flex-col items-center gap-1">
-      <DragFace card={card} name={`${label}, need`} lifted={lifted} disabled={false} />
+      <DragFace card={card} name={`${label}, ${stock ? "not in stock" : "need"}`} lifted={lifted} disabled={false} />
       <p aria-hidden="true" className="line-clamp-3 h-[3.75em] w-full text-center text-[11px] leading-tight text-ink-2">
         {cardCaption(card)}
       </p>
-      <p className="text-center text-[11px] leading-tight text-ink-2">Need</p>
+      {!stock && <p className="text-center text-[11px] leading-tight text-ink-2">Need</p>}
       <NeonButton
         ref={buttonRef}
         type="button"

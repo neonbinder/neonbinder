@@ -82,6 +82,21 @@ export const STRIP_FIELDS = ["createdByUserId"];
  */
 export const SPORT_ROW_CLEARED_ARRAYS = ["children"];
 
+/**
+ * NEO-358 / NEO-364 — card-derived fields a sport row may carry on the source
+ * deployment, removed at build. They describe the SOURCE's cards; the bundle
+ * carries none, so on the target they would be wrong. `hasCards` most of all:
+ * a sport flagged on prod would show in a preview's drill with nothing under
+ * it. The target's writers set them as its own cards land.
+ */
+export const SPORT_ROW_DERIVED_FIELDS = [
+  "hasCards",
+  "subtreeCardCount",
+  "subtreeNonVariationCardCount",
+  "cardCount",
+  "nonVariationCardCount",
+];
+
 /** Any top-level key matching this that is not stripped is reported. */
 export const SUSPICIOUS_KEY = /user|owner|author|email|clerk|token|secret/i;
 

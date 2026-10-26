@@ -113,6 +113,32 @@
   bottom: -2px;
 }
 
+/* "New box": the same box end, lid and handle slot, drawn as a dashed
+   outline of the box still to be made (the binder shelf's "New binder" is a
+   dashed spine). The plus and the words sit where the tape would. */
+.nb-boxspine--new {
+  --new-line: #64748b;
+}
+.nb-boxspine--new .nb-boxspine-lid,
+.nb-boxspine--new .nb-boxspine-end,
+.nb-boxspine--new .nb-boxspine-handle {
+  background: transparent;
+  box-shadow: none;
+  border: 2px dashed var(--new-line);
+}
+.nb-boxspine--new .nb-boxspine-end {
+  border-top: 0;
+  padding-top: 12px;
+}
+.nb-boxspine-new-mark {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
 /* The Inventory long box is a button on the real collection: no chrome of its own. */
 button.nb-longbox {
   padding: 0;
@@ -331,6 +357,9 @@ button.nb-longbox {
   outline: 2px solid var(--focus);
   outline-offset: 2px;
 }
+[data-theme="light"] .nb-boxspine--new {
+  --new-line: var(--control);
+}
 [data-theme="light"] .nb-box {
   box-shadow:
     0 0 0 1px var(--kraft-edge),
@@ -340,4 +369,48 @@ button.nb-longbox {
 [data-theme="light"] .nb-box-face:focus-visible,
 [data-theme="light"] .nb-box-row-pick:focus-visible {
   outline-color: var(--focus);
+}
+
+/* ---------------------------------------- NEO-364: Up for Trade as a box */
+
+/* The pennant "Trade" tag on the box end (the binder spine's own tag). */
+.nb-boxspine .nb-boxspine-trade {
+  top: 18px;
+  right: -10px;
+}
+
+/* The pile opened from My Boxes: the kraft box, one well, no dividers. */
+.nb-box-well {
+  min-height: 112px;
+  border-radius: 3px;
+  background: linear-gradient(180deg, var(--kraft-well), color-mix(in oklab, var(--kraft-well) 70%, #000 8%));
+  box-shadow: inset 0 3px 6px rgba(0, 0, 0, 0.25);
+}
+.nb-box--pile .nb-box-cards {
+  padding: 14px 12px 10px;
+  gap: 10px 8px;
+}
+/* Where a traded card really lives, on a strip of tape under it. */
+/*
+ * The text is sized in rem so it follows the reader's own font size (a px
+ * size ignores it); the width stays the card's, and a long name wraps.
+ */
+.nb-box-where {
+  max-width: 76px;
+  padding: 0.0625rem 0.3125rem;
+  border-radius: 2px;
+  background: var(--kraft-hi);
+  color: var(--kraft-ink);
+  box-shadow: 0 0 0 1px var(--kraft-edge);
+  font-size: 0.65625rem;
+  font-weight: 700;
+  line-height: 1.35;
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+/* Kept in the collection: the trade pile's yellow, so a binder copy reads apart from one for sale. */
+.nb-box-where--binder {
+  background: #ffe600;
+  color: #000;
+  box-shadow: 0 0 0 1px #5c4a00;
 }

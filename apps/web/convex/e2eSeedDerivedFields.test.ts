@@ -26,7 +26,7 @@
 
 import { convexTest } from "convex-test";
 import { describe, expect, test } from "vitest";
-import { internal } from "./_generated/api";
+import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import type { Doc, Id } from "./_generated/dataModel";
 import { recountCards } from "./cardCounts";
@@ -94,11 +94,27 @@ async function seedLikeAFreshImport(t: T) {
     const goldWave = await row("insert", "Gold Wave Refractors", parallelType);
     await ctx.db.patch(set, { children: [base, parallelType] });
     await ctx.db.patch(parallelType, { children: [goldWave] });
-    return { sport, base, goldWave, padres, mets, tatis, alonso };
+    return { sport, year, brand, set, base, goldWave, padres, mets, tatis, alonso };
   });
 }
 
 type Seeded = Awaited<ReturnType<typeof seedLikeAFreshImport>>;
+
+/**
+ * NEO-364 — the collector's drill, step by step, the way every E2E spec opens
+ * Checklists: the names of the rows it lists under each parent.
+ */
+async function drillNames(t: T, s: Seeded) {
+  const as = t.withIdentity({ subject: "collector_e2e_seed" });
+  const names = async (parentId?: Id<"selectorOptions">) =>
+    (await as.query(api.collectionCatalog.drill, parentId ? { parentId } : {})).items.map((i) => i.name);
+  return {
+    sports: await names(),
+    years: await names(s.sport),
+    brands: await names(s.year),
+    sets: await names(s.brand),
+  };
+}
 
 /** Every derived field the collection reads, for each card on `rowId`. */
 async function derivedFieldsOn(t: T, rowId: Id<"selectorOptions">) {
@@ -160,6 +176,8 @@ describe("the E2E seed's write paths carry every derived field", () => {
   test("the Base commit, then Gold Wave built from Base, on a freshly imported catalogue", async () => {
     const t = convexTest(schema, modules);
     const s = await seedLikeAFreshImport(t);
+    // NEO-364 — as imported, no card sits under Baseball: the drill is empty.
+    expect((await drillNames(t, s)).sports).toEqual([]);
 
     // ── the Base checklist, committed as the setup project commits it ──
     await t.mutation(internal.selectorOptions.commitCardChecklistChunk, {
@@ -191,6 +209,18 @@ describe("the E2E seed's write paths carry every derived field", () => {
     });
     const base = await derivedFieldsOn(t, s.base);
     expectFullyDerived(s, base, 2);
+    // NEO-364 — the commit's ledger flags the sport, year and brand, so every
+    // spec's drill (Baseball → 2024 → Topps → Topps Chrome) is there.
+    expect(await drillNames(t, s)).toEqual({
+      sports: ["Baseball"],
+      years: ["2024"],
+      brands: ["Topps"],
+      sets: ["Topps Chrome"],
+    });
+    const flags = await t.run(async (ctx) =>
+      Promise.all([s.sport, s.year, s.brand].map(async (id) => (await ctx.db.get(id))!.hasCards)),
+    );
+    expect(flags).toEqual([true, true, true]);
 
     // ── Gold Wave Refractors, built from Base (NEO-321) ──
     const sources = await t.run(async (ctx) =>

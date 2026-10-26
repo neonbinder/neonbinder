@@ -35,6 +35,16 @@
  * `useCollectionActions()` files a Have there. `useCopiesOf` always lists
  * every copy, each with its home.
  *
+ * ## Side (NEO-364)
+ *
+ * The page's side (`"collection"` on `/collection`, `"inventory"` on
+ * `/inventory`; the demo's `side=` param) sits in `SideProvider`, put there
+ * by the page (`../mode.tsx` decides it). `useCopiesInVariant`,
+ * `useVariantCompletion` and `useSetCompletion` read only that side's copies:
+ * binder homes for the collection, box homes for the inventory. Pass `side`
+ * to a wrapper to read the other one; the store's own member always gets it.
+ * Without a provider the side is `"collection"`.
+ *
  * ## Writes: async actions that hand back their undo
  *
  * `useCollectionActions()` returns promises. Each resolves with what it did
@@ -72,6 +82,10 @@ import { createContext, useContext, useMemo } from "react";
 import type { BrowseFilter, CardRequest, NewCardRequest } from "../store";
 import type {
   AddManyResult,
+  InventoryCards,
+  QuantityResult,
+  Side,
+  SystemKind,
   AddResult,
   BuildingResult,
   Capabilities,
@@ -144,14 +158,19 @@ export interface CollectionData {
   useSetPath(setId: SetId | null): SetPath | null | undefined;
   /** A checklist's cards, in checklist order. */
   useVariantCards(variantId: VariantId | null): Card[] | undefined;
-  /** How much of a checklist the collector's collection holds (inside the picked binder); a copy in a box never counts. */
-  useVariantCompletion(variantId: VariantId | null): Completion | undefined;
   /**
-   * How much of a whole set the collector has, every checklist together (in
-   * the view scope; a copy in a box never counts). The totals are the set summary's; while the summary or
-   * the counts load, `undefined`.
+   * How much of a checklist the collector holds on `side` (inside the picked
+   * home): the collection's binders, or the inventory's boxes. A copy on the
+   * other side never counts.
    */
-  useSetCompletion(setId: SetId | null): SetCompletion | undefined;
+  useVariantCompletion(variantId: VariantId | null, side: Side): Completion | undefined;
+  /**
+   * How much of a whole set the collector has on `side`, every checklist
+   * together (in the view scope; a copy on the other side never counts). The
+   * totals are the set summary's; while the summary or the counts load,
+   * `undefined`.
+   */
+  useSetCompletion(setId: SetId | null, side: Side): SetCompletion | undefined;
   /** One card. `null`: no longer in the catalog. */
   useCard(cardId: CardId | null): Card | null | undefined;
   /** Several cards, aligned with `cardIds`; `null` where one is no longer in the catalog. */
@@ -172,8 +191,12 @@ export interface CollectionData {
    * `collectionCopiesIn`.
    */
   useCopiesOf(cardId: CardId | null): Copy[] | undefined;
-  /** The collector's copies of every card in a checklist (inside the picked binder), never one in a box. */
-  useCopiesInVariant(variantId: VariantId | null): Copy[] | undefined;
+  /**
+   * The collector's copies of every card in a checklist on `side` (inside
+   * the picked home): binder copies for the collection, box copies for the
+   * inventory. Never one from the other side.
+   */
+  useCopiesInVariant(variantId: VariantId | null, side: Side): Copy[] | undefined;
   /** The whole collection at a glance: copies in a box are inventory, not counted. */
   useSummary(): CollectionSummary | undefined;
   /**
@@ -183,15 +206,22 @@ export interface CollectionData {
    * server for as many as it needs, so there is no ceiling but the limit.
    */
   useOwnedCards(options?: OwnedCardsOptions): OwnedCards | undefined;
+  /**
+   * The Inventory list: every card held in a box (never a binder copy), one
+   * item per card with its count and the boxes it sits in. `boxId` narrows
+   * to one box (Unsorted or the collector's own); Up for Trade is not a box,
+   * so filter on `upForTrade` instead. Inventory side only.
+   */
+  useInventoryCards(options?: InventoryCardsOptions): InventoryCards | undefined;
 
   // --- NEO-359: binders, boxes, wants, trade ---------------------------------
 
-  /** The shelf: system containers first (Main, Up for Trade, Want List), then the collector's own as made. */
+  /** The shelf: system containers first (Main, Unsorted, Up for Trade, Want List), then the collector's own as made. */
   useContainers(): Container[] | undefined;
   /**
    * The copies in one container, in slot order (unslotted last), up to
-   * `limit`. A binder or box: the copies whose home it is (a box's for the
-   * Inventory tab). The Up for Trade pile: every flagged copy, a box's too
+   * `limit`. A binder or box: the copies whose home it is (a box's for My
+   * Boxes). The Up for Trade pile: every flagged copy, a box's too
    * (same as `useTradeCopies`). A smart binder: the copies its rule matches
    * (demo only), never one in a box. The Want List: none (`useWants`).
    */
@@ -205,9 +235,9 @@ export interface CollectionData {
   useWants(): Want[] | undefined;
   /**
    * The collector's copies of each card asked for (the hunt tray), keyed by
-   * card id; a card held nowhere maps to `[]`. Every home, boxes too (the
-   * Inventory tray moves a box's copies): a collection screen passes the
-   * answer through `collectionCopiesOfCards`. Keep the list short: the
+   * card id; a card held nowhere maps to `[]`. Every home, boxes too: a
+   * collection screen passes the answer through `collectionCopiesOfCards`,
+   * an inventory screen (My Boxes' tray) through `inventoryCopiesOfCards`. Keep the list short: the
    * Convex store asks in chunks of 50, and lists at most ten line items of a
    * card (enough to say "you have it, here"; `useCopiesOf` has them all).
    */
@@ -236,6 +266,13 @@ export interface OwnedCardsOptions {
 
 /** The owned-cards list's limit when none is asked for. */
 export const OWNED_CARDS_DEFAULT_LIMIT = 200;
+
+export interface InventoryCardsOptions {
+  /** How many cards to list; raise it to page further. */
+  limit?: number;
+  /** One box's cards only (Unsorted or one of the collector's boxes). Absent: every box. */
+  boxId?: ContainerId;
+}
 
 /**
  * The writes. Each resolves with its undo; see the module comment. Take them
@@ -294,11 +331,24 @@ export interface CollectionActions {
   /** Renames, re-describes or re-labels. A system container takes a label only. */
   updateContainer(container: Container, patch: ContainerPatch): Promise<UpdateResult>;
   /**
-   * Deletes a binder or box the collector made: its copies go back to Main
-   * (pockets and rows cleared, trade flags kept), its wants become plain
-   * wants. No undo: the confirm must say so.
+   * Deletes a binder or box the collector made: a binder's copies go back to
+   * Main, a box's into Unsorted (pockets and rows cleared, trade flags kept),
+   * its wants become plain wants. No undo: the confirm must say so.
    */
   deleteContainer(container: Container): Promise<DeleteContainerResult>;
+
+  // --- NEO-364 ---------------------------------------------------------------
+
+  /**
+   * Sets how many PLAIN copies of `card` sit in `box` (a box, Unsorted
+   * included; refuses a binder): raw, no condition, serial, cost, location
+   * or notes, not up for trade. Raising adds raw copies acquired today,
+   * unslotted (folding into today's plain unslotted line). Lowering takes
+   * from the plain lines newest first. The card's other lines in the box are
+   * never touched. `quantity` is a whole number from 0; the current value
+   * writes nothing. One write; the undo puts exactly those lines back.
+   */
+  setBoxQuantity(card: Card, box: Container, quantity: number): Promise<QuantityResult>;
 }
 
 export interface MoveOptions {
@@ -407,6 +457,23 @@ export function useScope(): Scope {
   return useContext(ScopeContext);
 }
 
+// ---------------------------------------------------------------------------
+// Side
+// ---------------------------------------------------------------------------
+
+const SideContext = createContext<Side>("collection");
+
+/**
+ * Puts the page's side where the side-aware wrappers read it. The page
+ * decides it (`../mode.tsx`: by route in the app, `side=` in the public demo).
+ */
+export const SideProvider = SideContext.Provider;
+
+/** The page's side: `"collection"` (the default) or `"inventory"`. */
+export function useSide(): Side {
+  return useContext(SideContext);
+}
+
 /** The demo's reducer store and Reset; `undefined` under the Convex store. */
 export function useDemoExtension(): DemoExtension | undefined {
   return useCollectionStore().demo;
@@ -429,11 +496,13 @@ export function useSetPath(setId: SetId | null): SetPath | null | undefined {
 export function useVariantCards(variantId: VariantId | null): Card[] | undefined {
   return useCollectionStore().data.useVariantCards(variantId);
 }
-export function useVariantCompletion(variantId: VariantId | null): Completion | undefined {
-  return useCollectionStore().data.useVariantCompletion(variantId);
+export function useVariantCompletion(variantId: VariantId | null, side?: Side): Completion | undefined {
+  const pageSide = useSide();
+  return useCollectionStore().data.useVariantCompletion(variantId, side ?? pageSide);
 }
-export function useSetCompletion(setId: SetId | null): SetCompletion | undefined {
-  return useCollectionStore().data.useSetCompletion(setId);
+export function useSetCompletion(setId: SetId | null, side?: Side): SetCompletion | undefined {
+  const pageSide = useSide();
+  return useCollectionStore().data.useSetCompletion(setId, side ?? pageSide);
 }
 export function useCard(cardId: CardId | null): Card | null | undefined {
   return useCollectionStore().data.useCard(cardId);
@@ -459,8 +528,9 @@ export function useBuildingSets(): SetRef[] | undefined {
 export function useCopiesOf(cardId: CardId | null): Copy[] | undefined {
   return useCollectionStore().data.useCopiesOf(cardId);
 }
-export function useCopiesInVariant(variantId: VariantId | null): Copy[] | undefined {
-  return useCollectionStore().data.useCopiesInVariant(variantId);
+export function useCopiesInVariant(variantId: VariantId | null, side?: Side): Copy[] | undefined {
+  const pageSide = useSide();
+  return useCollectionStore().data.useCopiesInVariant(variantId, side ?? pageSide);
 }
 export function useSummary(): CollectionSummary | undefined {
   return useCollectionStore().data.useSummary();
@@ -471,6 +541,9 @@ export function useSummary(): CollectionSummary | undefined {
  */
 export function useOwnedCards(options?: OwnedCardsOptions): OwnedCards | undefined {
   return useCollectionStore().data.useOwnedCards(options);
+}
+export function useInventoryCards(options?: InventoryCardsOptions): InventoryCards | undefined {
+  return useCollectionStore().data.useInventoryCards(options);
 }
 
 export function useContainers(): Container[] | undefined {
@@ -503,8 +576,8 @@ export function useSetCards(setId: SetId | null, options?: PageOptions): SetCard
 // Small shared rules both stores follow.
 // ---------------------------------------------------------------------------
 
-/** The system container of a kind on the shelf, once the shelf is in. */
-export function systemContainer(containers: readonly Container[] | undefined, kind: Container["system"]): Container | undefined {
+/** The system container of a kind on the shelf (`"unsorted"`: the inventory's Main), once the shelf is in. */
+export function systemContainer(containers: readonly Container[] | undefined, kind: SystemKind): Container | undefined {
   return containers?.find((c) => c.system === kind);
 }
 
@@ -522,9 +595,20 @@ export function bindersOf(containers: readonly Container[] | undefined): Contain
   return homesOf(containers).filter((c) => c.kind !== "box");
 }
 
-/** The boxes: the sale table. Inventory's, and the drawer's Sell. */
+/**
+ * The boxes a copy can live in: Unsorted first, then the collector's own.
+ * The inventory's screens (the target box picker, My Boxes, the list's rail,
+ * the drawer's Sell) offer only these.
+ */
 export function boxesOf(containers: readonly Container[] | undefined): Container[] {
-  return homesOf(containers).filter((c) => c.kind === "box");
+  const boxes = homesOf(containers).filter((c) => c.kind === "box");
+  const unsorted = boxes.filter((c) => c.system === "unsorted");
+  return unsorted.length ? [...unsorted, ...boxes.filter((c) => c.system !== "unsorted")] : boxes;
+}
+
+/** The homes a screen on `side` offers: `bindersOf` for the collection, `boxesOf` for the inventory. */
+export function homesOnSide(containers: readonly Container[] | undefined, side: Side): Container[] {
+  return side === "inventory" ? boxesOf(containers) : bindersOf(containers);
 }
 
 /**
@@ -576,7 +660,7 @@ export function isForSale(copy: Pick<Copy, "homeKind">): boolean {
 // List's "landed", a browsed set, the hunt tray), My Cards (scoreboards, the
 // wall, the need list, every owned-card shelf, "Everything else"), Checklists
 // (Have, completion, row stacks, the drill's "have N of M") and the shelf's
-// counts. It appears on the Inventory tab and in the card's own drawer
+// counts. It appears on the inventory's screens and in the card's own drawer
 // (`useCopiesOf`), whose line reads "For sale · <box>" so it can be taken off
 // sale.
 //
@@ -631,6 +715,47 @@ export function collectionCopiesOfCards(
   const out: Record<CardId, Copy[]> = {};
   for (const [id, copies] of Object.entries(byCard)) out[id] = collectionCopies(copies);
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// The inventory never shows a binder copy (NEO-364, the mirror of the above)
+// ---------------------------------------------------------------------------
+//
+// Hard line: Collection = Binders, Inventory = Boxes. A copy whose home is a
+// binder (Main included) never appears on an inventory screen: the
+// Inventory list, My Boxes (every box, Unsorted, a box's hunt tray), the
+// inventory's Checklists (quantity fields, completion, "have N of M") and
+// the boxes' counts. The Up for Trade pile is again the one exception: drawn
+// as a box from the inventory side, it lists binder copies too, each tagged
+// "In <binder>". A view that reads every home (`useCopiesOf`,
+// `useCopiesOfCards`) for an inventory screen passes the answer through
+// `inventoryCopies` / `inventoryCopiesOfCards`, except that trade view.
+
+/** True when a copy may show on an inventory screen: its home is a box (Unsorted included). */
+export function inInventory(copy: Pick<Copy, "homeKind">): boolean {
+  return isForSale(copy);
+}
+
+/** The copies an inventory screen shows: every one whose home is a box. `undefined` (loading) stays `undefined`. */
+export function inventoryCopies<T extends Pick<Copy, "homeKind">>(copies: readonly T[]): T[];
+export function inventoryCopies<T extends Pick<Copy, "homeKind">>(copies: readonly T[] | undefined): T[] | undefined;
+export function inventoryCopies<T extends Pick<Copy, "homeKind">>(copies: readonly T[] | undefined): T[] | undefined {
+  return copies?.filter(inInventory);
+}
+
+/** `useCopiesOfCards`' answer for an inventory screen: each card's box copies (`[]` when only a binder holds it). */
+export function inventoryCopiesOfCards(
+  byCard: Record<CardId, Copy[]> | undefined,
+): Record<CardId, Copy[]> | undefined {
+  if (!byCard) return byCard;
+  const out: Record<CardId, Copy[]> = {};
+  for (const [id, copies] of Object.entries(byCard)) out[id] = inventoryCopies(copies);
+  return out;
+}
+
+/** The copies a screen on `side` shows: `collectionCopies` or `inventoryCopies`. */
+export function copiesOnSide<T extends Pick<Copy, "homeKind">>(copies: readonly T[] | undefined, side: Side): T[] | undefined {
+  return side === "inventory" ? inventoryCopies(copies) : collectionCopies(copies);
 }
 
 /** A line item's slot order: slotted first, by slot; then the rest as they came. */

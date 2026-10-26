@@ -12,12 +12,14 @@
 // The spec ends by deleting the first binder (its cards go back to Main) and
 // the second, so the shelf is back to where it started.
 //
-// Collection and inventory are separate screens (NEO-359, Jason: "Inventory is
-// things for sale and My Collection is things that are for your collection"),
-// so the real collection has no box and no Sell: the spec asserts both are
-// absent, and that the Inventory door leads to the `/inventory` page (a coming-
-// soon page; real inventory is NEO-364). The demo's Inventory tab, with boxes
-// and Sell, is proved by home/binder-tracking-demo.
+// Collection and inventory are separate screens (NEO-359, NEO-364; Jason:
+// "Inventory is things for sale and My Collection is things that are for your
+// collection. They should not mix on the screens"): the shelf holds binders
+// only, so no box stands on it and Unsorted, the inventory's catch-all, never
+// does; the Add form offers binders and no box; a binder line offers Sell (the
+// one way across, into a box) and never Take off sale; and the shelf's long box
+// is a link to the real `/inventory` list. The boxes themselves (Sell, Take off
+// sale, Unsorted) are proved by collection/inventory-boxes-sell-take-off-sale.
 //
 // The signed-in page is the REAL collection (Convex, per user). Moves are driven
 // with the drawer's Move form and the tray's buttons, never by dragging.
@@ -37,7 +39,7 @@
 // Minted names are single tokens from `env.ATTEMPT_TOKEN` (never rebuilt by
 // hand), so the binders of this run are this run's alone.
 import type { Locator } from "@playwright/test";
-import { drillToCollectorBase, ordinaryBaseRows, shortNameOf } from "../../support/collection";
+import { drillToCollectorBase, goViaShell, ordinaryBaseRows, shortNameOf } from "../../support/collection";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 
 const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -51,7 +53,7 @@ interface Stats {
 test(
   "Collection: make two binders, move copies between them (split, re-fold, Undo, trade), fill a pocket, want a card, delete both",
   { tag: ["@smoke", "@collection"] },
-  async ({ page, signIn, env }) => {
+  async ({ page, signIn, env, isMobile }) => {
     const binderA = `BinderA${env.ATTEMPT_TOKEN}`;
     let binderB = `BinderB${env.ATTEMPT_TOKEN}`;
     const renamed = `Spare${env.ATTEMPT_TOKEN}`;
@@ -107,16 +109,21 @@ test(
     };
     await expect(headline({})).toBeVisible();
 
-    // Collection and inventory do not mix: no box on this screen, and the
-    // Inventory door is a plain link to the `/inventory` page.
+    // Collection and inventory do not mix: no box on this screen (Unsorted, the
+    // inventory's catch-all, included), and the Inventory door is a plain link
+    // to the `/inventory` list.
     await expect(shelf.getByRole("button", { name: /, box, / })).toHaveCount(0);
+    await expect(shelf.getByRole("button", { name: /^Unsorted/ })).toHaveCount(0);
+    await expect(special.getByRole("button", { name: /^Unsorted/ })).toHaveCount(0);
     await expect(page.getByRole("heading", { name: /boxes/i })).toHaveCount(0);
     await expectAccessible(page, { label: "My Binders, the system spines" });
     const door = special.getByRole("link", { name: /^Inventory, / });
     await expect(door).toBeVisible();
     await door.click();
-    await expect(page).toHaveURL(/\/inventory$/);
-    await expect(page.getByRole("heading", { level: 1, name: "Your Inventory" })).toBeVisible();
+    await expect(page).toHaveURL(/\/inventory\?tab=cards/);
+    await expect(page.getByRole("heading", { level: 1, name: "Inventory" })).toBeVisible();
+    await expect(page.getByRole("heading", { level: 2, name: "Everything for sale" })).toBeVisible();
+    await expectAccessible(page, { label: "Inventory list, reached from the collection's long box" });
     await page.goBack();
     await expect(page).toHaveURL(/[?&]tab=binders/);
     await expect(headline({})).toBeVisible();
@@ -205,9 +212,11 @@ test(
     await expect(yourCopies.getByText("None yet. Fill in what you know below and add it.")).toBeVisible();
     const addForm = drawer.getByRole("form", { name: "Add a copy", exact: true });
     const where = addForm.getByRole("combobox", { name: "Where it lives" });
-    // Binders only: no box to file a copy in.
+    // Binders only: no box to file a copy in, and not Unsorted (the inventory's).
     await expect(where.getByRole("option", { name: binderA, exact: true })).toBeAttached();
+    await expect(where.getByRole("option", { name: "Main", exact: true })).toBeAttached();
     await expect(where.getByRole("option", { name: /box/i })).toHaveCount(0);
+    await expect(where.getByRole("option", { name: "Unsorted", exact: true })).toHaveCount(0);
     await where.selectOption({ label: binderA });
     await addForm.getByRole("spinbutton", { name: "Quantity" }).fill("3");
     await addForm.getByRole("button", { name: "Add to collection" }).click();
@@ -249,9 +258,10 @@ test(
 
     await expect(lines(1)).toBeVisible();
     await expect(line("Raw ×3").getByText(binderA)).toBeVisible();
-    // Selling is Inventory's: the real collection's drawer has Move, never Sell.
-    await expect(yourCopies.getByRole("button", { name: /^Sell / })).toHaveCount(0);
-    await expect(yourCopies.getByRole("button", { name: /off sale$/ })).toHaveCount(0);
+    // A binder line can be SOLD (the one way across to a box) and is never "taken off
+    // sale": it is not for sale. (inventory-boxes-sell-take-off-sale follows the sale.)
+    await expect(yourCopies.getByRole("button", { name: `Sell ${one.short}, Raw ×3`, exact: true })).toBeVisible();
+    await expect(yourCopies.getByRole("button", { name: /^Take off sale, / })).toHaveCount(0);
 
     // --- Move two into the second binder: a split into two lines -----------
     await moveLine("Raw ×3", binderB, 2, 2, "Card drawer, the Move panel with a binder picked");
@@ -276,6 +286,41 @@ test(
     await expect(headline({ cards: 3, binders: 2 })).toBeVisible();
     await expect(spineOf(binderA, 1)).toBeVisible();
     await expect(spineOf(binderB, 2)).toBeVisible();
+    await expect(tradeSpine(tradeBase + 1)).toBeVisible();
+
+    // --- The same pile from the inventory side: drawn as a box, the card tagged with its binder ----
+    // Up for Trade is the one place the two sides meet (one flag on the copy, one stored count),
+    // so the Inventory's My Boxes shows the binder copy too, as "In <binder>".
+    await door.click();
+    await expect(page).toHaveURL(/\/inventory\?tab=cards/);
+    await page.getByRole("navigation", { name: "Inventory sections" }).getByRole("link", { name: "My Boxes", exact: true }).click();
+    await expect(page).toHaveURL(/[?&]tab=boxes/);
+    const tradeBox = special.getByRole("button", {
+      name: `Up for Trade, box, ${cardsWord(tradeBase + 1)} up for trade`,
+      exact: true,
+    });
+    await expect(tradeBox).toBeVisible();
+    await tradeBox.click();
+    await expect(page.getByRole("heading", { level: 2, name: "Up for Trade", exact: true })).toBeVisible();
+    const tradeWell = page.getByRole("group", { name: /^Up for Trade, \d+ cards?$/ });
+    await expect(
+      tradeWell.getByRole("button", {
+        name: new RegExp(`#${escapeRegExp(one.number)} ${escapeRegExp(one.player)}.*up for trade.*in ${escapeRegExp(binderA)}`, "i"),
+      }),
+    ).toBeVisible();
+    await expectAccessible(page, { label: "My Boxes, Up for Trade with a binder copy" });
+    // The Inventory list's Up for Trade stop reads the same pile, binders included.
+    await page.getByRole("navigation", { name: "Inventory sections" }).getByRole("link", { name: "Inventory", exact: true }).click();
+    await page.getByRole("navigation", { name: "Boxes" }).getByRole("button", { name: /^Up for Trade/ }).click();
+    await expect(
+      page.getByRole("button", {
+        name: new RegExp(`#${escapeRegExp(one.number)} ${escapeRegExp(one.player)}.*in ${escapeRegExp(binderA)}`, "i"),
+      }),
+    ).toBeVisible();
+    await expectAccessible(page, { label: "Inventory list, the Up for Trade stop with a binder copy" });
+    await goViaShell(page, isMobile, "Collection");
+    await expect(page.getByRole("heading", { level: 1, name: "Collection" })).toBeVisible();
+    await toBinders();
     await expect(tradeSpine(tradeBase + 1)).toBeVisible();
 
     // --- Up for Trade: the card is listed, and still lives in its binder ----
@@ -331,7 +376,10 @@ test(
     await expect(spineOf(binderB, 2)).toBeVisible();
 
     // --- Move the pair back: it re-folds; Undo splits it again --------------
+    // The trip through the Inventory page left the collection page, so Checklists
+    // starts over (as from any other page): drill back to the Base.
     await toChecklists();
+    await drillToCollectorBase(page);
     await lookThroughEverything();
     await checklist.getByRole("button", { name: `Details for ${one.short}, Raw ×2`, exact: true }).click();
     await expect(lines(2)).toBeVisible();

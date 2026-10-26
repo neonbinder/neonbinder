@@ -35,6 +35,7 @@ import { DemoCollectionProvider, PUBLIC_STORAGE_KEY } from "./data/demoStore";
 import { setLabel, shortCardName } from "./data/labels";
 import {
   CollectionStoreContext,
+  SideProvider,
   useCard,
   useCollectionActions,
   useCollectionStore,
@@ -49,15 +50,23 @@ import type {
   Capabilities,
   Card,
   CardId,
+  CollectionTab,
   Container,
   CopyId,
   Scope,
+  Side,
   Suggestion,
   Undo,
   Want,
 } from "./data/types";
 import { useHomeName, useScopedName } from "./catalog/home";
 import { DRAWER_MODE_PARAM, DRAWER_PARAM, viewOf } from "./drawerParams";
+import InventoryListTab from "./inventory/InventoryListTab";
+// The inventory Checklists' target box (`box=`, NEO-364 D8): replaced in
+// place by the picker, carried here on each drill step within Checklists
+// like the scope, and dropped on a tab change (the Inventory list's rail
+// uses `box=` too, and neither may become the other's).
+import { TARGET_BOX_PARAM } from "./inventory/targetBox";
 import { lineSummary } from "./lineItems";
 import MyBindersTab from "./MyBindersTab";
 import MyCardsTab from "./MyCardsTab";
@@ -65,8 +74,12 @@ import {
   CollectionModeProvider,
   ParamLink,
   scopeFromParams,
+  SIDE_PARAM,
+  takeSideArrival,
   useCollectionMode,
   useCollectionParams,
+  useCollectionSide,
+  useGoToSide,
   usePushParams,
   useReplaceParams,
   ViewScopeProvider,
@@ -78,7 +91,7 @@ import {
   type OpenCardOptions,
   type PageApi,
 } from "./pageApi";
-import type { CollectionTab, GoToTabParams } from "./store";
+import type { GoToTabParams } from "./store";
 
 /**
  * NEO-350 / NEO-358 — the collection page: the signed-in collector's real
@@ -94,9 +107,19 @@ import type { CollectionTab, GoToTabParams } from "./store";
  *   reaches Convex or Clerk. Mounted with no provider at all (a unit test),
  *   the page runs on the demo store.
  *
- * Tabs on `?tab=` (My Cards, My Binders when the store has binders,
- * Checklists, and Inventory where the store has it), drawn like the admin section strip, sharing one status line
- * with Undo and one right-side card drawer opened through `openCard`.
+ * Two sides, one page (NEO-364; hard line: Collection = Binders, Inventory
+ * = Boxes). `surface` (the app's route; the demo's `side=` param, see
+ * `./mode`) picks the side, which goes in `SideProvider` for every view and
+ * the store's side-aware reads:
+ *
+ * - The collection (`/collection`, h1 "Collection"): My Cards, My Binders
+ *   (where the store has binders) and Checklists. No inventory tab.
+ * - The inventory (`/inventory`, h1 "Inventory"): Inventory (the list,
+ *   `tab=cards`, the default), My Boxes (`tab=boxes`) and Checklists (quick
+ *   quantity entry into a target box, `box=`).
+ *
+ * Tabs on `?tab=`, drawn like the admin section strip, sharing one status
+ * line with Undo and one right-side card drawer opened through `openCard`.
  * Every tab reads the store's hooks, so the demo and the real collection
  * run the same views.
  *
@@ -108,29 +131,54 @@ import type { CollectionTab, GoToTabParams } from "./store";
  * (default) is the signed-in binder shell, `"public"` the marketing page with
  * its own persist key, public destinations and the demo's exits.
  *
- * Inventory (NEO-359, `tab=inventory`, the `inventory` capability: the demo
- * only for now) is the collector's boxes and what is for sale, on the same
- * desk as My Binders (`surface="inventory"`), status line and card drawer,
- * and never narrowed by the Binder picker. Jason: "Inventory is things for
- * sale and My Collection is things that are for your collection. They
- * should not mix on the screens." The real collection has no Inventory tab
- * yet: its shelf's Inventory long box leads to the `/inventory` page.
+ * My Boxes is the same desk as My Binders (`MyBindersTab` with
+ * `surface="inventory"`), and the inventory never narrows by the Binder
+ * picker. Jason: "Inventory is things for sale and My Collection is things
+ * that are for your collection. They should not mix on the screens." The
+ * old `tab=inventory` (and `sale=1`) links redirect to the inventory, in
+ * place of the entry.
  */
 
-const TABS: {
+interface TabDef {
   key: CollectionTab;
   label: string;
   needs?: keyof Capabilities;
-}[] = [
-  { key: "cards", label: "My Cards" },
-  { key: "binders", label: "My Binders", needs: "binders" },
-  { key: "checklists", label: "Checklists" },
-  { key: "inventory", label: "Inventory", needs: "inventory" },
-];
+}
 
-/** The tabs this store can show: My Binders only where binders are built, Inventory where it is. */
-function tabsFor(capabilities: Capabilities) {
-  return TABS.filter((t) => !t.needs || capabilities[t.needs]);
+const TABS: Record<Side, TabDef[]> = {
+  collection: [
+    { key: "cards", label: "My Cards" },
+    { key: "binders", label: "My Binders", needs: "binders" },
+    { key: "checklists", label: "Checklists" },
+  ],
+  inventory: [
+    { key: "cards", label: "Inventory" },
+    { key: "boxes", label: "My Boxes" },
+    { key: "checklists", label: "Checklists" },
+  ],
+};
+
+/** What each side's page is called: its h1, and the last words of its title. */
+const SIDE_TITLE: Record<Side, string> = { collection: "Collection", inventory: "Inventory" };
+
+/** The tabs this side shows in this store: My Binders only where binders are built. */
+function tabsFor(side: Side, capabilities: Capabilities) {
+  return TABS[side].filter((t) => !t.needs || capabilities[t.needs]);
+}
+
+/**
+ * A link to the other side's tab, or an old one, and where it goes instead
+ * (NEO-364 Routing): `tab=inventory` and a collection `tab=boxes` to My
+ * Boxes, an inventory `tab=binders` to My Binders, `sale=1` (the retired
+ * everything-for-sale view) to the Inventory list. `null`: it is this side's.
+ */
+function redirectFor(side: Side, params: URLSearchParams): { side: Side; tab: CollectionTab } | null {
+  if (params.get("sale")) return { side: "inventory", tab: "cards" };
+  const tab = params.get("tab");
+  if (side === "collection" && (tab === "inventory" || tab === "boxes")) return { side: "inventory", tab: "boxes" };
+  if (side === "inventory" && tab === "inventory") return { side: "inventory", tab: "boxes" };
+  if (side === "inventory" && tab === "binders") return { side: "collection", tab: "binders" };
+  return null;
 }
 
 /**
@@ -150,6 +198,12 @@ function runUndo(undo: () => unknown, onDone: () => void, onError: (error: unkno
   if (pending instanceof Promise) pending.then(onDone, onError);
   else onDone();
 }
+
+/** Room kept under a field the keyboard reaches while the floating status line is up. */
+const NOTICE_CLEARANCE = "6rem";
+
+/** What Ctrl/⌘+Z says when the status line has no Undo to give. */
+const NOTHING_TO_UNDO = "Nothing to undo.";
 
 /** What an undo that the server refused says on the status line. */
 function undoFailed(error: unknown): string {
@@ -185,8 +239,13 @@ interface DrawerHistoryState {
 }
 
 export interface FinalCollectionPageProps {
-  /** `"app"` (default): `/collection`. `"public"`: the no-login demo. */
+  /** `"app"` (default): `/collection` or `/inventory`. `"public"`: the no-login demo. */
   mode?: CollectionMode;
+  /**
+   * The app's side: `"collection"` (default, `/collection`) or `"inventory"`
+   * (`/inventory`). The public demo reads its `side=` param instead.
+   */
+  surface?: Side;
   /** Public mode: params every view URL keeps (the marketing page's `demo=on`). */
   keepParams?: Record<string, string>;
   /** Public mode: leave the demo ("Back to the tour"). */
@@ -195,13 +254,14 @@ export interface FinalCollectionPageProps {
 
 export default function FinalCollectionPage({
   mode = "app",
+  surface = "collection",
   keepParams,
   onExit,
 }: FinalCollectionPageProps) {
   const mounted = useContext(CollectionStoreContext);
   const page = (
-    <CollectionModeProvider mode={mode} keepParams={keepParams}>
-      <CollectionPage onExit={onExit} />
+    <CollectionModeProvider mode={mode} keepParams={keepParams} surface={surface}>
+      <SidePage onExit={onExit} />
     </CollectionModeProvider>
   );
   if (mounted) return page;
@@ -214,22 +274,52 @@ export default function FinalCollectionPage({
   );
 }
 
-function CollectionPage({ onExit }: { onExit?: () => void }) {
-  const isPublic = useCollectionMode().mode === "public";
+/** The page on its side: every view below reads the side from `SideProvider`. */
+function SidePage({ onExit }: { onExit?: () => void }) {
+  const side = useCollectionSide();
+  return (
+    <SideProvider value={side}>
+      <CollectionPage side={side} onExit={onExit} />
+    </SideProvider>
+  );
+}
+
+function CollectionPage({ side, onExit }: { side: Side; onExit?: () => void }) {
+  const { mode, keepParams } = useCollectionMode();
+  const isPublic = mode === "public";
   const { capabilities, demo } = useCollectionStore();
   const containers = useContainers();
-  const tabs = tabsFor(capabilities);
+  const tabs = tabsFor(side, capabilities);
   const [params, setParams] = useCollectionParams();
   const replaceParams = useReplaceParams();
+  const goToSide = useGoToSide();
   const navigate = useNavigate();
   const tabParam = params.get("tab");
-  // A tab this store does not have (`?tab=binders` on the real collection,
-  // `?tab=inventory` before the real Inventory ships) opens My Cards.
+  const onInventory = side === "inventory";
+  // A tab this side does not have (`?tab=binders` where binders are not
+  // built) opens the side's first tab: My Cards, or the Inventory list.
   const tab: CollectionTab = tabs.some((t) => t.key === tabParam)
     ? (tabParam as CollectionTab)
     : "cards";
-  const inventory = tab === "inventory";
+  /** The desk: My Binders, or My Boxes on the inventory. */
+  const desk = tab === "binders" || tab === "boxes";
   const onChecklists = tab === "checklists";
+
+  // The other side's tab (or an old link) goes there, in place of this entry
+  // so Back skips it, with the rest of its params (an open container's `b`).
+  const redirect = redirectFor(side, params);
+  let redirectSearch: string | null = null;
+  if (redirect) {
+    const next = new URLSearchParams(params);
+    for (const key of [SIDE_PARAM, "sale", "scope", ...Object.keys(keepParams)]) next.delete(key);
+    next.set("tab", redirect.tab);
+    redirectSearch = next.toString();
+  }
+  const redirectSide = redirect?.side ?? null;
+  useEffect(() => {
+    if (redirectSide && redirectSearch !== null)
+      goToSide(redirectSide, new URLSearchParams(redirectSearch), { replace: true });
+  }, [redirectSide, redirectSearch, goToSide]);
 
   // The Checklists drill and its ringed row live on the URL (see
   // `./checklistParams`): each drill step is a Back step, and a refresh or a
@@ -241,6 +331,7 @@ function CollectionPage({ onExit }: { onExit?: () => void }) {
     [onChecklists, search],
   );
   const urlCard = onChecklists ? params.get(CARD_PARAM) : null;
+  const urlBox = onChecklists && onInventory ? params.get(TARGET_BOX_PARAM) : null;
   const entity = onChecklists ? entityFromParams(params) : null;
   // The router commits a navigation in a transition, a beat after the click.
   // A pick shows at once from here (the cascade moves focus into the next
@@ -316,6 +407,14 @@ function CollectionPage({ onExit }: { onExit?: () => void }) {
     onChecklists ? hereKey : "",
   );
   if (onChecklists && checklistsPlace !== hereKey) setChecklistsPlace(hereKey);
+  /**
+   * A Checklists drill step's params, with the target box carried on while
+   * the step stays inside the inventory's Checklists. Coming from another
+   * tab there is none to carry: `box=` never crosses a tab change (the
+   * picker falls back to the collector's last pick, then Unsorted).
+   */
+  const withBox = (p: Record<string, string>): Record<string, string> =>
+    urlBox ? { ...p, [TARGET_BOX_PARAM]: urlBox } : p;
 
   // --- Page title ------------------------------------------------------------
   const titleSetId = !onChecklists ? params.get("set") : null;
@@ -334,25 +433,29 @@ function CollectionPage({ onExit }: { onExit?: () => void }) {
       containers?.find((x) => x.id === b && x.kind !== "box")?.name ??
       titleSet ??
       (params.get("all") ? "All my cards" : null);
-  } else if (inventory) {
+  } else if (tab === "boxes") {
     const b = params.get("b");
     detail =
-      containers?.find((x) => x.id === b && x.kind === "box")?.name ??
-      (params.get("sale") ? "Everything for sale" : null);
-  } else {
+      containers?.find(
+        (x) => x.id === b && (x.kind === "box" || x.system === "trade"),
+      )?.name ?? null;
+  } else if (tab === "checklists") {
     detail = drillState.title;
   }
-  const label = TABS.find((t) => t.key === tab)?.label ?? "Collection";
+  const label = TABS[side].find((t) => t.key === tab)?.label ?? SIDE_TITLE[side];
+  const page = `${SIDE_TITLE[side]}${isPublic ? " demo" : ""}`;
+  // The Inventory list's tab is the page's own name: "Inventory", not "Inventory · Inventory".
+  const head = label === SIDE_TITLE[side] ? null : label;
   useDocumentTitle(
-    `${detail ? `${label} · ${detail}` : label} · ${isPublic ? "Collection demo" : "Collection"}`,
+    [head, detail, page].filter(Boolean).join(" · "),
   );
 
   // The Binder picker's scope comes from the URL, checked against the shelf
   // (an unknown id, or one that is not a home, reads as All). A store with no
   // binder scope always counts everything.
-  // Inventory never narrows: its boxes are not the collection's scope.
+  // The inventory never narrows: its boxes are not the collection's scope.
   const scope: Scope =
-    capabilities.scope && !inventory
+    capabilities.scope && !onInventory
       ? scopeFromParams(params, containers)
       : "all";
 
@@ -393,6 +496,17 @@ function CollectionPage({ onExit }: { onExit?: () => void }) {
         notify(undoFailed(error));
       },
     );
+  };
+  /** Ctrl/⌘+Z from quick entry: the line's Undo, or a word that there is none. */
+  // An aside keeps a live Undo on the line: it is skipped rather than replace
+  // it (an undo running counts too: its "Undone." is on the way).
+  const inform = (message: string) => {
+    setNotice((prev) => (prev?.undo ? prev : { id: (prev?.id ?? 0) + 1, message }));
+  };
+  const undoLast = () => {
+    if (undoing.current) return;
+    if (notice?.undo) undo();
+    else notify(NOTHING_TO_UNDO);
   };
   const run = async <T extends { undo: Undo }>(
     write: () => Promise<T>,
@@ -512,6 +626,9 @@ function CollectionPage({ onExit }: { onExit?: () => void }) {
     new URLSearchParams(checklistsPlace).forEach((value, key) =>
       p.set(key, value),
     );
+    // Only from inside Checklists (clearing a search pick, say): `urlBox` is
+    // null on every other tab, so the box never rides a tab change.
+    if (urlBox) p.set(TARGET_BOX_PARAM, urlBox);
     if (q !== undefined) {
       if (q) p.set(QUERY_PARAM, q);
       else p.delete(QUERY_PARAM);
@@ -524,10 +641,10 @@ function CollectionPage({ onExit }: { onExit?: () => void }) {
     if (sameDrill(next, drill)) return;
     settleQuery();
     setPending({ drill: next, card: null });
-    const p = new URLSearchParams({
+    const p = new URLSearchParams(withBox({
       tab: "checklists",
       ...drillToParams(next),
-    });
+    }));
     if (query) p.set(QUERY_PARAM, query);
     setParams(p);
   };
@@ -549,23 +666,23 @@ function CollectionPage({ onExit }: { onExit?: () => void }) {
       return;
     }
     settleQuery();
-    setParams({
+    setParams(withBox({
       tab: "checklists",
       ...drillToParams(next),
       [CARD_PARAM]: card.id,
-    });
+    }));
   };
 
   const goToChecklists = (target: ChecklistsTarget = {}) => {
     if ("card" in target) return jumpTo(target.card);
     settleQuery();
     if ("cardId" in target) {
-      setParams({ tab: "checklists", [CARD_PARAM]: target.cardId });
+      setParams(withBox({ tab: "checklists", [CARD_PARAM]: target.cardId }));
     } else if ("setId" in target) {
       setCascadeKey((k) => k + 1);
-      setParams({ tab: "checklists", set: target.setId });
+      setParams(withBox({ tab: "checklists", set: target.setId }));
     } else if ("entity" in target) {
-      setParams({ tab: "checklists", ...entityToParams(target.entity) });
+      setParams(withBox({ tab: "checklists", ...entityToParams(target.entity) }));
     } else {
       // Checklists opens where it was, with the search the caller asked for.
       setParams(checklistsSearch(target.q));
@@ -600,18 +717,40 @@ function CollectionPage({ onExit }: { onExit?: () => void }) {
     setParams(p);
   };
 
-  /** My Binders still asks for a tab (the demo's own props). */
+  /** My Binders and My Boxes still ask for a tab (the demo's own props). */
   const goToTab = (next: CollectionTab, p: GoToTabParams = {}) => {
     if (next === "checklists")
       goToChecklists(p.cardId ? { cardId: p.cardId } : { q: p.q });
     else setParams({ tab: next });
   };
 
+  // The floating status line sits over the bottom of the page: while it is
+  // up, keep a field the keyboard lands on clear of it (WCAG 2.4.11).
+  const floatingNotice = notice !== null && !drawer && !desk;
+  useEffect(() => {
+    if (!floatingNotice) return;
+    const root = document.documentElement;
+    const before = root.style.scrollPaddingBottom;
+    root.style.scrollPaddingBottom = NOTICE_CLEARANCE;
+    return () => {
+      root.style.scrollPaddingBottom = before;
+    };
+  }, [floatingNotice]);
+
+  // Arriving from the other side (a side link, the demo's switch): the
+  // keyboard starts on this side's heading, not wherever the link was.
+  const heading = useRef<HTMLHeadingElement>(null);
+  useEffect(() => {
+    if (takeSideArrival(side)) heading.current?.focus({ preventScroll: true });
+  }, [side]);
+
   const pageApi: PageApi = {
     openCard,
     goToChecklists,
     openSuggestion: pickSuggestion,
     notify,
+    inform,
+    undoLast,
     run,
   };
 
@@ -630,10 +769,12 @@ function CollectionPage({ onExit }: { onExit?: () => void }) {
                 {capabilities.demoChrome && demo && (
                   <DemoBar onReset={resetDemo} onExit={onExit} />
                 )}
-                <h1 className="text-2xl font-bold">Collection</h1>
+                <h1 ref={heading} tabIndex={-1} className="text-2xl font-bold focus:outline-none">
+                  {SIDE_TITLE[side]}
+                </h1>
 
                 <nav
-                  aria-label="Collection sections"
+                  aria-label={`${SIDE_TITLE[side]} sections`}
                   className="border-b border-rule"
                 >
                   <ul className="flex flex-wrap gap-x-6 gap-y-2">
@@ -653,7 +794,10 @@ function CollectionPage({ onExit }: { onExit?: () => void }) {
                             className={
                               "-mb-px block rounded-sm border-b-2 px-1 py-3 text-sm font-medium transition-colors focus-outline " +
                               (active
-                                ? "border-selection text-neon-blue-text"
+                                ? // One hue per section: the collection's cyan, the inventory's yellow.
+                                  onInventory
+                                  ? "border-neon-yellow-text text-neon-yellow-text"
+                                  : "border-selection text-neon-blue-text"
                                 : "border-transparent text-ink-3 hover:border-control hover:text-ink")
                             }
                           >
@@ -665,24 +809,26 @@ function CollectionPage({ onExit }: { onExit?: () => void }) {
                   </ul>
                 </nav>
 
-                {tab === "cards" && <MyCardsTab />}
-                {(tab === "binders" || inventory) && capabilities.binders && (
+                {!redirect && tab === "cards" && (onInventory ? <InventoryListTab /> : <MyCardsTab />)}
+                {!redirect && desk && capabilities.binders && (
                   // My Binders' pack tray is pinned to the bottom, where the floating
                   // toast would sit on its search box, so the tray shows the notice
-                  // (Inventory floats its own where no box is open). One desk per
-                  // tab: what each has aimed or found stays its own.
+                  // (My Boxes floats its own where no box is open). One desk per
+                  // side: what each has aimed or found stays its own.
                   <MyBindersTab
-                    key={tab}
-                    surface={inventory ? "inventory" : "collection"}
+                    key={side}
+                    surface={side}
                     openCard={openCard}
                     goToTab={goToTab}
                     notify={notify}
-                    notice={notice}
+                    // While the card drawer is open it carries the status
+                    // line; the desk's copy would say it a second time.
+                    notice={drawer ? null : notice}
                     onUndo={undo}
                     onDismissNotice={() => setNotice(null)}
                   />
                 )}
-                {tab === "checklists" && (
+                {!redirect && tab === "checklists" && (
                   <ChecklistsTab
                     actions={actions}
                     query={query}
@@ -707,7 +853,7 @@ function CollectionPage({ onExit }: { onExit?: () => void }) {
                 <DemoRail onExit={onExit} />
               )}
 
-              {!drawer && tab !== "binders" && !inventory && (
+              {!drawer && !desk && (
                 <NoticeLine
                   notice={notice}
                   onUndo={undo}
