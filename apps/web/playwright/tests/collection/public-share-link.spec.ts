@@ -220,8 +220,11 @@ test(
     await expect(confirmTwin).toBeHidden();
 
     // --- Cleanup through the UI: remove the copy, delete the empty binder ---
-    // The shelf trips may drop the drill from the address (they did on the
-    // desktop run, not the phone one): wait for one state, drill if needed.
+    // Opening a binder scopes the Checklists tab to it, and the last one opened
+    // was the deleted twin: open the shared binder again so its card's set shows.
+    await shelf.getByRole("button", { name: new RegExp(`^${escapeRegExp(binderName)}, `) }).click();
+    await expect(heading).toBeVisible();
+    // The drill may or may not have survived the trips: wait for one state, drill if needed.
     await tabs.getByRole("link", { name: "Checklists", exact: true }).click();
     const sports = collectorCascade(page).cascade.getByRole("listbox", { name: "Sports" });
     await expect(checklist.or(sports)).toBeVisible();
