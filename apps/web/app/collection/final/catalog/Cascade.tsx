@@ -37,20 +37,14 @@ const SELECTED_FOR: Record<DrillStep, string> = {
 };
 
 /**
- * "/50 · have 2 of 30", or "300 cards": the line under a checklist row. Base
- * cards only, the number the checklist's "Have 2 of 300" reads (NEO-358); a
- * row whose base count is not known yet shows no count rather than one with
- * the variations in it.
+ * NEO-364 (Jason, 2026-10-25): the drill shows no counts and no "has cards"
+ * marker on any level. Whether a row is listed at all is the only signal; the
+ * checklist's own "Have 2 of 300" heading is where the numbers live. The one
+ * line a row may carry is the store's own description that is not a count (a
+ * parallel's print run, "/50").
  */
-function describe(item: DrillItem): string | undefined {
-  if (item.description) return item.description;
-  const n = item.baseCardCount;
-  if (n === null || n === undefined || !item.variantId) return undefined;
-  return `${n} ${n === 1 ? "card" : "cards"}`;
-}
-
 function toColumnItems(items: DrillItem[]): ColumnItem[] {
-  return items.map((i) => ({ id: i.id, name: i.name, description: describe(i) }));
+  return items.map((i) => ({ id: i.id, name: i.name, description: i.description }));
 }
 
 export default function Cascade({

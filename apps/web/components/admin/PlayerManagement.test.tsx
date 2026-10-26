@@ -1069,7 +1069,7 @@ describe("NEO-319: the add form hands over without a jump", () => {
     expect(busy.getAttribute("aria-busy")).toBe("true");
     expect(busy.getAttribute("aria-disabled")).toBe("true");
     expect(busy.hasAttribute("disabled")).toBe(false);
-    expect(busy.className).toContain("motion-safe:animate-pulse");
+    expect(busy.className).toContain("animate-neon-glow");
     // The fields are locked: the row exists now, edits could go nowhere.
     expect(screen.getByLabelText("New player name")).toHaveProperty("disabled", true);
     expect(container.querySelector("#new-player-sport")).toHaveProperty("disabled", true);

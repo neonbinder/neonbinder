@@ -14,39 +14,16 @@ import Suggestions from "./catalog/Suggestions";
 import type { DrillState } from "./catalog/useDrillState";
 import type { EntityParam } from "./checklistParams";
 import Checklist from "./Checklist";
-import { searchable, useCapabilities, useDemoExtension, useSearch } from "./data/store";
+import { searchable, useCapabilities, useDemoExtension, useSearch, useSide } from "./data/store";
 import type { Card, CardId, Suggestion } from "./data/types";
+import { QuickEntryProvider } from "./inventory/QuickEntry";
+import TargetBoxPicker from "./inventory/TargetBoxPicker";
 import { useSetScope } from "./mode";
 import RequestCardDialog from "./RequestCardDialog";
 
 const FIRST_PAGE = 8;
 
-/**
- * Checklists: a search on top ("96 contenders reggie white"), which offers
- * players, teams and sets first and then the cards whose title holds every
- * word; the Set Builder's cascade underneath for browsing the long way; then
- * the checklist. A result's click opens its checklist with the row ringed.
- *
- * The drill (`drill`) is read and checked by the page (`useDrillState`),
- * which also titles the tab; this view draws it.
- */
-export default function ChecklistsTab({
-  actions,
-  query,
-  onQuery,
-  drill,
-  cascadeKey,
-  onDrill,
-  onJump,
-  highlightCardId,
-  selectedCardId,
-  entity,
-  onPickSuggestion,
-  onFranchise,
-  onClearEntity,
-  missingCard,
-  arrivalRef,
-}: {
+export interface ChecklistsTabProps {
   actions: RowActions;
   query: string;
   onQuery: (q: string) => void;
@@ -71,7 +48,52 @@ export default function ChecklistsTab({
    * Set by the page (a pick from My Cards lands here too); taken once.
    */
   arrivalRef: MutableRefObject<"entity" | "search" | null>;
-}) {
+}
+
+/**
+ * The page's side picks what the rows do (NEO-364): on the inventory side
+ * the tab gets the "Adding to" box picker on top, and every row (the
+ * checklist's and the search's) is a quantity field for that box, sharing
+ * one commit queue (`./inventory/QuickEntry`). The collection side is
+ * unchanged.
+ */
+export default function ChecklistsTab(props: ChecklistsTabProps) {
+  const side = useSide();
+  if (side !== "inventory") return <ChecklistsView {...props} inventory={false} />;
+  return (
+    <QuickEntryProvider>
+      <ChecklistsView {...props} inventory />
+    </QuickEntryProvider>
+  );
+}
+
+/**
+ * Checklists: a search on top ("96 contenders reggie white"), which offers
+ * players, teams and sets first and then the cards whose title holds every
+ * word; the Set Builder's cascade underneath for browsing the long way; then
+ * the checklist. A result's click opens its checklist with the row ringed.
+ *
+ * The drill (`drill`) is read and checked by the page (`useDrillState`),
+ * which also titles the tab; this view draws it.
+ */
+function ChecklistsView({
+  actions,
+  query,
+  onQuery,
+  drill,
+  cascadeKey,
+  onDrill,
+  onJump,
+  highlightCardId,
+  selectedCardId,
+  entity,
+  onPickSuggestion,
+  onFranchise,
+  onClearEntity,
+  missingCard,
+  arrivalRef,
+  inventory,
+}: ChecklistsTabProps & { inventory: boolean }) {
   const capabilities = useCapabilities();
   const demo = useDemoExtension();
   const setScope = useSetScope();
@@ -141,6 +163,7 @@ export default function ChecklistsTab({
   return (
     <div className="space-y-6">
       <h2 className="sr-only">Checklists</h2>
+      {inventory && <TargetBoxPicker />}
       <section aria-label="Quick search" className="space-y-3">
         <div role="search" className="relative max-w-2xl">
           <MagnifyingGlassIcon
@@ -215,7 +238,7 @@ export default function ChecklistsTab({
 
         {!entity && shown.length > 0 && (
           <>
-            {scopedName && (
+            {scopedName && !inventory && (
               <p className="text-xs text-ink-2">
                 Have, Want and Trade below are for <span className="text-neon-blue-text">{scopedName}</span>.{" "}
                 <button

@@ -40,24 +40,36 @@
  * Concurrent chunks on one variant serialise on the variant row itself: each
  * flush reads and patches it, so OCC retries the loser.
  *
- * ## Subtree counts (Jason, 2026-10-24)
+ * ## Subtree counts (Jason, 2026-10-24) and `hasCards` (NEO-364, 2026-10-25)
+ *
+ * Jason, final: "Exact counts from the set down, a one-time has-cards flag on
+ * sport, year and brand, hide anything without it, and drop counts from the
+ * selector."
  *
  * `subtreeCardCount` / `subtreeNonVariationCardCount`: the cards on a row OR
- * anywhere beneath it, on every level from sport down, so each step of the
- * collector's drill knows whether anything sits below it and an exact zero
- * is hidden (`collectionCatalog.drill`, `setSummary`, set suggestions).
+ * anywhere beneath it, kept from the SET row down, so each of those steps of
+ * the collector's drill knows whether anything sits below it and an exact
+ * zero is hidden (`collectionCatalog.drill`, `setSummary`, set suggestions).
+ *
+ * `hasCards`, on sport, year and manufacturer rows only (`HAS_CARDS_LEVELS`):
+ * set true by the first flush that carries an ADDED card (or a re-homed
+ * subtree with cards or of unknown size) up to the row, and never written by
+ * the ledger again. Never false, never cleared when the cards go. Absent
+ * means hidden from the drill.
  *
  * The same flush carries every row's delta up its `parentId` chain: each row
- * a delta reaches (the card's row, then insert / variant type / set / brand /
- * year / sport) is read ONCE and patched at most ONCE per flush, own and
- * subtree counts in one patch, however many cards and rows the mutation
- * touched. The rules:
+ * a delta reaches (the card's row, then insert / variant type / set) is read
+ * ONCE and patched at most ONCE per flush, own and subtree counts in one
+ * patch, however many cards and rows the mutation touched; the brand, year
+ * and sport above it are read, and patched only for their first card. The
+ * rules:
  *
  *  - an ABSENT subtree count stays absent (UNKNOWN). It is never recounted in
  *    a mutation and never written partially; `backfillSubtreeCardCounts`
- *    fills it. A new row is born at 0 (`NEW_ROW_SUBTREE_COUNTS`, spread into
- *    every selector-row insert), so only rows from before this field and rows
- *    the ledger cleared are ever unknown;
+ *    fills it. A new row from the set down is born at 0
+ *    (`newRowSubtreeCounts(level)`, spread into every selector-row insert),
+ *    so only rows from before this field and rows the ledger cleared are ever
+ *    unknown;
  *  - a subtree count that would go negative (or a base count that would pass
  *    the all-cards count) has drifted: it is cleared to UNKNOWN and logged
  *    `subtree_card_count_drift`, never clamped (a clamp claims "nothing
@@ -69,13 +81,17 @@
  *    set re-home, `applyParallelGroupings`): the row's stored subtree leaves
  *    the old chain and joins the new one, shared ancestors net to zero. A
  *    row of unknown size makes every row on one chain and not the other
- *    unknown (`subtree_card_count_unknown_move`).
+ *    unknown (`subtree_card_count_unknown_move`). The new chain's sport,
+ *    year and brand get `hasCards` when the moved subtree has cards or is of
+ *    unknown size; the old chain's are left as they are.
  *
- * Cost: one read and one patch per ancestor per flush (four or five rows for
- * a card under a set). Contention: every card write in a sport now writes the
- * sport, year and brand rows, so concurrent card-writing mutations anywhere
- * in one sport serialise on those rows (OCC retries the loser), where before
- * only writers on one variant did.
+ * Cost: one read per ancestor per flush (six or seven rows for a card under
+ * a set), and one patch per row from the card's row up to its set. The
+ * brand, year and sport rows are patched once in their lives, by the first
+ * card beneath them, so concurrent card writers in different sets of one
+ * sport no longer collide there (NEO-358 wrote all three on every card
+ * write, and every concurrent set build serialised on the sport row).
+ * Writers inside ONE set still serialise on the set row.
  *
  * ## What it counts
  *
@@ -86,7 +102,7 @@
  *
  * `cardCounts.pin.test.ts` greps every card insert, delete and move, every
  * `variationOfCardId` write, every selector-row re-parent and every
- * selector-row insert for its ledger (or its `NEW_ROW_SUBTREE_COUNTS`). The
+ * selector-row insert for its ledger (or its `newRowSubtreeCounts`). The
  * one exemption is the E2E reset drain (`selectorOptions.resetCardChecklistBatch`),
  * which drains the selector rows too.
  *
@@ -116,6 +132,11 @@
  *   # was still unknown). A dry run cannot fill a level for the one above it,
  *   # so its upper levels report as waiting. `"repair": true` rewrites a
  *   # stored subtree count that disagrees with the sum of its children.
+ *   # NEO-364: the same run sets `hasCards` on every sport, year and brand
+ *   # with cards (or a set of unknown count) below, unsets it where there
+ *   # are none, and clears their old subtree counts (`flagsSet`,
+ *   # `flagsCleared`, `staleCountsCleared`). Until it has run, a sport, year
+ *   # or brand whose cards were written before NEO-364 is hidden.
  *
  * See docs/operations/neo358-backfill-card-search-fields.md.
  */
@@ -170,15 +191,41 @@ export type SubtreeCounts = {
 };
 
 /**
- * What every new `selectorOptions` row is born with: nothing points at a
- * brand-new id, so its subtree is known to be empty. Spread first into every
- * selector-row insert (pinned by `cardCounts.pin.test.ts`); a row born
- * without it would read as UNKNOWN until the backfill reached it.
+ * NEO-364 — the levels that carry the one-time `hasCards` flag instead of
+ * subtree counts. Every other level (the set and below) keeps exact subtree
+ * counts.
  */
-export const NEW_ROW_SUBTREE_COUNTS: SubtreeCounts = {
+export const HAS_CARDS_LEVELS: ReadonlySet<Row["level"]> = new Set<Row["level"]>([
+  "sport",
+  "year",
+  "manufacturer",
+]);
+
+/** True for a sport, year or manufacturer row (see `HAS_CARDS_LEVELS`). */
+export function carriesHasCards(level: Row["level"]): boolean {
+  return HAS_CARDS_LEVELS.has(level);
+}
+
+const KNOWN_EMPTY_SUBTREE: SubtreeCounts = {
   subtreeCardCount: 0,
   subtreeNonVariationCardCount: 0,
 };
+
+/**
+ * What a new `selectorOptions` row of `level` is born with. From the set
+ * down: both subtree counts at 0 (nothing points at a brand-new id, so its
+ * subtree is known to be empty; a row born without them would read as
+ * UNKNOWN until the backfill reached it). A sport, year or manufacturer row
+ * is born with nothing: no subtree counts, and no `hasCards`, so it stays out
+ * of the collector's drill until a card lands beneath it. Spread first into
+ * every selector-row insert, with the row's own level (pinned by
+ * `cardCounts.pin.test.ts`).
+ */
+export function newRowSubtreeCounts(
+  level: Row["level"],
+): SubtreeCounts | Record<string, never> {
+  return carriesHasCards(level) ? {} : { ...KNOWN_EMPTY_SUBTREE };
+}
 
 /**
  * Hops an ancestor walk takes before giving up. The tree is seven levels deep
@@ -200,6 +247,12 @@ export class CardCountLedger {
   private chainDeltas: Array<{ from: RowId; delta: Delta }> = [];
   /** Moves of a row whose subtree size is unknown; see `moveSubtree`. */
   private unknownMoves: Array<{ from: RowId | undefined; to: RowId | undefined }> = [];
+  /**
+   * NEO-364 — chains (from the given row up) whose sport, year and
+   * manufacturer rows must carry `hasCards`: a re-homed sport, year or
+   * manufacturer row that itself carries the flag lands under them.
+   */
+  private flagChains: RowId[] = [];
   /**
    * Row → parent (null at the root), learned while the row still existed, so
    * a row deleted later in the same transaction still passes its delta up.
@@ -279,6 +332,13 @@ export class CardCountLedger {
    * A row whose subtree count is UNKNOWN cannot be moved by a delta: every
    * row on one chain and not the other is set unknown at flush (logged
    * `subtree_card_count_unknown_move`) for the backfill to refill.
+   *
+   * NEO-364 — the new chain's sport, year and manufacturer rows get
+   * `hasCards` when the moved subtree holds cards OR its size is unknown
+   * (showing a level is safe; hiding one with cards is not). The old chain's
+   * flags are never cleared. A moved row that is itself a sport, year or
+   * manufacturer row carries no subtree counts: its own `hasCards` is what
+   * travels.
    */
   async moveSubtree(
     ctx: CountCtx,
@@ -289,6 +349,10 @@ export class CardCountLedger {
     if (fromParentId === toParentId) return;
     if (fromParentId) await this.rememberChain(ctx, fromParentId);
     const row = await ctx.db.get(rowId);
+    if (row && carriesHasCards(row.level)) {
+      if (row.hasCards === true && toParentId) this.flagChains.push(toParentId);
+      return;
+    }
     const all = row?.subtreeCardCount;
     const base = row?.subtreeNonVariationCardCount;
     if (all === undefined || base === undefined) {
@@ -311,7 +375,9 @@ export class CardCountLedger {
    *
    * Each row a delta reaches (its own row, and every ancestor up the
    * `parentId` chain) is read once and patched at most once, own counts and
-   * subtree counts together.
+   * subtree counts together. A sport, year or manufacturer row is only READ,
+   * unless this flush is the first to bring it a card: then it is patched
+   * `hasCards: true`, once, ever (NEO-364).
    */
   async flush(ctx: CountCtx): Promise<void> {
     const own = [...this.deltas.entries()].filter(([, d]) => !isZero(d));
@@ -320,7 +386,14 @@ export class CardCountLedger {
     this.chainDeltas = [];
     const unknownMoves = this.unknownMoves;
     this.unknownMoves = [];
-    if (own.length === 0 && chainDeltas.length === 0 && unknownMoves.length === 0) {
+    const flagChains = this.flagChains;
+    this.flagChains = [];
+    if (
+      own.length === 0 &&
+      chainDeltas.length === 0 &&
+      unknownMoves.length === 0 &&
+      flagChains.length === 0
+    ) {
       return;
     }
 
@@ -361,11 +434,20 @@ export class CardCountLedger {
       const held = subtree.get(id) ?? { all: 0, nonVariation: 0 };
       subtree.set(id, { all: held.all + d.all, nonVariation: held.nonVariation + d.nonVariation });
     };
+    // NEO-364 — rows some ADDED card (or moved-in subtree with cards, or of
+    // unknown size) reaches. Judged per contribution, not on the net delta:
+    // a flush that adds a card in one set and removes one in another nets
+    // to zero at the sport, but a card still landed beneath it.
+    const gained = new Set<RowId>();
     for (const [rowId, d] of own) {
-      for (const id of await chainOf(rowId)) bump(id, d);
+      const chain = await chainOf(rowId);
+      for (const id of chain) bump(id, d);
+      if (d.all > 0) for (const id of chain) gained.add(id);
     }
     for (const { from, delta } of chainDeltas) {
-      for (const id of await chainOf(from)) bump(id, delta);
+      const chain = await chainOf(from);
+      for (const id of chain) bump(id, delta);
+      if (delta.all > 0) for (const id of chain) gained.add(id);
     }
     const unknown = new Set<RowId>();
     for (const { from, to } of unknownMoves) {
@@ -375,16 +457,35 @@ export class CardCountLedger {
       const inRight = new Set(right);
       for (const id of left) if (!inRight.has(id)) unknown.add(id);
       for (const id of right) if (!inLeft.has(id)) unknown.add(id);
+      // A subtree of unknown size may hold cards: its new chain shows.
+      for (const id of right) gained.add(id);
+    }
+    for (const from of flagChains) {
+      for (const id of await chainOf(from)) gained.add(id);
     }
 
     const ownById = new Map(own);
-    const ids = new Set<RowId>([...ownById.keys(), ...subtree.keys(), ...unknown]);
+    const ids = new Set<RowId>([
+      ...ownById.keys(),
+      ...subtree.keys(),
+      ...unknown,
+      ...gained,
+    ]);
     for (const id of ids) {
       const row = await read(id);
       // The row went in this same transaction (an emptied row ended through
       // `deleteEmptySelectorOptionRow`): there is nothing to count onto. Its
       // ancestors were still reached above, through `parentHints`.
       if (!row) continue;
+      if (carriesHasCards(row.level)) {
+        // Sport, year, manufacturer: no subtree counts are kept here, and the
+        // row is written at most once in its life (NEO-364). No card sits on
+        // these levels, so there is no own count to keep either.
+        if (gained.has(id) && row.hasCards !== true) {
+          await ctx.db.patch(id, { hasCards: true });
+        }
+        continue;
+      }
       const patch: Partial<Row> = {};
       const ownDelta = ownById.get(id);
       if (ownDelta) {
@@ -824,6 +925,24 @@ type SubtreeLevel = (typeof SUBTREE_LEVELS)[number];
  */
 export const SUBTREE_MAX_CHILDREN = 5_000;
 
+/**
+ * NEO-364 — whether `child` may hold cards, for its sport, year or
+ * manufacturer parent: a flag-level child by its `hasCards`; any other by its
+ * subtree count, where UNKNOWN counts as maybe (shown, never hidden), and its
+ * own count, so a drifted subtree zero never hides a row holding cards.
+ */
+function childMayHoldCards(child: Row): boolean {
+  if (carriesHasCards(child.level)) return child.hasCards === true;
+  if (typeof child.cardCount === "number" && child.cardCount > 0) return true;
+  if (
+    child.subtreeCardCount === undefined ||
+    child.subtreeNonVariationCardCount === undefined
+  ) {
+    return true;
+  }
+  return child.subtreeCardCount > 0;
+}
+
 const SUBTREE_NOT_ARMED_MESSAGE =
   `Refused: this deployment is not armed for the backfill. ` +
   `Set ${SUBTREE_ENV_FLAG}=1 on it (npx convex env set ${SUBTREE_ENV_FLAG} 1), ` +
@@ -833,7 +952,8 @@ const SUBTREE_DRY_RUN_MESSAGE =
   `Dry run — nothing written. Arm with ${SUBTREE_ENV_FLAG}=1 on the deployment ` +
   `and re-run with {"confirm":"${CONFIRM_TOKEN}"} to apply. A dry run cannot ` +
   `fill a level for the level above it to read, so rows above the deepest ` +
-  `unfilled level report as "waiting".`;
+  `unfilled level report as "waiting", and the year and sport flags are ` +
+  `judged on the brand and year flags as they stand now.`;
 
 const subtreeLevelValidator = v.union(
   v.literal("parallel"),
@@ -852,6 +972,12 @@ const subtreePageResultValidator = v.object({
   disagreed: v.number(),
   /** Rows left alone because a child's subtree count is still unknown. */
   waiting: v.number(),
+  /** NEO-364 — sport, year and manufacturer rows given `hasCards`. */
+  flagsSet: v.number(),
+  /** NEO-364 — sport, year and manufacturer rows whose `hasCards` was unset (nothing below). */
+  flagsCleared: v.number(),
+  /** NEO-364 — sport, year and manufacturer rows whose old subtree counts were cleared. */
+  staleCountsCleared: v.number(),
   docsRead: v.number(),
   /** As in `backfillVariantCardCountsPage`: same cursor, skip this many. */
   resumeSkip: v.optional(v.number()),
@@ -873,6 +999,14 @@ const subtreePageResultValidator = v.object({
  * `filled`: a row missing either subtree count, both written. `disagreed`:
  * stored subtree counts that do not match the sum; written (`repaired`) only
  * with `repair: true`.
+ *
+ * NEO-364 — a sport, year or manufacturer row keeps no subtree counts: it
+ * gets `hasCards: true` when any child below may hold cards (a set with
+ * cards or of unknown count; a brand or year that carries the flag), and has
+ * the flag unset when none does (`flagsSet`, `flagsCleared`; always, not
+ * only with `repair`). Any NEO-358 subtree counts still on it are cleared
+ * (`staleCountsCleared`). Levels are walked deepest first, so a brand is
+ * judged before its year and a year before its sport.
  */
 export const backfillSubtreeCardCountsPage = internalMutation({
   args: {
@@ -899,6 +1033,9 @@ export const backfillSubtreeCardCountsPage = internalMutation({
     let repaired = 0;
     let disagreed = 0;
     let waiting = 0;
+    let flagsSet = 0;
+    let flagsCleared = 0;
+    let staleCountsCleared = 0;
     let docsRead = 0;
     let resumeSkip: number | undefined;
     const skip = Math.max(0, Math.floor(args.skip ?? 0));
@@ -939,6 +1076,32 @@ export const backfillSubtreeCardCountsPage = internalMutation({
         );
       }
       docsRead += children.length;
+
+      if (carriesHasCards(row.level)) {
+        // NEO-364 — sport, year, manufacturer: `hasCards` when any card sits
+        // on the row or any child below holds cards or is of unknown size
+        // (shown, never hidden, when in doubt); unset otherwise. The
+        // NEO-358 subtree counts these levels no longer keep are cleared.
+        const holds =
+          own.cardCount > 0 || children.some((child) => childMayHoldCards(child));
+        const patch: Partial<Row> = {};
+        if (holds && row.hasCards !== true) {
+          flagsSet++;
+          patch.hasCards = true;
+        } else if (!holds && row.hasCards !== undefined) {
+          flagsCleared++;
+          patch.hasCards = undefined;
+        }
+        if (
+          row.subtreeCardCount !== undefined ||
+          row.subtreeNonVariationCardCount !== undefined
+        ) {
+          staleCountsCleared++;
+          Object.assign(patch, UNKNOWN_SUBTREE);
+        }
+        if (args.apply && Object.keys(patch).length > 0) await ctx.db.patch(row._id, patch);
+        continue;
+      }
 
       let all = own.cardCount;
       let base = own.nonVariationCardCount;
@@ -983,6 +1146,9 @@ export const backfillSubtreeCardCountsPage = internalMutation({
       repaired,
       disagreed,
       waiting,
+      flagsSet,
+      flagsCleared,
+      staleCountsCleared,
       docsRead,
       ...(resumeSkip !== undefined ? { resumeSkip } : {}),
       isDone: page.isDone,
@@ -1012,7 +1178,9 @@ export function parseSubtreeResumeCursor(raw: string): {
 
 /**
  * NEO-358 — fill `selectorOptions.subtreeCardCount` and
- * `subtreeNonVariationCardCount` on every row, bottom-up. Run it AFTER
+ * `subtreeNonVariationCardCount` on every row from the set down, bottom-up,
+ * and (NEO-364) set or unset `hasCards` on every sport, year and manufacturer
+ * row, clearing the subtree counts those levels no longer keep. Run it AFTER
  * `backfillVariantCardCounts` reports complete. Dry run by default; see the
  * header for the operator commands.
  *
@@ -1042,6 +1210,9 @@ export const backfillSubtreeCardCounts = internalAction({
     repaired: v.number(),
     disagreed: v.number(),
     waiting: v.number(),
+    flagsSet: v.number(),
+    flagsCleared: v.number(),
+    staleCountsCleared: v.number(),
   }),
   handler: async (ctx, args) => {
     const intendsToWrite = args.confirm === CONFIRM_TOKEN;
@@ -1060,7 +1231,16 @@ export const backfillSubtreeCardCounts = internalAction({
       cursor = parsed.cursor;
     }
 
-    const totals = { scanned: 0, filled: 0, repaired: 0, disagreed: 0, waiting: 0 };
+    const totals = {
+      scanned: 0,
+      filled: 0,
+      repaired: 0,
+      disagreed: 0,
+      waiting: 0,
+      flagsSet: 0,
+      flagsCleared: 0,
+      staleCountsCleared: 0,
+    };
     let complete = false;
     for (;;) {
       if (levelIndex >= SUBTREE_LEVELS.length) {
@@ -1074,6 +1254,9 @@ export const backfillSubtreeCardCounts = internalAction({
         repaired: number;
         disagreed: number;
         waiting: number;
+        flagsSet: number;
+        flagsCleared: number;
+        staleCountsCleared: number;
         docsRead: number;
         resumeSkip?: number;
         isDone: boolean;
@@ -1091,6 +1274,9 @@ export const backfillSubtreeCardCounts = internalAction({
       totals.repaired += page.repaired;
       totals.disagreed += page.disagreed;
       totals.waiting += page.waiting;
+      totals.flagsSet += page.flagsSet;
+      totals.flagsCleared += page.flagsCleared;
+      totals.staleCountsCleared += page.staleCountsCleared;
       if (page.resumeSkip !== undefined) {
         skip = page.resumeSkip;
       } else if (page.isDone) {

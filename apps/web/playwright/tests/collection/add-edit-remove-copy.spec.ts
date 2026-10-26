@@ -64,21 +64,15 @@ test(
     const searchBox = page.getByRole("searchbox", { name: "Search every card" });
     await expect(searchBox).toBeVisible();
 
-    const { cascade, drill } = collectorCascade(page);
+    const { drill } = collectorCascade(page);
     await drill("Sports", "Baseball", "Years");
     await drill("Years", "2024", "Brands");
     await drill("Brands", "Topps", "Sets");
     await drill("Sets", "Topps Chrome", "Variant Types");
 
-    // The catalog's own count for the Base checklist, read off its row before
-    // it is picked (the drill's read of the stored count).
-    const baseOption = cascade
-      .getByRole("listbox", { name: "Variant Types" })
-      .getByRole("option")
-      .filter({ has: page.getByText("Base", { exact: true }) });
-    const baseCount = baseOption.getByText(/^\d+ cards?$/);
-    await expect(baseCount).toBeVisible();
-    const catalogTotal = Number(/^\d+/.exec((await baseCount.textContent()) ?? "")?.[0]);
+    // NEO-364: the drill's rows carry no counts (the count lives on the
+    // checklist; checklists-drill-offers-only-levels-with-cards owns that
+    // absence), so the drill goes straight to the Base row.
     await drill("Variant Types", "Base");
 
     const checklist = page.getByRole("region", { name: "2024 Topps Chrome Base" });
@@ -99,8 +93,7 @@ test(
     // the count with photo variations swapped in, makes them differ. A missing
     // count that the server can still tally by hand reads the same number, so
     // the page shows the right total either way; one it cannot tally reads "N
-    // owned", which fails the "Have 0 of" read above, and a Base row with no
-    // count fails the catalog read below.
+    // owned", which fails the "Have 0 of" read above.
     const countLine = checklist
       .getByRole("status")
       .filter({ hasText: /^\d+ cards?(, \d+ with variations)?$/ });
@@ -116,7 +109,6 @@ test(
     if (withVariations !== null) {
       expect(withVariations, "'with variations' includes the base cards").toBeGreaterThan(baseListed);
     }
-    expect(catalogTotal, "the cascade's count for Base is the same T").toBe(total);
 
     // The card this spec uses: the first Base row that reads "#N First Last"
     // (two or more words, one player, no variation), never #300 (the
@@ -238,7 +230,7 @@ test(
       name: new RegExp(`^2024 Topps Chrome #${escapeRegExp(number)} ${escapeRegExp(player)}`),
     });
     await detailsButton.click();
-    await expect(drawer.getByText(/^You have 1\.?$/)).toBeVisible();
+    await expect(drawer.getByText(/^1 in binders\.?$/)).toBeVisible();
     await expect(page).toHaveURL(/[?&]detail=[^&]+/);
     // Opened from the checklist's rows, it says where the card sits among them.
     await expect(drawer.getByRole("status").filter({ hasText: /^Card \d+ of \d+, / })).toHaveText(
@@ -257,7 +249,7 @@ test(
     await checklist.getByRole("button", { name: `Add another ${short}`, exact: true }).click();
     await expect(page).toHaveURL(/[?&]detail=[^&]+/);
     await expect(page).toHaveURL(/[?&]mode=add(&|$)/);
-    await expect(drawer.getByText(/^You have 1\.?$/)).toBeVisible();
+    await expect(drawer.getByText(/^1 in binders\.?$/)).toBeVisible();
     const yourCopies = drawer.getByRole("region", { name: `Your copies of ${short}` });
     await expect(yourCopies.getByRole("heading", { name: "Your copies (1 line)" })).toBeVisible();
     // Fully on screen before axe reads it (the drawer slides in).

@@ -281,7 +281,7 @@ describe("placeCopy", () => {
     await exact(s);
   });
 
-  test("folds into an identical twin already in that row, and the undo splits back", async () => {
+  test("folds into an identical twin already in that row, and the undo splits back (a box: the collection tally is never touched)", async () => {
     const s = await setup();
     const twin = await add(s, s.fx.gooden1, { homeId: s.box, slot: 1, quantity: 2 });
     const a = await add(s, s.fx.gooden1, { homeId: s.box, quantity: 1 });
@@ -296,7 +296,10 @@ describe("placeCopy", () => {
     expect(back.split).toBe(true);
     expect(await copies(s.t)).toHaveLength(2);
     await exact(s);
-    await tallyIsExact(s);
+    // Everything here sits in a box: the collection tally was never written.
+    const tally = await tallyTruth(s.t, ME.subject);
+    expect(tally.truth).toEqual({ copies: 0, lines: 0, cards: 0 });
+    expect(tally.stored).toBeNull();
   });
 
   test("a binder pocket holds one line; a differing line in it is refused", async () => {
@@ -600,28 +603,30 @@ describe("scoped reads", () => {
     await add(s, s.fx.gooden1, { homeId: s.binderA });
     await add(s, s.fx.strawberry2, { homeId: s.binderB });
     await add(s, s.fx.futureStar, { homeId: s.binderA });
-    const inA = await s.me.query(api.collection.copiesInVariant, { variantId: s.fx.baseId, homeId: s.binderA });
+    const inA = await s.me.query(api.collection.copiesInVariant, { variantId: s.fx.baseId, homeId: s.binderA, side: "collection" });
     expect(inA.map((c) => c.cardId)).toEqual([s.fx.gooden1]);
-    const all = await s.me.query(api.collection.copiesInVariant, { variantId: s.fx.baseId });
+    const all = await s.me.query(api.collection.copiesInVariant, { variantId: s.fx.baseId, side: "collection" });
     expect(all).toHaveLength(2);
-    const vc = await s.me.query(api.collection.variantCompletion, { variantId: s.fx.baseId, homeId: s.binderB });
+    const vc = await s.me.query(api.collection.variantCompletion, { variantId: s.fx.baseId, homeId: s.binderB, side: "collection" });
     expect(vc).toMatchObject({ owned: 1, ownedAll: 1, total: 2, totalAll: 3 });
-    const sc = await s.me.query(api.collection.setCompletion, { setId: s.fx.setId, homeId: s.binderA });
+    const sc = await s.me.query(api.collection.setCompletion, { setId: s.fx.setId, homeId: s.binderA, side: "collection" });
     expect(sc.owned).toBe(2);
     expect(sc.variants).toHaveLength(2);
-    const scAll = await s.me.query(api.collection.setCompletion, { setId: s.fx.setId });
+    const scAll = await s.me.query(api.collection.setCompletion, { setId: s.fx.setId, side: "collection" });
     expect(scAll.owned).toBe(3);
   });
 
   test("a bad, foreign, Want, Trade or deleted homeId reads empty, never the unscoped answer", async () => {
     const s = await setup();
     await add(s, s.fx.gooden1, { homeId: s.binderA });
+    await add(s, s.fx.gooden1, { homeId: s.box });
+    await add(s, s.fx.gooden1, { homeId: s.sys.unsortedId });
     const theirs = await s.them.mutation(api.collectionContainers.create, { kind: "binder", name: "T" });
-    const bad = ["garbage", "", theirs.containerId as string, s.sys.wantId as string, s.sys.tradeId as string, s.fx.baseId as string];
+    const bad = ["garbage", "", theirs.containerId as string, s.sys.wantId as string, s.sys.tradeId as string, s.fx.baseId as string, s.box as string, s.sys.unsortedId as string];
     for (const homeId of bad) {
-      expect(await s.me.query(api.collection.copiesInVariant, { variantId: s.fx.baseId, homeId })).toEqual([]);
-      expect(await s.me.query(api.collection.variantCompletion, { variantId: s.fx.baseId, homeId })).toMatchObject({ owned: 0, ownedAll: 0 });
-      expect(await s.me.query(api.collection.setCompletion, { setId: s.fx.setId, homeId })).toEqual({ owned: 0, ownedAll: 0, variants: [], truncated: false });
+      expect(await s.me.query(api.collection.copiesInVariant, { variantId: s.fx.baseId, homeId, side: "collection" })).toEqual([]);
+      expect(await s.me.query(api.collection.variantCompletion, { variantId: s.fx.baseId, homeId, side: "collection" })).toMatchObject({ owned: 0, ownedAll: 0 });
+      expect(await s.me.query(api.collection.setCompletion, { setId: s.fx.setId, homeId, side: "collection" })).toEqual({ owned: 0, ownedAll: 0, variants: [], truncated: false });
     }
   });
 
@@ -634,7 +639,7 @@ describe("scoped reads", () => {
         rule: { version: 1, match: "all", terms: [{ test: { kind: "hallOfFame" } }] },
       }),
     );
-    expect(await s.me.query(api.collection.copiesInVariant, { variantId: s.fx.baseId, homeId: smart })).toEqual([]);
+    expect(await s.me.query(api.collection.copiesInVariant, { variantId: s.fx.baseId, homeId: smart, side: "collection" })).toEqual([]);
   });
 
   test("copiesInContainer pages in slot order; Trade lists the flagged; Want and foreign read empty", async () => {

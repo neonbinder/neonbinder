@@ -1,8 +1,10 @@
 import { SignedIn, SignedOut, SignInButton, UserButton } from "@clerk/clerk-react";
 import { useAuth } from "@clerk/clerk-react";
+import { useRef } from "react";
 import { useNavigate } from "react-router";
 import { Bars3Icon, KeyIcon, XMarkIcon } from "@heroicons/react/24/outline";
 import { BrandMark } from "@/components/primitives/BrandMark";
+import { useStickyHeaderHeight } from "@/src/hooks/useStickyHeaderHeight";
 import NeonButton from "./NeonButton";
 import { MOBILE_NAV_ID } from "./mobile-nav";
 
@@ -17,6 +19,9 @@ export default function BinderHeader({
 }: BinderHeaderProps) {
   const { isSignedIn, signOut } = useAuth();
   const navigate = useNavigate();
+  // Bars that stick under this one read its height from `--nb-header-h`.
+  const headerRef = useRef<HTMLElement>(null);
+  useStickyHeaderHeight(headerRef);
 
   const handleSignOut = async () => {
     await signOut();
@@ -38,7 +43,7 @@ export default function BinderHeader({
   // scroll position, and hands the 74px back to the content. globals.css
   // drops `scroll-padding-top` below `sm` to match; keep the two in step.
   return (
-    <header className="sm:sticky sm:top-0 z-20 bg-surface p-4 border-b-2 border-rule flex flex-row justify-between items-center pointer-events-none">
+    <header ref={headerRef} className="sm:sticky sm:top-0 z-20 bg-surface p-4 border-b-2 border-rule flex flex-row justify-between items-center pointer-events-none">
       <div className="flex items-center gap-2 pointer-events-auto">
         <BrandMark />
         {/* The wordmark inherits its colour in dark and takes the deep brand
@@ -65,7 +70,10 @@ export default function BinderHeader({
               />
             </UserButton.MenuItems>
           </UserButton>
-          <NeonButton variant="negative" onClick={handleSignOut} className="hidden sm:inline-flex">
+          {/* On screen at every width: the mobile menu has no Sign out of its
+              own (playwright/tests/auth/sign-out.spec.ts signs out from here
+              at phone width). */}
+          <NeonButton variant="negative" onClick={handleSignOut}>
             Sign out
           </NeonButton>
         </SignedIn>

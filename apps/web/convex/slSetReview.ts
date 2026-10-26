@@ -61,7 +61,7 @@ import {
 } from "./features/deriveCardFeatures";
 import { matchKnownBrand } from "./knownBrands";
 import { inheritedTeamIds } from "./lib/selectorTeams";
-import { NEW_ROW_SUBTREE_COUNTS } from "./cardCounts";
+import { newRowSubtreeCounts } from "./cardCounts";
 import { MAX_SLOT_LABEL_LENGTH, initialSlots, slotIds } from "./platformSlots";
 import { brandSubtreeSlIds, createSetsFromSlRootsImpl } from "./selectorOptions";
 import {
@@ -1003,7 +1003,7 @@ export const createSlRowsUnderVariantType = internalMutation({
         ...deriveOwnLevelFeatures("insert", named.value, flags),
       };
       const id = await ctx.db.insert("selectorOptions", {
-        ...NEW_ROW_SUBTREE_COUNTS,
+        ...newRowSubtreeCounts("insert"),
         level: "insert",
         value: named.value,
         platformData: slots.platformData,

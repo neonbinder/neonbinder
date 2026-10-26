@@ -814,7 +814,7 @@ function AddPlayerForm({
                 ? "Creating player"
                 : `Create player ${trimmed}`
           }
-          className={busyOn === "primary" ? "motion-safe:animate-pulse" : undefined}
+          className={busyOn === "primary" ? "animate-neon-glow" : undefined}
         >
           {/* NEO-254: the disambiguated label, which is byte-identical to
               `Open {name}` whenever the name matches exactly one row — so the

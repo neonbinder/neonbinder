@@ -15,14 +15,22 @@
  * opens the same view.
  *
  * The scope (`useScope`, from the page URL) applies here as on Convex: with
- * a binder picked, `useCopiesInVariant`, `useVariantCompletion` and the
- * drill's "have N of M" count only that home, while `useCopiesOf` lists
- * every copy (the drawer shows each with its home).
+ * a binder picked, `useCopiesInVariant` and `useVariantCompletion` count
+ * only that home, while `useCopiesOf` lists every copy (the drawer shows
+ * each with its home). The drill counts nothing (NEO-364).
  *
  * NEO-359: every collection read sees only the copies whose home is not a
  * box (`collectionOf`, the store's `inCollection` rule); `useCopiesOf`,
  * `useCopiesOfCards` and a box's own `useContainerCopies` list them all, and
  * the Up for Trade pile (`tradeOf`) keeps every flagged copy, a box's too.
+ *
+ * NEO-364: the side-aware reads (`useCopiesInVariant`, `useVariantCompletion`,
+ * `useSetCompletion`) read one
+ * side: binder homes for the collection (`collectionOf`), box homes for the
+ * inventory (`inventoryOf`). A scope on the other side reads as empty.
+ * `useInventoryCards` lists the box copies card by card; `setBoxQuantity`
+ * runs the reducer's `demoOps.setBoxQuantity` (plain lines only) and undoes
+ * with `demoOps.restoreLines`.
  *
  * Writes go through the reducer's pure ops (`../store` `demoOps`), so a
  * refusal (a taken pocket, the Want List as a home) rejects with the same
@@ -42,13 +50,11 @@ import {
   getTeam,
   players as fixturePlayers,
   searchCards,
-  setCompletion as fixtureSetCompletion,
   sets as fixtureSets,
   setsInOrder,
   teams as fixtureTeams,
   type Card as FixtureCard,
   type CardSet as FixtureSet,
-  type Copy as FixtureCopy,
   type VariantFilter,
   type VariantPath,
   type VariantType,
@@ -80,10 +86,13 @@ import {
   CONTAINER_COPIES_DEFAULT_LIMIT,
   emptyCopyDetails,
   inCollection,
+  inInventory,
   OWNED_CARDS_DEFAULT_LIMIT,
   searchable,
   SET_CARDS_DEFAULT_LIMIT,
+  todayIso,
   useScope,
+  useSide,
   type CollectionActions,
   type CollectionData,
   type CollectionStoreValue,
@@ -102,6 +111,9 @@ import {
   type Copy,
   type DrillItem,
   type HeldCount,
+  type InventoryBoxCount,
+  type InventoryCards,
+  type InventoryItem,
   type OwnedCards,
   type DrillLevel,
   type DrillParents,
@@ -115,6 +127,7 @@ import {
   type VariantKind,
   type VariantRef,
   type Scope,
+  type Side,
 } from "./types";
 
 export { PUBLIC_STORAGE_KEY };
@@ -289,6 +302,24 @@ function collectionOf(state: CollectionState): DemoCopy[] {
   return kept;
 }
 
+/** The inventory's copies, per reducer state (`inInventory`, NEO-364). */
+const inventoryCache = new WeakMap<CollectionState, DemoCopy[]>();
+
+/** The copies the inventory's screens see: every one whose home is a box (Unsorted included). */
+function inventoryOf(state: CollectionState): DemoCopy[] {
+  const cached = inventoryCache.get(state);
+  if (cached) return cached;
+  const kinds = new Map(state.containers.map((c) => [c.id, c.kind]));
+  const kept = state.copies.filter((c) => inInventory({ homeKind: kinds.get(c.homeId) ?? "binder" }));
+  inventoryCache.set(state, kept);
+  return kept;
+}
+
+/** One side's copies: the collection's binders or the inventory's boxes. */
+function sideOf(state: CollectionState, side: Side): DemoCopy[] {
+  return side === "inventory" ? inventoryOf(state) : collectionOf(state);
+}
+
 /**
  * The Up for Trade pile: every flagged copy, wherever it lives. Trade spans
  * collection and inventory, so a box copy stays (the one collection view
@@ -298,12 +329,18 @@ function tradeOf(state: CollectionState): DemoCopy[] {
   return state.copies.filter((c) => c.upForTrade);
 }
 
-/** The collection's copies a scope looks through: one home's, or all of them. */
-function inScope(state: CollectionState, scope: Scope): DemoCopy[] {
-  const copies = collectionOf(state);
+/**
+ * One side's copies a scope looks through: one home's, or all of them. A
+ * home on the other side reads as empty (NEO-364: a box scope never shows a
+ * collection copy, nor a binder scope an inventory one).
+ */
+function inScope(state: CollectionState, scope: Scope, side: Side): DemoCopy[] {
+  const copies = sideOf(state, side);
   if (scope === "all") return copies;
   const home = state.containers.find((c) => c.id === scope);
-  return isHome(home) ? copies.filter((c) => c.homeId === scope) : copies;
+  if (!isHome(home)) return copies;
+  if ((home!.kind === "box") !== (side === "inventory")) return [];
+  return copies.filter((c) => c.homeId === scope);
 }
 
 /** The copies a container lists (see `useContainerCopies`), in slot order. */
@@ -321,6 +358,68 @@ function containerCopies(state: CollectionState, id: string): DemoCopy[] {
     });
   }
   return bySlot(state.copies.filter((c) => c.homeId === id));
+}
+
+/**
+ * When a demo line was last touched, as `lastUpdated` ms: its date, plus its
+ * place in the list as a tiebreak (the reducer appends each new line), so a
+ * line added today sorts after one added earlier today.
+ */
+function touchedAt(copy: DemoCopy, index: number): number {
+  const day = Date.parse(copy.acquiredAt);
+  return (Number.isFinite(day) ? day : 0) + index;
+}
+
+/**
+ * The Inventory list (`useInventoryCards`): every card held in a box, one
+ * item per card (its box lines together), most recently touched first;
+ * `boxId` narrows to one box. Never a binder copy.
+ */
+function inventoryCardsOf(state: CollectionState, limit: number, boxId: string | undefined): InventoryCards {
+  const index = new Map(state.copies.map((c, i) => [c.id, i]));
+  // The shelf is sorted system first, so Unsorted leads the collector's boxes.
+  const order = new Map(state.containers.map((c, i) => [c.id, i]));
+  const held = new Map<string, Omit<InventoryItem, "card">>();
+  for (const copy of inventoryOf(state)) {
+    if (copy.quantity <= 0 || (boxId !== undefined && copy.homeId !== boxId)) continue;
+    const at = touchedAt(copy, index.get(copy.id) ?? 0);
+    const item = held.get(copy.cardId) ?? {
+      quantity: 0,
+      lines: 0,
+      graded: false,
+      gradedQuantity: 0,
+      upForTrade: false,
+      lastUpdated: 0,
+      boxes: [] as InventoryBoxCount[],
+    };
+    const slabs = copy.graded ? copy.quantity : 0;
+    item.quantity += copy.quantity;
+    item.lines += 1;
+    item.gradedQuantity += slabs;
+    if (copy.graded) item.graded = true;
+    if (copy.upForTrade) item.upForTrade = true;
+    item.lastUpdated = Math.max(item.lastUpdated, at);
+    const box = item.boxes.find((b) => b.boxId === copy.homeId);
+    if (box) {
+      box.quantity += copy.quantity;
+      box.gradedQuantity += slabs;
+    } else item.boxes.push({ boxId: copy.homeId, quantity: copy.quantity, gradedQuantity: slabs });
+    held.set(copy.cardId, item);
+  }
+  const ranked = [...held.entries()].sort(([, a], [, b]) => b.lastUpdated - a.lastUpdated);
+  const items: InventoryItem[] = [];
+  const goneCardIds: string[] = [];
+  for (const [id, item] of ranked.slice(0, limit)) {
+    const card = demoCard(id);
+    if (!card) {
+      goneCardIds.push(id);
+      continue;
+    }
+    // Unsorted first, then the shelf's order.
+    item.boxes.sort((a, b) => (order.get(a.boxId) ?? 0) - (order.get(b.boxId) ?? 0));
+    items.push({ card, ...item });
+  }
+  return { items, goneCardIds, truncated: ranked.length > limit };
 }
 
 function countOf(copies: readonly DemoCopy[]) {
@@ -370,22 +469,27 @@ function countsOf(variantId: VariantId): Pick<DrillItem, "cardCount" | "baseCard
   return { cardCount: v?.cardCount ?? null, baseCardCount: v?.baseCardCount ?? null };
 }
 
+/**
+ * NEO-364 (Jason, 2026-10-25): the drill shows names only, no counts and no
+ * "has cards" marker, on every level, the same as the real catalog. The
+ * prototype's lines ("Have 2 of 30 base", "300 cards", "3 inserts") are
+ * dropped; a parallel keeps its print run ("/50"), which is not a count.
+ */
 function drillItem(level: DrillLevel, item: ColumnItem, extra: Partial<DrillItem> = {}): DrillItem {
-  return { id: item.id, level, name: item.name, description: item.description, hasChildren: true, ...extra };
+  return { id: item.id, level, name: item.name, hasChildren: true, ...extra };
 }
 
-function drillColumn(level: DrillLevel, parents: DrillParents, scoped: readonly DemoCopy[]): DrillItem[] {
-  // NEO-358: the drill's "300 base cards" / "have 2 of 30" read base cards
-  // only, the same pair as the checklist's "Have 2 of 300"; the shared
-  // prototype completion counts image variations in.
-  const completion = (setId: string, variant?: VariantFilter) => {
-    // The prototype's completion reads only `cardId` and `quantity`.
-    const c = fixtureSetCompletion(setId, variant, scoped as unknown as FixtureCopy[]);
-    const total = cardsInSet(setId, variant).filter((card) => card.variation === null).length;
-    const missing = c.missing.filter((card) => card.variation === null);
-    const owned = total - missing.length;
-    return { ...c, total, owned, missing, percent: total ? Math.floor((owned / total) * 100) : 0 };
-  };
+/** "/50", "1/1", or nothing: a parallel's print run, the one line the drill keeps. */
+function printRunOf(set: FixtureSet, type: VariantType, name: string): string | undefined {
+  const run = set.variants.find((v) => v.path.type === type && v.path.name === name)?.printRun ?? null;
+  if (run === null) return undefined;
+  return run === 1 ? "1/1" : `/${run}`;
+}
+
+/** The prototype's set rows want a completion; the drill shows none of it. */
+const NO_COMPLETION = () => ({ total: 0, owned: 0, percent: 0, missing: [] as FixtureCard[] });
+
+function drillColumn(level: DrillLevel, parents: DrillParents): DrillItem[] {
   switch (level) {
     case "sport":
       return sportItems().map((i) => drillItem(level, i));
@@ -397,8 +501,8 @@ function drillColumn(level: DrillLevel, parents: DrillParents, scoped: readonly 
     }
     case "set": {
       if (!parents.sport || !parents.year || !parents.brand) return [];
-      return setItems(parents.sport as FixtureSet["sportId"], Number(parents.year), parents.brand, completion).map((i) =>
-        drillItem(level, i),
+      return setItems(parents.sport as FixtureSet["sportId"], Number(parents.year), parents.brand, NO_COMPLETION).map(
+        (i) => drillItem(level, i),
       );
     }
     case "variantType": {
@@ -409,17 +513,22 @@ function drillColumn(level: DrillLevel, parents: DrillParents, scoped: readonly 
         const kind = KIND_OF[type];
         if (type !== "Base") return drillItem(level, i, { kind });
         const variantId = demoVariantId(set.id, { type, name: null });
-        // The prototype's "N cards" counts variations; the cascade reads the base count instead.
-        return drillItem(level, { ...i, description: undefined }, { kind, variantId, hasChildren: false, ...countsOf(variantId) });
+        return drillItem(level, i, { kind, variantId, hasChildren: false, ...countsOf(variantId) });
       });
     }
     case "variant": {
       const set = parents.set ? fixtureSet(parents.set) : undefined;
       const type = parents.variantType as VariantType | undefined;
       if (!set || (type !== "Inserts" && type !== "Parallels")) return [];
-      return variantItems(set, type, completion).map((i) => {
+      return variantItems(set, type, NO_COMPLETION).map((i) => {
         const variantId = demoVariantId(set.id, { type, name: i.id });
-        return drillItem(level, i, { variantId, hasChildren: false, ...countsOf(variantId) });
+        const run = printRunOf(set, type, i.id);
+        return drillItem(level, i, {
+          variantId,
+          hasChildren: false,
+          ...countsOf(variantId),
+          ...(run ? { description: run } : {}),
+        });
       });
     }
     case "subVariant":
@@ -459,13 +568,9 @@ function parentsKey(parents: DrillParents): string {
 
 export const DEMO_DATA: CollectionData = {
   useDrill(level, parents) {
-    const state = useDemoState().state;
-    const scope = useScope();
+    // NEO-364: the drill carries no counts, so it reads nothing of the copies.
     const key = parentsKey(parents);
-    return useMemo(
-      () => (level ? drillColumn(level, JSON.parse(key) as DrillParents, inScope(state, scope)) : undefined),
-      [level, key, state, scope],
-    );
+    return useMemo(() => (level ? drillColumn(level, JSON.parse(key) as DrillParents) : undefined), [level, key]);
   },
 
   useSetSummary(setId) {
@@ -502,25 +607,25 @@ export const DEMO_DATA: CollectionData = {
     return variantId === null ? undefined : (demoIndex().variantCards.get(variantId) ?? []);
   },
 
-  useVariantCompletion(variantId) {
+  useVariantCompletion(variantId, side) {
     const state = useDemoState().state;
     const scope = useScope();
     return useMemo(
       () =>
         variantId === null
           ? undefined
-          : (completionIn(variantId, inScope(state, scope)) ?? completionOf({ owned: 0, total: 0 })),
-      [variantId, state, scope],
+          : (completionIn(variantId, inScope(state, scope, side)) ?? completionOf({ owned: 0, total: 0 })),
+      [variantId, state, scope, side],
     );
   },
 
-  useSetCompletion(setId) {
+  useSetCompletion(setId, side) {
     const state = useDemoState().state;
     const scope = useScope();
     return useMemo((): SetCompletion | undefined => {
       if (setId === null) return undefined;
       const set = fixtureSet(setId);
-      const scoped = inScope(state, scope);
+      const scoped = inScope(state, scope, side);
       const sum = { owned: 0, total: 0, ownedAll: 0, totalAll: 0 };
       for (const sv of set?.variants ?? []) {
         const c = completionIn(demoVariantId(set!.id, sv.path), scoped);
@@ -534,7 +639,7 @@ export const DEMO_DATA: CollectionData = {
         ...completionOf({ owned: sum.owned, total: sum.total }, { owned: sum.ownedAll, total: sum.totalAll }),
         exact: true,
       };
-    }, [setId, state, scope]);
+    }, [setId, state, scope, side]);
   },
 
   useCard(cardId) {
@@ -602,14 +707,14 @@ export const DEMO_DATA: CollectionData = {
     );
   },
 
-  useCopiesInVariant(variantId) {
+  useCopiesInVariant(variantId, side) {
     const state = useDemoState().state;
     const scope = useScope();
     return useMemo(() => {
       if (variantId === null) return undefined;
       const inVariant = new Set((demoIndex().variantCards.get(variantId) ?? []).map((c) => c.id));
-      return toViewCopies(inScope(state, scope).filter((c) => inVariant.has(c.cardId)), state.containers);
-    }, [variantId, state, scope]);
+      return toViewCopies(inScope(state, scope, side).filter((c) => inVariant.has(c.cardId)), state.containers);
+    }, [variantId, state, scope, side]);
   },
 
   useOwnedCards(options) {
@@ -654,6 +759,13 @@ export const DEMO_DATA: CollectionData = {
         truncated: order.length > limit,
       };
     }, [copies, limit]);
+  },
+
+  useInventoryCards(options) {
+    const limit = Math.max(1, Math.floor(options?.limit ?? OWNED_CARDS_DEFAULT_LIMIT));
+    const boxId = options?.boxId;
+    const state = useDemoState().state;
+    return useMemo(() => inventoryCardsOf(state, limit, boxId), [state, limit, boxId]);
   },
 
   useSummary() {
@@ -880,6 +992,17 @@ function demoActions(stateRef: { current: DemoState }): CollectionActions {
     async deleteContainer(container) {
       const moved = run((s) => demoOps.deleteContainer(s, container.id));
       return { moved };
+    },
+
+    async setBoxQuantity(card, box, quantity) {
+      const r = run((s) => demoOps.setBoxQuantity(s, card.id, box.id, quantity, todayIso()));
+      return {
+        before: r.before,
+        after: r.after,
+        undo: async () => {
+          run((s) => demoOps.restoreLines(s, r.undo));
+        },
+      };
     },
   };
   return actions;

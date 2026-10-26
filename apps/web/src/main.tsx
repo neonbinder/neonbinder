@@ -1,6 +1,8 @@
 import "./sentry";
+// Radix Themes' stylesheet is imported inside globals.css, in its own cascade
+// layer under Tailwind's utilities. Never import it here: unlayered, it
+// outranks every Tailwind class on a Radix element.
 import "@/app/globals.css";
-import "@radix-ui/themes/styles.css";
 
 import { lazy, StrictMode, useEffect, useMemo } from "react";
 import { createRoot } from "react-dom/client";
