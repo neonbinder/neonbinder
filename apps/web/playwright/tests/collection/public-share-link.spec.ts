@@ -223,7 +223,9 @@ test(
     await expect(confirmTwin).toBeHidden();
 
     // --- Cleanup through the UI: remove the copy, delete the empty binder ---
+    // The shelf trips dropped the drill from the address: drill again.
     await tabs.getByRole("link", { name: "Checklists", exact: true }).click();
+    await drillToCollectorBase(page);
     await checklist.getByRole("combobox", { name: "Binder" }).selectOption({ label: "All" });
     await checklist.getByRole("button", { name: `Details for ${card.short}`, exact: true }).click();
     const yourCopies = drawer.getByRole("region", { name: `Your copies of ${card.short}`, exact: true });
