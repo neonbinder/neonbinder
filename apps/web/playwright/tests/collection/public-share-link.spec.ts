@@ -8,7 +8,14 @@
 // page. A wrong link name reads as not found; the profile's shelf lists the
 // binder and Up for Trade; the Want List (never switched public) reads as not
 // found; Up for Trade, public by default, lists the card. The collector picks
-// Private again and the visitor's link reads as not found.
+// Private again and the visitor's link reads as not found. Up for Trade
+// switched private reads as not found and leaves the profile's shelf; the
+// Want List switched public opens. A second binder can't take the first
+// one's link name. Both shelves are put back as they were.
+//
+// Not covered here: the for-sale page. Boxes are made only in the demo until
+// Inventory reaches the real collection (NEO-364); unit tests in
+// convex/publicCollection.test.ts cover it.
 //
 // R7/R7a: writes only the signed-in user's own rows (`publicProfiles`,
 // `collectionContainers`, `collectionCopies`; the bootstrap reset clears the
@@ -44,6 +51,7 @@ test(
     await expect(page.getByRole("heading", { name: "Profile Settings" })).toBeVisible({ timeout: LAUNCH_GATE });
     await page.getByLabel(/^Username/).fill(username);
     await page.getByRole("button", { name: "Save Public Profile" }).click();
+    // Past the 7 s budget: the save is a server round trip that first checks the name is free.
     await expect(page.getByText(/^Profile saved/)).toBeVisible({ timeout: 10_000 });
 
     // --- A binder ------------------------------------------------------------
@@ -95,9 +103,11 @@ test(
     const publicChoice = visibility.getByRole("radio", { name: /^Public/ });
     await expect(privateChoice).toBeChecked();
     await expect(page.getByText("Nobody else can open the link below until you pick Public.")).toBeVisible();
+    await expectAccessible(page, { label: "Share panel, a private binder" });
     const linkName = page.getByRole("textbox", { name: "Link name" });
     await linkName.fill(readable);
     await linkName.press("Enter");
+    await expect(page.getByRole("status").filter({ hasText: "Link name saved. The old link no longer works." })).toBeVisible();
     const linkRe = new RegExp(`/u/${escapeRegExp(username)}/binders/${escapeRegExp(readable)}$`);
     const linkText = page.getByText(linkRe);
     await expect(linkText).toBeVisible();
@@ -130,11 +140,12 @@ test(
 
     // The profile's shelf lists the public binder and Up for Trade.
     await visitor.goto(`/u/${username}`);
-    const profileShelf = visitor.getByRole("region", { name: "Binders" });
+    const profileShelf = visitor.getByRole("region", { name: "Collection" });
     await expect(profileShelf.getByRole("link", { name: new RegExp(`^${escapeRegExp(binderName)}`) })).toBeVisible({
       timeout: LAUNCH_GATE,
     });
     await expect(profileShelf.getByRole("link", { name: "Up for Trade" })).toBeVisible();
+    await expectAccessible(visitor, { label: "Public profile with its shelf" });
 
     // The Want List was never switched public.
     await visitor.goto(`/u/${username}/want-list`);
@@ -151,8 +162,60 @@ test(
     await expect(privateChoice).toBeChecked();
     await visitor.goto(link.pathname);
     await expectNotFound(visitor);
-    await visitorContext.close();
     await page.getByRole("button", { name: "Done", exact: true }).click();
+
+    // --- Up for Trade switched private, then public again -------------------
+    const special = page.getByRole("list", { name: "Special places" });
+    await special.getByRole("button", { name: /^Up for Trade, / }).click();
+    await page.getByRole("button", { name: "Share Up for Trade", exact: true }).click();
+    const tradeVisibility = page.getByRole("group", { name: "Who can see this shelf" });
+    await expect(tradeVisibility.getByRole("radio", { name: /^Public/ })).toBeChecked();
+    await tradeVisibility.getByRole("radio", { name: /^Private/ }).check();
+    await expect(tradeVisibility.getByRole("radio", { name: /^Private/ })).toBeChecked();
+    await visitor.goto(`/u/${username}/up-for-trade`);
+    await expectNotFound(visitor);
+    await visitor.goto(`/u/${username}`);
+    await expect(visitor.getByRole("heading", { level: 1 })).toBeVisible();
+    await expect(visitor.getByRole("link", { name: "Up for Trade" })).toHaveCount(0);
+    await tradeVisibility.getByRole("radio", { name: /^Public/ }).check();
+    await expect(tradeVisibility.getByRole("radio", { name: /^Public/ })).toBeChecked();
+    await page.getByRole("button", { name: "Done", exact: true }).click();
+
+    // --- The Want List switched public, then private again ------------------
+    await special.getByRole("button", { name: /^Want List, / }).click();
+    await page.getByRole("button", { name: "Share your Want List", exact: true }).click();
+    const wantVisibility = page.getByRole("group", { name: "Who can see this Want List" });
+    await wantVisibility.getByRole("radio", { name: /^Public/ }).check();
+    await expect(wantVisibility.getByRole("radio", { name: /^Public/ })).toBeChecked();
+    await visitor.goto(`/u/${username}/want-list`);
+    await expect(visitor.getByRole("heading", { level: 1, name: "Want List" })).toBeVisible();
+    await wantVisibility.getByRole("radio", { name: /^Private/ }).check();
+    await expect(wantVisibility.getByRole("radio", { name: /^Private/ })).toBeChecked();
+    await page.getByRole("button", { name: "Done", exact: true }).click();
+    await visitorContext.close();
+
+    // --- A second binder can't take the first one's link name ---------------
+    const twinName = `Twin${env.ATTEMPT_TOKEN}`;
+    await shelf.getByRole("button", { name: "New binder", exact: true }).click();
+    await newDialog.getByRole("textbox", { name: "Binder name" }).fill(twinName);
+    await newDialog.getByRole("button", { name: "Put it on the shelf" }).click();
+    await expect(newDialog).toBeHidden();
+    await expect(page.getByRole("heading", { level: 2, name: twinName, exact: true })).toBeVisible();
+    await page.getByRole("button", { name: `Share ${twinName}`, exact: true }).click();
+    await linkName.fill(readable);
+    await linkName.press("Enter");
+    await expect(
+      page.getByRole("alert").filter({ hasText: `Another of your binders already uses ${readable}. Pick a different link name.` }),
+    ).toBeVisible();
+    await page.getByRole("button", { name: "Done", exact: true }).click();
+    await page.getByRole("button", { name: `Rename or delete ${twinName}`, exact: true }).click();
+    await page
+      .getByRole("dialog", { name: `Rename or delete ${twinName}`, exact: true })
+      .getByRole("button", { name: "Delete this binder" })
+      .click();
+    const confirmTwin = page.getByRole("dialog", { name: `Delete ${twinName}?`, exact: true });
+    await confirmTwin.getByRole("button", { name: "Yes, delete it" }).click();
+    await expect(confirmTwin).toBeHidden();
 
     // --- Cleanup through the UI: remove the copy, delete the empty binder ---
     await tabs.getByRole("link", { name: "Checklists", exact: true }).click();

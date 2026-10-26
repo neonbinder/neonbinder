@@ -8,6 +8,7 @@ import { hydrateCatalogCard } from "@/app/collection/final/data/convexStore";
 import { cardLabel } from "@/app/collection/final/data/labels";
 import NeonButton from "@/components/modules/NeonButton";
 import { USERNAME_RE } from "@/lib/collection/share-links";
+import { useDocumentTitle } from "@/src/hooks/useDocumentTitle";
 
 /**
  * NEO-360 — the public share pages: a binder, the Want List, Up for Trade and
@@ -44,13 +45,20 @@ function useUsername(): string {
   return USERNAME_RE.test(username) ? username : "";
 }
 
-function Shell({ username, children }: { username: string; children: ReactNode }) {
+/**
+ * The page frame. `title` names the tab: the page's own title and the
+ * collector, `null` for the not-found screen, left out while loading.
+ */
+function Shell({ username, title, children }: { username: string; title?: string | null; children: ReactNode }) {
   useNoIndex();
   const profile = useQuery(
     api.publicProfile.getPublicProfileByUsername,
     username ? { username } : "skip",
   );
   const name = profile?.displayName ?? profile?.username ?? username;
+  useDocumentTitle(
+    title === null ? "Nothing to see here · NeonBinder" : title ? `${title} · ${name || "NeonBinder"}` : "NeonBinder",
+  );
   return (
     <div data-theme="dark" className="min-h-screen bg-surface text-ink">
       <header className="border-b border-rule bg-surface px-4 py-3">
@@ -70,7 +78,7 @@ function Shell({ username, children }: { username: string; children: ReactNode }
               {name}
             </Link>
           ) : (
-            <Link to="/" className="min-h-10 font-semibold focus-outline">
+            <Link to="/" className="inline-flex min-h-10 items-center font-semibold focus-outline">
               NeonBinder
             </Link>
           )}
@@ -125,7 +133,7 @@ function CardTile({ item, tags = true }: { item: Listed; tags?: boolean }) {
       {card ? (
         <CardFace model={card} size="fill" />
       ) : (
-        <div className="aspect-[5/7] rounded-md border border-dashed border-rule" aria-label="A card no longer in the catalog" />
+        <div className="aspect-[5/7] rounded-md border border-dashed border-rule" aria-hidden="true" />
       )}
       <p className="text-xs leading-snug text-ink-2">
         <span className="block font-medium text-ink">{card ? cardLabel(card) : "No longer in the catalog"}</span>
@@ -141,20 +149,25 @@ function CardTile({ item, tags = true }: { item: Listed; tags?: boolean }) {
   );
 }
 
+/** Stays focusable while the next page loads (aria-disabled), so focus is not dropped. */
 function MoreButton({ status, loadMore }: { status: string; loadMore: (n: number) => void }) {
   if (status !== "CanLoadMore" && status !== "LoadingMore") return null;
+  const loading = status === "LoadingMore";
   return (
-    <div className="mt-6 flex justify-center">
+    <div className="mt-6 flex flex-col items-center gap-2">
       <NeonButton
         type="button"
         variant="secondary"
         outline
-        disabled={status === "LoadingMore"}
-        onClick={() => loadMore(PAGE_SIZE)}
+        aria-disabled={loading}
+        onClick={() => !loading && loadMore(PAGE_SIZE)}
         className="min-h-10"
       >
-        {status === "LoadingMore" ? "Loading…" : "Show more"}
+        Show more
       </NeonButton>
+      <p role="status" className="text-sm text-ink-3">
+        {loading ? "Loading more cards…" : ""}
+      </p>
     </div>
   );
 }
@@ -183,7 +196,7 @@ export function PublicBinderPage() {
   });
   if (!username) {
     return (
-      <Shell username="">
+      <Shell username="" title={null}>
         <PublicNotFound />
       </Shell>
     );
@@ -197,7 +210,7 @@ export function PublicBinderPage() {
   }
   if (header === null) {
     return (
-      <Shell username={username}>
+      <Shell username={username} title={null}>
         <PublicNotFound />
       </Shell>
     );
@@ -223,11 +236,14 @@ export function PublicBinderPage() {
   const pageNumbers = [...pages.keys()].sort((a, b) => a - b);
   const spine = header.label;
   return (
-    <Shell username={username}>
-      <div
-        className="rounded-xl border-l-8 bg-raised px-4 py-3"
-        style={{ borderLeftColor: spine?.background ?? "var(--color-neon-green)" }}
-      >
+    <Shell username={username} title={header.name}>
+      <div className="rounded-xl bg-raised px-4 py-3">
+        {/* The binder's spine colour, as a swatch above its name. */}
+        <span
+          aria-hidden="true"
+          className="mb-2 block h-1.5 w-12 rounded-full"
+          style={{ background: spine?.background ?? "var(--color-neon-green)" }}
+        />
         <h1 className="text-2xl font-bold">{header.name}</h1>
         {header.description && <p className="mt-1 text-ink-2">{header.description}</p>}
         {countLine(header.count, "card") && <p className="mt-1 text-sm text-ink-3">{countLine(header.count, "card")}</p>}
@@ -239,18 +255,16 @@ export function PublicBinderPage() {
       ) : (
         <>
           {pageNumbers.map((page) => (
-            <section key={page} aria-label={`Page ${page + 1}`} className="mt-6">
+            <section key={page} className="mt-6">
               <h2 className="mb-2 text-sm font-semibold text-ink-3">Page {page + 1}</h2>
               <ol className="grid max-w-xl grid-cols-3 gap-3 rounded-xl border border-rule p-3">
                 {pages.get(page)!.map((copy, i) =>
                   copy ? (
                     <CardTile key={copy.key} item={copy} />
                   ) : (
-                    <li
-                      key={`empty-${i}`}
-                      aria-label="Empty pocket"
-                      className="aspect-[5/7] rounded-md border border-dashed border-rule"
-                    />
+                    <li key={`empty-${i}`} className="aspect-[5/7] rounded-md border border-dashed border-rule">
+                      <span className="sr-only">Empty pocket</span>
+                    </li>
                   ),
                 )}
               </ol>
@@ -303,7 +317,7 @@ export function PublicShelfPage({ shelf }: { shelf: Shelf }) {
   const header = useQuery(api.publicCollection.shelf, username ? { username, shelf } : "skip");
   if (!username || header === null) {
     return (
-      <Shell username={username}>
+      <Shell username={username} title={null}>
         <PublicNotFound />
       </Shell>
     );
@@ -318,7 +332,7 @@ export function PublicShelfPage({ shelf }: { shelf: Shelf }) {
   const { title, noun } = SHELVES[shelf];
   const line = countLine(header.count, noun);
   return (
-    <Shell username={username}>
+    <Shell username={username} title={title}>
       <h1 className="text-2xl font-bold">{title}</h1>
       {line && <p className="mt-1 text-sm text-ink-3">{line}</p>}
       <ShelfList shelf={shelf} username={username} />

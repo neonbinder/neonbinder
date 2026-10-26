@@ -380,7 +380,8 @@ export const wantList = query({
 
 /**
  * Up for Trade's copies, a page at a time. A copy whose home is a box is
- * marked `forSale`; the box itself is never named.
+ * marked `forSale`, unless the collector switched for-sale private (then the
+ * flag would leak what that switch hides); the box itself is never named.
  */
 export const trade = query({
   args: { username: v.string(), paginationOpts: paginationOptsValidator },
@@ -388,6 +389,7 @@ export const trade = query({
   handler: async (ctx, args) => {
     const ownerId = await shelfOwner(ctx, args.username, "trade");
     if (!ownerId) return EMPTY_PAGE;
+    const forSalePublic = !(await profileOf(ctx, args.username))?.forSalePrivate;
     const result = await ctx.db
       .query("collectionCopies")
       .withIndex("by_owner_and_trade", (q) => q.eq("ownerId", ownerId).eq("upForTrade", true))
@@ -397,7 +399,7 @@ export const trade = query({
       const key = row.homeId as string;
       if (!homes.has(key)) homes.set(key, await ctx.db.get(row.homeId));
       const home = homes.get(key);
-      return { forSale: !!home && home.ownerId === ownerId && !home.system && home.kind === "box" };
+      return { forSale: forSalePublic && !!home && home.ownerId === ownerId && !home.system && home.kind === "box" };
     });
     return { ...result, page };
   },
@@ -407,8 +409,9 @@ export const trade = query({
  * The for-sale stock: every copy whose home is one of the collector's boxes,
  * box by box (oldest box first, in row order), a page at a time, at most
  * `MAX_CONTAINERS` boxes. One page never spans two boxes, so a cursor is the
- * box's id and a cursor inside it: `<boxId>|<inner cursor>`. A cursor naming
- * a box that is gone reads as the end.
+ * box's place in that order and a cursor inside it: `<index>|<inner cursor>`
+ * (never the box's id: a visitor learns nothing about which box). A place past
+ * the last box reads as the end.
  */
 export const forSale = query({
   args: { username: v.string(), paginationOpts: paginationOptsValidator },
@@ -422,8 +425,10 @@ export const forSale = query({
       if (!cursor) return null;
       const at = cursor.indexOf("|");
       if (at < 0) return undefined;
-      const index = boxes.findIndex((box) => (box._id as string) === cursor.slice(0, at));
-      if (index < 0) return undefined;
+      const place = cursor.slice(0, at);
+      if (!/^\d{1,4}$/.test(place)) return undefined;
+      const index = Number(place);
+      if (index >= boxes.length) return undefined;
       const inner = cursor.slice(at + 1);
       return { index, inner: inner === "" ? null : inner };
     };
@@ -444,8 +449,8 @@ export const forSale = query({
     const page = await mapCopies(ctx, result.page, async () => ({}));
     const next = boxes[index + 1];
     if (result.isDone && next && innerEnd === undefined) {
-      return { page, isDone: false, continueCursor: `${next._id}|` };
+      return { page, isDone: false, continueCursor: `${index + 1}|` };
     }
-    return { page, isDone: result.isDone && !next, continueCursor: `${box._id}|${result.continueCursor}` };
+    return { page, isDone: result.isDone && !next, continueCursor: `${index}|${result.continueCursor}` };
   },
 });
