@@ -26,7 +26,7 @@
 //
 // R3: the collector's cascade is drilled through `support/collection.ts`.
 import type { Page } from "@playwright/test";
-import { collectorCascade, drillToCollectorBase, ordinaryBaseRows, shortNameOf } from "../../support/collection";
+import { drillToCollectorBase, ordinaryBaseRows, shortNameOf } from "../../support/collection";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 
 const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -218,18 +218,15 @@ test(
     const confirmTwin = page.getByRole("dialog", { name: `Delete ${twinName}?`, exact: true });
     await confirmTwin.getByRole("button", { name: "Yes, delete it" }).click();
     await expect(confirmTwin).toBeHidden();
+    // The delete lands back on the shelf once it is done; wait for that before opening anything.
+    await expect(shelf.getByRole("button", { name: new RegExp(`^${escapeRegExp(twinName)}, `) })).toHaveCount(0);
+    await expect(shelf.getByRole("button", { name: new RegExp(`^${escapeRegExp(binderName)}, `) })).toBeVisible();
 
     // --- Cleanup through the UI: remove the copy, delete the empty binder ---
-    // Opening a binder scopes the Checklists tab to it, and the last one opened
-    // was the deleted twin: open the shared binder again so its card's set shows.
-    await shelf.getByRole("button", { name: new RegExp(`^${escapeRegExp(binderName)}, `) }).click();
-    await expect(heading).toBeVisible();
-    // The drill may or may not have survived the trips: wait for one state, drill if needed.
-    await tabs.getByRole("link", { name: "Checklists", exact: true }).click();
-    const sports = collectorCascade(page).cascade.getByRole("listbox", { name: "Sports" });
-    await expect(checklist.or(sports)).toBeVisible();
-    if (!(await checklist.isVisible())) await drillToCollectorBase(page);
-    await expect(checklist).toBeVisible();
+    // A fresh load of Checklists: the trips above leave the tab's remembered
+    // drill and scope behind, so start it from a known place.
+    await page.goto("/collection?tab=checklists");
+    await drillToCollectorBase(page);
     await checklist.getByRole("combobox", { name: "Binder" }).selectOption({ label: "All" });
     await checklist.getByRole("button", { name: `Details for ${card.short}`, exact: true }).click();
     const yourCopies = drawer.getByRole("region", { name: `Your copies of ${card.short}`, exact: true });
