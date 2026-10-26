@@ -388,6 +388,12 @@ export default function PublicProfileEditor() {
               </span>
             )}
           </div>
+          {/* NEO-360 — every share link carries the username. */}
+          {existingProfile?.username && username !== existingProfile.username && (
+            <p className="mt-1 text-xs text-ink-2">
+              Changing it stops every link you've shared: your binders, Want List, Up for Trade and sale pages.
+            </p>
+          )}
         </div>
 
         <div>

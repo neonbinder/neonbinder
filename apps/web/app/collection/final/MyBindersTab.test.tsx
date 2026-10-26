@@ -194,15 +194,15 @@ describe("My Binders", () => {
     expect(screen.queryByRole("list", { name: "Not in your binders yet" })).toBeNull();
   });
 
-  it("Share shows a human-readable link at the neutral @you handle, and says it is an example", () => {
+  it("Share shows a human-readable link at the neutral /u/you handle, and says it is an example", () => {
     renderBinders("/collection?tab=binders&b=binder-ohtani-rainbow");
     fireEvent.click(screen.getByRole("button", { name: "Share Ohtani rainbow" }));
-    expect(screen.getByText("neonbinder.io/@you/binders/ohtani-rainbow")).toBeTruthy();
+    expect(screen.getByText("neonbinder.io/u/you/binders/ohtani-rainbow")).toBeTruthy();
     expect(
       screen.getByText("Just an example: share links arrive when your real collection does."),
     ).toBeTruthy();
     // Signed in is still the demo: no real collector's handle, no promise of a real page.
-    expect(screen.queryByText(/@jason/)).toBeNull();
+    expect(screen.queryByText(/\/u\/jason/)).toBeNull();
     expect(screen.queryByText("Anyone with the link can see it. Only you can change it.")).toBeNull();
   });
 });
@@ -591,7 +591,7 @@ describe("one open-binder view for binders and browsed sets", () => {
     expect(screen.queryByRole("link", { name: /^Print label for/ })).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "Share 2000 Topps" }));
-    expect(screen.getByText("neonbinder.io/@you/sets/2000-topps")).toBeTruthy();
+    expect(screen.getByText("neonbinder.io/u/you/sets/2000-topps")).toBeTruthy();
   });
 
   it("Just a stack packs a browsed set tight, and the toggle is not a history step", () => {

@@ -86,14 +86,19 @@ export interface OpenInput {
   label: ContainerLabel;
   /** A smart binder's rule in words, when the store can say it (the demo). */
   describeRule?: (rule: ContainerRule) => string;
-  /** Share links exist here (capability `share`). */
-  canShare: boolean;
+  /**
+   * Which Share this store has: `"example"` (the demo's, capability `share`:
+   * binders, the Want List, Up for Trade and sets), `"live"` (capability
+   * `shareLinks`: binders, the Want List and Up for Trade, never a set), or
+   * none.
+   */
+  share: "example" | "live" | null;
   /** The screen it opens on: My Binders (default) or My Boxes. */
   side?: Side;
 }
 
 export function openView(input: OpenInput): OpenView {
-  const { view, container, set, mode, tally, label, describeRule, canShare, side = "collection" } = input;
+  const { view, container, set, mode, tally, label, describeRule, side = "collection" } = input;
   const want = container?.system === "want";
   const tradeBox = view.kind === "binder" && container?.system === "trade" && side === "inventory";
   const box = view.kind === "binder" && (container?.kind === "box" || tradeBox);
@@ -106,9 +111,15 @@ export function openView(input: OpenInput): OpenView {
       ? "All my cards"
       : (container?.name ?? "Binder");
   let share: ShareTarget | null = null;
-  // The inventory has no public face yet (NEO-360 decides it): no Share on a
-  // box, Unsorted, or Up for Trade drawn as a box.
-  if (canShare && side !== "inventory") share = browsing ? (set ? setShareTarget(set) : null) : container ? containerShareTarget(container) : null;
+  // The inventory has no Share of its own: no Share on a box, Unsorted, or
+  // Up for Trade drawn as a box (the for-sale stock's page is the profile's).
+  if (side === "inventory") {
+    share = null;
+  } else if (input.share === "example") {
+    share = browsing ? (set ? setShareTarget(set) : null) : container ? containerShareTarget(container) : null;
+  } else if (input.share === "live" && view.kind === "binder" && container && !container.rule) {
+    share = containerShareTarget(container);
+  }
   return {
     key: viewKey(view),
     title,

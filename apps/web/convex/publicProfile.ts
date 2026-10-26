@@ -1,6 +1,6 @@
 import { query, mutation } from "./_generated/server";
-import { v } from "convex/values";
-import { getCurrentUserId } from "./auth";
+import { ConvexError, v } from "convex/values";
+import { getCurrentUserId, requireSignedIn } from "./auth";
 
 const USERNAME_REGEX = /^[a-z0-9-]+$/;
 
@@ -27,6 +27,9 @@ const publicProfileFields = {
   youtubeUrl: v.optional(v.string()),
   facebookUrl: v.optional(v.string()),
   threadsUrl: v.optional(v.string()),
+  // NEO-360 — the shelf switches (absent: public).
+  tradePrivate: v.optional(v.literal(true)),
+  forSalePrivate: v.optional(v.literal(true)),
   createdAt: v.number(),
   updatedAt: v.number(),
 };
@@ -254,8 +257,49 @@ export const getPublicProfileByUsername = query({
 
     if (!profile) return null;
 
-    // Omit userId from public response
-    const { userId: _userId, ...publicData } = profile;
+    // Omit userId from public response. The NEO-360 shelf switches are the
+    // owner's settings, not profile content: a visitor learns them only by
+    // whether `publicCollection.trade` / `.forSale` answer.
+    const {
+      userId: _userId,
+      tradePrivate: _tradePrivate,
+      forSalePrivate: _forSalePrivate,
+      ...publicData
+    } = profile;
     return publicData;
+  },
+});
+
+/**
+ * NEO-360 — switch Up for Trade (`shelf: "trade"`) or the for-sale stock
+ * (`"forSale"`) private, or back to public (the default). Signed-in, the
+ * caller's own profile only; refuses a caller with no public name yet, since
+ * neither page exists without one. Any open public page flips to not-found
+ * live.
+ */
+export const setShelfVisibility = mutation({
+  args: {
+    shelf: v.union(v.literal("trade"), v.literal("forSale")),
+    private: v.boolean(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const userId = await requireSignedIn(ctx);
+    const profile = await ctx.db
+      .query("publicProfiles")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .unique();
+    if (!profile) {
+      throw new ConvexError({
+        code: "PROFILE_NEEDS_USERNAME",
+        message: "Pick a public name on your profile first. Your share links use it.",
+      });
+    }
+    const field = args.shelf === "trade" ? "tradePrivate" : "forSalePrivate";
+    await ctx.db.patch(profile._id, {
+      [field]: args.private ? true : undefined,
+      updatedAt: Date.now(),
+    });
+    return null;
   },
 });
