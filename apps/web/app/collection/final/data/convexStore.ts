@@ -211,6 +211,7 @@ function toCard(raw: CatalogCard, set: SetRef, variant: VariantRef): Card {
     features: raw.features,
     cardVariation: raw.cardVariation ?? null,
     isVariation: raw.variationOfCardId !== undefined,
+    ...(raw.notes ? { notes: raw.notes } : {}),
     sortOrder: raw.sortOrder,
     finish: variant.finish,
   };

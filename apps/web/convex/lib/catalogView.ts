@@ -134,6 +134,8 @@ export const catalogCardFields = {
   cardVariation: v.optional(v.string()),
   /** Set on a variation: the regular card it is a variation of. */
   variationOfCardId: v.optional(v.id("cardChecklist")),
+  /** NEO-367 — NB's own note about the card ("short print, about 1:120"). */
+  notes: v.optional(v.string()),
   features: v.array(cardFeatureValidator),
   /** NEO-363 — required on every card, never blank. */
   listingTitle: v.string(),
@@ -329,6 +331,7 @@ export class CatalogReader {
       ...(card.variationOfCardId
         ? { variationOfCardId: card.variationOfCardId }
         : {}),
+      ...(card.notes ? { notes: card.notes } : {}),
       features: cardFeatures(card),
       listingTitle: card.listingTitle,
       players,
