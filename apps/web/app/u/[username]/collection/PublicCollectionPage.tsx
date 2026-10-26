@@ -138,6 +138,13 @@ function CardTile({ item, tags = true }: { item: Listed; tags?: boolean }) {
       <p className="text-xs leading-snug text-ink-2">
         <span className="block font-medium text-ink">{card ? cardLabel(card) : "No longer in the catalog"}</span>
         {lines.length > 0 && <span className="block">{lines.join(" · ")}</span>}
+        {/* NEO-367: the catalog card's Notes are NB's facts about the card, public
+            by Jason's call. Never the copy's own notes, which this page never gets. */}
+        {card?.notes && (
+          <span className="mt-0.5 block line-clamp-3 whitespace-pre-line text-ink-3 [overflow-wrap:anywhere]">
+            {card.notes}
+          </span>
+        )}
       </p>
       {copy && tags && (copy.upForTrade || copy.forSale) && (
         <p className="flex flex-wrap gap-1 text-xs font-semibold">
