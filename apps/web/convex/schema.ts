@@ -729,6 +729,22 @@ export const collectionRuleValidator = v.object({
   ),
 });
 
+/**
+ * NEO-361 — where a collector's request stands. `waiting`: an admin has not
+ * decided. `added`: the card (or set) is NB catalog data now, and the
+ * collector's copies were moved onto it. `declined`: it stays the collector's
+ * own private card (or set), still ownable, never catalog data. A withdrawn
+ * request is deleted with everything it made, so it has no status.
+ */
+export const cardRequestStatusValidator = v.union(
+  v.literal("waiting"),
+  v.literal("added"),
+  v.literal("declined"),
+);
+
+/** NEO-361 — "Request a Card" (into a set NB has) or "Request a Set" (one NB lacks). */
+export const cardRequestKindValidator = v.union(v.literal("card"), v.literal("set"));
+
 // Using Clerk for authentication - users are identified by Clerk user IDs
 export default defineSchema({
   /**
@@ -3494,9 +3510,19 @@ export default defineSchema({
    */
   collectionCopies: defineTable({
     ownerId: v.string(),
-    cardId: v.id("cardChecklist"),
-    variantId: v.id("selectorOptions"),
-    setId: v.id("selectorOptions"),
+    /**
+     * NEO-361 — the card this is a copy of: an NB catalog card, or one of the
+     * owner's own PRIVATE cards (a requested card that is waiting or was
+     * declined, `privateCards`). A private card is never catalog data, so
+     * its copies carry no `variantId` or `setId`: they sit outside every
+     * checklist's "1 of N" and every set's completion, and no catalog-side
+     * walk (`by_card` with a catalog id, the set indexes) ever meets them.
+     * An approval re-points them (`collectionRequests.moveOntoCatalogCard`).
+     */
+    cardId: v.union(v.id("cardChecklist"), v.id("privateCards")),
+    // Both ABSENT exactly when `cardId` is a private card (NEO-361).
+    variantId: v.optional(v.id("selectorOptions")),
+    setId: v.optional(v.id("selectorOptions")),
     homeId: v.id("collectionContainers"),
     /**
      * NEO-359 — where in its home the copy sits. Binder: page * 9 + pocket
@@ -3605,4 +3631,125 @@ export default defineSchema({
     .index("by_owner_and_binder", ["ownerId", "binderId"])
     // removeCardRow: sweep a deleted card's wants.
     .index("by_card", ["cardId"]),
+
+  /**
+   * ── NEO-361: "Can't find it? Ask us to add it." ──────────────────────────
+   *
+   * One row per request a collector sends. `kind: "card"` asks for a card in
+   * a set NB has; the request made a private card (`privateCardId`) the
+   * collector can own from the moment they send it. `kind: "set"` asks for a
+   * whole set NB lacks; it made a private set (`privateSetId`) the collector
+   * files private cards into. Jason, 2026-10-26: anything waiting or
+   * declined stays privately ownable.
+   *
+   * What the collector typed is kept verbatim (trimmed, capped) for the
+   * admin, with the raw search text that led here (`searched`). Nothing here
+   * becomes catalog data on its own: an admin confirms every field when
+   * adding the card or building the set (product invariant 3). NB data only:
+   * no marketplace field.
+   *
+   * Withdrawing deletes the row and everything it made (the private card or
+   * set, its private cards and every copy of them), so there is no withdrawn
+   * status.
+   */
+  cardRequests: defineTable({
+    ownerId: v.string(),
+    kind: cardRequestKindValidator,
+    status: cardRequestStatusValidator,
+    privateCardId: v.optional(v.id("privateCards")),
+    privateSetId: v.optional(v.id("privateSets")),
+    /** The search box's text when the collector asked, raw. */
+    searched: v.optional(v.string()),
+    notes: v.optional(v.string()),
+    /**
+     * A snapshot of what was asked, for the request list after the private
+     * card has gone (an approval deletes it): "1996 Score #41 Reggie White".
+     */
+    label: v.string(),
+    /** The admin's note to the collector on a decision. */
+    decisionNote: v.optional(v.string()),
+    decidedBy: v.optional(v.string()),
+    decidedAt: v.optional(v.number()),
+    /** On an added card request: the NB card it became. */
+    addedCardId: v.optional(v.id("cardChecklist")),
+    /** On an added set request: the NB set it became. */
+    addedSetId: v.optional(v.id("selectorOptions")),
+    lastUpdated: v.number(),
+  })
+    // The collector's own list, newest first (prefix ownerId), and the cap.
+    .index("by_owner", ["ownerId", "lastUpdated"])
+    // The admin queue (eq status, oldest first) and its count.
+    .index("by_status", ["status", "lastUpdated"]),
+
+  /**
+   * ── NEO-361: a set a collector asked for, theirs alone ───────────────────
+   *
+   * Made by a set request. Free text as the collector read it off the card
+   * (`year` is a string: "1996-97" exists), plus the NB sport they picked.
+   * Never read by any catalog, set builder, sync or adapter code; every read
+   * is owner-scoped. It survives a decline (still the collector's), and an
+   * approval leaves only the cards no NB card could be matched to.
+   */
+  privateSets: defineTable({
+    ownerId: v.string(),
+    requestId: v.id("cardRequests"),
+    sportId: v.id("selectorOptions"),
+    year: v.string(),
+    brand: v.string(),
+    name: v.string(),
+    lastUpdated: v.number(),
+  }).index("by_owner", ["ownerId"]),
+
+  /**
+   * ── NEO-361: a card a collector owns that NB does not have ───────────────
+   *
+   * Exactly one of two homes in the hobby's terms:
+   *   - `setId` (+ `variantId` when they picked one): a real NB set (and
+   *     checklist) the card belongs in. The card itself is still NOT catalog
+   *     data: no checklist lists it and no count includes it.
+   *   - `privateSetId`: one of the collector's own requested sets.
+   * `variantName` is the checklist as typed ("Gold Refractor /50"), required
+   * when no NB variant was picked. The rest is what the collector typed.
+   *
+   * Photos (`frontImageId`, `backImageId`) are Convex file storage. Their
+   * URLs are only ever handed to the owner and admins, but a storage URL is a
+   * bearer link: anyone it is passed on to can open it. One photo belongs to
+   * one card (`checkPhoto` refuses a reused id); an upload attached to no
+   * card is swept after an hour (`sweepPhotoUploads`).
+   *
+   * Every copy of it (`collectionCopies.cardId`) belongs to the same owner.
+   * Approval moves those copies onto the NB card and deletes this row.
+   */
+  privateCards: defineTable({
+    ownerId: v.string(),
+    requestId: v.id("cardRequests"),
+    setId: v.optional(v.id("selectorOptions")),
+    variantId: v.optional(v.id("selectorOptions")),
+    privateSetId: v.optional(v.id("privateSets")),
+    variantName: v.optional(v.string()),
+    cardNumber: v.string(),
+    player: v.string(),
+    notes: v.optional(v.string()),
+    frontImageId: v.optional(v.id("_storage")),
+    backImageId: v.optional(v.id("_storage")),
+    lastUpdated: v.number(),
+  })
+    .index("by_owner", ["ownerId"])
+    // A requested set's cards (withdraw, approval, the set's list).
+    .index("by_private_set", ["privateSetId"])
+    // Which card a photo is on: a reused id is refused, an unattached one swept.
+    .index("by_front_image", ["frontImageId"])
+    .index("by_back_image", ["backImageId"]),
+
+  /**
+   * NEO-361 — one row per photo upload URL handed out, so a caller can't mint
+   * them without limit (`generateUploadUrl` caps the last hour's). Deleted by
+   * `sweepPhotoUploads` once an hour old.
+   */
+  photoUploadTickets: defineTable({
+    ownerId: v.string(),
+    createdAt: v.number(),
+  })
+    .index("by_owner_and_created", ["ownerId", "createdAt"])
+    .index("by_created", ["createdAt"]),
 });

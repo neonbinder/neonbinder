@@ -187,7 +187,7 @@ export default function OwnedShelf() {
     .filter((it) => !sport || it.card.set.sport.id === sport)
     .filter((it) => !graded || it.graded)
     .filter((it) => !dupes || it.count > 1)
-    .filter((it) => !matchIds || matchIds.has(it.card.id))
+    .filter((it) => !matchIds || matchIds.has(it.card.id) || (it.card.own && ownMatches(it.card, query)))
     .sort((a, b) => {
       switch (sort) {
         case "player":
@@ -463,9 +463,23 @@ function RailItem({
   );
 }
 
+/**
+ * NEO-361 — the catalog search never sees a collector's own (unlisted) cards,
+ * so the filter matches those by their name here: every typed word in it.
+ */
+function ownMatches(card: Card, query: string): boolean {
+  const name = cardLabel(card).toLowerCase();
+  return query
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(Boolean)
+    .every((word) => name.includes(word));
+}
+
 function ShelfCard({ item, tabIndex, onOpen }: { item: Item; tabIndex: number; onOpen: () => void }) {
   const { card, count } = item;
-  const name = `${cardLabel(card)}, ${count === 0 ? "need" : count > 1 ? `have ${count}` : "have"}`;
+  // An unlisted card (NEO-361) says so here too: the face's own name is hidden by the button's.
+  const name = `${cardLabel(card)}${card.own ? ", unlisted" : ""}, ${count === 0 ? "need" : count > 1 ? `have ${count}` : "have"}`;
   return (
     <li className="flex flex-col items-center">
       <button

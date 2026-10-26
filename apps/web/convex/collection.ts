@@ -180,12 +180,20 @@ export const copyDetailsFields = {
 };
 export const copyDetailsValidator = v.object(copyDetailsFields);
 
+/**
+ * NEO-361 — what a copy is a copy of: an NB catalog card, or one of the
+ * caller's own private cards (`privateCards`, a requested card).
+ */
+export const copyCardIdValidator = v.union(v.id("cardChecklist"), v.id("privateCards"));
+export type CopyCardId = Id<"cardChecklist"> | Id<"privateCards">;
+
 /** A copy as the collector's screens read it. */
 export const copyValidator = v.object({
   _id: v.id("collectionCopies"),
-  cardId: v.id("cardChecklist"),
-  variantId: v.id("selectorOptions"),
-  setId: v.id("selectorOptions"),
+  cardId: copyCardIdValidator,
+  /** NEO-361 — absent on a copy of a private card (it is in no NB checklist). */
+  variantId: v.optional(v.id("selectorOptions")),
+  setId: v.optional(v.id("selectorOptions")),
   homeId: v.id("collectionContainers"),
   quantity: v.number(),
   condition: v.optional(collectionCopyConditionValidator),
@@ -229,7 +237,7 @@ export const addResultValidator = v.object({
 
 /** A removed row: enough for `restoreCopy` to put it back. */
 export const removedCopyValidator = v.object({
-  cardId: v.id("cardChecklist"),
+  cardId: copyCardIdValidator,
   details: copyDetailsValidator,
 });
 
@@ -386,12 +394,37 @@ export function detailsOf(row: CopyRow): StoredDetails {
   };
 }
 
+/** Where a copy files (its `variantId` and `setId`), present only for a catalog card. */
+export type Place = { variantId?: Id<"selectorOptions">; setId?: Id<"selectorOptions"> };
+
+/** `place`'s fields as a row spells them: both or neither. */
+export function placeFields(place: Place): Place {
+  return place.variantId && place.setId ? { variantId: place.variantId, setId: place.setId } : {};
+}
+
+/**
+ * NEO-361 — a card id from a client: an NB catalog card, one of `ownerId`'s
+ * private cards, or null (a bad id, or someone else's private card, which
+ * reads exactly like one that does not exist).
+ */
+export async function parseCopyCardId(
+  ctx: Pick<QueryCtx, "db">,
+  ownerId: string,
+  raw: string,
+): Promise<CopyCardId | null> {
+  const catalog = ctx.db.normalizeId("cardChecklist", raw);
+  if (catalog) return catalog;
+  const own = ctx.db.normalizeId("privateCards", raw);
+  if (!own) return null;
+  const row = await ctx.db.get(own);
+  return row && row.ownerId === ownerId ? own : null;
+}
+
 export function copyOut(row: CopyRow): typeof copyValidator.type {
   return {
     _id: row._id,
     cardId: row.cardId,
-    variantId: row.variantId,
-    setId: row.setId,
+    ...placeFields(row),
     ...detailsOf(row),
     lastUpdated: row.lastUpdated,
   };
@@ -566,6 +599,8 @@ async function cardsOnBuilds(
   if (rows) {
     const bySet = new Map<string, Set<string>>();
     for (const row of rows) {
+      // NEO-361: a private card's copies are on no set build.
+      if (!row.setId) continue;
       const set = bySet.get(row.setId) ?? new Set<string>();
       set.add(row.cardId);
       bySet.set(row.setId, set);
@@ -616,7 +651,7 @@ export async function moveTally(ctx: MutationCtx, ownerId: string, delta: Tally)
 async function stillHolds(
   ctx: MutationCtx,
   ownerId: string,
-  cardId: Id<"cardChecklist">,
+  cardId: CopyCardId,
 ): Promise<boolean> {
   const line = await ctx.db
     .query("collectionCopies")
@@ -694,12 +729,26 @@ async function pocketIsFree(
   return line === null;
 }
 
-/** Where a card files: its variant row and that row's set. Refuses a gone card. */
-async function placeOf(
+/**
+ * Where a card files: its variant row and that row's set. Refuses a gone
+ * card. NEO-361: a private card files nowhere (no variant, no set), and must
+ * be the caller's own; anyone else's reads as gone.
+ */
+export async function placeOf(
   ctx: MutationCtx,
-  cardId: Id<"cardChecklist">,
-): Promise<{ variantId: Id<"selectorOptions">; setId: Id<"selectorOptions"> }> {
-  const card = await ctx.db.get(cardId);
+  ownerId: string,
+  rawId: CopyCardId,
+): Promise<Place> {
+  const own = ctx.db.normalizeId("privateCards", rawId);
+  if (own) {
+    const row = await ctx.db.get(own);
+    if (!row || row.ownerId !== ownerId) {
+      refuse(COLLECTION_ERRORS.notFound, "That card isn't in your collection anymore.");
+    }
+    return {};
+  }
+  const cardId = ctx.db.normalizeId("cardChecklist", rawId);
+  const card = cardId ? await ctx.db.get(cardId) : null;
   if (!card) {
     refuse(COLLECTION_ERRORS.notFound, "That card isn't in the catalog anymore.");
   }
@@ -744,7 +793,7 @@ export type CountChange = { before: Counted | null; after: Counted | null };
 
 const TRADE_KEY = "trade";
 
-function counted(row: Pick<CopyRow, "homeId" | "quantity" | "upForTrade">): Counted {
+export function counted(row: Pick<CopyRow, "homeId" | "quantity" | "upForTrade">): Counted {
   return {
     homeId: row.homeId,
     quantity: row.quantity,
@@ -930,7 +979,7 @@ export async function moveCounts(
 async function addOne(
   ctx: MutationCtx,
   ownerId: string,
-  cardId: Id<"cardChecklist">,
+  cardId: CopyCardId,
   raw: DetailsArg,
 ): Promise<{
   result: typeof addResultValidator.type;
@@ -942,7 +991,7 @@ async function addOne(
   const home = await resolveHome(ctx, ownerId, raw.homeId);
   checkSlot(home, cleaned.slot);
   const next: StoredDetails = { ...cleaned, homeId: home._id };
-  const place = await placeOf(ctx, cardId);
+  const place = await placeOf(ctx, ownerId, cardId);
   const lines = await ctx.db
     .query("collectionCopies")
     .withIndex("by_owner_and_card", (q) => q.eq("ownerId", ownerId).eq("cardId", cardId))
@@ -970,8 +1019,7 @@ async function addOne(
   const copyId = await ctx.db.insert("collectionCopies", {
     ownerId,
     cardId,
-    variantId: place.variantId,
-    setId: place.setId,
+    ...placeFields(place),
     ...next,
     lastUpdated: now,
   });
@@ -979,7 +1027,7 @@ async function addOne(
     result: { copyId, merged: false },
     delta: { copies: next.quantity, lines: 1, cards: lines.length === 0 ? 1 : 0 },
     change: { before: null, after: counted(next) },
-    setCards: lines.length === 0 ? [{ setId: place.setId, cards: 1 }] : [],
+    setCards: lines.length === 0 && place.setId ? [{ setId: place.setId, cards: 1 }] : [],
   };
 }
 
@@ -1073,8 +1121,7 @@ export async function moveCopyCore(
     copyId = await ctx.db.insert("collectionCopies", {
       ownerId,
       cardId: row.cardId,
-      variantId: row.variantId,
-      setId: row.setId,
+      ...placeFields(row),
       ...next,
       lastUpdated: now,
     });
@@ -1186,7 +1233,7 @@ export const summary = query({
 
 /** One card the caller holds, as "Everything I own" lists it. */
 export const ownedCardValidator = v.object({
-  cardId: v.id("cardChecklist"),
+  cardId: copyCardIdValidator,
   /** Physical copies, over every line of the card. */
   quantity: v.number(),
   /** Line items of the card. */
@@ -1268,7 +1315,7 @@ export const copiesOf = query({
   returns: v.array(copyValidator),
   handler: async (ctx, args) => {
     const ownerId = await requireSignedIn(ctx);
-    const cardId = ctx.db.normalizeId("cardChecklist", args.cardId);
+    const cardId = await parseCopyCardId(ctx, ownerId, args.cardId);
     if (!cardId) return [];
     const rows = await ctx.db
       .query("collectionCopies")
@@ -1439,6 +1486,7 @@ export const setCompletion = query({
     const truncated = rows.length > MAX_SUMMARY_LINES;
     const byVariant = new Map<string, { variantId: Id<"selectorOptions">; cards: Set<string> }>();
     for (const row of rows.slice(0, MAX_SUMMARY_LINES)) {
+      if (!row.variantId) continue;
       const key = row.variantId as string;
       const entry = byVariant.get(key) ?? { variantId: row.variantId, cards: new Set<string>() };
       entry.cards.add(row.cardId as string);
@@ -1540,7 +1588,7 @@ export const copiesOfMany = query({
     }
     const out = [];
     for (const raw of args.cardIds) {
-      const cardId = ctx.db.normalizeId("cardChecklist", raw);
+      const cardId = await parseCopyCardId(ctx, ownerId, raw);
       const rows = cardId
         ? await ctx.db
             .query("collectionCopies")
@@ -1732,7 +1780,7 @@ export const buildingSets = query({
  */
 export const addHave = mutation({
   args: {
-    cardId: v.id("cardChecklist"),
+    cardId: copyCardIdValidator,
     acquiredOn: v.optional(v.string()),
     homeId: v.optional(v.id("collectionContainers")),
   },
@@ -1755,11 +1803,11 @@ export const addHave = mutation({
 /** `addHave` for up to `MAX_BATCH` cards at once (a pasted range). One result per card, in order. */
 export const addHaves = mutation({
   args: {
-    cardIds: v.array(v.id("cardChecklist")),
+    cardIds: v.array(copyCardIdValidator),
     acquiredOn: v.optional(v.string()),
     homeId: v.optional(v.id("collectionContainers")),
   },
-  returns: v.array(v.object({ cardId: v.id("cardChecklist"), ...addResultValidator.fields })),
+  returns: v.array(v.object({ cardId: copyCardIdValidator, ...addResultValidator.fields })),
   handler: async (ctx, args) => {
     const ownerId = await requireSignedIn(ctx);
     if (args.cardIds.length > MAX_BATCH) {
@@ -1785,7 +1833,7 @@ export const addHaves = mutation({
 
 /** Add a line item with full details. Folds into an identical row (see the header). */
 export const addLineItem = mutation({
-  args: { cardId: v.id("cardChecklist"), details: copyDetailsValidator },
+  args: { cardId: copyCardIdValidator, details: copyDetailsValidator },
   returns: addResultValidator,
   handler: async (ctx, args) => {
     const ownerId = await requireSignedIn(ctx);
@@ -1825,8 +1873,7 @@ export const updateCopy = mutation({
     await ctx.db.replace(row._id, {
       ownerId: row.ownerId,
       cardId: row.cardId,
-      variantId: row.variantId,
-      setId: row.setId,
+      ...placeFields(row),
       ...cleaned,
       homeId: row.homeId,
       lastUpdated: Date.now(),
@@ -1854,7 +1901,7 @@ export const removeCopy = mutation({
       cards: lostCard ? -1 : 0,
     });
     await moveCounts(ctx, ownerId, [{ before: counted(row), after: null }]);
-    if (lostCard) await moveBuildingCards(ctx, ownerId, [{ setId: row.setId, cards: -1 }]);
+    if (lostCard && row.setId) await moveBuildingCards(ctx, ownerId, [{ setId: row.setId, cards: -1 }]);
     return { removed: { cardId: row.cardId, details: detailsOf(row) } };
   },
 });
@@ -1879,11 +1926,11 @@ export const removeCopies = mutation({
     let cards = 0;
     const setCards: SetCardsChange[] = [];
     for (const cardId of distinctCards(rows)) {
-      if (await stillHolds(ctx, ownerId, cardId as Id<"cardChecklist">)) continue;
+      if (await stillHolds(ctx, ownerId, cardId as CopyCardId)) continue;
       cards += 1;
       // A card's lines all name its set; the first removed one says which.
       const line = rows.find((row) => row.cardId === cardId)!;
-      setCards.push({ setId: line.setId, cards: -1 });
+      if (line.setId) setCards.push({ setId: line.setId, cards: -1 });
     }
     await moveTally(ctx, ownerId, { copies: -copies, lines: -rows.length, cards: -cards });
     await moveCounts(
@@ -1905,7 +1952,7 @@ export const removeCopies = mutation({
  * being refused.
  */
 export const restoreCopy = mutation({
-  args: { cardId: v.id("cardChecklist"), details: copyDetailsValidator },
+  args: { cardId: copyCardIdValidator, details: copyDetailsValidator },
   returns: v.object({ copyId: v.id("collectionCopies") }),
   handler: async (ctx, args) => {
     const ownerId = await requireSignedIn(ctx);
@@ -1913,7 +1960,7 @@ export const restoreCopy = mutation({
     const home = await resolveHome(ctx, ownerId, args.details.homeId);
     checkSlot(home, cleaned.slot);
     if (!(await pocketIsFree(ctx, ownerId, home, cleaned.slot))) delete cleaned.slot;
-    const place = await placeOf(ctx, args.cardId);
+    const place = await placeOf(ctx, ownerId, args.cardId);
     const lines = await ctx.db
       .query("collectionCopies")
       .withIndex("by_owner_and_card", (q) => q.eq("ownerId", ownerId).eq("cardId", args.cardId))
@@ -1924,8 +1971,7 @@ export const restoreCopy = mutation({
     const copyId = await ctx.db.insert("collectionCopies", {
       ownerId,
       cardId: args.cardId,
-      variantId: place.variantId,
-      setId: place.setId,
+      ...placeFields(place),
       ...cleaned,
       homeId: home._id,
       lastUpdated: Date.now(),
@@ -1936,7 +1982,7 @@ export const restoreCopy = mutation({
       cards: lines.length === 0 ? 1 : 0,
     });
     await moveCounts(ctx, ownerId, [{ before: null, after: counted({ ...cleaned, homeId: home._id }) }]);
-    if (lines.length === 0) {
+    if (lines.length === 0 && place.setId) {
       await moveBuildingCards(ctx, ownerId, [{ setId: place.setId, cards: 1 }]);
     }
     return { copyId };

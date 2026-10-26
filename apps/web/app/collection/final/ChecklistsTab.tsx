@@ -14,10 +14,11 @@ import Suggestions from "./catalog/Suggestions";
 import type { DrillState } from "./catalog/useDrillState";
 import type { EntityParam } from "./checklistParams";
 import Checklist from "./Checklist";
-import { searchable, useCapabilities, useDemoExtension, useSearch } from "./data/store";
+import { searchable, useCapabilities, useCollectionStore, useDemoExtension, useSearch } from "./data/store";
 import type { Card, CardId, Suggestion } from "./data/types";
 import { useSetScope } from "./mode";
 import RequestCardDialog from "./RequestCardDialog";
+import RequestsDialog, { type RequestsTab } from "./requests/RequestsDialog";
 
 const FIRST_PAGE = 8;
 
@@ -74,16 +75,17 @@ export default function ChecklistsTab({
 }) {
   const capabilities = useCapabilities();
   const demo = useDemoExtension();
+  const real = useCollectionStore().kind === "convex";
   const setScope = useSetScope();
   const scopedName = useScopedName();
   const [showAll, setShowAll] = useState(false);
-  const [requesting, setRequesting] = useState(false);
+  const [requesting, setRequesting] = useState<RequestsTab | null>(null);
   const text = useSearchText(query);
   const result = useSearch(text);
   const typed = query.trim();
   const hits = result?.cards ?? [];
   const shown = showAll ? hits : hits.slice(0, FIRST_PAGE);
-  const canRequest = capabilities.cardRequests && !!demo;
+  const canRequest = capabilities.cardRequests && (real || !!demo);
 
   const checklistHeading = useRef<HTMLHeadingElement>(null);
   const entityHeading = useRef<HTMLHeadingElement>(null);
@@ -115,10 +117,10 @@ export default function ChecklistsTab({
     if (row) row.scrollLeft = row.scrollWidth;
   }, [cascadeKey, columnCount]);
 
-  const askLink = (label: string) => (
+  const askLink = (label: string, tab: RequestsTab = "card") => (
     <button
       type="button"
-      onClick={() => setRequesting(true)}
+      onClick={() => setRequesting(tab)}
       className={`rounded-sm text-neon-blue-text underline underline-offset-2 hover:text-ink ${FOCUS}`}
     >
       {label}
@@ -194,9 +196,16 @@ export default function ChecklistsTab({
           <div className="max-w-2xl rounded-lg border border-dashed border-neon-blue/50 bg-raised p-4 text-sm text-ink-2 shadow-offset">
             <p className="font-semibold text-ink">Not in the catalog yet.</p>
             {canRequest ? (
-              <p className="mt-1 text-ink-2">
-                {askLink("Ask us to add it")}. It&apos;s a demo, so your request stays right here with you.
-              </p>
+              real ? (
+                <p className="mt-1 text-ink-2">
+                  {askLink("Request a card")} or {askLink("request a set", "set")}. It&apos;s yours to file while
+                  our crew adds it.
+                </p>
+              ) : (
+                <p className="mt-1 text-ink-2">
+                  {askLink("Ask us to add it")}. It&apos;s a demo, so your request stays right here with you.
+                </p>
+              )
             ) : (
               <p className="mt-1 text-ink-2">
                 We&apos;re still filling the long boxes. Try a year, a set or a last name, or browse below.
@@ -204,7 +213,15 @@ export default function ChecklistsTab({
             )}
           </div>
         ) : (
-          canRequest && <p className="text-xs text-ink-3">{askLink("Can't find it? Ask us to add it")}</p>
+          canRequest &&
+          (real ? (
+            <p className="text-xs text-ink-3">
+              Can&apos;t find it? {askLink("Request a card")} · {askLink("Request a set", "set")} ·{" "}
+              {askLink("My requests", "mine")}
+            </p>
+          ) : (
+            <p className="text-xs text-ink-3">{askLink("Can't find it? Ask us to add it")}</p>
+          ))
         )}
 
         {!entity && searchable(typed) && !settled && result === undefined && (
@@ -282,7 +299,18 @@ export default function ChecklistsTab({
         )}
       </section>
 
-      {requesting && demo && <RequestCardDialog store={demo} searched={query} onClose={() => setRequesting(false)} />}
+      {requesting && real && (
+        <RequestsDialog
+          searched={query}
+          drill={drill.drill}
+          initialTab={requesting}
+          onHave={actions.have}
+          onClose={() => setRequesting(null)}
+        />
+      )}
+      {requesting && !real && demo && (
+        <RequestCardDialog store={demo} searched={query} onClose={() => setRequesting(null)} />
+      )}
     </div>
   );
 }

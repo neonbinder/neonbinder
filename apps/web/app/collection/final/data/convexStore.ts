@@ -55,6 +55,7 @@ import type { FunctionReturnType } from "convex/server";
 import type { Infer } from "convex/values";
 import { api } from "@/convex/_generated/api";
 import type { copyDetailsValidator, copyValidator } from "@/convex/collection";
+import type { Id } from "@/convex/_generated/dataModel";
 import type {
   CatalogCard,
   CatalogCardWithPath,
@@ -113,6 +114,7 @@ type RawDrillItem = RawDrill["items"][number];
 type RawSummaryVariant = NonNullable<FunctionReturnType<typeof api.collectionCatalog.setSummary>>["variants"][number];
 type RawSuggest = FunctionReturnType<typeof api.collectionCatalog.suggest>;
 type RawEntityCards = { cards: CatalogCardWithPath[]; continueCursor: string | null };
+type RawOwnCard = NonNullable<FunctionReturnType<typeof api.collectionRequests.privateCards>[number]>;
 
 /** The card search's page size (the server's cap). */
 const SEARCH_LIMIT = 50;
@@ -220,6 +222,127 @@ function toCard(raw: CatalogCard, set: SetRef, variant: VariantRef): Card {
 function toCardWithPath(raw: CatalogCardWithPath | null): Card | null {
   if (!raw || !raw.set || !raw.variant) return null;
   return toCard(raw, toSetRef(raw.set), toVariantRef(raw.variant));
+}
+
+/** "Topps" + "Traded" reads "Topps Traded"; "Topps" + "Topps Traded" stays as typed. */
+function withBrand(brand: string, name: string): string {
+  return name.toLowerCase().startsWith(brand.toLowerCase()) ? name : [brand, name].filter(Boolean).join(" ");
+}
+
+/** A checklist name the collector typed: what kind of row it reads as. */
+function typedVariant(id: string, name: string): VariantRef {
+  const kind: VariantKind = /^base$/i.test(name.trim()) ? "base" : "other";
+  return {
+    id,
+    kind,
+    name: kind === "base" ? null : name,
+    insertName: null,
+    printRun: null,
+    order: 0,
+    path: { typeId: "", variantId: null, subVariantId: null },
+    finish: finishForVariant({ kind, name: kind === "base" ? null : name, insertName: null }),
+  };
+}
+
+/**
+ * NEO-361 — the collector's own card as the views draw any card: the NB set
+ * and checklist it belongs in when they picked them, else the set they asked
+ * for and the checklist as they typed it. Its player is a name only (no NB
+ * player row), so it links nowhere; it has no team. `own` marks it.
+ */
+function toOwnCard(raw: RawOwnCard): Card | null {
+  const set: SetRef | null = raw.set
+    ? toSetRef(raw.set)
+    : raw.privateSet
+      ? {
+          id: raw.privateSet._id,
+          name: withBrand(raw.privateSet.brand, raw.privateSet.name),
+          season: raw.privateSet.year,
+          year: Number.parseInt(raw.privateSet.year, 10) || 0,
+          brand: { id: "", name: raw.privateSet.brand },
+          sport: raw.privateSet.sport
+            ? { id: raw.privateSet.sport._id, name: raw.privateSet.sport.name }
+            : { id: "", name: "" },
+        }
+      : null;
+  if (!set) return null;
+  const variant = raw.variant ? toVariantRef(raw.variant) : typedVariant(`${raw._id}:checklist`, raw.variantName ?? "");
+  return {
+    id: raw._id,
+    set,
+    variant,
+    cardNumber: raw.cardNumber,
+    players: raw.player ? [{ id: "", name: raw.player }] : [],
+    teams: [],
+    printRun: null,
+    features: [],
+    cardVariation: null,
+    isVariation: false,
+    sortOrder: 0,
+    finish: variant.finish,
+    own: {
+      requestId: raw.requestId,
+      status: raw.status === "declined" ? "declined" : "waiting",
+      nbSet: raw.set !== null,
+      ...(raw.notes ? { notes: raw.notes } : {}),
+      ...(raw.frontImageUrl ? { frontImageUrl: raw.frontImageUrl } : {}),
+      ...(raw.backImageUrl ? { backImageUrl: raw.backImageUrl } : {}),
+    },
+  };
+}
+
+/**
+ * NEO-361 — the collector's own cards among the ids in `key` (newline
+ * joined: the ones the catalog read did not know), by id; `null` for one
+ * that is no one's. `undefined` while loading or when `key` is null; an
+ * empty map at once for "".
+ */
+function useOwnCards(key: string | null): Map<string, Card | null> | undefined {
+  const requests = useMemo(() => {
+    const ids = key ? key.split("\n") : [];
+    return Object.fromEntries(
+      chunk(ids, CARDS_PER_CALL).map((part, i) => [String(i), { query: api.collectionRequests.privateCards, args: { ids: part } }]),
+    );
+  }, [key]);
+  const results = useQueries(requests);
+  return useMemo(() => {
+    if (key === null) return undefined;
+    const out = new Map<string, Card | null>();
+    if (key === "") return out;
+    const ids = key.split("\n");
+    let at = 0;
+    for (let i = 0; i < Object.keys(requests).length; i++) {
+      const part = results[String(i)] as (RawOwnCard | null)[] | undefined | Error;
+      if (part === undefined) return undefined;
+      if (part instanceof Error) throw part;
+      for (const raw of part) out.set(ids[at++], raw ? toOwnCard(raw) : null);
+    }
+    return out;
+  }, [key, requests, results]);
+}
+
+/** The catalog's cards for `cardIds`, aligned: `null` for an id it doesn't hold. */
+function useCatalogCards(cardIds: readonly string[] | null): (Card | null)[] | undefined {
+  const key = cardIds ? cardIds.join("\n") : null;
+  const requests = useMemo(() => {
+    const ids = key ? key.split("\n") : [];
+    return Object.fromEntries(
+      chunk(ids, CARDS_PER_CALL).map((part, i) => [String(i), { query: api.collectionCatalog.cards, args: { cardIds: part } }]),
+    );
+  }, [key]);
+  const results = useQueries(requests);
+  return useMemo(() => {
+    if (key === null) return undefined;
+    if (key === "") return [];
+    const out: (Card | null)[] = [];
+    for (let i = 0; i < Object.keys(requests).length; i++) {
+      const part = results[String(i)] as (CatalogCardWithPath | null)[] | undefined | Error;
+      if (part === undefined) return undefined;
+      if (part instanceof Error) throw part;
+      out.push(...part.map(toCardWithPath));
+    }
+    return out;
+  }, [key, requests, results]);
 }
 
 function toCards(raws: CatalogCardWithPath[]): Card[] {
@@ -485,32 +608,33 @@ export const CONVEX_DATA: CollectionData = {
 
   useCard(cardId) {
     const raw = useQuery(api.collectionCatalog.card, cardId ? { cardId } : "skip");
-    return useMemo(() => (raw === undefined ? undefined : toCardWithPath(raw)), [raw]);
+    // NEO-361: an id the catalog doesn't know may be the collector's own card.
+    const own = useOwnCards(raw === null && cardId ? cardId : raw === undefined ? null : "");
+    return useMemo(() => {
+      if (raw === undefined) return undefined;
+      if (raw !== null) return toCardWithPath(raw);
+      if (!cardId) return null;
+      if (own === undefined) return undefined;
+      return own.get(cardId) ?? null;
+    }, [raw, own, cardId]);
   },
 
   useCards(cardIds) {
     const key = cardIds ? cardIds.join("\n") : null;
-    const requests = useMemo(() => {
-      const ids = key ? key.split("\n") : [];
-      return Object.fromEntries(
-        chunk(ids, CARDS_PER_CALL).map((part, i) => [String(i), { query: api.collectionCatalog.cards, args: { cardIds: part } }]),
-      );
-    }, [key]);
-    const results = useQueries(requests);
+    const ids = useMemo(() => (key === null ? null : key === "" ? [] : key.split("\n")), [key]);
+    const catalog = useCatalogCards(ids);
+    // NEO-361: the ids the catalog didn't know may be the collector's own cards.
+    const missing = useMemo(
+      () => (catalog && ids ? ids.filter((_, i) => catalog[i] === null).join("\n") : null),
+      [catalog, ids],
+    );
+    const own = useOwnCards(missing);
     return useMemo(() => {
-      if (key === null) return undefined;
-      if (key === "") return [];
-      const out: (Card | null)[] = [];
-      for (let i = 0; i < Object.keys(requests).length; i++) {
-        const part = results[String(i)] as (CatalogCardWithPath | null)[] | undefined | Error;
-        if (part === undefined) return undefined;
-        if (part instanceof Error) throw part;
-        out.push(...part.map(toCardWithPath));
-      }
-      return out;
-    }, [key, requests, results]);
+      if (!catalog || !ids) return catalog;
+      if (missing && own === undefined) return undefined;
+      return catalog.map((card, i) => card ?? own?.get(ids[i]) ?? null);
+    }, [catalog, ids, missing, own]);
   },
-
   useSuggestions(text) {
     const q = text.trim();
     const raw = useQuery(api.collectionCatalog.suggest, searchable(q) ? { q } : "skip");
@@ -882,8 +1006,9 @@ function suggestionsFrom(raw: RawSuggest): Suggestion[] {
 
 /** What an optimistic update needs to know about a card that its args do not say. */
 interface CardPlace {
-  variantId: string;
-  setId: string;
+  /** NEO-361 — both absent for the collector's own card (`Card.own`): in no checklist. */
+  variantId?: string;
+  setId?: string;
   isVariation: boolean;
 }
 
@@ -992,7 +1117,7 @@ async function landedCopy(copy: Copy): Promise<Copy> {
  */
 interface Change {
   cardId: string;
-  variantId: string;
+  variantId?: string;
   isVariation: boolean;
   before: RawCopy[];
   after: RawCopy[];
@@ -1205,8 +1330,9 @@ function applyAdd(
         ...next,
         _id: draw(),
         cardId: cardId as RawCopy["cardId"],
-        variantId: place.variantId as RawCopy["variantId"],
-        setId: place.setId as RawCopy["setId"],
+        ...(place.variantId && place.setId
+          ? { variantId: place.variantId as RawCopy["variantId"], setId: place.setId as RawCopy["setId"] }
+          : {}),
         homeId: homeId ?? ("" as RawCopy["homeId"]),
         lastUpdated: Date.now(),
       } as RawCopy,
@@ -1463,7 +1589,10 @@ function useConvexActions(): CollectionActions {
 
   return useMemo<CollectionActions>(() => {
     const placeCard = (card: Card) => {
-      cards.current.set(card.id, { variantId: card.variant.id, setId: card.set.id, isVariation: card.isVariation });
+      cards.current.set(
+        card.id,
+        card.own ? { isVariation: false } : { variantId: card.variant.id, setId: card.set.id, isVariation: card.isVariation },
+      );
     };
     /** Records a copy for the optimistic updates of the write about to run. */
     const know = (copy: Copy) => {
@@ -1616,11 +1745,11 @@ function useConvexActions(): CollectionActions {
       },
 
       async setBuilding(set, building) {
-        const { changed } = await setBuilding({ setId: set.id as RawCopy["setId"], building });
+        const { changed } = await setBuilding({ setId: set.id as Id<"selectorOptions">, building });
         return {
           building,
           undo: async () => {
-            if (changed) await setBuilding({ setId: set.id as RawCopy["setId"], building: !building });
+            if (changed) await setBuilding({ setId: set.id as Id<"selectorOptions">, building: !building });
           },
         };
       },
@@ -1664,7 +1793,7 @@ function useConvexActions(): CollectionActions {
       async setWant(cardId, binderId, on) {
         const before = wantsRef.current?.find((w) => w.cardId === cardId);
         const { changed } = await m.setWant({
-          cardId: asCard(cardId),
+          cardId: cardId as Id<"cardChecklist">,
           on,
           ...(binderId ? { binderId: asHome(binderId) } : {}),
         });
@@ -1673,9 +1802,9 @@ function useConvexActions(): CollectionActions {
           undo: async () => {
             if (!changed) return;
             if (before) {
-              await m.setWant({ cardId: asCard(cardId), on: true, ...(before.binderId ? { binderId: before.binderId } : {}) });
+              await m.setWant({ cardId: cardId as Id<"cardChecklist">, on: true, ...(before.binderId ? { binderId: before.binderId } : {}) });
             } else {
-              await m.setWant({ cardId: asCard(cardId), on: false });
+              await m.setWant({ cardId: cardId as Id<"cardChecklist">, on: false });
             }
           },
         };

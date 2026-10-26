@@ -188,6 +188,26 @@ export interface Card {
   sortOrder: number;
   /** Presentational only (`./finish`). */
   finish: Finish;
+  /**
+   * NEO-361 — set on a card the collector owns that NB doesn't have: one they
+   * asked us to add (waiting), or one we didn't (declined). It is theirs
+   * alone, in no checklist and no count, and shows a small "not a known NB
+   * card" marker wherever it is drawn. Absent on every catalog card.
+   */
+  own?: OwnCard;
+}
+
+/** NEO-361 — what makes a card the collector's own (see `Card.own`). */
+export interface OwnCard {
+  /** The request that made it. */
+  requestId: string;
+  status: "waiting" | "declined";
+  /** False when the set is one the collector asked for, not an NB set. */
+  nbSet: boolean;
+  /** What the collector wrote about it. */
+  notes?: string;
+  frontImageUrl?: string;
+  backImageUrl?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -295,8 +315,9 @@ export interface CopyDetails {
 export interface Copy extends CopyDetails {
   id: CopyId;
   cardId: CardId;
-  variantId: VariantId;
-  setId: SetId;
+  /** NEO-361 — absent on a copy of the collector's own card (`Card.own`): it is in no checklist. */
+  variantId?: VariantId;
+  setId?: SetId;
   /** The copy's one home: a binder, or a box (for sale). */
   homeId: ContainerId;
   /** What the home is. `"box"`: the copy is for sale. "binder" while the store does not know yet. */
@@ -590,7 +611,10 @@ export interface Capabilities {
   trade: boolean;
   /** The "Binder: [All ▾]" picker and every scoped count. */
   scope: boolean;
-  /** "Can't find it? Ask us to add it" (real requests arrive with NEO-361). */
+  /**
+   * "Can't find it? Ask us to add it". The demo keeps requests on the page
+   * (`DemoExtension`); the real collection sends them for review (NEO-361).
+   */
   cardRequests: boolean;
   /** The demo bar, its Reset, and the demo's Light / Dark switch. */
   demoChrome: boolean;
@@ -631,13 +655,14 @@ export const NO_CAPABILITIES: Capabilities = {
   inventory: false,
 };
 
-/** What the real collection can do today (NEO-359: binders, wants, trade and scope; Inventory comes later). */
+/** What the real collection can do today (NEO-359: binders, wants, trade and scope; NEO-361: card requests; Inventory comes later). */
 export const REAL_CAPABILITIES: Capabilities = {
   ...NO_CAPABILITIES,
   binders: true,
   wants: true,
   trade: true,
   scope: true,
+  cardRequests: true,
 };
 
 // ---------------------------------------------------------------------------

@@ -320,7 +320,7 @@ describe("copies between the view and the server", () => {
 });
 
 describe("the real store's capabilities and reads", () => {
-  it("turns on binders, wants, trade and scope, and leaves the demo-only features and Inventory off", () => {
+  it("turns on binders, wants, trade, scope and card requests, and leaves the demo-only features and Inventory off", () => {
     const { result } = renderHook(() => ({ caps: useCapabilities(), demo: useDemoExtension() }), { wrapper });
     expect(result.current.caps).toEqual(REAL_CAPABILITIES);
     expect(result.current.caps).toMatchObject({
@@ -330,7 +330,7 @@ describe("the real store's capabilities and reads", () => {
       scope: true,
       smartBinders: false,
       share: false,
-      cardRequests: false,
+      cardRequests: true,
       demoChrome: false,
       inventory: false,
     });
@@ -395,10 +395,37 @@ describe("everything I own", () => {
   });
   /** One server page: each card once, newest first, two copies on one line. */
   const page = (ids: string[]) => ids.map((cardId, i) => ({ cardId, quantity: 2, lines: 1, lastUpdated: 100 - i }));
-  const catalogAnswers = () =>
+  const catalogAnswers = () => {
     loaded.set("collectionCatalog:cards", ({ cardIds }: { cardIds: string[] }) =>
-      cardIds.map((id) => (id === "gone" ? null : catalogCard(id, id.slice(1)))),
+      cardIds.map((id) => (id === "gone" || id.startsWith("own") ? null : catalogCard(id, id.slice(1)))),
     );
+    // NEO-361: what the catalog doesn't hold is asked of the collector's own cards.
+    loaded.set("collectionRequests:privateCards", ({ ids }: { ids: string[] }) =>
+      ids.map((id) =>
+        id.startsWith("own")
+          ? {
+              _id: id,
+              requestId: "req1",
+              status: "waiting",
+              cardNumber: "77",
+              player: "Rookie Nobody",
+              variantName: "Gold Foil",
+              set: null,
+              variant: null,
+              privateSet: {
+                _id: "ps1",
+                requestId: "req1",
+                status: "waiting",
+                sport: { _id: "s1", name: "Football" },
+                year: "1996",
+                brand: "Playoff",
+                name: "Contenders",
+              },
+            }
+          : null,
+      ),
+    );
+  };
 
   it("hydrates the first page's cards, newest first, with how many of each, and the tally's total", () => {
     loaded.set("collection:summary", tally(2));
@@ -445,6 +472,19 @@ describe("everything I own", () => {
     const { result } = renderHook(() => useOwnedCards({ limit: 2 }), { wrapper });
     expect(result.current!.cards.map((c) => c.id)).toEqual(["k1"]);
     expect(result.current).toMatchObject({ goneCardIds: ["gone"], truncated: true, total: 3 });
+  });
+
+  it("hydrates a card of the collector's own from their requests, marked unlisted (NEO-361)", () => {
+    loaded.set("collection:summary", tally(2));
+    paged.pages.set("collection:ownedCards", [page(["own1", "k1"])]);
+    catalogAnswers();
+    const { result } = renderHook(() => useOwnedCards(), { wrapper });
+    const own = result.current!.cards.find((c) => c.id === "own1")!;
+    expect(own.own).toMatchObject({ requestId: "req1", status: "waiting", nbSet: false });
+    expect(own).toMatchObject({ cardNumber: "77", players: [{ name: "Rookie Nobody" }] });
+    expect(own.variant.name).toBe("Gold Foil");
+    expect(own.set.name).toContain("Contenders");
+    expect(result.current!.goneCardIds).toEqual([]);
   });
 
   it("asks the catalog in pages the server accepts", () => {

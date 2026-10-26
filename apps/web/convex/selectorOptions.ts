@@ -8204,6 +8204,8 @@ type SetBuilderResetResult = {
   collectionCopiesDeleted: number;
   /** NEO-359 — collectors' Want Lists, drained before the cards and containers they name. */
   collectionWantsDeleted: number;
+  /** NEO-361 — collectors' card and set requests with their private cards and sets. */
+  cardRequestsDeleted: number;
   /** NEO-358 — collectors' binders and boxes, drained after the copies in them. */
   collectionContainersDeleted: number;
   /** NEO-358 — collectors' "Sets I'm building", drained before the sets. */
@@ -8310,6 +8312,7 @@ async function runSetBuilderReset(
     selectorSyncStatusDeleted: 0,
     collectionCopiesDeleted: 0,
     collectionWantsDeleted: 0,
+    cardRequestsDeleted: 0,
     collectionContainersDeleted: 0,
     collectionBuildingSetsDeleted: 0,
     selectorOptionsDeleted: 0,
@@ -8365,6 +8368,14 @@ async function runSetBuilderReset(
     [
       "collectionWantsDeleted",
       internal.selectorOptions.resetCollectionWantsBatch,
+    ],
+    // NEO-361 — card and set requests and the private cards and sets they
+    // made: a private card names an NB set and checklist, so it drains
+    // BEFORE the selector rows; its copies went with the copies above. Not
+    // a reference-seed table: every scope drains it.
+    [
+      "cardRequestsDeleted",
+      internal.selectorOptions.resetCardRequestsBatch,
     ],
     // NEO-358 — the binders and boxes those copies lived in, AFTER the copies
     // (a copy's `homeId` names one) and the wants (NEO-359: a want's
@@ -8648,6 +8659,8 @@ export const resetSetBuilderDataFromCli = internalAction({
     collectionCopiesDeleted: v.number(),
     // NEO-359 — collectors' Want Lists.
     collectionWantsDeleted: v.number(),
+    // NEO-361 — card and set requests, private cards and private sets.
+    cardRequestsDeleted: v.number(),
     collectionContainersDeleted: v.number(),
     collectionBuildingSetsDeleted: v.number(),
     selectorOptionsDeleted: v.number(),
@@ -9115,6 +9128,48 @@ export const resetCollectionWantsBatch = internalMutation({
       await ctx.db.delete(row._id);
     }
     return { deleted: rows.length, hasMore: rows.length === RESET_BATCH_SIZE };
+  },
+});
+
+/**
+ * Internal: drain NEO-361's request tables, looped by `runSetBuilderReset`
+ * after the copies (a copy may name a private card) and BEFORE the selector
+ * rows a private card names. Private cards first (their photos with them),
+ * then private sets, then the requests. Every collector's, across every
+ * account; armed like every batch here.
+ */
+export const resetCardRequestsBatch = internalMutation({
+  args: {},
+  returns: v.object({
+    deleted: v.number(),
+    hasMore: v.boolean(),
+  }),
+  handler: async (ctx) => {
+    assertResetArmed();
+    let left = RESET_BATCH_SIZE;
+    let deleted = 0;
+    const cards = await ctx.db.query("privateCards").take(left);
+    for (const row of cards) {
+      for (const id of [row.frontImageId, row.backImageId]) {
+        if (id && (await ctx.db.system.get(id))) await ctx.storage.delete(id);
+      }
+      await ctx.db.delete(row._id);
+    }
+    left -= cards.length;
+    deleted += cards.length;
+    if (left > 0) {
+      const sets = await ctx.db.query("privateSets").take(left);
+      for (const row of sets) await ctx.db.delete(row._id);
+      left -= sets.length;
+      deleted += sets.length;
+    }
+    if (left > 0) {
+      const requests = await ctx.db.query("cardRequests").take(left);
+      for (const row of requests) await ctx.db.delete(row._id);
+      left -= requests.length;
+      deleted += requests.length;
+    }
+    return { deleted, hasMore: left === 0 };
   },
 });
 

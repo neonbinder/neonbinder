@@ -58,6 +58,8 @@ export const resetMyTestState = mutation({
     // live in). NEO-359: wants before the containers they may be scoped to.
     collectionCopies: v.number(),
     collectionWants: v.number(),
+    // NEO-361: the caller's requests, with their private cards and sets.
+    cardRequests: v.number(),
     collectionContainers: v.number(),
     collectionBuildingSets: v.number(),
   }),
@@ -116,6 +118,33 @@ export const resetMyTestState = mutation({
       await ctx.db.delete(row._id);
     }
 
+    // NEO-361 — the caller's private cards (photos with them), private sets
+    // and requests. Their copies went with the copies above.
+    const privateCards = await ctx.db
+      .query("privateCards")
+      .withIndex("by_owner", (q) => q.eq("ownerId", userId))
+      .collect();
+    for (const row of privateCards) {
+      for (const id of [row.frontImageId, row.backImageId]) {
+        if (id && (await ctx.db.system.get(id))) await ctx.storage.delete(id);
+      }
+      await ctx.db.delete(row._id);
+    }
+    const privateSets = await ctx.db
+      .query("privateSets")
+      .withIndex("by_owner", (q) => q.eq("ownerId", userId))
+      .collect();
+    for (const row of privateSets) {
+      await ctx.db.delete(row._id);
+    }
+    const cardRequests = await ctx.db
+      .query("cardRequests")
+      .withIndex("by_owner", (q) => q.eq("ownerId", userId))
+      .collect();
+    for (const row of cardRequests) {
+      await ctx.db.delete(row._id);
+    }
+
     const collectionContainers = await ctx.db
       .query("collectionContainers")
       .withIndex("by_owner_and_system", (q) => q.eq("ownerId", userId))
@@ -138,6 +167,7 @@ export const resetMyTestState = mutation({
       prizePool: prizePool.length,
       collectionCopies: collectionCopies.length,
       collectionWants: collectionWants.length,
+      cardRequests: cardRequests.length,
       collectionContainers: collectionContainers.length,
       collectionBuildingSets: collectionBuildingSets.length,
     };
