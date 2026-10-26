@@ -163,6 +163,8 @@ test(
     await page.getByRole("button", { name: "Done", exact: true }).click();
 
     // --- Up for Trade switched private, then public again -------------------
+    // An open binder replaces the shelf; go back to it.
+    await page.getByRole("button", { name: "Back to the shelf" }).click();
     const special = page.getByRole("list", { name: "Special places" });
     await special.getByRole("button", { name: /^Up for Trade, / }).click();
     await page.getByRole("button", { name: "Share Up for Trade", exact: true }).click();
@@ -180,6 +182,7 @@ test(
     await page.getByRole("button", { name: "Done", exact: true }).click();
 
     // --- The Want List switched public, then private again ------------------
+    await page.getByRole("button", { name: "Back to the shelf" }).click();
     await special.getByRole("button", { name: /^Want List, / }).click();
     await page.getByRole("button", { name: "Share your Want List", exact: true }).click();
     const wantVisibility = page.getByRole("group", { name: "Who can see this Want List" });
@@ -194,6 +197,7 @@ test(
 
     // --- A second binder can't take the first one's link name ---------------
     const twinName = `Twin${env.ATTEMPT_TOKEN}`;
+    await page.getByRole("button", { name: "Back to the shelf" }).click();
     await shelf.getByRole("button", { name: "New binder", exact: true }).click();
     await newDialog.getByRole("textbox", { name: "Binder name" }).fill(twinName);
     await newDialog.getByRole("button", { name: "Put it on the shelf" }).click();
