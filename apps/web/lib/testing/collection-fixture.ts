@@ -63,9 +63,13 @@ export async function seedCollectionCatalog(t: T) {
       return id;
     };
 
-    const sportId = await row("sport", "Baseball");
-    const yearId = await row("year", "2024", sportId);
-    const toppsId = await row("manufacturer", "Topps", yearId);
+    // NEO-364 — the sport, years and brands carry `hasCards`, as the
+    // backfill leaves rows written before the flag: cards sit under 2024
+    // Topps, and 1986's set is of unknown count (shown, never hidden).
+    const flagged = { hasCards: true };
+    const sportId = await row("sport", "Baseball", undefined, flagged);
+    const yearId = await row("year", "2024", sportId, flagged);
+    const toppsId = await row("manufacturer", "Topps", yearId, flagged);
     const setId = await row("setName", "Topps Chrome", toppsId);
     const baseId = await row("variantType", "Base", setId, {
       cardCount: 3,
@@ -86,8 +90,8 @@ export async function seedCollectionCatalog(t: T) {
     });
 
     // An older set, so the drill's year order has something to order.
-    const year1986Id = await row("year", "1986", sportId);
-    const topps86Id = await row("manufacturer", "Topps", year1986Id);
+    const year1986Id = await row("year", "1986", sportId, flagged);
+    const topps86Id = await row("manufacturer", "Topps", year1986Id, flagged);
     const set86Id = await row("setName", "Topps Traded", topps86Id);
 
     const franchiseId = await ctx.db.insert("franchises", {
@@ -195,7 +199,7 @@ export async function seedCollectionCatalog(t: T) {
 
     return {
       sportId, yearId, toppsId, setId, baseId, insertsTypeId, futureStarsId,
-      parallelsTypeId, goldId, year1986Id, set86Id,
+      parallelsTypeId, goldId, year1986Id, topps86Id, set86Id,
       franchiseId, metsId, exposId, nationalsId, goodenId, strawberryId,
       gooden1, strawberry2, gooden1Sliding, futureStar, gold1,
     };

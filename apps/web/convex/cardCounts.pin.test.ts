@@ -16,7 +16,8 @@
  *  - the subtree counts (Jason, 2026-10-24): the card delete remembers its
  *    row's chain before the row can go, every selector-row RE-PARENT moves
  *    the row's subtree count through a flushed ledger, and every selector-row
- *    INSERT is born with `NEW_ROW_SUBTREE_COUNTS`.
+ *    INSERT is born with `newRowSubtreeCounts(<its own level>)` (NEO-364:
+ *    zeroed counts from the set down, nothing on a sport, year or brand).
  *
  * The one exemption is the E2E reset drain (`resetCardChecklistBatch`), which
  * drains the selector rows the counts live on too.
@@ -240,9 +241,11 @@ describe("NEO-358: card inserts, deletes and moves keep the counts", () => {
     expect(seen.length).toBe(4);
   });
 
-  test("every selector-row insert is born with known-empty subtree counts", () => {
-    // A row born without them reads as UNKNOWN, so it is never hidden however
-    // empty it is, until the backfill reaches it.
+  test("every selector-row insert is born with its level's subtree counts", () => {
+    // A row from the set down born without them reads as UNKNOWN, so it is
+    // never hidden however empty it is, until the backfill reaches it. A
+    // sport, year or brand is born with none (NEO-364): the helper decides by
+    // level, so the argument must be the row's own level.
     const offenders: string[] = [];
     const seen: string[] = [];
     for (const file of sourceFiles(CONVEX_DIR)) {
@@ -251,7 +254,12 @@ describe("NEO-358: card inserts, deletes and moves keep the counts", () => {
         if (!/^ctx\.db\.insert\(\s*"selectorOptions"/.test(ins.text)) continue;
         const fn = enclosing(src, ins.at);
         seen.push(`${rel(file)}:${fn.name}`);
-        if (!/^ctx\.db\.insert\(\s*"selectorOptions",\s*\{\s*\.\.\.NEW_ROW_SUBTREE_COUNTS,/.test(ins.text)) {
+        const born =
+          /^ctx\.db\.insert\(\s*"selectorOptions",\s*\{\s*\.\.\.newRowSubtreeCounts\(([^)]*)\),\s*level(?::\s*([^,]+))?,/.exec(
+            ins.text,
+          );
+        // `level` shorthand passes `level`; `level: "x"` passes `"x"`.
+        if (!born || born[1].trim() !== (born[2]?.trim() ?? "level")) {
           offenders.push(`${rel(file)}:${fn.name}`);
         }
       }

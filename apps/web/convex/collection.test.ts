@@ -48,9 +48,9 @@ describe("auth", () => {
     const calls: Array<() => Promise<unknown>> = [
       () => t.query(api.collection.summary, {}),
       () => t.query(api.collection.copiesOf, { cardId: fx.gooden1 }),
-      () => t.query(api.collection.copiesInVariant, { variantId: fx.baseId }),
-      () => t.query(api.collection.variantCompletion, { variantId: fx.baseId }),
-      () => t.query(api.collection.setCompletion, { setId: fx.setId }),
+      () => t.query(api.collection.copiesInVariant, { variantId: fx.baseId, side: "collection" }),
+      () => t.query(api.collection.variantCompletion, { variantId: fx.baseId, side: "collection" }),
+      () => t.query(api.collection.setCompletion, { setId: fx.setId, side: "collection" }),
       () => t.query(api.collection.buildingSets, {}),
       () => t.mutation(api.collection.addHave, { cardId: fx.gooden1 }),
       () => t.mutation(api.collection.addHaves, { cardIds: [fx.gooden1] }),
@@ -336,9 +336,9 @@ describe("reads", () => {
     await them.mutation(api.collection.addHave, { cardId: fx.gooden1 });
 
     expect((await me.query(api.collection.copiesOf, { cardId: fx.gooden1 })).map((c) => c.quantity)).toEqual([2]);
-    const inBase = await me.query(api.collection.copiesInVariant, { variantId: fx.baseId });
+    const inBase = await me.query(api.collection.copiesInVariant, { variantId: fx.baseId, side: "collection" });
     expect(inBase.map((c) => c.cardId).sort()).toEqual([fx.gooden1, fx.strawberry2].sort());
-    expect(await me.query(api.collection.copiesInVariant, { variantId: "nope" })).toEqual([]);
+    expect(await me.query(api.collection.copiesInVariant, { variantId: "nope", side: "collection" })).toEqual([]);
 
     const summary = await me.query(api.collection.summary, {});
     expect(summary).toEqual({
@@ -371,7 +371,7 @@ describe("reads", () => {
 describe("completion: regular cards by default, every card as the second pair", () => {
   test("variantCompletion counts distinct cards both ways", async () => {
     const { fx, me } = await setup();
-    expect(await me.query(api.collection.variantCompletion, { variantId: fx.baseId })).toEqual({
+    expect(await me.query(api.collection.variantCompletion, { variantId: fx.baseId, side: "collection" })).toEqual({
       owned: 0,
       total: 2,
       ownedAll: 0,
@@ -383,7 +383,7 @@ describe("completion: regular cards by default, every card as the second pair", 
       cardId: fx.gooden1,
       details: { quantity: 1, condition: "Mint" },
     });
-    expect(await me.query(api.collection.variantCompletion, { variantId: fx.baseId })).toEqual({
+    expect(await me.query(api.collection.variantCompletion, { variantId: fx.baseId, side: "collection" })).toEqual({
       owned: 1,
       total: 2,
       ownedAll: 1,
@@ -391,14 +391,14 @@ describe("completion: regular cards by default, every card as the second pair", 
     });
     // The Sliding variation counts only in the "every card" pair.
     await me.mutation(api.collection.addHave, { cardId: fx.gooden1Sliding });
-    expect(await me.query(api.collection.variantCompletion, { variantId: fx.baseId })).toEqual({
+    expect(await me.query(api.collection.variantCompletion, { variantId: fx.baseId, side: "collection" })).toEqual({
       owned: 1,
       total: 2,
       ownedAll: 2,
       totalAll: 3,
     });
     await me.mutation(api.collection.addHave, { cardId: fx.strawberry2 });
-    expect(await me.query(api.collection.variantCompletion, { variantId: fx.baseId })).toEqual({
+    expect(await me.query(api.collection.variantCompletion, { variantId: fx.baseId, side: "collection" })).toEqual({
       owned: 2,
       total: 2,
       ownedAll: 3,
@@ -408,14 +408,14 @@ describe("completion: regular cards by default, every card as the second pair", 
 
   test("an uncounted variant is counted by hand; a non-variant id is null", async () => {
     const { fx, me } = await setup();
-    expect(await me.query(api.collection.variantCompletion, { variantId: fx.futureStarsId })).toEqual({
+    expect(await me.query(api.collection.variantCompletion, { variantId: fx.futureStarsId, side: "collection" })).toEqual({
       owned: 0,
       total: 1,
       ownedAll: 0,
       totalAll: 1,
     });
-    expect(await me.query(api.collection.variantCompletion, { variantId: fx.setId })).toBeNull();
-    expect(await me.query(api.collection.variantCompletion, { variantId: "x" })).toBeNull();
+    expect(await me.query(api.collection.variantCompletion, { variantId: fx.setId, side: "collection" })).toBeNull();
+    expect(await me.query(api.collection.variantCompletion, { variantId: "x", side: "collection" })).toBeNull();
   });
 
   test("setCompletion gives both owned counts per variant and for the set", async () => {
@@ -423,7 +423,7 @@ describe("completion: regular cards by default, every card as the second pair", 
     await me.mutation(api.collection.addHave, { cardId: fx.gooden1 });
     await me.mutation(api.collection.addHave, { cardId: fx.gooden1Sliding });
     await me.mutation(api.collection.addHave, { cardId: fx.gold1 });
-    const result = await me.query(api.collection.setCompletion, { setId: fx.setId });
+    const result = await me.query(api.collection.setCompletion, { setId: fx.setId, side: "collection" });
     expect(result.owned).toBe(2);
     expect(result.ownedAll).toBe(3);
     const byVariant = Object.fromEntries(result.variants.map((r) => [r.variantId, [r.owned, r.ownedAll]]));
@@ -848,7 +848,7 @@ async function insertManyOwned(
       kind: "binder",
       system: "main",
       name: "Main",
-      ...(keepTally ? { tally: { copies: lines, lines, cards } } : {}),
+      ...(keepTally ? { tally: { copies: lines, lines, cards }, tallyScope: "collection" as const } : {}),
       lastUpdated: 1,
     });
     const ids: Array<Id<"cardChecklist">> = [];

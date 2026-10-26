@@ -14,7 +14,7 @@
  * they follow from the slots its copies hold.
  */
 
-import { cardLabel, compareCards, playerNames, setLabel, variantLabel } from "../data/labels";
+import { cardLabel, compareCardNumbers, compareCards, playerNames, setLabel, variantLabel } from "../data/labels";
 import {
   BOX_ROWS,
   POCKETS_PER_PAGE,
@@ -38,14 +38,13 @@ import type { BrowseFilter } from "../store";
 
 /**
  * What is open on the desk: everything, one binder or box (or the Want List,
- * the trade pile, a smart binder), a set to browse, or every for-sale copy
- * at once (the Inventory long box on real data).
+ * the trade pile, a smart binder), or a set to browse. (The everything-for-
+ * sale view is retired, NEO-364: the Inventory list is its own tab.)
  */
 export type ViewKey =
   | { kind: "all" }
   | { kind: "binder"; binderId: ContainerId }
-  | { kind: "set"; setId: string }
-  | { kind: "sale" };
+  | { kind: "set"; setId: string };
 
 /** "Lay out like my real binder" or "Just a stack". */
 export type LayoutMode = "pockets" | "stack";
@@ -495,7 +494,40 @@ export interface BoxRows {
   unsorted: Copy[];
 }
 
-/** A box's copies by row, each row in checklist order. */
+const BOX_KIND_ORDER: Record<Card["variant"]["kind"], number> = { base: 0, insert: 1, parallel: 2, other: 3 };
+
+/**
+ * A dealer's box order (NEO-364 D18): by set (year, then name), then card
+ * number (natural: 2 before 10, 10a after 10), then the variant, so a base
+ * card and its parallels stand together the way a box is flipped through.
+ * The card's own variation goes last.
+ */
+export function compareBoxCards(a: Card, b: Card): number {
+  if (a.set.id !== b.set.id) {
+    return a.set.year - b.set.year || a.set.name.localeCompare(b.set.name) || a.set.id.localeCompare(b.set.id);
+  }
+  return (
+    compareCardNumbers(a.cardNumber, b.cardNumber) ||
+    (a.variant.id === b.variant.id
+      ? 0
+      : BOX_KIND_ORDER[a.variant.kind] - BOX_KIND_ORDER[b.variant.kind] ||
+        a.variant.order - b.variant.order ||
+        variantLabel(a.variant).localeCompare(variantLabel(b.variant))) ||
+    Number(a.cardVariation !== null) - Number(b.cardVariation !== null)
+  );
+}
+
+/** Copies in box order (`compareBoxCards`); a copy whose card is not in yet goes last. */
+function byBox(cards: CardsById) {
+  return (a: Copy, b: Copy) => {
+    const ca = cards.get(a.cardId);
+    const cb = cards.get(b.cardId);
+    if (!ca || !cb) return ca ? -1 : cb ? 1 : 0;
+    return compareBoxCards(ca, cb);
+  };
+}
+
+/** A box's copies by row, each row in box order (`compareBoxCards`); a stack stays one line, drawn ×N. */
 export function boxRows(copies: readonly Copy[], cards: CardsById): BoxRows {
   const rows: Copy[][] = Array.from({ length: BOX_ROWS }, () => []);
   const unsorted: Copy[] = [];
@@ -503,8 +535,13 @@ export function boxRows(copies: readonly Copy[], cards: CardsById): BoxRows {
     if (copy.slot !== undefined && copy.slot >= 0 && copy.slot < BOX_ROWS) rows[copy.slot].push(copy);
     else unsorted.push(copy);
   }
-  const order = byChecklist(cards);
+  const order = byBox(cards);
   return { rows: rows.map((r) => r.sort(order)), unsorted: unsorted.sort(order) };
+}
+
+/** Copies in box order: the Up for Trade pile drawn as a box (no rows). */
+export function boxOrder(copies: readonly Copy[], cards: CardsById): Copy[] {
+  return [...copies].sort(byBox(cards));
 }
 
 /** "Row 1" to "Row 5": a box row as the collector counts it. */

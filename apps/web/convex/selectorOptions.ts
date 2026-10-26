@@ -245,7 +245,7 @@ import { normalizeCardNotes } from "./cardNotes";
 import { syncCardTeamLinks } from "./cardTeamLinks";
 import { collectedCardIds, countCollectors, removeCardRow } from "./cardRowDelete";
 import { mergeCollectorCounts, type CollectorCount } from "../lib/collection/collectors";
-import { NEW_ROW_SUBTREE_COUNTS, createCardCountLedger } from "./cardCounts";
+import { newRowSubtreeCounts, createCardCountLedger } from "./cardCounts";
 import { titleForStoredCard } from "./storedCardTitle";
 import {
   MAX_TEAM_ALIASES,
@@ -2692,7 +2692,7 @@ export const storeSelectorOptions = mutation({
         ...(level === "manufacturer" ? { setNamePrefix: insertValue } : {}),
       };
       const id = await ctx.db.insert("selectorOptions", {
-        ...NEW_ROW_SUBTREE_COUNTS,
+        ...newRowSubtreeCounts(level),
         level,
         value: insertValue,
         platformData: alloc.platformData,
@@ -3360,7 +3360,7 @@ export const addCustomSelectorOption = mutation({
     }
 
     const id = await ctx.db.insert("selectorOptions", {
-      ...NEW_ROW_SUBTREE_COUNTS,
+      ...newRowSubtreeCounts(level),
       level,
       value,
       platformData: slots?.platformData ?? {},
@@ -11427,7 +11427,7 @@ export const ensureBrandUnknownRow = internalMutation({
       : undefined;
     const parentTeamIds = inheritedTeamIds(year);
     const id = await ctx.db.insert("selectorOptions", {
-      ...NEW_ROW_SUBTREE_COUNTS,
+      ...newRowSubtreeCounts("manufacturer"),
       level: "manufacturer",
       value: BRAND_UNKNOWN_VALUE,
       platformData: alloc?.platformData ?? {},

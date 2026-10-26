@@ -1,9 +1,11 @@
 import { useEffect, useRef } from "react";
 import { Link } from "react-router";
-import { ArrowUturnLeftIcon, UserPlusIcon } from "@heroicons/react/24/outline";
+import { ArchiveBoxIcon, ArrowUturnLeftIcon, BookOpenIcon, UserPlusIcon } from "@heroicons/react/24/outline";
 import { FOCUS } from "../prototypes/p1/ui";
+import { useCapabilities, useSide } from "./data/store";
+import type { Side } from "./data/types";
 import DemoThemeToggle from "./DemoThemeToggle";
-import { PUBLIC_DESTINATIONS, useCollectionMode } from "./mode";
+import { PUBLIC_DESTINATIONS, SideLink, useCollectionMode } from "./mode";
 import "./demo-chrome.css";
 import NeonButton from "@/components/modules/NeonButton";
 
@@ -23,6 +25,10 @@ import NeonButton from "@/components/modules/NeonButton";
  *   the bar is just the marker and Reset.
  * - Both modes (NEO-356): a Light / Dark switch for the demo alone, hidden
  *   for a collector who saved a mode in Settings (see DemoThemeToggle).
+ * - Both sides in one demo (NEO-364): a "Collection or Inventory" switch in
+ *   the bar (`SideSwitch`), since the demo has no `/inventory` route of its
+ *   own. A switch is a view change like any other: pushed, a Back step, and
+ *   counted toward "Back to the tour".
  */
 
 const SIGN_UP = "Sign up free";
@@ -59,8 +65,8 @@ export function DemoBar({ onReset, onExit }: { onReset: () => void; onExit?: () 
             <>
               <p className="text-ink">Fake cards, real buttons. Go nuts: nothing leaves this tab.</p>
               <p className="text-ink-2">
-                Selling works here too: make a box on Inventory and put cards up for sale. Label printing needs an
-                account, so that link shows you the tour instead.
+                Selling works here too: flip to Boxes I sell and punch in counts. Label printing needs an account, so
+                that link shows you the tour instead.
               </p>
             </>
           ) : (
@@ -71,6 +77,7 @@ export function DemoBar({ onReset, onExit }: { onReset: () => void; onExit?: () 
               </p>
             </>
           )}
+          <SideSwitch />
           <DemoThemeToggle className="max-w-80 pt-2" />
         </div>
       </div>
@@ -78,29 +85,70 @@ export function DemoBar({ onReset, onExit }: { onReset: () => void; onExit?: () 
         <button
           type="button"
           onClick={onReset}
-          className={`min-h-10 rounded-md px-2 text-sm text-ink-2 underline underline-offset-4 hover:text-ink ${FOCUS}`}
+          className={`min-h-10 max-sm:min-h-11 rounded-md px-2 text-sm text-ink-2 underline underline-offset-4 hover:text-ink ${FOCUS}`}
         >
           Reset demo data
         </button>
-        {/* `lg:hidden` rides on a `contents` wrapper: Radix's button display
-            is unlayered CSS, so a Tailwind `hidden` on the button itself
-            would lose to it. */}
         {isPublic && (
-          <span className="contents lg:hidden">
-            <NeonButton asChild className="min-h-10">
-              <Link to={PUBLIC_DESTINATIONS.signUp}>{SIGN_UP}</Link>
-            </NeonButton>
-          </span>
+          <NeonButton asChild className="min-h-10 max-sm:min-h-11 lg:hidden">
+            <Link to={PUBLIC_DESTINATIONS.signUp}>{SIGN_UP}</Link>
+          </NeonButton>
         )}
         {isPublic && onExit && (
-          <span className="contents lg:hidden">
-            <NeonButton type="button" variant="secondary" outline onClick={onExit} className="min-h-10">
-              {EXIT}
-            </NeonButton>
-          </span>
+          <NeonButton type="button" variant="secondary" outline onClick={onExit} className="min-h-10 max-sm:min-h-11 lg:hidden">
+            {EXIT}
+          </NeonButton>
         )}
       </div>
     </section>
+  );
+}
+
+const SIDES: { side: Side; text: string; Icon: typeof BookOpenIcon; on: string }[] = [
+  // One hue per section: the collection's cyan, the inventory's yellow.
+  { side: "collection", text: "Binders I keep", Icon: BookOpenIcon, on: "bg-neon-blue text-on-neon-blue" },
+  { side: "inventory", text: "Boxes I sell", Icon: ArchiveBoxIcon, on: "bg-neon-yellow text-on-neon-yellow" },
+];
+
+/**
+ * The demo's two sides (NEO-364 D15): the collection (binders, the entry,
+ * exactly `?demo=on`) and the inventory (boxes, `side=inventory`, opening on
+ * the Inventory list). Two links in a group named for the choice, the side
+ * on screen marked `aria-current`. Their words say what each side holds,
+ * so neither reads like the page's own tabs ("Inventory", "My Binders").
+ */
+function SideSwitch() {
+  const side = useSide();
+  const { inventory } = useCapabilities();
+  if (!inventory) return null;
+  return (
+    <div
+      role="group"
+      aria-label="Collection or Inventory"
+      className="mt-1 inline-flex flex-wrap rounded-lg border border-control bg-field p-0.5"
+    >
+      {SIDES.map(({ side: s, text, Icon, on }) => {
+        const current = s === side;
+        return (
+          <SideLink
+            key={s}
+            side={s}
+            search={s === "inventory" ? { tab: "cards" } : undefined}
+            aria-current={current ? "page" : undefined}
+            // Already here: a second entry for the same view would be a Back chore.
+            onClick={(e) => {
+              if (current) e.preventDefault();
+            }}
+            className={`inline-flex min-h-9 items-center gap-1.5 rounded-md px-3 text-sm font-semibold focus-outline max-sm:min-h-11 ${
+              current ? `${on} ring-1 ring-inset ring-selection` : "text-ink-2 hover:text-ink"
+            }`}
+          >
+            <Icon aria-hidden="true" className="h-4 w-4 shrink-0" />
+            {text}
+          </SideLink>
+        );
+      })}
+    </div>
   );
 }
 

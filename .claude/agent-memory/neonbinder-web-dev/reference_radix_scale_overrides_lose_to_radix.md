@@ -1,17 +1,21 @@
 ---
 name: radix-scale-overrides-lose-to-radix
-description: Radix Themes' own `.dark`/`.light`/`[data-accent-color]` variable rules load after globals.css and win at equal specificity on the Theme element; a (0,1,0) override of --green-9, --color-background or --focus-8 is dead code
+description: Radix Themes sets its scales (--green-9, --color-background, --focus-8) on the Theme element itself, so an override on <html> never reaches a Radix component; override on the Theme element and probe computed values
 metadata:
   type: reference
 ---
 
-`src/main.tsx` imports `app/globals.css` BEFORE `@radix-ui/themes/styles.css`,
-and both are unlayered. Radix sets its scales on the Theme element itself
-(`.dark, .dark-theme {...}`, `:root, .light, .light-theme {...}`), its
-`--color-background`/`--color-panel-solid` on `:is(.dark) :where(.radix-themes)`,
-and `--focus-8` on `[data-accent-color]`. A globals.css rule with the same
-selector shape (0,1,0) loses on source order, so it never reaches a Radix
-component. Measured in NEO-356 with getComputedStyle on
+Radix sets its scales on the Theme element itself (`.dark, .dark-theme {...}`,
+`:root, .light, .light-theme {...}`), its `--color-background`/`--color-panel-solid`
+on `:is(.dark) :where(.radix-themes)`, and `--focus-8` on `[data-accent-color]`.
+A globals.css rule on `<html>` (`[data-theme="dark"] { --green-9 }`) is
+redefined by the Theme element below it, so it never reaches a Radix
+component. Since NEO-364 Radix sits in a `radix` cascade layer, so an
+unlayered rule of ours beats it on the SAME element whatever the specificity
+(see [[radix-button-box-beats-tailwind]]); before that, Radix loaded after
+globals.css unlayered and won equal-specificity ties too. Measured after
+NEO-364: `--green-9` on `<html>` is now our `#00d558`, on the Theme element
+still Radix's `#30a46c`. Measured in NEO-356 with getComputedStyle on
 `.radix-themes[data-is-root-theme]`: `--green-9` was Radix's `#30a46c`, not the
 `#00d558` the remap in globals.css (and DESIGN.md) claimed; `--color-background`
 was Radix's sage `#101211`.

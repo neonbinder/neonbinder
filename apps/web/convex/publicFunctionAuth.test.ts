@@ -2170,9 +2170,18 @@ describe("NEO-358: the collection and its catalog reads require a signed-in call
       (t) => t.query(api.collection.ownedCards, { paginationOpts: { numItems: 10, cursor: null } }),
     ],
     ["collection.copiesOf", (t) => t.query(api.collection.copiesOf, { cardId: NOT_AN_ID })],
-    ["collection.copiesInVariant", (t) => t.query(api.collection.copiesInVariant, { variantId: NOT_AN_ID })],
-    ["collection.variantCompletion", (t) => t.query(api.collection.variantCompletion, { variantId: NOT_AN_ID })],
-    ["collection.setCompletion", (t) => t.query(api.collection.setCompletion, { setId: NOT_AN_ID })],
+    ["collection.copiesInVariant", (t) => t.query(api.collection.copiesInVariant, { variantId: NOT_AN_ID, side: "collection" })],
+    ["collection.variantCompletion", (t) => t.query(api.collection.variantCompletion, { variantId: NOT_AN_ID, side: "collection" })],
+    ["collection.setCompletion", (t) => t.query(api.collection.setCompletion, { setId: NOT_AN_ID, side: "collection" })],
+    // NEO-364 — the same three reads on the inventory side, and the inventory list.
+    ["collection.copiesInVariant (inventory)", (t) => t.query(api.collection.copiesInVariant, { variantId: NOT_AN_ID, side: "inventory" })],
+    ["collection.variantCompletion (inventory)", (t) => t.query(api.collection.variantCompletion, { variantId: NOT_AN_ID, side: "inventory" })],
+    ["collection.setCompletion (inventory)", (t) => t.query(api.collection.setCompletion, { setId: NOT_AN_ID, side: "inventory" })],
+    // NEO-364 — `side` omitted (a tab on the pre-NEO-364 bundle): still signed-in gated.
+    ["collection.copiesInVariant (no side)", (t) => t.query(api.collection.copiesInVariant, { variantId: NOT_AN_ID })],
+    ["collection.variantCompletion (no side)", (t) => t.query(api.collection.variantCompletion, { variantId: NOT_AN_ID })],
+    ["collection.setCompletion (no side)", (t) => t.query(api.collection.setCompletion, { setId: NOT_AN_ID })],
+    ["collectionInventory.inventoryCards", (t) => t.query(api.collectionInventory.inventoryCards, {})],
     ["collection.buildingSets", (t) => t.query(api.collection.buildingSets, {})],
     ["collection.addHaves", (t) => t.mutation(api.collection.addHaves, { cardIds: [] })],
     ["collection.removeCopies", (t) => t.mutation(api.collection.removeCopies, { copyIds: [] })],
@@ -2268,7 +2277,15 @@ describe("NEO-358: the collection and its catalog reads require a signed-in call
         quantity: 1,
         lastUpdated: 0,
       });
-      return { setId, cardId, copyId, homeId };
+      const boxId = await ctx.db.insert("collectionContainers", {
+        ownerId: "someone",
+        kind: "box",
+        system: "unsorted",
+        name: "Unsorted",
+        count: { copies: 0, lines: 0 },
+        lastUpdated: 0,
+      });
+      return { setId, cardId, copyId, homeId, boxId };
     });
     const calls = [
       () => t.mutation(api.collection.addHave, { cardId: ids.cardId }),
@@ -2285,6 +2302,12 @@ describe("NEO-358: the collection and its catalog reads require a signed-in call
       () => t.mutation(api.collectionContainers.empty, { containerId: ids.homeId }),
       () => t.mutation(api.collectionContainers.remove, { containerId: ids.homeId }),
       () => t.mutation(api.collectionWants.set, { cardId: ids.cardId, on: true }),
+      // NEO-364
+      () => t.mutation(api.collectionInventory.setBoxQuantity, { cardId: ids.cardId, boxId: ids.boxId, quantity: 2 }),
+      () =>
+        t.mutation(api.collectionInventory.undoBoxQuantity, {
+          inverse: { cardId: ids.cardId, boxId: ids.boxId, steps: [] },
+        }),
     ];
     for (const call of calls) await expect(call()).rejects.toThrow(/Not authenticated/);
     const after = await t.run(async (ctx) => ({
@@ -2293,6 +2316,7 @@ describe("NEO-358: the collection and its catalog reads require a signed-in call
     }));
     expect(after.copies.map((c) => c.quantity)).toEqual([1]);
     expect(after.building).toEqual([]);
+    // (the single seeded copy also proves the anonymous setBoxQuantity wrote no box line)
   });
 
   // NEO-359 — the deleted-card want sweep's continuation is never callable by a client.

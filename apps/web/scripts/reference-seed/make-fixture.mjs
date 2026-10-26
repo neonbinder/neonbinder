@@ -159,6 +159,10 @@ export function fixtureTables({ emptyTables = [] } = {}) {
         platformSlotSeq: { bsc: 1, sportlots: 1 },
         children: [Y1],
         sportConfig: { skuCode: "BB", espn: { path: "baseball/mlb", leagueName: "MLB" } },
+        // Card-derived (NEO-358 / NEO-364): describe the source's cards, stripped at build.
+        hasCards: true,
+        subtreeCardCount: 335,
+        subtreeNonVariationCardCount: 300,
         lastUpdated: 1759999999999,
       },
       {

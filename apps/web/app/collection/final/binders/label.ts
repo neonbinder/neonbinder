@@ -50,9 +50,21 @@ export const BOX_LABEL: ContainerLabel = {
 /** "All my cards": the page's own blue on near-black. */
 export const ALL_LABEL: ContainerLabel = { background: "#0B1220", text: "#00C2FF", fontId: DEFAULT_SPINE_FONT_ID };
 
-/** The special shelf's binders, by role. */
+/**
+ * Unsorted (NEO-364), the inventory's catch-all box: brown parcel tape in
+ * black marker, so it reads as the box everything lands in before it is
+ * sorted, beside the collector's own boxes in masking tape.
+ */
+export const UNSORTED_LABEL: ContainerLabel = {
+  background: "#C9A36A",
+  text: "#111827",
+  fontId: DEFAULT_SPINE_FONT_ID,
+};
+
+/** The system containers, by role: the special shelf's binders, and Unsorted. */
 const SYSTEM_LABEL: Record<NonNullable<Container["system"]>, ContainerLabel> = {
   main: { background: "#14532D", text: "#00D558", fontId: DEFAULT_SPINE_FONT_ID },
+  unsorted: UNSORTED_LABEL,
   want: { background: "#4A0B33", text: "#FF2E9A", fontId: DEFAULT_SPINE_FONT_ID },
   trade: { background: "#5C4A00", text: "#FFE600", fontId: DEFAULT_SPINE_FONT_ID },
 };

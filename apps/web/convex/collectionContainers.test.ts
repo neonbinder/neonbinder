@@ -52,13 +52,14 @@ describe("auth", () => {
 });
 
 describe("ensureSystem and list", () => {
-  test("makes Main, the Want List and Up for Trade once; twice changes nothing", async () => {
+  test("makes Main, the Want List, Up for Trade and Unsorted once; twice changes nothing", async () => {
     const s = await setup();
     const a = await s.me.mutation(api.collectionContainers.ensureSystem, {});
     const b = await s.me.mutation(api.collectionContainers.ensureSystem, {});
     expect(b).toEqual(a);
     const rows = await s.t.run(async (ctx) => ctx.db.query("collectionContainers").collect());
-    expect(rows.map((r) => r.system).sort()).toEqual(["main", "trade", "want"]);
+    expect(rows.map((r) => r.system).sort()).toEqual(["main", "trade", "unsorted", "want"]);
+    expect(rows.find((r) => r.system === "unsorted")).toMatchObject({ kind: "box", name: "Unsorted" });
     expect(rows.every((r) => r.count?.copies === 0 && r.count?.lines === 0)).toBe(true);
   });
 
@@ -69,7 +70,7 @@ describe("ensureSystem and list", () => {
     const ids = await s.me.mutation(api.collectionContainers.ensureSystem, {});
     expect(ids.mainId).toBe(mainBefore._id);
     expect((await rowOf(s, ids.mainId))!.count).toEqual({ copies: 1, lines: 1 });
-    expect(await s.t.run(async (ctx) => ctx.db.query("collectionContainers").collect())).toHaveLength(3);
+    expect(await s.t.run(async (ctx) => ctx.db.query("collectionContainers").collect())).toHaveLength(4);
   });
 
   test("Up for Trade and the Want List are counted at birth from flagged copies and wants that predate them", async () => {
@@ -82,16 +83,16 @@ describe("ensureSystem and list", () => {
     expect((await rowOf(s, ids.wantId))!.count).toEqual({ copies: 1, lines: 1 });
   });
 
-  test("list order: Main, Up for Trade, Want List, then their own by creation", async () => {
+  test("list order: Main, Up for Trade, Want List, Unsorted, then their own by creation", async () => {
     const s = await setup();
     const a = await mk(s, "binder", "Zed");
     const b = await mk(s, "box", "Alpha");
     await s.me.mutation(api.collectionContainers.ensureSystem, {});
     const c = await mk(s, "binder", "Mid");
     const list = await s.me.query(api.collectionContainers.list, {});
-    expect(list.slice(0, 3).map((r) => r.system)).toEqual(["main", "trade", "want"]);
-    expect(list.slice(3).map((r) => r._id)).toEqual([a, b, c]);
-    expect(list.slice(3).map((r) => r.name)).toEqual(["Zed", "Alpha", "Mid"]);
+    expect(list.slice(0, 4).map((r) => r.system)).toEqual(["main", "trade", "want", "unsorted"]);
+    expect(list.slice(4).map((r) => r._id)).toEqual([a, b, c]);
+    expect(list.slice(4).map((r) => r.name)).toEqual(["Zed", "Alpha", "Mid"]);
   });
 
   test("list carries NB fields only and a count on every row", async () => {
@@ -120,7 +121,7 @@ describe("ensureSystem and list", () => {
     ]);
     await s.me.mutation(api.collectionContainers.ensureSystem, {});
     const rows = await s.t.run(async (ctx) => ctx.db.query("collectionContainers").collect());
-    expect(rows).toHaveLength(3);
+    expect(rows).toHaveLength(4);
   });
 });
 
@@ -181,7 +182,7 @@ describe("create", () => {
     await mk(s, "box", "the 200th");
     await expect(s.me.mutation(api.collectionContainers.create, { kind: "box", name: "201st" })).rejects.toThrow(/200 binders and boxes/);
     await s.them.mutation(api.collectionContainers.create, { kind: "box", name: "fine" });
-    expect(await s.me.query(api.collectionContainers.list, {})).toHaveLength(203);
+    expect(await s.me.query(api.collectionContainers.list, {})).toHaveLength(204);
   });
 });
 
@@ -220,7 +221,7 @@ describe("update", () => {
   test("system rows take a label only", async () => {
     const s = await setup();
     const ids = await s.me.mutation(api.collectionContainers.ensureSystem, {});
-    for (const containerId of [ids.mainId, ids.wantId, ids.tradeId]) {
+    for (const containerId of [ids.mainId, ids.wantId, ids.tradeId, ids.unsortedId]) {
       const row = (await rowOf(s, containerId))!;
       await expect(s.me.mutation(api.collectionContainers.update, { containerId, name: "Renamed" })).rejects.toThrow(/keep their names/);
       await expect(s.me.mutation(api.collectionContainers.update, { containerId, description: "hello" })).rejects.toThrow(/keep their names/);
@@ -235,7 +236,7 @@ describe("update", () => {
 });
 
 describe("empty and remove", () => {
-  test("empty sends lines to Main, clears pockets and rows, folds into Main twins, keeps counts and tally", async () => {
+  test("empty sends a box's lines to Unsorted, clears pockets and rows, folds into Unsorted twins, keeps counts, and never touches the collection tally", async () => {
     const s = await setup();
     await s.me.mutation(api.collection.addHave, { cardId: s.fx.gooden1 });
     const box = await mk(s, "box", "Box");
@@ -244,16 +245,44 @@ describe("empty and remove", () => {
     await s.me.mutation(api.collection.addLineItem, { cardId: s.fx.strawberry2, details: { quantity: 1, homeId: box, slot: 4, notes: "keep" } });
     const r = await s.me.mutation(api.collectionContainers.empty, { containerId: box });
     expect(r).toEqual({ moved: 6, remaining: 0 });
+    const ids = await s.me.mutation(api.collectionContainers.ensureSystem, {});
     const rows = await copyRows(s);
-    expect(rows).toHaveLength(2);
-    const g = rows.find((x) => x.cardId === s.fx.gooden1)!;
-    expect(g.quantity).toBe(6);
+    // Main's own line stays put; the box's lines now sit in Unsorted.
+    expect(rows).toHaveLength(3);
+    const inMain = rows.filter((x) => x.homeId === undefined || x.homeId === ids.mainId);
+    expect(inMain).toHaveLength(1);
+    expect(inMain[0]).toMatchObject({ cardId: s.fx.gooden1, quantity: 1 });
+    const inUnsorted = rows.filter((x) => x.homeId === ids.unsortedId);
+    expect(inUnsorted).toHaveLength(2);
+    const g = inUnsorted.find((x) => x.cardId === s.fx.gooden1)!;
+    expect(g.quantity).toBe(5);
     expect("slot" in g).toBe(false);
-    const st = rows.find((x) => x.cardId === s.fx.strawberry2)!;
+    const st = inUnsorted.find((x) => x.cardId === s.fx.strawberry2)!;
     expect(st).toMatchObject({ notes: "keep", quantity: 1 });
     expect("slot" in st).toBe(false);
+    expect((await rowOf(s, ids.unsortedId))!.count).toEqual({ copies: 6, lines: 2 });
+    expect((await rowOf(s, box))!.count).toEqual({ copies: 0, lines: 0 });
     await expectCountsExact(s.t, ME.subject, expect as never);
     const tally = await tallyTruth(s.t, ME.subject);
+    expect(tally.truth).toEqual({ copies: 1, lines: 1, cards: 1 });
+    expect(tally.stored).toEqual(tally.truth);
+  });
+
+  test("empty sends a binder's lines to Main, clears pockets, folds into Main twins, keeps counts and tally", async () => {
+    const s = await setup();
+    await s.me.mutation(api.collection.addHave, { cardId: s.fx.gooden1 });
+    const binder = await mk(s, "binder", "Binder");
+    await s.me.mutation(api.collection.addLineItem, { cardId: s.fx.gooden1, details: { quantity: 2, homeId: binder, slot: 1 } });
+    await s.me.mutation(api.collection.addLineItem, { cardId: s.fx.strawberry2, details: { quantity: 1, homeId: binder, slot: 4, notes: "keep" } });
+    const r = await s.me.mutation(api.collectionContainers.empty, { containerId: binder });
+    expect(r).toEqual({ moved: 3, remaining: 0 });
+    const rows = await copyRows(s);
+    expect(rows).toHaveLength(2);
+    expect(rows.find((x) => x.cardId === s.fx.gooden1)!.quantity).toBe(3);
+    expect("slot" in rows.find((x) => x.cardId === s.fx.strawberry2)!).toBe(false);
+    await expectCountsExact(s.t, ME.subject, expect as never);
+    const tally = await tallyTruth(s.t, ME.subject);
+    expect(tally.truth).toEqual({ copies: 4, lines: 2, cards: 2 });
     expect(tally.stored).toEqual(tally.truth);
   });
 
@@ -301,7 +330,7 @@ describe("empty and remove", () => {
   test("empty and remove refuse a system row; another collector's container reads as not found", async () => {
     const s = await setup();
     const ids = await s.me.mutation(api.collectionContainers.ensureSystem, {});
-    for (const containerId of [ids.mainId, ids.wantId, ids.tradeId]) {
+    for (const containerId of [ids.mainId, ids.wantId, ids.tradeId, ids.unsortedId]) {
       await expect(s.me.mutation(api.collectionContainers.empty, { containerId })).rejects.toThrow(/can't be emptied or deleted/);
       await expect(s.me.mutation(api.collectionContainers.remove, { containerId })).rejects.toThrow(/can't be emptied or deleted/);
     }

@@ -22,7 +22,7 @@ import "../prototypes/p2/p2.css";
 import { SPREAD_DROP_ID, stepCount, stepOfPage } from "./binders/BinderDesk";
 import BinderView from "./binders/BinderView";
 import "./binders/binders.css";
-import BoxDesk from "./binders/BoxDesk";
+import BoxDesk, { TradeBox } from "./binders/BoxDesk";
 import {
   cardDragId,
   copyDragId,
@@ -31,7 +31,6 @@ import {
   pocketHop,
 } from "./binders/dnd";
 import EditContainerDialog from "./binders/EditContainerDialog";
-import ForSaleView from "./binders/ForSaleView";
 import { useCardMap, useLabelHints } from "./binders/hooks";
 import { labelOf, PLAIN_LABEL } from "./binders/label";
 import LabelEditorDialog from "./binders/LabelEditorDialog";
@@ -85,10 +84,12 @@ import { keepClearOfTray, trackInputModality } from "./binders/trayClear";
 import { useSearchText } from "./catalog/search";
 import { shortCardName } from "./data/labels";
 import {
+  bindersOf,
+  boxesOf,
   collectionCopiesOfCards,
   CONTAINER_COPIES_DEFAULT_LIMIT,
   emptyCopyDetails,
-  homesOf,
+  inventoryCopiesOfCards,
   isWantedIn,
   OWNED_CARDS_DEFAULT_LIMIT,
   searchable,
@@ -113,6 +114,7 @@ import {
   isHome,
   type Card,
   type CardId,
+  type CollectionTab,
   type Container,
   type ContainerLabel,
   type ContainerPatch,
@@ -121,9 +123,9 @@ import {
   type NewContainer,
   type Scope,
 } from "./data/types";
-import { useCollectionParams, useReplaceParams } from "./mode";
+import { useCollectionParams, useGoToSide, useReplaceParams, useSetScope } from "./mode";
 import { usePageApi, type OpenCardOptions } from "./pageApi";
-import type { CollectionTab, GoToTabParams } from "./store";
+import type { GoToTabParams } from "./store";
 
 /**
  * My Binders (NEO-350, on the shared store since NEO-359): a shelf of
@@ -139,10 +141,10 @@ import type { CollectionTab, GoToTabParams } from "./store";
  * the URL (`b=`, `set=`, `all=1`), pushed so Back steps out of it; opening
  * a binder scopes the whole page to it on the same push.
  *
- * The same desk is the Inventory tab (`surface="inventory"`, `tab=inventory`,
- * the demo only for now): the box shelf, an open box of five rows (`b=`)
- * and the whole stock (`sale=1`), with the hunt tray only while a box is
- * open. See `DeskSurface`.
+ * The same desk is My Boxes on the inventory side (`surface="inventory"`,
+ * `/inventory?tab=boxes`, NEO-364): the box shelf (Unsorted first), an open
+ * box of five rows (`b=`), and the Up for Trade pile drawn as a box, with
+ * the hunt tray only while one of those is open. See `DeskSurface`.
  *
  * Every drag has a button or a key that does the same thing: Slot in / Move
  * here / Put here in the tray, Up for trade, a box card's row picker and
@@ -154,13 +156,17 @@ import type { CollectionTab, GoToTabParams } from "./store";
  * sale and My Collection is things that are for your collection. They
  * should not mix on the screens"):
  *
- * - `"collection"`: My Binders (`tab=binders`). Binders only: Main, your
- *   binders, the special shelf. A box id on the URL (`b=`), or the old
- *   combined for-sale view (`sale=1`), goes to the Inventory tab instead
- *   where the store has one, and otherwise just shows the shelf.
- * - `"inventory"`: the Inventory tab (`tab=inventory`). Boxes only: the box
- *   shelf, an open box (`b=<boxId>`) and everything for sale at once
- *   (`sale=1`). A binder id goes to My Binders.
+ * - `"collection"`: My Binders (`/collection?tab=binders`). Binders only:
+ *   Main, your binders, the special shelf. A box id on the URL (`b=`,
+ *   Unsorted included) goes to My Boxes instead, in place of the entry.
+ * - `"inventory"`: My Boxes (`/inventory?tab=boxes`). Boxes only: Unsorted,
+ *   your boxes, an open box (`b=<boxId>`). A binder id goes to My Binders.
+ *   The hunt tray lists box places only (`inventoryCopiesOfCards`), and Move
+ *   here moves between boxes: a binder copy goes up for sale only through
+ *   the card drawer's Sell.
+ *
+ * The Up for Trade pile is both screens' (the one pile that spans the
+ * sides): a binder from My Binders, a box from My Boxes (`TradeBox`).
  */
 export type DeskSurface = "collection" | "inventory";
 
@@ -218,37 +224,41 @@ export default function MyBindersTab({
 
   // -- what is open ---------------------------------------------------------
   const [params, setParams] = useCollectionParams();
+  const replaceParams = useReplaceParams();
+  const setScope = useSetScope();
   const b = params.get("b");
   const s = params.get("set");
   let view: ViewKey | null = null;
   // While the shelf loads, an open binder on the URL stays open (it says so);
   // once it is in, an unknown or deleted one falls back to the shelf. Each
-  // screen opens only its own: a box on Inventory, anything else here.
+  // screen opens only its own: a box on My Boxes, anything else here; the
+  // Up for Trade pile on both.
   const named = b ? containers?.find((c) => c.id === b) : undefined;
-  const ownsIt = (c: Container) => (inventory ? isBoxHome(c) : !isBoxHome(c));
+  const ownsIt = (c: Container) =>
+    c.system === "trade" || (inventory ? isBoxHome(c) : !isBoxHome(c));
   if (b && (!containers || (named && ownsIt(named))))
     view = { kind: "binder", binderId: b };
-  else if (inventory) {
-    if (params.get("sale")) view = { kind: "sale" };
-  } else if (s) view = { kind: "set", setId: s };
-  else if (params.get("all")) view = { kind: "all" };
+  else if (!inventory && s) view = { kind: "set", setId: s };
+  else if (!inventory && params.get("all")) view = { kind: "all" };
   const viewId = view ? viewKey(view) : "shelf";
 
-  // A link to the other tab's thing (a box here, a binder on Inventory, the
-  // old `sale=1`) goes there, in place of this entry, so Back skips it. A
-  // store with no Inventory tab (the real collection, for now) just shows
-  // the shelf for a box id.
-  const replaceParams = useReplaceParams();
-  const elsewhere: CollectionTab | null = inventory
-    ? named && !isBoxHome(named)
-      ? "binders"
-      : null
-    : capabilities.inventory && ((named && isBoxHome(named)) || params.get("sale"))
-      ? "inventory"
+  // A link to the other side's container (a box here, a binder on My Boxes)
+  // goes there, in place of this entry, so Back skips it. A store with no
+  // inventory just shows the shelf for a box id.
+  const goToSide = useGoToSide();
+  const elsewhere: { side: DeskSurface; tab: CollectionTab; b: string } | null =
+    named && !ownsIt(named) && (inventory || capabilities.inventory)
+      ? inventory
+        ? { side: "collection", tab: "binders", b: named.id }
+        : { side: "inventory", tab: "boxes", b: named.id }
       : null;
+  const elsewhereSide = elsewhere?.side ?? null;
+  const elsewhereTab = elsewhere?.tab ?? null;
+  const elsewhereId = elsewhere?.b ?? null;
   useEffect(() => {
-    if (elsewhere) replaceParams((p) => p.set("tab", elsewhere));
-  }, [elsewhere, replaceParams]);
+    if (elsewhereSide && elsewhereTab && elsewhereId)
+      goToSide(elsewhereSide, { tab: elsewhereTab, b: elsewhereId }, { replace: true });
+  }, [elsewhereSide, elsewhereTab, elsewhereId, goToSide]);
   // Only where `:focus-visible` is missing: what tells keepClearOfTray a press from a key.
   useEffect(() => trackInputModality(), []);
   const container =
@@ -257,6 +267,8 @@ export default function MyBindersTab({
       : undefined;
   const isWant = container?.system === "want";
   const isTrade = container?.system === "trade";
+  /** The Up for Trade pile opened from My Boxes: drawn as a box, with no rows. */
+  const isTradeBox = inventory && isTrade;
   const isSmart = !!container?.rule;
   const isBox = !!container && container.kind === "box" && isHome(container);
   const homeOpen = isHome(container) ? container : undefined;
@@ -395,6 +407,8 @@ export default function MyBindersTab({
       });
     loading = !wants || !cards;
     truncated = wantsTruncated;
+  } else if (isTradeBox) {
+    loading = !listCopies || !cards;
   } else if (container && !isBox) {
     if (listCopies && cards) {
       if (isSmart)
@@ -483,13 +497,14 @@ export default function MyBindersTab({
         label,
         describeRule: demo?.describeRule,
         canShare: capabilities.share,
+        side: surface,
       })
     : null;
   const status = loading
     ? view?.kind === "set" && setSummary === null
       ? "That set isn't in the catalog anymore."
       : "Pulling it off the shelf…"
-    : isBox || view?.kind === "sale"
+    : isBox || isTradeBox
       ? ""
       : undefined;
 
@@ -500,11 +515,9 @@ export default function MyBindersTab({
     setFoundCopy(null);
     setPending(null);
     if (inventory) {
-      // A box opened here never narrows the collection's counts, so its
-      // views leave the scope as it was for the other tabs.
-      const p = new URLSearchParams({ tab: "inventory" });
+      // The inventory never narrows, so a box opened here sets no scope.
+      const p = new URLSearchParams({ tab: "boxes" });
       if (next?.kind === "binder") p.set("b", next.binderId);
-      if (next?.kind === "sale") p.set("sale", "1");
       setParams(p);
       return;
     }
@@ -588,14 +601,20 @@ export default function MyBindersTab({
   const allHits = searchable(settled) ? search?.cards : NO_CARDS;
   const trayHits = useMemo(() => allHits?.slice(0, TRAY_COPIES), [allHits]);
   const trayIds = useMemo(() => trayHits?.map((c) => c.id) ?? null, [trayHits]);
-  // The hunt tray on Inventory moves box copies too, and on the Up for Trade
-  // pile it flags them (trade spans collection and inventory). Every other
-  // My Binders hunt never lists a box (a card for sale is Inventory's, NEO-359).
+  // Each side's hunt lists only its own places (hard line, NEO-364): My
+  // Binders never a box (a card for sale is the inventory's), My Boxes never
+  // a binder. The Up for Trade pile is the exception on both: trade spans
+  // the sides, so its tray flags a copy wherever it lives.
   const huntCopies = useCopiesOfCards(
     trayIds && trayIds.length ? trayIds : null,
   );
   const trayCopies = useMemo(
-    () => (inventory || isTrade ? huntCopies : collectionCopiesOfCards(huntCopies)),
+    () =>
+      isTrade
+        ? huntCopies
+        : inventory
+          ? inventoryCopiesOfCards(huntCopies)
+          : collectionCopiesOfCards(huntCopies),
     [inventory, isTrade, huntCopies],
   );
   const trayTruncated =
@@ -603,21 +622,27 @@ export default function MyBindersTab({
   const mine = (cardId: CardId) =>
     (trayCopies?.[cardId] ?? []).filter((c) => c.quantity > 0);
   /**
-   * The copies this screen moves: on Inventory any (into a box is up for
-   * sale); in My Binders only a binder's, since taking a card off the sale
-   * table is the card drawer's "Take off sale", never a drag in passing.
+   * The copies this screen moves: each side its own. My Boxes moves a box's
+   * between boxes, My Binders a binder's between binders. Crossing (up for
+   * sale, or off it) is the card drawer's Sell / Take off sale, never a drag
+   * in passing.
    */
-  const canMoveCopy = (copy: Copy) => inventory || copy.homeKind !== "box";
+  const canMoveCopy = (copy: Copy) =>
+    inventory ? copy.homeKind === "box" : copy.homeKind !== "box";
   const movable = (copies: readonly Copy[], to: string) =>
     movableCopies(copies, to).filter(canMoveCopy);
 
   // -- writes -------------------------------------------------------------------
   const main = systemContainer(containers, "main");
-  /** Where a plain add goes: the page's scope when that is a home, else Main. */
-  const scopeHome =
-    (scope !== "all"
-      ? containers?.find((c) => c.id === scope && isHome(c))
-      : undefined) ?? main;
+  /**
+   * Where a plain add goes: on My Boxes, Unsorted (the inventory's Main); in
+   * My Binders, the page's scope when that is a home, else Main.
+   */
+  const scopeHome = inventory
+    ? systemContainer(containers, "unsorted")
+    : ((scope !== "all"
+        ? containers?.find((c) => c.id === scope && isHome(c))
+        : undefined) ?? main);
   const containerOf = (id: string) => containers?.find((c) => c.id === id);
 
   const whereIn = (home: Container, slot: number | undefined | null) => {
@@ -825,10 +850,9 @@ export default function MyBindersTab({
     else justAdd(card);
   };
 
-  // Slot in files a new copy on this screen only: a binder here, a box on Inventory.
-  const homes = homesOf(containers).filter((h) =>
-    inventory ? isBoxHome(h) : !isBoxHome(h),
-  );
+  // Slot in files a new copy on this screen only: a binder here, a box
+  // (Unsorted first) on My Boxes.
+  const homes = inventory ? boxesOf(containers) : bindersOf(containers);
   const targets: SlotTarget[] = [
     ...(homeOpen
       ? [
@@ -1061,11 +1085,21 @@ export default function MyBindersTab({
     try {
       const { moved } = await actions.deleteContainer(c);
       setDialog(null);
-      goTo(null, "all");
+      setAimed(null);
+      setFound(null);
+      setFoundCopy(null);
+      setPending(null);
+      // Back to the shelf IN PLACE of the deleted one's entry: a pushed
+      // shelf would leave Back on a URL naming a container that is gone
+      // (it draws the shelf again, so Back would seem to do nothing).
+      replaceParams((p) => p.delete("b"));
+      setScope("all");
       notify(
         moved === 0
           ? `${c.name} is off the shelf.`
-          : `${c.name} is off the shelf. ${moved === 1 ? "Its card went" : `Its ${moved} cards went`} back to Main.`,
+          : c.kind === "box"
+            ? `${c.name} is off the shelf. ${moved === 1 ? "Its card went" : `Its ${moved} cards went`} into Unsorted, still for sale.`
+            : `${c.name} is off the shelf. ${moved === 1 ? "Its card went" : `Its ${moved} cards went`} back to Main.`,
       );
       return null;
     } catch (error) {
@@ -1159,13 +1193,27 @@ export default function MyBindersTab({
             onAim={aim}
             status={status}
           >
-            {view.kind === "sale" ? (
-              <ForSaleView
-                onOpenBox={(box) => goTo({ kind: "binder", binderId: box.id })}
-                onOpenCard={(card, copy) =>
-                  openCard(card.id, { copyId: copy.id, seed: card })
-                }
-              />
+            {isTradeBox && container ? (
+              listCopies && cards ? (
+                <TradeBox
+                  pile={container}
+                  copies={listCopies}
+                  cards={cards}
+                  homes={containers}
+                  truncated={!!listPage?.truncated}
+                  onMore={more}
+                  onOpen={(card, copy) =>
+                    openCard(card.id, {
+                      copyId: copy.id,
+                      seed: card,
+                      list: listCopies.map((c) => c.cardId),
+                    })
+                  }
+                  found={foundCopy}
+                />
+              ) : (
+                <p className="py-8 text-center text-ink-2">Lifting the lid…</p>
+              )
             ) : isBox && container ? (
               listCopies && cards ? (
                 <BoxDesk
@@ -1192,22 +1240,22 @@ export default function MyBindersTab({
           </BinderView>
         )}
 
-        {view && truncated && !isBox && view.kind !== "sale" && (
+        {view && truncated && !isBox && !isTradeBox && (
           <div className="mt-3 flex justify-center">
             <NeonButton
               type="button"
               variant="secondary"
               outline
               onClick={more}
-              className="min-h-10"
+              className="min-h-10 max-sm:min-h-11"
             >
               {view.kind === "set" ? "Load more of the set" : "Show more cards"}
             </NeonButton>
           </div>
         )}
 
-        {inventory && !isBox && (
-          // Inventory's shelf and sale view have no hunt tray to carry the status line.
+        {inventory && !isBox && !isTradeBox && (
+          // My Boxes' shelf has no hunt tray to carry the status line.
           <NoticeLine
             notice={notice}
             onUndo={onUndo}
@@ -1215,9 +1263,10 @@ export default function MyBindersTab({
             floating
           />
         )}
-        {(!inventory || isBox) && (
+        {(!inventory || isBox || isTradeBox) && (
           <PackTray
             mode={trayMode}
+            side={surface}
             query={query}
             onQuery={setQuery}
             hits={trimmed ? trayHits : NO_CARDS}

@@ -1,4 +1,20 @@
+/* Cascade layers, lowest first. Radix Themes' stylesheet goes in its own
+ * `radix` layer, after Tailwind's preflight (`base`) and before
+ * `components` and `utilities`, so:
+ * - Radix still beats preflight (its controls keep their padding, borders
+ *   and `.rt-reset` button reset over preflight's `* { padding: 0 }`);
+ * - a Tailwind utility on a Radix element (NeonButton's `min-h-11`, `w-9`,
+ *   `px-4`, `rounded-full`) now beats Radix, as written, with no `!`;
+ * - every unlayered rule in our own CSS (this file, theme.css, the feature
+ *   stylesheets) beats Radix whatever its specificity.
+ * This statement must stay first: a layer's rank is fixed where its name
+ * first appears, and Tailwind's own `@import` repeats the four names. Radix
+ * is imported here, never from JS, or it lands unlayered and outranks every
+ * utility again (src/theme/radix-layer.test.tsx checks both). */
+@layer theme, base, radix, components, utilities;
+
 @import "tailwindcss";
+@import "@radix-ui/themes/styles.css" layer(radix);
 @import "./theme.css";
 @config "../tailwind.config.js";
 
@@ -34,8 +50,8 @@
 /* Radix Themes sets its own system-font stack on every `.radix-themes`
  * element, and the whole app (portals included) renders inside one, so
  * until this override every screen was in San Francisco / Segoe UI and
- * Lexend never even downloaded. `html .radix-themes` outranks Radix's
- * single-class rule, which loads after this file. */
+ * Lexend never even downloaded. Unlayered, this beats Radix's rule in the
+ * `radix` layer (the extra `html` is from when Radix was unlayered too). */
 html .radix-themes {
   --default-font-family: var(--font-sans);
   --heading-font-family: var(--font-sans);
@@ -69,10 +85,13 @@ html .radix-themes {
  *
  * From `sm` (40rem) up only: below it the header is not sticky (NEO-341,
  * see binder-header.tsx), so there is nothing to clear. Code that reads
- * this value (PlayerManagement's headingInView) follows it automatically. */
+ * this value (PlayerManagement's headingInView) follows it automatically.
+ * The height is the header's own, published on <html> as `--nb-header-h`
+ * (src/hooks/useStickyHeaderHeight.ts); 80px covers the first paint and a
+ * page with no sticky header. */
 @media (min-width: 40rem) {
   html {
-    scroll-padding-top: 80px;
+    scroll-padding-top: var(--nb-header-h, 80px);
   }
 }
 
@@ -86,10 +105,10 @@ body {
  * documents (lib/print/print-html.ts, the QR popup), which pin black on white
  * themselves and never load this file. This block covers the page itself being
  * printed (Ctrl+P): the dark base above would otherwise put #ededed body
- * text on paper, under a dark colour scheme. The selectors are weighted on
- * purpose: Radix's stylesheet loads after this one and sets `color-scheme:
- * dark` on `:root` (via `:has()`) and on `.radix-themes:where(.dark)`, so a
- * bare `:root` here loses; `html:root` and `:root .radix-themes` win. */
+ * text on paper, under a dark colour scheme. Radix sets `color-scheme: dark`
+ * on `:root` (via `:has()`) and on `.radix-themes:where(.dark)`; this
+ * unlayered block beats both from the `radix` layer. The weighted selectors
+ * date from when Radix was unlayered and loaded after this file. */
 @media print {
   html:root,
   :root .radix-themes {
@@ -447,9 +466,11 @@ body {
 /* NeonButton (components/modules/NeonButton.tsx), the one action button. It
  * sets its paint as `--nb-*` role variables on the element; this rule only
  * reads them, at rest and under the pointer, so the colour is decided in that
- * one file. At (0,2,0) it outranks Radix's unlayered (0,1,0) solid-button
- * fill, hover, press and grey disabled state, which a layered Tailwind utility
- * cannot. A disabled button's inline style outranks the hover. */
+ * one file. Unlayered, it beats Radix's solid-button fill, hover, press and
+ * grey disabled state (all in the `radix` layer) and any Tailwind colour
+ * utility a caller passes, so a button's colour stays NeonButton's to decide.
+ * Size, spacing and position utilities do reach the button. A disabled
+ * button's inline style outranks the hover. */
 .rt-BaseButton.neon-button {
   background-color: var(--nb-fill);
   color: var(--nb-ink);

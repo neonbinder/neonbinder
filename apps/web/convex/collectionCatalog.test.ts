@@ -7,7 +7,9 @@
  * and the NB-only guarantee: no result carries a marketplace or `isCustom` /
  * `sku` key even though every fixture row has them. Also (Jason, 2026-10-24)
  * that a row KNOWN to hold no cards beneath it is hidden from the drill, the
- * set summary and set suggestions, while an uncounted row is shown.
+ * set summary and set suggestions, while an uncounted row is shown; and
+ * (NEO-364, 2026-10-25) that a sport, year or brand is shown only when it
+ * carries `hasCards`.
  */
 
 import { convexTest } from "convex-test";
@@ -445,16 +447,53 @@ describe("NEO-358: a row known to hold no cards is hidden; an uncounted one is s
       }),
     );
 
-  test("drill: an exact zero is left out on every level; unknown stays, with hasCards null", async () => {
+  test("NEO-364: a sport, year or brand is shown only with hasCards; no count is read there", async () => {
     const { t, as, fx } = await setup();
-    // 1986 is counted and empty; 2024 has never been counted.
-    await setSubtree(t, fx.year1986Id, 0);
-    const years = await as.query(api.collectionCatalog.drill, { level: "year", parentId: fx.sportId });
-    expect(years.items.map((i) => [i.name, i.hasCards])).toEqual([["2024", null]]);
+    const sport = (value: string, extra: Record<string, unknown>) =>
+      t.run((ctx) =>
+        ctx.db.insert("selectorOptions", {
+          level: "sport", value, platformData: {}, children: [], lastUpdated: 1, ...extra,
+        } as never),
+      );
+    // No flag: hidden, even with a (stale NEO-358) subtree count that says
+    // cards sit below. Flagged: shown, with no count at all.
+    await sport("Basketball", {});
+    await sport("Football", { subtreeCardCount: 3, subtreeNonVariationCardCount: 3 });
+    await sport("Hockey", { hasCards: true });
+    const sports = await as.query(api.collectionCatalog.drill, {});
+    expect(sports.items.map((i) => [i.name, i.hasCards])).toEqual([
+      ["Baseball", true],
+      ["Hockey", true],
+    ]);
 
-    await setSubtree(t, fx.yearId, 5, 4);
-    const counted = await as.query(api.collectionCatalog.drill, { level: "year", parentId: fx.sportId });
-    expect(counted.items.map((i) => [i.name, i.hasCards])).toEqual([["2024", true]]);
+    // A year loses nothing but its flag: it goes.
+    await t.run((ctx) => ctx.db.patch(fx.year1986Id, { hasCards: undefined, subtreeCardCount: 5 }));
+    const years = await as.query(api.collectionCatalog.drill, { level: "year", parentId: fx.sportId });
+    expect(years.items.map((i) => [i.name, i.hasCards])).toEqual([["2024", true]]);
+
+    // And a brand.
+    await t.run((ctx) => ctx.db.patch(fx.topps86Id, { hasCards: undefined }));
+    const brands = await as.query(api.collectionCatalog.drill, { parentId: fx.year1986Id });
+    expect(brands.items).toEqual([]);
+    // A flag set false (never written by the ledger) hides as absent does.
+    await t.run((ctx) => ctx.db.patch(fx.toppsId, { hasCards: false }));
+    expect((await as.query(api.collectionCatalog.drill, { parentId: fx.yearId })).items).toEqual([]);
+  });
+
+  test("from the set down: an exact zero is left out; unknown stays, with hasCards null", async () => {
+    const { t, as, fx } = await setup();
+    // Topps Chrome has never been counted: shown, its hasCards unknown.
+    const sets = await as.query(api.collectionCatalog.drill, { parentId: fx.toppsId });
+    expect(sets.items.map((i) => [i.name, i.hasCards])).toEqual([["Topps Chrome", null]]);
+    await setSubtree(t, fx.setId, 0);
+    expect((await as.query(api.collectionCatalog.drill, { parentId: fx.toppsId })).items).toEqual([]);
+    await setSubtree(t, fx.setId, 5, 4);
+    const counted = await as.query(api.collectionCatalog.drill, { parentId: fx.toppsId });
+    expect(counted.items.map((i) => [i.name, i.hasCards])).toEqual([["Topps Chrome", true]]);
+
+    // Future Stars has no stored counts at all: shown, hasCards null.
+    const inserts = await as.query(api.collectionCatalog.drill, { level: "insert", parentId: fx.insertsTypeId });
+    expect(inserts.items.map((i) => [i.name, i.hasCards])).toEqual([["Future Stars", null]]);
 
     // Variant types: the empty Parallels type goes; the Inserts container
     // (no cards of its own) stays because a card sits beneath it.
