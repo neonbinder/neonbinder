@@ -485,6 +485,34 @@ describe("containers", () => {
   });
 });
 
+describe("deleting a container stacks onto an identical line there (as the server's empty)", () => {
+  it("a binder's card folds into Main's twin, in the twin's pocket", () => {
+    const s0 = initialCollectionState();
+    const cardId = s0.copies[0].cardId;
+    const inMain = demoOps.addLine(s0, cardId, details({ homeId: MAIN_BINDER_ID, notes: "twin" }), false);
+    const made = demoOps.createContainer(inMain.state, { kind: "binder", name: "Scratch" });
+    const filled = demoOps.addLine(made.state, cardId, details({ homeId: made.result, notes: "twin" }), false);
+    const gone = demoOps.deleteContainer(filled.state, made.result).state;
+    expect(gone.copies.some((c) => c.id === filled.result.copyId)).toBe(false);
+    const twin = copyIn(inMain.state, inMain.result.copyId);
+    expect(copyIn(gone, twin.id)).toMatchObject({ quantity: twin.quantity + 1, slot: twin.slot });
+  });
+
+  it("a box's card folds into Unsorted's twin", () => {
+    const s0 = initialCollectionState();
+    const cardId = s0.copies[0].cardId;
+    const first = demoOps.createContainer(s0, { kind: "box", name: "One" });
+    const a = demoOps.addLine(first.state, cardId, details({ homeId: first.result, notes: "boxed" }), false);
+    const intoUnsorted = demoOps.deleteContainer(a.state, first.result).state;
+    const second = demoOps.createContainer(intoUnsorted, { kind: "box", name: "Two" });
+    const b = demoOps.addLine(second.state, cardId, details({ homeId: second.result, notes: "boxed" }), false);
+    const gone = demoOps.deleteContainer(b.state, second.result).state;
+    const lines = gone.copies.filter((c) => c.cardId === cardId && c.homeId === UNSORTED_BOX_ID && c.notes === "boxed");
+    expect(lines).toHaveLength(1);
+    expect(lines[0].quantity).toBe(2);
+  });
+});
+
 describe("reducer and browse filter", () => {
   it("replaces the state and resets to the seed", () => {
     const s0 = initialCollectionState();

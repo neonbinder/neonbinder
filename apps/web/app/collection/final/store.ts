@@ -821,19 +821,37 @@ export const demoOps = {
     if (target.system) throw new DemoRefusal(`${target.name} can't be deleted.`);
     const shelf = target.kind === "box" ? withUnsorted(state) : { state, id: MAIN_BINDER_ID };
     const to = shelf.id;
+    const pockets = keepsPockets(containerIn(shelf.state, to));
     let moved = 0;
-    const copies = shelf.state.copies.map((c) => {
-      if (c.homeId !== id) return c;
+    // Each card folds into an identical line already there (as the server's
+    // `empty`), else lands as its own line: in Main's first open pocket, or
+    // with no row in Unsorted. In place, so the list keeps its order; a
+    // folded line drops out.
+    const work: (DemoCopy | null)[] = [...shelf.state.copies];
+    work.forEach((c, i) => {
+      if (!c || c.homeId !== id) return;
       // Cards, not line items: a stack of three is three cards on their way.
       moved += c.quantity;
-      return clean({ ...c, homeId: to, slot: undefined }) as DemoCopy;
+      const others = work.filter((o): o is DemoCopy => o !== null && o.id !== c.id);
+      const line = clean({ ...c, homeId: to, slot: undefined }) as DemoCopy;
+      if (pockets) line.slot = arrivingPocket(others, c.cardId, line);
+      const twin = others.find(
+        (o) => o.cardId === c.cardId && o.quantity + c.quantity <= MAX_LINE_QUANTITY && sameLineItem(o, line),
+      );
+      if (twin) {
+        const at = work.indexOf(twin);
+        work[at] = { ...twin, quantity: twin.quantity + c.quantity };
+        work[i] = null;
+      } else {
+        work[i] = line;
+      }
     });
+    const copies = work.filter((c): c is DemoCopy => c !== null);
     const wants = shelf.state.wants.map((w) => (w.binderId === id ? { ...w, binderId: null } : w));
     return {
-      // Main is a binder too: what comes back takes its first open pockets.
       state: {
         ...shelf.state,
-        copies: pocketLoose(copies, shelf.state.containers),
+        copies,
         wants,
         containers: shelf.state.containers.filter((c) => c.id !== id),
       },
