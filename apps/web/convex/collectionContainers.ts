@@ -6,17 +6,22 @@
  * A container that is not the caller's reads exactly like one that does not
  * exist.
  *
- * Three containers are NB's (`system`): Main (where a card lands when no
- * binder or box is named; made lazily on the first add, or here), the Want
+ * Four containers are NB's (`system`): Main (where a card lands when no
+ * binder or box is named; made lazily on the first add, or here), Unsorted
+ * (NEO-364: a BOX, the inventory's Main: the default for-sale home and where
+ * a deleted box's copies go; made here or by `getOrCreateUnsorted`), the Want
  * List and Up for Trade (shelf rows only, never homes; made here by
- * `ensureSystem`). They are never renamed or deleted; only their label
- * changes. Everything else is the collector's own, at most `MAX_CONTAINERS`.
- * A copy whose home is a box is for sale; there is no other for-sale flag.
+ * `ensureSystem`). They are never renamed, emptied or deleted; only their
+ * label changes. Everything else is the collector's own, at most
+ * `MAX_CONTAINERS`. A copy whose home is a box is for sale; there is no other
+ * for-sale flag.
  *
  * Deleting a binder or box: the client loops `empty` (up to `EMPTY_BATCH`
- * line items back to Main per call, their pockets and rows cleared, folding
- * into identical lines there) until nothing is left, then calls `remove`,
- * which also un-scopes any wants that named it. There is no undo for either.
+ * line items per call back to Main for a binder, NEO-364: to Unsorted for a
+ * box, so a deleted box's copies stay for sale; their pockets and rows
+ * cleared, folding into identical lines there) until nothing is left, then
+ * calls `remove`, which also un-scopes any wants that named it. There is no
+ * undo for either.
  *
  * Counts: every container carries its own `count`, moved by every copy write
  * (`collection.moveCounts`) and every want (`collectionWants.set`). `list`
@@ -45,14 +50,16 @@ import {
   MAX_CONTAINER_RECOUNT_LINES,
   MAX_LINES_PER_CARD,
   MAX_COPY_QUANTITY,
+  MAX_SYSTEM_CONTAINERS,
   MAX_WANTS,
+  applyCopyChanges,
+  changeOf,
   cleanText,
+  counted,
   countContainer,
   detailsOf,
   foldsInto,
   getOrCreateMain,
-  moveCounts,
-  moveTally,
   refuse,
   type CountChange,
 } from "./collection";
@@ -78,15 +85,27 @@ const EMPTY_READ_BUDGET = 1500;
 export const MAX_CONTAINER_NAME_CHARS = 60;
 export const MAX_CONTAINER_DESCRIPTION_CHARS = 280;
 
+type SystemKind = NonNullable<ContainerRow["system"]>;
+
 /** The names NB gives its own containers. */
 export const SYSTEM_NAMES = {
   main: "Main",
   want: "Want List",
   trade: "Up for Trade",
-} as const;
+  unsorted: "Unsorted",
+} as const satisfies Record<SystemKind, string>;
 
-/** Shelf order for the system rows: Main, then Up for Trade, then the Want List. */
-const SYSTEM_ORDER: Record<string, number> = { main: 0, trade: 1, want: 2 };
+/**
+ * Shelf order for the system rows: Main, then Up for Trade, then the Want
+ * List, then Unsorted (each surface picks its own side's rows out of this).
+ */
+const SYSTEM_ORDER: Record<SystemKind, number> = { main: 0, trade: 1, want: 2, unsorted: 3 };
+/** Where the collector's own containers sort: after every system row. */
+const OWN_ORDER = 4;
+
+/** The refusal for renaming, emptying or deleting a system container. */
+const SYSTEM_KEEPS_NAME = "Main, Unsorted, Up for Trade and the Want List keep their names. You can change their label.";
+const SYSTEM_STAYS = "Main, Unsorted, Up for Trade and the Want List can't be emptied or deleted.";
 
 /** A container as the shelf reads it. */
 export const containerValidator = v.object({
@@ -200,11 +219,36 @@ async function ownContainer(
   return row;
 }
 
+/**
+ * NEO-364 — the caller's Unsorted box, made on first use: the inventory's
+ * Main. Born counted `{0, 0}` (no copy can be in an Unsorted that did not
+ * exist). Two racing first calls are serialised by OCC on
+ * `by_owner_and_system`, as Main's are.
+ */
+export async function getOrCreateUnsorted(
+  ctx: MutationCtx,
+  ownerId: string,
+): Promise<Id<"collectionContainers">> {
+  const existing = await ctx.db
+    .query("collectionContainers")
+    .withIndex("by_owner_and_system", (q) => q.eq("ownerId", ownerId).eq("system", "unsorted"))
+    .unique();
+  if (existing) return existing._id;
+  return await ctx.db.insert("collectionContainers", {
+    ownerId,
+    kind: "box",
+    system: "unsorted",
+    name: SYSTEM_NAMES.unsorted,
+    count: { copies: 0, lines: 0 },
+    lastUpdated: Date.now(),
+  });
+}
+
 /** The caller's Want List or Up for Trade row, made (and counted) on first use. */
 async function getOrCreateShelfRow(
   ctx: MutationCtx,
   ownerId: string,
-  system: "want" | "trade",
+  system: Extract<SystemKind, "want" | "trade">,
 ): Promise<Id<"collectionContainers">> {
   const existing = await ctx.db
     .query("collectionContainers")
@@ -233,7 +277,7 @@ async function getOrCreateShelfRow(
 
 /**
  * The caller's shelf: the system rows first (Main, Up for Trade, the Want
- * List, whichever exist), then their own binders and boxes in the order they
+ * List, Unsorted, whichever exist), then their own binders and boxes in the order they
  * were made, each with its count. A count never kept is derived (Main) or
  * counted by hand within one budget shared across the call
  * (`MAX_CONTAINER_RECOUNT_LINES`), and null past it.
@@ -246,10 +290,10 @@ export const list = query({
     const rows = await ctx.db
       .query("collectionContainers")
       .withIndex("by_owner_and_system", (q) => q.eq("ownerId", ownerId))
-      .take(MAX_CONTAINERS + 3);
+      .take(MAX_CONTAINERS + MAX_SYSTEM_CONTAINERS);
     const ordered = [...rows].sort((a, b) => {
-      const ra = a.system ? SYSTEM_ORDER[a.system] : 3;
-      const rb = b.system ? SYSTEM_ORDER[b.system] : 3;
+      const ra = a.system ? SYSTEM_ORDER[a.system] : OWN_ORDER;
+      const rb = b.system ? SYSTEM_ORDER[b.system] : OWN_ORDER;
       return ra - rb || a._creationTime - b._creationTime;
     });
     const budget = { left: MAX_CONTAINER_RECOUNT_LINES };
@@ -267,10 +311,10 @@ export const list = query({
 // ───────────────────────────────────────────────────────────────────────────
 
 /**
- * Make sure the caller has Main, the Want List and Up for Trade (My Binders
- * calls it on mount). Idempotent: writes only what is missing, and counts a
- * Main that was never counted when that is cheap. Two racing calls are
- * serialised by OCC on `by_owner_and_system`.
+ * Make sure the caller has Main, the Want List, Up for Trade and (NEO-364)
+ * Unsorted (My Binders and My Boxes call it on mount). Idempotent: writes
+ * only what is missing, and counts a Main that was never counted when that
+ * is cheap. Two racing calls are serialised by OCC on `by_owner_and_system`.
  */
 export const ensureSystem = mutation({
   args: {},
@@ -278,6 +322,7 @@ export const ensureSystem = mutation({
     mainId: v.id("collectionContainers"),
     wantId: v.id("collectionContainers"),
     tradeId: v.id("collectionContainers"),
+    unsortedId: v.id("collectionContainers"),
   }),
   handler: async (ctx) => {
     const ownerId = await requireSignedIn(ctx);
@@ -289,7 +334,8 @@ export const ensureSystem = mutation({
     }
     const wantId = await getOrCreateShelfRow(ctx, ownerId, "want");
     const tradeId = await getOrCreateShelfRow(ctx, ownerId, "trade");
-    return { mainId, wantId, tradeId };
+    const unsortedId = await getOrCreateUnsorted(ctx, ownerId);
+    return { mainId, wantId, tradeId, unsortedId };
   },
 });
 
@@ -372,7 +418,7 @@ export const update = mutation({
       const renames = name !== undefined && name !== row.name;
       const redescribes = description !== undefined && description !== (row.description ?? "");
       if (renames || redescribes) {
-        refuse(COLLECTION_ERRORS.invalid, "Main, Up for Trade and the Want List keep their names. You can change their label.");
+        refuse(COLLECTION_ERRORS.invalid, SYSTEM_KEEPS_NAME);
       }
     }
     const patch: Partial<ContainerRow> = { lastUpdated: Date.now() };
@@ -389,9 +435,10 @@ export const update = mutation({
 });
 
 /**
- * Send up to `EMPTY_BATCH` of a binder's or box's line items back to Main,
- * their pockets and rows cleared, each folding into an identical line already
- * in Main (the trade flag travels with it). The client loops it until
+ * Send up to `EMPTY_BATCH` of a binder's line items back to Main, or
+ * (NEO-364) of a box's to Unsorted (so they stay for sale), their pockets and
+ * rows cleared, each folding into an identical line already there (the trade
+ * flag travels with it). The client loops it until
  * `remaining` is 0, then calls `remove`. `moved` is physical cards (quantities
  * summed); `remaining` is the line items still in it (0 when empty): exact
  * up to `EMPTY_BATCH`, past that the container's kept count (at least
@@ -405,15 +452,15 @@ export const empty = mutation({
     const ownerId = await requireSignedIn(ctx);
     const row = await ownContainer(ctx, ownerId, args.containerId);
     if (row.system) {
-      refuse(COLLECTION_ERRORS.invalid, "Main, Up for Trade and the Want List can't be emptied or deleted.");
+      refuse(COLLECTION_ERRORS.invalid, SYSTEM_STAYS);
     }
-    const mainId = await getOrCreateMain(ctx, ownerId);
+    const targetId =
+      row.kind === "box" ? await getOrCreateUnsorted(ctx, ownerId) : await getOrCreateMain(ctx, ownerId);
     const lines = await ctx.db
       .query("collectionCopies")
       .withIndex("by_owner_home_slot", (q) => q.eq("ownerId", ownerId).eq("homeId", row._id))
       .take(EMPTY_BATCH);
     const changes: CountChange[] = [];
-    let linesDelta = 0;
     let moved = 0;
     let readsLeft = EMPTY_READ_BUDGET;
     const now = Date.now();
@@ -424,7 +471,7 @@ export const empty = mutation({
         .withIndex("by_owner_and_card", (q) => q.eq("ownerId", ownerId).eq("cardId", line.cardId))
         .take(MAX_LINES_PER_CARD + 1);
       readsLeft -= siblings.length;
-      const next = { ...detailsOf(line), homeId: mainId };
+      const next = { ...detailsOf(line), homeId: targetId };
       delete next.slot;
       const into = siblings.find(
         (other) =>
@@ -432,31 +479,22 @@ export const empty = mutation({
           other.quantity + line.quantity <= MAX_COPY_QUANTITY &&
           foldsInto(detailsOf(other), next),
       );
-      const before = {
-        homeId: line.homeId,
-        quantity: line.quantity,
-        ...(line.upForTrade ? { upForTrade: true as const } : {}),
-      };
+      const before = counted(line);
       if (into) {
         const quantity = into.quantity + line.quantity;
         await ctx.db.patch(into._id, { quantity, lastUpdated: now });
         await ctx.db.delete(line._id);
         changes.push(
-          {
-            before: { homeId: into.homeId, quantity: into.quantity, ...(into.upForTrade ? { upForTrade: true as const } : {}) },
-            after: { homeId: into.homeId, quantity, ...(into.upForTrade ? { upForTrade: true as const } : {}) },
-          },
-          { before, after: null },
+          changeOf(into, counted(into), counted({ ...into, quantity })),
+          changeOf(line, before, null),
         );
-        linesDelta -= 1;
       } else {
-        await ctx.db.patch(line._id, { homeId: mainId, slot: undefined, lastUpdated: now });
-        changes.push({ before, after: { ...before, homeId: mainId } });
+        await ctx.db.patch(line._id, { homeId: targetId, slot: undefined, lastUpdated: now });
+        changes.push(changeOf(line, before, { ...before, homeId: targetId }));
       }
       moved += line.quantity;
     }
-    await moveTally(ctx, ownerId, { copies: 0, lines: linesDelta, cards: 0 });
-    await moveCounts(ctx, ownerId, changes);
+    await applyCopyChanges(ctx, ownerId, changes);
     // What is left, counted off the rows (this transaction's writes
     // included), up to one more batch. Past that the kept count says how
     // many, never fewer than the rows just seen.
@@ -482,14 +520,17 @@ export const remove = mutation({
     const ownerId = await requireSignedIn(ctx);
     const row = await ownContainer(ctx, ownerId, args.containerId);
     if (row.system) {
-      refuse(COLLECTION_ERRORS.invalid, "Main, Up for Trade and the Want List can't be emptied or deleted.");
+      refuse(COLLECTION_ERRORS.invalid, SYSTEM_STAYS);
     }
     const held = await ctx.db
       .query("collectionCopies")
       .withIndex("by_owner_home_slot", (q) => q.eq("ownerId", ownerId).eq("homeId", row._id))
       .first();
     if (held) {
-      refuse(COLLECTION_ERRORS.invalid, `"${row.name}" still holds cards. Send them back to Main first, then delete it.`);
+      refuse(
+        COLLECTION_ERRORS.invalid,
+        `"${row.name}" still holds cards. Send them to ${row.kind === "box" ? "Unsorted" : "Main"} first, then delete it.`,
+      );
     }
     const wants = await ctx.db
       .query("collectionWants")

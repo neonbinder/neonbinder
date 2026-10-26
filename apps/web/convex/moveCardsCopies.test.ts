@@ -158,17 +158,17 @@ describe("moveCards and collectors' copies", () => {
     // (its card has gone), the new one owns the card through the copies that
     // already moved.
     const as = t.withIdentity({ subject: OWNER });
-    expect(await as.query(api.collection.variantCompletion, { variantId: s.fromBase })).toMatchObject({
+    expect(await as.query(api.collection.variantCompletion, { variantId: s.fromBase, side: "collection" })).toMatchObject({
       owned: 0,
       ownedAll: 0,
       total: 0,
     });
-    expect(await as.query(api.collection.variantCompletion, { variantId: s.toBase })).toMatchObject({
+    expect(await as.query(api.collection.variantCompletion, { variantId: s.toBase, side: "collection" })).toMatchObject({
       owned: 1,
       ownedAll: 1,
       total: 2,
     });
-    const fromSetCompletion = await as.query(api.collection.setCompletion, { setId: s.fromSet });
+    const fromSetCompletion = await as.query(api.collection.setCompletion, { setId: s.fromSet, side: "collection" });
     expect(fromSetCompletion).toMatchObject({ owned: 0, ownedAll: 0 });
 
     await t.finishAllScheduledFunctions(vi.runAllTimers);

@@ -79,7 +79,7 @@ import {
 import { normalizeCardNumberPrefix } from "./cardNumberPrefix";
 // NEO-277: the set-level team a fresh child inherits from its parent.
 import { inheritedTeamIds } from "./lib/selectorTeams";
-import { NEW_ROW_SUBTREE_COUNTS } from "./cardCounts";
+import { newRowSubtreeCounts } from "./cardCounts";
 import {
   assertSubVariantParent,
   variantTypeRenameCheck,
@@ -2474,7 +2474,7 @@ export const storeReconciledOptions = mutation({
         Object.keys(alloc.platformLabels.sportlots ?? {}).length > 0;
 
       const id = await ctx.db.insert("selectorOptions", {
-        ...NEW_ROW_SUBTREE_COUNTS,
+        ...newRowSubtreeCounts(level),
         level,
         value: insertValue,
         platformData: alloc.platformData,

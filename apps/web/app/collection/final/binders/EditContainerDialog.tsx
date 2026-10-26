@@ -10,8 +10,9 @@ import NeonButton from "@/components/modules/NeonButton";
  * collector made (Main, the Want List and Up for Trade have neither).
  *
  * Deleting is a second step inside the dialog, and it says what happens:
- * the cards go back to Main (out of their pockets or rows, trade flags kept)
- * and there is no undo, because the store keeps none.
+ * a binder's cards go back to Main, a box's into Unsorted, still for sale
+ * (out of their pockets or rows, trade flags kept), and there is no undo,
+ * because the store keeps none.
  *
  * Both writes wait in the dialog: while one is out its buttons say busy and
  * ignore presses (`aria-disabled`, never native `disabled`, so focus stays
@@ -92,12 +93,14 @@ export default function EditContainerDialog({
     "aria-describedby": error && busy === null ? errorId : undefined,
   });
 
+  // Where the cards land, in the status line's words: a box's go to
+  // Unsorted and stay for sale (the inventory's Main), a binder's to Main.
   const goes =
-    n === null
-      ? "Every card in it goes back to Main."
-      : n === 0
-        ? "It's empty, so nothing moves."
-        : `${n === 1 ? "Its 1 card goes" : `Its ${cardCount(n)} go`} back to Main.`;
+    n === 0
+      ? "It's empty, so nothing moves."
+      : container.kind === "box"
+        ? `${n === null ? "Every card in it goes" : n === 1 ? "Its 1 card goes" : `Its ${cardCount(n)} go`} into Unsorted, still for sale.`
+        : `${n === null ? "Every card in it goes" : n === 1 ? "Its 1 card goes" : `Its ${cardCount(n)} go`} back to Main.`;
 
   return (
     <Modal labelledBy={titleId} onClose={onClose} className="max-w-lg">
@@ -129,11 +132,11 @@ export default function EditContainerDialog({
               onClick={() => {
                 if (!busy) setConfirming(false);
               }}
-              className="min-h-10"
+              className="min-h-10 max-sm:min-h-11"
             >
               Keep it
             </NeonButton>
-            <NeonButton type="button" variant="negative" onClick={() => void remove()} {...waiting("delete")} className="min-h-10">
+            <NeonButton type="button" variant="negative" onClick={() => void remove()} {...waiting("delete")} className="min-h-10 max-sm:min-h-11">
               Yes, delete it
             </NeonButton>
           </div>
@@ -174,15 +177,15 @@ export default function EditContainerDialog({
                 setConfirming(true);
               }}
               aria-disabled={busy ? true : undefined}
-              className="min-h-10"
+              className="min-h-10 max-sm:min-h-11"
             >
               Delete this {noun}
             </NeonButton>
             <div className="ml-auto flex flex-wrap gap-3">
-              <NeonButton type="button" variant="negative" outline onClick={onClose} className="min-h-10">
+              <NeonButton type="button" variant="negative" outline onClick={onClose} className="min-h-10 max-sm:min-h-11">
                 Cancel
               </NeonButton>
-              <NeonButton type="submit" {...waiting("save")} className="min-h-10">
+              <NeonButton type="submit" {...waiting("save")} className="min-h-10 max-sm:min-h-11">
                 Save
               </NeonButton>
             </div>

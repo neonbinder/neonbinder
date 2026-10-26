@@ -17,8 +17,10 @@
  *   binder pocket (`page * 9 + pocket`, one line item per pocket) or a box
  *   row (0-4, many per row). `upForTrade` flags it for the Up for Trade pile
  *   without moving it.
- * - Containers: three system ones every collector has (`main`, `trade`,
- *   `want`), then the collector's own binders and boxes. A binder with a
+ * - Containers: four system ones every collector has (`main`, the
+ *   collection's catch-all binder; `unsorted`, the inventory's catch-all box,
+ *   NEO-364; `trade`; `want`), then the collector's own binders and boxes.
+ *   A binder with a
  *   `rule` is a smart binder: it fills itself, and is never a home. Neither
  *   is the Want List (it holds wants) nor the Up for Trade pile.
  * - Wants are `{ cardId, binderId | null }`: "for my Ohtani rainbow", or
@@ -34,10 +36,14 @@
  * `updateCopy` never folds and never changes a home (that is `moveCopy`).
  *
  * ---------------------------------------------------------------------------
- * Props contract for the tabs (My Cards, My Binders, Checklists, Inventory)
+ * Props contract for the tabs
  * ---------------------------------------------------------------------------
  *
- *   type CollectionTab = "cards" | "binders" | "checklists" | "inventory";   // ?tab=
+ *   type CollectionTab = "cards" | "binders" | "boxes" | "checklists";   // ?tab=, from ./data/types
+ *
+ * `/collection` shows `cards`, `binders` and `checklists`; the inventory side
+ * (`/inventory`, the demo's `side=inventory`) shows `cards` (the Inventory
+ * list), `boxes` (My Boxes) and `checklists` (NEO-364).
  *
  * - `goToTab("checklists", { q })` opens Checklists with that search
  *   prefilled; `goToTab("checklists", { cardId })` opens that card's
@@ -69,6 +75,7 @@ import {
   type ContainerPatch,
   type ContainerRule,
   type CopyDetails,
+  type SystemKind,
   type NewContainer,
   type Scope,
   type Want,
@@ -131,7 +138,7 @@ export interface CollectionState {
   version: number;
 }
 
-export type CollectionTab = "cards" | "binders" | "checklists" | "inventory";
+export type { CollectionTab } from "./data/types";
 
 export interface GoToTabParams {
   /** Checklists: prefill the search box. */
@@ -163,9 +170,9 @@ export interface OpResult<T> {
 /**
  * v4 (NEO-359): one home per copy, slots, trade flag, the Show box. v5: the
  * single trade-bait dupe stays in the collection, up for trade; the rest of
- * Trade bait goes to the Show box, for sale.
+ * Trade bait goes to the Show box, for sale. v6 (NEO-364): the Unsorted box.
  */
-const STATE_VERSION = 5;
+const STATE_VERSION = 6;
 const STORAGE_KEY = "nb-collection-final";
 /** The public demo's own sessionStorage key (never the app's). */
 export const PUBLIC_STORAGE_KEY = "nb-collection-demo-public";
@@ -176,6 +183,8 @@ export const WANT_BINDER_ID = "binder-want";
 export const TRADE_BINDER_ID = "binder-trade-bait";
 /** The seed's box: the cards for sale at the next show. */
 export const SHOW_BOX_ID = "box-show";
+/** The system Unsorted box (NEO-364): the inventory's Main. */
+export const UNSORTED_BOX_ID = "box-unsorted";
 const CONTENDERS_BINDER_ID = "binder-contenders-96";
 const OHTANI_BINDER_ID = "binder-ohtani-rainbow";
 const SLAB_BINDER_ID = "binder-slab-case";
@@ -190,7 +199,10 @@ const SEED_LABELS: Record<ContainerId, ContainerLabel> = {
   [SLAB_BINDER_ID]: { background: "#101820", text: "#FFE600", fontId: "stardos-stencil" },
 };
 
-const SYSTEM_ORDER: Record<NonNullable<Container["system"]>, number> = { main: 0, trade: 1, want: 2 };
+const SYSTEM_ORDER: Record<SystemKind, number> = { main: 0, unsorted: 1, trade: 2, want: 3 };
+
+/** The most copies one line holds (the server's `MAX_COPY_QUANTITY`). */
+export const MAX_LINE_QUANTITY = 999;
 
 /** The one card at (set, variant name, number). Throws unless exactly one. */
 function seedRef(setId: SetId, variantName: string | null, cardNumber: string): CardId {
@@ -251,6 +263,15 @@ function seedCopy(copy: FixtureCopy, pockets: Map<CopyId, [ContainerId, number]>
   };
 }
 
+/** The Unsorted box as the seed makes it. */
+const UNSORTED_BOX: DemoContainer = {
+  id: UNSORTED_BOX_ID,
+  kind: "box",
+  name: "Unsorted",
+  description: "Cards for sale land here until you sort them into a box.",
+  system: "unsorted",
+};
+
 function seedState(): CollectionState {
   const pockets = new Map<CopyId, [ContainerId, number]>();
   for (const b of seedBinders) {
@@ -293,6 +314,7 @@ function seedState(): CollectionState {
       description: "Every card lands here until you file it somewhere else.",
       system: "main",
     },
+    UNSORTED_BOX,
     {
       id: TRADE_BINDER_ID,
       kind: "binder",
@@ -325,7 +347,7 @@ function seedState(): CollectionState {
   };
 }
 
-/** System containers first (Main, Up for Trade, Want List), the rest as made. */
+/** System containers first (Main, Unsorted, Up for Trade, Want List), the rest as made. */
 function sortContainers(containers: DemoContainer[]): DemoContainer[] {
   const rank = (c: DemoContainer) => (c.system ? SYSTEM_ORDER[c.system] : 10);
   return containers
@@ -408,6 +430,30 @@ function checkSlot(state: CollectionState, homeId: ContainerId, slot: number | u
   }
 }
 
+/**
+ * A PLAIN line (NEO-364, D9): what quick quantity entry counts and writes. Raw
+ * (no grade, no condition), no serial, cost, location or notes, not up for
+ * trade. Its row (`slot`) and date do not matter.
+ */
+export function isPlainLine(copy: Omit<DemoCopy, "id" | "cardId">): boolean {
+  return (
+    !copy.condition &&
+    !copy.graded &&
+    !copy.serialNumber?.trim() &&
+    copy.costBasis === undefined &&
+    !copy.location?.trim() &&
+    !copy.notes.trim() &&
+    !copy.upForTrade
+  );
+}
+
+/** The collector's Unsorted box, added to the shelf if a stored state somehow lacks it. */
+function withUnsorted(state: CollectionState): { state: CollectionState; id: ContainerId } {
+  const found = state.containers.find((c) => c.system === "unsorted");
+  if (found) return { state, id: found.id };
+  return { state: { ...state, containers: sortContainers([...state.containers, UNSORTED_BOX]) }, id: UNSORTED_BOX_ID };
+}
+
 let idCounter = 0;
 function newId(prefix: string): string {
   idCounter += 1;
@@ -438,6 +484,21 @@ export interface MoveOpResult {
   folded: boolean;
   split: boolean;
   from: { homeId: ContainerId; slot?: number; quantity: number };
+}
+
+/** What `demoOps.restoreLines` needs to undo a `setBoxQuantity`. */
+export interface BoxQuantityUndo {
+  /** The lines it changed or took, as they were, each with its place in the list. */
+  was: { copy: DemoCopy; index: number }[];
+  /** The lines it made. */
+  made: CopyId[];
+}
+
+export interface BoxQuantityOpResult {
+  /** Plain copies of the card in the box before the write, and after. */
+  before: number;
+  after: number;
+  undo: BoxQuantityUndo;
 }
 
 export interface RemoveOpResult {
@@ -676,22 +737,107 @@ export const demoOps = {
     };
   },
 
-  /** Sends its copies to Main (slots cleared), un-scopes its wants, and takes it off the shelf. */
+  /**
+   * Sends its copies away (slots cleared, trade flags kept): a binder's to
+   * Main, a box's into Unsorted, so a copy never crosses sides (NEO-364).
+   * Un-scopes its wants and takes it off the shelf.
+   */
   deleteContainer(state: CollectionState, id: ContainerId): OpResult<number> {
     const target = containerIn(state, id);
     if (!target) throw new DemoRefusal("That binder is gone.");
     if (target.system) throw new DemoRefusal(`${target.name} can't be deleted.`);
+    const shelf = target.kind === "box" ? withUnsorted(state) : { state, id: MAIN_BINDER_ID };
+    const to = shelf.id;
     let moved = 0;
-    const copies = state.copies.map((c) => {
+    const copies = shelf.state.copies.map((c) => {
       if (c.homeId !== id) return c;
-      moved += 1;
-      return clean({ ...c, homeId: MAIN_BINDER_ID, slot: undefined }) as DemoCopy;
+      // Cards, not line items: a stack of three is three cards on their way.
+      moved += c.quantity;
+      return clean({ ...c, homeId: to, slot: undefined }) as DemoCopy;
     });
-    const wants = state.wants.map((w) => (w.binderId === id ? { ...w, binderId: null } : w));
+    const wants = shelf.state.wants.map((w) => (w.binderId === id ? { ...w, binderId: null } : w));
     return {
-      state: { ...state, copies, wants, containers: state.containers.filter((c) => c.id !== id) },
+      state: { ...shelf.state, copies, wants, containers: shelf.state.containers.filter((c) => c.id !== id) },
       result: moved,
     };
+  },
+
+  /**
+   * NEO-364 (D9): sets how many PLAIN copies of `cardId` sit in `boxId` (a
+   * box, Unsorted included; never a binder). Raising adds raw copies acquired
+   * `today`, unslotted, folding into today's plain unslotted line. Lowering
+   * takes from the plain lines newest first (a line at 0 goes). The card's
+   * other lines in the box are never touched; the current value writes
+   * nothing. The result's `undo` is what `restoreLines` needs to put exactly
+   * those lines back.
+   */
+  setBoxQuantity(
+    state: CollectionState,
+    cardId: CardId,
+    boxId: ContainerId,
+    quantity: number,
+    today: string,
+  ): OpResult<BoxQuantityOpResult> {
+    const box = containerIn(state, boxId);
+    if (!box) throw new DemoRefusal("That box is gone.");
+    if (box.kind !== "box" || !isHome(box)) throw new DemoRefusal("Quick counts go in a box. Pick a box to count into.");
+    if (!Number.isInteger(quantity) || quantity < 0 || quantity > MAX_LINE_QUANTITY) {
+      throw new DemoRefusal(`Quantity is a whole number from 0 to ${MAX_LINE_QUANTITY}.`);
+    }
+    const plain = state.copies
+      .map((copy, index) => ({ copy, index }))
+      .filter(({ copy }) => copy.cardId === cardId && copy.homeId === boxId && isPlainLine(copy));
+    const before = plain.reduce((n, { copy }) => n + copy.quantity, 0);
+    const result = (next: CollectionState, undo: BoxQuantityUndo): OpResult<BoxQuantityOpResult> => ({
+      state: next,
+      result: { before, after: quantity, undo },
+    });
+    if (before === quantity) return result(state, { was: [], made: [] });
+    const was: BoxQuantityUndo["was"] = [];
+    const made: CopyId[] = [];
+    let copies = [...state.copies];
+    if (quantity > before) {
+      const adding = quantity - before;
+      // Never past the cap: today's line is part of `before`, so it ends at most at `quantity`.
+      const into = plain.find(({ copy }) => copy.slot === undefined && copy.acquiredAt === today);
+      if (into) {
+        was.push(into);
+        copies[into.index] = { ...into.copy, quantity: into.copy.quantity + adding };
+      } else {
+        const line: DemoCopy = { id: newId("copy"), cardId, homeId: boxId, quantity: adding, acquiredAt: today, notes: "", upForTrade: false };
+        copies.push(line);
+        made.push(line.id);
+      }
+    } else {
+      let taking = before - quantity;
+      const gone = new Set<CopyId>();
+      // Newest first: the reducer appends each new line, so the last one in the list.
+      for (const entry of [...plain].reverse()) {
+        if (taking === 0) break;
+        const take = Math.min(taking, entry.copy.quantity);
+        taking -= take;
+        was.push(entry);
+        if (take === entry.copy.quantity) gone.add(entry.copy.id);
+        else copies[entry.index] = { ...entry.copy, quantity: entry.copy.quantity - take };
+      }
+      copies = copies.filter((c) => !gone.has(c.id));
+    }
+    return result({ ...state, copies }, { was, made });
+  },
+
+  /** Puts back exactly the lines a `setBoxQuantity` touched: the lines it made go, the ones it changed or took return as they were. */
+  restoreLines(state: CollectionState, undo: BoxQuantityUndo): OpResult<null> {
+    if (undo.was.length === 0 && undo.made.length === 0) return { state, result: null };
+    const made = new Set(undo.made);
+    const was = new Map(undo.was.map((w) => [w.copy.id, w.copy]));
+    const copies = state.copies.filter((c) => !made.has(c.id)).map((c) => was.get(c.id) ?? c);
+    const present = new Set(copies.map((c) => c.id));
+    for (const { copy, index } of [...undo.was].sort((a, b) => a.index - b.index)) {
+      if (present.has(copy.id)) continue;
+      copies.splice(Math.min(index, copies.length), 0, copy);
+      present.add(copy.id);
+    }
+    return { state: { ...state, copies }, result: null };
   },
 
   requestCard(state: CollectionState, input: NewCardRequest, requestedAt: string): OpResult<CardRequest> {

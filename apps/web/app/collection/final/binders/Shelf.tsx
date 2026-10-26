@@ -6,6 +6,7 @@ import { useSearchText } from "../catalog/search";
 import { LoadingNote, SkeletonBars } from "../catalog/Skeleton";
 import { setLabel } from "../data/labels";
 import {
+  boxesOf,
   searchable,
   systemContainer,
   useBuildingSets,
@@ -18,7 +19,7 @@ import {
   useSummary,
 } from "../data/store";
 import type { Container, ContainerCount, SetRef } from "../data/types";
-import { ParamLink, useCollectionMode } from "../mode";
+import { SideLink, useCollectionMode } from "../mode";
 import { NO_BROWSE_FILTER, type BrowseFilter } from "../store";
 import { useLabelHints } from "./hooks";
 import IdTooltip, { IdLines } from "./IdTooltip";
@@ -29,15 +30,16 @@ import "./box.css";
 
 /**
  * The landing of My Binders (p2's shelf): the collector's binders standing
- * spine out, Main first. Boxes are not here: they are Inventory's
- * (`InventoryShelf`, the Inventory tab). Beside them, the special shelf: All
- * my cards, the Want List and Up for Trade, plus the long box of Inventory,
- * the door to the cards for sale. Below, the clear binders: sets to flip through. The demo has a
+ * spine out, Main first. Boxes are not here, Unsorted included: they are the
+ * inventory's (`InventoryShelf`, My Boxes). Beside them, the special shelf:
+ * All my cards, the Want List and Up for Trade, plus the long box of
+ * Inventory, the door to the Inventory list (`/inventory`, NEO-364). Below,
+ * the clear binders: sets to flip through. The demo has a
  * whole catalog there, narrowed by sport, years and name; the real
  * collection shows the sets you're building and a set search.
  *
  * Spines wear their labels in the Print Shop's spine-label look (see
- * `SpineLabel.tsx`); a box on Inventory wears its label as the masking tape on its end.
+ * `SpineLabel.tsx`); a box on My Boxes wears its label as the tape on its end.
  * The accessible name of every spine stays plain text: name, count, smart
  * or system role.
  *
@@ -68,12 +70,12 @@ function copiesIn(count: ContainerCount | null): number | null {
   return count ? count.copies : null;
 }
 
-/** A box you sell from (not a smart one): Inventory's, never the collection's shelf. */
+/** A box you sell from (not a smart one; Unsorted included): the inventory's, never the collection's shelf. */
 function isSaleBox(c: Container): boolean {
   return c.kind === "box" && !c.rule;
 }
 
-/** Copies in every box: what is for sale. Null while a box's count is unknown. */
+/** Copies in every box, Unsorted included: what is for sale. Null while a box's count is unknown. */
 export function forSaleCount(containers: readonly Container[] | undefined): number | null {
   if (!containers) return null;
   let n = 0;
@@ -295,9 +297,13 @@ function BinderSpine({
 
 /**
  * A box on the shelf: the end of a cardboard box standing between the
- * binders, the name on its masking tape (the box's spine label: its colours
- * and lettering), and the yellow price tag saying how many cards in it are
- * for sale. Everything in a box is for sale.
+ * binders, the name on its tape (the box's spine label: its colours and
+ * lettering), and the yellow price tag saying how many cards in it are for
+ * sale. Everything in a box is for sale. Unsorted wears brown parcel tape.
+ *
+ * The Up for Trade pile stands here too on My Boxes (NEO-364 D4), drawn as a
+ * box with the pennant "Trade" tag: not a home, so its tag counts what is up
+ * for trade, binders and boxes together.
  */
 function BoxSpine({
   container,
@@ -312,10 +318,11 @@ function BoxSpine({
 }) {
   const label = labelOf(container);
   const n = copiesIn(container.count);
-  const forSale = n === null ? "counting" : `${cardCount(n)} for sale`;
+  const trade = container.system === "trade";
+  const words = n === null ? "counting" : `${cardCount(n)} ${trade ? "up for trade" : "for sale"}`;
   return (
     <IdTooltip
-      content={<IdLines title={container.name} lines={[container.description, forSale]} />}
+      content={<IdLines title={container.name} lines={[container.description, words]} />}
       description={container.description || undefined}
     >
       <button
@@ -323,10 +330,15 @@ function BoxSpine({
         onClick={() => onOpen({ kind: "binder", binderId: container.id })}
         data-spine={container.id}
         aria-current={current ? "true" : undefined}
-        aria-label={`${container.name}, box, ${forSale}`}
+        aria-label={`${container.name}, box, ${words}`}
         className={`nb-boxspine${current ? " nb-boxspine--current" : ""}`}
         style={{ "--i": index } as CSSProperties}
       >
+        {trade && (
+          <span aria-hidden="true" className="nb-spine-tag nb-boxspine-trade">
+            Trade
+          </span>
+        )}
         <span aria-hidden="true" className="nb-boxspine-lid" />
         <span aria-hidden="true" className="nb-boxspine-end">
           <SpineLabel name={container.name} label={label} spineWidth={108} />
@@ -347,26 +359,14 @@ function BoxSpine({
  * the yellow price tag (the same tag a for-sale card wears in its sleeve)
  * says how many are for sale: every card in every box.
  *
- * On the collection's shelf it is the door to Inventory: the Inventory tab
- * where the store has one (the demo), otherwise the `/inventory` page. On
- * Inventory itself it opens every for-sale copy at once (`onOpen`,
- * `ForSaleView`).
+ * The collection's door to the Inventory list (NEO-364): it crosses to the
+ * inventory side where the store has one, otherwise to the public tour of
+ * it. My Boxes has no long box: it is already on the inventory side, and its
+ * Inventory tab is the list.
  */
-function InventoryBox({
-  forSale,
-  onOpen,
-  tape = "Inventory",
-  name = "Inventory",
-}: {
-  forSale: number | null;
-  onOpen?: () => void;
-  /** The lettering on its tape. */
-  tape?: string;
-  /** The first words of its accessible name. */
-  name?: string;
-}) {
+function InventoryBox({ forSale }: { forSale: number | null }) {
   const { inventoryHref } = useCollectionMode();
-  const { inventory: hasTab } = useCapabilities();
+  const { inventory: hasInventory } = useCapabilities();
   const words = forSale === null ? "counting what's for sale" : `${cardCount(forSale)} for sale`;
   const art = (
     <>
@@ -376,7 +376,7 @@ function InventoryBox({
         <span className="nb-longbox-divider" style={{ "--tab": "#FF2E9A", "--at": "66%" } as CSSProperties} />
       </span>
       <span aria-hidden="true" className="nb-longbox-box">
-        <span className="nb-longbox-tape">{tape}</span>
+        <span className="nb-longbox-tape">Inventory</span>
         <span className="nb-longbox-handle" />
       </span>
       <span aria-hidden="true" className="nb-longbox-tag">
@@ -384,38 +384,35 @@ function InventoryBox({
       </span>
     </>
   );
-  if (onOpen) {
+  if (hasInventory) {
     return (
-      <button type="button" onClick={onOpen} data-spine="sale" aria-label={`${name}, ${words}`} className="nb-longbox">
+      <SideLink side="inventory" search={{ tab: "cards" }} aria-label={`Inventory, ${words}`} className="nb-longbox">
         {art}
-      </button>
-    );
-  }
-  if (hasTab) {
-    return (
-      <ParamLink search={{ tab: "inventory" }} aria-label={`${name}, ${words}`} className="nb-longbox">
-        {art}
-      </ParamLink>
+      </SideLink>
     );
   }
   return (
-    <Link to={inventoryHref} aria-label={`${name}, ${words}`} className="nb-longbox">
+    <Link to={inventoryHref} aria-label={`Inventory, ${words}`} className="nb-longbox">
       {art}
     </Link>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Inventory's shelf: the boxes
+// My Boxes: the boxes
 // ---------------------------------------------------------------------------
 
 /**
- * NEO-359 — the landing of the Inventory tab: the collector's boxes,
- * standing box end out on the show table, and "New box". Beside them the
- * long box of the whole stock: every card in every box at once
- * (`ForSaleView`). Nothing from the collection stands here: binders, the
- * Want List and Up for Trade are My Binders' (Jason: "Inventory is things
- * for sale and My Collection is things that are for your collection").
+ * NEO-359 / NEO-364 — the landing of My Boxes (`/inventory?tab=boxes`): the
+ * collector's own boxes standing box end out on the show table, as made, and
+ * "New box" (an empty, dashed box end). Beside them the special places:
+ * Unsorted (the inventory's catch-all, always there, where a card lands when
+ * no box is picked) and Up for Trade drawn as a box (the one pile that spans
+ * both sides). No long box here: this is already the inventory side, and the
+ * Inventory tab is the whole stock in one list. Nothing from the collection
+ * stands here: binders, Main and the Want List are My Binders' (Jason:
+ * "Inventory is things for sale and My Collection is things that are for
+ * your collection").
  */
 export function InventoryShelf({ onOpen, onNewBox }: { onOpen: (view: ViewKey) => void; onNewBox: () => void }) {
   const containers = useContainers();
@@ -423,40 +420,47 @@ export function InventoryShelf({ onOpen, onNewBox }: { onOpen: (view: ViewKey) =
     return (
       <div>
         <h2 tabIndex={-1} data-shelf-heading className="sr-only">
-          Your boxes
+          My Boxes
         </h2>
         <LoadingNote>Pulling your boxes out from under the table…</LoadingNote>
         <SkeletonBars rows={3} className="mt-4" />
       </div>
     );
   }
-  const boxes = containers.filter((c) => c.kind === "box" && !c.rule && !c.system);
+  // Every box you sell from, Unsorted included; never a smart one.
+  const saleBoxes = boxesOf(containers).filter((c) => !c.rule);
+  // The collector's own stand on their shelf; Unsorted is a special place.
+  const boxes = saleBoxes.filter((c) => c.system !== "unsorted");
+  const unsorted = systemContainer(containers, "unsorted");
+  const trade = systemContainer(containers, "trade");
   const forSale = forSaleCount(containers);
   const saleText = forSale === null ? "Counting what's for sale" : `${cardCount(forSale)} for sale`;
+  // The boxes the stock sits in, Unsorted included: an empty one holds none of it.
+  const holding = saleBoxes.filter((c) => (c.count?.copies ?? 0) > 0).length;
 
   return (
     <div>
       <SpineFontFaces />
       <h2 tabIndex={-1} data-shelf-heading className="sr-only">
-        Your boxes
+        My Boxes
       </h2>
-      {boxes.length === 0 ? (
+      {forSale === 0 ? (
         <>
           <p className="neon-header nb-glow-title text-[1.7rem] leading-tight text-ink sm:text-[2.1rem]">
             Nothing for sale yet.
           </p>
           <p className="mt-2 max-w-2xl text-ink-2">
-            A box is your sale table: every card in it is for sale. Make one, then put cards in it: open any card in
-            My Cards or Checklists and press Sell, or open the box and hunt for a card to move in.
+            A box is your sale table: every card in it is for sale. Punch in counts on Checklists, or open a card in
+            your collection and press Sell. No box picked? It lands in Unsorted.
           </p>
         </>
       ) : (
         <>
           <p className="neon-header nb-glow-title text-[1.7rem] leading-tight text-ink sm:text-[2.1rem]">
-            {saleText} in {boxes.length} {boxes.length === 1 ? "box" : "boxes"}.
+            {forSale === null ? `${saleText}…` : `${saleText} in ${holding} ${holding === 1 ? "box" : "boxes"}.`}
           </p>
           <p className="mt-2 max-w-2xl text-ink-2">
-            Open a box to sort it into rows, or pull the long box for the whole stock at once.
+            Open a box to sort it into rows. Want the whole stock in one list? Hit the Inventory tab.
           </p>
         </>
       )}
@@ -476,36 +480,44 @@ export function InventoryShelf({ onOpen, onNewBox }: { onOpen: (view: ViewKey) =
               <button
                 type="button"
                 onClick={onNewBox}
-                className={`p2-spine p2-spine--new w-[58px] justify-center gap-3 text-ink-2 hover:text-ink ${SPINE_H}`}
+                className="nb-boxspine nb-boxspine--new text-ink-2 hover:text-ink"
                 style={{ "--i": boxes.length } as CSSProperties}
               >
-                <PlusIcon aria-hidden="true" className="h-6 w-6 shrink-0" />
-                <span className="p2-spine-name text-sm font-bold">New box</span>
+                <span aria-hidden="true" className="nb-boxspine-lid" />
+                <span className="nb-boxspine-end">
+                  <span className="nb-boxspine-new-mark">
+                    <PlusIcon aria-hidden="true" className="h-6 w-6 shrink-0" />
+                    <span className="text-sm font-bold">New box</span>
+                  </span>
+                  <span aria-hidden="true" className="nb-boxspine-handle" />
+                </span>
               </button>
             </li>
           </ul>
           <div className="p2-ledge shelf-ledge" aria-hidden="true" />
         </section>
 
-        {boxes.length > 0 && (
-          <section aria-labelledby="nb-stock-shelf" className="nb-special w-fit max-w-full min-w-0">
-            <h3 id="nb-stock-shelf" className="nb-special-sign">
-              The whole stock
-            </h3>
-            <p className="mt-1 max-w-[22rem] px-1 text-sm text-ink-2">Every card in every box, all at once.</p>
-            <ul className="p2-shelf nb-special-shelf" aria-label="The whole stock">
+        <section aria-labelledby="nb-box-special" className="nb-special w-fit max-w-full min-w-0">
+          <h3 id="nb-box-special" className="nb-special-sign">
+            Special places
+          </h3>
+          <p className="mt-1 max-w-[22rem] px-1 text-sm text-ink-2">
+            No box picked? Cards land in Unsorted. Up for Trade pulls swaps from every binder and box.
+          </p>
+          <ul className="p2-shelf nb-special-shelf" aria-label="Special places">
+            {unsorted && (
               <li className="flex-none">
-                <InventoryBox
-                  forSale={forSale}
-                  tape="For sale"
-                  name="Everything for sale"
-                  onOpen={() => onOpen({ kind: "sale" })}
-                />
+                <BoxSpine container={unsorted} current={false} index={0} onOpen={onOpen} />
               </li>
-            </ul>
-            <div className="nb-special-ledge shelf-ledge-special" aria-hidden="true" />
-          </section>
-        )}
+            )}
+            {trade && (
+              <li className="flex-none">
+                <BoxSpine container={trade} current={false} index={1} onOpen={onOpen} />
+              </li>
+            )}
+          </ul>
+          <div className="nb-special-ledge shelf-ledge-special" aria-hidden="true" />
+        </section>
       </div>
     </div>
   );

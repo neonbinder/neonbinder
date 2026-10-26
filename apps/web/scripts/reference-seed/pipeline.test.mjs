@@ -85,7 +85,10 @@ describe("build", () => {
 
   test("createdByUserId is stripped from every row and the count recorded", () => {
     for (const t of BUNDLE_TABLES) for (const r of rowsOf(bundleFiles, t)) expect(r).not.toHaveProperty("createdByUserId");
-    expect(manifest.strippedFields).toEqual({ selectorOptions: { createdByUserId: 1 }, players: { createdByUserId: 2 } });
+    expect(manifest.strippedFields).toEqual({
+      selectorOptions: { createdByUserId: 1, hasCards: 1, subtreeCardCount: 1, subtreeNonVariationCardCount: 1 },
+      players: { createdByUserId: 2 },
+    });
   });
 
   test("sport rows keep their marketplace ids and sport config; children are cleared", () => {
@@ -195,7 +198,17 @@ describe("check", () => {
     // count, title or card sport is carried for an import to get wrong.
     for (const t of BUNDLE_TABLES) {
       for (const r of rowsOf(bundleFiles, t)) {
-        for (const field of ["cardCount", "nonVariationCardCount", "listingTitle"]) {
+        for (const field of [
+          "cardCount",
+          "nonVariationCardCount",
+          "listingTitle",
+          // NEO-364 — a sport flagged on the source would show empty in a
+          // preview's drill; the fixture's Baseball carries these, so the
+          // build is what removes them.
+          "hasCards",
+          "subtreeCardCount",
+          "subtreeNonVariationCardCount",
+        ]) {
           expect(r).not.toHaveProperty(field);
         }
       }

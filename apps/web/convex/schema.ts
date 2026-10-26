@@ -577,16 +577,18 @@ export const selectorOptionFields = {
   /**
    * NEO-358 (Jason, 2026-10-24) — the cards homed on this row OR on any row
    * beneath it: `cardCount` of this row plus `subtreeCardCount` of every
-   * child. Kept on EVERY level, sport down to parallel, so each step of the
-   * collector's drill knows whether anything sits below it and an exact zero
-   * can be hidden. Not shown above the checklist levels.
+   * child. Kept FROM THE SET ROW DOWN only (`setName`, `variantType`,
+   * `insert`, `parallel`; NEO-364), so each of those steps of the collector's
+   * drill knows whether anything sits below it and an exact zero can be
+   * hidden. Absent on sport, year and manufacturer rows, which carry
+   * `hasCards` below instead. Never shown to a collector.
    *
    * Kept by the same `CardCountLedger` flush as the two counts above: each
    * card delta lands on its row and on every ancestor up the `parentId`
-   * chain, one read and one patch per row per flush; a writer that moves a
-   * row under a new parent (`ledger.moveSubtree`) moves its subtree count
-   * with it. A new row is born with both subtree counts at 0
-   * (`NEW_ROW_SUBTREE_COUNTS`).
+   * chain as far as the set, one read and one patch per row per flush; a
+   * writer that moves a row under a new parent (`ledger.moveSubtree`) moves
+   * its subtree count with it. A new row from the set down is born with both
+   * subtree counts at 0 (`newRowSubtreeCounts`).
    *
    * ABSENT means UNKNOWN: a row written before this field, or one the ledger
    * cleared because the stored value had drifted (it would have gone
@@ -605,6 +607,27 @@ export const selectorOptionFields = {
    * together with it.
    */
   subtreeNonVariationCardCount: v.optional(v.number()),
+  /**
+   * NEO-364 (Jason, 2026-10-25) — true once any card has landed anywhere
+   * beneath this row. Meaningful on `sport`, `year` and `manufacturer` rows
+   * only; absent on every other level, whose drill rule reads the exact
+   * subtree counts above.
+   *
+   * Set ONCE, by the `CardCountLedger` flush that first carries a card added
+   * beneath the row (or a re-home that brings cards or an unknown-size
+   * subtree under it), and never written by the ledger again: never set
+   * false, never cleared when the cards go. That is the point. Writing these
+   * three levels on every card write made them hot rows that serialised
+   * every concurrent card writer in a sport.
+   *
+   * ABSENT means no card is known beneath the row, and the collector's drill
+   * hides it (`collectionCatalog.drill`). The armed backfill
+   * (`backfillSubtreeCardCounts`) sets it where cards sit below and clears
+   * it where none do.
+   *
+   * NB data only: no adapter or sync reads or writes it.
+   */
+  hasCards: v.optional(v.boolean()),
   lastUpdated: v.number(),
 };
 
@@ -639,7 +662,8 @@ export const collectionCopyGradingValidator = v.object({
 /**
  * NEO-358 — one collector's whole collection in three numbers, kept on their
  * Main binder (see `collectionContainers.tally`): physical copies (quantities
- * summed), line items, and distinct cards.
+ * summed), line items, and distinct cards. NEO-364: binder homes only, never
+ * a box (`tallyScope`).
  */
 export const collectionTallyValidator = v.object({
   copies: v.number(),
@@ -659,7 +683,21 @@ export const collectionContainerSystemValidator = v.union(
   v.literal("main"),
   v.literal("want"),
   v.literal("trade"),
+  // NEO-364 — "unsorted": a box, the inventory's counterpart to Main: where a
+  // for-sale add lands with no box named, and where a deleted box empties.
+  // Lazy like Main; never in the tally; never on a collection screen.
+  v.literal("unsorted"),
 );
+
+/**
+ * NEO-364 — what a kept tally (Main's `tally`) or a building set's `cards`
+ * counts. Only `"collection"` exists: binder homes only, never a box (the
+ * hard line: collection numbers never touch a for-sale copy). A NEO-358/359
+ * number carries no marker because it counted every home, boxes included, so
+ * a reader treats an unmarked number as ABSENT: recounted (collection-only)
+ * and stamped on the next write, counted by hand on a read until then.
+ */
+export const collectionTallyScopeValidator = v.literal("collection");
 
 /**
  * NEO-359 — a spine label the collector designed; mirrors the client's
@@ -3427,12 +3465,17 @@ export default defineSchema({
    *     the Want List (`collectionWants`) and for the copies flagged
    *     `upForTrade`. Neither is ever a home; the add and move paths refuse
    *     both. Made by `collectionContainers.ensureSystem` (idempotent).
+   *   - `"unsorted"` (NEO-364) is a BOX, the inventory's Main: where a
+   *     for-sale add lands with no box named, and where a deleted box's
+   *     copies go. Lazy like Main (`getOrCreateUnsorted`), born counted,
+   *     never in the tally, never on a collection screen.
    * Absent means a container the collector named (a binder or a box; a copy
    * is for sale exactly when its home is a box). System rows are never
    * renamed or deleted; only their label changes.
    *
    * `tally` is on the Main row only, and it is the OWNER's tally, not Main's:
-   * every copy, line and distinct card they hold, in any home (Jason,
+   * every copy, line and distinct card they hold in a COLLECTION home (Main
+   * or a binder; NEO-364: never a box, see `tallyScope`) (Jason,
    * 2026-10-23: no per-account cap, dealers hold tens of thousands of cards,
    * so "how many do I own" can never be a walk). Every write in
    * convex/collection.ts moves it in the same transaction (`moveTally`).
@@ -3491,6 +3534,12 @@ export default defineSchema({
      * `publicProfiles` (`tradePrivate`, `forSalePrivate`).
      */
     visibility: v.optional(v.literal("public")),
+    /**
+     * NEO-364 — `tally` counts collection homes only (binders and Main, never
+     * a box) exactly when this says "collection". Absent: the tally is from
+     * before NEO-364 (every home) and reads as not kept.
+     */
+    tallyScope: v.optional(collectionTallyScopeValidator),
     lastUpdated: v.number(),
   })
     // Unchanged. Serves: Main/Want/Trade get-or-create (all fields, .unique()),
@@ -3609,6 +3658,12 @@ export default defineSchema({
      * (bounded) and a read counts it by hand until then.
      */
     cards: v.optional(v.number()),
+    /**
+     * NEO-364 — `cards` counts copies in collection homes only (never a box)
+     * exactly when this says "collection". Absent: a NEO-359 count over every
+     * home, read as not counted.
+     */
+    tallyScope: v.optional(collectionTallyScopeValidator),
     lastUpdated: v.number(),
   })
     .index("by_owner_and_set", ["ownerId", "setId"])

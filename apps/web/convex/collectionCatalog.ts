@@ -42,6 +42,7 @@ import {
   titleMatches,
 } from "./lib/titleQuery";
 import { variantTypeKind } from "./variantRole";
+import { carriesHasCards } from "./cardCounts";
 import { cardPlayerLinkPage } from "./cardPlayerLinks";
 import { playerAliasRowsByPrefix } from "./players";
 import { findTeamsByAliasPrefix } from "./lib/teamRow";
@@ -116,26 +117,33 @@ function sortColumn(rows: Row[]): Row[] {
 
 const CARD_BEARING = new Set(["variantType", "insert", "parallel"]);
 
+/** What `rowHasCards` reads off a row. */
+type HasCardsFields = Pick<Row, "level" | "cardCount" | "subtreeCardCount" | "hasCards">;
+
 /**
- * NEO-358 (Jason, 2026-10-24) — whether any card sits on `row` or beneath it,
- * from its stored subtree count: true, false, or null when that count is
- * unknown (never counted yet). A row whose OWN count says it holds cards is
- * true whatever the subtree count says, so a drifted subtree count can never
- * hide a checklist that has cards.
+ * NEO-358 / NEO-364 (Jason, 2026-10-25) — whether any card sits on `row` or
+ * beneath it.
+ *
+ *  - A sport, year or manufacturer row: its one-time `hasCards` flag, true or
+ *    false. Absent is false: no card is known beneath it.
+ *  - The set and below: its stored subtree count, true or false, or null when
+ *    that count is unknown (never counted yet). A row whose OWN count says it
+ *    holds cards is true whatever the subtree count says, so a drifted
+ *    subtree count can never hide a checklist that has cards.
  */
-export function rowHasCards(
-  row: Pick<Row, "cardCount" | "subtreeCardCount">,
-): boolean | null {
+export function rowHasCards(row: HasCardsFields): boolean | null {
+  if (carriesHasCards(row.level)) return row.hasCards === true;
   if (typeof row.cardCount === "number" && row.cardCount > 0) return true;
   if (typeof row.subtreeCardCount !== "number") return null;
   return row.subtreeCardCount > 0;
 }
 
 /**
- * Hidden from the collector: a row KNOWN to have no cards on it or beneath
- * it. An unknown count is shown, never hidden.
+ * Hidden from the collector: a sport, year or manufacturer without
+ * `hasCards`, or a row from the set down KNOWN to have no cards on it or
+ * beneath it (an unknown count there is shown, never hidden).
  */
-export function hiddenAsEmpty(row: Pick<Row, "cardCount" | "subtreeCardCount">): boolean {
+export function hiddenAsEmpty(row: HasCardsFields): boolean {
   return rowHasCards(row) === false;
 }
 
@@ -156,8 +164,10 @@ const drillItemValidator = v.object({
   /** The same, regular (non-variation) cards only: the default "of M". */
   baseCardCount: v.union(v.number(), v.null()),
   /**
-   * Whether any card sits on this row or beneath it; null when not counted
-   * yet. Never false in a drill reply: a row known to be empty is left out.
+   * Whether any card sits on this row or beneath it (`rowHasCards`): always
+   * true on a sport, year or brand in a reply; null on a row from the set
+   * down whose count is unknown. Never false in a drill reply: a row known
+   * to be empty is left out. Not shown to the collector.
    */
   hasCards: v.union(v.boolean(), v.null()),
 });
@@ -168,10 +178,12 @@ const drillItemValidator = v.object({
  * Parallels type holds `insert`-level rows; an insert holds `parallel`-level
  * sub-variants); omit it to read every child.
  *
- * NEO-358 — a row KNOWN to have no cards on it or anywhere beneath it (its
- * stored `subtreeCardCount` is exactly 0) is left out, on every level: a
- * collector never drills into nothing. A row whose count is unknown is kept.
- * `truncated` is judged before that filter, on the rows read.
+ * NEO-358 / NEO-364 — a collector never drills into nothing. A sport, year or
+ * brand is shown only when it carries `hasCards` (set once, by the first card
+ * beneath it). From the set down, a row KNOWN to have no cards on it or
+ * anywhere beneath it (stored `subtreeCardCount` exactly 0) is left out and a
+ * row whose count is unknown is kept (`hiddenAsEmpty`). `truncated` is judged
+ * before that filter, on the rows read.
  */
 export const drill = query({
   args: {
