@@ -231,6 +231,9 @@ test(
     });
     await detailsButton.click();
     await expect(drawer.getByText(/^1 in binders\.?$/)).toBeVisible();
+    // A card with a copy lists it, then an Add button: the add form waits behind it.
+    await expect(drawer.getByRole("button", { name: `Add another copy of ${short}`, exact: true })).toBeVisible();
+    await expect(drawer.getByRole("form", { name: "Add another copy" })).toHaveCount(0);
     await expect(page).toHaveURL(/[?&]detail=[^&]+/);
     // Opened from the checklist's rows, it says where the card sits among them.
     await expect(drawer.getByRole("status").filter({ hasText: /^Card \d+ of \d+, / })).toHaveText(
@@ -265,10 +268,15 @@ test(
     await expectAccessible(page, { within: drawer, label: "Card drawer, one copy" });
 
     const addForm = drawer.getByRole("form", { name: "Add another copy" });
+    const addButton = drawer.getByRole("button", { name: `Add another copy of ${short}`, exact: true });
+    // Opened to add, the form is open; an add folds it away, the keyboard on Add.
     const addNearMint = async () => {
+      if (!(await addForm.isVisible())) await addButton.click();
       await addForm.getByRole("combobox", { name: "Condition" }).selectOption("Near Mint");
       await addForm.getByRole("textbox", { name: "Notes" }).fill("Pulled at the show");
       await addForm.getByRole("button", { name: "Add to collection" }).click();
+      await expect(addForm).toBeHidden();
+      await expect(addButton).toBeFocused();
     };
 
     // A copy with different details is a second line.
@@ -283,6 +291,14 @@ test(
     await expect(drawer.getByRole("status").filter({ hasText: `Stacked it: another ${short} on the pile` })).toBeVisible();
     await expect(yourCopies.getByRole("heading", { name: "Your copies (2 lines)" })).toBeVisible();
     await expect(yourCopies.getByText("Raw, Near Mint ×2")).toBeVisible();
+
+    // Cancel folds the form away again and leaves the drawer open.
+    await addButton.click();
+    await expect(addForm).toBeVisible();
+    await addForm.getByRole("button", { name: "Cancel" }).click();
+    await expect(addForm).toBeHidden();
+    await expect(addButton).toBeFocused();
+    await expect(drawer).toBeVisible();
 
     // Edit the stacked line.
     await yourCopies.getByRole("button", { name: `Edit ${short}, Raw, Near Mint ×2`, exact: true }).click();
