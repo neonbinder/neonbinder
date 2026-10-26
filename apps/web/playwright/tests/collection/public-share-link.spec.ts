@@ -26,7 +26,7 @@
 //
 // R3: the collector's cascade is drilled through `support/collection.ts`.
 import type { Page } from "@playwright/test";
-import { drillToCollectorBase, ordinaryBaseRows, shortNameOf } from "../../support/collection";
+import { collectorCascade, drillToCollectorBase, ordinaryBaseRows, shortNameOf } from "../../support/collection";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 
 const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -220,9 +220,13 @@ test(
     await expect(confirmTwin).toBeHidden();
 
     // --- Cleanup through the UI: remove the copy, delete the empty binder ---
-    // The shelf trips dropped the drill from the address: drill again.
+    // The shelf trips may drop the drill from the address (they did on the
+    // desktop run, not the phone one): wait for one state, drill if needed.
     await tabs.getByRole("link", { name: "Checklists", exact: true }).click();
-    await drillToCollectorBase(page);
+    const sports = collectorCascade(page).cascade.getByRole("listbox", { name: "Sports" });
+    await expect(checklist.or(sports)).toBeVisible();
+    if (!(await checklist.isVisible())) await drillToCollectorBase(page);
+    await expect(checklist).toBeVisible();
     await checklist.getByRole("combobox", { name: "Binder" }).selectOption({ label: "All" });
     await checklist.getByRole("button", { name: `Details for ${card.short}`, exact: true }).click();
     const yourCopies = drawer.getByRole("region", { name: `Your copies of ${card.short}`, exact: true });
