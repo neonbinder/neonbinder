@@ -207,22 +207,22 @@ describe("the public collection demo", () => {
     expect(within(dialog).getByText(/in the Print Shop once you've signed up\./)).toBeTruthy();
   });
 
-  it("shares with a neutral @you handle and says the link is an example", () => {
+  it("shares with a neutral /u/you handle and says the link is an example", () => {
     renderDemo();
     openTab("My Binders");
     fireEvent.click(screen.getByRole("button", { name: /^Ohtani rainbow,/ }));
     fireEvent.click(screen.getByRole("button", { name: "Share Ohtani rainbow" }));
-    expect(screen.getByText("neonbinder.io/@you/binders/ohtani-rainbow")).toBeTruthy();
+    expect(screen.getByText("neonbinder.io/u/you/binders/ohtani-rainbow")).toBeTruthy();
     expect(screen.getByText("Just an example: demo binders don't get a real page.")).toBeTruthy();
-    expect(screen.queryByText(/@jason/)).toBeNull();
+    expect(screen.queryByText(/\/u\/jason/)).toBeNull();
   });
 
-  it("shares a browsed set at @you too", () => {
+  it("shares a browsed set at /u/you too", () => {
     renderDemo();
     openTab("My Binders");
     fireEvent.click(screen.getByRole("button", { name: /^Browse 2000 Topps,/ }));
     fireEvent.click(screen.getByRole("button", { name: "Share 2000 Topps" }));
-    expect(screen.getByText("neonbinder.io/@you/sets/2000-topps")).toBeTruthy();
+    expect(screen.getByText("neonbinder.io/u/you/sets/2000-topps")).toBeTruthy();
   });
 
   it("keeps its state under its own storage key, never the signed-in page's", () => {

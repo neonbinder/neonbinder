@@ -9,11 +9,13 @@ export default function OwnCardNote({ own }: { own: OwnCard }) {
   return (
     <div className="space-y-2 rounded-md border border-dashed border-neon-blue/60 bg-sheet p-3 text-xs">
       <p className="font-semibold text-neon-blue-text">Unlisted: not in the NeonBinder catalog</p>
-      <p className="text-ink-2">
-        {own.status === "waiting"
-          ? `You asked us to add it${own.nbSet ? "" : " with its set"}. It's yours to file in the meantime.`
-          : "We didn't add it to the catalog. It stays yours, just for you."}
-      </p>
+      {own.status && (
+        <p className="text-ink-2">
+          {own.status === "waiting"
+            ? `You asked us to add it${own.nbSet ? "" : " with its set"}. It's yours to file in the meantime.`
+            : "We didn't add it to the catalog. It stays yours, just for you."}
+        </p>
+      )}
       {own.notes && (
         <p className="text-ink-3">
           <span className="text-ink-2">Your notes:</span> {own.notes}

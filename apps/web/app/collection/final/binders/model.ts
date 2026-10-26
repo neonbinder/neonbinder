@@ -721,12 +721,13 @@ export function teamRule(teamId: TeamId, alsoPlayedFor: boolean): ContainerRule 
 }
 
 // ---------------------------------------------------------------------------
-// Share links (mock: no such route yet; capability `share`)
+// Share links (NEO-360: capability `shareLinks` is real; `share` is the demo's example)
 // ---------------------------------------------------------------------------
 
 /**
- * The share links' handle. Share is demo-only, so the handle is anyone's,
- * never a real collector's, and the link reads as an example.
+ * The demo's example handle: anyone's, never a real collector's, so the
+ * demo's link reads as an example. A real link uses the collector's own
+ * public name (`ShareLink`).
  */
 export const DEMO_HANDLE = "you";
 
@@ -743,28 +744,50 @@ export function slugify(name: string): string {
   return slug || "binder";
 }
 
-/** What a Share button shares: its name in words, and its path after the handle. */
+/**
+ * What a Share button shares. A binder and the Want List carry their
+ * container (its switch and, for a binder, its link parts); Up for Trade's
+ * switch is the profile's; a set is the demo's example only.
+ */
+export type ShareSubject =
+  | { kind: "binder"; container: Container }
+  | { kind: "want"; container: Container }
+  | { kind: "trade" }
+  | { kind: "set" };
+
+/** What a Share button shares: its name in words, its example path, and what it is. */
 export interface ShareTarget {
   /** "Ohtani rainbow", "your Want List", "2000 Topps". */
   what: string;
-  /** "binders/ohtani-rainbow", "want-list", "sets/2000-topps". */
+  /** The demo's example path after the handle: "binders/ohtani-rainbow", "want-list", "sets/2000-topps". */
   path: string;
+  subject: ShareSubject;
 }
 
-export function containerShareTarget(container: Pick<Container, "name" | "system" | "kind">): ShareTarget {
-  if (container.system === "want") return { what: "your Want List", path: "want-list" };
-  const dir = container.kind === "box" ? "boxes" : "binders";
-  return { what: container.name, path: `${dir}/${slugify(container.name)}` };
+/**
+ * A container's Share target, or null: Main is never shared (build a binder
+ * to share some of it), and a box is shared through the for-sale page, not
+ * on its own.
+ */
+export function containerShareTarget(container: Container): ShareTarget | null {
+  if (container.system === "main" || container.kind === "box") return null;
+  if (container.system === "want") {
+    return { what: "your Want List", path: "want-list", subject: { kind: "want", container } };
+  }
+  if (container.system === "trade") {
+    return { what: "Up for Trade", path: "up-for-trade", subject: { kind: "trade" } };
+  }
+  return { what: container.name, path: `binders/${slugify(container.name)}`, subject: { kind: "binder", container } };
 }
 
-/** A set you are flipping through: your copy of its checklist. */
+/** A set you are flipping through: the demo's example only (sets get no real link). */
 export function setShareTarget(set: Pick<SetRef, "season" | "name">): ShareTarget {
-  return { what: setLabel(set), path: `sets/${slugify(setLabel(set))}` };
+  return { what: setLabel(set), path: `sets/${slugify(setLabel(set))}`, subject: { kind: "set" } };
 }
 
-/** The human-readable public link for a share target. */
+/** The demo's human-readable example link for a share target. */
 export function shareUrl(target: ShareTarget, handle = DEMO_HANDLE): string {
-  return `neonbinder.io/@${handle}/${target.path}`;
+  return `neonbinder.io/u/${handle}/${target.path}`;
 }
 
 // ---------------------------------------------------------------------------

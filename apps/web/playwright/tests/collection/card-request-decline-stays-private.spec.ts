@@ -1,9 +1,11 @@
 // NEO-361 (R1): a card our crew declines stays the collector's, privately. They
 // ask for a card in a checklist the set doesn't list (typed by name), file a
 // copy, and an admin declines it with a note. The card is still in My Cards,
-// tagged unlisted; its drawer says it wasn't added; My requests shows "Not
-// added" with the crew's note; and removing the request (behind a confirm that
-// says the copy goes too) takes the card and its copy away.
+// tagged unlisted; its drawer says it wasn't added. Flagged Up for trade (a
+// shelf public by default), a signed-out visitor sees it on the collector's
+// public Up for Trade page, marked as not in the catalog. My requests shows
+// "Not added" with the crew's note; and removing the request (behind a
+// confirm that says the copy goes too) takes the card and its copy away.
 //
 // One account plays both parts, as in card-request-approve-moves-copy (which
 // proves the approve path); the shared admin queue is searched by the minted
@@ -15,6 +17,7 @@
 // (a known-empty set is hidden). The request is declined, so nothing is ever
 // added to the catalog. The request, private card and copy are the account's
 // own; removing the request at the end deletes all three (self-cleaning).
+// The public name is `env.TEST_USERNAME`, fresh per test.
 //
 // MINTED NAMES are single tokens: the set `crqd-<worker>-<attempt>`, the card
 // numbers `1<token>` (the seed card) and `8<token>` (the requested one), the
@@ -27,7 +30,7 @@ import { drillToCustom, setBuilderReady } from "../../support/set-builder";
 test(
   "Card request: a declined card stays the collector's own, marked unlisted with the crew's note, until they remove it",
   { tag: ["@smoke", "@collection"] },
-  async ({ page, signIn, env }) => {
+  async ({ page, browser, baseURL, signIn, env }) => {
     const A = env.ATTEMPT_ID;
     const T = env.ATTEMPT_TOKEN;
     const setName = `crqd-${env.WORKER_INDEX}-${A}`;
@@ -109,8 +112,37 @@ test(
     // A card of their own can't go on the Want List: there's no catalog card to want.
     await expect(drawer.getByRole("button", { name: /^Want/ })).toHaveCount(0);
     await expectAccessible(page, { label: "Unlisted card drawer" });
+
+    // --- Shown to visitors too, marked as not a known NB card --------------------
+    // Up for Trade is public by default; the flag puts this copy on it.
+    const copies = drawer.getByRole("region", { name: /^Your copies of / });
+    await copies.getByRole("button", { name: /^Edit .*, Raw$/ }).click();
+    const edit = drawer.getByRole("form", { name: "Edit Raw", exact: true });
+    const tradeFlag = edit.getByRole("switch", { name: "Up for trade" });
+    await tradeFlag.click();
+    await expect(tradeFlag).toBeChecked();
+    await edit.getByRole("button", { name: "Save copy" }).click();
+    await expect(edit).toBeHidden();
     await drawer.getByRole("button", { name: "Close card detail" }).click();
     await expect(drawer).toBeHidden();
+
+    const username = env.TEST_USERNAME;
+    await page.goto("/profile/public");
+    await expect(page.getByRole("heading", { name: "Profile Settings" })).toBeVisible({ timeout: LAUNCH_GATE });
+    await page.getByLabel(/^Username/).fill(username);
+    await page.getByRole("button", { name: "Save Public Profile" }).click();
+    // Past the 7 s budget: the save is a server round trip that first checks the name is free.
+    await expect(page.getByText(/^Profile saved/)).toBeVisible({ timeout: 10_000 });
+
+    const { viewport, userAgent, deviceScaleFactor, isMobile, hasTouch } = test.info().project.use;
+    const visitorContext = await browser.newContext({ baseURL, viewport, userAgent, deviceScaleFactor, isMobile, hasTouch });
+    const visitor = await visitorContext.newPage();
+    await visitor.goto(`/u/${username}/up-for-trade`);
+    await expect(visitor.getByRole("heading", { level: 1, name: "Up for Trade" })).toBeVisible({ timeout: LAUNCH_GATE });
+    const shown = visitor.getByRole("listitem").filter({ hasText: player });
+    await expect(shown.getByText("Not in the NeonBinder catalog")).toBeVisible();
+    await expectAccessible(visitor, { label: "Public Up for Trade, an unlisted card" });
+    await visitorContext.close();
 
     // --- My requests: not added, with the crew's note; remove it -----------------
     await page.goto("/collection?tab=checklists");
