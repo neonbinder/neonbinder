@@ -1368,6 +1368,12 @@ export default defineSchema({
     // Set only by `setCardVariationParent` and by a custom card created with a
     // parent. Never set by the marketplace commit path.
     variationParentManual: v.optional(v.boolean()),
+    // NEO-367: NB's own free-text note about this card ("short print, about
+    // 1:120 packs"). Admin-written only (`addCustomCard`, `updateCard`, both
+    // through `normalizeCardNotes`); no sync or marketplace value ever writes
+    // it, and nothing reads it to decide behaviour. Absent when blank. Not the
+    // per-copy `collectionCopies.notes`.
+    notes: v.optional(v.string()),
     // NEO-25: marketplace-agnostic listing title & description, authored once
     // and reused by every marketplace adapter (eBay/SportLots/BSC/MySlabs/
     // MyCardPost) so a listing doesn't recompute the title each time. NOT

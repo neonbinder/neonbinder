@@ -376,6 +376,7 @@ export default function CardDetail({
                 <dd className="text-ink-2">{card.cardVariation}</dd>
               </>
             )}
+            <CardNotesRow notes={card.notes} />
             {want && (
               <>
                 <dt className="text-ink-3">Wanted</dt>
@@ -543,6 +544,22 @@ function locationNamesAHome(location: string | undefined, homes: readonly NamedB
  * before, else the "Your copies" heading. A move that folds the whole line
  * into a twin lands the keyboard on the twin's Move (or Sell) button.
  */
+/**
+ * NEO-367 — NB's own note about the card, as one term of the detail list.
+ * Nothing at all when the card has none. The admin's line breaks are part of
+ * the note; `min-w-0` + `overflow-wrap:anywhere` keep a pasted URL from
+ * widening the grid past a phone.
+ */
+export function CardNotesRow({ notes }: { notes?: string }) {
+  if (!notes) return null;
+  return (
+    <>
+      <dt className="text-ink-3">Notes</dt>
+      <dd className="min-w-0 text-ink-2 whitespace-pre-line [overflow-wrap:anywhere]">{notes}</dd>
+    </>
+  );
+}
+
 export function CopyList({
   name,
   copies,

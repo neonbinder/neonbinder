@@ -217,6 +217,32 @@ describe("the server's variant rows, in the view's terms", () => {
   });
 });
 
+describe("NEO-367 a card's notes", () => {
+  const raw = (extra: object) =>
+    ({
+      _id: "c1",
+      cardNumber: "7",
+      cardName: "Mantle",
+      sortOrder: 0,
+      variantId: "vt",
+      features: [],
+      listingTitle: "#7",
+      players: [],
+      teams: [],
+      ...extra,
+    }) as never;
+  const variant = toVariantRef({ _id: "vt", level: "variantType", name: "Base", kind: "base", variantType: node("vt", "Base"), insert: null } as never);
+  const { toCard } = __test;
+
+  it("carries the server's note onto the view's card", () => {
+    expect(toCard(raw({ notes: "Short print" }), null as never, variant).notes).toBe("Short print");
+  });
+
+  it("leaves the key off a card with no note", () => {
+    expect("notes" in toCard(raw({}), null as never, variant)).toBe(false);
+  });
+});
+
 describe("the drill", () => {
   const item = (over: object) =>
     ({ _id: "x", level: "variantType", name: "Base", kind: "base", childCount: 0, cardCount: 335, baseCardCount: 330, ...over }) as never;

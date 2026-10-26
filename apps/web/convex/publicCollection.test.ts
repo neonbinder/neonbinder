@@ -153,6 +153,24 @@ describe("the forbidden-key scan", () => {
   });
 });
 
+describe("NEO-367 catalog card notes", () => {
+  test("a public binder carries the catalog card's Notes, never the copy's", async () => {
+    const s = await setup();
+    const b = await binder(s);
+    await s.t.run(async (ctx) => ctx.db.patch(s.fx.gooden1, { notes: "Short print, about 1:120 packs" }));
+    await s.me.mutation(api.collection.addLineItem, {
+      cardId: s.fx.gooden1,
+      details: { quantity: 1, homeId: b.id, slot: 1, notes: PRIVATE_VALUES.notes },
+    });
+    await s.me.mutation(api.collectionContainers.setVisibility, { containerId: b.id, visibility: "public" });
+    const { page } = await s.anon.query(api.publicCollection.binderCopies, { username: "ace", path: b.path, paginationOpts: PAGE });
+    expect(page).toHaveLength(1);
+    expect(page[0].card?.notes).toBe("Short print, about 1:120 packs");
+    expect(page[0]).not.toHaveProperty("notes");
+    expect(JSON.stringify(page)).not.toContain(PRIVATE_VALUES.notes);
+  });
+});
+
 describe("defaults", () => {
   test("a new binder and the Want List read as not found until switched public", async () => {
     const s = await setup();
