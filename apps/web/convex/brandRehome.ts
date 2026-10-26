@@ -72,7 +72,7 @@ import { initialSlots } from "./platformSlots";
 import { SL_ALL_BRANDS_BRAND_ID } from "./slBrandAxis";
 import { deriveOwnLevelFeatures } from "./features/deriveCardFeatures";
 import { inheritedTeamIds } from "./lib/selectorTeams";
-import { NEW_ROW_SUBTREE_COUNTS, createCardCountLedger } from "./cardCounts";
+import { newRowSubtreeCounts, createCardCountLedger } from "./cardCounts";
 
 /**
  * The "N sets moved out of Unknown" notice, one sentence for the two doors
@@ -770,7 +770,7 @@ export async function ensureBrandRowForName(
   const parentTeamIds = inheritedTeamIds(year);
   const now = Date.now();
   const id = await ctx.db.insert("selectorOptions", {
-    ...NEW_ROW_SUBTREE_COUNTS,
+    ...newRowSubtreeCounts("manufacturer"),
     level: "manufacturer",
     value: name,
     platformData: alloc?.platformData ?? {},

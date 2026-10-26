@@ -242,7 +242,10 @@ export interface DrillItem {
   id: string;
   level: DrillLevel;
   name: string;
-  /** A ready-made line under the name, when the store has one ("/50 · have 2 of 30"). */
+  /**
+   * A ready-made line under the name, when the store has one: a parallel's
+   * print run ("/50"). Never a count (NEO-364): the drill shows no numbers.
+   */
   description?: string;
   /** Variant-type rows: what the row is (and its children are). */
   kind?: VariantKind;

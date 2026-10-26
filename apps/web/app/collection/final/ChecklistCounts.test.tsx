@@ -105,19 +105,30 @@ describe("a checklist's counts agree", () => {
     expect(within(section).queryByText(/with variations/)).toBeNull();
   });
 
-  it("the cascade's Base and set rows read the same base count", () => {
-    renderDemo(`${DEMO}&tab=checklists&set=${CHROME}&type=Base`);
-    const { owned, total } = haveLine(checklist("2024 Topps Chrome Base"));
+  it("the cascade shows no counts on any level (NEO-364)", () => {
+    // Jason, 2026-10-25: showing or not showing the row is the only signal.
+    // A parallel keeps its print run, which is not a count.
+    const COUNT = /\d+\s+(base\s+)?cards?\b|\bhave\s+\d+|\d+\s+(inserts?|parallels?)\b/i;
+    const optionsOf = (name: string) =>
+      within(screen.getByRole("listbox", { name })).getAllByRole("option");
+
+    renderDemo(`${DEMO}&tab=checklists&sport=baseball&year=2024&brand=brand-topps`);
+    const sets = optionsOf("Sets");
+    expect(sets.length).toBeGreaterThan(0);
+    for (const option of sets) expect(option.textContent ?? "").not.toMatch(COUNT);
     cleanup();
 
     renderDemo(`${DEMO}&tab=checklists&set=${CHROME}`);
-    const base = within(screen.getByRole("listbox", { name: "Variant Types" })).getByRole("option", { name: /^Base/ });
-    expect(base.textContent).toContain(`${total} cards`);
+    const types = optionsOf("Variant Types");
+    expect(types.map((o) => o.textContent)).toContain("Base");
+    for (const option of types) expect(option.textContent ?? "").not.toMatch(COUNT);
     cleanup();
 
-    renderDemo(`${DEMO}&tab=checklists&sport=baseball&year=2024&brand=brand-topps`);
-    const set = within(screen.getByRole("listbox", { name: "Sets" })).getByRole("option", { name: /^Topps Chrome/ });
-    expect(set.textContent).toContain(owned > 0 ? `Have ${owned} of ${total} base` : `${total} base cards`);
+    renderDemo(`${DEMO}&tab=checklists&set=${CHROME}&type=Parallels`);
+    const parallels = optionsOf("Parallels");
+    for (const option of parallels) expect(option.textContent ?? "").not.toMatch(COUNT);
+    const gold = parallels.find((o) => (o.textContent ?? "").startsWith("Gold Refractor"));
+    expect(gold?.textContent).toBe("Gold Refractor/50");
   });
 
   it("a board's bulbs are spoken base first, variations after", () => {

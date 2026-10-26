@@ -15,9 +15,9 @@
  * opens the same view.
  *
  * The scope (`useScope`, from the page URL) applies here as on Convex: with
- * a binder picked, `useCopiesInVariant`, `useVariantCompletion` and the
- * drill's "have N of M" count only that home, while `useCopiesOf` lists
- * every copy (the drawer shows each with its home).
+ * a binder picked, `useCopiesInVariant` and `useVariantCompletion` count
+ * only that home, while `useCopiesOf` lists every copy (the drawer shows
+ * each with its home). The drill counts nothing (NEO-364).
  *
  * NEO-359: every collection read sees only the copies whose home is not a
  * box (`collectionOf`, the store's `inCollection` rule); `useCopiesOf`,
@@ -25,7 +25,7 @@
  * the Up for Trade pile (`tradeOf`) keeps every flagged copy, a box's too.
  *
  * NEO-364: the side-aware reads (`useCopiesInVariant`, `useVariantCompletion`,
- * `useSetCompletion`, and the drill's counts at the page's side) read one
+ * `useSetCompletion`) read one
  * side: binder homes for the collection (`collectionOf`), box homes for the
  * inventory (`inventoryOf`). A scope on the other side reads as empty.
  * `useInventoryCards` lists the box copies card by card; `setBoxQuantity`
@@ -50,13 +50,11 @@ import {
   getTeam,
   players as fixturePlayers,
   searchCards,
-  setCompletion as fixtureSetCompletion,
   sets as fixtureSets,
   setsInOrder,
   teams as fixtureTeams,
   type Card as FixtureCard,
   type CardSet as FixtureSet,
-  type Copy as FixtureCopy,
   type VariantFilter,
   type VariantPath,
   type VariantType,
@@ -471,22 +469,27 @@ function countsOf(variantId: VariantId): Pick<DrillItem, "cardCount" | "baseCard
   return { cardCount: v?.cardCount ?? null, baseCardCount: v?.baseCardCount ?? null };
 }
 
+/**
+ * NEO-364 (Jason, 2026-10-25): the drill shows names only, no counts and no
+ * "has cards" marker, on every level, the same as the real catalog. The
+ * prototype's lines ("Have 2 of 30 base", "300 cards", "3 inserts") are
+ * dropped; a parallel keeps its print run ("/50"), which is not a count.
+ */
 function drillItem(level: DrillLevel, item: ColumnItem, extra: Partial<DrillItem> = {}): DrillItem {
-  return { id: item.id, level, name: item.name, description: item.description, hasChildren: true, ...extra };
+  return { id: item.id, level, name: item.name, hasChildren: true, ...extra };
 }
 
-function drillColumn(level: DrillLevel, parents: DrillParents, scoped: readonly DemoCopy[]): DrillItem[] {
-  // NEO-358: the drill's "300 base cards" / "have 2 of 30" read base cards
-  // only, the same pair as the checklist's "Have 2 of 300"; the shared
-  // prototype completion counts image variations in.
-  const completion = (setId: string, variant?: VariantFilter) => {
-    // The prototype's completion reads only `cardId` and `quantity`.
-    const c = fixtureSetCompletion(setId, variant, scoped as unknown as FixtureCopy[]);
-    const total = cardsInSet(setId, variant).filter((card) => card.variation === null).length;
-    const missing = c.missing.filter((card) => card.variation === null);
-    const owned = total - missing.length;
-    return { ...c, total, owned, missing, percent: total ? Math.floor((owned / total) * 100) : 0 };
-  };
+/** "/50", "1/1", or nothing: a parallel's print run, the one line the drill keeps. */
+function printRunOf(set: FixtureSet, type: VariantType, name: string): string | undefined {
+  const run = set.variants.find((v) => v.path.type === type && v.path.name === name)?.printRun ?? null;
+  if (run === null) return undefined;
+  return run === 1 ? "1/1" : `/${run}`;
+}
+
+/** The prototype's set rows want a completion; the drill shows none of it. */
+const NO_COMPLETION = () => ({ total: 0, owned: 0, percent: 0, missing: [] as FixtureCard[] });
+
+function drillColumn(level: DrillLevel, parents: DrillParents): DrillItem[] {
   switch (level) {
     case "sport":
       return sportItems().map((i) => drillItem(level, i));
@@ -498,8 +501,8 @@ function drillColumn(level: DrillLevel, parents: DrillParents, scoped: readonly 
     }
     case "set": {
       if (!parents.sport || !parents.year || !parents.brand) return [];
-      return setItems(parents.sport as FixtureSet["sportId"], Number(parents.year), parents.brand, completion).map((i) =>
-        drillItem(level, i),
+      return setItems(parents.sport as FixtureSet["sportId"], Number(parents.year), parents.brand, NO_COMPLETION).map(
+        (i) => drillItem(level, i),
       );
     }
     case "variantType": {
@@ -510,17 +513,22 @@ function drillColumn(level: DrillLevel, parents: DrillParents, scoped: readonly 
         const kind = KIND_OF[type];
         if (type !== "Base") return drillItem(level, i, { kind });
         const variantId = demoVariantId(set.id, { type, name: null });
-        // The prototype's "N cards" counts variations; the cascade reads the base count instead.
-        return drillItem(level, { ...i, description: undefined }, { kind, variantId, hasChildren: false, ...countsOf(variantId) });
+        return drillItem(level, i, { kind, variantId, hasChildren: false, ...countsOf(variantId) });
       });
     }
     case "variant": {
       const set = parents.set ? fixtureSet(parents.set) : undefined;
       const type = parents.variantType as VariantType | undefined;
       if (!set || (type !== "Inserts" && type !== "Parallels")) return [];
-      return variantItems(set, type, completion).map((i) => {
+      return variantItems(set, type, NO_COMPLETION).map((i) => {
         const variantId = demoVariantId(set.id, { type, name: i.id });
-        return drillItem(level, i, { variantId, hasChildren: false, ...countsOf(variantId) });
+        const run = printRunOf(set, type, i.id);
+        return drillItem(level, i, {
+          variantId,
+          hasChildren: false,
+          ...countsOf(variantId),
+          ...(run ? { description: run } : {}),
+        });
       });
     }
     case "subVariant":
@@ -560,15 +568,9 @@ function parentsKey(parents: DrillParents): string {
 
 export const DEMO_DATA: CollectionData = {
   useDrill(level, parents) {
-    const state = useDemoState().state;
-    const scope = useScope();
-    // The drill's "have N of M" counts the page's side (the contract passes no side here).
-    const side = useSide();
+    // NEO-364: the drill carries no counts, so it reads nothing of the copies.
     const key = parentsKey(parents);
-    return useMemo(
-      () => (level ? drillColumn(level, JSON.parse(key) as DrillParents, inScope(state, scope, side)) : undefined),
-      [level, key, state, scope, side],
-    );
+    return useMemo(() => (level ? drillColumn(level, JSON.parse(key) as DrillParents) : undefined), [level, key]);
   },
 
   useSetSummary(setId) {

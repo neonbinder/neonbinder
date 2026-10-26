@@ -577,16 +577,18 @@ export const selectorOptionFields = {
   /**
    * NEO-358 (Jason, 2026-10-24) — the cards homed on this row OR on any row
    * beneath it: `cardCount` of this row plus `subtreeCardCount` of every
-   * child. Kept on EVERY level, sport down to parallel, so each step of the
-   * collector's drill knows whether anything sits below it and an exact zero
-   * can be hidden. Not shown above the checklist levels.
+   * child. Kept FROM THE SET ROW DOWN only (`setName`, `variantType`,
+   * `insert`, `parallel`; NEO-364), so each of those steps of the collector's
+   * drill knows whether anything sits below it and an exact zero can be
+   * hidden. Absent on sport, year and manufacturer rows, which carry
+   * `hasCards` below instead. Never shown to a collector.
    *
    * Kept by the same `CardCountLedger` flush as the two counts above: each
    * card delta lands on its row and on every ancestor up the `parentId`
-   * chain, one read and one patch per row per flush; a writer that moves a
-   * row under a new parent (`ledger.moveSubtree`) moves its subtree count
-   * with it. A new row is born with both subtree counts at 0
-   * (`NEW_ROW_SUBTREE_COUNTS`).
+   * chain as far as the set, one read and one patch per row per flush; a
+   * writer that moves a row under a new parent (`ledger.moveSubtree`) moves
+   * its subtree count with it. A new row from the set down is born with both
+   * subtree counts at 0 (`newRowSubtreeCounts`).
    *
    * ABSENT means UNKNOWN: a row written before this field, or one the ledger
    * cleared because the stored value had drifted (it would have gone
@@ -605,6 +607,27 @@ export const selectorOptionFields = {
    * together with it.
    */
   subtreeNonVariationCardCount: v.optional(v.number()),
+  /**
+   * NEO-364 (Jason, 2026-10-25) — true once any card has landed anywhere
+   * beneath this row. Meaningful on `sport`, `year` and `manufacturer` rows
+   * only; absent on every other level, whose drill rule reads the exact
+   * subtree counts above.
+   *
+   * Set ONCE, by the `CardCountLedger` flush that first carries a card added
+   * beneath the row (or a re-home that brings cards or an unknown-size
+   * subtree under it), and never written by the ledger again: never set
+   * false, never cleared when the cards go. That is the point. Writing these
+   * three levels on every card write made them hot rows that serialised
+   * every concurrent card writer in a sport.
+   *
+   * ABSENT means no card is known beneath the row, and the collector's drill
+   * hides it (`collectionCatalog.drill`). The armed backfill
+   * (`backfillSubtreeCardCounts`) sets it where cards sit below and clears
+   * it where none do.
+   *
+   * NB data only: no adapter or sync reads or writes it.
+   */
+  hasCards: v.optional(v.boolean()),
   lastUpdated: v.number(),
 };
 
