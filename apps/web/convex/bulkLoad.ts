@@ -13,8 +13,9 @@
  *
  * NEO-254 (#241) shipped the first version of this file with franchises and
  * players as well; #250 removed it once that load was done. This is the
- * leagues + teams half only, re-cut around the alias model NEO-284 adds. The
- * players leg comes back with NEO-285 if it is needed.
+ * leagues + teams half only, re-cut around the alias model NEO-284 adds.
+ * NEO-285 brought back the players leg ADOPT-ONLY, as `upsertPlayerStints`:
+ * college stints onto players NB already holds — see its section below.
  *
  * ## Product invariant
  *
@@ -174,6 +175,7 @@
 import { internalMutation, internalQuery } from "./_generated/server";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { ConvexError, v } from "convex/values";
+import type { Infer } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import {
   findLeagueByName,
@@ -203,6 +205,10 @@ import { erasOverlap } from "../lib/teams/team-era";
 import { longestToken, nameTokens, rankTeamCandidates } from "./lib/entityNearMatch";
 import { teamFullName } from "../lib/teams/team-name";
 import { isWikidataQid } from "../lib/players/wikidata-id";
+// NEO-285 — the stints leg reads players the way the editor keys them and
+// orders a career the one way every career writer does.
+import { MAX_PLAYER_TEAM_YEARS, normalizePlayerName } from "./players";
+import { sortTeamYears } from "../lib/players/team-tenure";
 
 // ---------------------------------------------------------------------------
 // Bounds
@@ -1472,5 +1478,615 @@ export const previewTeams = internalQuery({
       throw new ConvexError("Bulk load preview requires confirm: \"BULK_LOAD\".");
     }
     return await loadTeams(ctx, args, false);
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Player stints (NEO-285)
+// ---------------------------------------------------------------------------
+
+/**
+ * NEO-285 — the stints leg of NEO-254's `upsertPlayers`, brought back
+ * ADOPT-ONLY for the college load: "players that went to WVU, in any
+ * uniform" is a stint on the college team row NEO-284 loaded, and nobody
+ * loaded those for the players NB already holds.
+ *
+ * ## What a row is
+ *
+ * One existing NB player, named the way NEO-254 keyed them — name + sport +
+ * birth year — and zero or more stints. A stint names its team ONE of two
+ * ways, never both:
+ *
+ *  - `teamId` — the id path. The driver already knows the team's NB id: the
+ *    Wikidata P54 item is a college team whose Q-id its NEO-284 dataset
+ *    carries, and its NEO-284 results map that key to the row it landed on.
+ *    No name matching at all.
+ *  - `school` — the name path. nflverse carries a school STRING ("West
+ *    Virginia", "WVU"), which resolves through the same name-or-alias lookup
+ *    every other team reader uses (`findTeamsByFullName`), so NEO-284's
+ *    aliases are what make "WVU" land on West Virginia / Mountaineers.
+ *
+ * Years are optional on both. A stint with no `fromYear` is written UNDATED
+ * — absent means unknown, never a year guessed from the pro career (the
+ * NEO-235 rule; see `players.teamYears` in schema.ts).
+ *
+ * ## The rules, and why each exists
+ *
+ * 1. **Armed, twice** — the same gate as every writer in this file.
+ * 2. **Adopt-only. Never creates a player.** A key that matches no player is
+ *    `no-match` and nothing is written; a college load inventing pros is
+ *    out of scope by the ticket and wrong by the invariant (a player row is
+ *    created from a card, not from a roster).
+ * 3. **Never guesses the player.** Same identity rule as NEO-254: one
+ *    candidate adopts unless the birth years CONTRADICT (positive evidence of
+ *    two people — that is `no-match`, not a merge); several adopt the one
+ *    whose birth year matches, when exactly one does; anything else is
+ *    `ambiguous` with the candidates, nothing written, and the driver asks.
+ *    A `decision: { adopt }` replays the answer — only between players that
+ *    share the loaded name, so a mis-keyed answers file cannot write one
+ *    man's college onto another.
+ * 4. **The sport filter holds.** A `teamId` in another sport is refused PER
+ *    STINT as `wrong-sport` (the Gwynn case: Wikidata files his San Diego
+ *    State membership under the BASKETBALL team) and the rest of the row
+ *    lands. A `school` resolves only among the sport's own teams, and never
+ *    to a team whose league is a known non-college league — a school string
+ *    is not allowed to land on a pro club that happens to share a word.
+ * 5. **Never guesses the team.** A school that resolves to nothing is
+ *    `unresolved`; to several (two eras of one program, two programs sharing
+ *    an alias) it is `ambiguous-school` with the candidates. Neither is
+ *    dropped silently and neither gets a placeholder row: the summary's
+ *    `unresolvedSchools`, with counts, is the input to the next team preload.
+ * 6. **Gap-fill only.** A stint is ADDED to the player's career; nothing on
+ *    it is removed, re-dated or re-ordered by hand. A stint on the same team
+ *    that could be the same one is `present` and a no-op: an undated incoming
+ *    stint against any stint on that team, a dated one against an undated
+ *    stint there (never re-date one an operator or an earlier load wrote),
+ *    and a dated one against a dated stint whose years overlap. That is what
+ *    makes a second run converge to 0 added.
+ *
+ * ## Budget
+ *
+ * The same counted budget as `loadTeams`, checked between rows, with the same
+ * `processed` / `hasMore` / `nextKey` resume contract — here every outcome is
+ * idempotent, so a replayed prefix is harmless, but resuming from `nextKey`
+ * is still the cheap way.
+ */
+const MAX_PLAYER_ROWS_PER_CALL = 100;
+
+/**
+ * Stints per incoming row. College careers are one school, two with a
+ * transfer, three with a juco year; eight is headroom, and the bound keeps a
+ * row's worst case (`8 × 18` for a contested school lookup) inside the budget's
+ * single-row overshoot.
+ */
+const MAX_STINTS_PER_ROW = 8;
+
+/** Same-name players looked at before the answer is just "several". */
+const PLAYER_CANDIDATE_SCAN_LIMIT = 8;
+
+/** Same budget and calibration as the team loader's — see its note. */
+export const BULK_LOAD_STINT_OP_BUDGET = 900;
+
+const stintInputValidator = v.object({
+  teamId: v.optional(v.id("teams")),
+  school: v.optional(v.string()),
+  fromYear: v.optional(v.number()),
+  toYear: v.optional(v.number()),
+});
+
+const playerStintRowValidator = v.object({
+  key: v.string(),
+  name: v.string(),
+  birthYear: v.optional(v.number()),
+  stints: v.array(stintInputValidator),
+  decision: v.optional(v.object({ adopt: v.id("players") })),
+});
+
+const stintOutcomeValidator = v.union(
+  v.literal("added"),
+  v.literal("would-add"),
+  v.literal("present"),
+  v.literal("wrong-sport"),
+  v.literal("missing-team"),
+  v.literal("unresolved"),
+  v.literal("ambiguous-school"),
+  v.literal("cap-reached"),
+);
+
+const stintTeamCandidateValidator = v.object({
+  id: v.id("teams"),
+  name: v.string(),
+  yearsActive: v.optional(yearsValidator),
+});
+
+const playerStintResultValidator = v.object({
+  key: v.string(),
+  playerId: v.union(v.id("players"), v.null()),
+  status: v.union(
+    v.literal("adopted"),
+    v.literal("would-adopt"),
+    v.literal("no-match"),
+    v.literal("ambiguous"),
+  ),
+  /** How the player was found. `decision` is a replayed answer. */
+  matchedBy: v.optional(v.union(v.literal("name"), v.literal("decision"))),
+  /** `no-match` only: the one same-name player's birth year contradicted. */
+  birthYearMismatch: v.optional(v.boolean()),
+  /** `ambiguous` only — the players the operator chooses between. */
+  candidates: v.optional(
+    v.array(
+      v.object({
+        id: v.id("players"),
+        name: v.string(),
+        birthYear: v.optional(v.number()),
+      }),
+    ),
+  ),
+  /**
+   * One entry per incoming stint, in order. Empty on `no-match` and
+   * `ambiguous`: with no player, no stint was looked at.
+   */
+  stints: v.array(
+    v.object({
+      outcome: stintOutcomeValidator,
+      teamId: v.optional(v.id("teams")),
+      school: v.optional(v.string()),
+      candidates: v.optional(v.array(stintTeamCandidateValidator)),
+    }),
+  ),
+});
+
+const playerStintsResultValidator = v.object({
+  results: v.array(playerStintResultValidator),
+  summary: v.object({
+    adopted: v.number(),
+    /** Stints written — or, on a dry run, that would be. */
+    stintsAdded: v.number(),
+    stintsPresent: v.number(),
+    noMatch: v.number(),
+    ambiguous: v.number(),
+    wrongSport: v.number(),
+    /**
+     * Every school string that resolved to no team, with how many stints
+     * named it. Never dropped — this list is the next team preload's input.
+     */
+    unresolvedSchools: v.array(v.object({ school: v.string(), count: v.number() })),
+    /** Every school string that resolved to several teams. */
+    ambiguousSchools: v.array(
+      v.object({
+        school: v.string(),
+        count: v.number(),
+        candidates: v.array(stintTeamCandidateValidator),
+      }),
+    ),
+  }),
+  processed: v.number(),
+  hasMore: v.boolean(),
+  nextKey: v.union(v.string(), v.null()),
+  opsSpent: v.number(),
+});
+
+type PlayerStintRowInput = {
+  key: string;
+  name: string;
+  birthYear?: number;
+  stints: Array<{
+    teamId?: Id<"teams">;
+    school?: string;
+    fromYear?: number;
+    toYear?: number;
+  }>;
+  decision?: { adopt: Id<"players"> };
+};
+
+type StintOutcome =
+  | "added"
+  | "would-add"
+  | "present"
+  | "wrong-sport"
+  | "missing-team"
+  | "unresolved"
+  | "ambiguous-school"
+  | "cap-reached";
+
+type StintTeamCandidate = {
+  id: Id<"teams">;
+  name: string;
+  yearsActive?: { from: number; to?: number };
+};
+
+type PlayerStintResult = {
+  key: string;
+  playerId: Id<"players"> | null;
+  status: "adopted" | "would-adopt" | "no-match" | "ambiguous";
+  matchedBy?: "name" | "decision";
+  birthYearMismatch?: boolean;
+  candidates?: Array<{ id: Id<"players">; name: string; birthYear?: number }>;
+  stints: Array<{
+    outcome: StintOutcome;
+    teamId?: Id<"teams">;
+    school?: string;
+    candidates?: StintTeamCandidate[];
+  }>;
+};
+
+type StoredStint = { teamId: Id<"teams">; fromYear?: number; toYear?: number };
+
+/**
+ * Could `incoming` be a stint the player already has? See rule 6 in the
+ * section note: same team, and either side undated, or the years overlap.
+ * An open stint (no `toYear`) runs on.
+ */
+export function stintAlreadyPresent(
+  existing: ReadonlyArray<StoredStint>,
+  incoming: StoredStint,
+): boolean {
+  return existing.some((stint) => {
+    if (stint.teamId !== incoming.teamId) return false;
+    if (stint.fromYear === undefined || incoming.fromYear === undefined) return true;
+    return erasOverlap(
+      { from: stint.fromYear, ...(stint.toYear !== undefined ? { to: stint.toYear } : {}) },
+      { from: incoming.fromYear, ...(incoming.toYear !== undefined ? { to: incoming.toYear } : {}) },
+    );
+  });
+}
+
+function stintTeamCandidate(team: Doc<"teams">): StintTeamCandidate {
+  return {
+    id: team._id,
+    name: teamFullName(team),
+    ...(team.yearsActive ? { yearsActive: team.yearsActive } : {}),
+  };
+}
+
+async function loadPlayerStints(
+  ctx: QueryCtx | MutationCtx,
+  args: { sport: string; players: PlayerStintRowInput[] },
+  write: boolean,
+): Promise<Infer<typeof playerStintsResultValidator>> {
+  assertChunkSize(args.players.length, MAX_PLAYER_ROWS_PER_CALL, "players");
+  let ops = 0;
+  const sportId = await requireSportId(ctx, args.sport);
+  ops += 1;
+  const mutationCtx = write ? (ctx as MutationCtx) : null;
+  const maxYear = new Date().getFullYear() + 1;
+
+  // One read per distinct team, league and school across the whole chunk: a
+  // hundred players from one draft class share a few dozen schools.
+  const teamCache = new Map<string, Doc<"teams"> | null>();
+  const readTeam = async (id: Id<"teams">): Promise<Doc<"teams"> | null> => {
+    if (!teamCache.has(id)) {
+      teamCache.set(id, await ctx.db.get(id));
+      ops += 1;
+    }
+    return teamCache.get(id) ?? null;
+  };
+  const leagueIsCollege = new Map<string, boolean>();
+  /**
+   * Rule 4 — may a SCHOOL string land on this team? Not when its league is
+   * known and is not a college league. A team with no league, or a league
+   * with no level, is not ruled out: plenty of hand-made college rows predate
+   * NEO-284's league gap-fill, and refusing them would report half the
+   * country's programs as unresolved.
+   */
+  const collegeEligible = async (team: Doc<"teams">): Promise<boolean> => {
+    if (!team.leagueId) return true;
+    const key = team.leagueId as string;
+    if (!leagueIsCollege.has(key)) {
+      const league = await ctx.db.get(team.leagueId);
+      ops += 1;
+      leagueIsCollege.set(key, !league?.level || league.level === "college");
+    }
+    return leagueIsCollege.get(key)!;
+  };
+  const schoolCache = new Map<string, Doc<"teams">[]>();
+  const lookupSchool = async (school: string): Promise<Doc<"teams">[]> => {
+    const cacheKey = normalizeTeamName(school);
+    if (!schoolCache.has(cacheKey)) {
+      const rows = await findTeamsByFullName(ctx, sportId, school);
+      ops += IDENTITY_LOOKUP_BASE_OPS + rows.length;
+      const eligible: Doc<"teams">[] = [];
+      for (const row of rows) {
+        teamCache.set(row._id, row);
+        if (await collegeEligible(row)) eligible.push(row);
+      }
+      schoolCache.set(cacheKey, eligible);
+    }
+    return schoolCache.get(cacheKey)!;
+  };
+
+  const results: PlayerStintResult[] = [];
+  const unresolved = new Map<string, { school: string; count: number }>();
+  const ambiguousSchools = new Map<
+    string,
+    { school: string; count: number; candidates: StintTeamCandidate[] }
+  >();
+  let stintsAdded = 0;
+  let stintsPresent = 0;
+  let wrongSport = 0;
+
+  let processed = 0;
+  let nextKey: string | null = null;
+
+  for (let rowIndex = 0; rowIndex < args.players.length; rowIndex++) {
+    if (rowIndex > 0 && ops >= BULK_LOAD_STINT_OP_BUDGET) {
+      nextKey = boundedKey(args.players[rowIndex].key);
+      break;
+    }
+    const row = args.players[rowIndex];
+    processed = rowIndex + 1;
+    const key = boundedKey(row.key);
+    const name = boundedName(row.name, "A player name", key);
+    const nameNormalized = normalizePlayerName(name);
+    if (!nameNormalized) {
+      throw new ConvexError(`The player name for "${key}" has no letters or digits in it.`);
+    }
+    if (
+      row.birthYear !== undefined &&
+      (!Number.isInteger(row.birthYear) || row.birthYear < MIN_YEAR || row.birthYear > maxYear)
+    ) {
+      throw new ConvexError(
+        `The birth year for "${key}" is ${row.birthYear}; expected a whole year between ${MIN_YEAR} and ${maxYear}.`,
+      );
+    }
+
+    // ---- validate the stints before anything is read for them ------------
+    if (row.stints.length > MAX_STINTS_PER_ROW) {
+      throw new ConvexError(
+        `"${key}" has ${row.stints.length} stints; the limit is ${MAX_STINTS_PER_ROW}.`,
+      );
+    }
+    const stints = row.stints.map((stint) => {
+      const hasTeam = stint.teamId !== undefined;
+      const school = stint.school?.trim().replace(/\s+/g, " ") || undefined;
+      if (hasTeam === (school !== undefined)) {
+        throw new ConvexError(
+          `A stint for "${key}" must name exactly one of teamId or school.`,
+        );
+      }
+      if (school !== undefined) boundedName(school, "A school", key);
+      if (stint.fromYear !== undefined) {
+        assertYears(
+          { from: stint.fromYear, ...(stint.toYear !== undefined ? { to: stint.toYear } : {}) },
+          "A stint",
+          key,
+        );
+      } else if (stint.toYear !== undefined) {
+        throw new ConvexError(`A stint for "${key}" has an end year and no start year.`);
+      }
+      return {
+        teamId: stint.teamId,
+        school,
+        fromYear: stint.fromYear,
+        toYear: stint.toYear,
+      };
+    });
+
+    // ---- the player: adopt-only ------------------------------------------
+    let player: Doc<"players"> | null = null;
+    let matchedBy: "name" | "decision" = "name";
+    if (row.decision) {
+      const chosen = await ctx.db.get(row.decision.adopt);
+      ops += 1;
+      if (!chosen || chosen.sportId !== sportId) {
+        throw new ConvexError(`The player chosen for "${key}" is not a player in this sport.`);
+      }
+      if (chosen.nameNormalized !== nameNormalized) {
+        throw new ConvexError(
+          `The player chosen for "${key}" is a different person. A decision ` +
+            `can only pick between players that share the name being loaded.`,
+        );
+      }
+      player = chosen;
+      matchedBy = "decision";
+    } else {
+      const candidates = await ctx.db
+        .query("players")
+        .withIndex("by_name_normalized_and_sport_id", (q) =>
+          q.eq("nameNormalized", nameNormalized).eq("sportId", sportId),
+        )
+        .take(PLAYER_CANDIDATE_SCAN_LIMIT);
+      ops += 1;
+      if (candidates.length === 0) {
+        results.push({ key, playerId: null, status: "no-match", stints: [] });
+        continue;
+      }
+      if (candidates.length === 1) {
+        const only = candidates[0];
+        if (
+          only.birthYear !== undefined &&
+          row.birthYear !== undefined &&
+          only.birthYear !== row.birthYear
+        ) {
+          // Positive evidence of two people. A college load creates no one,
+          // so this man is simply not in NB yet.
+          results.push({
+            key,
+            playerId: null,
+            status: "no-match",
+            birthYearMismatch: true,
+            stints: [],
+          });
+          continue;
+        }
+        player = only;
+      } else {
+        const byYear =
+          row.birthYear === undefined
+            ? []
+            : candidates.filter((p) => p.birthYear === row.birthYear);
+        if (byYear.length === 1) {
+          player = byYear[0];
+        } else {
+          results.push({
+            key,
+            playerId: null,
+            status: "ambiguous",
+            candidates: candidates.map((p) => ({
+              id: p._id,
+              name: p.name,
+              ...(p.birthYear !== undefined ? { birthYear: p.birthYear } : {}),
+            })),
+            stints: [],
+          });
+          continue;
+        }
+      }
+    }
+
+    // ---- the stints: resolve, then gap-fill ------------------------------
+    const career: StoredStint[] = [...(player.teamYears ?? [])];
+    const startLength = career.length;
+    const outcomes: PlayerStintResult["stints"] = [];
+    for (const stint of stints) {
+      let team: Doc<"teams"> | null = null;
+      if (stint.teamId !== undefined) {
+        team = await readTeam(stint.teamId);
+        if (!team) {
+          outcomes.push({ outcome: "missing-team", teamId: stint.teamId });
+          continue;
+        }
+        if (team.sportId !== sportId) {
+          wrongSport += 1;
+          outcomes.push({ outcome: "wrong-sport", teamId: stint.teamId });
+          continue;
+        }
+      } else {
+        const school = stint.school!;
+        let matches = await lookupSchool(school);
+        if (stint.fromYear !== undefined && matches.length > 1) {
+          const span = {
+            from: stint.fromYear,
+            ...(stint.toYear !== undefined ? { to: stint.toYear } : {}),
+          };
+          matches = matches.filter((r) => erasOverlap(r.yearsActive, span));
+        }
+        if (matches.length === 0) {
+          const k = normalizeTeamName(school);
+          const entry = unresolved.get(k) ?? { school, count: 0 };
+          entry.count += 1;
+          unresolved.set(k, entry);
+          outcomes.push({ outcome: "unresolved", school });
+          continue;
+        }
+        if (matches.length > 1) {
+          const candidates = matches.map(stintTeamCandidate);
+          const k = normalizeTeamName(school);
+          const entry = ambiguousSchools.get(k) ?? { school, count: 0, candidates };
+          entry.count += 1;
+          ambiguousSchools.set(k, entry);
+          outcomes.push({ outcome: "ambiguous-school", school, candidates });
+          continue;
+        }
+        // Exactly one — the two branches above returned on none and several.
+        if (matches.length === 1) team = matches[0];
+      }
+      if (!team) continue;
+
+      const entry: StoredStint = {
+        teamId: team._id,
+        ...(stint.fromYear !== undefined ? { fromYear: stint.fromYear } : {}),
+        ...(stint.toYear !== undefined ? { toYear: stint.toYear } : {}),
+      };
+      const via = stint.school !== undefined ? { school: stint.school } : {};
+      if (stintAlreadyPresent(career, entry)) {
+        stintsPresent += 1;
+        outcomes.push({ outcome: "present", teamId: team._id, ...via });
+        continue;
+      }
+      if (career.length >= MAX_PLAYER_TEAM_YEARS) {
+        outcomes.push({ outcome: "cap-reached", teamId: team._id, ...via });
+        continue;
+      }
+      career.push(entry);
+      stintsAdded += 1;
+      outcomes.push({ outcome: write ? "added" : "would-add", teamId: team._id, ...via });
+    }
+
+    if (mutationCtx && career.length > startLength) {
+      await mutationCtx.db.patch(player._id, {
+        teamYears: sortTeamYears(career),
+        lastUpdated: Date.now(),
+      });
+      ops += 1;
+    }
+    results.push({
+      key,
+      playerId: player._id,
+      status: write ? "adopted" : "would-adopt",
+      matchedBy,
+      stints: outcomes,
+    });
+  }
+
+  const hasMore = processed < args.players.length;
+  if (hasMore) {
+    console.warn(
+      JSON.stringify({
+        msg: "bulk_load_player_stints_truncated",
+        fn: write ? "upsertPlayerStints" : "previewPlayerStints",
+        rowsSent: args.players.length,
+        processed,
+        opsSpent: ops,
+        budget: BULK_LOAD_STINT_OP_BUDGET,
+      }),
+    );
+  }
+
+  const adopted = results.filter((r) => r.playerId !== null).length;
+  return {
+    results,
+    summary: {
+      adopted,
+      stintsAdded,
+      stintsPresent,
+      noMatch: results.filter((r) => r.status === "no-match").length,
+      ambiguous: results.filter((r) => r.status === "ambiguous").length,
+      wrongSport,
+      unresolvedSchools: [...unresolved.values()],
+      ambiguousSchools: [...ambiguousSchools.values()],
+    },
+    processed,
+    hasMore,
+    nextKey,
+    opsSpent: ops,
+  };
+}
+
+/**
+ * NEO-285 — college (or any) stints onto players NB already holds. The
+ * protocol is in the section note above; this is the armed entry point.
+ */
+export const upsertPlayerStints = internalMutation({
+  args: {
+    confirm: confirmValidator,
+    sport: v.string(),
+    /** Same protocol, no writes, `would-` statuses. */
+    dryRun: v.optional(v.boolean()),
+    players: v.array(playerStintRowValidator),
+  },
+  returns: playerStintsResultValidator,
+  handler: async (ctx, args) => {
+    assertBulkLoadArmed(args.confirm);
+    return await loadPlayerStints(ctx, args, !args.dryRun);
+  },
+});
+
+/**
+ * The dry run as a query, runnable against an unarmed deployment — the same
+ * reasoning, and the same budget bound, as `previewTeams`.
+ */
+export const previewPlayerStints = internalQuery({
+  args: {
+    confirm: confirmValidator,
+    sport: v.string(),
+    players: v.array(playerStintRowValidator),
+  },
+  returns: playerStintsResultValidator,
+  handler: async (ctx, args) => {
+    if (args.confirm !== "BULK_LOAD") {
+      throw new ConvexError("Bulk load preview requires confirm: \"BULK_LOAD\".");
+    }
+    return await loadPlayerStints(ctx, args, false);
   },
 });
