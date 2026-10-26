@@ -496,7 +496,7 @@ export default function MyBindersTab({
         tally,
         label,
         describeRule: demo?.describeRule,
-        canShare: capabilities.share,
+        share: capabilities.shareLinks ? "live" : capabilities.share ? "example" : null,
         side: surface,
       })
     : null;

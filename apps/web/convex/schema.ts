@@ -3006,6 +3006,11 @@ export default defineSchema({
     youtubeUrl: v.optional(v.string()),
     facebookUrl: v.optional(v.string()),
     threadsUrl: v.optional(v.string()),
+    // NEO-360 — Up for Trade and the for-sale stock are public by default, so
+    // their switches say "private" and absent means public. Only `true` is
+    // ever stored. Set by `publicProfile.setShelfVisibility`.
+    tradePrivate: v.optional(v.literal(true)),
+    forSalePrivate: v.optional(v.literal(true)),
     createdAt: v.number(),
     updatedAt: v.number(),
   })
@@ -3510,6 +3515,32 @@ export default defineSchema({
     count: v.optional(collectionCountValidator),
     tally: v.optional(collectionTallyValidator),
     /**
+     * NEO-360 — a binder's public link is `/u/<username>/binders/<slug>`.
+     * `slug` is the link name the collector controls (lowercase `[a-z0-9-]`,
+     * 3 to 50 characters, suggested from the name at create; a rename never
+     * touches it), unique among the owner's binders. Only the collector's
+     * own binders carry it (never Main, a box, Up for Trade or the Want
+     * List). Absent on a binder made before NEO-360 until its owner first
+     * opens Share (`collectionContainers.ensureLink`).
+     */
+    slug: v.optional(v.string()),
+    /**
+     * Retired before release: an early NEO-360 draft added a random suffix to
+     * binder links. Never read or written; kept only so a preview deployment
+     * holding draft rows still validates. Drop once no row carries it.
+     */
+    slugKey: v.optional(v.string()),
+    /**
+     * NEO-360 — readable by anyone with the link. Only `"public"` is ever
+     * stored; private is ABSENT, so every binder and the Want List start
+     * private. Only a collector's own binder and the Want List row take it;
+     * every write refuses Main, a box and Up for Trade, and the public reads
+     * ignore it on any row that is not a binder or the Want List. Up for
+     * Trade and for-sale are public by default, so their switches live on
+     * `publicProfiles` (`tradePrivate`, `forSalePrivate`).
+     */
+    visibility: v.optional(v.literal("public")),
+    /**
      * NEO-364 — `tally` counts collection homes only (binders and Main, never
      * a box) exactly when this says "collection". Absent: the tally is from
      * before NEO-364 (every home) and reads as not kept.
@@ -3520,7 +3551,11 @@ export default defineSchema({
     // Unchanged. Serves: Main/Want/Trade get-or-create (all fields, .unique()),
     // list() (prefix ownerId), and the 200-container cap
     // (eq system undefined, take 201).
-    .index("by_owner_and_system", ["ownerId", "system"]),
+    .index("by_owner_and_system", ["ownerId", "system"])
+    // NEO-360 — a public binder link (`publicCollection.binder`): owner from the
+    // username, then the link name. Also the uniqueness check when a link
+    // name is minted or changed. `.first()`, never `.unique()`, on reads.
+    .index("by_owner_and_slug", ["ownerId", "slug"]),
 
   /**
    * ── NEO-358: one pile of a card the collector owns ────────────────────────

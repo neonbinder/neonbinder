@@ -2328,3 +2328,62 @@ describe("NEO-358: the collection and its catalog reads require a signed-in call
     },
   );
 });
+
+describe("NEO-360: the public share-link reads are public by intent; the switches are signed-in", () => {
+  // Anonymous ON PURPOSE: the caller is someone opening a link a collector
+  // posted, who will never sign in. Each answers a stranger with the same
+  // not-found it gives a private or missing page (publicCollection.test.ts
+  // proves what they can and cannot return).
+  const PUBLIC_BY_INTENT: Array<[string, (t: ReturnType<typeof convexTest>) => Promise<unknown>]> = [
+    ["publicCollection.binder", (t) => t.query(api.publicCollection.binder, { username: "nobody", path: "x-abcdef" })],
+    [
+      "publicCollection.binderCopies",
+      (t) =>
+        t.query(api.publicCollection.binderCopies, {
+          username: "nobody",
+          path: "x-abcdef",
+          paginationOpts: { numItems: 10, cursor: null },
+        }),
+    ],
+    ["publicCollection.shelf", (t) => t.query(api.publicCollection.shelf, { username: "nobody", shelf: "trade" })],
+    ["publicCollection.shelves", (t) => t.query(api.publicCollection.shelves, { username: "nobody" })],
+    [
+      "publicCollection.wantList",
+      (t) => t.query(api.publicCollection.wantList, { username: "nobody", paginationOpts: { numItems: 10, cursor: null } }),
+    ],
+    [
+      "publicCollection.trade",
+      (t) => t.query(api.publicCollection.trade, { username: "nobody", paginationOpts: { numItems: 10, cursor: null } }),
+    ],
+    [
+      "publicCollection.forSale",
+      (t) => t.query(api.publicCollection.forSale, { username: "nobody", paginationOpts: { numItems: 10, cursor: null } }),
+    ],
+  ];
+
+  test.each(PUBLIC_BY_INTENT)("%s answers an anonymous caller", async (_name, call) => {
+    const t = convexTest(schema, modules);
+    await expect(call(t)).resolves.toBeDefined();
+  });
+
+  test("publicCollection.ts holds no mutation or action", () => {
+    const src = readFileSync(join(__dirname, "publicCollection.ts"), "utf8");
+    expect(src).not.toMatch(/\b(mutation|action|internalMutation|internalAction)\(\{/);
+  });
+
+  test("the share switches reject an anonymous caller", async () => {
+    const t = convexTest(schema, modules);
+    const containerId = await t.run(async (ctx) =>
+      ctx.db.insert("collectionContainers", { ownerId: "someone", kind: "binder", name: "B", lastUpdated: 0 }),
+    );
+    const calls = [
+      () => t.mutation(api.collectionContainers.setVisibility, { containerId, visibility: "public" }),
+      () => t.mutation(api.collectionContainers.setSlug, { containerId, slug: "my-binder" }),
+      () => t.mutation(api.collectionContainers.ensureLink, { containerId }),
+      () => t.mutation(api.publicProfile.setShelfVisibility, { shelf: "trade", private: true }),
+    ];
+    for (const call of calls) await expect(call()).rejects.toThrow(/Not authenticated/);
+    const row = await t.run(async (ctx) => ctx.db.get(containerId));
+    expect(row?.visibility).toBeUndefined();
+  });
+});
