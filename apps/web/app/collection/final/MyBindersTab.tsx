@@ -884,12 +884,27 @@ export default function MyBindersTab({
     : null;
 
   // -- pockets ----------------------------------------------------------------
-  const openPocket = (card: Card, pocketCopies: Copy[]) =>
+  const openPocket = (card: Card, pocketCopies: Copy[]) => {
+    // A pocket is aimed in this binder: tapping one of its cards moves it
+    // there (the one-tap way to rearrange, with no drag and no keyboard).
+    if (
+      rearrange &&
+      aimed &&
+      homeOpen &&
+      aimed.binderId === homeOpen.id &&
+      pocketCopies.length === 1 &&
+      pocketCopies[0].homeId === homeOpen.id
+    ) {
+      setAimed(null);
+      void shiftTo(pocketCopies[0], slotOf(aimed));
+      return;
+    }
     openCard(card.id, {
       copyId: soleCopyId(pocketCopies),
       list: listIds,
       seed: card,
     });
+  };
 
   const addFromPocket = (
     card: Card,
@@ -965,6 +980,9 @@ export default function MyBindersTab({
     onDragStart: ({ active }) => {
       const name = nameOf(active.id);
       if (!name) return undefined;
+      // A card already here is picked up by pointer only: no arrow keys.
+      if (copyOf(active.id))
+        return `Picked up ${name}. Drop it on an empty ${isBox ? "row" : "pocket"}.`;
       const card = cardOf(active.id);
       if (card && moves(card)) {
         const from = placesOf(mine(card.id), containers ?? [])
@@ -983,7 +1001,8 @@ export default function MyBindersTab({
     },
     onDragEnd: ({ active, over }) => {
       const name = nameOf(active.id);
-      if (!name) return undefined;
+      // The status line says where a card already here went.
+      if (!name || (over && copyOf(active.id))) return undefined;
       return over
         ? `Dropped ${name} on ${describeOver(over.id)}.`
         : `${name} went back.`;

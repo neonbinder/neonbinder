@@ -171,7 +171,7 @@ function countLine(count: { copies: number; lines: number } | null, noun: string
 /**
  * `/u/:username/binders/:path`: nine pockets a page. Every card in a binder
  * sits in a pocket; one stored before that rule (waiting on the backfill)
- * shows in the first open pocket.
+ * shows after the last filled pocket, where the backfill will put it.
  */
 export function PublicBinderPage() {
   const username = useUsername();
@@ -215,12 +215,10 @@ export function PublicBinderPage() {
     put(copy, copy.slot);
     taken.add(copy.slot);
   }
-  let open = 0;
+  // After the last filled pocket, where the backfill will put it.
+  let next = Math.max(-1, ...taken) + 1;
   for (const copy of results) {
-    if (copy.slot !== undefined) continue;
-    while (taken.has(open)) open += 1;
-    put(copy, open);
-    taken.add(open);
+    if (copy.slot === undefined) put(copy, next++);
   }
   const pageNumbers = [...pages.keys()].sort((a, b) => a - b);
   const spine = header.label;

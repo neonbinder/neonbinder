@@ -124,6 +124,32 @@ describe("My Binders", () => {
     await waitFor(() => expect(movable()[0].getAttribute("aria-label")).toBe(name));
   });
 
+  it("tapping an empty pocket and then a card moves the card there, with no drag and no keyboard", async () => {
+    renderBinders("/collection?tab=binders&b=binder-slab-case");
+    const page1 = screen.getByRole("group", { name: /^Page 1/ });
+    const card = within(page1).getAllByRole("button").find((b) => b.getAttribute("aria-keyshortcuts"))!;
+    const name = card.getAttribute("aria-label")!;
+    const empty = within(page1).getAllByRole("button", { name: /^Empty pocket \d+ on page 1\. Fill it from the pack$/ })[0];
+    const n = /^Empty pocket (\d+)/.exec(empty.getAttribute("aria-label")!)![1];
+    fireEvent.click(empty);
+    expect(screen.getByText(/tap a card in this binder to move it here/)).toBeTruthy();
+    fireEvent.click(card);
+    const statusSays = (re: RegExp) => screen.getAllByRole("status").some((st) => re.test(st.textContent ?? ""));
+    await waitFor(() => expect(statusSays(new RegExp(`^Moved .+ to page 1, pocket ${n}\\.$`))).toBe(true));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(within(page1).queryByRole("button", { name: `Empty pocket ${n} on page 1. Fill it from the pack` })).toBeNull();
+    expect(screen.getAllByRole("button", { name }).length).toBeGreaterThan(0);
+  });
+
+  it("Alt+Left on any pocket of a binder never reaches the browser's Back", () => {
+    renderBinders("/collection?tab=binders&b=binder-slab-case");
+    const empty = screen.getAllByRole("button", { name: /^Empty pocket \d+ on page 1\. Fill it from the pack$/ })[0];
+    expect(fireEvent.keyDown(empty, { key: "ArrowLeft", altKey: true })).toBe(false);
+    const card = screen.getAllByRole("button").find((b) => b.getAttribute("aria-keyshortcuts")?.startsWith("Alt+"))!;
+    expect(card.getAttribute("aria-describedby")).toBe("nb-pocket-move-hint");
+    expect(document.getElementById("nb-pocket-move-hint")?.textContent).toMatch(/Alt plus the arrow keys/);
+  });
+
   it("opening a binder scopes the page to it, and the shelf shows it", () => {
     renderBinders();
     fireEvent.click(screen.getByRole("button", { name: /^'96 Contenders,/ }));
@@ -503,7 +529,8 @@ describe("identity slips on the shelf", () => {
     const pocket = screen.getAllByRole("button", { name: /^1996 Playoff Contenders .*#\d+ /, hidden: false })[0];
     act(() => pocket.focus());
     await waitFor(() => expect(tip()?.textContent).toMatch(/^1996 Playoff Contenders.*#\d+ \S+/));
-    expect(pocket.getAttribute("aria-describedby")).toBeNull();
+    // The slip is not its description (its name says it all); the move hint is.
+    expect(pocket.getAttribute("aria-describedby")).toBe("nb-pocket-move-hint");
   });
 });
 

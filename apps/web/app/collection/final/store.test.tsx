@@ -486,3 +486,42 @@ describe("reducer and browse filter", () => {
     expect(s.browseFilter).toEqual({ ...NO_BROWSE_FILTER, sport: "hockey", from: 1990 });
   });
 });
+
+describe("every card in a binder sits in a pocket", () => {
+  it("the seed gives every binder copy a pocket of its own, and leaves a box row optional", () => {
+    const s = initialCollectionState();
+    for (const home of s.containers.filter((c) => c.kind === "binder" && !c.rule)) {
+      const slots = inHome(s, home.id).map((c) => c.slot);
+      expect(slots.every((x) => typeof x === "number"), home.id).toBe(true);
+      expect(new Set(slots).size, home.id).toBe(slots.length);
+    }
+  });
+
+  it("an add with no pocket named stacks on an identical twin's pocket, else takes the first open one", () => {
+    const s0 = initialCollectionState();
+    const cardId = s0.copies[0].cardId;
+    const first = demoOps.addLine(s0, cardId, details({ homeId: SLAB, notes: "stack" }));
+    const firstSlot = copyIn(first.state, first.result.copyId).slot;
+    expect(firstSlot).toBeTypeOf("number");
+    const again = demoOps.addLine(first.state, cardId, details({ homeId: SLAB, notes: "stack" }));
+    expect(again.result).toMatchObject({ copyId: first.result.copyId, merged: true });
+    const other = demoOps.addLine(again.state, cardId, details({ homeId: SLAB, notes: "different" }));
+    expect(copyIn(other.state, other.result.copyId).slot).not.toBe(firstSlot);
+  });
+
+  it("placeCopy never takes a binder card out of its pocket; a move within the binder keeps it", () => {
+    const s0 = initialCollectionState();
+    const held = inHome(s0, CONTENDERS).find((c) => c.slot !== undefined)!;
+    expect(() => demoOps.placeCopy(s0, held.id, null)).toThrow(/always sits in a pocket/);
+    const { state, result } = demoOps.moveCopy(s0, held.id, CONTENDERS);
+    expect(result.copyId).toBe(held.id);
+    expect(copyIn(state, held.id).slot).toBe(held.slot);
+  });
+
+  it("an edit that clears the pocket keeps it in a binder", () => {
+    const s0 = initialCollectionState();
+    const held = inHome(s0, CONTENDERS).find((c) => c.slot !== undefined)!;
+    const { state } = demoOps.updateCopy(s0, held.id, { slot: undefined, notes: "edited" });
+    expect(copyIn(state, held.id)).toMatchObject({ slot: held.slot, notes: "edited" });
+  });
+});

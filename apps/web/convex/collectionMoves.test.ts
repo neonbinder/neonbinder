@@ -12,7 +12,9 @@ import { describe, expect, test } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import { seedCollectionCatalog } from "../lib/testing/collection-fixture";
+import { drainScheduled } from "../lib/testing/drain-scheduled";
 import { expectCountsExact, tallyTruth, truthByContainer } from "../lib/testing/collection-counts";
+import { LINES_PER_BINDER } from "./backfillBinderPockets";
 import type { Id } from "./_generated/dataModel";
 
 const modules = (import.meta as unknown as {
@@ -810,10 +812,106 @@ describe("backfillBinderPockets", () => {
 
     const armed = await s.t.mutation(internal.backfillBinderPockets.run, { arm: true });
     expect(armed).toMatchObject({ armed: true, binders: 1, placed: 2, isDone: true });
+    // After the last filled pocket (1), never hunting for the gap at 0.
     const slots = (await copies(s.t)).filter((r) => loose.includes(r._id)).map((r) => r.slot).sort();
-    expect(slots).toEqual([0, 2]);
+    expect(slots).toEqual([2, 3]);
     expect((await copies(s.t)).find((r) => r._id === boxed.copyId)!.slot).toBeUndefined();
 
     expect(await s.t.mutation(internal.backfillBinderPockets.run, { arm: true })).toMatchObject({ binders: 0, placed: 0 });
+  });
+});
+
+describe("the open-pocket hint", () => {
+  const hintOf = (s: S, id: Id<"collectionContainers">) => s.t.run(async (ctx) => (await ctx.db.get(id))!.openPocket);
+  const slotOf = async (s: S, id: Id<"collectionCopies">) => (await copies(s.t)).find((r) => r._id === id)!.slot;
+
+  test("removeCopies and a pocket change bring it down; a partial move leaves it", async () => {
+    const s = await setup();
+    const a = await add(s, s.fx.gooden1, { homeId: s.binderA });
+    const b = await add(s, s.fx.strawberry2, { homeId: s.binderA });
+    const c = await add(s, s.fx.gold1, { homeId: s.binderA, quantity: 3 });
+    expect(await hintOf(s, s.binderA)).toBe(3);
+    await s.me.mutation(api.collection.removeCopies, { copyIds: [b.copyId] });
+    expect(await hintOf(s, s.binderA)).toBe(1);
+    expect(await slotOf(s, (await add(s, s.fx.futureStar, { homeId: s.binderA })).copyId)).toBe(1);
+
+    await s.me.mutation(api.collection.updateCopy, {
+      copyId: a.copyId,
+      details: { quantity: 1, homeId: s.binderA, slot: 7 } as never,
+    });
+    expect(await hintOf(s, s.binderA)).toBe(0);
+    expect(await slotOf(s, (await add(s, s.fx.gooden1Sliding, { homeId: s.binderA })).copyId)).toBe(0);
+
+    // Two of the three leave; one stays in pocket 2, so it stays full.
+    const before = await hintOf(s, s.binderA);
+    await s.me.mutation(api.collection.moveCopy, { copyId: c.copyId, toHomeId: s.binderB, quantity: 2 });
+    expect(await slotOf(s, c.copyId)).toBe(2);
+    expect(await hintOf(s, s.binderA)).toBe(before);
+    await exact(s);
+  });
+
+  test("a full binder refuses a card; Main never fills", async () => {
+    const s = await setup();
+    await s.t.run(async (ctx) => {
+      await ctx.db.patch(s.binderA, { openPocket: 9000 });
+      await ctx.db.patch(s.sys.mainId, { openPocket: 9000 });
+    });
+    await expect(add(s, s.fx.gooden1, { homeId: s.binderA })).rejects.toThrow(/binder is full/);
+    const m = await s.me.mutation(api.collection.addHave, { cardId: s.fx.gooden1 });
+    expect(await slotOf(s, m.copyId)).toBe(9000);
+    await exact(s);
+  });
+
+  test("emptying a binder starts its hint over", async () => {
+    const s = await setup();
+    await add(s, s.fx.gooden1, { homeId: s.binderA });
+    await add(s, s.fx.strawberry2, { homeId: s.binderA });
+    await s.me.mutation(api.collectionContainers.empty, { containerId: s.binderA });
+    expect(await hintOf(s, s.binderA) ?? 0).toBe(0);
+    expect((await copies(s.t)).map((r) => r.homeId)).toEqual([s.sys.mainId, s.sys.mainId]);
+  });
+});
+
+describe("backfillBinderPockets past one run", () => {
+  async function looseLines(s: S, homeId: Id<"collectionContainers">, n: number) {
+    return s.t.run(async (ctx) => {
+      const card = (await ctx.db.get(s.fx.gooden1))!;
+      const variantId = card.selectorOptionId;
+      const set = (await ctx.db.query("collectionCopies").first())?.setId;
+      for (let i = 0; i < n; i++) {
+        await ctx.db.insert("collectionCopies", {
+          ownerId: ME.subject,
+          cardId: s.fx.gooden1,
+          variantId,
+          setId: set ?? variantId,
+          homeId,
+          quantity: 1,
+          notes: `n${i}`,
+          lastUpdated: 1,
+        });
+      }
+    });
+  }
+
+  test("a binder with more than a run's worth is revisited until every line has its own pocket", async () => {
+    const s = await setup();
+    await add(s, s.fx.strawberry2, { homeId: s.binderA, slot: 0 });
+    await looseLines(s, s.binderA, LINES_PER_BINDER + 5);
+    const first = await s.t.mutation(internal.backfillBinderPockets.run, { arm: true });
+    expect(first).toMatchObject({ placed: LINES_PER_BINDER, isDone: false });
+    await drainScheduled(s.t);
+    const slots = (await copies(s.t)).filter((r) => r.homeId === s.binderA).map((r) => r.slot);
+    expect(slots.every((x) => typeof x === "number")).toBe(true);
+    expect(new Set(slots).size).toBe(LINES_PER_BINDER + 6);
+    expect(Math.max(...(slots as number[]))).toBe(LINES_PER_BINDER + 5);
+  });
+
+  test("a binder that fills up is skipped and counted, not retried forever", async () => {
+    const s = await setup();
+    await looseLines(s, s.binderA, 3);
+    await s.t.run(async (ctx) => ctx.db.patch(s.binderA, { openPocket: 8999 }));
+    const r = await s.t.mutation(internal.backfillBinderPockets.run, { arm: true });
+    expect(r).toMatchObject({ placed: 1, full: 1, isDone: true });
+    await drainScheduled(s.t);
   });
 });

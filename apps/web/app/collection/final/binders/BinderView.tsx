@@ -130,7 +130,7 @@ export default function BinderView({
           at={at}
           onTurn={onTurn}
           vinyl={open.vinyl}
-          cover={<Cover open={open} actions={actions} />}
+          cover={<Cover open={open} actions={actions} rearrange={rearrange} />}
           variant={open.pockets}
           saleTags={open.saleTags}
           aimed={aimed}

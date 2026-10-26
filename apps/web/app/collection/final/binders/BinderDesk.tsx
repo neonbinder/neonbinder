@@ -1,7 +1,7 @@
 import { useLayoutEffect, useRef, type CSSProperties, type ReactNode, type TouchEvent } from "react";
 import { useDroppable } from "@dnd-kit/core";
 import { ChevronLeftIcon, ChevronRightIcon } from "@heroicons/react/24/outline";
-import Pocket, { type PocketHandlers, type PocketVariant } from "./Pocket";
+import Pocket, { POCKET_MOVE_HINT_ID, type PocketHandlers, type PocketVariant } from "./Pocket";
 import { sameSlot, type PageModel, type SlotRef } from "./model";
 import NeonButton from "@/components/modules/NeonButton";
 
@@ -151,6 +151,11 @@ export default function BinderDesk(props: BinderDeskProps) {
         } as CSSProperties
       }
     >
+      {props.rearrange && (
+        <span id={POCKET_MOVE_HINT_ID} hidden>
+          Alt plus the arrow keys move it to the open pocket before or after. Or drag it to an empty pocket.
+        </span>
+      )}
       {leftPage === "cover" && (
         <div ref={leftRef} className="p2-cover">
           {cover}

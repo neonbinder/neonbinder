@@ -461,6 +461,8 @@ export const empty = mutation({
     }
     await moveTally(ctx, ownerId, { copies: 0, lines: linesDelta, cards: 0 });
     await moveCounts(ctx, ownerId, changes);
+    // Its pockets emptied from the front: the open-pocket hint starts over.
+    if (moved > 0 && row.openPocket !== undefined) await ctx.db.patch(row._id, { openPocket: undefined });
     // What is left, counted off the rows (this transaction's writes
     // included), up to one more batch. Past that the kept count says how
     // many, never fewer than the rows just seen.

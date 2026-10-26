@@ -288,8 +288,8 @@ export function followedChecklist(copies: readonly Copy[], checklist: readonly C
 /**
  * A binder's pages in pockets mode: its own pockets in slot order, then a
  * fresh page at the back. Every card in a binder sits in a pocket; a copy
- * stored before that rule (waiting on the backfill) shows in the pocket it
- * would get (`pocketFor`). With a
+ * stored before that rule (waiting on the backfill) shows in the pocket the
+ * backfill will give it (`withPockets`). With a
  * followed checklist, empty numbered pockets are Need sleeves (when the
  * collector has the card nowhere: `ownedAnywhere`) and the pages past the
  * checklist say "Extras".
@@ -303,7 +303,7 @@ export function binderPages(input: {
 }): PageModel[] {
   const { binderId, copies, cards, followed } = input;
   const owned = input.ownedAnywhere ?? (() => false);
-  const pockets = pocketsOf(withPockets(copies, cards, followed));
+  const pockets = pocketsOf(withPockets(copies));
   const maxSlot = Math.max(-1, ...pockets.keys());
   const used = Math.max(maxSlot + 1, followed ? extrasStart(followed) : 0);
   const pageCount = Math.ceil(used / POCKETS_PER_PAGE);
@@ -345,13 +345,16 @@ export function binderPages(input: {
   return pages;
 }
 
-/** `copies` with each one that has no pocket given the one it would get, in checklist order. */
-function withPockets(copies: readonly Copy[], cards: CardsById, followed: readonly Card[] | null): Copy[] {
+/**
+ * `copies` with each one that has no pocket given the one the backfill
+ * (`backfillBinderPockets`) will give it: after the last filled pocket, in
+ * the order stored, whatever checklist the binder follows.
+ */
+function withPockets(copies: readonly Copy[]): Copy[] {
   const placed = copies.filter((c) => c.slot !== undefined && c.slot >= 0);
-  const loose = copies.filter((c) => c.slot === undefined || c.slot < 0).sort(byChecklist(cards));
-  for (const copy of loose) {
-    const card = cards.get(copy.cardId);
-    if (card) placed.push({ ...copy, slot: pocketFor(placed, card, followed) });
+  let next = Math.max(-1, ...placed.map((c) => c.slot!)) + 1;
+  for (const copy of copies) {
+    if (copy.slot === undefined || copy.slot < 0) placed.push({ ...copy, slot: next++ });
   }
   return placed;
 }

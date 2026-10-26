@@ -419,7 +419,10 @@ function firstOpenPocket(copies: readonly DemoCopy[], homeId: ContainerId): numb
   const taken = new Set(copies.filter((c) => c.homeId === homeId && c.slot !== undefined).map((c) => c.slot));
   let next = 0;
   while (taken.has(next)) next += 1;
-  if (next >= POCKETS_PER_PAGE * MAX_BINDER_PAGES) throw new DemoRefusal("That binder is full. Start another binder.");
+  // Main never fills (as the server's `slotLimit`).
+  if (homeId !== MAIN_BINDER_ID && next >= POCKETS_PER_PAGE * MAX_BINDER_PAGES) {
+    throw new DemoRefusal("That binder is full. Start another binder.");
+  }
   return next;
 }
 
@@ -445,7 +448,7 @@ function checkSlot(state: CollectionState, homeId: ContainerId, slot: number | u
   if (!Number.isInteger(slot) || slot < 0) throw new DemoRefusal("That isn't a pocket or a row.");
   const home = containerIn(state, homeId);
   if (home?.kind === "box" && slot >= BOX_ROWS) throw new DemoRefusal(`A box has ${BOX_ROWS} rows.`);
-  if (home?.kind === "binder" && slot >= POCKETS_PER_PAGE * MAX_BINDER_PAGES) {
+  if (home?.kind === "binder" && home.system !== "main" && slot >= POCKETS_PER_PAGE * MAX_BINDER_PAGES) {
     throw new DemoRefusal(`A binder runs to ${MAX_BINDER_PAGES.toLocaleString("en-US")} pages.`);
   }
 }

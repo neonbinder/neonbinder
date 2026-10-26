@@ -6,7 +6,8 @@
 // (it re-folds into one stack of three), takes that back with Undo (the stack
 // splits again) and moves it again. The second binder is renamed and relabelled,
 // a second card is slotted into a pocket from the hunt tray, the stack is
-// moved to the next pocket and back with Alt+arrows, a Want on a third
+// moved to the next pocket and back with Alt+arrows and by tapping a pocket
+// then the card, a Want on a third
 // card lands on the Want List spine and in the Want List and comes off again.
 // The spec ends by deleting the first binder (its cards go back to Main) and
 // the second, so the shelf is back to where it started.
@@ -415,6 +416,17 @@ test(
       page.getByRole("status").filter({ hasText: `Moved ${one.short} to page 1, pocket 1.` }),
     ).toBeVisible();
     await expect(empty(2)).toBeVisible();
+    await expect(empty(1)).toHaveCount(0);
+    // The one-tap way (no drag, no keyboard): tap an empty pocket, then the card.
+    await empty(2).click();
+    await expect(page.getByText(/tap a card in this binder to move it here/)).toBeVisible();
+    await stack.click();
+    await expect(
+      page.getByRole("status").filter({ hasText: `Moved ${one.short} to page 1, pocket 2.` }),
+    ).toBeVisible();
+    await expect(empty(1)).toBeVisible();
+    await expectAccessible(page, { label: "My Binders, a card moved to another pocket" });
+    await stack.press("Alt+ArrowLeft");
     await expect(empty(1)).toHaveCount(0);
     await backToShelf();
     await expect(spineOf(binderA, 3)).toBeVisible();

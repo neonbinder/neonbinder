@@ -330,13 +330,22 @@ export function cleanDetails(raw: DetailsArg): Omit<StoredDetails, "homeId"> {
 }
 
 /**
- * NEO-359 — a slot checked against the home it is in: a box has `BOX_ROWS`
- * rows; a binder's pockets run to `MAX_BINDER_PAGES` pages. Whole and
- * non-negative is `cleanDetails`' check.
+ * The slots a home runs to: a box's `BOX_ROWS` rows, a binder's
+ * `MAX_BINDER_PAGES` pages of pockets. Main has no last page: every card the
+ * collector owns may land there, and tens of thousands is a real collection.
  */
-function checkSlot(home: Pick<ContainerRow, "kind">, slot: number | undefined): void {
+export function slotLimit(home: Pick<ContainerRow, "kind" | "system">): number {
+  if (home.kind === "box") return BOX_ROWS;
+  return home.system === "main" ? Number.MAX_SAFE_INTEGER : MAX_BINDER_PAGES * POCKETS_PER_PAGE;
+}
+
+/**
+ * NEO-359 — a slot checked against the home it is in (`slotLimit`). Whole
+ * and non-negative is `cleanDetails`' check.
+ */
+function checkSlot(home: Pick<ContainerRow, "kind" | "system">, slot: number | undefined): void {
   if (slot === undefined) return;
-  const max = home.kind === "box" ? BOX_ROWS : MAX_BINDER_PAGES * POCKETS_PER_PAGE;
+  const max = slotLimit(home);
   if (!Number.isInteger(slot) || slot < 0 || slot >= max) {
     refuse(
       COLLECTION_ERRORS.invalid,
@@ -697,6 +706,9 @@ async function pocketIsFree(
   return line === null;
 }
 
+/** The refusal when a binder has no open pocket left. */
+export const BINDER_FULL = "That binder is full. Start another binder for the rest.";
+
 /**
  * A home whose every line sits in a pocket: a binder, Main included. A box
  * has rows (a card may wait outside them) and a smart binder holds nothing.
@@ -710,7 +722,8 @@ export function keepsPockets(home: Pick<ContainerRow, "kind" | "system" | "rule"
  * The first pocket of binder `homeId` no line holds. Starts at the binder's
  * `openPocket` hint, reads its pocketed lines in slot order up to the first
  * gap, and raises the hint past the pocket it returns (the caller fills it,
- * or refuses and rolls the hint back with it). Refuses a full binder.
+ * or refuses and rolls the hint back with it). Refuses a full binder (Main
+ * never fills: `slotLimit`).
  */
 export async function firstOpenPocket(
   ctx: MutationCtx,
@@ -727,10 +740,10 @@ export async function firstOpenPocket(
     if (slot > next) break;
     if (slot === next) next += 1;
   }
-  if (next >= MAX_BINDER_PAGES * POCKETS_PER_PAGE) {
-    refuse(COLLECTION_ERRORS.limit, "That binder is full. Start another binder for the rest.");
+  if (home && next >= slotLimit(home)) {
+    refuse(COLLECTION_ERRORS.limit, BINDER_FULL);
   }
-  if (home) await ctx.db.patch(homeId, { openPocket: next + 1 });
+  if (home && home.openPocket !== next + 1) await ctx.db.patch(homeId, { openPocket: next + 1 });
   return next;
 }
 

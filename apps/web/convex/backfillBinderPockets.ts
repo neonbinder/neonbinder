@@ -6,10 +6,13 @@
  * (`firstOpenPocket` in `collection.ts`); this backfill does the same for the
  * copies stored before.
  *
- * Per binder (Main included), its unplaced lines take the first open
- * pockets in the order they were stored. Only `slot` (and the binder's
- * `openPocket` hint) changes: no line folds, so no count or tally moves.
- * Boxes and smart binders are left alone. Safe to re-run: a binder with no unplaced lines is a no-op.
+ * Per binder (Main included), its unplaced lines go after its last filled
+ * pocket, in the order they were stored: the binder's `openPocket` hint is
+ * seeded there, so a binder costs one read for its pockets however many it
+ * has, never a walk of them looking for gaps. Only `slot` (and the hint)
+ * changes: no line folds, so no count or tally moves. Boxes and smart binders
+ * are left alone. A binder that fills up is logged and skipped, never retried.
+ * Safe to re-run: a binder with no unplaced lines is a no-op.
  *
  * ## Operator command
  *
@@ -25,13 +28,16 @@
  * No `--identity`: an internal function, and the deploy credential is the gate.
  */
 
-import { v } from "convex/values";
+import { ConvexError, v } from "convex/values";
 import { internal } from "./_generated/api";
 import { internalMutation } from "./_generated/server";
-import { firstOpenPocket, keepsPockets } from "./collection";
+import { BINDER_FULL, firstOpenPocket, keepsPockets } from "./collection";
 
-/** Containers read per page. Most are binders with a handful of lines. */
-export const CONTAINER_PAGE = 20;
+/**
+ * Containers read per page. A binder costs about three reads per line it
+ * places, so a page stays near 6,000 reads, well inside a transaction.
+ */
+export const CONTAINER_PAGE = 10;
 /** Unplaced lines placed per binder per run; a bigger binder is revisited. */
 export const LINES_PER_BINDER = 200;
 
@@ -41,6 +47,8 @@ export const run = internalMutation({
     armed: v.boolean(),
     binders: v.number(),
     placed: v.number(),
+    /** Binders that filled up before every line had a pocket (logged, skipped). */
+    full: v.number(),
     continueCursor: v.string(),
     isDone: v.boolean(),
   }),
@@ -52,6 +60,7 @@ export const run = internalMutation({
     let binders = 0;
     let placed = 0;
     let revisit = false;
+    let full = 0;
     for (const home of page.page) {
       if (!keepsPockets(home)) continue;
       const loose = await ctx.db
@@ -61,15 +70,37 @@ export const run = internalMutation({
         )
         .take(LINES_PER_BINDER + 1);
       if (loose.length === 0) continue;
-      if (loose.length > LINES_PER_BINDER) revisit = true;
       binders += 1;
       if (!armed) {
         placed += Math.min(loose.length, LINES_PER_BINDER);
         continue;
       }
+      if (home.openPocket === undefined) {
+        const last = await ctx.db
+          .query("collectionCopies")
+          .withIndex("by_owner_home_slot", (q) => q.eq("ownerId", home.ownerId).eq("homeId", home._id))
+          .order("desc")
+          .first();
+        await ctx.db.patch(home._id, { openPocket: (last?.slot ?? -1) + 1 });
+      }
+      let stuck = false;
       for (const line of loose.slice(0, LINES_PER_BINDER)) {
-        await ctx.db.patch(line._id, { slot: await firstOpenPocket(ctx, home.ownerId, home._id) });
+        let slot: number;
+        try {
+          slot = await firstOpenPocket(ctx, home.ownerId, home._id);
+        } catch (e) {
+          if (!(e instanceof ConvexError) || (e.data as { message?: string })?.message !== BINDER_FULL) throw e;
+          stuck = true;
+          break;
+        }
+        await ctx.db.patch(line._id, { slot });
         placed += 1;
+      }
+      if (stuck) {
+        full += 1;
+        console.log(JSON.stringify({ event: "backfillBinderPockets.full", homeId: home._id }));
+      } else if (loose.length > LINES_PER_BINDER) {
+        revisit = true;
       }
     }
     // A binder with more than a run's worth comes round again on the same page.
@@ -81,7 +112,7 @@ export const run = internalMutation({
         ...(next ? { cursor: next } : {}),
       });
     }
-    console.log(JSON.stringify({ event: "backfillBinderPockets", armed, binders, placed, isDone }));
-    return { armed, binders, placed, continueCursor: next, isDone };
+    console.log(JSON.stringify({ event: "backfillBinderPockets", armed, binders, placed, full, isDone }));
+    return { armed, binders, placed, full, continueCursor: next, isDone };
   },
 });

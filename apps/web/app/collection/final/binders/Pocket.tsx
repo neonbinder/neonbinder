@@ -68,6 +68,9 @@ interface PocketProps extends PocketHandlers {
 
 export { pocketDropId };
 
+/** The one hidden line every movable card points at (rendered by BinderDesk). */
+export const POCKET_MOVE_HINT_ID = "nb-pocket-move-hint";
+
 function prefersReducedMotion(): boolean {
   try {
     return window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
@@ -136,10 +139,12 @@ export default function Pocket({
         onTouchStart: drag.listeners?.onTouchStart as TouchEventHandler<HTMLButtonElement> | undefined,
       }
     : {};
+  // In a binder that rearranges, Alt+Left/Right always means a pocket move,
+  // never the browser's Back or Forward (the open binder lives in the URL).
   const onKeyDown = (e: KeyboardEvent<HTMLButtonElement>) => {
-    if (!lone || !slot || !onShift || !e.altKey || (e.key !== "ArrowLeft" && e.key !== "ArrowRight")) return;
+    if (!rearrange || variant !== "binder" || !e.altKey || (e.key !== "ArrowLeft" && e.key !== "ArrowRight")) return;
     e.preventDefault();
-    onShift(lone, slot, e.key === "ArrowLeft" ? -1 : 1);
+    if (lone && slot && onShift) onShift(lone, slot, e.key === "ArrowLeft" ? -1 : 1);
   };
   const ring = `${isOver ? " p2-sleeve--over" : ""}${aimed ? " p2-sleeve--target" : ""}${found ? " nb-sleeve--found" : ""}`;
   const where = `pocket ${index + 1} on page ${pageNumber}`;
@@ -199,6 +204,7 @@ export default function Pocket({
           aria-haspopup="dialog"
           aria-label={havePocketLabel(card, copies)}
           aria-keyshortcuts={lone ? "Alt+ArrowLeft Alt+ArrowRight" : undefined}
+          aria-describedby={lone ? POCKET_MOVE_HINT_ID : undefined}
           data-found={found ? "true" : undefined}
           data-lifted={lone && drag.isDragging ? "true" : undefined}
           onClick={open}
@@ -232,6 +238,7 @@ export default function Pocket({
           type="button"
           aria-label={`${cardLabel(card)}, need. Add it`}
           onClick={() => onAdd(card, slot, pocket.wantFor)}
+          onKeyDown={onKeyDown}
           className={`p2-sleeve${ring}`}
         >
           <span aria-hidden="true" className="p2-ghost">
@@ -251,6 +258,7 @@ export default function Pocket({
         type="button"
         aria-label={`Empty ${where}. Fill it from the pack`}
         onClick={() => onAim(slot)}
+        onKeyDown={onKeyDown}
         className={`p2-sleeve group${ring}`}
       >
         <span

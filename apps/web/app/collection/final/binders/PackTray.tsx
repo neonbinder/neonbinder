@@ -332,7 +332,7 @@ export default function PackTray(props: PackTrayProps) {
           {aimedAt && !slotting && !choosing && mode === "file" && (
             <div className="mb-2 flex flex-wrap items-center gap-2 rounded-lg border border-neon-blue/60 bg-neon-blue/10 px-3 py-1.5">
               <p className="min-w-0 flex-1 basis-56 text-sm text-ink">
-                Filling {aimedAt}. Hunt for a card, then press Move here or Put here.
+                Filling {aimedAt}. Hunt for a card, then press Move here or Put here, or tap a card in this binder to move it here.
               </p>
               <NeonButton type="button" variant="secondary" outline onClick={onCancelAim} className="max-sm:min-h-11">
                 Stop filling

@@ -258,6 +258,17 @@ describe("empty and remove", () => {
     expect(tally.stored).toEqual(tally.truth);
   });
 
+  test("a Main twin with no room left is not stacked on: the card takes Main's next pocket", async () => {
+    const s = await setup();
+    await s.me.mutation(api.collection.addLineItem, { cardId: s.fx.gooden1, details: { quantity: 999 } });
+    const box = await mk(s, "box", "Box");
+    await s.me.mutation(api.collection.addLineItem, { cardId: s.fx.gooden1, details: { quantity: 1, homeId: box } });
+    await s.me.mutation(api.collectionContainers.empty, { containerId: box });
+    const rows = (await copyRows(s)).sort((a, b) => (a.slot ?? -1) - (b.slot ?? -1));
+    expect(rows.map((r) => [r.quantity, r.slot])).toEqual([[999, 0], [1, 1]]);
+    await expectCountsExact(s.t, ME.subject, expect as never);
+  });
+
   test("the trade flag travels: a flagged line folds only into a flagged Main twin", async () => {
     const s = await setup();
     const box = await mk(s, "box", "Box");
