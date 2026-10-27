@@ -153,17 +153,47 @@ describe("the keyboard is parked, never dropped", () => {
     await waitFor(() => expect(document.activeElement?.getAttribute("aria-label")).toBe(editName));
   });
 
+  it("the add form waits behind Add once there is a copy: Add opens it, Cancel and an add fold it, the keyboard back on Add", async () => {
+    renderDemo([BASE_CHECKLIST]);
+    fireEvent.click(detailsButtons()[0]);
+    const drawer = screen.getByRole("dialog");
+    // The demo's first card is already in hand: the list, then Add, no form.
+    expect(within(drawer).queryByRole("form", { name: /^Add (a|another) copy$/ })).toBeNull();
+    const add = within(drawer).getByRole("button", { name: /^Add another copy of / });
+
+    fireEvent.click(add);
+    const form = within(drawer).getByRole("form", { name: "Add another copy" });
+    await waitFor(() => expect(form.contains(document.activeElement)).toBe(true));
+    fireEvent.click(within(form).getByRole("button", { name: "Cancel" }));
+    expect(within(drawer).queryByRole("form", { name: "Add another copy" })).toBeNull();
+    // Cancel folds the form; the drawer stays open.
+    expect(screen.getByRole("dialog")).toBe(drawer);
+    await waitFor(() => expect(document.activeElement?.getAttribute("aria-label")).toBe(add.getAttribute("aria-label")));
+
+    const edits = within(drawer).getAllByRole("button", { name: /^Edit / }).length;
+    fireEvent.click(within(drawer).getByRole("button", { name: /^Add another copy of / }));
+    const again = within(drawer).getByRole("form", { name: "Add another copy" });
+    fireEvent.change(within(again).getByRole("textbox", { name: "Notes" }), { target: { value: "From the show" } });
+    fireEvent.click(within(again).getByRole("button", { name: "Add to collection" }));
+    await waitFor(() => expect(within(drawer).getAllByRole("button", { name: /^Edit / })).toHaveLength(edits + 1));
+    expect(within(drawer).queryByRole("form", { name: "Add another copy" })).toBeNull();
+    await waitFor(() => expect(document.activeElement?.getAttribute("aria-label") ?? "").toMatch(/^Add another copy of /));
+  });
+
   it("Remove moves it to the next copy's Edit, and to the 'Your copies' heading after the last", async () => {
     renderDemo([BASE_CHECKLIST]);
     fireEvent.click(detailsButtons()[0]);
     const drawer = screen.getByRole("dialog");
     const removes = () => within(drawer).queryAllByRole("button", { name: /^Remove / });
     // Make sure there are two line items (a note keeps the new one from stacking).
-    const addForm = within(drawer).getByRole("form", { name: /^Add (a|another) copy$/ });
+    fireEvent.click(within(drawer).getByRole("button", { name: /^Add another copy of / }));
+    const addForm = within(drawer).getByRole("form", { name: "Add another copy" });
     fireEvent.change(within(addForm).getByRole("textbox", { name: "Notes" }), { target: { value: "From the show" } });
     const before = removes().length;
     fireEvent.click(within(addForm).getByRole("button", { name: "Add to collection" }));
     await waitFor(() => expect(removes()).toHaveLength(before + 1));
+    // The add folds away, the keyboard on Add.
+    await waitFor(() => expect(document.activeElement?.getAttribute("aria-label") ?? "").toMatch(/^Add another copy of /));
 
     // Remove the first: the keyboard lands on the next copy's Edit.
     const nextEdit = within(drawer).getAllByRole("button", { name: /^Edit / })[1];

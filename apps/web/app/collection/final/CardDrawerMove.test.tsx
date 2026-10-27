@@ -260,6 +260,7 @@ describe("the drawer's Move, Sell and Take off sale", () => {
     expect(within(region).getAllByText(/^For sale · Show box$/).length).toBeGreaterThan(0);
     expect(within(region).queryByText(/Slab case/)).toBeNull();
     // The add form's location hint no longer reads like a box.
+    fireEvent.click(within(drawer).getByRole("button", { name: /^Add another copy of / }));
     expect(within(drawer).getByPlaceholderText("Shelf 2, top drawer")).toBeTruthy();
   });
 });

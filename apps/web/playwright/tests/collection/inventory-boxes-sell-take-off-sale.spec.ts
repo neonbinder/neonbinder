@@ -310,6 +310,7 @@ test(
     await expect(drawer).toBeVisible();
     await expect(lines(2)).toBeVisible();
     // On the inventory the drawer adds to the inventory, into a box: never a binder.
+    await drawer.getByRole("button", { name: `Add another copy of ${one.short}`, exact: true }).click();
     await expect(drawer.getByRole("button", { name: "Add to inventory" })).toBeVisible();
     await expect(drawer.getByRole("button", { name: "Add to collection" })).toHaveCount(0);
     const where = drawer.getByRole("combobox", { name: "Where it lives" });
