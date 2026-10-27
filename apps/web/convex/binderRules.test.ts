@@ -9,7 +9,7 @@
 import { convexTest } from "convex-test";
 import { describe, expect, test } from "vitest";
 import { api } from "./_generated/api";
-import schema from "./schema";
+import schema, { collectionRuleValidator } from "./schema";
 import { seedCollectionCatalog } from "../lib/testing/collection-fixture";
 import type { Id } from "./_generated/dataModel";
 
@@ -33,7 +33,7 @@ const goodenRule = (s: S) => ({
   terms: [{ test: { kind: "player" as const, playerIds: [s.fx.goodenId] } }],
 });
 
-const smartBinder = async (s: S, rule = goodenRule(s)) =>
+const smartBinder = async (s: S, rule: typeof collectionRuleValidator.type = goodenRule(s)) =>
   (await s.me.mutation(api.collectionContainers.create, { kind: "binder", name: "Doc", rule })).containerId;
 
 const findAll = (s: S, containerId: Id<"collectionContainers">) =>
@@ -161,14 +161,32 @@ describe("empty slots", () => {
     const s = await setup();
     const id = await smartBinder(s);
     await s.me.mutation(api.collection.addLineItem, { cardId: s.fx.gooden1, details: { homeId: id, quantity: 1 } });
-    await s.me.mutation(api.collection.addHave, { cardId: s.fx.gold1 });
-    const { needs, supported } = await s.me.query(api.binderRules.needs, { containerId: id });
-    expect(supported).toBe(true);
-    const ids = needs.map((n) => n.card._id);
+    const before = await s.me.query(api.binderRules.needs, { containerId: id });
+    expect(before.supported).toBe(true);
+    const ids = before.needs.map((n) => n.card._id);
     expect(ids).not.toContain(s.fx.gooden1);
     expect(ids).toContain(s.fx.futureStar);
-    expect(needs.find((n) => n.card._id === s.fx.gold1)?.held).toBe(true);
-    expect(needs.find((n) => n.card._id === s.fx.futureStar)?.held).toBe(false);
+    expect(before.needs.find((n) => n.card._id === s.fx.futureStar)?.held).toBe(false);
+    await s.me.mutation(api.collection.addHave, { cardId: s.fx.futureStar });
+    const after = await s.me.query(api.binderRules.needs, { containerId: id });
+    expect(after.needs.find((n) => n.card._id === s.fx.futureStar)?.held).toBe(true);
+  });
+
+  test("a parallel shows no empty slots until the smart binder holds a card of it", async () => {
+    const s = await setup();
+    const id = await smartBinder(s);
+    const first = await s.me.query(api.binderRules.needs, { containerId: id });
+    expect(first.needs.map((n) => n.card._id)).not.toContain(s.fx.gold1);
+    // Holding a Gold Refractor opens the parallel's checklist: its gaps show.
+    const gold = await s.t.run(async (ctx) => {
+      const { _id, _creationTime, ...rest } = (await ctx.db.get(s.fx.gold1))!;
+      const id = await ctx.db.insert("cardChecklist", { ...rest, cardNumber: "99" });
+      await ctx.db.insert("cardPlayerLinks", { cardChecklistId: id, playerId: s.fx.goodenId, sportId: s.fx.sportId });
+      return id;
+    });
+    await s.me.mutation(api.collection.addLineItem, { cardId: s.fx.gold1, details: { homeId: id, quantity: 1 } });
+    const after = await s.me.query(api.binderRules.needs, { containerId: id });
+    expect(after.needs.map((n) => n.card._id)).toContain(gold);
   });
 
   test("a plain binder's needs are the regular cards of the checklists it holds", async () => {

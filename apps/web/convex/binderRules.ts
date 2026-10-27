@@ -34,6 +34,7 @@ import { COLLECTION_ERRORS, MAX_LINES_PER_CARD, copyOut, copyValidator, refuse }
 import { MAX_DRILL_ITEMS, MAX_VARIANT_CARDS, walkSetVariants } from "./collectionCatalog";
 import { CatalogReader, cardFeatures, catalogCardWithPathValidator } from "./lib/catalogView";
 import type { collectionRuleValidator } from "./schema";
+import { variantTypeKind } from "./variantRole";
 import { teamFullName } from "../lib/teams/team-name";
 import {
   MAX_RULE_IDS,
@@ -234,12 +235,17 @@ function walkable(leaf: StoredRuleLeaf): boolean {
 
 const WALK_PREFERENCE: Array<StoredRuleLeaf["kind"]> = ["set", "player", "team", "brand"];
 
+/** Leaves a variant out of a walk (its cards are never read). */
+type SkipVariant = (variantId: Id<"selectorOptions">) => Promise<boolean>;
+
 async function cardsUnderSet(
   ctx: Ctx,
   setId: Id<"selectorOptions">,
   add: (id: Id<"cardChecklist">) => boolean,
+  skip?: SkipVariant,
 ): Promise<void> {
   await walkSetVariants(ctx, setId, async (row) => {
+    if (skip && (await skip(row._id))) return true;
     const cards = await ctx.db
       .query("cardChecklist")
       .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", row._id))
@@ -254,6 +260,7 @@ async function leafCards(
   ctx: Ctx,
   leaf: StoredRuleLeaf,
   add: (id: Id<"cardChecklist">) => boolean,
+  skip?: SkipVariant,
 ): Promise<void> {
   if (leaf.kind === "player") {
     for (const raw of leaf.playerIds) {
@@ -271,7 +278,7 @@ async function leafCards(
   } else if (leaf.kind === "set") {
     for (const raw of leaf.setIds) {
       const id = ctx.db.normalizeId("selectorOptions", raw);
-      if (id) await cardsUnderSet(ctx, id, add);
+      if (id) await cardsUnderSet(ctx, id, add, skip);
     }
   } else if (leaf.kind === "brand") {
     for (const raw of leaf.brandIds) {
@@ -281,7 +288,7 @@ async function leafCards(
         .query("selectorOptions")
         .withIndex("by_level_and_parent", (q) => q.eq("level", "setName").eq("parentId", id))
         .take(MAX_DRILL_ITEMS);
-      for (const set of sets) await cardsUnderSet(ctx, set._id, add);
+      for (const set of sets) await cardsUnderSet(ctx, set._id, add, skip);
     }
   }
 }
@@ -297,6 +304,7 @@ async function leafCards(
 export async function catalogCandidates(
   ctx: Ctx,
   rule: Rule,
+  skip?: SkipVariant,
 ): Promise<{ cardIds: Array<Id<"cardChecklist">>; supported: boolean; complete: boolean }> {
   const positive = rule.terms.filter((t) => !t.negate).map((t) => t.test as StoredRuleLeaf);
   let leaves: StoredRuleLeaf[] = [];
@@ -327,7 +335,7 @@ export async function catalogCandidates(
   };
   for (const leaf of leaves) {
     if (!complete) break;
-    await leafCards(ctx, leaf, add);
+    await leafCards(ctx, leaf, add, skip);
   }
   return { cardIds, supported: true, complete };
 }
@@ -395,7 +403,8 @@ export const needsResultValidator = v.object({
 
 /**
  * The catalog cards a binder's empty slots stand for, every one NOT in the
- * binder: for a smart binder, the cards its rule matches; otherwise (a
+ * binder: for a smart binder, the cards its rule matches (a variation
+ * never, and a parallel's only once the binder holds a card of it); otherwise (a
  * binder sorted by checklist) the non-variation cards of each checklist it
  * holds a card from, at most `MAX_NEED_CHECKLISTS` of them. `held` says the
  * collector has the card in another binder (`ownerHeld`: null on a public
@@ -426,20 +435,28 @@ export async function binderNeeds(
     });
     return true;
   };
+  const variants: Array<Id<"selectorOptions">> = [];
+  for (const line of lines) {
+    if (line.variantId && !variants.includes(line.variantId)) variants.push(line.variantId);
+  }
   if (binder.rule) {
-    const candidates = await catalogCandidates(ctx, binder.rule);
+    const parallel = parallelReader(ctx);
+    const held = new Set(variants.map((id) => id as string));
+    const skip = async (variantId: Id<"selectorOptions">) => !held.has(variantId as string) && (await parallel(variantId));
+    const candidates = await catalogCandidates(ctx, binder.rule, skip);
     if (!candidates.supported) return { needs: [], supported: false, truncated: false };
     if (!candidates.complete) truncated = true;
     for (const id of candidates.cardIds) {
       const card = await ctx.db.get(id);
-      if (!card || !(await facts.matches(binder.rule, card))) continue;
+      if (!card || card.variationOfCardId) continue;
+      // A set's parallels repeat its base card for card: an empty slot for
+      // every one would bury the set. A parallel shows its gaps once the
+      // binder holds a card of it, as a plain binder's checklists do.
+      if (await skip(card.selectorOptionId)) continue;
+      if (!(await facts.matches(binder.rule, card))) continue;
       if (!(await take(card))) break;
     }
     return { needs, supported: true, truncated };
-  }
-  const variants: Array<Id<"selectorOptions">> = [];
-  for (const line of lines) {
-    if (line.variantId && !variants.includes(line.variantId)) variants.push(line.variantId);
   }
   if (variants.length > MAX_NEED_CHECKLISTS) truncated = true;
   outer: for (const variantId of variants.slice(0, MAX_NEED_CHECKLISTS)) {
@@ -453,6 +470,27 @@ export async function binderNeeds(
     }
   }
   return { needs, supported: true, truncated };
+}
+
+/**
+ * Is a variant row a parallel: a sub-variant, or an insert under a Parallel
+ * type (the kind is the type's own title, `variantRole`)? Cached per call.
+ */
+function parallelReader(ctx: Ctx) {
+  const seen = new Map<string, boolean>();
+  return async (variantId: Id<"selectorOptions">): Promise<boolean> => {
+    const key = variantId as string;
+    const known = seen.get(key);
+    if (known !== undefined) return known;
+    const row = await ctx.db.get(variantId);
+    let answer = false;
+    if (row?.level === "parallel") answer = true;
+    else if (row?.level === "insert" && row.parentId) {
+      answer = variantTypeKind(await ctx.db.get(row.parentId)) === "parallel";
+    }
+    seen.set(key, answer);
+    return answer;
+  };
 }
 
 /** Does the owner hold `cardId` in a binder (any but `except`)? Cached per call. */
