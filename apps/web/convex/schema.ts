@@ -3550,6 +3550,16 @@ export default defineSchema({
      */
     visibility: v.optional(v.literal("public")),
     /**
+     * A binder's (Main included) first pocket that may be open: every pocket
+     * below it holds a card. Every card in a binder sits in a pocket, and a
+     * write that names none takes the first open one (`firstOpenPocket` in
+     * collection.ts), which starts its search here instead of at pocket 0, so
+     * Main with tens of thousands of lines still costs a few reads. Raised by
+     * that search, lowered when a pocket empties. A hint, never truth: too
+     * high only means a new card skips a gap; absent means 0.
+     */
+    openPocket: v.optional(v.number()),
+    /**
      * NEO-364 — `tally` counts collection homes only (binders and Main, never
      * a box) exactly when this says "collection". Absent: the tally is from
      * before NEO-364 (every home) and reads as not kept.

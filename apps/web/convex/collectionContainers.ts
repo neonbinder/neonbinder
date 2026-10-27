@@ -58,6 +58,7 @@ import {
   counted,
   countContainer,
   detailsOf,
+  arrivingPocket,
   foldsInto,
   getOrCreateMain,
   refuse,
@@ -436,9 +437,10 @@ export const update = mutation({
 
 /**
  * Send up to `EMPTY_BATCH` of a binder's line items back to Main, or
- * (NEO-364) of a box's to Unsorted (so they stay for sale), their pockets and
- * rows cleared, each folding into an identical line already there (the trade
- * flag travels with it). The client loops it until
+ * (NEO-364) of a box's to Unsorted (so they stay for sale), each folding into
+ * an identical line already there (the trade flag travels with it). In Main a
+ * line that folds into nothing takes Main's first open pocket; in Unsorted
+ * its row is cleared. The client loops it until
  * `remaining` is 0, then calls `remove`. `moved` is physical cards (quantities
  * summed); `remaining` is the line items still in it (0 when empty): exact
  * up to `EMPTY_BATCH`, past that the container's kept count (at least
@@ -473,6 +475,12 @@ export const empty = mutation({
       readsLeft -= siblings.length;
       const next = { ...detailsOf(line), homeId: targetId };
       delete next.slot;
+      // Main is a binder too: the card stacks on a twin there or takes Main's
+      // first open pocket. Unsorted is a box: its rows are optional.
+      if (row.kind !== "box") {
+        const roomy = siblings.filter((other) => other.quantity + line.quantity <= MAX_COPY_QUANTITY);
+        next.slot = await arrivingPocket(ctx, ownerId, { _id: targetId }, roomy, next, [line._id]);
+      }
       const into = siblings.find(
         (other) =>
           other._id !== line._id &&
@@ -489,12 +497,14 @@ export const empty = mutation({
           changeOf(line, before, null),
         );
       } else {
-        await ctx.db.patch(line._id, { homeId: targetId, slot: undefined, lastUpdated: now });
+        await ctx.db.patch(line._id, { homeId: targetId, slot: next.slot, lastUpdated: now });
         changes.push(changeOf(line, before, { ...before, homeId: targetId }));
       }
       moved += line.quantity;
     }
     await applyCopyChanges(ctx, ownerId, changes);
+    // Its pockets emptied from the front: the open-pocket hint starts over.
+    if (moved > 0 && row.openPocket !== undefined) await ctx.db.patch(row._id, { openPocket: undefined });
     // What is left, counted off the rows (this transaction's writes
     // included), up to one more batch. Past that the kept count says how
     // many, never fewer than the rows just seen.

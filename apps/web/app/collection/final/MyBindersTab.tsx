@@ -699,7 +699,7 @@ export default function MyBindersTab({
     void addCopy(card, homeOpen, guarded.slot, guarded.savedFor);
   };
 
-  /** A new copy filed in a home: the open binder's next pocket when it is laid out, else unslotted. */
+  /** A new copy filed in a home: the open binder's next pocket when it is laid out, else the server's pick (a binder's first open pocket). */
   const fileIn = (card: Card, target: Container) => {
     if (
       homeOpen?.id === target.id &&
@@ -787,6 +787,43 @@ export default function MyBindersTab({
     );
   };
 
+  /** A binder open in pockets (Main included): its cards can be moved between pockets. */
+  const rearrange =
+    !!homeOpen && homeOpen.kind === "binder" && mode === "pockets";
+
+  /** A card already in the open binder, into another (empty) pocket of it. */
+  const shiftTo = async (copy: Copy, to: number) => {
+    if (!homeOpen) return;
+    const card = cards?.get(copy.cardId);
+    const name = card ? shortCardName(card) : "That card";
+    jumpTo(to);
+    const result = await run(
+      () => actions.placeCopy(copy, to),
+      () => `Moved ${name} to ${whereIn(homeOpen, to).slice(2)}.`,
+    );
+    if (result) setFound(slotRefOf(homeOpen.id, to));
+  };
+
+  /** Alt+Left / Alt+Right on a card: the open pocket before or after it. */
+  const shift = (copy: Copy, from: SlotRef, dir: -1 | 1) => {
+    const taken = new Set(
+      pages
+        .flatMap((p) => p.pockets)
+        .filter((pk) => pk.content.kind === "have" && pk.slot)
+        .map((pk) => slotOf(pk.slot!)),
+    );
+    let to = slotOf(from) + dir;
+    while (to >= 0 && taken.has(to)) to += dir;
+    if (to < 0) {
+      const card = cards?.get(copy.cardId);
+      notify(
+        `There's no open pocket before ${card ? shortCardName(card) : "that card"}.`,
+      );
+      return;
+    }
+    void shiftTo(copy, to);
+  };
+
   /** Into a row of the open box (or out of every row). Resolves with the line it is now. */
   const placeInBox = async (
     copy: Copy,
@@ -871,12 +908,27 @@ export default function MyBindersTab({
     : null;
 
   // -- pockets ----------------------------------------------------------------
-  const openPocket = (card: Card, pocketCopies: Copy[]) =>
+  const openPocket = (card: Card, pocketCopies: Copy[]) => {
+    // A pocket is aimed in this binder: tapping one of its cards moves it
+    // there (the one-tap way to rearrange, with no drag and no keyboard).
+    if (
+      rearrange &&
+      aimed &&
+      homeOpen &&
+      aimed.binderId === homeOpen.id &&
+      pocketCopies.length === 1 &&
+      pocketCopies[0].homeId === homeOpen.id
+    ) {
+      setAimed(null);
+      void shiftTo(pocketCopies[0], slotOf(aimed));
+      return;
+    }
     openCard(card.id, {
       copyId: soleCopyId(pocketCopies),
       list: listIds,
       seed: card,
     });
+  };
 
   const addFromPocket = (
     card: Card,
@@ -952,6 +1004,9 @@ export default function MyBindersTab({
     onDragStart: ({ active }) => {
       const name = nameOf(active.id);
       if (!name) return undefined;
+      // A card already here is picked up by pointer only: no arrow keys.
+      if (copyOf(active.id))
+        return `Picked up ${name}. Drop it on an empty ${isBox ? "row" : "pocket"}.`;
       const card = cardOf(active.id);
       if (card && moves(card)) {
         const from = placesOf(mine(card.id), containers ?? [])
@@ -970,7 +1025,8 @@ export default function MyBindersTab({
     },
     onDragEnd: ({ active, over }) => {
       const name = nameOf(active.id);
-      if (!name) return undefined;
+      // The status line says where a card already here went.
+      if (!name || (over && copyOf(active.id))) return undefined;
       return over
         ? `Dropped ${name} on ${describeOver(over.id)}.`
         : `${name} went back.`;
@@ -985,9 +1041,15 @@ export default function MyBindersTab({
   const onDragEnd = (e: DragEndEvent) => {
     setActiveId(null);
     const over = e.over?.id;
-    // A card already in the open box, onto another row (or the table).
+    // A card already in the open binder or box, onto another pocket or row.
     const copy = copyOf(e.active.id);
     if (copy) {
+      // A card in the open binder, onto an empty pocket of it.
+      const pocket = over !== undefined ? parseSlotId(over) : null;
+      if (pocket) {
+        if (pocket.binderId === copy.homeId) void shiftTo(copy, slotOf(pocket));
+        return;
+      }
       const row = over !== undefined ? parseRowId(over) : null;
       if (!row || row.boxId !== copy.homeId) return;
       const at = copy.slot !== undefined && copy.slot >= 0 ? copy.slot : null;
@@ -1191,6 +1253,8 @@ export default function MyBindersTab({
             onOpen={openPocket}
             onAdd={addFromPocket}
             onAim={aim}
+            onShift={shift}
+            rearrange={rearrange}
             status={status}
           >
             {isTradeBox && container ? (

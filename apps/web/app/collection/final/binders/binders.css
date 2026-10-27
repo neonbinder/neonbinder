@@ -377,7 +377,7 @@
 
 /* Focus: one outline in the focus colour, drawn inside things that sit in a
    sideways scroller (the shelf clips anything outside a spine). */
-[data-theme="light"] :is(.p2-spine, .nb-longbox, .p2-handle, button.p2-sleeve):focus-visible {
+[data-theme="light"] :is(.p2-spine, .nb-longbox, .p2-handle, button.p2-sleeve:not(.nb-sleeve--found)):focus-visible {
   box-shadow: none;
   outline: 2px solid var(--focus);
   outline-offset: -3px;
@@ -503,4 +503,19 @@
 }
 .nb-tray-clear {
   padding-bottom: calc(var(--nb-tray-h, 0px) + 16px);
+}
+
+/* ------------------------------------------- rearranging a binder's pockets */
+
+/* A card the collector can drag to another pocket; dimmed while it is lifted. */
+.p2-sleeve.nb-sleeve--movable {
+  cursor: grab;
+  touch-action: manipulation;
+}
+.p2-sleeve[data-lifted="true"] {
+  opacity: 0.35;
+  cursor: grabbing;
+}
+.p2-overlay {
+  cursor: grabbing;
 }
