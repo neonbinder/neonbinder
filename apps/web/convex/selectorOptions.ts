@@ -238,6 +238,7 @@ import {
 // writer and every card delete in this file goes through these two; see
 // convex/cardPlayerLinks.ts and `cardPlayerLinks.pin.test.ts`.
 import { syncCardPlayerLinks } from "./cardPlayerLinks";
+import { normalizeCardNotes } from "./cardNotes";
 // NEO-358 — the team → cards index (every `teamOnCardIds` writer syncs it),
 // the one card delete (`removeCardRow`, with its collector guard), the
 // per-mutation card counts, and the stored-card title the backfill shares.
@@ -1714,6 +1715,8 @@ export const getCardChecklist = query({
       // over.
       variationOfCardId: v.optional(v.id("cardChecklist")),
       variationParentManual: v.optional(v.boolean()),
+      // NEO-367: NB's own note about the card (see schema.ts).
+      notes: v.optional(v.string()),
       // NEO-25: marketplace-agnostic listing strings (see schema.ts).
       // NEO-363: the title is required on every row.
       listingTitle: v.string(),
@@ -5445,10 +5448,14 @@ export const addCustomCard = mutation({
      * helper `updateCard` uses — see `resolveTeamOnCardIdsForWrite`.
      */
     teamOnCardIds: v.optional(v.array(v.id("teams"))),
+    /** NEO-367 — NB's own note about the card; see `normalizeCardNotes`. */
+    notes: v.optional(v.string()),
   },
   returns: v.id("cardChecklist"),
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
+    // NEO-367 — refused before anything is written, like the ids below.
+    const notes = normalizeCardNotes(args.notes);
     const typedPlayerNames = normalizePendingNames(
       args.players,
       "player",
@@ -5663,6 +5670,7 @@ export const addCustomCard = mutation({
       ...(hasLinkedPlayers ? { playerIds, playerLinks } : {}),
       ...(hasLinkedTeams ? { teamOnCardIds } : {}),
       ...(featuresOrUndefined ? { features: featuresOrUndefined } : {}),
+      ...(notes ? { notes } : {}),
       listingTitle: listingTitle.title,
       listingDescription: generateListingDescription(listingInputs),
       // NEO-101: recorded only when the core actually had to be cut — the
@@ -5772,6 +5780,9 @@ export const updateCard = mutation({
     pendingTeamNames: v.optional(v.array(v.string())),
     listingTitle: v.optional(v.string()),
     listingDescription: v.optional(v.string()),
+    // NEO-367 — NB's own note about the card. "" clears it, like every other
+    // string here; see `normalizeCardNotes`.
+    notes: v.optional(v.string()),
     // NEO-24: full-replacement features patch. Callers pass the entire
     // desired map (or omit). Per-key edits should go through
     // `setCardFeature` so the propagation-engine semantics around the
@@ -5893,6 +5904,12 @@ export const updateCard = mutation({
       if (trimmedTitle !== existingTitle) {
         filtered.listingTitleTruncated = undefined;
       }
+    }
+
+    // NEO-367 — trimmed, capped, and blank deletes the field (`undefined` in a
+    // patch), so a cleared note is absent rather than stored as "".
+    if (typeof filtered.notes === "string") {
+      filtered.notes = normalizeCardNotes(filtered.notes);
     }
 
     // NEO-101 deliberately does NOT cap `cardVariation` here, even though

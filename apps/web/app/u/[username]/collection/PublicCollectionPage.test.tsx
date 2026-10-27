@@ -125,6 +125,16 @@ describe("public share pages", () => {
     expect(screen.getByText("Also for sale")).toBeTruthy();
   });
 
+  it("NEO-367: a tile shows the catalog card's Notes, and nothing when it has none", () => {
+    queries.shelf = { count: { copies: 2, lines: 2 } };
+    queries.copies = [
+      { key: "a", quantity: 1, upForTrade: true, card: { ...CARD, notes: "Short print, about 1:120 packs" } },
+      { key: "b", quantity: 1, upForTrade: true, card: { ...CARD, _id: "card2", cardNumber: "2" } },
+    ];
+    renderAt("/u/ace/up-for-trade");
+    expect(screen.getAllByText("Short print, about 1:120 packs")).toHaveLength(1);
+  });
+
   it("carries noindex while open", () => {
     queries.shelf = { count: null };
     renderAt("/u/ace/up-for-trade");

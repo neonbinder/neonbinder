@@ -205,6 +205,8 @@ export interface Card {
    * default (base) counts, kept in the `All` ones.
    */
   isVariation: boolean;
+  /** NEO-367 — NB's own note about the card; absent when there is none. */
+  notes?: string;
   /** Checklist position inside its variant. */
   sortOrder: number;
   /** Presentational only (`./finish`). */

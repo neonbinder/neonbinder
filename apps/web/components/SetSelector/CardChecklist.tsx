@@ -66,6 +66,9 @@ import {
 import { teamFullName } from "@/lib/teams/team-name";
 import SetRowActionButton from "./SetRowActionButton";
 import { Input } from "../primitives/Input";
+import { Textarea } from "../primitives/Textarea";
+import { CARD_NOTES_MAX } from "../../convex/cardNotes";
+import { NotesLengthMeter } from "./NotesLengthMeter";
 import TeamPicker from "./TeamPicker";
 import PlayerPicker, { type PlayerPickerLabels } from "./PlayerPicker";
 import { attachedSidesOf } from "../../convex/marketplaceResolvability";
@@ -917,6 +920,9 @@ export default function CardChecklist({
   // nothing.
   const cardNumberRef = useRef<HTMLInputElement>(null);
   const cardNameRef = useRef<HTMLInputElement>(null);
+  // NEO-367 — uncontrolled like the two above, read at submit.
+  const cardNotesRef = useRef<HTMLTextAreaElement>(null);
+  const [addFormNotesLength, setAddFormNotesLength] = useState(0);
   /**
    * NEO-208 — the quick-add form's picked teams. React STATE, not a ref, and
    * that is the one place this form deviates from the NEO-36 rule above.
@@ -2309,6 +2315,7 @@ export default function CardChecklist({
    * submit) so a picked team or player can never survive into the next card.
    */
   const openAddForm = useCallback(() => {
+    setAddFormNotesLength(0);
     setAddFormTeamIds([]);
     setAddFormPlayerIds([]);
     setShowAddForm(true);
@@ -2326,6 +2333,8 @@ export default function CardChecklist({
     const cardNumber = cardNumberRef.current?.value.trim() ?? "";
     if (!cardNumber) return;
     const cardName = (cardNameRef.current?.value ?? "").trim();
+    // NEO-367 — trimmed and capped server-side too; blank is not sent.
+    const notes = (cardNotesRef.current?.value ?? "").trim();
     // NEO-220: dedupe client-side as well as server-side, same belt as the
     // teams below — `PlayerPicker.addChip` already refuses a duplicate, but
     // the mutation's own dedupe is what the row is written from and the two
@@ -2359,6 +2368,7 @@ export default function CardChecklist({
         // is what leaves the card correctly badged as needing one. Note we
         // never send the legacy `teams` name array from here any more.
         ...(teamOnCardIds.length > 0 ? { teamOnCardIds } : {}),
+        ...(notes ? { notes } : {}),
       });
       // Closing the form unmounts it; the uncontrolled inputs reset to empty
       // on the next open, and `closeAddForm` clears the picker.
@@ -3200,6 +3210,26 @@ export default function CardChecklist({
                 // NEO-331: this checklist's row orders the candidates by the
                 // set's league and year.
                 contextOptionId={variantId}
+              />
+            </div>
+            {/* NEO-367 — NB's own note about the card. A real <label> this
+                time: a textarea's placeholder vanishes as soon as the admin
+                types, and `maxLength` keeps the add from failing on the
+                server's cap (`normalizeCardNotes`). */}
+            <div className="w-full">
+              <div className="flex items-center justify-between gap-2 text-[10px] uppercase tracking-wide text-ink-3 mb-1">
+                <label htmlFor={`${variantId}-quick-add-notes`}>Notes (optional)</label>
+                <NotesLengthMeter length={addFormNotesLength} />
+              </div>
+              <Textarea
+                bare
+                id={`${variantId}-quick-add-notes`}
+                ref={cardNotesRef}
+                rows={2}
+                maxLength={CARD_NOTES_MAX}
+                onChange={(e) => setAddFormNotesLength(e.target.value.length)}
+                className={`${fieldClass("cardNotes")} w-full p-2 text-sm resize-y`}
+                placeholder="e.g. Short print, about 1:120 packs"
               />
             </div>
             <div className="flex gap-2">
