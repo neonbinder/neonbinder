@@ -237,6 +237,77 @@ describe("school resolution through team aliases, and convergence", () => {
   });
 });
 
+describe("a bare location reaches the one college team there (rule 5b)", () => {
+  test("Pittsburgh lands on Pitt, never the Steelers, with no alias written", async () => {
+    const t = convexTest(schema, modules);
+    armed();
+    const f = await footballFixture(t);
+    const pitt = await seedTeam(t, f.sportId, {
+      location: "Pittsburgh",
+      name: "Panthers",
+      leagueId: f.ncaa,
+    });
+    const p = await seedPlayer(t, f.sportId, "Dan Marino");
+    const aliasesBefore = await t.run(async (ctx) => (await ctx.db.query("teamAliases").collect()).length);
+    const out = await t.mutation(internal.bulkLoad.upsertPlayerStints, {
+      confirm: CONFIRM,
+      sport: "Football",
+      players: [{ key: "p", name: "Dan Marino", stints: [{ school: "Pittsburgh" }] }],
+    });
+    expect(out.summary).toMatchObject({ stintsAdded: 1, unresolvedSchools: [] });
+    expect(await careerOf(t, p)).toEqual([{ teamId: pitt }]);
+    const aliasesAfter = await t.run(async (ctx) => (await ctx.db.query("teamAliases").collect()).length);
+    expect(aliasesAfter).toBe(aliasesBefore);
+  });
+
+  test("a location held only by a pro team stays unresolved", async () => {
+    const t = convexTest(schema, modules);
+    armed();
+    const f = await footballFixture(t);
+    const p = await seedPlayer(t, f.sportId, "Some Guy");
+    const out = await t.mutation(internal.bulkLoad.upsertPlayerStints, {
+      confirm: CONFIRM,
+      sport: "Football",
+      players: [{ key: "p", name: "Some Guy", stints: [{ school: "Pittsburgh" }] }],
+    });
+    expect(out.results[0].stints[0]).toEqual({ outcome: "unresolved", school: "Pittsburgh" });
+    expect(await careerOf(t, p)).toEqual([]);
+  });
+
+  test("two college teams at one location are ambiguous, never guessed", async () => {
+    const t = convexTest(schema, modules);
+    armed();
+    const f = await footballFixture(t);
+    const a = await seedTeam(t, f.sportId, { location: "Miami", name: "Hurricanes", leagueId: f.ncaa });
+    const b = await seedTeam(t, f.sportId, { location: "Miami", name: "RedHawks", leagueId: f.ncaa });
+    const p = await seedPlayer(t, f.sportId, "Some Guy");
+    const out = await t.mutation(internal.bulkLoad.upsertPlayerStints, {
+      confirm: CONFIRM,
+      sport: "Football",
+      players: [{ key: "p", name: "Some Guy", stints: [{ school: "Miami" }] }],
+    });
+    expect(out.results[0].stints[0].outcome).toBe("ambiguous-school");
+    expect(out.summary.ambiguousSchools[0].candidates.map((c) => c.id).sort()).toEqual([a, b].sort());
+    expect(await careerOf(t, p)).toEqual([]);
+  });
+
+  test("a name or alias match wins over the location leg", async () => {
+    const t = convexTest(schema, modules);
+    armed();
+    const f = await footballFixture(t);
+    // A second college team whose LOCATION is "Wisconsin" must not compete
+    // with the Badgers, who carry "Wisconsin" as an alias.
+    await seedTeam(t, f.sportId, { location: "Wisconsin", name: "Other", leagueId: f.ncaa });
+    const p = await seedPlayer(t, f.sportId, "J.J. Watt");
+    await t.mutation(internal.bulkLoad.upsertPlayerStints, {
+      confirm: CONFIRM,
+      sport: "Football",
+      players: [{ key: "p", name: "J.J. Watt", stints: [{ school: "Wisconsin" }] }],
+    });
+    expect(await careerOf(t, p)).toEqual([{ teamId: f.wisconsin }]);
+  });
+});
+
 describe("gap-fill: never remove, never re-date", () => {
   test("a pro career is kept and the college stint is added after it, sorted", async () => {
     const t = convexTest(schema, modules);

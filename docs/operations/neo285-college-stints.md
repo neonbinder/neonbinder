@@ -61,6 +61,13 @@ Each stint names its team ONE way:
 | `teamId` | Wikidata / register / Lahman, via the NEO-284 dataset's Q-id → the id that key landed on in the NEO-284 results | by id; sport-checked |
 | `school` | nflverse's college string; the NBA/NHL cross-checks | `findTeamsByFullName` in the sport (primary name, then NEO-284 aliases), era-narrowed when the stint is dated |
 
+When a `school` matches no team name or alias, the loader tries it as a bare
+**location** among the sport's college-league teams only ("Pittsburgh",
+"Ohio State"). The exactly-one rule still holds: two college teams at one
+location come back `ambiguous-school`. This is why bare city names are NOT
+written as aliases: set sync reads aliases, and "Pittsburgh" there must not
+mean Pitt.
+
 ## 2. Statuses
 
 Per row (`results[].status`):
@@ -105,14 +112,18 @@ is harmless, only slower.
    are on prod once NEO-284 has been released), and that the driver's NEO-284
    results map belongs to the deployment the snapshot came from — a `teamId`
    from elsewhere comes back `missing-team`.
-4. **Dry run** each sport with `previewPlayerStints`, football first, then
+4. **Alias leg first.** Load the driver's school-name aliases (variant
+   names like "Mississippi" for Ole Miss, never a bare pro city) onto the
+   college teams through the NEO-284 alias loader, so the stints run can
+   resolve them.
+5. **Dry run** each sport with `previewPlayerStints`, football first, then
    baseball, basketball, hockey. Soccer is out of scope. Answer every
    `ambiguous` player in the answers file.
-5. **Arm** the preview, run `upsertPlayerStints`, replaying answers until a
+6. **Arm** the preview, run `upsertPlayerStints`, replaying answers until a
    run reports no new ambiguity.
-6. **Prove convergence:** run the whole load again. It must report
+7. **Prove convergence:** run the whole load again. It must report
    `stintsAdded: 0`. Then disarm and prove it.
-7. **Verify** (acceptance):
+8. **Verify** (acceptance):
    - ≥ 90 % of NFL players in NB with an nflverse college carry a stint on
      the matching college team; every unresolved school is in the report
      with a count;
@@ -130,5 +141,5 @@ is harmless, only slower.
 2. **Backup Now** on prod (NEO-190 §3).
 3. Dry run on prod (`previewPlayerStints`, unarmed) and compare the summary
    to the rehearsal's.
-4. Arm prod, load sport by sport with the rehearsal's answers file, prove
+4. Arm prod, run the alias leg, then load sport by sport with the rehearsal's answers file, prove
    convergence (second run: 0 added), disarm, and prove the flag is gone.

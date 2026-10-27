@@ -1536,6 +1536,10 @@ export const previewTeams = internalQuery({
  *    an alias) it is `ambiguous-school` with the candidates. Neither is
  *    dropped silently and neither gets a placeholder row: the summary's
  *    `unresolvedSchools`, with counts, is the input to the next team preload.
+ * 5b. **A bare location reaches a college team.** When a school string
+ *    matches no team name or alias, it is tried as a LOCATION among the
+ *    sport's college-league teams only ("Ohio State", "Pittsburgh"). Never an
+ *    alias: set sync reads aliases, and "Pittsburgh" there must not mean Pitt.
  * 6. **Gap-fill only.** A stint is ADDED to the player's career; nothing on
  *    it is removed, re-dated or re-ordered by hand. A stint on the same team
  *    that could be the same one is `present` and a no-op: an undated incoming
@@ -1779,6 +1783,51 @@ async function loadPlayerStints(
     }
     return leagueIsCollege.get(key)!;
   };
+  /**
+   * Rule 5b — the bare-LOCATION leg, only when name and alias found nothing.
+   *
+   * nflverse writes "Ohio State", "USC", "Pittsburgh": a college's location,
+   * not its team name. As an alias such a string would be read by set sync
+   * too, and for "Pittsburgh" in Football that would bind a checklist's bare
+   * city to Pitt instead of parking it (Jason, 2026-10-27). Here it is safe:
+   * only teams in the sport's COLLEGE leagues are looked at, so a school can
+   * never land on the Steelers, and the caller's exactly-one rule still
+   * decides — two college teams at one location (two eras, or two programs)
+   * come back `ambiguous-school`.
+   *
+   * Built once per call, lazily, from the sport's college leagues: one
+   * `by_sport_id` read for the leagues and one `by_league_id` read per college
+   * league. A team with no league is not on this leg; NEO-284 filed every
+   * NCAA program under its league.
+   */
+  let collegeByLocation: Map<string, Doc<"teams">[]> | null = null;
+  const collegeTeamsAtLocation = async (school: string): Promise<Doc<"teams">[]> => {
+    if (!collegeByLocation) {
+      collegeByLocation = new Map();
+      const leagues = await ctx.db
+        .query("leagues")
+        .withIndex("by_sport_id", (q) => q.eq("sportId", sportId))
+        .collect();
+      ops += 1;
+      for (const league of leagues) {
+        if (league.level !== "college") continue;
+        const teams = await ctx.db
+          .query("teams")
+          .withIndex("by_league_id", (q) => q.eq("leagueId", league._id))
+          .collect();
+        ops += 1;
+        for (const team of teams) {
+          if (!team.location || team.sportId !== sportId) continue;
+          const key = normalizeTeamName(team.location);
+          if (!key) continue;
+          const list = collegeByLocation.get(key) ?? [];
+          list.push(team);
+          collegeByLocation.set(key, list);
+        }
+      }
+    }
+    return collegeByLocation.get(normalizeTeamName(school)) ?? [];
+  };
   const schoolCache = new Map<string, Doc<"teams">[]>();
   const lookupSchool = async (school: string): Promise<Doc<"teams">[]> => {
     const cacheKey = normalizeTeamName(school);
@@ -1789,6 +1838,9 @@ async function loadPlayerStints(
       for (const row of rows) {
         teamCache.set(row._id, row);
         if (await collegeEligible(row)) eligible.push(row);
+      }
+      if (eligible.length === 0) {
+        eligible.push(...(await collegeTeamsAtLocation(school)));
       }
       schoolCache.set(cacheKey, eligible);
     }
