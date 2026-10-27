@@ -272,7 +272,9 @@ test(
     const drawerX = page.getByRole("dialog", {
       name: new RegExp(`^2024 Topps Chrome #${escapeRegExp(x.number)} ${escapeRegExp(x.player)}`),
     });
-    const addForm = drawerX.getByRole("form", { name: /^Add (?:a|another) copy$/ });
+    // The card has copies, so its add form waits behind Add.
+    await drawerX.getByRole("button", { name: `Add another copy of ${x.short}`, exact: true }).click();
+    const addForm = drawerX.getByRole("form", { name: "Add another copy", exact: true });
     await addForm.getByRole("radio", { name: "Graded" }).check();
     await addForm.getByRole("combobox", { name: "Grader" }).selectOption({ label: "PSA" });
     await addForm.getByRole("textbox", { name: "Grade", exact: true }).fill("9");

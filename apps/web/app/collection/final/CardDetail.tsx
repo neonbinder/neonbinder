@@ -9,7 +9,7 @@ import {
   type ReactNode,
   type RefObject,
 } from "react";
-import { ArchiveBoxIcon, BookOpenIcon, StarIcon as StarSolid } from "@heroicons/react/20/solid";
+import { ArchiveBoxIcon, BookOpenIcon, PlusIcon, StarIcon as StarSolid } from "@heroicons/react/20/solid";
 import { StarIcon as StarOutline } from "@heroicons/react/24/outline";
 import NeonButton from "@/components/modules/NeonButton";
 import { Input } from "@/components/primitives/Input";
@@ -111,6 +111,11 @@ function formHomes(homes: readonly Container[]): FormHome[] {
  * collection (the opener's binder, else the page's scope, else Main), boxes
  * on the inventory (the opener's box, the target box, else Unsorted).
  *
+ * The add form waits behind an Add button under the list once the card has
+ * a copy: it opens on that button (or on an "add" open), and Cancel or a
+ * successful add folds it away again, the keyboard back on Add. With no copy yet there is nothing to
+ * list, so the form shows, and Cancel there closes the drawer as before.
+ *
  * The keyboard is never dropped: Edit puts it in the copy's form, and Save
  * copy or Cancel brings it back to that copy's Edit button (Remove's and
  * Move's parking are `CopyList`'s).
@@ -181,7 +186,26 @@ export default function CardDetail({
   /** The line whose form is open, by its line key (`CopyList`), so it lives through the store's id swap. */
   const [editing, setEditing] = useState<{ key: string; value: FormValue; trade: boolean } | null>(null);
 
+  /** The add form, open by the Add button or an "add" open; always shown while there is no copy to list. */
+  const [adding, setAdding] = useState(mode === "add");
+  const showAdd = adding || (copies !== undefined && lines.length === 0);
   const addRef = useRef<HTMLDivElement>(null);
+  const addButtonRef = useRef<HTMLButtonElement>(null);
+  /** Where the keyboard goes when the add form opens or folds: into its first field, or back to Add. */
+  const [addFocus, setAddFocus] = useState<"form" | "button" | null>(null);
+  useEffect(() => {
+    if (!addFocus) return;
+    const frame = requestAnimationFrame(() => {
+      const target =
+        addFocus === "form" ? addRef.current?.querySelector<HTMLInputElement>("input") : addButtonRef.current;
+      // Not drawn yet (a first copy still on its way in): try again when it is.
+      if (!target) return;
+      target.focus();
+      // Only this move: a newer one asked for meanwhile still runs.
+      setAddFocus((current) => (current === addFocus ? null : current));
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [addFocus, showAdd]);
   const rootRef = useRef<HTMLDivElement>(null);
   /**
    * Where the keyboard goes once the copy's form closes or opens: back to its
@@ -244,7 +268,11 @@ export default function CardDetail({
           }`,
       )
       .then((r) => {
-        if (r) resetDraft();
+        if (!r) return;
+        resetDraft();
+        // Back to the list, the new line in it, and the keyboard on Add.
+        setAdding(false);
+        setAddFocus("button");
       });
   };
 
@@ -426,27 +454,50 @@ export default function CardDetail({
         onMove={capabilities.binders ? move : undefined}
       />
 
-      <div ref={addRef} className="scroll-mt-4">
-        <CopyDetailsForm
-          card={card}
-          value={draft}
-          onChange={setDraft}
-          onSave={add}
-          onCancel={() => {
-            resetDraft();
-            onCancelAdd();
+      {showAdd ? (
+        <div ref={addRef} className="scroll-mt-4">
+          <CopyDetailsForm
+            card={card}
+            value={draft}
+            onChange={setDraft}
+            onSave={add}
+            onCancel={() => {
+              resetDraft();
+              if (lines.length === 0) {
+                onCancelAdd();
+              } else {
+                setAdding(false);
+                setAddFocus("button");
+              }
+            }}
+            hideSaleFields
+            hideBinders
+            homes={addKinds.length > 0 ? formHomes(addKinds) : undefined}
+            homeId={addHome}
+            onHomeChange={addKinds.length > 0 ? (id) => setDraftHome(id) : undefined}
+            upForTrade={capabilities.trade ? draftTrade : undefined}
+            onUpForTradeChange={capabilities.trade ? setDraftTrade : undefined}
+            heading={lines.length > 0 ? "Add another copy" : "Add a copy"}
+            saveLabel={onInventory ? "Add to inventory" : "Add to collection"}
+          />
+        </div>
+      ) : copies !== undefined ? (
+        <NeonButton
+          ref={addButtonRef}
+          type="button"
+          variant="secondary"
+          outline
+          aria-label={`Add another copy of ${name}`}
+          onClick={() => {
+            setAdding(true);
+            setAddFocus("form");
           }}
-          hideSaleFields
-          hideBinders
-          homes={addKinds.length > 0 ? formHomes(addKinds) : undefined}
-          homeId={addHome}
-          onHomeChange={addKinds.length > 0 ? (id) => setDraftHome(id) : undefined}
-          upForTrade={capabilities.trade ? draftTrade : undefined}
-          onUpForTradeChange={capabilities.trade ? setDraftTrade : undefined}
-          heading={lines.length > 0 ? "Add another copy" : "Add a copy"}
-          saveLabel={onInventory ? "Add to inventory" : "Add to collection"}
-        />
-      </div>
+          className="max-sm:min-h-11"
+        >
+          <PlusIcon aria-hidden="true" className="h-4 w-4" />
+          Add
+        </NeonButton>
+      ) : null}
     </div>
   );
 }
