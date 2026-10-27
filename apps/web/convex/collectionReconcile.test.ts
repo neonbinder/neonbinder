@@ -140,7 +140,9 @@ describe("edits", () => {
     await s.me.mutation(api.collection.placeCopy, { copyId: b.copyId, slot: 4 });
     await s.me.mutation(api.collection.placeCopy, { copyId: x.copyId, slot: 2 });
     await reconciled(s, "place");
-    await s.me.mutation(api.collection.placeCopy, { copyId: b.copyId, slot: null });
+    // A binder card always sits in a pocket (placeCopy refuses null there);
+    // a box row is optional.
+    await s.me.mutation(api.collection.placeCopy, { copyId: b.copyId, slot: 0 });
     await s.me.mutation(api.collection.placeCopy, { copyId: x.copyId, slot: null });
     await reconciled(s, "unplace");
   });

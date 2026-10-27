@@ -340,6 +340,8 @@ export const BOX_ROWS = 5;
 export const POCKETS_PER_PAGE = 9;
 /** Pages a binder's pockets run to: `slot` 0 to `POCKETS_PER_PAGE * MAX_BINDER_PAGES - 1`. */
 export const MAX_BINDER_PAGES = 1000;
+/** Main's pages: far past a binder's, never unbounded (the server's `MAX_MAIN_PAGES`). */
+export const MAX_MAIN_PAGES = 100_000;
 
 /** A binder pocket's `slot`, from its page and pocket (both from 0). */
 export function pocketSlot(page: number, pocket: number): number {

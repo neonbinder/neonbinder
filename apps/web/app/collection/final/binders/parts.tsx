@@ -181,7 +181,7 @@ function LabelControls({ open, actions }: { open: OpenView; actions: CoverAction
 }
 
 /** The inside front cover: name, label controls when it has a label, tally, how-to. */
-export function Cover({ open, actions }: { open: OpenView; actions: CoverActions }) {
+export function Cover({ open, actions, rearrange = false }: { open: OpenView; actions: CoverActions; rearrange?: boolean }) {
   return (
     <div className="flex h-full flex-col gap-3 text-sm text-ink-2">
       <p
@@ -195,7 +195,12 @@ export function Cover({ open, actions }: { open: OpenView; actions: CoverActions
       {open.blurb.map((line) => (
         <p key={line}>{line}</p>
       ))}
-      {!open.box && <p className="mt-auto text-xs text-ink-3">PageUp and PageDown turn the pages.</p>}
+      {!open.box && (
+        <p className="mt-auto text-xs text-ink-3">
+          PageUp and PageDown turn the pages.
+          {rearrange && " To move a card, drag it to an empty pocket, press Alt+← or Alt+→ on it, or tap an empty pocket and then the card."}
+        </p>
+      )}
     </div>
   );
 }

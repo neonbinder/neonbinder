@@ -253,12 +253,13 @@ describe("a binder laid out like the real one", () => {
     expect(pages[0].pockets.every((p) => p.slot && p.content.kind === "empty")).toBe(true);
   });
 
-  it("copies filed here but in no pocket come after, on pages that say so", () => {
+  it("a copy stored with no pocket shows where the backfill will put it (after the last filled pocket), never on a page of its own", () => {
     const loose = copy(c3);
-    const pages = binderPages({ binderId: CONTENDERS, copies: [copy(c0, { slot: 0 }), loose], cards: byId, followed: null });
-    const last = pages.at(-1)!;
-    expect(last.note).toBe("Not in a pocket yet");
-    expect(cardsOnPages([last])).toEqual([c3.id]);
+    const pages = binderPages({ binderId: CONTENDERS, copies: [copy(c0, { slot: 0 }), copy(c1, { slot: 2 }), loose], cards: byId, followed: null });
+    expect(pages.map((p) => p.note).filter(Boolean)).toEqual(["A fresh page"]);
+    const pocket = pages[0].pockets[3];
+    expect(pocket.content.kind === "have" && pocket.content.card.id).toBe(c3.id);
+    expect(pages[0].pockets[1].content.kind).toBe("empty");
   });
 
   it("maps pockets by slot, first copy winning", () => {

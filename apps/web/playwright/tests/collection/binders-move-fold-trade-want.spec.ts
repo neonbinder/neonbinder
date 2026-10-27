@@ -5,7 +5,9 @@
 // lines), flags a copy Up for trade and takes it off again, moves the pair back
 // (it re-folds into one stack of three), takes that back with Undo (the stack
 // splits again) and moves it again. The second binder is renamed and relabelled,
-// a second card is slotted into a pocket from the hunt tray, a Want on a third
+// a second card is slotted into a pocket from the hunt tray, the stack is
+// moved to the next pocket and back with Alt+arrows and by tapping a pocket
+// then the card, a Want on a third
 // card lands on the Want List spine and in the Want List and comes off again.
 // The spec ends by deleting the first binder (its cards go back to Main) and
 // the second, so the shelf is back to where it started.
@@ -425,8 +427,10 @@ test(
       .getByRole("group", { name: /^Where should .* go\?$/ })
       .getByRole("button", { name: "This binder", exact: true })
       .click();
+    // Pocket 1 already holds the stack of three: filed from the drawer, it
+    // still went into a pocket (every card in a binder does).
     await expect(
-      page.getByRole("status").filter({ hasText: `Added ${three.short} to ${binderA}, page 1, pocket 1` }),
+      page.getByRole("status").filter({ hasText: `Added ${three.short} to ${binderA}, page 1, pocket 2` }),
     ).toBeVisible();
     const pocket = page
       .getByRole("group", { name: "Page 1", exact: true })
@@ -439,6 +443,39 @@ test(
     await page.getByRole("button", { name: "Undo", exact: true }).click();
     await expect(page.getByRole("status").filter({ hasText: "Undone." })).toBeVisible();
     await expect(pocket).toHaveCount(0);
+
+    // --- Rearrange: Alt+arrows move a card to the open pocket beside it -----
+    const pageOne = page.getByRole("group", { name: "Page 1", exact: true });
+    const stack = pageOne.getByRole("button", {
+      name: new RegExp(`^2024 Topps Chrome #${escapeRegExp(one.number)} ${escapeRegExp(one.player)}`),
+    });
+    const empty = (n: number) =>
+      pageOne.getByRole("button", { name: `Empty pocket ${n} on page 1. Fill it from the pack`, exact: true });
+    await expect(stack).toBeVisible();
+    await expect(empty(2)).toBeVisible();
+    await stack.press("Alt+ArrowRight");
+    await expect(
+      page.getByRole("status").filter({ hasText: `Moved ${one.short} to page 1, pocket 2.` }),
+    ).toBeVisible();
+    await expect(empty(1)).toBeVisible();
+    await expect(empty(2)).toHaveCount(0);
+    await stack.press("Alt+ArrowLeft");
+    await expect(
+      page.getByRole("status").filter({ hasText: `Moved ${one.short} to page 1, pocket 1.` }),
+    ).toBeVisible();
+    await expect(empty(2)).toBeVisible();
+    await expect(empty(1)).toHaveCount(0);
+    // The one-tap way (no drag, no keyboard): tap an empty pocket, then the card.
+    await empty(2).click();
+    await expect(page.getByText(/tap a card in this binder to move it here/)).toBeVisible();
+    await stack.click();
+    await expect(
+      page.getByRole("status").filter({ hasText: `Moved ${one.short} to page 1, pocket 2.` }),
+    ).toBeVisible();
+    await expect(empty(1)).toBeVisible();
+    await expectAccessible(page, { label: "My Binders, a card moved to another pocket" });
+    await stack.press("Alt+ArrowLeft");
+    await expect(empty(1)).toHaveCount(0);
     await backToShelf();
     await expect(spineOf(binderA, 3)).toBeVisible();
 

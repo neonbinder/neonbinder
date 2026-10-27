@@ -1,7 +1,7 @@
 import { useLayoutEffect, useRef, type CSSProperties, type ReactNode, type TouchEvent } from "react";
 import { useDroppable } from "@dnd-kit/core";
 import { ChevronLeftIcon, ChevronRightIcon } from "@heroicons/react/24/outline";
-import Pocket, { type PocketHandlers, type PocketVariant } from "./Pocket";
+import Pocket, { POCKET_MOVE_HINT_ID, type PocketHandlers, type PocketVariant } from "./Pocket";
 import { sameSlot, type PageModel, type SlotRef } from "./model";
 import NeonButton from "@/components/modules/NeonButton";
 
@@ -33,6 +33,8 @@ interface BinderDeskProps extends PocketHandlers {
   reducedMotion: boolean;
   /** Label for the binder region, e.g. the binder's name. */
   name: string;
+  /** Its cards can be dragged or Alt+arrowed to other pockets. */
+  rearrange?: boolean;
 }
 
 export function stepCount(pageCount: number, wide: boolean): number {
@@ -149,6 +151,11 @@ export default function BinderDesk(props: BinderDeskProps) {
         } as CSSProperties
       }
     >
+      {props.rearrange && (
+        <span id={POCKET_MOVE_HINT_ID} hidden>
+          Alt plus the arrow keys move it to the open pocket before or after. Or drag it to an empty pocket.
+        </span>
+      )}
       {leftPage === "cover" && (
         <div ref={leftRef} className="p2-cover">
           {cover}
@@ -219,6 +226,8 @@ function Page({
   onOpen,
   onAdd,
   onAim,
+  onShift,
+  rearrange,
 }: BinderDeskProps & { page: PageModel; number: number }) {
   const head = [page.section, page.note].filter(Boolean).join(", ");
   return (
@@ -241,6 +250,8 @@ function Page({
           onOpen={onOpen}
           onAdd={onAdd}
           onAim={onAim}
+          onShift={onShift}
+          rearrange={rearrange}
         />
       ))}
       <p aria-hidden="true" className="p2-page-foot">
