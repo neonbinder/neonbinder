@@ -3557,6 +3557,30 @@ describe("CardChecklist — NEO-208 quick-add Team picker", () => {
     });
   });
 
+  it("NEO-367: sends a trimmed note, and no notes key when the box is blank", async () => {
+    renderChecklist();
+    openAddForm();
+    fillCardNumber("504");
+    const notes = screen.getByLabelText("Notes (optional)");
+    fireEvent.change(notes, { target: { value: "  Short print\nabout 1:120  " } });
+    expect(screen.getByText("27/1000")).toBeTruthy();
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Submit new card"));
+    });
+    expect(mockAddCustomCard.mock.calls[0][0]).toMatchObject({
+      cardNumber: "504",
+      notes: "Short print\nabout 1:120",
+    });
+
+    openAddForm();
+    fillCardNumber("505");
+    fireEvent.change(screen.getByLabelText("Notes (optional)"), { target: { value: "   " } });
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Submit new card"));
+    });
+    expect(mockAddCustomCard.mock.calls[1][0]).not.toHaveProperty("notes");
+  });
+
   /**
    * The NEO-36 pin, and the reason the picker's value is allowed to be React
    * state at all.
