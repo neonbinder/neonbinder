@@ -156,6 +156,28 @@ describe("Find cards", () => {
   });
 });
 
+describe("played for (NEO-362)", () => {
+  test("a card that shows the player on the team fits, even with no stints on file", async () => {
+    const s = await setup();
+    const id = await smartBinder(s, {
+      version: 1,
+      match: "all",
+      terms: [{ test: { kind: "playedFor", teamIds: [s.fx.metsId] } }],
+    });
+    const fits = await s.me.query(api.binderRules.matchingCards, {
+      containerId: id,
+      cardIds: [s.fx.gooden1, s.fx.strawberry2],
+    });
+    expect(fits).toEqual([s.fx.gooden1, s.fx.strawberry2]);
+    const other = await smartBinder(s, {
+      version: 1,
+      match: "all",
+      terms: [{ test: { kind: "playedFor", teamIds: [s.fx.exposId] } }],
+    });
+    expect(await s.me.query(api.binderRules.matchingCards, { containerId: other, cardIds: [s.fx.gooden1] })).toEqual([]);
+  });
+});
+
 describe("empty slots", () => {
   test("a smart binder's needs are the rule's cards it lacks, marked when held in another binder", async () => {
     const s = await setup();

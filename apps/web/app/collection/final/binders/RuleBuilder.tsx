@@ -395,10 +395,13 @@ function SportSelect({
   label,
   value,
   onChange,
+  anyLabel,
 }: {
   label: string;
   value: string;
   onChange: (sportId: string, name: string) => void;
+  /** What the empty choice reads as: "Pick a sport" when one is needed. */
+  anyLabel?: string;
 }) {
   const sports = useDrill("sport", {});
   return (
@@ -409,7 +412,7 @@ function SportSelect({
         value={value}
         onChange={(e) => onChange(e.target.value, sports?.find((s) => s.id === e.target.value)?.name ?? "")}
       >
-        <option value="">{sports ? "Pick a sport" : "Loading sports…"}</option>
+        <option value="">{sports ? (anyLabel ?? "Pick a sport") : "Loading sports…"}</option>
         {(sports ?? []).map((s) => (
           <option key={s.id} value={s.id}>
             {s.name}
@@ -478,6 +481,12 @@ function suggestionName(s: Pickable): string {
   return s.name;
 }
 
+/** A suggestion as the list shows it: with its sport, so three Reggie Whites can be told apart. */
+function suggestionOption(s: Pickable): string {
+  if (s.kind === "set") return s.sport ? `${s.label} · ${s.sport}` : s.label;
+  return s.sport ? `${suggestionName(s)} · ${s.sport}` : suggestionName(s);
+}
+
 /** Players, teams or sets, typed and picked from the catalog, shown as chips. */
 function ChipPicker({
   kind,
@@ -495,13 +504,16 @@ function ChipPicker({
   onChange: (ids: string[], names?: Record<string, string>) => void;
 }) {
   const [q, setQ] = useState("");
+  const [sportId, setSportId] = useState("");
   const settled = useSearchText(q);
-  const suggestions = useSuggestions(settled);
+  const suggestions = useSuggestions(settled, sportId ? { sportId } : undefined);
   const items = (suggestions ?? []).filter((s): s is Pickable => s.kind === kind && !ids.includes(s.id));
   return (
-    <div>
+    <div className="space-y-2">
+      {/* Names repeat across sports (three Reggie Whites): narrow the list to one. */}
+      {kind !== "set" && <SportSelect label="Sport" value={sportId} onChange={(id) => setSportId(id)} anyLabel="Every sport" />}
       {ids.length > 0 && (
-        <ul className="mb-2 flex flex-wrap gap-2" aria-label={`${label} picked`}>
+        <ul className="flex flex-wrap gap-2" aria-label={`${label} picked`}>
           {ids.map((pid) => (
             <li key={pid}>
               <button
@@ -523,7 +535,7 @@ function ChipPicker({
         onQueryChange={setQ}
         items={items}
         getKey={(s) => s.id}
-        getLabel={suggestionName}
+        getLabel={suggestionOption}
         onSelect={(s) => {
           onChange([...ids, s.id], { [s.id]: suggestionName(s) });
           setQ("");

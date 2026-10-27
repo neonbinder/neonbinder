@@ -689,9 +689,10 @@ export const CONVEX_DATA: CollectionData = {
       return catalog.map((card, i) => card ?? own?.get(ids[i]) ?? null);
     }, [catalog, ids, missing, own]);
   },
-  useSuggestions(text) {
+  useSuggestions(text, options) {
     const q = text.trim();
-    const raw = useQuery(api.collectionCatalog.suggest, searchable(q) ? { q } : "skip");
+    const sportId = options?.sportId;
+    const raw = useQuery(api.collectionCatalog.suggest, searchable(q) ? { q, ...(sportId ? { sportId } : {}) } : "skip");
     return useMemo((): Suggestion[] | undefined => {
       if (!searchable(q)) return [];
       if (raw === undefined) return undefined;
@@ -1247,6 +1248,7 @@ function suggestionsFrom(raw: RawSuggest): Suggestion[] {
         ...(t.franchise ? { franchise: { id: t.franchise._id, name: t.franchise.name } } : {}),
         ...(t.primaryColor ? { primary: t.primaryColor } : {}),
         ...(t.secondaryColor ? { secondary: t.secondaryColor } : {}),
+        ...(t.sport ? { sport: t.sport.name } : {}),
       }),
     ),
     ...raw.sets.map(

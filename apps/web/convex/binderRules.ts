@@ -100,13 +100,17 @@ export class FactReader {
       if (player.isHallOfFame) hallOfFame = true;
       for (const stint of player.teamYears ?? []) playedForIds.add(stint.teamId as string);
     }
+    // A card that shows him on a team is proof he played for it, whether or
+    // not his stints say so yet (most players have none on file).
+    const teamIds = new Set((card.teamOnCardIds ?? []).map((id) => id as string));
+    for (const id of teamIds) playedForIds.add(id);
     const chain = await this.catalog.chain(card.selectorOptionId);
     const set = chain?.get("setName");
     const yearRow = chain?.get("year");
     const season = set?.features?.season ?? yearRow?.value;
     return {
       playerIds,
-      teamIds: new Set((card.teamOnCardIds ?? []).map((id) => id as string)),
+      teamIds,
       playedForIds,
       hallOfFame,
       sportId: (chain?.get("sport")?._id as string | undefined) ?? null,

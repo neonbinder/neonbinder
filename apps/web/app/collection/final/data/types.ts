@@ -703,6 +703,7 @@ export type Suggestion =
       /** Livery, `#rrggbb`, when NB has it (the label designer's team colours). */
       primary?: string;
       secondary?: string;
+      sport?: string;
     }
   | {
       kind: "set";

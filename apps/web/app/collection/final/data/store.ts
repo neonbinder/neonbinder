@@ -183,7 +183,7 @@ export interface CollectionData {
   /** Several cards, aligned with `cardIds`; `null` where one is no longer in the catalog. */
   useCards(cardIds: readonly CardId[] | null): (Card | null)[] | undefined;
   /** Players (name or alias), teams and sets matching the text, best first. */
-  useSuggestions(text: string): Suggestion[] | undefined;
+  useSuggestions(text: string, options?: { sportId?: string }): Suggestion[] | undefined;
   /** One team, with its livery when NB has it. `null`: not in the catalog. */
   useTeam(teamId: TeamId | null): CardTeam | null | undefined;
   /** Cards whose title matches the text: every word, quoted phrases verbatim. */
@@ -557,8 +557,8 @@ export function useCard(cardId: CardId | null): Card | null | undefined {
 export function useCards(cardIds: readonly CardId[] | null): (Card | null)[] | undefined {
   return useCollectionStore().data.useCards(cardIds);
 }
-export function useSuggestions(text: string): Suggestion[] | undefined {
-  return useCollectionStore().data.useSuggestions(text);
+export function useSuggestions(text: string, options?: { sportId?: string }): Suggestion[] | undefined {
+  return useCollectionStore().data.useSuggestions(text, options);
 }
 export function useTeam(teamId: TeamId | null): CardTeam | null | undefined {
   return useCollectionStore().data.useTeam(teamId);
