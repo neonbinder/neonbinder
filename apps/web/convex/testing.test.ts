@@ -162,6 +162,7 @@ describe("resetMyTestState", () => {
       prizePool: 1,
       collectionCopies: 1,
       collectionWants: 0,
+      cardRequests: 0,
       collectionContainers: 1,
       collectionBuildingSets: 1,
     });
@@ -215,6 +216,7 @@ describe("resetMyTestState", () => {
       prizePool: 0,
       collectionCopies: 0,
       collectionWants: 0,
+      cardRequests: 0,
       collectionContainers: 0,
       collectionBuildingSets: 0,
     });

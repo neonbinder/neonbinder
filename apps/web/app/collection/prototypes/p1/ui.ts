@@ -67,6 +67,9 @@ export const FEATURE_BADGE: Record<CardFeature | "NUM", { label: string; cls: st
 export const SELECT =
   "w-full rounded-md border border-field-rule bg-field px-3 py-2 text-base text-ink focus-outline";
 export const LABEL = "block text-sm font-medium mb-1 text-ink-2";
+/** SELECT on a raised card or dialog: the panel well, with the control edge (3:1 on the card). */
+export const SELECT_PANEL =
+  "w-full rounded-md border border-control bg-raised-deep px-3 py-2 text-base text-ink focus-outline";
 
 /** PlayerManagement's pill, used for filter chips and rule chips. */
 export const CHIP =

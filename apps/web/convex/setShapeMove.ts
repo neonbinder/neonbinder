@@ -717,7 +717,10 @@ export async function moveCards(
         lastUpdated: now,
       });
       if (copy.setId !== setId) {
-        movedSets.push({ ownerId: copy.ownerId, setId: copy.setId }, { ownerId: copy.ownerId, setId });
+        // A catalog card's copy always names its set (only a private card's
+        // has none, and `by_card` with a catalog id never meets those).
+        if (copy.setId) movedSets.push({ ownerId: copy.ownerId, setId: copy.setId });
+        movedSets.push({ ownerId: copy.ownerId, setId });
       }
     }
   }
@@ -801,7 +804,8 @@ export const repointMovedCardCopies = internalMutation({
         });
         repointed += 1;
         if (copy.setId !== setId) {
-          movedSets.push({ ownerId: copy.ownerId, setId: copy.setId }, { ownerId: copy.ownerId, setId });
+          if (copy.setId) movedSets.push({ ownerId: copy.ownerId, setId: copy.setId });
+          movedSets.push({ ownerId: copy.ownerId, setId });
         }
       }
       // NEO-359 — the moved copies' owners' set-build counts are not known now.

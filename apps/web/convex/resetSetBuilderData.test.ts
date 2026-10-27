@@ -378,6 +378,7 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
       selectorSyncStatusDeleted: 3,
       collectionCopiesDeleted: 10,
       collectionWantsDeleted: 0,
+      cardRequestsDeleted: 0,
       collectionContainersDeleted: 1,
       collectionBuildingSetsDeleted: 11,
       selectorOptionsDeleted: 3,
@@ -428,6 +429,7 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
     ["resetSelectorSyncStatusBatch", "selectorSyncStatus"],
     ["resetCollectionCopiesBatch", "collectionCopies"],
     ["resetCollectionWantsBatch", "collectionWants"],
+    ["resetCardRequestsBatch", "cardRequests"],
     ["resetCollectionContainersBatch", "collectionContainers"],
     ["resetCollectionBuildingSetsBatch", "collectionBuildingSets"],
     ["resetCardTeamLinksBatch", "cardTeamLinks"],
@@ -486,6 +488,7 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
       selectorSyncStatusDeleted: 0,
       collectionCopiesDeleted: 0,
       collectionWantsDeleted: 0,
+      cardRequestsDeleted: 0,
       collectionContainersDeleted: 0,
       collectionBuildingSetsDeleted: 0,
       selectorOptionsDeleted: 0,
@@ -555,6 +558,7 @@ describe("NEO-254: the reset yields at RESET_TIME_BUDGET_MS and resumes", () => 
       selectorSyncStatusDeleted: 0,
       collectionCopiesDeleted: 0,
       collectionWantsDeleted: 0,
+      cardRequestsDeleted: 0,
       collectionContainersDeleted: 0,
       collectionBuildingSetsDeleted: 0,
       selectorOptionsDeleted: 0,
@@ -591,6 +595,7 @@ describe("NEO-254: the reset yields at RESET_TIME_BUDGET_MS and resumes", () => 
       selectorSyncStatusDeleted: 3,
       collectionCopiesDeleted: 10,
       collectionWantsDeleted: 0,
+      cardRequestsDeleted: 0,
       collectionContainersDeleted: 1,
       collectionBuildingSetsDeleted: 11,
       selectorOptionsDeleted: 3,
@@ -1019,6 +1024,10 @@ describe("NEO-330: scope exceptReferenceSeed", () => {
     "collectionBuildingSets",
     // NEO-359 — a smart binder's rule holds selectorOptions ids.
     "collectionContainers",
+    // NEO-361 — card requests and the private cards and sets they made.
+    "privateCards",
+    "privateSets",
+    "cardRequests",
     "cardPlayerLinks",
     "cardChecklist",
     "cardCrossListings",
@@ -1038,6 +1047,34 @@ describe("NEO-330: scope exceptReferenceSeed", () => {
   /** Existing seed, plus the reference tables it leaves empty and cardPlayerLinks. */
   async function seedAll(t: ReturnType<typeof convexTest>) {
     const { sportId } = await seedEveryDrainedTable(t);
+    // NEO-361 — one request with the private set and card it made.
+    await t.run(async (ctx) => {
+      const requestId = await ctx.db.insert("cardRequests", {
+        ownerId: "user",
+        kind: "set",
+        status: "waiting",
+        label: "1986 Topps Traded",
+        lastUpdated: 0,
+      });
+      const privateSetId = await ctx.db.insert("privateSets", {
+        ownerId: "user",
+        requestId,
+        sportId,
+        year: "1986",
+        brand: "Topps",
+        name: "Traded",
+        lastUpdated: 0,
+      });
+      await ctx.db.insert("privateCards", {
+        ownerId: "user",
+        requestId,
+        privateSetId,
+        variantName: "Base",
+        cardNumber: "11T",
+        player: "Barry Bonds",
+        lastUpdated: 0,
+      });
+    });
     await t.run(async (ctx) => {
       const team = (await ctx.db.query("teams").first())!;
       const player = (await ctx.db.query("players").first())!;
@@ -1109,6 +1146,7 @@ describe("NEO-330: scope exceptReferenceSeed", () => {
       selectorSyncStatusDeleted: 3,
       collectionCopiesDeleted: 10,
       collectionWantsDeleted: 0,
+      cardRequestsDeleted: 3,
       collectionContainersDeleted: 1,
       collectionBuildingSetsDeleted: 11,
       selectorOptionsDeleted: 0,

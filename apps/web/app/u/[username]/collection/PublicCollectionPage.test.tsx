@@ -117,6 +117,29 @@ describe("public share pages", () => {
     expect(document.title).toBe("Nothing to see here · NeonBinder");
   });
 
+  it("a collector's own card shows, marked as not in the catalog (NEO-361)", () => {
+    queries.shelf = { count: { copies: 1, lines: 1 } };
+    queries.copies = [
+      {
+        key: "u1",
+        quantity: 1,
+        upForTrade: true,
+        unlisted: {
+          cardNumber: "77",
+          player: "Rookie Nobody",
+          set: null,
+          variant: null,
+          variantName: "Gold Foil",
+          requestedSet: { sport: null, year: "1996", brand: "Playoff", name: "Contenders" },
+        },
+      },
+    ];
+    renderAt("/u/ace/up-for-trade");
+    expect(screen.getAllByText(/Rookie Nobody/).length).toBeGreaterThan(0);
+    expect(screen.getByText("Not in the NeonBinder catalog")).toBeTruthy();
+    expect(screen.getAllByText("Unlisted").length).toBeGreaterThan(0);
+  });
+
   it("Up for Trade tags a box copy as also for sale", () => {
     queries.shelf = { count: { copies: 1, lines: 1 } };
     queries.copies = [{ key: "a", quantity: 1, upForTrade: true, forSale: true, card: CARD }];

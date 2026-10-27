@@ -33,6 +33,10 @@
  *  5. Map every copy through `publicCopyOut`, built field by field from an
  *     allowlist (`publicCopyValidator`). Never a spread row.
  *
+ * NEO-361: a copy of the collector's own card (one NB doesn't have) shows
+ * as `unlisted` (its number, player and where it belongs), never its notes,
+ * photos or request.
+ *
  * Never public: cost, acquired date, location, notes, grading cert, serial
  * number, a copy's home or its id, a box's name, any other binder's link, and
  * timestamps, a private binder's name or link. Counts are the stored ones only (null when absent): a visitor
@@ -51,7 +55,13 @@ import {
   collectionCountValidator,
   collectionLabelValidator,
 } from "./schema";
-import { CatalogReader, catalogCardWithPathValidator } from "./lib/catalogView";
+import {
+  CatalogReader,
+  catalogCardWithPathValidator,
+  pathNodeValidator,
+  setRefValidator,
+  variantRefValidator,
+} from "./lib/catalogView";
 import { USERNAME_RE, isSlug } from "../lib/collection/share-links";
 
 type ContainerRow = Doc<"collectionContainers">;
@@ -73,6 +83,25 @@ const publicGradingValidator = v.object({
   grade: v.string(),
 });
 
+/**
+ * NEO-361 — a collector's own card (one NB doesn't have) as a visitor sees
+ * it: what is printed on it and where it belongs. Never its notes, photos or
+ * request, nor any id.
+ */
+export const publicUnlistedCardValidator = v.object({
+  cardNumber: v.string(),
+  player: v.string(),
+  /** The checklist as the collector typed it, when it is not one of the set's. */
+  variantName: v.optional(v.string()),
+  set: v.union(setRefValidator, v.null()),
+  variant: v.union(variantRefValidator, v.null()),
+  /** The set the collector asked us to add, when it is not an NB set. */
+  requestedSet: v.union(
+    v.object({ sport: v.union(pathNodeValidator, v.null()), year: v.string(), brand: v.string(), name: v.string() }),
+    v.null(),
+  ),
+});
+
 /** One line item as a visitor sees it. An allowlist, not a trimmed `copyValidator`. */
 export const publicCopyValidator = v.object({
   /** Opaque and stable per line, for list keys. Not the copy's id. */
@@ -86,7 +115,10 @@ export const publicCopyValidator = v.object({
   upForTrade: v.optional(v.literal(true)),
   /** Up for Trade only: this copy also sits in a box, so it's for sale too. */
   forSale: v.optional(v.literal(true)),
-  card: catalogCardWithPathValidator,
+  /** The NB card. Exactly one of `card` and `unlisted` is present. */
+  card: v.optional(catalogCardWithPathValidator),
+  /** NEO-361 — the collector's own card, one NB doesn't have (Jason: shown, marked). */
+  unlisted: v.optional(publicUnlistedCardValidator),
 });
 
 /** A wanted card as a visitor sees it: the card only, never the binder it's for. */
@@ -201,6 +233,45 @@ function opaqueKey(id: string): string {
 type PublicCopy = typeof publicCopyValidator.type;
 
 /**
+ * NEO-361 — the card a copy is of, as a visitor sees it: the NB card, or the
+ * collector's own card (`unlisted`). Null when it is gone, or (never in
+ * practice) a private card that isn't the copy owner's.
+ */
+async function publicCardOf(
+  reader: CatalogReader,
+  ctx: QueryCtx,
+  row: CopyRow,
+): Promise<Pick<PublicCopy, "card" | "unlisted"> | null> {
+  const ownId = ctx.db.normalizeId("privateCards", row.cardId);
+  if (ownId) {
+    const own = await ctx.db.get(ownId);
+    if (!own || own.ownerId !== row.ownerId) return null;
+    const requested = own.privateSetId ? await ctx.db.get(own.privateSetId) : null;
+    const sport = requested ? await reader.row(requested.sportId) : null;
+    return {
+      unlisted: {
+        cardNumber: own.cardNumber,
+        player: own.player,
+        ...(own.variantName ? { variantName: own.variantName } : {}),
+        set: own.setId ? await reader.setRef(own.setId) : null,
+        variant: own.variantId ? await reader.variantRef(own.variantId) : null,
+        requestedSet: requested
+          ? {
+              sport: sport ? { _id: sport._id, name: sport.value } : null,
+              year: requested.year,
+              brand: requested.brand,
+              name: requested.name,
+            }
+          : null,
+      },
+    };
+  }
+  const cardId = ctx.db.normalizeId("cardChecklist", row.cardId);
+  const card = cardId ? await ctx.db.get(cardId) : null;
+  return card ? { card: await reader.cardWithPath(card) } : null;
+}
+
+/**
  * One copy as a visitor sees it, or null when its card left the catalog.
  * Built field by field; add a field here only after deciding it is public.
  */
@@ -210,8 +281,8 @@ async function publicCopyOut(
   row: CopyRow,
   extra: { slot?: boolean; forSale?: boolean },
 ): Promise<PublicCopy | null> {
-  const card = await ctx.db.get(row.cardId);
-  if (!card) return null;
+  const shown = await publicCardOf(reader, ctx, row);
+  if (!shown) return null;
   return {
     key: opaqueKey(row._id),
     quantity: row.quantity,
@@ -220,7 +291,7 @@ async function publicCopyOut(
     ...(extra.slot && row.slot !== undefined ? { slot: row.slot } : {}),
     ...(row.upForTrade === true ? { upForTrade: true as const } : {}),
     ...(extra.forSale ? { forSale: true as const } : {}),
-    card: await reader.cardWithPath(card),
+    ...shown,
   };
 }
 

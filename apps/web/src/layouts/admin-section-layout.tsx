@@ -44,6 +44,9 @@ export const SECTIONS = [
   // NEO-170's operator view. Landed as a top-level tab while this section
   // didn't exist yet; its page header planned the move here all along.
   { label: "Pipeline Runs", path: "/admin/pipeline-runs" },
+  // NEO-361. What collectors asked us to add; approving one usually means a
+  // trip to the Set Builder, which leads the list.
+  { label: "Card Requests", path: "/admin/card-requests" },
 ];
 
 export default function AdminSectionLayout() {

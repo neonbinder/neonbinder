@@ -86,6 +86,8 @@ interface Face {
   /** The insert or parallel's name; null for Base. */
   variantName: string | null;
   finish: Finish;
+  /** NEO-361 — the collector's own card, not a known NB card: wears the "Unlisted" tag. */
+  own: boolean;
 }
 
 /** A team NB has no livery for: slate frame, lighter slate band. */
@@ -110,6 +112,7 @@ function faceOf(card: Card | undefined, model: ModelCard | undefined): Face {
       variation: model.cardVariation,
       variantName: model.variant.kind === "base" ? null : model.variant.name,
       finish: model.finish,
+      own: model.own !== undefined,
     };
   }
   if (!card) throw new Error("CardFace: pass a card or a model");
@@ -131,6 +134,7 @@ function faceOf(card: Card | undefined, model: ModelCard | undefined): Face {
     variation: card.variation,
     variantName: card.variantPath.type !== "Base" ? card.variantPath.name : null,
     finish: card.finish,
+    own: false,
   };
 }
 
@@ -175,6 +179,7 @@ export default function CardFace({
   const need = state === "need";
   const accessibleName = [
     baseName,
+    face.own ? "unlisted, not in the NeonBinder catalog" : null,
     serial ? `serial ${serial}` : null,
     need ? "need" : null,
   ]
@@ -285,6 +290,7 @@ export default function CardFace({
               className="absolute flex items-end"
               style={{ left: cq(4), bottom: cq(4), gap: cq(1.5) }}
             >
+              {face.own && <Tag tone="own">{compact ? "U" : "Unlisted"}</Tag>}
               {face.features.includes("RC") && <Tag tone="rc">RC</Tag>}
               {face.features.includes("SP") && !compact && <Tag tone="plain">SP</Tag>}
             </div>
@@ -373,7 +379,7 @@ export default function CardFace({
   );
 }
 
-function Tag({ tone, children }: { tone: "rc" | "plain"; children: ReactNode }) {
+function Tag({ tone, children }: { tone: "rc" | "plain" | "own"; children: ReactNode }) {
   return (
     <span
       className="font-bold"
@@ -383,8 +389,13 @@ function Tag({ tone, children }: { tone: "rc" | "plain"; children: ReactNode }) 
         borderRadius: cq(1.5),
         lineHeight: 1.15,
         background: tone === "rc" ? "#ffffff" : "rgba(0,0,0,0.78)",
-        color: tone === "rc" ? "#000000" : "#ffffff",
-        border: tone === "rc" ? `${cq(0.7)} solid #E0242B` : undefined,
+        color: tone === "rc" ? "#000000" : tone === "own" ? "#7DD3FC" : "#ffffff",
+        border:
+          tone === "rc"
+            ? `${cq(0.7)} solid #E0242B`
+            : tone === "own"
+              ? `${cq(0.7)} dashed #7DD3FC`
+              : undefined,
       }}
     >
       {children}

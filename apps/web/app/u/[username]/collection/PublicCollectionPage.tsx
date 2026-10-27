@@ -4,7 +4,7 @@ import { Link, useParams } from "react-router";
 import type { FunctionReturnType } from "convex/server";
 import { api } from "@/convex/_generated/api";
 import CardFace from "@/app/collection/prototypes/_shared/CardFace";
-import { hydrateCatalogCard } from "@/app/collection/final/data/convexStore";
+import { hydrateCatalogCard, hydratePublicOwnCard } from "@/app/collection/final/data/convexStore";
 import { cardLabel } from "@/app/collection/final/data/labels";
 import NeonButton from "@/components/modules/NeonButton";
 import { USERNAME_RE } from "@/lib/collection/share-links";
@@ -125,8 +125,13 @@ function grade(copy: PublicCopy): string | null {
 
 /** One card and what the visitor may know about this copy. */
 function CardTile({ item, tags = true }: { item: Listed; tags?: boolean }) {
-  const card = hydrateCatalogCard(item.card);
   const copy = "quantity" in item ? item : null;
+  // NEO-361: a collector's own card (one NB doesn't have) shows too, marked unlisted.
+  const card = item.card
+    ? hydrateCatalogCard(item.card)
+    : copy?.unlisted
+      ? hydratePublicOwnCard(copy.key, copy.unlisted)
+      : null;
   const lines = copy ? [grade(copy) ?? copy.condition, copy.quantity > 1 ? `×${copy.quantity}` : null].filter(Boolean) : [];
   return (
     <li className="flex flex-col gap-1.5">
@@ -137,6 +142,7 @@ function CardTile({ item, tags = true }: { item: Listed; tags?: boolean }) {
       )}
       <p className="text-xs leading-snug text-ink-2">
         <span className="block font-medium text-ink">{card ? cardLabel(card) : "No longer in the catalog"}</span>
+        {card?.own && <span className="block text-ink-3">Not in the NeonBinder catalog</span>}
         {lines.length > 0 && <span className="block">{lines.join(" · ")}</span>}
         {/* NEO-367: the catalog card's Notes are NB's facts about the card, public
             by Jason's call. Never the copy's own notes, which this page never gets. */}

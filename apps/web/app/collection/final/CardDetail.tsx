@@ -40,6 +40,7 @@ import {
 import type { Card, Container, ContainerId, Copy, CopyDetails, CopyId, MoveResult } from "./data/types";
 import { binderText, lineNames, lineSummary, lineWhat, type NamedBinder } from "./lineItems";
 import { useLineKeys } from "./lineKeys";
+import OwnCardNote from "./OwnCardNote";
 import { usePageApi } from "./pageApi";
 
 /** What the shared copy form edits (the prototypes' copy shape). */
@@ -354,7 +355,7 @@ export default function CardDetail({
                     : `You have ${owned}`}
               <span className="sr-only">.</span>
             </p>
-            {capabilities.wants && (
+            {capabilities.wants && !card.own && (
               <button
                 type="button"
                 aria-pressed={wanted}
@@ -412,6 +413,7 @@ export default function CardDetail({
             )}
           </dl>
           <FeatureBadges card={card} />
+          {card.own && <OwnCardNote own={card.own} />}
         </div>
       </div>
 

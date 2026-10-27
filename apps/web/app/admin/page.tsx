@@ -1,6 +1,7 @@
 import { Link } from "react-router";
 import {
   BuildingOffice2Icon,
+  InboxArrowDownIcon,
   SignalIcon,
   SquaresPlusIcon,
   TrophyIcon,
@@ -67,6 +68,12 @@ const TOOL_DETAILS: Record<
       "Watch every user's placeholder pipeline runs and abort the ones that are wedged.",
     icon: SignalIcon,
     accent: "text-neon-green-text group-hover:border-neon-green/50",
+  },
+  "/admin/card-requests": {
+    description:
+      "Review the cards and sets collectors asked us to add: approve one as a catalog card, or decline it with a note.",
+    icon: InboxArrowDownIcon,
+    accent: "text-neon-blue-text group-hover:border-neon-blue/50",
   },
 };
 
