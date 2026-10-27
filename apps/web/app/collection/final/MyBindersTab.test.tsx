@@ -599,7 +599,7 @@ describe("one open-binder view for binders and browsed sets", () => {
     return heading.closest("div")!.parentElement!;
   };
 
-  it("a browsed set gets the binder's Share and layout toggle, from the same view, and no label controls", () => {
+  it("a browsed set gets the binder's Share from the same view, and no settings or label controls", () => {
     renderBinders("/collection?tab=binders&b=binder-contenders-96");
     const binderControls = within(header("'96 Contenders"))
       .getAllByRole("button")
@@ -607,8 +607,7 @@ describe("one open-binder view for binders and browsed sets", () => {
     expect(binderControls).toEqual([
       "Back to the shelf",
       "Share '96 Contenders",
-      "Lay out like my real binder",
-      "Just a stack",
+      "Binder settings",
     ]);
     expect(screen.getAllByRole("button", { name: "Edit label for '96 Contenders" }).length).toBeGreaterThan(0);
 
@@ -620,8 +619,6 @@ describe("one open-binder view for binders and browsed sets", () => {
     expect(setControls).toEqual([
       "Back to the shelf",
       "Share 2000 Topps",
-      "Lay out like my real binder",
-      "Just a stack",
     ]);
     expect(within(header("2000 Topps")).getByText("Browsing")).toBeTruthy();
     expect(screen.queryByRole("button", { name: /^Edit label for/ })).toBeNull();
@@ -631,23 +628,55 @@ describe("one open-binder view for binders and browsed sets", () => {
     expect(screen.getByText("neonbinder.io/u/you/sets/2000-topps")).toBeTruthy();
   });
 
-  it("Just a stack packs a browsed set tight, and the toggle is not a history step", () => {
+  it("a browsed set lays out like a real binder, with no layout toggle (NEO-362)", () => {
     renderBinders("/collection?tab=binders&set=2000-topps-football");
-    const search = () => screen.getByRole("status", { name: "Page search" }).textContent;
-    const before = search();
-    const pockets = screen.getByRole("button", { name: "Lay out like my real binder" });
-    const stack = screen.getByRole("button", { name: "Just a stack" });
-    expect(pockets.getAttribute("aria-pressed")).toBe("true");
+    expect(screen.queryByRole("button", { name: "Lay out like my real binder" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Just a stack" })).toBeNull();
     expect(screen.getAllByText("Every card in the set, in checklist order. Each insert starts a fresh page.").length).toBeGreaterThan(0);
-
-    fireEvent.click(stack);
-    expect(stack.getAttribute("aria-pressed")).toBe("true");
-    expect(screen.getAllByText("Every card in the set, in checklist order, packed tight.").length).toBeGreaterThan(0);
-    expect(search()).toBe(before);
     expect(screen.getAllByRole("button", { name: /^Add / }).length).toBeGreaterThan(0);
   });
 });
 
+
+describe("binder settings (NEO-362)", () => {
+  const statusSays = (re: RegExp) => screen.getAllByRole("status").some((s) => re.test(s.textContent ?? ""));
+
+  it("keeps a binder sorted, then turns the sort off with every card where it was", async () => {
+    renderBinders("/collection?tab=binders&b=binder-contenders-96");
+    expect(document.querySelectorAll('[aria-keyshortcuts^="Alt+ArrowLeft"]').length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByRole("button", { name: "Binder settings" }));
+    const dialog = screen.getByRole("dialog", { name: "'96 Contenders settings" });
+    const unsorted = within(dialog).getByRole("radio", { name: /Where I put them/ });
+    expect((unsorted as HTMLInputElement).checked).toBe(true);
+    fireEvent.click(within(dialog).getByRole("radio", { name: /Keep sorted by player/ }));
+    await waitFor(() => expect(statusSays(/keeps itself sorted by player/)).toBe(true));
+    expect(screen.getAllByText(/Keeps itself sorted by player/).length).toBeGreaterThan(0);
+    // No dragging between pockets while it keeps itself sorted.
+    expect(document.querySelectorAll('[aria-keyshortcuts^="Alt+ArrowLeft"]')).toHaveLength(0);
+
+    fireEvent.click(within(dialog).getByRole("radio", { name: /Where I put them/ }));
+    await waitFor(() => expect(statusSays(/stays as it is now/)).toBe(true));
+  });
+
+  it("Sort now sorts once and leaves the binder unsorted", async () => {
+    renderBinders("/collection?tab=binders&b=binder-contenders-96");
+    fireEvent.click(screen.getByRole("button", { name: "Binder settings" }));
+    const dialog = screen.getByRole("dialog", { name: "'96 Contenders settings" });
+    fireEvent.change(within(dialog).getByLabelText("Sort it once, by"), { target: { value: "player" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Sort now" }));
+    await waitFor(() => expect(statusSays(/^Sorted '96 Contenders by player/)).toBe(true));
+    fireEvent.click(screen.getByRole("button", { name: "Binder settings" }));
+    expect(
+      (within(screen.getByRole("dialog")).getByRole("radio", { name: /Where I put them/ }) as HTMLInputElement).checked,
+    ).toBe(true);
+  });
+
+  it("the demo has no rule builder: its smart binder fills itself", () => {
+    renderBinders("/collection?tab=binders&b=binder-contenders-96");
+    fireEvent.click(screen.getByRole("button", { name: "Binder settings" }));
+    expect(within(screen.getByRole("dialog")).queryByRole("heading", { name: "Smart rule" })).toBeNull();
+  });
+});
 
 describe("boxes and binders you make", () => {
   const statusSays = (re: RegExp) => screen.getAllByRole("status").some((s) => re.test(s.textContent ?? ""));

@@ -144,8 +144,10 @@ test(
     };
 
     const newDialog = await openNewBinder();
-    // The real collection makes binders only: no box to pick, and no smart binder yet.
-    await expect(newDialog.getByRole("radio")).toHaveCount(0);
+    // The real collection makes binders only: no box to pick. A smart binder
+    // is a binder too (NEO-362; proved by collection/smart-binder-find-cards).
+    await expect(newDialog.getByRole("radio")).toHaveCount(2);
+    await expect(newDialog.getByRole("radio", { name: /^A binder/ })).toBeChecked();
     await expect(newDialog.getByText(/\bbox\b/i)).toHaveCount(0);
     await expectAccessible(page, { within: newDialog, label: "New binder dialog" });
     await newDialog.getByRole("textbox", { name: "Binder name" }).fill(binderA);

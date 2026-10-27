@@ -18,6 +18,7 @@ import { cardLabel, compareCardNumbers, compareCards, playerNames, setLabel, var
 import {
   BOX_ROWS,
   POCKETS_PER_PAGE,
+  type BinderSort,
   pocketOf,
   pocketSlot,
   type Card,
@@ -26,6 +27,7 @@ import {
   type ContainerId,
   type ContainerRule,
   type Copy,
+  type PocketPlacement,
   type SetRef,
   type TeamId,
   type Want,
@@ -69,8 +71,11 @@ export interface SlotRef {
 export type PocketContent =
   /** Owned: one copy (a per-copy pocket) or every copy of the card. */
   | { kind: "have"; card: Card; copies: Copy[] }
-  /** A card the view wants and the collector does not have yet. */
-  | { kind: "need"; card: Card }
+  /**
+   * A card the view wants and the collector does not have here yet.
+   * `elsewhere`: they have it, in another binder (NEO-362's empty slots).
+   */
+  | { kind: "need"; card: Card; elsewhere?: true }
   | { kind: "empty" };
 
 export interface PocketModel {
@@ -78,6 +83,8 @@ export interface PocketModel {
   slot?: SlotRef;
   /** On the Want List: the binder or box the want is for (null: none). */
   wantFor?: ContainerId | null;
+  /** NEO-362 — a card in a smart binder that its rule no longer takes in. */
+  outside?: true;
 }
 
 export interface PageModel {
@@ -344,6 +351,164 @@ export function binderPages(input: {
     });
   }
   return pages;
+}
+
+// ---------------------------------------------------------------------------
+// A binder that keeps itself sorted (NEO-362)
+// ---------------------------------------------------------------------------
+//
+// A sorted binder is drawn in order every time it opens; nothing is written
+// per add. Its stored pockets only matter again when the collector turns the
+// sort off (the order on screen is written down then, `placementsOf`) or
+// sorts an unsorted binder once ("Sort now", the same).
+
+/** How a binder lays itself out, its settings resolved. */
+export interface BinderLayout {
+  /** null: unsorted, every card where the collector put it. */
+  sort: BinderSort | null;
+  /** Show the cards it still needs, in the pockets they would fill. */
+  emptySlots: boolean;
+}
+
+/**
+ * A binder's layout from its settings. Empty slots default ON for a binder
+ * that follows a checklist (`follows`) and OFF for every other (Jason,
+ * 2026-10-27).
+ */
+export function binderLayout(container: Pick<Container, "settings"> | undefined, follows: boolean): BinderLayout {
+  const settings = container?.settings;
+  return { sort: settings?.sort ?? null, emptySlots: settings?.emptySlots ?? follows };
+}
+
+/** A card's first listed player, by last name then the whole name: whom a player sort files it under. */
+function playerKey(card: Card): { id: string; key: string; label: string } {
+  const first = card.players[0];
+  if (!first) return { id: "", key: "\uffff", label: "No player" };
+  return { id: first.id, key: `${lastName(card).toLowerCase()} ${first.name.toLowerCase()}`, label: first.name };
+}
+
+/** A card's first listed team, by its full name: whom a team sort files it under. */
+function teamKey(card: Card): { id: string; key: string; label: string } {
+  const first = card.teams[0];
+  if (!first) return { id: "", key: "\uffff", label: "No team" };
+  const label = `${first.location} ${first.name}`.trim();
+  return { id: first.id, key: label.toLowerCase(), label };
+}
+
+/** The group a card files under for a sort: a checklist, a player, a team. */
+function groupOf(card: Card, sort: BinderSort): { id: string; key: string; label: string } {
+  if (sort === "player") return playerKey(card);
+  if (sort === "team") return teamKey(card);
+  return {
+    id: card.variant.id,
+    key: "",
+    label: `${setLabel(card.set)}${card.variant.kind === "base" ? "" : ` ${variantLabel(card.variant)}`}`,
+  };
+}
+
+type Entry = { card: Card; copy?: Copy };
+
+function compareEntries(sort: BinderSort) {
+  return (a: Entry, b: Entry) => {
+    if (sort !== "checklist") {
+      const ga = groupOf(a.card, sort);
+      const gb = groupOf(b.card, sort);
+      const byGroup = ga.key.localeCompare(gb.key) || ga.id.localeCompare(gb.id);
+      if (byGroup) return byGroup;
+    }
+    return (
+      compareCards(a.card, b.card) ||
+      Number(!a.copy) - Number(!b.copy) ||
+      (a.copy && b.copy ? (a.copy.slot ?? 0) - (b.copy.slot ?? 0) || a.copy.id.localeCompare(b.copy.id) : 0)
+    );
+  };
+}
+
+/**
+ * A sorted binder's pages: one pocket per line item, in the sort's order
+ * (checklist: year, set, checklist, number; player or team: the first one
+ * listed, then the checklist). With `emptySlots`, the cards it still needs
+ * (`needs`, one pocket each, never one it holds) sit where they would go and
+ * each checklist, player or team starts a fresh page, so card 16 always sits
+ * in the same pocket. Without, the pockets pack tight.
+ */
+export function sortedPages(input: {
+  copies: readonly Copy[];
+  cards: CardsById;
+  sort: BinderSort;
+  emptySlots: boolean;
+  needs?: readonly Card[];
+  /** Of `needs`, the ones the collector has in another binder. */
+  heldElsewhere?: ReadonlySet<CardId>;
+  /** A smart binder: is this card one its rule still takes in? */
+  fits?: (cardId: CardId) => boolean;
+}): PageModel[] {
+  const { copies, cards, sort, emptySlots } = input;
+  const entries: Entry[] = [];
+  const here = new Set<CardId>();
+  for (const copy of copies) {
+    const card = cards.get(copy.cardId);
+    if (!card || copy.quantity < 1) continue;
+    entries.push({ card, copy });
+    here.add(card.id);
+  }
+  if (emptySlots) {
+    for (const card of input.needs ?? []) if (!here.has(card.id)) entries.push({ card });
+  }
+  entries.sort(compareEntries(sort));
+  const toPocket = ({ card, copy }: Entry): PocketModel => {
+    if (!copy) {
+      return { content: input.heldElsewhere?.has(card.id) ? { kind: "need", card, elsewhere: true } : { kind: "need", card } };
+    }
+    const pocket: PocketModel = { content: { kind: "have", card, copies: [copy] } };
+    if (input.fits && !input.fits(card.id)) pocket.outside = true;
+    return pocket;
+  };
+  if (!emptySlots) return paginate(entries.map(toPocket), null);
+  const pages: PageModel[] = [];
+  let run: Entry[] = [];
+  let current: { id: string; label: string } | null = null;
+  const flush = () => {
+    if (run.length && current) pages.push(...paginate(run.map(toPocket), current.label));
+    run = [];
+  };
+  for (const entry of entries) {
+    const g = groupOf(entry.card, sort);
+    if (!current || g.id !== current.id) {
+      flush();
+      current = g;
+    }
+    run.push(entry);
+  }
+  flush();
+  return pages;
+}
+
+/** A smart binder's pages with each card its rule no longer takes in marked "outside the rule". */
+export function markOutside(pages: PageModel[], fits: ((cardId: CardId) => boolean) | undefined): PageModel[] {
+  if (!fits) return pages;
+  return pages.map((page) => ({
+    ...page,
+    pockets: page.pockets.map((pocket) =>
+      pocket.content.kind === "have" && !fits(pocket.content.card.id) ? { ...pocket, outside: true as const } : pocket,
+    ),
+  }));
+}
+
+/**
+ * The pockets the cards on these pages sit in, as `relayPockets` takes them:
+ * what "Sort now" and turning a sort off write down, so the binder stays as
+ * it looked. A need sleeve takes no pocket; with empty slots it leaves its
+ * gap, so the numbering holds once the card turns up.
+ */
+export function placementsOf(pages: readonly PageModel[]): PocketPlacement[] {
+  const out: PocketPlacement[] = [];
+  pages.forEach((page, p) =>
+    page.pockets.forEach(({ content }, s) => {
+      if (content.kind === "have") for (const copy of content.copies) out.push({ copyId: copy.id, slot: pocketSlot(p, s) });
+    }),
+  );
+  return out;
 }
 
 /**

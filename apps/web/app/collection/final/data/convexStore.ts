@@ -111,10 +111,16 @@ import {
   type VariantRef,
   type ShareProfile,
   type Want,
+  type BinderNeeds,
+  type BinderSettings,
+  type DeclinedCard,
+  type FoundCards,
+  type SmartRule,
 } from "./types";
 
 type RawCopy = Infer<typeof copyValidator>;
 type RawContainer = FunctionReturnType<typeof api.collectionContainers.list>[number];
+type RawRule = NonNullable<RawContainer["rule"]>;
 type RawWant = FunctionReturnType<typeof api.collectionWants.list>[number];
 type RawMove = FunctionReturnType<typeof api.collection.moveCopy>;
 type RawCopiesOfMany = FunctionReturnType<typeof api.collection.copiesOfMany>;
@@ -150,6 +156,10 @@ const MAX_EMPTY_ROUNDS = 100;
 const MAX_BOX_LIST_LINES = 2000;
 /** The most copies one line holds (the server's `MAX_COPY_QUANTITY`). */
 const MAX_LINE_QUANTITY = 999;
+/** Copies one Find cards page reads (the server's `MAX_FIND_PAGE`). */
+const FIND_PAGE = 100;
+/** Find cards keeps looking on its own until it has this many fits. */
+const FIND_SCREENFUL = 40;
 
 // ---------------------------------------------------------------------------
 // Hydration: the server's shapes → the view model
@@ -411,9 +421,9 @@ function toCopy(raw: RawCopy, homes?: Homes): Copy {
 }
 
 /**
- * A shelf row as the view reads it. A rule is not carried: the server's
- * stored shape is NEO-362's and nothing on Convex can make one yet
- * (`smartBinders` is off). `count: null` is "not counted yet".
+ * A shelf row as the view reads it. NEO-362: a stored rule is a real smart
+ * binder's (`smartRule`, a home), never the demo's self-filling `rule`.
+ * `count: null` is "not counted yet".
  */
 function toContainer(raw: RawContainer): Container {
   return {
@@ -423,6 +433,13 @@ function toContainer(raw: RawContainer): Container {
     name: raw.name,
     ...(raw.description ? { description: raw.description } : {}),
     ...(raw.label ? { label: raw.label } : {}),
+    ...(raw.rule
+      ? {
+          smartRule: raw.rule as SmartRule,
+          ruleNames: Object.fromEntries((raw.ruleNames ?? []).map((n) => [n.id, n.name])),
+        }
+      : {}),
+    ...(raw.settings ? { settings: raw.settings } : {}),
     count: raw.count ?? null,
     ...(raw.slug ? { slug: raw.slug } : {}),
     ...(raw.visibility === "public" ? { isPublic: true } : {}),
@@ -982,6 +999,89 @@ export const CONVEX_DATA: CollectionData = {
         .filter((c): c is Card => c !== null);
       return { cards, truncated: pages.results.length > limit || !pages.exhausted };
     }, [setId, pages, limit]);
+  },
+
+  useBinderNeeds(containerId) {
+    const raw = useQuery(api.binderRules.needs, containerId ? { containerId } : "skip");
+    return useMemo((): BinderNeeds | undefined => {
+      if (!containerId || raw === undefined) return undefined;
+      const cards: Card[] = [];
+      const held = new Set<string>();
+      for (const need of raw.needs) {
+        const card = toCardWithPath(need.card);
+        if (!card) continue;
+        cards.push(card);
+        if (need.held) held.add(card.id);
+      }
+      return { cards, held, supported: raw.supported, truncated: raw.truncated };
+    }, [containerId, raw]);
+  },
+
+  useRuleMatches(containerId, cardIds) {
+    const key = containerId && cardIds ? [...new Set(cardIds)].join("\n") : null;
+    const requests = useMemo(() => {
+      const ids = key ? key.split("\n") : [];
+      return Object.fromEntries(
+        chunk(ids, CARDS_PER_CALL).map((part, i) => [
+          String(i),
+          { query: api.binderRules.matchingCards, args: { containerId: containerId!, cardIds: part } },
+        ]),
+      );
+    }, [key, containerId]);
+    const results = useQueries(requests);
+    return useMemo(() => {
+      if (key === null) return undefined;
+      const out = new Set<string>();
+      for (let i = 0; i < Object.keys(requests).length; i++) {
+        const part = results[String(i)] as string[] | undefined | Error;
+        if (part === undefined) return undefined;
+        if (part instanceof Error) throw part;
+        for (const id of part) out.add(id);
+      }
+      return out;
+    }, [key, requests, results]);
+  },
+
+  /**
+   * Find cards: `binderRules.findCards` pages through the whole collection,
+   * a page of copies at a time, keeping the ones that fit. It loads on its
+   * own until it has a screenful (`FIND_SCREENFUL`), then `more()` looks
+   * further.
+   */
+  useFindCards(containerId) {
+    const homes = useHomes();
+    const pages = usePaginatedQuery(api.binderRules.findCards, containerId ? { containerId } : "skip", {
+      initialNumItems: FIND_PAGE,
+    });
+    const { loadMore, status, results } = pages;
+    const canLoadMore = status === "CanLoadMore";
+    useEffect(() => {
+      if (canLoadMore && results.length < FIND_SCREENFUL) loadMore(FIND_PAGE);
+    }, [canLoadMore, results.length, loadMore]);
+    return useMemo((): FoundCards | undefined => {
+      if (!containerId || !homes || status === "LoadingFirstPage") return undefined;
+      return {
+        copies: results.map((r) => toCopy(r, homes)),
+        done: status === "Exhausted",
+        more: () => {
+          if (canLoadMore) loadMore(FIND_PAGE);
+        },
+      };
+    }, [containerId, homes, status, results, canLoadMore, loadMore]);
+  },
+
+  useRuleBrands(sportId) {
+    const raw = useQuery(api.binderRules.brandsOfSport, sportId ? { sportId: sportId as Id<"selectorOptions"> } : "skip");
+    return sportId ? raw : undefined;
+  },
+
+  useDeclined(containerId) {
+    const homes = useHomes();
+    const raw = useQuery(api.binderRules.declined, containerId ? { containerId } : "skip");
+    return useMemo((): DeclinedCard[] | undefined => {
+      if (!containerId || raw === undefined || !homes) return undefined;
+      return raw.map((row) => ({ cardId: row.cardId, copies: row.copies.map((c) => toCopy(c, homes)) }));
+    }, [containerId, raw, homes]);
   },
 };
 
@@ -1838,6 +1938,11 @@ function useConvexActions(): CollectionActions {
   const emptyContainer = useMutation(api.collectionContainers.empty);
   const removeContainerBase = useMutation(api.collectionContainers.remove);
   const setBoxQuantityBase = useMutation(api.collectionInventory.setBoxQuantity);
+  const setSettingsBase = useMutation(api.collectionContainers.setSettings);
+  const relayPockets = useMutation(api.collectionContainers.relayPockets);
+  const setRule = useMutation(api.collectionContainers.setRule);
+  const declineCard = useMutation(api.binderRules.decline);
+  const undeclineCard = useMutation(api.binderRules.undecline);
   const undoBoxQuantityBase = useMutation(api.collectionInventory.undoBoxQuantity);
 
   // `withOptimisticUpdate` hands back a new function each call: build them
@@ -1960,6 +2065,27 @@ function useConvexActions(): CollectionActions {
           }),
         );
       }),
+      setSettings: setSettingsBase.withOptimisticUpdate((local, args) => {
+        const shelf = local.getQuery(api.collectionContainers.list, {});
+        if (!shelf) return;
+        local.setQuery(
+          api.collectionContainers.list,
+          {},
+          shelf.map((c) => {
+            if (c._id !== args.containerId) return c;
+            const next: BinderSettings = { ...(c.settings ?? {}) };
+            for (const key of ["show", "sort", "emptySlots", "publicEmptySlots"] as const) {
+              const value = args[key];
+              if (value === undefined) continue;
+              if (value === null) delete next[key];
+              else (next as Record<string, unknown>)[key] = value;
+            }
+            const out = { ...c, settings: next };
+            if (Object.keys(next).length === 0) delete (out as { settings?: unknown }).settings;
+            return out;
+          }),
+        );
+      }),
       removeContainer: removeContainerBase.withOptimisticUpdate((local, args) => {
         const shelf = local.getQuery(api.collectionContainers.list, {});
         if (shelf) local.setQuery(api.collectionContainers.list, {}, shelf.filter((c) => c._id !== args.containerId));
@@ -2019,6 +2145,7 @@ function useConvexActions(): CollectionActions {
     removeContainerBase,
     setBoxQuantityBase,
     undoBoxQuantityBase,
+    setSettingsBase,
   ]);
 
   return useMemo<CollectionActions>(() => {
@@ -2245,13 +2372,14 @@ function useConvexActions(): CollectionActions {
       },
 
       async createContainer(input) {
-        // The server refuses a rule until NEO-362; the view hides smart binders meanwhile.
-        if (input.rule) throw new Error("Smart binders aren't here yet. Make a regular binder for now.");
+        // The demo's self-filling rule has no place on the server; a real smart binder sends `smartRule`.
+        if (input.rule) throw new Error("Give the binder a rule from its settings instead.");
         const result = await createContainer({
           kind: input.kind,
           name: input.name,
           ...(input.description ? { description: input.description } : {}),
           ...(input.label ? { label: input.label } : {}),
+          ...(input.smartRule ? { rule: input.smartRule as RawRule } : {}),
         });
         const containerId = createdId(result);
         return {
@@ -2322,8 +2450,65 @@ function useConvexActions(): CollectionActions {
           },
         };
       },
+
+      async setBinderSettings(container, patch) {
+        const { previous } = await m.setSettings({ containerId: asHome(container.id), ...patch });
+        const back = {
+          show: previous.show ?? null,
+          sort: previous.sort ?? null,
+          emptySlots: previous.emptySlots ?? null,
+          publicEmptySlots: previous.publicEmptySlots ?? null,
+        };
+        return {
+          undo: async () => {
+            await m.setSettings({ containerId: asHome(container.id), ...back });
+          },
+        };
+      },
+
+      async relayPockets(container, placements) {
+        const { previous } = await relayPockets({
+          containerId: asHome(container.id),
+          slots: placements.map((p) => ({ copyId: asCopy(p.copyId), slot: p.slot })),
+        });
+        return {
+          undo: async () => {
+            await relayPockets({ containerId: asHome(container.id), slots: previous });
+          },
+        };
+      },
+
+      async setSmartRule(container, rule) {
+        const { previous } = await setRule({
+          containerId: asHome(container.id),
+          rule: rule ? (rule as RawRule) : null,
+        });
+        return {
+          undo: async () => {
+            await setRule({ containerId: asHome(container.id), rule: previous });
+          },
+        };
+      },
+
+      async declineCard(container, cardId) {
+        await declineCard({ containerId: asHome(container.id), cardId: cardId as Id<"cardChecklist"> });
+        return {
+          undo: async () => {
+            await undeclineCard({ containerId: asHome(container.id), cardId: cardId as Id<"cardChecklist"> });
+          },
+        };
+      },
+
+      async undeclineCard(container, cardId) {
+        await undeclineCard({ containerId: asHome(container.id), cardId: cardId as Id<"cardChecklist"> });
+        return {
+          undo: async () => {
+            await declineCard({ containerId: asHome(container.id), cardId: cardId as Id<"cardChecklist"> });
+          },
+        };
+      },
     };
-  }, [m, setBuilding, createContainer, emptyContainer]);
+  }, [m, setBuilding, createContainer, emptyContainer, relayPockets, setRule, declineCard, undeclineCard]);
 }
 
 /** Blank details for a copy the undo only needs to name. */

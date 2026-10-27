@@ -62,15 +62,18 @@ import {
   foldsInto,
   getOrCreateMain,
   refuse,
+  slotLimit,
   type CountChange,
 } from "./collection";
 import {
+  collectionBinderSettingsValidator,
   collectionContainerKindValidator,
   collectionContainerSystemValidator,
   collectionCountValidator,
   collectionLabelValidator,
   collectionRuleValidator,
 } from "./schema";
+import { MAX_SORTED_LINES, cleanRule, forgetDeclines, ruleNameValidator, ruleNames } from "./binderRules";
 import { SPINE_FONTS } from "../lib/print/spine-fonts";
 import { SLUG_RULE, cleanSlug, freeSlug, suggestSlug } from "../lib/collection/share-links";
 
@@ -117,6 +120,10 @@ export const containerValidator = v.object({
   description: v.optional(v.string()),
   label: v.optional(collectionLabelValidator),
   rule: v.optional(collectionRuleValidator),
+  /** NEO-362 — what each id the rule names reads as, for the rule in words. */
+  ruleNames: v.optional(v.array(ruleNameValidator)),
+  /** NEO-362 — a binder's own layout and fill settings; absent means every default. */
+  settings: v.optional(collectionBinderSettingsValidator),
   /**
    * A home: its copies and line items. Up for Trade: the flagged ones. The
    * Want List: the wants (both numbers). Null when it was never counted and
@@ -133,6 +140,7 @@ export const containerValidator = v.object({
 function containerOut(
   row: ContainerRow,
   count: typeof collectionCountValidator.type | null,
+  names?: Array<typeof ruleNameValidator.type>,
 ): typeof containerValidator.type {
   return {
     _id: row._id,
@@ -141,7 +149,8 @@ function containerOut(
     name: row.name,
     ...(row.description ? { description: row.description } : {}),
     ...(row.label ? { label: row.label } : {}),
-    ...(row.rule ? { rule: row.rule } : {}),
+    ...(row.rule ? { rule: row.rule, ruleNames: names ?? [] } : {}),
+    ...(row.settings && Object.keys(row.settings).length ? { settings: row.settings } : {}),
     count,
     ...(row.slug ? { slug: row.slug } : {}),
     ...(row.visibility === "public" ? { visibility: "public" as const } : {}),
@@ -301,7 +310,7 @@ export const list = query({
     const out = [];
     for (const row of ordered) {
       const count = row.count ?? (await countContainer(ctx, row, budget));
-      out.push(containerOut(row, count));
+      out.push(containerOut(row, count, row.rule ? await ruleNames(ctx, row.rule) : undefined));
     }
     return out;
   },
@@ -342,9 +351,8 @@ export const ensureSystem = mutation({
 
 /**
  * A new binder or box, empty and counted. At most `MAX_CONTAINERS` per
- * collector. It takes no `rule` (a smart binder) until NEO-362 ships the
- * evaluator: the argument validator refuses one, so no row pins its shape
- * early.
+ * collector. NEO-362: a binder may carry a `rule` (a smart binder; checked
+ * by `cleanRule`); a box never does.
  */
 export const create = mutation({
   args: {
@@ -352,6 +360,7 @@ export const create = mutation({
     name: v.string(),
     description: v.optional(v.string()),
     label: v.optional(collectionLabelValidator),
+    rule: v.optional(collectionRuleValidator),
   },
   returns: v.object({ containerId: v.id("collectionContainers") }),
   handler: async (ctx, args) => {
@@ -359,6 +368,10 @@ export const create = mutation({
     const name = cleanName(args.name);
     const description = cleanText(args.description, MAX_CONTAINER_DESCRIPTION_CHARS, "description");
     const label = args.label ? cleanLabel(args.label) : undefined;
+    if (args.rule && args.kind !== "binder") {
+      refuse(COLLECTION_ERRORS.invalid, "Only a binder can have a rule. A box holds cards for sale.");
+    }
+    const rule = args.rule ? await cleanRule(ctx, args.rule) : undefined;
     const own = await ctx.db
       .query("collectionContainers")
       .withIndex("by_owner_and_system", (q) => q.eq("ownerId", ownerId).eq("system", undefined))
@@ -372,6 +385,7 @@ export const create = mutation({
       name,
       ...(description ? { description } : {}),
       ...(label ? { label } : {}),
+      ...(rule ? { rule } : {}),
       count: { copies: 0, lines: 0 },
       // NEO-360 — the link is minted with the binder, so a rename never moves it.
       ...(args.kind === "binder" ? { slug: freeSlug(suggestSlug(name), new Set(own.map((row) => row.slug ?? ""))) } : {}),
@@ -550,6 +564,7 @@ export const remove = mutation({
     for (const want of wants) {
       await ctx.db.patch(want._id, { binderId: undefined, lastUpdated: now });
     }
+    await forgetDeclines(ctx, ownerId, row._id);
     await ctx.db.delete(row._id);
     return { unscopedWants: wants.length };
   },
@@ -631,5 +646,135 @@ export const setVisibility = mutation({
     if (hasOwnLink(row) && !row.slug) patch.slug = await freeSlugFor(ctx, ownerId, suggestSlug(row.name), row._id);
     await ctx.db.patch(row._id, patch);
     return null;
+  },
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// NEO-362 — binder settings, rules and pocket layout
+// ───────────────────────────────────────────────────────────────────────────
+
+/** A binder whose settings the collector controls: Main or one they made. Never a box or a shelf. */
+function refuseUnlessBinder(row: Pick<ContainerRow, "kind" | "system">): void {
+  if (row.kind !== "binder") refuse(COLLECTION_ERRORS.invalid, "A box has no binder settings. Its rows stay as you put them.");
+  if (row.system === "want" || row.system === "trade") {
+    refuse(COLLECTION_ERRORS.invalid, "The Want List and Up for Trade lay themselves out. Open a binder to change its settings.");
+  }
+}
+
+/**
+ * Change a binder's settings (Main included). Each field given replaces the
+ * stored one; `null` puts it back to its default. `previous` is what the
+ * settings were (undo = `setSettings` with every field of it, `null` for
+ * what was absent).
+ */
+export const setSettings = mutation({
+  args: {
+    containerId: v.id("collectionContainers"),
+    show: v.optional(v.union(v.literal("list"), v.null())),
+    sort: v.optional(v.union(v.literal("checklist"), v.literal("player"), v.literal("team"), v.null())),
+    emptySlots: v.optional(v.union(v.boolean(), v.null())),
+    publicEmptySlots: v.optional(v.union(v.literal(true), v.null())),
+  },
+  returns: v.object({ previous: collectionBinderSettingsValidator }),
+  handler: async (ctx, args) => {
+    const ownerId = await requireSignedIn(ctx);
+    const row = await ownContainer(ctx, ownerId, args.containerId);
+    refuseUnlessBinder(row);
+    const previous = row.settings ?? {};
+    const next: typeof collectionBinderSettingsValidator.type = { ...previous };
+    const apply = <K extends keyof typeof next>(key: K, value: (typeof next)[K] | null | undefined) => {
+      if (value === undefined) return;
+      if (value === null) delete next[key];
+      else next[key] = value;
+    };
+    apply("show", args.show);
+    apply("sort", args.sort);
+    apply("emptySlots", args.emptySlots);
+    apply("publicEmptySlots", args.publicEmptySlots);
+    if (next.sort && (row.count?.lines ?? 0) > MAX_SORTED_LINES) {
+      refuse(
+        COLLECTION_ERRORS.limit,
+        `${row.name} holds more than ${MAX_SORTED_LINES.toLocaleString("en-US")} cards, too many to keep sorted. Move some into another binder first.`,
+      );
+    }
+    await ctx.db.patch(row._id, {
+      settings: Object.keys(next).length ? next : undefined,
+      lastUpdated: Date.now(),
+    });
+    return { previous };
+  },
+});
+
+/**
+ * Give a binder the collector made a rule (making it a smart binder),
+ * change it, or take it off (`rule: null`, which also forgets its
+ * declines). Changing a rule keeps the declines. Never moves a card.
+ * `previous` is the rule it had (undo = `setRule` with it, or `null`).
+ */
+export const setRule = mutation({
+  args: {
+    containerId: v.id("collectionContainers"),
+    rule: v.union(collectionRuleValidator, v.null()),
+  },
+  returns: v.object({ previous: v.union(collectionRuleValidator, v.null()) }),
+  handler: async (ctx, args) => {
+    const ownerId = await requireSignedIn(ctx);
+    const row = await ownContainer(ctx, ownerId, args.containerId);
+    if (row.system === "main") refuse(COLLECTION_ERRORS.invalid, "Main holds everything that isn't filed yet, so it never gets a rule. Give one of your binders a rule instead.");
+    refuseUnlessBinder(row);
+    if (row.system) refuse(COLLECTION_ERRORS.invalid, `${row.name} can't have a rule.`);
+    const rule = args.rule ? await cleanRule(ctx, args.rule) : undefined;
+    if (!rule) await forgetDeclines(ctx, ownerId, row._id);
+    await ctx.db.patch(row._id, { rule, lastUpdated: Date.now() });
+    return { previous: row.rule ?? null };
+  },
+});
+
+/**
+ * Re-lay a binder's pockets: every line item in it, each named once, into
+ * the pocket given (Sort now, and turning a sort off so the stored pockets
+ * match what was drawn). Refuses a list that misses a line or names one
+ * twice, a pocket twice, a pocket past the binder's last page, or a binder
+ * of more than `MAX_SORTED_LINES` lines. `previous` is every line's pocket
+ * before (undo = `relayPockets` with it).
+ */
+export const relayPockets = mutation({
+  args: {
+    containerId: v.id("collectionContainers"),
+    slots: v.array(v.object({ copyId: v.id("collectionCopies"), slot: v.number() })),
+  },
+  returns: v.object({ previous: v.array(v.object({ copyId: v.id("collectionCopies"), slot: v.number() })) }),
+  handler: async (ctx, args) => {
+    const ownerId = await requireSignedIn(ctx);
+    const row = await ownContainer(ctx, ownerId, args.containerId);
+    refuseUnlessBinder(row);
+    const lines = await ctx.db
+      .query("collectionCopies")
+      .withIndex("by_owner_home_slot", (q) => q.eq("ownerId", ownerId).eq("homeId", row._id))
+      .take(MAX_SORTED_LINES + 1);
+    if (lines.length > MAX_SORTED_LINES) {
+      refuse(COLLECTION_ERRORS.limit, `${row.name} holds more than ${MAX_SORTED_LINES.toLocaleString("en-US")} cards, too many to sort at once.`);
+    }
+    const stale = "The binder changed while it was being sorted. Try again.";
+    if (args.slots.length !== lines.length) refuse(COLLECTION_ERRORS.invalid, stale);
+    const byId = new Map(lines.map((line) => [line._id as string, line]));
+    const usedCopies = new Set<string>();
+    const usedSlots = new Set<number>();
+    for (const { copyId, slot } of args.slots) {
+      if (!byId.has(copyId as string) || usedCopies.has(copyId as string)) refuse(COLLECTION_ERRORS.invalid, stale);
+      if (!Number.isInteger(slot) || slot < 0 || slot >= slotLimit(row) || usedSlots.has(slot)) {
+        refuse(COLLECTION_ERRORS.invalid, "Each card needs a pocket of its own inside the binder.");
+      }
+      usedCopies.add(copyId as string);
+      usedSlots.add(slot);
+    }
+    const previous = lines.map((line) => ({ copyId: line._id, slot: line.slot ?? -1 })).filter((p) => p.slot >= 0);
+    for (const { copyId, slot } of args.slots) {
+      const line = byId.get(copyId as string)!;
+      if (line.slot !== slot) await ctx.db.patch(line._id, { slot });
+    }
+    // Every pocket moved: the open-pocket hint starts over.
+    await ctx.db.patch(row._id, { openPocket: undefined, lastUpdated: Date.now() });
+    return { previous };
   },
 });

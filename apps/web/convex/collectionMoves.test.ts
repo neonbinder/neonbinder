@@ -203,21 +203,14 @@ describe("moveCopy", () => {
     await exact(s);
   });
 
-  test("refuses the Want List, Up for Trade, a smart binder, a foreign container and a bad slot", async () => {
+  test("refuses the Want List, Up for Trade, a foreign container and a bad slot", async () => {
     const s = await setup();
     const a = await add(s, s.fx.gooden1, { homeId: s.binderA });
-    const smart = await s.t.run(async (ctx) =>
-      ctx.db.insert("collectionContainers", {
-        ownerId: ME.subject, kind: "binder", name: "Smart", lastUpdated: 0, count: { copies: 0, lines: 0 },
-        rule: { version: 1, match: "all", terms: [{ test: { kind: "hallOfFame" } }] },
-      }),
-    );
     const theirs = await s.them.mutation(api.collectionContainers.create, { kind: "binder", name: "Theirs" });
     const move = (toHomeId: Id<"collectionContainers">, slot?: number) =>
       s.me.mutation(api.collection.moveCopy, { copyId: a.copyId, toHomeId, ...(slot !== undefined ? { slot } : {}) });
     await expect(move(s.sys.wantId)).rejects.toThrow(/Want List/);
     await expect(move(s.sys.tradeId)).rejects.toThrow(/Up for Trade/);
-    await expect(move(smart)).rejects.toThrow(/smart binder/i);
     await expect(move(theirs.containerId)).rejects.toThrow(/isn't in your collection/);
     await expect(move(s.box, 5)).rejects.toThrow(/rows 1 to 5/);
     await expect(move(s.binderB, 9000)).rejects.toThrow(/pocket/);
@@ -647,16 +640,19 @@ describe("scoped reads", () => {
     }
   });
 
-  test("a smart binder scope reads empty", async () => {
+  test("a smart binder is a binder (NEO-362): it takes a move into a pocket, and scopes its own copies", async () => {
     const s = await setup();
-    await add(s, s.fx.gooden1);
+    const a = await add(s, s.fx.gooden1, { homeId: s.binderA });
     const smart = await s.t.run(async (ctx) =>
       ctx.db.insert("collectionContainers", {
-        ownerId: ME.subject, kind: "binder", name: "Smart", lastUpdated: 0,
+        ownerId: ME.subject, kind: "binder", name: "Smart", lastUpdated: 0, count: { copies: 0, lines: 0 },
         rule: { version: 1, match: "all", terms: [{ test: { kind: "hallOfFame" } }] },
       }),
     );
-    expect(await s.me.query(api.collection.copiesInVariant, { variantId: s.fx.baseId, homeId: smart, side: "collection" })).toEqual([]);
+    await s.me.mutation(api.collection.moveCopy, { copyId: a.copyId, toHomeId: smart });
+    const scoped = await s.me.query(api.collection.copiesInVariant, { variantId: s.fx.baseId, homeId: smart, side: "collection" });
+    expect(scoped.map((c) => c.slot)).toEqual([0]);
+    await exact(s);
   });
 
   test("copiesInContainer pages in slot order; Trade lists the flagged; Want and foreign read empty", async () => {

@@ -20,6 +20,7 @@ import NoticeLine, { type Notice } from "../prototypes/p1/notice";
 import { useReducedMotion, useWideDesk } from "../prototypes/p2/hooks";
 import "../prototypes/p2/p2.css";
 import { SPREAD_DROP_ID, stepCount, stepOfPage } from "./binders/BinderDesk";
+import BinderSettingsDialog from "./binders/BinderSettingsDialog";
 import BinderView from "./binders/BinderView";
 import "./binders/binders.css";
 import BoxDesk, { TradeBox } from "./binders/BoxDesk";
@@ -31,10 +32,12 @@ import {
   pocketHop,
 } from "./binders/dnd";
 import EditContainerDialog from "./binders/EditContainerDialog";
+import FindCardsDialog from "./binders/FindCardsDialog";
 import { useCardMap, useLabelHints } from "./binders/hooks";
 import { labelOf, PLAIN_LABEL } from "./binders/label";
 import LabelEditorDialog from "./binders/LabelEditorDialog";
 import {
+  binderLayout,
   binderPages,
   cardPages,
   cardsOnPages,
@@ -44,7 +47,9 @@ import {
   guardPocket,
   movableCopies,
   NO_FILTERS,
+  markOutside,
   pilePages,
+  placementsOf,
   placesOf,
   placeWords,
   pocketFor,
@@ -54,9 +59,11 @@ import {
   slotOf,
   slotRefOf,
   soleCopyId,
+  sortedPages,
   stackPages,
   orderWants,
   wantPages,
+  type BinderLayout,
   type CardsById,
   type LayoutMode,
   type PageModel,
@@ -95,6 +102,7 @@ import {
   searchable,
   SET_CARDS_DEFAULT_LIMIT,
   systemContainer,
+  useBinderNeeds,
   useCapabilities,
   useCollectionActions,
   useContainerCopies,
@@ -102,6 +110,7 @@ import {
   useCopiesOfCards,
   useDemoExtension,
   useOwnedCards,
+  useRuleMatches,
   useScope,
   useSearch,
   useSetCards,
@@ -110,8 +119,11 @@ import {
   useWants,
   writeErrorMessage,
 } from "./data/store";
+import { MAX_SORTED_LINES } from "@/lib/collection/binder-rule";
 import {
   isHome,
+  type BinderSettingsPatch,
+  type BinderSort,
   type Card,
   type CardId,
   type CollectionTab,
@@ -122,6 +134,7 @@ import {
   type CopyId,
   type NewContainer,
   type Scope,
+  type SmartRule,
 } from "./data/types";
 import { useCollectionParams, useGoToSide, useReplaceParams, useSetScope } from "./mode";
 import { usePageApi, type OpenCardOptions } from "./pageApi";
@@ -277,13 +290,14 @@ export default function MyBindersTab({
     view: "shelf",
     at: 0,
   });
-  const [modes, setModes] = useState<Record<string, LayoutMode>>({});
   const [limits, setLimits] = useState<Record<string, number>>({});
   const [sort, setSort] = useState<SortKey>("checklist");
   const [filters, setFilters] = useState<PileFilters>(NO_FILTERS);
   const [query, setQuery] = useState("");
   const [aimed, setAimed] = useState<SlotRef | null>(null);
-  const [dialog, setDialog] = useState<"new" | "label" | "edit" | null>(null);
+  const [dialog, setDialog] = useState<
+    "new" | "label" | "edit" | "settings" | "find" | null
+  >(null);
   const [activeId, setActiveId] = useState<string | null>(null);
   /** The pocket a hunt led to: ringed (and focused) until the binder closes. */
   const [found, setFound] = useState<SlotRef | null>(null);
@@ -297,16 +311,32 @@ export default function MyBindersTab({
   const searchRef = useRef<HTMLInputElement>(null);
   const deskRef = useRef<HTMLDivElement>(null);
 
-  const mode: LayoutMode = view
-    ? (modes[viewId] ?? defaultLayout(view, container))
-    : "stack";
+  // NEO-362: no layout toggle. A binder that keeps itself sorted is drawn
+  // in order (no pockets to aim at or drag between); every other view has
+  // its one layout.
+  const binderSettings =
+    capabilities.binderSettings &&
+    !!homeOpen &&
+    homeOpen.kind === "binder" &&
+    !isSmart;
+  const keptSorted = binderSettings ? (homeOpen?.settings?.sort ?? null) : null;
+  const mode: LayoutMode = keptSorted
+    ? "stack"
+    : view
+      ? defaultLayout(view, container)
+      : "stack";
   const defaultLimit =
     view?.kind === "set"
       ? SET_CARDS_DEFAULT_LIMIT
       : view?.kind === "all"
         ? OWNED_CARDS_DEFAULT_LIMIT
         : CONTAINER_COPIES_DEFAULT_LIMIT;
-  const limit = limits[viewId] ?? defaultLimit;
+  // A sorted binder is drawn whole, so all of it is read (up to the most
+  // lines one may hold sorted); so is one whose settings are open, for Sort now.
+  const limit =
+    keptSorted || (binderSettings && dialog === "settings")
+      ? Math.max(limits[viewId] ?? defaultLimit, MAX_SORTED_LINES)
+      : (limits[viewId] ?? defaultLimit);
   const more = () =>
     setLimits((l) => ({ ...l, [viewId]: limit + defaultLimit }));
 
@@ -374,6 +404,23 @@ export default function MyBindersTab({
   const ownedAnywhere = (id: CardId) =>
     (followedCopies?.[id] ?? []).some((c) => c.quantity > 0);
 
+  // NEO-362: the binder's settings, its defaults resolved; the cards its
+  // empty slots stand for; and, for a smart binder, which of its cards its
+  // rule still takes in.
+  const layout: BinderLayout | null = binderSettings
+    ? binderLayout(homeOpen, !!followed)
+    : null;
+  const needs = useBinderNeeds(
+    layout?.emptySlots && (layout.sort || dialog === "settings")
+      ? homeOpen!.id
+      : null,
+  );
+  const matches = useRuleMatches(
+    binderSettings && homeOpen?.smartRule ? homeOpen.id : null,
+    homeOpen?.smartRule ? listCardIds : null,
+  );
+  const fits = matches ? (id: CardId) => matches.has(id) : undefined;
+
   const setId = view?.kind === "set" ? view.setId : null;
   const setSummary = useSetSummary(setId);
   const setCards = useSetCards(setId, { limit });
@@ -411,23 +458,36 @@ export default function MyBindersTab({
     loading = !listCopies || !cards;
   } else if (container && !isBox) {
     if (listCopies && cards) {
-      if (isSmart)
-        pages =
-          mode === "pockets"
-            ? cardPages(listCopies, cards)
-            : stackPages(listCopies, cards);
-      else if (isTrade || mode === "stack")
-        pages = stackPages(listCopies, cards);
-      else
-        pages = binderPages({
-          binderId: container.id,
+      if (isSmart) pages = cardPages(listCopies, cards);
+      else if (isTrade) pages = stackPages(listCopies, cards);
+      else if (layout?.sort)
+        pages = sortedPages({
           copies: listCopies,
           cards,
-          followed,
-          ownedAnywhere,
+          sort: layout.sort,
+          emptySlots: layout.emptySlots,
+          needs: needs?.cards,
+          heldElsewhere: needs?.held,
+          fits,
         });
+      else
+        pages = markOutside(
+          binderPages({
+            binderId: container.id,
+            copies: listCopies,
+            cards,
+            followed,
+            // Empty slots off: no Need sleeves, even on a followed checklist.
+            ownedAnywhere:
+              layout && !layout.emptySlots ? () => true : ownedAnywhere,
+          }),
+          fits,
+        );
     }
-    loading = !listCopies || !cards;
+    loading =
+      !listCopies ||
+      !cards ||
+      (!!layout?.sort && layout.emptySlots && !needs);
     truncated = !!listPage?.truncated;
   } else if (isBox) {
     loading = !listCopies || !cards;
@@ -481,7 +541,13 @@ export default function MyBindersTab({
     tally.cards = wants.length;
   } else if (container) {
     tally.cards = container.count?.copies ?? null;
-    if (followed && listCopies && followedCopies) {
+    if (layout?.sort && layout.emptySlots && needs && listCopies) {
+      // Sorted with empty slots: the sleeves still to fill.
+      if (!needs.truncated && !listPage?.truncated) {
+        tally.have = new Set(listCopies.map((c) => c.cardId)).size;
+        tally.need = needs.cards.length;
+      }
+    } else if (followed && listCopies && followedCopies) {
       const t = followedTally(listCopies, followed, ownedAnywhere);
       tally.have = t.have;
       tally.need = t.need;
@@ -493,6 +559,7 @@ export default function MyBindersTab({
         container,
         set: setSummary?.set,
         mode,
+        layout,
         tally,
         label,
         describeRule: demo?.describeRule,
@@ -858,7 +925,15 @@ export default function MyBindersTab({
       };
       if (container?.id !== target.id)
         goTo({ kind: "binder", binderId: target.id });
-      setModes((m) => ({ ...m, [target.id]: "pockets" }));
+      // A binder that keeps itself sorted draws its cards in order, not by
+      // the pocket stored: say where to look instead of ringing a pocket.
+      if (capabilities.binderSettings && target.settings?.sort) {
+        setQuery("");
+        notify(
+          `Found ${shortCardName(card)} in ${target.name}. It keeps itself sorted by ${target.settings.sort}.`,
+        );
+        return;
+      }
       setStepState({ view: target.id, at: stepOfPage(ref.page, wide) });
       setFound(ref);
       // Found it: fold the results away so the ringed pocket is in view.
@@ -946,6 +1021,10 @@ export default function MyBindersTab({
       return;
     }
     if (slot) placeIn(card, slot);
+    // An empty slot for a card the collector has in another binder: the
+    // drawer says where it lives and moves it here.
+    else if (needs?.held.has(card.id))
+      openCard(card.id, { seed: card, list: listIds });
     else justAdd(card);
   };
 
@@ -1096,6 +1175,8 @@ export default function MyBindersTab({
       notify(
         input.rule
           ? `${input.name} is on the shelf. It fills itself.`
+          : input.smartRule
+            ? `${input.name} is on the shelf. Here are the cards you have that fit.`
           : `${input.name} is on the shelf. Hunt for a card below and ${input.kind === "box" ? "drop it in a row" : "start slotting"}.`,
         result.undo,
       );
@@ -1104,6 +1185,8 @@ export default function MyBindersTab({
         { kind: "binder", binderId: result.containerId },
         input.rule ? "all" : result.containerId,
       );
+      // A smart binder starts empty: go straight to the cards it could take.
+      if (input.smartRule) setDialog("find");
       return null;
     } catch (error) {
       return writeErrorMessage(error);
@@ -1169,9 +1252,142 @@ export default function MyBindersTab({
     }
   };
 
-  /** The layout toggle: local to this view, never a history step. */
-  const setMode = (next: LayoutMode) => {
-    if (view) setModes((m) => ({ ...m, [viewId]: next }));
+  // -- a binder's settings and smart rule (NEO-362) ----------------------------
+  const SORT_WORDS: Record<BinderSort, string> = {
+    checklist: "checklist",
+    player: "player",
+    team: "team",
+  };
+
+  /**
+   * Why this binder can't be sorted (kept sorted, or sorted once) right
+   * now, else null: too big, or its cards still coming in.
+   */
+  const unsortable = (): string | null => {
+    if (!homeOpen) return null;
+    if ((homeOpen.count?.lines ?? 0) > MAX_SORTED_LINES || listPage?.truncated)
+      return `${homeOpen.name} holds more than ${MAX_SORTED_LINES.toLocaleString("en-US")} cards, too many to sort. Move some into another binder first.`;
+    return null;
+  };
+
+  /** The binder's cards as drawn in `sort`, every one of them loaded, else null. */
+  const sortedLayout = (sort: BinderSort, emptySlots: boolean) => {
+    if (!listCopies || !cards || listPage?.truncated) return null;
+    if (listCopies.some((c) => !cards.has(c.cardId))) return null;
+    if (emptySlots && !needs) return null;
+    return placementsOf(
+      sortedPages({
+        copies: listCopies,
+        cards,
+        sort,
+        emptySlots,
+        needs: needs?.cards,
+      }),
+    );
+  };
+
+  const changeSettings = async (patch: BinderSettingsPatch) => {
+    if (!homeOpen || !layout) return;
+    const c = homeOpen;
+    // Turning a sort off writes down the order on screen first, so every
+    // card stays where the collector last saw it.
+    if (patch.sort === null && layout.sort) {
+      const placements = sortedLayout(layout.sort, layout.emptySlots);
+      if (!placements) {
+        notify(`Still loading ${c.name}. Try again in a moment.`);
+        return;
+      }
+      try {
+        const relaid = await actions.relayPockets(c, placements);
+        const off = await actions.setBinderSettings(c, { sort: null });
+        notify(`${c.name} stays as it is now. Drag cards anywhere.`, () => {
+          void off.undo().then(() => relaid.undo());
+        });
+      } catch (error) {
+        notify(writeErrorMessage(error));
+      }
+      return;
+    }
+    void run(
+      () => actions.setBinderSettings(c, patch),
+      () =>
+        patch.sort
+          ? `${c.name} keeps itself sorted by ${SORT_WORDS[patch.sort]}.`
+          : patch.emptySlots !== undefined
+            ? patch.emptySlots
+              ? `${c.name} shows its empty slots.`
+              : `${c.name} hides its empty slots.`
+            : patch.publicEmptySlots
+              ? `Your public page shows ${c.name}'s empty slots.`
+              : `Saved ${c.name}.`,
+    );
+    if (patch.sort) setStepState({ view: viewId, at: 0 });
+  };
+
+  const sortNow = (sort: BinderSort) => {
+    if (!homeOpen || !layout) return;
+    const c = homeOpen;
+    const placements = sortedLayout(sort, layout.emptySlots);
+    if (!placements) {
+      notify(`Still loading ${c.name}. Try again in a moment.`);
+      return;
+    }
+    setDialog(null);
+    setStepState({ view: viewId, at: 0 });
+    void run(
+      () => actions.relayPockets(c, placements),
+      () => `Sorted ${c.name} by ${SORT_WORDS[sort]}. Drag cards anywhere from here.`,
+    );
+  };
+
+  const saveRule = async (rule: SmartRule | null): Promise<string | null> => {
+    if (!homeOpen) return null;
+    const c = homeOpen;
+    try {
+      const result = await actions.setSmartRule(c, rule);
+      notify(
+        rule
+          ? `${c.name} has its rule. Find cards pulls in the ones you have.`
+          : `${c.name} has no rule now. Its cards stay put.`,
+        result.undo,
+      );
+      return null;
+    } catch (error) {
+      return writeErrorMessage(error);
+    }
+  };
+
+  /** Find cards' Add: some of a line item into the open binder, its first open pocket. */
+  const addFound = async (card: Card | undefined, copy: Copy, quantity: number) => {
+    if (!homeOpen) return;
+    const c = homeOpen;
+    const name = card ? shortCardName(card) : "That card";
+    const from = copy.homeName ? ` from ${copy.homeName}` : "";
+    await run(
+      () =>
+        actions.moveCopy(copy, c.id, quantity < copy.quantity ? { quantity } : {}),
+      () =>
+        `Moved ${quantity > 1 ? `${quantity} of ` : ""}${name}${from} to ${c.name}.`,
+    );
+  };
+
+  const declineFound = async (cardId: CardId, card: Card | undefined) => {
+    if (!homeOpen) return;
+    const c = homeOpen;
+    await run(
+      () => actions.declineCard(c, cardId),
+      () =>
+        `${card ? shortCardName(card) : "That card"} won't come up for ${c.name} again. It's under Turned down.`,
+    );
+  };
+
+  const undeclineFound = async (cardId: CardId, card: Card | undefined) => {
+    if (!homeOpen) return;
+    const c = homeOpen;
+    await run(
+      () => actions.undeclineCard(c, cardId),
+      () => `${card ? shortCardName(card) : "That card"} is back on the list for ${c.name}.`,
+    );
   };
 
   const wholeBinderDrop = !(
@@ -1228,7 +1444,8 @@ export default function MyBindersTab({
             at={at}
             onTurn={turn}
             onBack={() => goTo(null)}
-            onLayout={setMode}
+            onSettings={() => setDialog("settings")}
+            onFindCards={() => setDialog("find")}
             onEditLabel={() => setDialog("label")}
             onEditContainer={() => setDialog("edit")}
             onGoChecklists={() => goToTab("checklists")}
@@ -1388,6 +1605,28 @@ export default function MyBindersTab({
         <LabelEditorDialog
           binder={container}
           onSave={saveLabel}
+          onClose={() => setDialog(null)}
+        />
+      )}
+      {dialog === "settings" && homeOpen && layout && (
+        <BinderSettingsDialog
+          container={homeOpen}
+          layout={layout}
+          follows={!!followed}
+          tooBigToSort={unsortable()}
+          onSettings={(patch) => void changeSettings(patch)}
+          onSortNow={sortNow}
+          onRule={saveRule}
+          onFindCards={() => setDialog("find")}
+          onClose={() => setDialog(null)}
+        />
+      )}
+      {dialog === "find" && homeOpen?.smartRule && (
+        <FindCardsDialog
+          container={homeOpen}
+          onAdd={addFound}
+          onDecline={declineFound}
+          onUndecline={undeclineFound}
           onClose={() => setDialog(null)}
         />
       )}

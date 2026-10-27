@@ -725,27 +725,36 @@ export const collectionCountValidator = v.object({
 });
 
 /**
- * NEO-359 — one test in a smart binder's rule (evaluated in NEO-362). Every
- * leaf names NB data only: NB ids, NB numbers, NB feature keys. Never a
- * marketplace value or a display name. An id list means "any of these".
- * Lists are capped in the handler. A leaf whose id no longer resolves (a
- * deleted set, a merged player) matches nothing; it never throws.
+ * NEO-359 / NEO-362 — one test in a smart binder's rule. Every leaf names NB
+ * data only: NB ids, NB numbers, NB feature keys. Never a marketplace value
+ * or a display name. An id list means "any of these". Lists are capped in the
+ * handler (`convex/binderRules.ts` `cleanRule`). A leaf whose id no longer
+ * resolves (a deleted set, a merged player) matches nothing; it never throws.
  */
 export const collectionRuleLeafValidator = v.union(
   v.object({ kind: v.literal("player"), playerIds: v.array(v.id("players")) }),
+  // The team printed on the card (`cardChecklist.teamOnCardIds`): the uniform.
   v.object({ kind: v.literal("team"), teamIds: v.array(v.id("teams")) }),
+  // NEO-362 — any player on the card had a stint with the team
+  // (`players.teamYears`, college included once NEO-285 loads it).
+  v.object({ kind: v.literal("playedFor"), teamIds: v.array(v.id("teams")) }),
   // `level: "sport"` rows.
   v.object({ kind: v.literal("sport"), sportIds: v.array(v.id("selectorOptions")) }),
-  // `level: "manufacturer"` rows (one per year; grouping decided in NEO-362).
+  // `level: "manufacturer"` rows: one per year, so a brand across years is
+  // every year's row, collected when the rule is made.
   v.object({ kind: v.literal("brand"), brandIds: v.array(v.id("selectorOptions")) }),
   // `level: "setName"` rows.
   v.object({ kind: v.literal("set"), setIds: v.array(v.id("selectorOptions")) }),
   // Inclusive; either end open, at least one present (handler).
   v.object({ kind: v.literal("year"), from: v.optional(v.number()), to: v.optional(v.number()) }),
-  // A `features` key from convex/features/expectedFeatures.ts and its value
-  // ("isRookie" / "true", "autographed" / "true").
-  v.object({ kind: v.literal("feature"), key: v.string(), value: v.string() }),
-  // `cardChecklist.printRun`, inclusive; either end open, at least one present.
+  // NEO-362 — one of the features a collector sees on a card
+  // (`lib/catalogView.ts` `cardFeatures`, the single source of what each means).
+  v.object({
+    kind: v.literal("feature"),
+    feature: v.union(v.literal("RC"), v.literal("AU"), v.literal("Relic"), v.literal("SP")),
+  }),
+  // A NUMBERED card whose `cardChecklist.printRun` is in range, inclusive;
+  // either end open, at least one present. "Numbered under /50" is `max: 49`.
   v.object({ kind: v.literal("printRun"), min: v.optional(v.number()), max: v.optional(v.number()) }),
   // Any player on the card carries `players.isHallOfFame`.
   v.object({ kind: v.literal("hallOfFame") }),
@@ -754,7 +763,8 @@ export const collectionRuleLeafValidator = v.union(
 /**
  * NEO-359 — a smart binder's rule: ONE level of and/or over leaves, each
  * optionally negated. No nesting, so no recursion in the validator or the
- * evaluator. `version` lets NEO-362 reshape it additively.
+ * evaluator. `version` lets a later ticket reshape it additively. NEO-362
+ * shipped the evaluator; no row carried a rule before it (create refused one).
  */
 export const collectionRuleValidator = v.object({
   version: v.literal(1),
@@ -765,6 +775,27 @@ export const collectionRuleValidator = v.object({
       test: collectionRuleLeafValidator,
     }),
   ),
+});
+
+/**
+ * NEO-362 — how a binder lays out and fills, each its own (Jason,
+ * 2026-10-27). Every field absent means the default:
+ *   - `show`: absent is pockets (the real binder's pages); `"list"` a flat list.
+ *   - `sort`: absent is unsorted (a new card takes the first open pocket and
+ *     the collector drags to arrange). A sort is drawn when the binder is
+ *     read, never written per add: the stored pockets stay as they were, and
+ *     turning the sort off writes the drawn layout (`relayPockets`).
+ *   - `emptySlots`: missing cards get an empty Need slot, and each checklist,
+ *     player or team starts a new page. ABSENT means "decide from the
+ *     binder": on when its pockets follow a checklist, off otherwise.
+ *   - `publicEmptySlots`: the public page shows those slots too. Private
+ *     (absent) by default.
+ */
+export const collectionBinderSettingsValidator = v.object({
+  show: v.optional(v.literal("list")),
+  sort: v.optional(v.union(v.literal("checklist"), v.literal("player"), v.literal("team"))),
+  emptySlots: v.optional(v.boolean()),
+  publicEmptySlots: v.optional(v.literal(true)),
 });
 
 /**
@@ -3514,9 +3545,15 @@ export default defineSchema({
     // NEO-359 — trimmed, blank stored absent, capped in the handler.
     description: v.optional(v.string()),
     label: v.optional(collectionLabelValidator),
-    // NEO-359 — stored shape only; `create` refuses it until NEO-362 ships the
-    // evaluator, so no row pins this shape early.
+    // NEO-362 — a smart binder: a binder the collector made that carries a
+    // rule. The rule never moves a card; "Find cards" suggests and the
+    // collector adds (`convex/binderRules.ts`). Never on Main, a box or a shelf.
     rule: v.optional(collectionRuleValidator),
+    /**
+     * NEO-362 — a binder's own layout and fill settings (Main included; never
+     * a box or a shelf). See `collectionBinderSettingsValidator`.
+     */
+    settings: v.optional(collectionBinderSettingsValidator),
     /**
      * NEO-359 — this container's own count (see `collectionCountValidator`).
      * Moved in the same transaction by every copy write (home: always; Trade:
@@ -3724,6 +3761,25 @@ export default defineSchema({
    * A want never refuses a card delete. Removing a container un-scopes its
    * wants (`by_owner_and_binder`).
    */
+  /**
+   * ── NEO-362: cards the collector said no to for one smart binder ──────────
+   *
+   * "Find cards for this binder" leaves these out by default; the Declined
+   * view lists them so the collector can pull one back in (Jason,
+   * 2026-10-27). Per CARD, not per copy: copy rows fold and split, so a
+   * decline names the card. Deleted with the binder (`collectionContainers.remove`)
+   * and by `binderRules.undecline`. At most `MAX_DECLINES` per binder.
+   */
+  collectionBinderDeclines: defineTable({
+    ownerId: v.string(),
+    binderId: v.id("collectionContainers"),
+    cardId: v.id("cardChecklist"),
+    declinedAt: v.number(),
+  })
+    // The decline check (all three, `.first()`), the Declined view and the
+    // binder delete (prefix ownerId + binderId).
+    .index("by_owner_binder_card", ["ownerId", "binderId", "cardId"]),
+
   collectionWants: defineTable({
     ownerId: v.string(),
     cardId: v.id("cardChecklist"),

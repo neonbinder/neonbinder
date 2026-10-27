@@ -1,13 +1,12 @@
 import { spineLabelPrintHref } from "@/lib/print/spine-label-params";
 import type { ContainerLabel } from "../data/types";
-import type { LayoutMode, PileFilters, SortKey } from "./model";
+import type { PileFilters, SortKey } from "./model";
 import type { OpenView, Tally } from "./openView";
 import PrintShopLink from "./PrintShopLink";
 import NeonButton from "@/components/modules/NeonButton";
 
 /**
- * The open binder's furniture, from prototype 2's page: the layout toggle,
- * the master pile's sort and filters, the inside front cover (name, tally,
+ * The open binder's furniture, from prototype 2's page: the master pile's sort and filters, the inside front cover (name, tally,
  * a few lines of how-to) and its phone-width summary. Plus one thing p2
  * never needed: the scope line saying what Checklists and My Cards look
  * through now that this binder is open. All of it reads the open view's
@@ -15,27 +14,6 @@ import NeonButton from "@/components/modules/NeonButton";
  */
 
 const FOCUS = "focus-outline";
-
-export function ModeToggle({ mode, onChange }: { mode: LayoutMode; onChange: (m: LayoutMode) => void }) {
-  const btn = (m: LayoutMode, label: string) => (
-    <button
-      type="button"
-      aria-pressed={mode === m}
-      onClick={() => onChange(m)}
-      className={`min-h-10 rounded-md px-3 text-sm font-medium ${FOCUS} ${
-        mode === m ? "bg-neon-blue text-on-neon-blue ring-1 ring-inset ring-selection" : "text-ink-2 hover:text-ink"
-      }`}
-    >
-      {label}
-    </button>
-  );
-  return (
-    <div role="group" aria-label="How to show this binder" className="flex rounded-lg border border-control bg-field p-0.5">
-      {btn("pockets", "Lay out like my real binder")}
-      {btn("stack", "Just a stack")}
-    </div>
-  );
-}
 
 export function PileTools({
   sort,
