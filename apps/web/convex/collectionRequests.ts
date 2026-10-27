@@ -339,8 +339,12 @@ export async function moveOntoCatalogCard(
   const now = Date.now();
   for (const row of rows) {
     const mine = detailsOf(row);
+    // Same rule as an add (`arrivingPocket`): a twin in the same pocketed
+    // binder takes the copy into its own pocket, freeing the copy's pocket.
     const twin = target.find(
-      (t) => foldsInto(detailsOf(t), mine) && t.quantity + row.quantity <= MAX_COPY_QUANTITY,
+      (t) =>
+        foldsInto(detailsOf(t), samePocketAs(t, row, mine)) &&
+        t.quantity + row.quantity <= MAX_COPY_QUANTITY,
     );
     if (twin) {
       const quantity = twin.quantity + row.quantity;
@@ -370,6 +374,17 @@ export async function moveOntoCatalogCard(
   }
   await applyCopyChanges(ctx, ownerId, changes);
   return rows.length;
+}
+
+/** `mine`, read as if it sat in `twin`'s pocket when both hold pockets of one binder. */
+function samePocketAs(
+  twin: Pick<Doc<"collectionCopies">, "homeId" | "slot">,
+  row: Pick<Doc<"collectionCopies">, "homeId" | "slot">,
+  mine: ReturnType<typeof detailsOf>,
+): ReturnType<typeof detailsOf> {
+  return twin.homeId === row.homeId && twin.slot !== undefined && row.slot !== undefined
+    ? { ...mine, slot: twin.slot }
+    : mine;
 }
 
 /**

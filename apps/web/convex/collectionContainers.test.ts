@@ -270,7 +270,7 @@ describe("empty and remove", () => {
     expect(tally.stored).toEqual(tally.truth);
   });
 
-  test("empty sends a binder's lines to Main, clears pockets, folds into Main twins, keeps counts and tally", async () => {
+  test("empty sends a binder's lines to Main's pockets, folds into Main twins, keeps counts and tally", async () => {
     const s = await setup();
     await s.me.mutation(api.collection.addHave, { cardId: s.fx.gooden1 });
     const binder = await mk(s, "binder", "Binder");
@@ -280,12 +280,24 @@ describe("empty and remove", () => {
     expect(r).toEqual({ moved: 3, remaining: 0 });
     const rows = await copyRows(s);
     expect(rows).toHaveLength(2);
-    expect(rows.find((x) => x.cardId === s.fx.gooden1)!.quantity).toBe(3);
-    expect("slot" in rows.find((x) => x.cardId === s.fx.strawberry2)!).toBe(false);
+    // Main is a binder: the twin's pocket, then Main's first open one.
+    expect(rows.find((x) => x.cardId === s.fx.gooden1)).toMatchObject({ quantity: 3, slot: 0 });
+    expect(rows.find((x) => x.cardId === s.fx.strawberry2)).toMatchObject({ notes: "keep", quantity: 1, slot: 1 });
     await expectCountsExact(s.t, ME.subject, expect as never);
     const tally = await tallyTruth(s.t, ME.subject);
     expect(tally.truth).toEqual({ copies: 4, lines: 2, cards: 2 });
     expect(tally.stored).toEqual(tally.truth);
+  });
+
+  test("a Main twin with no room left is not stacked on: the card takes Main's next pocket", async () => {
+    const s = await setup();
+    await s.me.mutation(api.collection.addLineItem, { cardId: s.fx.gooden1, details: { quantity: 999 } });
+    const binder = await mk(s, "binder", "Binder");
+    await s.me.mutation(api.collection.addLineItem, { cardId: s.fx.gooden1, details: { quantity: 1, homeId: binder } });
+    await s.me.mutation(api.collectionContainers.empty, { containerId: binder });
+    const rows = (await copyRows(s)).sort((a, b) => (a.slot ?? -1) - (b.slot ?? -1));
+    expect(rows.map((r) => [r.quantity, r.slot])).toEqual([[999, 0], [1, 1]]);
+    await expectCountsExact(s.t, ME.subject, expect as never);
   });
 
   test("the trade flag travels: a flagged line folds only into a flagged Main twin", async () => {

@@ -272,16 +272,19 @@ describe("approveCard", () => {
     expect(completion.ownedAll).toBe(1);
   });
 
-  test("folds into an identical line of a card they already held", async () => {
+  test("folds into an identical line of a card they already held, into its pocket (NEO-359)", async () => {
     const s = await setup();
     await s.me.mutation(api.collection.addHave, { cardId: s.fx.gooden1, acquiredOn: "2024-01-02" });
     const { requestId, privateCardId } = await askBase(s, { cardNumber: "1", player: "Doc Gooden" });
     await s.me.mutation(api.collection.addHave, { cardId: privateCardId, acquiredOn: "2024-01-02" });
     expect(await tallyOf(s)).toMatchObject({ copies: 2, lines: 2, distinctCards: 2 });
+    const before = await copies(s);
+    const held = before.find((row) => row.cardId === s.fx.gooden1)!;
+    expect(before.find((row) => row.cardId === privateCardId)?.slot).not.toBe(held.slot);
     await s.admin.mutation(api.collectionRequests.approveCard, { requestId, cardId: s.fx.gooden1 });
     const rows = await copies(s);
     expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ cardId: s.fx.gooden1, quantity: 2 });
+    expect(rows[0]).toMatchObject({ cardId: s.fx.gooden1, quantity: 2, slot: held.slot });
     expect(await tallyOf(s)).toMatchObject({ copies: 2, lines: 1, distinctCards: 1 });
   });
 
