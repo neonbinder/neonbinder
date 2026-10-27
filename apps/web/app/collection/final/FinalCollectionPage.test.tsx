@@ -53,7 +53,7 @@ describe("the inventory surface", () => {
   it("is headed Inventory, with the tabs Inventory, My Boxes and Checklists and the list first", () => {
     renderAt("/inventory");
     expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("Inventory");
-    expect(tabs("Inventory").getAllByRole("link").map((l) => l.textContent)).toEqual(["Inventory", "My Boxes", "Checklists"]);
+    expect(tabs("Inventory").getAllByRole("link").map((l) => l.textContent)).toEqual(["Inventory", "My Boxes", "Checklists", "Add cards"]);
     expect(tabs("Inventory").getByRole("link", { name: "Inventory" }).getAttribute("aria-current")).toBe("page");
     expect(document.title).toBe("Inventory");
   });

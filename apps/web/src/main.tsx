@@ -99,10 +99,6 @@ const CollectionPrototype2 = lazy(() => import("@/app/collection/prototypes/p2/p
 const CollectionPrototype3 = lazy(() => import("@/app/collection/prototypes/p3/page"));
 const CollectionPrototype4 = lazy(() => import("@/app/collection/prototypes/p4/page"));
 const CollectionPrototype5 = lazy(() => import("@/app/collection/prototypes/p5/page"));
-const AddCardsPrototype1 = lazy(() => import("@/app/collection/add-prototypes/p1/page"));
-const AddCardsPrototype2 = lazy(() => import("@/app/collection/add-prototypes/p2/page"));
-const AddCardsPrototype3 = lazy(() => import("@/app/collection/add-prototypes/p3/page"));
-const AddCardsPrototype4 = lazy(() => import("@/app/collection/add-prototypes/p4/page"));
 
 const clerkPubKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
 
@@ -149,13 +145,6 @@ const SentryErrorBoundary = Sentry.withErrorBoundary(
           <Route path="/" element={<Home />} />
           <Route path="/about" element={<Deferred><About /></Deferred>} />
           <Route path="/binder-tracking" element={<Deferred><BinderTracking /></Deferred>} />
-          {/* NEO-369 — the add-cards prototypes, public beside the demo
-              binder (every major feature gets a logged-out, no-backend
-              version). Fake data only: nothing reads or writes Convex. */}
-          <Route path="/binder-tracking/add/1" element={<Deferred><AddCardsPrototype1 /></Deferred>} />
-          <Route path="/binder-tracking/add/2" element={<Deferred><AddCardsPrototype2 /></Deferred>} />
-          <Route path="/binder-tracking/add/3" element={<Deferred><AddCardsPrototype3 /></Deferred>} />
-          <Route path="/binder-tracking/add/4" element={<Deferred><AddCardsPrototype4 /></Deferred>} />
           <Route
             path="/ai-card-identification"
             element={<Deferred><AiCardIdentification /></Deferred>}

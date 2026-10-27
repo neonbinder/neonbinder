@@ -78,14 +78,6 @@ export function DemoBar({ onReset, onExit }: { onReset: () => void; onExit?: () 
             </>
           )}
           <SideSwitch />
-          {isPublic && (
-            <p className="text-ink-2">
-              New, in progress: add cards from photos.{" "}
-              <Link to="/binder-tracking/add/1" className={`text-ink underline underline-offset-4 ${FOCUS}`}>
-                Try the four prototypes
-              </Link>
-            </p>
-          )}
           <DemoThemeToggle className="max-w-80 pt-2" />
         </div>
       </div>

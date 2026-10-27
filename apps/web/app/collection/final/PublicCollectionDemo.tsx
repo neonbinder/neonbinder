@@ -1,3 +1,4 @@
+import { useSearchParams } from "react-router";
 import { DemoCollectionProvider, PUBLIC_STORAGE_KEY } from "./data/demoStore";
 import FinalCollectionPage from "./FinalCollectionPage";
 
@@ -24,9 +25,12 @@ export default function PublicCollectionDemo({
   /** The marketing page's own params, kept on every demo view URL (`demo=on`). */
   keepParams: Record<string, string>;
 }) {
+  // Add cards (NEO-369) is a lane per pipeline stage: it takes the full width.
+  const [params] = useSearchParams();
+  const wide = params.get("tab") === "add";
   return (
     <main className="min-h-screen min-w-0 bg-background lg:pr-[170px]">
-      <div className="mx-auto max-w-6xl p-4 sm:p-6">
+      <div className={`mx-auto p-4 sm:p-6 ${wide ? "max-w-[1600px]" : "max-w-6xl"}`}>
         <DemoCollectionProvider storageKey={PUBLIC_STORAGE_KEY}>
           <FinalCollectionPage mode="public" keepParams={keepParams} onExit={onExit} />
         </DemoCollectionProvider>

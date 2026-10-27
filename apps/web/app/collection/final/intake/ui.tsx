@@ -1,12 +1,9 @@
 import { useId, useMemo, useState, type ReactNode } from "react";
-import { Link } from "react-router";
 import NeonButton from "@/components/modules/NeonButton";
 import { Input } from "@/components/primitives/Input";
 import CardFace from "../../prototypes/_shared/CardFace";
 import { getCard } from "../../prototypes/_shared/data";
 import {
-  BINDERS,
-  BOXES,
   COMMON_PRICES,
   DEFAULT_DETAILS,
   SET_LABEL,
@@ -15,9 +12,7 @@ import {
   cardTitle,
   cardsForPicking,
   money,
-  variantNames,
   type Details,
-  type Home,
   type IntakeSim,
   type Item,
   type ScanSide,
@@ -25,53 +20,12 @@ import {
 } from "./sim";
 
 /**
- * NEO-369 — pieces every add-cards prototype shares, so the four differ in
- * flow and layout rather than in how a single control behaves.
+ * NEO-369 — the pieces of the demo's Add cards tab (`./AddCardsTab`): scans,
+ * badges, counters, the quantity field, the card picker, the prompts, the
+ * fix tools and the detail fields.
  */
 
 export const RING = "focus-outline";
-
-/* ------------------------------------------------------------------ */
-/* Banner                                                              */
-/* ------------------------------------------------------------------ */
-
-export const VARIANTS = [
-  { n: 1, name: "Guided Wizard", path: "/binder-tracking/add/1" },
-  { n: 2, name: "Mission Control", path: "/binder-tracking/add/2" },
-  { n: 3, name: "Review Desk", path: "/binder-tracking/add/3" },
-  { n: 4, name: "Keyboard Counter", path: "/binder-tracking/add/4" },
-] as const;
-
-export function IntakeBanner({ current, note }: { current: number; note: string }) {
-  return (
-    <div className="mb-6 flex flex-col gap-2 rounded-lg border border-rule bg-raised px-3 py-2 sm:flex-row sm:items-center sm:justify-between">
-      <p className="text-sm text-ink-2">
-        <span className="font-semibold text-ink">Add cards prototype {current}</span> · fake data, a scripted
-        pile of 2024 Topps Chrome scans · {note}
-      </p>
-      <nav aria-label="Add cards prototypes">
-        <ul className="flex flex-wrap gap-1.5">
-          {VARIANTS.map((v) => {
-            const active = v.n === current;
-            return (
-              <li key={v.n}>
-                <Link
-                  to={v.path}
-                  aria-current={active ? "page" : undefined}
-                  className={`block rounded-md border px-2 py-1 text-xs font-medium ${RING} ${
-                    active ? "border-neon-blue-text text-neon-blue-text" : "border-rule text-ink-3 hover:text-ink"
-                  }`}
-                >
-                  {v.n}. {v.name}
-                </Link>
-              </li>
-            );
-          })}
-        </ul>
-      </nav>
-    </div>
-  );
-}
 
 /* ------------------------------------------------------------------ */
 /* Scan images                                                         */
@@ -244,46 +198,59 @@ export function StageCounters({ sim, compact = false }: { sim: IntakeSim; compac
 /* Quantity                                                            */
 /* ------------------------------------------------------------------ */
 
+/** Marks a quantity field, so Enter can find the next one down the column. */
+export const QTY_ATTR = "data-intake-qty";
+
 /**
- * "Had 3 → 4": the count already in this home, and the count about to be
- * saved. Typing a number and pressing Enter saves the card (Jason: entering
- * a quantity is one of the three ways a card saves).
+ * "Had 3 → 4": the count already in this home, and the line's count once
+ * saved. Enter saves the card at the number shown (Jason: entering a
+ * quantity is one of the three ways a card saves) and `onEnter` moves on to
+ * the next card's field. Only digits type here: any other key is left to the
+ * tab's shortcuts (`./keys`), so a letter acts on this card instead of
+ * landing in the box.
  */
-export function QtyField({ item, sim, autoFocus = false }: { item: Item; sim: IntakeSim; autoFocus?: boolean }) {
+export function QtyField({ item, sim, onEnter }: { item: Item; sim: IntakeSim; onEnter?: () => void }) {
   const id = useId();
   const [draft, setDraft] = useState<string | null>(null);
   const shown = draft ?? String(item.qty);
-  const commit = () => {
-    if (draft === null) return;
-    const n = Number.parseInt(draft, 10);
+  const save = (text: string) => {
+    const n = Number.parseInt(text, 10);
     if (Number.isFinite(n)) sim.actions.setQty(item.id, n);
     setDraft(null);
   };
   return (
     <div className="flex items-center gap-2 text-sm">
-      <label htmlFor={id} className="text-ink-3">
-        {item.newLine ? "New line" : item.had > 0 ? `Had ${item.had} →` : "Qty"}
+      <label htmlFor={id} className="whitespace-nowrap text-ink-3">
+        {item.had > 0 ? `Had ${item.had} →` : "Qty"}
       </label>
-      <Input bare
+      <Input
+        bare
         id={id}
+        {...{ [QTY_ATTR]: item.id }}
         inputMode="numeric"
-        autoFocus={autoFocus}
         value={shown}
         disabled={!item.match.cardId}
         onChange={(e) => setDraft(e.target.value.replace(/\D/g, ""))}
         onKeyDown={(e) => {
           if (e.key === "Enter") {
             e.preventDefault();
-            commit();
+            save(shown);
+            onEnter?.();
+          } else if (e.key === "Escape") {
+            setDraft(null);
+          } else if (e.key.length === 1 && !/\d/.test(e.key) && !e.ctrlKey && !e.metaKey && !e.altKey) {
+            e.preventDefault();
           }
-          if (e.key === "Escape") setDraft(null);
         }}
-        onBlur={commit}
+        onBlur={() => {
+          if (draft !== null) save(draft);
+        }}
         className={`w-14 rounded-md border border-field-rule bg-field px-2 py-1 text-right tabular-nums text-ink ${RING}`}
         aria-describedby={`${id}-hint`}
+        aria-keyshortcuts="Enter"
       />
-      <span id={`${id}-hint`} className="text-xs text-ink-3">
-        {item.newLine ? "this line already has a photo" : item.had > 0 && !item.hadPhoto ? "adds this photo" : "Enter saves"}
+      <span id={`${id}-hint`} className="sr-only">
+        Enter saves and moves to the next card.
       </span>
     </div>
   );
@@ -586,52 +553,40 @@ export function DetailsFields({
 /* ------------------------------------------------------------------ */
 
 export interface Setup {
-  kind: "binder" | "box";
+  /** The binder or box every card starts in; each card can move. */
   homeId: string;
-  /** null = skipped; the set is found from the photos. */
+  /** The picked variant's name ("Base", "Refractor"), or null when the set was skipped. */
   variant: string | null;
   defaults: Details;
   commonPrices: Record<string, number | null>;
 }
 
-export function initialSetup(kind: "binder" | "box" = "binder"): Setup {
+export function initialSetup(homeId: string): Setup {
   return {
-    kind,
-    homeId: kind === "binder" ? BINDERS[1].id : BOXES[1].id,
+    homeId,
     variant: "Base",
     defaults: { ...DEFAULT_DETAILS, priceCents: COMMON_PRICES.Base },
     commonPrices: { ...COMMON_PRICES },
   };
 }
 
-export function homesFor(kind: "binder" | "box"): Home[] {
-  return kind === "binder" ? BINDERS : BOXES;
+/** A home the cards can go to: one of the side's binders or boxes. */
+export interface HomeOption {
+  id: string;
+  name: string;
 }
 
-export function homeName(id: string): string {
-  return [...BINDERS, ...BOXES].find((h) => h.id === id)?.name ?? id;
-}
-
-export function KindToggle({ setup, onChange }: { setup: Setup; onChange: (s: Setup) => void }) {
-  return (
-    <div role="radiogroup" aria-label="Adding to" className="inline-flex rounded-lg border border-rule p-0.5">
-      {(["binder", "box"] as const).map((k) => (
-        <button
-          key={k}
-          type="button"
-          role="radio"
-          aria-checked={setup.kind === k}
-          onClick={() => onChange({ ...initialSetup(k), variant: setup.variant })}
-          className={`rounded-md px-3 py-1 text-sm ${RING} ${setup.kind === k ? "bg-pick-blue font-semibold text-pick-blue-ink" : "text-ink-3"}`}
-        >
-          {k === "binder" ? "Collection: a binder" : "Inventory: a box"}
-        </button>
-      ))}
-    </div>
-  );
-}
-
-export function HomeSelect({ setup, onChange, label = "Put them in" }: { setup: Setup; onChange: (s: Setup) => void; label?: string }) {
+export function HomeSelect({
+  value,
+  homes,
+  onChange,
+  label = "Put them in",
+}: {
+  value: string;
+  homes: HomeOption[];
+  onChange: (homeId: string) => void;
+  label?: string;
+}) {
   const id = useId();
   return (
     <div className="flex flex-col gap-1">
@@ -640,46 +595,13 @@ export function HomeSelect({ setup, onChange, label = "Put them in" }: { setup: 
       </label>
       <select
         id={id}
-        value={setup.homeId}
-        onChange={(e) => onChange({ ...setup, homeId: e.target.value })}
-        className={`rounded-md border border-field-rule bg-field px-2 py-1.5 text-sm text-ink ${RING}`}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className={`min-h-10 rounded-md border border-field-rule bg-field px-2 py-1.5 text-sm text-ink ${RING}`}
       >
-        {homesFor(setup.kind).map((h) => (
+        {homes.map((h) => (
           <option key={h.id} value={h.id}>
             {h.name}
-          </option>
-        ))}
-      </select>
-    </div>
-  );
-}
-
-/**
- * Stand-in for the real SetSelector cascade (which reads Convex): the
- * prototype's catalog has one set, so the cascade collapses to its last
- * column, the variant. "Skip" is the no-set path.
- */
-export function VariantSelect({ setup, onChange }: { setup: Setup; onChange: (s: Setup) => void }) {
-  const id = useId();
-  return (
-    <div className="flex flex-col gap-1">
-      <label htmlFor={id} className="text-xs font-semibold text-ink-2">
-        Set · Baseball › 2024 › Topps › Topps Chrome ›
-      </label>
-      <select
-        id={id}
-        value={setup.variant ?? ""}
-        onChange={(e) => {
-          const variant = e.target.value || null;
-          const price = variant ? setup.commonPrices[variant] ?? null : null;
-          onChange({ ...setup, variant, defaults: { ...setup.defaults, priceCents: price } });
-        }}
-        className={`rounded-md border border-field-rule bg-field px-2 py-1.5 text-sm text-ink ${RING}`}
-      >
-        <option value="">Skip: find the set from the photos</option>
-        {variantNames().map((v) => (
-          <option key={v} value={v}>
-            {v}
           </option>
         ))}
       </select>
@@ -730,7 +652,7 @@ export function AddSources({ sim, compact = false }: { sim: IntakeSim; compact?:
         className={`rounded-lg border-2 border-dashed border-rule-strong px-4 py-5 text-center text-sm text-ink-2 hover:bg-hover ${RING}`}
       >
         <span className="block font-semibold text-ink">Drop more photos or a zip</span>
-        <span className="text-xs text-ink-3">Prototype: click to add 12 more scans. Phones open the camera here.</span>
+        <span className="text-xs text-ink-3">Demo: click to add 12 more scans. Phones open the camera here.</span>
       </button>
       <div className="rounded-lg border border-rule px-4 py-3 text-sm">
         <p className="m-0 font-semibold text-ink">Scanner</p>
@@ -743,14 +665,5 @@ export function AddSources({ sim, compact = false }: { sim: IntakeSim; compact?:
         </p>
       </div>
     </div>
-  );
-}
-
-export function SetupSummary({ setup }: { setup: Setup }) {
-  return (
-    <span>
-      {homeName(setup.homeId)} · {setup.variant ? `${SET_LABEL} ${setup.variant}` : "Set from photos"} · {setup.defaults.condition}
-      {setup.kind === "box" ? ` · min ${money(setup.defaults.priceCents)}` : ""}
-    </span>
   );
 }

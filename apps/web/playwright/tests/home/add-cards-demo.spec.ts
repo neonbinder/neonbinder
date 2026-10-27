@@ -1,0 +1,75 @@
+// NEO-369: Add cards, the demo's intake tab on both sides of the public demo
+// binder. A scripted pile of scans walks the pipeline on fake data (no
+// Convex, R7 read-only); saved cards go into the demo store. `?speed=6` runs
+// the pile six times faster so no wait leaves the 7 s budget.
+import { test, expect, expectAccessible } from "../../support/fixtures";
+
+test(
+  "Add cards (collection): the tab opens from the demo, Yes saves a card, y saves one from its quantity",
+  { tag: ["@home"] },
+  async ({ page }) => {
+    await page.goto("/binder-tracking?demo=on&speed=6");
+    await page.getByRole("link", { name: "Add cards" }).click();
+    await expect(page.getByLabel("Put them in this binder")).toBeVisible();
+
+    const review = page.getByRole("region", { name: /^Needs you/ });
+    const saved = page.getByRole("region", { name: /^Saved/ });
+    const yes = review
+      .getByRole("button", { name: "Yes", exact: true })
+      .first();
+    await expect(yes).toBeEnabled();
+    await expectAccessible(page, { label: "Add cards, collection" });
+    await yes.click();
+    await expect(saved).toHaveAccessibleName("Saved, 1");
+
+    // A letter in a quantity is that card's shortcut, never typed: y saves it.
+    const qty = review
+      .getByRole("textbox", { name: /^(Qty|Had \d+ →)$/ })
+      .first();
+    await expect(qty).toBeEnabled();
+    await qty.focus();
+    await page.keyboard.press("y");
+    await expect(saved).toHaveAccessibleName("Saved, 2");
+  },
+);
+
+test(
+  "Add cards (collection): the set button opens the set selector and Skip folds it",
+  { tag: ["@home"] },
+  async ({ page }) => {
+    await page.goto("/binder-tracking?demo=on&tab=add&speed=6");
+    const set = page.getByRole("button", {
+      name: "Set: 2024 Topps Chrome Base",
+    });
+    await set.click();
+    await expect(set).toHaveAttribute("aria-expanded", "true");
+    await expect(page.getByRole("button", { name: "Sports: Baseball, change" })).toBeVisible();
+    await expectAccessible(page, { label: "Add cards, set selector open" });
+    await page
+      .getByRole("button", {
+        name: "Skip: find each card's set from its photo",
+      })
+      .click();
+    await expect(
+      page.getByRole("button", { name: "Set: from the photos" }),
+    ).toBeFocused();
+  },
+);
+
+test(
+  "Add cards (inventory): files into a box and saves every matched card at once",
+  { tag: ["@home"] },
+  async ({ page }) => {
+    await page.goto("/binder-tracking?demo=on&side=inventory&tab=add&speed=6");
+    await expect(page.getByLabel("Put them in this box")).toHaveValue(/.+/);
+    const saveAll = page.getByRole("button", {
+      name: /^Save [1-9]\d* matched$/,
+    });
+    await expect(saveAll).toBeEnabled();
+    await saveAll.click();
+    await expect(
+      page.getByRole("region", { name: /^Saved, [1-9]/ }),
+    ).toBeVisible();
+    await expectAccessible(page, { label: "Add cards, inventory" });
+  },
+);

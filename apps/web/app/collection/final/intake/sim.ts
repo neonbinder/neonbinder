@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "r
 import { cards, getCard, type Card, type CardId } from "../../prototypes/_shared/data";
 
 /**
- * NEO-369 — the fake intake pipeline every add-cards prototype runs on.
+ * NEO-369 — the fake intake pipeline behind the demo's Add cards tab.
  *
  * Nothing here touches Convex. A scripted pile of scans arrives over time and
  * each card walks the real pipeline's stages on its own clock:
@@ -15,8 +15,9 @@ import { cards, getCard, type Card, type CardId } from "../../prototypes/_shared
  * confidence match, a card number shared by two cards, a number/player
  * conflict, a parallel and an insert while Base is pinned, a serial, a slab,
  * a front still waiting for its back, a mispair, a failed read, a card from
- * another set, a re-scan of a card already in this run, and owned cards with
- * and without a photo (the line rule).
+ * another set, and a re-scan of a card already in this run. What the
+ * collector already owns comes from the demo store (`hadOf`), so a scan of a
+ * card already in the binder bumps that line.
  *
  * Nothing saves on its own: a card saves only when the user confirms it,
  * enters a quantity, or saves the batch.
@@ -55,22 +56,8 @@ export interface Details {
   notes: string;
 }
 
-export interface Home {
-  id: string;
-  name: string;
-  kind: "binder" | "box";
-}
-
-export const BINDERS: Home[] = [
-  { id: "b-main", name: "Main", kind: "binder" },
-  { id: "b-chrome", name: "2024 Chrome set build", kind: "binder" },
-  { id: "b-rookies", name: "Rookie PC", kind: "binder" },
-];
-export const BOXES: Home[] = [
-  { id: "x-commons", name: "Commons box", kind: "box" },
-  { id: "x-chrome", name: "Chrome singles", kind: "box" },
-  { id: "x-slabs", name: "Slabs for sale", kind: "box" },
-];
+/** Copies of a card already in a home, before this run: the store's count. */
+export type HadOf = (cardId: CardId, homeId: string) => number;
 
 export interface ScanSide {
   /** The file name the user would recognise. */
@@ -107,12 +94,11 @@ export interface Item {
   match: Match;
   /** Copies already in this home before the run. */
   had: number;
-  /** Whether the existing line already has a photo pair. */
-  hadPhoto: boolean;
-  /** The count the user is about to save on this line. */
+  /**
+   * The line's count once saved: what was had, plus this scan (Jason: the
+   * quantity starts at what you had and goes up by one per scan).
+   */
   qty: number;
-  /** This scan starts its own line (the existing one already has a photo). */
-  newLine: boolean;
   details: Partial<Details>;
   homeId: string;
   /** Another item in this run that looks like the same physical card. */
@@ -153,6 +139,9 @@ const parallel = (name: string, n: string): Card =>
 const insert = (n: string): Card => inSet.find((c) => c.cardNumber === n)!;
 const other = cards.find((c) => c.setId !== SET_ID && c.variantPath.type === "Base")!;
 
+/** A card of the pile's own set and variant (2024 Topps Chrome Base), to open the set selector there. */
+export const SEED_CARD_ID: CardId = base("1").id;
+
 interface Beat {
   truth: Card | null;
   at: number; // ms after start
@@ -162,8 +151,6 @@ interface Beat {
   candidates?: Card[];
   suggestion?: Card;
   pickedAs?: Card | null;
-  had?: number;
-  hadPhoto?: boolean;
   grading?: Grading;
   serial?: string;
   failed?: boolean;
@@ -181,8 +168,8 @@ function beats(): Beat[] {
   return [
     { truth: ohtani, at: 0 },
     { truth: base("2"), at: 900 },
-    { truth: base("3"), at: 1800, had: 3, hadPhoto: false },
-    { truth: base("4"), at: 2700, had: 1, hadPhoto: true },
+    { truth: base("3"), at: 1800 },
+    { truth: base("4"), at: 2700 },
     {
       truth: base("13", "Sliding"),
       at: 3600,
@@ -255,7 +242,7 @@ function beats(): Beat[] {
     { truth: ohtani, at: 13500, rescanOf: 0 },
     { truth: base("7"), at: 14400 },
     { truth: base("24"), at: 15300 },
-    { truth: base("20"), at: 16200, had: 2, hadPhoto: false },
+    { truth: base("20"), at: 16200 },
     { truth: base("16"), at: 17100 },
   ];
 }
@@ -304,23 +291,23 @@ const NEXT: Partial<Record<Stage, Stage>> = {
 /* ------------------------------------------------------------------ */
 
 type Action =
-  | { type: "tick"; now: number; elapsed: number; speed: number; script: Beat[]; setChosen: boolean; home: string }
-  | { type: "more"; now: number; speed: number; home: string }
+  | { type: "tick"; now: number; elapsed: number; speed: number; script: Beat[]; setChosen: boolean; home: string; hadOf: HadOf }
+  | { type: "more"; now: number; speed: number; home: string; hadOf: HadOf }
   | { type: "pause"; paused: boolean }
   | { type: "confirm"; id: string }
   | { type: "qty"; id: string; qty: number }
   | { type: "saveAll" }
-  | { type: "pick"; id: string; cardId: CardId }
-  | { type: "suggestion"; id: string; accept: boolean }
+  | { type: "pick"; id: string; cardId: CardId; hadOf: HadOf }
+  | { type: "suggestion"; id: string; accept: boolean; hadOf: HadOf }
   | { type: "rotate"; id: string; side: Side }
   | { type: "recrop"; id: string; side: Side; now: number; speed: number }
   | { type: "swap"; id: string }
   | { type: "unpair"; id: string }
-  | { type: "pairLoose"; frontId: string; backId: string; now: number; speed: number; home: string }
+  | { type: "pairLoose"; frontId: string; backId: string; now: number; speed: number; home: string; hadOf: HadOf }
   | { type: "reject"; id: string; side: Side }
-  | { type: "retry"; id: string; now: number; speed: number }
+  | { type: "retry"; id: string; now: number; speed: number; hadOf: HadOf }
   | { type: "details"; id: string; patch: Partial<Details> }
-  | { type: "home"; id: string; homeId: string }
+  | { type: "home"; id: string; homeId: string; hadOf: HadOf }
   | { type: "rescan"; id: string; second: boolean }
   | { type: "pinSet" }
   | { type: "notInSet"; id: string };
@@ -350,20 +337,34 @@ function playerName(card: Card): string {
     .join(" ");
 }
 
-function lineFor(had: number, hadPhoto: boolean) {
-  // Jason (round 5): a scan bumps a photo-less line and gives it the photo;
-  // a line that already has a photo makes this scan start a new line.
-  if (had > 0 && !hadPhoto) return { qty: had + 1, newLine: false };
-  if (had > 0 && hadPhoto) return { qty: 1, newLine: true };
-  return { qty: 1, newLine: false };
+/**
+ * The line this scan lands on: the count already in the home, plus one. The
+ * demo's copies carry no photos, so a scan always bumps the existing line
+ * (the line rule only starts a new line when the old one has a photo).
+ */
+function lineFor(cardId: CardId | null, homeId: string, hadOf: HadOf) {
+  const had = cardId ? hadOf(cardId, homeId) : 0;
+  return { had, qty: had + 1 };
 }
 
-function itemFromBeat(beat: Beat, index: number, now: number, speed: number, setChosen: boolean, home: string): Item {
+/** Re-count the line after the card or its home changed. */
+function relined(item: Item, hadOf: HadOf): Item {
+  return { ...item, ...lineFor(item.match.cardId, item.homeId, hadOf) };
+}
+
+function itemFromBeat(
+  beat: Beat,
+  index: number,
+  now: number,
+  speed: number,
+  setChosen: boolean,
+  home: string,
+  hadOf: HadOf,
+): Item {
   const card = beat.truth;
   const picked = beat.pickedAs === undefined ? card : beat.pickedAs;
   const confidence = beat.confidence ?? 96 - Math.round(rand(index) * 8);
-  const had = beat.had ?? 0;
-  const { qty, newLine } = lineFor(had, beat.hadPhoto ?? false);
+  const { had, qty } = lineFor(picked?.id ?? null, home, hadOf);
   const backCard = beat.mispairWith ?? card;
   return {
     id: nextId("c"),
@@ -382,9 +383,7 @@ function itemFromBeat(beat: Beat, index: number, now: number, speed: number, set
       byUser: false,
     },
     had,
-    hadPhoto: beat.hadPhoto ?? false,
     qty,
-    newLine,
     details: beat.grading || beat.serial ? { grading: beat.grading ?? null, serial: beat.serial ?? "" } : {},
     homeId: home,
     rescanOf: null,
@@ -425,7 +424,7 @@ function reducer(state: State, action: Action): State {
       // Arrivals.
       while (cursor < action.script.length && action.script[cursor].at <= action.elapsed) {
         const beat = action.script[cursor];
-        const item = itemFromBeat(beat, cursor, action.now, action.speed, action.setChosen || state.setPinned, action.home);
+        const item = itemFromBeat(beat, cursor, action.now, action.speed, action.setChosen || state.setPinned, action.home, action.hadOf);
         if (beat.rescanOf !== undefined) {
           const first = items.find((i) => i.truth === beat.truth?.id && !i.rescanOf);
           if (first) item.rescanOf = first.id;
@@ -453,7 +452,7 @@ function reducer(state: State, action: Action): State {
     case "more": {
       const start = state.items.length;
       const added = MORE.map((n, k) =>
-        itemFromBeat({ truth: base(n), at: 0 }, start + k, action.now + k * 600, action.speed, true, action.home),
+        itemFromBeat({ truth: base(n), at: 0 }, start + k, action.now + k * 600, action.speed, true, action.home, action.hadOf),
       ).map((i, k) => ({ ...i, nextAt: action.now + 600 * (k + 1) }));
       return { ...state, items: [...state.items, ...added] };
     }
@@ -474,17 +473,25 @@ function reducer(state: State, action: Action): State {
         items: state.items.map((i) => (i.stage === "review" && bandOf(i) === "matched" ? { ...i, stage: "saved" } : i)),
       };
     case "pick":
-      return patch(action.id, (i) => ({
-        ...i,
-        match: { ...i.match, cardId: action.cardId, confidence: 100, byUser: true, suggestion: null, reason: null },
-      }));
+      return patch(action.id, (i) =>
+        relined(
+          { ...i, match: { ...i.match, cardId: action.cardId, confidence: 100, byUser: true, suggestion: null, reason: null } },
+          action.hadOf,
+        ),
+      );
     case "suggestion":
-      return patch(action.id, (i) => ({
-        ...i,
-        match: action.accept && i.match.suggestion
-          ? { ...i.match, cardId: i.match.suggestion, suggestion: null, byUser: true, confidence: 100, reason: null }
-          : { ...i.match, suggestion: null, reason: null },
-      }));
+      return patch(action.id, (i) =>
+        relined(
+          {
+            ...i,
+            match:
+              action.accept && i.match.suggestion
+                ? { ...i.match, cardId: i.match.suggestion, suggestion: null, byUser: true, confidence: 100, reason: null }
+                : { ...i.match, suggestion: null, reason: null },
+          },
+          action.hadOf,
+        ),
+      );
     case "rotate":
       return patch(action.id, (i) =>
         action.side === "front"
@@ -520,7 +527,7 @@ function reducer(state: State, action: Action): State {
       const b = state.loose.find((l) => l.id === action.backId);
       if (!f || !b) return state;
       const truth = f.truth ? getCard(f.truth) : null;
-      const item = itemFromBeat({ truth, at: 0 }, state.items.length + 40, action.now, action.speed, true, action.home);
+      const item = itemFromBeat({ truth, at: 0 }, state.items.length + 40, action.now, action.speed, true, action.home, action.hadOf);
       return {
         ...state,
         loose: state.loose.filter((l) => l !== f && l !== b),
@@ -544,17 +551,22 @@ function reducer(state: State, action: Action): State {
       };
     }
     case "retry":
-      return patch(action.id, (i) => ({
-        ...i,
-        front: { ...i.front, failed: false },
-        stage: "reading",
-        nextAt: action.now + duration("reading", 5, action.speed),
-        match: { ...i.match, cardId: i.truth, confidence: 92, reason: null },
-      }));
+      return patch(action.id, (i) =>
+        relined(
+          {
+            ...i,
+            front: { ...i.front, failed: false },
+            stage: "reading",
+            nextAt: action.now + duration("reading", 5, action.speed),
+            match: { ...i.match, cardId: i.truth, confidence: 92, reason: null },
+          },
+          action.hadOf,
+        ),
+      );
     case "details":
       return patch(action.id, (i) => ({ ...i, details: { ...i.details, ...action.patch } }));
     case "home":
-      return patch(action.id, (i) => ({ ...i, homeId: action.homeId }));
+      return patch(action.id, (i) => relined({ ...i, homeId: action.homeId }, action.hadOf));
     case "rescan":
       return action.second
         ? patch(action.id, (i) => ({ ...i, rescanOf: null }))
@@ -586,6 +598,8 @@ export interface SimOptions {
   /** False when the user skipped the set step. */
   setChosen: boolean;
   homeId: string;
+  /** What the collector already owns, read when a card or its home changes. */
+  hadOf: HadOf;
   /** 1 = the real pipeline's pace; higher is faster. */
   speed?: number;
   /** Start the clock (false while a wizard is still on its setup steps). */
@@ -599,7 +613,7 @@ function speedFromUrl(fallback: number): number {
   return Number.isFinite(n) && n > 0 ? n : fallback;
 }
 
-export function useIntakeSim({ setChosen, homeId, speed: requested = 1, running = true }: SimOptions) {
+export function useIntakeSim({ setChosen, homeId, hadOf, speed: requested = 1, running = true }: SimOptions) {
   const [speed] = useState(() => speedFromUrl(requested));
   const script = useMemo(script_, []);
   const [state, dispatch] = useReducer(reducer, {
@@ -613,40 +627,45 @@ export function useIntakeSim({ setChosen, homeId, speed: requested = 1, running 
   const started = useRef<number | null>(null);
   const homeRef = useRef(homeId);
   homeRef.current = homeId;
+  // The store's latest counts, read when a dispatch needs them (never during render).
+  const hadRef = useRef(hadOf);
+  hadRef.current = hadOf;
+  const had = useCallback<HadOf>((cardId, home) => hadRef.current(cardId, home), []);
 
   useEffect(() => {
     if (!running) return;
     if (started.current === null) started.current = Date.now();
     const id = window.setInterval(() => {
       const now = Date.now();
-      dispatch({ type: "tick", now, elapsed: (now - started.current!) * speed, speed, script, setChosen, home: homeRef.current });
+      dispatch({ type: "tick", now, elapsed: (now - started.current!) * speed, speed, script, setChosen, home: homeRef.current, hadOf: had });
     }, 250);
     return () => window.clearInterval(id);
-  }, [running, speed, script, setChosen]);
+  }, [running, speed, script, setChosen, had]);
 
   const now = () => Date.now();
   const actions = {
     confirm: useCallback((id: string) => dispatch({ type: "confirm", id }), []),
     setQty: useCallback((id: string, qty: number) => dispatch({ type: "qty", id, qty }), []),
     saveAllConfident: useCallback(() => dispatch({ type: "saveAll" }), []),
-    pick: useCallback((id: string, cardId: CardId) => dispatch({ type: "pick", id, cardId }), []),
-    suggestion: useCallback((id: string, accept: boolean) => dispatch({ type: "suggestion", id, accept }), []),
+    pick: useCallback((id: string, cardId: CardId) => dispatch({ type: "pick", id, cardId, hadOf: had }), [had]),
+    suggestion: useCallback((id: string, accept: boolean) => dispatch({ type: "suggestion", id, accept, hadOf: had }), [had]),
     rotate: useCallback((id: string, side: Side) => dispatch({ type: "rotate", id, side }), []),
     recrop: useCallback((id: string, side: Side) => dispatch({ type: "recrop", id, side, now: now(), speed }), [speed]),
     swap: useCallback((id: string) => dispatch({ type: "swap", id }), []),
     unpair: useCallback((id: string) => dispatch({ type: "unpair", id }), []),
     pairLoose: useCallback(
-      (frontId: string, backId: string) => dispatch({ type: "pairLoose", frontId, backId, now: now(), speed, home: homeRef.current }),
-      [speed],
+      (frontId: string, backId: string) =>
+        dispatch({ type: "pairLoose", frontId, backId, now: now(), speed, home: homeRef.current, hadOf: had }),
+      [speed, had],
     ),
     reject: useCallback((id: string, side: Side) => dispatch({ type: "reject", id, side }), []),
-    retry: useCallback((id: string) => dispatch({ type: "retry", id, now: now(), speed }), [speed]),
+    retry: useCallback((id: string) => dispatch({ type: "retry", id, now: now(), speed, hadOf: had }), [speed, had]),
     setDetails: useCallback((id: string, patch: Partial<Details>) => dispatch({ type: "details", id, patch }), []),
-    moveHome: useCallback((id: string, homeId: string) => dispatch({ type: "home", id, homeId }), []),
+    moveHome: useCallback((id: string, homeId: string) => dispatch({ type: "home", id, homeId, hadOf: had }), [had]),
     resolveRescan: useCallback((id: string, second: boolean) => dispatch({ type: "rescan", id, second }), []),
     pinSet: useCallback(() => dispatch({ type: "pinSet" }), []),
     notInSet: useCallback((id: string) => dispatch({ type: "notInSet", id }), []),
-    addMore: useCallback(() => dispatch({ type: "more", now: now(), speed, home: homeRef.current }), [speed]),
+    addMore: useCallback(() => dispatch({ type: "more", now: now(), speed, home: homeRef.current, hadOf: had }), [speed, had]),
     pause: useCallback((paused: boolean) => dispatch({ type: "pause", paused }), []),
   };
 
@@ -662,7 +681,7 @@ export function useIntakeSim({ setChosen, homeId, speed: requested = 1, running 
       check: review.filter((i) => bandOf(i) === "check").length,
       none: review.filter((i) => bandOf(i) === "none").length,
       savedCopies: state.items.filter((i) => i.stage === "saved").reduce((n, i) => n + Math.max(0, i.qty - i.had), 0),
-      newLines: state.items.filter((i) => i.stage === "saved" && (i.newLine || i.had === 0)).length,
+      newLines: state.items.filter((i) => i.stage === "saved" && i.had === 0).length,
       working: by.uploading + by.reading + by.pairing + by.matching,
       arriving: state.cursor < script.length,
     };
