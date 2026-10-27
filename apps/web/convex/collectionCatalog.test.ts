@@ -559,3 +559,17 @@ describe("NEO-358: a row known to hold no cards is hidden; an uncounted one is s
     expect(sets.sets.map((s) => s._id)).toEqual([fx.setId]);
   });
 });
+
+describe("NEO-367 card notes", () => {
+  test("a card's note reaches the collector; a card without one carries no key", async () => {
+    const { t, as, fx } = await setup();
+    await t.run(async (ctx) => {
+      await ctx.db.patch(fx.gooden1, { notes: "Short print, about 1:120 packs" });
+    });
+    const card = await as.query(api.collectionCatalog.card, { cardId: fx.gooden1 });
+    expect(card?.notes).toBe("Short print, about 1:120 packs");
+    const other = await as.query(api.collectionCatalog.card, { cardId: fx.gold1 });
+    expect(other).not.toBeNull();
+    expect("notes" in other!).toBe(false);
+  });
+});

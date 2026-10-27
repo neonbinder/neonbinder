@@ -651,6 +651,36 @@ describe("CardDetailPanel — per-field autosave (NEO-216)", () => {
     });
   });
 
+  it("NEO-367: notes commit only `notes`, keep line breaks, and clearing sends \"\"", async () => {
+    renderPanel({ card: makeCard({ notes: "Short print" }) });
+    const notes = screen.getByLabelText("Card notes") as HTMLTextAreaElement;
+    expect(notes.value).toBe("Short print");
+
+    await act(async () => {
+      focusField(notes);
+      typeInto(notes, "Error card\ncorrected later");
+      fireEvent.keyDown(notes, { key: "Enter" });
+    });
+    expect(mockUpdateCard).not.toHaveBeenCalled();
+
+    await act(async () => {
+      blurField(notes);
+    });
+    await waitFor(() => expect(mockUpdateCard).toHaveBeenCalledTimes(1));
+    expect(mockUpdateCard).toHaveBeenCalledWith({
+      id: CARD_ID,
+      notes: "Error card\ncorrected later",
+    });
+
+    await act(async () => {
+      focusField(notes);
+      typeInto(notes, "   ");
+      blurField(notes);
+    });
+    await waitFor(() => expect(mockUpdateCard).toHaveBeenCalledTimes(2));
+    expect(mockUpdateCard).toHaveBeenLastCalledWith({ id: CARD_ID, notes: "" });
+  });
+
   it("the card variation writes only cardVariation", async () => {
     renderPanel({ card: makeCard({ cardVariation: "" }) });
 
