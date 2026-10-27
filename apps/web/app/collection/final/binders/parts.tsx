@@ -193,7 +193,10 @@ export function MobileSummary({ open, actions }: { open: OpenView; actions: Cove
         </div>
       )}
       <TallyLine tally={open.tally} want={open.want} />
-      <p>{open.blurb[0]}</p>
+      {/* NEO-362: every line, so a phone also says when the binder keeps itself sorted (dragging is off). */}
+      {open.blurb.map((line) => (
+        <p key={line}>{line}</p>
+      ))}
     </div>
   );
 }
