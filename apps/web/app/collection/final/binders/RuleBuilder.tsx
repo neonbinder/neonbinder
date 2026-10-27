@@ -483,7 +483,7 @@ function suggestionName(s: Pickable): string {
 
 /** A suggestion as the list shows it: with its sport, so three Reggie Whites can be told apart. */
 function suggestionOption(s: Pickable): string {
-  if (s.kind === "set") return s.sport ? `${s.label} · ${s.sport}` : s.label;
+  if (s.kind === "set") return s.label;
   return s.sport ? `${suggestionName(s)} · ${s.sport}` : suggestionName(s);
 }
 
