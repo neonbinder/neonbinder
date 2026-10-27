@@ -116,4 +116,18 @@ crons.interval(
   {},
 );
 
+/**
+ * NEO-361 — clear card-request photo uploads that never made it onto a card
+ * (a request not sent, or one a send refused) and the hourly upload tickets.
+ * Hourly: an orphan is only swept once an hour old, so a tighter cadence
+ * would find nothing new, and a run with nothing to do reads two short index
+ * ranges and stops. See `sweepPhotoUploads`.
+ */
+crons.interval(
+  "sweep unattached request photos",
+  { hours: 1 },
+  internal.collectionRequests.sweepPhotoUploads,
+  {},
+);
+
 export default crons;

@@ -500,10 +500,14 @@ export const inventoryCards = query({
       if (rows.length > left) truncated = true;
       read += kept.length;
       for (const row of kept) {
+        // NEO-361: the inventory list is of catalog cards. A private card's
+        // copy (one put in a box) is counted by its box but not listed here.
+        const cardId = ctx.db.normalizeId("cardChecklist", row.cardId);
+        if (!cardId) continue;
         const entry =
-          byCard.get(row.cardId) ??
+          byCard.get(cardId) ??
           ({
-            cardId: row.cardId,
+            cardId,
             quantity: 0,
             lines: 0,
             graded: false,
@@ -524,7 +528,7 @@ export const inventoryCards = query({
           inBox.quantity += row.quantity;
           inBox.gradedQuantity += slabs;
         } else entry.boxes.push({ boxId: box._id, quantity: row.quantity, gradedQuantity: slabs });
-        byCard.set(row.cardId, entry);
+        byCard.set(cardId, entry);
       }
       if (truncated) break;
     }

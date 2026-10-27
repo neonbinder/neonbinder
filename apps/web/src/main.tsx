@@ -77,6 +77,7 @@ const AdminPlayers = lazy(() => import("@/app/admin/players/page"));
 const AdminTeams = lazy(() => import("@/app/admin/teams/page"));
 const AdminLeagues = lazy(() => import("@/app/admin/leagues/page"));
 const AdminFranchises = lazy(() => import("@/app/admin/franchises/page"));
+const AdminCardRequests = lazy(() => import("@/app/admin/card-requests/page"));
 const PipelineRuns = lazy(() => import("@/app/pipeline-runs/page"));
 const DesignPrimitives = lazy(() => import("@/app/design/primitives/page"));
 const PrintHub = lazy(loadPrintHub);
@@ -285,6 +286,9 @@ const SentryErrorBoundary = Sentry.withErrorBoundary(
                       this section didn't exist yet; its own header comment
                       planned this exact move. */}
                   <Route path="pipeline-runs" element={<Deferred><PipelineRuns /></Deferred>} />
+                  {/* NEO-361 — collectors' card and set requests. The
+                      functions behind it are requireAdmin server-side. */}
+                  <Route path="card-requests" element={<Deferred><AdminCardRequests /></Deferred>} />
                 </Route>
                 {/* The old top-level routes. Kept forever rather than 404ing:
                     /set-selector is bookmarked, and most E2E specs navigate

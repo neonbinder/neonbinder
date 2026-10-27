@@ -940,6 +940,7 @@ describe("NEO-214: the Set Builder admin panel and its client-callable functions
     "resetCardTeamLinksBatch",
     "resetCollectionCopiesBatch",
     "resetCollectionWantsBatch",
+    "resetCardRequestsBatch",
     "resetCollectionContainersBatch",
     "resetCollectionBuildingSetsBatch",
   ])("%s is declared internalMutation, not mutation", (fn) => {
@@ -2327,6 +2328,163 @@ describe("NEO-358: the collection and its catalog reads require a signed-in call
       expect(src).toContain(`export const ${fn} = ${kind}({`);
     },
   );
+});
+
+describe("NEO-361: card requests are the caller's own, and their review is admin-gated", () => {
+  /**
+   * A collector's requests, private cards and private sets are theirs alone
+   * (every read and write scopes to the caller; `collectionRequests.test.ts`
+   * covers the ownership refusals). Reviewing them reads every collector's
+   * requests and writes the shared catalog link, so that half is admin.
+   */
+  const NOT_AN_ID = "not-an-id";
+  const SIGNED_IN_GATED: Array<[string, (t: ReturnType<typeof convexTest>) => Promise<unknown>]> = [
+    ["collectionRequests.generateUploadUrl", (t) => t.mutation(api.collectionRequests.generateUploadUrl, {})],
+    ["collectionRequests.mine", (t) => t.query(api.collectionRequests.mine, {})],
+    ["collectionRequests.mySets", (t) => t.query(api.collectionRequests.mySets, {})],
+    ["collectionRequests.privateCards", (t) => t.query(api.collectionRequests.privateCards, { ids: [] })],
+    [
+      "collectionRequests.privateSetCards",
+      (t) => t.query(api.collectionRequests.privateSetCards, { privateSetId: NOT_AN_ID }),
+    ],
+    [
+      "collectionRequests.fileCandidates",
+      (t) => t.query(api.collectionRequests.fileCandidates, { privateCardId: NOT_AN_ID }),
+    ],
+  ];
+
+  test.each(SIGNED_IN_GATED)("%s rejects an anonymous caller", async (_name, call) => {
+    const t = convexTest(schema, modules);
+    await expect(call(t)).rejects.toThrow(/Not authenticated/);
+  });
+
+  test.each(SIGNED_IN_GATED)("%s answers a signed-in non-admin", async (_name, call) => {
+    const t = convexTest(schema, modules);
+    await expect(call(t.withIdentity(SIGNED_IN))).resolves.not.toThrow();
+  });
+
+  const ADMIN_READS: Array<[string, (t: ReturnType<typeof convexTest>) => Promise<unknown>]> = [
+    ["collectionRequests.waitingCount", (t) => t.query(api.collectionRequests.waitingCount, {})],
+    ["collectionRequests.queue", (t) => t.query(api.collectionRequests.queue, {})],
+    ["collectionRequests.review", (t) => t.query(api.collectionRequests.review, { requestId: NOT_AN_ID })],
+  ];
+
+  test.each(ADMIN_READS)("%s rejects anonymous and signed-in non-admin callers, and answers an admin", async (_name, call) => {
+    const t = convexTest(schema, modules);
+    await expect(call(t)).rejects.toThrow(/Not authenticated/);
+    await expect(call(t.withIdentity(SIGNED_IN))).rejects.toThrow(/Admin access required/);
+    await expect(call(t.withIdentity(ADMIN))).resolves.not.toThrow();
+  });
+
+  /** A request of "user"'s with its private card, in a real set, beside a catalog card. */
+  async function seed(t: ReturnType<typeof convexTest>) {
+    return await t.run(async (ctx) => {
+      const sportId = await ctx.db.insert("selectorOptions", {
+        level: "sport",
+        value: "Football",
+        platformData: {},
+        lastUpdated: 0,
+      });
+      const setId = await ctx.db.insert("selectorOptions", {
+        level: "setName",
+        value: "Contenders",
+        parentId: sportId,
+        platformData: {},
+        lastUpdated: 0,
+      });
+      const variantId = await ctx.db.insert("selectorOptions", {
+        level: "variantType",
+        value: "Base",
+        parentId: setId,
+        platformData: {},
+        lastUpdated: 0,
+      });
+      const cardId = await insertTestCard(ctx, {
+        selectorOptionId: variantId,
+        cardNumber: "41",
+        cardName: "Reggie White",
+        platformData: {},
+        sortOrder: 1,
+        lastUpdated: 0,
+      });
+      const requestId = await ctx.db.insert("cardRequests", {
+        ownerId: "user",
+        kind: "card",
+        status: "waiting",
+        label: "Contenders #77 Rookie Nobody",
+        lastUpdated: 0,
+      });
+      const privateCardId = await ctx.db.insert("privateCards", {
+        ownerId: "user",
+        requestId,
+        setId,
+        variantId,
+        cardNumber: "77",
+        player: "Rookie Nobody",
+        lastUpdated: 0,
+      });
+      await ctx.db.patch(requestId, { privateCardId });
+      const setRequestId = await ctx.db.insert("cardRequests", {
+        ownerId: "user",
+        kind: "set",
+        status: "waiting",
+        label: "1996 Playoff Contenders",
+        lastUpdated: 0,
+      });
+      const privateSetId = await ctx.db.insert("privateSets", {
+        ownerId: "user",
+        requestId: setRequestId,
+        sportId,
+        year: "1996",
+        brand: "Playoff",
+        name: "Contenders",
+        lastUpdated: 0,
+      });
+      await ctx.db.patch(setRequestId, { privateSetId });
+      return { sportId, setId, variantId, cardId, requestId, privateCardId, setRequestId, privateSetId };
+    });
+  }
+
+  test("the id-taking collector writes reject an anonymous caller and write nothing", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seed(t);
+    const writes: Array<() => Promise<unknown>> = [
+      () => t.mutation(api.collectionRequests.requestCard, { setId: ids.setId, variantId: ids.variantId, cardNumber: "9", player: "X" }),
+      () => t.mutation(api.collectionRequests.requestSet, { sportId: ids.sportId, year: "1996", brand: "Playoff", name: "Contenders" }),
+      () =>
+        t.mutation(api.collectionRequests.addPrivateCard, {
+          privateSetId: ids.privateSetId,
+          variantName: "Base",
+          cardNumber: "9",
+          player: "X",
+        }),
+      () => t.mutation(api.collectionRequests.withdraw, { requestId: ids.requestId }),
+      () => t.mutation(api.collectionRequests.fileAs, { privateCardId: ids.privateCardId, cardId: ids.cardId }),
+    ];
+    for (const write of writes) await expect(write()).rejects.toThrow(/Not authenticated/);
+    const counts = await t.run(async (ctx) => ({
+      requests: (await ctx.db.query("cardRequests").collect()).length,
+      cards: (await ctx.db.query("privateCards").collect()).length,
+    }));
+    expect(counts).toEqual({ requests: 2, cards: 1 });
+  });
+
+  test("approve and decline reject anonymous and signed-in non-admin callers, and leave the request waiting", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seed(t);
+    const decisions: Array<(c: ReturnType<typeof convexTest>) => Promise<unknown>> = [
+      (c) => c.mutation(api.collectionRequests.approveCard, { requestId: ids.requestId, cardId: ids.cardId }),
+      (c) => c.mutation(api.collectionRequests.approveSet, { requestId: ids.setRequestId, setId: ids.setId }),
+      (c) => c.mutation(api.collectionRequests.decline, { requestId: ids.requestId }),
+    ];
+    for (const decide of decisions) {
+      await expect(decide(t)).rejects.toThrow(/Not authenticated/);
+      // The collector who asked can't decide their own request either.
+      await expect(decide(t.withIdentity(SIGNED_IN))).rejects.toThrow(/Admin access required/);
+    }
+    const statuses = await t.run(async (ctx) => (await ctx.db.query("cardRequests").collect()).map((r) => r.status));
+    expect(statuses).toEqual(["waiting", "waiting"]);
+  });
 });
 
 describe("NEO-360: the public share-link reads are public by intent; the switches are signed-in", () => {

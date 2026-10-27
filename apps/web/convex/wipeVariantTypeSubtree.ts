@@ -189,6 +189,20 @@ export const SUBTREE_REFERENCE_GRAPH = {
     handling:
       "NEO-359 a collector's want is deleted with its card in removeCardRow (never refuses the wipe; past a bounded take the rest are swept by a scheduled continuation)",
   },
+  privateCards: {
+    fields: ["setId", "variantId"],
+    handling:
+      "NEO-361 a collector's own card may name the checklist it belongs in. Never refuses the wipe and is untouched: a gone checklist reads as none (the card shows under its set, unlisted, and the admin's review offers the set builder instead). setId is set-level, above the subtree",
+  },
+  privateSets: {
+    fields: ["sportId"],
+    handling: "NEO-361 sport-level only. Untouched",
+  },
+  cardRequests: {
+    fields: ["addedCardId", "addedSetId"],
+    handling:
+      "NEO-361 a record of what an approved request became; a wiped card leaves addedCardId pointing at nothing, which only the review's history reads. addedSetId is set-level. Untouched",
+  },
   entityReviewQueue: {
     fields: [
       "selectorOptionId",

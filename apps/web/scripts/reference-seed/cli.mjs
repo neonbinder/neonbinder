@@ -103,6 +103,12 @@ export const SELECTOR_DEPENDANT_TABLES = [
   // Drained by the reset (after the copies and wants), before the selector
   // rows.
   "collectionContainers",
+  // NEO-361 — card and set requests and the private cards and sets they
+  // made (setId, variantId, sportId, addedSetId). Drained by the reset
+  // (`resetCardRequestsBatch`), before the selector rows.
+  "privateCards",
+  "privateSets",
+  "cardRequests",
   "cardPlayerLinks",
   "cardChecklist",
   "cardCrossListings",

@@ -398,6 +398,38 @@ describe("what the shelves say", () => {
   });
 });
 
+describe("unlisted cards (NEO-361)", () => {
+  test("a collector's own card shows as unlisted: number, player and set, never its notes, photos or request", async () => {
+    const s = await setup();
+    const b = await binder(s);
+    const photo = await s.t.run(async (ctx) => ctx.storage.store(new Blob(["front"], { type: "image/jpeg" })));
+    const { privateCardId } = await s.me.mutation(api.collectionRequests.requestCard, {
+      setId: s.fx.setId,
+      variantName: "Gold Foil",
+      cardNumber: "77",
+      player: "Rookie Nobody",
+      notes: PRIVATE_VALUES.notes,
+    });
+    await s.t.run(async (ctx) => ctx.db.patch(privateCardId, { frontImageId: photo }));
+    await s.me.mutation(api.collection.addLineItem, {
+      cardId: privateCardId,
+      details: { quantity: 2, homeId: b.id, slot: 0, condition: "Mint" },
+    });
+    await s.me.mutation(api.collectionContainers.setVisibility, { containerId: b.id, visibility: "public" });
+    const { page } = await s.anon.query(api.publicCollection.binderCopies, { username: "ace", path: b.path, paginationOpts: PAGE });
+    expect(page).toHaveLength(1);
+    expect(page[0].card).toBeUndefined();
+    expect(page[0]).toMatchObject({
+      quantity: 2,
+      condition: "Mint",
+      unlisted: { cardNumber: "77", player: "Rookie Nobody", variantName: "Gold Foil", variant: null, requestedSet: null },
+    });
+    expect(page[0].unlisted?.set?._id).toBe(s.fx.setId);
+    const json = JSON.stringify(page);
+    for (const leak of [privateCardId, photo, PRIVATE_VALUES.notes, "requestId", "Url"]) expect(json).not.toContain(leak);
+  });
+});
+
 describe("links", () => {
   test("a new binder is born with a plain link name; a rename keeps it; a twin name gets -2", async () => {
     const s = await setup();
