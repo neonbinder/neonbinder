@@ -115,3 +115,14 @@ describe("formatCareerSummary", () => {
     ).toBe("Padres 1982–present +1 more");
   });
 });
+
+describe("NEO-285 — an undated stint prints as the bare team name", () => {
+  it("names it without years", () => {
+    expect(
+      formatCareerSummary([
+        { teamName: "Steelers", fromYear: 2010, toYear: 2012 },
+        { teamName: "West Virginia Mountaineers" },
+      ]),
+    ).toBe("Steelers 2010–2012 · West Virginia Mountaineers");
+  });
+});

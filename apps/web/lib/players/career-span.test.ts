@@ -108,3 +108,17 @@ describe("stintCoversYear", () => {
     expect(stintCoversYear({ fromYear: 2011 }, 2010, NOW)).toBe(false);
   });
 });
+
+describe("NEO-285 — an undated stint carries no year evidence", () => {
+  test("careerSpan ignores it", () => {
+    expect(careerSpan([{}], NOW)).toBeNull();
+    expect(careerSpan([{}, { fromYear: 2010, toYear: 2014 }], NOW)).toEqual({
+      fromYear: 2010,
+      toYear: 2014,
+    });
+  });
+
+  test("stintCoversYear is false for it", () => {
+    expect(stintCoversYear({}, 2010, NOW)).toBe(false);
+  });
+});

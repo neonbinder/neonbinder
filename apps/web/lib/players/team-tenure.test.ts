@@ -6,7 +6,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { pickDefaultTeamYear, sortTeamYears, tenureYears } from "./team-tenure";
+import { isDatedTeamYear, pickDefaultTeamYear, sortTeamYears, tenureYears } from "./team-tenure";
 
 const NOW = 2026;
 
@@ -164,5 +164,35 @@ describe("sortTeamYears", () => {
     expect(sortTeamYears([{ teamId: "only", fromYear: 2011 }])).toEqual([
       { teamId: "only", fromYear: 2011 },
     ]);
+  });
+});
+
+describe("NEO-285 — undated stints", () => {
+  it("sortTeamYears puts undated stints after every dated one, in input order", () => {
+    expect(
+      sortTeamYears([
+        { teamId: "college" },
+        { teamId: "pro", fromYear: 2012 },
+        { teamId: "juco" },
+        { teamId: "rookie", fromYear: 2010, toYear: 2011 },
+      ]),
+    ).toEqual([
+      { teamId: "rookie", fromYear: 2010, toYear: 2011 },
+      { teamId: "pro", fromYear: 2012 },
+      { teamId: "college" },
+      { teamId: "juco" },
+    ]);
+  });
+
+  it("pickDefaultTeamYear never picks an undated stint", () => {
+    expect(pickDefaultTeamYear([{ teamId: "college" }], NOW)).toBeNull();
+    expect(
+      pickDefaultTeamYear([{ teamId: "college" }, { teamId: "pro", fromYear: 2020, toYear: 2021 }], NOW),
+    ).toEqual({ teamId: "pro", fromYear: 2020, toYear: 2021 });
+  });
+
+  it("isDatedTeamYear tells the two apart", () => {
+    expect(isDatedTeamYear({ teamId: "a" })).toBe(false);
+    expect(isDatedTeamYear({ teamId: "a", fromYear: 2001 })).toBe(true);
   });
 });

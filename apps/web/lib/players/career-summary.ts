@@ -32,7 +32,8 @@ export const CAREER_SUMMARY_MAX_TEAMS = 3;
 /** One stint, already resolved to a team NAME — see `formatCareerSummary`. */
 export type CareerSummaryStint = {
   teamName: string;
-  fromYear: number;
+  /** NEO-285 — absent on an undated stint, which prints as the bare name. */
+  fromYear?: number;
   toYear?: number;
 };
 
@@ -86,7 +87,11 @@ export function formatCareerSummary(
   if (stints.length === 0) return "";
   const head = stints
     .slice(0, shown)
-    .map((s) => `${s.teamName} ${s.fromYear}–${s.toYear ?? "present"}`)
+    .map((s) =>
+      s.fromYear === undefined
+        ? s.teamName
+        : `${s.teamName} ${s.fromYear}–${s.toYear ?? "present"}`,
+    )
     .join(" · ");
   const rest = Math.max(0, stints.length - shown) + extra;
   return rest > 0 ? `${head} +${rest} more` : head;

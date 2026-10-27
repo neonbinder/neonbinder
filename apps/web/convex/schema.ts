@@ -1667,9 +1667,18 @@ export default defineSchema({
     sportId: v.id("selectorOptions"),
     // Career teams from Wikidata P54 with P580/P582 qualifiers. teamId
     // points at our teams table once the team is created/known.
+    //
+    // NEO-285 — `fromYear` is optional: an UNDATED stint is a real fact
+    // ("played college ball at West Virginia", years unknown), and the college
+    // load writes one whenever its source carries the school and no years.
+    // Synthesising a year from the player's pro career would fabricate a
+    // stint that never happened (the NEO-235 rule), so absent means unknown.
+    // An undated stint never carries `toYear`. Readers that need years (career
+    // span, the card-year team fill, the spine label's default) skip it; every
+    // list that shows a career shows it, without years, after the dated ones.
     teamYears: v.optional(v.array(v.object({
       teamId: v.id("teams"),
-      fromYear: v.number(),
+      fromYear: v.optional(v.number()),
       toYear: v.optional(v.number()),
     }))),
     isHallOfFame: v.optional(v.boolean()),
