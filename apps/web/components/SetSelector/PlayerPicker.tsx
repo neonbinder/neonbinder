@@ -37,7 +37,8 @@ type PickerPlayerRow = {
   stints?: Array<{
     label: string;
     primaryColor?: string;
-    fromYear: number;
+    /** NEO-285 — absent on an undated stint (a college, years unknown). */
+    fromYear?: number;
     toYear?: number;
   }>;
 };
@@ -785,14 +786,19 @@ export default function PlayerPicker({
                                   style={color ? { color } : undefined}
                                 >
                                   {st.label}
-                                </span>{" "}
-                                <span className="tabular-nums">
-                                  {st.toYear === undefined
-                                    ? `${st.fromYear}–`
-                                    : st.toYear === st.fromYear
-                                      ? `${st.fromYear}`
-                                      : `${st.fromYear}–${st.toYear}`}
                                 </span>
+                                {st.fromYear !== undefined && (
+                                  <>
+                                    {" "}
+                                    <span className="tabular-nums">
+                                      {st.toYear === undefined
+                                        ? `${st.fromYear}–`
+                                        : st.toYear === st.fromYear
+                                          ? `${st.fromYear}`
+                                          : `${st.fromYear}–${st.toYear}`}
+                                    </span>
+                                  </>
+                                )}
                               </span>
                             );
                           })}

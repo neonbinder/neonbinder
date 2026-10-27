@@ -82,11 +82,11 @@ export function normalizePlayerName(raw: string): string {
 /**
  * One career stint: a player on a team from `fromYear` until `toYear`
  * (open-ended while they are still there). Mirrors the `players.teamYears`
- * element shape in the schema.
+ * element shape in the schema; NEO-285 — `fromYear` absent is an undated stint.
  */
 export type PlayerTeamYear = {
   teamId: Id<"teams">;
-  fromYear: number;
+  fromYear?: number;
   toYear?: number;
 };
 
@@ -114,7 +114,8 @@ const playerDocPublicValidator = v.object({
   sportId: v.id("selectorOptions"),
   teamYears: v.optional(v.array(v.object({
     teamId: v.id("teams"),
-    fromYear: v.number(),
+    // NEO-285 — absent on an undated stint; see schema.ts.
+    fromYear: v.optional(v.number()),
     toYear: v.optional(v.number()),
   }))),
   isHallOfFame: v.optional(v.boolean()),
@@ -163,7 +164,8 @@ const playerSearchResultValidator = v.object({
     v.object({
       label: v.string(),
       primaryColor: v.optional(v.string()),
-      fromYear: v.number(),
+      // NEO-285 — absent on an undated stint.
+      fromYear: v.optional(v.number()),
       toYear: v.optional(v.number()),
     }),
   ),
@@ -181,7 +183,8 @@ const playerDocValidator = v.object({
   sportId: v.id("selectorOptions"),
   teamYears: v.optional(v.array(v.object({
     teamId: v.id("teams"),
-    fromYear: v.number(),
+    // NEO-285 — absent on an undated stint; see schema.ts.
+    fromYear: v.optional(v.number()),
     toYear: v.optional(v.number()),
   }))),
   isHallOfFame: v.optional(v.boolean()),
@@ -1748,7 +1751,7 @@ export async function buildExistingPlayerCandidates(
       }
       resolved.push({
         teamName: teamNameById.get(key)!,
-        fromYear: stint.fromYear,
+        ...(stint.fromYear !== undefined ? { fromYear: stint.fromYear } : {}),
         ...(stint.toYear !== undefined ? { toYear: stint.toYear } : {}),
       });
     }
@@ -2004,12 +2007,19 @@ export const search = query({
       }
       // Most recent first: an open stint (still there) outranks a closed one,
       // then by start year. What a picker shows is "who is this now".
+      // NEO-285 — an undated stint (a college, years unknown) is the least
+      // "now" thing a career holds, so it ranks after every dated one.
       const recent = [...(doc.teamYears ?? [])]
-        .sort(
-          (a, b) =>
+        .sort((a, b) => {
+          if (a.fromYear === undefined || b.fromYear === undefined) {
+            if (a.fromYear === b.fromYear) return 0;
+            return a.fromYear === undefined ? 1 : -1;
+          }
+          return (
             (b.toYear ?? Number.POSITIVE_INFINITY) - (a.toYear ?? Number.POSITIVE_INFINITY) ||
-            b.fromYear - a.fromYear,
-        )
+            b.fromYear - a.fromYear
+          );
+        })
         .slice(0, SEARCH_RESULT_STINTS);
       const stints = [];
       for (const stint of recent) {
@@ -2021,7 +2031,7 @@ export const search = query({
         stints.push({
           label: teamFullName(team),
           ...(team.colors?.primary ? { primaryColor: team.colors.primary } : {}),
-          fromYear: stint.fromYear,
+          ...(stint.fromYear !== undefined ? { fromYear: stint.fromYear } : {}),
           ...(stint.toYear !== undefined ? { toYear: stint.toYear } : {}),
         });
       }
@@ -2377,13 +2387,27 @@ export const applyEnrichmentInternal = internalMutation({
     if (!existing) return null;
 
     const patch: {
-      teamYears?: Array<{ teamId: Id<"teams">; fromYear: number; toYear?: number }>;
+      teamYears?: PlayerTeamYear[];
       isHallOfFame?: boolean;
       externalIds?: { wikidataId?: string };
       lastUpdated: number;
     } = { lastUpdated: Date.now() };
 
-    if (args.teamYears !== undefined) patch.teamYears = args.teamYears;
+    if (args.teamYears !== undefined) {
+      /*
+       * NEO-285 — an UNDATED stint survives a full write. Wikidata never
+       * produces one (`enrichPlayer` drops a membership with no start year),
+       * so every undated stint on a row came from the college load or an
+       * operator, and a forced re-enrich replacing "the answer that turned out
+       * to be wrong" was never an answer about those. Kept unless the incoming
+       * career already has a stint on that team.
+       */
+      const incomingTeams = new Set<string>(args.teamYears.map((s) => s.teamId));
+      const keptUndated = (existing.teamYears ?? []).filter(
+        (s) => s.fromYear === undefined && !incomingTeams.has(s.teamId),
+      );
+      patch.teamYears = sortTeamYears([...args.teamYears, ...keptUndated]);
+    }
 
     if (args.isHallOfFame !== undefined) patch.isHallOfFame = args.isHallOfFame;
     // NEO-212 security review: an id that is not `Q<digits>` is DROPPED, not
@@ -2509,7 +2533,7 @@ const PLAYER_MANAGEMENT_CAP = 500;
  * and the browser console through Convex's error path, and the names are
  * operator input. Same rule as `teams.resolveNames`'s over-length refusal.
  */
-const MAX_PLAYER_TEAM_YEARS = 64;
+export const MAX_PLAYER_TEAM_YEARS = 64;
 
 /**
  * NEO-212: the whole player list, for the Player Management page.
@@ -2781,7 +2805,10 @@ export const savePlayerFields = mutation({
       v.array(
         v.object({
           teamId: v.id("teams"),
-          fromYear: v.number(),
+          // NEO-285 — absent on an undated stint. The editor cannot create
+          // one, but it round-trips the ones the college load wrote, so a
+          // save that touches any stint must not refuse them.
+          fromYear: v.optional(v.number()),
           toYear: v.optional(v.number()),
         }),
       ),
@@ -2929,6 +2956,19 @@ export const savePlayerFields = mutation({
           );
         }
 
+        if (stint.fromYear === undefined) {
+          // NEO-285 — undated: a team and nothing else. An end year with no
+          // start is not a stint anyone can read.
+          if (stint.toYear !== undefined) {
+            throw new ConvexError("A career stint with an end year needs a start year.");
+          }
+          const key = `${stint.teamId}:undated`;
+          if (seen.has(key)) {
+            throw new ConvexError(`${team.name} is listed twice without years.`);
+          }
+          seen.add(key);
+          continue;
+        }
         if (!Number.isInteger(stint.fromYear) || stint.fromYear < MIN_CAREER_YEAR || stint.fromYear > maxYear) {
           throw new ConvexError(
             `A career start year must be a whole year between ${MIN_CAREER_YEAR} and ${maxYear}.`,

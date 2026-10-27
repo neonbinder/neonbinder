@@ -41,6 +41,7 @@ import { teamFullName } from "../lib/teams/team-name";
 // NEO-335: the wizard's pre-save team suggestions (`teamSuggestionsForPreview`).
 import { ConvexError } from "convex/values";
 import { sameNamePlayers } from "./players";
+import { isDatedTeamYear } from "../lib/players/team-tenure";
 // Called inside the handler only; `cardPlayerLinks.ts` imports this module
 // back (for `findSportForSelectorOption`), which is safe for the same reason.
 import { recentCardIdsForPlayer } from "./cardPlayerLinks";
@@ -1456,6 +1457,9 @@ export const suggestedTeamsForCard = query({
         // two players share is one suggestion EACH (the fixer folds them).
         const seenTeamIds = new Set<string>();
         for (const entry of player.teamYears ?? []) {
+          // NEO-285 — an undated stint (a college with no years) says nothing
+          // about which team the player was on in a card's season.
+          if (entry.fromYear === undefined) continue;
           if (!inYear(entry.fromYear, entry.toYear)) continue;
           if (seenTeamIds.has(entry.teamId)) continue;
           if (!teamTextById.has(entry.teamId)) {
@@ -1881,7 +1885,11 @@ export const teamSuggestionsForPreview = query({
       }
       const usablePlayer = player
         ? {
-            teamYears: (player.teamYears ?? []).filter((entry) => known.get(entry.teamId) !== null),
+            // NEO-285 — dated stints only: the suggestion reasons in seasons,
+            // and an undated college stint has none.
+            teamYears: (player.teamYears ?? [])
+              .filter(isDatedTeamYear)
+              .filter((entry) => known.get(entry.teamId) !== null),
           }
         : undefined;
 

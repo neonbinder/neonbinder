@@ -61,7 +61,8 @@ const MAX_RESULTS = 8;
 type ResultStint = {
   label: string;
   primaryColor?: string;
-  fromYear: number;
+  /** NEO-285 — absent on an undated stint (a college, years unknown). */
+  fromYear?: number;
   toYear?: number;
 };
 
@@ -115,6 +116,7 @@ function stintColor(
 }
 
 function stintYears(s: ResultStint): string {
+  if (s.fromYear === undefined) return "";
   if (s.toYear === undefined) return `${s.fromYear}–present`;
   if (s.toYear === s.fromYear) return `${s.fromYear}`;
   return `${s.fromYear}–${s.toYear}`;
@@ -361,8 +363,8 @@ export default function EntityLinkSearch({
                           style={color ? { color } : undefined}
                         >
                           {st.label}
-                        </span>{" "}
-                        {stintYears(st)}
+                        </span>
+                        {st.fromYear !== undefined && ` ${stintYears(st)}`}
                       </span>
                     );
                   })}

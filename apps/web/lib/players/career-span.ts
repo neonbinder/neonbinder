@@ -55,8 +55,14 @@
  */
 export const CARD_YEAR_TOLERANCE = 2;
 
-/** One career stint. `toYear` absent means the stint is still running. */
-export type CareerStint = { fromYear: number; toYear?: number };
+/**
+ * One career stint. `toYear` absent means the stint is still running.
+ *
+ * NEO-285 — `fromYear` absent means the stint is UNDATED (a college the
+ * source names without years). It says nothing about WHEN the man played, so
+ * every function here skips it: it neither widens a span nor covers a year.
+ */
+export type CareerStint = { fromYear?: number; toYear?: number };
 
 /** The outer bounds of a career, both years inclusive. */
 export type CareerSpan = { fromYear: number; toYear: number };
@@ -75,9 +81,10 @@ export function careerSpan(
   let fromYear: number | undefined;
   let toYear: number | undefined;
   for (const stint of stints) {
-    if (!Number.isFinite(stint.fromYear)) continue;
+    const start = stint.fromYear;
+    if (start === undefined || !Number.isFinite(start)) continue;
     const end = stint.toYear ?? currentYear;
-    if (fromYear === undefined || stint.fromYear < fromYear) fromYear = stint.fromYear;
+    if (fromYear === undefined || start < fromYear) fromYear = start;
     if (toYear === undefined || end > toYear) toYear = end;
   }
   if (fromYear === undefined || toYear === undefined) return null;
@@ -157,5 +164,6 @@ export function stintCoversYear(
   year: number,
   currentYear: number,
 ): boolean {
+  if (stint.fromYear === undefined) return false;
   return stint.fromYear <= year && year <= (stint.toYear ?? currentYear);
 }
