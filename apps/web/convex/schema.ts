@@ -1036,6 +1036,10 @@ export default defineSchema({
       // "system" (follow the OS); no backfill. Mirrored client-side to
       // localStorage so the pre-paint script can read it.
       theme: v.optional(themePreferenceValidator),
+      // NEO-380: the condition a raw copy gets when the collector names none
+      // (Profile → Settings). Absent means `DEFAULT_CONDITION` (Excellent,
+      // `convex/collection.ts`); no backfill of the setting itself.
+      defaultCondition: v.optional(collectionCopyConditionValidator),
     })),
     // NEO-118: the seller's own address, printed in the FROM block of a 4x6
     // shipping label. Lives here rather than in `publicProfiles` because a home

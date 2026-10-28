@@ -15,13 +15,14 @@
  * ## Quick counts: the plain lines
  *
  * The Inventory checklist sets "how many of this card are in this box" with
- * one number. That number is the card's PLAIN lines in the box: raw (no
- * condition), ungraded, no serial, no cost, no location, no notes, not up for
- * trade; where in the box (`slot`) and when acquired (`acquiredOn`) are
- * ignored. Every other line of the card in that box is the collector's own
+ * one number. That number is the card's PLAIN lines in the box: raw in the
+ * collector's default condition (NEO-380, `defaultConditionOf`; a line stored
+ * before conditions were required, with none, counts too), ungraded, no
+ * serial, no cost, no location, no notes, not up for trade; where in the box
+ * (`slot`) and when acquired (`acquiredOn`) are ignored. Every other line of the card in that box is the collector's own
  * detail and is never touched here (the client shows it beside the number).
  *
- *   - Raise by n: n raw copies acquired today (the caller's today, else the
+ *   - Raise by n: n raw copies in the default condition, acquired today (the caller's today, else the
  *     server's UTC date), not placed in a row, folding into today's plain
  *     unplaced line when there is one (the fold rule, `foldsInto`).
  *   - Lower by n: taken off the plain lines newest first (`newerLine`); a
@@ -50,6 +51,7 @@ import {
   changeOf,
   checkSlot,
   counted,
+  defaultConditionOf,
   foldsInto,
   detailsOf,
   isIsoDate,
@@ -60,6 +62,7 @@ import {
   sideOfContainer,
   MAX_CONTAINERS,
   MAX_SYSTEM_CONTAINERS,
+  type Condition,
   type CountChange,
   type StoredDetails,
 } from "./collection";
@@ -150,15 +153,17 @@ export const inventoryCardValidator = v.object({
 // ───────────────────────────────────────────────────────────────────────────
 
 /**
- * A plain line: what a quick count counts and changes. Raw, ungraded, no
- * serial, no cost, no location, no notes, not up for trade; its slot and
- * acquired date do not matter.
+ * A plain line: what a quick count counts and changes. Raw in the
+ * collector's default condition (or with none, from before NEO-380),
+ * ungraded, no serial, no cost, no location, no notes, not up for trade; its
+ * slot and acquired date do not matter.
  */
 export function isPlainLine(
   row: Pick<CopyRow, "condition" | "grading" | "serialNumber" | "costCents" | "location" | "notes" | "upForTrade">,
+  defaultCondition: Condition,
 ): boolean {
   return (
-    row.condition === undefined &&
+    (row.condition === undefined || row.condition === defaultCondition) &&
     row.grading === undefined &&
     row.serialNumber === undefined &&
     row.costCents === undefined &&
@@ -206,8 +211,12 @@ async function linesOfCard(
 }
 
 /** The card's plain lines in `boxId` and their copies. */
-function plainIn(lines: ReadonlyArray<CopyRow>, boxId: Id<"collectionContainers">): { rows: CopyRow[]; copies: number } {
-  const rows = lines.filter((row) => row.homeId === boxId && isPlainLine(row));
+function plainIn(
+  lines: ReadonlyArray<CopyRow>,
+  boxId: Id<"collectionContainers">,
+  defaultCondition: Condition,
+): { rows: CopyRow[]; copies: number } {
+  const rows = lines.filter((row) => row.homeId === boxId && isPlainLine(row, defaultCondition));
   let copies = 0;
   for (const row of rows) copies += row.quantity;
   return { rows, copies };
@@ -219,7 +228,8 @@ const CHANGED_SINCE =
 type Place = { variantId: Id<"selectorOptions">; setId: Id<"selectorOptions"> };
 
 /**
- * Put `quantity` plain copies of the card in the box with these details:
+ * Put `quantity` plain copies of the card in the box with these details, in
+ * the collector's default condition:
  * folded into the identical line when there is one (and it has room), else
  * a new line. Returns the step that undoes it, the row change, and the line
  * as it now stands (the folded line patched, or the inserted one), so a
@@ -234,11 +244,13 @@ async function putPlain(
   box: ContainerRow,
   lines: ReadonlyArray<CopyRow>,
   details: { quantity: number; acquiredOn?: string; slot?: number },
+  defaultCondition: Condition,
   now: number,
   place: () => Promise<Place> = () => placeOf(ctx, cardId),
 ): Promise<{ undo: Step; change: CountChange; row: CopyRow }> {
   const next: StoredDetails = {
     quantity: details.quantity,
+    condition: defaultCondition,
     ...(details.acquiredOn ? { acquiredOn: details.acquiredOn } : {}),
     homeId: box._id,
     ...(details.slot !== undefined ? { slot: details.slot } : {}),
@@ -299,7 +311,8 @@ export const setBoxQuantity = mutation({
       refuse(COLLECTION_ERRORS.invalid, "That acquired date isn't a real date.");
     }
     const lines = await linesOfCard(ctx, ownerId, args.cardId);
-    const plain = plainIn(lines, box._id);
+    const defaultCondition = await defaultConditionOf(ctx, ownerId);
+    const plain = plainIn(lines, box._id, defaultCondition);
     const before = plain.copies;
     const result = (steps: Step[], after: number): QuantityResult => ({
       before,
@@ -319,6 +332,7 @@ export const setBoxQuantity = mutation({
         box,
         lines,
         { quantity: args.quantity - before, acquiredOn },
+        defaultCondition,
         now,
       );
       undo.push(put.undo);
@@ -386,7 +400,8 @@ export const undoBoxQuantity = mutation({
     };
     let place: Promise<Place> | undefined;
     const placeOnce = () => (place ??= placeOf(ctx, cardId));
-    const before = plainIn(lines, box._id).copies;
+    const defaultCondition = await defaultConditionOf(ctx, ownerId);
+    const before = plainIn(lines, box._id, defaultCondition).copies;
     const now = Date.now();
     const redo: Step[] = [];
     const changes: CountChange[] = [];
@@ -400,7 +415,7 @@ export const undoBoxQuantity = mutation({
           refuse(COLLECTION_ERRORS.invalid, CHANGED_SINCE);
         }
         checkSlot(box, step.slot);
-        const put = await putPlain(ctx, ownerId, cardId, box, lines, step, now, placeOnce);
+        const put = await putPlain(ctx, ownerId, cardId, box, lines, step, defaultCondition, now, placeOnce);
         keep(put.row);
         redo.push(put.undo);
         changes.push(put.change);
@@ -412,7 +427,7 @@ export const undoBoxQuantity = mutation({
         row.ownerId !== ownerId ||
         row.cardId !== cardId ||
         row.homeId !== box._id ||
-        !isPlainLine(row)
+        !isPlainLine(row, defaultCondition)
       ) {
         refuse(COLLECTION_ERRORS.invalid, CHANGED_SINCE);
       }
@@ -437,7 +452,7 @@ export const undoBoxQuantity = mutation({
       }
     }
     await applyCopyChanges(ctx, ownerId, changes);
-    const after = plainIn(lines, box._id).copies;
+    const after = plainIn(lines, box._id, defaultCondition).copies;
     return { before, after, inverse: { cardId, boxId: box._id, steps: redo.reverse() } };
   },
 });

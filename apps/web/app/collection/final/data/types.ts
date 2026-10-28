@@ -290,6 +290,12 @@ export interface DrillItem {
 // ---------------------------------------------------------------------------
 
 export type Condition = "Mint" | "Near Mint" | "Excellent" | "Very Good" | "Good" | "Poor";
+/**
+ * NEO-380: the condition a raw copy gets when the collector names none, until
+ * they pick their own (Profile → Settings). Keep in step with
+ * `DEFAULT_CONDITION` in `convex/collection.ts`.
+ */
+export const DEFAULT_CONDITION: Condition = "Excellent";
 export type Grader = "PSA" | "BGS" | "SGC" | "CGC" | "TAG";
 
 export interface Grading {
