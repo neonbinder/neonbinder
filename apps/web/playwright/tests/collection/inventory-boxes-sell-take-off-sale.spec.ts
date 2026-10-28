@@ -159,21 +159,21 @@ test(
     const addForm = drawer.getByRole("form", { name: "Add a copy", exact: true });
     await addForm.getByRole("spinbutton", { name: "Quantity" }).fill("3");
     await addForm.getByRole("button", { name: "Add to collection" }).click();
-    await expect(drawer.getByRole("status").filter({ hasText: `Added ${one.short}, Raw ×3` })).toBeVisible();
+    await expect(drawer.getByRole("status").filter({ hasText: `Added ${one.short}, Raw, Excellent ×3` })).toBeVisible();
 
-    /** One "Your copies" line, found by what it says ("Raw ×3"). */
+    /** One "Your copies" line, found by what it says ("Raw, Excellent ×3"). */
     const line = (what: string) =>
       yourCopies.getByRole("listitem").filter({ has: page.getByText(what, { exact: true }) });
     const lines = (n: number) =>
       yourCopies.getByRole("heading", { name: `Your copies (${n} ${n === 1 ? "line" : "lines"})`, exact: true });
     await expect(lines(1)).toBeVisible();
-    await expect(line("Raw ×3").getByText("Main")).toBeVisible();
+    await expect(line("Raw, Excellent ×3").getByText("Main")).toBeVisible();
     // The drawer's headline splits what is kept from what is for sale.
     await expect(drawer.getByText(/^3 in binders\.?$/)).toBeVisible();
 
     // --- Sell two of them into the box ----------------------------------------
-    await yourCopies.getByRole("button", { name: `Sell ${one.short}, Raw ×3`, exact: true }).click();
-    const sellForm = yourCopies.getByRole("form", { name: "Sell Raw ×3", exact: true });
+    await yourCopies.getByRole("button", { name: `Sell ${one.short}, Raw, Excellent ×3`, exact: true }).click();
+    const sellForm = yourCopies.getByRole("form", { name: "Sell Raw, Excellent ×3", exact: true });
     const into = sellForm.getByRole("combobox", { name: "Into which box" });
     await expect(into).toBeVisible();
     // Unsorted is always there to sell into; so is the box just made. Binders are not boxes.
@@ -190,8 +190,8 @@ test(
     ).toBeVisible();
     await expect(lines(2)).toBeVisible();
     await expect(drawer.getByText(/^1 in binders · 2 for sale\.?$/)).toBeVisible();
-    await expect(line("Raw").getByText("Main")).toBeVisible();
-    await expect(line("Raw ×2").getByText(new RegExp(`For sale · ${escapeRegExp(boxName)}`))).toBeVisible();
+    await expect(line("Raw, Excellent").getByText("Main")).toBeVisible();
+    await expect(line("Raw, Excellent ×2").getByText(new RegExp(`For sale · ${escapeRegExp(boxName)}`))).toBeVisible();
     await expectAccessible(page, { within: drawer, label: "Card drawer, a stack split between Main and a box" });
     await drawer.getByRole("button", { name: "Close card detail" }).click();
     await expect(drawer).toBeHidden();
@@ -235,7 +235,7 @@ test(
     await cardInBox.click();
     await expect(drawer).toBeVisible();
     await expect(lines(2)).toBeVisible();
-    await yourCopies.getByRole("button", { name: `Take off sale, ${one.short}, Raw ×2`, exact: true }).click();
+    await yourCopies.getByRole("button", { name: `Take off sale, ${one.short}, Raw, Excellent ×2`, exact: true }).click();
     const offForm = yourCopies.getByRole("form", { name: /off sale/i });
     const back = offForm.getByRole("combobox", { name: "Back into" });
     await expect(back.getByRole("option", { name: "Main", exact: true })).toBeAttached();
@@ -254,8 +254,8 @@ test(
     ).toBeVisible();
     await expect(lines(2)).toBeVisible();
     await expect(drawer.getByText(/^2 in binders · 1 for sale\.?$/)).toBeVisible();
-    await expect(line("Raw ×2").getByText("Main")).toBeVisible();
-    await expect(line("Raw").getByText(new RegExp(`For sale · ${escapeRegExp(boxName)}`))).toBeVisible();
+    await expect(line("Raw, Excellent ×2").getByText("Main")).toBeVisible();
+    await expect(line("Raw, Excellent").getByText(new RegExp(`For sale · ${escapeRegExp(boxName)}`))).toBeVisible();
     await expectAccessible(page, { within: drawer, label: "Card drawer, one copy back in Main and one still for sale" });
     // The drawer rode on the URL: closing it is a Back step onto the open box.
     await drawer.getByRole("button", { name: "Close card detail" }).click();
@@ -316,9 +316,9 @@ test(
     const where = drawer.getByRole("combobox", { name: "Where it lives" });
     await expect(where.getByRole("option", { name: "Unsorted (box, for sale)", exact: true })).toBeAttached();
     await expect(where.getByRole("option", { name: "Main", exact: true })).toHaveCount(0);
-    await yourCopies.getByRole("button", { name: `Remove ${one.short}, Raw`, exact: true }).click();
+    await yourCopies.getByRole("button", { name: `Remove ${one.short}, Raw, Excellent`, exact: true }).click();
     await expect(lines(1)).toBeVisible();
-    await yourCopies.getByRole("button", { name: `Remove ${one.short}, Raw ×2`, exact: true }).click();
+    await yourCopies.getByRole("button", { name: `Remove ${one.short}, Raw, Excellent ×2`, exact: true }).click();
     await expect(yourCopies.getByText("None yet. Fill in what you know below and add it.")).toBeVisible();
     await drawer.getByRole("button", { name: "Close card detail" }).click();
     await expect(drawer).toBeHidden();

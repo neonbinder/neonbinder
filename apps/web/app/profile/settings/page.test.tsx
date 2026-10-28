@@ -29,6 +29,9 @@ vi.mock("convex/react", () => ({
   useQuery: () => undefined,
 }));
 
+// The Collection section (NEO-380) has its own test.
+vi.mock("./DefaultConditionSection", () => ({ default: () => null }));
+
 vi.mock("@/src/theme/ThemeProvider", () => ({
   useTheme: () => theme,
 }));

@@ -222,9 +222,9 @@ test(
     await where.selectOption({ label: binderA });
     await addForm.getByRole("spinbutton", { name: "Quantity" }).fill("3");
     await addForm.getByRole("button", { name: "Add to collection" }).click();
-    await expect(drawer.getByRole("status").filter({ hasText: `Added ${one.short}, Raw ×3` })).toBeVisible();
+    await expect(drawer.getByRole("status").filter({ hasText: `Added ${one.short}, Raw, Excellent ×3` })).toBeVisible();
 
-    /** One "Your copies" line, found by what it says ("Raw ×3"). */
+    /** One "Your copies" line, found by what it says ("Raw, Excellent ×3"). */
     const line = (what: string) =>
       yourCopies.getByRole("listitem").filter({ has: page.getByText(what, { exact: true }) });
     const lines = (n: number) =>
@@ -259,27 +259,27 @@ test(
     };
 
     await expect(lines(1)).toBeVisible();
-    await expect(line("Raw ×3").getByText(binderA)).toBeVisible();
+    await expect(line("Raw, Excellent ×3").getByText(binderA)).toBeVisible();
     // A binder line can be SOLD (the one way across to a box) and is never "taken off
     // sale": it is not for sale. (inventory-boxes-sell-take-off-sale follows the sale.)
-    await expect(yourCopies.getByRole("button", { name: `Sell ${one.short}, Raw ×3`, exact: true })).toBeVisible();
+    await expect(yourCopies.getByRole("button", { name: `Sell ${one.short}, Raw, Excellent ×3`, exact: true })).toBeVisible();
     await expect(yourCopies.getByRole("button", { name: /^Take off sale, / })).toHaveCount(0);
 
     // --- Move two into the second binder: a split into two lines -----------
-    await moveLine("Raw ×3", binderB, 2, 2, "Card drawer, the Move panel with a binder picked");
+    await moveLine("Raw, Excellent ×3", binderB, 2, 2, "Card drawer, the Move panel with a binder picked");
     await expect(
       drawer.getByRole("status").filter({ hasText: `Moved 2 of ${one.short} to ${binderB}.` }),
     ).toBeVisible();
     await expect(lines(2)).toBeVisible();
-    await expect(line("Raw").getByText(binderA)).toBeVisible();
-    await expect(line("Raw ×2").getByText(binderB)).toBeVisible();
+    await expect(line("Raw, Excellent").getByText(binderA)).toBeVisible();
+    await expect(line("Raw, Excellent ×2").getByText(binderB)).toBeVisible();
     await expect(yourCopies.getByText("For sale")).toHaveCount(0);
     await expectAccessible(page, { within: drawer, label: "Card drawer, a stack split between two binders" });
 
     // --- Up for trade: a flag on the copy in the first binder ---------------
-    await setTrade("Raw", true);
-    await expect(upForTrade("Raw")).toBeVisible();
-    await expect(upForTrade("Raw ×2")).toHaveCount(0);
+    await setTrade("Raw, Excellent", true);
+    await expect(upForTrade("Raw, Excellent")).toBeVisible();
+    await expect(upForTrade("Raw, Excellent ×2")).toHaveCount(0);
     await drawer.getByRole("button", { name: "Close card detail" }).click();
     await expect(drawer).toBeHidden();
 
@@ -335,10 +335,10 @@ test(
     await expectAccessible(page, { label: "Up for Trade, a card on the pile" });
     await tradeCard.click();
     await expect(lines(2)).toBeVisible();
-    await expect(line("Raw").getByText(binderA)).toBeVisible();
-    await expect(upForTrade("Raw")).toBeVisible();
-    await setTrade("Raw", false);
-    await expect(upForTrade("Raw")).toHaveCount(0);
+    await expect(line("Raw, Excellent").getByText(binderA)).toBeVisible();
+    await expect(upForTrade("Raw, Excellent")).toBeVisible();
+    await setTrade("Raw, Excellent", false);
+    await expect(upForTrade("Raw, Excellent")).toHaveCount(0);
     await drawer.getByRole("button", { name: "Close card detail" }).click();
     await expect(drawer).toBeHidden();
     await expect(heading("Up for Trade")).toBeVisible();
@@ -389,26 +389,26 @@ test(
     await toChecklists();
     await drillToCollectorBase(page);
     await lookThroughEverything();
-    await checklist.getByRole("button", { name: `Details for ${one.short}, Raw ×2`, exact: true }).click();
+    await checklist.getByRole("button", { name: `Details for ${one.short}, Raw, Excellent ×2`, exact: true }).click();
     await expect(lines(2)).toBeVisible();
-    await moveLine("Raw ×2", binderA, 2);
+    await moveLine("Raw, Excellent ×2", binderA, 2);
     await expect(
       drawer.getByRole("status").filter({
         hasText: `Moved ${one.short} to ${binderA}, stacked with the ones already there.`,
       }),
     ).toBeVisible();
     await expect(lines(1)).toBeVisible();
-    await expect(line("Raw ×3").getByText(binderA)).toBeVisible();
+    await expect(line("Raw, Excellent ×3").getByText(binderA)).toBeVisible();
 
     await drawer.getByRole("button", { name: "Undo", exact: true }).click();
     await expect(drawer.getByRole("status").filter({ hasText: "Undone." })).toBeVisible();
     await expect(lines(2)).toBeVisible();
-    await expect(line("Raw").getByText(binderA)).toBeVisible();
-    await expect(line("Raw ×2").getByText(binderB)).toBeVisible();
+    await expect(line("Raw, Excellent").getByText(binderA)).toBeVisible();
+    await expect(line("Raw, Excellent ×2").getByText(binderB)).toBeVisible();
 
-    await moveLine("Raw ×2", binderA, 2);
+    await moveLine("Raw, Excellent ×2", binderA, 2);
     await expect(lines(1)).toBeVisible();
-    await expect(line("Raw ×3").getByText(binderA)).toBeVisible();
+    await expect(line("Raw, Excellent ×3").getByText(binderA)).toBeVisible();
     // The drawer was pushed from Checklists, so closing it is a Back step there.
     await drawer.getByRole("button", { name: "Close card detail" }).click();
     await expect(drawer).toBeHidden();
@@ -552,8 +552,8 @@ test(
     await lookThroughEverything();
     await checklist.getByRole("button", { name: `Details for ${one.short}`, exact: true }).click();
     await expect(lines(1)).toBeVisible();
-    await expect(line("Raw ×3").getByText("Main")).toBeVisible();
-    await yourCopies.getByRole("button", { name: `Remove ${one.short}, Raw ×3`, exact: true }).click();
+    await expect(line("Raw, Excellent ×3").getByText("Main")).toBeVisible();
+    await yourCopies.getByRole("button", { name: `Remove ${one.short}, Raw, Excellent ×3`, exact: true }).click();
     await expect(yourCopies.getByText("None yet. Fill in what you know below and add it.")).toBeVisible();
     await drawer.getByRole("button", { name: "Close card detail" }).click();
     await expect(drawer).toBeHidden();

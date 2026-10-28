@@ -1552,10 +1552,22 @@ describe("the Inventory list and quick counts (NEO-364)", () => {
     });
 
     it("a raise folds into today's plain line instead of drawing another", async () => {
-      seed([row("a", UNSORTED, { quantity: 1, acquiredOn: "2026-10-25" })]);
+      // NEO-380: a quick count writes the default condition, so today's line holds it.
+      seed([row("a", UNSORTED, { quantity: 1, condition: "Excellent", acquiredOn: "2026-10-25" })]);
       applyBoxQuantity(await store(), "k1", UNSORTED, 4, "2026-10-25", PLACE, draw);
       expect(copiesOf().map((r) => [r._id, r.quantity])).toEqual([["a", 4]]);
       expect(drawn).toBe(0);
+    });
+
+    it("a raise draws in the collector's default condition; a line with none (before NEO-380) counts but is not folded into", async () => {
+      local.set("userProfile:getDefaultCondition", {}, "Near Mint");
+      seed([row("legacy", UNSORTED, { quantity: 1, acquiredOn: "2026-10-25" }), row("ex", UNSORTED, { quantity: 1, condition: "Excellent" })]);
+      applyBoxQuantity(await store(), "k1", UNSORTED, 3, "2026-10-25", PLACE, draw);
+      expect(copiesOf().map((r) => [r._id, r.quantity, r.condition]).sort()).toEqual([
+        ["drawn1", 2, "Near Mint"],
+        ["ex", 1, "Excellent"],
+        ["legacy", 1, undefined],
+      ]);
     });
 
     it("a raise past an older line draws a new line for the difference", async () => {
@@ -1610,7 +1622,7 @@ describe("the Inventory list and quick counts (NEO-364)", () => {
       });
 
       it("a restore step folds into an identical line, else draws the line at its step", async () => {
-        seed([row("a", UNSORTED, { quantity: 1, acquiredOn: "2026-10-01" })]);
+        seed([row("a", UNSORTED, { quantity: 1, condition: "Excellent", acquiredOn: "2026-10-01" })]);
         applyBoxSteps(
           await store(),
           inverse([{ op: "restore", quantity: 2, acquiredOn: "2026-10-01" }, { op: "restore", quantity: 1, acquiredOn: "2026-02-02" }]),
@@ -1645,6 +1657,12 @@ describe("the Inventory list and quick counts (NEO-364)", () => {
         ]) {
           expect(isPlainRow(row("a", UNSORTED, over) as never), JSON.stringify(over)).toBe(false);
         }
+      });
+
+      it("NEO-380: a line in the default condition is plain, another condition is not", () => {
+        expect(isPlainRow(row("a", UNSORTED, { condition: "Excellent" }) as never)).toBe(true);
+        expect(isPlainRow(row("a", UNSORTED, { condition: "Good" }) as never, "Good")).toBe(true);
+        expect(isPlainRow(row("a", UNSORTED, { condition: "Excellent" }) as never, "Good")).toBe(false);
       });
     });
 

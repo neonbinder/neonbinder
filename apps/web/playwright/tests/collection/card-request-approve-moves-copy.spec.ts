@@ -116,7 +116,7 @@ test(
     await drill("Insert", "Base");
     // A hand-added card has no linked player, so the checklist reads its number.
     const short = `#${number}`;
-    await expect(checklist.getByRole("button", { name: `Have ${short}, Raw`, exact: true, pressed: true })).toBeVisible();
+    await expect(checklist.getByRole("button", { name: `Have ${short}, Raw, Excellent`, exact: true, pressed: true })).toBeVisible();
 
     await page.getByRole("button", { name: "My requests", exact: true }).click();
     await expect(dialog.getByRole("tab", { name: "My requests", selected: true })).toBeVisible();
@@ -131,8 +131,8 @@ test(
     await checklist.getByRole("button", { name: `Details for ${short}`, exact: true }).click();
     const drawer = page.getByRole("dialog", { name: new RegExp(`^2024 ${escapeRe(setName)}.*#${escapeRe(number)}`) });
     const yourCopies = drawer.getByRole("region", { name: `Your copies of ${short}` });
-    await yourCopies.getByRole("button", { name: `Remove ${short}, Raw`, exact: true }).click();
-    await expect(drawer.getByRole("status").filter({ hasText: `Removed ${short}, Raw` })).toBeVisible();
+    await yourCopies.getByRole("button", { name: `Remove ${short}, Raw, Excellent`, exact: true }).click();
+    await expect(drawer.getByRole("status").filter({ hasText: `Removed ${short}, Raw, Excellent` })).toBeVisible();
     await expect(yourCopies.getByText("None yet. Fill in what you know below and add it.")).toBeVisible();
   },
 );
