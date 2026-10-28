@@ -261,6 +261,7 @@ function makeStore({
       id === null ? undefined : L({ copies: id === "main" ? [COPY_OHTANI, COPY_GOLD] : [], truncated: false }),
     useTradeCopies: () => L({ copies: [], truncated: false }),
     useWants: () => L(wants),
+    useDefaultCondition: () => "Excellent",
     useCopiesOfCards: (ids) =>
       ids === null
         ? undefined
@@ -817,10 +818,15 @@ describe("the card drawer on the real collection", () => {
     expect(within(drawer).getByRole("img", { name: `${cardLabel(JUDGE)}, need` })).toBeTruthy();
     expect(within(drawer).queryByRole("switch", { name: "For sale" })).toBeNull();
     expect(within(drawer).queryByRole("group", { name: "Binders" })).toBeNull();
+    // NEO-380: a raw copy always has a condition; the form starts on the default and offers no "Not set".
+    const condition = within(drawer).getByRole("combobox", { name: "Condition" }) as HTMLSelectElement;
+    expect(condition.value).toBe("Excellent");
+    expect(Array.from(condition.options).map((o) => o.textContent)).not.toContain("Not set");
     fireEvent.click(within(drawer).getByRole("button", { name: "Add to collection" }));
     expect(actions.addLineItem).toHaveBeenCalledTimes(1);
     const [, details] = actions.addLineItem.mock.calls[0] as unknown as [Card, Copy & { homeId?: string }];
     expect(details.quantity).toBe(1);
+    expect(details.condition).toBe("Excellent");
     expect(details.acquiredAt).toMatch(/^\d{4}-\d{2}-\d{2}$/);
     expect(details).not.toHaveProperty("demo");
     expect(details.homeId).toBe("main");
@@ -834,6 +840,8 @@ describe("the card drawer on the real collection", () => {
     fireEvent.click(within(drawer).getByRole("button", { name: "Edit #1 Shohei Ohtani, Raw" }));
     fireEvent.click(within(drawer).getByRole("button", { name: "Save copy" }));
     expect(actions.updateCopy).toHaveBeenCalledTimes(1);
+    // A copy stored with no condition saves in the default (NEO-380).
+    expect((actions.updateCopy.mock.calls[0] as unknown as [Copy, Partial<Copy>])[1].condition).toBe("Excellent");
     await act(async () => {});
     fireEvent.click(within(drawer).getByRole("button", { name: "Remove #1 Shohei Ohtani, Raw" }));
     expect(actions.removeCopy).toHaveBeenCalledWith(COPY_OHTANI);

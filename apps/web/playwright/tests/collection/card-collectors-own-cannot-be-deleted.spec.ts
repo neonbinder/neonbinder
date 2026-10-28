@@ -126,7 +126,7 @@ test(
     // All is a view (NEO-374): Have files into a picked binder.
     await checklist.getByRole("combobox", { name: "Binder" }).selectOption({ label: "Main" });
     await haveOff.click();
-    await expect(checklist.getByRole("button", { name: `Have ${short}, Raw`, exact: true, pressed: true })).toBeVisible();
+    await expect(checklist.getByRole("button", { name: `Have ${short}, Raw, Excellent`, exact: true, pressed: true })).toBeVisible();
     // The toggle flips optimistically; the notice is the server's answer. The
     // set builder is only opened once the copy is really stored.
     await expect(page.getByRole("status").filter({ hasText: `Added ${short} to Main` })).toBeVisible();
@@ -160,10 +160,10 @@ test(
     await checklist.getByRole("button", { name: `Details for ${short}`, exact: true }).click();
     const drawer = page.getByRole("dialog", { name: new RegExp(`^2024 ${escapeRe(setName)}.*#${escapeRe(number)}`) });
     const yourCopies = drawer.getByRole("region", { name: `Your copies of ${short}` });
-    await yourCopies.getByRole("button", { name: `Remove ${short}, Raw`, exact: true }).click();
+    await yourCopies.getByRole("button", { name: `Remove ${short}, Raw, Excellent`, exact: true }).click();
     // The list empties optimistically; "Removed ..." is the server's answer. The
     // card can only be deleted once that write has landed, so wait for it.
-    await expect(drawer.getByRole("status").filter({ hasText: `Removed ${short}, Raw` })).toBeVisible();
+    await expect(drawer.getByRole("status").filter({ hasText: `Removed ${short}, Raw, Excellent` })).toBeVisible();
     await expect(yourCopies.getByText("None yet. Fill in what you know below and add it.")).toBeVisible();
     await drawer.getByRole("button", { name: "Close card detail" }).click();
     await expect(drawer).toBeHidden();

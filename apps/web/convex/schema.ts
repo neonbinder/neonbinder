@@ -1014,6 +1014,10 @@ export default defineSchema({
       // back through the shelf, so a binder deleted since reads as All.
       binderOpen: v.optional(binderOpenPreferenceValidator),
       lastBinder: v.optional(v.id("collectionContainers")),
+      // NEO-380: the condition a raw copy gets when the collector names none
+      // (Profile → Settings). Absent means `DEFAULT_CONDITION` (Excellent,
+      // `convex/collection.ts`); no backfill of the setting itself.
+      defaultCondition: v.optional(collectionCopyConditionValidator),
     })),
     // NEO-118: the seller's own address, printed in the FROM block of a 4x6
     // shipping label. Lives here rather than in `publicProfiles` because a home

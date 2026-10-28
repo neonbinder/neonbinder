@@ -2,13 +2,15 @@ import { useId, useLayoutEffect, useRef, useState } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import ModeRadioGroup from "@/components/primitives/ModeRadioGroup";
+import DefaultConditionSection from "./DefaultConditionSection";
 import { useDocumentTitle } from "@/src/hooks/useDocumentTitle";
 import { useTheme } from "@/src/theme/ThemeProvider";
 import type { ThemePreference } from "@/src/theme/theme-mode";
 
 /**
  * Settings — NEO-356. The collector's own app preferences: Appearance (the
- * theme), then Binders (where My Collection opens, NEO-374).
+ * theme), then Collection (the default card condition, NEO-380,
+ * `DefaultConditionSection`), then Binders (where My Collection opens, NEO-374).
  *
  * A pick applies at once and is then saved to the profile, so it follows the
  * collector to every device:
@@ -25,7 +27,7 @@ import type { ThemePreference } from "@/src/theme/theme-mode";
  * System follows the OS live: the provider listens to `prefers-color-scheme`,
  * and the readout below names the mode the device is giving us right now.
  *
- * No entry in profile-layout's useWarmProfileQueries: the panel reads the
+ * Appearance needs no entry in profile-layout's useWarmProfileQueries: it reads the
  * provider, not a query of its own (ProfileThemeSync holds getThemePreference
  * on every signed-in page, so it is always warm).
  */
@@ -35,9 +37,17 @@ const THEME_OPTIONS: ReadonlyArray<{
   label: string;
   description: string;
 }> = [
-  { value: "light", label: "Light", description: "Bright as a brand-new Trapper Keeper" },
+  {
+    value: "light",
+    label: "Light",
+    description: "Bright as a brand-new Trapper Keeper",
+  },
   { value: "dark", label: "Dark", description: "Lights down, neon up" },
-  { value: "system", label: "System", description: "Matches your device, day or night" },
+  {
+    value: "system",
+    label: "System",
+    description: "Matches your device, day or night",
+  },
 ];
 
 type SaveState = "idle" | "saving" | "saved" | "failed";
@@ -55,7 +65,10 @@ export default function SettingsPanel() {
   // no save was in flight, then each confirmed save (newest pick wins, in
   // case two settle out of order). A rollback goes here, never to a pick
   // that was only ever optimistic.
-  const confirmed = useRef<{ pick: number; value: ThemePreference }>({ pick: 0, value: preference });
+  const confirmed = useRef<{ pick: number; value: ThemePreference }>({
+    pick: 0,
+    value: preference,
+  });
   const inFlight = useRef(0);
   // Where focus goes after a rollback: the restored option, once it renders.
   const groupRef = useRef<HTMLDivElement>(null);
@@ -68,20 +81,24 @@ export default function SettingsPanel() {
     // Only when focus is still in the group (the collector is arrowing or
     // just clicked); never pull it back from somewhere they have moved on to.
     if (!group || !group.contains(document.activeElement)) return;
-    group.querySelector<HTMLElement>('[role="radio"][aria-checked="true"]')?.focus();
+    group
+      .querySelector<HTMLElement>('[role="radio"][aria-checked="true"]')
+      ?.focus();
   }, [rollbacks]);
 
   const choose = async (next: ThemePreference) => {
     if (next === preference) return;
     const pick = ++latestPick.current;
-    if (inFlight.current === 0) confirmed.current = { pick: 0, value: preference };
+    if (inFlight.current === 0)
+      confirmed.current = { pick: 0, value: preference };
     inFlight.current += 1;
     setPreference(next);
     setProfilePreference(next);
     setSaveState("saving");
     try {
       await saveTheme({ theme: next });
-      if (pick > confirmed.current.pick) confirmed.current = { pick, value: next };
+      if (pick > confirmed.current.pick)
+        confirmed.current = { pick, value: next };
       if (pick === latestPick.current) setSaveState("saved");
     } catch {
       if (pick !== latestPick.current) return;
@@ -143,6 +160,7 @@ export default function SettingsPanel() {
             "That didn't save, so your old theme is back. Give it another try."}
         </p>
       </section>
+      <DefaultConditionSection />
       <BinderOpenSection />
     </div>
   );

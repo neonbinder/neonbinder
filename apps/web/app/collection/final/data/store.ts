@@ -98,6 +98,7 @@ import type {
   Capabilities,
   Card,
   CardId,
+  Condition,
   CardTeam,
   CollectionSummary,
   Completion,
@@ -137,7 +138,7 @@ import type {
   Want,
   WantResult,
 } from "./types";
-import { isHome } from "./types";
+import { DEFAULT_CONDITION, isHome } from "./types";
 
 export type * from "./types";
 
@@ -240,6 +241,12 @@ export interface CollectionData {
   useTradeCopies(options?: PageOptions): ContainerCopies | undefined;
   /** The Want List: every want (at most `MAX_WANTS`). */
   useWants(): Want[] | undefined;
+  /**
+   * NEO-380: the condition a raw copy gets when none is named (Profile →
+   * Settings), `DEFAULT_CONDITION` until the collector picks one or while it
+   * loads. The demo has no settings: always `DEFAULT_CONDITION`.
+   */
+  useDefaultCondition(): Condition;
   /**
    * The collector's copies of each card asked for (the hunt tray), keyed by
    * card id; a card held nowhere maps to `[]`. Every home, boxes too: a
@@ -646,6 +653,9 @@ export function useTradeCopies(options?: PageOptions): ContainerCopies | undefin
 export function useWants(): Want[] | undefined {
   return useCollectionStore().data.useWants();
 }
+export function useDefaultCondition(): Condition {
+  return useCollectionStore().data.useDefaultCondition();
+}
 export function useCopiesOfCards(cardIds: readonly CardId[] | null): Record<CardId, Copy[]> | undefined {
   return useCollectionStore().data.useCopiesOfCards(cardIds);
 }
@@ -915,7 +925,7 @@ export function todayIso(): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
-/** Blank details for a new copy: one raw card, acquired today. */
-export function emptyCopyDetails(): CopyDetails {
-  return { quantity: 1, acquiredAt: todayIso(), notes: "" };
+/** Blank details for a new copy: one raw card in the default condition (NEO-380), acquired today. */
+export function emptyCopyDetails(condition: Condition = DEFAULT_CONDITION): CopyDetails {
+  return { quantity: 1, condition, acquiredAt: todayIso(), notes: "" };
 }

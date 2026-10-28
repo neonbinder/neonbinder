@@ -132,7 +132,7 @@ test(
 
     const detailsButton = checklist.getByRole("button", { name: `Details for ${short}`, exact: true });
     const haveOff = checklist.getByRole("button", { name: `Have ${short}`, exact: true, pressed: false });
-    const haveOn = checklist.getByRole("button", { name: `Have ${short}, Raw`, exact: true, pressed: true });
+    const haveOn = checklist.getByRole("button", { name: `Have ${short}, Raw, Excellent`, exact: true, pressed: true });
     await expect(haveOff).toBeVisible();
     await expectAccessible(page, { label: "Checklists, Base checklist loaded" });
 
@@ -203,7 +203,7 @@ test(
     await searchBox.fill([...words].reverse().join(" "));
     const termsRow = await showCardRow(quick);
     // The hit shows the copy the collector holds.
-    await expect(termsRow.getByRole("button", { name: /^Have .*, Raw$/, pressed: true })).toBeVisible();
+    await expect(termsRow.getByRole("button", { name: /^Have .*, Raw, Excellent$/, pressed: true })).toBeVisible();
 
     // A quoted phrase is that exact string.
     await searchBox.fill(`"${player}"`);
@@ -320,16 +320,16 @@ test(
     const editForm = drawer.getByRole("form", { name: "Edit Raw, Near Mint ×2" });
     await expect(editForm).toBeVisible();
     await expectAccessible(page, { within: drawer, label: "Card drawer, edit form open" });
-    await editForm.getByRole("combobox", { name: "Condition" }).selectOption("Excellent");
+    await editForm.getByRole("combobox", { name: "Condition" }).selectOption("Very Good");
     await editForm.getByRole("button", { name: "Save copy" }).click();
-    await expect(drawer.getByRole("status").filter({ hasText: `Saved ${short}, Raw, Excellent ×2` })).toBeVisible();
+    await expect(drawer.getByRole("status").filter({ hasText: `Saved ${short}, Raw, Very Good ×2` })).toBeVisible();
     await expect(editForm).toBeHidden();
-    await expect(yourCopies.getByText("Raw, Excellent ×2")).toBeVisible();
+    await expect(yourCopies.getByText("Raw, Very Good ×2")).toBeVisible();
 
     // Remove every copy: the card needs again.
-    await yourCopies.getByRole("button", { name: `Remove ${short}, Raw, Excellent ×2`, exact: true }).click();
+    await yourCopies.getByRole("button", { name: `Remove ${short}, Raw, Very Good ×2`, exact: true }).click();
     await expect(yourCopies.getByRole("heading", { name: "Your copies (1 line)" })).toBeVisible();
-    await yourCopies.getByRole("button", { name: `Remove ${short}, Raw`, exact: true }).click();
+    await yourCopies.getByRole("button", { name: `Remove ${short}, Raw, Excellent`, exact: true }).click();
     await expect(yourCopies.getByText("None yet. Fill in what you know below and add it.")).toBeVisible();
     await expect(drawer.getByText("Need it")).toBeVisible();
 
