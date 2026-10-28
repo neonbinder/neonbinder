@@ -6,7 +6,7 @@ import { Input } from "@/components/primitives/Input";
 import { QUIET_BUTTON, useLiverySurface } from "../../prototypes/p1/ui";
 import type { RowActions } from "../CardRows";
 import { cardLabel, playerNames, printRunLabel, setAndVariant, shortCardName, teamNames, teamTextColor } from "../data/labels";
-import { inventoryCopies, useCollectionActions, useCopiesOf, writeErrorMessage } from "../data/store";
+import { inventoryCopies, useCollectionActions, useCopiesOf, useDefaultCondition, writeErrorMessage } from "../data/store";
 import type { Card, Container, Copy, CopyId, QuantityResult } from "../data/types";
 import { usePageApi } from "../pageApi";
 import { FeatureBadges } from "./badges";
@@ -130,8 +130,9 @@ export default function QuantityRow({
   const othersId = useId();
 
   const lines = linesInBox(copies, box?.id);
-  const count = plainQuantity(lines);
-  const others = otherLines(lines);
+  const defaultCondition = useDefaultCondition();
+  const count = plainQuantity(lines, defaultCondition);
+  const others = otherLines(lines, defaultCondition);
   const ready = copies !== undefined && box !== undefined;
 
   /** What is typed and not yet settled, for the box it was typed for. */

@@ -69,6 +69,12 @@ export interface CopyDetailsFormProps {
   onUpForTradeChange?: (on: boolean) => void;
   /** NEO-359: leave out the binder ticks even when `binders` are passed. */
   hideBinders?: boolean;
+  /**
+   * NEO-380: a raw copy always has a condition. When given, a raw value with
+   * none shows and saves this one (the collector's default), and "Not set"
+   * is gone from the list.
+   */
+  defaultCondition?: Condition;
 }
 
 const CONDITIONS: Condition[] = [
@@ -112,11 +118,13 @@ export default function CopyDetailsForm({
   upForTrade,
   onUpForTradeChange,
   hideBinders = false,
+  defaultCondition,
 }: CopyDetailsFormProps) {
   const headingId = useId();
   const quantityHelpId = useId();
   const homeHelpId = useId();
   const set = (patch: Partial<CopyDetails>) => onChange({ ...value, ...patch });
+  const condition = value.graded ? undefined : (value.condition ?? defaultCondition);
 
   const run = card.printRun === null ? null : card.printRun === 1 ? "1/1" : `/${card.printRun}`;
   const label = "setId" in card ? cardLabel(card) : modelLabel(card);
@@ -138,7 +146,7 @@ export default function CopyDetailsForm({
   function submit(e: FormEvent) {
     e.preventDefault();
     if (!quantityValid) return;
-    onSave(value);
+    onSave(condition && !value.condition ? { ...value, condition } : value);
   }
 
   function onKeyDown(e: KeyboardEvent<HTMLFormElement>) {
@@ -264,12 +272,12 @@ export default function CopyDetailsForm({
             <span className={LABEL}>Condition</span>
             <select
               className={SELECT}
-              value={value.condition ?? ""}
+              value={condition ?? ""}
               onChange={(e) =>
                 set({ condition: (e.target.value || undefined) as Condition | undefined })
               }
             >
-              <option value="">Not set</option>
+              {!defaultCondition && <option value="">Not set</option>}
               {CONDITIONS.map((c) => (
                 <option key={c} value={c}>
                   {c}
