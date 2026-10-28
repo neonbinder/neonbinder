@@ -35,12 +35,11 @@ test(
 
     const row = ordinaryBaseRows(checklist).first();
     await expect(row).toBeVisible();
-    const { short } = await shortNameOf(row);
+    const { short, number } = await shortNameOf(row);
     await checklist.getByRole("button", { name: `Have ${short}`, exact: true, pressed: false }).click();
     await expect(checklist.getByRole("button", { name: `Have ${short}, Raw, Excellent`, exact: true, pressed: true })).toBeVisible();
 
     // --- A click on the row opens the drawer already editing its one line ----
-    const { number } = await shortNameOf(row);
     await checklist.getByText(`#${number}`, { exact: true }).click();
     const drawer = page.getByRole("dialog", { name: /^2024 Topps Chrome / });
     const yourCopies = drawer.getByRole("region", { name: `Your copies of ${short}` });
