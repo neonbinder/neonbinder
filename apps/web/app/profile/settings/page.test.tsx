@@ -6,14 +6,18 @@
  *   - a pick applies first (provider + localStorage mirror) and saves second;
  *   - a failed save puts the old theme back and says so;
  *   - System names the mode the device is giving right now.
+ * And Binders (NEO-374): where My Collection opens, saved to the profile.
  */
 
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { getFunctionName } from "convex/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ThemePreference } from "@/src/theme/theme-mode";
 
 const calls: string[] = [];
 const saveTheme = vi.fn();
+const saveBinderOpen = vi.fn();
+let binderPreference: { open: "all" | "last"; lastBinder: string | null } | undefined;
 const theme = {
   preference: "system" as ThemePreference,
   mode: "dark" as "light" | "dark",
@@ -25,8 +29,9 @@ const theme = {
 };
 
 vi.mock("convex/react", () => ({
-  useMutation: () => saveTheme,
-  useQuery: () => undefined,
+  useMutation: (ref: Parameters<typeof getFunctionName>[0]) =>
+    getFunctionName(ref) === "userProfile:setBinderOpenPreference" ? saveBinderOpen : saveTheme,
+  useQuery: () => binderPreference,
 }));
 
 vi.mock("@/src/theme/ThemeProvider", () => ({
@@ -36,6 +41,9 @@ vi.mock("@/src/theme/ThemeProvider", () => ({
 import SettingsPanel from "./page";
 
 const radio = (label: string) => screen.getByRole("radio", { name: label });
+const section = (name: string) => within(screen.getByRole("region", { name }));
+const appearance = () => section("Appearance");
+const binders = () => section("Binders");
 
 beforeEach(() => {
   calls.length = 0;
@@ -48,6 +56,8 @@ beforeEach(() => {
   theme.mode = "dark";
   theme.setPreference.mockClear();
   theme.setProfilePreference.mockClear();
+  saveBinderOpen.mockReset();
+  binderPreference = undefined;
 });
 
 describe("Settings → Appearance", () => {
@@ -73,7 +83,7 @@ describe("Settings → Appearance", () => {
       "setProfilePreference:light",
       "save:light",
     ]);
-    expect(screen.getByRole("status").textContent).toBe("Saved.");
+    expect(appearance().getByRole("status").textContent).toBe("Saved.");
   });
 
   it("puts the old theme back and says so when the save fails", async () => {
@@ -88,8 +98,8 @@ describe("Settings → Appearance", () => {
     expect(theme.setPreference.mock.calls.map((c) => c[0])).toEqual(["light", "dark"]);
     expect(theme.setProfilePreference.mock.calls.map((c) => c[0])).toEqual(["light", "dark"]);
     // An alert, not a polite status: a failed save is news the collector must hear.
-    expect(screen.getByRole("alert").textContent).toMatch(/didn't save/);
-    expect(screen.queryByRole("status")).toBeNull();
+    expect(appearance().getByRole("alert").textContent).toMatch(/didn't save/);
+    expect(appearance().queryByRole("status")).toBeNull();
   });
 
   it("moves focus back to the restored option when the save fails", async () => {
@@ -138,5 +148,45 @@ describe("Settings → Appearance", () => {
     theme.mode = "dark";
     rerender(<SettingsPanel />);
     expect(screen.queryByText(/Your device is on/)).toBeNull();
+  });
+});
+
+describe("Settings → Binders (NEO-374)", () => {
+  it("offers Open on All and Remember the last binder, on All by default", () => {
+    binderPreference = { open: "all", lastBinder: null };
+    render(<SettingsPanel />);
+    const group = binders().getByRole("radiogroup", { name: "When you open your collection" });
+    expect(within(group).getByRole("radio", { name: /Open on All/ }).getAttribute("aria-checked")).toBe("true");
+    expect(within(group).getByRole("radio", { name: /Remember the last binder/ }).getAttribute("aria-checked")).toBe(
+      "false",
+    );
+  });
+
+  it("waits for the saved choice before offering one", () => {
+    render(<SettingsPanel />);
+    expect(binders().queryByRole("radiogroup")).toBeNull();
+    expect(binders().getByText("Loading…")).toBeTruthy();
+  });
+
+  it("saves a pick and says so", async () => {
+    binderPreference = { open: "all", lastBinder: null };
+    saveBinderOpen.mockResolvedValue(null);
+    render(<SettingsPanel />);
+    await act(async () => {
+      fireEvent.click(binders().getByRole("radio", { name: /Remember the last binder/ }));
+    });
+    expect(saveBinderOpen).toHaveBeenCalledWith({ open: "last" });
+    expect(binders().getByRole("status").textContent).toBe("Saved.");
+  });
+
+  it("shows the saved choice again and says so when the save fails", async () => {
+    binderPreference = { open: "all", lastBinder: null };
+    saveBinderOpen.mockRejectedValue(new Error("offline"));
+    render(<SettingsPanel />);
+    await act(async () => {
+      fireEvent.click(binders().getByRole("radio", { name: /Remember the last binder/ }));
+    });
+    expect(binders().getByRole("alert").textContent).toMatch(/didn't save/);
+    expect(binders().getByRole("radio", { name: /Open on All/ }).getAttribute("aria-checked")).toBe("true");
   });
 });

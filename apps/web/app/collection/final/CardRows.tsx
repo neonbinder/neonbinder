@@ -15,9 +15,11 @@ import {
 import {
   collectionCopiesIn,
   isWantedIn,
+  PICK_A_BINDER,
   useCapabilities,
   useContainers,
   useCopiesOf,
+  useReadOnlyAll,
   useScope,
   useSide,
   useWants,
@@ -69,11 +71,14 @@ function HaveToggle({
   label,
   onToggle,
   busy = false,
+  locked = false,
 }: {
   pressed: boolean;
   label: string;
   onToggle: () => void;
   busy?: boolean;
+  /** NEO-374 — All is a view: an add is locked until a binder is picked. */
+  locked?: boolean;
 }) {
   return (
     <button
@@ -81,14 +86,19 @@ function HaveToggle({
       aria-pressed={pressed}
       aria-label={label}
       aria-busy={busy || undefined}
-      aria-disabled={busy || undefined}
+      aria-disabled={busy || locked || undefined}
+      title={locked ? PICK_A_BINDER : undefined}
       onClick={stop(() => {
-        if (!busy) onToggle();
+        if (!busy && !locked) onToggle();
       })}
-      className={`${SLOT_HAVE} inline-flex min-h-8 shrink-0 items-center justify-center gap-1.5 rounded-md border px-2 py-1 text-xs font-semibold transition-colors aria-disabled:cursor-wait aria-disabled:opacity-60 ${FOCUS} ${
+      className={`${SLOT_HAVE} inline-flex min-h-8 shrink-0 items-center justify-center gap-1.5 rounded-md border px-2 py-1 text-xs font-semibold transition-colors aria-disabled:opacity-60 ${
+        locked ? "aria-disabled:cursor-not-allowed" : "aria-disabled:cursor-wait"
+      } ${FOCUS} ${
         pressed
           ? "border-selection bg-neon-blue text-on-neon-blue"
-          : "border-control text-ink-2 hover:border-neon-blue hover:text-neon-blue-text"
+          : locked
+            ? "border-control text-ink-2"
+            : "border-control text-ink-2 hover:border-neon-blue hover:text-neon-blue-text"
       }`}
     >
       <span
@@ -214,6 +224,7 @@ export default function CardRowGroup({
   const capabilities = useCapabilities();
   const binders = useContainers();
   const scope = useScope();
+  const readOnly = useReadOnlyAll();
   const allWants = useWants();
   const lines = copies ?? [];
   const name = showSet ? cardLabel(card) : shortCardName(card);
@@ -317,6 +328,7 @@ export default function CardRowGroup({
             pressed={false}
             label={`Have ${name}`}
             busy={copies === undefined}
+            locked={readOnly}
             onToggle={() => actions.have(card)}
           />
           {slot(SLOT_ADD)}
@@ -333,7 +345,7 @@ export default function CardRowGroup({
               <div key={copy.id} className={rowCls} onClick={() => rowClick(copy.id)}>
                 {body(lineSummary(copy, binders), top)}
                 <HaveToggle pressed label={`Have ${name}, ${line}`} onToggle={() => actions.removeLine(card, copy)} />
-                {top ? <AddButton label={`Add another ${name}`} onAdd={() => actions.addAnother(card)} /> : slot(SLOT_ADD)}
+                {top && !readOnly ? <AddButton label={`Add another ${name}`} onAdd={() => actions.addAnother(card)} /> : slot(SLOT_ADD)}
                 {trades && (
                   <SmallToggle
                     pressed={copy.upForTrade}

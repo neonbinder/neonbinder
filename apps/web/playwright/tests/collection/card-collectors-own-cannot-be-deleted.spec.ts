@@ -123,6 +123,8 @@ test(
     const short = `#${number}`;
     const haveOff = checklist.getByRole("button", { name: `Have ${short}`, exact: true, pressed: false });
     await expect(haveOff).toBeVisible();
+    // All is a view (NEO-374): Have files into a picked binder.
+    await checklist.getByRole("combobox", { name: "Binder" }).selectOption({ label: "Main" });
     await haveOff.click();
     await expect(checklist.getByRole("button", { name: `Have ${short}, Raw`, exact: true, pressed: true })).toBeVisible();
     // The toggle flips optimistically; the notice is the server's answer. The

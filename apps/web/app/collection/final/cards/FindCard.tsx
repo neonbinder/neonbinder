@@ -7,7 +7,7 @@ import { useSearchText } from "../catalog/search";
 import { SkeletonBars } from "../catalog/Skeleton";
 import Suggestions from "../catalog/Suggestions";
 import { playerNames, printRunLabel, setLabel, teamNames, teamTextColor, variantLabel } from "../data/labels";
-import { collectionCopiesIn, searchable, useCopiesOf, useScope, useSearch } from "../data/store";
+import { collectionCopiesIn, searchable, useCopiesOf, useReadOnlyAll, useScope, useSearch } from "../data/store";
 import type { Card } from "../data/types";
 import { useMyCards } from "./context";
 
@@ -106,6 +106,7 @@ function Hit({ card }: { card: Card }) {
   const sheet = useLiverySurface("sheet");
   const all = useCopiesOf(card.id);
   const scope = useScope();
+  const readOnly = useReadOnlyAll();
   // The collection's copies only (never one in a box), narrowed by the page's scope, as everywhere on the tab.
   const copies = collectionCopiesIn(all, scope);
   const n = (copies ?? []).reduce((sum, c) => sum + c.quantity, 0);
@@ -156,7 +157,8 @@ function Hit({ card }: { card: Card }) {
       <NeonButton
         type="button"
         aria-label={`Add 1: ${short}`}
-        disabled={copies === undefined}
+        // NEO-374 — All is a view: pick a binder (the note under the picker says so).
+        disabled={copies === undefined || readOnly}
         onClick={() => api.addOne(card, n)}
         className="min-h-11 sm:min-h-8"
       >

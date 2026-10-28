@@ -16,6 +16,7 @@ import {
   useCapabilities,
   useCollectionActions,
   useCopiesInVariant,
+  useReadOnlyAll,
   useSetSummary,
   useSide,
   useVariantCards,
@@ -82,6 +83,7 @@ const CollectionChecklist = forwardRef<HTMLHeadingElement, ChecklistProps>(funct
   const isBuilding = building?.some((s) => s.id === setId) ?? false;
   const into = useHomeName();
   const scopedName = useScopedName();
+  const readOnly = useReadOnlyAll();
 
   const byCard = useMemo(() => copiesByCard(copies), [copies]);
   const ownedIds = useMemo(() => new Set(byCard.keys()), [byCard]);
@@ -124,7 +126,7 @@ const CollectionChecklist = forwardRef<HTMLHeadingElement, ChecklistProps>(funct
   const { cards: rangeCards, toAdd, already: alreadyHave, blocked } = plan;
 
   const markRange = () => {
-    if (blocked || toAdd.length === 0) return;
+    if (readOnly || blocked || toAdd.length === 0) return;
     const n = toAdd.length;
     void api.run(
       () => writes.addMany(toAdd),
@@ -245,6 +247,8 @@ const CollectionChecklist = forwardRef<HTMLHeadingElement, ChecklistProps>(funct
                 surface="dark"
                 label="Mark a range as Have"
                 placeholder="1-20, -12"
+                // NEO-374 — All is a view: pick a binder (the note under the picker says so).
+                disabled={readOnly}
                 value={rangeText}
                 onChange={(e) => {
                   setRangeText(e.target.value);
@@ -269,7 +273,7 @@ const CollectionChecklist = forwardRef<HTMLHeadingElement, ChecklistProps>(funct
             <NeonButton
               type="button"
               variant="primary"
-              disabled={blocked || toAdd.length === 0}
+              disabled={readOnly || blocked || toAdd.length === 0}
               onClick={markRange}
               className={FOCUS}
             >

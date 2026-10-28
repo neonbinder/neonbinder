@@ -40,6 +40,7 @@ import {
   useCollectionActions,
   useCollectionStore,
   useContainers,
+  useReadOnlyAll,
   useScope,
   useSetPath,
   useWants,
@@ -73,6 +74,7 @@ import MyCardsTab from "./MyCardsTab";
 import {
   CollectionModeProvider,
   ParamLink,
+  SCOPE_PARAM,
   scopeFromParams,
   SIDE_PARAM,
   takeSideArrival,
@@ -82,6 +84,7 @@ import {
   useGoToSide,
   usePushParams,
   useReplaceParams,
+  useSetScope,
   ViewScopeProvider,
   type CollectionMode,
 } from "./mode";
@@ -287,7 +290,7 @@ function SidePage({ onExit }: { onExit?: () => void }) {
 function CollectionPage({ side, onExit }: { side: Side; onExit?: () => void }) {
   const { mode, keepParams } = useCollectionMode();
   const isPublic = mode === "public";
-  const { capabilities, demo } = useCollectionStore();
+  const { capabilities, demo, binderMemory } = useCollectionStore();
   const containers = useContainers();
   const tabs = tabsFor(side, capabilities);
   const [params, setParams] = useCollectionParams();
@@ -458,6 +461,22 @@ function CollectionPage({ side, onExit }: { side: Side; onExit?: () => void }) {
     capabilities.scope && !onInventory
       ? scopeFromParams(params, containers)
       : "all";
+
+  // NEO-374 — Profile → Settings' "remember the last binder": a visit whose
+  // URL names no scope opens on the binder picked last, once the shelf and
+  // the setting have loaded (a binder deleted since reads as All). Once per
+  // mount, so picking All afterwards stays All.
+  const setScope = useSetScope();
+  const opening = binderMemory?.opening;
+  const opened = useRef(false);
+  useEffect(() => {
+    if (opened.current || !capabilities.scope || onInventory || !containers || !opening) return;
+    opened.current = true;
+    const last = opening.open === "last" ? opening.lastBinder : null;
+    if (!last || scope !== "all" || params.has(SCOPE_PARAM)) return;
+    if (scopeFromParams(new URLSearchParams({ [SCOPE_PARAM]: last }), containers) === "all") return;
+    setScope(last);
+  }, [capabilities.scope, onInventory, containers, opening, scope, params, setScope]);
 
   // --- Status line -----------------------------------------------------------
   const [notice, setNotice] = useState<Notice | null>(null);
@@ -910,9 +929,12 @@ function ScopedRows({
   const into = useHomeName();
   const scopedName = useScopedName();
   const scope = useScope();
+  const readOnly = useReadOnlyAll();
   const wants = useWants();
   const actions: RowActions = {
     have: (card) => {
+      // NEO-374 — All is a view; the row's Have is locked too, this is the backstop.
+      if (readOnly) return;
       void run(
         () => writes.addHave(card),
         () => `Added ${shortCardName(card)} to ${into}`,
