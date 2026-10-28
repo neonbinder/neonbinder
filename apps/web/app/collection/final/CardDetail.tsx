@@ -254,7 +254,9 @@ export default function CardDetail({
   const autoEdit = useRef(mode === "view" ? editCopyId : undefined);
   useEffect(() => {
     if (!autoEdit.current || copies === undefined) return;
-    const only = copies.length === 1 && copies[0].id === autoEdit.current ? copies[0] : null;
+    // Any single line, not only the clicked id: a line just marked Have can
+    // trade its optimistic id for the server's between the click and here.
+    const only = copies.length === 1 && autoEdit.current ? copies[0] : null;
     autoEdit.current = undefined;
     if (!only) return;
     setEditing({ key: only.id, value: toForm(only), trade: only.upForTrade });
