@@ -406,6 +406,23 @@ export const remove = mutation({
   },
 });
 
+/** Trade a line's front and back photos (one side alone moves to the other). */
+export const swap = mutation({
+  args: { copyId: v.id("collectionCopies") },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const ownerId = await requireSignedIn(ctx);
+    const row = await ctx.db.get(args.copyId);
+    if (!row || row.ownerId !== ownerId) {
+      refuse(COLLECTION_ERRORS.notFound, "That copy isn't in your collection.");
+    }
+    for (const photo of await livePhotosOf(ctx, row._id)) {
+      await ctx.db.patch(photo._id, { side: photo.side === "front" ? "back" : "front" });
+    }
+    return null;
+  },
+});
+
 // ───────────────────────────────────────────────────────────────────────────
 // Reading
 // ───────────────────────────────────────────────────────────────────────────
@@ -428,6 +445,50 @@ export const photosOf = query({
       const row = await ctx.db.get(copyId);
       if (!row || row.ownerId !== ownerId || !row.hasPhotos) continue;
       out.push({ copyId, ...(await photoUrlsOf(ctx, row)) });
+    }
+    return out;
+  },
+});
+
+/** Cards `cardPhotos` may ask about at once. */
+export const MAX_CARD_PHOTOS = 60;
+/** Lines of one card `cardPhotos` looks through. */
+const LINES_PER_CARD = 50;
+
+/**
+ * The photo that stands for each of some cards in the caller's collection:
+ * the first line (oldest) with a front, else the first with a back. A card
+ * the caller has no photographed line of is left out; signed out, nothing.
+ */
+export const cardPhotos = query({
+  args: { cardIds: v.array(v.string()) },
+  returns: v.array(v.object({ cardId: v.string(), front: v.optional(photoUrlsValidator), back: v.optional(photoUrlsValidator) })),
+  handler: async (ctx, args) => {
+    const ownerId = await getCurrentUserId(ctx);
+    if (!ownerId) return [];
+    if (args.cardIds.length > MAX_CARD_PHOTOS) {
+      refuse(COLLECTION_ERRORS.limit, `Ask for at most ${MAX_CARD_PHOTOS} cards at once.`);
+    }
+    const out: Array<{ cardId: string; front?: PhotoUrls; back?: PhotoUrls }> = [];
+    for (const cardId of new Set(args.cardIds)) {
+      // A catalog card or the caller's own (private) card (NEO-361).
+      const id = ctx.db.normalizeId("cardChecklist", cardId) ?? ctx.db.normalizeId("privateCards", cardId);
+      if (!id) continue;
+      const lines = await ctx.db
+        .query("collectionCopies")
+        .withIndex("by_owner_and_card", (q) => q.eq("ownerId", ownerId).eq("cardId", id))
+        .take(LINES_PER_CARD);
+      let pick: { front?: PhotoUrls; back?: PhotoUrls } | null = null;
+      for (const line of lines) {
+        if (!line.hasPhotos) continue;
+        const urls = await photoUrlsOf(ctx, line);
+        if (urls.front) {
+          pick = urls;
+          break;
+        }
+        if (!pick && urls.back) pick = urls;
+      }
+      if (pick) out.push({ cardId, ...pick });
     }
     return out;
   },

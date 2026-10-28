@@ -39,6 +39,7 @@
 
 import { createContext, createElement, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { resizeCopyPhoto } from "@/lib/collection/copy-photo-resize";
+import { CardImagesProvider } from "./cardImages";
 import {
   brands,
   cards as fixtureCards,
@@ -1147,7 +1148,7 @@ export function DemoCollectionProvider({ storageKey, children }: { storageKey?: 
     }),
     [state.cardRequests, state.requestCard, state.browseFilter, state.setBrowseFilter, state.reset],
   );
-  const photos = useDemoCopyPhotos();
+  const photos = useDemoCopyPhotos(state.state.copies);
   const value = useMemo<CollectionStoreValue>(
     () => ({ kind: "demo", capabilities: ALL_CAPABILITIES, data: DEMO_DATA, actions, demo, photos }),
     [actions, demo, photos],
@@ -1155,7 +1156,11 @@ export function DemoCollectionProvider({ storageKey, children }: { storageKey?: 
   return createElement(
     CollectionStoreContext.Provider,
     { value },
-    createElement(DemoStateContext.Provider, { value: state }, children),
+    createElement(
+      DemoStateContext.Provider,
+      { value: state },
+      createElement(CardImagesProvider, { useImages: photos.useCardImages, children }),
+    ),
   );
 }
 
@@ -1164,7 +1169,7 @@ export function DemoCollectionProvider({ storageKey, children }: { storageKey?: 
  * real ones, then kept on this page only (object URLs, gone on reload). No
  * upload, no account.
  */
-function useDemoCopyPhotos(): CopyPhotosExtension {
+function useDemoCopyPhotos(copies: readonly { id: string; cardId: string }[]): CopyPhotosExtension {
   const [byCopy, setByCopy] = useState<ReadonlyMap<CopyId, CopyPhotos>>(new Map());
   const usePhotos = useCallback(
     (copies: readonly Copy[]) => {
@@ -1205,7 +1210,34 @@ function useDemoCopyPhotos(): CopyPhotosExtension {
       return next;
     });
   }, []);
-  return useMemo(() => ({ usePhotos, addPhoto, removePhoto }), [usePhotos, addPhoto, removePhoto]);
+  const swapPhotos = useCallback(async (copy: Copy) => {
+    setByCopy((prev) => {
+      const had = prev.get(copy.id);
+      if (!had) return prev;
+      const next = new Map(prev);
+      next.set(copy.id, { ...(had.back ? { front: had.back } : {}), ...(had.front ? { back: had.front } : {}) });
+      return next;
+    });
+  }, []);
+  const useCardImages = useCallback(
+    (cardIds: readonly string[]) => {
+      // Only lines still in the collection count.
+      const wanted = new Set(cardIds);
+      const out = new Map<string, CopyPhotos>();
+      for (const copy of copies) {
+        const p = byCopy.get(copy.id as CopyId);
+        if (!p || !wanted.has(copy.cardId)) continue;
+        const had = out.get(copy.cardId);
+        if (!had || (!had.front && p.front)) out.set(copy.cardId, p);
+      }
+      return out;
+    },
+    [byCopy, copies],
+  );
+  return useMemo(
+    () => ({ usePhotos, addPhoto, removePhoto, swapPhotos, useCardImages }),
+    [usePhotos, addPhoto, removePhoto, swapPhotos, useCardImages],
+  );
 }
 
 /** The fixture's set label for an id, or null (for page titles while views migrate). */

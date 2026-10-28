@@ -1,9 +1,10 @@
 // NEO-377 (R1): a copy line's photos, live. A signed-in collector marks the
-// FIRST ordinary Base row Have, opens its drawer, and on that copy line opens
-// Photos: adds a front (resized in the browser, uploaded straight to R2 through
+// FIRST ordinary Base row Have and clicks the row, which opens the drawer
+// already editing that one line; in the form's Photos box they add a front (resized in the browser, uploaded straight to R2 through
 // signed URLs, checked and attached by Convex), sees it on the line and loads
 // it through the /copy-photo redirect (the image really decodes), replaces it,
-// adds a back, removes the back, then removes the copy and Undoes it (the
+// adds a back, removes the back, swaps the front over and back, closes the
+// form with Escape, then removes the copy and Undoes it (the
 // photos come back with it), and finally removes it for good.
 //
 // R7/R7a: writes ONLY the signed-in user's `collectionCopies` and
@@ -38,20 +39,17 @@ test(
     await checklist.getByRole("button", { name: `Have ${short}`, exact: true, pressed: false }).click();
     await expect(checklist.getByRole("button", { name: `Have ${short}, Raw, Excellent`, exact: true, pressed: true })).toBeVisible();
 
-    await checklist.getByRole("button", { name: `Details for ${short}`, exact: true }).click();
+    // --- A click on the row opens the drawer already editing its one line ----
+    const { number } = await shortNameOf(row);
+    await checklist.getByText(`#${number}`, { exact: true }).click();
     const drawer = page.getByRole("dialog", { name: /^2024 Topps Chrome / });
     const yourCopies = drawer.getByRole("region", { name: `Your copies of ${short}` });
     await expect(yourCopies.getByRole("heading", { name: "Your copies (1 line)" })).toBeVisible();
-
-    // --- Photos opens under the line, the keyboard on Add front --------------
-    const photos = yourCopies.getByRole("button", { name: `Photos, ${short}, Raw, Excellent`, exact: true });
-    await expect(photos).toHaveAttribute("aria-expanded", "false");
-    await photos.click();
-    await expect(photos).toHaveAttribute("aria-expanded", "true");
-    const panel = drawer.getByRole("region", { name: "Photos of Raw, Excellent" });
-    await expect(panel.getByRole("button", { name: "Add front", exact: true })).toBeFocused();
+    const form = yourCopies.getByRole("form", { name: "Edit Raw, Excellent", exact: true });
+    await expect(form).toBeVisible();
+    const panel = form.getByRole("region", { name: "Photos", exact: true });
     await expect(panel.getByText("No front photo yet")).toBeAttached();
-    await expectAccessible(page, { within: drawer, label: "Card drawer, photo panel empty" });
+    await expectAccessible(page, { within: drawer, label: "Card drawer, editing, no photos" });
 
     // --- Add a front: it uploads, shows on the line and really loads ---------
     const front = panel.getByLabel("Front photo file", { exact: true });
@@ -82,12 +80,20 @@ test(
     await expect(panel.getByRole("status")).toHaveText("Back photo removed.");
     await expect(panel.getByText("No back photo yet")).toBeAttached();
 
-    // --- Escape closes the panel; the keyboard goes back to Photos -----------
+    // --- Swap: the front becomes the back ------------------------------------
+    await panel.getByRole("button", { name: "Swap front and back", exact: true }).click();
+    await expect(panel.getByRole("status")).toHaveText("Front and back swapped.");
+    await expect(panel.getByText("No front photo yet")).toBeAttached();
+    await panel.getByRole("button", { name: "Swap front and back", exact: true }).click();
+    await expect(panel.getByRole("status")).toHaveText("Front and back swapped.");
+    await expect(panel.getByText("No back photo yet")).toBeAttached();
+
+    // --- Escape closes the form (photos are already saved); keyboard on Edit --
     await panel.getByRole("button", { name: "Replace front", exact: true }).focus();
     await page.keyboard.press("Escape");
-    await expect(panel).toBeHidden();
-    await expect(photos).toBeFocused();
-    await expect(drawer).toBeVisible();
+    await expect(form).toBeHidden();
+    await expect(yourCopies.getByRole("button", { name: `Edit ${short}, Raw, Excellent`, exact: true })).toBeFocused();
+    await expect(lineThumb).toBeVisible();
 
     // --- Remove the copy, Undo: its photo comes back --------------------------
     await yourCopies.getByRole("button", { name: `Remove ${short}, Raw, Excellent`, exact: true }).click();

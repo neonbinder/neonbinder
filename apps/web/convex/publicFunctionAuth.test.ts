@@ -2332,6 +2332,7 @@ describe("NEO-358: the collection and its catalog reads require a signed-in call
         }),
       () => t.action(api.copyPhotos.finishUpload, { photoId: ids.photoId }),
       () => t.mutation(api.copyPhotos.remove, { copyId: ids.copyId, side: "front" }),
+      () => t.mutation(api.copyPhotos.swap, { copyId: ids.copyId }),
     ];
     for (const call of calls) await expect(call()).rejects.toThrow(/Not authenticated/);
     const after = await t.run(async (ctx) => ({
@@ -2342,6 +2343,7 @@ describe("NEO-358: the collection and its catalog reads require a signed-in call
     expect(after.building).toEqual([]);
     // NEO-377 — signed out, photosOf answers nothing rather than another collector's photos.
     expect(await t.query(api.copyPhotos.photosOf, { copyIds: [ids.copyId] })).toEqual([]);
+    expect(await t.query(api.copyPhotos.cardPhotos, { cardIds: [ids.cardId] })).toEqual([]);
     expect((await t.run((ctx) => ctx.db.get(ids.photoId)))?.status).toBe("pending");
     // (the single seeded copy also proves the anonymous setBoxQuantity wrote no box line)
   });

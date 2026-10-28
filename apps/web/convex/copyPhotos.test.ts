@@ -184,6 +184,41 @@ describe("reading and removing", () => {
   });
 });
 
+describe("swap and the card's picture", () => {
+  test("swap trades the sides, owner only", async () => {
+    const s = await setup();
+    const copyId = await addCopy(s);
+    const front = await photograph(s, copyId, "front");
+    await expect(s.them.mutation(api.copyPhotos.swap, { copyId })).rejects.toThrow(/isn't in your collection/);
+    await s.me.mutation(api.copyPhotos.swap, { copyId });
+    expect((await photoRows(s)).find((r) => r._id === front)?.side).toBe("back");
+  });
+
+  test("cardPhotos: the first line with a front stands for the card, the caller's own only", async () => {
+    const s = await setup();
+    const backOnly = await addCopy(s, { notes: "first" });
+    const withFront = await addCopy(s, { notes: "second" });
+    await photograph(s, backOnly, "back");
+    await photograph(s, withFront, "front");
+    const [pick] = await s.me.query(api.copyPhotos.cardPhotos, { cardIds: [s.fx.gooden1] });
+    expect(pick.cardId).toBe(s.fx.gooden1);
+    expect(pick.front?.thumbUrl).toMatch(/^https:\/\/example\.convex\.site\/copy-photo\/[0-9a-f]{32}\/thumb$/);
+    expect(pick.back).toBeUndefined();
+    expect(await s.them.query(api.copyPhotos.cardPhotos, { cardIds: [s.fx.gooden1] })).toEqual([]);
+    expect(await s.t.query(api.copyPhotos.cardPhotos, { cardIds: [s.fx.gooden1] })).toEqual([]);
+    expect(await s.me.query(api.copyPhotos.cardPhotos, { cardIds: ["not-an-id"] })).toEqual([]);
+  });
+
+  test("cardPhotos: a back alone stands in when no line has a front", async () => {
+    const s = await setup();
+    const copyId = await addCopy(s);
+    await photograph(s, copyId, "back");
+    const [pick] = await s.me.query(api.copyPhotos.cardPhotos, { cardIds: [s.fx.gooden1] });
+    expect(pick.back).toBeTruthy();
+    expect(pick.front).toBeUndefined();
+  });
+});
+
 describe("folds, removes and undo", () => {
   test("a line with photos never folds, either way", async () => {
     const s = await setup();

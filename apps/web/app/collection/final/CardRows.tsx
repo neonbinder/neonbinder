@@ -43,7 +43,8 @@ export interface RowActions {
    * Details: open the drawer, on this line item when there is one. `list`
    * is what the drawer's ↑ ↓ step through.
    */
-  open: (card: Card, copyId?: CopyId, list?: Card[]) => void;
+  /** `edit`: a row click on an owned line, which opens that line's Edit form when it is the card's one line. */
+  open: (card: Card, copyId?: CopyId, list?: Card[], edit?: boolean) => void;
 }
 
 const SLOT_HAVE = "w-[4.5rem]";
@@ -229,7 +230,8 @@ export default function CardRowGroup({
   if (run) sub.push(run);
   if (card.cardVariation) sub.push(`${card.cardVariation} variation`);
   const stacked = lines.length > 1;
-  const rowClick = onRowClick ?? ((copyId?: CopyId) => actions.open(card, copyId));
+  const rowClick =
+    onRowClick ?? ((copyId?: CopyId) => actions.open(card, copyId, undefined, copyId !== undefined));
 
   const want = wants ? (
     <SmallToggle

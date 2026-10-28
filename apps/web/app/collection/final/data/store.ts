@@ -460,6 +460,14 @@ export interface CopyPhotosExtension {
   addPhoto(copy: Copy, side: PhotoSide, file: File): Promise<void>;
   /** Take the photo off one side of a line. */
   removePhoto(copy: Copy, side: PhotoSide): Promise<void>;
+  /** Trade a line's front and back photos. */
+  swapPhotos(copy: Copy): Promise<void>;
+  /**
+   * The photo that stands for each of these cards in the collection (the
+   * first line with a front, else a back), for `CardFace`
+   * (`./cardImages`). Cards with none are absent. Called every render, like a hook.
+   */
+  useCardImages(cardIds: readonly string[]): ReadonlyMap<string, CopyPhotos> | undefined;
 }
 
 export interface CollectionStoreValue {

@@ -384,7 +384,7 @@ const CollectionChecklist = forwardRef<HTMLHeadingElement, ChecklistProps>(funct
                   key={card.id}
                   card={card}
                   copies={byCard.get(card.id) ?? []}
-                  actions={{ ...actions, open: (c, copyId) => actions.open(c, copyId, visible) }}
+                  actions={{ ...actions, open: (c, copyId, _list, edit) => actions.open(c, copyId, visible, edit) }}
                   isSelected={card.id === selectedCardId}
                   highlighted={card.id === ringed}
                   groupRef={(el) => {

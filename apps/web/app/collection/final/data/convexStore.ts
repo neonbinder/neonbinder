@@ -72,6 +72,7 @@ import type {
 import { isOptimisticId, OPTIMISTIC_ID_PREFIX } from "../lineKeys";
 import { finishForVariant } from "./finish";
 import { resizeCopyPhoto } from "@/lib/collection/copy-photo-resize";
+import { CardImagesProvider } from "./cardImages";
 
 import {
   bySlot,
@@ -2583,6 +2584,8 @@ function useShareProfile(): ShareProfile | undefined {
  */
 /** Lines one photo read asks about (the server's `MAX_PHOTOS_OF`). */
 const MAX_PHOTOS_OF = 100;
+/** Cards one card-picture read asks about (the server's `MAX_CARD_PHOTOS`). */
+const MAX_CARD_PHOTOS = 60;
 
 /** NEO-377 — the photos of the lines given that have any (a stable empty skip). */
 function useLinePhotos(copies: readonly Copy[]): ReadonlyMap<CopyId, CopyPhotos> | undefined {
@@ -2601,6 +2604,24 @@ function useLinePhotos(copies: readonly Copy[]): ReadonlyMap<CopyId, CopyPhotos>
   }, [args, rows]);
 }
 
+/** NEO-377 — the collector's photo of each card on screen (`./cardImages`). */
+function useCardImages(cardIds: readonly string[]): ReadonlyMap<string, CopyPhotos> | undefined {
+  const ids = cardIds.filter((id) => !isOptimisticId(id)).slice(0, MAX_CARD_PHOTOS);
+  const key = ids.join(",");
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- `key` is `ids`, spelled stably
+  const args = useMemo(() => (ids.length > 0 ? { cardIds: ids } : "skip"), [key]);
+  const rows = useQuery(api.copyPhotos.cardPhotos, args);
+  // Keep the last answer while a new set of cards loads, so pictures don't blink.
+  const last = useRef<ReadonlyMap<string, CopyPhotos> | undefined>(undefined);
+  return useMemo(() => {
+    if (args === "skip") return (last.current = new Map());
+    if (rows === undefined) return last.current;
+    return (last.current = new Map(
+      rows.map((r) => [r.cardId, { ...(r.front ? { front: r.front } : {}), ...(r.back ? { back: r.back } : {}) }]),
+    ));
+  }, [args, rows]);
+}
+
 /**
  * NEO-377 — copy photos: resize in the browser, upload both files straight
  * to R2 through signed URLs, then let Convex check and attach them.
@@ -2609,9 +2630,11 @@ function useConvexCopyPhotos(): CopyPhotosExtension {
   const startUpload = useAction(api.copyPhotos.startUpload);
   const finishUpload = useAction(api.copyPhotos.finishUpload);
   const remove = useMutation(api.copyPhotos.remove);
+  const swap = useMutation(api.copyPhotos.swap);
   return useMemo<CopyPhotosExtension>(
     () => ({
       usePhotos: useLinePhotos,
+      useCardImages,
       async addPhoto(copy, side, file) {
         if (isOptimisticId(copy.id)) throw new Error("That copy is still saving. Try again in a moment.");
         const resized = await resizeCopyPhoto(file);
@@ -2633,8 +2656,11 @@ function useConvexCopyPhotos(): CopyPhotosExtension {
       async removePhoto(copy, side) {
         await remove({ copyId: copy.id as RawCopy["_id"], side });
       },
+      async swapPhotos(copy) {
+        await swap({ copyId: copy.id as RawCopy["_id"] });
+      },
     }),
-    [startUpload, finishUpload, remove],
+    [startUpload, finishUpload, remove, swap],
   );
 }
 
@@ -2688,7 +2714,11 @@ export function ConvexCollectionProvider({ children }: { children: ReactNode }) 
     () => ({ kind: "convex", capabilities: REAL_CAPABILITIES, data: CONVEX_DATA, actions, sharing, photos }),
     [actions, sharing, photos],
   );
-  return createElement(CollectionStoreContext.Provider, { value }, children);
+  return createElement(
+    CollectionStoreContext.Provider,
+    { value },
+    createElement(CardImagesProvider, { useImages: photos.useCardImages, children }),
+  );
 }
 
 /**
