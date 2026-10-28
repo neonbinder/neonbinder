@@ -116,8 +116,8 @@ test(
     // --- Shown to visitors too, marked as not a known NB card --------------------
     // Up for Trade is public by default; the flag puts this copy on it.
     const copies = drawer.getByRole("region", { name: /^Your copies of / });
-    await copies.getByRole("button", { name: /^Edit .*, Raw$/ }).click();
-    const edit = drawer.getByRole("form", { name: "Edit Raw", exact: true });
+    await copies.getByRole("button", { name: /^Edit .*, Raw, Excellent$/ }).click();
+    const edit = drawer.getByRole("form", { name: "Edit Raw, Excellent", exact: true });
     const tradeFlag = edit.getByRole("switch", { name: "Up for trade" });
     await tradeFlag.click();
     await expect(tradeFlag).toBeChecked();

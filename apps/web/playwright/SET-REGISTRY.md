@@ -2552,6 +2552,12 @@ which never touches Base) or a re-commit of a DIFFERENT set. The seed's reset
 runs before any spec, and the global reset clears `collectionCopies` before
 the cards (it is in the drain order ahead of `cardChecklist`).
 
+**NEO-380.** `tests/profile/default-condition-setting.spec.ts` uses the same
+card (the same rule): with the account's default condition set to Near Mint it
+marks the card Have, reads the add form, and removes the copy again. Per user,
+like every copy here; it writes nothing to the set, and it leaves the account's
+default on Excellent.
+
 **NEO-359.** `tests/collection/binders-move-fold-trade-want.spec.ts` uses the same rule
 for the first THREE ordinary Base rows (it reads the names before writing, since
 a card with two lines drops out of the ordinary-row match). It puts copies on

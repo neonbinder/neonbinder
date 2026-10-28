@@ -69,6 +69,7 @@ function useWarmProfileQueries() {
   useQuery(api.userProfile.getPrizes); // prizes
   useQuery(api.publicProfile.getMyPublicProfile); // public + shipping
   useQuery(api.shipping.getMyReturnAddress); // shipping
+  useQuery(api.userProfile.getDefaultCondition); // settings: default card condition
 }
 
 /**

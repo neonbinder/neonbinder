@@ -103,6 +103,7 @@ import {
 } from "./store";
 import {
   ALL_CAPABILITIES,
+  DEFAULT_CONDITION,
   isHome,
   type BinderNeeds,
   type Card,
@@ -826,6 +827,10 @@ export const DEMO_DATA: CollectionData = {
 
   useWants() {
     return useDemoState().state.wants;
+  },
+
+  useDefaultCondition() {
+    return DEFAULT_CONDITION;
   },
 
   useCopiesOfCards(cardIds) {

@@ -172,6 +172,29 @@ const MAX_NOTES_CHARS = 2000;
 /** $100,000,000.00 in cents: far above any card, below float trouble. */
 const MAX_COST_CENTS = 10_000_000_000;
 
+/**
+ * NEO-380 — the condition a raw copy gets when nobody names one: the
+ * collector's own default (Profile → Settings, `userProfiles.preferences
+ * .defaultCondition`), and this when they have never set it. A raw copy
+ * always stores a condition (the marketplaces list by it); a graded copy
+ * has a grade instead and stores none.
+ */
+export const DEFAULT_CONDITION: Condition = "Excellent";
+
+export type Condition = typeof collectionCopyConditionValidator.type;
+
+/** The collector's default condition: their setting, else `DEFAULT_CONDITION`. */
+export async function defaultConditionOf(
+  ctx: Pick<QueryCtx, "db">,
+  ownerId: string,
+): Promise<Condition> {
+  const profile = await ctx.db
+    .query("userProfiles")
+    .withIndex("by_user", (q) => q.eq("userId", ownerId))
+    .unique();
+  return profile?.preferences?.defaultCondition ?? DEFAULT_CONDITION;
+}
+
 /** The default home every add lands in until containers are user-facing. */
 export const MAIN_CONTAINER_NAME = "Main";
 
@@ -320,9 +343,12 @@ export function isIsoDate(raw: string): boolean {
 /**
  * The details as they are stored: trimmed, blank text dropped, every number
  * checked. Refuses with a `ConvexError` the copy form can show. Home is
- * resolved separately (`resolveHome`).
+ * resolved separately (`resolveHome`). NEO-380: a raw copy sent with no
+ * condition takes `defaultCondition` (the collector's, `defaultConditionOf`),
+ * so no write stores a raw copy without one; a graded copy keeps whatever it
+ * was sent (the form sends none).
  */
-export function cleanDetails(raw: DetailsArg): Omit<StoredDetails, "homeId"> {
+export function cleanDetails(raw: DetailsArg, defaultCondition: Condition): Omit<StoredDetails, "homeId"> {
   if (!Number.isInteger(raw.quantity) || raw.quantity < 1 || raw.quantity > MAX_COPY_QUANTITY) {
     refuse(COLLECTION_ERRORS.invalid, `Quantity is a whole number from 1 to ${MAX_COPY_QUANTITY}.`);
   }
@@ -357,9 +383,10 @@ export function cleanDetails(raw: DetailsArg): Omit<StoredDetails, "homeId"> {
   if (raw.slot !== undefined && (!Number.isInteger(raw.slot) || raw.slot < 0)) {
     refuse(COLLECTION_ERRORS.invalid, "That pocket or row doesn't exist. Pick one from the page.");
   }
+  const condition = raw.condition ?? (grading ? undefined : defaultCondition);
   return {
     quantity: raw.quantity,
-    ...(raw.condition ? { condition: raw.condition } : {}),
+    ...(condition ? { condition } : {}),
     ...(grading ? { grading } : {}),
     ...(serialNumber ? { serialNumber } : {}),
     ...(raw.costCents !== undefined ? { costCents: raw.costCents } : {}),
@@ -1349,11 +1376,12 @@ async function addOne(
   ownerId: string,
   cardId: CopyCardId,
   raw: DetailsArg,
+  defaultCondition: Condition,
 ): Promise<{
   result: typeof addResultValidator.type;
   change: CountChange;
 }> {
-  const cleaned = cleanDetails(raw);
+  const cleaned = cleanDetails(raw, defaultCondition);
   const home = await resolveHome(ctx, ownerId, raw.homeId);
   checkSlot(home, cleaned.slot);
   const place = await placeOfCopyCard(ctx, ownerId, cardId);
@@ -1507,7 +1535,7 @@ export async function moveCopyCore(
   return { copyId, folded: into !== undefined, split: !whole, from };
 }
 
-/** A fresh copy of a card: one raw card, in `homeId` when given, else Main. */
+/** A fresh copy of a card: one raw card (in the default condition), in `homeId` when given, else Main. */
 function haveDetails(
   acquiredOn: string | undefined,
   homeId?: Id<"collectionContainers">,
@@ -2204,6 +2232,7 @@ export const addHave = mutation({
       ownerId,
       args.cardId,
       haveDetails(args.acquiredOn, args.homeId),
+      await defaultConditionOf(ctx, ownerId),
     );
     await applyCopyChanges(ctx, ownerId, [change]);
     return result;
@@ -2225,8 +2254,9 @@ export const addHaves = mutation({
     }
     const out = [];
     const changes: CountChange[] = [];
+    const defaultCondition = await defaultConditionOf(ctx, ownerId);
     for (const cardId of args.cardIds) {
-      const added = await addOne(ctx, ownerId, cardId, haveDetails(args.acquiredOn, args.homeId));
+      const added = await addOne(ctx, ownerId, cardId, haveDetails(args.acquiredOn, args.homeId), defaultCondition);
       out.push({ cardId, ...added.result });
       changes.push(added.change);
     }
@@ -2241,7 +2271,13 @@ export const addLineItem = mutation({
   returns: addResultValidator,
   handler: async (ctx, args) => {
     const ownerId = await requireSignedIn(ctx);
-    const { result, change } = await addOne(ctx, ownerId, args.cardId, args.details);
+    const { result, change } = await addOne(
+      ctx,
+      ownerId,
+      args.cardId,
+      args.details,
+      await defaultConditionOf(ctx, ownerId),
+    );
     await applyCopyChanges(ctx, ownerId, [change]);
     return result;
   },
@@ -2263,7 +2299,7 @@ export const updateCopy = mutation({
     if (args.details.homeId !== undefined && args.details.homeId !== row.homeId) {
       refuse(COLLECTION_ERRORS.invalid, "To put this copy somewhere else, move it. Editing keeps it where it lives.");
     }
-    const cleaned = cleanDetails(args.details);
+    const cleaned = cleanDetails(args.details, await defaultConditionOf(ctx, ownerId));
     const home = await ctx.db.get(row.homeId);
     if (home) {
       checkSlot(home, cleaned.slot);
@@ -2352,7 +2388,7 @@ export const restoreCopy = mutation({
   returns: v.object({ copyId: v.id("collectionCopies") }),
   handler: async (ctx, args) => {
     const ownerId = await requireSignedIn(ctx);
-    const cleaned = cleanDetails(args.details);
+    const cleaned = cleanDetails(args.details, await defaultConditionOf(ctx, ownerId));
     const home = await resolveHome(ctx, ownerId, args.details.homeId);
     checkSlot(home, cleaned.slot);
     if (!(await pocketIsFree(ctx, ownerId, home, cleaned.slot))) delete cleaned.slot;

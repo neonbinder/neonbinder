@@ -32,6 +32,7 @@ import {
   useContainers,
   useCopiesOf,
   useCopyPhotos,
+  useDefaultCondition,
   usePhotosOf,
   useScope,
   useSide,
@@ -63,6 +64,15 @@ function toForm(d: CopyDetails): FormValue {
     binderIds: [],
     forSale: false,
   };
+}
+
+/**
+ * A new copy's blank form. The condition is left out: the form shows and
+ * saves the collector's default (`defaultCondition`), which may still be
+ * loading when the drawer opens (NEO-380).
+ */
+function blankForm(): FormValue {
+  return toForm({ ...emptyCopyDetails(), condition: undefined });
 }
 
 /** The form's value as the store takes it: never a home (that is `moveCopy`), never a price. */
@@ -183,7 +193,8 @@ export default function CardDetail({
     : !onInventory && scope !== "all" && isAddId(scope)
       ? scope
       : systemContainer(containers, onInventory ? "unsorted" : "main")?.id;
-  const [draft, setDraft] = useState<FormValue>(() => toForm(emptyCopyDetails()));
+  const defaultCondition = useDefaultCondition();
+  const [draft, setDraft] = useState<FormValue>(blankForm);
   const [draftHome, setDraftHome] = useState<ContainerId | undefined>(undefined);
   const [draftTrade, setDraftTrade] = useState(false);
   const addHome = draftHome ?? defaultHome;
@@ -250,7 +261,7 @@ export default function CardDetail({
   const homeById = (id: string | undefined) => (id ? containers?.find((c) => c.id === id) : undefined);
 
   const resetDraft = () => {
-    setDraft(toForm(emptyCopyDetails()));
+    setDraft(blankForm());
     setDraftHome(undefined);
     setDraftTrade(false);
   };
@@ -441,6 +452,7 @@ export default function CardDetail({
               }}
               hideSaleFields
               hideBinders
+              defaultCondition={defaultCondition}
               upForTrade={capabilities.trade ? editing.trade : undefined}
               onUpForTradeChange={capabilities.trade ? (trade) => setEditing({ ...editing, trade }) : undefined}
               heading={`Edit ${names[i]}`}
@@ -477,6 +489,7 @@ export default function CardDetail({
             }}
             hideSaleFields
             hideBinders
+            defaultCondition={defaultCondition}
             homes={addKinds.length > 0 ? formHomes(addKinds) : undefined}
             homeId={addHome}
             onHomeChange={addKinds.length > 0 ? (id) => setDraftHome(id) : undefined}

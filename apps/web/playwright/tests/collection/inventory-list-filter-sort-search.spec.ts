@@ -210,8 +210,8 @@ test(
     });
     const yourCopies = drawer.getByRole("region", { name: `Your copies of ${y.short}`, exact: true });
     await expect(yourCopies.getByRole("heading", { name: "Your copies (1 line)", exact: true })).toBeVisible();
-    await yourCopies.getByRole("button", { name: `Edit ${y.short}, Raw`, exact: true }).click();
-    const editForm = drawer.getByRole("form", { name: "Edit Raw", exact: true });
+    await yourCopies.getByRole("button", { name: `Edit ${y.short}, Raw, Excellent`, exact: true }).click();
+    const editForm = drawer.getByRole("form", { name: "Edit Raw, Excellent", exact: true });
     const flag = editForm.getByRole("switch", { name: "Up for trade" });
     await expect(flag).not.toBeChecked();
     await flag.click();
@@ -332,9 +332,9 @@ test(
       await d.getByRole("button", { name: "Close card detail" }).click();
       await expect(d).toBeHidden();
     };
-    await removeLines(x, ["Raw ×3", "PSA 9"], mixedX);
-    await removeLines(y, ["Raw"], flaggedY);
-    await removeLines(z, ["Raw ×2"], itemZ);
+    await removeLines(x, ["Raw, Excellent ×3", "PSA 9"], mixedX);
+    await removeLines(y, ["Raw, Excellent"], flaggedY);
+    await removeLines(z, ["Raw, Excellent ×2"], itemZ);
     await expect(mixedX).toHaveCount(0);
     await expect(itemX).toHaveCount(0);
     await expect(itemZ).toHaveCount(0);

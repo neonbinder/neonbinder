@@ -70,6 +70,13 @@ describe("a plain line (D9)", () => {
     expect(isPlainLine(copy(over))).toBe(false);
   });
 
+  it("NEO-380: is plain in the default condition (Excellent until picked), or with none (stored before)", () => {
+    expect(isPlainLine(copy({ condition: "Excellent" }))).toBe(true);
+    expect(isPlainLine(copy({ condition: "Near Mint" }), "Near Mint")).toBe(true);
+    expect(isPlainLine(copy({ condition: "Excellent" }), "Near Mint")).toBe(false);
+    expect(isPlainLine(copy(), "Near Mint")).toBe(true);
+  });
+
   it("treats a cost of 0 as a cost recorded, but a missing one as none", () => {
     expect(isPlainLine(copy({ costBasis: 0 }))).toBe(false);
     expect(isPlainLine(copy({ costBasis: undefined }))).toBe(true);
@@ -116,6 +123,12 @@ describe("the other lines, read-only after the field", () => {
     expect(otherLines([copy({ upForTrade: true })])!.text).toBe("also here: Raw for trade");
     expect(otherLines([copy({ notes: "ding" })])!.text).toBe("also here: Raw with notes");
     expect(otherLines([copy({ graded: { grader: "BGS", grade: "" } })])!.text).toBe("also here: BGS ?");
+  });
+
+  it("NEO-380: leaves the default condition unsaid and names any other", () => {
+    expect(otherLines([copy({ condition: "Excellent", notes: "ding" })])!.text).toBe("also here: Raw with notes");
+    expect(otherLines([copy({ condition: "Excellent" })], "Good")).toEqual({ count: 1, text: "also here: Raw Excellent" });
+    expect(plainQuantity([copy({ condition: "Good", quantity: 2 }), copy({ quantity: 1 })], "Good")).toBe(3);
   });
 });
 
