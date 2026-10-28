@@ -1,41 +1,17 @@
 import { spineLabelPrintHref } from "@/lib/print/spine-label-params";
 import type { ContainerLabel } from "../data/types";
-import type { LayoutMode, PileFilters, SortKey } from "./model";
+import type { PileFilters, SortKey } from "./model";
 import type { OpenView, Tally } from "./openView";
 import PrintShopLink from "./PrintShopLink";
 import NeonButton from "@/components/modules/NeonButton";
 
 /**
- * The open binder's furniture, from prototype 2's page: the layout toggle,
- * the master pile's sort and filters, the inside front cover (name, tally,
- * a few lines of how-to) and its phone-width summary. Plus one thing p2
- * never needed: the scope line saying what Checklists and My Cards look
- * through now that this binder is open. All of it reads the open view's
- * data (`OpenView`); `BinderView.tsx` puts it together.
+ * The open binder's furniture, from prototype 2's page: the master pile's sort and filters, the inside front cover (name, tally,
+ * a few lines of how-to) and its phone-width summary. All of it reads the
+ * open view's data (`OpenView`); `BinderView.tsx` puts it together.
  */
 
 const FOCUS = "focus-outline";
-
-export function ModeToggle({ mode, onChange }: { mode: LayoutMode; onChange: (m: LayoutMode) => void }) {
-  const btn = (m: LayoutMode, label: string) => (
-    <button
-      type="button"
-      aria-pressed={mode === m}
-      onClick={() => onChange(m)}
-      className={`min-h-10 rounded-md px-3 text-sm font-medium ${FOCUS} ${
-        mode === m ? "bg-neon-blue text-on-neon-blue ring-1 ring-inset ring-selection" : "text-ink-2 hover:text-ink"
-      }`}
-    >
-      {label}
-    </button>
-  );
-  return (
-    <div role="group" aria-label="How to show this binder" className="flex rounded-lg border border-control bg-field p-0.5">
-      {btn("pockets", "Lay out like my real binder")}
-      {btn("stack", "Just a stack")}
-    </div>
-  );
-}
 
 export function PileTools({
   sort,
@@ -168,8 +144,13 @@ export interface CoverActions {
   onEditContainer: () => void;
 }
 
+/**
+ * The label and rename controls, on the cover only where there are no binder
+ * settings to hold them (a box, the Want List, Up for Trade, a store without
+ * settings). NEO-362: a binder with settings keeps them in its settings.
+ */
 function LabelControls({ open, actions }: { open: OpenView; actions: CoverActions }) {
-  if (!open.label) return null;
+  if (!open.label || open.settings) return null;
   const { container, label } = open.label;
   return (
     <div className="flex flex-wrap items-center gap-2 self-start">
@@ -209,33 +190,16 @@ export function Cover({ open, actions, rearrange = false }: { open: OpenView; ac
 export function MobileSummary({ open, actions }: { open: OpenView; actions: CoverActions }) {
   return (
     <div className="mb-3 space-y-1 text-sm text-ink-2">
-      {open.label && (
+      {open.label && !open.settings && (
         <div className="float-right ml-3">
           <LabelControls open={open} actions={actions} />
         </div>
       )}
       <TallyLine tally={open.tally} want={open.want} />
-      <p>{open.blurb[0]}</p>
+      {/* NEO-362: every line, so a phone also says when the binder keeps itself sorted (dragging is off). */}
+      {open.blurb.map((line) => (
+        <p key={line}>{line}</p>
+      ))}
     </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// What the rest of the page is looking through
-// ---------------------------------------------------------------------------
-
-export function ScopeLine({ text, onGo }: { text: string; onGo: () => void }) {
-  return (
-    <p className="mb-3 text-sm text-ink-2">
-      <span aria-hidden="true" className="nb-scope-dot mr-2 align-middle" />
-      {text}{" "}
-      <button
-        type="button"
-        onClick={onGo}
-        className={`rounded-sm text-neon-blue-text underline underline-offset-2 hover:text-ink ${FOCUS}`}
-      >
-        Open Checklists
-      </button>
-    </p>
   );
 }

@@ -82,6 +82,13 @@ import { createContext, useContext, useMemo } from "react";
 import type { BrowseFilter, CardRequest, NewCardRequest } from "../store";
 import type {
   AddManyResult,
+  BinderNeeds,
+  BinderSettingsPatch,
+  DeclinedCard,
+  RuleBrand,
+  FoundCards,
+  PocketPlacement,
+  SmartRule,
   InventoryCards,
   QuantityResult,
   Side,
@@ -176,7 +183,7 @@ export interface CollectionData {
   /** Several cards, aligned with `cardIds`; `null` where one is no longer in the catalog. */
   useCards(cardIds: readonly CardId[] | null): (Card | null)[] | undefined;
   /** Players (name or alias), teams and sets matching the text, best first. */
-  useSuggestions(text: string): Suggestion[] | undefined;
+  useSuggestions(text: string, options?: { sportId?: string }): Suggestion[] | undefined;
   /** One team, with its livery when NB has it. `null`: not in the catalog. */
   useTeam(teamId: TeamId | null): CardTeam | null | undefined;
   /** Cards whose title matches the text: every word, quoted phrases verbatim. */
@@ -247,6 +254,30 @@ export interface CollectionData {
    * inserts, then parallels; each in checklist order), up to `limit`.
    */
   useSetCards(setId: SetId | null, options?: PageOptions): SetCards | undefined;
+
+  // --- NEO-362: smart binders and binder settings ----------------------------
+
+  /**
+   * The catalog cards a binder's empty slots stand for (none of them in it):
+   * a smart binder's rule matches, else the checklists the binder holds a
+   * card from. Ask only while empty slots are drawn.
+   */
+  useBinderNeeds(containerId: ContainerId | null): BinderNeeds | undefined;
+  /**
+   * Which of `cardIds` fit a smart binder's rule (capability `binderRules`):
+   * the Checklists filter and "outside the rule". Empty for a binder without
+   * a rule, and from a store without rules.
+   */
+  useRuleMatches(containerId: ContainerId | null, cardIds: readonly CardId[] | null): ReadonlySet<CardId> | undefined;
+  /** "Find cards for this binder" (capability `binderRules`); `null` asks nothing. */
+  useFindCards(containerId: ContainerId | null): FoundCards | undefined;
+  /** The cards declined for a smart binder, newest first (capability `binderRules`). */
+  useDeclined(containerId: ContainerId | null): DeclinedCard[] | undefined;
+  /**
+   * A sport's brands for the rule builder, each with every year's row of it
+   * (capability `binderRules`); `null` asks nothing.
+   */
+  useRuleBrands(sportId: string | null): RuleBrand[] | undefined;
 }
 
 export interface PageOptions {
@@ -349,6 +380,22 @@ export interface CollectionActions {
    * writes nothing. One write; the undo puts exactly those lines back.
    */
   setBoxQuantity(card: Card, box: Container, quantity: number): Promise<QuantityResult>;
+
+  // --- NEO-362 ---------------------------------------------------------------
+
+  /** Changes a binder's settings (Main included; capability `binderSettings`). */
+  setBinderSettings(container: Container, patch: BinderSettingsPatch): Promise<UpdateResult>;
+  /**
+   * Puts every line item of a binder in the pocket given (Sort now; turning a
+   * sort off so the pockets match what was drawn). Name every line once.
+   */
+  relayPockets(container: Container, placements: readonly PocketPlacement[]): Promise<UpdateResult>;
+  /** Gives one of the collector's binders a rule, changes it, or takes it off (`null`). Never moves a card. */
+  setSmartRule(container: Container, rule: SmartRule | null): Promise<UpdateResult>;
+  /** Leaves a card out of a smart binder's Find cards. */
+  declineCard(container: Container, cardId: CardId): Promise<UpdateResult>;
+  /** Pulls a declined card back into Find cards. */
+  undeclineCard(container: Container, cardId: CardId): Promise<UpdateResult>;
 }
 
 export interface MoveOptions {
@@ -510,8 +557,8 @@ export function useCard(cardId: CardId | null): Card | null | undefined {
 export function useCards(cardIds: readonly CardId[] | null): (Card | null)[] | undefined {
   return useCollectionStore().data.useCards(cardIds);
 }
-export function useSuggestions(text: string): Suggestion[] | undefined {
-  return useCollectionStore().data.useSuggestions(text);
+export function useSuggestions(text: string, options?: { sportId?: string }): Suggestion[] | undefined {
+  return useCollectionStore().data.useSuggestions(text, options);
 }
 export function useTeam(teamId: TeamId | null): CardTeam | null | undefined {
   return useCollectionStore().data.useTeam(teamId);
@@ -567,6 +614,24 @@ export function useWants(): Want[] | undefined {
 }
 export function useCopiesOfCards(cardIds: readonly CardId[] | null): Record<CardId, Copy[]> | undefined {
   return useCollectionStore().data.useCopiesOfCards(cardIds);
+}
+export function useBinderNeeds(containerId: ContainerId | null): BinderNeeds | undefined {
+  return useCollectionStore().data.useBinderNeeds(containerId);
+}
+export function useRuleMatches(
+  containerId: ContainerId | null,
+  cardIds: readonly CardId[] | null,
+): ReadonlySet<CardId> | undefined {
+  return useCollectionStore().data.useRuleMatches(containerId, cardIds);
+}
+export function useFindCards(containerId: ContainerId | null): FoundCards | undefined {
+  return useCollectionStore().data.useFindCards(containerId);
+}
+export function useDeclined(containerId: ContainerId | null): DeclinedCard[] | undefined {
+  return useCollectionStore().data.useDeclined(containerId);
+}
+export function useRuleBrands(sportId: string | null): RuleBrand[] | undefined {
+  return useCollectionStore().data.useRuleBrands(sportId);
 }
 export function useSetCards(setId: SetId | null, options?: PageOptions): SetCards | undefined {
   return useCollectionStore().data.useSetCards(setId, options);

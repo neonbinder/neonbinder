@@ -6,6 +6,8 @@ import { api } from "@/convex/_generated/api";
 import CardFace from "@/app/collection/prototypes/_shared/CardFace";
 import { hydrateCatalogCard, hydratePublicOwnCard } from "@/app/collection/final/data/convexStore";
 import { cardLabel } from "@/app/collection/final/data/labels";
+import type { Card, Copy } from "@/app/collection/final/data/types";
+import { sortedPages, type PageModel } from "@/app/collection/final/binders/model";
 import NeonButton from "@/components/modules/NeonButton";
 import { USERNAME_RE } from "@/lib/collection/share-links";
 import { useDocumentTitle } from "@/src/hooks/useDocumentTitle";
@@ -228,6 +230,52 @@ export function PublicBinderPage() {
       </Shell>
     );
   }
+  const layout = header.layout;
+  const spine = header.label;
+  return (
+    <Shell username={username} title={header.name}>
+      <div className="rounded-xl bg-raised px-4 py-3">
+        {/* The binder's spine colour, as a swatch above its name. */}
+        <span
+          aria-hidden="true"
+          className="mb-2 block h-1.5 w-12 rounded-full"
+          style={{ background: spine?.background ?? "var(--color-neon-green)" }}
+        />
+        <h1 className="text-2xl font-bold">{header.name}</h1>
+        {header.description && <p className="mt-1 text-ink-2">{header.description}</p>}
+        {countLine(header.count, "card") && <p className="mt-1 text-sm text-ink-3">{countLine(header.count, "card")}</p>}
+      </div>
+      {status === "LoadingFirstPage" ? (
+        <Loading />
+      ) : layout?.sort ? (
+        <SortedBinder
+          username={username}
+          path={path}
+          results={results}
+          status={status}
+          loadMore={loadMore}
+          sort={layout.sort}
+          emptySlots={layout.emptySlots}
+        />
+      ) : (
+        <>
+          {results.length === 0 ? (
+            <p className="mt-6 text-ink-2">This binder is empty for now.</p>
+          ) : (
+            <>
+              <StoredPockets results={results} />
+              <MoreButton status={status} loadMore={loadMore} />
+            </>
+          )}
+          {layout?.emptySlots && <StillNeeds username={username} path={path} />}
+        </>
+      )}
+    </Shell>
+  );
+}
+
+/** Pockets as the owner placed them, a page at a time. */
+function StoredPockets({ results }: { results: readonly PublicCopy[] }) {
   const pages = new Map<number, Array<PublicCopy | null>>();
   const put = (copy: PublicCopy, slot: number) => {
     const page = Math.floor(slot / POCKETS);
@@ -248,46 +296,132 @@ export function PublicBinderPage() {
     if (copy.slot === undefined) put(copy, next++);
   }
   const pageNumbers = [...pages.keys()].sort((a, b) => a - b);
-  const spine = header.label;
   return (
-    <Shell username={username} title={header.name}>
-      <div className="rounded-xl bg-raised px-4 py-3">
-        {/* The binder's spine colour, as a swatch above its name. */}
-        <span
-          aria-hidden="true"
-          className="mb-2 block h-1.5 w-12 rounded-full"
-          style={{ background: spine?.background ?? "var(--color-neon-green)" }}
-        />
-        <h1 className="text-2xl font-bold">{header.name}</h1>
-        {header.description && <p className="mt-1 text-ink-2">{header.description}</p>}
-        {countLine(header.count, "card") && <p className="mt-1 text-sm text-ink-3">{countLine(header.count, "card")}</p>}
+    <>
+      {pageNumbers.map((page) => (
+        <section key={page} className="mt-6">
+          <h2 className="mb-2 text-sm font-semibold text-ink-3">Page {page + 1}</h2>
+          <ol className="grid max-w-xl grid-cols-3 gap-3 rounded-xl border border-rule p-3">
+            {pages.get(page)!.map((copy, i) =>
+              copy ? (
+                <CardTile key={copy.key} item={copy} />
+              ) : (
+                <li key={`empty-${i}`} className="aspect-[5/7] rounded-md border border-dashed border-rule">
+                  <span className="sr-only">Empty pocket</span>
+                </li>
+              ),
+            )}
+          </ol>
+        </section>
+      ))}
+    </>
+  );
+}
+
+/** The card a public copy is of, for laying out (null: gone). */
+function publicCard(copy: PublicCopy): Card | null {
+  return copy.card ? hydrateCatalogCard(copy.card) : copy.unlisted ? hydratePublicOwnCard(copy.key, copy.unlisted) : null;
+}
+
+/**
+ * NEO-362 — a binder its owner keeps sorted: drawn in the same order the
+ * owner sees (`sortedPages`), so every card is read first. With empty slots
+ * shared, the cards it still needs sit in their sleeves.
+ */
+function SortedBinder({
+  username,
+  path,
+  results,
+  status,
+  loadMore,
+  sort,
+  emptySlots,
+}: {
+  username: string;
+  path: string;
+  results: readonly PublicCopy[];
+  status: string;
+  loadMore: (n: number) => void;
+  sort: "checklist" | "player" | "team";
+  emptySlots: boolean;
+}) {
+  const needs = useQuery(api.publicCollection.binderNeeds, emptySlots ? { username, path } : "skip");
+  // Sorted is drawn whole: keep reading until every card is in.
+  useEffect(() => {
+    if (status === "CanLoadMore") loadMore(PAGE_SIZE * 4);
+  }, [status, loadMore]);
+  if (status !== "Exhausted" || (emptySlots && needs === undefined)) return <Loading />;
+  const cards = new Map<string, Card>();
+  const byKey = new Map<string, PublicCopy>();
+  const copies: Copy[] = [];
+  for (const item of results) {
+    const card = publicCard(item);
+    if (!card) continue;
+    cards.set(card.id, card);
+    byKey.set(item.key, item);
+    copies.push({ id: item.key, cardId: card.id, quantity: item.quantity, slot: item.slot } as Copy);
+  }
+  const needCards = (needs?.needs ?? []).map((n) => hydrateCatalogCard(n.card)).filter((c): c is Card => c !== null);
+  const pages: PageModel[] = sortedPages({ copies, cards, sort, emptySlots, needs: needCards });
+  if (pages.length === 0) return <p className="mt-6 text-ink-2">This binder is empty for now.</p>;
+  return (
+    <>
+      {pages.map((page, p) => (
+        <section key={p} className="mt-6">
+          <h2 className="mb-2 text-sm font-semibold text-ink-3">
+            Page {p + 1}
+            {page.section ? ` · ${page.section}` : ""}
+          </h2>
+          <ol className="grid max-w-xl grid-cols-3 gap-3 rounded-xl border border-rule p-3">
+            {page.pockets.map((pocket, i) => {
+              const { content } = pocket;
+              if (content.kind === "have") {
+                const item = byKey.get(content.copies[0].id);
+                if (item) return <CardTile key={item.key} item={item} />;
+              }
+              if (content.kind === "need") return <NeedTile key={`need-${content.card.id}`} card={content.card} />;
+              return (
+                <li key={`empty-${i}`} className="aspect-[5/7] rounded-md border border-dashed border-rule">
+                  <span className="sr-only">Empty pocket</span>
+                </li>
+              );
+            })}
+          </ol>
+        </section>
+      ))}
+    </>
+  );
+}
+
+/** NEO-362 — an empty slot the owner shares: a card this binder still needs. */
+function NeedTile({ card }: { card: Card }) {
+  return (
+    <li className="flex flex-col gap-1.5">
+      <div className="opacity-40">
+        <CardFace model={card} size="fill" state="need" />
       </div>
-      {status === "LoadingFirstPage" ? (
-        <Loading />
-      ) : results.length === 0 ? (
-        <p className="mt-6 text-ink-2">This binder is empty for now.</p>
-      ) : (
-        <>
-          {pageNumbers.map((page) => (
-            <section key={page} className="mt-6">
-              <h2 className="mb-2 text-sm font-semibold text-ink-3">Page {page + 1}</h2>
-              <ol className="grid max-w-xl grid-cols-3 gap-3 rounded-xl border border-rule p-3">
-                {pages.get(page)!.map((copy, i) =>
-                  copy ? (
-                    <CardTile key={copy.key} item={copy} />
-                  ) : (
-                    <li key={`empty-${i}`} className="aspect-[5/7] rounded-md border border-dashed border-rule">
-                      <span className="sr-only">Empty pocket</span>
-                    </li>
-                  ),
-                )}
-              </ol>
-            </section>
-          ))}
-          <MoreButton status={status} loadMore={loadMore} />
-        </>
-      )}
-    </Shell>
+      <p className="text-xs leading-snug text-ink-2">
+        <span className="block font-medium text-ink-3">{cardLabel(card)}</span>
+        <span className="block font-semibold text-neon-pink-text">Still needs</span>
+      </p>
+    </li>
+  );
+}
+
+/** NEO-362 — an unsorted binder's shared empty slots: listed after its pages. */
+function StillNeeds({ username, path }: { username: string; path: string }) {
+  const needs = useQuery(api.publicCollection.binderNeeds, { username, path });
+  if (!needs || needs.needs.length === 0) return null;
+  const cards = needs.needs.map((n) => hydrateCatalogCard(n.card)).filter((c): c is Card => c !== null);
+  return (
+    <section className="mt-8">
+      <h2 className="mb-2 text-lg font-bold">Still needs</h2>
+      <ul className="grid grid-cols-3 gap-3 sm:grid-cols-4 lg:grid-cols-6">
+        {cards.map((card) => (
+          <NeedTile key={card.id} card={card} />
+        ))}
+      </ul>
+    </section>
   );
 }
 

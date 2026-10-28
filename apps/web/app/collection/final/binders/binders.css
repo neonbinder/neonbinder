@@ -311,6 +311,17 @@
   top: 40%;
 }
 
+/*
+ * NEO-362: a card in a smart binder whose rule no longer takes it in. It
+ * stays put (nothing moves on its own); the sticker says why it stands out.
+ * Purple like the Smart badge, low on the sleeve, clear of the sale sticker.
+ */
+.p2-tag.nb-outside-tag {
+  top: 62%;
+  background: var(--neon-purple);
+  color: var(--on-neon-purple);
+}
+
 /* ------------------------------------------------ the pocket a hunt found */
 
 /* Pink, so it never reads as the blue "filling this pocket" ring: two quick

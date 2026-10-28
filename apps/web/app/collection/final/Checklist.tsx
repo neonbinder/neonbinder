@@ -15,7 +15,10 @@ import {
   useBuildingSets,
   useCapabilities,
   useCollectionActions,
+  useContainers,
   useCopiesInVariant,
+  useRuleMatches,
+  useScope,
   useSetSummary,
   useSide,
   useVariantCards,
@@ -25,7 +28,8 @@ import type { Card, CardId } from "./data/types";
 import InventoryChecklist from "./inventory/InventoryChecklist";
 import { usePageApi } from "./pageApi";
 
-type Show = "all" | "have" | "need";
+/** `fits`: NEO-362, the cards the open smart binder's rule takes in. */
+type Show = "all" | "have" | "need" | "fits";
 
 /**
  * The checklist under the cascade: progress strip, "Building this set", an
@@ -88,6 +92,13 @@ const CollectionChecklist = forwardRef<HTMLHeadingElement, ChecklistProps>(funct
   const list = useMemo(() => cards ?? [], [cards]);
 
   const [show, setShow] = useState<Show>("all");
+  // NEO-362: looking through a smart binder, the checklist can narrow to the
+  // cards its rule takes in. A Have here files into that binder as always.
+  const scope = useScope();
+  const containers = useContainers();
+  const smart = scope !== "all" ? containers?.find((c) => c.id === scope && !!c.smartRule) : undefined;
+  const listIds = useMemo(() => (smart && cards ? cards.map((c) => c.id) : null), [smart, cards]);
+  const fits = useRuleMatches(smart ? smart.id : null, listIds);
   const [query, setQuery] = useState("");
   const [rangeText, setRangeText] = useState("");
   /** For numbers two cards share: which of them the collector means. */
@@ -101,6 +112,7 @@ const CollectionChecklist = forwardRef<HTMLHeadingElement, ChecklistProps>(funct
     const have = ownedIds.has(c.id);
     if (show === "have" && !have) return false;
     if (show === "need" && have) return false;
+    if (show === "fits" && smart && !fits?.has(c.id)) return false;
     if (!needle) return true;
     const hay = fold(`${c.cardNumber} ${playerNames(c)} ${teamNames(c)} ${c.cardVariation ?? ""} ${c.features.join(" ")}`);
     return needle.split(" ").every((t) => hay.includes(t));
@@ -230,8 +242,9 @@ const CollectionChecklist = forwardRef<HTMLHeadingElement, ChecklistProps>(funct
               { value: "all", label: "All" },
               { value: "have", label: "Haves" },
               { value: "need", label: "Needs" },
+              ...(smart ? [{ value: "fits" as const, label: `Fits ${smart.name}` }] : []),
             ]}
-            onChange={setShow}
+            onChange={(next: Show) => setShow(next)}
             className="flex gap-1.5 pb-1"
             chipClass={(on) => `${CHIP} ${on ? CHIP_ON : CHIP_OFF}`}
           />

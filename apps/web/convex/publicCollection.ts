@@ -49,6 +49,7 @@ import type { Doc, Id } from "./_generated/dataModel";
 import type { QueryCtx } from "./_generated/server";
 import { query } from "./_generated/server";
 import { MAX_CONTAINERS } from "./collection";
+import { binderNeeds as readBinderNeeds, needsResultValidator } from "./binderRules";
 import {
   collectionCopyConditionValidator,
   collectionCopyGradingValidator,
@@ -133,6 +134,18 @@ export const publicBinderValidator = v.object({
   label: v.optional(collectionLabelValidator),
   /** The stored count; null when it was never counted. */
   count: v.union(collectionCountValidator, v.null()),
+  /**
+   * NEO-362 — how the owner lays it out: a sort (drawn on read, so the page
+   * draws it too) and whether visitors see its empty slots (only when the
+   * owner switched that on). Absent: pockets as stored.
+   */
+  layout: v.optional(
+    v.object({
+      sort: v.optional(v.union(v.literal("checklist"), v.literal("player"), v.literal("team"))),
+      emptySlots: v.boolean(),
+      smart: v.boolean(),
+    }),
+  ),
 });
 
 const shelfValidator = v.union(v.literal("want"), v.literal("trade"), v.literal("forSale"));
@@ -337,12 +350,38 @@ export const binder = query({
     const found = await publicBinder(ctx, args.username, args.path);
     if (!found) return null;
     const { row } = found;
+    const layout = publicLayout(row);
     return {
       name: row.name,
       ...(row.description ? { description: row.description } : {}),
       ...(row.label ? { label: row.label } : {}),
       count: row.count ?? null,
+      ...(layout ? { layout } : {}),
     };
+  },
+});
+
+/** NEO-362 — what a visitor's page draws: the sort, and empty slots only when the owner shares them. */
+function publicLayout(row: ContainerRow) {
+  const sort = row.settings?.sort;
+  const emptySlots =
+    row.settings?.publicEmptySlots === true && row.settings?.emptySlots !== false && (!!sort || !!row.rule);
+  if (!sort && !emptySlots) return null;
+  return { ...(sort ? { sort } : {}), emptySlots, smart: !!row.rule };
+}
+
+/**
+ * NEO-362 — a public binder's empty slots (`binderRules.binderNeeds`), only
+ * when its owner shares them (`publicLayout`); otherwise none. Never says
+ * whether the owner holds a card elsewhere.
+ */
+export const binderNeeds = query({
+  args: { username: v.string(), path: v.string() },
+  returns: needsResultValidator,
+  handler: async (ctx, args) => {
+    const found = await publicBinder(ctx, args.username, args.path);
+    if (!found || !publicLayout(found.row)?.emptySlots) return { needs: [], supported: true, truncated: false };
+    return await readBinderNeeds(ctx, found.row, null);
   },
 });
 

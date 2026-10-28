@@ -213,6 +213,8 @@ test(
       page.getByRole("alert").filter({ hasText: `Another of your binders already uses ${readable}. Pick a different link name.` }),
     ).toBeVisible();
     await page.getByRole("button", { name: "Done", exact: true }).click();
+    // NEO-362: label and rename controls live in the binder's settings.
+    await page.getByRole("button", { name: "Binder settings", exact: true }).click();
     await page.getByRole("button", { name: `Rename or delete ${twinName}`, exact: true }).click();
     await page
       .getByRole("dialog", { name: `Rename or delete ${twinName}`, exact: true })
@@ -238,6 +240,8 @@ test(
     await drawer.getByRole("button", { name: "Close card detail" }).click();
     await tabs.getByRole("link", { name: "My Binders", exact: true }).click();
     await shelf.getByRole("button", { name: new RegExp(`^${escapeRegExp(binderName)}, `) }).click();
+    // NEO-362: label and rename controls live in the binder's settings.
+    await page.getByRole("button", { name: "Binder settings", exact: true }).click();
     await page.getByRole("button", { name: `Rename or delete ${binderName}`, exact: true }).click();
     await page
       .getByRole("dialog", { name: `Rename or delete ${binderName}`, exact: true })

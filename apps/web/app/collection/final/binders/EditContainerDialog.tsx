@@ -6,7 +6,7 @@ import { cardCount } from "./model";
 import NeonButton from "@/components/modules/NeonButton";
 
 /**
- * NEO-359 — "Rename or delete", from the cover of a binder or box the
+ * NEO-359 — "Rename or delete", from a binder's settings or a box's cover, for one the
  * collector made (Main, the Want List and Up for Trade have neither).
  *
  * Deleting is a second step inside the dialog, and it says what happens:
