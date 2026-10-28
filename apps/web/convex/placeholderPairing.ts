@@ -69,6 +69,7 @@ import { v } from "convex/values";
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { pairBatch } from "./lib/pairing/pairBatch";
+import { noteIntakePairsChanged } from "./intakeRuns";
 import { playerNamesMatch, teamNamesMatch } from "./lib/pairing/names";
 import { orientPair } from "./lib/pairing/pool";
 import type {
@@ -1726,6 +1727,8 @@ export async function applyPairDiffImpl(
       JSON.stringify({ msg: "placeholder_pair_insert_skipped", jobId, skipped }),
     );
   }
+  // NEO-379: an intake run over this job re-matches the pairs that changed.
+  if (deleted + revised + inserted > 0) await noteIntakePairsChanged(ctx, jobId);
   return { deleted, revised, inserted, skipped };
 }
 
@@ -2179,6 +2182,7 @@ export const manuallyPairPlaceholderImages = mutation({
       ),
     });
 
+    await noteIntakePairsChanged(ctx, args.jobId); // NEO-379
     return { paired: true, frontIndex: args.frontIndex, backIndex: args.backIndex };
   },
 });
@@ -2269,6 +2273,7 @@ export const swapPairSides = mutation({
 
     // The images stay paired throughout — neither ever becomes a candidate — so
     // pairStatus needs no change and the pool never sees them.
+    await noteIntakePairsChanged(ctx, args.jobId); // NEO-379
     return { swapped: true };
   },
 });
@@ -2292,6 +2297,7 @@ export const unpairPlaceholderImages = mutation({
 
     const wasManual = pair.mechanism === "manual";
     await ctx.db.delete(pair._id);
+    await noteIntakePairsChanged(ctx, args.jobId); // NEO-379
 
     const front = await imageByIndex(ctx, args.jobId, args.frontIndex);
     const back = await imageByIndex(ctx, args.jobId, args.backIndex);

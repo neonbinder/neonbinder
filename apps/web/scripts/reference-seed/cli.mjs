@@ -109,6 +109,10 @@ export const SELECTOR_DEPENDANT_TABLES = [
   "privateCards",
   "privateSets",
   "cardRequests",
+  // NEO-379 — intake runs (variantId); their matches hold no selector id.
+  // Both drained by the reset (`resetIntakeRunsBatch`), before the
+  // containers, the selector rows and the cards.
+  "intakeRuns",
   "cardPlayerLinks",
   "cardChecklist",
   "cardCrossListings",
