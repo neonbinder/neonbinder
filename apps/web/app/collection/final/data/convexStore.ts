@@ -47,6 +47,7 @@
 
 import { createElement, useEffect, useMemo, useRef, type ReactNode } from "react";
 import {
+  useAction,
   useMutation,
   usePaginatedQuery,
   useQueries,
@@ -70,6 +71,8 @@ import type {
 } from "@/convex/lib/catalogView";
 import { isOptimisticId, OPTIMISTIC_ID_PREFIX } from "../lineKeys";
 import { finishForVariant } from "./finish";
+import { resizeCopyPhoto } from "@/lib/collection/copy-photo-resize";
+
 import {
   bySlot,
   CollectionStoreContext,
@@ -84,6 +87,7 @@ import {
   type CollectionActions,
   type CollectionData,
   type CollectionStoreValue,
+  type CopyPhotosExtension,
   type SharingExtension,
 } from "./store";
 import {
@@ -95,6 +99,8 @@ import {
   type ContainerPatch,
   type Copy,
   type CopyDetails,
+  type CopyId,
+  type CopyPhotos,
   type DrillItem,
   type DrillLevel,
   type HeldCount,
@@ -408,6 +414,7 @@ function toCopy(raw: RawCopy, homes?: Homes): Copy {
     homeKind: home?.kind ?? "binder",
     ...(home ? { homeName: home.name } : {}),
     upForTrade: raw.upForTrade === true,
+    ...(raw.hasPhotos ? { hasPhotos: true } : {}),
     ...(raw.slot !== undefined ? { slot: raw.slot } : {}),
     quantity: raw.quantity,
     ...(raw.condition ? { condition: raw.condition } : {}),
@@ -1673,8 +1680,10 @@ function mainId(local: OptimisticLocalStore): RawCopy["homeId"] | undefined {
 }
 
 /** The server's fold rule, as far as the client can see it: everything but quantity, never a cert or serial. */
-function foldsInto(row: RawCopy, next: RawDetails): boolean {
+function foldsInto(row: RawCopy, next: RawDetails & { hasPhotos?: boolean }): boolean {
   if (row.grading?.cert || row.serialNumber || next.grading?.cert || next.serialNumber) return false;
+  // NEO-377: a line with photos is one of a kind too.
+  if (row.hasPhotos || next.hasPhotos) return false;
   return (
     (next.homeId === undefined || row.homeId === next.homeId) &&
     (row.slot ?? null) === (next.slot ?? null) &&
@@ -1692,6 +1701,7 @@ function foldsInto(row: RawCopy, next: RawDetails): boolean {
 /** A plain line (NEO-364, D9), the server's `isPlainLine`: raw, no detail recorded, not up for trade. */
 function isPlainRow(r: RawCopy): boolean {
   return (
+    r.hasPhotos !== true &&
     r.condition === undefined &&
     r.grading === undefined &&
     r.serialNumber === undefined &&
@@ -1884,6 +1894,8 @@ function applyMove(
   const landed: RawCopy = { ...source, homeId: (toHomeId ?? source.homeId) as RawCopy["homeId"], quantity: moving };
   if (slot === undefined) delete landed.slot;
   else landed.slot = slot;
+  // NEO-377: photos stay with the line; a part split off has none.
+  if (split) delete landed.hasPhotos;
   const twin = cardRows(local, known.cardId).find((r) => r._id !== source._id && foldsInto(r, landed));
   const rest: RawCopy[] = split ? [{ ...source, quantity: source.quantity - moving }] : [];
   const change: Change = {
@@ -2285,7 +2297,11 @@ function useConvexActions(): CollectionActions {
               setId: copy.setId,
               isVariation: cards.current.get(copy.cardId)?.isVariation ?? false,
             });
-            await m.restoreCopy({ cardId: removed.cardId, details: removed.details });
+            await m.restoreCopy({
+              cardId: removed.cardId,
+              details: removed.details,
+              ...(removed.photoIds ? { photoIds: removed.photoIds } : {}),
+            });
           },
         };
       },
@@ -2539,6 +2555,63 @@ function useShareProfile(): ShareProfile | undefined {
  * The share-link writes. No optimistic layer: each is one small patch and the
  * shelf (`collectionContainers.list`) and the profile re-read on their own.
  */
+/** Lines one photo read asks about (the server's `MAX_PHOTOS_OF`). */
+const MAX_PHOTOS_OF = 100;
+
+/** NEO-377 — the photos of the lines given that have any (a stable empty skip). */
+function useLinePhotos(copies: readonly Copy[]): ReadonlyMap<CopyId, CopyPhotos> | undefined {
+  const ids = copies
+    .filter((c) => c.hasPhotos && !isOptimisticId(c.id))
+    .map((c) => c.id as RawCopy["_id"])
+    .slice(0, MAX_PHOTOS_OF);
+  const key = ids.join(",");
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- `key` is `ids`, spelled stably
+  const args = useMemo(() => (ids.length > 0 ? { copyIds: ids } : "skip"), [key]);
+  const rows = useQuery(api.copyPhotos.photosOf, args);
+  return useMemo(() => {
+    if (args === "skip") return new Map();
+    if (rows === undefined) return undefined;
+    return new Map(rows.map((r) => [r.copyId as CopyId, { ...(r.front ? { front: r.front } : {}), ...(r.back ? { back: r.back } : {}) }]));
+  }, [args, rows]);
+}
+
+/**
+ * NEO-377 — copy photos: resize in the browser, upload both files straight
+ * to R2 through signed URLs, then let Convex check and attach them.
+ */
+function useConvexCopyPhotos(): CopyPhotosExtension {
+  const startUpload = useAction(api.copyPhotos.startUpload);
+  const finishUpload = useAction(api.copyPhotos.finishUpload);
+  const remove = useMutation(api.copyPhotos.remove);
+  return useMemo<CopyPhotosExtension>(
+    () => ({
+      usePhotos: useLinePhotos,
+      async addPhoto(copy, side, file) {
+        if (isOptimisticId(copy.id)) throw new Error("That copy is still saving. Try again in a moment.");
+        const resized = await resizeCopyPhoto(file);
+        const started = await startUpload({
+          copyId: copy.id as RawCopy["_id"],
+          side,
+          contentType: resized.contentType,
+          imageBytes: resized.image.size,
+          thumbBytes: resized.thumb.size,
+        });
+        const put = async (url: string, blob: Blob) => {
+          const res = await fetch(url, { method: "PUT", headers: { "content-type": resized.contentType }, body: blob });
+          if (!res.ok) throw new Error("That photo didn't upload. Check your connection and try again.");
+        };
+        await put(started.imageUploadUrl, resized.image);
+        await put(started.thumbUploadUrl, resized.thumb);
+        await finishUpload({ photoId: started.photoId });
+      },
+      async removePhoto(copy, side) {
+        await remove({ copyId: copy.id as RawCopy["_id"], side });
+      },
+    }),
+    [startUpload, finishUpload, remove],
+  );
+}
+
 function useConvexSharing(): SharingExtension {
   const asHome = (id: string) => id as RawCopy["homeId"];
   const ensureLink = useMutation(api.collectionContainers.ensureLink);
@@ -2584,9 +2657,10 @@ export function ConvexCollectionProvider({ children }: { children: ReactNode }) 
     void Promise.resolve(ensureSystem({})).catch(() => undefined);
   }, [ensureSystem]);
   const sharing = useConvexSharing();
+  const photos = useConvexCopyPhotos();
   const value = useMemo<CollectionStoreValue>(
-    () => ({ kind: "convex", capabilities: REAL_CAPABILITIES, data: CONVEX_DATA, actions, sharing }),
-    [actions, sharing],
+    () => ({ kind: "convex", capabilities: REAL_CAPABILITIES, data: CONVEX_DATA, actions, sharing, photos }),
+    [actions, sharing, photos],
   );
   return createElement(CollectionStoreContext.Provider, { value }, children);
 }

@@ -31,6 +31,8 @@ import {
   useCollectionActions,
   useContainers,
   useCopiesOf,
+  useCopyPhotos,
+  usePhotosOf,
   useScope,
   useSide,
   useWants,
@@ -41,6 +43,7 @@ import type { Card, Container, ContainerId, Copy, CopyDetails, CopyId, MoveResul
 import { binderText, lineNames, lineSummary, lineWhat, type NamedBinder } from "./lineItems";
 import { useLineKeys } from "./lineKeys";
 import OwnCardNote from "./OwnCardNote";
+import CopyPhotosPanel, { LineThumb } from "./CopyPhotosPanel";
 import { usePageApi } from "./pageApi";
 
 /** What the shared copy form edits (the prototypes' copy shape). */
@@ -684,6 +687,14 @@ export function CopyList({
    * say), so neither the row nor a panel open on it closes under the pointer.
    */
   const keyOf = useLineKeys(lines);
+  /** NEO-377 — copy photos (capability `copyPhotos`) and the line whose photo panel is open. */
+  const photosExt = useCopyPhotos();
+  const photoMap = usePhotosOf(lines);
+  const [photosOpen, setPhotosOpen] = useState<string | null>(null);
+  const closePhotos = (copy: Copy) => {
+    setPhotosOpen(null);
+    sectionRef.current?.querySelector<HTMLElement>(`[data-copy-photos="${CSS.escape(copy.id)}"]`)?.focus();
+  };
   /** The line (by `keyOf`) whose Move, Sell or Take off sale panel is open. */
   const [moving, setMoving] = useState<{ key: string; shift: Shift } | null>(null);
   const movingOn = (copy: Copy) => (moving && moving.key === keyOf(copy) ? moving.shift : null);
@@ -767,6 +778,7 @@ export function CopyList({
                   copy.id === focusCopyId ? "bg-pick-blue/20 ring-2 ring-inset ring-selection" : ""
                 }`}
               >
+                <LineThumb photos={photoMap?.get(copy.id)} line={names[i]} />
                 <span className="min-w-0 flex-1">
                   <span className="block text-ink">
                     <span>{lineWhat(copy)}</span>
@@ -793,6 +805,18 @@ export function CopyList({
                     onClick={() => onEdit(copy, keyOf(copy))}
                   >
                     Edit
+                  </button>
+                )}
+                {photosExt && (
+                  <button
+                    type="button"
+                    className={QUIET_BUTTON}
+                    data-copy-photos={copy.id}
+                    aria-label={`Photos, ${name}, ${names[i]}`}
+                    aria-expanded={photosOpen === keyOf(copy)}
+                    onClick={() => setPhotosOpen(photosOpen === keyOf(copy) ? null : keyOf(copy))}
+                  >
+                    Photos
                   </button>
                 )}
                 {canShift && shiftHomes(copy, shelf, "move").length > 0 && (
@@ -843,6 +867,15 @@ export function CopyList({
                     }
                     onMove={(to, quantity) => submitMove(copy, moving.shift, to, quantity)}
                     onCancel={() => closeMove(copy.id, moving.shift)}
+                  />
+                )}
+                {photosExt && photosOpen === keyOf(copy) && (
+                  <CopyPhotosPanel
+                    copy={copy}
+                    line={names[i]}
+                    photos={photoMap?.get(copy.id)}
+                    ext={photosExt}
+                    onClose={() => closePhotos(copy)}
                   />
                 )}
               </li>

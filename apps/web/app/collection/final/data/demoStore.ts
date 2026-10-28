@@ -37,7 +37,8 @@
  * kind of words the server sends.
  */
 
-import { createContext, createElement, useContext, useEffect, useMemo, useRef, type ReactNode } from "react";
+import { createContext, createElement, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { resizeCopyPhoto } from "@/lib/collection/copy-photo-resize";
 import {
   brands,
   cards as fixtureCards,
@@ -97,6 +98,7 @@ import {
   type CollectionActions,
   type CollectionData,
   type CollectionStoreValue,
+  type CopyPhotosExtension,
   type DemoExtension,
 } from "./store";
 import {
@@ -111,6 +113,10 @@ import {
   type Container,
   type ContainerCopies,
   type Copy,
+  type CopyId,
+  type CopyPhotos,
+  type PhotoSide,
+  type PhotoUrls,
   type DeclinedCard,
   type DrillItem,
   type FoundCards,
@@ -1136,15 +1142,65 @@ export function DemoCollectionProvider({ storageKey, children }: { storageKey?: 
     }),
     [state.cardRequests, state.requestCard, state.browseFilter, state.setBrowseFilter, state.reset],
   );
+  const photos = useDemoCopyPhotos();
   const value = useMemo<CollectionStoreValue>(
-    () => ({ kind: "demo", capabilities: ALL_CAPABILITIES, data: DEMO_DATA, actions, demo }),
-    [actions, demo],
+    () => ({ kind: "demo", capabilities: ALL_CAPABILITIES, data: DEMO_DATA, actions, demo, photos }),
+    [actions, demo, photos],
   );
   return createElement(
     CollectionStoreContext.Provider,
     { value },
     createElement(DemoStateContext.Provider, { value: state }, children),
   );
+}
+
+/**
+ * NEO-377 — the demo's copy photos: resized in the browser exactly like the
+ * real ones, then kept on this page only (object URLs, gone on reload). No
+ * upload, no account.
+ */
+function useDemoCopyPhotos(): CopyPhotosExtension {
+  const [byCopy, setByCopy] = useState<ReadonlyMap<CopyId, CopyPhotos>>(new Map());
+  const usePhotos = useCallback(
+    (copies: readonly Copy[]) => {
+      const out = new Map<CopyId, CopyPhotos>();
+      for (const copy of copies) {
+        const p = byCopy.get(copy.id);
+        if (p) out.set(copy.id, p);
+      }
+      return out;
+    },
+    [byCopy],
+  );
+  const drop = (urls: PhotoUrls | undefined) => {
+    if (!urls) return;
+    URL.revokeObjectURL(urls.imageUrl);
+    URL.revokeObjectURL(urls.thumbUrl);
+  };
+  const addPhoto = useCallback(async (copy: Copy, side: PhotoSide, file: File) => {
+    const resized = await resizeCopyPhoto(file);
+    const urls = { imageUrl: URL.createObjectURL(resized.image), thumbUrl: URL.createObjectURL(resized.thumb) };
+    setByCopy((prev) => {
+      const next = new Map(prev);
+      drop(prev.get(copy.id)?.[side]);
+      next.set(copy.id, { ...prev.get(copy.id), [side]: urls });
+      return next;
+    });
+  }, []);
+  const removePhoto = useCallback(async (copy: Copy, side: PhotoSide) => {
+    setByCopy((prev) => {
+      const had = prev.get(copy.id);
+      if (!had?.[side]) return prev;
+      drop(had[side]);
+      const next = new Map(prev);
+      const rest: CopyPhotos = { ...had };
+      delete rest[side];
+      if (rest.front || rest.back) next.set(copy.id, rest);
+      else next.delete(copy.id);
+      return next;
+    });
+  }, []);
+  return useMemo(() => ({ usePhotos, addPhoto, removePhoto }), [usePhotos, addPhoto, removePhoto]);
 }
 
 /** The fixture's set label for an id, or null (for page titles while views migrate). */

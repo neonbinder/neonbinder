@@ -53,7 +53,10 @@ import {
   foldsInto,
   placeOf,
   refuse,
+  foldShape,
+  type FoldShape,
 } from "./collection";
+import { dropPhotos } from "./copyPhotos";
 import { MAX_SET_VARIANTS, walkSetVariants } from "./collectionCatalog";
 import { findSetForSelectorOption } from "./lib/selectorAncestry";
 import {
@@ -338,12 +341,12 @@ export async function moveOntoCatalogCard(
   const changes: CountChange[] = [];
   const now = Date.now();
   for (const row of rows) {
-    const mine = detailsOf(row);
+    const mine = foldShape(row);
     // Same rule as an add (`arrivingPocket`): a twin in the same pocketed
     // binder takes the copy into its own pocket, freeing the copy's pocket.
     const twin = target.find(
       (t) =>
-        foldsInto(detailsOf(t), samePocketAs(t, row, mine)) &&
+        foldsInto(foldShape(t), samePocketAs(t, row, mine)) &&
         t.quantity + row.quantity <= MAX_COPY_QUANTITY,
     );
     if (twin) {
@@ -380,8 +383,8 @@ export async function moveOntoCatalogCard(
 function samePocketAs(
   twin: Pick<Doc<"collectionCopies">, "homeId" | "slot">,
   row: Pick<Doc<"collectionCopies">, "homeId" | "slot">,
-  mine: ReturnType<typeof detailsOf>,
-): ReturnType<typeof detailsOf> {
+  mine: FoldShape,
+): FoldShape {
   return twin.homeId === row.homeId && twin.slot !== undefined && row.slot !== undefined
     ? { ...mine, slot: twin.slot }
     : mine;
@@ -393,7 +396,10 @@ function samePocketAs(
  */
 async function deletePrivateCard(ctx: MutationCtx, card: PrivateCardRow): Promise<void> {
   const rows = await linesOf(ctx, card.ownerId, card._id);
-  for (const row of rows) await ctx.db.delete(row._id);
+  for (const row of rows) {
+    await dropPhotos(ctx, row);
+    await ctx.db.delete(row._id);
+  }
   if (rows.length > 0) {
     await applyCopyChanges(
       ctx,

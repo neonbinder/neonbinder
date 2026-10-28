@@ -357,6 +357,23 @@ export interface Copy extends CopyDetails {
   /** "Main", "Show box", when the store knows it. */
   homeName?: string;
   upForTrade: boolean;
+  /** NEO-377 — this line has a photo (front, back or both): `useCopyPhotos`. */
+  hasPhotos?: boolean;
+}
+
+/** NEO-377 — a side of a physical copy. */
+export type PhotoSide = "front" | "back";
+
+/** One side's photo: the full (listing-sized) image and its thumbnail. */
+export interface PhotoUrls {
+  imageUrl: string;
+  thumbUrl: string;
+}
+
+/** A copy line's photos. A side with none is absent. */
+export interface CopyPhotos {
+  front?: PhotoUrls;
+  back?: PhotoUrls;
 }
 
 /** Rows in a box (a long box's dividers): `slot` 0 to 4. */
@@ -790,6 +807,8 @@ export interface Capabilities {
    * (a scripted pile of scans) until the real pipeline is built.
    */
   intake: boolean;
+  /** NEO-377 — a front and back photo on each copy line (`useCopyPhotos`). */
+  copyPhotos: boolean;
 }
 
 export const ALL_CAPABILITIES: Capabilities = {
@@ -807,6 +826,7 @@ export const ALL_CAPABILITIES: Capabilities = {
   shareLinks: false,
   inventory: true,
   intake: true,
+  copyPhotos: true,
 };
 
 export const NO_CAPABILITIES: Capabilities = {
@@ -823,6 +843,7 @@ export const NO_CAPABILITIES: Capabilities = {
   shareLinks: false,
   inventory: false,
   intake: false,
+  copyPhotos: false,
 };
 
 /**
@@ -840,6 +861,7 @@ export const REAL_CAPABILITIES: Capabilities = {
   inventory: true,
   binderRules: true,
   binderSettings: true,
+  copyPhotos: true,
 };
 
 // ---------------------------------------------------------------------------
