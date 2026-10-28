@@ -4,7 +4,7 @@ import BinderDesk, { whereLabel } from "./BinderDesk";
 import { AdjustmentsHorizontalIcon } from "@heroicons/react/24/outline";
 import type { PageModel, PileFilters, SlotRef, SortKey } from "./model";
 import type { OpenView } from "./openView";
-import { Cover, MobileSummary, PileTools, ScopeLine, type CoverActions } from "./parts";
+import { Cover, MobileSummary, PileTools, type CoverActions } from "./parts";
 import type { PocketHandlers } from "./Pocket";
 import ShareLink from "./ShareLink";
 import NeonButton from "@/components/modules/NeonButton";
@@ -40,7 +40,6 @@ interface BinderViewProps extends PocketHandlers {
   onFindCards: () => void;
   onEditLabel: () => void;
   onEditContainer: () => void;
-  onGoChecklists: () => void;
   pile: PileControls;
   aimed: SlotRef | null;
   found: SlotRef | null;
@@ -67,7 +66,6 @@ export default function BinderView({
   onFindCards,
   onEditLabel,
   onEditContainer,
-  onGoChecklists,
   pile,
   aimed,
   found,
@@ -133,7 +131,8 @@ export default function BinderView({
         </div>
       </div>
 
-      {open.scopeLine && <ScopeLine text={open.scopeLine} onGo={onGoChecklists} />}
+      {/* Room between the header and the binder (where the old scope line sat). */}
+      <div aria-hidden="true" className="h-8" />
 
       {(!wide || children) && <MobileSummary open={open} actions={actions} />}
 

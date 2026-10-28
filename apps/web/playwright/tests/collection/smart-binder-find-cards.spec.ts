@@ -139,6 +139,8 @@ test(
     await toBinders();
     await spine.click();
     await expect(page.getByRole("heading", { level: 2, name, exact: true })).toBeVisible();
+    // NEO-362: label and rename controls live in the binder's settings.
+    await page.getByRole("button", { name: "Binder settings", exact: true }).click();
     await page.getByRole("button", { name: `Rename or delete ${name}`, exact: true }).click();
     await page
       .getByRole("dialog", { name: `Rename or delete ${name}`, exact: true })

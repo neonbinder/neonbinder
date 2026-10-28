@@ -3,8 +3,9 @@ import NeonButton from "@/components/modules/NeonButton";
 import { ruleProblem } from "@/lib/collection/binder-rule";
 import Modal from "../../prototypes/p2/Modal";
 import { useCapabilities } from "../data/store";
-import type { BinderSettingsPatch, BinderSort, Container, SmartRule } from "../data/types";
+import type { BinderSettingsPatch, BinderSort, Container, ContainerLabel, SmartRule } from "../data/types";
 import type { BinderLayout } from "./model";
+import { EditContainerButton, EditLabelButton, PrintLabelLink } from "./parts";
 import RuleBuilder, { blankRule, describeSmartRule } from "./RuleBuilder";
 
 /**
@@ -20,6 +21,8 @@ import RuleBuilder, { blankRule, describeSmartRule } from "./RuleBuilder";
  * - **The public page** shows the empty slots too, only when asked.
  * - **A smart rule** (not on Main): what cards belong, and "Find cards" to
  *   pull in the ones the collector already has.
+ * - **Label and name**: Edit label, Print label, and (not on Main) Rename or
+ *   delete, which used to sit on the binder's inside cover.
  *
  * Each choice saves as it is made (with Undo on the status line); the rule
  * saves on its own Save, once it is whole.
@@ -49,6 +52,9 @@ export default function BinderSettingsDialog({
   onSortNow,
   onRule,
   onFindCards,
+  label,
+  onEditLabel,
+  onEditContainer,
   onClose,
 }: {
   container: Container;
@@ -63,6 +69,10 @@ export default function BinderSettingsDialog({
   /** Resolves with null once saved, or why it was refused. */
   onRule: (rule: SmartRule | null) => Promise<string | null>;
   onFindCards: () => void;
+  /** The label the binder wears (its own, else its default). */
+  label: ContainerLabel;
+  onEditLabel: () => void;
+  onEditContainer: () => void;
   onClose: () => void;
 }) {
   const titleId = useId();
@@ -278,6 +288,17 @@ export default function BinderSettingsDialog({
             </p>
           </section>
         )}
+
+        <section className={SECTION} aria-labelledby={`${id}-label`}>
+          <h3 id={`${id}-label`} className={HEADING}>
+            Label and name
+          </h3>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <EditLabelButton name={container.name} onClick={onEditLabel} />
+            <PrintLabelLink name={container.name} label={label} />
+            {!container.system && <EditContainerButton name={container.name} onClick={onEditContainer} />}
+          </div>
+        </section>
 
         <div className="flex justify-end border-t border-rule-strong pt-4">
           <NeonButton type="button" variant="secondary" outline onClick={onClose} className="min-h-10">

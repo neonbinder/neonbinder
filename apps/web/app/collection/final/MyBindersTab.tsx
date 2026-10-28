@@ -1448,7 +1448,6 @@ export default function MyBindersTab({
             onFindCards={() => setDialog("find")}
             onEditLabel={() => setDialog("label")}
             onEditContainer={() => setDialog("edit")}
-            onGoChecklists={() => goToTab("checklists")}
             pile={{
               sort,
               onSort: (next) => {
@@ -1618,6 +1617,9 @@ export default function MyBindersTab({
           onSortNow={sortNow}
           onRule={saveRule}
           onFindCards={() => setDialog("find")}
+          label={label}
+          onEditLabel={() => setDialog("label")}
+          onEditContainer={() => setDialog("edit")}
           onClose={() => setDialog(null)}
         />
       )}

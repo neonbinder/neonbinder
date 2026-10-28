@@ -53,8 +53,6 @@ export interface OpenView {
   want: boolean;
   /** The cover's lines, the first one also on a phone. */
   blurb: string[];
-  /** What Checklists and My Cards look through with this open; null: unchanged. */
-  scopeLine: string | null;
   /** The binder's vinyl. */
   vinyl: string;
   /** Sleeves with Add on every card (a set), or a binder's own pockets. */
@@ -145,7 +143,7 @@ export function openView(input: OpenInput): OpenView {
             ? { text: "For sale", tone: "sale" }
             : null,
     share,
-    settings: !!input.layout && side !== "inventory",
+    settings: !!input.layout && side !== "inventory" && view.kind === "binder" && isHome(container),
     findCards: !!input.layout && !!container?.smartRule && side !== "inventory",
     pileTools: view.kind === "all",
     label: container ? { container, label } : null,
@@ -153,8 +151,6 @@ export function openView(input: OpenInput): OpenView {
     tally,
     want,
     blurb: blurbFor(input),
-    // The inventory never narrows the collection's counts.
-    scopeLine: side === "inventory" ? null : scopeLineFor(view, container),
     vinyl: browsing ? "#1e293b" : label.background,
     pockets: browsing ? "browse" : "binder",
     saleTags: view.kind === "binder" && container?.system === "trade" && !tradeBox,
@@ -230,18 +226,3 @@ function blurbFor({ view, container, mode, layout, describeRule, side }: OpenInp
   return lines;
 }
 
-function scopeLineFor(view: ViewKey, container: Container | undefined): string | null {
-  if (view.kind === "set") return null;
-  if (view.kind === "all") return "Checklists and My Cards are looking through everything.";
-  if (!container) return null;
-  if (container.system === "want") {
-    return "Checklists and My Cards are looking through everything, with your wants lit up.";
-  }
-  if (container.rule) {
-    return `${container.name} fills itself, so Checklists and My Cards look through everything.`;
-  }
-  if (!isHome(container)) return "Checklists and My Cards are looking through everything.";
-  // A box is Inventory's: it never narrows the collection.
-  if (container.kind === "box") return null;
-  return `Checklists and My Cards are looking through ${container.name}.`;
-}

@@ -113,7 +113,6 @@ describe("My Binders", () => {
     fireEvent.click(screen.getByRole("button", { name: "Back to the shelf" }));
     fireEvent.click(screen.getByRole("button", { name: /^All my cards,/ }));
     expect(screen.getByRole("heading", { level: 2, name: "All my cards" })).toBeTruthy();
-    expect(screen.getByText("Checklists and My Cards are looking through everything.")).toBeTruthy();
   });
 
   it("Alt+arrows move a card to the open pocket after it, and Undo puts it back", async () => {
@@ -164,7 +163,7 @@ describe("My Binders", () => {
     renderBinders();
     fireEvent.click(screen.getByRole("button", { name: /^'96 Contenders,/ }));
     expect(screen.getByRole("heading", { level: 2, name: "'96 Contenders" })).toBeTruthy();
-    expect(screen.getByText("Checklists and My Cards are looking through '96 Contenders.")).toBeTruthy();
+    expect(screen.queryByText(/Checklists and My Cards are looking through/)).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "Back to the shelf" }));
     const spine = screen.getByRole("button", { name: /^'96 Contenders,/ });
@@ -344,6 +343,7 @@ describe("spine labels", () => {
 
   it("Edit label saves the collector's colours, and a faint pair letters in white on the shelf", () => {
     renderBinders("/collection?tab=binders&b=binder-contenders-96");
+    fireEvent.click(screen.getByRole("button", { name: "Binder settings" }));
     fireEvent.click(screen.getByRole("button", { name: "Edit label for '96 Contenders" }));
     const dialog = screen.getByRole("dialog");
     fireEvent.change(within(dialog).getByLabelText("Background"), { target: { value: "#005A9C" } });
@@ -446,6 +446,7 @@ describe("Print this label", () => {
 
   it("opens the Print Shop in a new tab from the label editor, so the unsaved edits survive", () => {
     renderBinders("/collection?tab=binders&b=binder-contenders-96");
+    fireEvent.click(screen.getByRole("button", { name: "Binder settings" }));
     fireEvent.click(screen.getByRole("button", { name: "Edit label for '96 Contenders" }));
     const dialog = screen.getByRole("dialog");
     fireEvent.change(within(dialog).getByLabelText("Background"), { target: { value: "#005A9C" } });
@@ -466,6 +467,7 @@ describe("Print this label", () => {
 
   it("links from the label editor with the label as it stands there", () => {
     renderBinders("/collection?tab=binders&b=binder-contenders-96");
+    fireEvent.click(screen.getByRole("button", { name: "Binder settings" }));
     fireEvent.click(screen.getByRole("button", { name: "Edit label for '96 Contenders" }));
     const dialog = screen.getByRole("dialog");
     fireEvent.change(within(dialog).getByLabelText("Background"), { target: { value: "#005A9C" } });
@@ -609,7 +611,14 @@ describe("one open-binder view for binders and browsed sets", () => {
       "Share '96 Contenders",
       "Binder settings",
     ]);
-    expect(screen.getAllByRole("button", { name: "Edit label for '96 Contenders" }).length).toBeGreaterThan(0);
+    // NEO-362: a binder's label and rename controls live in its settings, not on the cover.
+    expect(screen.queryByRole("button", { name: "Edit label for '96 Contenders" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Binder settings" }));
+    const settings = screen.getByRole("dialog", { name: "'96 Contenders settings" });
+    expect(within(settings).getByRole("button", { name: "Edit label for '96 Contenders" })).toBeTruthy();
+    expect(within(settings).getByRole("link", { name: "Print label for '96 Contenders" })).toBeTruthy();
+    expect(within(settings).getByRole("button", { name: "Rename or delete '96 Contenders" })).toBeTruthy();
+    fireEvent.click(within(settings).getByRole("button", { name: "Done" }));
 
     fireEvent.click(screen.getByRole("button", { name: "Back to the shelf" }));
     fireEvent.click(screen.getByRole("button", { name: /^Browse 2000 Topps,/ }));
@@ -759,6 +768,7 @@ describe("boxes and binders you make", () => {
     const search = () => screen.getByLabelText("Page search").textContent;
     fireEvent.click(screen.getByRole("button", { name: /^Slab case,/ }));
     expect(search()).toMatch(/^\?tab=binders&b=binder-slab-case/);
+    fireEvent.click(screen.getByRole("button", { name: "Binder settings" }));
     fireEvent.click(screen.getByRole("button", { name: "Rename or delete Slab case" }));
     fireEvent.click(screen.getByRole("button", { name: "Delete this binder" }));
     fireEvent.click(screen.getByRole("button", { name: "Yes, delete it" }));
@@ -788,9 +798,10 @@ describe("boxes and binders you make", () => {
 
   it("offers no rename or delete on a system container", () => {
     renderBinders("/collection?tab=binders&b=binder-main");
+    fireEvent.click(screen.getByRole("button", { name: "Binder settings" }));
     expect(screen.queryByRole("button", { name: /^Rename or delete/ })).toBeNull();
-    // Its label can still be set.
-    expect(screen.getAllByRole("button", { name: "Edit label for Main" }).length).toBeGreaterThan(0);
+    // Its label can still be set, from its settings.
+    expect(screen.getByRole("button", { name: "Edit label for Main" })).toBeTruthy();
   });
 
   it("offers no rename or delete on Unsorted, the inventory's Main", () => {

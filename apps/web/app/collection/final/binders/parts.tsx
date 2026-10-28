@@ -7,10 +7,8 @@ import NeonButton from "@/components/modules/NeonButton";
 
 /**
  * The open binder's furniture, from prototype 2's page: the master pile's sort and filters, the inside front cover (name, tally,
- * a few lines of how-to) and its phone-width summary. Plus one thing p2
- * never needed: the scope line saying what Checklists and My Cards look
- * through now that this binder is open. All of it reads the open view's
- * data (`OpenView`); `BinderView.tsx` puts it together.
+ * a few lines of how-to) and its phone-width summary. All of it reads the
+ * open view's data (`OpenView`); `BinderView.tsx` puts it together.
  */
 
 const FOCUS = "focus-outline";
@@ -146,8 +144,13 @@ export interface CoverActions {
   onEditContainer: () => void;
 }
 
+/**
+ * The label and rename controls, on the cover only where there are no binder
+ * settings to hold them (a box, the Want List, Up for Trade, a store without
+ * settings). NEO-362: a binder with settings keeps them in its settings.
+ */
 function LabelControls({ open, actions }: { open: OpenView; actions: CoverActions }) {
-  if (!open.label) return null;
+  if (!open.label || open.settings) return null;
   const { container, label } = open.label;
   return (
     <div className="flex flex-wrap items-center gap-2 self-start">
@@ -187,7 +190,7 @@ export function Cover({ open, actions, rearrange = false }: { open: OpenView; ac
 export function MobileSummary({ open, actions }: { open: OpenView; actions: CoverActions }) {
   return (
     <div className="mb-3 space-y-1 text-sm text-ink-2">
-      {open.label && (
+      {open.label && !open.settings && (
         <div className="float-right ml-3">
           <LabelControls open={open} actions={actions} />
         </div>
@@ -198,25 +201,5 @@ export function MobileSummary({ open, actions }: { open: OpenView; actions: Cove
         <p key={line}>{line}</p>
       ))}
     </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// What the rest of the page is looking through
-// ---------------------------------------------------------------------------
-
-export function ScopeLine({ text, onGo }: { text: string; onGo: () => void }) {
-  return (
-    <p className="mb-3 text-sm text-ink-2">
-      <span aria-hidden="true" className="nb-scope-dot mr-2 align-middle" />
-      {text}{" "}
-      <button
-        type="button"
-        onClick={onGo}
-        className={`rounded-sm text-neon-blue-text underline underline-offset-2 hover:text-ink ${FOCUS}`}
-      >
-        Open Checklists
-      </button>
-    </p>
   );
 }
