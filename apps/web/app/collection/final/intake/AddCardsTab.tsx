@@ -37,6 +37,8 @@ import {
   FixTools,
   HomeSelect,
   NeedsYou,
+  PRICE_ATTR,
+  PriceField,
   QTY_ATTR,
   QtyField,
   RING,
@@ -82,10 +84,11 @@ const REVIEW_LANE = 3;
 const TILE_ATTR = "data-intake-tile";
 
 const KEY_HELP: { keys: string; does: string }[] = [
-  { keys: "j k", does: "next, previous card" },
+  { keys: "j k ↓ ↑", does: "next, previous card" },
   { keys: "h l", does: "lane left, right" },
   { keys: "y", does: "yes, save it" },
   { keys: "o", does: "open it" },
+  { keys: "p", does: "jump to its price" },
   ...FIX_TOOLS.map((t) => ({ keys: t.key, does: t.label.toLowerCase() })),
   { keys: "Enter", does: "in a quantity: save, next card" },
 ];
@@ -194,19 +197,45 @@ export default function AddCardsTab() {
 
   /** Select a card. One that can't be saved as it stands opens its drawer;
    *  any other gets the focus (its quantity when asked). */
-  const land = (id: string | null, preferQty: boolean) => {
+  const land = (id: string | null, preferQty: boolean, moveFocus = true) => {
+    if (id !== shut.current) shut.current = null;
     setSelectedId(id);
     const item = id ? find(id) : undefined;
     if (item && needsDrawer(item)) setOpenId(item.id);
-    else focusTile(id, preferQty);
+    else if (moveFocus) focusTile(id, preferQty);
   };
 
-  /** Enter in a quantity: the card saved, on to the next one down the column. */
+  /** Enter in a quantity or price: the card saved, on to the next one down
+   *  the column (its drawer, when it can't be saved as it stands). */
   const nextQty = (id: string) => {
     const lane = lanes[REVIEW_LANE];
     const at = lane.findIndex((i) => i.id === id);
-    const next = lane.slice(at + 1).find((i) => i.match.cardId) ?? null;
-    land(next?.id ?? null, true);
+    land(lane[at + 1]?.id ?? null, true);
+  };
+
+  /** Yes clicked: the card saved, the one sliding into its spot selected.
+   *  Focus stays put, so nothing scrolls out from under the pointer. */
+  const yesClicked = (id: string) => {
+    const next = neighbour(id);
+    intake.actions.confirm(id);
+    land(next, false, false);
+  };
+
+  /** Enter in a price: that price kept, the card saved, on to the next. */
+  const savePriced = (id: string, priceCents: number | null) => {
+    const item = find(id);
+    sim.actions.setDetails(id, { priceCents });
+    sim.actions.confirm(id);
+    if (item?.stage === "review" && item.match.cardId) write([{ ...item, details: { ...item.details, priceCents } }]);
+    nextQty(id);
+  };
+
+  // The card whose drawer was just closed: focus coming back to it must not
+  // open the drawer again.
+  const shut = useRef<string | null>(null);
+  const closeDrawer = () => {
+    shut.current = openId;
+    setOpenId(null);
   };
 
   // --- Keys, on the selected card. The handler reads this render's state
@@ -214,10 +243,14 @@ export default function AddCardsTab() {
   const onKey = (e: KeyboardEvent) => {
     if (e.ctrlKey || e.metaKey || e.altKey) return;
     const target = e.target as HTMLElement | null;
-    const inQty = !!target?.closest?.(`[${QTY_ATTR}]`);
+    const inPrice = !!target?.closest?.(`[${PRICE_ATTR}]`);
+    const inQty = inPrice || !!target?.closest?.(`[${QTY_ATTR}]`);
     if (!inQty && target?.closest?.('input, textarea, select, [contenteditable="true"], [role="combobox"]')) return;
-    if (inQty && (e.key.length !== 1 || /\d/.test(e.key))) return;
-    const key = e.key;
+    // The arrows step through a lane like j and k, once a card is selected.
+    const arrow = e.key === "ArrowDown" ? "j" : e.key === "ArrowUp" ? "k" : null;
+    if (arrow && !selected) return;
+    if (inQty && !arrow && (e.key.length !== 1 || /[\d.]/.test(e.key))) return;
+    const key = arrow ?? e.key;
     const move = (to: string | null) => {
       if (!to) return;
       e.preventDefault();
@@ -249,17 +282,32 @@ export default function AddCardsTab() {
       return;
     }
     if (!selected) return;
+    if (key === "y" && inPrice) {
+      // y in a price keeps what was typed there, like Enter.
+      e.preventDefault();
+      const typed = (target as HTMLInputElement).value;
+      if (selected.stage === "review" && selected.match.cardId) savePriced(selected.id, typed ? Math.round(Number(typed) * 100) : null);
+      return;
+    }
     if (key === "y") {
       e.preventDefault();
       if (selected.stage !== "review" || !selected.match.cardId) return;
       const next = neighbour(selected.id);
-      intake.actions.confirm(selected.id);
+      // y in a quantity saves the number typed there.
+      const typed = inQty ? Number.parseInt((target as HTMLInputElement).value, 10) : NaN;
+      if (Number.isFinite(typed)) intake.actions.setQty(selected.id, typed);
+      else intake.actions.confirm(selected.id);
       land(next, inQty);
       return;
     }
     if (key === "o") {
       e.preventDefault();
       setOpenId(selected.id);
+      return;
+    }
+    if (key === "p") {
+      e.preventDefault();
+      document.querySelector<HTMLInputElement>(`[${PRICE_ATTR}="${selected.id}"]:not(:disabled)`)?.focus();
       return;
     }
     const tool = FIX_TOOLS.find((t) => t.key === key);
@@ -374,7 +422,10 @@ export default function AddCardsTab() {
                   <li
                     key={`${i.id}-${i.stage}`}
                     {...{ [TILE_ATTR]: i.id }}
-                    onFocusCapture={() => setSelectedId(i.id)}
+                    onFocusCapture={() => {
+                      setSelectedId(i.id);
+                      if (!open && needsDrawer(i) && shut.current !== i.id) setOpenId(i.id);
+                    }}
                     onClick={(e) => {
                       if (needsDrawer(i)) {
                         setSelectedId(i.id);
@@ -397,7 +448,10 @@ export default function AddCardsTab() {
                         sim={intake}
                         selected={i.id === selectedId}
                         onOpen={() => setOpenId(i.id)}
+                        onYes={() => yesClicked(i.id)}
                         onEnter={() => nextQty(i.id)}
+                        onPriceEnter={(cents) => savePriced(i.id, cents)}
+                        defaults={setup.defaults}
                       />
                     ) : (
                       <MiniTile item={i} selected={i.id === selectedId} />
@@ -416,14 +470,14 @@ export default function AddCardsTab() {
       </div>
 
       {open && (
-        <Overlay labelledBy="intake-drawer-title" onClose={() => setOpenId(null)}>
+        <Overlay labelledBy="intake-drawer-title" onClose={closeDrawer}>
           <Drawer
             item={open}
             sim={intake}
             setup={setup}
             homes={homes}
             kind={kind}
-            onClose={() => setOpenId(null)}
+            onClose={closeDrawer}
           />
         </Overlay>
       )}
@@ -473,13 +527,19 @@ function ReviewTile({
   sim,
   selected,
   onOpen,
+  onYes,
   onEnter,
+  onPriceEnter,
+  defaults,
 }: {
   item: Item;
   sim: IntakeSim;
   selected: boolean;
   onOpen: () => void;
+  onYes: () => void;
   onEnter: () => void;
+  onPriceEnter: (priceCents: number | null) => void;
+  defaults: Details;
 }) {
   return (
     <div className={`rounded-md border-2 bg-surface p-2 ${edge(item, selected)}`}>
@@ -499,7 +559,7 @@ function ReviewTile({
           size="1"
           variant="primary"
           disabled={!item.match.cardId}
-          onClick={() => sim.actions.confirm(item.id)}
+          onClick={onYes}
           aria-keyshortcuts="y"
         >
           Yes
@@ -508,6 +568,7 @@ function ReviewTile({
           Review
         </NeonButton>
         <QtyField item={item} sim={sim} onEnter={onEnter} />
+        <PriceField item={item} sim={sim} defaults={defaults} onEnter={onPriceEnter} />
       </div>
     </div>
   );

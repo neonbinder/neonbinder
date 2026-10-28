@@ -38,7 +38,13 @@ test(
     await page.keyboard.type("5");
     await expect(qty).toHaveValue("5");
 
-    // A letter in a quantity is that card's shortcut, never typed: y saves it.
+    // p jumps to the card's price beside it, number selected, and a letter
+    // there is still a shortcut: y saves the card at the typed price.
+    const price = card.getByRole("textbox", { name: "Price $" });
+    await page.keyboard.press("p");
+    await expect(price).toBeFocused();
+    await page.keyboard.type("2.50");
+    await expect(price).toHaveValue("2.50");
     await page.keyboard.press("y");
     await expect(saved).toHaveAccessibleName("Saved, 2");
   },

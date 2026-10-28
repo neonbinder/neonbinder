@@ -295,7 +295,7 @@ type Action =
   | { type: "more"; now: number; speed: number; home: string; hadOf: HadOf }
   | { type: "pause"; paused: boolean }
   | { type: "confirm"; id: string }
-  | { type: "qty"; id: string; qty: number }
+  | { type: "qty"; id: string; qty: number; hold?: boolean }
   | { type: "saveAll" }
   | { type: "pick"; id: string; cardId: CardId; hadOf: HadOf }
   | { type: "suggestion"; id: string; accept: boolean; hadOf: HadOf }
@@ -473,9 +473,10 @@ function reducer(state: State, action: Action): State {
         i.stage === "review" && i.match.cardId ? { ...i, stage: "saved", match: { ...i.match, byUser: true } } : i,
       );
     case "qty":
-      // Entering a quantity is a save (Jason, 2026-10-27).
+      // Entering a quantity is a save (Jason, 2026-10-27), unless it is held
+      // while the card's price is filled in.
       return patch(action.id, (i) =>
-        i.match.cardId ? { ...i, qty: Math.max(0, action.qty), stage: i.stage === "review" ? "saved" : i.stage } : { ...i, qty: Math.max(0, action.qty) },
+        i.match.cardId && !action.hold ? { ...i, qty: Math.max(0, action.qty), stage: i.stage === "review" ? "saved" : i.stage } : { ...i, qty: Math.max(0, action.qty) },
       );
     case "saveAll":
       return {
@@ -665,6 +666,7 @@ export function useIntakeSim({ setChosen, homeId, hadOf, speed: requested = 1, r
   const actions = {
     confirm: useCallback((id: string) => dispatch({ type: "confirm", id }), []),
     setQty: useCallback((id: string, qty: number) => dispatch({ type: "qty", id, qty }), []),
+    holdQty: useCallback((id: string, qty: number) => dispatch({ type: "qty", id, qty, hold: true }), []),
     saveAllConfident: useCallback(() => dispatch({ type: "saveAll" }), []),
     pick: useCallback((id: string, cardId: CardId) => dispatch({ type: "pick", id, cardId, hadOf: had }), [had]),
     suggestion: useCallback((id: string, accept: boolean) => dispatch({ type: "suggestion", id, accept, hadOf: had }), [had]),

@@ -202,6 +202,7 @@ export function StageCounters({ sim, compact = false }: { sim: IntakeSim; compac
 
 /** Marks a quantity field, so Enter can find the next one down the column. */
 export const QTY_ATTR = "data-intake-qty";
+export const PRICE_ATTR = "data-intake-price";
 
 /**
  * "Had 3 → 4": the count already in this home, and the line's count once
@@ -247,8 +248,14 @@ export function QtyField({ item, sim, onEnter }: { item: Item; sim: IntakeSim; o
         // However the field is reached (a click on the card, Enter from the
         // card above, the keys), the number is selected: typing replaces it.
         onFocus={(e) => e.currentTarget.select()}
-        onBlur={() => {
-          if (draft !== null) save(draft);
+        onBlur={(e) => {
+          if (draft === null) return;
+          // On to this card's price: keep the number, save with the price.
+          if ((e.relatedTarget as HTMLElement | null)?.getAttribute(PRICE_ATTR) === item.id) {
+            const n = Number.parseInt(draft, 10);
+            if (Number.isFinite(n)) sim.actions.holdQty(item.id, n);
+            setDraft(null);
+          } else save(draft);
         }}
         className={`w-14 rounded-md border border-field-rule bg-field px-2 py-1 text-right tabular-nums text-ink ${RING}`}
         aria-describedby={`${id}-hint`}
@@ -256,6 +263,68 @@ export function QtyField({ item, sim, onEnter }: { item: Item; sim: IntakeSim; o
       />
       <span id={`${id}-hint`} className="sr-only">
         Enter saves and moves to the next card.
+      </span>
+    </div>
+  );
+}
+
+/**
+ * The card's lowest price, beside its quantity (Jason, 2026-10-28): p jumps
+ * here. It starts at the run's default; Enter keeps the price, saves the card
+ * and moves on, the way Enter in the quantity does.
+ */
+export function PriceField({
+  item,
+  sim,
+  defaults,
+  onEnter,
+}: {
+  item: Item;
+  sim: IntakeSim;
+  defaults: Details;
+  onEnter?: (priceCents: number | null) => void;
+}) {
+  const id = useId();
+  const cents = effectiveDetails(item, defaults).priceCents;
+  const [draft, setDraft] = useState<string | null>(null);
+  const shown = draft ?? (cents === null ? "" : (cents / 100).toFixed(2));
+  const parse = (text: string): number | null => (text ? Math.round(Number(text) * 100) : null);
+  return (
+    <div className="flex items-center gap-1 text-sm">
+      <label htmlFor={id} className="whitespace-nowrap text-ink-3">
+        Price $
+      </label>
+      <Input
+        bare
+        id={id}
+        {...{ [PRICE_ATTR]: item.id }}
+        inputMode="decimal"
+        value={shown}
+        disabled={!item.match.cardId}
+        onChange={(e) => setDraft(e.target.value.replace(/[^\d.]/g, ""))}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            setDraft(null);
+            onEnter?.(parse(shown));
+          } else if (e.key === "Escape") {
+            setDraft(null);
+          } else if (e.key.length === 1 && !/[\d.]/.test(e.key) && !e.ctrlKey && !e.metaKey && !e.altKey) {
+            e.preventDefault();
+          }
+        }}
+        onFocus={(e) => e.currentTarget.select()}
+        onBlur={() => {
+          if (draft === null) return;
+          sim.actions.setDetails(item.id, { priceCents: parse(draft) });
+          setDraft(null);
+        }}
+        className={`w-16 rounded-md border border-field-rule bg-field px-2 py-1 text-right tabular-nums text-ink ${RING}`}
+        aria-describedby={`${id}-hint`}
+        aria-keyshortcuts="p"
+      />
+      <span id={`${id}-hint`} className="sr-only">
+        Enter keeps the price, saves and moves to the next card.
       </span>
     </div>
   );
