@@ -2571,21 +2571,23 @@ function useConvexSharing(): SharingExtension {
  * NEO-374 — Profile → Settings' "where My Collection opens", and the Binder
  * picker's pick kept while it says "remember the last binder". A failed save
  * only means the next visit opens where it did before, so it is dropped.
+ * A pick made while the setting is still loading is sent anyway: the server
+ * keeps it only when the setting is "last", so it is never lost to the race.
  */
 function useConvexBinderMemory(): BinderMemoryExtension {
   const opening = useQuery(api.userProfile.getBinderPreference, {});
   const setLastBinder = useMutation(api.userProfile.setLastBinder);
-  const remembers = opening?.open === "last";
+  const forgets = opening?.open === "all";
   return useMemo<BinderMemoryExtension>(
     () => ({
       opening,
       remember: (scope) => {
-        if (!remembers) return;
+        if (forgets) return;
         const binderId = scope === "all" ? null : (scope as Id<"collectionContainers">);
         void Promise.resolve(setLastBinder({ binderId })).catch(() => undefined);
       },
     }),
-    [opening, remembers, setLastBinder],
+    [opening, forgets, setLastBinder],
   );
 }
 
