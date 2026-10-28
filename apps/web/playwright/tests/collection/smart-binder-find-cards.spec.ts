@@ -56,6 +56,11 @@ test(
     for (const card of [one, two]) {
       await checklist.getByRole("button", { name: `Have ${card.short}`, exact: true }).click();
       await expect(checklist.getByRole("button", { name: new RegExp(`^Have ${escapeRegExp(card.short)}, `) })).toBeVisible();
+      // The "Added … to Main" line lands once the server answers and can sit
+      // over the next row's Have, swallowing its click: wait for it and close it.
+      await expect(page.getByRole("status").filter({ hasText: `Added ${card.short} to Main` })).toBeVisible();
+      await page.getByRole("button", { name: "Dismiss message", exact: true }).click();
+      await expect(page.getByRole("status").filter({ hasText: `Added ${card.short} to Main` })).toHaveCount(0);
     }
     const label = (card: typeof one) => `2024 Topps Chrome #${escapeRegExp(card.number)} ${escapeRegExp(card.player)}`;
 
