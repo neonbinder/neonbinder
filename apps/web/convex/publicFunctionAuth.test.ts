@@ -2545,3 +2545,58 @@ describe("NEO-360: the public share-link reads are public by intent; the switche
     expect(row?.visibility).toBeUndefined();
   });
 });
+
+describe("NEO-379: the intake run functions are signed-in, and the reads answer a stranger with nothing", () => {
+  test("the writes reject an anonymous caller; the reads return null or empty", async () => {
+    const t = convexTest(schema, modules);
+    const { homeId, runId, pairId, cardId } = await t.run(async (ctx) => {
+      const homeId = await ctx.db.insert("collectionContainers", {
+        ownerId: "someone",
+        kind: "box",
+        name: "B",
+        lastUpdated: 0,
+      });
+      const runId = await ctx.db.insert("intakeRuns", {
+        userId: "someone",
+        jobId: "job-x",
+        homeId,
+        createdAt: 0,
+        lastActivityAt: 0,
+      });
+      const pairId = await ctx.db.insert("placeholderPairs", {
+        jobId: "job-x",
+        userId: "someone",
+        frontIndex: 0,
+        backIndex: 1,
+        confidence: "side-only",
+        mechanism: "manual",
+        score: 0,
+      });
+      const sportId = await ctx.db.insert("selectorOptions", {
+        level: "sport",
+        value: "Baseball",
+        platformData: {},
+        children: [],
+        lastUpdated: 0,
+      });
+      const cardId = await insertTestCard(ctx, {
+        selectorOptionId: sportId,
+        cardNumber: "1",
+        cardName: "A",
+        platformData: {},
+        sortOrder: 0,
+        lastUpdated: 0,
+      } as never);
+      return { homeId, runId, pairId, cardId };
+    });
+    const writes = [
+      () => t.mutation(api.intakeRuns.createIntakeRun, { jobId: "job-x", homeId }),
+      () => t.mutation(api.intakeRuns.pickIntakeCard, { runId, pairId, cardId }),
+      () => t.mutation(api.intakeRuns.setIntakeRunDefaults, { runId, defaults: {} }),
+    ];
+    for (const call of writes) await expect(call()).rejects.toThrow(/Not authenticated/);
+    expect(await t.query(api.intakeRuns.getIntakeRun, { runId })).toBeNull();
+    expect(await t.query(api.intakeRuns.listIntakeMatches, { runId })).toEqual([]);
+    expect(await t.query(api.intakeRuns.listMyIntakeRuns, {})).toEqual([]);
+  });
+});
