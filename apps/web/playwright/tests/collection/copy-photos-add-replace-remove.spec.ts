@@ -36,7 +36,7 @@ test(
     await expect(row).toBeVisible();
     const { short } = await shortNameOf(row);
     await checklist.getByRole("button", { name: `Have ${short}`, exact: true, pressed: false }).click();
-    await expect(checklist.getByRole("button", { name: `Have ${short}, Raw`, exact: true, pressed: true })).toBeVisible();
+    await expect(checklist.getByRole("button", { name: `Have ${short}, Raw, Excellent`, exact: true, pressed: true })).toBeVisible();
 
     await checklist.getByRole("button", { name: `Details for ${short}`, exact: true }).click();
     const drawer = page.getByRole("dialog", { name: /^2024 Topps Chrome / });
@@ -44,11 +44,11 @@ test(
     await expect(yourCopies.getByRole("heading", { name: "Your copies (1 line)" })).toBeVisible();
 
     // --- Photos opens under the line, the keyboard on Add front --------------
-    const photos = yourCopies.getByRole("button", { name: `Photos, ${short}, Raw`, exact: true });
+    const photos = yourCopies.getByRole("button", { name: `Photos, ${short}, Raw, Excellent`, exact: true });
     await expect(photos).toHaveAttribute("aria-expanded", "false");
     await photos.click();
     await expect(photos).toHaveAttribute("aria-expanded", "true");
-    const panel = drawer.getByRole("region", { name: "Photos of Raw" });
+    const panel = drawer.getByRole("region", { name: "Photos of Raw, Excellent" });
     await expect(panel.getByRole("button", { name: "Add front", exact: true })).toBeFocused();
     await expect(panel.getByText("No front photo yet")).toBeAttached();
     await expectAccessible(page, { within: drawer, label: "Card drawer, photo panel empty" });
@@ -58,12 +58,12 @@ test(
     const back = panel.getByLabel("Back photo file", { exact: true });
     await front.setInputFiles(photoFile("front.jpg"));
     await expect(panel.getByRole("status")).toHaveText("Front photo saved.");
-    const lineThumb = yourCopies.getByRole("img", { name: "Front of Raw", exact: true });
+    const lineThumb = yourCopies.getByRole("img", { name: "Front of Raw, Excellent", exact: true });
     await expect(lineThumb).toBeVisible();
     // The thumbnail came through /copy-photo (Convex) -> a signed R2 URL, and decoded.
     await expect(lineThumb).toHaveAttribute("src", /\/copy-photo\/[0-9a-f]{32}\/thumb$/);
     await expect.poll(() => lineThumb.evaluate((img: HTMLImageElement) => img.complete && img.naturalWidth)).toBeGreaterThan(0);
-    const fullSize = panel.getByRole("link", { name: "Front of Raw, full size (opens a new tab)", exact: true });
+    const fullSize = panel.getByRole("link", { name: "Front of Raw, Excellent, full size (opens a new tab)", exact: true });
     await expect(fullSize).toHaveAttribute("href", /\/copy-photo\/[0-9a-f]{32}\/image$/);
     const firstSrc = await lineThumb.getAttribute("src");
     await expectAccessible(page, { within: drawer, label: "Card drawer, front photo on" });
@@ -77,7 +77,7 @@ test(
     // --- A back, then off again ----------------------------------------------
     await back.setInputFiles(photoFile("back.jpg"));
     await expect(panel.getByRole("status")).toHaveText("Back photo saved.");
-    await expect(panel.getByRole("link", { name: "Back of Raw, full size (opens a new tab)", exact: true })).toBeVisible();
+    await expect(panel.getByRole("link", { name: "Back of Raw, Excellent, full size (opens a new tab)", exact: true })).toBeVisible();
     await panel.getByRole("button", { name: "Remove back", exact: true }).click();
     await expect(panel.getByRole("status")).toHaveText("Back photo removed.");
     await expect(panel.getByText("No back photo yet")).toBeAttached();
@@ -90,13 +90,13 @@ test(
     await expect(drawer).toBeVisible();
 
     // --- Remove the copy, Undo: its photo comes back --------------------------
-    await yourCopies.getByRole("button", { name: `Remove ${short}, Raw`, exact: true }).click();
+    await yourCopies.getByRole("button", { name: `Remove ${short}, Raw, Excellent`, exact: true }).click();
     await expect(yourCopies.getByText("None yet. Fill in what you know below and add it.")).toBeVisible();
     await page.getByRole("button", { name: "Undo", exact: true }).click();
-    await expect(yourCopies.getByRole("img", { name: "Front of Raw", exact: true })).toBeVisible();
+    await expect(yourCopies.getByRole("img", { name: "Front of Raw, Excellent", exact: true })).toBeVisible();
 
     // --- Remove it for good (self-cleaning) ----------------------------------
-    await yourCopies.getByRole("button", { name: `Remove ${short}, Raw`, exact: true }).click();
+    await yourCopies.getByRole("button", { name: `Remove ${short}, Raw, Excellent`, exact: true }).click();
     await expect(yourCopies.getByText("None yet. Fill in what you know below and add it.")).toBeVisible();
     await drawer.getByRole("button", { name: "Close card detail" }).click();
     await expect(drawer).toBeHidden();
