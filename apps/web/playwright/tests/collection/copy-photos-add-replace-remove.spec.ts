@@ -55,20 +55,16 @@ test(
     const back = panel.getByLabel("Back photo file", { exact: true });
     await front.setInputFiles(photoFile("front.jpg"));
     await expect(panel.getByRole("status")).toHaveText("Front photo saved.");
-    const lineThumb = yourCopies.getByRole("img", { name: "Front of Raw, Excellent", exact: true });
-    await expect(lineThumb).toBeVisible();
-    // The thumbnail came through /copy-photo (Convex) -> a signed R2 URL, and decoded.
-    await expect(lineThumb).toHaveAttribute("src", /\/copy-photo\/[0-9a-f]{32}\/thumb$/);
-    await expect.poll(() => lineThumb.evaluate((img: HTMLImageElement) => img.complete && img.naturalWidth)).toBeGreaterThan(0);
+    // While the form is open the line is the form, so the photo shows in the box.
     const fullSize = panel.getByRole("link", { name: "Front of Raw, Excellent, full size (opens a new tab)", exact: true });
     await expect(fullSize).toHaveAttribute("href", /\/copy-photo\/[0-9a-f]{32}\/image$/);
-    const firstSrc = await lineThumb.getAttribute("src");
+    const firstHref = await fullSize.getAttribute("href");
     await expectAccessible(page, { within: drawer, label: "Card drawer, front photo on" });
 
     // --- Replace it: a new photo, a new address -------------------------------
     await panel.getByRole("button", { name: "Replace front", exact: true }).click();
     await front.setInputFiles(photoFile("front-2.jpg"));
-    await expect(lineThumb).not.toHaveAttribute("src", firstSrc ?? "");
+    await expect(fullSize).not.toHaveAttribute("href", firstHref ?? "");
     await expect(panel.getByRole("status")).toHaveText("Front photo saved.");
 
     // --- A back, then off again ----------------------------------------------
@@ -92,7 +88,11 @@ test(
     await page.keyboard.press("Escape");
     await expect(form).toBeHidden();
     await expect(yourCopies.getByRole("button", { name: `Edit ${short}, Raw, Excellent`, exact: true })).toBeFocused();
+    // Back on the line: its thumbnail came through /copy-photo (Convex) -> a signed R2 URL, and decoded.
+    const lineThumb = yourCopies.getByRole("img", { name: "Front of Raw, Excellent", exact: true });
     await expect(lineThumb).toBeVisible();
+    await expect(lineThumb).toHaveAttribute("src", /\/copy-photo\/[0-9a-f]{32}\/thumb$/);
+    await expect.poll(() => lineThumb.evaluate((img: HTMLImageElement) => img.complete && img.naturalWidth)).toBeGreaterThan(0);
 
     // --- Remove the copy, Undo: its photo comes back --------------------------
     await yourCopies.getByRole("button", { name: `Remove ${short}, Raw, Excellent`, exact: true }).click();
