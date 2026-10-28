@@ -5,7 +5,7 @@
 import { test, expect, expectAccessible } from "../../support/fixtures";
 
 test(
-  "Add cards (collection): the tab opens from the demo, Yes saves a card, y saves one from its quantity",
+  "Add cards (collection): the tab opens from the demo, Yes saves a card, a click lands in its quantity, y saves it",
   { tag: ["@home"] },
   async ({ page }) => {
     await page.goto("/binder-tracking?demo=on&speed=6");
@@ -22,12 +22,20 @@ test(
     await yes.click();
     await expect(saved).toHaveAccessibleName("Saved, 1");
 
-    // A letter in a quantity is that card's shortcut, never typed: y saves it.
-    const qty = review
-      .getByRole("textbox", { name: /^(Qty|Had \d+ →)$/ })
+    // A click on a waiting card puts the caret in its quantity with the
+    // number selected, so typing replaces it.
+    const card = review
+      .getByRole("listitem")
+      .filter({ hasText: /Matched \d+%/ })
       .first();
-    await expect(qty).toBeEnabled();
-    await qty.focus();
+    const badge = card.getByText(/^Matched \d+%$/);
+    const qty = card.getByRole("textbox", { name: /^(Qty|Had \d+ →)$/ });
+    await badge.click();
+    await expect(qty).toBeFocused();
+    await page.keyboard.type("5");
+    await expect(qty).toHaveValue("5");
+
+    // A letter in a quantity is that card's shortcut, never typed: y saves it.
     await page.keyboard.press("y");
     await expect(saved).toHaveAccessibleName("Saved, 2");
   },
@@ -43,7 +51,9 @@ test(
     });
     await set.click();
     await expect(set).toHaveAttribute("aria-expanded", "true");
-    await expect(page.getByRole("button", { name: "Sports: Baseball, change" })).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Sports: Baseball, change" }),
+    ).toBeVisible();
     await expectAccessible(page, { label: "Add cards, set selector open" });
     await page
       .getByRole("button", {

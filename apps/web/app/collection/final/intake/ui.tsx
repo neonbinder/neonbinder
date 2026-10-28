@@ -242,6 +242,9 @@ export function QtyField({ item, sim, onEnter }: { item: Item; sim: IntakeSim; o
             e.preventDefault();
           }
         }}
+        // However the field is reached (a click on the card, Enter from the
+        // card above, the keys), the number is selected: typing replaces it.
+        onFocus={(e) => e.currentTarget.select()}
         onBlur={() => {
           if (draft !== null) save(draft);
         }}

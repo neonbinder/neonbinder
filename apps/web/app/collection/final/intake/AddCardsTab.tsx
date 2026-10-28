@@ -368,7 +368,15 @@ export default function AddCardsTab() {
                     key={`${i.id}-${i.stage}`}
                     {...{ [TILE_ATTR]: i.id }}
                     onFocusCapture={() => setSelectedId(i.id)}
-                    onClick={() => setSelectedId(i.id)}
+                    onClick={(e) => {
+                      setSelectedId(i.id);
+                      // A click on a waiting card (not on one of its controls)
+                      // puts the caret in its quantity, number selected, so
+                      // typing replaces it (Jason, 2026-10-28).
+                      if (isReview && !(e.target as HTMLElement).closest("button, input, select, a, label")) {
+                        e.currentTarget.querySelector<HTMLInputElement>(`[${QTY_ATTR}]:not(:disabled)`)?.focus();
+                      }
+                    }}
                     className={i.stage === "saved" ? "intake-arrive intake-saved rounded-md" : "intake-arrive"}
                   >
                     {isReview ? (
@@ -443,7 +451,8 @@ function MiniTile({ item, selected }: { item: Item; selected: boolean }) {
 }
 
 /**
- * A card waiting for you. Its first line is the scans beside the title, a
+ * A card waiting for you. Clicking it (anywhere but a control) puts the
+ * caret in its quantity. Its first line is the scans beside the title, a
  * fixed height; its second line starts with Yes. So the top card's Yes is
  * always in the same spot, and the next card slides up under the pointer.
  */
@@ -463,16 +472,10 @@ function ReviewTile({
   return (
     <div className={`rounded-md border-2 bg-surface p-2 ${edge(item, selected)}`}>
       <div className="flex gap-2">
-        <button
-          type="button"
-          onClick={onOpen}
-          aria-pressed={selected}
-          className={`flex shrink-0 gap-1 rounded-md ${RING}`}
-          aria-label={`Open ${cardTitle(item.match.cardId)}`}
-        >
+        <div className="flex shrink-0 gap-1">
           <ScanImage item={item} side="front" size="sm" />
           <ScanImage item={item} side="back" size="sm" />
-        </button>
+        </div>
         <div className="min-w-0 flex-1 space-y-1">
           <p className="m-0 truncate text-sm font-semibold text-ink">{cardTitle(item.match.cardId)}</p>
           <BandBadge item={item} />
