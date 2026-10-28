@@ -17,8 +17,10 @@ import type { EntityParam } from "./checklistParams";
 import Checklist from "./Checklist";
 import {
   searchable,
+  systemContainer,
   useCapabilities,
   useCollectionStore,
+  useContainers,
   useDemoExtension,
   useReadOnlyAll,
   useSearch,
@@ -110,6 +112,7 @@ function ChecklistsView({
   const setScope = useSetScope();
   const scopedName = useScopedName();
   const readOnly = useReadOnlyAll();
+  const containers = useContainers();
   const [showAll, setShowAll] = useState(false);
   const [requesting, setRequesting] = useState<RequestsTab | null>(null);
   const text = useSearchText(query);
@@ -340,7 +343,8 @@ function ChecklistsView({
           searched={query}
           drill={drill.drill}
           initialTab={requesting}
-          onHave={actions.have}
+          // NEO-374 — "I have it" is its own explicit add: under All it files into Main.
+          onHave={(card) => actions.have(card, readOnly ? systemContainer(containers, "main")?.id : undefined)}
           onClose={() => setRequesting(null)}
         />
       )}

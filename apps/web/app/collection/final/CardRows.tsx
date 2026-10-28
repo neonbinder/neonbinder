@@ -31,8 +31,11 @@ import { lineNames, lineSummary } from "./lineItems";
 
 /** What a row's controls do; built once by the page. */
 export interface RowActions {
-  /** Have on a card you don't own yet: add a copy to the default home. */
-  have: (card: Card) => void;
+  /**
+   * Have on a card you don't own yet: add a copy to the scoped home. Under
+   * All (a view, NEO-374) only a call naming its `homeId` adds anything.
+   */
+  have: (card: Card, homeId?: string) => void;
   /** Un-Have one line item: remove just that line, with Undo. */
   removeLine: (card: Card, copy: Copy) => void;
   /** "+ Add": open the drawer on its Add a copy form. */

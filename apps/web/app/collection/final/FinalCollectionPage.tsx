@@ -932,12 +932,15 @@ function ScopedRows({
   const readOnly = useReadOnlyAll();
   const wants = useWants();
   const actions: RowActions = {
-    have: (card) => {
-      // NEO-374 — All is a view; the row's Have is locked too, this is the backstop.
-      if (readOnly) return;
+    have: (card, homeId) => {
+      // NEO-374 — All is a view: the row's Have is locked, this is the
+      // backstop. A caller that names its home (a card request's "I have
+      // it") still adds.
+      if (readOnly && !homeId) return;
+      const home = homeId ? (containers?.find((c) => c.id === homeId)?.name ?? into) : into;
       void run(
-        () => writes.addHave(card),
-        () => `Added ${shortCardName(card)} to ${into}`,
+        () => (homeId ? writes.addHave(card, homeId) : writes.addHave(card)),
+        () => `Added ${shortCardName(card)} to ${home}`,
       );
     },
     removeLine: (card, copy) => {
