@@ -64,6 +64,7 @@ import {
 } from "../prototypes/_shared/data";
 import {
   BOX_ROWS,
+  DEFAULT_CONDITION,
   isHome,
   MAX_BINDER_PAGES,
   MAX_CONTAINERS,
@@ -487,12 +488,13 @@ function checkSlot(state: CollectionState, homeId: ContainerId, slot: number | u
 
 /**
  * A PLAIN line (NEO-364, D9): what quick quantity entry counts and writes. Raw
- * (no grade, no condition), no serial, cost, location or notes, not up for
- * trade. Its row (`slot`) and date do not matter.
+ * (no grade) in the default condition (NEO-380; the demo has no setting, so
+ * `DEFAULT_CONDITION`, or none), no serial, cost, location or notes, not up
+ * for trade. Its row (`slot`) and date do not matter.
  */
 export function isPlainLine(copy: Omit<DemoCopy, "id" | "cardId">): boolean {
   return (
-    !copy.condition &&
+    (!copy.condition || copy.condition === DEFAULT_CONDITION) &&
     !copy.graded &&
     !copy.serialNumber?.trim() &&
     copy.costBasis === undefined &&
@@ -979,7 +981,16 @@ export const demoOps = {
         was.push(into);
         copies[into.index] = { ...into.copy, quantity: into.copy.quantity + adding };
       } else {
-        const line: DemoCopy = { id: newId("copy"), cardId, homeId: boxId, quantity: adding, acquiredAt: today, notes: "", upForTrade: false };
+        const line: DemoCopy = {
+          id: newId("copy"),
+          cardId,
+          homeId: boxId,
+          quantity: adding,
+          condition: DEFAULT_CONDITION,
+          acquiredAt: today,
+          notes: "",
+          upForTrade: false,
+        };
         copies.push(line);
         made.push(line.id);
       }

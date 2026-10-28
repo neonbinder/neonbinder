@@ -66,7 +66,8 @@ describe("setBoxQuantity: raise", () => {
     const lines = await linesIn(s, s.fx.gooden1, s.boxA);
     expect(lines).toHaveLength(1);
     expect(lines[0]).toMatchObject({ quantity: 3, acquiredOn: TODAY, homeId: s.boxA });
-    expect(lines[0].condition).toBeUndefined();
+    // NEO-380: a raw line always has a condition; never set, the default is Excellent.
+    expect(lines[0].condition).toBe("Excellent");
     expect(lines[0].grading).toBeUndefined();
     expect(lines[0].slot).toBeUndefined();
     expect(await rowsOf(s)).toHaveLength(1);

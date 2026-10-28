@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { DemoRefusal, demoOps, initialCollectionState } from "./store";
-import { minPriceText } from "./CardDetail";
+import { priceText } from "./CardDetail";
 import type { Copy } from "./data/types";
 
 /** NEO-378 — the demo's common prices, and how a line reads its floor. */
@@ -28,7 +28,7 @@ describe("demoOps.setCommonPrice", () => {
   });
 });
 
-describe("minPriceText", () => {
+describe("priceText", () => {
   const line = (patch: Partial<Copy>): Copy => ({
     id: "c1",
     cardId: "k1",
@@ -42,12 +42,12 @@ describe("minPriceText", () => {
   });
 
   it("names a box line's own floor first, else the common price", () => {
-    expect(minPriceText(line({ minPrice: 0.5 }), 0.25)).toBe("min $0.50");
-    expect(minPriceText(line({}), 0.25)).toBe("min $0.25, common");
-    expect(minPriceText(line({}), null)).toBeNull();
+    expect(priceText(line({ minPrice: 0.5 }), 0.25)).toBe("$0.50");
+    expect(priceText(line({}), 0.25)).toBe("$0.25, common");
+    expect(priceText(line({}), null)).toBeNull();
   });
 
   it("says nothing for a binder line", () => {
-    expect(minPriceText(line({ homeKind: "binder", minPrice: 0.5 }), 0.25)).toBeNull();
+    expect(priceText(line({ homeKind: "binder", minPrice: 0.5 }), 0.25)).toBeNull();
   });
 });

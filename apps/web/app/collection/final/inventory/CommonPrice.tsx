@@ -134,7 +134,7 @@ export default function CommonPrice({ variantId, title }: { variantId: VariantId
         Cancel
       </NeonButton>
       <p id={helpId} className={error ? "sr-only" : "basis-full text-xs text-ink-3"}>
-        Cards in this checklist with no minimum price of their own sell at this. Blank clears it.
+        Cards in this checklist with no price of their own sell at this. Blank clears it.
       </p>
       {error && (
         <p id={errorId} role="alert" className="basis-full text-sm text-neon-yellow-text">

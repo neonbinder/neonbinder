@@ -11,14 +11,14 @@
  * blocked site data just forgets the pick.
  *
  * The quantity (D9): how many PLAIN copies of the card sit in the box. A
- * plain line is raw (no grade), with no condition, serial, cost, location or
- * notes, and not up for trade; its pocket or row and its acquired date do
- * not matter. Everything else the card has in the box is read-only after
+ * plain line is raw (no grade), in the collector's default condition (or
+ * none, stored before NEO-380), with no serial, cost, location or notes, and
+ * not up for trade; its pocket or row and its acquired date do not matter. Everything else the card has in the box is read-only after
  * the field ("also here: PSA 9, Raw Mint") and never touched by it.
  */
 
 import { boxesOf, systemContainer } from "../data/store";
-import type { Container, ContainerId, Copy } from "../data/types";
+import { DEFAULT_CONDITION, type Condition, type Container, type ContainerId, type Copy } from "../data/types";
 
 /** The URL param that names the target box (and, on the Inventory list, the rail's box). */
 export const TARGET_BOX_PARAM = "box";
@@ -89,11 +89,11 @@ export function resolveTargetBox(
 // The quantity
 // ---------------------------------------------------------------------------
 
-/** True when a line is plain: raw, nothing noted about it, not up for trade (D9). */
-export function isPlainLine(copy: Copy): boolean {
+/** True when a line is plain: raw in the default condition, nothing else noted about it, not up for trade (D9). */
+export function isPlainLine(copy: Copy, defaultCondition: Condition = DEFAULT_CONDITION): boolean {
   return (
     !copy.graded &&
-    !copy.condition &&
+    (!copy.condition || copy.condition === defaultCondition) &&
     !copy.serialNumber &&
     (copy.costBasis === undefined || copy.costBasis === null) &&
     copy.minPrice === undefined &&
@@ -110,20 +110,22 @@ export function linesInBox(copies: readonly Copy[] | undefined, boxId: Container
 }
 
 /** The field's value: the card's plain copies in the box, quantities summed. */
-export function plainQuantity(lines: readonly Copy[]): number {
-  return lines.reduce((n, c) => (isPlainLine(c) ? n + c.quantity : n), 0);
+export function plainQuantity(lines: readonly Copy[], defaultCondition: Condition = DEFAULT_CONDITION): number {
+  return lines.reduce((n, c) => (isPlainLine(c, defaultCondition) ? n + c.quantity : n), 0);
 }
 
 /** "PSA 9", "Raw Mint ×3", "Raw · 23/50", "Raw, for trade": one other line, short. */
-function otherLineText(copy: Copy): string {
+function otherLineText(copy: Copy, defaultCondition: Condition): string {
+  // The default condition goes unsaid: it is what the field counts.
+  const condition = copy.condition !== defaultCondition ? copy.condition : undefined;
   let text = copy.graded
     ? `${copy.graded.grader} ${copy.graded.grade || "?"}`.trim()
-    : copy.condition
-      ? `Raw ${copy.condition}`
+    : condition
+      ? `Raw ${condition}`
       : "Raw";
   if (copy.serialNumber) text += ` ${copy.serialNumber}`;
   if (copy.upForTrade) text += " for trade";
-  else if (!copy.graded && !copy.condition && !copy.serialNumber) text += " with notes";
+  else if (!copy.graded && !condition && !copy.serialNumber) text += " with notes";
   if (copy.quantity > 1) text += ` ×${copy.quantity}`;
   return text;
 }
@@ -133,11 +135,14 @@ function otherLineText(copy: Copy): string {
  * copies and what they are ("also here: PSA 9, Raw Mint"), never counted by
  * it. `null` when every copy there is plain.
  */
-export function otherLines(lines: readonly Copy[]): { count: number; text: string } | null {
-  const others = lines.filter((c) => !isPlainLine(c));
+export function otherLines(
+  lines: readonly Copy[],
+  defaultCondition: Condition = DEFAULT_CONDITION,
+): { count: number; text: string } | null {
+  const others = lines.filter((c) => !isPlainLine(c, defaultCondition));
   if (others.length === 0) return null;
   const count = others.reduce((n, c) => n + c.quantity, 0);
-  return { count, text: `also here: ${others.map(otherLineText).join(", ")}` };
+  return { count, text: `also here: ${others.map((c) => otherLineText(c, defaultCondition)).join(", ")}` };
 }
 
 /**

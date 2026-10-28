@@ -70,11 +70,17 @@ export interface CopyDetailsFormProps {
   /** NEO-359: leave out the binder ticks even when `binders` are passed. */
   hideBinders?: boolean;
   /**
-   * NEO-378: show the Minimum price field (a copy for sale). `commonPrice` is
+   * NEO-378: show the Price field (a copy for sale; stored as its floor, `minPrice`). `commonPrice` is
    * the variant's common price in dollars, what a blank field means (`null`:
    * none set; `undefined`: still loading).
    */
   minPrice?: { commonPrice: number | null | undefined };
+  /**
+   * NEO-380: a raw copy always has a condition. When given, a raw value with
+   * none shows and saves this one (the collector's default), and "Not set"
+   * is gone from the list.
+   */
+  defaultCondition?: Condition;
 }
 
 const CONDITIONS: Condition[] = [
@@ -119,12 +125,14 @@ export default function CopyDetailsForm({
   onUpForTradeChange,
   hideBinders = false,
   minPrice,
+  defaultCondition,
 }: CopyDetailsFormProps) {
   const headingId = useId();
   const minPriceHelpId = useId();
   const quantityHelpId = useId();
   const homeHelpId = useId();
   const set = (patch: Partial<CopyDetails>) => onChange({ ...value, ...patch });
+  const condition = value.graded ? undefined : (value.condition ?? defaultCondition);
 
   const run = card.printRun === null ? null : card.printRun === 1 ? "1/1" : `/${card.printRun}`;
   const label = "setId" in card ? cardLabel(card) : modelLabel(card);
@@ -146,7 +154,7 @@ export default function CopyDetailsForm({
   function submit(e: FormEvent) {
     e.preventDefault();
     if (!quantityValid) return;
-    onSave(value);
+    onSave(condition && !value.condition ? { ...value, condition } : value);
   }
 
   function onKeyDown(e: KeyboardEvent<HTMLFormElement>) {
@@ -272,12 +280,12 @@ export default function CopyDetailsForm({
             <span className={LABEL}>Condition</span>
             <select
               className={SELECT}
-              value={value.condition ?? ""}
+              value={condition ?? ""}
               onChange={(e) =>
                 set({ condition: (e.target.value || undefined) as Condition | undefined })
               }
             >
-              <option value="">Not set</option>
+              {!defaultCondition && <option value="">Not set</option>}
               {CONDITIONS.map((c) => (
                 <option key={c} value={c}>
                   {c}
@@ -310,7 +318,7 @@ export default function CopyDetailsForm({
         {minPrice && (
           <div>
             <Input
-              label="Minimum price"
+              label="Price"
               type="number"
               inputMode="decimal"
               min={0}
@@ -324,8 +332,8 @@ export default function CopyDetailsForm({
               {typeof minPrice.commonPrice === "number"
                 ? `Blank sells at your common price, $${minPrice.commonPrice.toFixed(2)}.`
                 : minPrice.commonPrice === null
-                  ? "The lowest it sells for. No common price set for this variant yet."
-                  : "The lowest it sells for."}
+                  ? "No common price set for this variant yet."
+                  : "Blank sells at your common price."}
             </p>
           </div>
         )}

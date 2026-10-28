@@ -32,6 +32,7 @@ import {
   useCommonPrices,
   useContainers,
   useCopiesOf,
+  useDefaultCondition,
   useScope,
   useSide,
   useWants,
@@ -62,6 +63,15 @@ function toForm(d: CopyDetails): FormValue {
     binderIds: [],
     forSale: false,
   };
+}
+
+/**
+ * A new copy's blank form. The condition is left out: the form shows and
+ * saves the collector's default (`defaultCondition`), which may still be
+ * loading when the drawer opens (NEO-380).
+ */
+function blankForm(): FormValue {
+  return toForm({ ...emptyCopyDetails(), condition: undefined });
 }
 
 /**
@@ -97,13 +107,14 @@ function ownedText(kept: number, forSale: number): string {
 }
 
 /**
- * NEO-378 — a for-sale line's floor: its own ("min $0.50"), else the
- * variant's common price ("min $0.25, common"). Nothing for a binder line.
+ * NEO-378 — a for-sale line's price: its own ("$0.50"), else the variant's
+ * common price ("$0.25, common"). Nothing for a binder line. The stored field
+ * is a floor (`minPriceCents`), but the collector only ever sees "price".
  */
-export function minPriceText(copy: Copy, commonPrice: number | null | undefined): string | null {
+export function priceText(copy: Copy, commonPrice: number | null | undefined): string | null {
   if (copy.homeKind !== "box") return null;
-  if (copy.minPrice !== undefined) return `min $${copy.minPrice.toFixed(2)}`;
-  return typeof commonPrice === "number" ? `min $${commonPrice.toFixed(2)}, common` : null;
+  if (copy.minPrice !== undefined) return `$${copy.minPrice.toFixed(2)}`;
+  return typeof commonPrice === "number" ? `$${commonPrice.toFixed(2)}, common` : null;
 }
 
 /** The homes as "Where it lives" and "Move to" offer them. */
@@ -201,7 +212,8 @@ export default function CardDetail({
     : !onInventory && scope !== "all" && isAddId(scope)
       ? scope
       : systemContainer(containers, onInventory ? "unsorted" : "main")?.id;
-  const [draft, setDraft] = useState<FormValue>(() => toForm(emptyCopyDetails()));
+  const defaultCondition = useDefaultCondition();
+  const [draft, setDraft] = useState<FormValue>(blankForm);
   const [draftHome, setDraftHome] = useState<ContainerId | undefined>(undefined);
   const [draftTrade, setDraftTrade] = useState(false);
   const addHome = draftHome ?? defaultHome;
@@ -268,7 +280,7 @@ export default function CardDetail({
   const homeById = (id: string | undefined) => (id ? containers?.find((c) => c.id === id) : undefined);
 
   const resetDraft = () => {
-    setDraft(toForm(emptyCopyDetails()));
+    setDraft(blankForm());
     setDraftHome(undefined);
     setDraftTrade(false);
   };
@@ -460,6 +472,7 @@ export default function CardDetail({
               hideSaleFields
               hideBinders
               minPrice={copy.homeKind === "box" ? { commonPrice } : undefined}
+              defaultCondition={defaultCondition}
               upForTrade={capabilities.trade ? editing.trade : undefined}
               onUpForTradeChange={capabilities.trade ? (trade) => setEditing({ ...editing, trade }) : undefined}
               heading={`Edit ${names[i]}`}
@@ -497,6 +510,7 @@ export default function CardDetail({
             }}
             hideSaleFields
             hideBinders
+            defaultCondition={defaultCondition}
             homes={addKinds.length > 0 ? formHomes(addKinds) : undefined}
             homeId={addHome}
             onHomeChange={addKinds.length > 0 ? (id) => setDraftHome(id) : undefined}
@@ -805,7 +819,7 @@ export function CopyList({
                     {[
                       copy.acquiredAt ? `Added ${shortDate(copy.acquiredAt)}` : null,
                       copy.costBasis !== undefined ? `paid $${copy.costBasis.toFixed(2)}` : null,
-                      minPriceText(copy, commonPrice),
+                      priceText(copy, commonPrice),
                       copy.location && !locationNamesAHome(copy.location, binders) ? copy.location : null,
                       copy.notes ? `“${copy.notes}”` : null,
                     ]

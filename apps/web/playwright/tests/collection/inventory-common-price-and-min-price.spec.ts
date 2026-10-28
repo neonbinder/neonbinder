@@ -1,9 +1,10 @@
 // NEO-378 (R1): a collector prices what they sell. On the inventory's Checklists
 // each checklist carries the collector's COMMON PRICE for that exact variant
-// (manual, per collector: "commons go for 25¢"). A copy for sale with no minimum
-// price of its own sells at it, and the card drawer says so: the add form's
-// Minimum price field shows the common price as what a blank means, and the box
-// line reads "min $0.25, common". A copy's own floor overrides it ("min $0.50").
+// (manual, per collector: "commons go for 25¢"). A copy for sale with no price
+// of its own sells at it, and the card drawer says so: the add form's Price
+// field shows the common price as what a blank means, and the box line reads
+// "$0.25, common". A copy's own price overrides it ("$0.50"). The collector
+// never sees "minimum price" (Jason, 2026-10-28), though it is stored as a floor.
 // A blank common price clears it.
 //
 // The common price line opens in place: Set common price, type, Enter saves
@@ -65,28 +66,28 @@ test(
     await expect(
       addForm.getByRole("combobox", { name: "Where it lives" }).getByRole("option", { selected: true }),
     ).toHaveText("Unsorted (box, for sale)");
-    const minField = addForm.getByRole("spinbutton", { name: "Minimum price", exact: true });
+    const minField = addForm.getByRole("spinbutton", { name: "Price", exact: true });
     await expect(minField).toHaveAttribute("placeholder", "0.25");
     await expect(addForm.getByText("Blank sells at your common price, $0.25.", { exact: true })).toBeVisible();
     await expectAccessible(page, { within: drawer, label: "Card drawer, add form with a minimum price" });
     await addForm.getByRole("button", { name: "Add to inventory" }).click();
-    await expect(drawer.getByRole("status").filter({ hasText: `Added ${one.short}, Raw` })).toBeVisible();
-    const line = yourCopies.getByRole("listitem").filter({ has: page.getByText("Raw", { exact: true }) });
-    await expect(line.getByText(/min \$0\.25, common/)).toBeVisible();
+    await expect(drawer.getByRole("status").filter({ hasText: `Added ${one.short}, Raw, Excellent` })).toBeVisible();
+    const line = yourCopies.getByRole("listitem").filter({ has: page.getByText("Raw, Excellent", { exact: true }) });
+    await expect(line.getByText(/\$0\.25, common/)).toBeVisible();
 
     // --- Its own minimum price overrides the common one ---------------------------
-    await yourCopies.getByRole("button", { name: `Edit ${one.short}, Raw`, exact: true }).click();
-    const editForm = drawer.getByRole("form", { name: "Edit Raw", exact: true });
-    const ownMin = editForm.getByRole("spinbutton", { name: "Minimum price", exact: true });
+    await yourCopies.getByRole("button", { name: `Edit ${one.short}, Raw, Excellent`, exact: true }).click();
+    const editForm = drawer.getByRole("form", { name: "Edit Raw, Excellent", exact: true });
+    const ownMin = editForm.getByRole("spinbutton", { name: "Price", exact: true });
     await expect(ownMin).toHaveValue("");
     await ownMin.fill("0.50");
     await editForm.getByRole("button", { name: "Save copy" }).click();
     await expect(drawer.getByRole("status").filter({ hasText: `Saved ${one.short}` })).toBeVisible();
-    await expect(line.getByText(/min \$0\.50/)).toBeVisible();
+    await expect(line.getByText(/\$0\.50/)).toBeVisible();
     await expect(line.getByText(/, common/)).toHaveCount(0);
 
     // --- Cleanup (R7): remove the copy, then clear the common price ---------------
-    await yourCopies.getByRole("button", { name: `Remove ${one.short}, Raw`, exact: true }).click();
+    await yourCopies.getByRole("button", { name: `Remove ${one.short}, Raw, Excellent`, exact: true }).click();
     await expect(yourCopies.getByText("None yet. Fill in what you know below and add it.")).toBeVisible();
     await drawer.getByRole("button", { name: "Close card detail" }).click();
     await expect(drawer).toBeHidden();

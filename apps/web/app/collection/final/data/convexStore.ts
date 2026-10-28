@@ -87,8 +87,10 @@ import {
   type SharingExtension,
 } from "./store";
 import {
+  DEFAULT_CONDITION,
   REAL_CAPABILITIES,
   type Card,
+  type Condition,
   type CardTeam,
   type Container,
   type ContainerCopies,
@@ -962,6 +964,10 @@ export const CONVEX_DATA: CollectionData = {
     return useMemo(() => raw?.map(toWant), [raw]);
   },
 
+  useDefaultCondition() {
+    return useQuery(api.userProfile.getDefaultCondition, {}) ?? DEFAULT_CONDITION;
+  },
+
   useCopiesOfCards(cardIds) {
     const homes = useHomes();
     const key = cardIds ? [...new Set(cardIds)].join("\n") : null;
@@ -1703,10 +1709,27 @@ function foldsInto(row: RawCopy, next: RawDetails): boolean {
   );
 }
 
-/** A plain line (NEO-364, D9), the server's `isPlainLine`: raw, no detail recorded, not up for trade. */
-function isPlainRow(r: RawCopy): boolean {
+/**
+ * NEO-380: the collector's default condition as the server will fill it in
+ * (`useDefaultCondition` keeps it loaded), else `DEFAULT_CONDITION`.
+ */
+function defaultConditionIn(local: OptimisticLocalStore): Condition {
+  return local.getQuery(api.userProfile.getDefaultCondition, {}) ?? DEFAULT_CONDITION;
+}
+
+/** Details as the server stores them (NEO-380): a raw copy that names no condition takes the default. */
+function withDefaultCondition(local: OptimisticLocalStore, details: RawDetails): RawDetails {
+  return details.grading || details.condition ? details : { ...details, condition: defaultConditionIn(local) };
+}
+
+/**
+ * A plain line (NEO-364, D9), the server's `isPlainLine`: raw, in the default
+ * condition or none (stored before NEO-380), no other detail recorded, not up
+ * for trade.
+ */
+function isPlainRow(r: RawCopy, defaultCondition: Condition = DEFAULT_CONDITION): boolean {
   return (
-    r.condition === undefined &&
+    (r.condition === undefined || r.condition === defaultCondition) &&
     r.grading === undefined &&
     r.serialNumber === undefined &&
     r.costCents === undefined &&
@@ -1736,13 +1759,14 @@ function applyBoxQuantity(
   if (!place) return;
   const now = Date.now();
   const rows = cardRows(local, cardId);
-  const plain = rows.filter((r) => r.homeId === boxId && isPlainRow(r));
+  const condition = defaultConditionIn(local);
+  const plain = rows.filter((r) => r.homeId === boxId && isPlainRow(r, condition));
   const before = plain.reduce((n, r) => n + r.quantity, 0);
   if (quantity === before) return;
   const change: Change = { cardId, variantId: place.variantId, isVariation: place.isVariation, before: [], after: [] };
   if (quantity > before) {
     const adding = quantity - before;
-    const next = { quantity: adding, acquiredOn, homeId: boxId } as RawDetails;
+    const next = { quantity: adding, condition, acquiredOn, homeId: boxId } as RawDetails;
     const into = rows.find((r) => foldsInto(r, next) && r.quantity + adding <= MAX_LINE_QUANTITY);
     if (into) {
       change.before = [into];
@@ -1756,6 +1780,7 @@ function applyBoxQuantity(
           setId: place.setId as RawCopy["setId"],
           homeId: boxId as RawCopy["homeId"],
           quantity: adding,
+          condition,
           acquiredOn,
           lastUpdated: now,
         },
@@ -1799,6 +1824,7 @@ function applyBoxSteps(
     if (step.op === "restore") {
       const next = {
         quantity: step.quantity,
+        condition: defaultConditionIn(local),
         ...(step.acquiredOn ? { acquiredOn: step.acquiredOn } : {}),
         ...(step.slot !== undefined ? { slot: step.slot } : {}),
         homeId: inverse.boxId,
@@ -1841,7 +1867,7 @@ function applyAdd(
 ) {
   if (!place) return;
   const homeId = (details.homeId ?? mainId(local)) as RawCopy["homeId"] | undefined;
-  const next = { ...details, ...(homeId ? { homeId } : {}) };
+  const next = { ...withDefaultCondition(local, details), ...(homeId ? { homeId } : {}) };
   const into = fold ? cardRows(local, cardId).find((r) => foldsInto(r, next)) : undefined;
   const change: Change = { cardId, variantId: place.variantId, isVariation: place.isVariation, before: [], after: [] };
   if (into) {
@@ -2010,7 +2036,7 @@ function useConvexActions(): CollectionActions {
           variantId: r.variantId,
           setId: r.setId,
           lastUpdated: Date.now(),
-          ...args.details,
+          ...withDefaultCondition(local, args.details),
           homeId: args.details.homeId ?? r.homeId,
         }) as RawCopy),
       ),

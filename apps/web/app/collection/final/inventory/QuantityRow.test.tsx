@@ -108,7 +108,7 @@ function setup(
     run: vi.fn(),
   };
   const shelf = shelfIn ?? undefined;
-  const data = { useContainers: () => shelf, useDemoExtension: () => undefined } as unknown as CollectionData;
+  const data = { useContainers: () => shelf, useDemoExtension: () => undefined, useDefaultCondition: () => "Excellent" } as unknown as CollectionData;
   const value = {
     kind: "convex",
     capabilities: REAL_CAPABILITIES,
@@ -653,7 +653,7 @@ describe("a row that outlives its own commit", () => {
               {
                 kind: "convex",
                 capabilities: REAL_CAPABILITIES,
-                data: { useContainers: () => SHELF, useDemoExtension: () => undefined },
+                data: { useContainers: () => SHELF, useDemoExtension: () => undefined, useDefaultCondition: () => "Excellent" },
                 actions: { setBoxQuantity: vi.fn() },
               } as unknown as CollectionStoreValue
             }
