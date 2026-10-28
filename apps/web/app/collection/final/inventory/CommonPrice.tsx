@@ -1,4 +1,4 @@
-import { useId, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
 import NeonButton from "@/components/modules/NeonButton";
 import { Input } from "@/components/primitives/Input";
 import { FOCUS, QUIET_BUTTON } from "../../prototypes/p1/ui";
@@ -17,7 +17,7 @@ export function parsePrice(text: string): number | null | "invalid" {
 /**
  * NEO-378 — a checklist's common price on the inventory side: what a plain
  * card of this exact variant sells for at least. A for-sale copy with no
- * minimum price of its own sells at it. Manual, per collector, per variant
+ * price of its own sells at it. Manual, per collector, per variant
  * (Base has one, a Refractor parallel its own).
  *
  * Reads as one line ("Common price $0.25 · Change"). Change opens a field
@@ -32,6 +32,9 @@ export default function CommonPrice({ variantId, title }: { variantId: VariantId
   const [editing, setEditing] = useState(false);
   const [text, setText] = useState("");
   const [error, setError] = useState(false);
+  // Focus goes back to Change once the line is rendered again, not on a
+  // timer: after a save the line can re-render late (or wait on the price).
+  const [refocus, setRefocus] = useState(false);
   const errorId = useId();
   const helpId = useId();
   const changeRef = useRef<HTMLButtonElement>(null);
@@ -45,8 +48,13 @@ export default function CommonPrice({ variantId, title }: { variantId: VariantId
   };
   const close = () => {
     setEditing(false);
-    requestAnimationFrame(() => changeRef.current?.focus());
+    setRefocus(true);
   };
+  useEffect(() => {
+    if (!refocus || editing || !changeRef.current) return;
+    changeRef.current.focus();
+    setRefocus(false);
+  }, [refocus, editing, price]);
   const save = () => {
     const next = parsePrice(text);
     if (next === "invalid") {

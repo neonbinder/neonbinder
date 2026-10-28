@@ -78,6 +78,7 @@ describe("the common price line", () => {
     expect(setCommonPrice).toHaveBeenCalledWith("base1", 0.25);
     expect(messages).toEqual(["Common price for Base is $0.25"]);
     expect(screen.queryByRole("textbox", { name: "Common price" })).toBeNull();
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Set a common price for Base" }));
   });
 
   it("shows the price, and a blank field clears it", async () => {
