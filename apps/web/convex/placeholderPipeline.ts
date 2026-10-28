@@ -62,6 +62,7 @@ import { fastPreprocessPool } from "./placeholderPool";
 import { heavyPreprocessPool } from "./placeholderHeavyPool";
 import { readEscalationHints } from "./lib/preprocessBaseline";
 import { PLACEHOLDER_MAX_ENTRY_INDEX } from "./lib/placeholderObjects";
+import { noteIntakePairsChanged } from "./intakeRuns";
 
 /**
  * How many images are handled per chunked mutation — registration, enqueuing,
@@ -629,6 +630,8 @@ export const sweepJobPairs = internalMutation({
     for (const pair of pairs) {
       await ctx.db.delete(pair._id);
     }
+    // NEO-379: an intake run drops the matches of the swept pairs.
+    if (pairs.length > 0) await noteIntakePairsChanged(ctx, args.jobId);
 
     const done = pairs.length < ENQUEUE_CHUNK_SIZE;
     if (!done) {

@@ -8228,6 +8228,8 @@ type SetBuilderResetResult = {
   collectionContainersDeleted: number;
   /** NEO-358 — collectors' "Sets I'm building", drained before the sets. */
   collectionBuildingSetsDeleted: number;
+  /** NEO-379 — intake runs and their matches, drained before the containers. */
+  intakeRunsDeleted: number;
   selectorOptionsDeleted: number;
   /** NEO-313 — the derived player → cards index, drained before the cards. */
   cardPlayerLinksDeleted: number;
@@ -8333,6 +8335,7 @@ async function runSetBuilderReset(
     cardRequestsDeleted: 0,
     collectionContainersDeleted: 0,
     collectionBuildingSetsDeleted: 0,
+    intakeRunsDeleted: 0,
     selectorOptionsDeleted: 0,
     cardPlayerLinksDeleted: 0,
     cardTeamLinksDeleted: 0,
@@ -8394,6 +8397,13 @@ async function runSetBuilderReset(
     [
       "cardRequestsDeleted",
       internal.selectorOptions.resetCardRequestsBatch,
+    ],
+    // NEO-379 — intake runs name a container, a variant row, and (through
+    // their matches) cards, so they go BEFORE all three. Not reference-seed
+    // tables: every scope drains them.
+    [
+      "intakeRunsDeleted",
+      internal.selectorOptions.resetIntakeRunsBatch,
     ],
     // NEO-358 — the binders and boxes those copies lived in, AFTER the copies
     // (a copy's `homeId` names one) and the wants (NEO-359: a want's
@@ -8681,6 +8691,7 @@ export const resetSetBuilderDataFromCli = internalAction({
     cardRequestsDeleted: v.number(),
     collectionContainersDeleted: v.number(),
     collectionBuildingSetsDeleted: v.number(),
+    intakeRunsDeleted: v.number(),
     selectorOptionsDeleted: v.number(),
     // NEO-313 — the derived player → cards index.
     cardPlayerLinksDeleted: v.number(),
@@ -9076,6 +9087,34 @@ export const resetCardTeamLinksBatch = internalMutation({
       await ctx.db.delete(row._id);
     }
     return { deleted: rows.length, hasMore: rows.length === RESET_BATCH_SIZE };
+  },
+});
+
+/**
+ * Internal: drain `intakeMatches`, then `intakeRuns`, looped by
+ * `runSetBuilderReset` before the containers, selector rows and cards they
+ * name. NEO-379. Every collector's, across every account; armed like every
+ * batch here. Matches first, so a run never outlives its matches.
+ */
+export const resetIntakeRunsBatch = internalMutation({
+  args: {},
+  returns: v.object({
+    deleted: v.number(),
+    hasMore: v.boolean(),
+  }),
+  handler: async (ctx) => {
+    assertResetArmed();
+    const matches = await ctx.db.query("intakeMatches").take(RESET_BATCH_SIZE);
+    for (const row of matches) {
+      await ctx.db.delete(row._id);
+    }
+    const room = RESET_BATCH_SIZE - matches.length;
+    const runs = room > 0 ? await ctx.db.query("intakeRuns").take(room) : [];
+    for (const row of runs) {
+      await ctx.db.delete(row._id);
+    }
+    const deleted = matches.length + runs.length;
+    return { deleted, hasMore: deleted === RESET_BATCH_SIZE };
   },
 });
 
