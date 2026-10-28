@@ -305,6 +305,7 @@ type Action =
   | { type: "unpair"; id: string }
   | { type: "pairLoose"; frontId: string; backId: string; now: number; speed: number; home: string; hadOf: HadOf }
   | { type: "reject"; id: string; side: Side }
+  | { type: "drop"; id: string }
   | { type: "retry"; id: string; now: number; speed: number; hadOf: HadOf }
   | { type: "details"; id: string; patch: Partial<Details> }
   | { type: "home"; id: string; homeId: string; hadOf: HadOf }
@@ -402,6 +403,15 @@ function advance(item: Item, now: number, speed: number, seed: number): Item {
     next = { ...next, stage, nextAt: next.nextAt + duration(stage, seed + STAGES.indexOf(stage), speed) };
   }
   return next;
+}
+
+/**
+ * A waiting card that can't be saved as it stands: no card picked, a failed
+ * read, an unanswered rescan, or a suggestion that says the pick is wrong.
+ * Selecting one opens its drawer (Jason, 2026-10-28).
+ */
+export function needsDrawer(item: Item): boolean {
+  return item.stage === "review" && (!item.match.cardId || item.front.failed || !!item.rescanOf || !!item.match.suggestion);
 }
 
 export function bandOf(item: Item): Band {
@@ -550,6 +560,15 @@ function reducer(state: State, action: Action): State {
         log: [...state.log, `Rescan the ${action.side} of ${item.front.file}`],
       };
     }
+    case "drop": {
+      const item = state.items.find((i) => i.id === action.id);
+      if (!item) return state;
+      return {
+        ...state,
+        items: state.items.filter((i) => i.id !== action.id),
+        log: [...state.log, `Set aside ${item.front.file}`],
+      };
+    }
     case "retry":
       return patch(action.id, (i) =>
         relined(
@@ -659,6 +678,7 @@ export function useIntakeSim({ setChosen, homeId, hadOf, speed: requested = 1, r
       [speed, had],
     ),
     reject: useCallback((id: string, side: Side) => dispatch({ type: "reject", id, side }), []),
+    drop: useCallback((id: string) => dispatch({ type: "drop", id }), []),
     retry: useCallback((id: string) => dispatch({ type: "retry", id, now: now(), speed, hadOf: had }), [speed, had]),
     setDetails: useCallback((id: string, patch: Partial<Details>) => dispatch({ type: "details", id, patch }), []),
     moveHome: useCallback((id: string, homeId: string) => dispatch({ type: "home", id, homeId, hadOf: had }), [had]),

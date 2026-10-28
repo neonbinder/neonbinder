@@ -45,6 +45,28 @@ test(
 );
 
 test(
+  "Add cards (collection): a card that can't be saved as is opens its drawer, and Reject card takes it out",
+  { tag: ["@home"] },
+  async ({ page }) => {
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await page.goto("/binder-tracking?demo=on&tab=add&speed=6");
+    const review = page.getByRole("region", { name: /^Needs you/ });
+    // The scripted autograph: its number says it isn't a Base card.
+    const why = review.getByText(/not a Base card/);
+    await why.click();
+    const drawer = page.getByRole("dialog");
+    await expect(drawer).toBeVisible();
+    await expect(drawer.getByText(/not a Base card/)).toBeVisible();
+    await expectAccessible(page, {
+      label: "Add cards, drawer for a wrong variant",
+    });
+    await drawer.getByRole("button", { name: /Reject card$/ }).click();
+    await expect(drawer).toBeHidden();
+    await expect(why).toBeHidden();
+  },
+);
+
+test(
   "Add cards (collection): the set button opens the set selector and Skip folds it",
   { tag: ["@home"] },
   async ({ page }) => {

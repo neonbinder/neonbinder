@@ -19,6 +19,7 @@ import {
   bandOf,
   cardTitle,
   cardsForPicking,
+  needsDrawer,
   useIntakeSim,
   type Details,
   type HadOf,
@@ -191,13 +192,21 @@ export default function AddCardsTab() {
     });
   };
 
+  /** Select a card. One that can't be saved as it stands opens its drawer;
+   *  any other gets the focus (its quantity when asked). */
+  const land = (id: string | null, preferQty: boolean) => {
+    setSelectedId(id);
+    const item = id ? find(id) : undefined;
+    if (item && needsDrawer(item)) setOpenId(item.id);
+    else focusTile(id, preferQty);
+  };
+
   /** Enter in a quantity: the card saved, on to the next one down the column. */
   const nextQty = (id: string) => {
     const lane = lanes[REVIEW_LANE];
     const at = lane.findIndex((i) => i.id === id);
     const next = lane.slice(at + 1).find((i) => i.match.cardId) ?? null;
-    setSelectedId(next?.id ?? null);
-    focusTile(next?.id ?? null, true);
+    land(next?.id ?? null, true);
   };
 
   // --- Keys, on the selected card. The handler reads this render's state
@@ -212,8 +221,7 @@ export default function AddCardsTab() {
     const move = (to: string | null) => {
       if (!to) return;
       e.preventDefault();
-      setSelectedId(to);
-      focusTile(to, inQty);
+      land(to, inQty);
     };
     if (key === "j" || key === "k" || key === "h" || key === "l") {
       if (!selected) {
@@ -246,8 +254,7 @@ export default function AddCardsTab() {
       if (selected.stage !== "review" || !selected.match.cardId) return;
       const next = neighbour(selected.id);
       intake.actions.confirm(selected.id);
-      setSelectedId(next);
-      focusTile(next, inQty);
+      land(next, inQty);
       return;
     }
     if (key === "o") {
@@ -259,7 +266,7 @@ export default function AddCardsTab() {
     if (tool) {
       e.preventDefault();
       // Reject and unpair take the card out of its lane: selection moves on.
-      if (key === "x" || key === "X" || key === "u") setSelectedId(neighbour(selected.id));
+      if (key === "x" || key === "X" || key === "u" || key === "d") setSelectedId(neighbour(selected.id));
       tool.run(intake, selected);
     }
   };
@@ -369,6 +376,11 @@ export default function AddCardsTab() {
                     {...{ [TILE_ATTR]: i.id }}
                     onFocusCapture={() => setSelectedId(i.id)}
                     onClick={(e) => {
+                      if (needsDrawer(i)) {
+                        setSelectedId(i.id);
+                        if (!(e.target as HTMLElement).closest("button, input, select, a, label")) setOpenId(i.id);
+                        return;
+                      }
                       setSelectedId(i.id);
                       // A click on a waiting card (not on one of its controls)
                       // puts the caret in its quantity, number selected, so

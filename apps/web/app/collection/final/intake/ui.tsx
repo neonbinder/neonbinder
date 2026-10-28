@@ -139,7 +139,9 @@ export function BandBadge({ item }: { item: Item }) {
   if (band === "check") {
     return <span className="rounded-full bg-notice-warn-bg px-2 py-0.5 text-xs font-semibold text-notice-warn-ink">Check this {pct}</span>;
   }
-  return <span className="rounded-full bg-wash-pink px-2 py-0.5 text-xs font-semibold text-neon-pink-text">No match</span>;
+  // Ink on a pink rim: pink text on the pink wash misses 4.5:1 on the drawer's
+  // raised surface in dark mode.
+  return <span className="rounded-full border border-neon-pink-text bg-wash-pink px-2 py-0.5 text-xs font-semibold text-ink">No match</span>;
 }
 
 export function StageBadge({ stage }: { stage: Stage }) {
@@ -427,23 +429,41 @@ export const FIX_TOOLS = [
   { key: "x", label: "Reject front", run: (s: IntakeSim, i: Item) => s.actions.reject(i.id, "front") },
   { key: "X", label: "Reject back", run: (s: IntakeSim, i: Item) => s.actions.reject(i.id, "back") },
   { key: "u", label: "Unpair", run: (s: IntakeSim, i: Item) => s.actions.unpair(i.id) },
+  { key: "d", label: "Reject card", run: (s: IntakeSim, i: Item) => s.actions.drop(i.id) },
 ] as const;
 
 export function FixTools({ item, sim, showKeys = false }: { item: Item; sim: IntakeSim; showKeys?: boolean }) {
   return (
     <div role="group" aria-label="Fix this scan" className="flex flex-wrap gap-1.5">
-      {FIX_TOOLS.map((t) => (
-        <button
-          key={t.key}
-          type="button"
-          onClick={() => t.run(sim, item)}
-          aria-keyshortcuts={showKeys ? (t.key === t.key.toUpperCase() ? `Shift+${t.key}` : t.key) : undefined}
-          className={`min-h-11 rounded-md border border-rule bg-button-neutral px-2 py-1 text-xs text-ink-2 hover:bg-button-neutral-hover sm:min-h-8 ${RING}`}
-        >
-          {showKeys && <kbd className="mr-1 font-mono text-ink-3">{t.key}</kbd>}
-          {t.label}
-        </button>
-      ))}
+      {FIX_TOOLS.map((t) =>
+        t.key === "d" ? (
+          // Taking the whole card out is the destructive one: pink, like every
+          // other remove (Jason, 2026-10-28: "a reject card button").
+          <NeonButton
+            key={t.key}
+            size="1"
+            variant="negative"
+            outline
+            onClick={() => t.run(sim, item)}
+            aria-keyshortcuts={showKeys ? t.key : undefined}
+            className="min-h-11 sm:min-h-8"
+          >
+            {showKeys && <kbd className="mr-1 font-mono">{t.key}</kbd>}
+            {t.label}
+          </NeonButton>
+        ) : (
+          <button
+            key={t.key}
+            type="button"
+            onClick={() => t.run(sim, item)}
+            aria-keyshortcuts={showKeys ? (t.key === t.key.toUpperCase() ? `Shift+${t.key}` : t.key) : undefined}
+            className={`min-h-11 rounded-md border border-rule bg-button-neutral px-2 py-1 text-xs text-ink-2 hover:bg-button-neutral-hover sm:min-h-8 ${RING}`}
+          >
+            {showKeys && <kbd className="mr-1 font-mono text-ink-3">{t.key}</kbd>}
+            {t.label}
+          </button>
+        ),
+      )}
     </div>
   );
 }
