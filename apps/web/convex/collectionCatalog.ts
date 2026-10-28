@@ -563,12 +563,17 @@ const teamSuggestionValidator = v.object({
 /** A year typed as part of a set name: "2024", "1996-97", "2023-2024". */
 const YEAR_TOKEN = /^\d{4}(-\d{2}|-\d{4})?$/;
 
-async function suggestPlayers(ctx: Ctx, text: string, reader: CatalogReader) {
+async function suggestPlayers(
+  ctx: Ctx,
+  text: string,
+  reader: CatalogReader,
+  sportId: Id<"selectorOptions"> | null,
+) {
   const out: Array<typeof playerSuggestionValidator.type> = [];
   const seen = new Set<string>();
   const key = normalizeEntityName(text);
   if (key) {
-    const aliasRows = await playerAliasRowsByPrefix(ctx, key, SUGGEST_LIMIT * 2);
+    const aliasRows = await playerAliasRowsByPrefix(ctx, key, SUGGEST_LIMIT * (sportId ? 6 : 2));
     // Exact alias hits first, then prefix ones.
     aliasRows.sort(
       (a, b) =>
@@ -578,7 +583,7 @@ async function suggestPlayers(ctx: Ctx, text: string, reader: CatalogReader) {
       if (out.length >= SUGGEST_LIMIT) break;
       if (seen.has(row.playerId as string)) continue;
       const player = await ctx.db.get(row.playerId);
-      if (!player) continue;
+      if (!player || (sportId && player.sportId !== sportId)) continue;
       seen.add(player._id as string);
       const alias = (player.aliases ?? []).find(
         (a) => normalizeEntityName(a) === row.aliasNormalized,
@@ -595,7 +600,10 @@ async function suggestPlayers(ctx: Ctx, text: string, reader: CatalogReader) {
   if (out.length < SUGGEST_LIMIT) {
     const hits = await ctx.db
       .query("players")
-      .withSearchIndex("search_name", (q) => q.search("name", text))
+      .withSearchIndex("search_name", (q) => {
+        const s = q.search("name", text);
+        return sportId ? s.eq("sportId", sportId) : s;
+      })
       .take(SUGGEST_LIMIT * 2);
     for (const player of hits) {
       if (out.length >= SUGGEST_LIMIT) break;
@@ -612,20 +620,28 @@ async function suggestPlayers(ctx: Ctx, text: string, reader: CatalogReader) {
   return out;
 }
 
-async function suggestTeams(ctx: Ctx, text: string, reader: CatalogReader) {
+async function suggestTeams(
+  ctx: Ctx,
+  text: string,
+  reader: CatalogReader,
+  sportId: Id<"selectorOptions"> | null,
+) {
   const out: Array<typeof teamSuggestionValidator.type> = [];
   const key = normalizeEntityName(text);
   if (!key) return out;
   const found: Array<Doc<"teams">> = [];
   const seen = new Set<string>();
-  for (const team of await findTeamsByAliasPrefix(ctx, text, SUGGEST_LIMIT)) {
-    if (seen.has(team._id as string)) continue;
+  for (const team of await findTeamsByAliasPrefix(ctx, text, SUGGEST_LIMIT * (sportId ? 6 : 1))) {
+    if (seen.has(team._id as string) || (sportId && team.sportId !== sportId)) continue;
     seen.add(team._id as string);
     found.push(team);
   }
   const hits = await ctx.db
     .query("teams")
-    .withSearchIndex("search_name", (q) => q.search("nameNormalized", key))
+    .withSearchIndex("search_name", (q) => {
+      const s = q.search("nameNormalized", key);
+      return sportId ? s.eq("sportId", sportId) : s;
+    })
     .take(SUGGEST_LIMIT * 2);
   for (const team of hits) {
     if (seen.has(team._id as string)) continue;
@@ -655,7 +671,12 @@ async function suggestTeams(ctx: Ctx, text: string, reader: CatalogReader) {
   return out;
 }
 
-async function suggestSets(ctx: Ctx, text: string, reader: CatalogReader) {
+async function suggestSets(
+  ctx: Ctx,
+  text: string,
+  reader: CatalogReader,
+  sportId: Id<"selectorOptions"> | null,
+) {
   const tokens = text.toLowerCase().split(/\s+/).filter(Boolean);
   const years = tokens.filter((t) => YEAR_TOKEN.test(t));
   const words = tokens.filter((t) => !YEAR_TOKEN.test(t));
@@ -672,7 +693,7 @@ async function suggestSets(ctx: Ctx, text: string, reader: CatalogReader) {
     // NEO-358 — a set known to hold no cards is never offered.
     if (hiddenAsEmpty(row)) continue;
     const ref = await reader.setRef(row._id);
-    if (!ref) continue;
+    if (!ref || (sportId && ref.sport?._id !== sportId)) continue;
     const haystack = [ref.manufacturer?.name ?? "", ref.name, ref.sport?.name ?? ""]
       .join(" ")
       .toLowerCase();
@@ -698,7 +719,8 @@ async function suggestSets(ctx: Ctx, text: string, reader: CatalogReader) {
  * Empty under `MIN_QUERY_CHARS`.
  */
 export const suggest = query({
-  args: { q: v.string() },
+  /** NEO-362: `sportId` keeps every suggestion to one sport (the rule builder's sport pick). */
+  args: { q: v.string(), sportId: v.optional(v.string()) },
   returns: v.object({
     players: v.array(playerSuggestionValidator),
     teams: v.array(teamSuggestionValidator),
@@ -708,11 +730,13 @@ export const suggest = query({
     await requireSignedIn(ctx);
     const text = clampSearchQuery(args.q).replace(/["“”]/g, " ").trim();
     if (text.length < MIN_QUERY_CHARS) return { players: [], teams: [], sets: [] };
+    const sportId = selectorId(ctx, args.sportId);
+    if (args.sportId && !sportId) return { players: [], teams: [], sets: [] };
     const reader = new CatalogReader(ctx);
     return {
-      players: await suggestPlayers(ctx, text, reader),
-      teams: await suggestTeams(ctx, text, reader),
-      sets: await suggestSets(ctx, text, reader),
+      players: await suggestPlayers(ctx, text, reader, sportId),
+      teams: await suggestTeams(ctx, text, reader, sportId),
+      sets: await suggestSets(ctx, text, reader, sportId),
     };
   },
 });

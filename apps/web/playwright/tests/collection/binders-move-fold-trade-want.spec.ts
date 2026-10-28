@@ -144,8 +144,10 @@ test(
     };
 
     const newDialog = await openNewBinder();
-    // The real collection makes binders only: no box to pick, and no smart binder yet.
-    await expect(newDialog.getByRole("radio")).toHaveCount(0);
+    // The real collection makes binders only: no box to pick. A smart binder
+    // is a binder too (NEO-362; proved by collection/smart-binder-find-cards).
+    await expect(newDialog.getByRole("radio")).toHaveCount(2);
+    await expect(newDialog.getByRole("radio", { name: /^A binder/ })).toBeChecked();
     await expect(newDialog.getByText(/\bbox\b/i)).toHaveCount(0);
     await expectAccessible(page, { within: newDialog, label: "New binder dialog" });
     await newDialog.getByRole("textbox", { name: "Binder name" }).fill(binderA);
@@ -348,6 +350,8 @@ test(
     // --- Rename and relabel the second binder -------------------------------
     await spineOf(binderB, 2).click();
     await expect(heading(binderB)).toBeVisible();
+    // NEO-362: label and rename controls live in the binder's settings.
+    await page.getByRole("button", { name: "Binder settings", exact: true }).click();
     await page.getByRole("button", { name: `Rename or delete ${binderB}`, exact: true }).click();
     const editDialog = page.getByRole("dialog", { name: `Rename or delete ${binderB}`, exact: true });
     await expect(editDialog.getByRole("textbox", { name: "Binder name" })).toHaveValue(binderB);
@@ -359,6 +363,8 @@ test(
     binderB = renamed;
     await expect(heading(binderB)).toBeVisible();
 
+    // NEO-362: label and rename controls live in the binder's settings.
+    await page.getByRole("button", { name: "Binder settings", exact: true }).click();
     await page.getByRole("button", { name: `Edit label for ${binderB}`, exact: true }).click();
     const labelDialog = page.getByRole("dialog", { name: `Spine label for ${binderB}`, exact: true });
     await expect(labelDialog.getByRole("textbox", { name: "Background" })).toBeVisible();
@@ -368,6 +374,8 @@ test(
     await labelDialog.getByRole("button", { name: "Save label" }).click();
     await expect(labelDialog).toBeHidden();
     await expect(page.getByRole("status").filter({ hasText: `New label on ${binderB}. Looking sharp.` })).toBeVisible();
+    // NEO-362: label and rename controls live in the binder's settings.
+    await page.getByRole("button", { name: "Binder settings", exact: true }).click();
     await page.getByRole("button", { name: `Edit label for ${binderB}`, exact: true }).click();
     await expect(labelDialog.getByRole("textbox", { name: "Background" })).toHaveValue(/^#203731$/i);
     await labelDialog.getByRole("button", { name: "Cancel" }).click();
@@ -511,6 +519,8 @@ test(
     const deleteBinder = async (spine: Locator, name: string, goes: string) => {
       await spine.click();
       await expect(heading(name)).toBeVisible();
+      // NEO-362: label and rename controls live in the binder's settings.
+      await page.getByRole("button", { name: "Binder settings", exact: true }).click();
       await page.getByRole("button", { name: `Rename or delete ${name}`, exact: true }).click();
       await page
         .getByRole("dialog", { name: `Rename or delete ${name}`, exact: true })

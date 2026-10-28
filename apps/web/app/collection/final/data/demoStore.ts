@@ -70,6 +70,7 @@ import {
 } from "../../prototypes/p1/drill";
 import {
   demoOps,
+  DemoRefusal,
   fixtureRule,
   PUBLIC_STORAGE_KEY,
   useDemoCollectionState,
@@ -101,6 +102,7 @@ import {
 import {
   ALL_CAPABILITIES,
   isHome,
+  type BinderNeeds,
   type Card,
   type CardFeature,
   type CardId,
@@ -109,12 +111,15 @@ import {
   type Container,
   type ContainerCopies,
   type Copy,
+  type DeclinedCard,
   type DrillItem,
+  type FoundCards,
   type HeldCount,
   type InventoryBoxCount,
   type InventoryCards,
   type InventoryItem,
   type OwnedCards,
+  type RuleBrand,
   type DrillLevel,
   type DrillParents,
   type SetCompletion,
@@ -845,7 +850,68 @@ export const DEMO_DATA: CollectionData = {
       return { cards: all.slice(0, limit), truncated: all.length > limit };
     }, [setId, limit]);
   },
+
+  /**
+   * NEO-362 — a binder's needs, as the server's for a binder with no rule:
+   * every regular card of the checklists it already holds a card from.
+   */
+  useBinderNeeds(containerId) {
+    const { copies } = useDemoState().state;
+    return useMemo((): BinderNeeds | undefined => {
+      if (containerId === null) return undefined;
+      const idx = demoIndex();
+      const here = new Set<string>();
+      const variants = new Set<string>();
+      for (const c of copies) {
+        if (c.homeId !== containerId) continue;
+        here.add(c.cardId);
+        const card = idx.cards.get(c.cardId);
+        if (card) variants.add(card.variant.id);
+      }
+      const elsewhere = new Set(copies.filter((c) => c.homeId !== containerId).map((c) => c.cardId));
+      const cards: Card[] = [];
+      for (const v of [...variants].slice(0, MAX_NEED_CHECKLISTS)) {
+        for (const card of idx.variantCards.get(v) ?? []) {
+          if (!card.isVariation && !here.has(card.id)) cards.push(card);
+        }
+      }
+      const kept = cards.slice(0, MAX_NEEDS);
+      return {
+        cards: kept,
+        held: new Set(kept.filter((c) => elsewhere.has(c.id)).map((c) => c.id)),
+        supported: true,
+        truncated: cards.length > kept.length || variants.size > MAX_NEED_CHECKLISTS,
+      };
+    }, [containerId, copies]);
+  },
+
+  // The demo has no smart rules (capability `binderRules` is off): nothing
+  // matches, there is nothing to find, nothing was declined.
+  useRuleMatches(containerId, cardIds) {
+    return useMemo(() => (containerId && cardIds ? new Set<string>() : undefined), [containerId, cardIds]);
+  },
+
+  useFindCards(containerId) {
+    return useMemo(
+      (): FoundCards | undefined => (containerId ? { copies: [], done: true, more: () => {} } : undefined),
+      [containerId],
+    );
+  },
+
+  useDeclined(containerId) {
+    return useMemo((): DeclinedCard[] | undefined => (containerId ? [] : undefined), [containerId]);
+  },
+
+  useRuleBrands(sportId) {
+    return sportId ? NO_BRANDS : undefined;
+  },
 };
+
+const NO_BRANDS: RuleBrand[] = [];
+
+/** As the server's (`convex/binderRules.ts`). */
+const MAX_NEEDS = 900;
+const MAX_NEED_CHECKLISTS = 30;
 
 // ---------------------------------------------------------------------------
 // Writes
@@ -869,7 +935,33 @@ function demoActions(stateRef: { current: DemoState }): CollectionActions {
     run((s) => demoOps.moveCopy(s, r.copyId, r.from.homeId, r.from.quantity, r.from.slot));
   };
 
+  const noRules = async (): Promise<never> => {
+    throw new DemoRefusal("Smart binder rules need an account. Sign up to build one.");
+  };
+
   const actions: CollectionActions = {
+    async setBinderSettings(container, patch) {
+      const back = run((s) => demoOps.setBinderSettings(s, container.id, patch));
+      return {
+        undo: async () => {
+          run((s) => demoOps.setBinderSettings(s, container.id, back));
+        },
+      };
+    },
+
+    async relayPockets(container, placements) {
+      const previous = run((s) => demoOps.relayPockets(s, container.id, placements));
+      return {
+        undo: async () => {
+          run((s) => demoOps.relayPockets(s, container.id, previous));
+        },
+      };
+    },
+
+    setSmartRule: noRules,
+    declineCard: noRules,
+    undeclineCard: noRules,
+
     async addHave(card, homeId) {
       const r = run((s) => demoOps.addLine(s, card.id, { ...emptyCopyDetails(), ...(homeId ? { homeId } : {}) }));
       return { copyId: r.copyId, merged: r.merged, undo: undoAdd(r) };

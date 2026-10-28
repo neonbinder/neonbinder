@@ -189,10 +189,11 @@ describe("the public collection demo", () => {
     expect(within(bar).queryByText(/Inventory and label printing need an account/)).toBeNull();
   });
 
-  it("sends Print label, on the cover and in the label editor, to the public Print Shop page", () => {
+  it("sends Print label, in the binder's settings and in the label editor, to the public Print Shop page", () => {
     renderDemo();
     openTab("My Binders");
     fireEvent.click(screen.getByRole("button", { name: /^'96 Contenders,/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Binder settings" }));
     for (const link of screen.getAllByRole("link", { name: "Print label for '96 Contenders" })) {
       expect(link.getAttribute("href")).toBe(PUBLIC_DESTINATIONS.printShop);
       // The tour page opens in place, like every other tour link.

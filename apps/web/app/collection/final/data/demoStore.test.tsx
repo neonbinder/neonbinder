@@ -60,9 +60,11 @@ describe("reading the fixture through the contract", () => {
   it("turns every capability on and exposes the demo's own extension", () => {
     const { result } = renderHook(() => ({ caps: useCapabilities(), demo: useDemoExtension() }), { wrapper });
     // Every one but real share links (NEO-360): the demo makes no public pages.
-    const { shareLinks, ...rest } = result.current.caps;
+    // Nor real smart-binder rules (NEO-362): its smart binder fills itself.
+    const { shareLinks, binderRules, ...rest } = result.current.caps;
     expect(Object.values(rest).every(Boolean)).toBe(true);
     expect(shareLinks).toBe(false);
+    expect(binderRules).toBe(false);
     expect(result.current.demo?.browseSets.length).toBeGreaterThan(0);
     expect(result.current.demo).not.toHaveProperty("state");
   });
