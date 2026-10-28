@@ -199,6 +199,16 @@ export const SUBTREE_REFERENCE_GRAPH = {
     handling:
       "NEO-361 a collector's own card may name the checklist it belongs in. Never refuses the wipe and is untouched: a gone checklist reads as none (the card shows under its set, unlisted, and the admin's review offers the set builder instead). setId is set-level, above the subtree",
   },
+  intakeRuns: {
+    fields: ["variantId"],
+    handling:
+      "NEO-379 the variant an intake run matches in. Never refuses the wipe and is untouched: a gone variant matches nothing and the run shows no variant name",
+  },
+  intakeMatches: {
+    fields: ["cardId", "candidates[]", "variations[]"],
+    handling:
+      "NEO-379 the matcher's proposal for one scanned pair. Never refuses the wipe and is untouched: listIntakeMatches skips a card that is gone, and the next sync re-matches the pair",
+  },
   privateSets: {
     fields: ["sportId"],
     handling: "NEO-361 sport-level only. Untouched",
