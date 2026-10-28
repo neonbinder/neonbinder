@@ -25,6 +25,7 @@ export function lineSignature(copy: Copy): string {
     copy.graded?.cert ?? null,
     copy.serialNumber ?? null,
     copy.costBasis ?? null,
+    copy.minPrice ?? null,
     copy.acquiredAt,
     copy.location ?? null,
     copy.notes,

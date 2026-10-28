@@ -62,6 +62,8 @@ export const resetMyTestState = mutation({
     cardRequests: v.number(),
     collectionContainers: v.number(),
     collectionBuildingSets: v.number(),
+    // NEO-378: the caller's common prices per variant.
+    variantCommonPrices: v.number(),
   }),
   handler: async (ctx) => {
     // Fail closed in production: the enabling flag is unset there.
@@ -161,6 +163,14 @@ export const resetMyTestState = mutation({
       await ctx.db.delete(row._id);
     }
 
+    const variantCommonPrices = await ctx.db
+      .query("variantCommonPrices")
+      .withIndex("by_owner_and_variant", (q) => q.eq("ownerId", userId))
+      .collect();
+    for (const row of variantCommonPrices) {
+      await ctx.db.delete(row._id);
+    }
+
     return {
       publicProfiles: publicProfiles.length,
       userProfiles: userProfiles.length,
@@ -170,6 +180,7 @@ export const resetMyTestState = mutation({
       cardRequests: cardRequests.length,
       collectionContainers: collectionContainers.length,
       collectionBuildingSets: collectionBuildingSets.length,
+      variantCommonPrices: variantCommonPrices.length,
     };
   },
 });

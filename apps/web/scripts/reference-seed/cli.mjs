@@ -109,6 +109,9 @@ export const SELECTOR_DEPENDANT_TABLES = [
   "privateCards",
   "privateSets",
   "cardRequests",
+  // NEO-378 — a collector's common price per variant (variantId). Drained by
+  // the reset (`resetVariantCommonPricesBatch`), before the selector rows.
+  "variantCommonPrices",
   "cardPlayerLinks",
   "cardChecklist",
   "cardCrossListings",

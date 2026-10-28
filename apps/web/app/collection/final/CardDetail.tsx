@@ -29,6 +29,7 @@ import {
   systemContainer,
   useCapabilities,
   useCollectionActions,
+  useCommonPrices,
   useContainers,
   useCopiesOf,
   useScope,
@@ -54,6 +55,7 @@ function toForm(d: CopyDetails): FormValue {
     ...(d.graded ? { graded: d.graded } : {}),
     ...(d.serialNumber ? { serialNumber: d.serialNumber } : {}),
     ...(d.costBasis !== undefined ? { costBasis: d.costBasis } : {}),
+    ...(d.minPrice !== undefined ? { minPrice: d.minPrice } : {}),
     acquiredAt: d.acquiredAt,
     ...(d.location ? { location: d.location } : {}),
     notes: d.notes,
@@ -62,14 +64,20 @@ function toForm(d: CopyDetails): FormValue {
   };
 }
 
-/** The form's value as the store takes it: never a home (that is `moveCopy`), never a price. */
-function fromForm(v: FormValue): CopyDetails {
+/**
+ * The form's value as the store takes it: never a home (that is `moveCopy`),
+ * never the prototypes' ask price. NEO-378: the minimum price only when the
+ * copy is for sale (`forSale`), so a floor typed before switching the add
+ * form to a binder never rides along.
+ */
+function fromForm(v: FormValue, forSale: boolean): CopyDetails {
   return {
     quantity: v.quantity,
     condition: v.condition,
     graded: v.graded,
     serialNumber: v.serialNumber,
     costBasis: v.costBasis,
+    ...(forSale && v.minPrice !== undefined ? { minPrice: v.minPrice } : {}),
     acquiredAt: v.acquiredAt,
     location: v.location,
     notes: v.notes,
@@ -86,6 +94,16 @@ function ownedText(kept: number, forSale: number): string {
     forSale > 0 ? `${forSale.toLocaleString("en-US")} for sale` : null,
   ].filter(Boolean);
   return parts.join(" · ");
+}
+
+/**
+ * NEO-378 — a for-sale line's floor: its own ("min $0.50"), else the
+ * variant's common price ("min $0.25, common"). Nothing for a binder line.
+ */
+export function minPriceText(copy: Copy, commonPrice: number | null | undefined): string | null {
+  if (copy.homeKind !== "box") return null;
+  if (copy.minPrice !== undefined) return `min $${copy.minPrice.toFixed(2)}`;
+  return typeof commonPrice === "number" ? `min $${commonPrice.toFixed(2)}, common` : null;
 }
 
 /** The homes as "Where it lives" and "Move to" offer them. */
@@ -162,6 +180,9 @@ export default function CardDetail({
   const wants = capabilities.wants ? allWants : undefined;
   const wanted = capabilities.wants && isWantedIn(wants, card.id, scope);
   const want = wantOf(wants, card.id);
+  // NEO-378 — the variant's common price: what a for-sale copy with no floor of its own sells at.
+  const commonPrices = useCommonPrices(card.own ? null : [card.variant.id]);
+  const commonPrice = card.own ? null : commonPrices === undefined ? undefined : (commonPrices[card.variant.id] ?? null);
 
   // "Where it lives" on an add offers the page side's homes, never a mix:
   // binders on the collection, boxes (Unsorted first) on the inventory.
@@ -255,7 +276,7 @@ export default function CardDetail({
   const add = (value: FormValue) => {
     const home = homeById(addHome);
     const details: CopyDetails = {
-      ...fromForm(value),
+      ...fromForm(value, home?.kind === "box"),
       ...(addHome ? { homeId: addHome } : {}),
       ...(capabilities.trade && draftTrade ? { upForTrade: true } : {}),
     };
@@ -279,7 +300,7 @@ export default function CardDetail({
 
   const save = (copy: Copy, value: FormValue, trade: boolean, key: string) => {
     const patch: Partial<CopyDetails> = {
-      ...fromForm(value),
+      ...fromForm(value, copy.homeKind === "box" || copy.minPrice !== undefined),
       ...(capabilities.trade ? { upForTrade: trade } : {}),
     };
     void api
@@ -438,6 +459,7 @@ export default function CardDetail({
               }}
               hideSaleFields
               hideBinders
+              minPrice={copy.homeKind === "box" ? { commonPrice } : undefined}
               upForTrade={capabilities.trade ? editing.trade : undefined}
               onUpForTradeChange={capabilities.trade ? (trade) => setEditing({ ...editing, trade }) : undefined}
               heading={`Edit ${names[i]}`}
@@ -452,6 +474,7 @@ export default function CardDetail({
         onRemove={remove}
         showTrade={capabilities.trade}
         showSale={capabilities.binders && capabilities.inventory}
+        commonPrice={commonPrice}
         homes={capabilities.binders ? homes : undefined}
         onMove={capabilities.binders ? move : undefined}
       />
@@ -477,6 +500,7 @@ export default function CardDetail({
             homes={addKinds.length > 0 ? formHomes(addKinds) : undefined}
             homeId={addHome}
             onHomeChange={addKinds.length > 0 ? (id) => setDraftHome(id) : undefined}
+            minPrice={homeById(addHome)?.kind === "box" ? { commonPrice } : undefined}
             upForTrade={capabilities.trade ? draftTrade : undefined}
             onUpForTradeChange={capabilities.trade ? setDraftTrade : undefined}
             heading={lines.length > 0 ? "Add another copy" : "Add a copy"}
@@ -624,6 +648,7 @@ export function CopyList({
   onRemove,
   showTrade = false,
   showSale = false,
+  commonPrice,
   homes,
   onMove,
 }: {
@@ -641,6 +666,8 @@ export function CopyList({
   showTrade?: boolean;
   /** Sell / Take off sale, and a box line's "For sale · <box>" tag (capabilities `binders` and `inventory`). */
   showSale?: boolean;
+  /** NEO-378 — the variant's common price (dollars): a box line with no floor of its own sells at it. */
+  commonPrice?: number | null;
   /** Every home a line can go to (capability `binders`): Move, Sell and Take off sale pick from it. */
   homes?: readonly Container[];
   /** Moves `quantity` of the line; resolves `null` when the server refused. */
@@ -767,7 +794,8 @@ export function CopyList({
                   copy.id === focusCopyId ? "bg-pick-blue/20 ring-2 ring-inset ring-selection" : ""
                 }`}
               >
-                <span className="min-w-0 flex-1">
+                {/* At least 10rem wide, so on a phone the line's buttons wrap under it instead of squeezing it to a word a line. */}
+                <span className="min-w-40 flex-1">
                   <span className="block text-ink">
                     <span>{lineWhat(copy)}</span>
                     <HomeTag copy={copy} homes={binders} sale={showSale} />
@@ -777,6 +805,7 @@ export function CopyList({
                     {[
                       copy.acquiredAt ? `Added ${shortDate(copy.acquiredAt)}` : null,
                       copy.costBasis !== undefined ? `paid $${copy.costBasis.toFixed(2)}` : null,
+                      minPriceText(copy, commonPrice),
                       copy.location && !locationNamesAHome(copy.location, binders) ? copy.location : null,
                       copy.notes ? `“${copy.notes}”` : null,
                     ]

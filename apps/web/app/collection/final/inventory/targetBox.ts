@@ -96,6 +96,7 @@ export function isPlainLine(copy: Copy): boolean {
     !copy.condition &&
     !copy.serialNumber &&
     (copy.costBasis === undefined || copy.costBasis === null) &&
+    copy.minPrice === undefined &&
     !copy.location &&
     !copy.notes &&
     !copy.upForTrade

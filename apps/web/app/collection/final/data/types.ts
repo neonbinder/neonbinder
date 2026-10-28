@@ -308,7 +308,8 @@ export interface Grading {
  * NEO-359: a copy has ONE home (`homeId`, a binder or a box) and is for sale
  * exactly when that home is a box (Jason, 2026-10-24): there is no for-sale
  * flag and no asking price (price belongs to a listing). Up for Trade is a
- * flag on the copy; the card stays where it lives.
+ * flag on the copy; the card stays where it lives. NEO-378: a copy may carry
+ * its own floor (`minPrice`); without one, the variant's common price is it.
  */
 export interface CopyDetails {
   /** An integer ≥ 1: a stack of identical copies is one line item. */
@@ -319,6 +320,11 @@ export interface CopyDetails {
   serialNumber?: string;
   /** What the collector paid per copy, in dollars. */
   costBasis?: number;
+  /**
+   * NEO-378 — the lowest this copy sells for, per copy, in dollars. Absent:
+   * the collector's common price for the copy's variant (`useCommonPrices`).
+   */
+  minPrice?: number;
   /** `YYYY-MM-DD`. Defaults to today on a new copy. */
   acquiredAt: string;
   /** Free text: "Box 3", "Top shelf". */

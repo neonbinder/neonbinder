@@ -108,6 +108,7 @@ import {
   type Suggestion,
   type Variant,
   type VariantKind,
+  type VariantId,
   type VariantRef,
   type ShareProfile,
   type Want,
@@ -414,6 +415,7 @@ function toCopy(raw: RawCopy, homes?: Homes): Copy {
     ...(raw.grading ? { graded: raw.grading } : {}),
     ...(raw.serialNumber ? { serialNumber: raw.serialNumber } : {}),
     ...(raw.costCents !== undefined ? { costBasis: raw.costCents / 100 } : {}),
+    ...(raw.minPriceCents !== undefined ? { minPrice: raw.minPriceCents / 100 } : {}),
     acquiredAt: raw.acquiredOn ?? "",
     ...(raw.location ? { location: raw.location } : {}),
     notes: raw.notes ?? "",
@@ -478,6 +480,7 @@ function toRawDetails(d: CopyDetails, homeId?: string): RawDetails {
   }
   if (d.serialNumber?.trim()) out.serialNumber = d.serialNumber.trim();
   if (d.costBasis !== undefined) out.costCents = Math.round(d.costBasis * 100);
+  if (d.minPrice !== undefined) out.minPriceCents = Math.round(d.minPrice * 100);
   if (d.acquiredAt) out.acquiredOn = d.acquiredAt;
   if (location) out.location = location;
   if (notes) out.notes = notes;
@@ -496,6 +499,7 @@ function fromRawDetails(raw: RawDetails): CopyDetails {
     ...(raw.grading ? { graded: raw.grading } : {}),
     ...(raw.serialNumber ? { serialNumber: raw.serialNumber } : {}),
     ...(raw.costCents !== undefined ? { costBasis: raw.costCents / 100 } : {}),
+    ...(raw.minPriceCents !== undefined ? { minPrice: raw.minPriceCents / 100 } : {}),
     acquiredAt: raw.acquiredOn ?? "",
     ...(raw.location ? { location: raw.location } : {}),
     notes: raw.notes ?? "",
@@ -1074,6 +1078,15 @@ export const CONVEX_DATA: CollectionData = {
   useRuleBrands(sportId) {
     const raw = useQuery(api.binderRules.brandsOfSport, sportId ? { sportId: sportId as Id<"selectorOptions"> } : "skip");
     return sportId ? raw : undefined;
+  },
+
+  useCommonPrices(variantIds) {
+    const key = variantIds ? [...new Set(variantIds)].join("\n") : null;
+    const raw = useQuery(api.commonPrices.forVariants, key !== null ? { variantIds: key ? key.split("\n") : [] } : "skip");
+    return useMemo((): Record<VariantId, number> | undefined => {
+      if (key === null || raw === undefined) return undefined;
+      return Object.fromEntries(raw.map((row) => [row.variantId, row.priceCents / 100]));
+    }, [key, raw]);
   },
 
   useDeclined(containerId) {
@@ -1683,6 +1696,7 @@ function foldsInto(row: RawCopy, next: RawDetails): boolean {
     row.grading?.grader === next.grading?.grader &&
     row.grading?.grade === next.grading?.grade &&
     row.costCents === next.costCents &&
+    row.minPriceCents === next.minPriceCents &&
     row.acquiredOn === next.acquiredOn &&
     row.location === next.location &&
     row.notes === next.notes
@@ -1696,6 +1710,7 @@ function isPlainRow(r: RawCopy): boolean {
     r.grading === undefined &&
     r.serialNumber === undefined &&
     r.costCents === undefined &&
+    r.minPriceCents === undefined &&
     r.location === undefined &&
     r.notes === undefined &&
     r.upForTrade !== true
@@ -1945,6 +1960,7 @@ function useConvexActions(): CollectionActions {
   const setRule = useMutation(api.collectionContainers.setRule);
   const declineCard = useMutation(api.binderRules.decline);
   const undeclineCard = useMutation(api.binderRules.undecline);
+  const setCommonPriceBase = useMutation(api.commonPrices.set);
   const undoBoxQuantityBase = useMutation(api.collectionInventory.undoBoxQuantity);
 
   // `withOptimisticUpdate` hands back a new function each call: build them
@@ -2509,8 +2525,18 @@ function useConvexActions(): CollectionActions {
           },
         };
       },
+
+      async setCommonPrice(variantId, price) {
+        const toCents = (dollars: number | null) => (dollars === null ? null : Math.round(dollars * 100));
+        const { previous } = await setCommonPriceBase({ variantId, priceCents: toCents(price) });
+        return {
+          undo: async () => {
+            await setCommonPriceBase({ variantId, priceCents: previous });
+          },
+        };
+      },
     };
-  }, [m, setBuilding, createContainer, emptyContainer, relayPockets, setRule, declineCard, undeclineCard]);
+  }, [m, setBuilding, createContainer, emptyContainer, relayPockets, setRule, declineCard, undeclineCard, setCommonPriceBase]);
 }
 
 /** Blank details for a copy the undo only needs to name. */

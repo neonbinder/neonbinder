@@ -69,6 +69,12 @@ export interface CopyDetailsFormProps {
   onUpForTradeChange?: (on: boolean) => void;
   /** NEO-359: leave out the binder ticks even when `binders` are passed. */
   hideBinders?: boolean;
+  /**
+   * NEO-378: show the Minimum price field (a copy for sale). `commonPrice` is
+   * the variant's common price in dollars, what a blank field means (`null`:
+   * none set; `undefined`: still loading).
+   */
+  minPrice?: { commonPrice: number | null | undefined };
 }
 
 const CONDITIONS: Condition[] = [
@@ -112,8 +118,10 @@ export default function CopyDetailsForm({
   upForTrade,
   onUpForTradeChange,
   hideBinders = false,
+  minPrice,
 }: CopyDetailsFormProps) {
   const headingId = useId();
+  const minPriceHelpId = useId();
   const quantityHelpId = useId();
   const homeHelpId = useId();
   const set = (patch: Partial<CopyDetails>) => onChange({ ...value, ...patch });
@@ -298,6 +306,29 @@ export default function CopyDetailsForm({
           value={value.costBasis ?? ""}
           onChange={(e) => set({ costBasis: parseMoney(e.target.value) })}
         />
+
+        {minPrice && (
+          <div>
+            <Input
+              label="Minimum price"
+              type="number"
+              inputMode="decimal"
+              min={0}
+              step="0.01"
+              placeholder={typeof minPrice.commonPrice === "number" ? minPrice.commonPrice.toFixed(2) : "0.00"}
+              value={value.minPrice ?? ""}
+              onChange={(e) => set({ minPrice: parseMoney(e.target.value) })}
+              aria-describedby={minPriceHelpId}
+            />
+            <p id={minPriceHelpId} className="mt-1 text-xs text-ink-3">
+              {typeof minPrice.commonPrice === "number"
+                ? `Blank sells at your common price, $${minPrice.commonPrice.toFixed(2)}.`
+                : minPrice.commonPrice === null
+                  ? "The lowest it sells for. No common price set for this variant yet."
+                  : "The lowest it sells for."}
+            </p>
+          </div>
+        )}
 
         <Input
           label="Acquired"

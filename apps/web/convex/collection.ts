@@ -171,6 +171,11 @@ const MAX_NOTES_CHARS = 2000;
 /** $100,000,000.00 in cents: far above any card, below float trouble. */
 const MAX_COST_CENTS = 10_000_000_000;
 
+/** NEO-378 — a price (a copy's floor, a common price) in whole cents, zero to the cost cap. */
+export function isPriceCents(raw: number): boolean {
+  return Number.isSafeInteger(raw) && raw >= 0 && raw <= MAX_COST_CENTS;
+}
+
 /** The default home every add lands in until containers are user-facing. */
 export const MAIN_CONTAINER_NAME = "Main";
 
@@ -197,6 +202,11 @@ export const copyDetailsFields = {
   serialNumber: v.optional(v.string()),
   /** Integer cents, per copy. */
   costCents: v.optional(v.number()),
+  /**
+   * NEO-378 — this copy's own floor price, integer cents per copy. Absent:
+   * the owner's common price for the variant (`commonPrices.ts`) applies.
+   */
+  minPriceCents: v.optional(v.number()),
   /** `YYYY-MM-DD`. */
   acquiredOn: v.optional(v.string()),
   location: v.optional(v.string()),
@@ -232,6 +242,7 @@ export const copyValidator = v.object({
   grading: v.optional(collectionCopyGradingValidator),
   serialNumber: v.optional(v.string()),
   costCents: v.optional(v.number()),
+  minPriceCents: v.optional(v.number()),
   acquiredOn: v.optional(v.string()),
   location: v.optional(v.string()),
   notes: v.optional(v.string()),
@@ -340,6 +351,9 @@ export function cleanDetails(raw: DetailsArg): Omit<StoredDetails, "homeId"> {
       refuse(COLLECTION_ERRORS.invalid, "Cost needs to be a dollar amount of zero or more.");
     }
   }
+  if (raw.minPriceCents !== undefined && !isPriceCents(raw.minPriceCents)) {
+    refuse(COLLECTION_ERRORS.invalid, "Minimum price needs to be a dollar amount of zero or more.");
+  }
   let acquiredOn: string | undefined;
   if (raw.acquiredOn !== undefined && raw.acquiredOn.trim() !== "") {
     acquiredOn = raw.acquiredOn.trim();
@@ -358,6 +372,7 @@ export function cleanDetails(raw: DetailsArg): Omit<StoredDetails, "homeId"> {
     ...(grading ? { grading } : {}),
     ...(serialNumber ? { serialNumber } : {}),
     ...(raw.costCents !== undefined ? { costCents: raw.costCents } : {}),
+    ...(raw.minPriceCents !== undefined ? { minPriceCents: raw.minPriceCents } : {}),
     ...(acquiredOn ? { acquiredOn } : {}),
     ...(location ? { location } : {}),
     ...(notes ? { notes } : {}),
@@ -410,6 +425,7 @@ export function foldsInto(row: StoredDetails, next: StoredDetails): boolean {
     row.grading?.grader === next.grading?.grader &&
     row.grading?.grade === next.grading?.grade &&
     row.costCents === next.costCents &&
+    row.minPriceCents === next.minPriceCents &&
     row.acquiredOn === next.acquiredOn &&
     row.location === next.location &&
     row.notes === next.notes &&
@@ -426,6 +442,7 @@ export function detailsOf(row: CopyRow): StoredDetails {
     ...(row.grading ? { grading: row.grading } : {}),
     ...(row.serialNumber ? { serialNumber: row.serialNumber } : {}),
     ...(row.costCents !== undefined ? { costCents: row.costCents } : {}),
+    ...(row.minPriceCents !== undefined ? { minPriceCents: row.minPriceCents } : {}),
     ...(row.acquiredOn ? { acquiredOn: row.acquiredOn } : {}),
     ...(row.location ? { location: row.location } : {}),
     ...(row.notes ? { notes: row.notes } : {}),

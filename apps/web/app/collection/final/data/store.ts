@@ -278,6 +278,14 @@ export interface CollectionData {
    * (capability `binderRules`); `null` asks nothing.
    */
   useRuleBrands(sportId: string | null): RuleBrand[] | undefined;
+
+  // --- NEO-378: common prices ------------------------------------------------
+
+  /**
+   * The collector's common price (dollars) for each variant asked about that
+   * has one; a variant with none is absent from the record. At most 200 ids.
+   */
+  useCommonPrices(variantIds: readonly VariantId[] | null): Record<VariantId, number> | undefined;
 }
 
 export interface PageOptions {
@@ -396,6 +404,15 @@ export interface CollectionActions {
   declineCard(container: Container, cardId: CardId): Promise<UpdateResult>;
   /** Pulls a declined card back into Find cards. */
   undeclineCard(container: Container, cardId: CardId): Promise<UpdateResult>;
+
+  // --- NEO-378 ---------------------------------------------------------------
+
+  /**
+   * Sets the collector's common price (dollars, zero or more) for one exact
+   * variant, or clears it (`null`). Every copy of the variant with no
+   * minimum price of its own sells at no less than this.
+   */
+  setCommonPrice(variantId: VariantId, price: number | null): Promise<UpdateResult>;
 }
 
 export interface MoveOptions {
@@ -632,6 +649,10 @@ export function useDeclined(containerId: ContainerId | null): DeclinedCard[] | u
 }
 export function useRuleBrands(sportId: string | null): RuleBrand[] | undefined {
   return useCollectionStore().data.useRuleBrands(sportId);
+}
+/** NEO-378 — the collector's common prices (dollars) for these variants; one with none is absent. */
+export function useCommonPrices(variantIds: readonly VariantId[] | null): Record<VariantId, number> | undefined {
+  return useCollectionStore().data.useCommonPrices(variantIds);
 }
 export function useSetCards(setId: SetId | null, options?: PageOptions): SetCards | undefined {
   return useCollectionStore().data.useSetCards(setId, options);

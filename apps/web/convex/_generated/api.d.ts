@@ -61,6 +61,7 @@ import type * as collectionInventory from "../collectionInventory.js";
 import type * as collectionRequests from "../collectionRequests.js";
 import type * as collectionWants from "../collectionWants.js";
 import type * as combinedNamesReport from "../combinedNamesReport.js";
+import type * as commonPrices from "../commonPrices.js";
 import type * as credentials from "../credentials.js";
 import type * as crons from "../crons.js";
 import type * as drillPath from "../drillPath.js";
@@ -214,6 +215,7 @@ declare const fullApi: ApiFromModules<{
   collectionRequests: typeof collectionRequests;
   collectionWants: typeof collectionWants;
   combinedNamesReport: typeof combinedNamesReport;
+  commonPrices: typeof commonPrices;
   credentials: typeof credentials;
   crons: typeof crons;
   drillPath: typeof drillPath;

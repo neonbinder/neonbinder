@@ -16,8 +16,8 @@
  *
  * The Inventory checklist sets "how many of this card are in this box" with
  * one number. That number is the card's PLAIN lines in the box: raw (no
- * condition), ungraded, no serial, no cost, no location, no notes, not up for
- * trade; where in the box (`slot`) and when acquired (`acquiredOn`) are
+ * condition), ungraded, no serial, no cost, no floor price of its own (NEO-378),
+ * no location, no notes, not up for trade; where in the box (`slot`) and when acquired (`acquiredOn`) are
  * ignored. Every other line of the card in that box is the collector's own
  * detail and is never touched here (the client shows it beside the number).
  *
@@ -151,17 +151,21 @@ export const inventoryCardValidator = v.object({
 
 /**
  * A plain line: what a quick count counts and changes. Raw, ungraded, no
- * serial, no cost, no location, no notes, not up for trade; its slot and
+ * serial, no cost, no own minimum price, no location, no notes, not up for trade; its slot and
  * acquired date do not matter.
  */
 export function isPlainLine(
-  row: Pick<CopyRow, "condition" | "grading" | "serialNumber" | "costCents" | "location" | "notes" | "upForTrade">,
+  row: Pick<
+    CopyRow,
+    "condition" | "grading" | "serialNumber" | "costCents" | "minPriceCents" | "location" | "notes" | "upForTrade"
+  >,
 ): boolean {
   return (
     row.condition === undefined &&
     row.grading === undefined &&
     row.serialNumber === undefined &&
     row.costCents === undefined &&
+    row.minPriceCents === undefined &&
     row.location === undefined &&
     row.notes === undefined &&
     row.upForTrade !== true

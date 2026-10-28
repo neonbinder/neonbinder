@@ -82,6 +82,7 @@ import {
   type NewContainer,
   type PocketPlacement,
   type Scope,
+  type VariantId,
   type Want,
 } from "./data/types";
 
@@ -138,6 +139,8 @@ export interface CollectionState {
   buildingSetIds: SetId[];
   cardRequests: CardRequest[];
   browseFilter: BrowseFilter;
+  /** NEO-378 — the collector's common price per variant, in dollars. Absent in a state saved before it. */
+  commonPrices?: Record<VariantId, number>;
   /** Bumped when the stored shape changes; a mismatch reseeds. */
   version: number;
 }
@@ -415,6 +418,7 @@ export function sameLineItem(a: Omit<DemoCopy, "id" | "cardId">, b: Omit<DemoCop
     !a.serialNumber &&
     !b.serialNumber &&
     (a.costBasis ?? null) === (b.costBasis ?? null) &&
+    (a.minPrice ?? null) === (b.minPrice ?? null) &&
     (a.location ?? "") === (b.location ?? "") &&
     a.notes.trim() === b.notes.trim()
   );
@@ -492,6 +496,7 @@ export function isPlainLine(copy: Omit<DemoCopy, "id" | "cardId">): boolean {
     !copy.graded &&
     !copy.serialNumber?.trim() &&
     copy.costBasis === undefined &&
+    copy.minPrice === undefined &&
     !copy.location?.trim() &&
     !copy.notes.trim() &&
     !copy.upForTrade
@@ -761,6 +766,21 @@ export const demoOps = {
       ? state.wants.map((w) => (w.cardId === cardId ? { cardId, binderId } : w))
       : [...state.wants, { cardId, binderId }];
     return { state: { ...state, wants }, result: true };
+  },
+
+  /** NEO-378 — sets (or with `null` clears) a variant's common price. Returns the one it replaced. */
+  setCommonPrice(state: CollectionState, variantId: VariantId, price: number | null): OpResult<number | null> {
+    const wholeCents = price !== null && Math.abs(Math.round(price * 100) - price * 100) < 1e-6;
+    if (price !== null && !(Number.isFinite(price) && price >= 0 && wholeCents)) {
+      throw new DemoRefusal("Common price needs to be a dollar amount of zero or more.");
+    }
+    const prices = state.commonPrices ?? {};
+    const previous = prices[variantId] ?? null;
+    if (previous === price) return { state, result: previous };
+    const next = { ...prices };
+    if (price === null) delete next[variantId];
+    else next[variantId] = price;
+    return { state: { ...state, commonPrices: next }, result: previous };
   },
 
   createContainer(state: CollectionState, input: NewContainer): OpResult<ContainerId> {

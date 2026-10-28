@@ -199,6 +199,11 @@ export const SUBTREE_REFERENCE_GRAPH = {
     handling:
       "NEO-361 a collector's own card may name the checklist it belongs in. Never refuses the wipe and is untouched: a gone checklist reads as none (the card shows under its set, unlisted, and the admin's review offers the set builder instead). setId is set-level, above the subtree",
   },
+  variantCommonPrices: {
+    fields: ["variantId"],
+    handling:
+      "NEO-378 a collector's common price for one variant. Never refuses the wipe and is untouched: every read starts from a variant the page shows, so a price for a gone variant is never read",
+  },
   privateSets: {
     fields: ["sportId"],
     handling: "NEO-361 sport-level only. Untouched",

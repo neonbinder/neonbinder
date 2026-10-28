@@ -45,14 +45,19 @@ async function binder(s: S, name = "Ohtani rainbow", who: "me" | "them" = "me") 
 
 const PRIVATE_VALUES = {
   costCents: 123_456,
+  minPriceCents: 654_321,
   acquiredOn: "2019-04-01",
   location: "Closet shelf B",
   notes: "Paid too much, do not tell anyone",
   cert: "CERT-99887766",
   serialNumber: "07/99",
 };
+/** NEO-378 — a common price no public answer may carry. */
+const COMMON_PRICE = 777_777;
 const FORBIDDEN_KEYS = [
   "costCents",
+  "minPriceCents",
+  "priceCents",
   "acquiredOn",
   "location",
   "notes",
@@ -98,6 +103,7 @@ describe("the forbidden-key scan", () => {
       grading: { grader: "PSA" as const, grade: "10", cert: PRIVATE_VALUES.cert },
       serialNumber: PRIVATE_VALUES.serialNumber,
       costCents: PRIVATE_VALUES.costCents,
+      minPriceCents: PRIVATE_VALUES.minPriceCents,
       acquiredOn: PRIVATE_VALUES.acquiredOn,
       location: PRIVATE_VALUES.location,
       notes: PRIVATE_VALUES.notes,
@@ -111,6 +117,9 @@ describe("the forbidden-key scan", () => {
       cardId: s.fx.strawberry2,
       details: { ...details, homeId: box },
     });
+    // NEO-378 — the owner's common price for the for-sale card's variant is private too.
+    const boxCopy = await s.t.run(async (ctx) => ctx.db.get(inBox.copyId));
+    await s.me.mutation(api.commonPrices.set, { variantId: boxCopy!.variantId!, priceCents: COMMON_PRICE });
     await s.me.mutation(api.collectionWants.set, { cardId: s.fx.gooden1, binderId: b.id, on: true });
     await s.me.mutation(api.collectionContainers.setVisibility, { containerId: b.id, visibility: "public" });
     await s.me.mutation(api.collectionContainers.setVisibility, { containerId: s.system.wantId, visibility: "public" });
@@ -142,6 +151,7 @@ describe("the forbidden-key scan", () => {
     const hits: string[] = [];
     const forbiddenValues = [
       ...Object.values(PRIVATE_VALUES).map(String),
+      String(COMMON_PRICE),
       ME.subject,
       inBinder.copyId,
       inBox.copyId,

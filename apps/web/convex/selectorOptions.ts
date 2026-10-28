@@ -8227,6 +8227,8 @@ type SetBuilderResetResult = {
   collectionContainersDeleted: number;
   /** NEO-358 — collectors' "Sets I'm building", drained before the sets. */
   collectionBuildingSetsDeleted: number;
+  /** NEO-378 — collectors' common prices per variant, drained before the variants. */
+  variantCommonPricesDeleted: number;
   selectorOptionsDeleted: number;
   /** NEO-313 — the derived player → cards index, drained before the cards. */
   cardPlayerLinksDeleted: number;
@@ -8332,6 +8334,7 @@ async function runSetBuilderReset(
     cardRequestsDeleted: 0,
     collectionContainersDeleted: 0,
     collectionBuildingSetsDeleted: 0,
+    variantCommonPricesDeleted: 0,
     selectorOptionsDeleted: 0,
     cardPlayerLinksDeleted: 0,
     cardTeamLinksDeleted: 0,
@@ -8354,7 +8357,7 @@ async function runSetBuilderReset(
   // reorders the rest, so every ordering note below still holds for the
   // tables it does drain — and every table that points INTO the skipped
   // eight (slSetReviews, selectorSyncStatus, collectionCopies, collectionWants,
-  // collectionContainers, collectionBuildingSets,
+  // collectionContainers, collectionBuildingSets, variantCommonPrices,
   // cardPlayerLinks, cardTeamLinks, cardChecklist, cardCrossListings,
   // entityReviewQueue, checklistCandidates) is among them.
   const allSteps: Array<[keyof typeof counts, ResetBatchRef]> = [
@@ -8408,6 +8411,13 @@ async function runSetBuilderReset(
     [
       "collectionBuildingSetsDeleted",
       internal.selectorOptions.resetCollectionBuildingSetsBatch,
+    ],
+    // NEO-378 — a common price names a variant row, so BEFORE the selector
+    // rows. The reference-seed import can bring a variant back under the
+    // same id, and a price left behind would greet the next run.
+    [
+      "variantCommonPricesDeleted",
+      internal.selectorOptions.resetVariantCommonPricesBatch,
     ],
     // Well inside MAX_RETURNED_IDS: this list is one LEVEL's options for one
     // parent, de-duplicated — the biggest real case is a year's set list,
@@ -8680,6 +8690,7 @@ export const resetSetBuilderDataFromCli = internalAction({
     cardRequestsDeleted: v.number(),
     collectionContainersDeleted: v.number(),
     collectionBuildingSetsDeleted: v.number(),
+    variantCommonPricesDeleted: v.number(),
     selectorOptionsDeleted: v.number(),
     // NEO-313 — the derived player → cards index.
     cardPlayerLinksDeleted: v.number(),
@@ -9231,6 +9242,27 @@ export const resetCollectionBuildingSetsBatch = internalMutation({
     const rows = await ctx.db
       .query("collectionBuildingSets")
       .take(RESET_BATCH_SIZE);
+    for (const row of rows) {
+      await ctx.db.delete(row._id);
+    }
+    return { deleted: rows.length, hasMore: rows.length === RESET_BATCH_SIZE };
+  },
+});
+
+/**
+ * Internal: drain `variantCommonPrices`, looped by `runSetBuilderReset` BEFORE
+ * the selector rows they name. NEO-378. Every collector's, across every
+ * account; armed like every batch here.
+ */
+export const resetVariantCommonPricesBatch = internalMutation({
+  args: {},
+  returns: v.object({
+    deleted: v.number(),
+    hasMore: v.boolean(),
+  }),
+  handler: async (ctx) => {
+    assertResetArmed();
+    const rows = await ctx.db.query("variantCommonPrices").take(RESET_BATCH_SIZE);
     for (const row of rows) {
       await ctx.db.delete(row._id);
     }
