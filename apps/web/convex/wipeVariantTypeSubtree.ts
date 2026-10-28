@@ -204,6 +204,16 @@ export const SUBTREE_REFERENCE_GRAPH = {
     handling:
       "NEO-378 a collector's common price for one variant. Never refuses the wipe and is untouched: every read starts from a variant the page shows, so a price for a gone variant is never read",
   },
+  intakeRuns: {
+    fields: ["variantId"],
+    handling:
+      "NEO-379 the variant an intake run matches in. Never refuses the wipe and is untouched: a gone variant matches nothing and the run shows no variant name",
+  },
+  intakeMatches: {
+    fields: ["cardId", "candidates[]", "variations[]"],
+    handling:
+      "NEO-379 the matcher's proposal for one scanned pair. Never refuses the wipe and is untouched: listIntakeMatches skips a card that is gone, and the next sync re-matches the pair",
+  },
   privateSets: {
     fields: ["sportId"],
     handling: "NEO-361 sport-level only. Untouched",

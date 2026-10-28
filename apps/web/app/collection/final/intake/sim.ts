@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { cards, getCard, type Card, type CardId } from "../../prototypes/_shared/data";
+import { intakeBandFor, type IntakeBand } from "@/convex/lib/intakeMatch";
 
 /**
  * NEO-369 — the fake intake pipeline behind the demo's Add cards tab.
@@ -37,7 +38,7 @@ export const STAGE_LABEL: Record<Stage, string> = {
   saved: "Saved",
 };
 
-export type Band = "matched" | "check" | "none";
+export type Band = IntakeBand;
 export type Side = "front" | "back";
 
 export interface Grading {
@@ -416,9 +417,10 @@ export function needsDrawer(item: Item): boolean {
 
 export function bandOf(item: Item): Band {
   if (item.match.byUser) return "matched";
-  if (!item.match.cardId || item.match.confidence < 20) return "none";
-  if (item.match.confidence < 85 || item.match.suggestion || item.rescanOf) return "check";
-  return "matched";
+  // NEO-379: the same thresholds the real matcher bands on.
+  const band = intakeBandFor(item.match.cardId, item.match.confidence);
+  if (band === "matched" && (item.match.suggestion || item.rescanOf)) return "check";
+  return band;
 }
 
 function reducer(state: State, action: Action): State {

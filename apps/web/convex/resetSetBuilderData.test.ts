@@ -396,6 +396,7 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
       collectionContainersDeleted: 1,
       collectionBuildingSetsDeleted: 11,
       variantCommonPricesDeleted: 2,
+      intakeRunsDeleted: 0,
       selectorOptionsDeleted: 3,
       cardPlayerLinksDeleted: 0,
       cardTeamLinksDeleted: 9,
@@ -510,6 +511,7 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
       collectionContainersDeleted: 0,
       collectionBuildingSetsDeleted: 0,
       variantCommonPricesDeleted: 0,
+      intakeRunsDeleted: 0,
       selectorOptionsDeleted: 0,
       cardPlayerLinksDeleted: 0,
       cardTeamLinksDeleted: 0,
@@ -581,6 +583,7 @@ describe("NEO-254: the reset yields at RESET_TIME_BUDGET_MS and resumes", () => 
       collectionContainersDeleted: 0,
       collectionBuildingSetsDeleted: 0,
       variantCommonPricesDeleted: 0,
+      intakeRunsDeleted: 0,
       selectorOptionsDeleted: 0,
       cardPlayerLinksDeleted: 0,
       cardTeamLinksDeleted: 0,
@@ -619,6 +622,7 @@ describe("NEO-254: the reset yields at RESET_TIME_BUDGET_MS and resumes", () => 
       collectionContainersDeleted: 1,
       collectionBuildingSetsDeleted: 11,
       variantCommonPricesDeleted: 2,
+      intakeRunsDeleted: 0,
       selectorOptionsDeleted: 3,
       cardPlayerLinksDeleted: 0,
       cardTeamLinksDeleted: 9,
@@ -1053,6 +1057,8 @@ describe("NEO-330: scope exceptReferenceSeed", () => {
     "cardRequests",
     // NEO-378 — a collector's common price names a variant row.
     "variantCommonPrices",
+    // NEO-379 — an intake run names the variant it matches in.
+    "intakeRuns",
     "cardPlayerLinks",
     "cardChecklist",
     "cardCrossListings",
@@ -1124,6 +1130,39 @@ describe("NEO-330: scope exceptReferenceSeed", () => {
         playerId: player._id,
         sportId,
       });
+      // NEO-379 — one intake run in the card's variant, with one match.
+      const home = (await ctx.db.query("collectionContainers").first())!;
+      const runId = await ctx.db.insert("intakeRuns", {
+        userId: "user",
+        jobId: "job-reset",
+        homeId: home._id,
+        variantId: card.selectorOptionId,
+        createdAt: 0,
+        lastActivityAt: 0,
+      });
+      const pairId = await ctx.db.insert("placeholderPairs", {
+        jobId: "job-reset",
+        userId: "user",
+        frontIndex: 0,
+        backIndex: 1,
+        confidence: "side-only",
+        mechanism: "manual",
+        score: 0,
+      });
+      await ctx.db.insert("intakeMatches", {
+        runId,
+        userId: "user",
+        pairId,
+        frontIndex: 0,
+        backIndex: 1,
+        readKey: "",
+        cardId: card._id,
+        confidence: 97,
+        band: "matched",
+        reason: "numberAndPlayer",
+        candidates: [card._id],
+        variations: [],
+      });
     });
   }
 
@@ -1175,6 +1214,7 @@ describe("NEO-330: scope exceptReferenceSeed", () => {
       collectionContainersDeleted: 1,
       collectionBuildingSetsDeleted: 11,
       variantCommonPricesDeleted: 2,
+      intakeRunsDeleted: 2,
       selectorOptionsDeleted: 0,
       cardPlayerLinksDeleted: 1,
       cardTeamLinksDeleted: 9,

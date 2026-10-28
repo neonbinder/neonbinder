@@ -659,6 +659,43 @@ export const collectionCopyGradingValidator = v.object({
   grade: v.string(),
   cert: v.optional(v.string()),
 });
+
+/**
+ * NEO-379 — the batch defaults an intake run applies to every card it files,
+ * each overridable per card. The fields mirror `collectionCopies`;
+ * `minPriceCents` is the box floor (NEO-378), meaningful for boxes only.
+ */
+export const intakeDefaultsValidator = v.object({
+  condition: v.optional(collectionCopyConditionValidator),
+  grading: v.optional(collectionCopyGradingValidator),
+  costCents: v.optional(v.number()),
+  acquiredOn: v.optional(v.string()),
+  location: v.optional(v.string()),
+  notes: v.optional(v.string()),
+  minPriceCents: v.optional(v.number()),
+});
+/** NEO-379 — the matcher's confidence band (`convex/lib/intakeMatch.ts`). */
+export const intakeBandValidator = v.union(
+  v.literal("matched"),
+  v.literal("check"),
+  v.literal("none"),
+);
+/** NEO-379 — why the matcher decided what it did (`IntakeReason`). */
+export const intakeReasonValidator = v.union(
+  v.literal("numberAndPlayer"),
+  v.literal("numberOnly"),
+  v.literal("playerUnconfirmed"),
+  v.literal("numberPlayerConflict"),
+  v.literal("numberSharedPlayerPicked"),
+  v.literal("numberShared"),
+  v.literal("numberFuzzy"),
+  v.literal("playerOnly"),
+  v.literal("playerShared"),
+  v.literal("noMatch"),
+  v.literal("nothingRead"),
+  v.literal("noVariant"),
+  v.literal("byUser"),
+);
 /**
  * NEO-358 — one collector's whole collection in three numbers, kept on their
  * Main binder (see `collectionContainers.tally`): physical copies (quantities
@@ -3491,6 +3528,64 @@ export default defineSchema({
     // (jobId, frontIndex, backIndex); everything else on it is revisable until
     // the job reaches a terminal status.
   }).index("by_job", ["jobId"]),
+
+  // NEO-379 — an intake run: one placeholder job (the photos) filed into one
+  // home (a binder or a box). A thin row over the placeholder pipeline, which
+  // stays the record of the images and pairs; this holds only what intake
+  // adds: where the cards go, the variant they are matched in, the batch
+  // defaults. Its `_id` is the `?run=` handle; every function checks
+  // `userId === identity.subject` on it.
+  //
+  // `variantId` is absent when the collector skipped the set pick; every pair
+  // is then "noVariant" until a variant is picked or pinned. `variantPinned`
+  // marks one chosen mid-run ("these are all from <set>") rather than up front.
+  intakeRuns: defineTable({
+    userId: v.string(),
+    jobId: v.string(),
+    homeId: v.id("collectionContainers"),
+    variantId: v.optional(v.id("selectorOptions")),
+    variantPinned: v.optional(v.boolean()),
+    defaults: v.optional(intakeDefaultsValidator),
+    // Debounce latch for `syncIntakeMatches`, the same shape as
+    // `placeholderJobs.pairingScheduled`: set when a sync is queued, cleared
+    // by that sync before it reads anything, so a burst of pair changes costs
+    // one sync and a change landing mid-sync queues another.
+    matchScheduled: v.optional(v.boolean()),
+    createdAt: v.number(),
+    // Recent runs are listed newest activity first.
+    lastActivityAt: v.number(),
+  })
+    .index("by_job", ["jobId"])
+    .index("by_user_and_activity", ["userId", "lastActivityAt"]),
+
+  // NEO-379 — the matcher's answer for one placeholder pair of an intake run.
+  // One row per pair, keyed on the pair's `_id` (a swap patches the pair in
+  // place, so the id outlives it). `readKey` is the input the answer was
+  // computed from (indexes, read identity, variant); a sync re-matches a row
+  // whose pair now reads differently, unless the collector picked the card
+  // (`byUser`), which nothing automatic overwrites. A pair that is gone takes
+  // its row with it.
+  intakeMatches: defineTable({
+    runId: v.id("intakeRuns"),
+    userId: v.string(),
+    pairId: v.id("placeholderPairs"),
+    frontIndex: v.number(),
+    backIndex: v.number(),
+    readKey: v.string(),
+    cardId: v.optional(v.id("cardChecklist")),
+    confidence: v.number(),
+    band: intakeBandValidator,
+    reason: intakeReasonValidator,
+    candidates: v.array(v.id("cardChecklist")),
+    variations: v.array(v.id("cardChecklist")),
+    byUser: v.optional(v.boolean()),
+    // Another pair of this run matched to the same card, scanned earlier: a
+    // second copy or a re-scan (a jammed feeder). The screen asks which; this
+    // only flags it.
+    repeatOfPairId: v.optional(v.id("placeholderPairs")),
+  })
+    .index("by_run", ["runId"])
+    .index("by_pair", ["pairId"]),
 
   // Deployment-wide preprocess warm-up state (NEO-299). One row per fixed
   // `key`; today the only key is "heavyWarmup", read and written solely by
