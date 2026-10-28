@@ -2286,7 +2286,19 @@ describe("NEO-358: the collection and its catalog reads require a signed-in call
         count: { copies: 0, lines: 0 },
         lastUpdated: 0,
       });
-      return { setId, cardId, copyId, homeId, boxId };
+      // NEO-377 — a photo row on that copy, for the photo writes below.
+      const photoId = await ctx.db.insert("collectionCopyPhotos", {
+        ownerId: "someone",
+        copyId,
+        side: "front",
+        token: "0".repeat(32),
+        contentType: "image/jpeg",
+        imageBytes: 1,
+        thumbBytes: 1,
+        status: "pending",
+        since: 0,
+      });
+      return { setId, cardId, copyId, homeId, boxId, photoId };
     });
     const calls = [
       () => t.mutation(api.collection.addHave, { cardId: ids.cardId }),
@@ -2309,6 +2321,17 @@ describe("NEO-358: the collection and its catalog reads require a signed-in call
         t.mutation(api.collectionInventory.undoBoxQuantity, {
           inverse: { cardId: ids.cardId, boxId: ids.boxId, steps: [] },
         }),
+      // NEO-377 — a copy line's photos.
+      () =>
+        t.action(api.copyPhotos.startUpload, {
+          copyId: ids.copyId,
+          side: "front",
+          contentType: "image/jpeg",
+          imageBytes: 1,
+          thumbBytes: 1,
+        }),
+      () => t.action(api.copyPhotos.finishUpload, { photoId: ids.photoId }),
+      () => t.mutation(api.copyPhotos.remove, { copyId: ids.copyId, side: "front" }),
     ];
     for (const call of calls) await expect(call()).rejects.toThrow(/Not authenticated/);
     const after = await t.run(async (ctx) => ({
@@ -2317,11 +2340,23 @@ describe("NEO-358: the collection and its catalog reads require a signed-in call
     }));
     expect(after.copies.map((c) => c.quantity)).toEqual([1]);
     expect(after.building).toEqual([]);
+    // NEO-377 — signed out, photosOf answers nothing rather than another collector's photos.
+    expect(await t.query(api.copyPhotos.photosOf, { copyIds: [ids.copyId] })).toEqual([]);
+    expect((await t.run((ctx) => ctx.db.get(ids.photoId)))?.status).toBe("pending");
     // (the single seeded copy also proves the anonymous setBoxQuantity wrote no box line)
   });
 
   // NEO-359 — the deleted-card want sweep's continuation is never callable by a client.
-  test.each([["collectionWants.ts", "sweepWantsOfDeletedCard", "internalMutation"]])(
+  test.each([
+    ["collectionWants.ts", "sweepWantsOfDeletedCard", "internalMutation"],
+    // NEO-377 — the upload bookkeeping takes an ownerId argument, so it must never be public.
+    ["copyPhotos.ts", "reserveUpload", "internalMutation"],
+    ["copyPhotos.ts", "pendingUpload", "internalQuery"],
+    ["copyPhotos.ts", "commitUpload", "internalMutation"],
+    ["copyPhotos.ts", "liveByToken", "internalQuery"],
+    ["copyPhotos.ts", "deleteObjects", "internalAction"],
+    ["copyPhotos.ts", "sweepCopyPhotos", "internalMutation"],
+  ])(
     "%s :: %s is declared %s",
     (file, fn, kind) => {
       const src = readFileSync(join(__dirname, file), "utf8");

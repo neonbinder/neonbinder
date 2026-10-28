@@ -72,7 +72,7 @@ export const MAX_COPY_PHOTO_UPLOADS_PER_HOUR = 200;
 /** How long an upload may stay unfinished, and a removed copy's photos wait for its Undo. */
 export const PHOTO_HOLD_MS = 60 * 60 * 1000;
 /** How long a signed upload URL works. */
-const UPLOAD_URL_TTL_SECONDS = 10 * 60;
+const UPLOAD_URL_TTL_SECONDS = 5 * 60;
 /** How long a signed read URL works (the redirect makes a fresh one each load). */
 const READ_URL_TTL_SECONDS = 60 * 60;
 /** Copies one `photosOf` call may ask about. */

@@ -91,6 +91,8 @@ describe("a copy line's photos", () => {
     fireEvent.click(within(panel).getByRole("button", { name: "Remove front" }));
     await waitFor(() => expect(within(panel).getByRole("status").textContent).toBe("Front photo removed."));
     expect(within(drawer).queryByRole("img", { name: /^Front of / })).toBeNull();
+    // Remove unmounts itself; the keyboard lands on Add front, still inside the panel.
+    expect(document.activeElement).toBe(within(panel).getByRole("button", { name: "Add front" }));
   });
 
   it("a back alone shows on the line, and a file that isn't a photo says so", async () => {
@@ -113,5 +115,19 @@ describe("a copy line's photos", () => {
     fireEvent.click(photosButton(drawer));
     fireEvent.click(within(panelOf(drawer)).getByRole("button", { name: "Done" }));
     expect(document.activeElement).toBe(photosButton(drawer));
+  });
+
+  it("Photos and Move never stand open under a line together", () => {
+    const drawer = renderDrawer();
+    const move = within(drawer)
+      .getAllByRole("button", { name: /^Move / })
+      .find((b) => b.getAttribute("data-copy-move") === STACK.id);
+    if (!move) throw new Error("the fixture line has no Move button");
+    fireEvent.click(move);
+    fireEvent.click(photosButton(drawer));
+    expect(move.getAttribute("aria-expanded")).toBe("false");
+    expect(photosButton(drawer).getAttribute("aria-controls")).toBe(panelOf(drawer).id);
+    fireEvent.click(move);
+    expect(within(drawer).queryByRole("region", { name: /^Photos of / })).toBeNull();
   });
 });

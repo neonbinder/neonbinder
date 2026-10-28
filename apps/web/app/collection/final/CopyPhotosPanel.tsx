@@ -17,6 +17,10 @@ import type { Copy, CopyPhotos, PhotoSide } from "./data/types";
 
 const SIDES: readonly PhotoSide[] = ["front", "back"];
 const SIDE_WORD: Record<PhotoSide, string> = { front: "Front", back: "Back" };
+const DIMMED = "aria-disabled:cursor-not-allowed aria-disabled:opacity-60";
+
+/** The panel's id, for the line's Photos button `aria-controls`. */
+export const copyPhotosPanelId = (copyId: string) => `copy-photos-${copyId}`;
 
 /** A line's front thumbnail beside its words, when it has one. */
 export function LineThumb({ photos, line }: { photos: CopyPhotos | undefined; line: string }) {
@@ -26,7 +30,7 @@ export function LineThumb({ photos, line }: { photos: CopyPhotos | undefined; li
     <img
       src={shown.thumbUrl}
       alt={`${photos?.front ? "Front" : "Back"} of ${line}`}
-      className="h-12 w-auto shrink-0 rounded-sm border border-rule object-contain"
+      className="aspect-[5/7] h-12 w-auto shrink-0 rounded-sm border border-rule object-contain"
       loading="lazy"
       decoding="async"
     />
@@ -53,6 +57,7 @@ export default function CopyPhotosPanel({
   const [error, setError] = useState<string | null>(null);
   const inputs = useRef<Record<PhotoSide, HTMLInputElement | null>>({ front: null, back: null });
   const firstRef = useRef<HTMLButtonElement>(null);
+  const addRefs = useRef<Record<PhotoSide, HTMLButtonElement | null>>({ front: null, back: null });
 
   useEffect(() => {
     firstRef.current?.focus();
@@ -62,11 +67,18 @@ export default function CopyPhotosPanel({
     if (e.key === "Escape") {
       e.preventDefault();
       e.stopPropagation();
-      onClose();
+      // Closing mid-save would hide how it ended; wait for the status line.
+      if (busy === null) onClose();
     }
   };
 
-  const run = async (side: PhotoSide, doing: string, done: string, work: () => Promise<void>) => {
+  const run = async (
+    side: PhotoSide,
+    doing: string,
+    done: string,
+    work: () => Promise<void>,
+    after?: () => void,
+  ) => {
     setBusy(side);
     setError(null);
     setStatus(doing);
@@ -78,6 +90,7 @@ export default function CopyPhotosPanel({
       setError(writeErrorMessage(e));
     } finally {
       setBusy(null);
+      after?.();
     }
   };
 
@@ -91,12 +104,13 @@ export default function CopyPhotosPanel({
       aria-labelledby={headingId}
       onKeyDown={onKeyDown}
       className="basis-full rounded-md border border-dashed border-control bg-sheet p-3"
+      id={copyPhotosPanelId(copy.id)}
       data-copy-photos-panel={copy.id}
     >
       <h4 id={headingId} className="text-sm font-semibold text-ink">
         Photos of {line}
       </h4>
-      <div className="mt-2 grid grid-cols-2 gap-3">
+      <div className="mt-2 grid max-w-xs grid-cols-2 gap-3">
         {SIDES.map((side, i) => {
           const shown = photos?.[side];
           const word = SIDE_WORD[side];
@@ -142,9 +156,12 @@ export default function CopyPhotosPanel({
               />
               <div className="mt-1 flex flex-wrap gap-1">
                 <button
-                  ref={i === 0 ? firstRef : undefined}
+                  ref={(el) => {
+                    addRefs.current[side] = el;
+                    if (i === 0) firstRef.current = el;
+                  }}
                   type="button"
-                  className={`${QUIET_BUTTON} max-sm:min-h-11`}
+                  className={`${QUIET_BUTTON} ${DIMMED} max-sm:min-h-11`}
                   aria-disabled={busy !== null || undefined}
                   onClick={() => {
                     if (busy === null) inputs.current[side]?.click();
@@ -155,12 +172,14 @@ export default function CopyPhotosPanel({
                 {shown && (
                   <button
                     type="button"
-                    className={`${QUIET_BUTTON} hover:text-neon-pink-text max-sm:min-h-11`}
+                    className={`${QUIET_BUTTON} ${DIMMED} hover:text-neon-pink-text max-sm:min-h-11`}
                     aria-disabled={busy !== null || undefined}
                     onClick={() => {
                       if (busy === null) {
                         void run(side, `Removing the ${side} photo…`, `${word} photo removed.`, () =>
                           ext.removePhoto(copy, side),
+                          // Remove unmounts itself; park the keyboard on Add.
+                          () => addRefs.current[side]?.focus(),
                         );
                       }
                     }}
@@ -182,7 +201,14 @@ export default function CopyPhotosPanel({
         </p>
       )}
       <div className="mt-2 flex justify-end">
-        <button type="button" onClick={onClose} className={`${QUIET_BUTTON} max-sm:min-h-11`}>
+        <button
+          type="button"
+          aria-disabled={busy !== null || undefined}
+          onClick={() => {
+            if (busy === null) onClose();
+          }}
+          className={`${QUIET_BUTTON} ${DIMMED} max-sm:min-h-11`}
+        >
           Done
         </button>
       </div>

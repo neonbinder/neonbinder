@@ -43,7 +43,7 @@ import type { Card, Container, ContainerId, Copy, CopyDetails, CopyId, MoveResul
 import { binderText, lineNames, lineSummary, lineWhat, type NamedBinder } from "./lineItems";
 import { useLineKeys } from "./lineKeys";
 import OwnCardNote from "./OwnCardNote";
-import CopyPhotosPanel, { LineThumb } from "./CopyPhotosPanel";
+import CopyPhotosPanel, { LineThumb, copyPhotosPanelId } from "./CopyPhotosPanel";
 import { usePageApi } from "./pageApi";
 
 /** What the shared copy form edits (the prototypes' copy shape). */
@@ -734,8 +734,11 @@ export function CopyList({
     opener(id, shift)?.focus();
     setMoving(null);
   };
-  const toggle = (copy: Copy, shift: Shift) =>
+  // One panel under a line at a time: Move/Sell and Photos close each other.
+  const toggle = (copy: Copy, shift: Shift) => {
+    setPhotosOpen(null);
     setMoving(movingOn(copy) === shift ? null : { key: keyOf(copy), shift });
+  };
   const submitMove = (copy: Copy, shift: Shift, toHomeId: ContainerId, quantity: number) => {
     if (!onMove) return;
     closeMove(copy.id, shift);
@@ -779,7 +782,12 @@ export function CopyList({
                 }`}
               >
                 <LineThumb photos={photoMap?.get(copy.id)} line={names[i]} />
-                <span className="min-w-0 flex-1">
+                <span
+                  className={`min-w-0 flex-1 ${
+                    // Beside a thumbnail on a phone, the buttons wrap below rather than crush the words.
+                    (photoMap?.get(copy.id)?.front ?? photoMap?.get(copy.id)?.back) ? "max-sm:basis-[calc(100%-3.5rem)]" : ""
+                  }`}
+                >
                   <span className="block text-ink">
                     <span>{lineWhat(copy)}</span>
                     <HomeTag copy={copy} homes={binders} sale={showSale} />
@@ -802,7 +810,10 @@ export function CopyList({
                     className={QUIET_BUTTON}
                     data-copy-edit={copy.id}
                     aria-label={`Edit ${name}, ${names[i]}`}
-                    onClick={() => onEdit(copy, keyOf(copy))}
+                    onClick={() => {
+                      setPhotosOpen(null);
+                      onEdit(copy, keyOf(copy));
+                    }}
                   >
                     Edit
                   </button>
@@ -814,7 +825,11 @@ export function CopyList({
                     data-copy-photos={copy.id}
                     aria-label={`Photos, ${name}, ${names[i]}`}
                     aria-expanded={photosOpen === keyOf(copy)}
-                    onClick={() => setPhotosOpen(photosOpen === keyOf(copy) ? null : keyOf(copy))}
+                    aria-controls={photosOpen === keyOf(copy) ? copyPhotosPanelId(copy.id) : undefined}
+                    onClick={() => {
+                      setMoving(null);
+                      setPhotosOpen(photosOpen === keyOf(copy) ? null : keyOf(copy));
+                    }}
                   >
                     Photos
                   </button>
