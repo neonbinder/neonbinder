@@ -843,20 +843,21 @@ describe("Inventory is on for the real collection (NEO-364)", () => {
     expect(screen.getByRole("button", { name: "New box" })).toBeTruthy();
   });
 
-  it("the collection's tabs are My Cards, My Binders and Checklists, never Inventory", () => {
+  it("the collection's tabs are My Cards, My Binders, Checklists and Add cards, never Inventory", () => {
     renderAt("/collection");
     expect(sections("Collection sections").getAllByRole("link").map((l) => l.textContent)).toEqual([
       "My Cards",
       "My Binders",
       "Checklists",
+      "Add cards",
     ]);
   });
 
-  it("the inventory's tabs are Inventory, My Boxes and Checklists, with the list the default", () => {
+  it("the inventory's tabs are Inventory, My Boxes, Checklists and Add cards, with the list the default", () => {
     renderAt("/inventory");
     expect(screen.getByRole("heading", { level: 1, name: "Inventory" })).toBeTruthy();
     const tabs = sections("Inventory sections").getAllByRole("link");
-    expect(tabs.map((l) => l.textContent)).toEqual(["Inventory", "My Boxes", "Checklists"]);
+    expect(tabs.map((l) => l.textContent)).toEqual(["Inventory", "My Boxes", "Checklists", "Add cards"]);
     expect(tabs[0].getAttribute("aria-current")).toBe("page");
     expect(screen.getByRole("heading", { level: 2, name: "Everything for sale" })).toBeTruthy();
     expect(document.title).toBe("Inventory");

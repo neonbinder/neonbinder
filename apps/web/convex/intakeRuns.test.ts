@@ -310,6 +310,140 @@ describe("ownership", () => {
 });
 
 
+describe("the collector's answers (NEO-382)", () => {
+  const copiesOf = (w: Awaited<ReturnType<typeof world>>, cardId: Id<"cardChecklist">) =>
+    w.t.run(async (ctx) =>
+      (await ctx.db.query("collectionCopies").collect()).filter((c) => c.cardId === cardId),
+    );
+
+  test("a save files the copies with the run's defaults, once", async () => {
+    const w = await world([{ number: "1", players: ["Doc Gooden"] }]);
+    const runId = await startRun(w, w.fx.baseId);
+    const first = await w.me.mutation(api.intakeRuns.saveIntakeMatch, {
+      runId,
+      pairId: w.pairIds[0],
+      quantity: 2,
+      details: { notes: "From the show" },
+    });
+    expect(first.alreadySaved).toBe(false);
+    // A double click (or a retried request) adds nothing.
+    const again = await w.me.mutation(api.intakeRuns.saveIntakeMatch, {
+      runId,
+      pairId: w.pairIds[0],
+      quantity: 2,
+    });
+    expect(again).toEqual({ copyId: first.copyId, alreadySaved: true });
+
+    const copies = await copiesOf(w, w.fx.gooden1);
+    expect(copies).toHaveLength(1);
+    expect(copies[0]).toMatchObject({
+      homeId: w.boxId,
+      quantity: 2,
+      condition: "Near Mint",
+      costCents: 10,
+      location: "Shelf 2",
+      notes: "From the show",
+    });
+    const row = (await byPair(w, runId)).get(w.pairIds[0])!;
+    expect(row).toMatchObject({ savedCopyId: first.copyId, savedQuantity: 2, haveHere: 2 });
+    // A saved card is not re-picked.
+    await expect(
+      w.me.mutation(api.intakeRuns.pickIntakeCard, { runId, pairId: w.pairIds[0], cardId: null }),
+    ).rejects.toThrow(/already saved/);
+  });
+
+  test("a save folds into an identical line already in the home", async () => {
+    const w = await world([{ number: "1", players: ["Doc Gooden"] }]);
+    await w.t.run(async (ctx) => {
+      await ctx.db.insert("collectionCopies", {
+        ownerId: ME.subject,
+        cardId: w.fx.gooden1,
+        homeId: w.boxId,
+        quantity: 3,
+        condition: "Near Mint",
+        costCents: 10,
+        location: "Shelf 2",
+        lastUpdated: 0,
+      });
+    });
+    const runId = await startRun(w, w.fx.baseId);
+    const saved = await w.me.mutation(api.intakeRuns.saveIntakeMatch, {
+      runId,
+      pairId: w.pairIds[0],
+      quantity: 1,
+    });
+    const copies = await copiesOf(w, w.fx.gooden1);
+    expect(copies).toHaveLength(1);
+    expect(copies[0]).toMatchObject({ _id: saved.copyId, quantity: 4 });
+  });
+
+  test("a double scan must be answered: a second copy saves, a re-scan is set aside", async () => {
+    const w = await world([
+      { number: "2", players: ["Darryl Strawberry"] },
+      { number: "2", players: ["Darryl Strawberry"] },
+      { number: "2", players: ["Darryl Strawberry"] },
+    ]);
+    const runId = await startRun(w, w.fx.baseId);
+    await expect(
+      w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[1], quantity: 1 }),
+    ).rejects.toThrow(/second copy/);
+
+    await w.me.mutation(api.intakeRuns.answerIntakeRepeat, { runId, pairId: w.pairIds[1], secondCopy: true });
+    await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[1], quantity: 1 });
+
+    await w.me.mutation(api.intakeRuns.answerIntakeRepeat, { runId, pairId: w.pairIds[2], secondCopy: false });
+    await expect(
+      w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[2], quantity: 1 }),
+    ).rejects.toThrow(/set aside/);
+
+    const rows = await byPair(w, runId);
+    expect(rows.get(w.pairIds[1])).toMatchObject({ repeatIsSecondCopy: true, savedQuantity: 1 });
+    expect(rows.get(w.pairIds[2])).toMatchObject({ setAside: true });
+    expect((await copiesOf(w, w.fx.strawberry2)).reduce((n, c) => n + c.quantity, 0)).toBe(1);
+
+    // Brought back, the re-scan asks again.
+    await w.me.mutation(api.intakeRuns.setIntakeMatchAside, { runId, pairId: w.pairIds[2], setAside: false });
+    const back = (await byPair(w, runId)).get(w.pairIds[2])!;
+    expect(back.setAside).toBeUndefined();
+    expect(back.repeatOfPairId).toBe(w.pairIds[0]);
+  });
+
+  test("a pair with no card, or a bad quantity, does not save", async () => {
+    const w = await world([
+      { number: "77", players: ["Nobody Known"] },
+      { number: "1", players: ["Doc Gooden"] },
+    ]);
+    const runId = await startRun(w, w.fx.baseId);
+    await expect(
+      w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[0], quantity: 1 }),
+    ).rejects.toThrow(/Pick the card/);
+    for (const quantity of [0, 1.5, 100_000]) {
+      await expect(
+        w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[1], quantity }),
+      ).rejects.toThrow(/between 1/);
+    }
+  });
+
+  test("the search finds the variant's cards by number, then by name", async () => {
+    const w = await world([{ number: "1" }]);
+    const runId = await startRun(w, w.fx.baseId);
+    const byNumber = await w.me.query(api.intakeRuns.searchIntakeCards, { runId, q: "#002" });
+    expect(byNumber.map((c) => c._id)).toEqual([w.fx.strawberry2]);
+    const byName = await w.me.query(api.intakeRuns.searchIntakeCards, { runId, q: "gooden" });
+    expect(byName.map((c) => c._id)).toEqual(expect.arrayContaining([w.fx.gooden1]));
+    expect(await w.them.query(api.intakeRuns.searchIntakeCards, { runId, q: "1" })).toEqual([]);
+  });
+
+  test("another collector cannot save, answer or set aside", async () => {
+    const w = await world([{ number: "1", players: ["Doc Gooden"] }]);
+    const runId = await startRun(w, w.fx.baseId);
+    const pairId = w.pairIds[0];
+    await expect(w.them.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId, quantity: 1 })).rejects.toThrow(/not found/);
+    await expect(w.them.mutation(api.intakeRuns.answerIntakeRepeat, { runId, pairId, secondCopy: true })).rejects.toThrow(/not found/);
+    await expect(w.them.mutation(api.intakeRuns.setIntakeMatchAside, { runId, pairId, setAside: true })).rejects.toThrow(/not found/);
+  });
+});
+
 describe("the set builder reset", () => {
   test("drains intake matches and runs, matches first", async () => {
     const w = await world([

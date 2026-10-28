@@ -51,10 +51,10 @@ afterEach(() => {
 });
 
 describe("signed-in /collection runs on the real collection", () => {
-  it("shows My Cards, My Binders and Checklists, and none of the demo's chrome", () => {
+  it("shows My Cards, My Binders, Checklists and Add cards, and none of the demo's chrome", () => {
     renderAt("/collection");
     const tabs = within(sections()).getAllByRole("link").map((l) => l.textContent);
-    expect(tabs).toEqual(["My Cards", "My Binders", "Checklists"]);
+    expect(tabs).toEqual(["My Cards", "My Binders", "Checklists", "Add cards"]);
     expect(screen.queryByRole("region", { name: "About this demo" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Reset demo data" })).toBeNull();
     expect(screen.queryByRole("radiogroup", { name: "Demo theme" })).toBeNull();

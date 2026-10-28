@@ -1354,7 +1354,7 @@ async function moveCounts(
  * the caller applies every add's change once (`applyCopyChanges`), after all
  * its adds.
  */
-async function addOne(
+export async function addOne(
   ctx: MutationCtx,
   ownerId: string,
   cardId: CopyCardId,
