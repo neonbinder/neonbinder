@@ -76,3 +76,13 @@
     animation: none;
   }
 }
+
+@media (prefers-reduced-motion: reduce) {
+  .intake-sweep,
+  .intake-stripes,
+  .intake-dot,
+  .intake-arrive,
+  .intake-saved {
+    animation: none;
+  }
+}

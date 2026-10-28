@@ -8,6 +8,9 @@ test(
   "Add cards (collection): the tab opens from the demo, Yes saves a card, a click lands in its quantity, y saves it",
   { tag: ["@home"] },
   async ({ page }) => {
+    // Cards keep fading in as the scripted scans land; with reduced motion
+    // they arrive settled, so axe measures the colours a reader sees.
+    await page.emulateMedia({ reducedMotion: "reduce" });
     await page.goto("/binder-tracking?demo=on&speed=6");
     await page.getByRole("link", { name: "Add cards" }).click();
     await expect(page.getByLabel("Put them in this binder")).toBeVisible();
@@ -45,6 +48,7 @@ test(
   "Add cards (collection): the set button opens the set selector and Skip folds it",
   { tag: ["@home"] },
   async ({ page }) => {
+    await page.emulateMedia({ reducedMotion: "reduce" });
     await page.goto("/binder-tracking?demo=on&tab=add&speed=6");
     const set = page.getByRole("button", {
       name: "Set: 2024 Topps Chrome Base",
@@ -70,6 +74,7 @@ test(
   "Add cards (inventory): files into a box and saves every matched card at once",
   { tag: ["@home"] },
   async ({ page }) => {
+    await page.emulateMedia({ reducedMotion: "reduce" });
     await page.goto("/binder-tracking?demo=on&side=inventory&tab=add&speed=6");
     await expect(page.getByLabel("Put them in this box")).toHaveValue(/.+/);
     const saveAll = page.getByRole("button", {
