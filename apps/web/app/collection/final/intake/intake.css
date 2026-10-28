@@ -1,0 +1,88 @@
+/*
+ * NEO-369 — motion for the add-cards prototypes. Each prototype sets
+ * data-motion on its root ("low", "medium" or "high") so the four can be
+ * compared on how much movement helps. Reduced motion turns all of it off.
+ */
+
+.intake-sweep {
+  background: linear-gradient(100deg, transparent 30%, color-mix(in oklab, var(--neon-blue) 35%, transparent) 50%, transparent 70%);
+  background-size: 250% 100%;
+  animation: intake-sweep 1.4s linear infinite;
+}
+
+@keyframes intake-sweep {
+  from { background-position: 120% 0; }
+  to { background-position: -120% 0; }
+}
+
+.intake-dot {
+  animation: intake-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes intake-pulse {
+  50% { opacity: 0.3; }
+}
+
+.intake-stripes {
+  background-image: repeating-linear-gradient(45deg, transparent 0 6px, color-mix(in oklab, var(--ink-on-neon, #000) 18%, transparent) 6px 12px);
+  background-size: 17px 17px;
+  animation: intake-stripes 0.8s linear infinite;
+}
+
+@keyframes intake-stripes {
+  to { background-position: 17px 0; }
+}
+
+/* A card arriving in a lane (Mission Control). */
+.intake-arrive {
+  animation: intake-arrive 0.45s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+@keyframes intake-arrive {
+  from { opacity: 0; transform: translateY(-10px) scale(0.96); }
+}
+
+/* A save landing: a short green flash, then still. */
+.intake-saved {
+  animation: intake-saved 0.9s ease-out;
+}
+
+@keyframes intake-saved {
+  0% { box-shadow: 0 0 0 0 color-mix(in oklab, var(--neon-green) 70%, transparent); }
+  100% { box-shadow: 0 0 0 10px transparent; }
+}
+
+[data-motion="low"] .intake-sweep,
+[data-motion="low"] .intake-stripes,
+[data-motion="low"] .intake-arrive,
+[data-motion="low"] .intake-saved {
+  animation: none;
+}
+
+[data-motion="low"] .intake-sweep {
+  background: color-mix(in oklab, var(--neon-blue) 12%, transparent);
+}
+
+[data-motion="medium"] .intake-arrive {
+  animation: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .intake-sweep,
+  .intake-dot,
+  .intake-stripes,
+  .intake-arrive,
+  .intake-saved {
+    animation: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .intake-sweep,
+  .intake-stripes,
+  .intake-dot,
+  .intake-arrive,
+  .intake-saved {
+    animation: none;
+  }
+}

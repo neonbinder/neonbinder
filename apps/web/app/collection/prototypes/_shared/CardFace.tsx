@@ -336,7 +336,7 @@ export default function CardFace({
             {!compact && (
               <span
                 className="block truncate"
-                style={{ fontSize: cq(6.2), lineHeight: 1.2, opacity: 0.85 }}
+                style={{ fontSize: cq(6.2), lineHeight: 1.2 }}
               >
                 {face.teamName}
                 {face.variation ? `, ${face.variation}` : ""}

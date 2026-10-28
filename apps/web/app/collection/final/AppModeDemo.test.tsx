@@ -94,6 +94,8 @@ describe("the demo store in app mode", () => {
       "My Cards",
       "My Binders",
       "Checklists",
+      // The demo's intake (NEO-369).
+      "Add cards",
       // Inventory is its own page since NEO-364: no tab beside the collection's.
     ]);
   });

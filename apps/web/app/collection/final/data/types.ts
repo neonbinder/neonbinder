@@ -55,10 +55,11 @@ export type Side = "collection" | "inventory";
 /**
  * The page's `?tab=`. `/collection` shows `cards`, `binders` and
  * `checklists`; `/inventory` shows `cards` (the Inventory list), `boxes`
- * (My Boxes) and `checklists`. The old `"inventory"` key is retired: a
- * `?tab=inventory` link redirects (replace) to `/inventory?tab=boxes`.
+ * (My Boxes) and `checklists`. The demo adds `add` (Add cards, NEO-369) on
+ * both sides. The old `"inventory"` key is retired: a `?tab=inventory` link
+ * redirects (replace) to `/inventory?tab=boxes`.
  */
-export type CollectionTab = "cards" | "binders" | "boxes" | "checklists";
+export type CollectionTab = "cards" | "binders" | "boxes" | "checklists" | "add";
 
 // ---------------------------------------------------------------------------
 // Catalog
@@ -784,6 +785,11 @@ export interface Capabilities {
    * Never a tab beside the collection's: the inventory is its own page.
    */
   inventory: boolean;
+  /**
+   * NEO-369 — Add cards from photos: the intake tab on both sides. Demo only
+   * (a scripted pile of scans) until the real pipeline is built.
+   */
+  intake: boolean;
 }
 
 export const ALL_CAPABILITIES: Capabilities = {
@@ -800,6 +806,7 @@ export const ALL_CAPABILITIES: Capabilities = {
   // The demo makes no public pages: its Share button stays an example.
   shareLinks: false,
   inventory: true,
+  intake: true,
 };
 
 export const NO_CAPABILITIES: Capabilities = {
@@ -815,6 +822,7 @@ export const NO_CAPABILITIES: Capabilities = {
   share: false,
   shareLinks: false,
   inventory: false,
+  intake: false,
 };
 
 /**

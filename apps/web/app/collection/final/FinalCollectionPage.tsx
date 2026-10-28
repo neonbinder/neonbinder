@@ -1,5 +1,7 @@
 import {
+  lazy,
   startTransition,
+  Suspense,
   useCallback,
   useContext,
   useEffect,
@@ -31,6 +33,10 @@ import {
 } from "./checklistParams";
 import ChecklistsTab from "./ChecklistsTab";
 import { DemoBar, DemoRail } from "./DemoChrome";
+import { SkeletonBars } from "./catalog/Skeleton";
+// The demo's Add cards tab (NEO-369) loads only when opened: the signed-in
+// collection never shows it.
+const AddCardsTab = lazy(() => import("./intake/AddCardsTab"));
 import { DemoCollectionProvider, PUBLIC_STORAGE_KEY } from "./data/demoStore";
 import { setLabel, shortCardName } from "./data/labels";
 import {
@@ -153,11 +159,13 @@ const TABS: Record<Side, TabDef[]> = {
     { key: "cards", label: "My Cards" },
     { key: "binders", label: "My Binders", needs: "binders" },
     { key: "checklists", label: "Checklists" },
+    { key: "add", label: "Add cards", needs: "intake" },
   ],
   inventory: [
     { key: "cards", label: "Inventory" },
     { key: "boxes", label: "My Boxes" },
     { key: "checklists", label: "Checklists" },
+    { key: "add", label: "Add cards", needs: "intake" },
   ],
 };
 
@@ -846,6 +854,11 @@ function CollectionPage({ side, onExit }: { side: Side; onExit?: () => void }) {
                     onUndo={undo}
                     onDismissNotice={() => setNotice(null)}
                   />
+                )}
+                {!redirect && tab === "add" && capabilities.intake && (
+                  <Suspense fallback={<SkeletonBars rows={4} />}>
+                    <AddCardsTab />
+                  </Suspense>
                 )}
                 {!redirect && tab === "checklists" && (
                   <ChecklistsTab

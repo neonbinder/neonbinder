@@ -40,9 +40,10 @@ test(
     await expect(toCollection).toHaveAttribute("aria-current", "page");
     await expect(toInventory).not.toHaveAttribute("aria-current", "page");
 
-    // The collection's three tabs, each on its own view of the URL.
+    // The collection's three tabs, each on its own view of the URL, plus
+    // the demo's Add cards (NEO-369).
     const tabs = page.getByRole("navigation", { name: "Collection sections" });
-    await expect(tabs.getByRole("link")).toHaveCount(3);
+    await expect(tabs.getByRole("link")).toHaveCount(4);
     await tabs.getByRole("link", { name: "My Cards" }).click();
     await expect(page).toHaveURL(/[?&]tab=cards/);
     await expect(page.getByRole("heading", { level: 2, name: "Sets I'm building" })).toBeVisible();
@@ -90,9 +91,9 @@ test(
     // Arriving from a side link puts the keyboard on the new page's h1.
     await expect(page.getByRole("heading", { level: 1, name: "Inventory" })).toBeFocused();
 
-    // The inventory's three tabs.
+    // The inventory's three tabs, plus the demo's Add cards (NEO-369).
     const invTabs = page.getByRole("navigation", { name: "Inventory sections" });
-    await expect(invTabs.getByRole("link")).toHaveCount(3);
+    await expect(invTabs.getByRole("link")).toHaveCount(4);
     await expect(invTabs.getByRole("link", { name: "Inventory", exact: true })).toHaveAttribute("aria-current", "page");
     await expect(page.getByRole("navigation", { name: "Collection sections" })).toHaveCount(0);
 

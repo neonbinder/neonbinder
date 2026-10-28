@@ -289,7 +289,7 @@ describe("the demo's inventory side (NEO-364), on fixture data alone", () => {
     expect(screen.getByRole("heading", { level: 1, name: "Inventory" })).toBeTruthy();
     expect(document.title).toBe("Inventory demo");
     const tabs = within(screen.getByRole("navigation", { name: "Inventory sections" })).getAllByRole("link");
-    expect(tabs.map((t) => t.textContent)).toEqual(["Inventory", "My Boxes", "Checklists"]);
+    expect(tabs.map((t) => t.textContent)).toEqual(["Inventory", "My Boxes", "Checklists", "Add cards"]);
     expect(tabs[0].getAttribute("aria-current")).toBe("page");
     expect(within(sideSwitch()).getByRole("link", { name: "Boxes I sell" }).getAttribute("aria-current")).toBe("page");
 
