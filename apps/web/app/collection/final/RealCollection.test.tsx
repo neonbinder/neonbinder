@@ -192,6 +192,11 @@ function makeStore({
     updateContainer: vi.fn(async () => ({ undo })),
     deleteContainer: vi.fn(async () => ({ moved: 0 })),
     setBoxQuantity: vi.fn(async (_c: Card, _b: Container, quantity: number) => ({ before: 0, after: quantity, undo })),
+    setBinderSettings: vi.fn(async () => ({ undo })),
+    relayPockets: vi.fn(async () => ({ undo })),
+    setSmartRule: vi.fn(async () => ({ undo })),
+    declineCard: vi.fn(async () => ({ undo })),
+    undeclineCard: vi.fn(async () => ({ undo })),
   } satisfies CollectionActions;
   const wants: Want[] = [];
   const L = <T,>(value: T): T | undefined => (loading ? undefined : value);
@@ -293,6 +298,11 @@ function makeStore({
         goneCardIds: [],
         truncated: false,
       }),
+    useBinderNeeds: (id) => (id === null ? undefined : L({ cards: [], held: new Set<string>(), supported: true, truncated: false })),
+    useRuleMatches: (id, ids) => (id === null || ids === null ? undefined : L(new Set<string>())),
+    useFindCards: (id) => (id === null ? undefined : L({ copies: [], done: true, more: () => {} })),
+    useDeclined: (id) => (id === null ? undefined : L([])),
+    useRuleBrands: (id) => (id === null ? undefined : L([])),
   };
   const value: CollectionStoreValue = { kind: "convex", capabilities, data, actions, binderMemory };
   return { value, actions, undo, log };

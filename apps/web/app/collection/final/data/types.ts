@@ -18,6 +18,8 @@
  * which draws a card from its variant's title and drives nothing else.
  */
 
+import type { StoredRule, StoredRuleLeaf, StoredRuleTerm } from "@/lib/collection/binder-rule";
+
 // ---------------------------------------------------------------------------
 // Ids
 // ---------------------------------------------------------------------------
@@ -424,8 +426,42 @@ export type RuleLeaf =
 /** A leaf, or a leaf turned around. */
 export type RuleTerm = RuleLeaf | { kind: "not"; rule: RuleLeaf };
 
-/** A smart binder's rule: one term, or one level of and / or over terms. Never deeper. */
+/**
+ * The demo's self-filling smart binder's rule (`Container.rule`): one term,
+ * or one level of and / or over terms. Never deeper. A real smart binder's
+ * rule is `SmartRule` (NEO-362).
+ */
 export type ContainerRule = RuleTerm | { kind: "and" | "or"; rules: RuleTerm[] };
+
+/**
+ * NEO-362 — a real smart binder's rule, exactly as the server stores it
+ * (`lib/collection/binder-rule.ts`): all-of / any-of over leaves that name NB
+ * ids, each optionally turned around. It only HELPS fill the binder: Find
+ * cards suggests, the collector adds.
+ */
+export type SmartRule = StoredRule;
+export type SmartRuleTerm = StoredRuleTerm;
+export type SmartRuleLeaf = StoredRuleLeaf;
+
+/** NEO-362 — how a binder keeps its pockets in order. */
+export type BinderSort = "checklist" | "player" | "team";
+
+/**
+ * NEO-362 — a binder's own settings (Main included; never a box or a
+ * shelf). Each absent field is the default: pockets, unsorted, empty slots
+ * when its pockets follow a checklist, and none on the public page.
+ */
+export interface BinderSettings {
+  show?: "list";
+  sort?: BinderSort;
+  emptySlots?: boolean;
+  publicEmptySlots?: true;
+}
+
+/** A change to `BinderSettings`: `null` puts a field back to its default. */
+export type BinderSettingsPatch = {
+  [K in keyof BinderSettings]?: BinderSettings[K] | null;
+};
 
 /** What a container holds, kept on the server by every write (never counted on read). */
 export interface ContainerCount {
@@ -446,10 +482,20 @@ export interface Container {
   /** The collector's own spine label; absent for the default (`binders/label.ts`). */
   label?: ContainerLabel;
   /**
-   * A smart binder: fills itself from this rule (capability
-   * `smartBinders`; demo only until NEO-362). Never a home.
+   * The demo's smart binder: fills itself from this rule (capability
+   * `smartBinders`, the demo only). Never a home.
    */
   rule?: ContainerRule;
+  /**
+   * NEO-362 — a real smart binder: a binder the collector files cards in,
+   * whose rule helps fill it (capability `binderRules`). A home like any
+   * binder.
+   */
+  smartRule?: SmartRule;
+  /** NEO-362 — what each id the smart rule names reads as, by id. */
+  ruleNames?: Readonly<Record<string, string>>;
+  /** NEO-362 — a binder's own settings (capability `binderSettings`). */
+  settings?: BinderSettings;
   /**
    * A home (Main, Unsorted, a binder, a box): the copies whose home it is. Up for
    * Trade: the flagged copies. The Want List: the wants (both numbers). A
@@ -466,7 +512,11 @@ export interface Container {
   isPublic?: boolean;
 }
 
-/** True when a copy can live here: a binder or box (Main and Unsorted included) that is not the Want List, the trade pile or a smart binder. */
+/**
+ * True when a copy can live here: a binder or box (Main, Unsorted and real
+ * smart binders included) that is not the Want List, the trade pile or the
+ * demo's self-filling smart binder.
+ */
 export function isHome(container: Pick<Container, "system" | "rule"> | undefined): boolean {
   return !!container && !container.rule && container.system !== "want" && container.system !== "trade";
 }
@@ -653,6 +703,7 @@ export type Suggestion =
       /** Livery, `#rrggbb`, when NB has it (the label designer's team colours). */
       primary?: string;
       secondary?: string;
+      sport?: string;
     }
   | {
       kind: "set";
@@ -703,8 +754,18 @@ export interface Capabilities {
   cardRequests: boolean;
   /** The demo bar, its Reset, and the demo's Light / Dark switch. */
   demoChrome: boolean;
-  /** Making a smart binder (a rule that fills it). Real ones arrive with NEO-362. */
+  /** The demo's self-filling smart binder (a rule that fills it on its own). */
   smartBinders: boolean;
+  /**
+   * NEO-362 — real smart binders: a binder with a rule, Find cards, declines,
+   * the Checklists filter and "outside the rule".
+   */
+  binderRules: boolean;
+  /**
+   * NEO-362 — the binder settings panel: show as pockets or a list, a sort,
+   * Sort now, empty slots.
+   */
+  binderSettings: boolean;
   /**
    * The demo's example Share button for a binder, the Want List, Up for Trade
    * or a set: it shows what a link would look like and makes no page.
@@ -733,6 +794,8 @@ export const ALL_CAPABILITIES: Capabilities = {
   cardRequests: true,
   demoChrome: true,
   smartBinders: true,
+  binderRules: false,
+  binderSettings: true,
   share: true,
   // The demo makes no public pages: its Share button stays an example.
   shareLinks: false,
@@ -747,6 +810,8 @@ export const NO_CAPABILITIES: Capabilities = {
   cardRequests: false,
   demoChrome: false,
   smartBinders: false,
+  binderRules: false,
+  binderSettings: false,
   share: false,
   shareLinks: false,
   inventory: false,
@@ -765,6 +830,8 @@ export const REAL_CAPABILITIES: Capabilities = {
   cardRequests: true,
   shareLinks: true,
   inventory: true,
+  binderRules: true,
+  binderSettings: true,
 };
 
 // ---------------------------------------------------------------------------
@@ -853,13 +920,60 @@ export interface WantResult {
   undo: Undo;
 }
 
-/** A new binder or box. `rule` only with the `smartBinders` capability. */
+/**
+ * A new binder or box. `rule` only with the `smartBinders` capability (the
+ * demo's self-filling binder); `smartRule` only with `binderRules`.
+ */
 export interface NewContainer {
   kind: ContainerKind;
   name: string;
   description?: string;
   label?: ContainerLabel;
   rule?: ContainerRule;
+  smartRule?: SmartRule;
+}
+
+/** NEO-362 — one line item's pocket, for re-laying a binder (`relayPockets`). */
+export interface PocketPlacement {
+  copyId: CopyId;
+  slot: number;
+}
+
+/**
+ * NEO-362 — the catalog cards a binder's empty slots stand for, none of them
+ * in the binder: a smart binder's rule matches, or the checklists a binder
+ * sorted by checklist holds.
+ */
+export interface BinderNeeds {
+  cards: Card[];
+  /** Of `cards`, the ones the collector has in another binder. */
+  held: ReadonlySet<CardId>;
+  /** False when the rule names nothing NB can walk the catalog from (only years, features, ...). */
+  supported: boolean;
+  /** True when there are more than `cards` lists. */
+  truncated: boolean;
+}
+
+/** NEO-362 — "Find cards for this binder": copies that fit the rule and live elsewhere. */
+export interface FoundCards {
+  /** Line items that fit, every home but this binder, in card order. */
+  copies: Copy[];
+  /** True when the whole collection has been looked through. */
+  done: boolean;
+  /** Look further through the collection. */
+  more: () => void;
+}
+
+/** NEO-362 — a card declined for one smart binder, with the collector's copies of it. */
+/** NEO-362 — a brand for a rule: its NB name and every year's row of it. */
+export interface RuleBrand {
+  name: string;
+  ids: string[];
+}
+
+export interface DeclinedCard {
+  cardId: CardId;
+  copies: Copy[];
 }
 
 /** What `updateContainer` may change. On a system container, only `label`. `label: null` goes back to the default. */

@@ -189,6 +189,11 @@ export const SUBTREE_REFERENCE_GRAPH = {
     handling:
       "NEO-359 a collector's want is deleted with its card in removeCardRow (never refuses the wipe; past a bounded take the rest are swept by a scheduled continuation)",
   },
+  collectionBinderDeclines: {
+    fields: ["cardId"],
+    handling:
+      "NEO-362 a collector turned a card down for a smart binder. Never refuses the wipe and is untouched: Find cards and the Declined list never show a card that is gone, and the row goes with its binder or its rule",
+  },
   privateCards: {
     fields: ["setId", "variantId"],
     handling:

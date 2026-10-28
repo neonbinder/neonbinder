@@ -70,6 +70,8 @@ import {
   MAX_MAIN_PAGES,
   MAX_WANTS,
   POCKETS_PER_PAGE,
+  type BinderSettings,
+  type BinderSettingsPatch,
   type Container,
   type ContainerId,
   type ContainerLabel,
@@ -78,6 +80,7 @@ import {
   type CopyDetails,
   type SystemKind,
   type NewContainer,
+  type PocketPlacement,
   type Scope,
   type Want,
 } from "./data/types";
@@ -808,6 +811,61 @@ export const demoOps = {
       state: { ...state, containers: state.containers.map((c) => (c.id === id ? next : c)) },
       result: back,
     };
+  },
+
+  /**
+   * NEO-362 — a binder's own settings (as the server's `setSettings`): `null`
+   * puts a field back to its default. Returns the patch that puts it back.
+   */
+  setBinderSettings(state: CollectionState, id: ContainerId, patch: BinderSettingsPatch): OpResult<BinderSettingsPatch> {
+    const target = containerIn(state, id);
+    if (!target) throw new DemoRefusal("That binder is gone.");
+    if (target.kind !== "binder" || target.system === "want" || target.system === "trade" || target.rule) {
+      throw new DemoRefusal("Only a binder has these settings.");
+    }
+    const before = target.settings ?? {};
+    const back: BinderSettingsPatch = {};
+    const next: BinderSettings = { ...before };
+    for (const key of ["show", "sort", "emptySlots", "publicEmptySlots"] as const) {
+      if (!(key in patch)) continue;
+      back[key] = (before[key] ?? null) as never;
+      const value = patch[key];
+      if (value === null || value === undefined) delete next[key];
+      else (next as Record<string, unknown>)[key] = value;
+    }
+    const settings = Object.keys(next).length ? next : undefined;
+    const made: DemoContainer = { ...target };
+    if (settings) made.settings = settings;
+    else delete made.settings;
+    return {
+      state: { ...state, containers: state.containers.map((c) => (c.id === id ? made : c)) },
+      result: back,
+    };
+  },
+
+  /**
+   * NEO-362 — lays a binder out again (Sort now, or a sort turned off): every
+   * line it holds gets the pocket named, exactly once. Returns the old layout.
+   */
+  relayPockets(state: CollectionState, id: ContainerId, placements: readonly PocketPlacement[]): OpResult<PocketPlacement[]> {
+    const target = containerIn(state, id);
+    if (!keepsPockets(target)) throw new DemoRefusal("Only a binder keeps pockets.");
+    const lines = state.copies.filter((c) => c.homeId === id);
+    const bySlot = new Set<number>();
+    const placed = new Map<CopyId, number>();
+    for (const p of placements) {
+      checkSlot(state, id, p.slot);
+      if (bySlot.has(p.slot)) throw new DemoRefusal("Two cards can't share a pocket.");
+      if (placed.has(p.copyId)) throw new DemoRefusal("A card sits in one pocket.");
+      bySlot.add(p.slot);
+      placed.set(p.copyId, p.slot);
+    }
+    if (placed.size !== lines.length || lines.some((c) => !placed.has(c.id))) {
+      throw new DemoRefusal("This binder changed while it was being sorted. Try again.");
+    }
+    const previous = lines.map((c) => ({ copyId: c.id, slot: c.slot ?? 0 }));
+    const copies = state.copies.map((c) => (placed.has(c.id) ? { ...c, slot: placed.get(c.id) } : c));
+    return { state: { ...state, copies }, result: previous };
   },
 
   /**

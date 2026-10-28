@@ -176,6 +176,11 @@ export default function Pocket({
             For sale
           </span>
         )}
+        {pocket.outside && (
+          <span aria-hidden="true" className="p2-tag nb-outside-tag">
+            Outside the rule
+          </span>
+        )}
       </>
     );
     if (variant === "browse") {
@@ -202,7 +207,7 @@ export default function Pocket({
           ref={setNodeRef}
           type="button"
           aria-haspopup="dialog"
-          aria-label={havePocketLabel(card, copies)}
+          aria-label={`${havePocketLabel(card, copies)}${pocket.outside ? ", outside the rule" : ""}`}
           aria-keyshortcuts={lone ? "Alt+ArrowLeft Alt+ArrowRight" : undefined}
           aria-describedby={lone ? POCKET_MOVE_HINT_ID : undefined}
           data-found={found ? "true" : undefined}
@@ -236,14 +241,16 @@ export default function Pocket({
         <button
           ref={setNodeRef}
           type="button"
-          aria-label={`${cardLabel(card)}, need. Add it`}
+          aria-label={
+            content.elsewhere ? `${cardLabel(card)}, in another binder. Move it here` : `${cardLabel(card)}, need. Add it`
+          }
           onClick={() => onAdd(card, slot, pocket.wantFor)}
           onKeyDown={onKeyDown}
           className={`p2-sleeve${ring}`}
         >
           <span aria-hidden="true" className="p2-ghost">
             <span className="p2-ghost-number">#{card.cardNumber}</span>
-            <span className="p2-ghost-need">Need</span>
+            <span className="p2-ghost-need">{content.elsewhere ? "Have" : "Need"}</span>
             <span className="p2-ghost-who">{who}</span>
           </span>
         </button>

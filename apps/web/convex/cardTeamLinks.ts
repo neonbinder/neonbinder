@@ -41,7 +41,7 @@
 
 import { ConvexError, v } from "convex/values";
 import { internalAction, internalMutation } from "./_generated/server";
-import type { MutationCtx } from "./_generated/server";
+import type { MutationCtx, QueryCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { internal } from "./_generated/api";
 
@@ -105,6 +105,23 @@ export async function syncCardTeamLinks(
   for (const teamId of toInsert) {
     await ctx.db.insert("cardTeamLinks", { cardChecklistId: cardId, teamId });
   }
+}
+
+/**
+ * NEO-362 — up to `limit` cards showing a team, for a smart binder's empty
+ * slots (`binderRules.ts`). A READ that lives here so this module stays the
+ * one writer and a sanctioned reader of the index (`cardTeamLinks.pin.test.ts`).
+ */
+export async function cardIdsForTeam(
+  ctx: Pick<QueryCtx, "db">,
+  teamId: Id<"teams">,
+  limit: number,
+): Promise<Array<Id<"cardChecklist">>> {
+  const rows = await ctx.db
+    .query("cardTeamLinks")
+    .withIndex("by_team", (q) => q.eq("teamId", teamId))
+    .take(limit);
+  return rows.map((row) => row.cardChecklistId);
 }
 
 /**

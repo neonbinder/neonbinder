@@ -1059,10 +1059,10 @@ describe("writes: moves, trade, wants and containers", () => {
     expect(writes()).toHaveLength(1);
   });
 
-  it("refuses a smart binder with words, until the server can store a rule", async () => {
+  it("refuses the demo's self-filling rule with words: a real rule is a smartRule (NEO-362)", async () => {
     await expect(
       actions().createContainer({ kind: "binder", name: "Rainbow", rule: { all: [] } as never }),
-    ).rejects.toThrow(/Smart binders aren't here yet/);
+    ).rejects.toThrow(/Give the binder a rule from its settings instead/);
     expect(writes()).toEqual([]);
   });
 

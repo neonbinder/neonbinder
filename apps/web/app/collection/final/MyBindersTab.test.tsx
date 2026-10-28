@@ -113,7 +113,6 @@ describe("My Binders", () => {
     fireEvent.click(screen.getByRole("button", { name: "Back to the shelf" }));
     fireEvent.click(screen.getByRole("button", { name: /^All my cards,/ }));
     expect(screen.getByRole("heading", { level: 2, name: "All my cards" })).toBeTruthy();
-    expect(screen.getByText("Checklists and My Cards are looking through everything.")).toBeTruthy();
   });
 
   it("Alt+arrows move a card to the open pocket after it, and Undo puts it back", async () => {
@@ -164,7 +163,7 @@ describe("My Binders", () => {
     renderBinders();
     fireEvent.click(screen.getByRole("button", { name: /^'96 Contenders,/ }));
     expect(screen.getByRole("heading", { level: 2, name: "'96 Contenders" })).toBeTruthy();
-    expect(screen.getByText("Checklists and My Cards are looking through '96 Contenders.")).toBeTruthy();
+    expect(screen.queryByText(/Checklists and My Cards are looking through/)).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "Back to the shelf" }));
     const spine = screen.getByRole("button", { name: /^'96 Contenders,/ });
@@ -344,6 +343,7 @@ describe("spine labels", () => {
 
   it("Edit label saves the collector's colours, and a faint pair letters in white on the shelf", () => {
     renderBinders("/collection?tab=binders&b=binder-contenders-96");
+    fireEvent.click(screen.getByRole("button", { name: "Binder settings" }));
     fireEvent.click(screen.getByRole("button", { name: "Edit label for '96 Contenders" }));
     const dialog = screen.getByRole("dialog");
     fireEvent.change(within(dialog).getByLabelText("Background"), { target: { value: "#005A9C" } });
@@ -446,6 +446,7 @@ describe("Print this label", () => {
 
   it("opens the Print Shop in a new tab from the label editor, so the unsaved edits survive", () => {
     renderBinders("/collection?tab=binders&b=binder-contenders-96");
+    fireEvent.click(screen.getByRole("button", { name: "Binder settings" }));
     fireEvent.click(screen.getByRole("button", { name: "Edit label for '96 Contenders" }));
     const dialog = screen.getByRole("dialog");
     fireEvent.change(within(dialog).getByLabelText("Background"), { target: { value: "#005A9C" } });
@@ -466,6 +467,7 @@ describe("Print this label", () => {
 
   it("links from the label editor with the label as it stands there", () => {
     renderBinders("/collection?tab=binders&b=binder-contenders-96");
+    fireEvent.click(screen.getByRole("button", { name: "Binder settings" }));
     fireEvent.click(screen.getByRole("button", { name: "Edit label for '96 Contenders" }));
     const dialog = screen.getByRole("dialog");
     fireEvent.change(within(dialog).getByLabelText("Background"), { target: { value: "#005A9C" } });
@@ -599,7 +601,7 @@ describe("one open-binder view for binders and browsed sets", () => {
     return heading.closest("div")!.parentElement!;
   };
 
-  it("a browsed set gets the binder's Share and layout toggle, from the same view, and no label controls", () => {
+  it("a browsed set gets the binder's Share from the same view, and no settings or label controls", () => {
     renderBinders("/collection?tab=binders&b=binder-contenders-96");
     const binderControls = within(header("'96 Contenders"))
       .getAllByRole("button")
@@ -607,10 +609,16 @@ describe("one open-binder view for binders and browsed sets", () => {
     expect(binderControls).toEqual([
       "Back to the shelf",
       "Share '96 Contenders",
-      "Lay out like my real binder",
-      "Just a stack",
+      "Binder settings",
     ]);
-    expect(screen.getAllByRole("button", { name: "Edit label for '96 Contenders" }).length).toBeGreaterThan(0);
+    // NEO-362: a binder's label and rename controls live in its settings, not on the cover.
+    expect(screen.queryByRole("button", { name: "Edit label for '96 Contenders" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Binder settings" }));
+    const settings = screen.getByRole("dialog", { name: "'96 Contenders settings" });
+    expect(within(settings).getByRole("button", { name: "Edit label for '96 Contenders" })).toBeTruthy();
+    expect(within(settings).getByRole("link", { name: "Print label for '96 Contenders" })).toBeTruthy();
+    expect(within(settings).getByRole("button", { name: "Rename or delete '96 Contenders" })).toBeTruthy();
+    fireEvent.click(within(settings).getByRole("button", { name: "Done" }));
 
     fireEvent.click(screen.getByRole("button", { name: "Back to the shelf" }));
     fireEvent.click(screen.getByRole("button", { name: /^Browse 2000 Topps,/ }));
@@ -620,8 +628,6 @@ describe("one open-binder view for binders and browsed sets", () => {
     expect(setControls).toEqual([
       "Back to the shelf",
       "Share 2000 Topps",
-      "Lay out like my real binder",
-      "Just a stack",
     ]);
     expect(within(header("2000 Topps")).getByText("Browsing")).toBeTruthy();
     expect(screen.queryByRole("button", { name: /^Edit label for/ })).toBeNull();
@@ -631,23 +637,55 @@ describe("one open-binder view for binders and browsed sets", () => {
     expect(screen.getByText("neonbinder.io/u/you/sets/2000-topps")).toBeTruthy();
   });
 
-  it("Just a stack packs a browsed set tight, and the toggle is not a history step", () => {
+  it("a browsed set lays out like a real binder, with no layout toggle (NEO-362)", () => {
     renderBinders("/collection?tab=binders&set=2000-topps-football");
-    const search = () => screen.getByRole("status", { name: "Page search" }).textContent;
-    const before = search();
-    const pockets = screen.getByRole("button", { name: "Lay out like my real binder" });
-    const stack = screen.getByRole("button", { name: "Just a stack" });
-    expect(pockets.getAttribute("aria-pressed")).toBe("true");
+    expect(screen.queryByRole("button", { name: "Lay out like my real binder" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Just a stack" })).toBeNull();
     expect(screen.getAllByText("Every card in the set, in checklist order. Each insert starts a fresh page.").length).toBeGreaterThan(0);
-
-    fireEvent.click(stack);
-    expect(stack.getAttribute("aria-pressed")).toBe("true");
-    expect(screen.getAllByText("Every card in the set, in checklist order, packed tight.").length).toBeGreaterThan(0);
-    expect(search()).toBe(before);
     expect(screen.getAllByRole("button", { name: /^Add / }).length).toBeGreaterThan(0);
   });
 });
 
+
+describe("binder settings (NEO-362)", () => {
+  const statusSays = (re: RegExp) => screen.getAllByRole("status").some((s) => re.test(s.textContent ?? ""));
+
+  it("keeps a binder sorted, then turns the sort off with every card where it was", async () => {
+    renderBinders("/collection?tab=binders&b=binder-contenders-96");
+    expect(document.querySelectorAll('[aria-keyshortcuts^="Alt+ArrowLeft"]').length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByRole("button", { name: "Binder settings" }));
+    const dialog = screen.getByRole("dialog", { name: "'96 Contenders settings" });
+    const unsorted = within(dialog).getByRole("radio", { name: /Where I put them/ });
+    expect((unsorted as HTMLInputElement).checked).toBe(true);
+    fireEvent.click(within(dialog).getByRole("radio", { name: /Keep sorted by player/ }));
+    await waitFor(() => expect(statusSays(/keeps itself sorted by player/)).toBe(true));
+    expect(screen.getAllByText(/Keeps itself sorted by player/).length).toBeGreaterThan(0);
+    // No dragging between pockets while it keeps itself sorted.
+    expect(document.querySelectorAll('[aria-keyshortcuts^="Alt+ArrowLeft"]')).toHaveLength(0);
+
+    fireEvent.click(within(dialog).getByRole("radio", { name: /Where I put them/ }));
+    await waitFor(() => expect(statusSays(/stays as it is now/)).toBe(true));
+  });
+
+  it("Sort now sorts once and leaves the binder unsorted", async () => {
+    renderBinders("/collection?tab=binders&b=binder-contenders-96");
+    fireEvent.click(screen.getByRole("button", { name: "Binder settings" }));
+    const dialog = screen.getByRole("dialog", { name: "'96 Contenders settings" });
+    fireEvent.change(within(dialog).getByLabelText("Sort it once, by"), { target: { value: "player" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Sort now" }));
+    await waitFor(() => expect(statusSays(/^Sorted '96 Contenders by player/)).toBe(true));
+    fireEvent.click(screen.getByRole("button", { name: "Binder settings" }));
+    expect(
+      (within(screen.getByRole("dialog")).getByRole("radio", { name: /Where I put them/ }) as HTMLInputElement).checked,
+    ).toBe(true);
+  });
+
+  it("the demo has no rule builder: its smart binder fills itself", () => {
+    renderBinders("/collection?tab=binders&b=binder-contenders-96");
+    fireEvent.click(screen.getByRole("button", { name: "Binder settings" }));
+    expect(within(screen.getByRole("dialog")).queryByRole("heading", { name: "Smart rule" })).toBeNull();
+  });
+});
 
 describe("boxes and binders you make", () => {
   const statusSays = (re: RegExp) => screen.getAllByRole("status").some((s) => re.test(s.textContent ?? ""));
@@ -730,6 +768,7 @@ describe("boxes and binders you make", () => {
     const search = () => screen.getByLabelText("Page search").textContent;
     fireEvent.click(screen.getByRole("button", { name: /^Slab case,/ }));
     expect(search()).toMatch(/^\?tab=binders&b=binder-slab-case/);
+    fireEvent.click(screen.getByRole("button", { name: "Binder settings" }));
     fireEvent.click(screen.getByRole("button", { name: "Rename or delete Slab case" }));
     fireEvent.click(screen.getByRole("button", { name: "Delete this binder" }));
     fireEvent.click(screen.getByRole("button", { name: "Yes, delete it" }));
@@ -759,9 +798,10 @@ describe("boxes and binders you make", () => {
 
   it("offers no rename or delete on a system container", () => {
     renderBinders("/collection?tab=binders&b=binder-main");
+    fireEvent.click(screen.getByRole("button", { name: "Binder settings" }));
     expect(screen.queryByRole("button", { name: /^Rename or delete/ })).toBeNull();
-    // Its label can still be set.
-    expect(screen.getAllByRole("button", { name: "Edit label for Main" }).length).toBeGreaterThan(0);
+    // Its label can still be set, from its settings.
+    expect(screen.getByRole("button", { name: "Edit label for Main" })).toBeTruthy();
   });
 
   it("offers no rename or delete on Unsorted, the inventory's Main", () => {

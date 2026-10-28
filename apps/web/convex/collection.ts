@@ -891,8 +891,8 @@ export async function applyCopyChanges(
 /**
  * The home a write names, checked: the caller's own container, and a HOME
  * (Main, or a binder or box the collector made). The Want List and the Up for
- * Trade shelf are never homes (NEO-359), nor is a smart binder (it fills
- * itself from its rule). Absent means Main.
+ * Trade shelf are never homes (NEO-359). A smart binder is a home like any
+ * binder (NEO-362: its rule only suggests). Absent means Main.
  */
 export async function resolveHome(
   ctx: MutationCtx,
@@ -909,9 +909,6 @@ export async function resolveHome(
   }
   if (home.system === "trade") {
     refuse(COLLECTION_ERRORS.invalid, "Up for Trade isn't a place, it's a flag. Keep the card in a binder or a box and turn on Up for Trade.");
-  }
-  if (home.rule !== undefined) {
-    refuse(COLLECTION_ERRORS.invalid, "A smart binder fills itself. Pick a binder or a box to keep the card in.");
   }
   return home;
 }
@@ -961,12 +958,12 @@ async function pocketIsFree(
 export const BINDER_FULL = "That binder is full. Start another binder for the rest.";
 
 /**
- * A home whose every line sits in a pocket: a binder, Main included. A box
- * has rows (a card may wait outside them) and a smart binder holds nothing.
- * There is no "in the binder but not in a pocket".
+ * A home whose every line sits in a pocket: a binder, Main and smart binders
+ * included. A box has rows (a card may wait outside them). There is no "in
+ * the binder but not in a pocket".
  */
-export function keepsPockets(home: Pick<ContainerRow, "kind" | "system" | "rule">): boolean {
-  return home.kind === "binder" && home.rule === undefined && home.system !== "want" && home.system !== "trade";
+export function keepsPockets(home: Pick<ContainerRow, "kind" | "system">): boolean {
+  return home.kind === "binder" && home.system !== "want" && home.system !== "trade";
 }
 
 /**
@@ -1710,7 +1707,7 @@ async function readScope(
   if (!id) return null;
   const home = await ctx.db.get(id);
   if (!home || home.ownerId !== ownerId) return null;
-  if (home.system === "want" || home.system === "trade" || home.rule !== undefined) return null;
+  if (home.system === "want" || home.system === "trade") return null;
   if (sideOfContainer(home) !== side) return null;
   return id;
 }

@@ -1,20 +1,21 @@
 import type { ReactNode, Ref } from "react";
 import { ArrowLeftIcon } from "@heroicons/react/24/outline";
 import BinderDesk, { whereLabel } from "./BinderDesk";
-import type { LayoutMode, PageModel, PileFilters, SlotRef, SortKey } from "./model";
+import { AdjustmentsHorizontalIcon } from "@heroicons/react/24/outline";
+import type { PageModel, PileFilters, SlotRef, SortKey } from "./model";
 import type { OpenView } from "./openView";
-import { Cover, MobileSummary, ModeToggle, PileTools, ScopeLine, type CoverActions } from "./parts";
+import { Cover, MobileSummary, PileTools, type CoverActions } from "./parts";
 import type { PocketHandlers } from "./Pocket";
 import ShareLink from "./ShareLink";
 import NeonButton from "@/components/modules/NeonButton";
 
 /**
  * NEO-350 — the one open-binder view of My Binders: the header (back, title,
- * badge, where you are, Share, the layout toggle, the pile's tools), the
+ * badge, where you are, Share, Find cards and Binder settings, the pile's tools), the
  * scope line, the cover and the spread of pockets. A binder, a smart
  * binder, the Want List, All my cards and a set you are browsing all render
  * here; what differs between them arrives in `open` (see `openView.ts`), so
- * a browsed set gets the same Share and layout toggle as a binder, and no
+ * a browsed set gets the same Share as a binder, and no
  * label controls because it has no label. A box (and the for-sale view)
  * passes its own desk as `children` in place of the spread of pages.
  */
@@ -33,10 +34,12 @@ interface BinderViewProps extends PocketHandlers {
   at: number;
   onTurn: (to: number) => void;
   onBack: () => void;
-  onLayout: (mode: LayoutMode) => void;
+  /** NEO-362 — opens the binder's settings (order, empty slots, its rule). */
+  onSettings: () => void;
+  /** NEO-362 — opens Find cards (a smart binder). */
+  onFindCards: () => void;
   onEditLabel: () => void;
   onEditContainer: () => void;
-  onGoChecklists: () => void;
   pile: PileControls;
   aimed: SlotRef | null;
   found: SlotRef | null;
@@ -59,10 +62,10 @@ export default function BinderView({
   at,
   onTurn,
   onBack,
-  onLayout,
+  onSettings,
+  onFindCards,
   onEditLabel,
   onEditContainer,
-  onGoChecklists,
   pile,
   aimed,
   found,
@@ -113,12 +116,23 @@ export default function BinderView({
         </p>
         <div className="ml-auto flex flex-wrap items-center gap-2">
           {open.share && <ShareLink key={open.key} target={open.share} />}
-          {open.layout && <ModeToggle mode={open.layout} onChange={onLayout} />}
+          {open.findCards && (
+            <NeonButton type="button" variant="tertiary" onClick={onFindCards} className="min-h-10">
+              Find cards
+            </NeonButton>
+          )}
+          {open.settings && (
+            <NeonButton type="button" variant="secondary" outline onClick={onSettings} className="min-h-10">
+              <AdjustmentsHorizontalIcon aria-hidden="true" className="h-4 w-4" />
+              Binder settings
+            </NeonButton>
+          )}
           {open.pileTools && <PileTools {...pile} />}
         </div>
       </div>
 
-      {open.scopeLine && <ScopeLine text={open.scopeLine} onGo={onGoChecklists} />}
+      {/* Room between the header and the binder (where the old scope line sat). */}
+      <div aria-hidden="true" className="h-8" />
 
       {(!wide || children) && <MobileSummary open={open} actions={actions} />}
 

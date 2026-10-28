@@ -5,11 +5,13 @@ import { spineFontById, spineFontFamilyCss } from "@/lib/print/spine-fonts";
 import Modal from "../../prototypes/p2/Modal";
 import { useSearchText } from "../catalog/search";
 import { searchable, useCapabilities, useSuggestions } from "../data/store";
+import { ruleProblem } from "@/lib/collection/binder-rule";
 import type {
   ContainerKind,
   ContainerLabel,
   ContainerRule,
   NewContainer,
+  SmartRule,
   Suggestion,
 } from "../data/types";
 import { useDraftRuleHints } from "./hooks";
@@ -22,6 +24,7 @@ import {
 } from "./label";
 import LabelDesigner from "./LabelDesigner";
 import { teamRule } from "./model";
+import RuleBuilder, { blankRule } from "./RuleBuilder";
 import NeonButton from "@/components/modules/NeonButton";
 
 /**
@@ -70,6 +73,12 @@ const KINDS: { kind: Kind; title: string; line: string }[] = [
   },
 ];
 
+/** NEO-362: a real smart binder is a binder whose rule helps fill it. */
+const REAL_SMART = {
+  title: "Smart: a rule helps fill it",
+  line: "Say which cards belong. Find cards pulls in the ones you have, and you decide on each.",
+};
+
 export default function NewBinderDialog({
   kind: made = "binder",
   onCreate,
@@ -88,18 +97,24 @@ export default function NewBinderDialog({
   const [error, setError] = useState<string | null>(null);
   /** Bumped by a submit that missed something: focus goes to the first field to fix. */
   const [missed, setMissed] = useState(0);
-  const { smartBinders } = useCapabilities();
+  const { smartBinders, binderRules } = useCapabilities();
   const [name, setName] = useState("");
   const [kind, setKind] = useState<Kind>(made === "box" ? "box" : "binder");
   // A choice to make only where there is one: a binder or a smart binder.
   const choices =
     made === "box"
       ? []
-      : KINDS.filter((k) => k.kind !== "smart" || smartBinders);
+      : KINDS.filter((k) => k.kind !== "smart" || smartBinders || binderRules).map((k) =>
+          k.kind === "smart" && binderRules ? { ...k, ...REAL_SMART } : k,
+        );
   const [ruleKind, setRuleKind] = useState<RuleKind>("player");
   const [player, setPlayer] = useState<PlayerSuggestion | null>(null);
   const [team, setTeam] = useState<TeamSuggestion | null>(null);
   const [alumni, setAlumni] = useState(false);
+  const [smartDraft, setSmartDraft] = useState<{ rule: SmartRule; names: Record<string, string> }>(() => ({
+    rule: blankRule(),
+    names: {},
+  }));
   const [tried, setTried] = useState(false);
   const [styling, setStyling] = useState(false);
   /** The collector's own label, once they touch it; until then the default. */
@@ -107,7 +122,8 @@ export default function NewBinderDialog({
   const [labelError, setLabelError] = useState(false);
 
   const trimmed = name.trim();
-  const smart = kind === "smart" && smartBinders;
+  const smart = kind === "smart" && smartBinders && !binderRules;
+  const realSmart = kind === "smart" && binderRules;
   const rule: ContainerRule | null = !smart
     ? null
     : ruleKind === "player"
@@ -128,7 +144,7 @@ export default function NewBinderDialog({
     ? teamPicks(hints.teams ?? [], hints.ruleTeam ?? null)
     : [];
   const noun = kind === "box" ? "box" : "binder";
-  const ruleMissing = smart && !rule;
+  const ruleMissing = (smart && !rule) || (realSmart && !!ruleProblem(smartDraft.rule));
 
   useEffect(() => {
     if (missed === 0) return;
@@ -158,6 +174,7 @@ export default function NewBinderDialog({
     const input: NewContainer = { kind: containerKind, name: trimmed };
     if (label) input.label = label;
     if (rule) input.rule = rule;
+    if (realSmart) input.smartRule = smartDraft.rule;
     setError(null);
     setBusy(true);
     const refused = await onCreate(input);
@@ -285,6 +302,17 @@ export default function NewBinderDialog({
                 </label>
               </>
             )}
+          </div>
+        )}
+
+        {realSmart && (
+          <div className="mt-4">
+            <RuleBuilder
+              rule={smartDraft.rule}
+              names={smartDraft.names}
+              onChange={(next, names) => setSmartDraft({ rule: next, names })}
+              showProblems={tried}
+            />
           </div>
         )}
 

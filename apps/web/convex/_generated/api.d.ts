@@ -39,6 +39,7 @@ import type * as backfillPromotedParallelFacet from "../backfillPromotedParallel
 import type * as backfillVariantFacetAndBaseRole from "../backfillVariantFacetAndBaseRole.js";
 import type * as backfillVariantTypeRole from "../backfillVariantTypeRole.js";
 import type * as baseMatchProbe from "../baseMatchProbe.js";
+import type * as binderRules from "../binderRules.js";
 import type * as brandRehome from "../brandRehome.js";
 import type * as brandView from "../brandView.js";
 import type * as browserAudience from "../browserAudience.js";
@@ -191,6 +192,7 @@ declare const fullApi: ApiFromModules<{
   backfillVariantFacetAndBaseRole: typeof backfillVariantFacetAndBaseRole;
   backfillVariantTypeRole: typeof backfillVariantTypeRole;
   baseMatchProbe: typeof baseMatchProbe;
+  binderRules: typeof binderRules;
   brandRehome: typeof brandRehome;
   brandView: typeof brandView;
   browserAudience: typeof browserAudience;

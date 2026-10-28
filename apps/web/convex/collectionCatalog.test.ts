@@ -287,6 +287,21 @@ describe("suggest", () => {
     expect(wrongYear.sets).toEqual([]);
   });
 
+  test("a sport keeps players, teams and sets to that sport (NEO-362)", async () => {
+    const { t, as, fx } = await setup();
+    const football = await t.run(async (ctx) =>
+      ctx.db.insert("selectorOptions", { level: "sport", value: "Football", lastUpdated: 0, platformData: {} } as never),
+    );
+    const inBaseball = await as.query(api.collectionCatalog.suggest, { q: "Gooden", sportId: fx.sportId });
+    expect(inBaseball.players.map((p) => p._id)).toContain(fx.goodenId);
+    const inFootball = await as.query(api.collectionCatalog.suggest, { q: "Gooden", sportId: football });
+    expect(inFootball.players).toEqual([]);
+    expect((await as.query(api.collectionCatalog.suggest, { q: "Amazins", sportId: football })).teams).toEqual([]);
+    expect((await as.query(api.collectionCatalog.suggest, { q: "Mets", sportId: fx.sportId })).teams.map((x) => x._id)).toContain(fx.metsId);
+    expect((await as.query(api.collectionCatalog.suggest, { q: "Topps", sportId: football })).sets).toEqual([]);
+    expect(await as.query(api.collectionCatalog.suggest, { q: "Gooden", sportId: "not-an-id" })).toEqual({ players: [], teams: [], sets: [] });
+  });
+
   test("one character suggests nothing", async () => {
     const { as } = await setup();
     expect(await as.query(api.collectionCatalog.suggest, { q: "G" })).toEqual({

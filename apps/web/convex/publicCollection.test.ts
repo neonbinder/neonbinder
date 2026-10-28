@@ -532,3 +532,39 @@ describe("the switches are the owner's", () => {
     );
   });
 });
+
+describe("NEO-362: a binder's layout and shared empty slots", () => {
+  test("a visitor gets the sort, and the empty slots only once the owner shares them", async () => {
+    const s = await setup();
+    const b = await binder(s, "Chrome");
+    await s.me.mutation(api.collectionContainers.setVisibility, { containerId: b.id, visibility: "public" });
+    await s.me.mutation(api.collection.addLineItem, { cardId: s.fx.gooden1, details: { quantity: 1, homeId: b.id } });
+    const read = () => s.anon.query(api.publicCollection.binder, { username: "ace", path: b.path });
+    const needs = () => s.anon.query(api.publicCollection.binderNeeds, { username: "ace", path: b.path });
+
+    expect((await read())?.layout).toBeUndefined();
+    await s.me.mutation(api.collectionContainers.setSettings, { containerId: b.id, sort: "checklist", emptySlots: true });
+    expect((await read())?.layout).toEqual({ sort: "checklist", emptySlots: false, smart: false });
+    expect((await needs()).needs).toEqual([]);
+
+    await s.me.mutation(api.collectionContainers.setSettings, { containerId: b.id, publicEmptySlots: true });
+    expect((await read())?.layout).toEqual({ sort: "checklist", emptySlots: true, smart: false });
+    const shared = await needs();
+    expect(shared.needs.map((n) => n.card._id)).toEqual([s.fx.strawberry2]);
+    // A visitor never learns whether the owner has the card somewhere else.
+    expect(shared.needs.every((n) => n.held === false)).toBe(true);
+  });
+
+  test("a private binder's empty slots stay private", async () => {
+    const s = await setup();
+    const b = await binder(s, "Private");
+    await s.me.mutation(api.collectionContainers.setSettings, {
+      containerId: b.id,
+      sort: "checklist",
+      emptySlots: true,
+      publicEmptySlots: true,
+    });
+    await s.me.mutation(api.collection.addLineItem, { cardId: s.fx.gooden1, details: { quantity: 1, homeId: b.id } });
+    expect((await s.anon.query(api.publicCollection.binderNeeds, { username: "ace", path: b.path })).needs).toEqual([]);
+  });
+});
