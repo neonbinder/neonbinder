@@ -2343,6 +2343,7 @@ describe("NEO-358: the collection and its catalog reads require a signed-in call
     expect(after.building).toEqual([]);
     // NEO-377 — signed out, photosOf answers nothing rather than another collector's photos.
     expect(await t.query(api.copyPhotos.photosOf, { copyIds: [ids.copyId] })).toEqual([]);
+    // (the seeded photo is only pending; copyPhotos.test.ts covers signed-out against a live one)
     expect(await t.query(api.copyPhotos.cardPhotos, { cardIds: [ids.cardId] })).toEqual([]);
     expect((await t.run((ctx) => ctx.db.get(ids.photoId)))?.status).toBe("pending");
     // (the single seeded copy also proves the anonymous setBoxQuantity wrote no box line)

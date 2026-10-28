@@ -452,8 +452,12 @@ export const photosOf = query({
 
 /** Cards `cardPhotos` may ask about at once. */
 export const MAX_CARD_PHOTOS = 60;
-/** Lines of one card `cardPhotos` looks through. */
-const LINES_PER_CARD = 50;
+/**
+ * Lines of one card `cardPhotos` looks through. With `MAX_CARD_PHOTOS` this
+ * bounds one call at 60 × 20 line reads plus two photo rows per line, well
+ * inside Convex's per-function read limits.
+ */
+const LINES_PER_CARD = 20;
 
 /**
  * The photo that stands for each of some cards in the caller's collection:

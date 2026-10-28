@@ -120,9 +120,11 @@ export default function CopyPhotosField({
     e.preventDefault();
     e.stopPropagation();
     setOver(null);
-    const from = e.dataTransfer.getData(SIDE_DRAG);
-    if (from) {
-      if (target !== "box" && from !== target) swap();
+    const dragged = e.dataTransfer.getData(SIDE_DRAG);
+    if (dragged) {
+      // Only a photo of THIS line swaps; one dragged from another line does nothing.
+      const [fromCopy, from] = dragged.split("|");
+      if (fromCopy === copy.id && target !== "box" && from !== target) swap();
       return;
     }
     const files = Array.from(e.dataTransfer.files).filter((f) => f.type.startsWith("image/") || f.type === "");
@@ -170,7 +172,9 @@ export default function CopyPhotosField({
                   rel="noopener noreferrer"
                   draggable
                   onDragStart={(e) => {
-                    e.dataTransfer.setData(SIDE_DRAG, side);
+                    // Not the link's own address: the photo URL never leaves the page in a drag.
+                    e.dataTransfer.clearData();
+                    e.dataTransfer.setData(SIDE_DRAG, `${copy.id}|${side}`);
                     e.dataTransfer.effectAllowed = "move";
                   }}
                   onDragEnd={() => setOver(null)}
