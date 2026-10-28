@@ -91,7 +91,12 @@ export default function CopyPhotosField({
   /** Save these files to these sides, one after the other. */
   const put = (files: readonly File[], sides: readonly PhotoSide[]) => {
     const pairs = sides.slice(0, files.length).map((side, i) => ({ side, file: files[i] }));
-    if (pairs.length === 0 || busy) return;
+    if (pairs.length === 0) return;
+    if (busy) {
+      // Never drop a photo silently.
+      setError("Still saving the last photo. Add this one again in a moment.");
+      return;
+    }
     const words = pairs.map((p) => p.side).join(" and ");
     const saved = pairs.length > 1 ? "Front and back photos saved." : `${SIDE_WORD[pairs[0].side]} photo saved.`;
     void run(`Saving the ${words} photo${pairs.length > 1 ? "s" : ""}…`, saved, async () => {
@@ -140,17 +145,21 @@ export default function CopyPhotosField({
         if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setOver(null);
       }}
       onDrop={(e) => drop(e, "box")}
-      className={`mt-4 rounded-md border border-dashed p-3 ${
-        over === "box" ? "border-selection bg-pick-blue/10" : "border-control"
+      className={`mt-4 rounded-md p-3 ${
+        over !== null ? "border-2 border-solid border-selection bg-pick-blue/20" : "border border-dashed border-control"
       }`}
       data-copy-photos-field={copy.id}
     >
-      <h4 id={headingId} className="text-sm font-semibold text-ink">
+      <h3 id={headingId} className="text-sm font-semibold text-ink">
         Photos
-      </h4>
+      </h3>
       <p id={helpId} className="mt-0.5 text-xs text-ink-3">
-        Saved as soon as you add them. Drop two photos here for the front and back, or drag one onto the other to
-        swap.
+        Saved as soon as you add them.
+        {/* Dragging is a pointer's: on a touch screen, Add and Swap do it. */}
+        <span className="[@media(pointer:coarse)]:hidden">
+          {" "}
+          Drop two photos here for the front and back, or drag one onto the other to swap.
+        </span>
       </p>
       <div className="mt-2 grid max-w-xs grid-cols-2 gap-3">
         {SIDES.map((side) => {
@@ -179,7 +188,7 @@ export default function CopyPhotosField({
                   }}
                   onDragEnd={() => setOver(null)}
                   className={`mt-1 block cursor-grab rounded-sm focus-outline ${
-                    over === side ? "ring-2 ring-selection" : ""
+                    over === side ? "ring-4 ring-selection" : ""
                   }`}
                   aria-label={`${word} of ${line}, full size (opens a new tab)`}
                 >
@@ -194,7 +203,7 @@ export default function CopyPhotosField({
               ) : (
                 <div
                   className={`mt-1 flex aspect-[5/7] w-full items-center justify-center rounded-sm border border-dashed text-ink-3 ${
-                    over === side ? "border-selection bg-pick-blue/10" : "border-rule-strong"
+                    over === side ? "border-2 border-solid border-selection bg-pick-blue/30" : "border-rule-strong"
                   }`}
                 >
                   <PhotoIcon aria-hidden className="h-8 w-8" />

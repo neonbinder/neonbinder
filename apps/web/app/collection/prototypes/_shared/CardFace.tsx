@@ -202,25 +202,24 @@ export default function CardFace({
       <div
         role="img"
         aria-label={accessibleName}
-        className={`nb-card relative shrink-0 select-none overflow-hidden ${className}`}
-        style={{
-          width: WIDTH[size],
-          aspectRatio: "5 / 7",
-          containerType: "inline-size",
-          borderRadius: cq(5),
-          background: "#0b0f1a",
-          boxShadow: "0 6px 18px rgba(0,0,0,0.45)",
-        }}
+        className={`nb-card relative shrink-0 select-none ${className}`}
+        style={{ width: WIDTH[size], aspectRatio: "5 / 7", containerType: "inline-size" }}
       >
-        <img
-          src={picture.thumbUrl}
-          alt=""
+        {/* On a child, so `cqw` measures this card (not an ancestor), as the drawn face does. */}
+        <div
           aria-hidden="true"
-          draggable={false}
-          decoding="async"
-          className="absolute inset-0 h-full w-full object-contain"
-          style={{ filter: need ? "grayscale(0.9) brightness(0.5)" : undefined }}
-        />
+          className="absolute inset-0 overflow-hidden"
+          style={{ borderRadius: cq(5), background: "#0b0f1a", boxShadow: "0 6px 18px rgba(0,0,0,0.45)" }}
+        >
+          <img
+            src={picture.thumbUrl}
+            alt=""
+            draggable={false}
+            decoding="async"
+            className="h-full w-full object-contain"
+            style={{ filter: need ? "grayscale(0.9) brightness(0.5)" : undefined }}
+          />
+        </div>
         {serial && (
           <span
             aria-hidden="true"
