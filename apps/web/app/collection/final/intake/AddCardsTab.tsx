@@ -183,12 +183,12 @@ export default function AddCardsTab() {
     return (lane[at + 1] ?? lane[at - 1])?.id ?? null;
   };
 
-  const focusTile = (id: string | null, preferQty: boolean) => {
+  const focusTile = (id: string | null, preferQty: boolean, scroll = true) => {
     if (!id) return;
     requestAnimationFrame(() => {
       const tile = document.querySelector<HTMLElement>(`[${TILE_ATTR}="${id}"]`);
       if (!tile) return;
-      tile.scrollIntoView({ block: "nearest" });
+      if (scroll) tile.scrollIntoView({ block: "nearest" });
       const qty = tile.querySelector<HTMLInputElement>(`[${QTY_ATTR}]:not(:disabled)`);
       const target = (preferQty && qty) || tile.querySelector<HTMLElement>("button:not(:disabled)");
       target?.focus({ preventScroll: true });
@@ -197,12 +197,12 @@ export default function AddCardsTab() {
 
   /** Select a card. One that can't be saved as it stands opens its drawer;
    *  any other gets the focus (its quantity when asked). */
-  const land = (id: string | null, preferQty: boolean, moveFocus = true) => {
+  const land = (id: string | null, preferQty: boolean, scroll = true) => {
     if (id !== shut.current) shut.current = null;
     setSelectedId(id);
     const item = id ? find(id) : undefined;
     if (item && needsDrawer(item)) setOpenId(item.id);
-    else if (moveFocus) focusTile(id, preferQty);
+    else focusTile(id, preferQty, scroll);
   };
 
   /** Enter in a quantity or price: the card saved, on to the next one down
@@ -213,12 +213,14 @@ export default function AddCardsTab() {
     land(lane[at + 1]?.id ?? null, true);
   };
 
-  /** Yes clicked: the card saved, the one sliding into its spot selected.
-   *  Focus stays put, so nothing scrolls out from under the pointer. */
+  /** Yes clicked: exactly Enter in the quantity (Jason, 2026-10-28), the
+   *  next card selected and its quantity focused, but nothing scrolls out
+   *  from under the pointer. */
   const yesClicked = (id: string) => {
-    const next = neighbour(id);
+    const lane = lanes[REVIEW_LANE];
+    const next = lane[lane.findIndex((i) => i.id === id) + 1]?.id ?? null;
     intake.actions.confirm(id);
-    land(next, false, false);
+    land(next, true, false);
   };
 
   /** Enter in a price: that price kept, the card saved, on to the next. */
@@ -559,7 +561,11 @@ function ReviewTile({
           size="1"
           variant="primary"
           disabled={!item.match.cardId}
-          onClick={onYes}
+          onClick={(e) => {
+            // The card's own click would select the card just saved.
+            e.stopPropagation();
+            onYes();
+          }}
           aria-keyshortcuts="y"
         >
           Yes

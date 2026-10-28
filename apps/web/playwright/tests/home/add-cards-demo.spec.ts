@@ -22,8 +22,17 @@ test(
       .first();
     await expect(yes).toBeEnabled();
     await expectAccessible(page, { label: "Add cards, collection" });
+    // A second card waiting, so there is a next one for Yes to move to.
+    await expect(
+      review.getByRole("button", { name: "Yes", exact: true }).nth(1),
+    ).toBeEnabled();
     await yes.click();
     await expect(saved).toHaveAccessibleName("Saved, 1");
+    // Yes works like Enter in the quantity: the next card is selected with
+    // its quantity focused.
+    await expect(
+      review.getByRole("textbox", { name: /^(Qty|Had \d+ →)$/ }).first(),
+    ).toBeFocused();
 
     // A click on a waiting card puts the caret in its quantity with the
     // number selected, so typing replaces it.
