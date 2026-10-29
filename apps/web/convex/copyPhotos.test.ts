@@ -76,13 +76,19 @@ describe("upload", () => {
     expect(copies[0].hasPhotos).toBe(true);
   });
 
-  test("a second photo on a side replaces the first, and its objects are deleted", async () => {
+  test("a second photo on a side replaces the first, whose objects the sweep deletes an hour later", async () => {
     const s = await setup();
     vi.useFakeTimers();
     const copyId = await addCopy(s);
     await photograph(s, copyId, "front");
     const first = (await photoRows(s))[0];
     await photograph(s, copyId, "front");
+    const [photos] = await s.me.query(api.copyPhotos.photosOf, { copyIds: [copyId] });
+    expect(photos.front?.thumbUrl).not.toContain(first.token);
+    // The old one is no longer served, but waits for the sweep.
+    expect((await photoRows(s)).map((r) => r.status).sort()).toEqual(["live", "replaced"]);
+    vi.advanceTimersByTime(PHOTO_HOLD_MS + 1);
+    expect(await s.t.mutation(internal.copyPhotos.sweepCopyPhotos, {})).toEqual({ pending: 0, detached: 0, replaced: 1 });
     const rows = await photoRows(s);
     expect(rows).toHaveLength(1);
     expect(rows[0].token).not.toBe(first.token);
@@ -124,6 +130,13 @@ describe("upload", () => {
     });
     await expect(photograph(s, copyId, "back")).rejects.toThrow(/a lot of photos/);
   });
+
+  test("replacing one side over and over still meets the hourly cap", async () => {
+    const s = await setup();
+    const copyId = await addCopy(s);
+    for (let i = 0; i < MAX_COPY_PHOTO_UPLOADS_PER_HOUR; i++) await photograph(s, copyId, "front");
+    await expect(photograph(s, copyId, "front")).rejects.toThrow(/a lot of photos/);
+  }, 60_000);
 
   test("a pending upload can't be committed by someone else, or twice", async () => {
     const s = await setup();
@@ -305,10 +318,30 @@ describe("folds, removes and undo", () => {
     });
     vi.advanceTimersByTime(PHOTO_HOLD_MS + 1);
     const swept = await s.t.mutation(internal.copyPhotos.sweepCopyPhotos, {});
-    expect(swept).toEqual({ pending: 1, detached: 1 });
+    expect(swept).toEqual({ pending: 1, detached: 1, replaced: 0 });
     const rows = await photoRows(s);
     expect(rows.map((r) => r.status)).toEqual(["live"]);
     vi.useRealTimers();
+  });
+
+  test("the global reset drains every photo, with its objects, before the copies", async () => {
+    const s = await setup();
+    vi.stubEnv("ALLOW_RESET_SET_BUILDER_DATA", "true");
+    const copyId = await addCopy(s);
+    await photograph(s, copyId, "front");
+    await photograph(s, copyId, "back");
+    expect(await s.t.mutation(internal.selectorOptions.resetCollectionCopiesBatch, {})).toEqual({
+      deleted: 0,
+      hasMore: true,
+    });
+    expect(await photoRows(s)).toEqual([]);
+    expect(await copyRow(s, copyId)).not.toBeNull();
+    const scheduled = await s.t.run(async (ctx) => await ctx.db.system.query("_scheduled_functions").collect());
+    expect(scheduled.flatMap((f) => (f.args[0] as { keys?: string[] }).keys ?? [])).toHaveLength(4);
+    const next = await s.t.mutation(internal.selectorOptions.resetCollectionCopiesBatch, {});
+    expect(next.deleted).toBeGreaterThan(0);
+    expect(await copyRow(s, copyId)).toBeNull();
+    vi.unstubAllEnvs();
   });
 
   test("the per-account test reset takes the caller's photos with their copies", async () => {

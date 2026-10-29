@@ -31,8 +31,8 @@
  * A line with photos never folds (`isOneOfAKind`), so photos are never merged
  * into another line. Removing the copy DETACHES its photos (`detachPhotos`) so
  * the Undo can put them back (`reattachPhotos`, from `restoreCopy`).
- * `sweepCopyPhotos` (hourly) deletes pending and detached rows over an hour
- * old, with their objects.
+ * `sweepCopyPhotos` (hourly) deletes pending, detached and replaced rows over
+ * an hour old, with their objects.
  *
  * ## Reading
  *
@@ -347,9 +347,14 @@ export const commitUpload = internalMutation({
       await deletePhotoRows(ctx, [photo]);
       return null;
     }
+    // The side's old photo stops being served now, but its row (and files)
+    // wait an hour for the sweep: deleting it at once would let a loop of
+    // replacements slip under the hourly cap, and a still-valid upload URL
+    // could write files no row owns.
+    const now = Date.now();
     const old = (await livePhotosOf(ctx, copy._id)).filter((row) => row.side === photo.side);
-    await deletePhotoRows(ctx, old);
-    await ctx.db.patch(photo._id, { status: "live", since: Date.now() });
+    for (const row of old) await ctx.db.patch(row._id, { status: "replaced", since: now });
+    await ctx.db.patch(photo._id, { status: "live", since: now });
     if (!copy.hasPhotos) await ctx.db.patch(copy._id, { hasPhotos: true });
     return null;
   },
@@ -559,20 +564,21 @@ export const deleteObjects = internalAction({
  */
 export const sweepCopyPhotos = internalMutation({
   args: {},
-  returns: v.object({ pending: v.number(), detached: v.number() }),
+  returns: v.object({ pending: v.number(), detached: v.number(), replaced: v.number() }),
   handler: async (ctx) => {
     const cutoff = Date.now() - PHOTO_HOLD_MS;
-    const stale = async (status: "pending" | "detached") =>
+    const stale = async (status: "pending" | "detached" | "replaced") =>
       await ctx.db
         .query("collectionCopyPhotos")
         .withIndex("by_status_and_since", (q) => q.eq("status", status).lt("since", cutoff))
         .take(SWEEP_BATCH);
     const pending = await stale("pending");
     const detached = await stale("detached");
-    await deletePhotoRows(ctx, [...pending, ...detached]);
-    if (pending.length === SWEEP_BATCH || detached.length === SWEEP_BATCH) {
+    const replaced = await stale("replaced");
+    await deletePhotoRows(ctx, [...pending, ...detached, ...replaced]);
+    if ([pending, detached, replaced].some((rows) => rows.length === SWEEP_BATCH)) {
       await ctx.scheduler.runAfter(0, internal.copyPhotos.sweepCopyPhotos, {});
     }
-    return { pending: pending.length, detached: detached.length };
+    return { pending: pending.length, detached: detached.length, replaced: replaced.length };
   },
 });

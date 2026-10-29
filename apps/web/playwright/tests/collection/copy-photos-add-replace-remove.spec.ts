@@ -4,8 +4,11 @@
 // signed URLs, checked and attached by Convex), sees it on the line and loads
 // it through the /copy-photo redirect (the image really decodes), replaces it,
 // adds a back, removes the back, swaps the front over and back, closes the
-// form with Escape, then removes the copy and Undoes it (the
-// photos come back with it), and finally removes it for good.
+// form with Escape, sees the card itself drawn from the photo, then removes
+// the copy and Undoes it (the
+// photos come back with it), and finally removes it for good. Drag and drop
+// is proven in CopyPhotosField.test.tsx only: Playwright's file drops are not
+// reliable enough for a live spec, and Swap is the same write.
 //
 // R7/R7a: writes ONLY the signed-in user's `collectionCopies` and
 // `collectionCopyPhotos` on one Base card (the row choice every collection
@@ -93,6 +96,22 @@ test(
     await expect(lineThumb).toBeVisible();
     await expect(lineThumb).toHaveAttribute("src", /\/copy-photo\/[0-9a-f]{32}\/thumb$/);
     await expect.poll(() => lineThumb.evaluate((img: HTMLImageElement) => img.complete && img.naturalWidth)).toBeGreaterThan(0);
+    // The card itself is now drawn from the photo, not the generated stand-in:
+    // the drawer's card face reads it through the same one-query-per-screen
+    // path (cardPhotos) that binder pages and search results use.
+    await expect
+      .poll(() =>
+        drawer
+          .getByRole("img")
+          .evaluateAll((faces) =>
+            faces.some(
+              (face) =>
+                face.classList.contains("nb-card") &&
+                /\/copy-photo\/[0-9a-f]{32}\/thumb$/.test(face.querySelector("img")?.getAttribute("src") ?? ""),
+            ),
+          ),
+      )
+      .toBe(true);
 
     // --- Remove the copy, Undo: its photo comes back --------------------------
     await yourCopies.getByRole("button", { name: `Remove ${short}, Raw, Excellent`, exact: true }).click();

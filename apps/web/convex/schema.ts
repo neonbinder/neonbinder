@@ -4060,7 +4060,9 @@ export default defineSchema({
     contentType: v.union(v.literal("image/jpeg"), v.literal("image/webp")),
     imageBytes: v.number(),
     thumbBytes: v.number(),
-    status: v.union(v.literal("pending"), v.literal("live"), v.literal("detached")),
+    // "replaced": a side's old photo, kept (unserved) for an hour so the
+    // hourly upload cap still counts it and the sweep deletes its files.
+    status: v.union(v.literal("pending"), v.literal("live"), v.literal("detached"), v.literal("replaced")),
     since: v.number(),
   })
     .index("by_copy_and_status", ["copyId", "status"])

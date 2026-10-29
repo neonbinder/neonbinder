@@ -129,11 +129,27 @@ export default function CopyPhotosField({
     if (dragged) {
       // Only a photo of THIS line swaps; one dragged from another line does nothing.
       const [fromCopy, from] = dragged.split("|");
-      if (fromCopy === copy.id && target !== "box" && from !== target) swap();
+      if (fromCopy === copy.id && target !== "box" && from !== target) {
+        if (busy) setError("Still saving the last photo. Swap them again in a moment.");
+        else swap();
+      }
       return;
     }
-    const files = Array.from(e.dataTransfer.files).filter((f) => f.type.startsWith("image/") || f.type === "");
+    const dropped = Array.from(e.dataTransfer.files);
+    const files = dropped.filter((f) => f.type.startsWith("image/") || f.type === "");
+    if (files.length === 0) {
+      if (dropped.length > 0) setError("Only photos can be added here.");
+      return;
+    }
+    // Never drop a file silently: say what was left out, then save the rest.
+    const skipped =
+      files.length < dropped.length
+        ? "Only photos can be added here; the other files were left out."
+        : files.length > 2
+          ? "Two photos at most, the front and the back; the others were left out."
+          : null;
     put(files, sidesForDrop(files.length, target === "box" ? null : target, photos));
+    if (skipped && !busy) setError(skipped);
   };
 
   return (

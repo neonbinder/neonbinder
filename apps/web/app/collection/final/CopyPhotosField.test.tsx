@@ -120,6 +120,29 @@ describe("a copy line's photos, in its Edit form", () => {
   });
 });
 
+describe("files that can't be added", () => {
+  it("a dropped file that isn't a photo is refused out loud, not lost", async () => {
+    const drawer = renderDrawer();
+    const box = openPhotos(drawer);
+    const pdf = new File(["%PDF"], "list.pdf", { type: "application/pdf" });
+    fireEvent.drop(box, { dataTransfer: { files: [pdf], types: ["Files"], getData: () => "" } });
+    expect(within(box).getByRole("alert").textContent).toBe("Only photos can be added here.");
+    expect(within(box).getByText("No front photo yet")).toBeTruthy();
+  });
+
+  it("a third photo dropped is left out, and says so", async () => {
+    const drawer = renderDrawer();
+    const box = openPhotos(drawer);
+    await act(async () => {
+      fireEvent.drop(box, {
+        dataTransfer: { files: [jpeg("a.jpg"), jpeg("b.jpg"), jpeg("c.jpg")], types: ["Files"], getData: () => "" },
+      });
+    });
+    await waitFor(() => expect(within(box).getByRole("link", { name: /^Back of / })).toBeTruthy());
+    expect(within(box).getByRole("alert").textContent).toMatch(/Two photos at most/);
+  });
+});
+
 describe("sidesForDrop", () => {
   it("one file goes where it lands, else to the empty side; two go front then back", () => {
     expect(sidesForDrop(1, "back", undefined)).toEqual(["back"]);
