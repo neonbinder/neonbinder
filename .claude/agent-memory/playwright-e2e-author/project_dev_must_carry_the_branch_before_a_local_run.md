@@ -1,27 +1,27 @@
 ---
-name: local-validation-needs-a-pr-preview
-description: A spec exercising a NEW Convex function cannot be validated locally against shared dev — it lacks the function (and may lag main too); validate against the PR's own Convex preview, never push to dev
+name: project_dev_must_carry_the_branch_before_a_local_run
+description: A spec exercising a NEW Convex function fails on dev until the branch is pushed there — check `function-spec`, merge main, `npx convex dev --once`, then run; dev also lags main on its own
 metadata:
   type: project
 ---
 
-When a spec exercises a Convex function that exists **only on the branch**, local
-validation against shared dev is blocked; use the PR's own Convex preview (a
-spare-port Vite, GUIDE "Running"). Verified 2026-09-01 on a resync branch.
+When a spec exercises a Convex function that exists **only on the branch**, dev
+cannot run it until the branch is pushed to dev. Since NEO-390 (2026-10-29)
+that push is the expected step before the first push to GitHub
+([[feedback_run_specs_on_dev_before_first_push]]). First verified 2026-09-01 on
+a resync branch, when the rule was still "use the PR preview instead".
 
 **Why:**
 - `apps/web/.env.local` points `CONVEX_DEPLOYMENT` and `VITE_CONVEX_URL` at the
   shared dev deployment. Confirm what a deployment actually has with `npx convex
   function-spec | grep <fnName>`: the decisive check, and read-only.
-- There is **no deploy key** in `.env.local`, so `--preview-create` cannot make an
-  isolated deployment. With `CONVEX_DEPLOYMENT` set and no deploy key `npx convex
-  deploy` targets the project's **production** deployment: never run it to work
-  around this.
+- With `CONVEX_DEPLOYMENT` set and no deploy key, `npx convex deploy` targets
+  the project's **production** deployment: never run `deploy`. The dev push is
+  `npx convex dev --once`.
 - `npm run dev:backend` is NOT a local backend: it is `npx convex dev` against the
-  same shared dev deployment, so using it pushes unmerged branch code to the
-  deployment every other local run (and every other agent on this machine) uses
-  ([[feedback_never_push_a_branch_convex_to_shared_dev]]).
-- The seed's global reset must never be pointed at shared dev (GUIDE), so a spec
+  same shared dev deployment every other session uses, so merge main into the
+  branch before it pushes ([[feedback_run_specs_on_dev_before_first_push]]).
+- The seed's global reset wipes dev under every session, so it is not run on dev unannounced (GUIDE), and a spec
   whose precondition is "this real set does not exist yet" fails on dev, where it
   usually already does.
 
@@ -37,11 +37,12 @@ Report the exact step it reached; that is a far better disclosure than "cannot
 run locally". Beware [[negative-asserts-pass-on-a-dead-page]] when reading the
 result.
 
-**How to apply:** before promising a local run for a spec on a backend-touching
-branch, run the `function-spec` check ([[patterns_check_dev_function_spec_before_local_run]]).
-If the function is missing, say so up front as a disclosure (CLAUDE.md: "an
-unrunnable test is a disclosure, an unrun one is a defect"), name CI's per-PR
-preview as the cover, and do NOT reach for `convex dev`/`convex deploy`.
+**How to apply:** before a local run for a spec on a backend-touching branch, run
+the `function-spec` check ([[patterns_check_dev_function_spec_before_local_run]]).
+If the function is missing, merge main and push the branch with `npx convex dev
+--once`, then run. If that push is refused, say so as a disclosure (CLAUDE.md:
+"an unrunnable test is a disclosure, an unrun one is a defect") and use the PR
+preview after the first push. Never `convex deploy`.
 
 **One unconditionally-mounted panel takes the WHOLE page down.** NEO-212 mounted a
 panel with a `useQuery` inside `CardChecklist` with no gate, so on shared dev EVERY
@@ -59,8 +60,8 @@ selector row is selected, so the page dies one click into the drill.
 `git diff <base> -- <component>` came back EMPTY, which proved the crash was not the
 branch's. When every set-selector spec fails identically and early, check
 `function-spec` in BOTH directions (a function your branch added; a function `main`
-added that dev never received). If it is the second, the fix is not yours: report
-it and ask for dev to be refreshed or for the PR preview URL.
+added that dev never received). If it is the second, bring dev up to date: merge
+main into the branch and push it to dev.
 
 **Why a push to dev fails when another branch owns it.** Convex validates every
 existing document against the incoming schema, so **whichever branch pushed last
