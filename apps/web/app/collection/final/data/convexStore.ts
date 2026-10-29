@@ -85,6 +85,7 @@ import {
   type CollectionData,
   type CollectionStoreValue,
   type SharingExtension,
+  type BinderMemoryExtension,
 } from "./store";
 import {
   DEFAULT_CONDITION,
@@ -2618,6 +2619,30 @@ function useConvexSharing(): SharingExtension {
   );
 }
 
+/**
+ * NEO-374 — Profile → Settings' "where My Collection opens", and the Binder
+ * picker's pick kept while it says "remember the last binder". A failed save
+ * only means the next visit opens where it did before, so it is dropped.
+ * A pick made while the setting is still loading is sent anyway: the server
+ * keeps it only when the setting is "last", so it is never lost to the race.
+ */
+function useConvexBinderMemory(): BinderMemoryExtension {
+  const opening = useQuery(api.userProfile.getBinderPreference, {});
+  const setLastBinder = useMutation(api.userProfile.setLastBinder);
+  const forgets = opening?.open === "all";
+  return useMemo<BinderMemoryExtension>(
+    () => ({
+      opening,
+      remember: (scope) => {
+        if (forgets) return;
+        const binderId = scope === "all" ? null : (scope as Id<"collectionContainers">);
+        void Promise.resolve(setLastBinder({ binderId })).catch(() => undefined);
+      },
+    }),
+    [opening, forgets, setLastBinder],
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Provider
 // ---------------------------------------------------------------------------
@@ -2636,9 +2661,10 @@ export function ConvexCollectionProvider({ children }: { children: ReactNode }) 
     void Promise.resolve(ensureSystem({})).catch(() => undefined);
   }, [ensureSystem]);
   const sharing = useConvexSharing();
+  const binderMemory = useConvexBinderMemory();
   const value = useMemo<CollectionStoreValue>(
-    () => ({ kind: "convex", capabilities: REAL_CAPABILITIES, data: CONVEX_DATA, actions, sharing }),
-    [actions, sharing],
+    () => ({ kind: "convex", capabilities: REAL_CAPABILITIES, data: CONVEX_DATA, actions, sharing, binderMemory }),
+    [actions, sharing, binderMemory],
   );
   return createElement(CollectionStoreContext.Provider, { value }, children);
 }

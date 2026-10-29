@@ -4,7 +4,14 @@ import { MemoryRouter, Route, Routes, useLocation } from "react-router";
 import { Theme } from "@radix-ui/themes";
 import FinalCollectionPage from "./FinalCollectionPage";
 import { cardLabel } from "./data/labels";
-import { CollectionStoreContext, completionOf, type CollectionActions, type CollectionData, type CollectionStoreValue } from "./data/store";
+import {
+  CollectionStoreContext,
+  completionOf,
+  type BinderMemoryExtension,
+  type CollectionActions,
+  type CollectionData,
+  type CollectionStoreValue,
+} from "./data/store";
 import {
   REAL_CAPABILITIES,
   type Capabilities,
@@ -158,11 +165,14 @@ function makeStore({
   loading = false,
   capabilities = REAL_CAPABILITIES,
   boxCopies = [],
+  binderMemory,
 }: {
   loading?: boolean;
   capabilities?: Capabilities;
   /** Copies in a box: only the every-home read (`useCopiesOfCards`) lists them, as on Convex. */
   boxCopies?: Copy[];
+  /** NEO-374 — Profile → Settings' where-it-opens, as the Convex store hands it over. */
+  binderMemory?: BinderMemoryExtension;
 } = {}) {
   const log: Log = { variantCards: [], search: [], entity: [] };
   const undo = vi.fn(async () => {});
@@ -297,7 +307,7 @@ function makeStore({
     useRuleBrands: (id) => (id === null ? undefined : L([])),
     useCommonPrices: (ids) => (ids === null ? undefined : L({})),
   };
-  const value: CollectionStoreValue = { kind: "convex", capabilities, data, actions };
+  const value: CollectionStoreValue = { kind: "convex", capabilities, data, actions, binderMemory };
   return { value, actions, undo, log };
 }
 
@@ -596,12 +606,62 @@ describe("Checklists on the real collection", () => {
     expect(document.title).toBe("Checklists · 2024 Topps Chrome Gold Refractor · Collection");
   });
 
+  it("under All (NEO-374: a view, not a binder) Have is locked and the picker says to choose a binder", () => {
+    const { actions } = renderAt(`/collection?tab=checklists&set=${SET.id}&type=vt-base`);
+    expect(screen.getByText("Choose a binder to add cards.")).toBeTruthy();
+    const have = screen.getByRole("button", { name: "Have #2 Aaron Judge" });
+    expect(have.getAttribute("aria-disabled")).toBe("true");
+    fireEvent.click(have);
+    expect(actions.addHave).not.toHaveBeenCalled();
+  });
+
+  it("'remember the last binder' opens on that binder when the URL names none, and a pick is kept", () => {
+    const remember = vi.fn();
+    renderAt(
+      `/collection?tab=checklists&set=${SET.id}&type=vt-base`,
+      makeStore({ binderMemory: { opening: { open: "last", lastBinder: "binder-rainbow" }, remember } }),
+    );
+    expect(pageUrl()).toBe(`/collection?tab=checklists&set=${SET.id}&type=vt-base&scope=binder-rainbow`);
+    const picker = screen.getByRole("combobox", { name: "Binder" }) as HTMLSelectElement;
+    expect(picker.value).toBe("binder-rainbow");
+    expect(screen.queryByText("Choose a binder to add cards.")).toBeNull();
+
+    // Picking All stays All (once per visit), and the pick is kept.
+    fireEvent.change(picker, { target: { value: "all" } });
+    expect(remember).toHaveBeenCalledWith("all");
+    expect(picker.value).toBe("all");
+    expect(pageUrl()).toBe(`/collection?tab=checklists&set=${SET.id}&type=vt-base`);
+  });
+
+  it("opens on All under 'open on All', and a scope in the URL wins over a remembered binder", () => {
+    renderAt(
+      `/collection?tab=checklists&set=${SET.id}&type=vt-base`,
+      makeStore({ binderMemory: { opening: { open: "all", lastBinder: null }, remember: vi.fn() } }),
+    );
+    expect((screen.getByRole("combobox", { name: "Binder" }) as HTMLSelectElement).value).toBe("all");
+    cleanup();
+
+    renderAt(
+      `/collection?tab=checklists&set=${SET.id}&type=vt-base&scope=main`,
+      makeStore({ binderMemory: { opening: { open: "last", lastBinder: "binder-rainbow" }, remember: vi.fn() } }),
+    );
+    expect((screen.getByRole("combobox", { name: "Binder" }) as HTMLSelectElement).value).toBe("main");
+  });
+
+  it("a remembered binder that is gone opens on All", () => {
+    renderAt(
+      `/collection?tab=checklists&set=${SET.id}&type=vt-base`,
+      makeStore({ binderMemory: { opening: { open: "last", lastBinder: "binder-deleted" }, remember: vi.fn() } }),
+    );
+    expect((screen.getByRole("combobox", { name: "Binder" }) as HTMLSelectElement).value).toBe("all");
+  });
+
   it("Have adds through the store and offers Undo", async () => {
-    const { actions, undo } = renderAt(`/collection?tab=checklists&set=${SET.id}&type=vt-base`);
+    const { actions, undo } = renderAt(`/collection?tab=checklists&set=${SET.id}&type=vt-base&scope=main`);
     expect(screen.getByText(/Have/, { selector: "p" }).textContent).toContain("Have 1 of 3");
 
     fireEvent.click(screen.getByRole("button", { name: "Have #2 Aaron Judge" }));
-    expect(actions.addHave).toHaveBeenCalledWith(JUDGE);
+    expect(actions.addHave).toHaveBeenCalledWith(JUDGE, "main");
     await waitFor(() => expect(statuses()).toContain("Added #2 Aaron Judge to Main"));
     fireEvent.click(screen.getByRole("button", { name: "Undo" }));
     expect(undo).toHaveBeenCalledTimes(1);
@@ -611,7 +671,7 @@ describe("Checklists on the real collection", () => {
     const store = makeStore();
     let land!: () => void;
     store.undo.mockImplementationOnce(() => new Promise<void>((resolve) => (land = resolve)));
-    renderAt(`/collection?tab=checklists&set=${SET.id}&type=vt-base`, store);
+    renderAt(`/collection?tab=checklists&set=${SET.id}&type=vt-base&scope=main`, store);
     fireEvent.click(screen.getByRole("button", { name: "Have #2 Aaron Judge" }));
     await waitFor(() => expect(statuses()).toContain("Added #2 Aaron Judge to Main"));
 
@@ -635,7 +695,7 @@ describe("Checklists on the real collection", () => {
     store.undo.mockImplementationOnce(async () => {
       throw new Error("nope");
     });
-    renderAt(`/collection?tab=checklists&set=${SET.id}&type=vt-base`, store);
+    renderAt(`/collection?tab=checklists&set=${SET.id}&type=vt-base&scope=main`, store);
     fireEvent.click(screen.getByRole("button", { name: "Have #2 Aaron Judge" }));
     await waitFor(() => expect(statuses()).toContain("Added #2 Aaron Judge to Main"));
     fireEvent.click(screen.getByRole("button", { name: "Undo" }));
@@ -676,22 +736,23 @@ describe("Checklists on the real collection", () => {
   it("says why a write was refused", async () => {
     const store = makeStore();
     store.actions.addHave.mockRejectedValueOnce(Object.assign(new Error("x"), { data: { message: "That card is gone." } }));
-    renderAt(`/collection?tab=checklists&set=${SET.id}&type=vt-base`, store);
+    renderAt(`/collection?tab=checklists&set=${SET.id}&type=vt-base&scope=main`, store);
     fireEvent.click(screen.getByRole("button", { name: "Have #2 Aaron Judge" }));
     await waitFor(() => expect(statuses()).toContain("That card is gone."));
   });
 
   it("waits for a pause in typing, then offers a player by his nickname and lists all his cards", async () => {
-    const { log, actions } = renderAt("/collection?tab=checklists");
+    const { log, actions } = renderAt("/collection?tab=checklists&scope=main");
     fireEvent.change(searchBox(), { target: { value: "doc gooden" } });
     // Not asked yet: the box waits 300ms for a pause.
     expect(log.search.at(-1)).toBe("");
     const offer = await screen.findByRole("button", { name: "Every Dwight Gooden card, as Doc Gooden" });
     fireEvent.click(offer);
-    expect(pageUrl()).toBe("/collection?tab=checklists&player=pl-gooden");
+    // The binder rides along (NEO-374: under All nothing is added).
+    expect(pageUrl()).toBe("/collection?tab=checklists&player=pl-gooden&scope=main");
     const results = screen.getByRole("region", { name: "Every Dwight Gooden card" });
     fireEvent.click(within(results).getByRole("button", { name: `Have ${cardLabel(GOODEN)}` }));
-    expect(actions.addHave).toHaveBeenCalledWith(GOODEN);
+    expect(actions.addHave).toHaveBeenCalledWith(GOODEN, "main");
   });
 
   it("a team lists just that team by default, and the whole franchise only when it has one", async () => {

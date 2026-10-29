@@ -11,7 +11,16 @@ import OwnedShelf, { CollectionTally } from "./cards/OwnedShelf";
 import Scoreboard from "./cards/Scoreboard";
 import Wall from "./cards/Wall";
 import { playerNames } from "./data/labels";
-import { isWantedIn, useCapabilities, useCollectionActions, useContainers, useScope, useWants } from "./data/store";
+import {
+  isWantedIn,
+  PICK_A_BINDER,
+  useCapabilities,
+  useCollectionActions,
+  useContainers,
+  useReadOnlyAll,
+  useScope,
+  useWants,
+} from "./data/store";
 import type { Card, SetId } from "./data/types";
 import { lineSummary } from "./lineItems";
 import { useCollectionParams } from "./mode";
@@ -66,6 +75,7 @@ export default function MyCardsTab() {
   );
 
   const scope = useScope();
+  const readOnly = useReadOnlyAll();
   const allWants = useWants();
   const wants = capabilities.wants ? allWants : undefined;
   const binders = useContainers();
@@ -73,7 +83,14 @@ export default function MyCardsTab() {
   const api: MyCardsApi = useMemo(() => {
     const label = (card: Card) => wallName(card, playerNames(card));
 
+    // NEO-374 — All is a view: an add waits for a binder to be picked.
+    const locked = () => {
+      if (readOnly) page.notify(PICK_A_BINDER);
+      return readOnly;
+    };
+
     const addOne = (card: Card, owned = 0) => {
+      if (locked()) return;
       void page.run(
         () => writes.addHave(card),
         () =>
@@ -104,6 +121,7 @@ export default function MyCardsTab() {
         page.notify(`You have ${press.owned} of ${label(card)}. Pick the copy that goes.`);
       },
       addMany: (cards, summary) => {
+        if (locked()) return;
         void page.run(
           () => writes.addMany(cards),
           () => summary(into),
@@ -115,7 +133,7 @@ export default function MyCardsTab() {
       },
       go,
     };
-  }, [page, writes, into, scopedName, wants, scope, binders, setParams, go]);
+  }, [page, writes, into, scopedName, wants, scope, readOnly, binders, setParams, go]);
 
   return (
     <MyCardsContext.Provider value={api}>

@@ -429,6 +429,26 @@ Sensitive credentials are stored in **Google Cloud Secret Manager**, not `.env` 
 
 Agent memory lives at the **repo root** `.claude/agent-memory/<agent>/` and nowhere else. Agents write memory relative to their working directory, so a session started in `apps/web` will happily create `apps/web/.claude/agent-memory/` and then read a much smaller index than a root-level session — the two diverge silently and knowledge is lost rather than shadowed. If you are working under `apps/web`, write memory to the root path explicitly. The `repo-hygiene` job in `pr-pipeline.yml` fails any PR that leaves a `.claude/` directory outside the repo root.
 
+### Cloud project threads (NEO-383)
+
+A claude.ai cloud thread starts Claude Code in the parent of the checkout (`/home/user`, with this repo at `/home/user/neonbinder`), and Claude Code discovers agents and skills only from the launch directory's `.claude/`. Left alone, a cloud thread gets this file but none of the agents or skills, and quietly does the audit round itself. The cloud environment's setup script fixes that by linking them in before the session starts:
+
+```bash
+mkdir -p /home/user/.claude
+ln -sfn /home/user/neonbinder/.claude/agents       /home/user/.claude/agents
+ln -sfn /home/user/neonbinder/.claude/skills       /home/user/.claude/skills
+ln -sfn /home/user/neonbinder/.claude/agent-memory /home/user/.claude/agent-memory
+```
+
+Rules for a cloud thread:
+
+1. **Check at the start.** If the Agent tool's types do not include `test-coverage-auditor`, the links are missing. Run the four lines above yourself: the skills (`pr-watch`, `pr-close`, `deps-batch`, `impeccable`) load at once, but agents are read only at session start, so they stay missing for this session.
+2. **Without the agents, brief a `general-purpose` agent with the agent's file.** Tell it to read `.claude/agents/<name>.md` and follow it as its instructions (and the agent's memory under `.claude/agent-memory/<name>/`). Never fold an audit into your own turn; the point of the auditors is a read that is not anchored on yours.
+3. **Name what ran in the PR body**: which agents ran (or which stood in for them), and what each found.
+4. Agent memory written through the link lands in this checkout's `.claude/agent-memory/`; ship it in the PR like any other change.
+5. **Run the spec before you re-push (NEO-385).** CI is not the first check, from a cloud thread either. The cloud environment allows the hosts a local run needs (`*.convex.cloud`, Clerk, `*.vercel.app`) and carries the dev values Playwright reads (`CLERK_SECRET_KEY`, `VITE_CLERK_PUBLISHABLE_KEY`, `TESTING_ENDPOINT_SECRET`, `VERCEL_AUTOMATION_BYPASS_SECRET`), and Chromium is preinstalled. After the first push creates the PR's preview, every red or changed spec is run against that preview with the recipe in **Debugging a red spec against the PR's own services** before the next push. If those env vars are absent, say so in the thread rather than pushing to find out. Pass those values only through the environment of the command that needs them; never echo, print or `env`-dump them, and never write them into a file, commit, PR body, log or thread message (this repo is public). Before NEO-385, threads fixed specs by trial and error in CI: 65 failures in one week passed only on the next push after a spec edit.
+6. **Never "Re-run failed jobs" on E2E.** It skips the seed, so fresh-only and sole-writer specs fail by design (28 false reds in the week NEO-385 measured). Re-run the whole workflow, or push.
+
 ## CI/CD
 
 All workflows live in `.github/workflows/`. `pr-pipeline.yml` is the single all-PR orchestrator; area CI is keyed on `apps/web/**` vs `services/browser/**` vs `services/preprocess/**`:

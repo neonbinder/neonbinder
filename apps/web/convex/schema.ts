@@ -16,6 +16,15 @@ export const themePreferenceValidator = v.union(
 );
 
 /**
+ * NEO-374 — where My Collection opens: on All (the default; absent means
+ * this) or on the binder the collector last picked.
+ */
+export const binderOpenPreferenceValidator = v.union(
+  v.literal("all"),
+  v.literal("last"),
+);
+
+/**
  * NEO-118 — a postal address, shared by the schema and by convex/shipping.ts's
  * query `returns` / mutation `args`. Defined once and exported so the stored
  * shape and the wire shape cannot drift apart; the matching TypeScript
@@ -1036,6 +1045,12 @@ export default defineSchema({
       // "system" (follow the OS); no backfill. Mirrored client-side to
       // localStorage so the pre-paint script can read it.
       theme: v.optional(themePreferenceValidator),
+      // NEO-374: Profile → Settings, where My Collection opens. Absent means
+      // "all". `lastBinder` is the binder last picked in the Binder picker,
+      // kept only while `binderOpen` is "last"; absent means All. It is read
+      // back through the shelf, so a binder deleted since reads as All.
+      binderOpen: v.optional(binderOpenPreferenceValidator),
+      lastBinder: v.optional(v.id("collectionContainers")),
       // NEO-380: the condition a raw copy gets when the collector names none
       // (Profile → Settings). Absent means `DEFAULT_CONDITION` (Excellent,
       // `convex/collection.ts`); no backfill of the setting itself.
