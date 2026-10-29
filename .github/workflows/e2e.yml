@@ -658,12 +658,13 @@ jobs:
 
       # NEO-301: the seed job ends before the shard matrix starts, so it can
       # only cover its own window (captured above) — nothing spans the WHOLE
-      # E2E run. Shard 1 does the next best thing: one stream for its full
-      # lifetime (the other seven would just duplicate the same preview's logs
-      # 8x). See "Stop Convex log capture (desktop shard 1)" below for the filtering
-      # rationale. Best-effort only: never fails the job.
-      - name: Start Convex log capture (desktop shard 1)
-        if: matrix.shard == 1
+      # E2E run. Every shard streams the preview's logs for its own lifetime
+      # (NEO-391): shards end at different times, so shard 1 alone missed most
+      # of each pass. The streams overlap; dedupe on requestId when reading
+      # them. Measured cost is nil (shard 1, which always captured, was
+      # routinely the fastest shard). See "Stop Convex log capture" below for
+      # the filtering rationale. Best-effort only: never fails the job.
+      - name: Start Convex log capture (desktop shard ${{ matrix.shard }})
         working-directory: apps/web
         env:
           CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_PREVIEW_DEPLOY_KEY }}
@@ -674,16 +675,16 @@ jobs:
           # later npx convex commands never install into _npx concurrently.
           "$GITHUB_WORKSPACE/.github/scripts/convex-env-retry.sh" --version
           if [ -z "${CONVEX_DEPLOY_KEY:-}" ]; then
-            echo "::warning::CONVEX_PREVIEW_DEPLOY_KEY not set — skipping Convex log capture for desktop shard 1."
+            echo "::warning::CONVEX_PREVIEW_DEPLOY_KEY not set — skipping Convex log capture for desktop shard ${{ matrix.shard }}."
             exit 0
           fi
-          RAW_LOG_FILE="${RUNNER_TEMP}/convex-logs-desktop-1.raw.jsonl"
+          RAW_LOG_FILE="${RUNNER_TEMP}/convex-logs-desktop-${{ matrix.shard }}.raw.jsonl"
           rm -f "$RAW_LOG_FILE"
           nohup npx --yes convex@1.39.1 logs --deployment "$CONVEX_NAME" --jsonl \
-            > "$RAW_LOG_FILE" 2>"${RUNNER_TEMP}/convex-logs-desktop-1.stderr.log" &
+            > "$RAW_LOG_FILE" 2>"${RUNNER_TEMP}/convex-logs-desktop-${{ matrix.shard }}.stderr.log" &
           disown
           echo "CONVEX_LOGS_DESKTOP1_PID=$!" >> "$GITHUB_ENV"
-          echo "Started Convex log capture for desktop shard 1 (pid $!) -> $RAW_LOG_FILE"
+          echo "Started Convex log capture for desktop shard ${{ matrix.shard }} (pid $!) -> $RAW_LOG_FILE"
 
       - name: Run desktop shard ${{ matrix.shard }}/8
         env:
@@ -722,8 +723,8 @@ jobs:
       # filter and same reasoning as "Stop Convex log capture (seed)" above
       # (keep ERROR/WARN + our structured `{"msg": …}` lines, drop plain
       # INFO/LOG chatter that can carry a Convex userId). Never fails the job.
-      - name: Stop Convex log capture (desktop shard 1)
-        if: always() && matrix.shard == 1
+      - name: Stop Convex log capture (desktop shard ${{ matrix.shard }})
+        if: always()
         working-directory: apps/web
         run: |
           set -uo pipefail
@@ -731,8 +732,8 @@ jobs:
             kill "${CONVEX_LOGS_DESKTOP1_PID}" 2>/dev/null || true
             wait "${CONVEX_LOGS_DESKTOP1_PID}" 2>/dev/null || true
           fi
-          RAW_LOG_FILE="${RUNNER_TEMP}/convex-logs-desktop-1.raw.jsonl"
-          OUT_FILE="convex-logs-desktop-1.jsonl"
+          RAW_LOG_FILE="${RUNNER_TEMP}/convex-logs-desktop-${{ matrix.shard }}.raw.jsonl"
+          OUT_FILE="convex-logs-desktop-${{ matrix.shard }}.jsonl"
           if [ -s "$RAW_LOG_FILE" ]; then
             jq -c '
                 ((.logLines // [])
@@ -743,19 +744,19 @@ jobs:
                 as $keep
                 | select((.error != null) or ($keep | length) > 0)
                 | {identifier, udfType, timestamp, requestId, executionId, kind, error, logLines: $keep}
-              ' "$RAW_LOG_FILE" > "$OUT_FILE" 2>"${RUNNER_TEMP}/convex-logs-desktop-1-jq.stderr.log" || true
+              ' "$RAW_LOG_FILE" > "$OUT_FILE" 2>"${RUNNER_TEMP}/convex-logs-desktop-${{ matrix.shard }}-jq.stderr.log" || true
             gzip -f "$OUT_FILE" || true
-            echo "Wrote $(du -h "${OUT_FILE}.gz" 2>/dev/null | cut -f1) of filtered Convex logs for desktop shard 1."
+            echo "Wrote $(du -h "${OUT_FILE}.gz" 2>/dev/null | cut -f1) of filtered Convex logs for desktop shard ${{ matrix.shard }}."
           else
-            echo "No Convex logs captured for desktop shard 1 (capture may have been skipped or produced nothing)."
+            echo "No Convex logs captured for desktop shard ${{ matrix.shard }} (capture may have been skipped or produced nothing)."
           fi
 
-      - name: Upload Convex log capture (desktop shard 1)
-        if: always() && matrix.shard == 1
+      - name: Upload Convex log capture (desktop shard ${{ matrix.shard }})
+        if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: convex-logs-desktop-1
-          path: apps/web/convex-logs-desktop-1.jsonl.gz
+          name: convex-logs-desktop-${{ matrix.shard }}
+          path: apps/web/convex-logs-desktop-${{ matrix.shard }}.jsonl.gz
           if-no-files-found: ignore
           retention-days: 14
 
@@ -1139,12 +1140,13 @@ jobs:
 
       # NEO-301: the seed job ends before the shard matrix starts, so it can
       # only cover its own window (captured above) — nothing spans the WHOLE
-      # E2E run. Shard 1 does the next best thing: one stream for its full
-      # lifetime (the other seven would just duplicate the same preview's logs
-      # 8x). See "Stop Convex log capture (mobile shard 1)" below for the filtering
-      # rationale. Best-effort only: never fails the job.
-      - name: Start Convex log capture (mobile shard 1)
-        if: matrix.shard == 1
+      # E2E run. Every shard streams the preview's logs for its own lifetime
+      # (NEO-391): shards end at different times, so shard 1 alone missed most
+      # of each pass. The streams overlap; dedupe on requestId when reading
+      # them. Measured cost is nil (shard 1, which always captured, was
+      # routinely the fastest shard). See "Stop Convex log capture" below for
+      # the filtering rationale. Best-effort only: never fails the job.
+      - name: Start Convex log capture (mobile shard ${{ matrix.shard }})
         working-directory: apps/web
         env:
           CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_PREVIEW_DEPLOY_KEY }}
@@ -1155,16 +1157,16 @@ jobs:
           # later npx convex commands never install into _npx concurrently.
           "$GITHUB_WORKSPACE/.github/scripts/convex-env-retry.sh" --version
           if [ -z "${CONVEX_DEPLOY_KEY:-}" ]; then
-            echo "::warning::CONVEX_PREVIEW_DEPLOY_KEY not set — skipping Convex log capture for mobile shard 1."
+            echo "::warning::CONVEX_PREVIEW_DEPLOY_KEY not set — skipping Convex log capture for mobile shard ${{ matrix.shard }}."
             exit 0
           fi
-          RAW_LOG_FILE="${RUNNER_TEMP}/convex-logs-mobile-1.raw.jsonl"
+          RAW_LOG_FILE="${RUNNER_TEMP}/convex-logs-mobile-${{ matrix.shard }}.raw.jsonl"
           rm -f "$RAW_LOG_FILE"
           nohup npx --yes convex@1.39.1 logs --deployment "$CONVEX_NAME" --jsonl \
-            > "$RAW_LOG_FILE" 2>"${RUNNER_TEMP}/convex-logs-mobile-1.stderr.log" &
+            > "$RAW_LOG_FILE" 2>"${RUNNER_TEMP}/convex-logs-mobile-${{ matrix.shard }}.stderr.log" &
           disown
           echo "CONVEX_LOGS_MOBILE1_PID=$!" >> "$GITHUB_ENV"
-          echo "Started Convex log capture for mobile shard 1 (pid $!) -> $RAW_LOG_FILE"
+          echo "Started Convex log capture for mobile shard ${{ matrix.shard }} (pid $!) -> $RAW_LOG_FILE"
 
       - name: Run mobile shard ${{ matrix.shard }}/8
         env:
@@ -1203,8 +1205,8 @@ jobs:
       # filter and same reasoning as "Stop Convex log capture (seed)" above
       # (keep ERROR/WARN + our structured `{"msg": …}` lines, drop plain
       # INFO/LOG chatter that can carry a Convex userId). Never fails the job.
-      - name: Stop Convex log capture (mobile shard 1)
-        if: always() && matrix.shard == 1
+      - name: Stop Convex log capture (mobile shard ${{ matrix.shard }})
+        if: always()
         working-directory: apps/web
         run: |
           set -uo pipefail
@@ -1212,8 +1214,8 @@ jobs:
             kill "${CONVEX_LOGS_MOBILE1_PID}" 2>/dev/null || true
             wait "${CONVEX_LOGS_MOBILE1_PID}" 2>/dev/null || true
           fi
-          RAW_LOG_FILE="${RUNNER_TEMP}/convex-logs-mobile-1.raw.jsonl"
-          OUT_FILE="convex-logs-mobile-1.jsonl"
+          RAW_LOG_FILE="${RUNNER_TEMP}/convex-logs-mobile-${{ matrix.shard }}.raw.jsonl"
+          OUT_FILE="convex-logs-mobile-${{ matrix.shard }}.jsonl"
           if [ -s "$RAW_LOG_FILE" ]; then
             jq -c '
                 ((.logLines // [])
@@ -1224,19 +1226,19 @@ jobs:
                 as $keep
                 | select((.error != null) or ($keep | length) > 0)
                 | {identifier, udfType, timestamp, requestId, executionId, kind, error, logLines: $keep}
-              ' "$RAW_LOG_FILE" > "$OUT_FILE" 2>"${RUNNER_TEMP}/convex-logs-mobile-1-jq.stderr.log" || true
+              ' "$RAW_LOG_FILE" > "$OUT_FILE" 2>"${RUNNER_TEMP}/convex-logs-mobile-${{ matrix.shard }}-jq.stderr.log" || true
             gzip -f "$OUT_FILE" || true
-            echo "Wrote $(du -h "${OUT_FILE}.gz" 2>/dev/null | cut -f1) of filtered Convex logs for mobile shard 1."
+            echo "Wrote $(du -h "${OUT_FILE}.gz" 2>/dev/null | cut -f1) of filtered Convex logs for mobile shard ${{ matrix.shard }}."
           else
-            echo "No Convex logs captured for mobile shard 1 (capture may have been skipped or produced nothing)."
+            echo "No Convex logs captured for mobile shard ${{ matrix.shard }} (capture may have been skipped or produced nothing)."
           fi
 
-      - name: Upload Convex log capture (mobile shard 1)
-        if: always() && matrix.shard == 1
+      - name: Upload Convex log capture (mobile shard ${{ matrix.shard }})
+        if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: convex-logs-mobile-1
-          path: apps/web/convex-logs-mobile-1.jsonl.gz
+          name: convex-logs-mobile-${{ matrix.shard }}
+          path: apps/web/convex-logs-mobile-${{ matrix.shard }}.jsonl.gz
           if-no-files-found: ignore
           retention-days: 14
 
