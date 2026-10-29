@@ -30,6 +30,7 @@ import {
   whyNotSave,
 } from "./realLanes";
 import { HomeSelect, QTY_ATTR, RING, StageBadge } from "./ui";
+import { ScannerJoin } from "./ScannerJoin";
 import "./intake.css";
 
 /**
@@ -274,7 +275,18 @@ export default function RealAddCardsTab() {
         </p>
       )}
       {collecting ? (
-        <Dropzone quiet files={files} disabled={uploading} onFiles={(chosen) => void onFiles(chosen)} />
+        <>
+          <Dropzone quiet files={files} disabled={uploading} onFiles={(chosen) => void onFiles(chosen)} />
+          <ScannerJoin
+            runId={run?._id ?? null}
+            newRun={
+              pickedHome
+                ? { homeId: pickedHome as Id<"collectionContainers">, variantId: variant?.variantId, defaults }
+                : null
+            }
+            onRunStarted={openRun}
+          />
+        </>
       ) : (
         <p className="m-0 rounded-md border border-rule p-3 text-sm text-ink-2">
           This run&apos;s photos are all in. To add more, start a new run.
@@ -655,7 +667,8 @@ function RunWorkspace({ run, jobOpen }: { run: RunSummary; jobOpen: boolean }) {
         <p role="status" aria-live="polite" className="sr-only">
           {loading ? "" : working > 0 ? "Working on your photos." : summary}
         </p>
-        {jobOpen && (images?.length ?? 0) > 0 && (
+        {/* A scanner run (NEO-386) opens before any photo, so it closes with none. */}
+        {jobOpen && (
           <NeonButton
             size="1"
             variant="secondary"

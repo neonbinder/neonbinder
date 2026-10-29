@@ -1,0 +1,25 @@
+{
+  "name": "neonbinder-scanner",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Feeds cards from a SANE sheet-fed scanner into a NeonBinder intake run (NEO-386).",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "scan": "tsx src/main.ts",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "convex": "^1.44.0",
+    "sharp": "^0.35.5"
+  },
+  "devDependencies": {
+    "@types/node": "^24",
+    "tsx": "^4.23.15",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.11"
+  }
+}
