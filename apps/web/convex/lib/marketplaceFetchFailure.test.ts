@@ -7,6 +7,7 @@
 import { describe, expect, test } from "vitest";
 import {
   LOG_MESSAGE_MAX,
+  failedChecklistSides,
   failureFromMessage,
   isAbortTimeout,
   scrubLogText,
@@ -90,5 +91,70 @@ describe("isAbortTimeout", () => {
     expect(isAbortTimeout(new Error("The operation was aborted due to timeout"))).toBe(true);
     expect(isAbortTimeout(new Error("fetch failed"))).toBe(false);
     expect(isAbortTimeout("TimeoutError")).toBe(false);
+  });
+});
+
+describe("failedChecklistSides — a failed side is never an empty side (NEO-387)", () => {
+  const ok = { asked: true as const, success: true };
+  const notAsked = { asked: false as const };
+
+  test("sides that answered, or were not asked, are not failures", () => {
+    expect(failedChecklistSides({ bsc: ok, sportlots: notAsked })).toEqual([]);
+    expect(failedChecklistSides({ bsc: notAsked, sportlots: ok })).toEqual([]);
+  });
+
+  test("a structured failure is kept as is", () => {
+    expect(
+      failedChecklistSides({
+        bsc: {
+          asked: true,
+          success: false,
+          failure: { kind: "no_sign_in", timedOut: false },
+          message: "No BSC token available",
+        },
+        sportlots: ok,
+      }),
+    ).toEqual([{ side: "bsc", failure: { kind: "no_sign_in", timedOut: false } }]);
+  });
+
+  test("an unstructured failure is read off its message", () => {
+    const [f] = failedChecklistSides({
+      bsc: notAsked,
+      sportlots: { asked: true, success: false, message: "SportLots error: HTTP error 503" },
+    });
+    expect(f.side).toBe("sportlots");
+    expect(f.failure.kind).toBe("http_error");
+  });
+
+  test("a rejected fetch is a failure", () => {
+    const [f] = failedChecklistSides({
+      bsc: { asked: true, rejected: new Error("fetch failed") },
+      sportlots: notAsked,
+    });
+    expect(f).toEqual({ side: "bsc", failure: { kind: "network", timedOut: false } });
+  });
+
+  test("a SportLots fan-out where one call failed fails the whole side", () => {
+    // fetchCardChecklist reports the side as `success: false` with the first
+    // failed call's reason as soon as ANY call failed, and drops the cards the
+    // other calls returned, so SportLots never reads as covered.
+    const out = failedChecklistSides({
+      bsc: ok,
+      sportlots: {
+        asked: true,
+        success: false,
+        failure: { kind: "http_error", timedOut: false, httpStatus: 503 },
+      },
+    });
+    expect(out.map((f) => f.side)).toEqual(["sportlots"]);
+  });
+
+  test("both sides failing are both reported, BSC first", () => {
+    const out = failedChecklistSides({
+      bsc: { asked: true, success: false, message: "timed out" },
+      sportlots: { asked: true, rejected: "boom" },
+    });
+    expect(out.map((f) => f.side)).toEqual(["bsc", "sportlots"]);
+    expect(out[0].failure.kind).toBe("timeout");
   });
 });

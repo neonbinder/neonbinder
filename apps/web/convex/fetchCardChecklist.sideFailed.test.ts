@@ -36,6 +36,7 @@ const mockState = vi.hoisted(() => ({
   /** When set, that adapter answers `success: false` the way the real one does. */
   bscFails: null as null | { message: string; failure?: { kind: string; timedOut: boolean } },
   slFails: null as null | { message: string },
+  slCalls: [] as Array<Record<string, string>>,
 }));
 
 vi.mock("./adapters/buysportscards", async (importOriginal) => {
@@ -98,7 +99,8 @@ vi.mock("./adapters/sportlots", async (importOriginal) => {
         cards: v.array(v.any()),
         message: v.optional(v.string()),
       }),
-      handler: async () => {
+      handler: async (_ctx, args) => {
+        mockState.slCalls.push(args.platformFilters ?? {});
         if (mockState.slThrows) throw new Error("SportLots is down");
         if (mockState.slFails) return { success: false, cards: [], ...mockState.slFails };
         return { success: true, cards: mockState.slCards };
@@ -210,6 +212,7 @@ beforeEach(() => {
   mockState.slThrows = false;
   mockState.bscFails = null;
   mockState.slFails = null;
+  mockState.slCalls = [];
 });
 
 afterEach(() => {
@@ -238,6 +241,9 @@ describe("fetchCardChecklist — every asked side failed: the run fails (NEO-387
 
     const result = await fetchFor(t, rowId);
 
+    // SportLots was asked on its sport/year scope and answered with nothing,
+    // which must not turn the BSC failure back into "Saved 0 cards.".
+    expect(mockState.slCalls.length).toBeGreaterThan(0);
     expect(result.success).toBe(false);
     expect(result.candidateCount).toBe(0);
     expect(result.message).toBe(
@@ -261,7 +267,7 @@ describe("fetchCardChecklist — every asked side failed: the run fails (NEO-387
     expect(result.message).toMatch(NOTHING_CHANGED);
   });
 
-  test("BSC throwing on a BSC-only set fails the run", async () => {
+  test("BSC throwing (caught into success: false) on a BSC-only set fails the run", async () => {
     const t = convexTest(schema, modules);
     const rowId = await seedTree(t, { bscSet: true, slSet: false });
     mockState.bscThrows = true;
@@ -334,7 +340,7 @@ describe("fetchCardChecklist — one of two sides failed: the run goes on and sa
     expect(result.attachedSides).toEqual(["bsc", "sportlots"]);
   });
 
-  test("SportLots threw, BSC answered: the line names SportLots", async () => {
+  test("SportLots threw (caught into a failed call), BSC answered: the line names SportLots", async () => {
     const t = convexTest(schema, modules);
     const rowId = await seedTree(t, { bscSet: true, slSet: true });
     mockState.slThrows = true;
@@ -372,3 +378,4 @@ describe("fetchCardChecklist — one of two sides failed: the run goes on and sa
     expect(result.message).not.toMatch(/missing from this run|nothing changed/);
   });
 });
+

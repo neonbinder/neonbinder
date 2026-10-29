@@ -63,6 +63,7 @@ import {
 import { MAX_PARALLEL_GROUPING_ENTRIES } from "./parallelGroupingPlan";
 import { blockedSideFailed, sideMissingFromRun } from "./parallelChecklistBuild";
 import {
+  failedChecklistSides,
   failureFromMessage,
   type FetchFailure,
 } from "./lib/marketplaceFetchFailure";
@@ -14054,8 +14055,12 @@ export const fetchCardChecklist = action({
           : Promise.resolve({ success: false, cards: [] } as BscFetchResult),
       ]);
 
+      // NEO-387 — a SportLots fan-out where only some calls failed is a
+      // failed side as a whole. Keeping the calls that answered would make
+      // SportLots look covered, so the failed source set's cards would read
+      // as gone upstream; dropping them all keeps that side fail-closed.
       const slCards: SlCard[] =
-        slSettled.status === "fulfilled" ? slSettled.value : [];
+        slSettled.status === "fulfilled" && !slFailure ? slSettled.value : [];
       const bscResult: BscFetchResult =
         bscSettled.status === "fulfilled"
           ? bscSettled.value
@@ -14081,28 +14086,23 @@ export const fetchCardChecklist = action({
       // bring cards, the run goes on with them (NEO-255: the set stays
       // two-sided, so the Match Cards dialog still opens rather than
       // auto-committing) and the status line says which side is missing.
-      const failedSides: Array<{ side: "bsc" | "sportlots"; failure: FetchFailure }> = [];
-      if (resolution.bsc.resolvable) {
-        if (bscSettled.status === "rejected") {
-          failedSides.push({ side: "bsc", failure: failureFromMessage(String(bscSettled.reason)) });
-        } else if (!bscResult.success) {
-          failedSides.push({
-            side: "bsc",
-            failure:
-              bscResult.failure ?? failureFromMessage(bscResult.message),
-          });
-        }
-      }
-      if (resolution.sportlots.resolvable) {
-        if (slSettled.status === "rejected") {
-          failedSides.push({
-            side: "sportlots",
-            failure: failureFromMessage(String(slSettled.reason)),
-          });
-        } else if (slFailure) {
-          failedSides.push({ side: "sportlots", failure: slFailure });
-        }
-      }
+      const failedSides = failedChecklistSides({
+        bsc: !resolution.bsc.resolvable
+          ? { asked: false }
+          : bscSettled.status === "rejected"
+            ? { asked: true, rejected: bscSettled.reason }
+            : {
+                asked: true,
+                success: bscResult.success,
+                failure: bscResult.failure,
+                message: bscResult.message,
+              },
+        sportlots: !resolution.sportlots.resolvable
+          ? { asked: false }
+          : slSettled.status === "rejected"
+            ? { asked: true, rejected: slSettled.reason }
+            : { asked: true, success: !slFailure, failure: slFailure },
+      });
       const askedSides =
         (resolution.bsc.resolvable ? 1 : 0) + (resolution.sportlots.resolvable ? 1 : 0);
       const sideFailureNote = failedSides
