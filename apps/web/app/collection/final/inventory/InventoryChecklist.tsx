@@ -360,7 +360,7 @@ const InventoryChecklist = forwardRef<HTMLHeadingElement, ChecklistProps>(functi
               key={card.id}
               card={card}
               copies={byCard.get(card.id) ?? []}
-              onOpen={(copyId) => actions.open(card, copyId, visible)}
+              onOpen={(copyId, edit) => actions.open(card, copyId, visible, edit)}
               isSelected={card.id === selectedCardId}
               highlighted={card.id === ringed}
               groupRef={(el) => {

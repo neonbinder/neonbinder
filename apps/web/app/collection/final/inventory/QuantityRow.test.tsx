@@ -598,10 +598,10 @@ describe("the + beside the field", () => {
 });
 
 describe("the row's other controls", () => {
-  it("Details opens the card on the row's first line in the box", () => {
+  it("Details opens the card editing the row's first line in the box (when it is the card's only line)", () => {
     const rig = setup([{ card: ELLY, copies: [line({ id: "first" }), line({ id: "second", slot: 2 })] }]);
     fireEvent.click(screen.getByRole("button", { name: "Details for #12 Elly De La Cruz" }));
-    expect(rig.onOpen).toHaveBeenCalledWith("first");
+    expect(rig.onOpen).toHaveBeenCalledWith("first", true);
   });
 
   it("Details with no line in the box opens the card on no line", () => {

@@ -114,7 +114,8 @@ export default function QuantityRow({
   isSelected?: boolean;
   highlighted?: boolean;
   /** Details: the card drawer, on this line item when there is one. */
-  onOpen: (copyId?: CopyId) => void;
+  /** `edit`: open the drawer editing the card's line (when it has exactly one). */
+  onOpen: (copyId?: CopyId, edit?: boolean) => void;
   /** A click on the row's body. Default: put the caret in the field. */
   onRowClick?: () => void;
   /** Search results: the opener for the card's checklist. */
@@ -412,7 +413,7 @@ export default function QuantityRow({
             tabIndex={-1}
             data-qty-control=""
             onKeyDown={onControlKey}
-            onClick={stop(() => onOpen(lines[0]?.id))}
+            onClick={stop(() => (lines[0] ? onOpen(lines[0].id, true) : onOpen(undefined)))}
             aria-label={`Details for ${name}`}
             className={`${QUIET_BUTTON} ${ROW_ICON_BUTTON}`}
           >
@@ -501,7 +502,7 @@ export function InventorySearchHitRow({
       showSet={showSet}
       isSelected={isSelected}
       highlighted={highlighted}
-      onOpen={(copyId) => actions.open(card, copyId)}
+      onOpen={(copyId, edit) => actions.open(card, copyId, undefined, edit)}
       onRowClick={onRowClick ? () => onRowClick() : undefined}
       onOpenChecklist={onOpenChecklist}
       groupRef={groupRef}
