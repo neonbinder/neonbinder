@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { useSearchParams } from "react-router";
 import { useMutation, useQuery } from "convex/react";
 import NeonButton from "@/components/modules/NeonButton";
@@ -31,6 +31,13 @@ import {
 } from "./realLanes";
 import { HomeSelect, QTY_ATTR, RING, StageBadge } from "./ui";
 import "./intake.css";
+
+/**
+ * The photos dropped in this tab, by file name, as object URLs: a photo still
+ * cropping has no crop to sign yet, so its tile shows the file as picked.
+ * Gone after a reload, when the tile falls back to its name alone.
+ */
+const LocalPhotos = createContext<ReadonlyMap<string, string>>(new Map());
 
 /**
  * NEO-382 — Add cards from photos, signed in: the NEO-369 demo's "Mission
@@ -124,6 +131,9 @@ export default function RealAddCardsTab() {
   const { uploading, upload } = usePlaceholderUpload();
   const [files, setFiles] = useState<File[]>([]);
   const [status, setStatus] = useState("");
+  const [localPhotos, setLocalPhotos] = useState<ReadonlyMap<string, string>>(new Map());
+  const localUrls = useRef<string[]>([]);
+  useEffect(() => () => localUrls.current.forEach((u) => URL.revokeObjectURL(u)), []);
 
   const job = useQuery(api.placeholderPipeline.getPlaceholderJob, run ? { jobId: run.jobId } : "skip");
   const collecting = !run || job?.status === "collecting";
@@ -144,6 +154,14 @@ export default function RealAddCardsTab() {
       setStatus(`Make a ${kind} first: the cards need somewhere to go.`);
       return;
     }
+    const added = new Map(localPhotos);
+    for (const file of chosen) {
+      if (!file.type.startsWith("image/") || added.has(file.name)) continue;
+      const url = URL.createObjectURL(file);
+      localUrls.current.push(url);
+      added.set(file.name, url);
+    }
+    setLocalPhotos(added);
     setStatus("Sending your photos…");
     try {
       const out = await upload(chosen, { source: "web", jobId: run?.jobId });
@@ -255,7 +273,9 @@ export default function RealAddCardsTab() {
         {status}
       </p>
       {run ? (
-        <RunWorkspace run={run} jobOpen={job?.status === "collecting"} />
+        <LocalPhotos.Provider value={localPhotos}>
+          <RunWorkspace run={run} jobOpen={job?.status === "collecting"} />
+        </LocalPhotos.Provider>
       ) : (
         !runParam && <RecentRuns runs={(recent ?? []).filter((r) => r.homeKind === kind)} onOpen={openRun} />
       )}
@@ -660,6 +680,7 @@ function RunWorkspace({ run, jobOpen }: { run: RunSummary; jobOpen: boolean }) {
         </Lane>
         <Lane label={LANE_LABEL.pairing} count={lanes.loose.length}>
           <LoosePile
+            jobId={run.jobId}
             loose={lanes.loose}
             onPair={(front, back) =>
               void pairUp({ jobId: run.jobId, frontIndex: front, backIndex: back }).catch(fail)
@@ -829,8 +850,10 @@ function Lane({
 
 function PhotoTile({ image }: { image: IntakeImage }) {
   const failed = image.status === "failed";
+  const local = useContext(LocalPhotos).get(image.originalName);
   return (
     <div className="flex items-center gap-2 rounded-md border-2 border-rule bg-surface p-1.5 text-xs">
+      {local && <img src={local} alt="" className="h-14 w-10 shrink-0 rounded object-cover" />}
       <span className="min-w-0">
         <span className="block truncate font-medium text-ink-2" title={image.originalName}>
           {image.originalName}
@@ -851,7 +874,15 @@ function PhotoTile({ image }: { image: IntakeImage }) {
  * The loose pile: read photos not in a pair yet. Pick two (the front first)
  * and pair them by hand; pairing usually finds them on its own.
  */
-function LoosePile({ loose, onPair }: { loose: IntakeImage[]; onPair: (front: number, back: number) => void }) {
+function LoosePile({
+  jobId,
+  loose,
+  onPair,
+}: {
+  jobId: string;
+  loose: IntakeImage[];
+  onPair: (front: number, back: number) => void;
+}) {
   const [chosen, setChosen] = useState<number[]>([]);
   const live = chosen.filter((n) => loose.some((i) => i.entryIndex === n));
   const toggle = (n: number) =>
@@ -866,6 +897,9 @@ function LoosePile({ loose, onPair }: { loose: IntakeImage[]; onPair: (front: nu
             onClick={() => toggle(i.entryIndex)}
             className={`flex w-full items-center gap-2 rounded-md border-2 bg-surface p-1.5 text-left text-xs ${live.includes(i.entryIndex) ? "border-neon-green-text" : "border-rule"} ${RING}`}
           >
+            {i.status !== "failed" && (
+              <ScanImage jobId={jobId} entryIndex={i.entryIndex} alt="" className="h-14 w-auto shrink-0 rounded" />
+            )}
             <span className="min-w-0">
               <span className="block truncate font-medium text-ink-2">{i.originalName}</span>
               <span className="block text-ink-3">
