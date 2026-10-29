@@ -197,6 +197,7 @@ function makeStore({
     setSmartRule: vi.fn(async () => ({ undo })),
     declineCard: vi.fn(async () => ({ undo })),
     undeclineCard: vi.fn(async () => ({ undo })),
+    setCommonPrice: vi.fn(async () => ({ undo })),
   } satisfies CollectionActions;
   const wants: Want[] = [];
   const L = <T,>(value: T): T | undefined => (loading ? undefined : value);
@@ -304,6 +305,7 @@ function makeStore({
     useFindCards: (id) => (id === null ? undefined : L({ copies: [], done: true, more: () => {} })),
     useDeclined: (id) => (id === null ? undefined : L([])),
     useRuleBrands: (id) => (id === null ? undefined : L([])),
+    useCommonPrices: (ids) => (ids === null ? undefined : L({})),
   };
   const value: CollectionStoreValue = { kind: "convex", capabilities, data, actions, binderMemory };
   return { value, actions, undo, log };

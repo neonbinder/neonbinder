@@ -103,6 +103,12 @@ async function seedUser(
       setId,
       lastUpdated: 0,
     });
+    await ctx.db.insert("variantCommonPrices", {
+      ownerId: userId,
+      variantId,
+      priceCents: 25,
+      lastUpdated: 0,
+    });
   });
 }
 
@@ -116,6 +122,7 @@ async function countRows(
   collectionCopies: number;
   collectionContainers: number;
   collectionBuildingSets: number;
+  variantCommonPrices: number;
 }> {
   return t.run(async (ctx) => {
     const pp = (await ctx.db.query("publicProfiles").collect()).filter(
@@ -136,6 +143,9 @@ async function countRows(
     const bs = (await ctx.db.query("collectionBuildingSets").collect()).filter(
       (r) => r.ownerId === userId,
     );
+    const vp = (await ctx.db.query("variantCommonPrices").collect()).filter(
+      (r) => r.ownerId === userId,
+    );
     return {
       publicProfiles: pp.length,
       userProfiles: up.length,
@@ -143,6 +153,7 @@ async function countRows(
       collectionCopies: cc.length,
       collectionContainers: ct.length,
       collectionBuildingSets: bs.length,
+      variantCommonPrices: vp.length,
     };
   });
 }
@@ -165,6 +176,7 @@ describe("resetMyTestState", () => {
       cardRequests: 0,
       collectionContainers: 1,
       collectionBuildingSets: 1,
+      variantCommonPrices: 1,
     });
     expect(await countRows(t, USER_A)).toEqual({
       publicProfiles: 0,
@@ -173,6 +185,7 @@ describe("resetMyTestState", () => {
       collectionCopies: 0,
       collectionContainers: 0,
       collectionBuildingSets: 0,
+      variantCommonPrices: 0,
     });
   });
 
@@ -192,6 +205,7 @@ describe("resetMyTestState", () => {
       collectionCopies: 0,
       collectionContainers: 0,
       collectionBuildingSets: 0,
+      variantCommonPrices: 0,
     });
     expect(await countRows(t, USER_B)).toEqual({
       publicProfiles: 1,
@@ -200,6 +214,7 @@ describe("resetMyTestState", () => {
       collectionCopies: 1,
       collectionContainers: 1,
       collectionBuildingSets: 1,
+      variantCommonPrices: 1,
     });
   });
 
@@ -219,6 +234,7 @@ describe("resetMyTestState", () => {
       cardRequests: 0,
       collectionContainers: 0,
       collectionBuildingSets: 0,
+      variantCommonPrices: 0,
     });
   });
 
@@ -238,6 +254,7 @@ describe("resetMyTestState", () => {
       collectionCopies: 1,
       collectionContainers: 1,
       collectionBuildingSets: 1,
+      variantCommonPrices: 1,
     });
   });
 
@@ -259,6 +276,7 @@ describe("resetMyTestState", () => {
       collectionCopies: 1,
       collectionContainers: 1,
       collectionBuildingSets: 1,
+      variantCommonPrices: 1,
     });
   });
 });
