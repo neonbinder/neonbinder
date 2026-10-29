@@ -3,6 +3,11 @@ name: Refresh flow timings
 # Keeps apps/web/playwright/timings.json (the longest-first shard-plan seed) "generally
 # correct" as specs are added / changed, with no babysitting.
 #
+# NEO-389: CI no longer depends on this. e2e.yml's `timings` job rebuilds the
+# timings at the start of every run from the last few green runs, so the committed
+# file is only the fallback for when that cannot fetch them (and for local
+# `shard-plan.mjs` runs). Merging the nudge below keeps that fallback close.
+#
 # It does NOT run the E2E suite. It downloads the `pw-merged` artifact (the merged
 # Playwright JSON report, both passes, desktop and mobile) that e2e.yml's `e2e` job
 # uploads on every PR Pipeline run,
@@ -47,24 +52,33 @@ jobs:
         with:
           node-version-file: apps/web/.nvmrc
 
-      - name: Download the latest PR Pipeline run's merged Playwright report
+      - name: Download recent PR Pipeline runs' merged Playwright reports
         id: dl
         run: |
           set -uo pipefail
           # The newest green runs may be dependency-only PRs (E2E skipped, so no
-          # artifact): walk back through recent ones until one has pw-merged.
-          for rid in $(gh run list --workflow "PR Pipeline" --status success --limit 15 \
-                         --json databaseId --jq '.[].databaseId'); do
-            rm -rf dl
-            if gh run download "$rid" -n pw-merged -D dl 2>/dev/null && [ -f dl/results.json ]; then
-              echo "Using PR Pipeline run $rid"
-              echo "found=1" >> "$GITHUB_OUTPUT"
-              echo "rid=$rid" >> "$GITHUB_OUTPUT"
-              exit 0
+          # artifact): walk back through recent ones, keeping up to 5 that have
+          # pw-merged. Each spec takes its median over them (NEO-389), so one
+          # slow run cannot skew the table.
+          rm -rf dl
+          rids=()
+          # This repo's own branches only: a fork PR runs its own copy of the
+          # workflow, so its artifacts are not trusted input.
+          for rid in $(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/pr-pipeline.yml/runs?status=success&per_page=30" \
+                         --jq '.workflow_runs[] | select(.head_repository.full_name == env.GITHUB_REPOSITORY) | .id'); do
+            if gh run download "$rid" -n pw-merged -D "dl/$rid" 2>/dev/null && [ -f "dl/$rid/results.json" ]; then
+              rids+=("$rid")
+              [ "${#rids[@]}" -ge 5 ] && break
             fi
           done
-          echo "No recent successful 'PR Pipeline' run has a pw-merged artifact (expired, or none ran E2E) — nothing to refresh."
-          echo "found=0" >> "$GITHUB_OUTPUT"
+          if [ "${#rids[@]}" -eq 0 ]; then
+            echo "No recent successful 'PR Pipeline' run has a pw-merged artifact (expired, or none ran E2E) — nothing to refresh."
+            echo "found=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "Using PR Pipeline runs ${rids[*]}"
+          echo "found=1" >> "$GITHUB_OUTPUT"
+          echo "rid=${rids[*]}" >> "$GITHUB_OUTPUT"
 
       - name: Rewrite timings, re-align to main's spec set, detect drift
         id: drift
@@ -72,7 +86,7 @@ jobs:
         run: |
           set -uo pipefail
           cp playwright/timings.json old-timings.json
-          node playwright/shard-plan.mjs --from-results dl/results.json
+          node playwright/shard-plan.mjs --from-results dl/*/results.json
           python3 - old-timings.json playwright/timings.json <<'PY'
           import json, os, sys
 
@@ -170,7 +184,7 @@ jobs:
             echo "Candidate is byte-identical to committed — nothing to commit."; exit 0
           fi
           git commit \
-            -m "chore(e2e): refresh shard timings from run ${RID}" \
+            -m "chore(e2e): refresh shard timings from runs ${RID}" \
             -m "${REASON}" \
             -m "Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
           git push --force origin "$BR"
@@ -183,7 +197,7 @@ jobs:
             echo ""
             echo "**Drift:** ${REASON}"
             echo ""
-            echo "Refreshed timings pushed to \`${BR}\` (from PR Pipeline run \`${RID}\`)."
+            echo "Refreshed timings pushed to \`${BR}\` (median over PR Pipeline runs \`${RID}\`)."
             echo ""
             echo "➡️ **[Open the PR to apply](${COMPARE})** — you author it, so the required \`e2e\` check runs and it's mergeable."
             echo ""

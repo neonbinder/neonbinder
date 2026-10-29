@@ -16,7 +16,9 @@
  *               explicit file list (shard-plan.mjs, longest-first) instead of
  *               --shard.
  *   e2e-mobile — the same specs on a phone (Chromium, Pixel 7). Every spec
- *               runs on BOTH; the shard runs both projects on its files.
+ *               runs on BOTH, except the few playwright/project-scope.mjs
+ *               lists (NEO-389), which shard-plan.mjs leaves out of the
+ *               mobile plan too.
  *
  * One worker per shard: each shard owns one test account (TEST_EMAIL_<n>),
  * so a spec's desktop and mobile runs happen one after the other on the same
@@ -32,6 +34,7 @@
  * gate) passes that number on that one call. No retries.
  */
 import { defineConfig, devices } from "@playwright/test";
+import { ignoredSpecs } from "./playwright/project-scope.mjs";
 
 const CI = !!process.env.CI;
 const APP_URL = (process.env.APP_URL ?? "http://localhost:3000").replace(/\/$/, "");
@@ -81,7 +84,7 @@ export default defineConfig({
     { name: "bootstrap", testMatch: BOOTSTRAP },
     {
       name: "e2e",
-      testIgnore: [SETUP, BOOTSTRAP],
+      testIgnore: [SETUP, BOOTSTRAP, ...ignoredSpecs("e2e").map((spec) => `**/tests/${spec}`)],
       dependencies: ["bootstrap"],
     },
     {
@@ -89,7 +92,7 @@ export default defineConfig({
       // phone viewport, touch, isMobile and a mobile user agent; it replaces
       // the desktop viewport above for this project.
       name: "e2e-mobile",
-      testIgnore: [SETUP, BOOTSTRAP],
+      testIgnore: [SETUP, BOOTSTRAP, ...ignoredSpecs("e2e-mobile").map((spec) => `**/tests/${spec}`)],
       dependencies: ["bootstrap"],
       use: { ...devices["Pixel 7"] },
     },

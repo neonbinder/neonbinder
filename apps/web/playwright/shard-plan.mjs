@@ -5,9 +5,10 @@
 //                                                        spec paths for shard i of N (1-based),
 //                                                        one per line, relative to apps/web
 //   node playwright/shard-plan.mjs <N> [--project <p>]   the whole plan, per-shard totals (stderr)
-//   node playwright/shard-plan.mjs --from-results <results.json>
-//                                                        rewrite timings.json from a (merged)
-//                                                        Playwright JSON report
+//   node playwright/shard-plan.mjs --from-results <results.json>...
+//                                                        rewrite timings.json from one or more
+//                                                        (merged) Playwright JSON reports, each
+//                                                        spec's median over the reports
 //   node playwright/shard-plan.mjs --projects  the spec projects, one per line
 //                                                        (e2e.yml's gate reads it)
 //
@@ -17,13 +18,16 @@
 // fresh-only or the sole writer of a real marketplace set passes once per
 // seed, so desktop and mobile never share one. Each pass plans on its own
 // project's timings, one project's weight per spec, and every pass uses the
-// same file set. Playwright's own --shard splits by test COUNT in file order,
+// same file set, less the specs playwright/project-scope.mjs leaves out of
+// that project (NEO-389). Playwright's own --shard splits by test COUNT in file order,
 // so one shard can draw every multi-minute set-builder spec. This assigns each
 // spec to the currently lightest shard, heaviest spec first, which is what the
 // retired Maestro work queue achieved dynamically (NEO-61).
 //
 // Timings: timings.json (seconds per spec path under tests/) is the only
-// source. Only relative size matters. Schema:
+// source. Only relative size matters. In CI, e2e.yml's `timings` job rewrites
+// it before every run from the last few green runs' reports (NEO-389), so the
+// committed file is the fallback when those cannot be fetched. Schema:
 //   seconds    - per-spec seconds on `e2e` (desktop)
 //   byProject  - optional { "<project>": { "<spec>": seconds } } for the
 //                other projects (today `e2e-mobile`)
@@ -41,6 +45,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { ignoredSpecs } from "./project-scope.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const WEB = path.resolve(HERE, "..");
@@ -49,14 +54,18 @@ const TIMINGS_JSON = path.join(HERE, "timings.json");
 const EXCLUDED = new Set(["setup.spec.ts", "profile/worker-bootstrap.spec.ts"]);
 // Must match the spec projects in playwright.config.ts.
 export const PROJECTS = ["e2e", "e2e-mobile"];
+// A test runs for at most the config's 20 min timeout; anything above an hour
+// in a report is not a real duration.
+const MAX_SPEC_SECONDS = 3600;
 
 const toPosix = (p) => p.split(path.sep).join("/");
 
-function listSpecs() {
+function listSpecs(project) {
+  const ignored = new Set(ignoredSpecs(project));
   return fs
     .readdirSync(TESTS, { recursive: true })
     .map((p) => toPosix(String(p)))
-    .filter((p) => p.endsWith(".spec.ts") && !EXCLUDED.has(p))
+    .filter((p) => p.endsWith(".spec.ts") && !EXCLUDED.has(p) && !ignored.has(p))
     .sort();
 }
 
@@ -79,7 +88,7 @@ function median(values) {
 
 function plan(n, project) {
   const timings = loadTimings(project);
-  const specs = listSpecs();
+  const specs = listSpecs(project);
   const fallback = median(specs.map((s) => timings[s]).filter((v) => Number.isFinite(v)));
   const weighted = specs
     .map((spec) => ({ spec, secs: Number.isFinite(timings[spec]) ? timings[spec] : fallback }))
@@ -96,25 +105,39 @@ function plan(n, project) {
 }
 
 // One figure per spec per project in PROJECTS: `seconds` is the desktop
-// (PROJECTS[0]) run, `byProject` carries the others. A spec that reported on
-// only some projects (a pass died) keeps the other projects' committed value
-// via the planner's desktop fallback. Projects outside PROJECTS (setup,
-// bootstrap) are ignored.
-function fromResults(file) {
-  const report = JSON.parse(fs.readFileSync(file, "utf8"));
-  const perProject = Object.fromEntries(PROJECTS.map((p) => [p, {}])); // project -> spec -> seconds
-  const walk = (suite, specFile) => {
-    const f = toPosix(suite.file ?? specFile);
-    for (const spec of suite.specs ?? []) {
-      for (const t of spec.tests ?? []) {
-        if (!PROJECTS.includes(t.projectName)) continue;
-        const d = (t.results ?? []).reduce((acc, r) => acc + (r.duration ?? 0), 0) / 1000;
-        perProject[t.projectName][f] = (perProject[t.projectName][f] ?? 0) + d;
+// (PROJECTS[0]) run, `byProject` carries the others. With several reports
+// each spec gets its median over the reports it appears in, so one slow run
+// (a stalled marketplace fetch) cannot skew the plan (NEO-389). A spec that
+// reported on only some projects (a pass died) falls back to its desktop
+// value in the planner. Projects outside PROJECTS (setup, bootstrap) are
+// ignored.
+function fromResults(files) {
+  const samples = Object.fromEntries(PROJECTS.map((p) => [p, {}])); // project -> spec -> [seconds per report]
+  for (const file of files) {
+    const report = JSON.parse(fs.readFileSync(file, "utf8"));
+    const perProject = Object.fromEntries(PROJECTS.map((p) => [p, {}])); // project -> spec -> seconds
+    const walk = (suite, specFile) => {
+      const f = toPosix(suite.file ?? specFile);
+      for (const spec of suite.specs ?? []) {
+        for (const t of spec.tests ?? []) {
+          if (!PROJECTS.includes(t.projectName)) continue;
+          const ms = (t.results ?? []).reduce((acc, r) => acc + (Number(r.duration) || 0), 0);
+          // Reports come from other runs: clamp, so a bad figure can only
+          // weigh a spec, never break the plan.
+          const d = Math.min(Math.max(ms / 1000, 0), MAX_SPEC_SECONDS);
+          perProject[t.projectName][f] = (perProject[t.projectName][f] ?? 0) + d;
+        }
       }
+      for (const child of suite.suites ?? []) walk(child, f);
+    };
+    for (const s of report.suites ?? []) walk(s, s.file);
+    for (const p of PROJECTS) {
+      for (const [f, d] of Object.entries(perProject[p])) (samples[p][f] ??= []).push(d);
     }
-    for (const child of suite.suites ?? []) walk(child, f);
-  };
-  for (const s of report.suites ?? []) walk(s, s.file);
+  }
+  const perProject = Object.fromEntries(
+    PROJECTS.map((p) => [p, Object.fromEntries(Object.entries(samples[p]).map(([f, ds]) => [f, median(ds)]))]),
+  );
   const round = (m) =>
     Object.fromEntries(
       Object.entries(m)
@@ -123,7 +146,7 @@ function fromResults(file) {
     );
   const [desktop, ...others] = PROJECTS;
   const doc = {
-    _source: `Playwright JSON report ${path.basename(file)}, seconds per spec per project (${PROJECTS.join(", ")}).`,
+    _source: `Median over ${files.length} Playwright JSON report(s), seconds per spec per project (${PROJECTS.join(", ")}).`,
     seconds: round(perProject[desktop]),
   };
   const byProject = Object.fromEntries(others.map((p) => [p, round(perProject[p])]).filter(([, m]) => Object.keys(m).length));
@@ -145,14 +168,14 @@ if (pIdx !== -1) {
 if (args[0] === "--projects") {
   for (const p of PROJECTS) console.log(p);
 } else if (args[0] === "--from-results") {
-  if (!args[1]) throw new Error("usage: shard-plan.mjs --from-results <results.json>");
-  fromResults(args[1]);
+  if (!args[1]) throw new Error("usage: shard-plan.mjs --from-results <results.json>...");
+  fromResults(args.slice(1));
 } else {
   const n = Number(args[0]);
   const i = args[1] === undefined ? undefined : Number(args[1]);
   if (!Number.isInteger(n) || n < 1 || (i !== undefined && (!Number.isInteger(i) || i < 1 || i > n))) {
     throw new Error(
-      "usage: shard-plan.mjs <N> [<i> in 1..N] [--project <p>] | --from-results <results.json> | --projects",
+      "usage: shard-plan.mjs <N> [<i> in 1..N] [--project <p>] | --from-results <results.json>... | --projects",
     );
   }
   const shards = plan(n, project);
