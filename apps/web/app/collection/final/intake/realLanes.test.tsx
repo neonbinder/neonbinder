@@ -1,5 +1,16 @@
 import { describe, expect, test } from "vitest";
-import { cardLabel, laneOf, readOf, reasonText, type IntakeImage, type IntakeMatchRow, type IntakePair } from "./realLanes";
+import {
+  cardLabel,
+  laneOf,
+  proposedCount,
+  readOf,
+  reasonText,
+  tileLabel,
+  whyNotSave,
+  type IntakeImage,
+  type IntakeMatchRow,
+  type IntakePair,
+} from "./realLanes";
 
 /** NEO-382 — every photo of a run sits in exactly one lane. */
 
@@ -75,5 +86,31 @@ describe("words", () => {
       "#13 Gunnar Henderson (Sliding)",
     );
     expect(cardLabel(null)).toBe("No card picked");
+  });
+
+  test("an unmatched card is named by what was read and which photo, so two never share a name", () => {
+    const read = { number: "47", players: ["Le'Veon Bell"] };
+    expect(tileLabel({ card: null, frontIndex: 4 }, read)).toBe("Unmatched photo 5, read #47 Le'Veon Bell");
+    expect(tileLabel({ card: null, frontIndex: 6 }, { number: null, players: [] })).toBe("Unmatched photo 7");
+  });
+
+  test("why a card can't be saved yet", () => {
+    expect(whyNotSave({ cardId: undefined })).toBe("Pick which card this is first.");
+    expect(whyNotSave({ cardId: "c" as never, repeatOfPairId: "p" as never })).toMatch(/second copy/);
+    expect(whyNotSave({ cardId: "c" as never, repeatOfPairId: "p" as never, repeatIsSecondCopy: true })).toBe("");
+  });
+
+  test("every reason has words, and the conflict and shared-number ones name the number", () => {
+    const read = { number: "7", players: ["Ann"] };
+    const reasons = [
+      "numberAndPlayer", "numberOnly", "playerUnconfirmed", "numberPlayerConflict", "numberSharedPlayerPicked",
+      "numberShared", "numberFuzzy", "playerOnly", "playerShared", "noMatch", "nothingRead", "noVariant", "byUser",
+    ] as const;
+    for (const reason of reasons) expect(reasonText(match(0, 1, { reason }), read)).toMatch(/\w/);
+    expect(reasonText(match(0, 1, { reason: "numberShared" }), read)).toContain("#7");
+  });
+
+  test("the proposed count is what's here plus this scan", () => {
+    expect(proposedCount({ haveHere: 3 })).toBe(4);
   });
 });

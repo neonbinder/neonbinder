@@ -1352,7 +1352,8 @@ async function moveCounts(
 /**
  * Add one line item, folding when the rule allows. Returns the row change;
  * the caller applies every add's change once (`applyCopyChanges`), after all
- * its adds.
+ * its adds. `ownerId` must be the signed-in caller (or a row they own), never
+ * a value taken from a client's arguments.
  */
 export async function addOne(
   ctx: MutationCtx,

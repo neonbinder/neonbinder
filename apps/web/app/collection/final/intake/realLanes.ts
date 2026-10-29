@@ -78,6 +78,23 @@ export function cardLabel(card: CardSummary | null | undefined): string {
   return `#${card.cardNumber} ${card.cardName}${card.variation ? ` (${card.variation})` : ""}`;
 }
 
+/**
+ * A card's name on the screen: the card it was matched to, or, with none yet,
+ * what was read off it and which photo, so no two unmatched cards share a name.
+ */
+export function tileLabel(row: Pick<IntakeMatchRow, "card" | "frontIndex">, read: PairRead): string {
+  if (row.card) return cardLabel(row.card);
+  const what = [read.number ? `#${read.number}` : null, read.players.join(", ") || null].filter(Boolean).join(" ");
+  return `Unmatched photo ${row.frontIndex + 1}${what ? `, read ${what}` : ""}`;
+}
+
+/** Why a card can't be saved yet; empty when it can. */
+export function whyNotSave(row: Pick<IntakeMatchRow, "cardId" | "repeatOfPairId" | "repeatIsSecondCopy">): string {
+  if (!row.cardId) return "Pick which card this is first.";
+  if (row.repeatOfPairId && !row.repeatIsSecondCopy) return "Say whether this is a second copy first.";
+  return "";
+}
+
 /** Why the matcher decided what it did, in a collector's words. */
 export function reasonText(row: Pick<IntakeMatchRow, "reason" | "candidates">, read: PairRead): string {
   const number = read.number ? `#${read.number}` : "no number";

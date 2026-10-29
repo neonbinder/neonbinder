@@ -26,6 +26,8 @@ import {
   type IntakeImage,
   type IntakeMatchRow,
   type PairRead,
+  tileLabel,
+  whyNotSave,
 } from "./realLanes";
 import { HomeSelect, QTY_ATTR, RING, StageBadge } from "./ui";
 import "./intake.css";
@@ -59,6 +61,7 @@ import "./intake.css";
 
 export const RUN_PARAM = "run";
 const TILE_ATTR = "data-intake-tile";
+const REVIEW_HEADING_ID = "intake-needs-you";
 
 type Condition = "Mint" | "Near Mint" | "Excellent" | "Very Good" | "Good" | "Poor";
 type Grader = "PSA" | "BGS" | "SGC" | "CGC" | "TAG";
@@ -242,7 +245,7 @@ export default function RealAddCardsTab() {
         </p>
       )}
       {collecting ? (
-        <Dropzone files={files} disabled={uploading} onFiles={(chosen) => void onFiles(chosen)} />
+        <Dropzone quiet files={files} disabled={uploading} onFiles={(chosen) => void onFiles(chosen)} />
       ) : (
         <p className="m-0 rounded-md border border-rule p-3 text-sm text-ink-2">
           This run&apos;s photos are all in. To add more, start a new run.
@@ -474,7 +477,8 @@ function RunWorkspace({ run, jobOpen }: { run: RunSummary; jobOpen: boolean }) {
   const canSave = (row: IntakeMatchRow) => !!row.cardId && !(row.repeatOfPairId && !row.repeatIsSecondCopy);
   const actions: RowActions = {
     save: (row, total) => {
-      if (!canSave(row) || saving.current.has(row.pairId)) return;
+      if (!canSave(row)) return notify(whyNotSave(row));
+      if (saving.current.has(row.pairId)) return;
       const quantity = (total ?? counts[row.pairId] ?? proposedCount(row)) - row.haveHere;
       if (quantity < 1) return notify("The count must go up by at least one to save.");
       saving.current.add(row.pairId);
@@ -505,7 +509,11 @@ function RunWorkspace({ run, jobOpen }: { run: RunSummary; jobOpen: boolean }) {
 
   const focusTile = (id: Id<"placeholderPairs"> | null, preferCount: boolean) => {
     setSelected(id);
-    if (!id) return;
+    if (!id) {
+      // The last card is done: land on the lane, never on the page body.
+      requestAnimationFrame(() => document.getElementById(REVIEW_HEADING_ID)?.focus({ preventScroll: true }));
+      return;
+    }
     requestAnimationFrame(() => {
       const tile = document.querySelector<HTMLElement>(`[${TILE_ATTR}="${id}"]`);
       if (!tile) return;
@@ -519,38 +527,38 @@ function RunWorkspace({ run, jobOpen }: { run: RunSummary; jobOpen: boolean }) {
     return (review[at + 1] ?? review[at - 1])?.pairId ?? null;
   };
 
-  // Keys act on the selected card; read through a ref so the listener is added once.
+  // Keys act only on the card that has focus (WCAG 2.1.4), or on the open
+  // drawer's card; read through a ref so the listener is added once.
   const onKey = (e: KeyboardEvent) => {
-    if (e.ctrlKey || e.metaKey || e.altKey || openId) return;
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
     const target = e.target as HTMLElement | null;
     const inQty = !!target?.closest?.(`[${QTY_ATTR}]`);
     if (!inQty && target?.closest?.('input, textarea, select, [contenteditable="true"], [role="combobox"]')) return;
     if (inQty && (e.key.length !== 1 || /\d/.test(e.key))) return;
-    const key = e.key === "ArrowDown" ? "j" : e.key === "ArrowUp" ? "k" : e.key;
-    const row = find(selected);
-    if (key === "j" || key === "k") {
-      if (!row) {
-        if (review[0] && (key === "j" || e.key.startsWith("Arrow") === false)) {
-          e.preventDefault();
-          focusTile(review[0].pairId, false);
-        }
-        return;
-      }
-      const at = review.findIndex((r) => r.pairId === row.pairId);
-      const to = review[key === "j" ? at + 1 : at - 1];
-      if (to) {
-        e.preventDefault();
-        focusTile(to.pairId, inQty);
-      }
-      return;
-    }
-    if (!row) return;
     const run1 = (fn: () => void) => {
       e.preventDefault();
       fn();
     };
+    if (openId) {
+      if (!open || !target?.closest?.('[role="dialog"]')) return;
+      if (e.key === "s") run1(() => actions.swap(open));
+      else if (e.key === "v") run1(() => actions.nextVariation(open));
+      else if (e.key === "u") run1(() => closeAndMoveOn(open, () => actions.unpair(open)));
+      else if (e.key === "d") run1(() => closeAndMoveOn(open, () => actions.aside(open, true)));
+      return;
+    }
+    const tile = target?.closest?.(`[${TILE_ATTR}]`);
+    const row = find((tile?.getAttribute(TILE_ATTR) as Id<"placeholderPairs"> | null) ?? null);
+    if (!row) return;
+    const key = e.key === "ArrowDown" ? "j" : e.key === "ArrowUp" ? "k" : e.key;
+    if (key === "j" || key === "k") {
+      const at = review.findIndex((r) => r.pairId === row.pairId);
+      const to = review[key === "j" ? at + 1 : at - 1];
+      if (to) run1(() => focusTile(to.pairId, inQty));
+      return;
+    }
     if (key === "y") run1(() => {
-      if (!canSave(row)) return;
+      if (!canSave(row)) return notify(whyNotSave(row));
       const typed = inQty ? Number.parseInt((target as HTMLInputElement).value, 10) : NaN;
       actions.save(row, Number.isFinite(typed) ? typed : undefined);
       focusTile(after(row.pairId), inQty);
@@ -560,6 +568,13 @@ function RunWorkspace({ run, jobOpen }: { run: RunSummary; jobOpen: boolean }) {
     else if (key === "s") run1(() => actions.swap(row));
     else if (key === "u") run1(() => { focusTile(after(row.pairId), false); actions.unpair(row); });
     else if (key === "d") run1(() => { focusTile(after(row.pairId), false); actions.aside(row, true); });
+  };
+  /** Close the drawer after an action that takes its card off the lane, landing on the next card. */
+  const closeAndMoveOn = (row: IntakeMatchRow, act: () => void) => {
+    const next = after(row.pairId);
+    act();
+    setOpenId(null);
+    focusTile(next, false);
   };
   const keyRef = useRef(onKey);
   useEffect(() => {
@@ -600,8 +615,12 @@ function RunWorkspace({ run, jobOpen }: { run: RunSummary; jobOpen: boolean }) {
             </div>
           ))}
         </dl>
-        <p role="status" aria-live="polite" className="m-0 text-sm text-ink-2">
+        <p aria-hidden="true" className="m-0 text-sm text-ink-2">
           {summary}
+        </p>
+        {/* Said once while the photos work, then when they're done: not every tick. */}
+        <p role="status" aria-live="polite" className="sr-only">
+          {loading ? "" : working > 0 ? "Working on your photos." : summary}
         </p>
         {jobOpen && (images?.length ?? 0) > 0 && (
           <NeonButton
@@ -671,7 +690,10 @@ function RunWorkspace({ run, jobOpen }: { run: RunSummary; jobOpen: boolean }) {
               variant="primary"
               className="mb-2"
               disabled={matched.length === 0}
-              onClick={() => matched.forEach((r) => actions.save(r))}
+              onClick={() => {
+                matched.forEach((r) => actions.save(r));
+                focusTile(review.find((r) => !matched.includes(r))?.pairId ?? null, false);
+              }}
             >
               Save {matched.length} matched
             </NeonButton>
@@ -699,6 +721,7 @@ function RunWorkspace({ run, jobOpen }: { run: RunSummary; jobOpen: boolean }) {
                 canSave={canSave(row)}
                 onOpen={() => setOpenId(row.pairId)}
                 onSaved={() => focusTile(after(row.pairId), true)}
+                onAnswered={(movesOn) => focusTile(movesOn ? after(row.pairId) : row.pairId, false)}
               />
             </li>
           ))}
@@ -721,12 +744,15 @@ function RunWorkspace({ run, jobOpen }: { run: RunSummary; jobOpen: boolean }) {
               <ul className="m-0 list-none space-y-1 p-0">
                 {lanes.setAside.map((row) => (
                   <li key={row.pairId} className="flex items-center justify-between gap-2 text-xs text-ink-3">
-                    <span className="truncate">{cardLabel(row.card)}</span>
+                    <span className="truncate">{tileLabel(row, readFor(row))}</span>
                     <button
                       type="button"
-                      className={`shrink-0 text-neon-blue-text underline ${RING}`}
-                      onClick={() => actions.aside(row, false)}
-                      aria-label={`Bring back ${cardLabel(row.card)}`}
+                      className={`-my-1.5 shrink-0 py-1.5 text-neon-blue-text underline ${RING}`}
+                      onClick={() => {
+                        actions.aside(row, false);
+                        focusTile(null, false);
+                      }}
+                      aria-label={`Bring back ${tileLabel(row, readFor(row))}`}
                     >
                       Bring back
                     </button>
@@ -747,6 +773,7 @@ function RunWorkspace({ run, jobOpen }: { run: RunSummary; jobOpen: boolean }) {
             actions={actions}
             canSave={canSave(open)}
             onClose={() => setOpenId(null)}
+            onMoveOn={(act) => closeAndMoveOn(open, act)}
           />
         </Overlay>
       )}
@@ -785,7 +812,13 @@ function Lane({
       className={`flex min-h-[16rem] flex-col rounded-lg border p-2 ${review ? "border-notice-warn-rule bg-notice-warn-bg/40" : "border-rule bg-raised"}`}
     >
       <header className="mb-2 flex items-center justify-between px-1">
-        <h2 className="m-0 text-sm font-semibold text-ink">{label}</h2>
+        <h2
+          id={review ? REVIEW_HEADING_ID : undefined}
+          tabIndex={review ? -1 : undefined}
+          className={`m-0 text-sm font-semibold text-ink ${review ? RING : ""}`}
+        >
+          {label}
+        </h2>
         <span className="text-sm font-bold tabular-nums text-ink-2">{count}</span>
       </header>
       {action}
@@ -905,6 +938,7 @@ function ReviewTile({
   canSave,
   onOpen,
   onSaved,
+  onAnswered,
 }: {
   row: IntakeMatchRow;
   jobId: string;
@@ -914,9 +948,12 @@ function ReviewTile({
   canSave: boolean;
   onOpen: () => void;
   onSaved: () => void;
+  onAnswered: (movesOn: boolean) => void;
 }) {
+  const label = tileLabel(row, read);
+  const reasonId = useId();
   return (
-    <article aria-label={cardLabel(row.card)} className={`rounded-md border-2 bg-surface p-2 ${edge(row, selected)}`}>
+    <article aria-label={label} className={`rounded-md border-2 bg-surface p-2 ${edge(row, selected)}`}>
       <div className="flex gap-2">
         <div className="flex shrink-0 gap-1">
           <ScanImage jobId={jobId} entryIndex={row.frontIndex} alt="Front scan" className="h-24 w-auto rounded" />
@@ -926,26 +963,33 @@ function ReviewTile({
           <p className="m-0 truncate text-sm font-semibold text-ink">{cardLabel(row.card)}</p>
           <Band row={row} />
           <p className="m-0 text-xs text-ink-3">{readLine(read)}</p>
-          {!row.byUser && row.band !== "matched" && <p className="m-0 line-clamp-3 text-xs text-ink-3">{reasonText(row, read)}</p>}
+          {!row.byUser && row.band !== "matched" && <p className="m-0 text-xs text-ink-3">{reasonText(row, read)}</p>}
+          {!canSave && (
+            <p id={reasonId} className="sr-only">
+              {whyNotSave(row)}
+            </p>
+          )}
         </div>
       </div>
-      <Prompts row={row} actions={actions} />
+      <Prompts row={row} actions={actions} onAnswered={onAnswered} />
       <div className="mt-2 flex flex-wrap items-center gap-2">
         <NeonButton
           size="1"
           variant="primary"
-          disabled={!canSave}
+          // aria-disabled keeps it reachable, so its reason can be heard.
+          aria-disabled={!canSave}
+          aria-describedby={canSave ? undefined : reasonId}
           aria-keyshortcuts="y"
-          aria-label={`Yes, save ${cardLabel(row.card)}`}
+          aria-label={`Yes, save ${label}`}
           onClick={(e) => {
             e.stopPropagation();
             actions.save(row);
-            onSaved();
+            if (canSave) onSaved();
           }}
         >
           Yes
         </NeonButton>
-        <NeonButton size="1" variant="secondary" outline aria-keyshortcuts="o" onClick={onOpen} aria-label={`Review ${cardLabel(row.card)}`}>
+        <NeonButton size="1" variant="secondary" outline aria-keyshortcuts="o" onClick={onOpen} aria-label={`Review ${label}`}>
           Review
         </NeonButton>
         <CountField row={row} actions={actions} disabled={!canSave} onEnter={onSaved} />
@@ -955,15 +999,28 @@ function ReviewTile({
 }
 
 /** The questions only the collector can answer, with one-click answers. */
-function Prompts({ row, actions }: { row: IntakeMatchRow; actions: RowActions }) {
+function Prompts({
+  row,
+  actions,
+  onAnswered,
+}: {
+  row: IntakeMatchRow;
+  actions: RowActions;
+  /** The answer's button is gone; where focus goes. True when the card leaves the lane. */
+  onAnswered: (movesOn: boolean) => void;
+}) {
+  const answer = (act: () => void, movesOn = false) => {
+    act();
+    onAnswered(movesOn);
+  };
   const parts: ReactNode[] = [];
   if (row.repeatOfPairId && !row.repeatIsSecondCopy) {
     parts.push(
       <Prompt key="repeat" text="This card is already in this run. Is it a second copy, or the same card scanned twice?">
-        <NeonButton size="1" variant="secondary" onClick={() => actions.repeat(row, true)}>
+        <NeonButton size="1" variant="secondary" onClick={() => answer(() => actions.repeat(row, true))}>
           Second copy
         </NeonButton>
-        <NeonButton size="1" variant="negative" outline onClick={() => actions.repeat(row, false)}>
+        <NeonButton size="1" variant="negative" outline onClick={() => answer(() => actions.repeat(row, false), true)}>
           Same card, set it aside
         </NeonButton>
       </Prompt>,
@@ -974,7 +1031,7 @@ function Prompts({ row, actions }: { row: IntakeMatchRow; actions: RowActions })
     parts.push(
       <Prompt key="cands" text={row.cardId ? "Or is it:" : "Which card is it?"}>
         {others.map((c) => (
-          <NeonButton key={c._id} size="1" variant="secondary" outline onClick={() => actions.pick(row, c._id)}>
+          <NeonButton key={c._id} size="1" variant="secondary" outline onClick={() => answer(() => actions.pick(row, c._id))}>
             {cardLabel(c)}
           </NeonButton>
         ))}
@@ -987,7 +1044,7 @@ function Prompts({ row, actions }: { row: IntakeMatchRow; actions: RowActions })
         {[row.card, ...row.variations]
           .filter((c): c is NonNullable<typeof c> => !!c && c._id !== row.cardId)
           .map((c) => (
-            <NeonButton key={c._id} size="1" variant="secondary" outline onClick={() => actions.pick(row, c._id)}>
+            <NeonButton key={c._id} size="1" variant="secondary" outline onClick={() => answer(() => actions.pick(row, c._id))}>
               {c.variation ?? "The regular picture"}
             </NeonButton>
           ))}
@@ -1049,6 +1106,8 @@ function CountField({
             setDraft(null);
             onEnter?.();
           } else if (e.key === "Escape") {
+            // Undo the typing only; inside the drawer this must not close it too.
+            if (draft !== null) e.stopPropagation();
             setDraft(null);
           } else if (e.key.length === 1 && !/\d/.test(e.key) && !e.ctrlKey && !e.metaKey && !e.altKey) {
             e.preventDefault();
@@ -1146,6 +1205,7 @@ function Drawer({
   actions,
   canSave,
   onClose,
+  onMoveOn,
 }: {
   row: IntakeMatchRow;
   run: RunSummary;
@@ -1153,8 +1213,12 @@ function Drawer({
   actions: RowActions;
   canSave: boolean;
   onClose: () => void;
+  /** Do something that takes the card off the lane, close, and land on the next card. */
+  onMoveOn: (act: () => void) => void;
 }) {
   const [searching, setSearching] = useState(false);
+  // A control that took focus with it (a prompt answer, the search): focus goes back to the title.
+  const toTitle = () => requestAnimationFrame(() => document.getElementById("intake-drawer-title")?.focus());
   const tool = `min-h-11 rounded-md border border-rule bg-button-neutral px-2 py-1 text-xs text-ink-2 hover:bg-button-neutral-hover sm:min-h-8 ${RING}`;
   return (
     <div className="space-y-4 p-5">
@@ -1173,9 +1237,17 @@ function Drawer({
         <ScanImage jobId={run.jobId} entryIndex={row.frontIndex} alt="Front scan" className="h-64 w-auto rounded" />
         <ScanImage jobId={run.jobId} entryIndex={row.backIndex} alt="Back scan" className="h-64 w-auto rounded" />
       </div>
-      <Prompts row={row} actions={actions} />
+      <Prompts row={row} actions={actions} onAnswered={(movesOn) => (movesOn ? onMoveOn(() => {}) : toTitle())} />
       {searching ? (
-        <CardSearch row={row} run={run} actions={actions} onDone={() => setSearching(false)} />
+        <CardSearch
+          row={row}
+          run={run}
+          actions={actions}
+          onDone={() => {
+            setSearching(false);
+            toTitle();
+          }}
+        />
       ) : (
         <button type="button" onClick={() => setSearching(true)} className={`text-sm text-neon-blue-text underline ${RING}`}>
           Wrong card? Find it
@@ -1183,28 +1255,35 @@ function Drawer({
       )}
       <div role="group" aria-label="Fix this scan" className="flex flex-wrap gap-1.5">
         <button type="button" className={tool} aria-keyshortcuts="s" onClick={() => actions.swap(row)}>
-          <kbd className="mr-1 font-mono text-ink-3">s</kbd>Swap sides
+          <kbd className="mr-1 font-mono">s</kbd>Swap sides
         </button>
-        <button type="button" className={tool} aria-keyshortcuts="u" onClick={() => { actions.unpair(row); onClose(); }}>
-          <kbd className="mr-1 font-mono text-ink-3">u</kbd>Unpair
+        <button type="button" className={tool} aria-keyshortcuts="u" onClick={() => onMoveOn(() => actions.unpair(row))}>
+          <kbd className="mr-1 font-mono">u</kbd>Unpair
         </button>
         {row.byUser && (
-          <button type="button" className={tool} onClick={() => actions.pick(row, null)}>
+          <button
+            type="button"
+            className={tool}
+            onClick={() => {
+              actions.pick(row, null);
+              toTitle();
+            }}
+          >
             Let the matcher pick again
           </button>
         )}
-        <NeonButton size="1" variant="negative" outline aria-keyshortcuts="d" className="min-h-11 sm:min-h-8" onClick={() => { actions.aside(row, true); onClose(); }}>
+        <NeonButton size="1" variant="negative" outline aria-keyshortcuts="d" className="min-h-11 sm:min-h-8" onClick={() => onMoveOn(() => actions.aside(row, true))}>
           <kbd className="mr-1 font-mono">d</kbd>Set aside
         </NeonButton>
       </div>
       <div className="flex flex-wrap items-center gap-3 border-t border-rule pt-3">
-        <CountField row={row} actions={actions} disabled={!canSave} onEnter={onClose} />
+        <CountField row={row} actions={actions} disabled={!canSave} onEnter={() => onMoveOn(() => {})} />
         <NeonButton
           variant="primary"
-          disabled={!canSave}
+          aria-disabled={!canSave}
           onClick={() => {
-            actions.save(row);
-            onClose();
+            if (!canSave) return actions.save(row);
+            onMoveOn(() => actions.save(row));
           }}
         >
           Save this card

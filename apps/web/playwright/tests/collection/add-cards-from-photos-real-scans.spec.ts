@@ -1,9 +1,12 @@
 // NEO-382 (R1): Add cards from photos, signed in. Real card scans go through
 // the real pipeline (crop, read, pair), are matched in the set picked, and
 // wait for the collector: a sure match says "Matched", a number that names
-// one card while the name names another says "Check this" and offers both,
-// and a card fed through twice asks whether it is a second copy. Nothing
-// saves until the collector says yes; what they save lands in the binder.
+// one card while the name names another says "Check this" and is put right in
+// the review drawer by searching the set, a card saved by keyboard (y on the
+// focused card), and a card fed through twice asks whether it is a second copy
+// (set aside, brought back, then counted). Nothing saves until the collector
+// says yes; what they save lands in the binder, and the Inventory side offers
+// its boxes.
 //
 // The scans are six real 2014 Score football photos (McFadden #160, Bowe
 // #315, Bell #174, front then back) plus a re-scan of the Bowe card dropped
@@ -18,8 +21,9 @@
 // id beneath it: four hand-added cards. The card names are the real players'
 // names on purpose (they are what the photos read; not minted, like vtk's
 // kind words), scoped by the per-attempt set. The run and its photos are the
-// account's own. Self-cleaning: the three saved copies are removed through the
-// checklist at the end; the set and its cards stand, per attempt.
+// account's own. Self-cleaning: the saved copies are removed through the
+// checklist at the end and the upload session is closed ("Done adding photos");
+// the set, its cards and the closed run stand, per attempt.
 //
 // R3: the Set Builder through `support/set-builder.ts`; both collector
 // cascades through `support/collection.ts`. pipeline-pairs-uploaded-scans
@@ -91,11 +95,13 @@ test(
     await dropzone.setInputFiles(
       scans("01-mcfadden-front.jpg", "02-mcfadden-back.jpg", "03-bowe-front.jpg", "04-bowe-back.jpg", "05-bell-front.jpg", "06-bell-back.jpg"),
     );
-    await expect(page.getByRole("status").filter({ hasText: "Sent 6 photos." })).toBeVisible({ timeout: 60_000 });
+    // Sending is the pipeline's upload leg (six real scans to storage): its exception.
+    await expect(page.getByRole("status").filter({ hasText: "Sent 6 photos." })).toBeVisible({ timeout: PIPELINE });
     await expect(page).toHaveURL(/[?&]run=/);
     await expect(page.getByText("Going into", { exact: true })).toBeVisible();
 
     const waiting = page.getByRole("region", { name: /^Needs you, \d+$/ });
+    const saved = page.getByRole("region", { name: /^Saved, \d+$/ });
     const tile = (label: string) => waiting.getByRole("article", { name: label, exact: true });
     const mcfadden = tile("#160 Darren McFadden");
     const bowe = tile("#315 Dwayne Bowe");
@@ -109,42 +115,66 @@ test(
     await expect(mcfadden.getByText(/^Matched \d+%$/)).toBeVisible();
     await expect(bowe.getByText(/^Matched \d+%$/)).toBeVisible();
     await expect(bell.getByText(/^Check this \d+%$/)).toBeVisible();
-    // What was read is shown, and the other card is offered: never settled silently.
-    await expect(bell.getByText(/^Read: #174 · .*Bell/)).toBeVisible();
-    await expect(bell.getByText(/One of them is misread/)).toBeVisible();
-    await expectAccessible(page, { label: "Add cards, three waiting" });
-    // Nothing saved itself.
+    // What was read is shown (as read, so any case), and nothing saved itself.
+    await expect(bell.getByText(/^Read: #174 · .*bell/i)).toBeVisible();
     await expect(page.getByRole("region", { name: "Saved, 0" })).toBeVisible();
+
+    // --- Bell, in the drawer: the misread explained, the right card found -----------
+    await bell.getByRole("button", { name: "Review #174 Antonio Brown" }).click();
+    const reviewDrawer = page.getByRole("dialog", { name: "#174 Antonio Brown" });
+    await expect(reviewDrawer.getByText(/One of them is misread/)).toBeVisible();
+    await expectAccessible(page, { label: "Add cards, the review drawer", within: reviewDrawer });
+    await reviewDrawer.getByRole("button", { name: "Wrong card? Find it" }).click();
+    await reviewDrawer.getByRole("combobox", { name: /^Find the card in / }).fill("47");
+    await reviewDrawer.getByRole("option", { name: "#47 Le'Veon Bell", exact: true }).click();
+    const bellDrawer = page.getByRole("dialog", { name: "#47 Le'Veon Bell" });
+    await expect(bellDrawer.getByText("You picked", { exact: true })).toBeVisible();
+    await bellDrawer.getByRole("button", { name: "Save this card" }).click();
+    await expect(bellDrawer).toBeHidden();
+    await expect(saved).toHaveAccessibleName("Saved, 1");
+    await expect(waiting).toHaveAccessibleName("Needs you, 2");
+
+    // --- McFadden by keyboard: y on the focused card saves it ------------------------
+    await mcfadden.getByRole("button", { name: "Yes, save #160 Darren McFadden" }).focus();
+    await page.keyboard.press("y");
+    await expect(saved).toHaveAccessibleName("Saved, 2");
+    await expect(waiting).toHaveAccessibleName("Needs you, 1");
 
     // --- The same Bowe card fed through again, into the same run ------------------
     await dropzone.setInputFiles(scans("07-bowe-again-front.jpg", "08-bowe-again-back.jpg"));
-    await expect(page.getByRole("status").filter({ hasText: "Sent 2 photos." })).toBeVisible({ timeout: 60_000 });
-    await expect(waiting).toHaveAccessibleName("Needs you, 4", { timeout: PIPELINE });
+    await expect(page.getByRole("status").filter({ hasText: "Sent 2 photos." })).toBeVisible({ timeout: PIPELINE });
+    await expect(waiting).toHaveAccessibleName("Needs you, 2", { timeout: PIPELINE });
     const rescan = bowe.filter({ hasText: "This card is already in this run" });
     await expect(rescan).toHaveCount(1);
     // Until it is answered it cannot be saved.
     await expect(rescan.getByRole("button", { name: "Yes, save #315 Dwayne Bowe" })).toBeDisabled();
     await rescan.getByRole("button", { name: "Same card, set it aside" }).click();
-    await expect(waiting).toHaveAccessibleName("Needs you, 3");
-    const saved = page.getByRole("region", { name: /^Saved, \d+$/ });
+    await expect(waiting).toHaveAccessibleName("Needs you, 1");
     await expect(saved.getByText("Set aside", { exact: true })).toBeVisible();
-    await expect(saved.getByRole("button", { name: "Bring back #315 Dwayne Bowe" })).toBeVisible();
+    // Settled (nothing arriving): the whole screen, with a card set aside.
+    await expectAccessible(page, { label: "Add cards, a re-scan set aside" });
 
-    // --- Fix Bell, then yes to all three -------------------------------------------
-    await bell.getByRole("button", { name: "#47 Le'Veon Bell", exact: true }).click();
-    const bellFixed = tile("#47 Le'Veon Bell");
-    await expect(bellFixed.getByText("You picked", { exact: true })).toBeVisible();
-
-    await mcfadden.getByRole("button", { name: "Yes, save #160 Darren McFadden" }).click();
-    await bowe.getByRole("button", { name: "Yes, save #315 Dwayne Bowe" }).click();
-    await bellFixed.getByRole("button", { name: "Yes, save #47 Le'Veon Bell" }).click();
-    await expect(page.getByRole("region", { name: "Saved, 3" })).toBeVisible();
+    // Brought back, it asks again; this time it is a second copy.
+    await saved.getByRole("button", { name: "Bring back #315 Dwayne Bowe" }).click();
+    await expect(waiting).toHaveAccessibleName("Needs you, 2");
+    await rescan.getByRole("button", { name: "Second copy" }).click();
+    const boweYes = waiting.getByRole("button", { name: "Yes, save #315 Dwayne Bowe" });
+    await expect(boweYes).toHaveCount(2);
+    for (const yes of await boweYes.all()) await expect(yes).toBeEnabled();
+    // Either Bowe tile: they are the same card.
+    await boweYes.first().click();
+    await expect(waiting).toHaveAccessibleName("Needs you, 1");
+    await boweYes.click();
+    await expect(page.getByRole("region", { name: "Saved, 4" })).toBeVisible();
     await expect(waiting).toHaveAccessibleName("Needs you, 0");
-    for (const label of ["#160 Darren McFadden", "#315 Dwayne Bowe", "#47 Le'Veon Bell"]) {
-      await expect(saved.getByText(label, { exact: true })).toBeVisible();
+    const savedTiles = saved.getByRole("listitem").filter({ hasText: /Saved \+1$/ });
+    for (const [label, n] of [["#160 Darren McFadden", 1], ["#315 Dwayne Bowe", 2], ["#47 Le'Veon Bell", 1]] as const) {
+      await expect(savedTiles.filter({ has: page.getByText(label, { exact: true }) })).toHaveCount(n);
     }
-    // The re-scan was not counted: one Bowe saved.
-    await expect(saved.getByText("Saved +1")).toHaveCount(3);
+
+    // --- Done adding photos: the session closes ---------------------------------------
+    await page.getByRole("button", { name: "Done adding photos" }).click();
+    await expect(page.getByText("This run's photos are all in. To add more, start a new run.")).toBeVisible();
 
     // --- In the binder, then clean up ----------------------------------------------
     await page.goto("/collection?tab=checklists");
@@ -165,12 +195,21 @@ test(
       await checklist.getByRole("button", { name: `Details for ${short}`, exact: true }).click();
       const drawer = page.getByRole("dialog", { name: new RegExp(`^2024 ${escapeRe(setName)}.*${escapeRe(short)}`) });
       const yourCopies = drawer.getByRole("region", { name: `Your copies of ${short}` });
-      await yourCopies.getByRole("button", { name: new RegExp(`^Remove ${escapeRe(short)}, `) }).click();
+      const remove = yourCopies.getByRole("button", { name: new RegExp(`^Remove ${escapeRe(short)}, `) });
+      // One line each: the second Bowe copy folded into the first, not a line of its own.
+      await expect(remove).toHaveCount(1);
+      await remove.click();
       await expect(yourCopies.getByText("None yet. Fill in what you know below and add it.")).toBeVisible();
-      await drawer.press("Escape");
+      await drawer.getByRole("button", { name: "Close card detail" }).click();
       await expect(drawer).toBeHidden();
     }
     // Antonio Brown (#174) was never saved.
     await expect(checklist.getByRole("button", { name: /^Have #174, /, pressed: true })).toHaveCount(0);
+
+    // --- The Inventory side files into boxes ---------------------------------------
+    await page.goto("/inventory?tab=add");
+    await expect(page.getByRole("heading", { level: 1, name: "Inventory" })).toBeVisible();
+    await expect(page.getByRole("combobox", { name: "Put them in this box" })).toBeVisible();
+    await expectAccessible(page, { label: "Add cards, inventory" });
   },
 );

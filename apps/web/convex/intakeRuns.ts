@@ -461,6 +461,8 @@ export const pickIntakeCard = mutation({
 
 /** Cards the "Wrong card? Find it" search returns at most. */
 const MAX_SEARCH_HITS = 8;
+/** A ceiling on the cards one search reads; a variant's checklist is far smaller. */
+const MAX_SEARCH_SCAN = 5000;
 
 async function requireRunRow(
   ctx: QueryCtx,
@@ -556,6 +558,7 @@ export const answerIntakeRepeat = mutation({
     const run = await requireOwnedRun(ctx, args.runId);
     const row = await requireRunRow(ctx, run, args.pairId);
     if (row.savedAt !== undefined) throw new Error("That card is already saved");
+    if (!row.repeatOfPairId) throw new Error("That card isn't a repeat");
     await ctx.db.patch(
       row._id,
       args.secondCopy ? { repeatIsSecondCopy: true } : { setAside: true },
@@ -606,7 +609,7 @@ export const searchIntakeCards = query({
     const cards = await ctx.db
       .query("cardChecklist")
       .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", variantId))
-      .collect();
+      .take(MAX_SEARCH_SCAN);
     const byNumber = [];
     const byName = [];
     for (const c of cards) {
@@ -757,8 +760,11 @@ export const syncIntakeMatches = internalMutation({
         variations: (answer?.variations ?? []) as Id<"cardChecklist">[],
       };
       if (existing) {
-        await ctx.db.patch(existing._id, fields);
-        byPair.set(pair._id, { ...existing, ...fields });
+        // A different card asks the repeat question again.
+        const patch =
+          existing.cardId === fields.cardId ? fields : { ...fields, repeatIsSecondCopy: undefined };
+        await ctx.db.patch(existing._id, patch);
+        byPair.set(pair._id, { ...existing, ...patch });
       } else {
         const id = await ctx.db.insert("intakeMatches", {
           runId: run._id,
@@ -783,7 +789,8 @@ export const syncIntakeMatches = internalMutation({
         if (!repeatOf) firstFor.set(row.cardId, row.pairId);
       }
       if (row.repeatOfPairId !== repeatOf) {
-        await ctx.db.patch(row._id, { repeatOfPairId: repeatOf });
+        // A "second copy" answer was about the old repeat, so it is asked again.
+        await ctx.db.patch(row._id, { repeatOfPairId: repeatOf, repeatIsSecondCopy: undefined });
       }
     }
 

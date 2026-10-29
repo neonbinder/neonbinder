@@ -31,10 +31,13 @@ export function Dropzone({
   files,
   onFiles,
   disabled,
+  quiet = false,
 }: {
   files: File[];
   onFiles: (files: File[]) => void;
   disabled: boolean;
+  /** The caller announces progress itself; only a refused selection is said here. */
+  quiet?: boolean;
 }) {
   const inputId = useId();
   const [dragging, setDragging] = useState(false);
@@ -135,13 +138,15 @@ export function Dropzone({
       >
         {problem
           ? problem
-          : disabled
-            ? "Sending…"
-            : files.length === 0
-              ? "Nothing selected yet."
-              : intake?.kind === "zip"
-                ? `${files[0].name} sent.`
-                : `${files.length} photo${files.length === 1 ? "" : "s"} sent.`}
+          : quiet
+            ? ""
+            : disabled
+              ? "Sending…"
+              : files.length === 0
+                ? "Nothing selected yet."
+                : intake?.kind === "zip"
+                  ? `${files[0].name} sent.`
+                  : `${files.length} photo${files.length === 1 ? "" : "s"} sent.`}
       </p>
     </div>
   );

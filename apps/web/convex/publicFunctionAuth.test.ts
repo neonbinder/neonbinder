@@ -2593,10 +2593,17 @@ describe("NEO-379: the intake run functions are signed-in, and the reads answer 
       () => t.mutation(api.intakeRuns.createIntakeRun, { jobId: "job-x", homeId }),
       () => t.mutation(api.intakeRuns.pickIntakeCard, { runId, pairId, cardId }),
       () => t.mutation(api.intakeRuns.setIntakeRunDefaults, { runId, defaults: {} }),
+      // NEO-382: the collector's answers.
+      () => t.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId, quantity: 1 }),
+      () => t.mutation(api.intakeRuns.answerIntakeRepeat, { runId, pairId, secondCopy: true }),
+      () => t.mutation(api.intakeRuns.setIntakeMatchAside, { runId, pairId, setAside: true }),
     ];
     for (const call of writes) await expect(call()).rejects.toThrow(/Not authenticated/);
     expect(await t.query(api.intakeRuns.getIntakeRun, { runId })).toBeNull();
     expect(await t.query(api.intakeRuns.listIntakeMatches, { runId })).toEqual([]);
     expect(await t.query(api.intakeRuns.listMyIntakeRuns, {})).toEqual([]);
+    expect(await t.query(api.intakeRuns.searchIntakeCards, { runId, q: "1" })).toEqual([]);
+    const copies = await t.run(async (ctx) => ctx.db.query("collectionCopies").collect());
+    expect(copies).toEqual([]);
   });
 });

@@ -14,6 +14,7 @@ import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { drainScheduled } from "../lib/testing/drain-scheduled";
 import { seedCollectionCatalog } from "../lib/testing/collection-fixture";
+import { insertTestCard } from "../lib/testing/card-row";
 import { noteIntakePairsChanged } from "./intakeRuns";
 
 const modules = (import.meta as unknown as {
@@ -387,6 +388,10 @@ describe("the collector's answers (NEO-382)", () => {
     await expect(
       w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[1], quantity: 1 }),
     ).rejects.toThrow(/second copy/);
+    // The first scan of the card is no repeat, so there is nothing to answer.
+    await expect(
+      w.me.mutation(api.intakeRuns.answerIntakeRepeat, { runId, pairId: w.pairIds[0], secondCopy: true }),
+    ).rejects.toThrow(/isn't a repeat/);
 
     await w.me.mutation(api.intakeRuns.answerIntakeRepeat, { runId, pairId: w.pairIds[1], secondCopy: true });
     await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[1], quantity: 1 });
@@ -432,6 +437,77 @@ describe("the collector's answers (NEO-382)", () => {
     const byName = await w.me.query(api.intakeRuns.searchIntakeCards, { runId, q: "gooden" });
     expect(byName.map((c) => c._id)).toEqual(expect.arrayContaining([w.fx.gooden1]));
     expect(await w.them.query(api.intakeRuns.searchIntakeCards, { runId, q: "1" })).toEqual([]);
+  });
+
+  test("a saved or set-aside card is never re-matched; a second-copy answer is asked again when the match moves", async () => {
+    const w = await world([
+      { number: "1", players: ["Doc Gooden"] },
+      { number: "2", players: ["Darryl Strawberry"] },
+      { number: "1", players: ["Doc Gooden"] },
+    ]);
+    const runId = await startRun(w, w.fx.baseId);
+    await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[0], quantity: 1 });
+    await w.me.mutation(api.intakeRuns.setIntakeMatchAside, { runId, pairId: w.pairIds[1], setAside: true });
+    await w.me.mutation(api.intakeRuns.answerIntakeRepeat, { runId, pairId: w.pairIds[2], secondCopy: true });
+
+    // A new variant re-matches every open card, and only those.
+    await w.me.mutation(api.intakeRuns.setIntakeRunVariant, { runId, variantId: w.fx.goldId, pinned: true });
+    await drainScheduled(w.t);
+    const rows = await byPair(w, runId);
+    expect(rows.get(w.pairIds[0])).toMatchObject({ cardId: w.fx.gooden1, savedQuantity: 1 });
+    expect(rows.get(w.pairIds[1])).toMatchObject({ cardId: w.fx.strawberry2, setAside: true });
+    const moved = rows.get(w.pairIds[2])!;
+    expect(moved.cardId).toBe(w.fx.gold1);
+    expect(moved.repeatIsSecondCopy).toBeUndefined();
+
+    // A saved card takes no more answers.
+    await expect(
+      w.me.mutation(api.intakeRuns.setIntakeMatchAside, { runId, pairId: w.pairIds[0], setAside: true }),
+    ).rejects.toThrow(/already saved/);
+    await expect(
+      w.me.mutation(api.intakeRuns.answerIntakeRepeat, { runId, pairId: w.pairIds[0], secondCopy: false }),
+    ).rejects.toThrow(/already saved/);
+  });
+
+  test("a save takes up to 999 copies, and a per-card detail left out keeps the run's", async () => {
+    const w = await world([{ number: "1", players: ["Doc Gooden"] }]);
+    const runId = await startRun(w, w.fx.baseId);
+    await w.me.mutation(api.intakeRuns.saveIntakeMatch, {
+      runId,
+      pairId: w.pairIds[0],
+      quantity: 999,
+      details: { condition: undefined, location: "Binder 4" },
+    });
+    const [copy] = await copiesOf(w, w.fx.gooden1);
+    expect(copy).toMatchObject({ quantity: 999, condition: "Near Mint", location: "Binder 4" });
+    const row = (await byPair(w, runId)).get(w.pairIds[0])!;
+    expect(row.card).toMatchObject({ _id: w.fx.gooden1, cardNumber: "1" });
+  });
+
+  test("the search: no variant finds nothing, an empty search lists the variant, at most 8", async () => {
+    const w = await world([{ number: "1" }, { number: "77", players: ["Nobody Known"] }]);
+    const bare = await startRun(w);
+    expect(await w.me.query(api.intakeRuns.searchIntakeCards, { runId: bare, q: "1" })).toEqual([]);
+    expect((await byPair(w, bare)).get(w.pairIds[1])!.card).toBeNull();
+
+    await w.me.mutation(api.intakeRuns.setIntakeRunVariant, { runId: bare, variantId: w.fx.baseId, pinned: true });
+    const all = await w.me.query(api.intakeRuns.searchIntakeCards, { runId: bare, q: "  " });
+    expect(all.map((c) => c._id)).toEqual(
+      expect.arrayContaining([w.fx.gooden1, w.fx.strawberry2, w.fx.gooden1Sliding]),
+    );
+    await w.t.run(async (ctx) => {
+      for (let i = 0; i < 12; i++) {
+        await insertTestCard(ctx, {
+          selectorOptionId: w.fx.baseId,
+          cardNumber: `${100 + i}`,
+          cardName: `Filler ${i}`,
+          platformData: {},
+          sortOrder: 100 + i,
+          lastUpdated: 0,
+        } as never);
+      }
+    });
+    expect(await w.me.query(api.intakeRuns.searchIntakeCards, { runId: bare, q: "filler" })).toHaveLength(8);
   });
 
   test("another collector cannot save, answer or set aside", async () => {
