@@ -139,7 +139,9 @@ export default function RealAddCardsTab() {
   useEffect(() => () => localUrls.current.forEach((u) => URL.revokeObjectURL(u)), []);
 
   const job = useQuery(api.placeholderPipeline.getPlaceholderJob, run ? { jobId: run.jobId } : "skip");
-  const collecting = !run || job?.status === "collecting";
+  // Still loading the run's job reads as collecting, so the drop zone and the
+  // scanner code don't blink out while a just-started run catches up.
+  const collecting = !run || job === undefined || job?.status === "collecting";
 
   const openRun = (id: Id<"intakeRuns"> | null) =>
     setParams((p) => {
@@ -284,6 +286,7 @@ export default function RealAddCardsTab() {
                 ? { homeId: pickedHome as Id<"collectionContainers">, variantId: variant?.variantId, defaults }
                 : null
             }
+            kind={kind}
             onRunStarted={openRun}
           />
         </>

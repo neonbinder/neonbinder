@@ -228,7 +228,7 @@ export async function feedCards(opts: {
       proc.stderr?.on("data", (chunk: Buffer) => (stderr += chunk.toString()));
       const exited = new Promise<void>((resolve) => proc.on("close", () => resolve()));
 
-      const staged = async () => (await readdir(stage).catch(() => [] as string[])).filter((f) => f.startsWith("raw-")).sort();
+      const staged = async () => (await readdir(stage).catch(() => [] as string[])).filter((f) => f.startsWith("raw-") && f.endsWith(".jpg")).sort();
       let released = 0;
       let kept = 0;
       const release = async (final: boolean) => {

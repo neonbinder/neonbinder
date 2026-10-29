@@ -9,8 +9,11 @@ describe("siteUrlFor", () => {
     expect(() => siteUrlFor("https://example.com")).toThrow(/convex\.cloud/);
   });
   test("an override must be https, or loopback http", () => {
-    expect(siteUrlFor("x", "http://localhost:3211/")).toBe("http://localhost:3211");
-    expect(() => siteUrlFor("x", "http://evil.example")).toThrow(/https/);
+    expect(siteUrlFor("http://127.0.0.1:3210", "http://localhost:3211/")).toBe("http://localhost:3211");
+    expect(() => siteUrlFor("https://a.convex.cloud", "http://evil.example")).toThrow(/https/);
+  });
+  test("the deployment URL itself must be https, or loopback http", () => {
+    expect(() => siteUrlFor("http://a.convex.cloud", "https://a.convex.site")).toThrow(/NEONBINDER_CONVEX_URL/);
   });
 });
 

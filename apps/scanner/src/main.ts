@@ -45,7 +45,8 @@ async function main(): Promise<number> {
     log(HELP);
     return values.help ? 0 : 2;
   }
-  const apiKey = env("NEONBINDER_API_KEY");
+  // NEONBINDER_MACHINE_KEY is the name the older scanner CLI used for the same key.
+  const apiKey = env("NEONBINDER_API_KEY") ?? env("NEONBINDER_MACHINE_KEY");
   const convexUrl = env("NEONBINDER_CONVEX_URL");
   if (!apiKey || !convexUrl) {
     log("Set NEONBINDER_API_KEY and NEONBINDER_CONVEX_URL (see .env.example).");

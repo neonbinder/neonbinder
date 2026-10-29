@@ -1,22 +1,22 @@
 import { ConvexClient } from "convex/browser";
 import { makeFunctionReference } from "convex/server";
+import { BACKEND_FUNCTIONS, RUN_CLOSED_ERROR } from "./backend-contract.js";
 
 /**
  * The NeonBinder side: sign in with the collector's API key, join the intake
  * run by its scanner code, and stream images into that run's placeholder job.
  *
- * Function references are built from their paths because this package does
- * not share apps/web's codegen. The functions live in apps/web/convex:
- * intakeScanner.ts, placeholderStream.ts, adapters/placeholderUploads.ts and,
- * for the key exchange, machineAuth.ts (`POST /machine/token`).
+ * Function references are built from their paths (./backend-contract.ts)
+ * because this package does not share apps/web's codegen; the key exchange is
+ * apps/web/convex/machineAuth.ts (`POST /machine/token`).
  *
  * The API key and the session tokens minted from it are never logged, not even
  * in part.
  */
 
-const joinRun = makeFunctionReference<"query">("intakeScanner:joinIntakeRunByScannerCode");
-const createUploadUrl = makeFunctionReference<"action">("adapters/placeholderUploads:createPlaceholderImageUploadUrl");
-const confirmUpload = makeFunctionReference<"mutation">("placeholderStream:confirmPlaceholderImageUpload");
+const joinRun = makeFunctionReference<"query">(BACKEND_FUNCTIONS.joinRun);
+const createUploadUrl = makeFunctionReference<"action">(BACKEND_FUNCTIONS.createUploadUrl);
+const confirmUpload = makeFunctionReference<"mutation">(BACKEND_FUNCTIONS.confirmUpload);
 
 export interface JoinedRun {
   runId: string;
@@ -39,10 +39,15 @@ interface UploadTicket {
  * `.convex.site`. NEONBINDER_CONVEX_SITE_URL overrides for a local backend.
  * The key travels in that request's body, so it must be https (or loopback).
  */
+const LOOPBACK = /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/|$)/;
+
 export function siteUrlFor(convexUrl: string, override?: string): string {
+  // The session token rides the deployment connection, so it gets the same rule.
+  if (!/^https:\/\//.test(convexUrl) && !LOOPBACK.test(convexUrl)) {
+    throw new Error("NEONBINDER_CONVEX_URL must be https:// (or http://localhost for a local backend).");
+  }
   if (override) {
-    const loopback = /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/|$)/.test(override);
-    if (!/^https:\/\//.test(override) && !loopback) {
+    if (!/^https:\/\//.test(override) && !LOOPBACK.test(override)) {
       throw new Error("NEONBINDER_CONVEX_SITE_URL must be https:// (or http://localhost for a local backend).");
     }
     return override.replace(/\/$/, "");
@@ -70,6 +75,8 @@ class KeyExchange {
   private async exchange(): Promise<Response> {
     return await fetch(`${this.siteUrl}/machine/token`, {
       method: "POST",
+      // The key is in the body; a redirect would resend it somewhere else.
+      redirect: "error",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ key: this.key, ...(this.sessionId ? { sessionId: this.sessionId } : {}) }),
     });
@@ -176,5 +183,5 @@ export class NeonBinder {
 /** The run stopped taking cards (done pressed, or it sat idle and closed). */
 export function isRunClosedError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
-  return /not collecting|not a scanner batch|Job not found/i.test(message);
+  return RUN_CLOSED_ERROR.test(message);
 }

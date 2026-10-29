@@ -4,7 +4,7 @@
  */
 
 import { convexTest } from "convex-test";
-import { describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import schema from "./schema";
 import { api } from "./_generated/api";
 import {
@@ -21,7 +21,9 @@ const ME = { subject: "user_scannerMe00001" };
 const THEM = { subject: "user_scannerThem002" };
 const JOB = "job-scanner-1";
 
-async function world(status: "collecting" | "pairing" = "collecting") {
+afterEach(() => vi.restoreAllMocks());
+
+async function world(status: "collecting" | "pairing" = "collecting", mode: "stream" | "zip" = "stream") {
   const t = convexTest(schema, modules);
   const runId = await t.run(async (ctx) => {
     await ctx.db.insert("placeholderJobs", {
@@ -29,7 +31,7 @@ async function world(status: "collecting" | "pairing" = "collecting") {
       userId: ME.subject,
       objectPath: `placeholders/${ME.subject}/${JOB}/`,
       createdAt: 0,
-      mode: "stream",
+      mode,
       status,
     });
     const homeId = await ctx.db.insert("collectionContainers", {
@@ -63,6 +65,19 @@ describe("scannerCodeForIntakeRun", () => {
     expect(code).toHaveLength(SCANNER_CODE_LENGTH);
     for (const ch of code) expect(SCANNER_CODE_ALPHABET).toContain(ch);
     expect(await me.mutation(api.intakeScanner.scannerCodeForIntakeRun, { runId })).toBe(code);
+  });
+
+  test("tries again on a clash with one of the owner's codes, and gives up after five", async () => {
+    const { t, runId } = await world();
+    await t.run(async (ctx) => {
+      const other = await ctx.db.get(runId);
+      await ctx.db.insert("intakeRuns", { ...other!, _id: undefined, _creationTime: undefined, scannerCode: "AAAAAA" } as never);
+    });
+    // Every byte 0 spells "AAAAAA": always the clash.
+    vi.spyOn(crypto, "getRandomValues").mockImplementation(<T extends ArrayBufferView | null>(a: T) => a);
+    await expect(
+      t.withIdentity(ME).mutation(api.intakeScanner.scannerCodeForIntakeRun, { runId }),
+    ).rejects.toThrow(/Couldn't make a scanner code/);
   });
 
   test("refuses another collector's run", async () => {
@@ -103,6 +118,38 @@ describe("joinIntakeRunByScannerCode", () => {
     const code = await me.mutation(api.intakeScanner.scannerCodeForIntakeRun, { runId });
     const joined = await me.query(api.intakeScanner.joinIntakeRunByScannerCode, { code });
     expect(joined?.collecting).toBe(false);
+  });
+
+  test("names the run's variant when it has one", async () => {
+    const { t, runId } = await world();
+    await t.run(async (ctx) => {
+      const variantId = await ctx.db.insert("selectorOptions", {
+        level: "variantType",
+        value: "Base",
+        platformData: {},
+        children: [],
+        lastUpdated: 0,
+      } as never);
+      await ctx.db.patch(runId, { variantId });
+    });
+    const me = t.withIdentity(ME);
+    const code = await me.mutation(api.intakeScanner.scannerCodeForIntakeRun, { runId });
+    expect((await me.query(api.intakeScanner.joinIntakeRunByScannerCode, { code }))?.variantName).toBe("Base");
+  });
+
+  test("a run whose home is gone is no match", async () => {
+    const { t, runId } = await world();
+    const me = t.withIdentity(ME);
+    const code = await me.mutation(api.intakeScanner.scannerCodeForIntakeRun, { runId });
+    await t.run(async (ctx) => ctx.db.delete((await ctx.db.get(runId))!.homeId));
+    expect(await me.query(api.intakeScanner.joinIntakeRunByScannerCode, { code })).toBeNull();
+  });
+
+  test("a run over a zip upload is not taking scans", async () => {
+    const { t, runId } = await world("collecting", "zip");
+    const me = t.withIdentity(ME);
+    const code = await me.mutation(api.intakeScanner.scannerCodeForIntakeRun, { runId });
+    expect((await me.query(api.intakeScanner.joinIntakeRunByScannerCode, { code }))?.collecting).toBe(false);
   });
 
   test("a wrong-length code is no match", async () => {
