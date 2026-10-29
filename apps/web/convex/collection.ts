@@ -86,6 +86,7 @@ import {
   setRefValidator,
 } from "./lib/catalogView";
 import { MAX_SET_VARIANTS, hiddenAsEmpty, walkSetVariants } from "./collectionCatalog";
+import { detachPhotos, reattachPhotos } from "./copyPhotos";
 import {
   collectionCopyConditionValidator,
   collectionCopyGradingValidator,
@@ -262,6 +263,8 @@ export const copyValidator = v.object({
   slot: v.optional(v.number()),
   /** NEO-359 — present (true) only when on the Up for Trade shelf. */
   upForTrade: v.optional(v.boolean()),
+  /** NEO-377 — present (true) when the line has a photo (`copyPhotos.photosOf`). */
+  hasPhotos: v.optional(v.boolean()),
   lastUpdated: v.number(),
 });
 
@@ -294,6 +297,8 @@ export const addResultValidator = v.object({
 export const removedCopyValidator = v.object({
   cardId: copyCardIdValidator,
   details: copyDetailsValidator,
+  /** NEO-377 — the line's photos, detached for an hour so Undo can put them back. */
+  photoIds: v.optional(v.array(v.id("collectionCopyPhotos"))),
 });
 
 type DetailsArg = typeof copyDetailsValidator.type;
@@ -420,16 +425,27 @@ export function checkSlot(home: Pick<ContainerRow, "kind" | "system">, slot: num
   }
 }
 
-/** One of a kind: a cert or a serial number. Never folds, either way. */
-export function isOneOfAKind(d: { grading?: { cert?: string }; serialNumber?: string }): boolean {
-  return Boolean(d.grading?.cert || d.serialNumber);
+/**
+ * One of a kind: a cert, a serial number, or (NEO-377) a photo of that very
+ * copy. Never folds, either way.
+ */
+export function isOneOfAKind(d: { grading?: { cert?: string }; serialNumber?: string; hasPhotos?: true }): boolean {
+  return Boolean(d.grading?.cert || d.serialNumber || d.hasPhotos);
+}
+
+/** A line's details plus its photo marker: the shape the fold rule reads. */
+export type FoldShape = StoredDetails & { hasPhotos?: true };
+
+/** `detailsOf(row)` with the row's photo marker, for `foldsInto`. */
+export function foldShape(row: CopyRow): FoldShape {
+  return { ...detailsOf(row), ...(row.hasPhotos ? { hasPhotos: true as const } : {}) };
 }
 
 /**
  * The fold rule: may a new copy with `next` details join `row`? Only when
  * neither is one of a kind and every other field is identical, home included.
  */
-export function foldsInto(row: StoredDetails, next: StoredDetails): boolean {
+export function foldsInto(row: FoldShape, next: FoldShape): boolean {
   if (isOneOfAKind(row) || isOneOfAKind(next)) return false;
   return (
     row.homeId === next.homeId &&
@@ -494,6 +510,7 @@ export function copyOut(row: CopyRow): typeof copyValidator.type {
     cardId: row.cardId,
     ...placeFields(row),
     ...detailsOf(row),
+    ...(row.hasPhotos ? { hasPhotos: true } : {}),
     lastUpdated: row.lastUpdated,
   };
 }
@@ -1063,7 +1080,7 @@ export async function arrivingPocket(
   ownerId: string,
   home: Pick<ContainerRow, "_id">,
   lines: readonly CopyRow[],
-  next: StoredDetails,
+  next: FoldShape,
   except: ReadonlyArray<Id<"collectionCopies">> = [],
 ): Promise<number> {
   const twin = lines.find(
@@ -1071,7 +1088,7 @@ export async function arrivingPocket(
       !except.includes(row._id) &&
       row.homeId === home._id &&
       row.slot !== undefined &&
-      foldsInto(detailsOf(row), { ...next, homeId: home._id, slot: row.slot }),
+      foldsInto(foldShape(row), { ...next, homeId: home._id, slot: row.slot }),
   );
   return twin?.slot ?? (await firstOpenPocket(ctx, ownerId, home._id));
 }
@@ -1378,7 +1395,7 @@ export async function addOne(
   }
   const next: StoredDetails = { ...cleaned, homeId: home._id };
   const now = Date.now();
-  const into = lines.find((row) => foldsInto(detailsOf(row), next));
+  const into = lines.find((row) => foldsInto(foldShape(row), next));
   if (into) {
     const quantity = into.quantity + next.quantity;
     if (quantity > MAX_COPY_QUANTITY) {
@@ -1456,20 +1473,25 @@ export async function moveCopyCore(
     .take(MAX_LINES_PER_CARD + 1);
   const rest: StoredDetails = { ...detailsOf(row), quantity, homeId: home._id };
   delete rest.slot;
+  // NEO-377: a line's photos travel only with the whole line; a part split
+  // off is a plain stack that may fold.
+  const whole = quantity === row.quantity;
+  const moving: FoldShape = whole && row.hasPhotos ? { ...rest, hasPhotos: true } : rest;
   if (slot === undefined && keepsPockets(home)) {
     // Every card in a binder sits in a pocket: staying in the same binder
     // keeps its own; arriving stacks on a twin or takes the first open one.
     slot =
       toHomeId === row.homeId && row.slot !== undefined
         ? row.slot
-        : await arrivingPocket(ctx, ownerId, home, lines, rest, [row._id]);
+        : await arrivingPocket(ctx, ownerId, home, lines, moving, [row._id]);
   }
   if (toHomeId === row.homeId && slot === row.slot) {
     return { copyId: row._id, folded: false, split: false, from };
   }
   const next: StoredDetails = { ...rest, ...(slot !== undefined ? { slot } : {}) };
-  const into = lines.find((other) => other._id !== row._id && foldsInto(detailsOf(other), next));
-  const whole = quantity === row.quantity;
+  const into = lines.find(
+    (other) => other._id !== row._id && foldsInto(foldShape(other), { ...moving, ...next }),
+  );
   await assertPocketFree(ctx, ownerId, home, slot, [row._id, ...(into ? [into._id] : [])]);
   const now = Date.now();
   const changes: CountChange[] = [];
@@ -2297,6 +2319,8 @@ export const updateCopy = mutation({
       ...placeFields(row),
       ...cleaned,
       homeId: row.homeId,
+      // NEO-377 — an edit never touches the line's photos.
+      ...(row.hasPhotos ? { hasPhotos: true as const } : {}),
       lastUpdated: Date.now(),
     });
     await applyCopyChanges(ctx, ownerId, [
@@ -2313,10 +2337,11 @@ export const removeCopy = mutation({
   handler: async (ctx, args) => {
     const ownerId = await requireSignedIn(ctx);
     const row = await ownCopy(ctx, ownerId, args.copyId);
+    const photoIds = await detachPhotos(ctx, row);
     await ctx.db.delete(row._id);
     await pocketEmptied(ctx, row.homeId, row.slot);
     await applyCopyChanges(ctx, ownerId, [changeOf(row, counted(row), null)]);
-    return { removed: { cardId: row.cardId, details: detailsOf(row) } };
+    return { removed: { cardId: row.cardId, details: detailsOf(row), ...(photoIds ? { photoIds } : {}) } };
   },
 });
 
@@ -2332,16 +2357,19 @@ export const removeCopies = mutation({
     const unique = [...new Set(args.copyIds)];
     const rows = [];
     for (const id of unique) rows.push(await ownCopy(ctx, ownerId, id));
+    const removed: Array<typeof removedCopyValidator.type> = [];
     for (const row of rows) {
+      const photoIds = await detachPhotos(ctx, row);
       await ctx.db.delete(row._id);
       await pocketEmptied(ctx, row.homeId, row.slot);
+      removed.push({ cardId: row.cardId, details: detailsOf(row), ...(photoIds ? { photoIds } : {}) });
     }
     await applyCopyChanges(
       ctx,
       ownerId,
       rows.map((row) => changeOf(row, counted(row), null)),
     );
-    return { removed: rows.map((row) => ({ cardId: row.cardId, details: detailsOf(row) })) };
+    return { removed };
   },
 });
 
@@ -2354,7 +2382,12 @@ export const removeCopies = mutation({
  * rather than being refused.
  */
 export const restoreCopy = mutation({
-  args: { cardId: copyCardIdValidator, details: copyDetailsValidator },
+  args: {
+    cardId: copyCardIdValidator,
+    details: copyDetailsValidator,
+    /** NEO-377 — the removed line's photos (`removed.photoIds`), put back when still kept. */
+    photoIds: v.optional(v.array(v.id("collectionCopyPhotos"))),
+  },
   returns: v.object({ copyId: v.id("collectionCopies") }),
   handler: async (ctx, args) => {
     const ownerId = await requireSignedIn(ctx);
@@ -2381,6 +2414,7 @@ export const restoreCopy = mutation({
       homeId: home._id,
       lastUpdated: Date.now(),
     });
+    if (args.photoIds) await reattachPhotos(ctx, ownerId, args.photoIds, copyId);
     await applyCopyChanges(ctx, ownerId, [
       changeOf({ cardId: args.cardId, setId: place.setId }, null, counted({ ...cleaned, homeId: home._id })),
     ]);

@@ -64,6 +64,8 @@ import {
   refuse,
   slotLimit,
   type CountChange,
+  foldShape,
+  type FoldShape,
 } from "./collection";
 import {
   collectionBinderSettingsValidator,
@@ -487,7 +489,7 @@ export const empty = mutation({
         .withIndex("by_owner_and_card", (q) => q.eq("ownerId", ownerId).eq("cardId", line.cardId))
         .take(MAX_LINES_PER_CARD + 1);
       readsLeft -= siblings.length;
-      const next = { ...detailsOf(line), homeId: targetId };
+      const next: FoldShape = { ...foldShape(line), homeId: targetId };
       delete next.slot;
       // Main is a binder too: the card stacks on a twin there or takes Main's
       // first open pocket. Unsorted is a box: its rows are optional.
@@ -499,7 +501,7 @@ export const empty = mutation({
         (other) =>
           other._id !== line._id &&
           other.quantity + line.quantity <= MAX_COPY_QUANTITY &&
-          foldsInto(detailsOf(other), next),
+          foldsInto(foldShape(other), next),
       );
       const before = counted(line);
       if (into) {

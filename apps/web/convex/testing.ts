@@ -31,6 +31,7 @@ import { CLERK_USER_ID_RE, placeholderJobPrefix } from "./lib/placeholderObjects
 // before any read of its stored credentials.
 import { isPlatformPaused } from "./marketplacePause";
 import type { Id } from "./_generated/dataModel";
+import { dropOwnerPhotos } from "./copyPhotos";
 
 /**
  * What {@link seedMyTestLabelScans} hands back.
@@ -107,6 +108,8 @@ export const resetMyTestState = mutation({
     for (const row of collectionCopies) {
       await ctx.db.delete(row._id);
     }
+    // NEO-377 — their photos and files, live or waiting on an Undo.
+    await dropOwnerPhotos(ctx, userId);
 
     // NEO-359 — wants may name a container as their binder, so they go
     // before the containers too.

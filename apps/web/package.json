@@ -47,6 +47,7 @@
     "@sentry/vite-plugin": "^5.4.0",
     "@types/crypto-js": "^4.2.2",
     "@vercel/blob": "^2.8.0",
+    "aws4fetch": "^1.0.20",
     "axios": "^1.20.0",
     "convex": "^1.44.0",
     "convex-helpers": "^0.1.124",

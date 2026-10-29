@@ -29,6 +29,7 @@ export default function CardDrawer({
   seed,
   mode,
   focusCopyId,
+  editCopyId,
   addBinderId,
   openKey,
   notice,
@@ -44,6 +45,8 @@ export default function CardDrawer({
   seed?: Card;
   mode: "view" | "add";
   focusCopyId?: CopyId;
+  /** NEO-377: open this line's Edit form when it is the card's one line (a row click). */
+  editCopyId?: CopyId;
   /** The home the add form picks instead of the page's scope (the hunt tray's open binder). */
   addBinderId?: string;
   /** Bumps on every openCard, so the detail remounts and re-runs its focus. */
@@ -123,6 +126,7 @@ export default function CardDrawer({
             card={card}
             mode={mode}
             focusCopyId={focusCopyId}
+            editCopyId={editCopyId}
             addBinderId={addBinderId}
             onCancelAdd={onClose}
           />

@@ -49,6 +49,7 @@ import type { Doc, Id } from "./_generated/dataModel";
 import type { QueryCtx } from "./_generated/server";
 import { query } from "./_generated/server";
 import { MAX_CONTAINERS } from "./collection";
+import { photoUrlsOf } from "./copyPhotos";
 import { binderNeeds as readBinderNeeds, needsResultValidator } from "./binderRules";
 import {
   collectionCopyConditionValidator,
@@ -120,6 +121,16 @@ export const publicCopyValidator = v.object({
   card: v.optional(catalogCardWithPathValidator),
   /** NEO-361 — the collector's own card, one NB doesn't have (Jason: shown, marked). */
   unlisted: v.optional(publicUnlistedCardValidator),
+  /**
+   * NEO-377 — photos of this very copy, when the collector took them. Public
+   * like the copy itself (they will go on marketplace listings too).
+   */
+  photos: v.optional(
+    v.object({
+      front: v.optional(v.object({ imageUrl: v.string(), thumbUrl: v.string() })),
+      back: v.optional(v.object({ imageUrl: v.string(), thumbUrl: v.string() })),
+    }),
+  ),
 });
 
 /** A wanted card as a visitor sees it: the card only, never the binder it's for. */
@@ -296,6 +307,7 @@ async function publicCopyOut(
 ): Promise<PublicCopy | null> {
   const shown = await publicCardOf(reader, ctx, row);
   if (!shown) return null;
+  const photos = await photoUrlsOf(ctx, row);
   return {
     key: opaqueKey(row._id),
     quantity: row.quantity,
@@ -304,6 +316,7 @@ async function publicCopyOut(
     ...(extra.slot && row.slot !== undefined ? { slot: row.slot } : {}),
     ...(row.upForTrade === true ? { upForTrade: true as const } : {}),
     ...(extra.forSale ? { forSale: true as const } : {}),
+    ...(photos.front || photos.back ? { photos } : {}),
     ...shown,
   };
 }

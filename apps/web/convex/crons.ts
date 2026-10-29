@@ -130,4 +130,16 @@ crons.interval(
   {},
 );
 
+/**
+ * NEO-377 — delete copy-photo uploads never finished and a removed copy's
+ * photos never undone, once an hour old, with their R2 objects. Hourly for
+ * the same reason as the request-photo sweep. See `sweepCopyPhotos`.
+ */
+crons.interval(
+  "sweep stale copy photos",
+  { hours: 1 },
+  internal.copyPhotos.sweepCopyPhotos,
+  {},
+);
+
 export default crons;

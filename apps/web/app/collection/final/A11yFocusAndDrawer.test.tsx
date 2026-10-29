@@ -321,3 +321,31 @@ describe("more of the pass", () => {
     }
   });
 });
+
+describe("NEO-377: a row click on a card you own", () => {
+  /** The owned rows of the checklist, grouped by card: one entry per card, its rows inside. */
+  const ownedGroups = () =>
+    within(checklist())
+      .getAllByRole("button", { name: /^Have .+, /, pressed: true })
+      .map((b) => b.closest("li")!)
+      .filter((li, i, all) => all.indexOf(li) === i)
+      .map((li) => Array.from(li.querySelectorAll<HTMLElement>("div.cursor-pointer")));
+
+  it("opens the drawer already editing the line when the card has one line", async () => {
+    renderDemo([BASE_CHECKLIST]);
+    const single = ownedGroups().find((rows) => rows.length === 1);
+    expect(single).toBeTruthy();
+    fireEvent.click(single![0]);
+    const drawer = await screen.findByRole("dialog");
+    expect(within(drawer).getByRole("form", { name: /^Edit / })).toBeTruthy();
+    await frames();
+    expect(within(drawer).getByRole("form", { name: /^Edit / }).contains(document.activeElement)).toBe(true);
+  });
+
+  it("Details opens the same card with its line closed", () => {
+    renderDemo([BASE_CHECKLIST]);
+    const single = ownedGroups().find((rows) => rows.length === 1)!;
+    fireEvent.click(within(single[0]).getByRole("button", { name: /^Details for / }));
+    expect(within(screen.getByRole("dialog")).queryByRole("form", { name: /^Edit / })).toBeNull();
+  });
+});

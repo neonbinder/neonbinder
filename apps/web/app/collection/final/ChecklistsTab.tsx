@@ -288,7 +288,7 @@ function ChecklistsView({
                 <SearchHitRow
                   key={card.id}
                   card={card}
-                  actions={{ ...actions, open: (c, copyId) => actions.open(c, copyId, hits) }}
+                  actions={{ ...actions, open: (c, copyId, _list, edit) => actions.open(c, copyId, hits, edit) }}
                   isSelected={card.id === selectedCardId}
                   showSet
                   onRowClick={() => onJump(card)}

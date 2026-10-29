@@ -23,6 +23,8 @@ export interface OpenCardOptions {
    * binder a want is for, the binder or box the drawer was opened from).
    */
   binderId?: string;
+  /** NEO-377: open the `copyId` line's Edit form, when it is the card's one line. */
+  edit?: boolean;
 }
 
 /** Where Checklists opens. Each is a history entry of its own. */
