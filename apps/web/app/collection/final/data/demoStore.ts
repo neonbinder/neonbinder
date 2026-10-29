@@ -917,6 +917,20 @@ export const DEMO_DATA: CollectionData = {
   useRuleBrands(sportId) {
     return sportId ? NO_BRANDS : undefined;
   },
+
+  useCommonPrices(variantIds) {
+    const prices = useDemoState().state.commonPrices;
+    const key = variantIds ? variantIds.join("\n") : null;
+    return useMemo(() => {
+      if (key === null) return undefined;
+      const out: Record<string, number> = {};
+      for (const id of key.split("\n")) {
+        const price = prices?.[id];
+        if (price !== undefined) out[id] = price;
+      }
+      return out;
+    }, [key, prices]);
+  },
 };
 
 const NO_BRANDS: RuleBrand[] = [];
@@ -973,6 +987,15 @@ function demoActions(stateRef: { current: DemoState }): CollectionActions {
     setSmartRule: noRules,
     declineCard: noRules,
     undeclineCard: noRules,
+
+    async setCommonPrice(variantId, price) {
+      const previous = run((s) => demoOps.setCommonPrice(s, variantId, price));
+      return {
+        undo: async () => {
+          run((s) => demoOps.setCommonPrice(s, variantId, previous));
+        },
+      };
+    },
 
     async addHave(card, homeId) {
       const r = run((s) => demoOps.addLine(s, card.id, { ...emptyCopyDetails(), ...(homeId ? { homeId } : {}) }));

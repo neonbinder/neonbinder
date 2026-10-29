@@ -18,8 +18,9 @@
  * one number. That number is the card's PLAIN lines in the box: raw in the
  * collector's default condition (NEO-380, `defaultConditionOf`; a line stored
  * before conditions were required, with none, counts too), ungraded, no
- * serial, no cost, no location, no notes, not up for trade; where in the box
- * (`slot`) and when acquired (`acquiredOn`) are ignored. Every other line of the card in that box is the collector's own
+ * serial, no cost, no floor price of its own (NEO-378), no location, no notes,
+ * not up for trade; where in the box (`slot`) and when acquired (`acquiredOn`)
+ * are ignored. Every other line of the card in that box is the collector's own
  * detail and is never touched here (the client shows it beside the number).
  *
  *   - Raise by n: n raw copies in the default condition, acquired today (the caller's today, else the
@@ -156,13 +157,13 @@ export const inventoryCardValidator = v.object({
 /**
  * A plain line: what a quick count counts and changes. Raw in the
  * collector's default condition (or with none, from before NEO-380),
- * ungraded, no serial, no cost, no location, no notes, not up for trade; its
- * slot and acquired date do not matter.
+ * ungraded, no serial, no cost, no own minimum price, no location, no notes,
+ * not up for trade; its slot and acquired date do not matter.
  */
 export function isPlainLine(
   row: Pick<
     CopyRow,
-    "condition" | "grading" | "serialNumber" | "costCents" | "location" | "notes" | "upForTrade" | "hasPhotos"
+    "condition" | "grading" | "serialNumber" | "costCents" | "minPriceCents" | "location" | "notes" | "upForTrade" | "hasPhotos"
   >,
   defaultCondition: Condition,
 ): boolean {
@@ -172,6 +173,7 @@ export function isPlainLine(
     row.grading === undefined &&
     row.serialNumber === undefined &&
     row.costCents === undefined &&
+    row.minPriceCents === undefined &&
     row.location === undefined &&
     row.notes === undefined &&
     row.upForTrade !== true

@@ -125,6 +125,8 @@ describe("add", () => {
     await expect(add({ acquiredOn: "2026-02-30" })).rejects.toThrow(/real date/);
     await expect(add({ costCents: -1 })).rejects.toThrow(/Cost/);
     await expect(add({ costCents: 1.25 })).rejects.toThrow(/Cost/);
+    await expect(add({ minPriceCents: -1 })).rejects.toThrow(/Minimum price/);
+    await expect(add({ minPriceCents: 0.5 })).rejects.toThrow(/Minimum price/);
     await expect(add({ grading: { grader: "PSA", grade: "  " } })).rejects.toThrow(/grade/);
     await expect(add({ quantity: 2, serialNumber: "23/50" })).rejects.toThrow(/one of a kind/);
     await expect(
@@ -179,6 +181,7 @@ describe("fold", () => {
     for (const change of [
       { condition: "Mint" as const },
       { costCents: 151 },
+      { minPriceCents: 25 },
       { acquiredOn: "2026-10-02" },
       { location: "Box 4" },
       { notes: "different" },
@@ -190,7 +193,7 @@ describe("fold", () => {
       });
       expect(r.merged).toBe(false);
     }
-    expect(await copiesOwnedBy(t, ME.subject)).toHaveLength(7);
+    expect(await copiesOwnedBy(t, ME.subject)).toHaveLength(8);
   });
 
   test("a different home never folds", async () => {

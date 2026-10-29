@@ -237,6 +237,16 @@ async function seedEveryDrainedTable(
         lastUpdated: NOW,
       });
     }
+    // variantCommonPrices: 2 (NEO-378) — collectors' common prices, drained
+    // before the variant rows they name.
+    for (let i = 0; i < 2; i += 1) {
+      await ctx.db.insert("variantCommonPrices", {
+        ownerId: `collector_${i}`,
+        variantId,
+        priceCents: 25,
+        lastUpdated: NOW,
+      });
+    }
 
     // selectorSyncStatus: 3 (NEO-358) — transient per-column sync notices: a
     // root (sport) column's failure, which is exactly the one that survived a
@@ -288,6 +298,8 @@ async function tableCounts(t: ReturnType<typeof convexTest>) {
     collectionBuildingSets: (
       await ctx.db.query("collectionBuildingSets").collect()
     ).length,
+    variantCommonPrices: (await ctx.db.query("variantCommonPrices").collect())
+      .length,
     cardTeamLinks: (await ctx.db.query("cardTeamLinks").collect()).length,
     selectorOptions: (await ctx.db.query("selectorOptions").collect()).length,
     cardChecklist: (await ctx.db.query("cardChecklist").collect()).length,
@@ -324,6 +336,7 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
       collectionCopies: 10,
       collectionContainers: 1,
       collectionBuildingSets: 11,
+      variantCommonPrices: 2,
       cardTeamLinks: 9,
       selectorOptions: 3,
       cardChecklist: 5,
@@ -353,6 +366,7 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
       collectionCopies: 10,
       collectionContainers: 1,
       collectionBuildingSets: 11,
+      variantCommonPrices: 2,
       cardTeamLinks: 9,
       selectorOptions: 3,
       cardChecklist: 5,
@@ -381,6 +395,7 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
       cardRequestsDeleted: 0,
       collectionContainersDeleted: 1,
       collectionBuildingSetsDeleted: 11,
+      variantCommonPricesDeleted: 2,
       intakeRunsDeleted: 0,
       selectorOptionsDeleted: 3,
       cardPlayerLinksDeleted: 0,
@@ -405,6 +420,7 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
       collectionCopies: 0,
       collectionContainers: 0,
       collectionBuildingSets: 0,
+      variantCommonPrices: 0,
       cardTeamLinks: 0,
       selectorOptions: 0,
       cardChecklist: 0,
@@ -433,6 +449,7 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
     ["resetCardRequestsBatch", "cardRequests"],
     ["resetCollectionContainersBatch", "collectionContainers"],
     ["resetCollectionBuildingSetsBatch", "collectionBuildingSets"],
+    ["resetVariantCommonPricesBatch", "variantCommonPrices"],
     ["resetCardTeamLinksBatch", "cardTeamLinks"],
     ["resetSelectorOptionsBatch", "selectorOptions"],
     ["resetCardChecklistBatch", "cardChecklist"],
@@ -464,6 +481,7 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
         collectionCopies: 10,
         collectionContainers: 1,
         collectionBuildingSets: 11,
+        variantCommonPrices: 2,
         cardTeamLinks: 9,
         selectorOptions: 3,
         cardChecklist: 5,
@@ -492,6 +510,7 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
       cardRequestsDeleted: 0,
       collectionContainersDeleted: 0,
       collectionBuildingSetsDeleted: 0,
+      variantCommonPricesDeleted: 0,
       intakeRunsDeleted: 0,
       selectorOptionsDeleted: 0,
       cardPlayerLinksDeleted: 0,
@@ -563,6 +582,7 @@ describe("NEO-254: the reset yields at RESET_TIME_BUDGET_MS and resumes", () => 
       cardRequestsDeleted: 0,
       collectionContainersDeleted: 0,
       collectionBuildingSetsDeleted: 0,
+      variantCommonPricesDeleted: 0,
       intakeRunsDeleted: 0,
       selectorOptionsDeleted: 0,
       cardPlayerLinksDeleted: 0,
@@ -601,6 +621,7 @@ describe("NEO-254: the reset yields at RESET_TIME_BUDGET_MS and resumes", () => 
       cardRequestsDeleted: 0,
       collectionContainersDeleted: 1,
       collectionBuildingSetsDeleted: 11,
+      variantCommonPricesDeleted: 2,
       intakeRunsDeleted: 0,
       selectorOptionsDeleted: 3,
       cardPlayerLinksDeleted: 0,
@@ -623,6 +644,7 @@ describe("NEO-254: the reset yields at RESET_TIME_BUDGET_MS and resumes", () => 
       collectionCopies: 0,
       collectionContainers: 0,
       collectionBuildingSets: 0,
+      variantCommonPrices: 0,
       cardTeamLinks: 0,
       selectorOptions: 0,
       cardChecklist: 0,
@@ -652,6 +674,7 @@ describe("NEO-254: the reset yields at RESET_TIME_BUDGET_MS and resumes", () => 
       collectionCopies: 10,
       collectionContainers: 1,
       collectionBuildingSets: 11,
+      variantCommonPrices: 2,
       cardTeamLinks: 9,
       selectorOptions: 3,
       cardChecklist: 5,
@@ -1032,6 +1055,8 @@ describe("NEO-330: scope exceptReferenceSeed", () => {
     "privateCards",
     "privateSets",
     "cardRequests",
+    // NEO-378 — a collector's common price names a variant row.
+    "variantCommonPrices",
     // NEO-379 — an intake run names the variant it matches in.
     "intakeRuns",
     "cardPlayerLinks",
@@ -1188,6 +1213,7 @@ describe("NEO-330: scope exceptReferenceSeed", () => {
       cardRequestsDeleted: 3,
       collectionContainersDeleted: 1,
       collectionBuildingSetsDeleted: 11,
+      variantCommonPricesDeleted: 2,
       intakeRunsDeleted: 2,
       selectorOptionsDeleted: 0,
       cardPlayerLinksDeleted: 1,

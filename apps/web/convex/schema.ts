@@ -3806,6 +3806,14 @@ export default defineSchema({
     serialNumber: v.optional(v.string()),
     // Integer cents, PER COPY.
     costCents: v.optional(v.number()),
+    /**
+     * NEO-378 — the lowest price this copy may sell for, integer cents per
+     * copy. An OVERRIDE: absent means the owner's common price for the
+     * copy's variant (`variantCommonPrices`), read live, so changing the
+     * common price moves every copy that has no floor of its own. Part of the
+     * fold key. Private to the owner, like cost.
+     */
+    minPriceCents: v.optional(v.number()),
     // `YYYY-MM-DD`, checked by the handler.
     acquiredOn: v.optional(v.string()),
     location: v.optional(v.string()),
@@ -3842,6 +3850,24 @@ export default defineSchema({
     .index("by_owner_home_set_variant", ["ownerId", "homeId", "setId", "variantId"])
     // NEO-359 — tradeCopies (eq true, paged) and the Trade row's recount.
     .index("by_owner_and_trade", ["ownerId", "upForTrade"]),
+
+  /**
+   * ── NEO-378: a collector's common card price per exact variant ─────────────
+   *
+   * What a plain card of one variant (Base, a Refractor parallel, an insert)
+   * sells for at least, for this owner: a dealer's floor. Every copy in that
+   * variant with no `minPriceCents` of its own sells at no less than this.
+   * Manual for now, never defaulted (Jason, 2026-10-27: dealers' floors
+   * differ). One row per (owner, variant); `variantId` is a variantType,
+   * insert or parallel row. Owner-only: never on a public page. NB data only.
+   */
+  variantCommonPrices: defineTable({
+    ownerId: v.string(),
+    variantId: v.id("selectorOptions"),
+    // Integer cents, zero or more; capped in the handler.
+    priceCents: v.number(),
+    lastUpdated: v.number(),
+  }).index("by_owner_and_variant", ["ownerId", "variantId"]),
 
   /**
    * ── NEO-358: the sets a collector has said they are building ──────────────

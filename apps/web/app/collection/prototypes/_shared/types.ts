@@ -146,6 +146,8 @@ export interface CopyDetails {
   serialNumber?: string;
   /** What the collector paid, in dollars. */
   costBasis?: number;
+  /** NEO-378 — the lowest this copy sells for, in dollars. Only the real collection's box copies carry it. */
+  minPrice?: number;
   /** ISO date, `YYYY-MM-DD`. */
   acquiredAt: string;
   /** Free text: "Box 3", "Top shelf". */

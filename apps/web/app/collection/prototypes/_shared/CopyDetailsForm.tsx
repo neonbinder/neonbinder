@@ -70,6 +70,12 @@ export interface CopyDetailsFormProps {
   /** NEO-359: leave out the binder ticks even when `binders` are passed. */
   hideBinders?: boolean;
   /**
+   * NEO-378: show the Price field (a copy for sale; stored as its floor, `minPrice`). `commonPrice` is
+   * the variant's common price in dollars, what a blank field means (`null`:
+   * none set; `undefined`: still loading).
+   */
+  minPrice?: { commonPrice: number | null | undefined };
+  /**
    * NEO-380: a raw copy always has a condition. When given, a raw value with
    * none shows and saves this one (the collector's default), and "Not set"
    * is gone from the list.
@@ -120,10 +126,12 @@ export default function CopyDetailsForm({
   upForTrade,
   onUpForTradeChange,
   hideBinders = false,
+  minPrice,
   defaultCondition,
   extra,
 }: CopyDetailsFormProps) {
   const headingId = useId();
+  const minPriceHelpId = useId();
   const quantityHelpId = useId();
   const homeHelpId = useId();
   const set = (patch: Partial<CopyDetails>) => onChange({ ...value, ...patch });
@@ -309,6 +317,29 @@ export default function CopyDetailsForm({
           value={value.costBasis ?? ""}
           onChange={(e) => set({ costBasis: parseMoney(e.target.value) })}
         />
+
+        {minPrice && (
+          <div>
+            <Input
+              label="Price"
+              type="number"
+              inputMode="decimal"
+              min={0}
+              step="0.01"
+              placeholder={typeof minPrice.commonPrice === "number" ? minPrice.commonPrice.toFixed(2) : "0.00"}
+              value={value.minPrice ?? ""}
+              onChange={(e) => set({ minPrice: parseMoney(e.target.value) })}
+              aria-describedby={minPriceHelpId}
+            />
+            <p id={minPriceHelpId} className="mt-1 text-xs text-ink-3">
+              {typeof minPrice.commonPrice === "number"
+                ? `Blank sells at your common price, $${minPrice.commonPrice.toFixed(2)}.`
+                : minPrice.commonPrice === null
+                  ? "No common price set for this variant yet."
+                  : "Blank sells at your common price."}
+            </p>
+          </div>
+        )}
 
         <Input
           label="Acquired"

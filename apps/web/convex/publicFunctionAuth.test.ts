@@ -943,6 +943,7 @@ describe("NEO-214: the Set Builder admin panel and its client-callable functions
     "resetCardRequestsBatch",
     "resetCollectionContainersBatch",
     "resetCollectionBuildingSetsBatch",
+    "resetVariantCommonPricesBatch",
   ])("%s is declared internalMutation, not mutation", (fn) => {
     // These do the actual deleting, and they carry no identity check —
     // a CLI run has no identity, so one would refuse every legitimate call
@@ -2215,6 +2216,8 @@ describe("NEO-358: the collection and its catalog reads require a signed-in call
       (t) => t.mutation(api.collectionContainers.create, { kind: "box", name: "Show box" }),
     ],
     ["collectionWants.list", (t) => t.query(api.collectionWants.list, {})],
+    // NEO-378
+    ["commonPrices.forVariants", (t) => t.query(api.commonPrices.forVariants, { variantIds: [] })],
   ];
 
   test.each(SIGNED_IN_GATED)("%s rejects an anonymous caller", async (_name, call) => {
@@ -2298,7 +2301,7 @@ describe("NEO-358: the collection and its catalog reads require a signed-in call
         status: "pending",
         since: 0,
       });
-      return { setId, cardId, copyId, homeId, boxId, photoId };
+      return { setId, variantId, cardId, copyId, homeId, boxId, photoId };
     });
     const calls = [
       () => t.mutation(api.collection.addHave, { cardId: ids.cardId }),
@@ -2315,6 +2318,8 @@ describe("NEO-358: the collection and its catalog reads require a signed-in call
       () => t.mutation(api.collectionContainers.empty, { containerId: ids.homeId }),
       () => t.mutation(api.collectionContainers.remove, { containerId: ids.homeId }),
       () => t.mutation(api.collectionWants.set, { cardId: ids.cardId, on: true }),
+      // NEO-378
+      () => t.mutation(api.commonPrices.set, { variantId: ids.variantId, priceCents: 25 }),
       // NEO-364
       () => t.mutation(api.collectionInventory.setBoxQuantity, { cardId: ids.cardId, boxId: ids.boxId, quantity: 2 }),
       () =>
@@ -2338,9 +2343,11 @@ describe("NEO-358: the collection and its catalog reads require a signed-in call
     const after = await t.run(async (ctx) => ({
       copies: await ctx.db.query("collectionCopies").collect(),
       building: await ctx.db.query("collectionBuildingSets").collect(),
+      prices: await ctx.db.query("variantCommonPrices").collect(),
     }));
     expect(after.copies.map((c) => c.quantity)).toEqual([1]);
     expect(after.building).toEqual([]);
+    expect(after.prices).toEqual([]);
     // NEO-377 — signed out, photosOf answers nothing rather than another collector's photos.
     expect(await t.query(api.copyPhotos.photosOf, { copyIds: [ids.copyId] })).toEqual([]);
     // (the seeded photo is only pending; copyPhotos.test.ts covers signed-out against a live one)

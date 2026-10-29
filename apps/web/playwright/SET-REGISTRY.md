@@ -2503,6 +2503,7 @@ teams or variants**. They are the reason the set must stay pristine.
 - `tests/collection/inventory-boxes-sell-take-off-sale.spec.ts` (NEO-364 — the collector's My Boxes: files three copies of the FIRST ordinary Base row in Main, makes a box, sells two into it from the drawer, files the box's card into Row 2, takes one off sale, deletes the box (its copy drops into Unsorted) and removes the rest; writes ONLY the signed-in user's `collectionContainers` and `collectionCopies`, never the set, its cards, players or teams)
 - `tests/collection/inventory-checklist-quick-quantity.spec.ts` (NEO-364 — the inventory's Checklists: types counts on the FIRST TWO rows of the Base checklist into Unsorted and into a minted box (quick entry), lowers them, Undoes, then types everything back to 0 and deletes the box; writes ONLY the signed-in user's `collectionContainers` and `collectionCopies`)
 - `tests/collection/inventory-list-filter-sort-search.spec.ts` (NEO-364 — the Inventory list: stocks the FIRST THREE rows of the Base checklist through quick entry (two in Unsorted, one in a minted box), flags one Up for trade, narrows/sorts/searches the list, reads the collection's "Every card I own" count before and after (the hard line), then removes the three lines and deletes the box; writes ONLY the signed-in user's `collectionContainers` and `collectionCopies`)
+- `tests/collection/inventory-common-price-and-min-price.spec.ts` (NEO-378 — the inventory's Checklists: sets the signed-in user's common price for Base, files one box copy of the FIRST ordinary Base row into Unsorted from the drawer, gives it a minimum price of its own, then removes the copy and clears the common price; writes ONLY the signed-in user's `variantCommonPrices` and `collectionCopies`, never the set, its cards, players or teams)
 - `tests/collection/copy-photos-add-replace-remove.spec.ts` (NEO-377 — a copy line's photos: marks the FIRST ordinary Base row Have, adds, replaces and removes front and back photos on that copy, removes the copy and Undoes it, then removes it for good; writes ONLY the signed-in user's `collectionCopies` and `collectionCopyPhotos` (and their R2 objects in the dev bucket, which expires them), never the set, its cards, players or teams)
 
 **Three flows on this set are NOT read-only, and the list used to say the first two were**
@@ -2567,7 +2568,7 @@ no box; the inventory's boxes are NEO-364's three specs below). The same "a card
 with a collector's copy cannot be deleted" protection applies while its copy
 exists; the spec's copy lives only for the run.
 
-**NEO-364.** The three `tests/collection/inventory-*.spec.ts` specs put BOX copies
+**NEO-364.** The `tests/collection/inventory-*.spec.ts` specs put BOX copies
 (`collectionCopies` whose home is a box, per user) on the first rows of the Base
 checklist: `inventory-boxes-sell-take-off-sale` on the first ordinary row (3
 copies, sold into a minted box, then removed), `inventory-checklist-quick-quantity`
@@ -2576,6 +2577,10 @@ on the first two checklist rows (typed to 0 before it ends) and
 drawer). Every box they make is minted from `env.ATTEMPT_TOKEN` (`Sale…`, `Qty…`,
 `Lst…`) and deleted before the spec ends. The same copy-protection and
 concurrency notes apply: copies are per user, each shard owns one account.
+NEO-378's `inventory-common-price-and-min-price` puts one copy of the first
+ordinary row in Unsorted (removed through the drawer) and sets, then clears, the
+user's own common price for Base (`variantCommonPrices`, per user, never the
+variant row itself).
 
 **Concurrency.** Copies are per user and each shard owns one account, so no
 two shards see each other's copies. The spec's search results and "every card
