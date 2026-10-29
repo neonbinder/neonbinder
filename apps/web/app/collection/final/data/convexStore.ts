@@ -2035,6 +2035,8 @@ function useConvexActions(): CollectionActions {
           lastUpdated: Date.now(),
           ...withDefaultCondition(local, args.details),
           homeId: args.details.homeId ?? r.homeId,
+          // NEO-377 — an edit never touches the line's photos.
+          ...(r.hasPhotos ? { hasPhotos: true as const } : {}),
         }) as RawCopy),
       ),
       removeCopy: removeCopyBase.withOptimisticUpdate((local, args) =>

@@ -197,6 +197,25 @@ describe("reading and removing", () => {
   });
 });
 
+describe("editing a line", () => {
+  test("saving the line's details keeps its photos", async () => {
+    const s = await setup();
+    const copyId = await addCopy(s);
+    await photograph(s, copyId, "front");
+    await photograph(s, copyId, "back");
+    await s.me.mutation(api.collection.updateCopy, {
+      copyId,
+      details: { quantity: 1, condition: "Near Mint", notes: "corner ding" },
+    });
+    expect((await copyRow(s, copyId))?.hasPhotos).toBe(true);
+    const [photos] = await s.me.query(api.copyPhotos.photosOf, { copyIds: [copyId] });
+    expect(photos.front).toBeDefined();
+    expect(photos.back).toBeDefined();
+    const [card] = await s.me.query(api.copyPhotos.cardPhotos, { cardIds: [s.fx.gooden1] });
+    expect(card.front).toBeDefined();
+  });
+});
+
 describe("swap and the card's picture", () => {
   test("swap trades the sides, owner only", async () => {
     const s = await setup();

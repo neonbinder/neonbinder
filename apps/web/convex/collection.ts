@@ -2318,6 +2318,8 @@ export const updateCopy = mutation({
       ...placeFields(row),
       ...cleaned,
       homeId: row.homeId,
+      // NEO-377 — an edit never touches the line's photos.
+      ...(row.hasPhotos ? { hasPhotos: true as const } : {}),
       lastUpdated: Date.now(),
     });
     await applyCopyChanges(ctx, ownerId, [

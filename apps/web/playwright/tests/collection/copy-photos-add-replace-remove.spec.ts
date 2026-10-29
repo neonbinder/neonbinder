@@ -119,6 +119,13 @@ test(
     await page.getByRole("button", { name: "Undo", exact: true }).click();
     await expect(yourCopies.getByRole("img", { name: "Front of Raw, Excellent", exact: true })).toBeVisible();
 
+    // --- Saving the line's other details keeps its photo ----------------------
+    await yourCopies.getByRole("button", { name: `Edit ${short}, Raw, Excellent`, exact: true }).click();
+    await form.getByRole("textbox", { name: "Notes" }).fill("corner ding");
+    await form.getByRole("button", { name: "Save copy", exact: true }).click();
+    await expect(form).toBeHidden();
+    await expect(yourCopies.getByRole("img", { name: "Front of Raw, Excellent", exact: true })).toBeVisible();
+
     // --- Remove it for good (self-cleaning) ----------------------------------
     await yourCopies.getByRole("button", { name: `Remove ${short}, Raw, Excellent`, exact: true }).click();
     await expect(yourCopies.getByText("None yet. Fill in what you know below and add it.")).toBeVisible();
