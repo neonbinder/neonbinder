@@ -939,20 +939,28 @@ describe("the scope files new cards into the scoped home", () => {
     );
   });
 
-  it("a box is never the collection's scope: scope=<box> reads as All, and a Have lands in Main", async () => {
+  it("a box is never the collection's scope: scope=<box> reads as All, which adds nothing", () => {
     renderBinders("/collection?tab=checklists&set=2024-topps-chrome-baseball&type=Base&scope=box-show");
     expect((screen.getByRole("combobox", { name: "Binder" }) as HTMLSelectElement).value).toBe("all");
-    const have = screen.getAllByRole("button", { name: /^Have #/ }).find((b) => b.getAttribute("aria-pressed") === "false")!;
-    fireEvent.click(have);
-    await waitFor(() =>
-      expect(screen.getAllByRole("status").some((s) => /^Added .+ to Main$/.test(s.textContent ?? ""))).toBe(true),
-    );
+    expect(screen.getByText("Choose a binder to add cards.")).toBeTruthy();
   });
 
-  it("under All it lands in Main", async () => {
+  it("under All (NEO-374: a view, not a binder) Have and Mark as Have are locked, and the picker says to choose a binder", async () => {
     renderBinders("/collection?tab=checklists&set=2024-topps-chrome-baseball&type=Base");
+    const picker = screen.getByRole("combobox", { name: "Binder" });
+    expect(picker.getAttribute("aria-describedby")).toBe(screen.getByText("Choose a binder to add cards.").id);
     const have = screen.getAllByRole("button", { name: /^Have #/ }).find((b) => b.getAttribute("aria-pressed") === "false")!;
+    expect(have.getAttribute("aria-disabled")).toBe("true");
     fireEvent.click(have);
+    expect(have.getAttribute("aria-pressed")).toBe("false");
+    expect(screen.getAllByRole("status").some((s) => /^Added /.test(s.textContent ?? ""))).toBe(false);
+    expect((screen.getByRole("textbox", { name: "Mark a range as Have" }) as HTMLInputElement).disabled).toBe(true);
+
+    // Picking Main unlocks it, and the note goes.
+    fireEvent.change(picker, { target: { value: "binder-main" } });
+    expect(screen.queryByText("Choose a binder to add cards.")).toBeNull();
+    const unlocked = screen.getAllByRole("button", { name: /^Have #/ }).find((b) => b.getAttribute("aria-pressed") === "false")!;
+    fireEvent.click(unlocked);
     await waitFor(() =>
       expect(screen.getAllByRole("status").some((s) => /^Added .+ to Main$/.test(s.textContent ?? ""))).toBe(true),
     );
