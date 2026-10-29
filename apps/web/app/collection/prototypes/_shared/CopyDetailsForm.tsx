@@ -1,4 +1,4 @@
-import { useId, type FormEvent, type KeyboardEvent } from "react";
+import { useId, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
 import NeonButton from "@/components/modules/NeonButton";
 import { Input } from "@/components/primitives/Input";
 import { Textarea } from "@/components/primitives/Textarea";
@@ -75,6 +75,8 @@ export interface CopyDetailsFormProps {
    * is gone from the list.
    */
   defaultCondition?: Condition;
+  /** NEO-377: more of the line to edit, above the buttons (its photos). */
+  extra?: ReactNode;
 }
 
 const CONDITIONS: Condition[] = [
@@ -119,6 +121,7 @@ export default function CopyDetailsForm({
   onUpForTradeChange,
   hideBinders = false,
   defaultCondition,
+  extra,
 }: CopyDetailsFormProps) {
   const headingId = useId();
   const quantityHelpId = useId();
@@ -435,6 +438,8 @@ export default function CopyDetailsForm({
           </div>
         )}
       </div>
+
+      {extra}
 
       <div className="mt-5 flex flex-wrap justify-end gap-3">
         <button

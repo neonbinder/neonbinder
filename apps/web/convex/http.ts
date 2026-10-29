@@ -1,6 +1,7 @@
 import { httpRouter } from "convex/server";
 import { exchangeMachineToken } from "./machineAuth";
 import { servicePausedPlatforms } from "./marketplacePause";
+import { serveCopyPhoto } from "./copyPhotos";
 import { handleEasypostWebhook } from "./shipmentTracking";
 
 const http = httpRouter();
@@ -68,6 +69,19 @@ http.route({
   path: "/internal/marketplace-pause",
   method: "GET",
   handler: servicePausedPlatforms,
+});
+
+// ─── Copy photos (NEO-377) ───────────────────────────────────────────────────
+// `GET /copy-photo/<token>/<image|thumb>` → 302 to a short-lived signed URL on
+// Cloudflare R2, where the bytes live (R2 egress is free; Convex serves only
+// the redirect). The random token is the bearer and the URL is stable, so
+// queries can return it and Convex's cache never holds an expiring signature.
+// `pathPrefix` because the token is in the path; the handler checks its shape
+// before any read, and serves live photos only.
+http.route({
+  pathPrefix: "/copy-photo/",
+  method: "GET",
+  handler: serveCopyPhoto,
 });
 
 export default http;

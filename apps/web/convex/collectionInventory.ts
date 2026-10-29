@@ -65,6 +65,7 @@ import {
   type Condition,
   type CountChange,
   type StoredDetails,
+  foldShape,
 } from "./collection";
 
 type CopyRow = Doc<"collectionCopies">;
@@ -159,10 +160,14 @@ export const inventoryCardValidator = v.object({
  * slot and acquired date do not matter.
  */
 export function isPlainLine(
-  row: Pick<CopyRow, "condition" | "grading" | "serialNumber" | "costCents" | "location" | "notes" | "upForTrade">,
+  row: Pick<
+    CopyRow,
+    "condition" | "grading" | "serialNumber" | "costCents" | "location" | "notes" | "upForTrade" | "hasPhotos"
+  >,
   defaultCondition: Condition,
 ): boolean {
   return (
+    row.hasPhotos !== true &&
     (row.condition === undefined || row.condition === defaultCondition) &&
     row.grading === undefined &&
     row.serialNumber === undefined &&
@@ -256,7 +261,7 @@ async function putPlain(
     ...(details.slot !== undefined ? { slot: details.slot } : {}),
   };
   const into = lines.find(
-    (row) => foldsInto(detailsOf(row), next) && row.quantity + details.quantity <= MAX_COPY_QUANTITY,
+    (row) => foldsInto(foldShape(row), next) && row.quantity + details.quantity <= MAX_COPY_QUANTITY,
   );
   if (into) {
     const quantity = into.quantity + details.quantity;

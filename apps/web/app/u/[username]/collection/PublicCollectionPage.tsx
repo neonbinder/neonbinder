@@ -135,9 +135,29 @@ function CardTile({ item, tags = true }: { item: Listed; tags?: boolean }) {
       ? hydratePublicOwnCard(copy.key, copy.unlisted)
       : null;
   const lines = copy ? [grade(copy) ?? copy.condition, copy.quantity > 1 ? `×${copy.quantity}` : null].filter(Boolean) : [];
+  // NEO-377: the collector's own photo of this copy, when they took one, in
+  // place of the drawn card. Full size opens in a new tab.
+  const photo = copy?.photos?.front ?? copy?.photos?.back;
+  const label = card ? cardLabel(card) : "this card";
   return (
     <li className="flex flex-col gap-1.5">
-      {card ? (
+      {photo ? (
+        <a
+          href={photo.imageUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="block rounded-md focus-outline"
+          aria-label={`Photo of ${label}, full size (opens a new tab)`}
+        >
+          <img
+            src={photo.thumbUrl}
+            alt=""
+            loading="lazy"
+            decoding="async"
+            className="aspect-[5/7] w-full rounded-md border border-rule bg-sheet object-contain"
+          />
+        </a>
+      ) : card ? (
         <CardFace model={card} size="fill" />
       ) : (
         <div className="aspect-[5/7] rounded-md border border-dashed border-rule" aria-hidden="true" />
@@ -146,6 +166,16 @@ function CardTile({ item, tags = true }: { item: Listed; tags?: boolean }) {
         <span className="block font-medium text-ink">{card ? cardLabel(card) : "No longer in the catalog"}</span>
         {card?.own && <span className="block text-ink-3">Not in the NeonBinder catalog</span>}
         {lines.length > 0 && <span className="block">{lines.join(" · ")}</span>}
+        {copy?.photos?.front && copy.photos.back && (
+          <a
+            href={copy.photos.back.imageUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="block w-fit rounded-sm text-neon-blue-text underline focus-outline"
+          >
+            See the back<span className="sr-only"> of {label} (opens a new tab)</span>
+          </a>
+        )}
         {/* NEO-367: the catalog card's Notes are NB's facts about the card, public
             by Jason's call. Never the copy's own notes, which this page never gets. */}
         {card?.notes && (

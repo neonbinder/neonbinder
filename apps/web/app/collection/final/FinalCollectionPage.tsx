@@ -241,6 +241,8 @@ interface DrawerExtras {
   copyId?: CopyId;
   /** The home the add form picks instead of the page's scope. */
   binderId?: string;
+  /** Open `copyId`'s Edit form when it is the card's one line (a row click). */
+  edit?: boolean;
   key: number;
 }
 
@@ -592,6 +594,7 @@ function CollectionPage({ side, onExit }: { side: Side; onExit?: () => void }) {
             : ("view" as const),
         copyId: ours?.copyId,
         binderId: ours?.binderId,
+        edit: ours?.edit,
         key: extras?.key ?? 0,
       }
     : null;
@@ -607,6 +610,7 @@ function CollectionPage({ side, onExit }: { side: Side; onExit?: () => void }) {
         seed: opts.seed,
         copyId: opts.copyId,
         binderId: opts.binderId,
+        edit: opts.edit,
         key: (prev?.key ?? 0) + 1,
       })),
     );
@@ -899,6 +903,7 @@ function CollectionPage({ side, onExit }: { side: Side; onExit?: () => void }) {
                   seed={drawer.seed}
                   mode={drawer.mode}
                   focusCopyId={drawer.copyId}
+                  editCopyId={drawer.edit ? drawer.copyId : undefined}
                   addBinderId={drawer.binderId}
                   openKey={drawer.key}
                   notice={notice}
@@ -985,8 +990,8 @@ function ScopedRows({
           on ? `${name} is up for trade` : `${name} is off the trade pile`,
       );
     },
-    open: (card, copyId, list) =>
-      openCard(card.id, { copyId, list: list?.map((c) => c.id), seed: card }),
+    open: (card, copyId, list, edit) =>
+      openCard(card.id, { copyId, list: list?.map((c) => c.id), seed: card, edit }),
   };
   return <>{children(actions)}</>;
 }

@@ -109,6 +109,8 @@ import type {
   ContainerRule,
   Copy,
   CopyId,
+  CopyPhotos,
+  PhotoSide,
   CreateContainerResult,
   DeleteContainerResult,
   MoveResult,
@@ -447,6 +449,28 @@ export interface SharingExtension {
 }
 
 /**
+ * NEO-377 — photos of the collector's own copies (capability `copyPhotos`).
+ * The demo keeps them on the page; the real store uploads to R2 through
+ * Convex. Each write rejects with a message to show when it fails.
+ */
+export interface CopyPhotosExtension {
+  /** The photos of those lines that have any (`Copy.hasPhotos`); `undefined` while loading. */
+  usePhotos(copies: readonly Copy[]): ReadonlyMap<CopyId, CopyPhotos> | undefined;
+  /** Put a photo on one side of a line, replacing the one there. `file` is the original; it is never kept. */
+  addPhoto(copy: Copy, side: PhotoSide, file: File): Promise<void>;
+  /** Take the photo off one side of a line. */
+  removePhoto(copy: Copy, side: PhotoSide): Promise<void>;
+  /** Trade a line's front and back photos. */
+  swapPhotos(copy: Copy): Promise<void>;
+  /**
+   * The photo that stands for each of these cards in the collection (the
+   * first line with a front, else a back), for `CardFace`
+   * (`./cardImages`). Cards with none are absent. Called every render, like a hook.
+   */
+  useCardImages(cardIds: readonly string[]): ReadonlyMap<string, CopyPhotos> | undefined;
+}
+
+/**
  * NEO-374 — Profile → Settings' "where My Collection opens": on All, or on
  * the binder last picked. Only the Convex store has it (the setting lives on
  * the collector's profile); the demo always opens on All.
@@ -465,6 +489,7 @@ export interface CollectionStoreValue {
   actions: CollectionActions;
   demo?: DemoExtension;
   sharing?: SharingExtension;
+  photos?: CopyPhotosExtension;
   binderMemory?: BinderMemoryExtension;
 }
 
@@ -479,6 +504,24 @@ export function useCollectionStore(): CollectionStoreValue {
 
 export function useCapabilities(): Capabilities {
   return useCollectionStore().capabilities;
+}
+
+/** NEO-377 — copy photos; `undefined` when the store has none. */
+export function useCopyPhotos(): CopyPhotosExtension | undefined {
+  // Not `useCollectionStore`: a list drawn outside a store (a test's) simply has no photos.
+  const store = useContext(CollectionStoreContext);
+  return store?.capabilities.copyPhotos ? store.photos : undefined;
+}
+
+const NO_PHOTOS = (): undefined => undefined;
+
+/**
+ * NEO-377 — the photos of those `copies` that have any; `undefined` while
+ * loading or when the store has no photos. Call it every render, like a hook.
+ */
+export function usePhotosOf(copies: readonly Copy[]): ReadonlyMap<CopyId, CopyPhotos> | undefined {
+  const ext = useCopyPhotos();
+  return (ext?.usePhotos ?? NO_PHOTOS)(copies);
 }
 
 /** NEO-374 — where the page opens; `undefined` when the store has no such setting (the demo). */
