@@ -128,8 +128,7 @@
     "set-selector/topps-chrome-marketplace-read.spec.ts": 8,
     "set-selector/variation-link-group-and-unlink.spec.ts": 7,
     "spine-label/design-and-queue-a-spine-label.spec.ts": 4,
-    "spine-label/player-team-colors-default-to-longest-tenure.spec.ts": 10,
-    "collection/add-cards-from-photos-real-scans.spec.ts": 120
+    "spine-label/player-team-colors-default-to-longest-tenure.spec.ts": 10
   },
   "byProject": {
     "e2e-mobile": {
@@ -258,8 +257,7 @@
       "set-selector/topps-chrome-marketplace-read.spec.ts": 7,
       "set-selector/variation-link-group-and-unlink.spec.ts": 10,
       "spine-label/design-and-queue-a-spine-label.spec.ts": 7,
-      "spine-label/player-team-colors-default-to-longest-tenure.spec.ts": 10,
-      "collection/add-cards-from-photos-real-scans.spec.ts": 120
+      "spine-label/player-team-colors-default-to-longest-tenure.spec.ts": 10
     }
   }
 }

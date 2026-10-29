@@ -6,7 +6,9 @@
 // way: the checklist's count line reads base cards first (the same total as
 // "Have X of T"), then the rows with variations (the stored count is what the
 // page reads), the card drawer rides on the URL (Back closes it), and the
-// drawer fits the phone as a sheet and the desktop as a side panel.
+// drawer fits the phone as a sheet and the desktop as a side panel. The Binder
+// picker opens on All, a view that adds nothing until a binder is picked
+// (NEO-374), so the spec picks Main before its first Have.
 //
 // The signed-in page is the REAL collection (Convex, per user), not the demo:
 // it shows "My Cards", "Checklists" and (NEO-359) "My Binders", no demo bar and
@@ -77,7 +79,8 @@ test(
 
     const checklist = page.getByRole("region", { name: "2024 Topps Chrome Base" });
     await expect(checklist.getByRole("heading", { level: 3, name: "2024 Topps Chrome Base" })).toBeVisible();
-    const progress = checklist.getByText(/^Have \d+ of \d+/);
+    // "In Main: " leads the line once Main is picked (NEO-374), below.
+    const progress = checklist.getByText(/^(In Main: )?Have \d+ of \d+/);
     await expect(progress).toBeVisible();
     const total = Number(/^Have 0 of (\d+)/.exec((await progress.textContent()) ?? "")?.[1]);
     expect(total, "the Base checklist starts at Have 0 of N").toBeGreaterThan(1);
@@ -133,26 +136,38 @@ test(
     await expect(haveOff).toBeVisible();
     await expectAccessible(page, { label: "Checklists, Base checklist loaded" });
 
+    // --- All is a view (NEO-374): nothing is added until a binder is picked ---
+    const binder = checklist.getByRole("combobox", { name: "Binder" });
+    await expect(binder).toHaveValue("all");
+    await expect(binder).toHaveAccessibleDescription("Choose a binder to add cards.");
+    await expect(haveOff).toHaveAttribute("aria-disabled", "true");
+    await expect(checklist.getByRole("textbox", { name: "Mark a range as Have" })).toBeDisabled();
+    await binder.selectOption({ label: "Main" });
+    await expect(checklist.getByText("Choose a binder to add cards.")).toHaveCount(0);
+    await expect(haveOff).not.toHaveAttribute("aria-disabled", "true");
+    await expect(progress).toHaveText(`In Main: Have 0 of ${total} · Need ${total}`);
+
     // --- Have, then Undo, then Have again ------------------------------------
     await haveOff.click();
     await expect(haveOn).toBeVisible();
-    await expect(progress).toHaveText(`Have 1 of ${total} · Need ${total - 1}`);
+    await expect(progress).toHaveText(`In Main: Have 1 of ${total} · Need ${total - 1}`);
     const notice = page.getByRole("status").filter({ hasText: `Added ${short} to Main` });
     await expect(notice).toBeVisible();
     await page.getByRole("button", { name: "Undo", exact: true }).click();
     await expect(page.getByRole("status").filter({ hasText: "Undone." })).toBeVisible();
     await expect(haveOff).toBeVisible();
-    await expect(progress).toHaveText(`Have 0 of ${total} · Need ${total}`);
+    await expect(progress).toHaveText(`In Main: Have 0 of ${total} · Need ${total}`);
     await haveOff.click();
     await expect(haveOn).toBeVisible();
-    await expect(progress).toHaveText(`Have 1 of ${total} · Need ${total - 1}`);
+    await expect(progress).toHaveText(`In Main: Have 1 of ${total} · Need ${total - 1}`);
 
     // --- My Cards lists it while it is owned; Back returns to the checklist --
     await tabs.getByRole("link", { name: "My Cards", exact: true }).click();
     await expect(page).toHaveURL(/[?&]tab=cards/);
     // Nothing is marked as a set build, so the card sits on the shelf "Off the board".
     await expect(everythingElse.getByRole("status").filter({ hasText: /^1 card$/ })).toBeVisible();
-    const owned = everythingElse.getByRole("list", { name: "Off the board, 1 card", exact: true });
+    // Main is picked, so the shelf says whose cards it shows.
+    const owned = everythingElse.getByRole("list", { name: "Off the board in Main, 1 card", exact: true });
     await expect(owned).toBeVisible();
     await expect(
       owned.getByRole("button", { name: new RegExp(`^2024 Topps Chrome #${escapeRegExp(number)} ${escapeRegExp(player)}.*, have$`) }),
@@ -161,7 +176,7 @@ test(
     await page.goBack();
     await expect(page).toHaveURL(/[?&]tab=checklists/);
     await expect(haveOn).toBeVisible();
-    await expect(progress).toHaveText(`Have 1 of ${total} · Need ${total - 1}`);
+    await expect(progress).toHaveText(`In Main: Have 1 of ${total} · Need ${total - 1}`);
 
     // --- Search: terms, a quoted phrase, and a phrase that is not there ------
     const quick = page.getByRole("region", { name: "Quick search" });
@@ -245,7 +260,7 @@ test(
     // The checklist is still there, on the same card, with its copy.
     await expect(checklist.getByRole("heading", { level: 3, name: "2024 Topps Chrome Base" })).toBeVisible();
     await expect(haveOn).toBeVisible();
-    await expect(progress).toHaveText(`Have 1 of ${total} · Need ${total - 1}`);
+    await expect(progress).toHaveText(`In Main: Have 1 of ${total} · Need ${total - 1}`);
 
     // --- The drawer: add, fold, edit, remove ---------------------------------
     // "Add another" opens it on its Add a copy form, and the URL says so.
@@ -322,11 +337,11 @@ test(
     await expect(drawer).toBeHidden();
     await expect(page).not.toHaveURL(/[?&]detail=/);
     await expect(haveOff).toBeVisible();
-    await expect(progress).toHaveText(`Have 0 of ${total} · Need ${total}`);
+    await expect(progress).toHaveText(`In Main: Have 0 of ${total} · Need ${total}`);
 
     // The account is empty again (self-cleaning, R7).
     await tabs.getByRole("link", { name: "My Cards", exact: true }).click();
     await expect(everythingElse.getByRole("status").filter({ hasText: /^0 cards$/ })).toBeVisible();
-    await expect(everythingElse.getByRole("list", { name: /^Off the board, / })).toHaveCount(0);
+    await expect(everythingElse.getByRole("list", { name: /^Off the board( in Main)?, / })).toHaveCount(0);
   },
 );

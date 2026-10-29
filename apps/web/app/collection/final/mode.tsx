@@ -356,7 +356,15 @@ function useViewTarget() {
       const params = new URLSearchParams(keepParams);
       const view = new URLSearchParams(next);
       view.forEach((value, key) => params.set(key, value));
-      const carried = view.get(SCOPE_PARAM) ?? from.scope ?? scope;
+      // The page's own handlers (a drill, a search pick) run outside the scope
+      // provider, where `scope` reads All: the entry's own `scope=` carries
+      // on there, so picking a player never drops the binder (NEO-374: All
+      // adds nothing, so losing it would lock the Have it was picked for).
+      const carried =
+        view.get(SCOPE_PARAM) ??
+        from.scope ??
+        (scope === "all" ? new URLSearchParams(from.search).get(SCOPE_PARAM) : null) ??
+        scope;
       putScope(params, carried);
       const search = `?${params.toString()}`;
       if (mode !== "public") return { search, state: undefined, scope: carried };
