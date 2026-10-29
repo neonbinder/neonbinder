@@ -1,4 +1,5 @@
 import { SecretManagerServiceClient } from "@google-cloud/secret-manager";
+import { ACCESS_CALL_OPTIONS, withQuotaRetry } from "./secrets-manager";
 
 /**
  * NEO-288: the SportLots "Automated Access" credential.
@@ -88,13 +89,19 @@ function narrow(value: unknown): AutomatedAccessCredential | undefined {
 
 async function readFromSecretManager(): Promise<AutomatedAccessCredential | undefined> {
   const sm = getClient();
-  // Same steps as SecretsManagerService.getCredentials: list → first ENABLED →
-  // access. Each secret carries one live version (NEO-115 keep-one), so the
-  // first ENABLED version is the live one.
-  const [versions] = await sm.listSecretVersions({ parent: secretName() });
-  const active = versions.find((v) => v.state === "ENABLED");
-  if (!active?.name) return undefined;
-  const [version] = await sm.accessSecretVersion({ name: active.name });
+  // Same read as SecretsManagerService.getCredentials: the latest version,
+  // never a list (NEO-385: ListSecretVersions is metered at 600/min per
+  // project). Each secret carries one live version (NEO-115 keep-one).
+  let version;
+  try {
+    [version] = await withQuotaRetry(() =>
+      sm.accessSecretVersion({ name: `${secretName()}/versions/latest` }, ACCESS_CALL_OPTIONS),
+    );
+  } catch (err: any) {
+    // No version, or the newest one is destroyed/disabled: nothing stored.
+    if (err?.code === 5 || err?.code === 9) return undefined;
+    throw err;
+  }
   const data = version.payload?.data;
   if (!data) return undefined;
   let parsed: unknown;
