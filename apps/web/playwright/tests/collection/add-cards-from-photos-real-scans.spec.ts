@@ -38,7 +38,7 @@ import { fileURLToPath } from "node:url";
 import { collectorCascade } from "../../support/collection";
 import { addCardViaForm, escapeRe } from "../../support/cards";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
-import { drillToCustom, setBuilderReady } from "../../support/set-builder";
+import { VARIANT_TYPES_SYNC, columnHeading, drillToCustom, selectOrCreate, setBuilderReady } from "../../support/set-builder";
 
 const FIXTURES = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "fixtures", "intake");
 const scans = (...names: string[]) => names.map((n) => path.join(FIXTURES, n));
@@ -64,14 +64,14 @@ test(
     // --- A set of our own, holding the four cards -------------------------------
     await signIn("/set-selector");
     await expect(setBuilderReady(page)).toBeVisible({ timeout: LAUNCH_GATE });
-    await drillToCustom(page, {
-      sport: "Baseball",
-      year: "2024",
-      manufacturer: "Topps",
-      set: setName,
-      variantType: "Insert",
-      variant: "Base",
-    });
+    await drillToCustom(page, { sport: "Baseball", year: "2024", manufacturer: "Topps", set: setName });
+    await selectOrCreate(page, "Variant Types", "Insert", { via: "list" });
+    await expect(columnHeading(page, "Inserts")).toBeVisible({ timeout: 15_000 });
+    // A new type's column pays its first-visit sync before "+ Custom" shows: on
+    // a slow preview that ran past drillToCustom's 7 s (twice on desktop).
+    await expect(page.getByRole("button", { name: "Add custom Inserts" })).toBeVisible({ timeout: VARIANT_TYPES_SYNC });
+    await selectOrCreate(page, "Inserts", "Base", { via: "list" });
+    await expect(page.getByRole("button", { name: "Open add card form" })).toBeVisible();
     for (const card of cards) await addCardViaForm(page, card);
 
     // --- Set up the run: Main, this set's Base ------------------------------------
