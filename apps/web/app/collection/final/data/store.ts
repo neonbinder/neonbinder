@@ -470,6 +470,18 @@ export interface CopyPhotosExtension {
   useCardImages(cardIds: readonly string[]): ReadonlyMap<string, CopyPhotos> | undefined;
 }
 
+/**
+ * NEO-374 — Profile → Settings' "where My Collection opens": on All, or on
+ * the binder last picked. Only the Convex store has it (the setting lives on
+ * the collector's profile); the demo always opens on All.
+ */
+export interface BinderMemoryExtension {
+  /** The setting and the binder it remembers (null: All); `undefined` while loading. */
+  opening: { open: "all" | "last"; lastBinder: ContainerId | null } | undefined;
+  /** The Binder picker's pick, kept only while the setting is "last". */
+  remember(scope: Scope): void;
+}
+
 export interface CollectionStoreValue {
   kind: "demo" | "convex";
   capabilities: Capabilities;
@@ -478,6 +490,7 @@ export interface CollectionStoreValue {
   demo?: DemoExtension;
   sharing?: SharingExtension;
   photos?: CopyPhotosExtension;
+  binderMemory?: BinderMemoryExtension;
 }
 
 export const CollectionStoreContext = createContext<CollectionStoreValue | null>(null);
@@ -509,6 +522,11 @@ const NO_PHOTOS = (): undefined => undefined;
 export function usePhotosOf(copies: readonly Copy[]): ReadonlyMap<CopyId, CopyPhotos> | undefined {
   const ext = useCopyPhotos();
   return (ext?.usePhotos ?? NO_PHOTOS)(copies);
+}
+
+/** NEO-374 — where the page opens; `undefined` when the store has no such setting (the demo). */
+export function useBinderMemory(): BinderMemoryExtension | undefined {
+  return useCollectionStore().binderMemory;
 }
 
 /** NEO-360 — real share links; `undefined` when the store has none (the demo). */
@@ -553,6 +571,22 @@ export const ScopeProvider = ScopeContext.Provider;
 export function useScope(): Scope {
   return useContext(ScopeContext);
 }
+
+/**
+ * NEO-374 — All is a view, not a binder: while the collection looks through
+ * All, nothing is added (Have, Mark as Have, Add 1 are locked and the Binder
+ * picker says to pick a binder). Only a store with scope has the picker; the
+ * inventory side never narrows, so it is never locked.
+ */
+export function useReadOnlyAll(): boolean {
+  const { scope: canScope } = useCapabilities();
+  const scope = useScope();
+  const side = useSide();
+  return canScope && side === "collection" && scope === "all";
+}
+
+/** The words for a blocked add under All (the picker's note says the same). */
+export const PICK_A_BINDER = "Choose a binder to add cards.";
 
 // ---------------------------------------------------------------------------
 // Side

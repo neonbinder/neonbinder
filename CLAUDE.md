@@ -429,6 +429,24 @@ Sensitive credentials are stored in **Google Cloud Secret Manager**, not `.env` 
 
 Agent memory lives at the **repo root** `.claude/agent-memory/<agent>/` and nowhere else. Agents write memory relative to their working directory, so a session started in `apps/web` will happily create `apps/web/.claude/agent-memory/` and then read a much smaller index than a root-level session — the two diverge silently and knowledge is lost rather than shadowed. If you are working under `apps/web`, write memory to the root path explicitly. The `repo-hygiene` job in `pr-pipeline.yml` fails any PR that leaves a `.claude/` directory outside the repo root.
 
+### Cloud project threads (NEO-383)
+
+A claude.ai cloud thread starts Claude Code in the parent of the checkout (`/home/user`, with this repo at `/home/user/neonbinder`), and Claude Code discovers agents and skills only from the launch directory's `.claude/`. Left alone, a cloud thread gets this file but none of the agents or skills, and quietly does the audit round itself. The cloud environment's setup script fixes that by linking them in before the session starts:
+
+```bash
+mkdir -p /home/user/.claude
+ln -sfn /home/user/neonbinder/.claude/agents       /home/user/.claude/agents
+ln -sfn /home/user/neonbinder/.claude/skills       /home/user/.claude/skills
+ln -sfn /home/user/neonbinder/.claude/agent-memory /home/user/.claude/agent-memory
+```
+
+Rules for a cloud thread:
+
+1. **Check at the start.** If the Agent tool's types do not include `test-coverage-auditor`, the links are missing. Run the four lines above yourself: the skills (`pr-watch`, `pr-close`, `deps-batch`, `impeccable`) load at once, but agents are read only at session start, so they stay missing for this session.
+2. **Without the agents, brief a `general-purpose` agent with the agent's file.** Tell it to read `.claude/agents/<name>.md` and follow it as its instructions (and the agent's memory under `.claude/agent-memory/<name>/`). Never fold an audit into your own turn; the point of the auditors is a read that is not anchored on yours.
+3. **Name what ran in the PR body**: which agents ran (or which stood in for them), and what each found.
+4. Agent memory written through the link lands in this checkout's `.claude/agent-memory/`; ship it in the PR like any other change.
+
 ## CI/CD
 
 All workflows live in `.github/workflows/`. `pr-pipeline.yml` is the single all-PR orchestrator; area CI is keyed on `apps/web/**` vs `services/browser/**` vs `services/preprocess/**`:

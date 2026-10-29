@@ -3,7 +3,7 @@
  * against the REAL ThemeProvider. Each save is a deferred promise the test
  * settles by hand, so the order they land in is the test's choice.
  */
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ThemeProvider, useTheme } from "@/src/theme/ThemeProvider";
 import { THEME_STORAGE_KEY } from "@/src/theme/theme-mode";
@@ -37,8 +37,11 @@ const settle = async (i: number, how: "resolve" | "reject") => {
   await act(async () => pending[i][how]());
 };
 // The page's own live region: a status while saving, an alert once a save fails.
-const message = () =>
-  [...screen.queryAllByRole("status"), ...screen.queryAllByRole("alert")].find((el) => el.tagName === "P")!.textContent;
+const message = () => {
+  const appearance = within(screen.getByRole("region", { name: "Appearance" }));
+  return [...appearance.queryAllByRole("status"), ...appearance.queryAllByRole("alert")].find((el) => el.tagName === "P")!
+    .textContent;
+};
 
 beforeEach(() => {
   pending.length = 0;

@@ -1,9 +1,10 @@
 import { forwardRef, useState } from "react";
 import { FOCUS } from "../../prototypes/p1/ui";
+import BinderPicker from "../BinderPicker";
 import { SearchHitRow, type RowActions } from "../CardRows";
 import ChipGroup from "../ChipGroup";
 import type { EntityParam } from "../checklistParams";
-import { useEntityCards } from "../data/store";
+import { useEntityCards, useReadOnlyAll } from "../data/store";
 import type { Card } from "../data/types";
 import { cardsCount } from "./format";
 import { SkeletonBars } from "./Skeleton";
@@ -32,6 +33,7 @@ const EntityResults = forwardRef<
     onClear: () => void;
   }
 >(function EntityResults({ entity, actions, selectedCardId, onJump, onFranchise, onClear }, headingRef) {
+  const readOnly = useReadOnlyAll();
   const result = useEntityCards(
     entity.kind === "player"
       ? { kind: "player", id: entity.id }
@@ -76,6 +78,8 @@ const EntityResults = forwardRef<
           className="flex flex-wrap items-center gap-2"
         />
       )}
+      {/* NEO-374 — under All the cards' Have is locked: the picker says why and unlocks it. */}
+      {readOnly && <BinderPicker />}
       <p role="status" className={cards ? "text-xs text-ink-3" : "sr-only"}>
         {!cards
           ? "Pulling the cards…"

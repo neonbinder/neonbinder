@@ -3,6 +3,7 @@ import { MagnifyingGlassIcon } from "@heroicons/react/20/solid";
 import { Input } from "@/components/primitives/Input";
 import { DRILL_ROW_ATTR } from "../prototypes/p1/StaticColumn";
 import { FOCUS } from "../prototypes/p1/ui";
+import BinderPicker from "./BinderPicker";
 import { SearchHitRow, type RowActions } from "./CardRows";
 import Cascade from "./catalog/Cascade";
 import type { Drill } from "./catalog/drill";
@@ -14,7 +15,17 @@ import Suggestions from "./catalog/Suggestions";
 import type { DrillState } from "./catalog/useDrillState";
 import type { EntityParam } from "./checklistParams";
 import Checklist from "./Checklist";
-import { searchable, useCapabilities, useCollectionStore, useDemoExtension, useSearch, useSide } from "./data/store";
+import {
+  searchable,
+  systemContainer,
+  useCapabilities,
+  useCollectionStore,
+  useContainers,
+  useDemoExtension,
+  useReadOnlyAll,
+  useSearch,
+  useSide,
+} from "./data/store";
 import type { Card, CardId, Suggestion } from "./data/types";
 import { QuickEntryProvider } from "./inventory/QuickEntry";
 import TargetBoxPicker from "./inventory/TargetBoxPicker";
@@ -100,6 +111,8 @@ function ChecklistsView({
   const real = useCollectionStore().kind === "convex";
   const setScope = useSetScope();
   const scopedName = useScopedName();
+  const readOnly = useReadOnlyAll();
+  const containers = useContainers();
   const [showAll, setShowAll] = useState(false);
   const [requesting, setRequesting] = useState<RequestsTab | null>(null);
   const text = useSearchText(query);
@@ -256,6 +269,8 @@ function ChecklistsView({
 
         {!entity && shown.length > 0 && (
           <>
+            {/* NEO-374 — under All the hits' Have is locked: the picker says why and unlocks it. */}
+            {readOnly && <BinderPicker />}
             {scopedName && !inventory && (
               <p className="text-xs text-ink-2">
                 Have, Want and Trade below are for <span className="text-neon-blue-text">{scopedName}</span>.{" "}
@@ -328,7 +343,8 @@ function ChecklistsView({
           searched={query}
           drill={drill.drill}
           initialTab={requesting}
-          onHave={actions.have}
+          // NEO-374 — "I have it" is its own explicit add: under All it files into Main.
+          onHave={(card) => actions.have(card, readOnly ? systemContainer(containers, "main")?.id : undefined)}
           onClose={() => setRequesting(null)}
         />
       )}

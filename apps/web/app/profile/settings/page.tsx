@@ -1,5 +1,5 @@
-import { useLayoutEffect, useRef, useState } from "react";
-import { useMutation } from "convex/react";
+import { useId, useLayoutEffect, useRef, useState } from "react";
+import { useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import ModeRadioGroup from "@/components/primitives/ModeRadioGroup";
 import DefaultConditionSection from "./DefaultConditionSection";
@@ -8,9 +8,9 @@ import { useTheme } from "@/src/theme/ThemeProvider";
 import type { ThemePreference } from "@/src/theme/theme-mode";
 
 /**
- * Settings — NEO-356. The collector's own app preferences; Appearance (the
- * theme) is the first, then Collection (the default card condition, NEO-380,
- * `DefaultConditionSection`).
+ * Settings — NEO-356. The collector's own app preferences: Appearance (the
+ * theme), then Collection (the default card condition, NEO-380,
+ * `DefaultConditionSection`), then Binders (where My Collection opens, NEO-374).
  *
  * A pick applies at once and is then saved to the profile, so it follows the
  * collector to every device:
@@ -73,6 +73,7 @@ export default function SettingsPanel() {
   // Where focus goes after a rollback: the restored option, once it renders.
   const groupRef = useRef<HTMLDivElement>(null);
   const [rollbacks, setRollbacks] = useState(0);
+  const headingId = useId();
 
   useLayoutEffect(() => {
     if (rollbacks === 0) return;
@@ -113,9 +114,11 @@ export default function SettingsPanel() {
 
   return (
     <div className="space-y-6">
-      <section className="space-y-6 p-6 border border-rule rounded-lg">
+      <section aria-labelledby={headingId} className="space-y-6 p-6 border border-rule rounded-lg">
         <div>
-          <h2 className="text-xl font-semibold text-ink">Appearance</h2>
+          <h2 id={headingId} className="text-xl font-semibold text-ink">
+            Appearance
+          </h2>
           <p className="text-sm text-ink-3 mt-1">
             Pick your glow. It follows you to every device you sign in on.
           </p>
@@ -136,12 +139,12 @@ export default function SettingsPanel() {
         </div>
 
         {/* A live region keyed on the outcome. Progress ("Saving…", "Saved.")
-          is a polite status, always mounted so it exists before it speaks. A
-          failure remounts it as an alert, which announces on insertion
-          (an alert's text must not wait for a region that already exists).
-          An empty one takes no room: `empty:-mt-6` cancels the section's
-          24px gap, so the card ends at the last line of copy until there is
-          something to say. */}
+            is a polite status, always mounted so it exists before it speaks. A
+            failure remounts it as an alert, which announces on insertion
+            (an alert's text must not wait for a region that already exists).
+            An empty one takes no room: `empty:-mt-6` cancels the section's
+            24px gap, so the card ends at the last line of copy until there is
+            something to say. */}
         <p
           key={saveState === "failed" ? "failed" : "ok"}
           role={saveState === "failed" ? "alert" : "status"}
@@ -158,6 +161,105 @@ export default function SettingsPanel() {
         </p>
       </section>
       <DefaultConditionSection />
+      <BinderOpenSection />
     </div>
+  );
+}
+
+type BinderOpen = "all" | "last";
+
+const BINDER_OPEN_OPTIONS: ReadonlyArray<{
+  value: BinderOpen;
+  label: string;
+  description: string;
+}> = [
+  { value: "all", label: "Open on All", description: "Every card in every binder, to browse" },
+  { value: "last", label: "Remember the last binder", description: "Pick up in the binder you used last" },
+];
+
+/**
+ * NEO-374 — where My Collection opens. All is a view of every binder (you
+ * pick a binder to add cards); "remember" reopens the binder picked last in
+ * the Binder picker. Saved to the profile, so it follows the collector too.
+ *
+ * The pick shows at once and is then saved; Convex resolves the save after
+ * the query has the new value, so the local pick is dropped either way and
+ * the saved value shows (the old one, after a failure, with an alert).
+ */
+function BinderOpenSection() {
+  const saved = useQuery(api.userProfile.getBinderPreference, {});
+  const save = useMutation(api.userProfile.setBinderOpenPreference);
+  const [pending, setPending] = useState<BinderOpen | null>(null);
+  const [saveState, setSaveState] = useState<SaveState>("idle");
+  const latestPick = useRef(0);
+  const groupRef = useRef<HTMLDivElement>(null);
+  const [rollbacks, setRollbacks] = useState(0);
+  const value = pending ?? saved?.open ?? "all";
+  const headingId = useId();
+
+  useLayoutEffect(() => {
+    if (rollbacks === 0) return;
+    const group = groupRef.current;
+    if (!group || !group.contains(document.activeElement)) return;
+    group.querySelector<HTMLElement>('[role="radio"][aria-checked="true"]')?.focus();
+  }, [rollbacks]);
+
+  const choose = async (next: BinderOpen) => {
+    if (!saved || next === value) return;
+    const pick = ++latestPick.current;
+    setPending(next);
+    setSaveState("saving");
+    try {
+      await save({ open: next });
+      if (pick !== latestPick.current) return;
+      setPending(null);
+      setSaveState("saved");
+    } catch {
+      if (pick !== latestPick.current) return;
+      setPending(null);
+      setSaveState("failed");
+      setRollbacks((n) => n + 1);
+    }
+  };
+
+  return (
+    <section aria-labelledby={headingId} className="space-y-6 p-6 border border-rule rounded-lg">
+      <div>
+        <h2 id={headingId} className="text-xl font-semibold text-ink">
+          Binders
+        </h2>
+        <p className="text-sm text-ink-3 mt-1">
+          Where My Collection opens. On All you can browse everything; pick a binder to add cards.
+        </p>
+      </div>
+
+      <div ref={groupRef}>
+        {saved === undefined ? (
+          <p className="text-sm text-ink-3">Loading…</p>
+        ) : (
+          <ModeRadioGroup
+            label="When you open your collection"
+            value={value}
+            options={BINDER_OPEN_OPTIONS}
+            onChange={(next) => void choose(next)}
+          />
+        )}
+      </div>
+
+      <p
+        key={saveState === "failed" ? "failed" : "ok"}
+        role={saveState === "failed" ? "alert" : "status"}
+        aria-live={saveState === "failed" ? undefined : "polite"}
+        className={
+          "text-sm empty:-mt-6 " +
+          (saveState === "failed" ? "text-neon-pink-text" : "text-ink-3")
+        }
+      >
+        {saveState === "saving" && "Saving…"}
+        {saveState === "saved" && "Saved."}
+        {saveState === "failed" &&
+          "That didn't save, so your old choice is back. Give it another try."}
+      </p>
+    </section>
   );
 }

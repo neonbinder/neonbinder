@@ -304,7 +304,7 @@ describe("more of the pass", () => {
   it("the status line holds its Undo while the keyboard is on it", async () => {
     vi.useFakeTimers();
     try {
-      renderDemo([BASE_CHECKLIST]);
+      renderDemo([`${BASE_CHECKLIST}&scope=binder-main`]);
       const have = within(checklist()).getAllByRole("button", { name: /^Have /, pressed: false })[0];
       fireEvent.click(have);
       await act(async () => {});
