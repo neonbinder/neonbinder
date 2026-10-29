@@ -14,7 +14,7 @@ import Overlay from "../../prototypes/p1/Overlay";
 import Cascade from "../catalog/Cascade";
 import { EMPTY_DRILL, type Drill } from "../catalog/drill";
 import { useDrillState } from "../catalog/useDrillState";
-import { homesOnSide, useContainers, useSide, writeErrorMessage } from "../data/store";
+import { homesOnSide, useContainers, useDefaultCondition, useSide, writeErrorMessage } from "../data/store";
 import { usePageApi } from "../pageApi";
 import {
   EMPTY_LANES,
@@ -128,6 +128,8 @@ export default function RealAddCardsTab() {
   const createRun = useMutation(api.intakeRuns.createIntakeRun);
   const setRunVariant = useMutation(api.intakeRuns.setIntakeRunVariant);
   const setRunDefaults = useMutation(api.intakeRuns.setIntakeRunDefaults);
+  const setRunHome = useMutation(api.intakeRuns.setIntakeRunHome);
+  const usualCondition = useDefaultCondition();
   const { uploading, upload } = usePlaceholderUpload();
   const [files, setFiles] = useState<File[]>([]);
   const [status, setStatus] = useState("");
@@ -156,7 +158,8 @@ export default function RealAddCardsTab() {
     }
     const added = new Map(localPhotos);
     for (const file of chosen) {
-      if (!file.type.startsWith("image/") || added.has(file.name)) continue;
+      // Only types every browser draws; a HEIC photo keeps its name alone.
+      if (!/^image\/(jpeg|png|webp|gif)$/.test(file.type) || added.has(file.name)) continue;
       const url = URL.createObjectURL(file);
       localUrls.current.push(url);
       added.set(file.name, url);
@@ -191,17 +194,25 @@ export default function RealAddCardsTab() {
 
   const setupBar = (
     <div className="flex flex-wrap items-end gap-4 rounded-lg border border-panel-rule bg-panel p-4 shadow-offset">
-      {run ? (
+      {run && run.homeKind !== kind ? (
+        // A run opened from the other side (a box run under Collection) keeps
+        // its home; it moves only among homes of its own kind.
         <p className="m-0 flex flex-col gap-1 text-sm">
           <span className="text-xs font-semibold text-ink-2">Going into</span>
           <span className="font-semibold text-ink">{run.homeName}</span>
         </p>
       ) : (
         <HomeSelect
-          value={pickedHome}
+          value={run ? run.homeId : pickedHome}
           homes={homes}
           label={kind === "box" ? "Put them in this box" : "Put them in this binder"}
-          onChange={setHomeId}
+          onChange={(id) => {
+            if (!run) return setHomeId(id);
+            const name = homes.find((h) => h.id === id)?.name ?? `the ${kind}`;
+            setRunHome({ runId: run._id, homeId: id as Id<"collectionContainers"> })
+              .then(() => setStatus(`The next cards you save go into ${name}.`))
+              .catch((e: unknown) => notify(writeErrorMessage(e)));
+          }}
         />
       )}
       <RealSetButton
@@ -228,7 +239,7 @@ export default function RealAddCardsTab() {
         aria-controls="intake-defaults-panel"
         onClick={() => setPanel(panel === "defaults" ? null : "defaults")}
       >
-        Defaults: {(run?.defaults ?? defaults).condition ?? "your usual condition"}
+        Defaults: {(run?.defaults ?? defaults).condition ?? usualCondition}
         {(run?.defaults ?? defaults).grading ? `, ${(run?.defaults ?? defaults).grading?.grader}` : ""}
       </NeonButton>
       {run && (
@@ -352,6 +363,9 @@ const FIELD = `rounded-md border border-field-rule bg-field px-2 py-1 text-sm te
 
 /** The run's batch defaults: every card starts with these. */
 function DefaultsFields({ value, onChange }: { value: RunDefaults; onChange: (next: RunDefaults) => void }) {
+  // No "your usual" choice: the field shows the seller's default (Profile →
+  // Settings) until they pick another.
+  const usualCondition = useDefaultCondition();
   // Seeded once, when the panel opens; every change is written straight back.
   const [draft, setDraft] = useState(value);
   const commit = (patch: Partial<RunDefaults>) => {
@@ -367,10 +381,9 @@ function DefaultsFields({ value, onChange }: { value: RunDefaults; onChange: (ne
         Condition
         <select
           className={FIELD}
-          value={draft.condition ?? ""}
-          onChange={(e) => commit({ condition: (e.target.value || undefined) as Condition | undefined })}
+          value={draft.condition ?? usualCondition}
+          onChange={(e) => commit({ condition: e.target.value as Condition })}
         >
-          <option value="">Your usual</option>
           {CONDITIONS.map((c) => (
             <option key={c}>{c}</option>
           ))}

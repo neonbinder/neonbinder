@@ -102,7 +102,13 @@ test(
     // Sending is the pipeline's upload leg (six real scans to storage): its exception.
     await expect(page.getByRole("status").filter({ hasText: "Sent 6 photos." })).toBeVisible({ timeout: PIPELINE });
     await expect(page).toHaveURL(/[?&]run=/);
-    await expect(page.getByText("Going into", { exact: true })).toBeVisible();
+    // The run's home stays a pick (the box or binder can change mid-run), and the
+    // defaults name the seller's own condition, never a "your usual" stand-in.
+    const home = page.getByRole("combobox", { name: "Put them in this binder" });
+    await expect(home.getByRole("option", { name: "Main", selected: true })).toHaveCount(1);
+    await expect(page.getByRole("button", { name: /^Defaults: / })).toHaveAccessibleName(
+      /^Defaults: (Mint|Near Mint|Excellent|Very Good|Good|Fair|Poor)/,
+    );
 
     const waiting = page.getByRole("region", { name: /^Needs you, \d+$/ });
     const saved = page.getByRole("region", { name: /^Saved, \d+$/ });

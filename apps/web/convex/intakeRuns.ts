@@ -293,6 +293,31 @@ export const setIntakeRunDefaults = mutation({
   },
 });
 
+/**
+ * Move a run to another binder or box the caller owns, on the same side (a
+ * binder run stays among binders, a box run among boxes). Cards already saved
+ * stay where they went; the next save files into the new home.
+ */
+export const setIntakeRunHome = mutation({
+  args: { runId: v.id("intakeRuns"), homeId: v.id("collectionContainers") },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const run = await requireOwnedRun(ctx, args.runId);
+    const home = await ctx.db.get(args.homeId);
+    if (!home || home.ownerId !== run.userId) throw new Error("Binder or box not found");
+    const current = await ctx.db.get(run.homeId);
+    // A run whose home is gone has no side left to keep; it is closed, not moved.
+    if (!current) throw new Error("This run's binder or box is gone; start a new run");
+    if (current.kind !== home.kind) {
+      throw new Error(current.kind === "box" ? "Pick a box for this run" : "Pick a binder for this run");
+    }
+    if (home._id !== run.homeId) {
+      await ctx.db.patch(run._id, { homeId: home._id, lastActivityAt: Date.now() });
+    }
+    return null;
+  },
+});
+
 // ---------------------------------------------------------------------------
 // Public: matches
 // ---------------------------------------------------------------------------

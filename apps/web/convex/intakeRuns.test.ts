@@ -289,6 +289,42 @@ describe("ownership", () => {
     await expect(
       w.them.mutation(api.intakeRuns.setIntakeRunDefaults, { runId, defaults: {} }),
     ).rejects.toThrow(/not found/);
+    await expect(
+      w.them.mutation(api.intakeRuns.setIntakeRunHome, { runId, homeId: w.theirBoxId }),
+    ).rejects.toThrow(/not found/);
+    await expect(
+      w.me.mutation(api.intakeRuns.setIntakeRunHome, { runId, homeId: w.theirBoxId }),
+    ).rejects.toThrow(/not found/);
+  });
+
+  test("a run moves to another of the collector's boxes, never to a binder", async () => {
+    const w = await world([{ number: "1", players: ["Doc Gooden"] }]);
+    const runId = await startRun(w, w.fx.baseId);
+    const [otherBox, binder] = await w.t.run(async (ctx) => [
+      await ctx.db.insert("collectionContainers", { ownerId: ME.subject, kind: "box", name: "Row 2", lastUpdated: 0 }),
+      await ctx.db.insert("collectionContainers", { ownerId: ME.subject, kind: "binder", name: "Rookies", lastUpdated: 0 }),
+    ]);
+    await w.me.mutation(api.intakeRuns.setIntakeRunHome, { runId, homeId: otherBox });
+    expect((await w.me.query(api.intakeRuns.getIntakeRun, { runId }))?.homeName).toBe("Row 2");
+    await expect(
+      w.me.mutation(api.intakeRuns.setIntakeRunHome, { runId, homeId: binder }),
+    ).rejects.toThrow(/Pick a box/);
+  });
+
+  test("a binder run is refused a box, and a run whose home is gone is not moved", async () => {
+    const w = await world([{ number: "1", players: ["Doc Gooden"] }]);
+    const [binder, otherBinder] = await w.t.run(async (ctx) => [
+      await ctx.db.insert("collectionContainers", { ownerId: ME.subject, kind: "binder", name: "Rookies", lastUpdated: 0 }),
+      await ctx.db.insert("collectionContainers", { ownerId: ME.subject, kind: "binder", name: "Stars", lastUpdated: 0 }),
+    ]);
+    const runId = await w.me.mutation(api.intakeRuns.createIntakeRun, { jobId: JOB, homeId: binder });
+    await expect(
+      w.me.mutation(api.intakeRuns.setIntakeRunHome, { runId, homeId: w.boxId }),
+    ).rejects.toThrow(/Pick a binder/);
+    await w.t.run(async (ctx) => ctx.db.delete(binder));
+    await expect(
+      w.me.mutation(api.intakeRuns.setIntakeRunHome, { runId, homeId: otherBinder }),
+    ).rejects.toThrow(/gone/);
   });
 
   test("a variant with no cards, and a negative price, are refused", async () => {
@@ -316,6 +352,18 @@ describe("the collector's answers (NEO-382)", () => {
     w.t.run(async (ctx) =>
       (await ctx.db.query("collectionCopies").collect()).filter((c) => c.cardId === cardId),
     );
+
+  test("after a move, the next save files into the new box", async () => {
+    const w = await world([{ number: "1", players: ["Doc Gooden"] }]);
+    const runId = await startRun(w, w.fx.baseId);
+    const row2 = await w.t.run(async (ctx) =>
+      ctx.db.insert("collectionContainers", { ownerId: ME.subject, kind: "box", name: "Row 2", lastUpdated: 0 }),
+    );
+    await w.me.mutation(api.intakeRuns.setIntakeRunHome, { runId, homeId: row2 });
+    await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[0], quantity: 1 });
+    const copies = await copiesOf(w, w.fx.gooden1);
+    expect(copies.map((c) => c.homeId)).toEqual([row2]);
+  });
 
   test("a save files the copies with the run's defaults, once", async () => {
     const w = await world([{ number: "1", players: ["Doc Gooden"] }]);

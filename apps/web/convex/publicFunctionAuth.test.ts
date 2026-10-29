@@ -2631,6 +2631,7 @@ describe("NEO-379: the intake run functions are signed-in, and the reads answer 
       () => t.mutation(api.intakeRuns.createIntakeRun, { jobId: "job-x", homeId }),
       () => t.mutation(api.intakeRuns.pickIntakeCard, { runId, pairId, cardId }),
       () => t.mutation(api.intakeRuns.setIntakeRunDefaults, { runId, defaults: {} }),
+      () => t.mutation(api.intakeRuns.setIntakeRunHome, { runId, homeId }),
       // NEO-382: the collector's answers.
       () => t.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId, quantity: 1 }),
       () => t.mutation(api.intakeRuns.answerIntakeRepeat, { runId, pairId, secondCopy: true }),
