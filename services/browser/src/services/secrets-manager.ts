@@ -111,24 +111,28 @@ function parseCookieMap(value: unknown): Record<string, string> | undefined {
 const KEY_PATTERN = /^[a-z0-9]+-credentials-[a-zA-Z0-9_-]+$/;
 
 /**
- * Hard cap on how many stale versions a single credential write may destroy.
+ * Retry budget for a Secret Manager call refused with RESOURCE_EXHAUSTED.
  *
- * NEO-115 follow-up. The first cut of the prune destroyed *every* stale version
- * inline and sequentially. On a secret that had accumulated a backlog
- * (`buysportscards-credentials-user_3DPlQ…` was at 203 enabled versions) that
- * meant ~202 serialised `destroySecretVersion` round trips inside the
- * user-facing write, and the BSC login write-back went from 0.6s to **42s** —
- * enough to fail the E2E `setup.yaml` BSC-auth step on PR #126. This project
- * treats any response over 7s as a real bug, so the prune must be bounded, not
- * merely "eventually fast".
- *
- * A backlogged secret converges over successive writes instead of paying the
- * whole cost at once: 10 per write, and BSC writes hourly. In steady state
- * (i.e. after the one-time bulk cleanup) there is exactly ONE stale version per
- * write — the one this write superseded — so the cap is never reached and the
- * prune costs a single destroy.
+ * NEO-385. Secret Manager meters calls per project per minute, and a refused
+ * call was surfacing as a 500 from GET /credentials/:key/token, which left the
+ * Convex BSC checklist fetch waiting until the E2E spec timed out. A refused
+ * call is not executed, so trying it again is safe even for a write. Two
+ * retries add at most 2.4 s of backoff (400 ms and 1200 ms, each jittered to
+ * 0.5x-1.5x). A read can also spend up to three 5 s ACCESS_CALL_OPTIONS
+ * timeouts, so the true worst case is about 17 s; that needs timeouts and
+ * quota refusals to stack, and is still far short of the client's own
+ * 10-minute default retry it replaces.
  */
-const MAX_DESTROYS_PER_WRITE = 10;
+const QUOTA_RETRY_DELAYS_MS = [400, 1200];
+
+/**
+ * Call options for AccessSecretVersion. The client's own config retries that
+ * call on RESOURCE_EXHAUSTED and UNAVAILABLE for up to 10 minutes, which
+ * would hold a token request open far past any caller's timeout. Turning that
+ * off leaves `withQuotaRetry` as the single, bounded retry layer. Every other
+ * method the service calls has no client-side retry.
+ */
+export const ACCESS_CALL_OPTIONS = { retry: null, timeout: 5_000 } as const;
 
 /**
  * Extract the monotonically-increasing version ordinal from a Secret Manager
@@ -136,9 +140,8 @@ const MAX_DESTROYS_PER_WRITE = 10;
  *
  * Secret Manager assigns N in strictly increasing order per secret, so the
  * ordinal is a total order on "which write happened first" that needs no extra
- * API call. pruneToNewestVersion uses it to refuse to destroy anything NEWER
- * than the version it is keeping — see there for the interleaving that made
- * this necessary.
+ * API call. destroyPreviousVersion uses it to address the one version a write
+ * superseded, without listing the secret.
  *
  * @returns the ordinal, or undefined if the name does not end in `/versions/N`.
  */
@@ -180,6 +183,45 @@ function shortVersion(secretId: string, versionName: string): string {
  */
 const GRPC_NOT_FOUND = 5;
 const GRPC_ALREADY_EXISTS = 6;
+/** The project's per-minute quota for this kind of call is spent (NEO-385). */
+const GRPC_RESOURCE_EXHAUSTED = 8;
+/**
+ * The addressed version exists but is DESTROYED or DISABLED. On a read of
+ * `versions/latest` that means the secret holds no usable credential.
+ */
+const GRPC_FAILED_PRECONDITION = 9;
+
+function isResourceExhaustedError(err: any): boolean {
+  return err?.code === GRPC_RESOURCE_EXHAUSTED;
+}
+
+function isFailedPreconditionError(err: any): boolean {
+  return err?.code === GRPC_FAILED_PRECONDITION;
+}
+
+/**
+ * Run a Secret Manager call, retrying it on RESOURCE_EXHAUSTED only.
+ *
+ * Every other error propagates at once: they are answers (NOT_FOUND,
+ * FAILED_PRECONDITION) or faults a retry will not fix. Exported for the
+ * SportLots automated-access reader, which talks to the client directly.
+ */
+export async function withQuotaRetry<T>(call: () => Promise<T>): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await call();
+    } catch (err: any) {
+      const base = QUOTA_RETRY_DELAYS_MS[attempt];
+      if (!isResourceExhaustedError(err) || base === undefined) throw err;
+      // Jitter, so a herd of refused callers does not retry in lockstep.
+      const delay = Math.round(base * (0.5 + Math.random()));
+      console.warn(
+        JSON.stringify({ msg: "secret_manager_quota_retry", attempt: attempt + 1, delayMs: delay }),
+      );
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+  }
+}
 
 /**
  * True when a Secret Manager error means "that resource does not exist".
@@ -226,23 +268,41 @@ export class SecretsManagerService {
     this.client = new SecretManagerServiceClient();
     this.projectId = process.env.GOOGLE_CLOUD_PROJECT || 'neonbinder';
   }
+  /**
+   * NEO-385: every read goes straight to `versions/latest`. The service keeps
+   * one live version per secret and destroys only versions OLDER than the one
+   * a write just added, so the newest version is the live one. Reading it
+   * directly costs one AccessSecretVersion, metered at 90,000/min. The old
+   * list-then-access read also spent a ListSecretVersions, metered at
+   * 600/min per project and returning every destroyed version as well, and
+   * parallel E2E bootstraps ran that quota out.
+   */
+  private async accessLatest(secretName: string) {
+    const [version] = await withQuotaRetry(() =>
+      this.client.accessSecretVersion(
+        { name: `${secretName}/versions/latest` },
+        ACCESS_CALL_OPTIONS,
+      ),
+    );
+    return version;
+  }
+
   async getCredentials(key: string): Promise<Credentials> {
     validateKeyFormat(key);
     try {
       const secretName = `projects/${this.projectId}/secrets/${key}`;
-      
-      const [versions] = await this.client.listSecretVersions({
-        parent: secretName,
-      });
 
-      const activeVersion = versions.find(v => v.state === 'ENABLED');
-      if (!activeVersion?.name) {
-        throw new Error(`No active version found for secret`);
+      let version;
+      try {
+        version = await this.accessLatest(secretName);
+      } catch (err: any) {
+        // The newest version is DESTROYED or DISABLED: nothing usable is
+        // stored, which the routes report as a 404 like a missing secret.
+        if (isFailedPreconditionError(err)) {
+          throw new Error(`No active version found for secret`);
+        }
+        throw err;
       }
-
-      const [version] = await this.client.accessSecretVersion({
-        name: activeVersion.name,
-      });
 
       if (!version.payload?.data) {
         throw new Error(`No data found in secret`);
@@ -360,10 +420,11 @@ export class SecretsManagerService {
     validateKeyFormat(key);
     const secretName = `projects/${this.projectId}/secrets/${key}`;
     try {
-      const [versions] = await this.client.listSecretVersions({ parent: secretName });
-      return versions.some(v => v.state === 'ENABLED');
+      // NEO-385: the latest version, not a list. See accessLatest.
+      await this.accessLatest(secretName);
+      return true;
     } catch (err: any) {
-      if (isNotFoundError(err)) {
+      if (isNotFoundError(err) || isFailedPreconditionError(err)) {
         return false;
       }
       console.error(
@@ -413,8 +474,8 @@ export class SecretsManagerService {
     }
 
     // NEO-115: keep exactly one version. This is deliberately AFTER the write
-    // succeeded and is best-effort — see pruneToNewestVersion.
-    await this.pruneToNewestVersion(secretName, secretId, createdVersionName);
+    // succeeded and is best-effort — see destroyPreviousVersion.
+    await this.destroyPreviousVersion(secretName, secretId, createdVersionName);
   }
 
   /**
@@ -469,10 +530,12 @@ export class SecretsManagerService {
     payload: string,
   ): Promise<string | null | undefined> {
     const addVersion = async (): Promise<string | null | undefined> => {
-      const [created] = await this.client.addSecretVersion({
-        parent: secretName,
-        payload: { data: Buffer.from(payload, 'utf8') },
-      });
+      const [created] = await withQuotaRetry(() =>
+        this.client.addSecretVersion({
+          parent: secretName,
+          payload: { data: Buffer.from(payload, 'utf8') },
+        }),
+      );
       return created?.name;
     };
 
@@ -510,192 +573,80 @@ export class SecretsManagerService {
   }
 
   /**
-   * Destroys up to `MAX_DESTROYS_PER_WRITE` versions of `secretName` other
-   * than `keepVersionName`, converging the secret on exactly one live version.
+   * Destroys the one version a write superseded, so the secret keeps exactly
+   * one live version.
    *
    * ## Why this exists
    *
    * Secret Manager never reclaims versions on its own and bills every version
    * that is not DESTROYED. The adapters write back a cached marketplace token
    * on every TTL expiry (BSC: hourly), so an untended per-user credential
-   * secret accumulates versions forever — the state that put neonbinder-dev at
-   * 1,326 live versions across 33 secrets.
+   * secret accumulates versions forever (NEO-115). Nothing ever rolls back to
+   * an older credential: a credential that stops working is re-saved by its
+   * user. So the only version worth keeping is the newest.
    *
-   * ## Security / safety properties (all load-bearing)
+   * ## Why it does not list (NEO-385)
    *
-   * - **Best effort.** Every failure path is swallowed with a console.error.
-   *   A user saving their marketplace password must never see an error because
-   *   version cleanup hiccuped; the credential write has already succeeded by
-   *   the time we get here.
-   * - **Never destroys the version we just wrote.** Exclusion is by explicit
-   *   resource name returned from addSecretVersion, never by "newest in list
-   *   order" — list order is a race against a concurrent write from another
-   *   Cloud Run instance. If the created name is unknown we prune nothing at
-   *   all rather than guess.
-   * - **Never destroys a version NEWER than the one we kept.** Excluding only
-   *   our own version is not enough once two writers overlap, and they can:
-   *   the Convex per-(user,site) lock serialises writers within ONE deployment,
-   *   but a preview deployment has its own `userProfiles` table (its own lock)
-   *   while sharing the dev browser service, the dev GCP project and the same
-   *   per-worker Clerk test users — so a dev-branch E2E run overlapping a
-   *   preview E2E run on the same worker index is two unsynchronised writers on
-   *   one key. The interleaving that used to zero the secret:
+   * This used to list every version and destroy the stale ones. A list is a
+   * ListSecretVersions call, metered at 600/min per project, and it returns
+   * every DESTROYED version too (600 to 700 of them on the CI test accounts'
+   * secrets). Parallel E2E runs re-sign-in all eight test accounts at once,
+   * which ran that quota out and turned token reads into 500s. Version
+   * ordinals are strictly increasing per secret, so the version this write
+   * superseded is addressable as `versions/<N-1>` with no list at all.
    *
-   *     A adds v10, B adds v11
-   *     A prunes: keeps v10, destroys v11   ← B's write, gone
-   *     B prunes: keeps v11 (already dead), destroys v10
-   *     → ZERO enabled versions
+   * ## Safety properties (all load-bearing)
    *
-   *   getCredentials then throws "No active version", the route answers
-   *   404 `{"error":"Credentials not found"}`, Convex string-matches that into
-   *   `not_found` and calls removeSiteCredentialStatus — credential and status
-   *   flag both destroyed, from two ordinary concurrent logins.
-   *
-   *   The guard: version resource names end in `/versions/N` with N strictly
-   *   increasing per secret, so refusing to destroy any ordinal above the kept
-   *   one is enough, and costs no extra API call. Under the interleaving above
-   *   A now skips v11, B still keeps v11, and v11 survives both prunes. A
-   *   version whose ordinal cannot be parsed is skipped rather than destroyed:
-   *   an unrecognisable name is not evidence that it is stale.
-   * - **Keep-1 means no history.** There is no prior version to roll back to;
-   *   the write that just landed is the only copy.
-   *
-   *   NEO-141 changed what that costs, and the change is worth stating
-   *   because the old rationale is now wrong. This comment used to justify
-   *   keep-1 by "the payload carries the durable username/password", i.e. the
-   *   secret was mostly re-derivable-from-nothing durable state. It is not any
-   *   more: a user payload is `{username, token, expiresAt, refreshToken?,
-   *   refreshExpiresAt?}` and every field except the username is a session
-   *   credential with a lifetime. Losing it does NOT send the user back to
-   *   Profile to re-type a password (there is no stored password to lose) — it
-   *   costs one re-authentication: a refresh grant, or a fresh sign-in if the
-   *   refresh chain was what got interrupted.
-   *
-   *   That is a cheaper failure than the one this used to describe, so the
-   *   trade still holds. It is also a LOUDER one: the rotated refresh token is
-   *   single-use, so a half-completed write is not recoverable by retrying the
-   *   read. Hence the ordering below — prune only ever runs AFTER the new
-   *   version is durably written and its name is known.
+   * - **Best effort.** Every failure is swallowed with a log line. A user
+   *   saving their marketplace credentials must never see an error because
+   *   cleanup hiccuped; the write has already succeeded by the time we get
+   *   here. NOT_FOUND and FAILED_PRECONDITION (already destroyed, e.g. by a
+   *   concurrent writer) are the normal outcome of a race and are silent.
+   * - **Never destroys the version we just wrote, nor a newer one.** Only
+   *   `N-1` is ever addressed. With two overlapping writers, A adding v10 and
+   *   B adding v11, A destroys v9 and B destroys v10, and v11, the newest,
+   *   survives both. That is the interleaving that once zeroed a secret, when
+   *   prune destroyed "everything but mine" (see git history).
+   * - **Skipped when the created version is unknown.** Without the created
+   *   name's ordinal there is no safe target, so nothing is destroyed.
    * - **No secret material and no infrastructure identifier is logged.** Only
-   *   the BARE secret id, version ordinals, counts and error messages reach the
-   *   log — never the fully-qualified `projects/<project>/secrets/...` resource
-   *   name, which would write the GCP project identifier into Cloud Logging on
-   *   every prune failure (NEO-294; `shortVersion` is the helper). Payloads are
-   *   never read here (listSecretVersions returns metadata only, never
-   *   `payload`), and errors are reduced to their message so no arbitrary
-   *   object graph is spilled into Cloud Logging.
-   * - **Bounded and concurrent.** At most MAX_DESTROYS_PER_WRITE destroys are
-   *   issued, and they run together rather than one-at-a-time, so the prune
-   *   can never dominate the latency of the credential write it follows. See
-   *   the constant for the 42s incident that forced this.
+   *   the BARE secret id and the version ordinal (NEO-294; `shortVersion`),
+   *   never the fully-qualified `projects/<project>/...` name and never a
+   *   raw error object.
+   *
+   * A secret that already carries several live versions from before NEO-115
+   * keeps the older ones; the one-time cleanup for those is a script, not a
+   * per-write cost.
    *
    * @param secretName Fully-qualified `projects/<p>/secrets/<id>` resource
-   *   name. Addresses the API calls; it is NEVER logged — see the bullet above.
-   * @param secretId The bare `<site>-credentials-<clerkUserId>` id. Passed in
-   *   rather than parsed back out of `secretName` so the log-safe form is the
-   *   one the caller already holds, and so a future caller cannot supply a
-   *   name without also supplying the id it is allowed to log.
-   * @param keepVersionName Resource name of the version to preserve. When
-   *   null/undefined the prune is skipped — destroying "everything else" with
-   *   no known survivor would destroy the credential we just stored.
+   *   name. Addresses the API call; it is NEVER logged.
+   * @param secretId The bare `<site>-credentials-<clerkUserId>` id, the
+   *   log-safe form.
+   * @param createdVersionName Resource name of the version this write added.
    */
-  private async pruneToNewestVersion(
+  private async destroyPreviousVersion(
     secretName: string,
     secretId: string,
-    keepVersionName: string | null | undefined,
+    createdVersionName: string | null | undefined,
   ): Promise<void> {
-    if (!keepVersionName) {
-      // addSecretVersion succeeded but returned no name. Pruning now could
-      // destroy the version we just wrote, so do nothing.
+    const createdOrdinal = createdVersionName ? versionOrdinal(createdVersionName) : undefined;
+    if (createdOrdinal === undefined) {
       console.error(
-        "Skipping version prune for secret '%s': created version name unavailable",
+        "Skipping version prune for secret '%s': created version name unavailable or unparseable",
         secretId,
       );
       return;
     }
+    if (createdOrdinal <= 1) return;
 
-    const keptOrdinal = versionOrdinal(keepVersionName);
-    if (keptOrdinal === undefined) {
-      // Same posture as an unknown created name: without an ordinal for the
-      // survivor we cannot tell a stale version from a concurrent writer's
-      // newer one, and guessing wrong destroys a live credential.
-      console.error(
-        "Skipping version prune for secret '%s': created version name has no parseable ordinal",
-        secretId,
-      );
-      return;
-    }
-
+    const previous = `${secretName}/versions/${createdOrdinal - 1}`;
     try {
-      const [versions] = await this.client.listSecretVersions({ parent: secretName });
-
-      // Select at most MAX_DESTROYS_PER_WRITE stale versions, then stop
-      // walking. The cap is what keeps a backlogged secret from turning a
-      // credential write into a 42-second request; see the constant.
-      const stale: string[] = [];
-      for (const version of versions) {
-        if (stale.length >= MAX_DESTROYS_PER_WRITE) {
-          break;
-        }
-        if (!version.name || version.name === keepVersionName) {
-          continue;
-        }
-        // ENABLED and DISABLED both bill and both accept destroy. DESTROYED
-        // (and STATE_UNSPECIFIED) must be skipped: destroying an already
-        // destroyed version is a FAILED_PRECONDITION error.
-        if (version.state !== 'ENABLED' && version.state !== 'DISABLED') {
-          continue;
-        }
-        // Concurrency guard: anything numbered above the version we kept was
-        // written AFTER it, by someone else, and destroying it is how two
-        // overlapping writers leave a secret with no enabled version at all.
-        // An unparseable ordinal is skipped for the same reason.
-        const ordinal = versionOrdinal(version.name);
-        if (ordinal === undefined || ordinal > keptOrdinal) {
-          continue;
-        }
-        stale.push(version.name);
-      }
-
-      if (stale.length === 0) {
-        return;
-      }
-
-      // Concurrent, not serialised: the old `for … await` loop paid one full
-      // round trip per version. allSettled also means a single rejection can
-      // neither abort its siblings nor escape as an unhandled rejection.
-      //
-      // This is deliberately AWAITED rather than fired and forgotten: Cloud Run
-      // may freeze or reclaim the container once the response is written, so
-      // detached work is not reliably completed and its failures would be
-      // unobservable.
-      const results = await Promise.allSettled(
-        stale.map((name) => this.client.destroySecretVersion({ name })),
-      );
-      results.forEach((result, i) => {
-        if (result.status === 'rejected') {
-          const err = result.reason;
-          console.error(
-            "Failed to destroy secret version '%s': %s",
-            shortVersion(secretId, stale[i]),
-            err instanceof Error ? err.message : String(err),
-          );
-        }
-      });
-
-      if (stale.length === MAX_DESTROYS_PER_WRITE) {
-        // Backlog remains; the next write takes another batch. Counts and
-        // the bare secret id only — never payloads, never the project.
-        console.log(
-          "Pruned %d version(s) of secret '%s' (per-write cap reached; more remain)",
-          stale.length,
-          secretId,
-        );
-      }
+      await withQuotaRetry(() => this.client.destroySecretVersion({ name: previous }));
     } catch (err: any) {
+      if (isNotFoundError(err) || isFailedPreconditionError(err)) return;
       console.error(
-        "Failed to prune old versions for secret '%s': %s",
-        secretId,
+        "Failed to destroy secret version '%s': %s",
+        shortVersion(secretId, previous),
         err instanceof Error ? err.message : String(err),
       );
     }
