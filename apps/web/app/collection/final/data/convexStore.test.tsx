@@ -109,6 +109,10 @@ vi.mock("convex/react", async () => {
           return [key, typeof answer === "function" ? answer(args) : answer];
         }),
       ),
+    // NEO-377: the copy-photo actions; no test here reaches them.
+    useAction: (ref: Parameters<typeof nameOf>[0]) => async () => {
+      throw new Error(`unexpected action ${nameOf(ref)}`);
+    },
     useMutation: (ref: Parameters<typeof nameOf>[0]) => {
       const name = nameOf(ref);
       const send = async (args: unknown) => {
@@ -344,6 +348,9 @@ describe("copies between the view and the server", () => {
     expect(foldsInto(row, { quantity: 1, acquiredOn: "2026-10-22" } as never)).toBe(false);
     expect(foldsInto(row, { quantity: 1, acquiredOn: "2026-10-23", serialNumber: "3/50" } as never)).toBe(false);
     expect(foldsInto({ ...(row as object), grading: { grader: "PSA", grade: "10", cert: "1" } } as never, row)).toBe(false);
+    // NEO-377: a line with photos is one of a kind, either way.
+    expect(foldsInto({ ...(row as object), hasPhotos: true } as never, row)).toBe(false);
+    expect(foldsInto(row, { quantity: 1, acquiredOn: "2026-10-23", hasPhotos: true } as never)).toBe(false);
   });
 });
 
@@ -361,6 +368,7 @@ describe("the real store's capabilities and reads", () => {
       cardRequests: true,
       demoChrome: false,
       inventory: true,
+      copyPhotos: true,
     });
     expect(result.current.demo).toBeUndefined();
   });

@@ -3819,6 +3819,14 @@ export default defineSchema({
     location: v.optional(v.string()),
     // Blank is stored as absent, so a blank note never blocks a fold.
     notes: v.optional(v.string()),
+    /**
+     * NEO-377 — this line has a photo (`collectionCopyPhotos`, front and/or
+     * back). Only `true` is stored; none is ABSENT. Kept on the row so the
+     * fold rule can see it without a read: a line with photos never folds,
+     * either way, like a cert or a serial (`isOneOfAKind`). Set and cleared
+     * only by `convex/copyPhotos.ts`.
+     */
+    hasPhotos: v.optional(v.literal(true)),
     lastUpdated: v.number(),
   })
     // copiesOf, the fold lookup, and "all my copies" (prefix: ownerId alone).
@@ -4063,4 +4071,45 @@ export default defineSchema({
   })
     .index("by_owner_and_created", ["ownerId", "createdAt"])
     .index("by_created", ["createdAt"]),
+
+  /**
+   * NEO-377 — a copy line's photos: at most one LIVE row per (copy, side).
+   * One physical copy's front and back, for the collector's screens, public
+   * share pages and, later, marketplace listings.
+   *
+   * The bytes are in Cloudflare R2 (the NEO-377 cost analysis: R2 egress is
+   * free), never in Convex. `token` is a random id naming both objects
+   * (`copyPhotoObjectKey`): `image`, the listing-sized photo (long edge
+   * 1600px, eBay's recommended size), and `thumb`, the small one binder pages
+   * show. The browser makes both from the original, which is never kept.
+   * Pages load them through `GET /copy-photo/<token>/<size>`, which
+   * redirects to a short-lived signed R2 URL; the token is the bearer.
+   *
+   * `status`, and `since` (when it got there):
+   *   - `pending`: upload URLs handed out, not finished. Counts toward the
+   *     hourly cap; swept with its objects after an hour.
+   *   - `live`: on its copy. Never more than one per (copy, side).
+   *   - `detached`: its copy was removed; kept an hour so the Undo can put it
+   *     back (`restoreCopy`), then swept with its objects.
+   * All reads and writes go through `convex/copyPhotos.ts`.
+   */
+  collectionCopyPhotos: defineTable({
+    ownerId: v.string(),
+    copyId: v.id("collectionCopies"),
+    side: v.union(v.literal("front"), v.literal("back")),
+    token: v.string(),
+    contentType: v.union(v.literal("image/jpeg"), v.literal("image/webp")),
+    imageBytes: v.number(),
+    thumbBytes: v.number(),
+    // "replaced": a side's old photo, kept (unserved) for an hour so the
+    // hourly upload cap still counts it and the sweep deletes its files.
+    status: v.union(v.literal("pending"), v.literal("live"), v.literal("detached"), v.literal("replaced")),
+    since: v.number(),
+  })
+    .index("by_copy_and_status", ["copyId", "status"])
+    // The hourly upload cap (prefix ownerId, range on _creationTime) and the
+    // per-account test reset.
+    .index("by_owner", ["ownerId"])
+    .index("by_token", ["token"])
+    .index("by_status_and_since", ["status", "since"]),
 });

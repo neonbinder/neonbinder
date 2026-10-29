@@ -9,8 +9,8 @@
  */
 
 import { convexTest } from "convex-test";
-import { describe, expect, test } from "vitest";
-import { api } from "./_generated/api";
+import { describe, expect, test, vi } from "vitest";
+import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import { seedCollectionCatalog } from "../lib/testing/collection-fixture";
 import type { Id } from "./_generated/dataModel";
@@ -576,5 +576,38 @@ describe("NEO-362: a binder's layout and shared empty slots", () => {
     });
     await s.me.mutation(api.collection.addLineItem, { cardId: s.fx.gooden1, details: { quantity: 1, homeId: b.id } });
     expect((await s.anon.query(api.publicCollection.binderNeeds, { username: "ace", path: b.path })).needs).toEqual([]);
+  });
+});
+
+describe("NEO-377 copy photos on public pages", () => {
+  test("a public copy carries its live photos; a pending one and a copy with none carry nothing", async () => {
+    vi.stubEnv("CONVEX_SITE_URL", "https://example.convex.site");
+    const s = await setup();
+    const b = await binder(s);
+    const add = async (cardId: typeof s.fx.gooden1, slot: number) =>
+      (await s.me.mutation(api.collection.addLineItem, { cardId, details: { quantity: 1, homeId: b.id, slot } })).copyId;
+    const shot = await add(s.fx.gooden1, 1);
+    const plain = await add(s.fx.strawberry2, 2);
+    const reserve = (copyId: typeof shot, side: "front" | "back") =>
+      s.t.mutation(internal.copyPhotos.reserveUpload, {
+        ownerId: ME.subject,
+        copyId,
+        side,
+        contentType: "image/jpeg",
+        imageBytes: 10,
+        thumbBytes: 10,
+      });
+    const { photoId } = await reserve(shot, "front");
+    await s.t.mutation(internal.copyPhotos.commitUpload, { ownerId: ME.subject, photoId });
+    await reserve(shot, "back"); // never finished: stays pending
+    await reserve(plain, "front");
+    await s.me.mutation(api.collectionContainers.setVisibility, { containerId: b.id, visibility: "public" });
+
+    const { page } = await s.anon.query(api.publicCollection.binderCopies, { username: "ace", path: b.path, paginationOpts: PAGE });
+    const bySlot = new Map(page.map((row) => [row.slot, row]));
+    expect(bySlot.get(1)?.photos?.front?.thumbUrl).toMatch(/^https:\/\/example\.convex\.site\/copy-photo\/[0-9a-f]{32}\/thumb$/);
+    expect(bySlot.get(1)?.photos?.back).toBeUndefined();
+    expect(bySlot.get(2)).not.toHaveProperty("photos");
+    vi.unstubAllEnvs();
   });
 });

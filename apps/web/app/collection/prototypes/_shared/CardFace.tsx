@@ -11,6 +11,8 @@ import {
 } from "./data";
 import type { Card as ModelCard } from "../../final/data/types";
 import { cardLabel as modelLabel, playerInitials as initialsOf } from "../../final/data/labels";
+import { useCardImage } from "../../final/data/cardImages";
+import type { CopyPhotos } from "../../final/data/types";
 import "./card-face.css";
 
 /**
@@ -61,6 +63,12 @@ export interface CardFaceProps {
   /** Overrides the accessible name. */
   label?: string;
   className?: string;
+  /**
+   * NEO-377: a real photo to show instead of the drawn card. Left out, a
+   * `model` card shows the collector's own photo when the page has one
+   * (`final/data/cardImages`); the drawing is the fallback.
+   */
+  photo?: CopyPhotos;
 }
 
 /** Proportions used inside the face, in % of the card's width. */
@@ -157,7 +165,10 @@ export default function CardFace({
   serial,
   label,
   className = "",
+  photo,
 }: CardFaceProps) {
+  const theirs = useCardImage(photo || empty ? undefined : model?.id);
+  const picture = (photo ?? theirs)?.front ?? (photo ?? theirs)?.back;
   const face = faceOf(card, model);
   const run = face.printRun === null ? null : face.printRun === 1 ? "1/1" : `/${face.printRun}`;
   const compact = size === "sm";
@@ -185,6 +196,51 @@ export default function CardFace({
   ]
     .filter(Boolean)
     .join(", ");
+
+  if (picture) {
+    return (
+      <div
+        role="img"
+        aria-label={accessibleName}
+        className={`nb-card relative shrink-0 select-none ${className}`}
+        style={{ width: WIDTH[size], aspectRatio: "5 / 7", containerType: "inline-size" }}
+      >
+        {/* On a child, so `cqw` measures this card (not an ancestor), as the drawn face does. */}
+        <div
+          aria-hidden="true"
+          className="absolute inset-0 overflow-hidden"
+          style={{ borderRadius: cq(5), background: "#0b0f1a", boxShadow: "0 6px 18px rgba(0,0,0,0.45)" }}
+        >
+          <img
+            src={picture.thumbUrl}
+            alt=""
+            draggable={false}
+            decoding="async"
+            className="h-full w-full object-contain"
+            style={{ filter: need ? "grayscale(0.9) brightness(0.5)" : undefined }}
+          />
+        </div>
+        {serial && (
+          <span
+            aria-hidden="true"
+            className="absolute font-bold tabular-nums"
+            style={{
+              right: cq(4),
+              bottom: cq(4),
+              fontSize: cq(compact ? 10 : 7.5),
+              padding: `${cq(0.8)} ${cq(2.2)}`,
+              borderRadius: cq(1.5),
+              background: "rgba(0,0,0,0.78)",
+              color: "#F5D77A",
+              lineHeight: 1.15,
+            }}
+          >
+            {serial}
+          </span>
+        )}
+      </div>
+    );
+  }
 
   const primary = face.primary;
   const secondary = face.secondary;

@@ -32,7 +32,9 @@ import {
   useCommonPrices,
   useContainers,
   useCopiesOf,
+  useCopyPhotos,
   useDefaultCondition,
+  usePhotosOf,
   useScope,
   useSide,
   useWants,
@@ -43,6 +45,7 @@ import type { Card, Container, ContainerId, Copy, CopyDetails, CopyId, MoveResul
 import { binderText, lineNames, lineSummary, lineWhat, type NamedBinder } from "./lineItems";
 import { useLineKeys } from "./lineKeys";
 import OwnCardNote from "./OwnCardNote";
+import CopyPhotosField, { LineThumb } from "./CopyPhotosField";
 import { usePageApi } from "./pageApi";
 
 /** What the shared copy form edits (the prototypes' copy shape). */
@@ -155,6 +158,7 @@ export default function CardDetail({
   onCancelAdd,
   mode = "view",
   focusCopyId,
+  editCopyId,
   addBinderId,
 }: {
   card: Card;
@@ -164,6 +168,12 @@ export default function CardDetail({
   mode?: "view" | "add";
   /** Ring this line item in "Your copies". */
   focusCopyId?: CopyId;
+  /**
+   * NEO-377: open this line's Edit form (photos and all) once the copies
+   * load, when it is the card's one line. With more, the list opens closed
+   * and the collector picks.
+   */
+  editCopyId?: CopyId;
   /** The home the add form picks instead of the page's scope (the hunt tray's open binder). */
   addBinderId?: string;
 }) {
@@ -263,6 +273,17 @@ export default function CardDetail({
     return () => cancelAnimationFrame(frame);
   }, [refocus]);
   const copyRefs = useRef(new Map<CopyId, HTMLLIElement>());
+  const autoEdit = useRef(mode === "view" ? editCopyId : undefined);
+  useEffect(() => {
+    if (!autoEdit.current || copies === undefined) return;
+    // Any single line, not only the clicked id: a line just marked Have can
+    // trade its optimistic id for the server's between the click and here.
+    const only = copies.length === 1 && autoEdit.current ? copies[0] : null;
+    autoEdit.current = undefined;
+    if (!only) return;
+    setEditing({ key: only.id, value: toForm(only), trade: only.upForTrade });
+    setRefocus({ key: only.id, into: "form" });
+  }, [copies]);
   useEffect(() => {
     const frame = requestAnimationFrame(() => {
       if (mode === "add") {
@@ -458,7 +479,7 @@ export default function CardDetail({
         focusCopyId={focusCopyId}
         copyRefs={copyRefs}
         editing={editing}
-        renderEditor={(copy, i) =>
+        renderEditor={(copy, i, photos) =>
           editing && (
             <CopyDetailsForm
               card={card}
@@ -477,6 +498,7 @@ export default function CardDetail({
               onUpForTradeChange={capabilities.trade ? (trade) => setEditing({ ...editing, trade }) : undefined}
               heading={`Edit ${names[i]}`}
               saveLabel="Save copy"
+              extra={photos}
             />
           )
         }
@@ -675,7 +697,8 @@ export function CopyList({
   copyRefs?: RefObject<Map<CopyId, HTMLLIElement>>;
   /** The line whose form is open, by the line key `onEdit` handed over. */
   editing?: { key: string } | null;
-  renderEditor?: (copy: Copy, index: number) => ReactNode;
+  /** `photos`: the line's photo field (NEO-377), for the form to hold; null without photos. */
+  renderEditor?: (copy: Copy, index: number, photos: ReactNode) => ReactNode;
   /** Copies flagged Up for trade wear a tag (capability `trade`). */
   showTrade?: boolean;
   /** Sell / Take off sale, and a box line's "For sale · <box>" tag (capabilities `binders` and `inventory`). */
@@ -725,6 +748,9 @@ export function CopyList({
    * say), so neither the row nor a panel open on it closes under the pointer.
    */
   const keyOf = useLineKeys(lines);
+  /** NEO-377 — copy photos (capability `copyPhotos`): edited in the line's form. */
+  const photosExt = useCopyPhotos();
+  const photoMap = usePhotosOf(lines);
   /** The line (by `keyOf`) whose Move, Sell or Take off sale panel is open. */
   const [moving, setMoving] = useState<{ key: string; shift: Shift } | null>(null);
   const movingOn = (copy: Copy) => (moving && moving.key === keyOf(copy) ? moving.shift : null);
@@ -793,7 +819,13 @@ export function CopyList({
           {lines.map((copy, i) =>
             editing?.key === keyOf(copy) && renderEditor ? (
               <li key={keyOf(copy)} className="p-2" data-copy-editor={copy.id} data-copy-line={keyOf(copy)}>
-                {renderEditor(copy, i)}
+                {renderEditor(
+                  copy,
+                  i,
+                  photosExt ? (
+                    <CopyPhotosField copy={copy} line={names[i]} photos={photoMap?.get(copy.id)} ext={photosExt} />
+                  ) : null,
+                )}
               </li>
             ) : (
               <li
@@ -808,8 +840,13 @@ export function CopyList({
                   copy.id === focusCopyId ? "bg-pick-blue/20 ring-2 ring-inset ring-selection" : ""
                 }`}
               >
-                {/* At least 10rem wide, so on a phone the line's buttons wrap under it instead of squeezing it to a word a line. */}
-                <span className="min-w-40 flex-1">
+                <LineThumb photos={photoMap?.get(copy.id)} line={names[i]} />
+                <span
+                  className={`min-w-40 flex-1 ${
+                    // At least 10rem wide; beside a thumbnail on a phone, the buttons wrap below rather than crush the words.
+                    (photoMap?.get(copy.id)?.front ?? photoMap?.get(copy.id)?.back) ? "max-sm:basis-[calc(100%-3.5rem)]" : ""
+                  }`}
+                >
                   <span className="block text-ink">
                     <span>{lineWhat(copy)}</span>
                     <HomeTag copy={copy} homes={binders} sale={showSale} />

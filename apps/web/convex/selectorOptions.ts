@@ -344,6 +344,7 @@ import {
 // read it) and threaded into `resolvableSides` as an argument, so a paused
 // marketplace is a side that is never asked and never covered.
 import { pausedSides } from "./marketplacePause";
+import { drainPhotos } from "./copyPhotos";
 import {
   allocateSlots,
   assertValidSlotLabel,
@@ -9142,6 +9143,10 @@ export const resetCollectionCopiesBatch = internalMutation({
   }),
   handler: async (ctx) => {
     assertResetArmed();
+    // NEO-377 — the copies' photos (and their files) first, live or waiting
+    // on an Undo, a batch at a time; then the copies.
+    const photos = await drainPhotos(ctx, RESET_BATCH_SIZE);
+    if (photos > 0) return { deleted: 0, hasMore: true };
     const rows = await ctx.db.query("collectionCopies").take(RESET_BATCH_SIZE);
     for (const row of rows) {
       await ctx.db.delete(row._id);

@@ -101,7 +101,7 @@ const EntityResults = forwardRef<
                 <SearchHitRow
                   key={card.id}
                   card={card}
-                  actions={{ ...actions, open: (c, copyId) => actions.open(c, copyId, cards) }}
+                  actions={{ ...actions, open: (c, copyId, _list, edit) => actions.open(c, copyId, cards, edit) }}
                   isSelected={card.id === selectedCardId}
                   showSet
                   onRowClick={() => onJump(card)}

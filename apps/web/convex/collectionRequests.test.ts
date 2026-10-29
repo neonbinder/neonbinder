@@ -342,6 +342,26 @@ describe("withdraw", () => {
     expect(await tallyOf(s)).toMatchObject({ copies: 1, lines: 1, distinctCards: 1 });
   });
 
+  test("withdrawing deletes the photos of the private card's copies, with their objects", async () => {
+    const s = await setup();
+    const { requestId, privateCardId } = await askBase(s);
+    await s.me.mutation(api.collection.addHave, { cardId: privateCardId });
+    const [copy] = await copies(s);
+    const { photoId } = await s.t.mutation(internal.copyPhotos.reserveUpload, {
+      ownerId: ME.subject,
+      copyId: copy._id,
+      side: "front",
+      contentType: "image/jpeg",
+      imageBytes: 10,
+      thumbBytes: 10,
+    });
+    await s.t.mutation(internal.copyPhotos.commitUpload, { ownerId: ME.subject, photoId });
+    await s.me.mutation(api.collectionRequests.withdraw, { requestId });
+    expect(await s.t.run((ctx) => ctx.db.query("collectionCopyPhotos").collect())).toEqual([]);
+    const scheduled = await s.t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect());
+    expect(scheduled.flatMap((f) => (f.args[0] as { keys?: string[] }).keys ?? [])).toHaveLength(2);
+  });
+
   test("an added request has nothing to withdraw", async () => {
     const s = await setup();
     const { requestId } = await askBase(s);
