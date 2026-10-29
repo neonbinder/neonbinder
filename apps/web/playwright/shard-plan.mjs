@@ -79,6 +79,16 @@ function loadTimings(project) {
   return project === PROJECTS[0] ? desktop : { ...desktop, ...own };
 }
 
+// Specs whose run time swings far more than a median shows plan at no less
+// than this many seconds (NEO-389). pipeline-escalation-cold-start waits on
+// the heavy preprocess model's cold start: 1.6 to 5.4 min across runs, median
+// about 1.6, so planned at the median it lands beside a full shard's worth of
+// other specs and sets that shard's length whenever the start is slow.
+// Planned near its worst case it gets a shard close to its own.
+const MIN_SECONDS = {
+  "placeholders/pipeline-escalation-cold-start.spec.ts": 300,
+};
+
 function median(values) {
   if (values.length === 0) return 1;
   const s = [...values].sort((a, b) => a - b);
@@ -91,7 +101,10 @@ function plan(n, project) {
   const specs = listSpecs(project);
   const fallback = median(specs.map((s) => timings[s]).filter((v) => Number.isFinite(v)));
   const weighted = specs
-    .map((spec) => ({ spec, secs: Number.isFinite(timings[spec]) ? timings[spec] : fallback }))
+    .map((spec) => ({
+      spec,
+      secs: Math.max(Number.isFinite(timings[spec]) ? timings[spec] : fallback, MIN_SECONDS[spec] ?? 0),
+    }))
     // Heaviest first; path breaks ties so every shard computes the same plan.
     .sort((a, b) => b.secs - a.secs || a.spec.localeCompare(b.spec));
   const shards = Array.from({ length: n }, () => ({ secs: 0, specs: [] }));
