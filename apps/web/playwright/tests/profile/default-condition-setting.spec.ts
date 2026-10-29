@@ -62,6 +62,8 @@ test(
       await drill("Variant Types", "Base");
       const checklist = page.getByRole("region", { name: "2024 Topps Chrome Base" });
       await expect(checklist.getByRole("heading", { level: 3, name: "2024 Topps Chrome Base" })).toBeVisible();
+      // All is a view (NEO-374): Have files into a picked binder, here Main.
+      await checklist.getByRole("combobox", { name: "Binder" }).selectOption({ label: "Main" });
 
       // The first ordinary row (SET-REGISTRY.md), read off its own name.
       const ordinaryRow = checklist
