@@ -78,6 +78,7 @@ jobs:
     outputs:
       browser: ${{ steps.detect.outputs.browser }}
       preprocess: ${{ steps.detect.outputs.preprocess }}
+      scanner: ${{ steps.detect.outputs.scanner }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -104,6 +105,7 @@ jobs:
             echo "No usable diff base (before=$BEFORE). Deploying all services."
             echo "browser=true" >> "$GITHUB_OUTPUT"
             echo "preprocess=true" >> "$GITHUB_OUTPUT"
+            echo "scanner=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -119,8 +121,13 @@ jobs:
           if grep -qE '^services/preprocess/|^\.github/workflows/preprocess-deploy\.yml$' <<<"$CHANGED"; then
             preprocess=true
           fi
+          scanner=false
+          if grep -qE '^apps/scanner/|^\.github/workflows/scanner-build\.yml$' <<<"$CHANGED"; then
+            scanner=true
+          fi
           echo "browser=$browser"       >> "$GITHUB_OUTPUT"
           echo "preprocess=$preprocess" >> "$GITHUB_OUTPUT"
+          echo "scanner=$scanner"       >> "$GITHUB_OUTPUT"
 
   # Prove we can actually finish the release BEFORE anything deploys.
   #
@@ -378,6 +385,47 @@ jobs:
   # report-web-failure (that issue-per-web-failure job is untouched) — this
   # covers the whole release, not just the web lane, and it is the single
   # place that can see all three lanes' results at once.
+  # NEO-386: the NeonBinder Scanner Mac app. It runs on a collector's own
+  # computer and talks to production Convex through its public API, so it is
+  # independent of the deploy order above: it builds and publishes alongside.
+  # The download link on the Add cards screen points at the fixed
+  # `scanner-latest` release, so each publish replaces its two zips in place.
+  scanner-build:
+    name: Scanner app build
+    needs: changes
+    if: needs.changes.outputs.scanner == 'true'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/scanner-build.yml
+
+  scanner-publish:
+    name: Publish scanner app
+    needs: scanner-build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write  # the scanner-latest release and its assets
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: neonbinder-scanner-mac-*
+          merge-multiple: true
+          path: dist
+      - name: Replace the scanner-latest release's zips
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          ls -la dist
+          if ! gh release view scanner-latest --repo "$REPO" >/dev/null 2>&1; then
+            gh release create scanner-latest --repo "$REPO" --target "$GITHUB_SHA" --latest=false \
+              --title "NeonBinder Scanner" \
+              --notes "The NeonBinder Scanner app for Mac. Download the zip for your Mac (Apple chip: arm64; Intel: x64), open it, and double-click NeonBinder Scanner."
+          fi
+          gh release upload scanner-latest --repo "$REPO" --clobber dist/neonbinder-scanner-mac-*.zip
+          gh release edit scanner-latest --repo "$REPO" --target "$GITHUB_SHA"
+
   notify:
     name: Notify Discord
     needs: [changes, preflight, browser, preprocess, web]

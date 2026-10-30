@@ -1,4 +1,4 @@
-import sharp from "sharp";
+import jpeg from "jpeg-js";
 import { describe, expect, test } from "vitest";
 import { toneScan, toneTable, whitePoint } from "./tone.js";
 
@@ -28,14 +28,14 @@ describe("toneTable", () => {
 
 describe("toneScan", () => {
   test("brightens a dull scan and records the scan resolution", async () => {
-    const raw = await sharp({ create: { width: 40, height: 60, channels: 3, background: { r: 60, g: 60, b: 60 } } })
-      .jpeg()
-      .toBuffer();
+    const raw = Buffer.from(jpeg.encode({ data: Buffer.alloc(40 * 60 * 4, 60), width: 40, height: 60 }, 95).data);
     const out = await toneScan(raw, { whiteClipPercent: 1, gamma: 2.2, jpegQuality: 95, dpi: 400 });
     expect(out).not.toBeNull();
-    const meta = await sharp(out!).metadata();
-    expect(meta.density).toBe(400);
-    const { data } = await sharp(out!).raw().toBuffer({ resolveWithObject: true });
+    expect(out![13]).toBe(1);
+    expect(out!.readUInt16BE(14)).toBe(400);
+    expect(out!.readUInt16BE(16)).toBe(400);
+    const { data, width, height } = jpeg.decode(out!, { useTArray: true });
+    expect([width, height]).toEqual([40, 60]);
     expect(data[0]).toBeGreaterThan(200);
   });
   test("gives up quietly on bytes that aren't an image", async () => {

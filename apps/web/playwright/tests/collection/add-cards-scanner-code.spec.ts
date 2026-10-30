@@ -1,12 +1,12 @@
 // NEO-386 (R1): "Use a scanner" on Add cards. With no run open it starts one
 // (an empty scanner session filing into the binder or box picked), moves focus
-// to the six-character code the scanner script joins it with, and shows the
-// command to run. The run lives on the URL, so after a reload asking again
+// to the six-character code the scanner app joins it with, and links the app's
+// Mac downloads. The run lives on the URL, so after a reload asking again
 // gives the same code. "Done adding photos" closes the empty session. Both
 // sides: the Collection files into a binder, the Inventory into a box (its
 // own Main, which every account has).
 //
-// The script itself (apps/scanner) needs a real scanner and a real API key,
+// The app itself (apps/scanner) needs a real scanner and a real API key,
 // so its side of the join is pinned in convex/intakeScanner.test.ts,
 // convex/scannerContract.test.ts and apps/scanner's unit tests, not here.
 //
@@ -22,9 +22,11 @@ async function useScanner(page: Page): Promise<string> {
   await expect(page).toHaveURL(/[?&]run=/);
   const panel = page.getByRole("group", { name: "Scanner code" });
   await expect(panel).toBeFocused();
-  const command = panel.getByText(/^npm run scan [A-HJ-NP-Z2-9]{6}$/);
-  await expect(command).toBeVisible();
-  return ((await command.textContent()) ?? "").replace("npm run scan ", "");
+  await expect(panel.getByRole("link", { name: "Apple chip" })).toHaveAttribute("href", /scanner-mac-arm64\.zip$/);
+  await expect(panel.getByRole("link", { name: "Intel chip" })).toHaveAttribute("href", /scanner-mac-x64\.zip$/);
+  // The code as a screen reader hears it, one character at a time.
+  const spoken = panel.getByText(/^([A-HJ-NP-Z2-9] ){5}[A-HJ-NP-Z2-9]$/);
+  return ((await spoken.textContent()) ?? "").replaceAll(" ", "");
 }
 
 /** Close the open run if it is still taking cards (cleanup on any path). */
@@ -48,7 +50,7 @@ test(
       // The same run after a reload: asking again gives the same code.
       await page.reload();
       await page.getByRole("button", { name: "Use a scanner" }).click();
-      await expect(page.getByRole("group", { name: "Scanner code" }).getByText(`npm run scan ${code}`)).toBeVisible();
+      await expect(page.getByRole("group", { name: "Scanner code" }).getByText(code.split("").join(" "))).toHaveCount(1);
 
       // Done with no photos: the empty session closes, quietly.
       await page.getByRole("button", { name: "Done adding photos" }).click();

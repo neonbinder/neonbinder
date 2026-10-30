@@ -98,9 +98,7 @@ class KeyExchange {
         // Network blip: retried below like a transient status.
       }
       if (res?.status === 401) {
-        throw new Error(
-          "NeonBinder didn't accept your API key. Make one under Settings → API Keys and put it in NEONBINDER_API_KEY.",
-        );
+        throw new KeyRejectedError();
       }
       if (res?.ok) {
         this.primed = await this.read(res);
@@ -131,6 +129,14 @@ class KeyExchange {
     } catch {
       return null;
     }
+  }
+}
+
+/** The API key was refused: revoked, mistyped, or from another NeonBinder. */
+export class KeyRejectedError extends Error {
+  constructor() {
+    super("NeonBinder didn't accept that API key. Make one under Settings → API Keys.");
+    this.name = "KeyRejectedError";
   }
 }
 

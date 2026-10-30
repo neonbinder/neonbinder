@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { getFunctionName } from "convex/server";
 import type { Id } from "@/convex/_generated/dataModel";
 import { ScannerJoin, startRefusal } from "./ScannerJoin";
@@ -51,7 +51,9 @@ describe("ScannerJoin", () => {
     // The parent opens the run; the code shows for it.
     view.rerender(<ScannerJoin runId={RUN} newRun={{ homeId: HOME }} kind="binder" onRunStarted={onRunStarted} />);
     const panel = await screen.findByRole("group", { name: "Scanner code" });
-    expect(panel.textContent).toContain("npm run scan AB3X7K");
+    expect(panel.textContent).toContain("open NeonBinder Scanner and type this code");
+    expect(within(panel).getByRole("link", { name: "Apple chip" }).getAttribute("href")).toMatch(/scanner-mac-arm64\.zip$/);
+    expect(within(panel).getByRole("link", { name: "Intel chip" }).getAttribute("href")).toMatch(/scanner-mac-x64\.zip$/);
     await waitFor(() => expect(document.activeElement).toBe(panel));
   });
 

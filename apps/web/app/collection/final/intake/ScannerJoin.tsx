@@ -7,6 +7,17 @@ import type { Id } from "@/convex/_generated/dataModel";
 import { writeErrorMessage } from "../data/store";
 import { RING } from "./ui";
 
+/**
+ * The NeonBinder Scanner app, as release.yml publishes it from main (one zip
+ * per Mac architecture, its scanner driver inside).
+ */
+const SCANNER_RELEASE = "https://github.com/neonbinder/neonbinder/releases/download/scanner-latest";
+export const SCANNER_DOWNLOADS = {
+  arm64: `${SCANNER_RELEASE}/neonbinder-scanner-mac-arm64.zip`,
+  x64: `${SCANNER_RELEASE}/neonbinder-scanner-mac-x64.zip`,
+} as const;
+const DOWNLOAD_LINK = "text-neon-teal-text hover:decoration-2 underline focus-outline rounded-sm";
+
 type NewRun = Omit<FunctionArgs<typeof api.intakeRuns.createIntakeRun>, "jobId">;
 
 /** The server's refusal at the active-batch cap, in this screen's words. */
@@ -97,8 +108,18 @@ export function ScannerJoin({
           <span className="sr-only">{shown.split("").join(" ")}</span>
         </p>
         <p className="m-0">
-          On the scanner&apos;s computer, in <code>apps/scanner</code>, run{" "}
-          <code className="whitespace-nowrap">npm run scan {shown}</code>. Cards land here as they feed.
+          On the scanner&apos;s computer, open NeonBinder Scanner and type this code. Cards land here as they feed.
+        </p>
+        <p className="m-0">
+          Don&apos;t have it yet? Download for a Mac with an{" "}
+          <a className={DOWNLOAD_LINK} href={SCANNER_DOWNLOADS.arm64}>
+            Apple chip
+          </a>{" "}
+          or an{" "}
+          <a className={DOWNLOAD_LINK} href={SCANNER_DOWNLOADS.x64}>
+            Intel chip
+          </a>
+          .
         </p>
       </div>
     );

@@ -1,28 +1,39 @@
 import type { ChildProcess } from "node:child_process";
 import { parseArgs } from "node:util";
-import { isRunClosedError, NeonBinder } from "./neonbinder.js";
-import { DEFAULT_SETTINGS, DEFAULT_TIMING, feedCards, findDevice, stopScan, type ScanEvent } from "./scanimage.js";
+import { configPath, looksLikeCode, resolveConvexUrl, savedKey, saveKey } from "./config.js";
+import { isRunClosedError, KeyRejectedError, NeonBinder } from "./neonbinder.js";
+import { ask, askSecret } from "./prompt.js";
+import { saneRuntime, SYSTEM_SANE, type SaneRuntime } from "./sane.js";
+import { DEFAULT_SETTINGS, DEFAULT_TIMING, feedCards, findDevice, listScanners, stopScan, type ScanEvent } from "./scanimage.js";
 import { toneScan } from "./tone.js";
 
 /**
- * NEO-386 — `npm run scan <code>`: feed cards from a sheet-fed scanner into
- * the intake run open on the NeonBinder screen. The screen's "Use a scanner"
- * shows the code. Each card scans in duplex and goes up front then back; the
- * screen pairs, reads and matches them like dropped photos.
+ * NEO-386 — the NeonBinder scanner app: feed cards from a sheet-fed scanner
+ * into the intake run open on the NeonBinder screen. The screen's "Use a
+ * scanner" shows the code. Each card scans in duplex and goes up front then
+ * back; the screen pairs, reads and matches them like dropped photos.
  *
- * Environment (a `.env` beside package.json works):
- *   NEONBINDER_API_KEY   your key from Settings → API Keys (required)
- *   NEONBINDER_CONVEX_URL  https://<deployment>.convex.cloud (required)
+ * Packaged (`npm run build`), it is one file carrying its own scanner driver:
+ * double-click it, type the code, and (once) paste an API key. From source it
+ * is `npm run scan <code>` against the scanimage on PATH.
+ *
+ * Environment, all optional (a `.env` beside package.json works from source):
+ *   NEONBINDER_API_KEY     a key to use instead of the saved one
+ *   NEONBINDER_CONVEX_URL  https://<deployment>.convex.cloud, for a preview;
+ *                          otherwise the app asks neonbinder.io
  *   NEONBINDER_CONVEX_SITE_URL  only for a local backend
  *   SCANNER_DEVICE  a SANE device name, when the first Fujitsu isn't the one
  */
 
-const HELP = `Usage: npm run scan <code> [-- --raw]
+const HELP = `Usage: neonbinder-scanner [code] [--raw] [--forget-key]
 
-  <code>   the scanner code on the Add cards screen ("Use a scanner")
-  --raw    no hardware deskew/crop: full frame with margin (for odd sizes)
+  code          the scanner code on the Add cards screen ("Use a scanner");
+                asked for when left out
+  --raw         no hardware deskew/crop: full frame with margin (odd sizes)
+  --forget-key  forget the saved API key and ask for one again
+  --check       set up the scanner driver, list the scanners it sees, and stop
 
-Ctrl-C stops after the card in progress.`;
+Ctrl-C stops the scanner. A card it was partway through is reported to feed again.`;
 
 const log = (line: string) => process.stdout.write(`${line}\n`);
 
@@ -31,33 +42,94 @@ function env(name: string): string | undefined {
   return value ? value : undefined;
 }
 
+/** Sign in with the env key, the saved key, or one asked for (then saved). */
+async function signIn(convexUrl: string, keyFile: string): Promise<NeonBinder | undefined> {
+  const fromEnv = env("NEONBINDER_API_KEY") ?? env("NEONBINDER_MACHINE_KEY");
+  if (fromEnv) return NeonBinder.signIn(convexUrl, fromEnv, env("NEONBINDER_CONVEX_SITE_URL"));
+  let key = await savedKey(keyFile, convexUrl);
+  let asked = false;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (!key) {
+      log("Paste your NeonBinder API key (NeonBinder → Settings → API Keys). It's saved on this computer.");
+      key = await askSecret("API key: ");
+      if (!key) return undefined;
+      asked = true;
+    }
+    try {
+      const nb = await NeonBinder.signIn(convexUrl, key, env("NEONBINDER_CONVEX_SITE_URL"));
+      if (asked) await saveKey(keyFile, convexUrl, key);
+      return nb;
+    } catch (error) {
+      if (!(error instanceof KeyRejectedError)) throw error;
+      log(error.message);
+      await saveKey(keyFile, convexUrl, undefined);
+      key = undefined;
+    }
+  }
+  return undefined;
+}
+
+async function askCode(given: string | undefined): Promise<string | undefined> {
+  if (given) return given;
+  log('On NeonBinder, open Add cards, pick the binder or box, and press "Use a scanner".');
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const code = await ask("Scanner code: ");
+    if (code === undefined || code === "") return undefined;
+    if (looksLikeCode(code)) return code;
+    log("A scanner code is six letters and numbers, like ABC 123.");
+  }
+  return undefined;
+}
+
+/** `--check`: is the driver working, and does it see a scanner? Signs in to nothing. */
+async function check(): Promise<number> {
+  const sane = await saneRuntime();
+  const scanners = await listScanners(sane);
+  log(`Scanner driver ready (${sane === SYSTEM_SANE ? "SANE on this computer" : "built in"}).`);
+  log(scanners.length ? scanners.map((s) => `Found ${s}`).join("\n") : "No scanner found. Check it's on and plugged in.");
+  return 0;
+}
+
 async function main(): Promise<number> {
   try {
     process.loadEnvFile(new URL("../.env", import.meta.url));
   } catch {
-    // No .env: the environment alone has to do.
+    // No .env (always the case for the packaged app): the environment alone has to do.
   }
   const { values, positionals } = parseArgs({
     allowPositionals: true,
-    options: { raw: { type: "boolean", default: false }, help: { type: "boolean", short: "h", default: false } },
+    options: {
+      raw: { type: "boolean", default: false },
+      "forget-key": { type: "boolean", default: false },
+      check: { type: "boolean", default: false },
+      help: { type: "boolean", short: "h", default: false },
+    },
   });
-  if (values.help || positionals.length !== 1) {
+  if (values.help || positionals.length > 1) {
     log(HELP);
     return values.help ? 0 : 2;
   }
-  // NEONBINDER_MACHINE_KEY is the name the older scanner CLI used for the same key.
-  const apiKey = env("NEONBINDER_API_KEY") ?? env("NEONBINDER_MACHINE_KEY");
-  const convexUrl = env("NEONBINDER_CONVEX_URL");
-  if (!apiKey || !convexUrl) {
-    log("Set NEONBINDER_API_KEY and NEONBINDER_CONVEX_URL (see .env.example).");
-    return 2;
-  }
+  log("NeonBinder Scanner");
+  if (values.check) return await check();
 
-  const nb = await NeonBinder.signIn(convexUrl, apiKey, env("NEONBINDER_CONVEX_SITE_URL"));
+  const convexUrl = await resolveConvexUrl({ convexUrl: env("NEONBINDER_CONVEX_URL"), site: env("NEONBINDER_SITE") });
+  const keyFile = configPath();
+  if (values["forget-key"]) await saveKey(keyFile, convexUrl, undefined);
+
+  const nb = await signIn(convexUrl, keyFile);
+  if (!nb) {
+    log("No API key, so nothing to do. Make one under Settings → API Keys and run this again.");
+    return 1;
+  }
   try {
-    const run = await nb.join(positionals[0]);
+    const code = await askCode(positionals[0]);
+    if (!code) {
+      log(HELP);
+      return 2;
+    }
+    const run = await nb.join(code);
     if (!run) {
-      log(`No run of yours has the code ${positionals[0]}. Check the code on the Add cards screen.`);
+      log(`No run of yours has the code ${code}. Check the code on the Add cards screen.`);
       return 1;
     }
     if (!run.collecting) {
@@ -65,10 +137,11 @@ async function main(): Promise<number> {
       return 1;
     }
     const settings = { ...DEFAULT_SETTINGS, raw: values.raw, device: env("SCANNER_DEVICE") };
-    const device = await findDevice(settings);
+    const sane = await saneRuntime();
+    const device = await findDevice(settings, sane);
     log(`Joined: cards go into ${run.homeName}${run.variantName ? `, matched in ${run.variantName}` : ""}.`);
     log(`${settings.source}, ${settings.resolution} dpi, ${settings.raw ? "raw frame" : "cropped to the card"}. Waiting for cards…`);
-    return await scanInto(nb, run.jobId, device, settings);
+    return await scanInto(nb, run.jobId, device, settings, sane);
   } finally {
     await nb.close();
   }
@@ -79,6 +152,7 @@ async function scanInto(
   jobId: string,
   device: string,
   settings: typeof DEFAULT_SETTINGS,
+  sane: SaneRuntime,
 ): Promise<number> {
   let stopping = false;
   let runClosed = false;
@@ -87,38 +161,28 @@ async function scanInto(
   const stopRequested = new Promise<void>((resolve) => (requestStop = resolve));
   let cards = 0;
   let failed = 0;
-  let fromKeyboard = false;
 
   const stop = async () => {
     if (stopping) return;
     stopping = true;
     requestStop();
-    log("Stopping after this card…");
-    // A terminal Ctrl-C also reached scanimage, which cancels and releases the
-    // device on its own; a second SIGINT would make it abort without
-    // releasing. So give it a moment, and only a keyboard Ctrl-C we read
-    // ourselves (it never reached scanimage) is passed on at once.
+    log("Stopping the scanner…");
+    // scanimage runs in its own process group, so no terminal signal reached
+    // it: stopping it here, with SIGINT, is what releases the scanner.
     const proc = activeScan;
-    if (proc && proc.exitCode === null) {
-      if (fromKeyboard) await stopScan(proc, log);
-      else {
-        await new Promise((r) => setTimeout(r, 3000));
-        if (proc.exitCode === null) await stopScan(proc, log);
-      }
-    }
+    if (proc && proc.exitCode === null) await stopScan(proc, log);
   };
   process.on("SIGINT", () => void stop());
   process.on("SIGTERM", () => void stop());
+  // Closing the Terminal window.
+  process.on("SIGHUP", () => void stop());
   // Read Ctrl-C as a key instead of a signal, so npm and tsx don't tear the
   // process down mid-card before the scanner is released.
   if (process.stdin.isTTY) {
     process.stdin.setRawMode(true);
     process.stdin.resume();
     process.stdin.on("data", (buf: Buffer) => {
-      if (buf.includes(0x03)) {
-        fromKeyboard = true;
-        void stop();
-      }
+      if (buf.includes(0x03)) void stop();
     });
   }
 
@@ -167,6 +231,7 @@ async function scanInto(
   await feedCards({
     device,
     settings,
+    sane,
     timing: DEFAULT_TIMING,
     shouldStop: () => stopping,
     stopRequested,

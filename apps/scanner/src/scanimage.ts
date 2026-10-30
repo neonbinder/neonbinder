@@ -3,6 +3,7 @@ import { promisify } from "node:util";
 import { mkdtemp, readdir, readFile, rm, stat, copyFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { SYSTEM_SANE, type SaneRuntime } from "./sane.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -52,17 +53,27 @@ export const DEFAULT_SETTINGS: ScanSettings = {
 };
 
 /** The first Fujitsu device `scanimage -f` lists, or the configured one. */
-export async function findDevice(settings: ScanSettings): Promise<string> {
+export async function findDevice(settings: ScanSettings, sane: SaneRuntime = SYSTEM_SANE): Promise<string> {
   if (settings.device) return settings.device;
   let stdout: string;
   try {
-    ({ stdout } = await execFileAsync("scanimage", ["-f", "%d%n"]));
+    ({ stdout } = await execFileAsync(sane.scanimage, ["-f", "%d%n"], { env: sane.env }));
   } catch {
-    throw new Error("Couldn't run scanimage. Install SANE (brew install sane-backends) and try again.");
+    throw new Error(
+      sane === SYSTEM_SANE
+        ? "Couldn't run scanimage. Install SANE (brew install sane-backends) and try again."
+        : "Couldn't start the scanner driver. Download the scanner app again and retry.",
+    );
   }
   const device = pickFujitsuDevice(stdout);
   if (!device) throw new Error("No Fujitsu scanner found. Check it's on and plugged in.");
   return device;
+}
+
+/** Every scanner SANE sees, as "<device> (<vendor> <model>)". Throws when the driver won't run. */
+export async function listScanners(sane: SaneRuntime = SYSTEM_SANE): Promise<string[]> {
+  const { stdout } = await execFileAsync(sane.scanimage, ["-f", "%d (%v %m)%n"], { env: sane.env });
+  return stdout.split("\n").map((l) => l.trim()).filter(Boolean);
 }
 
 export function pickFujitsuDevice(listing: string): string | undefined {
@@ -78,9 +89,9 @@ export function paperLoadedIn(options: string): boolean {
   return !!line && /\[yes\]/.test(line);
 }
 
-export async function paperPresent(device: string): Promise<boolean> {
+export async function paperPresent(device: string, sane: SaneRuntime = SYSTEM_SANE): Promise<boolean> {
   try {
-    const { stdout } = await execFileAsync("scanimage", ["-d", device, "-A"]);
+    const { stdout } = await execFileAsync(sane.scanimage, ["-d", device, "-A"], { env: sane.env });
     return paperLoadedIn(stdout);
   } catch {
     return false;
@@ -200,6 +211,8 @@ export async function stopScan(proc: ChildProcess, log: (line: string) => void):
 export async function feedCards(opts: {
   device: string;
   settings: ScanSettings;
+  /** Which scanimage, and the environment it needs. The one on PATH if unset. */
+  sane?: SaneRuntime;
   timing: Timing;
   shouldStop: () => boolean;
   /** Resolves when a stop is asked for, to cut idle waits short. */
@@ -209,19 +222,24 @@ export async function feedCards(opts: {
   log: (line: string) => void;
 }): Promise<void> {
   const { device, settings, timing, shouldStop, onEvent, log } = opts;
+  const sane = opts.sane ?? SYSTEM_SANE;
   const pause = (ms: number) => Promise.race([sleep(ms), opts.stopRequested]);
   const stage = await mkdtemp(path.join(tmpdir(), "nb-scan-"));
   let jams = 0;
   try {
     while (!shouldStop()) {
-      while (!shouldStop() && !(await paperPresent(device))) await pause(timing.idleMs);
+      while (!shouldStop() && !(await paperPresent(device, sane))) await pause(timing.idleMs);
       if (shouldStop()) break;
       await pause(timing.settleMs);
       if (shouldStop()) break;
 
       for (const f of await readdir(stage)) await rm(path.join(stage, f), { force: true });
-      const proc = spawn("scanimage", scanArgs(device, settings, path.join(stage, "raw-%04d.jpg")), {
+      const proc = spawn(sane.scanimage, scanArgs(device, settings, path.join(stage, "raw-%04d.jpg")), {
         stdio: ["ignore", "ignore", "pipe"],
+        env: sane.env,
+        // Its own process group, so a Ctrl-C or a closed Terminal window
+        // reaches only us, and we stop it the one safe way (stopScan).
+        detached: true,
       });
       opts.onScanStart(proc);
       let stderr = "";
