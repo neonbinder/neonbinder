@@ -394,6 +394,14 @@ preview), and still runs when desktop has reds. The `e2e` gate needs a
 passing result for every planned spec on BOTH projects and a passing seed
 for each pass, and a skipped test counts as a failure.
 
+The one exception is `playwright/project-scope.mjs` (NEO-389): a spec listed
+there is left out of that project entirely (the config's `testIgnore`, the
+shard plan and the gate all read it), so it is not planned rather than
+skipped. A listing needs a reason in the file: the other project's run must
+add no UI coverage. Today only `pipeline-escalation-cold-start` is
+desktop-only, because it spends minutes waiting on the preprocess model's
+cold start, not on the UI.
+
 - **Write one spec for both.** Role, label and text locators do not care
   about the viewport, and `click()` scrolls by itself. Most specs need no
   change at all.
@@ -793,7 +801,8 @@ same Convex env steps, reset and `setup` project; the mobile shards run
 `--project=e2e-mobile`. Each shard gets an explicit file list from
 `node playwright/shard-plan.mjs 8 <i> --project <e2e|e2e-mobile>`
 (longest-processing-time-first over that project's entry in `timings.json`,
-not `--shard`) and runs the `bootstrap` project for its own account first, so
+not `--shard`; in CI the `timings` job first rebuilds that file from the
+median of the last few green runs' reports, NEO-389) and runs the `bootstrap` project for its own account first, so
 each pass re-bootstraps its workers after its reset (workers 0-7 are used;
 accounts 0-11 exist). Expected wall clock is about 20 minutes: seed ~4 min,
 longest shard ~5 min (the longest spec), twice. The `e2e` gate fails on any
@@ -801,8 +810,10 @@ failed spec, any missing result on either project, a pass whose seed did not
 pass, or a shard that died before reporting. A `report` job publishes the
 "Playwright E2E" check and a sticky PR comment. `e2e-repeat.yml` runs the
 suite N times (flake sampling); `refresh-flow-timings.yml` refreshes
-`timings.json` from CI. Refresh by hand from a run's merged results with
-`node playwright/shard-plan.mjs --from-results <results.json>`: `seconds` is
+`timings.json` from CI (CI no longer depends on it; the committed file is
+the fallback). Refresh by hand from merged results with
+`node playwright/shard-plan.mjs --from-results <results.json>...` (each spec's
+median over the reports given): `seconds` is
 each spec's desktop time and `byProject["e2e-mobile"]` its mobile time (a
 project with no value for a spec falls back to the desktop one, so a
 desktop-only file still plans both passes).
