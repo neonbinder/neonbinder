@@ -4164,8 +4164,8 @@ const ALL_SELECTOR_LEVELS = [
 /**
  * Everything that would be orphaned by deleting this row.
  *
- * Read by `getSelectorOptionHoldings` (the affordance's disabled state and its
- * reason text) and re-read by `deleteSelectorOption` inside the transaction
+ * Read by `getSelectorOptionHoldings` (the delete affordance's one-shot check
+ * on click, and its reason text) and re-read by `deleteSelectorOption` inside the transaction
  * that deletes. The mutation never trusts the query's answer — a checklist
  * commit can land between the two.
  *
@@ -4347,9 +4347,12 @@ export async function collectSelectorOptionHoldings(
 }
 
 /**
- * NEO-219 C — reactive read of what a row holds, for the delete affordance's
- * disabled state and its `aria-describedby` reason. DISPLAY ONLY: the mutation
- * re-checks everything inside its own transaction.
+ * NEO-219 C — what a row holds, for the delete affordance's reason text.
+ * NEO-400: read ONCE, on the trash's click (`convex.query`), never subscribed:
+ * it walks every row and card below the selection, and as a subscription it
+ * re-ran on every write to the set and held every mutation in the tab behind
+ * it. DISPLAY ONLY: the mutation re-checks everything inside its own
+ * transaction.
  */
 export const getSelectorOptionHoldings = query({
   args: { id: v.id("selectorOptions") },

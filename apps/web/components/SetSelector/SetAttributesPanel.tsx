@@ -626,13 +626,13 @@ export default function SetAttributesPanel({
                 which meant "hide it on a variantType that is not custom". That
                 predicate is gone with the custom concept — a row either carries
                 marketplace ids or it does not, and both behave the same — so
-                the gate is now the control's OWN, and it is a better one: it
-                reads `getSelectorOptionHoldings` and renders nothing for a
-                protected row, an explained refusal for a row with something
-                below it, and the confirm only when the row is genuinely empty.
-                Server-side emptiness + protection checks still run
-                independently. Nothing became deletable that the server would
-                not already have let go. */}
+                the gate is now the control's OWN, and it is a better one: on
+                click it reads `getSelectorOptionHoldings` once (NEO-400: never
+                subscribed, that read is too heavy to re-run on every write)
+                and shows an explained refusal for a row with something below
+                it, or the confirm when the row is genuinely empty. The server's
+                emptiness check still runs independently. Nothing became
+                deletable that the server would not already have let go. */}
             <DeleteSelectorRowControl
               // Keyed on the row: this panel does NOT remount when the
               // selection moves, so without this a dialog opened for one row
@@ -2278,10 +2278,16 @@ function DeleteSelectorRowControl({
   isBase?: boolean;
   onDeleted?: (level: SelectorLevel) => void;
 }) {
-  const holdings: SelectorHoldings | undefined = useQuery(
-    api.selectorOptions.getSelectorOptionHoldings,
-    { id },
-  );
+  // NEO-400: the holdings are read ONCE, on click, never subscribed. The
+  // subscribed form re-read every row and card below the selection on every
+  // write to the set (thousands of documents, over a hundred re-runs while
+  // the wizard added cards), and because the Convex client releases a
+  // mutation's promise only when the next Transition arrives, every save in
+  // the tab waited for it. Deleting is the rare act here (NEO-219), so the
+  // cost belongs on the click. The server re-checks in its own transaction
+  // regardless (`SELECTOR_ROW_NOT_EMPTY`), so this read is only the answer
+  // the operator sees before the dialog, not the gate.
+  const convex = useConvex();
   const deleteSelectorOption = useMutation(
     api.selectorOptions.deleteSelectorOption,
   );
@@ -2289,19 +2295,13 @@ function DeleteSelectorRowControl({
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [reasonRevealed, setReasonRevealed] = useState(false);
+  /** The one-shot check is in flight. */
+  const [checking, setChecking] = useState(false);
+  /** What the last check said is below the row; "" means nothing. */
+  const [reason, setReason] = useState<string | null>(null);
   const reasonId = useId();
 
-  // A protected row is not "disabled", it is not a thing you may do at all —
-  // same call the pencil makes. Rendering nothing beats rendering a control
-  // that can only ever refuse.
-  if (holdings?.protected) return null;
-
-  const reason =
-    holdings === undefined
-      ? "Checking what is below it…"
-      : selectorHoldsMessage(holdings.holds);
-  const blocked = reason.length > 0;
+  const blocked = reason !== null && reason.length > 0;
 
   const linkedSides = ALL_SIDES.filter(
     (side) => slotIds(row, side).length > 0,
@@ -2317,6 +2317,31 @@ function DeleteSelectorRowControl({
           linkedSides,
         )}; the next sync may add it back.`
       : "");
+
+  const handleClick = async () => {
+    if (checking || busy) return;
+    setChecking(true);
+    setError(null);
+    try {
+      const holdings: SelectorHoldings = await convex.query(
+        api.selectorOptions.getSelectorOptionHoldings,
+        { id },
+      );
+      const next = selectorHoldsMessage(holdings.holds);
+      setReason(next);
+      if (next.length === 0) setOpen(true);
+    } catch (e) {
+      // The check failing is not a refusal; say what happened and leave the
+      // control alone so the next click tries again.
+      setReason(
+        e instanceof Error && e.message.length > 0
+          ? e.message
+          : "Couldn't check what is below it — try again.",
+      );
+    } finally {
+      setChecking(false);
+    }
+  };
 
   const handleConfirm = async () => {
     if (busy) return;
@@ -2340,19 +2365,14 @@ function DeleteSelectorRowControl({
     <>
       <button
         type="button"
-        onClick={() => {
-          if (blocked) {
-            setReasonRevealed(true);
-            return;
-          }
-          setError(null);
-          setOpen(true);
-        }}
+        onClick={() => void handleClick()}
         // aria-disabled, not `disabled`: the reason is the whole point of the
         // control in this state, and a natively disabled button cannot be
-        // focused to hear it or clicked to reveal it.
+        // focused to hear it. A second click re-checks, so a row emptied in
+        // the meantime becomes deletable without leaving it.
         aria-disabled={blocked || undefined}
-        aria-describedby={blocked ? reasonId : undefined}
+        aria-busy={checking || undefined}
+        aria-describedby={blocked || checking ? reasonId : undefined}
         aria-label={`Delete ${row.value}`}
         title={`Delete ${row.value}`}
         // min-w-6 min-h-6: a bare 16x16 icon is under WCAG 2.5.8's 24x24
@@ -2364,16 +2384,13 @@ function DeleteSelectorRowControl({
       >
         <TrashIcon className="w-4 h-4" aria-hidden="true" />
       </button>
-      {blocked && (
+      {(blocked || checking) && (
         <span
           id={reasonId}
-          className={
-            reasonRevealed
-              ? "w-full text-[10px] text-ink-3"
-              : "sr-only"
-          }
+          role="status"
+          className="w-full text-[10px] text-ink-3"
         >
-          {reason}
+          {checking ? "Checking what is below it…" : reason}
         </span>
       )}
       {open && (
