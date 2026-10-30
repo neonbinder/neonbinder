@@ -960,9 +960,11 @@ jobs:
       && (needs.wire-preprocess-capacity.result == 'success' || needs.wire-preprocess-capacity.result == 'skipped')
     # NEO-330: a called workflow's token cannot exceed the caller's, and e2e.yml's
     # seed job needs id-token:write for WIF. Job-level replaces the workflow-level
-    # block, so the existing grants are repeated.
+    # block, so the existing grants are repeated. NEO-389: actions:read lets
+    # e2e.yml's `timings` job read recent runs' pw-merged reports.
     permissions:
       contents: read
+      actions: read
       checks: write
       pull-requests: write
       id-token: write

@@ -80,3 +80,4 @@
 - [Patterns neo356 theme prepaint](patterns_neo356_theme_prepaint.md) — inline pre-paint script safe shape (compare-to-literal); apps/web has no CSP (hash needed if added); getUserProfile now app-wide
 - [Patterns neo358 collector rows pin catalog](patterns_neo358_collector_rows_pin_catalog.md) — user copies guarding catalog deletes/moves = signed-in freeze lever; owner-scoped shape that held; clamp JSON-cursor index
 - [Patterns neo364 client-carried undo](patterns_neo364_client_carried_undo.md) — forged inverse = raw write API; per-step owner/home/class/qty re-check held; per-step re-read amplification; armed page skipped re-arm; schema-widening revert
+- [Cross-run artifacts](patterns_cross_run_artifacts.md) — A CI job that reads other runs' artifacts must filter to this repo's runs (fork PRs run their own workflow edits), clamp numbers, and download outside the source tree
