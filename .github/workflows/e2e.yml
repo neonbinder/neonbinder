@@ -583,8 +583,21 @@ jobs:
                     or ((.messages // []) | join(" ") | test("\"msg\""))
                   )))
                 as $keep
-                | select((.error != null) or ($keep | length) > 0)
-                | {identifier, udfType, timestamp, requestId, executionId, kind, error, logLines: $keep}
+                | if .kind == "Completion" then
+                    # NEO-392: every completion keeps its timing, queue delay,
+                    # read/write sizes and OCC info (no user data), so a stall
+                    # shows which function was slow, queued or retried.
+                    {identifier, udfType, timestamp, executionTimestamp,
+                     executionTime, userExecutionTime, requestId, executionId,
+                     parentExecutionId, cachedResult, willRetry, occInfo, kind, error,
+                     readDocs: .usageStats.databaseReadDocuments,
+                     readBytes: .usageStats.databaseReadBytes,
+                     writeDocs: .usageStats.databaseWriteDocuments,
+                     logLines: $keep}
+                  else
+                    select((.error != null) or ($keep | length) > 0)
+                    | {identifier, udfType, timestamp, requestId, executionId, kind, error, logLines: $keep}
+                  end
               ' "$RAW_LOG_FILE" > "$OUT_FILE" 2>"${RUNNER_TEMP}/convex-logs-seed-jq.stderr.log" || true
             gzip -f "$OUT_FILE" || true
             echo "Wrote $(du -h "${OUT_FILE}.gz" 2>/dev/null | cut -f1) of filtered Convex logs for the seed job."
@@ -742,8 +755,21 @@ jobs:
                     or ((.messages // []) | join(" ") | test("\"msg\""))
                   )))
                 as $keep
-                | select((.error != null) or ($keep | length) > 0)
-                | {identifier, udfType, timestamp, requestId, executionId, kind, error, logLines: $keep}
+                | if .kind == "Completion" then
+                    # NEO-392: every completion keeps its timing, queue delay,
+                    # read/write sizes and OCC info (no user data), so a stall
+                    # shows which function was slow, queued or retried.
+                    {identifier, udfType, timestamp, executionTimestamp,
+                     executionTime, userExecutionTime, requestId, executionId,
+                     parentExecutionId, cachedResult, willRetry, occInfo, kind, error,
+                     readDocs: .usageStats.databaseReadDocuments,
+                     readBytes: .usageStats.databaseReadBytes,
+                     writeDocs: .usageStats.databaseWriteDocuments,
+                     logLines: $keep}
+                  else
+                    select((.error != null) or ($keep | length) > 0)
+                    | {identifier, udfType, timestamp, requestId, executionId, kind, error, logLines: $keep}
+                  end
               ' "$RAW_LOG_FILE" > "$OUT_FILE" 2>"${RUNNER_TEMP}/convex-logs-desktop-${{ matrix.shard }}-jq.stderr.log" || true
             gzip -f "$OUT_FILE" || true
             echo "Wrote $(du -h "${OUT_FILE}.gz" 2>/dev/null | cut -f1) of filtered Convex logs for desktop shard ${{ matrix.shard }}."
@@ -1062,8 +1088,21 @@ jobs:
                     or ((.messages // []) | join(" ") | test("\"msg\""))
                   )))
                 as $keep
-                | select((.error != null) or ($keep | length) > 0)
-                | {identifier, udfType, timestamp, requestId, executionId, kind, error, logLines: $keep}
+                | if .kind == "Completion" then
+                    # NEO-392: every completion keeps its timing, queue delay,
+                    # read/write sizes and OCC info (no user data), so a stall
+                    # shows which function was slow, queued or retried.
+                    {identifier, udfType, timestamp, executionTimestamp,
+                     executionTime, userExecutionTime, requestId, executionId,
+                     parentExecutionId, cachedResult, willRetry, occInfo, kind, error,
+                     readDocs: .usageStats.databaseReadDocuments,
+                     readBytes: .usageStats.databaseReadBytes,
+                     writeDocs: .usageStats.databaseWriteDocuments,
+                     logLines: $keep}
+                  else
+                    select((.error != null) or ($keep | length) > 0)
+                    | {identifier, udfType, timestamp, requestId, executionId, kind, error, logLines: $keep}
+                  end
               ' "$RAW_LOG_FILE" > "$OUT_FILE" 2>"${RUNNER_TEMP}/convex-logs-seed-mobile-jq.stderr.log" || true
             gzip -f "$OUT_FILE" || true
             echo "Wrote $(du -h "${OUT_FILE}.gz" 2>/dev/null | cut -f1) of filtered Convex logs for the seed-mobile job."
@@ -1224,8 +1263,21 @@ jobs:
                     or ((.messages // []) | join(" ") | test("\"msg\""))
                   )))
                 as $keep
-                | select((.error != null) or ($keep | length) > 0)
-                | {identifier, udfType, timestamp, requestId, executionId, kind, error, logLines: $keep}
+                | if .kind == "Completion" then
+                    # NEO-392: every completion keeps its timing, queue delay,
+                    # read/write sizes and OCC info (no user data), so a stall
+                    # shows which function was slow, queued or retried.
+                    {identifier, udfType, timestamp, executionTimestamp,
+                     executionTime, userExecutionTime, requestId, executionId,
+                     parentExecutionId, cachedResult, willRetry, occInfo, kind, error,
+                     readDocs: .usageStats.databaseReadDocuments,
+                     readBytes: .usageStats.databaseReadBytes,
+                     writeDocs: .usageStats.databaseWriteDocuments,
+                     logLines: $keep}
+                  else
+                    select((.error != null) or ($keep | length) > 0)
+                    | {identifier, udfType, timestamp, requestId, executionId, kind, error, logLines: $keep}
+                  end
               ' "$RAW_LOG_FILE" > "$OUT_FILE" 2>"${RUNNER_TEMP}/convex-logs-mobile-${{ matrix.shard }}-jq.stderr.log" || true
             gzip -f "$OUT_FILE" || true
             echo "Wrote $(du -h "${OUT_FILE}.gz" 2>/dev/null | cut -f1) of filtered Convex logs for mobile shard ${{ matrix.shard }}."
