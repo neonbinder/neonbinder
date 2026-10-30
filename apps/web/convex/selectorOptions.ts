@@ -61,6 +61,12 @@ import {
   type CarriedCardFields,
 } from "./cardRowCreate";
 import { MAX_PARALLEL_GROUPING_ENTRIES } from "./parallelGroupingPlan";
+import { blockedSideFailed, sideMissingFromRun } from "./parallelChecklistBuild";
+import {
+  failedChecklistSides,
+  failureFromMessage,
+  type FetchFailure,
+} from "./lib/marketplaceFetchFailure";
 import {
   cardNumberStem,
   resolveVariationParents,
@@ -13931,6 +13937,7 @@ export const fetchCardChecklist = action({
         skippedSource: string;
       }> = [];
 
+      let slFailure: FetchFailure | undefined;
       const callSl = async (
         perCallFilters: Record<string, string>,
         sourceId: string | undefined,
@@ -13945,7 +13952,15 @@ export const fetchCardChecklist = action({
           console.error(`[fetchCardChecklist] SportLots error:`, err);
           return { success: false, cards: [] as SlCard[], message: String(err) };
         });
-        if (!result.success) return [];
+        if (!result.success) {
+          // NEO-387 — remembered, not swallowed: a failed call must fail the
+          // run (see the check after both sides settle), never read as a
+          // marketplace that had no cards.
+          slFailure ??=
+            (result as { failure?: FetchFailure }).failure ??
+            failureFromMessage(result.message);
+          return [];
+        }
         return (result.cards as SlCard[]).map((c) => ({
           ...c,
           sourceSlSetId: sourceId,
@@ -13996,6 +14011,7 @@ export const fetchCardChecklist = action({
         success: boolean;
         cards: any[];
         message?: string;
+        failure?: FetchFailure;
         collisions?: Array<{
           cardNumber: string;
           keptSource: string;
@@ -14039,12 +14055,81 @@ export const fetchCardChecklist = action({
           : Promise.resolve({ success: false, cards: [] } as BscFetchResult),
       ]);
 
+      // NEO-387 — a SportLots fan-out where only some calls failed is a
+      // failed side as a whole. Keeping the calls that answered would make
+      // SportLots look covered, so the failed source set's cards would read
+      // as gone upstream; dropping them all keeps that side fail-closed.
       const slCards: SlCard[] =
-        slSettled.status === "fulfilled" ? slSettled.value : [];
+        slSettled.status === "fulfilled" && !slFailure ? slSettled.value : [];
       const bscResult: BscFetchResult =
         bscSettled.status === "fulfilled"
           ? bscSettled.value
           : { success: false, cards: [] };
+
+      // NEO-387 — a side that was asked and failed is never read as a side
+      // with no cards.
+      //
+      // Before this, a failed side looked exactly like a marketplace with
+      // nothing listed: a BSC token read that 500'd came back as
+      // `success: false`, was turned into `[]`, and on a BSC-only set the run
+      // reported success with 0 candidates. The client then saved an empty
+      // checklist ("Saved 0 cards."), and a refresh called every existing card
+      // "no longer listed upstream". Nobody was told anything failed, and the
+      // E2E specs waited out their whole budget for cards that never came.
+      //
+      // When a side failed and the sides that did answer brought no cards,
+      // there is nothing to show, so the run fails before the candidate batch
+      // below writes anything and the operator can simply try again. (Not
+      // "every asked side failed": a BSC-only set can still ask SportLots on
+      // its sport/year scope, which answers with nothing — that must not turn
+      // a BSC failure back into "Saved 0 cards.") When the other side did
+      // bring cards, the run goes on with them (NEO-255: the set stays
+      // two-sided, so the Match Cards dialog still opens rather than
+      // auto-committing) and the status line says which side is missing.
+      const failedSides = failedChecklistSides({
+        bsc: !resolution.bsc.resolvable
+          ? { asked: false }
+          : bscSettled.status === "rejected"
+            ? { asked: true, rejected: bscSettled.reason }
+            : {
+                asked: true,
+                success: bscResult.success,
+                failure: bscResult.failure,
+                message: bscResult.message,
+              },
+        sportlots: !resolution.sportlots.resolvable
+          ? { asked: false }
+          : slSettled.status === "rejected"
+            ? { asked: true, rejected: slSettled.reason }
+            : { asked: true, success: !slFailure, failure: slFailure },
+      });
+      const askedSides =
+        (resolution.bsc.resolvable ? 1 : 0) + (resolution.sportlots.resolvable ? 1 : 0);
+      const sideFailureNote = failedSides
+        .map((f) => ` ${sideMissingFromRun(f.side, f.failure.kind)}`)
+        .join("");
+      if (failedSides.length > 0) {
+        console.warn(
+          JSON.stringify({
+            msg: "checklist_side_failed",
+            sides: failedSides.map((f) => ({ side: f.side, kind: f.failure.kind })),
+            askedSides,
+          }),
+        );
+      }
+      const answeredCards =
+        slCards.length + (bscResult.success ? bscResult.cards.length : 0);
+      if (failedSides.length > 0 && answeredCards === 0) {
+        return {
+          success: false,
+          message: failedSides
+            .map((f) => blockedSideFailed(f.side, f.failure.kind))
+            .join(". "),
+          candidateCount: 0,
+          attachedSides,
+          pausedSides: pausedList,
+        };
+      }
 
       const bscCollisions = bscResult.collisions ?? [];
       const bscCards = (bscResult.success ? bscResult.cards : []) as Array<{
@@ -14726,7 +14811,8 @@ export const fetchCardChecklist = action({
           `${autoMatchedCards.length} matched, ` +
           `${unmatchedBscCards.length} BSC-only, ${unmatchedSlCards.length} SL-only` +
           collisionNote +
-          pausedNote,
+          pausedNote +
+          sideFailureNote,
         // The cards themselves are already in `checklistCandidates` — this is
         // the count of what was published there, not a second copy of it.
         candidateCount:

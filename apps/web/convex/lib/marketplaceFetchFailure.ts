@@ -171,3 +171,35 @@ export function logMarketplaceLimiter(event: {
 }): void {
   console.warn(JSON.stringify({ msg: "marketplace_limiter", ...event }));
 }
+
+/**
+ * NEO-387 — which asked sides of a checklist fetch failed, and why.
+ *
+ * A side counts as failed when its fetch was rejected, answered
+ * `success: false`, or (SportLots fan-out) ANY of its per-set calls failed:
+ * a partly answered SportLots side is a failed side, so the calls that did
+ * answer cannot make it look covered. A side that answered with no cards is
+ * not a failure. Pure, so the fan-out case is testable without running
+ * concurrent adapter actions.
+ */
+export type ChecklistSideOutcome =
+  | { asked: false }
+  | { asked: true; rejected: unknown }
+  | { asked: true; success: boolean; failure?: FetchFailure; message?: string };
+
+export function failedChecklistSides(outcomes: {
+  bsc: ChecklistSideOutcome;
+  sportlots: ChecklistSideOutcome;
+}): Array<{ side: "bsc" | "sportlots"; failure: FetchFailure }> {
+  const failed: Array<{ side: "bsc" | "sportlots"; failure: FetchFailure }> = [];
+  for (const side of ["bsc", "sportlots"] as const) {
+    const o = outcomes[side];
+    if (!o.asked) continue;
+    if ("rejected" in o) {
+      failed.push({ side, failure: failureFromMessage(String(o.rejected)) });
+    } else if (!o.success) {
+      failed.push({ side, failure: o.failure ?? failureFromMessage(o.message) });
+    }
+  }
+  return failed;
+}
