@@ -6,9 +6,13 @@
  */
 import { expect, type Locator, type Page } from "@playwright/test";
 
-/** The cascade and a `drill` that picks one option and waits for its summary card. */
-export function collectorCascade(page: Page) {
-  const cascade = page.getByRole("group", { name: "Sport, year, brand and set" });
+/**
+ * The cascade and a `drill` that picks one option and waits for its summary
+ * card. `name` is the cascade's group: Checklists' by default, or the Add
+ * cards set pick's ("Sport, year, brand, set and variant").
+ */
+export function collectorCascade(page: Page, name = "Sport, year, brand and set") {
+  const cascade = page.getByRole("group", { name });
   const drill = async (column: string, option: string, next?: string) => {
     await cascade
       .getByRole("listbox", { name: column })

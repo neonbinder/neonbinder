@@ -12,9 +12,14 @@
  * one `syncIntakeMatches` for the job's run (one index read and nothing else
  * when the job has no run, which is every non-intake job).
  *
- * Not here yet: saving a pair as a copy (it attaches the photos, NEO-377), the
- * common-price prompt (NEO-378), the catalog-wide set finder for a run with no
- * variant, and the screen itself (NEO-376 step 4).
+ * NEO-382 adds what the intake screen writes: the save (one reviewed pair
+ * becomes copies in the run's home, once), the answer to "second copy or
+ * re-scan?", setting a pair aside, and the card search for "Wrong card? Find
+ * it". Nothing here saves on its own: every save is a collector's click.
+ *
+ * Not here yet: attaching the pair's photos to the saved line (NEO-377), the
+ * per-copy price and the common-price prompt (NEO-378), and the catalog-wide
+ * set finder for a run with no variant.
  */
 
 import { internalMutation, mutation, query } from "./_generated/server";
@@ -24,6 +29,12 @@ import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { requireSignedIn, getCurrentUserId } from "./auth";
 import {
+  addOne,
+  applyCopyChanges,
+  defaultConditionOf,
+  MAX_COPY_QUANTITY,
+} from "./collection";
+import {
   intakeBandValidator,
   intakeDefaultsValidator,
   intakeReasonValidator,
@@ -32,6 +43,7 @@ import {
 import {
   intakeNamesFor,
   matchIntakePair,
+  normalizeIntakeCardNumber,
   type IntakeCandidate,
 } from "./lib/intakeMatch";
 
@@ -281,6 +293,31 @@ export const setIntakeRunDefaults = mutation({
   },
 });
 
+/**
+ * Move a run to another binder or box the caller owns, on the same side (a
+ * binder run stays among binders, a box run among boxes). Cards already saved
+ * stay where they went; the next save files into the new home.
+ */
+export const setIntakeRunHome = mutation({
+  args: { runId: v.id("intakeRuns"), homeId: v.id("collectionContainers") },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const run = await requireOwnedRun(ctx, args.runId);
+    const home = await ctx.db.get(args.homeId);
+    if (!home || home.ownerId !== run.userId) throw new Error("Binder or box not found");
+    const current = await ctx.db.get(run.homeId);
+    // A run whose home is gone has no side left to keep; it is closed, not moved.
+    if (!current) throw new Error("This run's binder or box is gone; start a new run");
+    if (current.kind !== home.kind) {
+      throw new Error(current.kind === "box" ? "Pick a box for this run" : "Pick a binder for this run");
+    }
+    if (home._id !== run.homeId) {
+      await ctx.db.patch(run._id, { homeId: home._id, lastActivityAt: Date.now() });
+    }
+    return null;
+  },
+});
+
 // ---------------------------------------------------------------------------
 // Public: matches
 // ---------------------------------------------------------------------------
@@ -305,6 +342,16 @@ const matchRowValidator = v.object({
   variations: v.array(cardSummaryValidator),
   byUser: v.optional(v.boolean()),
   repeatOfPairId: v.optional(v.id("placeholderPairs")),
+  /** The proposed card, whatever list it came from. */
+  card: v.union(cardSummaryValidator, v.null()),
+  /** NEO-382 — the collector called this repeat a second copy. */
+  repeatIsSecondCopy: v.optional(v.boolean()),
+  /** NEO-382 — set aside ("Reject card"); not saved, not counted. */
+  setAside: v.optional(v.boolean()),
+  /** NEO-382 — saved: the line and how many copies went on it. */
+  savedCopyId: v.optional(v.id("collectionCopies")),
+  savedQuantity: v.optional(v.number()),
+  savedAt: v.optional(v.number()),
   /** Copies of the proposed card already in the run's home ("You have N here"). */
   haveHere: v.number(),
 });
@@ -373,6 +420,12 @@ export const listIntakeMatches = query({
         variations: await many(row.variations),
         byUser: row.byUser,
         repeatOfPairId: row.repeatOfPairId,
+        card: row.cardId ? await card(row.cardId) : null,
+        repeatIsSecondCopy: row.repeatIsSecondCopy,
+        setAside: row.setAside,
+        savedCopyId: row.savedCopyId,
+        savedQuantity: row.savedQuantity,
+        savedAt: row.savedAt,
         haveHere: row.cardId ? await haveHere(row.cardId) : 0,
       });
     }
@@ -399,6 +452,7 @@ export const pickIntakeCard = mutation({
       .withIndex("by_pair", (q) => q.eq("pairId", args.pairId))
       .first();
     if (!row || row.runId !== run._id) throw new Error("Card not found in this run");
+    if (row.savedAt !== undefined) throw new Error("That card is already saved");
 
     if (args.cardId === null) {
       // Clearing the readKey makes the next sync match it afresh.
@@ -423,6 +477,172 @@ export const pickIntakeCard = mutation({
     }
     await ctx.db.patch(run._id, { lastActivityAt: Date.now() });
     return null;
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Public: the collector's answers (NEO-382)
+// ---------------------------------------------------------------------------
+
+/** Cards the "Wrong card? Find it" search returns at most. */
+const MAX_SEARCH_HITS = 8;
+/** A ceiling on the cards one search reads; a variant's checklist is far smaller. */
+const MAX_SEARCH_SCAN = 5000;
+
+async function requireRunRow(
+  ctx: QueryCtx,
+  run: Doc<"intakeRuns">,
+  pairId: Id<"placeholderPairs">,
+): Promise<Doc<"intakeMatches">> {
+  const row = await ctx.db
+    .query("intakeMatches")
+    .withIndex("by_pair", (q) => q.eq("pairId", pairId))
+    .first();
+  if (!row || row.runId !== run._id) throw new Error("Card not found in this run");
+  return row;
+}
+
+/**
+ * Save one reviewed pair: `quantity` new copies of its card go in the run's
+ * home with the run's defaults, overridden by `details`. They fold into an
+ * identical line there (the collection's fold rule), else start a new line.
+ *
+ * Idempotent per pair: a second save of the same pair (a double click, a
+ * retried request) returns the first save and adds nothing. A repeat must be
+ * answered first ("second copy" saves; "same card" sets it aside), so a
+ * jammed feeder never counts one card twice.
+ */
+export const saveIntakeMatch = mutation({
+  args: {
+    runId: v.id("intakeRuns"),
+    pairId: v.id("placeholderPairs"),
+    quantity: v.number(),
+    details: v.optional(intakeDefaultsValidator),
+  },
+  returns: v.object({ copyId: v.id("collectionCopies"), alreadySaved: v.boolean() }),
+  handler: async (ctx, args) => {
+    const run = await requireOwnedRun(ctx, args.runId);
+    const row = await requireRunRow(ctx, run, args.pairId);
+    if (row.savedCopyId) return { copyId: row.savedCopyId, alreadySaved: true };
+    if (row.setAside) throw new Error("That card was set aside. Bring it back to save it.");
+    if (!row.cardId) throw new Error("Pick the card first");
+    if (row.repeatOfPairId && !row.repeatIsSecondCopy) {
+      throw new Error("This card is already in this run. Say whether it's a second copy first.");
+    }
+    if (!Number.isInteger(args.quantity) || args.quantity < 1 || args.quantity > MAX_COPY_QUANTITY) {
+      throw new Error(`Add between 1 and ${MAX_COPY_QUANTITY} copies`);
+    }
+
+    // A per-card field overrides the run's; one the card leaves out keeps it.
+    const overrides = Object.fromEntries(
+      Object.entries(args.details ?? {}).filter(([, value]) => value !== undefined),
+    );
+    const d = cleanDefaults({ ...run.defaults, ...overrides }) ?? {};
+    // The per-copy price (`minPriceCents`) waits for NEO-378's field on copies.
+    const { result, change } = await addOne(
+      ctx,
+      run.userId,
+      row.cardId,
+      {
+        quantity: args.quantity,
+        condition: d.condition,
+        grading: d.grading,
+        costCents: d.costCents,
+        acquiredOn: d.acquiredOn,
+        location: d.location,
+        notes: d.notes,
+        homeId: run.homeId,
+      },
+      await defaultConditionOf(ctx, run.userId),
+    );
+    await applyCopyChanges(ctx, run.userId, [change]);
+
+    const now = Date.now();
+    await ctx.db.patch(row._id, {
+      savedCopyId: result.copyId,
+      savedQuantity: args.quantity,
+      savedAt: now,
+    });
+    await ctx.db.patch(run._id, { lastActivityAt: now });
+    return { copyId: result.copyId, alreadySaved: false };
+  },
+});
+
+/**
+ * Answer "this card is already in this run": a second copy (it can then be
+ * saved), or the same card scanned twice (it is set aside).
+ */
+export const answerIntakeRepeat = mutation({
+  args: {
+    runId: v.id("intakeRuns"),
+    pairId: v.id("placeholderPairs"),
+    secondCopy: v.boolean(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const run = await requireOwnedRun(ctx, args.runId);
+    const row = await requireRunRow(ctx, run, args.pairId);
+    if (row.savedAt !== undefined) throw new Error("That card is already saved");
+    if (!row.repeatOfPairId) throw new Error("That card isn't a repeat");
+    await ctx.db.patch(
+      row._id,
+      args.secondCopy ? { repeatIsSecondCopy: true } : { setAside: true },
+    );
+    await ctx.db.patch(run._id, { lastActivityAt: Date.now() });
+    return null;
+  },
+});
+
+/** Set a pair aside ("Reject card"), or bring it back with `setAside: false`. */
+export const setIntakeMatchAside = mutation({
+  args: {
+    runId: v.id("intakeRuns"),
+    pairId: v.id("placeholderPairs"),
+    setAside: v.boolean(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const run = await requireOwnedRun(ctx, args.runId);
+    const row = await requireRunRow(ctx, run, args.pairId);
+    if (row.savedAt !== undefined) throw new Error("That card is already saved");
+    await ctx.db.patch(row._id, {
+      setAside: args.setAside ? true : undefined,
+      // Brought back, a re-scan asks its question again.
+      ...(args.setAside ? {} : { repeatIsSecondCopy: undefined }),
+    });
+    await ctx.db.patch(run._id, { lastActivityAt: Date.now() });
+    return null;
+  },
+});
+
+/**
+ * "Wrong card? Find it": the run's variant's cards whose number is `q`, or
+ * whose name holds it, number hits first. Empty when the run has no variant.
+ */
+export const searchIntakeCards = query({
+  args: { runId: v.id("intakeRuns"), q: v.string() },
+  returns: v.array(cardSummaryValidator),
+  handler: async (ctx, args) => {
+    const userId = await getCurrentUserId(ctx);
+    if (!userId) return [];
+    const run = await ownedRun(ctx, args.runId, userId);
+    if (!run?.variantId) return [];
+    const variantId = run.variantId;
+    const needle = args.q.trim().slice(0, 100);
+    const number = needle ? normalizeIntakeCardNumber(needle) : "";
+    const words = needle.toLowerCase();
+    const cards = await ctx.db
+      .query("cardChecklist")
+      .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", variantId))
+      .take(MAX_SEARCH_SCAN);
+    const byNumber = [];
+    const byName = [];
+    for (const c of cards) {
+      const summary = { _id: c._id, cardNumber: c.cardNumber, cardName: c.cardName, variation: c.cardVariation };
+      if (!needle || normalizeIntakeCardNumber(c.cardNumber) === number) byNumber.push(summary);
+      else if (c.cardName.toLowerCase().includes(words)) byName.push(summary);
+    }
+    return [...byNumber, ...byName].slice(0, MAX_SEARCH_HITS);
   },
 });
 
@@ -522,7 +742,8 @@ export const syncIntakeMatches = internalMutation({
     const ordered = [...pairs].sort((a, b) => a.frontIndex - b.frontIndex);
     for (const pair of ordered) {
       const existing = byPair.get(pair._id);
-      if (existing?.byUser) continue;
+      // The collector's word stands: a pick, a save or a set-aside is never re-matched.
+      if (existing?.byUser || existing?.savedAt !== undefined || existing?.setAside) continue;
       const front = await imagePlayers(ctx, run.jobId, pair.frontIndex);
       const back = await imagePlayers(ctx, run.jobId, pair.backIndex);
       const players = [
@@ -564,8 +785,11 @@ export const syncIntakeMatches = internalMutation({
         variations: (answer?.variations ?? []) as Id<"cardChecklist">[],
       };
       if (existing) {
-        await ctx.db.patch(existing._id, fields);
-        byPair.set(pair._id, { ...existing, ...fields });
+        // A different card asks the repeat question again.
+        const patch =
+          existing.cardId === fields.cardId ? fields : { ...fields, repeatIsSecondCopy: undefined };
+        await ctx.db.patch(existing._id, patch);
+        byPair.set(pair._id, { ...existing, ...patch });
       } else {
         const id = await ctx.db.insert("intakeMatches", {
           runId: run._id,
@@ -590,7 +814,8 @@ export const syncIntakeMatches = internalMutation({
         if (!repeatOf) firstFor.set(row.cardId, row.pairId);
       }
       if (row.repeatOfPairId !== repeatOf) {
-        await ctx.db.patch(row._id, { repeatOfPairId: repeatOf });
+        // A "second copy" answer was about the old repeat, so it is asked again.
+        await ctx.db.patch(row._id, { repeatOfPairId: repeatOf, repeatIsSecondCopy: undefined });
       }
     }
 

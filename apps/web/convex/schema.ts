@@ -3598,6 +3598,15 @@ export default defineSchema({
     // second copy or a re-scan (a jammed feeder). The screen asks which; this
     // only flags it.
     repeatOfPairId: v.optional(v.id("placeholderPairs")),
+    // NEO-382 — the collector's answers on the intake screen. A repeat they
+    // called a second copy (a re-scan is set aside instead), a pair set aside
+    // ("Reject card"), and the save: the line the copies went on, how many
+    // were added, and when. A saved or set-aside row is never re-matched.
+    repeatIsSecondCopy: v.optional(v.boolean()),
+    setAside: v.optional(v.boolean()),
+    savedCopyId: v.optional(v.id("collectionCopies")),
+    savedQuantity: v.optional(v.number()),
+    savedAt: v.optional(v.number()),
   })
     .index("by_run", ["runId"])
     .index("by_pair", ["pairId"]),

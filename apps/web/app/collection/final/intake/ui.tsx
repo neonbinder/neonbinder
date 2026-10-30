@@ -528,7 +528,7 @@ export function FixTools({ item, sim, showKeys = false }: { item: Item; sim: Int
             aria-keyshortcuts={showKeys ? (t.key === t.key.toUpperCase() ? `Shift+${t.key}` : t.key) : undefined}
             className={`min-h-11 rounded-md border border-rule bg-button-neutral px-2 py-1 text-xs text-ink-2 hover:bg-button-neutral-hover sm:min-h-8 ${RING}`}
           >
-            {showKeys && <kbd className="mr-1 font-mono text-ink-3">{t.key}</kbd>}
+            {showKeys && <kbd className="mr-1 font-mono">{t.key}</kbd>}
             {t.label}
           </button>
         ),
