@@ -230,6 +230,26 @@ async function seedEveryDrainedTable(
         lastUpdated: NOW,
       });
     }
+    // collectionBinderFits: 2 (+ its state row), NEO-401 — a smart binder's
+    // stored fits name a card and a variant row; drained with the containers.
+    for (let i = 0; i < 2; i += 1) {
+      await ctx.db.insert("collectionBinderFits", {
+        ownerId: "collector_1",
+        binderId: homeId,
+        cardId: cardIds[i % cardIds.length],
+        variantId,
+        order: i,
+        generation: 1,
+      });
+    }
+    await ctx.db.insert("collectionBinderFitsState", {
+      ownerId: "collector_1",
+      binderId: homeId,
+      computedAt: NOW,
+      supported: true,
+      complete: true,
+      count: 2,
+    });
     for (let i = 0; i < 11; i += 1) {
       await ctx.db.insert("collectionBuildingSets", {
         ownerId: `collector_${i}`,
@@ -393,7 +413,8 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
       collectionCopiesDeleted: 10,
       collectionWantsDeleted: 0,
       cardRequestsDeleted: 0,
-      collectionContainersDeleted: 1,
+      // NEO-401: the container, its 2 stored fits and their state row.
+      collectionContainersDeleted: 4,
       collectionBuildingSetsDeleted: 11,
       variantCommonPricesDeleted: 2,
       intakeRunsDeleted: 0,
@@ -619,7 +640,8 @@ describe("NEO-254: the reset yields at RESET_TIME_BUDGET_MS and resumes", () => 
       collectionCopiesDeleted: 10,
       collectionWantsDeleted: 0,
       cardRequestsDeleted: 0,
-      collectionContainersDeleted: 1,
+      // NEO-401: the container, its 2 stored fits and their state row.
+      collectionContainersDeleted: 4,
       collectionBuildingSetsDeleted: 11,
       variantCommonPricesDeleted: 2,
       intakeRunsDeleted: 0,
@@ -1051,6 +1073,8 @@ describe("NEO-330: scope exceptReferenceSeed", () => {
     "collectionBuildingSets",
     // NEO-359 — a smart binder's rule holds selectorOptions ids.
     "collectionContainers",
+    // NEO-401 — a smart binder's stored fits name a variant row.
+    "collectionBinderFits",
     // NEO-361 — card requests and the private cards and sets they made.
     "privateCards",
     "privateSets",
@@ -1211,7 +1235,8 @@ describe("NEO-330: scope exceptReferenceSeed", () => {
       collectionCopiesDeleted: 10,
       collectionWantsDeleted: 0,
       cardRequestsDeleted: 3,
-      collectionContainersDeleted: 1,
+      // NEO-401: the container, its 2 stored fits and their state row.
+      collectionContainersDeleted: 4,
       collectionBuildingSetsDeleted: 11,
       variantCommonPricesDeleted: 2,
       intakeRunsDeleted: 2,

@@ -59,6 +59,24 @@ export const test = base.extend<{ env: FlowEnv; signIn: SignIn; wireLog: void }>
     // The project feeds the d/m marker in every minted name (./env.ts).
     await use(makeEnv(testInfo.project.name));
   },
+  // NEO-392: stamp every page with the run, worker and test, before the app
+  // loads, so the app's E2E diagnostic events in PostHog can be filtered to
+  // the one test that went red (lib/observability/e2e-diagnostics.ts).
+  // Identifiers only: no URL, credential or test data goes on the window.
+  context: async ({ context, env }, use, testInfo) => {
+    await context.addInitScript((tags) => {
+      (window as unknown as { __NB_E2E?: unknown }).__NB_E2E = tags;
+    }, {
+      run_id: process.env.GITHUB_RUN_ID ?? "local",
+      run_attempt: process.env.GITHUB_RUN_ATTEMPT ?? "0",
+      worker: env.WORKER_INDEX,
+      project: testInfo.project.name,
+      test: testInfo.titlePath.slice(1).join(" > "),
+      file: testInfo.file.split("/playwright/").pop() ?? "",
+      retry: testInfo.retry,
+    });
+    await use(context);
+  },
   signIn: async ({ page, env }, use) => {
     await use(async (redirect, opts = {}) => {
       await page.goto(signInUrl(redirect, env.WORKER_INDEX, opts.account), {

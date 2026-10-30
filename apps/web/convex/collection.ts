@@ -77,6 +77,7 @@ import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { internalAction, internalMutation, mutation, query } from "./_generated/server";
 import { internal } from "./_generated/api";
+import { noteArrivals } from "./binderFits";
 import { requireSignedIn } from "./auth";
 import { findSetForSelectorOption } from "./lib/selectorAncestry";
 import {
@@ -947,6 +948,12 @@ export async function applyCopyChanges(
   await moveTally(ctx, ownerId, { copies, lines, cards });
   await moveCounts(ctx, ownerId, changes);
   await moveBuildingCards(ctx, ownerId, setCards, sides);
+  // NEO-401: a parallel arriving in a smart binder for the first time.
+  await noteArrivals(
+    ctx,
+    ownerId,
+    changes.map((c) => ({ cardId: c.cardId, homeId: c.after?.homeId ?? null, fromId: c.before?.homeId ?? null })),
+  );
 }
 
 /**

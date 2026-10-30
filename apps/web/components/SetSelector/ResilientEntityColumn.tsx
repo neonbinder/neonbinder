@@ -285,9 +285,10 @@ export default function ResilientEntityColumn(
           </div>
           {/*
             NEO-84 — the socket snapshot is rendered, not just captured,
-            because PostHog is switched off under E2E (PostHogProvider.tsx
-            returns early on VITE_CLERK_TESTING_ENABLED, per NEO-13) and
-            Maestro records no console output or failure hierarchy. On screen
+            because PostHog was switched off under E2E at the time (NEO-13;
+            since NEO-392 it runs there as a diagnostic recorder, see
+            lib/observability/e2e-diagnostics.ts) and Maestro recorded no
+            console output or failure hierarchy. On screen
             is the only channel that survives into a CI failure screenshot —
             the same conclusion NEO-85's tap forensics reached.
 

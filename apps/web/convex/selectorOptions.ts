@@ -4164,8 +4164,8 @@ const ALL_SELECTOR_LEVELS = [
 /**
  * Everything that would be orphaned by deleting this row.
  *
- * Read by `getSelectorOptionHoldings` (the affordance's disabled state and its
- * reason text) and re-read by `deleteSelectorOption` inside the transaction
+ * Read by `getSelectorOptionHoldings` (the delete affordance's one-shot check
+ * on click, and its reason text) and re-read by `deleteSelectorOption` inside the transaction
  * that deletes. The mutation never trusts the query's answer — a checklist
  * commit can land between the two.
  *
@@ -4347,9 +4347,12 @@ export async function collectSelectorOptionHoldings(
 }
 
 /**
- * NEO-219 C — reactive read of what a row holds, for the delete affordance's
- * disabled state and its `aria-describedby` reason. DISPLAY ONLY: the mutation
- * re-checks everything inside its own transaction.
+ * NEO-219 C — what a row holds, for the delete affordance's reason text.
+ * NEO-400: read ONCE, on the trash's click (`convex.query`), never subscribed:
+ * it walks every row and card below the selection, and as a subscription it
+ * re-ran on every write to the set and held every mutation in the tab behind
+ * it. DISPLAY ONLY: the mutation re-checks everything inside its own
+ * transaction.
  */
 export const getSelectorOptionHoldings = query({
   args: { id: v.id("selectorOptions") },
@@ -9267,13 +9270,29 @@ export const resetCollectionContainersBatch = internalMutation({
   }),
   handler: async (ctx) => {
     assertResetArmed();
-    const rows = await ctx.db
-      .query("collectionContainers")
-      .take(RESET_BATCH_SIZE);
-    for (const row of rows) {
-      await ctx.db.delete(row._id);
+    // NEO-401 — a smart binder's stored fits (cardId, variantId) and their
+    // state go first, in the same loop: they name a card and a variant row,
+    // so they can never outlive this step, and the import guard
+    // (`SELECTOR_DEPENDANT_TABLES`) counts them.
+    let left = RESET_BATCH_SIZE;
+    let deleted = 0;
+    const fits = await ctx.db.query("collectionBinderFits").take(left);
+    for (const row of fits) await ctx.db.delete(row._id);
+    left -= fits.length;
+    deleted += fits.length;
+    if (left > 0) {
+      const states = await ctx.db.query("collectionBinderFitsState").take(left);
+      for (const row of states) await ctx.db.delete(row._id);
+      left -= states.length;
+      deleted += states.length;
     }
-    return { deleted: rows.length, hasMore: rows.length === RESET_BATCH_SIZE };
+    if (left > 0) {
+      const rows = await ctx.db.query("collectionContainers").take(left);
+      for (const row of rows) await ctx.db.delete(row._id);
+      left -= rows.length;
+      deleted += rows.length;
+    }
+    return { deleted, hasMore: left === 0 };
   },
 });
 
