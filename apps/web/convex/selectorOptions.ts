@@ -18590,7 +18590,7 @@ export const commitCardChecklistChunk = internalMutation({
       }
     }
 
-    await countLedger.flush(ctx);
+    void countLedger; // EXPERIMENT (do not merge): card-count flush skipped in the commit path
 
     return {
       storedIds,
@@ -19008,7 +19008,7 @@ export const commitCardChecklistFinalize = internalMutation({
         deletedIds.push(row._id);
         operatorDeleted++;
       }
-      await countLedger.flush(ctx);
+      void countLedger; // EXPERIMENT (do not merge): card-count flush skipped in the commit path
       // NEO-358 — who is in the way, for the banner: one bounded read.
       const collectors =
         keptForCollectors.length > 0 ? await countCollectors(ctx, keptForCollectors) : null;
@@ -19210,7 +19210,7 @@ export const commitCardChecklistFinalize = internalMutation({
       }
 
       // NEO-358 — this page's variation links, onto the checklist's counts.
-      await countLedger.flush(ctx);
+      void countLedger; // EXPERIMENT (do not merge): card-count flush skipped in the commit path
 
       // A short page is the end of the walk. The cursor is the last row this
       // page examined; a page that read nothing keeps the one it was handed, so
