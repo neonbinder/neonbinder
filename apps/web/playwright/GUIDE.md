@@ -830,6 +830,19 @@ desktop-only file still plans both passes).
    usually visibly different from what is there.
 4. Check the run's `PAUSED_PLATFORMS: ` line and, for enrichment, the
    `convex-logs-*` artifacts, before deciding which branch the spec took.
+   For a page that looks stuck (a disabled button, "Saving…", a dialog that
+   never closes), read the failure's `client-wire.log` attachment
+   (`support/wire-log.ts`, NEO-398): page errors, console errors, the Convex
+   socket's opens and closes, and one line per Convex frame with its type,
+   request id and function path (never arguments, values or tokens). It says
+   whether the server's reply reached the page and whether the page sent its
+   next call. `node playwright/red-run.mjs <run-id>` downloads the run's
+   reports and Convex logs and prints both sides per failed test, with the
+   preview's slowest calls in the test's last seconds. A successful mutation's
+   promise resolves only once the tab's query set has caught up to that write
+   (Convex's client waits for the next Transition), so a page can "hang" on
+   `await` while the server shows the mutation finished in milliseconds: look
+   for slow or heavy queries the same page subscribes to.
 5. Reproduce that one spec locally against the PR preview (above); fix; push
    only once it passes. A full rerun (`gh run rerun`) is for suspected infra
    problems; a real failure just fails again. A rerun cannot fix a broken

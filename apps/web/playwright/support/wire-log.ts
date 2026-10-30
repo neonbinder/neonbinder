@@ -1,5 +1,5 @@
 /**
- * EXPERIMENT (do not merge): what the browser saw, attached to a failed test.
+ * What the browser saw, attached to a failed test (NEO-398).
  *
  * The server's call log shows a page that stopped asking (a binder delete
  * whose `remove` never arrived after `empty` answered). This records the

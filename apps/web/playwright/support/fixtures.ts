@@ -46,7 +46,7 @@ export function signInUrl(redirect: string, worker: string, account?: string): s
 }
 
 export const test = base.extend<{ env: FlowEnv; signIn: SignIn; wireLog: void }>({
-  // EXPERIMENT (do not merge): the client's side of a failure (./wire-log.ts).
+  // The client's side of a failure: attached as client-wire.log (./wire-log.ts, NEO-398).
   wireLog: [
     async ({ page }, use, testInfo) => {
       const lines = recordWire(page);
