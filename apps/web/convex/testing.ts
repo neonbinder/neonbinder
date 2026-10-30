@@ -155,6 +155,17 @@ export const resetMyTestState = mutation({
       .withIndex("by_owner_and_system", (q) => q.eq("ownerId", userId))
       .collect();
     for (const row of collectionContainers) {
+      // NEO-401 — a smart binder's stored fits go with it.
+      const fits = await ctx.db
+        .query("collectionBinderFits")
+        .withIndex("by_binder_order", (q) => q.eq("binderId", row._id))
+        .collect();
+      for (const fit of fits) await ctx.db.delete(fit._id);
+      const state = await ctx.db
+        .query("collectionBinderFitsState")
+        .withIndex("by_binder", (q) => q.eq("binderId", row._id))
+        .unique();
+      if (state) await ctx.db.delete(state._id);
       await ctx.db.delete(row._id);
     }
 

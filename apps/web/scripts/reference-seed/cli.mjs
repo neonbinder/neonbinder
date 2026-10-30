@@ -101,8 +101,9 @@ export const SELECTOR_DEPENDANT_TABLES = [
   "collectionBuildingSets",
   // NEO-359 — a smart binder's `rule` names sport, brand and set rows.
   // Drained by the reset (after the copies and wants), before the selector
-  // rows.
+  // rows. NEO-401 — its stored fits (variantId) drain in the same step.
   "collectionContainers",
+  "collectionBinderFits",
   // NEO-361 — card and set requests and the private cards and sets they
   // made (setId, variantId, sportId, addedSetId). Drained by the reset
   // (`resetCardRequestsBatch`), before the selector rows.

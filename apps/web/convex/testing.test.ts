@@ -98,6 +98,23 @@ async function seedUser(
       quantity: 1,
       lastUpdated: 0,
     });
+    // NEO-401 — a smart binder's stored fits, drained with its container.
+    await ctx.db.insert("collectionBinderFits", {
+      ownerId: userId,
+      binderId: homeId,
+      cardId,
+      variantId,
+      order: 0,
+      generation: 1,
+    });
+    await ctx.db.insert("collectionBinderFitsState", {
+      ownerId: userId,
+      binderId: homeId,
+      computedAt: 0,
+      supported: true,
+      complete: true,
+      count: 1,
+    });
     await ctx.db.insert("collectionBuildingSets", {
       ownerId: userId,
       setId,
@@ -123,6 +140,7 @@ async function countRows(
   collectionContainers: number;
   collectionBuildingSets: number;
   variantCommonPrices: number;
+  binderFits: number;
 }> {
   return t.run(async (ctx) => {
     const pp = (await ctx.db.query("publicProfiles").collect()).filter(
@@ -146,6 +164,9 @@ async function countRows(
     const vp = (await ctx.db.query("variantCommonPrices").collect()).filter(
       (r) => r.ownerId === userId,
     );
+    const bf =
+      (await ctx.db.query("collectionBinderFits").collect()).filter((r) => r.ownerId === userId).length +
+      (await ctx.db.query("collectionBinderFitsState").collect()).filter((r) => r.ownerId === userId).length;
     return {
       publicProfiles: pp.length,
       userProfiles: up.length,
@@ -154,6 +175,7 @@ async function countRows(
       collectionContainers: ct.length,
       collectionBuildingSets: bs.length,
       variantCommonPrices: vp.length,
+      binderFits: bf,
     };
   });
 }
@@ -186,6 +208,7 @@ describe("resetMyTestState", () => {
       collectionContainers: 0,
       collectionBuildingSets: 0,
       variantCommonPrices: 0,
+      binderFits: 0,
     });
   });
 
@@ -206,6 +229,7 @@ describe("resetMyTestState", () => {
       collectionContainers: 0,
       collectionBuildingSets: 0,
       variantCommonPrices: 0,
+      binderFits: 0,
     });
     expect(await countRows(t, USER_B)).toEqual({
       publicProfiles: 1,
@@ -215,6 +239,7 @@ describe("resetMyTestState", () => {
       collectionContainers: 1,
       collectionBuildingSets: 1,
       variantCommonPrices: 1,
+      binderFits: 2,
     });
   });
 
@@ -255,6 +280,7 @@ describe("resetMyTestState", () => {
       collectionContainers: 1,
       collectionBuildingSets: 1,
       variantCommonPrices: 1,
+      binderFits: 2,
     });
   });
 
@@ -277,6 +303,7 @@ describe("resetMyTestState", () => {
       collectionContainers: 1,
       collectionBuildingSets: 1,
       variantCommonPrices: 1,
+      binderFits: 2,
     });
   });
 });

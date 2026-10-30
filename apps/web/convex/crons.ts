@@ -142,4 +142,20 @@ crons.interval(
   {},
 );
 
+/**
+ * NEO-401 — recompute each smart binder's stored fits (`collectionBinderFits`)
+ * once a day, so a card added to the catalog after the rule was saved reaches
+ * the binder's empty slots. Daily at 09:00 UTC (the small hours in the US):
+ * the fits are a derived list that only the catalog's growth can age, and the
+ * binder screen must never pay for the walk itself (NEO-392). Each pass
+ * schedules at most `REFRESH_BATCH` recomputes, spaced out, and hands on to
+ * another pass when more are due. See `refreshStaleFits`.
+ */
+crons.daily(
+  "refresh smart binder fits",
+  { hourUTC: 9, minuteUTC: 0 },
+  internal.binderRules.refreshStaleFits,
+  {},
+);
+
 export default crons;
