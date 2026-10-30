@@ -75,7 +75,10 @@ jobs:
           set -euo pipefail
           mkdir -p dist/pkg
           cp dist/neonbinder-scanner "dist/pkg/NeonBinder Scanner"
-          ditto -c -k --keepParent "dist/pkg/NeonBinder Scanner" "dist/neonbinder-scanner-mac-${{ matrix.arch }}.zip"
+          # Zip the app alone (no folder around it), so opening the zip leaves
+          # just NeonBinder Scanner beside it.
+          (cd dist/pkg && ditto -c -k --norsrc --noextattr "NeonBinder Scanner" "../neonbinder-scanner-mac-${{ matrix.arch }}.zip")
+          unzip -l "dist/neonbinder-scanner-mac-${{ matrix.arch }}.zip" | grep -q " NeonBinder Scanner$"
       # A fork's PR builds code its author controls; nobody should be handed
       # that as something to run, so only this repo's own branches upload.
       - if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
