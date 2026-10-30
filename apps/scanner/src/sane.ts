@@ -18,7 +18,21 @@ export interface SaneRuntime {
   env: NodeJS.ProcessEnv;
 }
 
-export const SYSTEM_SANE: SaneRuntime = { scanimage: "scanimage", env: process.env };
+/** The environment without the collector's key: scanimage has no use for it. */
+function withoutKeys(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const env = { ...base };
+  delete env.NEONBINDER_API_KEY;
+  delete env.NEONBINDER_MACHINE_KEY;
+  return env;
+}
+
+export const SYSTEM_SANE: SaneRuntime = {
+  scanimage: "scanimage",
+  // A getter, so a PATH set after start-up (the tests' fake scanimage) still counts.
+  get env() {
+    return withoutKeys(process.env);
+  },
+};
 
 const BUNDLE_NAME = "sane-bundle.tar.gz";
 
@@ -29,7 +43,7 @@ export function bundledRuntime(root: string, base: NodeJS.ProcessEnv = process.e
   return {
     scanimage: path.join(root, "bin", "scanimage"),
     env: {
-      ...base,
+      ...withoutKeys(base),
       // dyld finds the bundled libraries by leaf name before their Homebrew paths.
       DYLD_LIBRARY_PATH: `${lib}:${backends}`,
       // SANE's dll backend searches LD_LIBRARY_PATH for backends, on macOS too.

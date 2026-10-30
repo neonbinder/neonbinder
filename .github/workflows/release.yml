@@ -404,13 +404,23 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
-      contents: write  # the scanner-latest release and its assets
+      contents: write      # the scanner-latest release and its assets
+      id-token: write      # build provenance
+      attestations: write  # build provenance
     steps:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: neonbinder-scanner-mac-*
           merge-multiple: true
           path: dist
+      # Anyone can check a download came from this workflow:
+      # gh attestation verify <zip> --repo neonbinder/neonbinder
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/neonbinder-scanner-mac-*.zip
+      - name: Checksums
+        working-directory: dist
+        run: shasum -a 256 neonbinder-scanner-mac-*.zip | tee SHA256SUMS
       - name: Replace the scanner-latest release's zips
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -423,8 +433,9 @@ jobs:
               --title "NeonBinder Scanner" \
               --notes "The NeonBinder Scanner app for Mac. Download the zip for your Mac (Apple chip: arm64; Intel: x64), open it, and double-click NeonBinder Scanner."
           fi
-          gh release upload scanner-latest --repo "$REPO" --clobber dist/neonbinder-scanner-mac-*.zip
-          gh release edit scanner-latest --repo "$REPO" --target "$GITHUB_SHA"
+          # Move the tag too, so the release names the commit its zips came from.
+          gh api -X PATCH "repos/$REPO/git/refs/tags/scanner-latest" -f sha="$GITHUB_SHA" -F force=true >/dev/null
+          gh release upload scanner-latest --repo "$REPO" --clobber dist/neonbinder-scanner-mac-*.zip dist/SHA256SUMS
 
   notify:
     name: Notify Discord

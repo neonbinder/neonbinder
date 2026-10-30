@@ -53,7 +53,7 @@ describe("sign-in", () => {
 
   test("a rejected key says where to make one, and is not retried", async () => {
     fetchMock.mockResolvedValueOnce(json(401));
-    await expect(NeonBinder.signIn(URL_, "bad")).rejects.toThrow(/Settings → API Keys/);
+    await expect(NeonBinder.signIn(URL_, "bad")).rejects.toThrow(/Profile → API Keys/);
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 

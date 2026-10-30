@@ -135,7 +135,7 @@ class KeyExchange {
 /** The API key was refused: revoked, mistyped, or from another NeonBinder. */
 export class KeyRejectedError extends Error {
   constructor() {
-    super("NeonBinder didn't accept that API key. Make one under Settings → API Keys.");
+    super("NeonBinder didn't accept that API key. Make one under Profile → API Keys.");
     this.name = "KeyRejectedError";
   }
 }

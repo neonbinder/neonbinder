@@ -9,7 +9,7 @@
   },
   "scripts": {
     "scan": "tsx src/main.ts",
-    "build": "./scripts/bundle-sane.sh && bun build --compile --minify --sourcemap=none --asset-naming='[name].[ext]' ./src/main.ts ./dist/sane-bundle.tar.gz --outfile dist/neonbinder-scanner",
+    "build": "./scripts/bundle-sane.sh && bun build --compile --no-compile-autoload-dotenv --no-compile-autoload-bunfig --minify --sourcemap=none --asset-naming='[name].[ext]' ./src/main.ts ./dist/sane-bundle.tar.gz --outfile dist/neonbinder-scanner",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },

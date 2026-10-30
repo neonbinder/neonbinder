@@ -16,7 +16,7 @@ export const SCANNER_DOWNLOADS = {
   arm64: `${SCANNER_RELEASE}/neonbinder-scanner-mac-arm64.zip`,
   x64: `${SCANNER_RELEASE}/neonbinder-scanner-mac-x64.zip`,
 } as const;
-const DOWNLOAD_LINK = "text-neon-teal-text hover:decoration-2 underline focus-outline rounded-sm";
+const DOWNLOAD_LINK = "text-neon-blue-text underline underline-offset-2 hover:decoration-2 focus-outline rounded-sm";
 
 type NewRun = Omit<FunctionArgs<typeof api.intakeRuns.createIntakeRun>, "jobId">;
 
@@ -98,26 +98,36 @@ export function ScannerJoin({
         tabIndex={-1}
         role="group"
         aria-labelledby={labelId}
-        className={`flex flex-wrap items-center gap-x-4 gap-y-2 rounded-md border border-rule p-3 text-sm text-ink-2 ${RING}`}
+        aria-describedby={`${labelId}-code ${labelId}-how`}
+        className={`flex flex-col gap-2 rounded-md border border-rule p-3 text-sm text-ink-2 ${RING}`}
       >
         <p className="m-0 flex items-baseline gap-2">
           <span id={labelId}>Scanner code</span>
           <span aria-hidden="true" className="font-mono text-xl font-semibold tracking-widest text-ink">
             {shown.slice(0, 3)} {shown.slice(3)}
           </span>
-          <span className="sr-only">{shown.split("").join(" ")}</span>
+          <span id={`${labelId}-code`} className="sr-only">
+            {shown.split("").join(" ")}
+          </span>
+        </p>
+        <p id={`${labelId}-how`} className="m-0">
+          Type this code in NeonBinder Scanner on the Mac the scanner is plugged into. Cards land here as they feed.
         </p>
         <p className="m-0">
-          On the scanner&apos;s computer, open NeonBinder Scanner and type this code. Cards land here as they feed.
-        </p>
-        <p className="m-0">
-          Don&apos;t have it yet? Download for a Mac with an{" "}
+          <strong className="font-semibold text-ink">First time?</strong> On that Mac, download NeonBinder Scanner
+          for an{" "}
           <a className={DOWNLOAD_LINK} href={SCANNER_DOWNLOADS.arm64}>
-            Apple chip
+            Apple chip<span className="sr-only"> (downloads a zip)</span>
           </a>{" "}
           or an{" "}
           <a className={DOWNLOAD_LINK} href={SCANNER_DOWNLOADS.x64}>
-            Intel chip
+            Intel chip<span className="sr-only"> (downloads a zip)</span>
+          </a>{" "}
+          Mac (Apple menu, About This Mac: &ldquo;Chip&rdquo; means Apple, &ldquo;Processor&rdquo; means Intel). Open the
+          zip and double-click the app. If macOS blocks it, go to System Settings, Privacy &amp; Security, and press Open
+          Anyway. The first time, it asks for an{" "}
+          <a className={DOWNLOAD_LINK} href="/profile/api-keys" target="_blank" rel="noopener">
+            API key<span className="sr-only"> (opens in a new tab)</span>
           </a>
           .
         </p>

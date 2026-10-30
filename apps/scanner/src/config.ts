@@ -1,4 +1,4 @@
-import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, open, readFile, rename, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 
@@ -9,7 +9,14 @@ import path from "node:path";
  */
 
 /** The site the app asks for its backend. Its pages name the Convex deployment they talk to. */
-export const DEFAULT_SITE = "https://neonbinder.io";
+export const DEFAULT_SITE = "https://www.neonbinder.io";
+
+/**
+ * The only hosts whose page may name the backend. The answer decides where
+ * the collector's API key goes, so a redirect that lands anywhere else is
+ * refused rather than believed.
+ */
+const SITE_HOSTS = new Set(["neonbinder.io", "www.neonbinder.io"]);
 
 const CONVEX_URL = /^https:\/\/[a-z0-9-]+\.convex\.cloud$/;
 
@@ -32,13 +39,21 @@ export async function resolveConvexUrl(
   if (env.convexUrl) return env.convexUrl;
   const site = env.site ?? DEFAULT_SITE;
   if (!site.startsWith("https://")) throw new Error("NEONBINDER_SITE must be https://.");
+  // An explicit NEONBINDER_SITE (a developer's own deploy) is trusted as given;
+  // the default only ever on NeonBinder's own hosts.
+  const trusted = env.site ? new Set([new URL(site).hostname]) : SITE_HOSTS;
   let html: string;
+  let landed: URL;
   try {
     const res = await fetchImpl(site, { redirect: "follow", signal: AbortSignal.timeout(15000) });
     if (!res.ok) throw new Error(String(res.status));
+    landed = new URL(res.url || site);
     html = await res.text();
   } catch {
     throw new Error("Can't reach NeonBinder. Check your connection and try again.");
+  }
+  if (landed.protocol !== "https:" || !trusted.has(landed.hostname)) {
+    throw new Error("NeonBinder's site sent the app somewhere unexpected, so it stopped. Try again later.");
   }
   const url = convexUrlIn(html);
   if (!url) throw new Error("NeonBinder didn't say where to send scans. Try again in a minute.");
@@ -70,7 +85,11 @@ export async function savedKey(file: string, convexUrl: string): Promise<string 
   return (await load(file)).keys[convexUrl] || undefined;
 }
 
-/** Saved readable by this user only: it signs in as them. */
+/**
+ * Saved readable by this user only: it signs in as them. Written to a fresh
+ * file and renamed into place, so the key never lands in a looser file that
+ * already sat there, and a crash mid-write can't wipe the keys already saved.
+ */
 export async function saveKey(file: string, convexUrl: string, key: string | undefined): Promise<void> {
   const saved = await load(file);
   if (key) saved.keys[convexUrl] = key;
@@ -79,9 +98,19 @@ export async function saveKey(file: string, convexUrl: string, key: string | und
     await rm(file, { force: true });
     return;
   }
-  await mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
-  await writeFile(file, `${JSON.stringify(saved, null, 2)}\n`, { mode: 0o600 });
-  await chmod(file, 0o600);
+  const dir = path.dirname(file);
+  await mkdir(dir, { recursive: true, mode: 0o700 });
+  await chmod(dir, 0o700);
+  const temp = `${file}.tmp-${process.pid}`;
+  await rm(temp, { force: true });
+  const handle = await open(temp, "wx", 0o600);
+  try {
+    await handle.writeFile(`${JSON.stringify(saved, null, 2)}\n`);
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+  await rename(temp, file);
 }
 
 /** Codes are shown as "ABC 123"; people type them however. */

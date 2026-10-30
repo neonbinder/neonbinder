@@ -12,15 +12,16 @@ now.
 
 1. On NeonBinder, open **Add cards**, pick the binder or box, and press
    **Use a scanner**. It shows a six-character code and two download links.
-2. On the computer the scanner is plugged into, download the one for your
-   Mac (Apple menu → About This Mac: "Apple M…" means Apple chip, otherwise
-   Intel) and open the zip. You get **NeonBinder Scanner**.
+2. On the Mac the scanner is plugged into, download the one for that Mac.
+   To tell which: Apple menu → About This Mac. If it shows **Chip**, choose
+   Apple chip; if it shows **Processor … Intel**, choose Intel chip. Open the
+   zip. You get **NeonBinder Scanner**.
 3. Double-click **NeonBinder Scanner**. The first time, macOS says it can't
    check the app for malicious software. Open **System Settings → Privacy &
    Security**, scroll down, and press **Open Anyway** next to NeonBinder
    Scanner. You only do this once.
 4. A Terminal window opens. The first time, it asks for your API key: on
-   NeonBinder go to **Settings → API Keys**, make one, and paste it in. The
+   NeonBinder go to **Profile → API Keys**, make one, and paste it in. The
    app remembers it.
 5. Type the code from step 1 and press Return. Load cards whenever; it waits
    for paper, and each card shows up on the screen as it feeds.
@@ -32,11 +33,15 @@ Nothing else to install: the app carries its own scanner driver.
 
 Trouble?
 
-- **"No Fujitsu scanner found"**: check it's on and plugged in. Running the
-  app from Terminal with `--check` lists the scanners it sees.
-- **It keeps asking for the key**: the key was revoked or mistyped; make a
-  new one.
-- **A different key**: run it with `--forget-key`.
+- **"No Fujitsu scanner found"**: check the scanner is on and its USB cable
+  is plugged into this Mac, then open the app again.
+- **To see which scanners the app can find**: open Terminal (Applications →
+  Utilities), drag **NeonBinder Scanner** into its window, type a space and
+  `--check`, and press Return.
+- **It keeps asking for the key**: the key was revoked or mistyped. Make a
+  new one under **Profile → API Keys** and paste that.
+- **To use a different key**: as above, but type `--forget-key` instead of
+  `--check`. It asks for a key again.
 
 ## Developing
 

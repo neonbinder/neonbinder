@@ -41,9 +41,17 @@ jobs:
           node-version-file: apps/scanner/.nvmrc
           cache: npm
           cache-dependency-path: apps/scanner/package-lock.json
+      # The Bun runtime ships inside the app, so its version is pinned, not "latest".
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.4
       - name: Install SANE (bundled into the app, not needed by its users)
-        run: brew install sane-backends
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+        run: |
+          brew install sane-backends
+          # Which library versions this build carries, for tracing a release.
+          brew list --versions sane-backends libusb libpng jpeg-turbo
       - run: npm ci
       - run: npm run build
 
@@ -67,7 +75,10 @@ jobs:
           mkdir -p dist/pkg
           cp dist/neonbinder-scanner "dist/pkg/NeonBinder Scanner"
           ditto -c -k --keepParent "dist/pkg/NeonBinder Scanner" "dist/neonbinder-scanner-mac-${{ matrix.arch }}.zip"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      # A fork's PR builds code its author controls; nobody should be handed
+      # that as something to run, so only this repo's own branches upload.
+      - if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: neonbinder-scanner-mac-${{ matrix.arch }}
           path: apps/scanner/dist/neonbinder-scanner-mac-${{ matrix.arch }}.zip

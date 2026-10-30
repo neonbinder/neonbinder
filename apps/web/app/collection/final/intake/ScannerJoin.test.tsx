@@ -51,9 +51,15 @@ describe("ScannerJoin", () => {
     // The parent opens the run; the code shows for it.
     view.rerender(<ScannerJoin runId={RUN} newRun={{ homeId: HOME }} kind="binder" onRunStarted={onRunStarted} />);
     const panel = await screen.findByRole("group", { name: "Scanner code" });
-    expect(panel.textContent).toContain("open NeonBinder Scanner and type this code");
-    expect(within(panel).getByRole("link", { name: "Apple chip" }).getAttribute("href")).toMatch(/scanner-mac-arm64\.zip$/);
-    expect(within(panel).getByRole("link", { name: "Intel chip" }).getAttribute("href")).toMatch(/scanner-mac-x64\.zip$/);
+    expect(panel.textContent).toContain("Type this code in NeonBinder Scanner");
+    // The code and the how-to are read out with the group, not just its name.
+    expect(panel.getAttribute("aria-describedby")?.split(" ").map((id) => document.getElementById(id)?.textContent)).toEqual([
+      "A B 3 X 7 K",
+      expect.stringContaining("Type this code"),
+    ]);
+    expect(within(panel).getByRole("link", { name: /^Apple chip/ }).getAttribute("href")).toMatch(/scanner-mac-arm64\.zip$/);
+    expect(within(panel).getByRole("link", { name: /^Intel chip/ }).getAttribute("href")).toMatch(/scanner-mac-x64\.zip$/);
+    expect(within(panel).getByRole("link", { name: /^API key/ }).getAttribute("href")).toBe("/profile/api-keys");
     await waitFor(() => expect(document.activeElement).toBe(panel));
   });
 

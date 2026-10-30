@@ -50,7 +50,7 @@ async function signIn(convexUrl: string, keyFile: string): Promise<NeonBinder | 
   let asked = false;
   for (let attempt = 0; attempt < 3; attempt++) {
     if (!key) {
-      log("Paste your NeonBinder API key (NeonBinder → Settings → API Keys). It's saved on this computer.");
+      log("Paste your NeonBinder API key (NeonBinder → Profile → API Keys). It's saved on this computer.");
       key = await askSecret("API key: ");
       if (!key) return undefined;
       asked = true;
@@ -91,10 +91,15 @@ async function check(): Promise<number> {
 }
 
 async function main(): Promise<number> {
-  try {
-    process.loadEnvFile(new URL("../.env", import.meta.url));
-  } catch {
-    // No .env (always the case for the packaged app): the environment alone has to do.
+  // Only from source. The packaged app reads no .env at all (it's built with
+  // --no-compile-autoload-dotenv too): a file dropped beside a download must
+  // never be able to point the collector's key at another backend.
+  if (!import.meta.url.includes("$bunfs")) {
+    try {
+      process.loadEnvFile(new URL("../.env", import.meta.url));
+    } catch {
+      // No .env: the environment alone has to do.
+    }
   }
   const { values, positionals } = parseArgs({
     allowPositionals: true,
@@ -118,13 +123,13 @@ async function main(): Promise<number> {
 
   const nb = await signIn(convexUrl, keyFile);
   if (!nb) {
-    log("No API key, so nothing to do. Make one under Settings → API Keys and run this again.");
+    log("No API key, so nothing to do. Make one under Profile → API Keys and run this again.");
     return 1;
   }
   try {
     const code = await askCode(positionals[0]);
     if (!code) {
-      log(HELP);
+      log('No code, so nothing to do. On NeonBinder, press "Use a scanner" on Add cards, then open this app again.');
       return 2;
     }
     const run = await nb.join(code);
@@ -140,7 +145,9 @@ async function main(): Promise<number> {
     const sane = await saneRuntime();
     const device = await findDevice(settings, sane);
     log(`Joined: cards go into ${run.homeName}${run.variantName ? `, matched in ${run.variantName}` : ""}.`);
-    log(`${settings.source}, ${settings.resolution} dpi, ${settings.raw ? "raw frame" : "cropped to the card"}. Waiting for cards…`);
+    if (settings.raw) log(`${settings.source}, ${settings.resolution} dpi, raw frame (no crop).`);
+    log("Ready. Load cards in the feeder; each shows up on NeonBinder as it feeds.");
+    log("To stop, press Ctrl-C or close this window.");
     return await scanInto(nb, run.jobId, device, settings, sane);
   } finally {
     await nb.close();
@@ -208,7 +215,8 @@ async function scanInto(
             return;
           }
           failed++;
-          log(`Card ${n} didn't send (${error instanceof Error ? error.message : String(error)}). Feed it again.`);
+          log(`Card ${n} didn't reach NeonBinder. Check the internet connection and feed it again.`);
+          log(`  (${error instanceof Error ? error.message : String(error)})`);
         }
         return;
       }
@@ -223,7 +231,8 @@ async function scanInto(
         log(`The feeder reported a jam ${event.times} times in a row. Check for a stuck card.`);
         return;
       case "error":
-        log(`Scanner error: ${event.detail}`);
+        log("The scanner reported a problem. Check it's on, the cover is shut, and the cards are loaded; it retries.");
+        log(`  (${event.detail})`);
         return;
     }
   };
