@@ -359,6 +359,21 @@ export function blockedSideFailed(
   return `${sideFailedWhat(side, kind)}, so nothing changed — try again in a bit`;
 }
 
+/**
+ * NEO-387 — a checklist fetch went on without one of its two sides. The
+ * operator must not read that side's empty column as "it has no cards".
+ */
+export function sideMissingFromRun(
+  side: PlatformSide,
+  kind?: FetchFailureKind,
+): string {
+  return `${capitalize(sideFailedWhat(side, kind))}, so its cards are missing from this run.`;
+}
+
+function capitalize(s: string): string {
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
 /** A rebuild with a paused side the parallel's old cards hold links on. */
 export function blockedSidePaused(side: PlatformSide): string {
   return `${SIDE_LABEL[side]} is paused right now — rebuild once it's back, or its links would drop`;

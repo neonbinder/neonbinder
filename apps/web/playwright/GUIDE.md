@@ -183,9 +183,11 @@ typed into "+ Custom" (the form refuses the name) and never searched for.
   `@regression` tag (it drifted into a set disjoint from smoke and was
   deleted) and never a `wip` tag: fix the bug instead. Run a subset with
   `--grep @smoke`.
-- **Run only what you changed, against the PR's Convex preview.** Never the
-  full suite locally unless the change is to the harness itself, and never
-  against shared dev (the seed resets its target).
+- **Run only what you changed, against dev before the first push.** Bring
+  dev up to date first if it is behind the branch; use the PR's Convex preview
+  only when dev cannot reproduce it (see Running). Never the full suite
+  locally unless the change is to the harness itself, and never the seed's
+  reset on dev without saying so first (it wipes dev under every session).
 - **Timing is never the first diagnosis.** "Looks like timing or a flake"
   means look harder, not raise a number. Get the failure screenshot and
   `error-context.md` (an ARIA snapshot of the page at failure) before
@@ -741,9 +743,25 @@ All commands run from `apps/web`.
 | `npm run test:e2e:seed` | `./e2e-baseline.sh reset` then the `setup` project: seeds the target deployment |
 | `npx eslint playwright` | lint the suite |
 
-**Locally: only the specs covering your change, against the PR preview,
-never shared dev** (the seed resets its target). Run a second Vite on a spare
-port wired to the PR's Convex preview, and point Playwright at it:
+**Locally: only the specs covering your change, against dev before the
+first push** (NEO-390). Bring dev up to date first if it is behind the branch:
+merge `origin/main` into the branch, check `npx convex function-spec`, and
+push with `npx convex dev --once` when dev lacks what the specs reach. The
+order and the rules for sharing dev with other sessions are in the root
+`CLAUDE.md` → **Run your specs against dev before the first push**.
+
+```bash
+# shell 1: local Vite on a spare port, on dev (.env.local / the env points at it)
+VITE_DEV_DISABLE_HTTPS=1 npx vite --port 3001 --strictPort
+# shell 2: one spec at a time, on a test account no other session is using
+APP_URL=http://localhost:3001 WORKER_INDEX=8 \
+  npx playwright test --project=e2e --no-deps <path-substring>
+```
+
+Dev is not reseeded per run, and its reset wipes it under every other
+session. A spec that needs a fresh seed, a change to `services/browser` or
+`services/preprocess`, or a schema dev refuses runs against **the PR
+preview** after the first push instead:
 
 ```bash
 # shell 1: local Vite on a spare port, wired to the PR's Convex preview

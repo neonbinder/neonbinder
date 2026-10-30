@@ -566,16 +566,29 @@ jobs:
       # not empty them, so each pass must load again; the sequence is
       # idempotent on a preview the earlier pass wrote to.
       - name: Scripted reset + reference catalogue (e2e-seed-reset.sh)
+        id: seed_reset
         env:
           CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_PREVIEW_DEPLOY_KEY }}
           CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
+          # NEO-392: an import past this marks a degraded preview (see
+          # e2e-seed-reset.sh); the next steps delete it so a re-run
+          # (recreate-degraded-preview.yml) gets a fresh one.
+          NB_SEED_MAX_IMPORT_S: "300"
         run: |
           if [ -z "${CONVEX_DEPLOY_KEY:-}" ]; then
             echo "::error::CONVEX_PREVIEW_DEPLOY_KEY is not set. Add a Convex *preview* deploy key for the monorepo project as a repo secret."
             exit 1
           fi
           reset_start=$(date +%s)
-          ./e2e-seed-reset.sh
+          rc=0
+          ./e2e-seed-reset.sh || rc=$?
+          if [ "$rc" -eq 75 ]; then
+            echo "degraded=true" >> "$GITHUB_OUTPUT"
+            echo "::error::Convex preview $CONVEX_NAME is degraded: the reference import ran past ${NB_SEED_MAX_IMPORT_S}s (desktop pass). No specs ran, so this says nothing about the PR. The next step deletes the preview, and the whole workflow re-runs on its own with a fresh one (NEO-392)."
+            echo "- Preview degraded: reference import past ${NB_SEED_MAX_IMPORT_S}s; deleting it for a fresh one (NEO-392)" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          [ "$rc" -eq 0 ] || exit "$rc"
           # Plain "label: value" lines (counts, table names, seconds only)
           # written by the script; nothing is parsed from its log output.
           {
@@ -584,6 +597,31 @@ jobs:
               sed 's/^/- /' "$NB_REFERENCE_SEED_SUMMARY"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # Its own step so the team-scoped token (which can delete any
+      # deployment) never shares an environment with npx or PR scripts:
+      # this runs only the guarded delete script (NEO-392 security audit).
+      - name: Delete the degraded preview (NEO-392)
+        id: delete_degraded
+        if: failure() && steps.seed_reset.outputs.degraded == 'true'
+        env:
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
+          CONVEX_ACCESS_TOKEN: ${{ secrets.CONVEX_ACCESS_TOKEN }}
+        run: "$GITHUB_WORKSPACE/.github/scripts/delete-degraded-convex-preview.sh"
+
+      - name: Mark the preview degraded (NEO-392)
+        if: failure() && steps.delete_degraded.outputs.deleted == 'true'
+        env:
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
+        run: printf '%s\n' "$CONVEX_NAME" > "$RUNNER_TEMP/preview-degraded.txt"
+
+      - name: Upload the degraded marker (NEO-392)
+        if: failure() && steps.delete_degraded.outputs.deleted == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: preview-degraded-desktop
+          path: ${{ runner.temp }}/preview-degraded.txt
+          retention-days: 14
 
       # The `setup` project answers one New Team step per team the first sync
       # stages (NEO-236, ~13 min on CI), so the project carries its own 25 min
@@ -672,8 +710,21 @@ jobs:
                     or ((.messages // []) | join(" ") | test("\"msg\""))
                   )))
                 as $keep
-                | select((.error != null) or ($keep | length) > 0)
-                | {identifier, udfType, timestamp, requestId, executionId, kind, error, logLines: $keep}
+                | if .kind == "Completion" then
+                    # NEO-392: every completion keeps its timing, queue delay,
+                    # read/write sizes and OCC info (no user data), so a stall
+                    # shows which function was slow, queued or retried.
+                    {identifier, udfType, timestamp, executionTimestamp,
+                     executionTime, userExecutionTime, requestId, executionId,
+                     parentExecutionId, cachedResult, willRetry, occInfo, kind, error,
+                     readDocs: .usageStats.databaseReadDocuments,
+                     readBytes: .usageStats.databaseReadBytes,
+                     writeDocs: .usageStats.databaseWriteDocuments,
+                     logLines: $keep}
+                  else
+                    select((.error != null) or ($keep | length) > 0)
+                    | {identifier, udfType, timestamp, requestId, executionId, kind, error, logLines: $keep}
+                  end
               ' "$RAW_LOG_FILE" > "$OUT_FILE" 2>"${RUNNER_TEMP}/convex-logs-seed-jq.stderr.log" || true
             gzip -f "$OUT_FILE" || true
             echo "Wrote $(du -h "${OUT_FILE}.gz" 2>/dev/null | cut -f1) of filtered Convex logs for the seed job."
@@ -766,12 +817,13 @@ jobs:
 
       # NEO-301: the seed job ends before the shard matrix starts, so it can
       # only cover its own window (captured above) — nothing spans the WHOLE
-      # E2E run. Shard 1 does the next best thing: one stream for its full
-      # lifetime (the other seven would just duplicate the same preview's logs
-      # 8x). See "Stop Convex log capture (desktop shard 1)" below for the filtering
-      # rationale. Best-effort only: never fails the job.
-      - name: Start Convex log capture (desktop shard 1)
-        if: matrix.shard == 1
+      # E2E run. Every shard streams the preview's logs for its own lifetime
+      # (NEO-391): shards end at different times, so shard 1 alone missed most
+      # of each pass. The streams overlap; dedupe on requestId when reading
+      # them. Measured cost is nil (shard 1, which always captured, was
+      # routinely the fastest shard). See "Stop Convex log capture" below for
+      # the filtering rationale. Best-effort only: never fails the job.
+      - name: Start Convex log capture (desktop shard ${{ matrix.shard }})
         working-directory: apps/web
         env:
           CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_PREVIEW_DEPLOY_KEY }}
@@ -782,16 +834,16 @@ jobs:
           # later npx convex commands never install into _npx concurrently.
           "$GITHUB_WORKSPACE/.github/scripts/convex-env-retry.sh" --version
           if [ -z "${CONVEX_DEPLOY_KEY:-}" ]; then
-            echo "::warning::CONVEX_PREVIEW_DEPLOY_KEY not set — skipping Convex log capture for desktop shard 1."
+            echo "::warning::CONVEX_PREVIEW_DEPLOY_KEY not set — skipping Convex log capture for desktop shard ${{ matrix.shard }}."
             exit 0
           fi
-          RAW_LOG_FILE="${RUNNER_TEMP}/convex-logs-desktop-1.raw.jsonl"
+          RAW_LOG_FILE="${RUNNER_TEMP}/convex-logs-desktop-${{ matrix.shard }}.raw.jsonl"
           rm -f "$RAW_LOG_FILE"
           nohup npx --yes convex@1.39.1 logs --deployment "$CONVEX_NAME" --jsonl \
-            > "$RAW_LOG_FILE" 2>"${RUNNER_TEMP}/convex-logs-desktop-1.stderr.log" &
+            > "$RAW_LOG_FILE" 2>"${RUNNER_TEMP}/convex-logs-desktop-${{ matrix.shard }}.stderr.log" &
           disown
           echo "CONVEX_LOGS_DESKTOP1_PID=$!" >> "$GITHUB_ENV"
-          echo "Started Convex log capture for desktop shard 1 (pid $!) -> $RAW_LOG_FILE"
+          echo "Started Convex log capture for desktop shard ${{ matrix.shard }} (pid $!) -> $RAW_LOG_FILE"
 
       - name: Run desktop shard ${{ matrix.shard }}/8
         env:
@@ -830,8 +882,8 @@ jobs:
       # filter and same reasoning as "Stop Convex log capture (seed)" above
       # (keep ERROR/WARN + our structured `{"msg": …}` lines, drop plain
       # INFO/LOG chatter that can carry a Convex userId). Never fails the job.
-      - name: Stop Convex log capture (desktop shard 1)
-        if: always() && matrix.shard == 1
+      - name: Stop Convex log capture (desktop shard ${{ matrix.shard }})
+        if: always()
         working-directory: apps/web
         run: |
           set -uo pipefail
@@ -839,8 +891,8 @@ jobs:
             kill "${CONVEX_LOGS_DESKTOP1_PID}" 2>/dev/null || true
             wait "${CONVEX_LOGS_DESKTOP1_PID}" 2>/dev/null || true
           fi
-          RAW_LOG_FILE="${RUNNER_TEMP}/convex-logs-desktop-1.raw.jsonl"
-          OUT_FILE="convex-logs-desktop-1.jsonl"
+          RAW_LOG_FILE="${RUNNER_TEMP}/convex-logs-desktop-${{ matrix.shard }}.raw.jsonl"
+          OUT_FILE="convex-logs-desktop-${{ matrix.shard }}.jsonl"
           if [ -s "$RAW_LOG_FILE" ]; then
             jq -c '
                 ((.logLines // [])
@@ -849,21 +901,34 @@ jobs:
                     or ((.messages // []) | join(" ") | test("\"msg\""))
                   )))
                 as $keep
-                | select((.error != null) or ($keep | length) > 0)
-                | {identifier, udfType, timestamp, requestId, executionId, kind, error, logLines: $keep}
-              ' "$RAW_LOG_FILE" > "$OUT_FILE" 2>"${RUNNER_TEMP}/convex-logs-desktop-1-jq.stderr.log" || true
+                | if .kind == "Completion" then
+                    # NEO-392: every completion keeps its timing, queue delay,
+                    # read/write sizes and OCC info (no user data), so a stall
+                    # shows which function was slow, queued or retried.
+                    {identifier, udfType, timestamp, executionTimestamp,
+                     executionTime, userExecutionTime, requestId, executionId,
+                     parentExecutionId, cachedResult, willRetry, occInfo, kind, error,
+                     readDocs: .usageStats.databaseReadDocuments,
+                     readBytes: .usageStats.databaseReadBytes,
+                     writeDocs: .usageStats.databaseWriteDocuments,
+                     logLines: $keep}
+                  else
+                    select((.error != null) or ($keep | length) > 0)
+                    | {identifier, udfType, timestamp, requestId, executionId, kind, error, logLines: $keep}
+                  end
+              ' "$RAW_LOG_FILE" > "$OUT_FILE" 2>"${RUNNER_TEMP}/convex-logs-desktop-${{ matrix.shard }}-jq.stderr.log" || true
             gzip -f "$OUT_FILE" || true
-            echo "Wrote $(du -h "${OUT_FILE}.gz" 2>/dev/null | cut -f1) of filtered Convex logs for desktop shard 1."
+            echo "Wrote $(du -h "${OUT_FILE}.gz" 2>/dev/null | cut -f1) of filtered Convex logs for desktop shard ${{ matrix.shard }}."
           else
-            echo "No Convex logs captured for desktop shard 1 (capture may have been skipped or produced nothing)."
+            echo "No Convex logs captured for desktop shard ${{ matrix.shard }} (capture may have been skipped or produced nothing)."
           fi
 
-      - name: Upload Convex log capture (desktop shard 1)
-        if: always() && matrix.shard == 1
+      - name: Upload Convex log capture (desktop shard ${{ matrix.shard }})
+        if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: convex-logs-desktop-1
-          path: apps/web/convex-logs-desktop-1.jsonl.gz
+          name: convex-logs-desktop-${{ matrix.shard }}
+          path: apps/web/convex-logs-desktop-${{ matrix.shard }}.jsonl.gz
           if-no-files-found: ignore
           retention-days: 14
 
@@ -1099,22 +1164,60 @@ jobs:
       # reference tables) plus the bundle's `import --replace` returns it to the
       # same baseline as the first pass. See the `seed` job's step for why.
       - name: Scripted reset + reference catalogue for the mobile pass (e2e-seed-reset.sh)
+        id: seed_reset
         env:
           CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_PREVIEW_DEPLOY_KEY }}
           CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
+          # NEO-392: an import past this marks a degraded preview (see
+          # e2e-seed-reset.sh); the next steps delete it so a re-run
+          # (recreate-degraded-preview.yml) gets a fresh one.
+          NB_SEED_MAX_IMPORT_S: "300"
         run: |
           if [ -z "${CONVEX_DEPLOY_KEY:-}" ]; then
             echo "::error::CONVEX_PREVIEW_DEPLOY_KEY is not set. Add a Convex *preview* deploy key for the monorepo project as a repo secret."
             exit 1
           fi
           reset_start=$(date +%s)
-          ./e2e-seed-reset.sh
+          rc=0
+          ./e2e-seed-reset.sh || rc=$?
+          if [ "$rc" -eq 75 ]; then
+            echo "degraded=true" >> "$GITHUB_OUTPUT"
+            echo "::error::Convex preview $CONVEX_NAME is degraded: the reference import ran past ${NB_SEED_MAX_IMPORT_S}s (mobile pass). No specs ran, so this says nothing about the PR. The next step deletes the preview, and the whole workflow re-runs on its own with a fresh one (NEO-392)."
+            echo "- Preview degraded: reference import past ${NB_SEED_MAX_IMPORT_S}s; deleting it for a fresh one (NEO-392)" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          [ "$rc" -eq 0 ] || exit "$rc"
           {
             echo "- Reset + reference import wall-clock: $(( $(date +%s) - reset_start ))s"
             if [ -s "${NB_REFERENCE_SEED_SUMMARY:-}" ]; then
               sed 's/^/- /' "$NB_REFERENCE_SEED_SUMMARY"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # Its own step so the team-scoped token (which can delete any
+      # deployment) never shares an environment with npx or PR scripts:
+      # this runs only the guarded delete script (NEO-392 security audit).
+      - name: Delete the degraded preview (NEO-392)
+        id: delete_degraded
+        if: failure() && steps.seed_reset.outputs.degraded == 'true'
+        env:
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
+          CONVEX_ACCESS_TOKEN: ${{ secrets.CONVEX_ACCESS_TOKEN }}
+        run: "$GITHUB_WORKSPACE/.github/scripts/delete-degraded-convex-preview.sh"
+
+      - name: Mark the preview degraded (NEO-392)
+        if: failure() && steps.delete_degraded.outputs.deleted == 'true'
+        env:
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
+        run: printf '%s\n' "$CONVEX_NAME" > "$RUNNER_TEMP/preview-degraded.txt"
+
+      - name: Upload the degraded marker (NEO-392)
+        if: failure() && steps.delete_degraded.outputs.deleted == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: preview-degraded-mobile
+          path: ${{ runner.temp }}/preview-degraded.txt
+          retention-days: 14
 
       - name: Seed global baseline for the mobile pass (setup project, worker 0)
         env:
@@ -1169,8 +1272,21 @@ jobs:
                     or ((.messages // []) | join(" ") | test("\"msg\""))
                   )))
                 as $keep
-                | select((.error != null) or ($keep | length) > 0)
-                | {identifier, udfType, timestamp, requestId, executionId, kind, error, logLines: $keep}
+                | if .kind == "Completion" then
+                    # NEO-392: every completion keeps its timing, queue delay,
+                    # read/write sizes and OCC info (no user data), so a stall
+                    # shows which function was slow, queued or retried.
+                    {identifier, udfType, timestamp, executionTimestamp,
+                     executionTime, userExecutionTime, requestId, executionId,
+                     parentExecutionId, cachedResult, willRetry, occInfo, kind, error,
+                     readDocs: .usageStats.databaseReadDocuments,
+                     readBytes: .usageStats.databaseReadBytes,
+                     writeDocs: .usageStats.databaseWriteDocuments,
+                     logLines: $keep}
+                  else
+                    select((.error != null) or ($keep | length) > 0)
+                    | {identifier, udfType, timestamp, requestId, executionId, kind, error, logLines: $keep}
+                  end
               ' "$RAW_LOG_FILE" > "$OUT_FILE" 2>"${RUNNER_TEMP}/convex-logs-seed-mobile-jq.stderr.log" || true
             gzip -f "$OUT_FILE" || true
             echo "Wrote $(du -h "${OUT_FILE}.gz" 2>/dev/null | cut -f1) of filtered Convex logs for the seed-mobile job."
@@ -1263,12 +1379,13 @@ jobs:
 
       # NEO-301: the seed job ends before the shard matrix starts, so it can
       # only cover its own window (captured above) — nothing spans the WHOLE
-      # E2E run. Shard 1 does the next best thing: one stream for its full
-      # lifetime (the other seven would just duplicate the same preview's logs
-      # 8x). See "Stop Convex log capture (mobile shard 1)" below for the filtering
-      # rationale. Best-effort only: never fails the job.
-      - name: Start Convex log capture (mobile shard 1)
-        if: matrix.shard == 1
+      # E2E run. Every shard streams the preview's logs for its own lifetime
+      # (NEO-391): shards end at different times, so shard 1 alone missed most
+      # of each pass. The streams overlap; dedupe on requestId when reading
+      # them. Measured cost is nil (shard 1, which always captured, was
+      # routinely the fastest shard). See "Stop Convex log capture" below for
+      # the filtering rationale. Best-effort only: never fails the job.
+      - name: Start Convex log capture (mobile shard ${{ matrix.shard }})
         working-directory: apps/web
         env:
           CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_PREVIEW_DEPLOY_KEY }}
@@ -1279,16 +1396,16 @@ jobs:
           # later npx convex commands never install into _npx concurrently.
           "$GITHUB_WORKSPACE/.github/scripts/convex-env-retry.sh" --version
           if [ -z "${CONVEX_DEPLOY_KEY:-}" ]; then
-            echo "::warning::CONVEX_PREVIEW_DEPLOY_KEY not set — skipping Convex log capture for mobile shard 1."
+            echo "::warning::CONVEX_PREVIEW_DEPLOY_KEY not set — skipping Convex log capture for mobile shard ${{ matrix.shard }}."
             exit 0
           fi
-          RAW_LOG_FILE="${RUNNER_TEMP}/convex-logs-mobile-1.raw.jsonl"
+          RAW_LOG_FILE="${RUNNER_TEMP}/convex-logs-mobile-${{ matrix.shard }}.raw.jsonl"
           rm -f "$RAW_LOG_FILE"
           nohup npx --yes convex@1.39.1 logs --deployment "$CONVEX_NAME" --jsonl \
-            > "$RAW_LOG_FILE" 2>"${RUNNER_TEMP}/convex-logs-mobile-1.stderr.log" &
+            > "$RAW_LOG_FILE" 2>"${RUNNER_TEMP}/convex-logs-mobile-${{ matrix.shard }}.stderr.log" &
           disown
           echo "CONVEX_LOGS_MOBILE1_PID=$!" >> "$GITHUB_ENV"
-          echo "Started Convex log capture for mobile shard 1 (pid $!) -> $RAW_LOG_FILE"
+          echo "Started Convex log capture for mobile shard ${{ matrix.shard }} (pid $!) -> $RAW_LOG_FILE"
 
       - name: Run mobile shard ${{ matrix.shard }}/8
         env:
@@ -1327,8 +1444,8 @@ jobs:
       # filter and same reasoning as "Stop Convex log capture (seed)" above
       # (keep ERROR/WARN + our structured `{"msg": …}` lines, drop plain
       # INFO/LOG chatter that can carry a Convex userId). Never fails the job.
-      - name: Stop Convex log capture (mobile shard 1)
-        if: always() && matrix.shard == 1
+      - name: Stop Convex log capture (mobile shard ${{ matrix.shard }})
+        if: always()
         working-directory: apps/web
         run: |
           set -uo pipefail
@@ -1336,8 +1453,8 @@ jobs:
             kill "${CONVEX_LOGS_MOBILE1_PID}" 2>/dev/null || true
             wait "${CONVEX_LOGS_MOBILE1_PID}" 2>/dev/null || true
           fi
-          RAW_LOG_FILE="${RUNNER_TEMP}/convex-logs-mobile-1.raw.jsonl"
-          OUT_FILE="convex-logs-mobile-1.jsonl"
+          RAW_LOG_FILE="${RUNNER_TEMP}/convex-logs-mobile-${{ matrix.shard }}.raw.jsonl"
+          OUT_FILE="convex-logs-mobile-${{ matrix.shard }}.jsonl"
           if [ -s "$RAW_LOG_FILE" ]; then
             jq -c '
                 ((.logLines // [])
@@ -1346,21 +1463,34 @@ jobs:
                     or ((.messages // []) | join(" ") | test("\"msg\""))
                   )))
                 as $keep
-                | select((.error != null) or ($keep | length) > 0)
-                | {identifier, udfType, timestamp, requestId, executionId, kind, error, logLines: $keep}
-              ' "$RAW_LOG_FILE" > "$OUT_FILE" 2>"${RUNNER_TEMP}/convex-logs-mobile-1-jq.stderr.log" || true
+                | if .kind == "Completion" then
+                    # NEO-392: every completion keeps its timing, queue delay,
+                    # read/write sizes and OCC info (no user data), so a stall
+                    # shows which function was slow, queued or retried.
+                    {identifier, udfType, timestamp, executionTimestamp,
+                     executionTime, userExecutionTime, requestId, executionId,
+                     parentExecutionId, cachedResult, willRetry, occInfo, kind, error,
+                     readDocs: .usageStats.databaseReadDocuments,
+                     readBytes: .usageStats.databaseReadBytes,
+                     writeDocs: .usageStats.databaseWriteDocuments,
+                     logLines: $keep}
+                  else
+                    select((.error != null) or ($keep | length) > 0)
+                    | {identifier, udfType, timestamp, requestId, executionId, kind, error, logLines: $keep}
+                  end
+              ' "$RAW_LOG_FILE" > "$OUT_FILE" 2>"${RUNNER_TEMP}/convex-logs-mobile-${{ matrix.shard }}-jq.stderr.log" || true
             gzip -f "$OUT_FILE" || true
-            echo "Wrote $(du -h "${OUT_FILE}.gz" 2>/dev/null | cut -f1) of filtered Convex logs for mobile shard 1."
+            echo "Wrote $(du -h "${OUT_FILE}.gz" 2>/dev/null | cut -f1) of filtered Convex logs for mobile shard ${{ matrix.shard }}."
           else
-            echo "No Convex logs captured for mobile shard 1 (capture may have been skipped or produced nothing)."
+            echo "No Convex logs captured for mobile shard ${{ matrix.shard }} (capture may have been skipped or produced nothing)."
           fi
 
-      - name: Upload Convex log capture (mobile shard 1)
-        if: always() && matrix.shard == 1
+      - name: Upload Convex log capture (mobile shard ${{ matrix.shard }})
+        if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: convex-logs-mobile-1
-          path: apps/web/convex-logs-mobile-1.jsonl.gz
+          name: convex-logs-mobile-${{ matrix.shard }}
+          path: apps/web/convex-logs-mobile-${{ matrix.shard }}.jsonl.gz
           if-no-files-found: ignore
           retention-days: 14
 

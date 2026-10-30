@@ -47,5 +47,5 @@ Topps Chrome Base row has the flag. On a **PR preview** that is automatic: the p
 starts empty and the seed re-syncs every variantType row from BSC, so the flag must be
 derived on the sync's INSERT branch, not only on match
 ([[reference_ci_convex_preview_starts_empty]]). Shared dev's rows predate the flag and
-would need the backfill, one more reason to validate against the preview
-([[feedback_never_push_a_branch_convex_to_shared_dev]]).
+would need the backfill before a dev run
+([[feedback_run_specs_on_dev_before_first_push]]).

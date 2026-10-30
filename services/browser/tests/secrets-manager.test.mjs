@@ -1500,3 +1500,83 @@ describe("SecretsManagerService — quota retry is wired into every call (NEO-38
     assert.equal(failures.length, 1, "one failure line for the abandoned prune");
   });
 });
+
+describe("SecretsManagerService — error logs carry the gRPC code, never the message (NEO-388)", () => {
+  // A real GCP error message quotes the full resource name, project included.
+  const leaky = () => grpcError(7, `7 PERMISSION_DENIED: Permission denied on resource ${V(3)}`);
+
+  const cases = [
+    {
+      name: "getCredentials",
+      line: "Failed to retrieve credentials",
+      run: () => {
+        activeClient = makeReadClient({ accessError: leaky() });
+        return new SecretsManagerService().getCredentials(KEY);
+      },
+    },
+    {
+      name: "credentialsExist",
+      line: "Failed to check credentials existence",
+      run: () => {
+        activeClient = makeReadClient({ accessError: leaky() });
+        return new SecretsManagerService().credentialsExist(KEY);
+      },
+    },
+    {
+      name: "updateCredentials",
+      line: "Failed to update credentials",
+      run: () => {
+        activeClient = makeClient();
+        activeClient.addSecretVersion = async () => {
+          throw leaky();
+        };
+        return new SecretsManagerService().updateCredentials(KEY, CREDS);
+      },
+    },
+    {
+      name: "deleteCredentials",
+      line: "Failed to delete credentials",
+      run: () => {
+        activeClient = makeClient();
+        activeClient.deleteSecret = async () => {
+          throw leaky();
+        };
+        return new SecretsManagerService().deleteCredentials(KEY);
+      },
+    },
+    {
+      name: "the N-1 prune",
+      line: "Failed to destroy",
+      run: () => {
+        activeClient = makeClient({
+          createdVersion: V(4),
+          destroyBehavior: () => {
+            throw leaky();
+          },
+        });
+        return new SecretsManagerService().updateCredentials(KEY, CREDS);
+      },
+    },
+  ];
+
+  for (const { name, line, run } of cases) {
+    it(`${name} logs the code and not the resource name`, async () => {
+      await run().catch(() => {});
+      const failures = capturedErrors.filter((l) => l.includes(line));
+      assert.equal(failures.length, 1, `${name}: one failure line`);
+      assert.ok(failures[0].includes("gRPC code 7"), `${name}: the code is logged`);
+      assert.ok(!failures[0].includes("projects/"), `${name}: never the resource name`);
+      assert.ok(!failures[0].includes("PERMISSION_DENIED"), `${name}: never the raw message`);
+    });
+  }
+
+  it("an error with no code is logged by its class name only", async () => {
+    activeClient = makeReadClient({
+      accessError: new TypeError(`fetch failed for ${LATEST}`),
+    });
+    await new SecretsManagerService().getCredentials(KEY).catch(() => {});
+    const failure = capturedErrors.find((l) => l.includes("Failed to retrieve credentials"));
+    assert.ok(failure.includes("TypeError"));
+    assert.ok(!failure.includes("projects/") && !failure.includes("fetch failed"));
+  });
+});
