@@ -19,6 +19,7 @@
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { setBuilderReady, drillToCustom } from "../../support/set-builder";
 import { addCardViaForm, editCardButton, escapeRe } from "../../support/cards";
+import { recordedNoMatchPlayer } from "../../support/recorded-names";
 import type { Page } from "@playwright/test";
 
 /** Raise a brand-new team through the card form's team picker. */
@@ -52,7 +53,10 @@ test(
       page.getByRole("img", { name: new RegExp(`^Card ${n}-${id}(, .*)? needs attention: no team on this card yet$`) });
     const teamB = `CNAB${token}`;
     const teamA = `CNAA${token}`;
-    const player = `CNAP${token}`;
+    // A REAL person whose Baseball lookup the enrichment recording holds as a
+    // no-match (support/recorded-names.ts): the quick-add create makes no live
+    // Wikidata call. Fresh-only for that reason: re-seed before re-running.
+    const player = recordedNoMatchPlayer(env, "checklist-attention-badge-and-filter");
     // The header pill: its visible text is its accessible name, so the exact
     // name IS the exact count.
     const pill = (name: string) => page.getByRole("button", { name, exact: true });
@@ -83,7 +87,7 @@ test(
         await page.mouse.wheel(0, 250);
         await page.getByRole("button", { name: "Add a player to the new card" }).click();
         await page.getByRole("textbox", { name: "Find a player for the new card" }).fill(player);
-        // The attempt's single token names no player yet, so Create is the one answer.
+        // No player of this name is on file yet, so Create is the answer for it.
         await page.getByRole("option", { name: `Create player ${player}` }).click();
         await expect(page.getByRole("button", { name: `Remove player ${player}` })).toBeVisible();
         // The popover hangs over the Team picker: leave the picker to close it.

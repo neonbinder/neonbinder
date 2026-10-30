@@ -239,6 +239,11 @@
         }
       }
     },
+    "player|Q5369|aaron donald": {
+      "kind": "player",
+      "name": "Aaron Donald",
+      "result": null
+    },
     "player|Q5369|aaron judge": {
       "kind": "player",
       "name": "Aaron Judge",
@@ -2629,6 +2634,11 @@
         "enwikiTitle": "Cedric Mullins"
       }
     },
+    "player|Q5369|ceedee lamb": {
+      "kind": "player",
+      "name": "CeeDee Lamb",
+      "result": null
+    },
     "player|Q5369|cesar diaz": {
       "kind": "player",
       "name": "Cesar Diaz",
@@ -4678,6 +4688,11 @@
         "birthYear": 2001,
         "enwikiTitle": "Everson Pereira"
       }
+    },
+    "player|Q5369|ezekiel elliott": {
+      "kind": "player",
+      "name": "Ezekiel Elliott",
+      "result": null
     },
     "player|Q5369|ezequiel duran": {
       "kind": "player",
@@ -8451,6 +8466,11 @@
         "birthYear": 2003,
         "enwikiTitle": "Junior Caminero"
       }
+    },
+    "player|Q5369|justin fields": {
+      "kind": "player",
+      "name": "Justin Fields",
+      "result": null
     },
     "player|Q5369|justin lawrence": {
       "kind": "player",
@@ -13786,6 +13806,11 @@
         "enwikiTitle": "Teoscar Hern\u00e1ndez"
       }
     },
+    "player|Q5369|terrell owens": {
+      "kind": "player",
+      "name": "Terrell Owens",
+      "result": null
+    },
     "player|Q5369|terry pendleton": {
       "kind": "player",
       "name": "Terry Pendleton",
@@ -15400,6 +15425,11 @@
         }
       }
     },
+    "team|Q5369|chicago bears": {
+      "kind": "team",
+      "name": "Chicago Bears",
+      "result": null
+    },
     "team|Q5369|chicago cubs": {
       "kind": "team",
       "name": "Chicago Cubs",
@@ -15534,6 +15564,11 @@
           "from": 1984
         }
       }
+    },
+    "team|Q5369|dallas cowboys": {
+      "kind": "team",
+      "name": "Dallas Cowboys",
+      "result": null
     },
     "team|Q5369|detroit tigers": {
       "kind": "team",
@@ -15926,6 +15961,11 @@
         },
         "espnId": "19"
       }
+    },
+    "team|Q5369|los angeles rams": {
+      "kind": "team",
+      "name": "Los Angeles Rams",
+      "result": null
     },
     "team|Q5369|louisville cardinals baseball": {
       "kind": "team",
@@ -16321,6 +16361,11 @@
         },
         "espnId": "25"
       }
+    },
+    "team|Q5369|san francisco 49ers": {
+      "kind": "team",
+      "name": "San Francisco 49ers",
+      "result": null
     },
     "team|Q5369|san francisco giants": {
       "kind": "team",

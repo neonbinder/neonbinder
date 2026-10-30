@@ -4,15 +4,19 @@
 // must survive a reload, and the FULL composed name must find the team again in
 // the typeahead (so an operator typing "San Diego Padres" never makes a second
 // Padres). "Discover" is never pressed: it is a live fetch of a third party.
+// The player is scaffolding: a REAL person whose Baseball lookup the
+// enrichment recording holds as a no-match (support/recorded-names.ts), so the
+// add makes no live Wikidata call. Fresh-only: re-seed before re-running.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { expectPlayersLoaded, expectTeamsLoaded, teamsCounter } from "../../support/players";
+import { recordedNoMatchPlayer } from "../../support/recorded-names";
 
 test(
   "Team Management — select a team and edit it",
   { tag: ["@admin"] },
   async ({ page, signIn, env }) => {
     const token = env.ATTEMPT_TOKEN;
-    const player = `TME${token}`;
+    const player = recordedNoMatchPlayer(env, "team-management-edit-a-team");
     const team = `TMT${token}`;
     const location = `Loc${env.WORKER_INDEX}`;
     const fullName = `${location} ${team}`;

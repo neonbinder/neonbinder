@@ -25,6 +25,7 @@
 // Magallanes" and skips every other step (a skip creates nothing, R7).
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { expectPlayersLoaded, expectTeamsLoaded, teamsCounter } from "../../support/players";
+import { recordedNoMatchPlayer } from "../../support/recorded-names";
 import { advanceToSave, fetchOneMarketplaceSetChecklistToWizard, readStep, reviewWizard, stepCounter } from "../../support/wizard";
 import type { Page } from "@playwright/test";
 
@@ -59,10 +60,16 @@ test(
     await expect(page.getByText("0 matches", { exact: true })).toBeVisible();
 
     await page.getByRole("button", { name: "Add player" }).click();
-    await page.getByRole("textbox", { name: "New player name" }).fill(`Alp${T}`);
-    await page.getByRole("button", { name: `Create player Alp${T}` }).click();
-    await expect(page.getByRole("heading", { name: `Alp${T}`, exact: true })).toBeVisible();
-    await expect(page.getByText(`Added Alp${T}`)).toBeVisible();
+    // The career editor's player: a REAL person whose Baseball lookup the
+    // enrichment recording holds as a no-match (support/recorded-names.ts), so
+    // the add makes no live Wikidata call and the row stays bare. The pool is
+    // this set's own roster, so the fetch below may resolve his card to him
+    // instead of staging it; the walk skips every player row either way.
+    const scaffold = recordedNoMatchPlayer(env, "checklist-wizard-link-team-saves-alias");
+    await page.getByRole("textbox", { name: "New player name" }).fill(scaffold);
+    await page.getByRole("button", { name: `Create player ${scaffold}` }).click();
+    await expect(page.getByRole("heading", { name: scaffold, exact: true })).toBeVisible();
+    await expect(page.getByText(`Added ${scaffold}`)).toBeVisible();
     await expect(page.getByText("No stints recorded yet.")).toBeVisible();
     await expectAccessible(page, { label: "Player detail, new player with no stints" });
 
