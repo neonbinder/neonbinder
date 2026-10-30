@@ -6,7 +6,7 @@
  */
 
 import { convexTest } from "convex-test";
-import { describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import schema from "./schema";
 import { api } from "./_generated/api";
 import {
@@ -20,6 +20,15 @@ const modules = (import.meta as unknown as {
 }).glob("./**/*.*s");
 
 const ME = { subject: "user_scannerContract01" };
+
+// NEO-188: closing a stream fires the preprocess /warmup ping on a real
+// timer, which can land after this file's tests finish. Same stub as
+// placeholderStream.test.ts; the warmup itself is asserted in
+// adapters.preprocess.test.ts.
+beforeEach(() => {
+  vi.stubGlobal("fetch", (async () => new Response("{}", { status: 200 })) as unknown as typeof fetch);
+});
+afterEach(() => vi.unstubAllGlobals());
 
 describe("the scanner CLI's backend contract", () => {
   test.each(Object.values(BACKEND_FUNCTIONS))("%s is still exported", async (path) => {
