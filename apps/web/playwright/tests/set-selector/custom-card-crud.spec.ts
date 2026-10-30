@@ -26,6 +26,19 @@ test(
     await expect(page.getByText(`#${number}`, { exact: true })).toBeVisible();
     await expect(page.getByText(`CRUDName-${A}`, { exact: true })).toBeVisible();
     await expectAccessible(page, { label: "Checklist with a hand-added card" });
+
+    // NEO-400: the row's trash can checks what is below it on click (never a
+    // live query). This insert now holds a card, so the click explains itself
+    // and opens no dialog.
+    const trash = page.getByRole("button", { name: "Delete Base", exact: true });
+    await expect(trash).toBeVisible();
+    await expect(trash).not.toHaveAttribute("aria-disabled", "true");
+    await trash.click();
+    await expect(page.getByText(/^Holds \d+ cards? — delete what is below it first$/)).toBeVisible();
+    await expect(trash).toHaveAttribute("aria-disabled", "true");
+    await expect(page.getByRole("dialog")).toBeHidden();
+    await expectAccessible(page, { label: "Delete refused, holds shown" });
+
     await editCardButton(page, number).click();
 
     // Rename: a single-line field commits on Enter, and the drawer confirms it.

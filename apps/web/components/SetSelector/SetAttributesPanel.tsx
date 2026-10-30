@@ -2299,6 +2299,8 @@ function DeleteSelectorRowControl({
   const [checking, setChecking] = useState(false);
   /** What the last check said is below the row; "" means nothing. */
   const [reason, setReason] = useState<string | null>(null);
+  /** The check itself failed — not a refusal, so the control stays live. */
+  const [checkError, setCheckError] = useState<string | null>(null);
   const reasonId = useId();
 
   const blocked = reason !== null && reason.length > 0;
@@ -2322,6 +2324,7 @@ function DeleteSelectorRowControl({
     if (checking || busy) return;
     setChecking(true);
     setError(null);
+    setCheckError(null);
     try {
       const holdings: SelectorHoldings = await convex.query(
         api.selectorOptions.getSelectorOptionHoldings,
@@ -2332,11 +2335,12 @@ function DeleteSelectorRowControl({
       if (next.length === 0) setOpen(true);
     } catch (e) {
       // The check failing is not a refusal; say what happened and leave the
-      // control alone so the next click tries again.
-      setReason(
-        e instanceof Error && e.message.length > 0
-          ? e.message
-          : "Couldn't check what is below it — try again.",
+      // control alone so the next click tries again. Only a ConvexError's own
+      // text is for a person (`userFacingMessage`); anything else is the
+      // fallback, never a request id.
+      setReason(null);
+      setCheckError(
+        userFacingMessage(e, "Couldn't check what is below it — try again."),
       );
     } finally {
       setChecking(false);
@@ -2384,13 +2388,25 @@ function DeleteSelectorRowControl({
       >
         <TrashIcon className="w-4 h-4" aria-hidden="true" />
       </button>
-      {(blocked || checking) && (
-        <span
-          id={reasonId}
-          role="status"
-          className="w-full text-[10px] text-ink-3"
-        >
-          {checking ? "Checking what is below it…" : reason}
+      {/* Always mounted (empty when idle): a live region inserted with its
+          text is not reliably announced; a text change on a mounted node is.
+          Routine states (checking, the reason) are `status`; a failed check is
+          the separate `alert` below, because it is not a refusal. */}
+      <span
+        id={reasonId}
+        // aria-live rather than role="status": the panel's own save toast is
+        // its one `status` landmark, and this node must not become a second.
+        aria-live="polite"
+        aria-atomic="true"
+        className={
+          blocked || checking ? "w-full text-[10px] text-ink-3" : "sr-only"
+        }
+      >
+        {checking ? "Checking what is below it…" : blocked ? reason : ""}
+      </span>
+      {checkError && (
+        <span role="alert" className="w-full text-[10px] text-neon-pink-text">
+          {checkError}
         </span>
       )}
       {open && (

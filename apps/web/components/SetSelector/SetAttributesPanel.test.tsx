@@ -751,6 +751,9 @@ describe("SetAttributesPanel — delete affordance (NEO-219)", () => {
     fireEvent.click(trash);
 
     expect(await screen.findByText("Checking what is below it…")).toBeTruthy();
+    expect(
+      screen.getByText("Checking what is below it…").getAttribute("aria-live"),
+    ).toBe("polite");
     expect(trash.getAttribute("aria-busy")).toBe("true");
     expect(screen.queryByRole("dialog")).toBeNull();
     // A second click while checking is a no-op: one read per question.
@@ -766,14 +769,21 @@ describe("SetAttributesPanel — delete affordance (NEO-219)", () => {
     let calls = 0;
     currentHoldings = async () => {
       calls += 1;
-      if (calls === 1) throw new Error("Lost the connection");
+      // A plain Error is a transport or server failure whose message is not
+      // for a person ("[CONVEX Q(...)] [Request ID: ...] Server Error"), so the
+      // fallback is shown; only a ConvexError's own text would be.
+      if (calls === 1) throw new Error("[CONVEX Q(x)] [Request ID: 1] Server Error");
       return { holds: [], protected: false };
     };
 
     renderPanel();
     const trash = screen.getByLabelText("Delete 2024 Topps Chrome");
     fireEvent.click(trash);
-    expect(await screen.findByText("Lost the connection")).toBeTruthy();
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe("Couldn't check what is below it — try again.");
+    expect(screen.queryByText(/Request ID/)).toBeNull();
+    // A failed check is not a refusal: the control stays live, not dimmed.
+    expect(trash.getAttribute("aria-disabled")).toBeNull();
     expect(screen.queryByRole("dialog")).toBeNull();
 
     fireEvent.click(trash);
