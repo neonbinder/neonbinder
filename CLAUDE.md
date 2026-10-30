@@ -130,9 +130,11 @@ re-measure before quoting them for Playwright.
 2. **Run the fast local gates.** These cost ~2 min for `apps/web`, ~30s for
    `services/browser` — they are not the expensive part, and they catch most
    breakage without a round trip.
-3. Push and open the PR. CI runs the full suite.
-4. On a red spec: **run that one spec locally**, with Vite pointed at the PR's
-   own preview stack (below).
+3. **Run the specs covering the change against dev**, before the first push
+   (below). Bring dev up to date first if it is behind the branch.
+4. Push and open the PR. CI runs the full suite. On a red spec: **run that one
+   spec locally** against dev again, or against the PR's own preview stack when
+   dev cannot reproduce it (below).
 5. Push again **only once that spec passes locally.** This step is the actual
    cost control — push-and-hope is what burns CI cycles, not the first push.
 6. Watch to green.
@@ -154,12 +156,58 @@ the E2E harness itself (`apps/web/playwright/support/**`, `playwright.config.ts`
 harness — a change there invalidates every other result, so a green CI run proves
 less than usual.
 
+#### Run your specs against dev before the first push (NEO-390)
+
+Jason, 2026-10-29: the specs covering a change run against the **dev Convex
+deployment before the branch is pushed**, and if dev is out of date, bring it up
+to date first. CI is not the first E2E check, and "push, then run the spec
+against the PR preview" puts it first. Dev is shared by every thread and every
+session on Jason's laptop, so these steps keep it moving forward only:
+
+1. **Bring the branch onto latest main** (`git fetch origin main && git merge
+   origin/main`). Never push a branch that is behind main onto dev: that rolls
+   back functions every other session is calling.
+2. **Check whether dev is current.** `npx convex function-spec` (read-only) lists
+   what dev has. Dev only moves when someone pushes it (no workflow deploys it,
+   NEO-249), so it is usually behind main. If it lacks anything the specs reach,
+   or the branch touches `apps/web/convex/**`, **push the branch to dev**:
+   `npx convex dev --once` from `apps/web`. Push right before you run. Whoever
+   pushed last owns dev, so if a run dies on `Could not find public function`
+   (the page collapses to "An error occurred. Please refresh the page."),
+   another session moved it: merge main again and re-push.
+3. **If the push is refused** with `Schema validation failed` (rows carrying
+   another branch's field), do not delete data and never set
+   `schemaValidation: false`. Say so in the thread, push, and run the spec
+   against the PR preview instead (next section).
+4. **Run only the specs covering the change**, against a spare-port Vite on dev:
+
+   ```bash
+   cd apps/web
+   VITE_DEV_DISABLE_HTTPS=1 npx vite --port 3001 --strictPort   # .env.local / the env points at dev
+   APP_URL=http://localhost:3001 WORKER_INDEX=8 \
+     npx playwright test --project=e2e --no-deps <path-substring>
+   ```
+
+   Drop `--no-deps` once per session so `bootstrap` gives the account its
+   credentials. Use a test account no other session is using; CI runs 0–7 on
+   previews, never on dev, so 8–11 are the usual picks. Set `PAUSED_PLATFORMS` to
+   dev's `NEONBINDER_PAUSED_PLATFORMS`.
+5. **Dev is not reseeded per run.** It keeps whatever the last run left. A spec
+   that needs a fresh seed (fresh-only, or a precondition such as "this set does
+   not exist yet") needs the reset, which wipes dev under every other session:
+   say so in the thread before you run it, or run that spec against the PR
+   preview instead.
+
+Dev cannot exercise the PR's own `services/browser` or `services/preprocess`
+code (dev Convex calls the dev services). A spec covering a change there runs
+against the PR's preview after the first push.
+
 #### Debugging a red spec against the PR's own services
 
-Running E2E against **shared dev** cannot exercise the PR's `services/browser`
-or `services/preprocess` code at all, and the seed resets its target. Always
-run a second local Vite on its own port, wired to the PR's Convex preview
-instead of dev, and use that port as `APP_URL`:
+Use this when dev cannot reproduce a CI red: the PR changes `services/browser`
+or `services/preprocess`, dev refused the branch's schema, or the spec needs a
+freshly seeded deployment. Run a second local Vite on its own port, wired to
+the PR's Convex preview instead of dev, and use that port as `APP_URL`:
 
 ```bash
 cd apps/web
@@ -242,13 +290,13 @@ npm run test:e2e:seed    # e2e-baseline.sh reset + the setup (seed) project
 
 > **The dev Convex deployment is a developer's *personal* deployment, not a shared dev
 > server (NEO-249).** Convex `dev` deployments are per-developer by design, and
-> **nobody deploys to dev from CI** — no workflow pushes it. Run `npm run dev:backend`
-> (`npx convex dev`) against your own dev deployment when you want to test locally, or
-> at the same time you push to a PR. When you need to exercise the PR's *own* backend
-> code, point local Vite at **that PR's Convex preview** instead — see "Debugging a red
-> spec against the PR's own services" above for the verified recipe (keep the
-> spare-port / `VITE_DEV_DISABLE_HTTPS=1` notes). Now
-> that every PR gets its own preview, the dev deployment is mostly unused.
+> **nobody deploys to dev from CI** — no workflow pushes it. Sessions push it themselves
+> before running specs locally: "Run your specs against dev before the first push"
+> above (NEO-390) is the order, including bringing dev up to date with
+> `npx convex dev --once`. Every concurrent session (Claude threads included) shares the
+> one dev deployment, so a push brings the branch onto latest main first. Point local
+> Vite at **that PR's Convex preview** only when dev cannot reproduce a CI red — see
+> "Debugging a red spec against the PR's own services" above.
 > `dev-backend.sh`'s behavior is unchanged by this — it still does exactly what its
 > comments say — this is a policy about when to run it, not a code change.
 
@@ -450,7 +498,7 @@ Rules for a cloud thread:
 2. **Run each agent as a `general-purpose` agent briefed with its file.** Tell it to read `.claude/agents/<name>.md` and follow it as its instructions, including its model and effort if your Agent tool takes them, and its memory under `.claude/agent-memory/<name>/`. Never fold an audit into your own turn; the point of the auditors is a read that is not anchored on yours.
 3. **Name what ran in the PR body**: which agent files were run this way, and what each found.
 4. Agent memory the stand-in writes goes to this checkout's `.claude/agent-memory/<name>/`; ship it in the PR like any other change.
-5. **Run the spec before you re-push (NEO-385).** CI is not the first check, from a cloud thread either. The cloud environment allows the hosts a local run needs (`*.convex.cloud`, Clerk, `*.vercel.app`) and carries the dev values Playwright reads (`CLERK_SECRET_KEY`, `VITE_CLERK_PUBLISHABLE_KEY`, `TESTING_ENDPOINT_SECRET`, `VERCEL_AUTOMATION_BYPASS_SECRET`), and Chromium is preinstalled. After the first push creates the PR's preview, every red or changed spec is run against that preview with the recipe in **Debugging a red spec against the PR's own services** before the next push. If those env vars are absent, say so in the thread rather than pushing to find out. Pass those values only through the environment of the command that needs them; never echo, print or `env`-dump them, and never write them into a file, commit, PR body, log or thread message (this repo is public). Before NEO-385, threads fixed specs by trial and error in CI: 65 failures in one week passed only on the next push after a spec edit.
+5. **Run the specs against dev before the first push (NEO-385, NEO-390).** CI is not the first check, from a cloud thread either. Follow **Run your specs against dev before the first push**: merge main, push the branch to dev with `npx convex dev --once` if dev is behind, then run each new or changed spec against a spare-port Vite on dev. Do the same before every re-push. The cloud environment carries the dev values Playwright reads (`VITE_CONVEX_URL`, `CONVEX_DEPLOYMENT`, `CLERK_SECRET_KEY`, `VITE_CLERK_PUBLISHABLE_KEY`, `TESTING_ENDPOINT_SECRET`, `VERCEL_AUTOMATION_BYPASS_SECRET`) and allows `*.convex.cloud`, Clerk and `*.vercel.app`, and Chromium is preinstalled, so a signed-in spec runs against dev as it stands (verified 2026-10-29). Pushing functions to dev, `function-spec` and the seed reset also need a dev `CONVEX_DEPLOY_KEY`, the `api.convex.dev` host (the CLI resolves a deploy key there) and `NODE_USE_ENV_PROXY=1` on those CLI commands only (Node's fetch ignores the proxy without it; set environment-wide it has crashed Vite with ECONNRESET, so never export it for Vite). The key must be a **dev**-deployment key: `convex dev --once` pushes to whatever deployment the key names, prod included, so check it before every push without printing it (`case "$CONVEX_DEPLOY_KEY" in dev:*) ;; *) echo "refusing: not a dev key" >&2; exit 1;; esac`). If any is missing, run what you can against dev as it stands, say in the thread which step could not run and which setting is missing, and do not push to find out. Pass those values, and `CONVEX_DEPLOY_KEY`, only through the environment of the command that needs them; never echo, print or `env`-dump them, and never write them into a file, commit, PR body, log or thread message (this repo is public). Before NEO-385, threads fixed specs by trial and error in CI: 65 failures in one week passed only on the next push after a spec edit.
 6. **Never "Re-run failed jobs" on E2E.** It skips the seed, so fresh-only and sole-writer specs fail by design (28 false reds in the week NEO-385 measured). Re-run the whole workflow, or push.
 
 ## CI/CD
@@ -476,12 +524,12 @@ The E2E suite is Playwright, in `apps/web/playwright/` (specs under `tests/`, he
 
 **Every PR that changes user-facing behaviour ships a spec that proves the feature live**, and the audit round includes the `test-coverage-auditor` agent, which checks the diff against the suite (and, for a new screen, `/impeccable audit`; see **UI & Styling**). `playwright-e2e-author` writes and debugs specs.
 
-**Run locally** — only the specs covering your change, against the PR's Convex preview (never shared dev, never the full suite; see the PR loop above):
+**Run locally** — only the specs covering your change, against dev before the first push (brought up to date first), and against the PR's Convex preview only when dev cannot reproduce a CI red (never the full suite; see the PR loop above):
 ```bash
 cd apps/web
 npm run test:e2e:list -- --project=e2e     # check a new spec is listed once (once per project)
 npm run test:e2e:typecheck                 # tsc -p playwright/tsconfig.json
-APP_URL=http://localhost:3001 WORKER_INDEX=0 \
+APP_URL=http://localhost:3001 WORKER_INDEX=8 \
   npx playwright test --project=e2e --no-deps <path-substring>
 # phone project: re-seed first (reset + setup), then --project=e2e-mobile
 ```

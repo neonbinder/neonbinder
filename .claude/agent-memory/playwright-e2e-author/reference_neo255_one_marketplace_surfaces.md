@@ -37,8 +37,8 @@ fall-through prints nothing at all.
 Asserting that the Match Cards dialog is ABSENT is a negative: pair it with the
 positive `Kept all N cards` assertion ([[negative-asserts-pass-on-a-dead-page]]).
 
-A one-sided spec cannot be validated against shared dev: without the server's new
-`attachedSides` field the client reads `serverSides.length` off `undefined` and
-throws. See [[feedback_never_push_a_branch_convex_to_shared_dev]] and
-[[project_local_validation_needs_a_pr_preview]]. Fixture rules:
+A one-sided spec cannot be validated against dev until the branch is pushed there:
+without the server's new `attachedSides` field the client reads `serverSides.length` off `undefined` and
+throws. See [[feedback_run_specs_on_dev_before_first_push]] and
+[[project_dev_must_carry_the_branch_before_a_local_run]]. Fixture rules:
 [[all-brands-is-where-the-one-sided-sets-live]].

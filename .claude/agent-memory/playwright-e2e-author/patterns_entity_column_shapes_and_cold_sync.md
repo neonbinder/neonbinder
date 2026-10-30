@@ -37,4 +37,4 @@ lists every option in the column), or `await page.getByRole("listbox", { name:
 "Sets" }).getByRole("option").allTextContents()` in a scratch run. Filter the
 column first when the list is long. Delete the probe afterwards.
 
-Related: [[project_local_validation_needs_a_pr_preview]].
+Related: [[project_dev_must_carry_the_branch_before_a_local_run]].

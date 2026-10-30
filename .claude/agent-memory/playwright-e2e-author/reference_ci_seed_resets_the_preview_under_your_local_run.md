@@ -48,6 +48,6 @@ the teardown began.
 **Do not run against a PR preview while a CI run is in flight**, and re-check after
 any push: a push you did not make (a teammate agent's) starts a run that will reset
 the deployment. Conversely, never start a local `setup` while CI's shards are
-draining. See [[feedback_never_push_a_branch_convex_to_shared_dev]] for why the
-preview is the right target in the first place, and
+draining. Dev comes first since NEO-390 ([[feedback_run_specs_on_dev_before_first_push]]);
+the preview is for a red dev cannot reproduce. See
 [[reference_ci_convex_preview_starts_empty]] for what the seed job does.

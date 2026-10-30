@@ -40,4 +40,4 @@ before touching a spec. `curl -sk` against the same URL returning 200 does not
 clear the server: curl does not enforce the cert.
 
 Note the Convex backend is still whatever `VITE_CONVEX_URL` says regardless of
-which Vite you run; see [[project_local_validation_needs_a_pr_preview]].
+which Vite you run; see [[project_dev_must_carry_the_branch_before_a_local_run]].

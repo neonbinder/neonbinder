@@ -75,8 +75,12 @@ with `npx convex run` — `backfillCardFeatures.ts` and
 button or a public function for a data repair.
 
 Validation for a schema change is `npm run typecheck` (the convex tsconfig),
-`npm run test:unit`, and then the PR's Convex preview. No local `convex dev`
-or `deploy` from a worktree.
+`npm run test:unit`, then the covering specs on dev (the branch, merged up to
+latest main, pushed with `npx convex dev --once`; root CLAUDE.md, "Run your
+specs against dev before the first push"), then the PR's Convex preview. If
+dev refuses the schema (`Schema validation failed` on another branch's rows),
+never clear data or turn validation off: report it and use the preview. Never
+`npx convex deploy` from a worktree.
 
 ## What your plan contains
 
