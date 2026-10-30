@@ -951,6 +951,7 @@ export async function applyCopyChanges(
   // NEO-401: a parallel arriving in a smart binder for the first time.
   await noteArrivals(
     ctx,
+    ownerId,
     changes.map((c) => ({ cardId: c.cardId, homeId: c.after?.homeId ?? null, fromId: c.before?.homeId ?? null })),
   );
 }
