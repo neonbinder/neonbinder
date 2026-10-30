@@ -8,7 +8,7 @@
 # Same guards as preview-cleanup.yml: refuse the shared deployments by name,
 # then fail closed unless the Management API confirms `deploymentType ==
 # preview`. Best-effort: never exits non-zero, so the caller decides the job's
-# outcome.
+# outcome; it sets the step output `deleted=true` only when the preview is gone.
 #
 # Env: CONVEX_NAME (the preview's deployment name), CONVEX_ACCESS_TOKEN (team
 # token; the deployment-scoped preview deploy key cannot call the Management
@@ -47,8 +47,15 @@ status=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 \
   -H "Content-Type: application/json" \
   --data '{}' || echo "000")
 case "$status" in
-  200) echo "Deleted degraded Convex preview '$name'. A whole-workflow re-run creates a fresh one." ;;
-  404) echo "Convex preview '$name' was already gone." ;;
+  200) echo "Deleted degraded Convex preview '$name'. A whole-workflow re-run creates a fresh one."
+       deleted=true ;;
+  404) echo "Convex preview '$name' was already gone."
+       deleted=true ;;
   *)   echo "::warning::Convex delete of '$name' returned HTTP $status — delete it by hand before re-running." ;;
 esac
+# Only a preview that is really gone earns the re-run marker; otherwise a
+# re-run would land on the same slow preview.
+if [ "${deleted:-}" = "true" ] && [ -n "${GITHUB_OUTPUT:-}" ]; then
+  echo "deleted=true" >> "$GITHUB_OUTPUT"
+fi
 exit 0

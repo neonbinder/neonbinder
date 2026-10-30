@@ -482,10 +482,9 @@ jobs:
           CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_PREVIEW_DEPLOY_KEY }}
           CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
           # NEO-392: an import past this marks a degraded preview (see
-          # e2e-seed-reset.sh). The team token deletes it so a re-run
+          # e2e-seed-reset.sh); the next steps delete it so a re-run
           # (recreate-degraded-preview.yml) gets a fresh one.
           NB_SEED_MAX_IMPORT_S: "300"
-          CONVEX_ACCESS_TOKEN: ${{ secrets.CONVEX_ACCESS_TOKEN }}
         run: |
           if [ -z "${CONVEX_DEPLOY_KEY:-}" ]; then
             echo "::error::CONVEX_PREVIEW_DEPLOY_KEY is not set. Add a Convex *preview* deploy key for the monorepo project as a repo secret."
@@ -496,9 +495,8 @@ jobs:
           ./e2e-seed-reset.sh || rc=$?
           if [ "$rc" -eq 75 ]; then
             echo "degraded=true" >> "$GITHUB_OUTPUT"
-            "$GITHUB_WORKSPACE/.github/scripts/delete-degraded-convex-preview.sh"
-            echo "::error::Convex preview $CONVEX_NAME is degraded: the reference import ran past ${NB_SEED_MAX_IMPORT_S}s (desktop pass). No specs ran, so this says nothing about the PR. The preview was deleted; the whole workflow re-runs once on its own with a fresh one (NEO-392)."
-            echo "- Preview degraded: reference import past ${NB_SEED_MAX_IMPORT_S}s; deleted for a fresh one (NEO-392)" >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::Convex preview $CONVEX_NAME is degraded: the reference import ran past ${NB_SEED_MAX_IMPORT_S}s (desktop pass). No specs ran, so this says nothing about the PR. The next step deletes the preview, and the whole workflow re-runs on its own with a fresh one (NEO-392)."
+            echo "- Preview degraded: reference import past ${NB_SEED_MAX_IMPORT_S}s; deleting it for a fresh one (NEO-392)" >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
           [ "$rc" -eq 0 ] || exit "$rc"
@@ -511,12 +509,25 @@ jobs:
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Mark the preview degraded (NEO-392)
+      # Its own step so the team-scoped token (which can delete any
+      # deployment) never shares an environment with npx or PR scripts:
+      # this runs only the guarded delete script (NEO-392 security audit).
+      - name: Delete the degraded preview (NEO-392)
+        id: delete_degraded
         if: failure() && steps.seed_reset.outputs.degraded == 'true'
-        run: echo "${{ needs.setup.outputs.convex_name }}" > "$RUNNER_TEMP/preview-degraded.txt"
+        env:
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
+          CONVEX_ACCESS_TOKEN: ${{ secrets.CONVEX_ACCESS_TOKEN }}
+        run: "$GITHUB_WORKSPACE/.github/scripts/delete-degraded-convex-preview.sh"
+
+      - name: Mark the preview degraded (NEO-392)
+        if: failure() && steps.delete_degraded.outputs.deleted == 'true'
+        env:
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
+        run: printf '%s\n' "$CONVEX_NAME" > "$RUNNER_TEMP/preview-degraded.txt"
 
       - name: Upload the degraded marker (NEO-392)
-        if: failure() && steps.seed_reset.outputs.degraded == 'true'
+        if: failure() && steps.delete_degraded.outputs.deleted == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: preview-degraded-desktop
@@ -1050,10 +1061,9 @@ jobs:
           CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_PREVIEW_DEPLOY_KEY }}
           CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
           # NEO-392: an import past this marks a degraded preview (see
-          # e2e-seed-reset.sh). The team token deletes it so a re-run
+          # e2e-seed-reset.sh); the next steps delete it so a re-run
           # (recreate-degraded-preview.yml) gets a fresh one.
           NB_SEED_MAX_IMPORT_S: "300"
-          CONVEX_ACCESS_TOKEN: ${{ secrets.CONVEX_ACCESS_TOKEN }}
         run: |
           if [ -z "${CONVEX_DEPLOY_KEY:-}" ]; then
             echo "::error::CONVEX_PREVIEW_DEPLOY_KEY is not set. Add a Convex *preview* deploy key for the monorepo project as a repo secret."
@@ -1064,9 +1074,8 @@ jobs:
           ./e2e-seed-reset.sh || rc=$?
           if [ "$rc" -eq 75 ]; then
             echo "degraded=true" >> "$GITHUB_OUTPUT"
-            "$GITHUB_WORKSPACE/.github/scripts/delete-degraded-convex-preview.sh"
-            echo "::error::Convex preview $CONVEX_NAME is degraded: the reference import ran past ${NB_SEED_MAX_IMPORT_S}s (mobile pass). No specs ran, so this says nothing about the PR. The preview was deleted; the whole workflow re-runs once on its own with a fresh one (NEO-392)."
-            echo "- Preview degraded: reference import past ${NB_SEED_MAX_IMPORT_S}s; deleted for a fresh one (NEO-392)" >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::Convex preview $CONVEX_NAME is degraded: the reference import ran past ${NB_SEED_MAX_IMPORT_S}s (mobile pass). No specs ran, so this says nothing about the PR. The next step deletes the preview, and the whole workflow re-runs on its own with a fresh one (NEO-392)."
+            echo "- Preview degraded: reference import past ${NB_SEED_MAX_IMPORT_S}s; deleting it for a fresh one (NEO-392)" >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
           [ "$rc" -eq 0 ] || exit "$rc"
@@ -1077,12 +1086,25 @@ jobs:
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Mark the preview degraded (NEO-392)
+      # Its own step so the team-scoped token (which can delete any
+      # deployment) never shares an environment with npx or PR scripts:
+      # this runs only the guarded delete script (NEO-392 security audit).
+      - name: Delete the degraded preview (NEO-392)
+        id: delete_degraded
         if: failure() && steps.seed_reset.outputs.degraded == 'true'
-        run: echo "${{ needs.setup.outputs.convex_name }}" > "$RUNNER_TEMP/preview-degraded.txt"
+        env:
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
+          CONVEX_ACCESS_TOKEN: ${{ secrets.CONVEX_ACCESS_TOKEN }}
+        run: "$GITHUB_WORKSPACE/.github/scripts/delete-degraded-convex-preview.sh"
+
+      - name: Mark the preview degraded (NEO-392)
+        if: failure() && steps.delete_degraded.outputs.deleted == 'true'
+        env:
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
+        run: printf '%s\n' "$CONVEX_NAME" > "$RUNNER_TEMP/preview-degraded.txt"
 
       - name: Upload the degraded marker (NEO-392)
-        if: failure() && steps.seed_reset.outputs.degraded == 'true'
+        if: failure() && steps.delete_degraded.outputs.deleted == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: preview-degraded-mobile
