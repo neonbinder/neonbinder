@@ -217,6 +217,7 @@ describe("empty slots", () => {
       needs: [],
       supported: true,
       truncated: false,
+      pending: true,
     });
     await settle(s);
     await s.me.mutation(api.collection.addLineItem, { cardId: s.fx.gooden1, details: { homeId: id, quantity: 1 } });
@@ -276,16 +277,25 @@ describe("empty slots", () => {
       containerId: id,
       rule: { version: 1, match: "all", terms: [{ test: { kind: "hallOfFame" } }] },
     });
-    expect(await fitsOf(s, id)).toEqual([]);
+    // Until the recompute lands the old rule's rows stand, flagged pending:
+    // the save itself wrote nothing heavy.
+    expect((await fitsOf(s, id)).length).toBe(stored.length);
+    expect(await s.me.query(api.binderRules.needs, { containerId: id })).toMatchObject({ pending: true });
     await settle(s);
+    expect(await fitsOf(s, id)).toEqual([]);
     expect(await fitsStateOf(s, id)).toMatchObject({ supported: false, count: 0 });
-    expect(await s.me.query(api.binderRules.needs, { containerId: id })).toMatchObject({ supported: false, needs: [] });
+    expect(await s.me.query(api.binderRules.needs, { containerId: id })).toMatchObject({
+      supported: false,
+      needs: [],
+      pending: false,
+    });
 
     // Back to a rule that fits: rows return. Taking the rule off removes them.
     await s.me.mutation(api.collectionContainers.setRule, { containerId: id, rule: goodenRule(s) });
     await settle(s);
     expect((await fitsOf(s, id)).length).toBe(stored.length);
     await s.me.mutation(api.collectionContainers.setRule, { containerId: id, rule: null });
+    await settle(s);
     expect(await fitsOf(s, id)).toEqual([]);
     expect(await fitsStateOf(s, id)).toBeNull();
 
@@ -294,8 +304,94 @@ describe("empty slots", () => {
     await settle(s);
     expect((await fitsOf(s, other)).length).toBeGreaterThan(0);
     await s.me.mutation(api.collectionContainers.remove, { containerId: other });
+    await settle(s);
     expect(await fitsOf(s, other)).toEqual([]);
     expect(await fitsStateOf(s, other)).toBeNull();
+  });
+
+  test("only a parallel the binder did not hold schedules a recompute; a base card or a private card never does (NEO-401)", async () => {
+    const s = await setup();
+    const id = await smartBinder(s);
+    await settle(s);
+    const stamp = () => fitsStateOf(s, id).then((st) => st!.computedAt);
+    const before = await stamp();
+    vi.advanceTimersByTime(1000);
+
+    // A base card arriving: nothing stored changes, so nothing is scheduled.
+    await s.me.mutation(api.collection.addLineItem, { cardId: s.fx.gooden1, details: { homeId: id, quantity: 1 } });
+    await settle(s);
+    expect(await stamp()).toBe(before);
+
+    // A private card (NEO-361) is in no catalog set: the hook steps over it.
+    const { privateCardId } = await s.me.mutation(api.collectionRequests.requestCard, {
+      setId: s.fx.setId,
+      variantId: s.fx.baseId,
+      cardNumber: "#7",
+      player: "Mike Piazza",
+    });
+    await s.me.mutation(api.collection.addLineItem, { cardId: privateCardId, details: { homeId: id, quantity: 1 } });
+    await settle(s);
+    expect(await stamp()).toBe(before);
+
+    // The first card of a parallel the binder did not hold DOES recompute;
+    // a second card of the same parallel does not.
+    await s.me.mutation(api.collection.addLineItem, { cardId: s.fx.gold1, details: { homeId: id, quantity: 1 } });
+    await settle(s);
+    const afterGold = await stamp();
+    expect(afterGold).toBeGreaterThan(before);
+    vi.advanceTimersByTime(1000);
+    await s.me.mutation(api.collection.addLineItem, { cardId: s.fx.gold1, details: { homeId: id, quantity: 1, condition: "Mint" } });
+    await settle(s);
+    expect(await stamp()).toBe(afterGold);
+  });
+
+  test("recomputing on an unchanged catalog rewrites nothing: same rows, same order (NEO-401)", async () => {
+    const s = await setup();
+    const id = await smartBinder(s);
+    await settle(s);
+    const first = await fitsOf(s, id);
+    expect(first.length).toBeGreaterThan(1);
+    await s.t.action(internal.binderRules.recomputeFits, { binderId: id });
+    const second = await fitsOf(s, id);
+    expect(second.map((f) => [f._id, f.order, f.cardId])).toEqual(first.map((f) => [f._id, f.order, f.cardId]));
+    expect((await fitsStateOf(s, id))?.count).toBe(first.length);
+  });
+
+  test("a nightly pass with more due than one batch hands on to another pass (NEO-401)", async () => {
+    const s = await setup();
+    // 101 aged state rows, each for a binder that has no rule any more: the
+    // recompute of each simply removes its state, which is how we can see
+    // that every one of them was reached.
+    const aged = Date.now() - 25 * 60 * 60 * 1000;
+    await s.t.run(async (ctx) => {
+      for (let i = 0; i < 101; i += 1) {
+        const binderId = await ctx.db.insert("collectionContainers", {
+          ownerId: ME.subject,
+          kind: "binder",
+          name: `Plain ${i}`,
+          lastUpdated: aged,
+        });
+        await ctx.db.insert("collectionBinderFitsState", {
+          ownerId: ME.subject,
+          binderId,
+          computedAt: aged,
+          supported: true,
+          complete: true,
+          count: 0,
+        });
+      }
+    });
+    expect(await s.t.mutation(internal.binderRules.refreshStaleFits, {})).toEqual({ scheduled: 100, more: true });
+    // The scheduled hundred are stamped, so the hand-on pass sees only the one left.
+    const left = await s.t.run(async (ctx) =>
+      ctx.db
+        .query("collectionBinderFitsState")
+        .withIndex("by_computed", (q) => q.lt("computedAt", Date.now() - 20 * 60 * 60 * 1000))
+        .collect(),
+    );
+    expect(left.length).toBe(1);
+    await settle(s);
+    expect(await s.t.run(async (ctx) => ctx.db.query("collectionBinderFitsState").collect())).toEqual([]);
   });
 
   test("the nightly refresh slots in a card added to the catalog after the rule was saved (NEO-401)", async () => {

@@ -29,7 +29,11 @@ export type Arrival = {
 };
 
 export async function noteArrivals(ctx: MutationCtx, arrivals: ReadonlyArray<Arrival>): Promise<void> {
+  // Every read here is cached for the call, so a hundred copies moving into
+  // one smart binder cost a handful of reads, not a few hundred.
   const homes = new Map<string, boolean>(); // homeId -> has a rule
+  const parallels = new Map<string, boolean>(); // variantId -> is a parallel
+  const known = new Map<string, boolean>(); // homeId/variantId -> stored already
   const scheduled = new Set<string>();
   for (const a of arrivals) {
     if (!a.homeId || a.homeId === a.fromId || scheduled.has(a.homeId as string)) continue;
@@ -43,18 +47,27 @@ export async function noteArrivals(ctx: MutationCtx, arrivals: ReadonlyArray<Arr
     if (!cardId) continue; // a private card (NEO-361) is in no catalog set
     const card = await ctx.db.get(cardId);
     if (!card) continue;
-    const variant = await ctx.db.get(card.selectorOptionId);
-    const parallel =
-      variant?.level === "parallel" ||
-      (variant?.level === "insert" &&
-        variant.parentId !== undefined &&
-        variantTypeKind(await ctx.db.get(variant.parentId)) === "parallel");
-    if (!parallel) continue;
-    const known = await ctx.db
-      .query("collectionBinderFits")
-      .withIndex("by_binder_variant", (q) => q.eq("binderId", a.homeId!).eq("variantId", card.selectorOptionId))
-      .first();
-    if (known) continue;
+    const variantId = card.selectorOptionId;
+    if (!parallels.has(variantId as string)) {
+      const variant = await ctx.db.get(variantId);
+      parallels.set(
+        variantId as string,
+        variant?.level === "parallel" ||
+          (variant?.level === "insert" &&
+            variant.parentId !== undefined &&
+            variantTypeKind(await ctx.db.get(variant.parentId)) === "parallel"),
+      );
+    }
+    if (!parallels.get(variantId as string)) continue;
+    const pair = `${key}/${variantId as string}`;
+    if (!known.has(pair)) {
+      const stored = await ctx.db
+        .query("collectionBinderFits")
+        .withIndex("by_binder_variant", (q) => q.eq("binderId", a.homeId!).eq("variantId", variantId))
+        .first();
+      known.set(pair, stored !== null);
+    }
+    if (known.get(pair)) continue;
     scheduled.add(key);
     await ctx.scheduler.runAfter(0, internal.binderRules.recomputeFits, { binderId: a.homeId });
   }

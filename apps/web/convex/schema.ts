@@ -3966,8 +3966,17 @@ export default defineSchema({
     variantId: v.id("selectorOptions"),
     /** Position in the catalog walk: the order the empty slots are drawn in. */
     order: v.number(),
+    /**
+     * The recompute that last wrote this row (`recomputeFits`). A recompute
+     * writes its rows in pages under one new generation, then deletes every
+     * row of an older one, so a rule's old cards leave in the same pass that
+     * brings the new ones, and never in a user's own mutation.
+     */
+    generation: v.number(),
   })
+    // The empty-slots read and the stale sweep (prefix binderId).
     .index("by_binder_order", ["binderId", "order"])
+    // The paged write: is this card already stored for this binder?
     .index("by_binder_card", ["binderId", "cardId"])
     .index("by_binder_variant", ["binderId", "variantId"]),
 
@@ -3987,6 +3996,13 @@ export default defineSchema({
     complete: v.boolean(),
     /** Rows stored. */
     count: v.number(),
+    /**
+     * A recompute is scheduled or running (the rule was just saved). The
+     * rows, if any, are the previous rule's until it lands; `needs` says so.
+     */
+    pending: v.optional(v.boolean()),
+    /** The generation the rows carry; the next recompute writes the one after. */
+    generation: v.optional(v.number()),
   })
     .index("by_binder", ["binderId"])
     .index("by_computed", ["computedAt"]),

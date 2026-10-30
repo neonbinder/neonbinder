@@ -239,6 +239,7 @@ async function seedEveryDrainedTable(
         cardId: cardIds[i % cardIds.length],
         variantId,
         order: i,
+        generation: 1,
       });
     }
     await ctx.db.insert("collectionBinderFitsState", {
