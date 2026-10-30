@@ -224,6 +224,22 @@ export async function withQuotaRetry<T>(call: () => Promise<T>): Promise<T> {
 }
 
 /**
+ * What an error log line may say about a Secret Manager failure (NEO-388).
+ *
+ * The gRPC status code, or the error's class name when there is no code, and
+ * nothing else. A GCP error message quotes the full resource name
+ * (`projects/<project>/secrets/<id>/versions/<N>`), which NEO-294 keeps out of
+ * the logs, and a JSON parse error can quote the secret payload itself. The key
+ * or short version name the caller logs beside this is enough to find the
+ * secret; the code is enough to tell quota from permission from absence.
+ */
+export function describeSecretError(err: unknown): string {
+  const code = (err as { code?: unknown } | null)?.code;
+  if (typeof code === "number") return `gRPC code ${code}`;
+  return err instanceof Error ? err.name : "unknown error";
+}
+
+/**
  * True when a Secret Manager error means "that resource does not exist".
  *
  * The message fallback is kept from the original inline checks: the client can
@@ -353,12 +369,13 @@ export class SecretsManagerService {
       }
       return result;
     } catch (error: any) {
-      // Message only — an arbitrary error object graph from the GCP client
-      // could carry the request payload, and this key's payload is secret.
+      // Code only (NEO-388) — never the object graph, which could carry the
+      // request payload, and never the message, which names the resource or,
+      // for a parse failure, quotes the payload. See describeSecretError.
       console.error(
         "Failed to retrieve credentials for key '%s': %s",
         key,
-        error instanceof Error ? error.message : String(error),
+        describeSecretError(error),
       );
       // NEO-294: these two used to interpolate `key` — i.e. the per-user
       // clerk id — into a message that the SportLots adapter's catch then
@@ -410,7 +427,7 @@ export class SecretsManagerService {
       console.error(
         "Failed to delete credentials for key '%s': %s",
         key,
-        err instanceof Error ? err.message : String(err),
+        describeSecretError(err),
       );
       throw new Error(`Failed to delete credentials`);
     }
@@ -430,7 +447,7 @@ export class SecretsManagerService {
       console.error(
         "Failed to check credentials existence for key '%s': %s",
         key,
-        err instanceof Error ? err.message : String(err),
+        describeSecretError(err),
       );
       throw new Error('Failed to check credentials existence');
     }
@@ -468,7 +485,7 @@ export class SecretsManagerService {
       console.error(
         "Failed to update credentials for key '%s': %s",
         key,
-        err instanceof Error ? err.message : String(err),
+        describeSecretError(err),
       );
       throw new Error(`Failed to update credentials`);
     }
@@ -647,7 +664,7 @@ export class SecretsManagerService {
       console.error(
         "Failed to destroy secret version '%s': %s",
         shortVersion(secretId, previous),
-        err instanceof Error ? err.message : String(err),
+        describeSecretError(err),
       );
     }
   }

@@ -114,7 +114,10 @@ if ! node scripts/reference-seed/cli.mjs load "$NB_REFERENCE_BUNDLE" \
 fi
 ref_import_s=$(( $(date +%s) - ref_t1 ))
 echo "reference seed: import took ${ref_import_s}s"
+# NEO-392: deployment + UTC window, the evidence a Convex support ticket needs.
+echo "reference seed: import window ${ref_target} $(date -u -d "@${ref_t1}" +%FT%TZ 2>/dev/null || echo "${ref_t1}")..$(date -u +%FT%TZ)"
 reference_seed_summary "import seconds" "$ref_import_s"
+
 if [ -n "${NB_REFERENCE_SEED_SUMMARY:-}" ] && [ -n "$ref_manifest_lines" ]; then
   printf '%s\n' "$ref_manifest_lines" >> "$NB_REFERENCE_SEED_SUMMARY"
 fi
@@ -123,4 +126,15 @@ fi
 # step that needed it on a runner. A developer's local copy stays.
 if [ -n "${GITHUB_ACTIONS:-}" ]; then
   rm -f "$NB_REFERENCE_BUNDLE"
+fi
+
+# NEO-392: a slow import marks a degraded preview. Across 387 CI seeds
+# (10-13 to 10-30) the import took ~110s; every pass whose import ran past
+# 500s went red, whatever the PR changed, and the slow spells stuck to one
+# preview at a time. Set NB_SEED_MAX_IMPORT_S (CI does) to stop here with
+# exit 75 instead of running shards against it; the caller deletes the
+# preview so a re-run gets a fresh one.
+if [ -n "${NB_SEED_MAX_IMPORT_S:-}" ] && [ "$ref_import_s" -gt "$NB_SEED_MAX_IMPORT_S" ]; then
+  echo "x reference seed: import took ${ref_import_s}s, over the ${NB_SEED_MAX_IMPORT_S}s limit. ${ref_target} is degraded (NEO-392); stopping before any spec runs." >&2
+  exit 75
 fi
