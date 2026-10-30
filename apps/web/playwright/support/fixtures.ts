@@ -24,6 +24,7 @@
 import { test as base, expect, type Page } from "@playwright/test";
 import { checkAccessibility, type AccessibleOptions } from "./a11y";
 import { makeEnv, type FlowEnv } from "./env";
+import { attachWireOnFailure, recordWire } from "./wire-log";
 
 export type SignIn = (
   redirect: string,
@@ -44,7 +45,16 @@ export function signInUrl(redirect: string, worker: string, account?: string): s
   return `/testing/sign-in?redirect=${redirect}${acct}&worker=${worker}`;
 }
 
-export const test = base.extend<{ env: FlowEnv; signIn: SignIn }>({
+export const test = base.extend<{ env: FlowEnv; signIn: SignIn; wireLog: void }>({
+  // EXPERIMENT (do not merge): the client's side of a failure (./wire-log.ts).
+  wireLog: [
+    async ({ page }, use, testInfo) => {
+      const lines = recordWire(page);
+      await use();
+      await attachWireOnFailure(testInfo, lines());
+    },
+    { auto: true },
+  ],
   env: async ({}, use, testInfo) => {
     // The project feeds the d/m marker in every minted name (./env.ts).
     await use(makeEnv(testInfo.project.name));
