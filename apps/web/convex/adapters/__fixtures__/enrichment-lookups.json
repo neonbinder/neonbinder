@@ -239,6 +239,782 @@
         }
       }
     },
+    "player|Q41323|jamie bird": {
+      "kind": "player",
+      "name": "Jamie Bird",
+      "sportQid": "Q41323",
+      "result": null
+    },
+    "player|Q41466|andy ross": {
+      "kind": "player",
+      "name": "Andy Ross",
+      "sportQid": "Q41466",
+      "result": null
+    },
+    "player|Q41466|bill mcdonald": {
+      "kind": "player",
+      "name": "Bill McDonald",
+      "sportQid": "Q41466",
+      "result": null
+    },
+    "player|Q41466|brent fleetwood": {
+      "kind": "player",
+      "name": "Brent Fleetwood",
+      "sportQid": "Q41466",
+      "result": null
+    },
+    "player|Q41466|brian caruso": {
+      "kind": "player",
+      "name": "Brian Caruso",
+      "sportQid": "Q41466",
+      "result": null
+    },
+    "player|Q41466|brian gallentine": {
+      "kind": "player",
+      "name": "Brian Gallentine",
+      "sportQid": "Q41466",
+      "result": null
+    },
+    "player|Q41466|brian shantz": {
+      "kind": "player",
+      "name": "Brian Shantz",
+      "sportQid": "Q41466",
+      "result": null
+    },
+    "player|Q41466|bryan forslund": {
+      "kind": "player",
+      "name": "Bryan Forslund",
+      "sportQid": "Q41466",
+      "result": null
+    },
+    "player|Q41466|carl menard": {
+      "kind": "player",
+      "name": "Carl Menard",
+      "sportQid": "Q41466",
+      "result": null
+    },
+    "player|Q41466|chris albert": {
+      "kind": "player",
+      "name": "Chris Albert",
+      "sportQid": "Q41466",
+      "result": null
+    },
+    "player|Q41466|chris morque": {
+      "kind": "player",
+      "name": "Chris Morque",
+      "sportQid": "Q41466",
+      "result": null
+    },
+    "player|Q41466|chris pollack": {
+      "kind": "player",
+      "name": "Chris Pollack",
+      "sportQid": "Q41466",
+      "result": null
+    },
+    "player|Q41466|chris potter": {
+      "kind": "player",
+      "name": "Chris Potter",
+      "sportQid": "Q41466",
+      "result": null
+    },
+    "player|Q41466|colin baustad": {
+      "kind": "player",
+      "name": "Colin Baustad",
+      "sportQid": "Q41466",
+      "result": {
+        "birthYear": 1969,
+        "careerTeams": [],
+        "description": "Canadian ice hockey defenceman",
+        "enwikiTitle": "Colin Baustad",
+        "isHallOfFame": false,
+        "undatedCareerTeams": [
+          "Tulsa Oilers"
+        ],
+        "wikidataId": "Q16197532"
+      }
+    },
+    "player|Q41466|craig hamelin": {
+      "kind": "player",
+      "name": "Craig Hamelin",
+      "sportQid": "Q41466",
+      "result": null
+    },
+    "player|Q41466|craig herr": {
+      "kind": "player",
+      "name": "Craig Herr",
+      "sportQid": "Q41466",
+      "result": {
+        "birthYear": 1970,
+        "careerTeams": [],
+        "description": "American ice hockey player",
+        "isHallOfFame": false,
+        "wikidataId": "Q3002014"
+      }
+    },
+    "player|Q41466|dan brown": {
+      "kind": "player",
+      "name": "Dan Brown",
+      "sportQid": "Q41466",
+      "result": null
+    },
+    "player|Q41466|dave holum": {
+      "kind": "player",
+      "name": "Dave Holum",
+      "sportQid": "Q41466",
+      "result": null
+    },
+    "player|Q41466|dave larouche": {
+      "kind": "player",
+      "name": "Dave Larouche",
+      "sportQid": "Q41466",
+      "result": null
+    },
+    "player|Q41466|dave stewart": {
+      "kind": "player",
+      "name": "Dave Stewart",
+      "sportQid": "Q41466",
+      "result": {
+        "birthYear": 1962,
+        "careerTeams": [],
+        "description": "Canadian ice hockey player",
+        "enwikiTitle": "Dave Simpson (ice hockey)",
+        "isHallOfFame": false,
+        "undatedCareerTeams": [
+          "Indianapolis Checkers"
+        ],
+        "wikidataId": "Q5229839"
+      }
+    },
+    "player|Q41466|david shute": {
+      "kind": "player",
+      "name": "David Shute",
+      "sportQid": "Q41466",
+      "result": {
+        "birthYear": 1971,
+        "careerTeams": [],
+        "description": "American ice hockey left winger",
+        "enwikiTitle": "David Shute (ice hockey)",
+        "isHallOfFame": false,
+        "undatedCareerTeams": [
+          "ERC Ingolstadt"
+        ],
+        "wikidataId": "Q68690810"
+      }
+    },
+    "player|Q41466|dean zayonce": {
+      "kind": "player",
+      "name": "Dean Zayonce",
+      "sportQid": "Q41466",
+      "result": null
+    },
+    "player|Q41466|dennis miller": {
+      "kind": "player",
+      "name": "Dennis Miller",
+      "sportQid": "Q41466",
+      "result": {
+        "birthYear": 1969,
+        "careerTeams": [],
+        "description": "American ice hockey coach",
+        "enwikiTitle": "Dennis Miller (ice hockey)",
+        "isHallOfFame": false,
+        "undatedCareerTeams": [
+          "Vermont Catamounts men's ice hockey"
+        ],
+        "wikidataId": "Q5258741"
+      }
+    },
+    "player|Q41466|doug stromback": {
+      "kind": "player",
+      "name": "Doug Stromback",
+      "sportQid": "Q41466",
+      "result": null
+    },
+    "player|Q41466|duane harmer": {
+      "kind": "player",
+      "name": "Duane Harmer",
+      "sportQid": "Q41466",
+      "result": {
+        "birthYear": 1974,
+        "careerTeams": [],
+        "description": "Canadian ice hockey player",
+        "enwikiTitle": "Duane Harmer",
+        "isHallOfFame": false,
+        "undatedCareerTeams": [
+          "Rosenborg IHK",
+          "S\u00f6dert\u00e4lje SK"
+        ],
+        "wikidataId": "Q3361173"
+      }
+    },
+    "player|Q41466|dwight mullins": {
+      "kind": "player",
+      "name": "Dwight Mullins",
+      "sportQid": "Q41466",
+      "result": {
+        "birthYear": 1967,
+        "careerTeams": [],
+        "description": "Canadian ice hockey player",
+        "isHallOfFame": false,
+        "wikidataId": "Q911893"
+      }
+    },
+    "player|Q41466|frank anzalone": {
+      "kind": "player",
+      "name": "Frank Anzalone",
+      "sportQid": "Q41466",
+      "result": {
+        "birthYear": 1954,
+        "careerTeams": [],
+        "description": "American ice hockey coach",
+        "enwikiTitle": "Frank Anzalone",
+        "isHallOfFame": false,
+        "undatedCareerTeams": [
+          "New Hampshire Wildcats men's ice hockey"
+        ],
+        "wikidataId": "Q5485040"
+      }
+    },
+    "player|Q41466|glen lang": {
+      "kind": "player",
+      "name": "Glen Lang",
+      "sportQid": "Q41466",
+      "result": {
+        "careerTeams": [
+          {
+            "fromYear": 1994,
+            "name": "Columbus Chill",
+            "toYear": 1995,
+            "wikidataId": "Q1112747"
+          },
+          {
+            "fromYear": 1994,
+            "name": "Tulsa Oilers",
+            "toYear": 1996,
+            "wikidataId": "Q2459566"
+          }
+        ],
+        "description": "American politician",
+        "enwikiTitle": "Glen Lang",
+        "isHallOfFame": false,
+        "undatedCareerTeams": [
+          "Johnstown Chiefs",
+          "Raleigh IceCaps"
+        ],
+        "wikidataId": "Q5567856"
+      }
+    },
+    "player|Q41466|gord christian": {
+      "kind": "player",
+      "name": "Gord Christian",
+      "sportQid": "Q41466",
+      "result": {
+        "birthYear": 1927,
+        "careerTeams": [],
+        "description": "American ice hockey player (1927-2017)",
+        "enwikiTitle": "Gordon Christian",
+        "isHallOfFame": false,
+        "wikidataId": "Q1326491"
+      }
+    },
+    "player|Q41466|herb boxer": {
+      "kind": "player",
+      "name": "Herb Boxer",
+      "sportQid": "Q41466",
+      "result": {
+        "birthYear": 1947,
+        "careerTeams": [],
+        "description": "American ice hockey player",
+        "enwikiTitle": "Herb Boxer",
+        "isHallOfFame": false,
+        "undatedCareerTeams": [
+          "Kalamazoo Wings"
+        ],
+        "wikidataId": "Q5732848"
+      }
+    },
+    "player|Q41466|ilya dubkov": {
+      "kind": "player",
+      "name": "Ilya Dubkov",
+      "sportQid": "Q41466",
+      "result": {
+        "birthYear": 1972,
+        "careerTeams": [],
+        "description": "Russian ice hockey player",
+        "enwikiTitle": "Ilya Dubkov",
+        "isHallOfFame": false,
+        "undatedCareerTeams": [
+          "Rosenborg IHK"
+        ],
+        "wikidataId": "Q8838029"
+      }
+    },
+    "player|Q41466|jamie bird": {
+      "kind": "player",
+      "name": "Jamie Bird",
+      "sportQid": "Q41466",
+      "result": null
+    },
+    "player|Q41466|jamie cooke": {
+      "kind": "player",
+      "name": "Jamie Cooke",
+      "sportQid": "Q41466",
+      "result": {
+        "birthYear": 1968,
+        "careerTeams": [],
+        "description": "Canadian ice hockey player",
+        "enwikiTitle": "Jamie Cooke",
+        "isHallOfFame": false,
+        "undatedCareerTeams": [
+          "Colgate Raiders"
+        ],
+        "wikidataId": "Q16198282"
+      }
+    },
+    "player|Q41466|jason clarke": {
+      "kind": "player",
+      "name": "Jason Clarke",
+      "sportQid": "Q41466",
+      "result": {
+        "birthYear": 1973,
+        "careerTeams": [],
+        "description": "Canadian ice hockey player",
+        "isHallOfFame": false,
+        "wikidataId": "Q6162224"
+      }
+    },
+    "player|Q41466|jeff jablonski": {
+      "kind": "player",
+      "name": "Jeff Jablonski",
+      "sportQid": "Q41466",
+      "result": null
+    },
+    "player|Q41466|jeff jestadt": {
+      "kind": "player",
+      "name": "Jeff Jestadt",
+      "sportQid": "Q41466",
+      "result": null
+    },
+    "player|Q41466|jeff massey": {
+      "kind": "player",
+      "name": "Jeff Massey",
+      "sportQid": "Q41466",
+      "result": null
+    },
+    "player|Q41466|jim sprott": {
+      "kind": "player",
+      "name": "Jim Sprott",
+      "sportQid": "Q41466",
+      "result": {
+        "birthYear": 1969,
+        "careerTeams": [],
+        "description": "Canadian ice hockey player",
+        "enwikiTitle": "Jim Sprott (ice hockey)",
+        "isHallOfFame": false,
+        "wikidataId": "Q91028305"
+      }
+    },
+    "player|Q41466|john laan": {
+      "kind": "player",
+      "name": "John Laan",
+      "sportQid": "Q41466",
+      "result": null
+    },
+    "player|Q41466|john torchetti": {
+      "kind": "player",
+      "name": "John Torchetti",
+      "sportQid": "Q41466",
+      "result": {
+        "birthYear": 1964,
+        "careerTeams": [],
+        "description": "American ice hockey player and coach",
+        "enwikiTitle": "John Torchetti",
+        "isHallOfFame": false,
+        "undatedCareerTeams": [
+          "Binghamton Whalers"
+        ],
+        "wikidataId": "Q3182613"
+      }
+    },
+    "player|Q41466|jon larson": {
+      "kind": "player",
+      "name": "Jon Larson",
+      "sportQid": "Q41466",
+      "result": null
+    },
+    "player|Q41466|ken plaquin": {
+      "kind": "player",
+      "name": "Ken Plaquin",
+      "sportQid": "Q41466",
+      "result": null
+    },
+    "player|Q41466|kyle reeves": {
+      "kind": "player",
+      "name": "Kyle Reeves",
+      "sportQid": "Q41466",
+      "result": {
+        "birthYear": 1971,
+        "careerTeams": [],
+        "description": "Canadian ice hockey right wingers",
+        "enwikiTitle": "Kyle Reeves",
+        "isHallOfFame": false,
+        "undatedCareerTeams": [
+          "Swift Current Broncos"
+        ],
+        "wikidataId": "Q68715029"
+      }
+    },
+    "player|Q41466|l.p. charbonneau": {
+      "kind": "player",
+      "name": "L.P. Charbonneau",
+      "sportQid": "Q41466",
+      "result": {
+        "birthYear": 1974,
+        "careerTeams": [],
+        "description": "Canadian ice hockey player",
+        "isHallOfFame": false,
+        "undatedCareerTeams": [
+          "Syracuse Crunch"
+        ],
+        "wikidataId": "Q2381071"
+      }
+    },
+    "player|Q41466|liam garvey": {
+      "kind": "player",
+      "name": "Liam Garvey",
+      "sportQid": "Q41466",
+      "result": {
+        "birthYear": 1973,
+        "careerTeams": [],
+        "description": "American ice hockey player",
+        "isHallOfFame": false,
+        "undatedCareerTeams": [
+          "EHC Basel"
+        ],
+        "wikidataId": "Q607816"
+      }
+    },
+    "player|Q41466|loco": {
+      "kind": "player",
+      "name": "Loco",
+      "sportQid": "Q41466",
+      "result": null
+    },
+    "player|Q41466|mark hilton": {
+      "kind": "player",
+      "name": "Mark Hilton",
+      "sportQid": "Q41466",
+      "result": null
+    },
+    "player|Q41466|mark yannetti": {
+      "kind": "player",
+      "name": "Mark Yannetti",
+      "sportQid": "Q41466",
+      "result": null
+    },
+    "player|Q41466|marty schriner": {
+      "kind": "player",
+      "name": "Marty Schriner",
+      "sportQid": "Q41466",
+      "result": null
+    },
+    "player|Q41466|matt bowden": {
+      "kind": "player",
+      "name": "Matt Bowden",
+      "sportQid": "Q41466",
+      "result": null
+    },
+    "player|Q41466|michael smith": {
+      "kind": "player",
+      "name": "Michael Smith",
+      "sportQid": "Q41466",
+      "result": {
+        "birthYear": 1971,
+        "careerTeams": [],
+        "description": "ice hockey player (born 1971)",
+        "enwikiTitle": "Michael Smith (ice hockey)",
+        "isHallOfFame": false,
+        "wikidataId": "Q107983092"
+      }
+    },
+    "player|Q41466|mike chase": {
+      "kind": "player",
+      "name": "Mike Chase",
+      "sportQid": "Q41466",
+      "result": null
+    },
+    "player|Q41466|mike jackson": {
+      "kind": "player",
+      "name": "Mike Jackson",
+      "sportQid": "Q41466",
+      "result": null
+    },
+    "player|Q41466|mike stacchi": {
+      "kind": "player",
+      "name": "Mike Stacchi",
+      "sportQid": "Q41466",
+      "result": null
+    },
+    "player|Q41466|mike williams": {
+      "kind": "player",
+      "name": "Mike Williams",
+      "sportQid": "Q41466",
+      "result": null
+    },
+    "player|Q41466|nick jones": {
+      "kind": "player",
+      "name": "Nick Jones",
+      "sportQid": "Q41466",
+      "result": {
+        "birthYear": 1990,
+        "careerTeams": [],
+        "description": "American ice hockey defenceman",
+        "enwikiTitle": "Nick Jones (ice hockey)",
+        "isHallOfFame": false,
+        "undatedCareerTeams": [
+          "South Carolina Stingrays"
+        ],
+        "wikidataId": "Q16229192"
+      }
+    },
+    "player|Q41466|paul croteau": {
+      "kind": "player",
+      "name": "Paul Croteau",
+      "sportQid": "Q41466",
+      "result": null
+    },
+    "player|Q41466|paul jackson": {
+      "kind": "player",
+      "name": "Paul Jackson",
+      "sportQid": "Q41466",
+      "result": {
+        "birthYear": 1940,
+        "careerTeams": [],
+        "description": "Canadian ice hockey defenceman",
+        "enwikiTitle": "Paul Jackson (ice hockey)",
+        "isHallOfFame": false,
+        "undatedCareerTeams": [
+          "Pittsburgh Hornets"
+        ],
+        "wikidataId": "Q16105367"
+      }
+    },
+    "player|Q41466|phil groeneveld": {
+      "kind": "player",
+      "name": "Phil Groeneveld",
+      "sportQid": "Q41466",
+      "result": {
+        "birthYear": 1974,
+        "careerTeams": [],
+        "description": "Canadian-Dutch ice hockey player",
+        "enwikiTitle": "Phil Groeneveld",
+        "isHallOfFame": false,
+        "undatedCareerTeams": [
+          "Dragons de Rouen",
+          "Jets de Viry-Essonne"
+        ],
+        "wikidataId": "Q1145859"
+      }
+    },
+    "player|Q41466|rick robus": {
+      "kind": "player",
+      "name": "Rick Robus",
+      "sportQid": "Q41466",
+      "result": null
+    },
+    "player|Q41466|ron fogarty": {
+      "kind": "player",
+      "name": "Ron Fogarty",
+      "sportQid": "Q41466",
+      "result": {
+        "birthYear": 1972,
+        "careerTeams": [],
+        "description": "ice hockey player (1972-)",
+        "enwikiTitle": "Ron Fogarty",
+        "isHallOfFame": false,
+        "undatedCareerTeams": [
+          "Colgate Raiders"
+        ],
+        "wikidataId": "Q33026695"
+      }
+    },
+    "player|Q41466|ryan harrison": {
+      "kind": "player",
+      "name": "Ryan Harrison",
+      "sportQid": "Q41466",
+      "result": null
+    },
+    "player|Q41466|scorch": {
+      "kind": "player",
+      "name": "Scorch",
+      "sportQid": "Q41466",
+      "result": null
+    },
+    "player|Q41466|scott allen": {
+      "kind": "player",
+      "name": "Scott Allen",
+      "sportQid": "Q41466",
+      "result": {
+        "birthYear": 1967,
+        "careerTeams": [],
+        "description": "American ice hockey player",
+        "enwikiTitle": "Scott Young (ice hockey, born 1967)",
+        "isHallOfFame": false,
+        "undatedCareerTeams": [
+          "Anaheim Ducks",
+          "Boston University Terriers men's ice hockey",
+          "Colorado Avalanche",
+          "Dallas Stars",
+          "Frankfurt Lions",
+          "Hartford Whalers",
+          "Pittsburgh Penguins",
+          "Quebec Nordiques",
+          "St. Louis Blues"
+        ],
+        "wikidataId": "Q1425642"
+      }
+    },
+    "player|Q41466|scott brower": {
+      "kind": "player",
+      "name": "Scott Brower",
+      "sportQid": "Q41466",
+      "result": {
+        "birthYear": 1964,
+        "careerTeams": [],
+        "description": "Canadian ice hockey player",
+        "enwikiTitle": "Scott Brower",
+        "isHallOfFame": false,
+        "undatedCareerTeams": [
+          "Espoo Blues"
+        ],
+        "wikidataId": "Q6380455"
+      }
+    },
+    "player|Q41466|scott kelsey": {
+      "kind": "player",
+      "name": "Scott Kelsey",
+      "sportQid": "Q41466",
+      "result": null
+    },
+    "player|Q41466|sebastien laplante": {
+      "kind": "player",
+      "name": "Sebastien LaPlante",
+      "sportQid": "Q41466",
+      "result": {
+        "birthYear": 1971,
+        "careerTeams": [],
+        "description": "Canadian ice hockey player and coach",
+        "isHallOfFame": false,
+        "undatedCareerTeams": [
+          "Fort Wayne Komets"
+        ],
+        "wikidataId": "Q7442603"
+      }
+    },
+    "player|Q41466|steve magnusson": {
+      "kind": "player",
+      "name": "Steve Magnusson",
+      "sportQid": "Q41466",
+      "result": null
+    },
+    "player|Q41466|steve plouffe": {
+      "kind": "player",
+      "name": "Steve Plouffe",
+      "sportQid": "Q41466",
+      "result": {
+        "birthYear": 1975,
+        "careerTeams": [],
+        "description": "Canadian ice hockey player",
+        "enwikiTitle": "Steve Plouffe",
+        "isHallOfFame": false,
+        "undatedCareerTeams": [
+          "Amur Khabarovsk",
+          "HC Spartak Moscow"
+        ],
+        "wikidataId": "Q6379315"
+      }
+    },
+    "player|Q41466|team photo": {
+      "kind": "player",
+      "name": "Team Photo",
+      "sportQid": "Q41466",
+      "result": null
+    },
+    "player|Q41466|tim christian": {
+      "kind": "player",
+      "name": "Tim Christian",
+      "sportQid": "Q41466",
+      "result": null
+    },
+    "player|Q41466|tim hanley": {
+      "kind": "player",
+      "name": "Tim Hanley",
+      "sportQid": "Q41466",
+      "result": null
+    },
+    "player|Q41466|tony martino": {
+      "kind": "player",
+      "name": "Tony Martino",
+      "sportQid": "Q41466",
+      "result": null
+    },
+    "player|Q41466|trent gleason": {
+      "kind": "player",
+      "name": "Trent Gleason",
+      "sportQid": "Q41466",
+      "result": null
+    },
+    "player|Q41466|trevor buchanan": {
+      "kind": "player",
+      "name": "Trevor Buchanan",
+      "sportQid": "Q41466",
+      "result": null
+    },
+    "player|Q41466|trevor burgess": {
+      "kind": "player",
+      "name": "Trevor Burgess",
+      "sportQid": "Q41466",
+      "result": null
+    },
+    "player|Q41466|trevor converse": {
+      "kind": "player",
+      "name": "Trevor Converse",
+      "sportQid": "Q41466",
+      "result": {
+        "birthYear": 1970,
+        "careerTeams": [],
+        "description": "Canadian ice hockey player",
+        "enwikiTitle": "Trevor Converse",
+        "isHallOfFame": false,
+        "undatedCareerTeams": [
+          "Johnstown Chiefs"
+        ],
+        "wikidataId": "Q7839102"
+      }
+    },
+    "player|Q41466|trevor ellerman": {
+      "kind": "player",
+      "name": "Trevor Ellerman",
+      "sportQid": "Q41466",
+      "result": null
+    },
+    "player|Q41466|troy frederick": {
+      "kind": "player",
+      "name": "Troy Frederick",
+      "sportQid": "Q41466",
+      "result": null
+    },
+    "player|Q41466|troy stephens": {
+      "kind": "player",
+      "name": "Troy Stephens",
+      "sportQid": "Q41466",
+      "result": null
+    },
+    "player|Q41466|vern ray": {
+      "kind": "player",
+      "name": "Vern Ray",
+      "sportQid": "Q41466",
+      "result": null
+    },
     "player|Q5369|aaron donald": {
       "kind": "player",
       "name": "Aaron Donald",
@@ -305,6 +1081,52 @@
         "description": "Dominican Republic baseball player",
         "birthYear": 2000,
         "enwikiTitle": "Abner Uribe"
+      }
+    },
+    "player|Q5369|adam walker": {
+      "kind": "player",
+      "name": "Adam Walker",
+      "result": {
+        "birthYear": 1991,
+        "careerTeams": [
+          {
+            "fromYear": 2022,
+            "name": "Yomiuri Giants",
+            "toYear": 2023,
+            "wikidataId": "Q1197407"
+          },
+          {
+            "fromYear": 2024,
+            "name": "Fukuoka SoftBank Hawks",
+            "toYear": 2024,
+            "wikidataId": "Q129164"
+          },
+          {
+            "fromYear": 2025,
+            "name": "Kanagawa Future Dreams",
+            "toYear": 2025,
+            "wikidataId": "Q76464618"
+          },
+          {
+            "fromYear": 2026,
+            "name": "Oisix Niigata Albirex Baseball Club",
+            "toYear": 2026,
+            "wikidataId": "Q5364870"
+          },
+          {
+            "fromYear": 2026,
+            "name": "Rakuten Monkeys",
+            "wikidataId": "Q78851123"
+          }
+        ],
+        "description": "American baseball player (born 1991)",
+        "enwikiTitle": "Adam Walker (baseball)",
+        "isHallOfFame": false,
+        "undatedCareerTeams": [
+          "Kansas City Monarchs",
+          "Milwaukee Milkmen"
+        ],
+        "wikidataId": "Q16234302"
       }
     },
     "player|Q5369|adley rutschman": {
@@ -402,6 +1224,31 @@
         "description": "American professional baseball pitcher",
         "birthYear": 2002,
         "enwikiTitle": "AJ Smith-Shawver"
+      }
+    },
+    "player|Q5369|akinobu okada": {
+      "kind": "player",
+      "name": "Akinobu Okada",
+      "result": {
+        "birthYear": 1957,
+        "careerTeams": [
+          {
+            "fromYear": 1980,
+            "name": "Hanshin Tigers",
+            "toYear": 1993,
+            "wikidataId": "Q127635"
+          },
+          {
+            "fromYear": 1994,
+            "name": "Orix Buffaloes",
+            "toYear": 1995,
+            "wikidataId": "Q1328038"
+          }
+        ],
+        "description": "Japanese baseball manager and former player",
+        "enwikiTitle": "Akinobu Okada",
+        "isHallOfFame": false,
+        "wikidataId": "Q4701067"
       }
     },
     "player|Q5369|alan trammell": {
@@ -3373,6 +4220,25 @@
         "enwikiTitle": "Curtis Mead"
       }
     },
+    "player|Q5369|daisuke miura": {
+      "kind": "player",
+      "name": "Daisuke Miura",
+      "result": {
+        "birthYear": 1973,
+        "careerTeams": [
+          {
+            "fromYear": 1992,
+            "name": "Yokohama DeNA BayStars",
+            "toYear": 2016,
+            "wikidataId": "Q1194023"
+          }
+        ],
+        "description": "Japanese baseball player, coach, manager",
+        "enwikiTitle": "Daisuke Miura",
+        "isHallOfFame": false,
+        "wikidataId": "Q1072115"
+      }
+    },
     "player|Q5369|damaso betancourt": {
       "kind": "player",
       "name": "Damaso Betancourt",
@@ -5736,6 +6602,26 @@
         "description": "Japanese professional baseball player, MLB player",
         "birthYear": 1968,
         "enwikiTitle": "Hideo Nomo"
+      }
+    },
+    "player|Q5369|hironori miyoshi": {
+      "kind": "player",
+      "name": "Hironori Miyoshi",
+      "result": {
+        "birthYear": 1997,
+        "careerTeams": [
+          {
+            "fromYear": 2021,
+            "name": "Chunichi Dragons",
+            "wikidataId": "Q209961"
+          }
+        ],
+        "description": "Japanese baseball player",
+        "isHallOfFame": false,
+        "undatedCareerTeams": [
+          "JFE Steel"
+        ],
+        "wikidataId": "Q104538586"
       }
     },
     "player|Q5369|homer baez": {
@@ -8666,6 +9552,25 @@
         "enwikiTitle": "Karim Garc\u00eda"
       }
     },
+    "player|Q5369|kazuyoshi tatsunami": {
+      "kind": "player",
+      "name": "Kazuyoshi Tatsunami",
+      "result": {
+        "birthYear": 1969,
+        "careerTeams": [
+          {
+            "fromYear": 1988,
+            "name": "Chunichi Dragons",
+            "toYear": 2009,
+            "wikidataId": "Q209961"
+          }
+        ],
+        "description": "Japanese baseball player",
+        "enwikiTitle": "Kazuyoshi Tatsunami",
+        "isHallOfFame": false,
+        "wikidataId": "Q2585053"
+      }
+    },
     "player|Q5369|ke'bryan hayes": {
       "kind": "player",
       "name": "Ke'Bryan Hayes",
@@ -8712,6 +9617,38 @@
         "description": "Baseball Player",
         "birthYear": 1998,
         "enwikiTitle": "Keibert Ruiz"
+      }
+    },
+    "player|Q5369|keishi tsuda": {
+      "kind": "player",
+      "name": "Keishi Tsuda",
+      "result": {
+        "birthYear": 2002,
+        "careerTeams": [],
+        "description": "Japanese baseball player",
+        "isHallOfFame": false,
+        "wikidataId": "Q123405959"
+      }
+    },
+    "player|Q5369|keisuke honda": {
+      "kind": "player",
+      "name": "Keisuke Honda",
+      "result": {
+        "birthYear": 1993,
+        "careerTeams": [
+          {
+            "fromYear": 2016,
+            "name": "Saitama Seibu Lions",
+            "wikidataId": "Q325819"
+          }
+        ],
+        "description": "Japanese baseball player",
+        "enwikiTitle": "Keisuke Honda (baseball)",
+        "isHallOfFame": false,
+        "undatedCareerTeams": [
+          "Orix Buffaloes"
+        ],
+        "wikidataId": "Q24861699"
       }
     },
     "player|Q5369|ken caminiti": {
@@ -9086,6 +10023,31 @@
         "enwikiTitle": "Kody Funderburk"
       }
     },
+    "player|Q5369|kosuke kawachi": {
+      "kind": "player",
+      "name": "Kosuke Kawachi",
+      "result": {
+        "birthYear": 2005,
+        "careerTeams": [],
+        "description": "Japanese baseball player",
+        "isHallOfFame": false,
+        "wikidataId": "Q123405939"
+      }
+    },
+    "player|Q5369|kota nishidate": {
+      "kind": "player",
+      "name": "Kota Nishidate",
+      "result": {
+        "birthYear": 2001,
+        "careerTeams": [],
+        "description": "Japanese baseball player",
+        "isHallOfFame": false,
+        "undatedCareerTeams": [
+          "Tokyo Yakult Swallows"
+        ],
+        "wikidataId": "Q123405931"
+      }
+    },
     "player|Q5369|kris bryant": {
       "kind": "player",
       "name": "Kris Bryant",
@@ -9451,6 +10413,49 @@
       "kind": "player",
       "name": "Leal",
       "result": null
+    },
+    "player|Q5369|leandro cedeno": {
+      "kind": "player",
+      "name": "Leandro Cedeno",
+      "result": {
+        "birthYear": 1998,
+        "careerTeams": [
+          {
+            "fromYear": 2020,
+            "name": "Caribes de Anzo\u00e1tegui",
+            "toYear": 2020,
+            "wikidataId": "Q870414"
+          },
+          {
+            "fromYear": 2021,
+            "name": "Leones del Caracas",
+            "toYear": 2022,
+            "wikidataId": "Q1368587"
+          },
+          {
+            "fromYear": 2023,
+            "name": "Orix Buffaloes",
+            "toYear": 2024,
+            "wikidataId": "Q1328038"
+          },
+          {
+            "fromYear": 2025,
+            "name": "Saitama Seibu Lions",
+            "toYear": 2025,
+            "wikidataId": "Q325819"
+          },
+          {
+            "fromYear": 2026,
+            "name": "Tokyo Yakult Swallows",
+            "toYear": 2026,
+            "wikidataId": "Q1324392"
+          }
+        ],
+        "description": "Venezuelan baseball player (born 1998)",
+        "enwikiTitle": "Leandro Cede\u00f1o",
+        "isHallOfFame": false,
+        "wikidataId": "Q115907255"
+      }
     },
     "player|Q5369|lee smith": {
       "kind": "player",
@@ -13025,6 +14030,43 @@
         "enwikiTitle": "Ryne Sandberg"
       }
     },
+    "player|Q5369|ryusei satoh": {
+      "kind": "player",
+      "name": "Ryusei Satoh",
+      "result": {
+        "birthYear": 1997,
+        "careerTeams": [],
+        "description": "Japanese baseball player",
+        "enwikiTitle": "Ry\u016bsei Sat\u014d",
+        "isHallOfFame": false,
+        "undatedCareerTeams": [
+          "Chunichi Dragons",
+          "Fuji University Baseball Team",
+          "Hokkaido Nippon-Ham Fighters",
+          "Saitama Seibu Lions"
+        ],
+        "wikidataId": "Q63131440"
+      }
+    },
+    "player|Q5369|ryutaro hatsuki": {
+      "kind": "player",
+      "name": "Ryutaro Hatsuki",
+      "result": {
+        "birthYear": 2000,
+        "careerTeams": [
+          {
+            "fromYear": 2019,
+            "name": "Hiroshima Toyo Carp",
+            "toYear": 2026,
+            "wikidataId": "Q247577"
+          }
+        ],
+        "description": "Japanese former professional baseball player",
+        "enwikiTitle": "Ryutaro Hatsuki",
+        "isHallOfFame": false,
+        "wikidataId": "Q59779654"
+      }
+    },
     "player|Q5369|sal frelick": {
       "kind": "player",
       "name": "Sal Frelick",
@@ -13150,6 +14192,43 @@
         "description": "American baseball player and coach (1906-1982)",
         "birthYear": 1906,
         "enwikiTitle": "Satchel Paige"
+      }
+    },
+    "player|Q5369|satoshi nakajima": {
+      "kind": "player",
+      "name": "Satoshi Nakajima",
+      "result": {
+        "birthYear": 1969,
+        "careerTeams": [
+          {
+            "fromYear": 1987,
+            "name": "Orix Buffaloes",
+            "toYear": 1997,
+            "wikidataId": "Q1328038"
+          },
+          {
+            "fromYear": 1998,
+            "name": "Saitama Seibu Lions",
+            "toYear": 2002,
+            "wikidataId": "Q325819"
+          },
+          {
+            "fromYear": 2003,
+            "name": "Yokohama DeNA BayStars",
+            "toYear": 2003,
+            "wikidataId": "Q1194023"
+          },
+          {
+            "fromYear": 2004,
+            "name": "Hokkaido Nippon-Ham Fighters",
+            "toYear": 2015,
+            "wikidataId": "Q974277"
+          }
+        ],
+        "description": "Japanese baseball player and coach",
+        "enwikiTitle": "Satoshi Nakajima",
+        "isHallOfFame": false,
+        "wikidataId": "Q11364699"
       }
     },
     "player|Q5369|sean murphy": {
@@ -13414,6 +14493,20 @@
         "description": "Japanese baseball player",
         "birthYear": 1993,
         "enwikiTitle": "Shota Imanaga"
+      }
+    },
+    "player|Q5369|shuya yamada": {
+      "kind": "player",
+      "name": "Shuya Yamada",
+      "result": {
+        "birthYear": 2005,
+        "careerTeams": [],
+        "description": "Japanese baseball players",
+        "isHallOfFame": false,
+        "undatedCareerTeams": [
+          "Hanshin Tigers"
+        ],
+        "wikidataId": "Q123405990"
       }
     },
     "player|Q5369|silverio navas": {
@@ -13709,6 +14802,21 @@
         "enwikiTitle": "Taijuan Walker"
       }
     },
+    "player|Q5369|taisei ota": {
+      "kind": "player",
+      "name": "Taisei Ota",
+      "result": {
+        "birthYear": 1999,
+        "careerTeams": [],
+        "description": "Japanese professional baseball player",
+        "enwikiTitle": "Taisei Ota",
+        "isHallOfFame": false,
+        "undatedCareerTeams": [
+          "Yomiuri Giants"
+        ],
+        "wikidataId": "Q109597331"
+      }
+    },
     "player|Q5369|taj bradley": {
       "kind": "player",
       "name": "Taj Bradley",
@@ -13719,6 +14827,77 @@
         "description": "American baseball player",
         "birthYear": 2001,
         "enwikiTitle": "Taj Bradley"
+      }
+    },
+    "player|Q5369|takashi uemoto": {
+      "kind": "player",
+      "name": "Takashi Uemoto",
+      "result": {
+        "birthYear": 1990,
+        "careerTeams": [],
+        "description": "Japanese baseball player",
+        "enwikiTitle": "Takashi Uemoto",
+        "isHallOfFame": false,
+        "undatedCareerTeams": [
+          "Hiroshima Toyo Carp"
+        ],
+        "wikidataId": "Q11359125"
+      }
+    },
+    "player|Q5369|takayuki kajitani": {
+      "kind": "player",
+      "name": "Takayuki Kajitani",
+      "result": {
+        "birthYear": 1988,
+        "careerTeams": [],
+        "description": "baseball player",
+        "enwikiTitle": "Takayuki Kajitani",
+        "isHallOfFame": false,
+        "undatedCareerTeams": [
+          "Yokohama DeNA BayStars",
+          "Yomiuri Giants"
+        ],
+        "wikidataId": "Q11538926"
+      }
+    },
+    "player|Q5369|takero okajima": {
+      "kind": "player",
+      "name": "Takero Okajima",
+      "result": {
+        "birthYear": 1989,
+        "careerTeams": [
+          {
+            "fromYear": 2008,
+            "name": "Hakuoh University Baseball Club",
+            "toYear": 2011,
+            "wikidataId": "Q136823800"
+          },
+          {
+            "fromYear": 2012,
+            "name": "Tohoku Rakuten Golden Eagles",
+            "toYear": 2025,
+            "wikidataId": "Q1375077"
+          }
+        ],
+        "description": "Japanese baseball player",
+        "enwikiTitle": "Takero Okajima",
+        "isHallOfFame": false,
+        "wikidataId": "Q11472793"
+      }
+    },
+    "player|Q5369|takumi ohshiro": {
+      "kind": "player",
+      "name": "Takumi Ohshiro",
+      "result": {
+        "birthYear": 1993,
+        "careerTeams": [],
+        "description": "baseball player",
+        "enwikiTitle": "Takumi Ohshiro",
+        "isHallOfFame": false,
+        "undatedCareerTeams": [
+          "Yomiuri Giants"
+        ],
+        "wikidataId": "Q45819989"
       }
     },
     "player|Q5369|tanner bibee": {
@@ -14992,6 +16171,36 @@
         "enwikiTitle": "Yuki Matsui"
       }
     },
+    "player|Q5369|yuki udagawa": {
+      "kind": "player",
+      "name": "Yuki Udagawa",
+      "result": {
+        "birthYear": 1998,
+        "careerTeams": [],
+        "description": "Japanese baseball player",
+        "enwikiTitle": "Yuki Udagawa",
+        "isHallOfFame": false,
+        "undatedCareerTeams": [
+          "Orix Buffaloes"
+        ],
+        "wikidataId": "Q106479226"
+      }
+    },
+    "player|Q5369|yuya shinto": {
+      "kind": "player",
+      "name": "Yuya Shinto",
+      "result": {
+        "birthYear": 2002,
+        "careerTeams": [],
+        "description": "Japanese baseball player",
+        "enwikiTitle": "Y\u016bya Shint\u014d",
+        "isHallOfFame": false,
+        "undatedCareerTeams": [
+          "Hokkaido Nippon-Ham Fighters"
+        ],
+        "wikidataId": "Q123405957"
+      }
+    },
     "player|Q5369|zac gallen": {
       "kind": "player",
       "name": "Zac Gallen",
@@ -15164,6 +16373,52 @@
         "description": "Major League Baseball pitcher",
         "birthYear": 1990,
         "enwikiTitle": "Zack Wheeler"
+      }
+    },
+    "team|Q41466|fort worth fire": {
+      "kind": "team",
+      "name": "Fort Worth Fire",
+      "sportQid": "Q41466",
+      "result": {
+        "wikidataId": "Q1438827",
+        "yearsActive": {
+          "from": 1992
+        }
+      }
+    },
+    "team|Q41466|memphis riverkings": {
+      "kind": "team",
+      "name": "Memphis RiverKings",
+      "sportQid": "Q41466",
+      "result": {
+        "wikidataId": "Q1302661",
+        "yearsActive": {
+          "from": 1992,
+          "to": 2018
+        }
+      }
+    },
+    "team|Q41466|roanoke express": {
+      "kind": "team",
+      "name": "Roanoke Express",
+      "sportQid": "Q41466",
+      "result": {
+        "wikidataId": "Q1137298",
+        "yearsActive": {
+          "from": 1993,
+          "to": 2004
+        }
+      }
+    },
+    "team|Q41466|san antonio iguanas": {
+      "kind": "team",
+      "name": "San Antonio Iguanas",
+      "sportQid": "Q41466",
+      "result": {
+        "wikidataId": "Q2219227",
+        "yearsActive": {
+          "from": 1994
+        }
       }
     },
     "team|Q5369|adelaide giants": {
@@ -15391,6 +16646,18 @@
         "leagueWikidataId": "Q1053005",
         "yearsActive": {
           "from": 1942
+        }
+      }
+    },
+    "team|Q5369|caribes de anzo\u00e1tegui": {
+      "kind": "team",
+      "name": "Caribes de Anzo\u00e1tegui",
+      "result": {
+        "league": "Venezuelan Professional Baseball League",
+        "leagueWikidataId": "Q1053005",
+        "wikidataId": "Q870414",
+        "yearsActive": {
+          "from": 1987
         }
       }
     },
@@ -15823,6 +17090,15 @@
         }
       }
     },
+    "team|Q5369|kanagawa future dreams": {
+      "kind": "team",
+      "name": "Kanagawa Future Dreams",
+      "result": {
+        "league": "Baseball Challenge League",
+        "leagueWikidataId": "Q857927",
+        "wikidataId": "Q76464618"
+      }
+    },
     "team|Q5369|kannapolis cannon ballers": {
       "kind": "team",
       "name": "Kannapolis Cannon Ballers",
@@ -16161,6 +17437,18 @@
         }
       }
     },
+    "team|Q5369|oisix niigata albirex baseball club": {
+      "kind": "team",
+      "name": "Oisix Niigata Albirex Baseball Club",
+      "result": {
+        "league": "Baseball Challenge League",
+        "leagueWikidataId": "Q857927",
+        "wikidataId": "Q5364870",
+        "yearsActive": {
+          "from": 2006
+        }
+      }
+    },
     "team|Q5369|old dominion monarchs baseball": {
       "kind": "team",
       "name": "Old Dominion Monarchs baseball",
@@ -16290,6 +17578,18 @@
         "wikidataId": "Q7244999",
         "yearsActive": {
           "from": 1988
+        }
+      }
+    },
+    "team|Q5369|rakuten monkeys": {
+      "kind": "team",
+      "name": "Rakuten Monkeys",
+      "result": {
+        "league": "Chinese Professional Baseball League",
+        "leagueWikidataId": "Q717976",
+        "wikidataId": "Q78851123",
+        "yearsActive": {
+          "from": 2003
         }
       }
     },

@@ -16,6 +16,7 @@ import { describe, expect, test } from "vitest";
 import { isWikidataQid } from "../lib/players/wikidata-id";
 import {
   FIXTURE_VERSION,
+  entrySportQid,
   fixtureKey,
   getEnrichmentFixture,
   normaliseLookupName,
@@ -142,7 +143,9 @@ describe("the committed enrichment fixture", () => {
     if (!parsed.ok) return;
     const { sportQid, entries } = parsed.fixture;
     for (const [key, entry] of Object.entries(entries)) {
-      expect(key).toBe(fixtureKey(entry.kind, sportQid, entry.name));
+      expect(key).toBe(fixtureKey(entry.kind, entrySportQid(entry, sportQid), entry.name));
+      // An entry names its sport only when it differs from the file's.
+      if (entry.sportQid !== undefined) expect(entry.sportQid).not.toBe(sportQid);
       expect(entry.name.trim().length).toBeGreaterThan(0);
       if (entry.result?.wikidataId !== undefined) {
         expect(isWikidataQid(entry.result.wikidataId), `${key} wikidataId`).toBe(true);

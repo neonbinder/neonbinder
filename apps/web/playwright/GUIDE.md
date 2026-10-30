@@ -730,15 +730,17 @@ never a stub of it. What that changes:
   per worker per spec. Such a spec is fresh-only. The unit test refuses a
   pool name that is not a recorded no-match. A checklist name avoids the
   lookup when the catalogue resolves it to one player, when two players
-  share it (a ready pick step, NEO-332), or when the recording holds it.
-  The recording holds ONE sport (Baseball): a Hockey or Football name always
-  goes live.
+  share it (a ready pick step, NEO-332), or when the recording holds it
+  under the lookup's sport. The file's default sport is Baseball; an entry
+  for another sport (the 1995 hockey fixtures' names) carries its own
+  `sportQid` and answers only that sport.
 - **Adding an entry** is a genuine captured answer only: §4/§4a of
   `docs/operations/neo289-enrichment-fixtures.md`, or a `null` for a name
   whose live lookup logged `wikidata_player_no_match` /
   `wikidata_team_no_match` in a run's `convex-logs-*` artifact (those lines
   are written only after a completed search found nothing, never on a
-  transport failure). Entries keyed with `fixtureKey`, merged sorted.
+  transport failure). Entries keyed with `fixtureKey` under their own sport,
+  carrying `sportQid` when it is not the file's, merged sorted.
 
 Fresh-only: the live proof passes once per seed. A second local run against
 the same preview finds the row the first run created, the add form demotes

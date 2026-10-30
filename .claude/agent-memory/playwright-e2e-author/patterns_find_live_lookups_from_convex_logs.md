@@ -18,8 +18,11 @@ A `miss` went live. The artifacts download through the public GitHub API
 `wikidata_team_no_match` (with the sport label) and `wikidata_league_no_match`
 are written only after a completed search found nothing (a transport failure
 returns before the log; a team with an ESPN answer returns that instead). Such
-a line is a captured `null` answer, usable as a recording entry for a Baseball
-name (the recording holds one sport).
+a line is a captured `null` answer, usable as a recording entry (an entry for a sport
+other than the file's default carries its own `sportQid`). Names with real
+answers can be captured without local Wikidata access by calling the
+deployment's `adapters/wikidata:runCaptureLookups` with explicit items (it
+writes nothing); see the fixture runbook §4b.
 
 **What never costs a lookup:** a team created anywhere (NEO-254), anything in
 a sport without `sportConfig.wikidata` (custom sports, Soccer, Golf...), a
