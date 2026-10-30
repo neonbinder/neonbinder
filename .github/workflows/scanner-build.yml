@@ -6,7 +6,8 @@ name: Scanner app build
 # on every PR that touches apps/scanner (the artifacts are what a reviewer
 # tries), and release.yml builds and publishes it from main.
 #
-# Built on the OLDEST macOS runner of each architecture on purpose: Homebrew
+# Built on the OLDEST macOS runner of each architecture on purpose (macOS 15
+# for both since macOS 14 images retire on 2026-11-02): Homebrew
 # bottles and the libraries bundled from them carry that runner's macOS as
 # their minimum, so the runner sets the oldest Mac the app runs on.
 
@@ -24,7 +25,7 @@ jobs:
       matrix:
         include:
           - arch: arm64
-            runner: macos-14
+            runner: macos-15
           - arch: x64
             runner: macos-15-intel
     runs-on: ${{ matrix.runner }}

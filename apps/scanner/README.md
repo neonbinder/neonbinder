@@ -6,7 +6,7 @@ screen crops, reads, pairs and matches them like dropped photos, and nothing
 saves until you say yes there.
 
 Built for Fujitsu fi-series scanners (tested on the fi-7160). Mac only for
-now.
+now, macOS 15 (Sequoia) or later.
 
 ## Using it (no setup beyond the download)
 
