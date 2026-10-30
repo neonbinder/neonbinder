@@ -40,6 +40,7 @@ import type * as backfillPromotedParallelFacet from "../backfillPromotedParallel
 import type * as backfillVariantFacetAndBaseRole from "../backfillVariantFacetAndBaseRole.js";
 import type * as backfillVariantTypeRole from "../backfillVariantTypeRole.js";
 import type * as baseMatchProbe from "../baseMatchProbe.js";
+import type * as binderFits from "../binderFits.js";
 import type * as binderRules from "../binderRules.js";
 import type * as brandRehome from "../brandRehome.js";
 import type * as brandView from "../brandView.js";
@@ -49,6 +50,7 @@ import type * as bscTeamCheck from "../bscTeamCheck.js";
 import type * as bulkLoad from "../bulkLoad.js";
 import type * as cardChecklist from "../cardChecklist.js";
 import type * as cardCounts from "../cardCounts.js";
+import type * as cardNotes from "../cardNotes.js";
 import type * as cardNumberPrefix from "../cardNumberPrefix.js";
 import type * as cardPlayerLinks from "../cardPlayerLinks.js";
 import type * as cardRowCreate from "../cardRowCreate.js";
@@ -199,6 +201,7 @@ declare const fullApi: ApiFromModules<{
   backfillVariantFacetAndBaseRole: typeof backfillVariantFacetAndBaseRole;
   backfillVariantTypeRole: typeof backfillVariantTypeRole;
   baseMatchProbe: typeof baseMatchProbe;
+  binderFits: typeof binderFits;
   binderRules: typeof binderRules;
   brandRehome: typeof brandRehome;
   brandView: typeof brandView;
@@ -208,6 +211,7 @@ declare const fullApi: ApiFromModules<{
   bulkLoad: typeof bulkLoad;
   cardChecklist: typeof cardChecklist;
   cardCounts: typeof cardCounts;
+  cardNotes: typeof cardNotes;
   cardNumberPrefix: typeof cardNumberPrefix;
   cardPlayerLinks: typeof cardPlayerLinks;
   cardRowCreate: typeof cardRowCreate;

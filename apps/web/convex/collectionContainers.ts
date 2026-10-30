@@ -75,7 +75,7 @@ import {
   collectionLabelValidator,
   collectionRuleValidator,
 } from "./schema";
-import { MAX_SORTED_LINES, cleanRule, forgetDeclines, ruleNameValidator, ruleNames } from "./binderRules";
+import { MAX_SORTED_LINES, cleanRule, forgetDeclines, forgetFits, ruleNameValidator, ruleNames, scheduleFits } from "./binderRules";
 import { SPINE_FONTS } from "../lib/print/spine-fonts";
 import { SLUG_RULE, cleanSlug, freeSlug, suggestSlug } from "../lib/collection/share-links";
 
@@ -393,6 +393,8 @@ export const create = mutation({
       ...(args.kind === "binder" ? { slug: freeSlug(suggestSlug(name), new Set(own.map((row) => row.slug ?? ""))) } : {}),
       lastUpdated: Date.now(),
     });
+    // NEO-401: a smart binder's fits are stored, computed right after it is born.
+    if (rule) await scheduleFits(ctx, containerId);
     return { containerId };
   },
 });
@@ -567,6 +569,7 @@ export const remove = mutation({
       await ctx.db.patch(want._id, { binderId: undefined, lastUpdated: now });
     }
     await forgetDeclines(ctx, ownerId, row._id);
+    await forgetFits(ctx, row._id);
     await ctx.db.delete(row._id);
     return { unscopedWants: wants.length };
   },
@@ -728,6 +731,9 @@ export const setRule = mutation({
     const rule = args.rule ? await cleanRule(ctx, args.rule) : undefined;
     if (!rule) await forgetDeclines(ctx, ownerId, row._id);
     await ctx.db.patch(row._id, { rule, lastUpdated: Date.now() });
+    // NEO-401: the rule's cards are stored, not walked on read.
+    if (rule) await scheduleFits(ctx, row._id);
+    else await forgetFits(ctx, row._id);
     return { previous: row.rule ?? null };
   },
 });

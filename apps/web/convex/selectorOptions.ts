@@ -9267,13 +9267,29 @@ export const resetCollectionContainersBatch = internalMutation({
   }),
   handler: async (ctx) => {
     assertResetArmed();
-    const rows = await ctx.db
-      .query("collectionContainers")
-      .take(RESET_BATCH_SIZE);
-    for (const row of rows) {
-      await ctx.db.delete(row._id);
+    // NEO-401 — a smart binder's stored fits (cardId, variantId) and their
+    // state go first, in the same loop: they name a card and a variant row,
+    // so they can never outlive this step, and the import guard
+    // (`SELECTOR_DEPENDANT_TABLES`) counts them.
+    let left = RESET_BATCH_SIZE;
+    let deleted = 0;
+    const fits = await ctx.db.query("collectionBinderFits").take(left);
+    for (const row of fits) await ctx.db.delete(row._id);
+    left -= fits.length;
+    deleted += fits.length;
+    if (left > 0) {
+      const states = await ctx.db.query("collectionBinderFitsState").take(left);
+      for (const row of states) await ctx.db.delete(row._id);
+      left -= states.length;
+      deleted += states.length;
     }
-    return { deleted: rows.length, hasMore: rows.length === RESET_BATCH_SIZE };
+    if (left > 0) {
+      const rows = await ctx.db.query("collectionContainers").take(left);
+      for (const row of rows) await ctx.db.delete(row._id);
+      left -= rows.length;
+      deleted += rows.length;
+    }
+    return { deleted, hasMore: left === 0 };
   },
 });
 
