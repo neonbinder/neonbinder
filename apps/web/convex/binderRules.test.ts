@@ -12,6 +12,8 @@ import { api, internal } from "./_generated/api";
 import schema, { collectionRuleValidator } from "./schema";
 import { seedCollectionCatalog } from "../lib/testing/collection-fixture";
 import type { Id } from "./_generated/dataModel";
+import { binderNeeds } from "./binderRules";
+import { CatalogReader } from "./lib/catalogView";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -19,6 +21,7 @@ const modules = (import.meta as unknown as {
 
 const ME = { subject: "collector_me_001" };
 const THEM = { subject: "collector_them_002" };
+const ADMIN = { subject: "user_admin", role: "admin" };
 
 /**
  * NEO-401: a smart binder's fits are computed by a SCHEDULED mutation
@@ -263,39 +266,107 @@ describe("empty slots", () => {
     expect(hidden.needs.map((n) => n.card._id)).not.toContain(gold);
   });
 
-  test("a stored slot carries the card as shown and whether it is held elsewhere; held follows every copy write (NEO-401)", async () => {
+  test("a stored slot reads its card live: an edit shows at once and a deleted card is no slot (NEO-401)", async () => {
+    const s = await setup();
+    const admin = s.t.withIdentity(ADMIN);
+    const id = await smartBinder(s);
+    await settle(s);
+    expect((await fitsOf(s, id)).map((f) => f.cardId)).toContain(s.fx.futureStar);
+    // The slot shows the card as it is now, the same view the catalog shows.
+    await s.t.run((ctx) => ctx.db.patch(s.fx.futureStar, { cardName: "Renamed in Set Builder" }));
+    const need = (await s.me.query(api.binderRules.needs, { containerId: id })).needs.find(
+      (n) => n.card._id === s.fx.futureStar,
+    );
+    const live = await s.t.run(async (ctx) => new CatalogReader(ctx).cardWithPath((await ctx.db.get(s.fx.futureStar))!));
+    expect(need?.card).toEqual(live);
+    expect(need?.card.cardName).toBe("Renamed in Set Builder");
+    // Deleted before any recompute: the stored row is still there, the slot is not.
+    await admin.mutation(api.selectorOptions.deleteCard, { id: s.fx.futureStar });
+    const after = await s.me.query(api.binderRules.needs, { containerId: id });
+    expect(after.needs.map((n) => n.card._id)).not.toContain(s.fx.futureStar);
+    expect(after.needs.length).toBeGreaterThan(0);
+  });
+
+  test("the held mark follows every copy write: add, move to a box and back, remove, and only on the other binder's rows (NEO-401)", async () => {
+    const s = await setup();
+    const id = await smartBinder(s);
+    const twin = await smartBinder(s);
+    await settle(s);
+    const heldIn = async (binderId: Id<"collectionContainers">) =>
+      (await fitsOf(s, binderId)).find((f) => f.cardId === s.fx.futureStar)?.held;
+    const shownHeld = async (binderId: Id<"collectionContainers">) =>
+      (await s.me.query(api.binderRules.needs, { containerId: binderId })).needs.find(
+        (n) => n.card._id === s.fx.futureStar,
+      )?.held;
+    expect(await heldIn(id)).toBe(false);
+
+    // A copy in a plain binder marks both smart binders' slots.
+    const keepers = (await s.me.mutation(api.collectionContainers.create, { kind: "binder", name: "Keepers" })).containerId;
+    const box = (await s.me.mutation(api.collectionContainers.create, { kind: "box", name: "Box" })).containerId;
+    const added = await s.me.mutation(api.collection.addLineItem, {
+      cardId: s.fx.futureStar,
+      details: { homeId: keepers, quantity: 1 },
+    });
+    expect(await heldIn(id)).toBe(true);
+    expect(await heldIn(twin)).toBe(true);
+    expect(await shownHeld(id)).toBe(true);
+
+    // To a box: in no binder, so unmarked. Back to a binder: marked again.
+    await s.me.mutation(api.collection.moveCopy, { copyId: added.copyId as Id<"collectionCopies">, toHomeId: box });
+    expect(await heldIn(id)).toBe(false);
+    expect(await shownHeld(id)).toBe(false);
+    const inBox = await s.t.run((ctx) =>
+      ctx.db
+        .query("collectionCopies")
+        .withIndex("by_owner_and_card", (q) => q.eq("ownerId", ME.subject).eq("cardId", s.fx.futureStar))
+        .first(),
+    );
+    await s.me.mutation(api.collection.moveCopy, { copyId: inBox!._id, toHomeId: keepers });
+    expect(await heldIn(id)).toBe(true);
+
+    // Into one smart binder: that binder has the card (no slot); the twin's
+    // row is marked held, as the card is in a binder other than the twin.
+    const inKeepers = await s.t.run((ctx) =>
+      ctx.db
+        .query("collectionCopies")
+        .withIndex("by_owner_and_card", (q) => q.eq("ownerId", ME.subject).eq("cardId", s.fx.futureStar))
+        .first(),
+    );
+    await s.me.mutation(api.collection.moveCopy, { copyId: inKeepers!._id, toHomeId: id });
+    expect(await heldIn(id)).toBe(false);
+    expect(await heldIn(twin)).toBe(true);
+    expect((await s.me.query(api.binderRules.needs, { containerId: id })).needs.map((n) => n.card._id)).not.toContain(
+      s.fx.futureStar,
+    );
+
+    // Removed: unmarked everywhere.
+    const inId = await s.t.run((ctx) =>
+      ctx.db
+        .query("collectionCopies")
+        .withIndex("by_owner_and_card", (q) => q.eq("ownerId", ME.subject).eq("cardId", s.fx.futureStar))
+        .first(),
+    );
+    await s.me.mutation(api.collection.removeCopy, { copyId: inId!._id });
+    expect(await heldIn(twin)).toBe(false);
+  });
+
+  test("a public read never learns the held mark, and a row stored before the mark existed reads it live (NEO-401)", async () => {
     const s = await setup();
     const id = await smartBinder(s);
     await settle(s);
-    const slot = (await fitsOf(s, id)).find((f) => f.cardId === s.fx.futureStar)!;
-    // The view the empty slot shows is on the row: no card read per slot.
-    const card = await s.t.run((ctx) => ctx.db.get(s.fx.futureStar));
-    expect(slot.card).toMatchObject({ _id: s.fx.futureStar, cardNumber: card!.cardNumber, cardName: card!.cardName });
-    expect(slot.card?.players.map((p) => p._id)).toContain(s.fx.goodenId);
-    expect(slot.held).toBe(false);
-    const shown = await s.me.query(api.binderRules.needs, { containerId: id });
-    expect(shown.needs.find((n) => n.card._id === s.fx.futureStar)?.card).toMatchObject({
-      cardNumber: card!.cardNumber,
-      set: expect.objectContaining({ _id: expect.any(String) }),
-      variant: expect.objectContaining({ _id: s.fx.futureStarsId }),
-    });
-
-    // A copy in another binder marks the slot held; taking it to zero unmarks it.
-    const other = (await s.me.mutation(api.collectionContainers.create, { kind: "binder", name: "Keepers" })).containerId;
-    const added = await s.me.mutation(api.collection.addLineItem, {
-      cardId: s.fx.futureStar,
-      details: { homeId: other, quantity: 1 },
-    });
+    const keepers = (await s.me.mutation(api.collectionContainers.create, { kind: "binder", name: "Keepers" })).containerId;
+    await s.me.mutation(api.collection.addLineItem, { cardId: s.fx.futureStar, details: { homeId: keepers, quantity: 1 } });
     expect((await fitsOf(s, id)).find((f) => f.cardId === s.fx.futureStar)?.held).toBe(true);
+    const publicNeeds = await s.t.run(async (ctx) => binderNeeds(ctx, (await ctx.db.get(id))!, null));
+    expect(publicNeeds.needs.find((n) => n.card._id === s.fx.futureStar)?.held).toBe(false);
+
+    // An old row with no mark: the owner's read works it out live.
+    const row = (await fitsOf(s, id)).find((f) => f.cardId === s.fx.futureStar)!;
+    await s.t.run((ctx) => ctx.db.patch(row._id, { held: undefined }));
     expect(
-      (await s.me.query(api.binderRules.needs, { containerId: id })).needs.find((n) => n.card._id === s.fx.futureStar)?.held,
+      (await s.me.query(api.binderRules.needs, { containerId: id })).needs.find((n) => n.card._id === s.fx.futureStar)
+        ?.held,
     ).toBe(true);
-    await s.me.mutation(api.collection.removeCopy, { copyId: added.copyId });
-    expect((await fitsOf(s, id)).find((f) => f.cardId === s.fx.futureStar)?.held).toBe(false);
-    // Moving the copy INTO this binder fills the slot; the mark on other binders' rows is their own.
-    await s.me.mutation(api.collection.addLineItem, { cardId: s.fx.futureStar, details: { homeId: id, quantity: 1 } });
-    const after = await s.me.query(api.binderRules.needs, { containerId: id });
-    expect(after.needs.map((n) => n.card._id)).not.toContain(s.fx.futureStar);
   });
 
   test("the stored fits follow the rule: saved, changed, taken off, and gone with the binder (NEO-401)", async () => {

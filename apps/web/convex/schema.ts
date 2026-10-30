@@ -1,6 +1,5 @@
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
-import { catalogCardValidator } from "./lib/catalogView";
 
 /**
  * NEO-356 — the collector's saved theme preference, shared by the schema and
@@ -3974,16 +3973,6 @@ export default defineSchema({
      * brings the new ones, and never in a user's own mutation.
      */
     generation: v.number(),
-    /**
-     * The card as the empty slot shows it (`CatalogReader.card`), copied here
-     * by the recompute so the slots read is ONE indexed range over this table
-     * and never a `get` per card (NEO-392: that fan-out was the read behind
-     * every save on the binder screen). The set and variant refs are not
-     * copied: one cached chain read per variant resolves them. Refreshed by
-     * every recompute (nightly at the latest). Optional only for rows written
-     * before the field existed; `binderNeeds` falls back to the card row.
-     */
-    card: v.optional(catalogCardValidator),
     /**
      * The collector has a copy of it in a binder other than this one. Kept
      * current by `binderFits.refreshHeld` on every copy write, and rewritten

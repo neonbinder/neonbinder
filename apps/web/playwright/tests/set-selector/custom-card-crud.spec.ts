@@ -28,7 +28,7 @@ test(
     await expectAccessible(page, { label: "Checklist with a hand-added card" });
 
     // NEO-400: the row's trash can checks what is below it on click (never a
-    // live query). This insert now holds a card, so the click explains itself
+    // live query). This Base variant type now holds a card, so the click explains itself
     // and opens no dialog.
     const trash = page.getByRole("button", { name: "Delete Base", exact: true });
     await expect(trash).toBeVisible();

@@ -469,40 +469,28 @@ export async function binderNeeds(
     if (!state.complete) truncated = true;
     const parallel = parallelReader(ctx);
     const holds = new Set(variants.map((id) => id as string));
-    // One indexed range, bounded by what the screen can show plus the cards
-    // already in the binder (each row is a slot or a card that is here).
-    const limit = Math.min(MAX_CANDIDATES, MAX_NEEDS + lines.length + 1);
     const fits = await ctx.db
       .query("collectionBinderFits")
       .withIndex("by_binder_order", (q) => q.eq("binderId", binder._id))
-      .take(limit);
-    if (fits.length === limit) truncated = true;
+      .take(MAX_CANDIDATES);
     for (const fit of fits) {
       if (here.has(fit.cardId as string)) continue;
       // A set's parallels repeat its base card for card: an empty slot for
       // every one would bury the set. A parallel shows its gaps only while
       // the binder holds a card of it, as a plain binder's checklists do.
       if (!holds.has(fit.variantId as string) && (await parallel(fit.variantId))) continue;
-      if (!fit.card) {
-        // A row from before the card view was stored: the card row, once,
-        // until the next recompute rewrites it.
-        const card = await ctx.db.get(fit.cardId);
-        if (!card) continue;
-        if (!(await take(card))) break;
-        continue;
-      }
       if (needs.length >= MAX_NEEDS) {
         truncated = true;
         break;
       }
-      // The stored view plus its path: the set and variant refs come from the
-      // chain, read once per variant (cached), never per card.
+      // The card itself is read live: a fits row stores which card fits,
+      // never how it looks, so a card renamed or deleted in Set Builder shows
+      // as it is now (a deleted one is skipped). Only the held mark is stored,
+      // kept current by every copy write (`binderFits.refreshHeld`).
+      const card = await ctx.db.get(fit.cardId);
+      if (!card) continue;
       needs.push({
-        card: {
-          ...fit.card,
-          set: await facts.catalog.setRef(fit.variantId),
-          variant: await facts.catalog.variantRef(fit.variantId),
-        },
+        card: await facts.catalog.cardWithPath(card),
         held: ownerHeld ? (fit.held ?? (await ownerHeld(fit.cardId))) : false,
       });
     }
@@ -602,17 +590,11 @@ export const writeFitsPage = internalMutation({
   },
   returns: v.null(),
   handler: async (ctx, args) => {
-    // The slot's card view and `held` mark are built HERE, off the save path,
-    // so the slots read is one range over the rows (NEO-392). Per row: the
-    // card, its players and teams (cached across the page) and one index
-    // read on the card's lines.
-    const catalog = new CatalogReader(ctx);
+    // The `held` mark is built HERE, off the save path, so the slots read
+    // needs no per-card lookup of the collector's other binders (NEO-392).
     const held = heldReader(ctx, args.ownerId);
     for (const [i, fit] of args.rows.entries()) {
       const order = args.startOrder + i;
-      const cardRow = await ctx.db.get(fit.cardId);
-      if (!cardRow) continue;
-      const card = await catalog.card(cardRow);
       const isHeld = await held(fit.cardId, args.binderId);
       const row = await ctx.db
         .query("collectionBinderFits")
@@ -626,11 +608,10 @@ export const writeFitsPage = internalMutation({
           variantId: fit.variantId,
           order,
           generation: args.generation,
-          card,
           held: isHeld,
         });
       } else {
-        await ctx.db.patch(row._id, { order, variantId: fit.variantId, generation: args.generation, card, held: isHeld });
+        await ctx.db.patch(row._id, { order, variantId: fit.variantId, generation: args.generation, held: isHeld });
       }
     }
     return null;
