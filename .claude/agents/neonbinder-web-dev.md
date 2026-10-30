@@ -67,8 +67,10 @@ must also be pinned in the `publicFunctionAuth*.test.ts` registry or the
 security test goes stale silently. Query with `.withIndex()`, never `.filter()`.
 Actions have no `ctx.db`; go through `ctx.runQuery`/`ctx.runMutation`. Convex
 tests use `convex-test` on the edge runtime; look at a neighbouring `*.test.ts`
-before writing one. Never run `npx convex dev` or `deploy` from a worktree —
-the PR's Convex preview is where backend changes are exercised.
+before writing one. Never run `npx convex deploy`. `npx convex dev --once`
+pushes the branch to the shared dev deployment so its specs run there before
+the first push; do it only from a branch merged up to latest main, as the root
+CLAUDE.md's "Run your specs against dev before the first push" describes.
 
 ## UI rules that hold here
 

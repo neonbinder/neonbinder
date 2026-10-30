@@ -1,12 +1,22 @@
 ---
 name: feedback-no-local-convex-deploy-from-worktrees
-description: Never run convex dev/deploy from a feature worktree; validate schema changes via tsc + the PR's isolated Convex preview
+description: Never `convex deploy` from a worktree; the only push from a branch is `npx convex dev --once` to shared dev, from a branch merged up to main, so its specs run before the first push (NEO-390)
 metadata:
   type: feedback
 ---
 
-Do not run `npx convex dev` / `npx convex deploy` from a feature worktree, and do not create a `.env.local` there.
+Never run `npx convex deploy` from a feature worktree: with no deploy key it
+targets production. The one push a branch makes is `npx convex dev --once` to
+the shared dev deployment, so the covering specs run on dev before the first
+push (NEO-390, 2026-10-29; root CLAUDE.md, "Run your specs against dev before
+the first push"). This replaces the earlier rule that a branch never pushes
+to dev.
 
-**Why:** feature worktrees are deliberately left without Convex credentials so a schema change can't be pushed to a shared dev/prod deployment from a branch. Each PR gets its own isolated Convex preview deploy in CI — that is the intended validation surface for schema and backend changes.
+**Why:** dev is shared by every concurrent session and whoever pushed last owns
+it, and Convex validates every stored row against the incoming schema.
 
-**How to apply:** validate locally with `tsc -p convex/tsconfig.json` only (see [[reference-typecheck-convex-changes]]), then let the PR's preview deploy prove the schema. Read-only `npx convex` commands against an already-configured deployment are fine; anything that writes is not.
+**How to apply:** validate a schema change with `tsc -p convex/tsconfig.json`
+first (see [[reference-typecheck-convex-changes]]). Then merge `origin/main`
+into the branch and push it to dev. If dev refuses it (`Schema validation
+failed` on another branch's rows), never clear data or set `schemaValidation:
+false`: report it and validate on the PR's Convex preview instead.

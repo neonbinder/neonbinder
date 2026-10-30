@@ -285,11 +285,12 @@ batch touched). Record the counts for the PR body.
 
 **E2E is CI's job here, not the laptop's.** The batch is maintainer-authored, so it
 gets the full 8-shard Playwright matrix on the PR, and a local full-suite run costs far
-more than it proves (see CLAUDE.md, "The PR loop"). A local run needs the PR's own
-Convex preview anyway — the seed resets its target, so it must never point at shared
-dev — and that does not exist until step 7 pushes. Do not skip or defer anything
+more than it proves (see CLAUDE.md, "The PR loop"). Run the specs a bump plausibly
+touches against dev before step 7 pushes (CLAUDE.md, "Run your specs against dev
+before the first push"), not the whole suite. Do not skip or defer anything
 silently: the E2E result is part of step 8's verdict, and a red spec is debugged with
-that one spec against the PR preview (`apps/web/playwright/GUIDE.md` -> **Running**).
+that one spec against dev, or against the PR preview when dev cannot reproduce it
+(`apps/web/playwright/GUIDE.md` -> **Running**).
 
 If a bump touches the E2E harness itself (`@playwright/test`, `playwright.config.ts`,
 the shard planner), say so in the PR body: a green run proves less than usual there, so

@@ -27,18 +27,19 @@ grep -oh "api\.[A-Za-z]*\.[A-Za-z]*" components/SetSelector/*.tsx components/mod
 Then grep the missing names for `useQuery(` to know exactly which step will die.
 On 2026-09-14 the New Team dialog (`useQuery(api.teams.erasByNameAndSport)`) was
 behind the wall, so EVERY spec that creates a team through the dialog is
-CI-preview-only while dev lags; everything before that step validated fine
+unrunnable on dev until dev is brought up to date; everything before that step validated fine
 locally.
 
-## `npx convex dev --once` is not a guaranteed fix, and not yours to run
+## `npx convex dev --once` is the fix, but not a guaranteed one
 
-Pushing the branch's functions to dev also pushes its SCHEMA, and the push is
-refused when any stored row carries a field the new schema no longer has (`Schema
-validation failed ... extra field`). Cleaning shared dev data is not a spec
-author's call: stop, report the partial validation and let the coordinator
+When dev lacks a function, merge main into the branch and push it with `npx
+convex dev --once` (NEO-390). That also pushes the branch's SCHEMA, and the push
+is refused when any stored row carries a field the new schema no longer has
+(`Schema validation failed ... extra field`). Cleaning shared dev data is not a
+spec author's call: stop, report the partial validation and let the coordinator
 validate against the PR's Convex preview
-([[project_local_validation_needs_a_pr_preview]],
-[[feedback_never_push_a_branch_convex_to_shared_dev]]).
+([[project_dev_must_carry_the_branch_before_a_local_run]],
+[[feedback_run_specs_on_dev_before_first_push]]).
 
 ## Read the partial run for what it DID prove
 Report which steps passed before the wall; that is evidence worth putting in the
