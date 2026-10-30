@@ -995,6 +995,11 @@ export interface BinderNeeds {
   supported: boolean;
   /** True when there are more than `cards` lists. */
   truncated: boolean;
+  /**
+   * NEO-401 — a smart binder whose slots are being recomputed (its rule was
+   * just saved): `cards` is what was known before, and refreshes on its own.
+   */
+  pending?: boolean;
 }
 
 /** NEO-362 — "Find cards for this binder": copies that fit the rule and live elsewhere. */

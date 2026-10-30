@@ -26,7 +26,8 @@ import { v } from "convex/values";
 import { paginationOptsValidator, paginationResultValidator } from "convex/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
-import { mutation, query } from "./_generated/server";
+import { internalAction, internalMutation, internalQuery, mutation, query } from "./_generated/server";
+import { internal } from "./_generated/api";
 import { requireSignedIn } from "./auth";
 import { cardPlayerLinkPage } from "./cardPlayerLinks";
 import { cardIdsForTeam } from "./cardTeamLinks";
@@ -403,6 +404,12 @@ export const needsResultValidator = v.object({
   supported: v.boolean(),
   /** True when there are more than were returned (`MAX_NEEDS`, or a walk cut short). */
   truncated: v.boolean(),
+  /**
+   * NEO-401 — a smart binder whose stored fits are being (re)computed: the
+   * rule was just saved. `needs` is what was stored before (nothing, for a
+   * new rule) and refreshes on its own when the recompute lands.
+   */
+  pending: v.optional(v.boolean()),
 });
 
 /**
@@ -444,23 +451,38 @@ export async function binderNeeds(
     if (line.variantId && !variants.includes(line.variantId)) variants.push(line.variantId);
   }
   if (binder.rule) {
+    // NEO-401: the rule's cards are STORED (`collectionBinderFits`, written
+    // by `recomputeFits`), never walked here. This read is the binder's own
+    // lines, its fits rows and the card rows of its gaps: all indexed, so
+    // a write from the binder screen no longer re-runs the catalog walk and
+    // rule test behind every save (NEO-392).
+    const state = await ctx.db
+      .query("collectionBinderFitsState")
+      .withIndex("by_binder", (q) => q.eq("binderId", binder._id))
+      .unique();
+    // Not computed yet (a rule just saved; the recompute is scheduled): no
+    // slots for a moment, said as `pending`, rather than a walk.
+    if (!state) return { needs: [], supported: true, truncated: false, pending: true };
+    const pending = state.pending === true;
+    if (!state.supported) return { needs: [], supported: false, truncated: false, pending };
+    if (!state.complete) truncated = true;
     const parallel = parallelReader(ctx);
     const held = new Set(variants.map((id) => id as string));
-    const skip = async (variantId: Id<"selectorOptions">) => !held.has(variantId as string) && (await parallel(variantId));
-    const candidates = await catalogCandidates(ctx, binder.rule, skip);
-    if (!candidates.supported) return { needs: [], supported: false, truncated: false };
-    if (!candidates.complete) truncated = true;
-    for (const id of candidates.cardIds) {
-      const card = await ctx.db.get(id);
-      if (!card || card.variationOfCardId) continue;
+    const fits = await ctx.db
+      .query("collectionBinderFits")
+      .withIndex("by_binder_order", (q) => q.eq("binderId", binder._id))
+      .take(MAX_CANDIDATES);
+    for (const fit of fits) {
+      if (here.has(fit.cardId as string)) continue;
       // A set's parallels repeat its base card for card: an empty slot for
-      // every one would bury the set. A parallel shows its gaps once the
-      // binder holds a card of it, as a plain binder's checklists do.
-      if (await skip(card.selectorOptionId)) continue;
-      if (!(await facts.matches(binder.rule, card))) continue;
+      // every one would bury the set. A parallel shows its gaps only while
+      // the binder holds a card of it, as a plain binder's checklists do.
+      if (!held.has(fit.variantId as string) && (await parallel(fit.variantId))) continue;
+      const card = await ctx.db.get(fit.cardId);
+      if (!card) continue;
       if (!(await take(card))) break;
     }
-    return { needs, supported: true, truncated };
+    return { needs, supported: true, truncated, pending };
   }
   if (variants.length > MAX_NEED_CHECKLISTS) truncated = true;
   outer: for (const variantId of variants.slice(0, MAX_NEED_CHECKLISTS)) {
@@ -475,6 +497,280 @@ export async function binderNeeds(
   }
   return { needs, supported: true, truncated };
 }
+
+/** Smart binders one nightly refresh pass schedules before handing on. */
+const REFRESH_BATCH = 100;
+/** Seconds between two scheduled recomputes, so a pass never stacks them. */
+const REFRESH_SPACING_MS = 3_000;
+/** A binder's fits older than this are due for the nightly pass. */
+const REFRESH_AFTER_MS = 20 * 60 * 60 * 1000;
+/** Fits rows one mutation writes or deletes: the per-transaction budget, with room. */
+export const FITS_PAGE = 500;
+
+const fitValidator = v.object({ cardId: v.id("cardChecklist"), variantId: v.id("selectorOptions") });
+
+/**
+ * NEO-401 — the read half of a recompute: every catalog card the binder's
+ * rule matches, in catalog order, through the same walk (`catalogCandidates`)
+ * and rule test the empty-slots read used to run on every subscription. A
+ * parallel's cards are kept only while the binder holds a card of it (see
+ * `binderNeeds`; `binderFits.noteArrivals` recomputes when one arrives).
+ * Null for a binder that is gone or has no rule: its rows are to be cleared.
+ */
+export const planFits = internalQuery({
+  args: { binderId: v.id("collectionContainers") },
+  returns: v.union(
+    v.null(),
+    v.object({
+      ownerId: v.string(),
+      supported: v.boolean(),
+      complete: v.boolean(),
+      wanted: v.array(fitValidator),
+      /** The generation this recompute writes: one past the stored one, never the clock. */
+      generation: v.number(),
+    }),
+  ),
+  handler: async (ctx, args) => {
+    const binder = await ctx.db.get(args.binderId);
+    if (!binder || !binder.rule) return null;
+    const state = await ctx.db
+      .query("collectionBinderFitsState")
+      .withIndex("by_binder", (q) => q.eq("binderId", binder._id))
+      .unique();
+    const generation = (state?.generation ?? 0) + 1;
+    const lines = await ctx.db
+      .query("collectionCopies")
+      .withIndex("by_owner_home_slot", (q) => q.eq("ownerId", binder.ownerId).eq("homeId", binder._id))
+      .take(MAX_SORTED_LINES + 1);
+    const held = new Set<string>();
+    for (const line of lines) if (line.variantId) held.add(line.variantId as string);
+    const parallel = parallelReader(ctx);
+    const skip = async (variantId: Id<"selectorOptions">) => !held.has(variantId as string) && (await parallel(variantId));
+    const candidates = await catalogCandidates(ctx, binder.rule, skip);
+    const facts = new FactReader(ctx);
+    const wanted: Array<typeof fitValidator.type> = [];
+    if (candidates.supported) {
+      for (const id of candidates.cardIds) {
+        const card = await ctx.db.get(id);
+        if (!card || card.variationOfCardId) continue;
+        if (await skip(card.selectorOptionId)) continue;
+        if (!(await facts.matches(binder.rule, card))) continue;
+        wanted.push({ cardId: card._id, variantId: card.selectorOptionId });
+      }
+    }
+    return { ownerId: binder.ownerId, supported: candidates.supported, complete: candidates.complete, wanted, generation };
+  },
+});
+
+/**
+ * One page of a recompute's rows: each card already stored for the binder is
+ * re-stamped with this generation (and its order, if it moved), each new one
+ * inserted. `FITS_PAGE` rows at most, so a brand rule at `MAX_CANDIDATES`
+ * takes eight pages rather than one over-budget transaction.
+ */
+export const writeFitsPage = internalMutation({
+  args: {
+    binderId: v.id("collectionContainers"),
+    ownerId: v.string(),
+    generation: v.number(),
+    startOrder: v.number(),
+    rows: v.array(fitValidator),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    for (const [i, fit] of args.rows.entries()) {
+      const order = args.startOrder + i;
+      const row = await ctx.db
+        .query("collectionBinderFits")
+        .withIndex("by_binder_card", (q) => q.eq("binderId", args.binderId).eq("cardId", fit.cardId))
+        .unique();
+      if (!row) {
+        await ctx.db.insert("collectionBinderFits", {
+          ownerId: args.ownerId,
+          binderId: args.binderId,
+          cardId: fit.cardId,
+          variantId: fit.variantId,
+          order,
+          generation: args.generation,
+        });
+      } else {
+        await ctx.db.patch(row._id, { order, variantId: fit.variantId, generation: args.generation });
+      }
+    }
+    return null;
+  },
+});
+
+/**
+ * The end of a recompute: delete up to `FITS_PAGE` rows of an older
+ * generation (what the rule no longer matches), and once none are left write
+ * the binder's state. `more` asks to be called again.
+ */
+export const finishFits = internalMutation({
+  args: {
+    binderId: v.id("collectionContainers"),
+    ownerId: v.string(),
+    generation: v.number(),
+    supported: v.boolean(),
+    complete: v.boolean(),
+    count: v.number(),
+  },
+  returns: v.object({ more: v.boolean() }),
+  handler: async (ctx, args) => {
+    const stale = await ctx.db
+      .query("collectionBinderFits")
+      .withIndex("by_binder_order", (q) => q.eq("binderId", args.binderId))
+      .filter((q) => q.neq(q.field("generation"), args.generation))
+      .take(FITS_PAGE);
+    for (const row of stale) await ctx.db.delete(row._id);
+    if (stale.length === FITS_PAGE) return { more: true };
+    const state = await ctx.db
+      .query("collectionBinderFitsState")
+      .withIndex("by_binder", (q) => q.eq("binderId", args.binderId))
+      .unique();
+    const next = {
+      ownerId: args.ownerId,
+      binderId: args.binderId,
+      computedAt: Date.now(),
+      supported: args.supported,
+      complete: args.complete,
+      count: args.count,
+      pending: undefined,
+      generation: args.generation,
+    };
+    if (state) await ctx.db.patch(state._id, next);
+    else await ctx.db.insert("collectionBinderFitsState", next);
+    return { more: false };
+  },
+});
+
+/**
+ * A binder that is gone or has no rule any more: its fits rows go, a page at
+ * a time, then its state. `more` asks to be called again.
+ */
+export const clearFits = internalMutation({
+  args: { binderId: v.id("collectionContainers") },
+  returns: v.object({ more: v.boolean() }),
+  handler: async (ctx, args) => {
+    const rows = await ctx.db
+      .query("collectionBinderFits")
+      .withIndex("by_binder_order", (q) => q.eq("binderId", args.binderId))
+      .take(FITS_PAGE);
+    for (const row of rows) await ctx.db.delete(row._id);
+    if (rows.length === FITS_PAGE) return { more: true };
+    const state = await ctx.db
+      .query("collectionBinderFitsState")
+      .withIndex("by_binder", (q) => q.eq("binderId", args.binderId))
+      .unique();
+    if (state) await ctx.db.delete(state._id);
+    return { more: false };
+  },
+});
+
+/**
+ * NEO-401 — recompute one smart binder's stored fits: plan (one read), write
+ * the rows in pages under a new generation, sweep the older generation, write
+ * the state. An action so that no single transaction carries the whole list;
+ * each step is bounded by `FITS_PAGE`. Scheduled by `scheduleFits` (a rule
+ * saved or taken off, a binder removed), by `binderFits.noteArrivals` (a
+ * parallel the binder did not hold arrives) and by `refreshStaleFits`
+ * (nightly, so new catalog cards are slotted in). Diffed against what is
+ * stored, so a pass on an unchanged catalog changes no row's id or order.
+ */
+export const recomputeFits = internalAction({
+  args: { binderId: v.id("collectionContainers") },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const plan = await ctx.runQuery(internal.binderRules.planFits, { binderId: args.binderId });
+    if (!plan) {
+      let more = true;
+      while (more) ({ more } = await ctx.runMutation(internal.binderRules.clearFits, { binderId: args.binderId }));
+      return null;
+    }
+    const { generation } = plan;
+    for (let start = 0; start < plan.wanted.length; start += FITS_PAGE) {
+      await ctx.runMutation(internal.binderRules.writeFitsPage, {
+        binderId: args.binderId,
+        ownerId: plan.ownerId,
+        generation,
+        startOrder: start,
+        rows: plan.wanted.slice(start, start + FITS_PAGE),
+      });
+    }
+    let more = true;
+    while (more) {
+      ({ more } = await ctx.runMutation(internal.binderRules.finishFits, {
+        binderId: args.binderId,
+        ownerId: plan.ownerId,
+        generation,
+        supported: plan.supported,
+        complete: plan.complete,
+        count: plan.wanted.length,
+      }));
+    }
+    return null;
+  },
+});
+
+/**
+ * A rule was saved, taken off, or its binder removed: schedule the recompute
+ * (which clears the rows when there is no rule to serve) and mark the state
+ * pending, so the save returns at once and the screen's slots say they are
+ * refreshing. Nothing heavy runs in the user's own mutation.
+ */
+export async function scheduleFits(ctx: MutationCtx, ownerId: string, binderId: Id<"collectionContainers">): Promise<void> {
+  const state = await ctx.db
+    .query("collectionBinderFitsState")
+    .withIndex("by_binder", (q) => q.eq("binderId", binderId))
+    .unique();
+  if (state) await ctx.db.patch(state._id, { pending: true });
+  else {
+    await ctx.db.insert("collectionBinderFitsState", {
+      ownerId,
+      binderId,
+      computedAt: 0,
+      supported: true,
+      complete: true,
+      count: 0,
+      pending: true,
+    });
+  }
+  await ctx.scheduler.runAfter(0, internal.binderRules.recomputeFits, { binderId });
+}
+
+/**
+ * The nightly pass (`crons.ts`): every smart binder whose fits are older
+ * than `REFRESH_AFTER_MS`, oldest first, `REFRESH_BATCH` at a time, each
+ * recompute `REFRESH_SPACING_MS` after the last; a full batch hands on to
+ * another pass after it. This is how a card added to the catalog after the
+ * rule was saved reaches the binder's empty slots.
+ */
+export const refreshStaleFits = internalMutation({
+  args: {},
+  returns: v.object({ scheduled: v.number(), more: v.boolean() }),
+  handler: async (ctx) => {
+    const due = await ctx.db
+      .query("collectionBinderFitsState")
+      .withIndex("by_computed", (q) => q.lt("computedAt", Date.now() - REFRESH_AFTER_MS))
+      .take(REFRESH_BATCH + 1);
+    const batch = due.slice(0, REFRESH_BATCH);
+    const now = Date.now();
+    for (const [i, state] of batch.entries()) {
+      // Stamped when scheduled, not when run: a pass that hands on must not
+      // select these again, and a recompute that fails must not be re-queued
+      // every night.
+      await ctx.db.patch(state._id, { computedAt: now });
+      await ctx.scheduler.runAfter(i * REFRESH_SPACING_MS, internal.binderRules.recomputeFits, {
+        binderId: state.binderId,
+      });
+    }
+    const more = due.length > REFRESH_BATCH;
+    if (more) {
+      await ctx.scheduler.runAfter((batch.length + 1) * REFRESH_SPACING_MS, internal.binderRules.refreshStaleFits, {});
+    }
+    return { scheduled: batch.length, more };
+  },
+});
 
 /**
  * Is a variant row a parallel: a sub-variant, or an insert under a Parallel

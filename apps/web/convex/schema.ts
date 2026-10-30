@@ -3946,6 +3946,67 @@ export default defineSchema({
     // binder delete (prefix ownerId + binderId).
     .index("by_owner_binder_card", ["ownerId", "binderId", "cardId"]),
 
+  /**
+   * ── NEO-401: the catalog cards a smart binder's rule matches, stored ──────
+   *
+   * One row per card the rule fits, in catalog order (`order`), written by
+   * `binderRules.recomputeFits` when the rule is saved, when a parallel the
+   * binder did not hold before arrives, and nightly (`crons.ts`) so new
+   * catalog cards are slotted in. The binder's empty slots (`binderRules.needs`)
+   * are these rows minus what the binder holds, read live and indexed; the
+   * catalog walk and rule test never run inside a subscribed query again
+   * (NEO-392: they re-ran on every write and held every save in the tab).
+   * Derived from NB data only; deleted with the rule and with the binder.
+   */
+  collectionBinderFits: defineTable({
+    ownerId: v.string(),
+    binderId: v.id("collectionContainers"),
+    cardId: v.id("cardChecklist"),
+    /** The card's variant row, so a parallel the binder no longer holds is skipped live. */
+    variantId: v.id("selectorOptions"),
+    /** Position in the catalog walk: the order the empty slots are drawn in. */
+    order: v.number(),
+    /**
+     * The recompute that last wrote this row (`recomputeFits`). A recompute
+     * writes its rows in pages under one new generation, then deletes every
+     * row of an older one, so a rule's old cards leave in the same pass that
+     * brings the new ones, and never in a user's own mutation.
+     */
+    generation: v.number(),
+  })
+    // The empty-slots read and the stale sweep (prefix binderId).
+    .index("by_binder_order", ["binderId", "order"])
+    // The paged write: is this card already stored for this binder?
+    .index("by_binder_card", ["binderId", "cardId"])
+    .index("by_binder_variant", ["binderId", "variantId"]),
+
+  /**
+   * NEO-401 — one row per smart binder: when its fits were last computed and
+   * what the walk said. Absent means "not computed yet" (a rule just saved;
+   * the recompute is scheduled). `by_computed` is the nightly refresh's
+   * order, oldest first.
+   */
+  collectionBinderFitsState: defineTable({
+    ownerId: v.string(),
+    binderId: v.id("collectionContainers"),
+    computedAt: v.number(),
+    /** False when the rule has no way into the catalog (`catalogCandidates`). */
+    supported: v.boolean(),
+    /** False when the walk stopped at its cap, so there may be more. */
+    complete: v.boolean(),
+    /** Rows stored. */
+    count: v.number(),
+    /**
+     * A recompute is scheduled or running (the rule was just saved). The
+     * rows, if any, are the previous rule's until it lands; `needs` says so.
+     */
+    pending: v.optional(v.boolean()),
+    /** The generation the rows carry; the next recompute writes the one after. */
+    generation: v.optional(v.number()),
+  })
+    .index("by_binder", ["binderId"])
+    .index("by_computed", ["computedAt"]),
+
   collectionWants: defineTable({
     ownerId: v.string(),
     cardId: v.id("cardChecklist"),
