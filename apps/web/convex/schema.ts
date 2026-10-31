@@ -3588,9 +3588,14 @@ export default defineSchema({
     createdAt: v.number(),
     // Recent runs are listed newest activity first.
     lastActivityAt: v.number(),
+    // NEO-386: the short code the screen shows so the scanner script can join
+    // this run. Minted on first ask; unique among the owner's runs only, since
+    // a join looks it up under the caller's own user id.
+    scannerCode: v.optional(v.string()),
   })
     .index("by_job", ["jobId"])
-    .index("by_user_and_activity", ["userId", "lastActivityAt"]),
+    .index("by_user_and_activity", ["userId", "lastActivityAt"])
+    .index("by_user_and_scanner_code", ["userId", "scannerCode"]),
 
   // NEO-379 — the matcher's answer for one placeholder pair of an intake run.
   // One row per pair, keyed on the pair's `_id` (a swap patches the pair in

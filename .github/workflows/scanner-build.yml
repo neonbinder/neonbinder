@@ -1,0 +1,90 @@
+name: Scanner app build
+
+# NEO-386: builds the NeonBinder Scanner app (apps/scanner) for Macs, one file
+# per architecture carrying its own SANE driver, so a collector downloads it,
+# double-clicks it and installs nothing. Reusable: pr-pipeline.yml builds it
+# on every PR that touches apps/scanner (the artifacts are what a reviewer
+# tries), and release.yml builds and publishes it from main.
+#
+# Built on the OLDEST macOS runner of each architecture on purpose (macOS 15
+# for both since macOS 14 images retire on 2026-11-02): Homebrew
+# bottles and the libraries bundled from them carry that runner's macOS as
+# their minimum, so the runner sets the oldest Mac the app runs on.
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-15
+          - arch: x64
+            runner: macos-15-intel
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: apps/scanner
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: apps/scanner/.nvmrc
+          cache: npm
+          cache-dependency-path: apps/scanner/package-lock.json
+      # The Bun runtime ships inside the app, so its version is pinned, not "latest".
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.4
+      - name: Install SANE (bundled into the app, not needed by its users)
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+        run: |
+          brew install sane-backends
+          # Which library versions this build carries, for tracing a release.
+          brew list --versions sane-backends libusb libpng jpeg-turbo
+      - run: npm ci
+      - run: npm run build
+
+      # The app must run with no Homebrew and no Node: a clean environment,
+      # a fresh home, and the built-in driver unpacking and starting there.
+      # No scanner is attached here, so "none found" is the expected answer.
+      - name: Smoke test the built app
+        run: |
+          set -euo pipefail
+          home="$(mktemp -d)"
+          out="$(env -i HOME="$home" PATH=/usr/bin:/bin ./dist/neonbinder-scanner --check)"
+          echo "$out"
+          grep -q "Scanner driver ready (built in)" <<<"$out"
+          file dist/neonbinder-scanner | grep -q "${{ matrix.arch == 'arm64' && 'arm64' || 'x86_64' }}"
+
+      # A zip keeps the executable bit through a browser download; a bare
+      # binary would arrive as a plain file that won't open.
+      - name: Package
+        run: |
+          set -euo pipefail
+          mkdir -p dist/pkg
+          cp dist/neonbinder-scanner "dist/pkg/NeonBinder Scanner"
+          # Zip the app alone (no folder around it), so opening the zip leaves
+          # just NeonBinder Scanner beside it.
+          (cd dist/pkg && ditto -c -k --norsrc --noextattr "NeonBinder Scanner" "../neonbinder-scanner-mac-${{ matrix.arch }}.zip")
+          unzip -l "dist/neonbinder-scanner-mac-${{ matrix.arch }}.zip" | grep -q " NeonBinder Scanner$"
+      # A fork's PR builds code its author controls; nobody should be handed
+      # that as something to run, so only this repo's own branches upload.
+      - if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: neonbinder-scanner-mac-${{ matrix.arch }}
+          path: apps/scanner/dist/neonbinder-scanner-mac-${{ matrix.arch }}.zip
+          if-no-files-found: error
+          retention-days: 14

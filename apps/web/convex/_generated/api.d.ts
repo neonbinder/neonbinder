@@ -82,6 +82,7 @@ import type * as features_listingLimits from "../features/listingLimits.js";
 import type * as franchises from "../franchises.js";
 import type * as http from "../http.js";
 import type * as intakeRuns from "../intakeRuns.js";
+import type * as intakeScanner from "../intakeScanner.js";
 import type * as knownBrands from "../knownBrands.js";
 import type * as leagues from "../leagues.js";
 import type * as lib_baseMatchProbe from "../lib/baseMatchProbe.js";
@@ -244,6 +245,7 @@ declare const fullApi: ApiFromModules<{
   franchises: typeof franchises;
   http: typeof http;
   intakeRuns: typeof intakeRuns;
+  intakeScanner: typeof intakeScanner;
   knownBrands: typeof knownBrands;
   leagues: typeof leagues;
   "lib/baseMatchProbe": typeof lib_baseMatchProbe;
