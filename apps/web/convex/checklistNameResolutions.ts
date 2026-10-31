@@ -53,8 +53,16 @@ export const RESOLUTION_NAMES_PER_DOC = 500;
  */
 export const RESOLUTION_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
-/** Documents one (set, operator) record may span: 25,000 names. */
-const MAX_DOCS_PER_RECORD = 50;
+/**
+ * The most answers one fetch stores. Convex caps an array argument at 8,192
+ * entries; a name left out is simply looked up by the commit.
+ */
+export const MAX_STORED_NAME_ANSWERS = 8000;
+
+/** Documents one (set, operator) record spans at most. */
+const MAX_DOCS_PER_RECORD = Math.ceil(
+  MAX_STORED_NAME_ANSWERS / RESOLUTION_NAMES_PER_DOC,
+);
 
 /** Deletes per sweep call; the cron comes back within the hour. */
 const SWEEP_PAGE = 200;
@@ -128,8 +136,7 @@ export const replaceForFetch = internalMutation({
   handler: async (ctx, args) => {
     await clearRecord(ctx, args.selectorOptionId, args.createdByUserId);
     const createdAt = Date.now();
-    const limit = RESOLUTION_NAMES_PER_DOC * MAX_DOCS_PER_RECORD;
-    const players = args.players.slice(0, limit);
+    const players = args.players.slice(0, MAX_STORED_NAME_ANSWERS);
     for (let i = 0; i < players.length; i += RESOLUTION_NAMES_PER_DOC) {
       await ctx.db.insert("checklistNameResolutions", {
         selectorOptionId: args.selectorOptionId,
@@ -145,8 +152,10 @@ export const replaceForFetch = internalMutation({
 
 /**
  * Hourly: deletes records older than `RESOLUTION_MAX_AGE_MS`, the ones whose
- * operator neither committed nor cancelled. Readers already ignore them; this
- * only keeps the table from growing.
+ * operator neither committed nor cancelled (or whose set was deleted). Readers
+ * already ignore them; this only keeps the table from growing. One page an
+ * hour, 200 documents, is far above the rate fetches create them, so
+ * `hasMore` is reported rather than chased.
  */
 export const sweepStaleResolutions = internalMutation({
   args: {},

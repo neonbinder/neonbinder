@@ -240,7 +240,10 @@ import {
   playerBelongsToSport,
   sameNamePlayers,
 } from "./players";
-import { loadPlayerAnswers } from "./checklistNameResolutions";
+import {
+  loadPlayerAnswers,
+  MAX_STORED_NAME_ANSWERS,
+} from "./checklistNameResolutions";
 // NEO-313 — the derived player → cards index. Every `cardChecklist.playerIds`
 // writer and every card delete in this file goes through these two; see
 // convex/cardPlayerLinks.ts and `cardPlayerLinks.pin.test.ts`.
@@ -1269,6 +1272,7 @@ export const findSetYearForSelectorOptionQuery = internalQuery({
   },
 });
 
+
 /**
  * Detect unresolved player/team names for a selectorOption and kick off the
  * NEO-92 review-wizard batch for whatever's unresolved. Shared by both the
@@ -1606,7 +1610,9 @@ async function resolveUnknownsAndStartBatch(
     selectorOptionId: args.selectorOptionId,
     createdByUserId: callerId,
     sportId: args.sportId,
-    players: singleMatchPlayers,
+    // Convex caps an array argument at 8,192 entries. A name left out is
+    // simply looked up by the commit, so a short record is harmless.
+    players: singleMatchPlayers.slice(0, MAX_STORED_NAME_ANSWERS),
   });
   const hasUnknowns = unknownPlayers.length > 0 || unknownTeams.length > 0;
   const openBatchId = hasUnknowns
@@ -17416,7 +17422,18 @@ export const commitCardChecklistPrelude = internalMutation({
         const answeredId = fetchAnswers.get(key);
         if (answeredId !== undefined) {
           const answered = await ctx.db.get(answeredId);
-          if (answered) return [answered];
+          // Only while the row would still be in `sameNamePlayers`' answer:
+          // it still goes by this name (primary or alias) and still plays this
+          // sport (a home-sport hit costs no read). A row renamed, de-aliased
+          // or moved since the fetch is looked up again.
+          if (
+            answered &&
+            (answered.nameNormalized === key ||
+              (answered.aliases ?? []).some((alias) => norm(alias) === key)) &&
+            (await playerBelongsToSport(ctx, answered, args.sportId))
+          ) {
+            return [answered];
+          }
         }
         return await sameNamePlayers(ctx, key, args.sportId);
       };

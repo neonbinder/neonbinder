@@ -4616,6 +4616,158 @@ describe("commitCardChecklist prelude: the fetch's stored name answers (NEO-402)
     expect(result.linked).toEqual({ "Bob Allen": newBob });
   });
 
+  test("a player renamed since the fetch is not bound by the stored answer", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+    const { bob } = await seedPlayers(t, sportId);
+    await asAdmin.action(api.selectorOptions.resolveChecklistEntities, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      cards: fetchCards,
+    });
+    await t.run((ctx) =>
+      ctx.db.patch(bob, { name: "Robert Allen", nameNormalized: normalizePlayerName("Robert Allen") }),
+    );
+
+    const result = await resolvePhase(asAdmin, variantTypeId, sportId);
+    expect(result.linked).toEqual({});
+    expect(result.unreviewed).toContain("Bob Allen");
+  });
+
+  test("an alias cleared since the fetch no longer binds through the stored answer", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+    const { metta, aliasRow } = await t.run(async (ctx) => {
+      const metta = await ctx.db.insert("players", {
+        name: "Metta World Peace",
+        nameNormalized: normalizePlayerName("Metta World Peace"),
+        aliases: ["Ron Artest"],
+        sportId,
+        lastUpdated: Date.now(),
+      } as never);
+      const aliasRow = await ctx.db.insert("playerAliases", {
+        playerId: metta,
+        sportId,
+        aliasNormalized: normalizePlayerName("Ron Artest"),
+      });
+      return { metta, aliasRow };
+    });
+    const cards = [makeCard({ cardNumber: "1", cardName: "Artest", players: ["Ron Artest"] })];
+    await asAdmin.action(api.selectorOptions.resolveChecklistEntities, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      cards,
+    });
+    const resolveArtest = () =>
+      asAdmin.mutation(internal.selectorOptions.commitCardChecklistPrelude, {
+        selectorOptionId: variantTypeId,
+        sportId,
+        playerNames: ["Ron Artest"],
+        teamNames: [],
+        phase: "resolve",
+      });
+    // While the alias stands, the stored answer binds.
+    expect((await resolveArtest()).playerIdByName).toEqual([{ name: "Ron Artest", id: metta }]);
+
+    // The operator clears the alias as wrong before confirming.
+    await t.run(async (ctx) => {
+      await ctx.db.patch(metta, { aliases: [] });
+      await ctx.db.delete(aliasRow);
+    });
+    const after = await resolveArtest();
+    expect(after.playerIdByName).toEqual([]);
+    expect(after.unreviewedPlayerNames).toEqual(["Ron Artest"]);
+  });
+
+  test("a player moved out of the sport since the fetch is not bound by the stored answer", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+    const { bob } = await seedPlayers(t, sportId);
+    await asAdmin.action(api.selectorOptions.resolveChecklistEntities, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      cards: fetchCards,
+    });
+    await t.run(async (ctx) => {
+      const football = await ctx.db.insert("selectorOptions", {
+        level: "sport",
+        value: "Football",
+        platformData: {},
+        children: [],
+        lastUpdated: Date.now(),
+      } as never);
+      await ctx.db.patch(bob, { sportId: football });
+    });
+
+    const result = await resolvePhase(asAdmin, variantTypeId, sportId);
+    expect(result.linked).toEqual({});
+  });
+
+  test("a name the set's year narrows to one player is not stored: the commit narrows it itself", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+    await t.run(async (ctx) => {
+      const team = await ctx.db.insert("teams", {
+        location: "Chicago",
+        name: "Cubs",
+        nameNormalized: "chicago cubs",
+        sportId,
+        lastUpdated: Date.now(),
+      });
+      // A 2024 set: one Bob Allen played then, the other in the 1890s.
+      for (const [fromYear, toYear] of [[2020, 2026], [1890, 1894]]) {
+        await ctx.db.insert("players", {
+          name: "Bob Allen",
+          nameNormalized: normalizePlayerName("Bob Allen"),
+          sportId,
+          teamYears: [{ teamId: team, fromYear, toYear }],
+          lastUpdated: Date.now(),
+        });
+      }
+    });
+    const resolved = await asAdmin.action(api.selectorOptions.resolveChecklistEntities, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      cards: [makeCard({ cardNumber: "1", cardName: "Allen", players: ["Bob Allen"] })],
+    });
+    // The fetch did resolve it (narrowed), yet kept nothing for the commit.
+    expect(resolved.unknownPlayers).toEqual([]);
+    expect(await records(t)).toHaveLength(0);
+  });
+
+  test("a record written for another sport is not read", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+    await seedPlayers(t, sportId);
+    await asAdmin.action(api.selectorOptions.resolveChecklistEntities, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      cards: fetchCards,
+    });
+    await addPlayer(t, sportId, "Bob Allen");
+    await t.run(async (ctx) => {
+      const football = await ctx.db.insert("selectorOptions", {
+        level: "sport",
+        value: "Football",
+        platformData: {},
+        children: [],
+        lastUpdated: Date.now(),
+      } as never);
+      for (const row of await ctx.db.query("checklistNameResolutions").collect()) {
+        await ctx.db.patch(row._id, { sportId: football });
+      }
+    });
+
+    const result = await resolvePhase(asAdmin, variantTypeId, sportId);
+    expect(result.linked).toEqual({});
+    expect(result.unreviewed).toContain("Bob Allen");
+  });
+
   test("a re-fetch replaces the record whole", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
