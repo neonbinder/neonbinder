@@ -246,6 +246,11 @@ export const SUBTREE_REFERENCE_GRAPH = {
     fields: ["selectorOptionId"],
     handling: "rows keyed on a subtree row deleted",
   },
+  checklistNameResolutions: {
+    fields: ["selectorOptionId", "sportId"],
+    handling:
+      "NEO-402 a fetch's stored player answers for one review session. Never refuses the wipe and is untouched: only a commit of that same set reads it, which a wiped set cannot have, and the hourly sweep reaps it within a day. sportId is sport-level",
+  },
   players: {
     fields: ["sportId"],
     handling: "sport-level only; a subtree row is never a sport. Untouched",

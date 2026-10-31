@@ -240,6 +240,7 @@ import {
   playerBelongsToSport,
   sameNamePlayers,
 } from "./players";
+import { loadPlayerAnswers } from "./checklistNameResolutions";
 // NEO-313 — the derived player → cards index. Every `cardChecklist.playerIds`
 // writer and every card delete in this file goes through these two; see
 // convex/cardPlayerLinks.ts and `cardPlayerLinks.pin.test.ts`.
@@ -1459,6 +1460,11 @@ async function resolveUnknownsAndStartBatch(
    */
   const cardTeamNamesFor = (nameNormalized: string): string[] =>
     args.cardTeamNamesByPlayer?.get(nameNormalized) ?? [];
+  /** NEO-402 — this fetch's exactly-one answers, written for the commit. */
+  const singleMatchPlayers: Array<{
+    nameNormalized: string;
+    playerId: Id<"players">;
+  }> = [];
 
   for (const [normalized, name] of playerByNorm) {
     if (skippedKeys.has(`player:${normalized}`)) continue;
@@ -1498,6 +1504,13 @@ async function resolveUnknownsAndStartBatch(
     // NEO-335 — recorded for the title context. A no-op when not asked for.
     if (resolved.playerId) {
       args.resolvedNames?.playerIdByNorm.set(normalized, resolved.playerId);
+    }
+    // NEO-402 — kept for the commit, which would otherwise look this name up
+    // again. Only the outright single match: a narrowed one is an inference
+    // the commit re-derives with its own card context (see
+    // `checklistNameResolutions.ts`).
+    if (resolved.playerId && resolved.matchCount === 1) {
+      singleMatchPlayers.push({ nameNormalized: normalized, playerId: resolved.playerId });
     }
     // `playerId`, not `matchCount`: several rows can still resolve to one
     // person once the year is taken into account.
@@ -1587,6 +1600,14 @@ async function resolveUnknownsAndStartBatch(
   // a batchId for a wizard with nothing in it.
   const callerId = await getCurrentUserId(ctx);
   if (!callerId) throw new Error("Not authenticated");
+  // NEO-402 — replaces this operator's record for the set whole, so a re-fetch
+  // ("Back to matching", a second sync) never leaves an older answer behind.
+  await ctx.runMutation(internal.checklistNameResolutions.replaceForFetch, {
+    selectorOptionId: args.selectorOptionId,
+    createdByUserId: callerId,
+    sportId: args.sportId,
+    players: singleMatchPlayers,
+  });
   const hasUnknowns = unknownPlayers.length > 0 || unknownTeams.length > 0;
   const openBatchId = hasUnknowns
     ? null
@@ -8252,6 +8273,8 @@ type SetBuilderResetResult = {
   entityReviewQueueDeleted: number;
   /** NEO-294 — staged candidate cards, the other half of an abandoned review. */
   checklistCandidatesDeleted: number;
+  /** NEO-402 — a fetch's stored name answers, the third part of a review session. */
+  checklistNameResolutionsDeleted: number;
   /** NEO-313 — a player's additional sports, drained before the players. */
   playerSportsDeleted: number;
   playersDeleted: number;
@@ -8355,6 +8378,7 @@ async function runSetBuilderReset(
     crossListingsDeleted: 0,
     entityReviewQueueDeleted: 0,
     checklistCandidatesDeleted: 0,
+    checklistNameResolutionsDeleted: 0,
     playerSportsDeleted: 0,
     playersDeleted: 0,
     playerAliasesDeleted: 0,
@@ -8504,6 +8528,11 @@ async function runSetBuilderReset(
     [
       "checklistCandidatesDeleted",
       internal.selectorOptions.resetChecklistCandidatesBatch,
+    ],
+    // NEO-402 — before the players its answers name.
+    [
+      "checklistNameResolutionsDeleted",
+      internal.selectorOptions.resetChecklistNameResolutionsBatch,
     ],
     // Players + teams are populated alongside cardChecklist by the
     // commitCardChecklist flow. Wipe them too so subsequent dev/test
@@ -8725,6 +8754,8 @@ export const resetSetBuilderDataFromCli = internalAction({
     // have caught the 15 s → 246 s drift a week earlier.
     entityReviewQueueDeleted: v.number(),
     checklistCandidatesDeleted: v.number(),
+    // NEO-402 — a fetch's stored name answers.
+    checklistNameResolutionsDeleted: v.number(),
     // NEO-313 — a player's additional sports.
     playerSportsDeleted: v.number(),
     playersDeleted: v.number(),
@@ -8920,6 +8951,29 @@ export const resetChecklistCandidatesBatch = internalMutation({
     assertResetArmed();
     const rows = await ctx.db
       .query("checklistCandidates")
+      .take(RESET_BATCH_SIZE);
+    for (const row of rows) {
+      await ctx.db.delete(row._id);
+    }
+    return { deleted: rows.length, hasMore: rows.length === RESET_BATCH_SIZE };
+  },
+});
+
+/**
+ * Internal: drain `checklistNameResolutions` (NEO-402), looped by
+ * `runSetBuilderReset`. A fetch's stored player answers name players and sets
+ * the reset is about to delete; a clean slate leaves none behind.
+ */
+export const resetChecklistNameResolutionsBatch = internalMutation({
+  args: {},
+  returns: v.object({
+    deleted: v.number(),
+    hasMore: v.boolean(),
+  }),
+  handler: async (ctx) => {
+    assertResetArmed();
+    const rows = await ctx.db
+      .query("checklistNameResolutions")
       .take(RESET_BATCH_SIZE);
     for (const row of rows) {
       await ctx.db.delete(row._id);
@@ -17345,11 +17399,30 @@ export const commitCardChecklistPrelude = internalMutation({
       const keys = Array.from(
         new Set(playerNameList.slice(start, end).map((name) => norm(name))),
       );
+      /*
+       * NEO-402 — the fetch already answered most of these. A name it found
+       * exactly one player for is confirmed with one `get` instead of the
+       * three index reads; a row deleted since reads null and the name is
+       * looked up as before. Every other name (none, several, narrowed by
+       * year, or no record at all) takes the lookup, unchanged.
+       */
+      const fetchAnswers = await loadPlayerAnswers(
+        ctx,
+        args.selectorOptionId,
+        userId,
+        args.sportId,
+      );
+      const lookUp = async (key: string): Promise<Array<Doc<"players">>> => {
+        const answeredId = fetchAnswers.get(key);
+        if (answeredId !== undefined) {
+          const answered = await ctx.db.get(answeredId);
+          if (answered) return [answered];
+        }
+        return await sameNamePlayers(ctx, key, args.sportId);
+      };
       for (let i = 0; i < keys.length; i += SAME_NAME_PREFETCH_CONCURRENCY) {
         const chunk = keys.slice(i, i + SAME_NAME_PREFETCH_CONCURRENCY);
-        const found = await Promise.all(
-          chunk.map((key) => sameNamePlayers(ctx, key, args.sportId)),
-        );
+        const found = await Promise.all(chunk.map(lookUp));
         chunk.forEach((key, j) => sameNamePrefetch.set(key, found[j]));
       }
     }

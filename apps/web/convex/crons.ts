@@ -95,6 +95,18 @@ crons.interval(
 );
 
 /**
+ * NEO-402 — a fetch's stored name answers whose session was neither confirmed
+ * nor cancelled. Readers ignore them after a day already; this keeps the
+ * table from growing.
+ */
+crons.interval(
+  "reap stale checklist name resolutions",
+  { hours: 1 },
+  internal.checklistNameResolutions.sweepStaleResolutions,
+  {},
+);
+
+/**
  * NEO-221 — delete entity-review batches nobody is coming back to.
  *
  * A separate entry from "age stale entity-review lookups" above, and

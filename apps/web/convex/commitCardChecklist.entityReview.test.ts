@@ -4472,3 +4472,221 @@ describe("commitCardChecklist prelude: the resolve phase's batched lookups (NEO-
     expect(resolved.unreviewedPlayerNames).toContain("Jim Smith");
   });
 });
+
+// ===========================================================================
+// NEO-402 — the fetch writes down the names it found exactly one player for,
+// and the commit's resolve phase takes those answers instead of looking the
+// names up again. The fetch's answer stands until the next fetch.
+// ===========================================================================
+
+describe("commitCardChecklist prelude: the fetch's stored name answers (NEO-402)", () => {
+  const OTHER_ADMIN = {
+    ...ADMIN_IDENTITY,
+    subject: "admin_entity_review_002",
+    tokenIdentifier: "clerk|admin_entity_review_002",
+  };
+
+  async function seedPlayers(t: ReturnType<typeof convexTest>, sportId: Id<"selectorOptions">) {
+    return t.run(async (ctx) => {
+      const player = (name: string) =>
+        ctx.db.insert("players", {
+          name,
+          nameNormalized: normalizePlayerName(name),
+          sportId,
+          lastUpdated: Date.now(),
+        } as never);
+      const bob = await player("Bob Allen");
+      await player("Jim Smith");
+      await player("Jim Smith");
+      return { bob };
+    });
+  }
+
+  const addPlayer = (t: ReturnType<typeof convexTest>, sportId: Id<"selectorOptions">, name: string) =>
+    t.run((ctx) =>
+      ctx.db.insert("players", {
+        name,
+        nameNormalized: normalizePlayerName(name),
+        sportId,
+        lastUpdated: Date.now(),
+      } as never),
+    );
+
+  const fetchCards = [
+    makeCard({ cardNumber: "1", cardName: "Allen", players: ["Bob Allen"] }),
+    makeCard({ cardNumber: "2", cardName: "Smith", players: ["Jim Smith"] }),
+    makeCard({ cardNumber: "3", cardName: "Nobody", players: ["Nobody Known"] }),
+  ];
+
+  async function resolvePhase(
+    who: ReturnType<ReturnType<typeof convexTest>["withIdentity"]>,
+    selectorOptionId: Id<"selectorOptions">,
+    sportId: Id<"selectorOptions">,
+  ) {
+    const result = await who.mutation(internal.selectorOptions.commitCardChecklistPrelude, {
+      selectorOptionId,
+      sportId,
+      playerNames: ["Bob Allen", "Jim Smith", "Nobody Known"],
+      teamNames: [],
+      phase: "resolve",
+    });
+    return {
+      linked: Object.fromEntries(result.playerIdByName.map(({ name, id }) => [name, id])),
+      unreviewed: [...result.unreviewedPlayerNames].sort(),
+    };
+  }
+
+  const records = (t: ReturnType<typeof convexTest>) =>
+    t.run((ctx) => ctx.db.query("checklistNameResolutions").collect());
+
+  test("the fetch stores only the names that matched exactly one player", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+    const { bob } = await seedPlayers(t, sportId);
+
+    await asAdmin.action(api.selectorOptions.resolveChecklistEntities, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      cards: fetchCards,
+    });
+
+    const stored = await records(t);
+    expect(stored).toHaveLength(1);
+    expect(stored[0]).toMatchObject({
+      selectorOptionId: variantTypeId,
+      createdByUserId: ADMIN_IDENTITY.subject,
+      sportId,
+      players: [{ nameNormalized: normalizePlayerName("Bob Allen"), playerId: bob }],
+    });
+  });
+
+  test("the commit takes the fetch's answer: a second same-name player added since does not unlink the card", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+    const { bob } = await seedPlayers(t, sportId);
+    await asAdmin.action(api.selectorOptions.resolveChecklistEntities, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      cards: fetchCards,
+    });
+    // Another set files a second Bob Allen between the fetch and the commit.
+    await addPlayer(t, sportId, "Bob Allen");
+
+    const result = await resolvePhase(asAdmin, variantTypeId, sportId);
+    expect(result.linked).toEqual({ "Bob Allen": bob });
+    // Names the fetch did not answer outright take today's lookup unchanged.
+    expect(result.unreviewed).toEqual(["Jim Smith", "Nobody Known"]);
+  });
+
+  test("with no record of its own the commit looks the name up, as before", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const asOther = t.withIdentity(OTHER_ADMIN);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+    await seedPlayers(t, sportId);
+    // The first operator fetched; the second did not.
+    await asAdmin.action(api.selectorOptions.resolveChecklistEntities, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      cards: fetchCards,
+    });
+    await addPlayer(t, sportId, "Bob Allen");
+
+    const result = await resolvePhase(asOther, variantTypeId, sportId);
+    expect(result.linked).toEqual({});
+    expect(result.unreviewed).toEqual(["Bob Allen", "Jim Smith", "Nobody Known"]);
+  });
+
+  test("a player deleted since the fetch is never linked; the name is looked up again", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+    const { bob } = await seedPlayers(t, sportId);
+    await asAdmin.action(api.selectorOptions.resolveChecklistEntities, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      cards: fetchCards,
+    });
+    await t.run((ctx) => ctx.db.delete(bob));
+    const newBob = await addPlayer(t, sportId, "Bob Allen");
+
+    const result = await resolvePhase(asAdmin, variantTypeId, sportId);
+    expect(result.linked).toEqual({ "Bob Allen": newBob });
+  });
+
+  test("a re-fetch replaces the record whole", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+    await seedPlayers(t, sportId);
+    await asAdmin.action(api.selectorOptions.resolveChecklistEntities, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      cards: fetchCards,
+    });
+    await addPlayer(t, sportId, "Bob Allen");
+    // "Back to matching", or a second sync: Bob Allen is now ambiguous.
+    await asAdmin.action(api.selectorOptions.resolveChecklistEntities, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      cards: fetchCards,
+    });
+
+    // Nothing matched exactly one player this time, so nothing is kept.
+    expect(await records(t)).toHaveLength(0);
+    const result = await resolvePhase(asAdmin, variantTypeId, sportId);
+    expect(result.linked).toEqual({});
+    expect(result.unreviewed).toEqual(["Bob Allen", "Jim Smith", "Nobody Known"]);
+  });
+
+  test("confirm or cancel (discardCandidates) deletes only the caller's record", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const asOther = t.withIdentity(OTHER_ADMIN);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+    await seedPlayers(t, sportId);
+    for (const who of [asAdmin, asOther]) {
+      await who.action(api.selectorOptions.resolveChecklistEntities, {
+        selectorOptionId: variantTypeId,
+        sportId,
+        cards: fetchCards,
+      });
+    }
+    expect(await records(t)).toHaveLength(2);
+
+    await asAdmin.mutation(api.checklistCandidates.discardCandidates, {
+      selectorOptionId: variantTypeId,
+    });
+
+    const left = await records(t);
+    expect(left.map((r) => r.createdByUserId)).toEqual([OTHER_ADMIN.subject]);
+  });
+
+  test("a day-old record is ignored by the commit and reaped by the sweep", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+    await seedPlayers(t, sportId);
+    await asAdmin.action(api.selectorOptions.resolveChecklistEntities, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      cards: fetchCards,
+    });
+    await addPlayer(t, sportId, "Bob Allen");
+    const dayAndAMinute = 24 * 60 * 60 * 1000 + 60 * 1000;
+    await t.run(async (ctx) => {
+      for (const row of await ctx.db.query("checklistNameResolutions").collect()) {
+        await ctx.db.patch(row._id, { createdAt: Date.now() - dayAndAMinute });
+      }
+    });
+
+    const result = await resolvePhase(asAdmin, variantTypeId, sportId);
+    expect(result.linked).toEqual({});
+
+    const swept = await t.mutation(internal.checklistNameResolutions.sweepStaleResolutions, {});
+    expect(swept).toEqual({ deleted: 1, hasMore: false });
+    expect(await records(t)).toHaveLength(0);
+  });
+});

@@ -128,13 +128,16 @@ async function seedEveryDrainedTable(
     });
 
     // players: 4
+    const playerIds = [];
     for (const name of ["A One", "B Two", "C Three", "D Four"]) {
-      await ctx.db.insert("players", {
-        name,
-        nameNormalized: name.toLowerCase(),
-        sportId,
-        lastUpdated: NOW,
-      });
+      playerIds.push(
+        await ctx.db.insert("players", {
+          name,
+          nameNormalized: name.toLowerCase(),
+          sportId,
+          lastUpdated: NOW,
+        }),
+      );
     }
 
     // cardChecklist: 5
@@ -199,6 +202,16 @@ async function seedEveryDrainedTable(
         lastUpdated: NOW,
       });
     }
+
+    // checklistNameResolutions: 1 (NEO-402) — the same abandoned review's
+    // stored player answers, naming a player the reset deletes.
+    await ctx.db.insert("checklistNameResolutions", {
+      selectorOptionId: variantId,
+      createdByUserId: "admin_who_closed_the_tab",
+      sportId,
+      createdAt: NOW,
+      players: [{ nameNormalized: "a one", playerId: playerIds[0] }],
+    });
 
     // cardTeamLinks: 9 (NEO-358) — the derived team → cards index. Hand
     // inserted: the reset drains the table, it does not care how rows got there.
@@ -329,6 +342,9 @@ async function tableCounts(t: ReturnType<typeof convexTest>) {
       .length,
     checklistCandidates: (await ctx.db.query("checklistCandidates").collect())
       .length,
+    checklistNameResolutions: (
+      await ctx.db.query("checklistNameResolutions").collect()
+    ).length,
     players: (await ctx.db.query("players").collect()).length,
     teams: (await ctx.db.query("teams").collect()).length,
     franchises: (await ctx.db.query("franchises").collect()).length,
@@ -363,6 +379,7 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
       cardCrossListings: 6,
       entityReviewQueue: 7,
       checklistCandidates: 8,
+      checklistNameResolutions: 1,
       players: 4,
       teams: 2,
       franchises: 1,
@@ -393,6 +410,7 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
       cardCrossListings: 6,
       entityReviewQueue: 7,
       checklistCandidates: 8,
+      checklistNameResolutions: 1,
       players: 4,
       teams: 2,
       franchises: 1,
@@ -425,6 +443,7 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
       crossListingsDeleted: 6,
       entityReviewQueueDeleted: 7,
       checklistCandidatesDeleted: 8,
+      checklistNameResolutionsDeleted: 1,
       playerSportsDeleted: 0,
       playersDeleted: 4,
       playerAliasesDeleted: 0,
@@ -448,6 +467,7 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
       cardCrossListings: 0,
       entityReviewQueue: 0,
       checklistCandidates: 0,
+      checklistNameResolutions: 0,
       players: 0,
       teams: 0,
       franchises: 0,
@@ -477,6 +497,7 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
     ["resetCardCrossListingsBatch", "cardCrossListings"],
     ["resetEntityReviewQueueBatch", "entityReviewQueue"],
     ["resetChecklistCandidatesBatch", "checklistCandidates"],
+    ["resetChecklistNameResolutionsBatch", "checklistNameResolutions"],
     ["resetPlayersBatch", "players"],
     ["resetTeamsBatch", "teams"],
     ["resetFranchisesBatch", "franchises"],
@@ -509,6 +530,7 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
         cardCrossListings: 6,
         entityReviewQueue: 7,
         checklistCandidates: 8,
+        checklistNameResolutions: 1,
         players: 4,
         teams: 2,
         franchises: 1,
@@ -540,6 +562,7 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
       crossListingsDeleted: 0,
       entityReviewQueueDeleted: 0,
       checklistCandidatesDeleted: 0,
+      checklistNameResolutionsDeleted: 0,
       playerSportsDeleted: 0,
       playersDeleted: 0,
       playerAliasesDeleted: 0,
@@ -612,6 +635,7 @@ describe("NEO-254: the reset yields at RESET_TIME_BUDGET_MS and resumes", () => 
       crossListingsDeleted: 0,
       entityReviewQueueDeleted: 0,
       checklistCandidatesDeleted: 0,
+      checklistNameResolutionsDeleted: 0,
       playerSportsDeleted: 0,
       playersDeleted: 0,
       playerAliasesDeleted: 0,
@@ -652,6 +676,7 @@ describe("NEO-254: the reset yields at RESET_TIME_BUDGET_MS and resumes", () => 
       crossListingsDeleted: 6,
       entityReviewQueueDeleted: 7,
       checklistCandidatesDeleted: 8,
+      checklistNameResolutionsDeleted: 1,
       playerSportsDeleted: 0,
       playersDeleted: 4,
       playerAliasesDeleted: 0,
@@ -673,6 +698,7 @@ describe("NEO-254: the reset yields at RESET_TIME_BUDGET_MS and resumes", () => 
       cardCrossListings: 0,
       entityReviewQueue: 0,
       checklistCandidates: 0,
+      checklistNameResolutions: 0,
       players: 0,
       teams: 0,
       franchises: 0,
@@ -703,6 +729,7 @@ describe("NEO-254: the reset yields at RESET_TIME_BUDGET_MS and resumes", () => 
       cardCrossListings: 6,
       entityReviewQueue: 7,
       checklistCandidates: 8,
+      checklistNameResolutions: 1,
       players: 4,
       teams: 2,
       franchises: 1,
@@ -1088,6 +1115,7 @@ describe("NEO-330: scope exceptReferenceSeed", () => {
     "cardCrossListings",
     "entityReviewQueue",
     "checklistCandidates",
+    "checklistNameResolutions",
   ] as const;
 
   const runScoped = (
@@ -1247,6 +1275,7 @@ describe("NEO-330: scope exceptReferenceSeed", () => {
       crossListingsDeleted: 6,
       entityReviewQueueDeleted: 7,
       checklistCandidatesDeleted: 8,
+      checklistNameResolutionsDeleted: 1,
       playerSportsDeleted: 0,
       playersDeleted: 0,
       playerAliasesDeleted: 0,

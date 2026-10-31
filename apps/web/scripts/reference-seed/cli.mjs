@@ -122,6 +122,9 @@ export const SELECTOR_DEPENDANT_TABLES = [
   "cardCrossListings",
   "entityReviewQueue",
   "checklistCandidates",
+  // NEO-402 — a fetch's stored player answers (selectorOptionId, sportId).
+  // Drained by the reset (`resetChecklistNameResolutionsBatch`).
+  "checklistNameResolutions",
 ];
 export const SELECTOR_DEPENDANT_UNDRAINED_TABLES = ["entityReviewSkips"];
 const COUNTED_DEPENDANT_TABLES = [...SELECTOR_DEPENDANT_TABLES, ...SELECTOR_DEPENDANT_UNDRAINED_TABLES];
