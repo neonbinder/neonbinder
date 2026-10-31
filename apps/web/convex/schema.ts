@@ -2941,6 +2941,25 @@ export default defineSchema({
       "nameNormalized",
     ]),
 
+  // NEO-402 — a checklist fetch's player names that matched exactly one NB
+  // player, kept so the commit that follows does not look each one up again.
+  // Scratch for one (set, operator) review session; see
+  // convex/checklistNameResolutions.ts for the rules.
+  checklistNameResolutions: defineTable({
+    selectorOptionId: v.id("selectorOptions"),
+    createdByUserId: v.string(),
+    sportId: v.id("selectorOptions"),
+    createdAt: v.number(),
+    players: v.array(
+      v.object({
+        nameNormalized: v.string(),
+        playerId: v.id("players"),
+      }),
+    ),
+  })
+    .index("by_selector_option_and_user", ["selectorOptionId", "createdByUserId"])
+    .index("by_created_at", ["createdAt"]),
+
   // NEO-195: candidate cards for ONE checklist fetch, written as reconciliation
   // produces them so the review modal can fill in live instead of waiting for
   // the whole fetch.

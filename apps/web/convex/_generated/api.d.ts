@@ -57,6 +57,7 @@ import type * as cardRowCreate from "../cardRowCreate.js";
 import type * as cardRowDelete from "../cardRowDelete.js";
 import type * as cardTeamLinks from "../cardTeamLinks.js";
 import type * as checklistCandidates from "../checklistCandidates.js";
+import type * as checklistNameResolutions from "../checklistNameResolutions.js";
 import type * as collection from "../collection.js";
 import type * as collectionCatalog from "../collectionCatalog.js";
 import type * as collectionContainers from "../collectionContainers.js";
@@ -218,6 +219,7 @@ declare const fullApi: ApiFromModules<{
   cardRowDelete: typeof cardRowDelete;
   cardTeamLinks: typeof cardTeamLinks;
   checklistCandidates: typeof checklistCandidates;
+  checklistNameResolutions: typeof checklistNameResolutions;
   collection: typeof collection;
   collectionCatalog: typeof collectionCatalog;
   collectionContainers: typeof collectionContainers;
