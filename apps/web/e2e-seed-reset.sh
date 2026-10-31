@@ -97,8 +97,36 @@ echo "   import the reference catalogue, which replaces selectorOptions, leagues
 echo "   franchises, teams, teamAliases, players, playerAliases and playerSports"
 echo "   on ${ref_target}. Confirming the reset below confirms both."
 
+# NEO-407: a hard limit on each Convex step. On 2026-10-31 a seed sat in this
+# step for 28 minutes with no output (the CLI calls below have no timeout of
+# their own), so a stalled preview held the job until its 45-minute timeout.
+# With NB_SEED_HANG_S set (CI sets it), a step that runs past it is stopped and
+# the script exits 75, the same "degraded preview" answer as a slow import:
+# the caller deletes the preview and the workflow re-runs on a fresh one.
+ref_guard() {
+  if [ -n "${NB_SEED_HANG_S:-}" ]; then
+    timeout --kill-after=15 "$NB_SEED_HANG_S" "$@"
+  else
+    "$@"
+  fi
+}
+ref_hung() {
+  # timeout(1) answers 124 when it stopped the command, 137 when it had to kill
+  # it. A 137 before the limit (an OOM kill, say) is an ordinary failure.
+  local waited=$(( $(date +%s) - $3 ))
+  if [ -n "${NB_SEED_HANG_S:-}" ] && { [ "$1" -eq 124 ] || { [ "$1" -eq 137 ] && [ "$waited" -ge "$NB_SEED_HANG_S" ]; }; }; then
+    echo "x reference seed: $2 did not finish within ${NB_SEED_HANG_S}s. ${ref_target} is degraded (NEO-407); stopping before any spec runs." >&2
+    echo "reference seed: $2 stopped at $(date -u +%FT%TZ) after ${NB_SEED_HANG_S}s"
+    exit 75
+  fi
+}
+
 ref_t0=$(date +%s)
-if ! ./e2e-baseline.sh reset --except-reference-seed --deployment "$ref_target"; then
+echo "reference seed: reset started $(date -u +%FT%TZ)"
+ref_rc=0
+ref_guard ./e2e-baseline.sh reset --except-reference-seed --deployment "$ref_target" || ref_rc=$?
+ref_hung "$ref_rc" "the reset" "$ref_t0"
+if [ "$ref_rc" -ne 0 ]; then
   echo "x reference seed: reset (except reference-seed tables) failed - see above." >&2
   exit 1
 fi
@@ -107,8 +135,23 @@ echo "reference seed: reset took ${ref_reset_s}s"
 reference_seed_summary "reset seconds" "$ref_reset_s"
 
 ref_t1=$(date +%s)
-if ! node scripts/reference-seed/cli.mjs load "$NB_REFERENCE_BUNDLE" \
-    --deployment "$ref_target" --sports import --yes; then
+echo "reference seed: load started $(date -u +%FT%TZ)"
+ref_rc=0
+ref_err="$(mktemp)"
+ref_guard node scripts/reference-seed/cli.mjs load "$NB_REFERENCE_BUNDLE" \
+    --deployment "$ref_target" --sports import --yes 2>"$ref_err" || ref_rc=$?
+cat "$ref_err" >&2
+ref_hung "$ref_rc" "the reference load" "$ref_t1"
+# NEO-407: a deployment whose snapshot export cannot even start (on
+# 2026-10-31 the preview whose export had hung refused every later export) is
+# degraded too, not a PR failure: same exit 75, same fresh-preview re-run.
+if [ "$ref_rc" -ne 0 ] && [ -n "${NB_SEED_HANG_S:-}" ] && grep -q "export of .* failed" "$ref_err"; then
+  rm -f "$ref_err"
+  echo "x reference seed: ${ref_target} could not take a snapshot export. It is degraded (NEO-407); stopping before any spec runs." >&2
+  exit 75
+fi
+rm -f "$ref_err"
+if [ "$ref_rc" -ne 0 ]; then
   echo "x reference seed: bundle load failed - see above. The deployment has been reset but holds no reference catalogue; do not run specs against it." >&2
   exit 1
 fi
