@@ -2,7 +2,8 @@
 // NEO-407 — Convex latency probe.
 //
 // Calls `latencyProbe:ping` (a one-document query) on a fixed clock, and
-// `latencyProbe:pingMutation` every Nth tick, against one deployment, and
+// `latencyProbe:pingMutation` every Nth tick (and `latencyProbe:pingWrite`,
+// which commits one tiny patch, every Mth tick), against one deployment, and
 // appends one JSON line per answer:
 //
 //   {"t":"2026-10-31T15:13:09.500Z","kind":"query","ms":23,"ok":true}
@@ -13,7 +14,7 @@
 // MAX_IN_FLIGHT. Nothing user-related is sent or recorded.
 //
 //   node scripts/convex-probe.mjs --url https://<name>.convex.cloud --out probe.jsonl
-//        [--interval-ms 1000] [--mutation-every 4]
+//        [--interval-ms 1000] [--mutation-every 4] [--write-every 0]
 //   node scripts/convex-probe.mjs --summary probe.jsonl [--stall-ms 2000]
 //
 // The probe runs until SIGTERM/SIGINT; calls still in flight are then written
@@ -46,7 +47,7 @@ function summarize(file, stallMs) {
     console.log(`probe summary: no data (${e instanceof Error ? e.message : String(e)})`);
     return;
   }
-  for (const kind of ["query", "mutation"]) {
+  for (const kind of ["query", "mutation", "write"]) {
     const rows = lines.filter((r) => r.kind === kind);
     const ms = rows.map((r) => r.ms).sort((a, b) => a - b);
     const failed = rows.filter((r) => !r.ok).length;
@@ -62,7 +63,7 @@ function summarize(file, stallMs) {
   }
 }
 
-async function probe(url, out, intervalMs, mutationEvery) {
+async function probe(url, out, intervalMs, mutationEvery, writeEvery) {
   const client = new ConvexHttpClient(url);
   const inFlight = new Map();
   let tick = 0;
@@ -85,7 +86,12 @@ async function probe(url, out, intervalMs, mutationEvery) {
     const sent = Date.now();
     inFlight.set(id, { kind, sent });
     const nonce = `${sent}-${id}`;
-    const fn = kind === "query" ? anyApi.latencyProbe.ping : anyApi.latencyProbe.pingMutation;
+    const fn =
+      kind === "query"
+        ? anyApi.latencyProbe.ping
+        : kind === "write"
+          ? anyApi.latencyProbe.pingWrite
+          : anyApi.latencyProbe.pingMutation;
     const p = kind === "query" ? client.query(fn, { nonce }) : client.mutation(fn, { nonce }, { skipQueue: true });
     let timer;
     const timeout = new Promise((_, reject) => {
@@ -107,6 +113,7 @@ async function probe(url, out, intervalMs, mutationEvery) {
     tick += 1;
     call("query");
     if (mutationEvery > 0 && tick % mutationEvery === 0) call("mutation");
+    if (writeEvery > 0 && tick % writeEvery === 0) call("write");
   }, intervalMs);
 
   const stop = () => {
@@ -132,5 +139,11 @@ if (summaryFile) {
     console.error("usage: convex-probe.mjs --url <deployment url> --out <file.jsonl>");
     process.exit(2);
   }
-  await probe(url, out, Number(arg("interval-ms", "1000")), Number(arg("mutation-every", "4")));
+  await probe(
+    url,
+    out,
+    Number(arg("interval-ms", "1000")),
+    Number(arg("mutation-every", "4")),
+    Number(arg("write-every", "0")),
+  );
 }

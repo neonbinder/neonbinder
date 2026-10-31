@@ -26,4 +26,20 @@ describe("latencyProbe", () => {
     const after = await t.run(async (ctx) => (await ctx.db.query("selectorOptions").collect()).length);
     expect(after).toBe(before);
   });
+
+  test("pingWrite keeps exactly one beat row when enabled", async () => {
+    const saved = process.env.TESTING_RESET_SECRET;
+    process.env.TESTING_RESET_SECRET = "x";
+    try {
+      const t = convexTest(schema, modules);
+      for (const n of ["d", "e", "f"]) {
+        expect(await t.mutation(api.latencyProbe.pingWrite, { nonce: n })).toBeNull();
+      }
+      const beats = await t.run(async (ctx) => ctx.db.query("latencyProbeBeats").collect());
+      expect(beats).toHaveLength(1);
+    } finally {
+      if (saved === undefined) delete process.env.TESTING_RESET_SECRET;
+      else process.env.TESTING_RESET_SECRET = saved;
+    }
+  });
 });

@@ -2655,9 +2655,10 @@ describe("NEO-379: the intake run functions are signed-in, and the reads answer 
 });
 
 /**
- * NEO-407 — `latencyProbe.ping` / `pingMutation`: public and ANONYMOUS by
+ * NEO-407 — `latencyProbe.ping` / `pingMutation` / `pingWrite`: public and ANONYMOUS by
  * intent (the E2E latency probe calls them with no session). Pinned: anonymous
- * calls answer null and write nothing; with `TESTING_RESET_SECRET` unset
+ * calls answer null and write nothing (pingWrite: its own single row, off
+ * prod only); with `TESTING_RESET_SECRET` unset
  * (production) they return before any read; an oversized nonce is refused.
  */
 describe("NEO-407 latencyProbe — anonymous by intent, fails closed in prod", () => {
@@ -2673,6 +2674,11 @@ describe("NEO-407 latencyProbe — anonymous by intent, fails closed in prod", (
         expect(await t.mutation(api.latencyProbe.pingMutation, { nonce: "n" })).toBeNull();
         const rows = await t.run(async (ctx) => ctx.db.query("selectorOptions").collect());
         expect(rows).toHaveLength(1);
+        // pingWrite touches only its own one-row table, and only off prod.
+        expect(await t.mutation(api.latencyProbe.pingWrite, { nonce: "n" })).toBeNull();
+        expect(await t.mutation(api.latencyProbe.pingWrite, { nonce: "m" })).toBeNull();
+        const beats = await t.run(async (ctx) => ctx.db.query("latencyProbeBeats").collect());
+        expect(beats).toHaveLength(secret === undefined ? 0 : 1);
       }
     } finally {
       if (saved === undefined) delete process.env.TESTING_RESET_SECRET;
@@ -2683,7 +2689,7 @@ describe("NEO-407 latencyProbe — anonymous by intent, fails closed in prod", (
   test("the production gate and the nonce cap stay in the source", () => {
     const src = readFileSync(join(__dirname, "latencyProbe.ts"), "utf8");
     expect(src).toContain("Boolean(process.env.TESTING_RESET_SECRET)");
-    expect(src.match(/if \(!probeEnabled\(args\.nonce\)\) return null;/g)).toHaveLength(2);
+    expect(src.match(/if \(!probeEnabled\(args\.nonce\)\) return null;/g)).toHaveLength(3);
   });
 
   test("an oversized nonce is refused", async () => {

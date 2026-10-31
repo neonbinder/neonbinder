@@ -9,7 +9,9 @@ import { mutation, query } from "./_generated/server";
  * or one of our functions was busy. `scripts/convex-probe.mjs` calls these on
  * a fixed clock beside every E2E shard (and can be pointed at any deployment),
  * so a stall shows up as a run of slow or missing probe answers with its own
- * timestamps, independent of what the specs were doing.
+ * timestamps, independent of what the specs were doing. `pingWrite` adds the
+ * write path: it commits one tiny patch, so writes stalling while reads stay
+ * fast points at the commit path (a lock or a long write), not the host.
  *
  * Each reads ONE document (the first selector option, by creation order) and
  * returns nothing: no data leaves, nothing is written, and the cost is one
@@ -50,6 +52,23 @@ export const pingMutation = mutation({
   handler: async (ctx, args) => {
     if (!probeEnabled(args.nonce)) return null;
     await ctx.db.query("selectorOptions").first();
+    return null;
+  },
+});
+
+/**
+ * The write path: patches the one `latencyProbeBeats` row (inserting it on
+ * first use), so every call commits a write. Bounded to that single row. Off
+ * where `TESTING_RESET_SECRET` is unset, like the other two.
+ */
+export const pingWrite = mutation({
+  args: { nonce: v.string() },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    if (!probeEnabled(args.nonce)) return null;
+    const row = await ctx.db.query("latencyProbeBeats").first();
+    if (row) await ctx.db.patch(row._id, { at: Date.now() });
+    else await ctx.db.insert("latencyProbeBeats", { at: Date.now() });
     return null;
   },
 });

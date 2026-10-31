@@ -565,6 +565,29 @@ jobs:
       # --replace`, which is the clear for those tables). The reset alone does
       # not empty them, so each pass must load again; the sequence is
       # idempotent on a preview the earlier pass wrote to.
+      # NEO-407: the latency probe also runs through the reset and reference
+      # import, with a WRITE ping (pingWrite commits one tiny patch every 4 s)
+      # beside the read and mutation pings. A slow import whose write pings
+      # stall while reads stay fast points at the commit path; everything
+      # slowing together points at the deployment. Best-effort: never fails.
+      - name: Start Convex latency probe (desktop seed)
+        working-directory: apps/web
+        env:
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
+        run: |
+          set -uo pipefail
+          if [ -z "${CONVEX_NAME:-}" ]; then
+            echo "::warning::No preview deployment name — skipping the latency probe."
+            exit 0
+          fi
+          OUT="${RUNNER_TEMP}/convex-probe-seed-desktop.jsonl"
+          rm -f "$OUT"
+          nohup node scripts/convex-probe.mjs --url "https://${CONVEX_NAME}.convex.cloud" --out "$OUT" \
+            --write-every 4 >"${RUNNER_TEMP}/convex-probe-seed.stdout.log" 2>&1 &
+          disown
+          echo "CONVEX_PROBE_PID=$!" >> "$GITHUB_ENV"
+          echo "Started the latency probe (pid $!) -> $OUT"
+
       - name: Scripted reset + reference catalogue (e2e-seed-reset.sh)
         id: seed_reset
         env:
@@ -574,6 +597,9 @@ jobs:
           # e2e-seed-reset.sh); the next steps delete it so a re-run
           # (recreate-degraded-preview.yml) gets a fresh one.
           NB_SEED_MAX_IMPORT_S: "300"
+          # NEO-407: any Convex step of the seed past this is stopped (exit 75,
+          # the same degraded-preview path) instead of hanging the job.
+          NB_SEED_HANG_S: "900"
         run: |
           if [ -z "${CONVEX_DEPLOY_KEY:-}" ]; then
             echo "::error::CONVEX_PREVIEW_DEPLOY_KEY is not set. Add a Convex *preview* deploy key for the monorepo project as a repo secret."
@@ -584,8 +610,8 @@ jobs:
           ./e2e-seed-reset.sh || rc=$?
           if [ "$rc" -eq 75 ]; then
             echo "degraded=true" >> "$GITHUB_OUTPUT"
-            echo "::error::Convex preview $CONVEX_NAME is degraded: the reference import ran past ${NB_SEED_MAX_IMPORT_S}s (desktop pass). No specs ran, so this says nothing about the PR. The next step deletes the preview, and the whole workflow re-runs on its own with a fresh one (NEO-392)."
-            echo "- Preview degraded: reference import past ${NB_SEED_MAX_IMPORT_S}s; deleting it for a fresh one (NEO-392)" >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::Convex preview $CONVEX_NAME is degraded: the reset or reference import ran past its limit (desktop pass; see the step log). No specs ran, so this says nothing about the PR. The next step deletes the preview, and the whole workflow re-runs on its own with a fresh one (NEO-392)."
+            echo "- Preview degraded: reset or reference import past its limit; deleting it for a fresh one (NEO-392)" >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
           [ "$rc" -eq 0 ] || exit "$rc"
@@ -597,6 +623,32 @@ jobs:
               sed 's/^/- /' "$NB_REFERENCE_SEED_SUMMARY"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Stop Convex latency probe (desktop seed)
+        if: always()
+        working-directory: apps/web
+        run: |
+          set -uo pipefail
+          if [ -n "${CONVEX_PROBE_PID:-}" ]; then
+            kill "${CONVEX_PROBE_PID}" 2>/dev/null || true
+            sleep 1
+          fi
+          OUT="${RUNNER_TEMP}/convex-probe-seed-desktop.jsonl"
+          if [ -s "$OUT" ]; then
+            node scripts/convex-probe.mjs --summary "$OUT" --stall-ms 2000 || true
+            gzip -c "$OUT" > "convex-probe-seed-desktop.jsonl.gz" || true
+          else
+            echo "No latency probe data for this seed."
+          fi
+
+      - name: Upload Convex latency probe (desktop seed)
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: convex-probe-seed-desktop
+          path: apps/web/convex-probe-seed-desktop.jsonl.gz
+          if-no-files-found: ignore
+          retention-days: 14
 
       # Its own step so the team-scoped token (which can delete any
       # deployment) never shares an environment with npx or PR scripts:
@@ -1213,6 +1265,29 @@ jobs:
       # desktop shards wrote to the same preview, and the reset (except the
       # reference tables) plus the bundle's `import --replace` returns it to the
       # same baseline as the first pass. See the `seed` job's step for why.
+      # NEO-407: the latency probe also runs through the reset and reference
+      # import, with a WRITE ping (pingWrite commits one tiny patch every 4 s)
+      # beside the read and mutation pings. A slow import whose write pings
+      # stall while reads stay fast points at the commit path; everything
+      # slowing together points at the deployment. Best-effort: never fails.
+      - name: Start Convex latency probe (mobile seed)
+        working-directory: apps/web
+        env:
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
+        run: |
+          set -uo pipefail
+          if [ -z "${CONVEX_NAME:-}" ]; then
+            echo "::warning::No preview deployment name — skipping the latency probe."
+            exit 0
+          fi
+          OUT="${RUNNER_TEMP}/convex-probe-seed-mobile.jsonl"
+          rm -f "$OUT"
+          nohup node scripts/convex-probe.mjs --url "https://${CONVEX_NAME}.convex.cloud" --out "$OUT" \
+            --write-every 4 >"${RUNNER_TEMP}/convex-probe-seed.stdout.log" 2>&1 &
+          disown
+          echo "CONVEX_PROBE_PID=$!" >> "$GITHUB_ENV"
+          echo "Started the latency probe (pid $!) -> $OUT"
+
       - name: Scripted reset + reference catalogue for the mobile pass (e2e-seed-reset.sh)
         id: seed_reset
         env:
@@ -1222,6 +1297,9 @@ jobs:
           # e2e-seed-reset.sh); the next steps delete it so a re-run
           # (recreate-degraded-preview.yml) gets a fresh one.
           NB_SEED_MAX_IMPORT_S: "300"
+          # NEO-407: any Convex step of the seed past this is stopped (exit 75,
+          # the same degraded-preview path) instead of hanging the job.
+          NB_SEED_HANG_S: "900"
         run: |
           if [ -z "${CONVEX_DEPLOY_KEY:-}" ]; then
             echo "::error::CONVEX_PREVIEW_DEPLOY_KEY is not set. Add a Convex *preview* deploy key for the monorepo project as a repo secret."
@@ -1232,8 +1310,8 @@ jobs:
           ./e2e-seed-reset.sh || rc=$?
           if [ "$rc" -eq 75 ]; then
             echo "degraded=true" >> "$GITHUB_OUTPUT"
-            echo "::error::Convex preview $CONVEX_NAME is degraded: the reference import ran past ${NB_SEED_MAX_IMPORT_S}s (mobile pass). No specs ran, so this says nothing about the PR. The next step deletes the preview, and the whole workflow re-runs on its own with a fresh one (NEO-392)."
-            echo "- Preview degraded: reference import past ${NB_SEED_MAX_IMPORT_S}s; deleting it for a fresh one (NEO-392)" >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::Convex preview $CONVEX_NAME is degraded: the reset or reference import ran past its limit (mobile pass; see the step log). No specs ran, so this says nothing about the PR. The next step deletes the preview, and the whole workflow re-runs on its own with a fresh one (NEO-392)."
+            echo "- Preview degraded: reset or reference import past its limit; deleting it for a fresh one (NEO-392)" >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
           [ "$rc" -eq 0 ] || exit "$rc"
@@ -1243,6 +1321,32 @@ jobs:
               sed 's/^/- /' "$NB_REFERENCE_SEED_SUMMARY"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Stop Convex latency probe (mobile seed)
+        if: always()
+        working-directory: apps/web
+        run: |
+          set -uo pipefail
+          if [ -n "${CONVEX_PROBE_PID:-}" ]; then
+            kill "${CONVEX_PROBE_PID}" 2>/dev/null || true
+            sleep 1
+          fi
+          OUT="${RUNNER_TEMP}/convex-probe-seed-mobile.jsonl"
+          if [ -s "$OUT" ]; then
+            node scripts/convex-probe.mjs --summary "$OUT" --stall-ms 2000 || true
+            gzip -c "$OUT" > "convex-probe-seed-mobile.jsonl.gz" || true
+          else
+            echo "No latency probe data for this seed."
+          fi
+
+      - name: Upload Convex latency probe (mobile seed)
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: convex-probe-seed-mobile
+          path: apps/web/convex-probe-seed-mobile.jsonl.gz
+          if-no-files-found: ignore
+          retention-days: 14
 
       # Its own step so the team-scoped token (which can delete any
       # deployment) never shares an environment with npx or PR scripts:
