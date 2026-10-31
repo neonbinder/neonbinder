@@ -4019,6 +4019,20 @@ describe("the prelude's phases keep the fold across a page boundary (NEO-296)", 
       });
   }
 
+  test("NEO-402: a resolve page that creates a row for one spelling links the other spelling to it, never a second row", async () => {
+    const t = convexTest(schema, modules);
+    const { variantTypeId, sportId } = await seedBatch(t);
+    // No creates phase and no priorCreates: the resolve page itself creates.
+    const resolved = await preludePage(t, variantTypeId, sportId, [ACCENTED, PLAIN], {
+      phase: "resolve",
+    });
+    const rows = await t.run((ctx) => ctx.db.query("players").collect());
+    expect(rows).toHaveLength(1);
+    const byName = Object.fromEntries(resolved.playerIdByName.map(({ name, id }) => [name, id]));
+    expect(byName[ACCENTED]).toBe(rows[0]._id);
+    expect(byName[PLAIN]).toBe(rows[0]._id);
+  });
+
   test("the two spellings land in DIFFERENT resolve pages and still share one row", async () => {
     const t = convexTest(schema, modules);
     const { variantTypeId, sportId } = await seedBatch(t);
@@ -4407,5 +4421,54 @@ describe("NEO-307: a stale Create decision does not mint a second past-era team"
     expect(teams.map((row) => row._id)).toEqual([brooklyn]);
     const [card] = await readCards(t, variantTypeId);
     expect(card.teamOnCardIds).toEqual([brooklyn]);
+  });
+});
+
+// ===========================================================================
+// NEO-402 — the resolve phase looks every page's names up together; the
+// answers are the ones the in-order lookup gives.
+// ===========================================================================
+
+describe("commitCardChecklist prelude: the resolve phase's batched lookups (NEO-402)", () => {
+  test("one match links, an alias links, two matches and none stay unlinked, exactly as one unsplit call", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+    const ids = await t.run(async (ctx) => {
+      const player = (name: string) =>
+        ctx.db.insert("players", {
+          name,
+          nameNormalized: normalizePlayerName(name),
+          sportId,
+          lastUpdated: Date.now(),
+        } as never);
+      const solo = await player("Bob Allen");
+      await player("Jim Smith");
+      await player("Jim Smith");
+      const artest = await player("Metta World Peace");
+      await ctx.db.insert("playerAliases", {
+        playerId: artest,
+        sportId,
+        aliasNormalized: normalizePlayerName("Ron Artest"),
+      });
+      return { solo, artest };
+    });
+    // More names than one prefetch chunk, so the chunking is exercised too.
+    const filler = Array.from({ length: 60 }, (_, i) => `Nobody Known ${i}`);
+    const playerNames = ["Bob Allen", "Jim Smith", "Ron Artest", ...filler, "bob  allen"];
+    const base = { selectorOptionId: variantTypeId, sportId, playerNames, teamNames: [] as string[] };
+
+    const unsplit = await asAdmin.mutation(internal.selectorOptions.commitCardChecklistPrelude, base);
+    await asAdmin.mutation(internal.selectorOptions.commitCardChecklistPrelude, { ...base, phase: "creates" });
+    const resolved = await asAdmin.mutation(internal.selectorOptions.commitCardChecklistPrelude, {
+      ...base,
+      phase: "resolve",
+    });
+
+    const byName = (r: typeof resolved) => Object.fromEntries(r.playerIdByName.map(({ name, id }) => [name, id]));
+    expect(byName(resolved)).toEqual(byName(unsplit));
+    expect(byName(resolved)).toEqual({ "Bob Allen": ids.solo, "Ron Artest": ids.artest, "bob  allen": ids.solo });
+    expect([...resolved.unreviewedPlayerNames].sort()).toEqual([...unsplit.unreviewedPlayerNames].sort());
+    expect(resolved.unreviewedPlayerNames).toContain("Jim Smith");
   });
 });

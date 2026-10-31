@@ -15290,6 +15290,12 @@ function boundedAliasInput(raw: ReadonlyArray<string>): string[] {
  * buys a shorter page; under-charging buys a failed transaction.
  */
 export const PRELUDE_NAMES_PER_PAGE = 300;
+/**
+ * NEO-402 — how many names' same-name lookups the resolve phase keeps in
+ * flight at once (three indexed reads each). Bounded so one page never
+ * issues hundreds of reads at the same instant.
+ */
+export const SAME_NAME_PREFETCH_CONCURRENCY = 25;
 
 /**
  * NEO-296 — how many prelude pages one commit may walk before giving up.
@@ -17315,6 +17321,39 @@ export const commitCardChecklistPrelude = internalMutation({
       }
     };
 
+    /*
+     * NEO-402 — the resolve phase's same-name lookups, issued together.
+     *
+     * Each name costs three indexed reads (`sameNamePlayers`: primary name,
+     * sport membership, alias), and the loop below awaited them one name at a
+     * time: a 300-card checklist was ~600 reads in a row, 1.7–2.5 s on a
+     * preview, most of a save the operator waits on. The reads are the same;
+     * they are now in flight together, `SAME_NAME_PREFETCH_CONCURRENCY` names
+     * at a time, for exactly the names this page walks.
+     *
+     * Only in a "resolve" call. A call with no `phase` (the test suite's
+     * direct callers) runs the creates inside this loop, so it keeps the
+     * in-order lookup. A resolve call can still create a player at the loop's
+     * tail (a `create` decision the creates phase did not record, e.g. its
+     * one match was merged away in between); that key's prefetched answer is
+     * dropped right after, so a second spelling of it reads again.
+     */
+    const sameNamePrefetch = new Map<string, Array<Doc<"players">>>();
+    if (args.phase === "resolve") {
+      const start = Math.max(0, walkOffset - teamNameList.length);
+      const end = Math.min(playerNameList.length, start + Math.max(0, walkBudget));
+      const keys = Array.from(
+        new Set(playerNameList.slice(start, end).map((name) => norm(name))),
+      );
+      for (let i = 0; i < keys.length; i += SAME_NAME_PREFETCH_CONCURRENCY) {
+        const chunk = keys.slice(i, i + SAME_NAME_PREFETCH_CONCURRENCY);
+        const found = await Promise.all(
+          chunk.map((key) => sameNamePlayers(ctx, key, args.sportId)),
+        );
+        chunk.forEach((key, j) => sameNamePrefetch.set(key, found[j]));
+      }
+    }
+
     for (
       let pi = Math.max(0, walkOffset - teamNameList.length);
       pi < playerNameList.length;
@@ -17363,7 +17402,9 @@ export const commitCardChecklistPrelude = internalMutation({
       // It is what carries the ALIAS leg: a 2010 "Ron Artest" card and a 2011
       // "Metta World Peace" card have to land on one row, and a hand-rolled
       // read here would have found only the primary name.
-      const existingMatches = await sameNamePlayers(ctx, normalized, args.sportId);
+      const existingMatches =
+        sameNamePrefetch.get(normalized) ??
+        (await sameNamePlayers(ctx, normalized, args.sportId));
       if (existingMatches.length === 1) {
         const existing = existingMatches[0];
         playerIdByName.set(name, existing._id);
@@ -17547,6 +17588,9 @@ export const commitCardChecklistPrelude = internalMutation({
         continue;
       }
       await createPlayerFromDecision(name, normalized, decision);
+      // NEO-402 — this key now has a row the prefetch did not see; a later
+      // spelling of it must read again, or it would mint a second one.
+      sameNamePrefetch.delete(normalized);
     }
 
 
