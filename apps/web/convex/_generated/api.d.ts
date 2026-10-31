@@ -83,6 +83,7 @@ import type * as franchises from "../franchises.js";
 import type * as http from "../http.js";
 import type * as intakeRuns from "../intakeRuns.js";
 import type * as knownBrands from "../knownBrands.js";
+import type * as latencyProbe from "../latencyProbe.js";
 import type * as leagues from "../leagues.js";
 import type * as lib_baseMatchProbe from "../lib/baseMatchProbe.js";
 import type * as lib_batchIdReads from "../lib/batchIdReads.js";
@@ -245,6 +246,7 @@ declare const fullApi: ApiFromModules<{
   http: typeof http;
   intakeRuns: typeof intakeRuns;
   knownBrands: typeof knownBrands;
+  latencyProbe: typeof latencyProbe;
   leagues: typeof leagues;
   "lib/baseMatchProbe": typeof lib_baseMatchProbe;
   "lib/batchIdReads": typeof lib_batchIdReads;

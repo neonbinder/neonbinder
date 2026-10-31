@@ -845,6 +845,30 @@ jobs:
           echo "CONVEX_LOGS_DESKTOP1_PID=$!" >> "$GITHUB_ENV"
           echo "Started Convex log capture for desktop shard ${{ matrix.shard }} (pid $!) -> $RAW_LOG_FILE"
 
+      # NEO-407: a latency probe beside the shard. It calls a one-document
+      # query every second (and a no-write mutation every fourth) on this pass's
+      # preview and records each answer's latency, so a stall in the preview
+      # shows as a run of slow probe calls with its own timestamps, apart from
+      # whatever the specs were doing. Needs only the deployment URL (public
+      # functions, no key). Best-effort only: never fails the job.
+      - name: Start Convex latency probe (desktop shard ${{ matrix.shard }})
+        working-directory: apps/web
+        env:
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
+        run: |
+          set -uo pipefail
+          if [ -z "${CONVEX_NAME:-}" ]; then
+            echo "::warning::No preview deployment name — skipping the latency probe."
+            exit 0
+          fi
+          OUT="${RUNNER_TEMP}/convex-probe-desktop-${{ matrix.shard }}.jsonl"
+          rm -f "$OUT"
+          nohup node scripts/convex-probe.mjs --url "https://${CONVEX_NAME}.convex.cloud" --out "$OUT" \
+            >"${RUNNER_TEMP}/convex-probe-desktop.stdout.log" 2>&1 &
+          disown
+          echo "CONVEX_PROBE_PID=$!" >> "$GITHUB_ENV"
+          echo "Started the latency probe (pid $!) -> $OUT"
+
       - name: Run desktop shard ${{ matrix.shard }}/8
         env:
           CI: "true"
@@ -922,6 +946,32 @@ jobs:
           else
             echo "No Convex logs captured for desktop shard ${{ matrix.shard }} (capture may have been skipped or produced nothing)."
           fi
+
+      - name: Stop Convex latency probe (desktop shard ${{ matrix.shard }})
+        if: always()
+        working-directory: apps/web
+        run: |
+          set -uo pipefail
+          if [ -n "${CONVEX_PROBE_PID:-}" ]; then
+            kill "${CONVEX_PROBE_PID}" 2>/dev/null || true
+            sleep 1
+          fi
+          OUT="${RUNNER_TEMP}/convex-probe-desktop-${{ matrix.shard }}.jsonl"
+          if [ -s "$OUT" ]; then
+            node scripts/convex-probe.mjs --summary "$OUT" --stall-ms 2000 || true
+            gzip -c "$OUT" > "convex-probe-desktop-${{ matrix.shard }}.jsonl.gz" || true
+          else
+            echo "No latency probe data for this shard."
+          fi
+
+      - name: Upload Convex latency probe (desktop shard ${{ matrix.shard }})
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: convex-probe-desktop-${{ matrix.shard }}
+          path: apps/web/convex-probe-desktop-${{ matrix.shard }}.jsonl.gz
+          if-no-files-found: ignore
+          retention-days: 14
 
       - name: Upload Convex log capture (desktop shard ${{ matrix.shard }})
         if: always()
@@ -1407,6 +1457,30 @@ jobs:
           echo "CONVEX_LOGS_MOBILE1_PID=$!" >> "$GITHUB_ENV"
           echo "Started Convex log capture for mobile shard ${{ matrix.shard }} (pid $!) -> $RAW_LOG_FILE"
 
+      # NEO-407: a latency probe beside the shard. It calls a one-document
+      # query every second (and a no-write mutation every fourth) on this pass's
+      # preview and records each answer's latency, so a stall in the preview
+      # shows as a run of slow probe calls with its own timestamps, apart from
+      # whatever the specs were doing. Needs only the deployment URL (public
+      # functions, no key). Best-effort only: never fails the job.
+      - name: Start Convex latency probe (mobile shard ${{ matrix.shard }})
+        working-directory: apps/web
+        env:
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
+        run: |
+          set -uo pipefail
+          if [ -z "${CONVEX_NAME:-}" ]; then
+            echo "::warning::No preview deployment name — skipping the latency probe."
+            exit 0
+          fi
+          OUT="${RUNNER_TEMP}/convex-probe-mobile-${{ matrix.shard }}.jsonl"
+          rm -f "$OUT"
+          nohup node scripts/convex-probe.mjs --url "https://${CONVEX_NAME}.convex.cloud" --out "$OUT" \
+            >"${RUNNER_TEMP}/convex-probe-mobile.stdout.log" 2>&1 &
+          disown
+          echo "CONVEX_PROBE_PID=$!" >> "$GITHUB_ENV"
+          echo "Started the latency probe (pid $!) -> $OUT"
+
       - name: Run mobile shard ${{ matrix.shard }}/8
         env:
           CI: "true"
@@ -1484,6 +1558,32 @@ jobs:
           else
             echo "No Convex logs captured for mobile shard ${{ matrix.shard }} (capture may have been skipped or produced nothing)."
           fi
+
+      - name: Stop Convex latency probe (mobile shard ${{ matrix.shard }})
+        if: always()
+        working-directory: apps/web
+        run: |
+          set -uo pipefail
+          if [ -n "${CONVEX_PROBE_PID:-}" ]; then
+            kill "${CONVEX_PROBE_PID}" 2>/dev/null || true
+            sleep 1
+          fi
+          OUT="${RUNNER_TEMP}/convex-probe-mobile-${{ matrix.shard }}.jsonl"
+          if [ -s "$OUT" ]; then
+            node scripts/convex-probe.mjs --summary "$OUT" --stall-ms 2000 || true
+            gzip -c "$OUT" > "convex-probe-mobile-${{ matrix.shard }}.jsonl.gz" || true
+          else
+            echo "No latency probe data for this shard."
+          fi
+
+      - name: Upload Convex latency probe (mobile shard ${{ matrix.shard }})
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: convex-probe-mobile-${{ matrix.shard }}
+          path: apps/web/convex-probe-mobile-${{ matrix.shard }}.jsonl.gz
+          if-no-files-found: ignore
+          retention-days: 14
 
       - name: Upload Convex log capture (mobile shard ${{ matrix.shard }})
         if: always()
