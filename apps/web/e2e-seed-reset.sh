@@ -111,8 +111,10 @@ ref_guard() {
   fi
 }
 ref_hung() {
-  # timeout(1) answers 124 when it stopped the command, 137 when it had to kill it.
-  if [ -n "${NB_SEED_HANG_S:-}" ] && { [ "$1" -eq 124 ] || [ "$1" -eq 137 ]; }; then
+  # timeout(1) answers 124 when it stopped the command, 137 when it had to kill
+  # it. A 137 before the limit (an OOM kill, say) is an ordinary failure.
+  local waited=$(( $(date +%s) - $3 ))
+  if [ -n "${NB_SEED_HANG_S:-}" ] && { [ "$1" -eq 124 ] || { [ "$1" -eq 137 ] && [ "$waited" -ge "$NB_SEED_HANG_S" ]; }; }; then
     echo "x reference seed: $2 did not finish within ${NB_SEED_HANG_S}s. ${ref_target} is degraded (NEO-407); stopping before any spec runs." >&2
     echo "reference seed: $2 stopped at $(date -u +%FT%TZ) after ${NB_SEED_HANG_S}s"
     exit 75
@@ -123,7 +125,7 @@ ref_t0=$(date +%s)
 echo "reference seed: reset started $(date -u +%FT%TZ)"
 ref_rc=0
 ref_guard ./e2e-baseline.sh reset --except-reference-seed --deployment "$ref_target" || ref_rc=$?
-ref_hung "$ref_rc" "the reset"
+ref_hung "$ref_rc" "the reset" "$ref_t0"
 if [ "$ref_rc" -ne 0 ]; then
   echo "x reference seed: reset (except reference-seed tables) failed - see above." >&2
   exit 1
@@ -137,7 +139,7 @@ echo "reference seed: load started $(date -u +%FT%TZ)"
 ref_rc=0
 ref_guard node scripts/reference-seed/cli.mjs load "$NB_REFERENCE_BUNDLE" \
     --deployment "$ref_target" --sports import --yes || ref_rc=$?
-ref_hung "$ref_rc" "the reference load"
+ref_hung "$ref_rc" "the reference load" "$ref_t1"
 if [ "$ref_rc" -ne 0 ]; then
   echo "x reference seed: bundle load failed - see above. The deployment has been reset but holds no reference catalogue; do not run specs against it." >&2
   exit 1

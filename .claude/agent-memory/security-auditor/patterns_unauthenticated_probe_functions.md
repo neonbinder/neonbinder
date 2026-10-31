@@ -42,3 +42,15 @@ like every other module.
 - Function-call volume from a per-shard probe is real money at CI cadence
   (calls/s x shard minutes x shards x passes x runs/day) against the team's
   monthly function-call quota; state it as a cost note.
+
+**Write-path probe (pingWrite)**
+- An anonymous write is acceptable when it is gated the same way, targets its
+  own single-row table (patch-or-insert on `.first()`), has no reader and no
+  user-visible effect; pin "exactly one row when enabled, zero when unset" in
+  both the colocated test and the registry entry, and count the gate line
+  occurrences in source so a new probe cannot skip it.
+- Racing first calls can insert two rows (both see no row); harmless for a
+  beat table, but `.first()` keeps the bound at "small", not strictly one.
+- A probe started in a step BEFORE the deploy-key step does not inherit that
+  key (env is fixed at spawn). Same-UID /proc reach is no new exposure when the
+  keyed step already runs PR code.

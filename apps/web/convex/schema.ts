@@ -3657,7 +3657,8 @@ export default defineSchema({
    * NEO-407 — the latency probe's one write target. `latencyProbe.pingWrite`
    * patches a single row (insert on first use) so the probe can tell a stalled
    * WRITE path (commits queued behind something else) from a stalled read
-   * path. Never more than one row; never written in production (the probe's
+   * path. One row in practice (two racing first calls could insert two;
+   * harmless, nothing reads it); never written in production (the probe's
    * functions fail closed where TESTING_RESET_SECRET is unset). No reader.
    */
   latencyProbeBeats: defineTable({
