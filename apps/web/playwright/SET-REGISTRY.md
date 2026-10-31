@@ -1930,30 +1930,21 @@ change these counts: prod builds sets, and a name prod has built is known.
 (Before the catalogue, on dev 2026-10-10, the same fetch staged 244 unknown
 names.)
 
-**The timing claim, and why it holds.** STEP 1 asserts that the wizard opens on
-the pick step while the other names are still being looked up (Jason,
-2026-10-11: the claim stays in E2E). What holds the window open is the pool's depth, not
-how slow one lookup is: the 20 unknown names need at least four rounds of the
-deployment's 5-wide FIFO pool, and every career team they stage is queued behind
-all of them, so the header's `· N still being looked up` stays on screen until
-the last settles. One lookup's Convex-side time varies widely — 0.3s to 20s in
-one batch on the PR preview (2026-10-11, with Wikidata 502 retries), ~4-5s in CI
-run 38073638557 — so even an all-fast batch keeps the tail ≥ ~2.5s; contention
-from other flows only lengthens it. The flow's first read after the wizard opens
-is that assertion, ~1s after the batch starts. Measured on the PR preview,
-2026-10-11 (laptop and Convex clocks): batch start +0.0s, first five lookups
-+0.5s, STEP 1 COMPLETED +1.1s, last player lookup started +13.3s, first team
-settled +14.1s, tail gone +44s (+26.7s without one late 502 retry).
+**No timing claim since NEO-394 (Jason, 2026-10-31).** The 20 unknown NPB names
+are now in the enrichment recording, so their lookups settle at once and the
+career teams they stage reach the wizard before its first read (CI run
+41212224696, phone: it opened on "New Team: Kanagawa Future Dreams"). The old
+STEP 1 claim ("opens on the pick step while the others are still looked up")
+rested on those lookups being slow and live, and is gone. Jason chose to walk
+to the pick step rather than keep the names live.
 
-**Then the flow walks.** An untouched pick step yields to the first settled
-team or league (teams first, NEO-236), and the career teams above settle ~14-25s
-in, inside the window the Create new / Back to the list / link steps need. So
-after STEP 1 the flow runs `walkToPlayerRow`, which waits the
-batch out, answers each team and league step as a skip, and stops on the first
-player row: Shuya Yamada's pick step, because rows are inserted in card order
-and he is card #1. Every later count is read relative to those skips (K), and
-the link's read-back comes from `Back to previous decision` → `Decision for
-Shuya Yamada`, because the Decided list folds past five.
+**The flow walks.** It runs `walkToPlayerRow` straight after the wizard opens,
+which waits the batch out, answers each team and league step as a skip, and
+stops on the first player row: Shuya Yamada's pick step, because rows are
+inserted in card order and he is card #1. The pick step's content is asserted
+there. Every later count is read relative to those skips (K), and the link's
+read-back comes from `Back to previous decision` → `Decision for Shuya Yamada`,
+because the Decided list folds past five.
 
 **What a green CI run must show** (fill in from the first green run on the
 catalogue preview): in the flow's `maestro.log`, STEP 1's
