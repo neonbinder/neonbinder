@@ -3,17 +3,22 @@
 // a 10-year stint at team A and a 2-year stint at team B, the two teams given
 // deliberately different colours. The asymmetry is the whole point: a designer
 // that defaulted to the wrong team (or none) fails on the hex.
+// The player is a REAL person whose Baseball lookup the enrichment recording
+// holds as a no-match (support/recorded-names.ts): the add makes no live
+// Wikidata call, so no Wikidata career lands beside the two stints typed here.
+// Fresh-only: re-seed before re-running.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { expectPlayersLoaded, expectTeamsLoaded, teamsCounter } from "../../support/players";
+import { recordedNoMatchPlayer } from "../../support/recorded-names";
 
 test(
   "Spine Labels — a player's colours default to their longest-tenure team",
   { tag: ["@spine-label"] },
   async ({ page, signIn, env }) => {
-    // One alphanumeric search token per name (teams.search / players.search
-    // tokenize at non-alphanumerics).
+    // One alphanumeric search token per minted team name (teams.search
+    // tokenizes at non-alphanumerics). The player is a real two-word name.
     const token = env.ATTEMPT_TOKEN;
-    const player = `SLP${token}`;
+    const player = recordedNoMatchPlayer(env, "player-team-colors-default-to-longest-tenure");
     const teamA = `SLA${token}`;
     const teamB = `SLB${token}`;
 
@@ -76,7 +81,7 @@ test(
     await expect(page.getByRole("heading", { name: "Spine Labels" }).first()).toBeVisible({
       timeout: 30_000,
     });
-    await page.getByRole("combobox", { name: "Find a player" }).fill("SLP");
+    await page.getByRole("combobox", { name: "Find a player" }).fill(player);
     await page.getByRole("option", { name: player }).click();
     await expect(
       page.getByText(new RegExp(`Defaults to the team ${player} spent longest with`)),

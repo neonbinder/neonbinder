@@ -251,6 +251,9 @@ test("<title states the feature>", { tag: ["@set-selector"] }, async ({ page, si
 - `support/players.ts`: `/admin/players` (`expectPlayersLoaded`,
   `emptyListAndPickSport`, `addPlayerByHand`).
 - `support/profile.ts`: `fillPublicProfile`.
+- `support/recorded-names.ts`: `recordedNoMatchPlayer(env, pool)`, a real
+  person per worker for a spec that adds a Baseball player as scaffolding
+  (see "Enrichment fixtures").
 - `support/theme.ts`: `expectLook`, `expectPageLook` (a light or dark page, proven by painted colour; theme specs), `paintsLook`, `pageHasBanner` (what `expectAccessible` uses to prove each mode; see "Accessibility checks").
 - `support/wizard.ts`: entity-review wizard (`reviewWizard`, `stepCounter`,
   `readStep`, `expectStepLeft`, `fetchChecklistToWizard`,
@@ -375,7 +378,8 @@ Idioms:
 - **Option names include their badges.** A set-builder row reads
   "Base SL BSC" to a screen reader; pick rows by their own visible text with
   `columnOption()` (`.filter({ has: getByText(name, { exact: true }) })`).
-- **Fresh-only specs** (wikidata live proof, the committing wizard flows) pass
+- **Fresh-only specs** (wikidata live proof, the committing wizard flows, the
+  specs that add a player from `support/recorded-names.ts`) pass
   once per seed. A second local run fails at its "nothing exists yet"
   precondition; that is correct, not flaky. Re-seed.
 
@@ -721,8 +725,30 @@ never a stub of it. What that changes:
   deployment's `players` rows, so a capture taken after the suite has run
   would sweep it in; `convex/adapters/enrichmentFixtureFile.test.ts` refuses
   a recording that contains it.
-- The wizard specs on the Cubs / Orioles / Brooklyn fixtures get partial hits
-  from the recording and stay live for the rest.
+- **Every other spec stays off live Wikidata** (Jason, 2026-10-30: "Use real
+  names in tests. Keep a single test that does a real Wikidata lookup").
+  Every player and league the product CREATES is looked up once, through the
+  same 5-wide pool the wizard's lookups wait in, so a minted name
+  (`PM<token>`) is a live miss that holds a slot. Teams are not looked up on
+  creation (NEO-254), and a custom sport has no `sportConfig.wikidata`, so
+  neither costs anything. A spec that adds a Baseball player only as
+  scaffolding takes a real person from `support/recorded-names.ts`
+  (`recordedNoMatchPlayer(env, "<spec>")`): each is a recorded Baseball
+  no-match, so the add is a fixture hit that leaves the row bare, one name
+  per worker per spec. Such a spec is fresh-only. The unit test refuses a
+  pool name that is not a recorded no-match. A checklist name avoids the
+  lookup when the catalogue resolves it to one player, when two players
+  share it (a ready pick step, NEO-332), or when the recording holds it
+  under the lookup's sport. The file's default sport is Baseball; an entry
+  for another sport (the 1995 hockey fixtures' names) carries its own
+  `sportQid` and answers only that sport.
+- **Adding an entry** is a genuine captured answer only: §4/§4a of
+  `docs/operations/neo289-enrichment-fixtures.md`, or a `null` for a name
+  whose live lookup logged `wikidata_player_no_match` /
+  `wikidata_team_no_match` in a run's `convex-logs-*` artifact (those lines
+  are written only after a completed search found nothing, never on a
+  transport failure). Entries keyed with `fixtureKey` under their own sport,
+  carrying `sportQid` when it is not the file's, merged sorted.
 
 Fresh-only: the live proof passes once per seed. A second local run against
 the same preview finds the row the first run created, the add form demotes

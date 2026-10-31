@@ -488,6 +488,55 @@ describe("parseFixtureFile", () => {
   });
 });
 
+describe("per-entry sport", () => {
+  const HOCKEY_QID = "Q41466";
+  const hockeyKey = fixtureKey("player", HOCKEY_QID, "Trevor Burgess");
+  const hockeyEntry = { kind: "player" as const, name: "Trevor Burgess", sportQid: HOCKEY_QID, result: null };
+  const oldKey = fixtureKey("player", SPORT_QID, "Tony Gwynn");
+  const oldEntry = { kind: "player" as const, name: "Tony Gwynn", result: recordedPlayer };
+
+  test("parses a file mixing old (file-sport) entries and entries that carry their own sport", () => {
+    const parsed = parseFixtureFile(fixtureWith({ [oldKey]: oldEntry, [hockeyKey]: hockeyEntry }));
+    expect(parsed.ok, parsed.ok ? "" : parsed.reason).toBe(true);
+  });
+
+  test.each([
+    // Keyed under the file's sport while the entry says Hockey.
+    ["entry sport disagrees with its key", { [fixtureKey("player", SPORT_QID, "Trevor Burgess")]: hockeyEntry }],
+    // A Hockey key on an entry that names no sport (so it reads as the file's).
+    ["sport-keyed entry without its sportQid", { [hockeyKey]: { kind: "player", name: "Trevor Burgess", result: null } }],
+    ["non-QID sportQid", { "player|hockey|trevor burgess": { ...hockeyEntry, sportQid: "hockey" } }],
+  ])("rejects: %s", (_label, entries) => {
+    expect(parseFixtureFile(fixtureWith(entries as EnrichmentFixtureFile["entries"])).ok).toBe(false);
+  });
+
+  test("an old entry still reads under the file's sport", () => {
+    fixtureOn();
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    __setEnrichmentFixtureForTests(fixtureWith({ [oldKey]: oldEntry, [hockeyKey]: hockeyEntry }));
+    expect(readFixture("player", SPORT_QID, "Tony Gwynn")).toEqual({ hit: true, result: recordedPlayer });
+  });
+
+  test("a Hockey entry hits for Hockey only; the same name under another sport misses", () => {
+    fixtureOn();
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    __setEnrichmentFixtureForTests(fixtureWith({ [oldKey]: oldEntry, [hockeyKey]: hockeyEntry }));
+    expect(readFixture("player", HOCKEY_QID, "Trevor Burgess")).toEqual({ hit: true, result: null });
+    expect(readFixture("player", SPORT_QID, "Trevor Burgess")).toEqual({ hit: false });
+    expect(readFixture("player", "Q41323", "Trevor Burgess")).toEqual({ hit: false });
+    // And the file-sport entry is not answered for Hockey.
+    expect(readFixture("player", HOCKEY_QID, "Tony Gwynn")).toEqual({ hit: false });
+  });
+
+  test("an entry handed in through the test seam under the wrong key still misses", () => {
+    fixtureOn();
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    // Hockey-tagged entry stored under a Baseball key: never answers Baseball.
+    __setEnrichmentFixtureForTests(fixtureWith({ [fixtureKey("player", SPORT_QID, "Trevor Burgess")]: hockeyEntry }));
+    expect(readFixture("player", SPORT_QID, "Trevor Burgess")).toEqual({ hit: false });
+  });
+});
+
 describe("toFixtureEntry", () => {
   test("strips undefined fields and, for a league, the country", () => {
     expect(

@@ -2,16 +2,20 @@
 // NEO-254: franchise MEMBERSHIP. Team Management's Franchise type-ahead STARTS
 // a thread and puts team A on it, the same field puts team B on the SAME thread
 // by picking its option, Franchise Management shows both, and "Remove <team>"
-// takes one back off. All names are single search tokens.
+// takes one back off. Every minted name is a single search token. The player
+// is scaffolding: a REAL person whose Baseball lookup the enrichment recording
+// holds as a no-match (support/recorded-names.ts), so the add makes no live
+// Wikidata call. Fresh-only: re-seed before re-running.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { expectPlayersLoaded, expectTeamsLoaded, teamsCounter } from "../../support/players";
+import { recordedNoMatchPlayer } from "../../support/recorded-names";
 
 test(
   "Franchises — two team rows are strung onto one franchise from the team side, and taken off again from the franchise side",
   { tag: ["@admin"] },
   async ({ page, signIn, env }) => {
     const token = env.ATTEMPT_TOKEN;
-    const player = `Frp${token}`;
+    const player = recordedNoMatchPlayer(env, "admin-franchises-link-teams");
     const teamA = `Loc${token} Fr${token}A`;
     const teamB = `Loc${token} Fr${token}B`;
     const franchise = `Fran${token}F`;

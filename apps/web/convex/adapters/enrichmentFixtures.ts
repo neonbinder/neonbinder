@@ -16,6 +16,11 @@
  *   whole point is that a name Wikidata has nothing for costs zero round
  *   trips too, because those are the rows that used to burn two 10 s
  *   timeouts each.
+ * - The file's top-level `sportQid` is the DEFAULT sport of its entries. An
+ *   entry recorded for another sport carries its own `sportQid` (the E2E
+ *   fixtures span Hockey and Football as well as Baseball), and its key is
+ *   built with that QID. The reader keys on the CALLER's sport, so a Hockey
+ *   entry answers a Hockey lookup only.
  * - `readFixture` is the only reader. The three lookup wrappers in
  *   `wikidata.ts` consult it first and fall through to the live body on a
  *   miss. A name outside the recording still goes live, so the fixture is
@@ -137,26 +142,39 @@ export const leagueFixtureResultValidator = v.object({
 /**
  * One recorded lookup. A discriminated union so a `player` entry can only
  * carry a player-shaped result; `result: null` is a recorded no-match.
+ *
+ * `sportQid` is present only on an entry recorded for a sport other than the
+ * file's top-level one. Absent, the entry belongs to the file's sport, which
+ * is every entry written before entries could carry one. Either way its key
+ * is `fixtureKey(kind, entrySportQid(entry, file.sportQid), name)`.
  */
 export const fixtureEntryValidator = v.union(
   v.object({
     kind: v.literal("player"),
     name: v.string(),
+    sportQid: v.optional(v.string()),
     result: v.union(playerFixtureResultValidator, v.null()),
   }),
   v.object({
     kind: v.literal("team"),
     name: v.string(),
+    sportQid: v.optional(v.string()),
     result: v.union(teamFixtureResultValidator, v.null()),
   }),
   v.object({
     kind: v.literal("league"),
     name: v.string(),
+    sportQid: v.optional(v.string()),
     result: v.union(leagueFixtureResultValidator, v.null()),
   }),
 );
 
 export type EnrichmentFixtureEntry = Infer<typeof fixtureEntryValidator>;
+
+/** The sport an entry was recorded for: its own, else the file's default. */
+export function entrySportQid(entry: EnrichmentFixtureEntry, fileSportQid: string): string {
+  return entry.sportQid ?? fileSportQid;
+}
 
 // Static proof that the validators above describe the SAME shapes the live
 // lookups return. If `PlayerLookupResult` grows a field these fail to compile,
@@ -239,7 +257,10 @@ export function parseFixtureFile(
   for (const [key, value] of Object.entries(file.entries as Record<string, unknown>)) {
     const entry = parseEntry(value);
     if (!entry) return { ok: false, reason: `fixture entry ${key} is malformed` };
-    if (key !== fixtureKey(entry.kind, file.sportQid, entry.name)) {
+    if (entry.sportQid !== undefined && !isWikidataQid(entry.sportQid)) {
+      return { ok: false, reason: `fixture entry ${key} carries a non-QID sportQid` };
+    }
+    if (key !== fixtureKey(entry.kind, entrySportQid(entry, file.sportQid), entry.name)) {
       return { ok: false, reason: `fixture entry ${key} does not match its own kind/name` };
     }
     const id = entry.result?.wikidataId;
@@ -264,6 +285,7 @@ function parseEntry(value: unknown): EnrichmentFixtureEntry | undefined {
   const entry = value as Record<string, unknown>;
   if (entry.kind !== "player" && entry.kind !== "team" && entry.kind !== "league") return undefined;
   if (typeof entry.name !== "string") return undefined;
+  if (entry.sportQid !== undefined && typeof entry.sportQid !== "string") return undefined;
   if (!("result" in entry)) return undefined;
   if (entry.result !== null && (typeof entry.result !== "object" || Array.isArray(entry.result))) {
     return undefined;
@@ -394,7 +416,9 @@ export function readFixture<K extends FixtureKind>(
   }
   const fixture = getEnrichmentFixture();
   const entry = fixture?.entries[fixtureKey(kind, sportQid, name)];
-  if (!entry || entry.kind !== kind) {
+  // The key already carries the caller's sport; the second check holds for a
+  // fixture that did not come through `parseFixtureFile` (the test seam).
+  if (!entry || entry.kind !== kind || entrySportQid(entry, fixture!.sportQid) !== sportQid) {
     log("miss");
     return { hit: false };
   }
