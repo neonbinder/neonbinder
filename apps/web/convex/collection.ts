@@ -77,6 +77,7 @@ import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { internalAction, internalMutation, mutation, query } from "./_generated/server";
 import { internal } from "./_generated/api";
+import { noteArrivals } from "./binderFits";
 import { requireSignedIn } from "./auth";
 import { findSetForSelectorOption } from "./lib/selectorAncestry";
 import {
@@ -947,6 +948,12 @@ export async function applyCopyChanges(
   await moveTally(ctx, ownerId, { copies, lines, cards });
   await moveCounts(ctx, ownerId, changes);
   await moveBuildingCards(ctx, ownerId, setCards, sides);
+  // NEO-401: a parallel arriving in a smart binder for the first time.
+  await noteArrivals(
+    ctx,
+    ownerId,
+    changes.map((c) => ({ cardId: c.cardId, homeId: c.after?.homeId ?? null, fromId: c.before?.homeId ?? null })),
+  );
 }
 
 /**
@@ -1386,9 +1393,10 @@ async function moveCounts(
 /**
  * Add one line item, folding when the rule allows. Returns the row change;
  * the caller applies every add's change once (`applyCopyChanges`), after all
- * its adds.
+ * its adds. `ownerId` must be the signed-in caller (or a row they own), never
+ * a value taken from a client's arguments.
  */
-async function addOne(
+export async function addOne(
   ctx: MutationCtx,
   ownerId: string,
   cardId: CopyCardId,

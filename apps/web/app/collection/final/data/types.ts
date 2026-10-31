@@ -815,8 +815,8 @@ export interface Capabilities {
    */
   inventory: boolean;
   /**
-   * NEO-369 — Add cards from photos: the intake tab on both sides. Demo only
-   * (a scripted pile of scans) until the real pipeline is built.
+   * NEO-369 — Add cards from photos: the intake tab on both sides. The demo
+   * runs a scripted pile of scans; the signed-in app the real pipeline (NEO-382).
    */
   intake: boolean;
   /** NEO-377 — a front and back photo on each copy line (`useCopyPhotos`). */
@@ -873,6 +873,7 @@ export const REAL_CAPABILITIES: Capabilities = {
   inventory: true,
   binderRules: true,
   binderSettings: true,
+  intake: true,
   copyPhotos: true,
 };
 
@@ -994,6 +995,11 @@ export interface BinderNeeds {
   supported: boolean;
   /** True when there are more than `cards` lists. */
   truncated: boolean;
+  /**
+   * NEO-401 — a smart binder whose slots are being recomputed (its rule was
+   * just saved): `cards` is what was known before, and refreshes on its own.
+   */
+  pending?: boolean;
 }
 
 /** NEO-362 — "Find cards for this binder": copies that fit the rule and live elsewhere. */

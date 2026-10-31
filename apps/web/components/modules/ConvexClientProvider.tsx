@@ -10,6 +10,7 @@ import {
   useState,
 } from "react";
 import { ConvexReconnectContext } from "./convexReconnect";
+import { e2eDiagnostic } from "@/lib/observability/e2e-diagnostics";
 
 /**
  * NEO-84 — the client must be replaceable, because a wedged websocket cannot
@@ -82,11 +83,21 @@ export default function ConvexClientProvider({
   const reconnectCount = useRef(0);
 
   const reconnect = useCallback(() => {
-    if (reconnectCount.current >= MAX_CLIENT_RECONNECTS) return;
+    if (reconnectCount.current >= MAX_CLIENT_RECONNECTS) {
+      e2eDiagnostic("convex_client_reconnect", { outcome: "capped" });
+      return;
+    }
     const now = Date.now();
-    if (now - lastReconnectAt.current < RECONNECT_COOLDOWN_MS) return;
+    if (now - lastReconnectAt.current < RECONNECT_COOLDOWN_MS) {
+      e2eDiagnostic("convex_client_reconnect", { outcome: "cooldown" });
+      return;
+    }
     lastReconnectAt.current = now;
     reconnectCount.current += 1;
+    e2eDiagnostic("convex_client_reconnect", {
+      outcome: "swapped",
+      count: reconnectCount.current,
+    });
     setGeneration((g) => g + 1);
   }, []);
 

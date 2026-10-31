@@ -4,6 +4,7 @@ import type { MutationCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { Id } from "./_generated/dataModel";
 import { requireAdmin, getCurrentUserIdentity } from "./auth";
+import { clearRecord } from "./checklistNameResolutions";
 import { cardPlatformWireDataValidator } from "./schema";
 import { cardNumberStem } from "../lib/cards/variations";
 // NEO-251 security review: the same two bounds the write path enforces, applied
@@ -1104,6 +1105,9 @@ export const discardCandidates = mutation({
       args.selectorOptionId,
       userId,
     );
+    // NEO-402 — the fetch's name answers belong to the same session and end
+    // with it: confirm and cancel both arrive here.
+    await clearRecord(ctx, args.selectorOptionId, userId);
     if (hasMore) {
       await ctx.scheduler.runAfter(
         0,

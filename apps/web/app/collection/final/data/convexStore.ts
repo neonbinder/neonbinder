@@ -1033,7 +1033,7 @@ export const CONVEX_DATA: CollectionData = {
         cards.push(card);
         if (need.held) held.add(card.id);
       }
-      return { cards, held, supported: raw.supported, truncated: raw.truncated };
+      return { cards, held, supported: raw.supported, truncated: raw.truncated, pending: raw.pending === true };
     }, [containerId, raw]);
   },
 

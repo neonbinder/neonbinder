@@ -34,9 +34,10 @@ import {
 import ChecklistsTab from "./ChecklistsTab";
 import { DemoBar, DemoRail } from "./DemoChrome";
 import { SkeletonBars } from "./catalog/Skeleton";
-// The demo's Add cards tab (NEO-369) loads only when opened: the signed-in
-// collection never shows it.
+// Add cards loads only when opened: the demo's scripted pile (NEO-369), or
+// the signed-in screen on the real pipeline (NEO-382).
 const AddCardsTab = lazy(() => import("./intake/AddCardsTab"));
+const RealAddCardsTab = lazy(() => import("./intake/RealAddCardsTab"));
 import { DemoCollectionProvider, PUBLIC_STORAGE_KEY } from "./data/demoStore";
 import { setLabel, shortCardName } from "./data/labels";
 import {
@@ -300,7 +301,7 @@ function SidePage({ onExit }: { onExit?: () => void }) {
 function CollectionPage({ side, onExit }: { side: Side; onExit?: () => void }) {
   const { mode, keepParams } = useCollectionMode();
   const isPublic = mode === "public";
-  const { capabilities, demo, binderMemory } = useCollectionStore();
+  const { capabilities, demo, binderMemory, kind: storeKind } = useCollectionStore();
   const containers = useContainers();
   const tabs = tabsFor(side, capabilities);
   const [params, setParams] = useCollectionParams();
@@ -861,7 +862,7 @@ function CollectionPage({ side, onExit }: { side: Side; onExit?: () => void }) {
                 )}
                 {!redirect && tab === "add" && capabilities.intake && (
                   <Suspense fallback={<SkeletonBars rows={4} />}>
-                    <AddCardsTab />
+                    {storeKind === "convex" ? <RealAddCardsTab /> : <AddCardsTab />}
                   </Suspense>
                 )}
                 {!redirect && tab === "checklists" && (

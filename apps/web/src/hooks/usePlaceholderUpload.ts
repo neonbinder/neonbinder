@@ -58,6 +58,12 @@ export interface UploadOptions {
    * Only a caller that passes a source takes on that dependency.
    */
   source?: UploadSource;
+  /**
+   * NEO-382 — add the photos to this open session instead of starting one
+   * (the intake screen keeps one session per run). Photos only: a zip always
+   * starts its own job, so it is refused here.
+   */
+  jobId?: string;
 }
 
 export interface PlaceholderUpload {
@@ -102,6 +108,10 @@ export function usePlaceholderUpload(): PlaceholderUpload {
       const intake = classifyIntake(files);
       if (intake.kind === "invalid") {
         return { ok: false, reason: intake.reason };
+      }
+
+      if (options?.jobId && intake.kind === "zip") {
+        return { ok: false, reason: "a zip starts its own run, so drop it on a new run" };
       }
 
       setUploading(true);
@@ -163,20 +173,24 @@ export function usePlaceholderUpload(): PlaceholderUpload {
         // sends `{}` and stays compatible with the current validator. `{source}`
         // is assignable to the empty-args type, so no cast is needed; the
         // runtime dependency is on the backend accepting the optional field.
-        const startArgs = options?.source ? { source: options.source } : {};
-        // Cast to the current (empty) args type: `startPlaceholderStream`'s
-        // validator has not grown the optional `source` field yet, so the
-        // generated type is `EmptyObject`. `{source}` is dropped by that
-        // validator until the backend change lands, at which point the field is
-        // read — no code change here.
-        const session = await startStream(
-          startArgs as Parameters<typeof startStream>[0],
-        );
-        if (!session.started || !session.jobId) {
-          return { ok: false, reason: session.reason ?? "try again" };
+        let jobId = options?.jobId;
+        if (!jobId) {
+          const startArgs = options?.source ? { source: options.source } : {};
+          // Cast to the current (empty) args type: `startPlaceholderStream`'s
+          // validator has not grown the optional `source` field yet, so the
+          // generated type is `EmptyObject`. `{source}` is dropped by that
+          // validator until the backend change lands, at which point the field is
+          // read — no code change here.
+          const session = await startStream(
+            startArgs as Parameters<typeof startStream>[0],
+          );
+          if (!session.started || !session.jobId) {
+            return { ok: false, reason: session.reason ?? "try again" };
+          }
+          jobId = session.jobId;
         }
 
-        const result = await runPlaceholderUpload(session.jobId, files, {
+        const result = await runPlaceholderUpload(jobId, files, {
           createUploadUrl,
           postToStorage: postSignedForm,
           confirmUpload,
@@ -190,7 +204,7 @@ export function usePlaceholderUpload(): PlaceholderUpload {
 
         return {
           ok: true,
-          jobId: session.jobId,
+          jobId,
           uploaded: result.uploaded,
           failed: result.failed,
           total: files.length,

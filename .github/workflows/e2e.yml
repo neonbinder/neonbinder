@@ -52,20 +52,25 @@ permissions:
 # gate. Specs live in apps/web/playwright/tests/; config is
 # apps/web/playwright.config.ts (projects: setup / bootstrap / e2e /
 # e2e-mobile). Every spec runs on BOTH e2e (desktop) and e2e-mobile (a
-# Chromium phone), in two passes, each on a FRESHLY SEEDED preview: ~15 specs
+# Chromium phone), except the few apps/web/playwright/project-scope.mjs
+# leaves out of one project (NEO-389), in two passes, each on a FRESHLY SEEDED preview: ~15 specs
 # are fresh-only or the sole writer of a real marketplace set and pass once
 # per seed, so desktop and mobile cannot share one. `shard-plan.mjs
 # --projects` names the projects for the gate.
 #
 #   setup        → adopt the PR's Vercel preview URL, wait for it (with the
 #                  bypass header), derive the preview's Convex deployment name.
+#   timings      → beside `seed`, best-effort (NEO-389): rebuild timings.json
+#                  from the median of the last few green runs' reports and
+#                  hand it to every shard; on any problem the shards plan
+#                  from the committed file.
 #   seed         → mirror the Convex env switches, scripted reset
 #                  (e2e-baseline.sh), then the `setup` project (the global
 #                  baseline) as worker 0.
 #   shard-desktop→ 8 x ubuntu-latest, `--project=e2e`. Each shard runs the spec
 #                  files that `shard-plan.mjs 8 <i> --project e2e` assigns it
-#                  (longest-first over the per-spec desktop timings in
-#                  playwright/timings.json), NOT Playwright's count-based
+#                  (longest-first over the per-spec desktop timings from
+#                  `timings`, else playwright/timings.json), NOT Playwright's count-based
 #                  --shard. One shard = one worker = one account (shard i ->
 #                  WORKER_INDEX i-1 -> TEST_EMAIL_<i-1>); each shard runs the
 #                  `bootstrap` project first via the project dependency.
@@ -82,8 +87,9 @@ permissions:
 #   e2e          → the single ruleset-gated verdict (job id and name are
 #                  load-bearing: pr-pipeline.yml's `e2e` job and ci-gate read
 #                  it). Merges every pass's report and is green iff all five
-#                  upstream jobs succeeded AND every planned spec produced a
-#                  passing result on EVERY spec project, and both seeds passed.
+#                  upstream jobs succeeded AND every spec planned for a
+#                  project produced a passing result on it, and both seeds
+#                  passed.
 #   report       → merged JUnit as ONE "Playwright E2E" check, per-test timing
 #                  table in the step summary, sticky PR comment.
 #
@@ -227,6 +233,89 @@ jobs:
           fi
           echo "Convex deployment: $name"
           echo "convex_name=$name" >> "$GITHUB_OUTPUT"
+
+  timings:
+    # NEO-389: the shard plan is only as good as timings.json, and a committed
+    # file goes stale (it sat untouched from July to October while new specs
+    # landed on guessed values, so one desktop shard took 105 s and another
+    # 544 s). This job rewrites it, once per run, from the median of the last
+    # few green PR Pipeline runs' merged reports, and hands that one file to
+    # every shard, so all 16 plan from the same numbers. It runs beside
+    # `seed`, off the critical path, and it never fails the suite: on any
+    # problem it says so and the shards plan from the committed file.
+    # Timings decide only which shard a spec runs in, never pass or fail.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read   # list recent PR Pipeline runs and download their pw-merged reports
+    outputs:
+      fresh: ${{ steps.upload.outcome == 'success' && 'true' || 'false' }}
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        continue-on-error: true
+        with:
+          sparse-checkout: |
+            apps/web/.nvmrc
+            apps/web/playwright
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        continue-on-error: true
+        with:
+          node-version-file: apps/web/.nvmrc
+
+      - name: Median timings from the last green runs
+        id: refresh
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          echo "fresh=false" >> "$GITHUB_OUTPUT"
+          # Up to 5 reports from the newest green runs of this repo's own
+          # branches. A fork PR runs its own copy of the workflow, so its
+          # artifacts are never read. A run that skipped E2E has no pw-merged
+          # and is passed over; a failed run never counts, so a stalled run
+          # cannot set the plan.
+          files=()
+          for rid in $(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/pr-pipeline.yml/runs?status=success&per_page=30" \
+                         --jq '.workflow_runs[] | select(.head_repository.full_name == env.GITHUB_REPOSITORY) | .id'); do
+            d="$RUNNER_TEMP/pw-merged-$rid"
+            if gh run download "$rid" -R "$GITHUB_REPOSITORY" -n pw-merged -D "$d" >/dev/null 2>&1 \
+                && [ -f "$d/results.json" ]; then
+              files+=("$d/results.json")
+              [ "${#files[@]}" -ge 5 ] && break
+            fi
+          done
+          if [ "${#files[@]}" -lt 3 ]; then
+            echo "::notice::Only ${#files[@]} recent green report(s) found; the shards plan from the committed timings.json."
+            exit 0
+          fi
+          if ! node playwright/shard-plan.mjs --from-results "${files[@]}"; then
+            echo "::warning::Could not build timings from the recent reports; the shards plan from the committed timings.json."
+            exit 0
+          fi
+          for p in e2e e2e-mobile; do
+            if ! node playwright/shard-plan.mjs 8 --project "$p"; then
+              echo "::warning::The new timings do not plan; the shards plan from the committed timings.json."
+              exit 0
+            fi
+          done
+          echo "fresh=true" >> "$GITHUB_OUTPUT"
+
+      - name: Hand the timings to the shards
+        if: steps.refresh.outputs.fresh == 'true'
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: shard-timings
+          path: apps/web/playwright/timings.json
+          if-no-files-found: error
+          retention-days: 1
 
   seed:
     # Seed the shared per-PR Convex preview's global baseline before the
@@ -674,7 +763,10 @@ jobs:
     # TEST_EMAIL_<i-1> (0..7 provisioned). A test failure fails the shard, but
     # `fail-fast: false` lets every other shard finish and report; the `e2e`
     # gate below reads the merged results for the verdict.
-    needs: [setup, seed]
+    needs: [setup, seed, timings]
+    # Explicit condition: `timings` is best-effort and must never hold the
+    # pass back (NEO-389), so only setup and seed decide.
+    if: ${{ !cancelled() && needs.setup.result == 'success' && needs.seed.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
@@ -697,6 +789,22 @@ jobs:
         working-directory: apps/web
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # NEO-389: plan from the run's fresh timings (see the `timings` job).
+      # Every shard of both passes downloads the same file or none, so the
+      # plans always agree. A failed download fails the shard rather than let
+      # it plan from different numbers than the others. Downloaded outside the
+      # tree and copied by name, so the artifact can only ever replace
+      # timings.json.
+      - name: Download this run's shard timings
+        if: needs.timings.outputs.fresh == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: shard-timings
+          path: ${{ runner.temp }}/shard-timings
+      - name: Use this run's shard timings
+        if: needs.timings.outputs.fresh == 'true'
+        run: cp "$RUNNER_TEMP/shard-timings/timings.json" playwright/timings.json
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -1216,7 +1324,7 @@ jobs:
     # TEST_EMAIL_<i-1> (0..7 provisioned). A test failure fails the shard, but
     # `fail-fast: false` lets every other shard finish and report; the `e2e`
     # gate below reads the merged results for the verdict.
-    needs: [setup, seed-mobile]
+    needs: [setup, seed-mobile, timings]
     # Explicit condition: the default success() also looks at seed-mobile's
     # own needs, so a red desktop shard would skip the whole mobile pass even
     # though seed-mobile ran and passed. Mobile results are collected anyway.
@@ -1243,6 +1351,22 @@ jobs:
         working-directory: apps/web
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # NEO-389: plan from the run's fresh timings (see the `timings` job).
+      # Every shard of both passes downloads the same file or none, so the
+      # plans always agree. A failed download fails the shard rather than let
+      # it plan from different numbers than the others. Downloaded outside the
+      # tree and copied by name, so the artifact can only ever replace
+      # timings.json.
+      - name: Download this run's shard timings
+        if: needs.timings.outputs.fresh == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: shard-timings
+          path: ${{ runner.temp }}/shard-timings
+      - name: Use this run's shard timings
+        if: needs.timings.outputs.fresh == 'true'
+        run: cp "$RUNNER_TEMP/shard-timings/timings.json" playwright/timings.json
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -1473,22 +1597,24 @@ jobs:
       - name: Verify results
         run: |
           set -euo pipefail
-          # What SHOULD have run: every spec the planner would hand out (one
-          # shard of one = the whole plan), relative to the tests dir.
-          node playwright/shard-plan.mjs 1 1 | sed 's#^playwright/tests/##' | sort -u > planned.txt
-          planned_n=$(wc -l < planned.txt | tr -d ' ')
-          if [ "$planned_n" -eq 0 ]; then
-            echo "::error::The shard planner lists no specs."
-            exit 1
-          fi
-          # ...and on which projects: each planned spec, on each of them.
+          # What SHOULD have run, per project: every spec the planner would
+          # hand out on it (one shard of one = the whole plan), relative to the
+          # tests dir. The two plans differ only by playwright/project-scope.mjs
+          # (NEO-389).
           node playwright/shard-plan.mjs --projects > projects.txt
-          python3 - planned.txt pw-merged/results.json projects.txt <<'PY'
+          while read -r proj; do
+            node playwright/shard-plan.mjs 1 1 --project "$proj" | sed 's#^playwright/tests/##' | sort -u > "planned-${proj}.txt"
+            if [ ! -s "planned-${proj}.txt" ]; then
+              echo "::error::The shard planner lists no specs for ${proj}."
+              exit 1
+            fi
+          done < projects.txt
+          python3 - pw-merged/results.json projects.txt <<'PY'
           import json, sys
 
-          planned = {l.strip() for l in open(sys.argv[1]) if l.strip()}
-          data = json.load(open(sys.argv[2]))
-          projects = [l.strip() for l in open(sys.argv[3]) if l.strip()]
+          data = json.load(open(sys.argv[1]))
+          projects = [l.strip() for l in open(sys.argv[2]) if l.strip()]
+          planned_by = {p: {l.strip() for l in open(f"planned-{p}.txt") if l.strip()} for p in projects}
           if "e2e" not in projects or "e2e-mobile" not in projects:
               print(f"::error::shard-plan.mjs --projects must name e2e and e2e-mobile, got {projects}")
               sys.exit(1)
@@ -1529,12 +1655,13 @@ jobs:
           missing = []
           for proj in projects:
               seen = {r[1] for r in rows if r[0] == proj}
-              for m in sorted(planned - seen):
+              for m in sorted(planned_by[proj] - seen):
                   missing.append((proj, m))
                   errors.append(f"planned spec produced no result on [{proj}]: {m}")
 
           counts = " · ".join(f"{p} tests reported={sum(1 for r in rows if r[0] == p)}" for p in projects)
-          print(f"planned specs={len(planned)} x projects={len(projects)} · {counts} · missing={len(missing)}")
+          planned_n = " · ".join(f"{p} planned={len(planned_by[p])}" for p in projects)
+          print(f"{planned_n} · {counts} · missing={len(missing)}")
           if errors:
               for line in errors[:200]:
                   print("::error::" + line.replace("\n", " "))
