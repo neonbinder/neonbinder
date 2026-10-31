@@ -137,9 +137,20 @@ reference_seed_summary "reset seconds" "$ref_reset_s"
 ref_t1=$(date +%s)
 echo "reference seed: load started $(date -u +%FT%TZ)"
 ref_rc=0
+ref_err="$(mktemp)"
 ref_guard node scripts/reference-seed/cli.mjs load "$NB_REFERENCE_BUNDLE" \
-    --deployment "$ref_target" --sports import --yes || ref_rc=$?
+    --deployment "$ref_target" --sports import --yes 2>"$ref_err" || ref_rc=$?
+cat "$ref_err" >&2
 ref_hung "$ref_rc" "the reference load" "$ref_t1"
+# NEO-407: a deployment whose snapshot export cannot even start (on
+# 2026-10-31 the preview whose export had hung refused every later export) is
+# degraded too, not a PR failure: same exit 75, same fresh-preview re-run.
+if [ "$ref_rc" -ne 0 ] && [ -n "${NB_SEED_HANG_S:-}" ] && grep -q "export of .* failed" "$ref_err"; then
+  rm -f "$ref_err"
+  echo "x reference seed: ${ref_target} could not take a snapshot export. It is degraded (NEO-407); stopping before any spec runs." >&2
+  exit 75
+fi
+rm -f "$ref_err"
 if [ "$ref_rc" -ne 0 ]; then
   echo "x reference seed: bundle load failed - see above. The deployment has been reset but holds no reference catalogue; do not run specs against it." >&2
   exit 1
