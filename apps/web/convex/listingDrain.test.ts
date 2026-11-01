@@ -25,7 +25,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
-import { drainOwnerImpl, type DrainCtx } from "./listingDrain";
+import { drainOwnerImpl, rejectedPushDetail, type DrainCtx } from "./listingDrain";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -702,6 +702,50 @@ describe("drainOwner: per-variant failures", () => {
       { cardId: v.cardIds[0], platformCardId: "bsc-1", reason: "numberMismatch", detail: "NB #1" },
     ]);
     expect(rec?.counts?.skipped).toBe(1);
+  });
+});
+
+describe("drainOwner: a push BSC did not take", () => {
+  test("is reported as rejected with an NB-only detail: NB's condition and quantity, never BSC's", async () => {
+    const s = await setup();
+    const v = await seedVariant(s.t, { cards: [{ number: "1", ref: "bsc-1" }] });
+    const bsc = new FakeBsc([{ bscCardId: "bsc-1", cardNo: "1" }], MODERN);
+    // The read-back after the PUT shows BSC kept its old count.
+    bsc.onSheetRead = async () => {
+      if (bsc.puts.length > 0) bsc.set("bsc-1", "near_mint", { availableQuantity: 7 });
+    };
+    vi.stubGlobal("fetch", bsc.fetch);
+    await add(s, v.cardIds[0], { homeId: s.box, condition: "Near Mint", quantity: 2, minPriceCents: 50 });
+    await listOnBsc(s);
+    await queue(s, [{ cardId: v.cardIds[0], variantId: v.variantId }]);
+    await drain(s);
+    expect(bsc.puts).toHaveLength(1);
+    const rec = await record(s, v.variantId);
+    const rejected = rec?.problems.filter((p) => p.reason === "rejected") ?? [];
+    expect(rejected).toEqual([
+      {
+        cardId: v.cardIds[0],
+        platformCardId: "bsc-1",
+        reason: "rejected",
+        detail: "NeonBinder sent 2 for Mint / Near Mint, but the listing didn't take it.",
+      },
+    ]);
+    expect(rejected[0].detail).not.toContain("near_mint");
+    expect(rejected[0].detail).not.toContain("7");
+    // And the public status carries the same NB-only words, without the BSC id.
+    const status = await s.me.query(api.listingSync.variantStatus, { variantId: v.variantId });
+    expect(JSON.stringify(status)).not.toContain("near_mint");
+    expect(JSON.stringify(status)).not.toContain("bsc-1");
+  });
+
+  test("rejectedPushDetail names NB's conditions for the era, and none for a condition NB has no name for", () => {
+    expect(rejectedPushDetail(0, "vg", "vintage")).toBe("NeonBinder sent 0 for Very Good, but the listing didn't take it.");
+    expect(rejectedPushDetail(3, "very_good", "modern")).toBe(
+      "NeonBinder sent 3 for Very Good / Good, but the listing didn't take it.",
+    );
+    expect(rejectedPushDetail(1, "weird_bsc_condition", "modern")).toBe(
+      "NeonBinder sent 1, but the listing didn't take it.",
+    );
   });
 });
 

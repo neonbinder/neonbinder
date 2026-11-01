@@ -53,6 +53,7 @@ import {
   bscConditionsForEra,
   bscEraForYear,
   isBscConditionOfEra,
+  nbConditionsFor,
   type BscEra,
 } from "./lib/bscConditions";
 import {
@@ -805,6 +806,18 @@ export function toStoredProblem(p: ListingProblem, cardIds: ReadonlySet<string>)
   }
 }
 
+/**
+ * The detail of a push BSC did not take (the read-back disagreed). NB-only,
+ * like `numberMismatch`: NB's condition names and the quantity NB sent, never
+ * BSC's condition string or the count BSC shows. A condition NB has no name
+ * for (a zeroed row of a condition outside the era) is left out.
+ */
+export function rejectedPushDetail(sent: number, bscCondition: string, era: BscEra): string {
+  const names = nbConditionsFor(bscCondition, era);
+  const which = names.length > 0 ? ` for ${names.join(" / ")}` : "";
+  return `NeonBinder sent ${sent}${which}, but the listing didn't take it.`.slice(0, MAX_DETAIL);
+}
+
 // ── The drain ──────────────────────────────────────────────────────────────
 
 /** What `drainOwnerImpl` needs of an action ctx (a stub in tests). */
@@ -1280,10 +1293,7 @@ async function syncVariant(
         ...(put.cardId ? { cardId: put.cardId } : {}),
         platformCardId: put.bscCardId,
         reason: "rejected",
-        detail: `BuySportsCards still shows ${shown ?? "no row"} in ${put.condition}; NeonBinder sent ${put.row.availableQuantity}.`.slice(
-          0,
-          MAX_DETAIL,
-        ),
+        detail: rejectedPushDetail(put.row.availableQuantity, put.condition, era),
       });
       if (put.kind === "set") listedConditions.delete(put.condition);
     }

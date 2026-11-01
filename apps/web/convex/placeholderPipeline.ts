@@ -62,7 +62,7 @@ import { fastPreprocessPool } from "./placeholderPool";
 import { heavyPreprocessPool } from "./placeholderHeavyPool";
 import { readEscalationHints } from "./lib/preprocessBaseline";
 import { PLACEHOLDER_MAX_ENTRY_INDEX } from "./lib/placeholderObjects";
-import { noteIntakePairsChanged } from "./intakeRuns";
+import { noteIntakeJobFinished, noteIntakePairsChanged } from "./intakeRuns";
 
 /**
  * How many images are handled per chunked mutation — registration, enqueuing,
@@ -1015,6 +1015,8 @@ async function cancelJobImpl(
       canceledBy === "admin" ? "canceled by an administrator" : "canceled by user",
     finishedAt: canceledAt,
   });
+  // NEO-370: an intake run over this job may have settled with it.
+  await noteIntakeJobFinished(ctx, job.jobId);
 
   // Unconditional rather than gated on `mode === "stream"`, for the same
   // reason `startPlaceholderBatch` schedules `sweepJobPairs` unconditionally:
@@ -2011,6 +2013,8 @@ export async function markJobFailedImpl(
     errorDetail,
     finishedAt: Date.now(),
   });
+  // NEO-370: an intake run over this job may have settled with it.
+  await noteIntakeJobFinished(ctx, job.jobId);
 }
 
 /**
@@ -2070,6 +2074,8 @@ export async function markJobSucceededImpl(
     errorCode: undefined,
     errorDetail: undefined,
   });
+  // NEO-370: an intake run over this job may have settled with it.
+  await noteIntakeJobFinished(ctx, job.jobId);
 }
 
 // ---------------------------------------------------------------------------

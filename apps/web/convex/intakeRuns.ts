@@ -175,6 +175,22 @@ export async function noteIntakePairsChanged(
   await queueSync(ctx, run);
 }
 
+/**
+ * NEO-370 — a placeholder job reached a terminal status (succeeded, failed
+ * or cancelled). A run whose pairs were all answered before the job finished
+ * (its last photo failed, say) settles now, so its saved box copies reach the
+ * listing platforms without waiting for the 15-minute cron. Called by every
+ * writer of a job's terminal status, in the same transaction, after the patch.
+ */
+export async function noteIntakeJobFinished(ctx: MutationCtx, jobId: string): Promise<boolean> {
+  const run = await ctx.db
+    .query("intakeRuns")
+    .withIndex("by_job", (q) => q.eq("jobId", jobId))
+    .first();
+  if (!run) return false;
+  return await kickListingIfRunSettled(ctx, run);
+}
+
 async function queueSync(ctx: MutationCtx, run: Doc<"intakeRuns">): Promise<void> {
   if (run.matchScheduled) return;
   await ctx.db.patch(run._id, { matchScheduled: true });

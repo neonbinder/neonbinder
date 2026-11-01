@@ -637,6 +637,44 @@ describe("NEO-370 — a settled box run kicks the collector's listing drain", ()
     });
   });
 
+  test("every pair answered while photos process: the job finishing kicks the drain", async () => {
+    for (const finish of ["succeeded", "failed"] as const) {
+      const w = await two();
+      await listOn(w);
+      await w.t.run(async (ctx) => {
+        const job = (await ctx.db.query("placeholderJobs").collect())[0];
+        await ctx.db.patch(job._id, { status: "processing" });
+      });
+      const runId = await startRun(w, w.fx.baseId);
+      await held(w, async () => {
+        await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[0], quantity: 1 });
+        await w.me.mutation(api.intakeRuns.setIntakeMatchAside, { runId, pairId: w.pairIds[1], setAside: true });
+        expect(await drainsOf(w)).toEqual([]);
+        if (finish === "succeeded") {
+          await w.t.mutation(internal.placeholderPipeline.markJobSucceeded, { jobId: JOB });
+        } else {
+          await w.t.mutation(internal.placeholderPipeline.markJobFailed, { jobId: JOB, errorCode: "TEST" });
+        }
+        expect((await drainsOf(w)).map((d) => d.args[0])).toEqual([{ ownerId: ME.subject, platform: "bsc" }]);
+      });
+    }
+  });
+
+  test("a job finishing with a pair still unanswered kicks nothing", async () => {
+    const w = await two();
+    await listOn(w);
+    await w.t.run(async (ctx) => {
+      const job = (await ctx.db.query("placeholderJobs").collect())[0];
+      await ctx.db.patch(job._id, { status: "processing" });
+    });
+    const runId = await startRun(w, w.fx.baseId);
+    await held(w, async () => {
+      await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[0], quantity: 1 });
+      await w.t.mutation(internal.placeholderPipeline.markJobSucceeded, { jobId: JOB });
+      expect(await drainsOf(w)).toEqual([]);
+    });
+  });
+
   test("everything set aside (nothing saved) kicks nothing", async () => {
     const w = await two();
     await listOn(w);
