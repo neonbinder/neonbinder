@@ -123,7 +123,7 @@ test.afterEach(async ({ context, isMobile }, testInfo) => {
     if (written.listingOn) {
       await clean.goto("/inventory?tab=sales");
       await expect(switchBsc).toBeChecked({ timeout: LAUNCH_GATE });
-      await switchBsc.click();
+      await switchBsc.press("Space");
       await expect(switchBsc).not.toBeChecked();
     }
   } finally {
@@ -188,7 +188,11 @@ test(
     await expect(panel.getByText(/^Switching on sets what you already list on /)).toBeVisible();
     await expect(resync).toBeHidden();
     await expectAccessible(page, { within: panel, label: "Checklist listing panel, listing off" });
-    await panelSwitch.click();
+    // Space, not a click: the switch is an sr-only checkbox under a drawn
+    // track, so a pointer aimed at the input lands on the track. The label
+    // wraps both, so a mouse on the track flips it too; the keyboard path is
+    // the one this proves.
+    await panelSwitch.press("Space");
     written.listingOn = true;
     await expect(said(new RegExp(`^Listing on ${BSC} is on`))).toBeVisible();
     await expect(resync).toBeVisible();
@@ -324,7 +328,7 @@ test(
     await expect(switchBsc).toBeChecked();
     await expect(page.getByText(/^No sales yet\./)).toBeVisible();
     await expectAccessible(page, { label: "Inventory Sales, listing on, no sales" });
-    await switchBsc.click();
+    await switchBsc.press("Space");
     await expect(said(new RegExp(`^Listing on ${BSC} is off`))).toBeVisible();
     await expect(switchBsc).not.toBeChecked();
     written.listingOn = false;
