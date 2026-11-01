@@ -1,20 +1,25 @@
 // NEO-370 Rev 4 (R1): a collector's boxes reach BuySportsCards when they Sync,
 // and a box set to in-person takes them off again. The flow, as the user lives
 // it:
-//   0. They make their box, then set every OTHER box they have (Unsorted
+//   0. They name themselves on the public profile (Admin names a collector by
+//      it), make their box, then set every OTHER box they have (Unsorted
 //      included) to in-person: Start walks every card in a listed box, so
 //      stock an earlier spec left on this worker must not reach real BSC.
+//      Before Start, the checklist's Sync is inert with its reason and Sync
+//      status says listing has not started.
 //   1. Profile -> Credentials (BuySportsCards): the consent warning shows, they
 //      press "Start listing on BuySportsCards", and the panel reads that they
 //      list since today. Saving a sign-in starts nothing; this is the start.
 //   2. They put one copy each of the first two 1988 Topps Base cards in their
-//      box, and press the checklist's Sync. Inventory -> Sync status
-//      then reads the set synced with 2 listed and nothing held back.
+//      box; Sync status queues the two cards; they press the checklist's Sync
+//      and Sync status reads the set synced with 2 listed, nothing held back.
+//      Admin -> Sync Status shows the same set for this collector, read-only.
 //   3. They turn the box's "Listed on marketplaces" off, Sync again, and the
 //      set reads 0 listed, with both cards taken to 0.
-//   4. Cleanup (afterEach, pass or fail): the touched BSC rows end at 0, then
-//      listing STOPS by removing the worker's BSC sign-in on Profile and
-//      saving it again. The account ends connected and NOT listing.
+//   4. They stop listing: the BSC sign-in is removed and saved again, and
+//      Profile offers "Start listing" again. The afterEach does the same on a
+//      failure (after first zeroing the touched rows). The account ends
+//      connected and NOT listing.
 //
 // What "2 listed" proves about BSC. The drain reads BSC's seller sheet, plans
 // against it, PUTs the rows that differ and READS THEM BACK; a row BSC still
@@ -76,19 +81,46 @@ const SET_LABEL = `${TOPPS_1988.year} ${TOPPS_1988.set}`;
 const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /** What the failing run needs undone, filled as the flow goes. */
-const written: { box?: string; cards?: [string, string]; started?: boolean } = {};
+const written: { box?: string; cards?: [string, string]; started?: boolean; stopped?: boolean } = {};
 
 /** The key that leaves a quantity field: Tab on a desktop, Enter on a phone. */
 const leaveKey = (isMobile: boolean) => (isMobile ? "Enter" : "Tab");
 
-/** The Sync status tab's BuySportsCards section and this set's "Last sync by set" row. */
-function syncStatus(page: Page) {
-  const platform = page.getByRole("region", { name: BSC, exact: true });
+/** What the checklist's inert Sync says (and Sync status points to the Profile for). */
+const NOT_LISTING_LINE = `Nothing to sync to yet. Start listing on ${BSC} from your Profile, under Credentials.`;
+
+/** The Sync status screen's BuySportsCards section and this set's "Last sync by set" row, in `scope` (the page, or an admin's collector). */
+function syncStatus(scope: Page | Locator) {
+  const platform = scope.getByRole("region", { name: BSC, exact: true });
   const row = platform
     .getByRole("list", { name: "Last sync by set" })
     .getByRole("listitem")
     .filter({ hasText: SET_LABEL });
   return { platform, row };
+}
+
+/** Profile -> Credentials' "Listing on BuySportsCards" section. */
+function listingSection(page: Page) {
+  return page.getByRole("region", { name: `Listing on ${BSC}`, exact: true });
+}
+
+/**
+ * STOP listing: remove the worker's sign-in (it also clears the start and
+ * drops the queue), save it again so the worker keeps its credentials (R7),
+ * and see Profile offer "Start listing" again. The page is signed in already.
+ * The only way to stop listing: an account left listing would put any later
+ * spec's boxed cards up for sale on real BSC.
+ */
+async function stopListing(page: Page): Promise<void> {
+  try {
+    await removeBscSignIn(page, LAUNCH_GATE);
+    // No sign-in, nothing to start: the section is gone (the form is up, see the helper).
+    await expect(listingSection(page)).toBeHidden();
+  } finally {
+    await saveBscSignIn(page);
+    await expect(listingSection(page).getByRole("button", { name: `Start listing on ${BSC}`, exact: true })).toBeVisible();
+    await expect(page.getByText(/^Listing your boxes on /)).toBeHidden();
+  }
 }
 
 /**
@@ -145,16 +177,8 @@ test.afterEach(async ({ context, isMobile }, testInfo) => {
         await expect(syncStatus(clean).row.getByText(/^0 listed/)).toBeVisible({ timeout: BSC_ROUND_TRIP });
       }
     } finally {
-      // STOP listing: remove the sign-in (it also clears the start), then save
-      // it again so the worker keeps its credentials (R7).
-      try {
-        await removeBscSignIn(clean, LAUNCH_GATE);
-      } finally {
-        await saveBscSignIn(clean);
-        const listing = clean.getByRole("region", { name: `Listing on ${BSC}`, exact: true });
-        await expect(listing.getByRole("button", { name: `Start listing on ${BSC}`, exact: true })).toBeVisible();
-        await expect(clean.getByText(/^Listing your boxes on /)).toBeHidden();
-      }
+      // The body already stopped listing on a pass; otherwise it stops here.
+      if (!written.stopped) await stopListing(clean);
     }
   } finally {
     await clean.close();
@@ -169,6 +193,7 @@ test(
     written.box = undefined;
     written.cards = undefined;
     written.started = false;
+    written.stopped = false;
     const boxName = `Bsc${env.ATTEMPT_TOKEN}`;
     const said = (text: string | RegExp) => page.getByRole("status").filter({ hasText: text });
     const tabs = inventoryTabs(page);
@@ -176,31 +201,52 @@ test(
     const boxSpine = (cards: number) =>
       boxes.getByRole("button", { name: `${boxName}, box, ${cardsWord(cards)} for sale`, exact: true });
 
+    // --- A name the admin screen can show: the label of "this worker's collector"
+    // The per-user reset leaves no public profile, and Admin names a collector
+    // by display name, else @username, else an opaque id. So the spec sets its own.
+    const collector = `Seller${env.ATTEMPT_TOKEN}`;
+    await signIn("/profile/public");
+    await expect(page.getByRole("heading", { name: "Profile Settings" })).toBeVisible({ timeout: LAUNCH_GATE });
+    await page.getByLabel(/^Username/).fill(env.TEST_USERNAME);
+    await page.getByLabel("Display Name").fill(collector);
+    await page.getByRole("button", { name: "Save Public Profile" }).click();
+    await expect(page.getByText(/^Profile saved/)).toBeVisible();
+
     // --- 0. A box to stock, and every other box in-person BEFORE Start -----------
-    await signIn("/inventory?tab=boxes");
+    // A full page load, so the launch gate (cold app + Clerk handshake) applies.
+    await page.goto("/inventory?tab=boxes");
     await expect(page.getByRole("heading", { level: 1, name: "Inventory" })).toBeVisible({ timeout: LAUNCH_GATE });
     await expect(page).toHaveURL(/[?&]tab=boxes/);
     await createBox(page, boxName);
     written.box = boxName;
     await backToBoxes(page);
-    // The shelf has settled once the new box shows on it.
     await expect(boxSpine(0)).toBeVisible();
 
     // Every other box the worker has: the boxes on the shelf and Unsorted in
-    // "Special places" (the Up for Trade pile is not a box that lists). Names
-    // are read first, then each box is opened and its "Listed on marketplaces"
-    // turned off (a box starts on); each ends unchecked, asserted. They are left
-    // in-person afterwards: putting them back would queue their cards.
+    // "Special places" (the Up for Trade pile is not a box that lists). Each is
+    // opened and its "Listed on marketplaces" turned off (a box starts on), and
+    // each ends unchecked, asserted. They are left in-person afterwards:
+    // putting them back would queue their cards.
     const special = page.getByRole("list", { name: "Special places" });
     const spineRe = /^(.+), box, (?!.*up for trade)/;
     const spines = boxes.getByRole("button", { name: spineRe }).or(special.getByRole("button", { name: spineRe }));
-    const others: string[] = [];
-    for (let i = 0, n = await spines.count(); i < n; i++) {
-      const name = await nameOf(spines.nth(i));
-      if (!name.startsWith(`${boxName}, box, `)) others.push(name);
-    }
+    // The shelf has settled when Unsorted is drawn and no box is still "counting"
+    // (its spine reads ", box, counting" until its count is known).
+    await expect(special.getByRole("button", { name: /^Unsorted, box, / })).toBeVisible();
+    await expect(
+      boxes.getByRole("button", { name: /, box, counting$/ }).or(special.getByRole("button", { name: /, box, counting$/ })),
+    ).toHaveCount(0);
+    const boxNameOf = (spineName: string) => spineRe.exec(spineName)![1];
+    const readBoxes = async () => {
+      const names: string[] = [];
+      for (let i = 0, n = await spines.count(); i < n; i++) names.push(await nameOf(spines.nth(i)));
+      return names;
+    };
+    const others = (await readBoxes()).filter((name) => boxNameOf(name) !== boxName);
+    // Unsorted is never skipped: it is the box most likely to hold earlier stock.
+    expect(others.map(boxNameOf), "the shelf names Unsorted").toContain("Unsorted");
     for (const spineName of others) {
-      const box = spineRe.exec(spineName)![1];
+      const box = boxNameOf(spineName);
       await boxes.getByRole("button", { name: spineName, exact: true }).or(special.getByRole("button", { name: spineName, exact: true })).click();
       await expect(page).toHaveURL(/[?&]b=[^&]+/);
       const toggle = page.getByRole("checkbox", { name: "Listed on marketplaces", exact: true });
@@ -212,14 +258,44 @@ test(
       await expect(toggle).not.toBeChecked();
       await backToBoxes(page);
     }
+    // Nothing arrived on the shelf while they were handled: a late box fails here, never skipped.
+    const handled = new Set([boxName, ...others.map(boxNameOf)]);
+    await expect
+      .poll(async () => (await readBoxes()).map(boxNameOf).filter((name) => !handled.has(name)))
+      .toEqual([]);
+
+    // --- Before Start: Sync is inert with its reason, Sync status says not started
+    await tabs.getByRole("link", { name: "Checklists", exact: true }).click();
+    await expect(page).toHaveURL(/[?&]tab=checklists/);
+    const checklist = await drillToCollectorBase(page, TOPPS_1988);
+    const sync = checklist.getByRole("button", { name: `Sync ${TITLE}`, exact: true });
+    // Shown, but inert (aria-disabled keeps it in the tab order): its reason is its description.
+    await expect(sync).toBeVisible();
+    await expect(sync).toHaveAttribute("aria-disabled", "true");
+    await expect(sync).toHaveAccessibleDescription(NOT_LISTING_LINE);
+    await expect(checklist.getByRole("switch", { name: /^List on / })).toHaveCount(0);
+    await expect(checklist.getByRole("group", { name: `${BSC} listing` })).toBeHidden();
+    await expectAccessible(page, { label: "Checklist, Sync inert before Start" });
+    // Pressed from the keyboard, it says why instead of syncing.
+    await sync.focus();
+    await page.keyboard.press("Enter");
+    await expect(said(NOT_LISTING_LINE)).toBeVisible();
+
+    await tabs.getByRole("link", { name: "Sync status", exact: true }).click();
+    await expect(page).toHaveURL(/[?&]tab=sync/);
+    const before = syncStatus(page);
+    await expect(before.platform.getByRole("heading", { level: 2, name: BSC, exact: true })).toBeVisible();
+    await expect(before.platform.getByText("Not started", { exact: true })).toBeVisible();
+    await expect(before.platform.getByText(/^Your sign-in is saved, but listing hasn't started\./)).toBeVisible();
+    await expect(before.platform.getByRole("link", { name: `Start listing on ${BSC} from your Profile` })).toBeVisible();
+    await expectAccessible(page, { label: "Inventory Sync status, listing not started" });
 
     // --- 1. Profile: the consent warning, then Start --------------------------
-    // A full page load, so the launch gate (cold app + Clerk handshake) applies.
     await page.goto("/profile/credentials");
     await expect(page.getByRole("heading", { name: "Profile Settings" })).toBeVisible({ timeout: LAUNCH_GATE });
     // A sign-in saved by the bootstrap: connected, and (saving starts nothing) not listing.
     await expect(page.getByText(`Connected to ${BSC}`)).toBeVisible();
-    const listing = page.getByRole("region", { name: `Listing on ${BSC}`, exact: true });
+    const listing = listingSection(page);
     await expect(listing).toBeVisible();
     const start = listing.getByRole("button", { name: `Start listing on ${BSC}`, exact: true });
     await expect(start).toBeVisible();
@@ -244,25 +320,18 @@ test(
     // Listing is not a switch any more: it is the Profile's Start and the boxes.
     await expect(page.getByRole("switch", { name: /^List on / })).toHaveCount(0);
 
-    await tabs.getByRole("link", { name: "My Boxes", exact: true }).click();
-    await expect(page).toHaveURL(/[?&]tab=boxes/);
-    await expect(boxSpine(0)).toBeVisible();
-
     // --- The 1988 Topps Base checklist, adding to the box ----------------------
     await tabs.getByRole("link", { name: "Checklists", exact: true }).click();
     await expect(page).toHaveURL(/[?&]tab=checklists/);
     const adding = page.getByRole("combobox", { name: "Adding to" });
     await expect(adding).toBeVisible();
-    const checklist = await drillToCollectorBase(page, TOPPS_1988);
+    await drillToCollectorBase(page, TOPPS_1988);
     await adding.selectOption({ label: boxName });
     await expect(adding.getByRole("option", { selected: true })).toHaveText(boxName);
     const boxList = checklist.getByRole("list", { name: `Quantities in ${boxName}` });
     await expect(boxList.getByRole("textbox").nth(1)).toBeVisible();
-    // The checklist carries Sync and no listing status or switch.
-    const sync = checklist.getByRole("button", { name: `Sync ${TITLE}`, exact: true });
-    await expect(sync).toBeVisible();
-    await expect(checklist.getByRole("switch", { name: /^List on / })).toHaveCount(0);
-    await expect(checklist.getByRole("group", { name: `${BSC} listing` })).toBeHidden();
+    // Listing has started: Sync is usable now.
+    await expect(sync).not.toHaveAttribute("aria-disabled", "true");
 
     // --- A common price: the rows have no price of their own -------------------
     await checklist.getByRole("button", { name: `Set a common price for ${TITLE}`, exact: true }).click();
@@ -303,15 +372,33 @@ test(
     await expect(rowOf(b).getByText("Saved")).toBeVisible();
     await expect(said(new RegExp(`^Boxed 1 more of ${escapeRegExp(b)}\\.`))).toBeVisible();
 
-    // --- 2. Sync: BSC takes both, Sync status says 2 listed --------------------
-    await sync.click();
-    await expect(said(`Syncing ${TITLE} now. Watch it on Sync status.`)).toBeVisible();
+    // --- Before Sync: Sync status queues the two cards -------------------------
     await tabs.getByRole("link", { name: "Sync status", exact: true }).click();
     await expect(page).toHaveURL(/[?&]tab=sync/);
     await expect(tabs.getByRole("link", { name: "Sync status", exact: true })).toHaveAttribute("aria-current", "page");
     const { platform, row } = syncStatus(page);
     await expect(platform.getByRole("heading", { level: 2, name: BSC, exact: true })).toBeVisible();
     await expect(platform.getByText("Listing", { exact: true })).toBeVisible();
+    await expect(platform.getByRole("heading", { level: 3, name: "Queued for the next sync (2)", exact: true })).toBeVisible();
+    const queued = platform.getByRole("list", { name: "Queued for the next sync (2)" }).getByRole("listitem");
+    await expect(queued).toHaveCount(2);
+    for (const short of [a, b]) {
+      const number = escapeRegExp(short.split(" ")[0]);
+      await expect(queued.filter({ hasText: new RegExp(`^${number} .* in ${escapeRegExp(SET_LABEL)}`) })).toHaveCount(1);
+    }
+    await expectAccessible(page, { label: "Inventory Sync status, two cards queued" });
+
+    // --- 2. Sync: BSC takes both, Sync status says 2 listed --------------------
+    // Back steps to the checklist the cards were boxed on, quantities as left.
+    await page.goBack();
+    await expect(page).toHaveURL(/[?&]tab=checklists/);
+    await expect(checklist.getByRole("heading", { level: 3, name: TITLE })).toBeVisible();
+    await expect(fieldA).toHaveValue("1");
+    await expect(fieldB).toHaveValue("1");
+    await sync.click();
+    await expect(said(`Syncing ${TITLE} now. Watch it on Sync status.`)).toBeVisible();
+    await tabs.getByRole("link", { name: "Sync status", exact: true }).click();
+    await expect(page).toHaveURL(/[?&]tab=sync/);
     // Live BSC round trip (BSC_ROUND_TRIP above). The line is the drain's own
     // count: 2 rows on BSC show NB's stock after the read-back (2 updated, or
     // none when BSC already showed them); "skipped" would be a held-back card.
@@ -320,16 +407,38 @@ test(
     await expect(row.getByText(/held back/)).toHaveCount(0);
     await expectAccessible(page, { label: "Inventory Sync status, 2 listed" });
 
-    // Back steps to the checklist the Sync was pressed on, quantities as left.
+    // --- Admin: the same result, read-only, for this collector --------------------
+    // (Worker accounts are admins: the admin specs sign in as them.)
+    await page.goto("/admin/sync-status");
+    await expect(page.getByRole("heading", { level: 2, name: "Sync Status", exact: true })).toBeVisible({ timeout: LAUNCH_GATE });
+    const pickCollector = page.getByRole("combobox", { name: "Collector", exact: true });
+    await expect(pickCollector.getByRole("option", { selected: true })).toHaveText("Everyone who lists");
+    const adminCollector = page.getByRole("region", { name: collector, exact: true });
+    // Everyone view: each collector has a LINK to see everything for them.
+    const seeAll = adminCollector.getByRole("link", { name: `See everything for ${collector}`, exact: true });
+    await seeAll.click();
+    await expect(page).toHaveURL(/[?&]owner=[^&]+/);
+    await expect(pickCollector.getByRole("option", { selected: true })).toHaveText(collector);
+    const admin = syncStatus(adminCollector);
+    await expect(admin.platform.getByRole("heading", { level: 4, name: BSC, exact: true })).toBeVisible();
+    await expect(admin.row.getByText(/^2 listed(, 2 updated)?$/)).toBeVisible();
+    await expect(admin.row.getByText(/held back/)).toHaveCount(0);
+    // Look, don't touch: nothing here syncs, starts, removes or links to the collector's Profile.
+    await expect(adminCollector.getByRole("button", { name: /^(Sync|Start listing|Remove|Clear)/ })).toHaveCount(0);
+    await expect(adminCollector.getByRole("link")).toHaveCount(0);
+    await expectAccessible(page, { label: "Admin Sync status, one collector, 2 listed" });
+    // Back returns to everyone (the link pushed a step); the filter then replaces.
     await page.goBack();
-    await expect(page).toHaveURL(/[?&]tab=checklists/);
-    await expect(checklist.getByRole("heading", { level: 3, name: TITLE })).toBeVisible();
-    await expect(fieldA).toHaveValue("1");
-    await expect(fieldB).toHaveValue("1");
+    await expect(page).not.toHaveURL(/[?&]owner=/);
+    await expect(pickCollector.getByRole("option", { selected: true })).toHaveText("Everyone who lists");
+    await expect(seeAll).toBeVisible();
+    await pickCollector.selectOption({ label: collector });
+    await expect(page).toHaveURL(/[?&]owner=[^&]+/);
+    await expect(admin.row.getByText(/^2 listed(, 2 updated)?$/)).toBeVisible();
 
     // --- 3. The box goes in-person: Sync takes both off BSC --------------------
-    await tabs.getByRole("link", { name: "My Boxes", exact: true }).click();
-    await expect(page).toHaveURL(/[?&]tab=boxes/);
+    await page.goto("/inventory?tab=boxes");
+    await expect(page.getByRole("heading", { level: 1, name: "Inventory" })).toBeVisible({ timeout: LAUNCH_GATE });
     await expect(boxSpine(2)).toBeVisible();
     await boxSpine(2).click();
     await expect(page.getByRole("heading", { level: 2, name: boxName, exact: true })).toBeVisible();
@@ -347,7 +456,7 @@ test(
     await tabs.getByRole("link", { name: "Checklists", exact: true }).click();
     await expect(page).toHaveURL(/[?&]tab=checklists/);
     await drillToCollectorBase(page, TOPPS_1988);
-    await checklist.getByRole("button", { name: `Sync ${TITLE}`, exact: true }).click();
+    await sync.click();
     await expect(said(`Syncing ${TITLE} now. Watch it on Sync status.`)).toBeVisible();
     await tabs.getByRole("link", { name: "Sync status", exact: true }).click();
     await expect(page).toHaveURL(/[?&]tab=sync/);
@@ -373,6 +482,10 @@ test(
     await deleteOpenBox(page, boxName);
     await expect(boxes.getByRole("button", { name: new RegExp(`^${escapeRegExp(boxName)},`) })).toHaveCount(0);
     written.box = undefined;
-    // The hook now stops listing: the sign-in is removed and saved again.
+
+    // --- 4. Stop listing: the sign-in goes and comes back, Start is offered again
+    // The BSC rows are already 0 (step 3). The hook does this on a failure.
+    await stopListing(page);
+    written.stopped = true;
   },
 );
