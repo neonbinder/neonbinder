@@ -158,3 +158,5 @@
 - [HMR context-module edit crashes the page](reference_hmr_context_module_edit_crashes_the_page.md) — sibling edits mode.tsx → "outside Provider"; reload. select-on-focus field: → test selectionEnd only
 - [Sticky sub-bar must bump scroll padding](reference_sticky_subbar_must_bump_scroll_padding.md) — a bar sticking under the sm-sticky header needs html scroll-padding-top grown inline while mounted; hint text outside the sticky part
 - [sr-only escapes an unpositioned scroller](reference_sr_only_escapes_unpositioned_scroller.md) — overflow-x rail with sr-only kids widens the page unless the scroller is `relative`
+- [Leave hook survives StrictMode](reference_leave_hook_survives_strictmode.md) — leave-time writes in effect cleanup fire on dev double mount; defer + cancel by view id
+- [Unit axe helper](reference_unit_axe_helper.md) — lib/testing/axe.ts: axe in happy-dom, E2E tags, light+dark, no contrast; for states E2E cannot stage

@@ -40,3 +40,6 @@
 - [E2E seed carries no cards](reference_e2e_seed_carries_no_cards.md) — bundle is 8 reference tables; preview cards come from setup.spec through insertCardRow, so derived fields need no backfill
 - [Pin tests need a bypass plant](reference_pin_tests_need_a_bypass_plant.md) — *.pin tests scan source; a planted throw leaves them green, plant a forbidden call instead
 - [convex-test t.run rejects undefined](reference_convex_test_t_run_rejects_undefined.md) — an array holding undefined throws; map to null
+- [convex-test ids fail real-id codecs](reference_convex_test_ids_fail_real_id_codecs.md) — mock id-checksum codecs (listingSku); fake timers when a test only inspects scheduled network actions
+- [Hold a runAfter(0) action in convex-test](reference_hold_runafter0_in_convex_test.md) — fake setTimeout, hand-run walks, cancel before useRealTimers; count drains in any state
+- [Scratch test typecheck: node-types noise](reference_scratch_test_typecheck_node_types_noise.md) — fixture-reading tests report TS2591/TS2304 under the convex tsconfig; encodeId mints real ids for lib tests

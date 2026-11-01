@@ -83,3 +83,4 @@
 - [Cross-run artifacts](patterns_cross_run_artifacts.md) — A CI job that reads other runs' artifacts must filter to this repo's runs (fork PRs run their own workflow edits), clamp numbers, and download outside the source tree
 - [Unauthenticated probe functions](patterns_unauthenticated_probe_functions.md) — weigh a no-auth ping against an auth-failing call (not zero); pin its shape, bound args, fail closed in prod via env, register it; CI probe steps carry no secret; quota cost note
 - [Neo408 seed without exports](patterns_neo408_seed_without_exports.md) — internal read fns replacing `convex export`: reachability = deploy key; normalizeId is a per-call syscall (scan cost); catch→0 rows is fail-open for a clear verify; "no deployed code" claims die
+- [Neo370 scheduled marketplace poll](patterns_neo370_scheduled_marketplace_poll.md) — 24/7 per-user poll: gate on credential state; backoff == interval; tick overlap; throwing poll pins never-polled-first index
