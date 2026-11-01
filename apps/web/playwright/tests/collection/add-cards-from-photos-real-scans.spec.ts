@@ -127,7 +127,7 @@ test(
     // Every pair read, paired and matched (the pipeline's exception, above). The
     // run's status line comes first so a stall says where: still reading, a
     // photo left unpaired, or matched into the wrong lane.
-    const runStatus = page.getByRole("status").filter({ hasText: /^(Working on your photos\.|Everything is read\..*|\d+ saved\.)$/ });
+    const runStatus = page.getByRole("status").filter({ hasText: /^(Working on your photos\.|Everything is read\..*|Done reading\..*|\d+ saved\..*)$/ });
     await expect(runStatus).toHaveText("Everything is read. 3 waiting for you, 0 saved.", { timeout: PIPELINE });
     await expect(waiting).toHaveAccessibleName("Needs you, 3");
 

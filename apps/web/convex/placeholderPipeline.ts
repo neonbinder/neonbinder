@@ -1947,11 +1947,12 @@ export const recordImageOutcome = internalMutation({
  * Before this, nothing ended a heavy photo's wait but the retry ladder, which
  * the pool comments put at up to ~48 minutes, and the intake screen said
  * "Working on your photos." the whole time. In the red E2E runs of 2026-10-30/31
- * a cold heavy call took 174-272s and warm ones 34-75s, so six minutes covers a
- * cold load with room for one retry on a warm instance, and nothing longer is
- * a photo still on its way.
+ * a cold heavy call took 174-272s and warm ones 34-75s. Seven minutes is longer
+ * than one heavy call's whole budget (PREPROCESS_HEAVY_TIMEOUT_MS, 400s), so a
+ * first attempt is never cut short by its own deadline, and a fast-failing
+ * first attempt still leaves time for a retry on the instance it warmed.
  */
-export const HEAVY_PHOTO_DEADLINE_MS = 6 * 60 * 1000;
+export const HEAVY_PHOTO_DEADLINE_MS = 7 * 60 * 1000;
 
 /**
  * Called by `processHeavyEntryWorker` as each heavy attempt starts. The FIRST
@@ -1972,11 +1973,15 @@ export const noteHeavyStart = internalMutation({
       .unique();
     if (!image || image.status !== "processing" || image.escalated !== true) return null;
     if (image.heavyStartedAt !== undefined) return null;
-    await ctx.db.patch(image._id, { heavyStartedAt: Date.now() });
+    const heavyStartedAt = Date.now();
+    await ctx.db.patch(image._id, { heavyStartedAt });
+    // The stamp travels with the deadline: a retry or a restart clears it and a
+    // later attempt writes a new one, so this deadline then finds a different
+    // stamp and does nothing (it belongs to an attempt that already ended).
     await ctx.scheduler.runAfter(
       HEAVY_PHOTO_DEADLINE_MS,
       internal.placeholderHeavyPool.expireHeavyPhoto,
-      { imageId: image._id },
+      { imageId: image._id, heavyStartedAt },
     );
     return null;
   },
@@ -1987,7 +1992,9 @@ export const noteHeavyStart = internalMutation({
  * the heavy pool component (see `recordImageOutcomeImpl`). If the row is still
  * heavy-processing, settle it as failed with errorCode "PHOTO_TIMED_OUT"
  * through the one shared settle, so the counters, pairing and batch completion
- * all move exactly as for any other failed photo. Returns the row's heavy
+ * all move exactly as for any other failed photo. Only the deadline of the
+ * row's CURRENT attempt acts: `heavyStartedAt` must still equal the stamp the
+ * deadline was scheduled with. Returns the row's heavy
  * `workId` so the caller can cancel the work still queued or retrying, or null
  * when there was nothing to expire. A heavy answer that lands later finds the
  * row terminal and is dropped by settle.
@@ -1995,11 +2002,15 @@ export const noteHeavyStart = internalMutation({
 export async function expireHeavyPhotoImpl(
   ctx: MutationCtx,
   imageId: Id<"placeholderImages">,
+  heavyStartedAt: number,
 ): Promise<{ expired: boolean; workId: string | null }> {
   const image = await ctx.db.get(imageId);
   if (!image || image.status !== "processing" || image.escalated !== true) {
     return { expired: false, workId: null };
   }
+  // A deadline from an earlier attempt of this photo (before a Try again or a
+  // restart) is not this attempt's deadline: the row's stamp has moved on.
+  if (image.heavyStartedAt !== heavyStartedAt) return { expired: false, workId: null };
   const minutes = HEAVY_PHOTO_DEADLINE_MS / 60_000;
   await recordImageOutcomeImpl(
     ctx,
@@ -2535,6 +2546,8 @@ export const listPlaceholderImages = query({
       queuedAt: v.optional(v.number()),
       escalatedAt: v.optional(v.number()),
       settledAt: v.optional(v.number()),
+      // NEO-411: Try again presses so far, so the screen hides the button at the cap.
+      retries: v.optional(v.number()),
     }),
   ),
   handler: async (ctx, args) => {
@@ -2567,6 +2580,7 @@ export const listPlaceholderImages = query({
       queuedAt: r.queuedAt,
       escalatedAt: r.escalatedAt,
       settledAt: r.settledAt,
+      retries: r.retries,
       // `workId` is intentionally omitted — it is a handle into the workpool
       // component, not something a client has any use for.
     }));

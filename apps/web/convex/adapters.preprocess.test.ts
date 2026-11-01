@@ -775,6 +775,37 @@ describe("per-call fetch timeouts (NEO-299)", () => {
   });
 });
 
+describe("no 300 s cut under the call budget (NEO-411)", () => {
+  // Node's built-in fetch gives up waiting for response headers after 300 s,
+  // below the 330/400 s budgets above. Every preprocess call goes through a
+  // dispatcher with that cut switched off, so AbortSignal.timeout is the bound.
+  test("process-entry and warm-up calls carry the preprocess dispatcher", async () => {
+    const inits: Array<RequestInit | undefined> = [];
+    stubFetch(async (_url, init) => {
+      inits.push(init);
+      return new Response(JSON.stringify(PROCESS_OK), { status: 200 });
+    });
+
+    await callProcessEntryHeavy(stubCtx(), { jobId: "j", userId: "u", entryIndex: 0 });
+    await callWarmupHeavy(stubCtx());
+
+    expect(inits).toHaveLength(2);
+    const [entry, warm] = inits.map((i) => (i as { dispatcher?: unknown } | undefined)?.dispatcher);
+    expect(entry).toBeDefined();
+    expect(warm).toBe(entry);
+  });
+
+  test("a network failure names its cause in the thrown error", async () => {
+    stubFetch(async () => {
+      throw new TypeError("fetch failed", { cause: { code: "UND_ERR_HEADERS_TIMEOUT" } });
+    });
+
+    await expect(
+      callProcessEntryHeavy(stubCtx(), { jobId: "j", userId: "u", entryIndex: 0 }),
+    ).rejects.toThrow(/fetch failed \(UND_ERR_HEADERS_TIMEOUT\)/);
+  });
+});
+
 describe("escalation hints — FAST decline baseline + dhash (NEO-315 D4)", () => {
   const WIRE_BASELINE = { rotation_degrees: 90, confidence: 0.75, text_count: 42 };
   const DECLINE_WITH_HINTS = {

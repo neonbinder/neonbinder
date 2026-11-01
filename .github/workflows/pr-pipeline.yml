@@ -773,7 +773,7 @@ jobs:
   # preprocessCapacity.ts's fallback — when the env var is unset — is the PROD
   # value (heavy 12, fast 20, NEO-299). Left unset, such a PR would fan out at
   # prod width against dev's services and 429 them, plus stampede a heavy
-  # warm-up burst (warmupPreprocess fans out to the FULL configured limit)
+  # warm-up burst (warmupPreprocess fans out to half the configured limit since NEO-411)
   # into a service dev shares with every other PR.
   #
   # So this job runs for every PR (no `changes.outputs.preprocess` gate,

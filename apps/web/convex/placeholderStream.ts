@@ -400,7 +400,12 @@ export const retryPlaceholderImage = mutation({
     ) {
       throw new Error("Image not found");
     }
-    const job = await requireCollectingStreamJob(ctx, args.jobId, userId);
+    const job = await findOwnedJob(ctx, args.jobId, userId);
+    if (!job) throw new Error("Job not found");
+    if (job.mode !== "stream") throw new Error("job is not a scanner batch");
+    // Closed (here or in another tab) since the button was drawn: an answer the
+    // screen can word for the collector, not a thrown internal message.
+    if (job.status !== "collecting") return { retried: false, reason: "closed" };
     const image = await ctx.db
       .query("placeholderImages")
       .withIndex("by_job_and_index", (q) =>

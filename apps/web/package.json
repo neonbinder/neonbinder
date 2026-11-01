@@ -61,7 +61,7 @@
     "react-dom": "^19.3.0",
     "react-router": "^8.4.0",
     "react-virtuoso": "^4.18.13",
-    "undici": "6.28.0"
+    "undici": "6.29.1"
   },
   "devDependencies": {
     "@axe-core/playwright": "4.13.0",

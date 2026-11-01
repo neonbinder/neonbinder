@@ -1,6 +1,10 @@
 import { describe, expect, test } from "vitest";
 import {
+  canRetryPhoto,
   cardLabel,
+  failedText,
+  MAX_PHOTO_RETRIES,
+  runSummary,
   laneOf,
   proposedCount,
   readOf,
@@ -112,5 +116,39 @@ describe("words", () => {
 
   test("the proposed count is what's here plus this scan", () => {
     expect(proposedCount({ haveHere: 3 })).toBe(4);
+  });
+});
+
+describe("NEO-411: failed photos end, and can be sent again", () => {
+  test("Try again is offered on a failed photo until it has had its tries", () => {
+    expect(canRetryPhoto({ status: "failed" })).toBe(true);
+    expect(canRetryPhoto({ status: "failed", retries: MAX_PHOTO_RETRIES - 1 })).toBe(true);
+    expect(canRetryPhoto({ status: "failed", retries: MAX_PHOTO_RETRIES })).toBe(false);
+    expect(canRetryPhoto({ status: "processing" })).toBe(false);
+    expect(canRetryPhoto({ status: "done" })).toBe(false);
+  });
+
+  test("the failure reads as the collector's words, and says what to do when no retry is left", () => {
+    expect(failedText({ errorCode: "PHOTO_TIMED_OUT" }, true)).toBe("Took too long to read");
+    expect(failedText({ errorCode: "PROCESS_ENTRY_FAILED" }, true)).toBe("Couldn't read it");
+    expect(failedText({ errorCode: "PHOTO_TIMED_OUT" }, false)).toBe("Took too long to read. Scan it again.");
+    expect(failedText({}, false)).toBe("Couldn't read it. Scan it again.");
+  });
+
+  test("the run summary never calls a run with failed photos fully read", () => {
+    const base = { loading: false, working: 0, waiting: 0, saved: 0, unread: 0 };
+    expect(runSummary({ ...base, loading: true })).toBe("Loading this run…");
+    expect(runSummary({ ...base, working: 1, waiting: 2, saved: 3 })).toBe(
+      "Working on 1 photo. 2 waiting for you, 3 saved.",
+    );
+    expect(runSummary({ ...base, working: 2, unread: 1 })).toBe(
+      "Working on 2 photos. 0 waiting for you, 0 saved. 1 photo couldn't be read.",
+    );
+    expect(runSummary({ ...base, waiting: 2, saved: 1 })).toBe("Everything is read. 2 waiting for you, 1 saved.");
+    expect(runSummary({ ...base, waiting: 2, saved: 1, unread: 2 })).toBe(
+      "Done reading. 2 waiting for you, 1 saved. 2 photos couldn't be read.",
+    );
+    expect(runSummary({ ...base, saved: 4 })).toBe("4 saved.");
+    expect(runSummary({ ...base, saved: 4, unread: 1 })).toBe("4 saved. 1 photo couldn't be read.");
   });
 });

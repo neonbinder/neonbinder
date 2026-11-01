@@ -120,3 +120,45 @@ export function reasonText(row: Pick<IntakeMatchRow, "reason" | "candidates">, r
 export function proposedCount(row: Pick<IntakeMatchRow, "haveHere">): number {
   return row.haveHere + 1;
 }
+
+/**
+ * NEO-411: how many times one photo may be sent again with Try again. The
+ * server's cap is PLACEHOLDER_MAX_IMAGE_RETRIES (convex/placeholderStream.ts);
+ * this copy only decides whether the button is drawn, the server still refuses.
+ */
+export const MAX_PHOTO_RETRIES = 3;
+
+/** Whether a failed photo can still be sent again (the run must also be open). */
+export function canRetryPhoto(image: Pick<IntakeImage, "status" | "retries">): boolean {
+  return image.status === "failed" && (image.retries ?? 0) < MAX_PHOTO_RETRIES;
+}
+
+/**
+ * Why a photo in the pile failed, in a collector's words. With no Try again on
+ * offer (the run is closed, or the photo has had its tries), it says what to do.
+ */
+export function failedText(image: Pick<IntakeImage, "errorCode">, retryOffered: boolean): string {
+  const why = image.errorCode === "PHOTO_TIMED_OUT" ? "Took too long to read" : "Couldn't read it";
+  return retryOffered ? why : `${why}. Scan it again.`;
+}
+
+/** The run's one-line status. A failed photo is not "read", so it never says everything is. */
+export function runSummary(s: {
+  loading: boolean;
+  working: number;
+  waiting: number;
+  saved: number;
+  unread: number;
+}): string {
+  if (s.loading) return "Loading this run…";
+  const note = s.unread > 0 ? ` ${s.unread} photo${s.unread === 1 ? "" : "s"} couldn't be read.` : "";
+  if (s.working > 0) {
+    return `Working on ${s.working} photo${s.working === 1 ? "" : "s"}. ${s.waiting} waiting for you, ${s.saved} saved.${note}`;
+  }
+  if (s.waiting > 0) {
+    return s.unread > 0
+      ? `Done reading. ${s.waiting} waiting for you, ${s.saved} saved.${note}`
+      : `Everything is read. ${s.waiting} waiting for you, ${s.saved} saved.`;
+  }
+  return `${s.saved} saved.${note}`;
+}
