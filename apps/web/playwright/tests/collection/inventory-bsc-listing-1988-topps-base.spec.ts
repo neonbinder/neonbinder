@@ -17,7 +17,9 @@
 //      listed box is held. The checklist says why and the + for a card is off,
 //      and photo intake holds its drop zone with the same reason and a "Set a
 //      Min price" button (nothing is uploaded). Setting the common price lifts
-//      the checklist's hold.
+//      the checklist's hold. ("Done adding photos" also shows "See what's
+//      syncing", but that path needs a real upload through preprocess and
+//      Vision, so it is covered by unit tests only.)
 //   3. They put one copy each of the first two 1988 Topps Base cards in their
 //      box; Sync status queues the two cards; they press the checklist's Sync,
 //      follow "See what's syncing" to Sync status (Back returns), and Sync
@@ -89,7 +91,7 @@ const SET_LABEL = `${TOPPS_1988.year} ${TOPPS_1988.set}`;
 const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /** What the failing run needs undone, filled as the flow goes. */
-const written: { box?: string; cards?: [string, string]; started?: boolean; removed?: boolean; stopped?: boolean } = {};
+const written: { box?: string; cards?: [string, string]; started?: boolean; removed?: boolean; stopped?: boolean; priced?: boolean } = {};
 
 /** The key that leaves a quantity field: Tab on a desktop, Enter on a phone. */
 const leaveKey = (isMobile: boolean) => (isMobile ? "Enter" : "Tab");
@@ -135,6 +137,20 @@ async function stopListing(page: Page, alreadyRemoved = false): Promise<void> {
     await expect(listingSection(page).getByRole("status")).toHaveText("Not syncing.");
     await expect(page.getByText(/^Listing your boxes on /)).toBeHidden();
   }
+}
+
+/**
+ * On the open checklist: clear its common price (read as `was` first). Used by
+ * the tidy-up and by the failure hook, so a rerun starts without one and sees
+ * the listing gate's hold.
+ */
+async function clearCommonPrice(page: Page, checklist: Locator, was: string): Promise<void> {
+  await checklist.getByRole("button", { name: `Change the common price for ${TITLE}`, exact: true }).click();
+  const priceField = checklist.getByRole("textbox", { name: "Common price", exact: true });
+  await expect(priceField).toHaveValue(was);
+  await priceField.fill("");
+  await page.keyboard.press("Enter");
+  await expect(page.getByRole("status").filter({ hasText: `Cleared the common price for ${TITLE}` })).toBeVisible();
 }
 
 /**
@@ -208,8 +224,21 @@ test.afterEach(async ({ context, isMobile }, testInfo) => {
         await expect(syncStatus(clean).row.getByText(/^0 listed/)).toBeVisible({ timeout: BSC_ROUND_TRIP });
       }
     } finally {
-      // The body already stopped listing on a pass; otherwise it stops here.
-      if (!written.stopped) await stopListing(clean, written.removed);
+      try {
+        // A common price the run set and did not clear would hide the gate's
+        // hold from the next run: clear it (after the zeroing above, which
+        // needs it still set).
+        if (failed && written.priced) {
+          await clean.goto("/inventory?tab=checklists");
+          await expect(clean.getByRole("heading", { level: 1, name: "Inventory" })).toBeVisible({ timeout: LAUNCH_GATE });
+          const checklist = await drillToCollectorBase(clean, TOPPS_1988);
+          await clearCommonPrice(clean, checklist, "0.25");
+          written.priced = false;
+        }
+      } finally {
+        // The body already stopped listing on a pass; otherwise it stops here.
+        if (!written.stopped) await stopListing(clean, written.removed);
+      }
     }
   } finally {
     await clean.close();
@@ -226,6 +255,7 @@ test(
     written.started = false;
     written.removed = false;
     written.stopped = false;
+    written.priced = false;
     const boxName = `Bsc${env.ATTEMPT_TOKEN}`;
     const said = (text: string | RegExp) => page.getByRole("status").filter({ hasText: text });
     const tabs = inventoryTabs(page);
@@ -415,6 +445,7 @@ test(
     // The button opens Defaults with the Min price field focused.
     await page.getByRole("button", { name: "Set a Min price", exact: true }).click();
     await expect(page.getByRole("textbox", { name: "Min price", exact: true })).toBeFocused();
+    await expectAccessible(page, { label: "Add cards, Defaults open on Min price while held" });
     // Back steps to the held checklist, still adding to the box.
     await page.goBack();
     await expect(page).toHaveURL(/[?&]tab=checklists/);
@@ -431,6 +462,7 @@ test(
     await page.keyboard.press("Enter");
     await expect(said(`Common price for ${TITLE} is $0.25`)).toBeVisible();
     await expect(checklist.getByText("$0.25", { exact: true })).toBeVisible();
+    written.priced = true;
     await expect(gateNote).toBeHidden();
     await expect(addOneOfA).toBeEnabled();
 
@@ -483,10 +515,16 @@ test(
     // status, and Back steps to the checklist it was pressed on.
     const seeSyncing = checklist.getByRole("link", { name: "See what's syncing", exact: true });
     await expect(seeSyncing).toBeVisible();
+    await expectAccessible(page, { label: "Checklist, See what's syncing after Sync" });
     await seeSyncing.click();
     await expect(page).toHaveURL(/[?&]tab=sync/);
     await expect(tabs.getByRole("link", { name: "Sync status", exact: true })).toHaveAttribute("aria-current", "page");
-    await expect(syncStatus(page).platform.getByRole("heading", { level: 2, name: BSC, exact: true })).toBeVisible();
+    // Arriving by the link puts the keyboard on the screen's first heading
+    // (the link it came from is gone).
+    const platformHeading = syncStatus(page).platform.getByRole("heading", { level: 2, name: BSC, exact: true });
+    await expect(platformHeading).toBeVisible();
+    await expect(platformHeading).toBeFocused();
+    await expectAccessible(page, { label: "Inventory Sync status, arrived by See what's syncing" });
     await page.goBack();
     await expect(page).toHaveURL(/[?&]tab=checklists/);
     await expect(checklist.getByRole("heading", { level: 3, name: TITLE })).toBeVisible();
@@ -564,11 +602,8 @@ test(
     await expect(page).toHaveURL(/[?&]tab=checklists/);
     // Same page since the drill above: the tab link reopens 1988 Topps Base.
     await emptyBox(page, boxName, [a, b], isMobile, "reopened");
-    await checklist.getByRole("button", { name: `Change the common price for ${TITLE}`, exact: true }).click();
-    await expect(priceField).toHaveValue("0.25");
-    await priceField.fill("");
-    await page.keyboard.press("Enter");
-    await expect(said(`Cleared the common price for ${TITLE}`)).toBeVisible();
+    await clearCommonPrice(page, checklist, "0.25");
+    written.priced = false;
 
     await tabs.getByRole("link", { name: "My Boxes", exact: true }).click();
     await expect(boxSpine(0)).toBeVisible();
