@@ -27,7 +27,7 @@
 // (a minted box, two box copies, one binder copy, the common price). The
 // quantities end at 0 on BSC: on a pass by the steps themselves, on a failure
 // by the afterEach hook, which zeroes the cards through the product (quantity
-// 0, Resync) and switches listing off on a second page, so the failure
+// 0, then leaving the checklist) and switches listing off on a second page, so the failure
 // screenshot keeps the page that failed. BSC is never called by the spec.
 //
 // Minted box name: a single token from `env.ATTEMPT_TOKEN`.
@@ -58,6 +58,11 @@ const BSC_ROUND_TRIP = 60_000;
 
 const BSC = "BuySportsCards";
 const TITLE = baseChecklistTitle(TOPPS_1988);
+/** The status line's promise while a change waits (copy.ts `WHEN_IT_GOES_UP`, as a user reads it). */
+const WHEN_IT_GOES_UP = "when you leave this checklist or within 15 minutes";
+/** "N listed on BuySportsCards. Synced 2:14 PM. Syncing soon, when you leave…": the last run's count, a change queued. */
+const pendingAfter = (listed: number) =>
+  new RegExp(`^${listed} listed on ${BSC}\\..* Syncing soon, ${WHEN_IT_GOES_UP}\\.$`);
 const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /** What the failing run needs undone, filled as the flow goes. */
@@ -105,13 +110,13 @@ test.afterEach(async ({ context, isMobile }, testInfo) => {
           ).toBeVisible();
         }
       }
-      const { status, resync } = listingPanel(clean);
+      // Leaving the checklist flushes the zeroed counts. Resync is not used: it is
+      // ignored within 60 s of a previous Resync or while a run holds the lease.
+      const { status } = listingPanel(clean);
       await tabs.getByRole("link", { name: "My Boxes", exact: true }).click();
       await expect(clean).toHaveURL(/[?&]tab=boxes/);
       await clean.goBack();
       await expect(clean).toHaveURL(/[?&]tab=checklists/);
-      await expect(resync).toBeEnabled();
-      await resync.click();
       // Live BSC round trip (GUIDE hard rule 3), the same constant as the flow.
       await expect(status).toHaveText(new RegExp(`^0 listed on ${BSC}\\.`), { timeout: BSC_ROUND_TRIP });
     }
@@ -230,6 +235,8 @@ test(
     await expect(said(new RegExp(`^Boxed 1 more of ${escapeRegExp(b)}\\.`))).toBeVisible();
 
     // --- Leave: BSC takes both; the panel says 2 listed, nothing held back ------
+    // Until then the change is waiting, and the panel says when it goes up.
+    await expect(status).toHaveText(new RegExp(`^Going up to ${BSC} ${WHEN_IT_GOES_UP}\\.$`));
     await leaveAndReturn(2);
     await expect(fieldA).toHaveValue("1");
     await expect(fieldB).toHaveValue("1");
@@ -257,6 +264,7 @@ test(
     await page.getByRole("button", { name: "Close card detail" }).click();
     await expect(yourCopies).toBeHidden();
     await expect(fieldA).toHaveValue("0");
+    await expect(status).toHaveText(pendingAfter(2));
 
     await leaveAndReturn(1);
     await expect(status).toHaveText(new RegExp(`^1 listed on ${BSC}\\.`), { timeout: BSC_ROUND_TRIP });
@@ -268,6 +276,7 @@ test(
     await page.keyboard.press(advance);
     await expect(said(`Pulled 1 of ${b} from ${boxName}. 0 left.`)).toBeVisible();
     await expect(fieldB).toHaveValue("0");
+    await expect(status).toHaveText(pendingAfter(1));
 
     await leaveAndReturn(0);
     await expect(status).toHaveText(new RegExp(`^0 listed on ${BSC}\\.`), { timeout: BSC_ROUND_TRIP });
