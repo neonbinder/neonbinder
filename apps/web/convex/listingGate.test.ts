@@ -294,6 +294,59 @@ describe("the writers it holds", () => {
   });
 });
 
+describe("a condition is never what a priced add lacks (NEO-380)", () => {
+  // Every raw add takes the collector's default condition (Excellent until they
+  // set another), so on the quick-count and intake doors only the PRICE can be
+  // missing: a refusal names a price alone, and a priced add always passes.
+  const PRICE_ONLY = listingGateMessage("Show box", { needsPrice: true, needsCondition: false });
+
+  test("a quick count with no price is refused for the price alone, never the condition", async () => {
+    const s = await setup();
+    await syncOn(s);
+    const refused = await refusal(raise(s, s.box, 1));
+    expect(refused).toEqual({ code: LISTING_GATE_ERROR, message: PRICE_ONLY });
+    expect(refused.message).not.toMatch(/condition/);
+  });
+
+  test("a priced quick count passes and writes the collector's default condition, whichever it is", async () => {
+    const s = await setup();
+    await syncOn(s);
+    await priceBase(s);
+    await raise(s, s.box, 1);
+    expect((await copies(s)).map((c) => c.condition)).toEqual(["Excellent"]);
+    await s.me.mutation(api.userProfile.setDefaultCondition, { condition: "Near Mint" });
+    await s.me.mutation(api.collectionInventory.setBoxQuantity, {
+      cardId: s.fx.strawberry2,
+      boxId: s.box,
+      quantity: 1,
+    });
+    expect((await copies(s)).map((c) => c.condition).sort()).toEqual(["Excellent", "Near Mint"]);
+  });
+
+  test("a photo intake run with no price is refused for the price alone, never the condition", async () => {
+    const s = await setup();
+    await syncOn(s);
+    const refused = await refusal(
+      s.me.mutation(api.intakeRuns.createIntakeRun, { jobId: JOB, homeId: s.box, variantId: s.fx.baseId }),
+    );
+    expect(refused).toEqual({ code: LISTING_GATE_ERROR, message: PRICE_ONLY });
+    expect(refused.message).not.toMatch(/condition/);
+    expect(await s.t.run((ctx) => ctx.db.query("intakeRuns").collect())).toEqual([]);
+  });
+
+  test("a priced photo intake run passes with no condition of its own: the collector's default stands in", async () => {
+    const s = await setup();
+    await syncOn(s);
+    await s.me.mutation(api.userProfile.setDefaultCondition, { condition: "Near Mint" });
+    const runId = await s.me.mutation(api.intakeRuns.createIntakeRun, {
+      jobId: JOB,
+      homeId: s.box,
+      defaults: { minPriceCents: 50 },
+    });
+    expect(await s.me.query(api.intakeRuns.getIntakeRun, { runId })).not.toBeNull();
+  });
+});
+
 describe("the other add doors (security review)", () => {
   const codeOf = async (p: Promise<unknown>) => (await refusal(p)).code;
 

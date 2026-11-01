@@ -355,6 +355,10 @@ function renderAt(start: string, store = makeStore()) {
 
 const pageUrl = () => screen.getByRole("status", { name: "Page URL" }).textContent ?? "";
 const searchBox = () => screen.getByRole("searchbox", { name: "Search every card" });
+/** The listing gate's refusal text (`convex/listingGate.ts`), as a ConvexError hands it over. */
+const GATE_WORDS =
+  "Show box sells on your marketplaces, so cards going in need a price first. Set a common price for the checklist, or give the card a price of its own.";
+
 const statuses = () => screen.getAllByRole("status").map((s) => s.textContent);
 
 beforeEach(() => {
@@ -971,6 +975,56 @@ describe("Inventory is on for the real collection (NEO-364)", () => {
     fireEvent.click(within(drawer).getByRole("button", { name: "Sell #1 Shohei Ohtani, Raw" }));
     const into = within(within(drawer).getByRole("form", { name: "Sell Raw" })).getByRole("combobox", { name: "Into which box" });
     expect(within(into).getAllByRole("option").map((o) => o.textContent)).toEqual(["Unsorted", "Show box"]);
+  });
+
+  it("a Sell the listing gate refuses says the gate's own words on the status line, and the copy stays where it was (NEO-370)", async () => {
+    const store = makeStore();
+    store.actions.moveCopy.mockRejectedValueOnce(
+      Object.assign(new Error("[Request ID: x] Server Error"), { data: { code: "LISTING_NEEDS_DETAILS", message: GATE_WORDS } }),
+    );
+    renderAt(`/collection?tab=checklists&set=${SET.id}&type=vt-base`, store);
+    fireEvent.click(screen.getByRole("button", { name: "Details for #1 Shohei Ohtani" }));
+    const drawer = screen.getByRole("dialog");
+    fireEvent.click(within(drawer).getByRole("button", { name: "Sell #1 Shohei Ohtani, Raw" }));
+    const form = within(drawer).getByRole("form", { name: "Sell Raw" });
+    fireEvent.change(within(form).getByRole("combobox", { name: "Into which box" }), { target: { value: "box-show" } });
+    fireEvent.submit(form);
+    await waitFor(() => expect(store.actions.moveCopy).toHaveBeenCalledWith(COPY_OHTANI, "box-show", undefined));
+    await waitFor(() => expect(within(drawer).getAllByRole("status").some((s) => s.textContent === GATE_WORDS)).toBe(true));
+    expect(within(drawer).queryByRole("button", { name: "Undo" })).toBeNull();
+    expect(within(drawer).queryByText(/up for sale in/)).toBeNull();
+  });
+
+  it("an undo the listing gate refuses (a removed line put back into a listed box) says why on the status line, never Undone. (NEO-370)", async () => {
+    const store = makeStore();
+    store.undo.mockImplementationOnce(async () => {
+      throw Object.assign(new Error("[Request ID: x] Server Error"), { data: { code: "LISTING_NEEDS_DETAILS", message: GATE_WORDS } });
+    });
+    renderAt(`/collection?tab=checklists&set=${SET.id}&type=vt-base`, store);
+    fireEvent.click(screen.getByRole("button", { name: "Details for #1 Shohei Ohtani" }));
+    const drawer = screen.getByRole("dialog");
+    fireEvent.click(within(drawer).getByRole("button", { name: "Remove #1 Shohei Ohtani, Raw" }));
+    await waitFor(() => expect(within(drawer).getByRole("button", { name: "Undo" })).toBeTruthy());
+    fireEvent.click(within(drawer).getByRole("button", { name: "Undo" }));
+    await waitFor(() =>
+      expect(within(drawer).getAllByRole("status").some((s) => s.textContent === `That undo didn't go through. ${GATE_WORDS}`)).toBe(true),
+    );
+    expect(within(drawer).getAllByRole("status").some((s) => s.textContent === "Undone.")).toBe(false);
+  });
+
+  it("Move here into an open box the listing gate refuses says the gate's words on the status line (NEO-370)", async () => {
+    // The Inventory side hunts what the boxes hold: a card in Unsorted, moved into the open Show box.
+    const inUnsorted: Copy = { ...COPY_OHTANI, id: "copy-unsorted", homeId: "box-unsorted", homeKind: "box", homeName: "Unsorted" };
+    const store = makeStore({ boxCopies: [inUnsorted] });
+    store.actions.moveCopy.mockRejectedValueOnce(
+      Object.assign(new Error("[Request ID: x] Server Error"), { data: { code: "LISTING_NEEDS_DETAILS", message: GATE_WORDS } }),
+    );
+    renderAt("/inventory?tab=boxes&b=box-show", store);
+    fireEvent.change(screen.getByRole("searchbox", { name: "Hunt for one of your cards" }), { target: { value: "ohtani" } });
+    fireEvent.click(await screen.findByRole("button", { name: /^Move here: .*Shohei Ohtani/ }));
+    await waitFor(() => expect(store.actions.moveCopy).toHaveBeenCalledWith(inUnsorted, "box-show", {}));
+    await waitFor(() => expect(statuses()).toContain(GATE_WORDS));
+    expect(statuses().some((t) => t?.startsWith("Moved "))).toBe(false);
   });
 
   it("the collection's checklists never show a quantity field: Have / Want / Trade stay", () => {
