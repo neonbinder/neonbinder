@@ -76,6 +76,8 @@ const FAILED_RESET_MS = 8000;
  * @param children the text variant's visible label; ignored by the icon variant.
  * @param size icon variant only: `sm` (default) 24x24, `md` 32x32.
  * @param className icon variant only: extra classes on the wrapper span.
+ * @param tone text variant only: the section's hue (DESIGN.md, one hue per
+ * section). Teal, Print Shop's, unless the caller's section is Collection.
  */
 export default function CopyButton({
   value,
@@ -86,6 +88,7 @@ export default function CopyButton({
   variant = "text",
   size = "sm",
   className = "",
+  tone = "teal",
 }: {
   value: string;
   copyLabel?: string;
@@ -95,6 +98,7 @@ export default function CopyButton({
   variant?: "text" | "icon";
   size?: "sm" | "md";
   className?: string;
+  tone?: "teal" | "blue";
 }) {
   const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">(
     "idle",
@@ -204,7 +208,7 @@ export default function CopyButton({
         aria-label={copyLabel}
         // `p-2 -m-2`: grows the hit area to WCAG 2.5.8's 24px minimum without
         // shifting the layout around it.
-        className="text-sm text-neon-teal-text hover:decoration-2 underline p-2 -m-2 focus-outline rounded-sm"
+        className={`text-sm ${tone === "blue" ? "text-neon-blue-text" : "text-neon-teal-text"} hover:decoration-2 underline p-2 -m-2 focus-outline rounded-sm`}
       >
         {children}
       </button>

@@ -118,6 +118,7 @@ export function ScannerJoin({
         <div>
           <CopyButton
             value={shown}
+            tone="blue"
             copiedMessage="Scanner code copied. Paste it into NeonBinder Scanner."
             failedMessage="Couldn't reach your clipboard. Type the code in by hand."
           >

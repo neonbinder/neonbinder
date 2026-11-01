@@ -21,14 +21,18 @@ const modules = (import.meta as unknown as {
 
 const ME = { subject: "user_scannerContract01" };
 
-// NEO-188: closing a stream fires the preprocess /warmup ping on a real
-// timer, which can land after this file's tests finish. Same stub as
-// placeholderStream.test.ts; the warmup itself is asserted in
-// adapters.preprocess.test.ts.
+// NEO-188: starting and closing a stream schedule preprocess /warmup pings.
+// On a real clock they fire after the stub below is gone, so, as in
+// placeholderStream.test.ts, the clock is fake and fetch is stubbed; the
+// warmup itself is asserted in adapters.preprocess.test.ts.
 beforeEach(() => {
+  vi.useFakeTimers();
   vi.stubGlobal("fetch", (async () => new Response("{}", { status: 200 })) as unknown as typeof fetch);
 });
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
+});
 
 describe("the scanner CLI's backend contract", () => {
   test.each(Object.values(BACKEND_FUNCTIONS))("%s is still exported", async (path) => {
