@@ -71,11 +71,10 @@ import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtu
  * GUIDE hard rule 3, the live-marketplace exception: a step that directly
  * drives a live BSC round trip. One Sync starts: BSC login/refresh, up to four
  * condition sheets read (1988 is after the 1980 vintage cutoff), one PUT, one
- * read-back. NOT YET MEASURED (no deployed backend carried the branch when this
- * was written): the first CI run records the figure beside the registry row,
- * and this number comes down to it if it is far above.
+ * read-back. Measured on CI (desktop, 2026-11-01): 9.9 s to "2 listed" and
+ * 9.4 s to "2 taken to 0"; the ceiling is about twice that (see the registry row).
  */
-const BSC_ROUND_TRIP = 60_000;
+const BSC_ROUND_TRIP = 20_000;
 
 const BSC = "BuySportsCards";
 const TITLE = baseChecklistTitle(TOPPS_1988);
