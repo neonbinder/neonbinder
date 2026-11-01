@@ -3,23 +3,26 @@
 // it:
 //   0. They name themselves on the public profile (Admin names a collector by
 //      it), make their box, then set every OTHER box they have (Unsorted
-//      included) to in-person: Start walks every card in a listed box, so
-//      stock an earlier spec left on this worker must not reach real BSC.
-//      Before Start, the checklist's Sync is inert with its reason and Sync
-//      status says listing has not started.
-//   1. Profile -> Credentials (BuySportsCards): the consent warning shows, they
-//      press "Start listing on BuySportsCards", and the panel reads that they
-//      list since today. Saving a sign-in starts nothing; this is the start.
-//   2. They put one copy each of the first two 1988 Topps Base cards in their
+//      included) to in-person: saving a sign-in walks every card in a listed
+//      box, so stock an earlier spec left on this worker must not reach real
+//      BSC.
+//   1. Not syncing yet (the bootstrap's seed marks the sign-in "not syncing"):
+//      the checklist's Sync is inert with its reason, Sync status and Profile
+//      both say "Not syncing".
+//   2. Rev 5: "if you have credentials you are syncing". They remove the BSC
+//      sign-in, and the form shows the consent warning before Connect. They
+//      start syncing the way a save does (the seed hop with listing=on) and
+//      Profile reads "Listing your boxes on BuySportsCards since ...".
+//   3. They put one copy each of the first two 1988 Topps Base cards in their
 //      box; Sync status queues the two cards; they press the checklist's Sync
 //      and Sync status reads the set synced with 2 listed, nothing held back.
 //      Admin -> Sync Status shows the same set for this collector, read-only.
-//   3. They turn the box's "Listed on marketplaces" off, Sync again, and the
+//   4. They turn the box's "Listed on marketplaces" off, Sync again, and the
 //      set reads 0 listed, with both cards taken to 0.
-//   4. They stop listing: the BSC sign-in is removed and saved again, and
-//      Profile offers "Start listing" again. The afterEach does the same on a
+//   5. They stop: the BSC sign-in is removed and saved again WITHOUT listing=on
+//      and Profile reads "Not syncing." again. The afterEach does the same on a
 //      failure (after first zeroing the touched rows). The account ends
-//      connected and NOT listing.
+//      connected and NOT syncing.
 //
 // What "2 listed" proves about BSC. The drain reads BSC's seller sheet, plans
 // against it, PUTs the rows that differ and READS THEM BACK; a row BSC still
@@ -40,7 +43,7 @@
 // R7/R7a. 1988 Topps Baseball is a registered real set (SET-REGISTRY.md): this
 // spec is the SOLE writer of its BSC quantities and writes no card, player,
 // team or variant of the set. Its NB writes are the signed-in user's own rows
-// (the listing start, a minted box, two box copies, the common price, and every
+// (the sign-in removed and saved again, a minted box, two box copies, the common price, and every
 // other box set to in-person, which is left that way). The
 // quantities end at 0 on BSC and the sign-in is saved again, on a pass by the
 // steps and the hook, on a failure by the hook on a second page (so the
@@ -81,13 +84,15 @@ const SET_LABEL = `${TOPPS_1988.year} ${TOPPS_1988.set}`;
 const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /** What the failing run needs undone, filled as the flow goes. */
-const written: { box?: string; cards?: [string, string]; started?: boolean; stopped?: boolean } = {};
+const written: { box?: string; cards?: [string, string]; started?: boolean; removed?: boolean; stopped?: boolean } = {};
 
 /** The key that leaves a quantity field: Tab on a desktop, Enter on a phone. */
 const leaveKey = (isMobile: boolean) => (isMobile ? "Enter" : "Tab");
 
-/** What the checklist's inert Sync says (and Sync status points to the Profile for). */
-const NOT_LISTING_LINE = `Nothing to sync to yet. Start listing on ${BSC} from your Profile, under Credentials.`;
+/** What the checklist's inert Sync says when no marketplace sign-in is syncing. */
+const NOT_LISTING_LINE = "Nothing to sync to yet. Save a marketplace sign-in on your Profile.";
+/** The consent warning beside Connect on the sign-in form (lib/marketplace/listing-copy.ts). */
+const CONSENT_HEADING = "Heads up: connecting starts listing";
 
 /** The Sync status screen's BuySportsCards section and this set's "Last sync by set" row, in `scope` (the page, or an admin's collector). */
 function syncStatus(scope: Page | Locator) {
@@ -105,20 +110,24 @@ function listingSection(page: Page) {
 }
 
 /**
- * STOP listing: remove the worker's sign-in (it also clears the start and
- * drops the queue), save it again so the worker keeps its credentials (R7),
- * and see Profile offer "Start listing" again. The page is signed in already.
- * The only way to stop listing: an account left listing would put any later
- * spec's boxed cards up for sale on real BSC.
+ * STOP listing (Rev 5: a saved sign-in syncs, so removing it is the stop):
+ * remove the worker's sign-in (it also drops the queue), then save it again
+ * through the seed hop WITHOUT `listing=on`, so the worker keeps its
+ * credentials (R7) but is "Not syncing." The page is signed in already. An
+ * account left syncing would put any later spec's boxed cards up for sale on
+ * real BSC. `alreadyRemoved`: the sign-in is already gone (the body removed it
+ * and failed before saving it again).
  */
-async function stopListing(page: Page): Promise<void> {
+async function stopListing(page: Page, alreadyRemoved = false): Promise<void> {
   try {
-    await removeBscSignIn(page, LAUNCH_GATE);
-    // No sign-in, nothing to start: the section is gone (the form is up, see the helper).
-    await expect(listingSection(page)).toBeHidden();
+    if (!alreadyRemoved) {
+      await removeBscSignIn(page, LAUNCH_GATE);
+      // No sign-in, nothing syncing to describe: the section is gone (the form is up, see the helper).
+      await expect(listingSection(page)).toBeHidden();
+    }
   } finally {
     await saveBscSignIn(page);
-    await expect(listingSection(page).getByRole("button", { name: `Start listing on ${BSC}`, exact: true })).toBeVisible();
+    await expect(listingSection(page).getByRole("status")).toHaveText("Not syncing.");
     await expect(page.getByText(/^Listing your boxes on /)).toBeHidden();
   }
 }
@@ -178,7 +187,7 @@ test.afterEach(async ({ context, isMobile }, testInfo) => {
       }
     } finally {
       // The body already stopped listing on a pass; otherwise it stops here.
-      if (!written.stopped) await stopListing(clean);
+      if (!written.stopped) await stopListing(clean, written.removed);
     }
   } finally {
     await clean.close();
@@ -193,6 +202,7 @@ test(
     written.box = undefined;
     written.cards = undefined;
     written.started = false;
+    written.removed = false;
     written.stopped = false;
     const boxName = `Bsc${env.ATTEMPT_TOKEN}`;
     const said = (text: string | RegExp) => page.getByRole("status").filter({ hasText: text });
@@ -212,7 +222,7 @@ test(
     await page.getByRole("button", { name: "Save Public Profile" }).click();
     await expect(page.getByText(/^Profile saved/)).toBeVisible();
 
-    // --- 0. A box to stock, and every other box in-person BEFORE Start -----------
+    // --- 0. A box to stock, and every other box in-person BEFORE syncing starts -----------
     // A full page load, so the launch gate (cold app + Clerk handshake) applies.
     await page.goto("/inventory?tab=boxes");
     await expect(page.getByRole("heading", { level: 1, name: "Inventory" })).toBeVisible({ timeout: LAUNCH_GATE });
@@ -264,7 +274,9 @@ test(
       .poll(async () => (await readBoxes()).map(boxNameOf).filter((name) => !handled.has(name)))
       .toEqual([]);
 
-    // --- Before Start: Sync is inert with its reason, Sync status says not started
+    // --- Before syncing: the worker is seeded "not syncing" -----------------------
+    // Sync is shown but inert with its reason, Sync status says Not syncing, and
+    // the Profile's BuySportsCards panel says so too.
     await tabs.getByRole("link", { name: "Checklists", exact: true }).click();
     await expect(page).toHaveURL(/[?&]tab=checklists/);
     const checklist = await drillToCollectorBase(page, TOPPS_1988);
@@ -275,7 +287,7 @@ test(
     await expect(sync).toHaveAccessibleDescription(NOT_LISTING_LINE);
     await expect(checklist.getByRole("switch", { name: /^List on / })).toHaveCount(0);
     await expect(checklist.getByRole("group", { name: `${BSC} listing` })).toBeHidden();
-    await expectAccessible(page, { label: "Checklist, Sync inert before Start" });
+    await expectAccessible(page, { label: "Checklist, Sync inert before syncing" });
     // Pressed from the keyboard, it says why instead of syncing.
     await sync.focus();
     await page.keyboard.press("Enter");
@@ -285,30 +297,41 @@ test(
     await expect(page).toHaveURL(/[?&]tab=sync/);
     const before = syncStatus(page);
     await expect(before.platform.getByRole("heading", { level: 2, name: BSC, exact: true })).toBeVisible();
-    await expect(before.platform.getByText("Not started", { exact: true })).toBeVisible();
-    await expect(before.platform.getByText(/^Your sign-in is saved, but listing hasn't started\./)).toBeVisible();
-    await expect(before.platform.getByRole("link", { name: `Start listing on ${BSC} from your Profile` })).toBeVisible();
-    await expectAccessible(page, { label: "Inventory Sync status, listing not started" });
+    await expect(before.platform.getByText("Not syncing", { exact: true })).toBeVisible();
+    await expect(before.platform.getByText("Listing", { exact: true })).toBeHidden();
+    await expectAccessible(page, { label: "Inventory Sync status, not syncing" });
 
-    // --- 1. Profile: the consent warning, then Start --------------------------
+    // A full page load, so the launch gate (cold app + Clerk handshake) applies.
     await page.goto("/profile/credentials");
     await expect(page.getByRole("heading", { name: "Profile Settings" })).toBeVisible({ timeout: LAUNCH_GATE });
-    // A sign-in saved by the bootstrap: connected, and (saving starts nothing) not listing.
     await expect(page.getByText(`Connected to ${BSC}`)).toBeVisible();
     const listing = listingSection(page);
     await expect(listing).toBeVisible();
-    const start = listing.getByRole("button", { name: `Start listing on ${BSC}`, exact: true });
-    await expect(start).toBeVisible();
-    await expect(listing.getByText(/Heads up before you start/)).toBeVisible();
-    await expect(listing.getByText(new RegExp(`Starting sets every card you already list on ${BSC}.*goes to 0\\.`, "s"))).toBeVisible();
-    await expect(listing.getByText(/^Listing your boxes on /)).toBeHidden();
-    await expectAccessible(page, { label: "Profile, BuySportsCards credentials, consent warning" });
+    await expect(listing.getByRole("status")).toHaveText("Not syncing.");
+    await expect(listing.getByRole("button")).toHaveCount(0);
+    await expectAccessible(page, { label: "Profile, BuySportsCards credentials, not syncing" });
 
+    // --- 1. Connecting starts listing, and the form says so first --------------
+    // Remove the sign-in: the form comes back with the consent warning, which
+    // describes Connect. (No password is typed: the sign-in comes back by the seed hop.)
+    await removeBscSignIn(page, LAUNCH_GATE);
+    written.removed = true;
+    await expect(listing).toBeHidden();
+    await expect(page.getByText(CONSENT_HEADING, { exact: true })).toBeVisible();
+    await expect(
+      page.getByText(new RegExp(`Connecting lists every card in your boxes on ${BSC} at your box counts.*goes to 0\\.`, "s")),
+    ).toBeVisible();
+    await expect(page.getByRole("button", { name: "Connect", exact: true })).toHaveAccessibleDescription(
+      new RegExp(`^${escapeRegExp(CONSENT_HEADING)}`),
+    );
+    await expectAccessible(page, { label: "Profile, BuySportsCards sign-in form, listing consent" });
+
+    // Start syncing as a real save does: the seed hop with listing=on.
     written.started = true;
-    await start.click();
-    await expect(listing.getByRole("status")).toHaveText(new RegExp(`^You're live on ${BSC}\\.`));
-    await expect(listing.getByText(new RegExp(`^Listing your boxes on ${BSC} since .+\\.$`))).toBeVisible();
-    await expect(start).toBeHidden();
+    await saveBscSignIn(page, { listing: true });
+    written.removed = false;
+    await expect(listing.getByRole("status")).toHaveText(new RegExp(`^Listing your boxes on ${BSC} since .+\\.$`));
+    await expect(listing.getByText(/Removing your BuySportsCards sign-in stops listing and sales\./)).toBeVisible();
     await expectAccessible(page, { label: "Profile, BuySportsCards credentials, listing since" });
 
     // --- Inventory: Sales has no switch ----------------------------------------
@@ -317,7 +340,7 @@ test(
     await tabs.getByRole("link", { name: "Sales", exact: true }).click();
     await expect(page).toHaveURL(/[?&]tab=sales/);
     await expect(page.getByRole("heading", { level: 2, name: "What sold" })).toBeVisible();
-    // Listing is not a switch any more: it is the Profile's Start and the boxes.
+    // Listing is not a switch any more: it is the saved sign-in and the boxes.
     await expect(page.getByRole("switch", { name: /^List on / })).toHaveCount(0);
 
     // --- The 1988 Topps Base checklist, adding to the box ----------------------
@@ -330,7 +353,7 @@ test(
     await expect(adding.getByRole("option", { selected: true })).toHaveText(boxName);
     const boxList = checklist.getByRole("list", { name: `Quantities in ${boxName}` });
     await expect(boxList.getByRole("textbox").nth(1)).toBeVisible();
-    // Listing has started: Sync is usable now.
+    // Syncing has started: Sync is usable now.
     await expect(sync).not.toHaveAttribute("aria-disabled", "true");
 
     // --- A common price: the rows have no price of their own -------------------
@@ -424,7 +447,7 @@ test(
     await expect(admin.row.getByText(/^2 listed(, 2 updated)?$/)).toBeVisible();
     await expect(admin.row.getByText(/held back/)).toHaveCount(0);
     // Look, don't touch: nothing here syncs, starts, removes or links to the collector's Profile.
-    await expect(adminCollector.getByRole("button", { name: /^(Sync|Start listing|Remove|Clear)/ })).toHaveCount(0);
+    await expect(adminCollector.getByRole("button", { name: /^(Sync|Connect|Remove|Clear)/ })).toHaveCount(0);
     await expect(adminCollector.getByRole("link")).toHaveCount(0);
     await expectAccessible(page, { label: "Admin Sync status, one collector, 2 listed" });
     // Back returns to everyone (the link pushed a step); the filter then replaces.
@@ -483,7 +506,7 @@ test(
     await expect(boxes.getByRole("button", { name: new RegExp(`^${escapeRegExp(boxName)},`) })).toHaveCount(0);
     written.box = undefined;
 
-    // --- 4. Stop listing: the sign-in goes and comes back, Start is offered again
+    // --- 4. Stop listing: the sign-in goes and comes back not syncing
     // The BSC rows are already 0 (step 3). The hook does this on a failure.
     await stopListing(page);
     written.stopped = true;

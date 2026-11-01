@@ -66,7 +66,7 @@ export const SEED_SIGN_IN = 90_000;
 /**
  * Remove the worker's BuySportsCards sign-in on Profile (Clear Credentials,
  * confirmed). For NEO-370 this is how a collector STOPS listing: it also stops
- * the sales poll and clears the start. Pair it with `saveBscSignIn` in a
+ * the sales poll and clears the queue. Pair it with `saveBscSignIn` in a
  * `finally`, so a worker is never left without its sign-in (R7). `gate` is
  * the heading wait: `LAUNCH_GATE` on a page that has not loaded the app yet.
  */
@@ -86,10 +86,18 @@ export async function removeBscSignIn(page: Page, gate?: number): Promise<void> 
  * Save the worker's BuySportsCards sign-in again, the way the bootstrap does:
  * the `/testing/seed-credentials` hop (no password ever typed, GUIDE hard
  * rule 7). The page must already be signed in. Lands on Profile → Credentials
- * showing "Connected to BuySportsCards". Saving never starts listing.
+ * showing "Connected to BuySportsCards".
+ *
+ * NEO-370 Rev 5: a saved sign-in syncs (counts pushed, sales polled), but the
+ * hop marks a seeded one "not syncing" unless `listing: true` (`listing=on`),
+ * so a worker's saved sign-in lists nowhere by default. Only `listing: true`
+ * sets up real listing on BuySportsCards; pair it with `removeBscSignIn` +
+ * `saveBscSignIn(page)` to stop it again. A real save through the Profile
+ * form (never done in E2E: it needs a typed password) would also sync.
  */
-export async function saveBscSignIn(page: Page): Promise<void> {
-  await page.goto("/testing/seed-credentials?sites=buysportscards&redirect=/profile/credentials");
+export async function saveBscSignIn(page: Page, opts: { listing?: boolean } = {}): Promise<void> {
+  const listing = opts.listing ? "&listing=on" : "";
+  await page.goto(`/testing/seed-credentials?sites=buysportscards${listing}&redirect=/profile/credentials`);
   // The hop signs in to BuySportsCards live (SEED_SIGN_IN, GUIDE hard rule 3).
   await expect(page.getByRole("heading", { name: "Profile Settings" })).toBeVisible({ timeout: SEED_SIGN_IN });
   await expect(page.getByText("Connected to BuySportsCards")).toBeVisible();
