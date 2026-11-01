@@ -1071,14 +1071,7 @@ export default defineSchema({
     .index("by_level", ["level"])
     .index("by_parent", ["parentId"])
     .index("by_value", ["value"])
-    .index("by_level_and_parent", ["level", "parentId"])
-    // NEO-358: the collector's set suggestions ("Topps Chrome" → the set, so
-    // picking it opens its checklist). Filtered to `level: "setName"` by the
-    // reader (`collectionCatalog.suggest`), which re-checks every word.
-    .searchIndex("search_value", {
-      searchField: "value",
-      filterFields: ["level"],
-    }),
+    .index("by_level_and_parent", ["level", "parentId"]),
 
   // Transient per-(level, parentId) marketplace-sync status for SetSelector
   // columns (NEO-47 sync redesign). A row exists only while a sync is in flight

@@ -681,12 +681,16 @@ async function suggestSets(
   const years = tokens.filter((t) => YEAR_TOKEN.test(t));
   const words = tokens.filter((t) => !YEAR_TOKEN.test(t));
   if (words.length === 0) return [];
-  const hits = await ctx.db
-    .query("selectorOptions")
-    .withSearchIndex("search_value", (q) =>
-      q.search("value", words.join(" ")).eq("level", "setName"),
-    )
-    .take(50);
+  // EXPERIMENT (NEO-408 A/B/C): the search index is removed on this branch;
+  // scan set rows by level instead. Never merge.
+  const hits = (
+    await ctx.db
+      .query("selectorOptions")
+      .withIndex("by_level", (q) => q.eq("level", "setName"))
+      .take(2000)
+  )
+    .filter((row) => words.some((w) => row.value.toLowerCase().includes(w)))
+    .slice(0, 50);
   const out: SetRef[] = [];
   for (const row of hits) {
     if (out.length >= SUGGEST_LIMIT) break;
