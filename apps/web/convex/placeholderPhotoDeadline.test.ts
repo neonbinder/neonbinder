@@ -316,6 +316,10 @@ describe("retryPlaceholderImage (Try again)", () => {
       heavyStartedAt: 1,
       settledAt: 2,
       pairStatus: "unmatched",
+      players: ["Antonio Brown"],
+      cardNumber: "174",
+      side: "front",
+      dhash: "a1b2c3d4e5f60718",
     });
 
     expect(await retry(t)).toEqual({ retried: true });
@@ -329,6 +333,10 @@ describe("retryPlaceholderImage (Try again)", () => {
     expect(image.heavyStartedAt).toBeUndefined();
     expect(image.settledAt).toBeUndefined();
     expect(image.pairStatus).toBeUndefined();
+    expect(image.players).toBeUndefined();
+    expect(image.cardNumber).toBeUndefined();
+    expect(image.side).toBeUndefined();
+    expect(image.dhash).toBeUndefined();
     const job = (await getJob(t))!;
     expect(job.failedImages).toBe(0);
     expect(job.totalImages).toBe(2);
@@ -381,6 +389,7 @@ describe("retryPlaceholderImage (Try again)", () => {
     ).rejects.toThrow();
     await expect(retry(t, -1)).rejects.toThrow();
     await expect(retry(t, 1_000_000)).rejects.toThrow();
+    await expect(retry(t, 0.5)).rejects.toThrow();
     expect(enqueueCalls).toHaveLength(0);
     expect((await getJob(t))!.failedImages).toBe(1);
   });

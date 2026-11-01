@@ -79,11 +79,14 @@ const PAIRING_HEADING_ID = "intake-pairing";
  * and focus would fall to the page. On the next frame, if it did, land on the
  * next photo left in the pile, or else on the pile's heading (WCAG 2.4.3).
  */
-function refocusAfterRetry(): void {
+function refocusAfterRetry(entryIndex: number): void {
+  // Always move: the retried photo's own tile and Try again leave the pile
+  // once its row goes back to processing, which can land after this frame, so
+  // focus left on them would drop to the page when they unmount.
   requestAnimationFrame(() => {
-    const active = document.activeElement;
-    if (active && active !== document.body && active.isConnected) return;
-    const next = document.querySelector<HTMLElement>("[data-loose-photo]");
+    const next = Array.from(document.querySelectorAll<HTMLElement>("[data-loose-photo]")).find(
+      (el) => el.dataset.loosePhoto !== String(entryIndex),
+    );
     (next ?? document.getElementById(PAIRING_HEADING_ID))?.focus();
   });
 }
@@ -720,7 +723,7 @@ function RunWorkspace({ run, jobOpen }: { run: RunSummary; jobOpen: boolean }) {
                       .then((r) => {
                         if (r.retried) {
                           inform(`Trying ${image.originalName} again.`);
-                          refocusAfterRetry();
+                          refocusAfterRetry(image.entryIndex);
                         } else if (r.reason === "too many tries") {
                           notify("This photo has been tried too many times. Scan it again instead.");
                         } else if (r.reason === "closed") {
@@ -944,7 +947,7 @@ function LoosePile({
         <li key={i.entryIndex} className="intake-arrive">
           <button
             type="button"
-            data-loose-photo=""
+            data-loose-photo={i.entryIndex}
             aria-pressed={live.includes(i.entryIndex)}
             aria-describedby={i.status === "failed" ? `loose-why-${i.entryIndex}` : undefined}
             onClick={() => toggle(i.entryIndex)}
