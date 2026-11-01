@@ -13,9 +13,15 @@
 //      sign-in, and the form shows the consent warning before Connect. They
 //      start syncing the way a save does (the seed hop with listing=on) and
 //      Profile reads "Listing your boxes on BuySportsCards since ...".
+//   2b. The listing gate (price before stocking): with no common price the
+//      listed box is held. The checklist says why and the + for a card is off,
+//      and photo intake holds its drop zone with the same reason and a "Set a
+//      Min price" button (nothing is uploaded). Setting the common price lifts
+//      the checklist's hold.
 //   3. They put one copy each of the first two 1988 Topps Base cards in their
-//      box; Sync status queues the two cards; they press the checklist's Sync
-//      and Sync status reads the set synced with 2 listed, nothing held back.
+//      box; Sync status queues the two cards; they press the checklist's Sync,
+//      follow "See what's syncing" to Sync status (Back returns), and Sync
+//      status reads the set synced with 2 listed, nothing held back.
 //      Admin -> Sync Status shows the same set for this collector, read-only.
 //   4. They turn the box's "Listed on marketplaces" off, Sync again, and the
 //      set reads 0 listed, with both cards taken to 0.
@@ -372,15 +378,6 @@ test(
     // Syncing has started: Sync is usable now.
     await expect(sync).not.toHaveAttribute("aria-disabled", "true");
 
-    // --- A common price: the rows have no price of their own -------------------
-    await checklist.getByRole("button", { name: `Set a common price for ${TITLE}`, exact: true }).click();
-    const priceField = checklist.getByRole("textbox", { name: "Common price", exact: true });
-    await expect(priceField).toBeFocused();
-    await priceField.fill("0.25");
-    await page.keyboard.press("Enter");
-    await expect(said(`Common price for ${TITLE} is $0.25`)).toBeVisible();
-    await expect(checklist.getByText("$0.25", { exact: true })).toBeVisible();
-
     // --- Two fixed cards: the first two rows of the checklist ------------------
     const shortOf = async (n: number) => {
       const name = await nameOf(boxList.getByRole("textbox").nth(n));
@@ -391,6 +388,52 @@ test(
     const a = await shortOf(0);
     const b = await shortOf(1);
     expect(a, "two different cards").not.toBe(b);
+
+    // --- The listing gate: no price yet, so the listed box is held -------------
+    // A collector who syncs stocks a listed box only with a price on its cards.
+    // No common price exists for this checklist (it is cleared at the end of
+    // every run), so the checklist says why and the + for a card is off.
+    const gateLine = `Price tag first! ${boxName} sells on your marketplaces, so set a common price above before you stock it.`;
+    const gateNote = checklist.getByText(gateLine, { exact: true });
+    const addOneOfA = checklist.getByRole("button", { name: `Add one ${a} to ${boxName}`, exact: true });
+    await expect(gateNote).toBeVisible();
+    await expect(addOneOfA).toBeDisabled();
+    await expectAccessible(page, { label: "Checklist, listed box held until a common price is set" });
+
+    // Photo intake holds the same box: the drop zone is held with its reason
+    // and a button to the missing field. Nothing is uploaded.
+    await tabs.getByRole("link", { name: "Add cards", exact: true }).click();
+    await expect(page).toHaveURL(/[?&]tab=add/);
+    await page.getByRole("combobox", { name: "Put them in this box" }).selectOption({ label: boxName });
+    const intakeLine = `Price tag first! ${boxName} sells on your marketplaces, so give these cards a price in Defaults (or pick a set with a common price) before you send photos.`;
+    await expect(page.getByText(intakeLine, { exact: true })).toBeVisible();
+    await expect(page.getByText("Set a price, then drop your photos", { exact: true })).toBeVisible();
+    const dropzone = page.getByLabel("Drag your card photos here, or browse your files");
+    await expect(dropzone).toHaveAttribute("aria-disabled", "true");
+    await expect(dropzone).toHaveAccessibleDescription(intakeLine);
+    await expectAccessible(page, { label: "Add cards, listed box held until a price is set" });
+    // The button opens Defaults with the Min price field focused.
+    await page.getByRole("button", { name: "Set a Min price", exact: true }).click();
+    await expect(page.getByRole("textbox", { name: "Min price", exact: true })).toBeFocused();
+    // Back steps to the held checklist, still adding to the box.
+    await page.goBack();
+    await expect(page).toHaveURL(/[?&]tab=checklists/);
+    await expect(checklist.getByRole("heading", { level: 3, name: TITLE })).toBeVisible();
+    await expect(adding.getByRole("option", { selected: true })).toHaveText(boxName);
+    await expect(gateNote).toBeVisible();
+
+    // --- A common price: the rows have no price of their own -------------------
+    // Setting it lifts the hold.
+    await checklist.getByRole("button", { name: `Set a common price for ${TITLE}`, exact: true }).click();
+    const priceField = checklist.getByRole("textbox", { name: "Common price", exact: true });
+    await expect(priceField).toBeFocused();
+    await priceField.fill("0.25");
+    await page.keyboard.press("Enter");
+    await expect(said(`Common price for ${TITLE} is $0.25`)).toBeVisible();
+    await expect(checklist.getByText("$0.25", { exact: true })).toBeVisible();
+    await expect(gateNote).toBeHidden();
+    await expect(addOneOfA).toBeEnabled();
+
     written.cards = [a, b];
     const fieldA = quantityField(boxList, a, boxName);
     const fieldB = quantityField(boxList, b, boxName);
@@ -436,6 +479,18 @@ test(
     await expect(fieldB).toHaveValue("1");
     await sync.click();
     await expect(said(`Syncing ${TITLE} now. Watch it on Sync status.`)).toBeVisible();
+    // After the press, a link to the result sits under Sync. It lands on Sync
+    // status, and Back steps to the checklist it was pressed on.
+    const seeSyncing = checklist.getByRole("link", { name: "See what's syncing", exact: true });
+    await expect(seeSyncing).toBeVisible();
+    await seeSyncing.click();
+    await expect(page).toHaveURL(/[?&]tab=sync/);
+    await expect(tabs.getByRole("link", { name: "Sync status", exact: true })).toHaveAttribute("aria-current", "page");
+    await expect(syncStatus(page).platform.getByRole("heading", { level: 2, name: BSC, exact: true })).toBeVisible();
+    await page.goBack();
+    await expect(page).toHaveURL(/[?&]tab=checklists/);
+    await expect(checklist.getByRole("heading", { level: 3, name: TITLE })).toBeVisible();
+    await expect(fieldA).toHaveValue("1");
     await tabs.getByRole("link", { name: "Sync status", exact: true }).click();
     await expect(page).toHaveURL(/[?&]tab=sync/);
     // Live BSC round trip (BSC_ROUND_TRIP above). The line is the drain's own

@@ -51,10 +51,11 @@ type Sort = "checklist" | "number" | "player" | "team";
  *
  * The listing gate (NEO-370): a collector set up for syncing stocks a box
  * that lists on marketplaces only with a price on the cards. With no common
- * price for this checklist (and no price of their own on a quick count), the
- * counts and "Add a range" hold, read-only, and a note under Common price
- * says why; every held control points at it. Lowering a count is held too,
- * so the field never half-works. The server refuses the same adds.
+ * price for this checklist (and no price of their own on a quick count),
+ * raising a count holds (a higher number, the +, "Add a range"), and a note
+ * under Common price says why; every held control points at it. Lowering a
+ * count always writes: taking cards out is never blocked (Jason,
+ * 2026-11-01). The server refuses the same raises and allows the lowers.
  *
  * The heading's subline names the target box too, so it is in sight beside
  * the checklist's name as well as on the sticky "Adding to" bar.
@@ -78,6 +79,7 @@ const InventoryChecklist = forwardRef<HTMLHeadingElement, ChecklistProps>(functi
   const lock = useListingLock({ homeId: box?.id ?? null, variantId, condition: defaultCondition });
   const gateNoteId = useId();
   const lockedBy = lock.locked ? gateNoteId : undefined;
+  const raiseHeld = lock.locked ? { noteId: gateNoteId, message: raiseHeldMessage(lock) } : undefined;
 
   const byCard = useMemo(() => copiesByCard(copies), [copies]);
   const stockedIds = useMemo(() => new Set(byCard.keys()), [byCard]);
@@ -399,7 +401,7 @@ const InventoryChecklist = forwardRef<HTMLHeadingElement, ChecklistProps>(functi
               onOpen={(copyId, edit) => actions.open(card, copyId, visible, edit)}
               isSelected={card.id === selectedCardId}
               highlighted={card.id === ringed}
-              lockedBy={lockedBy}
+              raiseHeld={raiseHeld}
               groupRef={(el) => {
                 if (el) rowEls.current.set(card.id, el);
                 else rowEls.current.delete(card.id);
@@ -413,6 +415,12 @@ const InventoryChecklist = forwardRef<HTMLHeadingElement, ChecklistProps>(functi
 });
 
 export default InventoryChecklist;
+
+/** What a held raise says on its row (NEO-370): what to set before boxing more. */
+function raiseHeldMessage(missing: { needsPrice: boolean; needsCondition: boolean }): string {
+  if (missing.needsPrice && missing.needsCondition) return "Set a common price and a default condition first to box more.";
+  return missing.needsPrice ? "Set a common price first to box more." : "Pick a default condition first to box more.";
+}
 
 /**
  * The checklist's stock as a row of sleeves, one per card, in checklist

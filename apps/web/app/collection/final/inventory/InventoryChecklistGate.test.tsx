@@ -9,15 +9,16 @@ import { stubListing } from "./listing/stubListing";
 import { CollectionModeProvider } from "../mode";
 import { PageApiContext, type PageApi } from "../pageApi";
 import { CollectionStoreContext, type CollectionActions, type CollectionData, type CollectionStoreValue } from "../data/store";
-import { REAL_CAPABILITIES, type Card, type Container, type ListingGateView } from "../data/types";
+import { REAL_CAPABILITIES, type Card, type Container, type Copy, type ListingGateView } from "../data/types";
 import { expectAccessibleInBothModes } from "@/lib/testing/axe";
 
 /**
  * NEO-370 — the listing gate on the inventory checklist. A collector set up
  * for syncing stocks a box that lists on marketplaces only with a price on
- * the cards: with no common price for the checklist, every count and "Add a
- * range" hold, read-only, each pointing at the note under Common price that
- * says why. A common price, a box that does not list, or a collector who does
+ * the cards: with no common price for the checklist, every RAISE holds (a
+ * higher number, the +, "Add a range"), each control pointing at the note
+ * under Common price that says why. Lowering a count always writes: taking
+ * cards out is never blocked (Jason, 2026-11-01). A common price, a box that does not list, or a collector who does
  * not sync: nothing held. The store is a stub; the gate is what the server's
  * `listingGate.forHome` would answer.
  */
@@ -59,18 +60,35 @@ const card = (id: string, n: string, player: string): Card => ({
 });
 const CARDS = [card("k1", "1", "Barry Larkin"), card("k2", "2", "Eric Davis")];
 const SHELF: Container[] = [{ id: "unsorted", kind: "box", system: "unsorted", name: "Unsorted", count: null }];
+/** Two plain copies of the first card already in the box, so its count can come down. */
+const STOCK: Copy[] = [
+  {
+    id: "line1",
+    cardId: CARDS[0].id,
+    variantId: VARIANT.id,
+    setId: SET.id,
+    homeId: "unsorted",
+    homeKind: "box",
+    homeName: "Unsorted",
+    upForTrade: false,
+    quantity: 2,
+    acquiredAt: "2026-10-01",
+    notes: "",
+  },
+];
 
 /** Syncing, the box lists, no common price: held. */
 const HELD: ListingGateView = { syncing: true, applies: true, commonPriceCents: null };
 
 function setup(gate: ListingGateView | undefined) {
-  const setBoxQuantity = vi.fn(async () => ({ before: 0, after: 1, undo: async () => {} }));
+  const setBoxQuantity = vi.fn(async (_c: Card, _b: Container, quantity: number) => ({ before: 2, after: quantity, undo: async () => {} }));
   const addMany = vi.fn(async () => ({ undo: async () => {} }));
+  const notify = vi.fn();
   const pageApi = {
     openCard: vi.fn(),
     goToChecklists: vi.fn(),
     openSuggestion: vi.fn(),
-    notify: vi.fn(),
+    notify,
     inform: vi.fn(),
     undoLast: vi.fn(),
     run: vi.fn(async (fn: () => Promise<unknown>) => fn()),
@@ -80,8 +98,8 @@ function setup(gate: ListingGateView | undefined) {
     useDemoExtension: () => undefined,
     useDefaultCondition: () => "Excellent",
     useVariantCards: () => CARDS,
-    useCopiesInVariant: () => [],
-    useVariantCompletion: () => ({ owned: 0, total: 2, percent: 0, ownedAll: 0, totalAll: 2 }),
+    useCopiesInVariant: () => STOCK,
+    useVariantCompletion: () => ({ owned: 1, total: 2, percent: 50, ownedAll: 1, totalAll: 2 }),
     useCommonPrices: () => (gate?.commonPriceCents ? { base1: gate.commonPriceCents / 100 } : {}),
   } as unknown as CollectionData;
   const value = {
@@ -114,7 +132,7 @@ function setup(gate: ListingGateView | undefined) {
     </Theme>
   );
   const view = render(tree());
-  return { view, setBoxQuantity, addMany, rerender: () => view.rerender(tree()) };
+  return { view, setBoxQuantity, addMany, notify, rerender: () => view.rerender(tree()) };
 }
 
 const fields = () => screen.getAllByRole("textbox", { name: /^Quantity of / }) as HTMLInputElement[];
@@ -130,13 +148,14 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("the inventory checklist's listing gate (NEO-370)", () => {
-  it("holds every count and the range, read-only, each pointing at the reason", () => {
+  it("holds every raise and the range, each pointing at the reason; the fields stay editable", () => {
     setup(HELD);
     expect(LINE).toBe("Price tag first! Unsorted sells on your marketplaces, so set a common price above before you stock it.");
     const note = screen.getByText(LINE).closest("p")!;
     expect(note.id).toBeTruthy();
     for (const f of fields()) {
-      expect(f.readOnly).toBe(true);
+      // Editable: a lower always goes through. Described by the reason a raise waits on.
+      expect(f.readOnly).toBe(false);
       expect(describedBy(f)).toContain(note.id);
     }
     // Still Tab stops, so the reason is read on arrival.
@@ -148,17 +167,37 @@ describe("the inventory checklist's listing gate (NEO-370)", () => {
     expect(screen.getByRole("button", { name: "Set a common price for 1988 Topps Base" })).toBeTruthy();
   });
 
-  it("a held count writes nothing, typed or with +, and a range adds nothing", async () => {
-    const { setBoxQuantity, addMany } = setup(HELD);
+  it("a held raise writes nothing, typed or with +, says why, and puts the number back; a range adds nothing", async () => {
+    const { setBoxQuantity, addMany, notify } = setup(HELD);
     const f = fields()[0];
+    expect(f.value).toBe("2");
     fireEvent.change(f, { target: { value: "3" } });
     fireEvent.blur(f);
+    await act(async () => {});
+    expect(fields()[0].value).toBe("2");
+    expect(notify).toHaveBeenCalledWith(expect.stringMatching(/didn't change\. Set a common price first to box more\.$/));
+    expect(fields()[0].getAttribute("aria-invalid")).toBe("true");
+    // A raise from 0 is held the same way.
+    fireEvent.change(fields()[1], { target: { value: "1" } });
+    fireEvent.blur(fields()[1]);
     fireEvent.click(plus()[0]);
     fireEvent.change(range(), { target: { value: "1-2" } });
     fireEvent.keyDown(range(), { key: "Enter" });
     await act(async () => {});
     expect(setBoxQuantity).not.toHaveBeenCalled();
     expect(addMany).not.toHaveBeenCalled();
+  });
+
+  it("a held field still lowers a count, and the lower is written (taking cards out is never blocked)", async () => {
+    const { setBoxQuantity } = setup(HELD);
+    for (const target of ["1", "0"]) {
+      const f = fields()[0];
+      fireEvent.change(f, { target: { value: target } });
+      fireEvent.blur(f);
+      await act(async () => {});
+    }
+    expect(setBoxQuantity).toHaveBeenCalledTimes(2);
+    expect(setBoxQuantity.mock.calls.map((c) => c[2])).toEqual([1, 0]);
   });
 
   it("a common price, a box that does not list, or a collector who does not sync: nothing held", async () => {
@@ -173,7 +212,7 @@ describe("the inventory checklist's listing gate (NEO-370)", () => {
       const f = fields()[0];
       expect(f.readOnly).toBe(false);
       expect(plus()[0].disabled).toBe(false);
-      fireEvent.change(f, { target: { value: "1" } });
+      fireEvent.change(f, { target: { value: "3" } });
       fireEvent.blur(f);
       await act(async () => {});
       expect(setBoxQuantity).toHaveBeenCalledTimes(1);

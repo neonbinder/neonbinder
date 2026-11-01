@@ -105,7 +105,7 @@ export default function QuantityRow({
   onRowClick,
   onOpenChecklist,
   groupRef,
-  lockedBy,
+  raiseHeld,
 }: {
   card: Card;
   /** The card's box copies (any box; never a binder copy). `undefined` while they load. */
@@ -123,11 +123,12 @@ export default function QuantityRow({
   onOpenChecklist?: () => void;
   groupRef?: Ref<HTMLLIElement>;
   /**
-   * NEO-370 — the id of the note saying why this box's counts are held (the
-   * listing gate): the field turns read-only and points at it, the + is off.
-   * The field stays a Tab stop, so the reason is read on arrival.
+   * NEO-370 — raising this box's count is held (the listing gate): `noteId` is
+   * the note saying why, which the field points at; `message` is what a typed
+   * raise says when it is refused. The + is off. Lowering always writes:
+   * taking cards out is never blocked (Jason, 2026-11-01).
    */
-  lockedBy?: string;
+  raiseHeld?: { noteId: string; message: string };
 }) {
   const api = usePageApi();
   const writes = useCollectionActions();
@@ -142,7 +143,6 @@ export default function QuantityRow({
   const count = plainQuantity(lines, defaultCondition);
   const others = otherLines(lines, defaultCondition);
   const ready = copies !== undefined && box !== undefined;
-  const locked = lockedBy !== undefined;
 
   /** What is typed and not yet settled, for the box it was typed for. */
   const [draft, setDraft] = useState<{ text: string; boxId: string } | null>(null);
@@ -169,7 +169,7 @@ export default function QuantityRow({
 
   /** Writes what is typed, if it changed. False only when it was refused. */
   const commit = (): boolean => {
-    if (shownDraft === null || !box || copies === undefined || locked) return true;
+    if (shownDraft === null || !box || copies === undefined) return true;
     const base = latest();
     const quantity = parseQuantity(shownDraft);
     if (quantity === null || quantity === base) {
@@ -185,6 +185,13 @@ export default function QuantityRow({
       refuseOverCap(base, box.id);
       return false;
     }
+    if (raiseHeld && quantity > base) {
+      // A raise the listing gate holds: nothing written, the number goes back.
+      setDraft(pending.current > 0 ? { text: String(base), boxId: box.id } : null);
+      setStatus({ kind: "error", message: raiseHeld.message });
+      api.notify(`${shortCardName(card)} didn't change. ${raiseHeld.message}`);
+      return false;
+    }
     send(quantity, box);
     return true;
   };
@@ -196,7 +203,7 @@ export default function QuantityRow({
    * left (the field keeps the focus, see `onMouseDown` below) goes first.
    */
   const addOne = () => {
-    if (!box || copies === undefined || locked) return;
+    if (!box || copies === undefined || raiseHeld) return;
     // A typed number the cap refused stays refused: the + adds nothing to it.
     if (!commit()) return;
     const base = latest();
@@ -285,7 +292,7 @@ export default function QuantityRow({
   if (showSet) sub.push(setAndVariant(card));
   if (run) sub.push(run);
   if (card.cardVariation) sub.push(`${card.cardVariation} variation`);
-  const describedBy = [lockedBy ?? null, status.kind === "error" ? errorId : null, others ? othersId : null]
+  const describedBy = [raiseHeld?.noteId ?? null, status.kind === "error" ? errorId : null, others ? othersId : null]
     .filter(Boolean)
     .join(" ");
 
@@ -352,11 +359,11 @@ export default function QuantityRow({
             enterKeyHint="next"
             autoComplete="off"
             spellCheck={false}
-            readOnly={!ready || locked}
+            readOnly={!ready}
             value={value}
             onFocus={(e) => e.currentTarget.select()}
             onChange={(e) => {
-              if (!box || locked) return;
+              if (!box) return;
               setDraft({ text: e.target.value.replace(/\D/g, "").slice(0, QUANTITY_FIELD_DIGITS), boxId: box.id });
               if (status.kind !== "saving") setStatus({ kind: "idle" });
             }}
@@ -377,7 +384,7 @@ export default function QuantityRow({
             size="1"
             tabIndex={-1}
             aria-label={addLabel}
-            disabled={!ready || locked}
+            disabled={!ready || raiseHeld !== undefined}
             onMouseDown={(e) => e.preventDefault()}
             onClick={(e) => {
               e.stopPropagation();
