@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { useMutation } from "convex/react";
 import type { FunctionArgs } from "convex/server";
+import CopyButton from "@/components/modules/CopyButton";
 import NeonButton from "@/components/modules/NeonButton";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
@@ -110,8 +111,21 @@ export function ScannerJoin({
             {shown.split("").join(" ")}
           </span>
         </p>
+        {/* Its own line: CopyButton's status line is a block. No copy on
+            open: the code lands after awaited mutations, past the click's
+            clipboard permission in Safari, and often the scanner is another
+            Mac anyway. Copies the bare code (the app ignores the space). */}
+        <div>
+          <CopyButton
+            value={shown}
+            copiedMessage="Scanner code copied. Paste it into NeonBinder Scanner."
+            failedMessage="Couldn't reach your clipboard. Type the code in by hand."
+          >
+            Copy code
+          </CopyButton>
+        </div>
         <p id={`${labelId}-how`} className="m-0">
-          Type this code in NeonBinder Scanner on the Mac the scanner is plugged into. Cards land here as they feed.
+          Type or paste this code in NeonBinder Scanner on the Mac the scanner is plugged into. Cards land here as they feed.
         </p>
         <p className="m-0">
           <strong className="font-semibold text-ink">First time?</strong> On that Mac, download NeonBinder Scanner

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Gather scanimage, the Fujitsu backend and every non-system library they load
+# Gather scanimage, the sheet-fed backends the app drives (Fujitsu fi, Canon
+# imageFORMULA DR/P, Epson ES/DS feeders) and every non-system library they load
 # from a Homebrew `sane-backends` install, so the scanner app carries its own
 # driver and the collector never installs Homebrew. Writes
 # dist/sane-bundle.tar.gz; the app unpacks it on first run (src/sane.ts).
@@ -18,14 +19,21 @@ mkdir -p "$OUT/bin" "$OUT/lib/sane" "$OUT/etc"
 
 cp "$PREFIX/bin/scanimage" "$OUT/bin/"
 cp "$PREFIX/lib/libsane.1.dylib" "$OUT/lib/"
-cp "$PREFIX/lib/sane/libsane-fujitsu.1.so" "$OUT/lib/sane/"
-# The dll meta-backend loads only what dll.conf lists.
-echo fujitsu > "$OUT/etc/dll.conf"
-cp "$ETC/fujitsu.conf" "$OUT/etc/"
+# Keep in step with SUPPORTED_BACKENDS in src/scanimage.ts.
+BACKENDS=(fujitsu canon_dr epsonds epson2)
+: > "$OUT/etc/dll.conf"
+for b in "${BACKENDS[@]}"; do
+  cp "$PREFIX/lib/sane/libsane-$b.1.so" "$OUT/lib/sane/"
+  # The dll meta-backend loads only what dll.conf lists.
+  echo "$b" >> "$OUT/etc/dll.conf"
+  # USB only: the Epson configs also broadcast for network scanners, which
+  # slows every lookup and turns up the all-in-one printer down the hall.
+  grep -vE '^[[:space:]]*net([[:space:]]|$)' "$ETC/$b.conf" > "$OUT/etc/$b.conf"
+done
 
 # Every Homebrew library reachable from what is in the bundle, transitively.
 deps() { otool -L "$1" | tail -n +2 | awk '{print $1}' | grep -E "^$(brew --prefix)/" || true; }
-queue=("$OUT/bin/scanimage" "$OUT/lib/libsane.1.dylib" "$OUT/lib/sane/libsane-fujitsu.1.so")
+queue=("$OUT/bin/scanimage" "$OUT/lib/libsane.1.dylib" "$OUT"/lib/sane/*.so)
 while ((${#queue[@]})); do
   file="${queue[0]}"; queue=("${queue[@]:1}")
   while read -r dep; do

@@ -3,13 +3,15 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { beforeEach, describe, expect, test } from "vitest";
-import { DEFAULT_SETTINGS, feedCards, type ScanEvent, type Timing } from "./scanimage.js";
+import { readFile } from "node:fs/promises";
+import { DEFAULT_SETTINGS, feedCards, fujitsuPlan, type ScanEvent, type ScanPlan, type Timing } from "./scanimage.js";
 
 /**
  * feedCards against a fake scanimage on PATH (./testing/fake-scanimage.sh):
  * whole cards come out as pairs in order, a lone last side is an orphan, a
  * page that stops arriving is a stall, only a run of jams is reported, and
- * the staging folder is gone afterwards.
+ * the staging folder is gone afterwards. With no hopper sensor, an empty
+ * feeder is found by trying.
  */
 const FAKE = path.join(path.dirname(fileURLToPath(import.meta.url)), "testing", "fake-scanimage.sh");
 const FAST: Timing = { stallMs: 300, firstPageMs: 2000, settleMs: 0, idleMs: 20, pollMs: 10 };
@@ -24,14 +26,17 @@ beforeEach(async () => {
   await writeFile(path.join(dir, "paper"), "");
 });
 
-async function feed(scenario: string, until: (events: ScanEvent[]) => boolean): Promise<ScanEvent[]> {
+async function feed(
+  scenario: string,
+  until: (events: ScanEvent[]) => boolean,
+  plan: ScanPlan = fujitsuPlan("fujitsu:fake", DEFAULT_SETTINGS),
+): Promise<ScanEvent[]> {
   process.env.FAKE_SCENARIO = scenario;
   const events: ScanEvent[] = [];
   let stop = () => {};
   const stopRequested = new Promise<void>((r) => (stop = r));
   await feedCards({
-    device: "fujitsu:fake",
-    settings: DEFAULT_SETTINGS,
+    plan,
     timing: FAST,
     shouldStop: () => until(events),
     stopRequested,
@@ -73,5 +78,18 @@ describe("feedCards", () => {
   test("a jam is only reported after four in a row", async () => {
     const events = await feed("jam", (e) => e.length >= 1);
     expect(events).toEqual([{ kind: "jammed", times: 4 }]);
+  });
+
+  test("with no hopper sensor, an empty feeder is tried again after a wait, quietly", async () => {
+    const events = await feed("empty-then-pairs:2", (e) => e.length >= 1, {
+      device: "epsonds:fake",
+      backend: "epsonds",
+      args: ["-d", "epsonds:fake", "--source=ADF Duplex"],
+      resolution: 300,
+    });
+    expect(events).toEqual([{ kind: "card", front: Buffer.from("side-1"), back: Buffer.from("side-2") }]);
+    const calls = (await readFile(path.join(dir, "calls"), "utf8")).trim().split("\n");
+    expect(calls).toHaveLength(2);
+    expect(calls[0]).toContain("-d epsonds:fake --source=ADF Duplex --format=jpeg");
   });
 });

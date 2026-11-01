@@ -51,11 +51,11 @@ describe("ScannerJoin", () => {
     // The parent opens the run; the code shows for it.
     view.rerender(<ScannerJoin runId={RUN} newRun={{ homeId: HOME }} kind="binder" onRunStarted={onRunStarted} />);
     const panel = await screen.findByRole("group", { name: "Scanner code" });
-    expect(panel.textContent).toContain("Type this code in NeonBinder Scanner");
+    expect(panel.textContent).toContain("Type or paste this code in NeonBinder Scanner");
     // The code and the how-to are read out with the group, not just its name.
     expect(panel.getAttribute("aria-describedby")?.split(" ").map((id) => document.getElementById(id)?.textContent)).toEqual([
       "A B 3 X 7 K",
-      expect.stringContaining("Type this code"),
+      expect.stringContaining("Type or paste this code"),
     ]);
     expect(within(panel).getByRole("link", { name: /^Apple chip/ }).getAttribute("href")).toMatch(/scanner-mac-arm64\.zip$/);
     expect(within(panel).getByRole("link", { name: /^Intel chip/ }).getAttribute("href")).toMatch(/scanner-mac-x64\.zip$/);
@@ -71,6 +71,26 @@ describe("ScannerJoin", () => {
     expect(calls.start).not.toHaveBeenCalled();
     expect(calls.create).not.toHaveBeenCalled();
     expect(onRunStarted).not.toHaveBeenCalled();
+  });
+
+  it("copies the bare code on Copy code, and says how to recover when the clipboard refuses", async () => {
+    const writeText = vi.fn().mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error("denied"));
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    renderJoin({ runId: RUN });
+    fireEvent.click(screen.getByRole("button", { name: "Use a scanner" }));
+    const panel = await screen.findByRole("group", { name: "Scanner code" });
+    // Nothing is copied until asked.
+    expect(writeText).not.toHaveBeenCalled();
+    const copy = within(panel).getByRole("button", { name: "Copy code" });
+    fireEvent.click(copy);
+    await waitFor(() =>
+      expect(within(panel).getByRole("status").textContent).toBe("Scanner code copied. Paste it into NeonBinder Scanner."),
+    );
+    expect(writeText).toHaveBeenCalledWith("AB3X7K");
+    fireEvent.click(copy);
+    await waitFor(() =>
+      expect(within(panel).getByRole("status").textContent).toBe("Couldn't reach your clipboard. Type the code in by hand."),
+    );
   });
 
   it("with nowhere to file, says to make one", async () => {

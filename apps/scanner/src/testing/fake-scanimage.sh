@@ -4,7 +4,7 @@
 for arg in "$@"; do
   case "$arg" in
     -A) [ -e "$FAKE_DIR/paper" ] && s=yes || s=no; echo "    --page-loaded[=(yes|no)] [$s] [hardware]"; exit 0 ;;
-    -f) echo "fujitsu:fake"; exit 0 ;;
+    -f) echo "fujitsu:fake|FAKE scanner"; exit 0 ;;
     --batch=*) pattern="${arg#--batch=}" ;;
   esac
 done
@@ -24,6 +24,17 @@ case "$FAKE_SCENARIO" in
     head -c 5000 /dev/zero > "$(printf "$pattern" 2).part"
     rm -f "$FAKE_DIR/paper"
     while true; do sleep 0.05; done
+    ;;
+  empty-then-pairs:*)
+    # No sensor: the first try finds the feeder empty, the next has cards.
+    if [ ! -e "$FAKE_DIR/tried" ]; then
+      touch "$FAKE_DIR/tried"
+      echo "scanimage: sane_start: Document feeder out of documents" >&2
+      exit 1
+    fi
+    n="${FAKE_SCENARIO#empty-then-pairs:}"
+    for ((i = 1; i <= n; i++)); do page "$i"; sleep 0.05; done
+    echo "scanimage: sane_start: Document feeder out of documents" >&2
     ;;
   jam)
     echo "scanimage: sane_start: Document feeder jammed" >&2

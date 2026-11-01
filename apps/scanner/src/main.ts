@@ -4,7 +4,19 @@ import { configPath, looksLikeCode, resolveConvexUrl, savedKey, saveKey } from "
 import { isRunClosedError, KeyRejectedError, NeonBinder } from "./neonbinder.js";
 import { ask, askSecret } from "./prompt.js";
 import { saneRuntime, SYSTEM_SANE, type SaneRuntime } from "./sane.js";
-import { DEFAULT_SETTINGS, DEFAULT_TIMING, feedCards, findDevice, listScanners, stopScan, type ScanEvent } from "./scanimage.js";
+import {
+  BRAND,
+  DEFAULT_SETTINGS,
+  DEFAULT_TIMING,
+  feedCards,
+  findScanner,
+  listScanners,
+  planScan,
+  stopScan,
+  TESTED_BACKENDS,
+  type ScanEvent,
+  type ScanPlan,
+} from "./scanimage.js";
 import { toneScan } from "./tone.js";
 
 /**
@@ -22,8 +34,12 @@ import { toneScan } from "./tone.js";
  *   NEONBINDER_CONVEX_URL  https://<deployment>.convex.cloud, for a preview;
  *                          otherwise the app asks neonbinder.io
  *   NEONBINDER_CONVEX_SITE_URL  only for a local backend
- *   SCANNER_DEVICE  a SANE device name, when the first Fujitsu isn't the one
+ *   SCANNER_DEVICE  a SANE device name, when the first scanner found isn't the one
  */
+
+/** Shown every time: only Fujitsu has been through real cards so far. */
+const TESTED =
+  "Tested on Fujitsu fi-series scanners. Canon imageFORMULA and Epson scanners with a feeder should work too, but haven't been tested yet.";
 
 const HELP = `Usage: neonbinder-scanner [code] [--raw] [--forget-key]
 
@@ -33,7 +49,9 @@ const HELP = `Usage: neonbinder-scanner [code] [--raw] [--forget-key]
   --forget-key  forget the saved API key and ask for one again
   --check       set up the scanner driver, list the scanners it sees, and stop
 
-Ctrl-C stops the scanner. A card it was partway through is reported to feed again.`;
+Ctrl-C stops the scanner. A card it was partway through is reported to feed again.
+
+${TESTED}`;
 
 const log = (line: string) => process.stdout.write(`${line}\n`);
 
@@ -86,7 +104,15 @@ async function check(): Promise<number> {
   const sane = await saneRuntime();
   const scanners = await listScanners(sane);
   log(`Scanner driver ready (${sane === SYSTEM_SANE ? "SANE on this computer" : "built in"}).`);
-  log(scanners.length ? scanners.map((s) => `Found ${s}`).join("\n") : "No scanner found. Check it's on and plugged in.");
+  for (const s of scanners) {
+    const support = !s.backend
+      ? "this app can't drive it"
+      : TESTED_BACKENDS.includes(s.backend)
+        ? "tested"
+        : `${BRAND[s.backend]}, not tested yet`;
+    log(`Found ${s.name} (${s.device}): ${support}.`);
+  }
+  if (!scanners.length) log("No scanner found. Check it's on and plugged in.");
   return 0;
 }
 
@@ -115,6 +141,7 @@ async function main(): Promise<number> {
     return values.help ? 0 : 2;
   }
   log("NeonBinder Scanner");
+  log(TESTED);
   if (values.check) return await check();
 
   const convexUrl = await resolveConvexUrl({ convexUrl: env("NEONBINDER_CONVEX_URL"), site: env("NEONBINDER_SITE") });
@@ -143,12 +170,18 @@ async function main(): Promise<number> {
     }
     const settings = { ...DEFAULT_SETTINGS, raw: values.raw, device: env("SCANNER_DEVICE") };
     const sane = await saneRuntime();
-    const device = await findDevice(settings, sane);
+    const scanner = await findScanner(settings, sane);
+    const plan = await planScan(scanner, settings, sane);
     log(`Joined: cards go into ${run.homeName}${run.variantName ? `, matched in ${run.variantName}` : ""}.`);
-    if (settings.raw) log(`${settings.source}, ${settings.resolution} dpi, raw frame (no crop).`);
+    log(`Scanner: ${scanner.name}.`);
+    if (!plan.backend || !TESTED_BACKENDS.includes(plan.backend)) {
+      log("This scanner hasn't been tested with NeonBinder Scanner yet. Watch the first few cards on the screen:");
+      log("if they jam, come out crooked or miss a side, stop here (Ctrl-C).");
+    }
+    if (settings.raw) log(`${plan.resolution} dpi, raw frame (no crop).`);
     log("Ready. Load cards in the feeder; each shows up on NeonBinder as it feeds.");
     log("To stop, press Ctrl-C or close this window.");
-    return await scanInto(nb, run.jobId, device, settings, sane);
+    return await scanInto(nb, run.jobId, plan, sane);
   } finally {
     await nb.close();
   }
@@ -157,8 +190,7 @@ async function main(): Promise<number> {
 async function scanInto(
   nb: NeonBinder,
   jobId: string,
-  device: string,
-  settings: typeof DEFAULT_SETTINGS,
+  plan: ScanPlan,
   sane: SaneRuntime,
 ): Promise<number> {
   let stopping = false;
@@ -193,7 +225,7 @@ async function scanInto(
     });
   }
 
-  const tone = { whiteClipPercent: 1, gamma: 2.2, jpegQuality: 95, dpi: settings.resolution };
+  const tone = { whiteClipPercent: 1, gamma: 2.2, jpegQuality: 95, dpi: plan.resolution };
   const send = async (raw: Buffer, name: string) => nb.sendImage(jobId, (await toneScan(raw, tone)) ?? raw, name);
 
   const onEvent = async (event: ScanEvent) => {
@@ -238,8 +270,7 @@ async function scanInto(
   };
 
   await feedCards({
-    device,
-    settings,
+    plan,
     sane,
     timing: DEFAULT_TIMING,
     shouldStop: () => stopping,

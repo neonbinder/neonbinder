@@ -1,10 +1,10 @@
 // NEO-386 (R1): "Use a scanner" on Add cards. With no run open it starts one
 // (an empty scanner session filing into the binder or box picked), moves focus
-// to the six-character code the scanner app joins it with, and links the app's
-// Mac downloads. The run lives on the URL, so after a reload asking again
-// gives the same code. "Done adding photos" closes the empty session. Both
-// sides: the Collection files into a binder, the Inventory into a box (its
-// own Main, which every account has).
+// to the six-character code the scanner app joins it with, copies it on
+// Copy code, and links the app's Mac downloads. The run lives on the URL, so
+// after a reload asking again gives the same code. "Done adding photos" closes
+// the empty session. Both sides: the Collection files into a binder, the
+// Inventory into a box (its own Main, which every account has).
 //
 // The app itself (apps/scanner) needs a real scanner and a real API key,
 // so its side of the join is pinned in convex/intakeScanner.test.ts,
@@ -26,7 +26,20 @@ async function useScanner(page: Page): Promise<string> {
   await expect(panel.getByRole("link", { name: "Intel chip" })).toHaveAttribute("href", /scanner-mac-x64\.zip$/);
   // The code as a screen reader hears it, one character at a time.
   const spoken = panel.getByText(/^([A-HJ-NP-Z2-9] ){5}[A-HJ-NP-Z2-9]$/);
-  return ((await spoken.textContent()) ?? "").replaceAll(" ", "");
+  const code = ((await spoken.textContent()) ?? "").replaceAll(" ", "");
+  // Copy code puts the bare code on the clipboard. Clipboard permission
+  // differs per browser engine, so the write is captured rather than read back.
+  await page.evaluate(() => {
+    const w = window as unknown as { copied?: string };
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: async (text: string) => void (w.copied = text) },
+    });
+  });
+  await panel.getByRole("button", { name: "Copy code" }).click();
+  await expect(panel.getByRole("status")).toHaveText("Scanner code copied. Paste it into NeonBinder Scanner.");
+  expect(await page.evaluate(() => (window as unknown as { copied?: string }).copied)).toBe(code);
+  return code;
 }
 
 /** Close the open run if it is still taking cards (cleanup on any path). */

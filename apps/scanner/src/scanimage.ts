@@ -8,11 +8,23 @@ import { SYSTEM_SANE, type SaneRuntime } from "./sane.js";
 const execFileAsync = promisify(execFile);
 
 /**
- * Driving a Fujitsu fi-series ADF over SANE `scanimage`, in duplex.
+ * Driving a sheet-fed scanner over SANE `scanimage`, in duplex.
  *
- * Everything here was learned the hard way on an fi-7160 by the scanner CLI
- * this replaces; the comments say why each setting is what it is.
+ * Fujitsu fi-series is the tested path: everything in `fujitsuArgs` was
+ * learned the hard way on an fi-7160 by the scanner CLI this replaces, and the
+ * comments say why each setting is what it is. Canon imageFORMULA (canon_dr)
+ * and Epson (epsonds, epson2) follow what their SANE backends document and
+ * are untested on real hardware, so their settings are only ever the options
+ * the scanner itself reports: scanimage refuses an unknown or inactive option
+ * outright, and every model of a brand reports a different set.
  */
+
+/** The SANE backends the app carries (scripts/bundle-sane.sh) and drives. */
+export const SUPPORTED_BACKENDS = ["fujitsu", "canon_dr", "epsonds", "epson2"] as const;
+export type Backend = (typeof SUPPORTED_BACKENDS)[number];
+/** Proven on a real scanner. */
+export const TESTED_BACKENDS: readonly Backend[] = ["fujitsu"];
+export const BRAND: Record<Backend, string> = { fujitsu: "Fujitsu", canon_dr: "Canon", epsonds: "Epson", epson2: "Epson" };
 
 export interface ScanSettings {
   device?: string;
@@ -52,53 +64,225 @@ export const DEFAULT_SETTINGS: ScanSettings = {
   prepick: "Default",
 };
 
-/** The first Fujitsu device `scanimage -f` lists, or the configured one. */
-export async function findDevice(settings: ScanSettings, sane: SaneRuntime = SYSTEM_SANE): Promise<string> {
-  if (settings.device) return settings.device;
-  let stdout: string;
-  try {
-    ({ stdout } = await execFileAsync(sane.scanimage, ["-f", "%d%n"], { env: sane.env }));
-  } catch {
-    throw new Error(
-      sane === SYSTEM_SANE
-        ? "Couldn't run scanimage. Install SANE (brew install sane-backends) and try again."
-        : "Couldn't start the scanner driver. Download the scanner app again and retry.",
-    );
-  }
-  const device = pickFujitsuDevice(stdout);
-  if (!device) throw new Error("No Fujitsu scanner found. Check it's on and plugged in.");
-  return device;
+export interface Scanner {
+  device: string;
+  backend?: Backend;
+  /** "Canon DR-C225", as SANE names it. */
+  name: string;
 }
 
-/** Every scanner SANE sees, as "<device> (<vendor> <model>)". Throws when the driver won't run. */
-export async function listScanners(sane: SaneRuntime = SYSTEM_SANE): Promise<string[]> {
-  const { stdout } = await execFileAsync(sane.scanimage, ["-f", "%d (%v %m)%n"], { env: sane.env });
-  return stdout.split("\n").map((l) => l.trim()).filter(Boolean);
+function unavailable(sane: SaneRuntime): Error {
+  return new Error(
+    sane === SYSTEM_SANE
+      ? "Couldn't run scanimage. Install SANE (brew install sane-backends) and try again."
+      : "Couldn't start the scanner driver. Download the scanner app again and retry.",
+  );
 }
 
-export function pickFujitsuDevice(listing: string): string | undefined {
+export function backendOf(device: string): Backend | undefined {
+  const prefix = device.slice(0, device.indexOf(":"));
+  return (SUPPORTED_BACKENDS as readonly string[]).includes(prefix) ? (prefix as Backend) : undefined;
+}
+
+/** `scanimage -f "%d|%v %m%n"` as scanners. */
+export function parseScanners(listing: string): Scanner[] {
   return listing
     .split("\n")
     .map((line) => line.trim())
-    .find((line) => line.startsWith("fujitsu:"));
+    .filter(Boolean)
+    .map((line) => {
+      const [device, name = ""] = line.split("|");
+      return { device, backend: backendOf(device), name: name.trim() || device };
+    });
+}
+
+/** Every scanner SANE sees. Throws when the driver won't run. */
+export async function listScanners(sane: SaneRuntime = SYSTEM_SANE): Promise<Scanner[]> {
+  const { stdout } = await execFileAsync(sane.scanimage, ["-f", "%d|%v %m%n"], { env: sane.env });
+  return parseScanners(stdout);
+}
+
+/** The first scanner the app can drive, or the configured one. */
+export async function findScanner(settings: ScanSettings, sane: SaneRuntime = SYSTEM_SANE): Promise<Scanner> {
+  if (settings.device) return { device: settings.device, backend: backendOf(settings.device), name: settings.device };
+  let scanners: Scanner[];
+  try {
+    scanners = await listScanners(sane);
+  } catch {
+    throw unavailable(sane);
+  }
+  const scanner = scanners.find((s) => s.backend);
+  if (!scanner) {
+    throw new Error(
+      "No scanner found that this app can drive. Check it's on and plugged in. It works with Fujitsu, Canon and Epson scanners that have a feeder.",
+    );
+  }
+  return scanner;
+}
+
+/** One option as `scanimage -A` lists it. `values` is null for a range or free value. */
+export interface DeviceOption {
+  values: string[] | null;
+  active: boolean;
+}
+export type DeviceOptions = Map<string, DeviceOption>;
+
+/**
+ * `scanimage -A`, as a map from flag ("--source", "-x") to what it accepts:
+ *
+ *     --source Flatbed|ADF Front|ADF Duplex [ADF Front]
+ *     --swcrop[=(yes|no)] [inactive]
+ *     --resolution 75|150|300|600dpi [300]
+ *     -x 0..215.9mm [215.9]
+ */
+export function parseOptions(listing: string): DeviceOptions {
+  const options: DeviceOptions = new Map();
+  for (const line of listing.split("\n")) {
+    const match = /^\s+(--?[a-z0-9][a-z0-9-]*)(.*)$/i.exec(line);
+    if (!match) continue;
+    const [, flag] = match;
+    let rest = match[2];
+    const current: string[] = [];
+    // The trailing "[current]" brackets; "[=(yes|no)]" is the value list, not one.
+    const TAIL = /\s+\[([^\]=][^\]]*)\]\s*$/;
+    for (let tail = TAIL.exec(rest); tail; tail = TAIL.exec(rest)) {
+      current.unshift(tail[1]);
+      rest = rest.slice(0, tail.index);
+    }
+    if (!current.length) continue;
+    rest = rest.trim();
+    let values: string[] | null;
+    const bool = /^\[=\(([^)]*)\)\]$/.exec(rest);
+    if (bool) values = bool[1].split("|");
+    else if (!rest || rest.includes("..") || rest.startsWith("<")) values = null;
+    else values = rest.split("|").map((v) => v.trim().replace(/^(\d+(?:\.\d+)?)[a-z%]+$/i, "$1"));
+    options.set(flag, { values, active: !current.includes("inactive") });
+  }
+  return options;
+}
+
+async function readOptions(device: string, set: string[], sane: SaneRuntime): Promise<DeviceOptions> {
+  try {
+    const { stdout } = await execFileAsync(sane.scanimage, ["-d", device, ...set, "-A"], { env: sane.env });
+    return parseOptions(stdout);
+  } catch {
+    throw new Error("The scanner didn't answer. Turn it off and on again, then reopen this app.");
+  }
+}
+
+/** How to scan with one scanner: everything scanimage needs before its output flags. */
+export interface ScanPlan {
+  device: string;
+  backend?: Backend;
+  args: string[];
+  /** The resolution scanned at, which the scanner may have rounded. */
+  resolution: number;
+  /** The hopper sensor flag. Without one, an empty feeder is found by trying. */
+  sensor?: string;
+}
+
+/** The feeder source that scans both sides, plus any flag that makes it duplex. */
+export function duplexSource(options: DeviceOptions): string[] | undefined {
+  const sources = options.get("--source")?.values ?? [];
+  const duplex = sources.find((s) => /^(ADF|Card) Duplex$/i.test(s)) ?? sources.find((s) => /duplex/i.test(s));
+  if (duplex) return [`--source=${duplex}`];
+  // epson2: one feeder source, with duplex as a mode of it.
+  const feeder = sources.find((s) => /ADF|feeder/i.test(s));
+  if (feeder && options.get("--adf-mode")?.values?.includes("Duplex")) return [`--source=${feeder}`, "--adf-mode=Duplex"];
+  return undefined;
+}
+
+/** The listed resolution nearest the one asked for, a step up on a tie. */
+export function nearestResolution(option: DeviceOption | undefined, wanted: number): number {
+  const listed = option?.values?.map(Number).filter((n) => Number.isFinite(n) && n > 0);
+  if (!listed?.length) return wanted;
+  return listed.reduce((best, n) => {
+    const d = Math.abs(n - wanted) - Math.abs(best - wanted);
+    return d < 0 || (d === 0 && n > best) ? n : best;
+  });
+}
+
+/**
+ * The args for a scanner other than a Fujitsu, from the options it reports
+ * with its duplex source set. A setting the scanner doesn't list is left out
+ * rather than guessed.
+ */
+export function reportedArgs(
+  device: string,
+  backend: Backend | undefined,
+  settings: ScanSettings,
+  source: string[],
+  options: DeviceOptions,
+): Omit<ScanPlan, "device" | "backend"> {
+  const args = ["-d", device, ...source];
+  const set = (flag: string, value: string) => {
+    const option = options.get(flag);
+    if (!option?.active) return false;
+    if (option.values && !option.values.includes(value)) return false;
+    // A long option takes "=value"; -x and -y take theirs as the next word.
+    if (flag.startsWith("--")) args.push(`${flag}=${value}`);
+    else args.push(flag, value);
+    return true;
+  };
+  const resolution = nearestResolution(options.get("--resolution"), settings.resolution);
+  set("--mode", settings.mode);
+  set("--resolution", String(resolution));
+  // Page size first: on Canon it bounds the scan area.
+  set("--page-width", String(settings.pageWidthMm));
+  set("--page-height", String(settings.pageHeightMm));
+  set("-x", String(settings.pageWidthMm));
+  set("-y", String(settings.pageHeightMm));
+  if (backend === "canon_dr") {
+    // Card stock trips double-feed detection by thickness and by length, the
+    // same way it trips the Fujitsu's sensors.
+    set("--df-thickness", "no");
+    set("--df-length", "no");
+    set("--stapledetect", "no");
+    // The same stranded-cards risk as the Fujitsu's buffer mode.
+    set("--buffermode", "no");
+    if (!settings.raw && !set("--hwcrop", "yes")) {
+      set("--swcrop", "yes");
+      set("--swdeskew", "yes");
+    }
+  }
+  // epsonds never turns on double-feed detection; it only offers crop and skew.
+  if (backend === "epsonds" && !settings.raw) {
+    set("--adf-skew", "yes");
+    set("--adf-crp", "yes");
+  }
+  const sensor = ["--page-loaded", "--adf-loaded"].find((flag) => options.get(flag)?.active);
+  return { args, resolution, sensor };
+}
+
+/** Work out how to scan with this scanner, asking it what it supports unless it is a Fujitsu. */
+export async function planScan(scanner: Scanner, settings: ScanSettings, sane: SaneRuntime = SYSTEM_SANE): Promise<ScanPlan> {
+  const { device, backend } = scanner;
+  if (backend === "fujitsu") return fujitsuPlan(device, settings);
+  const source = duplexSource(await readOptions(device, [], sane));
+  if (!source) throw new Error(`${scanner.name} can't scan both sides from its feeder, which cards need.`);
+  return { device, backend, ...reportedArgs(device, backend, settings, source, await readOptions(device, source, sane)) };
+}
+
+export function fujitsuPlan(device: string, settings: ScanSettings): ScanPlan {
+  return { device, backend: "fujitsu", args: fujitsuArgs(device, settings), resolution: settings.resolution, sensor: "--page-loaded" };
 }
 
 /** Does `scanimage -A` say the hopper sensor sees paper? */
-export function paperLoadedIn(options: string): boolean {
-  const line = options.split("\n").find((l) => l.includes("--page-loaded"));
+export function paperLoadedIn(options: string, sensor = "--page-loaded"): boolean {
+  const line = options.split("\n").find((l) => l.includes(`${sensor}[`));
   return !!line && /\[yes\]/.test(line);
 }
 
-export async function paperPresent(device: string, sane: SaneRuntime = SYSTEM_SANE): Promise<boolean> {
+export async function paperPresent(device: string, sane: SaneRuntime = SYSTEM_SANE, sensor = "--page-loaded"): Promise<boolean> {
   try {
     const { stdout } = await execFileAsync(sane.scanimage, ["-d", device, "-A"], { env: sane.env });
-    return paperLoadedIn(stdout);
+    return paperLoadedIn(stdout, sensor);
   } catch {
     return false;
   }
 }
 
-export function scanArgs(device: string, settings: ScanSettings, batchPattern: string): string[] {
+export function fujitsuArgs(device: string, settings: ScanSettings): string[] {
   const w = String(settings.pageWidthMm);
   const h = String(settings.pageHeightMm);
   return [
@@ -122,10 +306,11 @@ export function scanArgs(device: string, settings: ScanSettings, batchPattern: s
     "--df-recovery", "Off",
     "--buffermode", settings.bufferMode,
     "--prepick", settings.prepick,
-    "--format=jpeg",
-    `--batch=${batchPattern}`,
-    "--batch-start=1",
   ];
+}
+
+export function scanArgs(plan: ScanPlan, batchPattern: string): string[] {
+  return [...plan.args, "--format=jpeg", `--batch=${batchPattern}`, "--batch-start=1"];
 }
 
 /**
@@ -201,7 +386,8 @@ export async function stopScan(proc: ChildProcess, log: (line: string) => void):
 
 /**
  * Feed cards for as long as `shouldStop` says no: wait for paper, let it
- * settle, scan the stack, hand each whole card to `onEvent` as it lands, and
+ * settle, scan the stack (with no hopper sensor, just try, and wait a while
+ * when the feeder turns out empty), hand each whole card to `onEvent` as it lands, and
  * watchdog the transfer (the scanner sometimes stops mid-card and scanimage
  * then waits forever).
  *
@@ -209,8 +395,7 @@ export async function stopScan(proc: ChildProcess, log: (line: string) => void):
  * never the scanner itself.
  */
 export async function feedCards(opts: {
-  device: string;
-  settings: ScanSettings;
+  plan: ScanPlan;
   /** Which scanimage, and the environment it needs. The one on PATH if unset. */
   sane?: SaneRuntime;
   timing: Timing;
@@ -221,20 +406,23 @@ export async function feedCards(opts: {
   onScanStart: (proc: ChildProcess) => void;
   log: (line: string) => void;
 }): Promise<void> {
-  const { device, settings, timing, shouldStop, onEvent, log } = opts;
+  const { plan, timing, shouldStop, onEvent, log } = opts;
+  const { device, sensor } = plan;
   const sane = opts.sane ?? SYSTEM_SANE;
   const pause = (ms: number) => Promise.race([sleep(ms), opts.stopRequested]);
   const stage = await mkdtemp(path.join(tmpdir(), "nb-scan-"));
   let jams = 0;
   try {
     while (!shouldStop()) {
-      while (!shouldStop() && !(await paperPresent(device, sane))) await pause(timing.idleMs);
-      if (shouldStop()) break;
-      await pause(timing.settleMs);
-      if (shouldStop()) break;
+      if (sensor) {
+        while (!shouldStop() && !(await paperPresent(device, sane, sensor))) await pause(timing.idleMs);
+        if (shouldStop()) break;
+        await pause(timing.settleMs);
+        if (shouldStop()) break;
+      }
 
       for (const f of await readdir(stage)) await rm(path.join(stage, f), { force: true });
-      const proc = spawn(sane.scanimage, scanArgs(device, settings, path.join(stage, "raw-%04d.jpg")), {
+      const proc = spawn(sane.scanimage, scanArgs(plan, path.join(stage, "raw-%04d.jpg")), {
         stdio: ["ignore", "ignore", "pipe"],
         env: sane.env,
         // Its own process group, so a Ctrl-C or a closed Terminal window
@@ -293,8 +481,12 @@ export async function feedCards(opts: {
       if (stalled) {
         await onEvent({ kind: "stalled", kept, partial: orphan ? undefined : partial });
         await pause(timing.idleMs);
-      } else if (kept > 0 || /out of documents/i.test(stderr)) {
-        // Cards scanned, or the feeder emptied between the sensor and the scan.
+      } else if (kept > 0) {
+        // Cards scanned.
+      } else if (/out of documents/i.test(stderr)) {
+        // The feeder emptied between the sensor and the scan, or (no sensor)
+        // it was empty all along: try again after a wait, not straight away.
+        if (!sensor) await pause(timing.idleMs);
       } else if (/jammed/i.test(stderr)) {
         // The first start of a batch can report a jam that the retry clears.
         // Only a run of them means a card is really stuck.
