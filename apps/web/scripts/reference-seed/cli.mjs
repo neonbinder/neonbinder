@@ -114,6 +114,11 @@ export const SELECTOR_DEPENDANT_TABLES = [
   // Both drained by the reset (`resetIntakeRunsBatch`), before the
   // containers, the selector rows and the cards.
   "intakeRuns",
+  // NEO-370 — the listing outbox (variantId) and per-variant sync records
+  // (variantId). Both drained by the reset (`resetMarketplaceListingBatch`),
+  // before the selector rows and the cards.
+  "listingOutbox",
+  "marketplaceListingSyncs",
   "cardPlayerLinks",
   "cardChecklist",
   "cardCrossListings",

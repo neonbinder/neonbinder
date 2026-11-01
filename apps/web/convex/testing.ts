@@ -65,6 +65,9 @@ export const resetMyTestState = mutation({
     collectionBuildingSets: v.number(),
     // NEO-378: the caller's common prices per variant.
     variantCommonPrices: v.number(),
+    // NEO-370: the caller's marketplace listing rows, all four tables
+    // (outbox, per-variant syncs, per-platform states, sales) summed.
+    marketplaceListing: v.number(),
   }),
   handler: async (ctx) => {
     // Fail closed in production: the enabling flag is unset there.
@@ -185,6 +188,29 @@ export const resetMyTestState = mutation({
       await ctx.db.delete(row._id);
     }
 
+    // NEO-370 — the caller's listing outbox, per-variant sync records,
+    // per-platform states and sales. Every one is keyed on ownerId first, so
+    // each is a prefix read of its own index.
+    const listingOutbox = await ctx.db
+      .query("listingOutbox")
+      .withIndex("by_owner_platform_variant", (q) => q.eq("ownerId", userId))
+      .collect();
+    const listingSyncs = await ctx.db
+      .query("marketplaceListingSyncs")
+      .withIndex("by_owner_variant_platform", (q) => q.eq("ownerId", userId))
+      .collect();
+    const listingStates = await ctx.db
+      .query("marketplaceListingStates")
+      .withIndex("by_owner_platform", (q) => q.eq("ownerId", userId))
+      .collect();
+    const sales = await ctx.db
+      .query("marketplaceSales")
+      .withIndex("by_owner_date", (q) => q.eq("ownerId", userId))
+      .collect();
+    for (const row of [...listingOutbox, ...listingSyncs, ...listingStates, ...sales]) {
+      await ctx.db.delete(row._id);
+    }
+
     return {
       publicProfiles: publicProfiles.length,
       userProfiles: userProfiles.length,
@@ -195,6 +221,8 @@ export const resetMyTestState = mutation({
       collectionContainers: collectionContainers.length,
       collectionBuildingSets: collectionBuildingSets.length,
       variantCommonPrices: variantCommonPrices.length,
+      marketplaceListing:
+        listingOutbox.length + listingSyncs.length + listingStates.length + sales.length,
     };
   },
 });

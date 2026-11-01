@@ -436,6 +436,7 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
       collectionBuildingSetsDeleted: 11,
       variantCommonPricesDeleted: 2,
       intakeRunsDeleted: 0,
+      marketplaceListingDeleted: 0,
       selectorOptionsDeleted: 3,
       cardPlayerLinksDeleted: 0,
       cardTeamLinksDeleted: 9,
@@ -555,6 +556,7 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
       collectionBuildingSetsDeleted: 0,
       variantCommonPricesDeleted: 0,
       intakeRunsDeleted: 0,
+      marketplaceListingDeleted: 0,
       selectorOptionsDeleted: 0,
       cardPlayerLinksDeleted: 0,
       cardTeamLinksDeleted: 0,
@@ -628,6 +630,7 @@ describe("NEO-254: the reset yields at RESET_TIME_BUDGET_MS and resumes", () => 
       collectionBuildingSetsDeleted: 0,
       variantCommonPricesDeleted: 0,
       intakeRunsDeleted: 0,
+      marketplaceListingDeleted: 0,
       selectorOptionsDeleted: 0,
       cardPlayerLinksDeleted: 0,
       cardTeamLinksDeleted: 0,
@@ -669,6 +672,7 @@ describe("NEO-254: the reset yields at RESET_TIME_BUDGET_MS and resumes", () => 
       collectionBuildingSetsDeleted: 11,
       variantCommonPricesDeleted: 2,
       intakeRunsDeleted: 0,
+      marketplaceListingDeleted: 0,
       selectorOptionsDeleted: 3,
       cardPlayerLinksDeleted: 0,
       cardTeamLinksDeleted: 9,
@@ -1110,6 +1114,9 @@ describe("NEO-330: scope exceptReferenceSeed", () => {
     "variantCommonPrices",
     // NEO-379 — an intake run names the variant it matches in.
     "intakeRuns",
+    // NEO-370 — the listing outbox and per-variant sync records name a variant.
+    "listingOutbox",
+    "marketplaceListingSyncs",
     "cardPlayerLinks",
     "cardChecklist",
     "cardCrossListings",
@@ -1215,6 +1222,51 @@ describe("NEO-330: scope exceptReferenceSeed", () => {
         candidates: [card._id],
         variations: [],
       });
+      // NEO-370 — one row in each listing table: the card queued for BSC,
+      // its variant's sync record, the owner's BSC state and one sale.
+      await ctx.db.insert("listingOutbox", {
+        ownerId: "user",
+        platform: "bsc",
+        cardId: card._id,
+        variantId: card.selectorOptionId,
+        seq: 1,
+        changedAt: 0,
+      });
+      await ctx.db.insert("marketplaceListingSyncs", {
+        ownerId: "user",
+        variantId: card.selectorOptionId,
+        platform: "bsc",
+        status: "idle",
+        problems: [{ cardId: card._id, reason: "noPrice" }],
+        conditionsPushed: [],
+        lastUpdated: 0,
+      });
+      await ctx.db.insert("marketplaceListingStates", {
+        ownerId: "user",
+        platform: "bsc",
+        lastUpdated: 0,
+      });
+      await ctx.db.insert("marketplaceSales", {
+        ownerId: "user",
+        platform: "bsc",
+        orderId: "order-reset",
+        orderNo: "1001",
+        orderDate: 0,
+        status: "SHIPPED",
+        totals: {},
+        items: [
+          {
+            platformCardId: "bsc-card-1",
+            cardId: card._id,
+            condition: "near_mint",
+            quantity: 1,
+            priceCents: 25,
+            applied: true,
+          },
+        ],
+        firstSeenAt: 0,
+        lastUpdated: 0,
+      });
     });
   }
 
@@ -1268,6 +1320,7 @@ describe("NEO-330: scope exceptReferenceSeed", () => {
       collectionBuildingSetsDeleted: 11,
       variantCommonPricesDeleted: 2,
       intakeRunsDeleted: 2,
+      marketplaceListingDeleted: 4,
       selectorOptionsDeleted: 0,
       cardPlayerLinksDeleted: 1,
       cardTeamLinksDeleted: 9,

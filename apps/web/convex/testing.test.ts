@@ -126,6 +126,50 @@ async function seedUser(
       priceCents: 25,
       lastUpdated: 0,
     });
+    // NEO-370 — one row in each listing table.
+    await ctx.db.insert("listingOutbox", {
+      ownerId: userId,
+      platform: "bsc",
+      cardId,
+      variantId,
+      seq: 1,
+      changedAt: 0,
+    });
+    await ctx.db.insert("marketplaceListingSyncs", {
+      ownerId: userId,
+      variantId,
+      platform: "bsc",
+      status: "idle",
+      problems: [],
+      conditionsPushed: ["near_mint"],
+      lastUpdated: 0,
+    });
+    await ctx.db.insert("marketplaceListingStates", {
+      ownerId: userId,
+      platform: "bsc",
+      lastUpdated: 0,
+    });
+    await ctx.db.insert("marketplaceSales", {
+      ownerId: userId,
+      platform: "bsc",
+      orderId: `order-${userId}`,
+      orderNo: "1001",
+      orderDate: 0,
+      status: "READY_TO_SHIP",
+      totals: { totalCents: 25 },
+      items: [
+        {
+          platformCardId: "bsc-card-1",
+          cardId,
+          condition: "near_mint",
+          quantity: 1,
+          priceCents: 25,
+          applied: false,
+        },
+      ],
+      firstSeenAt: 0,
+      lastUpdated: 0,
+    });
   });
 }
 
@@ -141,6 +185,7 @@ async function countRows(
   collectionBuildingSets: number;
   variantCommonPrices: number;
   binderFits: number;
+  listing: number;
 }> {
   return t.run(async (ctx) => {
     const pp = (await ctx.db.query("publicProfiles").collect()).filter(
@@ -167,6 +212,15 @@ async function countRows(
     const bf =
       (await ctx.db.query("collectionBinderFits").collect()).filter((r) => r.ownerId === userId).length +
       (await ctx.db.query("collectionBinderFitsState").collect()).filter((r) => r.ownerId === userId).length;
+    let listing = 0;
+    for (const table of [
+      "listingOutbox",
+      "marketplaceListingSyncs",
+      "marketplaceListingStates",
+      "marketplaceSales",
+    ] as const) {
+      listing += (await ctx.db.query(table).collect()).filter((r) => r.ownerId === userId).length;
+    }
     return {
       publicProfiles: pp.length,
       userProfiles: up.length,
@@ -176,6 +230,7 @@ async function countRows(
       collectionBuildingSets: bs.length,
       variantCommonPrices: vp.length,
       binderFits: bf,
+      listing,
     };
   });
 }
@@ -199,6 +254,7 @@ describe("resetMyTestState", () => {
       collectionContainers: 1,
       collectionBuildingSets: 1,
       variantCommonPrices: 1,
+      marketplaceListing: 4,
     });
     expect(await countRows(t, USER_A)).toEqual({
       publicProfiles: 0,
@@ -209,6 +265,7 @@ describe("resetMyTestState", () => {
       collectionBuildingSets: 0,
       variantCommonPrices: 0,
       binderFits: 0,
+      listing: 0,
     });
   });
 
@@ -230,6 +287,7 @@ describe("resetMyTestState", () => {
       collectionBuildingSets: 0,
       variantCommonPrices: 0,
       binderFits: 0,
+      listing: 0,
     });
     expect(await countRows(t, USER_B)).toEqual({
       publicProfiles: 1,
@@ -240,6 +298,7 @@ describe("resetMyTestState", () => {
       collectionBuildingSets: 1,
       variantCommonPrices: 1,
       binderFits: 2,
+      listing: 4,
     });
   });
 
@@ -260,6 +319,7 @@ describe("resetMyTestState", () => {
       collectionContainers: 0,
       collectionBuildingSets: 0,
       variantCommonPrices: 0,
+      marketplaceListing: 0,
     });
   });
 
@@ -281,6 +341,7 @@ describe("resetMyTestState", () => {
       collectionBuildingSets: 1,
       variantCommonPrices: 1,
       binderFits: 2,
+      listing: 4,
     });
   });
 
@@ -304,6 +365,7 @@ describe("resetMyTestState", () => {
       collectionBuildingSets: 1,
       variantCommonPrices: 1,
       binderFits: 2,
+      listing: 4,
     });
   });
 });
