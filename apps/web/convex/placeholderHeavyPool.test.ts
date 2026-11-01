@@ -28,13 +28,16 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { getFunctionName } from "convex/server";
 import schema from "./schema";
 import { api, internal } from "./_generated/api";
-import { HEAVY_WARMUP_STATE_KEY, heavyPreprocessPool } from "./placeholderHeavyPool";
+import { HEAVY_WARMUP_STATE_KEY, heavyPreprocessPool, heavyWarmupCount } from "./placeholderHeavyPool";
 import { HEAVY_MAX_PARALLELISM } from "./preprocessCapacity";
 import { HEAVY_WARMUP_WINDOW_MS } from "./lib/preprocessWarmup";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
 }).glob("./**/*.*s");
+
+/** NEO-411: one fan-out warms half the heavy slots, leaving the rest for photos. */
+const WARM_UPS = heavyWarmupCount(HEAVY_MAX_PARALLELISM);
 
 const FAST_URL = "http://localhost:9997";
 const HEAVY_URL = "http://localhost:9998";
@@ -82,18 +85,31 @@ function spyOnEnqueueActionBatch() {
     );
 }
 
+describe("heavyWarmupCount (NEO-411)", () => {
+  test("is half the slots, rounded down, and never zero", () => {
+    expect(heavyWarmupCount(12)).toBe(6);
+    expect(heavyWarmupCount(6)).toBe(3);
+    expect(heavyWarmupCount(3)).toBe(1);
+    expect(heavyWarmupCount(1)).toBe(1);
+  });
+
+  test("always leaves at least one heavy slot free for a photo when there are two or more", () => {
+    for (let n = 2; n <= 50; n += 1) expect(heavyWarmupCount(n)).toBeLessThan(n);
+  });
+});
+
 describe("enqueueHeavyWarmups — the fan-out itself", () => {
-  test("enqueues exactly HEAVY_MAX_PARALLELISM x warmHeavyWorker, with retry:false and no onComplete", async () => {
+  test("enqueues exactly half the heavy slots (WARM_UPS) x warmHeavyWorker, with retry:false and no onComplete", async () => {
     const t = convexTest(schema, modules);
     const spy = spyOnEnqueueActionBatch();
 
     const result = await t.mutation(internal.placeholderHeavyPool.enqueueHeavyWarmups, {});
 
-    expect(result).toEqual({ enqueued: HEAVY_MAX_PARALLELISM });
+    expect(result).toEqual({ enqueued: WARM_UPS });
     expect(spy).toHaveBeenCalledTimes(1);
     const [, fnRef, items, opts] = spy.mock.calls[0] as [unknown, unknown, unknown[], unknown];
     expect(getFunctionName(fnRef as never)).toBe("placeholderBatch:warmHeavyWorker");
-    expect(items).toHaveLength(HEAVY_MAX_PARALLELISM);
+    expect(items).toHaveLength(WARM_UPS);
     expect(opts).toEqual({ retry: false });
     expect(opts).not.toHaveProperty("onComplete");
   });
@@ -109,7 +125,7 @@ describe("enqueueHeavyWarmups — the fan-out itself", () => {
 
     expect(spy).toHaveBeenCalledTimes(1);
     const items = spy.mock.calls[0][2] as unknown[];
-    expect(items).toHaveLength(HEAVY_MAX_PARALLELISM);
+    expect(items).toHaveLength(WARM_UPS);
   });
 
   test("warmupHeavyPreprocess (the first-escalation warm-gate) routes through the pool the same way", async () => {
@@ -120,7 +136,7 @@ describe("enqueueHeavyWarmups — the fan-out itself", () => {
 
     expect(spy).toHaveBeenCalledTimes(1);
     const items = spy.mock.calls[0][2] as unknown[];
-    expect(items).toHaveLength(HEAVY_MAX_PARALLELISM);
+    expect(items).toHaveLength(WARM_UPS);
   });
 });
 
@@ -168,7 +184,7 @@ describe("heavy pool retry configuration", () => {
 // The deployment-wide warm-up window (security review C1, NEO-299).
 //
 // `warmPreprocess` is public to any signed-in user, and every heavy fan-out
-// puts HEAVY_MAX_PARALLELISM items on the SHARED heavy pool, ahead of every
+// puts WARM_UPS items on the SHARED heavy pool, ahead of every
 // user's escalations. Without a window, a caller looping it grows that queue
 // without bound. These pin that only the first fan-out in a window reaches the
 // pool, from every entry point, and that the window really does reopen.
@@ -205,7 +221,7 @@ describe("enqueueHeavyWarmups — deployment-wide window", () => {
     await user.action(api.placeholderPipeline.warmPreprocess, {});
     await drain(t);
 
-    expect(itemsEnqueued(spy)).toBe(HEAVY_MAX_PARALLELISM);
+    expect(itemsEnqueued(spy)).toBe(WARM_UPS);
     // The second fan-out was skipped, and said so in the operator log.
     const skipped = log.mock.calls
       .map((c) => c[0])
@@ -228,19 +244,19 @@ describe("enqueueHeavyWarmups — deployment-wide window", () => {
 
     const call = () => t.mutation(internal.placeholderHeavyPool.enqueueHeavyWarmups, {});
 
-    expect(await call()).toEqual({ enqueued: HEAVY_MAX_PARALLELISM });
+    expect(await call()).toEqual({ enqueued: WARM_UPS });
 
     vi.setSystemTime(base + HEAVY_WARMUP_WINDOW_MS - 1);
     expect(await call()).toEqual({ enqueued: 0 });
 
     vi.setSystemTime(base + HEAVY_WARMUP_WINDOW_MS);
-    expect(await call()).toEqual({ enqueued: HEAVY_MAX_PARALLELISM });
+    expect(await call()).toEqual({ enqueued: WARM_UPS });
 
     // …and the reopened fan-out starts a NEW window from its own time.
     vi.setSystemTime(base + HEAVY_WARMUP_WINDOW_MS + 1);
     expect(await call()).toEqual({ enqueued: 0 });
 
-    expect(itemsEnqueued(spy)).toBe(2 * HEAVY_MAX_PARALLELISM);
+    expect(itemsEnqueued(spy)).toBe(2 * WARM_UPS);
     const rows = await t.run(async (ctx) => ctx.db.query("preprocessWarmupState").collect());
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({
@@ -262,7 +278,7 @@ describe("enqueueHeavyWarmups — deployment-wide window", () => {
     await t.action(internal.placeholderBatch.warmupHeavyPreprocess, {});
 
     expect(spy).toHaveBeenCalledTimes(1);
-    expect(itemsEnqueued(spy)).toBe(HEAVY_MAX_PARALLELISM);
+    expect(itemsEnqueued(spy)).toBe(WARM_UPS);
   });
 
   test("a fan-out whose enqueue fails does not hold the window shut", async () => {
@@ -278,7 +294,7 @@ describe("enqueueHeavyWarmups — deployment-wide window", () => {
     expect(await t.run(async (ctx) => ctx.db.query("preprocessWarmupState").collect())).toHaveLength(0);
 
     expect(await t.mutation(internal.placeholderHeavyPool.enqueueHeavyWarmups, {})).toEqual({
-      enqueued: HEAVY_MAX_PARALLELISM,
+      enqueued: WARM_UPS,
     });
   });
 });
