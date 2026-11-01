@@ -1156,3 +1156,79 @@ describe("NEO-335 — a refused short-name write persists nothing", () => {
     expect(cards).toHaveLength(0);
   });
 });
+
+describe("NEO-370 — listing reads ship no lease, SKU, order id or marketplace card id", () => {
+  // The returns validators are what keep these server-side; a validator that
+  // re-admitted one would pass every listing test that only reads the fields
+  // it expects. Mirrors listingSync.test.ts, with every hidden field planted.
+  const OWNER = { subject: "lister_neo370", issuer: "https://clerk.example.com", tokenIdentifier: "clerk|lister_neo370" };
+
+  test("variantStatus and listSales answer the owner with none of the hidden fields", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const cardId = await t.run((ctx) =>
+      insertTestCard(ctx, {
+        selectorOptionId: sportId,
+        cardNumber: "1",
+        cardName: "Aaron Judge",
+        platformData: {},
+        sortOrder: 0,
+        lastUpdated: Date.now(),
+      }),
+    );
+    await t.run(async (ctx) => {
+      await ctx.db.insert("marketplaceListingSyncs", {
+        ownerId: OWNER.subject,
+        variantId: sportId,
+        platform: "bsc",
+        status: "running",
+        leaseToken: "HIDDEN-lease",
+        leaseExpiresAt: 1,
+        problems: [{ cardId, platformCardId: "HIDDEN-card-id", reason: "notOnSheet" }],
+        problemsTotal: 1,
+        conditionsPushed: [],
+        lastUpdated: 1,
+      });
+      await ctx.db.insert("marketplaceSales", {
+        ownerId: OWNER.subject,
+        platform: "bsc",
+        orderId: "HIDDEN-order-id",
+        orderNo: "A-1",
+        orderDate: 1,
+        status: "SHIPPED",
+        totals: { totalCents: 100 },
+        items: [
+          {
+            platformCardId: "HIDDEN-sale-card-id",
+            cardId,
+            condition: "near_mint",
+            quantity: 1,
+            priceCents: 100,
+            sellerSku: "HIDDEN-sku",
+            applied: true,
+            appliedAt: 1,
+          },
+        ],
+        firstSeenAt: 1,
+        lastUpdated: 1,
+      });
+    });
+    const me = t.withIdentity(OWNER);
+    const status = await me.query(api.listingSync.variantStatus, { variantId: sportId });
+    const sales = await me.query(api.listingSync.listSales, { paginationOpts: { numItems: 5, cursor: null } });
+    expect(status.record).not.toBeNull();
+    expect(sales.page).toHaveLength(1);
+    const shipped = JSON.stringify([status, sales]);
+    expect(shipped).not.toContain("HIDDEN");
+    for (const key of ["leaseToken", "sellerSku", "orderId", "platformCardId", "appliedAt"]) {
+      expect(shipped).not.toContain(`"${key}"`);
+    }
+  });
+
+  test("flushListing refuses an anonymous caller and schedules nothing", async () => {
+    const t = convexTest(schema, modules);
+    await expect(t.mutation(api.listingSync.flushListing, {})).rejects.toThrow();
+    const scheduled = await t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect());
+    expect(scheduled).toEqual([]);
+  });
+});

@@ -3,6 +3,7 @@ import { v } from "convex/values";
 import { getCurrentUserId } from "./auth";
 import { binderOpenPreferenceValidator, collectionCopyConditionValidator, themePreferenceValidator } from "./schema";
 import { DEFAULT_CONDITION } from "./collection";
+import { setListingCredentialsDormant } from "./listingOutbox";
 
 const marketplaceAccountIdsValidator = v.optional(v.object({
   bscSellerId: v.optional(v.string()),
@@ -399,6 +400,10 @@ export const updateSiteCredentialStatus = internalMutation({
       });
     }
 
+    // NEO-370: credentials saved again wake a listing state they put to
+    // sleep; cleared, they put it to sleep (no poll, no drain).
+    await setListingCredentialsDormant(ctx, args.userId, args.site, !args.hasCredentials);
+
     return null;
   },
 });
@@ -532,6 +537,9 @@ export const removeSiteCredentialStatus = internalMutation({
         siteCredentials: updatedCredentials,
       });
     }
+    // NEO-370: no credentials, no listing work: the platform's listing state
+    // goes dormant (no order poll, no drain) until they are saved again.
+    await setListingCredentialsDormant(ctx, args.userId, args.site, true);
 
     return null;
   },

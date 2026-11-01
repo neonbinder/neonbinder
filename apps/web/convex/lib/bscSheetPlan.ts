@@ -201,29 +201,39 @@ function optionalString(value: unknown): string | null {
   return typeof value === "string" && value !== "" ? value : null;
 }
 
+/** Longest BSC card id, condition and SKU NB takes from a sheet row. */
+export const MAX_SHEET_CARD_ID = 64;
+export const MAX_SHEET_CONDITION = 32;
+export const MAX_SHEET_SKU = 100;
+/** A sheet row whose JSON is longer than this is unreadable (a measured row is about 1 KB). */
+export const MAX_SHEET_ROW_BYTES = 16 * 1024;
+
 /**
  * A row of `seller/bulk-upload/results`, or null when it lacks what a push
  * needs: `card.id` (agreeing with a top-level `cardId` when both are sent),
  * `card.cardNo`, `condition`, a whole `availableQuantity` >= 0 and a readable
- * `price` ("0" when unlisted).
+ * `price` ("0" when unlisted). A card id, condition or SKU longer than NB
+ * takes is unreadable too.
  */
 export function narrowBscSheetRow(value: unknown): BscSheetRow | null {
   if (!isRecord(value)) return null;
   const card = value.card;
   if (!isRecord(card)) return null;
   const bscCardId = optionalString(card.id);
-  if (bscCardId === null) return null;
+  if (bscCardId === null || bscCardId.length > MAX_SHEET_CARD_ID) return null;
   const topCardId = value.cardId;
   if (topCardId !== undefined && topCardId !== null && topCardId !== bscCardId) return null;
   const cardNo =
     typeof card.cardNo === "string" ? card.cardNo : typeof card.cardNo === "number" ? String(card.cardNo) : null;
-  if (cardNo === null) return null;
+  if (cardNo === null || cardNo.length > MAX_SHEET_CARD_ID) return null;
   const condition = optionalString(value.condition);
-  if (condition === null) return null;
+  if (condition === null || condition.length > MAX_SHEET_CONDITION) return null;
   const quantity = value.availableQuantity;
   if (typeof quantity !== "number" || !Number.isInteger(quantity) || quantity < 0) return null;
   const priceCents = bscDollarsToCents(value.price);
   if (priceCents === null || priceCents < 0) return null;
+  const sellerSku = optionalString(value.sellerSku);
+  if (sellerSku !== null && sellerSku.length > MAX_SHEET_SKU) return null;
   return {
     raw: value,
     bscCardId,
@@ -232,10 +242,54 @@ export function narrowBscSheetRow(value: unknown): BscSheetRow | null {
     productType: optionalString(value.productType),
     quantity,
     priceCents,
-    sellerSku: optionalString(value.sellerSku),
+    sellerSku,
     sellerImgFront: optionalString(value.sellerImgFront),
     sellerImgBack: optionalString(value.sellerImgBack),
   };
+}
+
+/**
+ * Sheet rows narrowed as they are read (`narrowBscSheet`), so a caller never
+ * holds BSC's raw answer: `rows` are the readable ones, `total` how many BSC
+ * sent and `unreadable` how many were dropped.
+ */
+export interface NarrowedBscSheet {
+  kind: "narrowed";
+  rows: BscSheetRow[];
+  total: number;
+  unreadable: number;
+}
+
+/** Narrows each row (`narrowBscSheetRow`), dropping unreadable and oversized ones. */
+export function narrowBscSheet(values: readonly unknown[]): NarrowedBscSheet {
+  const rows: BscSheetRow[] = [];
+  let unreadable = 0;
+  for (const value of values) {
+    let size = 0;
+    try {
+      size = JSON.stringify(value)?.length ?? 0;
+    } catch {
+      size = Infinity;
+    }
+    const row = size > MAX_SHEET_ROW_BYTES ? null : narrowBscSheetRow(value);
+    if (row) rows.push(row);
+    else unreadable += 1;
+  }
+  return { kind: "narrowed", rows, total: values.length, unreadable };
+}
+
+/** Joins narrowed sheets (several conditions or facet requests) into one. */
+export function joinNarrowedSheets(sheets: readonly NarrowedBscSheet[]): NarrowedBscSheet {
+  return {
+    kind: "narrowed",
+    rows: sheets.flatMap((s) => s.rows),
+    total: sheets.reduce((n, s) => n + s.total, 0),
+    unreadable: sheets.reduce((n, s) => n + s.unreadable, 0),
+  };
+}
+
+function isNarrowedSheet(value: readonly unknown[] | NarrowedBscSheet): value is NarrowedBscSheet {
+  return !Array.isArray(value) && (value as NarrowedBscSheet).kind === "narrowed";
 }
 
 /**
@@ -283,8 +337,11 @@ export interface NbVariantCard {
 }
 
 export interface PlanBscSheetInput {
-  /** Every row of every condition sheet read for the variant, as BSC sent them. */
-  sheetRows: readonly unknown[];
+  /**
+   * Every row of every condition sheet read for the variant: as BSC sent
+   * them, or already narrowed as they were read (`narrowBscSheet`).
+   */
+  sheetRows: readonly unknown[] | NarrowedBscSheet;
   /** The conditions those sheets were read for. */
   conditionsRead: readonly string[];
   targets: readonly BscTarget[];
@@ -332,19 +389,14 @@ export function planBscSheet(input: PlanBscSheetInput): BscSheetPlan {
   const conditionsRead = new Set(input.conditionsRead);
 
   // Sheet rows by (card.id, condition); a key seen twice is blocked whole.
-  let sheetRows = 0;
-  let unreadableRows = 0;
+  const narrowed = isNarrowedSheet(input.sheetRows) ? input.sheetRows : narrowBscSheet(input.sheetRows);
+  const sheetRows = narrowed.total;
+  const unreadableRows = narrowed.unreadable;
   const rowsByKey = new Map<string, BscSheetRow>();
   const duplicateKeys = new Set<string>();
   const firstRowByRef = new Map<string, BscSheetRow>();
   const sheetOrder: string[] = [];
-  for (const value of input.sheetRows) {
-    sheetRows += 1;
-    const row = narrowBscSheetRow(value);
-    if (row === null) {
-      unreadableRows += 1;
-      continue;
-    }
+  for (const row of narrowed.rows) {
     if (row.productType !== null && row.productType !== "raw") continue; // never ours
     const key = photoKeyFor(row.bscCardId, row.condition);
     if (rowsByKey.has(key)) {
@@ -409,7 +461,8 @@ export function planBscSheet(input: PlanBscSheetInput): BscSheetPlan {
         reason: "card_number_conflict",
         cardId: target.cardId,
         bscCardId: ref,
-        detail: `NB #${card.cardNumber}, BSC #${anyRow.cardNo}`,
+        // NB's own number only: a marketplace value never reaches the operator.
+        detail: `NB #${card.cardNumber}`,
       });
       continue;
     }

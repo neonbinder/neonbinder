@@ -113,38 +113,68 @@ function str(value: unknown): string | null {
   return typeof value === "string" && value.trim() !== "" ? value : null;
 }
 
+/**
+ * The longest BSC strings NB keeps. A value over its bound is not a value NB
+ * reads: the order (or the line) carrying it is treated as unreadable, never
+ * stored truncated.
+ */
+export const BSC_ORDER_BOUNDS = {
+  orderId: 64,
+  orderNo: 64,
+  status: 64,
+  condition: 32,
+  cardId: 64,
+  sku: 100,
+  productType: 32,
+  currency: 8,
+} as const;
+
+/** A non-blank string within `max`; `undefined` when it is longer (unreadable). */
+function bounded(value: unknown, max: number): string | null | undefined {
+  const s = str(value);
+  if (s === null) return null;
+  return s.length > max ? undefined : s;
+}
+
 function narrowOrderItem(value: unknown): BscOrderItem | null {
   if (!isRecord(value)) return null;
   const card = isRecord(value.card) ? value.card : null;
-  const nestedId = card ? str(card.id) : null;
-  const topId = str(value.cardId);
+  const nestedId = card ? bounded(card.id, BSC_ORDER_BOUNDS.cardId) : null;
+  const topId = bounded(value.cardId, BSC_ORDER_BOUNDS.cardId);
+  if (nestedId === undefined || topId === undefined) return null;
   if (nestedId !== null && topId !== null && nestedId !== topId) return null;
   const bscCardId = nestedId ?? topId;
   if (bscCardId === null) return null;
-  const condition = str(value.condition);
-  if (condition === null) return null;
+  const condition = bounded(value.condition, BSC_ORDER_BOUNDS.condition);
+  if (condition === null || condition === undefined) return null;
   const quantity = value.orderQuantity;
   if (typeof quantity !== "number" || !Number.isInteger(quantity) || quantity < 1) return null;
+  const productType = bounded(value.productType, BSC_ORDER_BOUNDS.productType);
+  const sellerSku = bounded(value.sellerSku, BSC_ORDER_BOUNDS.sku);
+  if (productType === undefined || sellerSku === undefined) return null;
   return {
     bscCardId,
     condition,
-    productType: str(value.productType),
+    productType,
     quantity,
     priceCents: bscDollarsToCents(value.price),
-    sellerSku: str(value.sellerSku),
+    sellerSku,
   };
 }
 
 /**
  * A `GET seller/order/{orderId}` payload, narrowed. Null when it has no
- * `orderId` or no `orderStatus` (nothing can be decided without them).
+ * `orderId` or no `orderStatus` (nothing can be decided without them), or
+ * when its id, number or status is longer than NB takes (`BSC_ORDER_BOUNDS`).
  * Missing optional fields come back null; a missing `orderItems` is no items.
  */
 export function parseBscOrder(value: unknown): BscOrder | null {
   if (!isRecord(value)) return null;
-  const orderId = str(value.orderId);
-  const status = str(value.orderStatus);
-  if (orderId === null || status === null) return null;
+  const orderId = bounded(value.orderId, BSC_ORDER_BOUNDS.orderId);
+  const status = bounded(value.orderStatus, BSC_ORDER_BOUNDS.status);
+  const orderNo = bounded(value.orderNo, BSC_ORDER_BOUNDS.orderNo);
+  if (orderId === null || orderId === undefined || status === null || status === undefined) return null;
+  if (orderNo === undefined) return null;
   const rawItems = Array.isArray(value.orderItems) ? value.orderItems : [];
   const items: BscOrderItem[] = [];
   let unreadableItems = 0;
@@ -155,10 +185,10 @@ export function parseBscOrder(value: unknown): BscOrder | null {
   }
   return {
     orderId,
-    orderNo: str(value.orderNo),
+    orderNo,
     orderDateMs: parseBscDate(value.orderDate),
     status,
-    currency: str(value.orderCurrency),
+    currency: bounded(value.orderCurrency, BSC_ORDER_BOUNDS.currency) ?? null,
     totals: {
       subtotalCents: bscDollarsToCents(value.subTotal),
       shippingCents: bscDollarsToCents(value.shippingCost),
@@ -184,7 +214,8 @@ export interface BscOrderSummary {
 /**
  * A `POST seller/order/history` page: `{totalElements, results}` with the
  * newest order first. `results` may be null on a seller with no orders. A
- * result with no `orderId` is counted in `unreadable` and skipped. Null when
+ * result with no `orderId`, or with an id, number or status longer than NB
+ * takes, is counted in `unreadable` and skipped. Null when
  * the payload is not an object at all.
  */
 export function parseBscOrderHistoryPage(
@@ -196,16 +227,18 @@ export function parseBscOrderHistoryPage(
   const orders: BscOrderSummary[] = [];
   let unreadable = 0;
   for (const r of results) {
-    const orderId = isRecord(r) ? str(r.orderId) : null;
-    if (!isRecord(r) || orderId === null) {
+    const orderId = isRecord(r) ? bounded(r.orderId, BSC_ORDER_BOUNDS.orderId) : null;
+    const orderNo = isRecord(r) ? bounded(r.orderNo, BSC_ORDER_BOUNDS.orderNo) : null;
+    const status = isRecord(r) ? bounded(r.orderStatus, BSC_ORDER_BOUNDS.status) : null;
+    if (!isRecord(r) || orderId === null || orderId === undefined || orderNo === undefined || status === undefined) {
       unreadable += 1;
       continue;
     }
     orders.push({
       orderId,
-      orderNo: str(r.orderNo),
+      orderNo,
       orderDateMs: parseBscDate(r.orderDate),
-      status: str(r.orderStatus),
+      status,
     });
   }
   return {

@@ -4351,7 +4351,7 @@ export default defineSchema({
    * unlinked` rule); the drainer reads and writes it once per variant.
    *
    * `status` with a lease is the per-variant lock that stops two drainers
-   * (the debounced drainer and a Resync press, two tabs) running one variant
+   * (a drain kicked by the cron and one kicked by a Resync) running one variant
    * at once: a run claims the row by writing `running`, a fresh `leaseToken`
    * and `leaseExpiresAt`; it finishes by writing `idle` or `error` and
    * dropping both. A `running` row past `leaseExpiresAt` is a run that died
@@ -4398,8 +4398,9 @@ export default defineSchema({
     /**
      * At most 200 (the writer caps; `problemsTotal` holds the true count).
      * `cardId` is absent only for a platform row NB cannot tie to a card
-     * (then `platformCardId` names it). `detail` is a short NB-truncated
-     * excerpt for `rejected`.
+     * (then `platformCardId` names it, server-side only: no public reader
+     * returns it). `detail` is a short NB-written sentence, never a
+     * marketplace value.
      */
     problems: v.array(
       v.object({
@@ -4411,6 +4412,8 @@ export default defineSchema({
     ),
     problemsTotal: v.optional(v.number()),
     conditionsPushed: v.array(v.string()),
+    /** The last Resync press (`listingSync.resyncVariant` ignores one within a minute). */
+    resyncRequestedAt: v.optional(v.number()),
     lastUpdated: v.number(),
   })
     // The variant panel's subscription and the drainer's claim (all three,
@@ -4421,29 +4424,53 @@ export default defineSchema({
   /**
    * ── NEO-370: one collector's standing with one listing platform ──────────
    *
-   * One row per (owner, platform), made by the owner's first sync to that
-   * platform. Its existence is what "this owner lists on this platform" means
-   * to the copy-change hook (which platforms get an outbox row) and to the
-   * order poll (which owners to poll). It holds no credential; the token is
-   * read through `credentials` as for every marketplace call, and the pause
-   * switch (`marketplacePause`) is honoured there.
+   * One row per (owner, platform), made the first time the owner switches
+   * listing on there, and never deleted by the app (the per-user test reset
+   * and the global drain clear it). It holds no credential; the token is read
+   * through `credentials` as for every marketplace call, and the pause switch
+   * (`marketplacePause`) is honoured there.
+   *
+   * Two switches, read through `listingOutbox.pushesCounts` / `pollsSales`:
+   *   - `enabled` is the collector's own: `false` stops pushing NB's counts
+   *     (the hook queues nothing, the drainer stands down) and leaves what
+   *     the platform lists as it is. Those listings can still sell, so the
+   *     order poll keeps running and keeps lowering NB copies. Absent means on
+   *     (rows written before the field existed were all switched on).
+   *   - `dormant` is NB's: set when the platform can't be used for this owner
+   *     at all, and it stops BOTH the poll and the drain.
+   *       `noCredentials`: the owner's saved credentials were cleared
+   *       (`userProfile.removeSiteCredentialStatus`); cleared again when they
+   *       are saved (`updateSiteCredentialStatus`).
+   *       `sellerConflict`: another NB owner already lists from the same
+   *       platform seller account (`platformAccountId`); cleared when the
+   *       owner switches listing on again and the conflict is gone.
+   *
+   * `platformAccountId` is the platform seller account this owner lists from
+   * (BSC: `sellerProfile.sellerId`), stamped when it is first known (at
+   * enable from the profile, or by the drainer before its first PUT). One NB
+   * owner per seller account: enabling, and the drainer, refuse an account
+   * another owner's row already holds.
    *
    * Order poll: `orderCursorAt` is the newest order date seen. The 15-minute
-   * cron lists owners on `by_platform_polled` (never-polled first, then
-   * oldest poll), and each owner's poll reads order history newer than the
-   * cursor across ALL statuses, so an order that ships within the 15 minutes
-   * is still caught.
+   * cron lists non-dormant owners on `by_platform_dormant_polled`
+   * (never-polled first, then oldest poll), and each owner's poll reads order
+   * history newer than the cursor across ALL statuses, so an order that ships
+   * within the 15 minutes is still caught. While the owner's credentials need
+   * a fresh sign-in, the poll runs at most hourly (`reauthPollAt`), so a dead
+   * session is not logged into every tick.
    *
-   * Drain debounce and lock, the `intakeRuns.matchScheduled` latch with a
-   * lease: the hook schedules the drainer about a minute out and stamps
-   * `drainScheduledAt` only when it is absent (or stale), so a burst of box
-   * writes schedules one drain. The drainer clears it before it reads any
-   * outbox row (a change landing mid-drain schedules the next one), and
-   * holds `drainLeaseToken` / `drainLeaseExpiresAt` while it runs so a
-   * second drainer for the same owner and platform stands down. The hook
-   * READS this row on every box write, so the drainer writes it as little as
-   * it can: claim once, release once, per-variant progress on
-   * `marketplaceListingSyncs`. `drainLeaseToken` never reaches a client.
+   * Drain triggers (no timer): leaving a checklist page
+   * (`listingSync.flushListing`), an intake run that is settled, a Resync,
+   * the end of the enable walk, and the 15-minute cron (after each owner's
+   * poll). Each kick schedules the drainer at once and stamps
+   * `drainScheduledAt` only when no drain is scheduled or running; a kick
+   * that lands while a drain runs sets `drainRequested`, and that drain's
+   * release runs the next one at once. `drainLeaseToken` /
+   * `drainLeaseExpiresAt` are held while a drain runs, so two kicks never run
+   * two drains. The hook READS this row on every box write, so the drainer
+   * writes it as little as it can: claim once, release once, per-variant
+   * progress on `marketplaceListingSyncs`. `drainLeaseToken` never reaches a
+   * client.
    */
   marketplaceListingStates: defineTable({
     ownerId: v.string(),
@@ -4454,16 +4481,29 @@ export default defineSchema({
     drainScheduledAt: v.optional(v.number()),
     drainLeaseToken: v.optional(v.string()),
     drainLeaseExpiresAt: v.optional(v.number()),
+    /** A kick landed while a drain ran: its release runs the next one at once. */
+    drainRequested: v.optional(v.boolean()),
     lastDrainAt: v.optional(v.number()),
+    /** `false`: the collector switched listing off (counts are not pushed; sales still polled). */
+    enabled: v.optional(v.boolean()),
+    /** NB stopped both poll and drain; see the table comment. */
+    dormant: v.optional(v.union(v.literal("noCredentials"), v.literal("sellerConflict"))),
+    /** The platform seller account this owner lists from (BSC seller id). */
+    platformAccountId: v.optional(v.string()),
+    /** When the poll last ran while the owner's credentials needed a fresh sign-in. */
+    reauthPollAt: v.optional(v.number()),
     lastUpdated: v.number(),
   })
     // Get-or-create and the drainer's claim (both fields, `.unique()`); the
     // hook's "which platforms does this owner list on" (prefix ownerId), and
     // the per-user test reset.
     .index("by_owner_platform", ["ownerId", "platform"])
-    // The order-poll cron: one platform's owners, never-polled first (an
-    // absent `lastPolledAt` sorts before every number), then oldest poll.
-    .index("by_platform_polled", ["platform", "lastPolledAt"]),
+    // The order-poll cron: one platform's non-dormant owners (`dormant`
+    // absent), never-polled first (an absent `lastPolledAt` sorts before
+    // every number), then oldest poll.
+    .index("by_platform_dormant_polled", ["platform", "dormant", "lastPolledAt"])
+    // One NB owner per seller account: who else holds this account.
+    .index("by_platform_account", ["platform", "platformAccountId"]),
 
   /**
    * ── NEO-370: one order a collector received on a platform ────────────────

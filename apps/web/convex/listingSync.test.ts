@@ -6,18 +6,23 @@
  * The rules pinned here:
  *   - a write whose copy lived in a box before or after queues the card for
  *     every platform the owner lists on; a binder-only write queues nothing;
- *   - an owner who lists nowhere gets no outbox row and no drain;
- *   - a burst of writes schedules ONE drain (the debounce latch);
+ *   - an owner who lists nowhere (or switched listing off) gets no outbox row;
+ *   - the hook only queues: no write schedules a drain (NEO-370 round 3, no
+ *     timer); `flushListing`, the end of the switch-on walk and Resync do;
+ *   - a flush is a cheap no-op with nothing pending, a drain already
+ *     scheduled, or one running (it then asks the running drain to go again);
  *   - only catalog cards carrying the platform's id are queued;
  *   - every public function is the caller's own, and a sync record's lease
- *     token never reaches a client.
+ *     token, a marketplace card id and a seller SKU never reach a client.
  *
- * The drain itself is scheduled a minute out and never runs here: each test
- * drains the `runAfter(0)` walks and cancels the delayed drain.
+ * A kicked drain is `runAfter(0)`. Tests that only inspect the kick hold the
+ * scheduler's timer (`holdDrains`) and cancel what is pending afterwards; a
+ * drain that does run finds no BSC session (the credentials layer is mocked
+ * to answer none), so nothing here reaches the network.
  */
 
 import { convexTest } from "convex-test";
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
@@ -25,6 +30,27 @@ import { seedCollectionCatalog } from "../lib/testing/collection-fixture";
 import { cancelScheduled, drainScheduled } from "../lib/testing/drain-scheduled";
 import { DRAIN_SCHEDULE_STALE_MS, enqueueListingCards } from "./listingOutbox";
 import { PAUSED_PLATFORMS_ENV } from "./lib/marketplacePause";
+
+// A drain that runs here opens no BSC session: no token, and a refresh that
+// fails. So it stops before any BSC call, and the suite never fetches.
+vi.mock("./credentials", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./credentials")>();
+  const { internalAction } = await import("./_generated/server");
+  const { v } = await import("convex/values");
+  return {
+    ...actual,
+    getSiteTokenForUser: internalAction({
+      args: { site: v.string(), userId: v.string() },
+      returns: v.any(),
+      handler: async () => null,
+    }),
+    refreshSiteTokenForUser: internalAction({
+      args: { site: v.string(), userId: v.string() },
+      returns: v.any(),
+      handler: async () => ({ refreshed: false }),
+    }),
+  };
+});
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -65,6 +91,41 @@ async function drains(s: S) {
   const rows = await s.t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect());
   return rows.filter((r) => r.name.includes("drainOwner") && r.state.kind === "pending");
 }
+/** Every drain ever scheduled, whatever became of it. */
+async function drainsEver(s: S) {
+  const rows = await s.t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect());
+  return rows.filter((r) => r.name.includes("drainOwner"));
+}
+/** Hold the scheduler's timer so a kicked `runAfter(0)` drain stays pending to be inspected. */
+function holdDrains() {
+  vi.useFakeTimers({ toFake: ["setTimeout"] });
+}
+/**
+ * With drains held: run the switch-on walk's pages by hand (cancelling each
+ * scheduled copy), so the walk completes while the drain it kicks stays pending.
+ */
+async function runWalks(s: S) {
+  for (let i = 0; i < 50; i += 1) {
+    const rows = await s.t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect());
+    const page = rows.find((r) => r.name.includes("queueBoxesPage") && r.state.kind === "pending");
+    if (!page) return;
+    await s.t.run((ctx) => ctx.scheduler.cancel(page._id));
+    await s.t.mutation(internal.listingSync.queueBoxesPage, page.args[0] as never);
+  }
+  throw new Error("the walk did not finish");
+}
+/** One queued change for ME at the base variant, as the hook would leave it. */
+const queueOne = (s: S, owner = ME.subject) =>
+  s.t.run((ctx) =>
+    ctx.db.insert("listingOutbox", {
+      ownerId: owner,
+      platform: "bsc",
+      cardId: s.fx.gooden1,
+      variantId: s.fx.baseId,
+      seq: 1,
+      changedAt: Date.now(),
+    }),
+  );
 const addTo = (s: S, cardId: Id<"cardChecklist">, homeId: Id<"collectionContainers">) =>
   s.me.mutation(api.collection.addLineItem, { cardId, details: { quantity: 1, homeId } });
 
@@ -73,9 +134,14 @@ beforeEach(() => {
   current = null;
 });
 afterEach(async () => {
-  if (!current) return;
-  await drainScheduled(current.t);
+  if (!current) {
+    vi.useRealTimers();
+    return;
+  }
+  // Cancel first: a held drain never fires, so draining would wait on it.
   await cancelScheduled(current.t as never);
+  vi.useRealTimers();
+  await drainScheduled(current.t);
 });
 async function fresh() {
   current = await setup();
@@ -90,21 +156,21 @@ describe("the copy-change hook", () => {
     expect(await drains(s)).toEqual([]);
   });
 
-  test("a box add queues the card once, for its variant, and schedules one drain", async () => {
+  test("a box add queues the card once, for its variant, and schedules no drain", async () => {
     const s = await fresh();
+    holdDrains();
     await listOn(s);
     await addTo(s, s.fx.gooden1, s.box);
     const rows = await outbox(s);
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ ownerId: ME.subject, platform: "bsc", cardId: s.fx.gooden1, variantId: s.fx.baseId, seq: 1 });
-    expect((await states(s))[0].drainScheduledAt).toBeTypeOf("number");
-    const scheduled = await drains(s);
-    expect(scheduled).toHaveLength(1);
-    expect(scheduled[0].args[0]).toEqual({ ownerId: ME.subject, platform: "bsc" });
+    expect((await states(s))[0].drainScheduledAt).toBeUndefined();
+    expect(await drainsEver(s)).toEqual([]);
   });
 
-  test("a burst of box writes bumps seq on one row and still schedules one drain", async () => {
+  test("a burst of box writes bumps seq on one row and schedules nothing", async () => {
     const s = await fresh();
+    holdDrains();
     await listOn(s);
     await addTo(s, s.fx.gooden1, s.box);
     await addTo(s, s.fx.gooden1, s.box);
@@ -113,22 +179,21 @@ describe("the copy-change hook", () => {
     expect(rows.map((r) => [r.cardId, r.seq]).sort()).toEqual(
       [[s.fx.gooden1, 2], [s.fx.strawberry2, 1]].sort(),
     );
-    expect(await drains(s)).toHaveLength(1);
+    expect(await drainsEver(s)).toEqual([]);
   });
 
-  test("a stale drain stamp schedules a fresh drain", async () => {
+  test("listing switched off (row kept): a box write queues nothing", async () => {
     const s = await fresh();
-    await listOn(s, ME.subject, { drainScheduledAt: Date.now() - DRAIN_SCHEDULE_STALE_MS - 1 });
+    await listOn(s, ME.subject, { enabled: false });
     await addTo(s, s.fx.gooden1, s.box);
-    expect(await drains(s)).toHaveLength(1);
+    expect(await outbox(s)).toEqual([]);
   });
 
-  test("a fresh drain stamp schedules nothing more", async () => {
+  test("a dormant row (no credentials) queues nothing", async () => {
     const s = await fresh();
-    await listOn(s, ME.subject, { drainScheduledAt: Date.now() });
+    await listOn(s, ME.subject, { dormant: "noCredentials" });
     await addTo(s, s.fx.gooden1, s.box);
-    expect(await outbox(s)).toHaveLength(1);
-    expect(await drains(s)).toEqual([]);
+    expect(await outbox(s)).toEqual([]);
   });
 
   test("binder-only writes queue nothing: add, edit, move between binders, remove", async () => {
@@ -192,12 +257,103 @@ describe("the copy-change hook", () => {
   });
 });
 
+describe("flushListing", () => {
+  test("signed out: refused", async () => {
+    const s = await fresh();
+    await expect(s.t.mutation(api.listingSync.flushListing, {})).rejects.toThrow();
+  });
+
+  test("with a change pending: schedules one drain for me, stamped; a second flush adds none", async () => {
+    const s = await fresh();
+    holdDrains();
+    await connect(s);
+    await listOn(s);
+    await listOn(s, THEM.subject);
+    await queueOne(s);
+    await queueOne(s, THEM.subject);
+    expect(await s.me.mutation(api.listingSync.flushListing, {})).toBeNull();
+    const scheduled = await drains(s);
+    expect(scheduled.map((d) => d.args[0])).toEqual([{ ownerId: ME.subject, platform: "bsc" }]);
+    const mine = (await states(s)).find((r) => r.ownerId === ME.subject);
+    expect(mine?.drainScheduledAt).toBeTypeOf("number");
+    // The UI flushes on every leave; the latch makes the repeat free.
+    await s.me.mutation(api.listingSync.flushListing, {});
+    expect(await drains(s)).toHaveLength(1);
+    // Never another collector's drain.
+    expect((await states(s)).find((r) => r.ownerId === THEM.subject)?.drainScheduledAt).toBeUndefined();
+  });
+
+  test("nothing pending: a no-op that writes nothing", async () => {
+    const s = await fresh();
+    holdDrains();
+    await listOn(s);
+    const before = await states(s);
+    await s.me.mutation(api.listingSync.flushListing, {});
+    expect(await drainsEver(s)).toEqual([]);
+    expect(await states(s)).toEqual(before);
+  });
+
+  test("listing off, dormant, or never on: nothing scheduled", async () => {
+    const s = await fresh();
+    holdDrains();
+    await queueOne(s);
+    await s.me.mutation(api.listingSync.flushListing, {});
+    expect(await drainsEver(s)).toEqual([]);
+    const id = await listOn(s, ME.subject, { enabled: false });
+    await s.me.mutation(api.listingSync.flushListing, {});
+    await s.t.run((ctx) => ctx.db.patch(id, { enabled: undefined, dormant: "noCredentials" }));
+    await s.me.mutation(api.listingSync.flushListing, {});
+    expect(await drainsEver(s)).toEqual([]);
+  });
+
+  test("a stale drain stamp is replaced by a fresh drain", async () => {
+    const s = await fresh();
+    holdDrains();
+    await listOn(s, ME.subject, { drainScheduledAt: Date.now() - DRAIN_SCHEDULE_STALE_MS - 1 });
+    await queueOne(s);
+    await s.me.mutation(api.listingSync.flushListing, {});
+    expect(await drains(s)).toHaveLength(1);
+  });
+
+  test("a fresh drain stamp: nothing more scheduled", async () => {
+    const s = await fresh();
+    holdDrains();
+    await listOn(s, ME.subject, { drainScheduledAt: Date.now() });
+    await queueOne(s);
+    await s.me.mutation(api.listingSync.flushListing, {});
+    expect(await drainsEver(s)).toEqual([]);
+  });
+
+  test("a drain holding the lease: asked to go again once, nothing scheduled, a repeat writes nothing", async () => {
+    const s = await fresh();
+    holdDrains();
+    const id = await listOn(s, ME.subject, { drainLeaseToken: "lease", drainLeaseExpiresAt: Date.now() + 60_000 });
+    await queueOne(s);
+    await s.me.mutation(api.listingSync.flushListing, {});
+    expect(await drainsEver(s)).toEqual([]);
+    const after = await s.t.run((ctx) => ctx.db.get(id));
+    expect(after?.drainRequested).toBe(true);
+    await s.me.mutation(api.listingSync.flushListing, {});
+    expect(await s.t.run((ctx) => ctx.db.get(id))).toEqual(after);
+    expect(await drainsEver(s)).toEqual([]);
+  });
+});
+
 describe("listingSettings", () => {
   test("off and not connected by default", async () => {
     const s = await fresh();
     expect(await s.me.query(api.listingSync.listingSettings, {})).toEqual({
-      bsc: { enabled: false, connected: false, needsReauth: false, paused: false },
+      bsc: { enabled: false, connected: false, needsReauth: false, paused: false, sellerConflict: false },
     });
+  });
+
+  test("off while the row is kept switched off; a seller conflict is reported", async () => {
+    const s = await fresh();
+    await connect(s);
+    const id = await listOn(s, ME.subject, { enabled: false });
+    expect((await s.me.query(api.listingSync.listingSettings, {})).bsc).toMatchObject({ enabled: false, connected: true });
+    await s.t.run((ctx) => ctx.db.patch(id, { enabled: undefined, dormant: "sellerConflict" }));
+    expect((await s.me.query(api.listingSync.listingSettings, {})).bsc).toMatchObject({ sellerConflict: true });
   });
 
   test("connected once BSC credentials are saved; on once the state row exists", async () => {
@@ -237,13 +393,31 @@ describe("setListingEnabled", () => {
     await addTo(s, s.fx.gold1, s.box);
     await addTo(s, s.fx.strawberry2, s.sys.unsortedId);
     await addTo(s, s.fx.futureStar, s.binder);
+    holdDrains();
     await s.me.mutation(api.listingSync.setListingEnabled, { platform: "bsc", enabled: true });
-    await drainScheduled(s.t);
+    await runWalks(s);
     expect(await states(s)).toHaveLength(1);
     const rows = await outbox(s);
     expect(rows.map((r) => r.cardId).sort()).toEqual([s.fx.gooden1, s.fx.gold1, s.fx.strawberry2].sort());
     expect(rows.find((r) => r.cardId === s.fx.gold1)?.variantId).toBe(s.fx.goldId);
-    expect(await drains(s)).toHaveLength(1);
+    // The end of the walk kicked one drain.
+    expect((await drains(s)).map((d) => d.args[0])).toEqual([{ ownerId: ME.subject, platform: "bsc" }]);
+  });
+
+  test("refuses a BSC seller account another NB owner already lists from", async () => {
+    const s = await fresh();
+    await s.t.run((ctx) =>
+      ctx.db.insert("userProfiles", {
+        userId: ME.subject,
+        marketplaceAccountIds: { bscSellerId: "seller-shared" },
+        siteCredentials: [{ site: "buysportscards", hasCredentials: true }],
+      } as never),
+    );
+    await listOn(s, THEM.subject, { platformAccountId: "seller-shared" });
+    await expect(
+      s.me.mutation(api.listingSync.setListingEnabled, { platform: "bsc", enabled: true }),
+    ).rejects.toThrow(/already listing from another NeonBinder account/);
+    expect((await states(s)).map((r) => r.ownerId)).toEqual([THEM.subject]);
   });
 
   test("on twice writes nothing the second time", async () => {
@@ -254,7 +428,7 @@ describe("setListingEnabled", () => {
     expect(await states(s)).toHaveLength(1);
   });
 
-  test("off: deletes the state row and my queued changes, never another collector's", async () => {
+  test("off: keeps the state row switched off and clears my queued changes, never another collector's", async () => {
     const s = await fresh();
     await connect(s);
     await listOn(s, THEM.subject);
@@ -271,11 +445,21 @@ describe("setListingEnabled", () => {
       }),
     );
     await s.me.mutation(api.listingSync.setListingEnabled, { platform: "bsc", enabled: false });
-    expect((await states(s)).map((r) => r.ownerId)).toEqual([THEM.subject]);
+    await drainScheduled(s.t);
+    // The row stays (the sales check keeps running for listings left up), marked off.
+    const rows = await states(s);
+    expect(rows.map((r) => r.ownerId).sort()).toEqual([ME.subject, THEM.subject].sort());
+    expect(rows.find((r) => r.ownerId === ME.subject)?.enabled).toBe(false);
     expect((await outbox(s)).map((r) => r.ownerId)).toEqual([THEM.subject]);
     // Off, the hook queues nothing more.
     await addTo(s, s.fx.strawberry2, s.box);
     expect((await outbox(s)).map((r) => r.ownerId)).toEqual([THEM.subject]);
+    expect((await s.me.query(api.listingSync.listingSettings, {})).bsc.enabled).toBe(false);
+    // On again flips the same row back.
+    await s.me.mutation(api.listingSync.setListingEnabled, { platform: "bsc", enabled: true });
+    const again = await states(s);
+    expect(again).toHaveLength(2);
+    expect(again.find((r) => r.ownerId === ME.subject)?.enabled).toBe(true);
   });
 
   test("a walk page that finds listing switched off again stops and queues nothing", async () => {
@@ -289,6 +473,41 @@ describe("setListingEnabled", () => {
       cursor: null,
     });
     expect(await outbox(s)).toEqual([]);
+  });
+});
+
+describe("credentials put a listing row to sleep and wake it", () => {
+  test("clearing BSC credentials makes the row dormant; saving them again wakes it", async () => {
+    const s = await fresh();
+    await connect(s);
+    const id = await listOn(s, ME.subject, { reauthPollAt: 5 });
+    await s.t.mutation(internal.userProfile.removeSiteCredentialStatus, { userId: ME.subject, site: "buysportscards" });
+    expect((await s.t.run((ctx) => ctx.db.get(id)))?.dormant).toBe("noCredentials");
+    // Dormant, the hook queues nothing and a flush schedules nothing.
+    holdDrains();
+    await addTo(s, s.fx.gooden1, s.box);
+    expect(await outbox(s)).toEqual([]);
+    await s.t.mutation(internal.userProfile.updateSiteCredentialStatus, {
+      userId: ME.subject,
+      site: "buysportscards",
+      hasCredentials: true,
+    });
+    const woke = await s.t.run((ctx) => ctx.db.get(id));
+    expect(woke?.dormant).toBeUndefined();
+    expect(woke?.reauthPollAt).toBeUndefined();
+  });
+
+  test("another site's credentials, and a seller conflict, are left alone", async () => {
+    const s = await fresh();
+    await connect(s);
+    const id = await listOn(s, ME.subject, { dormant: "sellerConflict" });
+    await s.t.mutation(internal.userProfile.removeSiteCredentialStatus, { userId: ME.subject, site: "sportlots" });
+    await s.t.mutation(internal.userProfile.updateSiteCredentialStatus, {
+      userId: ME.subject,
+      site: "buysportscards",
+      hasCredentials: true,
+    });
+    expect((await s.t.run((ctx) => ctx.db.get(id)))?.dormant).toBe("sellerConflict");
   });
 });
 
@@ -322,8 +541,11 @@ describe("variantStatus", () => {
         leaseExpiresAt: 123,
         lastSuccessAt: 99,
         counts: { listed: 2, pushed: 1, zeroed: 0, skipped: 1 },
-        problems: [{ cardId: s.fx.strawberry2, reason: "noPrice" }],
-        problemsTotal: 1,
+        problems: [
+          { cardId: s.fx.strawberry2, reason: "noPrice" },
+          { cardId: s.fx.gooden1, platformCardId: "bsc-secret-card", reason: "notOnSheet" },
+        ],
+        problemsTotal: 2,
         conditionsPushed: ["near_mint"],
         lastUpdated: 1,
       }),
@@ -334,10 +556,14 @@ describe("variantStatus", () => {
       leaseExpiresAt: 123,
       lastSuccessAt: 99,
       counts: { listed: 2, pushed: 1, zeroed: 0, skipped: 1 },
-      problems: [{ cardId: s.fx.strawberry2, reason: "noPrice" }],
-      problemsTotal: 1,
+      problems: [
+        { cardId: s.fx.strawberry2, reason: "noPrice" },
+        { cardId: s.fx.gooden1, reason: "notOnSheet" },
+      ],
+      problemsTotal: 2,
     });
     expect(JSON.stringify(mine)).not.toContain("secret-lease");
+    expect(JSON.stringify(mine)).not.toContain("bsc-secret-card");
     expect((await s.them.query(api.listingSync.variantStatus, { variantId: s.fx.baseId })).record).toBeNull();
   });
 });
@@ -368,11 +594,80 @@ describe("resyncVariant", () => {
         lastUpdated: 1,
       }),
     );
+    holdDrains();
     expect(await s.me.mutation(api.listingSync.resyncVariant, { variantId: s.fx.baseId })).toEqual({ queued: 1 });
     expect((await outbox(s)).map((r) => r.cardId)).toEqual([s.fx.gooden1]);
     const record = await s.t.run((ctx) => ctx.db.get(recordId));
     expect(record?.lastSuccessAt).toBeUndefined();
     expect(record?.conditionsPushed).toEqual(["near_mint"]);
+    expect(record?.resyncRequestedAt).toBeTypeOf("number");
+    // Resync kicks the drain itself.
+    expect(await drains(s)).toHaveLength(1);
+  });
+
+  test("a second Resync inside a minute is ignored: nothing queued, nothing kicked", async () => {
+    const s = await fresh();
+    holdDrains();
+    await addTo(s, s.fx.gooden1, s.box);
+    await listOn(s);
+    await s.t.run((ctx) =>
+      ctx.db.insert("marketplaceListingSyncs", {
+        ownerId: ME.subject,
+        variantId: s.fx.baseId,
+        platform: "bsc",
+        status: "idle",
+        lastSuccessAt: 500,
+        resyncRequestedAt: Date.now() - 10_000,
+        problems: [],
+        conditionsPushed: [],
+        lastUpdated: 1,
+      }),
+    );
+    expect(await s.me.mutation(api.listingSync.resyncVariant, { variantId: s.fx.baseId })).toEqual({
+      queued: 0,
+      ignored: true,
+    });
+    expect(await outbox(s)).toEqual([]);
+    expect(await drainsEver(s)).toEqual([]);
+  });
+
+  test("Resync while the variant's run holds its lease is ignored", async () => {
+    const s = await fresh();
+    holdDrains();
+    await addTo(s, s.fx.gooden1, s.box);
+    await listOn(s);
+    await s.t.run((ctx) =>
+      ctx.db.insert("marketplaceListingSyncs", {
+        ownerId: ME.subject,
+        variantId: s.fx.baseId,
+        platform: "bsc",
+        status: "running",
+        leaseToken: "lease",
+        leaseExpiresAt: Date.now() + 60_000,
+        problems: [],
+        conditionsPushed: [],
+        lastUpdated: 1,
+      }),
+    );
+    expect(await s.me.mutation(api.listingSync.resyncVariant, { variantId: s.fx.baseId })).toEqual({
+      queued: 0,
+      ignored: true,
+    });
+    expect(await outbox(s)).toEqual([]);
+  });
+
+  test("no record yet: a variant row queued in the last minute is not re-queued, only kicked", async () => {
+    const s = await fresh();
+    holdDrains();
+    await addTo(s, s.fx.gooden1, s.box);
+    await listOn(s);
+    await queueOne(s);
+    expect(await s.me.mutation(api.listingSync.resyncVariant, { variantId: s.fx.baseId })).toEqual({
+      queued: 0,
+      ignored: true,
+    });
+    expect((await outbox(s)).map((r) => r.seq)).toEqual([1]);
+    expect(await drains(s)).toHaveLength(1);
   });
 
   test("a variant with nothing in a box still queues one card so its run sets BSC to zero", async () => {
@@ -401,7 +696,7 @@ describe("listSales", () => {
           totals: { totalCents: 125 },
           items: [
             {
-              platformCardId: "bsc-1",
+              platformCardId: "bsc-secret-1",
               cardId: s.fx.gooden1,
               condition: "near_mint",
               quantity: 1,
@@ -422,9 +717,8 @@ describe("listSales", () => {
     const first = await s.me.query(api.listingSync.listSales, { paginationOpts: { numItems: 2, cursor: null } });
     expect(first.page.map((o) => o.orderNo)).toEqual(["A-3", "A-2"]);
     expect(first.isDone).toBe(false);
-    // The SKU and the time it was applied stay server-side.
+    // The BSC card id, the SKU and the time it was applied stay server-side.
     expect(first.page[0].items[0]).toEqual({
-      platformCardId: "bsc-1",
       cardId: s.fx.gooden1,
       condition: "near_mint",
       quantity: 1,
@@ -436,5 +730,6 @@ describe("listSales", () => {
     });
     expect(second.page.map((o) => o.orderNo)).toEqual(["A-1"]);
     expect(second.isDone).toBe(true);
+    expect(JSON.stringify([first, second])).not.toContain("bsc-secret-1");
   });
 });

@@ -32,7 +32,7 @@ import { convexTest } from "convex-test";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
-import { __resetContractCache } from "./credentials";
+import { __resetContractCache, actingUserId } from "./credentials";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -1939,5 +1939,47 @@ describe("marketplace paused (NEO-287)", () => {
     expect(sl.success).toBe(false);
     expect(bsc.success).toBe(false);
     expect(fetchCalled).toBe(false);
+  });
+});
+
+describe("NEO-370 — an explicit userId never lets a signed-in caller act for someone else", () => {
+  const authAs = (subject: string | null) => ({
+    auth: {
+      getUserIdentity: async () => (subject ? ({ subject } as never) : null),
+    } as never,
+  });
+
+  test("actingUserId: identity-less work acts for the userId it was given", async () => {
+    expect(await actingUserId(authAs(null), "user_x")).toBe("user_x");
+  });
+
+  test("actingUserId: a signed-in call with no userId is the caller", async () => {
+    expect(await actingUserId(authAs("user_a"), undefined)).toBe("user_a");
+  });
+
+  test("actingUserId: the caller's own id passed explicitly is allowed", async () => {
+    expect(await actingUserId(authAs("user_a"), "user_a")).toBe("user_a");
+  });
+
+  test("actingUserId: a signed-in caller naming a different user is refused", async () => {
+    await expect(actingUserId(authAs("user_a"), "user_b")).rejects.toThrow(/only act for itself/);
+  });
+
+  test("actingUserId: nobody at all is refused", async () => {
+    await expect(actingUserId(authAs(null), undefined)).rejects.toThrow(/Not authenticated/);
+  });
+
+  test("getSiteTokenForUser and authenticateBsc refuse a cross-user call before any request", async () => {
+    const t = convexTest(schema, modules);
+    const fetchSpy = vi.fn(async () => jsonResponse({}));
+    vi.stubGlobal("fetch", fetchSpy);
+    const asA = t.withIdentity({ subject: USER_A });
+    await expect(
+      asA.action(internal.credentials.getSiteTokenForUser, { site: SITE, userId: "user_someone_else" }),
+    ).rejects.toThrow(/only act for itself/);
+    await expect(
+      asA.action(internal.credentials.authenticateBsc, { userId: "user_someone_else" }),
+    ).rejects.toThrow(/only act for itself/);
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 });

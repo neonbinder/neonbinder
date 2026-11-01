@@ -833,6 +833,25 @@ export const getSiteToken = internalAction({
 });
 
 /**
+ * NEO-370 — the user an identity-less entry acts for. `explicitUserId` is the
+ * owner the scheduler passed; a caller that DOES carry an identity may only
+ * name itself. Both present and different is a bug or an attack, never a
+ * fallback: it throws. Neither present throws "Not authenticated".
+ */
+export async function actingUserId(
+  ctx: Pick<ActionCtx, "auth">,
+  explicitUserId: string | undefined,
+): Promise<string> {
+  const identity = await getCurrentUserId(ctx);
+  if (explicitUserId !== undefined && identity && identity !== explicitUserId) {
+    throw new Error("A signed-in caller can only act for itself");
+  }
+  const userId = explicitUserId ?? identity;
+  if (!userId) throw new Error("Not authenticated");
+  return userId;
+}
+
+/**
  * NEO-370 — `getSiteToken` for work that runs with NO caller identity: a
  * scheduled listing drain or the order poll acts for the collector it was
  * scheduled for, and the identity a user-driven call would carry is absent.
@@ -856,7 +875,8 @@ export const getSiteTokenForUser = internalAction({
     v.null(),
   ),
   handler: async (ctx, args): Promise<{ token: string; expiresAt?: number } | null> => {
-    return await siteTokenFor(ctx, args.userId, args.site, { explicitUserId: true });
+    const userId = await actingUserId(ctx, args.userId);
+    return await siteTokenFor(ctx, userId, args.site, { explicitUserId: true });
   },
 });
 
@@ -873,9 +893,10 @@ export const refreshSiteTokenForUser = internalAction({
   },
   returns: v.object({ refreshed: v.boolean() }),
   handler: async (ctx, args): Promise<{ refreshed: boolean }> => {
+    const userId = await actingUserId(ctx, args.userId);
     if (isPlatformPaused(args.site)) return { refreshed: false };
     return {
-      refreshed: await refreshSiteToken(ctx, args.userId, args.site, { explicitUserId: true }),
+      refreshed: await refreshSiteToken(ctx, userId, args.site, { explicitUserId: true }),
     };
   },
 });
@@ -1719,11 +1740,8 @@ export const authenticateBsc = internalAction({
   }),
   handler: async (ctx, args): Promise<{ success: boolean; message: string; details?: string }> => {
     console.log("[authenticateBsc] Starting BSC authentication");
-    const userId = args.userId ?? (await getCurrentUserId(ctx));
-    if (!userId) {
-      console.log("[authenticateBsc] Not authenticated - no userId");
-      throw new Error("Not authenticated");
-    }
+    // Throws for no user at all, and for an identity naming another user.
+    const userId = await actingUserId(ctx, args.userId);
 
     try {
       console.log(
@@ -1780,10 +1798,8 @@ export const authenticateSportlots = internalAction({
     details: v.optional(v.string()),
   }),
   handler: async (ctx, args): Promise<{ success: boolean; message: string; details?: string }> => {
-    const userId = args.userId ?? (await getCurrentUserId(ctx));
-    if (!userId) {
-      throw new Error("Not authenticated");
-    }
+    // Throws for no user at all, and for an identity naming another user.
+    const userId = await actingUserId(ctx, args.userId);
 
     try {
       // Stored-session path — see authenticateBsc.

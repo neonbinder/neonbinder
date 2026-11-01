@@ -17,6 +17,12 @@
  * re-scan?", setting a pair aside, and the card search for "Wrong card? Find
  * it". Nothing here saves on its own: every save is a collector's click.
  *
+ * NEO-370: a run that saves into a box is settled once its photos are all
+ * processed (the job finished) and every pair is saved or set aside; at that
+ * point the collector's listing drain runs (`kickListingIfRunSettled`), so
+ * the box copies the run added reach their listing platforms without waiting
+ * for the 15-minute cron.
+ *
  * Not here yet: attaching the pair's photos to the saved line (NEO-377), the
  * per-copy price and the common-price prompt (NEO-378), and the catalog-wide
  * set finder for a run with no variant.
@@ -40,6 +46,7 @@ import {
   intakeReasonValidator,
   collectionContainerKindValidator,
 } from "./schema";
+import { kickOwnerDrains } from "./listingOutbox";
 import {
   intakeNamesFor,
   matchIntakePair,
@@ -56,6 +63,42 @@ const MAX_DEFAULT_TEXT = 500;
 
 /** Variant ancestry walked for a `cardNumberPrefix` (variant → set). */
 const MAX_PREFIX_HOPS = 4;
+
+/**
+ * Match rows the settle check reads. A larger run is not checked on each
+ * save (the collector leaving the page, or the cron, runs its drain).
+ */
+export const INTAKE_SETTLE_SCAN = 1000;
+
+/** Job statuses after which no more photos arrive or get processed. */
+const JOB_DONE = new Set(["succeeded", "failed"]);
+
+/**
+ * NEO-370: run the collector's listing drain once a box run is settled: its
+ * job finished processing every photo and every pair of the run is saved or
+ * set aside (at least one saved). Called after each save and set-aside.
+ * Cheap until then: the home is read first (a binder run stops there), then
+ * the job, then the run's match rows (bounded). The kick itself is a no-op
+ * when the collector lists nowhere or nothing is queued.
+ */
+export async function kickListingIfRunSettled(ctx: MutationCtx, run: Doc<"intakeRuns">): Promise<boolean> {
+  const home = await ctx.db.get(run.homeId);
+  if (!home || home.kind !== "box") return false;
+  const job = await ctx.db
+    .query("placeholderJobs")
+    .withIndex("by_job", (q) => q.eq("jobId", run.jobId))
+    .unique();
+  if (!job || !JOB_DONE.has(job.status)) return false;
+  const rows = await ctx.db
+    .query("intakeMatches")
+    .withIndex("by_run", (q) => q.eq("runId", run._id))
+    .take(INTAKE_SETTLE_SCAN + 1);
+  if (rows.length === 0 || rows.length > INTAKE_SETTLE_SCAN) return false;
+  if (rows.some((row) => row.savedAt === undefined && !row.setAside)) return false;
+  if (!rows.some((row) => row.savedAt !== undefined)) return false;
+  await kickOwnerDrains(ctx, run.userId);
+  return true;
+}
 
 async function ownedRun(
   ctx: QueryCtx,
@@ -564,6 +607,7 @@ export const saveIntakeMatch = mutation({
       savedAt: now,
     });
     await ctx.db.patch(run._id, { lastActivityAt: now });
+    await kickListingIfRunSettled(ctx, run);
     return { copyId: result.copyId, alreadySaved: false };
   },
 });
@@ -589,6 +633,7 @@ export const answerIntakeRepeat = mutation({
       args.secondCopy ? { repeatIsSecondCopy: true } : { setAside: true },
     );
     await ctx.db.patch(run._id, { lastActivityAt: Date.now() });
+    if (!args.secondCopy) await kickListingIfRunSettled(ctx, run);
     return null;
   },
 });
@@ -611,6 +656,7 @@ export const setIntakeMatchAside = mutation({
       ...(args.setAside ? {} : { repeatIsSecondCopy: undefined }),
     });
     await ctx.db.patch(run._id, { lastActivityAt: Date.now() });
+    if (args.setAside) await kickListingIfRunSettled(ctx, run);
     return null;
   },
 });

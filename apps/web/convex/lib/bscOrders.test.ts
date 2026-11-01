@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import {
+  BSC_ORDER_BOUNDS,
   bscOrderDisposition,
   chooseCopiesToLower,
   parseBscDate,
@@ -285,5 +286,69 @@ describe("chooseCopiesToLower (NEO-370)", () => {
     const copies = [c("b", "box", 1, { creationTime: T0 + 1 }), c("a", "box", 1)];
     chooseCopiesToLower(copies, null, 1);
     expect(copies.map((x) => x.copyId)).toEqual(["b", "a"]);
+  });
+});
+
+describe("NEO-370 round 3 — BSC strings past NB's bounds are unreadable, never stored", () => {
+  const long = (n: number) => "x".repeat(n + 1);
+  const base = () => clone(FIXTURE) as Record<string, unknown> & { orderItems: Array<Record<string, unknown>> };
+
+  test("an order id, order number or status past its bound makes the order unreadable", () => {
+    for (const [field, max] of [
+      ["orderId", BSC_ORDER_BOUNDS.orderId],
+      ["orderNo", BSC_ORDER_BOUNDS.orderNo],
+      ["orderStatus", BSC_ORDER_BOUNDS.status],
+    ] as const) {
+      const o = base();
+      o[field] = long(max);
+      expect(parseBscOrder(o)).toBeNull();
+      o[field] = "y".repeat(max);
+      expect(parseBscOrder(o)).not.toBeNull();
+    }
+  });
+
+  test("an item whose card id, condition, product type or SKU is past its bound is counted unreadable", () => {
+    const cases: Array<(item: Record<string, unknown>) => void> = [
+      (i) => {
+        i.cardId = long(BSC_ORDER_BOUNDS.cardId);
+        i.card = { ...(i.card as object), id: i.cardId };
+      },
+      (i) => {
+        i.condition = long(BSC_ORDER_BOUNDS.condition);
+      },
+      (i) => {
+        i.productType = long(BSC_ORDER_BOUNDS.productType);
+      },
+      (i) => {
+        i.sellerSku = long(BSC_ORDER_BOUNDS.sku);
+      },
+    ];
+    const items = base().orderItems.length;
+    for (const spoil of cases) {
+      const o = base();
+      spoil(o.orderItems[0]);
+      const parsed = parseBscOrder(o);
+      expect(parsed?.unreadableItems).toBe(1);
+      expect(parsed?.items).toHaveLength(items - 1);
+    }
+  });
+
+  test("a currency past its bound is dropped to null, the order still read", () => {
+    const o = base();
+    o.orderCurrency = long(BSC_ORDER_BOUNDS.currency);
+    expect(parseBscOrder(o)?.currency).toBeNull();
+  });
+
+  test("a history result past a bound is counted unreadable and skipped", () => {
+    const page = parseBscOrderHistoryPage({
+      totalElements: 3,
+      results: [
+        { orderId: "ok-1", orderNo: "N1", orderStatus: "SHIPPED" },
+        { orderId: long(BSC_ORDER_BOUNDS.orderId), orderNo: "N2", orderStatus: "SHIPPED" },
+        { orderId: "ok-3", orderNo: "N3", orderStatus: long(BSC_ORDER_BOUNDS.status) },
+      ],
+    });
+    expect(page?.orders.map((o) => o.orderId)).toEqual(["ok-1"]);
+    expect(page?.unreadable).toBe(2);
   });
 });

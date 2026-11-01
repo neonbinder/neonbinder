@@ -7,6 +7,12 @@
  * (`lib/__fixtures__/bsc-order-redacted.json`), re-pointed at this test's
  * card. The credentials layer is mocked at the identity-less entry points.
  * No test reaches a live server.
+ *
+ * NEO-370 round 3: the poll runs while listing is switched OFF (listings left
+ * up still sell) but not for a dormant row or an owner with no credentials;
+ * an owner needing a fresh sign-in is polled at most hourly; a poll that
+ * throws still finishes (stamped, drain kicked); a sale that removes a copy
+ * keeps its photos.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -17,7 +23,15 @@ import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
 import { buildListingSku } from "./lib/listingSku";
 import { expectCountsExact } from "../lib/testing/collection-counts";
-import { pollOwnerImpl, projectBscOrder, type PollCtx, type ProjectedOrder } from "./listingSales";
+import {
+  POLL_STAGGER_MS,
+  pollOwnerImpl,
+  pollStaggerMs,
+  projectBscOrder,
+  REAUTH_POLL_INTERVAL_MS,
+  type PollCtx,
+  type ProjectedOrder,
+} from "./listingSales";
 import { parseBscOrder } from "./lib/bscOrders";
 
 const modules = (import.meta as unknown as {
@@ -102,6 +116,10 @@ async function setup(opts: { year?: string } = {}) {
   });
   await t.run(async (ctx) => {
     await ctx.db.insert("marketplaceListingStates", { ownerId: OWNER, platform: "bsc", lastUpdated: NOW });
+    await ctx.db.insert("userProfiles", {
+      userId: OWNER,
+      siteCredentials: [{ site: "buysportscards", hasCredentials: true }],
+    } as never);
   });
   return { t, me, box, box2, binder, cardId, otherCardId };
 }
@@ -193,6 +211,53 @@ describe("applying a sale", () => {
     expect(await copies(s)).toEqual(after);
     expect((await sale(s))?.status).toBe("SHIPPED");
     expect((await sale(s))?.items).toHaveLength(1);
+  });
+
+  test("a sale that removes the last copy keeps its photos; a manual remove detaches them as before", async () => {
+    const s = await setup();
+    const photo = async (copyId: Id<"collectionCopies">, side: "front" | "back") => {
+      const { photoId } = await s.t.mutation(internal.copyPhotos.reserveUpload, {
+        ownerId: OWNER,
+        copyId,
+        side,
+        contentType: "image/jpeg",
+        imageBytes: 300_000,
+        thumbBytes: 20_000,
+      });
+      await s.t.mutation(internal.copyPhotos.commitUpload, { ownerId: OWNER, photoId });
+      return photoId;
+    };
+    const sold = (await add(s, s.cardId, { homeId: s.box, condition: "Near Mint" })).copyId as Id<"collectionCopies">;
+    const front = await photo(sold, "front");
+    const back = await photo(sold, "back");
+    const kept = (await add(s, s.otherCardId, { homeId: s.box, condition: "Near Mint" })).copyId as Id<"collectionCopies">;
+    const keptPhoto = await photo(kept, "front");
+
+    await record(s, order(s));
+    // The copy is gone; its photo rows stay, live, pointing at it.
+    expect(await copies(s)).toEqual([]);
+    const rows = await s.t.run(async (ctx) => await ctx.db.query("collectionCopyPhotos").collect());
+    expect(rows.filter((r) => r.copyId === sold).map((r) => [r._id, r.status]).sort()).toEqual(
+      [[front, "live"], [back, "live"]].sort(),
+    );
+    // No delete of their files was scheduled.
+    const scheduled = await s.t.run(async (ctx) => ctx.db.system.query("_scheduled_functions").collect());
+    expect(scheduled.filter((f) => f.name.includes("deleteObjects"))).toEqual([]);
+
+    // A manual remove keeps today's behaviour: the photo is detached for the
+    // Undo, and the hourly sweep deletes it.
+    await s.me.mutation(api.collection.removeCopy, { copyId: kept });
+    const after = await s.t.run(async (ctx) => await ctx.db.get(keptPhoto));
+    expect(after?.status).toBe("detached");
+
+    // The per-user test reset clears the orphaned photo rows with the rest.
+    process.env.TESTING_RESET_SECRET = "test-enabled";
+    try {
+      await s.me.mutation(api.testing.resetMyTestState, {});
+    } finally {
+      delete process.env.TESTING_RESET_SECRET;
+    }
+    expect(await s.t.run(async (ctx) => await ctx.db.query("collectionCopyPhotos").collect())).toEqual([]);
   });
 
   test("the SKU's box wins a tie on the age day", async () => {
@@ -360,7 +425,7 @@ describe("pollOwner", () => {
     expect((await copies(s))[0].quantity).toBe(1);
   });
 
-  test("listing switched off mid-poll: no sale stored, no copy lowered, no state row recreated", async () => {
+  test("the row put to sleep mid-poll (credentials cleared): no sale stored, no copy lowered", async () => {
     const s = await setup();
     await add(s, s.cardId, { homeId: s.box, condition: "Near Mint", quantity: 2 });
     const createdAt = (await s.t.run(async (ctx) => (await ctx.db.query("marketplaceListingStates").first())!._creationTime));
@@ -374,11 +439,8 @@ describe("pollOwner", () => {
           results: [{ orderId: "o-off", orderNo: "OFF", orderDate: iso(createdAt + 1000), orderStatus: "READY_TO_SHIP" }],
         });
       }
-      // The collector switches listing off while the detail is in flight.
-      await s.t.run(async (ctx) => {
-        const row = await ctx.db.query("marketplaceListingStates").first();
-        if (row) await ctx.db.delete(row._id);
-      });
+      // The collector clears their BSC credentials while the detail is in flight.
+      await s.t.mutation(internal.userProfile.removeSiteCredentialStatus, { userId: OWNER, site: "buysportscards" });
       return Response.json({
         ...fixture,
         orderId: "o-off",
@@ -393,7 +455,95 @@ describe("pollOwner", () => {
     expect(report.ordersStored).toBe(0);
     expect(await s.t.run(async (ctx) => (await ctx.db.query("marketplaceSales").collect()).length)).toBe(0);
     expect((await copies(s))[0].quantity).toBe(2);
-    expect(await s.t.run(async (ctx) => await ctx.db.query("marketplaceListingStates").collect())).toHaveLength(0);
+    const states = await s.t.run(async (ctx) => await ctx.db.query("marketplaceListingStates").collect());
+    expect(states).toHaveLength(1);
+    expect(states[0].dormant).toBe("noCredentials");
+  });
+
+  test("listing switched OFF still polls: a sale on a listing left up still lowers the copy", async () => {
+    const s = await setup();
+    await add(s, s.cardId, { homeId: s.box, condition: "Near Mint", quantity: 2 });
+    await s.me.mutation(api.listingSync.setListingEnabled, { platform: "bsc", enabled: false });
+    const createdAt = (await s.t.run(async (ctx) => (await ctx.db.query("marketplaceListingStates").first())!._creationTime));
+    const iso = (ms: number) => new Date(ms).toISOString().replace("Z", "");
+    const sku = buildListingSku({ cardId: s.cardId, bscCondition: "near_mint", boxId: s.box });
+    vi.stubGlobal("fetch", (async (url: string | URL | Request) => {
+      const href = String(url);
+      if (href.endsWith("seller/order/history")) {
+        return Response.json({
+          totalElements: 1,
+          results: [{ orderId: "o-up", orderNo: "UP", orderDate: iso(createdAt + 1000), orderStatus: "READY_TO_SHIP" }],
+        });
+      }
+      return Response.json({
+        ...fixture,
+        orderId: "o-up",
+        orderDate: iso(createdAt + 1000),
+        orderStatus: "READY_TO_SHIP",
+        orderItems: [{ ...fixture.orderItems[0], cardId: "bsc-1", card: { id: "bsc-1", cardNo: "TB2" }, sellerSku: sku }],
+      });
+    }) as typeof fetch);
+    vi.useFakeTimers({ toFake: ["setTimeout"] });
+
+    const report = await pollOwnerImpl(stubCtx(s.t), { ownerId: OWNER, platform: "bsc" });
+
+    expect(report.ordersStored).toBe(1);
+    expect(report.linesApplied).toBe(1);
+    expect((await copies(s))[0].quantity).toBe(1);
+    // Off pushes nothing: the sale queued no listing change and kicked no drain.
+    expect(await s.t.run(async (ctx) => await ctx.db.query("listingOutbox").collect())).toEqual([]);
+    const scheduled = await s.t.run(async (ctx) => ctx.db.system.query("_scheduled_functions").collect());
+    expect(scheduled.filter((f) => f.name.includes("drainOwner"))).toEqual([]);
+  });
+
+  test("a poll that throws part-way still finishes: stamped, error recorded, drain kicked", async () => {
+    const s = await setup();
+    await add(s, s.cardId, { homeId: s.box, condition: "Near Mint" });
+    // A queued change, so the finish has a drain to kick.
+    await s.t.run(async (ctx) => {
+      const card = await ctx.db.get(s.cardId);
+      await ctx.db.insert("listingOutbox", {
+        ownerId: OWNER,
+        platform: "bsc",
+        cardId: s.cardId,
+        variantId: card!.selectorOptionId,
+        seq: 1,
+        changedAt: NOW,
+      });
+    });
+    const createdAt = (await s.t.run(async (ctx) => (await ctx.db.query("marketplaceListingStates").first())!._creationTime));
+    const iso = (ms: number) => new Date(ms).toISOString().replace("Z", "");
+    vi.stubGlobal("fetch", (async (url: string | URL | Request) => {
+      const href = String(url);
+      if (href.endsWith("seller/order/history")) {
+        return Response.json({
+          totalElements: 1,
+          results: [{ orderId: "o-boom", orderNo: "BOOM", orderDate: iso(createdAt + 1000), orderStatus: "READY_TO_SHIP" }],
+        });
+      }
+      return Response.json({ ...fixture, orderId: "o-boom", orderDate: iso(createdAt + 1000), orderStatus: "READY_TO_SHIP" });
+    }) as typeof fetch);
+    const base = stubCtx(s.t);
+    const ctx: PollCtx = {
+      ...base,
+      runMutation: (async (ref: unknown, args: unknown) => {
+        if (JSON.stringify(args).includes("o-boom") && !JSON.stringify(args).includes("error")) {
+          throw new Error("recordOrder blew up");
+        }
+        return (base.runMutation as (r: unknown, a: unknown) => Promise<unknown>)(ref, args);
+      }) as PollCtx["runMutation"],
+    };
+    vi.useFakeTimers({ toFake: ["setTimeout"] });
+
+    await expect(pollOwnerImpl(ctx, { ownerId: OWNER, platform: "bsc" })).rejects.toThrow(/blew up/);
+
+    const st = await s.t.run(async (ctx2) => await ctx2.db.query("marketplaceListingStates").first());
+    expect(st?.lastPolledAt).toBeTypeOf("number");
+    expect(st?.lastPollError).toMatch(/stopped part-way/);
+    expect(st?.orderCursorAt).toBeUndefined();
+    expect(st?.drainScheduledAt).toBeTypeOf("number");
+    const scheduled = await s.t.run(async (ctx2) => ctx2.db.system.query("_scheduled_functions").collect());
+    expect(scheduled.filter((f) => f.name.includes("drainOwner"))).toHaveLength(1);
   });
 
   test("a failed detail read holds the cursor back", async () => {
@@ -417,10 +567,19 @@ describe("pollOwner", () => {
     expect(st?.lastPollError).toMatch(/503/);
   });
 
-  test("pollAll schedules one poll per owner listing on BSC", async () => {
+  test("pollAll schedules one poll per owner listing on BSC (switched off too)", async () => {
     const s = await setup();
     await s.t.run(async (ctx) => {
-      await ctx.db.insert("marketplaceListingStates", { ownerId: "someone_else", platform: "bsc", lastUpdated: NOW });
+      await ctx.db.insert("marketplaceListingStates", {
+        ownerId: "someone_else",
+        platform: "bsc",
+        enabled: false,
+        lastUpdated: NOW,
+      });
+      await ctx.db.insert("userProfiles", {
+        userId: "someone_else",
+        siteCredentials: [{ site: "buysportscards", hasCredentials: true }],
+      } as never);
     });
     // Fake timers: the scheduled polls are inspected, never run (they would
     // reach the network after this test's fetch stub is gone).
@@ -431,6 +590,84 @@ describe("pollOwner", () => {
     expect(scheduled.filter((f) => f.name.includes("pollOwner")).map((f) => (f.args[0] as { ownerId: string }).ownerId).sort()).toEqual(
       [OWNER, "someone_else"].sort(),
     );
+  });
+
+  test("pollAll: no credentials puts the row to sleep; a dormant row is never read; re-sign-in waits an hour", async () => {
+    const s = await setup();
+    await s.t.run(async (ctx) => {
+      // No credentials saved at all.
+      await ctx.db.insert("marketplaceListingStates", { ownerId: "no_creds", platform: "bsc", lastUpdated: NOW });
+      // Already dormant (a seller conflict): skipped by the index itself.
+      await ctx.db.insert("marketplaceListingStates", {
+        ownerId: "conflicted",
+        platform: "bsc",
+        dormant: "sellerConflict",
+        lastUpdated: NOW,
+      });
+      await ctx.db.insert("userProfiles", {
+        userId: "conflicted",
+        siteCredentials: [{ site: "buysportscards", hasCredentials: true }],
+      } as never);
+      // Needs a fresh sign-in, last tried 10 minutes ago.
+      await ctx.db.insert("marketplaceListingStates", {
+        ownerId: "reauth_recent",
+        platform: "bsc",
+        reauthPollAt: Date.now() - 10 * 60_000,
+        lastUpdated: NOW,
+      });
+      await ctx.db.insert("userProfiles", {
+        userId: "reauth_recent",
+        siteCredentials: [{ site: "buysportscards", hasCredentials: true, needsReauth: true }],
+      } as never);
+      // Needs a fresh sign-in, last tried over an hour ago.
+      await ctx.db.insert("marketplaceListingStates", {
+        ownerId: "reauth_due",
+        platform: "bsc",
+        reauthPollAt: Date.now() - REAUTH_POLL_INTERVAL_MS - 1,
+        lastUpdated: NOW,
+      });
+      await ctx.db.insert("userProfiles", {
+        userId: "reauth_due",
+        siteCredentials: [{ site: "buysportscards", hasCredentials: true, needsReauth: true }],
+      } as never);
+    });
+    vi.useFakeTimers({ toFake: ["setTimeout"] });
+    const r = await s.t.mutation(internal.listingSales.pollAll, {});
+    expect(r).toEqual({ scheduled: 2, skipped: 2 });
+    const scheduled = await s.t.run(async (ctx) => ctx.db.system.query("_scheduled_functions").collect());
+    expect(
+      scheduled.filter((f) => f.name.includes("pollOwner")).map((f) => (f.args[0] as { ownerId: string }).ownerId).sort(),
+    ).toEqual([OWNER, "reauth_due"].sort());
+    const byOwner = new Map(
+      (await s.t.run(async (ctx) => await ctx.db.query("marketplaceListingStates").collect())).map((row) => [row.ownerId, row]),
+    );
+    expect(byOwner.get("no_creds")?.dormant).toBe("noCredentials");
+    expect(byOwner.get("conflicted")?.lastPolledAt).toBeUndefined();
+    // Waiting out the hour: stamped so it moves to the back, not polled.
+    expect(byOwner.get("reauth_recent")?.lastPolledAt).toBeTypeOf("number");
+    // Due: its re-sign-in attempt is stamped now.
+    expect(byOwner.get("reauth_due")?.reauthPollAt).toBeGreaterThan(Date.now() - 60_000);
+
+    // A second tick: the dormant row stays out of the read, and nothing new is due.
+    const again = await s.t.mutation(internal.listingSales.pollAll, {});
+    expect(again.scheduled).toBe(1);
+  });
+
+  test("the stagger spreads one tick's polls inside the 15-minute window", () => {
+    expect(pollStaggerMs(1)).toBe(POLL_STAGGER_MS);
+    expect(pollStaggerMs(100)).toBe(POLL_STAGGER_MS);
+    expect(pollStaggerMs(500)).toBe(Math.floor((14 * 60 * 1000) / 500));
+    expect(499 * pollStaggerMs(500)).toBeLessThan(15 * 60 * 1000);
+  });
+
+  test("pollOwner for an owner with no credentials reads nothing", async () => {
+    const s = await setup();
+    await s.t.mutation(internal.userProfile.removeSiteCredentialStatus, { userId: OWNER, site: "buysportscards" });
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+    const report = await pollOwnerImpl(stubCtx(s.t), { ownerId: OWNER, platform: "bsc" });
+    expect(report.ordersRead).toBe(0);
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 });
 

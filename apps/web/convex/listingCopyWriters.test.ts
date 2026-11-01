@@ -12,9 +12,10 @@
  *   2. the armed condition backfill (`backfillCopyCondition.run`) queues the
  *      box copies it gives a condition, for owners who list.
  *
- * Owners who list nowhere, and binder copies, queue nothing. The drain itself
- * is scheduled a minute out and never runs here: each test drains the
- * `runAfter(0)` hand-offs and cancels the delayed drain.
+ * Owners who list nowhere, and binder copies, queue nothing. Neither writer
+ * schedules a drain (NEO-370 round 3: queueing never kicks; the collector's
+ * flush, an intake finishing, Resync or the 15-minute cron does), so each test
+ * drains the `runAfter(0)` hand-offs and checks no drain was scheduled.
  */
 
 import { convexTest } from "convex-test";
@@ -55,7 +56,8 @@ const rowsOf = async (s: S) =>
   (await outbox(s)).map((r) => ({ ownerId: r.ownerId, cardId: r.cardId, variantId: r.variantId }));
 async function drains(s: S) {
   const rows = await s.t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect());
-  return rows.filter((r) => r.name.includes("drainOwner") && r.state.kind === "pending");
+  // Any state: a drain that already ran still counts as scheduled.
+  return rows.filter((r) => r.name.includes("drainOwner"));
 }
 
 /** A copy written straight to the table (no hook), the way a stored one sits. */
@@ -121,7 +123,7 @@ describe("a card move re-syncs both variants", () => {
     expect([s.fx.strawberry2, s.fx.gooden1Sliding]).toContain(wake?.cardId);
     // THEM lists nowhere: nothing of theirs.
     expect(rows.every((r) => r.ownerId === ME.subject)).toBe(true);
-    expect(await drains(s)).toHaveLength(1);
+    expect(await drains(s)).toEqual([]);
   });
 
   test("an old variant left with no linked card: the moved card's row waits at the old variant", async () => {
@@ -257,7 +259,7 @@ describe("the condition backfill queues the box copies it sets", () => {
     await drainScheduled(s.t);
 
     expect(await rowsOf(s)).toEqual([{ ownerId: ME.subject, cardId: s.fx.gooden1, variantId: s.fx.baseId }]);
-    expect(await drains(s)).toHaveLength(1);
+    expect(await drains(s)).toEqual([]);
   });
 
   test("an owner who lists nowhere: armed sets the condition and queues nothing", async () => {

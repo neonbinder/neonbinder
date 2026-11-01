@@ -4,6 +4,12 @@ import {
   BSC_PUT_CHUNK_SIZE,
   chunkRows,
   foldBscTargets,
+  joinNarrowedSheets,
+  MAX_SHEET_CARD_ID,
+  MAX_SHEET_CONDITION,
+  MAX_SHEET_ROW_BYTES,
+  MAX_SHEET_SKU,
+  narrowBscSheet,
   narrowBscSheetRow,
   photoKeyFor,
   planBscSheet,
@@ -358,7 +364,7 @@ describe("planBscSheet (NEO-370)", () => {
     });
     expect(plan.puts).toEqual([]);
     expect(plan.problems).toEqual([
-      { reason: "card_number_conflict", cardId: card(1), bscCardId: "bsc-1", detail: "NB #21, BSC #12" },
+      { reason: "card_number_conflict", cardId: card(1), bscCardId: "bsc-1", detail: "NB #21" },
     ]);
   });
 
@@ -526,5 +532,48 @@ describe("chunkRows", () => {
     expect(chunkRows([])).toEqual([]);
     expect(chunkRows([1, 2, 3], 2)).toEqual([[1, 2], [3]]);
     expect(() => chunkRows([1], 0)).toThrow();
+  });
+});
+
+describe("NEO-370 — sheet rows are bounded and narrowed as they are read", () => {
+  test("a card id, card number, condition or SKU past its bound makes the row unreadable", () => {
+    const long = (n: number) => "x".repeat(n);
+    expect(narrowBscSheetRow(sheetRow(long(MAX_SHEET_CARD_ID), "1", "near_mint"))).not.toBeNull();
+    expect(narrowBscSheetRow(sheetRow(long(MAX_SHEET_CARD_ID + 1), "1", "near_mint"))).toBeNull();
+    expect(narrowBscSheetRow(sheetRow("c1", long(MAX_SHEET_CARD_ID + 1), "near_mint"))).toBeNull();
+    expect(narrowBscSheetRow(sheetRow("c1", "1", long(MAX_SHEET_CONDITION)))).not.toBeNull();
+    expect(narrowBscSheetRow(sheetRow("c1", "1", long(MAX_SHEET_CONDITION + 1)))).toBeNull();
+    expect(narrowBscSheetRow(sheetRow("c1", "1", "near_mint", { sellerSku: long(MAX_SHEET_SKU) }))).not.toBeNull();
+    expect(narrowBscSheetRow(sheetRow("c1", "1", "near_mint", { sellerSku: long(MAX_SHEET_SKU + 1) }))).toBeNull();
+  });
+
+  test("narrowBscSheet keeps readable rows, counts the rest, and drops an oversized row whole", () => {
+    const sheet = narrowBscSheet([
+      sheetRow("c1", "1", "near_mint"),
+      { nonsense: true },
+      sheetRow("c2", "2", "near_mint", { padding: "y".repeat(MAX_SHEET_ROW_BYTES) }),
+      sheetRow("c3", "3", "near_mint"),
+    ]);
+    expect(sheet.kind).toBe("narrowed");
+    expect(sheet.total).toBe(4);
+    expect(sheet.unreadable).toBe(2);
+    expect(sheet.rows.map((r) => r.bscCardId)).toEqual(["c1", "c3"]);
+  });
+
+  test("joinNarrowedSheets adds the counts and keeps every row", () => {
+    const a = narrowBscSheet([sheetRow("c1", "1", "near_mint"), null]);
+    const b = narrowBscSheet([sheetRow("c2", "2", "excellent")]);
+    expect(joinNarrowedSheets([a, b])).toMatchObject({ total: 3, unreadable: 1 });
+    expect(joinNarrowedSheets([a, b]).rows.map((r) => r.bscCardId)).toEqual(["c1", "c2"]);
+  });
+
+  test("planBscSheet reads a narrowed sheet the same as the raw rows", () => {
+    const t = target();
+    const rows = [sheetRow("bsc-1", "1", "near_mint"), { unreadable: true }];
+    const input = { conditionsRead: ["near_mint", "excellent", "very_good", "poor"], targets: [t], cards: [nbCard(1, "1", "bsc-1")] };
+    const fromRaw = planBscSheet({ ...input, sheetRows: rows });
+    const fromNarrowed = planBscSheet({ ...input, sheetRows: narrowBscSheet(rows) });
+    expect(fromNarrowed).toEqual(fromRaw);
+    expect(fromNarrowed.counts).toMatchObject({ sheetRows: 2, unreadableRows: 1 });
   });
 });

@@ -1,5 +1,5 @@
 {
-  "_note": "Real BSC GET seller/order/{orderId} response, 2026-10-30, redacted: buyer, seller, addresses, Stripe ids, emails, phone and tracking removed or replaced. Keys present on the real payload but dropped here: shippingAddressId, billingAddressId, stripeTransactionId, stripePaymentId, userId, shippingAddress, billingAddress, seller, buyer, refunds[] (empty), packingSlips[] (empty). shipments[] holds shippedDate, bscShipped, trackingNumber, shippingLabel{...}.",
+  "_note": "Real BSC GET seller/order/{orderId} response, 2026-10-30, redacted: buyer, seller, addresses, Stripe ids, emails, phone and tracking removed or replaced; product ids, seller image paths and update timestamps replaced with fixture values (one row keeps BSC's default image paths, which the default-image check reads). Keys present on the real payload but dropped here: shippingAddressId, billingAddressId, stripeTransactionId, stripePaymentId, userId, shippingAddress, billingAddress, seller, buyer, refunds[] (empty), packingSlips[] (empty). shipments[] holds shippedDate, bscShipped, trackingNumber, shippingLabel{...}.",
   "orderId": "0000fixtureorder0001",
   "orderNo": "FIXT01-ORDER1-000AAAA",
   "confirmationNumber": "F0000-0000-FIXTUR",
@@ -22,9 +22,9 @@
   "shippingRefundTotal": 0.0,
   "orderItems": [
     {
-      "productId": "5f52843588",
-      "sellerImgFront": "/prod/card/undefined/product/undefined/1734101053-front.jpg",
-      "sellerImgBack": "/prod/card/undefined/product/undefined/1734101053-back.jpg",
+      "productId": "fixtprod01",
+      "sellerImgFront": "/prod/card/undefined/product/undefined/fixture-front.jpg",
+      "sellerImgBack": "/prod/card/undefined/product/undefined/fixture-back.jpg",
       "productType": "raw",
       "cardId": "859115a1371626f4911ba3d70722d757",
       "price": "0.25",
@@ -47,13 +47,13 @@
       "lastSoldPrice": 0.25,
       "sportId": "football",
       "sellerInventoryStatus": true,
-      "updatedTimestamp": "2026-02-04T22:31:43.943959",
+      "updatedTimestamp": "2026-01-01T00:00:00.000001",
       "sellerSku": "303|TB2",
       "cardYear": 2021,
       "imageChanged": false
     },
     {
-      "productId": "b28a1213fb",
+      "productId": "fixtprod02",
       "sellerImgFront": "/Images/DefaultFront.gif",
       "sellerImgBack": "/Images/DefaultBack.gif",
       "productType": "raw",
@@ -78,7 +78,7 @@
       "lastSoldPrice": 0.25,
       "sportId": "football",
       "sellerInventoryStatus": true,
-      "updatedTimestamp": "2026-02-04T22:31:43.944",
+      "updatedTimestamp": "2026-01-01T00:00:00.000",
       "sellerSku": "303|TB10",
       "cardYear": 2021,
       "imageChanged": false

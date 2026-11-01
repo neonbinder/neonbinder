@@ -2,9 +2,15 @@
  * NEO-370 — the order poll: what sold on a listing platform comes back to NB.
  * BuySportsCards only today.
  *
- * Every 15 minutes (`crons.ts`) `pollAll` lists the owners who list on BSC
- * (`marketplaceListingStates` on `by_platform_polled`, never-polled first)
- * and schedules `pollOwner` for each. One owner's poll:
+ * Every 15 minutes (`crons.ts`) `pollAll` lists the owners with a BSC
+ * listing state that is not dormant (`marketplaceListingStates` on
+ * `by_platform_dormant_polled`, never-polled first) and schedules
+ * `pollOwner` for each. Listing switched OFF still polls: off stops pushing
+ * NB's counts only, and the listings left up can still sell. The credential
+ * gate: an owner with no saved BSC credentials is not polled (their state
+ * goes dormant), and one whose session needs a fresh sign-in is polled at
+ * most hourly (`reauthPollAt`), so a dead session is not logged into every
+ * tick. One owner's poll:
  *
  *   1. reads order history newest first, every status, until it reaches the
  *      stored cursor (`orderCursorAt`, the newest order date seen; a new
@@ -22,6 +28,15 @@
  *      first (the SKU's box wins a tie) through the app's own write path
  *      (`applyCopyChanges`), so counts, smart-binder fits and the listing
  *      outbox all follow. Lowering and flipping `applied` share a mutation.
+ *      A sold copy's photos are KEPT (Jason, 2026-11-01), unlike a manual
+ *      delete: a sale that removes a line leaves its `collectionCopyPhotos`
+ *      rows (and R2 objects) behind, pointing at a copy that is gone. Every
+ *      reader goes through a live copy, so none shows them; the per-user test
+ *      reset and the global drain clear them by owner / by table. A cleanup
+ *      (or a use for them on the sold record, NEO-371) is expected later.
+ *
+ * After each owner's poll `finishPoll` kicks the owner's listing drain when
+ * changes are queued: that is the cron's half of the drain triggers.
  *
  * A cancelled order lowers nothing; a cancel that lands after a line was
  * applied is left for the operator (the line stays `applied` on a CANCELLED
@@ -46,7 +61,7 @@ import {
   pocketEmptied,
   type CountChange,
 } from "./collection";
-import { dropPhotos } from "./copyPhotos";
+import { listingCredentialOf, kickListingDrain, pollsSales } from "./listingOutbox";
 import { bscEraForYear, isBscRawCondition, nbConditionsFor, type BscEra } from "./lib/bscConditions";
 import { bscOrderDisposition, chooseCopiesToLower, type BscOrder } from "./lib/bscOrders";
 import { parseListingSku } from "./lib/listingSku";
@@ -62,6 +77,14 @@ import {
 export const MAX_OWNERS_PER_TICK = 500;
 /** Spacing between the scheduled per-owner polls, so a tick is not one burst. */
 export const POLL_STAGGER_MS = 2000;
+/**
+ * The window a tick's polls are spread over: under the 15-minute interval,
+ * so one tick's last poll starts before the next tick's first. The stagger
+ * shrinks to fit it (`pollStaggerMs`).
+ */
+export const POLL_SPREAD_MS = 14 * 60 * 1000;
+/** While an owner's credentials need a fresh sign-in, their poll runs at most this often. */
+export const REAUTH_POLL_INTERVAL_MS = 60 * 60 * 1000;
 /** History pages one poll reads before giving up on reaching the cursor. */
 export const MAX_HISTORY_PAGES = 10;
 /** Stored, not-final orders one poll re-reads when the history did not reach them. */
@@ -80,8 +103,6 @@ export const MAX_SALE_ITEMS = 2000;
  * this lets in has no NB SKU and is stored as unmatched, never applied.
  */
 export const INITIAL_CURSOR_GRACE_MS = 12 * 60 * 60 * 1000;
-/** A stored drain latch older than this is treated as lost. */
-const STALE_DRAIN_LATCH_MS = 10 * 60 * 1000;
 
 type Platform = Doc<"marketplaceSales">["platform"];
 type SaleItem = Doc<"marketplaceSales">["items"][number];
@@ -95,44 +116,93 @@ export function isFinalOrderStatus(status: string): boolean {
 
 // ── The cron fan-out ───────────────────────────────────────────────────────
 
-/** The 15-minute tick: one scheduled `pollOwner` per owner listing on BSC. */
+/** The spacing between one tick's `count` polls: 2s, less when they would not fit the window. */
+export function pollStaggerMs(count: number): number {
+  if (count <= 1) return POLL_STAGGER_MS;
+  return Math.min(POLL_STAGGER_MS, Math.floor(POLL_SPREAD_MS / count));
+}
+
+type PollGate = "poll" | "noCredentials" | "reauthWait";
+
+/** Whether an owner's poll may run now (see the module comment). */
+function pollGate(
+  credential: { hasCredentials: boolean; needsReauth: boolean },
+  state: Pick<Doc<"marketplaceListingStates">, "reauthPollAt">,
+  now: number,
+): PollGate {
+  if (!credential.hasCredentials) return "noCredentials";
+  if (credential.needsReauth && state.reauthPollAt !== undefined && now - state.reauthPollAt < REAUTH_POLL_INTERVAL_MS) {
+    return "reauthWait";
+  }
+  return "poll";
+}
+
+/**
+ * The 15-minute tick: one scheduled `pollOwner` per non-dormant owner with
+ * a BSC listing state, through the credential gate. An owner with no saved
+ * credentials goes dormant (and leaves the index the tick reads); one waiting
+ * out the hourly re-sign-in limit is skipped but still stamped `lastPolledAt`,
+ * so they move to the back of the queue rather than hold a slot every tick.
+ */
 export const pollAll = internalMutation({
   args: {},
-  returns: v.object({ scheduled: v.number() }),
+  returns: v.object({ scheduled: v.number(), skipped: v.number() }),
   handler: async (ctx) => {
+    const now = Date.now();
     const states = await ctx.db
       .query("marketplaceListingStates")
-      .withIndex("by_platform_polled", (q) => q.eq("platform", "bsc"))
+      .withIndex("by_platform_dormant_polled", (q) => q.eq("platform", "bsc").eq("dormant", undefined))
       .take(MAX_OWNERS_PER_TICK);
-    let i = 0;
+    const due: Array<Doc<"marketplaceListingStates">> = [];
+    let skipped = 0;
     for (const state of states) {
-      await ctx.scheduler.runAfter(i * POLL_STAGGER_MS, internal.listingSales.pollOwner, {
-        ownerId: state.ownerId,
-        platform: state.platform,
-      });
-      i += 1;
+      const credential = await listingCredentialOf(ctx, state.ownerId, state.platform);
+      const gate = pollGate(credential, state, now);
+      if (gate === "noCredentials") {
+        await ctx.db.patch(state._id, { dormant: "noCredentials", lastUpdated: now });
+        skipped += 1;
+      } else if (gate === "reauthWait") {
+        await ctx.db.patch(state._id, { lastPolledAt: now, lastUpdated: now });
+        skipped += 1;
+      } else {
+        if (credential.needsReauth) await ctx.db.patch(state._id, { reauthPollAt: now, lastUpdated: now });
+        due.push(state);
+      }
     }
-    return { scheduled: i };
+    const stagger = pollStaggerMs(due.length);
+    for (let i = 0; i < due.length; i += 1) {
+      await ctx.scheduler.runAfter(i * stagger, internal.listingSales.pollOwner, {
+        ownerId: due[i].ownerId,
+        platform: due[i].platform,
+      });
+    }
+    return { scheduled: due.length, skipped };
   },
 });
 
 // ── What the poll reads of NB ──────────────────────────────────────────────
 
+const pollInputValidator = v.union(
+  v.null(),
+  v.object({
+    cursorAt: v.number(),
+    stored: v.array(v.object({ orderId: v.string(), status: v.string(), orderDate: v.number() })),
+  }),
+);
+
 export const pollInput = internalQuery({
   args: { ownerId: v.string(), platform: listingPlatformValidator },
-  returns: v.union(
-    v.null(),
-    v.object({
-      cursorAt: v.number(),
-      stored: v.array(v.object({ orderId: v.string(), status: v.string(), orderDate: v.number() })),
-    }),
-  ),
+  returns: pollInputValidator,
   handler: async (ctx, args) => {
     const state = await ctx.db
       .query("marketplaceListingStates")
       .withIndex("by_owner_platform", (q) => q.eq("ownerId", args.ownerId).eq("platform", args.platform))
       .unique();
-    if (!state) return null;
+    // The gate again, at the moment the poll starts (credentials may have
+    // been cleared, or the row put to sleep, since the tick).
+    if (!state || !pollsSales(state)) return null;
+    const credential = await listingCredentialOf(ctx, args.ownerId, args.platform);
+    if (!credential.hasCredentials) return null;
     const recent = await ctx.db
       .query("marketplaceSales")
       .withIndex("by_owner_date", (q) => q.eq("ownerId", args.ownerId))
@@ -207,16 +277,18 @@ export function projectBscOrder(order: BscOrder, fallbackDate: number | null): P
 }
 
 /**
- * Listing on `platform` is on for the owner exactly while their state row
- * exists. Turning it off deletes the row, so a poll already under way stands
- * down at its next write: no sale stored, no copy lowered.
+ * Sales on `platform` are polled for the owner while their state row exists
+ * and is not dormant: switched off or on (listings left up can still sell).
+ * A row put to sleep (credentials cleared, a seller conflict) makes a poll
+ * already under way stand down at its next write: no sale stored, no copy
+ * lowered.
  */
-async function listingOn(ctx: QueryCtx, ownerId: string, platform: Doc<"marketplaceSales">["platform"]): Promise<boolean> {
+async function pollingOn(ctx: QueryCtx, ownerId: string, platform: Doc<"marketplaceSales">["platform"]): Promise<boolean> {
   const state = await ctx.db
     .query("marketplaceListingStates")
     .withIndex("by_owner_platform", (q) => q.eq("ownerId", ownerId).eq("platform", platform))
     .unique();
-  return state !== null;
+  return state !== null && pollsSales(state);
 }
 
 function itemKey(item: { platformCardId: string; condition: string; sellerSku?: string }): string {
@@ -233,7 +305,7 @@ export const recordOrder = internalMutation({
   args: { ownerId: v.string(), platform: listingPlatformValidator, order: orderValidator },
   returns: v.object({ saleId: v.union(v.id("marketplaceSales"), v.null()), toApply: v.array(v.number()) }),
   handler: async (ctx, args) => {
-    if (!(await listingOn(ctx, args.ownerId, args.platform))) return { saleId: null, toApply: [] };
+    if (!(await pollingOn(ctx, args.ownerId, args.platform))) return { saleId: null, toApply: [] };
     const now = Date.now();
     const { order } = args;
     const existing = await ctx.db
@@ -337,7 +409,7 @@ export const applySaleItems = internalMutation({
     const sale = await ctx.db.get(args.saleId);
     if (!sale || sale.ownerId !== args.ownerId) return { applied: 0, lowered: 0 };
     if (bscOrderDisposition(sale.status) !== "sale") return { applied: 0, lowered: 0 };
-    if (!(await listingOn(ctx, args.ownerId, sale.platform))) return { applied: 0, lowered: 0 };
+    if (!(await pollingOn(ctx, args.ownerId, sale.platform))) return { applied: 0, lowered: 0 };
     const now = Date.now();
     const items = [...sale.items];
     const sides = new HomeSides(ctx, args.ownerId);
@@ -401,7 +473,8 @@ export const applySaleItems = internalMutation({
         const row = candidates.find((c) => c._id === d.copyId);
         if (!row) continue;
         if (d.by >= row.quantity) {
-          await dropPhotos(ctx, row);
+          // The sold copy's photos are kept on purpose (no `dropPhotos`, unlike
+          // a manual delete): see the module comment. A cleanup comes later.
           await ctx.db.delete(row._id);
           await pocketEmptied(ctx, row.homeId, row.slot);
           changes.push(changeOf(row, counted(row), null));
@@ -431,8 +504,10 @@ export const applySaleItems = internalMutation({
 /**
  * Ends one owner's poll: stamps `lastPolledAt` (always, so the cron's order
  * moves on), the error or its absence, and the cursor (only forward, and
- * only when `cursorAt` is given). Also the drain safety net: pending outbox
- * rows with no live drain scheduled or running get one now.
+ * only when `cursorAt` is given). Then the cron's half of the drain
+ * triggers: when the owner pushes counts and has changes queued, the drain
+ * runs now (`kickListingDrain`: a drain already scheduled or running is not
+ * doubled, and one that died holding a lease is replaced once it runs out).
  */
 export const finishPoll = internalMutation({
   args: {
@@ -457,25 +532,9 @@ export const finishPoll = internalMutation({
     if (args.cursorAt !== undefined && args.cursorAt > (state.orderCursorAt ?? -Infinity)) {
       patch.orderCursorAt = args.cursorAt;
     }
-    let drainKicked = false;
-    const leaseLive = state.drainLeaseToken !== undefined && (state.drainLeaseExpiresAt ?? 0) > now;
-    const latchLive = state.drainScheduledAt !== undefined && state.drainScheduledAt > now - STALE_DRAIN_LATCH_MS;
-    if (!leaseLive && !latchLive) {
-      const pending = await ctx.db
-        .query("listingOutbox")
-        .withIndex("by_owner_platform_variant", (q) => q.eq("ownerId", args.ownerId).eq("platform", args.platform))
-        .first();
-      if (pending) {
-        await ctx.scheduler.runAfter(0, internal.listingDrain.drainOwner, {
-          ownerId: args.ownerId,
-          platform: args.platform,
-        });
-        patch.drainScheduledAt = now;
-        drainKicked = true;
-      }
-    }
     await ctx.db.patch(state._id, patch);
-    return { drainKicked };
+    const kick = await kickListingDrain(ctx, args.ownerId, args.platform);
+    return { drainKicked: kick === "scheduled" };
   },
 });
 
@@ -501,10 +560,16 @@ export async function pollOwnerImpl(
   const input = await ctx.runQuery(internal.listingSales.pollInput, args);
   if (!input) return report;
 
+  // `finishPoll` runs exactly once, whatever happens below: `finish` on a
+  // normal end, the `finally` when a step threw, so a throw never leaves the
+  // owner unstamped (first in line every tick) or their drain unkicked.
+  let finished = false;
+  let standDown = false;
   const finish = async (cursorAt: number | undefined, failure: BscSellerFailure | string | null) => {
     const error = failure === null ? undefined : typeof failure === "string" ? failure : failure.message;
     report.error = error ?? null;
     report.cursorAt = cursorAt ?? null;
+    finished = true;
     await ctx.runMutation(internal.listingSales.finishPoll, {
       ...args,
       ...(cursorAt !== undefined ? { cursorAt } : {}),
@@ -525,6 +590,30 @@ export async function pollOwnerImpl(
     return report;
   };
 
+  try {
+    return await pollOwnerSteps(ctx, args, input, report, finish, () => {
+      standDown = true;
+    });
+  } finally {
+    if (!finished && !standDown) {
+      finished = true;
+      report.error = "The sales check stopped part-way through; it runs again next time.";
+      await ctx.runMutation(internal.listingSales.finishPoll, { ...args, error: report.error });
+    }
+  }
+}
+
+type PollInput = NonNullable<typeof pollInputValidator.type>;
+
+/** The body of one owner's poll (`pollOwnerImpl` wraps it so it always finishes). */
+async function pollOwnerSteps(
+  ctx: PollCtx,
+  args: { ownerId: string; platform: Platform },
+  input: PollInput,
+  report: PollReport,
+  finish: (cursorAt: number | undefined, failure: BscSellerFailure | string | null) => Promise<PollReport>,
+  standDown: () => void,
+): Promise<PollReport> {
   const opened = await openBscSellerSession(ctx, args.ownerId);
   if (!opened.ok) return await finish(undefined, opened.failure);
   const session = opened.value;
@@ -595,9 +684,11 @@ export async function pollOwnerImpl(
       note = `Order ${order.orderNo} has ${detail.value.unreadableItems} line(s) NeonBinder can't read; the rest were applied.`;
     }
     const recorded = await ctx.runMutation(internal.listingSales.recordOrder, { ...args, order });
-    // Listing switched off under the poll: stand down (finishPoll would find
-    // no row to write either).
-    if (recorded.saleId === null) return report;
+    // The row was put to sleep under the poll: stand down, write nothing more.
+    if (recorded.saleId === null) {
+      standDown();
+      return report;
+    }
     report.ordersStored += 1;
     for (let i = 0; i < recorded.toApply.length; i += SALE_ITEMS_PER_APPLY) {
       const r = await ctx.runMutation(internal.listingSales.applySaleItems, {

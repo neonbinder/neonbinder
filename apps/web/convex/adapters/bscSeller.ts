@@ -28,6 +28,7 @@ import {
   type BscOrder,
   type BscOrderSummary,
 } from "../lib/bscOrders";
+import { narrowBscSheet, type NarrowedBscSheet } from "../lib/bscSheetPlan";
 
 /** The `credentials` site key for BuySportsCards. */
 const SITE = "buysportscards" as const;
@@ -48,6 +49,21 @@ export const BSC_SELLER_TIMEOUTS_MS = {
 
 /** BSC answers the sheet read in one body; `size` is a guard, not a page. */
 const SHEET_MAX_ROWS = 5000;
+
+/**
+ * The most bytes NB reads of one answer, per call. A `Content-Length` above
+ * the cap is refused before the body is read, and the body is counted while
+ * it streams in, so a lying or absent header cannot make NB hold more. The
+ * sheet cap fits `SHEET_MAX_ROWS` rows at well over the ~1 KB a measured row
+ * takes; the rest are far above anything BSC was seen to send.
+ */
+export const BSC_SELLER_MAX_BYTES = {
+  sheet: 12 * 1024 * 1024,
+  put: 4 * 1024 * 1024,
+  photo: 64 * 1024,
+  order: 1024 * 1024,
+  profile: 256 * 1024,
+} as const;
 
 /** An uploaded photo's object key: BSC's own path, kept within this shape. */
 const OBJECT_KEY_RE = /^[A-Za-z0-9._\-/]{1,300}$/;
@@ -147,6 +163,37 @@ interface SendOptions {
   json?: unknown;
   form?: () => FormData;
   timeoutMs: number;
+  /** The most bytes of the answer NB reads (`BSC_SELLER_MAX_BYTES`). */
+  maxBytes: number;
+}
+
+/**
+ * The body as text, or null when it is (or claims to be) over `maxBytes`.
+ * Reads the stream itself so a body without a `Content-Length`, or with a
+ * false one, still stops at the cap.
+ */
+export async function readCappedText(res: Response, maxBytes: number): Promise<string | null> {
+  const declared = Number(res.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    await res.body?.cancel().catch(() => undefined);
+    return null;
+  }
+  if (!res.body) return "";
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let total = 0;
+  let text = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel().catch(() => undefined);
+      return null;
+    }
+    text += decoder.decode(value, { stream: true });
+  }
+  return text + decoder.decode();
 }
 
 /**
@@ -170,6 +217,9 @@ async function send(
         headers: bscHeaders(session.token, { json: opts.form === undefined }),
         ...(opts.json !== undefined ? { body: JSON.stringify(opts.json) } : {}),
         ...(opts.form !== undefined ? { body: opts.form() } : {}),
+        // The bearer token goes to BSC's API host and nowhere else: a
+        // redirect is a failure, never followed.
+        redirect: "error",
         signal: AbortSignal.timeout(opts.timeoutMs),
       });
       logCall(opts.operation, startedAt, res.ok ? "ok" : "http_error", res.status);
@@ -237,13 +287,19 @@ async function send(
       failure: failure("http", `BuySportsCards answered ${res.status} to ${opts.operation}.`, res.status),
     };
   }
-  let text: string;
+  let text: string | null;
   try {
-    text = await res.text();
+    text = await readCappedText(res, opts.maxBytes);
   } catch (err) {
     return {
       ok: false,
       failure: failure(isAbort(err) ? "timeout" : "bad_response", `BuySportsCards' answer to ${opts.operation} could not be read.`, res.status),
+    };
+  }
+  if (text === null) {
+    return {
+      ok: false,
+      failure: failure("bad_response", `BuySportsCards' answer to ${opts.operation} was too large to read.`, res.status),
     };
   }
   if (text.trim() === "") return { ok: true, value: null };
@@ -278,6 +334,7 @@ export async function fetchBscSellerId(
     method: "GET",
     path: "marketplace/user/profile",
     timeoutMs: BSC_SELLER_TIMEOUTS_MS.profile,
+    maxBytes: BSC_SELLER_MAX_BYTES.profile,
   });
   if (!r.ok) return r;
   const profile = isRecord(r.value) && isRecord(r.value.sellerProfile) ? r.value.sellerProfile : null;
@@ -300,13 +357,14 @@ export function isBscSellerId(value: string): boolean {
  *
  * `filters` are single-valued per facet (the caller fans out with
  * `planBscFanOut`: BSC answers a multi-value facet with 200 and no rows).
- * The rows come back unnarrowed; `planBscSheet` narrows them.
+ * Each row is narrowed as it is read (`narrowBscSheet`): an unreadable or
+ * oversized row is counted and dropped, never held.
  */
 export async function readBscSellerSheet(
   ctx: SessionCtx,
   session: BscSellerSession,
   args: { filters: Record<string, string[]>; condition: string },
-): Promise<BscSellerResult<unknown[]>> {
+): Promise<BscSellerResult<NarrowedBscSheet>> {
   const r = await send(ctx, session, {
     operation: "sheetRead",
     method: "POST",
@@ -321,6 +379,7 @@ export async function readBscSellerSheet(
       filters: args.filters,
     },
     timeoutMs: BSC_SELLER_TIMEOUTS_MS.sheet,
+    maxBytes: BSC_SELLER_MAX_BYTES.sheet,
   });
   if (!r.ok) return r;
   // A bare array, as `search/bulk-upload/results` answers; `{results}` is
@@ -333,7 +392,7 @@ export async function readBscSellerSheet(
   if (rows === null) {
     return { ok: false, failure: failure("bad_response", "BuySportsCards' listing sheet came back in a shape NeonBinder can't read.") };
   }
-  return { ok: true, value: rows };
+  return { ok: true, value: narrowBscSheet(rows.slice(0, SHEET_MAX_ROWS)) };
 }
 
 /**
@@ -352,6 +411,7 @@ export async function putBscListings(
     path: "seller/bulk-upload",
     json: { sellerId: args.sellerId, listings: args.listings },
     timeoutMs: BSC_SELLER_TIMEOUTS_MS.put,
+    maxBytes: BSC_SELLER_MAX_BYTES.put,
   });
   return r.ok ? { ok: true, value: null } : r;
 }
@@ -376,6 +436,7 @@ export async function uploadBscSellerPhoto(
       return form;
     },
     timeoutMs: BSC_SELLER_TIMEOUTS_MS.photo,
+    maxBytes: BSC_SELLER_MAX_BYTES.photo,
   });
   if (!r.ok) return r;
   const key = isRecord(r.value) && typeof r.value.objectKey === "string" ? r.value.objectKey : null;
@@ -402,6 +463,7 @@ export async function readBscOrderHistory(
     path: "seller/order/history",
     json: { name: "", orderNo: "", fromDate: "", toDate: "", page, size: BSC_ORDER_PAGE_SIZE, status: [] },
     timeoutMs: BSC_SELLER_TIMEOUTS_MS.order,
+    maxBytes: BSC_SELLER_MAX_BYTES.order,
   });
   if (!r.ok) return r;
   const parsed = parseBscOrderHistoryPage(r.value);
@@ -422,6 +484,7 @@ export async function readBscOrder(
     method: "GET",
     path: `seller/order/${encodeURIComponent(orderId)}`,
     timeoutMs: BSC_SELLER_TIMEOUTS_MS.order,
+    maxBytes: BSC_SELLER_MAX_BYTES.order,
   });
   if (!r.ok) return r;
   const order = parseBscOrder(r.value);

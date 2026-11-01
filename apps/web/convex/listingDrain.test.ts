@@ -13,7 +13,12 @@
  * outbox row whose `seq` moved mid-push survives; a moved card's row is
  * re-pointed and a deleted card's row cleared; the owner lease; a variant
  * with no BSC scope; a sign-in BSC refuses after a refresh stops the drain;
- * the time budget hands the rest to a rescheduled run.
+ * the time budget hands the rest to a rescheduled run. NEO-370 round 3: no
+ * timer (a row landing mid-run waits for the next kick unless a kick asked
+ * for another run), the credential gate (no credentials → dormant, a session
+ * that needs a fresh sign-in is not logged into), one NB owner per seller
+ * account, switching off stops the push but keeps the state row, and every
+ * BSC call refuses redirects.
  */
 import { convexTest } from "convex-test";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -149,6 +154,8 @@ class FakeBsc {
       throw new Error(`unexpected fetch ${href}`);
     }
     if (headers.assumedrole !== "sellers") throw new Error("missing assumedrole");
+    // The bearer token must never follow a redirect off BSC's API host.
+    if (init?.redirect !== "error") throw new Error("a BSC call must refuse redirects");
     if (this.unauthorized > 0) {
       this.unauthorized -= 1;
       return new Response("", { status: 401 });
@@ -246,17 +253,28 @@ async function setup() {
   const box2 = (await me.mutation(api.collectionContainers.create, { kind: "box", name: "Box B" })).containerId;
   const binder = (await me.mutation(api.collectionContainers.create, { kind: "binder", name: "Binder" })).containerId;
   await t.run(async (ctx) => {
-    await ctx.db.insert("userProfiles", { userId: OWNER, marketplaceAccountIds: { bscSellerId: "seller-1" } } as never);
+    await ctx.db.insert("userProfiles", {
+      userId: OWNER,
+      marketplaceAccountIds: { bscSellerId: "seller-1" },
+      siteCredentials: [{ site: "buysportscards", hasCredentials: true }],
+    } as never);
   });
   return { t, me, box, box2, binder };
 }
 type S = Awaited<ReturnType<typeof setup>>;
 
-async function listOnBsc(s: S) {
+async function listOnBsc(s: S, extra: Record<string, unknown> = {}) {
   await s.t.run(async (ctx) => {
-    await ctx.db.insert("marketplaceListingStates", { ownerId: OWNER, platform: "bsc", lastUpdated: NOW });
+    await ctx.db.insert("marketplaceListingStates", { ownerId: OWNER, platform: "bsc", lastUpdated: NOW, ...extra });
   });
 }
+
+const pendingDrains = (s: S) =>
+  s.t.run(async (ctx) =>
+    (await ctx.db.system.query("_scheduled_functions").collect()).filter(
+      (f) => f.name.includes("listingDrain") && f.state.kind === "pending",
+    ),
+  );
 
 const add = (s: S, cardId: Id<"cardChecklist">, details: Record<string, unknown>) =>
   s.me.mutation(api.collection.addLineItem, { cardId, details: { quantity: 1, ...details } as never });
@@ -401,6 +419,8 @@ describe("drainOwner: the first sync of a variant", () => {
     expect(st?.drainLeaseToken).toBeUndefined();
     expect(st?.drainScheduledAt).toBeUndefined();
     expect(st?.lastDrainAt).toBeTypeOf("number");
+    // The seller account the PUT named is now this owner's.
+    expect(st?.platformAccountId).toBe("seller-1");
   });
 
   test("a later sync reads only the targets' conditions and the ones NB pushed before", async () => {
@@ -430,7 +450,7 @@ describe("drainOwner: the first sync of a variant", () => {
 });
 
 describe("drainOwner: the outbox rows", () => {
-  test("a row whose seq moved during the push is kept, and the next run is scheduled", async () => {
+  test("a row whose seq moved during the push is kept for the next kick: no timer schedules a run", async () => {
     const s = await setup();
     const v = await seedVariant(s.t, {
       cards: [
@@ -467,8 +487,50 @@ describe("drainOwner: the outbox rows", () => {
     expect(left[0].seq).toBe(2);
     expect(left.some((r) => r._id === row1)).toBe(false);
     const st = await state(s);
-    expect(st?.drainScheduledAt).toBeTypeOf("number");
+    expect(st?.drainScheduledAt).toBeUndefined();
     expect(st?.drainLeaseToken).toBeUndefined();
+    expect(await pendingDrains(s)).toEqual([]);
+  });
+
+  test("a kick that lands while the run is under way runs the next drain at once on release", async () => {
+    const s = await setup();
+    const v = await seedVariant(s.t, {
+      cards: [
+        { number: "1", ref: "bsc-1" },
+        { number: "2", ref: "bsc-2" },
+      ],
+    });
+    const bsc = new FakeBsc(
+      [
+        { bscCardId: "bsc-1", cardNo: "1" },
+        { bscCardId: "bsc-2", cardNo: "2" },
+      ],
+      MODERN,
+    );
+    vi.stubGlobal("fetch", bsc.fetch);
+    await add(s, v.cardIds[1], { homeId: s.box, condition: "Near Mint", minPriceCents: 50 });
+    await listOnBsc(s);
+    const [, row2] = await queue(s, [
+      { cardId: v.cardIds[0], variantId: v.variantId },
+      { cardId: v.cardIds[1], variantId: v.variantId },
+    ]);
+    // A box write and the collector leaving the page, mid-push.
+    bsc.onPut = async () => {
+      await s.t.run(async (ctx) => {
+        await ctx.db.patch(row2, { seq: 2 });
+      });
+      await s.me.mutation(api.listingSync.flushListing, {});
+    };
+
+    await drain(s);
+
+    expect((await outbox(s)).map((r) => r._id)).toEqual([row2]);
+    const st = await state(s);
+    expect(st?.drainRequested).toBeUndefined();
+    expect(st?.drainScheduledAt).toBeTypeOf("number");
+    const next = await pendingDrains(s);
+    expect(next).toHaveLength(1);
+    expect(next[0].args[0]).toEqual({ ownerId: OWNER, platform: "bsc" });
   });
 
   test("a deleted card's row is cleared and a moved card's row follows it to its new variant", async () => {
@@ -529,6 +591,8 @@ describe("drainOwner: the owner lease", () => {
     const st = await state(s);
     expect(st?.drainLeaseToken).toBe("someone-else");
     expect(st?.drainScheduledAt).toBeUndefined();
+    // The live run is asked to run once more when it releases.
+    expect(st?.drainRequested).toBe(true);
     expect(await outbox(s)).toHaveLength(1);
   });
 
@@ -596,7 +660,7 @@ describe("drainOwner: per-variant failures", () => {
     expect(await outbox(s)).toHaveLength(0);
   });
 
-  test("a sign-in BSC refuses after a refresh stops the drain, keeps the rows and retries later", async () => {
+  test("a sign-in BSC refuses after a refresh stops the drain and keeps the rows for the cron's next kick", async () => {
     const s = await setup();
     const v = await seedVariant(s.t, { cards: [{ number: "1", ref: "bsc-1" }] });
     const bsc = new FakeBsc([{ bscCardId: "bsc-1", cardNo: "1" }], MODERN);
@@ -616,7 +680,9 @@ describe("drainOwner: per-variant failures", () => {
     expect(await outbox(s)).toHaveLength(1);
     const st = await state(s);
     expect(st?.drainLeaseToken).toBeUndefined();
-    expect(st?.drainScheduledAt).toBeTypeOf("number");
+    // No retry timer: a dead session is not hammered; the cron kicks again.
+    expect(st?.drainScheduledAt).toBeUndefined();
+    expect(await pendingDrains(s)).toEqual([]);
   });
 
   test("a guarded card is left alone on BSC and reported (card number disagrees)", async () => {
@@ -633,7 +699,7 @@ describe("drainOwner: per-variant failures", () => {
     expect(bsc.qty("bsc-1", "near_mint")).toBe(3);
     const rec = await record(s, v.variantId);
     expect(rec?.problems).toEqual([
-      { cardId: v.cardIds[0], platformCardId: "bsc-1", reason: "numberMismatch", detail: "NB #1, BSC #1A" },
+      { cardId: v.cardIds[0], platformCardId: "bsc-1", reason: "numberMismatch", detail: "NB #1" },
     ]);
     expect(rec?.counts?.skipped).toBe(1);
   });
@@ -750,13 +816,14 @@ describe("drainOwner: a variant NB no longer holds anything in", () => {
 });
 
 describe("drainOwner: listing switched off under a run", () => {
+  // What `listingSync.setListingEnabled({enabled: false})` does to the row.
   const deleteState = (s: S) =>
     s.t.run(async (ctx) => {
       const row = await ctx.db
         .query("marketplaceListingStates")
         .withIndex("by_owner_platform", (q) => q.eq("ownerId", OWNER).eq("platform", "bsc"))
         .unique();
-      if (row) await ctx.db.delete(row._id);
+      if (row) await ctx.db.patch(row._id, { enabled: false });
     });
 
   test("between variants: the next variant is never claimed, and nothing is recreated or rescheduled", async () => {
@@ -793,7 +860,9 @@ describe("drainOwner: listing switched off under a run", () => {
     expect(first.result).toBe("ok");
     expect(second.result).toBe("off");
     expect(await record(s, second.variantId)).toBeNull();
-    expect(await state(s)).toBeNull();
+    // Kept, switched off (its order cursor and sales stay).
+    expect(await state(s)).toMatchObject({ enabled: false });
+    expect((await state(s))?.drainLeaseToken).toBeUndefined();
     const scheduled = await s.t.run(async (ctx) => ctx.db.system.query("_scheduled_functions").collect());
     expect(scheduled.filter((f) => f.name.includes("listingDrain"))).toHaveLength(0);
   });
@@ -819,6 +888,105 @@ describe("drainOwner: listing switched off under a run", () => {
     expect(rec?.lastError).toMatch(/switched off/);
     expect(rec?.leaseToken).toBeUndefined();
     expect(await outbox(s)).toHaveLength(1);
-    expect(await state(s)).toBeNull();
+    expect(await state(s)).toMatchObject({ enabled: false });
+  });
+});
+
+describe("drainOwner: the credential gate", () => {
+  const setCredential = (s: S, entry: Record<string, unknown> | null) =>
+    s.t.run(async (ctx) => {
+      const profile = await ctx.db
+        .query("userProfiles")
+        .withIndex("by_user", (q) => q.eq("userId", OWNER))
+        .unique();
+      await ctx.db.patch(profile!._id, {
+        siteCredentials: entry ? [{ site: "buysportscards", ...entry }] : [],
+      } as never);
+    });
+
+  test("no saved credentials: nothing is fetched, the state goes dormant and the rows wait", async () => {
+    const s = await setup();
+    const v = await seedVariant(s.t, { cards: [{ number: "1", ref: "bsc-1" }] });
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+    await setCredential(s, null);
+    await listOnBsc(s, { drainScheduledAt: Date.now() });
+    await queue(s, [{ cardId: v.cardIds[0], variantId: v.variantId }]);
+
+    const report = await drainOwnerImpl(stubCtx(s.t), { ownerId: OWNER, platform: "bsc" });
+
+    expect(report).toMatchObject({ claimed: false, stoppedFor: "noCredentials" });
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(creds.tokenCalls).toBe(0);
+    const st = await state(s);
+    expect(st?.dormant).toBe("noCredentials");
+    expect(st?.drainScheduledAt).toBeUndefined();
+    expect(st?.drainLeaseToken).toBeUndefined();
+    expect(await outbox(s)).toHaveLength(1);
+  });
+
+  test("a session that needs a fresh sign-in is never logged into by a drain", async () => {
+    const s = await setup();
+    const v = await seedVariant(s.t, { cards: [{ number: "1", ref: "bsc-1" }] });
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+    await setCredential(s, { hasCredentials: true, needsReauth: true });
+    await listOnBsc(s);
+    await queue(s, [{ cardId: v.cardIds[0], variantId: v.variantId }]);
+
+    const report = await drainOwnerImpl(stubCtx(s.t), { ownerId: OWNER, platform: "bsc" });
+
+    expect(report).toMatchObject({ claimed: false, stoppedFor: "needsReauth" });
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(creds.tokenCalls).toBe(0);
+    expect(creds.refreshCalls).toBe(0);
+    expect((await state(s))?.dormant).toBeUndefined();
+    expect(await outbox(s)).toHaveLength(1);
+  });
+
+  test("a dormant row is never drained", async () => {
+    const s = await setup();
+    const v = await seedVariant(s.t, { cards: [{ number: "1", ref: "bsc-1" }] });
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+    await listOnBsc(s, { dormant: "sellerConflict" });
+    await queue(s, [{ cardId: v.cardIds[0], variantId: v.variantId }]);
+    const report = await drainOwnerImpl(stubCtx(s.t), { ownerId: OWNER, platform: "bsc" });
+    expect(report).toMatchObject({ claimed: false, stoppedFor: "notClaimed" });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe("drainOwner: one NB owner per seller account", () => {
+  test("a seller account another owner already lists from: nothing is pushed, the row goes dormant", async () => {
+    const s = await setup();
+    const v = await seedVariant(s.t, { cards: [{ number: "1", ref: "bsc-1" }] });
+    const bsc = new FakeBsc([{ bscCardId: "bsc-1", cardNo: "1" }], MODERN);
+    vi.stubGlobal("fetch", bsc.fetch);
+    await add(s, v.cardIds[0], { homeId: s.box, condition: "Near Mint", minPriceCents: 50 });
+    await listOnBsc(s);
+    await s.t.run(async (ctx) => {
+      await ctx.db.insert("marketplaceListingStates", {
+        ownerId: "someone_else",
+        platform: "bsc",
+        platformAccountId: "seller-1",
+        lastUpdated: NOW,
+      });
+    });
+    await queue(s, [{ cardId: v.cardIds[0], variantId: v.variantId }]);
+
+    const report = await drainOwnerImpl(stubCtx(s.t), { ownerId: OWNER, platform: "bsc" });
+
+    expect(report.stoppedFor).toBe("sellerConflict");
+    expect(bsc.puts).toHaveLength(0);
+    expect(bsc.qty("bsc-1", "near_mint")).toBe(0);
+    const st = await state(s);
+    expect(st?.dormant).toBe("sellerConflict");
+    expect(st?.platformAccountId).toBeUndefined();
+    const rec = await record(s, v.variantId);
+    expect(rec?.status).toBe("error");
+    expect(rec?.lastError).toMatch(/another NeonBinder account/);
+    expect(await outbox(s)).toHaveLength(1);
+    expect(await pendingDrains(s)).toEqual([]);
   });
 });

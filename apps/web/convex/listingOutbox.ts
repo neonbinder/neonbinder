@@ -1,12 +1,13 @@
 /**
  * NEO-370 — the copy-change hook's half of listing: record that a card's
- * for-sale count may have changed, and wake the owner's drainer.
+ * for-sale count may have changed, and (on the triggers that ask for it) wake
+ * the owner's drainer.
  *
  * NB is the only truth. A box copy is for sale; every platform the collector
  * lists on shows NB's box count, and nothing about a listing is stored in NB.
  * `listingOutbox` is the change list (one row per owner + platform + card,
- * see its schema comment), and `marketplaceListingStates` is both the switch
- * ("this owner lists on this platform": the row exists) and the drain latch.
+ * see its schema comment), and `marketplaceListingStates` is the switch (its
+ * `enabled` and `dormant`) and the drain latch.
  *
  * Called from `collection.applyCopyChanges` (every copy write, a sale applied
  * by the order poll included) for the cards whose copy lived in a box before
@@ -16,6 +17,12 @@
  * `enqueueMovedListingCards`) and the condition backfill
  * (`backfillCopyCondition`, through `queueOwnerCards`). It is cheap when the
  * owner lists nowhere: one indexed read of their state rows, then return.
+ *
+ * A box write only ENQUEUES. Nothing here runs on a timer: the drain runs
+ * when something asks for it (`kickListingDrain`): the collector leaving a
+ * checklist page (`listingSync.flushListing`), an intake run that is settled
+ * (`intakeRuns`), a Resync, the end of the enable walk, and the 15-minute
+ * cron (`listingSales.finishPoll`).
  *
  * Kept out of `collection.ts` and free of any import from it, so the hook can
  * be imported there without a module cycle (the `binderFits` rule).
@@ -30,17 +37,44 @@ export type ListingPlatform = Doc<"marketplaceListingStates">["platform"];
 type StateRow = Doc<"marketplaceListingStates">;
 type CardRow = Doc<"cardChecklist">;
 
-/** How long after the first change the owner's drainer runs (debounce). */
-export const DRAIN_DEBOUNCE_MS = 60_000;
-
 /**
  * A `drainScheduledAt` older than this is a drain that never ran or died
- * before clearing the latch: the next change schedules a fresh one.
+ * before clearing the latch: the next kick schedules a fresh one.
  */
 export const DRAIN_SCHEDULE_STALE_MS = 10 * 60_000;
 
 /** State rows one owner can have: one per platform, with room to spare. */
 const MAX_STATES_PER_OWNER = 8;
+
+/** Cards of a variant looked through for one that can wake its sync. */
+export const WAKE_SCAN_CARDS = 50;
+
+/** The credential site key each listing platform signs in through. */
+export const LISTING_CREDENTIAL_SITE: Record<ListingPlatform, string> = { bsc: "buysportscards" };
+
+/** The listing platform a credential site serves, or null for none. */
+export function listingPlatformForSite(site: string): ListingPlatform | null {
+  for (const [platform, credentialSite] of Object.entries(LISTING_CREDENTIAL_SITE)) {
+    if (credentialSite === site) return platform as ListingPlatform;
+  }
+  return null;
+}
+
+/**
+ * NB pushes counts to the platform for this owner: the collector has listing
+ * switched on (`enabled` is not `false`) and NB has not made the row dormant.
+ */
+export function pushesCounts(state: Pick<StateRow, "enabled" | "dormant">): boolean {
+  return state.enabled !== false && state.dormant === undefined;
+}
+
+/**
+ * NB polls the platform's orders for this owner: whenever the row is not
+ * dormant, switched on or off (listings left up can still sell).
+ */
+export function pollsSales(state: Pick<StateRow, "dormant">): boolean {
+  return state.dormant === undefined;
+}
 
 /**
  * Whether the card carries the id a platform lists it by. Read from the
@@ -54,7 +88,7 @@ export function carriesPlatformRef(card: Pick<CardRow, "platformData">, platform
   }
 }
 
-/** The owner's state row for one platform, or null when they don't list there. */
+/** The owner's state row for one platform, or null when they never listed there. */
 export async function listingStateOf(
   ctx: Pick<QueryCtx, "db">,
   ownerId: string,
@@ -66,13 +100,20 @@ export async function listingStateOf(
     .first();
 }
 
+async function statesOf(ctx: Pick<QueryCtx, "db">, ownerId: string): Promise<StateRow[]> {
+  return await ctx.db
+    .query("marketplaceListingStates")
+    .withIndex("by_owner_platform", (q) => q.eq("ownerId", ownerId))
+    .take(MAX_STATES_PER_OWNER);
+}
+
 /**
- * Queue `cardIds` for every platform the owner lists on (only `platforms`,
- * when given): one `listingOutbox` row per (owner, platform, card), upserted
- * with `seq` bumped, for catalog cards that carry that platform's id. A
- * private card (`privateCards`) and a card that has left the catalog are
- * skipped. Then wakes each platform's drainer that got a row. Returns how
- * many rows were written.
+ * Queue `cardIds` for every platform the owner pushes counts to (only
+ * `platforms`, when given): one `listingOutbox` row per (owner, platform,
+ * card), upserted with `seq` bumped, for catalog cards that carry that
+ * platform's id. A private card (`privateCards`) and a card that has left the
+ * catalog are skipped. Enqueues only: no drain is scheduled. Returns how many
+ * rows were written.
  *
  * `ownerId` is the signed-in caller (or the owner of the rows being written),
  * never a value taken from a client's arguments.
@@ -86,16 +127,13 @@ export async function enqueueListingCards(
   },
 ): Promise<number> {
   if (args.cardIds.length === 0) return 0;
-  const states = await ctx.db
-    .query("marketplaceListingStates")
-    .withIndex("by_owner_platform", (q) => q.eq("ownerId", args.ownerId))
-    .take(MAX_STATES_PER_OWNER);
-  const wanted = args.platforms ? states.filter((s) => args.platforms!.includes(s.platform)) : states;
+  const wanted = (await statesOf(ctx, args.ownerId)).filter(
+    (s) => pushesCounts(s) && (!args.platforms || args.platforms.includes(s.platform)),
+  );
   if (wanted.length === 0) return 0;
 
   const now = Date.now();
   const seen = new Set<string>();
-  const touched = new Set<ListingPlatform>();
   let written = 0;
   for (const raw of args.cardIds) {
     if (seen.has(raw)) continue;
@@ -108,31 +146,20 @@ export async function enqueueListingCards(
     for (const state of wanted) {
       if (!carriesPlatformRef(card, state.platform)) continue;
       await upsertOutboxRow(ctx, args.ownerId, state.platform, cardId, card.selectorOptionId, now);
-      touched.add(state.platform);
       written += 1;
     }
-  }
-  for (const state of wanted) {
-    if (touched.has(state.platform)) await kickWithState(ctx, state, now);
   }
   return written;
 }
 
 /**
- * Whether the owner lists on any platform: one indexed read. The copy writers
- * outside `applyCopyChanges` (an operator's card move, the condition
+ * Whether the owner pushes counts to any platform: one indexed read. The copy
+ * writers outside `applyCopyChanges` (an operator's card move, the condition
  * backfill) ask this first, so an owner who lists nowhere costs exactly that.
  */
 export async function listsAnywhere(ctx: Pick<QueryCtx, "db">, ownerId: string): Promise<boolean> {
-  const state = await ctx.db
-    .query("marketplaceListingStates")
-    .withIndex("by_owner_platform", (q) => q.eq("ownerId", ownerId))
-    .first();
-  return state !== null;
+  return (await statesOf(ctx, ownerId)).some(pushesCounts);
 }
-
-/** Cards of a variant looked through for one that can wake its sync. */
-export const WAKE_SCAN_CARDS = 50;
 
 /** One card an operator moved, and the variant it (and the owner's copy) left. */
 export interface MovedListingCard {
@@ -151,7 +178,7 @@ export interface MovedListingCard {
  *     card's own row can't carry that (one row per card, and the next box
  *     write points it at the card's current variant), so the old variant
  *     gets its own trigger: another card still in it that carries the
- *     platform's id (the `resyncVariant` wake), queued at the old variant.
+ *     platform's id (`wakeCardOf`), queued at the old variant.
  *     When the old variant has no such card left, the moved card's row is
  *     queued at the OLD variant instead; the drainer syncs that variant,
  *     then re-points the row to the card's current one (`settleRows`), which
@@ -161,7 +188,8 @@ export interface MovedListingCard {
  *
  * `wakeCards` caches the wake card per (platform, variant) across owners, so
  * a move with many owners scans each old variant once. Cheap when the owner
- * lists nowhere: one indexed read. Returns how many rows were written.
+ * lists nowhere: one indexed read. Enqueues only. Returns how many rows were
+ * written.
  */
 export async function enqueueMovedListingCards(
   ctx: MutationCtx,
@@ -172,10 +200,7 @@ export async function enqueueMovedListingCards(
   },
 ): Promise<number> {
   if (args.moved.length === 0) return 0;
-  const states = await ctx.db
-    .query("marketplaceListingStates")
-    .withIndex("by_owner_platform", (q) => q.eq("ownerId", args.ownerId))
-    .take(MAX_STATES_PER_OWNER);
+  const states = (await statesOf(ctx, args.ownerId)).filter(pushesCounts);
   if (states.length === 0) return 0;
   const wakeCards = args.wakeCards ?? new Map<string, Id<"cardChecklist"> | null>();
   const now = Date.now();
@@ -202,13 +227,7 @@ export async function enqueueMovedListingCards(
     }
     for (const [fromVariantId, movedCardId] of left) {
       const key = `${platform}|${fromVariantId}`;
-      if (!wakeCards.has(key)) {
-        const inVariant = await ctx.db
-          .query("cardChecklist")
-          .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", fromVariantId))
-          .take(WAKE_SCAN_CARDS);
-        wakeCards.set(key, inVariant.find((c) => carriesPlatformRef(c, platform))?._id ?? null);
-      }
+      if (!wakeCards.has(key)) wakeCards.set(key, await wakeCardOf(ctx, platform, fromVariantId));
       const wake = wakeCards.get(key) ?? null;
       if (wake !== null) {
         await upsertOutboxRow(ctx, args.ownerId, platform, wake, fromVariantId, now);
@@ -218,9 +237,38 @@ export async function enqueueMovedListingCards(
         await upsertOutboxRow(ctx, args.ownerId, platform, movedCardId, fromVariantId, now);
       }
     }
-    if (queued.size > 0) await kickWithState(ctx, state, now);
   }
   return written;
+}
+
+/**
+ * The variant's first card (of `WAKE_SCAN_CARDS`) that carries the
+ * platform's id: queueing it makes the variant's run happen even when the
+ * owner holds nothing of it in a box (so the run sets the platform to NB's
+ * zero). Null when none of those cards carries the id.
+ */
+export async function wakeCardOf(
+  ctx: Pick<QueryCtx, "db">,
+  platform: ListingPlatform,
+  variantId: Id<"selectorOptions">,
+): Promise<Id<"cardChecklist"> | null> {
+  const cards = await ctx.db
+    .query("cardChecklist")
+    .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", variantId))
+    .take(WAKE_SCAN_CARDS);
+  return cards.find((c) => carriesPlatformRef(c, platform))?._id ?? null;
+}
+
+/** Queue the variant's wake card for one owner (`wakeCardOf`). Returns rows written. */
+export async function wakeVariant(
+  ctx: MutationCtx,
+  ownerId: string,
+  platform: ListingPlatform,
+  variantId: Id<"selectorOptions">,
+): Promise<number> {
+  const card = await wakeCardOf(ctx, platform, variantId);
+  if (!card) return 0;
+  return await enqueueListingCards(ctx, { ownerId, cardIds: [card], platforms: [platform] });
 }
 
 /**
@@ -255,28 +303,124 @@ async function upsertOutboxRow(
   await ctx.db.insert("listingOutbox", { ownerId, platform, cardId, variantId, seq: 1, changedAt: now });
 }
 
+/** What a kick did, for tests and logs. */
+export type DrainKick =
+  /** No state row, listing off, or the row is dormant: nothing to drain. */
+  | "notListing"
+  /** Nothing queued for the platform. */
+  | "nothingPending"
+  /** A drain is scheduled and has not started yet: it will see the rows. */
+  | "alreadyScheduled"
+  /** A drain is running: its release runs the next one at once. */
+  | "requested"
+  /** A drain was scheduled to run now. */
+  | "scheduled";
+
 /**
- * Wake the owner's drainer for one platform, debounced: schedules
- * `listingDrain.drainOwner` a minute out and stamps `drainScheduledAt`, only
- * when no drain is already scheduled (or the stamp is stale). The drainer
- * clears the stamp before it reads any outbox row, so a change landing
- * mid-drain schedules the next one. Does nothing when the owner doesn't list
- * on the platform.
+ * Run the owner's drainer for one platform now, if there is anything to push.
+ * Cheap and idempotent: one state read and one outbox read; when a drain is
+ * already scheduled nothing more is written, and when one is running it is
+ * asked (`drainRequested`) to run again once it releases, so a change landing
+ * mid-drain is not left for the cron. The drainer itself gates on the
+ * owner's credentials.
  */
 export async function kickListingDrain(
   ctx: MutationCtx,
   ownerId: string,
   platform: ListingPlatform,
-): Promise<void> {
+): Promise<DrainKick> {
   const state = await listingStateOf(ctx, ownerId, platform);
-  if (state) await kickWithState(ctx, state, Date.now());
+  if (!state) return "notListing";
+  return await kickWithState(ctx, state, Date.now());
 }
 
-async function kickWithState(ctx: MutationCtx, state: StateRow, now: number): Promise<void> {
-  if (state.drainScheduledAt !== undefined && now - state.drainScheduledAt < DRAIN_SCHEDULE_STALE_MS) return;
+/** `kickListingDrain` for every platform the owner pushes counts to. */
+export async function kickOwnerDrains(ctx: MutationCtx, ownerId: string): Promise<DrainKick[]> {
+  const out: DrainKick[] = [];
+  for (const state of await statesOf(ctx, ownerId)) out.push(await kickWithState(ctx, state, Date.now()));
+  return out;
+}
+
+async function kickWithState(ctx: MutationCtx, state: StateRow, now: number): Promise<DrainKick> {
+  if (!pushesCounts(state)) return "notListing";
+  const pending = await ctx.db
+    .query("listingOutbox")
+    .withIndex("by_owner_platform_variant", (q) => q.eq("ownerId", state.ownerId).eq("platform", state.platform))
+    .first();
+  if (!pending) return "nothingPending";
+  if (state.drainLeaseToken !== undefined && (state.drainLeaseExpiresAt ?? 0) > now) {
+    if (state.drainRequested !== true) await ctx.db.patch(state._id, { drainRequested: true });
+    return "requested";
+  }
+  if (state.drainScheduledAt !== undefined && now - state.drainScheduledAt < DRAIN_SCHEDULE_STALE_MS) {
+    return "alreadyScheduled";
+  }
   await ctx.db.patch(state._id, { drainScheduledAt: now });
-  await ctx.scheduler.runAfter(DRAIN_DEBOUNCE_MS, internal.listingDrain.drainOwner, {
+  await ctx.scheduler.runAfter(0, internal.listingDrain.drainOwner, {
     ownerId: state.ownerId,
     platform: state.platform,
   });
+  return "scheduled";
+}
+
+/**
+ * The owner's saved credentials for `site` were cleared (`dormant: true`) or
+ * saved again (`dormant: false`): stop, or let resume, the poll and the drain
+ * of the platform that signs in through that site. Saving again clears only
+ * the `noCredentials` dormancy (a seller conflict stays until the owner
+ * switches listing on again). Does nothing for a site no listing platform
+ * uses, or an owner who never listed there.
+ */
+export async function setListingCredentialsDormant(
+  ctx: MutationCtx,
+  ownerId: string,
+  site: string,
+  dormant: boolean,
+): Promise<void> {
+  const platform = listingPlatformForSite(site);
+  if (!platform) return;
+  const state = await listingStateOf(ctx, ownerId, platform);
+  if (!state) return;
+  if (dormant && state.dormant === undefined) {
+    await ctx.db.patch(state._id, { dormant: "noCredentials", lastUpdated: Date.now() });
+  } else if (!dormant && state.dormant === "noCredentials") {
+    await ctx.db.patch(state._id, { dormant: undefined, reauthPollAt: undefined, lastUpdated: Date.now() });
+  }
+}
+
+/** The owner's saved credential entry for a listing platform's site. */
+export async function listingCredentialOf(
+  ctx: Pick<QueryCtx, "db">,
+  ownerId: string,
+  platform: ListingPlatform,
+): Promise<{ hasCredentials: boolean; needsReauth: boolean; sellerId: string | null }> {
+  const profile = await ctx.db
+    .query("userProfiles")
+    .withIndex("by_user", (q) => q.eq("userId", ownerId))
+    .first();
+  const entry = profile?.siteCredentials?.find((c) => c.site === LISTING_CREDENTIAL_SITE[platform]);
+  return {
+    hasCredentials: entry?.hasCredentials === true,
+    needsReauth: entry?.needsReauth === true,
+    sellerId: platform === "bsc" ? (profile?.marketplaceAccountIds?.bscSellerId ?? null) : null,
+  };
+}
+
+/**
+ * Another NB owner's state row on `platform` that already holds the seller
+ * account `accountId`, or null. One NB owner per seller account: two owners
+ * pushing counts to one seller would overwrite each other, and a sale there
+ * would lower both owners' copies.
+ */
+export async function sellerAccountHolder(
+  ctx: Pick<QueryCtx, "db">,
+  platform: ListingPlatform,
+  accountId: string,
+  ownerId: string,
+): Promise<StateRow | null> {
+  const holders = await ctx.db
+    .query("marketplaceListingStates")
+    .withIndex("by_platform_account", (q) => q.eq("platform", platform).eq("platformAccountId", accountId))
+    .take(MAX_STATES_PER_OWNER);
+  return holders.find((s) => s.ownerId !== ownerId) ?? null;
 }

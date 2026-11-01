@@ -12,7 +12,7 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import schema from "./schema";
 import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
-import { drainScheduled } from "../lib/testing/drain-scheduled";
+import { cancelScheduled, drainScheduled } from "../lib/testing/drain-scheduled";
 import { seedCollectionCatalog } from "../lib/testing/collection-fixture";
 import { insertTestCard } from "../lib/testing/card-row";
 import { noteIntakePairsChanged } from "./intakeRuns";
@@ -565,6 +565,97 @@ describe("the collector's answers (NEO-382)", () => {
     await expect(w.them.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId, quantity: 1 })).rejects.toThrow(/not found/);
     await expect(w.them.mutation(api.intakeRuns.answerIntakeRepeat, { runId, pairId, secondCopy: true })).rejects.toThrow(/not found/);
     await expect(w.them.mutation(api.intakeRuns.setIntakeMatchAside, { runId, pairId, setAside: true })).rejects.toThrow(/not found/);
+  });
+});
+
+describe("NEO-370 — a settled box run kicks the collector's listing drain", () => {
+  type W = Awaited<ReturnType<typeof world>>;
+  const listOn = (w: W) =>
+    w.t.run(async (ctx) => {
+      await ctx.db.insert("marketplaceListingStates", { ownerId: ME.subject, platform: "bsc", lastUpdated: 0 });
+      await ctx.db.insert("userProfiles", {
+        userId: ME.subject,
+        siteCredentials: [{ site: "buysportscards", hasCredentials: true }],
+      } as never);
+    });
+  const drainsOf = async (w: W) =>
+    (await w.t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect())).filter((f) =>
+      f.name.includes("drainOwner"),
+    );
+  /** Hold the scheduler's clock so a kicked drain stays pending (it would reach BSC). */
+  async function held<T>(w: W, body: () => Promise<T>): Promise<T> {
+    vi.useFakeTimers({ toFake: ["setTimeout"] });
+    try {
+      return await body();
+    } finally {
+      await cancelScheduled(w.t as never);
+      vi.useRealTimers();
+    }
+  }
+  const two = () => world([
+    { number: "1", players: ["Doc Gooden"] },
+    { number: "2", players: ["Darryl Strawberry"] },
+  ]);
+
+  test("the last pair answered (a set-aside) kicks one drain; the saves before it kick none", async () => {
+    const w = await two();
+    await listOn(w);
+    const runId = await startRun(w, w.fx.baseId);
+    await held(w, async () => {
+      await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[0], quantity: 1 });
+      expect(await drainsOf(w)).toEqual([]);
+      await w.me.mutation(api.intakeRuns.setIntakeMatchAside, { runId, pairId: w.pairIds[1], setAside: true });
+      const drains = await drainsOf(w);
+      expect(drains.map((d) => d.args[0])).toEqual([{ ownerId: ME.subject, platform: "bsc" }]);
+    });
+  });
+
+  test("the last pair saved kicks the drain", async () => {
+    const w = await two();
+    await listOn(w);
+    const runId = await startRun(w, w.fx.baseId);
+    await held(w, async () => {
+      await w.me.mutation(api.intakeRuns.setIntakeMatchAside, { runId, pairId: w.pairIds[1], setAside: true });
+      expect(await drainsOf(w)).toEqual([]);
+      await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[0], quantity: 1 });
+      expect(await drainsOf(w)).toHaveLength(1);
+    });
+  });
+
+  test("photos still processing: every pair saved kicks nothing yet", async () => {
+    const w = await two();
+    await listOn(w);
+    await w.t.run(async (ctx) => {
+      const job = (await ctx.db.query("placeholderJobs").collect())[0];
+      await ctx.db.patch(job._id, { status: "processing" });
+    });
+    const runId = await startRun(w, w.fx.baseId);
+    await held(w, async () => {
+      await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[0], quantity: 1 });
+      await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[1], quantity: 1 });
+      expect(await drainsOf(w)).toEqual([]);
+    });
+  });
+
+  test("everything set aside (nothing saved) kicks nothing", async () => {
+    const w = await two();
+    await listOn(w);
+    const runId = await startRun(w, w.fx.baseId);
+    await held(w, async () => {
+      await w.me.mutation(api.intakeRuns.setIntakeMatchAside, { runId, pairId: w.pairIds[0], setAside: true });
+      await w.me.mutation(api.intakeRuns.setIntakeMatchAside, { runId, pairId: w.pairIds[1], setAside: true });
+      expect(await drainsOf(w)).toEqual([]);
+    });
+  });
+
+  test("a collector who lists nowhere: the settled run schedules no drain", async () => {
+    const w = await two();
+    const runId = await startRun(w, w.fx.baseId);
+    await held(w, async () => {
+      await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[0], quantity: 1 });
+      await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[1], quantity: 1 });
+      expect(await drainsOf(w)).toEqual([]);
+    });
   });
 });
 
