@@ -69,10 +69,10 @@ import {
   logMarketplaceLimiter,
   type FetchFailure,
 } from "../lib/marketplaceFetchFailure";
+import { BSC_API_BASE, bscHeaders } from "../lib/bscHttp";
 
 // Real BSC filter endpoint (ported from cardlister-server/script-frontend/src/listing-sites/bsc.ts).
 // The earlier www.buysportscards.com URL was a webpage path, not an API — CloudFront returned 403.
-const BSC_API_BASE = "https://api-prod.buysportscards.com";
 const BSC_FILTERS_PATH = "/search/bulk-upload/filters";
 
 // Per-attempt timeout for a single BSC marketplace fetch. The product owner
@@ -133,28 +133,8 @@ function sleep(ms: number): Promise<void> {
 //   NB insert        → BSC "variantName" (specific variant names)
 //   NB parallel      → NB only (no BSC facet)
 
-// Browser-mimicking headers required by the BSC API (without these CloudFront
-// rejects requests as bot traffic). `assumedrole: sellers` is mandatory and
-// scopes the session to a seller context.
-function bscHeaders(bearerToken: string): Record<string, string> {
-  return {
-    accept: "application/json, text/plain, */*",
-    "accept-language": "en-US,en;q=0.9",
-    assumedrole: "sellers",
-    "content-type": "application/json",
-    origin: "https://www.buysportscards.com",
-    referer: "https://www.buysportscards.com/",
-    "Sec-Ch-Ua":
-      '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
-    "Sec-Ch-Ua-Mobile": "?0",
-    "Sec-Ch-Ua-Platform": "macOS",
-    "Sec-Fetch-Dest": "empty",
-    "Sec-Fetch-Mode": "cors",
-    "Sec-Fetch-Site": "same-site",
-    authority: "api-prod.buysportscards.com",
-    authorization: `Bearer ${bearerToken}`,
-  };
-}
+// Browser-mimicking headers required by the BSC API: `bscHeaders` in
+// `lib/bscHttp.ts`, shared with the NEO-370 seller client.
 
 /**
  * Get BSC bearer token from Secret Manager (browser service extraction).

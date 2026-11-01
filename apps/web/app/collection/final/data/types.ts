@@ -59,7 +59,7 @@ export type Side = "collection" | "inventory";
  * both sides. The old `"inventory"` key is retired: a `?tab=inventory` link
  * redirects (replace) to `/inventory?tab=boxes`.
  */
-export type CollectionTab = "cards" | "binders" | "boxes" | "checklists" | "add";
+export type CollectionTab = "cards" | "binders" | "boxes" | "checklists" | "add" | "sales";
 
 // ---------------------------------------------------------------------------
 // Catalog
@@ -821,6 +821,12 @@ export interface Capabilities {
   intake: boolean;
   /** NEO-377 — a front and back photo on each copy line (`useCopyPhotos`). */
   copyPhotos: boolean;
+  /**
+   * NEO-370 — listing box copies on a marketplace (`useListing`): the
+   * per-collector switch, a checklist's listing panel and the Sales tab.
+   * Signed-in only: the demo never touches a marketplace.
+   */
+  marketplaceListing: boolean;
 }
 
 export const ALL_CAPABILITIES: Capabilities = {
@@ -839,6 +845,8 @@ export const ALL_CAPABILITIES: Capabilities = {
   inventory: true,
   intake: true,
   copyPhotos: true,
+  // The demo never touches Convex, so it never lists anywhere.
+  marketplaceListing: false,
 };
 
 export const NO_CAPABILITIES: Capabilities = {
@@ -856,6 +864,7 @@ export const NO_CAPABILITIES: Capabilities = {
   inventory: false,
   intake: false,
   copyPhotos: false,
+  marketplaceListing: false,
 };
 
 /**
@@ -875,6 +884,7 @@ export const REAL_CAPABILITIES: Capabilities = {
   binderSettings: true,
   intake: true,
   copyPhotos: true,
+  marketplaceListing: true,
 };
 
 // ---------------------------------------------------------------------------
@@ -894,6 +904,128 @@ export interface ShareProfile {
 
 export interface ShareLinkParts {
   slug: string;
+}
+
+// ---------------------------------------------------------------------------
+// Marketplace listing (NEO-370)
+// ---------------------------------------------------------------------------
+
+/** A marketplace NB lists box copies on. Only BuySportsCards today. */
+export type ListingPlatform = "bsc";
+
+/** Where the collector stands with one listing platform. */
+export interface ListingPlatformSettings {
+  /** They switched listing on: their box copies go up, and sales come back. */
+  enabled: boolean;
+  /** Their credentials for it are saved (Profile → Credentials). */
+  connected: boolean;
+  /** The saved sign-in died: they must sign in again on their Profile. */
+  needsReauth: boolean;
+  /** NB has paused the platform for everyone; changes wait until it is back. */
+  paused: boolean;
+}
+
+export type ListingSettings = Record<ListingPlatform, ListingPlatformSettings>;
+
+/**
+ * Why one card of a checklist did not list (NB's own words for it live in
+ * `../inventory/listing/copy`). Mirrors `listingProblemReasonValidator` in
+ * convex/schema.ts.
+ */
+export type ListingProblemReason =
+  | "noLink"
+  | "sharedLink"
+  | "numberMismatch"
+  | "noPrice"
+  | "priceTooHigh"
+  | "noCondition"
+  | "graded"
+  | "notOnSheet"
+  | "rejected";
+
+export interface ListingProblem {
+  reason: ListingProblemReason;
+  /** The NB card; absent only for a platform row NB cannot tie to a card. */
+  cardId?: CardId;
+  /** The platform's own id for a row NB cannot tie to a card. */
+  platformCardId?: string;
+  /** For `rejected`: a short excerpt of what the platform said. */
+  detail?: string;
+}
+
+/** One checklist's last push to a platform. */
+export interface ListingRun {
+  /** `running` while a push is going on; `error` when the last one failed. */
+  status: "idle" | "running" | "error";
+  /** When the last push finished, clean or not (ms). */
+  lastRunAt?: number;
+  /** When the last clean push finished (ms); absent before one, and after Resync. */
+  lastSuccessAt?: number;
+  /** NB's sentence for what went wrong last time. */
+  lastError?: string;
+  /** Cards NB holds a count for on the platform, after the last push. */
+  listed?: number;
+  /** At most 200; `problemsTotal` is the true count. */
+  problems: ListingProblem[];
+  problemsTotal: number;
+}
+
+export interface VariantListingStatus {
+  /** Null before the checklist's first push. */
+  run: ListingRun | null;
+  /** A change is waiting to go up (it goes about a minute after the change). */
+  pending: boolean;
+}
+
+/** Why a sold line was not (fully) taken out of the collector's boxes. */
+export type SaleItemProblem = "unmatched" | "linkMismatch" | "oversold";
+
+export interface SaleItem {
+  /** The platform's card id. */
+  platformCardId: string;
+  /** The NB card it sold as; absent when NB could not match it. */
+  cardId?: CardId;
+  /** The platform's condition word, verbatim. */
+  condition: string;
+  quantity: number;
+  /** Per copy, in cents. */
+  priceCents: number;
+  /** Taken out of the collector's boxes. */
+  applied: boolean;
+  problem?: SaleItemProblem;
+  /** `oversold` only: how many sold that NB had no box copy for. */
+  shortBy?: number;
+}
+
+/** One order a collector received on a platform. Money is integer cents. */
+export interface Sale {
+  id: string;
+  platform: ListingPlatform;
+  /** The number the platform shows the seller. */
+  orderNo: string;
+  /** When it was ordered (ms). */
+  orderDate: number;
+  /** The platform's status word, verbatim ("SHIPPED"). */
+  status: string;
+  totals: {
+    subtotalCents?: number;
+    shippingCents?: number;
+    feesCents?: number;
+    netCents?: number;
+    totalCents?: number;
+  };
+  items: SaleItem[];
+}
+
+/** The Sales list, newest first, a page at a time. */
+export interface SalesPage {
+  /** Undefined while the first page loads. */
+  sales: Sale[] | undefined;
+  /** More can be loaded. */
+  canLoadMore: boolean;
+  /** A page is on its way. */
+  loadingMore: boolean;
+  loadMore: () => void;
 }
 
 // ---------------------------------------------------------------------------

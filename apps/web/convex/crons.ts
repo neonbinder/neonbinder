@@ -170,4 +170,19 @@ crons.daily(
   {},
 );
 
+/**
+ * NEO-370 — read what sold on BuySportsCards and apply it to the collector's
+ * box copies. Every 15 minutes: the poll reads order history across ALL
+ * statuses back to a stored cursor, so an order that ships inside the window
+ * is still caught. One scheduled `pollOwner` per owner who lists on BSC; an
+ * owner with nothing new costs one history page. The tick also re-kicks a
+ * listing drain whose latch was lost (`finishPoll`). See `listingSales.ts`.
+ */
+crons.interval(
+  "poll BuySportsCards sales",
+  { minutes: 15 },
+  internal.listingSales.pollAll,
+  {},
+);
+
 export default crons;

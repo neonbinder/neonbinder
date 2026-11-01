@@ -91,6 +91,7 @@ import {
   type CopyPhotosExtension,
   type SharingExtension,
   type BinderMemoryExtension,
+  type ListingExtension,
 } from "./store";
 import {
   DEFAULT_CONDITION,
@@ -127,6 +128,10 @@ import {
   type DeclinedCard,
   type FoundCards,
   type SmartRule,
+  type ListingSettings,
+  type Sale,
+  type SalesPage,
+  type VariantListingStatus,
 } from "./types";
 
 type RawCopy = Infer<typeof copyValidator>;
@@ -2745,6 +2750,107 @@ function useConvexBinderMemory(): BinderMemoryExtension {
 }
 
 // ---------------------------------------------------------------------------
+// Marketplace listing (NEO-370)
+// ---------------------------------------------------------------------------
+
+/** Orders the Sales list asks for at a time (the server caps a page at 50). */
+const SALES_PER_PAGE = 20;
+
+type RawVariantStatus = FunctionReturnType<typeof api.listingSync.variantStatus>;
+type RawSale = FunctionReturnType<typeof api.listingSync.listSales>["page"][number];
+
+function toVariantListing(raw: RawVariantStatus): VariantListingStatus {
+  const r = raw.record;
+  return {
+    pending: raw.pending,
+    run: r
+      ? {
+          status: r.status,
+          ...(r.lastRunAt !== undefined ? { lastRunAt: r.lastRunAt } : {}),
+          ...(r.lastSuccessAt !== undefined ? { lastSuccessAt: r.lastSuccessAt } : {}),
+          ...(r.lastError !== undefined ? { lastError: r.lastError } : {}),
+          ...(r.counts ? { listed: r.counts.listed } : {}),
+          problems: r.problems.map((p) => ({
+            reason: p.reason,
+            ...(p.cardId !== undefined ? { cardId: p.cardId } : {}),
+            ...(p.platformCardId !== undefined ? { platformCardId: p.platformCardId } : {}),
+            ...(p.detail !== undefined ? { detail: p.detail } : {}),
+          })),
+          problemsTotal: Math.max(r.problemsTotal ?? 0, r.problems.length),
+        }
+      : null,
+  };
+}
+
+function toSale(raw: RawSale): Sale {
+  return {
+    id: raw._id,
+    platform: raw.platform,
+    orderNo: raw.orderNo,
+    orderDate: raw.orderDate,
+    status: raw.status,
+    totals: raw.totals,
+    items: raw.items.map((item) => ({
+      platformCardId: item.platformCardId,
+      ...(item.cardId !== undefined ? { cardId: item.cardId } : {}),
+      condition: item.condition,
+      quantity: item.quantity,
+      priceCents: item.priceCents,
+      applied: item.applied,
+      ...(item.problem !== undefined ? { problem: item.problem } : {}),
+      ...(item.shortBy !== undefined ? { shortBy: item.shortBy } : {}),
+    })),
+  };
+}
+
+function useListingSettings(): ListingSettings | undefined {
+  return useQuery(api.listingSync.listingSettings, {});
+}
+
+function useVariantListing(variantId: VariantId | null): VariantListingStatus | undefined {
+  const raw = useQuery(
+    api.listingSync.variantStatus,
+    variantId ? { variantId: variantId as Id<"selectorOptions"> } : "skip",
+  );
+  return useMemo(() => (raw === undefined ? undefined : toVariantListing(raw)), [raw]);
+}
+
+function useSalesPage(): SalesPage {
+  const pages = usePaginatedQuery(api.listingSync.listSales, {}, { initialNumItems: SALES_PER_PAGE });
+  const { results, status, loadMore } = pages;
+  const sales = useMemo(
+    () => (status === "LoadingFirstPage" ? undefined : results.map(toSale)),
+    [status, results],
+  );
+  return {
+    sales,
+    canLoadMore: status === "CanLoadMore",
+    loadingMore: status === "LoadingMore",
+    loadMore: () => loadMore(SALES_PER_PAGE),
+  };
+}
+
+function useConvexListing(): ListingExtension {
+  const setEnabled = useMutation(api.listingSync.setListingEnabled);
+  const resync = useMutation(api.listingSync.resyncVariant);
+  return useMemo<ListingExtension>(
+    () => ({
+      useSettings: useListingSettings,
+      useVariantStatus: useVariantListing,
+      useSales: useSalesPage,
+      async setEnabled(platform, enabled) {
+        await setEnabled({ platform, enabled });
+      },
+      async resyncVariant(variantId) {
+        const { queued } = await resync({ variantId: variantId as Id<"selectorOptions"> });
+        return queued;
+      },
+    }),
+    [setEnabled, resync],
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Provider
 // ---------------------------------------------------------------------------
 
@@ -2764,9 +2870,19 @@ export function ConvexCollectionProvider({ children }: { children: ReactNode }) 
   const sharing = useConvexSharing();
   const photos = useConvexCopyPhotos();
   const binderMemory = useConvexBinderMemory();
+  const listing = useConvexListing();
   const value = useMemo<CollectionStoreValue>(
-    () => ({ kind: "convex", capabilities: REAL_CAPABILITIES, data: CONVEX_DATA, actions, sharing, photos, binderMemory }),
-    [actions, sharing, photos, binderMemory],
+    () => ({
+      kind: "convex",
+      capabilities: REAL_CAPABILITIES,
+      data: CONVEX_DATA,
+      actions,
+      sharing,
+      photos,
+      binderMemory,
+      listing,
+    }),
+    [actions, sharing, photos, binderMemory, listing],
   );
   return createElement(
     CollectionStoreContext.Provider,
@@ -2814,4 +2930,6 @@ export const __test = {
   isPlainRow,
   patchInventory,
   optimisticIdFor,
+  toVariantListing,
+  toSale,
 };

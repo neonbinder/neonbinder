@@ -90,7 +90,11 @@ import type {
   PocketPlacement,
   SmartRule,
   InventoryCards,
+  ListingPlatform,
+  ListingSettings,
   QuantityResult,
+  SalesPage,
+  VariantListingStatus,
   Side,
   SystemKind,
   AddResult,
@@ -499,6 +503,26 @@ export interface BinderMemoryExtension {
   remember(scope: Scope): void;
 }
 
+/**
+ * NEO-370 — listing the collector's box copies on a marketplace (capability
+ * `marketplaceListing`): the Convex store's only. The demo never touches a
+ * marketplace, so it has none and hides every listing control. NB is the
+ * only truth: a platform shows NB's box count, and nothing here edits a
+ * listing by hand.
+ */
+export interface ListingExtension {
+  /** Where the collector stands with each platform; `undefined` while loading. */
+  useSettings(): ListingSettings | undefined;
+  /** Switch listing on or off. Rejects with the server's words (no saved sign-in, say). */
+  setEnabled(platform: ListingPlatform, enabled: boolean): Promise<void>;
+  /** One checklist's last push and whether a change is waiting; `null` asks nothing. */
+  useVariantStatus(variantId: VariantId | null): VariantListingStatus | undefined;
+  /** Forget the checklist's last clean push and send it again. Resolves with the cards queued. */
+  resyncVariant(variantId: VariantId): Promise<number>;
+  /** The Sales list, newest first. Call it every render, like a hook. */
+  useSales(): SalesPage;
+}
+
 export interface CollectionStoreValue {
   kind: "demo" | "convex";
   capabilities: Capabilities;
@@ -508,6 +532,7 @@ export interface CollectionStoreValue {
   sharing?: SharingExtension;
   photos?: CopyPhotosExtension;
   binderMemory?: BinderMemoryExtension;
+  listing?: ListingExtension;
 }
 
 export const CollectionStoreContext = createContext<CollectionStoreValue | null>(null);
@@ -544,6 +569,16 @@ export function usePhotosOf(copies: readonly Copy[]): ReadonlyMap<CopyId, CopyPh
 /** NEO-374 — where the page opens; `undefined` when the store has no such setting (the demo). */
 export function useBinderMemory(): BinderMemoryExtension | undefined {
   return useCollectionStore().binderMemory;
+}
+
+/**
+ * NEO-370 — marketplace listing; `undefined` when the store has none (the
+ * demo) or the capability is off. Hide every listing control when it is.
+ */
+export function useListing(): ListingExtension | undefined {
+  // Not `useCollectionStore`: a checklist drawn outside a store (a test's) simply lists nowhere.
+  const store = useContext(CollectionStoreContext);
+  return store?.capabilities.marketplaceListing ? store.listing : undefined;
 }
 
 /** NEO-360 — real share links; `undefined` when the store has none (the demo). */

@@ -78,6 +78,7 @@ import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { internalAction, internalMutation, mutation, query } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { noteArrivals } from "./binderFits";
+import { enqueueListingCards } from "./listingOutbox";
 import { requireSignedIn } from "./auth";
 import { findSetForSelectorOption } from "./lib/selectorAncestry";
 import {
@@ -904,7 +905,9 @@ async function collectionLinesOf(
  *      binder home; a distinct card gained when a card's first collection
  *      line arrives, lost when its last one goes),
  *   2. every container's own count (`moveCounts`, both sides, Trade too),
- *   3. the building-set `cards` (the same gained/lost cards, by set).
+ *   3. the building-set `cards` (the same gained/lost cards, by set),
+ *   4. NEO-370: the listing outbox, for every card a write touched in a box
+ *      (`enqueueListingCards`).
  *
  * A card's collection presence before the write is its collection lines now
  * minus the net collection lines the changes added, so a card is read only
@@ -954,6 +957,18 @@ export async function applyCopyChanges(
     ownerId,
     changes.map((c) => ({ cardId: c.cardId, homeId: c.after?.homeId ?? null, fromId: c.before?.homeId ?? null })),
   );
+  // NEO-370: a box copy is for sale, so a write whose row lived in a box
+  // before or after may change what the collector lists. Queue those cards
+  // for every platform they list on (a sale applied from one platform comes
+  // through here too, which is how it reaches the others). Binder-only
+  // writes queue nothing; an owner who lists nowhere costs one read.
+  const forSale: CopyCardId[] = [];
+  for (const change of changes) {
+    const wasBoxed = change.before !== null && (await sides.is(change.before.homeId, "inventory"));
+    const isBoxed = change.after !== null && (await sides.is(change.after.homeId, "inventory"));
+    if (wasBoxed || isBoxed) forSale.push(change.cardId);
+  }
+  await enqueueListingCards(ctx, { ownerId, cardIds: forSale });
 }
 
 /**
