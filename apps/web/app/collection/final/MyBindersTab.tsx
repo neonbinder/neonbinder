@@ -87,6 +87,7 @@ import PackTray, {
   type SlotTarget,
 } from "./binders/PackTray";
 import Shelf, { InventoryShelf } from "./binders/Shelf";
+import SmartFitsStatus from "./binders/SmartFitsStatus";
 import { keepClearOfTray, trackInputModality } from "./binders/trayClear";
 import { useSearchText } from "./catalog/search";
 import { shortCardName } from "./data/labels";
@@ -420,6 +421,9 @@ export default function MyBindersTab({
     homeOpen?.smartRule ? listCardIds : null,
   );
   const fits = matches ? (id: CardId) => matches.has(id) : undefined;
+
+  // NEO-410 — a smart binder's empty-slot status line (`SmartFitsStatus`).
+  const fitsWatched = !!(homeOpen?.smartRule && layout?.sort && layout.emptySlots);
 
   const setId = view?.kind === "set" ? view.setId : null;
   const setSummary = useSetSummary(setId);
@@ -1381,6 +1385,17 @@ export default function MyBindersTab({
     );
   };
 
+  /** NEO-410 — "Try again" after a smart binder's slots failed to compute. */
+  const retryFits = async () => {
+    if (!homeOpen) return;
+    const c = homeOpen;
+    try {
+      await actions.retryBinderFits(c);
+    } catch {
+      notify(`Couldn't restart the search for ${c.name}. Try again in a moment.`);
+    }
+  };
+
   const undeclineFound = async (cardId: CardId, card: Card | undefined) => {
     if (!homeOpen) return;
     const c = homeOpen;
@@ -1518,6 +1533,14 @@ export default function MyBindersTab({
               )
             ) : undefined}
           </BinderView>
+        )}
+
+        {fitsWatched && (
+          <SmartFitsStatus
+            pending={needs?.pending === true}
+            failed={needs?.failed === true}
+            onRetry={retryFits}
+          />
         )}
 
         {view && truncated && !isBox && !isTradeBox && (

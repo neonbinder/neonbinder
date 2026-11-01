@@ -1000,6 +1000,11 @@ export interface BinderNeeds {
    * just saved): `cards` is what was known before, and refreshes on its own.
    */
   pending?: boolean;
+  /**
+   * NEO-410 — every attempt to recompute the slots failed: `cards` is what
+   * was known before, and the screen offers "Try again" (`retryBinderFits`).
+   */
+  failed?: boolean;
 }
 
 /** NEO-362 — "Find cards for this binder": copies that fit the rule and live elsewhere. */

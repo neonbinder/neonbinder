@@ -987,6 +987,7 @@ function demoActions(stateRef: { current: DemoState }): CollectionActions {
     setSmartRule: noRules,
     declineCard: noRules,
     undeclineCard: noRules,
+    retryBinderFits: noRules,
 
     async setCommonPrice(variantId, price) {
       const previous = run((s) => demoOps.setCommonPrice(s, variantId, price));

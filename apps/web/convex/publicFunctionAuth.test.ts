@@ -2317,6 +2317,8 @@ describe("NEO-358: the collection and its catalog reads require a signed-in call
       () => t.mutation(api.collectionContainers.update, { containerId: ids.homeId, label: null }),
       () => t.mutation(api.collectionContainers.empty, { containerId: ids.homeId }),
       () => t.mutation(api.collectionContainers.remove, { containerId: ids.homeId }),
+      // NEO-410 — "Try again" on a smart binder's empty slots.
+      () => t.mutation(api.binderRules.retryFits, { containerId: ids.homeId }),
       () => t.mutation(api.collectionWants.set, { cardId: ids.cardId, on: true }),
       // NEO-378
       () => t.mutation(api.commonPrices.set, { variantId: ids.variantId, priceCents: 25 }),
