@@ -24,6 +24,7 @@
 import { test as base, expect, type Page } from "@playwright/test";
 import { checkAccessibility, type AccessibleOptions } from "./a11y";
 import { makeEnv, type FlowEnv } from "./env";
+import { capturePageDiagnostics } from "./hang-capture";
 
 export type SignIn = (
   redirect: string,
@@ -44,7 +45,11 @@ export function signInUrl(redirect: string, worker: string, account?: string): s
   return `/testing/sign-in?redirect=${redirect}${acct}&worker=${worker}`;
 }
 
-export const test = base.extend<{ env: FlowEnv; signIn: SignIn }>({
+export const test = base.extend<{ env: FlowEnv; signIn: SignIn; hangAfterMs: number | undefined }>({
+  // NEO-409: how long a Convex call may stay open before the app's hang
+  // detector prints its `[nb-hang]` record. Undefined keeps the app's default
+  // (5 s). Only the detector's own spec lowers it, via test.use().
+  hangAfterMs: [undefined, { option: true }],
   env: async ({}, use, testInfo) => {
     // The project feeds the d/m marker in every minted name (./env.ts).
     await use(makeEnv(testInfo.project.name));
@@ -53,7 +58,7 @@ export const test = base.extend<{ env: FlowEnv; signIn: SignIn }>({
   // loads, so the app's E2E diagnostic events in PostHog can be filtered to
   // the one test that went red (lib/observability/e2e-diagnostics.ts).
   // Identifiers only: no URL, credential or test data goes on the window.
-  context: async ({ context, env }, use, testInfo) => {
+  context: async ({ context, env, hangAfterMs }, use, testInfo) => {
     await context.addInitScript((tags) => {
       (window as unknown as { __NB_E2E?: unknown }).__NB_E2E = tags;
     }, {
@@ -64,8 +69,18 @@ export const test = base.extend<{ env: FlowEnv; signIn: SignIn }>({
       test: testInfo.titlePath.slice(1).join(" > "),
       file: testInfo.file.split("/playwright/").pop() ?? "",
       retry: testInfo.retry,
+      ...(hangAfterMs === undefined ? {} : { hang_after_ms: hangAfterMs }),
     });
     await use(context);
+  },
+  // NEO-409: every page's console and page errors are kept in memory; when a
+  // test fails they go on it as attachments, with the Convex calls that were
+  // still open at that moment (lib/observability/convex-hang-detector.ts).
+  // Nothing is attached for a passing test.
+  page: async ({ page }, use, testInfo) => {
+    const capture = capturePageDiagnostics(page);
+    await use(page);
+    await capture.attachOnFailure(testInfo);
   },
   signIn: async ({ page, env }, use) => {
     await use(async (redirect, opts = {}) => {

@@ -10,7 +10,13 @@ import {
   useState,
 } from "react";
 import { ConvexReconnectContext } from "./convexReconnect";
-import { e2eDiagnostic } from "@/lib/observability/e2e-diagnostics";
+import { e2eDiagnostic, isE2E } from "@/lib/observability/e2e-diagnostics";
+import {
+  createHangDetector,
+  hangAfterMsFrom,
+  type HangDetector,
+  type HangRecord,
+} from "@/lib/observability/convex-hang-detector";
 
 /**
  * NEO-84 — the client must be replaceable, because a wedged websocket cannot
@@ -54,6 +60,62 @@ export const MAX_CLIENT_RECONNECTS = 3;
  */
 export const RECONNECT_COOLDOWN_MS = 30_000;
 
+/**
+ * NEO-409 — one hang detector per page, E2E only. It outlives client swaps,
+ * so a call stranded on a superseded client still shows up as open.
+ */
+let hangDetector: HangDetector | null = null;
+
+function reportHang(record: HangRecord): void {
+  const connection = record.state.connection ?? {};
+  e2eDiagnostic("convex_call_hang", {
+    kind: record.kind,
+    name: record.name,
+    args_hash: record.argsHash,
+    generation: record.generation,
+    open_for_ms: record.openForMs,
+    open_calls: record.openCalls,
+    auth_paused: record.state.authPaused,
+    last_auth_line: record.state.lastAuthLine,
+    ms_since_last_auth_line: record.state.msSinceLastAuthLine,
+    ms_since_last_server_message: record.state.msSinceLastServerMessage,
+    ms_since_last_transition: record.state.msSinceLastTransition,
+    ws_connected:
+      typeof connection.isWebSocketConnected === "boolean"
+        ? connection.isWebSocketConnected
+        : null,
+    connection_count:
+      typeof connection.connectionCount === "number" ? connection.connectionCount : null,
+    connection_retries:
+      typeof connection.connectionRetries === "number" ? connection.connectionRetries : null,
+  });
+}
+
+function e2eHangDetector(): HangDetector {
+  if (!hangDetector) {
+    const tags = (window as unknown as { __NB_E2E?: unknown }).__NB_E2E;
+    const detector = createHangDetector({
+      hangAfterMs: hangAfterMsFrom(tags),
+      onHang: reportHang,
+    });
+    (window as unknown as { __NB_HANG?: unknown }).__NB_HANG = {
+      snapshot: detector.snapshot,
+    };
+    hangDetector = detector;
+  }
+  return hangDetector;
+}
+
+/** Builds the client; under E2E with the hang detector as logger and watcher. */
+export function buildConvexClient(generation: number): ConvexReactClient {
+  const url = import.meta.env.VITE_CONVEX_URL;
+  if (!isE2E()) return new ConvexReactClient(url);
+  const detector = e2eHangDetector();
+  const client = new ConvexReactClient(url, { logger: detector.logger });
+  detector.attach(client, generation);
+  return client;
+}
+
 export default function ConvexClientProvider({
   children,
 }: {
@@ -62,8 +124,9 @@ export default function ConvexClientProvider({
   const [generation, setGeneration] = useState(0);
 
   const convex = useMemo(() => {
-    return new ConvexReactClient(import.meta.env.VITE_CONVEX_URL);
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- `generation` IS the dependency: bumping it to build a new client (and therefore a new websocket) is the entire mechanism.
+    return buildConvexClient(generation);
+    // `generation` IS the dependency: bumping it to build a new client (and
+    // therefore a new websocket) is the entire mechanism.
   }, [generation]);
 
   // Close the superseded client, but only after the new one is committed and

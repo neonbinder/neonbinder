@@ -90,6 +90,15 @@ Reference specs that show the patterns below:
    `no-restricted-imports` in `eslint.config.mjs` refuses the import in every
    other file, so a third importer is a lint error.
 
+9. **One named exception to rule 2: the NEO-409 hang detector (approved by Jason
+   2026-11-01).** `support/convex-stall.ts` (a `routeWebSocket` on the Convex sync
+   socket that swallows one client `Mutation` frame, a wait on the page console and
+   a read of `window.__NB_HANG`) is used by
+   `diagnostics/convex-hang-detector-names-a-stalled-save` ONLY, to prove that a call
+   the server never answers is named by the app's hang detector. `support/hang-capture.ts`
+   is the fixture's failure capture (below). `no-restricted-imports` refuses both
+   in every other spec.
+
 ## Rules every spec satisfies (R1-R4, R7, R7a, R9)
 
 The numbers are stable: specs cite them in comments (`// R7a ...`).
@@ -232,6 +241,9 @@ test("<title states the feature>", { tag: ["@set-selector"] }, async ({ page, si
 - `support/a11y.ts`: what `expectAccessible` runs: the WCAG tags, the one
   list of excluded third-party regions (each with its reason), the failure
   summary and the attachment. Specs never import it directly.
+- `support/hang-capture.ts`: the fixture's failure capture (NEO-409): the
+  page console and page errors, and on a failed test the `console` and
+  `convex open calls` attachments. Specs never import it directly.
 - `support/env.ts`: how `env` is built (`makeEnv`, `isSlPaused`); import types
   from here, do not re-derive.
 - `support/credentials.ts`: `loginToBsc(page)`, `loginToSportLots(page, env)`,
@@ -854,6 +866,13 @@ desktop-only file still plans both passes).
 3. Open the failure screenshot and the spec's `error-context.md` (the ARIA
    snapshot of the page at failure). The role and name you expected is
    usually visibly different from what is there.
+   If the screen was waiting (a spinner, a save that never said "Saved."),
+   open the failed test's `convex open calls` attachment (NEO-409): every
+   Convex mutation, action and unanswered query still open at that moment,
+   with the socket state, whether the client was paused for a Clerk token, the
+   time since the last server message, and the Convex client's last log lines.
+   The `console` attachment is the page console and uncaught errors; a
+   `[nb-hang]` line there marks when a call passed 5 s open.
 4. Check the run's `PAUSED_PLATFORMS: ` line and, for enrichment, the
    `convex-logs-*` artifacts, before deciding which branch the spec took.
 5. Reproduce that one spec locally against the PR preview (above); fix; push
