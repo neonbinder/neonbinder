@@ -268,3 +268,19 @@ export const PREPROCESS_MAX_PARALLELISM = resolvePreprocessMaxParallelism(
 export const HEAVY_MAX_PARALLELISM = resolveHeavyPreprocessMaxParallelism(
   process.env.HEAVY_PREPROCESS_MAX_PARALLELISM,
 );
+
+/**
+ * How many heavy warm-ups one fan-out enqueues: half the heavy slots, at least
+ * one (NEO-411).
+ *
+ * NEO-299 warmed to the full limit, but a heavy warm-up holds its pool slot for
+ * the whole ~200s model load, so a full fan-out left no slot for the batch's
+ * own photos: in the 2026-10-30/31 red E2E runs, escalated photos sat queued
+ * until warm-ups returned (2 min 50 s in run 41106456908) and then often landed
+ * on a cold instance anyway. Half the slots still brings instances up during
+ * the fast phase, and the other half is always free for a photo the moment it
+ * escalates. No 429 was seen in any of those runs, so the shared ceiling holds.
+ */
+export function heavyWarmupCount(maxParallelism: number): number {
+  return Math.max(1, Math.floor(maxParallelism / 2));
+}

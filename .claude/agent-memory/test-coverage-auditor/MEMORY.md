@@ -4,3 +4,5 @@
 - [One big spec, many screens](one-big-spec-many-screens-axe-gap.md) — map every view of a multi-view feature to an open assert plus axe; open forms count
 - [CLI to Convex boundary args pin](cli-to-convex-boundary-args-pin.md) — a script calling `convex run` needs a test pinning the JSON it sends and the refusal on a short answer; convex-test ids cannot prove id-byte logic, ask for a read-only cross-check on a deployment
 - [Retry chain plus sweep overlap](retry-chain-plus-sweep-overlap.md) — delay ladder longer than the sweep threshold runs two chains; ask for an overlap test; failure-only UI gets a component test, not a backdoor
+- [Scheduled deadline keyed on row id](scheduled-deadline-keyed-on-row-id.md) — a deadline that carries only the row id fires on a retried/restarted row; require a test running the old deadline after the reset
+- [Seeded terminal-state spec](seeded-terminal-state-spec.md) — a spec that seeds a failed row then drives the real path: trace it to a terminal 4xx, check close keeps the screen, prove the cap variant; gate sign-in on LAUNCH_GATE

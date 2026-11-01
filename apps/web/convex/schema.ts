@@ -3485,6 +3485,19 @@ export default defineSchema({
     queuedAt: v.optional(v.number()),
     escalatedAt: v.optional(v.number()),
     settledAt: v.optional(v.number()),
+    // NEO-411: when the heavy worker first started on this escalated row, epoch
+    // ms. Stamped once, by `noteHeavyStart`, which also schedules the photo's
+    // deadline (`HEAVY_PHOTO_DEADLINE_MS`): a heavy photo with no answer by then
+    // is marked failed (errorCode "PHOTO_TIMED_OUT") instead of staying in
+    // "Working on your photos." for the length of the retry ladder. Counted from
+    // the start of work, not from escalation, so a photo waiting its turn behind
+    // other photos in a large batch is not failed for the queue. Cleared with
+    // the rest of the per-image state on a restart or a retry.
+    heavyStartedAt: v.optional(v.number()),
+    // NEO-411: how many times the collector has pressed Try again on this photo
+    // (`retryPlaceholderImage`). Capped at PLACEHOLDER_MAX_IMAGE_RETRIES so one
+    // photo cannot be sent to the paid services without end.
+    retries: v.optional(v.number()),
   })
     // The ONLY index this table needs. It answers both "every image of this
     // job" (prefix `jobId` alone) and "this job's images in zip order", so a

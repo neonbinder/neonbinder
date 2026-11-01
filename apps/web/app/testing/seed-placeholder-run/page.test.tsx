@@ -18,6 +18,7 @@ const mocks = vi.hoisted(() => ({
   calls: [] as string[],
   reset: vi.fn(),
   seed: vi.fn(),
+  seedFailed: vi.fn(),
 }));
 
 // Plain string tokens for the generated api so `useMutation` can tell the reset
@@ -30,6 +31,7 @@ vi.mock("@/convex/_generated/api", () => ({
     },
     testing: {
       seedMyTestPlaceholderStream: "testing:seedMyTestPlaceholderStream",
+      seedMyTestFailedPhotoRun: "testing:seedMyTestFailedPhotoRun",
     },
   },
 }));
@@ -39,7 +41,9 @@ vi.mock("convex/react", () => ({
   useMutation: (ref: string) =>
     ref === "placeholderPipeline:seedCancelMyActivePlaceholderJobs"
       ? mocks.reset
-      : mocks.seed,
+      : ref === "testing:seedMyTestFailedPhotoRun"
+        ? mocks.seedFailed
+        : mocks.seed,
 }));
 
 import TestingSeedPlaceholderRunPage from "./page";
@@ -53,6 +57,7 @@ function renderPage(entry = "/testing/seed-placeholder-run") {
           element={<TestingSeedPlaceholderRunPage />}
         />
         <Route path="/pipeline-runs" element={<div>operator view</div>} />
+        <Route path="/collection" element={<div>add cards screen</div>} />
       </Routes>
     </MemoryRouter>,
   );
@@ -70,7 +75,18 @@ describe("TestingSeedPlaceholderRunPage", () => {
       mocks.calls.push("seed");
       return { jobId: "3f2a1b8c-1111-2222-3333-444455556666" };
     });
+    mocks.seedFailed = vi.fn(async () => {
+      mocks.calls.push("seedFailed");
+      return { runId: "run123", originalName: "never-read-3f2a1b8c.jpg" };
+    });
     vi.stubEnv("VITE_CLERK_TESTING_ENABLED", "true");
+  });
+
+  it("NEO-411: with failedPhoto=1, resets, seeds the failed-photo run and opens it", async () => {
+    renderPage("/testing/seed-placeholder-run?failedPhoto=1");
+    await waitFor(() => expect(screen.getByText("add cards screen")).not.toBeNull());
+    expect(mocks.calls).toEqual(["reset", "seedFailed"]);
+    expect(mocks.seed).not.toHaveBeenCalled();
   });
 
   it("resets the caller's active jobs before seeding the fixture run", async () => {

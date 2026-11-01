@@ -30,6 +30,11 @@ import { api } from "@/convex/_generated/api";
 // idempotent across repeated runs. Gated identically, so it is safe here and
 // nowhere a real user can reach.
 //
+// NEO-411: `?failedPhoto=1` seeds a different fixture, an intake run holding one
+// photo that was never read (`seedMyTestFailedPhotoRun`), and lands on that
+// run's Add cards screen. `redirect` is ignored in that mode: the run id is
+// only known once the seed returns.
+//
 // Only functional when VITE_CLERK_TESTING_ENABLED=true; the mutations also fail
 // closed on production Convex (no TESTING_RESET_SECRET there).
 function TestingSeedPlaceholderRunContent() {
@@ -38,9 +43,11 @@ function TestingSeedPlaceholderRunContent() {
     api.placeholderPipeline.seedCancelMyActivePlaceholderJobs,
   );
   const seedRun = useMutation(api.testing.seedMyTestPlaceholderStream);
+  const seedFailedPhoto = useMutation(api.testing.seedMyTestFailedPhotoRun);
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const redirect = searchParams.get("redirect") || "/pipeline-runs";
+  const failedPhoto = searchParams.get("failedPhoto") === "1";
   const [status, setStatus] = useState("Initializing...");
   const ranRef = useRef(false);
 
@@ -71,6 +78,12 @@ function TestingSeedPlaceholderRunContent() {
         // Held through the seed's own await so it actually paints; a bare
         // second setStatus in the same tick would batch it away.
         setStatus(`Reset ${reset.canceled} previous sessions.`);
+        if (failedPhoto) {
+          const seeded = await seedFailedPhoto();
+          setStatus(`Seeded ${seeded.originalName} — redirecting...`);
+          navigate(`/collection?tab=add&run=${encodeURIComponent(seeded.runId)}`);
+          return;
+        }
         const result = await seedRun();
         setStatus(`Seeded ${result.jobId.slice(0, 8)} — redirecting...`);
         navigate(redirect);
@@ -79,7 +92,7 @@ function TestingSeedPlaceholderRunContent() {
         setStatus(`Error: ${msg}`);
       }
     })();
-  }, [isAuthenticated, isLoading, navigate, redirect, resetSessions, seedRun]);
+  }, [failedPhoto, isAuthenticated, isLoading, navigate, redirect, resetSessions, seedFailedPhoto, seedRun]);
 
   return (
     <div className="flex items-center justify-center min-h-screen bg-surface">
