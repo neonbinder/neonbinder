@@ -109,6 +109,7 @@ BuySportsCards alone for the whole run:
 | Baseball → 2025 → Bowman › Bowman Draft › Insert › Bowman Draft Nights Autographs | `Insert` set `Bowman Draft Nights Autographs` — made its own set from the Reconcile Inserts dialog by its exact "Make its own set" button (its four refractor siblings are NOT made sets); its 5 cards (BDNA-SH, -EW, -GF, -KA, -XN, each AU + SN99 in BSC's attribute field) fetched and COMMITTED in-flow (NOT pre-synced); every name the wizard stages is SKIPPED, no player, team or league minted; the part's autograph format answered in the wizard, changed in Set details, cleared and answered again from the header, and card BDNA-KA's `autographed` toggled once by hand | `tests/set-selector/checklist-autograph-format-asked-applied-and-changeable.spec.ts` — **sole writer** of those five cards, not self-cleaning (the run-start reset is its cleanup). ✅ **Approved by Jason 2026-10-14** (NEO-345); shares the YEAR and the Bowman Draft Insert reconcile with the dual-team spec above (a different insert, different rows) — see "Baseball → 2025 — the NEO-345 autograph fixture" |
 | Baseball → 2024 → Topps → Topps (the flagship: BSC's Series 1 + 2 set) | `Insert` — Variant Types synced on first entry; the `Insert` reconcile SAVED twice (once built, once re-synced): every Ready set it holds, including `City Connect Swatch Collection Relics (Series One)` linked to SportLots **299607** and `… (Series Two)` linked to **307437**. No checklist is fetched (NOT pre-synced; the `Topps` row itself is the seed's 2024 Topps Sets sync) | `tests/set-selector/reconcile-sportlots-twins-save-each-to-its-own-set.spec.ts` — **sole writer**, not self-cleaning (the run-start reset is its cleanup). ✅ Approved by Jason 2026-10-08 (NEO-325); see "SportLots twin names" |
 | Football → 2014 (the whole year) → Topps → Topps (the flagship) | `Base` — the year's Years, Manufacturers and year-wide Sets synced cold in-flow; `Topps`' Variant Types synced; the Base picker CONFIRMED on both sides; the checklist fetched and COMMITTED in-flow through the Match Cards dialog, with BSC's #442 unlinked and then deliberately linked to a SportLots-only card and saved under the SportLots name; any review-wizard names SKIPPED (NOT pre-synced) | `tests/set-selector/checklist-team-leader-cards-pair-and-picked-name-saves.spec.ts` — **sole writer** of the year, not self-cleaning (the run-start reset is its cleanup). ✅ **Approved by Jason 2026-10-13** (NEO-343/NEO-344) — see "Football → 2014 — the NEO-343 team-leader fixture" |
+| Baseball → 1988 → Topps → Topps (BSC's "1988 Topps") | `Base` — the year's Manufacturers and Sets synced cold, Base MAPPED on both sides, the full checklist (BSC's 1988 Topps base, about 792 cards) fetched and SAVED by the SEED, wizard walked (NEO-370; the live count is recorded below after the first seed) | `tests/setup.spec.ts` provisions it; `tests/collection/inventory-bsc-listing-1988-topps-base.spec.ts` is the **sole writer of its BuySportsCards quantities** (it writes no card, player, team or variant of the set). ✅ **Approved by Jason 2026-11-01** (NEO-370) — see "1988 Topps Baseball — the BuySportsCards listing fixture" |
 
 ### 2024 Topps NHL Sticker Collection — NEO-211, sole-writer ⚠️ SUBSTITUTED, NEEDS SIGN-OFF
 
@@ -989,6 +990,30 @@ carried exactly that. It also means these flows need a set that has never been
 committed on the deployment — which CI guarantees by reseeding every run, and
 which a LOCAL re-run does not: re-running one of these against an
 already-committed preview fails at the wizard wait, correctly.
+
+### 1988 Topps Baseball — the BuySportsCards listing fixture (NEO-370) ✅ APPROVED by Jason 2026-11-01
+
+`tests/collection/inventory-bsc-listing-1988-topps-base.spec.ts` proves that a
+collector's box counts reach BuySportsCards. That cannot be proved on a
+hand-made set (no BSC card id, nothing to list), so it uses a real, synced one.
+
+**Why this set.** Jason: there is so much of 1988 Topps on BSC that nothing
+sells from the two cards during a run, and the spec sets both back to 0 before
+it ends, even on failure. The seller account the spec lists on is the one the
+bootstrap saves for E2E; the spec never calls BSC itself, it lists through the
+product (leave the checklist, Resync).
+
+| | |
+| -- | -- |
+| ancestors | `Baseball → 1988 → Topps → Topps` (BSC calls it "1988 Topps"; NB strips the year, as for "2024 Topps Chrome"). Reached with `drillToColdManufacturer` + `drillToBaseVariant` in the seed; the collector's `drillToCollectorBase(page, TOPPS_1988)` in the spec |
+| provisioned | `tests/setup.spec.ts`, before the Bowman block (that block returns early under a SportLots pause). Brand row hand-made under the pause, SportLots-linked when live, like 2024's |
+| what the SPEC writes | on BuySportsCards: the quantity (and the price and SKU the drain sends) of the **first two cards** of the Base checklist, 0 to 1 to 0. In NB: the signed-in user's own `collectionContainers` (one minted box `Bsc<token>`), `collectionCopies` (two box copies, one binder copy removed again), `variantCommonPrices` (set, then cleared) and `marketplaceListing*` rows (the account's switch and per-checklist record). It never writes the set's cards, players, teams or variants |
+| the cards | the first two rows in checklist order, read off the quantity fields' names, so the choice follows the seed. Their BSC rows are the only rows the spec's pushes change; a Resync (cleanup only) sets every row of the checklist to what NB holds, which is 0 beyond these two |
+| writer | **sole writer** of every BSC quantity for this set. No other spec, and no other session pointed at the same seller, may list or edit 1988 Topps there: a second writer turns a "1 listed" into a read-back mismatch. The seller account is shared by every worker, but only the worker running this spec writes. Desktop and mobile each run it once, in separate passes on separate seeds |
+| reads | no other spec reads the set. If one is added, it must not turn the account's listing switch on |
+| re-runs | **safe to re-run on the same seed**: the minted box differs per attempt, every count ends at 0 and the switch ends off. A failed run is cleaned by the spec's afterEach (see its header) |
+| cron | the 15-minute order poll and re-sync are deliberately NOT exercised (Jason, 2026-11-01); the account has listing off again before the spec ends, so a poll never meets this account |
+| measured | **Not yet.** Fill in after the first PR-preview run: (1) the seed block's wall time and the saved card count (`Saved N cards`) and the wizard steps it walked (it uses the live enrichment lookups: the committed recording holds none of this set's names, and extending it needs the set's staged names from a committed run, see `docs/operations/neo289-enrichment-fixtures.md` §4a); (2) one "leave → N listed" BSC round trip, the figure `BSC_ROUND_TRIP` in the spec is checked against; (3) whether the first two cards carry both a BSC card id and a SportLots one |
 
 ### Topps 206 — the unmapped-Base fixture for `base-mapping-cancel-recovers` (NEO-248) ✅ APPROVED
 
