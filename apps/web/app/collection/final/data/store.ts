@@ -91,6 +91,7 @@ import type {
   SmartRule,
   InventoryCards,
   ListingPlatform,
+  ListingGateView,
   ListingSettings,
   QuantityResult,
   SalesPage,
@@ -532,6 +533,12 @@ export interface ListingExtension {
   loadSetProblems(variantId: VariantId, platform: ListingPlatform): Promise<SetProblems>;
   /** The Sales list, newest first. Call it every render, like a hook. */
   useSales(): SalesPage;
+  /**
+   * The listing gate for adds into `homeId` (a variant's common price
+   * included), and whether the collector syncs at all; `undefined` while
+   * loading. Call it every render, like a hook.
+   */
+  useGate(homeId: ContainerId | null, variantId: VariantId | null): ListingGateView | undefined;
 }
 
 export interface CollectionStoreValue {
@@ -590,6 +597,20 @@ export function useListing(): ListingExtension | undefined {
   // Not `useCollectionStore`: a checklist drawn outside a store (a test's) simply lists nowhere.
   const store = useContext(CollectionStoreContext);
   return store?.capabilities.marketplaceListing ? store.listing : undefined;
+}
+
+/** A store that lists nowhere (the demo, a test's): never syncing, never gated. */
+export const NO_LISTING_GATE: ListingGateView = { syncing: false, applies: false, commonPriceCents: null };
+const noGate = (): ListingGateView => NO_LISTING_GATE;
+
+/**
+ * NEO-370 — the listing gate for adds into `homeId` (`ListingGateView`):
+ * `NO_LISTING_GATE` in a store with no listing, `undefined` while loading.
+ * Call it every render, like a hook.
+ */
+export function useListingGate(homeId: ContainerId | null, variantId: VariantId | null): ListingGateView | undefined {
+  const ext = useListing();
+  return (ext?.useGate ?? noGate)(homeId, variantId);
 }
 
 /** NEO-360 — real share links; `undefined` when the store has none (the demo). */

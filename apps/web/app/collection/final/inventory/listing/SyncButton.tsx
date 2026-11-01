@@ -5,6 +5,7 @@ import { FOCUS } from "../../../prototypes/p1/ui";
 import { useListing, writeErrorMessage, type ListingExtension } from "../../data/store";
 import type { ListingSettings, SyncVariantResult, VariantId } from "../../data/types";
 import { usePageApi } from "../../pageApi";
+import { SyncStatusLink } from "./ListingGate";
 
 /**
  * NEO-370 Rev 4/5 — "Sync", top right of an inventory checklist's header. One
@@ -19,6 +20,11 @@ import { usePageApi } from "../../pageApi";
  * the reason is read with it. A press while inert
  * says the reason on the status line too, for anyone who can't see the
  * dimmed button's description.
+ *
+ * After a press, "See what's syncing" appears under it (Jason, 2026-11-01):
+ * a link to Inventory → Sync status, for a collector set up for syncing (the
+ * listing gate's `syncing`). It lands in a polite live region that is always
+ * there, so it is announced, and it is the next Tab stop after Sync.
  *
  * Hidden in a store with no listing (the demo).
  */
@@ -48,7 +54,9 @@ export function syncToast(title: string, result: SyncVariantResult): string {
 function Sync({ listing, variantId, title }: { listing: ListingExtension; variantId: VariantId; title: string }) {
   const api = usePageApi();
   const settings = listing.useSettings();
+  const syncing = listing.useGate(null, null)?.syncing === true;
   const [busy, setBusy] = useState(false);
+  const [pressed, setPressed] = useState(false);
   const reasonId = useId();
   const loading = settings === undefined;
   const canSync = listsAnywhere(settings);
@@ -61,6 +69,7 @@ function Sync({ listing, variantId, title }: { listing: ListingExtension; varian
       return;
     }
     setBusy(true);
+    setPressed(true);
     listing
       .syncVariant(variantId)
       .then(
@@ -71,7 +80,7 @@ function Sync({ listing, variantId, title }: { listing: ListingExtension; varian
   };
 
   return (
-    <>
+    <div className="flex shrink-0 flex-col items-end">
       <NeonButton
         type="button"
         size="1"
@@ -92,6 +101,8 @@ function Sync({ listing, variantId, title }: { listing: ListingExtension; varian
           {NOT_LISTING_LINE}
         </span>
       )}
-    </>
+      {/* Always mounted (a live region announces what lands in it), empty until a press. */}
+      <span role="status">{pressed && syncing && <SyncStatusLink className="mt-1 inline-block max-sm:py-2" />}</span>
+    </div>
   );
 }

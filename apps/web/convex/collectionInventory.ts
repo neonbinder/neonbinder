@@ -30,6 +30,10 @@
  *     line that reaches 0 is deleted.
  *   - The same number: nothing is written.
  *
+ * NEO-370: a raise into a listed box needs the variant's common price and a
+ * condition when the collector is set up for syncing (`listingGate.ts`); a
+ * lower, and an undo, are never held.
+ *
  * Every write returns `inverse`: the exact row-level undo (each touched line
  * put back as it was), which `undoBoxQuantity` applies after checking every
  * line still reads as the write left it. The undo returns its own inverse
@@ -44,6 +48,7 @@ import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx } from "./_generated/server";
 import { mutation, query } from "./_generated/server";
 import { requireSignedIn } from "./auth";
+import { ListingGate } from "./listingGate";
 import {
   COLLECTION_ERRORS,
   MAX_COPY_QUANTITY,
@@ -332,6 +337,20 @@ export const setBoxQuantity = mutation({
     const undo: Step[] = [];
     const changes: CountChange[] = [];
     if (args.quantity > before) {
+      // NEO-370: a raise into a listed box, by a collector set up for
+      // syncing, needs the variant's common price (a plain line has no price
+      // of its own) and the default condition (`listingGate.ts`). A lower is
+      // never held: taking cards out always works.
+      const gate = new ListingGate(ctx, ownerId);
+      let place: Promise<Place> | undefined;
+      const placeOnce = () => (place ??= placeOf(ctx, args.cardId));
+      if (await gate.applies(box)) {
+        await gate.require(box, {
+          variantId: (await placeOnce()).variantId,
+          graded: false,
+          condition: defaultCondition,
+        });
+      }
       const put = await putPlain(
         ctx,
         ownerId,
@@ -341,6 +360,7 @@ export const setBoxQuantity = mutation({
         { quantity: args.quantity - before, acquiredOn },
         defaultCondition,
         now,
+        placeOnce,
       );
       undo.push(put.undo);
       changes.push(put.change);

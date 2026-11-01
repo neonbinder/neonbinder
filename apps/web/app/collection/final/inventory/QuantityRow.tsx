@@ -105,6 +105,7 @@ export default function QuantityRow({
   onRowClick,
   onOpenChecklist,
   groupRef,
+  lockedBy,
 }: {
   card: Card;
   /** The card's box copies (any box; never a binder copy). `undefined` while they load. */
@@ -121,6 +122,12 @@ export default function QuantityRow({
   /** Search results: the opener for the card's checklist. */
   onOpenChecklist?: () => void;
   groupRef?: Ref<HTMLLIElement>;
+  /**
+   * NEO-370 — the id of the note saying why this box's counts are held (the
+   * listing gate): the field turns read-only and points at it, the + is off.
+   * The field stays a Tab stop, so the reason is read on arrival.
+   */
+  lockedBy?: string;
 }) {
   const api = usePageApi();
   const writes = useCollectionActions();
@@ -135,6 +142,7 @@ export default function QuantityRow({
   const count = plainQuantity(lines, defaultCondition);
   const others = otherLines(lines, defaultCondition);
   const ready = copies !== undefined && box !== undefined;
+  const locked = lockedBy !== undefined;
 
   /** What is typed and not yet settled, for the box it was typed for. */
   const [draft, setDraft] = useState<{ text: string; boxId: string } | null>(null);
@@ -161,7 +169,7 @@ export default function QuantityRow({
 
   /** Writes what is typed, if it changed. False only when it was refused. */
   const commit = (): boolean => {
-    if (shownDraft === null || !box || copies === undefined) return true;
+    if (shownDraft === null || !box || copies === undefined || locked) return true;
     const base = latest();
     const quantity = parseQuantity(shownDraft);
     if (quantity === null || quantity === base) {
@@ -188,7 +196,7 @@ export default function QuantityRow({
    * left (the field keeps the focus, see `onMouseDown` below) goes first.
    */
   const addOne = () => {
-    if (!box || copies === undefined) return;
+    if (!box || copies === undefined || locked) return;
     // A typed number the cap refused stays refused: the + adds nothing to it.
     if (!commit()) return;
     const base = latest();
@@ -277,7 +285,9 @@ export default function QuantityRow({
   if (showSet) sub.push(setAndVariant(card));
   if (run) sub.push(run);
   if (card.cardVariation) sub.push(`${card.cardVariation} variation`);
-  const describedBy = [status.kind === "error" ? errorId : null, others ? othersId : null].filter(Boolean).join(" ");
+  const describedBy = [lockedBy ?? null, status.kind === "error" ? errorId : null, others ? othersId : null]
+    .filter(Boolean)
+    .join(" ");
 
   return (
     <li
@@ -342,11 +352,11 @@ export default function QuantityRow({
             enterKeyHint="next"
             autoComplete="off"
             spellCheck={false}
-            readOnly={!ready}
+            readOnly={!ready || locked}
             value={value}
             onFocus={(e) => e.currentTarget.select()}
             onChange={(e) => {
-              if (!box) return;
+              if (!box || locked) return;
               setDraft({ text: e.target.value.replace(/\D/g, "").slice(0, QUANTITY_FIELD_DIGITS), boxId: box.id });
               if (status.kind !== "saving") setStatus({ kind: "idle" });
             }}
@@ -367,7 +377,7 @@ export default function QuantityRow({
             size="1"
             tabIndex={-1}
             aria-label={addLabel}
-            disabled={!ready}
+            disabled={!ready || locked}
             onMouseDown={(e) => e.preventDefault()}
             onClick={(e) => {
               e.stopPropagation();

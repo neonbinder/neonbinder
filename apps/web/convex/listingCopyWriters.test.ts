@@ -25,6 +25,7 @@ import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
 import { seedCollectionCatalog } from "../lib/testing/collection-fixture";
 import { cancelScheduled, drainScheduled } from "../lib/testing/drain-scheduled";
+import { priceEveryVariant } from "../lib/testing/common-prices";
 import { moveCards, MOVED_LISTING_PAGE } from "./setShapeMove";
 
 const modules = (import.meta as unknown as {
@@ -49,10 +50,13 @@ async function setup() {
 }
 type S = Awaited<ReturnType<typeof setup>>;
 
-const listOn = (s: S, owner = ME.subject) =>
-  s.t.run((ctx) =>
+const listOn = async (s: S, owner = ME.subject) => {
+  // NEO-370: a syncing collector's box adds need a price (`listingGate`).
+  await priceEveryVariant(s.t, owner);
+  return await s.t.run((ctx) =>
     ctx.db.insert("marketplaceListingStates", { ownerId: owner, platform: "bsc", listingStartedAt: 1, lastUpdated: 0 }),
   );
+};
 const outbox = (s: S) => s.t.run((ctx) => ctx.db.query("listingOutbox").collect());
 const rowsOf = async (s: S) =>
   (await outbox(s)).map((r) => ({ ownerId: r.ownerId, cardId: r.cardId, variantId: r.variantId }));

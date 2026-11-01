@@ -15,6 +15,7 @@ import type { Id } from "./_generated/dataModel";
 import { cancelScheduled, drainScheduled } from "../lib/testing/drain-scheduled";
 import { seedCollectionCatalog } from "../lib/testing/collection-fixture";
 import { insertTestCard } from "../lib/testing/card-row";
+import { priceEveryVariant } from "../lib/testing/common-prices";
 import { INTAKE_SETTLE_SCAN, noteIntakePairsChanged } from "./intakeRuns";
 
 const modules = (import.meta as unknown as {
@@ -574,8 +575,10 @@ describe("NEO-370 — a settled box run kicks the collector's listing drain", ()
    * Listing started on BSC, and the photo session closed by the collector
    * ("Done adding photos"): the only close that may trigger a sync.
    */
-  const listOn = (w: W) =>
-    w.t.run(async (ctx) => {
+  const listOn = async (w: W) => {
+    // NEO-370: a syncing collector's box saves need a price (`listingGate`).
+    await priceEveryVariant(w.t, ME.subject);
+    await w.t.run(async (ctx) => {
       await ctx.db.insert("marketplaceListingStates", {
         ownerId: ME.subject,
         platform: "bsc",
@@ -589,6 +592,7 @@ describe("NEO-370 — a settled box run kicks the collector's listing drain", ()
       const job = (await ctx.db.query("placeholderJobs").collect())[0];
       await ctx.db.patch(job._id, { streamClosedBy: "user" });
     });
+  };
   const closedBy = (w: W, by: "user" | "idle" | undefined) =>
     w.t.run(async (ctx) => {
       const job = (await ctx.db.query("placeholderJobs").collect())[0];
@@ -961,5 +965,66 @@ describe("the set builder reset", () => {
       ...(await ctx.db.query("intakeRuns").collect()),
     ]);
     expect(left).toEqual([]);
+  });
+});
+
+describe("NEO-370 — the listing gate on photo intake saves", () => {
+  const syncOn = (w: Awaited<ReturnType<typeof world>>) =>
+    w.t.run((ctx) =>
+      ctx.db.insert("marketplaceListingStates", {
+        ownerId: ME.subject,
+        platform: "bsc",
+        listingStartedAt: 1,
+        lastUpdated: 0,
+      }),
+    );
+
+  test("the run's price goes on the saved copy, so it lists at it", async () => {
+    const w = await world([{ number: "1", players: ["Doc Gooden"] }]);
+    await syncOn(w);
+    const runId = await w.me.mutation(api.intakeRuns.createIntakeRun, {
+      jobId: JOB,
+      homeId: w.boxId,
+      variantId: w.fx.baseId,
+      defaults: { condition: "Near Mint", minPriceCents: 75 },
+    });
+    await drainScheduled(w.t);
+    const { copyId } = await w.me.mutation(api.intakeRuns.saveIntakeMatch, {
+      runId,
+      pairId: w.pairIds[0],
+      quantity: 1,
+    });
+    const copy = await w.t.run((ctx) => ctx.db.get(copyId));
+    expect(copy).toMatchObject({ minPriceCents: 75, condition: "Near Mint", homeId: w.boxId });
+  });
+
+  test("a save into a listed box with the price taken off the run is refused, writing nothing", async () => {
+    const w = await world([{ number: "1", players: ["Doc Gooden"] }]);
+    await syncOn(w);
+    const runId = await w.me.mutation(api.intakeRuns.createIntakeRun, {
+      jobId: JOB,
+      homeId: w.boxId,
+      variantId: w.fx.baseId,
+      defaults: { minPriceCents: 75 },
+    });
+    await drainScheduled(w.t);
+    await w.me.mutation(api.intakeRuns.setIntakeRunDefaults, { runId, defaults: {} });
+    await expect(
+      w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[0], quantity: 1 }),
+    ).rejects.toThrow(/For sale sells on your marketplaces, so cards going in need a price first/);
+    expect(await w.t.run((ctx) => ctx.db.query("collectionCopies").collect())).toEqual([]);
+    // A per-card price answers it too.
+    await w.me.mutation(api.intakeRuns.saveIntakeMatch, {
+      runId,
+      pairId: w.pairIds[0],
+      quantity: 1,
+      details: { minPriceCents: 30 },
+    });
+  });
+
+  test("a collector who syncs nowhere saves into a box with no price, as before", async () => {
+    const w = await world([{ number: "1", players: ["Doc Gooden"] }]);
+    const runId = await startRun(w, w.fx.baseId);
+    await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[0], quantity: 1 });
   });
 });

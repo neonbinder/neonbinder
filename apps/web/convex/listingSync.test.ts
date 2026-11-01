@@ -39,6 +39,7 @@ import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
 import { seedCollectionCatalog } from "../lib/testing/collection-fixture";
 import { cancelScheduled, drainScheduled } from "../lib/testing/drain-scheduled";
+import { priceEveryVariant } from "../lib/testing/common-prices";
 import { DRAIN_SCHEDULE_STALE_MS, enqueueListingCards, kickOwnerDrains } from "./listingOutbox";
 import { SAVED_SIGN_INS_PASS_KEY, SIGN_IN_SCAN_PAGE } from "./listingSync";
 import { PAUSED_PLATFORMS_ENV } from "./lib/marketplacePause";
@@ -85,7 +86,9 @@ type S = Awaited<ReturnType<typeof setup>>;
 
 /** BSC listing started for ME the way the drainer would find it: just the state row. */
 async function listOn(s: S, owner = ME.subject, extra: Record<string, unknown> = {}) {
-  return s.t.run((ctx) =>
+  // NEO-370: a syncing collector's box adds need a price (`listingGate`).
+  await priceEveryVariant(s.t, owner);
+  return await s.t.run((ctx) =>
     ctx.db.insert("marketplaceListingStates", {
       ownerId: owner,
       platform: "bsc",

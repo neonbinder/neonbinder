@@ -2218,6 +2218,8 @@ describe("NEO-358: the collection and its catalog reads require a signed-in call
     ["collectionWants.list", (t) => t.query(api.collectionWants.list, {})],
     // NEO-378
     ["commonPrices.forVariants", (t) => t.query(api.commonPrices.forVariants, { variantIds: [] })],
+    // NEO-370 — the listing gate's read: the caller's own state rows, home and common price only.
+    ["listingGate.forHome", (t) => t.query(api.listingGate.forHome, {})],
   ];
 
   test.each(SIGNED_IN_GATED)("%s rejects an anonymous caller", async (_name, call) => {

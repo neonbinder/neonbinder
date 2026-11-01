@@ -25,9 +25,13 @@
  * drain runs (`kickListingIfRunSettled`). A run whose stream the idle sweep
  * closed, or that was left without Done, waits for the 15-minute cron.
  *
+ * NEO-370: a collector set up for syncing starts a run into a listed box
+ * with a price and a condition, and every save from it carries them
+ * (`listingGate.ts`); the run's price is the saved copy's own floor.
+ *
  * Not here yet: attaching the pair's photos to the saved line (NEO-377), the
- * per-copy price and the common-price prompt (NEO-378), and the catalog-wide
- * set finder for a run with no variant.
+ * common-price prompt (NEO-378), and the catalog-wide set finder for a run
+ * with no variant.
  */
 
 import { internalMutation, mutation, query } from "./_generated/server";
@@ -49,6 +53,7 @@ import {
   collectionContainerKindValidator,
 } from "./schema";
 import { kickOwnerDrains, listsOnMarketplaces } from "./listingOutbox";
+import { ListingGate } from "./listingGate";
 import {
   intakeNamesFor,
   matchIntakePair,
@@ -237,13 +242,28 @@ export const createIntakeRun = mutation({
       .first();
     if (existing) return existing._id;
 
+    // NEO-370: a run into a listed box, by a collector set up for syncing,
+    // starts with a price (the run's own, else the picked variant's common
+    // price) and a condition, as every save from it will need
+    // (`listingGate.ts`). A run with no variant yet prices by its own default.
+    const defaults = cleanDefaults(args.defaults);
+    const gate = new ListingGate(ctx, userId);
+    if (await gate.applies(home)) {
+      await gate.require(home, {
+        ...(args.variantId ? { variantId: args.variantId } : {}),
+        graded: defaults?.grading !== undefined,
+        condition: defaults?.condition ?? (await defaultConditionOf(ctx, userId)),
+        ...(defaults?.minPriceCents !== undefined ? { ownPriceCents: defaults.minPriceCents } : {}),
+      });
+    }
+
     const now = Date.now();
     const runId = await ctx.db.insert("intakeRuns", {
       userId,
       jobId: args.jobId,
       homeId: args.homeId,
       variantId: args.variantId,
-      defaults: cleanDefaults(args.defaults),
+      defaults,
       createdAt: now,
       lastActivityAt: now,
     });
@@ -604,7 +624,9 @@ export const saveIntakeMatch = mutation({
       Object.entries(args.details ?? {}).filter(([, value]) => value !== undefined),
     );
     const d = cleanDefaults({ ...run.defaults, ...overrides }) ?? {};
-    // The per-copy price (`minPriceCents`) waits for NEO-378's field on copies.
+    // NEO-370: the run's price goes on the copy (NEO-378's `minPriceCents`),
+    // so a listed box's saves list at it. `addOne` refuses a save into a
+    // listed box with no price and no common price (`listingGate.ts`).
     const { result, change } = await addOne(
       ctx,
       run.userId,
@@ -617,6 +639,7 @@ export const saveIntakeMatch = mutation({
         acquiredOn: d.acquiredOn,
         location: d.location,
         notes: d.notes,
+        ...(d.minPriceCents !== undefined ? { minPriceCents: d.minPriceCents } : {}),
         homeId: run.homeId,
       },
       await defaultConditionOf(ctx, run.userId),

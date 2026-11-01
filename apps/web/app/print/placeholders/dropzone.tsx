@@ -26,18 +26,32 @@ import { classifyIntake } from "@/lib/placeholders/intake-kind";
  * That makes the invalid case load-bearing rather than cosmetic: two zips, or a
  * zip mixed with photos, must be REFUSED here and reported beside the selection,
  * because there is no button press left to intercept it.
+ *
+ * ## Held, not disabled (NEO-370)
+ * `heldBy` holds the zone back for a reason the caller shows beside it (the
+ * id of that text): the input stays a Tab stop, `aria-disabled` and described
+ * by the reason, so a keyboard or screen-reader user hears why on arrival,
+ * where a native `disabled` would drop it from the tab order unexplained. A
+ * click, Space/Enter or a drop does nothing while held. `heldLabel` replaces
+ * the headline; the accessible name never changes.
  */
 export function Dropzone({
   files,
   onFiles,
   disabled,
   quiet = false,
+  heldBy,
+  heldLabel,
 }: {
   files: File[];
   onFiles: (files: File[]) => void;
   disabled: boolean;
   /** The caller announces progress itself; only a refused selection is said here. */
   quiet?: boolean;
+  /** The id of the text saying why the zone is held (see above); absent when it is open. */
+  heldBy?: string;
+  /** The headline while held. */
+  heldLabel?: string;
 }) {
   const inputId = useId();
   const [dragging, setDragging] = useState(false);
@@ -45,6 +59,8 @@ export function Dropzone({
   // the pointer crosses an inner node. Counting enter/leave is what keeps the
   // highlight steady while moving across the zone.
   const depth = useRef(0);
+  const held = heldBy !== undefined;
+  const inert = disabled || held;
 
   const setDropped = useCallback(
     (list: FileList | null) => {
@@ -64,7 +80,7 @@ export function Dropzone({
         onDragEnter={(e) => {
           e.preventDefault();
           depth.current += 1;
-          if (!disabled) setDragging(true);
+          if (!inert) setDragging(true);
         }}
         onDragOver={(e) => e.preventDefault()}
         onDragLeave={() => {
@@ -75,7 +91,7 @@ export function Dropzone({
           e.preventDefault();
           depth.current = 0;
           setDragging(false);
-          if (!disabled) setDropped(e.dataTransfer.files);
+          if (!inert) setDropped(e.dataTransfer.files);
         }}
         className={[
           "flex cursor-pointer flex-col items-center justify-center gap-2",
@@ -84,7 +100,7 @@ export function Dropzone({
           dragging
             ? "border-neon-purple bg-neon-purple/10"
             : "border-rule-strong hover:border-control hover:bg-field/40",
-          disabled ? "cursor-not-allowed opacity-60" : "",
+          inert ? "cursor-not-allowed opacity-60" : "",
         ].join(" ")}
       >
         <span className="text-base font-medium text-ink-2">
@@ -92,7 +108,9 @@ export function Dropzone({
             ? "Drop them here"
             : disabled
               ? "Sending your photos…"
-              : "Drag your card photos here"}
+              : held && heldLabel
+                ? heldLabel
+                : "Drag your card photos here"}
         </span>
         <span className="text-sm text-ink-3">
           or <span className="text-neon-blue-text underline">browse your files</span>
@@ -108,6 +126,10 @@ export function Dropzone({
           accept=".zip,image/jpeg,image/png"
           multiple
           disabled={disabled}
+          aria-disabled={held || undefined}
+          aria-describedby={heldBy}
+          // Held: no picker (a label click, Space and Enter all arrive as this click).
+          onClick={held ? (e) => e.preventDefault() : undefined}
           // The visible label's full text (title + hint + the instructional
           // paragraph) would otherwise BE the accessible name — every word in
           // the <label> counts, so without this a screen reader announces all

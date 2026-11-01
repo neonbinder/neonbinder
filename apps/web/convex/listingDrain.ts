@@ -50,6 +50,7 @@ import { copyPhotoObjectKey, MAX_COPY_PHOTO_BYTES } from "./copyPhotos";
 import { planBscFanOut, resolveBscFacetFilters } from "./bscFacets";
 import { resolvableSides, type ResolvableRow } from "./marketplaceResolvability";
 import { r2Config } from "./lib/r2";
+import { commonPriceCentsOf } from "./listingGate";
 import {
   bscConditionsForEra,
   bscEraForYear,
@@ -625,10 +626,8 @@ export const variantSyncInput = internalQuery({
       return call;
     });
     const setId = chain.find((row) => row.level === "setName")?.id ?? null;
-    const common = await ctx.db
-      .query("variantCommonPrices")
-      .withIndex("by_owner_and_variant", (q) => q.eq("ownerId", args.ownerId).eq("variantId", args.variantId))
-      .unique();
+    // The same read the add gate prices by (`listingGate.commonPriceCentsOf`).
+    const commonPriceCents = await commonPriceCentsOf(ctx, args.ownerId, args.variantId);
     const profile = await ctx.db
       .query("userProfiles")
       .withIndex("by_user", (q) => q.eq("userId", args.ownerId))
@@ -639,7 +638,7 @@ export const variantSyncInput = internalQuery({
       era,
       requests,
       setId,
-      commonPriceCents: common?.priceCents ?? null,
+      commonPriceCents,
       sellerId: sellerId !== null && isBscSellerId(sellerId) ? sellerId : null,
     };
   },

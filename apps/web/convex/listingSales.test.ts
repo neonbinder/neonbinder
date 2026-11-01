@@ -36,6 +36,7 @@ import {
   type ProjectedOrder,
 } from "./listingSales";
 import { parseBscOrder } from "./lib/bscOrders";
+import { priceEveryVariant } from "../lib/testing/common-prices";
 import { SAVED_SIGN_INS_PASS_KEY } from "./listingSync";
 
 const modules = (import.meta as unknown as {
@@ -130,6 +131,8 @@ async function setup(opts: { year?: string } = {}) {
       siteCredentials: [{ site: "buysportscards", hasCredentials: true }],
     } as never);
   });
+  // NEO-370: a syncing collector's box adds need a price (`listingGate`).
+  await priceEveryVariant(t, OWNER);
   return { t, me, box, box2, binder, cardId, otherCardId };
 }
 type S = Awaited<ReturnType<typeof setup>>;

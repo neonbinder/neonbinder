@@ -7,13 +7,20 @@ import type { ChecklistProps } from "../Checklist";
 import ChipGroup from "../ChipGroup";
 import CommonPrice from "./CommonPrice";
 import SyncButton from "./listing/SyncButton";
+import { checklistGateLine, ListingGateNote, useListingLock } from "./listing/ListingGate";
 import { checklistCount, isComplete, totalKnown } from "../catalog/format";
 import { copiesByCard, fold } from "../catalog/home";
 import { SkeletonBars, SkeletonPips } from "../catalog/Skeleton";
 import { blockedMessage, pickFirstLabel, runPlan } from "../cards/model";
 import { parseRange } from "../cards/range";
 import { playerNames, shortCardName, teamNames } from "../data/labels";
-import { useCollectionActions, useCopiesInVariant, useVariantCards, useVariantCompletion } from "../data/store";
+import {
+  useCollectionActions,
+  useCopiesInVariant,
+  useDefaultCondition,
+  useVariantCards,
+  useVariantCompletion,
+} from "../data/store";
 import type { Card, CardId } from "../data/types";
 import { usePageApi } from "../pageApi";
 import { comparePlayerNames } from "../playerName";
@@ -42,6 +49,13 @@ type Sort = "checklist" | "number" | "player" | "team";
  * The header's top right holds Sync (NEO-370): this set's counts, up to
  * every marketplace the collector lists on.
  *
+ * The listing gate (NEO-370): a collector set up for syncing stocks a box
+ * that lists on marketplaces only with a price on the cards. With no common
+ * price for this checklist (and no price of their own on a quick count), the
+ * counts and "Add a range" hold, read-only, and a note under Common price
+ * says why; every held control points at it. Lowering a count is held too,
+ * so the field never half-works. The server refuses the same adds.
+ *
  * The heading's subline names the target box too, so it is in sight beside
  * the checklist's name as well as on the sticky "Adding to" bar.
  *
@@ -60,6 +74,10 @@ const InventoryChecklist = forwardRef<HTMLHeadingElement, ChecklistProps>(functi
   const copies = useCopiesInVariant(variantId, "inventory");
   const completion = useVariantCompletion(variantId, "inventory");
   const boxName = box?.name ?? "the box";
+  const defaultCondition = useDefaultCondition();
+  const lock = useListingLock({ homeId: box?.id ?? null, variantId, condition: defaultCondition });
+  const gateNoteId = useId();
+  const lockedBy = lock.locked ? gateNoteId : undefined;
 
   const byCard = useMemo(() => copiesByCard(copies), [copies]);
   const stockedIds = useMemo(() => new Set(byCard.keys()), [byCard]);
@@ -122,7 +140,7 @@ const InventoryChecklist = forwardRef<HTMLHeadingElement, ChecklistProps>(functi
   const alreadyHere = toAdd.filter((c) => inBoxIds.has(c.id)).length;
 
   const addRange = () => {
-    if (blocked || toAdd.length === 0 || !box) return;
+    if (blocked || toAdd.length === 0 || !box || lock.locked) return;
     const n = toAdd.length;
     const into = box;
     void api.run(
@@ -190,6 +208,7 @@ const InventoryChecklist = forwardRef<HTMLHeadingElement, ChecklistProps>(functi
           <SkeletonBars rows={1} className="w-48" />
         )}
         <CommonPrice variantId={variantId} title={title} />
+        {lock.locked && box && <ListingGateNote id={gateNoteId} line={checklistGateLine(box.name, lock)} />}
         {/* Nothing stocked: no strip. A row of empty pockets reads as missing
             glyphs, and the "0 of N" line above already says it. */}
         {!cards ? <SkeletonPips /> : stockedIds.size > 0 && <StockStrip cards={cards} stockedIds={stockedIds} />}
@@ -262,14 +281,16 @@ const InventoryChecklist = forwardRef<HTMLHeadingElement, ChecklistProps>(functi
                 }}
                 autoComplete="off"
                 spellCheck={false}
+                readOnly={lock.locked}
                 aria-invalid={range?.invalid || undefined}
-                aria-describedby={range?.invalid ? rangeErrorId : rangePreviewId}
+                aria-describedby={[range?.invalid ? rangeErrorId : rangePreviewId, lockedBy].filter(Boolean).join(" ")}
               />
             </div>
             <NeonButton
               type="button"
               variant="primary"
-              disabled={blocked || toAdd.length === 0 || !box}
+              disabled={blocked || toAdd.length === 0 || !box || lock.locked}
+              aria-describedby={lockedBy}
               onClick={addRange}
               className={`${FOCUS} max-sm:min-h-11`}
             >
@@ -378,6 +399,7 @@ const InventoryChecklist = forwardRef<HTMLHeadingElement, ChecklistProps>(functi
               onOpen={(copyId, edit) => actions.open(card, copyId, visible, edit)}
               isSelected={card.id === selectedCardId}
               highlighted={card.id === ringed}
+              lockedBy={lockedBy}
               groupRef={(el) => {
                 if (el) rowEls.current.set(card.id, el);
                 else rowEls.current.delete(card.id);

@@ -36,6 +36,7 @@ import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { internalMutation } from "./_generated/server";
+import { isPlatformPaused } from "./marketplacePause";
 
 export type ListingPlatform = Doc<"marketplaceListingStates">["platform"];
 type StateRow = Doc<"marketplaceListingStates">;
@@ -94,6 +95,17 @@ export function pushesCounts(
   state: Pick<StateRow, "listingStartedAt" | "dormant" | "testListingOff">,
 ): boolean {
   return state.listingStartedAt !== undefined && state.dormant === undefined && state.testListingOff !== true;
+}
+
+/**
+ * NB pushes counts to the platform for this owner NOW: the row's own rule
+ * (`pushesCounts`) and the platform not paused for everyone
+ * (`marketplacePause.isPlatformPaused`).
+ */
+export function pushesCountsNow(
+  state: Pick<StateRow, "platform" | "listingStartedAt" | "dormant" | "testListingOff">,
+): boolean {
+  return pushesCounts(state) && !isPlatformPaused(LISTING_CREDENTIAL_SITE[state.platform]);
 }
 
 /**
@@ -200,6 +212,16 @@ export async function enqueueListingCards(
  */
 export async function listsAnywhere(ctx: Pick<QueryCtx, "db">, ownerId: string): Promise<boolean> {
   return (await statesOf(ctx, ownerId)).some(pushesCounts);
+}
+
+/**
+ * NEO-370 — the owner is set up for syncing: they push counts to at least one
+ * platform NB has not paused (`pushesCountsNow`). One indexed read. Copies
+ * headed to a listed box need a price and a condition first
+ * (`listingGate.ts`); an owner who syncs nowhere is never held to that.
+ */
+export async function listsAnywhereNow(ctx: Pick<QueryCtx, "db">, ownerId: string): Promise<boolean> {
+  return (await statesOf(ctx, ownerId)).some(pushesCountsNow);
 }
 
 /** One card an operator moved, and the variant it (and the owner's copy) left. */

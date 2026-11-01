@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useId, useMemo, useRef, useState, type ReactNode, type Ref } from "react";
 import { useSearchParams } from "react-router";
 import { useMutation, useQuery } from "convex/react";
 import NeonButton from "@/components/modules/NeonButton";
@@ -15,7 +15,8 @@ import Overlay from "../../prototypes/p1/Overlay";
 import Cascade from "../catalog/Cascade";
 import { EMPTY_DRILL, type Drill } from "../catalog/drill";
 import { useDrillState } from "../catalog/useDrillState";
-import { homesOnSide, useContainers, useDefaultCondition, useSide, writeErrorMessage } from "../data/store";
+import { homesOnSide, useContainers, useDefaultCondition, useListingGate, useSide, writeErrorMessage } from "../data/store";
+import { intakeGateLine, ListingGateNote, SyncStatusLink, useListingLock } from "../inventory/listing/ListingGate";
 import { usePageApi } from "../pageApi";
 import {
   EMPTY_LANES,
@@ -67,9 +68,17 @@ const LocalPhotos = createContext<ReadonlyMap<string, string>>(new Map());
  * s swaps sides, u unpairs, d sets it aside, v steps through its other
  * pictures. In the count field only digits type; Enter saves and moves on.
  *
- * Not yet: photos onto the saved line (NEO-377), the price and the common
- * price prompt (NEO-378), rotate/re-crop/reject one side, and finding the
- * set from the photos when none is picked.
+ * The listing gate (NEO-370): a run into a box that lists on marketplaces,
+ * for a collector set up for syncing, needs a price on its cards before any
+ * photo goes up: the run's Min price (Defaults), else the common price for
+ * the picked set. Until then the drop zone is held with the reason beside it
+ * and a button that opens the field; the server refuses the run (and each
+ * save) the same way. After "Done adding photos" on such a run, "See what's
+ * syncing" links to Inventory → Sync status.
+ *
+ * Not yet: photos onto the saved line (NEO-377), the common price prompt
+ * (NEO-378), rotate/re-crop/reject one side, and finding the set from the
+ * photos when none is picked.
  */
 
 export const RUN_PARAM = "run";
@@ -123,6 +132,8 @@ interface RunDefaults {
   acquiredOn?: string;
   location?: string;
   notes?: string;
+  /** NEO-378's floor for every card in the run; blank sells at the common price. */
+  minPriceCents?: number;
 }
 
 interface VariantPick {
@@ -180,6 +191,26 @@ export default function RealAddCardsTab() {
   const job = useQuery(api.placeholderPipeline.getPlaceholderJob, run ? { jobId: run.jobId } : "skip");
   const collecting = !run || job?.status === "collecting";
 
+  // NEO-370 — the listing gate, on what the run (or the setup) will give its cards.
+  const shownDefaults: RunDefaults = run?.defaults ?? defaults;
+  const homeKind = run ? run.homeKind : kind;
+  const homeName = run ? run.homeName : (homes.find((h) => h.id === pickedHome)?.name ?? `the ${kind}`);
+  const lock = useListingLock({
+    homeId: run ? run.homeId : pickedHome || null,
+    variantId: run ? (run.variantId ?? null) : (variant?.variantId ?? null),
+    condition: shownDefaults.condition ?? usualCondition,
+    ownPriceCents: shownDefaults.minPriceCents,
+    graded: shownDefaults.grading !== undefined,
+  });
+  const gateNoteId = useId();
+  const priceRef = useRef<HTMLInputElement>(null);
+  const conditionRef = useRef<HTMLSelectElement>(null);
+  /** The note's button: open Defaults with the missing field focused (once the panel is drawn). */
+  const openMissingField = (field: "price" | "condition") => {
+    setPanel("defaults");
+    requestAnimationFrame(() => (field === "price" ? priceRef.current : conditionRef.current)?.focus());
+  };
+
   const openRun = (id: Id<"intakeRuns"> | null) =>
     setParams((p) => {
       const next = new URLSearchParams(p);
@@ -192,6 +223,8 @@ export default function RealAddCardsTab() {
     setFiles(chosen);
     if (chosen.length === 0 || uploading) return;
     if (classifyIntake(chosen).kind === "invalid") return;
+    // Held by the listing gate: the reason is beside the zone (it never opens a picker then).
+    if (lock.locked) return;
     if (!run && !pickedHome) {
       setStatus(`Make a ${kind} first: the cards need somewhere to go.`);
       return;
@@ -290,7 +323,10 @@ export default function RealAddCardsTab() {
       {panel === "defaults" && (
         <div id="intake-defaults-panel" className="w-full border-t border-rule pt-3">
           <DefaultsFields
-            value={run?.defaults ?? defaults}
+            value={shownDefaults}
+            showPrice={homeKind === "box"}
+            priceRef={priceRef}
+            conditionRef={conditionRef}
             onChange={(next) => {
               if (run) {
                 setRunDefaults({ runId: run._id, defaults: next }).catch((e: unknown) => notify(writeErrorMessage(e)));
@@ -313,8 +349,28 @@ export default function RealAddCardsTab() {
           </button>
         </p>
       )}
+      {collecting && lock.locked && (
+        <ListingGateNote id={gateNoteId} line={intakeGateLine(homeName, lock)}>
+          <NeonButton
+            size="1"
+            variant="secondary"
+            outline
+            className="max-sm:min-h-11"
+            onClick={() => openMissingField(lock.needsPrice ? "price" : "condition")}
+          >
+            {lock.needsPrice ? "Set a Min price" : "Pick a condition"}
+          </NeonButton>
+        </ListingGateNote>
+      )}
       {collecting ? (
-        <Dropzone quiet files={files} disabled={uploading} onFiles={(chosen) => void onFiles(chosen)} />
+        <Dropzone
+          quiet
+          files={files}
+          disabled={uploading}
+          heldBy={lock.locked ? gateNoteId : undefined}
+          heldLabel={heldHeadline(lock)}
+          onFiles={(chosen) => void onFiles(chosen)}
+        />
       ) : (
         <p className="m-0 rounded-md border border-rule p-3 text-sm text-ink-2">
           This run&apos;s photos are all in. To add more, start a new run.
@@ -337,6 +393,12 @@ export default function RealAddCardsTab() {
 /* ------------------------------------------------------------------ */
 /* Setup pieces                                                        */
 /* ------------------------------------------------------------------ */
+
+/** The held drop zone's headline (NEO-370): what to do before the photos. */
+function heldHeadline(missing: { needsPrice: boolean; needsCondition: boolean }): string {
+  if (missing.needsPrice && missing.needsCondition) return "Set a price and a condition, then drop your photos";
+  return missing.needsPrice ? "Set a price, then drop your photos" : "Pick a condition, then drop your photos";
+}
 
 /**
  * The set pick: the collection's own cascade (sport to variant) behind one
@@ -402,7 +464,21 @@ function RealSetButton({
 const FIELD = `rounded-md border border-field-rule bg-field px-2 py-1 text-sm text-ink ${RING}`;
 
 /** The run's batch defaults: every card starts with these. */
-function DefaultsFields({ value, onChange }: { value: RunDefaults; onChange: (next: RunDefaults) => void }) {
+function DefaultsFields({
+  value,
+  onChange,
+  showPrice,
+  priceRef,
+  conditionRef,
+}: {
+  value: RunDefaults;
+  onChange: (next: RunDefaults) => void;
+  /** A box run: the cards can carry a Min price (NEO-378). */
+  showPrice: boolean;
+  priceRef?: Ref<HTMLInputElement>;
+  conditionRef?: Ref<HTMLSelectElement>;
+}) {
+  const priceHelpId = useId();
   // No "your usual" choice: the field shows the seller's default (Profile →
   // Settings) until they pick another.
   const usualCondition = useDefaultCondition();
@@ -415,11 +491,13 @@ function DefaultsFields({ value, onChange }: { value: RunDefaults; onChange: (ne
   };
   const g = draft.grading;
   const cost = draft.costCents === undefined ? "" : (draft.costCents / 100).toFixed(2);
+  const price = draft.minPriceCents === undefined ? "" : (draft.minPriceCents / 100).toFixed(2);
   return (
     <div className="grid gap-3 sm:grid-cols-3">
       <label className="flex flex-col gap-1 text-xs text-ink-3">
         Condition
         <select
+          ref={conditionRef}
           className={FIELD}
           value={draft.condition ?? usualCondition}
           onChange={(e) => commit({ condition: e.target.value as Condition })}
@@ -465,6 +543,29 @@ function DefaultsFields({ value, onChange }: { value: RunDefaults; onChange: (ne
           }}
         />
       </label>
+      {showPrice && (
+        <div className="flex flex-col gap-1 text-xs text-ink-3">
+          {/* The help sits outside the label, so the field's name is "Min price" alone. */}
+          <label className="flex flex-col gap-1">
+            Min price
+            <Input
+              ref={priceRef}
+              bare
+              className={FIELD}
+              inputMode="decimal"
+              placeholder="$0.00"
+              defaultValue={price}
+              key={price}
+              aria-describedby={priceHelpId}
+              onBlur={(e) => {
+                const n = Number(e.target.value.trim().replace(/^\$/, ""));
+                commit({ minPriceCents: e.target.value.trim() && Number.isFinite(n) && n >= 0 ? Math.round(n * 100) : undefined });
+              }}
+            />
+          </label>
+          <span id={priceHelpId}>Leave it blank to sell at your common price.</span>
+        </div>
+      )}
       <label className="flex flex-col gap-1 text-xs text-ink-3">
         Acquired
         <Input bare type="date" className={FIELD} value={draft.acquiredOn ?? ""} onChange={(e) => commit({ acquiredOn: e.target.value || undefined })} />
@@ -553,6 +654,8 @@ function RunWorkspace({ run, jobOpen }: { run: RunSummary; jobOpen: boolean }) {
     setDone(on);
   };
   const retry = useMutation(api.placeholderStream.retryPlaceholderImage);
+  // NEO-370: after Done, a run into a box that syncs links to Sync status.
+  const syncsHere = useListingGate(run.homeId, null)?.applies === true;
 
   const [selected, setSelected] = useState<Id<"placeholderPairs"> | null>(null);
   const [openId, setOpenId] = useState<Id<"placeholderPairs"> | null>(null);
@@ -714,24 +817,27 @@ function RunWorkspace({ run, jobOpen }: { run: RunSummary; jobOpen: boolean }) {
         <p role="status" aria-live="polite" className="sr-only">
           {loading ? "" : working > 0 ? "Working on your photos." : summary}
         </p>
-        {jobOpen && (images?.length ?? 0) > 0 && (
-          <NeonButton
-            size="1"
-            variant="secondary"
-            outline
-            className="ml-auto"
-            {...{ [DONE_ATTR]: "" }}
-            onClick={() => {
-              markDone(true);
-              void closeStream({ jobId: run.jobId }).catch((e: unknown) => {
-                markDone(false);
-                fail(e);
-              });
-            }}
-          >
-            Done adding photos
-          </NeonButton>
-        )}
+        <div className="ml-auto flex flex-wrap items-center gap-3">
+          {jobOpen && (images?.length ?? 0) > 0 && (
+            <NeonButton
+              size="1"
+              variant="secondary"
+              outline
+              {...{ [DONE_ATTR]: "" }}
+              onClick={() => {
+                markDone(true);
+                void closeStream({ jobId: run.jobId }).catch((e: unknown) => {
+                  markDone(false);
+                  fail(e);
+                });
+              }}
+            >
+              Done adding photos
+            </NeonButton>
+          )}
+          {/* Always mounted (a live region announces what lands in it), empty until Done. */}
+          <span role="status">{done && syncsHere && <SyncStatusLink className="inline-block max-sm:py-2" />}</span>
+        </div>
       </div>
 
       <details className="rounded-md border border-rule px-3 py-2 text-sm text-ink-2">

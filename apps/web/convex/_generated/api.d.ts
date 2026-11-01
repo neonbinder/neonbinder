@@ -115,6 +115,7 @@ import type * as lib_teamFill from "../lib/teamFill.js";
 import type * as lib_teamRow from "../lib/teamRow.js";
 import type * as lib_titleQuery from "../lib/titleQuery.js";
 import type * as listingDrain from "../listingDrain.js";
+import type * as listingGate from "../listingGate.js";
 import type * as listingOutbox from "../listingOutbox.js";
 import type * as listingSales from "../listingSales.js";
 import type * as listingShortName from "../listingShortName.js";
@@ -285,6 +286,7 @@ declare const fullApi: ApiFromModules<{
   "lib/teamRow": typeof lib_teamRow;
   "lib/titleQuery": typeof lib_titleQuery;
   listingDrain: typeof listingDrain;
+  listingGate: typeof listingGate;
   listingOutbox: typeof listingOutbox;
   listingSales: typeof listingSales;
   listingShortName: typeof listingShortName;

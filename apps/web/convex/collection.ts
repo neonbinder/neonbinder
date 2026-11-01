@@ -79,6 +79,7 @@ import { internalAction, internalMutation, mutation, query } from "./_generated/
 import { internal } from "./_generated/api";
 import { noteArrivals } from "./binderFits";
 import { enqueueListingCards } from "./listingOutbox";
+import { ListingGate } from "./listingGate";
 import { requireSignedIn } from "./auth";
 import { findSetForSelectorOption } from "./lib/selectorAncestry";
 import {
@@ -1413,6 +1414,11 @@ async function moveCounts(
  * the caller applies every add's change once (`applyCopyChanges`), after all
  * its adds. `ownerId` must be the signed-in caller (or a row they own), never
  * a value taken from a client's arguments.
+ *
+ * NEO-370: an add into a listed box by a collector set up for syncing needs
+ * a price and a condition (`listingGate.ts`), or it is refused before
+ * anything is written. A caller adding many cards passes one `gate`, so the
+ * owner's listing state and each common price are read once.
  */
 export async function addOne(
   ctx: MutationCtx,
@@ -1420,6 +1426,7 @@ export async function addOne(
   cardId: CopyCardId,
   raw: DetailsArg,
   defaultCondition: Condition,
+  gate: ListingGate = new ListingGate(ctx, ownerId),
 ): Promise<{
   result: typeof addResultValidator.type;
   change: CountChange;
@@ -1428,6 +1435,12 @@ export async function addOne(
   const home = await resolveHome(ctx, ownerId, raw.homeId);
   checkSlot(home, cleaned.slot);
   const place = await placeOfCopyCard(ctx, ownerId, cardId);
+  await gate.require(home, {
+    ...(place.variantId !== undefined ? { variantId: place.variantId } : { privateCard: true }),
+    graded: cleaned.grading !== undefined,
+    condition: cleaned.condition,
+    ...(cleaned.minPriceCents !== undefined ? { ownPriceCents: cleaned.minPriceCents } : {}),
+  });
   const lines = await ctx.db
     .query("collectionCopies")
     .withIndex("by_owner_and_card", (q) => q.eq("ownerId", ownerId).eq("cardId", cardId))
@@ -2298,8 +2311,16 @@ export const addHaves = mutation({
     const out = [];
     const changes: CountChange[] = [];
     const defaultCondition = await defaultConditionOf(ctx, ownerId);
+    const gate = new ListingGate(ctx, ownerId);
     for (const cardId of args.cardIds) {
-      const added = await addOne(ctx, ownerId, cardId, haveDetails(args.acquiredOn, args.homeId), defaultCondition);
+      const added = await addOne(
+        ctx,
+        ownerId,
+        cardId,
+        haveDetails(args.acquiredOn, args.homeId),
+        defaultCondition,
+        gate,
+      );
       out.push({ cardId, ...added.result });
       changes.push(added.change);
     }

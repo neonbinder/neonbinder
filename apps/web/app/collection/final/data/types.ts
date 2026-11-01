@@ -949,6 +949,20 @@ export interface ListingPlatformSettings {
 export type ListingSettings = Record<ListingPlatform, ListingPlatformSettings>;
 
 /**
+ * NEO-370 — the listing gate as a screen reads it (`convex/listingGate.ts`
+ * `forHome`): whether the collector is set up for syncing at all, whether
+ * adds into the home need a price and a condition first (it lists on
+ * marketplaces and they sync), and their common price for the variant, in
+ * cents, when it does. What the copy will carry is combined with it through
+ * `convex/lib/listingReadiness.ts`, the rule the server enforces.
+ */
+export interface ListingGateView {
+  syncing: boolean;
+  applies: boolean;
+  commonPriceCents: number | null;
+}
+
+/**
  * Why one card of a checklist did not list (NB's own words for it live in
  * `lib/marketplace/listing-copy`). Mirrors `listingProblemReasonValidator` in
  * convex/schema.ts.

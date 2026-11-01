@@ -3,6 +3,8 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { MemoryRouter } from "react-router";
 import { Theme } from "@radix-ui/themes";
 import SyncButton, { NOT_LISTING_LINE, syncToast } from "./SyncButton";
+import { SYNC_STATUS_LINK } from "./ListingGate";
+import { CollectionModeProvider } from "../../mode";
 import { LISTING, NOT_SYNCING, stubListing } from "./stubListing";
 import { expectAccessibleInBothModes } from "@/lib/testing/axe";
 import { PageApiContext, type PageApi } from "../../pageApi";
@@ -21,12 +23,15 @@ function setup(opts: {
   settings?: ListingPlatformSettings | null;
   sync?: () => Promise<SyncVariantResult>;
   listing?: boolean;
+  /** The listing gate's `syncing` (NEO-370): the collector is set up for syncing. Default true. */
+  syncing?: boolean;
 }) {
   const notify = vi.fn();
   const syncVariant = vi.fn(opts.sync ?? (async () => ({ queued: true })));
   const listing = stubListing({
     useSettings: () => (opts.settings === null ? undefined : { bsc: opts.settings ?? LISTING }),
     syncVariant,
+    useGate: () => ({ syncing: opts.syncing ?? true, applies: false, commonPriceCents: null }),
   });
   const value = {
     kind: "convex",
@@ -38,12 +43,14 @@ function setup(opts: {
   const pageApi = { notify, inform: vi.fn() } as unknown as PageApi;
   const tree = () => (
     <Theme>
-      <MemoryRouter>
-        <CollectionStoreContext.Provider value={value}>
-          <PageApiContext.Provider value={pageApi}>
-            <SyncButton variantId="base1" title="1989 Upper Deck Base" />
-          </PageApiContext.Provider>
-        </CollectionStoreContext.Provider>
+      <MemoryRouter initialEntries={["/inventory?tab=checklists"]}>
+        <CollectionModeProvider mode="app" surface="inventory">
+          <CollectionStoreContext.Provider value={value}>
+            <PageApiContext.Provider value={pageApi}>
+              <SyncButton variantId="base1" title="1989 Upper Deck Base" />
+            </PageApiContext.Provider>
+          </CollectionStoreContext.Provider>
+        </CollectionModeProvider>
       </MemoryRouter>
     </Theme>
   );
@@ -144,6 +151,50 @@ describe("the checklist's Sync button", () => {
     cleanup();
     const inert = setup({ settings: NOT_SYNCING });
     await expectAccessibleInBothModes(inert.view.container, { label: "Sync button, nothing lists", rerender: inert.rerender });
+  });
+
+  describe("\"See what's syncing\" (Jason, 2026-11-01)", () => {
+    const link = () => screen.queryByRole("link", { name: SYNC_STATUS_LINK });
+
+    it("appears after a press, in a live region, and goes to Inventory → Sync status", async () => {
+      setup({});
+      expect(link()).toBeNull();
+      // The region is there before the press, so what lands in it is announced.
+      const region = screen.getByRole("status");
+      expect(region.textContent).toBe("");
+      fireEvent.click(button());
+      await flush();
+      const a = link();
+      expect(a).not.toBeNull();
+      expect(region.contains(a)).toBe(true);
+      expect(new URL(a!.getAttribute("href")!, "http://x").searchParams.get("tab")).toBe("sync");
+      // A real link: a Tab stop of its own, right after Sync.
+      expect(a!.tabIndex).toBe(0);
+      expect(button().compareDocumentPosition(a!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
+    it("is not there for a collector who is not set up for syncing, pressed or not", async () => {
+      setup({ syncing: false });
+      fireEvent.click(button());
+      await flush();
+      expect(link()).toBeNull();
+    });
+
+    it("is not there before a press, or after a press that went nowhere (nothing lists)", async () => {
+      setup({ settings: NOT_SYNCING, syncing: false });
+      expect(link()).toBeNull();
+      fireEvent.click(button());
+      await flush();
+      expect(link()).toBeNull();
+    });
+
+    it("passes axe in light and dark with the link showing", async () => {
+      const s = setup({});
+      fireEvent.click(button());
+      await flush();
+      expect(link()).not.toBeNull();
+      await expectAccessibleInBothModes(s.view.container, { label: "Sync button, after a press", rerender: s.rerender });
+    });
   });
 
   it("syncToast covers each answer", () => {

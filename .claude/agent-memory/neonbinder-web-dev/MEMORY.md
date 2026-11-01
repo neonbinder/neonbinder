@@ -163,3 +163,4 @@
 - [Unit axe helper](reference_unit_axe_helper.md) — lib/testing/axe.ts: axe in happy-dom, E2E tags, light+dark, no contrast; for states E2E cannot stage
 - [Mocked useConvex must be stable](reference_mocked_useconvex_must_be_stable.md) — fresh client per render loops an on-demand read effect; hoist it; inline .then in the effect
 - [users table is never written](reference_users_table_is_never_written.md) — never join it for names; profile names, else Clerk via adminResolveOwnerLabels (label===id means none)
+- [Intake tab test mocks the store wholesale](reference_intake_tab_test_mocks_store_wholesale.md) — new store hooks or a mode.tsx import (ParamLink) break RealAddCardsTab.test at import; mock ../mode; ParamLink needs CollectionModeProvider

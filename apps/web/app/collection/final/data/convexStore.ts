@@ -121,6 +121,7 @@ import {
   type Variant,
   type VariantKind,
   type VariantId,
+  type ContainerId,
   type VariantRef,
   type ShareProfile,
   type Want,
@@ -129,6 +130,7 @@ import {
   type DeclinedCard,
   type FoundCards,
   type SmartRule,
+  type ListingGateView,
   type ListingSettings,
   type Sale,
   type SalesPage,
@@ -2798,6 +2800,14 @@ function useListingSettings(): ListingSettings | undefined {
   return useQuery(api.listingSync.listingSettings, {});
 }
 
+/** NEO-370 — the listing gate (`listingGate.forHome`): a handful of reads, safe to subscribe. */
+function useListingGateQuery(homeId: ContainerId | null, variantId: VariantId | null): ListingGateView | undefined {
+  return useQuery(api.listingGate.forHome, {
+    ...(homeId ? { homeId } : {}),
+    ...(variantId ? { variantId } : {}),
+  });
+}
+
 function useSyncStatusQuery(): SyncStatus | undefined {
   const raw = useQuery(api.listingSync.syncStatus, {});
   return useMemo(() => (raw === undefined ? undefined : toSyncStatus(raw)), [raw]);
@@ -2846,6 +2856,7 @@ function useConvexListing(): ListingExtension {
       useSettings: useListingSettings,
       useSyncStatus: useSyncStatusQuery,
       useSales: useSalesPage,
+      useGate: useListingGateQuery,
       async syncVariant(variantId) {
         const { queued, ignored } = await sync({ variantId: variantId as Id<"selectorOptions"> });
         return { queued, ...(ignored ? { ignored } : {}) };

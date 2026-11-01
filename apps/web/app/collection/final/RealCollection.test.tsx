@@ -1009,6 +1009,7 @@ const LISTING: ListingExtension = {
   useSyncStatus: () => ({ platforms: [] }),
   loadSetProblems: vi.fn(async () => ({ problems: [], problemsTotal: 0 })),
   useSales: () => ({ sales: [], canLoadMore: false, loadingMore: false, loadMore: () => {} }),
+  useGate: () => undefined,
 };
 
 const inventoryTabs = () =>

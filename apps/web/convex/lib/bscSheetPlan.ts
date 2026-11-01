@@ -36,6 +36,7 @@ import {
 } from "./bscConditions";
 import { bscDollarsToCents, centsToBscDollars, checkBscPrice } from "./bscMoney";
 import { compareCopiesOldestFirst, type AgedCopy } from "./listingCopyOrder";
+import { hasListingCondition, listingFloorCents } from "./listingReadiness";
 import { buildListingSku } from "./listingSku";
 
 /** BSC takes at most this many rows per PUT (the old platform's batch). */
@@ -138,7 +139,7 @@ export function foldBscTargets(input: FoldBscTargetsInput): {
       problems.add({ reason: "graded", cardId });
       continue;
     }
-    if (copy.condition === undefined) {
+    if (copy.condition === undefined || !hasListingCondition(copy.condition)) {
       problems.add({ reason: "no_condition", cardId });
       continue;
     }
@@ -161,7 +162,8 @@ export function foldBscTargets(input: FoldBscTargetsInput): {
     let priceCents: number | null = null;
     for (const c of sorted) {
       quantity += c.quantity;
-      const floor = c.minPriceCents ?? input.commonPriceCents ?? null;
+      // The one price rule the add gate shares (`listingReadiness`).
+      const floor = listingFloorCents(c.minPriceCents, input.commonPriceCents);
       if (floor !== null && (priceCents === null || floor > priceCents)) priceCents = floor;
     }
     targets.push({
