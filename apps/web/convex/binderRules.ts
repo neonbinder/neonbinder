@@ -25,7 +25,7 @@
 import { v } from "convex/values";
 import { paginationOptsValidator, paginationResultValidator } from "convex/server";
 import type { Doc, Id } from "./_generated/dataModel";
-import type { MutationCtx, QueryCtx } from "./_generated/server";
+import type { ActionCtx, MutationCtx, QueryCtx } from "./_generated/server";
 import { internalAction, internalMutation, internalQuery, mutation, query } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { requireSignedIn } from "./auth";
@@ -411,6 +411,12 @@ export const needsResultValidator = v.object({
    * new rule) and refreshes on its own when the recompute lands.
    */
   pending: v.optional(v.boolean()),
+  /**
+   * NEO-410 — every recompute attempt for this smart binder failed: the
+   * slots shown are the last ones stored (none, for a new rule) and the
+   * screen offers "Try again" (`retryFits`).
+   */
+  failed: v.optional(v.boolean()),
 });
 
 /**
@@ -465,7 +471,8 @@ export async function binderNeeds(
     // slots for a moment, said as `pending`, rather than a walk.
     if (!state) return { needs: [], supported: true, truncated: false, pending: true };
     const pending = state.pending === true;
-    if (!state.supported) return { needs: [], supported: false, truncated: false, pending };
+    const failed = !pending && state.failed === true ? true : undefined;
+    if (!state.supported) return { needs: [], supported: false, truncated: false, pending, failed };
     if (!state.complete) truncated = true;
     const parallel = parallelReader(ctx);
     const holds = new Set(variants.map((id) => id as string));
@@ -494,7 +501,7 @@ export async function binderNeeds(
         held: ownerHeld ? (fit.held ?? (await ownerHeld(fit.cardId))) : false,
       });
     }
-    return { needs, supported: true, truncated, pending };
+    return { needs, supported: true, truncated, pending, failed };
   }
   if (variants.length > MAX_NEED_CHECKLISTS) truncated = true;
   outer: for (const variantId of variants.slice(0, MAX_NEED_CHECKLISTS)) {
@@ -516,8 +523,25 @@ const REFRESH_BATCH = 100;
 const REFRESH_SPACING_MS = 3_000;
 /** A binder's fits older than this are due for the nightly pass. */
 const REFRESH_AFTER_MS = 20 * 60 * 60 * 1000;
-/** Fits rows one mutation writes or deletes: the per-transaction budget, with room. */
+/** Fits rows one mutation deletes: one delete per row, well inside a transaction. */
 export const FITS_PAGE = 500;
+/**
+ * NEO-410 — fits rows one `writeFitsPage` writes. Each row costs about three
+ * database calls (the held check, the stored-row lookup, the insert or
+ * patch), so a page of 500 was ~1,500 calls in one transaction. One of
+ * those never finished in CI ("too many system operations") and the binder
+ * hung refreshing; 50 keeps each transaction small.
+ */
+export const FITS_WRITE_PAGE = 50;
+/**
+ * NEO-410 — a failed recompute tries again after each of these delays, then
+ * gives up visibly (`markFitsFailed`): the binder is never left pending.
+ */
+export const FITS_RETRY_DELAYS_MS = [5_000, 30_000, 120_000, 600_000];
+/** NEO-410 — a binder pending longer than this is re-queued by `requeueStuckFits`. */
+export const FITS_STUCK_AFTER_MS = 10 * 60 * 1000;
+/** Stuck binders one `requeueStuckFits` pass re-queues. */
+const REQUEUE_BATCH = 50;
 
 const fitValidator = v.object({ cardId: v.id("cardChecklist"), variantId: v.id("selectorOptions") });
 
@@ -577,8 +601,8 @@ export const planFits = internalQuery({
 /**
  * One page of a recompute's rows: each card already stored for the binder is
  * re-stamped with this generation (and its order, if it moved), each new one
- * inserted. `FITS_PAGE` rows at most, so a brand rule at `MAX_CANDIDATES`
- * takes eight pages rather than one over-budget transaction.
+ * inserted. `FITS_WRITE_PAGE` rows at most (NEO-410), so even a brand rule
+ * at `MAX_CANDIDATES` is many small transactions, never one big one.
  */
 export const writeFitsPage = internalMutation({
   args: {
@@ -653,6 +677,8 @@ export const finishFits = internalMutation({
       complete: args.complete,
       count: args.count,
       pending: undefined,
+      pendingSince: undefined,
+      failed: undefined,
       generation: args.generation,
     };
     if (state) await ctx.db.patch(state._id, next);
@@ -695,36 +721,127 @@ export const clearFits = internalMutation({
  * stored, so a pass on an unchanged catalog changes no row's id or order.
  */
 export const recomputeFits = internalAction({
+  args: {
+    binderId: v.id("collectionContainers"),
+    /** NEO-410 — 1 for a first run; each retry after a failure counts up. */
+    attempt: v.optional(v.number()),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const attempt = args.attempt ?? 1;
+    try {
+      await recompute(ctx, args.binderId);
+    } catch (error) {
+      // NEO-410: a recompute that throws (a page that hit Convex's limits, a
+      // conflict that ran out of retries) must never leave the binder
+      // pending. Every page is keyed by generation and card, so running the
+      // whole recompute again from a fresh plan is safe.
+      const retryIn = FITS_RETRY_DELAYS_MS[attempt - 1];
+      console.error(
+        JSON.stringify({
+          event: "binder_fits_recompute_failed",
+          binderId: args.binderId,
+          attempt,
+          retryInMs: retryIn ?? null,
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      );
+      if (retryIn !== undefined) {
+        await ctx.scheduler.runAfter(retryIn, internal.binderRules.recomputeFits, {
+          binderId: args.binderId,
+          attempt: attempt + 1,
+        });
+      } else {
+        await ctx.runMutation(internal.binderRules.markFitsFailed, { binderId: args.binderId });
+      }
+    }
+    return null;
+  },
+});
+
+/** One recompute: plan, the pages, the sweep and the state (see `recomputeFits`). */
+async function recompute(ctx: ActionCtx, binderId: Id<"collectionContainers">): Promise<void> {
+  const plan = await ctx.runQuery(internal.binderRules.planFits, { binderId });
+  if (!plan) {
+    let more = true;
+    while (more) ({ more } = await ctx.runMutation(internal.binderRules.clearFits, { binderId }));
+    return;
+  }
+  const { generation } = plan;
+  for (let start = 0; start < plan.wanted.length; start += FITS_WRITE_PAGE) {
+    await ctx.runMutation(internal.binderRules.writeFitsPage, {
+      binderId,
+      ownerId: plan.ownerId,
+      generation,
+      startOrder: start,
+      rows: plan.wanted.slice(start, start + FITS_WRITE_PAGE),
+    });
+  }
+  let more = true;
+  while (more) {
+    ({ more } = await ctx.runMutation(internal.binderRules.finishFits, {
+      binderId,
+      ownerId: plan.ownerId,
+      generation,
+      supported: plan.supported,
+      complete: plan.complete,
+      count: plan.wanted.length,
+    }));
+  }
+}
+
+/**
+ * NEO-410 — every attempt of a recompute failed: stop saying "pending" and
+ * say "failed", so the binder offers "Try again" instead of waiting forever.
+ * The stored rows (the previous rule's, or none) stay as they were.
+ */
+export const markFitsFailed = internalMutation({
   args: { binderId: v.id("collectionContainers") },
   returns: v.null(),
   handler: async (ctx, args) => {
-    const plan = await ctx.runQuery(internal.binderRules.planFits, { binderId: args.binderId });
-    if (!plan) {
-      let more = true;
-      while (more) ({ more } = await ctx.runMutation(internal.binderRules.clearFits, { binderId: args.binderId }));
-      return null;
-    }
-    const { generation } = plan;
-    for (let start = 0; start < plan.wanted.length; start += FITS_PAGE) {
-      await ctx.runMutation(internal.binderRules.writeFitsPage, {
-        binderId: args.binderId,
-        ownerId: plan.ownerId,
-        generation,
-        startOrder: start,
-        rows: plan.wanted.slice(start, start + FITS_PAGE),
+    const state = await ctx.db
+      .query("collectionBinderFitsState")
+      .withIndex("by_binder", (q) => q.eq("binderId", args.binderId))
+      .unique();
+    if (state) await ctx.db.patch(state._id, { pending: undefined, pendingSince: undefined, failed: true });
+    return null;
+  },
+});
+
+/**
+ * NEO-410 — the safety net under `recomputeFits`' own retries: a recompute
+ * Convex never finished at all (a deploy or restart mid-run drops an action
+ * without an error to catch) leaves its binder pending. Every pass re-queues
+ * the binders pending longer than `FITS_STUCK_AFTER_MS`, oldest first, and
+ * re-stamps `pendingSince` so the next pass waits again. `crons.ts`.
+ */
+export const requeueStuckFits = internalMutation({
+  args: {},
+  returns: v.object({ requeued: v.number() }),
+  handler: async (ctx) => {
+    const now = Date.now();
+    const stuck = await ctx.db
+      .query("collectionBinderFitsState")
+      .withIndex("by_pending_since", (q) => q.gt("pendingSince", 0).lt("pendingSince", now - FITS_STUCK_AFTER_MS))
+      .take(REQUEUE_BATCH);
+    for (const [i, state] of stuck.entries()) {
+      await ctx.db.patch(state._id, { pendingSince: now });
+      await ctx.scheduler.runAfter(i * REFRESH_SPACING_MS, internal.binderRules.recomputeFits, {
+        binderId: state.binderId,
       });
     }
-    let more = true;
-    while (more) {
-      ({ more } = await ctx.runMutation(internal.binderRules.finishFits, {
-        binderId: args.binderId,
-        ownerId: plan.ownerId,
-        generation,
-        supported: plan.supported,
-        complete: plan.complete,
-        count: plan.wanted.length,
-      }));
-    }
+    return { requeued: stuck.length };
+  },
+});
+
+/** NEO-410 — "Try again" on a smart binder whose recompute failed. */
+export const retryFits = mutation({
+  args: { containerId: v.id("collectionContainers") },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const ownerId = await requireSignedIn(ctx);
+    const binder = await ownSmartBinder(ctx, ownerId, args.containerId);
+    await scheduleFits(ctx, ownerId, binder._id);
     return null;
   },
 });
@@ -740,7 +857,8 @@ export async function scheduleFits(ctx: MutationCtx, ownerId: string, binderId: 
     .query("collectionBinderFitsState")
     .withIndex("by_binder", (q) => q.eq("binderId", binderId))
     .unique();
-  if (state) await ctx.db.patch(state._id, { pending: true });
+  const pendingSince = Date.now();
+  if (state) await ctx.db.patch(state._id, { pending: true, pendingSince, failed: undefined });
   else {
     await ctx.db.insert("collectionBinderFitsState", {
       ownerId,
@@ -750,6 +868,7 @@ export async function scheduleFits(ctx: MutationCtx, ownerId: string, binderId: 
       complete: true,
       count: 0,
       pending: true,
+      pendingSince,
     });
   }
   await ctx.scheduler.runAfter(0, internal.binderRules.recomputeFits, { binderId });

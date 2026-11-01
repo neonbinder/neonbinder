@@ -604,3 +604,117 @@ describe("brandsOfSport", () => {
     expect([...brands[0].ids].sort()).toEqual([s.fx.toppsId, s.fx.topps86Id].sort());
   });
 });
+
+/**
+ * NEO-410 — a smart binder is never left waiting for its empty slots. In CI
+ * one `writeFitsPage` never finished ("too many system operations"), nothing
+ * retried it, and the binder stayed pending forever. These fail the write on
+ * purpose and check every road out ends in stored fits or a visible "failed".
+ */
+describe("a recompute that fails (NEO-410)", () => {
+  const TIMEOUT = "Your request timed out performing too many system operations.";
+  const failWrites = async (times: number) => {
+    const mod = await import("./binderRules");
+    // convex-test runs a nested mutation through its `_handler`.
+    const write = mod.writeFitsPage as unknown as { _handler: (...args: unknown[]) => Promise<unknown> };
+    const spy = vi.spyOn(write, "_handler");
+    for (let i = 0; i < times; i++) spy.mockRejectedValueOnce(new Error(TIMEOUT));
+    return spy;
+  };
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+  const slots = (s: S, containerId: Id<"collectionContainers">) =>
+    s.me.query(api.binderRules.needs, { containerId });
+
+  test("tries again on its own and ends with every fit stored, nothing pending", async () => {
+    const s = await setup();
+    const reference = await smartBinder(s);
+    await settle(s);
+    const expected = (await fitsOf(s, reference)).map((f) => f.cardId);
+    expect(expected.length).toBeGreaterThan(1);
+
+    const spy = await failWrites(1);
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const id = await smartBinder(s);
+    await settle(s);
+    expect(spy.mock.calls.length).toBeGreaterThan(1); // it ran again after the failure
+    expect((await fitsOf(s, id)).map((f) => f.cardId)).toEqual(expected);
+    const state = await fitsStateOf(s, id);
+    expect(state?.pending).toBeUndefined();
+    expect(state?.failed).toBeUndefined();
+    expect(state?.pendingSince).toBeUndefined();
+    const read = await slots(s, id);
+    expect(read.pending).toBe(false);
+    expect(read.failed).toBeUndefined();
+  });
+
+  test("gives up visibly after its last retry, and Try again fills the slots", async () => {
+    const s = await setup();
+    await failWrites(5);
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    const id = await smartBinder(s);
+    await settle(s);
+    expect(errors).toHaveBeenCalledTimes(5);
+    const state = await fitsStateOf(s, id);
+    expect(state?.pending).toBeUndefined();
+    expect(state?.failed).toBe(true);
+    const read = await slots(s, id);
+    expect(read.pending).toBe(false);
+    expect(read.failed).toBe(true);
+
+    // "Try again" (the write works now): pending at once, then filled.
+    await s.me.mutation(api.binderRules.retryFits, { containerId: id });
+    expect((await slots(s, id)).pending).toBe(true);
+    await settle(s);
+    expect((await fitsOf(s, id)).length).toBeGreaterThan(1);
+    const after = await fitsStateOf(s, id);
+    expect(after?.failed).toBeUndefined();
+    expect(after?.pending).toBeUndefined();
+    expect((await slots(s, id)).failed).toBeUndefined();
+  });
+
+  test("Try again is the owner's alone", async () => {
+    const s = await setup();
+    const id = await smartBinder(s);
+    await settle(s);
+    await expect(s.them.mutation(api.binderRules.retryFits, { containerId: id })).rejects.toThrow();
+  });
+
+  test("a binder left pending (a recompute Convex never finished) is re-queued by the sweep", async () => {
+    const s = await setup();
+    const id = await smartBinder(s);
+    await settle(s);
+    const fresh = await smartBinder(s, {
+      version: 1,
+      match: "all",
+      terms: [{ test: { kind: "player", playerIds: [s.fx.goodenId] } }],
+    });
+    await settle(s);
+    // Simulate a dropped recompute: pending, long ago, rows gone; and a
+    // second binder that only just went pending, which the sweep leaves be.
+    const now = Date.now();
+    await s.t.run(async (ctx) => {
+      for (const row of await ctx.db
+        .query("collectionBinderFits")
+        .withIndex("by_binder_order", (q) => q.eq("binderId", id))
+        .collect())
+        await ctx.db.delete(row._id);
+      const stuck = await ctx.db
+        .query("collectionBinderFitsState")
+        .withIndex("by_binder", (q) => q.eq("binderId", id))
+        .unique();
+      await ctx.db.patch(stuck!._id, { pending: true, pendingSince: now - 11 * 60 * 1000 });
+      const recent = await ctx.db
+        .query("collectionBinderFitsState")
+        .withIndex("by_binder", (q) => q.eq("binderId", fresh))
+        .unique();
+      await ctx.db.patch(recent!._id, { pending: true, pendingSince: now });
+    });
+    expect(await s.t.mutation(internal.binderRules.requeueStuckFits, {})).toEqual({ requeued: 1 });
+    await settle(s);
+    expect((await fitsOf(s, id)).length).toBeGreaterThan(1);
+    expect((await fitsStateOf(s, id))?.pending).toBeUndefined();
+    expect((await fitsStateOf(s, fresh))?.pending).toBe(true);
+  });
+});

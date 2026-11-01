@@ -4040,11 +4040,21 @@ export default defineSchema({
      * rows, if any, are the previous rule's until it lands; `needs` says so.
      */
     pending: v.optional(v.boolean()),
+    /**
+     * NEO-410 — when `pending` was set (`scheduleFits`). A binder pending for
+     * longer than `binderRules.FITS_STUCK_AFTER_MS` is re-queued by
+     * `requeueStuckFits`, so a recompute Convex dropped can't leave it stuck.
+     */
+    pendingSince: v.optional(v.number()),
+    /** NEO-410 — every attempt of the last recompute failed; the screen offers "Try again". */
+    failed: v.optional(v.boolean()),
     /** The generation the rows carry; the next recompute writes the one after. */
     generation: v.optional(v.number()),
   })
     .index("by_binder", ["binderId"])
-    .index("by_computed", ["computedAt"]),
+    .index("by_computed", ["computedAt"])
+    // NEO-410: the stuck-pending sweep (rows with no `pendingSince` sort first and are skipped).
+    .index("by_pending_since", ["pendingSince"]),
 
   collectionWants: defineTable({
     ownerId: v.string(),

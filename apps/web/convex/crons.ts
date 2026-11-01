@@ -170,4 +170,17 @@ crons.daily(
   {},
 );
 
+/**
+ * NEO-410 — re-queue any smart binder whose fits have been pending (rule
+ * just saved, recompute scheduled) for more than ten minutes. A recompute
+ * that throws retries itself; this catches the one Convex never finished
+ * at all, so no binder waits forever. See `requeueStuckFits`.
+ */
+crons.interval(
+  "re-queue stuck smart binder fits",
+  { minutes: 10 },
+  internal.binderRules.requeueStuckFits,
+  {},
+);
+
 export default crons;

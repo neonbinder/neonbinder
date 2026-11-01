@@ -1381,6 +1381,16 @@ export default function MyBindersTab({
     );
   };
 
+  /** NEO-410 — "Try again" after a smart binder's slots failed to compute. */
+  const retryFits = async () => {
+    if (!homeOpen) return;
+    try {
+      await actions.retryBinderFits(homeOpen);
+    } catch {
+      notify(`Couldn't start that again. Try once more in a moment.`);
+    }
+  };
+
   const undeclineFound = async (cardId: CardId, card: Card | undefined) => {
     if (!homeOpen) return;
     const c = homeOpen;
@@ -1518,6 +1528,28 @@ export default function MyBindersTab({
               )
             ) : undefined}
           </BinderView>
+        )}
+
+        {homeOpen?.smartRule && layout?.sort && layout.emptySlots && needs?.pending && (
+          // NEO-410: the rule was just saved and its empty slots are on the way.
+          <p role="status" className="mt-3 text-center text-sm text-ink-2">
+            Finding cards for this rule…
+          </p>
+        )}
+        {homeOpen?.smartRule && layout?.sort && layout.emptySlots && needs?.failed && (
+          // NEO-410: every recompute attempt failed; never a binder that waits forever.
+          <div role="status" className="mt-3 flex flex-wrap items-center justify-center gap-3 text-sm text-ink-2">
+            <span>Couldn't fill the empty slots for this rule.</span>
+            <NeonButton
+              type="button"
+              variant="secondary"
+              outline
+              onClick={() => void retryFits()}
+              className="min-h-10 max-sm:min-h-11"
+            >
+              Try again
+            </NeonButton>
+          </div>
         )}
 
         {view && truncated && !isBox && !isTradeBox && (
