@@ -947,8 +947,6 @@ export interface ListingProblem {
   reason: ListingProblemReason;
   /** The NB card; absent only for a platform row NB cannot tie to a card. */
   cardId?: CardId;
-  /** The platform's own id for a row NB cannot tie to a card. */
-  platformCardId?: string;
   /** For `rejected`: a short excerpt of what the platform said. */
   detail?: string;
 }
@@ -973,7 +971,10 @@ export interface ListingRun {
 export interface VariantListingStatus {
   /** Null before the checklist's first push. */
   run: ListingRun | null;
-  /** A change is waiting to go up (it goes about a minute after the change). */
+  /**
+   * A change is waiting to go up: it goes when the collector leaves the
+   * checklist, when a photo intake finishes, on Resync, or within 15 minutes.
+   */
   pending: boolean;
 }
 
@@ -981,8 +982,6 @@ export interface VariantListingStatus {
 export type SaleItemProblem = "unmatched" | "linkMismatch" | "oversold";
 
 export interface SaleItem {
-  /** The platform's card id. */
-  platformCardId: string;
   /** The NB card it sold as; absent when NB could not match it. */
   cardId?: CardId;
   /** The platform's condition word, verbatim. */

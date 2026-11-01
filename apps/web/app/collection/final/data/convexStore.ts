@@ -2773,7 +2773,6 @@ function toVariantListing(raw: RawVariantStatus): VariantListingStatus {
           problems: r.problems.map((p) => ({
             reason: p.reason,
             ...(p.cardId !== undefined ? { cardId: p.cardId } : {}),
-            ...(p.platformCardId !== undefined ? { platformCardId: p.platformCardId } : {}),
             ...(p.detail !== undefined ? { detail: p.detail } : {}),
           })),
           problemsTotal: Math.max(r.problemsTotal ?? 0, r.problems.length),
@@ -2791,7 +2790,6 @@ function toSale(raw: RawSale): Sale {
     status: raw.status,
     totals: raw.totals,
     items: raw.items.map((item) => ({
-      platformCardId: item.platformCardId,
       ...(item.cardId !== undefined ? { cardId: item.cardId } : {}),
       condition: item.condition,
       quantity: item.quantity,
@@ -2833,6 +2831,7 @@ function useSalesPage(): SalesPage {
 function useConvexListing(): ListingExtension {
   const setEnabled = useMutation(api.listingSync.setListingEnabled);
   const resync = useMutation(api.listingSync.resyncVariant);
+  const flush = useMutation(api.listingSync.flushListing);
   return useMemo<ListingExtension>(
     () => ({
       useSettings: useListingSettings,
@@ -2845,8 +2844,11 @@ function useConvexListing(): ListingExtension {
         const { queued } = await resync({ variantId: variantId as Id<"selectorOptions"> });
         return queued;
       },
+      async flushListing() {
+        await flush({});
+      },
     }),
-    [setEnabled, resync],
+    [setEnabled, resync, flush],
   );
 }
 

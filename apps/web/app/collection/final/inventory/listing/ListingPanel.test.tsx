@@ -1,9 +1,10 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { StrictMode } from "react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { Theme } from "@radix-ui/themes";
 import ListingPanel, { statusLine } from "./ListingPanel";
-import { PROBLEM_COPY, problemSentence, saleItemProblem, whenSynced } from "./copy";
+import { CONSENT_LINE, PROBLEM_COPY, problemSentence, saleItemProblem, whenSynced } from "./copy";
 import { PageApiContext, type PageApi } from "../../pageApi";
 import {
   CollectionStoreContext,
@@ -21,8 +22,9 @@ import {
 
 /**
  * NEO-370 — a checklist's BuySportsCards panel on the inventory side. The
- * store is a stub: settings, one variant's status, and spies for the switch
- * and Resync. Copy is pinned where a collector reads it.
+ * store is a stub: settings, one variant's status, and spies for the switch,
+ * Resync and the leave-time flush. Copy is pinned where a collector reads it;
+ * focus is pinned wherever a control swaps out or goes inert.
  */
 vi.mock("@clerk/clerk-react", () => ({ useAuth: () => ({ isLoaded: true, isSignedIn: true, userId: "user_1" }) }));
 
@@ -47,16 +49,23 @@ function setup(opts: {
   status?: VariantListingStatus;
   listing?: boolean;
   resync?: () => Promise<number>;
+  setEnabled?: () => Promise<void>;
+  variantId?: string;
+  strict?: boolean;
 }) {
+  // What the stub store answers; change it and call `rerender()`.
+  const state = { settings: opts.settings, status: opts.status, variantId: opts.variantId ?? "base1" };
   const notify = vi.fn();
-  const setEnabled = vi.fn(async () => {});
+  const setEnabled = vi.fn(opts.setEnabled ?? (async () => {}));
   const resyncVariant = vi.fn(opts.resync ?? (async () => 2));
-  const useVariantStatus = vi.fn(() => opts.status);
+  const flushListing = vi.fn(async () => {});
+  const useVariantStatus = vi.fn(() => state.status);
   const listing: ListingExtension = {
-    useSettings: () => (opts.settings ? { bsc: opts.settings } : undefined),
+    useSettings: () => (state.settings ? { bsc: state.settings } : undefined),
     setEnabled,
     useVariantStatus,
     resyncVariant,
+    flushListing,
     useSales: () => ({ sales: [], canLoadMore: false, loadingMore: false, loadMore: () => {} }),
   };
   const pageApi = {
@@ -75,25 +84,48 @@ function setup(opts: {
     actions: {},
     ...(opts.listing === false ? {} : { listing }),
   } as CollectionStoreValue;
-  const view = render(
-    <Theme>
-      <MemoryRouter>
-        <CollectionStoreContext.Provider value={value}>
-          <PageApiContext.Provider value={pageApi}>
-            <ListingPanel variantId="base1" title="Base" cards={CARDS} />
-          </PageApiContext.Provider>
-        </CollectionStoreContext.Provider>
-      </MemoryRouter>
-    </Theme>,
-  );
-  return { view, notify, setEnabled, resyncVariant, useVariantStatus };
+  // A fresh element each time: re-rendering the same one bails out.
+  const tree = () => {
+    const panel = (
+      <Theme>
+        <MemoryRouter>
+          <CollectionStoreContext.Provider value={value}>
+            <PageApiContext.Provider value={pageApi}>
+              <ListingPanel variantId={state.variantId} title="Base" cards={CARDS} />
+            </PageApiContext.Provider>
+          </CollectionStoreContext.Provider>
+        </MemoryRouter>
+      </Theme>
+    );
+    return opts.strict ? <StrictMode>{panel}</StrictMode> : panel;
+  };
+  const view = render(tree());
+  const rerender = () => view.rerender(tree());
+  return { view, state, rerender, notify, setEnabled, resyncVariant, flushListing, useVariantStatus };
 }
 
 const flush = () => act(async () => {});
+/** Lets the deferred leave (a zero-delay timer) run. */
+const afterLeave = () => act(async () => new Promise<void>((resolve) => setTimeout(resolve, 0)));
 const NOW = new Date(2026, 10, 1, 15, 0).getTime();
 const AT_2_14 = new Date(2026, 10, 1, 14, 14).getTime();
+const IDLE: VariantListingStatus = { pending: false, run: { status: "idle", listed: 1, problems: [], problemsTotal: 0 } };
 
+let visibility: DocumentVisibilityState = "visible";
+function setVisibility(next: DocumentVisibilityState) {
+  visibility = next;
+  act(() => {
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+}
+
+beforeEach(() => {
+  visibility = "visible";
+  Object.defineProperty(document, "visibilityState", { configurable: true, get: () => visibility });
+});
 afterEach(cleanup);
+
+const isInert = (el: HTMLElement) => el.getAttribute("aria-disabled") === "true";
 
 describe("the listing panel", () => {
   it("draws nothing in a store with no listing (the demo)", () => {
@@ -101,27 +133,92 @@ describe("the listing panel", () => {
     expect(view.container.textContent).toBe("");
   });
 
-  it("listing off: the short switch, and switching it on says when the boxes go up", async () => {
+  it("listing off: the short switch says what switching on does first, and the toast only confirms", async () => {
     const { setEnabled, notify, useVariantStatus } = setup({ settings: OFF });
     // Off, it never asks for the variant's status.
     expect(useVariantStatus).toHaveBeenCalledWith(null);
     const toggle = screen.getByRole("switch", { name: "List on BuySportsCards" }) as HTMLInputElement;
     expect(toggle.checked).toBe(false);
+    const described = toggle.getAttribute("aria-describedby");
+    expect(described).toBeTruthy();
+    expect(document.getElementById(described!)?.textContent).toBe(CONSENT_LINE);
     fireEvent.click(toggle);
     await flush();
     expect(setEnabled).toHaveBeenCalledWith("bsc", true);
-    expect(notify).toHaveBeenCalledWith("Listing on BuySportsCards is on. Your boxes go up in about a minute.");
+    expect(notify).toHaveBeenCalledWith("Listing on BuySportsCards is on.");
   });
 
-  it("not connected: the switch is off limits and points at Profile", () => {
-    setup({ settings: { ...OFF, connected: false } });
+  it("not connected: the switch stays focusable but does nothing, and its description points at Profile", () => {
+    const { setEnabled } = setup({ settings: { ...OFF, connected: false } });
     const toggle = screen.getByRole("switch", { name: "List on BuySportsCards" }) as HTMLInputElement;
-    expect(toggle.disabled).toBe(true);
+    expect(toggle.disabled).toBe(false);
+    expect(isInert(toggle)).toBe(true);
+    toggle.focus();
+    expect(document.activeElement).toBe(toggle);
+    fireEvent.click(toggle);
+    expect(setEnabled).not.toHaveBeenCalled();
+    expect(toggle.checked).toBe(false);
+    const note = document.getElementById(toggle.getAttribute("aria-describedby")!);
+    expect(note?.textContent).toContain("Save your BuySportsCards sign-in first.");
     const link = screen.getByRole("link", { name: "Connect BuySportsCards on your Profile" });
     expect(link.getAttribute("href")).toBe("/profile/credentials");
+    // No consent line before there is a sign-in to switch on with.
+    expect(screen.queryByText(CONSENT_LINE)).toBeNull();
   });
 
-  it("listing on: says how many are listed and when it synced, and Syncing soon while a change waits", () => {
+  it("while a flip is on its way the switch is aria-disabled and a second press does nothing", async () => {
+    let release = () => {};
+    const { setEnabled } = setup({
+      settings: OFF,
+      setEnabled: () => new Promise<void>((resolve) => (release = resolve)),
+    });
+    const toggle = screen.getByRole("switch", { name: "List on BuySportsCards" }) as HTMLInputElement;
+    fireEvent.click(toggle);
+    expect(isInert(toggle)).toBe(true);
+    expect(toggle.getAttribute("aria-busy")).toBe("true");
+    expect(toggle.disabled).toBe(false);
+    fireEvent.click(toggle);
+    expect(setEnabled).toHaveBeenCalledTimes(1);
+    await act(async () => release());
+    expect(isInert(toggle)).toBe(false);
+  });
+
+  it("switching on parks focus on Resync once the switch swaps out", async () => {
+    const { state, rerender } = setup({ settings: OFF });
+    const toggle = screen.getByRole("switch", { name: "List on BuySportsCards" });
+    toggle.focus();
+    fireEvent.click(toggle);
+    state.settings = ON;
+    state.status = IDLE;
+    rerender();
+    await flush();
+    expect(screen.queryByRole("switch")).toBeNull();
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Resync Base with BuySportsCards" }));
+  });
+
+  it("a swap leaves focus alone when it was somewhere else on the page", async () => {
+    const { state, rerender } = setup({ settings: OFF });
+    const elsewhere = document.createElement("button");
+    document.body.appendChild(elsewhere);
+    elsewhere.focus();
+    state.settings = ON;
+    state.status = IDLE;
+    rerender();
+    await flush();
+    expect(document.activeElement).toBe(elsewhere);
+    elsewhere.remove();
+  });
+
+  it("switched off elsewhere while Resync had focus: focus lands on the listing group", async () => {
+    const { state, rerender } = setup({ settings: ON, status: IDLE });
+    screen.getByRole("button", { name: "Resync Base with BuySportsCards" }).focus();
+    state.settings = OFF;
+    rerender();
+    await flush();
+    expect(document.activeElement).toBe(screen.getByRole("group", { name: "BuySportsCards listing" }));
+  });
+
+  it("listing on: says how many are listed and when it synced, and when a waiting change goes up", () => {
     setup({
       settings: ON,
       status: {
@@ -130,11 +227,13 @@ describe("the listing panel", () => {
       },
     });
     const line = screen.getByRole("status");
-    expect(line.textContent).toMatch(/^12 listed on BuySportsCards\. Synced .+\. Syncing soon\.$/);
-    expect(screen.queryByRole("button", { name: /Can't list on BSC/ })).toBeNull();
+    expect(line.textContent).toMatch(
+      /^12 listed on BuySportsCards\. Synced .+\. Syncing soon, when you leave this checklist or within 15 minutes\.$/,
+    );
+    expect(screen.queryByRole("button", { name: /Can't list on/ })).toBeNull();
   });
 
-  it("Can't list on BSC (M) opens a list naming each card by number and player, with why", () => {
+  it("Can't list on BuySportsCards (M) opens a list naming each card by number and player, with why", () => {
     setup({
       settings: ON,
       status: {
@@ -145,13 +244,13 @@ describe("the listing panel", () => {
           problems: [
             { cardId: "c2", reason: "noPrice" },
             { cardId: "c1", reason: "rejected", detail: "price below minimum" },
-            { platformCardId: "998877", reason: "notOnSheet" },
+            { reason: "notOnSheet" },
           ],
           problemsTotal: 5,
         },
       },
     });
-    const toggle = screen.getByRole("button", { name: "Can't list on BSC (5)" });
+    const toggle = screen.getByRole("button", { name: "Can't list on BuySportsCards (5)" });
     expect(toggle.getAttribute("aria-expanded")).toBe("false");
     fireEvent.click(toggle);
     expect(toggle.getAttribute("aria-expanded")).toBe("true");
@@ -159,42 +258,168 @@ describe("the listing panel", () => {
     expect(items).toEqual([
       `#2 Darryl Strawberry ${PROBLEM_COPY.noPrice}`,
       `#1 Doc Gooden ${PROBLEM_COPY.rejected} They said: “price below minimum”`,
-      `A BuySportsCards card we can't match (id 998877) ${PROBLEM_COPY.notOnSheet}`,
+      `A BuySportsCards card we can't match ${PROBLEM_COPY.notOnSheet}`,
     ]);
     expect(screen.getByText("Showing the first 3 of 5. Fix these and Resync to see the rest.")).toBeTruthy();
   });
 
-  it("Resync sends the checklist again and says so", async () => {
-    const { resyncVariant, notify } = setup({
+  it("the problems list emptying while open keeps the button (and focus), then closing parks focus on Resync", async () => {
+    const { state, rerender } = setup({
       settings: ON,
-      status: { pending: false, run: { status: "idle", listed: 1, problems: [], problemsTotal: 0 } },
+      status: { pending: false, run: { status: "idle", listed: 0, problems: [{ cardId: "c1", reason: "noPrice" }], problemsTotal: 1 } },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Resync Base with BuySportsCards" }));
+    const toggle = screen.getByRole("button", { name: "Can't list on BuySportsCards (1)" });
+    toggle.focus();
+    fireEvent.click(toggle);
+    state.status = IDLE;
+    rerender();
+    await flush();
+    const emptied = screen.getByRole("button", { name: "Can't list on BuySportsCards (0)" });
+    expect(emptied).toBe(toggle);
+    expect(document.activeElement).toBe(toggle);
+    expect(screen.getByText("All clear. Nothing's held back now.")).toBeTruthy();
+    fireEvent.click(toggle);
+    expect(screen.queryByRole("button", { name: /Can't list on/ })).toBeNull();
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Resync Base with BuySportsCards" }));
+  });
+
+  it("Resync sends the checklist again with a short confirmation, and is described by the status line", async () => {
+    const { resyncVariant, notify } = setup({ settings: ON, status: IDLE });
+    const button = screen.getByRole("button", { name: "Resync Base with BuySportsCards" });
+    expect(button.textContent).toBe("Resync");
+    const described = button.getAttribute("aria-describedby")!.split(" ");
+    expect(described).toEqual([screen.getByRole("status").id]);
+    fireEvent.click(button);
     await flush();
     expect(resyncVariant).toHaveBeenCalledWith("base1");
-    expect(notify).toHaveBeenCalledWith("Resyncing Base with BuySportsCards. It goes up in about a minute.");
+    expect(notify).toHaveBeenCalledWith("Resyncing Base with BuySportsCards.");
+  });
+
+  it("Resync keeps its focus and its words through a run, and presses do nothing meanwhile", async () => {
+    let release: (n: number) => void = () => {};
+    const { state, rerender, resyncVariant } = setup({
+      settings: ON,
+      status: IDLE,
+      resync: () => new Promise<number>((resolve) => (release = resolve)),
+    });
+    const button = screen.getByRole("button", { name: "Resync Base with BuySportsCards" }) as HTMLButtonElement;
+    button.focus();
+    fireEvent.click(button);
+    expect(isInert(button)).toBe(true);
+    expect(button.getAttribute("aria-busy")).toBe("true");
+    expect(button.disabled).toBe(false);
+    expect(button.textContent).toBe("Resync");
+    fireEvent.click(button);
+    expect(resyncVariant).toHaveBeenCalledTimes(1);
+    state.status = { pending: false, run: { status: "running", problems: [], problemsTotal: 0 } };
+    rerender();
+    await act(async () => release(2));
+    expect(isInert(button)).toBe(true);
+    expect(document.activeElement).toBe(button);
+    state.status = IDLE;
+    rerender();
+    await flush();
+    expect(isInert(button)).toBe(false);
+    expect(button.getAttribute("aria-busy")).toBeNull();
+    expect(document.activeElement).toBe(button);
   });
 
   it("Resync waits while a sync runs, and while BuySportsCards is paused", () => {
-    setup({
+    const { resyncVariant } = setup({
       settings: ON,
       status: { pending: false, run: { status: "running", problems: [], problemsTotal: 0 } },
     });
-    expect((screen.getByRole("button", { name: "Resync Base with BuySportsCards" }) as HTMLButtonElement).disabled).toBe(true);
+    const running = screen.getByRole("button", { name: "Resync Base with BuySportsCards" });
+    expect(isInert(running)).toBe(true);
+    fireEvent.click(running);
+    expect(resyncVariant).not.toHaveBeenCalled();
     expect(screen.getByRole("status").textContent).toBe("Syncing with BuySportsCards now…");
     cleanup();
     setup({ settings: { ...ON, paused: true }, status: { pending: true, run: null } });
-    expect((screen.getByRole("button", { name: "Resync Base with BuySportsCards" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(isInert(screen.getByRole("button", { name: "Resync Base with BuySportsCards" }))).toBe(true);
     expect(screen.getByRole("status").textContent).toBe(
       "BuySportsCards is on a break. Changes wait here and go up when it's back.",
     );
   });
 
-  it("a sign-in that ran out says so, with the way back", () => {
-    setup({ settings: { ...ON, needsReauth: true }, status: { pending: false, run: null } });
-    expect(screen.getByRole("link", { name: "Sign in to BuySportsCards again" }).getAttribute("href")).toBe(
-      "/profile/credentials",
-    );
+  it("a sign-in that ran out says so, with the way back, and Resync is described by it", () => {
+    setup({ settings: { ...ON, needsReauth: true }, status: { pending: true, run: null } });
+    const link = screen.getByRole("link", { name: "Sign in to BuySportsCards again" });
+    expect(link.getAttribute("href")).toBe("/profile/credentials");
+    const button = screen.getByRole("button", { name: "Resync Base with BuySportsCards" });
+    expect(isInert(button)).toBe(true);
+    const [statusId, reauthId] = button.getAttribute("aria-describedby")!.split(" ");
+    expect(statusId).toBe(screen.getByRole("status").id);
+    expect(document.getElementById(reauthId)?.contains(link)).toBe(true);
+    // Nothing goes up on a dead sign-in, so the line never says "soon".
+    expect(screen.getByRole("status").textContent).toBe("Waiting on your BuySportsCards sign-in to go up.");
+  });
+});
+
+describe("leaving the checklist sends waiting changes up", () => {
+  it("once, when the checklist closes with listing on", async () => {
+    const { view, flushListing } = setup({ settings: ON, status: IDLE });
+    await afterLeave();
+    expect(flushListing).not.toHaveBeenCalled();
+    view.unmount();
+    await afterLeave();
+    expect(flushListing).toHaveBeenCalledTimes(1);
+  });
+
+  it("never with listing off", async () => {
+    const { view, flushListing } = setup({ settings: OFF });
+    setVisibility("hidden");
+    view.unmount();
+    await afterLeave();
+    expect(flushListing).not.toHaveBeenCalled();
+  });
+
+  it("switching to another checklist is a leave", async () => {
+    const { state, rerender, flushListing } = setup({ settings: ON, status: IDLE });
+    state.variantId = "insert1";
+    rerender();
+    await afterLeave();
+    expect(flushListing).toHaveBeenCalledTimes(1);
+  });
+
+  it("hiding the tab, then closing it, is one leave; coming back starts a new one", async () => {
+    const { view, flushListing } = setup({ settings: ON, status: IDLE });
+    setVisibility("hidden");
+    expect(flushListing).toHaveBeenCalledTimes(1);
+    act(() => {
+      window.dispatchEvent(new Event("pagehide"));
+    });
+    expect(flushListing).toHaveBeenCalledTimes(1);
+    setVisibility("visible");
+    setVisibility("hidden");
+    expect(flushListing).toHaveBeenCalledTimes(2);
+    view.unmount();
+    await afterLeave();
+    expect(flushListing).toHaveBeenCalledTimes(2);
+  });
+
+  it("pagehide alone is a leave", () => {
+    const { flushListing } = setup({ settings: ON, status: IDLE });
+    act(() => {
+      window.dispatchEvent(new Event("pagehide"));
+    });
+    expect(flushListing).toHaveBeenCalledTimes(1);
+  });
+
+  it("React's development double mount is not a leave", async () => {
+    const { flushListing } = setup({ settings: ON, status: IDLE, strict: true });
+    await afterLeave();
+    expect(flushListing).not.toHaveBeenCalled();
+  });
+
+  it("switching listing on in the panel, then leaving, sends the first push", async () => {
+    const { view, state, rerender, flushListing } = setup({ settings: OFF });
+    state.settings = ON;
+    state.status = IDLE;
+    rerender();
+    view.unmount();
+    await afterLeave();
+    expect(flushListing).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -204,7 +429,17 @@ describe("statusLine", () => {
     expect(statusLine(settings, { pending: false, run: null }, NOW)).toBe(
       "Not on BuySportsCards yet. Resync sends this checklist up.",
     );
-    expect(statusLine(settings, { pending: true, run: null }, NOW)).toBe("Going up to BuySportsCards in about a minute.");
+    expect(statusLine(settings, { pending: true, run: null }, NOW)).toBe(
+      "Going up to BuySportsCards when you leave this checklist or within 15 minutes.",
+    );
+  });
+
+  it("a dead sign-in never promises soon", () => {
+    const dead = { paused: false, needsReauth: true };
+    expect(statusLine(dead, { pending: true, run: null }, NOW)).toBe("Waiting on your BuySportsCards sign-in to go up.");
+    expect(
+      statusLine(dead, { pending: true, run: { status: "idle", listed: 3, lastSuccessAt: AT_2_14, problems: [], problemsTotal: 0 } }, NOW),
+    ).toBe(`3 listed on BuySportsCards. Synced ${whenSynced(AT_2_14, NOW)}. Changes wait for your sign-in.`);
   });
 
   it("a failed run says what NB wrote and when", () => {
@@ -220,7 +455,9 @@ describe("statusLine", () => {
   it("after Resync cleared the clean run, it says when it was last sent", () => {
     expect(
       statusLine(settings, { pending: true, run: { status: "idle", listed: 3, lastRunAt: AT_2_14, problems: [], problemsTotal: 0 } }, NOW),
-    ).toBe(`3 listed on BuySportsCards. Last sent ${whenSynced(AT_2_14, NOW)}. Syncing soon.`);
+    ).toBe(
+      `3 listed on BuySportsCards. Last sent ${whenSynced(AT_2_14, NOW)}. Syncing soon, when you leave this checklist or within 15 minutes.`,
+    );
   });
 });
 

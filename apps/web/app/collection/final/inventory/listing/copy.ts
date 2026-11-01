@@ -10,7 +10,6 @@ import { shortCardName } from "../../data/labels";
 
 /** The platform's name as a collector reads it. */
 export const BSC_NAME = "BuySportsCards";
-export const BSC_SHORT = "BSC";
 /** BSC's seller orders page. BSC has no link to one order: the number is what to search. */
 export const BSC_ORDERS_URL = "https://www.buysportscards.com/sellers/orders";
 /** Where a collector saves (or renews) their marketplace sign-in. */
@@ -36,13 +35,25 @@ export function problemSentence(problem: Pick<ListingProblem, "reason" | "detail
   return base;
 }
 
-/** Which card a problem is about: "#12 Ken Griffey Jr.", else BSC's own id for it. */
-export function problemCardName(problem: Pick<ListingProblem, "cardId" | "platformCardId">, card: Card | undefined): string {
+/** A BSC row NB cannot tie to one of its cards (a problem or a sold line). */
+export const UNMATCHED_CARD = `A ${BSC_NAME} card we can't match`;
+
+/** Which card a problem is about: "#12 Ken Griffey Jr.", else that NB has no card for it. */
+export function problemCardName(problem: Pick<ListingProblem, "cardId">, card: Card | undefined): string {
   if (card) return shortCardName(card);
   if (problem.cardId) return "A card that has left this checklist";
-  if (problem.platformCardId) return `A BuySportsCards card we can't match (id ${problem.platformCardId})`;
-  return "A card";
+  return UNMATCHED_CARD;
 }
+
+/**
+ * What switching listing on does to listings the collector already has on
+ * BSC, said before they flip it: NB's box count wins, including 0.
+ */
+export const CONSENT_LINE =
+  `Switching on sets what you already list on ${BSC_NAME}, in any set you have in your boxes, to your box counts. A card that isn't in a box goes to 0.`;
+
+/** When a change goes up, for the status line and the switch's note. */
+export const WHEN_IT_GOES_UP = "when you leave this checklist or within 15 minutes";
 
 /** "2:14 PM" today, "Oct 30, 2:14 PM" this year, "Oct 30, 2025" before. */
 export function whenSynced(at: number, now: number = Date.now()): string {

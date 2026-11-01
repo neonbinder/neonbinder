@@ -1,4 +1,4 @@
-import { useId, useMemo } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { ArrowTopRightOnSquareIcon } from "@heroicons/react/24/outline";
 import NeonButton from "@/components/modules/NeonButton";
 import { FOCUS } from "../../../prototypes/p1/ui";
@@ -6,14 +6,17 @@ import { SkeletonBars } from "../../catalog/Skeleton";
 import { cardLabel } from "../../data/labels";
 import { useCards, useListing, type ListingExtension } from "../../data/store";
 import type { Card, CardId, Sale, SaleItem } from "../../data/types";
-import { BSC_NAME, BSC_ORDERS_URL, dollars, orderDay, orderStatus, saleItemProblem } from "./copy";
+import { BSC_NAME, BSC_ORDERS_URL, UNMATCHED_CARD, dollars, orderDay, orderStatus, saleItemProblem } from "./copy";
 import ListingSwitch from "./ListingSwitch";
 
 /**
  * NEO-370 — the Sales tab on the inventory (`/inventory?tab=sales`): the
  * "List on BuySportsCards" switch, then every order the collector received,
  * newest first, a page at a time ("Show more sales" stays in place: paging is
- * not a Back step). Read-only: shipping and the pull list come later.
+ * not a Back step). When a page lands, focus moves to its first order and a
+ * quiet status says how many show. Read-only: shipping and the pull list
+ * come later. Sales keep coming in with listing off, while the sign-in is
+ * saved.
  *
  * Each order shows its number, day, BSC's status, its total and its lines
  * (the NB card when NB matched it, how many, the price each). A line NB could
@@ -47,6 +50,32 @@ function Sales({ listing }: { listing: ListingExtension }) {
     return out;
   }, [cards, cardIds]);
 
+  // "Show more sales": where the new page starts, until it lands; then focus
+  // its first order and say how many show. `sawLoading` tells a page that
+  // brought nothing apart from a click the store has not answered yet.
+  const listRef = useRef<HTMLOListElement>(null);
+  const asked = useRef<{ from: number; sawLoading: boolean } | null>(null);
+  const [moreNote, setMoreNote] = useState("");
+  const shown = page.sales?.length ?? 0;
+  useEffect(() => {
+    const ask = asked.current;
+    if (!ask) return;
+    if (page.loadingMore) {
+      ask.sawLoading = true;
+      return;
+    }
+    if (shown <= ask.from && !ask.sawLoading) return;
+    asked.current = null;
+    const heads = listRef.current?.querySelectorAll<HTMLElement>("h3");
+    if (heads && heads.length > 0) heads[Math.min(ask.from, heads.length - 1)].focus();
+    setMoreNote(page.canLoadMore ? `Showing ${shown} sales.` : `Showing ${shown} sales. That's every sale.`);
+  }, [page.loadingMore, page.canLoadMore, shown]);
+  const showMore = () => {
+    if (page.loadingMore) return;
+    asked.current = { from: shown, sawLoading: false };
+    page.loadMore();
+  };
+
   return (
     <div className="space-y-6">
       <section
@@ -68,9 +97,9 @@ function Sales({ listing }: { listing: ListingExtension }) {
             href={BSC_ORDERS_URL}
             target="_blank"
             rel="noopener noreferrer"
-            className="inline-flex items-center gap-1 rounded-sm text-sm font-medium text-neon-blue-text underline focus-outline"
+            className="inline-flex min-h-6 items-center gap-1 rounded-sm py-0.5 text-sm font-medium text-neon-blue-text underline focus-outline max-sm:min-h-11"
           >
-            Open BSC orders
+            Open {BSC_NAME} orders
             <ArrowTopRightOnSquareIcon aria-hidden="true" className="h-4 w-4" />
             <span className="sr-only"> (opens in a new tab)</span>
           </a>
@@ -88,7 +117,7 @@ function Sales({ listing }: { listing: ListingExtension }) {
             No sales yet. When a card sells on {BSC_NAME}, the order shows up here within about 15 minutes.
           </p>
         ) : (
-          <ol aria-label="Orders, newest first" className="space-y-3">
+          <ol ref={listRef} aria-label="Orders, newest first" className="space-y-3">
             {page.sales.map((sale) => (
               <Order key={sale.id} sale={sale} cards={byId} />
             ))}
@@ -100,13 +129,17 @@ function Sales({ listing }: { listing: ListingExtension }) {
             type="button"
             variant="secondary"
             outline
-            disabled={page.loadingMore}
-            onClick={page.loadMore}
+            aria-disabled={page.loadingMore || undefined}
+            aria-busy={page.loadingMore || undefined}
+            onClick={showMore}
             className={`${FOCUS} max-sm:min-h-11`}
           >
-            {page.loadingMore ? "Loading sales…" : "Show more sales"}
+            Show more sales
           </NeonButton>
         ) : null}
+        <p role="status" className="sr-only">
+          {moreNote}
+        </p>
       </section>
     </div>
   );
@@ -120,7 +153,7 @@ function Order({ sale, cards }: { sale: Sale; cards: ReadonlyMap<CardId, Card> }
     <li>
       <article aria-labelledby={titleId} className="rounded-lg bg-raised text-ink shadow-offset">
         <header className="flex flex-wrap items-baseline gap-x-3 gap-y-1 px-4 pt-3 pb-2.5">
-          <h3 id={titleId} className="text-base font-semibold tabular-nums">
+          <h3 id={titleId} tabIndex={-1} className="rounded-sm text-base font-semibold tabular-nums focus-outline">
             Order {sale.orderNo}
           </h3>
           <span className="rounded-full border border-rule-strong px-2 py-0.5 text-xs font-medium text-ink-2">
@@ -143,7 +176,7 @@ function Order({ sale, cards }: { sale: Sale; cards: ReadonlyMap<CardId, Card> }
         {/* The tear line of a sales slip. */}
         <ul className="space-y-2 border-t border-dashed border-rule-strong px-4 pt-2.5 pb-3">
           {sale.items.map((item, i) => (
-            <Line key={`${item.platformCardId}-${item.condition}-${i}`} item={item} card={item.cardId ? cards.get(item.cardId) : undefined} />
+            <Line key={`${item.cardId ?? "unmatched"}-${item.condition}-${i}`} item={item} card={item.cardId ? cards.get(item.cardId) : undefined} />
           ))}
         </ul>
       </article>
@@ -159,7 +192,7 @@ function conditionWords(condition: string): string {
 
 function Line({ item, card }: { item: SaleItem; card: Card | undefined }) {
   const problem = saleItemProblem(item);
-  const name = card ? cardLabel(card) : item.cardId ? "A card that has left the catalog" : `${BSC_NAME} card ${item.platformCardId}`;
+  const name = card ? cardLabel(card) : item.cardId ? "A card that has left the catalog" : UNMATCHED_CARD;
   const condition = conditionWords(item.condition);
   return (
     <li className="text-sm">

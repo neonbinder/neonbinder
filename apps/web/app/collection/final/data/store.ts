@@ -519,6 +519,12 @@ export interface ListingExtension {
   useVariantStatus(variantId: VariantId | null): VariantListingStatus | undefined;
   /** Forget the checklist's last clean push and send it again. Resolves with the cards queued. */
   resyncVariant(variantId: VariantId): Promise<number>;
+  /**
+   * Send the collector's waiting changes now, rather than within 15 minutes.
+   * The checklist calls it as the collector leaves (best effort: a closing
+   * tab may not get the call out).
+   */
+  flushListing(): Promise<void>;
   /** The Sales list, newest first. Call it every render, like a hook. */
   useSales(): SalesPage;
 }
