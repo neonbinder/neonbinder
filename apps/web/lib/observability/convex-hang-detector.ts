@@ -46,6 +46,8 @@ export type ClientState = {
   connection: Record<string, unknown> | null;
   /** True between "pausing WS for auth token fetch" and its resume. */
   authPaused: boolean;
+  /** True between "attempting to reauthenticate" (server rejected the token) and its outcome. */
+  reauthenticating: boolean;
   /** The last auth line the client logged, and how long ago. */
   lastAuthLine: string | null;
   msSinceLastAuthLine: number | null;
@@ -105,7 +107,11 @@ export type HangDetectorOptions = {
   autoCheck?: boolean;
 };
 
-/** FNV-1a over the JSON of the args: tells calls apart without recording them. */
+/**
+ * FNV-1a over the JSON of the args: tells calls apart without recording them.
+ * Not a privacy boundary: 32 bits of short args can be brute-forced. Fine
+ * for E2E test-account data, which is all this ever sees.
+ */
 export function hashArgs(args: unknown): string {
   let text: string;
   try {
@@ -122,12 +128,16 @@ export function hashArgs(args: unknown): string {
 }
 
 /**
- * Strips what must never reach a public report: Clerk testing tokens in
- * URLs, bearer tokens, and anything shaped like a JWT.
+ * Strips what must never reach a public report: Clerk testing, dev-browser
+ * and session tokens in URLs (plain or %3D-encoded), bearer tokens, and
+ * anything shaped like a JWT.
  */
 export function redactLine(line: string): string {
   return line
-    .replace(/__clerk_testing_token=[^&\s"']*/g, "__clerk_testing_token=[redacted]")
+    .replace(
+      /(__clerk_testing_token|__clerk_db_jwt|__session|__client_uat|__client)(=|%3D)[^&\s"';]*/gi,
+      "$1$2[redacted]",
+    )
     .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/g, "Bearer [redacted]")
     .replace(/eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]*/g, "[jwt]");
 }
@@ -165,6 +175,9 @@ export function createHangDetector(options: HangDetectorOptions = {}): HangDetec
   /** The client that last carried a call (the first attached until then). */
   let client: ConvexReactClient | null = null;
   let authPaused = false;
+  let reauthenticating = false;
+  /** Generation of `client`: a swap (NEO-84) moves the snapshot to the new client. */
+  let clientGeneration = -1;
   let lastAuthLine: string | null = null;
   let lastAuthAt: number | null = null;
   let lastServerMessageAt: number | null = null;
@@ -177,7 +190,9 @@ export function createHangDetector(options: HangDetectorOptions = {}): HangDetec
   };
 
   const track = (text: string) => {
-    const message = text.match(/received ws message with type (\w+)/);
+    // A large update arrives as TransitionChunk frames and is then logged once
+    // as an assembled Transition; both count.
+    const message = text.match(/(?:received ws message|assembled full ws message) (?:with|of) type (\w+)/);
     if (message) {
       lastServerMessageAt = now();
       if (message[1] === "Transition") lastTransitionAt = lastServerMessageAt;
@@ -192,6 +207,14 @@ export function createHangDetector(options: HangDetectorOptions = {}): HangDetec
         text.includes("restarting WS after auth token fetch")
       ) {
         authPaused = false;
+      }
+      // A rejected token stops the socket and refetches without a "pausing" line.
+      if (text.includes("attempting to reauthenticate")) reauthenticating = true;
+      if (
+        text.includes("server confirmed new auth token is valid") ||
+        text.includes("reauthentication failed")
+      ) {
+        reauthenticating = false;
       }
     }
     return false;
@@ -251,6 +274,7 @@ export function createHangDetector(options: HangDetectorOptions = {}): HangDetec
     return {
       connection,
       authPaused,
+      reauthenticating,
       lastAuthLine,
       msSinceLastAuthLine: since(lastAuthAt),
       msSinceLastServerMessage: since(lastServerMessageAt),
@@ -267,6 +291,7 @@ export function createHangDetector(options: HangDetectorOptions = {}): HangDetec
   ) => {
     const id = nextId++;
     client = target;
+    clientGeneration = Math.max(clientGeneration, generation);
     clientOf.set(id, target);
     open.set(id, {
       id,
@@ -283,16 +308,24 @@ export function createHangDetector(options: HangDetectorOptions = {}): HangDetec
     };
   };
 
-  const settleWith = <T>(promise: Promise<T>, clear: () => void): Promise<T> => {
-    promise.then(clear, clear);
-    return promise;
-  };
+  // `finally` hands the caller a promise that still rejects, so a caller
+  // that ignores it (`void ensureOptions(...)`) still raises an unhandled
+  // rejection for PostHog and the page-error capture, exactly as before.
+  const settleWith = <T>(promise: Promise<T>, clear: () => void): Promise<T> =>
+    promise.finally(clear);
 
   const attach = (target: ConvexReactClient, generation: number) =>
     safely(() => attachTo(target, generation));
 
   const attachTo = (target: ConvexReactClient, generation: number) => {
-    client ??= target;
+    // The first client of a generation stands in until a call lands: React
+    // StrictMode builds a spare of the same generation (ignored), and a swap
+    // brings a higher one, which replaces the closed client. Note that
+    // connectionState() on a client that never carried a call opens its socket.
+    if (generation > clientGeneration) {
+      client = target;
+      clientGeneration = generation;
+    }
     const mutation = target.mutation.bind(target);
     const action = target.action.bind(target);
     const watchQuery = target.watchQuery.bind(target);
@@ -316,7 +349,9 @@ export function createHangDetector(options: HangDetectorOptions = {}): HangDetec
       return settleWith(promise, clear);
     };
 
-    // useQuery, client.query and prewarmQuery all subscribe through here. A
+    // useQuery, client.query and prewarmQuery all subscribe through here.
+    // watchPaginatedQuery is not wrapped: only usePaginatedQuery_experimental
+    // uses it, and the app does not. A
     // subscription is open from its first listener until it has a result or
     // an error, or until the listener is dropped (the screen moved on).
     patch.watchQuery = (fn: unknown, ...rest: unknown[]) => {

@@ -112,6 +112,11 @@ permissions:
 # the blob report (and the merged HTML) embeds every path attachment, so it
 # carries each failure's error-context.md (an ARIA snapshot of the page, input
 # values in plaintext) and the screenshots, plus the sanitised axe JSON.
+# Since NEO-409 each FAILED test also attaches `console` (the page console and
+# page errors, including the Convex client's log lines) and `convex open calls`
+# (open Convex function names, an args hash, socket and token state), both
+# passed through redactLine (Clerk testing/dev-browser/session tokens, Bearer
+# tokens, JWTs); call args are never recorded.
 # Accepted as the main red-run diagnostic: real marketplace passwords never
 # reach the browser. Artifact names:
 # pw-report-seed, pw-report-desktop-<i>, pw-report-seed-mobile,
@@ -1788,7 +1793,8 @@ jobs:
             npx playwright merge-reports --reporter=json,junit,html pw-blobs
 
       # Screenshots and reports only (see the header). The merged HTML report
-      # embeds attachments, which in CI are failure screenshots.
+      # embeds attachments, which in CI are failure screenshots plus the NEO-409
+      # `console` / `convex open calls` attachments of failed tests.
       - name: Upload merged report
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

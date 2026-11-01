@@ -10,7 +10,7 @@ import {
   useState,
 } from "react";
 import { ConvexReconnectContext } from "./convexReconnect";
-import { e2eDiagnostic, isE2E } from "@/lib/observability/e2e-diagnostics";
+import { e2eDiagnostic } from "@/lib/observability/e2e-diagnostics";
 import {
   createHangDetector,
   hangAfterMsFrom,
@@ -109,7 +109,11 @@ function e2eHangDetector(): HangDetector {
 /** Builds the client; under E2E with the hang detector as logger and watcher. */
 export function buildConvexClient(generation: number): ConvexReactClient {
   const url = import.meta.env.VITE_CONVEX_URL;
-  if (!isE2E()) return new ConvexReactClient(url);
+  // Inline build-time constant, not isE2E(): the bundler folds it, so the
+  // detector module drops out of the production bundle entirely.
+  if (import.meta.env.VITE_CLERK_TESTING_ENABLED !== "true") {
+    return new ConvexReactClient(url);
+  }
   const detector = e2eHangDetector();
   const client = new ConvexReactClient(url, { logger: detector.logger });
   detector.attach(client, generation);

@@ -22,6 +22,8 @@ import { redactLine } from "../../lib/observability/convex-hang-detector";
 /** Lines kept per page; the oldest drop first. */
 export const CONSOLE_LINE_LIMIT = 3_000;
 const MAX_LINE_LENGTH = 2_000;
+/** The console attachment keeps its newest lines up to this many bytes. */
+export const CONSOLE_BODY_LIMIT = 512 * 1024;
 const SNAPSHOT_TIMEOUT_MS = 5_000;
 
 export type PageDiagnostics = {
@@ -53,11 +55,27 @@ export function capturePageDiagnostics(page: Page): PageDiagnostics {
         contentType: "application/json",
       });
       await testInfo.attach("console", {
-        body: lines.join("\n") || "(no console output)",
+        body: consoleBody(lines),
         contentType: "text/plain",
       });
     },
   };
+}
+
+/** The newest lines that fit the byte cap, saying how many were dropped. */
+export function consoleBody(lines: string[]): string {
+  if (lines.length === 0) return "(no console output)";
+  const kept: string[] = [];
+  let bytes = 0;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const size = Buffer.byteLength(lines[i]) + 1;
+    if (bytes + size > CONSOLE_BODY_LIMIT) break;
+    kept.push(lines[i]);
+    bytes += size;
+  }
+  kept.reverse();
+  const dropped = lines.length - kept.length;
+  return (dropped > 0 ? `(... ${dropped} earlier lines dropped)\n` : "") + kept.join("\n");
 }
 
 /**

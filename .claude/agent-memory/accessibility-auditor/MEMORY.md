@@ -48,3 +48,4 @@
 - [Required pill group, no words NEO-331](required-pill-group-no-words-neo331.md) — radiogroup+aria-required and focus-the-field on a held primary, zero new copy
 - [Collection store UI NEO-358](collection-store-ui-neo358.md) — collector page: focus loss on unmount, state-in-name toggles, label-in-name, stacked loading statuses
 - [Intake demo vs real sibling NEO-369/382](intake-demo-vs-real-sibling-neo369-382.md) — the public demo intake kept on-focus dialogs, focus-blind single-key shortcuts, status chatter and a self-disabling Save-all that the real tab fixed; kbd inside a button corrupts its name
+- [E2E-only code ships in prod bundle](e2e-only-code-ships-in-prod-bundle.md) — isE2E() helper is not folded by rolldown; inline import.meta.env to tree-shake; how to measure with a flag-unset build

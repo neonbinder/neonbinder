@@ -20,8 +20,11 @@ type Listener = () => void;
 
 function fakeClient() {
   const pending: Array<{ resolve: (v: unknown) => void; reject: (e: unknown) => void }> = [];
-  let result: unknown = undefined;
+  // One result per watch, keyed by its args, as the real client keys them.
+  const results = new Map<string, unknown>();
+  const failing = new Set<string>();
   const listeners = new Set<Listener>();
+  const key = (args: unknown) => JSON.stringify(args ?? {});
   const client = {
     mutation: vi.fn(
       () =>
@@ -29,13 +32,18 @@ function fakeClient() {
           pending.push({ resolve, reject });
         }),
     ),
-    action: vi.fn(() => Promise.resolve("ok")),
-    watchQuery: vi.fn(() => ({
+    action: vi.fn((_fn: unknown, args: { hang?: boolean } = {}) =>
+      args.hang ? new Promise(() => {}) : Promise.resolve("ok"),
+    ),
+    watchQuery: vi.fn((_fn: unknown, args?: unknown) => ({
       onUpdate: (cb: Listener) => {
         listeners.add(cb);
         return () => listeners.delete(cb);
       },
-      localQueryResult: () => result,
+      localQueryResult: () => {
+        if (failing.has(key(args))) throw new Error("query failed");
+        return results.get(key(args));
+      },
       localQueryLogs: () => undefined,
       journal: () => undefined,
     })),
@@ -53,8 +61,12 @@ function fakeClient() {
   return {
     client: client as unknown as ConvexReactClient,
     pending,
-    deliver(value: unknown) {
-      result = value;
+    deliver(args: unknown, value: unknown) {
+      results.set(key(args), value);
+      for (const l of listeners) l();
+    },
+    fail(args: unknown) {
+      failing.add(key(args));
       for (const l of listeners) l();
     },
   };
@@ -133,6 +145,48 @@ describe("convex hang detector", () => {
     expect(detector.snapshot().state.connection).toMatchObject({ isWebSocketConnected: true });
   });
 
+  it("still lets an ignored rejecting mutation surface as an unhandled rejection", async () => {
+    const { fake } = setup();
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      void fake.client.mutation(saveTheme, {});
+      fake.pending[0].reject(new Error("ignored failure"));
+      await new Promise((r) => setTimeout(r, 0));
+      await new Promise((r) => setTimeout(r, 0));
+      expect(unhandled).toEqual([expect.objectContaining({ message: "ignored failure" })]);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
+
+  it("counts an assembled chunked Transition as a server transition", () => {
+    const { detector, advance } = setup();
+    detector.logger.logVerbose("received ws message with type TransitionChunk");
+    detector.logger.logVerbose("assembled full ws message of type Transition");
+    advance(1_000);
+    expect(detector.snapshot().state.msSinceLastTransition).toBe(1_000);
+  });
+
+  it("tracks a server-rejected token's reauthentication", () => {
+    const { detector } = setup();
+    detector.logger.logVerbose("attempting to reauthenticate: token expired [v3]");
+    expect(detector.snapshot().state.reauthenticating).toBe(true);
+    detector.logger.logVerbose("server confirmed new auth token is valid [v4]");
+    expect(detector.snapshot().state.reauthenticating).toBe(false);
+  });
+
+  it("moves the snapshot to the new client after a swap, before any call lands on it", () => {
+    const { detector } = setup();
+    const swapped = fakeClient();
+    (swapped.client as unknown as { connectionState: () => object }).connectionState = () => ({
+      connectionCount: 7,
+    });
+    detector.attach(swapped.client, 1);
+    expect(detector.snapshot().state.connection).toMatchObject({ connectionCount: 7 });
+  });
+
   it("never records the args themselves", () => {
     const { detector, fake, advance } = setup();
     void fake.client.mutation(saveTheme, { secretish: "do-not-print" });
@@ -153,23 +207,53 @@ describe("convex hang detector", () => {
     expect(detector.snapshot().openCalls).toHaveLength(0);
   });
 
-  it("holds a subscription open until its first result, and drops it on unsubscribe", () => {
+  it("holds a subscription open until its first result", () => {
     const { detector, fake, hangs, advance } = setup();
     const watch = fake.client.watchQuery(listBinders, {});
-    const unsubscribe = watch.onUpdate(() => {});
+    watch.onUpdate(() => {});
     expect(detector.snapshot().openCalls).toEqual([
       expect.objectContaining({ kind: "query", name: "binders:list" }),
     ]);
 
-    fake.deliver([]);
+    fake.deliver({}, []);
     expect(detector.snapshot().openCalls).toHaveLength(0);
-
-    const second = fake.client.watchQuery(listBinders, { other: 1 });
-    // Already has a result: never registered.
-    second.onUpdate(() => {})();
-    unsubscribe();
     advance(10_000);
     expect(hangs).toHaveLength(0);
+  });
+
+  it("never registers a subscription that already has a result", () => {
+    const { detector, fake } = setup();
+    fake.deliver({ cached: 1 }, ["x"]);
+    fake.client.watchQuery(listBinders, { cached: 1 }).onUpdate(() => {});
+    expect(detector.snapshot().openCalls).toHaveLength(0);
+  });
+
+  it("drops a subscription unsubscribed before any result (the screen moved on)", () => {
+    const { detector, fake, hangs, advance } = setup();
+    const unsubscribe = fake.client.watchQuery(listBinders, { a: 1 }).onUpdate(() => {});
+    expect(detector.snapshot().openCalls).toHaveLength(1);
+    unsubscribe();
+    expect(detector.snapshot().openCalls).toHaveLength(0);
+    advance(10_000);
+    expect(hangs).toHaveLength(0);
+  });
+
+  it("treats a subscription whose result is an error as settled", () => {
+    const { detector, fake, hangs, advance } = setup();
+    fake.client.watchQuery(listBinders, { b: 1 }).onUpdate(() => {});
+    fake.fail({ b: 1 });
+    expect(detector.snapshot().openCalls).toHaveLength(0);
+    advance(10_000);
+    expect(hangs).toHaveLength(0);
+  });
+
+  it("reports an action that never resolves, once, as an action", () => {
+    const { fake, hangs, advance } = setup();
+    void fake.client.action(makeFunctionReference<"action">("intake:run"), { hang: true });
+    advance(5_000);
+    advance(5_000);
+    expect(hangs).toHaveLength(1);
+    expect(hangs[0]).toMatchObject({ kind: "action", name: "intake:run" });
   });
 
   it("tracks the time since the last server transition from the client's own log lines", () => {
@@ -197,13 +281,34 @@ describe("convex hang detector", () => {
     expect(sink.debug).toHaveBeenCalledWith("[convex] line 399");
   });
 
-  it("passes calls straight through even when the detector cannot register them", async () => {
-    const { fake } = setup();
-    await expect(fake.client.action(makeFunctionReference<"action">("x:y"), {})).resolves.toBe("ok");
+  it("passes calls straight through when the detector itself fails", async () => {
+    const { detector, fake, hangs, advance } = setup();
+    (fake.client as unknown as { connectionState: () => never }).connectionState = () => {
+      throw new Error("client closed");
+    };
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+    await expect(
+      fake.client.action(makeFunctionReference<"action">("x:y"), cyclic),
+    ).resolves.toBe("ok");
+    void fake.client.mutation(saveTheme, cyclic);
+    expect(() => advance(5_000)).not.toThrow();
+    expect(hangs[0]).toMatchObject({ argsHash: "unhashable", state: { connection: null } });
+    expect(() => detector.snapshot()).not.toThrow();
   });
 });
 
 describe("redactLine", () => {
+  it("strips Clerk dev-browser and session tokens, plain and URL-encoded", () => {
+    const out = redactLine(
+      "GET https://clerk.x.dev/v1/client?__clerk_db_jwt=dvb_2abcSECRET&_v=5 " +
+        "redirect=%2F%3F__clerk_db_jwt%3Ddvb_OTHERSECRET __session=sess_SECRET; __client_uat=123",
+    );
+    expect(out).not.toMatch(/SECRET|sess_|=123/);
+    expect(out).toContain("__clerk_db_jwt=[redacted]&_v=5");
+    expect(out).toContain("__clerk_db_jwt%3D[redacted]");
+  });
+
   it("strips Clerk testing tokens, bearer tokens and JWTs", () => {
     const jwt = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ1c2VyXzEyMyJ9.c2lnbmF0dXJl";
     const out = redactLine(

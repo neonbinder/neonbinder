@@ -9,9 +9,9 @@
  * reads the page console and `window.__NB_HANG` instead. Nothing else may
  * import this file (eslint.config.mjs fences it).
  *
- * How it stalls: every frame is forwarded both ways untouched, except the
- * first client `Mutation` frame whose function path contains `udfPathPart`,
- * which is swallowed. The server never sees that mutation, so nothing is
+ * How it stalls: every frame is forwarded both ways untouched, except client
+ * `Mutation` frames whose function path contains `udfPathPart` (the first,
+ * and any resend after a reconnect), which are swallowed. The server never sees that mutation, so nothing is
  * written, and the socket stays healthy (pings and transitions keep
  * flowing): exactly the shape of the E2E reds, an await that never resolves
  * on a live socket.
@@ -38,11 +38,15 @@ export async function stallFirstMutation(page: Page, udfPathPart: string): Promi
   await page.routeWebSocket(CONVEX_SYNC, (ws) => {
     const server = ws.connectToServer();
     ws.onMessage((message) => {
-      if (!done && typeof message === "string") {
+      if (typeof message === "string") {
         const frame = parse(message);
         if (frame?.type === "Mutation" && typeof frame.udfPath === "string" && frame.udfPath.includes(udfPathPart)) {
-          done = true;
-          resolveSwallowed(frame.udfPath);
+          if (!done) {
+            done = true;
+            resolveSwallowed(frame.udfPath);
+          }
+          // Never forwarded, including the resend a reconnect makes of every
+          // in-flight mutation, so the write can never land (R7).
           return;
         }
       }
@@ -52,6 +56,22 @@ export async function stallFirstMutation(page: Page, udfPathPart: string): Promi
   });
 
   return { swallowed };
+}
+
+/** The swallowed frame's path, or a clear failure if the save never sent one. */
+export async function swallowedWithin(stall: StalledMutation, udfPathPart: string, timeout: number): Promise<string> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`no ${udfPathPart} mutation was sent within ${timeout} ms (renamed?)`)),
+      timeout,
+    );
+  });
+  try {
+    return await Promise.race([stall.swallowed, late]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function parse(message: string): { type?: unknown; udfPath?: unknown } | null {

@@ -244,6 +244,9 @@ test("<title states the feature>", { tag: ["@set-selector"] }, async ({ page, si
 - `support/hang-capture.ts`: the fixture's failure capture (NEO-409): the
   page console and page errors, and on a failed test the `console` and
   `convex open calls` attachments. Specs never import it directly.
+- `support/convex-stall.ts`: the NEO-409 rule 9 exception: swallow one Convex
+  `Mutation` frame and read the `[nb-hang]` record. Licensed for
+  `diagnostics/convex-hang-detector-names-a-stalled-save` only.
 - `support/env.ts`: how `env` is built (`makeEnv`, `isSlPaused`); import types
   from here, do not re-derive.
 - `support/credentials.ts`: `loginToBsc(page)`, `loginToSportLots(page, env)`,
@@ -872,7 +875,9 @@ desktop-only file still plans both passes).
    with the socket state, whether the client was paused for a Clerk token, the
    time since the last server message, and the Convex client's last log lines.
    The `console` attachment is the page console and uncaught errors; a
-   `[nb-hang]` line there marks when a call passed 5 s open.
+   `[nb-hang]` line there marks when a call passed 5 s open. Only the
+   fixture's own `page` is captured; a second page or context a spec opens
+   itself carries neither attachment.
 4. Check the run's `PAUSED_PLATFORMS: ` line and, for enrichment, the
    `convex-logs-*` artifacts, before deciding which branch the spec took.
 5. Reproduce that one spec locally against the PR preview (above); fix; push
