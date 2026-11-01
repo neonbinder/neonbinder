@@ -272,6 +272,9 @@ async function confirm(deployment, what, { yes, log }) {
   if (answer.trim() !== deployment) throw new RefusedError("confirmation did not match; nothing changed");
 }
 
+/** `referenceSeed:tableStats` calls per load before giving up (each works for the action's budget). */
+export const STATS_MAX_PASSES = 10;
+
 /**
  * `npx convex run` of an internal function, parsed. No --identity: an
  * internal function is reachable only by deploy credentials (see
@@ -313,12 +316,19 @@ function readPreflight(deployment, env, tables, log) {
  */
 function readTableStats(deployment, env, tables, checkSports, log) {
   const t0 = Date.now();
-  const out = runInternal(
-    deployment,
-    "referenceSeed:tableStats",
-    { tables, checkSports, sportIdFields: [SPORT_ID_FIELD, SPORT_ID_ARRAY_FIELD] },
-    env,
-  );
+  const sportIdFields = [SPORT_ID_FIELD, SPORT_ID_ARRAY_FIELD];
+  let out = null;
+  let resume;
+  // Each call works for the action's own time budget and hands back where it
+  // stopped; `convex run` would give up on one call that ran five minutes.
+  for (let pass = 1; pass <= STATS_MAX_PASSES; pass++) {
+    out = runInternal(deployment, "referenceSeed:tableStats", { tables, checkSports, sportIdFields, ...(resume ? { resume } : {}) }, env);
+    if (out.complete !== false) break;
+    resume = out.resume;
+    log(`table stats: pass ${pass} ran out of time; resuming`);
+    out = null;
+  }
+  if (!out) throw new Error(`referenceSeed:tableStats did not finish within ${STATS_MAX_PASSES} passes`);
   log(`table stats: ${tables.length} tables in ${((Date.now() - t0) / 1000).toFixed(1)}s`);
   return { sportRows: out.sportRows ?? 0, rows: out.rows ?? {}, badSport: out.badSport ?? {} };
 }

@@ -30,13 +30,26 @@ import { internal } from "./_generated/api";
 import { internalAction, internalQuery } from "./_generated/server";
 import { MAX_TABLE_NUMBER, findTableNumbers, tableNumberOf } from "./lib/convexIdCodec";
 
-/** Rows per `tableStats` page: well under the 16 MiB read budget at ~1 KiB a row. */
-export const STATS_PAGE = 4000;
+/** Rows per `tableStats` page: under the 16 MiB read budget even at several KiB a row. */
+export const STATS_PAGE = 2000;
+/** `tableStats` hands back a resume token after this long; `npx convex run` gives up waiting at about five minutes. */
+export const STATS_BUDGET_MS = 120_000;
 
 const SPORT_TABLE = "selectorOptions";
 
-/** Table numbers probed per `scanTableNumbers` call: one `normalizeId` syscall per number per pending table. */
-export const SCAN_CHUNK = 4096;
+/**
+ * `normalizeId` is a syscall, and a query has one second. CI measured
+ * 4096 numbers × 29 tables (119k calls) over that limit, so each call
+ * probes about this many numbers in total across its pending tables.
+ */
+export const SCAN_CALLS_PER_QUERY = 3000;
+/** Convex numbers user tables upward from here; the scan starts here and falls back to 1.. only if needed. */
+export const FIRST_USER_TABLE_NUMBER = 10001;
+
+/** Numbers one `scanTableNumbers` call may probe for this many pending tables. */
+export function scanChunk(pendingTables: number): number {
+  return Math.max(16, Math.floor(SCAN_CALLS_PER_QUERY / Math.max(1, pendingTables)));
+}
 
 export const emptiness = internalQuery({
   args: { tables: v.array(v.string()) },
@@ -64,7 +77,7 @@ export const scanTableNumbers = internalQuery({
   args: { tables: v.array(v.string()), from: v.number(), to: v.number() },
   returns: v.record(v.string(), v.number()),
   handler: async (ctx, args) => {
-    const to = Math.min(args.to, args.from + SCAN_CHUNK);
+    const to = Math.min(args.to, args.from + scanChunk(args.tables.length));
     const found = findTableNumbers(
       args.tables,
       (table, id) => ctx.db.normalizeId(table as TableNames, id) !== null,
@@ -91,15 +104,22 @@ export const preflight = internalAction({
     );
     const tableNumbers: Record<string, number> = { ...e.known };
     let pending = args.tables.filter((t) => !(t in tableNumbers));
-    for (let from = 1; from < MAX_TABLE_NUMBER && pending.length > 0; from += SCAN_CHUNK) {
-      const found: Record<string, number> = await ctx.runQuery(internal.referenceSeed.scanTableNumbers, {
-        tables: pending,
-        from,
-        to: Math.min(MAX_TABLE_NUMBER, from + SCAN_CHUNK),
-      });
-      Object.assign(tableNumbers, found);
-      pending = pending.filter((t) => !(t in tableNumbers));
-    }
+    const scan = async (from: number, to: number) => {
+      for (let at = from; at < to && pending.length > 0; at += scanChunk(pending.length)) {
+        const found: Record<string, number> = await ctx.runQuery(internal.referenceSeed.scanTableNumbers, {
+          tables: pending,
+          from: at,
+          to: Math.min(to, at + scanChunk(pending.length)),
+        });
+        Object.assign(tableNumbers, found);
+        pending = pending.filter((t) => !(t in tableNumbers));
+      }
+    };
+    // User tables first (the common case finds everything within a few
+    // hundred numbers), then the low range, so a table that does not exist
+    // costs a bounded number of calls before it is reported missing.
+    await scan(FIRST_USER_TABLE_NUMBER, MAX_TABLE_NUMBER);
+    await scan(1, FIRST_USER_TABLE_NUMBER);
     return { tableNumbers, nonEmpty: e.nonEmpty };
   },
 });
@@ -150,12 +170,36 @@ export const countPage = internalQuery({
   },
 });
 
-type TableStats = { sportRows: number; rows: Record<string, number>; badSport: Record<string, number> };
+type Resume = { tableIndex: number; cursor: string | null; rows: Record<string, number>; badSport: Record<string, number>; sportRows: number };
+type TableStats = { complete: boolean; resume: Resume | null; sportRows: number; rows: Record<string, number>; badSport: Record<string, number> };
 type CountPage = { count: number; badSport: number; isDone: boolean; continueCursor: string };
 
+const resumeValidator = v.object({
+  tableIndex: v.number(),
+  cursor: v.union(v.string(), v.null()),
+  rows: v.record(v.string(), v.number()),
+  badSport: v.record(v.string(), v.number()),
+  sportRows: v.number(),
+});
+
+/**
+ * Counts rows per table, a page at a time, within `budgetMs` of wall clock;
+ * when the budget runs out it returns `complete: false` and a `resume`
+ * token for the caller to pass back (the pattern e2e-baseline.sh uses for
+ * the reset, because `convex run` stops waiting after about five minutes).
+ * `checkSports` needs the field names, or the check would silently pass.
+ */
 export const tableStats = internalAction({
-  args: { tables: v.array(v.string()), checkSports: v.boolean(), sportIdFields: v.optional(v.array(v.string())) },
+  args: {
+    tables: v.array(v.string()),
+    checkSports: v.boolean(),
+    sportIdFields: v.optional(v.array(v.string())),
+    budgetMs: v.optional(v.number()),
+    resume: v.optional(resumeValidator),
+  },
   returns: v.object({
+    complete: v.boolean(),
+    resume: v.union(resumeValidator, v.null()),
     sportRows: v.number(),
     rows: v.record(v.string(), v.number()),
     badSport: v.record(v.string(), v.number()),
@@ -163,33 +207,39 @@ export const tableStats = internalAction({
   // Explicit types: the action calls queries from its own module, and
   // without them TypeScript's inference of `internal` turns circular.
   handler: async (ctx, args): Promise<TableStats> => {
+    if (args.checkSports && !(args.sportIdFields?.length ?? 0)) {
+      throw new Error("tableStats: checkSports needs sportIdFields, or the sport-id check would check nothing");
+    }
+    const started = Date.now();
+    const budget = args.budgetMs ?? STATS_BUDGET_MS;
     const sports: string[] | null = args.checkSports ? await ctx.runQuery(internal.referenceSeed.sportIds, {}) : null;
-    const rows: Record<string, number> = {};
-    const badSport: Record<string, number> = {};
-    for (const table of args.tables) {
-      let count = 0;
-      let bad = 0;
-      let cursor: string | null = null;
-      for (;;) {
-        const page: CountPage = await ctx.runQuery(
-          internal.referenceSeed.countPage,
-          {
-            table,
-            cursor,
-            numItems: STATS_PAGE,
-            // The sport table's own rows are the sport ids; only its dependants are checked.
-            sportIds: sports && table !== SPORT_TABLE ? sports : undefined,
-            sportIdFields: args.sportIdFields,
-          },
-        );
-        count += page.count;
-        bad += page.badSport;
-        if (page.isDone) break;
+    const rows: Record<string, number> = { ...(args.resume?.rows ?? {}) };
+    const badSport: Record<string, number> = { ...(args.resume?.badSport ?? {}) };
+    let tableIndex = args.resume?.tableIndex ?? 0;
+    let cursor: string | null = args.resume?.cursor ?? null;
+    while (tableIndex < args.tables.length) {
+      const table = args.tables[tableIndex];
+      const page: CountPage = await ctx.runQuery(internal.referenceSeed.countPage, {
+        table,
+        cursor,
+        numItems: STATS_PAGE,
+        // The sport table's own rows are the sport ids; only its dependants are checked.
+        sportIds: sports && table !== SPORT_TABLE ? sports : undefined,
+        sportIdFields: args.sportIdFields,
+      });
+      rows[table] = (rows[table] ?? 0) + page.count;
+      badSport[table] = (badSport[table] ?? 0) + page.badSport;
+      if (page.isDone) {
+        tableIndex++;
+        cursor = null;
+      } else {
         cursor = page.continueCursor;
       }
-      rows[table] = count;
-      badSport[table] = bad;
+      if (tableIndex < args.tables.length && Date.now() - started > budget) {
+        const sportRows = sports?.length ?? 0;
+        return { complete: false, resume: { tableIndex, cursor, rows, badSport, sportRows }, sportRows, rows, badSport };
+      }
     }
-    return { sportRows: sports?.length ?? 0, rows, badSport };
+    return { complete: true, resume: null, sportRows: sports?.length ?? 0, rows, badSport };
   },
 });

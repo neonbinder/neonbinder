@@ -77,9 +77,36 @@ describe("referenceSeed", () => {
       checkSports: true,
       sportIdFields: ["sportId"],
     });
+    expect(stats.complete).toBe(true);
     expect(stats.sportRows).toBe(1);
     expect(stats.rows).toEqual({ selectorOptions: 2, teams: STATS_PAGE + 6, players: 0 });
     // The sport table's own rows are never checked against themselves.
     expect(stats.badSport).toEqual({ selectorOptions: 0, teams: 1, players: 0 });
+  });
+
+  test("tableStats without the sport check counts only; with the check it needs the field names", async () => {
+    const t = convexTest(schema, modules);
+    await seedSportAndTeams(t, 2, 1);
+    const stats = await t.action(internal.referenceSeed.tableStats, { tables: ["teams"], checkSports: false, sportIdFields: ["sportId"] });
+    expect(stats).toMatchObject({ complete: true, sportRows: 0, rows: { teams: 3 }, badSport: { teams: 0 } });
+    await expect(
+      t.action(internal.referenceSeed.tableStats, { tables: ["teams"], checkSports: true }),
+    ).rejects.toThrow(/needs sportIdFields/);
+  });
+
+  test("tableStats hands back a resume token when its budget is spent, and finishes from it", async () => {
+    const t = convexTest(schema, modules);
+    await seedSportAndTeams(t, STATS_PAGE + 3, 0);
+    const args = { tables: ["selectorOptions", "teams", "players"], checkSports: false, budgetMs: -1 };
+    let out = await t.action(internal.referenceSeed.tableStats, args);
+    let passes = 1;
+    while (!out.complete) {
+      expect(out.resume).not.toBeNull();
+      out = await t.action(internal.referenceSeed.tableStats, { ...args, resume: out.resume! });
+      passes++;
+    }
+    // One page per pass: 1 (selectorOptions) + 2 (teams) + 1 (players).
+    expect(passes).toBe(4);
+    expect(out.rows).toEqual({ selectorOptions: 2, teams: STATS_PAGE + 3, players: 0 });
   });
 });
