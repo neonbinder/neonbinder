@@ -136,11 +136,28 @@ async function stopListing(page: Page, alreadyRemoved = false): Promise<void> {
  * On the Inventory Checklists tab with the Adding-to box picked: set both cards'
  * quantities in `box` to 0 (only those not already 0). Returns the checklist.
  * Idempotent, for the tidy-up and for the failure hook.
+ *
+ * `arrival` says how the tab was reached. The Checklists tab link reopens the
+ * checklist last open on the same page ("Checklists opens where you left it"),
+ * so after a tab change within the page it is already open ("reopened"); a
+ * fresh page load starts at the cascade ("fresh") and drills.
  */
-async function emptyBox(page: Page, box: string, cards: readonly string[], isMobile: boolean): Promise<Locator> {
+async function emptyBox(
+  page: Page,
+  box: string,
+  cards: readonly string[],
+  isMobile: boolean,
+  arrival: "fresh" | "reopened",
+): Promise<Locator> {
   const adding = page.getByRole("combobox", { name: "Adding to" });
   await expect(adding).toBeVisible();
-  const checklist = await drillToCollectorBase(page, TOPPS_1988);
+  let checklist: Locator;
+  if (arrival === "fresh") {
+    checklist = await drillToCollectorBase(page, TOPPS_1988);
+  } else {
+    checklist = page.getByRole("region", { name: TITLE });
+    await expect(checklist.getByRole("heading", { level: 3, name: TITLE })).toBeVisible();
+  }
   await adding.selectOption({ label: box });
   const boxList = checklist.getByRole("list", { name: `Quantities in ${box}` });
   for (const short of cards) {
@@ -179,7 +196,7 @@ test.afterEach(async ({ context, isMobile }, testInfo) => {
         // Live BSC round trip (GUIDE hard rule 3), the same constant as the flow.
         await expect(clean.getByText(/^Nothing syncing right now\./)).toBeVisible({ timeout: BSC_ROUND_TRIP });
         await clean.goto("/inventory?tab=checklists");
-        const checklist = await emptyBox(clean, written.box, written.cards, isMobile);
+        const checklist = await emptyBox(clean, written.box, written.cards, isMobile, "fresh");
         await checklist.getByRole("button", { name: `Sync ${TITLE}`, exact: true }).click();
         await clean.goto("/inventory?tab=sync");
         // Live BSC round trip, as above.
@@ -491,7 +508,8 @@ test(
     // Zero before deleting, so no copy falls into the Unsorted box (a listed one).
     await tabs.getByRole("link", { name: "Checklists", exact: true }).click();
     await expect(page).toHaveURL(/[?&]tab=checklists/);
-    await emptyBox(page, boxName, [a, b], isMobile);
+    // Same page since the drill above: the tab link reopens 1988 Topps Base.
+    await emptyBox(page, boxName, [a, b], isMobile, "reopened");
     await checklist.getByRole("button", { name: `Change the common price for ${TITLE}`, exact: true }).click();
     await expect(priceField).toHaveValue("0.25");
     await priceField.fill("");

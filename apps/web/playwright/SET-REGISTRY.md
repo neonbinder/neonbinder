@@ -994,10 +994,11 @@ already-committed preview fails at the wizard wait, correctly.
 ### 1988 Topps Baseball — the BuySportsCards listing fixture (NEO-370) ✅ APPROVED by Jason 2026-11-01
 
 `tests/collection/inventory-bsc-listing-1988-topps-base.spec.ts` proves that a
-collector's box counts reach BuySportsCards (NEO-370 Revision 4): Profile's
-the BSC sign-in removed and saved again (the form's consent warning shown
-before Connect; Rev 5: a saved sign-in syncs), a box with the first two cards, the checklist's Sync and the Sync status tab's "2 listed",
-then the box's "Listed on marketplaces" turned off, Sync, and "0 listed ... 2
+collector's box counts reach BuySportsCards (NEO-370 Revisions 4 and 5): the
+BSC sign-in removed on Profile (the form's consent warning shown before
+Connect) and saved again, which starts syncing (Rev 5: a saved sign-in
+syncs); a box with the first two cards; the checklist's Sync and the Sync
+status tab's "2 listed"; then the box's "Listed on marketplaces" turned off, Sync, and "0 listed ... 2
 taken to 0". That cannot be proved on a hand-made set (no BSC card id, nothing
 to list), so it uses a real, synced one.
 
