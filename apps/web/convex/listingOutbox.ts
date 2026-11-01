@@ -11,15 +11,20 @@
  * Called from `collection.applyCopyChanges` (every copy write, a sale applied
  * by the order poll included) for the cards whose copy lived in a box before
  * or after the write, and from `listingSync` when a collector turns listing
- * on or presses Resync. It is cheap when the owner lists nowhere: one indexed
- * read of their state rows, then return.
+ * on or presses Resync. Two copy writers skip `applyCopyChanges` and call in
+ * here themselves: an operator's card move (`setShapeMove`, through
+ * `enqueueMovedListingCards`) and the condition backfill
+ * (`backfillCopyCondition`, through `queueOwnerCards`). It is cheap when the
+ * owner lists nowhere: one indexed read of their state rows, then return.
  *
  * Kept out of `collection.ts` and free of any import from it, so the hook can
  * be imported there without a module cycle (the `binderFits` rule).
  */
+import { v } from "convex/values";
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
+import { internalMutation } from "./_generated/server";
 
 export type ListingPlatform = Doc<"marketplaceListingStates">["platform"];
 type StateRow = Doc<"marketplaceListingStates">;
@@ -112,6 +117,122 @@ export async function enqueueListingCards(
   }
   return written;
 }
+
+/**
+ * Whether the owner lists on any platform: one indexed read. The copy writers
+ * outside `applyCopyChanges` (an operator's card move, the condition
+ * backfill) ask this first, so an owner who lists nowhere costs exactly that.
+ */
+export async function listsAnywhere(ctx: Pick<QueryCtx, "db">, ownerId: string): Promise<boolean> {
+  const state = await ctx.db
+    .query("marketplaceListingStates")
+    .withIndex("by_owner_platform", (q) => q.eq("ownerId", ownerId))
+    .first();
+  return state !== null;
+}
+
+/** Cards of a variant looked through for one that can wake its sync. */
+export const WAKE_SCAN_CARDS = 50;
+
+/** One card an operator moved, and the variant it (and the owner's copy) left. */
+export interface MovedListingCard {
+  cardId: Id<"cardChecklist">;
+  fromVariantId: Id<"selectorOptions">;
+}
+
+/**
+ * Queue cards an operator moved to another variant (`setShapeMove`), for one
+ * owner who holds them in a box. A move changes which marketplace set a card
+ * lists under, so BOTH variants must re-sync:
+ *
+ *   - the NEW variant, so the card lists there: the card's own row, at its
+ *     current variant (as `enqueueListingCards` writes it);
+ *   - the OLD variant, so what it listed for the card goes to NB's zero. The
+ *     card's own row can't carry that (one row per card, and the next box
+ *     write points it at the card's current variant), so the old variant
+ *     gets its own trigger: another card still in it that carries the
+ *     platform's id (the `resyncVariant` wake), queued at the old variant.
+ *     When the old variant has no such card left, the moved card's row is
+ *     queued at the OLD variant instead; the drainer syncs that variant,
+ *     then re-points the row to the card's current one (`settleRows`), which
+ *     syncs next. When the old variant is gone, nothing is queued for it: a
+ *     move never drops a marketplace link, so the variant that took its
+ *     links (and its cards) re-syncs that sheet.
+ *
+ * `wakeCards` caches the wake card per (platform, variant) across owners, so
+ * a move with many owners scans each old variant once. Cheap when the owner
+ * lists nowhere: one indexed read. Returns how many rows were written.
+ */
+export async function enqueueMovedListingCards(
+  ctx: MutationCtx,
+  args: {
+    ownerId: string;
+    moved: ReadonlyArray<MovedListingCard>;
+    wakeCards?: Map<string, Id<"cardChecklist"> | null>;
+  },
+): Promise<number> {
+  if (args.moved.length === 0) return 0;
+  const states = await ctx.db
+    .query("marketplaceListingStates")
+    .withIndex("by_owner_platform", (q) => q.eq("ownerId", args.ownerId))
+    .take(MAX_STATES_PER_OWNER);
+  if (states.length === 0) return 0;
+  const wakeCards = args.wakeCards ?? new Map<string, Id<"cardChecklist"> | null>();
+  const now = Date.now();
+  const cards = new Map<string, CardRow | null>();
+  const cardOf = async (cardId: Id<"cardChecklist">): Promise<CardRow | null> => {
+    if (!cards.has(cardId)) cards.set(cardId, await ctx.db.get(cardId));
+    return cards.get(cardId) ?? null;
+  };
+  let written = 0;
+  for (const state of states) {
+    const platform = state.platform;
+    // Old variant → the first moved card (still carrying the id) that left it.
+    const left = new Map<Id<"selectorOptions">, Id<"cardChecklist">>();
+    const queued = new Set<string>();
+    for (const { cardId, fromVariantId } of args.moved) {
+      const card = await cardOf(cardId);
+      if (!card || !carriesPlatformRef(card, platform)) continue;
+      if (!queued.has(cardId)) {
+        queued.add(cardId);
+        await upsertOutboxRow(ctx, args.ownerId, platform, cardId, card.selectorOptionId, now);
+        written += 1;
+      }
+      if (fromVariantId !== card.selectorOptionId && !left.has(fromVariantId)) left.set(fromVariantId, cardId);
+    }
+    for (const [fromVariantId, movedCardId] of left) {
+      const key = `${platform}|${fromVariantId}`;
+      if (!wakeCards.has(key)) {
+        const inVariant = await ctx.db
+          .query("cardChecklist")
+          .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", fromVariantId))
+          .take(WAKE_SCAN_CARDS);
+        wakeCards.set(key, inVariant.find((c) => carriesPlatformRef(c, platform))?._id ?? null);
+      }
+      const wake = wakeCards.get(key) ?? null;
+      if (wake !== null) {
+        await upsertOutboxRow(ctx, args.ownerId, platform, wake, fromVariantId, now);
+        written += 1;
+      } else if (await ctx.db.get(fromVariantId)) {
+        // The same row as above, re-pointed: not a new one.
+        await upsertOutboxRow(ctx, args.ownerId, platform, movedCardId, fromVariantId, now);
+      }
+    }
+    if (queued.size > 0) await kickWithState(ctx, state, now);
+  }
+  return written;
+}
+
+/**
+ * Queue `cardIds` for `ownerId` (`enqueueListingCards`), from a copy writer
+ * that does its own page and hands the listing work on rather than spend its
+ * transaction on it (`backfillCopyCondition`). The caller bounds `cardIds`.
+ */
+export const queueOwnerCards = internalMutation({
+  args: { ownerId: v.string(), cardIds: v.array(v.string()) },
+  returns: v.object({ queued: v.number() }),
+  handler: async (ctx, args) => ({ queued: await enqueueListingCards(ctx, args) }),
+});
 
 async function upsertOutboxRow(
   ctx: MutationCtx,
