@@ -14,7 +14,8 @@ import { BSC_NAME, BSC_ORDERS_URL, UNMATCHED_CARD, dollars, orderDay, orderStatu
  * sales" stays in place: paging is not a Back step). When a page lands, focus
  * moves to its first order and a quiet status says how many show.
  * Read-only: shipping and the pull list come later. Sales come in while the
- * sign-in is saved; removing it stops them (Profile).
+ * sign-in is saved and the platform isn't paused; removing it stops them
+ * (Profile).
  *
  * Each order shows its number, day, BSC's status, its total and its lines
  * (the NB card when NB matched it, how many, the price each). A line NB could

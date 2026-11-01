@@ -5,11 +5,13 @@
  * Every 15 minutes (`crons.ts`) `pollAll` lists the owners with a BSC
  * listing state that is not dormant (`marketplaceListingStates` on
  * `by_platform_dormant_polled`, never-polled first) and schedules
- * `pollOwner` for each STARTED owner (`listingOutbox.pollsSales`: the poll
- * takes the same consent as pushing). A state row exists once the collector
- * has started listing; after the sign-in is removed and saved again it stays
- * unpolled until they press Start again (the tick stamps it `lastPolledAt` so
- * it moves to the back of the read, never holding a slot). The credential
+ * `pollOwner` for each LISTING owner (`listingOutbox.pollsSales`, the same
+ * rule as pushing: Revision 5, a saved sign-in is listing and selling). A row
+ * held off by the E2E test marker is skipped (the tick stamps it
+ * `lastPolledAt` so it moves to the back of the read, never holding a slot).
+ * Nothing is read or written while NB has paused the platform. Each tick
+ * also starts the pass that sets up sign-ins saved before Revision 5
+ * (`listingSync.setUpSavedSignInsPage`). The credential
  * gate: an owner with no saved BSC credentials is not polled (their state
  * goes dormant), and one whose session needs a fresh sign-in is polled at
  * most hourly (`reauthPollAt`), so a dead session is not logged into every
@@ -65,7 +67,14 @@ import {
   pocketEmptied,
   type CountChange,
 } from "./collection";
-import { listingCredentialOf, kickListingDrain, listsOnMarketplaces, pollsSales } from "./listingOutbox";
+import {
+  kickListingDrain,
+  LISTING_CREDENTIAL_SITE,
+  listingCredentialOf,
+  listsOnMarketplaces,
+  pollsSales,
+} from "./listingOutbox";
+import { isPlatformPaused } from "./marketplacePause";
 import { bscEraForYear, isBscRawCondition, nbConditionsFor, type BscEra } from "./lib/bscConditions";
 import { bscOrderDisposition, chooseCopiesToLower, type BscOrder } from "./lib/bscOrders";
 import { parseListingSku } from "./lib/listingSku";
@@ -142,18 +151,22 @@ function pollGate(
 }
 
 /**
- * The 15-minute tick: one scheduled `pollOwner` per started, non-dormant
- * owner with a BSC listing state, through the credential gate. A row not
- * started (a sign-in saved again without Start) is skipped and stamped
- * `lastPolledAt`, so it moves to the back of the read. An owner with no saved
- * credentials goes dormant (and leaves the index the tick reads); one waiting
- * out the hourly re-sign-in limit is skipped but still stamped `lastPolledAt`,
- * so they move to the back of the queue rather than hold a slot every tick.
+ * The 15-minute tick: one scheduled `pollOwner` per listing, non-dormant
+ * owner with a BSC listing state, through the credential gate, and one pass
+ * over saved sign-ins not yet set up (`listingSync.setUpSavedSignInsPage`).
+ * While NB has paused BSC it does nothing at all. A row not listing (the E2E
+ * test marker) is skipped and stamped `lastPolledAt`, so it moves to the
+ * back of the read. An owner with no saved credentials goes dormant (and
+ * leaves the index the tick reads); one waiting out the hourly re-sign-in
+ * limit is skipped but still stamped `lastPolledAt`, so they move to the back
+ * of the queue rather than hold a slot every tick.
  */
 export const pollAll = internalMutation({
   args: {},
   returns: v.object({ scheduled: v.number(), skipped: v.number() }),
   handler: async (ctx) => {
+    if (isPlatformPaused(LISTING_CREDENTIAL_SITE.bsc)) return { scheduled: 0, skipped: 0 };
+    await ctx.scheduler.runAfter(0, internal.listingSync.setUpSavedSignInsPage, { cursor: null });
     const now = Date.now();
     const states = await ctx.db
       .query("marketplaceListingStates")
@@ -288,8 +301,8 @@ export function projectBscOrder(order: BscOrder, fallbackDate: number | null): P
 }
 
 /**
- * Sales on `platform` are polled for the owner while they are started and
- * their state row is not dormant (`pollsSales`). A row that stops (the
+ * Sales on `platform` are polled for the owner while their state row lists
+ * (`pollsSales`: a saved sign-in, not dormant, no test marker). A row that stops (the
  * sign-in cleared, a seller conflict) makes a poll already under way stand
  * down at its next write: no sale stored, no copy lowered.
  */

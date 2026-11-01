@@ -946,7 +946,7 @@ describe("drainOwner: a Sync press reads every condition once", () => {
 
 describe("drainOwner: listing stopped under a run", () => {
   // What removing the BSC sign-in does to the row
-  // (`listingOutbox.setListingCredentialsDormant`).
+  // (`listingOutbox.stopListingForSite`).
   const deleteState = (s: S) =>
     s.t.run(async (ctx) => {
       const row = await ctx.db
@@ -1051,7 +1051,7 @@ describe("drainOwner: the credential gate", () => {
     expect(creds.tokenCalls).toBe(0);
     const st = await state(s);
     expect(st?.dormant).toBe("noCredentials");
-    // Stopped like a removed sign-in: saving it again needs Start again.
+    // Stopped like a removed sign-in: saving it again starts it again.
     expect(st?.listingStartedAt).toBeUndefined();
     expect(st?.drainScheduledAt).toBeUndefined();
     expect(st?.drainLeaseToken).toBeUndefined();

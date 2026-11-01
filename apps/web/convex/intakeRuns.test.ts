@@ -916,7 +916,7 @@ describe("NEO-370 — a settled box run kicks the collector's listing drain", ()
     });
   });
 
-  test("a collector who never pressed Start: the settled run schedules no drain", async () => {
+  test("a collector not listing (no saved sign-in started it): the settled run schedules no drain", async () => {
     const w = await two();
     await listOn(w);
     await w.t.run(async (ctx) => {

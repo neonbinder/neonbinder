@@ -31,6 +31,9 @@ import {
   within,
 } from "@testing-library/react";
 import { describe, expect, it, vi, beforeEach } from "vitest";
+import { Theme } from "@radix-ui/themes";
+import { expectAccessibleInBothModes } from "@/lib/testing/axe";
+import { CONSENT_HEADING, CONSENT_LINE } from "@/lib/marketplace/listing-copy";
 
 type SiteCredential = {
   site: string;
@@ -64,10 +67,9 @@ vi.mock("@/convex/_generated/api", () => ({
     },
     // NEO-370: the BSC listing section under the sign-in (its own tests are
     // in app/profile/credentials/BscListingSection.test.tsx). Loading here,
-    // so it draws nothing.
+    // so it draws only its empty status line.
     listingSync: {
       listingSettings: "listingSync:listingSettings",
-      startListing: "listingSync:startListing",
     },
   },
 }));
@@ -426,5 +428,57 @@ describe("CredentialsPanel — copy no longer claims we store passwords", () => 
     expect(
       document.getElementById("password")?.getAttribute("autocomplete"),
     ).toBe("current-password");
+  });
+});
+
+/**
+ * NEO-370 Rev 5 — a saved, unpaused BuySportsCards sign-in IS syncing, so
+ * what connecting does is said beside Connect, before it is pressed, and
+ * describes the button. No Start anywhere.
+ */
+describe("CredentialsPanel — the listing consent beside Connect", () => {
+  const connect = () => screen.getByRole("button", { name: "Connect" });
+
+  it("BuySportsCards, not connected: the warning sits before Connect and describes it", async () => {
+    setProfile([]);
+    const tree = () => (
+      <Theme>
+        <CredentialsPanel />
+      </Theme>
+    );
+    const view = render(tree());
+    const description = document.getElementById(connect().getAttribute("aria-describedby")!);
+    expect(description?.textContent).toBe(`${CONSENT_HEADING}${CONSENT_LINE}`);
+    expect(CONSENT_HEADING).toBe("Heads up: connecting starts listing");
+    expect(CONSENT_LINE).toMatch(/^Connecting lists every card in your boxes on BuySportsCards/);
+    expect(CONSENT_LINE).toMatch(/goes to 0\.$/);
+    // Before the button in reading order.
+    expect(description!.compareDocumentPosition(connect()) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Start listing/ })).toBeNull();
+    await expectAccessibleInBothModes(view.container, {
+      label: "Credentials, BuySportsCards not connected, listing consent",
+      rerender: () => view.rerender(tree()),
+    });
+  });
+
+  it("signing in again over a saved sign-in still says it, beside Connect", () => {
+    setProfile([{ site: BSC, hasCredentials: true, needsReauth: true }]);
+    render(<CredentialsPanel />);
+    fireEvent.click(screen.getByRole("button", { name: "Sign in again" }));
+    expect(document.getElementById(connect().getAttribute("aria-describedby")!)?.textContent).toContain(CONSENT_LINE);
+  });
+
+  it("SportLots does not list yet: no warning, and Connect describes nothing", () => {
+    setProfile([]);
+    render(<CredentialsPanel />);
+    fireEvent.click(screen.getByRole("tab", { name: "SportLots" }));
+    expect(connect().getAttribute("aria-describedby")).toBeNull();
+    expect(screen.queryByText(CONSENT_HEADING)).toBeNull();
+  });
+
+  it("connected: the form (and its warning) are gone", () => {
+    setProfile([{ site: BSC, hasCredentials: true, needsReauth: false }]);
+    render(<CredentialsPanel />);
+    expect(screen.queryByText(CONSENT_HEADING)).toBeNull();
   });
 });

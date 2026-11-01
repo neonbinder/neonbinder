@@ -1,17 +1,24 @@
 /**
  * NEO-370 — the listing hook (`listingOutbox.enqueueListingCards`, called by
  * `collection.applyCopyChanges`) and the collector's listing functions
- * (`convex/listingSync.ts`): Start listing, the credentials that stop it, a
- * box's "Listed on marketplaces" setting, Sync and Sales. The Sync status
- * tab's reads are pinned in `listingSyncStatus.test.ts`.
+ * (`convex/listingSync.ts`): what a saved sign-in starts, the removal that
+ * stops it, the E2E test marker, the cron's pass over sign-ins saved before
+ * Revision 5, a box's "Listed on marketplaces" setting, Sync and Sales. The
+ * Sync status tab's reads are pinned in `listingSyncStatus.test.ts`.
  *
- * The rules pinned here (Revision 4):
+ * The rules pinned here (Revision 5, "If you have credentials you are
+ * syncing"):
  *   - a write whose copy lived in a box before or after queues the card for
- *     every platform the owner has started; a binder-only write queues nothing;
- *   - an owner who never started (or whose sign-in was removed) gets no
- *     outbox row; saving a sign-in starts nothing, only `startListing` does;
+ *     every platform the owner lists on; a binder-only write queues nothing;
+ *   - saving a sign-in starts listing (row, stamp, one walk of the listed
+ *     boxes, one drain), idempotently; removing it stops listing (dormant,
+ *     stamp cleared, queue dropped); saving again starts again, and a walk
+ *     from the earlier save stands down;
+ *   - a paused platform is refused setup and Sync; a seller conflict holds
+ *     the row dormant; the test marker holds it off and only the testing
+ *     seed can set it;
  *   - the hook only queues: no write schedules a drain (no timer); a Sync,
- *     the end of the Start walk and a settled intake do;
+ *     the end of a saved sign-in's walk and a settled intake do;
  *   - a kick is a cheap no-op with nothing pending, a drain already
  *     scheduled, or one running (it then asks the running drain to go again);
  *   - flipping a box's listed setting queues its cards and kicks nothing;
@@ -33,6 +40,7 @@ import type { Id } from "./_generated/dataModel";
 import { seedCollectionCatalog } from "../lib/testing/collection-fixture";
 import { cancelScheduled, drainScheduled } from "../lib/testing/drain-scheduled";
 import { DRAIN_SCHEDULE_STALE_MS, enqueueListingCards, kickOwnerDrains } from "./listingOutbox";
+import { SIGN_IN_SCAN_PAGE } from "./listingSync";
 import { PAUSED_PLATFORMS_ENV } from "./lib/marketplacePause";
 
 // A drain that runs here opens no BSC session: no token, and a refresh that
@@ -111,19 +119,26 @@ function holdDrains() {
   vi.useFakeTimers({ toFake: ["setTimeout"] });
 }
 /**
- * With drains held: run the queueing walk's pages by hand (cancelling each
+ * With drains held: run the queueing walk's pages by hand (a saved sign-in's
+ * walk starts with `startListingWalk`; cancelling each
  * scheduled copy), so the walk completes while the drain it kicks stays pending.
  */
 async function runWalks(s: S) {
   for (let i = 0; i < 50; i += 1) {
     const rows = await s.t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect());
     const page = rows.find(
-      (r) => (r.name.includes("queueBoxesPage") || r.name.includes("queueListedBoxPage")) && r.state.kind === "pending",
+      (r) =>
+        (r.name.includes("queueBoxesPage") ||
+          r.name.includes("queueListedBoxPage") ||
+          r.name.includes("startListingWalk")) &&
+        r.state.kind === "pending",
     );
     if (!page) return;
     await s.t.run((ctx) => ctx.scheduler.cancel(page._id));
     if (page.name.includes("queueListedBoxPage")) {
       await s.t.mutation(internal.listingSync.queueListedBoxPage, page.args[0] as never);
+    } else if (page.name.includes("startListingWalk")) {
+      await s.t.mutation(internal.listingSync.startListingWalk, page.args[0] as never);
     } else {
       await s.t.mutation(internal.listingSync.queueBoxesPage, page.args[0] as never);
     }
@@ -198,12 +213,15 @@ describe("the copy-change hook", () => {
     expect(await drainsEver(s)).toEqual([]);
   });
 
-  test("a row never started (Revision 3's `enabled` alone, or the start cleared): a box write queues nothing", async () => {
+  test("a row not listing (Revision 3's `enabled` alone, the stamp cleared, the test marker): a box write queues nothing", async () => {
     const s = await fresh();
     const id = await listOn(s, ME.subject, { listingStartedAt: undefined, enabled: true });
     await addTo(s, s.fx.gooden1, s.box);
     expect(await outbox(s)).toEqual([]);
     await s.t.run((ctx) => ctx.db.patch(id, { enabled: undefined }));
+    await addTo(s, s.fx.gooden1, s.box);
+    expect(await outbox(s)).toEqual([]);
+    await s.t.run((ctx) => ctx.db.patch(id, { listingStartedAt: 1, testListingOff: true }));
     await addTo(s, s.fx.gooden1, s.box);
     expect(await outbox(s)).toEqual([]);
   });
@@ -284,7 +302,7 @@ describe("the copy-change hook", () => {
   });
 });
 
-describe("the drain kick (kickOwnerDrains: Sync, the end of the Start walk, a settled intake)", () => {
+describe("the drain kick (kickOwnerDrains: Sync, the end of a saved sign-in's walk, a settled intake)", () => {
   const kick = (s: S, owner = ME.subject) => s.t.run((ctx) => kickOwnerDrains(ctx as never, owner));
 
   test("with a change pending: schedules one drain for me, stamped; a second kick adds none", async () => {
@@ -324,6 +342,8 @@ describe("the drain kick (kickOwnerDrains: Sync, the end of the Start walk, a se
     const id = await listOn(s, ME.subject, { listingStartedAt: undefined, enabled: true });
     await kick(s);
     await s.t.run((ctx) => ctx.db.patch(id, { listingStartedAt: 1, dormant: "noCredentials" }));
+    await kick(s);
+    await s.t.run((ctx) => ctx.db.patch(id, { dormant: undefined, testListingOff: true }));
     await kick(s);
     expect(await drainsEver(s)).toEqual([]);
   });
@@ -369,7 +389,7 @@ describe("listingSettings", () => {
     });
   });
 
-  test("connected but never started: not listing (saving a sign-in starts nothing)", async () => {
+  test("a row with no stamp (kept from Revision 3) is not listing, connected or not", async () => {
     const s = await fresh();
     await connect(s);
     await listOn(s, ME.subject, { listingStartedAt: undefined, enabled: true });
@@ -382,7 +402,7 @@ describe("listingSettings", () => {
     });
   });
 
-  test("started: listing since the Start press; only to its owner", async () => {
+  test("listing since the save that started it; only to its owner", async () => {
     const s = await fresh();
     await connect(s);
     await listOn(s, ME.subject, { listingStartedAt: 1234 });
@@ -397,49 +417,89 @@ describe("listingSettings", () => {
     });
   });
 
-  test("a seller conflict holds pushing back: not listing, conflict reported, start kept", async () => {
+  test("a seller conflict holds pushing back: not listing, conflict reported, no since", async () => {
     const s = await fresh();
     await connect(s);
     await listOn(s, ME.subject, { listingStartedAt: 77, dormant: "sellerConflict" });
-    expect((await s.me.query(api.listingSync.listingSettings, {})).bsc).toMatchObject({
+    const bsc = (await s.me.query(api.listingSync.listingSettings, {})).bsc;
+    expect(bsc).toMatchObject({ connected: true, listing: false, sellerConflict: true });
+    expect(bsc.listingSince).toBeUndefined();
+  });
+
+  test("the E2E test marker: connected, not listing, nothing else to say", async () => {
+    const s = await fresh();
+    await connect(s);
+    await listOn(s, ME.subject, { listingStartedAt: undefined, testListingOff: true });
+    expect((await s.me.query(api.listingSync.listingSettings, {})).bsc).toEqual({
+      connected: true,
       listing: false,
-      listingSince: 77,
-      sellerConflict: true,
+      needsReauth: false,
+      paused: false,
+      sellerConflict: false,
     });
   });
 
-  test("paused when NB pauses BuySportsCards", async () => {
+  test("paused when NB pauses BuySportsCards: a listing row reads not listing", async () => {
     const s = await fresh();
-    const before = process.env[PAUSED_PLATFORMS_ENV];
-    process.env[PAUSED_PLATFORMS_ENV] = "buysportscards";
-    try {
-      expect((await s.me.query(api.listingSync.listingSettings, {})).bsc.paused).toBe(true);
-    } finally {
-      if (before === undefined) delete process.env[PAUSED_PLATFORMS_ENV];
-      else process.env[PAUSED_PLATFORMS_ENV] = before;
-    }
+    await connect(s);
+    await listOn(s, ME.subject, { listingStartedAt: 1234 });
+    await withPaused(async () => {
+      expect((await s.me.query(api.listingSync.listingSettings, {})).bsc).toMatchObject({
+        connected: true,
+        listing: false,
+        paused: true,
+      });
+    });
   });
 });
 
-describe("startListing", () => {
-  test("signed out: refused, no state row", async () => {
-    const s = await fresh();
-    await expect(s.t.mutation(api.listingSync.startListing, { platform: "bsc" })).rejects.toThrow();
-    expect(await states(s)).toEqual([]);
+/** The collector's own save through the product (`credentials.saveCredentials`). */
+const save = (s: S, owner = ME.subject, listing: "save" | "testOff" = "save") =>
+  s.t.mutation(internal.userProfile.updateSiteCredentialStatus, {
+    userId: owner,
+    site: "buysportscards",
+    hasCredentials: true,
+    needsReauth: false,
+    listing,
   });
-
-  test("without saved BuySportsCards credentials: notConnected, nothing written", async () => {
-    const s = await fresh();
-    expect(await s.me.mutation(api.listingSync.startListing, { platform: "bsc" })).toEqual({
-      started: false,
-      reason: "notConnected",
-    });
-    expect(await states(s)).toEqual([]);
+/** A successful login re-asserting the flag (a token refresh, Test Credentials): no `listing`. */
+const refresh = (s: S, owner = ME.subject) =>
+  s.t.mutation(internal.userProfile.updateSiteCredentialStatus, {
+    userId: owner,
+    site: "buysportscards",
+    hasCredentials: true,
+    needsReauth: false,
   });
+const remove = (s: S, owner = ME.subject) =>
+  s.t.mutation(internal.userProfile.removeSiteCredentialStatus, { userId: owner, site: "buysportscards" });
+async function pendingNamed(s: S, name: string) {
+  const rows = await s.t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect());
+  return rows.filter((r) => r.name.includes(name) && r.state.kind === "pending");
+}
+async function withPaused(body: () => Promise<void>) {
+  const before = process.env[PAUSED_PLATFORMS_ENV];
+  process.env[PAUSED_PLATFORMS_ENV] = "buysportscards";
+  try {
+    await body();
+  } finally {
+    if (before === undefined) delete process.env[PAUSED_PLATFORMS_ENV];
+    else process.env[PAUSED_PLATFORMS_ENV] = before;
+  }
+}
+async function withTestingFlag(body: () => Promise<void>) {
+  const before = process.env.TESTING_RESET_SECRET;
+  process.env.TESTING_RESET_SECRET = "test-enabled";
+  try {
+    await body();
+  } finally {
+    if (before === undefined) delete process.env.TESTING_RESET_SECRET;
+    else process.env.TESTING_RESET_SECRET = before;
+  }
+}
 
-  test("stamps the start and queues every listed box's cards, never an in-person box or a binder", async () => {
+describe("a saved sign-in is listing (Revision 5)", () => {
+  test("saving makes the row, stamps since, queues every listed box's cards (never an in-person box or a binder) and runs one drain", async () => {
     const s = await fresh();
-    await connect(s);
     const inPerson = (await s.me.mutation(api.collectionContainers.create, { kind: "box", name: "Show table" }))
       .containerId;
     await s.me.mutation(api.collectionContainers.setContainerListed, { containerId: inPerson, listed: false });
@@ -450,70 +510,85 @@ describe("startListing", () => {
     await addTo(s, s.fx.futureStar, s.binder);
     holdDrains();
     const before = Date.now();
-    expect(await s.me.mutation(api.listingSync.startListing, { platform: "bsc" })).toEqual({ started: true });
+    await save(s);
     const [row] = await states(s);
     expect(row.listingStartedAt).toBeGreaterThanOrEqual(before);
     expect(row.dormant).toBeUndefined();
+    expect(row.testListingOff).toBeUndefined();
     await runWalks(s);
     const queued = await outbox(s);
     expect(queued.map((r) => r.cardId).sort()).toEqual([s.fx.gooden1, s.fx.gold1, s.fx.strawberry2].sort());
     expect(queued.find((r) => r.cardId === s.fx.gold1)?.variantId).toBe(s.fx.goldId);
     // The end of the walk ran one drain: the owner's first sync.
     expect((await drains(s)).map((d) => d.args[0])).toEqual([{ ownerId: ME.subject, platform: "bsc" }]);
-    expect((await s.me.query(api.listingSync.listingSettings, {})).bsc).toMatchObject({ listing: true });
+    expect((await s.me.query(api.listingSync.listingSettings, {})).bsc).toMatchObject({
+      connected: true,
+      listing: true,
+      listingSince: row.listingStartedAt,
+    });
   });
 
-  test("while NB has paused BuySportsCards: paused, nothing written", async () => {
+  test("idempotent: a second save, and a token refresh, keep the stamp and schedule no second walk", async () => {
     const s = await fresh();
-    await connect(s);
-    await addTo(s, s.fx.gooden1, s.box);
-    const before = process.env[PAUSED_PLATFORMS_ENV];
-    process.env[PAUSED_PLATFORMS_ENV] = "buysportscards";
-    try {
-      expect(await s.me.mutation(api.listingSync.startListing, { platform: "bsc" })).toEqual({
-        started: false,
-        reason: "paused",
-      });
-    } finally {
-      if (before === undefined) delete process.env[PAUSED_PLATFORMS_ENV];
-      else process.env[PAUSED_PLATFORMS_ENV] = before;
-    }
-    expect(await states(s)).toEqual([]);
-    const walks = (await s.t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect())).filter((r) =>
-      r.name.includes("queueBoxesPage"),
-    );
-    expect(walks).toEqual([]);
-  });
-
-  test("a second press keeps the first start and schedules no second walk", async () => {
-    const s = await fresh();
-    await connect(s);
     await addTo(s, s.fx.gooden1, s.box);
     holdDrains();
-    await s.me.mutation(api.listingSync.startListing, { platform: "bsc" });
+    await save(s);
+    const first = (await states(s))[0];
+    // A second save while the first walk is still pending: no second walk.
+    await save(s);
+    await refresh(s);
+    expect(await pendingNamed(s, "startListingWalk")).toHaveLength(1);
     await runWalks(s);
-    const first = (await states(s))[0].listingStartedAt;
-    expect(await s.me.mutation(api.listingSync.startListing, { platform: "bsc" })).toEqual({ started: true });
+    await save(s);
+    await refresh(s);
     const rows = await states(s);
     expect(rows).toHaveLength(1);
-    expect(rows[0].listingStartedAt).toBe(first);
-    const walks = (await s.t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect())).filter(
-      (r) => r.name.includes("queueBoxesPage") && r.state.kind === "pending",
-    );
-    expect(walks).toEqual([]);
+    expect(rows[0].listingStartedAt).toBe(first.listingStartedAt);
+    expect(await pendingNamed(s, "startListingWalk")).toEqual([]);
+    expect(await pendingNamed(s, "queueBoxesPage")).toEqual([]);
   });
 
-  test("a row kept from Revision 3 (enabled, never started) is started in place", async () => {
+  test("a login re-asserting a sign-in saved before Revision 5 starts listing too", async () => {
     const s = await fresh();
     await connect(s);
+    holdDrains();
+    await refresh(s);
+    expect((await states(s))[0].listingStartedAt).toBeTypeOf("number");
+    expect(await pendingNamed(s, "startListingWalk")).toHaveLength(1);
+  });
+
+  test("while NB has paused BuySportsCards: the flag is saved, no row, no walk", async () => {
+    const s = await fresh();
+    await addTo(s, s.fx.gooden1, s.box);
+    await withPaused(async () => {
+      await save(s);
+    });
+    expect(await states(s)).toEqual([]);
+    expect(await pendingNamed(s, "startListingWalk")).toEqual([]);
+    expect((await s.me.query(api.listingSync.listingSettings, {})).bsc).toMatchObject({ connected: true });
+  });
+
+  test("another site's sign-in starts nothing", async () => {
+    const s = await fresh();
+    await s.t.mutation(internal.userProfile.updateSiteCredentialStatus, {
+      userId: ME.subject,
+      site: "sportlots",
+      hasCredentials: true,
+    });
+    expect(await states(s)).toEqual([]);
+  });
+
+  test("a row kept from Revision 3 (enabled, never stamped) is started in place", async () => {
+    const s = await fresh();
     const id = await listOn(s, ME.subject, { listingStartedAt: undefined, enabled: true });
-    expect(await s.me.mutation(api.listingSync.startListing, { platform: "bsc" })).toEqual({ started: true });
+    holdDrains();
+    await save(s);
     const rows = await states(s);
     expect(rows.map((r) => r._id)).toEqual([id]);
     expect(rows[0].listingStartedAt).toBeTypeOf("number");
   });
 
-  test("a BSC seller account another NB owner already lists from: sellerConflict, nothing written", async () => {
+  test("a BSC seller account another NB owner already lists from: dormant sellerConflict, nothing queued", async () => {
     const s = await fresh();
     await s.t.run((ctx) =>
       ctx.db.insert("userProfiles", {
@@ -522,38 +597,89 @@ describe("startListing", () => {
         siteCredentials: [{ site: "buysportscards", hasCredentials: true }],
       } as never),
     );
+    await addTo(s, s.fx.gooden1, s.box);
     await listOn(s, THEM.subject, { platformAccountId: "seller-shared" });
-    expect(await s.me.mutation(api.listingSync.startListing, { platform: "bsc" })).toEqual({
-      started: false,
-      reason: "sellerConflict",
+    holdDrains();
+    await save(s);
+    const mine = (await states(s)).find((r) => r.ownerId === ME.subject);
+    expect(mine).toMatchObject({ dormant: "sellerConflict", platformAccountId: "seller-shared" });
+    expect(mine?.listingStartedAt).toBeUndefined();
+    expect(await pendingNamed(s, "startListingWalk")).toEqual([]);
+    expect(await outbox(s)).toEqual([]);
+    expect((await s.me.query(api.listingSync.listingSettings, {})).bsc).toMatchObject({
+      listing: false,
+      sellerConflict: true,
     });
-    expect((await states(s)).map((r) => r.ownerId)).toEqual([THEM.subject]);
+    // A token refresh never re-checks it (no churn); a real save does, and
+    // starts once the other owner no longer holds the account.
+    const before = await s.t.run((ctx) => ctx.db.get(mine!._id));
+    await refresh(s);
+    expect(await s.t.run((ctx) => ctx.db.get(mine!._id))).toEqual(before);
+    await s.t.run(async (ctx) => {
+      const theirs = (await ctx.db.query("marketplaceListingStates").collect()).find((r) => r.ownerId === THEM.subject);
+      await ctx.db.patch(theirs!._id, { platformAccountId: "seller-other" });
+    });
+    await save(s);
+    const after = await s.t.run((ctx) => ctx.db.get(mine!._id));
+    expect(after?.dormant).toBeUndefined();
+    expect(after?.listingStartedAt).toBeTypeOf("number");
   });
 
-  test("a walk page that finds the start cleared stops and queues nothing", async () => {
+  test("a walk page or walk start carrying an older stamp stands down and queues nothing", async () => {
     const s = await fresh();
     await addTo(s, s.fx.gooden1, s.box);
-    await listOn(s, ME.subject, { listingStartedAt: undefined });
+    await listOn(s, ME.subject, { listingStartedAt: 500 });
     await s.t.mutation(internal.listingSync.queueBoxesPage, {
       ownerId: ME.subject,
       platform: "bsc",
+      startedAt: 400,
+      boxIds: [s.box],
+      index: 0,
+      cursor: null,
+    });
+    await s.t.mutation(internal.listingSync.startListingWalk, { ownerId: ME.subject, platform: "bsc", startedAt: 400 });
+    expect(await outbox(s)).toEqual([]);
+    expect(await pendingNamed(s, "queueBoxesPage")).toEqual([]);
+  });
+
+  test("a walk page that finds the stamp cleared (sign-in removed) stops and queues nothing", async () => {
+    const s = await fresh();
+    await addTo(s, s.fx.gooden1, s.box);
+    await listOn(s, ME.subject, { listingStartedAt: undefined, dormant: "noCredentials" });
+    await s.t.mutation(internal.listingSync.queueBoxesPage, {
+      ownerId: ME.subject,
+      platform: "bsc",
+      startedAt: 1,
       boxIds: [s.box],
       index: 0,
       cursor: null,
     });
     expect(await outbox(s)).toEqual([]);
   });
+
+  test("an owner with no listed box: the walk schedules nothing", async () => {
+    const s = await fresh();
+    await s.t.run(async (ctx) => {
+      const rows = await ctx.db.query("collectionContainers").collect();
+      for (const row of rows) if (row.kind === "box") await ctx.db.patch(row._id, { listedOnMarketplaces: false });
+    });
+    holdDrains();
+    await save(s);
+    await runWalks(s);
+    expect(await pendingNamed(s, "queueBoxesPage")).toEqual([]);
+    expect(await drainsEver(s)).toEqual([]);
+  });
 });
 
-describe("credentials: removing the sign-in stops listing, saving one starts nothing", () => {
-  test("removal makes the row dormant, clears the start and my queued changes, never another collector's", async () => {
+describe("credentials: removing the sign-in stops listing, saving again starts it again", () => {
+  test("removal makes the row dormant, clears the stamp and my queued changes, never another collector's", async () => {
     const s = await fresh();
     await connect(s);
     const id = await listOn(s, ME.subject, { reauthPollAt: 5, drainRequested: true });
     await listOn(s, THEM.subject);
     await queueOne(s);
     await queueOne(s, THEM.subject);
-    await s.t.mutation(internal.userProfile.removeSiteCredentialStatus, { userId: ME.subject, site: "buysportscards" });
+    await remove(s);
     const stopped = await s.t.run((ctx) => ctx.db.get(id));
     expect(stopped?.dormant).toBe("noCredentials");
     expect(stopped?.listingStartedAt).toBeUndefined();
@@ -562,54 +688,184 @@ describe("credentials: removing the sign-in stops listing, saving one starts not
     // Stopped, the hook queues nothing.
     await addTo(s, s.fx.gooden1, s.box);
     expect((await outbox(s)).map((r) => r.ownerId)).toEqual([THEM.subject]);
-    expect((await s.me.query(api.listingSync.listingSettings, {})).bsc).toMatchObject({ listing: false });
-  });
-
-  test("saving the sign-in again wakes the row but does not start listing", async () => {
-    const s = await fresh();
-    await connect(s);
-    const id = await listOn(s, ME.subject, { reauthPollAt: 5 });
-    await s.t.mutation(internal.userProfile.removeSiteCredentialStatus, { userId: ME.subject, site: "buysportscards" });
-    await s.t.mutation(internal.userProfile.updateSiteCredentialStatus, {
-      userId: ME.subject,
-      site: "buysportscards",
-      hasCredentials: true,
-    });
-    const woke = await s.t.run((ctx) => ctx.db.get(id));
-    expect(woke?.dormant).toBeUndefined();
-    expect(woke?.reauthPollAt).toBeUndefined();
-    expect(woke?.listingStartedAt).toBeUndefined();
-    await addTo(s, s.fx.gooden1, s.box);
-    expect(await outbox(s)).toEqual([]);
     expect((await s.me.query(api.listingSync.listingSettings, {})).bsc).toMatchObject({
-      connected: true,
+      connected: false,
       listing: false,
     });
   });
 
-  test("saving a sign-in with no listing row writes none", async () => {
+  test("saving again starts again: woken, restamped, walked; the earlier walk stands down", async () => {
     const s = await fresh();
-    await s.t.mutation(internal.userProfile.updateSiteCredentialStatus, {
-      userId: ME.subject,
-      site: "buysportscards",
-      hasCredentials: true,
-    });
-    expect(await states(s)).toEqual([]);
+    await addTo(s, s.fx.gooden1, s.box);
+    holdDrains();
+    await save(s);
+    const [firstWalk] = await pendingNamed(s, "startListingWalk");
+    const firstArgs = firstWalk.args[0] as { ownerId: string; platform: "bsc"; startedAt: number };
+    const id = (await states(s))[0]._id;
+    await s.t.run((ctx) => ctx.db.patch(id, { reauthPollAt: 5 }));
+    await remove(s);
+    await s.t.run((ctx) => ctx.scheduler.cancel(firstWalk._id));
+    // The first walk's start, run late: the row no longer lists, so it stands down.
+    await s.t.mutation(internal.listingSync.startListingWalk, firstArgs);
+    expect(await pendingNamed(s, "queueBoxesPage")).toEqual([]);
+    // Saved again at a later millisecond: a new stamp and a new walk.
+    const t0 = Date.now();
+    while (Date.now() === t0) {
+      // spin one millisecond (setTimeout is held)
+    }
+    await save(s);
+    const woke = await s.t.run((ctx) => ctx.db.get(id));
+    expect(woke?.dormant).toBeUndefined();
+    expect(woke?.reauthPollAt).toBeUndefined();
+    expect(woke?.listingStartedAt).toBeGreaterThan(firstArgs.startedAt);
+    // The earlier walk's stamp no longer names the row's: it stands down even now.
+    await s.t.mutation(internal.listingSync.startListingWalk, firstArgs);
+    expect(await pendingNamed(s, "queueBoxesPage")).toEqual([]);
+    await runWalks(s);
+    expect((await outbox(s)).map((r) => r.cardId)).toEqual([s.fx.gooden1]);
+    expect((await s.me.query(api.listingSync.listingSettings, {})).bsc).toMatchObject({ listing: true });
   });
 
-  test("another site's credentials, and a seller conflict, are left alone", async () => {
+  test("another site's removal, and a removal with a seller conflict, keep what they should", async () => {
     const s = await fresh();
     await connect(s);
     const id = await listOn(s, ME.subject, { dormant: "sellerConflict" });
     await s.t.mutation(internal.userProfile.removeSiteCredentialStatus, { userId: ME.subject, site: "sportlots" });
-    await s.t.mutation(internal.userProfile.updateSiteCredentialStatus, {
-      userId: ME.subject,
-      site: "buysportscards",
-      hasCredentials: true,
-    });
+    expect((await s.t.run((ctx) => ctx.db.get(id)))?.listingStartedAt).toBe(1);
+    await remove(s);
     const row = await s.t.run((ctx) => ctx.db.get(id));
     expect(row?.dormant).toBe("sellerConflict");
-    expect(row?.listingStartedAt).toBe(1);
+    expect(row?.listingStartedAt).toBeUndefined();
+  });
+});
+
+describe("the E2E test marker (testListingOff)", () => {
+  test("refused where the testing flag is unset (production): nothing written", async () => {
+    const s = await fresh();
+    await expect(save(s, ME.subject, "testOff")).rejects.toThrow(/not enabled/);
+    expect(await states(s)).toEqual([]);
+    expect(await s.t.run((ctx) => ctx.db.query("userProfiles").collect())).toEqual([]);
+  });
+
+  test("set by the seed: connected, not listing, the hook and a token refresh start nothing", async () => {
+    const s = await fresh();
+    await withTestingFlag(async () => {
+      holdDrains();
+      await save(s, ME.subject, "testOff");
+      const [row] = await states(s);
+      expect(row).toMatchObject({ ownerId: ME.subject, platform: "bsc", testListingOff: true });
+      expect(row.listingStartedAt).toBeUndefined();
+      await refresh(s);
+      await addTo(s, s.fx.gooden1, s.box);
+      expect(await outbox(s)).toEqual([]);
+      expect(await pendingNamed(s, "startListingWalk")).toEqual([]);
+      expect((await s.me.query(api.listingSync.listingSettings, {})).bsc).toMatchObject({
+        connected: true,
+        listing: false,
+      });
+      expect(await s.me.mutation(api.listingSync.syncVariant, { variantId: s.fx.baseId })).toEqual({
+        queued: false,
+        ignored: "notListing",
+      });
+    });
+  });
+
+  test("set on an owner already listing: stops (stamp cleared, queue dropped)", async () => {
+    const s = await fresh();
+    await connect(s);
+    const id = await listOn(s, ME.subject, { drainRequested: true });
+    await queueOne(s);
+    await withTestingFlag(async () => {
+      await save(s, ME.subject, "testOff");
+    });
+    const row = await s.t.run((ctx) => ctx.db.get(id));
+    expect(row).toMatchObject({ testListingOff: true });
+    expect(row?.listingStartedAt).toBeUndefined();
+    expect(row?.drainRequested).toBeUndefined();
+    expect(await outbox(s)).toEqual([]);
+  });
+
+  test("a real save clears it and starts listing", async () => {
+    const s = await fresh();
+    await addTo(s, s.fx.gooden1, s.box);
+    await withTestingFlag(async () => {
+      await save(s, ME.subject, "testOff");
+    });
+    holdDrains();
+    await save(s);
+    const [row] = await states(s);
+    expect(row.testListingOff).toBeUndefined();
+    expect(row.listingStartedAt).toBeTypeOf("number");
+    await runWalks(s);
+    expect((await outbox(s)).map((r) => r.cardId)).toEqual([s.fx.gooden1]);
+  });
+});
+
+describe("sign-ins saved before Revision 5: the cron's pass (setUpSavedSignInsPage)", () => {
+  const pass = (s: S, cursor: string | null = null) =>
+    s.t.mutation(internal.listingSync.setUpSavedSignInsPage, { cursor });
+
+  test("sets up a saved BSC sign-in with no row; leaves the marker, a conflict, a listing owner and no sign-in alone", async () => {
+    const s = await fresh();
+    const others = ["owner_marker", "owner_conflict", "owner_listing", "owner_none"];
+    await connect(s);
+    for (const owner of others.slice(0, 3)) await connect(s, owner);
+    await s.t.run((ctx) => ctx.db.insert("userProfiles", { userId: "owner_none", siteCredentials: [] }));
+    await listOn(s, "owner_marker", { listingStartedAt: undefined, testListingOff: true });
+    await listOn(s, "owner_conflict", { listingStartedAt: undefined, dormant: "sellerConflict" });
+    const listingId = await listOn(s, "owner_listing", { listingStartedAt: 42 });
+    holdDrains();
+    const before = await states(s);
+    expect(await pass(s)).toEqual({ started: 1 });
+    const after = await states(s);
+    const mine = after.find((r) => r.ownerId === ME.subject);
+    expect(mine?.listingStartedAt).toBeTypeOf("number");
+    for (const row of before) expect(after.find((r) => r._id === row._id)).toEqual(row);
+    expect((await s.t.run((ctx) => ctx.db.get(listingId)))?.listingStartedAt).toBe(42);
+    expect(after.some((r) => r.ownerId === "owner_none")).toBe(false);
+    expect((await pendingNamed(s, "startListingWalk")).map((r) => r.args[0])).toEqual([
+      { ownerId: ME.subject, platform: "bsc", startedAt: mine?.listingStartedAt },
+    ]);
+  });
+
+  test("a row woken from noCredentials while the sign-in is saved again is set up", async () => {
+    const s = await fresh();
+    await connect(s);
+    await listOn(s, ME.subject, { listingStartedAt: undefined, dormant: "noCredentials" });
+    holdDrains();
+    expect(await pass(s)).toEqual({ started: 1 });
+    expect((await states(s))[0].dormant).toBeUndefined();
+  });
+
+  test("pages: a full page schedules the next one; the last schedules none", async () => {
+    const s = await fresh();
+    await s.t.run(async (ctx) => {
+      for (let i = 0; i < SIGN_IN_SCAN_PAGE; i += 1) {
+        await ctx.db.insert("userProfiles", { userId: `bulk_${i}`, siteCredentials: [] });
+      }
+    });
+    await connect(s, "bulk_last");
+    holdDrains();
+    expect(await pass(s)).toEqual({ started: 0 });
+    const [next] = await pendingNamed(s, "setUpSavedSignInsPage");
+    expect(next).toBeDefined();
+    await s.t.run((ctx) => ctx.scheduler.cancel(next._id));
+    expect(await s.t.mutation(internal.listingSync.setUpSavedSignInsPage, next.args[0] as never)).toEqual({
+      started: 1,
+    });
+    expect(await pendingNamed(s, "setUpSavedSignInsPage")).toEqual([]);
+  });
+
+  test("paused, or on a testing deployment: sets up nothing", async () => {
+    const s = await fresh();
+    await connect(s);
+    await withPaused(async () => {
+      expect(await pass(s)).toEqual({ started: 0 });
+    });
+    await withTestingFlag(async () => {
+      expect(await pass(s)).toEqual({ started: 0 });
+    });
+    expect(await states(s)).toEqual([]);
   });
 });
 

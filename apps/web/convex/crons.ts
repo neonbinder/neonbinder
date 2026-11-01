@@ -176,8 +176,9 @@ crons.daily(
  * minutes: the poll reads order history across ALL statuses back to a stored
  * cursor, so an order that ships inside the window is still caught. One
  * scheduled `pollOwner` per owner with BSC credentials saved and a listing
- * state that is started and not dormant (Start listing is the consent for
- * both pushing and polling);
+ * state that lists and is not dormant (NEO-370 Revision 5: a saved sign-in
+ * is listing, so pushing and polling go together; nothing while BSC is
+ * paused), plus one pass that sets up sign-ins saved before that rule;
  * an owner with nothing new costs one history page. After each owner's poll
  * their listing drain runs when changes are queued (`finishPoll`): the
  * drain's only timed trigger, and what picks up an intake run left without

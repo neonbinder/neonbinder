@@ -201,23 +201,30 @@ describe("the Sync status screen", () => {
   it("no platforms at all: the way to the Profile (and none in the admin's copy)", () => {
     draw({ platforms: [] });
     expect(screen.getByRole("link", { name: "Save a sign-in on your Profile" }).getAttribute("href")).toBe("/profile/credentials");
+    expect(screen.getByText(/and syncing starts on its own\.$/)).toBeTruthy();
     cleanup();
     draw({ platforms: [] }, { readOnly: true });
     expect(screen.queryByRole("link")).toBeNull();
   });
 
   it("each platform state says what to do, with a Profile link only for the collector", async () => {
-    const cases: [Partial<PlatformSyncStatus>, string, string | RegExp, string | null][] = [
+    // Rev 5: a saved, unpaused sign-in IS listing, so a pause (or a dead
+    // sign-in) arrives with listing false and must still read as itself.
+    const cases: [Partial<PlatformSyncStatus>, string, string | RegExp | null, string | null][] = [
       [{ connected: false, listing: false }, "Not connected", /^No BuySportsCards sign-in saved/, "Connect BuySportsCards on your Profile"],
-      [{ listing: false }, "Not started", /^Your sign-in is saved, but listing hasn.t started\./, "Start listing on BuySportsCards from your Profile"],
       [{ needsReauth: true }, "Needs sign-in", REAUTH_LINE, "Sign in to BuySportsCards again"],
-      [{ paused: true }, "On a break", PAUSED_LINE, null],
-      [{ sellerConflict: true }, "Seller account in use", SELLER_CONFLICT_LINE, null],
+      [{ needsReauth: true, listing: false }, "Needs sign-in", REAUTH_LINE, "Sign in to BuySportsCards again"],
+      [{ paused: true, listing: false }, "On a break", PAUSED_LINE, null],
+      [{ sellerConflict: true, listing: false }, "Seller account in use", SELLER_CONFLICT_LINE, null],
+      // Saved, none of the above, not listing: a testing account. No line, no link.
+      [{ listing: false }, "Not syncing", null, null],
     ];
     for (const [over, word, line, link] of cases) {
       const { view, rerender } = draw({ platforms: [bsc(over)] });
       expect(screen.getByText(word)).toBeTruthy();
-      expect(screen.getByText(line instanceof RegExp ? line : (t) => t.startsWith(line))).toBeTruthy();
+      expect(screen.queryByText("Not started")).toBeNull();
+      if (line) expect(screen.getByText(line instanceof RegExp ? line : (t) => t.startsWith(line))).toBeTruthy();
+      if (!link) expect(screen.queryByRole("link")).toBeNull();
       if (link) expect(screen.getByRole("link", { name: link }).getAttribute("href")).toBe("/profile/credentials");
       await expectAccessibleInBothModes(view.container, { label: `Sync status, ${word}`, rerender });
       cleanup();

@@ -8,9 +8,11 @@
  * card. The credentials layer is mocked at the identity-less entry points.
  * No test reaches a live server.
  *
- * NEO-370 Revision 4 audit: the poll takes the same consent as pushing
- * (Start listing): a sign-in saved again without Start polls nothing, and
- * not a dormant row or an owner with no credentials either;
+ * NEO-370 Revision 5: the poll takes the same rule as pushing (a saved,
+ * unpaused sign-in is listing): a row held off by the E2E test marker polls
+ * nothing, nothing at all is read while BSC is paused, and not a dormant row
+ * or an owner with no credentials either; each tick starts the pass over
+ * sign-ins saved before Revision 5;
  * an owner needing a fresh sign-in is polled at most hourly; a poll that
  * throws still finishes (stamped, drain kicked); a sale that removes a copy
  * keeps its photos.
@@ -611,7 +613,7 @@ describe("pollOwner", () => {
     expect(st?.lastPollError).toMatch(/503/);
   });
 
-  test("pollAll schedules one poll per STARTED owner; a row not started is stamped to the back, never polled", async () => {
+  test("pollAll schedules one poll per LISTING owner and one saved-sign-in pass; the test marker's row is stamped to the back, never polled", async () => {
     const s = await setup();
     await s.t.run(async (ctx) => {
       await ctx.db.insert("marketplaceListingStates", {
@@ -624,10 +626,11 @@ describe("pollOwner", () => {
         userId: "someone_else",
         siteCredentials: [{ site: "buysportscards", hasCredentials: true }],
       } as never);
-      // Signed in again after removing the sign-in, Start not pressed again.
+      // Signed in by the testing seed without listing (the E2E test marker).
       await ctx.db.insert("marketplaceListingStates", {
         ownerId: "not_started",
         platform: "bsc",
+        testListingOff: true,
         lastUpdated: NOW,
       });
       await ctx.db.insert("userProfiles", {
@@ -647,9 +650,28 @@ describe("pollOwner", () => {
     const notStarted = await s.t.run(async (ctx) =>
       (await ctx.db.query("marketplaceListingStates").collect()).find((row) => row.ownerId === "not_started"),
     );
-    // Moved to the back of the read, still not dormant (a Start later polls it again).
+    // Moved to the back of the read, still not dormant.
     expect(notStarted?.lastPolledAt).toBeTypeOf("number");
     expect(notStarted?.dormant).toBeUndefined();
+    expect(scheduled.filter((f) => f.name.includes("setUpSavedSignInsPage")).map((f) => f.args[0])).toEqual([
+      { cursor: null },
+    ]);
+  });
+
+  test("pollAll while NB has paused BuySportsCards: reads and writes nothing, schedules nothing", async () => {
+    const s = await setup();
+    const before = await s.t.run(async (ctx) => await ctx.db.query("marketplaceListingStates").collect());
+    const prior = process.env.NEONBINDER_PAUSED_PLATFORMS;
+    process.env.NEONBINDER_PAUSED_PLATFORMS = "buysportscards";
+    vi.useFakeTimers({ toFake: ["setTimeout"] });
+    try {
+      expect(await s.t.mutation(internal.listingSales.pollAll, {})).toEqual({ scheduled: 0, skipped: 0 });
+    } finally {
+      if (prior === undefined) delete process.env.NEONBINDER_PAUSED_PLATFORMS;
+      else process.env.NEONBINDER_PAUSED_PLATFORMS = prior;
+    }
+    expect(await s.t.run(async (ctx) => await ctx.db.query("marketplaceListingStates").collect())).toEqual(before);
+    expect(await s.t.run(async (ctx) => ctx.db.system.query("_scheduled_functions").collect())).toEqual([]);
   });
 
   test("pollAll: no credentials puts the row to sleep; a dormant row is never read; re-sign-in waits an hour", async () => {

@@ -4345,7 +4345,7 @@ export default defineSchema({
    * nothing about a listing is stored here. This is the change list. One row
    * per (owner, platform, card) means "this card's for-sale count on that
    * platform may be stale". The copy-change hook upserts one row per platform
-   * the owner has started listing on (`marketplaceListingStates`) whenever a
+   * the owner lists on (a saved sign-in, `marketplaceListingStates`) whenever a
    * box-side write touches the card: an add, move, remove or recount, a sale
    * applied from ANY platform (so a sale on one reaches all the others), and
    * a box's listed setting flipped. The per-owner drainer pushes and deletes
@@ -4497,44 +4497,56 @@ export default defineSchema({
   /**
    * ── NEO-370: one collector's standing with one listing platform ──────────
    *
-   * One row per (owner, platform), made the first time the owner starts
-   * listing there (`listingSync.startListing`, the one-way "Start listing"
-   * button beside the saved sign-in on Profile), and never deleted by the app
-   * (the per-user test reset and the global drain clear it). It holds no
-   * credential; the token is read through `credentials` as for every
-   * marketplace call, and the pause switch (`marketplacePause`) is honoured
-   * there. There is no per-platform switch and no pause (Revision 4): every
-   * card in a listed box lists on every platform the collector has started.
+   * One row per (owner, platform). Revision 5 (Jason, 2026-11-01: "If you
+   * have credentials you are syncing"): a saved sign-in for the platform's
+   * site IS listing. The row is made when that sign-in is saved
+   * (`userProfile.updateSiteCredentialStatus` → `listingSync.setUpListing`),
+   * or, for a sign-in saved before this rule, by the order-poll cron's pass
+   * over saved sign-ins (`listingSync.setUpSavedSignInsPage`), and then kept:
+   * never deleted by the app (the per-user test reset and the global drain
+   * clear it). It holds no credential; the token is read through
+   * `credentials` as for every marketplace call, and the pause switch
+   * (`marketplacePause`) is honoured there and by the poll, Sync and setup.
+   * There is no per-platform switch, no Start button and no pause: every
+   * card in a listed box lists on every platform the collector has a saved,
+   * unpaused sign-in for.
    *
-   * Read through `listingOutbox.pushesCounts` / `pollsSales`:
-   *   - `listingStartedAt` is the collector's consent: NB pushes counts AND
-   *     polls orders only while it is set and the row is not dormant. Saving
-   *     a sign-in does NOT set it; `startListing` does. Removing the sign-in
-   *     clears it (and makes the row dormant), so saving again needs Start
-   *     again before anything is pushed or polled.
+   * Read through `listingOutbox.pushesCounts` / `pollsSales` (one rule):
+   *   - `listingStartedAt` is when the saved sign-in started listing (the
+   *     "since" the Profile shows). NB pushes counts AND polls orders only
+   *     while it is set, the row is not dormant and no test marker is set.
+   *     Saving the sign-in stamps it (again, on every save that starts
+   *     listing; it also names the walk that queues the owner's boxes, so a
+   *     walk from an earlier save stands down). Removing the sign-in clears
+   *     it (`listingOutbox.stopListingForSite`).
    *   - `dormant` is NB's: set when the platform can't be used for this owner
    *     at all, and it stops BOTH the poll and the drain.
-   *       `noCredentials`: the owner's saved credentials were cleared
+   *       `noCredentials`: the owner's saved sign-in was removed
    *       (`userProfile.removeSiteCredentialStatus`, which also clears
-   *       `listingStartedAt`); cleared again when they are saved
-   *       (`updateSiteCredentialStatus`). Pushing and the order poll both
-   *       wait for Start.
+   *       `listingStartedAt` and the queue); cleared when it is saved again.
    *       `sellerConflict`: another NB owner already lists from the same
-   *       platform seller account (`platformAccountId`); cleared when the
-   *       owner presses Start again and the conflict is gone.
+   *       platform seller account (`platformAccountId`); checked again, and
+   *       cleared when the conflict is gone, each time the sign-in is saved.
+   *   - `testListingOff` is the E2E marker: an account the testing seed
+   *     signed in WITHOUT asking for listing (`testing.seedMyTestCredentials`
+   *     with `listing` false), so the suite's accounts never push to a real
+   *     marketplace unless a spec asks. Written ONLY by the testing seed
+   *     (testing deployments only); no product path reads it except through
+   *     `pushesCounts`, and a real save through the product UI clears it.
    *   - `enabled` is RETIRED (Revision 3's per-platform switch). Never read
    *     or written; kept optional only because preview deployments hold rows
    *     carrying it, and removing a field with rows present fails the deploy.
    *
    * `platformAccountId` is the platform seller account this owner lists from
    * (BSC: `sellerProfile.sellerId`), stamped when it is first known (at
-   * enable from the profile, or by the drainer before its first PUT). One NB
-   * owner per seller account: enabling, and the drainer, refuse an account
+   * setup from the profile, or by the drainer before its first PUT). One NB
+   * owner per seller account: setup, and the drainer, refuse an account
    * another owner's row already holds.
    *
    * Order poll: `orderCursorAt` is the newest order date seen. The 15-minute
    * cron lists non-dormant owners on `by_platform_dormant_polled` and polls
-   * the started ones (a row not started is stamped and skipped)
+   * the listing ones (a row not listing, the test marker's, is stamped and
+   * skipped; nothing is read while the platform is paused)
    * (never-polled first, then oldest poll), and each owner's poll reads order
    * history newer than the cursor across ALL statuses, so an order that ships
    * within the 15 minutes is still caught. While the owner's credentials need
@@ -4543,7 +4555,7 @@ export default defineSchema({
    *
    * Drain triggers (no timer): a Sync press (`listingSync.syncVariant`), an
    * intake run the collector closed with "Done adding photos" once it is
-   * settled, the end of the Start walk, and the 15-minute cron (after each
+   * settled, the end of the walk a saved sign-in starts, and the 15-minute cron (after each
    * owner's poll). The Sync status tab reads `drainLeaseToken` (never
    * returned) / `drainLeaseExpiresAt` as "a sync is running now". Each kick schedules the drainer at once and stamps
    * `drainScheduledAt` only when no drain is scheduled or running; a kick
@@ -4569,8 +4581,10 @@ export default defineSchema({
     lastDrainAt: v.optional(v.number()),
     /** RETIRED (Revision 3's switch): never read or written; see the table comment. */
     enabled: v.optional(v.boolean()),
-    /** When the collector pressed Start listing; absent = not listing (see the table comment). */
+    /** When the saved sign-in started listing; absent = not listing (see the table comment). */
     listingStartedAt: v.optional(v.number()),
+    /** E2E only: the testing seed signed this account in without listing (see the table comment). */
+    testListingOff: v.optional(v.boolean()),
     /** NB stopped both poll and drain; see the table comment. */
     dormant: v.optional(v.union(v.literal("noCredentials"), v.literal("sellerConflict"))),
     /** The platform seller account this owner lists from (BSC seller id). */

@@ -146,7 +146,7 @@ describe("admin Sync Status", () => {
       "See everything for @straw",
     ]);
     // Each collector's section is named by its heading.
-    expect(within(screen.getByRole("region", { name: "Doc's Cards" })).getByText("Not started")).toBeTruthy();
+    expect(within(screen.getByRole("region", { name: "Doc's Cards" })).getByText("Not syncing")).toBeTruthy();
     expect(screen.getByText(/^Showing the first 2 collectors\./)).toBeTruthy();
     expect(screen.getByText(/^Each collector's lists are cut short here\./)).toBeTruthy();
     await expectAccessibleInBothModes(view.container, { label: "admin Sync Status, everyone", rerender });

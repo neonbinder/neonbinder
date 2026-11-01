@@ -57,6 +57,12 @@ const listOn = (s: S, owner = ME.subject, extra: Record<string, unknown> = {}) =
     }),
   );
 
+/** A saved BSC sign-in: with a listing state row, that is listing (Revision 5). */
+const connect = (s: S, owner = ME.subject) =>
+  s.t.run((ctx) =>
+    ctx.db.insert("userProfiles", { userId: owner, siteCredentials: [{ site: "buysportscards", hasCredentials: true }] }),
+  );
+
 const queue = (s: S, cardId: Id<"cardChecklist">, variantId: Id<"selectorOptions">, changedAt: number, owner = ME.subject) =>
   s.t.run((ctx) =>
     ctx.db.insert("listingOutbox", { ownerId: owner, platform: "bsc", cardId, variantId, seq: 1, changedAt }),
@@ -106,8 +112,16 @@ describe("syncStatus", () => {
     });
   });
 
+  test("a saved sign-in held off by the E2E test marker reads connected, not listing (no 'not started' state)", async () => {
+    const s = await setup();
+    await connect(s);
+    await listOn(s, ME.subject, { listingStartedAt: undefined, testListingOff: true });
+    expect(await bsc(s)).toMatchObject({ connected: true, listing: false, paused: false, sellerConflict: false });
+  });
+
   test("names queued cards and sets from NB rows, oldest change first, and hides every secret", async () => {
     const s = await setup();
+    await connect(s);
     await listOn(s, ME.subject, { drainScheduledAt: 4000, lastDrainAt: 3000 });
     await queue(s, s.fx.strawberry2, s.fx.baseId, 200);
     await queue(s, s.fx.gold1, s.fx.goldId, 100);
@@ -124,7 +138,7 @@ describe("syncStatus", () => {
       problemsTotal: 2,
     });
     const p = await bsc(s);
-    expect(p).toMatchObject({ listing: true, running: null, scheduledAt: 4000, lastDrainAt: 3000 });
+    expect(p).toMatchObject({ connected: true, listing: true, running: null, scheduledAt: 4000, lastDrainAt: 3000 });
     expect(p.queued).toEqual({
       cards: [
         { cardId: s.fx.gold1, cardNo: "1", cardLabel: "Dwight Gooden", variantId: s.fx.goldId, setLabel: GOLD_LABEL, changedAt: 100 },

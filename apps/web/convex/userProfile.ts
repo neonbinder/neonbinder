@@ -3,7 +3,8 @@ import { v } from "convex/values";
 import { getCurrentUserId } from "./auth";
 import { binderOpenPreferenceValidator, collectionCopyConditionValidator, themePreferenceValidator } from "./schema";
 import { DEFAULT_CONDITION } from "./collection";
-import { setListingCredentialsDormant } from "./listingOutbox";
+import { listingPlatformForSite, stopListingForSite } from "./listingOutbox";
+import { holdTestListingOff, setUpListing } from "./listingSync";
 
 const marketplaceAccountIdsValidator = v.optional(v.object({
   bscSellerId: v.optional(v.string()),
@@ -355,6 +356,19 @@ export const updateSiteCredentialStatus = internalMutation({
     // self-recovery path: a successful login proves no re-auth is needed);
     // `true` sets them.
     needsReauth: v.optional(v.boolean()),
+    // NEO-370 Revision 5: what a saved sign-in does to listing on the
+    // platform that signs in through `site` (only with `hasCredentials`).
+    //   absent    — a login re-asserting the flag (token refresh, Test
+    //               Credentials): starts listing unless the E2E test marker
+    //               or a seller conflict holds the account off
+    //               (`listingSync.setUpListing`).
+    //   "save"    — the collector saved their sign-in (`credentials.
+    //               saveCredentials`), or the testing seed asked for listing:
+    //               clears the marker, re-checks a seller conflict and
+    //               starts listing.
+    //   "testOff" — the testing seed signed in WITHOUT listing: sets the
+    //               marker (testing deployments only; refused elsewhere).
+    listing: v.optional(v.union(v.literal("save"), v.literal("testOff"))),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -400,10 +414,16 @@ export const updateSiteCredentialStatus = internalMutation({
       });
     }
 
-    // NEO-370: credentials saved again wake a listing state they put to
-    // sleep (the order poll resumes; listing itself waits for Start, saving
-    // never starts it). Cleared, listing stops and its start is cleared.
-    await setListingCredentialsDormant(ctx, args.userId, args.site, !args.hasCredentials);
+    // NEO-370 Revision 5 ("If you have credentials you are syncing"): a saved
+    // sign-in for a listing platform's site starts listing there, cleared it
+    // stops. In this same mutation as the flag, so the two never disagree.
+    const platform = listingPlatformForSite(args.site);
+    if (!args.hasCredentials) {
+      await stopListingForSite(ctx, args.userId, args.site);
+    } else if (platform !== null) {
+      if (args.listing === "testOff") await holdTestListingOff(ctx, args.userId, platform);
+      else await setUpListing(ctx, args.userId, platform, { save: args.listing === "save" });
+    }
 
     return null;
   },
@@ -539,9 +559,9 @@ export const removeSiteCredentialStatus = internalMutation({
       });
     }
     // NEO-370: no credentials, no listing work: listing on the platform stops
-    // (dormant: no order poll, no drain; the start is cleared and the queue
-    // dropped), so saving again needs Start listing again.
-    await setListingCredentialsDormant(ctx, args.userId, args.site, true);
+    // (dormant: no order poll, no drain; the stamp is cleared and the queue
+    // dropped). Saving again starts it again.
+    await stopListingForSite(ctx, args.userId, args.site);
 
     return null;
   },

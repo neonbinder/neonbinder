@@ -3,16 +3,17 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { MemoryRouter } from "react-router";
 import { Theme } from "@radix-ui/themes";
 import SyncButton, { NOT_LISTING_LINE, syncToast } from "./SyncButton";
-import { LISTING, NOT_STARTED, stubListing } from "./stubListing";
+import { LISTING, NOT_SYNCING, stubListing } from "./stubListing";
 import { expectAccessibleInBothModes } from "@/lib/testing/axe";
 import { PageApiContext, type PageApi } from "../../pageApi";
 import { CollectionStoreContext, type CollectionData, type CollectionStoreValue } from "../../data/store";
 import { REAL_CAPABILITIES, type ListingPlatformSettings, type SyncVariantResult } from "../../data/types";
 
 /**
- * NEO-370 Rev 4 — the checklist header's Sync: one press, every platform the
- * collector lists on, the outcome on the status line. Inert with its reason
- * (never native disabled) while nothing lists anywhere; hidden in the demo.
+ * NEO-370 Rev 4/5 — the checklist header's Sync: one press, every platform
+ * the collector lists on, the outcome on the status line. Inert with its
+ * reason (never native disabled) while nothing lists anywhere (no saved,
+ * unpaused sign-in: Rev 5 has no Start); hidden in the demo.
  */
 vi.mock("@clerk/clerk-react", () => ({ useAuth: () => ({ isLoaded: true, isSignedIn: true, userId: "user_1" }) }));
 
@@ -103,15 +104,29 @@ describe("the checklist's Sync button", () => {
   });
 
   it("nothing lists: shown, inert (never native disabled), the reason its description; a press says it and sends nothing", () => {
-    const { notify, syncVariant } = setup({ settings: NOT_STARTED });
+    const { notify, syncVariant } = setup({ settings: NOT_SYNCING });
     const b = button();
     expect(b.hasAttribute("disabled")).toBe(false);
     expect(b.getAttribute("aria-disabled")).toBe("true");
     const reason = document.getElementById(b.getAttribute("aria-describedby")!);
     expect(reason?.textContent).toBe(NOT_LISTING_LINE);
+    // Rev 5: no Start to point at; saving a sign-in is what syncs.
+    expect(NOT_LISTING_LINE).toBe("Nothing to sync to yet. Save a marketplace sign-in on your Profile.");
     fireEvent.click(b);
     expect(syncVariant).not.toHaveBeenCalled();
     expect(notify).toHaveBeenCalledWith(NOT_LISTING_LINE);
+  });
+
+  it("no sign-in saved, or the platform paused: inert with the same reason", () => {
+    for (const settings of [
+      { ...NOT_SYNCING, connected: false },
+      { ...NOT_SYNCING, paused: true },
+    ]) {
+      setup({ settings });
+      expect(button().getAttribute("aria-disabled")).toBe("true");
+      expect(document.getElementById(button().getAttribute("aria-describedby")!)?.textContent).toBe(NOT_LISTING_LINE);
+      cleanup();
+    }
   });
 
   it("while the settings load it is inert and busy, and a press does nothing", () => {
@@ -127,7 +142,7 @@ describe("the checklist's Sync button", () => {
     const live = setup({});
     await expectAccessibleInBothModes(live.view.container, { label: "Sync button, listing", rerender: live.rerender });
     cleanup();
-    const inert = setup({ settings: NOT_STARTED });
+    const inert = setup({ settings: NOT_SYNCING });
     await expectAccessibleInBothModes(inert.view.container, { label: "Sync button, nothing lists", rerender: inert.rerender });
   });
 

@@ -5,11 +5,11 @@
  *
  * NB is the only truth. A copy in a LISTED box (`listsOnMarketplaces`: a box
  * whose "Listed on marketplaces" setting is not off) is for sale on every
- * platform the collector has started listing on, and each shows NB's count;
+ * platform the collector has a saved sign-in for, and each shows NB's count;
  * nothing about a listing is stored in NB. `listingOutbox` is the change list
  * (one row per owner + platform + card, see its schema comment), and
- * `marketplaceListingStates` is the consent (`listingStartedAt`), NB's
- * `dormant` and the drain latch.
+ * `marketplaceListingStates` is the standing (`listingStartedAt`, stamped
+ * when the sign-in is saved), NB's `dormant` and the drain latch.
  *
  * Called from `collection.applyCopyChanges` (every copy write, a sale applied
  * by the order poll included) for the cards whose copy lived in a box before
@@ -24,7 +24,8 @@
  * A box write only ENQUEUES. Nothing here runs on a timer: the drain runs
  * when something asks for it (`kickListingDrain`): a Sync press
  * (`listingSync.syncVariant`), an intake run the collector closed with "Done
- * adding photos" once it settles (`intakeRuns`), the end of the Start walk,
+ * adding photos" once it settles (`intakeRuns`), the end of the walk a
+ * saved sign-in starts,
  * and the 15-minute cron (`listingSales.finishPoll`).
  *
  * Kept out of `collection.ts` and free of any import from it, so the hook can
@@ -71,22 +72,32 @@ export function listingPlatformForSite(site: string): ListingPlatform | null {
 }
 
 /**
- * NB pushes counts to the platform for this owner: the collector pressed
- * Start listing (`listingStartedAt`) and NB has not made the row dormant.
- * The retired `enabled` is never read.
+ * NB pushes counts to the platform for this owner. Revision 5 (Jason,
+ * 2026-11-01: "If you have credentials you are syncing"): saving a sign-in
+ * for the platform's site starts listing (`listingSync.setUpListing` stamps
+ * `listingStartedAt`, the "since"), and removing it stops listing (clears
+ * the stamp, `dormant: "noCredentials"`). So this reads: started by a saved
+ * sign-in, not made dormant by NB, and not held off by the E2E test marker
+ * (`testListingOff`, written only by the testing seed). Whether NB has
+ * paused the platform for everyone is read where it matters
+ * (`marketplacePause.isPlatformPaused`), not stored here. The retired
+ * `enabled` is never read.
  */
-export function pushesCounts(state: Pick<StateRow, "listingStartedAt" | "dormant">): boolean {
-  return state.listingStartedAt !== undefined && state.dormant === undefined;
+export function pushesCounts(
+  state: Pick<StateRow, "listingStartedAt" | "dormant" | "testListingOff">,
+): boolean {
+  return state.listingStartedAt !== undefined && state.dormant === undefined && state.testListingOff !== true;
 }
 
 /**
- * NB polls the platform's orders for this owner: on the same consent as
- * pushing (the collector pressed Start listing and the row is not dormant).
- * A sign-in saved again without Start polls nothing: reading a seller's
- * orders is part of listing, and listing needs Start.
+ * NB polls the platform's orders for this owner on the same rule as pushing
+ * (`pushesCounts`): a saved sign-in is listing AND selling, so reading the
+ * seller's orders goes with it. The pause is checked by the poll itself.
  */
-export function pollsSales(state: Pick<StateRow, "listingStartedAt" | "dormant">): boolean {
-  return state.listingStartedAt !== undefined && state.dormant === undefined;
+export function pollsSales(
+  state: Pick<StateRow, "listingStartedAt" | "dormant" | "testListingOff">,
+): boolean {
+  return pushesCounts(state);
 }
 
 /**
@@ -387,54 +398,39 @@ async function kickWithState(ctx: MutationCtx, state: StateRow, now: number): Pr
 }
 
 /**
- * The owner's saved credentials for `site` were cleared (`dormant: true`) or
- * saved again (`dormant: false`), for the platform that signs in through that
- * site.
+ * The owner's saved sign-in for `site` was removed: listing on the platform
+ * that signs in through that site STOPS, and so does its order poll. The row
+ * goes dormant (`noCredentials`; a seller conflict stays as it is),
+ * `listingStartedAt` is cleared, a drain asked to run again is not, and the
+ * owner's queued changes for that platform are dropped (paged; a drain
+ * already running stands down at its next write, `listingDrain`). What the
+ * platform lists is left as it is. Saving a sign-in again starts listing
+ * again (`listingSync.setUpListing`).
  *
- * Cleared: listing STOPS. The row goes dormant (`noCredentials`: no poll, no
- * drain; a seller conflict stays as it is), `listingStartedAt` is cleared
- * (saving again needs Start again; there is no pause), and the owner's queued
- * changes for that platform are dropped (paged). What the platform lists is
- * left as it is.
- *
- * Saved: clears only the `noCredentials` dormancy. It never starts listing,
- * and the order poll stays off with it (both need Start):
- * `listingSync.startListing` does, and only that.
- *
- * Does nothing for a site no listing platform uses, or an owner who never
- * started listing there.
+ * Does nothing for a site no listing platform uses, or an owner with no
+ * state row there.
  */
-export async function setListingCredentialsDormant(
-  ctx: MutationCtx,
-  ownerId: string,
-  site: string,
-  dormant: boolean,
-): Promise<void> {
+export async function stopListingForSite(ctx: MutationCtx, ownerId: string, site: string): Promise<void> {
   const platform = listingPlatformForSite(site);
   if (!platform) return;
   const state = await listingStateOf(ctx, ownerId, platform);
   if (!state) return;
-  const now = Date.now();
-  if (dormant) {
-    if (state.dormant === undefined || state.listingStartedAt !== undefined || state.drainRequested !== undefined) {
-      await ctx.db.patch(state._id, {
-        ...(state.dormant === undefined ? { dormant: "noCredentials" as const } : {}),
-        listingStartedAt: undefined,
-        drainRequested: undefined,
-        lastUpdated: now,
-      });
-    }
-    await clearListingOutbox(ctx, ownerId, platform);
-  } else if (state.dormant === "noCredentials") {
-    await ctx.db.patch(state._id, { dormant: undefined, reauthPollAt: undefined, lastUpdated: now });
+  if (state.dormant === undefined || state.listingStartedAt !== undefined || state.drainRequested !== undefined) {
+    await ctx.db.patch(state._id, {
+      ...(state.dormant === undefined ? { dormant: "noCredentials" as const } : {}),
+      listingStartedAt: undefined,
+      drainRequested: undefined,
+      lastUpdated: Date.now(),
+    });
   }
+  await clearListingOutbox(ctx, ownerId, platform);
 }
 
 /**
  * Delete one page of the owner's queued changes for `platform`, and schedule
  * the next (`listingSync.clearOutboxPage`) while a full page came back. The
- * scheduled pages stop once the owner lists there again (a fresh Start walk
- * owns the queue from then on).
+ * scheduled pages stop once the owner lists there again (the walk a fresh
+ * save starts owns the queue from then on).
  */
 export async function clearListingOutbox(
   ctx: MutationCtx,

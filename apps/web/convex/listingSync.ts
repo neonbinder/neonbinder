@@ -1,20 +1,23 @@
 /**
- * NEO-370 — the collector's side of marketplace listing: starting to list,
- * a set's Sync button, the Sync status tab (theirs, and the read-only admin
- * view across collectors), and the Sales screen.
+ * NEO-370 — the collector's side of marketplace listing: what a saved
+ * sign-in starts, a set's Sync button, the Sync status tab (theirs, and the
+ * read-only admin view across collectors), and the Sales screen.
  *
- * Revision 4 (Jason, 2026-11-01): there is no per-platform switch and no
- * pause. Everything in a LISTED box (a box whose "Listed on marketplaces"
- * setting is not off, `listingOutbox.listsOnMarketplaces`) lists on every
- * platform the collector has STARTED. Starting is one-way and explicit
- * (`startListing`, the button under the warning beside the saved sign-in);
- * saving a sign-in alone starts nothing. Removing the sign-in stops listing
- * and clears the start (`listingOutbox.setListingCredentialsDormant`).
+ * Revision 5 (Jason, 2026-11-01): "If you have credentials you are syncing."
+ * A sign-in saved for a listing platform's site, on a platform NB has not
+ * paused, IS listing: NB pushes the counts of everything in the collector's
+ * LISTED boxes (a box whose "Listed on marketplaces" setting is not off,
+ * `listingOutbox.listsOnMarketplaces`) and polls that platform's orders.
+ * There is no Start button, no switch and no pause. Saving the sign-in
+ * starts it (`setUpListing`, from `userProfile.updateSiteCredentialStatus`);
+ * removing it stops it (`listingOutbox.stopListingForSite`). A sign-in saved
+ * before this rule is set up by the order-poll cron (`setUpSavedSignInsPage`).
  *
- * The owner's `marketplaceListingStates` row is made by the first Start and
- * then kept. Starting queues every card the collector holds in a listed box
- * (paged through scheduled internal mutations, so a 100k-copy inventory never
- * meets a transaction limit) and the walk's last page runs the drain.
+ * Setting up makes the owner's `marketplaceListingStates` row (or wakes the
+ * kept one), stamps `listingStartedAt` and queues every card the collector
+ * holds in a listed box (paged through scheduled internal mutations, so a
+ * 100k-copy inventory never meets a transaction limit); the walk's last page
+ * runs the drain.
  *
  * Every collector function here is the signed-in caller's own: the owner is
  * always `requireSignedIn`, never an argument. The admin reads take an owner
@@ -54,7 +57,7 @@ import {
   saleItemProblemValidator,
 } from "./schema";
 
-/** Copy lines one page of a queueing walk reads (Start, a box flip, Sync). */
+/** Copy lines one page of a queueing walk reads (a saved sign-in, a box flip, Sync). */
 export const QUEUE_PAGE_LINES = 200;
 /** Orders one Sales page returns at most. */
 export const MAX_SALES_PAGE = 50;
@@ -88,15 +91,19 @@ export const ADMIN_OWNER_LIST = 200;
 type StatusCaps = { queued: number; queuedLabelled: number; sets: number; problemsPerSet: number; problemCards: number };
 
 // ───────────────────────────────────────────────────────────────────────────
-// Settings and Start
+// Settings, and what a saved sign-in starts
 // ───────────────────────────────────────────────────────────────────────────
 
 const platformSettingsValidator = v.object({
   /** Their sign-in for it is saved (Profile → Credentials). */
   connected: v.boolean(),
-  /** They pressed Start and NB is pushing their counts (not dormant). */
+  /**
+   * NB is pushing their counts and polling their sales: the sign-in is saved,
+   * the platform is not paused, NB has not made the row dormant (a seller
+   * conflict, a removed sign-in) and no test marker holds it off.
+   */
   listing: v.boolean(),
-  /** When they pressed Start (kept while a seller conflict holds pushing back). */
+  /** When the saved sign-in started listing (absent while not listing). */
   listingSince: v.optional(v.number()),
   /** The saved session died and they must sign in again on Profile. */
   needsReauth: v.boolean(),
@@ -107,6 +114,11 @@ const platformSettingsValidator = v.object({
 });
 type PlatformSettings = typeof platformSettingsValidator.type;
 
+/** The owner lists on the platform now: the state row's rule (`pushesCounts`) and the platform not paused. */
+function listsNow(row: Doc<"marketplaceListingStates"> | null, platform: ListingPlatform): boolean {
+  return row !== null && pushesCounts(row) && !isPlatformPaused(LISTING_CREDENTIAL_SITE[platform]);
+}
+
 async function platformSettings(
   ctx: QueryCtx,
   ownerId: string,
@@ -115,10 +127,11 @@ async function platformSettings(
 ): Promise<PlatformSettings> {
   const row = state === undefined ? await listingStateOf(ctx, ownerId, platform) : state;
   const credential = await listingCredentialOf(ctx, ownerId, platform);
+  const listing = credential.hasCredentials && listsNow(row, platform);
   return {
     connected: credential.hasCredentials,
-    listing: row !== null && pushesCounts(row),
-    ...(row?.listingStartedAt !== undefined ? { listingSince: row.listingStartedAt } : {}),
+    listing,
+    ...(listing && row?.listingStartedAt !== undefined ? { listingSince: row.listingStartedAt } : {}),
     needsReauth: credential.needsReauth,
     paused: isPlatformPaused(LISTING_CREDENTIAL_SITE[platform]),
     sellerConflict: row?.dormant === "sellerConflict",
@@ -135,63 +148,202 @@ export const listingSettings = query({
   },
 });
 
+/** What `setUpListing` did. */
+export type ListingSetup =
+  /** Already listing: nothing written (a repeated save, a token refresh). */
+  | "listing"
+  /** Listing started now: row stamped, the owner's boxes queued, the drain to follow. */
+  | "started"
+  /** Another NB owner lists from the same seller account: the row is dormant, nothing queued. */
+  | "sellerConflict"
+  /** NB has paused the platform for everyone: nothing written (the cron sets it up once unpaused). */
+  | "paused"
+  /** No saved sign-in for the platform's site: nothing written. */
+  | "notConnected"
+  /** The E2E test marker holds this owner off and this save may not clear it: nothing written. */
+  | "testOff";
+
 /**
- * Start listing on one platform: the one-way consent (Profile, under the
- * warning beside the saved sign-in). There is no stop here; removing the
- * sign-in stops listing.
+ * A sign-in for `platform`'s site was saved (or found saved by the cron):
+ * start listing there. Called from `userProfile.updateSiteCredentialStatus`
+ * on every save and every successful login (`credentials` re-asserts the
+ * flag), and from `setUpSavedSignInsPage`. `save` is true only for a real
+ * save (the collector's own, through the product UI, or the testing seed
+ * asking for listing); a login re-asserting the flag, and the cron, pass
+ * false.
  *
- * Refused while NB has paused the platform (`paused`, the same switch the
- * drain honours). Needs a saved sign-in (`notConnected` otherwise), and refuses a seller
- * account another NB owner already lists from (`sellerConflict`; one NB owner
- * per seller account, the account the owner's last sign-in captured when
- * known; the drainer checks it again before its first push). Neither refusal
- * writes anything.
- *
- * Starting makes the state row (or wakes the kept one, clearing a dormancy
- * that no longer applies), stamps `listingStartedAt` and queues every card the
- * collector holds in a listed box (paged, scheduled); the walk's last page
- * runs the drain. Idempotent: pressed while already listing, it answers
- * `started: true` and writes nothing.
+ * Cheap and idempotent: an owner already listing costs one state read and
+ * writes nothing, so a token refresh or a repeated save never walks twice.
+ * Otherwise, in order:
+ *   - refused, writing nothing, while NB has paused the platform (`paused`);
+ *   - held off, writing nothing, by the E2E test marker unless this is a
+ *     real save, which clears it (`testOff`);
+ *   - a row dormant on a seller conflict stays so, writing nothing, unless
+ *     this is a real save, which checks again (`sellerConflict`): a token
+ *     refresh never restarts a walk the drain would only refuse again;
+ *   - refused, writing nothing, with no saved sign-in (`notConnected`);
+ *   - a seller account another NB owner already lists from: the row is made
+ *     (or kept) dormant `sellerConflict`, nothing queued (one NB owner per
+ *     seller account, the account the owner's last sign-in captured when
+ *     known; the drainer checks again before its first push);
+ *   - otherwise the row is made (or woken: dormancy cleared, the re-sign-in
+ *     poll limit reset, the marker cleared on a real save),
+ *     `listingStartedAt` stamped NOW, and one walk scheduled that queues
+ *     every card in the owner's listed boxes and then runs the drain
+ *     (`startListingWalk`). The stamp names the walk, so a walk from an
+ *     earlier save (removed and saved again within the walk) stands down.
  */
-export const startListing = mutation({
-  args: { platform: listingPlatformValidator },
-  returns: v.object({
-    started: v.boolean(),
-    reason: v.optional(v.union(v.literal("notConnected"), v.literal("sellerConflict"), v.literal("paused"))),
-  }),
-  handler: async (ctx, args) => {
-    const ownerId = await requireSignedIn(ctx);
-    // NB has paused the platform for everyone (the switch the drain's token
-    // read honours): nothing would push, so nothing starts.
-    if (isPlatformPaused(LISTING_CREDENTIAL_SITE[args.platform])) return { started: false, reason: "paused" as const };
-    const state = await listingStateOf(ctx, ownerId, args.platform);
-    if (state && pushesCounts(state)) return { started: true };
-    const credential = await listingCredentialOf(ctx, ownerId, args.platform);
-    if (!credential.hasCredentials) return { started: false, reason: "notConnected" as const };
-    const accountId = credential.sellerId ?? state?.platformAccountId ?? null;
-    if (accountId !== null && (await sellerAccountHolder(ctx, args.platform, accountId, ownerId))) {
-      return { started: false, reason: "sellerConflict" as const };
+export async function setUpListing(
+  ctx: MutationCtx,
+  ownerId: string,
+  platform: ListingPlatform,
+  opts: { save: boolean },
+): Promise<ListingSetup> {
+  if (isPlatformPaused(LISTING_CREDENTIAL_SITE[platform])) return "paused";
+  const state = await listingStateOf(ctx, ownerId, platform);
+  if (state && pushesCounts(state)) return "listing";
+  if (state?.testListingOff === true && !opts.save) return "testOff";
+  if (state?.dormant === "sellerConflict" && !opts.save) return "sellerConflict";
+  const credential = await listingCredentialOf(ctx, ownerId, platform);
+  if (!credential.hasCredentials) return "notConnected";
+  const now = Date.now();
+  // Only a real save reaches here with the marker set (see above).
+  const clearMarker = state?.testListingOff !== undefined ? { testListingOff: undefined } : {};
+  const accountId = credential.sellerId ?? state?.platformAccountId ?? null;
+  if (accountId !== null && (await sellerAccountHolder(ctx, platform, accountId, ownerId))) {
+    // Already held for this account, marker clear: nothing to write.
+    if (state?.dormant === "sellerConflict" && state.platformAccountId === accountId && !("testListingOff" in clearMarker)) {
+      return "sellerConflict";
     }
-    const now = Date.now();
-    const on = {
-      listingStartedAt: state?.listingStartedAt ?? now,
-      dormant: undefined,
-      ...(accountId !== null ? { platformAccountId: accountId } : {}),
+    const held = {
+      dormant: "sellerConflict" as const,
+      listingStartedAt: undefined,
+      platformAccountId: accountId,
+      ...clearMarker,
       lastUpdated: now,
     };
-    if (state) await ctx.db.patch(state._id, on);
-    else await ctx.db.insert("marketplaceListingStates", { ownerId, platform: args.platform, ...on });
-    const boxIds = await listedBoxIdsOf(ctx, ownerId);
-    if (boxIds.length > 0) {
-      await ctx.scheduler.runAfter(0, internal.listingSync.queueBoxesPage, {
-        ownerId,
-        platform: args.platform,
-        boxIds,
-        index: 0,
-        cursor: null,
-      });
+    if (state) await ctx.db.patch(state._id, held);
+    else await ctx.db.insert("marketplaceListingStates", { ownerId, platform, ...held });
+    return "sellerConflict";
+  }
+  const on = {
+    listingStartedAt: now,
+    dormant: undefined,
+    reauthPollAt: undefined,
+    ...(accountId !== null ? { platformAccountId: accountId } : {}),
+    ...clearMarker,
+    lastUpdated: now,
+  };
+  if (state) await ctx.db.patch(state._id, on);
+  else await ctx.db.insert("marketplaceListingStates", { ownerId, platform, ...on });
+  await ctx.scheduler.runAfter(0, internal.listingSync.startListingWalk, { ownerId, platform, startedAt: now });
+  return "started";
+}
+
+/**
+ * The E2E test marker, set: the testing seed signed this account in without
+ * asking for listing (`testing.seedMyTestCredentials`, `listing` false), so
+ * nothing is pushed or polled for it. Makes the row when there is none (so a
+ * sign-in found by the cron is never set up), stops a listing already under
+ * way (stamp cleared, queue dropped) and writes nothing more.
+ *
+ * Testing deployments only: refuses (throws) where the testing flag is unset,
+ * so production can never write it. Called only by the testing seed's
+ * credential write (`userProfile.updateSiteCredentialStatus` with
+ * `listing: "testOff"`).
+ */
+export async function holdTestListingOff(ctx: MutationCtx, ownerId: string, platform: ListingPlatform): Promise<void> {
+  if (!process.env.TESTING_RESET_SECRET) {
+    throw new Error("The listing test marker is not enabled on this deployment");
+  }
+  const state = await listingStateOf(ctx, ownerId, platform);
+  const now = Date.now();
+  if (!state) {
+    await ctx.db.insert("marketplaceListingStates", { ownerId, platform, testListingOff: true, lastUpdated: now });
+    return;
+  }
+  if (state.testListingOff !== true || state.listingStartedAt !== undefined || state.drainRequested !== undefined) {
+    await ctx.db.patch(state._id, {
+      testListingOff: true,
+      listingStartedAt: undefined,
+      drainRequested: undefined,
+      lastUpdated: now,
+    });
+  }
+  await clearListingOutbox(ctx, ownerId, platform);
+}
+
+/**
+ * The walk a saved sign-in starts: reads the owner's listed boxes once and
+ * hands them to `queueBoxesPage`, whose last page runs the drain. Stands down
+ * when the owner no longer lists there, or a later save restamped the row
+ * (`startedAt` is the stamp this walk was started with).
+ */
+export const startListingWalk = internalMutation({
+  args: { ownerId: v.string(), platform: listingPlatformValidator, startedAt: v.number() },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const state = await listingStateOf(ctx, args.ownerId, args.platform);
+    if (!state || !pushesCounts(state) || state.listingStartedAt !== args.startedAt) return null;
+    const boxIds = await listedBoxIdsOf(ctx, args.ownerId);
+    if (boxIds.length === 0) return null;
+    await ctx.scheduler.runAfter(0, internal.listingSync.queueBoxesPage, {
+      ownerId: args.ownerId,
+      platform: args.platform,
+      startedAt: args.startedAt,
+      boxIds,
+      index: 0,
+      cursor: null,
+    });
+    return null;
+  },
+});
+
+/** Profiles one page of the saved-sign-in pass reads. */
+export const SIGN_IN_SCAN_PAGE = 50;
+
+/**
+ * Sign-ins saved before Revision 5 have no state row (saving never made one
+ * then), so nothing would ever list them. The order-poll cron
+ * (`listingSales.pollAll`) starts one pass per tick: a page of
+ * `SIGN_IN_SCAN_PAGE` profiles, each with a saved sign-in for a listing
+ * platform's site that is not set up yet (no row, or a row that is neither
+ * listing, nor held off by the test marker, nor a seller conflict) is set up
+ * as a login re-asserting it would (`setUpListing` with `save` false: never
+ * clears the marker or re-checks a seller conflict),
+ * then the next page on the scheduler. Each page is one bounded transaction:
+ * the profiles, one state read each, and for the few not set up a setup
+ * (a handful of reads and one scheduled walk).
+ *
+ * Not run on a testing deployment (dev, previews): there the suite's accounts
+ * keep sign-ins saved between runs, and only the seed decides whether they
+ * list (`testListingOff`).
+ */
+export const setUpSavedSignInsPage = internalMutation({
+  args: { cursor: v.union(v.string(), v.null()) },
+  returns: v.object({ started: v.number() }),
+  handler: async (ctx, args) => {
+    if (process.env.TESTING_RESET_SECRET) return { started: 0 };
+    const page = await ctx.db.query("userProfiles").paginate({ numItems: SIGN_IN_SCAN_PAGE, cursor: args.cursor });
+    let started = 0;
+    for (const profile of page.page) {
+      for (const platform of LISTING_PLATFORMS) {
+        const saved = profile.siteCredentials?.some(
+          (c) => c.site === LISTING_CREDENTIAL_SITE[platform] && c.hasCredentials === true,
+        );
+        if (!saved) continue;
+        const state = await listingStateOf(ctx, profile.userId, platform);
+        const setUp =
+          state !== null &&
+          (pushesCounts(state) || state.testListingOff === true || state.dormant === "sellerConflict");
+        if (setUp) continue;
+        if ((await setUpListing(ctx, profile.userId, platform, { save: false })) === "started") started += 1;
+      }
     }
-    return { started: true };
+    if (!page.isDone) {
+      await ctx.scheduler.runAfter(0, internal.listingSync.setUpSavedSignInsPage, { cursor: page.continueCursor });
+    }
+    return { started };
   },
 });
 
@@ -207,8 +359,12 @@ async function listedBoxIdsOf(ctx: QueryCtx, ownerId: string): Promise<Array<Id<
 /** A flip's walk stamped within this long is taken as still pending (see `listedQueuedAt`). */
 export const LISTED_WALK_PENDING_MS = 60_000;
 
-/** The platforms the owner has started and NB pushes to now. */
-async function startedPlatformsOf(ctx: QueryCtx, ownerId: string): Promise<ListingPlatform[]> {
+/**
+ * The platforms whose state row lists (`pushesCounts`): where a box flip
+ * queues. A paused platform is included: its queue waits for the pause to
+ * lift, and the drain itself honours the pause. Sync leaves a paused one out.
+ */
+async function listingPlatformsOf(ctx: QueryCtx, ownerId: string): Promise<ListingPlatform[]> {
   const out: ListingPlatform[] = [];
   for (const platform of LISTING_PLATFORMS) {
     const state = await listingStateOf(ctx, ownerId, platform);
@@ -237,7 +393,7 @@ export async function queueBoxForListing(
   box: Pick<Doc<"collectionContainers">, "_id" | "listedQueuedAt">,
   listed: boolean,
 ): Promise<boolean> {
-  if ((await startedPlatformsOf(ctx, ownerId)).length === 0) return false;
+  if ((await listingPlatformsOf(ctx, ownerId)).length === 0) return false;
   const now = Date.now();
   if (box.listedQueuedAt !== undefined && now - box.listedQueuedAt < LISTED_WALK_PENDING_MS) return false;
   await ctx.db.patch(box._id, { listedQueuedAt: now });
@@ -253,7 +409,7 @@ export async function queueBoxForListing(
 
 /**
  * One page of a box flip's walk: the box's copies queued on every platform
- * the owner has started, then the next page on the scheduler; the last page
+ * the owner lists on, then the next page on the scheduler; the last page
  * clears the box's stamp. It only queues (no drain).
  *
  *   - Superseded (the box carries another stamp: a newer walk replaced one
@@ -279,7 +435,7 @@ export const queueListedBoxPage = internalMutation({
     const box = await ctx.db.get(args.boxId);
     if (!box || box.ownerId !== args.ownerId || box.kind !== "box") return null;
     if (box.listedQueuedAt !== args.queuedAt) return null;
-    const platforms = await startedPlatformsOf(ctx, args.ownerId);
+    const platforms = await listingPlatformsOf(ctx, args.ownerId);
     if (platforms.length === 0) {
       await ctx.db.patch(box._id, { listedQueuedAt: undefined });
       return null;
@@ -313,15 +469,19 @@ export const queueListedBoxPage = internalMutation({
 });
 
 /**
- * The Start walk over boxes: one page of one box's copies, queued for
- * `platform`, then the next page (or the next box) on the scheduler. Its last
- * page runs the drain (the owner's first sync). Stops as soon as the owner no
- * longer lists on the platform. (A box flip walks `queueListedBoxPage`.)
+ * The walk a saved sign-in starts (`startListingWalk`), over boxes: one page
+ * of one box's copies, queued for `platform`, then the next page (or the
+ * next box) on the scheduler. Its last page runs the drain (the owner's first
+ * sync). Stands down as soon as the owner no longer lists on the platform,
+ * or a later save restamped the row (`startedAt`). (A box flip walks
+ * `queueListedBoxPage`.)
  */
 export const queueBoxesPage = internalMutation({
   args: {
     ownerId: v.string(),
     platform: listingPlatformValidator,
+    /** The `listingStartedAt` this walk was started with. */
+    startedAt: v.number(),
     boxIds: v.array(v.id("collectionContainers")),
     index: v.number(),
     cursor: v.union(v.string(), v.null()),
@@ -329,7 +489,7 @@ export const queueBoxesPage = internalMutation({
   returns: v.null(),
   handler: async (ctx, args) => {
     const state = await listingStateOf(ctx, args.ownerId, args.platform);
-    if (!state || !pushesCounts(state)) return null;
+    if (!state || !pushesCounts(state) || state.listingStartedAt !== args.startedAt) return null;
     const homeId = args.boxIds[args.index];
     if (homeId === undefined) return null;
     const page = await ctx.db
@@ -357,8 +517,9 @@ export const queueBoxesPage = internalMutation({
 
 /**
  * One more page of the stop-listing sweep (`listingOutbox.clearListingOutbox`,
- * run when the sign-in is removed). Stands down once the owner lists on the
- * platform again: a fresh Start walk owns the queue from then on.
+ * run when the sign-in is removed or the test marker is set). Stands down
+ * once the owner lists on the platform again: the walk a fresh save starts
+ * owns the queue from then on.
  */
 export const clearOutboxPage = internalMutation({
   args: { ownerId: v.string(), platform: listingPlatformValidator },
@@ -398,14 +559,14 @@ async function recordOf(
  * in a box, so the run happens and sets the platform to NB's zero) and runs
  * the drain now.
  *
- * Answers `ignored: "notListing"` (and writes nothing) when no platform is
- * started. A press while the variant's run is under way, or within
+ * Answers `ignored: "notListing"` (and writes nothing) when the collector
+ * has no saved sign-in on a platform NB has not paused. A press while the variant's run is under way, or within
  * `RESYNC_THROTTLE_MS` of the last press, is dropped on that platform: the run
  * under way, or about to start, reads the set in full. `queued` is true when
  * at least one platform took the press (queued work, or kicked a drain for a
- * change already queued); `ignored: "throttled"` only when every started
+ * change already queued); `ignored: "throttled"` only when every listing
  * platform dropped it. `queued: false` with no reason: nothing to sync here
- * (the set has no card any started platform can list, or the collector holds
+ * (the set has no card any listing platform can list, or the collector holds
  * no copy of it and never synced it).
  */
 export const syncVariant = mutation({
@@ -416,7 +577,9 @@ export const syncVariant = mutation({
   }),
   handler: async (ctx, args) => {
     const ownerId = await requireSignedIn(ctx);
-    const platforms = await startedPlatformsOf(ctx, ownerId);
+    const platforms = (await listingPlatformsOf(ctx, ownerId)).filter(
+      (platform) => !isPlatformPaused(LISTING_CREDENTIAL_SITE[platform]),
+    );
     if (platforms.length === 0) return { queued: false, ignored: "notListing" as const };
     let queued = false;
     let throttled = 0;

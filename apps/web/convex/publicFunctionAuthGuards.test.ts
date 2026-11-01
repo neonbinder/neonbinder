@@ -1263,13 +1263,12 @@ describe("NEO-370 — listing reads ship no lease, SKU, order id or marketplace 
     }
   });
 
-  test("Start, Sync and a box's listed setting refuse an anonymous caller and write nothing", async () => {
+  test("Sync and a box's listed setting refuse an anonymous caller and write nothing", async () => {
     const t = convexTest(schema, modules);
     const sportId = await seedSport(t);
     const boxId = await t.run((ctx) =>
       ctx.db.insert("collectionContainers", { ownerId: OWNER.subject, kind: "box", name: "Box", lastUpdated: 0 }),
     );
-    await expect(t.mutation(api.listingSync.startListing, { platform: "bsc" })).rejects.toThrow();
     await expect(t.mutation(api.listingSync.syncVariant, { variantId: sportId })).rejects.toThrow();
     await expect(
       t.mutation(api.collectionContainers.setContainerListed, { containerId: boxId, listed: false }),

@@ -7,7 +7,7 @@
  * schedules nothing. `drainOwner` runs when something kicks it
  * (`listingOutbox.kickListingDrain`): a Sync press (`listingSync.syncVariant`),
  * an intake run the collector closed with "Done adding photos" once it
- * settles, the end of the Start walk, and the 15-minute cron after each
+ * settles, the end of the walk a saved sign-in starts, and the 15-minute cron after each
  * owner's order poll. Only copies in a LISTED box count
  * (`listingOutbox.listsOnMarketplaces`); an in-person box counts 0.
  * This drainer:
@@ -122,11 +122,12 @@ const fullVariantIdsValidator = v.optional(v.array(v.id("selectorOptions")));
 
 /**
  * Claims the owner's drain, and is the drain's gate:
- *   - no state row, listing not started, or a dormant row: `off`;
+ *   - no state row, a row not listing (`pushesCounts`: the stamp cleared, a
+ *     dormant row, the E2E test marker): `off`;
  *   - no saved credentials for the platform: listing stops as it does when
  *     the sign-in is removed (`noCredentials` dormancy, no poll and no drain
- *     until it is saved again, and the start cleared: saving needs Start
- *     again);
+ *     until it is saved again, and the stamp cleared; saving again starts
+ *     it again);
  *   - credentials that need a fresh sign-in: `needsReauth`, nothing
  *     written (the hourly order poll retries the sign-in; a drain never does);
  *   - another run's live lease: `busy`, and that run is asked to run once
@@ -530,7 +531,7 @@ export const finishVariant = internalMutation({
  * the PUT names (`platformAccountId`), unless another NB owner's row already
  * holds it. On a conflict the row goes dormant (`sellerConflict`: no drain,
  * no poll) and nothing is pushed; the collector is told on the variant and
- * in their listing settings, and pressing Start again re-checks.
+ * in their listing settings, and saving the sign-in again re-checks.
  * Only the run holding the lease may bind.
  */
 export const bindSellerAccount = internalMutation({

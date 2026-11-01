@@ -24,7 +24,7 @@ import {
 } from "./copy";
 
 /**
- * NEO-370 Rev 4 — the Sync status screen, per platform: what is syncing now,
+ * NEO-370 Rev 4/5 — the Sync status screen, per platform: what is syncing now,
  * the cards waiting for the next sync, and each set's last result (held-back
  * cards with the reason, failures). Last result per set only: no run log.
  *
@@ -91,7 +91,7 @@ export default function SyncStatusView({ status, loadProblems, readOnly = false,
             <Link to={CREDENTIALS_PATH} className={LINK}>
               Save a sign-in on your Profile
             </Link>{" "}
-            and start listing there.
+            and syncing starts on its own.
           </>
         )}
       </p>
@@ -106,13 +106,18 @@ export default function SyncStatusView({ status, loadProblems, readOnly = false,
   );
 }
 
-/** The platform's state, in a word or two, and the line that says what to do. */
+/**
+ * The platform's state, in a word or two. Rev 5: a saved, unpaused sign-in
+ * IS listing, so a pause reads before "not listing" (a pause makes listing
+ * false), and "Not syncing" is left for a saved sign-in that is none of the
+ * others (a testing account only).
+ */
 export function platformState(p: PlatformSyncStatus): { word: string; tone: string } {
   if (!p.connected) return { word: "Not connected", tone: "border-rule-strong text-ink-2" };
   if (p.sellerConflict) return { word: "Seller account in use", tone: "border-neon-yellow-text text-neon-yellow-text" };
-  if (!p.listing) return { word: "Not started", tone: "border-rule-strong text-ink-2" };
   if (p.paused) return { word: "On a break", tone: "border-neon-yellow-text text-neon-yellow-text" };
   if (p.needsReauth) return { word: "Needs sign-in", tone: "border-neon-yellow-text text-neon-yellow-text" };
+  if (!p.listing) return { word: "Not syncing", tone: "border-rule-strong text-ink-2" };
   return { word: "Listing", tone: "border-neon-green-text text-neon-green-text" };
 }
 
@@ -135,13 +140,6 @@ function StateNote({ p, readOnly }: { p: PlatformSyncStatus; readOnly: boolean }
     );
   }
   if (p.sellerConflict) return <p className="text-sm text-neon-yellow-text">{SELLER_CONFLICT_LINE}</p>;
-  if (!p.listing) {
-    return (
-      <p className="text-sm text-ink-2">
-        Your sign-in is saved, but listing hasn&apos;t started.{profile(`Start listing on ${name} from your Profile`)}
-      </p>
-    );
-  }
   if (p.paused) return <p className="text-sm text-neon-yellow-text">{PAUSED_LINE}</p>;
   if (p.needsReauth) {
     return (
@@ -151,6 +149,7 @@ function StateNote({ p, readOnly }: { p: PlatformSyncStatus; readOnly: boolean }
       </p>
     );
   }
+  // The pill already says "Not syncing"; there is nothing for the collector to do.
   return null;
 }
 

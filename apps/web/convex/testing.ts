@@ -446,7 +446,16 @@ const SEED_SITE_ENV: Record<string, { username: string; password: string }> = {
 };
 
 export const seedMyTestCredentials = action({
-  args: { sites: v.optional(v.array(v.string())) },
+  args: {
+    sites: v.optional(v.array(v.string())),
+    // NEO-370 Revision 5: whether the seeded marketplace sign-ins LIST (a
+    // saved sign-in is listing: counts pushed, sales polled). Default false:
+    // the suite's accounts carry the test marker
+    // (`marketplaceListingStates.testListingOff`) so nothing reaches a real
+    // marketplace unless a spec asks (`/testing/seed-credentials?listing=on`).
+    // True clears the marker and starts listing as a collector's own save.
+    listing: v.optional(v.boolean()),
+  },
   returns: v.object({
     seeded: v.array(
       v.object({
@@ -604,20 +613,26 @@ export const seedMyTestCredentials = action({
           site,
           hasCredentials: true,
           needsReauth: false,
+          listing: args.listing === true ? "save" : "testOff",
         });
         seeded.push({ site, stored: true });
         continue;
       }
 
-      // NEO-89: saveCredentials already updates hasCredentials server-side on
+      // NEO-89: the store already updates hasCredentials server-side on
       // a successful store, so no separate follow-up mutation is needed here
       // (unlike the credsMatch branch above, which skips the store call
       // entirely and so must set the flag itself).
-      const storeResult = await ctx.runAction(api.credentials.saveCredentials, {
-        site,
-        username,
-        password,
-      });
+      //
+      // NEO-370 Revision 5: through the internal store
+      // (`credentials.storeTestCredentials`, the same connect-and-store as
+      // `saveCredentials`) so the seed, not a collector's save, decides
+      // whether the sign-in lists: the marker is written in the same mutation
+      // as the credential flag, so nothing can start listing in between.
+      const storeResult: { success: boolean; message: string } = await ctx.runAction(
+        internal.credentials.storeTestCredentials,
+        { userId, site, username, password, listing: args.listing === true },
+      );
 
       // NEO-294: carry `saveCredentials`' own message through on a failure.
       // It is already product copy shown to real users (a fixed per-site

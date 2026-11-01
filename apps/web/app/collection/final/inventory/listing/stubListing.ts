@@ -17,8 +17,8 @@ export const LISTING: ListingPlatformSettings = {
   sellerConflict: false,
 };
 
-/** Connected, not started. */
-export const NOT_STARTED: ListingPlatformSettings = {
+/** Connected but not syncing, for none of the named reasons (a testing account). */
+export const NOT_SYNCING: ListingPlatformSettings = {
   connected: true,
   listing: false,
   needsReauth: false,

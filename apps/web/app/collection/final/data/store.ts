@@ -512,8 +512,8 @@ export interface BinderMemoryExtension {
  * `marketplaceListing`): the Convex store's only. The demo never touches a
  * marketplace, so it has none and hides every listing control. NB is the
  * only truth: a platform shows NB's box count, and nothing here edits a
- * listing by hand. Listing starts on the Profile (where the sign-in is
- * saved), not here.
+ * listing by hand. Saving a marketplace sign-in on the Profile is what
+ * starts syncing (NEO-370 Rev 5), not anything here.
  */
 export interface ListingExtension {
   /** Where the collector stands with each platform; `undefined` while loading. */

@@ -411,6 +411,87 @@ async function withCredentialLock<T>(
 }
 
 /**
+ * The connect-and-store half of `saveCredentials` (NEO-141), shared with the
+ * testing seed (`storeTestCredentials`). `listing` says what the stored
+ * sign-in does to marketplace listing (NEO-370 Revision 5, see
+ * `userProfile.updateSiteCredentialStatus`): "save" for the collector's own
+ * save, "testOff" only from the testing seed.
+ */
+async function connectAndStore(
+  ctx: ActionCtx,
+  userId: string,
+  site: string,
+  username: string,
+  password: string,
+  listing: "save" | "testOff",
+): Promise<{ success: boolean; message: string }> {
+  return withCredentialLock(ctx, userId, site, "store", async () => {
+    try {
+      // NEO-141: connect-and-store. The password is handed to the login
+      // route for this one request only — the browser service persists the
+      // resulting session, never the password. There is therefore no
+      // "store now, verify later": a login we cannot complete gives us
+      // nothing worth storing.
+      const outcome = await runSiteLogin(
+        ctx,
+        userId,
+        site,
+        { username, password },
+        "saveCredentials",
+      );
+
+      if (!outcome.success) {
+        // Store NOTHING on failure. Leaving `hasCredentials` untouched is
+        // the whole point: a half-saved credential is what NEO-140 was.
+        //
+        // NEO-281: only send the user to their password when the
+        // marketplace actually refused it. If it never answered, say so.
+        // NEO-287: and if the operator paused the marketplace, the login
+        // was never attempted — the paused copy goes out verbatim and is
+        // never rewritten into "check your username and password".
+        // NEO-288: a site-side refusal (challenge / automated_access)
+        // arrives here as `transient` with the per-site `siteMessage`
+        // already in `message`, so it too goes out verbatim.
+        return {
+          success: false,
+          message: outcome.paused || outcome.transient
+            ? outcome.message
+            : `Could not sign in to ${siteDisplayName(site)}. Nothing was saved — check your username and password and try again.`,
+        };
+      }
+
+      await ctx.runMutation(internal.userProfile.updateSiteCredentialStatus, {
+        userId,
+        site: site,
+        hasCredentials: true,
+        // A successful login is proof no re-auth is pending.
+        needsReauth: false,
+        listing,
+      });
+
+      return {
+        success: true,
+        message: `Connected to ${siteDisplayName(site)} successfully. Your password was not stored — only the session it created.`,
+      };
+    } catch (error) {
+      const detail = error instanceof Error
+        ? `${error.name}: ${error.message}${error.cause ? ` (cause: ${String(error.cause)})` : ""}`
+        : String(error);
+      console.error(
+        `[saveCredentials] store site=${site} url=${browserUrl()} threw: ${detail}`,
+      );
+      return {
+        success: false,
+        message: credentialFailureMessage(error, site),
+      };
+    }
+  }, {
+    success: false,
+    message: "Another credential operation is in progress — try again.",
+  });
+}
+
+/**
  * Save (or clear) credentials for a site — the single client-facing entry
  * point for both operations (NEO-89: previously two separate public actions,
  * `storeSiteCredentials` and `deleteSiteCredentials`, each paired with its
@@ -483,69 +564,9 @@ export const saveCredentials = action({
       validateInputLength(username, "Username");
       validateInputLength(password, "Password");
 
-      return withCredentialLock(ctx, userId, args.site, "store", async () => {
-        try {
-          // NEO-141: connect-and-store. The password is handed to the login
-          // route for this one request only — the browser service persists the
-          // resulting session, never the password. There is therefore no
-          // "store now, verify later": a login we cannot complete gives us
-          // nothing worth storing.
-          const outcome = await runSiteLogin(
-            ctx,
-            userId,
-            args.site,
-            { username, password },
-            "saveCredentials",
-          );
-
-          if (!outcome.success) {
-            // Store NOTHING on failure. Leaving `hasCredentials` untouched is
-            // the whole point: a half-saved credential is what NEO-140 was.
-            //
-            // NEO-281: only send the user to their password when the
-            // marketplace actually refused it. If it never answered, say so.
-            // NEO-287: and if the operator paused the marketplace, the login
-            // was never attempted — the paused copy goes out verbatim and is
-            // never rewritten into "check your username and password".
-            // NEO-288: a site-side refusal (challenge / automated_access)
-            // arrives here as `transient` with the per-site `siteMessage`
-            // already in `message`, so it too goes out verbatim.
-            return {
-              success: false,
-              message: outcome.paused || outcome.transient
-                ? outcome.message
-                : `Could not sign in to ${siteDisplayName(args.site)}. Nothing was saved — check your username and password and try again.`,
-            };
-          }
-
-          await ctx.runMutation(internal.userProfile.updateSiteCredentialStatus, {
-            userId,
-            site: args.site,
-            hasCredentials: true,
-            // A successful login is proof no re-auth is pending.
-            needsReauth: false,
-          });
-
-          return {
-            success: true,
-            message: `Connected to ${siteDisplayName(args.site)} successfully. Your password was not stored — only the session it created.`,
-          };
-        } catch (error) {
-          const detail = error instanceof Error
-            ? `${error.name}: ${error.message}${error.cause ? ` (cause: ${String(error.cause)})` : ""}`
-            : String(error);
-          console.error(
-            `[saveCredentials] store site=${args.site} url=${browserUrl()} threw: ${detail}`,
-          );
-          return {
-            success: false,
-            message: credentialFailureMessage(error, args.site),
-          };
-        }
-      }, {
-        success: false,
-        message: "Another credential operation is in progress — try again.",
-      });
+      // NEO-370 Revision 5: the collector's own save starts listing on a
+      // listing platform's site (and clears an E2E test marker).
+      return connectAndStore(ctx, userId, args.site, username, password, "save");
     }
 
     // Clear branch — both username and password omitted/blank.
@@ -584,6 +605,37 @@ export const saveCredentials = action({
       success: false,
       message: "Another credential operation is in progress — try again.",
     });
+  },
+});
+
+/**
+ * NEO-370 Revision 5 — the testing seed's connect-and-store
+ * (`testing.seedMyTestCredentials`): `saveCredentials`' store path for the
+ * seeded user, where the seed decides whether the stored sign-in lists
+ * (`listing` true: as a collector's own save) or not (false: the E2E test
+ * marker, `marketplaceListingStates.testListingOff`). Internal, and fails
+ * closed where the testing flag is unset (production), so no product path
+ * can reach the marker.
+ */
+export const storeTestCredentials = internalAction({
+  args: {
+    userId: v.string(),
+    site: v.string(),
+    username: v.string(),
+    password: v.string(),
+    listing: v.boolean(),
+  },
+  returns: v.object({ success: v.boolean(), message: v.string() }),
+  handler: async (ctx, args) => {
+    if (!process.env.TESTING_RESET_SECRET) {
+      throw new Error("Test credential seeding is not enabled on this deployment");
+    }
+    if (!isSupportedSite(args.site)) {
+      return { success: false, message: `Unsupported site: ${args.site}` };
+    }
+    validateInputLength(args.username, "Username");
+    validateInputLength(args.password, "Password");
+    return connectAndStore(ctx, args.userId, args.site, args.username, args.password, args.listing ? "save" : "testOff");
   },
 });
 

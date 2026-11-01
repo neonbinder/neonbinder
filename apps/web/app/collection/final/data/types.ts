@@ -920,16 +920,20 @@ export interface ShareLinkParts {
 export type ListingPlatform = "bsc";
 
 /**
- * Where the collector stands with one listing platform (NEO-370 Rev 4).
- * Listing starts once, on their Profile, where the sign-in is saved; there
- * is no pause: removing the sign-in stops it (and the sales poll).
+ * Where the collector stands with one listing platform (NEO-370 Rev 5).
+ * A saved, unpaused sign-in IS syncing (listing and the sales poll); there
+ * is no Start and no pause: removing the sign-in stops both.
  */
 export interface ListingPlatformSettings {
   /** Their sign-in for it is saved (Profile → Credentials). */
   connected: boolean;
-  /** They started listing there: everything in a listed box goes up, and sales come back. */
+  /**
+   * Syncing there: a saved sign-in, the platform not paused and the seller
+   * account not in use elsewhere. Everything in a listed box goes up, and
+   * sales come back.
+   */
   listing: boolean;
-  /** When they started (ms); absent until they do. */
+  /** Since when (ms), as the server stamps it; may be absent. */
   listingSince?: number;
   /** The saved sign-in died: they must sign in again on their Profile. */
   needsReauth: boolean;
@@ -937,7 +941,7 @@ export interface ListingPlatformSettings {
   paused: boolean;
   /**
    * Their seller account already lists from another NeonBinder account, so
-   * this one can't: starting is refused, and a running listing rests.
+   * this one can't: nothing goes up or comes in from this one.
    */
   sellerConflict: boolean;
 }

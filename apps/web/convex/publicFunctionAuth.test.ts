@@ -2742,7 +2742,6 @@ describe("NEO-370: listing is the signed-in collector's own", () => {
       "listingSync.listSales",
       (t) => t.query(api.listingSync.listSales, { paginationOpts: { numItems: 10, cursor: null } }),
     ],
-    ["listingSync.startListing", (t) => t.mutation(api.listingSync.startListing, { platform: "bsc" })],
     ["listingSync.syncVariant", (t, variantId) => t.mutation(api.listingSync.syncVariant, { variantId })],
   ];
   const ADMIN_CALLS: Array<
@@ -2786,9 +2785,47 @@ describe("NEO-370: listing is the signed-in collector's own", () => {
     await expect(call(t.withIdentity(ADMIN), await seedVariant(t))).resolves.toBeDefined();
   });
 
-  test("starting listing anonymously is refused and writes no state row", async () => {
+  // Revision 5 ("If you have credentials you are syncing"): there is no
+  // Start. Listing starts from a saved sign-in, server-side, so nothing a
+  // client can call makes or wakes a listing state row by itself.
+  test("startListing is gone: no public way to start listing but saving a sign-in", () => {
+    const src = readFileSync(join(__dirname, "listingSync.ts"), "utf8");
+    expect(src).not.toMatch(/export const startListing\s*=/);
+    expect(src).toContain("export async function setUpListing(");
+    expect(src).not.toContain("export const setUpListing");
+  });
+
+  test.each([
+    ["listingSync.ts", "startListingWalk", "internalMutation"],
+    ["listingSync.ts", "setUpSavedSignInsPage", "internalMutation"],
+    ["listingSync.ts", "queueBoxesPage", "internalMutation"],
+    ["credentials.ts", "storeTestCredentials", "internalAction"],
+    ["userProfile.ts", "updateSiteCredentialStatus", "internalMutation"],
+  ])("%s %s stays %s (it starts listing, or writes the E2E test marker)", (file, fn, kind) => {
+    const src = readFileSync(join(__dirname, file), "utf8");
+    expect(src).toContain(`export const ${fn} = ${kind}({`);
+  });
+
+  test("the E2E test marker is written only by the testing seed's path, and refused off testing deployments", () => {
+    // `testListingOff` may be written only through `holdTestListingOff`
+    // (gated on TESTING_RESET_SECRET), reached only from
+    // `updateSiteCredentialStatus` with `listing: "testOff"`, which only the
+    // testing seed and its internal store pass.
+    const sync = readFileSync(join(__dirname, "listingSync.ts"), "utf8");
+    const hold = sync.slice(sync.indexOf("export async function holdTestListingOff("));
+    expect(hold.slice(0, hold.indexOf("\n}\n"))).toContain("if (!process.env.TESTING_RESET_SECRET)");
+    const store = readFileSync(join(__dirname, "credentials.ts"), "utf8");
+    const seedStore = store.slice(store.indexOf("export const storeTestCredentials"));
+    expect(seedStore.slice(0, seedStore.indexOf("\n});\n"))).toContain("if (!process.env.TESTING_RESET_SECRET)");
+    // The collector's own save always passes "save", never "testOff".
+    const save = store.slice(store.indexOf("export const saveCredentials"));
+    expect(save.slice(0, save.indexOf("\n});\n"))).toContain('connectAndStore(ctx, userId, args.site, username, password, "save")');
+    expect(save.slice(0, save.indexOf("\n});\n"))).not.toContain('"testOff"');
+  });
+
+  test("an anonymous Sync is refused and writes no state row", async () => {
     const t = convexTest(schema, modules);
-    await expect(t.mutation(api.listingSync.startListing, { platform: "bsc" })).rejects.toThrow(
+    await expect(t.mutation(api.listingSync.syncVariant, { variantId: await seedVariant(t) })).rejects.toThrow(
       /Not authenticated/,
     );
     expect(await t.run(async (ctx) => ctx.db.query("marketplaceListingStates").collect())).toEqual([]);

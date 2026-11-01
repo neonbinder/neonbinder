@@ -669,8 +669,8 @@ export const setVisibility = mutation({
  * default). Off makes the box in-person inventory: its copies stay for sale
  * in NB but count 0 on every listing platform. Per box only, never per copy.
  *
- * A change queues every card in the box on every platform the collector has
- * started listing on (`listingSync.queueBoxForListing`), like a move does;
+ * A change queues every card in the box on every platform the collector
+ * lists on (a saved sign-in, `listingSync.queueBoxForListing`), like a move does;
  * the next sync trigger pushes it. Debounced per box: a flip while the box's
  * last walk is still pending schedules nothing (that walk follows the box's
  * current setting), so a run of flips is one walk, never one each. Setting it

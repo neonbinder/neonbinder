@@ -6,10 +6,11 @@
 
 import { convexTest } from "convex-test";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { api } from "./_generated/api";
+import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import { __resetContractCache } from "./credentials";
 import { insertTestCard } from "../lib/testing/card-row";
+import { drainScheduled } from "../lib/testing/drain-scheduled";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -967,6 +968,113 @@ describe("seedMyTestCredentials", () => {
 
     expect(result.seeded).toEqual([{ site: "sportlots", stored: false, skipped: true }]);
     delete process.env.NEONBINDER_PAUSED_PLATFORMS;
+  });
+});
+
+// NEO-370 Revision 5 — the seed decides whether the seeded BSC sign-in LISTS.
+// A saved sign-in is listing (counts pushed, sales polled), so the suite's
+// accounts carry the E2E test marker (`testListingOff`) unless a spec asks
+// for listing (`listing: true`, the seed page's `listing=on`). A real save
+// through the product clears the marker.
+describe("seedMyTestCredentials — the listing test marker", () => {
+  beforeEach(() => {
+    process.env.NEONBINDER_BROWSER_URL = "http://localhost:9999";
+    __resetContractCache();
+    process.env.DEV_BSC_USERNAME = BSC_USERNAME;
+    process.env.DEV_BSC_PASSWORD = BSC_PASSWORD;
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    delete process.env.NEONBINDER_BROWSER_URL;
+    delete process.env.DEV_BSC_USERNAME;
+    delete process.env.DEV_BSC_PASSWORD;
+  });
+
+  const bscState = (t: ReturnType<typeof convexTest>) =>
+    t.run(async (ctx) =>
+      (await ctx.db.query("marketplaceListingStates").collect()).filter((r) => r.ownerId === USER_A),
+    );
+  const seed = (t: ReturnType<typeof convexTest>, listing?: boolean) =>
+    t
+      .withIdentity({ subject: USER_A })
+      .action(api.testing.seedMyTestCredentials, {
+        sites: ["buysportscards"],
+        ...(listing !== undefined ? { listing } : {}),
+      });
+
+  test.each([
+    ["the skip path (stored session still good)", { username: BSC_USERNAME } as const],
+    ["the store path (no secret yet)", 404 as const],
+  ])("%s: by default the account is held off listing", async (_name, metadata) => {
+    const t = convexTest(schema, modules);
+    const puts: Array<{ url: string; method: string; body: unknown }> = [];
+    stubFetch(makeCredentialFetch({ metadata, puts }));
+    expect((await seed(t)).seeded).toEqual([{ site: "buysportscards", stored: true }]);
+    const rows = await bscState(t);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ platform: "bsc", testListingOff: true });
+    expect(rows[0].listingStartedAt).toBeUndefined();
+    expect(
+      (await t.withIdentity({ subject: USER_A }).query(api.listingSync.listingSettings, {})).bsc,
+    ).toMatchObject({ connected: true, listing: false });
+    // Nothing was set going: no walk, no drain.
+    const scheduled = await t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect());
+    expect(scheduled.filter((f) => /startListingWalk|drainOwner/.test(f.name))).toEqual([]);
+  });
+
+  test.each([
+    ["the skip path (stored session still good)", { username: BSC_USERNAME } as const],
+    ["the store path (no secret yet)", 404 as const],
+  ])("%s: `listing: true` lists, and clears a marker an earlier seed set", async (_name, metadata) => {
+    const t = convexTest(schema, modules);
+    const puts: Array<{ url: string; method: string; body: unknown }> = [];
+    stubFetch(makeCredentialFetch({ metadata: { username: BSC_USERNAME }, puts }));
+    await seed(t);
+    expect((await bscState(t))[0].testListingOff).toBe(true);
+    vi.unstubAllGlobals();
+    __resetContractCache();
+    stubFetch(makeCredentialFetch({ metadata, puts }));
+    expect((await seed(t, true)).seeded).toEqual([{ site: "buysportscards", stored: true }]);
+    const [row] = await bscState(t);
+    expect(row.testListingOff).toBeUndefined();
+    expect(row.listingStartedAt).toBeTypeOf("number");
+    expect(
+      (await t.withIdentity({ subject: USER_A }).query(api.listingSync.listingSettings, {})).bsc,
+    ).toMatchObject({ connected: true, listing: true });
+    await drainScheduled(t);
+  });
+
+  test("a real save through the product (saveCredentials) clears the marker and starts listing", async () => {
+    const t = convexTest(schema, modules);
+    const puts: Array<{ url: string; method: string; body: unknown }> = [];
+    stubFetch(makeCredentialFetch({ metadata: { username: BSC_USERNAME }, puts }));
+    await seed(t);
+    const result = await t
+      .withIdentity({ subject: USER_A })
+      .action(api.credentials.saveCredentials, { site: "buysportscards", username: "me@example.com", password: "pw" });
+    expect(result.success).toBe(true);
+    const [row] = await bscState(t);
+    expect(row.testListingOff).toBeUndefined();
+    expect(row.listingStartedAt).toBeTypeOf("number");
+    await drainScheduled(t);
+  });
+
+  test("the internal store refuses where the testing flag is unset, and writes nothing", async () => {
+    const t = convexTest(schema, modules);
+    stubFetch(async () => {
+      throw new Error("no fetch expected");
+    });
+    delete process.env.TESTING_RESET_SECRET;
+    await expect(
+      t.action(internal.credentials.storeTestCredentials, {
+        userId: USER_A,
+        site: "buysportscards",
+        username: BSC_USERNAME,
+        password: BSC_PASSWORD,
+        listing: false,
+      }),
+    ).rejects.toThrow(/not enabled/);
+    expect(await bscState(t)).toEqual([]);
   });
 });
 

@@ -1,10 +1,11 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useId, useRef } from "react";
 import { useAction, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import NeonButton from "@/components/modules/NeonButton";
 import { Input } from "@/components/primitives/Input";
 import { usePausedPlatforms } from "@/src/hooks/usePausedPlatforms";
 import { PAUSE_NOTICE_COPY } from "@/lib/marketplace/pause-notice";
+import { CONSENT_HEADING, LISTING_CONSENT } from "@/lib/marketplace/listing-copy";
 import BscListingSection from "./BscListingSection";
 
 const SUPPORTED_SITES = [
@@ -75,6 +76,11 @@ export default function CredentialsPanel() {
   const paused = usePausedPlatforms();
   const sitePaused = paused.has(selectedSite);
   const siteName = siteMeta?.label ?? selectedSite;
+  // NEO-370 Rev 5: a saved, unpaused sign-in on a listing platform IS
+  // syncing (listing and sales). What that does is said beside Connect,
+  // before it is pressed, and describes the button.
+  const listingConsent = LISTING_CONSENT[selectedSite];
+  const consentId = useId();
   // a11y (NEO-287 audit): which of the mutually exclusive state cards is
   // showing. Each card is a polite live region keyed on this, so a LIVE flip
   // (pause set or lifted, session lapsing, connect succeeding) remounts the
@@ -593,10 +599,20 @@ export default function CredentialsPanel() {
             </p>
           )}
         </div>
+        {listingConsent && (
+          <p
+            id={consentId}
+            className="mt-4 rounded-md border border-notice-warn-rule bg-notice-warn-bg p-3 text-sm text-notice-warn-ink"
+          >
+            <strong className="block">{CONSENT_HEADING}</strong>
+            {listingConsent}
+          </p>
+        )}
         <div className="flex flex-col sm:flex-row gap-4 mt-4">
           <NeonButton
             type="submit"
             disabled={credsBusy || !username || !password}
+            aria-describedby={listingConsent ? consentId : undefined}
             className="flex-1"
           >
             {credsBusy ? "Connecting..." : "Connect"}
@@ -633,8 +649,8 @@ export default function CredentialsPanel() {
         )}
       </form>
     )}
-    {/* NEO-370 Rev 4 — listing starts here, under the sign-in it needs.
-        Draws nothing until a BuySportsCards sign-in is saved. */}
+    {/* NEO-370 Rev 5 — where BuySportsCards syncing stands, under the
+        sign-in that drives it. Draws nothing until that sign-in is saved. */}
     {selectedSite === "buysportscards" && <BscListingSection />}
     {confirmingClear && (
       // Centered modal overlay (not inline): a destructive confirm

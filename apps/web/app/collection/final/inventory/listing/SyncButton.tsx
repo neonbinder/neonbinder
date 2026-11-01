@@ -5,18 +5,18 @@ import { FOCUS } from "../../../prototypes/p1/ui";
 import { useListing, writeErrorMessage, type ListingExtension } from "../../data/store";
 import type { ListingSettings, SyncVariantResult, VariantId } from "../../data/types";
 import { usePageApi } from "../../pageApi";
-import { BSC_NAME } from "./copy";
 
 /**
- * NEO-370 Rev 4 — "Sync", top right of an inventory checklist's header. One
+ * NEO-370 Rev 4/5 — "Sync", top right of an inventory checklist's header. One
  * press reads this set's sheet on every platform the collector lists on, sets
  * every card there to NB's box counts, and pushes (throttled on the server).
  * The checklist carries no listing status: the toast says what happened and
  * points to the Sync status tab, where the result lands.
  *
- * Shown, but inert with its reason, while nothing lists anywhere (listing
- * starts on the Profile): `aria-disabled`, never native `disabled`, so it
- * stays in the tab order and the reason is read with it. A press while inert
+ * Shown, but inert with its reason, while nothing lists anywhere (Rev 5: a
+ * saved, unpaused marketplace sign-in on the Profile is what syncs):
+ * `aria-disabled`, never native `disabled`, so it stays in the tab order and
+ * the reason is read with it. A press while inert
  * says the reason on the status line too, for anyone who can't see the
  * dimmed button's description.
  *
@@ -33,8 +33,8 @@ export function listsAnywhere(settings: ListingSettings | undefined): boolean {
   return !!settings && Object.values(settings).some((p) => p.listing);
 }
 
-/** Said when nothing can sync: listing hasn't started anywhere. */
-export const NOT_LISTING_LINE = `Nothing to sync to yet. Start listing on ${BSC_NAME} from your Profile, under Credentials.`;
+/** Said when nothing can sync: no saved, unpaused marketplace sign-in anywhere. */
+export const NOT_LISTING_LINE = "Nothing to sync to yet. Save a marketplace sign-in on your Profile.";
 
 /** What the toast says after a press. */
 export function syncToast(title: string, result: SyncVariantResult): string {
