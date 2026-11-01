@@ -3654,6 +3654,18 @@ export default defineSchema({
   }).index("by_key", ["key"]),
 
   /**
+   * NEO-407 — the latency probe's one write target. `latencyProbe.pingWrite`
+   * patches a single row (insert on first use) so the probe can tell a stalled
+   * WRITE path (commits queued behind something else) from a stalled read
+   * path. One row in practice (two racing first calls could insert two;
+   * harmless, nothing reads it); never written in production (the probe's
+   * functions fail closed where TESTING_RESET_SECRET is unset). No reader.
+   */
+  latencyProbeBeats: defineTable({
+    at: v.number(),
+  }),
+
+  /**
    * ── NEO-358: a collector's places to keep cards ───────────────────────────
    *
    * A HOME for copies: a binder, or a box (for-sale cards live in boxes). Every

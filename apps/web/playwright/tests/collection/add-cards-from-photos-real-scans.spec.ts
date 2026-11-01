@@ -44,10 +44,16 @@ const FIXTURES = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "
 const scans = (...names: string[]) => names.map((n) => path.join(FIXTURES, n));
 /**
  * The placeholder pipeline: real crops and reads. Usually about a minute, but
- * a cold preprocess service (the first pipeline spec on a shard) has taken
- * over three; pipeline-escalation-cold-start allows ten for its heavier load.
+ * photos that escalate to the heavy model can meet a cold instance: a cold
+ * load is ~200-300 s, a warm heavy photo ~40 s (CI run 41212224696, where 6
+ * minutes ran out about a minute before the last heavy job finished, ~7.4 min
+ * in). Eight minutes covers a cold load plus the queue (NEO-407, Jason
+ * 2026-10-31); shard-plan.mjs runs this spec after
+ * pipeline-escalation-cold-start on one shard so the two never compete for
+ * the heavy instances. pipeline-escalation-cold-start allows ten for its
+ * heavier load.
  */
-const PIPELINE = 360_000;
+const PIPELINE = 480_000;
 
 test(
   "Add cards from photos: real scans are matched in the set, a misread asks, a double scan asks, and only a yes saves",

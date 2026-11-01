@@ -80,23 +80,25 @@ test(
     }
     await expect(stepCounter(page)).toHaveText(/^Step 1 of [0-9]+$/);
 
-    // ── STEP 1: the wizard opens on the pick step with nothing decided, while the
-    // other names are still being looked up. The same-name row arrives ready (no
-    // lookup of its own); this set stages ~20 other names, each behind a live
-    // lookup in the deployment's FIFO pool, which keeps the batch pending for
-    // tens of seconds. NEO-335 dropped the header's "· N still being looked up"
-    // tail, so "still looked up" rests on the timing: this is the FIRST read after
-    // the wizard opens, and a product that looked the name up first would show
-    // "Looking up N more names…" instead of the pick step. y is never pinned: it
-    // GROWS while lookups land.
+    // ── STEP 1: the pick step. The same-name row arrives READY (no lookup of its
+    // own), so the wizard never offers "Add as New Player" for it. Every other
+    // name on this set is in the enrichment recording (NEO-394), so their
+    // lookups settle at once and the career teams they stage come first: the
+    // walk SKIPS every team/league step and stops on the first player row, this
+    // pick step (rows are inserted in card order and he is card #1). Its skips
+    // are K decisions, so every count below is read against K. Run 41212224696
+    // (phone) opened on "New Team: Kanagawa Future Dreams", which is why the old
+    // "opens on the pick step while the others are still looked up" check went.
     const question = wizard.getByText(`Which ${NAME} is this?`);
     const link1851 = wizard.getByRole("button", { name: `Link to ${NAME}, b. 1851` });
     // The catalogue's man: his label carries what is on file about him but no
     // birth year, so "any Shuya Yamada link that is not a dated one" cannot be
     // the b. 1851 row and pins no catalogue data this spec does not own.
     const linkCatalogue = wizard.getByRole("button", { name: new RegExp(`^Link to ${NAME}, (?!b\\. ).+`) });
+    await walkToPlayerRow(page);
     await expect(question).toBeVisible();
-    await expect(stepCounter(page)).toHaveText(/^Step 1 of [0-9]+$/);
+    // x is the decided count plus one on a name step; only x is ever pinned.
+    const { x: step } = await readStep(page);
     // NEO-335: the pick step is its own screen type in the header.
     await expect(wizard.getByText("Which player is this?", { exact: true })).toBeVisible();
     await expect(wizard.getByText("We've got 2 on file under that name. Pick the one on this card.")).toBeVisible();
@@ -105,17 +107,6 @@ test(
     await expect(wizard.getByRole("button", { name: "Create new" })).toBeVisible();
     await expect(wizard.getByRole("button", { name: `Skip ${NAME} — not a person` })).toBeVisible();
     await expectAccessible(page, { within: wizard, label: "Entity review wizard, same-name pick step" });
-
-    // THE WALK, so the pick step holds still for STEPS 2-4: an UNTOUCHED pick
-    // step yields to the first settled team or league (NEO-236), and the career
-    // teams settle ~14-25 s into the batch. The walk waits the batch out, SKIPS
-    // every team/league step, and stops on the first player row: this pick step
-    // (rows are inserted in card order and he is card #1). Its skips are K
-    // decisions, so every count below is read against K.
-    await walkToPlayerRow(page);
-    await expect(question).toBeVisible();
-    // x is the decided count plus one on a name step; only x is ever pinned.
-    const { x: step } = await readStep(page);
 
     // ── STEP 2: Create new opens the New Player step, without the list ──
     await wizard.getByRole("button", { name: "Create new" }).click();

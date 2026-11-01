@@ -2,15 +2,21 @@
 // Add a player by hand, create a team from the career editor, record two
 // stints at ONE team out of order, edit the pending stint with Enter, save,
 // reload: both stints survive in year order.
+//
+// The player is a REAL person whose Baseball lookup the enrichment recording
+// holds as a no-match (support/recorded-names.ts): the add makes no live
+// Wikidata call and leaves the row bare, as the old minted name did. Fresh-only
+// (re-seed before re-running): a second run finds the row and adopts it.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { addPlayerByHand, expectPlayersLoaded, PLAYERS_MATCHES, playersCounter } from "../../support/players";
+import { recordedNoMatchPlayer } from "../../support/recorded-names";
 
 test(
   "Player Management — add a player by hand and record two stints at one team",
   { tag: ["@admin"] },
   async ({ page, signIn, env }) => {
     const token = env.ATTEMPT_TOKEN;
-    const player = `PM${token}`;
+    const player = recordedNoMatchPlayer(env, "player-management-add-and-career-history");
     const team = `PMT${token}`;
 
     await signIn("/admin/players");

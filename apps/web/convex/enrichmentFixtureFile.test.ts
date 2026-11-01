@@ -16,12 +16,14 @@ import { describe, expect, test } from "vitest";
 import { isWikidataQid } from "../lib/players/wikidata-id";
 import {
   FIXTURE_VERSION,
+  entrySportQid,
   fixtureKey,
   getEnrichmentFixture,
   normaliseLookupName,
   parseFixtureFile,
   type EnrichmentFixtureEntry,
 } from "./adapters/enrichmentFixtures";
+import { RECORDED_NO_MATCH_PLAYERS } from "../playwright/support/recorded-names";
 
 const FIXTURE_PATH = join(__dirname, "adapters", "__fixtures__", "enrichment-lookups.json");
 
@@ -141,7 +143,9 @@ describe("the committed enrichment fixture", () => {
     if (!parsed.ok) return;
     const { sportQid, entries } = parsed.fixture;
     for (const [key, entry] of Object.entries(entries)) {
-      expect(key).toBe(fixtureKey(entry.kind, sportQid, entry.name));
+      expect(key).toBe(fixtureKey(entry.kind, entrySportQid(entry, sportQid), entry.name));
+      // An entry names its sport only when it differs from the file's.
+      if (entry.sportQid !== undefined) expect(entry.sportQid).not.toBe(sportQid);
       expect(entry.name.trim().length).toBeGreaterThan(0);
       if (entry.result?.wikidataId !== undefined) {
         expect(isWikidataQid(entry.result.wikidataId), `${key} wikidataId`).toBe(true);
@@ -167,6 +171,34 @@ describe("the committed enrichment fixture", () => {
     // sport must not sweep the name in either.
     const suffix = `|${normaliseLookupName(LIVE_PROOF_PLAYER)}`;
     expect(Object.keys(entries).filter((key) => key.endsWith(suffix))).toEqual([]);
+  });
+
+  // The E2E specs that add a player only as scaffolding take a real person from
+  // `playwright/support/recorded-names.ts` so the add costs no live Wikidata
+  // call (Jason, 2026-10-30). That holds only while each name is a recorded
+  // Baseball NO-MATCH: a recorded answer would put a Wikidata career on the
+  // row (the specs assert "No stints recorded yet."), and a missing one goes
+  // live. One name per worker per spec, never shared, so no two shards add
+  // the same person.
+  test("every recorded-name pool player is a recorded Baseball no-match, used once", () => {
+    const parsed = parseFixtureFile(readCommitted());
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    const { entries, sportQid } = parsed.fixture;
+    expect(sportQid).toBe("Q5369");
+    const seen = new Set<string>();
+    for (const [pool, names] of Object.entries(RECORDED_NO_MATCH_PLAYERS)) {
+      // Accounts 0-11 exist; recordedNoMatchPlayer indexes by WORKER_INDEX.
+      expect(names.length, pool).toBeGreaterThanOrEqual(12);
+      for (const name of names) {
+        const entry = entries[fixtureKey("player", sportQid, name)];
+        expect(entry, `${pool}: ${name} is not recorded`).toBeDefined();
+        expect(entry?.result, `${pool}: ${name} is recorded with an answer`).toBeNull();
+        const key = normaliseLookupName(name);
+        expect(seen.has(key), `${name} is in two pools`).toBe(false);
+        seen.add(key);
+      }
+    }
   });
 
   test("carries names and lookup answers only — no credentials, URLs or deployment names", () => {

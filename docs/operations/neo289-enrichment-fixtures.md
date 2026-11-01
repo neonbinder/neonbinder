@@ -271,6 +271,39 @@ those (§3).
 The preview answers from the new entries only after its bundle is rebuilt,
 because the JSON is imported at build time: the next push to the PR.
 
+## 4b. Other sports, explicit names, and no Wikidata from your machine (2026-10-30)
+
+**Entries for another sport.** The file's `sportQid` is the default sport of
+its entries. An entry for any other sport carries its own `sportQid`, and its
+key is `fixtureKey(kind, <that QID>, name)`; an entry of the default sport
+carries none (every entry written before this). The reader keys on the
+caller's sport, so a Hockey entry answers only a Hockey lookup.
+`parseFixtureFile` refuses an entry whose key disagrees with its sport.
+
+**When the machine cannot reach Wikidata** (a cloud session's proxy), run the
+node half of the capture on a deployment instead:
+
+    npx convex run adapters/wikidata:runCaptureLookups \
+      '{"sport":<the sport row's sportConfig, as {label, espn, wikidata}>,
+        "sportQid":"Q41466",
+        "items":[{"kind":"player","name":"…"},{"kind":"team","name":"…","knownQid":"Q…"}]}'
+
+It is the action `captureFromCli` fans out to. Its handler never touches
+`ctx`, so it writes nothing; it calls the `*Live` bodies and returns the
+entries plus `skippedTransport`. It needs no env arming (the arming guards
+`captureFromCli`'s deployment-wide name scan, which this skips because you
+pass the names). Ten names a call keeps each call well inside the CLI's wait.
+Re-run every `skippedTransport` name, add `sportQid` to each entry that is not
+of the file's sport, re-key locally with `fixtureKey`, and merge as §4a step 5.
+A staged career team carries the QID from the player's recorded
+`careerTeams[].wikidataId`: pass it as `knownQid`.
+
+**Recorded no-matches from a CI run.** A run's `convex-logs-*` artifacts
+log `wikidata_player_no_match` / `wikidata_team_no_match` (with the sport
+label) only after a completed search found nothing, never on a transport
+failure; a team line also means ESPN had nothing. Such a line is a captured
+`null` answer and may be merged the same way.
+
 ## 5. When to re-capture
 
 - The seed's fixture set changes (a different set, brand, or card range gets

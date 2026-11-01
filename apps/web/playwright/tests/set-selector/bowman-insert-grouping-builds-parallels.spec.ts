@@ -86,6 +86,12 @@ test(
       // Paused: SportLots offers no twin, so the sets come in without a reconcile.
       await expect(columnHeading(page, "Inserts")).toBeVisible({ timeout: 240_000 });
       await expect(reconcile).toBeHidden();
+      // GUIDE R5 exception, a live BSC round trip: the heading shows while the
+      // column's BSC sync is still running ("Syncing Inserts"), before Anime
+      // is written. Run 41212224696 searched at that moment and read "No
+      // matches found"; the sync finished 5 s later.
+      await columnSearch(page, "Inserts").fill("Anime");
+      await expect(columnOption(page, "Inserts", "Anime")).toBeVisible({ timeout: 60_000 });
     }
 
     // ── PART 2: both are inserts; Group Parallels nests Kanji under Anime ──

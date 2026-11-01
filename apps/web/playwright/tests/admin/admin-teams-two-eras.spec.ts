@@ -1,15 +1,20 @@
 // Origin: .maestro/flows/admin/admin-teams-two-eras.yaml (Maestro suite retired in NEO-341; see git history)
 // One location + nickname can be two teams when their eras differ; the second
 // is created only after the operator confirms ("Create again").
+//
+// The player is scaffolding: a REAL person whose Baseball lookup the
+// enrichment recording holds as a no-match (support/recorded-names.ts), so the
+// add makes no live Wikidata call. Fresh-only: re-seed before re-running.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { addPlayerByHand, expectPlayersLoaded, expectTeamsLoaded, teamsCounter } from "../../support/players";
+import { recordedNoMatchPlayer } from "../../support/recorded-names";
 
 test(
   "Teams — one location and nickname can be two teams when their eras differ, and the second is only created once the operator confirms it",
   { tag: ["@admin"] },
   async ({ page, signIn, env }) => {
     const token = env.ATTEMPT_TOKEN;
-    const player = `Erp${token}`;
+    const player = recordedNoMatchPlayer(env, "admin-teams-two-eras");
     const nickname = `Era${token}`;
     const location = `Loc${token}`;
     const fullName = `${location} ${nickname}`;
