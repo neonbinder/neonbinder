@@ -6,8 +6,9 @@ import { expectAccessibleInBothModes } from "@/lib/testing/axe";
 
 /**
  * NEO-370 Rev 4 — /admin/sync-status: the collector's Sync status screen for
- * every collector who lists, or one picked under "Collector" (kept in the
- * URL, replacing the entry). Read-only: no Sync, no Profile links.
+ * every collector who has connected a marketplace, or one picked under
+ * "Collector" (kept in the URL, replacing the entry). Read-only: no Sync, no
+ * Profile links, and nothing said to the collector.
  */
 
 type Args = Record<string, unknown>;
@@ -38,13 +39,15 @@ const PLATFORM = {
 };
 
 const mocks = vi.hoisted(() => ({
-  owners: undefined as { ownerId: string; label: string }[] | undefined,
+  owners: undefined as { ownerId: string; label: string; named: boolean }[] | undefined,
   status: vi.fn(),
   read: vi.fn(),
   problems: vi.fn(),
+  names: vi.fn(),
   client: {
     query: (ref: string, args: Args): unknown =>
       ref === "listingSync:adminSyncStatus" ? mocks.read(args) : mocks.problems(args),
+    action: (_ref: string, args: Args): unknown => mocks.names(args),
   },
 }));
 
@@ -55,6 +58,7 @@ vi.mock("@/convex/_generated/api", () => ({
       adminSyncStatus: "listingSync:adminSyncStatus",
       adminSyncSetProblems: "listingSync:adminSyncSetProblems",
     },
+    adminUsers: { adminResolveOwnerLabels: "adminUsers:adminResolveOwnerLabels" },
   },
 }));
 
@@ -111,20 +115,22 @@ const url = () => screen.getByRole("status", { name: "Page URL" }).textContent;
 
 beforeEach(() => {
   mocks.owners = [
-    { ownerId: "u1", label: "Doc's Cards" },
-    { ownerId: "u2", label: "@straw" },
+    { ownerId: "u1", label: "Doc's Cards", named: true },
+    { ownerId: "u2", label: "@straw", named: true },
   ];
   mocks.status.mockImplementation((args: Args) =>
     args.ownerId === "u2"
-      ? { owners: [{ ownerId: "u2", label: "@straw", status: { platforms: [PLATFORM] } }], more: false }
+      ? { owners: [{ ownerId: "u2", label: "@straw", named: true, status: { platforms: [PLATFORM] } }], more: false }
       : {
           owners: [
-            { ownerId: "u1", label: "Doc's Cards", status: { platforms: [{ ...PLATFORM, listing: false }] } },
-            { ownerId: "u2", label: "@straw", status: { platforms: [PLATFORM] } },
+            { ownerId: "u1", label: "Doc's Cards", named: true, status: { platforms: [{ ...PLATFORM, listing: false }] } },
+            { ownerId: "u2", label: "@straw", named: true, status: { platforms: [PLATFORM] } },
           ],
           more: true,
         },
   );
+  mocks.names.mockReset();
+  mocks.names.mockResolvedValue({});
   mocks.problems.mockResolvedValue({ problems: [], problemsTotal: 0 });
   mocks.read.mockReset();
   mocks.read.mockImplementation(async (args: Args) => mocks.status(args));
@@ -137,6 +143,10 @@ describe("admin Sync Status", () => {
     await flush();
     expect(screen.getByRole("heading", { level: 2, name: "Sync Status" })).toBeTruthy();
     expect(collector().value).toBe("");
+    // The default says who is in it: every collector with a listing state, syncing or not.
+    expect(within(collector()).getByRole("option", { selected: true }).textContent).toBe(
+      "Everyone who has connected a marketplace",
+    );
     expect(screen.getByRole("heading", { level: 3, name: "Doc's Cards" })).toBeTruthy();
     expect(screen.getAllByRole("heading", { level: 4, name: "BuySportsCards" })).toHaveLength(2);
     // Read-only: no Sync, and the only links are the drill-downs (none to anyone's Profile).
@@ -149,6 +159,9 @@ describe("admin Sync Status", () => {
     expect(within(screen.getByRole("region", { name: "Doc's Cards" })).getByText("Not syncing")).toBeTruthy();
     expect(screen.getByText(/^Showing the first 2 collectors\./)).toBeTruthy();
     expect(screen.getByText(/^Each collector's lists are cut short here\./)).toBeTruthy();
+    // Held-back reasons are about the card, not an instruction to its owner.
+    expect(screen.getAllByText(/No price yet: no common price on the set/).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/Set a common price above/)).toBeNull();
     await expectAccessibleInBothModes(view.container, { label: "admin Sync Status, everyone", rerender });
   });
 
@@ -237,6 +250,66 @@ describe("admin Sync Status", () => {
     expect(mocks.problems).toHaveBeenCalledWith({ ownerId: "u2", variantId: "v1", platform: "bsc" });
   });
 
+  describe("a collector with no public profile name", () => {
+    const RAW = "user_unnamed0ab12cd";
+    const UNNAMED = "Collector without a name (…ab12cd)";
+    beforeEach(() => {
+      mocks.owners = [...(mocks.owners ?? []), { ownerId: RAW, label: UNNAMED, named: false }];
+      const everyone = mocks.status.getMockImplementation()!;
+      mocks.status.mockImplementation((args: Args) => {
+        if (args.ownerId === RAW) {
+          return { owners: [{ ownerId: RAW, label: UNNAMED, named: false, status: { platforms: [PLATFORM] } }], more: false };
+        }
+        const got = everyone(args);
+        return args.ownerId
+          ? got
+          : { ...got, owners: [...got.owners, { ownerId: RAW, label: UNNAMED, named: false, status: { platforms: [PLATFORM] } }] };
+      });
+    });
+
+    /** Every place the page names a collector: picker option, section heading and region, drill link. */
+    function expectNamed(name: string) {
+      expect(within(collector()).getByRole("option", { name }).getAttribute("value")).toBe(RAW);
+      expect(screen.getByRole("heading", { level: 3, name })).toBeTruthy();
+      expect(screen.getByRole("region", { name })).toBeTruthy();
+      expect(screen.getByRole("link", { name: `See everything for ${name}` })).toBeTruthy();
+      expect(document.body.textContent).not.toContain(RAW);
+    }
+
+    it("Clerk's name, asked once for the unnamed ids only, replaces the unnamed label everywhere", async () => {
+      mocks.names.mockResolvedValue({ [RAW]: "keith@example.test" });
+      draw();
+      await flush();
+      expect(mocks.names).toHaveBeenCalledTimes(1);
+      expect(mocks.names).toHaveBeenCalledWith({ userIds: [RAW] });
+      expectNamed("keith@example.test");
+      expect(screen.queryByText(UNNAMED)).toBeNull();
+      // Refresh reads everyone again; the name is not asked for again.
+      fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+      await flush();
+      expect(mocks.read).toHaveBeenCalledTimes(2);
+      expect(mocks.names).toHaveBeenCalledTimes(1);
+      expectNamed("keith@example.test");
+    });
+
+    it("an answer that is the raw id (Clerk had nothing) keeps the unnamed label", async () => {
+      mocks.names.mockResolvedValue({ [RAW]: RAW });
+      draw();
+      await flush();
+      expect(mocks.names).toHaveBeenCalledTimes(1);
+      expectNamed(UNNAMED);
+    });
+
+    it("a failed call keeps the unnamed label and the page", async () => {
+      mocks.names.mockRejectedValue(new Error("Clerk is down"));
+      draw();
+      await flush();
+      expectNamed(UNNAMED);
+      expect(screen.queryByRole("alert")).toBeNull();
+      expect(screen.getByRole("heading", { level: 3, name: "Doc's Cards" })).toBeTruthy();
+    });
+  });
+
   it("loading and empty, in plain words", async () => {
     mocks.read.mockReturnValue(new Promise(() => {}));
     const loading = draw();
@@ -245,6 +318,6 @@ describe("admin Sync Status", () => {
     mocks.read.mockResolvedValue({ owners: [], more: false });
     draw();
     await flush();
-    expect(screen.getByText("Nobody lists anywhere yet. Quiet on the wire.")).toBeTruthy();
+    expect(screen.getByText("Nobody has connected a marketplace yet.")).toBeTruthy();
   });
 });

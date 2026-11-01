@@ -451,7 +451,7 @@ test(
     await page.goto("/admin/sync-status");
     await expect(page.getByRole("heading", { level: 2, name: "Sync Status", exact: true })).toBeVisible({ timeout: LAUNCH_GATE });
     const pickCollector = page.getByRole("combobox", { name: "Collector", exact: true });
-    await expect(pickCollector.getByRole("option", { selected: true })).toHaveText("Everyone who lists");
+    await expect(pickCollector.getByRole("option", { selected: true })).toHaveText("Everyone who has connected a marketplace");
     const adminCollector = page.getByRole("region", { name: collector, exact: true });
     // Everyone view: each collector has a LINK to see everything for them.
     const seeAll = adminCollector.getByRole("link", { name: `See everything for ${collector}`, exact: true });
@@ -469,7 +469,7 @@ test(
     // Back returns to everyone (the link pushed a step); the filter then replaces.
     await page.goBack();
     await expect(page).not.toHaveURL(/[?&]owner=/);
-    await expect(pickCollector.getByRole("option", { selected: true })).toHaveText("Everyone who lists");
+    await expect(pickCollector.getByRole("option", { selected: true })).toHaveText("Everyone who has connected a marketplace");
     await expect(seeAll).toBeVisible();
     await pickCollector.selectOption({ label: collector });
     await expect(page).toHaveURL(/[?&]owner=[^&]+/);

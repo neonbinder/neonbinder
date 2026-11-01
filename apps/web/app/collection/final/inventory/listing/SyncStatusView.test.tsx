@@ -5,7 +5,17 @@ import { Theme } from "@radix-ui/themes";
 import SyncStatusView, { countsLine, platformState, setKind, setLine } from "./SyncStatusView";
 import SyncStatusTab, { finishedLine } from "./SyncStatusTab";
 import { stubListing } from "./stubListing";
-import { PAUSED_LINE, PROBLEM_COPY, REAUTH_LINE, SELLER_CONFLICT_LINE, whenSynced } from "./copy";
+import {
+  PAUSED_LINE,
+  PAUSED_LINE_READ_ONLY,
+  PROBLEM_COPY,
+  PROBLEM_COPY_READ_ONLY,
+  REAUTH_LINE,
+  REAUTH_LINE_READ_ONLY,
+  SELLER_CONFLICT_LINE,
+  problemSentence,
+  whenSynced,
+} from "./copy";
 import { expectAccessibleInBothModes } from "@/lib/testing/axe";
 import { CollectionStoreContext, type CollectionData, type CollectionStoreValue } from "../../data/store";
 import {
@@ -19,7 +29,8 @@ import {
 /**
  * NEO-370 Rev 4 — the Sync status screen: what runs now, what waits for the
  * next sync, each set's last result. Shared by Inventory → Sync status and
- * the admin's read-only copy (`readOnly`: no Profile links).
+ * the admin's read-only copy (`readOnly`: no Profile links, and every line
+ * about the collector rather than to them).
  */
 vi.mock("@clerk/clerk-react", () => ({ useAuth: () => ({ isLoaded: true, isSignedIn: true, userId: "user_1" }) }));
 
@@ -231,6 +242,57 @@ describe("the Sync status screen", () => {
       draw({ platforms: [bsc(over)] }, { readOnly: true });
       expect(screen.queryByRole("link")).toBeNull();
       cleanup();
+    }
+  });
+
+  it("the admin's copy never talks to the collector: no 'you', no 'Press', no 'on your Profile'", async () => {
+    // Every line the collector reads as an instruction or as "your", each in
+    // its own state (one platform per render).
+    const TO_THE_COLLECTOR = /\b(you|your|yours|press|pick one|set a common price)\b|on your profile/i;
+    const NO_PRICE_SET = set({
+      problemsTotal: 4,
+      problems: [
+        { reason: "noPrice", cardNo: "1", cardLabel: "Nolan Ryan" },
+        { reason: "sharedLink", cardNo: "3", cardLabel: "Ken Griffey Jr." },
+        { reason: "noCondition", cardNo: "5", cardLabel: "Bo Jackson" },
+        { reason: "rejected", cardNo: "7", detail: "duplicate" },
+      ],
+    });
+    const states: SyncStatus[] = [
+      { platforms: [] },
+      { platforms: [bsc()] },
+      { platforms: [bsc({ connected: false, listing: false })] },
+      { platforms: [bsc({ needsReauth: true, listing: false })] },
+      { platforms: [bsc({ paused: true, listing: false })] },
+      { platforms: [bsc({ sellerConflict: true, listing: false })] },
+      { platforms: [bsc({ sets: [NO_PRICE_SET] })] },
+    ];
+    for (const status of states) {
+      const { view } = draw(status, { readOnly: true });
+      expect(view.container.textContent).not.toMatch(TO_THE_COLLECTOR);
+      expect(screen.queryByRole("link")).toBeNull();
+      cleanup();
+    }
+    // What it says instead.
+    const { view, rerender } = draw({ platforms: [bsc()] }, { readOnly: true });
+    expect(within(section("Queued for the next sync")).getByText("Nothing waiting. Their boxes and BuySportsCards are square.")).toBeTruthy();
+    expect(within(section("Last sync by set")).getByText("No sets synced yet.")).toBeTruthy();
+    await expectAccessibleInBothModes(view.container, { label: "Admin Sync status, empty", rerender });
+    cleanup();
+    draw({ platforms: [bsc({ paused: true, listing: false })] }, { readOnly: true });
+    expect(screen.getByText(PAUSED_LINE_READ_ONLY)).toBeTruthy();
+    cleanup();
+    draw({ platforms: [bsc({ needsReauth: true })] }, { readOnly: true });
+    expect(screen.getByText(REAUTH_LINE_READ_ONLY)).toBeTruthy();
+    cleanup();
+    draw({ platforms: [bsc({ sets: [NO_PRICE_SET] })] }, { readOnly: true });
+    for (const reason of ["noPrice", "sharedLink", "noCondition"] as const) {
+      expect(screen.getByText(PROBLEM_COPY_READ_ONLY[reason], { exact: false })).toBeTruthy();
+      expect(screen.queryByText(PROBLEM_COPY[reason], { exact: false })).toBeNull();
+    }
+    // Every reason, said read-only, is about the card, never to its owner.
+    for (const reason of Object.keys(PROBLEM_COPY) as (keyof typeof PROBLEM_COPY)[]) {
+      expect(problemSentence({ reason, detail: "duplicate" }, true)).not.toMatch(TO_THE_COLLECTOR);
     }
   });
 

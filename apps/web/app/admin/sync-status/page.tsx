@@ -12,8 +12,8 @@ import { useDocumentTitle } from "@/src/hooks/useDocumentTitle";
 
 /**
  * /admin/sync-status — NEO-370 Rev 4. The collector's Sync status screen
- * (`SyncStatusView`), for every collector who lists anywhere, or one picked
- * from "Collector". READ-ONLY: no Sync here, and no link to anyone's
+ * (`SyncStatusView`), for every collector who has connected a marketplace
+ * (a listing state on any platform), or one picked from "Collector". READ-ONLY: no Sync here, and no link to anyone's
  * Profile. The functions behind it are requireAdmin server-side.
  *
  * The pick lives in the URL (`?owner=`), so a refresh or a pasted link
@@ -27,6 +27,13 @@ import { useDocumentTitle } from "@/src/hooks/useDocumentTitle";
  * (on arriving, and on "Refresh"), never subscribed: a subscription re-runs
  * on every collector's writes (CLAUDE.md, NEO-392). One collector's view is
  * small and stays live.
+ *
+ * A collector with no public profile name comes back `named: false` with a
+ * plain "Collector without a name (…xxxxxx)" label. The page asks Clerk for
+ * those names once per id (`adminUsers.adminResolveOwnerLabels`) and shows one
+ * wherever the collector is named: the picker, their section and its link.
+ * The action answers an id with itself when Clerk has nothing (or fails), so
+ * an answer equal to the id is no name, and the raw id is never shown.
  *
  * The h1 lives in the section layout, so this heads its content with an h2.
  */
@@ -81,6 +88,37 @@ export default function AdminSyncStatusPage() {
   };
   const result = owner ? one : everyone?.result;
 
+  // Clerk's names for the unnamed collectors on screen, by id. `namesAsked`
+  // holds every id already sent, so a re-render or Refresh never asks again;
+  // a failed call forgets its ids so a later read can retry them.
+  const [clerkNames, setClerkNames] = useState<Record<string, string>>({});
+  const namesAsked = useRef(new Set<string>());
+  const unnamedKey = useMemo(() => {
+    const ids = new Set<string>();
+    for (const o of [...(owners ?? []), ...(result?.owners ?? [])]) if (!o.named) ids.add(o.ownerId);
+    return [...ids].sort().join("\n");
+  }, [owners, result]);
+  useEffect(() => {
+    const ids = unnamedKey ? unnamedKey.split("\n").filter((id) => !namesAsked.current.has(id)) : [];
+    if (ids.length === 0) return;
+    ids.forEach((id) => namesAsked.current.add(id));
+    convex.action(api.adminUsers.adminResolveOwnerLabels, { userIds: ids }).then(
+      (labels) => {
+        const found: Record<string, string> = {};
+        for (const id of ids) {
+          const name = labels[id]?.trim();
+          if (name && name !== id) found[id] = name;
+        }
+        if (Object.keys(found).length > 0) setClerkNames((prev) => ({ ...prev, ...found }));
+      },
+      () => ids.forEach((id) => namesAsked.current.delete(id)),
+    );
+  }, [unnamedKey, convex]);
+  const nameOf = useCallback(
+    (o: { ownerId: string; label: string; named: boolean }) => (!o.named && clerkNames[o.ownerId]) || o.label,
+    [clerkNames],
+  );
+
   const pick = (next: string, replace = true) => {
     setParams(
       (prev) => {
@@ -97,8 +135,8 @@ export default function AdminSyncStatusPage() {
   const focusFilter = () => requestAnimationFrame(() => selectRef.current?.focus());
 
   const shown = useMemo(
-    () => result?.owners.map((o) => ({ ownerId: o.ownerId, label: o.label, status: toSyncStatus(o.status) })),
-    [result],
+    () => result?.owners.map((o) => ({ ownerId: o.ownerId, label: nameOf(o), status: toSyncStatus(o.status) })),
+    [result, nameOf],
   );
 
   const loaderFor = useCallback(
@@ -121,26 +159,27 @@ export default function AdminSyncStatusPage() {
       <div>
         <h2 className="mb-1 text-2xl font-semibold">Sync Status</h2>
         <p className="text-sm text-ink-3">
-          What every collector&apos;s listing is doing: syncs running now, cards queued for the next one, and each
-          set&apos;s last result. Look, don&apos;t touch: nothing here syncs.
+          What syncing is doing for every collector who has connected a marketplace: syncs running now, cards
+          queued for the next one, and each set&apos;s last result. Look, don&apos;t touch: nothing here syncs.
         </p>
       </div>
 
       <div className="flex flex-wrap items-end gap-3">
-        <label htmlFor={selectId} className="block">
+        {/* min-w-0 + max-w-full: a long collector name never pushes the select past a phone's edge. */}
+        <label htmlFor={selectId} className="block min-w-0 max-w-full">
           <span className="mb-1 block text-sm font-medium text-ink-2">Collector</span>
           <select
             id={selectId}
             ref={selectRef}
             value={owner}
             onChange={(e) => pick(e.target.value)}
-            className="min-h-11 rounded-md border border-field-rule bg-field px-3 text-base text-ink focus-outline sm:min-h-10"
+            className="min-h-11 w-full max-w-full rounded-md border border-field-rule bg-field px-3 text-base text-ink focus-outline sm:min-h-10"
           >
-            <option value={EVERYONE}>Everyone who lists</option>
+            <option value={EVERYONE}>Everyone who has connected a marketplace</option>
             {!knownOwner && <option value={owner}>This collector</option>}
             {(owners ?? []).map((o) => (
               <option key={o.ownerId} value={o.ownerId}>
-                {o.label}
+                {nameOf(o)}
               </option>
             ))}
           </select>
@@ -186,7 +225,7 @@ export default function AdminSyncStatusPage() {
         )
       ) : shown.length === 0 ? (
         <p className="rounded-md border border-dashed border-rule-strong px-3 py-2 text-sm text-ink-3">
-          {owner ? "Nothing synced for this collector yet." : "Nobody lists anywhere yet. Quiet on the wire."}
+          {owner ? "Nothing synced for this collector yet." : "Nobody has connected a marketplace yet."}
         </p>
       ) : (
         <div className="space-y-8">
@@ -203,7 +242,14 @@ export default function AdminSyncStatusPage() {
                 </h3>
                 {!owner && (
                   // A drill-down: a link that pushes history, so Back returns to everyone.
-                  <NeonButton asChild size="1" variant="secondary" outline className="shrink-0 max-sm:min-h-11">
+                  // On a phone a long name wraps inside the button rather than running off the edge.
+                  <NeonButton
+                    asChild
+                    size="1"
+                    variant="secondary"
+                    outline
+                    className="max-w-full shrink-0 max-sm:h-auto max-sm:min-h-11 max-sm:whitespace-normal max-sm:py-2 max-sm:text-center max-sm:wrap-anywhere"
+                  >
                     <Link to={`?owner=${encodeURIComponent(o.ownerId)}`} onClick={focusFilter}>
                       {`See everything for ${o.label}`}
                     </Link>

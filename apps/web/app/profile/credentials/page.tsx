@@ -613,7 +613,7 @@ export default function CredentialsPanel() {
             type="submit"
             disabled={credsBusy || !username || !password}
             aria-describedby={listingConsent ? consentId : undefined}
-            className="flex-1"
+            className="flex-1 max-sm:min-h-11"
           >
             {credsBusy ? "Connecting..." : "Connect"}
           </NeonButton>
@@ -621,7 +621,7 @@ export default function CredentialsPanel() {
             type="button"
             onClick={handleTestCredentials}
             disabled={credsBusy || !hasStoredCredentials}
-            className="flex-1"
+            className="flex-1 max-sm:min-h-11"
           >
             {credsBusy ? "Testing..." : "Test Stored Credentials"}
           </NeonButton>
@@ -631,7 +631,7 @@ export default function CredentialsPanel() {
               variant="negative"
               onClick={handleClearCredentials}
               disabled={credsBusy}
-              className="flex-1"
+              className="flex-1 max-sm:min-h-11"
             >
               {credsBusy ? "Clearing..." : "Clear Credentials"}
             </NeonButton>

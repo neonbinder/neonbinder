@@ -34,12 +34,28 @@ export const PROBLEM_COPY: Record<ListingProblemReason, string> = {
   rejected: "BuySportsCards turned this one down.",
 };
 
+/**
+ * The admin's read-only Sync status says the reasons that address the
+ * collector ("yours", "Set a common price above") as plain description: the
+ * admin is not that collector and has nothing above to press.
+ */
+export const PROBLEM_COPY_READ_ONLY: Record<ListingProblemReason, string> = {
+  ...PROBLEM_COPY,
+  sharedLink: "Its BuySportsCards link points at another card too, so it's held back rather than guessed.",
+  noPrice: "No price yet: no common price on the set and no minimum price on the card.",
+  noCondition: "A copy has no condition.",
+};
+
 /** The full sentence for one problem, with what BSC said when it refused a row. */
-export function problemSentence(problem: Pick<SyncProblem, "reason" | "detail">): string {
-  const base = PROBLEM_COPY[problem.reason];
+export function problemSentence(problem: Pick<SyncProblem, "reason" | "detail">, readOnly = false): string {
+  const base = (readOnly ? PROBLEM_COPY_READ_ONLY : PROBLEM_COPY)[problem.reason];
   if (problem.reason === "rejected" && problem.detail) return `${base} They said: “${problem.detail}”`;
   return base;
 }
+
+/** PAUSED_LINE and REAUTH_LINE for the admin's read-only view, about the collector rather than to them. */
+export const PAUSED_LINE_READ_ONLY = `${BSC_NAME} is on a break. Changes wait here and go up when it's back.`;
+export const REAUTH_LINE_READ_ONLY = `The ${BSC_NAME} sign-in ran out, so nothing goes up until the collector signs in again.`;
 
 /** A BSC row NB cannot tie to one of its cards (a problem or a sold line). */
 export const UNMATCHED_CARD = `A ${BSC_NAME} card we can't match`;

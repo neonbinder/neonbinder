@@ -14,7 +14,9 @@
  *   - a lease token, a marketplace card id and a seller account id never
  *     reach a client;
  *   - the admin functions refuse anyone who is not an admin, and the
- *     all-collectors view is capped by owners and by per-owner lists.
+ *     all-collectors view is capped by owners and by per-owner lists;
+ *   - the admin names a collector by public profile, else a plain unnamed
+ *     label (`named: false`, for the page to ask Clerk), never the raw id.
  */
 
 import { convexTest } from "convex-test";
@@ -23,7 +25,7 @@ import { api } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
 import { seedCollectionCatalog } from "../lib/testing/collection-fixture";
-import { ADMIN_ALL_CAPS, ADMIN_STATUS_OWNERS, STATUS_CAPS } from "./listingSync";
+import { ADMIN_ALL_CAPS, ADMIN_STATUS_OWNERS, STATUS_CAPS, UNNAMED_COLLECTOR } from "./listingSync";
 import { DRAIN_LEASE_MS } from "./listingDrain";
 import { MISSING_SET_LABEL } from "./lib/listingLabels";
 
@@ -336,23 +338,26 @@ describe("admin Sync status", () => {
     }
   });
 
-  test("the owner picker: every collector with a listing row, named by public profile, else the id", async () => {
+  test("the owner picker: every collector with a listing row, named by public profile, never the raw id", async () => {
     const s = await setup();
-    await listOn(s, ME.subject);
-    await listOn(s, THEM.subject, { listingStartedAt: undefined, dormant: "noCredentials" });
-    await listOn(s, "collector_third");
+    const owners = [ME.subject, THEM.subject, "collector_noname_ab12cd", "collector_noname_ef34gh"];
+    for (const owner of owners) await listOn(s, owner);
     await s.t.run(async (ctx) => {
+      // A display name wins; a blank one falls through to the @username.
       await ctx.db.insert("publicProfiles", { userId: ME.subject, username: "mets86", displayName: "Doc's Cards", createdAt: 0, updatedAt: 0 } as never);
-      await ctx.db.insert("publicProfiles", { userId: THEM.subject, username: "kidcards", createdAt: 0, updatedAt: 0 } as never);
+      await ctx.db.insert("publicProfiles", { userId: THEM.subject, username: "kidcards", displayName: "  ", createdAt: 0, updatedAt: 0 } as never);
     });
-    const owners = await s.admin.query(api.listingSync.adminSyncOwners, {});
-    expect([...owners].sort((a, b) => a.ownerId.localeCompare(b.ownerId))).toEqual(
-      [
-        { ownerId: ME.subject, label: "Doc's Cards" },
-        { ownerId: THEM.subject, label: "@kidcards" },
-        { ownerId: "collector_third", label: "collector_third" },
-      ].sort((a, b) => a.ownerId.localeCompare(b.ownerId)),
-    );
+    const got = await s.admin.query(api.listingSync.adminSyncOwners, {});
+    const byOwner = Object.fromEntries(got.map(({ ownerId, ...rest }) => [ownerId, rest]));
+    expect(byOwner).toEqual({
+      [ME.subject]: { label: "Doc's Cards", named: true },
+      [THEM.subject]: { label: "@kidcards", named: true },
+      // No profile: a plain label, told apart by the id's last six characters,
+      // and `named: false` so the page asks Clerk for the name.
+      collector_noname_ab12cd: { label: `${UNNAMED_COLLECTOR} (…ab12cd)`, named: false },
+      collector_noname_ef34gh: { label: `${UNNAMED_COLLECTOR} (…ef34gh)`, named: false },
+    });
+    expect(got.map((o) => o.label).filter((label) => owners.includes(label))).toEqual([]);
   });
 
   test("one collector: their full status, read-only; their set's problems", async () => {
@@ -368,7 +373,11 @@ describe("admin Sync status", () => {
     const got = await s.admin.query(api.listingSync.adminSyncStatus, { ownerId: THEM.subject });
     expect(got.more).toBe(false);
     expect(got.owners).toHaveLength(1);
-    expect(got.owners[0]).toMatchObject({ ownerId: THEM.subject, label: THEM.subject });
+    expect(got.owners[0]).toMatchObject({
+      ownerId: THEM.subject,
+      label: `${UNNAMED_COLLECTOR} (…${THEM.subject.slice(-6)})`,
+      named: false,
+    });
     const p = got.owners[0].status.platforms[0];
     expect(p.queued.cards.map((c) => c.cardLabel)).toEqual(["Dwight Gooden"]);
     expect(p.sets[0].problems).toEqual([{ cardNo: "1", cardLabel: "Dwight Gooden", reason: "rejected" }]);

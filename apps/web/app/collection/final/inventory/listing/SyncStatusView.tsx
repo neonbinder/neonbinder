@@ -16,7 +16,9 @@ import {
   BSC_NAME,
   CREDENTIALS_PATH,
   PAUSED_LINE,
+  PAUSED_LINE_READ_ONLY,
   REAUTH_LINE,
+  REAUTH_LINE_READ_ONLY,
   SELLER_CONFLICT_LINE,
   problemCardName,
   problemSentence,
@@ -30,8 +32,9 @@ import {
  *
  * One component, two homes: the collector's Inventory → Sync status tab, and
  * the admin's read-only Sync Status (all collectors, or one). `readOnly`
- * drops every link to the collector's own Profile (an admin is not that
- * collector) and nothing here ever writes: Sync lives on the checklist.
+ * drops every link to the collector's own Profile and says each line about
+ * the collector instead of to them (an admin is not that collector). Nothing
+ * here ever writes: Sync lives on the checklist.
  *
  * The first five held-back cards of a set show inline; "Show all N held
  * back" reads the whole list once, on demand (`loadProblems`), so the screen
@@ -47,7 +50,7 @@ export interface SyncStatusViewProps {
   status: SyncStatus;
   /** The whole held-back list of one set on one platform. */
   loadProblems: (variantId: VariantId, platform: ListingPlatform) => Promise<SetProblems>;
-  /** The admin's view: no Profile links. */
+  /** The admin's view: no Profile links, and no line that tells the collector what to do. */
   readOnly?: boolean;
   /** The platform names' heading level; its parts go one deeper. */
   level?: Level;
@@ -140,11 +143,11 @@ function StateNote({ p, readOnly }: { p: PlatformSyncStatus; readOnly: boolean }
     );
   }
   if (p.sellerConflict) return <p className="text-sm text-neon-yellow-text">{SELLER_CONFLICT_LINE}</p>;
-  if (p.paused) return <p className="text-sm text-neon-yellow-text">{PAUSED_LINE}</p>;
+  if (p.paused) return <p className="text-sm text-neon-yellow-text">{readOnly ? PAUSED_LINE_READ_ONLY : PAUSED_LINE}</p>;
   if (p.needsReauth) {
     return (
       <p className="text-sm text-neon-yellow-text">
-        {REAUTH_LINE}
+        {readOnly ? REAUTH_LINE_READ_ONLY : REAUTH_LINE}
         {profile(`Sign in to ${name} again`)}
       </p>
     );
@@ -181,8 +184,8 @@ function Platform({
       </header>
 
       <RunningNow p={p} level={sub} />
-      <Queue p={p} level={sub} />
-      <Sets p={p} level={sub} loadProblems={loadProblems} />
+      <Queue p={p} level={sub} readOnly={readOnly} />
+      <Sets p={p} level={sub} loadProblems={loadProblems} readOnly={readOnly} />
     </section>
   );
 }
@@ -224,10 +227,11 @@ function cardName(c: { cardNo?: string; cardLabel?: string }): string {
   return c.cardNo || c.cardLabel?.trim() ? problemCardName(c) : GONE_CARD;
 }
 
-function Queue({ p, level }: { p: PlatformSyncStatus; level: number }) {
+function Queue({ p, level, readOnly }: { p: PlatformSyncStatus; level: number; readOnly: boolean }) {
   const headingId = useId();
   const { cards, more } = p.queued;
   const n = cards.length;
+  const square = `Nothing waiting. ${readOnly ? "Their" : "Your"} boxes and ${PLATFORM_NAME[p.platform]} are square.`;
   return (
     <section className={`space-y-2 ${RULE}`}>
       <Heading level={level} id={headingId} className="text-base font-semibold">
@@ -235,7 +239,7 @@ function Queue({ p, level }: { p: PlatformSyncStatus; level: number }) {
       </Heading>
       {n === 0 ? (
         <p className="text-sm text-ink-2">
-          {p.listing ? `Nothing waiting. Your boxes and ${PLATFORM_NAME[p.platform]} are square.` : "Nothing waiting."}
+          {p.listing ? square : "Nothing waiting."}
         </p>
       ) : (
         <>
@@ -263,10 +267,12 @@ function Sets({
   p,
   level,
   loadProblems,
+  readOnly,
 }: {
   p: PlatformSyncStatus;
   level: number;
   loadProblems: SyncStatusViewProps["loadProblems"];
+  readOnly: boolean;
 }) {
   const headingId = useId();
   return (
@@ -276,12 +282,14 @@ function Sets({
       </Heading>
       {p.sets.length === 0 ? (
         <p className="text-sm text-ink-2">
-          No sets synced yet. Press Sync on a checklist, or the next round picks up any change in your boxes.
+          {readOnly
+            ? "No sets synced yet."
+            : "No sets synced yet. Press Sync on a checklist, or the next round picks up any change in your boxes."}
         </p>
       ) : (
         <ol aria-labelledby={headingId} className="space-y-3">
           {p.sets.map((set) => (
-            <SetRow key={set.variantId} set={set} platform={p.platform} loadProblems={loadProblems} />
+            <SetRow key={set.variantId} set={set} platform={p.platform} loadProblems={loadProblems} readOnly={readOnly} />
           ))}
         </ol>
       )}
@@ -326,10 +334,12 @@ function SetRow({
   set,
   platform,
   loadProblems,
+  readOnly,
 }: {
   set: SyncSetResult;
   platform: ListingPlatform;
   loadProblems: SyncStatusViewProps["loadProblems"];
+  readOnly: boolean;
 }) {
   const listId = useId();
   const [open, setOpen] = useState(false);
@@ -381,7 +391,7 @@ function SetRow({
               {shown.map((problem, i) => (
                 <li key={`${problem.cardNo ?? "unmatched"}-${problem.reason}-${i}`}>
                   <span className="font-semibold text-ink">{problemCardName(problem)}</span>
-                  <span className="text-ink-2"> {problemSentence(problem)}</span>
+                  <span className="text-ink-2"> {problemSentence(problem, readOnly)}</span>
                 </li>
               ))}
             </ul>

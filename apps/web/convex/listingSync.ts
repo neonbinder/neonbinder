@@ -988,17 +988,29 @@ export const syncSetProblems = query({
 
 // ── Admin: the same screen across collectors, read-only ─────────────────────
 
-/** A collector as the admin screen names them: their public display name or @username, else the id. */
-async function ownerLabel(ctx: QueryCtx, ownerId: string): Promise<string> {
+/** What the admin screen calls a collector with no public profile name. */
+export const UNNAMED_COLLECTOR = "Collector without a name";
+
+/**
+ * A collector as the admin screen names them: their public display name, else
+ * @username (`named`), else "Collector without a name" with the id's last six
+ * characters, so two such collectors still read apart. Never the raw sign-in
+ * id. The page asks Clerk for the unnamed ones' names
+ * (`adminUsers.adminResolveOwnerLabels`): NB keeps no other copy of a name.
+ */
+async function ownerLabel(ctx: QueryCtx, ownerId: string): Promise<{ label: string; named: boolean }> {
   const profile = await ctx.db
     .query("publicProfiles")
     .withIndex("by_user", (q) => q.eq("userId", ownerId))
     .first();
   const display = profile?.displayName?.trim();
-  if (display) return display;
-  if (profile?.username) return `@${profile.username}`;
-  return ownerId;
+  if (display) return { label: display, named: true };
+  if (profile?.username) return { label: `@${profile.username}`, named: true };
+  return { label: `${UNNAMED_COLLECTOR} (…${ownerId.slice(-6)})`, named: false };
 }
+
+/** An owner as the admin functions return them. */
+const adminOwnerFields = { ownerId: v.string(), label: v.string(), named: v.boolean() };
 
 /** Collectors with a listing state on any platform, at most `cap`, de-duplicated. */
 async function listingOwners(ctx: QueryCtx, cap: number): Promise<{ ownerIds: string[]; more: boolean }> {
@@ -1027,12 +1039,12 @@ async function listingOwners(ctx: QueryCtx, cap: number): Promise<{ ownerIds: st
 /** The admin owner picker: every collector with a listing state (`ADMIN_OWNER_LIST` at most). */
 export const adminSyncOwners = query({
   args: {},
-  returns: v.array(v.object({ ownerId: v.string(), label: v.string() })),
+  returns: v.array(v.object(adminOwnerFields)),
   handler: async (ctx) => {
     await requireAdmin(ctx);
     const { ownerIds } = await listingOwners(ctx, ADMIN_OWNER_LIST);
     const out = [];
-    for (const ownerId of ownerIds) out.push({ ownerId, label: await ownerLabel(ctx, ownerId) });
+    for (const ownerId of ownerIds) out.push({ ownerId, ...(await ownerLabel(ctx, ownerId)) });
     return out;
   },
 });
@@ -1046,7 +1058,7 @@ export const adminSyncOwners = query({
 export const adminSyncStatus = query({
   args: { ownerId: v.optional(v.string()) },
   returns: v.object({
-    owners: v.array(v.object({ ownerId: v.string(), label: v.string(), status: syncStatusValidator })),
+    owners: v.array(v.object({ ...adminOwnerFields, status: syncStatusValidator })),
     more: v.boolean(),
   }),
   handler: async (ctx, args) => {
@@ -1056,7 +1068,7 @@ export const adminSyncStatus = query({
         owners: [
           {
             ownerId: args.ownerId,
-            label: await ownerLabel(ctx, args.ownerId),
+            ...(await ownerLabel(ctx, args.ownerId)),
             status: await syncStatusOf(ctx, args.ownerId, STATUS_CAPS),
           },
         ],
@@ -1070,7 +1082,7 @@ export const adminSyncStatus = query({
     for (const ownerId of ownerIds) {
       owners.push({
         ownerId,
-        label: await ownerLabel(ctx, ownerId),
+        ...(await ownerLabel(ctx, ownerId)),
         status: await syncStatusOf(ctx, ownerId, ADMIN_ALL_CAPS, labels),
       });
     }
