@@ -935,7 +935,9 @@ describe("drainOwner: a Sync press reads every condition once", () => {
     // The press is spent: the last clean run is kept, the stamp is behind it.
     const after = await record(s, v.variantId);
     expect(after?.lastSuccessAt).toBeTypeOf("number");
-    expect(after!.lastRunAt!).toBeGreaterThan(after!.resyncRequestedAt!);
+    // Equal is spent too (the drain re-reads only on `resyncRequestedAt >
+    // lastRunAt`), and the run can land in the stamp's own millisecond.
+    expect(after!.lastRunAt!).toBeGreaterThanOrEqual(after!.resyncRequestedAt!);
 
     bsc.sheetReads = [];
     await queue(s, [{ cardId: v.cardIds[0], variantId: v.variantId, seq: 3 }]);
@@ -1117,6 +1119,7 @@ describe("drainOwner: one NB owner per seller account", () => {
         ownerId: "someone_else",
         platform: "bsc",
         platformAccountId: "seller-1",
+        listingStartedAt: NOW,
         lastUpdated: NOW,
       });
     });
@@ -1135,5 +1138,40 @@ describe("drainOwner: one NB owner per seller account", () => {
     expect(rec?.lastError).toMatch(/another NeonBinder account/);
     expect(await outbox(s)).toHaveLength(1);
     expect(await pendingDrains(s)).toEqual([]);
+  });
+
+  test("an owner who stopped (sign-in removed) or is held back holds the account against nobody: the drain binds and pushes", async () => {
+    const s = await setup();
+    const v = await seedVariant(s.t, { cards: [{ number: "1", ref: "bsc-1" }] });
+    const bsc = new FakeBsc([{ bscCardId: "bsc-1", cardNo: "1" }], MODERN);
+    vi.stubGlobal("fetch", bsc.fetch);
+    await add(s, v.cardIds[0], { homeId: s.box, condition: "Near Mint", minPriceCents: 50 });
+    await listOnBsc(s);
+    await s.t.run(async (ctx) => {
+      await ctx.db.insert("marketplaceListingStates", {
+        ownerId: "stopped_owner",
+        platform: "bsc",
+        platformAccountId: "seller-1",
+        dormant: "noCredentials",
+        lastUpdated: NOW,
+      });
+      await ctx.db.insert("marketplaceListingStates", {
+        ownerId: "conflicted_owner",
+        platform: "bsc",
+        platformAccountId: "seller-1",
+        listingStartedAt: NOW,
+        dormant: "sellerConflict",
+        lastUpdated: NOW,
+      });
+    });
+    await queue(s, [{ cardId: v.cardIds[0], variantId: v.variantId }]);
+
+    const report = await drainOwnerImpl(stubCtx(s.t), { ownerId: OWNER, platform: "bsc" });
+
+    expect(report.stoppedFor).not.toBe("sellerConflict");
+    expect(bsc.qty("bsc-1", "near_mint")).toBe(1);
+    const st = await state(s);
+    expect(st?.dormant).toBeUndefined();
+    expect(st?.platformAccountId).toBe("seller-1");
   });
 });

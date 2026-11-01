@@ -9,9 +9,9 @@
  * rule as pushing: Revision 5, a saved sign-in is listing and selling). A row
  * held off by the E2E test marker is skipped (the tick stamps it
  * `lastPolledAt` so it moves to the back of the read, never holding a slot).
- * Nothing is read or written while NB has paused the platform. Each tick
- * also starts the pass that sets up sign-ins saved before Revision 5
- * (`listingSync.setUpSavedSignInsPage`). The credential
+ * Nothing is read or written while NB has paused the platform. Until it
+ * records itself done, each tick also starts the one-time pass that sets up
+ * sign-ins saved before Revision 5 (`listingSync.setUpSavedSignInsPage`). The credential
  * gate: an owner with no saved BSC credentials is not polled (their state
  * goes dormant), and one whose session needs a fresh sign-in is polled at
  * most hourly (`reauthPollAt`), so a dead session is not logged into every
@@ -75,6 +75,7 @@ import {
   pollsSales,
 } from "./listingOutbox";
 import { isPlatformPaused } from "./marketplacePause";
+import { savedSignInsPassDone } from "./listingSync";
 import { bscEraForYear, isBscRawCondition, nbConditionsFor, type BscEra } from "./lib/bscConditions";
 import { bscOrderDisposition, chooseCopiesToLower, type BscOrder } from "./lib/bscOrders";
 import { parseListingSku } from "./lib/listingSku";
@@ -152,8 +153,9 @@ function pollGate(
 
 /**
  * The 15-minute tick: one scheduled `pollOwner` per listing, non-dormant
- * owner with a BSC listing state, through the credential gate, and one pass
- * over saved sign-ins not yet set up (`listingSync.setUpSavedSignInsPage`).
+ * owner with a BSC listing state, through the credential gate, and (until
+ * it is done, never on a testing deployment) one pass over saved sign-ins
+ * not yet set up (`listingSync.setUpSavedSignInsPage`).
  * While NB has paused BSC it does nothing at all. A row not listing (the E2E
  * test marker) is skipped and stamped `lastPolledAt`, so it moves to the
  * back of the read. An owner with no saved credentials goes dormant (and
@@ -166,7 +168,11 @@ export const pollAll = internalMutation({
   returns: v.object({ scheduled: v.number(), skipped: v.number() }),
   handler: async (ctx) => {
     if (isPlatformPaused(LISTING_CREDENTIAL_SITE.bsc)) return { scheduled: 0, skipped: 0 };
-    await ctx.scheduler.runAfter(0, internal.listingSync.setUpSavedSignInsPage, { cursor: null });
+    // The one-time pass over sign-ins saved before Revision 5: only while it
+    // has not recorded itself done, and never on a testing deployment.
+    if (!process.env.TESTING_RESET_SECRET && !(await savedSignInsPassDone(ctx))) {
+      await ctx.scheduler.runAfter(0, internal.listingSync.setUpSavedSignInsPage, { cursor: null });
+    }
     const now = Date.now();
     const states = await ctx.db
       .query("marketplaceListingStates")

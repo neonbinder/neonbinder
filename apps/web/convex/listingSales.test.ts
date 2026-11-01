@@ -36,6 +36,7 @@ import {
   type ProjectedOrder,
 } from "./listingSales";
 import { parseBscOrder } from "./lib/bscOrders";
+import { SAVED_SIGN_INS_PASS_KEY } from "./listingSync";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -656,6 +657,27 @@ describe("pollOwner", () => {
     expect(scheduled.filter((f) => f.name.includes("setUpSavedSignInsPage")).map((f) => f.args[0])).toEqual([
       { cursor: null },
     ]);
+  });
+
+  test("pollAll starts the saved-sign-in pass only until it is done, and never on a testing deployment", async () => {
+    const s = await setup();
+    vi.useFakeTimers({ toFake: ["setTimeout"] });
+    const passes = async () =>
+      (await s.t.run(async (ctx) => ctx.db.system.query("_scheduled_functions").collect())).filter((f) =>
+        f.name.includes("setUpSavedSignInsPage"),
+      ).length;
+    process.env.TESTING_RESET_SECRET = "test-enabled";
+    try {
+      await s.t.mutation(internal.listingSales.pollAll, {});
+    } finally {
+      delete process.env.TESTING_RESET_SECRET;
+    }
+    expect(await passes()).toBe(0);
+    await s.t.run(async (ctx) => {
+      await ctx.db.insert("listingBackfillState", { key: SAVED_SIGN_INS_PASS_KEY, doneAt: NOW });
+    });
+    await s.t.mutation(internal.listingSales.pollAll, {});
+    expect(await passes()).toBe(0);
   });
 
   test("pollAll while NB has paused BuySportsCards: reads and writes nothing, schedules nothing", async () => {

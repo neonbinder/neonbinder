@@ -40,7 +40,7 @@ import type { Id } from "./_generated/dataModel";
 import { seedCollectionCatalog } from "../lib/testing/collection-fixture";
 import { cancelScheduled, drainScheduled } from "../lib/testing/drain-scheduled";
 import { DRAIN_SCHEDULE_STALE_MS, enqueueListingCards, kickOwnerDrains } from "./listingOutbox";
-import { SIGN_IN_SCAN_PAGE } from "./listingSync";
+import { SAVED_SIGN_INS_PASS_KEY, SIGN_IN_SCAN_PAGE } from "./listingSync";
 import { PAUSED_PLATFORMS_ENV } from "./lib/marketplacePause";
 
 // A drain that runs here opens no BSC session: no token, and a refresh that
@@ -557,15 +557,54 @@ describe("a saved sign-in is listing (Revision 5)", () => {
     expect(await pendingNamed(s, "startListingWalk")).toHaveLength(1);
   });
 
-  test("while NB has paused BuySportsCards: the flag is saved, no row, no walk", async () => {
+  test("a save while NB has paused BuySportsCards sets up anyway: row stamped, cards queued, no drain; reads paused, not listing", async () => {
     const s = await fresh();
     await addTo(s, s.fx.gooden1, s.box);
+    holdDrains();
     await withPaused(async () => {
       await save(s);
+      const [row] = await states(s);
+      expect(row.listingStartedAt).toBeTypeOf("number");
+      await runWalks(s);
+      expect((await outbox(s)).map((r) => r.cardId)).toEqual([s.fx.gooden1]);
+      // Nothing reaches the platform while paused: no drain was kicked.
+      expect(await drainsEver(s)).toEqual([]);
+      expect((await s.me.query(api.listingSync.listingSettings, {})).bsc).toMatchObject({
+        connected: true,
+        listing: false,
+        paused: true,
+      });
+    });
+    expect((await s.me.query(api.listingSync.listingSettings, {})).bsc).toMatchObject({ listing: true });
+  });
+
+  test("a login re-asserting the flag while paused writes nothing", async () => {
+    const s = await fresh();
+    await connect(s);
+    await withPaused(async () => {
+      await refresh(s);
     });
     expect(await states(s)).toEqual([]);
     expect(await pendingNamed(s, "startListingWalk")).toEqual([]);
-    expect((await s.me.query(api.listingSync.listingSettings, {})).bsc).toMatchObject({ connected: true });
+  });
+
+  test("on a testing deployment a login re-assert never starts listing, row or no row; an explicit save does", async () => {
+    const s = await fresh();
+    await connect(s);
+    await withTestingFlag(async () => {
+      holdDrains();
+      await refresh(s);
+      expect(await states(s)).toEqual([]);
+      const scheduled = await s.t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect());
+      expect(scheduled).toEqual([]);
+      // A row that is not listing (a stamp cleared) is not woken either.
+      await listOn(s, ME.subject, { listingStartedAt: undefined, dormant: "noCredentials" });
+      const before = await states(s);
+      await refresh(s);
+      expect(await states(s)).toEqual(before);
+      await save(s);
+      expect((await states(s))[0].listingStartedAt).toBeTypeOf("number");
+    });
   });
 
   test("another site's sign-in starts nothing", async () => {
@@ -588,7 +627,7 @@ describe("a saved sign-in is listing (Revision 5)", () => {
     expect(rows[0].listingStartedAt).toBeTypeOf("number");
   });
 
-  test("a BSC seller account another NB owner already lists from: dormant sellerConflict, nothing queued", async () => {
+  test("a BSC seller account another NB owner already lists from: dormant sellerConflict, nothing queued, the account not stamped", async () => {
     const s = await fresh();
     await s.t.run((ctx) =>
       ctx.db.insert("userProfiles", {
@@ -602,7 +641,8 @@ describe("a saved sign-in is listing (Revision 5)", () => {
     holdDrains();
     await save(s);
     const mine = (await states(s)).find((r) => r.ownerId === ME.subject);
-    expect(mine).toMatchObject({ dormant: "sellerConflict", platformAccountId: "seller-shared" });
+    expect(mine).toMatchObject({ dormant: "sellerConflict" });
+    expect(mine?.platformAccountId).toBeUndefined();
     expect(mine?.listingStartedAt).toBeUndefined();
     expect(await pendingNamed(s, "startListingWalk")).toEqual([]);
     expect(await outbox(s)).toEqual([]);
@@ -610,19 +650,74 @@ describe("a saved sign-in is listing (Revision 5)", () => {
       listing: false,
       sellerConflict: true,
     });
-    // A token refresh never re-checks it (no churn); a real save does, and
-    // starts once the other owner no longer holds the account.
+    // A token refresh never re-checks it (no churn), and a repeated save
+    // that still conflicts writes nothing.
     const before = await s.t.run((ctx) => ctx.db.get(mine!._id));
     await refresh(s);
+    await save(s);
     expect(await s.t.run((ctx) => ctx.db.get(mine!._id))).toEqual(before);
-    await s.t.run(async (ctx) => {
-      const theirs = (await ctx.db.query("marketplaceListingStates").collect()).find((r) => r.ownerId === THEM.subject);
-      await ctx.db.patch(theirs!._id, { platformAccountId: "seller-other" });
-    });
+    // The other owner stops listing (sign-in removed): a real save starts mine.
+    await remove(s, THEM.subject);
     await save(s);
     const after = await s.t.run((ctx) => ctx.db.get(mine!._id));
     expect(after?.dormant).toBeUndefined();
     expect(after?.listingStartedAt).toBeTypeOf("number");
+    expect(after?.platformAccountId).toBe("seller-shared");
+  });
+
+  describe("one seller account: only a LISTING owner holds it, so no two owners lock each other out", () => {
+    const withSeller = (s: S, owner: string) =>
+      s.t.run((ctx) =>
+        ctx.db.insert("userProfiles", {
+          userId: owner,
+          marketplaceAccountIds: { bscSellerId: "seller-x" },
+          siteCredentials: [{ site: "buysportscards", hasCredentials: true }],
+        } as never),
+      );
+    const rowOf = async (s: S, owner: string) => (await states(s)).find((r) => r.ownerId === owner);
+    const A = ME.subject;
+    const B = THEM.subject;
+
+    test("A lists, B conflicts; A removes and saves again and still lists", async () => {
+      const s = await fresh();
+      await withSeller(s, A);
+      await withSeller(s, B);
+      holdDrains();
+      await save(s, A);
+      await save(s, B);
+      expect((await rowOf(s, B))?.dormant).toBe("sellerConflict");
+      await remove(s, A);
+      // B's conflicted row holds nothing, so A's own row is free to list again.
+      await save(s, A);
+      const a = await rowOf(s, A);
+      expect(a?.dormant).toBeUndefined();
+      expect(a?.listingStartedAt).toBeTypeOf("number");
+      expect(a?.platformAccountId).toBe("seller-x");
+    });
+
+    test("B, conflicted, removes its sign-in: nothing is held for A", async () => {
+      const s = await fresh();
+      await withSeller(s, A);
+      await withSeller(s, B);
+      holdDrains();
+      await save(s, A);
+      await save(s, B);
+      await remove(s, B);
+      await remove(s, A);
+      await save(s, A);
+      expect((await rowOf(s, A))?.listingStartedAt).toBeTypeOf("number");
+    });
+
+    test("a noCredentials row (an owner who stopped) holds nothing", async () => {
+      const s = await fresh();
+      await listOn(s, A, { listingStartedAt: undefined, dormant: "noCredentials", platformAccountId: "seller-x" });
+      await withSeller(s, B);
+      holdDrains();
+      await save(s, B);
+      const b = await rowOf(s, B);
+      expect(b?.dormant).toBeUndefined();
+      expect(b?.platformAccountId).toBe("seller-x");
+    });
   });
 
   test("a walk page or walk start carrying an older stamp stands down and queues nothing", async () => {
@@ -801,9 +896,13 @@ describe("the E2E test marker (testListingOff)", () => {
   });
 });
 
-describe("sign-ins saved before Revision 5: the cron's pass (setUpSavedSignInsPage)", () => {
+describe("sign-ins saved before Revision 5: the cron's one-time pass (setUpSavedSignInsPage)", () => {
   const pass = (s: S, cursor: string | null = null) =>
     s.t.mutation(internal.listingSync.setUpSavedSignInsPage, { cursor });
+  const passDone = async (s: S) =>
+    (await s.t.run((ctx) => ctx.db.query("listingBackfillState").collect())).some(
+      (r) => r.key === SAVED_SIGN_INS_PASS_KEY,
+    );
 
   test("sets up a saved BSC sign-in with no row; leaves the marker, a conflict, a listing owner and no sign-in alone", async () => {
     const s = await fresh();
@@ -816,7 +915,7 @@ describe("sign-ins saved before Revision 5: the cron's pass (setUpSavedSignInsPa
     const listingId = await listOn(s, "owner_listing", { listingStartedAt: 42 });
     holdDrains();
     const before = await states(s);
-    expect(await pass(s)).toEqual({ started: 1 });
+    expect(await pass(s)).toEqual({ started: 1, deferred: 0, done: true });
     const after = await states(s);
     const mine = after.find((r) => r.ownerId === ME.subject);
     expect(mine?.listingStartedAt).toBeTypeOf("number");
@@ -833,7 +932,7 @@ describe("sign-ins saved before Revision 5: the cron's pass (setUpSavedSignInsPa
     await connect(s);
     await listOn(s, ME.subject, { listingStartedAt: undefined, dormant: "noCredentials" });
     holdDrains();
-    expect(await pass(s)).toEqual({ started: 1 });
+    expect(await pass(s)).toEqual({ started: 1, deferred: 0, done: true });
     expect((await states(s))[0].dormant).toBeUndefined();
   });
 
@@ -846,26 +945,52 @@ describe("sign-ins saved before Revision 5: the cron's pass (setUpSavedSignInsPa
     });
     await connect(s, "bulk_last");
     holdDrains();
-    expect(await pass(s)).toEqual({ started: 0 });
+    expect(await pass(s)).toEqual({ started: 0, deferred: 0, done: false });
+    expect(await passDone(s)).toBe(false);
     const [next] = await pendingNamed(s, "setUpSavedSignInsPage");
     expect(next).toBeDefined();
     await s.t.run((ctx) => ctx.scheduler.cancel(next._id));
     expect(await s.t.mutation(internal.listingSync.setUpSavedSignInsPage, next.args[0] as never)).toEqual({
       started: 1,
+      deferred: 0,
+      done: true,
     });
     expect(await pendingNamed(s, "setUpSavedSignInsPage")).toEqual([]);
+    expect(await passDone(s)).toBe(true);
   });
 
-  test("paused, or on a testing deployment: sets up nothing", async () => {
+  test("a sign-in found while paused is deferred: the pass is not done, and a later pass sets it up and ends", async () => {
     const s = await fresh();
     await connect(s);
     await withPaused(async () => {
-      expect(await pass(s)).toEqual({ started: 0 });
-    });
-    await withTestingFlag(async () => {
-      expect(await pass(s)).toEqual({ started: 0 });
+      expect(await pass(s)).toEqual({ started: 0, deferred: 1, done: false });
     });
     expect(await states(s)).toEqual([]);
+    expect(await passDone(s)).toBe(false);
+    holdDrains();
+    expect(await pass(s)).toEqual({ started: 1, deferred: 0, done: true });
+    expect(await passDone(s)).toBe(true);
+  });
+
+  test("done: a later pass reads nothing and writes nothing", async () => {
+    const s = await fresh();
+    expect(await pass(s)).toEqual({ started: 0, deferred: 0, done: true });
+    await connect(s);
+    expect(await pass(s)).toEqual({ started: 0, deferred: 0, done: true });
+    expect(await states(s)).toEqual([]);
+    expect(
+      (await s.t.run((ctx) => ctx.db.query("listingBackfillState").collect())).map((r) => r.key),
+    ).toEqual([SAVED_SIGN_INS_PASS_KEY]);
+  });
+
+  test("on a testing deployment: sets up nothing and never records done", async () => {
+    const s = await fresh();
+    await connect(s);
+    await withTestingFlag(async () => {
+      expect(await pass(s)).toEqual({ started: 0, deferred: 0, done: false });
+    });
+    expect(await states(s)).toEqual([]);
+    expect(await passDone(s)).toBe(false);
   });
 });
 

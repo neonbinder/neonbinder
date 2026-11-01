@@ -4500,9 +4500,12 @@ export default defineSchema({
    * One row per (owner, platform). Revision 5 (Jason, 2026-11-01: "If you
    * have credentials you are syncing"): a saved sign-in for the platform's
    * site IS listing. The row is made when that sign-in is saved
-   * (`userProfile.updateSiteCredentialStatus` → `listingSync.setUpListing`),
-   * or, for a sign-in saved before this rule, by the order-poll cron's pass
-   * over saved sign-ins (`listingSync.setUpSavedSignInsPage`), and then kept:
+   * (`userProfile.updateSiteCredentialStatus` → `listingSync.setUpListing`;
+   * a save while the platform is paused sets up too, and nothing reaches the
+   * platform until the pause lifts), or, for a sign-in saved before this
+   * rule, by the order-poll cron's one-time pass over saved sign-ins
+   * (`listingSync.setUpSavedSignInsPage`, done once `listingBackfillState`
+   * says so), and then kept:
    * never deleted by the app (the per-user test reset and the global drain
    * clear it). It holds no credential; the token is read through
    * `credentials` as for every marketplace call, and the pause switch
@@ -4539,9 +4542,12 @@ export default defineSchema({
    *
    * `platformAccountId` is the platform seller account this owner lists from
    * (BSC: `sellerProfile.sellerId`), stamped when it is first known (at
-   * setup from the profile, or by the drainer before its first PUT). One NB
-   * owner per seller account: setup, and the drainer, refuse an account
-   * another owner's row already holds.
+   * setup from the profile, or by the drainer before its first PUT), never
+   * on a row held back by a conflict. One NB owner per seller account:
+   * setup, and the drainer, refuse an account another owner's row holds
+   * while that row LISTS (`listingOutbox.sellerAccountHolder`); a stopped,
+   * dormant or marked row holds nothing, so two owners can never lock each
+   * other out.
    *
    * Order poll: `orderCursorAt` is the newest order date seen. The 15-minute
    * cron lists non-dormant owners on `by_platform_dormant_polled` and polls
@@ -4603,6 +4609,27 @@ export default defineSchema({
     .index("by_platform_dormant_polled", ["platform", "dormant", "lastPolledAt"])
     // One NB owner per seller account: who else holds this account.
     .index("by_platform_account", ["platform", "platformAccountId"]),
+
+  /**
+   * ── NEO-370: deployment-wide listing backfill state ──────────────────────
+   *
+   * One row per finished one-time listing backfill, by fixed `key`. Today the
+   * only key is "savedSignInsSetUp": the order-poll cron's pass that sets up
+   * marketplace sign-ins saved before Revision 5 (when saving made no
+   * `marketplaceListingStates` row) records itself done here after a full
+   * pass that left nothing to set up (`listingSync.setUpSavedSignInsPage`),
+   * and the cron (`listingSales.pollAll`) starts it only while no row exists.
+   * Every save since sets itself up, so the pass never needs to run again.
+   *
+   * Its own table for the reason `preprocessWarmupState` has one: no existing
+   * table is deployment-wide state, and a singleton bolted onto one would sit
+   * among rows of a different shape. Holds no user data; the per-user test
+   * reset never touches it.
+   */
+  listingBackfillState: defineTable({
+    key: v.string(),
+    doneAt: v.number(),
+  }).index("by_key", ["key"]),
 
   /**
    * ── NEO-370: one order a collector received on a platform ────────────────

@@ -51,6 +51,13 @@ export const DRAIN_SCHEDULE_STALE_MS = 10 * 60_000;
 /** State rows one owner can have: one per platform, with room to spare. */
 const MAX_STATES_PER_OWNER = 8;
 
+/**
+ * State rows read for one seller account (`sellerAccountHolder`). Only a
+ * listing row is stamped with an account and only one can list from it, so
+ * rows past the first few are stopped ones; the cap bounds the read.
+ */
+const MAX_ACCOUNT_ROWS = 50;
+
 /** Cards of a variant looked through for one that can wake its sync. */
 export const WAKE_SCAN_CARDS = 50;
 
@@ -466,10 +473,13 @@ export async function listingCredentialOf(
 }
 
 /**
- * Another NB owner's state row on `platform` that already holds the seller
- * account `accountId`, or null. One NB owner per seller account: two owners
- * pushing counts to one seller would overwrite each other, and a sale there
- * would lower both owners' copies.
+ * Another NB owner's state row on `platform` that holds the seller account
+ * `accountId` NOW, or null: a row that lists (`pushesCounts`). One NB owner
+ * per seller account: two owners pushing counts to one seller would
+ * overwrite each other, and a sale there would lower both owners' copies.
+ * A row that stopped (sign-in removed), went dormant (a conflict of its own)
+ * or carries the test marker holds nothing, so a holder that stops frees the
+ * account and two owners can never lock each other out.
  */
 export async function sellerAccountHolder(
   ctx: Pick<QueryCtx, "db">,
@@ -480,6 +490,6 @@ export async function sellerAccountHolder(
   const holders = await ctx.db
     .query("marketplaceListingStates")
     .withIndex("by_platform_account", (q) => q.eq("platform", platform).eq("platformAccountId", accountId))
-    .take(MAX_STATES_PER_OWNER);
-  return holders.find((s) => s.ownerId !== ownerId) ?? null;
+    .take(MAX_ACCOUNT_ROWS);
+  return holders.find((s) => s.ownerId !== ownerId && pushesCounts(s)) ?? null;
 }

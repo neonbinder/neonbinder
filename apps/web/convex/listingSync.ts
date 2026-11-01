@@ -156,11 +156,14 @@ export type ListingSetup =
   | "started"
   /** Another NB owner lists from the same seller account: the row is dormant, nothing queued. */
   | "sellerConflict"
-  /** NB has paused the platform for everyone: nothing written (the cron sets it up once unpaused). */
+  /** NB has paused the platform and this is no real save: nothing written. */
   | "paused"
   /** No saved sign-in for the platform's site: nothing written. */
   | "notConnected"
-  /** The E2E test marker holds this owner off and this save may not clear it: nothing written. */
+  /**
+   * The E2E test marker holds this owner off and this is no real save, or
+   * this is a testing deployment and no real save: nothing written.
+   */
   | "testOff";
 
 /**
@@ -175,17 +178,28 @@ export type ListingSetup =
  * Cheap and idempotent: an owner already listing costs one state read and
  * writes nothing, so a token refresh or a repeated save never walks twice.
  * Otherwise, in order:
- *   - refused, writing nothing, while NB has paused the platform (`paused`);
+ *   - no real save while NB has paused the platform: nothing written
+ *     (`paused`). A real save while paused DOES set up (row, stamp, walk):
+ *     the walk only queues, the drain is not kicked while paused (its own
+ *     token read honours the pause too), the poll skips a paused platform
+ *     and Sync refuses one, so nothing reaches the platform until the pause
+ *     lifts, and nothing is left for a later pass to set up;
+ *   - no real save on a TESTING deployment (dev, previews; the testing flag
+ *     is set): nothing written (`testOff`). There a login re-asserting a
+ *     suite account's sign-in must never start listing, row or no row; only
+ *     an explicit save (the product's, or the seed asking for listing) does;
  *   - held off, writing nothing, by the E2E test marker unless this is a
  *     real save, which clears it (`testOff`);
  *   - a row dormant on a seller conflict stays so, writing nothing, unless
  *     this is a real save, which checks again (`sellerConflict`): a token
  *     refresh never restarts a walk the drain would only refuse again;
  *   - refused, writing nothing, with no saved sign-in (`notConnected`);
- *   - a seller account another NB owner already lists from: the row is made
- *     (or kept) dormant `sellerConflict`, nothing queued (one NB owner per
- *     seller account, the account the owner's last sign-in captured when
- *     known; the drainer checks again before its first push);
+ *   - a seller account another NB owner LISTS from now (`sellerAccountHolder`
+ *     counts only active holders): the row is made (or kept) dormant
+ *     `sellerConflict`, nothing queued, and the account is NOT stamped on it,
+ *     so a conflicted row never holds the account against anyone (one NB
+ *     owner per seller account, the account the owner's last sign-in
+ *     captured when known; the drainer checks again before its first push);
  *   - otherwise the row is made (or woken: dormancy cleared, the re-sign-in
  *     poll limit reset, the marker cleared on a real save),
  *     `listingStartedAt` stamped NOW, and one walk scheduled that queues
@@ -199,7 +213,8 @@ export async function setUpListing(
   platform: ListingPlatform,
   opts: { save: boolean },
 ): Promise<ListingSetup> {
-  if (isPlatformPaused(LISTING_CREDENTIAL_SITE[platform])) return "paused";
+  if (!opts.save && isPlatformPaused(LISTING_CREDENTIAL_SITE[platform])) return "paused";
+  if (!opts.save && process.env.TESTING_RESET_SECRET) return "testOff";
   const state = await listingStateOf(ctx, ownerId, platform);
   if (state && pushesCounts(state)) return "listing";
   if (state?.testListingOff === true && !opts.save) return "testOff";
@@ -211,14 +226,18 @@ export async function setUpListing(
   const clearMarker = state?.testListingOff !== undefined ? { testListingOff: undefined } : {};
   const accountId = credential.sellerId ?? state?.platformAccountId ?? null;
   if (accountId !== null && (await sellerAccountHolder(ctx, platform, accountId, ownerId))) {
-    // Already held for this account, marker clear: nothing to write.
-    if (state?.dormant === "sellerConflict" && state.platformAccountId === accountId && !("testListingOff" in clearMarker)) {
+    // Already held back, stamp and marker clear: nothing to write.
+    if (
+      state?.dormant === "sellerConflict" &&
+      state.listingStartedAt === undefined &&
+      !("testListingOff" in clearMarker)
+    ) {
       return "sellerConflict";
     }
+    // No `platformAccountId` here: only a row that lists holds the account.
     const held = {
       dormant: "sellerConflict" as const,
       listingStartedAt: undefined,
-      platformAccountId: accountId,
       ...clearMarker,
       lastUpdated: now,
     };
@@ -302,30 +321,54 @@ export const startListingWalk = internalMutation({
 /** Profiles one page of the saved-sign-in pass reads. */
 export const SIGN_IN_SCAN_PAGE = 50;
 
+/** The `listingBackfillState` key the saved-sign-in pass records itself done under. */
+export const SAVED_SIGN_INS_PASS_KEY = "savedSignInsSetUp";
+
+/** Whether the saved-sign-in pass has finished for good (`listingBackfillState`). One indexed read. */
+export async function savedSignInsPassDone(ctx: Pick<QueryCtx, "db">): Promise<boolean> {
+  const row = await ctx.db
+    .query("listingBackfillState")
+    .withIndex("by_key", (q) => q.eq("key", SAVED_SIGN_INS_PASS_KEY))
+    .first();
+  return row !== null;
+}
+
 /**
  * Sign-ins saved before Revision 5 have no state row (saving never made one
- * then), so nothing would ever list them. The order-poll cron
- * (`listingSales.pollAll`) starts one pass per tick: a page of
- * `SIGN_IN_SCAN_PAGE` profiles, each with a saved sign-in for a listing
- * platform's site that is not set up yet (no row, or a row that is neither
- * listing, nor held off by the test marker, nor a seller conflict) is set up
- * as a login re-asserting it would (`setUpListing` with `save` false: never
- * clears the marker or re-checks a seller conflict),
- * then the next page on the scheduler. Each page is one bounded transaction:
- * the profiles, one state read each, and for the few not set up a setup
- * (a handful of reads and one scheduled walk).
+ * then), so nothing would ever list them. Since Revision 5 every save sets
+ * itself up (even while the platform is paused, `setUpListing`), so this is
+ * a one-time backfill: the order-poll cron (`listingSales.pollAll`) starts a
+ * pass while it is not done. A page of `SIGN_IN_SCAN_PAGE` profiles, each
+ * with a saved sign-in for a listing platform's site that is not set up yet
+ * (no row, or a row that is neither listing, nor held off by the test
+ * marker, nor a seller conflict) is set up as a login re-asserting it would
+ * (`setUpListing` with `save` false: never clears the marker or re-checks a
+ * seller conflict), then the next page on the scheduler. Each page is one
+ * bounded transaction: the profiles, one state read each, and for the few
+ * not set up a setup (a handful of reads and one scheduled walk).
+ *
+ * Self-ending: the pass's last page records it done (`listingBackfillState`)
+ * when no page deferred a sign-in (one found while the platform was paused,
+ * `deferred`), and the cron never starts it again. A pass that deferred one
+ * is simply run again on a later tick (the cron starts none while paused).
  *
  * Not run on a testing deployment (dev, previews): there the suite's accounts
  * keep sign-ins saved between runs, and only the seed decides whether they
  * list (`testListingOff`).
  */
 export const setUpSavedSignInsPage = internalMutation({
-  args: { cursor: v.union(v.string(), v.null()) },
-  returns: v.object({ started: v.number() }),
+  args: {
+    cursor: v.union(v.string(), v.null()),
+    /** Sign-ins earlier pages of this pass could not set up (paused). */
+    deferred: v.optional(v.number()),
+  },
+  returns: v.object({ started: v.number(), deferred: v.number(), done: v.boolean() }),
   handler: async (ctx, args) => {
-    if (process.env.TESTING_RESET_SECRET) return { started: 0 };
+    if (process.env.TESTING_RESET_SECRET) return { started: 0, deferred: 0, done: false };
+    if (await savedSignInsPassDone(ctx)) return { started: 0, deferred: 0, done: true };
     const page = await ctx.db.query("userProfiles").paginate({ numItems: SIGN_IN_SCAN_PAGE, cursor: args.cursor });
     let started = 0;
+    let deferred = args.deferred ?? 0;
     for (const profile of page.page) {
       for (const platform of LISTING_PLATFORMS) {
         const saved = profile.siteCredentials?.some(
@@ -337,13 +380,21 @@ export const setUpSavedSignInsPage = internalMutation({
           state !== null &&
           (pushesCounts(state) || state.testListingOff === true || state.dormant === "sellerConflict");
         if (setUp) continue;
-        if ((await setUpListing(ctx, profile.userId, platform, { save: false })) === "started") started += 1;
+        const outcome = await setUpListing(ctx, profile.userId, platform, { save: false });
+        if (outcome === "started") started += 1;
+        else if (outcome === "paused") deferred += 1;
       }
     }
     if (!page.isDone) {
-      await ctx.scheduler.runAfter(0, internal.listingSync.setUpSavedSignInsPage, { cursor: page.continueCursor });
+      await ctx.scheduler.runAfter(0, internal.listingSync.setUpSavedSignInsPage, {
+        cursor: page.continueCursor,
+        deferred,
+      });
+      return { started, deferred, done: false };
     }
-    return { started };
+    if (deferred > 0) return { started, deferred, done: false };
+    await ctx.db.insert("listingBackfillState", { key: SAVED_SIGN_INS_PASS_KEY, doneAt: Date.now() });
+    return { started, deferred, done: true };
   },
 });
 
@@ -508,7 +559,9 @@ export const queueBoxesPage = internalMutation({
       : { index: args.index, cursor: page.continueCursor };
     if (next) {
       await ctx.scheduler.runAfter(0, internal.listingSync.queueBoxesPage, { ...args, ...next });
-    } else {
+    } else if (!isPlatformPaused(LISTING_CREDENTIAL_SITE[args.platform])) {
+      // Paused (a save while NB paused the platform): the cards wait queued;
+      // the cron's first poll after the pause lifts kicks the drain.
       await kickListingDrain(ctx, args.ownerId, args.platform);
     }
     return null;

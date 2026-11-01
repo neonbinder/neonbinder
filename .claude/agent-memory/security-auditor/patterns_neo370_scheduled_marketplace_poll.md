@@ -1,6 +1,6 @@
 ---
 name: patterns-neo370-scheduled-marketplace-poll
-description: NEO-370 BSC listing drain + 15-min order poll — identity-less token path is safe only while internal; the recurring traps are credential-state gating, backoff == poll interval, tick overlap, and a throwing per-owner poll pinning the never-polled-first index
+description: NEO-370 BSC listing drain + 15-min order poll — identity-less token path is safe only while internal; traps: credential-state gating, backoff == poll interval, tick overlap, throwing poll pins the index; Rev 5: default-on doors bypass a test marker, all-rows seller holder locks out, per-tick full scan
 metadata:
   type: project
 ---
@@ -33,6 +33,20 @@ NEO-370 added the first 24/7, per-user, scheduler-driven marketplace work
 - Marketplace ids (`platformCardId`, BSC `cardNo` in problem detail) reached
   public validators and rendered copy: invariant finding even when they are
   the user's own orders.
+
+- **Rev 5 (saved sign-in = listing) traps.** (a) A test marker that holds
+  off a default-ON behaviour only works if every default-on door honours
+  "no marker yet": a login re-asserting the credential flag (token refresh,
+  Test Credentials) that creates a fresh state row starts listing on a
+  testing deployment the cron skip never covered. On testing deployments
+  only an explicit save should start. (b) A one-holder-per-account check that
+  counts EVERY row carrying the account id (dormant, conflicted, removed
+  sign-in) makes holders permanent; stamping the contested id onto the
+  conflicted row turns it into a holder too, so two owners lock each other
+  out and removal never releases. Count only active holders. (c) A one-time
+  migration written as a per-tick full scan of userProfiles is a perpetual
+  O(users) cost; ask what else it covers (saves made while paused) and
+  bound it to that.
 
 **How to apply:** any cron/scheduler fan-out that acts on a user's marketplace
 session. Related: [[inline-reauth-bypasses-backoff]],
