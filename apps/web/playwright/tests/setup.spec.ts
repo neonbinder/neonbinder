@@ -173,7 +173,7 @@ async function reconcileAndFind(page: Page, column: "Inserts" | "Parallels", nam
 }
 
 test(
-  "Setup — global reset + warm + sync 2024 Topps Chrome Baseball (Base + Insert + Parallel) + 2026 Bowman's SportLots review",
+  "Setup — global reset + warm + sync 2024 Topps Chrome Baseball (Base + Insert + Parallel) + 1988 Topps Baseball (Base) + 2026 Bowman's SportLots review",
   { tag: ["@setup"] },
   async ({ page, signIn, env }) => {
     // ── sign in, per-user reset, seed creds, land on /admin ────────────────

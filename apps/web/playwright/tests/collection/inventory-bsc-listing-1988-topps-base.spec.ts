@@ -135,6 +135,10 @@ test(
   "Inventory: boxing 1988 Topps Base cards lists them on BuySportsCards when you leave the checklist",
   { tag: ["@collection"] },
   async ({ page, signIn, env, isMobile }) => {
+    // The hook's record of how far this run got starts empty.
+    written.box = undefined;
+    written.cards = undefined;
+    written.listingOn = false;
     const boxName = `Bsc${env.ATTEMPT_TOKEN}`;
     const advance = isMobile ? "Enter" : "Tab";
     const said = (text: string | RegExp) => page.getByRole("status").filter({ hasText: text });
@@ -144,7 +148,7 @@ test(
     const boxSpine = (cards: number) =>
       boxes.getByRole("button", { name: `${boxName}, box, ${cardsWord(cards)} for sale`, exact: true });
 
-    // --- Sales tab first: listing is off; the empty state; then switch it on ------
+    // --- Sales tab first: listing is off, and nothing has sold -------------------
     await signIn("/inventory?tab=sales");
     await expect(page.getByRole("heading", { level: 1, name: "Inventory" })).toBeVisible({ timeout: LAUNCH_GATE });
     await expect(tabs.getByRole("link", { name: "Sales", exact: true })).toHaveAttribute("aria-current", "page");
@@ -155,13 +159,6 @@ test(
     await expect(page.getByRole("heading", { level: 2, name: "What sold" })).toBeVisible();
     await expect(page.getByText(/^No sales yet\./)).toBeVisible();
     await expectAccessible(page, { label: "Inventory Sales, listing off, no sales" });
-
-    await switchBsc.click();
-    written.listingOn = true;
-    await expect(said(new RegExp(`^Listing on ${BSC} is on`))).toBeVisible();
-    await expect(switchBsc).toBeChecked();
-    await expect(page.getByText(/^No sales yet\./)).toBeVisible();
-    await expectAccessible(page, { label: "Inventory Sales, listing on, no sales" });
 
     // --- A box to stock -------------------------------------------------------
     await tabs.getByRole("link", { name: "My Boxes", exact: true }).click();
@@ -183,7 +180,19 @@ test(
     await expect(boxList.getByRole("textbox").nth(1)).toBeVisible();
     const { panel, status, resync, heldBack } = listingPanel(page);
     await expect(panel).toBeVisible();
+
+    // --- Listing is still off here: the compact switch and the consent line ------
+    const panelSwitch = panel.getByRole("switch", { name: `List on ${BSC}`, exact: true });
+    await expect(panelSwitch).toBeEnabled();
+    await expect(panelSwitch).not.toBeChecked();
+    await expect(panel.getByText(/^Switching on sets what you already list on /)).toBeVisible();
+    await expect(resync).toBeHidden();
+    await expectAccessible(page, { within: panel, label: "Checklist listing panel, listing off" });
+    await panelSwitch.click();
+    written.listingOn = true;
+    await expect(said(new RegExp(`^Listing on ${BSC} is on`))).toBeVisible();
     await expect(resync).toBeVisible();
+    await expect(panelSwitch).toBeHidden();
 
     // --- A common price: the rows have no price of their own -------------------
     await checklist.getByRole("button", { name: `Set a common price for ${TITLE}`, exact: true }).click();
@@ -245,6 +254,17 @@ test(
     await expect(heldBack).toHaveCount(0);
     await expectAccessible(page, { within: panel, label: "Checklist listing panel, 2 listed" });
 
+    // --- Resync on the happy path: the whole checklist is read and sent again ----
+    // The first Resync of the run, so the 60 s throttle does not apply. Its toast
+    // comes after the request lands, so the "Synced" line below is the new run's.
+    await resync.click();
+    await expect(said(`Resyncing ${TITLE} with ${BSC}.`)).toBeVisible();
+    // Live BSC round trip (BSC_ROUND_TRIP above). "Synced <time>." with no
+    // "Syncing soon" tail: the run is over and nothing waits.
+    await expect(status).toHaveText(new RegExp(`^2 listed on ${BSC}\\. Synced [^.]*\\.$`), { timeout: BSC_ROUND_TRIP });
+    await expect(resync).toBeEnabled();
+    await expect(heldBack).toHaveCount(0);
+
     // --- Move one copy to a binder (take it off sale): 1 listed ----------------
     await checklist.getByRole("button", { name: `Details for ${a}`, exact: true }).click();
     const yourCopies = page.getByRole("region", { name: `Your copies of ${a}`, exact: true });
@@ -269,6 +289,7 @@ test(
     await leaveAndReturn(1);
     await expect(status).toHaveText(new RegExp(`^1 listed on ${BSC}\\.`), { timeout: BSC_ROUND_TRIP });
     await expect(heldBack).toHaveCount(0);
+    await expectAccessible(page, { within: panel, label: "Checklist listing panel, 1 listed" });
 
     // --- Pull the other to 0: 0 listed -----------------------------------------
     await expect(fieldB).toHaveValue("1");
@@ -281,6 +302,7 @@ test(
     await leaveAndReturn(0);
     await expect(status).toHaveText(new RegExp(`^0 listed on ${BSC}\\.`), { timeout: BSC_ROUND_TRIP });
     await expect(heldBack).toHaveCount(0);
+    await expectAccessible(page, { within: panel, label: "Checklist listing panel, 0 listed" });
 
     // --- Cleanup through the product: common price, the box, the switch --------
     await checklist.getByRole("button", { name: `Change the common price for ${TITLE}`, exact: true }).click();
@@ -300,6 +322,8 @@ test(
     await tabs.getByRole("link", { name: "Sales", exact: true }).click();
     await expect(page).toHaveURL(/[?&]tab=sales/);
     await expect(switchBsc).toBeChecked();
+    await expect(page.getByText(/^No sales yet\./)).toBeVisible();
+    await expectAccessible(page, { label: "Inventory Sales, listing on, no sales" });
     await switchBsc.click();
     await expect(said(new RegExp(`^Listing on ${BSC} is off`))).toBeVisible();
     await expect(switchBsc).not.toBeChecked();
