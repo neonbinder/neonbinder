@@ -3857,6 +3857,17 @@ export default defineSchema({
      * which refuses a binder; never set on a binder or a shelf row.
      */
     listedOnMarketplaces: v.optional(v.boolean()),
+    /**
+     * NEO-370 — when the walk that queues this box's cards after a
+     * "Listed on marketplaces" flip started (`listingSync.queueBoxForListing`);
+     * cleared by the walk's last page. NB's bookkeeping, never shown. A flip
+     * while a walk stamped within `LISTED_WALK_PENDING_MS` is pending
+     * schedules nothing (that walk follows the box's current setting); an
+     * older stamp is taken as a walk that died, and a fresh one replaces it.
+     * Each page carries the stamp it was started with and stands down when
+     * the box holds another, so one box never has two walks running.
+     */
+    listedQueuedAt: v.optional(v.number()),
     lastUpdated: v.number(),
   })
     // Unchanged. Serves: Main/Want/Trade get-or-create (all fields, .unique()),
@@ -4496,17 +4507,18 @@ export default defineSchema({
    * card in a listed box lists on every platform the collector has started.
    *
    * Read through `listingOutbox.pushesCounts` / `pollsSales`:
-   *   - `listingStartedAt` is the collector's consent: NB pushes counts only
-   *     while it is set and the row is not dormant. Saving a sign-in does NOT
-   *     set it; `startListing` does. Removing the sign-in clears it (and
-   *     makes the row dormant), so saving again needs Start again.
+   *   - `listingStartedAt` is the collector's consent: NB pushes counts AND
+   *     polls orders only while it is set and the row is not dormant. Saving
+   *     a sign-in does NOT set it; `startListing` does. Removing the sign-in
+   *     clears it (and makes the row dormant), so saving again needs Start
+   *     again before anything is pushed or polled.
    *   - `dormant` is NB's: set when the platform can't be used for this owner
    *     at all, and it stops BOTH the poll and the drain.
    *       `noCredentials`: the owner's saved credentials were cleared
    *       (`userProfile.removeSiteCredentialStatus`, which also clears
    *       `listingStartedAt`); cleared again when they are saved
-   *       (`updateSiteCredentialStatus`). The order poll then resumes
-   *       (listings left up can still sell); pushing waits for Start.
+   *       (`updateSiteCredentialStatus`). Pushing and the order poll both
+   *       wait for Start.
    *       `sellerConflict`: another NB owner already lists from the same
    *       platform seller account (`platformAccountId`); cleared when the
    *       owner presses Start again and the conflict is gone.
@@ -4521,7 +4533,8 @@ export default defineSchema({
    * another owner's row already holds.
    *
    * Order poll: `orderCursorAt` is the newest order date seen. The 15-minute
-   * cron lists non-dormant owners on `by_platform_dormant_polled`
+   * cron lists non-dormant owners on `by_platform_dormant_polled` and polls
+   * the started ones (a row not started is stamped and skipped)
    * (never-polled first, then oldest poll), and each owner's poll reads order
    * history newer than the cursor across ALL statuses, so an order that ships
    * within the 15 minutes is still caught. While the owner's credentials need

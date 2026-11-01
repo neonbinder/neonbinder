@@ -188,12 +188,14 @@ function Platform({
   );
 }
 
+// The platform's three parts are plain sections under their headings, not
+// named regions: three more landmarks per platform (more on the admin's
+// everyone view) would only be noise in the landmark list.
 function RunningNow({ p, level }: { p: PlatformSyncStatus; level: number }) {
-  const headingId = useId();
   const name = PLATFORM_NAME[p.platform];
   return (
-    <section aria-labelledby={headingId} className={`space-y-1.5 ${RULE}`}>
-      <Heading level={level} id={headingId} className="text-base font-semibold">
+    <section className={`space-y-1.5 ${RULE}`}>
+      <Heading level={level} className="text-base font-semibold">
         Running now
       </Heading>
       {p.running ? (
@@ -228,7 +230,7 @@ function Queue({ p, level }: { p: PlatformSyncStatus; level: number }) {
   const { cards, more } = p.queued;
   const n = cards.length;
   return (
-    <section aria-labelledby={headingId} className={`space-y-2 ${RULE}`}>
+    <section className={`space-y-2 ${RULE}`}>
       <Heading level={level} id={headingId} className="text-base font-semibold">
         Queued for the next sync{n > 0 ? ` (${more ? `${n}+` : n})` : ""}
       </Heading>
@@ -269,7 +271,7 @@ function Sets({
 }) {
   const headingId = useId();
   return (
-    <section aria-labelledby={headingId} className={`space-y-2 ${RULE}`}>
+    <section className={`space-y-2 ${RULE}`}>
       <Heading level={level} id={headingId} className="text-base font-semibold">
         Last sync by set
       </Heading>
@@ -387,6 +389,7 @@ function SetRow({
             {hasMore && (
               <button
                 type="button"
+                aria-label={`Show all ${total} held back in ${set.setLabel}`}
                 aria-expanded={open}
                 aria-controls={listId}
                 aria-busy={(open && loaded.state === "loading") || undefined}
@@ -397,7 +400,8 @@ function SetRow({
                   aria-hidden="true"
                   className={`h-4 w-4 transition-transform motion-reduce:transition-none ${open ? "rotate-90" : ""}`}
                 />
-                Show all {total} held back in {set.setLabel}
+                {/* The name stays put (aria-expanded says open or shut); the words say what a press does. */}
+                <span aria-hidden="true">{open ? "Show fewer" : `Show all ${total} held back`}</span>
               </button>
             )}
             {open && loaded.state === "error" && (

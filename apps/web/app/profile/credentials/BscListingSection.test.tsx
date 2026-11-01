@@ -5,6 +5,7 @@ import { expectAccessibleInBothModes } from "@/lib/testing/axe";
 import {
   CONSENT_LINE,
   PAUSED_LINE,
+  PAUSED_START_LINE,
   REAUTH_LINE,
   SELLER_CONFLICT_LINE,
   listingDay,
@@ -91,6 +92,10 @@ describe("Profile → BuySportsCards listing", () => {
     start().focus();
     fireEvent.click(start());
     expect(mocks.start).toHaveBeenCalledWith({ platform: "bsc" });
+    // The polite status line is in the tree before anything is said.
+    const idle = screen.getByRole("status");
+    expect(idle.getAttribute("aria-live")).toBe("polite");
+    expect(idle.textContent).toBe("");
     expect(start().getAttribute("aria-busy")).toBe("true");
     // A second press while the first is out does nothing.
     fireEvent.click(start());
@@ -109,7 +114,22 @@ describe("Profile → BuySportsCards listing", () => {
     draw(BASE);
     fireEvent.click(start());
     await flush();
-    expect(screen.getByRole("status").textContent).toBe(SELLER_CONFLICT_LINE);
+    // A refusal is an alert (assertive by role, no polite override); the status line is gone.
+    const alert = screen.getByRole("alert");
+    expect(alert.textContent).toBe(SELLER_CONFLICT_LINE);
+    expect(alert.hasAttribute("aria-live")).toBe(false);
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+
+  it("BuySportsCards paused for everyone: Start is refused with the paused line, never 'You're live'", async () => {
+    mocks.start.mockResolvedValue({ started: false, reason: "paused" });
+    draw(BASE);
+    fireEvent.click(start());
+    await flush();
+    expect(screen.getByRole("alert").textContent).toBe(PAUSED_START_LINE);
+    expect(screen.queryByText(/You're live/)).toBeNull();
+    // Start stays, for once BuySportsCards is back.
+    expect(start()).toBeTruthy();
   });
 
   it("a sign-in removed meanwhile: Start says to save it first", async () => {
@@ -117,7 +137,7 @@ describe("Profile → BuySportsCards listing", () => {
     draw(BASE);
     fireEvent.click(start());
     await flush();
-    expect(screen.getByRole("status").textContent).toBe("Save your BuySportsCards sign-in above first, then start listing.");
+    expect(screen.getByRole("alert").textContent).toBe("Save your BuySportsCards sign-in above first, then start listing.");
   });
 
   it("listing: since when, and that removing the sign-in stops listing and sales", async () => {

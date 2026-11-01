@@ -104,6 +104,54 @@ describe("useLeaveGuard", () => {
     expect(go).not.toHaveBeenCalled();
   });
 
+  it("Stay parks focus through onStay once history is back, and only once", () => {
+    window.history.replaceState({ idx: 7 }, "");
+    const onStay = vi.fn(() => true);
+    const { rerender } = renderHook(() => useLeaveGuard(true, MESSAGE, { onStay }));
+    back(6);
+    expect(go).toHaveBeenCalledWith(1);
+    // Still on the entry the user tried to go to: not yet.
+    window.history.replaceState({ idx: 6 }, "");
+    rerender();
+    expect(onStay).not.toHaveBeenCalled();
+    window.history.replaceState({ idx: 7 }, "");
+    back(7);
+    rerender();
+    expect(onStay).toHaveBeenCalledTimes(1);
+    rerender();
+    expect(onStay).toHaveBeenCalledTimes(1);
+  });
+
+  it("Stay after the page remounted: the new mount parks focus, retrying until its target is drawn", () => {
+    window.history.replaceState({ idx: 9 }, "");
+    const first = renderHook(() => useLeaveGuard(true, MESSAGE));
+    back(8);
+    expect(go).toHaveBeenCalledWith(1);
+    // The router drew the other page: the guarding component is gone.
+    first.unmount();
+    window.history.replaceState({ idx: 9 }, "");
+    let drawn = false;
+    const onStay = vi.fn(() => drawn);
+    const again = renderHook(() => useLeaveGuard(false, MESSAGE, { onStay }));
+    expect(onStay).toHaveBeenCalledTimes(1);
+    drawn = true;
+    again.rerender();
+    expect(onStay).toHaveBeenCalledTimes(2);
+    again.rerender();
+    expect(onStay).toHaveBeenCalledTimes(2);
+  });
+
+  it("Back with Leave never moves focus", () => {
+    window.history.replaceState({ idx: 4 }, "");
+    confirm.mockReturnValue(true);
+    const onStay = vi.fn(() => true);
+    const { rerender } = renderHook(() => useLeaveGuard(true, MESSAGE, { onStay }));
+    back(3);
+    window.history.replaceState({ idx: 4 }, "");
+    rerender();
+    expect(onStay).not.toHaveBeenCalled();
+  });
+
   it("stops asking once inactive", () => {
     const { rerender } = render(<Page active />);
     rerender(<Page active={false} />);

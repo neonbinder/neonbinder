@@ -65,6 +65,8 @@ export const RESYNC_THROTTLE_MS = 60_000;
 export const STATUS_CAPS = {
   /** Cards queued for the next sync, oldest first. */
   queued: 100,
+  /** Of those, the first this many are named (card + players); the rest carry ids, set and time only. */
+  queuedLabelled: 30,
   /** Sets, most recent run first. */
   sets: 50,
   /** Held-back cards named per set; the rest through `syncSetProblems`. */
@@ -77,13 +79,13 @@ export const STATUS_CAPS = {
  * to a glance (the latest few sets and queued cards), so 25 owners stay a few
  * hundred reads. Filtering to one collector shows `STATUS_CAPS`.
  */
-export const ADMIN_ALL_CAPS = { queued: 3, sets: 3, problemsPerSet: 2, problemCards: 2 } as const;
+export const ADMIN_ALL_CAPS = { queued: 3, queuedLabelled: 3, sets: 3, problemsPerSet: 2, problemCards: 2 } as const;
 /** Collectors the admin view shows at once with no owner picked. */
 export const ADMIN_STATUS_OWNERS = 25;
 /** Collectors the admin owner picker lists. */
 export const ADMIN_OWNER_LIST = 200;
 
-type StatusCaps = { queued: number; sets: number; problemsPerSet: number; problemCards: number };
+type StatusCaps = { queued: number; queuedLabelled: number; sets: number; problemsPerSet: number; problemCards: number };
 
 // ───────────────────────────────────────────────────────────────────────────
 // Settings and Start
@@ -138,7 +140,8 @@ export const listingSettings = query({
  * warning beside the saved sign-in). There is no stop here; removing the
  * sign-in stops listing.
  *
- * Needs a saved sign-in (`notConnected` otherwise), and refuses a seller
+ * Refused while NB has paused the platform (`paused`, the same switch the
+ * drain honours). Needs a saved sign-in (`notConnected` otherwise), and refuses a seller
  * account another NB owner already lists from (`sellerConflict`; one NB owner
  * per seller account, the account the owner's last sign-in captured when
  * known; the drainer checks it again before its first push). Neither refusal
@@ -154,10 +157,13 @@ export const startListing = mutation({
   args: { platform: listingPlatformValidator },
   returns: v.object({
     started: v.boolean(),
-    reason: v.optional(v.union(v.literal("notConnected"), v.literal("sellerConflict"))),
+    reason: v.optional(v.union(v.literal("notConnected"), v.literal("sellerConflict"), v.literal("paused"))),
   }),
   handler: async (ctx, args) => {
     const ownerId = await requireSignedIn(ctx);
+    // NB has paused the platform for everyone (the switch the drain's token
+    // read honours): nothing would push, so nothing starts.
+    if (isPlatformPaused(LISTING_CREDENTIAL_SITE[args.platform])) return { started: false, reason: "paused" as const };
     const state = await listingStateOf(ctx, ownerId, args.platform);
     if (state && pushesCounts(state)) return { started: true };
     const credential = await listingCredentialOf(ctx, ownerId, args.platform);
@@ -198,42 +204,119 @@ async function listedBoxIdsOf(ctx: QueryCtx, ownerId: string): Promise<Array<Id<
   return rows.filter(listsOnMarketplaces).map((row) => row._id);
 }
 
+/** A flip's walk stamped within this long is taken as still pending (see `listedQueuedAt`). */
+export const LISTED_WALK_PENDING_MS = 60_000;
+
+/** The platforms the owner has started and NB pushes to now. */
+async function startedPlatformsOf(ctx: QueryCtx, ownerId: string): Promise<ListingPlatform[]> {
+  const out: ListingPlatform[] = [];
+  for (const platform of LISTING_PLATFORMS) {
+    const state = await listingStateOf(ctx, ownerId, platform);
+    if (state && pushesCounts(state)) out.push(platform);
+  }
+  return out;
+}
+
 /**
  * Queue one box's cards on every platform the owner lists on: a box's
- * "Listed on marketplaces" setting was flipped (`collectionContainers.
- * setContainerListed`), so every card in it may now count differently there.
- * Like a move, it only queues: the next trigger (Sync, a finished intake, the
- * cron) pushes. Paged and scheduled, so a box of any size is safe. Writes
- * nothing when the owner lists nowhere.
+ * "Listed on marketplaces" setting was flipped to `listed`
+ * (`collectionContainers.setContainerListed`), so every card in it may now
+ * count differently there. Like a move, it only queues: the next trigger
+ * (Sync, a finished intake, the cron) pushes. Paged and scheduled
+ * (`queueListedBoxPage`), so a box of any size is safe.
+ *
+ * Debounced: one walk per box. A flip while the box's walk is pending (its
+ * `listedQueuedAt` stamp is under `LISTED_WALK_PENDING_MS` old) schedules
+ * nothing; that walk reads the box's setting on every page and follows it.
+ * Writes nothing when the owner lists nowhere. Returns whether a walk was
+ * scheduled.
  */
 export async function queueBoxForListing(
   ctx: MutationCtx,
   ownerId: string,
-  boxId: Id<"collectionContainers">,
-): Promise<number> {
-  let walks = 0;
-  for (const platform of LISTING_PLATFORMS) {
-    const state = await listingStateOf(ctx, ownerId, platform);
-    if (!state || !pushesCounts(state)) continue;
-    await ctx.scheduler.runAfter(0, internal.listingSync.queueBoxesPage, {
-      ownerId,
-      platform,
-      boxIds: [boxId],
-      index: 0,
-      cursor: null,
-      kick: false,
-    });
-    walks += 1;
-  }
-  return walks;
+  box: Pick<Doc<"collectionContainers">, "_id" | "listedQueuedAt">,
+  listed: boolean,
+): Promise<boolean> {
+  if ((await startedPlatformsOf(ctx, ownerId)).length === 0) return false;
+  const now = Date.now();
+  if (box.listedQueuedAt !== undefined && now - box.listedQueuedAt < LISTED_WALK_PENDING_MS) return false;
+  await ctx.db.patch(box._id, { listedQueuedAt: now });
+  await ctx.scheduler.runAfter(0, internal.listingSync.queueListedBoxPage, {
+    ownerId,
+    boxId: box._id,
+    listed,
+    queuedAt: now,
+    cursor: null,
+  });
+  return true;
 }
 
 /**
- * A queueing walk over boxes: one page of one box's copies, queued for
- * `platform`, then the next page (or the next box) on the scheduler. The
- * Start walk's last page runs the drain (the owner's first sync); a box
- * flip's walk (`kick: false`) only queues. Stops as soon as the owner no
- * longer lists on the platform.
+ * One page of a box flip's walk: the box's copies queued on every platform
+ * the owner has started, then the next page on the scheduler; the last page
+ * clears the box's stamp. It only queues (no drain).
+ *
+ *   - Superseded (the box carries another stamp: a newer walk replaced one
+ *     taken for dead) or gone: stands down, writes nothing.
+ *   - The owner lists nowhere now: clears the stamp and stops.
+ *   - The box's setting no longer matches `listed` (flipped back while this
+ *     walk was pending): this walk stops, and one fresh walk carrying the
+ *     box's current setting starts over from the first page, because cards
+ *     this walk already queued may have been pushed under the old setting.
+ */
+export const queueListedBoxPage = internalMutation({
+  args: {
+    ownerId: v.string(),
+    boxId: v.id("collectionContainers"),
+    /** The setting the flip set (`true` = listed). */
+    listed: v.boolean(),
+    /** The stamp this walk was started with (`listedQueuedAt`). */
+    queuedAt: v.number(),
+    cursor: v.union(v.string(), v.null()),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const box = await ctx.db.get(args.boxId);
+    if (!box || box.ownerId !== args.ownerId || box.kind !== "box") return null;
+    if (box.listedQueuedAt !== args.queuedAt) return null;
+    const platforms = await startedPlatformsOf(ctx, args.ownerId);
+    if (platforms.length === 0) {
+      await ctx.db.patch(box._id, { listedQueuedAt: undefined });
+      return null;
+    }
+    const listedNow = listsOnMarketplaces(box);
+    if (listedNow !== args.listed) {
+      const now = Date.now();
+      await ctx.db.patch(box._id, { listedQueuedAt: now });
+      await ctx.scheduler.runAfter(0, internal.listingSync.queueListedBoxPage, {
+        ownerId: args.ownerId,
+        boxId: args.boxId,
+        listed: listedNow,
+        queuedAt: now,
+        cursor: null,
+      });
+      return null;
+    }
+    const page = await ctx.db
+      .query("collectionCopies")
+      .withIndex("by_owner_home_slot", (q) => q.eq("ownerId", args.ownerId).eq("homeId", args.boxId))
+      .paginate({ numItems: QUEUE_PAGE_LINES, cursor: args.cursor });
+    await enqueueListingCards(ctx, {
+      ownerId: args.ownerId,
+      cardIds: page.page.map((row) => row.cardId),
+      platforms,
+    });
+    if (page.isDone) await ctx.db.patch(box._id, { listedQueuedAt: undefined });
+    else await ctx.scheduler.runAfter(0, internal.listingSync.queueListedBoxPage, { ...args, cursor: page.continueCursor });
+    return null;
+  },
+});
+
+/**
+ * The Start walk over boxes: one page of one box's copies, queued for
+ * `platform`, then the next page (or the next box) on the scheduler. Its last
+ * page runs the drain (the owner's first sync). Stops as soon as the owner no
+ * longer lists on the platform. (A box flip walks `queueListedBoxPage`.)
  */
 export const queueBoxesPage = internalMutation({
   args: {
@@ -242,8 +325,6 @@ export const queueBoxesPage = internalMutation({
     boxIds: v.array(v.id("collectionContainers")),
     index: v.number(),
     cursor: v.union(v.string(), v.null()),
-    /** Run the drain after the last page. Absent means yes (the Start walk). */
-    kick: v.optional(v.boolean()),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -267,7 +348,7 @@ export const queueBoxesPage = internalMutation({
       : { index: args.index, cursor: page.continueCursor };
     if (next) {
       await ctx.scheduler.runAfter(0, internal.listingSync.queueBoxesPage, { ...args, ...next });
-    } else if (args.kick !== false) {
+    } else {
       await kickListingDrain(ctx, args.ownerId, args.platform);
     }
     return null;
@@ -319,11 +400,13 @@ async function recordOf(
  *
  * Answers `ignored: "notListing"` (and writes nothing) when no platform is
  * started. A press while the variant's run is under way, or within
- * `RESYNC_THROTTLE_MS` of the last press, is ignored on that platform: the run
+ * `RESYNC_THROTTLE_MS` of the last press, is dropped on that platform: the run
  * under way, or about to start, reads the set in full. `queued` is true when
- * at least one platform took the press; `ignored: "throttled"` when every
- * started platform ignored it. `queued: false` with no reason: the set has no
- * card any started platform can list (nothing carries its id).
+ * at least one platform took the press (queued work, or kicked a drain for a
+ * change already queued); `ignored: "throttled"` only when every started
+ * platform dropped it. `queued: false` with no reason: nothing to sync here
+ * (the set has no card any started platform can list, or the collector holds
+ * no copy of it and never synced it).
  */
 export const syncVariant = mutation({
   args: { variantId: v.id("selectorOptions") },
@@ -333,11 +416,7 @@ export const syncVariant = mutation({
   }),
   handler: async (ctx, args) => {
     const ownerId = await requireSignedIn(ctx);
-    const platforms: ListingPlatform[] = [];
-    for (const platform of LISTING_PLATFORMS) {
-      const state = await listingStateOf(ctx, ownerId, platform);
-      if (state && pushesCounts(state)) platforms.push(platform);
-    }
+    const platforms = await startedPlatformsOf(ctx, ownerId);
     if (platforms.length === 0) return { queued: false, ignored: "notListing" as const };
     let queued = false;
     let throttled = 0;
@@ -366,8 +445,9 @@ async function syncOnePlatform(
     if (running || recent) return "throttled";
   } else {
     // Never run yet (its first run reads every condition anyway): no record
-    // to stamp. A change queued for the variant in the last minute (a press,
-    // or a box write) is the throttle; that run is kicked.
+    // to stamp. A change queued for the variant in the last minute (a box
+    // write, or a press) is not queued again, but the press still runs the
+    // drain that syncs it: taken, not dropped.
     const queuedRow = await ctx.db
       .query("listingOutbox")
       .withIndex("by_owner_platform_variant", (q) =>
@@ -376,13 +456,21 @@ async function syncOnePlatform(
       .first();
     if (queuedRow && now - queuedRow.changedAt < RESYNC_THROTTLE_MS) {
       await kickListingDrain(ctx, ownerId, platform);
-      return "throttled";
+      return "queued";
     }
   }
   const setId = await findSetForSelectorOption(ctx, variantId);
   let written = 0;
-  if (setId) written = await queueVariantLines(ctx, { ownerId, platform, setId, variantId, cursor: null });
-  if (written === 0) written = await wakeVariant(ctx, ownerId, platform, variantId);
+  let holdsCopy = false;
+  if (setId) {
+    const lines = await queueVariantLines(ctx, { ownerId, platform, setId, variantId, cursor: null });
+    written = lines.queued;
+    holdsCopy = lines.holdsCopy;
+  }
+  // Nothing in a box: wake the variant (one card, so its run sets the
+  // platform to NB's zero) only for a set the collector has synced before or
+  // holds a copy of; any other set id is nothing to sync.
+  if (written === 0 && (record !== null || holdsCopy)) written = await wakeVariant(ctx, ownerId, platform, variantId);
   if (written === 0) return "nothing";
   if (record) await ctx.db.patch(record._id, { resyncRequestedAt: now, lastUpdated: now });
   await kickListingDrain(ctx, ownerId, platform);
@@ -391,7 +479,8 @@ async function syncOnePlatform(
 
 /**
  * One page of a variant's copies: the box ones queued, the next page on the
- * scheduler. Returns how many outbox rows the page wrote.
+ * scheduler. Returns how many outbox rows the page wrote, and whether the
+ * page held any copy of the variant at all (any home).
  */
 async function queueVariantLines(
   ctx: MutationCtx,
@@ -402,7 +491,7 @@ async function queueVariantLines(
     variantId: Id<"selectorOptions">;
     cursor: string | null;
   },
-): Promise<number> {
+): Promise<{ queued: number; holdsCopy: boolean }> {
   const page = await ctx.db
     .query("collectionCopies")
     .withIndex("by_owner_set_variant", (q) =>
@@ -421,7 +510,7 @@ async function queueVariantLines(
       cursor: page.continueCursor,
     });
   }
-  return queued;
+  return { queued, holdsCopy: page.page.length > 0 };
 }
 
 export const queueVariantPage = internalMutation({
@@ -578,8 +667,10 @@ async function platformStatus(
     .withIndex("by_owner_platform_changed", (q) => q.eq("ownerId", ownerId).eq("platform", platform))
     .take(caps.queued + 1);
   const cards: PlatformStatus["queued"]["cards"] = [];
-  for (const row of rows.slice(0, caps.queued)) {
-    const card = await labels.card(row.cardId);
+  for (const [i, row] of rows.slice(0, caps.queued).entries()) {
+    // Past the first `queuedLabelled`, no card (or player) is read: the row's
+    // own variant and a cached set label only.
+    const card = i < caps.queuedLabelled ? await labels.card(row.cardId) : null;
     const variantId = card?.variantId ?? row.variantId;
     cards.push({
       cardId: row.cardId,

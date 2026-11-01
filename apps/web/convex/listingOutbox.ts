@@ -80,12 +80,13 @@ export function pushesCounts(state: Pick<StateRow, "listingStartedAt" | "dormant
 }
 
 /**
- * NB polls the platform's orders for this owner: whenever the row is not
- * dormant (listings left up can still sell, so a sign-in saved again keeps
- * lowering NB's copies even before the collector presses Start again).
+ * NB polls the platform's orders for this owner: on the same consent as
+ * pushing (the collector pressed Start listing and the row is not dormant).
+ * A sign-in saved again without Start polls nothing: reading a seller's
+ * orders is part of listing, and listing needs Start.
  */
-export function pollsSales(state: Pick<StateRow, "dormant">): boolean {
-  return state.dormant === undefined;
+export function pollsSales(state: Pick<StateRow, "listingStartedAt" | "dormant">): boolean {
+  return state.listingStartedAt !== undefined && state.dormant === undefined;
 }
 
 /**
@@ -396,8 +397,9 @@ async function kickWithState(ctx: MutationCtx, state: StateRow, now: number): Pr
  * changes for that platform are dropped (paged). What the platform lists is
  * left as it is.
  *
- * Saved: clears only the `noCredentials` dormancy, so the order poll resumes.
- * It never starts listing: `listingSync.startListing` does, and only that.
+ * Saved: clears only the `noCredentials` dormancy. It never starts listing,
+ * and the order poll stays off with it (both need Start):
+ * `listingSync.startListing` does, and only that.
  *
  * Does nothing for a site no listing platform uses, or an owner who never
  * started listing there.

@@ -8,8 +8,9 @@
  * card. The credentials layer is mocked at the identity-less entry points.
  * No test reaches a live server.
  *
- * NEO-370 round 3: the poll runs while listing is switched OFF (listings left
- * up still sell) but not for a dormant row or an owner with no credentials;
+ * NEO-370 Revision 4 audit: the poll takes the same consent as pushing
+ * (Start listing): a sign-in saved again without Start polls nothing, and
+ * not a dormant row or an owner with no credentials either;
  * an owner needing a fresh sign-in is polled at most hourly; a poll that
  * throws still finishes (stamped, drain kicked); a sale that removes a copy
  * keeps its photos.
@@ -492,43 +493,51 @@ describe("pollOwner", () => {
     expect(states[0].dormant).toBe("noCredentials");
   });
 
-  test("a sign-in saved but listing not started still polls: a sale on a listing left up still lowers the copy", async () => {
+  test("a sign-in saved but listing not started polls nothing: no order read, no sale stored, no copy lowered", async () => {
     const s = await setup();
     await s.t.run(async (ctx) => {
       const st = await ctx.db.query("marketplaceListingStates").first();
       await ctx.db.patch(st!._id, { listingStartedAt: undefined });
     });
     await add(s, s.cardId, { homeId: s.box, condition: "Near Mint", quantity: 2 });
-    const createdAt = (await s.t.run(async (ctx) => (await ctx.db.query("marketplaceListingStates").first())!._creationTime));
-    const iso = (ms: number) => new Date(ms).toISOString().replace("Z", "");
-    const sku = buildListingSku({ cardId: s.cardId, bscCondition: "near_mint", boxId: s.box });
+    const fetched: string[] = [];
     vi.stubGlobal("fetch", (async (url: string | URL | Request) => {
-      const href = String(url);
-      if (href.endsWith("seller/order/history")) {
-        return Response.json({
-          totalElements: 1,
-          results: [{ orderId: "o-up", orderNo: "UP", orderDate: iso(createdAt + 1000), orderStatus: "READY_TO_SHIP" }],
-        });
-      }
-      return Response.json({
-        ...fixture,
-        orderId: "o-up",
-        orderDate: iso(createdAt + 1000),
-        orderStatus: "READY_TO_SHIP",
-        orderItems: [{ ...fixture.orderItems[0], cardId: "bsc-1", card: { id: "bsc-1", cardNo: "TB2" }, sellerSku: sku }],
-      });
+      fetched.push(String(url));
+      return Response.json({ totalElements: 0, results: [] });
     }) as typeof fetch);
     vi.useFakeTimers({ toFake: ["setTimeout"] });
 
     const report = await pollOwnerImpl(stubCtx(s.t), { ownerId: OWNER, platform: "bsc" });
 
-    expect(report.ordersStored).toBe(1);
-    expect(report.linesApplied).toBe(1);
-    expect((await copies(s))[0].quantity).toBe(1);
-    // Not started pushes nothing: the sale queued no listing change and kicked no drain.
-    expect(await s.t.run(async (ctx) => await ctx.db.query("listingOutbox").collect())).toEqual([]);
+    expect(report.ordersStored).toBe(0);
+    expect(report.linesApplied).toBe(0);
+    expect(fetched).toEqual([]);
+    expect(await s.t.run(async (ctx) => (await ctx.db.query("marketplaceSales").collect()).length)).toBe(0);
+    expect((await copies(s))[0].quantity).toBe(2);
     const scheduled = await s.t.run(async (ctx) => ctx.db.system.query("_scheduled_functions").collect());
     expect(scheduled.filter((f) => f.name.includes("drainOwner"))).toEqual([]);
+  });
+
+  test("a sale recorded for an owner who is not started is neither stored nor applied (the write-side gate)", async () => {
+    const s = await setup();
+    await add(s, s.cardId, { homeId: s.box, condition: "Near Mint", quantity: 2 });
+    await s.t.run(async (ctx) => {
+      const st = await ctx.db.query("marketplaceListingStates").first();
+      await ctx.db.patch(st!._id, { listingStartedAt: undefined });
+    });
+    const sku = buildListingSku({ cardId: s.cardId, bscCondition: "near_mint", boxId: s.box });
+    const order: ProjectedOrder = {
+      orderId: "o-unstarted",
+      orderNo: "UNSTARTED",
+      orderDate: NOW,
+      status: "READY_TO_SHIP",
+      totals: {},
+      items: [{ platformCardId: "bsc-1", condition: "near_mint", quantity: 1, priceCents: 100, sellerSku: sku, graded: false }],
+    };
+    const r = await s.t.mutation(internal.listingSales.recordOrder, { ownerId: OWNER, platform: "bsc", order });
+    expect(r.saleId).toBeNull();
+    expect(await s.t.run(async (ctx) => (await ctx.db.query("marketplaceSales").collect()).length)).toBe(0);
+    expect((await copies(s))[0].quantity).toBe(2);
   });
 
   test("a poll that throws part-way still finishes: stamped, error recorded, drain kicked", async () => {
@@ -602,16 +611,27 @@ describe("pollOwner", () => {
     expect(st?.lastPollError).toMatch(/503/);
   });
 
-  test("pollAll schedules one poll per owner with a BSC listing row (not started too)", async () => {
+  test("pollAll schedules one poll per STARTED owner; a row not started is stamped to the back, never polled", async () => {
     const s = await setup();
     await s.t.run(async (ctx) => {
       await ctx.db.insert("marketplaceListingStates", {
         ownerId: "someone_else",
         platform: "bsc",
+        listingStartedAt: NOW,
         lastUpdated: NOW,
       });
       await ctx.db.insert("userProfiles", {
         userId: "someone_else",
+        siteCredentials: [{ site: "buysportscards", hasCredentials: true }],
+      } as never);
+      // Signed in again after removing the sign-in, Start not pressed again.
+      await ctx.db.insert("marketplaceListingStates", {
+        ownerId: "not_started",
+        platform: "bsc",
+        lastUpdated: NOW,
+      });
+      await ctx.db.insert("userProfiles", {
+        userId: "not_started",
         siteCredentials: [{ site: "buysportscards", hasCredentials: true }],
       } as never);
     });
@@ -619,22 +639,34 @@ describe("pollOwner", () => {
     // reach the network after this test's fetch stub is gone).
     vi.useFakeTimers();
     const r = await s.t.mutation(internal.listingSales.pollAll, {});
-    expect(r.scheduled).toBe(2);
+    expect(r).toEqual({ scheduled: 2, skipped: 1 });
     const scheduled = await s.t.run(async (ctx) => ctx.db.system.query("_scheduled_functions").collect());
     expect(scheduled.filter((f) => f.name.includes("pollOwner")).map((f) => (f.args[0] as { ownerId: string }).ownerId).sort()).toEqual(
       [OWNER, "someone_else"].sort(),
     );
+    const notStarted = await s.t.run(async (ctx) =>
+      (await ctx.db.query("marketplaceListingStates").collect()).find((row) => row.ownerId === "not_started"),
+    );
+    // Moved to the back of the read, still not dormant (a Start later polls it again).
+    expect(notStarted?.lastPolledAt).toBeTypeOf("number");
+    expect(notStarted?.dormant).toBeUndefined();
   });
 
   test("pollAll: no credentials puts the row to sleep; a dormant row is never read; re-sign-in waits an hour", async () => {
     const s = await setup();
     await s.t.run(async (ctx) => {
       // No credentials saved at all.
-      await ctx.db.insert("marketplaceListingStates", { ownerId: "no_creds", platform: "bsc", lastUpdated: NOW });
+      await ctx.db.insert("marketplaceListingStates", {
+        ownerId: "no_creds",
+        platform: "bsc",
+        listingStartedAt: NOW,
+        lastUpdated: NOW,
+      });
       // Already dormant (a seller conflict): skipped by the index itself.
       await ctx.db.insert("marketplaceListingStates", {
         ownerId: "conflicted",
         platform: "bsc",
+        listingStartedAt: NOW,
         dormant: "sellerConflict",
         lastUpdated: NOW,
       });
@@ -646,6 +678,7 @@ describe("pollOwner", () => {
       await ctx.db.insert("marketplaceListingStates", {
         ownerId: "reauth_recent",
         platform: "bsc",
+        listingStartedAt: NOW,
         reauthPollAt: Date.now() - 10 * 60_000,
         lastUpdated: NOW,
       });
@@ -657,6 +690,7 @@ describe("pollOwner", () => {
       await ctx.db.insert("marketplaceListingStates", {
         ownerId: "reauth_due",
         platform: "bsc",
+        listingStartedAt: NOW,
         reauthPollAt: Date.now() - REAUTH_POLL_INTERVAL_MS - 1,
         lastUpdated: NOW,
       });

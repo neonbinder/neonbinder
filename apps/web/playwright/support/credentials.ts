@@ -12,11 +12,13 @@ import type { FlowEnv } from "./env";
 /** A cold marketplace login is a real ~22 s Puppeteer/SSO round trip (the flows' 30 s). */
 export const LIVE_LOGIN = 30_000;
 
-async function openCredentials(page: Page): Promise<void> {
+async function openCredentials(page: Page, gate = 10_000): Promise<void> {
   await page.goto("/profile/credentials");
-  // An in-session navigation, not a cold launch: the flows' 10 s.
+  // An in-session navigation, not a cold launch: the flows' 10 s. A page that
+  // has not loaded the app yet (a second page opened by a cleanup hook) passes
+  // `LAUNCH_GATE`.
   await expect(page.getByRole("heading", { name: "Profile Settings" })).toBeVisible({
-    timeout: 10_000,
+    timeout: gate,
   });
 }
 
@@ -56,4 +58,39 @@ export async function loginToSportLots(page: Page, env: FlowEnv): Promise<void> 
   await expect(page.getByText(/^Sign-ins to SportLots are benched for now/)).toBeVisible();
   await expect(page.getByRole("button", { name: "Test Credentials" })).toBeHidden();
   await expect(page.getByLabel(/SportLots Username/i)).toBeHidden();
+}
+
+/** Saving a sign-in through the seed hop signs in live to the marketplace (the bootstrap's 90 s). */
+export const SEED_SIGN_IN = 90_000;
+
+/**
+ * Remove the worker's BuySportsCards sign-in on Profile (Clear Credentials,
+ * confirmed). For NEO-370 this is how a collector STOPS listing: it also stops
+ * the sales poll and clears the start. Pair it with `saveBscSignIn` in a
+ * `finally`, so a worker is never left without its sign-in (R7). `gate` is
+ * the heading wait: `LAUNCH_GATE` on a page that has not loaded the app yet.
+ */
+export async function removeBscSignIn(page: Page, gate?: number): Promise<void> {
+  await openCredentials(page, gate);
+  // BuySportsCards is the default tab.
+  await expect(page.getByText("Connected to BuySportsCards")).toBeVisible();
+  const clear = page.getByRole("button", { name: "Clear Credentials" });
+  await expect(clear).toBeVisible({ timeout: LIVE_LOGIN });
+  await clear.click();
+  await page.getByRole("button", { name: "Yes, Clear" }).click();
+  await expect(page.getByText("Cleared your BuySportsCards connection.")).toBeVisible({ timeout: LIVE_LOGIN });
+  await expect(page.getByLabel(/BuySportsCards Username/)).toBeVisible();
+}
+
+/**
+ * Save the worker's BuySportsCards sign-in again, the way the bootstrap does:
+ * the `/testing/seed-credentials` hop (no password ever typed, GUIDE hard
+ * rule 7). The page must already be signed in. Lands on Profile → Credentials
+ * showing "Connected to BuySportsCards". Saving never starts listing.
+ */
+export async function saveBscSignIn(page: Page): Promise<void> {
+  await page.goto("/testing/seed-credentials?sites=buysportscards&redirect=/profile/credentials");
+  // The hop signs in to BuySportsCards live (SEED_SIGN_IN, GUIDE hard rule 3).
+  await expect(page.getByRole("heading", { name: "Profile Settings" })).toBeVisible({ timeout: SEED_SIGN_IN });
+  await expect(page.getByText("Connected to BuySportsCards")).toBeVisible();
 }

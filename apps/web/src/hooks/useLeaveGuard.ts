@@ -25,12 +25,38 @@ import { useEffect, useRef } from "react";
  *
  * A navigation done in code (`navigate()`) is not asked about: those are the
  * page's own moves, and it knows when it is guarding.
+ *
+ * After a Back/Forward "Stay", focus would be left on the document (the page
+ * may even have remounted). `onStay` parks it on a stable target: it runs on
+ * the first commit of the guarding component once history is back where the
+ * user was, whether the component survived the round trip or remounted, and
+ * again on later commits until it answers `true` (its target may not be drawn
+ * yet while the remounted page loads). A Stay not settled within
+ * `STAY_FOCUS_WINDOW_MS` is dropped.
  */
-export function useLeaveGuard(active: boolean, message: string): void {
+export function useLeaveGuard(
+  active: boolean,
+  message: string,
+  options: { onStay?: () => boolean } = {},
+): void {
   const messageRef = useRef(message);
+  const onStayRef = useRef(options.onStay);
   useEffect(() => {
     messageRef.current = message;
-  }, [message]);
+    onStayRef.current = options.onStay;
+  });
+
+  // Every commit: a Stay waiting to put focus back, once history is back.
+  useEffect(() => {
+    const pending = stayPending;
+    if (!pending) return;
+    if (Date.now() - pending.at > STAY_FOCUS_WINDOW_MS) {
+      stayPending = null;
+      return;
+    }
+    if (indexOf(window.history.state) !== pending.idx) return;
+    if (onStayRef.current?.() !== false) stayPending = null;
+  });
 
   useEffect(() => {
     if (!active) return;
@@ -71,6 +97,7 @@ export function useLeaveGuard(active: boolean, message: string): void {
         return;
       }
       restoring = true;
+      stayPending = { at: Date.now(), idx: here };
       window.history.go(here - to);
     };
 
@@ -84,6 +111,16 @@ export function useLeaveGuard(active: boolean, message: string): void {
     };
   }, [active]);
 }
+
+/** How long a Stay waits for the page to come back before its focus move is dropped. */
+export const STAY_FOCUS_WINDOW_MS = 2_000;
+
+/**
+ * A Back/Forward "Stay" whose focus move has not happened yet: when, and the
+ * history index it restores. Module state, because the guarding component
+ * may unmount and remount on the round trip.
+ */
+let stayPending: { at: number; idx: number } | null = null;
 
 function indexOf(state: unknown): number | null {
   const idx = (state as { idx?: unknown } | null)?.idx;

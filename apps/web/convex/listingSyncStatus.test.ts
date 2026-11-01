@@ -260,6 +260,17 @@ describe("syncStatus", () => {
     expect(p.sets[0].lastRunAt).toBe(STATUS_CAPS.sets);
     expect(p.sets.map((x) => x.lastRunAt)).not.toContain(0);
     expect(p.sets.every((x) => x.problems.length === STATUS_CAPS.problemsPerSet && x.problemsTotal === 12)).toBe(true);
+    // Queued cards are named (card + players) for the first `queuedLabelled` only; the rest carry ids, set and time.
+    expect(p.queued.cards.filter((c) => c.cardNo !== undefined)).toHaveLength(STATUS_CAPS.queuedLabelled);
+    expect(p.queued.cards.slice(STATUS_CAPS.queuedLabelled).every((c) => c.cardNo === undefined && c.cardLabel === undefined)).toBe(
+      true,
+    );
+    expect(p.queued.cards[STATUS_CAPS.queuedLabelled]).toEqual({
+      cardId: s.fx.gooden1,
+      variantId: s.fx.baseId,
+      setLabel: BASE_LABEL,
+      changedAt: 10_000 - STATUS_CAPS.queued + STATUS_CAPS.queuedLabelled,
+    });
     // Card names are read for the first `problemCards` problems; the rest carry the reason alone.
     const named = p.sets.flatMap((x) => x.problems).filter((x) => x.cardNo !== undefined);
     expect(named).toHaveLength(STATUS_CAPS.problemCards);

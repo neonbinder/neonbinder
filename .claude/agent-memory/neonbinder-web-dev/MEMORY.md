@@ -161,3 +161,4 @@
 - [sr-only escapes an unpositioned scroller](reference_sr_only_escapes_unpositioned_scroller.md) — overflow-x rail with sr-only kids widens the page unless the scroller is `relative`
 - [Leave hook survives StrictMode](reference_leave_hook_survives_strictmode.md) — leave-time writes in effect cleanup fire on dev double mount; defer + cancel by view id
 - [Unit axe helper](reference_unit_axe_helper.md) — lib/testing/axe.ts: axe in happy-dom, E2E tags, light+dark, no contrast; for states E2E cannot stage
+- [Mocked useConvex must be stable](reference_mocked_useconvex_must_be_stable.md) — fresh client per render loops an on-demand read effect; hoist it; inline .then in the effect

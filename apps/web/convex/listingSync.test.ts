@@ -117,10 +117,16 @@ function holdDrains() {
 async function runWalks(s: S) {
   for (let i = 0; i < 50; i += 1) {
     const rows = await s.t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect());
-    const page = rows.find((r) => r.name.includes("queueBoxesPage") && r.state.kind === "pending");
+    const page = rows.find(
+      (r) => (r.name.includes("queueBoxesPage") || r.name.includes("queueListedBoxPage")) && r.state.kind === "pending",
+    );
     if (!page) return;
     await s.t.run((ctx) => ctx.scheduler.cancel(page._id));
-    await s.t.mutation(internal.listingSync.queueBoxesPage, page.args[0] as never);
+    if (page.name.includes("queueListedBoxPage")) {
+      await s.t.mutation(internal.listingSync.queueListedBoxPage, page.args[0] as never);
+    } else {
+      await s.t.mutation(internal.listingSync.queueBoxesPage, page.args[0] as never);
+    }
   }
   throw new Error("the walk did not finish");
 }
@@ -457,6 +463,28 @@ describe("startListing", () => {
     expect((await s.me.query(api.listingSync.listingSettings, {})).bsc).toMatchObject({ listing: true });
   });
 
+  test("while NB has paused BuySportsCards: paused, nothing written", async () => {
+    const s = await fresh();
+    await connect(s);
+    await addTo(s, s.fx.gooden1, s.box);
+    const before = process.env[PAUSED_PLATFORMS_ENV];
+    process.env[PAUSED_PLATFORMS_ENV] = "buysportscards";
+    try {
+      expect(await s.me.mutation(api.listingSync.startListing, { platform: "bsc" })).toEqual({
+        started: false,
+        reason: "paused",
+      });
+    } finally {
+      if (before === undefined) delete process.env[PAUSED_PLATFORMS_ENV];
+      else process.env[PAUSED_PLATFORMS_ENV] = before;
+    }
+    expect(await states(s)).toEqual([]);
+    const walks = (await s.t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect())).filter((r) =>
+      r.name.includes("queueBoxesPage"),
+    );
+    expect(walks).toEqual([]);
+  });
+
   test("a second press keeps the first start and schedules no second walk", async () => {
     const s = await fresh();
     await connect(s);
@@ -588,8 +616,9 @@ describe("credentials: removing the sign-in stops listing, saving one starts not
 describe("setContainerListed", () => {
   const pendingWalks = async (s: S) =>
     (await s.t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect())).filter(
-      (r) => r.name.includes("queueBoxesPage") && r.state.kind === "pending",
+      (r) => (r.name.includes("queueBoxesPage") || r.name.includes("queueListedBoxPage")) && r.state.kind === "pending",
     );
+  const boxRow = (s: S) => s.t.run((ctx) => ctx.db.get(s.box));
 
   test("signed out, or another collector's box: refused", async () => {
     const s = await fresh();
@@ -644,6 +673,73 @@ describe("setContainerListed", () => {
     expect(await drainsEver(s)).toEqual([]);
   });
 
+  test("a run of flips while the box's walk is pending schedules no second walk; the walk follows the setting", async () => {
+    const s = await fresh();
+    await addTo(s, s.fx.gooden1, s.box);
+    await listOn(s);
+    holdDrains();
+    await s.me.mutation(api.collectionContainers.setContainerListed, { containerId: s.box, listed: false });
+    const stamped = (await boxRow(s))?.listedQueuedAt;
+    expect(stamped).toBeTypeOf("number");
+    await s.me.mutation(api.collectionContainers.setContainerListed, { containerId: s.box, listed: true });
+    await s.me.mutation(api.collectionContainers.setContainerListed, { containerId: s.box, listed: false });
+    const walks = await pendingWalks(s);
+    expect(walks).toHaveLength(1);
+    expect(walks[0].args[0]).toMatchObject({ listed: false, queuedAt: stamped, cursor: null });
+    // The setting ended where the walk started: it runs as scheduled, then clears the stamp.
+    await runWalks(s);
+    expect((await outbox(s)).map((r) => r.cardId)).toEqual([s.fx.gooden1]);
+    expect((await boxRow(s))?.listedQueuedAt).toBeUndefined();
+    // Done: the next flip walks again.
+    await s.me.mutation(api.collectionContainers.setContainerListed, { containerId: s.box, listed: true });
+    expect(await pendingWalks(s)).toHaveLength(1);
+  });
+
+  test("flipped back before the walk ran: that walk stops and one fresh walk carries the box's current setting", async () => {
+    const s = await fresh();
+    await addTo(s, s.fx.gooden1, s.box);
+    await listOn(s);
+    holdDrains();
+    await s.me.mutation(api.collectionContainers.setContainerListed, { containerId: s.box, listed: false });
+    await s.me.mutation(api.collectionContainers.setContainerListed, { containerId: s.box, listed: true });
+    const [first] = await pendingWalks(s);
+    await s.t.run((ctx) => ctx.scheduler.cancel(first._id));
+    await s.t.mutation(internal.listingSync.queueListedBoxPage, first.args[0] as never);
+    // The stale walk queued nothing and handed over to one walk at the current setting.
+    expect(await outbox(s)).toEqual([]);
+    const next = await pendingWalks(s);
+    expect(next).toHaveLength(1);
+    expect(next[0].args[0]).toMatchObject({ listed: true, cursor: null });
+    expect((next[0].args[0] as { queuedAt: number }).queuedAt).toBe((await boxRow(s))?.listedQueuedAt);
+    await runWalks(s);
+    expect((await outbox(s)).map((r) => r.cardId)).toEqual([s.fx.gooden1]);
+    expect((await boxRow(s))?.listedQueuedAt).toBeUndefined();
+  });
+
+  test("a walk whose stamp the box no longer carries stands down; a stamp over a minute old is replaced", async () => {
+    const s = await fresh();
+    await addTo(s, s.fx.gooden1, s.box);
+    await listOn(s);
+    holdDrains();
+    // A walk taken for dead: stamped long ago, never cleared.
+    await s.t.run((ctx) => ctx.db.patch(s.box, { listedQueuedAt: Date.now() - 61_000 }));
+    await s.me.mutation(api.collectionContainers.setContainerListed, { containerId: s.box, listed: false });
+    const walks = await pendingWalks(s);
+    expect(walks).toHaveLength(1);
+    const fresh_ = (await boxRow(s))?.listedQueuedAt as number;
+    expect(Date.now() - fresh_).toBeLessThan(61_000);
+    // The old walk's page, if it still ran, writes nothing.
+    await s.t.mutation(internal.listingSync.queueListedBoxPage, {
+      ownerId: ME.subject,
+      boxId: s.box,
+      listed: false,
+      queuedAt: fresh_ - 61_000,
+      cursor: null,
+    });
+    expect(await outbox(s)).toEqual([]);
+    expect((await boxRow(s))?.listedQueuedAt).toBe(fresh_);
+  });
+
   test("setting the value it already has writes and queues nothing", async () => {
     const s = await fresh();
     await addTo(s, s.fx.gooden1, s.box);
@@ -655,13 +751,14 @@ describe("setContainerListed", () => {
     expect(await outbox(s)).toEqual([]);
   });
 
-  test("not listing anywhere: the setting is saved and nothing is queued", async () => {
+  test("not listing anywhere: the setting is saved and nothing is queued or stamped", async () => {
     const s = await fresh();
     await addTo(s, s.fx.gooden1, s.box);
     await s.me.mutation(api.collectionContainers.setContainerListed, { containerId: s.box, listed: false });
     expect(await pendingWalks(s)).toEqual([]);
     expect(await outbox(s)).toEqual([]);
     expect((await s.t.run((ctx) => ctx.db.get(s.box)))?.listedOnMarketplaces).toBe(false);
+    expect((await boxRow(s))?.listedQueuedAt).toBeUndefined();
   });
 });
 
@@ -768,17 +865,55 @@ describe("syncVariant", () => {
     expect(await outbox(s)).toEqual([]);
   });
 
-  test("no record yet: a change queued in the last minute is not re-queued, only kicked", async () => {
+  test("no record yet, a change boxed seconds ago: the press is taken (queued) and runs the drain, nothing re-queued", async () => {
     const s = await fresh();
     holdDrains();
     await addTo(s, s.fx.gooden1, s.box);
     await listOn(s);
     await queueOne(s);
+    // Not "throttled": nothing has synced yet, and this press is what syncs it.
+    expect(await s.me.mutation(api.listingSync.syncVariant, { variantId: s.fx.baseId })).toEqual({ queued: true });
+    expect((await outbox(s)).map((r) => r.seq)).toEqual([1]);
+    expect(await drains(s)).toHaveLength(1);
+  });
+
+  test("throttled only when the press is dropped: a recent Sync press, or the set's run under way, kicks nothing", async () => {
+    const s = await fresh();
+    holdDrains();
+    await addTo(s, s.fx.gooden1, s.box);
+    await listOn(s);
+    const id = await record(s, { resyncRequestedAt: Date.now() - 5_000 });
     expect(await s.me.mutation(api.listingSync.syncVariant, { variantId: s.fx.baseId })).toEqual({
       queued: false,
       ignored: "throttled",
     });
-    expect((await outbox(s)).map((r) => r.seq)).toEqual([1]);
+    await s.t.run((ctx) =>
+      ctx.db.patch(id, { resyncRequestedAt: undefined, status: "running", leaseToken: "l", leaseExpiresAt: Date.now() + 60_000 }),
+    );
+    expect(await s.me.mutation(api.listingSync.syncVariant, { variantId: s.fx.baseId })).toEqual({
+      queued: false,
+      ignored: "throttled",
+    });
+    expect(await outbox(s)).toEqual([]);
+    expect(await drainsEver(s)).toEqual([]);
+  });
+
+  test("a set I hold no copy of and never synced: nothing to sync here, nothing written or kicked", async () => {
+    const s = await fresh();
+    holdDrains();
+    await listOn(s);
+    expect(await s.me.mutation(api.listingSync.syncVariant, { variantId: s.fx.baseId })).toEqual({ queued: false });
+    expect(await outbox(s)).toEqual([]);
+    expect(await drainsEver(s)).toEqual([]);
+  });
+
+  test("a set I synced before but hold nothing of now: woken, so its run sets BSC to zero", async () => {
+    const s = await fresh();
+    holdDrains();
+    await listOn(s);
+    await record(s);
+    expect(await s.me.mutation(api.listingSync.syncVariant, { variantId: s.fx.baseId })).toEqual({ queued: true });
+    expect((await outbox(s)).map((r) => r.variantId)).toEqual([s.fx.baseId]);
     expect(await drains(s)).toHaveLength(1);
   });
 
@@ -813,8 +948,10 @@ describe("syncVariant", () => {
     await listOn(s);
     await listOn(s, THEM.subject);
     const id = await record(s);
-    expect(await s.them.mutation(api.listingSync.syncVariant, { variantId: s.fx.baseId })).toEqual({ queued: true });
+    // They hold no copy and never synced it: nothing to sync, and my record is untouched.
+    expect(await s.them.mutation(api.listingSync.syncVariant, { variantId: s.fx.baseId })).toEqual({ queued: false });
     expect((await s.t.run((ctx) => ctx.db.get(id)))?.resyncRequestedAt).toBeUndefined();
+    expect(await outbox(s)).toEqual([]);
   });
 });
 

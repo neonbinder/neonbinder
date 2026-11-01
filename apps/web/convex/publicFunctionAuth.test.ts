@@ -2815,6 +2815,7 @@ describe("NEO-370: listing is the signed-in collector's own", () => {
 
   test.each([
     ["listingSync.ts", "queueBoxesPage", "internalMutation"],
+    ["listingSync.ts", "queueListedBoxPage", "internalMutation"],
     ["listingSync.ts", "clearOutboxPage", "internalMutation"],
     ["listingSync.ts", "queueVariantPage", "internalMutation"],
   ])("%s :: %s is declared %s", (file, fn, kind) => {

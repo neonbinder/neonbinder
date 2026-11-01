@@ -6,6 +6,7 @@ import {
   BSC_NAME,
   CONSENT_LINE,
   PAUSED_LINE,
+  PAUSED_START_LINE,
   REAUTH_LINE,
   SELLER_CONFLICT_LINE,
   listingDay,
@@ -24,7 +25,8 @@ import {
  *     sales (re-saving it needs Start again);
  *   - a seller account that lists from another NB account: said in place of
  *     Start, which the server would refuse;
- *   - a dead sign-in, or BSC paused for everyone: said beside the state.
+ *   - a dead sign-in, or BSC paused for everyone: said beside the state (a
+ *     Start pressed while paused is refused, and says so).
  *
  * The outcome of Start is said on a polite status line that is always in
  * the tree. When Start succeeds its button goes, so focus moves to this
@@ -64,6 +66,8 @@ export default function BscListingSection() {
             setSaid({ text: `You're live on ${BSC_NAME}. Your boxes go up within 15 minutes.`, tone: "ok" });
           } else if (result.reason === "sellerConflict") {
             setSaid({ text: SELLER_CONFLICT_LINE, tone: "warn" });
+          } else if (result.reason === "paused") {
+            setSaid({ text: PAUSED_START_LINE, tone: "warn" });
           } else {
             setSaid({ text: `Save your ${BSC_NAME} sign-in above first, then start listing.`, tone: "warn" });
           }
@@ -123,7 +127,16 @@ export default function BscListingSection() {
       {bsc.paused && <p className="text-sm text-notice-warn-ink">{PAUSED_LINE}</p>}
       {bsc.needsReauth && !bsc.paused && <p className="text-sm text-notice-warn-ink">{REAUTH_LINE}</p>}
 
-      <p role="status" className={said ? `text-sm ${said.tone === "ok" ? "text-notice-success-ink" : "text-notice-warn-ink"}` : "sr-only"}>
+      {/* Always mounted: a live region inserted with its text is unreliably
+          announced. A refusal is an alert; `key` remounts the node when the
+          tone (and so the role) changes. */}
+      <p
+        key={said?.tone ?? "idle"}
+        role={said?.tone === "warn" ? "alert" : "status"}
+        aria-live={said?.tone === "warn" ? undefined : "polite"}
+        aria-atomic="true"
+        className={said ? `text-sm ${said.tone === "ok" ? "text-notice-success-ink" : "text-notice-warn-ink"}` : "sr-only"}
+      >
         {said?.text ?? ""}
       </p>
     </section>

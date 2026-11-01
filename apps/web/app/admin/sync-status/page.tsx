@@ -1,6 +1,6 @@
-import { useCallback, useId, useMemo, useRef } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { useConvex, useQuery } from "convex/react";
-import { useSearchParams } from "react-router";
+import { Link, useSearchParams } from "react-router";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
 import { SkeletonBars } from "@/app/collection/final/catalog/Skeleton";
@@ -19,10 +19,14 @@ import { useDocumentTitle } from "@/src/hooks/useDocumentTitle";
  * The pick lives in the URL (`?owner=`), so a refresh or a pasted link
  * reopens the same collector. Picking under "Collector" is a filter, so it
  * replaces the entry; "See everything for <name>" from the everyone view is
- * a drill-down, so it pushes one and Back returns to everyone.
+ * a drill-down link, so it pushes one and Back returns to everyone.
  *
  * The everyone view gets short per-collector lists from the server (a few
- * queued cards and sets each); one collector's view gets the full ones.
+ * queued cards and sets each); one collector's view gets the full ones. The
+ * everyone read spans up to 25 collectors, so it is read once on demand
+ * (on arriving, and on "Refresh"), never subscribed: a subscription re-runs
+ * on every collector's writes (CLAUDE.md, NEO-392). One collector's view is
+ * small and stays live.
  *
  * The h1 lives in the section layout, so this heads its content with an h2.
  */
@@ -35,10 +39,47 @@ export default function AdminSyncStatusPage() {
   const [params, setParams] = useSearchParams();
   const owner = params.get("owner") ?? EVERYONE;
   const owners = useQuery(api.listingSync.adminSyncOwners, {});
-  const result = useQuery(api.listingSync.adminSyncStatus, owner ? { ownerId: owner } : {});
+  const one = useQuery(api.listingSync.adminSyncStatus, owner ? { ownerId: owner } : "skip");
   const convex = useConvex();
   const selectId = useId();
+  const sectionId = useId();
   const selectRef = useRef<HTMLSelectElement>(null);
+
+  // Everyone: read once on demand, on arriving (first load, or Back from one
+  // collector) and on each Refresh (`tick`). `asked` counts reads, so a slow
+  // answer never overwrites a newer one.
+  type Everyone = { result: NonNullable<typeof one>; at: number };
+  const [everyone, setEveryone] = useState<Everyone | undefined>(undefined);
+  const [reading, setReading] = useState(false);
+  const [readError, setReadError] = useState<string | null>(null);
+  const [tick, setTick] = useState(0);
+  const asked = useRef(0);
+  useEffect(() => {
+    if (owner) return;
+    const mine = ++asked.current;
+    convex
+      .query(api.listingSync.adminSyncStatus, {})
+      .then(
+        (read) => {
+          if (mine !== asked.current) return;
+          setEveryone({ result: read, at: Date.now() });
+          setReadError(null);
+        },
+        (error: unknown) => {
+          if (mine !== asked.current) return;
+          setReadError(error instanceof Error ? error.message : "the server didn't answer");
+        },
+      )
+      .finally(() => {
+        if (mine === asked.current) setReading(false);
+      });
+  }, [owner, convex, tick]);
+  const refresh = () => {
+    if (reading) return;
+    setReading(true);
+    setTick((n) => n + 1);
+  };
+  const result = owner ? one : everyone?.result;
 
   const pick = (next: string, replace = true) => {
     setParams(
@@ -52,11 +93,8 @@ export default function AdminSyncStatusPage() {
     );
   };
 
-  /** Drill from everyone into one collector, and land on the filter that now names them. */
-  const seeAll = (ownerId: string) => {
-    pick(ownerId, false);
-    requestAnimationFrame(() => selectRef.current?.focus());
-  };
+  /** After the drill-down link: land on the filter that now names the collector. */
+  const focusFilter = () => requestAnimationFrame(() => selectRef.current?.focus());
 
   const shown = useMemo(
     () => result?.owners.map((o) => ({ ownerId: o.ownerId, label: o.label, status: toSyncStatus(o.status) })),
@@ -108,12 +146,44 @@ export default function AdminSyncStatusPage() {
           </select>
         </label>
         {owners === undefined && <p className="pb-2 text-sm text-ink-3">Rounding up collectors…</p>}
+        {!owner && (
+          <NeonButton
+            type="button"
+            variant="secondary"
+            outline
+            onClick={refresh}
+            aria-disabled={reading || undefined}
+            aria-busy={reading || undefined}
+            className="min-h-11 sm:min-h-10"
+          >
+            Refresh
+          </NeonButton>
+        )}
+        {/* Always mounted, so the read time and a failed read are announced. */}
+        <p
+          key={readError ? "error" : "ok"}
+          role={readError ? "alert" : "status"}
+          aria-live={readError ? undefined : "polite"}
+          aria-atomic="true"
+          className={`pb-2 text-sm ${readError ? "text-notice-warn-ink" : "text-ink-3"}`}
+        >
+          {owner
+            ? ""
+            : readError
+              ? `Couldn't read everyone's sync status: ${readError}. Press Refresh to try again.`
+              : everyone
+                ? `As of ${new Date(everyone.at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}.`
+                : ""}
+        </p>
       </div>
 
       {shown === undefined ? (
-        <div aria-busy="true">
-          <SkeletonBars rows={6} />
-        </div>
+        // A first read that failed says so above; no skeleton waits on it.
+        readError && !owner ? null : (
+          <div aria-busy="true">
+            <SkeletonBars rows={6} />
+          </div>
+        )
       ) : shown.length === 0 ? (
         <p className="rounded-md border border-dashed border-rule-strong px-3 py-2 text-sm text-ink-3">
           {owner ? "Nothing synced for this collector yet." : "Nobody lists anywhere yet. Quiet on the wire."}
@@ -126,19 +196,17 @@ export default function AdminSyncStatusPage() {
             </p>
           )}
           {shown.map((o) => (
-            <section key={o.ownerId} aria-label={`Sync status for ${o.label}`} className="space-y-3">
+            <section key={o.ownerId} aria-labelledby={`${sectionId}-${o.ownerId}`} className="space-y-3">
               <div className="flex flex-wrap items-center justify-between gap-3">
-                <h3 className="min-w-0 break-words text-xl font-semibold">{o.label}</h3>
+                <h3 id={`${sectionId}-${o.ownerId}`} className="min-w-0 break-words text-xl font-semibold">
+                  {o.label}
+                </h3>
                 {!owner && (
-                  <NeonButton
-                    type="button"
-                    size="1"
-                    variant="secondary"
-                    outline
-                    onClick={() => seeAll(o.ownerId)}
-                    className="shrink-0 max-sm:min-h-11"
-                  >
-                    {`See everything for ${o.label}`}
+                  // A drill-down: a link that pushes history, so Back returns to everyone.
+                  <NeonButton asChild size="1" variant="secondary" outline className="shrink-0 max-sm:min-h-11">
+                    <Link to={`?owner=${encodeURIComponent(o.ownerId)}`} onClick={focusFilter}>
+                      {`See everything for ${o.label}`}
+                    </Link>
                   </NeonButton>
                 )}
               </div>

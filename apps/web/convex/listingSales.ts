@@ -5,10 +5,11 @@
  * Every 15 minutes (`crons.ts`) `pollAll` lists the owners with a BSC
  * listing state that is not dormant (`marketplaceListingStates` on
  * `by_platform_dormant_polled`, never-polled first) and schedules
- * `pollOwner` for each. A state row exists once the collector has started
- * listing; it is polled whenever it is not dormant, even after the sign-in
- * was removed and saved again but Start not pressed again (pushing needs
- * Start; listings left up can still sell). The credential
+ * `pollOwner` for each STARTED owner (`listingOutbox.pollsSales`: the poll
+ * takes the same consent as pushing). A state row exists once the collector
+ * has started listing; after the sign-in is removed and saved again it stays
+ * unpolled until they press Start again (the tick stamps it `lastPolledAt` so
+ * it moves to the back of the read, never holding a slot). The credential
  * gate: an owner with no saved BSC credentials is not polled (their state
  * goes dormant), and one whose session needs a fresh sign-in is polled at
  * most hourly (`reauthPollAt`), so a dead session is not logged into every
@@ -141,8 +142,10 @@ function pollGate(
 }
 
 /**
- * The 15-minute tick: one scheduled `pollOwner` per non-dormant owner with
- * a BSC listing state, through the credential gate. An owner with no saved
+ * The 15-minute tick: one scheduled `pollOwner` per started, non-dormant
+ * owner with a BSC listing state, through the credential gate. A row not
+ * started (a sign-in saved again without Start) is skipped and stamped
+ * `lastPolledAt`, so it moves to the back of the read. An owner with no saved
  * credentials goes dormant (and leaves the index the tick reads); one waiting
  * out the hourly re-sign-in limit is skipped but still stamped `lastPolledAt`,
  * so they move to the back of the queue rather than hold a slot every tick.
@@ -159,6 +162,11 @@ export const pollAll = internalMutation({
     const due: Array<Doc<"marketplaceListingStates">> = [];
     let skipped = 0;
     for (const state of states) {
+      if (!pollsSales(state)) {
+        await ctx.db.patch(state._id, { lastPolledAt: now, lastUpdated: now });
+        skipped += 1;
+        continue;
+      }
       const credential = await listingCredentialOf(ctx, state.ownerId, state.platform);
       const gate = pollGate(credential, state, now);
       if (gate === "noCredentials") {
@@ -280,11 +288,10 @@ export function projectBscOrder(order: BscOrder, fallbackDate: number | null): P
 }
 
 /**
- * Sales on `platform` are polled for the owner while their state row exists
- * and is not dormant, started or not (listings left up can still sell).
- * A row put to sleep (credentials cleared, a seller conflict) makes a poll
- * already under way stand down at its next write: no sale stored, no copy
- * lowered.
+ * Sales on `platform` are polled for the owner while they are started and
+ * their state row is not dormant (`pollsSales`). A row that stops (the
+ * sign-in cleared, a seller conflict) makes a poll already under way stand
+ * down at its next write: no sale stored, no copy lowered.
  */
 async function pollingOn(ctx: QueryCtx, ownerId: string, platform: Doc<"marketplaceSales">["platform"]): Promise<boolean> {
   const state = await ctx.db

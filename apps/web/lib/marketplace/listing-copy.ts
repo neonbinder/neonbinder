@@ -24,6 +24,8 @@ export const SELLER_CONFLICT_LINE = `That ${BSC_NAME} seller account already lis
 
 /** BSC is paused for everyone (NB's switch): changes wait, nothing is lost. */
 export const PAUSED_LINE = `${BSC_NAME} is on a break. Your changes wait here and go up when it's back.`;
+/** Start pressed while NB has paused the platform: nothing started. */
+export const PAUSED_START_LINE = `Hold up: ${BSC_NAME} is on a break, so listing didn't start. Press Start again once it's back.`;
 
 /** The saved sign-in died: nothing goes up until they sign in again. */
 export const REAUTH_LINE = `Your ${BSC_NAME} sign-in ran out, so nothing goes up until you sign in again.`;

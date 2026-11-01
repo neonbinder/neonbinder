@@ -76,6 +76,22 @@ export const RUN_PARAM = "run";
 const TILE_ATTR = "data-intake-tile";
 const REVIEW_HEADING_ID = "intake-needs-you";
 const PAIRING_HEADING_ID = "intake-pairing";
+/** Marks "Done adding photos" for focus moves (a control carries no DOM id). */
+const DONE_ATTR = "data-intake-done";
+
+/**
+ * After a Back the user answered "Stay" (`useLeaveGuard`): focus on "Done
+ * adding photos" when it is drawn, else the Pairing column's heading. False
+ * while neither is drawn yet (the page is still loading), so it is tried again.
+ */
+function parkAfterStay(): boolean {
+  const target =
+    document.querySelector<HTMLElement>(`[${DONE_ATTR}]`) ?? document.getElementById(PAIRING_HEADING_ID);
+  if (!target) return false;
+  target.focus({ preventScroll: true });
+  target.scrollIntoView?.({ block: "nearest" });
+  return true;
+}
 
 /**
  * NEO-411: a Try again moves the photo out of the pile, so its button unmounts
@@ -668,7 +684,9 @@ function RunWorkspace({ run, jobOpen }: { run: RunSummary; jobOpen: boolean }) {
   useEffect(() => {
     if (done && clear) doneRuns.delete(run._id);
   }, [done, clear, run._id]);
-  useLeaveGuard(done && !loading && !clear, LEAVE_INTAKE_LINE);
+  // A Back answered "Stay" leaves focus nowhere (the page may have remounted):
+  // park it on "Done adding photos" when it is drawn, else the first column's heading.
+  useLeaveGuard(done && !loading && !clear, LEAVE_INTAKE_LINE, { onStay: parkAfterStay });
 
   return (
     <div className="space-y-3">
@@ -702,6 +720,7 @@ function RunWorkspace({ run, jobOpen }: { run: RunSummary; jobOpen: boolean }) {
             variant="secondary"
             outline
             className="ml-auto"
+            {...{ [DONE_ATTR]: "" }}
             onClick={() => {
               markDone(true);
               void closeStream({ jobId: run.jobId }).catch((e: unknown) => {

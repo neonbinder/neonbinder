@@ -12,7 +12,10 @@ import type { Container } from "../data/types";
  *
  * Drawn as the binder settings' checkbox row (`BinderSettingsDialog`): a
  * native checkbox, so Space flips it; "Listed on marketplaces" is its name
- * and the line under it (what on or off means) its description. It saves as it is flipped and the status line says so. While the
+ * and the line under it (what on or off means) its description. The whole
+ * row is the hit area (a wrapping `<label>`, at least 44px tall on a phone);
+ * the name comes from the title alone (`aria-labelledby`), so the
+ * description is never read into it. It saves as it is flipped and the status line says so. While the
  * write is out the box shows the new state and ignores presses
  * (`aria-disabled`, never native `disabled`, so focus stays put); a refusal
  * puts it back and says why.
@@ -38,7 +41,7 @@ export default function BoxListedToggle({
   notify: (message: string) => void;
 }) {
   const noteId = useId();
-  const inputId = useId();
+  const titleId = useId();
   const listed = box.listedOnMarketplaces !== false;
   // The state being saved, shown at once; cleared when the write settles.
   const [saving, setSaving] = useState<boolean | null>(null);
@@ -58,14 +61,14 @@ export default function BoxListedToggle({
   };
 
   return (
-    <div className={`${CHOICE} mb-3 max-w-xl`}>
+    <label className={`${CHOICE} mb-3 max-w-xl max-sm:min-h-11`}>
       <input
-        id={inputId}
         type="checkbox"
         className="mt-0.5 h-4 w-4 cursor-pointer accent-selection"
         checked={shown}
         aria-disabled={saving !== null || undefined}
         aria-busy={saving !== null || undefined}
+        aria-labelledby={titleId}
         aria-describedby={noteId}
         // A press while saving must not even flicker the box.
         onClick={(e) => {
@@ -74,15 +77,15 @@ export default function BoxListedToggle({
         onChange={flip}
       />
       <span>
-        <label htmlFor={inputId} className="block cursor-pointer font-medium">
+        <span id={titleId} className="block font-medium">
           Listed on marketplaces
-        </label>
+        </span>
         <span id={noteId} className="block text-ink-3">
           {shown
             ? "Everything in this box lists on the marketplaces you sell on."
             : "In-person only. Nothing in this box lists online: its cards count 0 on every marketplace."}
         </span>
       </span>
-    </div>
+    </label>
   );
 }

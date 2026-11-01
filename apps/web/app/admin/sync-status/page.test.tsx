@@ -40,7 +40,12 @@ const PLATFORM = {
 const mocks = vi.hoisted(() => ({
   owners: undefined as { ownerId: string; label: string }[] | undefined,
   status: vi.fn(),
+  read: vi.fn(),
   problems: vi.fn(),
+  client: {
+    query: (ref: string, args: Args): unknown =>
+      ref === "listingSync:adminSyncStatus" ? mocks.read(args) : mocks.problems(args),
+  },
 }));
 
 vi.mock("@/convex/_generated/api", () => ({
@@ -53,9 +58,13 @@ vi.mock("@/convex/_generated/api", () => ({
   },
 }));
 
+// One collector is a live subscription; everyone is read once on demand
+// (`useConvex().query`), on arriving and on Refresh.
 vi.mock("convex/react", () => ({
-  useQuery: (ref: string, args: Args) => (ref === "listingSync:adminSyncOwners" ? mocks.owners : mocks.status(args)),
-  useConvex: () => ({ query: (_ref: string, args: Args) => mocks.problems(args) }),
+  useQuery: (ref: string, args: Args | "skip") =>
+    ref === "listingSync:adminSyncOwners" ? mocks.owners : args === "skip" ? undefined : mocks.status(args),
+  // Stable, as the real client is.
+  useConvex: () => mocks.client,
 }));
 
 import AdminSyncStatusPage from "./page";
@@ -96,6 +105,7 @@ function draw(start = "/admin/sync-status") {
   return { view, rerender: () => view.rerender(tree()) };
 }
 
+const flush = () => act(async () => {});
 const collector = () => screen.getByRole("combobox", { name: "Collector" }) as HTMLSelectElement;
 const url = () => screen.getByRole("status", { name: "Page URL" }).textContent;
 
@@ -116,27 +126,71 @@ beforeEach(() => {
         },
   );
   mocks.problems.mockResolvedValue({ problems: [], problemsTotal: 0 });
+  mocks.read.mockReset();
+  mocks.read.mockImplementation(async (args: Args) => mocks.status(args));
 });
 afterEach(cleanup);
 
 describe("admin Sync Status", () => {
   it("everyone: one section per collector, read-only, with a note when there are more", async () => {
     const { view, rerender } = draw();
+    await flush();
     expect(screen.getByRole("heading", { level: 2, name: "Sync Status" })).toBeTruthy();
     expect(collector().value).toBe("");
     expect(screen.getByRole("heading", { level: 3, name: "Doc's Cards" })).toBeTruthy();
     expect(screen.getAllByRole("heading", { level: 4, name: "BuySportsCards" })).toHaveLength(2);
-    // Read-only: no Sync, no link to anyone's Profile.
+    // Read-only: no Sync, and the only links are the drill-downs (none to anyone's Profile).
     expect(screen.queryByRole("button", { name: /^Sync/ })).toBeNull();
-    expect(screen.queryByRole("link")).toBeNull();
-    expect(within(screen.getByRole("region", { name: "Sync status for Doc's Cards" })).getByText("Not started")).toBeTruthy();
+    expect(screen.getAllByRole("link").map((a) => a.textContent)).toEqual([
+      "See everything for Doc's Cards",
+      "See everything for @straw",
+    ]);
+    // Each collector's section is named by its heading.
+    expect(within(screen.getByRole("region", { name: "Doc's Cards" })).getByText("Not started")).toBeTruthy();
     expect(screen.getByText(/^Showing the first 2 collectors\./)).toBeTruthy();
     expect(screen.getByText(/^Each collector's lists are cut short here\./)).toBeTruthy();
     await expectAccessibleInBothModes(view.container, { label: "admin Sync Status, everyone", rerender });
   });
 
+  it("everyone is read once on demand, not subscribed; Refresh reads it again", async () => {
+    draw();
+    await flush();
+    expect(mocks.read).toHaveBeenCalledTimes(1);
+    expect(mocks.read).toHaveBeenLastCalledWith({});
+    // Never a subscription to everyone.
+    expect(mocks.status.mock.calls.filter(([args]) => !(args as Args).ownerId)).toHaveLength(1);
+    let release: () => void = () => {};
+    mocks.read.mockImplementationOnce(
+      () => new Promise((r) => (release = () => r(mocks.status({})))),
+    );
+    const refresh = screen.getByRole("button", { name: "Refresh" });
+    fireEvent.click(refresh);
+    expect(refresh.getAttribute("aria-busy")).toBe("true");
+    // A second press while the read is out does nothing.
+    fireEvent.click(refresh);
+    expect(mocks.read).toHaveBeenCalledTimes(2);
+    await act(async () => release());
+    expect(refresh.getAttribute("aria-busy")).toBeNull();
+    expect(screen.getByText(/^As of /).getAttribute("role")).toBe("status");
+  });
+
+  it("a failed read says so in an alert, with Refresh to try again", async () => {
+    mocks.read.mockRejectedValueOnce(new Error("network down"));
+    draw();
+    await flush();
+    expect(screen.getByRole("alert").textContent).toBe(
+      "Couldn't read everyone's sync status: network down. Press Refresh to try again.",
+    );
+    expect(document.querySelector("[aria-busy='true']")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    await flush();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByRole("heading", { level: 3, name: "Doc's Cards" })).toBeTruthy();
+  });
+
   it("picking a collector filters to them, in the URL, replacing the entry", async () => {
     const { view, rerender } = draw();
+    await flush();
     fireEvent.change(collector(), { target: { value: "u2" } });
     expect(url()).toBe("?owner=u2");
     expect(mocks.status).toHaveBeenLastCalledWith({ ownerId: "u2" });
@@ -148,13 +202,17 @@ describe("admin Sync Status", () => {
     expect(screen.getByText("Admin hub")).toBeTruthy();
   });
 
-  it("See everything drills into one collector as a Back step", async () => {
+  it("See everything is a link that drills into one collector as a Back step", async () => {
     draw();
-    fireEvent.click(screen.getByRole("button", { name: "See everything for @straw" }));
+    await flush();
+    const drill = screen.getByRole("link", { name: "See everything for @straw" });
+    expect(drill.getAttribute("href")).toBe("/admin/sync-status?owner=u2");
+    fireEvent.click(drill);
     expect(url()).toBe("?owner=u2");
     expect(collector().value).toBe("u2");
-    // One collector's view: full lists, no drill button, no cut-short note.
-    expect(screen.queryByRole("button", { name: /^See everything for/ })).toBeNull();
+    // One collector's view: full lists, no drill link, no Refresh, no cut-short note.
+    expect(screen.queryByRole("link", { name: /^See everything for/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Refresh" })).toBeNull();
     expect(screen.queryByText(/^Each collector's lists are cut short here\./)).toBeNull();
     await act(async () => {
       await new Promise((r) => requestAnimationFrame(() => r(null)));
@@ -162,6 +220,7 @@ describe("admin Sync Status", () => {
     expect(document.activeElement).toBe(collector());
     fireEvent.click(screen.getByRole("button", { name: "Browser Back" }));
     expect(url()).toBe("");
+    await flush();
     expect(screen.getByRole("heading", { level: 3, name: "Doc's Cards" })).toBeTruthy();
   });
 
@@ -178,13 +237,14 @@ describe("admin Sync Status", () => {
     expect(mocks.problems).toHaveBeenCalledWith({ ownerId: "u2", variantId: "v1", platform: "bsc" });
   });
 
-  it("loading and empty, in plain words", () => {
-    mocks.status.mockReturnValue(undefined);
+  it("loading and empty, in plain words", async () => {
+    mocks.read.mockReturnValue(new Promise(() => {}));
     const loading = draw();
     expect(loading.view.container.querySelector("[aria-busy='true']")).not.toBeNull();
     cleanup();
-    mocks.status.mockReturnValue({ owners: [], more: false });
+    mocks.read.mockResolvedValue({ owners: [], more: false });
     draw();
+    await flush();
     expect(screen.getByText("Nobody lists anywhere yet. Quiet on the wire.")).toBeTruthy();
   });
 });

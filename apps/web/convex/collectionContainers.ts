@@ -671,9 +671,11 @@ export const setVisibility = mutation({
  *
  * A change queues every card in the box on every platform the collector has
  * started listing on (`listingSync.queueBoxForListing`), like a move does;
- * the next sync trigger pushes it. Setting it to what it already is writes
- * nothing. Refuses a binder (and the shelf rows, which are never boxes);
- * Unsorted is a box and takes it.
+ * the next sync trigger pushes it. Debounced per box: a flip while the box's
+ * last walk is still pending schedules nothing (that walk follows the box's
+ * current setting), so a run of flips is one walk, never one each. Setting it
+ * to what it already is writes nothing. Refuses a binder (and the shelf rows,
+ * which are never boxes); Unsorted is a box and takes it.
  */
 export const setContainerListed = mutation({
   args: { containerId: v.id("collectionContainers"), listed: v.boolean() },
@@ -692,7 +694,7 @@ export const setContainerListed = mutation({
       listedOnMarketplaces: args.listed ? undefined : false,
       lastUpdated: Date.now(),
     });
-    await queueBoxForListing(ctx, ownerId, row._id);
+    await queueBoxForListing(ctx, ownerId, row, args.listed);
     return null;
   },
 });

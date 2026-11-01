@@ -176,7 +176,8 @@ crons.daily(
  * minutes: the poll reads order history across ALL statuses back to a stored
  * cursor, so an order that ships inside the window is still caught. One
  * scheduled `pollOwner` per owner with BSC credentials saved and a listing
- * state (made by Start listing; not dormant: listings left up still sell);
+ * state that is started and not dormant (Start listing is the consent for
+ * both pushing and polling);
  * an owner with nothing new costs one history page. After each owner's poll
  * their listing drain runs when changes are queued (`finishPoll`): the
  * drain's only timed trigger, and what picks up an intake run left without

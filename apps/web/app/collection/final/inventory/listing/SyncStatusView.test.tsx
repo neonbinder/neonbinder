@@ -3,7 +3,7 @@ import { act, cleanup, fireEvent, render, screen, within } from "@testing-librar
 import { MemoryRouter } from "react-router";
 import { Theme } from "@radix-ui/themes";
 import SyncStatusView, { countsLine, platformState, setKind, setLine } from "./SyncStatusView";
-import SyncStatusTab from "./SyncStatusTab";
+import SyncStatusTab, { finishedLine } from "./SyncStatusTab";
 import { stubListing } from "./stubListing";
 import { PAUSED_LINE, PROBLEM_COPY, REAUTH_LINE, SELLER_CONFLICT_LINE, whenSynced } from "./copy";
 import { expectAccessibleInBothModes } from "@/lib/testing/axe";
@@ -80,7 +80,8 @@ function draw(status: SyncStatus, opts: { readOnly?: boolean; load?: () => Promi
   return { view, loadProblems, rerender: () => view.rerender(tree()) };
 }
 
-const section = (name: string) => screen.getByRole("region", { name });
+/** A platform's part, by its heading (the parts are plain sections, not named regions). */
+const section = (name: string) => screen.getByRole("heading", { name }).closest("section") as HTMLElement;
 const flush = () => act(async () => {});
 
 afterEach(cleanup);
@@ -158,10 +159,14 @@ describe("the Sync status screen", () => {
 
     const more = screen.getByRole("button", { name: "Show all 7 held back in 1990 Score Base" });
     expect(more.getAttribute("aria-expanded")).toBe("false");
+    expect(more.textContent).toBe("Show all 7 held back");
     fireEvent.click(more);
     expect(loadProblems).toHaveBeenCalledWith("v2", "bsc");
     await flush();
     expect(more.getAttribute("aria-expanded")).toBe("true");
+    // Open: the words say what a press does now; the name stays put.
+    expect(more.textContent).toBe("Show fewer");
+    expect(screen.getByRole("button", { name: "Show all 7 held back in 1990 Score Base" })).toBe(more);
     const list = document.getElementById(more.getAttribute("aria-controls")!)!;
     expect(within(list).getAllByRole("listitem")).toHaveLength(7);
     expect(list.textContent).toContain("#7 Tony Gwynn");
@@ -177,6 +182,12 @@ describe("the Sync status screen", () => {
     fireEvent.click(screen.getByRole("button", { name: "Show all 7 held back in 1990 Score Base" }));
     await flush();
     expect(screen.getByText(/^Couldn.t pull the full list\./)).toBeTruthy();
+  });
+
+  it("the platform's parts are not landmarks; the only regions are the platforms", () => {
+    draw({ platforms: [bsc({ sets: [set()] })] });
+    expect(screen.getAllByRole("region").map((r) => r.querySelector("h2")?.textContent)).toEqual(["BuySportsCards"]);
+    expect(screen.getByRole("list", { name: "Last sync by set" })).toBeTruthy();
   });
 
   it("empty: nothing queued, no sets yet, in NB's words", async () => {
@@ -254,6 +265,61 @@ describe("the Sync status tab", () => {
 
   it("draws nothing in a store with no listing (the demo)", () => {
     expect(tab(undefined, false).container.textContent).toBe("");
+  });
+
+  it("says once, politely, when one of my sets finishes or hits a snag; queue churn says nothing", () => {
+    const running = (over: Partial<SyncSetResult> = {}) => set({ status: "running", ...over });
+    const before: SyncStatus = {
+      platforms: [bsc({ sets: [running(), running({ variantId: "v3", setLabel: "1991 Fleer Base" }), set({ variantId: "v4" })] })],
+    };
+    const after: SyncStatus = {
+      platforms: [
+        bsc({
+          sets: [
+            set(),
+            set({ variantId: "v3", setLabel: "1991 Fleer Base", status: "error" }),
+            set({ variantId: "v4" }),
+          ],
+        }),
+      ],
+    };
+    expect(finishedLine(before, after)).toBe(
+      "1989 Upper Deck Base finished syncing with BuySportsCards. 1991 Fleer Base hit a snag syncing with BuySportsCards.",
+    );
+    // Nothing was running: nothing to say (a queued card coming or going included).
+    const churn: SyncStatus = {
+      platforms: [bsc({ sets: [set()], queued: { cards: [{ cardId: "c1", variantId: "v1", setLabel: "x", changedAt: T }], more: false } })],
+    };
+    expect(finishedLine({ platforms: [bsc({ sets: [set()] })] }, churn)).toBe("");
+    expect(finishedLine(undefined, after)).toBe("");
+
+    let current: SyncStatus = before;
+    const value = {
+      kind: "convex",
+      capabilities: REAL_CAPABILITIES,
+      data: {} as CollectionData,
+      actions: {},
+      listing: stubListing({ useSyncStatus: () => current }),
+    } as CollectionStoreValue;
+    const tree = () => (
+      <Theme>
+        <MemoryRouter>
+          <CollectionStoreContext.Provider value={value}>
+            <SyncStatusTab />
+          </CollectionStoreContext.Provider>
+        </MemoryRouter>
+      </Theme>
+    );
+    const view = render(tree());
+    const line = () => view.container.querySelector("div.space-y-4 > p[role='status']")!;
+    expect(line().textContent).toBe("");
+    current = after;
+    view.rerender(tree());
+    expect(line().textContent).toBe(finishedLine(before, after));
+    // A later read with nothing newly finished keeps the line (no re-announce, no clear).
+    current = { platforms: [bsc({ sets: after.platforms[0].sets })] };
+    view.rerender(tree());
+    expect(line().textContent).toBe(finishedLine(before, after));
   });
 
   it("loading shows a skeleton, then the platform", () => {

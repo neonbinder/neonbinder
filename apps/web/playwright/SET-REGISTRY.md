@@ -994,26 +994,31 @@ already-committed preview fails at the wizard wait, correctly.
 ### 1988 Topps Baseball — the BuySportsCards listing fixture (NEO-370) ✅ APPROVED by Jason 2026-11-01
 
 `tests/collection/inventory-bsc-listing-1988-topps-base.spec.ts` proves that a
-collector's box counts reach BuySportsCards. That cannot be proved on a
-hand-made set (no BSC card id, nothing to list), so it uses a real, synced one.
+collector's box counts reach BuySportsCards (NEO-370 Revision 4): Profile's
+"Start listing on BuySportsCards" under the consent warning, a box with the
+first two cards, the checklist's Sync and the Sync status tab's "2 listed",
+then the box's "Listed on marketplaces" turned off, Sync, and "0 listed ... 2
+taken to 0". That cannot be proved on a hand-made set (no BSC card id, nothing
+to list), so it uses a real, synced one.
 
 **Why this set.** Jason: there is so much of 1988 Topps on BSC that nothing
 sells from the two cards during a run, and the spec sets both back to 0 before
 it ends, even on failure. The seller account the spec lists on is the one the
 bootstrap saves for E2E; the spec never calls BSC itself, it lists through the
-product (leave the checklist, Resync).
+product (Start, Sync).
 
 | | |
 | -- | -- |
 | ancestors | `Baseball → 1988 → Topps → Topps` (BSC calls it "1988 Topps"; NB strips the year, as for "2024 Topps Chrome"). Reached with `drillToColdManufacturer` + `drillToBaseVariant` in the seed; the collector's `drillToCollectorBase(page, TOPPS_1988)` in the spec |
 | provisioned | `tests/setup.spec.ts`, before the Bowman block (that block returns early under a SportLots pause). Brand row hand-made under the pause, SportLots-linked when live, like 2024's |
-| what the SPEC writes | on BuySportsCards: the quantity (and the price and SKU the drain sends) of the **first two cards** of the Base checklist, 0 to 1 to 0. In NB: the signed-in user's own `collectionContainers` (one minted box `Bsc<token>`), `collectionCopies` (two box copies, one binder copy removed again), `variantCommonPrices` (set, then cleared) and `marketplaceListing*` rows (the account's switch and per-checklist record). It never writes the set's cards, players, teams or variants |
-| the cards | the first two rows in checklist order, read off the quantity fields' names, so the choice follows the seed. Their BSC rows are the only rows the spec's pushes change; a Resync (cleanup only) sets every row of the checklist to what NB holds, which is 0 beyond these two |
-| writer | **sole writer** of every BSC quantity for this set. No other spec, and no other session pointed at the same seller, may list or edit 1988 Topps there: a second writer turns a "1 listed" into a read-back mismatch. The seller account is shared by every worker, but only the worker running this spec writes. Desktop and mobile each run it once, in separate passes on separate seeds |
-| reads | no other spec reads the set. If one is added, it must not turn the account's listing switch on |
-| re-runs | **safe to re-run on the same seed**: the minted box differs per attempt, every count ends at 0 and the switch ends off. A failed run is cleaned by the spec's afterEach (see its header) |
-| cron | the 15-minute order poll and re-sync are deliberately NOT exercised (Jason, 2026-11-01); the account has listing off again before the spec ends, so a poll never meets this account |
-| measured | **Not yet.** Fill in after the first PR-preview run: (1) the seed block's wall time and the saved card count (`Saved N cards`) and the wizard steps it walked (it uses the live enrichment lookups: the committed recording holds none of this set's names, and extending it needs the set's staged names from a committed run, see `docs/operations/neo289-enrichment-fixtures.md` §4a); (2) one "leave → N listed" BSC round trip, the figure `BSC_ROUND_TRIP` in the spec is checked against; (3) whether the first two cards carry both a BSC card id and a SportLots one |
+| what the SPEC writes | on BuySportsCards: the quantity (and the price and SKU the drain sends) of the **first two cards** of the Base checklist, 0 to 1 to 0. In NB: the signed-in user's own rows: the **listing start** (`marketplaceListingStates`, pressed on Profile), one minted box `Bsc<token>` (set in-person mid-run, then emptied and deleted), two box `collectionCopies`, `variantCommonPrices` (set, then cleared) and `marketplaceListing*` records (outbox, per-set last result). It also **removes the worker's BuySportsCards sign-in and saves it again** (the `/testing/seed-credentials` hop; no password typed) in its afterEach, to stop listing. It never writes the set's cards, players, teams or variants |
+| the cards | the first two rows in checklist order, read off the quantity fields' names, so the choice follows the seed. Their BSC rows are the only rows the spec's pushes change; a Sync (the failure hook only) sets every row of the checklist to what NB holds, which is 0 beyond these two |
+| writer | **sole writer** of every BSC quantity for this set, and the only spec that **starts listing** or touches a worker's BSC sign-in outside `credentials-lifecycle` (its own `new-profile` account) and the bootstrap. No other spec, and no other session pointed at the same seller, may list or edit 1988 Topps there: a second writer turns a "2 listed" into a read-back mismatch. The seller account is shared by every worker, but only the worker running this spec writes (one NB account may list from a seller account at a time, so a second worker's Start would read "seller account in use"). Desktop and mobile each run it once, in separate passes on separate seeds |
+| reads | no other spec reads the set. A spec added later must not press "Start listing on BuySportsCards" and must not leave cards in a box, or a worker still listing would put them on real BSC |
+| end state | **connected to BSC and NOT listing, and every OTHER box the worker had (Unsorted included) left in-person.** Before pressing Start the spec opens each box except its own minted one and unchecks "Listed on marketplaces" (asserting each), because Start walks every card in a listed box and a worker's leftover stock would go up on real BSC; it does not turn them back on (that would re-queue their cards). The Up for Trade pile is not a box that lists and is left alone. **Connected and not listing:** The afterEach runs on a pass too: on a failure it first zeroes the touched rows (waits for a running sync, empties the box, Sync, waits for "0 listed"), then removes the sign-in (the only way to stop listing: it clears the start, drops the queue and stops the sales poll) and saves it again, and asserts Profile offers "Start listing" again |
+| re-runs | **safe to re-run on the same seed**: the minted box differs per attempt, every count ends at 0 and listing is stopped. A re-run's first step needs the account NOT listing, which the previous run's hook (or the bootstrap's per-user reset) guarantees |
+| cron | the 15-minute order poll and re-sync are deliberately NOT exercised (Jason, 2026-11-01); the account is not listing again before the spec ends, so a poll never meets this account |
+| measured | **Not yet.** Fill in after the first CI run: (1) the seed block's wall time and the saved card count (`Saved N cards`) and the wizard steps it walked (it uses the live enrichment lookups: the committed recording holds none of this set's names, and extending it needs the set's staged names from a committed run, see `docs/operations/neo289-enrichment-fixtures.md` §4a); (2) one "Sync → N listed" BSC round trip, the figure `BSC_ROUND_TRIP` in the spec is checked against, and the hook's sign-in remove + save-again time (`SEED_SIGN_IN` is the bootstrap's 90 s); (3) whether the first two cards carry both a BSC card id and a SportLots one; (4) whether the zeroing Sync reads "2 taken to 0" (one BSC row per card) |
 
 ### Topps 206 — the unmapped-Base fixture for `base-mapping-cancel-recovers` (NEO-248) ✅ APPROVED
 

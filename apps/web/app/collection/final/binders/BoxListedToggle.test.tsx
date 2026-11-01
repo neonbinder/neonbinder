@@ -66,6 +66,17 @@ describe("a box's Listed on marketplaces", () => {
     expect(notify).toHaveBeenCalledWith("Show box lists on your marketplaces again. Its cards go up on the next sync.");
   });
 
+  it("the whole row is the hit area: a press on its description flips it too", async () => {
+    const { setContainerListed } = draw(BOX);
+    const note = document.getElementById(box().getAttribute("aria-describedby")!)!;
+    expect(box().closest("label")?.contains(note)).toBe(true);
+    // The name is the title alone, never the description.
+    expect(box().getAttribute("aria-labelledby")).toBeTruthy();
+    fireEvent.click(note);
+    expect(setContainerListed).toHaveBeenCalledWith("box1", false);
+    await flush();
+  });
+
   it("a refusal puts it back and says why", async () => {
     const { notify } = draw(
       BOX,
