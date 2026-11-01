@@ -228,6 +228,11 @@ const PLAYWRIGHT_RESTRICTED_IMPORTS = {
       message:
         "support/theme-no-flash.ts reads under-the-covers state and is licensed (GUIDE rule 8) for home/theme-prepaint-script and profile/theme-saved-no-flash only. Prove a theme by what is painted (support/theme.ts).",
     },
+    {
+      group: ["**/convex-stall", "**/convex-stall.*", "**/hang-capture", "**/hang-capture.*"],
+      message:
+        "support/convex-stall.ts and support/hang-capture.ts intercept the Convex socket and read window.__NB_HANG; they are licensed (GUIDE rule 9, NEO-409) for diagnostics/convex-hang-detector-names-a-stalled-save and the shared fixture only.",
+    },
   ],
 };
 
@@ -276,6 +281,21 @@ const playwrightNoFlashSpecs = {
   files: [
     "playwright/tests/home/theme-prepaint-script.spec.ts",
     "playwright/tests/profile/theme-saved-no-flash.spec.ts",
+  ],
+  rules: {
+    "no-restricted-imports": ["error", { paths: [PLAYWRIGHT_TEST_IMPORT] }],
+  },
+};
+
+/**
+ * GUIDE rule 9 (NEO-409): the hang detector's own spec, and the stall helper
+ * it uses, may import the socket stall and the snapshot reader. Every other
+ * fence stays on.
+ */
+const playwrightHangDetectorSpec = {
+  files: [
+    "playwright/tests/diagnostics/convex-hang-detector-names-a-stalled-save.spec.ts",
+    "playwright/support/convex-stall.ts",
   ],
   rules: {
     "no-restricted-imports": ["error", { paths: [PLAYWRIGHT_TEST_IMPORT] }],
@@ -336,6 +356,7 @@ const eslintConfig = [
   playwrightRecommended,
   playwrightHouseRules,
   playwrightNoFlashSpecs,
+  playwrightHangDetectorSpec,
   playwrightFixturesFile,
   jsxA11yRecommended,
   jsxA11yHouseRules,

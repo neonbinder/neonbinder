@@ -30,6 +30,7 @@ export const E2E_DIAGNOSTIC_EVENTS: ReadonlySet<string> = new Set([
   "e2e_page_start",
   "e2e_column",
   "convex_client_reconnect",
+  "convex_call_hang",
   "selector_options_stall_backstop",
   "selector_sync_fe_timeout",
   "$exception",

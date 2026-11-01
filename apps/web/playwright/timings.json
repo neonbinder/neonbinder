@@ -30,6 +30,7 @@
     "collection/public-share-link.spec.ts": 49,
     "collection/smart-binder-find-cards.spec.ts": 25,
     "dashboard/view-collection.spec.ts": 4,
+    "diagnostics/convex-hang-detector-names-a-stalled-save.spec.ts": 11,
     "home/add-cards-demo.spec.ts": 25,
     "home/ai-identification.spec.ts": 4,
     "home/binder-tracking-demo-theme.spec.ts": 5,

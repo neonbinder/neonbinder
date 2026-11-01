@@ -16,13 +16,16 @@
 import { act, fireEvent, render } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const constructed: Array<{ close: ReturnType<typeof vi.fn> }> = [];
+type FakeClient = { close: ReturnType<typeof vi.fn>; args: unknown[] };
+const constructed: FakeClient[] = [];
 
 vi.mock("convex/react", () => ({
   ConvexReactClient: class {
     close = vi.fn().mockResolvedValue(undefined);
-    constructor() {
-      constructed.push(this as unknown as { close: ReturnType<typeof vi.fn> });
+    args: unknown[];
+    constructor(...args: unknown[]) {
+      this.args = args;
+      constructed.push(this as unknown as FakeClient);
     }
   },
 }));
@@ -152,5 +155,65 @@ describe("ConvexClientProvider — reconnect escalation (NEO-84)", () => {
     waitOutCooldown();
     requestReconnect();
     expect(constructed).toHaveLength(1 + MAX_CLIENT_RECONNECTS);
+  });
+});
+
+/**
+ * NEO-409 — the hang detector exists only on E2E builds. Real users get the
+ * plain client: no logger, no wrapper, no timer, nothing on the window.
+ */
+describe("ConvexClientProvider — hang detector only under E2E (NEO-409)", () => {
+  const hangWindow = () =>
+    (window as unknown as { __NB_HANG?: { snapshot?: unknown } }).__NB_HANG;
+
+  const clearWindow = () => {
+    delete (window as unknown as { __NB_HANG?: unknown }).__NB_HANG;
+  };
+  beforeEach(clearWindow);
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    clearWindow();
+  });
+
+  async function freshProvider() {
+    vi.resetModules();
+    return (await import("./ConvexClientProvider")).default;
+  }
+
+  it("builds the plain client for real users", async () => {
+    vi.stubEnv("VITE_CLERK_TESTING_ENABLED", "false");
+    const Provider = await freshProvider();
+    render(
+      <Provider>
+        <span />
+      </Provider>,
+    );
+    expect(constructed).toHaveLength(1);
+    expect(constructed[0].args).toHaveLength(1);
+    expect(hangWindow()).toBeUndefined();
+  });
+
+  it("gives the E2E client the detector's logger, and keeps one detector across a swap", async () => {
+    vi.stubEnv("VITE_CLERK_TESTING_ENABLED", "true");
+    const Provider = await freshProvider();
+    const { useConvexReconnect: useReconnect } = await import("./convexReconnect");
+    function FreshProbe() {
+      const reconnect = useReconnect();
+      return <button onClick={reconnect}>request reconnect</button>;
+    }
+    const utils = render(
+      <Provider>
+        <FreshProbe />
+      </Provider>,
+    );
+    const options = constructed[0].args[1] as { logger?: unknown };
+    expect(options.logger).toBeDefined();
+    expect(typeof hangWindow()?.snapshot).toBe("function");
+
+    act(() => {
+      fireEvent.click(utils.getByRole("button", { name: /request reconnect/i }));
+    });
+    expect(constructed).toHaveLength(2);
+    expect((constructed[1].args[1] as { logger?: unknown }).logger).toBe(options.logger);
   });
 });
