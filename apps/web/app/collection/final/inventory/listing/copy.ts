@@ -52,6 +52,9 @@ export function problemCardName(problem: Pick<ListingProblem, "cardId">, card: C
 export const CONSENT_LINE =
   `Switching on sets what you already list on ${BSC_NAME}, in any set you have in your boxes, to your box counts. A card that isn't in a box goes to 0.`;
 
+/** The seller account lists from another NB account: said wherever the switch or status is. */
+export const SELLER_CONFLICT_LINE = `That ${BSC_NAME} seller account already lists from another NeonBinder account, so nothing goes up or comes in from this one.`;
+
 /** When a change goes up, for the status line and the switch's note. */
 export const WHEN_IT_GOES_UP = "when you leave this checklist or within 15 minutes";
 

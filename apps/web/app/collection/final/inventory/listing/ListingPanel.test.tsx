@@ -4,7 +4,7 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { MemoryRouter } from "react-router";
 import { Theme } from "@radix-ui/themes";
 import ListingPanel, { statusLine } from "./ListingPanel";
-import { CONSENT_LINE, PROBLEM_COPY, problemSentence, saleItemProblem, whenSynced } from "./copy";
+import { CONSENT_LINE, SELLER_CONFLICT_LINE, PROBLEM_COPY, problemSentence, saleItemProblem, whenSynced } from "./copy";
 import { PageApiContext, type PageApi } from "../../pageApi";
 import {
   CollectionStoreContext,
@@ -28,7 +28,13 @@ import {
  */
 vi.mock("@clerk/clerk-react", () => ({ useAuth: () => ({ isLoaded: true, isSignedIn: true, userId: "user_1" }) }));
 
-const OFF: ListingPlatformSettings = { enabled: false, connected: true, needsReauth: false, paused: false };
+const OFF: ListingPlatformSettings = {
+  enabled: false,
+  connected: true,
+  needsReauth: false,
+  paused: false,
+  sellerConflict: false,
+};
 const ON: ListingPlatformSettings = { ...OFF, enabled: true };
 
 function card(id: string, cardNumber: string, player: string): Card {
@@ -48,7 +54,7 @@ function setup(opts: {
   settings?: ListingPlatformSettings;
   status?: VariantListingStatus;
   listing?: boolean;
-  resync?: () => Promise<number>;
+  resync?: () => Promise<{ queued: number; ignored: boolean }>;
   setEnabled?: () => Promise<void>;
   variantId?: string;
   strict?: boolean;
@@ -57,7 +63,7 @@ function setup(opts: {
   const state = { settings: opts.settings, status: opts.status, variantId: opts.variantId ?? "base1" };
   const notify = vi.fn();
   const setEnabled = vi.fn(opts.setEnabled ?? (async () => {}));
-  const resyncVariant = vi.fn(opts.resync ?? (async () => 2));
+  const resyncVariant = vi.fn(opts.resync ?? (async () => ({ queued: 2, ignored: false })));
   const flushListing = vi.fn(async () => {});
   const useVariantStatus = vi.fn(() => state.status);
   const listing: ListingExtension = {
@@ -296,11 +302,11 @@ describe("the listing panel", () => {
   });
 
   it("Resync keeps its focus and its words through a run, and presses do nothing meanwhile", async () => {
-    let release: (n: number) => void = () => {};
+    let release: (r: { queued: number; ignored: boolean }) => void = () => {};
     const { state, rerender, resyncVariant } = setup({
       settings: ON,
       status: IDLE,
-      resync: () => new Promise<number>((resolve) => (release = resolve)),
+      resync: () => new Promise((resolve) => (release = resolve)),
     });
     const button = screen.getByRole("button", { name: "Resync Base with BuySportsCards" }) as HTMLButtonElement;
     button.focus();
@@ -313,7 +319,7 @@ describe("the listing panel", () => {
     expect(resyncVariant).toHaveBeenCalledTimes(1);
     state.status = { pending: false, run: { status: "running", problems: [], problemsTotal: 0 } };
     rerender();
-    await act(async () => release(2));
+    await act(async () => release({ queued: 2, ignored: false }));
     expect(isInert(button)).toBe(true);
     expect(document.activeElement).toBe(button);
     state.status = IDLE;
@@ -340,6 +346,48 @@ describe("the listing panel", () => {
     expect(screen.getByRole("status").textContent).toBe(
       "BuySportsCards is on a break. Changes wait here and go up when it's back.",
     );
+  });
+
+  it("a Resync the server let pass (a run going, or pressed within a minute) never claims one started", async () => {
+    const { notify } = setup({ settings: ON, status: IDLE, resync: async () => ({ queued: 0, ignored: true }) });
+    fireEvent.click(screen.getByRole("button", { name: "Resync Base with BuySportsCards" }));
+    await flush();
+    expect(notify).toHaveBeenCalledWith(
+      "Hang on: Base is syncing with BuySportsCards or just did. Try again in a minute.",
+    );
+  });
+
+  it("a refused switch-on says the server's words in a toast", async () => {
+    const { notify } = setup({
+      settings: OFF,
+      setEnabled: async () => {
+        throw Object.assign(new Error("refused"), { data: { code: "invalid", message: "Already listing elsewhere." } });
+      },
+    });
+    fireEvent.click(screen.getByRole("switch", { name: "List on BuySportsCards" }));
+    await flush();
+    expect(notify).toHaveBeenCalledWith("Already listing elsewhere.");
+  });
+
+  it("a seller account listing from another NeonBinder account: the switch is off limits and says why", () => {
+    const { setEnabled } = setup({ settings: { ...OFF, sellerConflict: true } });
+    const toggle = screen.getByRole("switch", { name: "List on BuySportsCards" }) as HTMLInputElement;
+    expect(toggle.disabled).toBe(false);
+    expect(isInert(toggle)).toBe(true);
+    fireEvent.click(toggle);
+    expect(setEnabled).not.toHaveBeenCalled();
+    expect(document.getElementById(toggle.getAttribute("aria-describedby")!)?.textContent).toBe(SELLER_CONFLICT_LINE);
+    // Nothing to consent to: it can't switch on.
+    expect(screen.queryByText(CONSENT_LINE)).toBeNull();
+  });
+
+  it("listing on but resting for a seller conflict: the status line says why and Resync waits", () => {
+    const { resyncVariant } = setup({ settings: { ...ON, sellerConflict: true }, status: { ...IDLE, pending: true } });
+    expect(screen.getByRole("status").textContent).toBe(SELLER_CONFLICT_LINE);
+    const button = screen.getByRole("button", { name: "Resync Base with BuySportsCards" });
+    expect(isInert(button)).toBe(true);
+    fireEvent.click(button);
+    expect(resyncVariant).not.toHaveBeenCalled();
   });
 
   it("a sign-in that ran out says so, with the way back, and Resync is described by it", () => {

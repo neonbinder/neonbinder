@@ -3,7 +3,7 @@ import { Link } from "react-router";
 import { writeErrorMessage, type ListingExtension } from "../../data/store";
 import type { ListingPlatformSettings } from "../../data/types";
 import { usePageApi } from "../../pageApi";
-import { BSC_NAME, CONSENT_LINE, CREDENTIALS_PATH } from "./copy";
+import { BSC_NAME, CONSENT_LINE, CREDENTIALS_PATH, SELLER_CONFLICT_LINE } from "./copy";
 
 /**
  * NEO-370 — "List on BuySportsCards": the collector's own switch, off until
@@ -17,7 +17,9 @@ import { BSC_NAME, CONSENT_LINE, CREDENTIALS_PATH } from "./copy";
  * its name. While a flip is on its way, or with no saved BSC sign-in, it is
  * `aria-disabled` (never native `disabled`): it stays in the tab order so
  * the note saying why is reachable, and a press does nothing. A sign-in that
- * ran out, or BSC paused for everyone, is said beside it.
+ * ran out, BSC paused for everyone, or a seller account that already lists
+ * from another NB account (it can't be switched on then, as with no
+ * sign-in), is said beside it.
  */
 export default function ListingSwitch({
   listing,
@@ -33,7 +35,7 @@ export default function ListingSwitch({
   const [busy, setBusy] = useState(false);
   const noteId = useId();
   const on = settings.enabled;
-  const inert = busy || (!on && !settings.connected);
+  const inert = busy || (!on && (!settings.connected || settings.sellerConflict));
 
   const flip = () => {
     if (inert) return;
@@ -51,7 +53,7 @@ export default function ListingSwitch({
       .finally(() => setBusy(false));
   };
 
-  const note = !settings.connected
+  const note = !settings.connected || settings.sellerConflict
     ? null
     : settings.paused
       ? `${BSC_NAME} is on a break. Your changes wait here and go up when it's back.`
@@ -61,7 +63,7 @@ export default function ListingSwitch({
           ? `Changes go up when you leave a checklist, or within 15 minutes, and sales land in Sales. Switching off stops sending your counts; sales still come in and come out of your boxes while your ${BSC_NAME} sign-in is saved.`
           : `Every card in your boxes lists at its box count, priced at its minimum or the checklist's common price.`;
   // Said before the switch goes on, wherever it is drawn.
-  const consent = settings.connected && !on ? CONSENT_LINE : null;
+  const consent = settings.connected && !settings.sellerConflict && !on ? CONSENT_LINE : null;
 
   return (
     <div className="space-y-1.5">
@@ -74,7 +76,9 @@ export default function ListingSwitch({
             checked={on}
             aria-disabled={inert || undefined}
             aria-busy={busy || undefined}
-            aria-describedby={note || consent || !settings.connected || settings.needsReauth ? noteId : undefined}
+            aria-describedby={
+              note || consent || !settings.connected || settings.sellerConflict || settings.needsReauth ? noteId : undefined
+            }
             // A press while inert must not even flicker the box.
             onClick={(e) => {
               if (inert) e.preventDefault();
@@ -104,6 +108,8 @@ export default function ListingSwitch({
               Connect {BSC_NAME} on your Profile
             </Link>
           </p>
+        ) : settings.sellerConflict ? (
+          <p className="text-neon-yellow-text">{SELLER_CONFLICT_LINE}</p>
         ) : (
           settings.needsReauth && (
             <p className="text-neon-yellow-text">

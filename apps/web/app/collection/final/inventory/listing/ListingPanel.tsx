@@ -6,7 +6,15 @@ import { FOCUS } from "../../../prototypes/p1/ui";
 import { useListing, writeErrorMessage, type ListingExtension } from "../../data/store";
 import type { Card, CardId, ListingPlatformSettings, ListingProblem, VariantId, VariantListingStatus } from "../../data/types";
 import { usePageApi } from "../../pageApi";
-import { BSC_NAME, CREDENTIALS_PATH, WHEN_IT_GOES_UP, problemCardName, problemSentence, whenSynced } from "./copy";
+import {
+  BSC_NAME,
+  CREDENTIALS_PATH,
+  SELLER_CONFLICT_LINE,
+  WHEN_IT_GOES_UP,
+  problemCardName,
+  problemSentence,
+  whenSynced,
+} from "./copy";
 import ListingSwitch from "./ListingSwitch";
 
 /**
@@ -146,11 +154,12 @@ function Panel({
 
 /** What the status line says about a checklist that lists on BSC. It carries the timing; toasts only confirm. */
 export function statusLine(
-  settings: Pick<ListingPlatformSettings, "paused" | "needsReauth">,
+  settings: Pick<ListingPlatformSettings, "paused" | "needsReauth"> & Partial<Pick<ListingPlatformSettings, "sellerConflict">>,
   status: VariantListingStatus,
   now: number = Date.now(),
 ): string {
   const { run, pending } = status;
+  if (settings.sellerConflict) return SELLER_CONFLICT_LINE;
   if (settings.paused) return `${BSC_NAME} is on a break. Changes wait here and go up when it's back.`;
   // A dead sign-in sends nothing: never promise "soon" then.
   const soon =
@@ -202,7 +211,7 @@ function Listed({
   const statusId = useId();
   const reauthId = useId();
   const running = status?.run?.status === "running";
-  const blocked = settings.paused || settings.needsReauth;
+  const blocked = settings.paused || settings.needsReauth || settings.sellerConflict;
   const working = busy || running;
   // aria-disabled, never native disabled: Resync keeps focus through a run,
   // and its description (the status line) stays reachable.
@@ -226,9 +235,13 @@ function Listed({
     listing
       .resyncVariant(variantId)
       .then(
-        (queued) =>
+        ({ queued, ignored }) =>
           api.notify(
-            queued > 0 ? `Resyncing ${title} with ${BSC_NAME}.` : `Nothing in ${title} can go to ${BSC_NAME} yet.`,
+            ignored
+              ? `Hang on: ${title} is syncing with ${BSC_NAME} or just did. Try again in a minute.`
+              : queued > 0
+                ? `Resyncing ${title} with ${BSC_NAME}.`
+                : `Nothing in ${title} can go to ${BSC_NAME} yet.`,
           ),
         (error: unknown) => api.notify(writeErrorMessage(error)),
       )

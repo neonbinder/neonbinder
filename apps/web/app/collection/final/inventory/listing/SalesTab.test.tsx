@@ -3,7 +3,7 @@ import { cleanup, fireEvent, render, screen, within } from "@testing-library/rea
 import { MemoryRouter } from "react-router";
 import { Theme } from "@radix-ui/themes";
 import SalesTab from "./SalesTab";
-import { BSC_ORDERS_URL } from "./copy";
+import { BSC_ORDERS_URL, SELLER_CONFLICT_LINE } from "./copy";
 import { PageApiContext, type PageApi } from "../../pageApi";
 import {
   CollectionStoreContext,
@@ -11,7 +11,14 @@ import {
   type CollectionStoreValue,
   type ListingExtension,
 } from "../../data/store";
-import { REAL_CAPABILITIES, type Card, type CardId, type Sale, type SalesPage } from "../../data/types";
+import {
+  REAL_CAPABILITIES,
+  type Card,
+  type CardId,
+  type ListingPlatformSettings,
+  type Sale,
+  type SalesPage,
+} from "../../data/types";
 
 /**
  * NEO-370 — the Sales tab: the listing switch, then the collector's orders
@@ -45,16 +52,21 @@ function sale(over: Partial<Sale> & Pick<Sale, "id" | "orderNo">): Sale {
   };
 }
 
-function setup(initial: Partial<SalesPage>, opts: { listing?: boolean } = {}) {
+function setup(
+  initial: Partial<SalesPage>,
+  opts: { listing?: boolean; settings?: ListingPlatformSettings } = {},
+) {
   // What the stub store answers; change it and call `rerender()`.
   const state: { page: Partial<SalesPage> } = { page: initial };
   const loadMore = vi.fn();
   const useCards = vi.fn((ids: readonly CardId[] | null) => ids?.map((id) => (id === "c1" ? GOODEN : null)));
   const listing: ListingExtension = {
-    useSettings: () => ({ bsc: { enabled: true, connected: true, needsReauth: false, paused: false } }),
+    useSettings: () => ({
+      bsc: opts.settings ?? { enabled: true, connected: true, needsReauth: false, paused: false, sellerConflict: false },
+    }),
     setEnabled: vi.fn(async () => {}),
     useVariantStatus: () => undefined,
-    resyncVariant: vi.fn(async () => 0),
+    resyncVariant: vi.fn(async () => ({ queued: 0, ignored: false })),
     flushListing: vi.fn(async () => {}),
     useSales: () => ({ sales: [], canLoadMore: false, loadingMore: false, loadMore, ...state.page }),
   };
@@ -103,6 +115,13 @@ describe("the Sales tab", () => {
     expect(link.getAttribute("href")).toBe(BSC_ORDERS_URL);
     expect(link.getAttribute("target")).toBe("_blank");
     expect(screen.queryByRole("button", { name: "Show more sales" })).toBeNull();
+  });
+
+  it("a seller conflict shows on the Sales tab's switch, which stays focusable but off limits", () => {
+    setup({ sales: [] }, { settings: { enabled: false, connected: true, needsReauth: false, paused: false, sellerConflict: true } });
+    const toggle = screen.getByRole("switch", { name: "List on BuySportsCards" });
+    expect(toggle.getAttribute("aria-disabled")).toBe("true");
+    expect(document.getElementById(toggle.getAttribute("aria-describedby")!)?.textContent).toBe(SELLER_CONFLICT_LINE);
   });
 
   it("the first page loading shows a skeleton, not the empty note", () => {

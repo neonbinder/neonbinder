@@ -923,6 +923,11 @@ export interface ListingPlatformSettings {
   needsReauth: boolean;
   /** NB has paused the platform for everyone; changes wait until it is back. */
   paused: boolean;
+  /**
+   * Their seller account already lists from another NeonBinder account, so
+   * this one can't: switching on is refused, and a running listing rests.
+   */
+  sellerConflict: boolean;
 }
 
 export type ListingSettings = Record<ListingPlatform, ListingPlatformSettings>;

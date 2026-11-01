@@ -2841,8 +2841,8 @@ function useConvexListing(): ListingExtension {
         await setEnabled({ platform, enabled });
       },
       async resyncVariant(variantId) {
-        const { queued } = await resync({ variantId: variantId as Id<"selectorOptions"> });
-        return queued;
+        const { queued, ignored } = await resync({ variantId: variantId as Id<"selectorOptions"> });
+        return { queued, ignored: ignored === true };
       },
       async flushListing() {
         await flush({});

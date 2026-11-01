@@ -517,8 +517,12 @@ export interface ListingExtension {
   setEnabled(platform: ListingPlatform, enabled: boolean): Promise<void>;
   /** One checklist's last push and whether a change is waiting; `null` asks nothing. */
   useVariantStatus(variantId: VariantId | null): VariantListingStatus | undefined;
-  /** Forget the checklist's last clean push and send it again. Resolves with the cards queued. */
-  resyncVariant(variantId: VariantId): Promise<number>;
+  /**
+   * Forget the checklist's last clean push and send it again. Resolves with
+   * the cards queued; `ignored` when the server let it pass (a run is going,
+   * or Resync was pressed within the last minute).
+   */
+  resyncVariant(variantId: VariantId): Promise<{ queued: number; ignored: boolean }>;
   /**
    * Send the collector's waiting changes now, rather than within 15 minutes.
    * The checklist calls it as the collector leaves (best effort: a closing
