@@ -643,7 +643,7 @@ jobs:
 
       - name: Upload Convex latency probe (desktop seed)
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: convex-probe-seed-desktop
           path: apps/web/convex-probe-seed-desktop.jsonl.gz
@@ -1018,7 +1018,7 @@ jobs:
 
       - name: Upload Convex latency probe (desktop shard ${{ matrix.shard }})
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: convex-probe-desktop-${{ matrix.shard }}
           path: apps/web/convex-probe-desktop-${{ matrix.shard }}.jsonl.gz
@@ -1341,7 +1341,7 @@ jobs:
 
       - name: Upload Convex latency probe (mobile seed)
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: convex-probe-seed-mobile
           path: apps/web/convex-probe-seed-mobile.jsonl.gz
@@ -1682,7 +1682,7 @@ jobs:
 
       - name: Upload Convex latency probe (mobile shard ${{ matrix.shard }})
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: convex-probe-mobile-${{ matrix.shard }}
           path: apps/web/convex-probe-mobile-${{ matrix.shard }}.jsonl.gz
