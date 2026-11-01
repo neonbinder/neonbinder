@@ -417,6 +417,8 @@ export interface CollectionActions {
   declineCard(container: Container, cardId: CardId): Promise<UpdateResult>;
   /** Pulls a declined card back into Find cards. */
   undeclineCard(container: Container, cardId: CardId): Promise<UpdateResult>;
+  /** NEO-410 — recompute a smart binder's empty slots after a recompute failed ("Try again"). */
+  retryBinderFits(container: Container): Promise<void>;
 
   // --- NEO-378 ---------------------------------------------------------------
 

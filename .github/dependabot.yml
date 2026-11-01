@@ -31,6 +31,14 @@ updates:
     groups:
       web-minor-patch:
         update-types: ["minor", "patch"]
+    ignore:
+      # NEO-411: convex/adapters/preprocess.ts hands an undici Agent to Node's
+      # BUILT-IN fetch as its `dispatcher`, which only works while the package
+      # and the runtime's bundled undici share a major. Convex runs Node 22
+      # (convex.json), which bundles undici 6. Move this pin by hand, with
+      # convex.json's nodeVersion, never as a Dependabot major bump.
+      - dependency-name: "undici"
+        update-types: ["version-update:semver-major"]
 
   # Browser automation service (Puppeteer + Express)
   - package-ecosystem: npm

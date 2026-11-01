@@ -201,6 +201,7 @@ function makeStore({
     setSmartRule: vi.fn(async () => ({ undo })),
     declineCard: vi.fn(async () => ({ undo })),
     undeclineCard: vi.fn(async () => ({ undo })),
+    retryBinderFits: vi.fn(async () => {}),
     setCommonPrice: vi.fn(async () => ({ undo })),
   } satisfies CollectionActions;
   const wants: Want[] = [];

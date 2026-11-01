@@ -34,6 +34,9 @@ const mockState = vi.hoisted(() => ({
   /** Calls the mocked `touchJobActivity` recorded, and whether it should throw. */
   touchCalls: [] as string[],
   touchThrows: false,
+  /** NEO-411: calls the mocked `noteHeavyStart` recorded, and whether it should throw. */
+  noteCalls: [] as Array<{ jobId: string; entryIndex: number }>,
+  noteThrows: false,
 }));
 
 vi.mock("./adapters/preprocess", async (importOriginal) => {
@@ -64,6 +67,15 @@ vi.mock("./placeholderPipeline", async (importOriginal) => {
         return null;
       },
     }),
+    noteHeavyStart: internalMutation({
+      args: { jobId: v.string(), entryIndex: v.number() },
+      returns: v.null(),
+      handler: async (_ctx, args) => {
+        mockState.noteCalls.push(args);
+        if (mockState.noteThrows) throw new Error("note mutation failed");
+        return null;
+      },
+    }),
   };
 });
 
@@ -81,6 +93,8 @@ beforeEach(() => {
   mockState.warmupResult = { warmed: true };
   mockState.touchCalls = [];
   mockState.touchThrows = false;
+  mockState.noteCalls = [];
+  mockState.noteThrows = false;
 });
 
 afterEach(() => {
@@ -165,6 +179,20 @@ describe("processHeavyEntryWorker", () => {
 
     expect(result).toEqual({ needs_escalation: false, dhash: "abc123" });
     expect(mockState.touchCalls).toEqual([]);
+  });
+
+  test("NEO-411: stamps the photo's heavy start before calling, and a failed stamp does not stop the call", async () => {
+    const t = convexTest(schema, modules);
+
+    await t.action(internal.placeholderBatch.processHeavyEntryWorker, ARGS);
+    expect(mockState.noteCalls).toEqual([{ jobId: JOB_A, entryIndex: 0 }]);
+
+    mockState.noteThrows = true;
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const result = await t.action(internal.placeholderBatch.processHeavyEntryWorker, ARGS);
+    expect(result).toEqual({ needs_escalation: false });
+    expect(mockState.heavyCalls).toHaveLength(2);
+    expect(warn.mock.calls.some((c) => String(c[0]).includes("preprocess_heavy_note_start_failed"))).toBe(true);
   });
 
   test("NEO-315 D4: passes the fast baseline and dHash straight to the heavy call", async () => {

@@ -35,6 +35,7 @@ import type * as backfillBrandUnknownRole from "../backfillBrandUnknownRole.js";
 import type * as backfillBscAttributeFeatures from "../backfillBscAttributeFeatures.js";
 import type * as backfillCardFeatures from "../backfillCardFeatures.js";
 import type * as backfillCopyCondition from "../backfillCopyCondition.js";
+import type * as backfillFitsState from "../backfillFitsState.js";
 import type * as backfillKnownBrands from "../backfillKnownBrands.js";
 import type * as backfillPromotedParallelFacet from "../backfillPromotedParallelFacet.js";
 import type * as backfillVariantFacetAndBaseRole from "../backfillVariantFacetAndBaseRole.js";
@@ -204,6 +205,7 @@ declare const fullApi: ApiFromModules<{
   backfillBscAttributeFeatures: typeof backfillBscAttributeFeatures;
   backfillCardFeatures: typeof backfillCardFeatures;
   backfillCopyCondition: typeof backfillCopyCondition;
+  backfillFitsState: typeof backfillFitsState;
   backfillKnownBrands: typeof backfillKnownBrands;
   backfillPromotedParallelFacet: typeof backfillPromotedParallelFacet;
   backfillVariantFacetAndBaseRole: typeof backfillVariantFacetAndBaseRole;

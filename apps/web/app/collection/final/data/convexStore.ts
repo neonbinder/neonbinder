@@ -1038,7 +1038,14 @@ export const CONVEX_DATA: CollectionData = {
         cards.push(card);
         if (need.held) held.add(card.id);
       }
-      return { cards, held, supported: raw.supported, truncated: raw.truncated, pending: raw.pending === true };
+      return {
+        cards,
+        held,
+        supported: raw.supported,
+        truncated: raw.truncated,
+        pending: raw.pending === true,
+        failed: raw.failed === true,
+      };
     }, [containerId, raw]);
   },
 
@@ -2005,6 +2012,7 @@ function useConvexActions(): CollectionActions {
   const setRule = useMutation(api.collectionContainers.setRule);
   const declineCard = useMutation(api.binderRules.decline);
   const undeclineCard = useMutation(api.binderRules.undecline);
+  const retryBinderFits = useMutation(api.binderRules.retryFits);
   const setCommonPriceBase = useMutation(api.commonPrices.set);
   const undoBoxQuantityBase = useMutation(api.collectionInventory.undoBoxQuantity);
 
@@ -2557,6 +2565,10 @@ function useConvexActions(): CollectionActions {
             await setRule({ containerId: asHome(container.id), rule: previous });
           },
         };
+      },
+
+      async retryBinderFits(container) {
+        await retryBinderFits({ containerId: asHome(container.id) });
       },
 
       async declineCard(container, cardId) {

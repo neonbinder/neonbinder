@@ -1296,6 +1296,7 @@ export const registerExtractedImages = internalMutation({
           queuedAt: now,
           escalatedAt: undefined,
           settledAt: undefined,
+          heavyStartedAt: undefined,
         });
       }
     }
@@ -1690,9 +1691,13 @@ export function recordImageOutcomeImpl(
   context: { jobId: string; imageId: Id<"placeholderImages"> },
   result: RunResult,
   origin?: CompletionOrigin,
+  // NEO-411: the errorCode a FAILED settle records, when the caller knows a
+  // more specific one than PROCESS_ENTRY_FAILED (the photo deadline passes
+  // "PHOTO_TIMED_OUT"). Ignored for a success or a cancel.
+  failureCode?: string,
 ): Promise<null> {
   return withJobSettleLock(context.jobId, () =>
-    settleImageOutcome(ctx, context, result, origin),
+    settleImageOutcome(ctx, context, result, origin, failureCode),
   );
 }
 
@@ -1729,6 +1734,7 @@ async function settleImageOutcome(
   context: { jobId: string; imageId: Id<"placeholderImages"> },
   result: RunResult,
   origin: CompletionOrigin | undefined,
+  failureCode?: string,
 ): Promise<null> {
   const image = await ctx.db.get(context.imageId);
   // The row can legitimately be gone: restarting a failed job deletes the
@@ -1832,7 +1838,8 @@ async function settleImageOutcome(
     await ctx.db.patch(image._id, {
       status: "failed",
       settledAt,
-      errorCode: result.kind === "canceled" ? "CANCELED" : "PROCESS_ENTRY_FAILED",
+      errorCode:
+        result.kind === "canceled" ? "CANCELED" : (failureCode ?? "PROCESS_ENTRY_FAILED"),
       errorDetail:
         result.kind === "failed"
           ? result.error.slice(0, 1000)
@@ -1934,6 +1941,97 @@ export const recordImageOutcome = internalMutation({
     );
   },
 });
+
+/**
+ * NEO-411: how long a heavy photo may go from the start of its heavy work to an
+ * answer before it is marked failed.
+ *
+ * Before this, nothing ended a heavy photo's wait but the retry ladder, which
+ * the pool comments put at up to ~48 minutes, and the intake screen said
+ * "Working on your photos." the whole time. In the red E2E runs of 2026-10-30/31
+ * a cold heavy call took 174-272s and warm ones 34-75s. Seven minutes is longer
+ * than one heavy call's whole budget (PREPROCESS_HEAVY_TIMEOUT_MS, 400s), so a
+ * first attempt is never cut short by its own deadline, and a fast-failing
+ * first attempt still leaves time for a retry on the instance it warmed.
+ */
+export const HEAVY_PHOTO_DEADLINE_MS = 7 * 60 * 1000;
+
+/**
+ * Called by `processHeavyEntryWorker` as each heavy attempt starts. The FIRST
+ * call for a row stamps `heavyStartedAt` and schedules the photo's deadline;
+ * every later attempt (a retry) finds the stamp and does nothing, so the
+ * deadline counts from the start of the first attempt. A row that is gone, no
+ * longer heavy-processing, or already settled is left alone.
+ */
+export const noteHeavyStart = internalMutation({
+  args: { jobId: v.string(), entryIndex: v.number() },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const image = await ctx.db
+      .query("placeholderImages")
+      .withIndex("by_job_and_index", (q) =>
+        q.eq("jobId", args.jobId).eq("entryIndex", args.entryIndex),
+      )
+      .unique();
+    if (!image || image.status !== "processing" || image.escalated !== true) return null;
+    if (image.heavyStartedAt !== undefined) return null;
+    const heavyStartedAt = Date.now();
+    await ctx.db.patch(image._id, { heavyStartedAt });
+    // The stamp travels with the deadline: a retry or a restart clears it and a
+    // later attempt writes a new one, so this deadline then finds a different
+    // stamp and does nothing (it belongs to an attempt that already ended).
+    await ctx.scheduler.runAfter(
+      HEAVY_PHOTO_DEADLINE_MS,
+      internal.placeholderHeavyPool.expireHeavyPhoto,
+      { imageId: image._id, heavyStartedAt },
+    );
+    return null;
+  },
+});
+
+/**
+ * The photo deadline itself, as a plain function so the tests drive it without
+ * the heavy pool component (see `recordImageOutcomeImpl`). If the row is still
+ * heavy-processing, settle it as failed with errorCode "PHOTO_TIMED_OUT"
+ * through the one shared settle, so the counters, pairing and batch completion
+ * all move exactly as for any other failed photo. Only the deadline of the
+ * row's CURRENT attempt acts: `heavyStartedAt` must still equal the stamp the
+ * deadline was scheduled with. Returns the row's heavy
+ * `workId` so the caller can cancel the work still queued or retrying, or null
+ * when there was nothing to expire. A heavy answer that lands later finds the
+ * row terminal and is dropped by settle.
+ */
+export async function expireHeavyPhotoImpl(
+  ctx: MutationCtx,
+  imageId: Id<"placeholderImages">,
+  heavyStartedAt: number,
+): Promise<{ expired: boolean; workId: string | null }> {
+  const image = await ctx.db.get(imageId);
+  if (!image || image.status !== "processing" || image.escalated !== true) {
+    return { expired: false, workId: null };
+  }
+  // A deadline from an earlier attempt of this photo (before a Try again or a
+  // restart) is not this attempt's deadline: the row's stamp has moved on.
+  if (image.heavyStartedAt !== heavyStartedAt) return { expired: false, workId: null };
+  const minutes = HEAVY_PHOTO_DEADLINE_MS / 60_000;
+  await recordImageOutcomeImpl(
+    ctx,
+    { jobId: image.jobId, imageId },
+    { kind: "failed", error: `no answer from the heavy preprocess service within ${minutes} minutes` },
+    "heavy",
+    "PHOTO_TIMED_OUT",
+  );
+  console.warn(
+    JSON.stringify({
+      msg: "placeholder_photo_timed_out",
+      jobId: image.jobId,
+      entryIndex: image.entryIndex,
+      heavyStartedAt: image.heavyStartedAt,
+      escalatedAt: image.escalatedAt,
+    }),
+  );
+  return { expired: true, workId: image.workId ?? null };
+}
 
 /**
  * Put a job into its terminal failure state.
@@ -2454,6 +2552,8 @@ export const listPlaceholderImages = query({
       queuedAt: v.optional(v.number()),
       escalatedAt: v.optional(v.number()),
       settledAt: v.optional(v.number()),
+      // NEO-411: Try again presses so far, so the screen hides the button at the cap.
+      retries: v.optional(v.number()),
     }),
   ),
   handler: async (ctx, args) => {
@@ -2486,6 +2586,7 @@ export const listPlaceholderImages = query({
       queuedAt: r.queuedAt,
       escalatedAt: r.escalatedAt,
       settledAt: r.settledAt,
+      retries: r.retries,
       // `workId` is intentionally omitted — it is a handle into the workpool
       // component, not something a client has any use for.
     }));

@@ -3538,6 +3538,19 @@ export default defineSchema({
     queuedAt: v.optional(v.number()),
     escalatedAt: v.optional(v.number()),
     settledAt: v.optional(v.number()),
+    // NEO-411: when the heavy worker first started on this escalated row, epoch
+    // ms. Stamped once, by `noteHeavyStart`, which also schedules the photo's
+    // deadline (`HEAVY_PHOTO_DEADLINE_MS`): a heavy photo with no answer by then
+    // is marked failed (errorCode "PHOTO_TIMED_OUT") instead of staying in
+    // "Working on your photos." for the length of the retry ladder. Counted from
+    // the start of work, not from escalation, so a photo waiting its turn behind
+    // other photos in a large batch is not failed for the queue. Cleared with
+    // the rest of the per-image state on a restart or a retry.
+    heavyStartedAt: v.optional(v.number()),
+    // NEO-411: how many times the collector has pressed Try again on this photo
+    // (`retryPlaceholderImage`). Capped at PLACEHOLDER_MAX_IMAGE_RETRIES so one
+    // photo cannot be sent to the paid services without end.
+    retries: v.optional(v.number()),
   })
     // The ONLY index this table needs. It answers both "every image of this
     // job" (prefix `jobId` alone) and "this job's images in zip order", so a
@@ -4097,11 +4110,26 @@ export default defineSchema({
      * rows, if any, are the previous rule's until it lands; `needs` says so.
      */
     pending: v.optional(v.boolean()),
+    /**
+     * NEO-410 — when `pending` was set (`scheduleFits`). A binder pending for
+     * longer than `binderRules.FITS_STUCK_AFTER_MS` is re-queued by
+     * `requeueStuckFits`, so a recompute Convex dropped can't leave it stuck.
+     */
+    pendingSince: v.optional(v.number()),
+    /** NEO-410 — every attempt of the last recompute failed; the screen offers "Try again". */
+    failed: v.optional(v.boolean()),
     /** The generation the rows carry; the next recompute writes the one after. */
     generation: v.optional(v.number()),
+    /**
+     * NEO-410 — the highest generation a recompute has claimed
+     * (`claimFitsGeneration`), so overlapping recomputes never share one.
+     */
+    nextGeneration: v.optional(v.number()),
   })
     .index("by_binder", ["binderId"])
-    .index("by_computed", ["computedAt"]),
+    .index("by_computed", ["computedAt"])
+    // NEO-410: the stuck-pending sweep (rows with no `pendingSince` sort first and are skipped).
+    .index("by_pending_since", ["pendingSince"]),
 
   collectionWants: defineTable({
     ownerId: v.string(),
