@@ -240,6 +240,10 @@ import {
   playerBelongsToSport,
   sameNamePlayers,
 } from "./players";
+import {
+  loadPlayerAnswers,
+  MAX_STORED_NAME_ANSWERS,
+} from "./checklistNameResolutions";
 // NEO-313 — the derived player → cards index. Every `cardChecklist.playerIds`
 // writer and every card delete in this file goes through these two; see
 // convex/cardPlayerLinks.ts and `cardPlayerLinks.pin.test.ts`.
@@ -1268,6 +1272,7 @@ export const findSetYearForSelectorOptionQuery = internalQuery({
   },
 });
 
+
 /**
  * Detect unresolved player/team names for a selectorOption and kick off the
  * NEO-92 review-wizard batch for whatever's unresolved. Shared by both the
@@ -1459,6 +1464,11 @@ async function resolveUnknownsAndStartBatch(
    */
   const cardTeamNamesFor = (nameNormalized: string): string[] =>
     args.cardTeamNamesByPlayer?.get(nameNormalized) ?? [];
+  /** NEO-402 — this fetch's exactly-one answers, written for the commit. */
+  const singleMatchPlayers: Array<{
+    nameNormalized: string;
+    playerId: Id<"players">;
+  }> = [];
 
   for (const [normalized, name] of playerByNorm) {
     if (skippedKeys.has(`player:${normalized}`)) continue;
@@ -1498,6 +1508,13 @@ async function resolveUnknownsAndStartBatch(
     // NEO-335 — recorded for the title context. A no-op when not asked for.
     if (resolved.playerId) {
       args.resolvedNames?.playerIdByNorm.set(normalized, resolved.playerId);
+    }
+    // NEO-402 — kept for the commit, which would otherwise look this name up
+    // again. Only the outright single match: a narrowed one is an inference
+    // the commit re-derives with its own card context (see
+    // `checklistNameResolutions.ts`).
+    if (resolved.playerId && resolved.matchCount === 1) {
+      singleMatchPlayers.push({ nameNormalized: normalized, playerId: resolved.playerId });
     }
     // `playerId`, not `matchCount`: several rows can still resolve to one
     // person once the year is taken into account.
@@ -1587,6 +1604,16 @@ async function resolveUnknownsAndStartBatch(
   // a batchId for a wizard with nothing in it.
   const callerId = await getCurrentUserId(ctx);
   if (!callerId) throw new Error("Not authenticated");
+  // NEO-402 — replaces this operator's record for the set whole, so a re-fetch
+  // ("Back to matching", a second sync) never leaves an older answer behind.
+  await ctx.runMutation(internal.checklistNameResolutions.replaceForFetch, {
+    selectorOptionId: args.selectorOptionId,
+    createdByUserId: callerId,
+    sportId: args.sportId,
+    // Convex caps an array argument at 8,192 entries. A name left out is
+    // simply looked up by the commit, so a short record is harmless.
+    players: singleMatchPlayers.slice(0, MAX_STORED_NAME_ANSWERS),
+  });
   const hasUnknowns = unknownPlayers.length > 0 || unknownTeams.length > 0;
   const openBatchId = hasUnknowns
     ? null
@@ -4164,8 +4191,8 @@ const ALL_SELECTOR_LEVELS = [
 /**
  * Everything that would be orphaned by deleting this row.
  *
- * Read by `getSelectorOptionHoldings` (the affordance's disabled state and its
- * reason text) and re-read by `deleteSelectorOption` inside the transaction
+ * Read by `getSelectorOptionHoldings` (the delete affordance's one-shot check
+ * on click, and its reason text) and re-read by `deleteSelectorOption` inside the transaction
  * that deletes. The mutation never trusts the query's answer — a checklist
  * commit can land between the two.
  *
@@ -4347,9 +4374,12 @@ export async function collectSelectorOptionHoldings(
 }
 
 /**
- * NEO-219 C — reactive read of what a row holds, for the delete affordance's
- * disabled state and its `aria-describedby` reason. DISPLAY ONLY: the mutation
- * re-checks everything inside its own transaction.
+ * NEO-219 C — what a row holds, for the delete affordance's reason text.
+ * NEO-400: read ONCE, on the trash's click (`convex.query`), never subscribed:
+ * it walks every row and card below the selection, and as a subscription it
+ * re-ran on every write to the set and held every mutation in the tab behind
+ * it. DISPLAY ONLY: the mutation re-checks everything inside its own
+ * transaction.
  */
 export const getSelectorOptionHoldings = query({
   args: { id: v.id("selectorOptions") },
@@ -8249,6 +8279,8 @@ type SetBuilderResetResult = {
   entityReviewQueueDeleted: number;
   /** NEO-294 — staged candidate cards, the other half of an abandoned review. */
   checklistCandidatesDeleted: number;
+  /** NEO-402 — a fetch's stored name answers, the third part of a review session. */
+  checklistNameResolutionsDeleted: number;
   /** NEO-313 — a player's additional sports, drained before the players. */
   playerSportsDeleted: number;
   playersDeleted: number;
@@ -8352,6 +8384,7 @@ async function runSetBuilderReset(
     crossListingsDeleted: 0,
     entityReviewQueueDeleted: 0,
     checklistCandidatesDeleted: 0,
+    checklistNameResolutionsDeleted: 0,
     playerSportsDeleted: 0,
     playersDeleted: 0,
     playerAliasesDeleted: 0,
@@ -8501,6 +8534,11 @@ async function runSetBuilderReset(
     [
       "checklistCandidatesDeleted",
       internal.selectorOptions.resetChecklistCandidatesBatch,
+    ],
+    // NEO-402 — before the players its answers name.
+    [
+      "checklistNameResolutionsDeleted",
+      internal.selectorOptions.resetChecklistNameResolutionsBatch,
     ],
     // Players + teams are populated alongside cardChecklist by the
     // commitCardChecklist flow. Wipe them too so subsequent dev/test
@@ -8722,6 +8760,8 @@ export const resetSetBuilderDataFromCli = internalAction({
     // have caught the 15 s → 246 s drift a week earlier.
     entityReviewQueueDeleted: v.number(),
     checklistCandidatesDeleted: v.number(),
+    // NEO-402 — a fetch's stored name answers.
+    checklistNameResolutionsDeleted: v.number(),
     // NEO-313 — a player's additional sports.
     playerSportsDeleted: v.number(),
     playersDeleted: v.number(),
@@ -8917,6 +8957,29 @@ export const resetChecklistCandidatesBatch = internalMutation({
     assertResetArmed();
     const rows = await ctx.db
       .query("checklistCandidates")
+      .take(RESET_BATCH_SIZE);
+    for (const row of rows) {
+      await ctx.db.delete(row._id);
+    }
+    return { deleted: rows.length, hasMore: rows.length === RESET_BATCH_SIZE };
+  },
+});
+
+/**
+ * Internal: drain `checklistNameResolutions` (NEO-402), looped by
+ * `runSetBuilderReset`. A fetch's stored player answers name players and sets
+ * the reset is about to delete; a clean slate leaves none behind.
+ */
+export const resetChecklistNameResolutionsBatch = internalMutation({
+  args: {},
+  returns: v.object({
+    deleted: v.number(),
+    hasMore: v.boolean(),
+  }),
+  handler: async (ctx) => {
+    assertResetArmed();
+    const rows = await ctx.db
+      .query("checklistNameResolutions")
       .take(RESET_BATCH_SIZE);
     for (const row of rows) {
       await ctx.db.delete(row._id);
@@ -9267,13 +9330,29 @@ export const resetCollectionContainersBatch = internalMutation({
   }),
   handler: async (ctx) => {
     assertResetArmed();
-    const rows = await ctx.db
-      .query("collectionContainers")
-      .take(RESET_BATCH_SIZE);
-    for (const row of rows) {
-      await ctx.db.delete(row._id);
+    // NEO-401 — a smart binder's stored fits (cardId, variantId) and their
+    // state go first, in the same loop: they name a card and a variant row,
+    // so they can never outlive this step, and the import guard
+    // (`SELECTOR_DEPENDANT_TABLES`) counts them.
+    let left = RESET_BATCH_SIZE;
+    let deleted = 0;
+    const fits = await ctx.db.query("collectionBinderFits").take(left);
+    for (const row of fits) await ctx.db.delete(row._id);
+    left -= fits.length;
+    deleted += fits.length;
+    if (left > 0) {
+      const states = await ctx.db.query("collectionBinderFitsState").take(left);
+      for (const row of states) await ctx.db.delete(row._id);
+      left -= states.length;
+      deleted += states.length;
     }
-    return { deleted: rows.length, hasMore: rows.length === RESET_BATCH_SIZE };
+    if (left > 0) {
+      const rows = await ctx.db.query("collectionContainers").take(left);
+      for (const row of rows) await ctx.db.delete(row._id);
+      left -= rows.length;
+      deleted += rows.length;
+    }
+    return { deleted, hasMore: left === 0 };
   },
 });
 
@@ -15271,6 +15350,12 @@ function boundedAliasInput(raw: ReadonlyArray<string>): string[] {
  * buys a shorter page; under-charging buys a failed transaction.
  */
 export const PRELUDE_NAMES_PER_PAGE = 300;
+/**
+ * NEO-402 — how many names' same-name lookups the resolve phase keeps in
+ * flight at once (three indexed reads each). Bounded so one page never
+ * issues hundreds of reads at the same instant.
+ */
+export const SAME_NAME_PREFETCH_CONCURRENCY = 25;
 
 /**
  * NEO-296 — how many prelude pages one commit may walk before giving up.
@@ -17296,6 +17381,69 @@ export const commitCardChecklistPrelude = internalMutation({
       }
     };
 
+    /*
+     * NEO-402 — the resolve phase's same-name lookups, issued together.
+     *
+     * Each name costs three indexed reads (`sameNamePlayers`: primary name,
+     * sport membership, alias), and the loop below awaited them one name at a
+     * time: a 300-card checklist was ~600 reads in a row, 1.7–2.5 s on a
+     * preview, most of a save the operator waits on. The reads are the same;
+     * they are now in flight together, `SAME_NAME_PREFETCH_CONCURRENCY` names
+     * at a time, for exactly the names this page walks.
+     *
+     * Only in a "resolve" call. A call with no `phase` (the test suite's
+     * direct callers) runs the creates inside this loop, so it keeps the
+     * in-order lookup. A resolve call can still create a player at the loop's
+     * tail (a `create` decision the creates phase did not record, e.g. its
+     * one match was merged away in between); that key's prefetched answer is
+     * dropped right after, so a second spelling of it reads again.
+     */
+    const sameNamePrefetch = new Map<string, Array<Doc<"players">>>();
+    if (args.phase === "resolve") {
+      const start = Math.max(0, walkOffset - teamNameList.length);
+      const end = Math.min(playerNameList.length, start + Math.max(0, walkBudget));
+      const keys = Array.from(
+        new Set(playerNameList.slice(start, end).map((name) => norm(name))),
+      );
+      /*
+       * NEO-402 — the fetch already answered most of these. A name it found
+       * exactly one player for is confirmed with one `get` instead of the
+       * three index reads; a row deleted since reads null and the name is
+       * looked up as before. Every other name (none, several, narrowed by
+       * year, or no record at all) takes the lookup, unchanged.
+       */
+      const fetchAnswers = await loadPlayerAnswers(
+        ctx,
+        args.selectorOptionId,
+        userId,
+        args.sportId,
+      );
+      const lookUp = async (key: string): Promise<Array<Doc<"players">>> => {
+        const answeredId = fetchAnswers.get(key);
+        if (answeredId !== undefined) {
+          const answered = await ctx.db.get(answeredId);
+          // Only while the row would still be in `sameNamePlayers`' answer:
+          // it still goes by this name (primary or alias) and still plays this
+          // sport (a home-sport hit costs no read). A row renamed, de-aliased
+          // or moved since the fetch is looked up again.
+          if (
+            answered &&
+            (answered.nameNormalized === key ||
+              (answered.aliases ?? []).some((alias) => norm(alias) === key)) &&
+            (await playerBelongsToSport(ctx, answered, args.sportId))
+          ) {
+            return [answered];
+          }
+        }
+        return await sameNamePlayers(ctx, key, args.sportId);
+      };
+      for (let i = 0; i < keys.length; i += SAME_NAME_PREFETCH_CONCURRENCY) {
+        const chunk = keys.slice(i, i + SAME_NAME_PREFETCH_CONCURRENCY);
+        const found = await Promise.all(chunk.map(lookUp));
+        chunk.forEach((key, j) => sameNamePrefetch.set(key, found[j]));
+      }
+    }
+
     for (
       let pi = Math.max(0, walkOffset - teamNameList.length);
       pi < playerNameList.length;
@@ -17344,7 +17492,9 @@ export const commitCardChecklistPrelude = internalMutation({
       // It is what carries the ALIAS leg: a 2010 "Ron Artest" card and a 2011
       // "Metta World Peace" card have to land on one row, and a hand-rolled
       // read here would have found only the primary name.
-      const existingMatches = await sameNamePlayers(ctx, normalized, args.sportId);
+      const existingMatches =
+        sameNamePrefetch.get(normalized) ??
+        (await sameNamePlayers(ctx, normalized, args.sportId));
       if (existingMatches.length === 1) {
         const existing = existingMatches[0];
         playerIdByName.set(name, existing._id);
@@ -17528,6 +17678,9 @@ export const commitCardChecklistPrelude = internalMutation({
         continue;
       }
       await createPlayerFromDecision(name, normalized, decision);
+      // NEO-402 — this key now has a row the prefetch did not see; a later
+      // spelling of it must read again, or it would mint a second one.
+      sameNamePrefetch.delete(normalized);
     }
 
 

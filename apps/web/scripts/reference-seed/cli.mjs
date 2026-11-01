@@ -10,16 +10,18 @@
 // check  Structural integrity of a bundle or import ZIP (exit 1 on a problem).
 // load   Replaces the reference tables on a NON-production deployment with the
 //        bundle, ids re-encoded onto the target's table numbers, then verifies
-//        the counts from a second read-only export.
+//        the row counts. The target's table numbers, row counts and sport ids
+//        come from `convex/referenceSeed.ts` (internal functions, run with the
+//        deploy credentials); the loader takes no snapshot export (NEO-408).
 //          --sports import  CI. Imports the bundle's sport rows too and replaces
 //                           the target's WHOLE selectorOptions table, so it
 //                           refuses unless cardChecklist is empty (run the reset
 //                           first).
 //          --sports remap   A developer's deployment. Leaves selectorOptions
 //                           alone; maps sports by name onto the target's rows.
-// clear  Empties the eight tables with one atomic import. Needs no deployed
-//        code, so it works when a schema change has left a preview unable to
-//        deploy over stale rows.
+// clear  Empties the eight tables with one atomic import. Like load, it reads
+//        the target through `convex/referenceSeed.ts`, so the target must
+//        have the current code deployed.
 //
 // Guards (load and clear), all before any write:
 //   - --prod, the production deployment name and anything that is not a plain
@@ -48,18 +50,13 @@ import {
   BUNDLE_TABLES,
   SPORT_ID_FIELD,
   SPORT_ID_ARRAY_FIELD,
-  decodeId,
   deploymentNameProblem,
   deployKeyProblem,
   effectiveDeployKey,
   redactConvexOutput,
   hollowBundleProblems,
   requireZipTools,
-  listZip,
-  zipLines,
-  zipJsonl,
   readZipText,
-  readTableNumbers,
   zipDir,
   makeTempDir,
   fmt,
@@ -101,8 +98,9 @@ export const SELECTOR_DEPENDANT_TABLES = [
   "collectionBuildingSets",
   // NEO-359 — a smart binder's `rule` names sport, brand and set rows.
   // Drained by the reset (after the copies and wants), before the selector
-  // rows.
+  // rows. NEO-401 — its stored fits (variantId) drain in the same step.
   "collectionContainers",
+  "collectionBinderFits",
   // NEO-361 — card and set requests and the private cards and sets they
   // made (setId, variantId, sportId, addedSetId). Drained by the reset
   // (`resetCardRequestsBatch`), before the selector rows.
@@ -121,6 +119,9 @@ export const SELECTOR_DEPENDANT_TABLES = [
   "cardCrossListings",
   "entityReviewQueue",
   "checklistCandidates",
+  // NEO-402 — a fetch's stored player answers (selectorOptionId, sportId).
+  // Drained by the reset (`resetChecklistNameResolutionsBatch`).
+  "checklistNameResolutions",
 ];
 export const SELECTOR_DEPENDANT_UNDRAINED_TABLES = ["entityReviewSkips"];
 const COUNTED_DEPENDANT_TABLES = [...SELECTOR_DEPENDANT_TABLES, ...SELECTOR_DEPENDANT_UNDRAINED_TABLES];
@@ -271,25 +272,65 @@ async function confirm(deployment, what, { yes, log }) {
   if (answer.trim() !== deployment) throw new RefusedError("confirmation did not match; nothing changed");
 }
 
-/** Read-only export of the target; `readExport(zip, entries)` runs before it is deleted. */
-async function withTargetExport(deployment, env, label, readExport) {
-  const dir = makeTempDir(`target-${label}`);
+/** `referenceSeed:tableStats` calls per load before giving up (each works for the action's budget). */
+export const STATS_MAX_PASSES = 10;
+
+/**
+ * `npx convex run` of an internal function, parsed. No --identity: an
+ * internal function is reachable only by deploy credentials (see
+ * e2e-baseline.sh). The CLI's own output stays captured.
+ */
+function runInternal(deployment, fn, args, env) {
+  const r = convex(["run", "--deployment", deployment, fn, JSON.stringify(args), "--typecheck", "disable", "--codegen", "disable"], env);
+  if (r.status !== 0) throw new Error(`${fn} failed (${failure(r)})`);
   try {
-    const zip = path.join(dir, "target.zip");
-    const r = convex(["export", "--deployment", deployment, "--path", zip], env);
-    if (r.status !== 0) throw new Error(`export of ${deployment} failed (${failure(r)})`);
-    return await readExport(zip, listZip(zip));
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
+    return JSON.parse(r.stdout);
+  } catch {
+    throw new Error(`${fn} returned something other than JSON`);
   }
 }
 
-async function countLines(zip, entries, table) {
-  const e = `${table}/documents.jsonl`;
-  if (!entries.has(e)) return 0;
-  let n = 0;
-  for await (const _ of zipLines(zip, e)) n++;
-  return n;
+/**
+ * The target's table numbers for `tables` (Map<name, number>) and which of
+ * them hold rows, from `referenceSeed:preflight` (NEO-408). Replaces the
+ * read-only snapshot export the loader used to take first.
+ */
+function readPreflight(deployment, env, tables, log) {
+  const t0 = Date.now();
+  const out = runInternal(deployment, "referenceSeed:preflight", { tables }, env);
+  const tableNumbers = new Map();
+  for (const [t, n] of Object.entries(out.tableNumbers ?? {})) if (Number.isInteger(n) && n > 0) tableNumbers.set(t, n);
+  // Every table the loader asks about must exist on the target: a table with
+  // no number is one the deployment does not have (or a misspelt name), and
+  // either would silently disable a guard below.
+  const missing = tables.filter((t) => !tableNumbers.has(t));
+  if (missing.length) throw new Error(`${deployment} has no table number for ${missing.join(", ")}; is the current code deployed there?`);
+  log(`preflight: ${tables.length} tables in ${((Date.now() - t0) / 1000).toFixed(1)}s`);
+  return { tableNumbers, nonEmpty: out.nonEmpty ?? {} };
+}
+
+/**
+ * Row counts per table, and (with `checkSports`) how many rows name a sport
+ * id that is not a sport row, from `referenceSeed:tableStats`. Replaces the
+ * verifying snapshot export.
+ */
+function readTableStats(deployment, env, tables, checkSports, log) {
+  const t0 = Date.now();
+  const sportIdFields = [SPORT_ID_FIELD, SPORT_ID_ARRAY_FIELD];
+  let out = null;
+  let resume;
+  // Each call works for the action's own time budget and hands back where it
+  // stopped; `convex run` would give up on one call that ran five minutes.
+  for (let pass = 1; pass <= STATS_MAX_PASSES; pass++) {
+    out = runInternal(deployment, "referenceSeed:tableStats", { tables, checkSports, sportIdFields, ...(resume ? { resume } : {}) }, env);
+    if (out.complete !== false) break;
+    resume = out.resume;
+    log(`table stats: pass ${pass} ran out of time; resuming`);
+    out = null;
+  }
+  if (!out) throw new Error(`referenceSeed:tableStats did not finish within ${STATS_MAX_PASSES} passes`);
+  log(`table stats: ${tables.length} tables in ${((Date.now() - t0) / 1000).toFixed(1)}s`);
+  return { sportRows: out.sportRows ?? 0, rows: out.rows ?? {}, badSport: out.badSport ?? {} };
 }
 
 function writeImportZip(files) {
@@ -361,12 +402,7 @@ async function cmdLoad({ bundle, deployment, sports, dryRun, yes }, { env, log }
   log(`bundle: ${path.basename(bundle)} (generated ${parsed.manifest.generatedAt}); sports mode: ${sports}`);
   const recheck = guardTargetProbe(deployment, env, key, log);
 
-  const pre = await withTargetExport(deployment, env, "pre", async (zip, entries) => {
-    const tableNumbers = await readTableNumbers(zip, entries);
-    const counts = {};
-    for (const t of [...BUNDLE_TABLES, ...COUNTED_DEPENDANT_TABLES]) counts[t] = await countLines(zip, entries, t);
-    return { tableNumbers, counts };
-  });
+  const pre = readPreflight(deployment, env, [...BUNDLE_TABLES, ...COUNTED_DEPENDANT_TABLES], log);
 
   let targetSports;
   if (sports === "remap") {
@@ -374,14 +410,14 @@ async function cmdLoad({ bundle, deployment, sports, dryRun, yes }, { env, log }
     if (r.status !== 0) throw new Error(`listSportsForSplit failed (${failure(r)})`);
     targetSports = JSON.parse(r.stdout);
   } else {
-    const blocking = SELECTOR_DEPENDANT_TABLES.filter((t) => pre.counts[t] > 0);
+    const blocking = SELECTOR_DEPENDANT_TABLES.filter((t) => pre.nonEmpty[t]);
     if (blocking.length) {
       throw new RefusedError(
-        `${deployment} holds rows in ${blocking.map((t) => `${t} (${fmt(pre.counts[t])})`).join(", ")}; --sports import replaces the whole ${SPORT_TABLE} table and would orphan them. Run the reset first (e2e-baseline.sh reset), or use --sports remap.`,
+        `${deployment} holds rows in ${blocking.join(", ")}; --sports import replaces the whole ${SPORT_TABLE} table and would orphan them. Run the reset first (e2e-baseline.sh reset), or use --sports remap.`,
       );
     }
     for (const t of SELECTOR_DEPENDANT_UNDRAINED_TABLES) {
-      if (pre.counts[t] > 0) log(`note: ${fmt(pre.counts[t])} ${t} rows will point at replaced ${SPORT_TABLE} rows (no reset drains this table)`);
+      if (pre.nonEmpty[t]) log(`note: ${t} rows will point at replaced ${SPORT_TABLE} rows (no reset drains this table)`);
     }
   }
 
@@ -405,7 +441,7 @@ async function cmdLoad({ bundle, deployment, sports, dryRun, yes }, { env, log }
     const st = report.rows[t];
     const bySport = Object.entries(st.droppedBySport).map(([k, n]) => `${k}: ${fmt(n)}`).join(", ");
     log(
-      `  ${t.padEnd(16)} ${fmt(st.bundle).padStart(9)} -> ${fmt(st.kept).padStart(9)}   target now ${fmt(pre.counts[t]).padStart(9)}` +
+      `  ${t.padEnd(16)} ${fmt(st.bundle).padStart(9)} -> ${fmt(st.kept).padStart(9)}   target now ${pre.nonEmpty[t] ? "has rows" : "empty   "}` +
         (bySport ? `   dropped by sport {${bySport}}` : "") +
         (st.droppedAsDependant ? `   dropped as dependant ${fmt(st.droppedAsDependant)}` : ""),
     );
@@ -445,43 +481,26 @@ async function cmdLoad({ bundle, deployment, sports, dryRun, yes }, { env, log }
     rmSync(written.dir, { recursive: true, force: true });
   }
 
-  // ── Verify (second read-only export) ──────────────────────────────────────
-  const ok = await withTargetExport(deployment, env, "post", async (zip, entries) => {
-    const T = await readTableNumbers(zip, entries);
-    let sportIds;
-    if (sports === "remap") sportIds = new Set(targetSports.map((s) => s.sportId));
-    else {
-      sportIds = new Set();
-      if (entries.has(`${SPORT_TABLE}/documents.jsonl`)) {
-        for await (const row of zipJsonl(zip, `${SPORT_TABLE}/documents.jsonl`)) if (row.level === "sport") sportIds.add(row._id);
-      }
-    }
-    let allOk = true;
-    log("\nverify:");
-    for (const t of tables) {
-      let n = 0;
-      let badSport = 0;
-      let badTable = 0;
-      const e = `${t}/documents.jsonl`;
-      if (entries.has(e)) {
-        for await (const row of zipJsonl(zip, e)) {
-          n++;
-          if (decodeId(row._id)?.table !== T.get(t)) badTable++;
-          if (t === SPORT_TABLE) continue;
-          if (!sportIds.has(row[SPORT_ID_FIELD])) badSport++;
-          for (const s of row[SPORT_ID_ARRAY_FIELD] ?? []) if (!sportIds.has(s)) badSport++;
-        }
-      }
-      const pass = n === expected[t] && badSport === 0 && badTable === 0;
-      allOk &&= pass;
-      log(
-        `  ${pass ? "ok  " : "FAIL"} ${t.padEnd(16)} ${fmt(n).padStart(9)} rows (expected ${fmt(expected[t])})` +
-          (badSport ? `, ${badSport} sport ids that are not sport rows` : "") +
-          (badTable ? `, ${badTable} ids on the wrong table` : ""),
-      );
-    }
-    return allOk;
-  });
+  // ── Verify (row counts and sport ids, read from the deployment) ──────────
+  // Every row was read from its own table, so "an id on the wrong table"
+  // cannot occur here; the import would have refused such an id.
+  const stats = readTableStats(deployment, env, tables, true, log);
+  let ok = true;
+  log("\nverify:");
+  if (sports === "import" && stats.sportRows !== expected[SPORT_TABLE]) {
+    ok = false;
+    log(`  FAIL ${fmt(stats.sportRows)} sport rows on the target (expected ${fmt(expected[SPORT_TABLE])})`);
+  }
+  for (const t of tables) {
+    const n = stats.rows[t] ?? 0;
+    const badSport = t === SPORT_TABLE ? 0 : (stats.badSport[t] ?? 0);
+    const pass = n === expected[t] && badSport === 0;
+    ok &&= pass;
+    log(
+      `  ${pass ? "ok  " : "FAIL"} ${t.padEnd(16)} ${fmt(n).padStart(9)} rows (expected ${fmt(expected[t])})` +
+        (badSport ? `, ${badSport} sport ids that are not sport rows` : ""),
+    );
+  }
   log(ok ? "\nVERIFIED." : "\nVERIFICATION FAILED.");
   return ok ? 0 : 1;
 }
@@ -490,17 +509,13 @@ async function cmdClear({ deployment, yes }, { env, log }) {
   requireZipTools();
   requireConfirmable(yes);
   const recheck = guardTargetProbe(deployment, env, guardTargetStatic(deployment, env), log);
-  const pre = await withTargetExport(deployment, env, "pre", async (zip, entries) => {
-    const tableNumbers = await readTableNumbers(zip, entries);
-    const counts = {};
-    for (const t of [...BUNDLE_TABLES, ...COUNTED_DEPENDANT_TABLES]) counts[t] = await countLines(zip, entries, t);
-    return { tableNumbers, counts };
-  });
+  const pre = readPreflight(deployment, env, BUNDLE_TABLES, log);
+  const before = readTableStats(deployment, env, [...BUNDLE_TABLES, ...COUNTED_DEPENDANT_TABLES], false, log);
   const files = emptyImportFiles(pre.tableNumbers);
   log("\nrows to remove:");
-  for (const t of BUNDLE_TABLES) log(`  ${t.padEnd(16)} ${fmt(pre.counts[t]).padStart(9)}`);
+  for (const t of BUNDLE_TABLES) log(`  ${t.padEnd(16)} ${fmt(before.rows[t] ?? 0).padStart(9)}`);
   for (const t of COUNTED_DEPENDANT_TABLES) {
-    if (pre.counts[t] > 0) log(`note: ${fmt(pre.counts[t])} ${t} rows stay and will point at removed rows until the next reset`);
+    if (before.rows[t] > 0) log(`note: ${fmt(before.rows[t])} ${t} rows stay and will point at removed rows until the next reset`);
   }
   await confirm(deployment, `empties ${BUNDLE_TABLES.join(", ")} (every selectorOptions row, not only sports)`, { yes, log });
   recheck();
@@ -511,16 +526,14 @@ async function cmdClear({ deployment, yes }, { env, log }) {
   } finally {
     rmSync(written.dir, { recursive: true, force: true });
   }
-  const ok = await withTargetExport(deployment, env, "post", async (zip, entries) => {
-    let allOk = true;
-    log("\nverify:");
-    for (const t of BUNDLE_TABLES) {
-      const n = await countLines(zip, entries, t);
-      allOk &&= n === 0;
-      log(`  ${n === 0 ? "ok  " : "FAIL"} ${t.padEnd(16)} ${fmt(n).padStart(9)} rows`);
-    }
-    return allOk;
-  });
+  const after = readTableStats(deployment, env, BUNDLE_TABLES, false, log);
+  let ok = true;
+  log("\nverify:");
+  for (const t of BUNDLE_TABLES) {
+    const n = after.rows[t] ?? 0;
+    ok &&= n === 0;
+    log(`  ${n === 0 ? "ok  " : "FAIL"} ${t.padEnd(16)} ${fmt(n).padStart(9)} rows`);
+  }
   log(ok ? "\nCLEARED." : "\nCLEAR FAILED.");
   return ok ? 0 : 1;
 }

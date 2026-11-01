@@ -18,11 +18,14 @@ import { homesOnSide, useContainers, useDefaultCondition, useSide, writeErrorMes
 import { usePageApi } from "../pageApi";
 import {
   EMPTY_LANES,
+  canRetryPhoto,
   cardLabel,
+  failedText,
   laneOf,
   proposedCount,
   readOf,
   reasonText,
+  runSummary,
   type IntakeImage,
   type IntakeMatchRow,
   type PairRead,
@@ -70,6 +73,24 @@ const LocalPhotos = createContext<ReadonlyMap<string, string>>(new Map());
 export const RUN_PARAM = "run";
 const TILE_ATTR = "data-intake-tile";
 const REVIEW_HEADING_ID = "intake-needs-you";
+const PAIRING_HEADING_ID = "intake-pairing";
+
+/**
+ * NEO-411: a Try again moves the photo out of the pile, so its button unmounts
+ * and focus would fall to the page. On the next frame, if it did, land on the
+ * next photo left in the pile, or else on the pile's heading (WCAG 2.4.3).
+ */
+function refocusAfterRetry(entryIndex: number): void {
+  // Always move: the retried photo's own tile and Try again leave the pile
+  // once its row goes back to processing, which can land after this frame, so
+  // focus left on them would drop to the page when they unmount.
+  requestAnimationFrame(() => {
+    const next = Array.from(document.querySelectorAll<HTMLElement>("[data-loose-photo]")).find(
+      (el) => el.dataset.loosePhoto !== String(entryIndex),
+    );
+    (next ?? document.getElementById(PAIRING_HEADING_ID))?.focus();
+  });
+}
 
 type Condition = "Mint" | "Near Mint" | "Excellent" | "Very Good" | "Good" | "Poor";
 type Grader = "PSA" | "BGS" | "SGC" | "CGC" | "TAG";
@@ -496,7 +517,7 @@ const LANE_LABEL = {
 } as const;
 
 function RunWorkspace({ run, jobOpen }: { run: RunSummary; jobOpen: boolean }) {
-  const { notify } = usePageApi();
+  const { notify, inform } = usePageApi();
   const images = useQuery(api.placeholderPipeline.listPlaceholderImages, { jobId: run.jobId });
   const pairs = useQuery(api.placeholderPipeline.listPlaceholderPairs, { jobId: run.jobId });
   const matches = useQuery(api.intakeRuns.listIntakeMatches, { runId: run._id });
@@ -514,6 +535,7 @@ function RunWorkspace({ run, jobOpen }: { run: RunSummary; jobOpen: boolean }) {
   const unpair = useMutation(api.placeholderPairing.unpairPlaceholderImages);
   const pairUp = useMutation(api.placeholderPairing.manuallyPairPlaceholderImages);
   const closeStream = useMutation(api.placeholderStream.closePlaceholderStream);
+  const retry = useMutation(api.placeholderStream.retryPlaceholderImage);
 
   const [selected, setSelected] = useState<Id<"placeholderPairs"> | null>(null);
   const [openId, setOpenId] = useState<Id<"placeholderPairs"> | null>(null);
@@ -636,13 +658,9 @@ function RunWorkspace({ run, jobOpen }: { run: RunSummary; jobOpen: boolean }) {
 
   const loading = images === undefined || pairs === undefined || matches === undefined;
   const working = lanes.reading.length + lanes.matching.length;
-  const summary = loading
-    ? "Loading this run…"
-    : working > 0
-      ? `Working on ${working} photo${working === 1 ? "" : "s"}. ${review.length} waiting for you, ${lanes.saved.length} saved.`
-      : review.length > 0
-        ? `Everything is read. ${review.length} waiting for you, ${lanes.saved.length} saved.`
-        : `${lanes.saved.length} saved.`;
+  // NEO-411: a photo that failed is not "read", so the summary says so.
+  const unread = lanes.loose.filter((i) => i.status === "failed").length;
+  const summary = runSummary({ loading, working, waiting: review.length, saved: lanes.saved.length, unread });
 
   return (
     <div className="space-y-3">
@@ -707,12 +725,29 @@ function RunWorkspace({ run, jobOpen }: { run: RunSummary; jobOpen: boolean }) {
             </li>
           ))}
         </Lane>
-        <Lane label={LANE_LABEL.pairing} count={lanes.loose.length}>
+        <Lane label={LANE_LABEL.pairing} count={lanes.loose.length} headingId={PAIRING_HEADING_ID}>
           <LoosePile
             jobId={run.jobId}
             loose={lanes.loose}
             onPair={(front, back) =>
               void pairUp({ jobId: run.jobId, frontIndex: front, backIndex: back }).catch(fail)
+            }
+            onRetry={
+              jobOpen
+                ? (image) =>
+                    void retry({ jobId: run.jobId, entryIndex: image.entryIndex })
+                      .then((r) => {
+                        if (r.retried) {
+                          inform(`Trying ${image.originalName} again.`);
+                          refocusAfterRetry(image.entryIndex);
+                        } else if (r.reason === "too many tries") {
+                          notify("This photo has been tried too many times. Scan it again instead.");
+                        } else if (r.reason === "closed") {
+                          notify("This run is closed. Scan the photo again to add it.");
+                        }
+                      })
+                      .catch(fail)
+                : undefined
             }
           />
         </Lane>
@@ -847,12 +882,15 @@ function Lane({
   label,
   count,
   review = false,
+  headingId,
   action,
   children,
 }: {
   label: string;
   count: number;
   review?: boolean;
+  /** Makes the heading a focus target (programmatic only), under this id. */
+  headingId?: string;
   action?: ReactNode;
   children: ReactNode;
 }) {
@@ -863,9 +901,9 @@ function Lane({
     >
       <header className="mb-2 flex items-center justify-between px-1">
         <h2
-          id={review ? REVIEW_HEADING_ID : undefined}
-          tabIndex={review ? -1 : undefined}
-          className={`m-0 text-sm font-semibold text-ink ${review ? RING : ""}`}
+          id={review ? REVIEW_HEADING_ID : headingId}
+          tabIndex={review || headingId ? -1 : undefined}
+          className={`m-0 text-sm font-semibold text-ink ${review || headingId ? RING : ""}`}
         >
           {label}
         </h2>
@@ -907,10 +945,13 @@ function LoosePile({
   jobId,
   loose,
   onPair,
+  onRetry,
 }: {
   jobId: string;
   loose: IntakeImage[];
   onPair: (front: number, back: number) => void;
+  /** NEO-411: send a failed photo through again; absent once the run is closed. */
+  onRetry?: (image: IntakeImage) => void;
 }) {
   const [chosen, setChosen] = useState<number[]>([]);
   const live = chosen.filter((n) => loose.some((i) => i.entryIndex === n));
@@ -922,7 +963,9 @@ function LoosePile({
         <li key={i.entryIndex} className="intake-arrive">
           <button
             type="button"
+            data-loose-photo={i.entryIndex}
             aria-pressed={live.includes(i.entryIndex)}
+            aria-describedby={i.status === "failed" ? `loose-why-${i.entryIndex}` : undefined}
             onClick={() => toggle(i.entryIndex)}
             className={`flex w-full items-center gap-2 rounded-md border-2 bg-surface p-1.5 text-left text-xs ${live.includes(i.entryIndex) ? "border-neon-green-text" : "border-rule"} ${RING}`}
           >
@@ -931,14 +974,27 @@ function LoosePile({
             )}
             <span className="min-w-0">
               <span className="block truncate font-medium text-ink-2">{i.originalName}</span>
-              <span className="block text-ink-3">
+              <span className="block text-ink-3" id={i.status === "failed" ? `loose-why-${i.entryIndex}` : undefined}>
                 {i.status === "failed"
-                  ? "Couldn't read it"
+                  ? failedText(i, !!onRetry && canRetryPhoto(i))
                   : [i.side, i.players?.join(", "), i.cardNumber ? `#${i.cardNumber}` : null].filter(Boolean).join(" · ") ||
                     "Waiting for its other side"}
               </span>
             </span>
           </button>
+          {onRetry && canRetryPhoto(i) && (
+            <NeonButton
+              size="1"
+              variant="secondary"
+              outline
+              className="mt-1 min-h-11 sm:min-h-8"
+              aria-label={`Try again: ${i.originalName}`}
+              aria-describedby={`loose-why-${i.entryIndex}`}
+              onClick={() => onRetry(i)}
+            >
+              Try again
+            </NeonButton>
+          )}
         </li>
       ))}
       {loose.length > 1 && (

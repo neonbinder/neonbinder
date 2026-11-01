@@ -189,6 +189,11 @@ export const SUBTREE_REFERENCE_GRAPH = {
     handling:
       "NEO-359 a collector's want is deleted with its card in removeCardRow (never refuses the wipe; past a bounded take the rest are swept by a scheduled continuation)",
   },
+  collectionBinderFits: {
+    fields: ["cardId", "variantId"],
+    handling:
+      "NEO-401 a smart binder's stored fits: the catalog cards its rule matches. Never refuses the wipe and is untouched: the empty-slots read skips a card that is gone, and the next recompute (the rule saved again, or the nightly pass) drops the row",
+  },
   collectionBinderDeclines: {
     fields: ["cardId"],
     handling:
@@ -240,6 +245,11 @@ export const SUBTREE_REFERENCE_GRAPH = {
   checklistCandidates: {
     fields: ["selectorOptionId"],
     handling: "rows keyed on a subtree row deleted",
+  },
+  checklistNameResolutions: {
+    fields: ["selectorOptionId", "sportId"],
+    handling:
+      "NEO-402 a fetch's stored player answers for one review session. Never refuses the wipe and is untouched: only a commit of that same set reads it, which a wiped set cannot have, and the hourly sweep reaps it within a day. sportId is sport-level",
   },
   players: {
     fields: ["sportId"],

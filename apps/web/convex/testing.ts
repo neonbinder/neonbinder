@@ -32,6 +32,7 @@ import { CLERK_USER_ID_RE, placeholderJobPrefix } from "./lib/placeholderObjects
 import { isPlatformPaused } from "./marketplacePause";
 import type { Id } from "./_generated/dataModel";
 import { dropOwnerPhotos } from "./copyPhotos";
+import { getOrCreateMain } from "./collection";
 
 /**
  * What {@link seedMyTestLabelScans} hands back.
@@ -155,6 +156,17 @@ export const resetMyTestState = mutation({
       .withIndex("by_owner_and_system", (q) => q.eq("ownerId", userId))
       .collect();
     for (const row of collectionContainers) {
+      // NEO-401 — a smart binder's stored fits go with it.
+      const fits = await ctx.db
+        .query("collectionBinderFits")
+        .withIndex("by_binder_order", (q) => q.eq("binderId", row._id))
+        .collect();
+      for (const fit of fits) await ctx.db.delete(fit._id);
+      const state = await ctx.db
+        .query("collectionBinderFitsState")
+        .withIndex("by_binder", (q) => q.eq("binderId", row._id))
+        .unique();
+      if (state) await ctx.db.delete(state._id);
       await ctx.db.delete(row._id);
     }
 
@@ -312,6 +324,78 @@ export const seedMyTestPlaceholderStream = mutation({
     });
 
     return { jobId };
+  },
+});
+
+/**
+ * NEO-411 — a run holding one photo that never got read, for the spec that
+ * proves a failed photo ends on screen and can be sent again.
+ *
+ * A photo the heavy service never answers is minutes of real spend and cannot
+ * be made to happen on cue, so this writes the end state directly: an open
+ * scanner run (the same row `seedMyTestPlaceholderStream` writes), one photo
+ * marked failed with PHOTO_TIMED_OUT, and the intake run that shows it, homed
+ * in the caller's Main. Nothing was uploaded under the photo's key, so Try
+ * again sends it to the fast service, which answers "no such photo" at once
+ * and the photo ends failed again: the real retry path, end to end, at no
+ * model cost.
+ *
+ * Same safety as the seed above: fails closed in production, writes only rows
+ * owned by the CALLER, and leaves an open run the idle sweep closes. Callers
+ * cancel their active runs first (the page does), for the 2-active cap.
+ */
+export const seedMyTestFailedPhotoRun = mutation({
+  args: {},
+  returns: v.object({ runId: v.id("intakeRuns"), originalName: v.string() }),
+  handler: async (ctx) => {
+    if (!process.env.TESTING_RESET_SECRET) {
+      throw new Error("Test placeholder seeding is not enabled on this deployment");
+    }
+    const userId = await getCurrentUserId(ctx);
+    if (!userId) throw new Error("Not authenticated");
+    if (!CLERK_USER_ID_RE.test(userId)) throw new Error("Unexpected user id shape");
+
+    const jobId = crypto.randomUUID();
+    const now = Date.now();
+    const originalName = `never-read-${jobId.slice(0, 8)}.jpg`;
+    await ctx.db.insert("placeholderJobs", {
+      jobId,
+      userId,
+      objectPath: placeholderJobPrefix(userId, jobId),
+      createdAt: now,
+      mode: "stream",
+      status: "collecting",
+      startedAt: now,
+      totalImages: 1,
+      processedImages: 0,
+      failedImages: 1,
+      rejectedEntries: 0,
+      nextEntryIndex: 1,
+      lastActivityAt: now,
+    });
+    await ctx.db.insert("placeholderImages", {
+      jobId,
+      userId,
+      entryIndex: 0,
+      originalName,
+      status: "failed",
+      escalated: true,
+      errorCode: "PHOTO_TIMED_OUT",
+      errorDetail: "seeded for E2E: no answer from the heavy preprocess service",
+      queuedAt: now,
+      escalatedAt: now,
+      heavyStartedAt: now,
+      settledAt: now,
+    });
+    const homeId = await getOrCreateMain(ctx, userId);
+    const runId = await ctx.db.insert("intakeRuns", {
+      userId,
+      jobId,
+      homeId,
+      createdAt: now,
+      lastActivityAt: now,
+    });
+    return { runId, originalName };
   },
 });
 

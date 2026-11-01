@@ -31,6 +31,7 @@
 
 import { ActionCtx } from "../_generated/server";
 import { NonRetryableError } from "@convex-dev/workpool";
+import { Agent } from "undici";
 import { buildAuthHeaders } from "../lib/cloudRunAuth";
 import { preprocessAudienceFor } from "../preprocessAudience";
 import { WARMUP_HEAVY_FETCH_TIMEOUT_MS } from "../lib/preprocessWarmup";
@@ -134,6 +135,30 @@ const HEAVY_SERVICE = (): PreprocessService => ({
  * adapters/placeholderUploads.ts) and hits the FAST service (no model), so it
  * keeps its own generous budget rather than the fast process-entry one.
  */
+/**
+ * NEO-411: the connection pool every preprocess request goes through, with
+ * undici's own header and body timeouts switched off.
+ *
+ * Node's built-in fetch gives up on a response whose headers take more than
+ * 300s (undici's default `headersTimeout`), whatever `AbortSignal.timeout` the
+ * caller set. A cold heavy call can take longer than that, so every heavy call
+ * and heavy warm-up that ran past 300s died with "fetch failed"
+ * (UND_ERR_HEADERS_TIMEOUT) before our 400s / 330s budgets were reached: six
+ * of them in five red E2E runs on 2026-10-30/31, all at 300.4-300.9s. With
+ * these off, the per-call `AbortSignal.timeout` is the only limit, which is
+ * what the budgets below were always meant to be.
+ */
+const preprocessDispatcher = new Agent({ headersTimeout: 0, bodyTimeout: 0 });
+
+/**
+ * A network failure's own reason, e.g. "UND_ERR_HEADERS_TIMEOUT", so a cut
+ * request names its cause in the log instead of a bare "fetch failed".
+ */
+export function networkCauseOf(err: unknown): string | undefined {
+  const cause = (err as { cause?: { code?: unknown } } | null)?.cause;
+  return typeof cause?.code === "string" ? cause.code : undefined;
+}
+
 const PREPROCESS_FAST_TIMEOUT_MS = 60_000;
 const PREPROCESS_HEAVY_TIMEOUT_MS = 400_000;
 const PREPROCESS_EXTRACT_TIMEOUT_MS = 240_000;
@@ -404,12 +429,14 @@ async function preprocessPost<T>(
       headers: await preprocessHeaders(service),
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(timeoutMs),
-    });
+      dispatcher: preprocessDispatcher,
+    } as RequestInit);
   } catch (err) {
     // Network failure, DNS failure, or AbortSignal.timeout firing
     // (`TimeoutError`). All transient by construction — a plain Error, so the
     // pool retries.
-    const message = err instanceof Error ? err.message : String(err);
+    const cause = networkCauseOf(err);
+    const message = (err instanceof Error ? err.message : String(err)) + (cause ? ` (${cause})` : "");
     const isTimeout = err instanceof Error && err.name === "TimeoutError";
     const text = isTimeout
       ? `preprocess request timed out after ${timeoutMs / 1000}s: ${path}`
@@ -626,7 +653,8 @@ async function callWarmupFor(
       headers: await preprocessHeaders(service),
       body: JSON.stringify({}),
       signal: AbortSignal.timeout(timeoutMs),
-    });
+      dispatcher: preprocessDispatcher,
+    } as RequestInit);
     statusCode = response.status;
     // Drain the body so the socket can be reused; its contents are ignored.
     await response.text().catch(() => "");
@@ -641,7 +669,8 @@ async function callWarmupFor(
   } catch (err) {
     // Network failure, timeout (AbortSignal), or DNS — all non-fatal. A cold
     // start simply happens later.
-    const message = err instanceof Error ? err.message : String(err);
+    const cause = networkCauseOf(err);
+    const message = (err instanceof Error ? err.message : String(err)) + (cause ? ` (${cause})` : "");
     await record(false, `preprocess warmup failed: ${message}`);
     console.warn(`[${operation}] failed (non-fatal): ${message}`);
     return { warmed: false };

@@ -360,6 +360,15 @@ export const myQuery = query({
 - Always include `args` and `returns` validators
 - Use `v.null()` for functions that return nothing
 - Queries should use `.withIndex()` instead of `.filter()` for performance
+- **A subscribed query stays small (NEO-392, NEO-400, NEO-401).** The Convex client
+  resolves a mutation's `await` only when the next Transition arrives, and the server
+  sends that only after re-running every query the tab subscribes to. A `useQuery`
+  that reads thousands of documents therefore stalls every save on its screen (the
+  E2E "lockups" of 2026-10). Rule of thumb: nothing a screen subscribes to reads more
+  than a few hundred documents or re-runs on the screen's own writes. A heavy answer is
+  either read once on demand (`useConvex().query`, the Set Builder trash can) or stored
+  as NB rows and refreshed by a scheduled job (smart binder fits). Check a new query's
+  `readDocs` in the per-shard `convex-logs-*` CI artifact before merging it.
 - Use `Id<"tableName">` type for document IDs
 - Actions cannot access `ctx.db` - call mutations/queries via `ctx.runMutation`/`ctx.runQuery`
 

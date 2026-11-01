@@ -30,9 +30,12 @@ test(
     await page.getByRole("button", { name: "Replace and build" }).click();
 
     await page.getByRole("button", { name: "Stop after this one" }).click();
+    // GUIDE R5 exception, a live BSC round trip: building a parallel fetches its
+    // checklist from BSC before writing it. Run 41212224696 spent 4.8 s in that
+    // fetch (a BSC re-login inside it) plus 1.7 s writing the page, past 7 s.
     await expect(
       page.getByRole("heading", { name: new RegExp(`Base parallels — stopped after 1 of ${total}`) }),
-    ).toBeVisible();
+    ).toBeVisible({ timeout: 60_000 });
 
     await expectAccessible(page, { label: "Base parallels build stopped after one" });
 

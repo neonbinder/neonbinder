@@ -20,3 +20,6 @@
 - [Tightening a validator shared with stored drafts](tightening-a-validator-shared-with-stored-drafts.md) — args+returns shared validators tighten only in the handler; required args make auth tests vacuous; reset runs after deploy
 - [Per-card derived state hook points](per-card-derived-state-hook-points.md) — every card insert/delete/move/re-parent site; moves cross sets; ledger flushed once per mutation
 - [Schema pins: text scan vs export walk](schema-pins-text-scan-vs-export-walk.md) — wipe-graph pin greps table-block text; reference-seed pin walks schema.export(); ids in a shared validator const hit only the second
+- [Cached lookup answer must reverify membership](cached-lookup-answer-must-reverify-membership.md) — a cached name→id answer confirmed by get alone survives rename/alias/sport removal; re-check membership in memory; Convex arrays cap at 8,192
+- [Table-number discovery by normalizeId](table-number-discovery-by-normalize-id.md) — normalizeId is a SYNC syscall: budget = 1 s execution, cost = numbers x pending tables per query; start at 10001; convex-test cannot pin it
+- [Workpool cancel does not stop running work](workpool-cancel-does-not-stop-running-work.md) — cancel only blocks retries; the running attempt's real result or 'canceled' still hits onComplete later; reset-in-place rows need a generation guard (workId or context gen)

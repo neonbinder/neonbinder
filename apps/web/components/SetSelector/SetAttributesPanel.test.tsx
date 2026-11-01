@@ -147,7 +147,11 @@ const mockConvexQuery = vi.fn();
 
 let currentRow: unknown;
 let currentChain: unknown;
-/** `getSelectorOptionHoldings` — undefined means "still counting". */
+/**
+ * `getSelectorOptionHoldings` — NEO-400: read ONCE, on the trash's click,
+ * through `useConvex().query`, never subscribed. A function answers a test
+ * that wants the check to fail; undefined answers one that never clicks.
+ */
 let currentHoldings: unknown;
 /**
  * NEO-277: `teams.getManyByIds` — the collapsed bar's livery and the Team
@@ -170,7 +174,6 @@ vi.mock("convex/react", () => ({
   useQuery: (query: string) => {
     if (query === "getSelectorOptionById") return currentRow;
     if (query === "getAncestorChain") return currentChain;
-    if (query === "getSelectorOptionHoldings") return currentHoldings;
     if (query === "teams.getManyByIds") return currentTeamRows;
     if (query === "brandView.getBrandsForYearOfSet") return currentYearBrands;
     // NEO-305 — both answers "yes"; the panel decides by LEVEL which one
@@ -198,7 +201,14 @@ vi.mock("convex/react", () => ({
     if (mutation === "autographFormat.setAutographFormat") return mockSetAutographFormat;
     return vi.fn();
   },
-  useConvex: () => ({ query: mockConvexQuery }),
+  useConvex: () => ({
+    query: (ref: string, args: unknown) =>
+      ref === "getSelectorOptionHoldings"
+        ? typeof currentHoldings === "function"
+          ? currentHoldings()
+          : Promise.resolve(currentHoldings)
+        : mockConvexQuery(ref, args),
+  }),
   // Inert here: nothing this file exercises calls an action.
   useAction: () => vi.fn(),
 }));
@@ -625,7 +635,7 @@ describe("SetAttributesPanel — delete affordance (NEO-219)", () => {
     currentHoldings = undefined;
   });
 
-  it("is inert and names what is below the row when holdings exist", () => {
+  it("checks on click, then is inert and names what is below the row", async () => {
     currentRow = makeRow({ level: "manufacturer", value: "Topps" });
     // Exactly the server's shape: `kind: "rows"` names the children's level
     // when they share one. The noun is the operator's only clue about what is
@@ -645,24 +655,26 @@ describe("SetAttributesPanel — delete affordance (NEO-219)", () => {
 
     renderPanel();
 
+    // NEO-400: nothing is read until the click. Before it the trash is a
+    // plain, enabled control with no reason attached.
     const trash = screen.getByLabelText("Delete Topps");
-    expect(trash.getAttribute("aria-disabled")).toBe("true");
+    expect(trash.getAttribute("aria-disabled")).toBeNull();
+    expect(screen.queryByText(/below it/)).toBeNull();
 
-    // The reason is in the DOM at all times as the button's described-by
-    // target, so a screen reader hears it without any interaction.
-    const reason = screen.getByText(
+    // The click runs the check; a row with something below it never opens
+    // the dialog — it answers the question instead, as the described-by
+    // target so a screen reader hears it too.
+    fireEvent.click(trash);
+    const reason = await screen.findByText(
       "Holds 3 sets and 220 cards — delete what is below it first",
     );
+    expect(trash.getAttribute("aria-disabled")).toBe("true");
     expect(trash.getAttribute("aria-describedby")).toBe(reason.id);
-
-    // Clicking an inert control must not open the dialog — it answers the
-    // question the inert state raises instead.
-    fireEvent.click(trash);
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(mockDeleteSelectorOption).not.toHaveBeenCalled();
   });
 
-  it("says the neutral 'rows' when the children are mixed levels and the server names none", () => {
+  it("says the neutral 'rows' when the children are mixed levels and the server names none", async () => {
     // A variantType holding both inserts and parallels: the server OMITS
     // `level` because no single noun is right. Inventing one from the parent's
     // level would name the wrong thing in exactly that case, so the sentence
@@ -677,13 +689,14 @@ describe("SetAttributesPanel — delete affordance (NEO-219)", () => {
     };
 
     renderPanel();
+    fireEvent.click(screen.getByLabelText("Delete Inserts"));
 
     expect(
-      screen.getByText("Holds 3 rows — delete what is below it first"),
+      await screen.findByText("Holds 3 rows — delete what is below it first"),
     ).toBeTruthy();
   });
 
-  it("names an in-flight checklist review with its own remedy, not 'delete what is below it'", () => {
+  it("names an in-flight checklist review with its own remedy, not 'delete what is below it'", async () => {
     // A review is work in progress ON the row, not a thing below it, so the
     // instruction has to differ: telling an operator to delete their way out
     // of a review they are halfway through is the wrong answer.
@@ -694,15 +707,16 @@ describe("SetAttributesPanel — delete affordance (NEO-219)", () => {
     };
 
     const { unmount } = renderPanel();
+    fireEvent.click(screen.getByLabelText("Delete 2024 Topps Chrome"));
 
     expect(
-      screen.getByLabelText("Delete 2024 Topps Chrome").getAttribute("aria-disabled"),
-    ).toBe("true");
-    expect(
-      screen.getByText(
+      await screen.findByText(
         "A checklist review is in progress here — finish or cancel it first",
       ),
     ).toBeTruthy();
+    expect(
+      screen.getByLabelText("Delete 2024 Topps Chrome").getAttribute("aria-disabled"),
+    ).toBe("true");
     expect(screen.queryByText(/delete what is below it first/)).toBeNull();
     unmount();
 
@@ -716,31 +730,98 @@ describe("SetAttributesPanel — delete affordance (NEO-219)", () => {
       protected: false,
     };
     renderPanel();
+    fireEvent.click(screen.getByLabelText("Delete 2024 Topps Chrome"));
     expect(
-      screen.getByText(
+      await screen.findByText(
         "Holds 2 variant types — delete what is below it first; 3 checklist reviews are in progress here — finish or cancel them first",
       ),
     ).toBeTruthy();
   });
 
-  it("is inert while the holdings query is still in flight — never optimistically deletable", () => {
+  it("says it is checking while the one-shot read is in flight, and never opens the dialog early", async () => {
     currentRow = makeRow({ level: "setName" });
-    currentHoldings = undefined;
+    let answer: (h: unknown) => void = () => {};
+    currentHoldings = () =>
+      new Promise((resolve) => {
+        answer = resolve;
+      });
 
     renderPanel();
-
     const trash = screen.getByLabelText("Delete 2024 Topps Chrome");
-    expect(trash.getAttribute("aria-disabled")).toBe("true");
-    expect(screen.getByText("Checking what is below it…")).toBeTruthy();
+    fireEvent.click(trash);
+
+    expect(await screen.findByText("Checking what is below it…")).toBeTruthy();
+    expect(
+      screen.getByText("Checking what is below it…").getAttribute("aria-live"),
+    ).toBe("polite");
+    expect(trash.getAttribute("aria-busy")).toBe("true");
+    expect(screen.queryByRole("dialog")).toBeNull();
+    // A second click while checking is a no-op: one read per question.
+    fireEvent.click(trash);
+
+    answer({ holds: [], protected: false });
+    expect(await screen.findByRole("dialog")).toBeTruthy();
+    expect(screen.queryByText("Checking what is below it…")).toBeNull();
   });
 
-  it("is hidden entirely for a protected row — hidden, not disabled", () => {
-    // A protected row is not "a thing you may do but not now", it is not a
-    // thing you may do at all, so there is no control to disable.
-    currentRow = makeRow({ level: "insert", value: "Refractors" });
-    currentHoldings = { holds: [], protected: true };
+  it("a failed check is said, not mistaken for a refusal, and the next click tries again", async () => {
+    currentRow = makeRow({ level: "setName" });
+    let calls = 0;
+    currentHoldings = async () => {
+      calls += 1;
+      // A plain Error is a transport or server failure whose message is not
+      // for a person ("[CONVEX Q(...)] [Request ID: ...] Server Error"), so the
+      // fallback is shown; only a ConvexError's own text would be.
+      if (calls === 1) throw new Error("[CONVEX Q(x)] [Request ID: 1] Server Error");
+      return { holds: [], protected: false };
+    };
+
     renderPanel();
-    expect(screen.queryByLabelText("Delete Refractors")).toBeNull();
+    const trash = screen.getByLabelText("Delete 2024 Topps Chrome");
+    fireEvent.click(trash);
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe("Couldn't check what is below it — try again.");
+    expect(screen.queryByText(/Request ID/)).toBeNull();
+    // A failed check is not a refusal: the control stays live, not dimmed.
+    expect(trash.getAttribute("aria-disabled")).toBeNull();
+    expect(screen.queryByRole("dialog")).toBeNull();
+
+    fireEvent.click(trash);
+    expect(await screen.findByRole("dialog")).toBeTruthy();
+  });
+
+  it("re-checks on every click, so a row emptied meanwhile becomes deletable without leaving it", async () => {
+    currentRow = makeRow({ level: "setName" });
+    currentHoldings = {
+      holds: [{ kind: "cards", count: 4, examples: [] }],
+      protected: false,
+    };
+
+    renderPanel();
+    const trash = screen.getByLabelText("Delete 2024 Topps Chrome");
+    fireEvent.click(trash);
+    expect(
+      await screen.findByText("Holds 4 cards — delete what is below it first"),
+    ).toBeTruthy();
+
+    currentHoldings = { holds: [], protected: false };
+    fireEvent.click(trash);
+    expect(await screen.findByRole("dialog")).toBeTruthy();
+    expect(trash.getAttribute("aria-disabled")).toBeNull();
+  });
+
+  it("does not subscribe to the holdings — nothing is read until the trash is clicked (NEO-400)", () => {
+    // The live subscription re-read every row and card below the selection
+    // on every write to the set and stalled every save in the tab behind it.
+    currentRow = makeRow({ level: "setName" });
+    let reads = 0;
+    currentHoldings = async () => {
+      reads += 1;
+      return { holds: [], protected: false };
+    };
+    renderPanel();
+    expect(screen.getByLabelText("Delete 2024 Topps Chrome")).toBeTruthy();
+    expect(reads).toBe(0);
   });
 
   it("offers BOTH controls on an empty variantType — the custom gate is gone (NEO-239)", () => {
@@ -767,7 +848,7 @@ describe("SetAttributesPanel — delete affordance (NEO-219)", () => {
 
     fireEvent.click(screen.getByLabelText("Delete 2024 Topps Chrome"));
 
-    const dialog = screen.getByRole("dialog");
+    const dialog = await screen.findByRole("dialog");
     expect(
       within(dialog).getByText('Delete Set "2024 Topps Chrome"?'),
     ).toBeTruthy();
@@ -799,7 +880,7 @@ describe("SetAttributesPanel — delete affordance (NEO-219)", () => {
     renderPanel(onDeleted);
 
     fireEvent.click(screen.getByLabelText("Delete 2024 Topps Chrome"));
-    fireEvent.click(screen.getByRole("button", { name: "Yes, delete" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Yes, delete" }));
 
     await waitFor(() => {
       expect(
@@ -811,13 +892,13 @@ describe("SetAttributesPanel — delete affordance (NEO-219)", () => {
     expect(onDeleted).not.toHaveBeenCalled();
   });
 
-  it("warns that a marketplace-linked row may come back, and only then", () => {
+  it("warns that a marketplace-linked row may come back, and only then", async () => {
     // No ids attached: nothing will re-create it, so no sentence.
     currentRow = makeRow({ level: "setName", value: "2024 Topps Chrome" });
     currentHoldings = { holds: [], protected: false };
     const { unmount } = renderPanel();
     fireEvent.click(screen.getByLabelText("Delete 2024 Topps Chrome"));
-    expect(screen.getByRole("dialog").textContent).not.toContain(
+    expect((await screen.findByRole("dialog")).textContent).not.toContain(
       "the next sync may add it back",
     );
     unmount();
@@ -831,7 +912,7 @@ describe("SetAttributesPanel — delete affordance (NEO-219)", () => {
     });
     renderPanel();
     fireEvent.click(screen.getByLabelText("Delete 2024 Topps Chrome"));
-    expect(screen.getByRole("dialog").textContent).toContain(
+    expect((await screen.findByRole("dialog")).textContent).toContain(
       "It is linked to BSC; the next sync may add it back.",
     );
   });
@@ -1170,7 +1251,7 @@ describe("SetAttributesPanel — the base variant type (NEO-239, NEO-334)", () =
 
     fireEvent.click(screen.getByLabelText("Delete Base"));
 
-    const dialog = screen.getByRole("dialog");
+    const dialog = await screen.findByRole("dialog");
     expect(within(dialog).getByText('Delete base set "Base"?')).toBeTruthy();
     expect(
       within(dialog).getByText(
@@ -1194,7 +1275,7 @@ describe("SetAttributesPanel — the base variant type (NEO-239, NEO-334)", () =
     await waitFor(() => expect(onDeleted).toHaveBeenCalledWith("variantType"));
   });
 
-  it("a linked base says the next sync may bring it back", () => {
+  it("a linked base says the next sync may bring it back", async () => {
     currentRow = makeRow({
       level: "variantType",
       value: "Base",
@@ -1206,13 +1287,13 @@ describe("SetAttributesPanel — the base variant type (NEO-239, NEO-334)", () =
     fireEvent.click(screen.getByLabelText("Delete Base"));
 
     expect(
-      within(screen.getByRole("dialog")).getByText(
+      within(await screen.findByRole("dialog")).getByText(
         "Nothing is below it. This cannot be undone. The set will have no base set until you rename a type to Base. It is linked to SportLots; the next sync may add it back.",
       ),
     ).toBeTruthy();
   });
 
-  it("a base holding cards is REFUSED, with the house reason, and no dialog opens", () => {
+  it("a base holding cards is REFUSED, with the house reason, and no dialog opens", async () => {
     currentRow = baseRow();
     currentChain = makeChain("Baseball");
     currentHoldings = {
@@ -1223,24 +1304,24 @@ describe("SetAttributesPanel — the base variant type (NEO-239, NEO-334)", () =
     renderPanel();
 
     const trash = screen.getByLabelText("Delete Base");
-    expect(trash.getAttribute("aria-disabled")).toBe("true");
     fireEvent.click(trash);
 
-    expect(screen.queryByRole("dialog")).toBeNull();
     expect(
-      screen.getByText("Holds 120 cards — delete what is below it first"),
+      await screen.findByText("Holds 120 cards — delete what is below it first"),
     ).toBeTruthy();
+    expect(trash.getAttribute("aria-disabled")).toBe("true");
+    expect(screen.queryByRole("dialog")).toBeNull();
     expect(mockDeleteSelectorOption).not.toHaveBeenCalled();
   });
 
-  it("an ordinary variant type keeps the ordinary delete confirm, with no base sentence", () => {
+  it("an ordinary variant type keeps the ordinary delete confirm, with no base sentence", async () => {
     currentRow = makeRow({ level: "variantType", value: "Inserts" });
     currentChain = makeChain("Baseball");
 
     renderPanel();
     fireEvent.click(screen.getByLabelText("Delete Inserts"));
 
-    const dialog = screen.getByRole("dialog");
+    const dialog = await screen.findByRole("dialog");
     expect(within(dialog).getByText('Delete Variant Type "Inserts"?')).toBeTruthy();
     expect(
       within(dialog).getByText("Nothing is below it. This cannot be undone."),

@@ -2941,6 +2941,25 @@ export default defineSchema({
       "nameNormalized",
     ]),
 
+  // NEO-402 — a checklist fetch's player names that matched exactly one NB
+  // player, kept so the commit that follows does not look each one up again.
+  // Scratch for one (set, operator) review session; see
+  // convex/checklistNameResolutions.ts for the rules.
+  checklistNameResolutions: defineTable({
+    selectorOptionId: v.id("selectorOptions"),
+    createdByUserId: v.string(),
+    sportId: v.id("selectorOptions"),
+    createdAt: v.number(),
+    players: v.array(
+      v.object({
+        nameNormalized: v.string(),
+        playerId: v.id("players"),
+      }),
+    ),
+  })
+    .index("by_selector_option_and_user", ["selectorOptionId", "createdByUserId"])
+    .index("by_created_at", ["createdAt"]),
+
   // NEO-195: candidate cards for ONE checklist fetch, written as reconciliation
   // produces them so the review modal can fill in live instead of waiting for
   // the whole fetch.
@@ -3466,6 +3485,19 @@ export default defineSchema({
     queuedAt: v.optional(v.number()),
     escalatedAt: v.optional(v.number()),
     settledAt: v.optional(v.number()),
+    // NEO-411: when the heavy worker first started on this escalated row, epoch
+    // ms. Stamped once, by `noteHeavyStart`, which also schedules the photo's
+    // deadline (`HEAVY_PHOTO_DEADLINE_MS`): a heavy photo with no answer by then
+    // is marked failed (errorCode "PHOTO_TIMED_OUT") instead of staying in
+    // "Working on your photos." for the length of the retry ladder. Counted from
+    // the start of work, not from escalation, so a photo waiting its turn behind
+    // other photos in a large batch is not failed for the queue. Cleared with
+    // the rest of the per-image state on a restart or a retry.
+    heavyStartedAt: v.optional(v.number()),
+    // NEO-411: how many times the collector has pressed Try again on this photo
+    // (`retryPlaceholderImage`). Capped at PLACEHOLDER_MAX_IMAGE_RETRIES so one
+    // photo cannot be sent to the paid services without end.
+    retries: v.optional(v.number()),
   })
     // The ONLY index this table needs. It answers both "every image of this
     // job" (prefix `jobId` alone) and "this job's images in zip order", so a
@@ -3638,6 +3670,18 @@ export default defineSchema({
     key: v.string(),
     heavyWarmEnqueuedAt: v.number(),
   }).index("by_key", ["key"]),
+
+  /**
+   * NEO-407 — the latency probe's one write target. `latencyProbe.pingWrite`
+   * patches a single row (insert on first use) so the probe can tell a stalled
+   * WRITE path (commits queued behind something else) from a stalled read
+   * path. One row in practice (two racing first calls could insert two;
+   * harmless, nothing reads it); never written in production (the probe's
+   * functions fail closed where TESTING_RESET_SECRET is unset). No reader.
+   */
+  latencyProbeBeats: defineTable({
+    at: v.number(),
+  }),
 
   /**
    * ── NEO-358: a collector's places to keep cards ───────────────────────────
@@ -3950,6 +3994,90 @@ export default defineSchema({
     // The decline check (all three, `.first()`), the Declined view and the
     // binder delete (prefix ownerId + binderId).
     .index("by_owner_binder_card", ["ownerId", "binderId", "cardId"]),
+
+  /**
+   * ── NEO-401: the catalog cards a smart binder's rule matches, stored ──────
+   *
+   * One row per card the rule fits, in catalog order (`order`), written by
+   * `binderRules.recomputeFits` when the rule is saved, when a parallel the
+   * binder did not hold before arrives, and nightly (`crons.ts`) so new
+   * catalog cards are slotted in. The binder's empty slots (`binderRules.needs`)
+   * are these rows minus what the binder holds, read live and indexed; the
+   * catalog walk and rule test never run inside a subscribed query again
+   * (NEO-392: they re-ran on every write and held every save in the tab).
+   * Derived from NB data only; deleted with the rule and with the binder.
+   */
+  collectionBinderFits: defineTable({
+    ownerId: v.string(),
+    binderId: v.id("collectionContainers"),
+    cardId: v.id("cardChecklist"),
+    /** The card's variant row, so a parallel the binder no longer holds is skipped live. */
+    variantId: v.id("selectorOptions"),
+    /** Position in the catalog walk: the order the empty slots are drawn in. */
+    order: v.number(),
+    /**
+     * The recompute that last wrote this row (`recomputeFits`). A recompute
+     * writes its rows in pages under one new generation, then deletes every
+     * row of an older one, so a rule's old cards leave in the same pass that
+     * brings the new ones, and never in a user's own mutation.
+     */
+    generation: v.number(),
+    /**
+     * The collector has a copy of it in a binder other than this one. Kept
+     * current by `binderFits.refreshHeld` on every copy write, and rewritten
+     * by every recompute.
+     */
+    held: v.optional(v.boolean()),
+  })
+    // The empty-slots read and the stale sweep (prefix binderId).
+    .index("by_binder_order", ["binderId", "order"])
+    // The paged write: is this card already stored for this binder?
+    .index("by_binder_card", ["binderId", "cardId"])
+    .index("by_binder_variant", ["binderId", "variantId"])
+    // `held` upkeep: every smart binder of the owner that stores this card.
+    .index("by_owner_card", ["ownerId", "cardId"]),
+
+  /**
+   * NEO-401 — one row per smart binder: when its fits were last computed and
+   * what the walk said. Absent means "not computed yet" (a rule just saved;
+   * the recompute is scheduled). `by_computed` is the nightly refresh's
+   * order, oldest first.
+   */
+  collectionBinderFitsState: defineTable({
+    ownerId: v.string(),
+    binderId: v.id("collectionContainers"),
+    computedAt: v.number(),
+    /** False when the rule has no way into the catalog (`catalogCandidates`). */
+    supported: v.boolean(),
+    /** False when the walk stopped at its cap, so there may be more. */
+    complete: v.boolean(),
+    /** Rows stored. */
+    count: v.number(),
+    /**
+     * A recompute is scheduled or running (the rule was just saved). The
+     * rows, if any, are the previous rule's until it lands; `needs` says so.
+     */
+    pending: v.optional(v.boolean()),
+    /**
+     * NEO-410 — when `pending` was set (`scheduleFits`). A binder pending for
+     * longer than `binderRules.FITS_STUCK_AFTER_MS` is re-queued by
+     * `requeueStuckFits`, so a recompute Convex dropped can't leave it stuck.
+     */
+    pendingSince: v.optional(v.number()),
+    /** NEO-410 — every attempt of the last recompute failed; the screen offers "Try again". */
+    failed: v.optional(v.boolean()),
+    /** The generation the rows carry; the next recompute writes the one after. */
+    generation: v.optional(v.number()),
+    /**
+     * NEO-410 — the highest generation a recompute has claimed
+     * (`claimFitsGeneration`), so overlapping recomputes never share one.
+     */
+    nextGeneration: v.optional(v.number()),
+  })
+    .index("by_binder", ["binderId"])
+    .index("by_computed", ["computedAt"])
+    // NEO-410: the stuck-pending sweep (rows with no `pendingSince` sort first and are skipped).
+    .index("by_pending_since", ["pendingSince"]),
 
   collectionWants: defineTable({
     ownerId: v.string(),

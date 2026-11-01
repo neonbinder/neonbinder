@@ -95,6 +95,18 @@ crons.interval(
 );
 
 /**
+ * NEO-402 — a fetch's stored name answers whose session was neither confirmed
+ * nor cancelled. Readers ignore them after a day already; this keeps the
+ * table from growing.
+ */
+crons.interval(
+  "reap stale checklist name resolutions",
+  { hours: 1 },
+  internal.checklistNameResolutions.sweepStaleResolutions,
+  {},
+);
+
+/**
  * NEO-221 — delete entity-review batches nobody is coming back to.
  *
  * A separate entry from "age stale entity-review lookups" above, and
@@ -139,6 +151,35 @@ crons.interval(
   "sweep stale copy photos",
   { hours: 1 },
   internal.copyPhotos.sweepCopyPhotos,
+  {},
+);
+
+/**
+ * NEO-401 — recompute each smart binder's stored fits (`collectionBinderFits`)
+ * once a day, so a card added to the catalog after the rule was saved reaches
+ * the binder's empty slots. Daily at 09:00 UTC (the small hours in the US):
+ * the fits are a derived list that only the catalog's growth can age, and the
+ * binder screen must never pay for the walk itself (NEO-392). Each pass
+ * schedules at most `REFRESH_BATCH` recomputes, spaced out, and hands on to
+ * another pass when more are due. See `refreshStaleFits`.
+ */
+crons.daily(
+  "refresh smart binder fits",
+  { hourUTC: 9, minuteUTC: 0 },
+  internal.binderRules.refreshStaleFits,
+  {},
+);
+
+/**
+ * NEO-410 — re-queue any smart binder whose fits have been pending (rule
+ * just saved, recompute scheduled) for more than ten minutes. A recompute
+ * that throws retries itself; this catches the one Convex never finished
+ * at all, so no binder waits forever. See `requeueStuckFits`.
+ */
+crons.interval(
+  "re-queue stuck smart binder fits",
+  { minutes: 10 },
+  internal.binderRules.requeueStuckFits,
   {},
 );
 

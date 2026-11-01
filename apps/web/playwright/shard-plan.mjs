@@ -89,6 +89,17 @@ const MIN_SECONDS = {
   "placeholders/pipeline-escalation-cold-start.spec.ts": 300,
 };
 
+// Specs that share the heavy preprocess service (NEO-407). Each sends photos
+// past the fast crop to the heavy model: the dev heavy service runs one photo
+// per instance on a handful of instances, and a cold one takes minutes to
+// load. Two of them on different shards at once compete for those instances,
+// and which one lands on a cold instance or waits behind the other's photos is
+// luck (CI run 41212224696: real-scans timed out queued behind other heavy
+// jobs). Planned as ONE unit, they run one after another on one shard
+// (`workers: 1`), so within a pass they never overlap. Order is the listed one.
+const RUN_TOGETHER = [
+  ["placeholders/pipeline-escalation-cold-start.spec.ts", "collection/add-cards-from-photos-real-scans.spec.ts"],
+];
 function median(values) {
   if (values.length === 0) return 1;
   const s = [...values].sort((a, b) => a - b);
@@ -100,19 +111,24 @@ function plan(n, project) {
   const timings = loadTimings(project);
   const specs = listSpecs(project);
   const fallback = median(specs.map((s) => timings[s]).filter((v) => Number.isFinite(v)));
-  const weighted = specs
-    .map((spec) => ({
-      spec,
-      secs: Math.max(Number.isFinite(timings[spec]) ? timings[spec] : fallback, MIN_SECONDS[spec] ?? 0),
-    }))
-    // Heaviest first; path breaks ties so every shard computes the same plan.
-    .sort((a, b) => b.secs - a.secs || a.spec.localeCompare(b.spec));
+  const secsOf = (spec) => Math.max(Number.isFinite(timings[spec]) ? timings[spec] : fallback, MIN_SECONDS[spec] ?? 0);
+  const grouped = new Set();
+  const units = [];
+  for (const group of RUN_TOGETHER) {
+    const present = group.filter((spec) => specs.includes(spec));
+    if (present.length === 0) continue;
+    for (const spec of present) grouped.add(spec);
+    units.push({ spec: present[0], specs: present, secs: present.reduce((acc, spec) => acc + secsOf(spec), 0) });
+  }
+  for (const spec of specs) if (!grouped.has(spec)) units.push({ spec, specs: [spec], secs: secsOf(spec) });
+  // Heaviest first; path breaks ties so every shard computes the same plan.
+  const weighted = units.sort((a, b) => b.secs - a.secs || a.spec.localeCompare(b.spec));
   const shards = Array.from({ length: n }, () => ({ secs: 0, specs: [] }));
   for (const item of weighted) {
     let lightest = shards[0];
     for (const s of shards) if (s.secs < lightest.secs) lightest = s;
     lightest.secs += item.secs;
-    lightest.specs.push(item.spec);
+    lightest.specs.push(...item.specs);
   }
   return shards;
 }
