@@ -1,10 +1,22 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { cleanup, renderHook } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, renderHook, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
-import { checklistGateLine, intakeGateLine, useListingLock } from "./ListingGate";
+import { MemoryRouter } from "react-router";
+import {
+  ChecklistGateText,
+  SETTINGS_PATH,
+  SYNC_STATUS_LINK,
+  SyncStatusLink,
+  checklistGateLine,
+  intakeGateLine,
+  takeSyncStatusArrival,
+  useListingLock,
+} from "./ListingGate";
+import SyncStatusTab from "./SyncStatusTab";
 import { stubListing } from "./stubListing";
+import { CollectionModeProvider } from "../../mode";
 import { CollectionStoreContext, type CollectionData, type CollectionStoreValue } from "../../data/store";
-import { REAL_CAPABILITIES, type ListingGateView } from "../../data/types";
+import { REAL_CAPABILITIES, type ListingGateView, type PlatformSyncStatus } from "../../data/types";
 
 /**
  * NEO-370 — the screens' copy of the listing gate: `useListingLock` combines
@@ -75,5 +87,84 @@ describe("the gate's lines", () => {
     expect(intakeGateLine("Show box", { needsPrice: false, needsCondition: true })).toBe(
       "Condition first! Show box sells on your marketplaces, so pick a condition in Defaults before you send photos.",
     );
+  });
+});
+
+describe("the checklist note's Profile → Settings link", () => {
+  it("reads exactly as the line, with Profile → Settings a real link there", () => {
+    const missing = { needsPrice: true, needsCondition: true };
+    const { container } = render(
+      <MemoryRouter>
+        <p>
+          <ChecklistGateText homeName="Show box" missing={missing} />
+        </p>
+      </MemoryRouter>,
+    );
+    expect(container.textContent).toBe(checklistGateLine("Show box", missing));
+    expect(screen.getByRole("link", { name: "Profile → Settings" }).getAttribute("href")).toBe(SETTINGS_PATH);
+  });
+
+  it("no link when only the price is missing", () => {
+    render(
+      <MemoryRouter>
+        <ChecklistGateText homeName="Show box" missing={{ needsPrice: true, needsCondition: false }} />
+      </MemoryRouter>,
+    );
+    expect(screen.queryByRole("link")).toBeNull();
+  });
+});
+
+describe("arriving on Sync status by \"See what's syncing\"", () => {
+  const platform: PlatformSyncStatus = {
+    platform: "bsc",
+    connected: true,
+    listing: true,
+    needsReauth: false,
+    paused: false,
+    sellerConflict: false,
+    running: null,
+    queued: { cards: [], more: false },
+    sets: [],
+  };
+  function tab() {
+    const value = {
+      kind: "convex",
+      capabilities: REAL_CAPABILITIES,
+      data: {} as CollectionData,
+      actions: {},
+      listing: stubListing({ useSyncStatus: () => ({ platforms: [platform] }) }),
+    } as CollectionStoreValue;
+    return render(
+      <MemoryRouter initialEntries={["/inventory?tab=sync"]}>
+        <CollectionStoreContext.Provider value={value}>
+          <SyncStatusTab />
+        </CollectionStoreContext.Provider>
+      </MemoryRouter>,
+    );
+  }
+
+  it("a plain click on the link puts the keyboard on Sync status's first heading", async () => {
+    render(
+      <MemoryRouter initialEntries={["/inventory?tab=checklists"]}>
+        <CollectionModeProvider mode="app" surface="inventory">
+          <SyncStatusLink />
+        </CollectionModeProvider>
+      </MemoryRouter>,
+    );
+    fireEvent.click(screen.getByRole("link", { name: SYNC_STATUS_LINK }));
+    cleanup();
+    tab();
+    await act(async () => {});
+    const heading = screen.getByRole("heading", { level: 2, name: "BuySportsCards" });
+    expect(document.activeElement).toBe(heading);
+    expect(heading.getAttribute("tabindex")).toBe("-1");
+    // Once: the next visit (a tab click, a Back) leaves focus alone.
+    expect(takeSyncStatusArrival()).toBe(false);
+  });
+
+  it("any other way in leaves focus where it was", async () => {
+    tab();
+    await act(async () => {});
+    expect(document.activeElement).toBe(document.body);
   });
 });

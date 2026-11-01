@@ -26,6 +26,7 @@ function setup(opts: {
   /** The listing gate's `syncing` (NEO-370): the collector is set up for syncing. Default true. */
   syncing?: boolean;
 }) {
+  let variant = { id: "base1", title: "1989 Upper Deck Base" };
   const notify = vi.fn();
   const syncVariant = vi.fn(opts.sync ?? (async () => ({ queued: true })));
   const listing = stubListing({
@@ -47,7 +48,7 @@ function setup(opts: {
         <CollectionModeProvider mode="app" surface="inventory">
           <CollectionStoreContext.Provider value={value}>
             <PageApiContext.Provider value={pageApi}>
-              <SyncButton variantId="base1" title="1989 Upper Deck Base" />
+              <SyncButton variantId={variant.id} title={variant.title} />
             </PageApiContext.Provider>
           </CollectionStoreContext.Provider>
         </CollectionModeProvider>
@@ -55,7 +56,17 @@ function setup(opts: {
     </Theme>
   );
   const view = render(tree());
-  return { view, notify, syncVariant, rerender: () => view.rerender(tree()) };
+  return {
+    view,
+    notify,
+    syncVariant,
+    rerender: () => view.rerender(tree()),
+    /** The checklist moves on to another set (the header stays mounted). */
+    showSet: (id: string, title: string) => {
+      variant = { id, title };
+      view.rerender(tree());
+    },
+  };
 }
 
 const button = () => screen.getByRole("button", { name: "Sync 1989 Upper Deck Base" });
@@ -171,6 +182,45 @@ describe("the checklist's Sync button", () => {
       // A real link: a Tab stop of its own, right after Sync.
       expect(a!.tabIndex).toBe(0);
       expect(button().compareDocumentPosition(a!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
+    it("says \"Sync started.\" first when the press set a run going; a throttled press shows the link alone", async () => {
+      setup({});
+      fireEvent.click(button());
+      await flush();
+      expect(screen.getByRole("status").textContent).toBe(`Sync started. ${SYNC_STATUS_LINK}`);
+      cleanup();
+      setup({ sync: async () => ({ queued: false, ignored: "throttled" }) });
+      fireEvent.click(button());
+      await flush();
+      expect(screen.getByRole("status").textContent).toBe(SYNC_STATUS_LINK);
+    });
+
+    it("a refused press takes the link away", async () => {
+      let fail = false;
+      setup({
+        sync: async () => {
+          if (fail) throw new Error("Signed out");
+          return { queued: true };
+        },
+      });
+      fireEvent.click(button());
+      await flush();
+      expect(link()).not.toBeNull();
+      fail = true;
+      fireEvent.click(button());
+      await flush();
+      expect(link()).toBeNull();
+    });
+
+    it("never carries over to another set the checklist moves on to", async () => {
+      const s = setup({});
+      fireEvent.click(button());
+      await flush();
+      expect(link()).not.toBeNull();
+      s.showSet("base2", "1990 Upper Deck Base");
+      expect(screen.getByRole("button", { name: "Sync 1990 Upper Deck Base" })).toBeTruthy();
+      expect(link()).toBeNull();
     });
 
     it("is not there for a collector who is not set up for syncing, pressed or not", async () => {

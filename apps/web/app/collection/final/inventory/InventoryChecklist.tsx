@@ -7,7 +7,7 @@ import type { ChecklistProps } from "../Checklist";
 import ChipGroup from "../ChipGroup";
 import CommonPrice from "./CommonPrice";
 import SyncButton from "./listing/SyncButton";
-import { checklistGateLine, ListingGateNote, useListingLock } from "./listing/ListingGate";
+import { ChecklistGateText, ListingGateNote, useListingLock } from "./listing/ListingGate";
 import { checklistCount, isComplete, totalKnown } from "../catalog/format";
 import { copiesByCard, fold } from "../catalog/home";
 import { SkeletonBars, SkeletonPips } from "../catalog/Skeleton";
@@ -210,7 +210,9 @@ const InventoryChecklist = forwardRef<HTMLHeadingElement, ChecklistProps>(functi
           <SkeletonBars rows={1} className="w-48" />
         )}
         <CommonPrice variantId={variantId} title={title} />
-        {lock.locked && box && <ListingGateNote id={gateNoteId} line={checklistGateLine(box.name, lock)} />}
+        {lock.locked && box && (
+          <ListingGateNote id={gateNoteId} line={<ChecklistGateText homeName={box.name} missing={lock} />} />
+        )}
         {/* Nothing stocked: no strip. A row of empty pockets reads as missing
             glyphs, and the "0 of N" line above already says it. */}
         {!cards ? <SkeletonPips /> : stockedIds.size > 0 && <StockStrip cards={cards} stockedIds={stockedIds} />}

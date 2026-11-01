@@ -369,6 +369,7 @@ function newRunIntoBox(gate: ListingGateView | undefined) {
 
 const zone = () => screen.getByRole("button", { name: /drop your photos|Drag your card photos here/ });
 const gateLine = intakeGateLine("For sale", { needsPrice: true, needsCondition: false });
+const describedByIds = (el: Element) => (el.getAttribute("aria-describedby") ?? "").split(" ").filter(Boolean);
 
 describe("RealAddCardsTab listing gate (NEO-370)", () => {
   it("holds the drop zone into a listed box with no price, the reason beside it", () => {
@@ -400,6 +401,38 @@ describe("RealAddCardsTab listing gate (NEO-370)", () => {
     expect(screen.queryByText(gateLine)).toBeNull();
     expect(zone().getAttribute("aria-disabled")).toBeNull();
     expect(zone().textContent).toBe("Drag your card photos here");
+  });
+
+  it("Min price reads $ and commas, commits on Enter, and shows the cents back", async () => {
+    newRunIntoBox(HELD);
+    fireEvent.click(screen.getByRole("button", { name: "Set a Min price" }));
+    const field = screen.getByRole("textbox", { name: "Min price" }) as HTMLInputElement;
+    expect(field.getAttribute("type")).toBe("text");
+    expect(field.getAttribute("inputmode")).toBe("decimal");
+    fireEvent.change(field, { target: { value: "$1,250.5" } });
+    fireEvent.keyDown(field, { key: "Enter" });
+    expect(field.value).toBe("1250.50");
+    expect(zone().getAttribute("aria-disabled")).toBeNull();
+  });
+
+  it("a Min price that is not a price keeps the hold, marks the field and says how, tied to it", () => {
+    newRunIntoBox(HELD);
+    fireEvent.click(screen.getByRole("button", { name: "Set a Min price" }));
+    const field = screen.getByRole("textbox", { name: "Min price" }) as HTMLInputElement;
+    fireEvent.change(field, { target: { value: "a buck" } });
+    fireEvent.blur(field);
+    expect(field.getAttribute("aria-invalid")).toBe("true");
+    const alert = screen.getByRole("alert");
+    expect(alert.textContent).toBe("Type a price like 1.50");
+    expect(describedByIds(field)).toContain(alert.id);
+    // The typed text stays to fix; nothing was stored, so the hold stays.
+    expect(field.value).toBe("a buck");
+    expect(zone().getAttribute("aria-disabled")).toBe("true");
+    fireEvent.change(field, { target: { value: "2" } });
+    fireEvent.blur(field);
+    expect(field.getAttribute("aria-invalid")).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(field.value).toBe("2.00");
   });
 
   it("a common price for the set, a box that does not list, or a collector who does not sync: no hold", () => {

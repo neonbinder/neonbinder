@@ -394,6 +394,22 @@ export default function RealAddCardsTab() {
 /* Setup pieces                                                        */
 /* ------------------------------------------------------------------ */
 
+/** Cents as the Min price field shows them ("1.50"); blank for none. */
+function centsText(cents: number | undefined): string {
+  return cents === undefined ? "" : (cents / 100).toFixed(2);
+}
+
+/**
+ * The Min price field's text as cents: blank is none (`undefined`), "$1,250.5"
+ * is 125050; anything else, or more than two decimals, is "invalid".
+ */
+export function parseMinPrice(text: string): number | undefined | "invalid" {
+  const t = text.trim().replace(/[$,\s]/g, "");
+  if (t === "") return undefined;
+  if (!/^\d+(\.\d{0,2})?$|^\.\d{1,2}$/.test(t)) return "invalid";
+  return Math.round(Number(t) * 100);
+}
+
 /** The held drop zone's headline (NEO-370): what to do before the photos. */
 function heldHeadline(missing: { needsPrice: boolean; needsCondition: boolean }): string {
   if (missing.needsPrice && missing.needsCondition) return "Set a price and a condition, then drop your photos";
@@ -479,6 +495,7 @@ function DefaultsFields({
   conditionRef?: Ref<HTMLSelectElement>;
 }) {
   const priceHelpId = useId();
+  const priceErrorId = useId();
   // No "your usual" choice: the field shows the seller's default (Profile →
   // Settings) until they pick another.
   const usualCondition = useDefaultCondition();
@@ -491,7 +508,19 @@ function DefaultsFields({
   };
   const g = draft.grading;
   const cost = draft.costCents === undefined ? "" : (draft.costCents / 100).toFixed(2);
-  const price = draft.minPriceCents === undefined ? "" : (draft.minPriceCents / 100).toFixed(2);
+  const [priceText, setPriceText] = useState(() => centsText(value.minPriceCents));
+  const [priceBad, setPriceBad] = useState(false);
+  /** Min price: blank clears it, a price sets it (shown back to the cent), anything else is refused in place. */
+  const commitPrice = () => {
+    const cents = parseMinPrice(priceText);
+    if (cents === "invalid") {
+      setPriceBad(true);
+      return;
+    }
+    setPriceBad(false);
+    setPriceText(centsText(cents));
+    if (cents !== draft.minPriceCents) commit({ minPriceCents: cents });
+  };
   return (
     <div className="grid gap-3 sm:grid-cols-3">
       <label className="flex flex-col gap-1 text-xs text-ink-3">
@@ -552,17 +581,27 @@ function DefaultsFields({
               ref={priceRef}
               bare
               className={FIELD}
+              type="text"
               inputMode="decimal"
               placeholder="$0.00"
-              defaultValue={price}
-              key={price}
-              aria-describedby={priceHelpId}
-              onBlur={(e) => {
-                const n = Number(e.target.value.trim().replace(/^\$/, ""));
-                commit({ minPriceCents: e.target.value.trim() && Number.isFinite(n) && n >= 0 ? Math.round(n * 100) : undefined });
+              value={priceText}
+              aria-invalid={priceBad || undefined}
+              aria-describedby={priceBad ? `${priceErrorId} ${priceHelpId}` : priceHelpId}
+              onChange={(e) => setPriceText(e.target.value)}
+              onBlur={commitPrice}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  commitPrice();
+                }
               }}
             />
           </label>
+          {priceBad && (
+            <span id={priceErrorId} role="alert" className="text-notice-danger-ink">
+              Type a price like 1.50
+            </span>
+          )}
           <span id={priceHelpId}>Leave it blank to sell at your common price.</span>
         </div>
       )}

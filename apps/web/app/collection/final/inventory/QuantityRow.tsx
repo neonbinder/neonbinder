@@ -385,6 +385,9 @@ export default function QuantityRow({
             tabIndex={-1}
             aria-label={addLabel}
             disabled={!ready || raiseHeld !== undefined}
+            // Held: the reason, for the pointer (title) and for anyone who reaches it.
+            aria-describedby={raiseHeld?.noteId}
+            title={raiseHeld?.message}
             onMouseDown={(e) => e.preventDefault()}
             onClick={(e) => {
               e.stopPropagation();

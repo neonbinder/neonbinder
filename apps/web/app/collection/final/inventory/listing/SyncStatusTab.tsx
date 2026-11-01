@@ -1,10 +1,11 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { LiveLine } from "@/components/modules/RunLedger";
 import { SkeletonBars } from "../../catalog/Skeleton";
 import { useListing, type ListingExtension } from "../../data/store";
 import type { SyncStatus } from "../../data/types";
 import SyncStatusView from "./SyncStatusView";
 import { BSC_NAME } from "./copy";
+import { takeSyncStatusArrival } from "./ListingGate";
 
 /**
  * NEO-370 Rev 4 — Inventory → Sync status (`/inventory?tab=sync`): the
@@ -14,6 +15,10 @@ import { BSC_NAME } from "./copy";
  * One polite line says when one of their sets finishes syncing (running →
  * done, or running → a snag), so a collector who pressed Sync and came here
  * hears it land. The queue coming and going is not announced: it churns.
+ *
+ * Arriving by "See what's syncing" (NEO-370), the keyboard lands on the
+ * first heading once the status is drawn (the intro line when there is
+ * none), since the link it came from is gone.
  *
  * Hidden in a store with no listing (the demo): the page leaves the tab out.
  */
@@ -54,12 +59,23 @@ function Status({ listing }: { listing: ListingExtension }) {
   // The last read seen and the last line said, compared during render (no
   // effect): a new read that finishes a set replaces the line.
   const [seen, setSeen] = useState<{ status: SyncStatus | undefined; line: string }>({ status, line: "" });
+  const root = useRef<HTMLDivElement>(null);
+  const arrived = useRef<boolean | null>(null);
+  useEffect(() => {
+    if (arrived.current === null) arrived.current = takeSyncStatusArrival();
+    if (!arrived.current || status === undefined || !root.current) return;
+    arrived.current = false;
+    const target = root.current.querySelector<HTMLElement>("h2, h3") ?? root.current.querySelector<HTMLElement>("p");
+    if (!target) return;
+    if (!target.hasAttribute("tabindex")) target.setAttribute("tabindex", "-1");
+    target.focus();
+  }, [status]);
   if (seen.status !== status) {
     const line = finishedLine(seen.status, status);
     setSeen({ status, line: line || seen.line });
   }
   return (
-    <div className="space-y-4">
+    <div ref={root} className="space-y-4">
       <p className="text-sm text-ink-2">
         What&apos;s going up to your marketplaces, what&apos;s waiting, and how each set&apos;s last sync went. Changes go up
         within 15 minutes, or right away when you press Sync on a checklist.

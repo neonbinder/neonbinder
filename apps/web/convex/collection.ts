@@ -78,8 +78,8 @@ import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { internalAction, internalMutation, mutation, query } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { noteArrivals } from "./binderFits";
-import { enqueueListingCards } from "./listingOutbox";
-import { ListingGate } from "./listingGate";
+import { enqueueListingCards, listsOnMarketplaces } from "./listingOutbox";
+import { ListingGate, type GatedCopy } from "./listingGate";
 import { requireSignedIn } from "./auth";
 import { findSetForSelectorOption } from "./lib/selectorAncestry";
 import {
@@ -1435,12 +1435,7 @@ export async function addOne(
   const home = await resolveHome(ctx, ownerId, raw.homeId);
   checkSlot(home, cleaned.slot);
   const place = await placeOfCopyCard(ctx, ownerId, cardId);
-  await gate.require(home, {
-    ...(place.variantId !== undefined ? { variantId: place.variantId } : { privateCard: true }),
-    graded: cleaned.grading !== undefined,
-    condition: cleaned.condition,
-    ...(cleaned.minPriceCents !== undefined ? { ownPriceCents: cleaned.minPriceCents } : {}),
-  });
+  await gate.require(home, gatedCopy(place, cleaned));
   const lines = await ctx.db
     .query("collectionCopies")
     .withIndex("by_owner_and_card", (q) => q.eq("ownerId", ownerId).eq("cardId", cardId))
@@ -1492,6 +1487,23 @@ export async function addOne(
  * (`applyCopyChanges`): NEO-364, a binder-to-box move (Sell) leaves the tally,
  * a box-to-binder one (Take off sale) joins it.
  */
+/**
+ * NEO-370 — what the listing gate reads of a copy headed for a home: its
+ * variant (for the common price; none for a private card, which never lists),
+ * whether it is graded, its condition and its own price.
+ */
+function gatedCopy(
+  place: Pick<Place, "variantId">,
+  details: { grading?: unknown; condition?: string; minPriceCents?: number },
+): GatedCopy {
+  return {
+    ...(place.variantId !== undefined ? { variantId: place.variantId } : { privateCard: true }),
+    graded: details.grading !== undefined,
+    condition: details.condition,
+    ...(details.minPriceCents !== undefined ? { ownPriceCents: details.minPriceCents } : {}),
+  };
+}
+
 export async function moveCopyCore(
   ctx: MutationCtx,
   ownerId: string,
@@ -1522,6 +1534,19 @@ export async function moveCopyCore(
     refuse(COLLECTION_ERRORS.notFound, "That binder or box isn't in your collection.");
   }
   checkSlot(home, slot);
+  // NEO-370: cards moving INTO a listed box from a home that does not list
+  // (a binder, an in-person box) are an add there, held by the listing gate
+  // as `addOne` is. A move between listed homes changes nothing it reads.
+  if (toHomeId !== row.homeId) {
+    const source = await ctx.db.get(row.homeId);
+    if (!source || !listsOnMarketplaces(source)) {
+      const own = ctx.db.normalizeId("privateCards", row.cardId) !== null;
+      await new ListingGate(ctx, ownerId).require(
+        home,
+        gatedCopy(own ? {} : { variantId: row.variantId }, row),
+      );
+    }
+  }
   const lines = await ctx.db
     .query("collectionCopies")
     .withIndex("by_owner_and_card", (q) => q.eq("ownerId", ownerId).eq("cardId", row.cardId))
@@ -2462,6 +2487,8 @@ export const restoreCopy = mutation({
       cleaned.slot = await firstOpenPocket(ctx, ownerId, home._id);
     }
     const place = await placeOfCopyCard(ctx, ownerId, args.cardId);
+    // NEO-370: a line put back is an add, held by the listing gate as `addOne` is.
+    await new ListingGate(ctx, ownerId).require(home, gatedCopy(place, cleaned));
     const lines = await ctx.db
       .query("collectionCopies")
       .withIndex("by_owner_and_card", (q) => q.eq("ownerId", ownerId).eq("cardId", args.cardId))

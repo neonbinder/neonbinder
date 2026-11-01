@@ -428,6 +428,15 @@ export const undoBoxQuantity = mutation({
     let place: Promise<Place> | undefined;
     const placeOnce = () => (place ??= placeOf(ctx, cardId));
     const defaultCondition = await defaultConditionOf(ctx, ownerId);
+    // NEO-370: the inverse comes from the client, so it is forgeable. An undo
+    // that puts cards back or raises a line is held by the listing gate, once,
+    // as a raise is; one that only lowers or removes never is.
+    if (steps.some((step) => step.op === "restore" || (step.op === "set" && step.to > step.from))) {
+      const gate = new ListingGate(ctx, ownerId);
+      if (await gate.applies(box)) {
+        await gate.require(box, { variantId: (await placeOnce()).variantId, graded: false, condition: defaultCondition });
+      }
+    }
     const before = plainIn(lines, box._id, defaultCondition).copies;
     const now = Date.now();
     const redo: Step[] = [];

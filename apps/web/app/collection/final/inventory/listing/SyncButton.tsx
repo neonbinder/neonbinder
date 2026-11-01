@@ -24,14 +24,17 @@ import { SyncStatusLink } from "./ListingGate";
  * After a press, "See what's syncing" appears under it (Jason, 2026-11-01):
  * a link to Inventory → Sync status, for a collector set up for syncing (the
  * listing gate's `syncing`). It lands in a polite live region that is always
- * there, so it is announced, and it is the next Tab stop after Sync.
+ * there, so it is announced ("Sync started." first, for a press that set a
+ * run going), and it is the next Tab stop after Sync. A refused press takes
+ * it away again.
  *
  * Hidden in a store with no listing (the demo).
  */
 export default function SyncButton({ variantId, title }: { variantId: VariantId; title: string }) {
   const listing = useListing();
   if (!listing) return null;
-  return <Sync listing={listing} variantId={variantId} title={title} />;
+  // Keyed by the set: a press on one set never shows its link on the next.
+  return <Sync key={variantId} listing={listing} variantId={variantId} title={title} />;
 }
 
 /** True when the collector lists on at least one platform. */
@@ -56,7 +59,8 @@ function Sync({ listing, variantId, title }: { listing: ListingExtension; varian
   const settings = listing.useSettings();
   const syncing = listing.useGate(null, null)?.syncing === true;
   const [busy, setBusy] = useState(false);
-  const [pressed, setPressed] = useState(false);
+  /** The last press: on its way, a run started, or answered otherwise (throttled, …). Null: none, or refused. */
+  const [pressed, setPressed] = useState<null | "pending" | "started" | "answered">(null);
   const reasonId = useId();
   const loading = settings === undefined;
   const canSync = listsAnywhere(settings);
@@ -69,12 +73,18 @@ function Sync({ listing, variantId, title }: { listing: ListingExtension; varian
       return;
     }
     setBusy(true);
-    setPressed(true);
+    setPressed("pending");
     listing
       .syncVariant(variantId)
       .then(
-        (result) => api.notify(syncToast(title, result)),
-        (error: unknown) => api.notify(writeErrorMessage(error)),
+        (result) => {
+          setPressed(result.queued ? "started" : "answered");
+          api.notify(syncToast(title, result));
+        },
+        (error: unknown) => {
+          setPressed(null);
+          api.notify(writeErrorMessage(error));
+        },
       )
       .finally(() => setBusy(false));
   };
@@ -102,7 +112,14 @@ function Sync({ listing, variantId, title }: { listing: ListingExtension; varian
         </span>
       )}
       {/* Always mounted (a live region announces what lands in it), empty until a press. */}
-      <span role="status">{pressed && syncing && <SyncStatusLink className="mt-1 inline-block max-sm:py-2" />}</span>
+      <span role="status">
+        {pressed && syncing && (
+          <>
+            {pressed === "started" && <span className="sr-only">Sync started. </span>}
+            <SyncStatusLink className="mt-1 inline-block max-sm:py-2" />
+          </>
+        )}
+      </span>
     </div>
   );
 }

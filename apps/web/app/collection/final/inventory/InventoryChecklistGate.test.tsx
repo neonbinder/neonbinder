@@ -161,6 +161,11 @@ describe("the inventory checklist's listing gate (NEO-370)", () => {
     // Still Tab stops, so the reason is read on arrival.
     expect(fields().every((f) => f.tabIndex !== -1)).toBe(true);
     expect(plus().every((b) => b.disabled)).toBe(true);
+    // The held + says why too: to the pointer (title) and with the note.
+    for (const b of plus()) {
+      expect(describedBy(b)).toContain(note.id);
+      expect(b.title).toBe("Set a common price first to box more.");
+    }
     expect(range().readOnly).toBe(true);
     expect(describedBy(range())).toContain(note.id);
     // The fix sits right above: the common price.

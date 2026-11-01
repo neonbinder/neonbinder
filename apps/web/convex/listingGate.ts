@@ -22,11 +22,29 @@
  * too), and any NB condition on a raw copy. A graded copy and a copy of a
  * private card never list here, so they are never held.
  *
- * The rule lives here; the screens only mirror it (`forHome`). The writers
- * that refuse: every add into a home (`collection.addOne`: Have, a range,
- * a line item, an intake save), a quick count that raises a box's number
- * (`collectionInventory.setBoxQuantity`), and starting a photo intake run
- * into a listed box (`intakeRuns.createIntakeRun`).
+ * The rule lives here; the screens only mirror it (`forHome`). It guards
+ * the ADD doors, the writes that put cards into a listed box:
+ *   - every add into a home (`collection.addOne`: Have, a range, a line
+ *     item, an intake save);
+ *   - a line put back (`collection.restoreCopy`, the undo of a removal);
+ *   - a move into a listed box from a home that does not list
+ *     (`collection.moveCopyCore`, so `moveCopy`);
+ *   - a quick count that raises a box's number
+ *     (`collectionInventory.setBoxQuantity`), and an undo/redo of one that
+ *     restores or raises a line (`undoBoxQuantity`; its inverse comes from
+ *     the client, so it is checked, not trusted);
+ *   - starting a photo intake run into a listed box
+ *     (`intakeRuns.createIntakeRun`).
+ * Lowering, removing and moving out are never held.
+ *
+ * It is not the only line. State that changes AFTER cards are in can still
+ * leave a listed copy with no price or condition: a box emptied into
+ * Unsorted, a box's "Listed on marketplaces" turned back on
+ * (`setContainerListed` off → on), a copy's own price cleared, a common
+ * price removed. Those are not refused here; the drain's `noPrice` /
+ * `noCondition` hold (`lib/bscSheetPlan.ts`) is the backstop: such a copy is
+ * held back from the marketplace and shown on Sync status, never listed
+ * without a price.
  *
  * Kept free of any import from `collection.ts` (which imports this), so
  * there is no module cycle.

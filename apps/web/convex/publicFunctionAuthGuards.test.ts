@@ -1163,7 +1163,7 @@ describe("NEO-370 — listing reads ship no lease, SKU, order id or marketplace 
   // it expects. Mirrors listingSync.test.ts, with every hidden field planted.
   const OWNER = { subject: "lister_neo370", issuer: "https://clerk.example.com", tokenIdentifier: "clerk|lister_neo370" };
 
-  test("the Sync status reads (the owner's and the admin's) and listSales ship none of the hidden fields", async () => {
+  test("the Sync status reads (the owner's and the admin's), listSales and the listing gate ship none of the hidden fields", async () => {
     const t = convexTest(schema, modules);
     const sportId = await seedSport(t);
     const cardId = await t.run((ctx) =>
@@ -1242,13 +1242,19 @@ describe("NEO-370 — listing reads ship no lease, SKU, order id or marketplace 
       platform: "bsc",
     });
     const sales = await me.query(api.listingSync.listSales, { paginationOpts: { numItems: 5, cursor: null } });
+    // The listing gate (NEO-370): three plain answers, never the state row it reads.
+    const boxId = await t.run((ctx) =>
+      ctx.db.insert("collectionContainers", { ownerId: OWNER.subject, kind: "box", name: "Box", lastUpdated: 0 }),
+    );
+    const gate = await me.query(api.listingGate.forHome, { homeId: boxId, variantId: sportId });
+    expect(Object.keys(gate).sort()).toEqual(["applies", "commonPriceCents", "syncing"]);
     expect(status.platforms[0].sets).toHaveLength(1);
     expect(status.platforms[0].queued.cards).toHaveLength(1);
     expect(status.platforms[0].running).not.toBeNull();
     expect(problems.problems).toHaveLength(1);
     expect(adminAll.owners.map((o) => o.ownerId)).toEqual([OWNER.subject]);
     expect(sales.page).toHaveLength(1);
-    const shipped = JSON.stringify([status, problems, adminAll, adminOne, adminProblems, sales]);
+    const shipped = JSON.stringify([status, problems, adminAll, adminOne, adminProblems, sales, gate]);
     expect(shipped).not.toContain("HIDDEN");
     for (const key of [
       "leaseToken",

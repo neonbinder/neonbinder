@@ -85,3 +85,4 @@
 - [Neo408 seed without exports](patterns_neo408_seed_without_exports.md) — internal read fns replacing `convex export`: reachability = deploy key; normalizeId is a per-call syscall (scan cost); catch→0 rows is fail-open for a clear verify; "no deployed code" claims die
 - [Neo370 scheduled marketplace poll](patterns_neo370_scheduled_marketplace_poll.md) — 24/7 poll: credential gating; backoff == interval; tick overlap; Rev 5: re-assert bypasses test marker, all-rows seller holder, per-tick scan
 - [Neo411 retry generation and dispatcher](patterns_neo411_retry_generation_and_dispatcher.md) — retry door needs an attempt generation (stale deadline, workpool cancel leaves running action whose completion lands); undici timeouts 0 needs per-call signal; audit exact-pinned undici
+- [Neo370 listing gate doors](patterns_neo370_listing_gate_doors.md) — readiness gate on adds: restore/undo/move/empty/flag-flip doors bypass it; owner-scoped forHome shape that held

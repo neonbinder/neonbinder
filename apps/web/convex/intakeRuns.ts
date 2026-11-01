@@ -43,8 +43,11 @@ import { requireSignedIn, getCurrentUserId } from "./auth";
 import {
   addOne,
   applyCopyChanges,
+  COLLECTION_ERRORS,
   defaultConditionOf,
+  isPriceCents,
   MAX_COPY_QUANTITY,
+  refuse,
 } from "./collection";
 import {
   intakeBandValidator,
@@ -146,6 +149,13 @@ async function requireVariant(
   if (!card) throw new Error("That variant has no cards to match against");
 }
 
+/** A run's Min price: whole cents, zero to the cap, by the copies' rule; else refused. */
+function minPrice(n: number | undefined): number | undefined {
+  if (n === undefined) return undefined;
+  if (!isPriceCents(n)) refuse(COLLECTION_ERRORS.invalid, "Minimum price needs to be a dollar amount of zero or more.");
+  return n;
+}
+
 function cleanDefaults(
   defaults: Doc<"intakeRuns">["defaults"],
 ): Doc<"intakeRuns">["defaults"] {
@@ -166,7 +176,9 @@ function cleanDefaults(
     acquiredOn: text(defaults.acquiredOn),
     location: text(defaults.location),
     notes: text(defaults.notes),
-    minPriceCents: cents(defaults.minPriceCents, "Minimum price"),
+    // NEO-370: the copies' own price rule (`isPriceCents`), so a run that
+    // could never save is refused at its start, in the words a save would use.
+    minPriceCents: minPrice(defaults.minPriceCents),
   };
 }
 

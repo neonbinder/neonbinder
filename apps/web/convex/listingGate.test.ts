@@ -10,8 +10,10 @@
  *   - the price: the copy's own, else the common price for its variant (the
  *     drain's rule, `lib/listingReadiness.ts`);
  *   - the writers it holds: Have / a range / a line item into a box, a quick
- *     count that raises a box's number (never one that lowers it), and a
- *     photo intake run into a listed box;
+ *     count that raises a box's number (never one that lowers it), an undo
+ *     that restores or raises one (never one that only lowers), a removed
+ *     line put back, a move into a listed box from a home that does not list,
+ *     and a photo intake run into a listed box (whose Min price is checked);
  *   - `forHome`, the screens' subscribed read.
  *
  * The condition half is pinned in `lib/listingReadiness.test.ts`: since
@@ -289,5 +291,94 @@ describe("the writers it holds", () => {
     const s = await setup();
     await syncOn(s);
     await s.me.mutation(api.intakeRuns.createIntakeRun, { jobId: JOB, homeId: s.inPerson, variantId: s.fx.baseId });
+  });
+});
+
+describe("the other add doors (security review)", () => {
+  const codeOf = async (p: Promise<unknown>) => (await refusal(p)).code;
+
+  test("a removed line put back (restoreCopy) is an add: held into a listed box, free into a binder", async () => {
+    const s = await setup();
+    await raise(s, s.box, 2); // stocked before the collector synced
+    await s.me.mutation(api.collection.addHave, { cardId: s.fx.strawberry2, homeId: s.binder });
+    await syncOn(s);
+    const [inBox, inBinder] = await Promise.all([
+      copies(s).then((all) => all.find((c) => c.homeId === s.box)!),
+      copies(s).then((all) => all.find((c) => c.homeId === s.binder)!),
+    ]);
+    const boxGone = await s.me.mutation(api.collection.removeCopy, { copyId: inBox._id });
+    const binderGone = await s.me.mutation(api.collection.removeCopy, { copyId: inBinder._id });
+    expect(await codeOf(s.me.mutation(api.collection.restoreCopy, boxGone.removed))).toBe(LISTING_GATE_ERROR);
+    await s.me.mutation(api.collection.restoreCopy, binderGone.removed);
+    expect((await copies(s)).map((c) => c.homeId)).toEqual([s.binder]);
+    await priceBase(s);
+    await s.me.mutation(api.collection.restoreCopy, boxGone.removed);
+    expect(await copies(s)).toHaveLength(2);
+  });
+
+  test("an undo that raises a box's count is held; one that only lowers never is", async () => {
+    const s = await setup();
+    await raise(s, s.box, 2);
+    await syncOn(s);
+    // Lowering 2 → 1 goes through; its undo (1 → 2) is a raise, held.
+    const lowered = await raise(s, s.box, 1);
+    expect(await codeOf(s.me.mutation(api.collectionInventory.undoBoxQuantity, { inverse: lowered.inverse }))).toBe(
+      LISTING_GATE_ERROR,
+    );
+    expect((await copies(s)).map((c) => c.quantity)).toEqual([1]);
+    // A forged inverse that restores a line is held the same way.
+    const forged = { cardId: s.fx.gooden1, boxId: s.box, steps: [{ op: "restore" as const, quantity: 5 }] };
+    expect(await codeOf(s.me.mutation(api.collectionInventory.undoBoxQuantity, { inverse: forged }))).toBe(
+      LISTING_GATE_ERROR,
+    );
+    // Priced, a raise goes through; with the price gone again, its undo (a lower) still does.
+    await priceBase(s);
+    const raised = await raise(s, s.box, 3);
+    await s.t.run(async (ctx) => {
+      for (const row of await ctx.db.query("variantCommonPrices").collect()) await ctx.db.delete(row._id);
+    });
+    await s.me.mutation(api.collectionInventory.undoBoxQuantity, { inverse: raised.inverse });
+    expect((await copies(s)).map((c) => c.quantity)).toEqual([1]);
+  });
+
+  test("a move INTO a listed box from a home that does not list is held; graded, out, and box to box are not", async () => {
+    const s = await setup();
+    await s.me.mutation(api.collection.addHave, { cardId: s.fx.gooden1, homeId: s.binder });
+    await s.me.mutation(api.collection.addLineItem, {
+      cardId: s.fx.strawberry2,
+      details: { quantity: 1, homeId: s.inPerson, grading: { grader: "PSA", grade: "9" } },
+    });
+    await raise(s, s.box, 1); // a raw card already in the listed box, stocked before syncing
+    const other = (await s.me.mutation(api.collectionContainers.create, { kind: "box", name: "Back stock" })).containerId;
+    await syncOn(s);
+    const all = await copies(s);
+    const raw = all.find((c) => c.homeId === s.binder)!;
+    const slab = all.find((c) => c.homeId === s.inPerson)!;
+    const boxed = all.find((c) => c.homeId === s.box)!;
+    const refused = await refusal(s.me.mutation(api.collection.moveCopy, { copyId: raw._id, toHomeId: s.box }));
+    expect(refused).toEqual({
+      code: LISTING_GATE_ERROR,
+      message: listingGateMessage("Show box", { needsPrice: true, needsCondition: false }),
+    });
+    // A slab is never held; a card already listed moves between listed boxes; taking one out always works.
+    await s.me.mutation(api.collection.moveCopy, { copyId: slab._id, toHomeId: s.box });
+    await s.me.mutation(api.collection.moveCopy, { copyId: boxed._id, toHomeId: other });
+    const moved = (await copies(s)).find((c) => c.cardId === boxed.cardId && c.homeId === other)!;
+    await s.me.mutation(api.collection.moveCopy, { copyId: moved._id, toHomeId: s.binder });
+    // With a price of its own, the raw card moves in.
+    await s.t.run((ctx) => ctx.db.patch(raw._id, { minPriceCents: 10 }));
+    await s.me.mutation(api.collection.moveCopy, { copyId: raw._id, toHomeId: s.box });
+    expect((await copies(s)).some((c) => c.cardId === raw.cardId && c.homeId === s.box && c.minPriceCents === 10)).toBe(true);
+  });
+
+  test("a photo intake run with a Min price that is not a price is refused at its start", async () => {
+    const s = await setup();
+    for (const minPriceCents of [1.5, -1, Number.MAX_SAFE_INTEGER]) {
+      const refused = await refusal(
+        s.me.mutation(api.intakeRuns.createIntakeRun, { jobId: JOB, homeId: s.binder, defaults: { minPriceCents } }),
+      );
+      expect(refused.message).toBe("Minimum price needs to be a dollar amount of zero or more.");
+    }
+    expect(await s.t.run((ctx) => ctx.db.query("intakeRuns").collect())).toEqual([]);
   });
 });
