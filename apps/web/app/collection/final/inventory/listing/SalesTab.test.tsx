@@ -3,6 +3,7 @@ import { cleanup, fireEvent, render, screen, within } from "@testing-library/rea
 import { MemoryRouter } from "react-router";
 import { Theme } from "@radix-ui/themes";
 import SalesTab from "./SalesTab";
+import { expectAccessibleInBothModes } from "@/lib/testing/axe";
 import { BSC_ORDERS_URL, SELLER_CONFLICT_LINE } from "./copy";
 import { PageApiContext, type PageApi } from "../../pageApi";
 import {
@@ -91,7 +92,7 @@ function setup(
     </Theme>
   );
   const view = render(tree());
-  const rerender = (page: Partial<SalesPage>) => {
+  const rerender = (page: Partial<SalesPage> = state.page) => {
     state.page = page;
     view.rerender(tree());
   };
@@ -115,6 +116,34 @@ describe("the Sales tab", () => {
     expect(link.getAttribute("href")).toBe(BSC_ORDERS_URL);
     expect(link.getAttribute("target")).toBe("_blank");
     expect(screen.queryByRole("button", { name: "Show more sales" })).toBeNull();
+  });
+
+  it("a populated Sales list passes axe in light and dark (matched, unmatched, mismatched and oversold lines)", async () => {
+    const { view, rerender } = setup({
+      canLoadMore: true,
+      sales: [
+        sale({
+          id: "o1",
+          orderNo: "100245",
+          items: [
+            { cardId: "c1", condition: "near_mint", quantity: 2, priceCents: 500, applied: true },
+            { condition: "excellent", quantity: 1, priceCents: 250, applied: false, problem: "unmatched" },
+            { cardId: "c1", condition: "near_mint", quantity: 3, priceCents: 500, applied: true, problem: "oversold", shortBy: 2 },
+          ],
+        }),
+        sale({
+          id: "o2",
+          orderNo: "100198",
+          status: "SHIPPED",
+          totals: { subtotalCents: 75 },
+          items: [
+            { cardId: "c9", condition: "very_good", quantity: 1, priceCents: 75, applied: false, problem: "linkMismatch" },
+          ],
+        }),
+      ],
+    });
+    expect(screen.getByRole("list", { name: "Orders, newest first" })).toBeTruthy();
+    await expectAccessibleInBothModes(view.container, { label: "Sales tab, populated", rerender: () => rerender() });
   });
 
   it("a seller conflict shows on the Sales tab's switch, which stays focusable but off limits", () => {

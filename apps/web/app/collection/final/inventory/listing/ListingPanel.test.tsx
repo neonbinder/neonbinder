@@ -4,6 +4,7 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { MemoryRouter } from "react-router";
 import { Theme } from "@radix-ui/themes";
 import ListingPanel, { statusLine } from "./ListingPanel";
+import { expectAccessibleInBothModes } from "@/lib/testing/axe";
 import { CONSENT_LINE, SELLER_CONFLICT_LINE, PROBLEM_COPY, problemSentence, saleItemProblem, whenSynced } from "./copy";
 import { PageApiContext, type PageApi } from "../../pageApi";
 import {
@@ -401,6 +402,53 @@ describe("the listing panel", () => {
     expect(document.getElementById(reauthId)?.contains(link)).toBe(true);
     // Nothing goes up on a dead sign-in, so the line never says "soon".
     expect(screen.getByRole("status").textContent).toBe("Waiting on your BuySportsCards sign-in to go up.");
+  });
+});
+
+describe("accessibility of the states E2E cannot stage (axe, light and dark)", () => {
+  const ERROR_RUN: VariantListingStatus = {
+    pending: true,
+    run: {
+      status: "error",
+      lastRunAt: AT_2_14,
+      lastError: "BuySportsCards didn't answer",
+      listed: 4,
+      problems: [],
+      problemsTotal: 0,
+    },
+  };
+  const cases: Array<[string, ListingPlatformSettings, VariantListingStatus | undefined]> = [
+    ["a sync error", ON, ERROR_RUN],
+    ["an expired sign-in", { ...ON, needsReauth: true }, { pending: true, run: null }],
+    ["BuySportsCards paused", { ...ON, paused: true }, { pending: true, run: null }],
+    ["a seller conflict, listing off", { ...OFF, sellerConflict: true }, undefined],
+    ["a seller conflict, listing resting", { ...ON, sellerConflict: true }, IDLE],
+    ["no saved sign-in", { ...OFF, connected: false }, undefined],
+  ];
+  it.each(cases)("%s", async (label, settings, status) => {
+    const { view, rerender } = setup({ settings, status });
+    await expectAccessibleInBothModes(view.container, { label: `listing panel, ${label}`, rerender });
+  });
+
+  it("the Can't list on BuySportsCards disclosure, open", async () => {
+    const { view, rerender } = setup({
+      settings: ON,
+      status: {
+        pending: false,
+        run: {
+          status: "idle",
+          listed: 1,
+          problems: [
+            { cardId: "c2", reason: "noPrice" },
+            { cardId: "c1", reason: "rejected", detail: "price below minimum" },
+            { reason: "notOnSheet" },
+          ],
+          problemsTotal: 5,
+        },
+      },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Can't list on BuySportsCards (5)" }));
+    await expectAccessibleInBothModes(view.container, { label: "listing panel, problems open", rerender });
   });
 });
 
