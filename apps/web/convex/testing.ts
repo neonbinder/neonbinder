@@ -31,7 +31,6 @@ import { CLERK_USER_ID_RE, placeholderJobPrefix } from "./lib/placeholderObjects
 // before any read of its stored credentials.
 import { isPlatformPaused } from "./marketplacePause";
 import type { Id } from "./_generated/dataModel";
-import { dropOwnerPhotos } from "./copyPhotos";
 
 /**
  * What {@link seedMyTestLabelScans} hands back.
@@ -55,16 +54,6 @@ export const resetMyTestState = mutation({
     publicProfiles: v.number(),
     userProfiles: v.number(),
     prizePool: v.number(),
-    // NEO-358: the caller's collection (copies before the containers they
-    // live in). NEO-359: wants before the containers they may be scoped to.
-    collectionCopies: v.number(),
-    collectionWants: v.number(),
-    // NEO-361: the caller's requests, with their private cards and sets.
-    cardRequests: v.number(),
-    collectionContainers: v.number(),
-    collectionBuildingSets: v.number(),
-    // NEO-378: the caller's common prices per variant.
-    variantCommonPrices: v.number(),
   }),
   handler: async (ctx) => {
     // Fail closed in production: the enabling flag is unset there.
@@ -101,100 +90,10 @@ export const resetMyTestState = mutation({
       await ctx.db.delete(row._id);
     }
 
-    // NEO-358 — the caller's collection. Copies first: every copy names a
-    // container as its home, so the containers go after them.
-    const collectionCopies = await ctx.db
-      .query("collectionCopies")
-      .withIndex("by_owner_and_card", (q) => q.eq("ownerId", userId))
-      .collect();
-    for (const row of collectionCopies) {
-      await ctx.db.delete(row._id);
-    }
-    // NEO-377 — their photos and files, live or waiting on an Undo.
-    await dropOwnerPhotos(ctx, userId);
-
-    // NEO-359 — wants may name a container as their binder, so they go
-    // before the containers too.
-    const collectionWants = await ctx.db
-      .query("collectionWants")
-      .withIndex("by_owner_and_card", (q) => q.eq("ownerId", userId))
-      .collect();
-    for (const row of collectionWants) {
-      await ctx.db.delete(row._id);
-    }
-
-    // NEO-361 — the caller's private cards (photos with them), private sets
-    // and requests. Their copies went with the copies above.
-    const privateCards = await ctx.db
-      .query("privateCards")
-      .withIndex("by_owner", (q) => q.eq("ownerId", userId))
-      .collect();
-    for (const row of privateCards) {
-      for (const id of [row.frontImageId, row.backImageId]) {
-        if (id && (await ctx.db.system.get(id))) await ctx.storage.delete(id);
-      }
-      await ctx.db.delete(row._id);
-    }
-    const privateSets = await ctx.db
-      .query("privateSets")
-      .withIndex("by_owner", (q) => q.eq("ownerId", userId))
-      .collect();
-    for (const row of privateSets) {
-      await ctx.db.delete(row._id);
-    }
-    const cardRequests = await ctx.db
-      .query("cardRequests")
-      .withIndex("by_owner", (q) => q.eq("ownerId", userId))
-      .collect();
-    for (const row of cardRequests) {
-      await ctx.db.delete(row._id);
-    }
-
-    const collectionContainers = await ctx.db
-      .query("collectionContainers")
-      .withIndex("by_owner_and_system", (q) => q.eq("ownerId", userId))
-      .collect();
-    for (const row of collectionContainers) {
-      // NEO-401 — a smart binder's stored fits go with it.
-      const fits = await ctx.db
-        .query("collectionBinderFits")
-        .withIndex("by_binder_order", (q) => q.eq("binderId", row._id))
-        .collect();
-      for (const fit of fits) await ctx.db.delete(fit._id);
-      const state = await ctx.db
-        .query("collectionBinderFitsState")
-        .withIndex("by_binder", (q) => q.eq("binderId", row._id))
-        .unique();
-      if (state) await ctx.db.delete(state._id);
-      await ctx.db.delete(row._id);
-    }
-
-    const collectionBuildingSets = await ctx.db
-      .query("collectionBuildingSets")
-      .withIndex("by_owner_and_set", (q) => q.eq("ownerId", userId))
-      .collect();
-    for (const row of collectionBuildingSets) {
-      await ctx.db.delete(row._id);
-    }
-
-    const variantCommonPrices = await ctx.db
-      .query("variantCommonPrices")
-      .withIndex("by_owner_and_variant", (q) => q.eq("ownerId", userId))
-      .collect();
-    for (const row of variantCommonPrices) {
-      await ctx.db.delete(row._id);
-    }
-
     return {
       publicProfiles: publicProfiles.length,
       userProfiles: userProfiles.length,
       prizePool: prizePool.length,
-      collectionCopies: collectionCopies.length,
-      collectionWants: collectionWants.length,
-      cardRequests: cardRequests.length,
-      collectionContainers: collectionContainers.length,
-      collectionBuildingSets: collectionBuildingSets.length,
-      variantCommonPrices: variantCommonPrices.length,
     };
   },
 });

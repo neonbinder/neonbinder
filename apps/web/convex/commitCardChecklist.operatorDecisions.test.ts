@@ -18,7 +18,6 @@ import { normalizeTeamName } from "./teams";
 import schema from "./schema";
 import { Id } from "./_generated/dataModel";
 import { cancelScheduled, drainScheduled } from "../lib/testing/drain-scheduled";
-import { insertTestCard } from "../lib/testing/card-row";
 
 beforeEach(() => {
   // NEO-188/NEO-247: commitCardChecklist can schedule a BSC per-card team
@@ -301,7 +300,7 @@ describe("commitCardChecklist — operatorDeleteIds guards", () => {
     const t = convexTest(schema, modules);
     const { sportId, leafId } = await seedTree(t);
     const handAddedId = await t.run(async (ctx) =>
-      insertTestCard(ctx, {
+      ctx.db.insert("cardChecklist", {
         selectorOptionId: leafId,
         cardNumber: "9001",
         cardName: "Hand Added Card",

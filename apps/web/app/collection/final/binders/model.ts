@@ -1,131 +1,106 @@
 /**
- * NEO-350 / NEO-359 — My Binders, the pure half: what goes on each page of an
- * open binder, box, pile or browsed set, where a card lives, share links, the
- * Browse shelf's filters, and the one-match guard for a typed card.
+ * NEO-350 — My Binders (prototype 2, Nine-Pocket, on the consolidated page):
+ * the pure half on top of p2's model. Adds what the consolidated page needs
+ * and p2 never had: the special shelf's liveries, the Want List's pages,
+ * share links, the smart binder's team rule, and the one-match guard for a
+ * typed card.
  *
- * Everything here reads the collection's view model (`../data/types`), so the
- * demo and the real collection lay out the same way. Nothing keys behaviour
- * on a display name: system containers are recognised by `system`, rules
- * name ids, and a name only ever becomes a slug for a link the collector can
- * read.
- *
- * A copy's pocket or row is its `slot` (NEO-359): a binder pocket is
- * `page * 9 + pocket`, a box row is 0 to 4. A binder no longer stores pages;
- * they follow from the slots its copies hold.
+ * Nothing here keys on a display name to decide behaviour: system binders are
+ * recognised by `binder.system`, rules name ids, and a name only ever becomes
+ * a slug for a link the collector can read.
  */
 
-import { cardLabel, compareCardNumbers, compareCards, playerNames, setLabel, variantLabel } from "../data/labels";
 import {
-  BOX_ROWS,
-  POCKETS_PER_PAGE,
-  type BinderSort,
-  pocketOf,
-  pocketSlot,
+  binderCopies,
+  cardsInSet,
+  compareCards,
+  copiesOf,
+  getCard,
+  setLabel,
+  type Binder,
+  type BinderId,
+  type BinderRule,
   type Card,
-  type CardId,
-  type Container,
-  type ContainerId,
-  type ContainerRule,
+  type CardSet,
   type Copy,
-  type PocketPlacement,
-  type SetRef,
+  type ManualBinder,
+  type SearchHit,
   type TeamId,
-  type Want,
-} from "../data/types";
-import type { BrowseFilter } from "../store";
+} from "../../prototypes/_shared/data";
+import {
+  binderCount as p2BinderCount,
+  buildPages as p2BuildPages,
+  type BinderCount,
+  type BuildInput,
+  type Livery,
+  type PageModel,
+  type PocketModel,
+  type SlotRef,
+} from "../../prototypes/p2/model";
+import type { BrowseFilter, CollectionBinder } from "../store";
+import { labelOf, ruleTeamId } from "./label";
 
 // ---------------------------------------------------------------------------
-// Views and pockets
+// Pages
 // ---------------------------------------------------------------------------
-
-/**
- * What is open on the desk: everything, one binder or box (or the Want List,
- * the trade pile, a smart binder), or a set to browse. (The everything-for-
- * sale view is retired, NEO-364: the Inventory list is its own tab.)
- */
-export type ViewKey =
-  | { kind: "all" }
-  | { kind: "binder"; binderId: ContainerId }
-  | { kind: "set"; setId: string };
-
-/** "Lay out like my real binder" or "Just a stack". */
-export type LayoutMode = "pockets" | "stack";
-
-export type SortKey = "checklist" | "newest" | "player";
-
-/** All my cards' "Only show" chips. No "For sale": a card for sale is Inventory's and never in the pile (NEO-359). */
-export interface PileFilters {
-  graded: boolean;
-  rookies: boolean;
-}
-
-export const NO_FILTERS: PileFilters = { graded: false, rookies: false };
-
-/** A real pocket in a binder: where a drop or a pick lands. `slot` is the pocket on its page (0-8). */
-export interface SlotRef {
-  binderId: ContainerId;
-  page: number;
-  slot: number;
-}
-
-export type PocketContent =
-  /** Owned: one copy (a per-copy pocket) or every copy of the card. */
-  | { kind: "have"; card: Card; copies: Copy[] }
-  /**
-   * A card the view wants and the collector does not have here yet.
-   * `elsewhere`: they have it, in another binder (NEO-362's empty slots).
-   */
-  | { kind: "need"; card: Card; elsewhere?: true }
-  | { kind: "empty" };
-
-export interface PocketModel {
-  content: PocketContent;
-  slot?: SlotRef;
-  /** On the Want List: the binder or box the want is for (null: none). */
-  wantFor?: ContainerId | null;
-  /** NEO-362 — a card in a smart binder that its rule no longer takes in. */
-  outside?: true;
-}
-
-export interface PageModel {
-  pockets: PocketModel[];
-  /** The checklist section the page belongs to ("Base", "Pennant Flyers"). */
-  section: string | null;
-  /** A word over the page ("A fresh page"). */
-  note?: string;
-}
 
 const EMPTY: PocketModel = { content: { kind: "empty" } };
 
+/** A pocket on the Want List knows which binder its want is for (null: none). */
+export interface BinderPocket extends PocketModel {
+  wantFor?: BinderId | null;
+}
+
 /** Chop pockets into pages of nine, padding the last with empty sleeves. */
-export function paginate(pockets: PocketModel[], section: string | null, note?: string): PageModel[] {
+export function paginate(pockets: PocketModel[], section: string | null): PageModel[] {
   const pages: PageModel[] = [];
-  for (let i = 0; i < pockets.length; i += POCKETS_PER_PAGE) {
-    const chunk = pockets.slice(i, i + POCKETS_PER_PAGE);
-    while (chunk.length < POCKETS_PER_PAGE) chunk.push(EMPTY);
-    pages.push(note ? { pockets: chunk, section, note } : { pockets: chunk, section });
+  for (let i = 0; i < pockets.length; i += 9) {
+    const chunk = pockets.slice(i, i + 9);
+    while (chunk.length < 9) chunk.push(EMPTY);
+    pages.push({ pockets: chunk, section });
   }
   return pages;
 }
 
-/** The pocket a binder slot names. */
-export function slotRefOf(binderId: ContainerId, slot: number): SlotRef {
-  const { page, pocket } = pocketOf(slot);
-  return { binderId, page, slot: pocket };
+export interface WantGroup {
+  binderId: BinderId | null;
+  cards: Card[];
 }
 
-/** The slot number of a pocket. */
-export function slotOf(ref: Pick<SlotRef, "page" | "slot">): number {
-  return pocketSlot(ref.page, ref.slot);
+/** The section heading over a group of wants. */
+export function wantSection(binderId: BinderId | null, nameOf: (id: BinderId) => string | undefined) {
+  if (binderId === null) return "Just want it";
+  return `For ${nameOf(binderId) ?? "a binder"}`;
 }
 
-export function sameSlot(a: SlotRef | null | undefined, b: SlotRef | null | undefined): boolean {
-  return !!a && !!b && a.binderId === b.binderId && a.page === b.page && a.slot === b.slot;
+/**
+ * The Want List, opened: one run of pages per group (unscoped wants first,
+ * as `wantsByBinder()` orders them), each group starting a fresh page like a
+ * new section of a real binder. A want you have since landed shows the card
+ * in its sleeve; the rest are "Need" sleeves.
+ */
+export function wantPages(
+  groups: WantGroup[],
+  copies: Copy[],
+  nameOf: (id: BinderId) => string | undefined,
+): PageModel[] {
+  const pages: PageModel[] = [];
+  for (const group of groups) {
+    const pockets = group.cards.map((card): BinderPocket => {
+      const mine = copiesOf(card.id, copies);
+      return {
+        content: mine.length ? { kind: "have", card, copies: mine } : { kind: "need", card },
+        wantFor: group.binderId,
+      };
+    });
+    pages.push(...paginate(pockets, wantSection(group.binderId, nameOf)));
+  }
+  return pages;
 }
 
 /** Every card on the pages, in order, once: what the drawer's ↑ ↓ step through. */
-export function cardsOnPages(pages: PageModel[]): CardId[] {
-  const seen = new Set<CardId>();
+export function cardsOnPages(pages: PageModel[]): string[] {
+  const seen = new Set<string>();
   for (const page of pages) {
     for (const { content } of page.pockets) {
       if (content.kind !== "empty") seen.add(content.card.id);
@@ -134,427 +109,97 @@ export function cardsOnPages(pages: PageModel[]): CardId[] {
   return [...seen];
 }
 
-/** The checklist section a card files under: each insert alone, parallels together. */
-export function sectionOf(card: Card): string {
-  if (card.variant.kind === "base") return "Base";
-  if (card.variant.kind === "parallel") return "Parallels";
-  return variantLabel(card.variant);
-}
-
-/** Cards in checklist order, a fresh run of pages for each section. */
-function sectionedPages(cards: Card[], toPocket: (c: Card) => PocketModel): PageModel[] {
-  const pages: PageModel[] = [];
-  let run: Card[] = [];
-  let current: string | null = null;
-  const flush = () => {
-    if (run.length) pages.push(...paginate(run.map(toPocket), current));
-    run = [];
-  };
-  for (const card of cards) {
-    const s = sectionOf(card);
-    if (s !== current) {
-      flush();
-      current = s;
-    }
-    run.push(card);
-  }
-  flush();
-  return pages;
-}
-
-/** Look a copy's card up; a copy whose card is gone (or still loading) has no pocket. */
-export type CardsById = ReadonlyMap<CardId, Card>;
-
-function perCopy(copies: readonly Copy[], cards: CardsById): PocketModel[] {
-  const out: PocketModel[] = [];
-  for (const copy of copies) {
-    const card = cards.get(copy.cardId);
-    if (card) out.push({ content: { kind: "have", card, copies: [copy] } });
-  }
-  return out;
-}
-
-function byChecklist(cards: CardsById) {
-  return (a: Copy, b: Copy) => {
-    const ca = cards.get(a.cardId);
-    const cb = cards.get(b.cardId);
-    if (!ca || !cb) return ca ? -1 : cb ? 1 : 0;
-    return compareCards(ca, cb);
-  };
-}
-
-/** "Just a stack": one pocket per copy, packed tight, in checklist order. */
-export function stackPages(copies: readonly Copy[], cards: CardsById): PageModel[] {
-  return paginate(perCopy([...copies].sort(byChecklist(cards)), cards), null);
-}
-
-/** One pocket per card (every copy of it together), in checklist order: a smart binder laid out. */
-export function cardPages(copies: readonly Copy[], cards: CardsById): PageModel[] {
-  const byCard = new Map<CardId, Copy[]>();
-  for (const copy of copies) {
-    const list = byCard.get(copy.cardId);
-    if (list) list.push(copy);
-    else byCard.set(copy.cardId, [copy]);
-  }
-  const owned = [...byCard.entries()]
-    .map(([id, list]) => ({ card: cards.get(id), list }))
-    .filter((e): e is { card: Card; list: Copy[] } => !!e.card)
-    .sort((a, b) => compareCards(a.card, b.card));
-  return paginate(
-    owned.map(({ card, list }) => ({ content: { kind: "have", card, copies: list } })),
-    null,
-  );
-}
-
 // ---------------------------------------------------------------------------
-// All my cards: the master pile
-// ---------------------------------------------------------------------------
-
-function lastName(card: Card): string {
-  const words = (card.players[0]?.name ?? "")
-    .split(/\s+/)
-    .filter((w) => w && !/^(jr\.?|sr\.?|ii|iii|iv)$/i.test(w));
-  return words[words.length - 1] ?? "";
-}
-
-/** Every copy, one pocket each, filtered and sorted as the pile's tools say. */
-export function pilePages(
-  copies: readonly Copy[],
-  cards: CardsById,
-  sort: SortKey,
-  filters: PileFilters,
-): PageModel[] {
-  const kept = copies.filter((c) => {
-    if (c.quantity < 1) return false;
-    if (filters.graded && !c.graded) return false;
-    if (filters.rookies && !cards.get(c.cardId)?.features.includes("RC")) return false;
-    return true;
-  });
-  const checklist = byChecklist(cards);
-  const sorted = [...kept].sort((a, b) => {
-    if (sort === "newest") return b.acquiredAt.localeCompare(a.acquiredAt) || checklist(a, b);
-    if (sort === "player") {
-      const ca = cards.get(a.cardId);
-      const cb = cards.get(b.cardId);
-      return (ca && cb ? lastName(ca).localeCompare(lastName(cb)) : 0) || checklist(a, b);
-    }
-    return checklist(a, b);
-  });
-  return paginate(perCopy(sorted, cards), null);
-}
-
-// ---------------------------------------------------------------------------
-// A binder laid out like the real one
+// A binder laid out in checklist order ('96 Contenders)
 // ---------------------------------------------------------------------------
 //
-// The numbered pages are the checklist (pocket N holds card N) when the
-// binder follows one; everything after them is "Extras": a second copy, a
-// stray card. Extras never count against the checklist, and nothing is ever
-// slotted into another card's numbered pocket.
+// p2 calls a binder a set binder only when EVERY filled pocket sits where the
+// checklist puts it, so one extra copy anywhere switched its Need sleeves
+// off. Here the numbered pages are the checklist (pocket N holds card N) and
+// everything after them is "Extras": a second copy, a stray card. Extras
+// never count against the checklist, and nothing is ever slotted into
+// another card's numbered pocket.
+
+/** The checklist section a card files under: each insert alone, parallels together. */
+function sectionOf(card: Card): string {
+  if (card.variantPath.type === "Base") return "Base";
+  if (card.variantPath.type === "Inserts") return card.variantPath.name ?? "Inserts";
+  return "Parallels";
+}
 
 export const EXTRAS = "Extras";
 
 /** Where the Extras pages start: the first pocket after the checklist's last page. */
-export function extrasStart(checklist: readonly Card[]): number {
-  return Math.ceil(checklist.length / POCKETS_PER_PAGE) * POCKETS_PER_PAGE;
-}
-
-/** The copies of a binder that sit in a pocket, by slot. */
-export function pocketsOf(copies: readonly Copy[]): Map<number, Copy> {
-  const out = new Map<number, Copy>();
-  for (const copy of copies) {
-    if (copy.slot !== undefined && copy.slot >= 0 && !out.has(copy.slot)) out.set(copy.slot, copy);
-  }
-  return out;
-}
-
-/**
- * The checklist whose variant the first filled pocket names: the one a
- * binder MIGHT follow (`followedChecklist` decides). Null with no pockets.
- */
-export function firstPocketVariant(copies: readonly Copy[]): string | null {
-  const pockets = [...pocketsOf(copies).entries()].sort((a, b) => a[0] - b[0]);
-  return pockets[0]?.[1].variantId ?? null;
+export function extrasStart(checklist: Card[]): number {
+  return Math.ceil(checklist.length / 9) * 9;
 }
 
 /**
  * The checklist a binder's numbered pockets follow, or null. Decided from
- * ids every time, never stored: `checklist` is the variant the first filled
- * pocket names (regular cards only, in checklist order), and every filled
- * pocket inside it must hold card N in pocket N, with at least three filled.
+ * ids every time, never stored: the first filled pocket names the set and
+ * section, and every filled pocket inside the checklist must hold card N in
+ * pocket N. Pockets past the checklist are Extras and do not count.
  */
-export function followedChecklist(copies: readonly Copy[], checklist: readonly Card[] | undefined): Card[] | null {
-  if (!checklist || checklist.length === 0) return null;
-  const regular = checklist.filter((c) => !c.isVariation);
-  const filled = [...pocketsOf(copies).entries()].filter(([slot]) => slot < regular.length);
-  if (filled.length < 3) return null;
-  return filled.every(([slot, copy]) => regular[slot]?.id === copy.cardId) ? regular : null;
-}
-
-/**
- * A binder's pages in pockets mode: its own pockets in slot order, then a
- * fresh page at the back. Every card in a binder sits in a pocket; a copy
- * stored before that rule (waiting on the backfill) shows in the pocket the
- * backfill will give it (`withPockets`). With a
- * followed checklist, empty numbered pockets are Need sleeves (when the
- * collector has the card nowhere: `ownedAnywhere`) and the pages past the
- * checklist say "Extras".
- */
-export function binderPages(input: {
-  binderId: ContainerId;
-  copies: readonly Copy[];
-  cards: CardsById;
-  followed: readonly Card[] | null;
-  ownedAnywhere?: (cardId: CardId) => boolean;
-}): PageModel[] {
-  const { binderId, copies, cards, followed } = input;
-  const owned = input.ownedAnywhere ?? (() => false);
-  const pockets = pocketsOf(withPockets(copies));
-  // A loop, not a spread: a big Main has more pockets than a call takes arguments.
-  let maxSlot = -1;
-  for (const n of pockets.keys()) if (n > maxSlot) maxSlot = n;
-  const used = Math.max(maxSlot + 1, followed ? extrasStart(followed) : 0);
-  const pageCount = Math.ceil(used / POCKETS_PER_PAGE);
-  const checklistPages = followed ? extrasStart(followed) / POCKETS_PER_PAGE : 0;
-  const sectionFor = (p: number) => (followed ? (p < checklistPages ? sectionOf(followed[0]) : EXTRAS) : null);
-
-  const pages: PageModel[] = [];
-  for (let p = 0; p < pageCount; p++) {
-    const page: PocketModel[] = [];
-    for (let s = 0; s < POCKETS_PER_PAGE; s++) {
-      const n = pocketSlot(p, s);
-      const slot = slotRefOf(binderId, n);
-      const copy = pockets.get(n);
-      const card = copy ? cards.get(copy.cardId) : undefined;
-      if (copy && card) {
-        page.push({ slot, content: { kind: "have", card, copies: [copy] } });
-        continue;
-      }
-      const wanted = followed?.[n];
-      if (!copy && wanted && !owned(wanted.id)) page.push({ slot, content: { kind: "need", card: wanted } });
-      else page.push({ slot, content: { kind: "empty" } });
-    }
-    pages.push({ section: sectionFor(p), pockets: page });
-  }
-
-  // A fresh page at the back, unless the last one is still blank.
-  const last = pages[pages.length - 1];
-  if (!last || last.pockets.some((pk) => pk.content.kind !== "empty")) {
-    const p = pages.length;
-    pages.push({
-      section: followed && p >= checklistPages ? EXTRAS : null,
-      note: followed ? undefined : "A fresh page",
-      pockets: Array.from({ length: POCKETS_PER_PAGE }, (_, s) => ({
-        slot: slotRefOf(binderId, pocketSlot(p, s)),
-        content: { kind: "empty" as const },
-      })),
-    });
-  }
-  return pages;
-}
-
-// ---------------------------------------------------------------------------
-// A binder that keeps itself sorted (NEO-362)
-// ---------------------------------------------------------------------------
-//
-// A sorted binder is drawn in order every time it opens; nothing is written
-// per add. Its stored pockets only matter again when the collector turns the
-// sort off (the order on screen is written down then, `placementsOf`) or
-// sorts an unsorted binder once ("Sort now", the same).
-
-/** How a binder lays itself out, its settings resolved. */
-export interface BinderLayout {
-  /** null: unsorted, every card where the collector put it. */
-  sort: BinderSort | null;
-  /** Show the cards it still needs, in the pockets they would fill. */
-  emptySlots: boolean;
-}
-
-/**
- * A binder's layout from its settings. Empty slots default ON for a binder
- * that follows a checklist (`follows`) and OFF for every other (Jason,
- * 2026-10-27).
- */
-export function binderLayout(container: Pick<Container, "settings"> | undefined, follows: boolean): BinderLayout {
-  const settings = container?.settings;
-  return { sort: settings?.sort ?? null, emptySlots: settings?.emptySlots ?? follows };
-}
-
-/** A card's first listed player, by last name then the whole name: whom a player sort files it under. */
-function playerKey(card: Card): { id: string; key: string; label: string } {
-  const first = card.players[0];
-  if (!first) return { id: "", key: "\uffff", label: "No player" };
-  return { id: first.id, key: `${lastName(card).toLowerCase()} ${first.name.toLowerCase()}`, label: first.name };
-}
-
-/** A card's first listed team, by its full name: whom a team sort files it under. */
-function teamKey(card: Card): { id: string; key: string; label: string } {
-  const first = card.teams[0];
-  if (!first) return { id: "", key: "\uffff", label: "No team" };
-  const label = `${first.location} ${first.name}`.trim();
-  return { id: first.id, key: label.toLowerCase(), label };
-}
-
-/** The group a card files under for a sort: a checklist, a player, a team. */
-function groupOf(card: Card, sort: BinderSort): { id: string; key: string; label: string } {
-  if (sort === "player") return playerKey(card);
-  if (sort === "team") return teamKey(card);
-  return {
-    id: card.variant.id,
-    key: "",
-    label: `${setLabel(card.set)}${card.variant.kind === "base" ? "" : ` ${variantLabel(card.variant)}`}`,
-  };
-}
-
-type Entry = { card: Card; copy?: Copy };
-
-function compareEntries(sort: BinderSort) {
-  return (a: Entry, b: Entry) => {
-    if (sort !== "checklist") {
-      const ga = groupOf(a.card, sort);
-      const gb = groupOf(b.card, sort);
-      const byGroup = ga.key.localeCompare(gb.key) || ga.id.localeCompare(gb.id);
-      if (byGroup) return byGroup;
-    }
-    return (
-      compareCards(a.card, b.card) ||
-      Number(!a.copy) - Number(!b.copy) ||
-      (a.copy && b.copy ? (a.copy.slot ?? 0) - (b.copy.slot ?? 0) || a.copy.id.localeCompare(b.copy.id) : 0)
-    );
-  };
-}
-
-/**
- * A sorted binder's pages: one pocket per line item, in the sort's order
- * (checklist: year, set, checklist, number; player or team: the first one
- * listed, then the checklist). With `emptySlots`, the cards it still needs
- * (`needs`, one pocket each, never one it holds) sit where they would go and
- * each checklist, player or team starts a fresh page, so card 16 always sits
- * in the same pocket. Without, the pockets pack tight.
- */
-export function sortedPages(input: {
-  copies: readonly Copy[];
-  cards: CardsById;
-  sort: BinderSort;
-  emptySlots: boolean;
-  needs?: readonly Card[];
-  /** Of `needs`, the ones the collector has in another binder. */
-  heldElsewhere?: ReadonlySet<CardId>;
-  /** A smart binder: is this card one its rule still takes in? */
-  fits?: (cardId: CardId) => boolean;
-}): PageModel[] {
-  const { copies, cards, sort, emptySlots } = input;
-  const entries: Entry[] = [];
-  const here = new Set<CardId>();
-  for (const copy of copies) {
-    const card = cards.get(copy.cardId);
-    if (!card || copy.quantity < 1) continue;
-    entries.push({ card, copy });
-    here.add(card.id);
-  }
-  if (emptySlots) {
-    for (const card of input.needs ?? []) if (!here.has(card.id)) entries.push({ card });
-  }
-  entries.sort(compareEntries(sort));
-  const toPocket = ({ card, copy }: Entry): PocketModel => {
-    if (!copy) {
-      return { content: input.heldElsewhere?.has(card.id) ? { kind: "need", card, elsewhere: true } : { kind: "need", card } };
-    }
-    const pocket: PocketModel = { content: { kind: "have", card, copies: [copy] } };
-    if (input.fits && !input.fits(card.id)) pocket.outside = true;
-    return pocket;
-  };
-  if (!emptySlots) return paginate(entries.map(toPocket), null);
-  const pages: PageModel[] = [];
-  let run: Entry[] = [];
-  let current: { id: string; label: string } | null = null;
-  const flush = () => {
-    if (run.length && current) pages.push(...paginate(run.map(toPocket), current.label));
-    run = [];
-  };
-  for (const entry of entries) {
-    const g = groupOf(entry.card, sort);
-    if (!current || g.id !== current.id) {
-      flush();
-      current = g;
-    }
-    run.push(entry);
-  }
-  flush();
-  return pages;
-}
-
-/** A smart binder's pages with each card its rule no longer takes in marked "outside the rule". */
-export function markOutside(pages: PageModel[], fits: ((cardId: CardId) => boolean) | undefined): PageModel[] {
-  if (!fits) return pages;
-  return pages.map((page) => ({
-    ...page,
-    pockets: page.pockets.map((pocket) =>
-      pocket.content.kind === "have" && !fits(pocket.content.card.id) ? { ...pocket, outside: true as const } : pocket,
-    ),
-  }));
-}
-
-/**
- * The pockets the cards on these pages sit in, as `relayPockets` takes them:
- * what "Sort now" and turning a sort off write down, so the binder stays as
- * it looked. A need sleeve takes no pocket; with empty slots it leaves its
- * gap, so the numbering holds once the card turns up.
- */
-export function placementsOf(pages: readonly PageModel[]): PocketPlacement[] {
-  const out: PocketPlacement[] = [];
-  pages.forEach((page, p) =>
-    page.pockets.forEach(({ content }, s) => {
-      if (content.kind === "have") for (const copy of content.copies) out.push({ copyId: copy.id, slot: pocketSlot(p, s) });
+export function followedChecklist(binder: ManualBinder, copies: Copy[]): Card[] | null {
+  if (!binder.layout) return null;
+  const byId = new Map(copies.map((c) => [c.id, c]));
+  const filled: [number, Card][] = [];
+  binder.layout.forEach((page, p) =>
+    page.slots.forEach((id, s) => {
+      const copy = id ? byId.get(id) : undefined;
+      if (copy) filled.push([p * 9 + s, getCard(copy.cardId)]);
     }),
   );
-  return out;
+  if (filled.length === 0) return null;
+  const first = filled[0][1];
+  const list = cardsInSet(first.setId, {
+    type: first.variantPath.type,
+    name: first.variantPath.name,
+  }).filter((c) => c.variation === null);
+  const numbered = filled.filter(([i]) => i < list.length);
+  if (numbered.length < 3) return null;
+  return numbered.every(([i, card]) => list[i]?.id === card.id) ? list : null;
 }
 
-/**
- * `copies` with each one that has no pocket given the one the backfill
- * (`backfillBinderPockets`) will give it: after the last filled pocket, in
- * the order stored, whatever checklist the binder follows.
- */
-function withPockets(copies: readonly Copy[]): Copy[] {
-  const placed = copies.filter((c) => c.slot !== undefined && c.slot >= 0);
-  let next = placed.reduce((max, c) => Math.max(max, c.slot!), -1) + 1;
-  for (const copy of copies) {
-    if (copy.slot === undefined || copy.slot < 0) placed.push({ ...copy, slot: next++ });
-  }
-  return placed;
+/** p2's spine count, reading the checklist the Extras-aware way. */
+export function binderTally(binder: Binder, copies: Copy[]): BinderCount {
+  if (binder.kind !== "manual") return p2BinderCount(binder, copies);
+  const cards = binderCopies(binder, copies).reduce((n, c) => n + c.quantity, 0);
+  const followed = followedChecklist(binder, copies);
+  if (!followed) return { cards };
+  const owned = new Set(copies.filter((c) => c.quantity > 0).map((c) => c.cardId));
+  const have = followed.filter((c) => owned.has(c.id)).length;
+  return { cards, have, need: followed.length - have };
 }
 
-/** Have / need on a followed checklist, for the cover. */
-export function followedTally(
-  copies: readonly Copy[],
-  followed: readonly Card[],
-  ownedAnywhere: (cardId: CardId) => boolean,
-): { have: number; need: number } {
-  const here = new Set(copies.map((c) => c.cardId));
-  const have = followed.filter((c) => here.has(c.id) || ownedAnywhere(c.id)).length;
-  return { have, need: followed.length - have };
+function slotAt(layout: ManualBinder["layout"], i: number): string | null {
+  return layout?.[Math.floor(i / 9)]?.slots[i % 9] ?? null;
+}
+
+function refOf(binder: ManualBinder, i: number): SlotRef {
+  return { binderId: binder.id, page: Math.floor(i / 9), slot: i % 9 };
 }
 
 /**
  * Where a card goes when the collector says "put it in this binder": its
  * own numbered pocket when the binder follows a checklist and that pocket is
- * free; otherwise (a second copy, or a card from another set) the first free
- * pocket on the Extras pages. A binder with no checklist takes the first
- * free pocket anywhere. A full binder grows a page.
+ * free; otherwise (a second copy, or a card from another set) the first
+ * free pocket on the Extras pages. A binder with no checklist takes the
+ * first free pocket anywhere. A full binder grows a page.
  */
-export function pocketFor(copies: readonly Copy[], card: Card, followed: readonly Card[] | null): number {
-  const taken = pocketsOf(copies);
+export function pocketFor(binder: ManualBinder, card: Card, copies: Copy[]): SlotRef {
+  const layout = binder.layout ?? [];
+  const total = layout.length * 9;
+  const followed = followedChecklist(binder, copies);
   if (followed) {
     const own = followed.findIndex((c) => c.id === card.id);
-    if (own !== -1 && !taken.has(own)) return own;
-    let i = extrasStart(followed);
-    while (taken.has(i)) i++;
-    return i;
+    if (own !== -1 && slotAt(layout, own) === null) return refOf(binder, own);
+    const from = extrasStart(followed);
+    for (let i = from; i < total; i++) if (slotAt(layout, i) === null) return refOf(binder, i);
+    return refOf(binder, Math.max(total, from));
   }
-  let i = 0;
-  while (taken.has(i)) i++;
-  return i;
+  for (let i = 0; i < total; i++) if (slotAt(layout, i) === null) return refOf(binder, i);
+  return refOf(binder, total);
 }
 
 /**
@@ -563,326 +208,108 @@ export function pocketFor(copies: readonly Copy[], card: Card, followed: readonl
  * its own pocket or the Extras pages instead, and `savedFor` says why.
  */
 export function guardPocket(
-  copies: readonly Copy[],
-  slot: number,
+  binder: ManualBinder,
+  slot: SlotRef,
   card: Card,
-  followed: readonly Card[] | null,
-): { slot: number; savedFor: Card | null } {
-  if (!followed || slot >= followed.length || followed[slot].id === card.id) return { slot, savedFor: null };
-  return { slot: pocketFor(copies, card, followed), savedFor: followed[slot] };
-}
-
-// ---------------------------------------------------------------------------
-// A browsed set
-// ---------------------------------------------------------------------------
-
-/**
- * A set flipped through: every card in set order. Laid out, each section
- * starts a fresh page; as a stack, packed tight. A card whose copies are not
- * in yet reads as a need until they are.
- */
-export function setPages(
-  cards: readonly Card[],
-  copiesByCard: Readonly<Record<CardId, Copy[]>> | undefined,
-  mode: LayoutMode,
-): PageModel[] {
-  const toPocket = (card: Card): PocketModel => {
-    const mine = (copiesByCard?.[card.id] ?? []).filter((c) => c.quantity > 0);
-    return { content: mine.length ? { kind: "have", card, copies: mine } : { kind: "need", card } };
-  };
-  if (mode === "stack") return paginate(cards.map(toPocket), null);
-  return sectionedPages([...cards], toPocket);
-}
-
-// ---------------------------------------------------------------------------
-// The Want List
-// ---------------------------------------------------------------------------
-
-/** The section heading over a group of wants. */
-export function wantSection(binderId: ContainerId | null, nameOf: (id: ContainerId) => string | undefined): string {
-  if (binderId === null) return "Just want it";
-  return `For ${nameOf(binderId) ?? "a binder"}`;
-}
-
-/**
- * The Want List in the order it opens in (see `wantPages`): plain wants
- * first, then one group per binder or box in shelf order, cards in checklist
- * order. A want whose card is not loaded (or left the catalog) is left out.
- * A prefix of this list pages the same as the whole, so the view can hydrate
- * copies for only the wants on screen.
- */
-export function orderWants(wants: readonly Want[], containers: readonly Container[], cards: CardsById): Want[] {
-  const order = new Map(containers.map((c, i) => [c.id, i]));
-  const groupOf = (w: Want) => (w.binderId !== null && order.has(w.binderId) ? order.get(w.binderId)! : -1);
-  return wants
-    .filter((w) => cards.has(w.cardId))
-    .sort((a, b) => groupOf(a) - groupOf(b) || compareCards(cards.get(a.cardId)!, cards.get(b.cardId)!));
-}
-
-/**
- * The Want List, opened: plain wants first, then one group per binder or box
- * in shelf order, each starting a fresh page like a new section of a real
- * binder, cards in checklist order. A want you have since landed shows the
- * card in its sleeve; the rest are "Need" sleeves.
- */
-export function wantPages(input: {
-  wants: readonly Want[];
-  containers: readonly Container[];
-  cards: CardsById;
-  copiesByCard: Readonly<Record<CardId, Copy[]>> | undefined;
-}): PageModel[] {
-  const { wants, containers, cards, copiesByCard } = input;
-  const order = new Map(containers.map((c, i) => [c.id, i]));
-  const groups = new Map<ContainerId | null, Card[]>();
-  for (const w of wants) {
-    const card = cards.get(w.cardId);
-    if (!card) continue;
-    const key = w.binderId !== null && order.has(w.binderId) ? w.binderId : null;
-    const list = groups.get(key);
-    if (list) list.push(card);
-    else groups.set(key, [card]);
+  copies: Copy[],
+): { slot: SlotRef; savedFor: Card | null } {
+  const followed = followedChecklist(binder, copies);
+  const i = slot.page * 9 + slot.slot;
+  if (!followed || i >= followed.length || followed[i].id === card.id) {
+    return { slot, savedFor: null };
   }
-  const keys = [...groups.keys()].sort((a, b) =>
-    a === null ? -1 : b === null ? 1 : (order.get(a) ?? 0) - (order.get(b) ?? 0),
-  );
-  const nameOf = (id: ContainerId) => containers.find((c) => c.id === id)?.name;
-  const pages: PageModel[] = [];
-  for (const key of keys) {
-    const list = [...(groups.get(key) ?? [])].sort(compareCards);
-    const pockets = list.map((card): PocketModel => {
-      const mine = (copiesByCard?.[card.id] ?? []).filter((c) => c.quantity > 0);
-      return {
-        content: mine.length ? { kind: "have", card, copies: mine } : { kind: "need", card },
-        wantFor: key,
-      };
+  return { slot: pocketFor(binder, card, copies), savedFor: followed[i] };
+}
+
+/**
+ * p2's pages, except:
+ * - a manual binder laid out like the real one: its numbered pages keep
+ *   their Need sleeves whatever sits on the Extras pages, and those pages
+ *   say "Extras";
+ * - a browsed set as "Just a stack": every card in checklist order, packed
+ *   tight (laid out like a binder, each insert starts a fresh page).
+ */
+export function buildBinderPages(input: BuildInput): PageModel[] {
+  const { view, mode, copies, binders } = input;
+  if (view.kind === "set" && mode === "stack") {
+    return paginate(
+      cardsInSet(view.setId).map((card): PocketModel => {
+        const mine = copiesOf(card.id, copies);
+        return { content: mine.length ? { kind: "have", card, copies: mine } : { kind: "need", card } };
+      }),
+      null,
+    );
+  }
+  const binder = view.kind === "binder" ? binders.find((b) => b.id === view.binderId) : undefined;
+  if (!binder || binder.kind !== "manual" || !binder.layout || mode !== "pockets") {
+    return p2BuildPages(input);
+  }
+
+  const byId = new Map(copies.map((c) => [c.id, c]));
+  const followed = followedChecklist(binder, copies);
+  const checklistPages = followed ? extrasStart(followed) / 9 : 0;
+  const section = (p: number) =>
+    followed ? (p < checklistPages ? sectionOf(followed[0]) : EXTRAS) : null;
+  const slotted = new Set<string>();
+  const pages: PageModel[] = binder.layout.map((page, p) => ({
+    section: section(p),
+    pockets: page.slots.map((id, s): PocketModel => {
+      const slot = refOf(binder, p * 9 + s);
+      const copy = id ? byId.get(id) : undefined;
+      if (copy) {
+        slotted.add(copy.id);
+        return { slot, content: { kind: "have", card: getCard(copy.cardId), copies: [copy] } };
+      }
+      const wanted = followed?.[p * 9 + s];
+      if (wanted && copiesOf(wanted.id, copies).length === 0) {
+        return { slot, content: { kind: "need", card: wanted } };
+      }
+      return { slot, content: { kind: "empty" } };
+    }),
+  }));
+
+  // A fresh page at the back, unless the last one is still blank.
+  const last = pages[pages.length - 1];
+  if (!last || last.pockets.some((pk) => pk.content.kind !== "empty")) {
+    const p = binder.layout.length;
+    pages.push({
+      section: followed && p >= checklistPages ? EXTRAS : null,
+      note: followed ? undefined : "A fresh page",
+      pockets: Array.from({ length: 9 }, (_, s) => ({
+        slot: refOf(binder, p * 9 + s),
+        content: { kind: "empty" as const },
+      })),
     });
-    pages.push(...paginate(pockets, wantSection(key, nameOf)));
+  }
+
+  // Filed in the binder (from a copy's details) but in no pocket yet.
+  const loose = binderCopies(binder, copies)
+    .filter((c) => !slotted.has(c.id))
+    .sort((a, b) => compareCards(getCard(a.cardId), getCard(b.cardId)));
+  if (loose.length) {
+    const pockets = loose.map(
+      (copy): PocketModel => ({ content: { kind: "have", card: getCard(copy.cardId), copies: [copy] } }),
+    );
+    for (const page of paginate(pockets, null)) pages.push({ ...page, note: "Not in a pocket yet" });
   }
   return pages;
 }
 
 // ---------------------------------------------------------------------------
-// A box's rows
+// Colours
 // ---------------------------------------------------------------------------
-
-export interface BoxRows {
-  /** `BOX_ROWS` rows, front to back: the copies whose slot is that row. */
-  rows: Copy[][];
-  /** In the box, in no row yet. */
-  unsorted: Copy[];
-}
-
-const BOX_KIND_ORDER: Record<Card["variant"]["kind"], number> = { base: 0, insert: 1, parallel: 2, other: 3 };
 
 /**
- * A dealer's box order (NEO-364 D18): by set (year, then name), then card
- * number (natural: 2 before 10, 10a after 10), then the variant, so a base
- * card and its parallels stand together the way a box is flipped through.
- * The card's own variation goes last.
+ * A binder's colours: its spine label's (see `label.ts`), so the open
+ * binder's vinyl matches the spine it was pulled by. By role or by rule,
+ * never by name.
  */
-export function compareBoxCards(a: Card, b: Card): number {
-  if (a.set.id !== b.set.id) {
-    return a.set.year - b.set.year || a.set.name.localeCompare(b.set.name) || a.set.id.localeCompare(b.set.id);
-  }
-  return (
-    compareCardNumbers(a.cardNumber, b.cardNumber) ||
-    (a.variant.id === b.variant.id
-      ? 0
-      : BOX_KIND_ORDER[a.variant.kind] - BOX_KIND_ORDER[b.variant.kind] ||
-        a.variant.order - b.variant.order ||
-        variantLabel(a.variant).localeCompare(variantLabel(b.variant))) ||
-    Number(a.cardVariation !== null) - Number(b.cardVariation !== null)
-  );
+export function liveryOf(binder: CollectionBinder | "all"): Livery {
+  const label = labelOf(binder);
+  return { primary: label.background, secondary: label.text };
 }
 
-/** Copies in box order (`compareBoxCards`); a copy whose card is not in yet goes last. */
-function byBox(cards: CardsById) {
-  return (a: Copy, b: Copy) => {
-    const ca = cards.get(a.cardId);
-    const cb = cards.get(b.cardId);
-    if (!ca || !cb) return ca ? -1 : cb ? 1 : 0;
-    return compareBoxCards(ca, cb);
-  };
-}
-
-/** A box's copies by row, each row in box order (`compareBoxCards`); a stack stays one line, drawn ×N. */
-export function boxRows(copies: readonly Copy[], cards: CardsById): BoxRows {
-  const rows: Copy[][] = Array.from({ length: BOX_ROWS }, () => []);
-  const unsorted: Copy[] = [];
-  for (const copy of copies) {
-    if (copy.slot !== undefined && copy.slot >= 0 && copy.slot < BOX_ROWS) rows[copy.slot].push(copy);
-    else unsorted.push(copy);
-  }
-  const order = byBox(cards);
-  return { rows: rows.map((r) => r.sort(order)), unsorted: unsorted.sort(order) };
-}
-
-/** Copies in box order: the Up for Trade pile drawn as a box (no rows). */
-export function boxOrder(copies: readonly Copy[], cards: CardsById): Copy[] {
-  return [...copies].sort(byBox(cards));
-}
-
-/** "Row 1" to "Row 5": a box row as the collector counts it. */
-export function rowName(row: number): string {
-  return `Row ${row + 1}`;
-}
-
-// ---------------------------------------------------------------------------
-// Where a card lives (the hunt tray)
-// ---------------------------------------------------------------------------
-
-/** One place a card lives: a home, and its pocket or row when it sits in one. */
-export interface Place {
-  homeId: ContainerId;
-  homeName: string;
-  /** The home is a box: the card is for sale there. */
-  box: boolean;
-  /** A binder pocket, or null. */
-  pocket: { page: number; slot: number } | null;
-  /** A box row (0-4), or null. */
-  row: number | null;
-  /** The line items in this place (one, for a pocket). */
-  copyIds: string[];
-  /** Cards in this place, counting a line item's quantity. */
-  quantity: number;
-}
-
-/**
- * Every place the collector's copies of a card live, home by home in shelf
- * order. A copy in a binder pocket is its own place ("'96 Contenders, page
- * 2, pocket 4"); copies in one box row share it ("Show box, row 2"); copies
- * just filed somewhere share one ("Main ×2").
- */
-export function placesOf(copies: readonly Copy[], containers: readonly Container[]): Place[] {
-  const order = new Map(containers.map((c, i) => [c.id, i]));
-  const homes = [...new Set(copies.map((c) => c.homeId))].sort(
-    (a, b) => (order.get(a) ?? Infinity) - (order.get(b) ?? Infinity),
-  );
-  const places: Place[] = [];
-  for (const homeId of homes) {
-    const home = containers.find((c) => c.id === homeId);
-    const here = copies.filter((c) => c.homeId === homeId && c.quantity > 0);
-    if (here.length === 0) continue;
-    const box = (home?.kind ?? here[0].homeKind) === "box";
-    const homeName = home?.name ?? here[0].homeName ?? "a binder";
-    const base = { homeId, homeName, box };
-    const pocketed: Place[] = [];
-    const rows = new Map<number, Copy[]>();
-    const loose: Copy[] = [];
-    for (const copy of here) {
-      if (copy.slot === undefined || copy.slot < 0) loose.push(copy);
-      else if (box) {
-        if (copy.slot < BOX_ROWS) rows.set(copy.slot, [...(rows.get(copy.slot) ?? []), copy]);
-        else loose.push(copy);
-      } else {
-        const { page, pocket } = pocketOf(copy.slot);
-        pocketed.push({ ...base, pocket: { page, slot: pocket }, row: null, copyIds: [copy.id], quantity: copy.quantity });
-      }
-    }
-    pocketed.sort((a, b) => a.pocket!.page - b.pocket!.page || a.pocket!.slot - b.pocket!.slot);
-    places.push(...pocketed);
-    for (const [row, list] of [...rows.entries()].sort((a, b) => a[0] - b[0])) {
-      places.push({
-        ...base,
-        pocket: null,
-        row,
-        copyIds: list.map((c) => c.id),
-        quantity: list.reduce((n, c) => n + c.quantity, 0),
-      });
-    }
-    if (loose.length) {
-      places.push({
-        ...base,
-        pocket: null,
-        row: null,
-        copyIds: loose.map((c) => c.id),
-        quantity: loose.reduce((n, c) => n + c.quantity, 0),
-      });
-    }
-  }
-  return places;
-}
-
-/** "'96 Contenders, page 2, pocket 4", "Show box, row 2", "Main ×2". */
-export function placeWords(place: Place): string {
-  if (place.pocket) return `${place.homeName}, page ${place.pocket.page + 1}, pocket ${place.pocket.slot + 1}`;
-  const qty = place.quantity > 1 ? ` ×${place.quantity}` : "";
-  if (place.row !== null) return `${place.homeName}, row ${place.row + 1}${qty}`;
-  return `${place.homeName}${qty}`;
-}
-
-/** The copies of a card that "Move here" may move into `to`: any not already there. */
-export function movableCopies(copies: readonly Copy[], to: ContainerId): Copy[] {
-  return copies.filter((c) => c.homeId !== to && c.quantity > 0);
-}
-
-/** The copies of a card "Put up for trade" may flag: any not flagged yet. */
-export function tradeableCopies(copies: readonly Copy[]): Copy[] {
-  return copies.filter((c) => !c.upForTrade && c.quantity > 0);
-}
-
-// ---------------------------------------------------------------------------
-// A typed card: act only on exactly one match
-// ---------------------------------------------------------------------------
-
-export type TypedCard =
-  | { kind: "none" }
-  | { kind: "one"; card: Card }
-  /** More than one card fits: the collector picks. Never the first. */
-  | { kind: "many"; count: number };
-
-/**
- * What Enter in the hunt may act on. A card number is not unique (a set has
- * #1 in Base and #1 in every parallel), so a search only resolves to a card
- * when exactly one card fits every word.
- */
-export function resolveTyped(hits: readonly Card[], truncated = false): TypedCard {
-  if (hits.length === 0) return { kind: "none" };
-  if (hits.length === 1 && !truncated) return { kind: "one", card: hits[0] };
-  return { kind: "many", count: hits.length };
-}
-
-/** The copy a per-copy pocket holds, so the drawer can ring its line item. */
-export function soleCopyId(copies: readonly Copy[]): string | undefined {
-  return copies.length === 1 ? copies[0].id : undefined;
-}
-
-// ---------------------------------------------------------------------------
-// Words
-// ---------------------------------------------------------------------------
-
-/** "#4 Reggie White", "Pennant Flyers #2 Reggie White", "Gold Refractor #1 Shohei Ohtani". */
-export function shortName(card: Card): string {
-  const variant = card.variant.kind === "base" ? "" : `${variantLabel(card.variant)} `;
-  const players = playerNames(card);
-  const variation = card.cardVariation ? ` (${card.cardVariation})` : "";
-  return `${variant}#${card.cardNumber}${players ? ` ${players}` : ""}${variation}`;
-}
-
-/** "PSA 9", or null for a raw copy. */
-export function slabLabel(copy: Pick<Copy, "graded">): string | null {
-  return copy.graded ? `${copy.graded.grader} ${copy.graded.grade}`.trim() : null;
-}
-
-/** A pocket's accessible name for an owned card. */
-export function havePocketLabel(card: Card, copies: readonly Copy[]): string {
-  const qty = copies.reduce((n, c) => n + c.quantity, 0);
-  const parts = [cardLabel(card)];
-  if (qty > 1) parts.push(`${qty} copies`);
-  if (copies.length === 1) {
-    const slab = slabLabel(copies[0]);
-    if (slab) parts.push(slab);
-    if (copies[0].serialNumber) parts.push(`serial ${copies[0].serialNumber}`);
-  }
-  if (copies.some((c) => c.homeKind === "box")) parts.push("for sale");
-  if (copies.some((c) => c.upForTrade)) parts.push("up for trade");
-  return parts.join(", ");
-}
-
-/** "12 cards", "1 card". */
-export function cardCount(n: number): string {
-  return `${n.toLocaleString("en-US")} ${n === 1 ? "card" : "cards"}`;
-}
+export { ruleTeamId };
 
 // ---------------------------------------------------------------------------
 // The smart binder's team rule
@@ -892,20 +319,19 @@ export function cardCount(n: number): string {
  * "A team" means cards showing the team, in that jersey. Ticking "Also count
  * anyone who played for them" widens it to the team's alumni as well.
  */
-export function teamRule(teamId: TeamId, alsoPlayedFor: boolean): ContainerRule {
-  return alsoPlayedFor
-    ? { kind: "or", rules: [{ kind: "teamOnCard", teamId }, { kind: "playedFor", teamId }] }
-    : { kind: "teamOnCard", teamId };
+export function teamRule(teamId: TeamId, alsoPlayedFor: boolean): BinderRule {
+  const onCard: BinderRule = { kind: "teamOnCard", teamId };
+  return alsoPlayedFor ? { kind: "or", rules: [onCard, { kind: "playedFor", teamId }] } : onCard;
 }
 
 // ---------------------------------------------------------------------------
-// Share links (NEO-360: capability `shareLinks` is real; `share` is the demo's example)
+// Share links (mock: no such route yet)
 // ---------------------------------------------------------------------------
 
 /**
- * The demo's example handle: anyone's, never a real collector's, so the
- * demo's link reads as an example. A real link uses the collector's own
- * public name (`ShareLink`).
+ * The share links' handle. The page is a demo in both of its homes (public
+ * and signed in), so the handle is anyone's, never a real collector's, and
+ * the link reads as an example. The real one will come from a profile.
  */
 export const DEMO_HANDLE = "you";
 
@@ -922,62 +348,44 @@ export function slugify(name: string): string {
   return slug || "binder";
 }
 
-/**
- * What a Share button shares. A binder and the Want List carry their
- * container (its switch and, for a binder, its link parts); Up for Trade's
- * switch is the profile's; a set is the demo's example only.
- */
-export type ShareSubject =
-  | { kind: "binder"; container: Container }
-  | { kind: "want"; container: Container }
-  | { kind: "trade" }
-  | { kind: "set" };
-
-/** What a Share button shares: its name in words, its example path, and what it is. */
+/** What a Share button shares: its name in words, and its path after the handle. */
 export interface ShareTarget {
   /** "Ohtani rainbow", "your Want List", "2000 Topps". */
   what: string;
-  /** The demo's example path after the handle: "binders/ohtani-rainbow", "want-list", "sets/2000-topps". */
+  /** "binders/ohtani-rainbow", "want-list", "sets/2000-topps". */
   path: string;
-  subject: ShareSubject;
 }
 
-/**
- * A container's Share target, or null: Main is never shared (build a binder
- * to share some of it), and a box is shared through the for-sale page, not
- * on its own.
- */
-export function containerShareTarget(container: Container): ShareTarget | null {
-  if (container.system === "main" || container.kind === "box") return null;
-  if (container.system === "want") {
-    return { what: "your Want List", path: "want-list", subject: { kind: "want", container } };
-  }
-  if (container.system === "trade") {
-    return { what: "Up for Trade", path: "up-for-trade", subject: { kind: "trade" } };
-  }
-  return { what: container.name, path: `binders/${slugify(container.name)}`, subject: { kind: "binder", container } };
+export function binderShareTarget(binder: CollectionBinder): ShareTarget {
+  if (binder.system === "want") return { what: "your Want List", path: "want-list" };
+  return { what: binder.name, path: `binders/${slugify(binder.name)}` };
 }
 
-/** A set you are flipping through: the demo's example only (sets get no real link). */
-export function setShareTarget(set: Pick<SetRef, "season" | "name">): ShareTarget {
-  return { what: setLabel(set), path: `sets/${slugify(setLabel(set))}`, subject: { kind: "set" } };
+/** A set you are flipping through: your copy of its checklist. */
+export function setShareTarget(set: CardSet): ShareTarget {
+  return { what: setLabel(set), path: `sets/${slugify(setLabel(set))}` };
 }
 
-/** The demo's human-readable example link for a share target. */
+/** The human-readable public link for a share target. */
 export function shareUrl(target: ShareTarget, handle = DEMO_HANDLE): string {
-  return `neonbinder.io/u/${handle}/${target.path}`;
+  return `neonbinder.io/@${handle}/${target.path}`;
+}
+
+/** A human-readable public link to a binder, or to the Want List. */
+export function shareLink(binder: CollectionBinder, handle = DEMO_HANDLE): string {
+  return shareUrl(binderShareTarget(binder), handle);
 }
 
 // ---------------------------------------------------------------------------
-// Browse a set: the shelf's filters (the demo's catalog)
+// Browse a set: the shelf's filters
 // ---------------------------------------------------------------------------
 
 function foldText(text: string): string {
   return text
     .normalize("NFKD")
-    .replace(/[̀-ͯ]/g, "")
+    .replace(/[\u0300-\u036f]/g, "")
     .toLowerCase()
-    .replace(/['’]/g, "")
+    .replace(/['\u2019]/g, "")
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -987,12 +395,12 @@ function foldText(text: string): string {
  * end open, ends inclusive and swapped if typed backwards) and every word of
  * the name typed ("96 contenders", "chrome").
  */
-export function filterSets(sets: readonly SetRef[], filter: BrowseFilter): SetRef[] {
+export function filterSets(sets: CardSet[], filter: BrowseFilter): CardSet[] {
   let { from, to } = filter;
   if (from !== null && to !== null && from > to) [from, to] = [to, from];
   const words = foldText(filter.q).split(" ").filter(Boolean);
   return sets.filter((set) => {
-    if (filter.sport !== "all" && set.sport.id !== filter.sport) return false;
+    if (filter.sport !== "all" && set.sportId !== filter.sport) return false;
     if (from !== null && set.year < from) return false;
     if (to !== null && set.year > to) return false;
     if (words.length === 0) return true;
@@ -1006,9 +414,102 @@ export function isFiltering(filter: BrowseFilter): boolean {
   return filter.sport !== "all" || filter.from !== null || filter.to !== null || filter.q.trim() !== "";
 }
 
-/** The sports on the Browse shelf, in shelf order, once each. */
-export function sportsOf(sets: readonly SetRef[]): { id: string; name: string }[] {
-  const seen = new Map<string, string>();
-  for (const s of sets) if (!seen.has(s.sport.id)) seen.set(s.sport.id, s.sport.name);
-  return [...seen.entries()].map(([id, name]) => ({ id, name }));
+// ---------------------------------------------------------------------------
+// Where a card lives (the hunt tray)
+// ---------------------------------------------------------------------------
+
+/** One place a card lives: a binder, and a pocket when it sits in one. */
+export interface Place {
+  binderId: BinderId;
+  binderName: string;
+  /** The pocket on the binder's pages, or null when it is just filed there. */
+  pocket: { page: number; slot: number } | null;
+  /** The line items in this place (one, for a pocket). */
+  copyIds: string[];
+  /** Cards in this place, counting a line item's quantity. */
+  quantity: number;
 }
+
+/**
+ * Every place the collector's copies of a card live, binder by binder in
+ * shelf order. A copy in a pocket is its own place ("'96 Contenders, page 2,
+ * pocket 4"); copies just filed in a binder share one ("Main", ×2). A copy
+ * filed in two binders (Main and Up for Trade) is in both.
+ */
+export function placesOf(cardId: string, copies: Copy[], binders: CollectionBinder[]): Place[] {
+  const mine = copies.filter((c) => c.cardId === cardId);
+  const places: Place[] = [];
+  for (const binder of binders) {
+    const here = mine.filter((c) => c.binderIds.includes(binder.id));
+    if (here.length === 0) continue;
+    const loose: Copy[] = [];
+    const pocketed: Place[] = [];
+    for (const copy of here) {
+      let pocket: Place["pocket"] = null;
+      if (binder.kind === "manual") {
+        binder.layout?.forEach((page, p) =>
+          page.slots.forEach((id, slot) => {
+            if (id === copy.id && !pocket) pocket = { page: p, slot };
+          }),
+        );
+      }
+      if (pocket) {
+        pocketed.push({ binderId: binder.id, binderName: binder.name, pocket, copyIds: [copy.id], quantity: copy.quantity });
+      } else {
+        loose.push(copy);
+      }
+    }
+    pocketed.sort((a, b) => a.pocket!.page - b.pocket!.page || a.pocket!.slot - b.pocket!.slot);
+    places.push(...pocketed);
+    if (loose.length) {
+      places.push({
+        binderId: binder.id,
+        binderName: binder.name,
+        pocket: null,
+        copyIds: loose.map((c) => c.id),
+        quantity: loose.reduce((n, c) => n + c.quantity, 0),
+      });
+    }
+  }
+  return places;
+}
+
+/** "'96 Contenders, page 2, pocket 4", "Main", "Main ×2". */
+export function placeWords(place: Place): string {
+  if (place.pocket) return `${place.binderName}, page ${place.pocket.page + 1}, pocket ${place.pocket.slot + 1}`;
+  return place.quantity > 1 ? `${place.binderName} ×${place.quantity}` : place.binderName;
+}
+
+/** The copies of a card that "Move here" may move into `to`: any not already there. */
+export function movableCopies(cardId: string, copies: Copy[], to: BinderId): Copy[] {
+  return copies.filter((c) => c.cardId === cardId && !c.binderIds.includes(to));
+}
+
+// ---------------------------------------------------------------------------
+// A typed card: act only on exactly one match
+// ---------------------------------------------------------------------------
+
+export type TypedCard =
+  | { kind: "none" }
+  | { kind: "one"; card: Card }
+  /** More than one card fits: the collector picks. Never the first. */
+  | { kind: "many"; count: number };
+
+/**
+ * What Enter in the pack may act on. A card number is not unique (a set has
+ * #1 in Base and #1 in every parallel), so a search only resolves to a card
+ * when it fits every word AND exactly one card fits.
+ */
+export function resolveTyped(hits: SearchHit[]): TypedCard {
+  const full = hits.filter((h) => h.matchedAll);
+  if (full.length === 0) return { kind: "none" };
+  if (full.length === 1) return { kind: "one", card: full[0].card };
+  return { kind: "many", count: full.length };
+}
+
+/** The copy a per-copy pocket holds, so the drawer can ring its line item. */
+export function soleCopyId(copies: Copy[]): string | undefined {
+  return copies.length === 1 ? copies[0].id : undefined;
+}
+
+export { getCard };

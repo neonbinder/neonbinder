@@ -35,7 +35,6 @@ import schema from "./schema";
 import { Id } from "./_generated/dataModel";
 import { teamRowFields } from "./lib/teamRow";
 import { MAX_CARD_TEAMS } from "./features/cardAttention";
-import { insertTestCard } from "../lib/testing/card-row";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -166,7 +165,7 @@ async function seedCard(
   } = {},
 ): Promise<Id<"cardChecklist">> {
   return t.run(async (ctx) =>
-    insertTestCard(ctx, {
+    ctx.db.insert("cardChecklist", {
       selectorOptionId,
       cardNumber,
       cardName: `Card ${cardNumber}`,
@@ -619,7 +618,7 @@ describe("NEO-277 setSelectorOptionTeams cascade", () => {
     // in-node cursor and the node-to-node hop are exercised.
     await t.run(async (ctx) => {
       for (let i = 0; i < 450; i++) {
-        await insertTestCard(ctx, {
+        await ctx.db.insert("cardChecklist", {
           selectorOptionId: i < 300 ? tree.variantTypeId : tree.parallelId,
           cardNumber: String(i + 1),
           cardName: `Card ${i + 1}`,
@@ -681,7 +680,7 @@ describe("NEO-277 teamCascadeStartedAt", () => {
     const tree = await seedTree(t, {}, sportId);
     await t.run(async (ctx) => {
       for (let i = 0; i < 250; i++) {
-        await insertTestCard(ctx, {
+        await ctx.db.insert("cardChecklist", {
           selectorOptionId: tree.variantTypeId,
           cardNumber: String(i + 1),
           cardName: `Card ${i + 1}`,

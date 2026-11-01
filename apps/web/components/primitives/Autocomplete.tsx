@@ -172,10 +172,6 @@ export interface AutocompleteProps<T> {
    * still says so.
    */
   hideWhenEmpty?: boolean;
-  /** Id(s) of the text that describes the field, such as its error line (`aria-describedby`). */
-  describedBy?: string;
-  /** Marks the field as failing validation (`aria-invalid`); pair it with `describedBy` on the error. */
-  invalid?: boolean;
 }
 
 export function Autocomplete<T>({
@@ -201,8 +197,6 @@ export function Autocomplete<T>({
   inputGeometryClassName = "px-3 py-2 text-base",
   descriptionBelow = false,
   hideWhenEmpty = false,
-  describedBy,
-  invalid = false,
 }: AutocompleteProps<T>) {
   const [open, setOpen] = useState(false);
   const [highlightIdx, setHighlightIdx] = useState(0);
@@ -398,8 +392,6 @@ export function Autocomplete<T>({
         disabled={disabled}
         placeholder={placeholder}
         aria-label={label}
-        aria-describedby={describedBy}
-        aria-invalid={invalid || undefined}
         role="combobox"
         // Tracks whether the POPUP is displayed, not whether it has results.
         // The loading and empty states render a real listbox containing a

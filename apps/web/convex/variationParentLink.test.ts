@@ -11,7 +11,6 @@ import { describe, expect, test } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
-import { insertTestCard } from "../lib/testing/card-row";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -21,22 +20,14 @@ const ADMIN = { subject: "user_admin", role: "admin" };
 
 async function seedSetWithVariations(t: ReturnType<typeof convexTest>) {
   return await t.run(async (ctx) => {
-    // NEO-363 — a card cannot exist without a sport above it.
-    const sportId = await ctx.db.insert("selectorOptions", {
-      level: "sport",
-      value: "Baseball",
-      platformData: {},
-      lastUpdated: Date.now(),
-    });
     const selectorOptionId = await ctx.db.insert("selectorOptions", {
       level: "variantType",
       value: "Base",
-      parentId: sportId,
       platformData: {},
       lastUpdated: Date.now(),
     });
     const base = async (cardNumber: string, cardName: string) =>
-      await insertTestCard(ctx, {
+      await ctx.db.insert("cardChecklist", {
         selectorOptionId,
         cardNumber,
         cardName,
@@ -59,7 +50,7 @@ async function seedSetWithVariations(t: ReturnType<typeof convexTest>) {
         cardVariation: name,
       });
     }
-    return { sportId, selectorOptionId, parent, varA, varB, unrelated };
+    return { selectorOptionId, parent, varA, varB, unrelated };
   });
 }
 
@@ -89,7 +80,7 @@ describe("variationOfCardId", () => {
     const t = convexTest(schema, modules);
     const { selectorOptionId } = await seedSetWithVariations(t);
     await t.run(async (ctx) => {
-      const parent = await insertTestCard(ctx, {
+      const parent = await ctx.db.insert("cardChecklist", {
         selectorOptionId,
         cardNumber: "52",
         cardName: "Archie Bradley",
@@ -98,7 +89,7 @@ describe("variationOfCardId", () => {
         sortOrder: 1,
         lastUpdated: Date.now(),
       });
-      const child = await insertTestCard(ctx, {
+      const child = await ctx.db.insert("cardChecklist", {
         selectorOptionId,
         cardNumber: "52b",
         cardName: "Mickey Mantle",
@@ -235,16 +226,15 @@ describe("setCardVariationParent — the operator's escape hatch", () => {
 
   test("the parent must be in the same checklist", async () => {
     const t = convexTest(schema, modules);
-    const { sportId, unrelated } = await seedSetWithVariations(t);
+    const { unrelated } = await seedSetWithVariations(t);
     const otherSetCard = await t.run(async (ctx) => {
       const other = await ctx.db.insert("selectorOptions", {
         level: "variantType",
         value: "Insert",
-        parentId: sportId,
         platformData: {},
         lastUpdated: Date.now(),
       });
-      return insertTestCard(ctx, {
+      return ctx.db.insert("cardChecklist", {
         selectorOptionId: other,
         cardNumber: "1",
         cardName: "Elsewhere",

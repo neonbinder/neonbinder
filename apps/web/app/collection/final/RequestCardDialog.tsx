@@ -4,7 +4,7 @@ import { Input } from "@/components/primitives/Input";
 import { Textarea } from "@/components/primitives/Textarea";
 import Overlay from "../prototypes/p1/Overlay";
 import { useCollectionMode } from "./mode";
-import type { DemoExtension } from "./data/store";
+import type { CollectionStore } from "./store";
 
 /**
  * "Can't find it? Ask us to add it." The collector describes the card. In a
@@ -18,7 +18,7 @@ export default function RequestCardDialog({
   searched,
   onClose,
 }: {
-  store: Pick<DemoExtension, "cardRequests" | "requestCard">;
+  store: CollectionStore;
   /** What was in the search box, kept with the request for the admin. */
   searched: string;
   onClose: () => void;

@@ -82,7 +82,6 @@
 - [Result ledgers grow, the page scrolls](feedback-result-ledgers-grow-the-page-scrolls.md) — no max-h-48 inner scroller on a list the operator reads; 70vh cap only past a pathological count (Jason, NEO-321)
 - [Key join rules need a typeahead reading](reference_key_join_rules_need_a_typeahead_reading.md) — joined initials break prefix AND substring typeahead one keystroke; entityNameQueryReadings; player-in-sport = home + playerSports legs
 - [Router navigation is a transition](reference_router_navigation_is_a_transition.md) — setSearchParams commits in startTransition; a sibling setState renders the OLD URL first; wrap it in startTransition, or hold a pending value when a child moves focus
-- [Latest-entry ref is stale at render after POP](reference_latest_entry_ref_is_stale_at_render_after_pop.md) — Link href/state from useLocation, rebuild the push in onClick; MemoryRouter clamps go(-n), add an entry ahead
 - [New string locator collision sweep](reference_new_string_locator_collision_sweep.md) — Playwright name/text matching is a substring; grep the specs for the new copy and check the page each hit runs on
 - [Caption under an image never widens it](reference_caption_under_an_image_never_widens_it.md) — figure flex-col + caption `w-0 min-w-full wrap-anywhere text-balance`; `w-min` zeroes preflight images
 - [Static markup visual check](reference_static_markup_visual_check.md) — built CSS + scratch HTML + headless Chrome; phone widths via iframe; measure heights per case matrix; tsx `.css` import stub loader
@@ -90,7 +89,6 @@
 - [Escape blur commits the draft](reference_escape_blur_commits_the_draft.md) — Enter/Escape act in place, never blur (focus leaves aria-modal); never key={prefill}
 - [Local override of server state needs a null tombstone](reference_local_override_of_server_state_needs_a_null_tombstone.md) — `null` not a deleted key over a stored per-row value; merge save results; readyTitleClashes reuse for own-set names
 - [Action blind insert is invisible to OCC](reference_action_blind_insert_is_invisible_to_occ.md) — re-check status + read the range inside the write; repro the interleave by driving the action steps by hand
-- [Ancestor rollups make the sport row hot](reference_ancestor_rollups_make_the_sport_row_hot.md) — rollups to sport/year/brand = cross-set OCC; NEO-364: counts from set down + one-time hasCards above; ledger hint/move mechanics
 - [ReconciliationModal lists unstable per render](reference_reconciliation_modal_lists_are_unstable_per_render.md) — default `[]` props → new list identity each render; key setState effects on content or the modal loops silently
 - [Vitest console hidden in passing tests](reference_vitest_console_hidden_in_passing_tests.md) — console.log from a passing test prints nothing; scratch probes log via appendFileSync
 - [Focus centres; scroll margins add](reference_focus_centres_and_scroll_margins_add.md) — Chrome focus() centres off-screen targets; scrollIntoView = 80px scroll-padding + scroll-mt; use preventScroll + own scroll
@@ -129,32 +127,18 @@
 - [Print-only region needs the :has() prefix](reference_print_only_region_has_specificity.md) — visible rule must match hide rule weight; fullPage print-emulated shots go blank
 - [Parallel builders share the scratchpad](reference_parallel_builders_share_the_scratchpad.md) — per-agent subdir for scripts/shots; own Vite port; check root for stray folders
 - [Wrapped select name includes its option](reference_wrapping_label_select_name_includes_option.md) — label-wrapped <select> name = "Binder All"; aria-label the select, aria-hide the word
-- [Radix button outside a Theme portal](reference_radix_button_outside_theme_portal.md) — createPortal(body) loses Radix tokens (NeonButton padding 0): prop-less nested <Theme> in the portal, never portal into the root Theme
+- [Radix button outside a Theme portal](reference_radix_button_outside_theme_portal.md) — hand-rolled modal portals to body lose Radix tokens; nest <Theme hasBackground={false}>
 - [Lazy component test preload](reference_lazy_component_test_preload.md) — lazy() child + findBy times out under load; import the module in beforeAll
 - [Radix Themes tooltip needs Theme in tests](reference_radix_themes_tooltip_needs_theme_in_tests.md) — Tooltip throws outside <Theme> in component tests; child aria-describedby overrides the trigger; headless .focus() never opens it, Tab does
 - [happy-dom target=_blank click fetches](reference_happy_dom_target_blank_click_fetches.md) — new window fetches the href (ECONNREFUSED noise); preventDefault on document for that click
 - [axe contrast ignores aria-hidden](reference_axe_contrast_ignores_aria_hidden.md) — aria-hidden/role=img text is still measured; user-colour previews go in an <img alt> (SVG foreignObject)
 - [Tailwind JS-config colours are inlined](reference_tailwind_js_config_colours_are_inlined.md) — neon-* compile to literal hex; redeclare in @theme to theme them by variable
-- [Radix scale overrides lose to Radix](reference_radix_scale_overrides_lose_to_radix.md) — Radix sets --green-9/--focus-8 on the Theme element, so html-level remaps never reach it; set them there, probe computed values
+- [Radix scale overrides lose to Radix](reference_radix_scale_overrides_lose_to_radix.md) — globals.css (0,1,0) remaps of --green-9/--focus-8 are dead; out-specify on the Theme element, probe computed values
 - [vitest CSS ?raw import is empty](reference_vitest_css_raw_import_is_empty.md) — CSS imports stub to ""; read stylesheets with readFileSync(join(__dirname, ...))
 - [data-theme="dark" scopes a subtree](reference_data_theme_dark_scopes_a_subtree.md) — pin roles dark for one scene (spin shelf, /u storefronts); light signatures still match; waitForURL glob matches query
-- [Local screenshot script gotchas](reference_local_screenshot_script_gotchas.md) — sign-in redirect fools waitForURL; missing Convex fn; hand-set data-theme misreads livery; oklch colours
+- [Local screenshot script gotchas](reference_local_screenshot_script_gotchas.md) — sign-in redirect fools a waitForURL regex; "An error occurred" is usually a missing Convex function on the backend
 - [Unlayered CSS beats Tailwind utilities](reference_unlayered_css_beats_tailwind_utilities.md) — feature stylesheets are unlayered and outrank @utility/@layer rules; strip legacy colours before adding a signature class
 - [Render a component from its unit test](reference_render_a_component_from_its_unit_test.md) — dump happy-dom markup via a scratch vitest config (sequence.hooks "list"), render with real CSS; for screens the backend cannot serve
 - [Printed output is a srcdoc capture](reference_printed_output_is_srcdoc_capture.md) — prove print unchanged by hooking the print iframe srcdoc / QR popup, not page screenshots
 - [App-wide useQuery needs its own boundary](reference_app_wide_usequery_needs_its_own_boundary.md) — a failing/missing Convex function throws in render; boundary + Sentry once
-- [Radix layer under Tailwind utilities](reference_radix_button_box_beats_tailwind.md) — Radix CSS is `layer(radix)` in globals.css (NEO-364): plain utilities on NeonButton work, no `!`; never import it from JS
-- [rAF focus request clears by identity](reference_raf_focus_request_clear_by_identity.md) — functional clear or a stale frame drops a newer move; happy-dom blur() fires no focusout
-- [Write tool turns unicode escapes into chars](reference_write_tool_turns_unicode_escapes_into_chars.md) — a written `￿` can land as the literal char; grep and fix
-- [Compiler memo lost by a derived JSX map](reference_compiler_memo_lost_by_derived_jsx_map.md) — preserve-manual-memoization: drop the manual memo, never disable the rule
-- [Collection views test on a hand-built store](reference_collection_views_test_on_a_hand_built_store.md) — RealCollection.test.tsx fakes the store; add each new hook to it
-- [convex-test scale walks cost per range read](reference_convex_test_scale_walks_cost_per_range_read.md) — paged walk over 5k distinct keys ~26s; use few keys x many rows
-- [Card fixtures insert through insertTestCard](reference_card_fixtures_insert_through_insert_test_card.md) — required listingTitle/sportId; raw test inserts fail at runtime; t.run drops closures
-- [No timeout binary empties a grep gate](reference_no_timeout_binary_empties_a_grep_gate.md) — `timeout` is missing on macOS; `timeout … tsc | grep` is a false green; tee to a file, check line count
-- [Keep counts per scope, not global](reference_keep_counts_per_scope_not_global.md) — admin-invalidated count on the per-set row (clear + bounded recount), never one owner-wide counter
-- [Optimistic id swap remounts id-keyed rows](reference_optimistic_id_swap_remounts_id_keyed_rows.md) — key rows via useLineKeys; ids replay per args (optimisticIdFor); writes await landedCopy
-- [Scroll on focus swallows mouse clicks](reference_scroll_on_focus_swallows_mouse_clicks.md) — focus fires between mousedown/mouseup; gate scroll-on-focus on :focus-visible (binders/trayClear)
-- [Typecheck a client against a contract stub](reference_typecheck_a_client_against_a_contract_stub.md) — parallel backend: scratch tsconfig paths map api to a stub; missing members hide bugs as any
-- [HMR context-module edit crashes the page](reference_hmr_context_module_edit_crashes_the_page.md) — sibling edits mode.tsx → "outside Provider"; reload. select-on-focus field: → test selectionEnd only
-- [Sticky sub-bar must bump scroll padding](reference_sticky_subbar_must_bump_scroll_padding.md) — a bar sticking under the sm-sticky header needs html scroll-padding-top grown inline while mounted; hint text outside the sticky part
-- [sr-only escapes an unpositioned scroller](reference_sr_only_escapes_unpositioned_scroller.md) — overflow-x rail with sr-only kids widens the page unless the scroller is `relative`
+- [Radix button box beats Tailwind](reference_radix_button_box_beats_tailwind.md) — on NeonButton, Tailwind display/height/padding/radius classes lose to Radix; use min-h, `contents` wrappers, asChild, inline style

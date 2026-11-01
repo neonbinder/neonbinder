@@ -37,20 +37,11 @@
  * that points at a selector row, a card or a staged review fails the suite
  * until it is handled here.
  *
- * NEO-358 — collectors' copies (`collectionCopies`) DO point at cards now, and
- * they are the one holding this wipe never takes: a card a collector owns a
- * copy of REFUSES the page that would delete it (through `removeCardRow`'s
- * guard), and the dry run counts them per row (`cardsCollected`) under
- * `beyondChecklist`. A set's "Sets I'm building" entries sit on the SET row,
- * above the variant type, and are untouched. NEO-359: a collector's WANT of
- * a card (`collectionWants`) never holds a card back; `removeCardRow` deletes
- * it with the card. A smart binder's rule names only set-level-and-above
- * selector rows (sport, brand, set), never a subtree row, so containers are
- * untouched and not in the graph. There are still no listing,
- * sales or print tables (`labelPurchases` carries no card link). The other
- * holdings beyond the checklist are cross-listings, staged checklist reviews
- * and card scans an operator uploaded (`cardChecklist.imageUrls`), and the dry
- * run lists every row that carries one.
+ * NB has NO inventory, listing, sales or print tables yet (`labelPurchases`
+ * carries no card link). The only holdings beyond the checklist itself are
+ * cross-listings, staged checklist reviews and card scans an operator
+ * uploaded (`cardChecklist.imageUrls`), and the dry run lists every row that
+ * carries one.
  *
  * ## Operator commands
  *
@@ -123,16 +114,9 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { selectorOptionLevelValidator } from "./schema";
 import { selectorValueKey } from "./selectorSyncMatch";
 import { variantTypeKind } from "./variantRole";
-// NEO-313 / NEO-358 — each wiped card goes through the one card delete,
-// `removeCardRow`: its cross-listings, its player and team index rows, the
-// card and its row's counts, behind the collector guard.
-import {
-  cardIsCollected,
-  collectedCardIds,
-  countCollectors,
-  removeCardRow,
-} from "./cardRowDelete";
-import { createCardCountLedger } from "./cardCounts";
+// NEO-313 — the derived player → cards index goes with each wiped card,
+// through the table's own helper (`cardPlayerLinks.pin.test.ts`).
+import { deleteCardPlayerLinks } from "./cardPlayerLinks";
 
 // ───────────────────────────────────────────────────────────────────────────
 // The reference graph
@@ -155,9 +139,9 @@ export const SUBTREE_REFERENCE_GRAPH = {
       "rows keyed on a subtree row, or on the variant type (its child columns), are deleted; a parent's go with its first child, because unlinked[].id names the children under that key",
   },
   cardChecklist: {
-    fields: ["selectorOptionId", "variationOfCardId", "sportId"],
+    fields: ["selectorOptionId", "variationOfCardId"],
     handling:
-      "cards on subtree rows deleted; a card's variation children go in the same transaction; a child outside the subtree refuses the page; sportId is sport-level",
+      "cards on subtree rows deleted; a card's variation children go in the same transaction; a child outside the subtree refuses the page",
   },
   cardCrossListings: {
     fields: ["cardChecklistId", "selectorOptionId"],
@@ -168,65 +152,6 @@ export const SUBTREE_REFERENCE_GRAPH = {
     fields: ["cardChecklistId", "sportId"],
     handling:
       "NEO-313 derived index: a wiped card's rows are deleted with it, in the same transaction; sportId is sport-level",
-  },
-  cardTeamLinks: {
-    fields: ["cardChecklistId"],
-    handling:
-      "NEO-358 derived index: a wiped card's rows are deleted with it, in the same transaction",
-  },
-  collectionCopies: {
-    fields: ["cardId", "variantId", "setId"],
-    handling:
-      "NEO-358 a collector's copy REFUSES the wipe of its card (removeCardRow's guard); the dry run counts them as cardsCollected. setId is set-level, above the subtree",
-  },
-  collectionBuildingSets: {
-    fields: ["setId"],
-    handling:
-      "NEO-358 set-level only; a subtree row is never a set. Untouched",
-  },
-  collectionWants: {
-    fields: ["cardId"],
-    handling:
-      "NEO-359 a collector's want is deleted with its card in removeCardRow (never refuses the wipe; past a bounded take the rest are swept by a scheduled continuation)",
-  },
-  collectionBinderFits: {
-    fields: ["cardId", "variantId"],
-    handling:
-      "NEO-401 a smart binder's stored fits: the catalog cards its rule matches. Never refuses the wipe and is untouched: the empty-slots read skips a card that is gone, and the next recompute (the rule saved again, or the nightly pass) drops the row",
-  },
-  collectionBinderDeclines: {
-    fields: ["cardId"],
-    handling:
-      "NEO-362 a collector turned a card down for a smart binder. Never refuses the wipe and is untouched: Find cards and the Declined list never show a card that is gone, and the row goes with its binder or its rule",
-  },
-  privateCards: {
-    fields: ["setId", "variantId"],
-    handling:
-      "NEO-361 a collector's own card may name the checklist it belongs in. Never refuses the wipe and is untouched: a gone checklist reads as none (the card shows under its set, unlisted, and the admin's review offers the set builder instead). setId is set-level, above the subtree",
-  },
-  variantCommonPrices: {
-    fields: ["variantId"],
-    handling:
-      "NEO-378 a collector's common price for one variant. Never refuses the wipe and is untouched: every read starts from a variant the page shows, so a price for a gone variant is never read",
-  },
-  intakeRuns: {
-    fields: ["variantId"],
-    handling:
-      "NEO-379 the variant an intake run matches in. Never refuses the wipe and is untouched: a gone variant matches nothing and the run shows no variant name",
-  },
-  intakeMatches: {
-    fields: ["cardId", "candidates[]", "variations[]"],
-    handling:
-      "NEO-379 the matcher's proposal for one scanned pair. Never refuses the wipe and is untouched: listIntakeMatches skips a card that is gone, and the next sync re-matches the pair",
-  },
-  privateSets: {
-    fields: ["sportId"],
-    handling: "NEO-361 sport-level only. Untouched",
-  },
-  cardRequests: {
-    fields: ["addedCardId", "addedSetId"],
-    handling:
-      "NEO-361 a record of what an approved request became; a wiped card leaves addedCardId pointing at nothing, which only the review's history reads. addedSetId is set-level. Untouched",
   },
   entityReviewQueue: {
     fields: [
@@ -245,11 +170,6 @@ export const SUBTREE_REFERENCE_GRAPH = {
   checklistCandidates: {
     fields: ["selectorOptionId"],
     handling: "rows keyed on a subtree row deleted",
-  },
-  checklistNameResolutions: {
-    fields: ["selectorOptionId", "sportId"],
-    handling:
-      "NEO-402 a fetch's stored player answers for one review session. Never refuses the wipe and is untouched: only a commit of that same set reads it, which a wiped set cannot have, and the hourly sweep reaps it within a day. sportId is sport-level",
   },
   players: {
     fields: ["sportId"],
@@ -293,8 +213,6 @@ export const WIPED_TABLES = [
   "cardCrossListings",
   // NEO-313 — rows deleted with their card; see the graph above.
   "cardPlayerLinks",
-  // NEO-358 — likewise.
-  "cardTeamLinks",
   "entityReviewQueue",
   "checklistCandidates",
   "entityReviewSkips",
@@ -317,13 +235,9 @@ const LIST_CHILDREN_GROUP = 100;
 
 /**
  * System operations one deleting mutation may spend before it ends its page.
- * A card costs ~8 through `removeCardRow` (variation-children read, collector
- * guard, cross-listing, variation, player-index, team-index and (NEO-359)
- * want reads, the delete) plus one per junction and index row, three per want
- * swept (at most `WANT_SWEEP_BATCH`) and one for a scheduled sweep; ~700
- * leaves room under the ~900
- * comfortable line for the fixed reads (target, ancestors, membership, the
- * page's collector pre-check and the counts flush).
+ * A card costs ~3 (variation-children read, cross-listing read, delete) plus
+ * one per junction; ~700 leaves room under the ~900 comfortable line for the
+ * fixed reads (target, ancestors, membership).
  */
 const OP_BUDGET = 700;
 /** Cards read per page. 150 cards × ~3 ops ≈ 450; the op budget ends it early otherwise. */
@@ -341,7 +255,7 @@ const SURVEY_NODE_GROUP = 10;
 const SURVEY_REF_PROBE = 100;
 /** Rows per page when a probe saturates and the count has to be exact. */
 const SURVEY_COUNT_PAGE = 1000;
-/** Cards per survey page: 3 reads each (NEO-358 added the collector probe). */
+/** Cards per survey page: 2 reads each. */
 const SURVEY_CARD_PAGE = 200;
 
 /** Ids per log line, so no line approaches the log size cap. */
@@ -662,12 +576,11 @@ function countNodeLevel(counts: TableCounts, level: string): void {
 }
 
 const NO_INVENTORY_NOTE =
-  "Collectors' copies are never wiped: a row whose holds show cardsCollected " +
-  "refuses the armed run until those copies are gone. NB has no listing or " +
-  "sales tables yet. beyondChecklist lists every row holding more than its " +
-  "own cards: collectors' copies, cross-listings to or from rows outside this " +
-  "subtree, staged checklist reviews, and cards with uploaded scans. Cards on " +
-  "the variant type row itself, and the row with its marketplace links, are kept.";
+  "NB has no inventory, listing or sales tables yet, so nothing of that kind " +
+  "is lost. beyondChecklist lists every row holding more than its own cards: " +
+  "cross-listings to or from rows outside this subtree, staged checklist " +
+  "reviews, and cards with uploaded scans. Cards on the variant type row " +
+  "itself, and the row with its marketplace links, are kept.";
 
 // ───────────────────────────────────────────────────────────────────────────
 // Reads
@@ -1033,8 +946,6 @@ export const surveyCardsPage = internalQuery({
   returns: v.object({
     cardIds: v.array(v.id("cardChecklist")),
     withImages: v.number(),
-    /** NEO-358 — cards a collector owns a copy of; the armed run refuses them. */
-    collected: v.number(),
     crossOut: v.array(
       v.object({
         id: v.id("cardCrossListings"),
@@ -1053,7 +964,6 @@ export const surveyCardsPage = internalQuery({
       )
       .paginate({ cursor: args.cursor, numItems: SURVEY_CARD_PAGE });
     let withImages = 0;
-    let collected = 0;
     const crossOut: Array<{
       id: Id<"cardCrossListings">;
       guestId: Id<"selectorOptions">;
@@ -1061,7 +971,6 @@ export const surveyCardsPage = internalQuery({
     const childrenElsewhere: Blocker[] = [];
     for (const card of page.page) {
       if (card.imageUrls?.front || card.imageUrls?.back) withImages += 1;
-      if (await cardIsCollected(ctx, card._id)) collected += 1;
       const links = await ctx.db
         .query("cardCrossListings")
         .withIndex("by_card", (q) => q.eq("cardChecklistId", card._id))
@@ -1104,7 +1013,6 @@ export const surveyCardsPage = internalQuery({
     return {
       cardIds: page.page.map((card) => card._id),
       withImages,
-      collected,
       crossOut,
       childrenElsewhere,
       isDone: page.isDone,
@@ -1166,56 +1074,29 @@ export const wipeCardsPage = internalMutation({
       .take(limit);
     ops += 1;
 
-    // NEO-358 — a collector's copy refuses the page BEFORE anything in it is
-    // deleted: this wipe never takes a card someone owns. (A variation child
-    // is checked as it is reached below; the throw rolls the page back.)
-    const collected = await collectedCardIds(
-      ctx,
-      cards.map((card) => card._id),
-    );
-    ops += cards.length;
-    const refuseCollected = async (cardId: Id<"cardChecklist">): Promise<never> => {
-      const count = await countCollectors(ctx, [cardId]);
-      const held =
-        count.collectors <= 1
-          ? "a collector's collection"
-          : `${count.collectors}${count.atLeast ? "+" : ""} collectors' collections`;
-      throw new ConvexError(
-        `Refused: card ${cardId} is in ${held}, and this ` +
-          `wipe never deletes a card someone owns a copy of. The dry run ` +
-          `counts these as cardsCollected. This page wrote nothing.`,
-      );
-    };
-    for (const card of cards) {
-      if (collected.has(card._id)) await refuseCollected(card._id);
-    }
-
-    const countLedger = createCardCountLedger();
     const deleted = new Set<string>();
     const deletedCards: string[] = [];
     const deletedLinks: string[] = [];
     const deletedPlayerLinks: string[] = [];
-    const deletedTeamLinks: string[] = [];
     const dropCard = async (card: Doc<"cardChecklist">): Promise<void> => {
-      // NEO-358 — the one card delete: guard, cross-listings, variations
-      // (already gone here: children are dropped first), player and team
-      // index rows, the card, and its row's counts.
-      const removed = await removeCardRow(ctx, card, countLedger);
-      deletedLinks.push(...removed.crossListingIds);
-      deletedPlayerLinks.push(...removed.playerLinkIds);
-      deletedTeamLinks.push(...removed.teamLinkIds);
+      const links = await ctx.db
+        .query("cardCrossListings")
+        .withIndex("by_card", (q) => q.eq("cardChecklistId", card._id))
+        .collect();
+      ops += 1;
+      for (const link of links) {
+        await ctx.db.delete(link._id);
+        deletedLinks.push(link._id);
+        ops += 1;
+      }
+      // NEO-313: one index read plus a delete per player on the card.
+      const playerLinks = await deleteCardPlayerLinks(ctx, card._id);
+      deletedPlayerLinks.push(...playerLinks);
+      ops += 1 + playerLinks.length;
+      await ctx.db.delete(card._id);
       deleted.add(card._id);
       deletedCards.push(card._id);
-      // 8: the fixed reads and the delete, the want-index read included;
-      // each want swept costs 3 (its delete, its owner's Want List read and
-      // patch); scheduling the continuation costs 1.
-      ops +=
-        8 +
-        removed.crossListingIds.length +
-        removed.playerLinkIds.length +
-        removed.teamLinkIds.length +
-        3 * removed.wantIds.length +
-        (removed.wantSweepScheduled ? 1 : 0);
+      ops += 1;
     };
 
     let stoppedEarly = false;
@@ -1261,20 +1142,13 @@ export const wipeCardsPage = internalMutation({
               `level deep. Clear that nesting first. This page wrote nothing.`,
           );
         }
-        // NEO-358 — a child off this page was not in the pre-check.
-        if (!collected.has(child._id) && (await cardIsCollected(ctx, child._id))) {
-          await refuseCollected(child._id);
-        }
-        ops += 1;
         await dropCard(child);
       }
       await dropCard(card);
     }
-    await countLedger.flush(ctx);
 
     logDeleted(args.variantTypeId, "cardCrossListings", deletedLinks);
     logDeleted(args.variantTypeId, "cardPlayerLinks", deletedPlayerLinks);
-    logDeleted(args.variantTypeId, "cardTeamLinks", deletedTeamLinks);
     logDeleted(args.variantTypeId, "cardChecklist", deletedCards);
     return {
       cardChecklist: deletedCards.length,
@@ -1720,8 +1594,6 @@ type Holds = {
   children: number;
   cards: number;
   cardsWithImages: number;
-  /** NEO-358 — cards a collector owns a copy of: the armed run refuses them. */
-  cardsCollected: number;
   crossListingsIn: number;
   crossListingsOut: number;
   crossListingsInternal: number;
@@ -1738,7 +1610,6 @@ function emptyHolds(): Holds {
     children: 0,
     cards: 0,
     cardsWithImages: 0,
-    cardsCollected: 0,
     crossListingsIn: 0,
     crossListingsOut: 0,
     crossListingsInternal: 0,
@@ -1767,7 +1638,6 @@ function isBeyondChecklist(holds: Holds): boolean {
     holds.reviewQueue > 0 ||
     holds.candidates > 0 ||
     holds.cardsWithImages > 0 ||
-    holds.cardsCollected > 0 ||
     holds.externalVariationChildren > 0 ||
     holds.nestedVariations > 0
   );
@@ -1843,7 +1713,6 @@ async function survey(
       const page: {
         cardIds: Id<"cardChecklist">[];
         withImages: number;
-        collected: number;
         crossOut: Array<{
           id: Id<"cardCrossListings">;
           guestId: Id<"selectorOptions">;
@@ -1858,7 +1727,6 @@ async function survey(
       for (const id of page.cardIds) cardIds.add(id);
       holds.cards += page.cardIds.length;
       holds.cardsWithImages += page.withImages;
-      holds.cardsCollected += page.collected;
       for (const link of page.crossOut) {
         crossListingIds.add(link.id);
         if (nodeIds.has(link.guestId)) holds.crossListingsInternal += 1;

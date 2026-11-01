@@ -15,7 +15,6 @@ import { describe, expect, test } from "vitest";
 import { internal } from "./_generated/api";
 import schema from "./schema";
 import { Id } from "./_generated/dataModel";
-import { insertTestCard } from "../lib/testing/card-row";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -25,23 +24,15 @@ async function seedVariant(
   t: ReturnType<typeof convexTest>,
   platformData: Record<string, Record<string, string>> = {},
 ): Promise<Id<"selectorOptions">> {
-  return t.run(async (ctx) => {
-    // NEO-363 — a card cannot exist without a sport above it.
-    const sportId = await ctx.db.insert("selectorOptions", {
-      level: "sport",
-      value: "Baseball",
-      platformData: {},
-      lastUpdated: Date.now(),
-    });
-    return ctx.db.insert("selectorOptions", {
+  return t.run(async (ctx) =>
+    ctx.db.insert("selectorOptions", {
       level: "variantType",
       value: "Base",
-      parentId: sportId,
       platformData,
       children: [],
       lastUpdated: Date.now(),
-    });
-  });
+    }),
+  );
 }
 
 async function seedCard(
@@ -54,7 +45,7 @@ async function seedCard(
   },
 ) {
   await t.run(async (ctx) => {
-    await insertTestCard(ctx, {
+    await ctx.db.insert("cardChecklist", {
       selectorOptionId,
       cardNumber: opts.cardNumber,
       cardName: `Card ${opts.cardNumber}`,
@@ -84,8 +75,7 @@ describe("auditChecklistDataForResync", () => {
     expect(report.multiSlotVariants.count).toBe(0);
     expect(report.scanned).toMatchObject({
       cardChecklistRows: 2,
-      // The variant and the sport above it (NEO-363: a card needs one).
-      selectorOptionRows: 2,
+      selectorOptionRows: 1,
       truncated: false,
     });
   });

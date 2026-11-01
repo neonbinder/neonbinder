@@ -1930,21 +1930,30 @@ change these counts: prod builds sets, and a name prod has built is known.
 (Before the catalogue, on dev 2026-10-10, the same fetch staged 244 unknown
 names.)
 
-**No timing claim since NEO-394 (Jason, 2026-10-31).** The 20 unknown NPB names
-are now in the enrichment recording, so their lookups settle at once and the
-career teams they stage reach the wizard before its first read (CI run
-41212224696, phone: it opened on "New Team: Kanagawa Future Dreams"). The old
-STEP 1 claim ("opens on the pick step while the others are still looked up")
-rested on those lookups being slow and live, and is gone. Jason chose to walk
-to the pick step rather than keep the names live.
+**The timing claim, and why it holds.** STEP 1 asserts that the wizard opens on
+the pick step while the other names are still being looked up (Jason,
+2026-10-11: the claim stays in E2E). What holds the window open is the pool's depth, not
+how slow one lookup is: the 20 unknown names need at least four rounds of the
+deployment's 5-wide FIFO pool, and every career team they stage is queued behind
+all of them, so the header's `· N still being looked up` stays on screen until
+the last settles. One lookup's Convex-side time varies widely — 0.3s to 20s in
+one batch on the PR preview (2026-10-11, with Wikidata 502 retries), ~4-5s in CI
+run 38073638557 — so even an all-fast batch keeps the tail ≥ ~2.5s; contention
+from other flows only lengthens it. The flow's first read after the wizard opens
+is that assertion, ~1s after the batch starts. Measured on the PR preview,
+2026-10-11 (laptop and Convex clocks): batch start +0.0s, first five lookups
++0.5s, STEP 1 COMPLETED +1.1s, last player lookup started +13.3s, first team
+settled +14.1s, tail gone +44s (+26.7s without one late 502 retry).
 
-**The flow walks.** It runs `walkToPlayerRow` straight after the wizard opens,
-which waits the batch out, answers each team and league step as a skip, and
-stops on the first player row: Shuya Yamada's pick step, because rows are
-inserted in card order and he is card #1. The pick step's content is asserted
-there. Every later count is read relative to those skips (K), and the link's
-read-back comes from `Back to previous decision` → `Decision for Shuya Yamada`,
-because the Decided list folds past five.
+**Then the flow walks.** An untouched pick step yields to the first settled
+team or league (teams first, NEO-236), and the career teams above settle ~14-25s
+in, inside the window the Create new / Back to the list / link steps need. So
+after STEP 1 the flow runs `walkToPlayerRow`, which waits the
+batch out, answers each team and league step as a skip, and stops on the first
+player row: Shuya Yamada's pick step, because rows are inserted in card order
+and he is card #1. Every later count is read relative to those skips (K), and
+the link's read-back comes from `Back to previous decision` → `Decision for
+Shuya Yamada`, because the Decided list folds past five.
 
 **What a green CI run must show** (fill in from the first green run on the
 catalogue preview): in the flow's `maestro.log`, STEP 1's
@@ -2017,11 +2026,6 @@ would put the wrong question on screen.
 | `cap-` | `tests/set-selector/card-autopopulates-features.spec.ts` |
 | `ccrud-` | `tests/set-selector/custom-card-crud.spec.ts` |
 | `cd-` | `tests/set-selector/card-detail-panel.spec.ts` |
-| `cdr-` | `tests/collection/card-collectors-own-cannot-be-deleted.spec.ts` (NEO-358, per-attempt: `cdr-<worker>-<attempt>`) — under the REAL `Baseball` › 2024 › `Topps`; `Insert` › `Base`, ONE hand-added card `361-<attempt>` (card name `Held<token>`, no player, no marketplace id anywhere beneath it). The worker's own account marks it Have through `/collection`, the set builder's Del → Confirm is REFUSED (the collector guard), then the copy is removed and the same delete goes through: the card is DELETED at the end, the set and its rows stand. The same set also proves the collector's catalog hides a known-empty level: absent from `/collection` > Checklists > Sets before the card, offered with it, absent again after the delete. **Never aim a collector's copy at a card of a shared set** with this check: were the guard to break, the delete would take the card. Per-attempt so the card and its copy are this run's alone. |
-| `crqa-` | `tests/collection/card-request-approve-moves-copy.spec.ts` (NEO-361, per-attempt: `crqa-<worker>-<attempt>`) — under the REAL `Baseball` › 2024 › `Topps`; `Insert` › `Base`, one hand-added card `1<token>` (so the collector's catalog offers the set) and the card the admin's "Add and approve" adds, `9<token>` (title `Asked<token>`, no player, no marketplace id anywhere beneath it). The worker's own account requests `9<token>` and files a copy; the approval moves that copy onto the new card; the copy is removed at the end. The set and both cards stand. |
-| `crqd-` | `tests/collection/card-request-decline-stays-private.spec.ts` (NEO-361, per-attempt: `crqd-<worker>-<attempt>`) — under the REAL `Baseball` › 2024 › `Topps`; `Insert` › `Base`, one hand-added card `1<token>` so the collector's catalog offers the set. The requested card (`8<token>` in a typed checklist `Foil<token>`) is DECLINED, so nothing is ever added to the set; the request, its private card and copy are removed by the spec. |
-| `cnote-` | `tests/set-selector/card-notes.spec.ts` (NEO-367, per-attempt: `cnote-<worker key>-<attempt>`) — under the REAL `Baseball` › 2024 › `Topps`; `Insert` › `Base`, ONE hand-added card `367-<attempt>` (card name `Noted<token>`, no player, no marketplace id anywhere beneath it) carrying a Notes value set in quick add and edited in the drawer, read on the collector's card detail, then cleared in the drawer and confirmed gone there. Nobody owns a copy; the card is DELETED at the end, the set and its rows stand. |
-| `intk-` | `tests/collection/add-cards-from-photos-real-scans.spec.ts` (NEO-382, per-attempt: `intk-<worker>-<attempt>`) — under the REAL `Baseball` › 2024 › `Topps`; `Insert` › `Base`, FOUR hand-added cards with real player names (the input under test, scoped by the per-attempt set): `160` Darren McFadden, `315` Dwayne Bowe, `47` Le'Veon Bell, `174` Antonio Brown (no player links, no marketplace id anywhere beneath it). The flow uploads real 2014 Score scans into an intake run, saves one copy each of #160, #315 and #47 into Main, then REMOVES those copies through the checklist drawer. The set and its four cards stand. |
 | `cft-` | `tests/set-selector/card-features-editor-toggle.spec.ts` |
 | `cna-` | `tests/set-selector/checklist-attention-badge-and-filter.spec.ts` (also `-${ATTEMPT_ID}`) |
 | `cnw-` | `tests/set-selector/checklist-attention-walker-missing-team.spec.ts` (also `-${ATTEMPT_ID}`) |
@@ -2030,7 +2034,6 @@ would put the wrong question on screen.
 | `cvar-` | `tests/set-selector/variation-link-group-and-unlink.spec.ts` |
 | `fp-` | `tests/set-selector/features-propagation.spec.ts` |
 | `msp-` | `tests/admin/player-sports-multi-sport-membership.spec.ts` (NEO-313) — under the REAL `Baseball` › 2024 › `Topps` (the set's sport must be Baseball: the flow gives a football player Baseball and proves a baseball card's picker finds him); `Insert` › `Base`, one card `316-<attempt>` linking the player `Gm<token>`, DELETED at the end. The set and its rows stand. |
-| `hcs` | `tests/collection/checklists-drill-offers-only-levels-with-cards.spec.ts` (NEO-364, per-attempt, single tokens) — its OWN sport `hcs<token>` (a collector's Sports column hides a sport until a card exists beneath it, so the sport must be new), year `2026`, brand `Topps` and ONE set `hcset<token>` with `Insert` › `Base`, all hand-made with no marketplace id. The flow adds ONE card `372<token>` (collector sees the sport appear), then DELETES it; the sport, year, brand, set and rows stand (a sport that has held a card cannot be deleted). It only READS the seed's 2024 Topps Chrome (no count text in the drill). One sport row per attempt joins the Sports column; no flow drills past it by position. |
 | `msb-` | `tests/set-selector/move-set-to-another-brand.spec.ts` — its OWN sport `msb-sport-<worker>`, brand rows `Topps` / `Panini` under it in 2026 (hand-made, no ids), and ONE set `msb-a-<worker>` under `Topps`. The flow moves that set to `Panini` and back, so it ends where it started; `Panini` stays empty. Per-worker only (no count is asserted). **Never under `E2E Test Sport <worker>`** — it adds a brand row, see the fold note below. |
 | `mtf-` | `tests/set-selector/checklist-missing-team-fixer-hand-added-card.spec.ts` (NEO-330, also `-${ATTEMPT_ID}`) — under the REAL `Baseball` › 2024 › `Topps`: the quick-add PlayerPicker and the fixer's TeamPicker search the set's sport, where the reference catalogue's Baseball rows live, and the real 2024 year is what makes the fixer offer the player's whole career ("No 2024 team on file"). `Insert` › `Base`, one card `851-<attempt>` linking the catalogue's **George Brett** with no team, then given the catalogue's **Kansas City Royals** in the attention walker's fixer; the card is DELETED at the end. Both catalogue rows are only READ (the flow writes the card alone). Per-attempt because the header count and the walker queue are exact. The set and its rows stand. |
 | `parallel-feature-` | `tests/set-selector/cards-parallel-custom.spec.ts` — under `E2E Test Sport <w>` › 2026 › Topps; its hand-made `Parallel` type is a Parallel type by its title (NEO-334), so its rows are parallels of a Base the set never gets (the checklist shows the build-from-Base stand-in). |
@@ -2488,15 +2491,6 @@ teams or variants**. They are the reason the set must stay pristine.
 - `tests/set-selector/sets-base.spec.ts`
 - `tests/set-selector/sets-resync-already-loaded.spec.ts`
 - `tests/set-selector/topps-chrome-marketplace-read.spec.ts`
-- `tests/collection/add-edit-remove-copy.spec.ts` (NEO-358 — the collector's `/collection`: drills to Base, reads it, and writes ONLY the signed-in user's `collectionCopies` on one Base card, removing them all before it ends; see "The collection spec's card" below)
-- `tests/collection/binders-move-fold-trade-want.spec.ts` (NEO-359 — the collector's My Binders: makes two binders, files copies on the FIRST THREE ordinary Base rows (same row choice as above), moves them between the binders, wants one, then deletes both binders and removes the copies; writes ONLY the signed-in user's `collectionContainers`, `collectionCopies` and `collectionWants`, never the set, its cards, players or teams)
-- `tests/collection/smart-binder-find-cards.spec.ts` (NEO-362 — a smart binder: puts one copy each of the FIRST TWO ordinary Base rows (same row choice as above) in Main, makes a smart binder whose rule is the set, adds one through Find cards, turns the other down and back, keeps the binder sorted with empty slots, then deletes the binder and removes both copies; writes ONLY the signed-in user's `collectionContainers`, `collectionCopies` and `collectionBinderDeclines`, never the set, its cards, players or teams)
-- `tests/collection/public-share-link.spec.ts` (NEO-360 — public share links: sets the signed-in user's public name, makes one binder, files one graded copy on the FIRST ordinary Base row (same row choice as above), shares the binder and reads it signed out, then removes the copy and deletes the binder; writes ONLY the signed-in user's `publicProfiles`, `collectionContainers` and `collectionCopies`, never the set, its cards, players or teams)
-- `tests/collection/inventory-boxes-sell-take-off-sale.spec.ts` (NEO-364 — the collector's My Boxes: files three copies of the FIRST ordinary Base row in Main, makes a box, sells two into it from the drawer, files the box's card into Row 2, takes one off sale, deletes the box (its copy drops into Unsorted) and removes the rest; writes ONLY the signed-in user's `collectionContainers` and `collectionCopies`, never the set, its cards, players or teams)
-- `tests/collection/inventory-checklist-quick-quantity.spec.ts` (NEO-364 — the inventory's Checklists: types counts on the FIRST TWO rows of the Base checklist into Unsorted and into a minted box (quick entry), lowers them, Undoes, then types everything back to 0 and deletes the box; writes ONLY the signed-in user's `collectionContainers` and `collectionCopies`)
-- `tests/collection/inventory-list-filter-sort-search.spec.ts` (NEO-364 — the Inventory list: stocks the FIRST THREE rows of the Base checklist through quick entry (two in Unsorted, one in a minted box), flags one Up for trade, narrows/sorts/searches the list, reads the collection's "Every card I own" count before and after (the hard line), then removes the three lines and deletes the box; writes ONLY the signed-in user's `collectionContainers` and `collectionCopies`)
-- `tests/collection/inventory-common-price-and-min-price.spec.ts` (NEO-378 — the inventory's Checklists: sets the signed-in user's common price for Base, files one box copy of the FIRST ordinary Base row into Unsorted from the drawer, gives it a minimum price of its own, then removes the copy and clears the common price; writes ONLY the signed-in user's `variantCommonPrices` and `collectionCopies`, never the set, its cards, players or teams)
-- `tests/collection/copy-photos-add-replace-remove.spec.ts` (NEO-377 — a copy line's photos: marks the FIRST ordinary Base row Have, adds, replaces and removes front and back photos on that copy, removes the copy and Undoes it, then removes it for good; writes ONLY the signed-in user's `collectionCopies` and `collectionCopyPhotos` (and their R2 objects in the dev bucket, which expires them), never the set, its cards, players or teams)
 
 **Three flows on this set are NOT read-only, and the list used to say the first two were**
 (corrected NEO-260). Each is **sole writer of one datum on the anchor** —
@@ -2518,67 +2512,6 @@ is now a single positive assertion that the checklist has cards, so an unseeded
 run fails loudly instead of rebuilding a fixture the rest of the queue is
 reading. **Do not re-add a self-heal branch to any consumer of this set: the fix
 for an empty shared set is to fix the seed.**
-
-### The collection spec's card — 2024 Topps Chrome › Base (NEO-358)
-
-`tests/collection/add-edit-remove-copy.spec.ts` proves the real `/collection`
-for a signed-in collector. It writes nothing to the set: its only writes are
-that user's own `collectionCopies` (per account, cleared by the bootstrap
-reset), and it removes every copy it adds through the UI.
-
-**The card.** The FIRST Base row that reads `#N First Last` (two or more
-words, one player, no variation) and is not `#300`. The spec reads the number
-and player off that row's own accessible name (`Details for #N First Last`), so
-the choice follows the seed; the number is **not yet measured** (record it here
-after the first green run). It is a Base card, so it is not one of
-`base-parallels-build-from-section`'s rows (that spec rebuilds a PARALLEL's
-cards, and the parallel's cards are copies OF Base cards, never Base itself).
-Not #300: that card is `signed-by-autofills-from-players`' sole-write card.
-
-**Why copies on it are safe.** A card with a collector's copy cannot be
-deleted: `deleteCard`, the checklist finalize, the parallel rebuild and the
-subtree wipe all refuse or skip it. Checked 2026-10-23 that no spec in
-`tests/` deletes a card of this set: the 22 specs that drill to Topps Chrome
-(`drillToSet` / `drillToBaseVariant`) contain no card delete, and every
-card-deleting path is a parallel rebuild (`base-parallels-build-from-section`,
-which never touches Base) or a re-commit of a DIFFERENT set. The seed's reset
-runs before any spec, and the global reset clears `collectionCopies` before
-the cards (it is in the drain order ahead of `cardChecklist`).
-
-**NEO-380.** `tests/profile/default-condition-setting.spec.ts` uses the same
-card (the same rule): with the account's default condition set to Near Mint it
-marks the card Have, reads the add form, and removes the copy again. Per user,
-like every copy here; it writes nothing to the set, and it leaves the account's
-default on Excellent.
-
-**NEO-359.** `tests/collection/binders-move-fold-trade-want.spec.ts` uses the same rule
-for the first THREE ordinary Base rows (it reads the names before writing, since
-a card with two lines drops out of the ordinary-row match). It puts copies on
-the first, a slotted copy (undone at once) on the third and a Want on the second,
-all per user, and removes them again. It writes only binders (the collection has
-no box; the inventory's boxes are NEO-364's three specs below). The same "a card
-with a collector's copy cannot be deleted" protection applies while its copy
-exists; the spec's copy lives only for the run.
-
-**NEO-364.** The `tests/collection/inventory-*.spec.ts` specs put BOX copies
-(`collectionCopies` whose home is a box, per user) on the first rows of the Base
-checklist: `inventory-boxes-sell-take-off-sale` on the first ordinary row (3
-copies, sold into a minted box, then removed), `inventory-checklist-quick-quantity`
-on the first two checklist rows (typed to 0 before it ends) and
-`inventory-list-filter-sort-search` on the first three (removed through the
-drawer). Every box they make is minted from `env.ATTEMPT_TOKEN` (`Sale…`, `Qty…`,
-`Lst…`) and deleted before the spec ends. The same copy-protection and
-concurrency notes apply: copies are per user, each shard owns one account.
-NEO-378's `inventory-common-price-and-min-price` puts one copy of the first
-ordinary row in Unsorted (removed through the drawer) and sets, then clears, the
-user's own common price for Base (`variantCommonPrices`, per user, never the
-variant row itself).
-
-**Concurrency.** Copies are per user and each shard owns one account, so no
-two shards see each other's copies. The spec's search results and "every card
-of this player" list are catalog reads, and cards other specs add or edit
-(`signed-by`'s #300, the autograph and dual-team inserts) change no row this
-spec asserts on.
 
 ### 2024 Topps Chrome › Parallel — the base-parallel build (NEO-321) — approved: Jason, 2026-10-04
 

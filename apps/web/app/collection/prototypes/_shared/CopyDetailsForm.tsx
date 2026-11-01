@@ -1,11 +1,10 @@
-import { useId, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
+import { useId, type FormEvent, type KeyboardEvent } from "react";
 import NeonButton from "@/components/modules/NeonButton";
 import { Input } from "@/components/primitives/Input";
 import { Textarea } from "@/components/primitives/Textarea";
-import type { Card as ModelCard } from "../../final/data/types";
-import { cardLabel as modelLabel } from "../../final/data/labels";
 import {
   cardLabel,
+  printRunLabel,
   type Binder,
   type Card,
   type Condition,
@@ -24,65 +23,21 @@ import {
  * Grader, grade and cert appear only for a graded copy; condition only for a
  * raw one. Serial number appears only when the card is numbered. The binder
  * list offers manual binders only: a smart binder fills itself from its rule.
- *
- * NEO-358: the real collection passes a view-model card, no binders (a copy
- * has one home, Main, until binders ship) and `hideSaleFields` (price belongs
- * to a listing, not the copy).
- *
- * NEO-359: the collection page files a copy in ONE home. It passes `homes`
- * (with `homeId` / `onHomeChange`) for a "Where it lives" pick, and
- * `upForTrade` (with `onUpForTradeChange`) for the Up for trade switch; it
- * hides the prototypes' binder ticks (`hideBinders`). Every one of these is
- * optional: a prototype that passes none renders exactly as before.
  */
 
-/** A home "Where it lives" offers: a binder, or a box (cards in a box are for sale). */
-export interface FormHome {
-  id: string;
-  name: string;
-  kind: "binder" | "box";
-}
-
 export interface CopyDetailsFormProps {
-  /** A prototype fixture card, or (NEO-358) a collection view-model card. */
-  card: Card | ModelCard;
+  card: Card;
   value: CopyDetails;
   onChange: (next: CopyDetails) => void;
   onSave: (value: CopyDetails) => void;
   onCancel: () => void;
-  /** Every binder; smart ones are filtered out here. None: no binder choice. */
-  binders?: Binder[];
-  /** Leave out For sale and Ask price (the real collection keeps no price on a copy). */
-  hideSaleFields?: boolean;
+  /** Every binder; smart ones are filtered out here. */
+  binders: Binder[];
   /** Primary button text. Default "Save copy". */
   saveLabel?: string;
   /** Heading above the fields; default "Copy details". `null` hides it. */
   heading?: string | null;
   className?: string;
-  /** NEO-359: the homes "Where it lives" offers. Shown only with `onHomeChange`. */
-  homes?: readonly FormHome[];
-  /** NEO-359: the picked home's id. */
-  homeId?: string;
-  onHomeChange?: (homeId: string) => void;
-  /** NEO-359: the Up for trade switch's state. Shown only with `onUpForTradeChange`. */
-  upForTrade?: boolean;
-  onUpForTradeChange?: (on: boolean) => void;
-  /** NEO-359: leave out the binder ticks even when `binders` are passed. */
-  hideBinders?: boolean;
-  /**
-   * NEO-378: show the Price field (a copy for sale; stored as its floor, `minPrice`). `commonPrice` is
-   * the variant's common price in dollars, what a blank field means (`null`:
-   * none set; `undefined`: still loading).
-   */
-  minPrice?: { commonPrice: number | null | undefined };
-  /**
-   * NEO-380: a raw copy always has a condition. When given, a raw value with
-   * none shows and saves this one (the collector's default), and "Not set"
-   * is gone from the list.
-   */
-  defaultCondition?: Condition;
-  /** NEO-377: more of the line to edit, above the buttons (its photos). */
-  extra?: ReactNode;
 }
 
 const CONDITIONS: Condition[] = [
@@ -115,49 +70,24 @@ export default function CopyDetailsForm({
   onChange,
   onSave,
   onCancel,
-  binders = [],
-  hideSaleFields = false,
+  binders,
   saveLabel = "Save copy",
   heading = "Copy details",
   className = "",
-  homes,
-  homeId,
-  onHomeChange,
-  upForTrade,
-  onUpForTradeChange,
-  hideBinders = false,
-  minPrice,
-  defaultCondition,
-  extra,
 }: CopyDetailsFormProps) {
   const headingId = useId();
-  const minPriceHelpId = useId();
   const quantityHelpId = useId();
-  const homeHelpId = useId();
   const set = (patch: Partial<CopyDetails>) => onChange({ ...value, ...patch });
-  const condition = value.graded ? undefined : (value.condition ?? defaultCondition);
 
-  const run = card.printRun === null ? null : card.printRun === 1 ? "1/1" : `/${card.printRun}`;
-  const label = "setId" in card ? cardLabel(card) : modelLabel(card);
+  const run = printRunLabel(card);
   const graded = value.graded !== undefined;
-  const manualBinders = hideBinders ? [] : binders.filter((b) => b.kind === "manual");
-  const showHomes = !!homes && homes.length > 0 && !!onHomeChange;
-  const pickedHome = showHomes ? homes.find((h) => h.id === homeId) : undefined;
-  const showTrade = upForTrade !== undefined && !!onUpForTradeChange;
-  // Said only where the list has a box: a box is the sale table.
-  const homeHelp = !showHomes
-    ? null
-    : pickedHome?.kind === "box"
-      ? "It's in a box, so it's for sale."
-      : homes?.some((h) => h.kind === "box")
-        ? "A binder keeps it. A box puts it up for sale."
-        : null;
+  const manualBinders = binders.filter((b) => b.kind === "manual");
   const quantityValid = Number.isInteger(value.quantity) && value.quantity >= 1;
 
   function submit(e: FormEvent) {
     e.preventDefault();
     if (!quantityValid) return;
-    onSave(condition && !value.condition ? { ...value, condition } : value);
+    onSave(value);
   }
 
   function onKeyDown(e: KeyboardEvent<HTMLFormElement>) {
@@ -182,7 +112,7 @@ export default function CopyDetailsForm({
       onSubmit={submit}
       onKeyDown={onKeyDown}
       aria-labelledby={heading ? headingId : undefined}
-      aria-label={heading ? undefined : `Details for ${label}`}
+      aria-label={heading ? undefined : `Details for ${cardLabel(card)}`}
       className={`rounded-lg border border-rule bg-sheet p-4 text-ink shadow-offset sm:p-5 ${className}`}
     >
       {heading && (
@@ -283,12 +213,12 @@ export default function CopyDetailsForm({
             <span className={LABEL}>Condition</span>
             <select
               className={SELECT}
-              value={condition ?? ""}
+              value={value.condition ?? ""}
               onChange={(e) =>
                 set({ condition: (e.target.value || undefined) as Condition | undefined })
               }
             >
-              {!defaultCondition && <option value="">Not set</option>}
+              <option value="">Not set</option>
               {CONDITIONS.map((c) => (
                 <option key={c} value={c}>
                   {c}
@@ -318,29 +248,6 @@ export default function CopyDetailsForm({
           onChange={(e) => set({ costBasis: parseMoney(e.target.value) })}
         />
 
-        {minPrice && (
-          <div>
-            <Input
-              label="Price"
-              type="number"
-              inputMode="decimal"
-              min={0}
-              step="0.01"
-              placeholder={typeof minPrice.commonPrice === "number" ? minPrice.commonPrice.toFixed(2) : "0.00"}
-              value={value.minPrice ?? ""}
-              onChange={(e) => set({ minPrice: parseMoney(e.target.value) })}
-              aria-describedby={minPriceHelpId}
-            />
-            <p id={minPriceHelpId} className="mt-1 text-xs text-ink-3">
-              {typeof minPrice.commonPrice === "number"
-                ? `Blank sells at your common price, $${minPrice.commonPrice.toFixed(2)}.`
-                : minPrice.commonPrice === null
-                  ? "No common price set for this variant yet."
-                  : "Blank sells at your common price."}
-            </p>
-          </div>
-        )}
-
         <Input
           label="Acquired"
           type="date"
@@ -350,53 +257,10 @@ export default function CopyDetailsForm({
 
         <Input
           label="Location"
-          placeholder="Shelf 2, top drawer"
+          placeholder="Box 3"
           value={value.location ?? ""}
           onChange={(e) => set({ location: e.target.value || undefined })}
         />
-
-        {showHomes && (
-          <div>
-            <label className="block">
-              <span className={LABEL}>Where it lives</span>
-              <select
-                className={SELECT}
-                value={homeId ?? ""}
-                aria-describedby={homeHelp ? homeHelpId : undefined}
-                onChange={(e) => onHomeChange?.(e.target.value)}
-              >
-                {homeId === undefined && (
-                  <option value="">{homes.some((h) => h.kind === "box") ? "Pick a binder or box" : "Pick a binder"}</option>
-                )}
-                {homes.map((h) => (
-                  <option key={h.id} value={h.id}>
-                    {h.kind === "box" ? `${h.name} (box, for sale)` : h.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-            {homeHelp && (
-              <p id={homeHelpId} className="mt-1 text-xs text-ink-3">
-                {homeHelp}
-              </p>
-            )}
-          </div>
-        )}
-
-        {showTrade && (
-          <div className="flex items-start sm:pt-6">
-            <label className={CHOICE}>
-              <input
-                type="checkbox"
-                role="switch"
-                className={CHECK}
-                checked={upForTrade}
-                onChange={(e) => onUpForTradeChange?.(e.target.checked)}
-              />
-              Up for trade
-            </label>
-          </div>
-        )}
 
         {manualBinders.length > 0 && (
           <fieldset className="sm:col-span-2">
@@ -435,42 +299,38 @@ export default function CopyDetailsForm({
           />
         </div>
 
-        {!hideSaleFields && (
-          <div className="flex flex-wrap items-end gap-4 sm:col-span-2">
-            <label className={CHOICE}>
-              <input
-                type="checkbox"
-                role="switch"
-                className={CHECK}
-                checked={value.forSale}
-                onChange={(e) =>
-                  set({
-                    forSale: e.target.checked,
-                    askPrice: e.target.checked ? value.askPrice : undefined,
-                  })
-                }
+        <div className="flex flex-wrap items-end gap-4 sm:col-span-2">
+          <label className={CHOICE}>
+            <input
+              type="checkbox"
+              role="switch"
+              className={CHECK}
+              checked={value.forSale}
+              onChange={(e) =>
+                set({
+                  forSale: e.target.checked,
+                  askPrice: e.target.checked ? value.askPrice : undefined,
+                })
+              }
+            />
+            For sale
+          </label>
+          {value.forSale && (
+            <div className="w-40">
+              <Input
+                label="Ask price"
+                type="number"
+                inputMode="decimal"
+                min={0}
+                step="0.01"
+                placeholder="0.00"
+                value={value.askPrice ?? ""}
+                onChange={(e) => set({ askPrice: parseMoney(e.target.value) })}
               />
-              For sale
-            </label>
-            {value.forSale && (
-              <div className="w-40">
-                <Input
-                  label="Ask price"
-                  type="number"
-                  inputMode="decimal"
-                  min={0}
-                  step="0.01"
-                  placeholder="0.00"
-                  value={value.askPrice ?? ""}
-                  onChange={(e) => set({ askPrice: parseMoney(e.target.value) })}
-                />
-              </div>
-            )}
-          </div>
-        )}
+            </div>
+          )}
+        </div>
       </div>
-
-      {extra}
 
       <div className="mt-5 flex flex-wrap justify-end gap-3">
         <button

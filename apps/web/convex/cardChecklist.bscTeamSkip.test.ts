@@ -29,7 +29,6 @@ import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
 import { teamRowFields } from "./lib/teamRow";
 import { normalizeEntityName } from "../lib/entities/normalize-name";
-import { insertTestCard } from "../lib/testing/card-row";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -147,7 +146,7 @@ async function seedCard(
   extra: { bscTeamName?: string } = {},
 ): Promise<Id<"cardChecklist">> {
   return t.run(async (ctx) =>
-    insertTestCard(ctx, {
+    ctx.db.insert("cardChecklist", {
       selectorOptionId: leafId,
       cardNumber: "1",
       cardName: "Card 1",

@@ -42,7 +42,6 @@ import {
   BSC_TEAM_CHECK_RETRY_DELAYS_MS,
 } from "./adapters/buysportscards";
 import { deriveCardAttention } from "./features/cardAttention";
-import { insertTestCard } from "../lib/testing/card-row";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -118,7 +117,7 @@ async function insertCard(
   bscCardId: string,
 ): Promise<Id<"cardChecklist">> {
   return t.run(async (ctx) =>
-    insertTestCard(ctx, {
+    ctx.db.insert("cardChecklist", {
       selectorOptionId,
       cardNumber,
       cardName: `Card ${cardNumber}`,
@@ -309,7 +308,7 @@ describe("resolveBscCardTeam", () => {
     const t = convexTest(schema, modules);
     const variantTypeId = await seedTree(t);
     const cardId = await t.run(async (ctx) =>
-      insertTestCard(ctx, {
+      ctx.db.insert("cardChecklist", {
         selectorOptionId: variantTypeId,
         cardNumber: "1",
         cardName: "Card 1",
@@ -628,7 +627,7 @@ describe("bscTeamCheck.markBscTeamCheckGivenUp (NEO-330)", () => {
     const t = convexTest(schema, modules);
     const variantTypeId = await seedTree(t);
     const cardId = await t.run(async (ctx) =>
-      insertTestCard(ctx, {
+      ctx.db.insert("cardChecklist", {
         selectorOptionId: variantTypeId,
         cardNumber: "1",
         cardName: "Card 1",

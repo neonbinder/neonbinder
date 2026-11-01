@@ -1,5 +1,3 @@
-import { useSearchParams } from "react-router";
-import { DemoCollectionProvider, PUBLIC_STORAGE_KEY } from "./data/demoStore";
 import FinalCollectionPage from "./FinalCollectionPage";
 
 /**
@@ -7,9 +5,8 @@ import FinalCollectionPage from "./FinalCollectionPage";
  * marketing page shows it (lazy-loaded there, so the fake catalog and its CSS
  * stay out of the main bundle).
  *
- * The same page signed-in collectors see at `/collection`, in public mode and
- * on the demo store (`./data/demoStore`): no Clerk, no Convex, its own
- * sessionStorage key, its views on the
+ * The same page signed-in collectors see at `/collection`, in public mode:
+ * no Clerk, no Convex, its own sessionStorage key, its views on the
  * marketing page's URL beside `demo=on` (so Back steps back through them),
  * and signed-in destinations pointed at the public tour (see `./mode`). This component only supplies the frame the signed-in binder
  * shell would: the content column (with the right-edge gutter the pack tray
@@ -25,15 +22,10 @@ export default function PublicCollectionDemo({
   /** The marketing page's own params, kept on every demo view URL (`demo=on`). */
   keepParams: Record<string, string>;
 }) {
-  // Add cards (NEO-369) is a lane per pipeline stage: it takes the full width.
-  const [params] = useSearchParams();
-  const wide = params.get("tab") === "add";
   return (
     <main className="min-h-screen min-w-0 bg-background lg:pr-[170px]">
-      <div className={`mx-auto p-4 sm:p-6 ${wide ? "max-w-[1600px]" : "max-w-6xl"}`}>
-        <DemoCollectionProvider storageKey={PUBLIC_STORAGE_KEY}>
-          <FinalCollectionPage mode="public" keepParams={keepParams} onExit={onExit} />
-        </DemoCollectionProvider>
+      <div className="mx-auto max-w-6xl p-4 sm:p-6">
+        <FinalCollectionPage mode="public" keepParams={keepParams} onExit={onExit} />
       </div>
       <div aria-hidden="true" className="h-[208px]" />
     </main>

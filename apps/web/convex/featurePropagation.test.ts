@@ -30,7 +30,6 @@ import { Id } from "./_generated/dataModel";
 // never have written.
 import { teamRowFields } from "./lib/teamRow";
 import { teamFullName } from "../lib/teams/team-name";
-import { insertTestCard } from "../lib/testing/card-row";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -140,7 +139,7 @@ async function seedSubtree(
     const cardIds: Array<Id<"cardChecklist">> = [];
     for (let i = 0; i < 3; i++) {
       const features = opts?.cardFeaturesPerIndex?.[i];
-      const id = await insertTestCard(ctx, {
+      const id = await ctx.db.insert("cardChecklist", {
         selectorOptionId: variantTypeId,
         cardNumber: String(i + 1),
         cardName: `Card ${i + 1}`,

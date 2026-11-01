@@ -1,17 +1,42 @@
 import { spineLabelPrintHref } from "@/lib/print/spine-label-params";
-import type { ContainerLabel } from "../data/types";
-import type { PileFilters, SortKey } from "./model";
+import { type LayoutMode, type PileFilters, type SortKey } from "../../prototypes/p2/model";
+import type { CollectionBinder } from "../store";
+import { labelOf } from "./label";
 import type { OpenView, Tally } from "./openView";
 import PrintShopLink from "./PrintShopLink";
 import NeonButton from "@/components/modules/NeonButton";
 
 /**
- * The open binder's furniture, from prototype 2's page: the master pile's sort and filters, the inside front cover (name, tally,
- * a few lines of how-to) and its phone-width summary. All of it reads the
- * open view's data (`OpenView`); `BinderView.tsx` puts it together.
+ * The open binder's furniture, from prototype 2's page: the layout toggle,
+ * the master pile's sort and filters, the inside front cover (name, tally,
+ * a few lines of how-to) and its phone-width summary. Plus one thing p2
+ * never needed: the scope line saying what Checklists and My Cards look
+ * through now that this binder is open. All of it reads the open view's
+ * data (`OpenView`); `BinderView.tsx` puts it together.
  */
 
 const FOCUS = "focus-outline";
+
+export function ModeToggle({ mode, onChange }: { mode: LayoutMode; onChange: (m: LayoutMode) => void }) {
+  const btn = (m: LayoutMode, label: string) => (
+    <button
+      type="button"
+      aria-pressed={mode === m}
+      onClick={() => onChange(m)}
+      className={`min-h-10 rounded-md px-3 text-sm font-medium ${FOCUS} ${
+        mode === m ? "bg-neon-blue text-on-neon-blue ring-1 ring-inset ring-selection" : "text-ink-2 hover:text-ink"
+      }`}
+    >
+      {label}
+    </button>
+  );
+  return (
+    <div role="group" aria-label="How to show this binder" className="flex rounded-lg border border-control bg-field p-0.5">
+      {btn("pockets", "Lay out like my real binder")}
+      {btn("stack", "Just a stack")}
+    </div>
+  );
+}
 
 export function PileTools({
   sort,
@@ -52,6 +77,7 @@ export function PileTools({
       </label>
       <div role="group" aria-label="Only show" className="flex flex-wrap gap-2">
         {toggle("graded", "Graded")}
+        {toggle("forSale", "For sale")}
         {toggle("rookies", "Rookies")}
       </div>
     </div>
@@ -82,7 +108,7 @@ function TallyLine({ tally, want }: { tally: Tally; want: boolean }) {
   }
   return (
     <p className="text-lg font-bold text-ink tabular-nums">
-      {cards === null ? "Counting cards" : `${cards.toLocaleString("en-US")} ${cards === 1 ? "card" : "cards"}`}
+      {cards} {cards === 1 ? "card" : "cards"}
     </p>
   );
 }
@@ -110,11 +136,11 @@ export function EditLabelButton({ name, onClick }: { name: string; onClick: () =
  * (the collector's pick, else its default), never the shelf's readable swap.
  * In the app it opens a new tab (`PrintShopLink`).
  */
-export function PrintLabelLink({ name, label }: { name: string; label: ContainerLabel }) {
+export function PrintLabelLink({ binder }: { binder: CollectionBinder }) {
   return (
     <PrintShopLink
-      appHref={spineLabelPrintHref({ name, ...label })}
-      aria-label={`Print label for ${name}`}
+      appHref={spineLabelPrintHref({ name: binder.name, ...labelOf(binder) })}
+      aria-label={`Print label for ${binder.name}`}
       className={`inline-flex min-h-8 items-center rounded-md px-1 text-xs font-medium text-neon-blue-text underline underline-offset-2 hover:text-ink max-sm:min-h-11 ${FOCUS}`}
     >
       Print label
@@ -122,47 +148,17 @@ export function PrintLabelLink({ name, label }: { name: string; label: Container
   );
 }
 
-/** The cover's "Rename or delete": the collector's own binders and boxes only. */
-export function EditContainerButton({ name, onClick }: { name: string; onClick: () => void }) {
-  return (
-    <NeonButton
-      type="button"
-      variant="secondary"
-      outline
-      size="1"
-      onClick={onClick}
-      aria-label={`Rename or delete ${name}`}
-      className="min-h-8 self-start max-sm:min-h-11"
-    >
-      Rename or delete
-    </NeonButton>
-  );
-}
-
-export interface CoverActions {
-  onEditLabel: () => void;
-  onEditContainer: () => void;
-}
-
-/**
- * The label and rename controls, on the cover only where there are no binder
- * settings to hold them (a box, the Want List, Up for Trade, a store without
- * settings). NEO-362: a binder with settings keeps them in its settings.
- */
-function LabelControls({ open, actions }: { open: OpenView; actions: CoverActions }) {
-  if (!open.label || open.settings) return null;
-  const { container, label } = open.label;
+function LabelControls({ binder, onEditLabel }: { binder: CollectionBinder; onEditLabel: () => void }) {
   return (
     <div className="flex flex-wrap items-center gap-2 self-start">
-      <EditLabelButton name={container.name} onClick={actions.onEditLabel} />
-      <PrintLabelLink name={container.name} label={label} />
-      {open.editable && <EditContainerButton name={container.name} onClick={actions.onEditContainer} />}
+      <EditLabelButton name={binder.name} onClick={onEditLabel} />
+      <PrintLabelLink binder={binder} />
     </div>
   );
 }
 
 /** The inside front cover: name, label controls when it has a label, tally, how-to. */
-export function Cover({ open, actions, rearrange = false }: { open: OpenView; actions: CoverActions; rearrange?: boolean }) {
+export function Cover({ open, onEditLabel }: { open: OpenView; onEditLabel: () => void }) {
   return (
     <div className="flex h-full flex-col gap-3 text-sm text-ink-2">
       <p
@@ -171,35 +167,47 @@ export function Cover({ open, actions, rearrange = false }: { open: OpenView; ac
       >
         {open.title}
       </p>
-      <LabelControls open={open} actions={actions} />
+      {open.label && <LabelControls binder={open.label} onEditLabel={onEditLabel} />}
       <TallyLine tally={open.tally} want={open.want} />
       {open.blurb.map((line) => (
         <p key={line}>{line}</p>
       ))}
-      {!open.box && (
-        <p className="mt-auto text-xs text-ink-3">
-          PageUp and PageDown turn the pages.
-          {rearrange && " To move a card, drag it to an empty pocket, press Alt+← or Alt+→ on it, or tap an empty pocket and then the card."}
-        </p>
-      )}
+      <p className="mt-auto text-xs text-ink-3">PageUp and PageDown turn the pages.</p>
     </div>
   );
 }
 
 /** The cover's phone-width summary. */
-export function MobileSummary({ open, actions }: { open: OpenView; actions: CoverActions }) {
+export function MobileSummary({ open, onEditLabel }: { open: OpenView; onEditLabel: () => void }) {
   return (
     <div className="mb-3 space-y-1 text-sm text-ink-2">
-      {open.label && !open.settings && (
+      {open.label && (
         <div className="float-right ml-3">
-          <LabelControls open={open} actions={actions} />
+          <LabelControls binder={open.label} onEditLabel={onEditLabel} />
         </div>
       )}
       <TallyLine tally={open.tally} want={open.want} />
-      {/* NEO-362: every line, so a phone also says when the binder keeps itself sorted (dragging is off). */}
-      {open.blurb.map((line) => (
-        <p key={line}>{line}</p>
-      ))}
+      <p>{open.blurb[0]}</p>
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// What the rest of the page is looking through
+// ---------------------------------------------------------------------------
+
+export function ScopeLine({ text, onGo }: { text: string; onGo: () => void }) {
+  return (
+    <p className="mb-3 text-sm text-ink-2">
+      <span aria-hidden="true" className="nb-scope-dot mr-2 align-middle" />
+      {text}{" "}
+      <button
+        type="button"
+        onClick={onGo}
+        className={`rounded-sm text-neon-blue-text underline underline-offset-2 hover:text-ink ${FOCUS}`}
+      >
+        Open Checklists
+      </button>
+    </p>
   );
 }

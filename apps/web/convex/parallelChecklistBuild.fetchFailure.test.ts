@@ -17,7 +17,6 @@ import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
 import { blockedSideFailed } from "./parallelChecklistBuild";
 import type { FetchFailure } from "./lib/marketplaceFetchFailure";
-import { insertTestCard } from "../lib/testing/card-row";
 
 const modules = (
   import.meta as unknown as {
@@ -188,7 +187,7 @@ async function seed(t: T, slIds: string[] = ["SL-P-1"]) {
     });
     await ctx.db.patch(variantType, { children: [insert] });
     await ctx.db.patch(insert, { children: [parallel] });
-    await insertTestCard(ctx, {
+    await ctx.db.insert("cardChecklist", {
       selectorOptionId: insert,
       cardNumber: "1",
       cardName: "Someone",

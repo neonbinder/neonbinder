@@ -45,7 +45,6 @@ import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
 // @ts-expect-error plain .mjs with no declaration file; test files are not typechecked anyway
 import { SELECTOR_DEPENDANT_TABLES } from "../scripts/reference-seed/cli.mjs";
-import { insertTestCard } from "../lib/testing/card-row";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -128,23 +127,20 @@ async function seedEveryDrainedTable(
     });
 
     // players: 4
-    const playerIds = [];
     for (const name of ["A One", "B Two", "C Three", "D Four"]) {
-      playerIds.push(
-        await ctx.db.insert("players", {
-          name,
-          nameNormalized: name.toLowerCase(),
-          sportId,
-          lastUpdated: NOW,
-        }),
-      );
+      await ctx.db.insert("players", {
+        name,
+        nameNormalized: name.toLowerCase(),
+        sportId,
+        lastUpdated: NOW,
+      });
     }
 
     // cardChecklist: 5
     const cardIds: Id<"cardChecklist">[] = [];
     for (let i = 1; i <= 5; i += 1) {
       cardIds.push(
-        await insertTestCard(ctx, {
+        await ctx.db.insert("cardChecklist", {
           selectorOptionId: variantId,
           cardNumber: String(i),
           cardName: `Card ${i}`,
@@ -203,102 +199,6 @@ async function seedEveryDrainedTable(
       });
     }
 
-    // checklistNameResolutions: 1 (NEO-402) — the same abandoned review's
-    // stored player answers, naming a player the reset deletes.
-    await ctx.db.insert("checklistNameResolutions", {
-      selectorOptionId: variantId,
-      createdByUserId: "admin_who_closed_the_tab",
-      sportId,
-      createdAt: NOW,
-      players: [{ nameNormalized: "a one", playerId: playerIds[0] }],
-    });
-
-    // cardTeamLinks: 9 (NEO-358) — the derived team → cards index. Hand
-    // inserted: the reset drains the table, it does not care how rows got there.
-    for (let i = 0; i < 9; i += 1) {
-      await ctx.db.insert("cardTeamLinks", {
-        cardChecklistId: cardIds[i % cardIds.length],
-        teamId,
-      });
-    }
-
-    // collectionCopies: 10, collectionContainers: 1 and
-    // collectionBuildingSets: 11 (NEO-358) — a collector's copies, the binder
-    // they live in, and "Sets I'm building". The global reset drains all three.
-    const homeId = await ctx.db.insert("collectionContainers", {
-      ownerId: "collector_1",
-      kind: "binder",
-      system: "main",
-      name: "Main",
-      lastUpdated: NOW,
-    });
-    for (let i = 0; i < 10; i += 1) {
-      await ctx.db.insert("collectionCopies", {
-        ownerId: "collector_1",
-        cardId: cardIds[i % cardIds.length],
-        variantId,
-        setId: sportId,
-        homeId,
-        quantity: 1,
-        lastUpdated: NOW,
-      });
-    }
-    // collectionBinderFits: 2 (+ its state row), NEO-401 — a smart binder's
-    // stored fits name a card and a variant row; drained with the containers.
-    for (let i = 0; i < 2; i += 1) {
-      await ctx.db.insert("collectionBinderFits", {
-        ownerId: "collector_1",
-        binderId: homeId,
-        cardId: cardIds[i % cardIds.length],
-        variantId,
-        order: i,
-        generation: 1,
-      });
-    }
-    await ctx.db.insert("collectionBinderFitsState", {
-      ownerId: "collector_1",
-      binderId: homeId,
-      computedAt: NOW,
-      supported: true,
-      complete: true,
-      count: 2,
-    });
-    for (let i = 0; i < 11; i += 1) {
-      await ctx.db.insert("collectionBuildingSets", {
-        ownerId: `collector_${i}`,
-        setId: sportId,
-        lastUpdated: NOW,
-      });
-    }
-    // variantCommonPrices: 2 (NEO-378) — collectors' common prices, drained
-    // before the variant rows they name.
-    for (let i = 0; i < 2; i += 1) {
-      await ctx.db.insert("variantCommonPrices", {
-        ownerId: `collector_${i}`,
-        variantId,
-        priceCents: 25,
-        lastUpdated: NOW,
-      });
-    }
-
-    // selectorSyncStatus: 3 (NEO-358) — transient per-column sync notices: a
-    // root (sport) column's failure, which is exactly the one that survived a
-    // dev reset before this table was drained, and two under the sport.
-    await ctx.db.insert("selectorSyncStatus", {
-      level: "sport",
-      status: "error",
-      message: "SportLots could not be reached",
-      updatedAt: NOW,
-    });
-    for (const level of ["year", "manufacturer"] as const) {
-      await ctx.db.insert("selectorSyncStatus", {
-        level,
-        parentId: sportId,
-        status: "done",
-        updatedAt: NOW,
-      });
-    }
-
     // slSetReviews: 2 (NEO-306) — pending SportLots set reviews. The ids
     // only need to be selectorOptions ids for the delete loop.
     for (const label of ["Gold", "Blue"]) {
@@ -323,17 +223,6 @@ const runReset = (t: ReturnType<typeof convexTest>) =>
 async function tableCounts(t: ReturnType<typeof convexTest>) {
   return t.run(async (ctx) => ({
     slSetReviews: (await ctx.db.query("slSetReviews").collect()).length,
-    selectorSyncStatus: (await ctx.db.query("selectorSyncStatus").collect())
-      .length,
-    collectionCopies: (await ctx.db.query("collectionCopies").collect()).length,
-    collectionContainers: (await ctx.db.query("collectionContainers").collect())
-      .length,
-    collectionBuildingSets: (
-      await ctx.db.query("collectionBuildingSets").collect()
-    ).length,
-    variantCommonPrices: (await ctx.db.query("variantCommonPrices").collect())
-      .length,
-    cardTeamLinks: (await ctx.db.query("cardTeamLinks").collect()).length,
     selectorOptions: (await ctx.db.query("selectorOptions").collect()).length,
     cardChecklist: (await ctx.db.query("cardChecklist").collect()).length,
     cardCrossListings: (await ctx.db.query("cardCrossListings").collect())
@@ -342,9 +231,6 @@ async function tableCounts(t: ReturnType<typeof convexTest>) {
       .length,
     checklistCandidates: (await ctx.db.query("checklistCandidates").collect())
       .length,
-    checklistNameResolutions: (
-      await ctx.db.query("checklistNameResolutions").collect()
-    ).length,
     players: (await ctx.db.query("players").collect()).length,
     teams: (await ctx.db.query("teams").collect()).length,
     franchises: (await ctx.db.query("franchises").collect()).length,
@@ -368,18 +254,11 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
     // guard at all, so assert the data is still there rather than just the throw.
     expect(await tableCounts(t)).toEqual({
       slSetReviews: 2,
-      selectorSyncStatus: 3,
-      collectionCopies: 10,
-      collectionContainers: 1,
-      collectionBuildingSets: 11,
-      variantCommonPrices: 2,
-      cardTeamLinks: 9,
       selectorOptions: 3,
       cardChecklist: 5,
       cardCrossListings: 6,
       entityReviewQueue: 7,
       checklistCandidates: 8,
-      checklistNameResolutions: 1,
       players: 4,
       teams: 2,
       franchises: 1,
@@ -399,18 +278,11 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
 
     expect(await tableCounts(t)).toEqual({
       slSetReviews: 2,
-      selectorSyncStatus: 3,
-      collectionCopies: 10,
-      collectionContainers: 1,
-      collectionBuildingSets: 11,
-      variantCommonPrices: 2,
-      cardTeamLinks: 9,
       selectorOptions: 3,
       cardChecklist: 5,
       cardCrossListings: 6,
       entityReviewQueue: 7,
       checklistCandidates: 8,
-      checklistNameResolutions: 1,
       players: 4,
       teams: 2,
       franchises: 1,
@@ -427,23 +299,12 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
 
     expect(result).toEqual({
       slSetReviewsDeleted: 2,
-      selectorSyncStatusDeleted: 3,
-      collectionCopiesDeleted: 10,
-      collectionWantsDeleted: 0,
-      cardRequestsDeleted: 0,
-      // NEO-401: the container, its 2 stored fits and their state row.
-      collectionContainersDeleted: 4,
-      collectionBuildingSetsDeleted: 11,
-      variantCommonPricesDeleted: 2,
-      intakeRunsDeleted: 0,
       selectorOptionsDeleted: 3,
       cardPlayerLinksDeleted: 0,
-      cardTeamLinksDeleted: 9,
       cardChecklistDeleted: 5,
       crossListingsDeleted: 6,
       entityReviewQueueDeleted: 7,
       checklistCandidatesDeleted: 8,
-      checklistNameResolutionsDeleted: 1,
       playerSportsDeleted: 0,
       playersDeleted: 4,
       playerAliasesDeleted: 0,
@@ -456,18 +317,11 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
 
     expect(await tableCounts(t)).toEqual({
       slSetReviews: 0,
-      selectorSyncStatus: 0,
-      collectionCopies: 0,
-      collectionContainers: 0,
-      collectionBuildingSets: 0,
-      variantCommonPrices: 0,
-      cardTeamLinks: 0,
       selectorOptions: 0,
       cardChecklist: 0,
       cardCrossListings: 0,
       entityReviewQueue: 0,
       checklistCandidates: 0,
-      checklistNameResolutions: 0,
       players: 0,
       teams: 0,
       franchises: 0,
@@ -484,20 +338,11 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
    */
   test.each([
     ["resetSlSetReviewsBatch", "slSetReviews"],
-    ["resetSelectorSyncStatusBatch", "selectorSyncStatus"],
-    ["resetCollectionCopiesBatch", "collectionCopies"],
-    ["resetCollectionWantsBatch", "collectionWants"],
-    ["resetCardRequestsBatch", "cardRequests"],
-    ["resetCollectionContainersBatch", "collectionContainers"],
-    ["resetCollectionBuildingSetsBatch", "collectionBuildingSets"],
-    ["resetVariantCommonPricesBatch", "variantCommonPrices"],
-    ["resetCardTeamLinksBatch", "cardTeamLinks"],
     ["resetSelectorOptionsBatch", "selectorOptions"],
     ["resetCardChecklistBatch", "cardChecklist"],
     ["resetCardCrossListingsBatch", "cardCrossListings"],
     ["resetEntityReviewQueueBatch", "entityReviewQueue"],
     ["resetChecklistCandidatesBatch", "checklistCandidates"],
-    ["resetChecklistNameResolutionsBatch", "checklistNameResolutions"],
     ["resetPlayersBatch", "players"],
     ["resetTeamsBatch", "teams"],
     ["resetFranchisesBatch", "franchises"],
@@ -519,18 +364,11 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
 
       expect(await tableCounts(t)).toEqual({
         slSetReviews: 2,
-        selectorSyncStatus: 3,
-        collectionCopies: 10,
-        collectionContainers: 1,
-        collectionBuildingSets: 11,
-        variantCommonPrices: 2,
-        cardTeamLinks: 9,
         selectorOptions: 3,
         cardChecklist: 5,
         cardCrossListings: 6,
         entityReviewQueue: 7,
         checklistCandidates: 8,
-        checklistNameResolutions: 1,
         players: 4,
         teams: 2,
         franchises: 1,
@@ -547,22 +385,12 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
 
     expect(await runReset(t)).toEqual({
       slSetReviewsDeleted: 0,
-      selectorSyncStatusDeleted: 0,
-      collectionCopiesDeleted: 0,
-      collectionWantsDeleted: 0,
-      cardRequestsDeleted: 0,
-      collectionContainersDeleted: 0,
-      collectionBuildingSetsDeleted: 0,
-      variantCommonPricesDeleted: 0,
-      intakeRunsDeleted: 0,
       selectorOptionsDeleted: 0,
       cardPlayerLinksDeleted: 0,
-      cardTeamLinksDeleted: 0,
       cardChecklistDeleted: 0,
       crossListingsDeleted: 0,
       entityReviewQueueDeleted: 0,
       checklistCandidatesDeleted: 0,
-      checklistNameResolutionsDeleted: 0,
       playerSportsDeleted: 0,
       playersDeleted: 0,
       playerAliasesDeleted: 0,
@@ -620,22 +448,12 @@ describe("NEO-254: the reset yields at RESET_TIME_BUDGET_MS and resumes", () => 
     let complete = false;
     const totals = {
       slSetReviewsDeleted: 0,
-      selectorSyncStatusDeleted: 0,
-      collectionCopiesDeleted: 0,
-      collectionWantsDeleted: 0,
-      cardRequestsDeleted: 0,
-      collectionContainersDeleted: 0,
-      collectionBuildingSetsDeleted: 0,
-      variantCommonPricesDeleted: 0,
-      intakeRunsDeleted: 0,
       selectorOptionsDeleted: 0,
       cardPlayerLinksDeleted: 0,
-      cardTeamLinksDeleted: 0,
       cardChecklistDeleted: 0,
       crossListingsDeleted: 0,
       entityReviewQueueDeleted: 0,
       checklistCandidatesDeleted: 0,
-      checklistNameResolutionsDeleted: 0,
       playerSportsDeleted: 0,
       playersDeleted: 0,
       playerAliasesDeleted: 0,
@@ -660,23 +478,12 @@ describe("NEO-254: the reset yields at RESET_TIME_BUDGET_MS and resumes", () => 
     // double-counts or skips a table.
     expect(totals).toEqual({
       slSetReviewsDeleted: 2,
-      selectorSyncStatusDeleted: 3,
-      collectionCopiesDeleted: 10,
-      collectionWantsDeleted: 0,
-      cardRequestsDeleted: 0,
-      // NEO-401: the container, its 2 stored fits and their state row.
-      collectionContainersDeleted: 4,
-      collectionBuildingSetsDeleted: 11,
-      variantCommonPricesDeleted: 2,
-      intakeRunsDeleted: 0,
       selectorOptionsDeleted: 3,
       cardPlayerLinksDeleted: 0,
-      cardTeamLinksDeleted: 9,
       cardChecklistDeleted: 5,
       crossListingsDeleted: 6,
       entityReviewQueueDeleted: 7,
       checklistCandidatesDeleted: 8,
-      checklistNameResolutionsDeleted: 1,
       playerSportsDeleted: 0,
       playersDeleted: 4,
       playerAliasesDeleted: 0,
@@ -687,18 +494,11 @@ describe("NEO-254: the reset yields at RESET_TIME_BUDGET_MS and resumes", () => 
     });
     expect(await tableCounts(t)).toEqual({
       slSetReviews: 0,
-      selectorSyncStatus: 0,
-      collectionCopies: 0,
-      collectionContainers: 0,
-      collectionBuildingSets: 0,
-      variantCommonPrices: 0,
-      cardTeamLinks: 0,
       selectorOptions: 0,
       cardChecklist: 0,
       cardCrossListings: 0,
       entityReviewQueue: 0,
       checklistCandidates: 0,
-      checklistNameResolutions: 0,
       players: 0,
       teams: 0,
       franchises: 0,
@@ -718,18 +518,11 @@ describe("NEO-254: the reset yields at RESET_TIME_BUDGET_MS and resumes", () => 
 
     expect(await tableCounts(t)).toEqual({
       slSetReviews: 2,
-      selectorSyncStatus: 3,
-      collectionCopies: 10,
-      collectionContainers: 1,
-      collectionBuildingSets: 11,
-      variantCommonPrices: 2,
-      cardTeamLinks: 9,
       selectorOptions: 3,
       cardChecklist: 5,
       cardCrossListings: 6,
       entityReviewQueue: 7,
       checklistCandidates: 8,
-      checklistNameResolutions: 1,
       players: 4,
       teams: 2,
       franchises: 1,
@@ -1028,7 +821,7 @@ describe("NEO-313: the reset also drains cardPlayerLinks and playerSports", () =
         sportId: otherSport,
         nameNormalized: "multi player sport",
       });
-      const cardId = await insertTestCard(ctx, {
+      const cardId = await ctx.db.insert("cardChecklist", {
         selectorOptionId: variantId,
         cardNumber: "99",
         cardName: "Multi Sport Card",
@@ -1093,29 +886,11 @@ describe("NEO-330: scope exceptReferenceSeed", () => {
   ] as const;
   const DEPENDANTS = [
     "slSetReviews",
-    // NEO-358 — sync notices name a selector row (parentId).
-    "selectorSyncStatus",
-    // NEO-358 — a collector's copies and building sets hold selectorOptions ids.
-    "collectionCopies",
-    "collectionBuildingSets",
-    // NEO-359 — a smart binder's rule holds selectorOptions ids.
-    "collectionContainers",
-    // NEO-401 — a smart binder's stored fits name a variant row.
-    "collectionBinderFits",
-    // NEO-361 — card requests and the private cards and sets they made.
-    "privateCards",
-    "privateSets",
-    "cardRequests",
-    // NEO-378 — a collector's common price names a variant row.
-    "variantCommonPrices",
-    // NEO-379 — an intake run names the variant it matches in.
-    "intakeRuns",
     "cardPlayerLinks",
     "cardChecklist",
     "cardCrossListings",
     "entityReviewQueue",
     "checklistCandidates",
-    "checklistNameResolutions",
   ] as const;
 
   const runScoped = (
@@ -1130,34 +905,6 @@ describe("NEO-330: scope exceptReferenceSeed", () => {
   /** Existing seed, plus the reference tables it leaves empty and cardPlayerLinks. */
   async function seedAll(t: ReturnType<typeof convexTest>) {
     const { sportId } = await seedEveryDrainedTable(t);
-    // NEO-361 — one request with the private set and card it made.
-    await t.run(async (ctx) => {
-      const requestId = await ctx.db.insert("cardRequests", {
-        ownerId: "user",
-        kind: "set",
-        status: "waiting",
-        label: "1986 Topps Traded",
-        lastUpdated: 0,
-      });
-      const privateSetId = await ctx.db.insert("privateSets", {
-        ownerId: "user",
-        requestId,
-        sportId,
-        year: "1986",
-        brand: "Topps",
-        name: "Traded",
-        lastUpdated: 0,
-      });
-      await ctx.db.insert("privateCards", {
-        ownerId: "user",
-        requestId,
-        privateSetId,
-        variantName: "Base",
-        cardNumber: "11T",
-        player: "Barry Bonds",
-        lastUpdated: 0,
-      });
-    });
     await t.run(async (ctx) => {
       const team = (await ctx.db.query("teams").first())!;
       const player = (await ctx.db.query("players").first())!;
@@ -1181,39 +928,6 @@ describe("NEO-330: scope exceptReferenceSeed", () => {
         cardChecklistId: card._id,
         playerId: player._id,
         sportId,
-      });
-      // NEO-379 — one intake run in the card's variant, with one match.
-      const home = (await ctx.db.query("collectionContainers").first())!;
-      const runId = await ctx.db.insert("intakeRuns", {
-        userId: "user",
-        jobId: "job-reset",
-        homeId: home._id,
-        variantId: card.selectorOptionId,
-        createdAt: 0,
-        lastActivityAt: 0,
-      });
-      const pairId = await ctx.db.insert("placeholderPairs", {
-        jobId: "job-reset",
-        userId: "user",
-        frontIndex: 0,
-        backIndex: 1,
-        confidence: "side-only",
-        mechanism: "manual",
-        score: 0,
-      });
-      await ctx.db.insert("intakeMatches", {
-        runId,
-        userId: "user",
-        pairId,
-        frontIndex: 0,
-        backIndex: 1,
-        readKey: "",
-        cardId: card._id,
-        confidence: 97,
-        band: "matched",
-        reason: "numberAndPlayer",
-        candidates: [card._id],
-        variations: [],
       });
     });
   }
@@ -1259,23 +973,12 @@ describe("NEO-330: scope exceptReferenceSeed", () => {
 
     expect(await runScoped(t, "exceptReferenceSeed")).toEqual({
       slSetReviewsDeleted: 2,
-      selectorSyncStatusDeleted: 3,
-      collectionCopiesDeleted: 10,
-      collectionWantsDeleted: 0,
-      cardRequestsDeleted: 3,
-      // NEO-401: the container, its 2 stored fits and their state row.
-      collectionContainersDeleted: 4,
-      collectionBuildingSetsDeleted: 11,
-      variantCommonPricesDeleted: 2,
-      intakeRunsDeleted: 2,
       selectorOptionsDeleted: 0,
       cardPlayerLinksDeleted: 1,
-      cardTeamLinksDeleted: 9,
       cardChecklistDeleted: 5,
       crossListingsDeleted: 6,
       entityReviewQueueDeleted: 7,
       checklistCandidatesDeleted: 8,
-      checklistNameResolutionsDeleted: 1,
       playerSportsDeleted: 0,
       playersDeleted: 0,
       playerAliasesDeleted: 0,
@@ -1337,12 +1040,10 @@ describe("NEO-330: scope exceptReferenceSeed", () => {
     }
 
     expect(results.at(-1)!.complete).toBe(true);
-    // Every dependant holds rows, plus `cardTeamLinks` and
-    // `collectionContainers` (NEO-358: drained in both scopes, but neither
-    // holds a selectorOptions id, so neither is a dependant), so it takes at
-    // most that many passes, never the 18 the unscoped reset needs; a loop
-    // still counting skipped tables would not finish early here.
-    expect(results.length).toBeLessThanOrEqual(DEPENDANTS.length + 2);
+    // 6 dependants hold rows, so it takes at most 6 passes, never the 14 the
+    // unscoped reset needs; a loop still counting skipped tables would not
+    // finish early here.
+    expect(results.length).toBeLessThanOrEqual(DEPENDANTS.length);
   });
 
   test("scope \"all\" drains every table, exactly like omitting scope", async () => {

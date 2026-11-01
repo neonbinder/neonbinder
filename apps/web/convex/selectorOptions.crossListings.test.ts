@@ -30,7 +30,6 @@ import { describe, expect, test } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
 import { Id } from "./_generated/dataModel";
-import { insertTestCard } from "../lib/testing/card-row";
 
 // convex-test v0.0.53 with Vitest uses import.meta.glob to discover modules.
 // Must run from the convex/ root — a subdirectory glob silently drops sibling
@@ -131,7 +130,7 @@ async function seedCard(
   opts: { cardNumber: string; cardName?: string; sortOrder: number },
 ): Promise<Id<"cardChecklist">> {
   return t.run(async (ctx) =>
-    insertTestCard(ctx, {
+    ctx.db.insert("cardChecklist", {
       selectorOptionId,
       cardNumber: opts.cardNumber,
       cardName: opts.cardName ?? `Card ${opts.cardNumber}`,

@@ -2,7 +2,6 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react"
 import { createPortal } from "react-dom";
 import { Input } from "../primitives/Input";
 import { Textarea } from "../primitives/Textarea";
-import { NotesLengthMeter } from "./NotesLengthMeter";
 import { Theme } from "@radix-ui/themes";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
@@ -139,14 +138,6 @@ const PRINT_RUN_MAX = 1_000_000;
 const PRINT_RUN_MESSAGE =
   "Print run must be a whole number between 1 and 1,000,000.";
 
-/**
- * NEO-358 — the refusal for a cleared Card title. The same sentence as
- * `selectorOptions.BLANK_LISTING_TITLE_REFUSAL`, which `updateCard` throws for
- * any other client: the server is the rule, this saves the round trip.
- */
-const BLANK_TITLE_MESSAGE =
-  "A card needs a title. Type one in, or hit Regenerate for a fresh one.";
-
 type CardDetailCard = {
   _id: Id<"cardChecklist">;
   selectorOptionId: Id<"selectorOptions">;
@@ -194,8 +185,6 @@ type CardDetailCard = {
    */
   listingTitleTruncated?: boolean;
   listingDescription?: string;
-  /** NEO-367 — NB's own note about the card; absent when blank. */
-  notes?: string;
   imageUrls?: { front?: string; back?: string };
   // NEO-137: ref = marketplace card identity, src = slot on the parent row.
   platformData: {
@@ -481,16 +470,6 @@ export default function CardDetailPanel({
       }
       await commitField({ listingTitle: trimmed }, "Saved Card title");
     },
-    // NEO-358 — a card's title is what a collector searches, so it is never
-    // stored blank (`updateCard` refuses one with the same sentence). A
-    // cleared field puts the stored title back and says why, rather than
-    // silently reverting as it did before.
-    onEmptyCommit: () => {
-      const stored = card.listingTitle ?? "";
-      if (titleInputRef.current) titleInputRef.current.value = stored;
-      setTitleLength(stored.length);
-      throw new Error(BLANK_TITLE_MESSAGE);
-    },
   });
 
   const descriptionField = useReactiveField<HTMLTextAreaElement>({
@@ -500,27 +479,6 @@ export default function CardDetailPanel({
     onSave: (trimmed) =>
       commitField({ listingDescription: trimmed }, "Saved Card description"),
   });
-
-  // NEO-367 — NB's own note about the card. Multi-line like the description,
-  // so a bare Enter is a line break. Blank is a real answer ("no note"), sent
-  // as "" — the server stores that as the field's absence.
-  const notesField = useReactiveField<HTMLTextAreaElement>({
-    value: card.notes ?? "",
-    enterCommit: "modEnter",
-    onSave: (trimmed) => commitField({ notes: trimmed }, "Saved Notes"),
-    onEmptyCommit: () => commitField({ notes: "" }, "Cleared Notes"),
-  });
-
-  // Mirrors the live row while the box is idle, like the title counter below.
-  const [notesLength, setNotesLength] = useState((card.notes ?? "").length);
-  const notesInputRef = useRef<HTMLTextAreaElement | null>(null);
-  const { ref: notesHookRef, ...notesInputProps } = notesField.inputProps;
-  useEffect(() => {
-    if (typeof document !== "undefined" && document.activeElement === notesInputRef.current) {
-      return;
-    }
-    setNotesLength((card.notes ?? "").length);
-  }, [card.notes]);
 
   const printRunField = useReactiveField({
     value: card.printRun != null ? String(card.printRun) : "",
@@ -587,9 +545,6 @@ export default function CardDetailPanel({
   const titleErrorId = `${uid}-title-error`;
   const descriptionErrorId = `${uid}-description-error`;
   const descriptionHintId = `${uid}-description-hint`;
-  const notesErrorId = `${uid}-notes-error`;
-  const notesHintId = `${uid}-notes-hint`;
-  const notesId = `${uid}-notes`;
   const printRunErrorId = `${uid}-print-run-error`;
   const variationErrorId = `${uid}-variation-error`;
 
@@ -1246,45 +1201,6 @@ export default function CardDetailPanel({
               busy={descriptionField.busy}
               error={descriptionField.error}
               errorId={descriptionErrorId}
-            />
-          </div>
-          {/* NEO-367 — Notes: NB's own facts about the card ("short print,
-              about 1:120 packs"). Not listing copy, and no sync writes it. */}
-          <div>
-            <div className="flex items-center justify-between gap-2 text-[10px] uppercase tracking-wide text-ink-3 mb-1">
-              <label htmlFor={notesId}>Notes</label>
-              <NotesLengthMeter length={notesLength} />
-            </div>
-            <Textarea
-              bare
-              id={notesId}
-              {...notesInputProps}
-              ref={(el) => {
-                notesHookRef(el);
-                notesInputRef.current = el;
-              }}
-              rows={2}
-              onChange={(e) => setNotesLength(e.target.value.length)}
-              readOnly={notesField.busy}
-              aria-busy={notesField.busy || undefined}
-              aria-invalid={notesField.error ? true : undefined}
-              aria-describedby={
-                [notesHintId, notesField.error ? notesErrorId : null]
-                  .filter(Boolean)
-                  .join(" ") || undefined
-              }
-              aria-keyshortcuts="Control+Enter Meta+Enter"
-              className={`${fieldClass("cardNotes")} w-full p-1.5 text-sm resize-y`}
-              placeholder="e.g. Short print, about 1:120 packs"
-              aria-label="Card notes"
-            />
-            <p id={notesHintId} className="mt-1 text-[10px] text-ink-3">
-              Facts about this card, shown to collectors. Not listing copy. Enter adds a line break. ⌘/Ctrl+Enter or leaving the field saves.
-            </p>
-            <FieldFeedback
-              busy={notesField.busy}
-              error={notesField.error}
-              errorId={notesErrorId}
             />
           </div>
 

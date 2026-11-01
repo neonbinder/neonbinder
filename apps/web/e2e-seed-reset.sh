@@ -97,36 +97,8 @@ echo "   import the reference catalogue, which replaces selectorOptions, leagues
 echo "   franchises, teams, teamAliases, players, playerAliases and playerSports"
 echo "   on ${ref_target}. Confirming the reset below confirms both."
 
-# NEO-407: a hard limit on each Convex step. On 2026-10-31 a seed sat in this
-# step for 28 minutes with no output (the CLI calls below have no timeout of
-# their own), so a stalled preview held the job until its 45-minute timeout.
-# With NB_SEED_HANG_S set (CI sets it), a step that runs past it is stopped and
-# the script exits 75, the same "degraded preview" answer as a slow import:
-# the caller deletes the preview and the workflow re-runs on a fresh one.
-ref_guard() {
-  if [ -n "${NB_SEED_HANG_S:-}" ]; then
-    timeout --kill-after=15 "$NB_SEED_HANG_S" "$@"
-  else
-    "$@"
-  fi
-}
-ref_hung() {
-  # timeout(1) answers 124 when it stopped the command, 137 when it had to kill
-  # it. A 137 before the limit (an OOM kill, say) is an ordinary failure.
-  local waited=$(( $(date +%s) - $3 ))
-  if [ -n "${NB_SEED_HANG_S:-}" ] && { [ "$1" -eq 124 ] || { [ "$1" -eq 137 ] && [ "$waited" -ge "$NB_SEED_HANG_S" ]; }; }; then
-    echo "x reference seed: $2 did not finish within ${NB_SEED_HANG_S}s. ${ref_target} is degraded (NEO-407); stopping before any spec runs." >&2
-    echo "reference seed: $2 stopped at $(date -u +%FT%TZ) after ${NB_SEED_HANG_S}s"
-    exit 75
-  fi
-}
-
 ref_t0=$(date +%s)
-echo "reference seed: reset started $(date -u +%FT%TZ)"
-ref_rc=0
-ref_guard ./e2e-baseline.sh reset --except-reference-seed --deployment "$ref_target" || ref_rc=$?
-ref_hung "$ref_rc" "the reset" "$ref_t0"
-if [ "$ref_rc" -ne 0 ]; then
+if ! ./e2e-baseline.sh reset --except-reference-seed --deployment "$ref_target"; then
   echo "x reference seed: reset (except reference-seed tables) failed - see above." >&2
   exit 1
 fi
@@ -135,24 +107,14 @@ echo "reference seed: reset took ${ref_reset_s}s"
 reference_seed_summary "reset seconds" "$ref_reset_s"
 
 ref_t1=$(date +%s)
-echo "reference seed: load started $(date -u +%FT%TZ)"
-ref_rc=0
-ref_err="$(mktemp)"
-ref_guard node scripts/reference-seed/cli.mjs load "$NB_REFERENCE_BUNDLE" \
-    --deployment "$ref_target" --sports import --yes 2>"$ref_err" || ref_rc=$?
-cat "$ref_err" >&2
-ref_hung "$ref_rc" "the reference load" "$ref_t1"
-rm -f "$ref_err"
-if [ "$ref_rc" -ne 0 ]; then
+if ! node scripts/reference-seed/cli.mjs load "$NB_REFERENCE_BUNDLE" \
+    --deployment "$ref_target" --sports import --yes; then
   echo "x reference seed: bundle load failed - see above. The deployment has been reset but holds no reference catalogue; do not run specs against it." >&2
   exit 1
 fi
 ref_import_s=$(( $(date +%s) - ref_t1 ))
 echo "reference seed: import took ${ref_import_s}s"
-# NEO-392: deployment + UTC window, the evidence a Convex support ticket needs.
-echo "reference seed: import window ${ref_target} $(date -u -d "@${ref_t1}" +%FT%TZ 2>/dev/null || echo "${ref_t1}")..$(date -u +%FT%TZ)"
 reference_seed_summary "import seconds" "$ref_import_s"
-
 if [ -n "${NB_REFERENCE_SEED_SUMMARY:-}" ] && [ -n "$ref_manifest_lines" ]; then
   printf '%s\n' "$ref_manifest_lines" >> "$NB_REFERENCE_SEED_SUMMARY"
 fi
@@ -161,15 +123,4 @@ fi
 # step that needed it on a runner. A developer's local copy stays.
 if [ -n "${GITHUB_ACTIONS:-}" ]; then
   rm -f "$NB_REFERENCE_BUNDLE"
-fi
-
-# NEO-392: a slow import marks a degraded preview. Across 387 CI seeds
-# (10-13 to 10-30) the import took ~110s; every pass whose import ran past
-# 500s went red, whatever the PR changed, and the slow spells stuck to one
-# preview at a time. Set NB_SEED_MAX_IMPORT_S (CI does) to stop here with
-# exit 75 instead of running shards against it; the caller deletes the
-# preview so a re-run gets a fresh one.
-if [ -n "${NB_SEED_MAX_IMPORT_S:-}" ] && [ "$ref_import_s" -gt "$NB_SEED_MAX_IMPORT_S" ]; then
-  echo "x reference seed: import took ${ref_import_s}s, over the ${NB_SEED_MAX_IMPORT_S}s limit. ${ref_target} is degraded (NEO-392); stopping before any spec runs." >&2
-  exit 75
 fi

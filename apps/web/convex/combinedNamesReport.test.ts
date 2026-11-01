@@ -22,7 +22,6 @@ import {
   hasTeamNameSeparator,
   isSuffixOnlyName,
 } from "./combinedNamesReport";
-import { insertTestCard } from "../lib/testing/card-row";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -147,7 +146,8 @@ async function seedAll(t: T): Promise<Seeded> {
     await skip("skipPlayerSuffix", "player", "III");
 
     const card = (key: string, extra: Record<string, unknown>) =>
-      insertTestCard(ctx, {
+      ctx.db
+        .insert("cardChecklist", {
           selectorOptionId: setId,
           cardNumber: key,
           cardName: key,
@@ -365,7 +365,7 @@ describe("combinedNamesReport.run: read-only, paging and resume", () => {
     void sportId;
     await t.run(async (ctx) => {
       for (let i = 0; i < 160; i++) {
-        await insertTestCard(ctx, {
+        await ctx.db.insert("cardChecklist", {
           selectorOptionId: setId,
           cardNumber: `bulk-${i}`,
           cardName: `bulk-${i}`,

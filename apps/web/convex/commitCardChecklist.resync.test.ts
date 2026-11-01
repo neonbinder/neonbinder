@@ -20,7 +20,6 @@ import { api } from "./_generated/api";
 import schema from "./schema";
 import { Id } from "./_generated/dataModel";
 import { cancelScheduled, drainScheduled } from "../lib/testing/drain-scheduled";
-import { insertTestCard } from "../lib/testing/card-row";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -293,7 +292,7 @@ describe("commitCardChecklist — ambiguity is surfaced, never guessed", () => {
     const t = convexTest(schema, modules);
     const { sportId, leafId } = await seedTree(t);
     const [rowAId, rowBId] = await t.run(async (ctx) => {
-      const a = await insertTestCard(ctx, {
+      const a = await ctx.db.insert("cardChecklist", {
         selectorOptionId: leafId,
         cardNumber: "1",
         cardName: "Row A (duplicate SL ref)",
@@ -301,7 +300,7 @@ describe("commitCardChecklist — ambiguity is surfaced, never guessed", () => {
         sortOrder: 0,
         lastUpdated: Date.now(),
       });
-      const b = await insertTestCard(ctx, {
+      const b = await ctx.db.insert("cardChecklist", {
         selectorOptionId: leafId,
         cardNumber: "2",
         cardName: "Row B (duplicate SL ref)",
@@ -349,7 +348,7 @@ describe("commitCardChecklist — ambiguity is surfaced, never guessed", () => {
     const t = convexTest(schema, modules);
     const { sportId, leafId } = await seedTree(t, { bscSlots: { b0: "real-bsc-set" } });
     const [rowXId, rowYId] = await t.run(async (ctx) => {
-      const x = await insertTestCard(ctx, {
+      const x = await ctx.db.insert("cardChecklist", {
         selectorOptionId: leafId,
         cardNumber: "9",
         cardName: "Row X",
@@ -357,7 +356,7 @@ describe("commitCardChecklist — ambiguity is surfaced, never guessed", () => {
         sortOrder: 0,
         lastUpdated: Date.now(),
       });
-      const y = await insertTestCard(ctx, {
+      const y = await ctx.db.insert("cardChecklist", {
         selectorOptionId: leafId,
         cardNumber: "9",
         cardName: "Row Y",
@@ -393,7 +392,7 @@ describe("commitCardChecklist — ambiguity is surfaced, never guessed", () => {
     const t = convexTest(schema, modules);
     const { sportId, leafId } = await seedTree(t, { bscSlots: { b0: "real-bsc-set" } });
     const existingId = await t.run(async (ctx) =>
-      insertTestCard(ctx, {
+      ctx.db.insert("cardChecklist", {
         selectorOptionId: leafId,
         cardNumber: "7",
         cardName: "Existing Card",
@@ -554,7 +553,7 @@ describe("commitCardChecklist — tier 3 (bare number, no-ref rows)", () => {
     const t = convexTest(schema, modules);
     const { sportId, leafId } = await seedTree(t);
     const legacyId = await t.run(async (ctx) =>
-      insertTestCard(ctx, {
+      ctx.db.insert("cardChecklist", {
         selectorOptionId: leafId,
         cardNumber: "42",
         cardName: "Legacy/Custom Card",

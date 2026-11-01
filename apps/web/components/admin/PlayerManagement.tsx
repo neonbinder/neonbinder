@@ -26,7 +26,7 @@ import { teamFullName, teamShortName } from "@/lib/teams/team-name";
 // NEO-235: `tenureYears` owns the open-ended-stint rule ("still there" counts
 // through the current year). `primaryTeamId` below sums it per team rather than
 // re-deriving it — see that function for why it is not `pickDefaultTeamYear`.
-import { isDatedTeamYear, tenureYears } from "@/lib/players/team-tenure";
+import { tenureYears } from "@/lib/players/team-tenure";
 // NEO-254: the birth-year bounds, shared with `players.assertBirthYear` so
 // the field cannot offer a year the round-trip then refuses.
 import { MIN_BIRTH_YEAR, maxBirthYear } from "@/lib/players/career-years";
@@ -92,8 +92,7 @@ type PlayerCardRow = {
 const PLAYER_CARDS_CAP = 200;
 
 /** One career stint, in the shape `savePlayerFields` takes. */
-/** NEO-285 — `fromYear` absent is an undated stint (a college, years unknown). */
-type Stint = { teamId: Id<"teams">; fromYear?: number; toYear?: number };
+type Stint = { teamId: Id<"teams">; fromYear: number; toYear?: number };
 
 type Status = { text: string; isError: boolean } | null;
 
@@ -163,32 +162,23 @@ const NEAR_MATCH_DEBOUNCE_MS = 300;
  * `./_generated/server` into the browser bundle.
  */
 function sortStints(stints: Stint[]): Stint[] {
-  return [...stints].sort((a, b) => {
-    // NEO-285 — undated stints after every dated one, as `sortTeamYears` does.
-    if (a.fromYear === undefined || b.fromYear === undefined) {
-      if (a.fromYear === b.fromYear) return 0;
-      return a.fromYear === undefined ? 1 : -1;
-    }
-    return (
+  return [...stints].sort(
+    (a, b) =>
       a.fromYear - b.fromYear ||
       (a.toYear ?? Number.POSITIVE_INFINITY) -
-        (b.toYear ?? Number.POSITIVE_INFINITY)
-    );
-  });
+        (b.toYear ?? Number.POSITIVE_INFINITY),
+  );
 }
 
 function stintsEqual(a: Stint[], b: Stint[]): boolean {
   const key = (s: Stint[]) =>
     JSON.stringify(
-      sortStints(s).map((x) => [x.teamId, x.fromYear ?? null, x.toYear ?? null]),
+      sortStints(s).map((x) => [x.teamId, x.fromYear, x.toYear ?? null]),
     );
   return key(a) === key(b);
 }
 
 function stintRange(stint: Stint): string {
-  // NEO-285 — the college load writes a stint whenever its source names the
-  // school, with years only when the source has them.
-  if (stint.fromYear === undefined) return "years unknown";
   return `${stint.fromYear}–${stint.toYear ?? "present"}`;
 }
 
@@ -218,9 +208,7 @@ function primaryTeamId(
   if (!stints || stints.length === 0) return null;
 
   const totals = new Map<string, { years: number; firstYear: number }>();
-  // NEO-285 — an undated stint has no tenure to count, and a college is not
-  // the franchise a collector files a pro under.
-  for (const stint of stints.filter(isDatedTeamYear)) {
+  for (const stint of stints) {
     const key = stint.teamId as string;
     const running = totals.get(key);
     totals.set(key, {
@@ -328,7 +316,7 @@ function fieldSignature(fields: {
     fields.birthYear.trim(),
     sortStints(fields.stints).map((s) => [
       s.teamId,
-      s.fromYear ?? null,
+      s.fromYear,
       s.toYear ?? null,
     ]),
   ]);
@@ -826,7 +814,7 @@ function AddPlayerForm({
                 ? "Creating player"
                 : `Create player ${trimmed}`
           }
-          className={busyOn === "primary" ? "animate-neon-glow" : undefined}
+          className={busyOn === "primary" ? "motion-safe:animate-pulse" : undefined}
         >
           {/* NEO-254: the disambiguated label, which is byte-identical to
               `Open {name}` whenever the name matches exactly one row — so the
@@ -1987,11 +1975,7 @@ function PlayerDetail({
                 <button
                   type="button"
                   onClick={() => removeStint(index)}
-                  aria-label={
-                    stint.fromYear === undefined
-                      ? `Remove ${teamName(stint.teamId)} undated stint`
-                      : `Remove ${teamName(stint.teamId)} ${stint.fromYear} stint`
-                  }
+                  aria-label={`Remove ${teamName(stint.teamId)} ${stint.fromYear} stint`}
                   className="min-h-6 shrink-0 rounded px-2 py-1 text-xs text-neon-pink-text transition-colors hover:bg-neon-pink/10 focus-outline"
                 >
                   Remove stint

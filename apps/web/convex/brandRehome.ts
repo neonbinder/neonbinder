@@ -72,7 +72,6 @@ import { initialSlots } from "./platformSlots";
 import { SL_ALL_BRANDS_BRAND_ID } from "./slBrandAxis";
 import { deriveOwnLevelFeatures } from "./features/deriveCardFeatures";
 import { inheritedTeamIds } from "./lib/selectorTeams";
-import { newRowSubtreeCounts, createCardCountLedger } from "./cardCounts";
 
 /**
  * The "N sets moved out of Unknown" notice, one sentence for the two doors
@@ -327,10 +326,6 @@ export async function rehomeSetRowsToBrand(
   const now = Date.now();
   const movedIds: Id<"selectorOptions">[] = [];
   const removedFrom = new Map<Id<"selectorOptions">, Set<Id<"selectorOptions">>>();
-  // NEO-358 — a moved set takes its subtree card count with it: off the old
-  // brand (and the year above, if it differs), onto the new one. Flushed
-  // once, below.
-  const countLedger = createCardCountLedger();
   let clashes = 0;
   let operatorPlaced = 0;
 
@@ -364,7 +359,6 @@ export async function rehomeSetRowsToBrand(
       // the way the insert branch stores one, with no `features` key at all.
       ...(featuresChanged ? { features: nextFeatures } : {}),
     });
-    await countLedger.moveSubtree(ctx, row._id, row.parentId, args.brandId);
     movedIds.push(row._id);
     if (row.parentId) {
       const set = removedFrom.get(row.parentId) ?? new Set<Id<"selectorOptions">>();
@@ -390,8 +384,6 @@ export async function rehomeSetRowsToBrand(
       await ctx.db.patch(args.brandId, { children: nextChildren, lastUpdated: now });
     }
   }
-
-  await countLedger.flush(ctx);
 
   if (clashes > 0) {
     // Counts only — a set name is operator content and the log is not the
@@ -770,7 +762,6 @@ export async function ensureBrandRowForName(
   const parentTeamIds = inheritedTeamIds(year);
   const now = Date.now();
   const id = await ctx.db.insert("selectorOptions", {
-    ...newRowSubtreeCounts("manufacturer"),
     level: "manufacturer",
     value: name,
     platformData: alloc?.platformData ?? {},

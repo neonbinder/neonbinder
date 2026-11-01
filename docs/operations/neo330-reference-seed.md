@@ -53,11 +53,8 @@ Two traps are handled for you:
   import keeps the exported number. Production numbered its tables in
   creation order, while a fresh preview numbers them differently. A raw
   import either fails or lands ids on the wrong table. `load` re-encodes
-  every id onto the target's numbers, which it reads from the target through
-  `referenceSeed:preflight` (`apps/web/convex/referenceSeed.ts`, an internal
-  action run with the deploy credentials). Until NEO-408 it took a full
-  snapshot export for this; two fresh previews' exports hung on 2026-10-31
-  while the deployment itself answered in 100 ms.
+  every id onto the target's numbers, which it reads from a read-only export
+  of the target.
 - **int64.** In a snapshot every plain JSON number is a float64, and the
   export writes `2005.0`. The importer reads a bare `2005` as int64, which a
   `v.number()` validator rejects. Every writer here emits float notation, and
@@ -86,11 +83,11 @@ as rows of their own, with their marketplace ids, and they replace the
 target's **entire** `selectorOptions` table: years, brands and sets too, not
 just sports. The load refuses if the target holds rows in any table the
 reset drains that points into `selectorOptions` (`slSetReviews`,
-`selectorSyncStatus`, `collectionCopies`, `collectionBuildingSets`,
 `cardPlayerLinks`, `cardChecklist`, `cardCrossListings`,
 `entityReviewQueue`, `checklistCandidates`), because those rows mean the
-reset did not run. `entityReviewSkips` also points into `selectorOptions`,
-but no reset drains it, so the load only reports its count.
+reset did not run. `selectorSyncStatus` and `entityReviewSkips` also point
+into `selectorOptions`, but no reset drains them, so the load only reports
+their counts.
 
 **`--sports remap`** is the developer mode. `selectorOptions` is left alone.
 Each bundle sport is matched by exact name to the one sport row with that
@@ -99,8 +96,7 @@ their dependants, and references to dropped rows are repaired. The target
 needs its sport rows first, and opening the Set Selector once creates them.
 
 **`clear`** empties all eight tables, `selectorOptions` included, with one
-atomic import of empty tables. Like `load`, it reads the target through
-`referenceSeed:*`, so the target must have the current code deployed.
+atomic import of empty tables. It needs no deployed code (see §6).
 
 `load` refuses a hollow bundle before it contacts Convex. Each of the seven
 reference tables needs at least one row, except `playerSports`, which
@@ -114,10 +110,9 @@ the eight tables.
 
 `load` prints its plan before writing anything: the sport mapping, table
 numbers, rows in versus rows kept, repairs and re-encodes. It then runs the
-same check on the import ZIP, imports, and verifies the result through
-`referenceSeed:tableStats` (exact row counts per table, and every sport id a
-real sport row; a row read from its own table is on the right table number
-by construction). `--dry-run` stops after the plan. It still reads the
+same check on the import ZIP, imports, and verifies the result from a second
+read-only export (exact counts, ids on the right table numbers, every sport
+id a real sport row). `--dry-run` stops after the plan. It still reads the
 target, because the plan needs the target's table numbers.
 
 ### Guards

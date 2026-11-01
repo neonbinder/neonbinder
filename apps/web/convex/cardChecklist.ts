@@ -41,12 +41,9 @@ import { teamFullName } from "../lib/teams/team-name";
 // NEO-335: the wizard's pre-save team suggestions (`teamSuggestionsForPreview`).
 import { ConvexError } from "convex/values";
 import { sameNamePlayers } from "./players";
-import { isDatedTeamYear } from "../lib/players/team-tenure";
 // Called inside the handler only; `cardPlayerLinks.ts` imports this module
 // back (for `findSportForSelectorOption`), which is safe for the same reason.
 import { recentCardIdsForPlayer } from "./cardPlayerLinks";
-// NEO-358 — every `teamOnCardIds` write here keeps the team → cards index.
-import { syncCardTeamLinks } from "./cardTeamLinks";
 // NEO-330: also the key `entityReviewSkips.nameNormalized` is written with
 // (the commit prelude's `norm`). A skip lookup keyed any other way would miss.
 import { normalizeEntityName } from "../lib/entities/normalize-name";
@@ -278,8 +275,6 @@ export const backfillTeamToOnCardIds = internalMutation({
         team: undefined,
         lastUpdated: Date.now(),
       } as any);
-      // NEO-358 — the team → cards index follows the link.
-      await syncCardTeamLinks(ctx, row._id, [teamId]);
       processed += 1;
     }
 
@@ -893,8 +888,6 @@ export const applyBscTeamResolution = internalMutation({
           bscTeamName: undefined,
           lastUpdated: Date.now(),
         });
-        // NEO-358 — the team → cards index follows the card.
-        await syncCardTeamLinks(ctx, row._id, [wholeTeamId]);
         return { applied: true, unmatched: false };
       }
       // The whole string names a team NB holds, but not one this card can
@@ -994,8 +987,6 @@ export const applyBscTeamResolution = internalMutation({
       bscTeamName: undefined,
       lastUpdated: Date.now(),
     });
-    // NEO-358 — the team → cards index follows the card.
-    await syncCardTeamLinks(ctx, row._id, resolvedTeamIds);
 
     return { applied: true, unmatched: false };
   },
@@ -1457,9 +1448,6 @@ export const suggestedTeamsForCard = query({
         // two players share is one suggestion EACH (the fixer folds them).
         const seenTeamIds = new Set<string>();
         for (const entry of player.teamYears ?? []) {
-          // NEO-285 — an undated stint (a college with no years) says nothing
-          // about which team the player was on in a card's season.
-          if (entry.fromYear === undefined) continue;
           if (!inYear(entry.fromYear, entry.toYear)) continue;
           if (seenTeamIds.has(entry.teamId)) continue;
           if (!teamTextById.has(entry.teamId)) {
@@ -1885,11 +1873,7 @@ export const teamSuggestionsForPreview = query({
       }
       const usablePlayer = player
         ? {
-            // NEO-285 — dated stints only: the suggestion reasons in seasons,
-            // and an undated college stint has none.
-            teamYears: (player.teamYears ?? [])
-              .filter(isDatedTeamYear)
-              .filter((entry) => known.get(entry.teamId) !== null),
+            teamYears: (player.teamYears ?? []).filter((entry) => known.get(entry.teamId) !== null),
           }
         : undefined;
 

@@ -1,8 +1,6 @@
 import "./sentry";
-// Radix Themes' stylesheet is imported inside globals.css, in its own cascade
-// layer under Tailwind's utilities. Never import it here: unlayered, it
-// outranks every Tailwind class on a Radix element.
 import "@/app/globals.css";
+import "@radix-ui/themes/styles.css";
 
 import { lazy, StrictMode, useEffect, useMemo } from "react";
 import { createRoot } from "react-dom/client";
@@ -51,12 +49,6 @@ const SignInPage = lazy(() => import("@/app/signin/[[...sign-in]]/page"));
 const SignUpPage = lazy(() => import("@/app/sign-up/[[...sign-up]]/page"));
 const PublicProfile = lazy(() => import("@/app/u/[username]/page"));
 const SalePage = lazy(() => import("@/app/u/[username]/sale/page"));
-// NEO-360 — the public share pages, one module for all four.
-const publicCollection = () => import("@/app/u/[username]/collection/PublicCollectionPage");
-const PublicBinder = lazy(() => publicCollection().then((m) => ({ default: m.PublicBinderPage })));
-const PublicWantList = lazy(() => publicCollection().then((m) => ({ default: m.PublicWantListPage })));
-const PublicTrade = lazy(() => publicCollection().then((m) => ({ default: m.PublicTradePage })));
-const PublicForSale = lazy(() => publicCollection().then((m) => ({ default: m.PublicForSalePage })));
 const TestSignIn = lazy(() => import("@/app/testing/sign-in/page"));
 const TestReset = lazy(() => import("@/app/testing/reset/page"));
 const TestSeedCredentials = lazy(() => import("@/app/testing/seed-credentials/page"));
@@ -77,7 +69,6 @@ const AdminPlayers = lazy(() => import("@/app/admin/players/page"));
 const AdminTeams = lazy(() => import("@/app/admin/teams/page"));
 const AdminLeagues = lazy(() => import("@/app/admin/leagues/page"));
 const AdminFranchises = lazy(() => import("@/app/admin/franchises/page"));
-const AdminCardRequests = lazy(() => import("@/app/admin/card-requests/page"));
 const PipelineRuns = lazy(() => import("@/app/pipeline-runs/page"));
 const DesignPrimitives = lazy(() => import("@/app/design/primitives/page"));
 const PrintHub = lazy(loadPrintHub);
@@ -159,10 +150,6 @@ const SentryErrorBoundary = Sentry.withErrorBoundary(
           <Route path="/signin/*" element={<Deferred><SignInPage /></Deferred>} />
           <Route path="/sign-up/*" element={<Deferred><SignUpPage /></Deferred>} />
           <Route path="/u/:username/sale" element={<Deferred><SalePage /></Deferred>} />
-          <Route path="/u/:username/binders/:path" element={<Deferred><PublicBinder /></Deferred>} />
-          <Route path="/u/:username/want-list" element={<Deferred><PublicWantList /></Deferred>} />
-          <Route path="/u/:username/up-for-trade" element={<Deferred><PublicTrade /></Deferred>} />
-          <Route path="/u/:username/for-sale" element={<Deferred><PublicForSale /></Deferred>} />
           <Route path="/u/:username" element={<Deferred><PublicProfile /></Deferred>} />
           <Route path="/testing/sign-in" element={<Deferred><TestSignIn /></Deferred>} />
           <Route path="/testing/reset" element={<Deferred><TestReset /></Deferred>} />
@@ -286,9 +273,6 @@ const SentryErrorBoundary = Sentry.withErrorBoundary(
                       this section didn't exist yet; its own header comment
                       planned this exact move. */}
                   <Route path="pipeline-runs" element={<Deferred><PipelineRuns /></Deferred>} />
-                  {/* NEO-361 — collectors' card and set requests. The
-                      functions behind it are requireAdmin server-side. */}
-                  <Route path="card-requests" element={<Deferred><AdminCardRequests /></Deferred>} />
                 </Route>
                 {/* The old top-level routes. Kept forever rather than 404ing:
                     /set-selector is bookmarked, and most E2E specs navigate

@@ -32,25 +32,6 @@ export interface TeamYear {
 }
 
 /**
- * NEO-285 — a stint as `players.teamYears` STORES it: `fromYear` is absent on
- * an undated stint (a college the source names without years). Undated stints
- * are facts about a career, not about a season, so anything that reasons in
- * years narrows to `TeamYear` first with `isDatedTeamYear`.
- */
-export interface StoredTeamYear {
-  teamId: string;
-  fromYear?: number;
-  toYear?: number;
-}
-
-/** NEO-285 — narrows a stored stint to one that carries a start year. */
-export function isDatedTeamYear<T extends { fromYear?: number }>(
-  entry: T,
-): entry is T & { fromYear: number } {
-  return entry.fromYear !== undefined;
-}
-
-/**
  * NEO-212 — the one ordering for a career timeline: earliest stint first,
  * and for two stints starting the same year, the one that ended first.
  *
@@ -78,17 +59,10 @@ export function isDatedTeamYear<T extends { fromYear?: number }>(
  *
  * Pure, and returns a new array; the input is never mutated.
  */
-export function sortTeamYears<T extends { fromYear?: number; toYear?: number }>(
+export function sortTeamYears<T extends { fromYear: number; toYear?: number }>(
   rows: readonly T[],
 ): T[] {
   return [...rows].sort((a, b) => {
-    // NEO-285 — undated stints sort after every dated one, in the order they
-    // were given (Array.prototype.sort is stable). They have no place on the
-    // timeline, and listing them last keeps the dated career reading in order.
-    if (a.fromYear === undefined || b.fromYear === undefined) {
-      if (a.fromYear === b.fromYear) return 0;
-      return a.fromYear === undefined ? 1 : -1;
-    }
     if (a.fromYear !== b.fromYear) return a.fromYear - b.fromYear;
     return (a.toYear ?? Infinity) - (b.toYear ?? Infinity);
   });
@@ -120,15 +94,12 @@ export function tenureYears(entry: TeamYear, currentYear: number): number {
  * 27 of the first 100 prod players have no `teamYears`.
  */
 export function pickDefaultTeamYear(
-  teamYears: ReadonlyArray<StoredTeamYear> | undefined,
+  teamYears: TeamYear[] | undefined,
   currentYear: number,
 ): TeamYear | null {
-  // NEO-285 — an undated stint has no tenure to measure and no years for the
-  // label to print, so it is never the default. The user can still pick it.
-  const dated = (teamYears ?? []).filter(isDatedTeamYear);
-  if (dated.length === 0) return null;
+  if (!teamYears || teamYears.length === 0) return null;
 
-  return dated.reduce((best, candidate) => {
+  return teamYears.reduce((best, candidate) => {
     const bestTenure = tenureYears(best, currentYear);
     const candidateTenure = tenureYears(candidate, currentYear);
     if (candidateTenure !== bestTenure) {

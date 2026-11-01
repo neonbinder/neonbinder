@@ -29,7 +29,6 @@ import { ConvexError } from "convex/values";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import { Id } from "./_generated/dataModel";
-import { insertTestCard } from "../lib/testing/card-row";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -72,8 +71,7 @@ type HoldKind =
   | "players"
   | "teams"
   | "leagues"
-  | "review"
-  | "collectors";
+  | "review";
 
 type Hold = {
   kind: HoldKind;
@@ -130,7 +128,7 @@ async function insertCard(
   cardName: string,
 ): Promise<Id<"cardChecklist">> {
   return t.run(async (ctx) =>
-    insertTestCard(ctx, {
+    ctx.db.insert("cardChecklist", {
       selectorOptionId,
       cardNumber,
       cardName,
@@ -466,71 +464,6 @@ describe("deleteSelectorOption — empty row", () => {
     ).toBe(0);
   });
 
-  // NEO-358 — "Sets I'm building" entries are swept with an empty set, up to
-  // the same cap; past it the delete refuses with a `collectors` holding.
-  async function buildingEntries(
-    t: ReturnType<typeof convexTest>,
-    setId: Id<"selectorOptions">,
-    n: number,
-  ) {
-    await t.run(async (ctx) => {
-      for (let i = 0; i < n; i++) {
-        await ctx.db.insert("collectionBuildingSets", {
-          ownerId: `collector_${i}`,
-          setId,
-          lastUpdated: SENTINEL_LAST_UPDATED,
-        });
-      }
-    });
-  }
-  const buildingCount = (t: ReturnType<typeof convexTest>) =>
-    t.run(async (ctx) => (await ctx.db.query("collectionBuildingSets").collect()).length);
-
-  test("NEO-358: refuses with a collectors holding when more collectors build the set than the cap", async () => {
-    const t = convexTest(schema, modules);
-    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
-    const setId = await insertRow(t, "setName", "Topps Chrome");
-    await buildingEntries(t, setId, TRANSIENT_DELETE_CAP + 1);
-
-    const holdings = await asAdmin.query(
-      api.selectorOptions.getSelectorOptionHoldings,
-      { id: setId },
-    );
-    expect(holdings.holds).toEqual([
-      { kind: "collectors", count: TRANSIENT_DELETE_CAP + 1, examples: [] },
-    ]);
-
-    const error = await expectRefusal(() =>
-      asAdmin.mutation(api.selectorOptions.deleteSelectorOption, { id: setId }),
-    );
-    expect(error.data.code).toBe("SELECTOR_ROW_NOT_EMPTY");
-    expect(holdFor(error.data, "collectors")?.count).toBe(TRANSIENT_DELETE_CAP + 1);
-    // Nothing written: the set and every entry are still there.
-    expect(await t.run(async (ctx) => ctx.db.get(setId))).not.toBeNull();
-    expect(await buildingCount(t)).toBe(TRANSIENT_DELETE_CAP + 1);
-  });
-
-  test("NEO-358: sweeps the collectors' building entries at the cap without refusing", async () => {
-    const t = convexTest(schema, modules);
-    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
-    const setId = await insertRow(t, "setName", "Topps Chrome");
-    const otherSetId = await insertRow(t, "setName", "Topps Finest");
-    await buildingEntries(t, setId, TRANSIENT_DELETE_CAP);
-    await buildingEntries(t, otherSetId, 1);
-
-    const holdings = await asAdmin.query(
-      api.selectorOptions.getSelectorOptionHoldings,
-      { id: setId },
-    );
-    expect(holdings.holds).toEqual([]);
-    const result = await asAdmin.mutation(api.selectorOptions.deleteSelectorOption, {
-      id: setId,
-    });
-    expect(result.deleted).toBe(true);
-    // Only the deleted set's entries went; another set's entry stays.
-    expect(await buildingCount(t)).toBe(1);
-  });
-
   test("an empty SYNCED row is deletable and reports syncedBack", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
@@ -606,9 +539,7 @@ describe("deleteSelectorOption — refusals", () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
 
-    // NEO-363 — a card cannot exist without a sport above it.
-    const sportId = await insertRow(t, "sport", "Baseball");
-    const setId = await insertRow(t, "setName", "Topps Chrome", { parentId: sportId });
+    const setId = await insertRow(t, "setName", "Topps Chrome");
     const rowId = await insertRow(t, "insert", "Future Stars", {
       parentId: setId,
       isCustom: true,
@@ -632,9 +563,7 @@ describe("deleteSelectorOption — refusals", () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
 
-    // NEO-363 — a card cannot exist without a sport above it.
-    const sportId = await insertRow(t, "sport", "Baseball");
-    const setId = await insertRow(t, "setName", "2022 Chronicles", { parentId: sportId });
+    const setId = await insertRow(t, "setName", "2022 Chronicles");
     const homeRowId = await insertRow(t, "insert", "Home", {
       parentId: setId,
       isCustom: true,
@@ -841,9 +770,7 @@ describe("deleteSelectorOption — refusals", () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
 
-    // NEO-363 — a card cannot exist without a sport above it.
-    const sportId = await insertRow(t, "sport", "Baseball");
-    const setId = await insertRow(t, "setName", "Topps Chrome", { parentId: sportId });
+    const setId = await insertRow(t, "setName", "Topps Chrome");
     const baseId = await insertRow(t, "variantType", "Base", {
       parentId: setId,
     });
@@ -967,9 +894,7 @@ describe("getSelectorOptionHoldings", () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
 
-    // NEO-363 — a card cannot exist without a sport above it.
-    const sportId = await insertRow(t, "sport", "Baseball");
-    const setId = await insertRow(t, "setName", "Topps Chrome", { parentId: sportId });
+    const setId = await insertRow(t, "setName", "Topps Chrome");
     const rowId = await insertRow(t, "insert", "Future Stars", {
       parentId: setId,
       isCustom: true,
@@ -1279,9 +1204,7 @@ describe("deleteSelectorOption — adversarial", () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
 
-    // NEO-363 — a card cannot exist without a sport above it.
-    const sportId = await insertRow(t, "sport", "Baseball");
-    const setId = await insertRow(t, "setName", "Topps Chrome", { parentId: sportId });
+    const setId = await insertRow(t, "setName", "Topps Chrome");
     const rowId = await insertRow(t, "insert", "Future Stars", {
       parentId: setId,
       isCustom: true,
@@ -1367,11 +1290,8 @@ describe("commitCardChecklistChunk — deleted parent row", () => {
   test("still commits normally while the row exists", async () => {
     const t = convexTest(schema, modules);
 
-    // NEO-363 — a card cannot be committed without a sport above it.
-    const sportId = await insertRow(t, "sport", "Baseball");
     const setId = await insertRow(t, "setName", "Topps Chrome", {
       isCustom: true,
-      parentId: sportId,
     });
 
     const result = await t.run(async (ctx) =>

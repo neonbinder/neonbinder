@@ -183,11 +183,9 @@ typed into "+ Custom" (the form refuses the name) and never searched for.
   `@regression` tag (it drifted into a set disjoint from smoke and was
   deleted) and never a `wip` tag: fix the bug instead. Run a subset with
   `--grep @smoke`.
-- **Run only what you changed, against dev before the first push.** Bring
-  dev up to date first if it is behind the branch; use the PR's Convex preview
-  only when dev cannot reproduce it (see Running). Never the full suite
-  locally unless the change is to the harness itself, and never the seed's
-  reset on dev without saying so first (it wipes dev under every session).
+- **Run only what you changed, against the PR's Convex preview.** Never the
+  full suite locally unless the change is to the harness itself, and never
+  against shared dev (the seed resets its target).
 - **Timing is never the first diagnosis.** "Looks like timing or a flake"
   means look harder, not raise a number. Get the failure screenshot and
   `error-context.md` (an ARIA snapshot of the page at failure) before
@@ -251,9 +249,6 @@ test("<title states the feature>", { tag: ["@set-selector"] }, async ({ page, si
 - `support/players.ts`: `/admin/players` (`expectPlayersLoaded`,
   `emptyListAndPickSport`, `addPlayerByHand`).
 - `support/profile.ts`: `fillPublicProfile`.
-- `support/recorded-names.ts`: `recordedNoMatchPlayer(env, pool)`, a real
-  person per worker for a spec that adds a Baseball player as scaffolding
-  (see "Enrichment fixtures").
 - `support/theme.ts`: `expectLook`, `expectPageLook` (a light or dark page, proven by painted colour; theme specs), `paintsLook`, `pageHasBanner` (what `expectAccessible` uses to prove each mode; see "Accessibility checks").
 - `support/wizard.ts`: entity-review wizard (`reviewWizard`, `stepCounter`,
   `readStep`, `expectStepLeft`, `fetchChecklistToWizard`,
@@ -378,8 +373,7 @@ Idioms:
 - **Option names include their badges.** A set-builder row reads
   "Base SL BSC" to a screen reader; pick rows by their own visible text with
   `columnOption()` (`.filter({ has: getByText(name, { exact: true }) })`).
-- **Fresh-only specs** (wikidata live proof, the committing wizard flows, the
-  specs that add a player from `support/recorded-names.ts`) pass
+- **Fresh-only specs** (wikidata live proof, the committing wizard flows) pass
   once per seed. A second local run fails at its "nothing exists yet"
   precondition; that is correct, not flaky. Re-seed.
 
@@ -397,14 +391,6 @@ only after every desktop shard finished (the reset wipes the shared
 preview), and still runs when desktop has reds. The `e2e` gate needs a
 passing result for every planned spec on BOTH projects and a passing seed
 for each pass, and a skipped test counts as a failure.
-
-The one exception is `playwright/project-scope.mjs` (NEO-389): a spec listed
-there is left out of that project entirely (the config's `testIgnore`, the
-shard plan and the gate all read it), so it is not planned rather than
-skipped. A listing needs a reason in the file: the other project's run must
-add no UI coverage. Today only `pipeline-escalation-cold-start` is
-desktop-only, because it spends minutes waiting on the preprocess model's
-cold start, not on the UI.
 
 - **Write one spec for both.** Role, label and text locators do not care
   about the viewport, and `click()` scrolls by itself. Most specs need no
@@ -464,7 +450,7 @@ It works because test accounts are on System, so the app follows the OS.
 - **A page that cannot flip is checked in the mode it is in, and the result
   says so** (`note` in the attachment, an `axe-single-mode` annotation in the
   report): the page stayed on one mode when the OS changed (an explicit saved
-  theme, a ForceDark route, the public collection demo's Light/Dark switch once
+  theme, a ForceDark route, the collection demo's Light/Dark switch once
   flipped, i.e. the page is pinned; the probe waits the 7 s budget before it
   concludes that), or the page has no header banner to read the mode from
   (the public profile and sale pages). A single-mode result is a coverage
@@ -517,7 +503,7 @@ await expectAccessible(page, { within: dialog, label: "New Team dialog" });
   `use.colorScheme: "dark"`, and the app follows the OS while a collector is on
   System (the default), so every spec sees the dark theme between axe checks.
   `expectAccessible` flips the OS itself and puts it back dark (above). Only
-  the theme specs (`profile/theme-setting` and
+  the theme specs (`profile/theme-setting`, `home/collection-demo-theme`,
   `home/binder-tracking-demo-theme`) otherwise call `page.emulateMedia` or
   change the saved theme, and each restores what it changed: System saved and
   the OS dark again, in a `finally` block (R7), so a later spec on the same
@@ -725,30 +711,8 @@ never a stub of it. What that changes:
   deployment's `players` rows, so a capture taken after the suite has run
   would sweep it in; `convex/adapters/enrichmentFixtureFile.test.ts` refuses
   a recording that contains it.
-- **Every other spec stays off live Wikidata** (Jason, 2026-10-30: "Use real
-  names in tests. Keep a single test that does a real Wikidata lookup").
-  Every player and league the product CREATES is looked up once, through the
-  same 5-wide pool the wizard's lookups wait in, so a minted name
-  (`PM<token>`) is a live miss that holds a slot. Teams are not looked up on
-  creation (NEO-254), and a custom sport has no `sportConfig.wikidata`, so
-  neither costs anything. A spec that adds a Baseball player only as
-  scaffolding takes a real person from `support/recorded-names.ts`
-  (`recordedNoMatchPlayer(env, "<spec>")`): each is a recorded Baseball
-  no-match, so the add is a fixture hit that leaves the row bare, one name
-  per worker per spec. Such a spec is fresh-only. The unit test refuses a
-  pool name that is not a recorded no-match. A checklist name avoids the
-  lookup when the catalogue resolves it to one player, when two players
-  share it (a ready pick step, NEO-332), or when the recording holds it
-  under the lookup's sport. The file's default sport is Baseball; an entry
-  for another sport (the 1995 hockey fixtures' names) carries its own
-  `sportQid` and answers only that sport.
-- **Adding an entry** is a genuine captured answer only: §4/§4a of
-  `docs/operations/neo289-enrichment-fixtures.md`, or a `null` for a name
-  whose live lookup logged `wikidata_player_no_match` /
-  `wikidata_team_no_match` in a run's `convex-logs-*` artifact (those lines
-  are written only after a completed search found nothing, never on a
-  transport failure). Entries keyed with `fixtureKey` under their own sport,
-  carrying `sportQid` when it is not the file's, merged sorted.
+- The wizard specs on the Cubs / Orioles / Brooklyn fixtures get partial hits
+  from the recording and stay live for the rest.
 
 Fresh-only: the live proof passes once per seed. A second local run against
 the same preview finds the row the first run created, the add form demotes
@@ -769,25 +733,9 @@ All commands run from `apps/web`.
 | `npm run test:e2e:seed` | `./e2e-baseline.sh reset` then the `setup` project: seeds the target deployment |
 | `npx eslint playwright` | lint the suite |
 
-**Locally: only the specs covering your change, against dev before the
-first push** (NEO-390). Bring dev up to date first if it is behind the branch:
-merge `origin/main` into the branch, check `npx convex function-spec`, and
-push with `npx convex dev --once` when dev lacks what the specs reach. The
-order and the rules for sharing dev with other sessions are in the root
-`CLAUDE.md` → **Run your specs against dev before the first push**.
-
-```bash
-# shell 1: local Vite on a spare port, on dev (.env.local / the env points at it)
-VITE_DEV_DISABLE_HTTPS=1 npx vite --port 3001 --strictPort
-# shell 2: one spec at a time, on a test account no other session is using
-APP_URL=http://localhost:3001 WORKER_INDEX=8 \
-  npx playwright test --project=e2e --no-deps <path-substring>
-```
-
-Dev is not reseeded per run, and its reset wipes it under every other
-session. A spec that needs a fresh seed, a change to `services/browser` or
-`services/preprocess`, or a schema dev refuses runs against **the PR
-preview** after the first push instead:
+**Locally: only the specs covering your change, against the PR preview,
+never shared dev** (the seed resets its target). Run a second Vite on a spare
+port wired to the PR's Convex preview, and point Playwright at it:
 
 ```bash
 # shell 1: local Vite on a spare port, wired to the PR's Convex preview
@@ -827,8 +775,7 @@ same Convex env steps, reset and `setup` project; the mobile shards run
 `--project=e2e-mobile`. Each shard gets an explicit file list from
 `node playwright/shard-plan.mjs 8 <i> --project <e2e|e2e-mobile>`
 (longest-processing-time-first over that project's entry in `timings.json`,
-not `--shard`; in CI the `timings` job first rebuilds that file from the
-median of the last few green runs' reports, NEO-389) and runs the `bootstrap` project for its own account first, so
+not `--shard`) and runs the `bootstrap` project for its own account first, so
 each pass re-bootstraps its workers after its reset (workers 0-7 are used;
 accounts 0-11 exist). Expected wall clock is about 20 minutes: seed ~4 min,
 longest shard ~5 min (the longest spec), twice. The `e2e` gate fails on any
@@ -836,10 +783,8 @@ failed spec, any missing result on either project, a pass whose seed did not
 pass, or a shard that died before reporting. A `report` job publishes the
 "Playwright E2E" check and a sticky PR comment. `e2e-repeat.yml` runs the
 suite N times (flake sampling); `refresh-flow-timings.yml` refreshes
-`timings.json` from CI (CI no longer depends on it; the committed file is
-the fallback). Refresh by hand from merged results with
-`node playwright/shard-plan.mjs --from-results <results.json>...` (each spec's
-median over the reports given): `seconds` is
+`timings.json` from CI. Refresh by hand from a run's merged results with
+`node playwright/shard-plan.mjs --from-results <results.json>`: `seconds` is
 each spec's desktop time and `byProject["e2e-mobile"]` its mobile time (a
 project with no value for a spec falls back to the desktop one, so a
 desktop-only file still plans both passes).

@@ -21,7 +21,6 @@ import {
   REPORT_CARD_ROWS_PER_CALL,
   REPORT_DOCS_PER_CALL,
 } from "./slLinkDuplicatesReport";
-import { insertTestCard } from "../lib/testing/card-row";
 
 const modules = (
   import.meta as unknown as {
@@ -133,7 +132,7 @@ async function seed(t: T) {
   await t.run(async (ctx) => {
     for (const [rowId, n] of [[recreated, 2], [moved, 3]] as const) {
       for (let i = 0; i < n; i++) {
-        await insertTestCard(ctx, {
+        await ctx.db.insert("cardChecklist", {
           selectorOptionId: rowId,
           cardNumber: String(i + 1),
           cardName: `Player ${i}`,
@@ -257,7 +256,7 @@ describe("slLinkDuplicatesReport.run (NEO-312)", () => {
     const ids = await seed(t);
     await t.run(async (ctx) => {
       for (let i = 0; i < REPORT_CARD_COUNT_CAP + 50; i++) {
-        await insertTestCard(ctx, {
+        await ctx.db.insert("cardChecklist", {
           selectorOptionId: ids.recreated,
           cardNumber: String(100 + i),
           cardName: `Bulk ${i}`,
@@ -347,13 +346,6 @@ describe("slLinkDuplicatesReport.run (NEO-312)", () => {
         });
       const a = await mk("A");
       const b = await mk("B");
-      // NEO-363 — required on a card; the report under test never reads it.
-      const sportId = await ctx.db.insert("selectorOptions", {
-        level: "sport",
-        value: "Baseball",
-        platformData: {},
-        lastUpdated: SENTINEL,
-      });
       for (const parentId of [a, b]) {
         for (let i = 0; i < 3; i++) {
           const child = await ctx.db.insert("selectorOptions", {
@@ -364,12 +356,11 @@ describe("slLinkDuplicatesReport.run (NEO-312)", () => {
             children: [],
             lastUpdated: SENTINEL,
           });
-          await insertTestCard(ctx, {
+          await ctx.db.insert("cardChecklist", {
             selectorOptionId: parentId,
             cardNumber: String(i),
             cardName: heavy,
             platformData: {},
-            sportId,
             sortOrder: i,
             lastUpdated: SENTINEL,
           });

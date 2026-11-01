@@ -25,7 +25,6 @@ import {
   MAX_VARIANT_TYPES_PER_SET,
   READ_BYTES_RESERVE,
 } from "./parallelChecklistBuild";
-import { insertTestCard } from "../lib/testing/card-row";
 
 const modules = (
   import.meta as unknown as {
@@ -170,7 +169,7 @@ async function addCard(
   card: Partial<Doc<"cardChecklist">> & { cardNumber: string; cardName: string },
 ) {
   return t.run(async (ctx) =>
-    insertTestCard(ctx, {
+    ctx.db.insert("cardChecklist", {
       selectorOptionId,
       platformData: {},
       sortOrder: 0,
@@ -202,7 +201,7 @@ async function addHeavyCards(
   for (let start = 0; start < count; start += perBatch) {
     await t.run(async (ctx) => {
       for (let i = start; i < Math.min(count, start + perBatch); i++) {
-        await insertTestCard(ctx, {
+        await ctx.db.insert("cardChecklist", {
           selectorOptionId,
           cardNumber: String(i + 1),
           cardName: `Player ${i + 1}`,

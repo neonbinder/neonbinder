@@ -1,8 +1,7 @@
 import { query, mutation, internalMutation, internalQuery } from "./_generated/server";
 import { v } from "convex/values";
 import { getCurrentUserId } from "./auth";
-import { binderOpenPreferenceValidator, collectionCopyConditionValidator, themePreferenceValidator } from "./schema";
-import { DEFAULT_CONDITION } from "./collection";
+import { themePreferenceValidator } from "./schema";
 
 const marketplaceAccountIdsValidator = v.optional(v.object({
   bscSellerId: v.optional(v.string()),
@@ -36,9 +35,6 @@ export const getUserProfile = query({
       preferences: v.optional(v.object({
         defaultYear: v.optional(v.number()),
         theme: v.optional(themePreferenceValidator),
-        binderOpen: v.optional(binderOpenPreferenceValidator),
-        lastBinder: v.optional(v.id("collectionContainers")),
-        defaultCondition: v.optional(collectionCopyConditionValidator),
       })),
     }),
     v.null()
@@ -175,10 +171,6 @@ export const updateUserProfile = mutation({
     preferences: v.optional(v.object({
       defaultYear: v.optional(v.number()),
       theme: v.optional(themePreferenceValidator),
-      // NEO-374: no `lastBinder` here. It is written only by `setLastBinder`,
-      // which checks the binder is the caller's own.
-      binderOpen: v.optional(binderOpenPreferenceValidator),
-      defaultCondition: v.optional(collectionCopyConditionValidator),
     })),
   },
   returns: v.boolean(),
@@ -243,64 +235,6 @@ export const setThemePreference = mutation({
       await ctx.db.insert("userProfiles", {
         userId,
         preferences: { theme: args.theme },
-      });
-    }
-    return null;
-  },
-});
-
-/**
- * NEO-380 — the condition a raw copy gets when the collector names none:
- * their Profile → Settings pick, else `DEFAULT_CONDITION` (Excellent). The
- * copy forms preselect it and quick counts write it; the server fills it in
- * on every write that sends none (`collection.defaultConditionOf`).
- *
- * `null` only when signed out.
- */
-export const getDefaultCondition = query({
-  args: {},
-  returns: v.union(collectionCopyConditionValidator, v.null()),
-  handler: async (ctx) => {
-    const userId = await getCurrentUserId(ctx);
-    if (!userId) {
-      return null;
-    }
-    const profile = await ctx.db
-      .query("userProfiles")
-      .withIndex("by_user", (q) => q.eq("userId", userId))
-      .unique();
-    return profile?.preferences?.defaultCondition ?? DEFAULT_CONDITION;
-  },
-});
-
-/**
- * NEO-380 — save the collector's default card condition. Patches
- * `defaultCondition` alone and carries every other preference across (see
- * `setThemePreference`); creates the profile row when there is none yet.
- * Copies already saved keep their condition.
- */
-export const setDefaultCondition = mutation({
-  args: { condition: collectionCopyConditionValidator },
-  returns: v.null(),
-  handler: async (ctx, args) => {
-    const userId = await getCurrentUserId(ctx);
-    if (!userId) {
-      throw new Error("Not authenticated");
-    }
-
-    const profile = await ctx.db
-      .query("userProfiles")
-      .withIndex("by_user", (q) => q.eq("userId", userId))
-      .unique();
-
-    if (profile) {
-      await ctx.db.patch(profile._id, {
-        preferences: { ...profile.preferences, defaultCondition: args.condition },
-      });
-    } else {
-      await ctx.db.insert("userProfiles", {
-        userId,
-        preferences: { defaultCondition: args.condition },
       });
     }
     return null;
@@ -840,98 +774,5 @@ export const getPrizes = query({
       .collect();
 
     return prizes;
-  },
-});
-
-/**
- * NEO-374 — where My Collection opens, for the collection page and Profile →
- * Settings: `open` is "all" (the default) or "last"; `lastBinder` is the
- * binder last picked while `open` is "last", or null for All. A signed-out
- * caller reads the default.
- */
-export const getBinderPreference = query({
-  args: {},
-  returns: v.object({
-    open: binderOpenPreferenceValidator,
-    lastBinder: v.union(v.id("collectionContainers"), v.null()),
-  }),
-  handler: async (ctx) => {
-    const userId = await getCurrentUserId(ctx);
-    if (!userId) {
-      return { open: "all" as const, lastBinder: null };
-    }
-    const profile = await ctx.db
-      .query("userProfiles")
-      .withIndex("by_user", (q) => q.eq("userId", userId))
-      .unique();
-    const open = profile?.preferences?.binderOpen ?? "all";
-    return {
-      open,
-      lastBinder: open === "last" ? (profile?.preferences?.lastBinder ?? null) : null,
-    };
-  },
-});
-
-/**
- * NEO-374 — save where My Collection opens. Patches `binderOpen` alone and
- * carries every other preference across (as `setThemePreference` does).
- * Choosing "all" also drops the remembered binder, so nothing is kept that
- * the setting does not use.
- */
-export const setBinderOpenPreference = mutation({
-  args: { open: binderOpenPreferenceValidator },
-  returns: v.null(),
-  handler: async (ctx, args) => {
-    const userId = await getCurrentUserId(ctx);
-    if (!userId) {
-      throw new Error("Not authenticated");
-    }
-    const profile = await ctx.db
-      .query("userProfiles")
-      .withIndex("by_user", (q) => q.eq("userId", userId))
-      .unique();
-    if (!profile) {
-      await ctx.db.insert("userProfiles", { userId, preferences: { binderOpen: args.open } });
-      return null;
-    }
-    const preferences = { ...profile.preferences, binderOpen: args.open };
-    if (args.open === "all") delete preferences.lastBinder;
-    await ctx.db.patch(profile._id, { preferences });
-    return null;
-  },
-});
-
-/**
- * NEO-374 — remember the binder the collector just picked (null for All).
- * Only while the setting is "remember the last binder"; otherwise it writes
- * nothing. The binder must be one of the caller's own: a foreign or missing
- * id is refused.
- */
-export const setLastBinder = mutation({
-  args: { binderId: v.union(v.id("collectionContainers"), v.null()) },
-  returns: v.null(),
-  handler: async (ctx, args) => {
-    const userId = await getCurrentUserId(ctx);
-    if (!userId) {
-      throw new Error("Not authenticated");
-    }
-    if (args.binderId !== null) {
-      const binder = await ctx.db.get(args.binderId);
-      if (!binder || binder.ownerId !== userId) {
-        throw new Error("Binder not found");
-      }
-    }
-    const profile = await ctx.db
-      .query("userProfiles")
-      .withIndex("by_user", (q) => q.eq("userId", userId))
-      .unique();
-    if (!profile || profile.preferences?.binderOpen !== "last") {
-      return null;
-    }
-    const preferences = { ...profile.preferences };
-    if (args.binderId === null) delete preferences.lastBinder;
-    else preferences.lastBinder = args.binderId;
-    await ctx.db.patch(profile._id, { preferences });
-    return null;
   },
 });

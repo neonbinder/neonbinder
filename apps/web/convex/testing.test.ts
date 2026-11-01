@@ -1,6 +1,5 @@
 // Unit tests for the `resetMyTestState` mutation. Verifies caller-scoped
-// deletes across publicProfiles / userProfiles / prizePool and (NEO-358) the
-// caller's collection tables, the auth gate
+// deletes across publicProfiles / userProfiles / prizePool, the auth gate
 // (must be signed in), and the production fail-closed gate (mutation throws
 // unless TESTING_RESET_SECRET is present on the deployment).
 
@@ -9,7 +8,6 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
 import { __resetContractCache } from "./credentials";
-import { insertTestCard } from "../lib/testing/card-row";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -50,82 +48,6 @@ async function seedUser(
       createdAt: 0,
       updatedAt: 0,
     });
-    // NEO-358: one copy in a Main binder, and one set being built. The
-    // catalog rows they point at are shared reference data the reset never
-    // touches.
-    // NEO-363 — a card cannot exist without a sport above it.
-    const sportId = await ctx.db.insert("selectorOptions", {
-      level: "sport",
-      value: `Sport ${userId}`,
-      platformData: {},
-      lastUpdated: 0,
-    });
-    const setId = await ctx.db.insert("selectorOptions", {
-      level: "setName",
-      value: `Set ${userId}`,
-      parentId: sportId,
-      platformData: {},
-      lastUpdated: 0,
-    });
-    const variantId = await ctx.db.insert("selectorOptions", {
-      level: "variantType",
-      value: "Base",
-      parentId: setId,
-      platformData: {},
-      lastUpdated: 0,
-    });
-    const cardId = await insertTestCard(ctx, {
-      selectorOptionId: variantId,
-      cardNumber: "1",
-      cardName: "Card",
-      platformData: {},
-      sortOrder: 0,
-      lastUpdated: 0,
-    });
-    const homeId = await ctx.db.insert("collectionContainers", {
-      ownerId: userId,
-      kind: "binder",
-      system: "main",
-      name: "Main",
-      lastUpdated: 0,
-    });
-    await ctx.db.insert("collectionCopies", {
-      ownerId: userId,
-      cardId,
-      variantId,
-      setId,
-      homeId,
-      quantity: 1,
-      lastUpdated: 0,
-    });
-    // NEO-401 — a smart binder's stored fits, drained with its container.
-    await ctx.db.insert("collectionBinderFits", {
-      ownerId: userId,
-      binderId: homeId,
-      cardId,
-      variantId,
-      order: 0,
-      generation: 1,
-    });
-    await ctx.db.insert("collectionBinderFitsState", {
-      ownerId: userId,
-      binderId: homeId,
-      computedAt: 0,
-      supported: true,
-      complete: true,
-      count: 1,
-    });
-    await ctx.db.insert("collectionBuildingSets", {
-      ownerId: userId,
-      setId,
-      lastUpdated: 0,
-    });
-    await ctx.db.insert("variantCommonPrices", {
-      ownerId: userId,
-      variantId,
-      priceCents: 25,
-      lastUpdated: 0,
-    });
   });
 }
 
@@ -136,11 +58,6 @@ async function countRows(
   publicProfiles: number;
   userProfiles: number;
   prizePool: number;
-  collectionCopies: number;
-  collectionContainers: number;
-  collectionBuildingSets: number;
-  variantCommonPrices: number;
-  binderFits: number;
 }> {
   return t.run(async (ctx) => {
     const pp = (await ctx.db.query("publicProfiles").collect()).filter(
@@ -152,36 +69,16 @@ async function countRows(
     const pz = (await ctx.db.query("prizePool").collect()).filter(
       (r) => r.userId === userId,
     );
-    const cc = (await ctx.db.query("collectionCopies").collect()).filter(
-      (r) => r.ownerId === userId,
-    );
-    const ct = (await ctx.db.query("collectionContainers").collect()).filter(
-      (r) => r.ownerId === userId,
-    );
-    const bs = (await ctx.db.query("collectionBuildingSets").collect()).filter(
-      (r) => r.ownerId === userId,
-    );
-    const vp = (await ctx.db.query("variantCommonPrices").collect()).filter(
-      (r) => r.ownerId === userId,
-    );
-    const bf =
-      (await ctx.db.query("collectionBinderFits").collect()).filter((r) => r.ownerId === userId).length +
-      (await ctx.db.query("collectionBinderFitsState").collect()).filter((r) => r.ownerId === userId).length;
     return {
       publicProfiles: pp.length,
       userProfiles: up.length,
       prizePool: pz.length,
-      collectionCopies: cc.length,
-      collectionContainers: ct.length,
-      collectionBuildingSets: bs.length,
-      variantCommonPrices: vp.length,
-      binderFits: bf,
     };
   });
 }
 
 describe("resetMyTestState", () => {
-  test("deletes the caller's own rows across every per-user table", async () => {
+  test("deletes the caller's own rows across all three tables", async () => {
     const t = convexTest(schema, modules);
     await seedUser(t, USER_A);
 
@@ -193,22 +90,11 @@ describe("resetMyTestState", () => {
       publicProfiles: 1,
       userProfiles: 1,
       prizePool: 1,
-      collectionCopies: 1,
-      collectionWants: 0,
-      cardRequests: 0,
-      collectionContainers: 1,
-      collectionBuildingSets: 1,
-      variantCommonPrices: 1,
     });
     expect(await countRows(t, USER_A)).toEqual({
       publicProfiles: 0,
       userProfiles: 0,
       prizePool: 0,
-      collectionCopies: 0,
-      collectionContainers: 0,
-      collectionBuildingSets: 0,
-      variantCommonPrices: 0,
-      binderFits: 0,
     });
   });
 
@@ -225,21 +111,11 @@ describe("resetMyTestState", () => {
       publicProfiles: 0,
       userProfiles: 0,
       prizePool: 0,
-      collectionCopies: 0,
-      collectionContainers: 0,
-      collectionBuildingSets: 0,
-      variantCommonPrices: 0,
-      binderFits: 0,
     });
     expect(await countRows(t, USER_B)).toEqual({
       publicProfiles: 1,
       userProfiles: 1,
       prizePool: 1,
-      collectionCopies: 1,
-      collectionContainers: 1,
-      collectionBuildingSets: 1,
-      variantCommonPrices: 1,
-      binderFits: 2,
     });
   });
 
@@ -254,12 +130,6 @@ describe("resetMyTestState", () => {
       publicProfiles: 0,
       userProfiles: 0,
       prizePool: 0,
-      collectionCopies: 0,
-      collectionWants: 0,
-      cardRequests: 0,
-      collectionContainers: 0,
-      collectionBuildingSets: 0,
-      variantCommonPrices: 0,
     });
   });
 
@@ -276,11 +146,6 @@ describe("resetMyTestState", () => {
       publicProfiles: 1,
       userProfiles: 1,
       prizePool: 1,
-      collectionCopies: 1,
-      collectionContainers: 1,
-      collectionBuildingSets: 1,
-      variantCommonPrices: 1,
-      binderFits: 2,
     });
   });
 
@@ -299,11 +164,6 @@ describe("resetMyTestState", () => {
       publicProfiles: 1,
       userProfiles: 1,
       prizePool: 1,
-      collectionCopies: 1,
-      collectionContainers: 1,
-      collectionBuildingSets: 1,
-      variantCommonPrices: 1,
-      binderFits: 2,
     });
   });
 });

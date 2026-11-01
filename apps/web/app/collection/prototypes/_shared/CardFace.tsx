@@ -6,13 +6,9 @@ import {
   leadPlayer,
   leadTeam,
   playerInitials,
+  printRunLabel,
   type Card,
-  type Finish,
 } from "./data";
-import type { Card as ModelCard } from "../../final/data/types";
-import { cardLabel as modelLabel, playerInitials as initialsOf } from "../../final/data/labels";
-import { useCardImage } from "../../final/data/cardImages";
-import type { CopyPhotos } from "../../final/data/types";
 import "./card-face.css";
 
 /**
@@ -41,14 +37,7 @@ const WIDTH: Record<CardFaceSize, string> = {
 };
 
 export interface CardFaceProps {
-  /** A prototype fixture card. Pass this or `model`. */
-  card?: Card;
-  /**
-   * NEO-358: a card from the collection's view model (the real catalog or
-   * the demo store), drawn the same way. Its finish comes from its variant's
-   * title (`final/data/finish`); a team NB has no colours for draws in slate.
-   */
-  model?: ModelCard;
+  card: Card;
   /** sm 88px, md 144px, lg 240px, fill = the parent's width. Default md. */
   size?: CardFaceSize;
   /** "need" dims and desaturates the card and says "Need" on it. Default owned. */
@@ -63,12 +52,6 @@ export interface CardFaceProps {
   /** Overrides the accessible name. */
   label?: string;
   className?: string;
-  /**
-   * NEO-377: a real photo to show instead of the drawn card. Left out, a
-   * `model` card shows the collector's own photo when the page has one
-   * (`final/data/cardImages`); the drawing is the fallback.
-   */
-  photo?: CopyPhotos;
 }
 
 /** Proportions used inside the face, in % of the card's width. */
@@ -77,77 +60,8 @@ const cq = (n: number) => `${n}cqw`;
 const GOLD_FRAME =
   "linear-gradient(135deg, #8a6a1c 0%, #f5d77a 28%, #b8902c 52%, #fff1b8 74%, #9c7a23 100%)";
 
-/** Everything the face draws, whichever kind of card it was handed. */
-interface Face {
-  label: string;
-  season: string;
-  setName: string;
-  cardNumber: string;
-  playerName: string;
-  initials: string;
-  teamName: string;
-  primary: string;
-  secondary: string;
-  printRun: number | null;
-  features: readonly string[];
-  variation: string | null;
-  /** The insert or parallel's name; null for Base. */
-  variantName: string | null;
-  finish: Finish;
-  /** NEO-361 — the collector's own card, not a known NB card: wears the "Unlisted" tag. */
-  own: boolean;
-}
-
-/** A team NB has no livery for: slate frame, lighter slate band. */
-const NO_LIVERY = { primary: "#334155", secondary: "#94A3B8" };
-
-function faceOf(card: Card | undefined, model: ModelCard | undefined): Face {
-  if (model) {
-    const player = model.players[0];
-    const team = model.teams[0];
-    return {
-      label: modelLabel(model),
-      season: model.set.season,
-      setName: model.set.name,
-      cardNumber: model.cardNumber,
-      playerName: player?.nameOnCard ?? player?.name ?? "",
-      initials: player ? initialsOf(player.name) : "?",
-      teamName: team?.name ?? "",
-      primary: team?.primary ?? NO_LIVERY.primary,
-      secondary: team?.secondary ?? team?.primary ?? NO_LIVERY.secondary,
-      printRun: model.printRun,
-      features: model.features,
-      variation: model.cardVariation,
-      variantName: model.variant.kind === "base" ? null : model.variant.name,
-      finish: model.finish,
-      own: model.own !== undefined,
-    };
-  }
-  if (!card) throw new Error("CardFace: pass a card or a model");
-  const set = getSet(card.setId);
-  const player = leadPlayer(card);
-  const team = leadTeam(card);
-  return {
-    label: cardLabel(card),
-    season: set.season,
-    setName: set.name,
-    cardNumber: card.cardNumber,
-    playerName: player.name,
-    initials: playerInitials(player),
-    teamName: team.name,
-    primary: team.primary,
-    secondary: team.secondary,
-    printRun: card.printRun,
-    features: card.features,
-    variation: card.variation,
-    variantName: card.variantPath.type !== "Base" ? card.variantPath.name : null,
-    finish: card.finish,
-    own: false,
-  };
-}
-
-function frameBackground(face: Face, primary: string): string {
-  const { kind, tint } = face.finish;
+function frameBackground(card: Card, primary: string): string {
+  const { kind, tint } = card.finish;
   if (kind === "gold" || kind === "superfractor") return GOLD_FRAME;
   if (kind === "foil" && tint) {
     return `linear-gradient(135deg, ${tint} 0%, #ffffff 30%, ${tint} 55%, #ffffff 80%, ${tint} 100%)`;
@@ -158,30 +72,28 @@ function frameBackground(face: Face, primary: string): string {
 
 export default function CardFace({
   card,
-  model,
   size = "md",
   state = "owned",
   empty = false,
   serial,
   label,
   className = "",
-  photo,
 }: CardFaceProps) {
-  const theirs = useCardImage(photo || empty ? undefined : model?.id);
-  const picture = (photo ?? theirs)?.front ?? (photo ?? theirs)?.back;
-  const face = faceOf(card, model);
-  const run = face.printRun === null ? null : face.printRun === 1 ? "1/1" : `/${face.printRun}`;
+  const set = getSet(card.setId);
+  const player = leadPlayer(card);
+  const team = leadTeam(card);
+  const run = printRunLabel(card);
   const compact = size === "sm";
 
-  const baseName = label ?? face.label;
+  const baseName = label ?? cardLabel(card);
 
   if (empty) {
     return (
       <EmptySleeve
         size={size}
         label={`${baseName}, empty pocket`}
-        ghost={`#${face.cardNumber}`}
-        caption={compact ? undefined : face.playerName}
+        ghost={`#${card.cardNumber}`}
+        caption={compact ? undefined : player.name}
         className={className}
       />
     );
@@ -190,66 +102,20 @@ export default function CardFace({
   const need = state === "need";
   const accessibleName = [
     baseName,
-    face.own ? "unlisted, not in the NeonBinder catalog" : null,
     serial ? `serial ${serial}` : null,
     need ? "need" : null,
   ]
     .filter(Boolean)
     .join(", ");
 
-  if (picture) {
-    return (
-      <div
-        role="img"
-        aria-label={accessibleName}
-        className={`nb-card relative shrink-0 select-none ${className}`}
-        style={{ width: WIDTH[size], aspectRatio: "5 / 7", containerType: "inline-size" }}
-      >
-        {/* On a child, so `cqw` measures this card (not an ancestor), as the drawn face does. */}
-        <div
-          aria-hidden="true"
-          className="absolute inset-0 overflow-hidden"
-          style={{ borderRadius: cq(5), background: "#0b0f1a", boxShadow: "0 6px 18px rgba(0,0,0,0.45)" }}
-        >
-          <img
-            src={picture.thumbUrl}
-            alt=""
-            draggable={false}
-            decoding="async"
-            className="h-full w-full object-contain"
-            style={{ filter: need ? "grayscale(0.9) brightness(0.5)" : undefined }}
-          />
-        </div>
-        {serial && (
-          <span
-            aria-hidden="true"
-            className="absolute font-bold tabular-nums"
-            style={{
-              right: cq(4),
-              bottom: cq(4),
-              fontSize: cq(compact ? 10 : 7.5),
-              padding: `${cq(0.8)} ${cq(2.2)}`,
-              borderRadius: cq(1.5),
-              background: "rgba(0,0,0,0.78)",
-              color: "#F5D77A",
-              lineHeight: 1.15,
-            }}
-          >
-            {serial}
-          </span>
-        )}
-      </div>
-    );
-  }
-
-  const primary = face.primary;
-  const secondary = face.secondary;
+  const primary = team.primary;
+  const secondary = team.secondary;
   const bandInk = inkOn(secondary);
   const initialsInk = inkOn(primary);
   const darkPhoto = initialsInk === "#FFFFFF";
   const stamp = serial ?? run;
-  const isOneOfOne = face.printRun === 1;
-  const finish = face.finish.kind;
+  const isOneOfOne = card.printRun === 1;
+  const finish = card.finish.kind;
 
   const rootStyle: CSSProperties = {
     width: WIDTH[size],
@@ -270,7 +136,7 @@ export default function CardFace({
         style={{
           padding: cq(3.5),
           borderRadius: cq(5),
-          background: frameBackground(face, primary),
+          background: frameBackground(card, primary),
           boxShadow: "0 1px 0 rgba(255,255,255,0.08) inset, 0 6px 18px rgba(0,0,0,0.45)",
           filter: need ? "grayscale(0.9) brightness(0.5)" : undefined,
         }}
@@ -306,7 +172,7 @@ export default function CardFace({
                   className="nb-card-ink min-w-0 flex-1 truncate font-bold"
                   style={{ fontSize: cq(6.5), lineHeight: 1.1, paddingTop: cq(1) }}
                 >
-                  {face.season} {face.setName}
+                  {set.season} {set.name}
                 </span>
               )}
               <span
@@ -319,7 +185,7 @@ export default function CardFace({
                   lineHeight: 1.15,
                 }}
               >
-                #{face.cardNumber}
+                #{card.cardNumber}
               </span>
             </div>
 
@@ -336,19 +202,18 @@ export default function CardFace({
                   : "0 0.04em 0 rgba(255,255,255,0.4)",
               }}
             >
-              {face.initials}
+              {playerInitials(player)}
             </span>
 
-            {face.features.includes("AU") && <Signature dark={darkPhoto} />}
-            {face.features.includes("Relic") && <RelicSwatch primary={primary} secondary={secondary} />}
+            {card.features.includes("AU") && <Signature dark={darkPhoto} />}
+            {card.features.includes("Relic") && <RelicSwatch primary={primary} secondary={secondary} />}
 
             <div
               className="absolute flex items-end"
               style={{ left: cq(4), bottom: cq(4), gap: cq(1.5) }}
             >
-              {face.own && <Tag tone="own">{compact ? "U" : "Unlisted"}</Tag>}
-              {face.features.includes("RC") && <Tag tone="rc">RC</Tag>}
-              {face.features.includes("SP") && !compact && <Tag tone="plain">SP</Tag>}
+              {card.features.includes("RC") && <Tag tone="rc">RC</Tag>}
+              {card.features.includes("SP") && !compact && <Tag tone="plain">SP</Tag>}
             </div>
 
             {stamp && (
@@ -387,16 +252,18 @@ export default function CardFace({
               className="block truncate font-bold"
               style={{ fontSize: cq(compact ? 11 : 9), lineHeight: 1.15 }}
             >
-              {face.playerName}
+              {player.name}
             </span>
             {!compact && (
               <span
                 className="block truncate"
-                style={{ fontSize: cq(6.2), lineHeight: 1.2 }}
+                style={{ fontSize: cq(6.2), lineHeight: 1.2, opacity: 0.85 }}
               >
-                {face.teamName}
-                {face.variation ? `, ${face.variation}` : ""}
-                {face.variantName ? `, ${face.variantName}` : ""}
+                {team.name}
+                {card.variation ? `, ${card.variation}` : ""}
+                {card.variantPath.type !== "Base" && card.variantPath.name
+                  ? `, ${card.variantPath.name}`
+                  : ""}
               </span>
             )}
           </div>
@@ -404,10 +271,10 @@ export default function CardFace({
           {/* Finishes sit over everything printed. */}
           {(finish === "refractor" || finish === "superfractor") && (
             <>
-              {face.finish.tint && (
+              {card.finish.tint && (
                 <div
                   className="absolute inset-0"
-                  style={{ background: face.finish.tint, mixBlendMode: "overlay", opacity: 0.4 }}
+                  style={{ background: card.finish.tint, mixBlendMode: "overlay", opacity: 0.4 }}
                 />
               )}
               <div className="nb-prism" />
@@ -435,7 +302,7 @@ export default function CardFace({
   );
 }
 
-function Tag({ tone, children }: { tone: "rc" | "plain" | "own"; children: ReactNode }) {
+function Tag({ tone, children }: { tone: "rc" | "plain"; children: ReactNode }) {
   return (
     <span
       className="font-bold"
@@ -445,13 +312,8 @@ function Tag({ tone, children }: { tone: "rc" | "plain" | "own"; children: React
         borderRadius: cq(1.5),
         lineHeight: 1.15,
         background: tone === "rc" ? "#ffffff" : "rgba(0,0,0,0.78)",
-        color: tone === "rc" ? "#000000" : tone === "own" ? "#7DD3FC" : "#ffffff",
-        border:
-          tone === "rc"
-            ? `${cq(0.7)} solid #E0242B`
-            : tone === "own"
-              ? `${cq(0.7)} dashed #7DD3FC`
-              : undefined,
+        color: tone === "rc" ? "#000000" : "#ffffff",
+        border: tone === "rc" ? `${cq(0.7)} solid #E0242B` : undefined,
       }}
     >
       {children}

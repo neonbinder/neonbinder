@@ -2,7 +2,7 @@
 
 - [Apps web root tsc is not a gate](apps-web-root-tsc-is-not-a-gate.md) — `npx tsc --noEmit -p .` in apps/web is red at baseline (153 errors on 2026-09-08; the count drifts — 39 in Aug, 65 on 2026-09-04); the real typecheck gate is `npm run…
 - [Entity review skip is per set](entity-review-skip-is-per-set.md) — entityReviewSkips is keyed per (selectorOptionId, kind, nameNormalized) on purpose — never make the skip list global
-- [Feedback no local convex deploy from worktrees](feedback_no_local_convex_deploy_from_worktrees.md) — Never `convex deploy` from a worktree; the only branch push is `npx convex dev --once` to dev, merged up to main, before the first push (NEO-390)
+- [Feedback no local convex deploy from worktrees](feedback_no_local_convex_deploy_from_worktrees.md) — Never run convex dev/deploy from a feature worktree; validate schema changes via tsc + the PR's isolated Convex preview
 - [Patterns service derived field validators](patterns_service_derived_field_validators.md) — Convex validator rule for this repo — columns written from an external service response get loose validators, columns our own code produces get unions; plus the return…
 - [Project neo170 placeholder batch schema](project_neo170_placeholder_batch_schema.md) — NEO-170 placeholder batch pipeline — the three-table design (placeholderJobs/Images/Pairs), its load-bearing invariants, and the review findings from 2026-08-17
 - [Project neo21 cross release home set](project_neo21_cross_release_home_set.md) — NEO-21 cross-release cards — cardChecklist.selectorOptionId is the immutable "home"/printed-in pointer; guest appearances go in the cardCrossListings junction table
@@ -18,7 +18,3 @@
 - [Re-key action is not a backfill](rekey-action-is-not-a-backfill.md) — rekeyEntityNames resyncs only key-changed rows; steady state writes nothing; fill a new derived field with a small armed backfill
 - [convex-test search is not the backend](convex-test-search-is-not-the-backend.md) — harness search = insertion order, every-term prefix, unchecked filterFields; typecheck gates filter fields
 - [Tightening a validator shared with stored drafts](tightening-a-validator-shared-with-stored-drafts.md) — args+returns shared validators tighten only in the handler; required args make auth tests vacuous; reset runs after deploy
-- [Per-card derived state hook points](per-card-derived-state-hook-points.md) — every card insert/delete/move/re-parent site; moves cross sets; ledger flushed once per mutation
-- [Schema pins: text scan vs export walk](schema-pins-text-scan-vs-export-walk.md) — wipe-graph pin greps table-block text; reference-seed pin walks schema.export(); ids in a shared validator const hit only the second
-- [Cached lookup answer must reverify membership](cached-lookup-answer-must-reverify-membership.md) — a cached name→id answer confirmed by get alone survives rename/alias/sport removal; re-check membership in memory; Convex arrays cap at 8,192
-- [Table-number discovery by normalizeId](table-number-discovery-by-normalize-id.md) — normalizeId is a SYNC syscall: budget = 1 s execution, cost = numbers x pending tables per query; start at 10001; convex-test cannot pin it

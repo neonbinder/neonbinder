@@ -65,7 +65,6 @@ import {
 } from "./selectorOptions";
 import { compareCardNumbers } from "../lib/cards/card-number";
 import { teamRowFields } from "./lib/teamRow";
-import { insertTestCard } from "../lib/testing/card-row";
 
 // convex-test discovers modules through import.meta.glob, and the glob must be
 // called from a file directly under convex/ or sibling modules (adapters/…)
@@ -401,7 +400,7 @@ async function seedChecklist(t: T, count: number) {
     });
     await ctx.db.patch(setNameId, { children: [variantTypeId] });
     for (let i = 0; i < count; i++) {
-      await insertTestCard(ctx, {
+      await ctx.db.insert("cardChecklist", {
         selectorOptionId: variantTypeId,
         cardNumber: String(i + 1),
         cardName: `Card ${i + 1}`,
@@ -606,7 +605,7 @@ async function seedCrossListingSets(t: T, count: number) {
     });
     await ctx.db.patch(setNameId, { children: [sourceId, targetId] });
     for (let i = 0; i < count; i++) {
-      await insertTestCard(ctx, {
+      await ctx.db.insert("cardChecklist", {
         selectorOptionId: sourceId,
         cardNumber: String(i + 1),
         cardName: `Card ${i + 1}`,
@@ -864,7 +863,7 @@ async function seedWideSubtree(t: T, inserts: number) {
       );
     }
     await ctx.db.patch(variantTypeId, { children: insertIds });
-    const cardId = await insertTestCard(ctx, {
+    const cardId = await ctx.db.insert("cardChecklist", {
       selectorOptionId: insertIds[0],
       cardNumber: "1",
       cardName: "Card 1",

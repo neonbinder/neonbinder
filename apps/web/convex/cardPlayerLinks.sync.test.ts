@@ -16,7 +16,6 @@ import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
 import { normalizePlayerName } from "./players";
 import { planCardPlayerLinks } from "./cardPlayerLinks";
-import { insertTestCard } from "../lib/testing/card-row";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -190,7 +189,7 @@ describe("backfillCardPlayerLinks", () => {
     playerIds: Array<Id<"players">>,
   ) {
     return t.run(async (ctx) =>
-      insertTestCard(ctx, {
+      ctx.db.insert("cardChecklist", {
         selectorOptionId: variantTypeId,
         cardNumber: "1",
         cardName: "Legacy",

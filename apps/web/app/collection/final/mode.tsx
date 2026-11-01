@@ -5,20 +5,18 @@ import {
   useLayoutEffect,
   useMemo,
   useRef,
-  type MouseEvent as ReactMouseEvent,
   type MutableRefObject,
-  type Ref,
   type ReactNode,
 } from "react";
-import { Link, useLocation, useNavigate, useSearchParams, type LinkProps, type To } from "react-router";
-import { ScopeProvider, useScope } from "./data/store";
-import { isHome, type Container, type Scope, type Side } from "./data/types";
+import { Link, useLocation, useNavigate, useSearchParams, type LinkProps } from "react-router";
+import type { BinderSelection, CollectionBinder } from "./store";
 
 /**
- * NEO-350 / NEO-358 — where the collection page is running, and what that
- * changes. Which STORE it runs on is a separate question (`./data/store`):
- * signed-in `/collection` is the real collection on the Convex store, the
- * public demo is fixture data on the demo store.
+ * NEO-350 — where the collection demo is running, and what that changes.
+ *
+ * The same page ships twice, and it is a demo both times: the cards are
+ * fake, share links use a neutral `@you` handle (`DEMO_HANDLE`) and say they
+ * are examples, a card request stays on the page, and a demo bar says so.
  *
  * - `"app"`: `/collection`, inside the signed-in binder shell. Links go to
  *   the real tools; "Print label" opens the Print Shop in a new tab, so the
@@ -32,20 +30,9 @@ import { isHome, type Container, type Scope, type Side } from "./data/types";
  * the views, a refresh stays put and a deep link opens straight there. The
  * params, all ids and never display names:
  *
- * - The side (NEO-364, `useCollectionSide`): `/collection` is the
- *   collection (binders), `/inventory` the inventory (boxes). The public demo
- *   runs both on one page and says which with `side=inventory`, written only
- *   for the inventory, so the demo's entry URL stays exactly `?demo=on`.
- *   Switching sides is a view change like any other (`SideLink`), so Back
- *   steps back across it and the demo counts it in `demoDepth`.
- * - `tab`: on the collection `cards`, `binders` or `checklists`; on the
- *   inventory `cards` (the Inventory list), `boxes` (My Boxes) or
- *   `checklists`. A tab, or an open container, of the other side redirects
- *   there in place of the entry (`useGoToSide` with `replace`).
+ * - `tab`: `cards`, `binders` or `checklists`.
  * - My Cards: `set` (a set wall), or `view=needs` with an optional `for`.
  * - My Binders: `b` (an open binder), `set` (a set to browse) or `all=1`.
- * - My Boxes: `b` (an open box, Unsorted, or the Up for Trade pile drawn as
- *   a box).
  * - Checklists: the drill (`checklistParams.ts`): above a set, `sport`,
  *   `year` and `brand`; from a set down, `set` (the rest follows from it),
  *   `type` (Base, Inserts or Parallels) and `variant` (an insert or parallel
@@ -55,38 +42,24 @@ import { isHome, type Container, type Scope, type Side } from "./data/types";
  * `ParamLink`), each Checklists drill step included. In-view tweaks replace
  * the current entry instead (`useReplaceParams`): the search box's `q` as
  * you type, a jump that only rings another row of the checklist on screen,
- * the binder-scope picker. Page turns and filters stay in local state and
- * touch no URL. The card drawer opens ON a view: `detail=<cardId>` (and
- * `mode=add`), pushed (`usePushParams`) so Back closes it, its ↑ ↓ replacing
- * the card in place (`./drawerParams`). Public mode also keeps its own params on
+ * the binder-scope picker. Page turns, filters and the card drawer stay in
+ * local state and touch no URL. Public mode also keeps its own params on
  * every view URL (`keepParams`, the marketing page's `demo=on`) and counts
  * how deep into the demo each entry is (`DemoHistoryState`), so "Back to the
  * tour" can return to the entry the visitor came from in one step.
  *
- * The Binder picker's scope rides there too, as `scope=<containerId>` (left
- * off for All), and the URL is its one source: the page reads it
- * (`scopeFromParams`, against `useContainers()`) and hands it down in
- * `ViewScopeProvider`, where both stores read it (`useScope`). Picking a
+ * The Binder picker's scope rides there too, as `scope=<binderId>` (left off
+ * for All), and the URL is its one source: the page reads it
+ * (`scopeFromParams`) and the store's `selectedBinderId` follows. Picking a
  * scope replaces the current entry (`useSetScope`); every view change carries
  * the scope of the moment on, so Back restores the scope each view had. An
- * unknown or deleted id, or one that is not a binder that holds copies (the
- * Want List, the Up for Trade pile, a smart binder, or a box, which is
- * Inventory's), reads as All, and an unknown id anywhere else
+ * unknown or deleted binder id reads as All, and an unknown id anywhere else
  * falls back the same quiet way: to the deepest level that still makes sense.
  *
- * Public mode is always the demo store and never reaches Convex or Clerk.
- * On the inventory side the page never narrows: the scope is always All.
+ * Both modes are hard-coded data and never reach Convex or Clerk.
  */
 
 export type CollectionMode = "app" | "public";
-
-/** The demo's side param: `side=inventory`, absent on the collection side. */
-export const SIDE_PARAM = "side";
-/** Where each side lives in the signed-in app. */
-export const SIDE_PATHS: Record<Side, string> = {
-  collection: "/collection",
-  inventory: "/inventory",
-};
 
 type ParamsInit = URLSearchParams | Record<string, string>;
 type SetParams = (next: ParamsInit) => void;
@@ -104,10 +77,7 @@ export interface DemoHistoryState {
 
 /** Where a signed-in destination goes from the public demo, and why. */
 export const PUBLIC_DESTINATIONS = {
-  /**
-   * The Inventory long box, for a store with no inventory side: `/inventory`
-   * needs an account. (The demo has its own inventory side, NEO-364.)
-   */
+  /** The Inventory long box: `/inventory` needs an account. */
   inventory: "/managing-inventory",
   /** "Print label" / "Print this label": `/print/spine-label` needs an account. */
   printShop: "/print-shop",
@@ -117,7 +87,7 @@ export const PUBLIC_DESTINATIONS = {
 
 interface CollectionModeValue {
   mode: CollectionMode;
-  /** Where the Inventory long box leads when the store has no Inventory tab. */
+  /** Where the Inventory long box leads. */
   inventoryHref: string;
   /** Where a "Print label" link leads, given the Print Shop link the app uses. */
   printLabelHref: (appHref: string) => string;
@@ -126,24 +96,16 @@ interface CollectionModeValue {
    * mid-edit here is still here. The public tour page opens in place.
    */
   printLabelInNewTab: boolean;
-  /**
-   * Params every view URL keeps: public mode's `demo=on`, plus `side=inventory`
-   * on the demo's inventory side. Empty in the app.
-   */
+  /** Params every view URL keeps (public mode's `demo=on`). Empty in the app. */
   keepParams: Record<string, string>;
-  /** The page's own kept params, without the side: what a side switch starts from. */
-  baseParams: Record<string, string>;
-  /** The app page's side (`FinalCollectionPage`'s `surface`); unset: by route. */
-  surface?: Side;
 }
 
 const APP_MODE: CollectionModeValue = {
   mode: "app",
-  inventoryHref: SIDE_PATHS.inventory,
+  inventoryHref: "/inventory",
   printLabelHref: (appHref) => appHref,
   printLabelInNewTab: true,
   keepParams: {},
-  baseParams: {},
 };
 
 const CollectionModeContext = createContext<CollectionModeValue>(APP_MODE);
@@ -151,38 +113,31 @@ const CollectionModeContext = createContext<CollectionModeValue>(APP_MODE);
 export function CollectionModeProvider({
   mode,
   keepParams,
-  surface,
   children,
 }: {
   mode: CollectionMode;
   /** Public mode: params every view URL keeps (the marketing page's `demo=on`). */
   keepParams?: Record<string, string>;
-  /** App mode: the page's side (`/inventory` passes `"inventory"`). Unset: by route. */
-  surface?: Side;
   children: ReactNode;
 }) {
+  const keepKey = new URLSearchParams(keepParams).toString();
+  const value = useMemo<CollectionModeValue>(
+    () =>
+      mode === "app"
+        ? APP_MODE
+        : {
+            mode,
+            inventoryHref: PUBLIC_DESTINATIONS.inventory,
+            printLabelHref: () => PUBLIC_DESTINATIONS.printShop,
+            printLabelInNewTab: false,
+            keepParams: Object.fromEntries(new URLSearchParams(keepKey)),
+          },
+    [mode, keepKey],
+  );
   // The URL the page is headed to. The router commits a navigation inside a
   // transition, so for a moment after a push the rendered params are the old
   // ones; a scope pick or a second push in that moment builds on this.
   const location = useLocation();
-  const base = new URLSearchParams(keepParams);
-  base.delete(SIDE_PARAM);
-  const baseKey = base.toString();
-  // The demo's inventory side rides on every view URL as `side=inventory`.
-  const demoInventory =
-    mode === "public" && new URLSearchParams(location.search).get(SIDE_PARAM) === "inventory";
-  const value = useMemo<CollectionModeValue>(() => {
-    if (mode === "app") return surface ? { ...APP_MODE, surface } : APP_MODE;
-    const baseParams = Object.fromEntries(new URLSearchParams(baseKey));
-    return {
-      mode,
-      inventoryHref: PUBLIC_DESTINATIONS.inventory,
-      printLabelHref: () => PUBLIC_DESTINATIONS.printShop,
-      printLabelInNewTab: false,
-      keepParams: demoInventory ? { ...baseParams, [SIDE_PARAM]: "inventory" } : baseParams,
-      baseParams,
-    };
-  }, [mode, baseKey, demoInventory, surface]);
   const latestRef = useRef<LatestEntry>({ search: location.search, state: location.state });
   useLayoutEffect(() => {
     latestRef.current = { search: location.search, state: location.state };
@@ -194,77 +149,14 @@ export function CollectionModeProvider({
   );
 }
 
-/**
- * The newest history entry the page has asked for, committed or not.
- *
- * Read it only from an event handler, never while rendering: after a Back
- * (a POP) the router renders the entry it went back to BEFORE the layout
- * effect above catches this up, so a render reading it would build on the
- * entry the visitor just left (NEO-364: the demo's door then counted one
- * level too deep, and "Back to the tour" overshot history and did nothing).
- * A render builds on `useLocation()` instead (`entryOf`).
- */
+/** The newest history entry the page has asked for, committed or not. */
 interface LatestEntry {
   search: string;
   state: unknown;
   /** The scope to carry on: set while a navigation of ours is still pending. */
-  scope?: Scope;
+  scope?: BinderSelection;
 }
 const LatestEntryContext = createContext<MutableRefObject<LatestEntry> | null>(null);
-
-/** The committed entry, as a render sees it. */
-function entryOf(location: { search: string; state: unknown }): LatestEntry {
-  return { search: location.search, state: location.state };
-}
-
-/**
- * The history state a view pushed from `state` carries in the demo: the way
- * in (`demoFrom`) and one level deeper. Nothing else rides on: what the
- * entry underneath has of its own (the card drawer's `drawer`) stays there.
- */
-export function deeperDemoState(state: unknown): DemoHistoryState {
-  const current = (state ?? {}) as DemoHistoryState;
-  const next: DemoHistoryState = { demoDepth: (current.demoDepth ?? 0) + 1 };
-  if (current.demoFrom !== undefined) next.demoFrom = current.demoFrom;
-  return next;
-}
-
-/** Two searches name the same view. */
-function sameSearch(a: string, b: string): boolean {
-  return new URLSearchParams(a).toString() === new URLSearchParams(b).toString();
-}
-
-/** A click the router follows: the browser keeps modified clicks and other targets. */
-function isPlainClick(e: ReactMouseEvent<HTMLAnchorElement>, target: string | undefined): boolean {
-  return (
-    !e.defaultPrevented &&
-    e.button === 0 &&
-    (!target || target === "_self") &&
-    !(e.metaKey || e.ctrlKey || e.shiftKey || e.altKey)
-  );
-}
-
-/**
- * Follows a view link from its click: builds the target on the newest entry
- * (`build`), pushes it, and records where the page is headed. A link to the
- * view already showing replaces its entry and keeps that entry's state, as
- * a router link does, so it is never a Back step and never counts deeper.
- */
-function useFollowLink() {
-  const navigate = useNavigate();
-  const latestRef = useLatestEntry();
-  return useCallback(
-    (build: (from: LatestEntry) => { to: To; search: string; state: unknown; scope?: Scope }) => {
-      const from = latestRef.current;
-      const t = build(from);
-      const replace = sameSearch(t.search, from.search);
-      const state = replace ? from.state : t.state;
-      latestRef.current = { search: t.search, state, scope: replace ? from.scope : t.scope };
-      void navigate(t.to, { replace, state });
-    },
-    [navigate, latestRef],
-  );
-}
 
 function useLatestEntry(): MutableRefObject<LatestEntry> {
   const ref = useContext(LatestEntryContext);
@@ -276,68 +168,33 @@ export function useCollectionMode(): CollectionModeValue {
   return useContext(CollectionModeContext);
 }
 
-/**
- * The side a URL stands for (NEO-364). The app: the page's `surface`, else
- * the route (`/inventory` is the inventory, anything else the collection).
- * The public demo: `side=inventory`, else the collection.
- */
-export function sideOf(
-  mode: CollectionMode,
-  location: { pathname: string; search: string },
-  surface?: Side,
-): Side {
-  if (mode === "public") {
-    return new URLSearchParams(location.search).get(SIDE_PARAM) === "inventory" ? "inventory" : "collection";
-  }
-  if (surface) return surface;
-  return location.pathname === SIDE_PATHS.inventory || location.pathname.startsWith(`${SIDE_PATHS.inventory}/`)
-    ? "inventory"
-    : "collection";
-}
-
-/** The page's side, as its URL has it (see `sideOf`). The page puts it in `SideProvider`. */
-export function useCollectionSide(): Side {
-  const { mode, surface } = useCollectionMode();
-  const location = useLocation();
-  return sideOf(mode, location, surface);
-}
-
-/** The scope param: a binder or box id, or absent for All. */
+/** The scope param: a binder id, or absent for All. */
 export const SCOPE_PARAM = "scope";
 
-/**
- * A container the picker can scope to: a binder that is a home. A box is
- * Inventory's, so the collection never narrows to one (NEO-359).
- */
-function scopable(containers: readonly Container[], id: string): boolean {
-  const c = containers.find((x) => x.id === id);
-  return isHome(c) && c?.kind !== "box";
+/** A binder the picker can scope to (the store refuses anything else). */
+function scopable(binders: CollectionBinder[], id: string): boolean {
+  return binders.some((b) => b.id === id && b.kind === "manual");
 }
 
 /**
- * The scope a URL stands for. `scope=` names it; an unknown, deleted or
- * non-home id is All. With no `scope` on the URL, an open binder or box
- * (`tab=binders&b=…`, as a shared link has it) scopes the page the way
- * opening it does: a home scopes to itself, anything else to All. While the
- * shelf is still loading (`containers` undefined) the scope reads as All.
+ * The scope a URL stands for. `scope=` names it; an unknown or deleted id is
+ * All. With no `scope` on the URL, an open binder (`tab=binders&b=…`, as a
+ * shared link has it) scopes the page the way opening it does: a binder that
+ * holds copies scopes to itself, a smart binder to All.
  */
-export function scopeFromParams(params: URLSearchParams, containers: readonly Container[] | undefined): Scope {
-  if (!containers) return "all";
+export function scopeFromParams(params: URLSearchParams, binders: CollectionBinder[]): BinderSelection {
   const id = params.get(SCOPE_PARAM);
-  if (id !== null) return scopable(containers, id) ? id : "all";
+  if (id !== null) return scopable(binders, id) ? id : "all";
   const open = params.get("tab") === "binders" ? params.get("b") : null;
-  return open && scopable(containers, open) ? open : "all";
+  return open && scopable(binders, open) ? open : "all";
 }
 
-/**
- * The page's scope as its URL has it: view links carry it on, and both
- * stores read it (`useScope` in `./data/store`). The page wraps its views in
- * this with `value={scopeFromParams(params, containers)}`.
- */
-export const ViewScopeProvider = ScopeProvider;
+/** The page's scope as its URL has it, for view links to carry on. */
+const ViewScopeContext = createContext<BinderSelection>("all");
+export const ViewScopeProvider = ViewScopeContext.Provider;
 
 /** Writes a scope into a view's params: the id, or nothing for All. */
-function putScope(params: URLSearchParams, scope: Scope) {
+function putScope(params: URLSearchParams, scope: BinderSelection) {
   if (scope === "all") params.delete(SCOPE_PARAM);
   else params.set(SCOPE_PARAM, scope);
 }
@@ -345,32 +202,26 @@ function putScope(params: URLSearchParams, scope: Scope) {
 /**
  * Where a view link or a view change goes: the next view's search (with the
  * mode's kept params and the scope of the moment, unless `next` sets its
- * own: `"all"` for All) and, in the demo, the history state one level deeper
- * than `from`, the entry it is pushed on top of (`deeperDemoState`).
+ * own: `"all"` for All) and, in the demo, the history state one level deeper.
  */
 function useViewTarget() {
   const { mode, keepParams } = useCollectionMode();
-  const scope = useScope();
+  const scope = useContext(ViewScopeContext);
+  const latestRef = useLatestEntry();
   return useCallback(
-    (next: ParamsInit, from: LatestEntry) => {
+    (next: ParamsInit) => {
       const params = new URLSearchParams(keepParams);
       const view = new URLSearchParams(next);
       view.forEach((value, key) => params.set(key, value));
-      // The page's own handlers (a drill, a search pick) run outside the scope
-      // provider, where `scope` reads All: the entry's own `scope=` carries
-      // on there, so picking a player never drops the binder (NEO-374: All
-      // adds nothing, so losing it would lock the Have it was picked for).
-      const carried =
-        view.get(SCOPE_PARAM) ??
-        from.scope ??
-        (scope === "all" ? new URLSearchParams(from.search).get(SCOPE_PARAM) : null) ??
-        scope;
+      const carried = view.get(SCOPE_PARAM) ?? latestRef.current.scope ?? scope;
       putScope(params, carried);
       const search = `?${params.toString()}`;
       if (mode !== "public") return { search, state: undefined, scope: carried };
-      return { search, state: deeperDemoState(from.state), scope: carried };
+      const current = (latestRef.current.state ?? {}) as DemoHistoryState;
+      const state: DemoHistoryState = { ...current, demoDepth: (current.demoDepth ?? 0) + 1 };
+      return { search, state, scope: carried };
     },
-    [mode, keepParams, scope],
+    [mode, keepParams, scope, latestRef],
   );
 }
 
@@ -398,34 +249,10 @@ export function useReplaceParams(): (update: (params: URLSearchParams) => void) 
 }
 
 /**
- * Opens something ON the current view (the card drawer): `update` edits a
- * copy of the newest URL the page has asked for, and the result is PUSHED, so
- * Back steps out of it to the view underneath. The mode's kept params and the
- * scope carry on as for any view change; `state` rides on the new entry next
- * to the demo's depth count.
- */
-export function usePushParams(): (update: (params: URLSearchParams) => void, state?: Record<string, unknown>) => void {
-  const navigate = useNavigate();
-  const target = useViewTarget();
-  const latestRef = useLatestEntry();
-  return useCallback(
-    (update, extra) => {
-      const next = new URLSearchParams(latestRef.current.search);
-      update(next);
-      const t = target(next, latestRef.current);
-      const state = extra ? { ...((t.state ?? {}) as object), ...extra } : t.state;
-      latestRef.current = { search: t.search, state, scope: t.scope };
-      void navigate({ search: t.search }, { state });
-    },
-    [navigate, target, latestRef],
-  );
-}
-
-/**
  * The Binder picker's setter: the same view at another scope, replacing the
  * current entry (`useReplaceParams`), so a scope change is never a Back step.
  */
-export function useSetScope(): (scope: Scope) => void {
+export function useSetScope(): (scope: BinderSelection) => void {
   const replace = useReplaceParams();
   const latestRef = useLatestEntry();
   return useCallback(
@@ -449,7 +276,7 @@ export function useCollectionParams(): [URLSearchParams, SetParams] {
   const latestRef = useLatestEntry();
   const setParams = useCallback<SetParams>(
     (next) => {
-      const { search, state, scope } = target(next, latestRef.current);
+      const { search, state, scope } = target(next);
       latestRef.current = { search, state, scope };
       void navigate({ search }, { state });
     },
@@ -458,141 +285,24 @@ export function useCollectionParams(): [URLSearchParams, SetParams] {
   return [params, setParams];
 }
 
-/**
- * A link to another view of the collection page (`?tab=…`): a router link
- * that pushes. Its href is built on the entry on screen; a plain click
- * builds the push again on the newest entry (`useFollowLink`), so a link
- * rendered by a Back, or clicked while another push is landing, still counts
- * from the entry the visitor is really on.
- */
+/** A link to another view of the collection page (`?tab=…`): a router link that pushes. */
 export function ParamLink({
   search,
   onClick,
   ...rest
-}: Omit<LinkProps, "to" | "state"> & { search: ParamsInit; ref?: Ref<HTMLAnchorElement> }) {
-  const location = useLocation();
-  const target = useViewTarget();
-  const follow = useFollowLink();
-  const shown = target(search, entryOf(location));
-  return (
-    <Link
-      to={{ search: shown.search }}
-      state={shown.state}
-      onClick={(e) => {
-        onClick?.(e);
-        if (!isPlainClick(e, rest.target)) return;
-        e.preventDefault();
-        follow((from) => {
-          const t = target(search, from);
-          return { ...t, to: { search: t.search } };
-        });
-      }}
-      {...rest}
-    />
-  );
-}
-
-/**
- * Where a view on a side goes (NEO-364): the app's other route
- * (`/collection` or `/inventory`) with the view's params, or, in the demo,
- * the same page with the kept params, `side=inventory` for the inventory
- * (never written for the collection), and the view's. A push counts one
- * deeper than `from`, the entry it leaves; a replace keeps `from`'s history
- * state. The scope is never carried across: each side starts at All.
- */
-function useSideTarget() {
-  const { mode, baseParams } = useCollectionMode();
-  return useCallback(
-    (
-      side: Side,
-      next: ParamsInit,
-      how: "push" | "replace",
-      from: LatestEntry,
-    ): { to: To; search: string; state: unknown; scope: Scope } => {
-      const view = new URLSearchParams(next);
-      view.delete(SIDE_PARAM);
-      if (mode !== "public") {
-        const q = view.toString();
-        const search = q ? `?${q}` : "";
-        return { to: { pathname: SIDE_PATHS[side], search }, search, state: undefined, scope: "all" };
-      }
-      const params = new URLSearchParams(baseParams);
-      if (side === "inventory") params.set(SIDE_PARAM, "inventory");
-      view.forEach((value, key) => params.set(key, value));
-      const search = `?${params.toString()}`;
-      const state = how === "replace" ? from.state : deeperDemoState(from.state);
-      return { to: { search }, search, state, scope: "all" };
-    },
-    [mode, baseParams],
-  );
-}
-
-/**
- * Opens a view on a side (NEO-364): pushed (a Back step), or with
- * `replace` in place of the current entry (a redirect of a link to the
- * other side's tab or container, so Back skips it).
- */
-export function useGoToSide(): (side: Side, next: ParamsInit, options?: { replace?: boolean }) => void {
-  const navigate = useNavigate();
-  const target = useSideTarget();
+}: Omit<LinkProps, "to" | "state"> & { search: ParamsInit }) {
+  const target = useViewTarget()(search);
   const latestRef = useLatestEntry();
-  const { mode } = useCollectionMode();
-  return useCallback(
-    (side, next, options) => {
-      const replace = options?.replace === true;
-      const t = target(side, next, replace ? "replace" : "push", latestRef.current);
-      // Same page in the demo: record where it is headed. The app's other
-      // route mounts a page of its own.
-      if (mode === "public") latestRef.current = { search: t.search, state: t.state, scope: t.scope };
-      void navigate(t.to, { replace, state: t.state });
-    },
-    [navigate, target, latestRef, mode],
-  );
-}
-
-/**
- * The side a side link is on its way to, so that side's page can put the
- * keyboard on its heading when it arrives (`takeSideArrival`). Only a link
- * the collector follows sets it; a redirect to the other side does not.
- */
-let arrivingSide: Side | null = null;
-
-/** True once, on the side a side link just headed for. */
-export function takeSideArrival(side: Side): boolean {
-  if (arrivingSide !== side) return false;
-  arrivingSide = null;
-  return true;
-}
-
-/**
- * A link to a view on a side (`useSideTarget`): the demo's side switch, the
- * long box's door to the Inventory list. In the demo, as with `ParamLink`,
- * the href is built on the entry on screen and a plain click builds the push
- * again on the newest entry. The app's link goes to another route, which
- * carries no history state, so the router follows it as it is.
- */
-export function SideLink({
-  side,
-  search,
-  onClick,
-  ...rest
-}: Omit<LinkProps, "to" | "state"> & { side: Side; search?: ParamsInit; ref?: Ref<HTMLAnchorElement> }) {
-  const location = useLocation();
-  const target = useSideTarget();
-  const follow = useFollowLink();
-  const { mode } = useCollectionMode();
-  const shown = target(side, search ?? {}, "push", entryOf(location));
   return (
     <Link
-      to={shown.to}
-      state={shown.state}
+      to={{ search: target.search }}
+      state={target.state}
       onClick={(e) => {
         onClick?.(e);
-        if (!isPlainClick(e, rest.target)) return;
-        arrivingSide = side;
-        if (mode !== "public") return;
-        e.preventDefault();
-        follow((from) => target(side, search ?? {}, "push", from));
+        // A plain click navigates here; record it as where the page is headed.
+        if (!e.defaultPrevented && e.button === 0 && !(e.metaKey || e.ctrlKey || e.shiftKey || e.altKey)) {
+          latestRef.current = target;
+        }
       }}
       {...rest}
     />

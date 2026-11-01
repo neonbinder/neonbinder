@@ -1,60 +1,48 @@
 import type { MouseEvent, ReactNode, Ref } from "react";
 import { ArrowsRightLeftIcon, CheckIcon, PlusIcon, StarIcon as StarSolid } from "@heroicons/react/20/solid";
 import { StarIcon as StarOutline } from "@heroicons/react/24/outline";
-import NeonButton from "@/components/modules/NeonButton";
-import { FOCUS, QUIET_BUTTON, useLiverySurface } from "../prototypes/p1/ui";
 import {
   cardLabel,
+  getTeam,
   playerNames,
-  printRunLabel,
+  teamNames,
+  type Card,
+  type Copy,
+  type CopyId,
+} from "../prototypes/_shared/data";
+import { FeatureBadges } from "../prototypes/p1/ChecklistRow";
+import {
+  FOCUS,
+  QUIET_BUTTON,
+  liveryOn,
+  useLiverySurface,
+  printRunText,
   setAndVariant,
   shortCardName,
-  teamNames,
-  teamTextColor,
-} from "./data/labels";
-import {
-  collectionCopiesIn,
-  isWantedIn,
-  PICK_A_BINDER,
-  useCapabilities,
-  useContainers,
-  useCopiesOf,
-  useReadOnlyAll,
-  useScope,
-  useSide,
-  useWants,
-} from "./data/store";
-import type { Card, Copy, CopyId } from "./data/types";
-import { FeatureBadges } from "./inventory/badges";
-import { InventorySearchHitRow } from "./inventory/QuantityRow";
+} from "../prototypes/p1/ui";
 import { lineNames, lineSummary } from "./lineItems";
+import type { CollectionStore } from "./store";
+import NeonButton from "@/components/modules/NeonButton";
 
-/** What a row's controls do; built once by the page. */
+/** What a row's controls do; built once by the list that shows the rows. */
 export interface RowActions {
-  /**
-   * Have on a card you don't own yet: add a copy to the scoped home. Under
-   * All (a view, NEO-374) only a call naming its `homeId` adds anything.
-   */
-  have: (card: Card, homeId?: string) => void;
+  /** Have on a card you don't own yet: add a copy to the target binder. */
+  have: (card: Card) => void;
   /** Un-Have one line item: remove just that line, with Undo. */
   removeLine: (card: Card, copy: Copy) => void;
   /** "+ Add": open the drawer on its Add a copy form. */
   addAnother: (card: Card) => void;
-  /** Want on, or off, under the page's scope (the `wants` capability). */
   toggleWant: (card: Card) => void;
-  /** Up for trade on, or off, for one line item (the `trade` capability). */
   toggleTrade: (card: Card, copy: Copy) => void;
   /**
    * Details: open the drawer, on this line item when there is one. `list`
    * is what the drawer's ↑ ↓ step through.
    */
-  /** `edit`: a row click on an owned line, which opens that line's Edit form when it is the card's one line. */
-  open: (card: Card, copyId?: CopyId, list?: Card[], edit?: boolean) => void;
+  open: (card: Card, copyId?: CopyId, list?: Card[]) => void;
 }
 
 const SLOT_HAVE = "w-[4.5rem]";
-// Add is 44px square on a phone (the house touch target), so its column is too.
-const SLOT_ADD = "w-11 sm:w-[4.25rem]";
+const SLOT_ADD = "w-9 sm:w-[4.25rem]";
 const SLOT_ICON = "w-9 sm:w-[4.5rem]";
 
 function stop(fn: () => void) {
@@ -64,45 +52,18 @@ function stop(fn: () => void) {
   };
 }
 
-/**
- * The Have toggle: a filled neon box with a check when pressed; "Have" either
- * way. While the copies load it stays focusable and says it is busy and
- * unavailable (`aria-disabled`, `aria-busy`), and a press does nothing: a
- * native `disabled` would drop the keyboard out from under it.
- */
-function HaveToggle({
-  pressed,
-  label,
-  onToggle,
-  busy = false,
-  locked = false,
-}: {
-  pressed: boolean;
-  label: string;
-  onToggle: () => void;
-  busy?: boolean;
-  /** NEO-374 — All is a view: an add is locked until a binder is picked. */
-  locked?: boolean;
-}) {
+/** The Have toggle: a filled neon box with a check when pressed; "Have" either way. */
+function HaveToggle({ pressed, label, onToggle }: { pressed: boolean; label: string; onToggle: () => void }) {
   return (
     <button
       type="button"
       aria-pressed={pressed}
       aria-label={label}
-      aria-busy={busy || undefined}
-      aria-disabled={busy || locked || undefined}
-      title={locked ? PICK_A_BINDER : undefined}
-      onClick={stop(() => {
-        if (!busy && !locked) onToggle();
-      })}
-      className={`${SLOT_HAVE} inline-flex min-h-8 shrink-0 items-center justify-center gap-1.5 rounded-md border px-2 py-1 text-xs font-semibold transition-colors aria-disabled:opacity-60 ${
-        locked ? "aria-disabled:cursor-not-allowed" : "aria-disabled:cursor-wait"
-      } ${FOCUS} ${
+      onClick={stop(onToggle)}
+      className={`${SLOT_HAVE} inline-flex min-h-8 shrink-0 items-center justify-center gap-1.5 rounded-md border px-2 py-1 text-xs font-semibold transition-colors ${FOCUS} ${
         pressed
           ? "border-selection bg-neon-blue text-on-neon-blue"
-          : locked
-            ? "border-control text-ink-2"
-            : "border-control text-ink-2 hover:border-neon-blue hover:text-neon-blue-text"
+          : "border-control text-ink-2 hover:border-neon-blue hover:text-neon-blue-text"
       }`}
     >
       <span
@@ -128,8 +89,7 @@ function AddButton({ label, onAdd }: { label: string; onAdd: () => void }) {
       aria-label={label}
       title="Add another copy"
       onClick={stop(onAdd)}
-      // The widths are SLOT_ADD's, so the column lines up with the empty slots.
-      className="w-11 min-h-11 sm:w-[4.25rem] sm:min-h-8"
+      className={`${SLOT_ADD} min-h-8`}
     >
       <PlusIcon aria-hidden="true" className="h-3.5 w-3.5" />
       <span className="max-sm:hidden">Add</span>
@@ -173,35 +133,20 @@ function SmallToggle({
   );
 }
 
-/** RC, AU, RELIC, SP and #'d badges: shared with the inventory's quantity rows. */
-export { FeatureBadges };
-
-/** The green tag a copy flagged Up for trade wears. */
-export function TradeBadge() {
-  return (
-    <span className="ml-2 rounded border border-neon-green-text px-1 text-xs text-neon-green-text">Up for trade</span>
-  );
-}
-
 const slot = (cls: string) => <span aria-hidden="true" className={`${cls} shrink-0`} />;
 
 /**
  * One checklist card, as one row or as a stack of rows: a card you own in
  * several line items (five raw Mint, one PSA 10) shows each line as its own
  * row under the same number, joined by a neon rail so the stack reads as one
- * card. Card-wide controls (+ Add, and Want in the demo) sit on the stack's
- * top row; each line carries its own Have and Details (and Trade). Each line
- * says which binder it lives in. A copy in a box is for sale, Inventory's,
- * and never reaches a row (NEO-359: `collectionCopiesIn`); the card's drawer
- * still lists it.
+ * card. Card-wide controls (+ Add, Want) sit on the stack's top row; each
+ * line carries its own Have, Trade and Details.
  *
- * Every control's name is distinct: the line's grade is in it, and its home
- * too when two lines would otherwise read the same.
- * `copies` is `undefined` while they load: the row shows, its Have waits.
+ * Every control's name is distinct: the line's grade and binder are in it.
  */
 export default function CardRowGroup({
   card,
-  copies,
+  store,
   actions,
   showSet = false,
   isSelected = false,
@@ -211,8 +156,7 @@ export default function CardRowGroup({
   groupRef,
 }: {
   card: Card;
-  /** The collector's copies of this card in the collection (never one in a box), in the page's scope. */
-  copies: Copy[] | undefined;
+  store: CollectionStore;
   actions: RowActions;
   /** Search results span sets: show which set and variant on the subline. */
   showSet?: boolean;
@@ -225,40 +169,37 @@ export default function CardRowGroup({
   onOpenChecklist?: () => void;
   groupRef?: Ref<HTMLLIElement>;
 }) {
-  const capabilities = useCapabilities();
-  const binders = useContainers();
-  const scope = useScope();
-  const readOnly = useReadOnlyAll();
-  const allWants = useWants();
-  const lines = copies ?? [];
+  const copies = store.copiesInScope(card.id);
+  const binders = store.state.binders;
   const name = showSet ? cardLabel(card) : shortCardName(card);
-  const wants = capabilities.wants;
-  const trades = capabilities.trade;
-  const wanted = wants && isWantedIn(allWants, card.id, scope);
-  const names = lineNames(lines, binders);
-  const team = card.teams[0];
+  const wanted = store.isWanted(card.id);
+  const lines = lineNames(copies, binders);
+  const team = getTeam(card.teamIds[0]);
   const panel = useLiverySurface("raised");
-  const run = printRunLabel(card);
+  const run = printRunText(card);
   const sub: string[] = [];
   if (showSet) sub.push(setAndVariant(card));
   if (run) sub.push(run);
-  if (card.cardVariation) sub.push(`${card.cardVariation} variation`);
-  const stacked = lines.length > 1;
-  const rowClick =
-    onRowClick ?? ((copyId?: CopyId) => actions.open(card, copyId, undefined, copyId !== undefined));
+  if (card.variation) sub.push(`${card.variation} variation`);
+  const stacked = copies.length > 1;
+  const rowClick = onRowClick ?? ((copyId?: CopyId) => actions.open(card, copyId));
 
-  const want = wants ? (
+  const want = (
     <SmallToggle
       pressed={wanted}
       label={`Want ${name}`}
       word="Want"
       tone="want"
       icon={
-        wanted ? <StarSolid aria-hidden="true" className="h-4 w-4" /> : <StarOutline aria-hidden="true" className="h-4 w-4" />
+        wanted ? (
+          <StarSolid aria-hidden="true" className="h-4 w-4" />
+        ) : (
+          <StarOutline aria-hidden="true" className="h-4 w-4" />
+        )
       }
       onToggle={() => actions.toggleWant(card)}
     />
-  ) : null;
+  );
 
   const trailing = (copyId: CopyId | undefined, line: string | null, top: boolean) => (
     <span className="flex shrink-0 gap-1">
@@ -287,27 +228,15 @@ export default function CardRowGroup({
     <>
       <span className="w-12 shrink-0 text-right font-mono text-sm text-ink-3">#{card.cardNumber}</span>
       <div className="min-w-0 flex-1 max-sm:basis-[calc(100%-4rem)]">
-        <div className="flex min-w-0 items-baseline text-sm">
-          <span className="min-w-0 sm:truncate">
-            <span className="font-medium text-ink">{playerNames(card) || "Player unknown"}</span>
-            {summary && <span className="text-neon-blue-text"> · {summary}</span>}
-          </span>
+        <div className="text-sm sm:truncate">
+          <span className="font-medium text-ink">{playerNames(card)}</span>
+          {summary && <span className="text-neon-blue-text"> · {summary}</span>}
         </div>
         <div className="min-h-[1rem] truncate text-xs text-ink-3">
-          {team && (
-            <span
-              style={{ color: teamTextColor(team, panel) }}
-              title={team.location ? `${team.location} ${team.name}` : team.name}
-            >
-              {teamNames(card)}
-            </span>
-          )}
-          {sub.length > 0 && (
-            <span>
-              {team ? " · " : ""}
-              {sub.join(" · ")}
-            </span>
-          )}
+          <span style={{ color: liveryOn(card, panel) }} title={`${team.location} ${team.name}`}>
+            {teamNames(card)}
+          </span>
+          {sub.length > 0 && <span> · {sub.join(" · ")}</span>}
         </div>
       </div>
       {top ? <FeatureBadges card={card} /> : null}
@@ -321,47 +250,48 @@ export default function CardRowGroup({
     <li
       ref={groupRef}
       className={`overflow-hidden rounded-md border border-rule-strong ${
-        card.cardVariation ? "ml-8 border-l-2 border-l-control" : ""
+        card.variation ? "ml-8 border-l-2 border-l-control" : ""
       } ${stacked ? "border-l-2 border-l-neon-blue/70" : ""} ${
         isSelected || highlighted ? "border-selection bg-pick-blue/10 ring-2 ring-selection" : ""
       }`}
     >
-      {lines.length === 0 ? (
+      {copies.length === 0 ? (
         <div className={rowCls} onClick={() => rowClick()}>
           {body(null, true)}
-          <HaveToggle
-            pressed={false}
-            label={`Have ${name}`}
-            busy={copies === undefined}
-            locked={readOnly}
-            onToggle={() => actions.have(card)}
-          />
+          <HaveToggle pressed={false} label={`Have ${name}`} onToggle={() => actions.have(card)} />
           {slot(SLOT_ADD)}
-          {trades && slot(SLOT_ICON)}
+          {slot(SLOT_ICON)}
           {want}
           {trailing(undefined, null, true)}
         </div>
       ) : (
         <div className={stacked ? "divide-y divide-rule-strong" : ""}>
-          {lines.map((copy, i) => {
+          {copies.map((copy, i) => {
             const top = i === 0;
-            const line = names[i];
+            const line = lines[i];
+            const trade = store.isUpForTrade(copy);
             return (
               <div key={copy.id} className={rowCls} onClick={() => rowClick(copy.id)}>
                 {body(lineSummary(copy, binders), top)}
-                <HaveToggle pressed label={`Have ${name}, ${line}`} onToggle={() => actions.removeLine(card, copy)} />
-                {top && !readOnly ? <AddButton label={`Add another ${name}`} onAdd={() => actions.addAnother(card)} /> : slot(SLOT_ADD)}
-                {trades && (
-                  <SmallToggle
-                    pressed={copy.upForTrade}
-                    label={`Trade ${name}, ${line}`}
-                    word="Trade"
-                    tone="trade"
-                    icon={<ArrowsRightLeftIcon aria-hidden="true" className="h-4 w-4" />}
-                    onToggle={() => actions.toggleTrade(card, copy)}
-                  />
+                <HaveToggle
+                  pressed
+                  label={`Have ${name}, ${line}`}
+                  onToggle={() => actions.removeLine(card, copy)}
+                />
+                {top ? (
+                  <AddButton label={`Add another ${name}`} onAdd={() => actions.addAnother(card)} />
+                ) : (
+                  slot(SLOT_ADD)
                 )}
-                {wants && (top ? want : slot(SLOT_ICON))}
+                <SmallToggle
+                  pressed={trade}
+                  label={`Trade ${name}, ${line}`}
+                  word="Trade"
+                  tone="trade"
+                  icon={<ArrowsRightLeftIcon aria-hidden="true" className="h-4 w-4" />}
+                  onToggle={() => actions.toggleTrade(card, copy)}
+                />
+                {top ? want : slot(SLOT_ICON)}
                 {trailing(copy.id, line, top)}
               </div>
             );
@@ -370,23 +300,4 @@ export default function CardRowGroup({
       )}
     </li>
   );
-}
-
-/**
- * A search hit's row: reads its own copies, since a result list spans
- * checklists. On the inventory side (NEO-364) it is a quantity row for the
- * target box instead, counting box copies only.
- */
-export function SearchHitRow(props: Omit<Parameters<typeof CardRowGroup>[0], "copies">) {
-  const side = useSide();
-  if (side === "inventory") return <InventorySearchHitRow {...props} />;
-  return <CollectionSearchHitRow {...props} />;
-}
-
-function CollectionSearchHitRow(props: Omit<Parameters<typeof CardRowGroup>[0], "copies">) {
-  const all = useCopiesOf(props.card.id);
-  const scope = useScope();
-  // The collection's copies only, narrowed by the page's scope, as the checklist's rows are.
-  const copies = collectionCopiesIn(all, scope);
-  return <CardRowGroup {...props} copies={copies} />;
 }

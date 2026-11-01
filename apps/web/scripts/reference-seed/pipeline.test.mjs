@@ -85,10 +85,7 @@ describe("build", () => {
 
   test("createdByUserId is stripped from every row and the count recorded", () => {
     for (const t of BUNDLE_TABLES) for (const r of rowsOf(bundleFiles, t)) expect(r).not.toHaveProperty("createdByUserId");
-    expect(manifest.strippedFields).toEqual({
-      selectorOptions: { createdByUserId: 1, hasCards: 1, subtreeCardCount: 1, subtreeNonVariationCardCount: 1 },
-      players: { createdByUserId: 2 },
-    });
+    expect(manifest.strippedFields).toEqual({ selectorOptions: { createdByUserId: 1 }, players: { createdByUserId: 2 } });
   });
 
   test("sport rows keep their marketplace ids and sport config; children are cleared", () => {
@@ -169,50 +166,6 @@ describe("check", () => {
     const g = clone(bundleFiles);
     g.set("_tables/documents.jsonl", g.get("_tables/documents.jsonl") + '{"name":"cardChecklist","id":10008}\n');
     expect(checkFiles(g).problems).toHaveProperty("unexpected table cardChecklist");
-  });
-
-  // NEO-358 — the collection reads fields derived when a card is written
-  // (`cardChecklist.sportId` / `listingTitle`, the variant rows' card counts,
-  // `cardTeamLinks`, `cardPlayerLinks`). None of them can travel in a bundle:
-  // the preview's cards are built by the Playwright setup project through the
-  // writers that derive them (convex/e2eSeedDerivedFields.test.ts), so the
-  // import has nothing to transform and the preview needs no backfill.
-  test("NEO-358: no card, no derived table and no derived field travels in a bundle", () => {
-    const DERIVED_TABLES = [
-      "cardChecklist",
-      "cardTeamLinks",
-      "cardPlayerLinks",
-      "collectionCopies",
-      "collectionContainers",
-      "collectionBuildingSets",
-    ];
-    const entries = [...bundleFiles.keys()];
-    for (const table of DERIVED_TABLES) {
-      expect(BUNDLE_TABLES).not.toContain(table);
-      expect(entries.some((e) => e.startsWith(`${table}/`))).toBe(false);
-      const f = clone(bundleFiles);
-      f.set(`${table}/documents.jsonl`, "");
-      expect(checkFiles(f).problems).toHaveProperty(`unexpected table ${table}`);
-    }
-    // The only selectorOptions rows are sports, which hold no cards: no
-    // count, title or card sport is carried for an import to get wrong.
-    for (const t of BUNDLE_TABLES) {
-      for (const r of rowsOf(bundleFiles, t)) {
-        for (const field of [
-          "cardCount",
-          "nonVariationCardCount",
-          "listingTitle",
-          // NEO-364 — a sport flagged on the source would show empty in a
-          // preview's drill; the fixture's Baseball carries these, so the
-          // build is what removes them.
-          "hasCards",
-          "subtreeCardCount",
-          "subtreeNonVariationCardCount",
-        ]) {
-          expect(r).not.toHaveProperty(field);
-        }
-      }
-    }
   });
 
   test("rejects more dangling references than the manifest recorded", () => {

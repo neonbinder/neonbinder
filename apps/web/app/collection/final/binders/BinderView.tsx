@@ -1,23 +1,21 @@
-import type { ReactNode, Ref } from "react";
+import type { Ref } from "react";
 import { ArrowLeftIcon } from "@heroicons/react/24/outline";
+import type { LayoutMode, PageModel, PileFilters, SlotRef, SortKey } from "../../prototypes/p2/model";
 import BinderDesk, { whereLabel } from "./BinderDesk";
-import { AdjustmentsHorizontalIcon } from "@heroicons/react/24/outline";
-import type { PageModel, PileFilters, SlotRef, SortKey } from "./model";
 import type { OpenView } from "./openView";
-import { Cover, MobileSummary, PileTools, type CoverActions } from "./parts";
+import { Cover, MobileSummary, ModeToggle, PileTools, ScopeLine } from "./parts";
 import type { PocketHandlers } from "./Pocket";
 import ShareLink from "./ShareLink";
 import NeonButton from "@/components/modules/NeonButton";
 
 /**
  * NEO-350 — the one open-binder view of My Binders: the header (back, title,
- * badge, where you are, Share, Find cards and Binder settings, the pile's tools), the
+ * badge, where you are, Share, the layout toggle, the pile's tools), the
  * scope line, the cover and the spread of pockets. A binder, a smart
  * binder, the Want List, All my cards and a set you are browsing all render
  * here; what differs between them arrives in `open` (see `openView.ts`), so
- * a browsed set gets the same Share as a binder, and no
- * label controls because it has no label. A box (and the for-sale view)
- * passes its own desk as `children` in place of the spread of pages.
+ * a browsed set gets the same Share and layout toggle as a binder, and no
+ * label controls because it has no label.
  */
 
 export interface PileControls {
@@ -34,12 +32,9 @@ interface BinderViewProps extends PocketHandlers {
   at: number;
   onTurn: (to: number) => void;
   onBack: () => void;
-  /** NEO-362 — opens the binder's settings (order, empty slots, its rule). */
-  onSettings: () => void;
-  /** NEO-362 — opens Find cards (a smart binder). */
-  onFindCards: () => void;
+  onLayout: (mode: LayoutMode) => void;
   onEditLabel: () => void;
-  onEditContainer: () => void;
+  onGoChecklists: () => void;
   pile: PileControls;
   aimed: SlotRef | null;
   found: SlotRef | null;
@@ -47,12 +42,6 @@ interface BinderViewProps extends PocketHandlers {
   reducedMotion: boolean;
   headingRef: Ref<HTMLHeadingElement>;
   deskRef: Ref<HTMLDivElement>;
-  /** A desk of its own (a box's rows) in place of the binder's pages. */
-  children?: ReactNode;
-  /** Words under the title while the pages load, or for a desk with no pages. */
-  status?: string;
-  /** Its cards can be dragged or Alt+arrowed to other pockets. */
-  rearrange?: boolean;
 }
 
 export default function BinderView({
@@ -62,10 +51,9 @@ export default function BinderView({
   at,
   onTurn,
   onBack,
-  onSettings,
-  onFindCards,
+  onLayout,
   onEditLabel,
-  onEditContainer,
+  onGoChecklists,
   pile,
   aimed,
   found,
@@ -76,12 +64,7 @@ export default function BinderView({
   onOpen,
   onAdd,
   onAim,
-  onShift,
-  rearrange,
-  children,
-  status,
 }: BinderViewProps) {
-  const actions: CoverActions = { onEditLabel, onEditContainer };
   return (
     <div>
       <div className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-2">
@@ -102,9 +85,7 @@ export default function BinderView({
               className={
                 open.badge.tone === "smart"
                   ? "rounded bg-neon-purple px-1.5 text-xs font-bold leading-5 text-on-neon-purple"
-                  : open.badge.tone === "sale"
-                    ? "rounded bg-neon-yellow px-1.5 text-xs font-bold leading-5 text-on-neon-yellow"
-                    : "rounded border border-neon-blue-text px-1.5 text-xs font-bold leading-5 text-neon-blue-text"
+                  : "rounded border border-neon-blue-text px-1.5 text-xs font-bold leading-5 text-neon-blue-text"
               }
             >
               {open.badge.text}
@@ -112,41 +93,28 @@ export default function BinderView({
           )}
         </div>
         <p aria-live="polite" className="text-sm tabular-nums text-ink-2">
-          {status ?? whereLabel(pages.length, wide, at)}
+          {whereLabel(pages.length, wide, at)}
         </p>
         <div className="ml-auto flex flex-wrap items-center gap-2">
           {open.share && <ShareLink key={open.key} target={open.share} />}
-          {open.findCards && (
-            <NeonButton type="button" variant="tertiary" onClick={onFindCards} className="min-h-10">
-              Find cards
-            </NeonButton>
-          )}
-          {open.settings && (
-            <NeonButton type="button" variant="secondary" outline onClick={onSettings} className="min-h-10">
-              <AdjustmentsHorizontalIcon aria-hidden="true" className="h-4 w-4" />
-              Binder settings
-            </NeonButton>
-          )}
+          {open.layout && <ModeToggle mode={open.layout} onChange={onLayout} />}
           {open.pileTools && <PileTools {...pile} />}
         </div>
       </div>
 
-      {/* Room between the header and the binder (where the old scope line sat). */}
-      <div aria-hidden="true" className="h-8" />
+      {open.scopeLine && <ScopeLine text={open.scopeLine} onGo={onGoChecklists} />}
 
-      {(!wide || children) && <MobileSummary open={open} actions={actions} />}
+      {!wide && <MobileSummary open={open} onEditLabel={onEditLabel} />}
 
       <div ref={deskRef} className="scroll-mt-2">
-        {children ?? (
         <BinderDesk
           pages={pages}
           wide={wide}
           at={at}
           onTurn={onTurn}
           vinyl={open.vinyl}
-          cover={<Cover open={open} actions={actions} rearrange={rearrange} />}
+          cover={<Cover open={open} onEditLabel={onEditLabel} />}
           variant={open.pockets}
-          saleTags={open.saleTags}
           aimed={aimed}
           found={found}
           wholeBinderDrop={wholeBinderDrop}
@@ -155,10 +123,7 @@ export default function BinderView({
           onOpen={onOpen}
           onAdd={onAdd}
           onAim={onAim}
-          onShift={onShift}
-          rearrange={rearrange}
         />
-        )}
       </div>
     </div>
   );

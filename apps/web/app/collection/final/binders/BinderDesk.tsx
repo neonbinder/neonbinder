@@ -1,8 +1,8 @@
 import { useLayoutEffect, useRef, type CSSProperties, type ReactNode, type TouchEvent } from "react";
 import { useDroppable } from "@dnd-kit/core";
 import { ChevronLeftIcon, ChevronRightIcon } from "@heroicons/react/24/outline";
-import Pocket, { POCKET_MOVE_HINT_ID, type PocketHandlers, type PocketVariant } from "./Pocket";
-import { sameSlot, type PageModel, type SlotRef } from "./model";
+import Pocket, { type PocketHandlers, type PocketVariant } from "./Pocket";
+import type { PageModel, SlotRef } from "../../prototypes/p2/model";
 import NeonButton from "@/components/modules/NeonButton";
 
 /**
@@ -23,8 +23,6 @@ interface BinderDeskProps extends PocketHandlers {
   vinyl: string;
   cover: ReactNode;
   variant: PocketVariant;
-  /** Tag a box copy's pocket "For sale" (the Up for Trade pile only). */
-  saleTags?: boolean;
   aimed: SlotRef | null;
   /** The pocket a hunt found, ringed until the binder closes. */
   found?: SlotRef | null;
@@ -33,8 +31,6 @@ interface BinderDeskProps extends PocketHandlers {
   reducedMotion: boolean;
   /** Label for the binder region, e.g. the binder's name. */
   name: string;
-  /** Its cards can be dragged or Alt+arrowed to other pockets. */
-  rearrange?: boolean;
 }
 
 export function stepCount(pageCount: number, wide: boolean): number {
@@ -151,11 +147,6 @@ export default function BinderDesk(props: BinderDeskProps) {
         } as CSSProperties
       }
     >
-      {props.rearrange && (
-        <span id={POCKET_MOVE_HINT_ID} hidden>
-          Alt plus the arrow keys move it to the open pocket before or after. Or drag it to an empty pocket.
-        </span>
-      )}
       {leftPage === "cover" && (
         <div ref={leftRef} className="p2-cover">
           {cover}
@@ -220,14 +211,11 @@ function Page({
   page,
   number,
   variant,
-  saleTags,
   aimed,
   found,
   onOpen,
   onAdd,
   onAim,
-  onShift,
-  rearrange,
 }: BinderDeskProps & { page: PageModel; number: number }) {
   const head = [page.section, page.note].filter(Boolean).join(", ");
   return (
@@ -242,16 +230,25 @@ function Page({
           key={i}
           pocket={pocket}
           variant={variant}
-          saleTag={saleTags}
           index={i}
           pageNumber={number}
-          aimed={sameSlot(aimed, pocket.slot)}
-          found={sameSlot(found, pocket.slot)}
+          aimed={
+            !!aimed &&
+            !!pocket.slot &&
+            aimed.binderId === pocket.slot.binderId &&
+            aimed.page === pocket.slot.page &&
+            aimed.slot === pocket.slot.slot
+          }
+          found={
+            !!found &&
+            !!pocket.slot &&
+            found.binderId === pocket.slot.binderId &&
+            found.page === pocket.slot.page &&
+            found.slot === pocket.slot.slot
+          }
           onOpen={onOpen}
           onAdd={onAdd}
           onAim={onAim}
-          onShift={onShift}
-          rearrange={rearrange}
         />
       ))}
       <p aria-hidden="true" className="p2-page-foot">

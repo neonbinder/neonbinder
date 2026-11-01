@@ -14,7 +14,6 @@ import { beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
-import { insertTestCard } from "../lib/testing/card-row";
 
 const modules = (
   import.meta as unknown as {
@@ -109,7 +108,7 @@ async function seed(t: T) {
     const ohtani = await player("Shohei Ohtani");
     const judge = await player("Aaron Judge");
     const card = (n: string, p: Id<"players">, name: string, sortOrder: number) =>
-      insertTestCard(ctx, {
+      ctx.db.insert("cardChecklist", {
         selectorOptionId: insert,
         cardNumber: n,
         cardName: name,

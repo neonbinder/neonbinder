@@ -22,7 +22,6 @@ import schema from "./schema";
 import { drainScheduled } from "../lib/testing/drain-scheduled";
 import { MAX_CARD_PLAYERS } from "./features/cardAttention";
 import type { Id } from "./_generated/dataModel";
-import { insertTestCard } from "../lib/testing/card-row";
 
 const modules = (
   import.meta as unknown as {
@@ -83,7 +82,7 @@ async function insertCard(
   card: Record<string, unknown>,
 ): Promise<Id<"cardChecklist">> {
   return t.run(async (ctx) =>
-    insertTestCard(ctx, {
+    ctx.db.insert("cardChecklist", {
       selectorOptionId: variantTypeId,
       cardNumber: "50",
       cardName: "A Card",

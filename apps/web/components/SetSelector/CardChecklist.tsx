@@ -7,7 +7,6 @@ import type { GenericId } from "convex/values";
 import type { Id } from "../../convex/_generated/dataModel";
 import CardChecklistItem from "./CardChecklistItem";
 import { compareCardNumbers } from "@/lib/cards/card-number";
-import { keptCollectedNote } from "@/lib/collection/collectors";
 import CardDetailPanel from "./CardDetailPanel";
 import { useFieldTestClass } from "@/src/hooks/useFieldTestClass";
 import NeonButton from "../modules/NeonButton";
@@ -66,9 +65,6 @@ import {
 import { teamFullName } from "@/lib/teams/team-name";
 import SetRowActionButton from "./SetRowActionButton";
 import { Input } from "../primitives/Input";
-import { Textarea } from "../primitives/Textarea";
-import { CARD_NOTES_MAX } from "../../convex/cardNotes";
-import { NotesLengthMeter } from "./NotesLengthMeter";
 import TeamPicker from "./TeamPicker";
 import PlayerPicker, { type PlayerPickerLabels } from "./PlayerPicker";
 import { attachedSidesOf } from "../../convex/marketplaceResolvability";
@@ -898,11 +894,6 @@ export default function CardChecklist({
     },
     [setSyncNotice],
   );
-  /** NEO-358 — a row's delete or unlink the server refused, said here. */
-  const onRowDeleteFailed = useCallback(
-    (message: string) => setSyncMessage(message, "error"),
-    [setSyncMessage],
-  );
   const [showAddForm, setShowAddForm] = useState(false);
   // NEO-36: the add-card form's TEXT fields are UNCONTROLLED (refs, read at
   // submit) rather than controlled React state. CardChecklist re-renders on
@@ -920,9 +911,6 @@ export default function CardChecklist({
   // nothing.
   const cardNumberRef = useRef<HTMLInputElement>(null);
   const cardNameRef = useRef<HTMLInputElement>(null);
-  // NEO-367 — uncontrolled like the two above, read at submit.
-  const cardNotesRef = useRef<HTMLTextAreaElement>(null);
-  const [addFormNotesLength, setAddFormNotesLength] = useState(0);
   /**
    * NEO-208 — the quick-add form's picked teams. React STATE, not a ref, and
    * that is the one place this form deviates from the NEO-36 rule above.
@@ -2133,17 +2121,6 @@ export default function CardChecklist({
       if (result.operatorDeleted) {
         notes.push(`Deleted ${result.operatorDeleted}.`);
       }
-      // NEO-358 — a delete the server refused because a collector owns a copy.
-      // It says how many collectors are in the way (a floor, "5+", when the
-      // server's bounded count could not see them all).
-      if (result.collectedDeleteSkipped) {
-        notes.push(
-          keptCollectedNote(result.collectedDeleteSkipped, {
-            collectors: result.collectedDeleteCollectors ?? 1,
-            atLeast: result.collectedDeleteCollectorsAtLeast === true,
-          }),
-        );
-      }
       if (result.staleDecisions) {
         notes.push(
           `${result.staleDecisions} changed under review — not applied; re-sync to see them again.`,
@@ -2315,7 +2292,6 @@ export default function CardChecklist({
    * submit) so a picked team or player can never survive into the next card.
    */
   const openAddForm = useCallback(() => {
-    setAddFormNotesLength(0);
     setAddFormTeamIds([]);
     setAddFormPlayerIds([]);
     setShowAddForm(true);
@@ -2333,8 +2309,6 @@ export default function CardChecklist({
     const cardNumber = cardNumberRef.current?.value.trim() ?? "";
     if (!cardNumber) return;
     const cardName = (cardNameRef.current?.value ?? "").trim();
-    // NEO-367 — trimmed and capped server-side too; blank is not sent.
-    const notes = (cardNotesRef.current?.value ?? "").trim();
     // NEO-220: dedupe client-side as well as server-side, same belt as the
     // teams below — `PlayerPicker.addChip` already refuses a duplicate, but
     // the mutation's own dedupe is what the row is written from and the two
@@ -2368,7 +2342,6 @@ export default function CardChecklist({
         // is what leaves the card correctly badged as needing one. Note we
         // never send the legacy `teams` name array from here any more.
         ...(teamOnCardIds.length > 0 ? { teamOnCardIds } : {}),
-        ...(notes ? { notes } : {}),
       });
       // Closing the form unmounts it; the uncontrolled inputs reset to empty
       // on the next open, and `closeAddForm` clears the picker.
@@ -3212,26 +3185,6 @@ export default function CardChecklist({
                 contextOptionId={variantId}
               />
             </div>
-            {/* NEO-367 — NB's own note about the card. A real <label> this
-                time: a textarea's placeholder vanishes as soon as the admin
-                types, and `maxLength` keeps the add from failing on the
-                server's cap (`normalizeCardNotes`). */}
-            <div className="w-full">
-              <div className="flex items-center justify-between gap-2 text-[10px] uppercase tracking-wide text-ink-3 mb-1">
-                <label htmlFor={`${variantId}-quick-add-notes`}>Notes (optional)</label>
-                <NotesLengthMeter length={addFormNotesLength} />
-              </div>
-              <Textarea
-                bare
-                id={`${variantId}-quick-add-notes`}
-                ref={cardNotesRef}
-                rows={2}
-                maxLength={CARD_NOTES_MAX}
-                onChange={(e) => setAddFormNotesLength(e.target.value.length)}
-                className={`${fieldClass("cardNotes")} w-full p-2 text-sm resize-y`}
-                placeholder="e.g. Short print, about 1:120 packs"
-              />
-            </div>
             <div className="flex gap-2">
               <NeonButton
                 onClick={() => {
@@ -3589,11 +3542,6 @@ export default function CardChecklist({
                   isVariation={row.isVariation}
                   isExpanded={row.expanded}
                   parentCardNumber={row.parentCardNumber}
-                  // NEO-358: a refused delete ("Hold up! 3 collectors have
-                  // this card…") is said in the notice banner, the
-                  // checklist's one live region for results, as an alert.
-                  // The row puts focus back on its own Del control.
-                  onDeleteFailed={onRowDeleteFailed}
                   // NEO-343: withdrawn while searching — every match is
                   // already listed open (see `displayRows`), so a toggle
                   // would change nothing.

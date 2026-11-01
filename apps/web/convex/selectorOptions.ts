@@ -55,18 +55,8 @@ import {
   type ResolvedNames,
 } from "./listingTitleContext";
 import { generateSku } from "./sku";
-import {
-  insertCardRow,
-  requireCardSport,
-  type CarriedCardFields,
-} from "./cardRowCreate";
+import { insertCardRow, type CarriedCardFields } from "./cardRowCreate";
 import { MAX_PARALLEL_GROUPING_ENTRIES } from "./parallelGroupingPlan";
-import { blockedSideFailed, sideMissingFromRun } from "./parallelChecklistBuild";
-import {
-  failedChecklistSides,
-  failureFromMessage,
-  type FetchFailure,
-} from "./lib/marketplaceFetchFailure";
 import {
   cardNumberStem,
   resolveVariationParents,
@@ -240,23 +230,10 @@ import {
   playerBelongsToSport,
   sameNamePlayers,
 } from "./players";
-import {
-  loadPlayerAnswers,
-  MAX_STORED_NAME_ANSWERS,
-} from "./checklistNameResolutions";
 // NEO-313 — the derived player → cards index. Every `cardChecklist.playerIds`
 // writer and every card delete in this file goes through these two; see
 // convex/cardPlayerLinks.ts and `cardPlayerLinks.pin.test.ts`.
-import { syncCardPlayerLinks } from "./cardPlayerLinks";
-import { normalizeCardNotes } from "./cardNotes";
-// NEO-358 — the team → cards index (every `teamOnCardIds` writer syncs it),
-// the one card delete (`removeCardRow`, with its collector guard), the
-// per-mutation card counts, and the stored-card title the backfill shares.
-import { syncCardTeamLinks } from "./cardTeamLinks";
-import { collectedCardIds, countCollectors, removeCardRow } from "./cardRowDelete";
-import { mergeCollectorCounts, type CollectorCount } from "../lib/collection/collectors";
-import { newRowSubtreeCounts, createCardCountLedger } from "./cardCounts";
-import { titleForStoredCard } from "./storedCardTitle";
+import { deleteCardPlayerLinks, syncCardPlayerLinks } from "./cardPlayerLinks";
 import {
   MAX_TEAM_ALIASES,
   MAX_TEAM_ALIAS_LENGTH,
@@ -354,7 +331,6 @@ import {
 // read it) and threaded into `resolvableSides` as an argument, so a paused
 // marketplace is a side that is never asked and never covered.
 import { pausedSides } from "./marketplacePause";
-import { drainPhotos } from "./copyPhotos";
 import {
   allocateSlots,
   assertValidSlotLabel,
@@ -1272,7 +1248,6 @@ export const findSetYearForSelectorOptionQuery = internalQuery({
   },
 });
 
-
 /**
  * Detect unresolved player/team names for a selectorOption and kick off the
  * NEO-92 review-wizard batch for whatever's unresolved. Shared by both the
@@ -1464,11 +1439,6 @@ async function resolveUnknownsAndStartBatch(
    */
   const cardTeamNamesFor = (nameNormalized: string): string[] =>
     args.cardTeamNamesByPlayer?.get(nameNormalized) ?? [];
-  /** NEO-402 — this fetch's exactly-one answers, written for the commit. */
-  const singleMatchPlayers: Array<{
-    nameNormalized: string;
-    playerId: Id<"players">;
-  }> = [];
 
   for (const [normalized, name] of playerByNorm) {
     if (skippedKeys.has(`player:${normalized}`)) continue;
@@ -1508,13 +1478,6 @@ async function resolveUnknownsAndStartBatch(
     // NEO-335 — recorded for the title context. A no-op when not asked for.
     if (resolved.playerId) {
       args.resolvedNames?.playerIdByNorm.set(normalized, resolved.playerId);
-    }
-    // NEO-402 — kept for the commit, which would otherwise look this name up
-    // again. Only the outright single match: a narrowed one is an inference
-    // the commit re-derives with its own card context (see
-    // `checklistNameResolutions.ts`).
-    if (resolved.playerId && resolved.matchCount === 1) {
-      singleMatchPlayers.push({ nameNormalized: normalized, playerId: resolved.playerId });
     }
     // `playerId`, not `matchCount`: several rows can still resolve to one
     // person once the year is taken into account.
@@ -1604,16 +1567,6 @@ async function resolveUnknownsAndStartBatch(
   // a batchId for a wizard with nothing in it.
   const callerId = await getCurrentUserId(ctx);
   if (!callerId) throw new Error("Not authenticated");
-  // NEO-402 — replaces this operator's record for the set whole, so a re-fetch
-  // ("Back to matching", a second sync) never leaves an older answer behind.
-  await ctx.runMutation(internal.checklistNameResolutions.replaceForFetch, {
-    selectorOptionId: args.selectorOptionId,
-    createdByUserId: callerId,
-    sportId: args.sportId,
-    // Convex caps an array argument at 8,192 entries. A name left out is
-    // simply looked up by the commit, so a short record is harmless.
-    players: singleMatchPlayers.slice(0, MAX_STORED_NAME_ANSWERS),
-  });
   const hasUnknowns = unknownPlayers.length > 0 || unknownTeams.length > 0;
   const openBatchId = hasUnknowns
     ? null
@@ -1749,11 +1702,8 @@ export const getCardChecklist = query({
       // over.
       variationOfCardId: v.optional(v.id("cardChecklist")),
       variationParentManual: v.optional(v.boolean()),
-      // NEO-367: NB's own note about the card (see schema.ts).
-      notes: v.optional(v.string()),
       // NEO-25: marketplace-agnostic listing strings (see schema.ts).
-      // NEO-363: the title is required on every row.
-      listingTitle: v.string(),
+      listingTitle: v.optional(v.string()),
       listingDescription: v.optional(v.string()),
       // NEO-101: the generated title's core was cut to fit at creation time
       // (see schema.ts). Returned because the checklist derives the
@@ -1772,9 +1722,6 @@ export const getCardChecklist = query({
       features: featuresValidator,
       // NEO-91: cross-marketplace SKU (see convex/sku.ts).
       sku: v.optional(v.string()),
-      // NEO-358: the card's sport, denormalised for the collector's search.
-      // NEO-363: required on every row.
-      sportId: v.id("selectorOptions"),
       sortOrder: v.number(),
       lastUpdated: v.number(),
       // NEO-21: set only on guest rows — cards printed in another product
@@ -2726,7 +2673,6 @@ export const storeSelectorOptions = mutation({
         ...(level === "manufacturer" ? { setNamePrefix: insertValue } : {}),
       };
       const id = await ctx.db.insert("selectorOptions", {
-        ...newRowSubtreeCounts(level),
         level,
         value: insertValue,
         platformData: alloc.platformData,
@@ -3394,7 +3340,6 @@ export const addCustomSelectorOption = mutation({
     }
 
     const id = await ctx.db.insert("selectorOptions", {
-      ...newRowSubtreeCounts(level),
       level,
       value,
       platformData: slots?.platformData ?? {},
@@ -4124,10 +4069,6 @@ const holdingKindValidator = v.union(
   v.literal("leagues"),
   // NEO-219 security condition 2 — staged checklist-review state.
   v.literal("review"),
-  // NEO-358 — collectors who said they are building this set, only when there
-  // are more than `TRANSIENT_DELETE_CAP` of them; fewer are swept with the
-  // row. Always counted, never named: who collects what is the collector's.
-  v.literal("collectors"),
 );
 
 const holdingValidator = v.object({
@@ -4171,8 +4112,7 @@ type Holding = {
     | "players"
     | "teams"
     | "leagues"
-    | "review"
-    | "collectors";
+    | "review";
   count: number;
   examples: string[];
   level?: Level;
@@ -4191,8 +4131,8 @@ const ALL_SELECTOR_LEVELS = [
 /**
  * Everything that would be orphaned by deleting this row.
  *
- * Read by `getSelectorOptionHoldings` (the delete affordance's one-shot check
- * on click, and its reason text) and re-read by `deleteSelectorOption` inside the transaction
+ * Read by `getSelectorOptionHoldings` (the affordance's disabled state and its
+ * reason text) and re-read by `deleteSelectorOption` inside the transaction
  * that deletes. The mutation never trusts the query's answer — a checklist
  * commit can land between the two.
  *
@@ -4200,12 +4140,6 @@ const ALL_SELECTOR_LEVELS = [
  * `selectorSyncStatus` are NOT holdings. They are transient per-batch or
  * per-column state whose only meaning is "a fetch is/was in flight here";
  * nothing an operator would mourn, and they go with the row.
- *
- * NEO-358 — nor are a set's `collectionBuildingSets` entries ("Sets I'm
- * building"): an empty set deleted from the trash icon sweeps them, up to
- * `TRANSIENT_DELETE_CAP` (above it, `kind: "collectors"`). A collector's
- * COPIES can never be stranded by a row delete: a copy points at a card, and
- * every card delete runs `removeCardRow`'s collector guard.
  *
  * NEO-306 — a brand's pending `slSetReviews` doc is NOT a holding either. It
  * is what SportLots listed minus what NB covers, re-derived by the next Sync
@@ -4327,23 +4261,6 @@ export async function collectSelectorOptionHoldings(
     holds.push({ kind: "review", count: reviewCount, examples: [] });
   }
 
-  // NEO-358 — "Sets I'm building" entries are collector bookkeeping ABOUT the
-  // set, not something stored under it: an empty set row deleted from the
-  // trash icon takes them with it (Jason's default). Counted here only to keep
-  // that sweep bounded, the `entityReviewSkips` rule above: past the cap the
-  // delete refuses instead of issuing an unbounded write batch. A set's COPIES
-  // are never in question here — a copy points at a card, and a row with
-  // cards under it is already refused.
-  if (row.level === "setName") {
-    const building = await ctx.db
-      .query("collectionBuildingSets")
-      .withIndex("by_set", (q) => q.eq("setId", row._id))
-      .take(TRANSIENT_DELETE_CAP + 1);
-    if (building.length > TRANSIENT_DELETE_CAP) {
-      holds.push({ kind: "collectors", count: building.length, examples: [] });
-    }
-  }
-
   // NEO-96: players/teams/leagues reference a SPORT row by id. Nothing points
   // at any other level, so this whole block is skipped elsewhere.
   if (row.level === "sport") {
@@ -4374,12 +4291,9 @@ export async function collectSelectorOptionHoldings(
 }
 
 /**
- * NEO-219 C — what a row holds, for the delete affordance's reason text.
- * NEO-400: read ONCE, on the trash's click (`convex.query`), never subscribed:
- * it walks every row and card below the selection, and as a subscription it
- * re-ran on every write to the set and held every mutation in the tab behind
- * it. DISPLAY ONLY: the mutation re-checks everything inside its own
- * transaction.
+ * NEO-219 C — reactive read of what a row holds, for the delete affordance's
+ * disabled state and its `aria-describedby` reason. DISPLAY ONLY: the mutation
+ * re-checks everything inside its own transaction.
  */
 export const getSelectorOptionHoldings = query({
   args: { id: v.id("selectorOptions") },
@@ -4461,18 +4375,6 @@ export async function deleteEmptySelectorOptionRow(
     )
     .take(TRANSIENT_DELETE_CAP);
   for (const doc of skips) await ctx.db.delete(doc._id);
-
-  // NEO-358 — the collectors' "Sets I'm building" entries for this set go with
-  // it (the holdings check above refused more than TRANSIENT_DELETE_CAP). A
-  // set conversion re-points them to its target set BEFORE ending the source
-  // here, so on that path this finds nothing.
-  if (row.level === "setName") {
-    const building = await ctx.db
-      .query("collectionBuildingSets")
-      .withIndex("by_set", (q) => q.eq("setId", row._id))
-      .take(TRANSIENT_DELETE_CAP);
-    for (const doc of building) await ctx.db.delete(doc._id);
-  }
 
   // A status row is keyed on (childLevel, parentId), so the ones belonging
   // to this row are its CHILD columns' — one indexed lookup per level.
@@ -4718,7 +4620,7 @@ export const renameSelectorOption = mutation({
  * `findSportForSelectorOption`, so a cyclic or corrupted `parentId` cannot
  * spin a query.
  */
-export async function findAncestorLabels(
+async function findAncestorLabels(
   ctx: { db: { get: (id: Id<"selectorOptions">) => Promise<any> } },
   node: any,
 ): Promise<
@@ -5485,14 +5387,10 @@ export const addCustomCard = mutation({
      * helper `updateCard` uses — see `resolveTeamOnCardIdsForWrite`.
      */
     teamOnCardIds: v.optional(v.array(v.id("teams"))),
-    /** NEO-367 — NB's own note about the card; see `normalizeCardNotes`. */
-    notes: v.optional(v.string()),
   },
   returns: v.id("cardChecklist"),
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
-    // NEO-367 — refused before anything is written, like the ids below.
-    const notes = normalizeCardNotes(args.notes);
     const typedPlayerNames = normalizePendingNames(
       args.players,
       "player",
@@ -5664,15 +5562,6 @@ export const addCustomCard = mutation({
     );
     const listingTitle = assessListingTitle(listingInputs);
 
-    // NEO-358 — the card's sport, stamped once at insert for the collector's
-    // search. Already walked when the card carries players; the SKU below
-    // reads the same answer rather than walking the chain again. NEO-363:
-    // required on the row, so a broken chain refuses the card.
-    const insertSportId = requireCardSport(
-      cardSportId ??
-        (await findSportForSelectorOption(ctx, args.selectorOptionId)),
-    );
-
     // Insert with a placeholder sortOrder; restampCardChecklistSortOrders
     // below assigns the correct natural-cardNumber position. This way a
     // user can add #42 to a set already containing #1..#100 and the new
@@ -5707,14 +5596,12 @@ export const addCustomCard = mutation({
       ...(hasLinkedPlayers ? { playerIds, playerLinks } : {}),
       ...(hasLinkedTeams ? { teamOnCardIds } : {}),
       ...(featuresOrUndefined ? { features: featuresOrUndefined } : {}),
-      ...(notes ? { notes } : {}),
       listingTitle: listingTitle.title,
       listingDescription: generateListingDescription(listingInputs),
       // NEO-101: recorded only when the core actually had to be cut — the
       // field is absent, not `false`, on the overwhelming majority of rows
       // that fit fine (mean real title length is 34 characters).
       ...(listingTitle.coreFits ? {} : { listingTitleTruncated: true }),
-      sportId: insertSportId,
       sortOrder: 0,
       lastUpdated: Date.now(),
     });
@@ -5723,14 +5610,6 @@ export const addCustomCard = mutation({
     if (hasLinkedPlayers) {
       await syncCardPlayerLinks(ctx, id, playerIds, cardSportId, { fresh: true });
     }
-    // NEO-358 — and the team → cards index.
-    if (hasLinkedTeams) {
-      await syncCardTeamLinks(ctx, id, teamOnCardIds, { fresh: true });
-    }
-    // NEO-358 — the row's counts: one more card, born a non-variation.
-    const ledger = createCardCountLedger();
-    ledger.addCard({ selectorOptionId: args.selectorOptionId });
-    await ledger.flush(ctx);
 
     await restampCardChecklistSortOrders(ctx, args.selectorOptionId);
 
@@ -5739,7 +5618,8 @@ export const addCustomCard = mutation({
     // commitCardChecklist can no longer disagree (they used to emit NB-BB- and
     // NB-BA- for the same set, because one passed "Baseball" and the other the
     // lowercased "baseball" into a capitalized-keyed map).
-    const skuSportRow = await ctx.db.get(insertSportId);
+    const skuSportId = await findSportForSelectorOption(ctx, args.selectorOptionId);
+    const skuSportRow = skuSportId ? await ctx.db.get(skuSportId) : null;
     await ctx.db.patch(id, {
       sku: generateSku({
         skuCode: skuSportRow?.sportConfig?.skuCode,
@@ -5817,9 +5697,6 @@ export const updateCard = mutation({
     pendingTeamNames: v.optional(v.array(v.string())),
     listingTitle: v.optional(v.string()),
     listingDescription: v.optional(v.string()),
-    // NEO-367 — NB's own note about the card. "" clears it, like every other
-    // string here; see `normalizeCardNotes`.
-    notes: v.optional(v.string()),
     // NEO-24: full-replacement features patch. Callers pass the entire
     // desired map (or omit). Per-key edits should go through
     // `setCardFeature` so the propagation-engine semantics around the
@@ -5912,13 +5789,6 @@ export const updateCard = mutation({
 
     if (typeof filtered.listingTitle === "string") {
       const trimmedTitle = filtered.listingTitle.trim();
-      // NEO-358 — a card's title is what a collector searches
-      // (`search_listing_title`), so it is never stored blank. Refused, never
-      // regenerated: the operator cleared it, and only they can say what it
-      // should read instead. The panel shows this and puts the title back.
-      if (trimmedTitle.length === 0) {
-        throw new ConvexError(BLANK_LISTING_TITLE_REFUSAL);
-      }
       if (trimmedTitle.length > LISTING_TITLE_MAX) {
         throw new ConvexError(
           `Listing title is ${trimmedTitle.length} characters; the limit is ${LISTING_TITLE_MAX}.`,
@@ -5941,12 +5811,6 @@ export const updateCard = mutation({
       if (trimmedTitle !== existingTitle) {
         filtered.listingTitleTruncated = undefined;
       }
-    }
-
-    // NEO-367 — trimmed, capped, and blank deletes the field (`undefined` in a
-    // patch), so a cleared note is absent rather than stored as "".
-    if (typeof filtered.notes === "string") {
-      filtered.notes = normalizeCardNotes(filtered.notes);
     }
 
     // NEO-101 deliberately does NOT cap `cardVariation` here, even though
@@ -6091,26 +5955,9 @@ export const updateCard = mutation({
         playerLinksIndexWrite.sportId,
       );
     }
-    // NEO-358 — the team → cards index follows a written `teamOnCardIds`
-    // (validated and deduped above), emptied lists included.
-    if (Array.isArray(filtered.teamOnCardIds)) {
-      await syncCardTeamLinks(
-        ctx,
-        id,
-        filtered.teamOnCardIds as Array<Id<"teams">>,
-      );
-    }
     return null;
   },
 });
-
-/**
- * NEO-358 — `updateCard`'s refusal of a blank listing title. The card detail
- * panel (`CardDetailPanel.tsx`, `BLANK_TITLE_MESSAGE`) says the same sentence
- * without the round trip; keep the two in step.
- */
-export const BLANK_LISTING_TITLE_REFUSAL =
-  "A card needs a title. Type one in, or hit Regenerate for a fresh one.";
 
 /**
  * NEO-101 — what the generator WOULD title this stored card today, plus the
@@ -6189,21 +6036,153 @@ export const previewListingTitle = query({
     await requireAdmin(ctx);
     const card = await ctx.db.get(args.cardId);
     if (!card) throw new ConvexError("previewListingTitle: no such card");
-    // NEO-358 — the body moved, unchanged, to `storedCardTitle.ts` (for the
-    // NEO-358 title backfill, retired in NEO-363).
-    const { title, coreFits, dropped, inputs } = await titleForStoredCard(ctx, card);
-    return { title, coreFits, dropped, inputs };
+
+    // Deduped and BOUNDED before any read, exactly as `teamOnCardIds` is
+    // below. NEO-101 originally bounded this with a LOCAL constant of its own
+    // (12) because `updateCard.playerIds` was written unvalidated and this
+    // query was the only thing standing between one card id and an unbounded
+    // sequential `ctx.db.get` walk. NEO-246 routed that write through
+    // `resolvePlayerIdsForWrite`, so the stopgap is gone and the bound here is
+    // `MAX_CARD_PLAYERS` — the same number the write path enforces. A row that
+    // went through the supported path can therefore never be truncated by it;
+    // the cap remains for rows written before that validation landed, or by a
+    // future caller that skips it. Deduping still earns its keep for the same
+    // rows: a repeat must not be read twice, or printed twice.
+    const previewPlayerIds = [...new Set(card.playerIds ?? [])].slice(
+      0,
+      MAX_CARD_PLAYERS,
+    );
+    const resolvedPlayerNames: string[] = [];
+    for (const playerId of previewPlayerIds) {
+      const player = await ctx.db.get(playerId);
+      // A dangling id is a data problem, not a reason to fail a preview —
+      // skip it and let the chips show what actually resolved.
+      if (player) resolvedPlayerNames.push(player.name);
+    }
+    const playerNames =
+      resolvedPlayerNames.length > 0
+        ? resolvedPlayerNames
+        : (card.pendingPlayerNames ?? []);
+
+    // Teams get the same treatment as players — deduped and BOUNDED before any
+    // read. The bound here is `MAX_CARD_TEAMS`, which is what `updateCard`
+    // already enforces on the write path, so a row that went through the
+    // supported path can never be truncated by it; the cap exists for rows
+    // written before that validation landed, or by a future caller that skips
+    // it.
+    const previewTeamIds = [...new Set(card.teamOnCardIds ?? [])].slice(
+      0,
+      MAX_CARD_TEAMS,
+    );
+    const resolvedTeamNames: string[] = [];
+    for (const teamId of previewTeamIds) {
+      const team = await ctx.db.get(teamId);
+      // NEO-236: full name, matching what the commit path stores on the card.
+      if (team) resolvedTeamNames.push(teamFullName(team));
+    }
+    // Same fallback as `playerNames`: a hand-added card carries the names the
+    // operator typed until a sync resolves them into `teams` rows, and those
+    // are the operator's answer.
+    const teamNames =
+      resolvedTeamNames.length > 0
+        ? resolvedTeamNames
+        : (card.pendingTeamNames ?? []).slice(0, MAX_CARD_TEAMS);
+
+    const features: Record<string, string> = card.features ?? {};
+    const parentNode = await ctx.db.get(card.selectorOptionId);
+    const {
+      setName: setNameValue,
+      sport: sportValue,
+      manufacturerBrandUnknown,
+      ...chainFacts
+    } = await findAncestorLabels(ctx, parentNode);
+
+    // NEO-335 — the insert branch's own mapping (`listingInputsForCard`), fed
+    // the STORED row's `features` as the merged snapshot, rather than a
+    // hand-kept mirror of it. Same fields as before — year/manufacturer/
+    // parallel/autograph/short print off `features`, the card's own RC/relic/
+    // print run/verbatim variation, the set name, the NEO-272 brand ROLE and
+    // the sport — plus the chain's insert role, parallel leaf and short name,
+    // so Regenerate and the TitleFixer read the short name an operator set.
+    const inputs: ListingCardInputs = listingInputsForCard(
+      {
+        cardNumber: card.cardNumber,
+        isRookie: card.isRookie,
+        isRelic: card.isRelic,
+        printRun: card.printRun,
+        cardVariation: card.cardVariation,
+      },
+      {
+        sportValue: sportValue ?? "",
+        setNameValue,
+        manufacturerBrandUnknown,
+        ...chainFacts,
+      },
+      { playerNames, teamNames },
+      features,
+    );
+
+    const { title, coreFits, dropped } = assessListingTitle(inputs);
+    return {
+      title,
+      coreFits,
+      dropped,
+      inputs: { ...inputs, playerNames, teamNames },
+    };
   },
 });
 
 /**
- * NEO-358 — every card delete in this file goes through `removeCardRow`
- * (convex/cardRowDelete.ts): the collector guard, then the cross-listings
- * (NEO-21), the variation children promoted (NEO-189), the player and team
- * index rows, the card, and its row's counts. `orphanVariationsOf` moved there
- * with it and is re-exported for existing importers.
+ * NEO-21: every place in this file that deletes a `cardChecklist` row must
+ * drop its `cardCrossListings` junction rows first, or a guest checklist
+ * keeps rendering a link to a card that no longer exists. Shared so the
+ * handful of stale-card-cleanup loops (marketplace re-sync, legacy-migration
+ * wipe, manual delete, dev-only reset) can't drift out of sync with each
+ * other on this invariant.
  */
-export { orphanVariationsOf } from "./cardRowDelete";
+async function deleteCardCrossListingsFor(
+  ctx: { db: { query: any; delete: (id: any) => Promise<void> } },
+  cardChecklistId: Id<"cardChecklist">,
+): Promise<void> {
+  const crossListings = await ctx.db
+    .query("cardCrossListings")
+    .withIndex("by_card", (q: any) => q.eq("cardChecklistId", cardChecklistId))
+    .collect();
+  for (const link of crossListings) {
+    await ctx.db.delete(link._id);
+  }
+}
+
+/**
+ * NEO-189 — a deleted card must not leave its VARIATIONS pointing at a row that
+ * no longer exists.
+ *
+ * Same invariant `deleteCardCrossListingsFor` exists for, one table over: every
+ * path that deletes a `cardChecklist` row has to tidy what points at it.
+ *
+ * The children are PROMOTED, not deleted. A variation is a full card in its own
+ * right — its own players, its own SKU, its own platform refs — so losing its
+ * parent must not lose the card. It becomes an ordinary card, and an operator
+ * can re-parent it. Deleting a parent's variations along with it would destroy
+ * real catalog data as a side effect of one click.
+ */
+export async function orphanVariationsOf(
+  ctx: { db: { query: any; patch: (id: any, patch: any) => Promise<void> } },
+  cardChecklistId: Id<"cardChecklist">,
+): Promise<void> {
+  const children = await ctx.db
+    .query("cardChecklist")
+    .withIndex("by_variation_parent", (q: any) =>
+      q.eq("variationOfCardId", cardChecklistId),
+    )
+    .collect();
+  for (const child of children) {
+    await ctx.db.patch(child._id, {
+      variationOfCardId: undefined,
+      lastUpdated: Date.now(),
+    });
+  }
+}
 
 /**
  * NEO-189 — set or clear a card's variation parent by hand.
@@ -6251,10 +6230,6 @@ export const setCardVariationParent = mutation({
     const card = await ctx.db.get(args.cardId);
     if (!card) throw new Error("setCardVariationParent: no such card");
 
-    // NEO-358 — a card gaining or losing its parent moves its row's
-    // non-variation count; nothing else about the counts changes.
-    const ledger = createCardCountLedger();
-
     if (!args.parentCardId) {
       await ctx.db.patch(args.cardId, {
         variationOfCardId: undefined,
@@ -6263,8 +6238,6 @@ export const setCardVariationParent = mutation({
         variationParentManual: true,
         lastUpdated: Date.now(),
       });
-      ledger.variationChanged(card.selectorOptionId, !!card.variationOfCardId, false);
-      await ledger.flush(ctx);
       return null;
     }
 
@@ -6300,8 +6273,6 @@ export const setCardVariationParent = mutation({
       variationParentManual: true,
       lastUpdated: Date.now(),
     });
-    ledger.variationChanged(card.selectorOptionId, !!card.variationOfCardId, true);
-    await ledger.flush(ctx);
     return null;
   },
 });
@@ -6311,15 +6282,11 @@ export const deleteCard = mutation({
   returns: v.null(),
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
-    const card = await ctx.db.get(args.id);
-    // A missing id threw before (from the bare `ctx.db.delete`); it still does.
-    if (!card) throw new Error(`deleteCard: no such card ${args.id}`);
-    // NEO-358 — through the one card delete. A card a collector owns a copy
-    // of is REFUSED (`collectedCardRefusal`, thrown before any write, naming how many collectors hold it), and
-    // the row's counts move in this transaction.
-    const ledger = createCardCountLedger();
-    await removeCardRow(ctx, card, ledger);
-    await ledger.flush(ctx);
+    await deleteCardCrossListingsFor(ctx, args.id);
+    await orphanVariationsOf(ctx, args.id);
+    // NEO-313 — the derived player index goes with the card.
+    await deleteCardPlayerLinks(ctx, args.id);
+    await ctx.db.delete(args.id);
     return null;
   },
 });
@@ -6900,11 +6867,6 @@ const TEAM_EDITABLE_LEVELS: ReadonlySet<Level> = new Set<Level>([
  * at worst, well inside the ~900 the house treats as comfortable
  * (`CARDS_PER_COMMIT_CHUNK`).
  *
- * NEO-358 — a card that follows also re-syncs its `cardTeamLinks`: one
- * `by_card` read plus a delete per old team and an insert per new one. A
- * one-team swap is ~4 operations per card, ~800 a page at worst; a page of
- * cards that do not follow still costs nothing extra.
- *
  * NEO-296 — the clause this comment used to end with, "even after the first
  * invocation's descendant walk", is gone because that walk is no longer in the
  * same transaction. It was the unbounded half: the card pass was paged from
@@ -7311,8 +7273,6 @@ export const cascadeSelectorOptionTeams = internalMutation({
           teamOnCardIds: [...next],
           lastUpdated: Date.now(),
         });
-        // NEO-358 — the team → cards index follows the card.
-        await syncCardTeamLinks(ctx, card._id, next);
       }
       if (rows.length < requested) {
         // This node is exhausted; on to the next with a fresh cursor.
@@ -7928,10 +7888,6 @@ export const applyParallelGroupings = mutation({
     // leaves tags alone — `variantName` is what the level rule answers at
     // `insert` anyway, so the tagged and untagged row resolve identically.
     const variantTypeChildren = await getChildren(args.variantTypeId);
-    // NEO-358 — every row moved below takes its subtree card count with it:
-    // off the old parent, onto the new one (the variant type above both nets
-    // to zero). Flushed once, after the last move.
-    const countLedger = createCardCountLedger();
     for (const {
       sourceId,
       targetId,
@@ -7943,8 +7899,6 @@ export const applyParallelGroupings = mutation({
         ...(platformFacets !== undefined ? { platformFacets } : {}),
         lastUpdated: now,
       });
-      // Validated above: a promoted source is an insert under this type.
-      await countLedger.moveSubtree(ctx, sourceId, args.variantTypeId, targetId);
       variantTypeChildren.delete(sourceId);
       const targetChildren = await getChildren(targetId);
       targetChildren.add(sourceId);
@@ -7960,7 +7914,6 @@ export const applyParallelGroupings = mutation({
         parentId: args.variantTypeId,
         lastUpdated: now,
       });
-      await countLedger.moveSubtree(ctx, parallelId, oldParentId, args.variantTypeId);
       const oldParentChildren = await getChildren(oldParentId);
       oldParentChildren.delete(parallelId);
       variantTypeChildren.add(parallelId);
@@ -7976,7 +7929,6 @@ export const applyParallelGroupings = mutation({
         parentId: newParentId,
         lastUpdated: now,
       });
-      await countLedger.moveSubtree(ctx, parallelId, oldParentId, newParentId);
       const oldChildren = await getChildren(oldParentId);
       oldChildren.delete(parallelId);
       const newChildren = await getChildren(newParentId);
@@ -7987,7 +7939,6 @@ export const applyParallelGroupings = mutation({
     for (const [id, set] of childrenMap) {
       await ctx.db.patch(id, { children: Array.from(set), lastUpdated: now });
     }
-    await countLedger.flush(ctx);
 
     return {
       success: true,
@@ -8252,35 +8203,15 @@ function resetTimeBudgetMs(): number {
 type SetBuilderResetResult = {
   /** NEO-306 — pending SportLots set reviews, one per (year, brand). */
   slSetReviewsDeleted: number;
-  /** NEO-358 — the transient per-column sync notices, drained before the rows they name. */
-  selectorSyncStatusDeleted: number;
-  /** NEO-358 — collectors' copies, drained before the cards they name. */
-  collectionCopiesDeleted: number;
-  /** NEO-359 — collectors' Want Lists, drained before the cards and containers they name. */
-  collectionWantsDeleted: number;
-  /** NEO-361 — collectors' card and set requests with their private cards and sets. */
-  cardRequestsDeleted: number;
-  /** NEO-358 — collectors' binders and boxes, drained after the copies in them. */
-  collectionContainersDeleted: number;
-  /** NEO-358 — collectors' "Sets I'm building", drained before the sets. */
-  collectionBuildingSetsDeleted: number;
-  /** NEO-378 — collectors' common prices per variant, drained before the variants. */
-  variantCommonPricesDeleted: number;
-  /** NEO-379 — intake runs and their matches, drained before the containers. */
-  intakeRunsDeleted: number;
   selectorOptionsDeleted: number;
   /** NEO-313 — the derived player → cards index, drained before the cards. */
   cardPlayerLinksDeleted: number;
-  /** NEO-358 — the derived team → cards index, drained before the cards. */
-  cardTeamLinksDeleted: number;
   cardChecklistDeleted: number;
   crossListingsDeleted: number;
   /** NEO-294 — staged review rows, the residue that made CI's reset quadratic. */
   entityReviewQueueDeleted: number;
   /** NEO-294 — staged candidate cards, the other half of an abandoned review. */
   checklistCandidatesDeleted: number;
-  /** NEO-402 — a fetch's stored name answers, the third part of a review session. */
-  checklistNameResolutionsDeleted: number;
   /** NEO-313 — a player's additional sports, drained before the players. */
   playerSportsDeleted: number;
   playersDeleted: number;
@@ -8369,22 +8300,12 @@ async function runSetBuilderReset(
 
   const counts = {
     slSetReviewsDeleted: 0,
-    selectorSyncStatusDeleted: 0,
-    collectionCopiesDeleted: 0,
-    collectionWantsDeleted: 0,
-    cardRequestsDeleted: 0,
-    collectionContainersDeleted: 0,
-    collectionBuildingSetsDeleted: 0,
-    variantCommonPricesDeleted: 0,
-    intakeRunsDeleted: 0,
     selectorOptionsDeleted: 0,
     cardPlayerLinksDeleted: 0,
-    cardTeamLinksDeleted: 0,
     cardChecklistDeleted: 0,
     crossListingsDeleted: 0,
     entityReviewQueueDeleted: 0,
     checklistCandidatesDeleted: 0,
-    checklistNameResolutionsDeleted: 0,
     playerSportsDeleted: 0,
     playersDeleted: 0,
     playerAliasesDeleted: 0,
@@ -8399,76 +8320,12 @@ async function runSetBuilderReset(
   // `"exceptReferenceSeed"` scope drops entries from this list but never
   // reorders the rest, so every ordering note below still holds for the
   // tables it does drain — and every table that points INTO the skipped
-  // eight (slSetReviews, selectorSyncStatus, collectionCopies, collectionWants,
-  // collectionContainers, collectionBuildingSets, variantCommonPrices,
-  // cardPlayerLinks, cardTeamLinks, cardChecklist, cardCrossListings,
+  // eight (slSetReviews, cardPlayerLinks, cardChecklist, cardCrossListings,
   // entityReviewQueue, checklistCandidates) is among them.
   const allSteps: Array<[keyof typeof counts, ResetBatchRef]> = [
     // NEO-306 — FIRST: a review doc points at a year and a brand row, so it
     // drains before the table it references. A handful of docs at most.
     ["slSetReviewsDeleted", internal.selectorOptions.resetSlSetReviewsBatch],
-    // NEO-358 — the per-column sync notices ("SportLots could not be
-    // reached…"). A row names its column's parent selector row, so it drains
-    // before the selector rows. Transient, never catalogue data, and not a
-    // reference-seed table: every scope drains it, or a reused deployment
-    // greets the next run with the last run's failure.
-    [
-      "selectorSyncStatusDeleted",
-      internal.selectorOptions.resetSelectorSyncStatusBatch,
-    ],
-    // NEO-358 — collectors' copies point at a card, its variant and its set;
-    // "Sets I'm building" at a set. Both go BEFORE the selector rows and the
-    // cards, so an interrupted reset never leaves a collector's row pointing
-    // at something deleted. Not reference-seed tables: every scope drains
-    // them.
-    [
-      "collectionCopiesDeleted",
-      internal.selectorOptions.resetCollectionCopiesBatch,
-    ],
-    // NEO-359 — collectors' wants point at a card and, when scoped, at one
-    // of their binders or boxes. So they go BEFORE the cards and BEFORE the
-    // containers. Not a reference-seed table: every scope drains it.
-    [
-      "collectionWantsDeleted",
-      internal.selectorOptions.resetCollectionWantsBatch,
-    ],
-    // NEO-361 — card and set requests and the private cards and sets they
-    // made: a private card names an NB set and checklist, so it drains
-    // BEFORE the selector rows; its copies went with the copies above. Not
-    // a reference-seed table: every scope drains it.
-    [
-      "cardRequestsDeleted",
-      internal.selectorOptions.resetCardRequestsBatch,
-    ],
-    // NEO-379 — intake runs name a container, a variant row, and (through
-    // their matches) cards, so they go BEFORE all three. Not reference-seed
-    // tables: every scope drains them.
-    [
-      "intakeRunsDeleted",
-      internal.selectorOptions.resetIntakeRunsBatch,
-    ],
-    // NEO-358 — the binders and boxes those copies lived in, AFTER the copies
-    // (a copy's `homeId` names one) and the wants (NEO-359: a want's
-    // `binderId` names one), so an interrupted reset never leaves a copy
-    // without its home. Every collector's Main is gone too; it is re-created
-    // lazily on their next add. NEO-359: a smart binder's `rule` names
-    // catalog ids (players, teams, selector rows), so containers stay BEFORE
-    // the selector rows and the players and teams.
-    [
-      "collectionContainersDeleted",
-      internal.selectorOptions.resetCollectionContainersBatch,
-    ],
-    [
-      "collectionBuildingSetsDeleted",
-      internal.selectorOptions.resetCollectionBuildingSetsBatch,
-    ],
-    // NEO-378 — a common price names a variant row, so BEFORE the selector
-    // rows. The reference-seed import can bring a variant back under the
-    // same id, and a price left behind would greet the next run.
-    [
-      "variantCommonPricesDeleted",
-      internal.selectorOptions.resetVariantCommonPricesBatch,
-    ],
     // Well inside MAX_RETURNED_IDS: this list is one LEVEL's options for one
     // parent, de-duplicated — the biggest real case is a year's set list,
     // which SportLots tops out at a few thousand for. The store degrades
@@ -8482,11 +8339,6 @@ async function runSetBuilderReset(
     [
       "cardPlayerLinksDeleted",
       internal.selectorOptions.resetCardPlayerLinksBatch,
-    ],
-    // NEO-358 — the team → cards index, likewise before the cards.
-    [
-      "cardTeamLinksDeleted",
-      internal.selectorOptions.resetCardTeamLinksBatch,
     ],
     ["cardChecklistDeleted", internal.selectorOptions.resetCardChecklistBatch],
     // NEO-21: cardCrossListings rows outlive nothing on their own (they're
@@ -8534,11 +8386,6 @@ async function runSetBuilderReset(
     [
       "checklistCandidatesDeleted",
       internal.selectorOptions.resetChecklistCandidatesBatch,
-    ],
-    // NEO-402 — before the players its answers name.
-    [
-      "checklistNameResolutionsDeleted",
-      internal.selectorOptions.resetChecklistNameResolutionsBatch,
     ],
     // Players + teams are populated alongside cardChecklist by the
     // commitCardChecklist flow. Wipe them too so subsequent dev/test
@@ -8734,24 +8581,9 @@ export const resetSetBuilderDataFromCli = internalAction({
   returns: v.object({
     // NEO-306 — pending SportLots set reviews, drained first.
     slSetReviewsDeleted: v.number(),
-    // NEO-358 — the transient per-column sync notices.
-    selectorSyncStatusDeleted: v.number(),
-    // NEO-358 — collectors' copies, their binders and boxes, and "Sets I'm
-    // building".
-    collectionCopiesDeleted: v.number(),
-    // NEO-359 — collectors' Want Lists.
-    collectionWantsDeleted: v.number(),
-    // NEO-361 — card and set requests, private cards and private sets.
-    cardRequestsDeleted: v.number(),
-    collectionContainersDeleted: v.number(),
-    collectionBuildingSetsDeleted: v.number(),
-    variantCommonPricesDeleted: v.number(),
-    intakeRunsDeleted: v.number(),
     selectorOptionsDeleted: v.number(),
     // NEO-313 — the derived player → cards index.
     cardPlayerLinksDeleted: v.number(),
-    // NEO-358 — the derived team → cards index.
-    cardTeamLinksDeleted: v.number(),
     cardChecklistDeleted: v.number(),
     crossListingsDeleted: v.number(),
     // NEO-294 — the staging tables. Reported so the CI seed log carries the
@@ -8760,8 +8592,6 @@ export const resetSetBuilderDataFromCli = internalAction({
     // have caught the 15 s → 246 s drift a week earlier.
     entityReviewQueueDeleted: v.number(),
     checklistCandidatesDeleted: v.number(),
-    // NEO-402 — a fetch's stored name answers.
-    checklistNameResolutionsDeleted: v.number(),
     // NEO-313 — a player's additional sports.
     playerSportsDeleted: v.number(),
     playersDeleted: v.number(),
@@ -8966,29 +8796,6 @@ export const resetChecklistCandidatesBatch = internalMutation({
 });
 
 /**
- * Internal: drain `checklistNameResolutions` (NEO-402), looped by
- * `runSetBuilderReset`. A fetch's stored player answers name players and sets
- * the reset is about to delete; a clean slate leaves none behind.
- */
-export const resetChecklistNameResolutionsBatch = internalMutation({
-  args: {},
-  returns: v.object({
-    deleted: v.number(),
-    hasMore: v.boolean(),
-  }),
-  handler: async (ctx) => {
-    assertResetArmed();
-    const rows = await ctx.db
-      .query("checklistNameResolutions")
-      .take(RESET_BATCH_SIZE);
-    for (const row of rows) {
-      await ctx.db.delete(row._id);
-    }
-    return { deleted: rows.length, hasMore: rows.length === RESET_BATCH_SIZE };
-  },
-});
-
-/**
  * Internal: delete up to RESET_BATCH_SIZE rows from `players`, looped by
  * `runSetBuilderReset` until no rows remain.
  */
@@ -9139,259 +8946,6 @@ export const resetCardPlayerLinksBatch = internalMutation({
   handler: async (ctx) => {
     assertResetArmed();
     const rows = await ctx.db.query("cardPlayerLinks").take(RESET_BATCH_SIZE);
-    for (const row of rows) {
-      await ctx.db.delete(row._id);
-    }
-    return { deleted: rows.length, hasMore: rows.length === RESET_BATCH_SIZE };
-  },
-});
-
-/**
- * Internal: drain `cardTeamLinks`, looped by `runSetBuilderReset` BEFORE the
- * cards. NEO-358. The derived team → cards index; a row that outlived its card
- * would keep naming it in a collector's team search. The one sanctioned
- * reader and deleter of the table outside convex/cardTeamLinks.ts (and
- * `collectionCatalog.ts`, which reads it) — `cardTeamLinks.pin.test.ts` checks
- * it by name.
- */
-export const resetCardTeamLinksBatch = internalMutation({
-  args: {},
-  returns: v.object({
-    deleted: v.number(),
-    hasMore: v.boolean(),
-  }),
-  handler: async (ctx) => {
-    assertResetArmed();
-    const rows = await ctx.db.query("cardTeamLinks").take(RESET_BATCH_SIZE);
-    for (const row of rows) {
-      await ctx.db.delete(row._id);
-    }
-    return { deleted: rows.length, hasMore: rows.length === RESET_BATCH_SIZE };
-  },
-});
-
-/**
- * Internal: drain `intakeMatches`, then `intakeRuns`, looped by
- * `runSetBuilderReset` before the containers, selector rows and cards they
- * name. NEO-379. Every collector's, across every account; armed like every
- * batch here. Matches first, so a run never outlives its matches.
- */
-export const resetIntakeRunsBatch = internalMutation({
-  args: {},
-  returns: v.object({
-    deleted: v.number(),
-    hasMore: v.boolean(),
-  }),
-  handler: async (ctx) => {
-    assertResetArmed();
-    const matches = await ctx.db.query("intakeMatches").take(RESET_BATCH_SIZE);
-    for (const row of matches) {
-      await ctx.db.delete(row._id);
-    }
-    const room = RESET_BATCH_SIZE - matches.length;
-    const runs = room > 0 ? await ctx.db.query("intakeRuns").take(room) : [];
-    for (const row of runs) {
-      await ctx.db.delete(row._id);
-    }
-    const deleted = matches.length + runs.length;
-    return { deleted, hasMore: deleted === RESET_BATCH_SIZE };
-  },
-});
-
-/**
- * Internal: drain `collectionCopies`, looped by `runSetBuilderReset` before the
- * selector rows and the cards a copy points at. NEO-358. Every collector's
- * copies, across every account: this is the global E2E/dev reset, armed like
- * every batch here. The per-account clear is `testing.resetMyTestState`.
- */
-export const resetCollectionCopiesBatch = internalMutation({
-  args: {},
-  returns: v.object({
-    deleted: v.number(),
-    hasMore: v.boolean(),
-  }),
-  handler: async (ctx) => {
-    assertResetArmed();
-    // NEO-377 — the copies' photos (and their files) first, live or waiting
-    // on an Undo, a batch at a time; then the copies.
-    const photos = await drainPhotos(ctx, RESET_BATCH_SIZE);
-    if (photos > 0) return { deleted: 0, hasMore: true };
-    const rows = await ctx.db.query("collectionCopies").take(RESET_BATCH_SIZE);
-    for (const row of rows) {
-      await ctx.db.delete(row._id);
-    }
-    return { deleted: rows.length, hasMore: rows.length === RESET_BATCH_SIZE };
-  },
-});
-
-/**
- * Internal: drain `selectorSyncStatus`, looped by `runSetBuilderReset` before
- * the selector rows its `parentId` names. NEO-358. Every row is a transient
- * notice about one column's last marketplace sync; a reset that kept them
- * left a reused deployment showing the previous run's failures (a sport-level
- * "SportLots could not be reached…" survived a dev reset and failed the E2E
- * setup spec's `expectNoSyncFailure`).
- */
-export const resetSelectorSyncStatusBatch = internalMutation({
-  args: {},
-  returns: v.object({
-    deleted: v.number(),
-    hasMore: v.boolean(),
-  }),
-  handler: async (ctx) => {
-    assertResetArmed();
-    const rows = await ctx.db
-      .query("selectorSyncStatus")
-      .take(RESET_BATCH_SIZE);
-    for (const row of rows) {
-      await ctx.db.delete(row._id);
-    }
-    return { deleted: rows.length, hasMore: rows.length === RESET_BATCH_SIZE };
-  },
-});
-
-/**
- * Internal: drain `collectionWants`, looped by `runSetBuilderReset` after the
- * copies and BEFORE the containers a want may be scoped to and the cards it
- * names. NEO-359. Every collector's wants, across every account; armed like
- * every batch here.
- */
-export const resetCollectionWantsBatch = internalMutation({
-  args: {},
-  returns: v.object({
-    deleted: v.number(),
-    hasMore: v.boolean(),
-  }),
-  handler: async (ctx) => {
-    assertResetArmed();
-    const rows = await ctx.db.query("collectionWants").take(RESET_BATCH_SIZE);
-    for (const row of rows) {
-      await ctx.db.delete(row._id);
-    }
-    return { deleted: rows.length, hasMore: rows.length === RESET_BATCH_SIZE };
-  },
-});
-
-/**
- * Internal: drain NEO-361's request tables, looped by `runSetBuilderReset`
- * after the copies (a copy may name a private card) and BEFORE the selector
- * rows a private card names. Private cards first (their photos with them),
- * then private sets, then the requests. Every collector's, across every
- * account; armed like every batch here.
- */
-export const resetCardRequestsBatch = internalMutation({
-  args: {},
-  returns: v.object({
-    deleted: v.number(),
-    hasMore: v.boolean(),
-  }),
-  handler: async (ctx) => {
-    assertResetArmed();
-    let left = RESET_BATCH_SIZE;
-    let deleted = 0;
-    const cards = await ctx.db.query("privateCards").take(left);
-    for (const row of cards) {
-      for (const id of [row.frontImageId, row.backImageId]) {
-        if (id && (await ctx.db.system.get(id))) await ctx.storage.delete(id);
-      }
-      await ctx.db.delete(row._id);
-    }
-    left -= cards.length;
-    deleted += cards.length;
-    if (left > 0) {
-      const sets = await ctx.db.query("privateSets").take(left);
-      for (const row of sets) await ctx.db.delete(row._id);
-      left -= sets.length;
-      deleted += sets.length;
-    }
-    if (left > 0) {
-      const requests = await ctx.db.query("cardRequests").take(left);
-      for (const row of requests) await ctx.db.delete(row._id);
-      left -= requests.length;
-      deleted += requests.length;
-    }
-    return { deleted, hasMore: left === 0 };
-  },
-});
-
-/**
- * Internal: drain `collectionContainers`, looped by `runSetBuilderReset` right
- * AFTER `collectionCopies` and `collectionWants` (a copy's `homeId` and a
- * want's `binderId` name a container). NEO-358.
- * Every collector's binders and boxes, across every account; a collector's
- * Main is re-created lazily on their next add. Without this a global reset
- * left every account's emptied containers behind.
- */
-export const resetCollectionContainersBatch = internalMutation({
-  args: {},
-  returns: v.object({
-    deleted: v.number(),
-    hasMore: v.boolean(),
-  }),
-  handler: async (ctx) => {
-    assertResetArmed();
-    // NEO-401 — a smart binder's stored fits (cardId, variantId) and their
-    // state go first, in the same loop: they name a card and a variant row,
-    // so they can never outlive this step, and the import guard
-    // (`SELECTOR_DEPENDANT_TABLES`) counts them.
-    let left = RESET_BATCH_SIZE;
-    let deleted = 0;
-    const fits = await ctx.db.query("collectionBinderFits").take(left);
-    for (const row of fits) await ctx.db.delete(row._id);
-    left -= fits.length;
-    deleted += fits.length;
-    if (left > 0) {
-      const states = await ctx.db.query("collectionBinderFitsState").take(left);
-      for (const row of states) await ctx.db.delete(row._id);
-      left -= states.length;
-      deleted += states.length;
-    }
-    if (left > 0) {
-      const rows = await ctx.db.query("collectionContainers").take(left);
-      for (const row of rows) await ctx.db.delete(row._id);
-      left -= rows.length;
-      deleted += rows.length;
-    }
-    return { deleted, hasMore: left === 0 };
-  },
-});
-
-/**
- * Internal: drain `collectionBuildingSets`, looped by `runSetBuilderReset`
- * before the set rows it names. NEO-358.
- */
-export const resetCollectionBuildingSetsBatch = internalMutation({
-  args: {},
-  returns: v.object({
-    deleted: v.number(),
-    hasMore: v.boolean(),
-  }),
-  handler: async (ctx) => {
-    assertResetArmed();
-    const rows = await ctx.db
-      .query("collectionBuildingSets")
-      .take(RESET_BATCH_SIZE);
-    for (const row of rows) {
-      await ctx.db.delete(row._id);
-    }
-    return { deleted: rows.length, hasMore: rows.length === RESET_BATCH_SIZE };
-  },
-});
-
-/**
- * Internal: drain `variantCommonPrices`, looped by `runSetBuilderReset` BEFORE
- * the selector rows they name. NEO-378. Every collector's, across every
- * account; armed like every batch here.
- */
-export const resetVariantCommonPricesBatch = internalMutation({
-  args: {},
-  returns: v.object({
-    deleted: v.number(),
-    hasMore: v.boolean(),
-  }),
-  handler: async (ctx) => {
-    assertResetArmed();
-    const rows = await ctx.db.query("variantCommonPrices").take(RESET_BATCH_SIZE);
     for (const row of rows) {
       await ctx.db.delete(row._id);
     }
@@ -11643,7 +11197,6 @@ export const ensureBrandUnknownRow = internalMutation({
       : undefined;
     const parentTeamIds = inheritedTeamIds(year);
     const id = await ctx.db.insert("selectorOptions", {
-      ...newRowSubtreeCounts("manufacturer"),
       level: "manufacturer",
       value: BRAND_UNKNOWN_VALUE,
       platformData: alloc?.platformData ?? {},
@@ -14016,7 +13569,6 @@ export const fetchCardChecklist = action({
         skippedSource: string;
       }> = [];
 
-      let slFailure: FetchFailure | undefined;
       const callSl = async (
         perCallFilters: Record<string, string>,
         sourceId: string | undefined,
@@ -14031,15 +13583,7 @@ export const fetchCardChecklist = action({
           console.error(`[fetchCardChecklist] SportLots error:`, err);
           return { success: false, cards: [] as SlCard[], message: String(err) };
         });
-        if (!result.success) {
-          // NEO-387 — remembered, not swallowed: a failed call must fail the
-          // run (see the check after both sides settle), never read as a
-          // marketplace that had no cards.
-          slFailure ??=
-            (result as { failure?: FetchFailure }).failure ??
-            failureFromMessage(result.message);
-          return [];
-        }
+        if (!result.success) return [];
         return (result.cards as SlCard[]).map((c) => ({
           ...c,
           sourceSlSetId: sourceId,
@@ -14090,7 +13634,6 @@ export const fetchCardChecklist = action({
         success: boolean;
         cards: any[];
         message?: string;
-        failure?: FetchFailure;
         collisions?: Array<{
           cardNumber: string;
           keptSource: string;
@@ -14134,81 +13677,12 @@ export const fetchCardChecklist = action({
           : Promise.resolve({ success: false, cards: [] } as BscFetchResult),
       ]);
 
-      // NEO-387 — a SportLots fan-out where only some calls failed is a
-      // failed side as a whole. Keeping the calls that answered would make
-      // SportLots look covered, so the failed source set's cards would read
-      // as gone upstream; dropping them all keeps that side fail-closed.
       const slCards: SlCard[] =
-        slSettled.status === "fulfilled" && !slFailure ? slSettled.value : [];
+        slSettled.status === "fulfilled" ? slSettled.value : [];
       const bscResult: BscFetchResult =
         bscSettled.status === "fulfilled"
           ? bscSettled.value
           : { success: false, cards: [] };
-
-      // NEO-387 — a side that was asked and failed is never read as a side
-      // with no cards.
-      //
-      // Before this, a failed side looked exactly like a marketplace with
-      // nothing listed: a BSC token read that 500'd came back as
-      // `success: false`, was turned into `[]`, and on a BSC-only set the run
-      // reported success with 0 candidates. The client then saved an empty
-      // checklist ("Saved 0 cards."), and a refresh called every existing card
-      // "no longer listed upstream". Nobody was told anything failed, and the
-      // E2E specs waited out their whole budget for cards that never came.
-      //
-      // When a side failed and the sides that did answer brought no cards,
-      // there is nothing to show, so the run fails before the candidate batch
-      // below writes anything and the operator can simply try again. (Not
-      // "every asked side failed": a BSC-only set can still ask SportLots on
-      // its sport/year scope, which answers with nothing — that must not turn
-      // a BSC failure back into "Saved 0 cards.") When the other side did
-      // bring cards, the run goes on with them (NEO-255: the set stays
-      // two-sided, so the Match Cards dialog still opens rather than
-      // auto-committing) and the status line says which side is missing.
-      const failedSides = failedChecklistSides({
-        bsc: !resolution.bsc.resolvable
-          ? { asked: false }
-          : bscSettled.status === "rejected"
-            ? { asked: true, rejected: bscSettled.reason }
-            : {
-                asked: true,
-                success: bscResult.success,
-                failure: bscResult.failure,
-                message: bscResult.message,
-              },
-        sportlots: !resolution.sportlots.resolvable
-          ? { asked: false }
-          : slSettled.status === "rejected"
-            ? { asked: true, rejected: slSettled.reason }
-            : { asked: true, success: !slFailure, failure: slFailure },
-      });
-      const askedSides =
-        (resolution.bsc.resolvable ? 1 : 0) + (resolution.sportlots.resolvable ? 1 : 0);
-      const sideFailureNote = failedSides
-        .map((f) => ` ${sideMissingFromRun(f.side, f.failure.kind)}`)
-        .join("");
-      if (failedSides.length > 0) {
-        console.warn(
-          JSON.stringify({
-            msg: "checklist_side_failed",
-            sides: failedSides.map((f) => ({ side: f.side, kind: f.failure.kind })),
-            askedSides,
-          }),
-        );
-      }
-      const answeredCards =
-        slCards.length + (bscResult.success ? bscResult.cards.length : 0);
-      if (failedSides.length > 0 && answeredCards === 0) {
-        return {
-          success: false,
-          message: failedSides
-            .map((f) => blockedSideFailed(f.side, f.failure.kind))
-            .join(". "),
-          candidateCount: 0,
-          attachedSides,
-          pausedSides: pausedList,
-        };
-      }
 
       const bscCollisions = bscResult.collisions ?? [];
       const bscCards = (bscResult.success ? bscResult.cards : []) as Array<{
@@ -14890,8 +14364,7 @@ export const fetchCardChecklist = action({
           `${autoMatchedCards.length} matched, ` +
           `${unmatchedBscCards.length} BSC-only, ${unmatchedSlCards.length} SL-only` +
           collisionNote +
-          pausedNote +
-          sideFailureNote,
+          pausedNote,
         // The cards themselves are already in `checklistCandidates` — this is
         // the count of what was published there, not a second copy of it.
         candidateCount:
@@ -15350,12 +14823,6 @@ function boundedAliasInput(raw: ReadonlyArray<string>): string[] {
  * buys a shorter page; under-charging buys a failed transaction.
  */
 export const PRELUDE_NAMES_PER_PAGE = 300;
-/**
- * NEO-402 — how many names' same-name lookups the resolve phase keeps in
- * flight at once (three indexed reads each). Bounded so one page never
- * issues hundreds of reads at the same instant.
- */
-export const SAME_NAME_PREFETCH_CONCURRENCY = 25;
 
 /**
  * NEO-296 — how many prelude pages one commit may walk before giving up.
@@ -17381,69 +16848,6 @@ export const commitCardChecklistPrelude = internalMutation({
       }
     };
 
-    /*
-     * NEO-402 — the resolve phase's same-name lookups, issued together.
-     *
-     * Each name costs three indexed reads (`sameNamePlayers`: primary name,
-     * sport membership, alias), and the loop below awaited them one name at a
-     * time: a 300-card checklist was ~600 reads in a row, 1.7–2.5 s on a
-     * preview, most of a save the operator waits on. The reads are the same;
-     * they are now in flight together, `SAME_NAME_PREFETCH_CONCURRENCY` names
-     * at a time, for exactly the names this page walks.
-     *
-     * Only in a "resolve" call. A call with no `phase` (the test suite's
-     * direct callers) runs the creates inside this loop, so it keeps the
-     * in-order lookup. A resolve call can still create a player at the loop's
-     * tail (a `create` decision the creates phase did not record, e.g. its
-     * one match was merged away in between); that key's prefetched answer is
-     * dropped right after, so a second spelling of it reads again.
-     */
-    const sameNamePrefetch = new Map<string, Array<Doc<"players">>>();
-    if (args.phase === "resolve") {
-      const start = Math.max(0, walkOffset - teamNameList.length);
-      const end = Math.min(playerNameList.length, start + Math.max(0, walkBudget));
-      const keys = Array.from(
-        new Set(playerNameList.slice(start, end).map((name) => norm(name))),
-      );
-      /*
-       * NEO-402 — the fetch already answered most of these. A name it found
-       * exactly one player for is confirmed with one `get` instead of the
-       * three index reads; a row deleted since reads null and the name is
-       * looked up as before. Every other name (none, several, narrowed by
-       * year, or no record at all) takes the lookup, unchanged.
-       */
-      const fetchAnswers = await loadPlayerAnswers(
-        ctx,
-        args.selectorOptionId,
-        userId,
-        args.sportId,
-      );
-      const lookUp = async (key: string): Promise<Array<Doc<"players">>> => {
-        const answeredId = fetchAnswers.get(key);
-        if (answeredId !== undefined) {
-          const answered = await ctx.db.get(answeredId);
-          // Only while the row would still be in `sameNamePlayers`' answer:
-          // it still goes by this name (primary or alias) and still plays this
-          // sport (a home-sport hit costs no read). A row renamed, de-aliased
-          // or moved since the fetch is looked up again.
-          if (
-            answered &&
-            (answered.nameNormalized === key ||
-              (answered.aliases ?? []).some((alias) => norm(alias) === key)) &&
-            (await playerBelongsToSport(ctx, answered, args.sportId))
-          ) {
-            return [answered];
-          }
-        }
-        return await sameNamePlayers(ctx, key, args.sportId);
-      };
-      for (let i = 0; i < keys.length; i += SAME_NAME_PREFETCH_CONCURRENCY) {
-        const chunk = keys.slice(i, i + SAME_NAME_PREFETCH_CONCURRENCY);
-        const found = await Promise.all(chunk.map(lookUp));
-        chunk.forEach((key, j) => sameNamePrefetch.set(key, found[j]));
-      }
-    }
-
     for (
       let pi = Math.max(0, walkOffset - teamNameList.length);
       pi < playerNameList.length;
@@ -17492,9 +16896,7 @@ export const commitCardChecklistPrelude = internalMutation({
       // It is what carries the ALIAS leg: a 2010 "Ron Artest" card and a 2011
       // "Metta World Peace" card have to land on one row, and a hand-rolled
       // read here would have found only the primary name.
-      const existingMatches =
-        sameNamePrefetch.get(normalized) ??
-        (await sameNamePlayers(ctx, normalized, args.sportId));
+      const existingMatches = await sameNamePlayers(ctx, normalized, args.sportId);
       if (existingMatches.length === 1) {
         const existing = existingMatches[0];
         playerIdByName.set(name, existing._id);
@@ -17678,9 +17080,6 @@ export const commitCardChecklistPrelude = internalMutation({
         continue;
       }
       await createPlayerFromDecision(name, normalized, decision);
-      // NEO-402 — this key now has a row the prefetch did not see; a later
-      // spelling of it must read again, or it would mint a second one.
-      sameNamePrefetch.delete(normalized);
     }
 
 
@@ -18246,9 +17645,8 @@ export const commitCardChecklistChunk = internalMutation({
 
     /**
      * NEO-313 — the CARD sport the `cardPlayerLinks` rows are keyed by. Walked
-     * once per chunk, and only when a card in it actually writes players or
-     * (NEO-358, `cardChecklist.sportId`) is inserted: the ancestor walk is a
-     * handful of reads and most re-sync chunks do neither.
+     * once per chunk, and only when a card in it actually writes players: the
+     * ancestor walk is a handful of reads and most re-sync chunks write none.
      * Walked here rather than trusted from the action's `sportId`, which is a
      * client argument.
      */
@@ -18273,10 +17671,6 @@ export const commitCardChecklistChunk = internalMutation({
     // `boundPendingNames` call in this chunk, on both the update and the
     // insert branch.
     let droppedPendingNameCount = 0;
-
-    // NEO-358 — every insert below adds to the leaf's card counts; written
-    // once, after the loop.
-    const countLedger = createCardCountLedger();
 
     for (const card of args.cards) {
       // Deliberately `rowsById.get`, not `ctx.db.get`: the map is this
@@ -18597,13 +17991,6 @@ export const commitCardChecklistChunk = internalMutation({
             await cardSport(),
           );
         }
-        // NEO-358 — and the team → cards index, only when teams were actually
-        // written: an accepted change, or the operator's pre-save fill (the
-        // two never both apply; `operatorFill` only fills an empty row).
-        const teamsWritten = operatorFill ?? teamIdsWritten;
-        if (teamsWritten !== undefined) {
-          await syncCardTeamLinks(ctx, existing._id, teamsWritten);
-        }
         if (teamAnswer.enqueue) bscTeamEnrichmentIds.push(existing._id);
       } else {
         // NEO-246 — see the note beside where these are spread in
@@ -18733,17 +18120,12 @@ export const commitCardChecklistChunk = internalMutation({
           },
           // NEO-313 — the new card's player index, kept inside
           // `insertCardRow` with `fresh: true` and this chunk's `cardSport`.
-          // NEO-358 — which also stamps the card's `sportId`.
           { sport: cardSport },
-          // NEO-358 — +1 on the leaf's counts, flushed once below.
-          countLedger,
         );
         storedIds.push(newCardId);
         if (insertTeamAnswer.enqueue) bscTeamEnrichmentIds.push(newCardId);
       }
     }
-
-    await countLedger.flush(ctx);
 
     return {
       storedIds,
@@ -18845,17 +18227,6 @@ export type FinalizePageResult = {
   operatorDeleted: number;
   /** Operator-named rows this page examined and refused. */
   deleteSkipped: number;
-  /**
-   * NEO-358 — of `deleteSkipped`, the rows kept because a collector owns a
-   * copy. Present only when non-zero, so every other page is unchanged.
-   */
-  collectedSkipped?: number;
-  /**
-   * NEO-358 — how many collectors own the cards this page kept (bounded:
-   * `collectedCollectorsAtLeast` marks a floor). Present with `collectedSkipped`.
-   */
-  collectedCollectors?: number;
-  collectedCollectorsAtLeast?: boolean;
   /** Rows THIS PAGE found that no incoming card matched. */
   unmatchedExistingIds: Array<Id<"cardChecklist">>;
   /** More phases or more pages remain; call again with `resume`. */
@@ -19035,13 +18406,6 @@ export const commitCardChecklistFinalize = internalMutation({
     variationsLinked: v.number(),
     operatorDeleted: v.number(),
     deleteSkipped: v.number(),
-    // NEO-358 — of `deleteSkipped`, kept because a collector owns a copy.
-    // Present only when non-zero.
-    collectedSkipped: v.optional(v.number()),
-    // NEO-358 — the collectors who own those kept cards (a floor when
-    // `collectedCollectorsAtLeast`). Present with `collectedSkipped`.
-    collectedCollectors: v.optional(v.number()),
-    collectedCollectorsAtLeast: v.optional(v.boolean()),
     unmatchedExistingIds: v.array(v.id("cardChecklist")),
     hasMore: v.boolean(),
     resume: v.union(
@@ -19085,14 +18449,7 @@ export const commitCardChecklistFinalize = internalMutation({
     let variationsLinked = 0;
     let operatorDeleted = 0;
     let deleteSkipped = 0;
-    // NEO-358 — of `deleteSkipped`, the cards kept because a collector owns a
-    // copy. Counted apart so the operator is told why.
-    let collectedSkipped = 0;
-    const keptForCollectors: Array<Id<"cardChecklist">> = [];
     const deletedIds: Array<Id<"cardChecklist">> = [];
-    // NEO-358 — card deletes and variation links move this checklist's
-    // counts; every phase flushes before it returns.
-    const countLedger = createCardCountLedger();
     const unmatchedExistingIds: Array<Id<"cardChecklist">> = [];
 
     // ── PHASE 1 (NEO-203): explicit deletes ─────────────────────────────────
@@ -19106,15 +18463,6 @@ export const commitCardChecklistFinalize = internalMutation({
       const slice = requestedDeletes.slice(
         resume.offset,
         resume.offset + FINALIZE_DELETES_PER_PAGE,
-      );
-      // NEO-358 — the collector guard, over the WHOLE page before any delete:
-      // a card a collector owns a copy of is skipped and counted, never
-      // deleted. (`removeCardRow` would refuse it anyway, but by throwing,
-      // which would lose the operator the rest of a commit that has already
-      // written every chunk — the reason every refusal here is counted.)
-      const collected = await collectedCardIds(
-        ctx,
-        slice as Array<Id<"cardChecklist">>,
       );
       for (const id of slice) {
         // 1. It must exist, and it must be a row of THIS checklist. An id
@@ -19141,30 +18489,22 @@ export const commitCardChecklistFinalize = internalMutation({
           deleteSkipped++;
           continue;
         }
-        // 4. NEO-358 — a collector owns a copy: kept, and the operator is told.
-        if (collected.has(row._id)) {
-          deleteSkipped++;
-          collectedSkipped++;
-          keptForCollectors.push(row._id);
-          continue;
-        }
-        // NEO-21 / NEO-189 / NEO-313 / NEO-358 — the one card delete: its
-        // cross-listings, its variations promoted (the old inference sweep
-        // deleted rows without this, which left variations pointing at a row
-        // that no longer existed), its player and team index rows, the card,
-        // and its row's counts.
+        // NEO-21: drop this card's cross-listing rows before the card itself.
+        await deleteCardCrossListingsFor(ctx, row._id);
+        // NEO-189: and re-parent anything that varies it. The old inference
+        // sweep deleted rows without this, which left variations pointing at a
+        // row that no longer existed — `deleteCard` has always done both.
         //
-        // NEO-294: all of it runs in this transaction, which is why a page is
-        // the unit of atomicity that matters: a row is never half-deleted
-        // however the walk is interrupted.
-        await removeCardRow(ctx, row, countLedger);
+        // NEO-294: these two plus the delete are the reason a page is the unit
+        // of atomicity that matters. All three run in this transaction, so a
+        // row is never half-deleted however the walk is interrupted.
+        await orphanVariationsOf(ctx, row._id);
+        // NEO-313 — and the derived player index, in the same transaction.
+        await deleteCardPlayerLinks(ctx, row._id);
+        await ctx.db.delete(row._id);
         deletedIds.push(row._id);
         operatorDeleted++;
       }
-      await countLedger.flush(ctx);
-      // NEO-358 — who is in the way, for the banner: one bounded read.
-      const collectors =
-        keptForCollectors.length > 0 ? await countCollectors(ctx, keptForCollectors) : null;
       const offset = resume.offset + slice.length;
       const done = offset >= requestedDeletes.length;
       // One audit line per PAGE that touched deletions. Ids and counts only.
@@ -19178,7 +18518,6 @@ export const commitCardChecklistFinalize = internalMutation({
             examined: slice.length,
             deleted: deletedIds.length,
             skipped: deleteSkipped,
-            collectedSkipped,
             deletedIds,
           }),
         );
@@ -19187,13 +18526,6 @@ export const commitCardChecklistFinalize = internalMutation({
         variationsLinked,
         operatorDeleted,
         deleteSkipped,
-        ...(collectedSkipped > 0 ? { collectedSkipped } : {}),
-        ...(collectors
-          ? {
-              collectedCollectors: collectors.collectors,
-              ...(collectors.atLeast ? { collectedCollectorsAtLeast: true } : {}),
-            }
-          : {}),
         unmatchedExistingIds,
         hasMore: true,
         resume: done
@@ -19268,12 +18600,6 @@ export const commitCardChecklistFinalize = internalMutation({
             variationOfCardId: parentId,
             lastUpdated: Date.now(),
           });
-          // NEO-358 — a card becoming a variation leaves the base count.
-          countLedger.variationChanged(
-            row.selectorOptionId,
-            row.variationOfCardId !== undefined,
-            true,
-          );
           variationsLinked++;
         } else if (
           // A row that USED to be a variation and no longer is must lose its
@@ -19288,7 +18614,6 @@ export const commitCardChecklistFinalize = internalMutation({
             variationOfCardId: undefined,
             lastUpdated: Date.now(),
           });
-          countLedger.variationChanged(row.selectorOptionId, true, false);
         }
 
         // What upstream no longer lists. NOT deleted — surfaced, so the operator
@@ -19361,9 +18686,6 @@ export const commitCardChecklistFinalize = internalMutation({
           await ctx.db.patch(row._id, patch);
         }
       }
-
-      // NEO-358 — this page's variation links, onto the checklist's counts.
-      await countLedger.flush(ctx);
 
       // A short page is the end of the walk. The cursor is the last row this
       // page examined; a page that read nothing keeps the one it was handed, so
@@ -21030,14 +20352,6 @@ export const commitCardChecklist = action({
     // between the operator's review and the write.
     staleDecisions: v.number(),
     operatorDeleted: v.number(),
-    // NEO-358 — operator-named deletes KEPT because a collector owns a copy of
-    // the card. Present only when non-zero; the checklist says so.
-    collectedDeleteSkipped: v.optional(v.number()),
-    // NEO-358 — how many collectors own those kept cards, so the banner can
-    // say who is in the way. A floor when `collectedDeleteCollectorsAtLeast`
-    // (bounded reads, and pages counted apart may share a collector).
-    collectedDeleteCollectors: v.optional(v.number()),
-    collectedDeleteCollectorsAtLeast: v.optional(v.boolean()),
     // ── NEO-221: names this commit wrote with no review decision ───────────
     // Distinct names (players and teams together), so the banner can say how
     // many links were NOT made rather than leaving the operator to discover it
@@ -21070,9 +20384,6 @@ export const commitCardChecklist = action({
     collisionInserts: number;
     staleDecisions: number;
     operatorDeleted: number;
-    collectedDeleteSkipped?: number;
-    collectedDeleteCollectors?: number;
-    collectedDeleteCollectorsAtLeast?: boolean;
     unreviewedNameCount: number;
     droppedPendingNameCount: number;
   }> => {
@@ -21830,9 +21141,6 @@ export const commitCardChecklist = action({
      */
     let variationsLinked = 0;
     let operatorDeleted = 0;
-    let collectedDeleteSkipped = 0;
-    // NEO-358 — pages count their collectors apart; merged as a floor.
-    let collectedDeleteCollectors: CollectorCount | null = null;
     const unmatchedExistingIds: Array<Id<"cardChecklist">> = [];
     const finalizeArgs = {
       selectorOptionId: args.selectorOptionId,
@@ -21875,13 +21183,6 @@ export const commitCardChecklist = action({
       );
       variationsLinked += page.variationsLinked;
       operatorDeleted += page.operatorDeleted;
-      collectedDeleteSkipped += page.collectedSkipped ?? 0;
-      if (page.collectedCollectors !== undefined) {
-        collectedDeleteCollectors = mergeCollectorCounts(collectedDeleteCollectors, {
-          collectors: page.collectedCollectors,
-          atLeast: page.collectedCollectorsAtLeast === true,
-        });
-      }
       unmatchedExistingIds.push(...page.unmatchedExistingIds);
       if (!page.hasMore || page.resume === null) break;
       resume = page.resume;
@@ -21982,13 +21283,6 @@ export const commitCardChecklist = action({
       collisionInserts: match.collisions.length,
       staleDecisions: staleDecisionIds.length,
       operatorDeleted,
-      ...(collectedDeleteSkipped > 0 ? { collectedDeleteSkipped } : {}),
-      ...(collectedDeleteCollectors
-        ? {
-            collectedDeleteCollectors: collectedDeleteCollectors.collectors,
-            ...(collectedDeleteCollectors.atLeast ? { collectedDeleteCollectorsAtLeast: true } : {}),
-          }
-        : {}),
       // NEO-221: players and teams together and deduped — the operator is
       // being told "these names got no link", and which table a name would
       // have landed in is not the part they need.

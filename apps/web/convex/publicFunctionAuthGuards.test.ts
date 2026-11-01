@@ -56,7 +56,6 @@ import { api } from "./_generated/api";
 import schema from "./schema";
 import { drainScheduled } from "../lib/testing/drain-scheduled";
 import { Id } from "./_generated/dataModel";
-import { insertTestCard } from "../lib/testing/card-row";
 
 // NEO-315: the placeholder download mints sign with a storage client. A fake one
 // records every probe and signature so "refused" can be asserted as "touched
@@ -976,18 +975,9 @@ describe("NEO-312 — getParallelsForBuild and buildParallelChecklist require an
   // build target.
   async function seedBaseAndParallelType(t: ReturnType<typeof convexTest>) {
     return t.run(async (ctx) => {
-      // NEO-363 — a card cannot exist without a sport above it.
-      const sportId = await ctx.db.insert("selectorOptions", {
-        level: "sport",
-        value: "Baseball",
-        platformData: {},
-        children: [],
-        lastUpdated: Date.now(),
-      });
       const setName = await ctx.db.insert("selectorOptions", {
         level: "setName",
         value: "Topps Chrome",
-        parentId: sportId,
         platformData: { bsc: { b0: "topps-chrome" } },
         children: [],
         lastUpdated: Date.now(),
@@ -1018,7 +1008,7 @@ describe("NEO-312 — getParallelsForBuild and buildParallelChecklist require an
         children: [],
         lastUpdated: Date.now(),
       });
-      const baseCardId = await insertTestCard(ctx, {
+      const baseCardId = await ctx.db.insert("cardChecklist", {
         selectorOptionId: baseId,
         cardNumber: "1",
         cardName: "Aaron Judge",

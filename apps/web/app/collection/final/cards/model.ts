@@ -7,11 +7,8 @@
  * which one is theirs.
  */
 
-import { variantLabel } from "../data/labels";
-import type { Card, CardId, Copy } from "../data/types";
-import type { RangePick as AnyRangePick } from "./range";
-
-type RangePick = AnyRangePick<Card>;
+import type { Card, CardId, Copy } from "../../prototypes/_shared/data";
+import type { RangePick } from "../../prototypes/p1/range";
 
 /**
  * What a press on a tile does, given the card's copies in scope.
@@ -27,7 +24,7 @@ export type TilePress =
   | { kind: "remove"; copy: Copy }
   | { kind: "pick"; owned: number };
 
-export function tilePress(copiesInScope: readonly Copy[]): TilePress {
+export function tilePress(copiesInScope: Copy[]): TilePress {
   const live = copiesInScope.filter((c) => c.quantity > 0);
   if (live.length === 0) return { kind: "add" };
   if (live.length === 1 && live[0].quantity === 1) return { kind: "remove", copy: live[0] };
@@ -106,7 +103,6 @@ export function wantedFirst(cards: Card[], isWanted: (cardId: CardId) => boolean
 
 /** "Base #4 Reggie White" / "Blue Foil #4 Reggie White (Sliding)". */
 export function wallName(card: Card, players: string): string {
-  const row = variantLabel(card.variant);
-  const who = players ? ` ${players}` : "";
-  return `${row} #${card.cardNumber}${card.cardVariation ? ` (${card.cardVariation})` : ""}${who}`;
+  const row = card.variantPath.name ?? "Base";
+  return `${row} #${card.cardNumber}${card.variation ? ` (${card.variation})` : ""} ${players}`;
 }
