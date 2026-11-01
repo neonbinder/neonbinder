@@ -15,7 +15,7 @@ import type { Id } from "./_generated/dataModel";
 import { cancelScheduled, drainScheduled } from "../lib/testing/drain-scheduled";
 import { seedCollectionCatalog } from "../lib/testing/collection-fixture";
 import { insertTestCard } from "../lib/testing/card-row";
-import { noteIntakePairsChanged } from "./intakeRuns";
+import { INTAKE_SETTLE_SCAN, noteIntakePairsChanged } from "./intakeRuns";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -682,6 +682,131 @@ describe("NEO-370 — a settled box run kicks the collector's listing drain", ()
     await held(w, async () => {
       await w.me.mutation(api.intakeRuns.setIntakeMatchAside, { runId, pairId: w.pairIds[0], setAside: true });
       await w.me.mutation(api.intakeRuns.setIntakeMatchAside, { runId, pairId: w.pairIds[1], setAside: true });
+      expect(await drainsOf(w)).toEqual([]);
+    });
+  });
+
+  test("a binder run never kicks: the home is read first and a binder is not for sale", async () => {
+    const w = await two();
+    await listOn(w);
+    const runId = await startRun(w, w.fx.baseId);
+    await w.t.run(async (ctx) => {
+      await ctx.db.patch(w.boxId, { kind: "binder" });
+    });
+    await held(w, async () => {
+      await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[0], quantity: 1 });
+      await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[1], quantity: 1 });
+      expect(await drainsOf(w)).toEqual([]);
+    });
+  });
+
+  test("a job that already failed counts as finished: the last save kicks the drain", async () => {
+    const w = await two();
+    await listOn(w);
+    await w.t.run(async (ctx) => {
+      const job = (await ctx.db.query("placeholderJobs").collect())[0];
+      await ctx.db.patch(job._id, { status: "failed" });
+    });
+    const runId = await startRun(w, w.fx.baseId);
+    await held(w, async () => {
+      await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[0], quantity: 1 });
+      expect(await drainsOf(w)).toEqual([]);
+      await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[1], quantity: 1 });
+      expect(await drainsOf(w)).toHaveLength(1);
+    });
+  });
+
+  describe("the settle scan is bounded", () => {
+    /** Pad the run with already-set-aside rows so it holds `total` match rows. */
+    async function padTo(w: W, runId: Id<"intakeRuns">, total: number) {
+      await w.t.run(async (ctx) => {
+        const have = (await ctx.db.query("intakeMatches").withIndex("by_run", (q) => q.eq("runId", runId)).collect()).length;
+        for (let i = have; i < total; i++) {
+          await ctx.db.insert("intakeMatches", {
+            runId,
+            userId: ME.subject,
+            pairId: w.pairIds[0],
+            frontIndex: 1000 + 2 * i,
+            backIndex: 1001 + 2 * i,
+            readKey: `pad-${i}`,
+            confidence: 0,
+            band: "none",
+            reason: "playerOnly",
+            candidates: [],
+            variations: [],
+            setAside: true,
+          });
+        }
+      });
+    }
+
+    test("a run of exactly INTAKE_SETTLE_SCAN rows still settles and kicks", async () => {
+      const w = await two();
+      await listOn(w);
+      const runId = await startRun(w, w.fx.baseId);
+      await padTo(w, runId, INTAKE_SETTLE_SCAN);
+      await held(w, async () => {
+        await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[0], quantity: 1 });
+        await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[1], quantity: 1 });
+        expect(await drainsOf(w)).toHaveLength(1);
+      });
+    });
+
+    test("a run larger than INTAKE_SETTLE_SCAN is not checked on a save: no kick", async () => {
+      const w = await two();
+      await listOn(w);
+      const runId = await startRun(w, w.fx.baseId);
+      await padTo(w, runId, INTAKE_SETTLE_SCAN + 1);
+      await held(w, async () => {
+        await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[0], quantity: 1 });
+        await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[1], quantity: 1 });
+        expect(await drainsOf(w)).toEqual([]);
+      });
+    });
+  });
+
+  test("answering a repeat as a second copy kicks nothing; saving that copy does", async () => {
+    const w = await world([
+      { number: "1", players: ["Doc Gooden"] },
+      { number: "2", players: ["Darryl Strawberry"] },
+      { number: "2", players: ["Darryl Strawberry"] },
+    ]);
+    await listOn(w);
+    const runId = await startRun(w, w.fx.baseId);
+    await held(w, async () => {
+      await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[0], quantity: 1 });
+      await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[1], quantity: 1 });
+      await w.me.mutation(api.intakeRuns.answerIntakeRepeat, { runId, pairId: w.pairIds[2], secondCopy: true });
+      expect(await drainsOf(w)).toEqual([]);
+      await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[2], quantity: 1 });
+      expect(await drainsOf(w)).toHaveLength(1);
+    });
+  });
+
+  test("a re-scan answered as set aside settles the run and kicks", async () => {
+    const w = await world([
+      { number: "2", players: ["Darryl Strawberry"] },
+      { number: "2", players: ["Darryl Strawberry"] },
+    ]);
+    await listOn(w);
+    const runId = await startRun(w, w.fx.baseId);
+    await held(w, async () => {
+      await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[0], quantity: 1 });
+      await w.me.mutation(api.intakeRuns.answerIntakeRepeat, { runId, pairId: w.pairIds[1], secondCopy: false });
+      expect(await drainsOf(w)).toHaveLength(1);
+    });
+  });
+
+  test("bringing a set-aside pair back (setAside: false) kicks nothing, and the run is unsettled again", async () => {
+    const w = await two();
+    await listOn(w);
+    const runId = await startRun(w, w.fx.baseId);
+    await held(w, async () => {
+      await w.me.mutation(api.intakeRuns.setIntakeMatchAside, { runId, pairId: w.pairIds[1], setAside: true });
+      await w.me.mutation(api.intakeRuns.setIntakeMatchAside, { runId, pairId: w.pairIds[1], setAside: false });
+      expect(await drainsOf(w)).toEqual([]);
+      // The brought-back pair is open again: saving the other alone does not settle.
+      await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[0], quantity: 1 });
       expect(await drainsOf(w)).toEqual([]);
     });
   });

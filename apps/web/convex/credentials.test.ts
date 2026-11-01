@@ -1983,3 +1983,160 @@ describe("NEO-370 — an explicit userId never lets a signed-in caller act for s
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 });
+
+describe("NEO-370 — identity-less token entries act for the userId they are given", () => {
+  afterEach(() => {
+    delete process.env.NEONBINDER_PAUSED_PLATFORMS;
+  });
+
+  test("getSiteTokenForUser with no identity returns the named user's cached token", async () => {
+    const t = convexTest(schema, modules);
+    await seedHasCredentials(t, USER_A, SITE);
+    const fresh = { token: "tok-fresh", expiresAt: Date.now() + 60 * 60 * 1000 };
+    const tokenUrls: string[] = [];
+    stubFetch(async (url) => {
+      const u = String(url);
+      if (u.includes("/token")) {
+        tokenUrls.push(u);
+        return jsonResponse(fresh);
+      }
+      throw new Error(`unexpected fetch: ${u}`);
+    });
+
+    // No withIdentity: this is the scheduler's door.
+    const token = await t.action(internal.credentials.getSiteTokenForUser, {
+      site: SITE,
+      userId: USER_A,
+    });
+
+    expect(token?.token).toBe("tok-fresh");
+    // The read was keyed on the named user, not on an (absent) identity.
+    expect(tokenUrls).toHaveLength(1);
+    expect(tokenUrls[0]).toContain(encodeURIComponent(USER_A));
+  });
+
+  test("a stale token with no identity makes the login action receive the userId (login is attempted, then the new token is returned)", async () => {
+    const t = convexTest(schema, modules);
+    await seedHasCredentials(t, USER_A, SITE);
+    let tokenReads = 0;
+    let loginAttempts = 0;
+    stubFetch(async (url) => {
+      const u = String(url);
+      if (u.includes("/token")) {
+        tokenReads += 1;
+        return jsonResponse(
+          tokenReads === 1
+            ? STALE_TOKEN
+            : { token: "tok-renewed", expiresAt: Date.now() + 60 * 60 * 1000 },
+        );
+      }
+      if (u.includes("/login/bsc")) {
+        loginAttempts += 1;
+        return jsonResponse({ success: true, message: "ok" });
+      }
+      throw new Error(`unexpected fetch: ${u}`);
+    });
+
+    const token = await t.action(internal.credentials.getSiteTokenForUser, {
+      site: SITE,
+      userId: USER_A,
+    });
+
+    // Without the userId handed to authenticateBsc it would throw "Not
+    // authenticated" (no identity) and the stale token would come back.
+    expect(loginAttempts).toBe(1);
+    expect(token?.token).toBe("tok-renewed");
+  });
+
+  test("the user-driven getSiteToken still sends the login no userId (it is the caller's identity)", async () => {
+    // Guards the other half of the switch: an identity-carrying call must keep
+    // working with `{}` args, so a signed-in refresh is not broken by the fix.
+    const t = convexTest(schema, modules);
+    await seedHasCredentials(t, USER_A, SITE);
+    let tokenReads = 0;
+    let loginAttempts = 0;
+    stubFetch(async (url) => {
+      const u = String(url);
+      if (u.includes("/token")) {
+        tokenReads += 1;
+        return jsonResponse(
+          tokenReads === 1
+            ? STALE_TOKEN
+            : { token: "tok-renewed", expiresAt: Date.now() + 60 * 60 * 1000 },
+        );
+      }
+      if (u.includes("/login/bsc")) {
+        loginAttempts += 1;
+        return jsonResponse({ success: true, message: "ok" });
+      }
+      throw new Error(`unexpected fetch: ${u}`);
+    });
+
+    const token = await t
+      .withIdentity({ subject: USER_A })
+      .action(internal.credentials.getSiteToken, { site: SITE });
+
+    expect(loginAttempts).toBe(1);
+    expect(token?.token).toBe("tok-renewed");
+  });
+
+  test.each([
+    ["buysportscards", "/login/bsc"],
+    ["sportlots", "/login/sportlots"],
+  ] as const)(
+    "refreshSiteTokenForUser passes the userId to the %s login with no identity",
+    async (site, loginPath) => {
+      const t = convexTest(schema, modules);
+      await seedHasCredentials(t, USER_A, site);
+      const logins: string[] = [];
+      stubFetch(async (url) => {
+        const u = String(url);
+        if (u.includes(loginPath)) {
+          logins.push(u);
+          return jsonResponse({ success: true, message: "ok" });
+        }
+        throw new Error(`unexpected fetch: ${u}`);
+      });
+
+      const result = await t.action(internal.credentials.refreshSiteTokenForUser, {
+        site,
+        userId: USER_A,
+      });
+
+      expect(result).toEqual({ refreshed: true });
+      expect(logins).toHaveLength(1);
+    },
+  );
+
+  test("refreshSiteTokenForUser answers refreshed:false and makes no request while the platform is paused", async () => {
+    process.env.NEONBINDER_PAUSED_PLATFORMS = "buysportscards";
+    const t = convexTest(schema, modules);
+    await seedHasCredentials(t, USER_A, SITE);
+    const fetchSpy = vi.fn(async () => jsonResponse({ success: true, message: "ok" }));
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const result = await t.action(internal.credentials.refreshSiteTokenForUser, {
+      site: SITE,
+      userId: USER_A,
+    });
+
+    expect(result).toEqual({ refreshed: false });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  test("getSiteTokenForUser on a paused platform returns null and makes no request", async () => {
+    process.env.NEONBINDER_PAUSED_PLATFORMS = "buysportscards";
+    const t = convexTest(schema, modules);
+    await seedHasCredentials(t, USER_A, SITE);
+    const fetchSpy = vi.fn(async () => jsonResponse({}));
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const token = await t.action(internal.credentials.getSiteTokenForUser, {
+      site: SITE,
+      userId: USER_A,
+    });
+
+    expect(token).toBeNull();
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+});

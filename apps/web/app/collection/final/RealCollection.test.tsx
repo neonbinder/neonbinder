@@ -11,6 +11,7 @@ import {
   type CollectionActions,
   type CollectionData,
   type CollectionStoreValue,
+  type ListingExtension,
 } from "./data/store";
 import {
   REAL_CAPABILITIES,
@@ -166,8 +167,11 @@ function makeStore({
   capabilities = REAL_CAPABILITIES,
   boxCopies = [],
   binderMemory,
+  listing,
 }: {
   loading?: boolean;
+  /** NEO-370 — the store's marketplace-listing half; absent in a store with none. */
+  listing?: ListingExtension;
   capabilities?: Capabilities;
   /** Copies in a box: only the every-home read (`useCopiesOfCards`) lists them, as on Convex. */
   boxCopies?: Copy[];
@@ -307,7 +311,7 @@ function makeStore({
     useRuleBrands: (id) => (id === null ? undefined : L([])),
     useCommonPrices: (ids) => (ids === null ? undefined : L({})),
   };
-  const value: CollectionStoreValue = { kind: "convex", capabilities, data, actions, binderMemory };
+  const value: CollectionStoreValue = { kind: "convex", capabilities, data, actions, binderMemory, listing };
   return { value, actions, undo, log };
 }
 
@@ -994,3 +998,51 @@ describe("Inventory is on for the real collection (NEO-364)", () => {
 function escapeRe(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
+
+
+/** NEO-370 — a listing half whose reads are still loading: enough to open the Sales tab. */
+const LISTING: ListingExtension = {
+  useSettings: () => undefined,
+  setEnabled: vi.fn(async () => {}),
+  useVariantStatus: () => undefined,
+  resyncVariant: vi.fn(async () => ({ queued: 0, ignored: false })),
+  flushListing: vi.fn(async () => {}),
+  useSales: () => ({ sales: [], canLoadMore: false, loadingMore: false, loadMore: () => {} }),
+};
+
+const inventoryTabs = () =>
+  within(screen.getByRole("navigation", { name: "Inventory sections" }))
+    .getAllByRole("link")
+    .map((l) => l.textContent);
+
+describe("the Sales tab (NEO-370)", () => {
+  it("a store with a listing extension shows Sales last among the inventory's tabs", () => {
+    renderAt("/inventory", makeStore({ listing: LISTING }));
+    const names = inventoryTabs();
+    expect(names[names.length - 1]).toBe("Sales");
+    expect(names).toContain("Add cards");
+  });
+
+  it("/collection?tab=sales goes to the inventory's Sales tab", async () => {
+    renderAt("/collection?tab=sales", makeStore({ listing: LISTING }));
+    await waitFor(() => expect(pageUrl()).toBe("/inventory?tab=sales"));
+    expect(await screen.findByRole("heading", { level: 2, name: "What sold" })).toBeTruthy();
+  });
+
+  it("without a listing extension the tab is absent", () => {
+    renderAt("/inventory", makeStore());
+    expect(inventoryTabs()).not.toContain("Sales");
+  });
+
+  it("without a listing extension, tab=sales renders no Sales content and opens the first tab", () => {
+    renderAt("/inventory?tab=sales", makeStore());
+    expect(screen.queryByRole("list", { name: "Orders, newest first" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "What sold" })).toBeNull();
+    expect(inventoryTabs()).not.toContain("Sales");
+  });
+
+  it("the flag alone is not enough: capabilities on but no listing half still hides the tab", () => {
+    renderAt("/inventory", makeStore({ capabilities: { ...REAL_CAPABILITIES, marketplaceListing: true } }));
+    expect(inventoryTabs()).not.toContain("Sales");
+  });
+});
