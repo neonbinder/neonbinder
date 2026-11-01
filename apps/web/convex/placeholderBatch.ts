@@ -236,6 +236,23 @@ export const processHeavyEntryWorker = internalAction({
   },
   returns: v.any(),
   handler: async (ctx, args) => {
+    // NEO-411: start the photo's deadline on its first attempt. Best-effort: a
+    // failure here must not cost the photo its heavy call.
+    try {
+      await ctx.runMutation(internal.placeholderPipeline.noteHeavyStart, {
+        jobId: args.jobId,
+        entryIndex: args.entryIndex,
+      });
+    } catch (noteErr) {
+      console.warn(
+        JSON.stringify({
+          msg: "preprocess_heavy_note_start_failed",
+          jobId: args.jobId,
+          entryIndex: args.entryIndex,
+          error: noteErr instanceof Error ? noteErr.message : String(noteErr),
+        }),
+      );
+    }
     try {
       return await callProcessEntryHeavy(ctx, {
         jobId: args.jobId,

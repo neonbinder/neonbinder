@@ -369,6 +369,95 @@ export const confirmPlaceholderImageUpload = mutation({
   },
 });
 
+/** NEO-411: how many times one photo may be sent again with Try again. */
+export const PLACEHOLDER_MAX_IMAGE_RETRIES = 3;
+
+/**
+ * Try again on one photo that failed (NEO-411), while the batch is still open.
+ *
+ * The photo goes back through the pipeline from the start, as a fresh fast-tier
+ * row: its read-off fields, escalation and stage clock are cleared exactly as a
+ * restart clears them (`registerExtractedImages`), it leaves the failed count,
+ * and it is enqueued on the fast pool the same way a confirmed upload is. Its
+ * object is already stored, so nothing is uploaded again. `totalImages` does
+ * not change: it is the same photo.
+ *
+ * Only on a collecting stream job, the one shape where "the batch is finished"
+ * cannot have fired yet (a collecting job never satisfies the last-one-done
+ * test), so moving a row from failed back to working cannot strand a batch that
+ * already counted it. Capped at PLACEHOLDER_MAX_IMAGE_RETRIES per photo, because
+ * each retry is paid preprocess work.
+ */
+export const retryPlaceholderImage = mutation({
+  args: { jobId: v.string(), entryIndex: v.number() },
+  returns: v.object({ retried: v.boolean(), reason: v.optional(v.string()) }),
+  handler: async (ctx, args) => {
+    const userId = await requireUserId(ctx);
+    if (
+      !Number.isInteger(args.entryIndex) ||
+      args.entryIndex < 0 ||
+      args.entryIndex > PLACEHOLDER_MAX_ENTRY_INDEX
+    ) {
+      throw new Error("Image not found");
+    }
+    const job = await requireCollectingStreamJob(ctx, args.jobId, userId);
+    const image = await ctx.db
+      .query("placeholderImages")
+      .withIndex("by_job_and_index", (q) =>
+        q.eq("jobId", args.jobId).eq("entryIndex", args.entryIndex),
+      )
+      .unique();
+    if (!image) throw new Error("Image not found");
+    // A double click, or a photo that already came back: nothing to do.
+    if (image.status !== "failed") return { retried: false, reason: "not failed" };
+    const retries = (image.retries ?? 0) + 1;
+    if (retries > PLACEHOLDER_MAX_IMAGE_RETRIES) {
+      return { retried: false, reason: "too many tries" };
+    }
+
+    const now = Date.now();
+    await ctx.db.patch(image._id, {
+      status: "queued",
+      retries,
+      workId: undefined,
+      players: undefined,
+      team: undefined,
+      cardNumber: undefined,
+      side: undefined,
+      sideByUser: undefined,
+      rotationDegrees: undefined,
+      orientConfidence: undefined,
+      textCount: undefined,
+      croppedSource: undefined,
+      dhash: undefined,
+      escalated: undefined,
+      errorCode: undefined,
+      errorDetail: undefined,
+      pairStatus: undefined,
+      queuedAt: now,
+      escalatedAt: undefined,
+      settledAt: undefined,
+      heavyStartedAt: undefined,
+    });
+    await ctx.db.patch(job._id, {
+      failedImages: Math.max(0, (job.failedImages ?? 0) - 1),
+      lastActivityAt: now,
+    });
+
+    const workId = await fastPreprocessPool.enqueueAction(
+      ctx,
+      internal.placeholderBatch.processEntryWorker,
+      { jobId: args.jobId, userId: image.userId, entryIndex: image.entryIndex },
+      {
+        onComplete: internal.placeholderPool.onImageComplete,
+        context: { jobId: args.jobId, imageId: image._id },
+      },
+    );
+    await ctx.db.patch(image._id, { workId, status: "processing" });
+    return { retried: true };
+  },
+});
+
 /**
  * Stop accepting images and let the batch finish.
  *

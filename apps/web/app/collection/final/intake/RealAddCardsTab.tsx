@@ -499,6 +499,7 @@ function RunWorkspace({ run, jobOpen }: { run: RunSummary; jobOpen: boolean }) {
   const unpair = useMutation(api.placeholderPairing.unpairPlaceholderImages);
   const pairUp = useMutation(api.placeholderPairing.manuallyPairPlaceholderImages);
   const closeStream = useMutation(api.placeholderStream.closePlaceholderStream);
+  const retry = useMutation(api.placeholderStream.retryPlaceholderImage);
 
   const [selected, setSelected] = useState<Id<"placeholderPairs"> | null>(null);
   const [openId, setOpenId] = useState<Id<"placeholderPairs"> | null>(null);
@@ -621,13 +622,17 @@ function RunWorkspace({ run, jobOpen }: { run: RunSummary; jobOpen: boolean }) {
 
   const loading = images === undefined || pairs === undefined || matches === undefined;
   const working = lanes.reading.length + lanes.matching.length;
+  // NEO-411: a photo that failed is not "read", so the summary says so rather
+  // than claiming everything is.
+  const unread = lanes.loose.filter((i) => i.status === "failed").length;
+  const unreadNote = unread > 0 ? ` ${unread} photo${unread === 1 ? "" : "s"} couldn't be read.` : "";
   const summary = loading
     ? "Loading this run…"
     : working > 0
-      ? `Working on ${working} photo${working === 1 ? "" : "s"}. ${review.length} waiting for you, ${lanes.saved.length} saved.`
+      ? `Working on ${working} photo${working === 1 ? "" : "s"}. ${review.length} waiting for you, ${lanes.saved.length} saved.${unreadNote}`
       : review.length > 0
-        ? `Everything is read. ${review.length} waiting for you, ${lanes.saved.length} saved.`
-        : `${lanes.saved.length} saved.`;
+        ? `Everything is read. ${review.length} waiting for you, ${lanes.saved.length} saved.${unreadNote}`
+        : `${lanes.saved.length} saved.${unreadNote}`;
 
   return (
     <div className="space-y-3">
@@ -697,6 +702,18 @@ function RunWorkspace({ run, jobOpen }: { run: RunSummary; jobOpen: boolean }) {
             loose={lanes.loose}
             onPair={(front, back) =>
               void pairUp({ jobId: run.jobId, frontIndex: front, backIndex: back }).catch(fail)
+            }
+            onRetry={
+              jobOpen
+                ? (entryIndex) =>
+                    void retry({ jobId: run.jobId, entryIndex })
+                      .then((r) => {
+                        if (!r.retried && r.reason === "too many tries") {
+                          notify("This photo has been tried too many times. Scan it again instead.");
+                        }
+                      })
+                      .catch(fail)
+                : undefined
             }
           />
         </Lane>
@@ -891,10 +908,13 @@ function LoosePile({
   jobId,
   loose,
   onPair,
+  onRetry,
 }: {
   jobId: string;
   loose: IntakeImage[];
   onPair: (front: number, back: number) => void;
+  /** NEO-411: send a failed photo through again; absent once the run is closed. */
+  onRetry?: (entryIndex: number) => void;
 }) {
   const [chosen, setChosen] = useState<number[]>([]);
   const live = chosen.filter((n) => loose.some((i) => i.entryIndex === n));
@@ -917,12 +937,24 @@ function LoosePile({
               <span className="block truncate font-medium text-ink-2">{i.originalName}</span>
               <span className="block text-ink-3">
                 {i.status === "failed"
-                  ? "Couldn't read it"
+                  ? failedText(i)
                   : [i.side, i.players?.join(", "), i.cardNumber ? `#${i.cardNumber}` : null].filter(Boolean).join(" · ") ||
                     "Waiting for its other side"}
               </span>
             </span>
           </button>
+          {i.status === "failed" && onRetry && (
+            <NeonButton
+              size="1"
+              variant="secondary"
+              outline
+              className="mt-1"
+              aria-label={`Try again: ${i.originalName}`}
+              onClick={() => onRetry(i.entryIndex)}
+            >
+              Try again
+            </NeonButton>
+          )}
         </li>
       ))}
       {loose.length > 1 && (
@@ -943,6 +975,11 @@ function LoosePile({
       )}
     </>
   );
+}
+
+/** Why a photo in the pile failed, in a collector's words (NEO-411). */
+function failedText(image: Pick<IntakeImage, "errorCode">): string {
+  return image.errorCode === "PHOTO_TIMED_OUT" ? "Took too long to read" : "Couldn't read it";
 }
 
 /** The band, as a pill: matched, check this, or no match. */

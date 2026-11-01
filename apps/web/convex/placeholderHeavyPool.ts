@@ -24,13 +24,13 @@
  */
 
 import { v } from "convex/values";
-import { Workpool } from "@convex-dev/workpool";
+import { Workpool, type WorkId } from "@convex-dev/workpool";
 import { components, internal } from "./_generated/api";
 import type { MutationCtx } from "./_generated/server";
 import { internalMutation } from "./_generated/server";
 import { HEAVY_MAX_PARALLELISM } from "./preprocessCapacity";
 import { HEAVY_WARMUP_WINDOW_MS } from "./lib/preprocessWarmup";
-import { findJob, recordImageOutcomeImpl } from "./placeholderPipeline";
+import { expireHeavyPhotoImpl, findJob, recordImageOutcomeImpl } from "./placeholderPipeline";
 import { preprocessBaselineValidator } from "./lib/preprocessBaseline";
 
 /** The fixed key of the heavy warm-up row in `preprocessWarmupState`. */
@@ -195,8 +195,24 @@ export const enqueueHeavyImage = internalMutation({
 });
 
 /**
- * Enqueue HEAVY_MAX_PARALLELISM heavy warm-ups onto the heavy pool — one per
- * heavy instance this environment runs (NEO-299: warm to the limit).
+ * How many heavy warm-ups one fan-out enqueues: half the heavy slots, at least
+ * one (NEO-411).
+ *
+ * NEO-299 warmed to the full limit, but a heavy warm-up holds its pool slot for
+ * the whole ~200s model load, so a full fan-out left no slot for the batch's
+ * own photos: in the 2026-10-30/31 red E2E runs, escalated photos sat queued
+ * until warm-ups returned (2 min 50 s in run 41106456908) and then often landed
+ * on a cold instance anyway. Half the slots still brings instances up during
+ * the fast phase, and the other half is always free for a photo the moment it
+ * escalates. No 429 was seen in any of those runs, so the shared ceiling holds.
+ */
+export function heavyWarmupCount(maxParallelism: number): number {
+  return Math.max(1, Math.floor(maxParallelism / 2));
+}
+
+/**
+ * Enqueue `heavyWarmupCount(HEAVY_MAX_PARALLELISM)` heavy warm-ups onto the
+ * heavy pool (NEO-411: half the slots; NEO-299 used all of them).
  *
  * Called by `warmupPreprocess` (batch start and warm-on-intent) and by
  * `warmupHeavyPreprocess` (the warm-gate on a batch's first escalation), both in
@@ -264,9 +280,29 @@ export const enqueueHeavyWarmups = internalMutation({
     const workIds: string[] = await heavyPreprocessPool.enqueueActionBatch(
       ctx,
       internal.placeholderBatch.warmHeavyWorker,
-      Array.from({ length: HEAVY_MAX_PARALLELISM }, () => ({})),
+      Array.from({ length: heavyWarmupCount(HEAVY_MAX_PARALLELISM) }, () => ({})),
       { retry: false },
     );
     return { enqueued: workIds.length };
+  },
+});
+
+/**
+ * NEO-411: a heavy photo's deadline, scheduled by `noteHeavyStart` when its
+ * heavy work first starts. Settles a photo that is still heavy-processing as
+ * failed ("PHOTO_TIMED_OUT", see `expireHeavyPhotoImpl`) and cancels its heavy
+ * work item, so nothing more is paid for a photo the screen already shows as
+ * "Couldn't read this photo". A photo that finished in time is untouched.
+ */
+export const expireHeavyPhoto = internalMutation({
+  args: { imageId: v.id("placeholderImages") },
+  returns: v.object({ expired: v.boolean() }),
+  handler: async (ctx, args) => {
+    const { expired, workId } = await expireHeavyPhotoImpl(ctx, args.imageId);
+    if (workId) {
+      // The cancel's own completion settles nothing: the row is terminal now.
+      await heavyPreprocessPool.cancel(ctx, workId as WorkId);
+    }
+    return { expired };
   },
 });
