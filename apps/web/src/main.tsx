@@ -78,6 +78,7 @@ const AdminTeams = lazy(() => import("@/app/admin/teams/page"));
 const AdminLeagues = lazy(() => import("@/app/admin/leagues/page"));
 const AdminFranchises = lazy(() => import("@/app/admin/franchises/page"));
 const AdminCardRequests = lazy(() => import("@/app/admin/card-requests/page"));
+const AdminSyncStatus = lazy(() => import("@/app/admin/sync-status/page"));
 const PipelineRuns = lazy(() => import("@/app/pipeline-runs/page"));
 const DesignPrimitives = lazy(() => import("@/app/design/primitives/page"));
 const PrintHub = lazy(loadPrintHub);
@@ -289,6 +290,9 @@ const SentryErrorBoundary = Sentry.withErrorBoundary(
                   {/* NEO-361 — collectors' card and set requests. The
                       functions behind it are requireAdmin server-side. */}
                   <Route path="card-requests" element={<Deferred><AdminCardRequests /></Deferred>} />
+                  {/* NEO-370 — every collector's marketplace sync, read-only.
+                      The functions behind it are requireAdmin server-side. */}
+                  <Route path="sync-status" element={<Deferred><AdminSyncStatus /></Deferred>} />
                 </Route>
                 {/* The old top-level routes. Kept forever rather than 404ing:
                     /set-selector is bookmarked, and most E2E specs navigate

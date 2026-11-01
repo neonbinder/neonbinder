@@ -59,7 +59,7 @@ export type Side = "collection" | "inventory";
  * both sides. The old `"inventory"` key is retired: a `?tab=inventory` link
  * redirects (replace) to `/inventory?tab=boxes`.
  */
-export type CollectionTab = "cards" | "binders" | "boxes" | "checklists" | "add" | "sales";
+export type CollectionTab = "cards" | "binders" | "boxes" | "checklists" | "add" | "sales" | "sync";
 
 // ---------------------------------------------------------------------------
 // Catalog
@@ -540,6 +540,11 @@ export interface Container {
   slug?: string;
   /** NEO-360 — anyone with the link can read it (a binder or the Want List). */
   isPublic?: boolean;
+  /**
+   * NEO-370 — a box only: false when it is in-person inventory, whose copies
+   * count 0 on every marketplace. Absent reads as listed.
+   */
+  listedOnMarketplaces?: boolean;
 }
 
 /**
@@ -822,8 +827,9 @@ export interface Capabilities {
   /** NEO-377 — a front and back photo on each copy line (`useCopyPhotos`). */
   copyPhotos: boolean;
   /**
-   * NEO-370 — listing box copies on a marketplace (`useListing`): the
-   * per-collector switch, a checklist's listing panel and the Sales tab.
+   * NEO-370 — listing box copies on a marketplace (`useListing`): a
+   * checklist's Sync button, a box's "Listed on marketplaces", the Sales
+   * and Sync status tabs.
    * Signed-in only: the demo never touches a marketplace.
    */
   marketplaceListing: boolean;
@@ -913,19 +919,25 @@ export interface ShareLinkParts {
 /** A marketplace NB lists box copies on. Only BuySportsCards today. */
 export type ListingPlatform = "bsc";
 
-/** Where the collector stands with one listing platform. */
+/**
+ * Where the collector stands with one listing platform (NEO-370 Rev 4).
+ * Listing starts once, on their Profile, where the sign-in is saved; there
+ * is no pause: removing the sign-in stops it (and the sales poll).
+ */
 export interface ListingPlatformSettings {
-  /** They switched listing on: their box copies go up, and sales come back. */
-  enabled: boolean;
-  /** Their credentials for it are saved (Profile → Credentials). */
+  /** Their sign-in for it is saved (Profile → Credentials). */
   connected: boolean;
+  /** They started listing there: everything in a listed box goes up, and sales come back. */
+  listing: boolean;
+  /** When they started (ms); absent until they do. */
+  listingSince?: number;
   /** The saved sign-in died: they must sign in again on their Profile. */
   needsReauth: boolean;
   /** NB has paused the platform for everyone; changes wait until it is back. */
   paused: boolean;
   /**
    * Their seller account already lists from another NeonBinder account, so
-   * this one can't: switching on is refused, and a running listing rests.
+   * this one can't: starting is refused, and a running listing rests.
    */
   sellerConflict: boolean;
 }
@@ -934,7 +946,7 @@ export type ListingSettings = Record<ListingPlatform, ListingPlatformSettings>;
 
 /**
  * Why one card of a checklist did not list (NB's own words for it live in
- * `../inventory/listing/copy`). Mirrors `listingProblemReasonValidator` in
+ * `lib/marketplace/listing-copy`). Mirrors `listingProblemReasonValidator` in
  * convex/schema.ts.
  */
 export type ListingProblemReason =
@@ -948,39 +960,72 @@ export type ListingProblemReason =
   | "notOnSheet"
   | "rejected";
 
-export interface ListingProblem {
+/** One card a sync held back, named as the collector reads it. */
+export interface SyncProblem {
   reason: ListingProblemReason;
-  /** The NB card; absent only for a platform row NB cannot tie to a card. */
-  cardId?: CardId;
+  /** NB's card number; absent for a platform row NB cannot tie to a card. */
+  cardNo?: string;
+  /** The card's player(s), as NB names them. */
+  cardLabel?: string;
   /** For `rejected`: a short excerpt of what the platform said. */
   detail?: string;
 }
 
-/** One checklist's last push to a platform. */
-export interface ListingRun {
-  /** `running` while a push is going on; `error` when the last one failed. */
+/** What Sync answered: `queued`, or why it let the press pass. */
+export interface SyncVariantResult {
+  queued: boolean;
+  ignored?: "throttled" | "notListing";
+}
+
+/** A card waiting for the next sync. The queue holds cards, not diffs: NB's counts are what go up. */
+export interface QueuedSyncCard {
+  cardId: CardId;
+  cardNo?: string;
+  cardLabel?: string;
+  variantId: VariantId;
+  setLabel: string;
+  /** When it was queued (ms). */
+  changedAt: number;
+}
+
+/** One set's last sync on a platform. Last result only: there is no run log. */
+export interface SyncSetResult {
+  variantId: VariantId;
+  setLabel: string;
   status: "idle" | "running" | "error";
-  /** When the last push finished, clean or not (ms). */
   lastRunAt?: number;
-  /** When the last clean push finished (ms); absent before one, and after Resync. */
   lastSuccessAt?: number;
   /** NB's sentence for what went wrong last time. */
   lastError?: string;
-  /** Cards NB holds a count for on the platform, after the last push. */
-  listed?: number;
-  /** At most 200; `problemsTotal` is the true count. */
-  problems: ListingProblem[];
+  counts?: { listed: number; pushed: number; zeroed: number; skipped: number };
   problemsTotal: number;
+  /** The first few only; the rest come from `loadSetProblems`. */
+  problems: SyncProblem[];
 }
 
-export interface VariantListingStatus {
-  /** Null before the checklist's first push. */
-  run: ListingRun | null;
-  /**
-   * A change is waiting to go up: it goes when the collector leaves the
-   * checklist, when a photo intake finishes, on Resync, or within 15 minutes.
-   */
-  pending: boolean;
+/** One platform on the Sync status tab. */
+export interface PlatformSyncStatus extends ListingPlatformSettings {
+  platform: ListingPlatform;
+  /** A sync going on now. */
+  running: { startedAt: number; setLabel?: string; variantId?: VariantId } | null;
+  /** When the next sync is due (ms), when one is scheduled. */
+  scheduledAt?: number;
+  /** When the last sync finished (ms). */
+  lastDrainAt?: number;
+  /** Oldest first, capped; `more` when there are others. */
+  queued: { cards: QueuedSyncCard[]; more: boolean };
+  /** Most recent first, capped. */
+  sets: SyncSetResult[];
+}
+
+export interface SyncStatus {
+  platforms: PlatformSyncStatus[];
+}
+
+/** One set's whole held-back list, read on demand. */
+export interface SetProblems {
+  problems: SyncProblem[];
+  problemsTotal: number;
 }
 
 /** Why a sold line was not (fully) taken out of the collector's boxes. */

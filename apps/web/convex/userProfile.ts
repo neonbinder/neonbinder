@@ -401,7 +401,8 @@ export const updateSiteCredentialStatus = internalMutation({
     }
 
     // NEO-370: credentials saved again wake a listing state they put to
-    // sleep; cleared, they put it to sleep (no poll, no drain).
+    // sleep (the order poll resumes; listing itself waits for Start, saving
+    // never starts it). Cleared, listing stops and its start is cleared.
     await setListingCredentialsDormant(ctx, args.userId, args.site, !args.hasCredentials);
 
     return null;
@@ -537,8 +538,9 @@ export const removeSiteCredentialStatus = internalMutation({
         siteCredentials: updatedCredentials,
       });
     }
-    // NEO-370: no credentials, no listing work: the platform's listing state
-    // goes dormant (no order poll, no drain) until they are saved again.
+    // NEO-370: no credentials, no listing work: listing on the platform stops
+    // (dormant: no order poll, no drain; the start is cleared and the queue
+    // dropped), so saving again needs Start listing again.
     await setListingCredentialsDormant(ctx, args.userId, args.site, true);
 
     return null;

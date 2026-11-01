@@ -17,8 +17,10 @@
  * timer (a row landing mid-run waits for the next kick unless a kick asked
  * for another run), the credential gate (no credentials → dormant, a session
  * that needs a fresh sign-in is not logged into), one NB owner per seller
- * account, switching off stops the push but keeps the state row, and every
- * BSC call refuses redirects.
+ * account, listing stopped under a run (the sign-in removed) stops the push
+ * but keeps the state row, and every BSC call refuses redirects. Revision 4:
+ * a copy in an in-person box (`listedOnMarketplaces: false`) counts 0, and
+ * the first run after a Sync press reads every condition.
  */
 import { convexTest } from "convex-test";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -26,6 +28,7 @@ import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
 import { drainOwnerImpl, rejectedPushDetail, type DrainCtx } from "./listingDrain";
+import { kickOwnerDrains } from "./listingOutbox";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -265,7 +268,13 @@ type S = Awaited<ReturnType<typeof setup>>;
 
 async function listOnBsc(s: S, extra: Record<string, unknown> = {}) {
   await s.t.run(async (ctx) => {
-    await ctx.db.insert("marketplaceListingStates", { ownerId: OWNER, platform: "bsc", lastUpdated: NOW, ...extra });
+    await ctx.db.insert("marketplaceListingStates", {
+      ownerId: OWNER,
+      platform: "bsc",
+      listingStartedAt: NOW,
+      lastUpdated: NOW,
+      ...extra,
+    });
   });
 }
 
@@ -514,12 +523,14 @@ describe("drainOwner: the outbox rows", () => {
       { cardId: v.cardIds[0], variantId: v.variantId },
       { cardId: v.cardIds[1], variantId: v.variantId },
     ]);
-    // A box write and the collector leaving the page, mid-push.
+    // A box write and a kick (a Sync press, a finished intake), mid-push.
     bsc.onPut = async () => {
       await s.t.run(async (ctx) => {
         await ctx.db.patch(row2, { seq: 2 });
       });
-      await s.me.mutation(api.listingSync.flushListing, {});
+      await s.t.run(async (ctx) => {
+        await kickOwnerDrains(ctx as never, OWNER);
+      });
     };
 
     await drain(s);
@@ -733,7 +744,8 @@ describe("drainOwner: a push BSC did not take", () => {
     expect(rejected[0].detail).not.toContain("near_mint");
     expect(rejected[0].detail).not.toContain("7");
     // And the public status carries the same NB-only words, without the BSC id.
-    const status = await s.me.query(api.listingSync.variantStatus, { variantId: v.variantId });
+    const status = await s.me.query(api.listingSync.syncSetProblems, { variantId: v.variantId, platform: "bsc" });
+    expect(status.problems).toContainEqual({ cardNo: "1", cardLabel: "Player 1", reason: "rejected", detail: rejected[0].detail });
     expect(JSON.stringify(status)).not.toContain("near_mint");
     expect(JSON.stringify(status)).not.toContain("bsc-1");
   });
@@ -826,7 +838,7 @@ describe("drainOwner: a variant NB no longer holds anything in", () => {
     expect(await outbox(s)).toHaveLength(0);
   });
 
-  test("a Resync of an empty variant (last clean run forgotten) reads every condition and zeroes all of them", async () => {
+  test("a Sync of an empty variant (pressed after its last run) reads every condition and zeroes all of them", async () => {
     const s = await setup();
     const v = await seedVariant(s.t, { cards: [{ number: "1", ref: "bsc-1" }] });
     const bsc = new FakeBsc([{ bscCardId: "bsc-1", cardNo: "1" }], MODERN);
@@ -842,11 +854,12 @@ describe("drainOwner: a variant NB no longer holds anything in", () => {
     });
     // Something NB never pushed sits under another condition on BSC.
     bsc.set("bsc-1", "very_good", { availableQuantity: 3, price: "1.00", sellerSku: "303|1" });
-    // What `listingSync.resyncVariant` does to an empty variant: forget the
-    // last clean run, queue one BSC-linked card so the run happens.
+    // What `listingSync.syncVariant` does to an empty variant: stamp the
+    // press (later than the last run), queue one BSC-linked card so the run
+    // happens. The last clean run is kept.
     const rec = await record(s, v.variantId);
     await s.t.run(async (ctx) => {
-      await ctx.db.patch(rec!._id, { lastSuccessAt: undefined });
+      await ctx.db.patch(rec!._id, { resyncRequestedAt: (rec!.lastRunAt ?? 0) + 1 });
     });
     bsc.sheetReads = [];
     await queue(s, [{ cardId: v.cardIds[0], variantId: v.variantId, seq: 2 }]);
@@ -859,15 +872,88 @@ describe("drainOwner: a variant NB no longer holds anything in", () => {
   });
 });
 
-describe("drainOwner: listing switched off under a run", () => {
-  // What `listingSync.setListingEnabled({enabled: false})` does to the row.
+describe("drainOwner: an in-person box (Revision 4)", () => {
+  test("its copies count 0 on BSC; a listed box's copies of the same card still count", async () => {
+    const s = await setup();
+    const v = await seedVariant(s.t, {
+      cards: [
+        { number: "1", ref: "bsc-1" },
+        { number: "2", ref: "bsc-2" },
+      ],
+    });
+    const bsc = new FakeBsc(
+      [
+        { bscCardId: "bsc-1", cardNo: "1" },
+        { bscCardId: "bsc-2", cardNo: "2" },
+      ],
+      MODERN,
+    );
+    // BSC still shows what NB pushed before box B went in-person.
+    bsc.set("bsc-2", "near_mint", { availableQuantity: 2, price: "1.00", sellerSku: "303|2" });
+    vi.stubGlobal("fetch", bsc.fetch);
+    await add(s, v.cardIds[0], { homeId: s.box, condition: "Near Mint", minPriceCents: 50 });
+    await add(s, v.cardIds[0], { homeId: s.box2, condition: "Near Mint", minPriceCents: 50 });
+    await add(s, v.cardIds[1], { homeId: s.box2, condition: "Near Mint", quantity: 2, minPriceCents: 50 });
+    await s.t.run(async (ctx) => {
+      await ctx.db.patch(s.box2, { listedOnMarketplaces: false });
+    });
+    await listOnBsc(s);
+    await queue(s, [
+      { cardId: v.cardIds[0], variantId: v.variantId },
+      { cardId: v.cardIds[1], variantId: v.variantId },
+    ]);
+
+    await drain(s);
+
+    // Box A's one copy of #1 lists; box B (in-person) adds nothing to it and
+    // takes #2 down to 0.
+    expect(bsc.qty("bsc-1", "near_mint")).toBe(1);
+    expect(bsc.qty("bsc-2", "near_mint")).toBe(0);
+    expect(await record(s, v.variantId)).toMatchObject({ status: "idle", counts: { listed: 1 } });
+  });
+});
+
+describe("drainOwner: a Sync press reads every condition once", () => {
+  test("the run after the press reads them all; the run after that reads only what it needs", async () => {
+    const s = await setup();
+    const v = await seedVariant(s.t, { cards: [{ number: "1", ref: "bsc-1" }] });
+    const bsc = new FakeBsc([{ bscCardId: "bsc-1", cardNo: "1" }], MODERN);
+    vi.stubGlobal("fetch", bsc.fetch);
+    await add(s, v.cardIds[0], { homeId: s.box, condition: "Near Mint", minPriceCents: 40 });
+    await listOnBsc(s);
+    await queue(s, [{ cardId: v.cardIds[0], variantId: v.variantId }]);
+    await drain(s); // the first sync: every condition
+    const first = await record(s, v.variantId);
+
+    await s.t.run(async (ctx) => {
+      await ctx.db.patch(first!._id, { resyncRequestedAt: (first!.lastRunAt ?? 0) + 1 });
+    });
+    bsc.sheetReads = [];
+    await queue(s, [{ cardId: v.cardIds[0], variantId: v.variantId, seq: 2 }]);
+    await drain(s);
+    expect([...new Set(bsc.sheetReads.map((r) => r.condition))].sort()).toEqual([...MODERN].sort());
+    // The press is spent: the last clean run is kept, the stamp is behind it.
+    const after = await record(s, v.variantId);
+    expect(after?.lastSuccessAt).toBeTypeOf("number");
+    expect(after!.lastRunAt!).toBeGreaterThan(after!.resyncRequestedAt!);
+
+    bsc.sheetReads = [];
+    await queue(s, [{ cardId: v.cardIds[0], variantId: v.variantId, seq: 3 }]);
+    await drain(s);
+    expect([...new Set(bsc.sheetReads.map((r) => r.condition))]).toEqual(["near_mint"]);
+  });
+});
+
+describe("drainOwner: listing stopped under a run", () => {
+  // What removing the BSC sign-in does to the row
+  // (`listingOutbox.setListingCredentialsDormant`).
   const deleteState = (s: S) =>
     s.t.run(async (ctx) => {
       const row = await ctx.db
         .query("marketplaceListingStates")
         .withIndex("by_owner_platform", (q) => q.eq("ownerId", OWNER).eq("platform", "bsc"))
         .unique();
-      if (row) await ctx.db.patch(row._id, { enabled: false });
+      if (row) await ctx.db.patch(row._id, { listingStartedAt: undefined, dormant: "noCredentials" });
     });
 
   test("between variants: the next variant is never claimed, and nothing is recreated or rescheduled", async () => {
@@ -889,7 +975,7 @@ describe("drainOwner: listing switched off under a run", () => {
       { cardId: a.cardIds[0], variantId: a.variantId },
       { cardId: b.cardIds[0], variantId: b.variantId },
     ]);
-    // The collector switches listing off while the first variant's push is
+    // The collector removes their sign-in while the first variant's push is
     // in flight (the outbox clear has not reached the second row yet).
     bsc.onPut = async () => {
       await deleteState(s);
@@ -904,8 +990,9 @@ describe("drainOwner: listing switched off under a run", () => {
     expect(first.result).toBe("ok");
     expect(second.result).toBe("off");
     expect(await record(s, second.variantId)).toBeNull();
-    // Kept, switched off (its order cursor and sales stay).
-    expect(await state(s)).toMatchObject({ enabled: false });
+    // Kept, stopped (its order cursor and sales stay).
+    expect(await state(s)).toMatchObject({ dormant: "noCredentials" });
+    expect((await state(s))?.listingStartedAt).toBeUndefined();
     expect((await state(s))?.drainLeaseToken).toBeUndefined();
     const scheduled = await s.t.run(async (ctx) => ctx.db.system.query("_scheduled_functions").collect());
     expect(scheduled.filter((f) => f.name.includes("listingDrain"))).toHaveLength(0);
@@ -929,10 +1016,10 @@ describe("drainOwner: listing switched off under a run", () => {
     expect(bsc.puts).toHaveLength(0);
     const rec = await record(s, v.variantId);
     expect(rec?.status).toBe("error");
-    expect(rec?.lastError).toMatch(/switched off/);
+    expect(rec?.lastError).toMatch(/stopped part-way/);
     expect(rec?.leaseToken).toBeUndefined();
     expect(await outbox(s)).toHaveLength(1);
-    expect(await state(s)).toMatchObject({ enabled: false });
+    expect(await state(s)).toMatchObject({ dormant: "noCredentials" });
   });
 });
 
@@ -964,9 +1051,25 @@ describe("drainOwner: the credential gate", () => {
     expect(creds.tokenCalls).toBe(0);
     const st = await state(s);
     expect(st?.dormant).toBe("noCredentials");
+    // Stopped like a removed sign-in: saving it again needs Start again.
+    expect(st?.listingStartedAt).toBeUndefined();
     expect(st?.drainScheduledAt).toBeUndefined();
     expect(st?.drainLeaseToken).toBeUndefined();
     expect(await outbox(s)).toHaveLength(1);
+  });
+
+  test("a state row that was never started (Revision 3's `enabled` only) is not drained", async () => {
+    const s = await setup();
+    const v = await seedVariant(s.t, { cards: [{ number: "1", ref: "bsc-1" }] });
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+    await listOnBsc(s, { listingStartedAt: undefined, enabled: true });
+    await queue(s, [{ cardId: v.cardIds[0], variantId: v.variantId }]);
+
+    const report = await drainOwnerImpl(stubCtx(s.t), { ownerId: OWNER, platform: "bsc" });
+
+    expect(report).toMatchObject({ claimed: false, stoppedFor: "notClaimed" });
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   test("a session that needs a fresh sign-in is never logged into by a drain", async () => {

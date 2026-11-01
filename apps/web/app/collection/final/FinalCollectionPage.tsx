@@ -70,8 +70,9 @@ import type {
 import { useHomeName, useScopedName } from "./catalog/home";
 import { DRAWER_MODE_PARAM, DRAWER_PARAM, viewOf } from "./drawerParams";
 import InventoryListTab from "./inventory/InventoryListTab";
-// The Sales tab (NEO-370) loads only when opened.
+// The Sales and Sync status tabs (NEO-370) load only when opened.
 const SalesTab = lazy(() => import("./inventory/listing/SalesTab"));
+const SyncStatusTab = lazy(() => import("./inventory/listing/SyncStatusTab"));
 // The inventory Checklists' target box (`box=`, NEO-364 D8): replaced in
 // place by the picker, carried here on each drill step within Checklists
 // like the scope, and dropped on a tab change (the Inventory list's rail
@@ -171,6 +172,8 @@ const TABS: Record<Side, TabDef[]> = {
     { key: "add", label: "Add cards", needs: "intake" },
     // NEO-370 — orders from the marketplaces the collector lists on.
     { key: "sales", label: "Sales", needs: "marketplaceListing" },
+    // NEO-370 Rev 4 — what is syncing, what waits, and each set's last result.
+    { key: "sync", label: "Sync status", needs: "marketplaceListing" },
   ],
 };
 
@@ -195,7 +198,7 @@ function redirectFor(side: Side, params: URLSearchParams): { side: Side; tab: Co
   if (side === "inventory" && tab === "inventory") return { side: "inventory", tab: "boxes" };
   if (side === "inventory" && tab === "binders") return { side: "collection", tab: "binders" };
   // NEO-370: sales are the inventory's (what sold came out of a box).
-  if (side === "collection" && tab === "sales") return { side: "inventory", tab: "sales" };
+  if (side === "collection" && (tab === "sales" || tab === "sync")) return { side: "inventory", tab };
   return null;
 }
 
@@ -879,6 +882,11 @@ function CollectionPage({ side, onExit }: { side: Side; onExit?: () => void }) {
                 {!redirect && tab === "sales" && capabilities.marketplaceListing && (
                   <Suspense fallback={<SkeletonBars rows={4} />}>
                     <SalesTab />
+                  </Suspense>
+                )}
+                {!redirect && tab === "sync" && capabilities.marketplaceListing && (
+                  <Suspense fallback={<SkeletonBars rows={4} />}>
+                    <SyncStatusTab />
                   </Suspense>
                 )}
                 {!redirect && tab === "checklists" && (

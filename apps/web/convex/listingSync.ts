@@ -1,23 +1,26 @@
 /**
- * NEO-370 — the collector's side of marketplace listing: the per-user switch,
- * a variant's listing status, Resync, the flush on leaving a checklist, and
- * the Sales screen.
+ * NEO-370 — the collector's side of marketplace listing: starting to list,
+ * a set's Sync button, the Sync status tab (theirs, and the read-only admin
+ * view across collectors), and the Sales screen.
  *
- * Listing is opt-in, per collector and per platform, off by default. The
- * owner's `marketplaceListingStates` row is made by the first switch-on and
- * then kept: `enabled: false` is "off". Off stops pushing NB's counts only:
- * the copy-change hook queues nothing and the drainer stands down, but what
- * the platform lists stays up and can still sell, so the order poll keeps
- * running (while credentials are saved) and keeps lowering NB copies.
- * Turning it on queues every card the collector holds in a box (paged
- * through scheduled internal mutations, so a 100k-copy inventory never meets
- * a transaction limit) and the walk's last page runs the drain; turning it
- * off drops the owner's queued changes for that platform.
+ * Revision 4 (Jason, 2026-11-01): there is no per-platform switch and no
+ * pause. Everything in a LISTED box (a box whose "Listed on marketplaces"
+ * setting is not off, `listingOutbox.listsOnMarketplaces`) lists on every
+ * platform the collector has STARTED. Starting is one-way and explicit
+ * (`startListing`, the button under the warning beside the saved sign-in);
+ * saving a sign-in alone starts nothing. Removing the sign-in stops listing
+ * and clears the start (`listingOutbox.setListingCredentialsDormant`).
  *
- * Every public function here is the signed-in caller's own: the owner is
- * always `requireSignedIn`, never an argument. A sync record's `leaseToken`,
- * a marketplace's card ids, an order's id and a line's SKU are server-only
- * and never returned.
+ * The owner's `marketplaceListingStates` row is made by the first Start and
+ * then kept. Starting queues every card the collector holds in a listed box
+ * (paged through scheduled internal mutations, so a 100k-copy inventory never
+ * meets a transaction limit) and the walk's last page runs the drain.
+ *
+ * Every collector function here is the signed-in caller's own: the owner is
+ * always `requireSignedIn`, never an argument. The admin reads take an owner
+ * and are `requireAdmin`-gated and read-only. A sync record's `leaseToken`,
+ * the owner's drain lease, a marketplace's card ids, the seller account id,
+ * an order's id and a line's SKU are server-only and never returned.
  */
 import { v } from "convex/values";
 import { paginationOptsValidator, paginationResultValidator } from "convex/server";
@@ -25,17 +28,21 @@ import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { internalMutation, mutation, query } from "./_generated/server";
 import { internal } from "./_generated/api";
-import { requireSignedIn } from "./auth";
-import { COLLECTION_ERRORS, HomeSides, MAX_CONTAINERS, MAX_SYSTEM_CONTAINERS, refuse } from "./collection";
+import { requireAdmin, requireSignedIn } from "./auth";
+import { HomeSides, MAX_CONTAINERS, MAX_SYSTEM_CONTAINERS } from "./collection";
 import { findSetForSelectorOption } from "./lib/selectorAncestry";
+import { ListingLabels } from "./lib/listingLabels";
 import { isPlatformPaused } from "./marketplacePause";
+import { DRAIN_LEASE_MS, MAX_STORED_PROBLEMS } from "./listingDrain";
 import {
+  clearListingOutbox,
   enqueueListingCards,
   kickListingDrain,
-  kickOwnerDrains,
   LISTING_CREDENTIAL_SITE,
+  LISTING_PLATFORMS,
   listingCredentialOf,
   listingStateOf,
+  listsOnMarketplaces,
   pushesCounts,
   sellerAccountHolder,
   wakeVariant,
@@ -47,27 +54,48 @@ import {
   saleItemProblemValidator,
 } from "./schema";
 
-/** Copy lines one page of a queueing walk reads (enable, Resync). */
+/** Copy lines one page of a queueing walk reads (Start, a box flip, Sync). */
 export const QUEUE_PAGE_LINES = 200;
-/** Outbox rows one page of the turn-off sweep deletes. */
-export const CLEAR_PAGE_ROWS = 500;
 /** Orders one Sales page returns at most. */
 export const MAX_SALES_PAGE = 50;
-/** A Resync pressed within this long of the last one (or during a run) is ignored. */
+/** A Sync pressed within this long of the last one (or during a run) is ignored. */
 export const RESYNC_THROTTLE_MS = 60_000;
 
-const SELLER_CONFLICT_MESSAGE =
-  "That BuySportsCards seller account is already listing from another NeonBinder account, so it can't list from this one too.";
+/** The Sync status tab's caps, per platform (NEO-392: a subscribed read stays small). */
+export const STATUS_CAPS = {
+  /** Cards queued for the next sync, oldest first. */
+  queued: 100,
+  /** Sets, most recent run first. */
+  sets: 50,
+  /** Held-back cards named per set; the rest through `syncSetProblems`. */
+  problemsPerSet: 5,
+  /** Held-back cards read (card + players) across all sets of one platform. */
+  problemCards: 60,
+} as const;
+/**
+ * The admin view across collectors (no owner picked): each owner's lists cut
+ * to a glance (the latest few sets and queued cards), so 25 owners stay a few
+ * hundred reads. Filtering to one collector shows `STATUS_CAPS`.
+ */
+export const ADMIN_ALL_CAPS = { queued: 3, sets: 3, problemsPerSet: 2, problemCards: 2 } as const;
+/** Collectors the admin view shows at once with no owner picked. */
+export const ADMIN_STATUS_OWNERS = 25;
+/** Collectors the admin owner picker lists. */
+export const ADMIN_OWNER_LIST = 200;
+
+type StatusCaps = { queued: number; sets: number; problemsPerSet: number; problemCards: number };
 
 // ───────────────────────────────────────────────────────────────────────────
-// Settings
+// Settings and Start
 // ───────────────────────────────────────────────────────────────────────────
 
 const platformSettingsValidator = v.object({
-  /** The collector has listing switched on (counts are pushed). */
-  enabled: v.boolean(),
-  /** Their credentials for it are saved (Profile → Credentials). */
+  /** Their sign-in for it is saved (Profile → Credentials). */
   connected: v.boolean(),
+  /** They pressed Start and NB is pushing their counts (not dormant). */
+  listing: v.boolean(),
+  /** When they pressed Start (kept while a seller conflict holds pushing back). */
+  listingSince: v.optional(v.number()),
   /** The saved session died and they must sign in again on Profile. */
   needsReauth: v.boolean(),
   /** NB has paused this platform for everyone (`NEONBINDER_PAUSED_PLATFORMS`). */
@@ -75,16 +103,23 @@ const platformSettingsValidator = v.object({
   /** Their seller account already lists from another NeonBinder account: nothing is pushed or polled. */
   sellerConflict: v.boolean(),
 });
+type PlatformSettings = typeof platformSettingsValidator.type;
 
-async function platformSettings(ctx: QueryCtx, ownerId: string, platform: ListingPlatform) {
-  const state = await listingStateOf(ctx, ownerId, platform);
+async function platformSettings(
+  ctx: QueryCtx,
+  ownerId: string,
+  platform: ListingPlatform,
+  state?: Doc<"marketplaceListingStates"> | null,
+): Promise<PlatformSettings> {
+  const row = state === undefined ? await listingStateOf(ctx, ownerId, platform) : state;
   const credential = await listingCredentialOf(ctx, ownerId, platform);
   return {
-    enabled: state !== null && state.enabled !== false,
     connected: credential.hasCredentials,
+    listing: row !== null && pushesCounts(row),
+    ...(row?.listingStartedAt !== undefined ? { listingSince: row.listingStartedAt } : {}),
     needsReauth: credential.needsReauth,
     paused: isPlatformPaused(LISTING_CREDENTIAL_SITE[platform]),
-    sellerConflict: state?.dormant === "sellerConflict",
+    sellerConflict: row?.dormant === "sellerConflict",
   };
 }
 
@@ -99,102 +134,106 @@ export const listingSettings = query({
 });
 
 /**
- * Turn listing on one platform on or off for the caller.
+ * Start listing on one platform: the one-way consent (Profile, under the
+ * warning beside the saved sign-in). There is no stop here; removing the
+ * sign-in stops listing.
  *
- * On: needs saved credentials, and refuses a seller account another NB
- * owner already lists from (one NB owner per seller account; the account is
- * the one the owner's last sign-in captured, when known, and the drainer
- * checks it again before its first push). Makes the state row (or switches
- * the kept one back on, clearing a dormancy that no longer applies) and
- * queues every card the collector holds in a box (paged, scheduled); the
- * walk's last page runs the drain.
+ * Needs a saved sign-in (`notConnected` otherwise), and refuses a seller
+ * account another NB owner already lists from (`sellerConflict`; one NB owner
+ * per seller account, the account the owner's last sign-in captured when
+ * known; the drainer checks it again before its first push). Neither refusal
+ * writes anything.
  *
- * Off: keeps the state row with `enabled: false` (sales are still polled and
- * applied) and drops the caller's queued changes for that platform (paged);
- * what the platform lists is left as it is.
- *
- * Asking for the state it is already in writes nothing.
+ * Starting makes the state row (or wakes the kept one, clearing a dormancy
+ * that no longer applies), stamps `listingStartedAt` and queues every card the
+ * collector holds in a listed box (paged, scheduled); the walk's last page
+ * runs the drain. Idempotent: pressed while already listing, it answers
+ * `started: true` and writes nothing.
  */
-export const setListingEnabled = mutation({
-  args: { platform: listingPlatformValidator, enabled: v.boolean() },
-  returns: v.null(),
+export const startListing = mutation({
+  args: { platform: listingPlatformValidator },
+  returns: v.object({
+    started: v.boolean(),
+    reason: v.optional(v.union(v.literal("notConnected"), v.literal("sellerConflict"))),
+  }),
   handler: async (ctx, args) => {
     const ownerId = await requireSignedIn(ctx);
     const state = await listingStateOf(ctx, ownerId, args.platform);
-    const now = Date.now();
-    if (args.enabled) {
-      if (state && pushesCounts(state)) return null;
-      const credential = await listingCredentialOf(ctx, ownerId, args.platform);
-      if (!credential.hasCredentials) {
-        refuse(
-          COLLECTION_ERRORS.invalid,
-          "Connect your BuySportsCards account on your Profile first, then switch listing on.",
-        );
-      }
-      const accountId = credential.sellerId ?? state?.platformAccountId ?? null;
-      if (accountId !== null && (await sellerAccountHolder(ctx, args.platform, accountId, ownerId))) {
-        refuse(COLLECTION_ERRORS.invalid, SELLER_CONFLICT_MESSAGE);
-      }
-      const on = {
-        enabled: true,
-        dormant: undefined,
-        ...(accountId !== null ? { platformAccountId: accountId } : {}),
-        lastUpdated: now,
-      };
-      if (state) await ctx.db.patch(state._id, on);
-      else await ctx.db.insert("marketplaceListingStates", { ownerId, platform: args.platform, ...on });
-      const boxIds = await boxIdsOf(ctx, ownerId);
-      if (boxIds.length > 0) {
-        await ctx.scheduler.runAfter(0, internal.listingSync.queueBoxesPage, {
-          ownerId,
-          platform: args.platform,
-          boxIds,
-          index: 0,
-          cursor: null,
-        });
-      }
-      return null;
+    if (state && pushesCounts(state)) return { started: true };
+    const credential = await listingCredentialOf(ctx, ownerId, args.platform);
+    if (!credential.hasCredentials) return { started: false, reason: "notConnected" as const };
+    const accountId = credential.sellerId ?? state?.platformAccountId ?? null;
+    if (accountId !== null && (await sellerAccountHolder(ctx, args.platform, accountId, ownerId))) {
+      return { started: false, reason: "sellerConflict" as const };
     }
-    if (!state || state.enabled === false) return null;
-    await ctx.db.patch(state._id, { enabled: false, drainRequested: undefined, lastUpdated: now });
-    await clearOutbox(ctx, ownerId, args.platform);
-    return null;
+    const now = Date.now();
+    const on = {
+      listingStartedAt: state?.listingStartedAt ?? now,
+      dormant: undefined,
+      ...(accountId !== null ? { platformAccountId: accountId } : {}),
+      lastUpdated: now,
+    };
+    if (state) await ctx.db.patch(state._id, on);
+    else await ctx.db.insert("marketplaceListingStates", { ownerId, platform: args.platform, ...on });
+    const boxIds = await listedBoxIdsOf(ctx, ownerId);
+    if (boxIds.length > 0) {
+      await ctx.scheduler.runAfter(0, internal.listingSync.queueBoxesPage, {
+        ownerId,
+        platform: args.platform,
+        boxIds,
+        index: 0,
+        cursor: null,
+      });
+    }
+    return { started: true };
   },
 });
 
-/**
- * Run the caller's listing drain now, for every platform they push counts to
- * that has changes queued. The web app calls it when the collector leaves a
- * checklist page (navigate away, or the page is hidden), so the changes they
- * just made reach the platform without waiting for the 15-minute cron.
- * Cheap and idempotent: nothing queued, listing off, or a drain already
- * scheduled writes nothing; a drain already running is asked to run once
- * more when it finishes.
- */
-export const flushListing = mutation({
-  args: {},
-  returns: v.null(),
-  handler: async (ctx) => {
-    const ownerId = await requireSignedIn(ctx);
-    await kickOwnerDrains(ctx, ownerId);
-    return null;
-  },
-});
-
-/** The owner's boxes (Unsorted included), oldest first. One bounded read. */
-async function boxIdsOf(ctx: QueryCtx, ownerId: string): Promise<Array<Id<"collectionContainers">>> {
+/** The owner's listed boxes (Unsorted included, in-person boxes left out), oldest first. One bounded read. */
+async function listedBoxIdsOf(ctx: QueryCtx, ownerId: string): Promise<Array<Id<"collectionContainers">>> {
   const rows = await ctx.db
     .query("collectionContainers")
     .withIndex("by_owner_and_system", (q) => q.eq("ownerId", ownerId))
     .take(MAX_CONTAINERS + MAX_SYSTEM_CONTAINERS);
-  return rows.filter((row) => row.kind === "box").map((row) => row._id);
+  return rows.filter(listsOnMarketplaces).map((row) => row._id);
 }
 
 /**
- * The enable walk: one page of one box's copies, queued for `platform`, then
- * the next page (or the next box) on the scheduler; the last page runs the
- * drain (the owner's first sync). Stops as soon as the owner has turned
- * listing off again.
+ * Queue one box's cards on every platform the owner lists on: a box's
+ * "Listed on marketplaces" setting was flipped (`collectionContainers.
+ * setContainerListed`), so every card in it may now count differently there.
+ * Like a move, it only queues: the next trigger (Sync, a finished intake, the
+ * cron) pushes. Paged and scheduled, so a box of any size is safe. Writes
+ * nothing when the owner lists nowhere.
+ */
+export async function queueBoxForListing(
+  ctx: MutationCtx,
+  ownerId: string,
+  boxId: Id<"collectionContainers">,
+): Promise<number> {
+  let walks = 0;
+  for (const platform of LISTING_PLATFORMS) {
+    const state = await listingStateOf(ctx, ownerId, platform);
+    if (!state || !pushesCounts(state)) continue;
+    await ctx.scheduler.runAfter(0, internal.listingSync.queueBoxesPage, {
+      ownerId,
+      platform,
+      boxIds: [boxId],
+      index: 0,
+      cursor: null,
+      kick: false,
+    });
+    walks += 1;
+  }
+  return walks;
+}
+
+/**
+ * A queueing walk over boxes: one page of one box's copies, queued for
+ * `platform`, then the next page (or the next box) on the scheduler. The
+ * Start walk's last page runs the drain (the owner's first sync); a box
+ * flip's walk (`kick: false`) only queues. Stops as soon as the owner no
+ * longer lists on the platform.
  */
 export const queueBoxesPage = internalMutation({
   args: {
@@ -203,6 +242,8 @@ export const queueBoxesPage = internalMutation({
     boxIds: v.array(v.id("collectionContainers")),
     index: v.number(),
     cursor: v.union(v.string(), v.null()),
+    /** Run the drain after the last page. Absent means yes (the Start walk). */
+    kick: v.optional(v.boolean()),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -226,7 +267,7 @@ export const queueBoxesPage = internalMutation({
       : { index: args.index, cursor: page.continueCursor };
     if (next) {
       await ctx.scheduler.runAfter(0, internal.listingSync.queueBoxesPage, { ...args, ...next });
-    } else {
+    } else if (args.kick !== false) {
       await kickListingDrain(ctx, args.ownerId, args.platform);
     }
     return null;
@@ -234,90 +275,31 @@ export const queueBoxesPage = internalMutation({
 });
 
 /**
- * Delete one page of the owner's queued changes for `platform`, and schedule
- * the next while a full page came back. Stops when listing is on again (a
- * fresh enable walk owns the queue from then on).
+ * One more page of the stop-listing sweep (`listingOutbox.clearListingOutbox`,
+ * run when the sign-in is removed). Stands down once the owner lists on the
+ * platform again: a fresh Start walk owns the queue from then on.
  */
-async function clearOutbox(ctx: MutationCtx, ownerId: string, platform: ListingPlatform): Promise<void> {
-  const rows = await ctx.db
-    .query("listingOutbox")
-    .withIndex("by_owner_platform_variant", (q) => q.eq("ownerId", ownerId).eq("platform", platform))
-    .take(CLEAR_PAGE_ROWS);
-  for (const row of rows) await ctx.db.delete(row._id);
-  if (rows.length === CLEAR_PAGE_ROWS) {
-    await ctx.scheduler.runAfter(0, internal.listingSync.clearOutboxPage, { ownerId, platform });
-  }
-}
-
 export const clearOutboxPage = internalMutation({
   args: { ownerId: v.string(), platform: listingPlatformValidator },
   returns: v.null(),
   handler: async (ctx, args) => {
     const state = await listingStateOf(ctx, args.ownerId, args.platform);
     if (state && pushesCounts(state)) return null;
-    await clearOutbox(ctx, args.ownerId, args.platform);
+    await clearListingOutbox(ctx, args.ownerId, args.platform);
     return null;
   },
 });
 
 // ───────────────────────────────────────────────────────────────────────────
-// A variant's status, and Resync
+// Sync: one set, every platform
 // ───────────────────────────────────────────────────────────────────────────
-
-const syncRecordValidator = v.object({
-  status: v.union(v.literal("idle"), v.literal("running"), v.literal("error")),
-  leaseExpiresAt: v.optional(v.number()),
-  lastRunAt: v.optional(v.number()),
-  lastSuccessAt: v.optional(v.number()),
-  lastError: v.optional(v.string()),
-  counts: v.optional(
-    v.object({
-      listed: v.number(),
-      pushed: v.number(),
-      zeroed: v.number(),
-      skipped: v.number(),
-    }),
-  ),
-  /** No marketplace id: a problem with no `cardId` is a platform row NB can't tie to a card. */
-  problems: v.array(
-    v.object({
-      cardId: v.optional(v.id("cardChecklist")),
-      reason: listingProblemReasonValidator,
-      detail: v.optional(v.string()),
-    }),
-  ),
-  problemsTotal: v.optional(v.number()),
-});
-
-type SyncRecord = Doc<"marketplaceListingSyncs">;
-
-/**
- * A sync record as a client may see it: no lease token, no marketplace card
- * id, no internal bookkeeping.
- */
-function publicRecord(row: SyncRecord): typeof syncRecordValidator.type {
-  return {
-    status: row.status,
-    ...(row.leaseExpiresAt !== undefined ? { leaseExpiresAt: row.leaseExpiresAt } : {}),
-    ...(row.lastRunAt !== undefined ? { lastRunAt: row.lastRunAt } : {}),
-    ...(row.lastSuccessAt !== undefined ? { lastSuccessAt: row.lastSuccessAt } : {}),
-    ...(row.lastError !== undefined ? { lastError: row.lastError } : {}),
-    ...(row.counts !== undefined ? { counts: row.counts } : {}),
-    problems: row.problems.map((p) => ({
-      ...(p.cardId !== undefined ? { cardId: p.cardId } : {}),
-      reason: p.reason,
-      ...(p.detail !== undefined ? { detail: p.detail } : {}),
-    })),
-    ...(row.problemsTotal !== undefined ? { problemsTotal: row.problemsTotal } : {}),
-  };
-}
 
 async function recordOf(
   ctx: QueryCtx,
   ownerId: string,
   variantId: Id<"selectorOptions">,
   platform: ListingPlatform,
-): Promise<SyncRecord | null> {
+): Promise<Doc<"marketplaceListingSyncs"> | null> {
   return await ctx.db
     .query("marketplaceListingSyncs")
     .withIndex("by_owner_variant_platform", (q) =>
@@ -327,77 +309,85 @@ async function recordOf(
 }
 
 /**
- * How the caller's last push of one variant to a platform went (null before
- * its first run), and whether a change in it is still queued (`pending`).
- * Two point reads: the Inventory checklist panel subscribes to it.
+ * The checklist's Sync button: read this set's sheet on every platform the
+ * collector lists on, for EVERY condition, set every card to NB's counts and
+ * push. Per platform it stamps the press on the variant's sync record (the
+ * next run reads every condition, see `listingDrain.claimVariant`), queues the
+ * variant's box cards (one card that carries the platform's id when none is
+ * in a box, so the run happens and sets the platform to NB's zero) and runs
+ * the drain now.
+ *
+ * Answers `ignored: "notListing"` (and writes nothing) when no platform is
+ * started. A press while the variant's run is under way, or within
+ * `RESYNC_THROTTLE_MS` of the last press, is ignored on that platform: the run
+ * under way, or about to start, reads the set in full. `queued` is true when
+ * at least one platform took the press; `ignored: "throttled"` when every
+ * started platform ignored it. `queued: false` with no reason: the set has no
+ * card any started platform can list (nothing carries its id).
  */
-export const variantStatus = query({
-  args: { variantId: v.id("selectorOptions"), platform: v.optional(listingPlatformValidator) },
-  returns: v.object({ record: v.union(syncRecordValidator, v.null()), pending: v.boolean() }),
+export const syncVariant = mutation({
+  args: { variantId: v.id("selectorOptions") },
+  returns: v.object({
+    queued: v.boolean(),
+    ignored: v.optional(v.union(v.literal("throttled"), v.literal("notListing"))),
+  }),
   handler: async (ctx, args) => {
     const ownerId = await requireSignedIn(ctx);
-    const platform = args.platform ?? "bsc";
-    const record = await recordOf(ctx, ownerId, args.variantId, platform);
-    const queued = await ctx.db
-      .query("listingOutbox")
-      .withIndex("by_owner_platform_variant", (q) =>
-        q.eq("ownerId", ownerId).eq("platform", platform).eq("variantId", args.variantId),
-      )
-      .first();
-    return { record: record ? publicRecord(record) : null, pending: queued !== null };
+    const platforms: ListingPlatform[] = [];
+    for (const platform of LISTING_PLATFORMS) {
+      const state = await listingStateOf(ctx, ownerId, platform);
+      if (state && pushesCounts(state)) platforms.push(platform);
+    }
+    if (platforms.length === 0) return { queued: false, ignored: "notListing" as const };
+    let queued = false;
+    let throttled = 0;
+    for (const platform of platforms) {
+      const outcome = await syncOnePlatform(ctx, ownerId, platform, args.variantId);
+      if (outcome === "queued") queued = true;
+      else if (outcome === "throttled") throttled += 1;
+    }
+    if (queued) return { queued: true };
+    if (throttled === platforms.length) return { queued: false, ignored: "throttled" as const };
+    return { queued: false };
   },
 });
 
-/**
- * Resync one variant on a platform: forget its last clean run (so the next
- * run reads every condition the platform has), queue the variant's box cards
- * and run the drain now. A variant with nothing in a box still gets one card
- * queued, so the run happens and sets the platform to NB's zero.
- *
- * Answers `queued: 0` and writes nothing while listing is off. A press while
- * the variant's run is under way, or within `RESYNC_THROTTLE_MS` of the last
- * press, is ignored (`ignored: true`): the run already under way, or about
- * to start, reads the variant in full.
- */
-export const resyncVariant = mutation({
-  args: { variantId: v.id("selectorOptions"), platform: v.optional(listingPlatformValidator) },
-  returns: v.object({ queued: v.number(), ignored: v.optional(v.boolean()) }),
-  handler: async (ctx, args) => {
-    const ownerId = await requireSignedIn(ctx);
-    const platform = args.platform ?? "bsc";
-    const state = await listingStateOf(ctx, ownerId, platform);
-    if (!state || !pushesCounts(state)) return { queued: 0 };
-    const now = Date.now();
-    const record = await recordOf(ctx, ownerId, args.variantId, platform);
-    if (record) {
-      const running = record.status === "running" && (record.leaseExpiresAt ?? 0) > now;
-      const recent = record.resyncRequestedAt !== undefined && now - record.resyncRequestedAt < RESYNC_THROTTLE_MS;
-      if (running || recent) return { queued: 0, ignored: true };
-      await ctx.db.patch(record._id, { lastSuccessAt: undefined, resyncRequestedAt: now, lastUpdated: now });
-    } else {
-      // Never run yet: no record to stamp. A change queued for the variant
-      // in the last minute (a press, or a box write) is the throttle.
-      const queuedRow = await ctx.db
-        .query("listingOutbox")
-        .withIndex("by_owner_platform_variant", (q) =>
-          q.eq("ownerId", ownerId).eq("platform", platform).eq("variantId", args.variantId),
-        )
-        .first();
-      if (queuedRow && now - queuedRow.changedAt < RESYNC_THROTTLE_MS) {
-        await kickListingDrain(ctx, ownerId, platform);
-        return { queued: 0, ignored: true };
-      }
+async function syncOnePlatform(
+  ctx: MutationCtx,
+  ownerId: string,
+  platform: ListingPlatform,
+  variantId: Id<"selectorOptions">,
+): Promise<"queued" | "throttled" | "nothing"> {
+  const now = Date.now();
+  const record = await recordOf(ctx, ownerId, variantId, platform);
+  if (record) {
+    const running = record.status === "running" && (record.leaseExpiresAt ?? 0) > now;
+    const recent = record.resyncRequestedAt !== undefined && now - record.resyncRequestedAt < RESYNC_THROTTLE_MS;
+    if (running || recent) return "throttled";
+  } else {
+    // Never run yet (its first run reads every condition anyway): no record
+    // to stamp. A change queued for the variant in the last minute (a press,
+    // or a box write) is the throttle; that run is kicked.
+    const queuedRow = await ctx.db
+      .query("listingOutbox")
+      .withIndex("by_owner_platform_variant", (q) =>
+        q.eq("ownerId", ownerId).eq("platform", platform).eq("variantId", variantId),
+      )
+      .first();
+    if (queuedRow && now - queuedRow.changedAt < RESYNC_THROTTLE_MS) {
+      await kickListingDrain(ctx, ownerId, platform);
+      return "throttled";
     }
-    const setId = await findSetForSelectorOption(ctx, args.variantId);
-    let queued = 0;
-    if (setId) {
-      queued = await queueVariantLines(ctx, { ownerId, platform, setId, variantId: args.variantId, cursor: null });
-    }
-    if (queued === 0) queued = await wakeVariant(ctx, ownerId, platform, args.variantId);
-    await kickListingDrain(ctx, ownerId, platform);
-    return { queued };
-  },
-});
+  }
+  const setId = await findSetForSelectorOption(ctx, variantId);
+  let written = 0;
+  if (setId) written = await queueVariantLines(ctx, { ownerId, platform, setId, variantId, cursor: null });
+  if (written === 0) written = await wakeVariant(ctx, ownerId, platform, variantId);
+  if (written === 0) return "nothing";
+  if (record) await ctx.db.patch(record._id, { resyncRequestedAt: now, lastUpdated: now });
+  await kickListingDrain(ctx, ownerId, platform);
+  return "queued";
+}
 
 /**
  * One page of a variant's copies: the box ones queued, the next page on the
@@ -452,6 +442,345 @@ export const queueVariantPage = internalMutation({
     return null;
   },
 });
+
+// ───────────────────────────────────────────────────────────────────────────
+// The Sync status tab
+// ───────────────────────────────────────────────────────────────────────────
+
+/** One held-back card: NB's number and label, never a marketplace id. */
+const syncProblemValidator = v.object({
+  cardNo: v.optional(v.string()),
+  cardLabel: v.optional(v.string()),
+  reason: listingProblemReasonValidator,
+  detail: v.optional(v.string()),
+});
+type SyncProblem = typeof syncProblemValidator.type;
+
+const countsValidator = v.object({
+  listed: v.number(),
+  pushed: v.number(),
+  zeroed: v.number(),
+  skipped: v.number(),
+});
+
+const platformStatusValidator = v.object({
+  platform: listingPlatformValidator,
+  connected: v.boolean(),
+  listing: v.boolean(),
+  needsReauth: v.boolean(),
+  paused: v.boolean(),
+  sellerConflict: v.boolean(),
+  /** A sync running now: since when, and the set it is on when known. */
+  running: v.union(
+    v.null(),
+    v.object({
+      startedAt: v.number(),
+      setLabel: v.optional(v.string()),
+      variantId: v.optional(v.id("selectorOptions")),
+    }),
+  ),
+  /** A sync is scheduled to start (kicked, not yet running). */
+  scheduledAt: v.optional(v.number()),
+  lastDrainAt: v.optional(v.number()),
+  /** Cards waiting for the next sync, oldest first, `STATUS_CAPS.queued` at most. */
+  queued: v.object({
+    cards: v.array(
+      v.object({
+        cardId: v.id("cardChecklist"),
+        cardNo: v.optional(v.string()),
+        cardLabel: v.optional(v.string()),
+        variantId: v.id("selectorOptions"),
+        setLabel: v.string(),
+        changedAt: v.number(),
+      }),
+    ),
+    more: v.boolean(),
+  }),
+  /** Each set's last result, most recent run first, `STATUS_CAPS.sets` at most. */
+  sets: v.array(
+    v.object({
+      variantId: v.id("selectorOptions"),
+      setLabel: v.string(),
+      status: v.union(v.literal("idle"), v.literal("running"), v.literal("error")),
+      lastRunAt: v.optional(v.number()),
+      lastSuccessAt: v.optional(v.number()),
+      lastError: v.optional(v.string()),
+      counts: v.optional(countsValidator),
+      problemsTotal: v.number(),
+      /** The first few only; the rest through `syncSetProblems`. */
+      problems: v.array(syncProblemValidator),
+    }),
+  ),
+});
+type PlatformStatus = typeof platformStatusValidator.type;
+
+const syncStatusValidator = v.object({ platforms: v.array(platformStatusValidator) });
+type SyncStatus = typeof syncStatusValidator.type;
+
+/** A stored problem as the tab shows it: hydrated while `budget` lasts, else reason and detail only. */
+async function publicProblem(
+  labels: ListingLabels,
+  problem: Doc<"marketplaceListingSyncs">["problems"][number],
+  budget: { left: number },
+): Promise<SyncProblem> {
+  const out: SyncProblem = {
+    reason: problem.reason,
+    ...(problem.detail !== undefined ? { detail: problem.detail } : {}),
+  };
+  if (problem.cardId === undefined || budget.left <= 0) return out;
+  budget.left -= 1;
+  const card = await labels.card(problem.cardId);
+  if (!card) return out;
+  return {
+    cardNo: card.cardNo,
+    ...(card.cardLabel !== undefined ? { cardLabel: card.cardLabel } : {}),
+    ...out,
+  };
+}
+
+async function platformStatus(
+  ctx: QueryCtx,
+  labels: ListingLabels,
+  ownerId: string,
+  platform: ListingPlatform,
+  caps: StatusCaps,
+): Promise<PlatformStatus> {
+  const now = Date.now();
+  const state = await listingStateOf(ctx, ownerId, platform);
+  const settings = await platformSettings(ctx, ownerId, platform, state);
+
+  const records = await ctx.db
+    .query("marketplaceListingSyncs")
+    .withIndex("by_owner_platform_run", (q) => q.eq("ownerId", ownerId).eq("platform", platform))
+    .order("desc")
+    .take(caps.sets);
+  const live = (r: Doc<"marketplaceListingSyncs">) => r.status === "running" && (r.leaseExpiresAt ?? 0) > now;
+
+  // Running: the owner's drain lease, and the set its run holds now (a
+  // running record with a live lease; most recent first).
+  const runningRecord = records.find(live) ?? null;
+  const drainLive = state?.drainLeaseToken !== undefined && (state.drainLeaseExpiresAt ?? 0) > now;
+  let running: PlatformStatus["running"] = null;
+  if (drainLive || runningRecord) {
+    const startedAt = drainLive
+      ? (state!.drainLeaseExpiresAt as number) - DRAIN_LEASE_MS
+      : (runningRecord!.lastRunAt ?? now);
+    running = {
+      startedAt,
+      ...(runningRecord
+        ? { variantId: runningRecord.variantId, setLabel: await labels.setLabel(runningRecord.variantId) }
+        : {}),
+    };
+  }
+
+  const rows = await ctx.db
+    .query("listingOutbox")
+    .withIndex("by_owner_platform_changed", (q) => q.eq("ownerId", ownerId).eq("platform", platform))
+    .take(caps.queued + 1);
+  const cards: PlatformStatus["queued"]["cards"] = [];
+  for (const row of rows.slice(0, caps.queued)) {
+    const card = await labels.card(row.cardId);
+    const variantId = card?.variantId ?? row.variantId;
+    cards.push({
+      cardId: row.cardId,
+      ...(card ? { cardNo: card.cardNo } : {}),
+      ...(card?.cardLabel !== undefined ? { cardLabel: card.cardLabel } : {}),
+      variantId,
+      setLabel: await labels.setLabel(variantId),
+      changedAt: row.changedAt,
+    });
+  }
+
+  const budget = { left: caps.problemCards };
+  const sets: PlatformStatus["sets"] = [];
+  for (const r of records) {
+    const problems: SyncProblem[] = [];
+    for (const p of r.problems.slice(0, caps.problemsPerSet)) problems.push(await publicProblem(labels, p, budget));
+    sets.push({
+      variantId: r.variantId,
+      setLabel: await labels.setLabel(r.variantId),
+      // A `running` record whose lease ran out is a run that died: it reads
+      // as its last result until the next run reclaims it.
+      status: r.status === "running" && !live(r) ? (r.lastError !== undefined ? "error" : "idle") : r.status,
+      ...(r.lastRunAt !== undefined ? { lastRunAt: r.lastRunAt } : {}),
+      ...(r.lastSuccessAt !== undefined ? { lastSuccessAt: r.lastSuccessAt } : {}),
+      ...(r.lastError !== undefined ? { lastError: r.lastError } : {}),
+      ...(r.counts !== undefined ? { counts: r.counts } : {}),
+      problemsTotal: r.problemsTotal ?? r.problems.length,
+      problems,
+    });
+  }
+
+  return {
+    platform,
+    connected: settings.connected,
+    listing: settings.listing,
+    needsReauth: settings.needsReauth,
+    paused: settings.paused,
+    sellerConflict: settings.sellerConflict,
+    running,
+    ...(state?.drainScheduledAt !== undefined ? { scheduledAt: state.drainScheduledAt } : {}),
+    ...(state?.lastDrainAt !== undefined ? { lastDrainAt: state.lastDrainAt } : {}),
+    queued: { cards, more: rows.length > caps.queued },
+    sets,
+  };
+}
+
+async function syncStatusOf(
+  ctx: QueryCtx,
+  ownerId: string,
+  caps: StatusCaps,
+  labels: ListingLabels = new ListingLabels(ctx),
+): Promise<SyncStatus> {
+  const platforms: PlatformStatus[] = [];
+  for (const platform of LISTING_PLATFORMS) platforms.push(await platformStatus(ctx, labels, ownerId, platform, caps));
+  return { platforms };
+}
+
+/** The full held-back list of one set on one platform (what the record kept, `MAX_STORED_PROBLEMS` at most). */
+async function setProblemsOf(
+  ctx: QueryCtx,
+  ownerId: string,
+  variantId: Id<"selectorOptions">,
+  platform: ListingPlatform,
+): Promise<{ problems: SyncProblem[]; problemsTotal: number }> {
+  const record = await recordOf(ctx, ownerId, variantId, platform);
+  if (!record) return { problems: [], problemsTotal: 0 };
+  const labels = new ListingLabels(ctx);
+  const budget = { left: MAX_STORED_PROBLEMS };
+  const problems: SyncProblem[] = [];
+  for (const p of record.problems.slice(0, MAX_STORED_PROBLEMS)) problems.push(await publicProblem(labels, p, budget));
+  return { problems, problemsTotal: record.problemsTotal ?? record.problems.length };
+}
+
+const setProblemsValidator = v.object({ problems: v.array(syncProblemValidator), problemsTotal: v.number() });
+
+/**
+ * The caller's Sync status tab: per platform, the sync running now, the cards
+ * queued for the next one and each set's last result (no run log). Capped
+ * (`STATUS_CAPS`) so the subscription stays a few hundred reads.
+ */
+export const syncStatus = query({
+  args: {},
+  returns: syncStatusValidator,
+  handler: async (ctx) => {
+    const ownerId = await requireSignedIn(ctx);
+    return await syncStatusOf(ctx, ownerId, STATUS_CAPS);
+  },
+});
+
+/** One of the caller's sets, every held-back card (read when its row is expanded). */
+export const syncSetProblems = query({
+  args: { variantId: v.id("selectorOptions"), platform: listingPlatformValidator },
+  returns: setProblemsValidator,
+  handler: async (ctx, args) => {
+    const ownerId = await requireSignedIn(ctx);
+    return await setProblemsOf(ctx, ownerId, args.variantId, args.platform);
+  },
+});
+
+// ── Admin: the same screen across collectors, read-only ─────────────────────
+
+/** A collector as the admin screen names them: their public display name or @username, else the id. */
+async function ownerLabel(ctx: QueryCtx, ownerId: string): Promise<string> {
+  const profile = await ctx.db
+    .query("publicProfiles")
+    .withIndex("by_user", (q) => q.eq("userId", ownerId))
+    .first();
+  const display = profile?.displayName?.trim();
+  if (display) return display;
+  if (profile?.username) return `@${profile.username}`;
+  return ownerId;
+}
+
+/** Collectors with a listing state on any platform, at most `cap`, de-duplicated. */
+async function listingOwners(ctx: QueryCtx, cap: number): Promise<{ ownerIds: string[]; more: boolean }> {
+  const seen = new Set<string>();
+  const ownerIds: string[] = [];
+  let more = false;
+  for (const platform of LISTING_PLATFORMS) {
+    const rows = await ctx.db
+      .query("marketplaceListingStates")
+      .withIndex("by_platform_dormant_polled", (q) => q.eq("platform", platform))
+      .take(cap + 1);
+    if (rows.length > cap) more = true;
+    for (const row of rows.slice(0, cap)) {
+      if (seen.has(row.ownerId)) continue;
+      if (ownerIds.length >= cap) {
+        more = true;
+        break;
+      }
+      seen.add(row.ownerId);
+      ownerIds.push(row.ownerId);
+    }
+  }
+  return { ownerIds, more };
+}
+
+/** The admin owner picker: every collector with a listing state (`ADMIN_OWNER_LIST` at most). */
+export const adminSyncOwners = query({
+  args: {},
+  returns: v.array(v.object({ ownerId: v.string(), label: v.string() })),
+  handler: async (ctx) => {
+    await requireAdmin(ctx);
+    const { ownerIds } = await listingOwners(ctx, ADMIN_OWNER_LIST);
+    const out = [];
+    for (const ownerId of ownerIds) out.push({ ownerId, label: await ownerLabel(ctx, ownerId) });
+    return out;
+  },
+});
+
+/**
+ * The admin Sync status, read-only. One collector (`ownerId`): their full
+ * status (`STATUS_CAPS`). None: the first `ADMIN_STATUS_OWNERS` collectors
+ * with a listing state, each with shorter lists (`ADMIN_ALL_CAPS`); `more`
+ * says there are more collectors than shown.
+ */
+export const adminSyncStatus = query({
+  args: { ownerId: v.optional(v.string()) },
+  returns: v.object({
+    owners: v.array(v.object({ ownerId: v.string(), label: v.string(), status: syncStatusValidator })),
+    more: v.boolean(),
+  }),
+  handler: async (ctx, args) => {
+    await requireAdmin(ctx);
+    if (args.ownerId !== undefined) {
+      return {
+        owners: [
+          {
+            ownerId: args.ownerId,
+            label: await ownerLabel(ctx, args.ownerId),
+            status: await syncStatusOf(ctx, args.ownerId, STATUS_CAPS),
+          },
+        ],
+        more: false,
+      };
+    }
+    const { ownerIds, more } = await listingOwners(ctx, ADMIN_STATUS_OWNERS);
+    // One label cache across owners: collectors in the same sets read each set's chain once.
+    const labels = new ListingLabels(ctx);
+    const owners = [];
+    for (const ownerId of ownerIds) {
+      owners.push({
+        ownerId,
+        label: await ownerLabel(ctx, ownerId),
+        status: await syncStatusOf(ctx, ownerId, ADMIN_ALL_CAPS, labels),
+      });
+    }
+    return { owners, more };
+  },
+});
+
+/** One collector's set, every held-back card. Admin only, read-only. */
+export const adminSyncSetProblems = query({
+  args: { ownerId: v.string(), variantId: v.id("selectorOptions"), platform: listingPlatformValidator },
+  returns: setProblemsValidator,
+  handler: async (ctx, args) => {
+    await requireAdmin(ctx);
+    return await setProblemsOf(ctx, args.ownerId, args.variantId, args.platform);
+  },
+});
+
 
 // ───────────────────────────────────────────────────────────────────────────
 // Sales

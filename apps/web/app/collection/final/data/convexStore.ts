@@ -48,6 +48,7 @@
 import { createElement, useEffect, useMemo, useRef, type ReactNode } from "react";
 import {
   useAction,
+  useConvex,
   useMutation,
   usePaginatedQuery,
   useQueries,
@@ -131,8 +132,9 @@ import {
   type ListingSettings,
   type Sale,
   type SalesPage,
-  type VariantListingStatus,
+  type SyncStatus,
 } from "./types";
+import { toSetProblems, toSyncStatus } from "./syncStatus";
 
 type RawCopy = Infer<typeof copyValidator>;
 type RawContainer = FunctionReturnType<typeof api.collectionContainers.list>[number];
@@ -461,6 +463,8 @@ function toContainer(raw: RawContainer): Container {
     count: raw.count ?? null,
     ...(raw.slug ? { slug: raw.slug } : {}),
     ...(raw.visibility === "public" ? { isPublic: true } : {}),
+    // NEO-370: only a box carries it, and only once switched off (absent = listed).
+    ...(raw.kind === "box" && raw.listedOnMarketplaces === false ? { listedOnMarketplaces: false } : {}),
   };
 }
 
@@ -2768,30 +2772,7 @@ function useConvexBinderMemory(): BinderMemoryExtension {
 /** Orders the Sales list asks for at a time (the server caps a page at 50). */
 const SALES_PER_PAGE = 20;
 
-type RawVariantStatus = FunctionReturnType<typeof api.listingSync.variantStatus>;
 type RawSale = FunctionReturnType<typeof api.listingSync.listSales>["page"][number];
-
-function toVariantListing(raw: RawVariantStatus): VariantListingStatus {
-  const r = raw.record;
-  return {
-    pending: raw.pending,
-    run: r
-      ? {
-          status: r.status,
-          ...(r.lastRunAt !== undefined ? { lastRunAt: r.lastRunAt } : {}),
-          ...(r.lastSuccessAt !== undefined ? { lastSuccessAt: r.lastSuccessAt } : {}),
-          ...(r.lastError !== undefined ? { lastError: r.lastError } : {}),
-          ...(r.counts ? { listed: r.counts.listed } : {}),
-          problems: r.problems.map((p) => ({
-            reason: p.reason,
-            ...(p.cardId !== undefined ? { cardId: p.cardId } : {}),
-            ...(p.detail !== undefined ? { detail: p.detail } : {}),
-          })),
-          problemsTotal: Math.max(r.problemsTotal ?? 0, r.problems.length),
-        }
-      : null,
-  };
-}
 
 function toSale(raw: RawSale): Sale {
   return {
@@ -2817,12 +2798,9 @@ function useListingSettings(): ListingSettings | undefined {
   return useQuery(api.listingSync.listingSettings, {});
 }
 
-function useVariantListing(variantId: VariantId | null): VariantListingStatus | undefined {
-  const raw = useQuery(
-    api.listingSync.variantStatus,
-    variantId ? { variantId: variantId as Id<"selectorOptions"> } : "skip",
-  );
-  return useMemo(() => (raw === undefined ? undefined : toVariantListing(raw)), [raw]);
+function useSyncStatusQuery(): SyncStatus | undefined {
+  const raw = useQuery(api.listingSync.syncStatus, {});
+  return useMemo(() => (raw === undefined ? undefined : toSyncStatus(raw)), [raw]);
 }
 
 function useSalesPage(): SalesPage {
@@ -2841,26 +2819,50 @@ function useSalesPage(): SalesPage {
 }
 
 function useConvexListing(): ListingExtension {
-  const setEnabled = useMutation(api.listingSync.setListingEnabled);
-  const resync = useMutation(api.listingSync.resyncVariant);
-  const flush = useMutation(api.listingSync.flushListing);
+  const convex = useConvex();
+  const sync = useMutation(api.listingSync.syncVariant);
+  const setListedBase = useMutation(api.collectionContainers.setContainerListed);
+  // The box's setting flips on the shelf at once; the server's answer settles it.
+  const setListed = useMemo(
+    () =>
+      setListedBase.withOptimisticUpdate((local, args) => {
+        const shelf = local.getQuery(api.collectionContainers.list, {});
+        if (!shelf) return;
+        local.setQuery(
+          api.collectionContainers.list,
+          {},
+          shelf.map((c) => {
+            if (c._id !== args.containerId) return c;
+            // The server keeps only `false` (absent = listed).
+            const { listedOnMarketplaces: _was, ...rest } = c;
+            return args.listed ? rest : { ...rest, listedOnMarketplaces: false as const };
+          }),
+        );
+      }),
+    [setListedBase],
+  );
   return useMemo<ListingExtension>(
     () => ({
       useSettings: useListingSettings,
-      useVariantStatus: useVariantListing,
+      useSyncStatus: useSyncStatusQuery,
       useSales: useSalesPage,
-      async setEnabled(platform, enabled) {
-        await setEnabled({ platform, enabled });
+      async syncVariant(variantId) {
+        const { queued, ignored } = await sync({ variantId: variantId as Id<"selectorOptions"> });
+        return { queued, ...(ignored ? { ignored } : {}) };
       },
-      async resyncVariant(variantId) {
-        const { queued, ignored } = await resync({ variantId: variantId as Id<"selectorOptions"> });
-        return { queued, ignored: ignored === true };
+      async setContainerListed(containerId, listed) {
+        await setListed({ containerId: containerId as Id<"collectionContainers">, listed });
       },
-      async flushListing() {
-        await flush({});
+      async loadSetProblems(variantId, platform) {
+        // Read once, on demand: a full held-back list is never subscribed.
+        const raw = await convex.query(api.listingSync.syncSetProblems, {
+          variantId: variantId as Id<"selectorOptions">,
+          platform,
+        });
+        return toSetProblems(raw);
       },
     }),
-    [setEnabled, resync, flush],
+    [convex, sync, setListed],
   );
 }
 
@@ -2944,6 +2946,5 @@ export const __test = {
   isPlainRow,
   patchInventory,
   optimisticIdFor,
-  toVariantListing,
   toSale,
 };

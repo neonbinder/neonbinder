@@ -960,8 +960,11 @@ export async function applyCopyChanges(
   // NEO-370: a box copy is for sale, so a write whose row lived in a box
   // before or after may change what the collector lists. Queue those cards
   // for every platform they list on (a sale applied from one platform comes
-  // through here too, which is how it reaches the others). Binder-only
-  // writes queue nothing; an owner who lists nowhere costs one read.
+  // through here too, which is how it reaches the others). Any box, listed
+  // or in-person: the drain reads the whole variant and counts only the
+  // listed boxes, so a move from one to the other is pushed as a 0 or a
+  // count. Binder-only writes queue nothing; an owner who lists nowhere
+  // costs one read.
   const forSale: CopyCardId[] = [];
   for (const change of changes) {
     const wasBoxed = change.before !== null && (await sides.is(change.before.homeId, "inventory"));

@@ -39,6 +39,7 @@ function renderAt(path: string) {
           <Route path="leagues" element={<div>leagues tool</div>} />
           <Route path="pipeline-runs" element={<div>pipeline runs tool</div>} />
           <Route path="card-requests" element={<div>card requests tool</div>} />
+          <Route path="sync-status" element={<div>sync status tool</div>} />
         </Route>
       </Routes>
     </MemoryRouter>,
@@ -65,6 +66,8 @@ describe("AdminSectionLayout", () => {
       ["Pipeline Runs", "/admin/pipeline-runs"],
       // NEO-361.
       ["Card Requests", "/admin/card-requests"],
+      // NEO-370.
+      ["Sync Status", "/admin/sync-status"],
     ]);
   });
 
@@ -75,6 +78,7 @@ describe("AdminSectionLayout", () => {
     ["/admin/leagues", "Leagues"],
     ["/admin/pipeline-runs", "Pipeline Runs"],
     ["/admin/card-requests", "Card Requests"],
+    ["/admin/sync-status", "Sync Status"],
   ])("marks %s as the current page", (path, label) => {
     renderAt(path);
     const nav = screen.getByRole("navigation", { name: "Admin sections" });

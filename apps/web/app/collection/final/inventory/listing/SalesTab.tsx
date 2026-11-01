@@ -7,16 +7,14 @@ import { cardLabel } from "../../data/labels";
 import { useCards, useListing, type ListingExtension } from "../../data/store";
 import type { Card, CardId, Sale, SaleItem } from "../../data/types";
 import { BSC_NAME, BSC_ORDERS_URL, UNMATCHED_CARD, dollars, orderDay, orderStatus, saleItemProblem } from "./copy";
-import ListingSwitch from "./ListingSwitch";
 
 /**
- * NEO-370 — the Sales tab on the inventory (`/inventory?tab=sales`): the
- * "List on BuySportsCards" switch, then every order the collector received,
- * newest first, a page at a time ("Show more sales" stays in place: paging is
- * not a Back step). When a page lands, focus moves to its first order and a
- * quiet status says how many show. Read-only: shipping and the pull list
- * come later. Sales keep coming in with listing off, while the sign-in is
- * saved.
+ * NEO-370 — the Sales tab on the inventory (`/inventory?tab=sales`): every
+ * order the collector received, newest first, a page at a time ("Show more
+ * sales" stays in place: paging is not a Back step). When a page lands, focus
+ * moves to its first order and a quiet status says how many show.
+ * Read-only: shipping and the pull list come later. Sales come in while the
+ * sign-in is saved; removing it stops them (Profile).
  *
  * Each order shows its number, day, BSC's status, its total and its lines
  * (the NB card when NB matched it, how many, the price each). A line NB could
@@ -32,9 +30,7 @@ export default function SalesTab() {
 }
 
 function Sales({ listing }: { listing: ListingExtension }) {
-  const settings = listing.useSettings()?.bsc;
   const page = listing.useSales();
-  const headingId = useId();
   const listHeadingId = useId();
   const cardIds = useMemo(() => {
     const ids = new Set<CardId>();
@@ -78,16 +74,6 @@ function Sales({ listing }: { listing: ListingExtension }) {
 
   return (
     <div className="space-y-6">
-      <section
-        aria-labelledby={headingId}
-        className="space-y-3 rounded-lg bg-raised p-4 text-ink shadow-offset sm:p-6"
-      >
-        <h2 id={headingId} className="text-lg font-semibold">
-          Selling on {BSC_NAME}
-        </h2>
-        {settings ? <ListingSwitch listing={listing} settings={settings} /> : <SkeletonBars rows={2} className="w-64" />}
-      </section>
-
       <section aria-labelledby={listHeadingId} className="space-y-3">
         <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
           <h2 id={listHeadingId} className="text-lg font-semibold">

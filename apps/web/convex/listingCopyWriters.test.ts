@@ -50,7 +50,9 @@ async function setup() {
 type S = Awaited<ReturnType<typeof setup>>;
 
 const listOn = (s: S, owner = ME.subject) =>
-  s.t.run((ctx) => ctx.db.insert("marketplaceListingStates", { ownerId: owner, platform: "bsc", lastUpdated: 0 }));
+  s.t.run((ctx) =>
+    ctx.db.insert("marketplaceListingStates", { ownerId: owner, platform: "bsc", listingStartedAt: 1, lastUpdated: 0 }),
+  );
 const outbox = (s: S) => s.t.run((ctx) => ctx.db.query("listingOutbox").collect());
 const rowsOf = async (s: S) =>
   (await outbox(s)).map((r) => ({ ownerId: r.ownerId, cardId: r.cardId, variantId: r.variantId }));

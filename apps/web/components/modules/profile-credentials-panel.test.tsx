@@ -62,6 +62,13 @@ vi.mock("@/convex/_generated/api", () => ({
     marketplacePause: {
       getPausedPlatforms: "marketplacePause:getPausedPlatforms",
     },
+    // NEO-370: the BSC listing section under the sign-in (its own tests are
+    // in app/profile/credentials/BscListingSection.test.tsx). Loading here,
+    // so it draws nothing.
+    listingSync: {
+      listingSettings: "listingSync:listingSettings",
+      startListing: "listingSync:startListing",
+    },
   },
 }));
 
@@ -69,7 +76,11 @@ vi.mock("convex/react", () => ({
   // Routed by ref: the panel subscribes to the NEO-287 pause query as well as
   // the profile; `mocks.paused` defaults to "nothing paused".
   useQuery: (ref: string) =>
-    ref === "marketplacePause:getPausedPlatforms" ? mocks.paused : mocks.profile,
+    ref === "marketplacePause:getPausedPlatforms"
+      ? mocks.paused
+      : ref === "listingSync:listingSettings"
+        ? undefined
+        : mocks.profile,
   useMutation: () => vi.fn(),
   useAction: (ref: string) => {
     if (ref === "credentials:saveCredentials") return mocks.saveCredentials;

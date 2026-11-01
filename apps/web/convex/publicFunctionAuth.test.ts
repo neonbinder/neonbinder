@@ -2701,11 +2701,13 @@ describe("NEO-407 latencyProbe — anonymous by intent, fails closed in prod", (
 });
 
 /**
- * NEO-370 — marketplace listing (`listingSync.ts`): the switch, a variant's
- * status, Resync and the Sales screen. Every one is the signed-in caller's
- * own (a collector, not an admin); the owner is never an argument. The
- * walks that queue and clear a collector's changes take an `ownerId`, so
- * they are internal.
+ * NEO-370 — marketplace listing (`listingSync.ts`): the settings, Start, Sync,
+ * the Sync status tab and the Sales screen, plus a box's "Listed on
+ * marketplaces" setting (`collectionContainers.setContainerListed`). Every one
+ * is the signed-in caller's own (a collector, not an admin); the owner is
+ * never an argument. The admin's read-only Sync status takes an `ownerId`, so
+ * it is admin-only. The walks that queue and clear a collector's changes take
+ * an `ownerId`, so they are internal.
  */
 describe("NEO-370: listing is the signed-in collector's own", () => {
   async function seedVariant(t: ReturnType<typeof convexTest>): Promise<Id<"selectorOptions">> {
@@ -2731,16 +2733,32 @@ describe("NEO-370: listing is the signed-in collector's own", () => {
     [string, (t: ReturnType<typeof convexTest>, variantId: Id<"selectorOptions">) => Promise<unknown>]
   > = [
     ["listingSync.listingSettings", (t) => t.query(api.listingSync.listingSettings, {})],
-    ["listingSync.variantStatus", (t, variantId) => t.query(api.listingSync.variantStatus, { variantId })],
+    ["listingSync.syncStatus", (t) => t.query(api.listingSync.syncStatus, {})],
+    [
+      "listingSync.syncSetProblems",
+      (t, variantId) => t.query(api.listingSync.syncSetProblems, { variantId, platform: "bsc" }),
+    ],
     [
       "listingSync.listSales",
       (t) => t.query(api.listingSync.listSales, { paginationOpts: { numItems: 10, cursor: null } }),
     ],
+    ["listingSync.startListing", (t) => t.mutation(api.listingSync.startListing, { platform: "bsc" })],
+    ["listingSync.syncVariant", (t, variantId) => t.mutation(api.listingSync.syncVariant, { variantId })],
+  ];
+  const ADMIN_CALLS: Array<
+    [string, (t: ReturnType<typeof convexTest>, variantId: Id<"selectorOptions">) => Promise<unknown>]
+  > = [
+    ["listingSync.adminSyncOwners", (t) => t.query(api.listingSync.adminSyncOwners, {})],
+    ["listingSync.adminSyncStatus (every collector)", (t) => t.query(api.listingSync.adminSyncStatus, {})],
     [
-      "listingSync.setListingEnabled (off)",
-      (t) => t.mutation(api.listingSync.setListingEnabled, { platform: "bsc", enabled: false }),
+      "listingSync.adminSyncStatus (one collector)",
+      (t) => t.query(api.listingSync.adminSyncStatus, { ownerId: "someone" }),
     ],
-    ["listingSync.resyncVariant", (t, variantId) => t.mutation(api.listingSync.resyncVariant, { variantId })],
+    [
+      "listingSync.adminSyncSetProblems",
+      (t, variantId) =>
+        t.query(api.listingSync.adminSyncSetProblems, { ownerId: "someone", variantId, platform: "bsc" }),
+    ],
   ];
 
   test.each(CALLS)("%s rejects an anonymous caller", async (_name, call) => {
@@ -2753,12 +2771,46 @@ describe("NEO-370: listing is the signed-in collector's own", () => {
     await expect(call(t.withIdentity(SIGNED_IN), await seedVariant(t))).resolves.not.toThrow();
   });
 
-  test("switching listing on anonymously is refused and writes no state row", async () => {
+  test.each(ADMIN_CALLS)("%s rejects an anonymous caller", async (_name, call) => {
     const t = convexTest(schema, modules);
-    await expect(
-      t.mutation(api.listingSync.setListingEnabled, { platform: "bsc", enabled: true }),
-    ).rejects.toThrow(/Not authenticated/);
+    await expect(call(t, await seedVariant(t))).rejects.toThrow(/Not authenticated/);
+  });
+
+  test.each(ADMIN_CALLS)("%s rejects a signed-in NON-ADMIN caller", async (_name, call) => {
+    const t = convexTest(schema, modules);
+    await expect(call(t.withIdentity(SIGNED_IN), await seedVariant(t))).rejects.toThrow(/Admin access required/);
+  });
+
+  test.each(ADMIN_CALLS)("%s answers an admin", async (_name, call) => {
+    const t = convexTest(schema, modules);
+    await expect(call(t.withIdentity(ADMIN), await seedVariant(t))).resolves.toBeDefined();
+  });
+
+  test("starting listing anonymously is refused and writes no state row", async () => {
+    const t = convexTest(schema, modules);
+    await expect(t.mutation(api.listingSync.startListing, { platform: "bsc" })).rejects.toThrow(
+      /Not authenticated/,
+    );
     expect(await t.run(async (ctx) => ctx.db.query("marketplaceListingStates").collect())).toEqual([]);
+  });
+
+  test("a box's listed setting: anonymous refused; another collector's box not found; the owner's own answers", async () => {
+    const t = convexTest(schema, modules);
+    const boxId = await t.run(async (ctx) =>
+      ctx.db.insert("collectionContainers", { ownerId: SIGNED_IN.subject, kind: "box", name: "Box", lastUpdated: 0 }),
+    );
+    await expect(
+      t.mutation(api.collectionContainers.setContainerListed, { containerId: boxId, listed: false }),
+    ).rejects.toThrow(/Not authenticated/);
+    await expect(
+      t
+        .withIdentity({ subject: "someone_else_370" })
+        .mutation(api.collectionContainers.setContainerListed, { containerId: boxId, listed: false }),
+    ).rejects.toThrow();
+    expect((await t.run((ctx) => ctx.db.get(boxId)))?.listedOnMarketplaces).toBeUndefined();
+    await expect(
+      t.withIdentity(SIGNED_IN).mutation(api.collectionContainers.setContainerListed, { containerId: boxId, listed: false }),
+    ).resolves.toBeNull();
   });
 
   test.each([

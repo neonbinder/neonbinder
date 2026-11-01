@@ -133,6 +133,7 @@
 - [Lazy component test preload](reference_lazy_component_test_preload.md) — lazy() child + findBy times out under load; import the module in beforeAll
 - [Radix Themes tooltip needs Theme in tests](reference_radix_themes_tooltip_needs_theme_in_tests.md) — Tooltip throws outside <Theme> in component tests; child aria-describedby overrides the trigger; headless .focus() never opens it, Tab does
 - [happy-dom target=_blank click fetches](reference_happy_dom_target_blank_click_fetches.md) — new window fetches the href (ECONNREFUSED noise); preventDefault on document for that click
+- [happy-dom has no window.confirm](reference_happy_dom_has_no_window_confirm.md) — define it per test; a new convex/react export in the store breaks every hand-built mock
 - [axe contrast ignores aria-hidden](reference_axe_contrast_ignores_aria_hidden.md) — aria-hidden/role=img text is still measured; user-colour previews go in an <img alt> (SVG foreignObject)
 - [Tailwind JS-config colours are inlined](reference_tailwind_js_config_colours_are_inlined.md) — neon-* compile to literal hex; redeclare in @theme to theme them by variable
 - [Radix scale overrides lose to Radix](reference_radix_scale_overrides_lose_to_radix.md) — Radix sets --green-9/--focus-8 on the Theme element, so html-level remaps never reach it; set them there, probe computed values

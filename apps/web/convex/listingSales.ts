@@ -5,8 +5,10 @@
  * Every 15 minutes (`crons.ts`) `pollAll` lists the owners with a BSC
  * listing state that is not dormant (`marketplaceListingStates` on
  * `by_platform_dormant_polled`, never-polled first) and schedules
- * `pollOwner` for each. Listing switched OFF still polls: off stops pushing
- * NB's counts only, and the listings left up can still sell. The credential
+ * `pollOwner` for each. A state row exists once the collector has started
+ * listing; it is polled whenever it is not dormant, even after the sign-in
+ * was removed and saved again but Start not pressed again (pushing needs
+ * Start; listings left up can still sell). The credential
  * gate: an owner with no saved BSC credentials is not polled (their state
  * goes dormant), and one whose session needs a fresh sign-in is polled at
  * most hourly (`reauthPollAt`), so a dead session is not logged into every
@@ -23,9 +25,11 @@
  *   3. projects each to `marketplaceSales` (no buyer data, ever) and applies
  *      each sold line EXACTLY ONCE: the SKU names the NB card and box; the
  *      card's own `platformData.bsc.ref` must be the line's BSC card id (the
- *      exactly-one guard); the owner's raw box copies of that card in the NB
- *      conditions that fold into the sold BSC condition are lowered oldest
- *      first (the SKU's box wins a tie) through the app's own write path
+ *      exactly-one guard); the owner's raw copies of that card in a LISTED
+ *      box (or in the box the SKU names: a listing pushed before that box
+ *      was set to in-person) in the NB conditions that fold into the sold
+ *      BSC condition are lowered oldest first (the SKU's box wins a tie)
+ *      through the app's own write path
  *      (`applyCopyChanges`), so counts, smart-binder fits and the listing
  *      outbox all follow. Lowering and flipping `applied` share a mutation.
  *      A sold copy's photos are KEPT (Jason, 2026-11-01), unlike a manual
@@ -56,12 +60,11 @@ import {
   applyCopyChanges,
   changeOf,
   counted,
-  HomeSides,
   MAX_LINES_PER_CARD,
   pocketEmptied,
   type CountChange,
 } from "./collection";
-import { listingCredentialOf, kickListingDrain, pollsSales } from "./listingOutbox";
+import { listingCredentialOf, kickListingDrain, listsOnMarketplaces, pollsSales } from "./listingOutbox";
 import { bscEraForYear, isBscRawCondition, nbConditionsFor, type BscEra } from "./lib/bscConditions";
 import { bscOrderDisposition, chooseCopiesToLower, type BscOrder } from "./lib/bscOrders";
 import { parseListingSku } from "./lib/listingSku";
@@ -278,7 +281,7 @@ export function projectBscOrder(order: BscOrder, fallbackDate: number | null): P
 
 /**
  * Sales on `platform` are polled for the owner while their state row exists
- * and is not dormant: switched off or on (listings left up can still sell).
+ * and is not dormant, started or not (listings left up can still sell).
  * A row put to sleep (credentials cleared, a seller conflict) makes a poll
  * already under way stand down at its next write: no sale stored, no copy
  * lowered.
@@ -412,7 +415,17 @@ export const applySaleItems = internalMutation({
     if (!(await pollingOn(ctx, args.ownerId, sale.platform))) return { applied: 0, lowered: 0 };
     const now = Date.now();
     const items = [...sale.items];
-    const sides = new HomeSides(ctx, args.ownerId);
+    // Which homes a sold copy may come from: a LISTED box (or the SKU's own
+    // box, checked per line below). One read per home.
+    const homes = new Map<string, boolean>();
+    const listedHome = async (homeId: Id<"collectionContainers">): Promise<boolean> => {
+      const known = homes.get(homeId);
+      if (known !== undefined) return known;
+      const home = await ctx.db.get(homeId);
+      const lists = home !== null && home.ownerId === args.ownerId && listsOnMarketplaces(home);
+      homes.set(homeId, lists);
+      return lists;
+    };
     const eras = new Map<string, BscEra | null>();
     const changes: CountChange[] = [];
     let applied = 0;
@@ -450,14 +463,20 @@ export const applySaleItems = internalMutation({
         .query("collectionCopies")
         .withIndex("by_owner_and_card", (q) => q.eq("ownerId", args.ownerId).eq("cardId", cardId))
         .take(MAX_LINES_PER_CARD + 1);
+      const skuBoxId = ctx.db.normalizeId("collectionContainers", sku.boxId);
       const candidates: Doc<"collectionCopies">[] = [];
       for (const row of lines) {
         if (row.grading !== undefined || row.condition === undefined) continue;
         if (!nbConditions.includes(row.condition)) continue;
-        if ((await sides.of(row.homeId)) !== "inventory") continue;
+        if (!(await listedHome(row.homeId))) {
+          // The SKU's own box still counts while it is a box of the owner's:
+          // it was listed when this listing was pushed.
+          if (row.homeId !== skuBoxId) continue;
+          const home = await ctx.db.get(row.homeId);
+          if (!home || home.ownerId !== args.ownerId || home.kind !== "box") continue;
+        }
         candidates.push(row);
       }
-      const skuBoxId = ctx.db.normalizeId("collectionContainers", sku.boxId);
       const { decrements, shortfall } = chooseCopiesToLower(
         candidates.map((row) => ({
           copyId: row._id,

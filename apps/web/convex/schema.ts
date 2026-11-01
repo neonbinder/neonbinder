@@ -3315,6 +3315,14 @@ export default defineSchema({
       v.literal("succeeded"),
       v.literal("failed"),
     ),
+    // NEO-370 — how a stream job left "collecting": `"user"` when the
+    // collector closed it (`closePlaceholderStream`, the intake screen's "Done
+    // adding photos"), `"idle"` when the idle sweep closed an abandoned one.
+    // Only an intake run whose stream the USER closed triggers a listing sync
+    // when it settles (`intakeRuns.kickListingIfRunSettled`); an idle-closed
+    // run waits for the 15-minute cron. Absent on zip jobs and on every row
+    // closed before the field existed (read as "not closed by the user").
+    streamClosedBy: v.optional(v.union(v.literal("user"), v.literal("idle"))),
     // Progress counters (NEO-170). All optional so pre-NEO-170 rows — and the
     // row `insertPlaceholderJob` writes at mint time — stay valid without a
     // migration. `processedImages + failedImages === totalImages` is the
@@ -3838,6 +3846,17 @@ export default defineSchema({
      * before NEO-364 (every home) and reads as not kept.
      */
     tallyScope: v.optional(collectionTallyScopeValidator),
+    /**
+     * NEO-370 — a BOX's one marketplace setting, "Listed on marketplaces".
+     * Only `false` means anything: the box is in-person inventory, and its
+     * copies count 0 on every listing platform (they stay for sale in NB, on
+     * the box, just not listed). Absent (every box made before the field,
+     * and every box by default) and `true` both mean listed; no backfill.
+     * Per box only, never per copy: a card is held back by moving it to an
+     * in-person box. Written only by `collectionContainers.setContainerListed`,
+     * which refuses a binder; never set on a binder or a shelf row.
+     */
+    listedOnMarketplaces: v.optional(v.boolean()),
     lastUpdated: v.number(),
   })
     // Unchanged. Serves: Main/Want/Trade get-or-create (all fields, .unique()),
@@ -4310,14 +4329,16 @@ export default defineSchema({
   /**
    * ── NEO-370: a card whose for-sale count changed, per platform ───────────
    *
-   * NB is the only truth: every platform shows NB's box quantity, and nothing
-   * about a listing is stored here. This is the change list. One row per
-   * (owner, platform, card) means "this card's for-sale count on that
+   * NB is the only truth: every platform shows NB's count in the owner's
+   * LISTED boxes (a box with `listedOnMarketplaces: false` counts 0), and
+   * nothing about a listing is stored here. This is the change list. One row
+   * per (owner, platform, card) means "this card's for-sale count on that
    * platform may be stale". The copy-change hook upserts one row per platform
-   * the owner lists on (`marketplaceListingStates`) whenever a box-side write
-   * touches the card: an add, move, remove or recount, and a sale applied from
-   * ANY platform (so a sale on one reaches all the others). The per-owner
-   * drainer pushes and deletes it.
+   * the owner has started listing on (`marketplaceListingStates`) whenever a
+   * box-side write touches the card: an add, move, remove or recount, a sale
+   * applied from ANY platform (so a sale on one reaches all the others), and
+   * a box's listed setting flipped. The per-owner drainer pushes and deletes
+   * it. The Sync status tab lists the oldest rows (`listingSync.syncStatus`).
    *
    * One row per PLATFORM rather than one per card with a flag per platform:
    *   - the drainers never write the same document, so a BSC run clearing its
@@ -4366,20 +4387,25 @@ export default defineSchema({
     // The drainer: "anything pending?" and "next variant" (prefix owner +
     // platform, take 1), then that variant's rows (all three). The per-user
     // test reset (prefix ownerId).
-    .index("by_owner_platform_variant", ["ownerId", "platform", "variantId"]),
+    .index("by_owner_platform_variant", ["ownerId", "platform", "variantId"])
+    // The Sync status tab's "queued for the next sync", oldest first (prefix
+    // owner + platform, capped `take`).
+    .index("by_owner_platform_changed", ["ownerId", "platform", "changedAt"]),
 
   /**
    * ── NEO-370: how one variant's last push to one platform went ────────────
    *
    * One row per (owner, variant, platform), made by the variant's first sync
    * and patched by every run after it. A SUMMARY, never a mirror: the counts
-   * and problems of the last run, not the listings. The Inventory variant
-   * panel subscribes to exactly one row (so it stays a few KB: `problems` is
-   * capped, the true count in `problemsTotal`, the `selectorSyncStatus.
-   * unlinked` rule); the drainer reads and writes it once per variant.
+   * and problems of the last run, not the listings, and no run log (the last
+   * result per set only). The Sync status tab lists the most recent ones
+   * (`listingSync.syncStatus`, capped, `problems` hydrated for the first few
+   * only; the rest on demand through `syncSetProblems`). `problems` is capped,
+   * the true count in `problemsTotal` (the `selectorSyncStatus.unlinked`
+   * rule); the drainer reads and writes it once per variant.
    *
    * `status` with a lease is the per-variant lock that stops two drainers
-   * (a drain kicked by the cron and one kicked by a Resync) running one variant
+   * (a drain kicked by the cron and one kicked by a Sync) running one variant
    * at once: a run claims the row by writing `running`, a fresh `leaseToken`
    * and `leaseExpiresAt`; it finishes by writing `idle` or `error` and
    * dropping both. A `running` row past `leaseExpiresAt` is a run that died
@@ -4393,7 +4419,8 @@ export default defineSchema({
    * condition it no longer uses is still found and corrected. Only ever grows;
    * small (BSC has 4 modern and 10 vintage conditions). ABSENT
    * `lastSuccessAt` means the variant has never synced cleanly, and that run
-   * reads every condition.
+   * reads every condition; so does the first run after a Sync press
+   * (`resyncRequestedAt` later than `lastRunAt`, see `listingSync.syncVariant`).
    *
    * `lastError` is an NB-written sentence, truncated by the writer; never a
    * raw platform response body (it can echo the request, and this row is
@@ -4440,38 +4467,52 @@ export default defineSchema({
     ),
     problemsTotal: v.optional(v.number()),
     conditionsPushed: v.array(v.string()),
-    /** The last Resync press (`listingSync.resyncVariant` ignores one within a minute). */
+    /**
+     * The last Sync press (`listingSync.syncVariant` ignores one within a
+     * minute). The variant's next run reads every condition while this is
+     * later than `lastRunAt` (the claim stamps `lastRunAt`, so one run).
+     */
     resyncRequestedAt: v.optional(v.number()),
     lastUpdated: v.number(),
   })
-    // The variant panel's subscription and the drainer's claim (all three,
-    // `.unique()`); a variant's rows across platforms (prefix owner +
-    // variant); the per-user test reset (prefix ownerId).
-    .index("by_owner_variant_platform", ["ownerId", "variantId", "platform"]),
+    // The drainer's claim and a Sync press (all three, `.unique()`); a
+    // variant's rows across platforms (prefix owner + variant); the per-user
+    // test reset (prefix ownerId).
+    .index("by_owner_variant_platform", ["ownerId", "variantId", "platform"])
+    // The Sync status tab: one platform's sets, most recent run first
+    // (prefix owner + platform, order desc, capped `take`).
+    .index("by_owner_platform_run", ["ownerId", "platform", "lastRunAt"]),
 
   /**
    * ── NEO-370: one collector's standing with one listing platform ──────────
    *
-   * One row per (owner, platform), made the first time the owner switches
-   * listing on there, and never deleted by the app (the per-user test reset
-   * and the global drain clear it). It holds no credential; the token is read
-   * through `credentials` as for every marketplace call, and the pause switch
-   * (`marketplacePause`) is honoured there.
+   * One row per (owner, platform), made the first time the owner starts
+   * listing there (`listingSync.startListing`, the one-way "Start listing"
+   * button beside the saved sign-in on Profile), and never deleted by the app
+   * (the per-user test reset and the global drain clear it). It holds no
+   * credential; the token is read through `credentials` as for every
+   * marketplace call, and the pause switch (`marketplacePause`) is honoured
+   * there. There is no per-platform switch and no pause (Revision 4): every
+   * card in a listed box lists on every platform the collector has started.
    *
-   * Two switches, read through `listingOutbox.pushesCounts` / `pollsSales`:
-   *   - `enabled` is the collector's own: `false` stops pushing NB's counts
-   *     (the hook queues nothing, the drainer stands down) and leaves what
-   *     the platform lists as it is. Those listings can still sell, so the
-   *     order poll keeps running and keeps lowering NB copies. Absent means on
-   *     (rows written before the field existed were all switched on).
+   * Read through `listingOutbox.pushesCounts` / `pollsSales`:
+   *   - `listingStartedAt` is the collector's consent: NB pushes counts only
+   *     while it is set and the row is not dormant. Saving a sign-in does NOT
+   *     set it; `startListing` does. Removing the sign-in clears it (and
+   *     makes the row dormant), so saving again needs Start again.
    *   - `dormant` is NB's: set when the platform can't be used for this owner
    *     at all, and it stops BOTH the poll and the drain.
    *       `noCredentials`: the owner's saved credentials were cleared
-   *       (`userProfile.removeSiteCredentialStatus`); cleared again when they
-   *       are saved (`updateSiteCredentialStatus`).
+   *       (`userProfile.removeSiteCredentialStatus`, which also clears
+   *       `listingStartedAt`); cleared again when they are saved
+   *       (`updateSiteCredentialStatus`). The order poll then resumes
+   *       (listings left up can still sell); pushing waits for Start.
    *       `sellerConflict`: another NB owner already lists from the same
    *       platform seller account (`platformAccountId`); cleared when the
-   *       owner switches listing on again and the conflict is gone.
+   *       owner presses Start again and the conflict is gone.
+   *   - `enabled` is RETIRED (Revision 3's per-platform switch). Never read
+   *     or written; kept optional only because preview deployments hold rows
+   *     carrying it, and removing a field with rows present fails the deploy.
    *
    * `platformAccountId` is the platform seller account this owner lists from
    * (BSC: `sellerProfile.sellerId`), stamped when it is first known (at
@@ -4487,10 +4528,11 @@ export default defineSchema({
    * a fresh sign-in, the poll runs at most hourly (`reauthPollAt`), so a dead
    * session is not logged into every tick.
    *
-   * Drain triggers (no timer): leaving a checklist page
-   * (`listingSync.flushListing`), an intake run that is settled, a Resync,
-   * the end of the enable walk, and the 15-minute cron (after each owner's
-   * poll). Each kick schedules the drainer at once and stamps
+   * Drain triggers (no timer): a Sync press (`listingSync.syncVariant`), an
+   * intake run the collector closed with "Done adding photos" once it is
+   * settled, the end of the Start walk, and the 15-minute cron (after each
+   * owner's poll). The Sync status tab reads `drainLeaseToken` (never
+   * returned) / `drainLeaseExpiresAt` as "a sync is running now". Each kick schedules the drainer at once and stamps
    * `drainScheduledAt` only when no drain is scheduled or running; a kick
    * that lands while a drain runs sets `drainRequested`, and that drain's
    * release runs the next one at once. `drainLeaseToken` /
@@ -4512,8 +4554,10 @@ export default defineSchema({
     /** A kick landed while a drain ran: its release runs the next one at once. */
     drainRequested: v.optional(v.boolean()),
     lastDrainAt: v.optional(v.number()),
-    /** `false`: the collector switched listing off (counts are not pushed; sales still polled). */
+    /** RETIRED (Revision 3's switch): never read or written; see the table comment. */
     enabled: v.optional(v.boolean()),
+    /** When the collector pressed Start listing; absent = not listing (see the table comment). */
+    listingStartedAt: v.optional(v.number()),
     /** NB stopped both poll and drain; see the table comment. */
     dormant: v.optional(v.union(v.literal("noCredentials"), v.literal("sellerConflict"))),
     /** The platform seller account this owner lists from (BSC seller id). */
@@ -4547,7 +4591,9 @@ export default defineSchema({
    * the order again, or two polls racing, can never take a sold card off
    * twice. A re-poll updates `status` and `totals` and never resets
    * `applied`. A sale applied here is a box-side change like any other, so
-   * the hook queues the card for every platform (`listingOutbox`).
+   * the hook queues the card for every platform (`listingOutbox`). The copy
+   * lowered is a box copy in a LISTED box, or one in the box the SKU names
+   * (a listing pushed before that box was set to in-person).
    *
    * NO BUYER PII, ever: no name, address, email or phone, not even
    * transiently on the row. The poll projects the platform's order to these

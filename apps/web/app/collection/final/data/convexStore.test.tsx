@@ -109,6 +109,13 @@ vi.mock("convex/react", async () => {
           return [key, typeof answer === "function" ? answer(args) : answer];
         }),
       ),
+    // NEO-370: the client the Sync status tab reads a set's held-back list with.
+    useConvex: () => ({
+      query: async (ref: Parameters<typeof nameOf>[0], args: unknown) => {
+        const answer = loaded.get(nameOf(ref));
+        return typeof answer === "function" ? answer(args) : answer;
+      },
+    }),
     // NEO-377: the copy-photo actions; no test here reaches them.
     useAction: (ref: Parameters<typeof nameOf>[0]) => async () => {
       throw new Error(`unexpected action ${nameOf(ref)}`);

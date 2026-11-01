@@ -487,7 +487,10 @@ export const closePlaceholderStream = mutation({
       return { closed: false, reason: `job is already ${job.status}` };
     }
 
-    const status = await closeStreamImpl(ctx, job);
+    // NEO-370: the collector said "no more photos are coming" (the intake
+    // screen's "Done adding photos"); an intake run over this job may now
+    // sync its box copies once it settles. The idle sweep says "idle".
+    const status = await closeStreamImpl(ctx, job, "user");
     return { closed: true, status };
   },
 });
@@ -525,7 +528,11 @@ export const closePlaceholderStream = mutation({
 export async function closeStreamImpl(
   ctx: MutationCtx,
   job: Doc<"placeholderJobs">,
+  closedBy: "user" | "idle",
 ): Promise<string> {
+  // NEO-370: recorded FIRST, so a finalize that lands in this transaction
+  // (and the intake settle check it runs) already sees who closed it.
+  await ctx.db.patch(job._id, { streamClosedBy: closedBy });
   await ctx.scheduler.runAfter(0, internal.placeholderStream.sweepAwaitingUploads, {
     jobId: job.jobId,
     from: 0,
@@ -670,7 +677,9 @@ export const sweepIdleStreams = internalMutation({
       .take(ENQUEUE_CHUNK_SIZE);
 
     for (const job of idle) {
-      await closeStreamImpl(ctx, job);
+      // NEO-370: an abandoned session never triggers a listing sync; the
+      // 15-minute cron picks its box copies up.
+      await closeStreamImpl(ctx, job, "idle");
     }
 
     const done = idle.length < ENQUEUE_CHUNK_SIZE;

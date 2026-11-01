@@ -73,13 +73,14 @@ describe("the inventory's checklist", () => {
     expect(screen.getByRole("list", { name: "Quantities in Unsorted" })).toBeTruthy();
   });
 
-  it("the demo never lists anywhere: no Sales section and no BuySportsCards panel (NEO-370)", () => {
+  it("the demo never lists anywhere: no Sales or Sync status section and no Sync button (NEO-370)", () => {
     renderChecklist();
     const sections = screen.getByRole("navigation", { name: "Inventory sections" });
     expect(within(sections).getByRole("link", { name: "Checklists" })).toBeTruthy();
     expect(within(sections).queryByRole("link", { name: "Sales" })).toBeNull();
-    expect(screen.queryByRole("group", { name: "BuySportsCards listing" })).toBeNull();
-    expect(screen.queryByRole("switch", { name: "List on BuySportsCards" })).toBeNull();
+    expect(within(sections).queryByRole("link", { name: "Sync status" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Sync / })).toBeNull();
+    expect(screen.queryByRole("switch")).toBeNull();
   });
 
   it("has no Have, Want or Trade controls: a field and Details only", () => {

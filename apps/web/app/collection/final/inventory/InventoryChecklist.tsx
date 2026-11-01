@@ -6,7 +6,7 @@ import { CHIP, CHIP_OFF, CHIP_ON, FOCUS, LABEL, SELECT, compareNumbers } from ".
 import type { ChecklistProps } from "../Checklist";
 import ChipGroup from "../ChipGroup";
 import CommonPrice from "./CommonPrice";
-import ListingPanel from "./listing/ListingPanel";
+import SyncButton from "./listing/SyncButton";
 import { checklistCount, isComplete, totalKnown } from "../catalog/format";
 import { copiesByCard, fold } from "../catalog/home";
 import { SkeletonBars, SkeletonPips } from "../catalog/Skeleton";
@@ -38,6 +38,9 @@ type Sort = "checklist" | "number" | "player" | "team";
  * Not in <box>, Sort by (checklist order, number, player, team), and
  * "Add a range to <box>", one copy of each card the range names ("1-20,
  * skip 12": `rangeWords` reads "skip" as the range reader's "-").
+ *
+ * The header's top right holds Sync (NEO-370): this set's counts, up to
+ * every marketplace the collector lists on.
  *
  * The heading's subline names the target box too, so it is in sight beside
  * the checklist's name as well as on the sticky "Adding to" bar.
@@ -151,9 +154,18 @@ const InventoryChecklist = forwardRef<HTMLHeadingElement, ChecklistProps>(functi
   return (
     <section aria-labelledby={headingId} className="space-y-4 rounded-lg bg-raised p-4 text-ink shadow-offset sm:p-6">
       <div className="min-w-0 space-y-2">
-        <h3 id={headingId} ref={headingRef} tabIndex={-1} className="rounded-sm text-xl font-semibold focus-outline">
-          {title}
-        </h3>
+        {/* NEO-370 Rev 4: Sync sits at the top right, compact, out of the title's way. */}
+        <div className="flex items-start gap-3">
+          <h3
+            id={headingId}
+            ref={headingRef}
+            tabIndex={-1}
+            className="min-w-0 flex-1 rounded-sm text-xl font-semibold focus-outline"
+          >
+            {title}
+          </h3>
+          <SyncButton variantId={variantId} title={title} />
+        </div>
         {box && (
           <p className="flex items-center gap-1.5 text-sm text-ink-2">
             <ArchiveBoxIcon aria-hidden="true" className="h-4 w-4 shrink-0 text-neon-yellow-text" />
@@ -178,7 +190,6 @@ const InventoryChecklist = forwardRef<HTMLHeadingElement, ChecklistProps>(functi
           <SkeletonBars rows={1} className="w-48" />
         )}
         <CommonPrice variantId={variantId} title={title} />
-        <ListingPanel variantId={variantId} title={title} cards={cards} />
         {/* Nothing stocked: no strip. A row of empty pockets reads as missing
             glyphs, and the "0 of N" line above already says it. */}
         {!cards ? <SkeletonPips /> : stockedIds.size > 0 && <StockStrip cards={cards} stockedIds={stockedIds} />}

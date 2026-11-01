@@ -570,13 +570,29 @@ describe("the collector's answers (NEO-382)", () => {
 
 describe("NEO-370 — a settled box run kicks the collector's listing drain", () => {
   type W = Awaited<ReturnType<typeof world>>;
+  /**
+   * Listing started on BSC, and the photo session closed by the collector
+   * ("Done adding photos"): the only close that may trigger a sync.
+   */
   const listOn = (w: W) =>
     w.t.run(async (ctx) => {
-      await ctx.db.insert("marketplaceListingStates", { ownerId: ME.subject, platform: "bsc", lastUpdated: 0 });
+      await ctx.db.insert("marketplaceListingStates", {
+        ownerId: ME.subject,
+        platform: "bsc",
+        listingStartedAt: 1,
+        lastUpdated: 0,
+      });
       await ctx.db.insert("userProfiles", {
         userId: ME.subject,
         siteCredentials: [{ site: "buysportscards", hasCredentials: true }],
       } as never);
+      const job = (await ctx.db.query("placeholderJobs").collect())[0];
+      await ctx.db.patch(job._id, { streamClosedBy: "user" });
+    });
+  const closedBy = (w: W, by: "user" | "idle" | undefined) =>
+    w.t.run(async (ctx) => {
+      const job = (await ctx.db.query("placeholderJobs").collect())[0];
+      await ctx.db.patch(job._id, { streamClosedBy: by });
     });
   const drainsOf = async (w: W) =>
     (await w.t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect())).filter((f) =>
@@ -807,6 +823,110 @@ describe("NEO-370 — a settled box run kicks the collector's listing drain", ()
       expect(await drainsOf(w)).toEqual([]);
       // The brought-back pair is open again: saving the other alone does not settle.
       await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[0], quantity: 1 });
+      expect(await drainsOf(w)).toEqual([]);
+    });
+  });
+
+  test("a session closed by the idle sweep never kicks, however settled the run", async () => {
+    const w = await two();
+    await listOn(w);
+    await closedBy(w, "idle");
+    const runId = await startRun(w, w.fx.baseId);
+    await held(w, async () => {
+      await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[0], quantity: 1 });
+      await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[1], quantity: 1 });
+      expect(await drainsOf(w)).toEqual([]);
+    });
+  });
+
+  test("a finished job no one closed (an upload batch, or a session before this rule) never kicks", async () => {
+    const w = await two();
+    await listOn(w);
+    await closedBy(w, undefined);
+    const runId = await startRun(w, w.fx.baseId);
+    await held(w, async () => {
+      await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[0], quantity: 1 });
+      await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[1], quantity: 1 });
+      expect(await drainsOf(w)).toEqual([]);
+    });
+  });
+
+  test("every pair answered while still collecting: Done adding photos closes the session and kicks", async () => {
+    const w = await two();
+    await listOn(w);
+    await w.t.run(async (ctx) => {
+      const job = (await ctx.db.query("placeholderJobs").collect())[0];
+      await ctx.db.patch(job._id, {
+        status: "collecting",
+        streamClosedBy: undefined,
+        totalImages: 4,
+        processedImages: 4,
+        failedImages: 0,
+        lastActivityAt: Date.now(),
+      });
+    });
+    const runId = await startRun(w, w.fx.baseId);
+    await held(w, async () => {
+      await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[0], quantity: 1 });
+      await w.me.mutation(api.intakeRuns.setIntakeMatchAside, { runId, pairId: w.pairIds[1], setAside: true });
+      expect(await drainsOf(w)).toEqual([]);
+      const closed = await w.me.mutation(api.placeholderStream.closePlaceholderStream, { jobId: JOB });
+      expect(closed).toMatchObject({ closed: true, status: "succeeded" });
+      const job = await w.t.run(async (ctx) => (await ctx.db.query("placeholderJobs").collect())[0]);
+      expect(job.streamClosedBy).toBe("user");
+      expect((await drainsOf(w)).map((d) => d.args[0])).toEqual([{ ownerId: ME.subject, platform: "bsc" }]);
+    });
+  });
+
+  test("the idle sweep closing a settled session records it and kicks nothing", async () => {
+    const w = await two();
+    await listOn(w);
+    await w.t.run(async (ctx) => {
+      const job = (await ctx.db.query("placeholderJobs").collect())[0];
+      await ctx.db.patch(job._id, {
+        status: "collecting",
+        streamClosedBy: undefined,
+        totalImages: 4,
+        processedImages: 4,
+        failedImages: 0,
+        lastActivityAt: 1,
+      });
+    });
+    const runId = await startRun(w, w.fx.baseId);
+    await held(w, async () => {
+      await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[0], quantity: 1 });
+      await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[1], quantity: 1 });
+      expect(await w.t.mutation(internal.placeholderStream.sweepIdleStreams, {})).toMatchObject({ closed: 1 });
+      const job = await w.t.run(async (ctx) => (await ctx.db.query("placeholderJobs").collect())[0]);
+      expect(job.streamClosedBy).toBe("idle");
+      expect(job.status).toBe("succeeded");
+      expect(await drainsOf(w)).toEqual([]);
+    });
+  });
+
+  test("an in-person box (not listed on marketplaces) never kicks", async () => {
+    const w = await two();
+    await listOn(w);
+    await w.t.run((ctx) => ctx.db.patch(w.boxId, { listedOnMarketplaces: false }));
+    const runId = await startRun(w, w.fx.baseId);
+    await held(w, async () => {
+      await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[0], quantity: 1 });
+      await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[1], quantity: 1 });
+      expect(await drainsOf(w)).toEqual([]);
+    });
+  });
+
+  test("a collector who never pressed Start: the settled run schedules no drain", async () => {
+    const w = await two();
+    await listOn(w);
+    await w.t.run(async (ctx) => {
+      const state = (await ctx.db.query("marketplaceListingStates").collect())[0];
+      await ctx.db.patch(state._id, { listingStartedAt: undefined });
+    });
+    const runId = await startRun(w, w.fx.baseId);
+    await held(w, async () => {
+      await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[0], quantity: 1 });
+      await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[1], quantity: 1 });
       expect(await drainsOf(w)).toEqual([]);
     });
   });

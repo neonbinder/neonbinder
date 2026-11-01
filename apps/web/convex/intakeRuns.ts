@@ -17,11 +17,13 @@
  * re-scan?", setting a pair aside, and the card search for "Wrong card? Find
  * it". Nothing here saves on its own: every save is a collector's click.
  *
- * NEO-370: a run that saves into a box is settled once its photos are all
- * processed (the job finished) and every pair is saved or set aside; at that
- * point the collector's listing drain runs (`kickListingIfRunSettled`), so
- * the box copies the run added reach their listing platforms without waiting
- * for the 15-minute cron.
+ * NEO-370: a run that saves into a listed box syncs to the collector's
+ * listing platforms once the collector pressed "Done adding photos" (the
+ * stream was closed by them, `placeholderJobs.streamClosedBy === "user"`)
+ * AND every column but Saved is clear: its photos are all processed (the job
+ * finished) and every pair is saved or set aside. At that point the listing
+ * drain runs (`kickListingIfRunSettled`). A run whose stream the idle sweep
+ * closed, or that was left without Done, waits for the 15-minute cron.
  *
  * Not here yet: attaching the pair's photos to the saved line (NEO-377), the
  * per-copy price and the common-price prompt (NEO-378), and the catalog-wide
@@ -46,7 +48,7 @@ import {
   intakeReasonValidator,
   collectionContainerKindValidator,
 } from "./schema";
-import { kickOwnerDrains } from "./listingOutbox";
+import { kickOwnerDrains, listsOnMarketplaces } from "./listingOutbox";
 import {
   intakeNamesFor,
   matchIntakePair,
@@ -66,7 +68,7 @@ const MAX_PREFIX_HOPS = 4;
 
 /**
  * Match rows the settle check reads. A larger run is not checked on each
- * save (the collector leaving the page, or the cron, runs its drain).
+ * save (the 15-minute cron runs its drain).
  */
 export const INTAKE_SETTLE_SCAN = 1000;
 
@@ -74,21 +76,26 @@ export const INTAKE_SETTLE_SCAN = 1000;
 const JOB_DONE = new Set(["succeeded", "failed"]);
 
 /**
- * NEO-370: run the collector's listing drain once a box run is settled: its
- * job finished processing every photo and every pair of the run is saved or
- * set aside (at least one saved). Called after each save and set-aside.
- * Cheap until then: the home is read first (a binder run stops there), then
- * the job, then the run's match rows (bounded). The kick itself is a no-op
- * when the collector lists nowhere or nothing is queued.
+ * NEO-370: run the collector's listing drain once a listed-box run is
+ * settled: the collector pressed "Done adding photos" (Jason, 2026-11-01:
+ * that click means no more photos are coming, not "sync now"), the job
+ * finished processing every photo, and every pair of the run is saved or set
+ * aside (at least one saved), so every column but Saved is clear. Called
+ * after each save and set-aside, and when the job finishes. Cheap until
+ * then: the home is read first (a binder or an in-person box stops there),
+ * then the job, then the run's match rows (bounded). The kick itself is a
+ * no-op when the collector lists nowhere or nothing is queued.
  */
 export async function kickListingIfRunSettled(ctx: MutationCtx, run: Doc<"intakeRuns">): Promise<boolean> {
   const home = await ctx.db.get(run.homeId);
-  if (!home || home.kind !== "box") return false;
+  if (!home || !listsOnMarketplaces(home)) return false;
   const job = await ctx.db
     .query("placeholderJobs")
     .withIndex("by_job", (q) => q.eq("jobId", run.jobId))
     .unique();
   if (!job || !JOB_DONE.has(job.status)) return false;
+  // Only "Done adding photos" counts: never the idle sweep, never a run left open.
+  if (job.streamClosedBy !== "user") return false;
   const rows = await ctx.db
     .query("intakeMatches")
     .withIndex("by_run", (q) => q.eq("runId", run._id))

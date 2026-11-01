@@ -1,88 +1,99 @@
 import { describe, expect, it } from "vitest";
 import { __test } from "./convexStore";
+import { toSetProblems, toSyncStatus } from "./syncStatus";
 
-// NEO-370 — the two pure mappers between the listing queries' rows and the
-// store's types. They carry the optional-field rules the Listing panel and the
-// Sales list lean on, so each absent/odd shape is pinned here.
-const { toVariantListing, toSale } = __test;
+// NEO-370 — the pure mappers between the listing queries' rows and the
+// store's types. They carry the optional-field rules the Sync status tab and
+// the Sales list lean on, so each absent/odd shape is pinned here.
+const { toSale } = __test;
 
-type RawStatus = Parameters<typeof toVariantListing>[0];
 type RawSale = Parameters<typeof toSale>[0];
+type RawStatus = Parameters<typeof toSyncStatus>[0];
+type RawPlatform = RawStatus["platforms"][number];
 
-const record = (over: Record<string, unknown> = {}) =>
+const platform = (over: Partial<Record<keyof RawPlatform, unknown>> = {}) =>
   ({
-    status: "ok",
-    problems: [],
+    platform: "bsc",
+    connected: true,
+    listing: true,
+    needsReauth: false,
+    paused: false,
+    sellerConflict: false,
+    running: null,
+    queued: { cards: [], more: false },
+    sets: [],
     ...over,
-  }) as unknown as NonNullable<RawStatus["record"]>;
+  }) as unknown as RawPlatform;
 
-describe("toVariantListing", () => {
-  it("a checklist never pushed has no run, and keeps the pending flag", () => {
-    expect(toVariantListing({ pending: true, record: null } as unknown as RawStatus)).toEqual({
-      pending: true,
-      run: null,
+describe("toSyncStatus", () => {
+  it("passes the platform's state through and leaves every unset timestamp out", () => {
+    const [p] = toSyncStatus({ platforms: [platform()] } as RawStatus).platforms;
+    expect(p).toEqual({
+      platform: "bsc",
+      connected: true,
+      listing: true,
+      needsReauth: false,
+      paused: false,
+      sellerConflict: false,
+      running: null,
+      queued: { cards: [], more: false },
+      sets: [],
     });
+    expect(p).not.toHaveProperty("scheduledAt");
+    expect(p).not.toHaveProperty("lastDrainAt");
   });
 
-  it("omits listed when the record has no counts, and every unset timestamp and error", () => {
-    const { run } = toVariantListing({
-      pending: false,
-      record: record(),
-    } as unknown as RawStatus);
-    expect(run).toEqual({ status: "ok", problems: [], problemsTotal: 0 });
-    expect(run).not.toHaveProperty("listed");
-    expect(run).not.toHaveProperty("lastRunAt");
-    expect(run).not.toHaveProperty("lastError");
+  it("a run with no set yet keeps only its start", () => {
+    const [p] = toSyncStatus({ platforms: [platform({ running: { startedAt: 5 }, lastDrainAt: 3, scheduledAt: 9 })] } as RawStatus)
+      .platforms;
+    expect(p.running).toEqual({ startedAt: 5 });
+    expect(p).toMatchObject({ lastDrainAt: 3, scheduledAt: 9 });
   });
 
-  it("carries counts.listed, the timestamps and the last error when present", () => {
-    const { run } = toVariantListing({
-      pending: false,
-      record: record({
-        status: "failed",
-        lastRunAt: 10,
-        lastSuccessAt: 5,
-        lastError: "boom",
-        counts: { listed: 7 },
-      }),
-    } as unknown as RawStatus);
-    expect(run).toMatchObject({
-      status: "failed",
-      lastRunAt: 10,
-      lastSuccessAt: 5,
-      lastError: "boom",
-      listed: 7,
+  it("a queued card keeps its number and player only when set", () => {
+    const [p] = toSyncStatus({
+      platforms: [
+        platform({
+          queued: {
+            cards: [
+              { cardId: "c1", cardNo: "12", cardLabel: "Ken Griffey Jr.", variantId: "v1", setLabel: "1989 Upper Deck", changedAt: 1 },
+              { cardId: "c2", variantId: "v1", setLabel: "1989 Upper Deck", changedAt: 2 },
+            ],
+            more: true,
+          },
+        }),
+      ],
+    } as RawStatus).platforms;
+    expect(p.queued.more).toBe(true);
+    expect(p.queued.cards[1]).toEqual({ cardId: "c2", variantId: "v1", setLabel: "1989 Upper Deck", changedAt: 2 });
+  });
+
+  it("a held-back total smaller than the problems shown is raised to the shown count", () => {
+    const [p] = toSyncStatus({
+      platforms: [
+        platform({
+          sets: [
+            {
+              variantId: "v1",
+              setLabel: "Base",
+              status: "idle",
+              problemsTotal: 1,
+              problems: [{ reason: "noPrice" }, { reason: "graded", cardNo: "3" }],
+            },
+          ],
+        }),
+      ],
+    } as RawStatus).platforms;
+    expect(p.sets[0].problemsTotal).toBe(2);
+    expect(p.sets[0].problems).toEqual([{ reason: "noPrice" }, { reason: "graded", cardNo: "3" }]);
+    expect(p.sets[0]).not.toHaveProperty("counts");
+  });
+
+  it("toSetProblems keeps a larger total (a capped list)", () => {
+    expect(toSetProblems({ problems: [{ reason: "noLink" }], problemsTotal: 40 } as Parameters<typeof toSetProblems>[0])).toEqual({
+      problems: [{ reason: "noLink" }],
+      problemsTotal: 40,
     });
-  });
-
-  it("a stored problemsTotal smaller than the problems shown is raised to the shown count", () => {
-    const { run } = toVariantListing({
-      pending: false,
-      record: record({
-        problems: [{ reason: "a" }, { reason: "b" }, { reason: "c" }],
-        problemsTotal: 1,
-      }),
-    } as unknown as RawStatus);
-    expect(run?.problemsTotal).toBe(3);
-  });
-
-  it("a problemsTotal larger than the shown problems (capped list) is kept", () => {
-    const { run } = toVariantListing({
-      pending: false,
-      record: record({ problems: [{ reason: "a" }], problemsTotal: 40 }),
-    } as unknown as RawStatus);
-    expect(run?.problemsTotal).toBe(40);
-  });
-
-  it("a problem keeps cardId and detail only when set", () => {
-    const { run } = toVariantListing({
-      pending: false,
-      record: record({
-        problems: [{ reason: "no number" }, { reason: "bad", cardId: "c1", detail: "why" }],
-      }),
-    } as unknown as RawStatus);
-    expect(run?.problems[0]).toEqual({ reason: "no number" });
-    expect(run?.problems[1]).toEqual({ reason: "bad", cardId: "c1", detail: "why" });
   });
 });
 

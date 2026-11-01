@@ -115,7 +115,12 @@ async function setup(opts: { year?: string } = {}) {
     return { cardId: await card("TB2", "bsc-1"), otherCardId: await card("TB10", "bsc-2") };
   });
   await t.run(async (ctx) => {
-    await ctx.db.insert("marketplaceListingStates", { ownerId: OWNER, platform: "bsc", lastUpdated: NOW });
+    await ctx.db.insert("marketplaceListingStates", {
+      ownerId: OWNER,
+      platform: "bsc",
+      listingStartedAt: NOW,
+      lastUpdated: NOW,
+    });
     await ctx.db.insert("userProfiles", {
       userId: OWNER,
       siteCredentials: [{ site: "buysportscards", hasCredentials: true }],
@@ -268,6 +273,33 @@ describe("applying a sale", () => {
     const after = await copies(s);
     expect(after.find((c) => c.homeId === s.box)).toBeUndefined();
     expect(after.find((c) => c.homeId === s.box2)?.quantity).toBe(1);
+    await expectCountsExact(s.t, OWNER, expect as never);
+  });
+
+  test("an in-person box's copy is never sold off, unless the SKU names that box", async () => {
+    const s = await setup();
+    // box2 is in person: its older copy stays; the SKU's (listed) box loses one.
+    await s.me.mutation(api.collectionContainers.setContainerListed, { containerId: s.box2, listed: false });
+    await add(s, s.cardId, { homeId: s.box2, condition: "Near Mint", acquiredOn: "2025-01-01" });
+    await add(s, s.cardId, { homeId: s.box, condition: "Near Mint", quantity: 2, acquiredOn: "2026-01-01" });
+    await record(s, order(s));
+    let after = await copies(s);
+    expect(after.find((c) => c.homeId === s.box2)?.quantity).toBe(1);
+    expect(after.find((c) => c.homeId === s.box)?.quantity).toBe(1);
+
+    // The SKU's own box made in person after the listing went up: a sale
+    // through that listing still lowers it (the copy sold is the one listed).
+    await s.me.mutation(api.collectionContainers.setContainerListed, { containerId: s.box, listed: false });
+    await record(s, order(s, { orderId: "order-2", orderNo: "NO-2" }));
+    after = await copies(s);
+    expect(after.find((c) => c.homeId === s.box)).toBeUndefined();
+    expect(after.find((c) => c.homeId === s.box2)?.quantity).toBe(1);
+
+    // No listed box and not the SKU's box: nothing to lower, the line says so.
+    const sku2 = buildListingSku({ cardId: s.cardId, bscCondition: "near_mint", boxId: s.box });
+    const third = await record(s, order(s, { orderId: "order-3", orderNo: "NO-3", lines: [{ sellerSku: sku2 }] }));
+    expect(third.toApply).toHaveLength(1);
+    expect((await copies(s)).find((c) => c.homeId === s.box2)?.quantity).toBe(1);
     await expectCountsExact(s.t, OWNER, expect as never);
   });
 
@@ -460,10 +492,13 @@ describe("pollOwner", () => {
     expect(states[0].dormant).toBe("noCredentials");
   });
 
-  test("listing switched OFF still polls: a sale on a listing left up still lowers the copy", async () => {
+  test("a sign-in saved but listing not started still polls: a sale on a listing left up still lowers the copy", async () => {
     const s = await setup();
+    await s.t.run(async (ctx) => {
+      const st = await ctx.db.query("marketplaceListingStates").first();
+      await ctx.db.patch(st!._id, { listingStartedAt: undefined });
+    });
     await add(s, s.cardId, { homeId: s.box, condition: "Near Mint", quantity: 2 });
-    await s.me.mutation(api.listingSync.setListingEnabled, { platform: "bsc", enabled: false });
     const createdAt = (await s.t.run(async (ctx) => (await ctx.db.query("marketplaceListingStates").first())!._creationTime));
     const iso = (ms: number) => new Date(ms).toISOString().replace("Z", "");
     const sku = buildListingSku({ cardId: s.cardId, bscCondition: "near_mint", boxId: s.box });
@@ -490,7 +525,7 @@ describe("pollOwner", () => {
     expect(report.ordersStored).toBe(1);
     expect(report.linesApplied).toBe(1);
     expect((await copies(s))[0].quantity).toBe(1);
-    // Off pushes nothing: the sale queued no listing change and kicked no drain.
+    // Not started pushes nothing: the sale queued no listing change and kicked no drain.
     expect(await s.t.run(async (ctx) => await ctx.db.query("listingOutbox").collect())).toEqual([]);
     const scheduled = await s.t.run(async (ctx) => ctx.db.system.query("_scheduled_functions").collect());
     expect(scheduled.filter((f) => f.name.includes("drainOwner"))).toEqual([]);
@@ -567,13 +602,12 @@ describe("pollOwner", () => {
     expect(st?.lastPollError).toMatch(/503/);
   });
 
-  test("pollAll schedules one poll per owner listing on BSC (switched off too)", async () => {
+  test("pollAll schedules one poll per owner with a BSC listing row (not started too)", async () => {
     const s = await setup();
     await s.t.run(async (ctx) => {
       await ctx.db.insert("marketplaceListingStates", {
         ownerId: "someone_else",
         platform: "bsc",
-        enabled: false,
         lastUpdated: NOW,
       });
       await ctx.db.insert("userProfiles", {

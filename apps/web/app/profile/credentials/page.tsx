@@ -5,6 +5,7 @@ import NeonButton from "@/components/modules/NeonButton";
 import { Input } from "@/components/primitives/Input";
 import { usePausedPlatforms } from "@/src/hooks/usePausedPlatforms";
 import { PAUSE_NOTICE_COPY } from "@/lib/marketplace/pause-notice";
+import BscListingSection from "./BscListingSection";
 
 const SUPPORTED_SITES = [
   { key: "buysportscards", label: "BuySportsCards" },
@@ -632,6 +633,9 @@ export default function CredentialsPanel() {
         )}
       </form>
     )}
+    {/* NEO-370 Rev 4 — listing starts here, under the sign-in it needs.
+        Draws nothing until a BuySportsCards sign-in is saved. */}
+    {selectedSite === "buysportscards" && <BscListingSection />}
     {confirmingClear && (
       // Centered modal overlay (not inline): a destructive confirm
       // belongs in a modal, and rendering it fixed/centered keeps it out

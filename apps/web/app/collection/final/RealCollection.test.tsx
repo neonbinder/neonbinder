@@ -1001,13 +1001,13 @@ function escapeRe(text: string): string {
 }
 
 
-/** NEO-370 — a listing half whose reads are still loading: enough to open the Sales tab. */
+/** NEO-370 — a listing half whose reads are still loading: enough to open the Sales and Sync status tabs. */
 const LISTING: ListingExtension = {
   useSettings: () => undefined,
-  setEnabled: vi.fn(async () => {}),
-  useVariantStatus: () => undefined,
-  resyncVariant: vi.fn(async () => ({ queued: 0, ignored: false })),
-  flushListing: vi.fn(async () => {}),
+  syncVariant: vi.fn(async () => ({ queued: true })),
+  setContainerListed: vi.fn(async () => {}),
+  useSyncStatus: () => ({ platforms: [] }),
+  loadSetProblems: vi.fn(async () => ({ problems: [], problemsTotal: 0 })),
   useSales: () => ({ sales: [], canLoadMore: false, loadingMore: false, loadMore: () => {} }),
 };
 
@@ -1017,11 +1017,21 @@ const inventoryTabs = () =>
     .map((l) => l.textContent);
 
 describe("the Sales tab (NEO-370)", () => {
-  it("a store with a listing extension shows Sales last among the inventory's tabs", () => {
+  it("a store with a listing extension ends the inventory's tabs with Sales, then Sync status", () => {
     renderAt("/inventory", makeStore({ listing: LISTING }));
     const names = inventoryTabs();
-    expect(names[names.length - 1]).toBe("Sales");
+    expect(names.slice(-2)).toEqual(["Sales", "Sync status"]);
     expect(names).toContain("Add cards");
+  });
+
+  it("Sync status is deep-linkable (?tab=sync), and /collection?tab=sync goes there", async () => {
+    renderAt("/collection?tab=sync", makeStore({ listing: LISTING }));
+    await waitFor(() => expect(pageUrl()).toBe("/inventory?tab=sync"));
+    expect(await screen.findByText(/^No marketplaces hooked up yet\./)).toBeTruthy();
+    const link = within(screen.getByRole("navigation", { name: "Inventory sections" })).getByRole("link", {
+      name: "Sync status",
+    });
+    expect(link.getAttribute("aria-current")).toBe("page");
   });
 
   it("/collection?tab=sales goes to the inventory's Sales tab", async () => {
@@ -1030,9 +1040,10 @@ describe("the Sales tab (NEO-370)", () => {
     expect(await screen.findByRole("heading", { level: 2, name: "What sold" })).toBeTruthy();
   });
 
-  it("without a listing extension the tab is absent", () => {
+  it("without a listing extension the tabs are absent", () => {
     renderAt("/inventory", makeStore());
     expect(inventoryTabs()).not.toContain("Sales");
+    expect(inventoryTabs()).not.toContain("Sync status");
   });
 
   it("without a listing extension, tab=sales renders no Sales content and opens the first tab", () => {
@@ -1040,6 +1051,24 @@ describe("the Sales tab (NEO-370)", () => {
     expect(screen.queryByRole("list", { name: "Orders, newest first" })).toBeNull();
     expect(screen.queryByRole("heading", { name: "What sold" })).toBeNull();
     expect(inventoryTabs()).not.toContain("Sales");
+  });
+
+  it("an open box carries Listed on marketplaces; a binder never does", async () => {
+    renderAt("/inventory?tab=boxes&b=box-show", makeStore({ listing: LISTING }));
+    const toggle = (await screen.findByRole("checkbox", { name: "Listed on marketplaces" })) as HTMLInputElement;
+    expect(toggle.checked).toBe(true);
+    fireEvent.click(toggle);
+    expect(LISTING.setContainerListed).toHaveBeenCalledWith("box-show", false);
+    cleanup();
+    renderAt("/collection?tab=binders&b=binder-rainbow", makeStore({ listing: LISTING }));
+    await screen.findByRole("heading", { level: 2, name: "Ohtani rainbow" });
+    expect(screen.queryByRole("checkbox", { name: "Listed on marketplaces" })).toBeNull();
+  });
+
+  it("without a listing half (the demo's case) an open box has no Listed on marketplaces", async () => {
+    renderAt("/inventory?tab=boxes&b=box-show", makeStore());
+    await screen.findByRole("heading", { level: 2, name: "Show box" });
+    expect(screen.queryByRole("checkbox", { name: "Listed on marketplaces" })).toBeNull();
   });
 
   it("the flag alone is not enough: capabilities on but no listing half still hides the tab", () => {

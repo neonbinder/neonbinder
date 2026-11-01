@@ -8,6 +8,7 @@ import type { Id } from "@/convex/_generated/dataModel";
 import { classifyIntake } from "@/lib/placeholders/intake-kind";
 import { usePlaceholderUpload } from "@/src/hooks/usePlaceholderUpload";
 import { useWarmPreprocess } from "@/src/hooks/useWarmPreprocess";
+import { useLeaveGuard } from "@/src/hooks/useLeaveGuard";
 import { Dropzone } from "@/app/print/placeholders/dropzone";
 import { ScanImage } from "@/app/print/placeholders/scan-image";
 import Overlay from "../../prototypes/p1/Overlay";
@@ -20,7 +21,9 @@ import {
   EMPTY_LANES,
   canRetryPhoto,
   cardLabel,
+  columnsClear,
   failedText,
+  LEAVE_INTAKE_LINE,
   laneOf,
   proposedCount,
   readOf,
@@ -493,6 +496,13 @@ function RecentRuns({ runs, onOpen }: { runs: RunSummary[]; onOpen: (id: Id<"int
 /* The live workspace                                                  */
 /* ------------------------------------------------------------------ */
 
+/**
+ * NEO-370 Rev 4 — the runs this tab saw "Done adding photos" pressed on.
+ * Outside component state so a Back that the leave guard sends straight back
+ * (a remount) still knows the run is waiting on its columns.
+ */
+const doneRuns = new Set<string>();
+
 const LANE_LABEL = {
   reading: "Cropping & reading",
   pairing: "Pairing",
@@ -520,6 +530,12 @@ function RunWorkspace({ run, jobOpen }: { run: RunSummary; jobOpen: boolean }) {
   const unpair = useMutation(api.placeholderPairing.unpairPlaceholderImages);
   const pairUp = useMutation(api.placeholderPairing.manuallyPairPlaceholderImages);
   const closeStream = useMutation(api.placeholderStream.closePlaceholderStream);
+  const [done, setDone] = useState(() => doneRuns.has(run._id));
+  const markDone = (on: boolean) => {
+    if (on) doneRuns.add(run._id);
+    else doneRuns.delete(run._id);
+    setDone(on);
+  };
   const retry = useMutation(api.placeholderStream.retryPlaceholderImage);
 
   const [selected, setSelected] = useState<Id<"placeholderPairs"> | null>(null);
@@ -646,6 +662,13 @@ function RunWorkspace({ run, jobOpen }: { run: RunSummary; jobOpen: boolean }) {
   // NEO-411: a photo that failed is not "read", so the summary says so.
   const unread = lanes.loose.filter((i) => i.status === "failed").length;
   const summary = runSummary({ loading, working, waiting: review.length, saved: lanes.saved.length, unread });
+  // After Done and until every column but Saved clears, leaving warns (the
+  // sync waits on those columns; leave anyway and the 15-minute round sends it).
+  const clear = !loading && columnsClear(lanes);
+  useEffect(() => {
+    if (done && clear) doneRuns.delete(run._id);
+  }, [done, clear, run._id]);
+  useLeaveGuard(done && !loading && !clear, LEAVE_INTAKE_LINE);
 
   return (
     <div className="space-y-3">
@@ -679,7 +702,13 @@ function RunWorkspace({ run, jobOpen }: { run: RunSummary; jobOpen: boolean }) {
             variant="secondary"
             outline
             className="ml-auto"
-            onClick={() => void closeStream({ jobId: run.jobId }).catch(fail)}
+            onClick={() => {
+              markDone(true);
+              void closeStream({ jobId: run.jobId }).catch((e: unknown) => {
+                markDone(false);
+                fail(e);
+              });
+            }}
           >
             Done adding photos
           </NeonButton>

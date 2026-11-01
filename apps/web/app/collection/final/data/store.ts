@@ -94,7 +94,9 @@ import type {
   ListingSettings,
   QuantityResult,
   SalesPage,
-  VariantListingStatus,
+  SetProblems,
+  SyncStatus,
+  SyncVariantResult,
   Side,
   SystemKind,
   AddResult,
@@ -510,27 +512,24 @@ export interface BinderMemoryExtension {
  * `marketplaceListing`): the Convex store's only. The demo never touches a
  * marketplace, so it has none and hides every listing control. NB is the
  * only truth: a platform shows NB's box count, and nothing here edits a
- * listing by hand.
+ * listing by hand. Listing starts on the Profile (where the sign-in is
+ * saved), not here.
  */
 export interface ListingExtension {
   /** Where the collector stands with each platform; `undefined` while loading. */
   useSettings(): ListingSettings | undefined;
-  /** Switch listing on or off. Rejects with the server's words (no saved sign-in, say). */
-  setEnabled(platform: ListingPlatform, enabled: boolean): Promise<void>;
-  /** One checklist's last push and whether a change is waiting; `null` asks nothing. */
-  useVariantStatus(variantId: VariantId | null): VariantListingStatus | undefined;
   /**
-   * Forget the checklist's last clean push and send it again. Resolves with
-   * the cards queued; `ignored` when the server let it pass (a run is going,
-   * or Resync was pressed within the last minute).
+   * Sync: read this checklist's sheet on every platform the collector lists
+   * on and set every card to NB's counts. Resolves with whether it was
+   * queued, or why the server let it pass (just synced, or nothing lists).
    */
-  resyncVariant(variantId: VariantId): Promise<{ queued: number; ignored: boolean }>;
-  /**
-   * Send the collector's waiting changes now, rather than within 15 minutes.
-   * The checklist calls it as the collector leaves (best effort: a closing
-   * tab may not get the call out).
-   */
-  flushListing(): Promise<void>;
+  syncVariant(variantId: VariantId): Promise<SyncVariantResult>;
+  /** A box's "Listed on marketplaces". Rejects with the server's words (a binder, say). */
+  setContainerListed(containerId: ContainerId, listed: boolean): Promise<void>;
+  /** The Sync status tab: running, queued and each set's last result. `undefined` while loading. */
+  useSyncStatus(): SyncStatus | undefined;
+  /** One set's whole held-back list, read once on demand. */
+  loadSetProblems(variantId: VariantId, platform: ListingPlatform): Promise<SetProblems>;
   /** The Sales list, newest first. Call it every render, like a hook. */
   useSales(): SalesPage;
 }

@@ -1,19 +1,25 @@
-import type { Card, ListingProblem, ListingProblemReason, SaleItem } from "../../data/types";
-import { shortCardName } from "../../data/labels";
+import type { ListingProblemReason, SaleItem, SyncProblem } from "../../data/types";
+import { BSC_NAME } from "@/lib/marketplace/listing-copy";
+
+export {
+  BSC_NAME,
+  CONSENT_LINE,
+  CREDENTIALS_PATH,
+  PAUSED_LINE,
+  REAUTH_LINE,
+  SELLER_CONFLICT_LINE,
+} from "@/lib/marketplace/listing-copy";
 
 /**
- * NEO-370 — the words the listing panel and the Sales tab say. One place, so
- * a reason reads the same everywhere and a new one is a type error here.
- * NB voice: short, plain, a little rad; never an internal word ("outbox",
- * "lease", "commit", "SKU").
+ * NEO-370 — the words the Sync button, the Sync status tab and the Sales tab
+ * say. One place, so a reason reads the same everywhere and a new one is a
+ * type error here. NB voice: short, plain, a little rad; never an internal
+ * word ("outbox", "lease", "drain", "SKU"). The ones the Profile says too
+ * live in `lib/marketplace/listing-copy`.
  */
 
-/** The platform's name as a collector reads it. */
-export const BSC_NAME = "BuySportsCards";
 /** BSC's seller orders page. BSC has no link to one order: the number is what to search. */
 export const BSC_ORDERS_URL = "https://www.buysportscards.com/sellers/orders";
-/** Where a collector saves (or renews) their marketplace sign-in. */
-export const CREDENTIALS_PATH = "/profile/credentials";
 
 /** Why a card didn't list on BSC, in a collector's words. */
 export const PROBLEM_COPY: Record<ListingProblemReason, string> = {
@@ -29,7 +35,7 @@ export const PROBLEM_COPY: Record<ListingProblemReason, string> = {
 };
 
 /** The full sentence for one problem, with what BSC said when it refused a row. */
-export function problemSentence(problem: Pick<ListingProblem, "reason" | "detail">): string {
+export function problemSentence(problem: Pick<SyncProblem, "reason" | "detail">): string {
   const base = PROBLEM_COPY[problem.reason];
   if (problem.reason === "rejected" && problem.detail) return `${base} They said: “${problem.detail}”`;
   return base;
@@ -39,24 +45,11 @@ export function problemSentence(problem: Pick<ListingProblem, "reason" | "detail
 export const UNMATCHED_CARD = `A ${BSC_NAME} card we can't match`;
 
 /** Which card a problem is about: "#12 Ken Griffey Jr.", else that NB has no card for it. */
-export function problemCardName(problem: Pick<ListingProblem, "cardId">, card: Card | undefined): string {
-  if (card) return shortCardName(card);
-  if (problem.cardId) return "A card that has left this checklist";
-  return UNMATCHED_CARD;
+export function problemCardName(problem: Pick<SyncProblem, "cardNo" | "cardLabel">): string {
+  const name = problem.cardLabel?.trim();
+  if (problem.cardNo) return name ? `#${problem.cardNo} ${name}` : `#${problem.cardNo}`;
+  return name || UNMATCHED_CARD;
 }
-
-/**
- * What switching listing on does to listings the collector already has on
- * BSC, said before they flip it: NB's box count wins, including 0.
- */
-export const CONSENT_LINE =
-  `Switching on sets what you already list on ${BSC_NAME}, in any set you have in your boxes, to your box counts. A card that isn't in a box goes to 0.`;
-
-/** The seller account lists from another NB account: said wherever the switch or status is. */
-export const SELLER_CONFLICT_LINE = `That ${BSC_NAME} seller account already lists from another NeonBinder account, so nothing goes up or comes in from this one.`;
-
-/** When a change goes up, for the status line and the switch's note. */
-export const WHEN_IT_GOES_UP = "when you leave this checklist or within 15 minutes";
 
 /** "2:14 PM" today, "Oct 30, 2:14 PM" this year, "Oct 30, 2025" before. */
 export function whenSynced(at: number, now: number = Date.now()): string {

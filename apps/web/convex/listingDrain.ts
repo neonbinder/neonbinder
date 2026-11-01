@@ -5,9 +5,11 @@
  * NB is the only truth. A box-side write (`collection.applyCopyChanges` and
  * its hook) upserts one `listingOutbox` row per (owner, platform, card); it
  * schedules nothing. `drainOwner` runs when something kicks it
- * (`listingOutbox.kickListingDrain`): the collector leaving a checklist page
- * (`listingSync.flushListing`), a settled intake run, a Resync, the end of
- * the enable walk, and the 15-minute cron after each owner's order poll.
+ * (`listingOutbox.kickListingDrain`): a Sync press (`listingSync.syncVariant`),
+ * an intake run the collector closed with "Done adding photos" once it
+ * settles, the end of the Start walk, and the 15-minute cron after each
+ * owner's order poll. Only copies in a LISTED box count
+ * (`listingOutbox.listsOnMarketplaces`); an in-person box counts 0.
  * This drainer:
  *
  *   1. CLAIMS the owner's state row (a lease, written once on claim and once
@@ -43,8 +45,7 @@ import type { ActionCtx, QueryCtx } from "./_generated/server";
 import { internalAction, internalMutation, internalQuery } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { listingPlatformValidator, listingProblemReasonValidator } from "./schema";
-import { listingCredentialOf, pushesCounts, sellerAccountHolder } from "./listingOutbox";
-import { HomeSides } from "./collection";
+import { listingCredentialOf, listsOnMarketplaces, pushesCounts, sellerAccountHolder } from "./listingOutbox";
 import { copyPhotoObjectKey, MAX_COPY_PHOTO_BYTES } from "./copyPhotos";
 import { planBscFanOut, resolveBscFacetFilters } from "./bscFacets";
 import { resolvableSides, type ResolvableRow } from "./marketplaceResolvability";
@@ -121,9 +122,11 @@ const fullVariantIdsValidator = v.optional(v.array(v.id("selectorOptions")));
 
 /**
  * Claims the owner's drain, and is the drain's gate:
- *   - no state row, listing switched off, or a dormant row: `off`;
- *   - no saved credentials for the platform: the row goes dormant
- *     (`noCredentials`, no poll and no drain until they are saved again);
+ *   - no state row, listing not started, or a dormant row: `off`;
+ *   - no saved credentials for the platform: listing stops as it does when
+ *     the sign-in is removed (`noCredentials` dormancy, no poll and no drain
+ *     until it is saved again, and the start cleared: saving needs Start
+ *     again);
  *   - credentials that need a fresh sign-in: `needsReauth`, nothing
  *     written (the hourly order poll retries the sign-in; a drain never does);
  *   - another run's live lease: `busy`, and that run is asked to run once
@@ -160,6 +163,7 @@ export const claimDrain = internalMutation({
     if (!credential.hasCredentials) {
       await ctx.db.patch(state._id, {
         dormant: "noCredentials",
+        listingStartedAt: undefined,
         drainScheduledAt: undefined,
         drainRequested: undefined,
         lastUpdated: now,
@@ -177,7 +181,7 @@ export const claimDrain = internalMutation({
       // once more when it releases, so whatever this run was kicked for is
       // not left for the cron. A run that dies holding its lease is picked
       // up by the cron (`listingSales.finishPoll`) once the lease runs out.
-      // A Resync's full re-read cannot ride on the live run, so it alone is
+      // A full re-read asked of this run cannot ride on the live one, so it alone is
       // retried when that lease runs out.
       if (args.fullVariantIds && args.fullVariantIds.length > 0) {
         await ctx.scheduler.runAt((state.drainLeaseExpiresAt ?? now) + 1000, internal.listingDrain.drainOwner, {
@@ -328,8 +332,8 @@ export const outboxSnapshot = internalQuery({
 
 /**
  * True while the owner's state row pushes counts and carries this run's
- * lease. Turning listing off (`enabled: false`) or a dormant row makes a run
- * between variants, or between PUT chunks, stand down.
+ * lease. Listing stopped (the sign-in removed: start cleared, row dormant)
+ * makes a run between variants, or between PUT chunks, stand down.
  */
 async function holdsDrain(
   ctx: QueryCtx,
@@ -351,6 +355,9 @@ export const drainHeld = internalQuery({
 /**
  * Claims one variant's sync record (made on its first sync). A `running`
  * record whose lease has not run out belongs to another run: stand down.
+ * `fullReadRequested`: a Sync was pressed since the record's last run
+ * (`resyncRequestedAt` later than `lastRunAt`), so this run reads every
+ * condition; the claim stamps `lastRunAt`, so only this one run does.
  */
 export const claimVariant = internalMutation({
   args: {
@@ -363,13 +370,14 @@ export const claimVariant = internalMutation({
     v.object({
       claimed: v.literal(true),
       lastSuccessAt: v.union(v.number(), v.null()),
+      fullReadRequested: v.boolean(),
       conditionsPushed: v.array(v.string()),
     }),
     v.object({ claimed: v.literal(false), reason: v.union(v.literal("busy"), v.literal("listingOff")) }),
   ),
   handler: async (ctx, args) => {
     const now = Date.now();
-    // Listing switched off or dormant under the run: stand down, write nothing.
+    // Listing stopped or dormant under the run: stand down, write nothing.
     if (!(await holdsDrain(ctx, args))) return { claimed: false as const, reason: "listingOff" as const };
     const record = await ctx.db
       .query("marketplaceListingSyncs")
@@ -390,11 +398,13 @@ export const claimVariant = internalMutation({
         conditionsPushed: [],
         lastUpdated: now,
       });
-      return { claimed: true as const, lastSuccessAt: null, conditionsPushed: [] };
+      return { claimed: true as const, lastSuccessAt: null, fullReadRequested: false, conditionsPushed: [] };
     }
     if (record.status === "running" && (record.leaseExpiresAt ?? 0) > now && record.leaseToken !== args.leaseToken) {
       return { claimed: false as const, reason: "busy" as const };
     }
+    const fullReadRequested =
+      record.resyncRequestedAt !== undefined && record.resyncRequestedAt > (record.lastRunAt ?? 0);
     await ctx.db.patch(record._id, {
       status: "running",
       leaseToken: args.leaseToken,
@@ -405,6 +415,7 @@ export const claimVariant = internalMutation({
     return {
       claimed: true as const,
       lastSuccessAt: record.lastSuccessAt ?? null,
+      fullReadRequested,
       conditionsPushed: record.conditionsPushed,
     };
   },
@@ -519,7 +530,7 @@ export const finishVariant = internalMutation({
  * the PUT names (`platformAccountId`), unless another NB owner's row already
  * holds it. On a conflict the row goes dormant (`sellerConflict`: no drain,
  * no poll) and nothing is pushed; the collector is told on the variant and
- * in their listing settings, and switching listing on again re-checks.
+ * in their listing settings, and pressing Start again re-checks.
  * Only the run holding the lease may bind.
  */
 export const bindSellerAccount = internalMutation({
@@ -685,9 +696,10 @@ const copyOutValidator = v.object({
 type CopyOut = typeof copyOutValidator.type;
 
 /**
- * One page of the owner's copies in the variant, with whether each one's home
- * is a box (only box copies are for sale). Private-card copies carry no
- * variant, so none reach here.
+ * One page of the owner's copies in the variant, with whether each one lists
+ * (`homeIsBox`: its home is a LISTED box, `listingOutbox.listsOnMarketplaces`;
+ * a binder copy and an in-person box copy both count 0 on the platform).
+ * Private-card copies carry no variant, so none reach here.
  */
 export const variantCopiesPage = internalQuery({
   args: {
@@ -704,7 +716,15 @@ export const variantCopiesPage = internalQuery({
         q.eq("ownerId", args.ownerId).eq("setId", args.setId).eq("variantId", args.variantId),
       )
       .paginate({ numItems: COPY_PAGE_SIZE, cursor: args.cursor });
-    const sides = new HomeSides(ctx, args.ownerId);
+    const listed = new Map<string, boolean>();
+    const homeLists = async (homeId: Id<"collectionContainers">): Promise<boolean> => {
+      const known = listed.get(homeId);
+      if (known !== undefined) return known;
+      const home = await ctx.db.get(homeId);
+      const lists = home !== null && home.ownerId === args.ownerId && listsOnMarketplaces(home);
+      listed.set(homeId, lists);
+      return lists;
+    };
     const copies: CopyOut[] = [];
     for (const row of page.page) {
       const cardId = ctx.db.normalizeId("cardChecklist", row.cardId);
@@ -713,7 +733,7 @@ export const variantCopiesPage = internalQuery({
         copyId: row._id,
         homeId: row.homeId,
         cardId,
-        homeIsBox: (await sides.of(row.homeId)) === "inventory",
+        homeIsBox: await homeLists(row.homeId),
         graded: row.grading !== undefined,
         quantity: row.quantity,
         ...(row.condition !== undefined ? { condition: row.condition } : {}),
@@ -853,7 +873,7 @@ type VariantResult =
   | { kind: "error" }
   | { kind: "skipped" }
   | { kind: "stop"; failure: BscSellerFailure }
-  /** Listing was switched off under the run: stop, write nothing more. */
+  /** Listing stopped under the run (sign-in removed): stop, write nothing more. */
   | { kind: "off" }
   /** Another NB owner holds the seller account: stop, push nothing. */
   | { kind: "sellerConflict" };
@@ -1038,7 +1058,7 @@ async function syncVariant(
   });
   if (!claim.claimed && claim.reason === "listingOff") return { kind: "off" };
   if (!claim.claimed) {
-    // Another run (a Resync) holds this variant. Re-point and drop what is
+    // Another run (a Sync's) holds this variant. Re-point and drop what is
     // not ours to push; the rest waits.
     await ctx.runMutation(internal.listingDrain.finishVariant, {
       ownerId,
@@ -1130,9 +1150,9 @@ async function syncVariant(
   });
 
   // Which condition sheets to read: every condition of the era on a full
-  // read (first sync, or a Resync), else the targets' plus every condition NB
+  // read (first sync, or the first run after a Sync press), else the targets' plus every condition NB
   // has pushed before (so a row NB once listed is still found and zeroed).
-  const fullRead = args.full || claim.lastSuccessAt === null;
+  const fullRead = args.full || claim.lastSuccessAt === null || claim.fullReadRequested;
   const conditions = fullRead
     ? [...bscConditionsForEra(era)]
     : [
@@ -1244,7 +1264,7 @@ async function syncVariant(
     // One NB owner per seller account, checked before anything is pushed.
     const binding = await bindSeller(sellerId);
     if (binding === "off") {
-      await finish({ kind: "error", error: "Listing on BuySportsCards was switched off part-way through." }, false);
+      await finish({ kind: "error", error: "Listing on BuySportsCards stopped part-way through (the sign-in was removed)." }, false);
       return { kind: "off" };
     }
     if (binding === "conflict") {
@@ -1253,7 +1273,7 @@ async function syncVariant(
     }
     let putFailure: BscSellerFailure | null = null;
     for (const chunk of plan.chunks) {
-      // Switched off mid-variant: push nothing more ("what the platform lists
+      // Stopped mid-variant: push nothing more ("what the platform lists
       // is left as it is"). The variant's record is closed rather than left
       // "running"; it keeps the conditions this run may already have pushed,
       // so a later run still reads (and can zero) them.
@@ -1261,7 +1281,7 @@ async function syncVariant(
         await finish(
           {
             kind: "error",
-            error: "Listing on BuySportsCards was switched off part-way through.",
+            error: "Listing on BuySportsCards stopped part-way through (the sign-in was removed).",
             conditionsPushed: [...listedConditions],
           },
           false,
