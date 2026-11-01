@@ -310,3 +310,5 @@ rm <scratch>/reference-bundle.zip
 - Your dev deployment needs its sport rows first. Open the Set Selector once.
   Sports the target lacks are dropped and listed in the plan.
 - To go back to an empty catalogue, run `e2e-baseline.sh reset`.
+
+<!-- NEO-407 seed test B: main on a fresh preview (measurement branch, never merged). -->
