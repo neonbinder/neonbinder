@@ -87,6 +87,7 @@ import PackTray, {
   type SlotTarget,
 } from "./binders/PackTray";
 import Shelf, { InventoryShelf } from "./binders/Shelf";
+import SmartFitsStatus from "./binders/SmartFitsStatus";
 import { keepClearOfTray, trackInputModality } from "./binders/trayClear";
 import { useSearchText } from "./catalog/search";
 import { shortCardName } from "./data/labels";
@@ -420,6 +421,9 @@ export default function MyBindersTab({
     homeOpen?.smartRule ? listCardIds : null,
   );
   const fits = matches ? (id: CardId) => matches.has(id) : undefined;
+
+  // NEO-410 — a smart binder's empty-slot status line (`SmartFitsStatus`).
+  const fitsWatched = !!(homeOpen?.smartRule && layout?.sort && layout.emptySlots);
 
   const setId = view?.kind === "set" ? view.setId : null;
   const setSummary = useSetSummary(setId);
@@ -1384,10 +1388,11 @@ export default function MyBindersTab({
   /** NEO-410 — "Try again" after a smart binder's slots failed to compute. */
   const retryFits = async () => {
     if (!homeOpen) return;
+    const c = homeOpen;
     try {
-      await actions.retryBinderFits(homeOpen);
+      await actions.retryBinderFits(c);
     } catch {
-      notify(`Couldn't start that again. Try once more in a moment.`);
+      notify(`Couldn't restart the search for ${c.name}. Try again in a moment.`);
     }
   };
 
@@ -1530,26 +1535,12 @@ export default function MyBindersTab({
           </BinderView>
         )}
 
-        {homeOpen?.smartRule && layout?.sort && layout.emptySlots && needs?.pending && (
-          // NEO-410: the rule was just saved and its empty slots are on the way.
-          <p role="status" className="mt-3 text-center text-sm text-ink-2">
-            Finding cards for this rule…
-          </p>
-        )}
-        {homeOpen?.smartRule && layout?.sort && layout.emptySlots && needs?.failed && (
-          // NEO-410: every recompute attempt failed; never a binder that waits forever.
-          <div role="status" className="mt-3 flex flex-wrap items-center justify-center gap-3 text-sm text-ink-2">
-            <span>Couldn't fill the empty slots for this rule.</span>
-            <NeonButton
-              type="button"
-              variant="secondary"
-              outline
-              onClick={() => void retryFits()}
-              className="min-h-10 max-sm:min-h-11"
-            >
-              Try again
-            </NeonButton>
-          </div>
+        {fitsWatched && (
+          <SmartFitsStatus
+            pending={needs?.pending === true}
+            failed={needs?.failed === true}
+            onRetry={retryFits}
+          />
         )}
 
         {view && truncated && !isBox && !isTradeBox && (

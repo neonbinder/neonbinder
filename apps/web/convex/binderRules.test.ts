@@ -663,12 +663,20 @@ describe("a recompute that fails (NEO-410)", () => {
     expect(read.pending).toBe(false);
     expect(read.failed).toBe(true);
 
-    // "Try again" (the write works now): pending at once, then filled.
+    // "Try again" (the write works now): pending at once, then filled. A
+    // second tap while it is pending schedules nothing more.
+    const writes = await failWrites(0);
+    writes.mockClear();
     await s.me.mutation(api.binderRules.retryFits, { containerId: id });
     expect((await slots(s, id)).pending).toBe(true);
+    await s.me.mutation(api.binderRules.retryFits, { containerId: id });
     await settle(s);
+    expect(writes).toHaveBeenCalledTimes(1); // one recompute, one page
     expect((await fitsOf(s, id)).length).toBeGreaterThan(1);
     const after = await fitsStateOf(s, id);
+    // On a binder that is fine, Try again does nothing at all.
+    await s.me.mutation(api.binderRules.retryFits, { containerId: id });
+    expect((await fitsStateOf(s, id))?.pending).toBeUndefined();
     expect(after?.failed).toBeUndefined();
     expect(after?.pending).toBeUndefined();
     expect((await slots(s, id)).failed).toBeUndefined();
@@ -691,6 +699,9 @@ describe("a recompute that fails (NEO-410)", () => {
       terms: [{ test: { kind: "player", playerIds: [s.fx.goodenId] } }],
     });
     await settle(s);
+    // A third binder that is fine (no pendingSince at all): never swept.
+    const settled = await smartBinder(s);
+    await settle(s);
     // Simulate a dropped recompute: pending, long ago, rows gone; and a
     // second binder that only just went pending, which the sweep leaves be.
     const now = Date.now();
@@ -704,7 +715,7 @@ describe("a recompute that fails (NEO-410)", () => {
         .query("collectionBinderFitsState")
         .withIndex("by_binder", (q) => q.eq("binderId", id))
         .unique();
-      await ctx.db.patch(stuck!._id, { pending: true, pendingSince: now - 11 * 60 * 1000 });
+      await ctx.db.patch(stuck!._id, { pending: true, pendingSince: now - 21 * 60 * 1000 });
       const recent = await ctx.db
         .query("collectionBinderFitsState")
         .withIndex("by_binder", (q) => q.eq("binderId", fresh))
@@ -716,5 +727,96 @@ describe("a recompute that fails (NEO-410)", () => {
     expect((await fitsOf(s, id)).length).toBeGreaterThan(1);
     expect((await fitsStateOf(s, id))?.pending).toBeUndefined();
     expect((await fitsStateOf(s, fresh))?.pending).toBe(true);
+    expect((await fitsStateOf(s, settled))?.pending).toBeUndefined();
+  });
+
+  test("overlapping recomputes: an older run landing late changes nothing a newer one stored", async () => {
+    const s = await setup();
+    const id = await smartBinder(s);
+    await settle(s);
+    const before = await fitsOf(s, id);
+    // Run A claims a generation, then stalls; run C claims after it and finishes.
+    const older = await s.t.mutation(internal.binderRules.claimFitsGeneration, { binderId: id });
+    await s.t.action(internal.binderRules.recomputeFits, { binderId: id });
+    const done = await fitsStateOf(s, id);
+    expect(done!.generation).toBeGreaterThan(older);
+    const rows = await fitsOf(s, id);
+    // A wakes up: writes one page (a subset) and finishes. Nothing moves.
+    await s.t.mutation(internal.binderRules.writeFitsPage, {
+      binderId: id,
+      ownerId: ME.subject,
+      generation: older,
+      startOrder: 0,
+      rows: [{ cardId: rows[0].cardId, variantId: rows[0].variantId }],
+    });
+    await s.t.mutation(internal.binderRules.finishFits, {
+      binderId: id,
+      ownerId: ME.subject,
+      generation: older,
+      supported: true,
+      complete: true,
+      count: 1,
+    });
+    const after = await fitsOf(s, id);
+    expect(after.map((f) => [f._id, f.order, f.generation])).toEqual(rows.map((f) => [f._id, f.order, f.generation]));
+    expect(after.map((f) => f.cardId)).toEqual(before.map((f) => f.cardId));
+    expect(await fitsStateOf(s, id)).toMatchObject({ generation: done!.generation, count: done!.count });
+  });
+
+  test("a stale chain never marks failed: not over a newer save, not over good fits", async () => {
+    const s = await setup();
+    const id = await smartBinder(s);
+    await settle(s);
+    const good = await fitsStateOf(s, id);
+    // A nightly-style recompute (no pending spell) that fails every time
+    // leaves the binder's good fits alone: no `failed`, no "Try again".
+    await failWrites(5);
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    await s.t.action(internal.binderRules.recomputeFits, { binderId: id });
+    await settle(s);
+    expect((await fitsStateOf(s, id))?.failed).toBeUndefined();
+    expect((await fitsOf(s, id)).length).toBe(good!.count);
+    // An old spell's give-up after a newer save started another spell.
+    await s.t.run(async (ctx) => {
+      const st = await ctx.db
+        .query("collectionBinderFitsState")
+        .withIndex("by_binder", (q) => q.eq("binderId", id))
+        .unique();
+      await ctx.db.patch(st!._id, { pending: true, pendingSince: 2_000 });
+    });
+    await s.t.mutation(internal.binderRules.markFitsFailed, { binderId: id, since: 1_000 });
+    expect(await fitsStateOf(s, id)).toMatchObject({ pending: true, pendingSince: 2_000 });
+    expect((await fitsStateOf(s, id))?.failed).toBeUndefined();
+  });
+});
+
+describe("backfillFitsState (NEO-410)", () => {
+  test("schedules only smart binders the sweep cannot see: no state row, or pending with no pendingSince", async () => {
+    const s = await setup();
+    const fine = await smartBinder(s);
+    const noRow = await smartBinder(s);
+    const unstamped = await smartBinder(s);
+    await settle(s);
+    await s.t.run(async (ctx) => {
+      const row = (id: Id<"collectionContainers">) =>
+        ctx.db
+          .query("collectionBinderFitsState")
+          .withIndex("by_binder", (q) => q.eq("binderId", id))
+          .unique();
+      await ctx.db.delete((await row(noRow))!._id);
+      await ctx.db.patch((await row(unstamped))!._id, { pending: true });
+    });
+    // Dry run: counts, writes nothing.
+    const dry = await s.t.mutation(internal.backfillFitsState.run, {});
+    expect(dry).toMatchObject({ armed: false, missing: 1, unstamped: 1, isDone: true });
+    expect(await fitsStateOf(s, noRow)).toBeNull();
+    // Armed: both computed; the settled binder untouched.
+    const fineBefore = await fitsStateOf(s, fine);
+    await s.t.mutation(internal.backfillFitsState.run, { arm: true });
+    await settle(s);
+    expect((await fitsStateOf(s, noRow))?.pending).toBeUndefined();
+    expect((await fitsOf(s, noRow)).length).toBeGreaterThan(1);
+    expect((await fitsStateOf(s, unstamped))?.pending).toBeUndefined();
+    expect((await fitsStateOf(s, fine))?.computedAt).toBe(fineBefore?.computedAt);
   });
 });

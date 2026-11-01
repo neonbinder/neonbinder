@@ -523,8 +523,8 @@ const REFRESH_BATCH = 100;
 const REFRESH_SPACING_MS = 3_000;
 /** A binder's fits older than this are due for the nightly pass. */
 const REFRESH_AFTER_MS = 20 * 60 * 60 * 1000;
-/** Fits rows one mutation deletes: one delete per row, well inside a transaction. */
-export const FITS_PAGE = 500;
+/** Fits rows one mutation deletes: one delete per row, a small transaction (NEO-410). */
+export const FITS_PAGE = 200;
 /**
  * NEO-410 — fits rows one `writeFitsPage` writes. Each row costs about three
  * database calls (the held check, the stored-row lookup, the insert or
@@ -538,8 +538,12 @@ export const FITS_WRITE_PAGE = 50;
  * gives up visibly (`markFitsFailed`): the binder is never left pending.
  */
 export const FITS_RETRY_DELAYS_MS = [5_000, 30_000, 120_000, 600_000];
-/** NEO-410 — a binder pending longer than this is re-queued by `requeueStuckFits`. */
-export const FITS_STUCK_AFTER_MS = 10 * 60 * 1000;
+/**
+ * NEO-410 — a binder pending longer than this is re-queued by
+ * `requeueStuckFits`. Longer than a whole retry chain (about 12.6 minutes),
+ * so the sweep never starts a second chain beside a live one.
+ */
+export const FITS_STUCK_AFTER_MS = 20 * 60 * 1000;
 /** Stuck binders one `requeueStuckFits` pass re-queues. */
 const REQUEUE_BATCH = 50;
 
@@ -562,18 +566,11 @@ export const planFits = internalQuery({
       supported: v.boolean(),
       complete: v.boolean(),
       wanted: v.array(fitValidator),
-      /** The generation this recompute writes: one past the stored one, never the clock. */
-      generation: v.number(),
     }),
   ),
   handler: async (ctx, args) => {
     const binder = await ctx.db.get(args.binderId);
     if (!binder || !binder.rule) return null;
-    const state = await ctx.db
-      .query("collectionBinderFitsState")
-      .withIndex("by_binder", (q) => q.eq("binderId", binder._id))
-      .unique();
-    const generation = (state?.generation ?? 0) + 1;
     const lines = await ctx.db
       .query("collectionCopies")
       .withIndex("by_owner_home_slot", (q) => q.eq("ownerId", binder.ownerId).eq("homeId", binder._id))
@@ -594,7 +591,7 @@ export const planFits = internalQuery({
         wanted.push({ cardId: card._id, variantId: card.selectorOptionId });
       }
     }
-    return { ownerId: binder.ownerId, supported: candidates.supported, complete: candidates.complete, wanted, generation };
+    return { ownerId: binder.ownerId, supported: candidates.supported, complete: candidates.complete, wanted };
   },
 });
 
@@ -614,6 +611,15 @@ export const writeFitsPage = internalMutation({
   },
   returns: v.null(),
   handler: async (ctx, args) => {
+    // NEO-410: recomputes of one binder can overlap (a retry, the stuck
+    // sweep, an arrival, Try again). A run whose generation a newer run has
+    // already finished writes nothing, and no row is ever moved back to an
+    // older generation.
+    const state = await ctx.db
+      .query("collectionBinderFitsState")
+      .withIndex("by_binder", (q) => q.eq("binderId", args.binderId))
+      .unique();
+    if ((state?.generation ?? 0) >= args.generation) return null;
     // The `held` mark is built HERE, off the save path, so the slots read
     // needs no per-card lookup of the collector's other binders (NEO-392).
     const held = heldReader(ctx, args.ownerId);
@@ -634,7 +640,7 @@ export const writeFitsPage = internalMutation({
           generation: args.generation,
           held: isHeld,
         });
-      } else {
+      } else if (row.generation <= args.generation) {
         await ctx.db.patch(row._id, { order, variantId: fit.variantId, generation: args.generation, held: isHeld });
       }
     }
@@ -658,17 +664,24 @@ export const finishFits = internalMutation({
   },
   returns: v.object({ more: v.boolean() }),
   handler: async (ctx, args) => {
-    const stale = await ctx.db
-      .query("collectionBinderFits")
-      .withIndex("by_binder_order", (q) => q.eq("binderId", args.binderId))
-      .filter((q) => q.neq(q.field("generation"), args.generation))
-      .take(FITS_PAGE);
-    for (const row of stale) await ctx.db.delete(row._id);
-    if (stale.length === FITS_PAGE) return { more: true };
     const state = await ctx.db
       .query("collectionBinderFitsState")
       .withIndex("by_binder", (q) => q.eq("binderId", args.binderId))
       .unique();
+    // NEO-410: a newer run already finished; this one's rows are its own
+    // business no longer (that run's sweep removed or re-stamped them).
+    if ((state?.generation ?? 0) >= args.generation) return { more: false };
+    // Only OLDER generations go: a newer run still writing keeps its rows.
+    const stale = await ctx.db
+      .query("collectionBinderFits")
+      .withIndex("by_binder_order", (q) => q.eq("binderId", args.binderId))
+      .filter((q) => q.lt(q.field("generation"), args.generation))
+      .take(FITS_PAGE);
+    for (const row of stale) await ctx.db.delete(row._id);
+    if (stale.length === FITS_PAGE) return { more: true };
+    // A run claimed after this one is still on its way: its spell stays
+    // pending (so the stuck sweep still covers it) and it writes the state.
+    const superseded = (state?.nextGeneration ?? args.generation) > args.generation;
     const next = {
       ownerId: args.ownerId,
       binderId: args.binderId,
@@ -676,9 +689,7 @@ export const finishFits = internalMutation({
       supported: args.supported,
       complete: args.complete,
       count: args.count,
-      pending: undefined,
-      pendingSince: undefined,
-      failed: undefined,
+      ...(superseded ? {} : { pending: undefined, pendingSince: undefined, failed: undefined }),
       generation: args.generation,
     };
     if (state) await ctx.db.patch(state._id, next);
@@ -725,6 +736,12 @@ export const recomputeFits = internalAction({
     binderId: v.id("collectionContainers"),
     /** NEO-410 — 1 for a first run; each retry after a failure counts up. */
     attempt: v.optional(v.number()),
+    /**
+     * NEO-410 — the `pendingSince` of the pending spell this chain serves
+     * (`scheduleFits`, `requeueStuckFits`). Only that spell's chain may mark
+     * the binder failed; a nightly or arrival recompute carries none.
+     */
+    since: v.optional(v.number()),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -739,23 +756,43 @@ export const recomputeFits = internalAction({
       const retryIn = FITS_RETRY_DELAYS_MS[attempt - 1];
       console.error(
         JSON.stringify({
-          event: "binder_fits_recompute_failed",
+          msg: "binder_fits_recompute_failed",
           binderId: args.binderId,
           attempt,
           retryInMs: retryIn ?? null,
-          error: error instanceof Error ? error.message : String(error),
+          error: (error instanceof Error ? error.message : String(error)).slice(0, 500),
         }),
       );
       if (retryIn !== undefined) {
         await ctx.scheduler.runAfter(retryIn, internal.binderRules.recomputeFits, {
           binderId: args.binderId,
           attempt: attempt + 1,
+          since: args.since,
         });
-      } else {
-        await ctx.runMutation(internal.binderRules.markFitsFailed, { binderId: args.binderId });
+      } else if (args.since !== undefined) {
+        await ctx.runMutation(internal.binderRules.markFitsFailed, { binderId: args.binderId, since: args.since });
       }
     }
     return null;
+  },
+});
+
+/**
+ * NEO-410 — claim the generation a recompute writes: one past every
+ * generation stored or claimed before, so two overlapping runs never share
+ * one (a query cannot claim; `planFits` used to pick stored + 1).
+ */
+export const claimFitsGeneration = internalMutation({
+  args: { binderId: v.id("collectionContainers") },
+  returns: v.number(),
+  handler: async (ctx, args) => {
+    const state = await ctx.db
+      .query("collectionBinderFitsState")
+      .withIndex("by_binder", (q) => q.eq("binderId", args.binderId))
+      .unique();
+    const generation = Math.max(state?.generation ?? 0, state?.nextGeneration ?? 0) + 1;
+    if (state) await ctx.db.patch(state._id, { nextGeneration: generation });
+    return generation;
   },
 });
 
@@ -767,7 +804,7 @@ async function recompute(ctx: ActionCtx, binderId: Id<"collectionContainers">): 
     while (more) ({ more } = await ctx.runMutation(internal.binderRules.clearFits, { binderId }));
     return;
   }
-  const { generation } = plan;
+  const generation = await ctx.runMutation(internal.binderRules.claimFitsGeneration, { binderId });
   for (let start = 0; start < plan.wanted.length; start += FITS_WRITE_PAGE) {
     await ctx.runMutation(internal.binderRules.writeFitsPage, {
       binderId,
@@ -793,17 +830,20 @@ async function recompute(ctx: ActionCtx, binderId: Id<"collectionContainers">): 
 /**
  * NEO-410 — every attempt of a recompute failed: stop saying "pending" and
  * say "failed", so the binder offers "Try again" instead of waiting forever.
- * The stored rows (the previous rule's, or none) stay as they were.
+ * The stored rows (the previous rule's, or none) stay as they were. Only the
+ * chain of the binder's current pending spell (`since`) may do this: a chain
+ * a newer save or the sweep has replaced, or one for a binder that is not
+ * pending (a nightly refresh over good fits), changes nothing.
  */
 export const markFitsFailed = internalMutation({
-  args: { binderId: v.id("collectionContainers") },
+  args: { binderId: v.id("collectionContainers"), since: v.number() },
   returns: v.null(),
   handler: async (ctx, args) => {
     const state = await ctx.db
       .query("collectionBinderFitsState")
       .withIndex("by_binder", (q) => q.eq("binderId", args.binderId))
       .unique();
-    if (state) await ctx.db.patch(state._id, { pending: undefined, pendingSince: undefined, failed: true });
+    if (state?.pending === true && state.pendingSince === args.since) await ctx.db.patch(state._id, { pending: undefined, pendingSince: undefined, failed: true });
     return null;
   },
 });
@@ -828,19 +868,29 @@ export const requeueStuckFits = internalMutation({
       await ctx.db.patch(state._id, { pendingSince: now });
       await ctx.scheduler.runAfter(i * REFRESH_SPACING_MS, internal.binderRules.recomputeFits, {
         binderId: state.binderId,
+        since: now,
       });
     }
     return { requeued: stuck.length };
   },
 });
 
-/** NEO-410 — "Try again" on a smart binder whose recompute failed. */
+/**
+ * NEO-410 — "Try again" on a smart binder whose recompute failed. A no-op
+ * unless the last recompute did fail: a binder already pending (or fine)
+ * schedules nothing, so repeated taps can't stack recomputes.
+ */
 export const retryFits = mutation({
   args: { containerId: v.id("collectionContainers") },
   returns: v.null(),
   handler: async (ctx, args) => {
     const ownerId = await requireSignedIn(ctx);
     const binder = await ownSmartBinder(ctx, ownerId, args.containerId);
+    const state = await ctx.db
+      .query("collectionBinderFitsState")
+      .withIndex("by_binder", (q) => q.eq("binderId", binder._id))
+      .unique();
+    if (state?.failed !== true || state.pending === true) return null;
     await scheduleFits(ctx, ownerId, binder._id);
     return null;
   },
@@ -871,7 +921,7 @@ export async function scheduleFits(ctx: MutationCtx, ownerId: string, binderId: 
       pendingSince,
     });
   }
-  await ctx.scheduler.runAfter(0, internal.binderRules.recomputeFits, { binderId });
+  await ctx.scheduler.runAfter(0, internal.binderRules.recomputeFits, { binderId, since: pendingSince });
 }
 
 /**

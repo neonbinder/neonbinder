@@ -4050,6 +4050,11 @@ export default defineSchema({
     failed: v.optional(v.boolean()),
     /** The generation the rows carry; the next recompute writes the one after. */
     generation: v.optional(v.number()),
+    /**
+     * NEO-410 — the highest generation a recompute has claimed
+     * (`claimFitsGeneration`), so overlapping recomputes never share one.
+     */
+    nextGeneration: v.optional(v.number()),
   })
     .index("by_binder", ["binderId"])
     .index("by_computed", ["computedAt"])
