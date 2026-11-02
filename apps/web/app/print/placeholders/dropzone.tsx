@@ -100,7 +100,8 @@ export function Dropzone({
           dragging
             ? "border-neon-purple bg-neon-purple/10"
             : "border-rule-strong hover:border-control hover:bg-field/40",
-          inert ? "cursor-not-allowed opacity-60" : "",
+          // Held, the headline is the instruction, so only sending dims the zone.
+          disabled ? "cursor-not-allowed opacity-60" : held ? "cursor-not-allowed" : "",
         ].join(" ")}
       >
         <span className="text-base font-medium text-ink-2">

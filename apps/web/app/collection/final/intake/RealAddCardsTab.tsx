@@ -601,7 +601,7 @@ function DefaultsFields({
               className={FIELD}
               type="text"
               inputMode="decimal"
-              placeholder="$0.00"
+              placeholder="Common price"
               value={priceText}
               aria-invalid={priceBad || undefined}
               aria-describedby={priceBad ? `${priceErrorId} ${priceHelpId}` : priceHelpId}
