@@ -165,3 +165,4 @@
 - [users table is never written](reference_users_table_is_never_written.md) — never join it for names; profile names, else Clerk via adminResolveOwnerLabels (label===id means none)
 - [Intake tab test mocks the store wholesale](reference_intake_tab_test_mocks_store_wholesale.md) — new store hooks or a mode.tsx import (ParamLink) break RealAddCardsTab.test at import; mock ../mode; ParamLink needs CollectionModeProvider
 - [Batch reads in waves, validate in order](reference_batch_reads_in_waves_validate_in_order.md) — Promise.all read waves then original-order checks; mutation-check refusal pairs; moveSubtree pin regex is one-line
+- [No jest-dom matchers](reference_no_jest_dom_matchers_in_unit_tests.md) — toBeInTheDocument/toHaveAttribute throw; use getByRole, getAttribute, textContent
