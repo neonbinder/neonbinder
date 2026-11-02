@@ -49,6 +49,24 @@ const PUBLIC_KEY_PATH = "/commerce/notification/v1/public_key/";
 /** Re-read a key at most hourly; eBay rotates by issuing a new kid. */
 const KEY_TTL_MS = 60 * 60 * 1000;
 const MAX_CACHED_KEYS = 100;
+
+/**
+ * Re-audit condition 1. The kid comes from an unauthenticated push, so
+ * without these two limits anyone who can reach Convex's webhook could make
+ * this service call eBay once per request with a made-up kid.
+ *
+ *   - A kid eBay answers 400/404 for is remembered as unknown for 10 minutes
+ *     and answered `valid:false` without another call.
+ *   - At most UNCACHED_KEY_FETCHES_PER_MINUTE key fetches (cache misses) run
+ *     per process per rolling minute. Over the cap the verifier reports an
+ *     OUTAGE, never `valid:false`: Convex answers eBay 500 and eBay retries
+ *     later, so a genuine push that lands during a flood is delayed, not
+ *     dropped. Kids already cached (either way) do not count.
+ */
+const NEGATIVE_KID_TTL_MS = 10 * 60 * 1000;
+const MAX_NEGATIVE_KIDS = 1000;
+export const UNCACHED_KEY_FETCHES_PER_MINUTE = 5;
+const KEY_FETCH_WINDOW_MS = 60 * 1000;
 /** Renew the app token this long before eBay says it lapses. */
 const APP_TOKEN_LEEWAY_MS = 60 * 1000;
 
@@ -116,6 +134,10 @@ export class EbayNotificationVerifier {
   private appTokens = new Map<string, { token: string; expiresAt: number }>();
   private appTokenInFlight = new Map<string, Promise<string>>();
   private keys = new Map<string, { key: KeyObject; fetchedAt: number }>();
+  /** environment:kid → epoch ms until which eBay's "no such key" stands. */
+  private unknownKids = new Map<string, number>();
+  /** Start times of recent uncached key fetches, for the per-minute cap. */
+  private recentKeyFetches: number[] = [];
 
   constructor(private readonly deps: EbayOAuthDeps = {}) {}
 
@@ -159,13 +181,21 @@ export class EbayNotificationVerifier {
 
   /**
    * The public key for `kid`, or null when eBay says there is no such key
-   * (400/404) or hands back one that is not an EC key. Throws
-   * `EbayOAuthError("unavailable")` when the key cannot be fetched.
+   * (400/404, remembered for NEGATIVE_KID_TTL_MS) or hands back one that is
+   * not an EC key. Throws `EbayOAuthError("unavailable")` when the key cannot
+   * be fetched, including when the per-minute fetch budget is spent.
    */
   private async publicKey(config: EbayOAuthConfig, kid: string): Promise<KeyObject | null> {
     const slot = `${config.environment}:${kid}`;
+    const now = this.now();
     const cached = this.keys.get(slot);
-    if (cached && this.now() - cached.fetchedAt < KEY_TTL_MS) return cached.key;
+    if (cached && now - cached.fetchedAt < KEY_TTL_MS) return cached.key;
+    const unknownUntil = this.unknownKids.get(slot);
+    if (unknownUntil !== undefined) {
+      if (unknownUntil > now) return null;
+      this.unknownKids.delete(slot);
+    }
+    this.takeKeyFetchBudget(now);
 
     const url = `${EBAY_HOSTS[config.environment].api}${PUBLIC_KEY_PATH}${encodeURIComponent(kid)}`;
     let res: Response | undefined;
@@ -186,7 +216,10 @@ export class EbayNotificationVerifier {
       this.appTokens.delete(this.appTokenSlot(config));
     }
     if (!res) throw new EbayOAuthError("unavailable");
-    if (res.status === 400 || res.status === 404) return null;
+    if (res.status === 400 || res.status === 404) {
+      this.rememberUnknownKid(slot);
+      return null;
+    }
     if (!res.ok) throw new EbayOAuthError("unavailable", { upstreamStatus: res.status });
 
     let body: Record<string, unknown> | null = null;
@@ -216,6 +249,29 @@ export class EbayNotificationVerifier {
     }
     this.keys.set(slot, { key, fetchedAt: this.now() });
     return key;
+  }
+
+  /**
+   * Spend one uncached key fetch, or throw `unavailable` when the rolling
+   * minute's budget is gone. Only timestamps within [now - window, now] count,
+   * so a clock that moves backwards cannot wedge the budget shut.
+   */
+  private takeKeyFetchBudget(now: number): void {
+    this.recentKeyFetches = this.recentKeyFetches.filter(
+      (t) => t <= now && now - t < KEY_FETCH_WINDOW_MS,
+    );
+    if (this.recentKeyFetches.length >= UNCACHED_KEY_FETCHES_PER_MINUTE) {
+      throw new EbayOAuthError("unavailable");
+    }
+    this.recentKeyFetches.push(now);
+  }
+
+  private rememberUnknownKid(slot: string): void {
+    if (this.unknownKids.size >= MAX_NEGATIVE_KIDS && !this.unknownKids.has(slot)) {
+      const oldest = this.unknownKids.keys().next().value;
+      if (oldest !== undefined) this.unknownKids.delete(oldest);
+    }
+    this.unknownKids.set(slot, this.now() + NEGATIVE_KID_TTL_MS);
   }
 
   /**

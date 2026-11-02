@@ -182,9 +182,13 @@ after(async () => {
   await new Promise((resolve) => server.close(resolve));
 });
 
+// Each test starts two minutes after the last, so no test inherits the
+// previous one's uncached-key-fetch budget (5 per rolling minute).
+let testSeq = 0;
 beforeEach(() => {
   env = { ...SANDBOX_ENV };
-  clock = T0;
+  testSeq++;
+  clock = T0 + testSeq * 2 * 60 * 1000;
   ebay.reset();
   ebay.keysByKid.set(KID, pair.ebayKeyString);
   logs.length = 0;
@@ -462,6 +466,90 @@ describe("POST /webhooks/ebay/verify — errors", () => {
       assert.deepEqual(await res.json(), { error_class: "bad_request" });
     });
   }
+});
+
+describe("POST /webhooks/ebay/verify — kid flood protection (re-audit condition 1)", () => {
+  it("a kid eBay does not know is remembered for 10 minutes", async () => {
+    clock = T0 + 100 * 24 * 3600 * 1000;
+    const kid = `never-issued-${Date.now()}`;
+    const sig = signedHeader(pair.privateKey, NOTIFICATION, kid);
+
+    assert.deepEqual((await verify(sig, NOTIFICATION)).body, { valid: false });
+    assert.equal(keyCalls().length, 1);
+
+    clock += 9 * 60 * 1000;
+    assert.deepEqual((await verify(sig, NOTIFICATION)).body, { valid: false });
+    assert.equal(keyCalls().length, 1, "answered from the negative cache");
+
+    clock += 2 * 60 * 1000; // 11 minutes after the first miss
+    assert.deepEqual((await verify(sig, NOTIFICATION)).body, { valid: false });
+    assert.equal(keyCalls().length, 2, "re-asked eBay once the 10 minutes passed");
+  });
+
+  it("a kid eBay later publishes verifies once its negative entry lapses", async () => {
+    clock = T0 + 110 * 24 * 3600 * 1000;
+    const kid = `late-key-${Date.now()}`;
+    const sig = signedHeader(pair.privateKey, NOTIFICATION, kid);
+    assert.deepEqual((await verify(sig, NOTIFICATION)).body, { valid: false });
+    ebay.keysByKid.set(kid, pair.ebayKeyString);
+    clock += 11 * 60 * 1000;
+    assert.deepEqual((await verify(sig, NOTIFICATION)).body, { valid: true });
+  });
+
+  it("caps uncached key fetches at 5 per minute and answers the 6th as an outage, never valid:false", async () => {
+    clock = T0 + 120 * 24 * 3600 * 1000;
+    const known = freshKid();
+    const knownSig = signedHeader(pair.privateKey, NOTIFICATION, known);
+    assert.deepEqual((await verify(knownSig, NOTIFICATION)).body, { valid: true }); // fetch 1
+
+    const negative = `flood-neg-${Date.now()}`;
+    const negativeSig = signedHeader(pair.privateKey, NOTIFICATION, negative);
+    assert.deepEqual((await verify(negativeSig, NOTIFICATION)).body, { valid: false }); // fetch 2
+
+    for (let i = 0; i < 3; i++) {
+      // fetches 3-5: made-up kids, as a flood would send
+      const res = await verify(signedHeader(pair.privateKey, NOTIFICATION, `flood-${i}-${Date.now()}`), NOTIFICATION);
+      assert.deepEqual(res.body, { valid: false });
+    }
+    assert.equal(keyCalls().length, 5);
+
+    // 6th uncached kid inside the minute: an outage, so Convex 500s and eBay retries.
+    const genuine = freshKid();
+    const genuineSig = signedHeader(pair.privateKey, NOTIFICATION, genuine);
+    const over = await verify(genuineSig, NOTIFICATION);
+    assert.equal(over.status, 502);
+    assert.deepEqual(over.body, { error_class: "ebay_unavailable" });
+
+    const overUnknown = await verify(
+      signedHeader(pair.privateKey, NOTIFICATION, `flood-x-${Date.now()}`),
+      NOTIFICATION,
+    );
+    assert.equal(overUnknown.status, 502, "an unknown kid over the cap is an outage too, not valid:false");
+    assert.equal(keyCalls().length, 5, "nothing over the cap reached eBay");
+
+    // Cached kids, positive and negative, still answer during the cap.
+    assert.deepEqual((await verify(knownSig, NOTIFICATION)).body, { valid: true });
+    assert.deepEqual((await verify(negativeSig, NOTIFICATION)).body, { valid: false });
+    assert.equal(keyCalls().length, 5);
+
+    // A minute on, eBay's retry of the genuine push goes through.
+    clock += 61 * 1000;
+    assert.deepEqual((await verify(genuineSig, NOTIFICATION)).body, { valid: true });
+    assert.equal(keyCalls().length, 6);
+  });
+
+  it("the cap is rolling: fetches older than a minute stop counting", async () => {
+    clock = T0 + 130 * 24 * 3600 * 1000;
+    for (let i = 0; i < 5; i++) {
+      await verify(signedHeader(pair.privateKey, NOTIFICATION, freshKid()), NOTIFICATION);
+      clock += 10 * 1000; // fetches at +0s, +10s, +20s, +30s, +40s
+    }
+    // now +50s: all five inside the window
+    assert.equal((await verify(signedHeader(pair.privateKey, NOTIFICATION, freshKid()), NOTIFICATION)).status, 502);
+    clock += 15 * 1000; // +65s: the +0s fetch has aged out
+    const res = await verify(signedHeader(pair.privateKey, NOTIFICATION, freshKid()), NOTIFICATION);
+    assert.deepEqual(res.body, { valid: true });
+  });
 });
 
 describe("POST /webhooks/ebay/verify — logging and rate limiting", () => {
