@@ -861,14 +861,16 @@ export const cardRequestStatusValidator = v.union(
 export const cardRequestKindValidator = v.union(v.literal("card"), v.literal("set"));
 
 /**
- * NEO-370 — a marketplace NB lists a collector's for-sale copies on. Only
- * BuySportsCards today. eBay joins by adding `v.literal("ebay")` here: a
- * wider union is additive, but it must DEPLOY before anything writes the new
- * value (a document carrying a literal the deployed union lacks is refused on
- * write, and on read by a rolled-back deployment; see `platformFacets`).
- * SportLots is not a listing destination, so it is not here.
+ * NEO-370 — a marketplace NB lists a collector's for-sale copies on.
+ * BuySportsCards (sheet-level, one row per BSC card id) and, since NEO-415,
+ * eBay (card-level: one NB-owned listing per card and condition bucket, see
+ * `marketplaceListingLinks`). A wider union is additive, but it must DEPLOY
+ * before anything writes the new value (a document carrying a literal the
+ * deployed union lacks is refused on write, and on read by a rolled-back
+ * deployment; see `platformFacets`). SportLots is not a listing destination,
+ * so it is not here.
  */
-export const listingPlatformValidator = v.union(v.literal("bsc"));
+export const listingPlatformValidator = v.union(v.literal("bsc"), v.literal("ebay"));
 
 /**
  * NEO-370 — why one card of a variant did not list on a platform, as the
@@ -885,6 +887,11 @@ export const listingPlatformValidator = v.union(v.literal("bsc"));
  *   graded         a graded copy (raw only, NEO-373 does slabs)
  *   notOnSheet     the platform's sheet for this variant has no row for it
  *   rejected       the platform refused the row; `detail` says what it said
+ *   missingAspect  (eBay) a field eBay requires for the card category is not
+ *                  one NB can fill for this card; `detail` names the field
+ *   noPhoto        (eBay) the copy NB would list has no photo; eBay needs one
+ *   setupIncomplete (eBay) the collector's eBay settings (shipping, payment,
+ *                  returns, location) are not complete, so nothing was sent
  * A new reason widens this union (additive, deploy before writing it).
  */
 export const listingProblemReasonValidator = v.union(
@@ -897,6 +904,9 @@ export const listingProblemReasonValidator = v.union(
   v.literal("graded"),
   v.literal("notOnSheet"),
   v.literal("rejected"),
+  v.literal("missingAspect"),
+  v.literal("noPhoto"),
+  v.literal("setupIncomplete"),
 );
 
 /**
@@ -1088,6 +1098,11 @@ export default defineSchema({
     // (e.g. fetchBscChecklist) don't have to re-derive them on every request.
     marketplaceAccountIds: v.optional(v.object({
       bscSellerId: v.optional(v.string()),
+      // NEO-415: eBay's immutable user id for the connected seller account
+      // (Commerce Identity `userId`, returned by the browser service's
+      // `/oauth/ebay/connect`). The seller-conflict key and the account
+      // deletion lookup; never the display username, which a seller can change.
+      ebayUserId: v.optional(v.string()),
     })),
     preferences: v.optional(v.object({
       // NEO-96: `defaultSport: v.optional(v.string())` removed — it had zero
@@ -1115,7 +1130,11 @@ export default defineSchema({
     // unauthenticated at /u/:username. Optional so existing rows need no
     // migration; /labels treats absent as "not set up yet".
     returnAddress: v.optional(postalAddressValidator),
-  }).index("by_user", ["userId"]),
+  })
+    .index("by_user", ["userId"])
+    // NEO-415: eBay's Marketplace Account Deletion notice names the seller by
+    // eBay user id; this finds the NB owner(s) holding that account.
+    .index("by_ebay_user", ["marketplaceAccountIds.ebayUserId"]),
 
   // Selector Options - stores all possible values for each selector level.
   // Fields live in `selectorOptionFields` above so query `returns` validators
@@ -4710,4 +4729,126 @@ export default defineSchema({
     // The Sales screen, every platform, newest first, paginated (prefix
     // ownerId, order desc); the per-user test reset (prefix ownerId).
     .index("by_owner_date", ["ownerId", "orderDate"]),
+
+  /**
+   * ── NEO-415: one collector's eBay listing settings ──────────────────────
+   *
+   * One row per owner, made by the first Connect press (`ebayConnect
+   * .beginConnect`) or the first settings save, and patched after. NB's own
+   * choices about HOW cards list on the collector's eBay account; never a
+   * copy of eBay data. The policy ids are the collector's OWN eBay business
+   * policies (Account API), picked on /profile/ebay; their names are read live
+   * when the page opens, so nothing here goes stale when the seller renames
+   * one on eBay. Two shipping slots: `fulfillmentPolicyUnder20Id` for a card
+   * priced under $20.00 and `fulfillmentPolicy20PlusId` for $20.00 and up
+   * (eBay Standard Envelope only covers items under $20, so a policy whose
+   * only domestic service is the envelope is refused for the $20+ slot when
+   * saved, `lib/ebayListing.policyFitness`).
+   *
+   * Listing needs all four policies and a ship-from location: until then the
+   * drain refuses with `setupIncomplete` (`listingDrain.claimDrain`), so
+   * nothing reaches eBay half-configured. `location` is what the collector
+   * typed; it is pushed to eBay as the inventory location
+   * `merchantLocationKey` when saved (`ebayConnect.saveLocation`) and only
+   * stored once eBay took it. `bestOffer` absent means ON (the default).
+   *
+   * `connectNonce` / `connectNonceAt` are the OAuth `state` of the Connect
+   * press in flight: server-minted, single-use, short-lived, and never
+   * returned to a client (`connectionState` strips them).
+   */
+  ebaySellerSettings: defineTable({
+    ownerId: v.string(),
+    fulfillmentPolicyUnder20Id: v.optional(v.string()),
+    fulfillmentPolicy20PlusId: v.optional(v.string()),
+    paymentPolicyId: v.optional(v.string()),
+    returnPolicyId: v.optional(v.string()),
+    /** The inventory location key NB created on the seller's account (fixed per owner). */
+    merchantLocationKey: v.optional(v.string()),
+    location: v.optional(
+      v.object({
+        postalCode: v.string(),
+        city: v.string(),
+        stateOrProvince: v.string(),
+      }),
+    ),
+    /** Absent = on. */
+    bestOffer: v.optional(v.boolean()),
+    /** The connected seller's eBay username, for display only (eBay's; may change). */
+    ebayUsername: v.optional(v.string()),
+    /** When the current eBay connection was made. */
+    connectedAt: v.optional(v.number()),
+    connectNonce: v.optional(v.string()),
+    connectNonceAt: v.optional(v.number()),
+    lastUpdated: v.number(),
+  })
+    // Every read and write is one owner's row (`.unique()`); the per-user test
+    // reset and the account-deletion sweep too.
+    .index("by_owner", ["ownerId"]),
+
+  /**
+   * ── NEO-415: NB's link to one listing it made on a card-level platform ──
+   *
+   * One row per (owner, platform, card, condition bucket): the listing NB
+   * created for that card on the collector's account (eBay: one inventory
+   * item + one offer, SKU `NB2-<cardId>-<bucket>`, `lib/ebayListing`). LINKAGE,
+   * not a mirror: the platform ids NB needs to update or end its own listing
+   * and to route a sale on it back to the card (product invariant 5), plus
+   * what NB last pushed so a run only sends what changed (eBay caps revisions
+   * per listing per day). Nothing user-facing reads it; it lives inside the
+   * listing boundary (`listingDrainEbay`, `listingSales`).
+   *
+   * `status`: `draft` (item and offer made, not yet live), `live` (published;
+   * `listingId` set), `ended` (NB withdrew it because the count went to 0; the
+   * offer is kept so the listing is published again when stock returns).
+   * `pushed` is what the live listing carries, as NB sent it; absent until a
+   * publish succeeds. `images` are the eBay-hosted pictures NB uploaded from
+   * the copy's photos, front first (`photoToken` names which photo, so a new
+   * photo uploads again; `expiresAt` from eBay, an unused upload expires).
+   *
+   * Never deleted by the drain: a card that leaves the variant or the
+   * catalog keeps its row (an `ended` one costs nothing). Cleared only by
+   * Disconnect (after it ends every live listing), the per-user test reset
+   * and the eBay account-deletion sweep.
+   */
+  marketplaceListingLinks: defineTable({
+    ownerId: v.string(),
+    platform: listingPlatformValidator,
+    cardId: v.id("cardChecklist"),
+    /** NB's condition bucket for the listing (eBay: NM | EX | VG | PR). */
+    conditionCode: v.string(),
+    sku: v.string(),
+    offerId: v.optional(v.string()),
+    listingId: v.optional(v.string()),
+    status: v.union(v.literal("draft"), v.literal("live"), v.literal("ended")),
+    pushed: v.optional(
+      v.object({
+        quantity: v.number(),
+        priceCents: v.number(),
+        fulfillmentPolicyId: v.string(),
+        paymentPolicyId: v.string(),
+        returnPolicyId: v.string(),
+        bestOffer: v.boolean(),
+        /** Hash of the item content NB sent (title, description, aspects, picture). */
+        contentHash: v.string(),
+      }),
+    ),
+    images: v.optional(
+      v.array(
+        v.object({
+          url: v.string(),
+          photoToken: v.string(),
+          expiresAt: v.optional(v.number()),
+        }),
+      ),
+    ),
+    lastPushedAt: v.optional(v.number()),
+    lastUpdated: v.number(),
+  })
+    // The drainer's per-card read and upsert (prefix to the card: at most one
+    // row per bucket; all four `.unique()`); the per-user test reset and the
+    // account-deletion sweep (prefix owner + platform, paged).
+    .index("by_owner_platform_card_condition", ["ownerId", "platform", "cardId", "conditionCode"])
+    // A sale line's exactly-one guard: the link whose SKU the order names
+    // (all three, `.unique()`), then its `listingId` must equal the line's.
+    .index("by_owner_platform_sku", ["ownerId", "platform", "sku"]),
 });

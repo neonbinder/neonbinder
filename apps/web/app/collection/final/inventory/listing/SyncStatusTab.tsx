@@ -2,9 +2,9 @@ import { useEffect, useRef, useState } from "react";
 import { LiveLine } from "@/components/modules/RunLedger";
 import { SkeletonBars } from "../../catalog/Skeleton";
 import { useListing, type ListingExtension } from "../../data/store";
-import type { SyncStatus } from "../../data/types";
+import type { EbaySetupView, ListingPlatform, SyncStatus } from "../../data/types";
 import SyncStatusView from "./SyncStatusView";
-import { BSC_NAME } from "./copy";
+import { PLATFORM_NAME } from "./copy";
 import { takeSyncStatusArrival } from "./ListingGate";
 
 /**
@@ -28,7 +28,13 @@ export default function SyncStatusTab() {
   return <Status listing={listing} />;
 }
 
-const PLATFORM_NAME: Record<string, string> = { bsc: BSC_NAME };
+/** A store without eBay has no setup to read. */
+const noEbaySetup = (): EbaySetupView | undefined => undefined;
+
+/** NEO-415 — eBay connected but its setup unfinished: nothing goes up there until it is. */
+function unfinishedOf(ebay: EbaySetupView | undefined): ListingPlatform[] {
+  return ebay && ebay.connected && !ebay.setupComplete ? ["ebay"] : [];
+}
 
 /**
  * What finished between two reads of the status: each set that was running
@@ -40,7 +46,7 @@ export function finishedLine(before: SyncStatus | undefined, now: SyncStatus | u
   for (const p of now.platforms) {
     const was = before.platforms.find((b) => b.platform === p.platform);
     if (!was) continue;
-    const name = PLATFORM_NAME[p.platform] ?? p.platform;
+    const name = PLATFORM_NAME[p.platform];
     for (const set of p.sets) {
       const prior = was.sets.find((s) => s.variantId === set.variantId);
       if (prior?.status !== "running" || set.status === "running") continue;
@@ -56,6 +62,8 @@ export function finishedLine(before: SyncStatus | undefined, now: SyncStatus | u
 
 function Status({ listing }: { listing: ListingExtension }) {
   const status = listing.useSyncStatus();
+  const useEbaySetup = listing.useEbaySetup ?? noEbaySetup;
+  const unfinished = unfinishedOf(useEbaySetup());
   // The last read seen and the last line said, compared during render (no
   // effect): a new read that finishes a set replaces the line.
   const [seen, setSeen] = useState<{ status: SyncStatus | undefined; line: string }>({ status, line: "" });
@@ -86,7 +94,7 @@ function Status({ listing }: { listing: ListingExtension }) {
           <SkeletonBars rows={5} />
         </div>
       ) : (
-        <SyncStatusView status={status} loadProblems={listing.loadSetProblems} />
+        <SyncStatusView status={status} loadProblems={listing.loadSetProblems} unfinishedSetup={unfinished} />
       )}
     </div>
   );

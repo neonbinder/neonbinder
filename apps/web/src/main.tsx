@@ -66,6 +66,7 @@ const TestSeedPlaceholderUpload = lazy(() => import("@/app/testing/seed-placehol
 const Dashboard = lazy(loadDashboard);
 const ProfilePublic = lazy(loadProfilePublic);
 const ProfileCredentials = lazy(() => import("@/app/profile/credentials/page"));
+const ProfileEbay = lazy(() => import("@/app/profile/ebay/page"));
 const ProfileShipping = lazy(() => import("@/app/profile/shipping/page"));
 const ProfilePostage = lazy(() => import("@/app/profile/postage/page"));
 const ProfilePrizes = lazy(() => import("@/app/profile/prizes/page"));
@@ -224,6 +225,9 @@ const SentryErrorBoundary = Sentry.withErrorBoundary(
                 <Route index element={<Navigate to="/profile/public" replace />} />
                 <Route path="public" element={<Deferred><ProfilePublic /></Deferred>} />
                 <Route path="credentials" element={<Deferred><ProfileCredentials /></Deferred>} />
+                {/* NEO-415 — eBay connects by eBay's consent screen and
+                    returns here with ?code=&state= (the RuName's accept URL). */}
+                <Route path="ebay" element={<Deferred><ProfileEbay /></Deferred>} />
                 <Route path="shipping" element={<Deferred><ProfileShipping /></Deferred>} />
                 <Route path="postage" element={<Deferred><ProfilePostage /></Deferred>} />
                 <Route path="prizes" element={<Deferred><ProfilePrizes /></Deferred>} />

@@ -86,7 +86,8 @@ const record = (s: S, variantId: Id<"selectorOptions">, extra: Record<string, un
 
 const bsc = async (s: S, who: "me" | "them" = "me") => {
   const status = await s[who].query(api.listingSync.syncStatus, {});
-  expect(status.platforms.map((p) => p.platform)).toEqual(["bsc"]);
+  // NEO-415: every listing platform answers, BSC first.
+  expect(status.platforms.map((p) => p.platform)).toEqual(["bsc", "ebay"]);
   return status.platforms[0];
 };
 

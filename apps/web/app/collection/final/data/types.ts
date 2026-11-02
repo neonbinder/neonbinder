@@ -916,8 +916,11 @@ export interface ShareLinkParts {
 // Marketplace listing (NEO-370)
 // ---------------------------------------------------------------------------
 
-/** A marketplace NB lists box copies on. Only BuySportsCards today. */
-export type ListingPlatform = "bsc";
+/**
+ * A marketplace NB lists box copies on: BuySportsCards (NEO-370) and eBay
+ * (NEO-415). Mirrors `listingPlatformValidator` in convex/schema.ts.
+ */
+export type ListingPlatform = "bsc" | "ebay";
 
 /**
  * Where the collector stands with one listing platform (NEO-370 Rev 5).
@@ -949,6 +952,19 @@ export interface ListingPlatformSettings {
 export type ListingSettings = Record<ListingPlatform, ListingPlatformSettings>;
 
 /**
+ * NEO-415 — the two things about the collector's eBay connection that the
+ * inventory's tabs say (the rest lives on Profile → eBay): whether its setup
+ * is finished (shipping, payment, returns, ships-from), without which nothing
+ * goes up; and whether it talks to eBay's sandbox (dev and previews), so an
+ * order's link goes there.
+ */
+export interface EbaySetupView {
+  connected: boolean;
+  setupComplete: boolean;
+  sandbox: boolean;
+}
+
+/**
  * NEO-370 — the listing gate as a screen reads it (`convex/listingGate.ts`
  * `forHome`): whether the collector is set up for syncing at all, whether
  * adds into the home need a price and a condition first (it lists on
@@ -976,7 +992,13 @@ export type ListingProblemReason =
   | "noCondition"
   | "graded"
   | "notOnSheet"
-  | "rejected";
+  | "rejected"
+  // NEO-415, eBay: a category detail eBay requires that NB can't fill
+  // (`detail` names it), no photo on the card's copy, and the eBay page's
+  // setup (shipping, payment, returns, ships-from) not finished.
+  | "missingAspect"
+  | "noPhoto"
+  | "setupIncomplete";
 
 /** One card a sync held back, named as the collector reads it. */
 export interface SyncProblem {
@@ -1052,7 +1074,7 @@ export type SaleItemProblem = "unmatched" | "linkMismatch" | "oversold";
 export interface SaleItem {
   /** The NB card it sold as; absent when NB could not match it. */
   cardId?: CardId;
-  /** The platform's condition word, verbatim. */
+  /** The platform's condition word, verbatim (eBay: NB's bucket code, NM/EX/VG/PR). */
   condition: string;
   quantity: number;
   /** Per copy, in cents. */

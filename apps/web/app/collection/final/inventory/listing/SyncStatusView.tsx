@@ -13,15 +13,17 @@ import type {
   VariantId,
 } from "../../data/types";
 import {
-  BSC_NAME,
   CREDENTIALS_PATH,
-  PAUSED_LINE,
-  PAUSED_LINE_READ_ONLY,
-  REAUTH_LINE,
-  REAUTH_LINE_READ_ONLY,
-  SELLER_CONFLICT_LINE,
+  EBAY_SETUP_LINE,
+  PLATFORM_NAME,
+  PLATFORM_PROFILE_PATH,
+  pausedLine,
+  pausedLineReadOnly,
   problemCardName,
   problemSentence,
+  reauthLine,
+  reauthLineReadOnly,
+  sellerConflictLine,
   whenSynced,
 } from "./copy";
 
@@ -54,9 +56,14 @@ export interface SyncStatusViewProps {
   readOnly?: boolean;
   /** The platform names' heading level; its parts go one deeper. */
   level?: Level;
+  /**
+   * NEO-415 — platforms connected but not set up yet (eBay's shipping,
+   * payment, returns or ships-from unpicked): said under the name, with the
+   * way to the eBay page. The collector's tab only; the admin view leaves it
+   * out (it can't read another collector's setup).
+   */
+  unfinishedSetup?: ReadonlyArray<ListingPlatform>;
 }
-
-const PLATFORM_NAME: Record<ListingPlatform, string> = { bsc: BSC_NAME };
 
 /** Glyph colours for the ledger on a raised panel (the defaults are the blue banner's). */
 const TONES: Record<RunLineKind, string> = {
@@ -82,7 +89,13 @@ function Heading({ level, id, className, children }: { level: number; id?: strin
   );
 }
 
-export default function SyncStatusView({ status, loadProblems, readOnly = false, level = 2 }: SyncStatusViewProps) {
+export default function SyncStatusView({
+  status,
+  loadProblems,
+  readOnly = false,
+  level = 2,
+  unfinishedSetup = [],
+}: SyncStatusViewProps) {
   if (status.platforms.length === 0) {
     return (
       <p className="rounded-md border border-dashed border-rule-strong px-3 py-2 text-sm text-ink-3">
@@ -94,7 +107,11 @@ export default function SyncStatusView({ status, loadProblems, readOnly = false,
             <Link to={CREDENTIALS_PATH} className={LINK}>
               Save a sign-in on your Profile
             </Link>{" "}
-            and syncing starts on its own.
+            or{" "}
+            <Link to={PLATFORM_PROFILE_PATH.ebay} className={LINK}>
+              connect eBay
+            </Link>
+            , and syncing starts on its own.
           </>
         )}
       </p>
@@ -103,7 +120,14 @@ export default function SyncStatusView({ status, loadProblems, readOnly = false,
   return (
     <div className="space-y-6">
       {status.platforms.map((p) => (
-        <Platform key={p.platform} platform={p} loadProblems={loadProblems} readOnly={readOnly} level={level} />
+        <Platform
+          key={p.platform}
+          platform={p}
+          loadProblems={loadProblems}
+          readOnly={readOnly}
+          level={level}
+          unfinished={!readOnly && unfinishedSetup.includes(p.platform)}
+        />
       ))}
     </div>
   );
@@ -115,22 +139,29 @@ export default function SyncStatusView({ status, loadProblems, readOnly = false,
  * false), and "Not syncing" is left for a saved sign-in that is none of the
  * others (a testing account only).
  */
-export function platformState(p: PlatformSyncStatus): { word: string; tone: string } {
+export function platformState(p: PlatformSyncStatus, unfinished = false): { word: string; tone: string } {
   if (!p.connected) return { word: "Not connected", tone: "border-rule-strong text-ink-2" };
   if (p.sellerConflict) return { word: "Seller account in use", tone: "border-neon-yellow-text text-neon-yellow-text" };
   if (p.paused) return { word: "On a break", tone: "border-neon-yellow-text text-neon-yellow-text" };
-  if (p.needsReauth) return { word: "Needs sign-in", tone: "border-neon-yellow-text text-neon-yellow-text" };
+  if (p.needsReauth) {
+    return {
+      word: p.platform === "ebay" ? "Needs reconnect" : "Needs sign-in",
+      tone: "border-neon-yellow-text text-neon-yellow-text",
+    };
+  }
+  if (unfinished) return { word: "Setup unfinished", tone: "border-neon-yellow-text text-neon-yellow-text" };
   if (!p.listing) return { word: "Not syncing", tone: "border-rule-strong text-ink-2" };
   return { word: "Listing", tone: "border-neon-green-text text-neon-green-text" };
 }
 
-function StateNote({ p, readOnly }: { p: PlatformSyncStatus; readOnly: boolean }) {
+function StateNote({ p, readOnly, unfinished }: { p: PlatformSyncStatus; readOnly: boolean; unfinished: boolean }) {
   const name = PLATFORM_NAME[p.platform];
+  const ebay = p.platform === "ebay";
   const profile = (words: string) =>
     readOnly ? null : (
       <>
         {" "}
-        <Link to={CREDENTIALS_PATH} className={LINK}>
+        <Link to={PLATFORM_PROFILE_PATH[p.platform]} className={LINK}>
           {words}
         </Link>
       </>
@@ -138,17 +169,32 @@ function StateNote({ p, readOnly }: { p: PlatformSyncStatus; readOnly: boolean }
   if (!p.connected) {
     return (
       <p className="text-sm text-ink-2">
-        No {name} sign-in saved, so nothing lists there.{profile(`Connect ${name} on your Profile`)}
+        {ebay ? `${name} isn't connected, so nothing lists there.` : `No ${name} sign-in saved, so nothing lists there.`}
+        {profile(`Connect ${name} on your Profile`)}
       </p>
     );
   }
-  if (p.sellerConflict) return <p className="text-sm text-neon-yellow-text">{SELLER_CONFLICT_LINE}</p>;
-  if (p.paused) return <p className="text-sm text-neon-yellow-text">{readOnly ? PAUSED_LINE_READ_ONLY : PAUSED_LINE}</p>;
+  if (p.sellerConflict) return <p className="text-sm text-neon-yellow-text">{sellerConflictLine(name)}</p>;
+  if (p.paused) {
+    return (
+      <p className="text-sm text-neon-yellow-text">
+        {readOnly ? pausedLineReadOnly(p.platform) : pausedLine(name)}
+      </p>
+    );
+  }
   if (p.needsReauth) {
     return (
       <p className="text-sm text-neon-yellow-text">
-        {readOnly ? REAUTH_LINE_READ_ONLY : REAUTH_LINE}
-        {profile(`Sign in to ${name} again`)}
+        {readOnly ? reauthLineReadOnly(p.platform) : reauthLine(p.platform)}
+        {profile(ebay ? `Connect ${name} again` : `Sign in to ${name} again`)}
+      </p>
+    );
+  }
+  if (unfinished) {
+    return (
+      <p className="text-sm text-neon-yellow-text">
+        {EBAY_SETUP_LINE}
+        {profile(`Finish your ${name} setup`)}
       </p>
     );
   }
@@ -161,15 +207,17 @@ function Platform({
   loadProblems,
   readOnly,
   level,
+  unfinished,
 }: {
   platform: PlatformSyncStatus;
   loadProblems: SyncStatusViewProps["loadProblems"];
   readOnly: boolean;
   level: Level;
+  unfinished: boolean;
 }) {
   const headingId = useId();
   const name = PLATFORM_NAME[p.platform];
-  const state = platformState(p);
+  const state = platformState(p, unfinished);
   const sub = level + 1;
   return (
     <section aria-labelledby={headingId} className="space-y-4 rounded-lg bg-raised p-4 text-ink shadow-offset sm:p-6">
@@ -180,7 +228,7 @@ function Platform({
           </Heading>
           <span className={`rounded-full border px-2 py-0.5 text-xs font-medium ${state.tone}`}>{state.word}</span>
         </div>
-        <StateNote p={p} readOnly={readOnly} />
+        <StateNote p={p} readOnly={readOnly} unfinished={unfinished} />
       </header>
 
       <RunningNow p={p} level={sub} />
@@ -390,8 +438,8 @@ function SetRow({
             <ul id={listId} className="space-y-1 border-l-2 border-neon-yellow-text/60 pl-3">
               {shown.map((problem, i) => (
                 <li key={`${problem.cardNo ?? "unmatched"}-${problem.reason}-${i}`}>
-                  <span className="font-semibold text-ink">{problemCardName(problem)}</span>
-                  <span className="text-ink-2"> {problemSentence(problem, readOnly)}</span>
+                  <span className="font-semibold text-ink">{problemCardName(problem, platform)}</span>
+                  <span className="text-ink-2"> {problemSentence(problem, readOnly, platform)}</span>
                 </li>
               ))}
             </ul>

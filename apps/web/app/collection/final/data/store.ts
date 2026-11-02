@@ -91,6 +91,7 @@ import type {
   SmartRule,
   InventoryCards,
   ListingPlatform,
+  EbaySetupView,
   ListingGateView,
   ListingSettings,
   QuantityResult,
@@ -539,6 +540,13 @@ export interface ListingExtension {
    * loading. Call it every render, like a hook.
    */
   useGate(homeId: ContainerId | null, variantId: VariantId | null): ListingGateView | undefined;
+  /**
+   * NEO-415 — the collector's eBay setup as the inventory says it (finished
+   * or not, sandbox or real); `undefined` while loading or where there is
+   * none. Call it every render, like a hook. Optional: a store without eBay
+   * leaves it out and every eBay line reads as not set up.
+   */
+  useEbaySetup?(): EbaySetupView | undefined;
 }
 
 export interface CollectionStoreValue {

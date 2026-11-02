@@ -78,12 +78,20 @@ const SEVEN_HELD: SyncSetResult = set({
   ],
 });
 
-function draw(status: SyncStatus, opts: { readOnly?: boolean; load?: () => Promise<SetProblems> } = {}) {
+function draw(
+  status: SyncStatus,
+  opts: { readOnly?: boolean; load?: () => Promise<SetProblems>; unfinished?: PlatformSyncStatus["platform"][] } = {},
+) {
   const loadProblems = vi.fn(opts.load ?? (async () => ({ problems: [], problemsTotal: 0 })));
   const tree = () => (
     <Theme>
       <MemoryRouter>
-        <SyncStatusView status={status} loadProblems={loadProblems} readOnly={opts.readOnly} />
+        <SyncStatusView
+          status={status}
+          loadProblems={loadProblems}
+          readOnly={opts.readOnly}
+          unfinishedSetup={opts.unfinished}
+        />
       </MemoryRouter>
     </Theme>
   );
@@ -397,5 +405,37 @@ describe("the Sync status tab", () => {
     cleanup();
     tab({ platforms: [bsc()] });
     expect(screen.getByRole("heading", { level: 2, name: "BuySportsCards" })).toBeTruthy();
+  });
+
+  it("NEO-415: eBay beside BSC, its setup unfinished, its own reasons and its own Profile page", async () => {
+    const { view, rerender } = draw(
+      {
+        platforms: [
+          bsc(),
+          bsc({
+            platform: "ebay",
+            sets: [
+              set({
+                problemsTotal: 3,
+                problems: [
+                  { reason: "noPhoto", cardNo: "1", cardLabel: "Ken Griffey Jr." },
+                  { reason: "missingAspect", cardNo: "2", detail: "Team" },
+                  { reason: "setupIncomplete", cardNo: "3" },
+                ],
+              }),
+            ],
+          }),
+        ],
+      },
+      { unfinished: ["ebay"] },
+    );
+    const ebay = screen.getByRole("region", { name: "eBay" });
+    expect(within(ebay).getByText("Setup unfinished")).toBeTruthy();
+    expect(within(ebay).getByRole("link", { name: "Finish your eBay setup" }).getAttribute("href")).toBe("/profile/ebay");
+    expect(within(ebay).getByText(/eBay listings need a photo/)).toBeTruthy();
+    expect(within(ebay).getByText("eBay wants this card's Team, and we don't have it yet, so it's held back.", { exact: false })).toBeTruthy();
+    // BSC reads as before.
+    expect(within(screen.getByRole("region", { name: "BuySportsCards" })).getByText("Listing")).toBeTruthy();
+    await expectAccessibleInBothModes(view.container, { label: "Sync status, eBay unfinished", rerender });
   });
 });

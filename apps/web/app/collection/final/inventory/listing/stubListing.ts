@@ -26,11 +26,20 @@ export const NOT_SYNCING: ListingPlatformSettings = {
   sellerConflict: false,
 };
 
+/** No connection saved (NEO-415: eBay, in every stub unless a test connects it). */
+export const NOT_CONNECTED: ListingPlatformSettings = {
+  connected: false,
+  listing: false,
+  needsReauth: false,
+  paused: false,
+  sellerConflict: false,
+};
+
 export const EMPTY_SYNC_STATUS: SyncStatus = { platforms: [] };
 
 export function stubListing(over: Partial<ListingExtension> = {}): ListingExtension {
   return {
-    useSettings: () => ({ bsc: LISTING }),
+    useSettings: () => ({ bsc: LISTING, ebay: NOT_CONNECTED }),
     syncVariant: async () => ({ queued: true }),
     setContainerListed: async () => {},
     useSyncStatus: () => EMPTY_SYNC_STATUS,

@@ -41,11 +41,14 @@
  */
 import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
-import type { ActionCtx, QueryCtx } from "./_generated/server";
+import type { ActionCtx, MutationCtx, QueryCtx } from "./_generated/server";
 import { internalAction, internalMutation, internalQuery } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { listingPlatformValidator, listingProblemReasonValidator } from "./schema";
 import { listingCredentialOf, listsOnMarketplaces, pushesCounts, sellerAccountHolder } from "./listingOutbox";
+import { ebayConfigured } from "./lib/ebayEnv";
+import { ebaySetupMissing } from "./lib/ebayListing";
+import { drainEbayOwnerImpl } from "./listingDrainEbay";
 import { copyPhotoObjectKey, MAX_COPY_PHOTO_BYTES } from "./copyPhotos";
 import { planBscFanOut, resolveBscFacetFilters } from "./bscFacets";
 import { resolvableSides, type ResolvableRow } from "./marketplaceResolvability";
@@ -108,18 +111,64 @@ const MAX_DETAIL = 160;
 const MAX_ERROR = 300;
 
 type Platform = Doc<"listingOutbox">["platform"];
-type StoredProblem = Doc<"marketplaceListingSyncs">["problems"][number];
+export type StoredProblem = Doc<"marketplaceListingSyncs">["problems"][number];
 type StoredReason = typeof listingProblemReasonValidator.type;
 
 // ── Owner lease ────────────────────────────────────────────────────────────
 
-function newToken(): string {
+export function newToken(): string {
   const bytes = new Uint8Array(16);
   crypto.getRandomValues(bytes);
   return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
 const fullVariantIdsValidator = v.optional(v.array(v.id("selectorOptions")));
+
+/** NEO-415 — the sentence a variant held back by unfinished eBay settings shows. */
+export const EBAY_SETUP_INCOMPLETE_ERROR =
+  "Finish your eBay setup (shipping, payment, returns and ship-from) and these cards go up.";
+/** Variants one refused claim marks (the rest are marked by later kicks). */
+const SETUP_MARK_VARIANTS = 10;
+
+/**
+ * Marks the first few variants waiting on eBay as held back by unfinished
+ * settings, so the Sync status tab says why nothing moved. Writes only a
+ * record that does not already say so.
+ */
+async function markSetupIncomplete(ctx: MutationCtx, ownerId: string, now: number): Promise<void> {
+  const rows = await ctx.db
+    .query("listingOutbox")
+    .withIndex("by_owner_platform_variant", (q) => q.eq("ownerId", ownerId).eq("platform", "ebay"))
+    .take(200);
+  const variants = [...new Set(rows.map((r) => r.variantId))].slice(0, SETUP_MARK_VARIANTS);
+  for (const variantId of variants) {
+    const record = await ctx.db
+      .query("marketplaceListingSyncs")
+      .withIndex("by_owner_variant_platform", (q) =>
+        q.eq("ownerId", ownerId).eq("variantId", variantId).eq("platform", "ebay"),
+      )
+      .unique();
+    const marked = {
+      status: "error" as const,
+      lastRunAt: now,
+      lastError: EBAY_SETUP_INCOMPLETE_ERROR,
+      problems: [{ reason: "setupIncomplete" as const }],
+      problemsTotal: 1,
+      lastUpdated: now,
+    };
+    if (!record) {
+      await ctx.db.insert("marketplaceListingSyncs", {
+        ownerId,
+        variantId,
+        platform: "ebay",
+        conditionsPushed: [],
+        ...marked,
+      });
+    } else if (record.status !== "running" && record.lastError !== EBAY_SETUP_INCOMPLETE_ERROR) {
+      await ctx.db.patch(record._id, marked);
+    }
+  }
+}
 
 /**
  * Claims the owner's drain, and is the drain's gate:
@@ -146,7 +195,13 @@ export const claimDrain = internalMutation({
     v.object({ claimed: v.literal(true) }),
     v.object({
       claimed: v.literal(false),
-      reason: v.union(v.literal("off"), v.literal("busy"), v.literal("noCredentials"), v.literal("needsReauth")),
+      reason: v.union(
+        v.literal("off"),
+        v.literal("busy"),
+        v.literal("noCredentials"),
+        v.literal("needsReauth"),
+        v.literal("setupIncomplete"),
+      ),
     }),
   ),
   handler: async (ctx, args) => {
@@ -177,6 +232,29 @@ export const claimDrain = internalMutation({
         await ctx.db.patch(state._id, { drainScheduledAt: undefined, drainRequested: undefined, lastUpdated: now });
       }
       return { claimed: false as const, reason: "needsReauth" as const };
+    }
+    if (args.platform === "ebay") {
+      // NEO-415: a deployment not wired to eBay drains nothing (quietly).
+      if (!ebayConfigured()) {
+        if (state.drainScheduledAt !== undefined || state.drainRequested !== undefined) {
+          await ctx.db.patch(state._id, { drainScheduledAt: undefined, drainRequested: undefined, lastUpdated: now });
+        }
+        return { claimed: false as const, reason: "off" as const };
+      }
+      // Nothing reaches eBay half-configured: the collector's shipping,
+      // payment, returns and ship-from must all be set first. The queue
+      // waits; saving the settings kicks the drain (`ebayConnect`).
+      const settings = await ctx.db
+        .query("ebaySellerSettings")
+        .withIndex("by_owner", (q) => q.eq("ownerId", args.ownerId))
+        .unique();
+      if (ebaySetupMissing(settings).length > 0) {
+        await markSetupIncomplete(ctx, args.ownerId, now);
+        if (state.drainScheduledAt !== undefined || state.drainRequested !== undefined) {
+          await ctx.db.patch(state._id, { drainScheduledAt: undefined, drainRequested: undefined, lastUpdated: now });
+        }
+        return { claimed: false as const, reason: "setupIncomplete" as const };
+      }
     }
     if (state.drainLeaseToken !== undefined && (state.drainLeaseExpiresAt ?? 0) > now) {
       // Drop the latch that scheduled this run and ask the live run to run
@@ -276,7 +354,7 @@ const snapshotRowValidator = v.object({
   /** The card's variant now; null when the card is gone. */
   currentVariantId: v.union(v.id("selectorOptions"), v.null()),
 });
-type SnapshotRow = typeof snapshotRowValidator.type;
+export type SnapshotRow = typeof snapshotRowValidator.type;
 
 /**
  * The next variant with pending rows after `afterVariantId` (index order), or
@@ -446,7 +524,7 @@ const finishOutcomeValidator = v.union(
     conditionsPushed: v.optional(v.array(v.string())),
   }),
 );
-type FinishOutcome = typeof finishOutcomeValidator.type;
+export type FinishOutcome = typeof finishOutcomeValidator.type;
 
 /**
  * Finishes one variant: writes its sync record (only while this run still
@@ -693,7 +771,7 @@ const copyOutValidator = v.object({
   creationTime: v.number(),
   hasPhotos: v.boolean(),
 });
-type CopyOut = typeof copyOutValidator.type;
+export type CopyOut = typeof copyOutValidator.type;
 
 /**
  * One page of the owner's copies in the variant, with whether each one lists
@@ -863,7 +941,11 @@ export interface DrainReport {
     | "listingOff"
     | "noCredentials"
     | "needsReauth"
-    | "sellerConflict";
+    | "sellerConflict"
+    /** NEO-415: eBay settings are not complete; nothing was sent. */
+    | "setupIncomplete"
+    /** NEO-415: eBay is not wired on this deployment. */
+    | "notConfigured";
 }
 
 type SessionResult = BscSellerResult<BscSellerSession>;
@@ -878,7 +960,7 @@ type VariantResult =
   /** Another NB owner holds the seller account: stop, push nothing. */
   | { kind: "sellerConflict" };
 
-async function defaultFetchPhoto(key: string, maxBytes: number): Promise<ArrayBuffer | null> {
+export async function defaultFetchPhoto(key: string, maxBytes: number): Promise<ArrayBuffer | null> {
   const config = r2Config();
   if (!config) return null;
   const res = await config.client.fetch(`${config.base}/${key.split("/").map(encodeURIComponent).join("/")}`, {
@@ -901,6 +983,9 @@ export async function drainOwnerImpl(
   args: { ownerId: string; platform: Platform; fullVariantIds?: Array<Id<"selectorOptions">> },
   opts: DrainOptions = {},
 ): Promise<DrainReport> {
+  // NEO-415: eBay is card-level and has its own walk (`listingDrainEbay`);
+  // everything below is BuySportsCards' sheet-level push, unchanged.
+  if (args.platform === "ebay") return await drainEbayOwnerImpl(ctx, args, opts);
   const now = opts.now ?? Date.now;
   const budgetMs = opts.budgetMs ?? DRAIN_BUDGET_MS;
   const startedAt = now();
@@ -915,7 +1000,13 @@ export async function drainOwnerImpl(
   });
   if (!claim.claimed) {
     report.stoppedFor =
-      claim.reason === "noCredentials" ? "noCredentials" : claim.reason === "needsReauth" ? "needsReauth" : "notClaimed";
+      claim.reason === "noCredentials"
+        ? "noCredentials"
+        : claim.reason === "needsReauth"
+          ? "needsReauth"
+          : claim.reason === "setupIncomplete"
+            ? "setupIncomplete"
+            : "notClaimed";
     return report;
   }
   report.claimed = true;
@@ -1012,7 +1103,7 @@ export async function drainOwnerImpl(
 }
 
 /** Splits a snapshot into rows this variant settles and rows to re-point. */
-function settleRows(snapshot: readonly SnapshotRow[], variantId: Id<"selectorOptions">) {
+export function settleRows(snapshot: readonly SnapshotRow[], variantId: Id<"selectorOptions">) {
   const mine: SnapshotRow[] = [];
   const gone: SnapshotRow[] = [];
   const moved: SnapshotRow[] = [];
@@ -1346,7 +1437,7 @@ async function syncVariant(
   return { kind: "ok" };
 }
 
-function distinctCards(problems: readonly StoredProblem[]): number {
+export function distinctCards(problems: readonly StoredProblem[]): number {
   return new Set(problems.map((p) => p.cardId).filter((id) => id !== undefined)).size;
 }
 

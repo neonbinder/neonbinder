@@ -58,6 +58,8 @@ describe("ProfileLayout", () => {
     ).toEqual([
       ["Public Profile", "/profile/public"],
       ["Credentials", "/profile/credentials"],
+      // NEO-415: eBay connects on its own page, beside Credentials.
+      ["eBay", "/profile/ebay"],
       ["Shipping", "/profile/shipping"],
       ["Postage", "/profile/postage"],
       ["Prize Pool", "/profile/prizes"],

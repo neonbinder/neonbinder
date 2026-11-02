@@ -1,11 +1,12 @@
 import { useState, useEffect, useId, useRef } from "react";
 import { useAction, useQuery } from "convex/react";
+import { Link } from "react-router";
 import { api } from "@/convex/_generated/api";
 import NeonButton from "@/components/modules/NeonButton";
 import { Input } from "@/components/primitives/Input";
 import { usePausedPlatforms } from "@/src/hooks/usePausedPlatforms";
 import { PAUSE_NOTICE_COPY } from "@/lib/marketplace/pause-notice";
-import { CONSENT_HEADING, LISTING_CONSENT } from "@/lib/marketplace/listing-copy";
+import { CONSENT_HEADING, EBAY_PATH, LISTING_CONSENT } from "@/lib/marketplace/listing-copy";
 import BscListingSection from "./BscListingSection";
 
 const SUPPORTED_SITES = [
@@ -14,8 +15,18 @@ const SUPPORTED_SITES = [
   // server-returned message. Maestro text matching is case-insensitive, so the
   // flows that select on "Sportlots" keep working.
   { key: "sportlots", label: "SportLots" },
-  // Add more sites here as needed (eBay coming soon)
 ];
+
+/**
+ * NEO-415 — eBay has no password to save: it connects by eBay's own consent
+ * screen, on its own Profile page (it lists, so it carries shipping, payment
+ * and returns too). Its tab here is a pointer there, so a collector who looks
+ * for eBay among the sign-ins finds the way, and nothing here can save,
+ * test or clear an eBay sign-in.
+ */
+const POINTER_SITES = [{ key: "ebay", label: "eBay", path: EBAY_PATH }];
+
+const SITE_TABS = [...SUPPORTED_SITES, ...POINTER_SITES];
 
 export default function CredentialsPanel() {
   const [selectedSite, setSelectedSite] = useState(SUPPORTED_SITES[0].key);
@@ -61,6 +72,7 @@ export default function CredentialsPanel() {
   // Get user profile to check if credentials are stored
   const profile = useQuery(api.userProfile.getUserProfile);
   const siteMeta = SUPPORTED_SITES.find((s) => s.key === selectedSite);
+  const pointer = POINTER_SITES.find((s) => s.key === selectedSite);
 
   const siteCredential = profile?.siteCredentials?.find(
     (cred) => cred.site === selectedSite,
@@ -324,7 +336,7 @@ export default function CredentialsPanel() {
           aria-labelledby="site-select-label"
           className="flex flex-wrap gap-2"
         >
-          {SUPPORTED_SITES.map((site) => {
+          {SITE_TABS.map((site) => {
             const isSelected = selectedSite === site.key;
             return (
               <button
@@ -348,6 +360,22 @@ export default function CredentialsPanel() {
           })}
         </div>
       </div>
+    {pointer ? (
+      <div id="site-credentials-panel" role="tabpanel" className="space-y-2">
+        <h2 className="text-xl font-semibold">{pointer.label}</h2>
+        <p className="text-sm text-ink-2">
+          {pointer.label} skips the password. You connect it on {pointer.label}&apos;s own sign-in screen, and pick your
+          shipping, payment and returns right after.
+        </p>
+        <Link
+          to={pointer.path}
+          className="inline-flex min-h-11 items-center rounded-sm text-sm font-medium text-neon-blue-text underline focus-outline"
+        >
+          Set up {pointer.label} on its own page
+        </Link>
+      </div>
+    ) : (
+      <>
     <div
       id="site-credentials-panel"
       role="tabpanel"
@@ -777,6 +805,8 @@ export default function CredentialsPanel() {
           <li>• You can clear your credentials at any time</li>
         </ul>
       </div>
+      </>
+    )}
       </>
     )}
   </section>

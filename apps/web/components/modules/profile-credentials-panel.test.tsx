@@ -32,6 +32,7 @@ import {
 } from "@testing-library/react";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { Theme } from "@radix-ui/themes";
+import { MemoryRouter } from "react-router";
 import { expectAccessibleInBothModes } from "@/lib/testing/axe";
 import { CONSENT_HEADING, CONSENT_LINE } from "@/lib/marketplace/listing-copy";
 
@@ -166,6 +167,19 @@ describe("CredentialsPanel — state matrix", () => {
     expect(screen.queryByRole("button", { name: "Connect" })).not.toBeNull();
     expect(screen.queryByText("Connected to BuySportsCards")).toBeNull();
     expect(screen.queryByText("Connection not yet verified")).toBeNull();
+  });
+
+  it("NEO-415: the eBay tab points to its own page and offers no sign-in", () => {
+    setProfile([]);
+    render(
+      <MemoryRouter>
+        <CredentialsPanel />
+      </MemoryRouter>,
+    );
+    fireEvent.click(screen.getByRole("tab", { name: "eBay" }));
+    expect(screen.getByRole("link", { name: "Set up eBay on its own page" }).getAttribute("href")).toBe("/profile/ebay");
+    expect(screen.queryByRole("button", { name: "Connect" })).toBeNull();
+    expect(screen.queryByText("Security Information")).toBeNull();
   });
 
   it("routes the re-auth primary action into the sign-in form", () => {

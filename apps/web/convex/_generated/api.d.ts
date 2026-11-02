@@ -10,7 +10,6 @@
 
 import type * as adapters_base from "../adapters/base.js";
 import type * as adapters_buysportscards from "../adapters/buysportscards.js";
-import type * as adapters_ebay from "../adapters/ebay.js";
 import type * as adapters_enrichmentFixtures from "../adapters/enrichmentFixtures.js";
 import type * as adapters_espn from "../adapters/espn.js";
 import type * as adapters_gcs from "../adapters/gcs.js";
@@ -71,6 +70,7 @@ import type * as copyPhotos from "../copyPhotos.js";
 import type * as credentials from "../credentials.js";
 import type * as crons from "../crons.js";
 import type * as drillPath from "../drillPath.js";
+import type * as ebayConnect from "../ebayConnect.js";
 import type * as enrichmentFixtures from "../enrichmentFixtures.js";
 import type * as entityReviewQueue from "../entityReviewQueue.js";
 import type * as entityReviewSkips from "../entityReviewSkips.js";
@@ -116,6 +116,7 @@ import type * as lib_teamFill from "../lib/teamFill.js";
 import type * as lib_teamRow from "../lib/teamRow.js";
 import type * as lib_titleQuery from "../lib/titleQuery.js";
 import type * as listingDrain from "../listingDrain.js";
+import type * as listingDrainEbay from "../listingDrainEbay.js";
 import type * as listingGate from "../listingGate.js";
 import type * as listingOutbox from "../listingOutbox.js";
 import type * as listingSales from "../listingSales.js";
@@ -182,7 +183,6 @@ import type {
 declare const fullApi: ApiFromModules<{
   "adapters/base": typeof adapters_base;
   "adapters/buysportscards": typeof adapters_buysportscards;
-  "adapters/ebay": typeof adapters_ebay;
   "adapters/enrichmentFixtures": typeof adapters_enrichmentFixtures;
   "adapters/espn": typeof adapters_espn;
   "adapters/gcs": typeof adapters_gcs;
@@ -243,6 +243,7 @@ declare const fullApi: ApiFromModules<{
   credentials: typeof credentials;
   crons: typeof crons;
   drillPath: typeof drillPath;
+  ebayConnect: typeof ebayConnect;
   enrichmentFixtures: typeof enrichmentFixtures;
   entityReviewQueue: typeof entityReviewQueue;
   entityReviewSkips: typeof entityReviewSkips;
@@ -288,6 +289,7 @@ declare const fullApi: ApiFromModules<{
   "lib/teamRow": typeof lib_teamRow;
   "lib/titleQuery": typeof lib_titleQuery;
   listingDrain: typeof listingDrain;
+  listingDrainEbay: typeof listingDrainEbay;
   listingGate: typeof listingGate;
   listingOutbox: typeof listingOutbox;
   listingSales: typeof listingSales;

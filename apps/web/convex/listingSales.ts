@@ -42,6 +42,12 @@
  *      reset and the global drain clear them by owner / by table. A cleanup
  *      (or a use for them on the sold record, NEO-371) is expected later.
  *
+ * eBay (NEO-415) polls the same way per owner with its own read
+ * (`pollEbaySteps`: orders modified since the cursor, NB-SKU orders only)
+ * and its own guard (`applyEbayLine`: NB's link row for the SKU must hold
+ * the sold eBay item id). Its stored status is one of eBay's own words
+ * (`lib/ebayListing.ebayOrderStatus`).
+ *
  * After each owner's poll `finishPoll` kicks the owner's listing drain when
  * changes are queued: that is the cron's half of the drain triggers.
  *
@@ -70,10 +76,22 @@ import {
 import {
   kickListingDrain,
   LISTING_CREDENTIAL_SITE,
+  LISTING_PLATFORMS,
   listingCredentialOf,
   listsOnMarketplaces,
+  platformReachable,
   pollsSales,
 } from "./listingOutbox";
+import {
+  ebayStatusDisposition,
+  isFinalEbayStatus,
+  nbConditionsOfBucket,
+  ordersModifiedSinceFilter,
+  parseEbaySku,
+  projectEbayOrder,
+  type EbayProjectedOrder,
+} from "./lib/ebayListing";
+import { getOrdersPage, openEbaySellerSession, EBAY_ORDERS_PAGE } from "./adapters/ebaySeller";
 import { isPlatformPaused } from "./marketplacePause";
 import { savedSignInsPassDone } from "./listingSync";
 import { bscEraForYear, isBscRawCondition, nbConditionsFor, type BscEra } from "./lib/bscConditions";
@@ -124,8 +142,13 @@ type SaleItem = Doc<"marketplaceSales">["items"][number];
 /** Statuses after which BSC will not change the order again. */
 const FINAL_STATUSES = new Set(["SHIPPED", "PARTIALLY_REFUNDED_SHIPPED", "CANCELLED"]);
 
-export function isFinalOrderStatus(status: string): boolean {
-  return FINAL_STATUSES.has(status);
+export function isFinalOrderStatus(status: string, platform: Platform = "bsc"): boolean {
+  return platform === "ebay" ? isFinalEbayStatus(status) : FINAL_STATUSES.has(status);
+}
+
+/** Whether a stored order lowers NB's copies, read in the platform's own status words. */
+export function saleDisposition(platform: Platform, status: string): "sale" | "cancelled" | "unknown" {
+  return platform === "ebay" ? ebayStatusDisposition(status) : bscOrderDisposition(status);
 }
 
 // ── The cron fan-out ───────────────────────────────────────────────────────
@@ -167,17 +190,30 @@ export const pollAll = internalMutation({
   args: {},
   returns: v.object({ scheduled: v.number(), skipped: v.number() }),
   handler: async (ctx) => {
-    if (isPlatformPaused(LISTING_CREDENTIAL_SITE.bsc)) return { scheduled: 0, skipped: 0 };
-    // The one-time pass over sign-ins saved before Revision 5: only while it
-    // has not recorded itself done, and never on a testing deployment.
-    if (!process.env.TESTING_RESET_SECRET && !(await savedSignInsPassDone(ctx))) {
+    // The one-time pass over sign-ins saved before Revision 5 (BSC sign-ins
+    // only: eBay never had a saved sign-in before it): only while it has not
+    // recorded itself done, never on a testing deployment, never while BSC
+    // is paused.
+    if (
+      !isPlatformPaused(LISTING_CREDENTIAL_SITE.bsc) &&
+      !process.env.TESTING_RESET_SECRET &&
+      !(await savedSignInsPassDone(ctx))
+    ) {
       await ctx.scheduler.runAfter(0, internal.listingSync.setUpSavedSignInsPage, { cursor: null });
     }
     const now = Date.now();
-    const states = await ctx.db
-      .query("marketplaceListingStates")
-      .withIndex("by_platform_dormant_polled", (q) => q.eq("platform", "bsc").eq("dormant", undefined))
-      .take(MAX_OWNERS_PER_TICK);
+    // NEO-415: every listing platform NB can reach now (not paused; eBay
+    // also wired on this deployment), each read on its own.
+    const states: Array<Doc<"marketplaceListingStates">> = [];
+    for (const platform of LISTING_PLATFORMS) {
+      if (!platformReachable(platform)) continue;
+      states.push(
+        ...(await ctx.db
+          .query("marketplaceListingStates")
+          .withIndex("by_platform_dormant_polled", (q) => q.eq("platform", platform).eq("dormant", undefined))
+          .take(MAX_OWNERS_PER_TICK)),
+      );
+    }
     const due: Array<Doc<"marketplaceListingStates">> = [];
     let skipped = 0;
     for (const state of states) {
@@ -397,7 +433,7 @@ export const recordOrder = internalMutation({
       saleId = await ctx.db.insert("marketplaceSales", { ...doc, firstSeenAt: now });
     }
     const toApply =
-      bscOrderDisposition(order.status) === "sale"
+      saleDisposition(args.platform, order.status) === "sale"
         ? items.flatMap((item, i) => (!item.applied && item.problem === undefined ? [i] : []))
         : [];
     return { saleId, toApply };
@@ -426,6 +462,89 @@ async function eraOfVariant(
 }
 
 /**
+ * NEO-415 — one eBay sale line. The SKU names the NB card and condition
+ * bucket; the exactly-one guard is NB's own link row for that SKU, whose
+ * listing id must be the line's eBay item id (the listing NB made, not a
+ * look-alike). The owner's raw copies of the card in a LISTED box, in the NB
+ * conditions of that bucket, are lowered oldest first. Null when the line
+ * was refused (`refuse` already wrote why).
+ */
+async function applyEbayLine(
+  ctx: MutationCtx,
+  ownerId: string,
+  item: SaleItem,
+  refuse: (problem: "unmatched" | "linkMismatch", cardId?: Id<"cardChecklist">) => void,
+  listedHome: (homeId: Id<"collectionContainers">) => Promise<boolean>,
+  changes: CountChange[],
+  now: number,
+): Promise<{ item: SaleItem; lowered: number } | null> {
+  const sku = parseEbaySku(item.sellerSku);
+  const cardId = sku ? ctx.db.normalizeId("cardChecklist", sku.cardId) : null;
+  const card = cardId ? await ctx.db.get(cardId) : null;
+  if (!sku || !cardId || !card) {
+    refuse("unmatched");
+    return null;
+  }
+  const link = await ctx.db
+    .query("marketplaceListingLinks")
+    .withIndex("by_owner_platform_sku", (q) => q.eq("ownerId", ownerId).eq("platform", "ebay").eq("sku", item.sellerSku as string))
+    .unique();
+  if (!link || link.cardId !== cardId || link.listingId === undefined || link.listingId !== item.platformCardId) {
+    refuse("linkMismatch", cardId);
+    return null;
+  }
+  const nbConditions = nbConditionsOfBucket(sku.conditionCode);
+  const lines = await ctx.db
+    .query("collectionCopies")
+    .withIndex("by_owner_and_card", (q) => q.eq("ownerId", ownerId).eq("cardId", cardId))
+    .take(MAX_LINES_PER_CARD + 1);
+  const candidates: Doc<"collectionCopies">[] = [];
+  for (const row of lines) {
+    if (row.grading !== undefined || row.condition === undefined) continue;
+    if (!nbConditions.includes(row.condition)) continue;
+    if (!(await listedHome(row.homeId))) continue;
+    candidates.push(row);
+  }
+  const { decrements, shortfall } = chooseCopiesToLower(
+    candidates.map((row) => ({
+      copyId: row._id,
+      homeId: row.homeId,
+      ...(row.acquiredOn !== undefined ? { acquiredOn: row.acquiredOn } : {}),
+      creationTime: row._creationTime,
+      quantity: row.quantity,
+    })),
+    null,
+    item.quantity,
+  );
+  let lowered = 0;
+  for (const d of decrements) {
+    const row = candidates.find((c) => c._id === d.copyId);
+    if (!row) continue;
+    if (d.by >= row.quantity) {
+      // Photos kept, as for BSC (see the module comment).
+      await ctx.db.delete(row._id);
+      await pocketEmptied(ctx, row.homeId, row.slot);
+      changes.push(changeOf(row, counted(row), null));
+    } else {
+      const quantity = row.quantity - d.by;
+      await ctx.db.patch(row._id, { quantity, lastUpdated: now });
+      changes.push(changeOf(row, counted(row), counted({ ...row, quantity })));
+    }
+    lowered += d.by;
+  }
+  return {
+    item: {
+      ...item,
+      cardId,
+      applied: true,
+      appliedAt: now,
+      ...(shortfall > 0 ? { problem: "oversold" as const, shortBy: shortfall } : {}),
+    },
+    lowered,
+  };
+}
+
+/**
  * Applies some of an order's lines (at most `SALE_ITEMS_PER_APPLY`), each
  * exactly once: the copies are lowered and the line flips `applied` in this
  * one transaction. Re-checks the stored status and each line's `applied`, so
@@ -437,7 +556,7 @@ export const applySaleItems = internalMutation({
   handler: async (ctx, args) => {
     const sale = await ctx.db.get(args.saleId);
     if (!sale || sale.ownerId !== args.ownerId) return { applied: 0, lowered: 0 };
-    if (bscOrderDisposition(sale.status) !== "sale") return { applied: 0, lowered: 0 };
+    if (saleDisposition(sale.platform, sale.status) !== "sale") return { applied: 0, lowered: 0 };
     if (!(await pollingOn(ctx, args.ownerId, sale.platform))) return { applied: 0, lowered: 0 };
     const now = Date.now();
     const items = [...sale.items];
@@ -463,6 +582,15 @@ export const applySaleItems = internalMutation({
       const refuse = (problem: "unmatched" | "linkMismatch", cardId?: Id<"cardChecklist">) => {
         items[index] = { ...item, ...(cardId ? { cardId } : {}), problem };
       };
+
+      if (sale.platform === "ebay") {
+        const ebay = await applyEbayLine(ctx, args.ownerId, item, refuse, listedHome, changes, now);
+        if (ebay === null) continue;
+        items[index] = ebay.item;
+        lowered += ebay.lowered;
+        applied += 1;
+        continue;
+      }
 
       // The SKU names the NB card and box; anything else is not NB's line.
       const sku = parseListingSku(item.sellerSku);
@@ -610,7 +738,7 @@ export async function pollOwnerImpl(
   // owner unstamped (first in line every tick) or their drain unkicked.
   let finished = false;
   let standDown = false;
-  const finish = async (cursorAt: number | undefined, failure: BscSellerFailure | string | null) => {
+  const finish = async (cursorAt: number | undefined, failure: { message: string } | string | null) => {
     const error = failure === null ? undefined : typeof failure === "string" ? failure : failure.message;
     report.error = error ?? null;
     report.cursorAt = cursorAt ?? null;
@@ -656,9 +784,10 @@ async function pollOwnerSteps(
   args: { ownerId: string; platform: Platform },
   input: PollInput,
   report: PollReport,
-  finish: (cursorAt: number | undefined, failure: BscSellerFailure | string | null) => Promise<PollReport>,
+  finish: (cursorAt: number | undefined, failure: { message: string } | string | null) => Promise<PollReport>,
   standDown: () => void,
 ): Promise<PollReport> {
+  if (args.platform === "ebay") return await pollEbaySteps(ctx, args, input, report, finish, standDown);
   const opened = await openBscSellerSession(ctx, args.ownerId);
   if (!opened.ok) return await finish(undefined, opened.failure);
   const session = opened.value;
@@ -749,6 +878,95 @@ async function pollOwnerSteps(
   // every order stored.
   const complete = reachedCursor && failed === null;
   return await finish(complete ? newest : undefined, failed ?? note);
+}
+
+/** eBay orders projected for `recordOrder`: NB's SKU lines only (a seller's other eBay sales are not NB's). */
+export function projectEbayOrderForNb(order: EbayProjectedOrder): ProjectedOrder | null {
+  const items: ProjectedOrder["items"] = [];
+  for (const line of order.lines) {
+    const sku = parseEbaySku(line.sku);
+    if (!sku || line.sku === null) continue;
+    items.push({
+      platformCardId: line.legacyItemId,
+      condition: sku.conditionCode,
+      quantity: line.quantity,
+      priceCents: line.unitPriceCents,
+      sellerSku: line.sku,
+      graded: false,
+    });
+  }
+  if (items.length === 0) return null;
+  return {
+    orderId: order.orderId,
+    orderNo: order.orderNo,
+    orderDate: order.orderDate,
+    status: order.status,
+    totals: order.totals,
+    items,
+  };
+}
+
+/**
+ * NEO-415 — the eBay half of one owner's poll: Fulfillment `getOrders`
+ * filtered to orders MODIFIED since the cursor (so a status change on an
+ * old order is seen with no history walk), paged. Each order carrying an NB
+ * SKU is stored and its lines applied exactly once; orders with no NB line
+ * are not stored. The cursor moves (to the newest modification seen) only
+ * past a complete read.
+ */
+async function pollEbaySteps(
+  ctx: PollCtx,
+  args: { ownerId: string; platform: Platform },
+  input: PollInput,
+  report: PollReport,
+  finish: (cursorAt: number | undefined, failure: { message: string } | string | null) => Promise<PollReport>,
+  standDown: () => void,
+): Promise<PollReport> {
+  const opened = await openEbaySellerSession(ctx, args.ownerId);
+  if (!opened.ok) return await finish(undefined, opened.failure);
+  const session = opened.value;
+  const filter = ordersModifiedSinceFilter(input.cursorAt);
+  let newest = input.cursorAt;
+  let complete = false;
+  let note: string | null = null;
+  for (let page = 0; page < MAX_HISTORY_PAGES; page += 1) {
+    const read = await getOrdersPage(ctx, session, { filter, offset: page * EBAY_ORDERS_PAGE });
+    if (!read.ok) return await finish(undefined, read.failure);
+    for (const raw of read.value.orders) {
+      report.ordersRead += 1;
+      const projected = projectEbayOrder(raw);
+      if (!projected) {
+        note = "One eBay order couldn't be read, so it was skipped.";
+        continue;
+      }
+      newest = Math.max(newest, projected.lastModified);
+      const order = projectEbayOrderForNb(projected);
+      if (!order) continue;
+      if (order.items.length > MAX_SALE_ITEMS) {
+        note = `Order ${order.orderNo} has more lines than NeonBinder takes in one order, so none of it was applied.`;
+        continue;
+      }
+      const recorded = await ctx.runMutation(internal.listingSales.recordOrder, { ...args, order });
+      if (recorded.saleId === null) {
+        standDown();
+        return report;
+      }
+      report.ordersStored += 1;
+      for (let i = 0; i < recorded.toApply.length; i += SALE_ITEMS_PER_APPLY) {
+        const r = await ctx.runMutation(internal.listingSales.applySaleItems, {
+          ownerId: args.ownerId,
+          saleId: recorded.saleId,
+          indexes: recorded.toApply.slice(i, i + SALE_ITEMS_PER_APPLY),
+        });
+        report.linesApplied += r.applied;
+      }
+    }
+    if (!read.value.more) {
+      complete = true;
+      break;
+    }
+  }
+  return await finish(complete ? newest : undefined, note);
 }
 
 /** One owner's poll (scheduled by `pollAll`). */

@@ -33,6 +33,9 @@ import { api } from "@/convex/_generated/api";
 const SECTIONS = [
   { label: "Public Profile", path: "/profile/public" },
   { label: "Credentials", path: "/profile/credentials" },
+  // NEO-415. Beside Credentials: it is a marketplace connection too, but by
+  // eBay's own consent screen, with the listing setup only eBay needs.
+  { label: "eBay", path: "/profile/ebay" },
   { label: "Shipping", path: "/profile/shipping" },
   { label: "Postage", path: "/profile/postage" },
   { label: "Prize Pool", path: "/profile/prizes" },
@@ -70,6 +73,7 @@ function useWarmProfileQueries() {
   useQuery(api.publicProfile.getMyPublicProfile); // public + shipping
   useQuery(api.shipping.getMyReturnAddress); // shipping
   useQuery(api.userProfile.getDefaultCondition); // settings: default card condition
+  useQuery(api.ebayConnect.connectionState); // eBay: connection and setup
 }
 
 /**

@@ -46,6 +46,7 @@ import {
   listingCredentialOf,
   listingStateOf,
   listsOnMarketplaces,
+  platformReachable,
   pushesCounts,
   sellerAccountHolder,
   wakeVariant,
@@ -116,10 +117,10 @@ type PlatformSettings = typeof platformSettingsValidator.type;
 
 /** The owner lists on the platform now: the state row's rule (`pushesCounts`) and the platform not paused. */
 function listsNow(row: Doc<"marketplaceListingStates"> | null, platform: ListingPlatform): boolean {
-  return row !== null && pushesCounts(row) && !isPlatformPaused(LISTING_CREDENTIAL_SITE[platform]);
+  return row !== null && pushesCounts(row) && platformReachable(platform);
 }
 
-async function platformSettings(
+export async function platformSettings(
   ctx: QueryCtx,
   ownerId: string,
   platform: ListingPlatform,
@@ -141,10 +142,13 @@ async function platformSettings(
 /** Where the collector stands with each listing platform. Small and subscribable. */
 export const listingSettings = query({
   args: {},
-  returns: v.object({ bsc: platformSettingsValidator }),
+  returns: v.object({ bsc: platformSettingsValidator, ebay: platformSettingsValidator }),
   handler: async (ctx) => {
     const ownerId = await requireSignedIn(ctx);
-    return { bsc: await platformSettings(ctx, ownerId, "bsc") };
+    return {
+      bsc: await platformSettings(ctx, ownerId, "bsc"),
+      ebay: await platformSettings(ctx, ownerId, "ebay"),
+    };
   },
 });
 
@@ -630,9 +634,7 @@ export const syncVariant = mutation({
   }),
   handler: async (ctx, args) => {
     const ownerId = await requireSignedIn(ctx);
-    const platforms = (await listingPlatformsOf(ctx, ownerId)).filter(
-      (platform) => !isPlatformPaused(LISTING_CREDENTIAL_SITE[platform]),
-    );
+    const platforms = (await listingPlatformsOf(ctx, ownerId)).filter(platformReachable);
     if (platforms.length === 0) return { queued: false, ignored: "notListing" as const };
     let queued = false;
     let throttled = 0;

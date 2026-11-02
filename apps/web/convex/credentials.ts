@@ -15,6 +15,7 @@ import {
 } from "./observability";
 import type { CredentialTestProperties } from "./observability";
 import { isPlatformPaused } from "./marketplacePause";
+import { ebayConfigured } from "./lib/ebayEnv";
 import {
   isAbortTimeout,
   logMarketplaceLimiter,
@@ -360,7 +361,7 @@ function validateInputLength(value: string, fieldName: string) {
 // reactively, so a user rarely hits this). Releases in a finally so the happy
 // path frees the lock immediately; a server-minted token guards release.
 async function withCredentialLock<T>(
-  ctx: { runMutation: (ref: any, args: any) => Promise<any> },
+  ctx: Pick<ActionCtx, "runMutation">,
   userId: string,
   site: string,
   op: "store" | "test" | "delete",
@@ -543,6 +544,12 @@ export const saveCredentials = action({
     const userId = await getCurrentUserId(ctx);
     if (!userId) {
       throw new Error("Not authenticated");
+    }
+    // NEO-415: eBay never takes a username and password. It connects through
+    // eBay's own consent page (`ebayConnect.beginConnect` / `completeConnect`)
+    // and disconnects there too.
+    if (args.site === "ebay") {
+      return { success: false, message: "eBay connects from Profile → eBay, not with a password." };
     }
     if (!isSupportedSite(args.site)) {
       return { success: false, message: `Unsupported site: ${args.site}` };
@@ -916,7 +923,7 @@ export async function actingUserId(
  */
 export const getSiteTokenForUser = internalAction({
   args: {
-    site: v.union(v.literal("buysportscards"), v.literal("sportlots")),
+    site: v.union(v.literal("buysportscards"), v.literal("sportlots"), v.literal("ebay")),
     userId: v.string(),
   },
   returns: v.union(
@@ -940,7 +947,7 @@ export const getSiteTokenForUser = internalAction({
  */
 export const refreshSiteTokenForUser = internalAction({
   args: {
-    site: v.union(v.literal("buysportscards"), v.literal("sportlots")),
+    site: v.union(v.literal("buysportscards"), v.literal("sportlots"), v.literal("ebay")),
     userId: v.string(),
   },
   returns: v.object({ refreshed: v.boolean() }),
@@ -980,6 +987,9 @@ async function siteTokenFor(
     );
     return null;
   }
+  // NEO-415: a deployment not wired to eBay never asks the service for an
+  // eBay token (and never self-heals a flag on its answer).
+  if (args.site === "ebay" && !ebayConfigured()) return null;
 
   try {
     const cached = await readCachedToken(args.site, userId);
@@ -1209,6 +1219,12 @@ async function refreshSiteToken(
         };
         return result.success;
       }
+      if (site === "ebay") {
+        // NEO-415: no login. The browser service renews the access token
+        // with the stored refresh token (eBay's refresh grant) and stores
+        // it; the caller re-reads the cached token. Already under the lock.
+        return await refreshEbayToken(ctx, userId);
+      }
       console.warn(`[refreshSiteToken] no refresh handler for site: ${site}`);
       return false;
     } catch (error) {
@@ -1328,13 +1344,6 @@ export const testSiteCredentials = action({
               {},
             );
             console.log(`[testSiteCredentials] authenticateBsc returned: success=${result.success}`);
-            return result;
-          }
-
-          case "ebay": {
-            console.log("[testSiteCredentials] Dispatching to ebay.testCredentials");
-            const result = await ctx.runAction(internal.adapters.ebay.testCredentials, {});
-            console.log(`[testSiteCredentials] ebay.testCredentials returned: success=${result.success}`);
             return result;
           }
 
@@ -1743,7 +1752,7 @@ async function runSiteLogin(
  *   evidence about what we have stored.
  */
 async function applyLoginOutcome(
-  ctx: { runMutation: (ref: any, args: any) => Promise<any> },
+  ctx: Pick<ActionCtx, "runMutation">,
   userId: string,
   site: string,
   outcome: SiteLoginOutcome,
@@ -1884,3 +1893,231 @@ export const authenticateSportlots = internalAction({
     }
   },
 });
+
+// ─── NEO-415: eBay (OAuth, no password) ──────────────────────────────────────
+//
+// eBay signs in through eBay's own consent page, never with a username and
+// password, so it has no SITE_LOGIN row. The browser service holds the client
+// secret and the refresh token and does every token exchange:
+//   POST /oauth/ebay/connect  {key, code | refreshToken} → {username, ebayUserId, expiresAt}
+//   POST /oauth/ebay/refresh  {key}                      → {token, expiresAt}
+// Reading the token is the existing `GET /credentials/<key>/token`, and
+// disconnect is the existing `DELETE /credentials/<key>`. Every one runs under
+// the per-(user, "ebay") credential lock. Errors are `{error_class}` from a
+// closed set; a 404 whose body is not that JSON is an older service without
+// the route ("service not ready"), never absence. A 500 `internal` is the
+// service's own store fault: transient, never a reason to ask for a fresh
+// connection.
+
+/** What an eBay connect can come back with (NB-side words, never eBay's). */
+export type EbayConnectError =
+  | "busy"
+  | "notConfigured"
+  | "consentRefused"
+  | "unavailable"
+  | "serviceNotReady"
+  | "badRequest"
+  | "internal";
+
+const ebayConnectErrorValidator = v.union(
+  v.literal("busy"),
+  v.literal("notConfigured"),
+  v.literal("consentRefused"),
+  v.literal("unavailable"),
+  v.literal("serviceNotReady"),
+  v.literal("badRequest"),
+  v.literal("internal"),
+);
+
+/** The browser service's `error_class`, or null when the body is not that JSON. */
+async function serviceErrorClass(response: Response): Promise<string | null> {
+  const body = (await response.json().catch(() => null)) as { error_class?: unknown } | null;
+  return body && typeof body.error_class === "string" ? body.error_class.slice(0, 40) : null;
+}
+
+function logEbayCredentialCall(operation: string, startedAt: number, outcome: string, httpStatus?: number): void {
+  console.log(
+    JSON.stringify({
+      msg: "ebay_credential_call",
+      platform: "ebay",
+      operation,
+      outcome,
+      ...(httpStatus !== undefined ? { httpStatus } : {}),
+      durationMs: Date.now() - startedAt,
+    }),
+  );
+}
+
+/** Account id shape `userProfile.setMarketplaceAccountIdInternal` accepts for eBay. */
+const EBAY_USER_ID_RE = /^[A-Za-z0-9._-]{1,64}$/;
+
+/**
+ * Exchanges a consent `code` (or, testing deployments only, a refresh token
+ * minted out of band) for a stored eBay session, then records the connection:
+ * the seller's immutable eBay user id (`marketplaceAccountIds.ebayUserId`, the
+ * seller-conflict key), the display username, and the saved sign-in, which
+ * starts listing (`updateSiteCredentialStatus` → `listingSync.setUpListing`,
+ * or the E2E marker for `listing: "testOff"`).
+ */
+export const connectEbay = internalAction({
+  args: {
+    userId: v.string(),
+    code: v.optional(v.string()),
+    refreshToken: v.optional(v.string()),
+    listing: v.union(v.literal("save"), v.literal("testOff")),
+  },
+  returns: v.union(
+    v.object({ ok: v.literal(true), username: v.string(), ebayUserId: v.string() }),
+    v.object({ ok: v.literal(false), error: ebayConnectErrorValidator }),
+  ),
+  handler: async (
+    ctx,
+    args,
+  ): Promise<{ ok: true; username: string; ebayUserId: string } | { ok: false; error: EbayConnectError }> => {
+    if ((args.code === undefined) === (args.refreshToken === undefined)) {
+      return { ok: false, error: "badRequest" };
+    }
+    if (args.refreshToken !== undefined && !process.env.TESTING_RESET_SECRET) {
+      throw new Error("Seeding an eBay connection is not enabled on this deployment");
+    }
+    if (!ebayConfigured()) return { ok: false, error: "notConfigured" };
+    const grant = args.code !== undefined ? { code: args.code } : { refreshToken: args.refreshToken as string };
+    if ((grant.code ?? grant.refreshToken ?? "").length > 4096) return { ok: false, error: "badRequest" };
+    return await withCredentialLock<
+      { ok: true; username: string; ebayUserId: string } | { ok: false; error: EbayConnectError }
+    >(
+      ctx,
+      args.userId,
+      "ebay",
+      "store",
+      async () => {
+        const startedAt = Date.now();
+        let response: Response;
+        try {
+          response = await browserFetch("/oauth/ebay/connect", {
+            method: "POST",
+            headers: { ...(await browserAuthHeaders()), "Content-Type": "application/json" },
+            body: JSON.stringify({ key: credKey("ebay", args.userId), ...grant }),
+          });
+        } catch {
+          logEbayCredentialCall("connect", startedAt, "network");
+          return { ok: false, error: "unavailable" };
+        }
+        if (!response.ok) {
+          const errorClass = await serviceErrorClass(response);
+          logEbayCredentialCall("connect", startedAt, errorClass ?? "unreadable", response.status);
+          if (response.status === 404 && errorClass === null) return { ok: false, error: "serviceNotReady" };
+          if (errorClass === "consent_refused") return { ok: false, error: "consentRefused" };
+          if (errorClass === "ebay_not_configured") return { ok: false, error: "notConfigured" };
+          if (errorClass === "bad_request") return { ok: false, error: "badRequest" };
+          if (errorClass === "internal") return { ok: false, error: "internal" };
+          return { ok: false, error: "unavailable" };
+        }
+        const body = (await response.json().catch(() => null)) as
+          | { username?: unknown; ebayUserId?: unknown }
+          | null;
+        const username = typeof body?.username === "string" ? body.username.trim().slice(0, 64) : "";
+        const ebayUserId = typeof body?.ebayUserId === "string" ? body.ebayUserId.trim() : "";
+        if (!EBAY_USER_ID_RE.test(ebayUserId)) {
+          // The session is stored, but NB cannot tell whose it is, so it
+          // cannot check one-owner-per-account: refuse to start listing.
+          logEbayCredentialCall("connect", startedAt, "no_user_id", response.status);
+          return { ok: false, error: "unavailable" };
+        }
+        logEbayCredentialCall("connect", startedAt, "ok", response.status);
+        await ctx.runMutation(internal.userProfile.setMarketplaceAccountIdInternal, {
+          userId: args.userId,
+          site: "ebay",
+          accountId: ebayUserId,
+        });
+        await ctx.runMutation(internal.ebayConnect.recordConnection, {
+          ownerId: args.userId,
+          ebayUsername: username.length > 0 ? username : ebayUserId,
+        });
+        await ctx.runMutation(internal.userProfile.updateSiteCredentialStatus, {
+          userId: args.userId,
+          site: "ebay",
+          hasCredentials: true,
+          needsReauth: false,
+          listing: args.listing,
+        });
+        return { ok: true, username: username.length > 0 ? username : ebayUserId, ebayUserId };
+      },
+      { ok: false, error: "busy" },
+    );
+  },
+});
+
+/**
+ * Deletes the stored eBay session (`DELETE /credentials/<key>`; a 404 is
+ * already gone) and clears the saved sign-in, which stops listing there
+ * (`removeSiteCredentialStatus` → `listingOutbox.stopListingForSite`). What
+ * eBay lists is left as it is. Under the credential lock.
+ */
+export const disconnectEbay = internalAction({
+  args: { userId: v.string() },
+  returns: v.object({ ok: v.boolean() }),
+  handler: async (ctx, args): Promise<{ ok: boolean }> => {
+    return await withCredentialLock(
+      ctx,
+      args.userId,
+      "ebay",
+      "delete",
+      async () => {
+        const startedAt = Date.now();
+        try {
+          const response = await browserFetch(`/credentials/${credKey("ebay", args.userId)}`, {
+            method: "DELETE",
+            headers: await browserAuthHeaders(),
+          });
+          logEbayCredentialCall("disconnect", startedAt, response.ok ? "ok" : "http_error", response.status);
+          if (!response.ok && response.status !== 404) return { ok: false };
+        } catch {
+          logEbayCredentialCall("disconnect", startedAt, "network");
+          return { ok: false };
+        }
+        await ctx.runMutation(internal.userProfile.removeSiteCredentialStatus, { userId: args.userId, site: "ebay" });
+        return { ok: true };
+      },
+      { ok: false },
+    );
+  },
+});
+
+/**
+ * The eBay branch of `refreshSiteToken` (already under the credential lock):
+ * asks the browser service to renew the access token. True when it did; a
+ * `reauth_required` answer (eBay refused the refresh token, or none is
+ * stored) flags `needsReauth`; anything else (not configured, eBay or the
+ * store down, an older service) is a failed refresh that writes nothing.
+ */
+async function refreshEbayToken(
+  ctx: Pick<ActionCtx, "runMutation">,
+  userId: string,
+): Promise<boolean> {
+  if (!ebayConfigured()) return false;
+  const startedAt = Date.now();
+  let response: Response;
+  try {
+    response = await browserFetch("/oauth/ebay/refresh", {
+      method: "POST",
+      headers: { ...(await browserAuthHeaders()), "Content-Type": "application/json" },
+      body: JSON.stringify({ key: credKey("ebay", userId) }),
+    });
+  } catch {
+    logEbayCredentialCall("refresh", startedAt, "network");
+    return false;
+  }
+  if (response.ok) {
+    await response.text().catch(() => "");
+    logEbayCredentialCall("refresh", startedAt, "ok", response.status);
+    await ctx.runMutation(internal.userProfile.setSiteReauthState, { userId, site: "ebay", needsReauth: false });
+    return true;
+  }
+  const errorClass = await serviceErrorClass(response);
+  logEbayCredentialCall("refresh", startedAt, errorClass ?? "unreadable", response.status);
+  if (response.status === 401 && errorClass === "reauth_required") {
+    await ctx.runMutation(internal.userProfile.setSiteReauthState, { userId, site: "ebay", needsReauth: true });
+  }
+  return false;
+}
