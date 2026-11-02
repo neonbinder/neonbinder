@@ -379,7 +379,7 @@ Idioms:
   "Base SL BSC" to a screen reader; pick rows by their own visible text with
   `columnOption()` (`.filter({ has: getByText(name, { exact: true }) })`).
 - **Fresh-only specs** (wikidata live proof, the committing wizard flows, the
-  specs that add a player from `support/recorded-names.ts`) pass
+  specs that take a name from `support/recorded-names.ts`) pass
   once per seed. A second local run fails at its "nothing exists yet"
   precondition; that is correct, not flaky. Re-seed.
 
@@ -693,15 +693,16 @@ recording (`convex/adapters/__fixtures__/enrichment-lookups.json`) instead of
 a live round trip. The switch is the Convex env var
 `NEONBINDER_ENRICHMENT_FIXTURES=1`, honoured only where
 `TESTING_RESET_SECRET` is also set; `e2e.yml` writes it onto the PR's preview
-before seeding, every run, and production has neither. A name not in the
-recording still goes live, so the fixture is a cache in front of the adapter,
-never a stub of it. What that changes:
+before seeding, every run, and production has neither. Since NEO-413 a name
+not in the recording does **not** go live under the switch: it is answered
+no-match and logged as `enrichment_fixture_live_refused` (error level), except
+the live-proof player below. Record a name before a spec depends on its
+answer. What that changes:
 
 - **`setup.spec.ts` no longer proves the live lane.** Its wizard drain
   (the names-done footer, 240 s) is now an upper bound over a fixture-backed hit:
   seconds when the recording covers the seed, network time only for names it
-  does not. The 240 s stays (the seed's sanctioned cold-path ceiling, and the
-  miss path is still live), but a seed that needs it with the recording in
+  does not. The 240 s stays (the seed's sanctioned cold-path ceiling), but a seed that needs it with the recording in
   place is a coverage gap, not a slow Wikidata. CI prints the coverage report
   to the seed job summary after the seed; read it before reading anything
   into a slow drain.
@@ -736,7 +737,15 @@ never a stub of it. What that changes:
   (`recordedNoMatchPlayer(env, "<spec>")`): each is a recorded Baseball
   no-match, so the add is a fixture hit that leaves the row bare, one name
   per worker per spec. Such a spec is fresh-only. The unit test refuses a
-  pool name that is not a recorded no-match. A checklist name avoids the
+  pool name that is not a recorded no-match. Since NEO-413 the same holds
+  for every player, league or team a spec makes that the product looks up
+  (a Football player, a league added by hand or in the wizard, a career
+  team staged in the wizard): it comes from `recordedNoMatchName(env,
+  "<spec>[:<role>]")`, a real name recorded as a no-match in that sport and
+  absent from the catalogue. Never mint a token for a name that reaches a
+  lookup; under the recording it is refused and logged as
+  `enrichment_fixture_live_refused`. Teams typed into a TeamPicker and
+  aliases are not looked up and may stay minted. A checklist name avoids the
   lookup when the catalogue resolves it to one player, when two players
   share it (a ready pick step, NEO-332), or when the recording holds it
   under the lookup's sport. The file's default sport is Baseball; an entry

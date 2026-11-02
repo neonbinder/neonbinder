@@ -2,17 +2,21 @@
 // NEO-313: switch the quick-add player search to Football and put a football
 // player on a baseball card; the card carries him with his sport, and he stays
 // out of Baseball's roster on /admin/players.
+// NEO-413: the player is a real person from support/recorded-names.ts whose
+// Football lookup the recording holds as a no-match, so his add sends nothing
+// to Wikidata. One name per worker; FRESH-ONLY (re-seed before re-running).
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { addPlayerByHand } from "../../support/players";
 import { confirmDeleteCardButton, deleteCardButton, editCardButton, openVariant } from "../../support/cards";
 import { drillToCustom } from "../../support/set-builder";
+import { recordedNoMatchName } from "../../support/recorded-names";
 
 test(
   "Card player picker — switch the search to Football and put a football player on a baseball card; the card carries him with his sport, and he stays out of Baseball's roster (NEO-313)",
   { tag: ["@set-selector"] },
   async ({ page, signIn, env }) => {
     const A = env.ATTEMPT_ID;
-    const PLAYER = `Gp${env.ATTEMPT_TOKEN}`;
+    const PLAYER = recordedNoMatchName(env, "card-player-picker-cross-sport");
     const card = `315-${A}`;
     const target = {
       sport: "Baseball",

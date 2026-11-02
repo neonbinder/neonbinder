@@ -2,6 +2,7 @@
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { setBuilderReady } from "../../support/set-builder";
 import { expectTeamsLoaded, teamsCounter } from "../../support/players";
+import { recordedNoMatchName } from "../../support/recorded-names";
 import {
   advanceToSave,
   fetchOneMarketplaceSetChecklistToWizard,
@@ -17,13 +18,18 @@ import {
 // every Orioles player, so that fetch committed straight through with no
 // wizard. MEASURED on PR #314's preview: 18 cards, 15 unknown names, all
 // players, 0 teams. Re-seed before re-running.
+// NEO-413: the staged career team is looked up when it stages, so it is a
+// real club from support/recorded-names.ts (a hurling club, one word) that the
+// recording holds as a Hockey no-match and the reference catalogue does not
+// hold: the lookup sends nothing to Wikidata, the step still reads "New Team",
+// and Team Management's filter finds this one row. One name per worker.
 const SET = "Memphis RiverKings CHL";
 
 test(
   "Entity review — a hand-staged career team survives the commit and becomes a real team row",
   { tag: ["@set-selector"] },
   async ({ page, signIn, env }) => {
-    const team = `MintedTeam${env.ATTEMPT_TOKEN}`;
+    const team = recordedNoMatchName(env, "checklist-wizard-career-team-commits");
 
     await signIn("/set-selector");
     await expect(setBuilderReady(page)).toBeVisible({ timeout: LAUNCH_GATE });

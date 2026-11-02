@@ -1,17 +1,22 @@
 // Origin: .maestro/flows/admin/league-management-add-and-edit.yaml (Maestro suite retired in NEO-341; see git history)
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { expectTeamsLoaded } from "../../support/players";
+import { recordedNoMatchName } from "../../support/recorded-names";
 
 test(
   "League Management — add a league by hand, classify it, and edit what we know about it",
   { tag: ["@admin"] },
   async ({ page, signIn, env }) => {
-    // Every minted name is ONE search token carrying worker AND attempt
-    // (NEO-330: a hyphenated name is several search terms, and a reference
-    // catalogue of real leagues sits on every CI preview). The abbreviation
-    // stays under createByAdmin's 16-character cap.
+    // NEO-413: the league is a real one from support/recorded-names.ts (a
+    // cricket competition) whose Baseball lookup the recording holds as a
+    // no-match, so creating it sends nothing to Wikidata, and whose name is
+    // not contained in any league of the reference catalogue every CI preview
+    // carries, so the filter below finds it alone. One name per worker;
+    // FRESH-ONLY (re-seed before re-running). The abbreviation and aliases are
+    // never looked up, so they stay minted: ONE search token carrying worker
+    // AND attempt, the abbreviation under createByAdmin's 16-character cap.
     const token = env.ATTEMPT_TOKEN;
-    const name = `Lg${token}`;
+    const name = recordedNoMatchName(env, "league-management-add-and-edit");
     const abbreviation = `L${token}`;
     const aliasOne = `Alias${token}`;
     const aliasTwo = `Second${token}`;

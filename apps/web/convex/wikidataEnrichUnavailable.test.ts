@@ -228,7 +228,7 @@ describe("enrichPlayer — unavailable throws retryable, no-match is final", () 
     expect(JSON.stringify(unavailableLines())).not.toContain("Killebrew");
   });
 
-  test("a 200 with no binding resolves, writes nothing, and makes exactly one request", async () => {
+  test("a 200 with no binding resolves, writes nothing, and makes exactly two requests (one re-ask, NEO-413)", async () => {
     const t = convexTest(schema, modules);
     const sportId = await seedSport(t);
     const playerId = await insertPlayer(t, sportId, "Nobody Wikidata Knows");
@@ -239,7 +239,7 @@ describe("enrichPlayer — unavailable throws retryable, no-match is final", () 
       t.action(internal.adapters.wikidata.enrichPlayer, { playerId }),
     ).resolves.toBeNull();
 
-    expect(stub.calls()).toBe(1);
+    expect(stub.calls()).toBe(2);
     expect(await getPlayer(t, playerId)).toEqual(before);
     expect(unavailableLines()).toEqual([]);
   });

@@ -44,6 +44,7 @@ import {
   captureSportValidator,
   fixtureEntryValidator,
   fixtureKey,
+  liveLookupAllowed,
   readFixture,
   toFixtureEntry,
   type EnrichmentFixtureEntry,
@@ -242,8 +243,39 @@ function sparqlStringLiteral(raw: string): string {
  * is the value the retry log line carries: never the query, never the body.
  */
 type SparqlAttemptOutcome =
-  | { ok: true; results: SparqlResults }
+  | { ok: true; results: SparqlResults; meta: SparqlReplyMeta }
   | { ok: false; retryable: boolean; reason: string };
+
+/**
+ * NEO-413 — what a 200 looked like, for the empty-search log line. Header
+ * values only, read defensively (a test double may carry no headers): the
+ * cache verdict and age say whether the answer came from the endpoint's
+ * front cache, `x-served-by` which backend produced it. Never the body.
+ */
+type SparqlReplyMeta = {
+  status: number;
+  contentLength: string | null;
+  xCache: string | null;
+  age: string | null;
+  servedBy: string | null;
+};
+
+function replyMeta(response: Response): SparqlReplyMeta {
+  const header = (name: string): string | null => {
+    try {
+      return response.headers?.get?.(name) ?? null;
+    } catch {
+      return null;
+    }
+  };
+  return {
+    status: response.status,
+    contentLength: header("content-length"),
+    xCache: header("x-cache"),
+    age: header("age"),
+    servedBy: header("x-served-by"),
+  };
+}
 
 /**
  * One attempt. Never throws: every failure is mapped to `{ ok: false }` with
@@ -281,7 +313,8 @@ async function sparqlAttempt(url: string): Promise<SparqlAttemptOutcome> {
     return { ok: false, retryable, reason: `http_${response.status}` };
   }
   try {
-    return { ok: true, results: (await response.json()) as SparqlResults };
+    const meta = replyMeta(response);
+    return { ok: true, results: (await response.json()) as SparqlResults, meta };
   } catch (error) {
     // A 200 whose body will not parse. Not retried: the rule is "never retry
     // a 200", and a malformed body from a healthy endpoint is not transient.
@@ -323,11 +356,19 @@ function sleep(ms: number): Promise<void> {
  * this module should reach for it — the `lookup*` functions are the surface.
  */
 export async function runSparql(query: string, trace?: LookupTrace): Promise<SparqlResults | null> {
+  return (await runSparqlWithMeta(query, trace))?.results ?? null;
+}
+
+/** `runSparql`, also handing back what the successful reply looked like. */
+async function runSparqlWithMeta(
+  query: string,
+  trace?: LookupTrace,
+): Promise<{ results: SparqlResults; meta: SparqlReplyMeta } | null> {
   const url = `${SPARQL_ENDPOINT}?query=${encodeURIComponent(query)}&format=json`;
   for (let attempt = 1; ; attempt++) {
     const startedAt = Date.now();
     const outcome = await sparqlAttempt(url);
-    if (outcome.ok) return outcome.results;
+    if (outcome.ok) return { results: outcome.results, meta: outcome.meta };
     const fast = Date.now() - startedAt < WIKIDATA_FAST_FAILURE_MS;
     if (outcome.retryable && fast && attempt < WIKIDATA_MAX_ATTEMPTS) {
       // Structured, and deliberately WITHOUT the query: the existing lines
@@ -783,6 +824,57 @@ export function membershipIsOutsidePlayerSport(
 }
 
 /**
+ * NEO-413 — a name search whose 200 came back with no rows is asked ONCE more
+ * before it is believed.
+ *
+ * Why: until now an empty search was a final no-match, and only transport
+ * failures were retried. On 2026-11-01 the live-enrichment spec's Tretiak
+ * search came back empty on one CI attempt (the review row was written as a
+ * no-match and the page waited its full 600 s for a link that could not
+ * come) and found Q316864 on the next attempt of the same commit. One empty
+ * reply had become a permanent wrong answer.
+ *
+ * What: log what the empty reply looked like (`wikidata_search_empty`: the
+ * kind, the status, the cache and backend headers; never the name or the
+ * body), pause `WIKIDATA_RETRY_BACKOFF_MS`, and ask again. The second request
+ * carries a trailing SPARQL comment so its URL differs: the endpoint caches
+ * GET answers, and an identical URL could be served the same cached empty
+ * reply. Whatever the second reply says is the answer; a second empty is a
+ * genuine no-match. A transport failure on the second request trips the
+ * trace exactly as `runSparql` always has, so the pool's ladder handles it.
+ *
+ * Why in-call and not the pool's ladder: the ladder is for "Wikidata could
+ * not be reached" and ends a never-recovering row in an error state. A
+ * genuine no-match is the common answer for an obscure name in production,
+ * and sending every one of them through minutes of backoff, then to an
+ * error, would turn a correct "nothing found" into a wrong failure. One
+ * re-ask costs one extra round trip inside the caller's existing pool slot.
+ */
+async function runEntitySearch(
+  query: string,
+  kind: "player" | "team" | "league",
+  trace?: LookupTrace,
+): Promise<SparqlResults | null> {
+  const first = await runSparqlWithMeta(query, trace);
+  if (!first || first.results.results.bindings.length > 0) return first?.results ?? null;
+  console.warn(JSON.stringify({ msg: "wikidata_search_empty", kind, attempt: 1, ...first.meta }));
+  await sleep(WIKIDATA_RETRY_BACKOFF_MS);
+  const second = await runSparqlWithMeta(`${query}\n# re-ask after an empty reply (NEO-413)\n`, trace);
+  if (second) {
+    const rows = second.results.results.bindings.length;
+    console.warn(
+      JSON.stringify({
+        msg: rows > 0 ? "wikidata_search_empty_recovered" : "wikidata_search_empty",
+        kind,
+        attempt: 2,
+        ...second.meta,
+      }),
+    );
+  }
+  return second?.results ?? null;
+}
+
+/**
  * Find the best Wikidata QID for a player using the MediaWiki entity
  * search inlined in SPARQL — much faster than a label-FILTER scan since
  * Wikidata indexes labels and aliases for prefix lookup. The sport
@@ -824,7 +916,7 @@ async function findPlayerQid(
     LIMIT 1
   `;
 
-  const result = await runSparql(query, trace);
+  const result = await runEntitySearch(query, "player", trace);
   const binding = result?.results.bindings[0];
   // `?? null`: an IRI whose final segment is not a QID is no match at all.
   return binding ? (qidFromIri(binding.player.value) ?? null) : null;
@@ -862,7 +954,7 @@ async function findTeamQid(
     LIMIT 1
   `;
 
-  const result = await runSparql(query, trace);
+  const result = await runEntitySearch(query, "team", trace);
   const binding = result?.results.bindings[0];
   // See the note in findPlayerQid — a non-QID segment is treated as no match.
   return binding ? (qidFromIri(binding.team.value) ?? null) : null;
@@ -971,7 +1063,7 @@ async function findLeagueQid(
     LIMIT 1
   `;
 
-  const result = await runSparql(query, trace);
+  const result = await runEntitySearch(query, "league", trace);
   const binding = result?.results.bindings[0];
   // See the note in findPlayerQid — a non-QID segment is treated as no match.
   return binding ? (qidFromIri(binding.league.value) ?? null) : null;
@@ -1105,6 +1197,10 @@ export async function lookupPlayerEnrichment(
     const recorded = readFixture("player", sportQid, name);
     if (recorded.hit) return recorded.result;
   }
+  // NEO-413: on a recording-enabled deployment a miss stays a no-match unless
+  // it is the one allowed live name. A player without a sport QID never makes
+  // a request (findPlayerQid refuses), so it needs no check.
+  if (sportQid && !liveLookupAllowed("player", sportQid, name)) return null;
   return lookupPlayerEnrichmentLive(name, sport, trace);
 }
 
@@ -1710,6 +1806,9 @@ export async function lookupTeamEnrichment(
     const recorded = readFixture("team", sportQid, name, knownQid);
     if (recorded.hit) return recorded.result;
   }
+  // NEO-413: see `lookupPlayerEnrichment`. Checked with or without a sport
+  // QID, because the live team body can still ask ESPN.
+  if (!liveLookupAllowed("team", sportQid, name)) return null;
   return lookupTeamEnrichmentLive(name, sport, knownQid, trace);
 }
 
@@ -2312,6 +2411,9 @@ export async function lookupLeagueEnrichment(
     const recorded = readFixture("league", sportQid, name, knownQid);
     if (recorded.hit) return recorded.result;
   }
+  // NEO-413: see `lookupPlayerEnrichment`. A league with no sport QID still
+  // searches live, so it is checked too.
+  if (!liveLookupAllowed("league", sportQid, name)) return null;
   return lookupLeagueEnrichmentLive(name, sportQid, knownQid, trace);
 }
 

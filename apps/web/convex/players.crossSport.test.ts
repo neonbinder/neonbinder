@@ -269,6 +269,43 @@ describe("players.search", () => {
     expect(result[0]).toMatchObject({ name: "Bo Jackson", sportValue: "Football" });
   });
 
+  // NEO-414: the member leg used to run only when the home leg came back
+  // short of the limit. The index matches ANY typed word, so ten home-sport
+  // namesakes sharing his surname hid him from every picker in that sport.
+  test("a member is found even when home-sport namesakes fill the limit, and is listed first", async () => {
+    const t = convexTest(schema, modules);
+    const football = await seedSport(t, "Football");
+    const baseball = await seedSport(t, "Baseball");
+    const firsts = ["Jose", "Luis", "Edgar", "Kevin", "Gera", "Armando", "Yordan", "Wilson", "Victor", "Tony", "Tavo", "Pedro"];
+    for (const first of firsts) await insertPlayer(t, { name: `${first} Alvarez`, sportId: baseball });
+    const him = await insertPlayer(t, { name: "Alejandro Alvarez", sportId: football });
+    await t.withIdentity(ADMIN_IDENTITY).mutation(api.players.setAdditionalSports, {
+      playerId: him,
+      sportIds: [baseball],
+    });
+
+    const result = await t
+      .withIdentity(MEMBER_IDENTITY)
+      .query(api.players.search, { query: "Alejandro Alvarez", sportId: baseball, limit: 10 });
+    expect(result).toHaveLength(10);
+    expect(result[0]).toMatchObject({ name: "Alejandro Alvarez", sportValue: "Football" });
+    expect(result.slice(1).every((row) => row.name.endsWith(" Alvarez"))).toBe(true);
+  });
+
+  test("a home row matching every typed word outranks namesakes matching one", async () => {
+    const t = convexTest(schema, modules);
+    const baseball = await seedSport(t, "Baseball");
+    for (const first of ["Jose", "Luis", "Edgar", "Kevin"]) {
+      await insertPlayer(t, { name: `${first} Alvarez`, sportId: baseball });
+    }
+    await insertPlayer(t, { name: "Alejandro Alvarez", sportId: baseball });
+
+    const result = await t
+      .withIdentity(MEMBER_IDENTITY)
+      .query(api.players.search, { query: "Alejandro Alvarez", sportId: baseball });
+    expect(result[0].name).toBe("Alejandro Alvarez");
+  });
+
   test("does not surface a member of another sport with no membership here", async () => {
     const t = convexTest(schema, modules);
     const football = await seedSport(t, "Football");

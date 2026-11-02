@@ -93,12 +93,12 @@ BuySportsCards alone for the whole run:
 | Baseball → 2024 → Topps → Topps 206 | none — variant types sync on first use; Base stays **UNMAPPED** (NOT pre-synced) | `tests/set-selector/base-mapping-cancel-recovers.spec.ts` — **sole writer**, and it writes nothing |
 | Hockey → 1995 → Unknown (via the All Brands view) → Tulsa Oilers CHL | `Base` — 18 cards, fetched and COMMITTED in-flow, BSC only, every name SKIPPED (NOT pre-synced) | `tests/set-selector/checklist-wizard-skip-commits-and-unskip.spec.ts` — **sole writer**. ✅ **Approved by Jason 2026-10-10** (NEO-330). Measured: **16 unknown players, 0 teams** (19 review rows once three players' Wikidata career clubs are staged) — see "The 1995 minor-league hockey wizard fixtures" |
 | Hockey → 1995 → Unknown (via the All Brands view) → Memphis RiverKings CHL | `Base` — 18 cards, fetched and COMMITTED in-flow, BSC only; ONE player created with ONE hand-staged career team, the rest SKIPPED (NOT pre-synced) | `tests/set-selector/checklist-wizard-career-team-commits.spec.ts` — **sole writer**. ✅ **Approved by Jason 2026-10-10** (NEO-330). Measured: **15 unknown players, 0 teams** (15 rows settled) |
-| Hockey → 1995 → Unknown (via the All Brands view) → San Antonio Iguanas CHL | `Base` — 18 cards, fetched and COMMITTED in-flow, BSC only; one row LINKED to the catalogue's Wayne Gretzky, one moved to Football and linked to the minted `Gw<token>`, the rest SKIPPED (NOT pre-synced) | `tests/set-selector/checklist-wizard-link-commits.spec.ts` — **sole writer**. ✅ **Approved by Jason 2026-10-10** (NEO-330). Measured: **16 unknown players, 0 teams** (16 rows settled) |
+| Hockey → 1995 → Unknown (via the All Brands view) → San Antonio Iguanas CHL | `Base` — 18 cards, fetched and COMMITTED in-flow, BSC only; one row LINKED to the catalogue's Wayne Gretzky, one moved to Football and linked to this worker's real recorded Football name (`recordedNoMatchName`, NEO-413), the rest SKIPPED (NOT pre-synced) | `tests/set-selector/checklist-wizard-link-commits.spec.ts` — **sole writer**. ✅ **Approved by Jason 2026-10-10** (NEO-330). Measured: **16 unknown players, 0 teams** (16 rows settled) |
 | Hockey → 1995 → Unknown (via the All Brands view) → Fort Worth Fire CHL | `Base` — 18 cards fetched in-flow, BSC only, and DISCARDED (Cancel → Discard; nothing saved) (NOT pre-synced) | `tests/set-selector/checklist-wizard-skip-not-a-person.spec.ts` — **sole reader**, writes nothing. ✅ **Approved by Jason 2026-10-10** (NEO-330). Measured: **16 unknown players, 0 teams** (16 rows settled) |
 | Baseball → 2024 → Topps → Topps Heritage | `Base` — SportLots base mapping CONFIRMED in-flow (NOT pre-synced) | `tests/set-selector/sets-base.spec.ts` — **sole writer** of that mapping. ✅ **RATIFIED 2026-09-09** (NEO-260) — it was already in use and had never been listed |
 | Baseball → 1996 → Score → Score | `Insert` (reconciled in-flow, NOT pre-synced) | `tests/set-selector/inserts-1996-score-one-nb-set-two-bsc-sources.spec.ts` — **sole writer** |
 | Hockey → 2024 → Topps → Topps NHL Sticker Collection | none — the flow never goes below `Variant Types` (NOT pre-synced) | `tests/set-selector/set-rename-survives-resync-and-suggests-bsc-name.spec.ts` — **sole writer** |
-| Hockey → 1995 → Unknown (reached through the All Brands view) → Roanoke Express ECHL | `Base` — 25 cards, fetched and COMMITTED in-flow, BSC only (NOT pre-synced); NEO-335: one player CREATED in the review with one career team (`RXT<token>`, pre-filled onto his card), one card answered "No team on this card", one given a team CREATED with "Other team…" (`RXO<token>T`), 22 left for later; then RE-SYNCED once (teams-only review) | `tests/set-selector/checklist-one-marketplace-skips-match-dialog.spec.ts` — **sole writer**. ✅ **APPROVED 2026-09-09** (NEO-260); manufacturer row renamed by NEO-237 (the marketplace's "All Brands" option is routed onto the year's `Unknown` row, never stored under its label) |
+| Hockey → 1995 → Unknown (reached through the All Brands view) → Roanoke Express ECHL | `Base` — 25 cards, fetched and COMMITTED in-flow, BSC only (NOT pre-synced); NEO-335: one player CREATED in the review with one career team (a real recorded one-word club, NEO-413, pre-filled onto his card), one card answered "No team on this card", one given a team CREATED with "Other team…" (`RXO<token>T`), 22 left for later; then RE-SYNCED once (teams-only review) | `tests/set-selector/checklist-one-marketplace-skips-match-dialog.spec.ts` — **sole writer**. ✅ **APPROVED 2026-09-09** (NEO-260); manufacturer row renamed by NEO-237 (the marketplace's "All Brands" option is routed onto the year's `Unknown` row, never stored under its label) |
 | Hockey → 1997 (the whole year) | a manufacturer row `SPx` linked through SportLots' All Brands option; the per-brand SportLots reviews the year-wide Sync Sets leaves behind (NEO-306: SportLots-only names are no longer saved as sets; the reviews stay unsaved, labels never read or asserted); the year's BSC sets filed under the brands / `Unknown` and the prefix-matching ones re-homed to `SPx`. No checklist is fetched. | `tests/set-selector/brand-via-all-brands-narrows-sportlots.spec.ts` — **sole writer** of the year. ✅ Claimed by Jason 2026-09-21 (NEO-237 §0.1); the prefix `SPx` **measured** on PR #272's preview 2026-09-21 — see the Hockey 1997 section |
 | Baseball → 2024 → Topps → Topps MLB at Rickwood Field Negro Leagues Collection | none since NEO-330 — RETIRED as a fixture: the reference catalogue holds its Negro League clubs and players, so it no longer raises the team steps the alias flow needs | was `tests/set-selector/checklist-wizard-link-team-saves-alias.spec.ts` (NEO-284, approved 2026-09-16); no flow touches it now |
 | Baseball → 1996 → All Brands (the view; the set is filed under the year's `Unknown` row) → Line Up Venezuelan Winter League | `Base` — 300 cards, BSC only (the SportLots picker is CANCELLED in-flow), fetched and COMMITTED in-flow (NOT pre-synced): one club LINKED to the minted `Loc<token> Ali<token>` with its alias, every other name SKIPPED | `tests/set-selector/checklist-wizard-link-team-saves-alias.spec.ts` — **sole writer**. ✅ **Approved by Jason 2026-10-10** (NEO-330). Measured: **200 unknown players + 8 unknown teams** (211 rows once lookups settle) — see "The TEAM-link alias fixture" |
@@ -553,8 +553,9 @@ one staged a Wikidata career team (`Sydney Blue Sox`), skipped.
 
 **No recorded lookups are needed.** Nothing is staged on the catalogue, so
 nothing is looked up. Should a refresh stage names again, a name absent from
-the recording goes live (README → "Enrichment fixtures"); the flow decides
-nothing that depends on a lookup's answer.
+the recording is answered no-match and logged as refused (NEO-413; README →
+"Enrichment fixtures"); the flow decides nothing that depends on a lookup's
+answer.
 
 **Verified 2026-10-12** against BSC's public catalog facets and #316's green
 CI run: the set is `Bowman Draft` under the `Bowman` row, the insert's
@@ -1179,11 +1180,11 @@ old attention count climbed to). The step prints no count; the header's
 - **STEP 5** asserts the sitting opens at `Step 1 of …`.
 - **STEP 6** creates the first player the wizard presents ("Add as New
   Player"; header `New player`), with ONE hand-staged career team
-  `RXT<token>` (1994–1996), decided "Add as New Team" in its own New Team step
+  this worker's real one-word club from `recordedNoMatchName(env, "checklist-one-marketplace-skips-match-dialog")` (NEO-413; written `<club>` below) (1994–1996), decided "Add as New Team" in its own New Team step
   (header `New team`). Every other name is skipped. Whichever Roanoke name
   that is, no other flow touches it.
 - **STEP 6b** reads the teams step: that player's card is a player line with
-  `RXT<token>` CHECKED by default. Since Phase 2 a career pre-fills only when
+  `<club>` CHECKED by default. Since Phase 2 a career pre-fills only when
   EXACTLY ONE of its teams covers `[setYear-1, setYear]` (C2,
   `careerTeamVerdict`); the set year is 1995, the window `[1994, 1995]`, and
   the 1994–1996 stint covers it — the only one that can (Wikidata career teams
@@ -1202,7 +1203,7 @@ old attention count climbed to). The step prints no count; the header's
   card; one card per player here, measurement 5).
 - **STEP 9** walks the drawer's `Next card` from `NB272-…` (it sorts first)
   to the two cards with a team chip, in whichever order the checklist shows
-  them, and asserts `Remove team RXT<token>` on one and
+  them, and asserts `Remove team <club>` on one and
   `Remove team RXO<token>T` on the other.
 - **STEP 10** re-syncs. The content review always opens (the pre-filled and
   RXO cards store a team BSC does not list; skipped cards store no player
@@ -1215,7 +1216,7 @@ old attention count climbed to). The step prints no count; the header's
   `Saved 25 cards.` again.
 
 So the flow writes, on top of the 25 cards: one PLAYER (a real Roanoke name,
-Hockey) with one stint, two TEAMS `RXT<token>` and `RXO<token>T` (Hockey),
+Hockey) with one stint, two TEAMS `<club>` and `RXO<token>T` (Hockey),
 each on one card, `teamNoneConfirmedAt` on another, `teamCheckDoneAt` on
 every card, and a second commit of the same 25 cards. The set stays single-use per preview
 deployment and the flow remains its sole writer. Every card is `NNO`, so
@@ -2029,7 +2030,7 @@ would put the wrong question on screen.
 | `cpx-` | `tests/set-selector/set-attributes-card-prefix.spec.ts` — an Insert row `CPXROW` under it carries the Card prefix under test; the flow clears the prefix before it ends. |
 | `cvar-` | `tests/set-selector/variation-link-group-and-unlink.spec.ts` |
 | `fp-` | `tests/set-selector/features-propagation.spec.ts` |
-| `msp-` | `tests/admin/player-sports-multi-sport-membership.spec.ts` (NEO-313) — under the REAL `Baseball` › 2024 › `Topps` (the set's sport must be Baseball: the flow gives a football player Baseball and proves a baseball card's picker finds him); `Insert` › `Base`, one card `316-<attempt>` linking the player `Gm<token>`, DELETED at the end. The set and its rows stand. |
+| `msp-` | `tests/admin/player-sports-multi-sport-membership.spec.ts` (NEO-313) — under the REAL `Baseball` › 2024 › `Topps` (the set's sport must be Baseball: the flow gives a football player Baseball and proves a baseball card's picker finds him); `Insert` › `Base`, one card `316-<attempt>` linking this worker's real recorded Football player (`recordedNoMatchName`, NEO-413), DELETED at the end. The set and its rows stand. |
 | `hcs` | `tests/collection/checklists-drill-offers-only-levels-with-cards.spec.ts` (NEO-364, per-attempt, single tokens) — its OWN sport `hcs<token>` (a collector's Sports column hides a sport until a card exists beneath it, so the sport must be new), year `2026`, brand `Topps` and ONE set `hcset<token>` with `Insert` › `Base`, all hand-made with no marketplace id. The flow adds ONE card `372<token>` (collector sees the sport appear), then DELETES it; the sport, year, brand, set and rows stand (a sport that has held a card cannot be deleted). It only READS the seed's 2024 Topps Chrome (no count text in the drill). One sport row per attempt joins the Sports column; no flow drills past it by position. |
 | `msb-` | `tests/set-selector/move-set-to-another-brand.spec.ts` — its OWN sport `msb-sport-<worker>`, brand rows `Topps` / `Panini` under it in 2026 (hand-made, no ids), and ONE set `msb-a-<worker>` under `Topps`. The flow moves that set to `Panini` and back, so it ends where it started; `Panini` stays empty. Per-worker only (no count is asserted). **Never under `E2E Test Sport <worker>`** — it adds a brand row, see the fold note below. |
 | `mtf-` | `tests/set-selector/checklist-missing-team-fixer-hand-added-card.spec.ts` (NEO-330, also `-${ATTEMPT_ID}`) — under the REAL `Baseball` › 2024 › `Topps`: the quick-add PlayerPicker and the fixer's TeamPicker search the set's sport, where the reference catalogue's Baseball rows live, and the real 2024 year is what makes the fixer offer the player's whole career ("No 2024 team on file"). `Insert` › `Base`, one card `851-<attempt>` linking the catalogue's **George Brett** with no team, then given the catalogue's **Kansas City Royals** in the attention walker's fixer; the card is DELETED at the end. Both catalogue rows are only READ (the flow writes the card alone). Per-attempt because the header count and the walker queue are exact. The set and its rows stand. |
@@ -2050,7 +2051,7 @@ would put the wrong question on screen.
 | `vtk` | `tests/set-selector/variant-type-title-is-its-kind.spec.ts` (NEO-334) — ONE set per attempt, `vtk<token>` (single token: `ATTEMPT_ID` with its hyphens folded, which also carries the runner), under the REAL `Baseball` › 2024 › `Topps`. Hand-made, so neither marketplace side is resolvable at any level beneath it and its Base mapping answers "Nothing to link yet" without a round trip. Inside it the flow creates the variant types `Inserts` (renamed in-flow to `Insert`), `Parallel`, `vtkpro<token>` (renamed in-flow to `Base`) and `vtksec<token>`, the inserts `vtkins<token>` (under Inserts) and `vtkpar<token>` (under Parallel), and the sub-variant `vtksub<token>`. Per-attempt because the flow renames types and makes a Base: a retry in a set that already holds them would refuse the very creates it needs (one Base per set; singular/plural siblings refused). Nothing is deleted; the set stands. The kind words are deliberately NOT minted — they are the input under test, scoped by the per-attempt set. |
 | `WOSet3-` | `tests/set-selector/new-chain-autopopulates-features.spec.ts` (under synthetic `E2E Test Sport N`) |
 | `xb-` | `tests/set-selector/all-brands-view-lists-every-set.spec.ts` — its OWN sport `xb-sport-<worker>`, brand rows `Topps` / `Panini` under it in 2026 (hand-made, no ids), and one set under each: `xb-a-<worker>` (Topps) / `xb-b-<worker>` (Panini). Per-worker only (no count is asserted). **Never under `E2E Test Sport <worker>`** — it adds a brand row, see the fold note below. |
-| `xsp-` | `tests/set-selector/card-player-picker-cross-sport.spec.ts` (NEO-313) — under the REAL `Baseball` › 2024 › `Topps` (the set's sport must be Baseball: the card's picker defaults to it and the flow switches it to Football); `Insert` › `Base`, one card `315-<attempt>` linking the FOOTBALL player `Gp<token>` as a guest, DELETED at the end. The set and its rows stand. |
+| `xsp-` | `tests/set-selector/card-player-picker-cross-sport.spec.ts` (NEO-313) — under the REAL `Baseball` › 2024 › `Topps` (the set's sport must be Baseball: the card's picker defaults to it and the flow switches it to Football); `Insert` › `Base`, one card `315-<attempt>` linking this worker's real recorded FOOTBALL player (`recordedNoMatchName`, NEO-413) as a guest, DELETED at the end. The set and its rows stand. |
 | `xag-`, `xsrc-` | `tests/set-selector/cross-release-card-appears-in-guest-checklist.spec.ts` |
 | `xbg-`, `xbs-` | `tests/set-selector/cross-release-import-reports-missing-numbers.spec.ts` |
 | `xcg-`, `xsrc-` | `tests/set-selector/cross-release-hide-toggle-filters-guest-cards.spec.ts` |
@@ -2268,11 +2269,12 @@ because a league step they cannot answer stops the batch dead and fails them.
 **NEO-307 — the one deterministic route in: a league the operator TYPES.**
 Everything above is about a step an ENRICHMENT raises. A step the operator
 raises by picking `Create “<typed>”` in a team step's `League` combobox has
-neither problem: a per-attempt name (`Lg<token>`) is missing from every sport
-by construction, and nothing earlier in the run can have created it.
+neither problem: the flow's league (a real competition from `recordedNoMatchName`,
+NEO-413; a minted `Lg<token>` until then) is missing from every sport's
+catalogue, and nothing earlier in the run can have created it.
 `tests/set-selector/checklist-wizard-career-team-entry.spec.ts` does exactly that on its minted
-`ProbeTeam<token>` step, answers the `New League: Lg<token>` step the walk
-presents, reads `Lg<token> (new)` back on the team, and discards the batch — so
+first-team step, answers the `New League: <league>` step the walk
+presents, reads `<league> (new)` back on the team, and discards the batch — so
 the step is asserted live without a new real set and without writing a
 `leagues` row.
 
@@ -2361,15 +2363,15 @@ whole thing; never assume which letter the worker half starts with.
 | Prefix | Owning flow | Notes |
 |---|---|---|
 | `CNAA`, `CNAB` | `tests/set-selector/checklist-attention-badge-and-filter.spec.ts` | two teams; CNAB is the born-linked card's alone, which is what makes its row assertion single-row |
-| `RXT` | `tests/set-selector/checklist-one-marketplace-skips-match-dialog.spec.ts` | a HOCKEY team, staged as a career team on the one Roanoke player that flow creates in its review (1994–1996) and decided "Add as New Team"; the NEO-335 pre-fill evidence, read back as `Remove team RXT<token>` in a card drawer |
+| `RXT` | `tests/set-selector/checklist-one-marketplace-skips-match-dialog.spec.ts` | RETIRED by NEO-413: the career team is a real recorded one-word club (`recordedNoMatchName`) |
 | `RXO` | `tests/set-selector/checklist-one-marketplace-skips-match-dialog.spec.ts` | a HOCKEY team, `RXO<token>T`, created from the wizard's teams step through a line's "Other team…" picker and the New Team dialog it opens (NEO-335 Phase 2, C1); read back as `Remove team RXO<token>T` in a card drawer. Ends in a LETTER so no other attempt's longer token can contain it as a prefix (Convex search treats the last term as a prefix, which would turn the picker's `No matches.` into a match). Diverges from `RXT` at its third character |
 | `CNAP` | `tests/set-selector/checklist-attention-badge-and-filter.spec.ts` | a PLAYER — the born-linked card #703's, created from the quick-add form's PlayerPicker ("Create player CNAP<token>") and read back from that card's drawer. The quick-add create path's one E2E since NEO-335 retired `set-fill-teams-from-teammate-card` (and its `ftl-`/`FTP`/`FTT` names). Diverges from CNAA/CNAB at its fourth character, and lives in `players.search`, not `teams.search` |
 | `CNWT` | `tests/set-selector/checklist-attention-walker-missing-team.spec.ts` | |
 | `NBTeam` | `tests/set-selector/team-picker-create-custom-card.spec.ts` | created under `E2E Test Sport <w>`, not Baseball |
 | `NBPlayer` | `tests/set-selector/player-picker-create-custom-card.spec.ts` | a PLAYER, not a team — `players.search` tokenises identically, and the row persists the same way |
-| `Gw` | `tests/set-selector/checklist-wizard-link-commits.spec.ts` | a FOOTBALL player (NEO-313), made on `/admin/players` through `admin/`addPlayerByHand`, which the review wizard links a Topps Brooklyn Collection name to after switching that row to Football. `Gp`/`Gm` below are its siblings; the three diverge at their SECOND character, so none is a prefix of another |
-| `Gp` | `tests/set-selector/card-player-picker-cross-sport.spec.ts` | a FOOTBALL player (NEO-313), linked as a guest onto a baseball card from the card picker's sport switch |
-| `Gm` | `tests/admin/player-sports-multi-sport-membership.spec.ts` | a FOOTBALL player (NEO-313) who is given Baseball as an added sport, then picked on a baseball card |
+| `Gw` | `tests/set-selector/checklist-wizard-link-commits.spec.ts` | RETIRED by NEO-413: the Football player is now a real recorded name (`recordedNoMatchName`) |
+| `Gp` | `tests/set-selector/card-player-picker-cross-sport.spec.ts` | RETIRED by NEO-413 (real recorded Football name) |
+| `Gm` | `tests/admin/player-sports-multi-sport-membership.spec.ts` | RETIRED by NEO-413 (real recorded Football name) |
 | `PM` | `tests/admin/player-management-add-and-career-history.spec.ts` | the PLAYER this flow adds by hand; `PMT` below is the team it gives him. The two diverge at their THIRD character, so neither name is a prefix of the other and neither picker can be answered by the other's row |
 | `PMT` | `tests/admin/player-management-add-and-career-history.spec.ts` | |
 | `SLP` | `tests/spine-label/player-team-colors-default-to-longest-tenure.spec.ts` | the PLAYER; `SLA`/`SLB` are his two teams. This is the one flow that types a strict PREFIX of a minted name — see the prefix note below |
@@ -2381,13 +2383,13 @@ whole thing; never assume which letter the worker half starts with.
 | `Alp` | `tests/set-selector/checklist-wizard-link-team-saves-alias.spec.ts` | the throwaway PLAYER that flow creates to reach a career editor; `Ali` below is the team it makes there. The two diverge at their third character |
 | `Ali` | `tests/set-selector/checklist-wizard-link-team-saves-alias.spec.ts` | the team a checklist club is LINKED to; carries the Location `Loc<token>` (typed into the DIALOG, never into a picker), so the composed `Loc<token> Ali<token>` is what the link option, the decision line and Team Management print. The link SEARCH types the single token `Ali<token>`. Its alias (the club's marketplace spelling) is removed again before the flow ends |
 | `Pca` | `tests/set-selector/checklist-wizard-link-team-saves-alias.spec.ts` | an ALIAS, not a team: typed into `Ali<token>`'s New Team dialog so the wizard's alias-clash refusal (NEO-307) has a holder. Never searched; removed with the club's alias before the flow ends |
-| `MintedTeam` | `tests/set-selector/checklist-wizard-career-team-commits.spec.ts` | |
+| `MintedTeam` | `tests/set-selector/checklist-wizard-career-team-commits.spec.ts` | RETIRED by NEO-413 (real recorded one-word club) |
 | `TPT` | `tests/set-selector/team-picker.spec.ts` | |
 | `TPR` | `tests/set-selector/team-picker-ranks-by-set-context.spec.ts` | four teams `TPR<token>QZ` / `QY` / `QX` / `QW` (NEO-331), alphabetical order the REVERSE of their tier order: Z in Major League Baseball from 1958, Y in the minor league `TPRLg` below from 2000, X in Major League Baseball 1900–1957, W in no league from 1958. Z and X PICK the existing "Major League Baseball" in the New Team dialog's League combobox (an unanswered League leaves a team league-less since NEO-331); that row is the reference catalogue's on a catalogue preview (NEO-330: level Major, abbreviation MLB) and otherwise `tests/setup.spec.ts`'s (its Base wizard drain adds the New League step, level Other, abbreviation MLB), and this flow never creates it. The flow types the shared prefix `TPR<token>Q`, which ENDS IN A LETTER so no other attempt's longer token can prefix-match it and interleave its rows (a digit sorts before "Z"). `TPR` and `TPT` diverge at their third character |
-| `TPRLg` | `tests/set-selector/team-picker-ranks-by-set-context.spec.ts` | a LEAGUE, named `TPRLg<token>M`, level **Minor** (load-bearing: it is what puts `TPR<token>QY` in tier 2), created from Y's New Team dialog (`Create “TPRLg<token>M”` → `Minor` → `Add league`) in **Baseball**. Trailing letter for the `STL<token>L` reason. No flow deletes it, so one row per attempt stands in Baseball |
-| `ProbeTeam` / `TempTeam` | `tests/set-selector/checklist-wizard-career-team-entry.spec.ts` | never persisted — the flow discards its batch |
+| `TPRLg` | `tests/set-selector/team-picker-ranks-by-set-context.spec.ts` | RETIRED by NEO-413: the Minor league (load-bearing: it is what puts `TPR<token>QY` in tier 2) is a real recorded competition (`recordedNoMatchName`), created from Y's New Team dialog in **Baseball**; one per worker, so the flow is fresh-only |
+| `ProbeTeam` / `TempTeam` | `tests/set-selector/checklist-wizard-career-team-entry.spec.ts` | RETIRED by NEO-413 (real recorded one-word clubs); never persisted, the flow discards its batch |
 | `STL` | `tests/set-selector/set-team-carries-down-to-cards.spec.ts` | a LEAGUE, not a team, named `STL<token>L`: created from STA's New Team dialog (`Create “STL<token>L”` → `Add league`) under `E2E Test Sport <w>`, then picked as an existing league on STB's by typing `<token>L`. The trailing `L` is load-bearing: the create option appears only when the typed text is a substring of NO league, the token's random tail varies in length, so a bare `STL<token>` can sit inside an older attempt's name — a letter after the digits makes it contained in none. No flow deletes it, so one row per attempt stands in that worker's sport; nothing else types into that sport's League combobox except `No lea` |
-| `Lg` | `tests/set-selector/checklist-wizard-career-team-entry.spec.ts` | a LEAGUE staged on ProbeTeam's wizard step and picked as `Lg<token> (new)` on TempTeam's — never persisted, the batch is discarded |
+| `Lg` | `tests/set-selector/checklist-wizard-career-team-entry.spec.ts` | RETIRED by NEO-413 (a real recorded competition), staged and discarded; `tests/admin/league-management-add-and-edit.spec.ts` likewise takes a real recorded league |
 
 ### ⚠️ A name typed into a team picker must be a SINGLE search token
 

@@ -13,6 +13,11 @@
         }
       }
     },
+    "league|Q5369|anz premiership": {
+      "kind": "league",
+      "name": "ANZ Premiership",
+      "result": null
+    },
     "league|Q5369|arizona complex league": {
       "kind": "league",
       "name": "Arizona Complex League",
@@ -43,6 +48,11 @@
         }
       }
     },
+    "league|Q5369|bandyallsvenskan": {
+      "kind": "league",
+      "name": "Bandyallsvenskan",
+      "result": null
+    },
     "league|Q5369|big 12 conference": {
       "kind": "league",
       "name": "Big 12 Conference",
@@ -63,6 +73,11 @@
         }
       }
     },
+    "league|Q5369|bob willis trophy": {
+      "kind": "league",
+      "name": "Bob Willis Trophy",
+      "result": null
+    },
     "league|Q5369|central league": {
       "kind": "league",
       "name": "Central League",
@@ -72,6 +87,11 @@
           "from": 1949
         }
       }
+    },
+    "league|Q5369|charlotte edwards cup": {
+      "kind": "league",
+      "name": "Charlotte Edwards Cup",
+      "result": null
     },
     "league|Q5369|chinese professional baseball league": {
       "kind": "league",
@@ -84,6 +104,16 @@
         }
       }
     },
+    "league|Q5369|christy ring cup": {
+      "kind": "league",
+      "name": "Christy Ring Cup",
+      "result": null
+    },
+    "league|Q5369|county championship": {
+      "kind": "league",
+      "name": "County Championship",
+      "result": null
+    },
     "league|Q5369|cuban national series": {
       "kind": "league",
       "name": "Cuban National Series",
@@ -93,6 +123,16 @@
           "from": 1961
         }
       }
+    },
+    "league|Q5369|currie cup": {
+      "kind": "league",
+      "name": "Currie Cup",
+      "result": null
+    },
+    "league|Q5369|deodhar trophy": {
+      "kind": "league",
+      "name": "Deodhar Trophy",
+      "result": null
     },
     "league|Q5369|dominican professional baseball league": {
       "kind": "league",
@@ -104,12 +144,37 @@
         }
       }
     },
+    "league|Q5369|duleep trophy": {
+      "kind": "league",
+      "name": "Duleep Trophy",
+      "result": null
+    },
+    "league|Q5369|efeler ligi": {
+      "kind": "league",
+      "name": "Efeler Ligi",
+      "result": null
+    },
+    "league|Q5369|ford trophy": {
+      "kind": "league",
+      "name": "Ford Trophy",
+      "result": null
+    },
+    "league|Q5369|handbollsligan": {
+      "kind": "league",
+      "name": "Handbollsligan",
+      "result": null
+    },
     "league|Q5369|high-a central": {
       "kind": "league",
       "name": "High-A Central",
       "result": {
         "wikidataId": "Q105702200"
       }
+    },
+    "league|Q5369|hogan cup": {
+      "kind": "league",
+      "name": "Hogan Cup",
+      "result": null
     },
     "league|Q5369|international league": {
       "kind": "league",
@@ -121,6 +186,16 @@
         }
       }
     },
+    "league|Q5369|irani cup": {
+      "kind": "league",
+      "name": "Irani Cup",
+      "result": null
+    },
+    "league|Q5369|joe mcdonagh cup": {
+      "kind": "league",
+      "name": "Joe McDonagh Cup",
+      "result": null
+    },
     "league|Q5369|kbo league": {
       "kind": "league",
       "name": "KBO League",
@@ -130,6 +205,16 @@
           "from": 1982
         }
       }
+    },
+    "league|Q5369|logan cup": {
+      "kind": "league",
+      "name": "Logan Cup",
+      "result": null
+    },
+    "league|Q5369|lory meagher cup": {
+      "kind": "league",
+      "name": "Lory Meagher Cup",
+      "result": null
     },
     "league|Q5369|low-a southeast": {
       "kind": "league",
@@ -148,6 +233,11 @@
           "from": 1903
         }
       }
+    },
+    "league|Q5369|marsh cup": {
+      "kind": "league",
+      "name": "Marsh Cup",
+      "result": null
     },
     "league|Q5369|mexican league": {
       "kind": "league",
@@ -168,6 +258,16 @@
           "from": 1876
         }
       }
+    },
+    "league|Q5369|netball superleague": {
+      "kind": "league",
+      "name": "Netball Superleague",
+      "result": null
+    },
+    "league|Q5369|nicky rackard cup": {
+      "kind": "league",
+      "name": "Nicky Rackard Cup",
+      "result": null
     },
     "league|Q5369|northwest league": {
       "kind": "league",
@@ -199,6 +299,41 @@
         }
       }
     },
+    "league|Q5369|plunket shield": {
+      "kind": "league",
+      "name": "Plunket Shield",
+      "result": null
+    },
+    "league|Q5369|plusliga": {
+      "kind": "league",
+      "name": "PlusLiga",
+      "result": null
+    },
+    "league|Q5369|rachael heyhoe flint trophy": {
+      "kind": "league",
+      "name": "Rachael Heyhoe Flint Trophy",
+      "result": null
+    },
+    "league|Q5369|ranji trophy": {
+      "kind": "league",
+      "name": "Ranji Trophy",
+      "result": null
+    },
+    "league|Q5369|salibandyliiga": {
+      "kind": "league",
+      "name": "Salibandyliiga",
+      "result": null
+    },
+    "league|Q5369|sheffield shield": {
+      "kind": "league",
+      "name": "Sheffield Shield",
+      "result": null
+    },
+    "league|Q5369|sigerson cup": {
+      "kind": "league",
+      "name": "Sigerson Cup",
+      "result": null
+    },
     "league|Q5369|south atlantic league": {
       "kind": "league",
       "name": "South Atlantic League",
@@ -218,6 +353,41 @@
           "from": 1932
         }
       }
+    },
+    "league|Q5369|sultanlar ligi": {
+      "kind": "league",
+      "name": "Sultanlar Ligi",
+      "result": null
+    },
+    "league|Q5369|suncorp super netball": {
+      "kind": "league",
+      "name": "Suncorp Super Netball",
+      "result": null
+    },
+    "league|Q5369|super smash": {
+      "kind": "league",
+      "name": "Super Smash",
+      "result": null
+    },
+    "league|Q5369|superlega": {
+      "kind": "league",
+      "name": "SuperLega",
+      "result": null
+    },
+    "league|Q5369|svenska superligan": {
+      "kind": "league",
+      "name": "Svenska Superligan",
+      "result": null
+    },
+    "league|Q5369|syed mushtaq ali trophy": {
+      "kind": "league",
+      "name": "Syed Mushtaq Ali Trophy",
+      "result": null
+    },
+    "league|Q5369|tailteann cup": {
+      "kind": "league",
+      "name": "Tailteann Cup",
+      "result": null
     },
     "league|Q5369|tohto university baseball league": {
       "kind": "league",
@@ -239,9 +409,235 @@
         }
       }
     },
+    "league|Q5369|vijay hazare trophy": {
+      "kind": "league",
+      "name": "Vijay Hazare Trophy",
+      "result": null
+    },
+    "league|Q5369|vitality blast": {
+      "kind": "league",
+      "name": "Vitality Blast",
+      "result": null
+    },
+    "player|Q41323|alejandro alvarez": {
+      "kind": "player",
+      "name": "Alejandro Alvarez",
+      "sportQid": "Q41323",
+      "result": null
+    },
+    "player|Q41323|angel pocho gomez": {
+      "kind": "player",
+      "name": "Angel Pocho Gomez",
+      "sportQid": "Q41323",
+      "result": null
+    },
+    "player|Q41323|brian gallentine": {
+      "kind": "player",
+      "name": "Brian Gallentine",
+      "sportQid": "Q41323",
+      "result": null
+    },
+    "player|Q41323|bryan forslund": {
+      "kind": "player",
+      "name": "Bryan Forslund",
+      "sportQid": "Q41323",
+      "result": null
+    },
+    "player|Q41323|carlos tovar trillo": {
+      "kind": "player",
+      "name": "Carlos Tovar Trillo",
+      "sportQid": "Q41323",
+      "result": null
+    },
+    "player|Q41323|craig hamelin": {
+      "kind": "player",
+      "name": "Craig Hamelin",
+      "sportQid": "Q41323",
+      "result": null
+    },
+    "player|Q41323|dean zayonce": {
+      "kind": "player",
+      "name": "Dean Zayonce",
+      "sportQid": "Q41323",
+      "result": null
+    },
+    "player|Q41323|doug stromback": {
+      "kind": "player",
+      "name": "Doug Stromback",
+      "sportQid": "Q41323",
+      "result": null
+    },
+    "player|Q41323|gustavo jose gil": {
+      "kind": "player",
+      "name": "Gustavo Jose Gil",
+      "sportQid": "Q41323",
+      "result": null
+    },
+    "player|Q41323|ivan paz montiel": {
+      "kind": "player",
+      "name": "Ivan Paz Montiel",
+      "sportQid": "Q41323",
+      "result": null
+    },
     "player|Q41323|jamie bird": {
       "kind": "player",
       "name": "Jamie Bird",
+      "sportQid": "Q41323",
+      "result": null
+    },
+    "player|Q41323|jesus avila": {
+      "kind": "player",
+      "name": "Jesus Avila",
+      "sportQid": "Q41323",
+      "result": null
+    },
+    "player|Q41323|jesus chalao mendez": {
+      "kind": "player",
+      "name": "Jesus Chalao Mendez",
+      "sportQid": "Q41323",
+      "result": null
+    },
+    "player|Q41323|jesus marquez": {
+      "kind": "player",
+      "name": "Jesus Marquez",
+      "sportQid": "Q41323",
+      "result": null
+    },
+    "player|Q41323|jesus mendoza": {
+      "kind": "player",
+      "name": "Jesus Mendoza",
+      "sportQid": "Q41323",
+      "result": null
+    },
+    "player|Q41323|johnny gonzalez": {
+      "kind": "player",
+      "name": "Johnny Gonzalez",
+      "sportQid": "Q41323",
+      "result": null
+    },
+    "player|Q41323|jose cheo garcia": {
+      "kind": "player",
+      "name": "Jose Cheo Garcia",
+      "sportQid": "Q41323",
+      "result": null
+    },
+    "player|Q41323|jose luis ramos": {
+      "kind": "player",
+      "name": "Jose Luis Ramos",
+      "sportQid": "Q41323",
+      "result": null
+    },
+    "player|Q41323|jose luis zambrano": {
+      "kind": "player",
+      "name": "Jose Luis Zambrano",
+      "sportQid": "Q41323",
+      "result": null
+    },
+    "player|Q41323|juan munoz": {
+      "kind": "player",
+      "name": "Juan Munoz",
+      "sportQid": "Q41323",
+      "result": null
+    },
+    "player|Q41323|julio cesar strauss": {
+      "kind": "player",
+      "name": "Julio Cesar Strauss",
+      "sportQid": "Q41323",
+      "result": null
+    },
+    "player|Q41323|luis rafael salazar": {
+      "kind": "player",
+      "name": "Luis Rafael Salazar",
+      "sportQid": "Q41323",
+      "result": null
+    },
+    "player|Q41323|luis tinoco": {
+      "kind": "player",
+      "name": "Luis Tinoco",
+      "sportQid": "Q41323",
+      "result": null
+    },
+    "player|Q41323|manuel gonzalez": {
+      "kind": "player",
+      "name": "Manuel Gonzalez",
+      "sportQid": "Q41323",
+      "result": null
+    },
+    "player|Q41323|mario gonzalez": {
+      "kind": "player",
+      "name": "Mario Gonzalez",
+      "sportQid": "Q41323",
+      "result": null
+    },
+    "player|Q41323|mark yannetti": {
+      "kind": "player",
+      "name": "Mark Yannetti",
+      "sportQid": "Q41323",
+      "result": null
+    },
+    "player|Q41323|mauricio ruiz": {
+      "kind": "player",
+      "name": "Mauricio Ruiz",
+      "sportQid": "Q41323",
+      "result": null
+    },
+    "player|Q41323|miguel campos": {
+      "kind": "player",
+      "name": "Miguel Campos",
+      "sportQid": "Q41323",
+      "result": null
+    },
+    "player|Q41323|omar sanchez": {
+      "kind": "player",
+      "name": "Omar Sanchez",
+      "sportQid": "Q41323",
+      "result": null
+    },
+    "player|Q41323|richard fernandez": {
+      "kind": "player",
+      "name": "Richard Fernandez",
+      "sportQid": "Q41323",
+      "result": null
+    },
+    "player|Q41323|richard romero": {
+      "kind": "player",
+      "name": "Richard Romero",
+      "sportQid": "Q41323",
+      "result": null
+    },
+    "player|Q41323|rigoberto mendoza": {
+      "kind": "player",
+      "name": "Rigoberto Mendoza",
+      "sportQid": "Q41323",
+      "result": null
+    },
+    "player|Q41323|tomas salazar": {
+      "kind": "player",
+      "name": "Tomas Salazar",
+      "sportQid": "Q41323",
+      "result": null
+    },
+    "player|Q41323|vicente garcia": {
+      "kind": "player",
+      "name": "Vicente Garcia",
+      "sportQid": "Q41323",
+      "result": null
+    },
+    "player|Q41323|vitico davalillo": {
+      "kind": "player",
+      "name": "Vitico Davalillo",
+      "sportQid": "Q41323",
+      "result": null
+    },
+    "player|Q41323|wilfredo romero": {
+      "kind": "player",
+      "name": "Wilfredo Romero",
+      "sportQid": "Q41323",
+      "result": null
+    },
+    "player|Q41323|william martinez": {
+      "kind": "player",
+      "name": "William Martinez",
       "sportQid": "Q41323",
       "result": null
     },
@@ -317,6 +713,12 @@
       "sportQid": "Q41466",
       "result": null
     },
+    "player|Q41466|chris robertson": {
+      "kind": "player",
+      "name": "Chris Robertson",
+      "sportQid": "Q41466",
+      "result": null
+    },
     "player|Q41466|colin baustad": {
       "kind": "player",
       "name": "Colin Baustad",
@@ -331,6 +733,18 @@
           "Tulsa Oilers"
         ],
         "wikidataId": "Q16197532"
+      }
+    },
+    "player|Q41466|cory peterson": {
+      "kind": "player",
+      "name": "Cory Peterson",
+      "sportQid": "Q41466",
+      "result": {
+        "birthYear": 1975,
+        "careerTeams": [],
+        "description": "American ice hockey player (born 1975)",
+        "isHallOfFame": false,
+        "wikidataId": "Q869239"
       }
     },
     "player|Q41466|craig hamelin": {
@@ -600,6 +1014,27 @@
       "sportQid": "Q41466",
       "result": null
     },
+    "player|Q41466|jim peters": {
+      "kind": "player",
+      "name": "Jim Peters",
+      "sportQid": "Q41466",
+      "result": {
+        "birthYear": 1922,
+        "careerTeams": [],
+        "description": "Canadian ice hockey player (1922\u20132006)",
+        "enwikiTitle": "Jimmy Peters Sr.",
+        "isHallOfFame": false,
+        "undatedCareerTeams": [
+          "Boston Bruins",
+          "Chicago Blackhawks",
+          "Detroit Red Wings",
+          "Montreal Canadiens",
+          "Pittsburgh Hornets",
+          "Portland Buckaroos"
+        ],
+        "wikidataId": "Q7221845"
+      }
+    },
     "player|Q41466|jim sprott": {
       "kind": "player",
       "name": "Jim Sprott",
@@ -662,6 +1097,12 @@
         ],
         "wikidataId": "Q68715029"
       }
+    },
+    "player|Q41466|kyuin shim": {
+      "kind": "player",
+      "name": "Kyuin Shim",
+      "sportQid": "Q41466",
+      "result": null
     },
     "player|Q41466|l.p. charbonneau": {
       "kind": "player",
@@ -932,6 +1373,12 @@
         ],
         "wikidataId": "Q6379315"
       }
+    },
+    "player|Q41466|sylvain naud": {
+      "kind": "player",
+      "name": "Sylvain Naud",
+      "sportQid": "Q41466",
+      "result": null
     },
     "player|Q41466|team photo": {
       "kind": "player",
@@ -16375,6 +16822,84 @@
         "enwikiTitle": "Zack Wheeler"
       }
     },
+    "team|Q41466|ballinderreen": {
+      "kind": "team",
+      "name": "Ballinderreen",
+      "sportQid": "Q41466",
+      "result": null
+    },
+    "team|Q41466|ballyhale": {
+      "kind": "team",
+      "name": "Ballyhale",
+      "sportQid": "Q41466",
+      "result": null
+    },
+    "team|Q41466|borrisoleigh": {
+      "kind": "team",
+      "name": "Borrisoleigh",
+      "sportQid": "Q41466",
+      "result": null
+    },
+    "team|Q41466|cappawhite": {
+      "kind": "team",
+      "name": "Cappawhite",
+      "sportQid": "Q41466",
+      "result": null
+    },
+    "team|Q41466|carrickshock": {
+      "kind": "team",
+      "name": "Carrickshock",
+      "sportQid": "Q41466",
+      "result": null
+    },
+    "team|Q41466|castlehaven": {
+      "kind": "team",
+      "name": "Castlehaven",
+      "sportQid": "Q41466",
+      "result": null
+    },
+    "team|Q41466|clonoulty": {
+      "kind": "team",
+      "name": "Clonoulty",
+      "sportQid": "Q41466",
+      "result": null
+    },
+    "team|Q41466|columbus chill": {
+      "kind": "team",
+      "name": "Columbus Chill",
+      "sportQid": "Q41466",
+      "result": {
+        "wikidataId": "Q1112747",
+        "yearsActive": {
+          "from": 1991,
+          "to": 1999
+        }
+      }
+    },
+    "team|Q41466|craughwell": {
+      "kind": "team",
+      "name": "Craughwell",
+      "sportQid": "Q41466",
+      "result": null
+    },
+    "team|Q41466|dicksboro": {
+      "kind": "team",
+      "name": "Dicksboro",
+      "sportQid": "Q41466",
+      "result": null
+    },
+    "team|Q41466|dungarvan": {
+      "kind": "team",
+      "name": "Dungarvan",
+      "sportQid": "Q41466",
+      "result": null
+    },
+    "team|Q41466|dunloy": {
+      "kind": "team",
+      "name": "Dunloy",
+      "sportQid": "Q41466",
+      "result": null
+    },
     "team|Q41466|fort worth fire": {
       "kind": "team",
       "name": "Fort Worth Fire",
@@ -16385,6 +16910,36 @@
           "from": 1992
         }
       }
+    },
+    "team|Q41466|fourmilewater": {
+      "kind": "team",
+      "name": "Fourmilewater",
+      "sportQid": "Q41466",
+      "result": null
+    },
+    "team|Q41466|kiladangan": {
+      "kind": "team",
+      "name": "Kiladangan",
+      "sportQid": "Q41466",
+      "result": null
+    },
+    "team|Q41466|kilruane": {
+      "kind": "team",
+      "name": "Kilruane",
+      "sportQid": "Q41466",
+      "result": null
+    },
+    "team|Q41466|lismore": {
+      "kind": "team",
+      "name": "Lismore",
+      "sportQid": "Q41466",
+      "result": null
+    },
+    "team|Q41466|loughrea": {
+      "kind": "team",
+      "name": "Loughrea",
+      "sportQid": "Q41466",
+      "result": null
     },
     "team|Q41466|memphis riverkings": {
       "kind": "team",
@@ -16398,6 +16953,30 @@
         }
       }
     },
+    "team|Q41466|mooncoin": {
+      "kind": "team",
+      "name": "Mooncoin",
+      "sportQid": "Q41466",
+      "result": null
+    },
+    "team|Q41466|moycarkey": {
+      "kind": "team",
+      "name": "Moycarkey",
+      "sportQid": "Q41466",
+      "result": null
+    },
+    "team|Q41466|mullinavat": {
+      "kind": "team",
+      "name": "Mullinavat",
+      "sportQid": "Q41466",
+      "result": null
+    },
+    "team|Q41466|nenagh": {
+      "kind": "team",
+      "name": "Nenagh",
+      "sportQid": "Q41466",
+      "result": null
+    },
     "team|Q41466|roanoke express": {
       "kind": "team",
       "name": "Roanoke Express",
@@ -16410,6 +16989,12 @@
         }
       }
     },
+    "team|Q41466|roscrea": {
+      "kind": "team",
+      "name": "Roscrea",
+      "sportQid": "Q41466",
+      "result": null
+    },
     "team|Q41466|san antonio iguanas": {
       "kind": "team",
       "name": "San Antonio Iguanas",
@@ -16419,6 +17004,32 @@
         "yearsActive": {
           "from": 1994
         }
+      }
+    },
+    "team|Q41466|templetuohy": {
+      "kind": "team",
+      "name": "Templetuohy",
+      "sportQid": "Q41466",
+      "result": null
+    },
+    "team|Q41466|thomastown": {
+      "kind": "team",
+      "name": "Thomastown",
+      "sportQid": "Q41466",
+      "result": null
+    },
+    "team|Q41466|tullaroan": {
+      "kind": "team",
+      "name": "Tullaroan",
+      "sportQid": "Q41466",
+      "result": null
+    },
+    "team|Q41466|tulsa oilers": {
+      "kind": "team",
+      "name": "Tulsa Oilers",
+      "sportQid": "Q41466",
+      "result": {
+        "wikidataId": "Q1417192"
       }
     },
     "team|Q5369|adelaide giants": {
@@ -16498,6 +17109,11 @@
         "wikidataId": "Q4791460"
       }
     },
+    "team|Q5369|athenry": {
+      "kind": "team",
+      "name": "Athenry",
+      "result": null
+    },
     "team|Q5369|athletics": {
       "kind": "team",
       "name": "Athletics",
@@ -16534,6 +17150,26 @@
         "espnId": "15"
       }
     },
+    "team|Q5369|ballyboden": {
+      "kind": "team",
+      "name": "Ballyboden",
+      "result": null
+    },
+    "team|Q5369|ballycran": {
+      "kind": "team",
+      "name": "Ballycran",
+      "result": null
+    },
+    "team|Q5369|ballyea": {
+      "kind": "team",
+      "name": "Ballyea",
+      "result": null
+    },
+    "team|Q5369|ballygunner": {
+      "kind": "team",
+      "name": "Ballygunner",
+      "result": null
+    },
     "team|Q5369|baltimore orioles": {
       "kind": "team",
       "name": "Baltimore Orioles",
@@ -16568,6 +17204,11 @@
           "from": 1885
         }
       }
+    },
+    "team|Q5369|birr": {
+      "kind": "team",
+      "name": "Birr",
+      "result": null
     },
     "team|Q5369|boston college eagles baseball": {
       "kind": "team",
@@ -16760,6 +17401,11 @@
         "espnId": "17"
       }
     },
+    "team|Q5369|clarinbridge": {
+      "kind": "team",
+      "name": "Clarinbridge",
+      "result": null
+    },
     "team|Q5369|clearwater threshers": {
       "kind": "team",
       "name": "Clearwater Threshers",
@@ -16820,6 +17466,16 @@
         "espnId": "27"
       }
     },
+    "team|Q5369|corofin": {
+      "kind": "team",
+      "name": "Corofin",
+      "result": null
+    },
+    "team|Q5369|crossmaglen": {
+      "kind": "team",
+      "name": "Crossmaglen",
+      "result": null
+    },
     "team|Q5369|ctbc brothers": {
       "kind": "team",
       "name": "CTBC Brothers",
@@ -16831,6 +17487,16 @@
           "from": 1984
         }
       }
+    },
+    "team|Q5369|cuala": {
+      "kind": "team",
+      "name": "Cuala",
+      "result": null
+    },
+    "team|Q5369|cushendall": {
+      "kind": "team",
+      "name": "Cushendall",
+      "result": null
     },
     "team|Q5369|dallas cowboys": {
       "kind": "team",
@@ -17129,6 +17795,26 @@
         "espnId": "7"
       }
     },
+    "team|Q5369|kilcoo": {
+      "kind": "team",
+      "name": "Kilcoo",
+      "result": null
+    },
+    "team|Q5369|kilmacud": {
+      "kind": "team",
+      "name": "Kilmacud",
+      "result": null
+    },
+    "team|Q5369|kilmallock": {
+      "kind": "team",
+      "name": "Kilmallock",
+      "result": null
+    },
+    "team|Q5369|kiltormer": {
+      "kind": "team",
+      "name": "Kiltormer",
+      "result": null
+    },
     "team|Q5369|kiwoom heroes": {
       "kind": "team",
       "name": "Kiwoom Heroes",
@@ -17241,6 +17927,11 @@
     "team|Q5369|los angeles rams": {
       "kind": "team",
       "name": "Los Angeles Rams",
+      "result": null
+    },
+    "team|Q5369|loughgiel": {
+      "kind": "team",
+      "name": "Loughgiel",
       "result": null
     },
     "team|Q5369|louisville cardinals baseball": {
@@ -17365,6 +18056,11 @@
         }
       }
     },
+    "team|Q5369|mullinalaghta": {
+      "kind": "team",
+      "name": "Mullinalaghta",
+      "result": null
+    },
     "team|Q5369|navegantes del magallanes": {
       "kind": "team",
       "name": "Navegantes del Magallanes",
@@ -17419,6 +18115,11 @@
         },
         "espnId": "10"
       }
+    },
+    "team|Q5369|newtownshandrum": {
+      "kind": "team",
+      "name": "Newtownshandrum",
+      "result": null
     },
     "team|Q5369|nova southeastern sharks baseball": {
       "kind": "team",
@@ -17510,6 +18211,11 @@
         }
       }
     },
+    "team|Q5369|patrickswell": {
+      "kind": "team",
+      "name": "Patrickswell",
+      "result": null
+    },
     "team|Q5369|peoria chiefs": {
       "kind": "team",
       "name": "Peoria Chiefs",
@@ -17570,6 +18276,16 @@
         },
         "espnId": "23"
       }
+    },
+    "team|Q5369|portaferry": {
+      "kind": "team",
+      "name": "Portaferry",
+      "result": null
+    },
+    "team|Q5369|portumna": {
+      "kind": "team",
+      "name": "Portumna",
+      "result": null
     },
     "team|Q5369|princeton rays": {
       "kind": "team",
@@ -17703,6 +18419,16 @@
         "espnId": "12"
       }
     },
+    "team|Q5369|sixmilebridge": {
+      "kind": "team",
+      "name": "Sixmilebridge",
+      "result": null
+    },
+    "team|Q5369|slaughtneil": {
+      "kind": "team",
+      "name": "Slaughtneil",
+      "result": null
+    },
     "team|Q5369|south bend cubs": {
       "kind": "team",
       "name": "South Bend Cubs",
@@ -17833,6 +18559,11 @@
           "from": 2005
         }
       }
+    },
+    "team|Q5369|toomevara": {
+      "kind": "team",
+      "name": "Toomevara",
+      "result": null
     },
     "team|Q5369|toronto blue jays": {
       "kind": "team",

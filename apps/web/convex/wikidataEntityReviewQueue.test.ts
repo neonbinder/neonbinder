@@ -279,7 +279,92 @@ describe("lookupPlayerEnrichment", () => {
 
     const result = await lookupPlayerEnrichment("Totally Unknown Prospect", { label: "Baseball", wikidata: { sportQid: "Q5369", hallOfFameQid: "Q1194380" }, espn: { path: "baseball/mlb", leagueName: "Major League Baseball" } });
     expect(result).toBeNull();
-    expect(callCount).toBe(1); // search query only — no detail query attempted
+    // The search and its one re-ask after an empty reply (NEO-413); no detail query.
+    expect(callCount).toBe(2);
+  });
+
+  // NEO-413: one empty search reply is not believed until it is asked again.
+  const BASEBALL_CTX = { label: "Baseball", wikidata: { sportQid: "Q5369", hallOfFameQid: "Q1194380" }, espn: { path: "baseball/mlb", leagueName: "Major League Baseball" } };
+  const searchEmptyLines = (warn: { mock: { calls: unknown[][] } }) =>
+    warn.mock.calls
+      .map((call) => call[0])
+      .filter((first): first is string => typeof first === "string" && first.startsWith("{"))
+      .map((first) => JSON.parse(first) as Record<string, unknown>)
+      .filter((line) => String(line.msg).startsWith("wikidata_search_empty"));
+
+  test("an empty search reply is asked once more, on a different URL, and a match on the re-ask is used", async () => {
+    const urls: string[] = [];
+    let searches = 0;
+    const detail = makePlayerFetchStub({ qid: "Q1000", detail: {} });
+    vi.stubGlobal(
+      "fetch",
+      (async (url: string | URL) => {
+        const decoded = decodeURIComponent(String(url));
+        urls.push(decoded);
+        if (decoded.includes("p:P54") || decoded.includes("wdt:P166")) return detail(url);
+        searches += 1;
+        return jsonResponse(makePlayerSearchBody(searches === 1 ? null : "Q1000"));
+      }) as unknown as typeof fetch,
+    );
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const result = await lookupPlayerEnrichment("Recovered Prospect", BASEBALL_CTX);
+
+    expect(result?.wikidataId).toBe("Q1000");
+    expect(searches).toBe(2);
+    // The re-ask is the same query with a trailing comment, so a cached GET
+    // answer for the first URL cannot be served to it.
+    expect(urls[0]).not.toContain("re-ask after an empty reply");
+    expect(urls[1]).toContain("# re-ask after an empty reply (NEO-413)");
+    expect(urls[1]).not.toBe(urls[0]);
+    const lines = searchEmptyLines(warn);
+    expect(lines.map((l) => [l.msg, l.kind, l.attempt, l.status])).toEqual([
+      ["wikidata_search_empty", "player", 1, 200],
+      ["wikidata_search_empty_recovered", "player", 2, 200],
+    ]);
+    // Reply metadata only: never the name or the query.
+    expect(JSON.stringify(lines)).not.toContain("Recovered Prospect");
+    expect(JSON.stringify(lines)).not.toContain("SELECT");
+  });
+
+  test("a second empty reply is the answer: null, two searches, both logged", async () => {
+    let calls = 0;
+    vi.stubGlobal(
+      "fetch",
+      (async () => {
+        calls += 1;
+        return jsonResponse(makePlayerSearchBody(null));
+      }) as unknown as typeof fetch,
+    );
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await expect(lookupPlayerEnrichment("Nobody At All", BASEBALL_CTX)).resolves.toBeNull();
+
+    expect(calls).toBe(2);
+    expect(searchEmptyLines(warn).map((l) => [l.msg, l.attempt])).toEqual([
+      ["wikidata_search_empty", 1],
+      ["wikidata_search_empty", 2],
+    ]);
+  });
+
+  test("a search that matches first time is not re-asked and logs nothing", async () => {
+    let searches = 0;
+    const stub = makePlayerFetchStub({ qid: "Q1000", detail: {} });
+    vi.stubGlobal(
+      "fetch",
+      (async (url: string | URL) => {
+        const decoded = decodeURIComponent(String(url));
+        if (!(decoded.includes("p:P54") || decoded.includes("wdt:P166"))) searches += 1;
+        return stub(url);
+      }) as unknown as typeof fetch,
+    );
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const result = await lookupPlayerEnrichment("Derek Jeter", BASEBALL_CTX);
+
+    expect(result?.wikidataId).toBe("Q1000");
+    expect(searches).toBe(1);
+    expect(searchEmptyLines(warn)).toEqual([]);
   });
 
   test("returns null for a sport with no sportConfig.wikidata mapping, without calling fetch at all", async () => {
@@ -1500,8 +1585,9 @@ describe("runEntityReviewLookup", () => {
     const r = await getRow(t, row);
     expect(r!.status).toBe("error");
     expect(r!.enrichment).toBeUndefined();
-    // One search, no detail query, no in-call retry: an answer is final.
-    expect(calls).toBe(1);
+    // One search plus its one re-ask after an empty reply (NEO-413), no
+    // detail query: the second empty answer is final.
+    expect(calls).toBe(2);
     const msgs = logSpy.mock.calls
       .map((call) => call[0])
       .filter((first): first is string => typeof first === "string" && first.startsWith("{"))

@@ -39,7 +39,14 @@ two batches, both Baseball only (`sportQid: "Q5369"`):
   players, the 8 clubs, the 2 career teams and the league the wizard stages,
   211 of 211, added with §4a's method.
 
-Names outside the recording still go live.
+Since NEO-413 (2026-11-01), a name outside the recording does **not** go live
+while the switch is on: the lookup wrapper refuses it, answers no-match, and
+logs one error-level `enrichment_fixture_live_refused` line (kind, sport,
+name: these are test names). The one exception is the live-proof player
+(`LIVE_LOOKUP_ALLOWED` in `enrichmentFixtures.ts`, Vladislav Tretiak under
+Hockey), which proves the live lane. A spec that needs a lookup answer
+records the name first (§4). A refused line in a run's Convex logs is a
+coverage gap to record, never a reason to loosen the refusal.
 **Production never reads the recording** — see the two-env gate below.
 
 This exists because the seed's own arithmetic doesn't fit inside CI's wait:
@@ -57,11 +64,12 @@ transport failure by mistake.
 belt-and-braces shape as `convex/testing.ts:60`). Prod has neither var, so a
 stray `NEONBINDER_ENRICHMENT_FIXTURES=1` there is inert — the gate check
 fails closed and the code falls through to a live lookup with one structured
-warning logged, never a silent recording read.
+warning logged, never a silent recording read. The NEO-413 refusal applies
+only while the switch is honoured, so production always looks up live.
 
 A hit is honoured only when the recorded `wikidataId` matches the caller's
-`knownQid` (or the record carries none); a mismatch is treated as a miss and
-goes live. The key is `${kind}|${sportQid}|${normalised name}` — `knownQid`
+`knownQid` (or the record carries none); a mismatch is treated as a miss
+(refused as above under the switch, live with the switch off). The key is `${kind}|${sportQid}|${normalised name}` — `knownQid`
 is not part of the key.
 
 ## 2. How each environment gets it
