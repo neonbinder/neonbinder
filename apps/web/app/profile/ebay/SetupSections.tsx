@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState, type ChangeEvent } from "react";
 import { useAction, useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import NeonButton from "@/components/modules/NeonButton";
@@ -36,7 +36,7 @@ import PolicyPicker, { type SaveAnswer } from "./PolicyPicker";
 export const SECTION = "space-y-5 rounded-lg border border-rule p-6";
 const NOTE = "text-sm text-ink-3";
 
-type SetupLine = { kind: "ok" | "error"; text: string } | null;
+type SetupLine = { kind: "progress" | "ok" | "error"; text: string } | null;
 
 type Loaded = { state: "loading" } | { state: "error"; error: string } | { state: "ready"; policies: EbayPolicies };
 
@@ -120,7 +120,7 @@ function PoliciesBody({
           Shipping, payment and returns
         </h2>
         {loaded.state === "loading" ? (
-          <p role="status" className={NOTE} aria-busy="true">
+          <p role="status" className={NOTE}>
             Pulling your policies from {EBAY_NAME}…
           </p>
         ) : (
@@ -183,21 +183,25 @@ function PoliciesBody({
             connection={connection}
             save={save}
             setLoaded={setLoaded}
-            reread={reread}
             setLine={setSetupLine}
             onDone={() => setFocusShipping((n) => n + 1)}
           />
         )}
-        {setupLine && (
-          <p
-            key={setupLine.kind}
-            role={setupLine.kind === "error" ? "alert" : "status"}
-            aria-live={setupLine.kind === "error" ? undefined : "polite"}
-            className={`text-sm ${setupLine.kind === "error" ? "text-neon-pink-text" : "text-notice-success-ink"}`}
-          >
-            {setupLine.text}
-          </p>
-        )}
+        {/* Always mounted, so progress and the answer are announced as they fill it. */}
+        <p
+          key={setupLine?.kind === "error" ? "error" : "ok"}
+          role={setupLine?.kind === "error" ? "alert" : "status"}
+          aria-live={setupLine?.kind === "error" ? undefined : "polite"}
+          className={`text-sm ${
+            setupLine?.kind === "error"
+              ? "text-neon-pink-text"
+              : setupLine?.kind === "ok"
+                ? "text-notice-success-ink"
+                : "text-ink-3"
+          }`}
+        >
+          {setupLine?.text ?? ""}
+        </p>
       </section>
 
       <section aria-labelledby={moneyId} className={SECTION}>
@@ -231,64 +235,77 @@ function PoliciesBody({
  * (Standard Envelope under $20, tracked Ground Advantage, free shipping, and
  * payment and returns only where there are none), reads them back, and
  * picks them for any slot still empty. A slot already picked stays put.
+ *
+ * Made but not read back: the box stays, says so, and its button becomes
+ * "Try again", which reads and picks without making anything twice. Focus
+ * stays on that button; on success it moves to the Shipping heading.
  */
 function SetMeUp({
   connection,
   save,
   setLoaded,
-  reread,
   setLine,
   onDone,
 }: {
   connection: EbayConnectionState;
   save: (picks: EbayPolicyPicks) => Promise<SaveAnswer>;
   setLoaded: (next: Loaded) => void;
-  reread: () => void;
   setLine: (line: SetupLine) => void;
   onDone: () => void;
 }) {
   const create = useAction(api.ebayConnect.createStandardPolicies);
   const readPolicies = useAction(api.ebayConnect.readPolicies);
   const [busy, setBusy] = useState(false);
+  /** What the last run made, when reading it back failed: a retry picks from these. */
+  const [made, setMade] = useState<string[] | null>(null);
   const describeId = useId();
 
   const run = async () => {
     if (busy) return;
     setBusy(true);
-    setLine(null);
+    setLine({ kind: "progress", text: "Setting you up…" });
+    let created = made;
     try {
-      const made = await create({});
-      if (!made.ok) {
-        setLine({ kind: "error", text: made.error });
-        return;
+      if (created === null) {
+        const answer = await create({});
+        if (!answer.ok) {
+          setLine({ kind: "error", text: answer.error });
+          return;
+        }
+        created = answer.created;
       }
       const read = await readPolicies({});
       if (!read.ok) {
-        // Made, but the read back failed: show what we have and let a retry pick up the rest.
-        setLine({ kind: "error", text: read.error });
-        reread();
+        setMade(created);
+        setLine({ kind: "error", text: `${read.error} Your new policies are made, so Try again just picks them.` });
         return;
       }
-      const picks = standardPicks(connection.settings, read, made.created);
+      const picks = standardPicks(connection.settings, read, created);
       const saved = Object.keys(picks).length > 0 ? await save(picks) : ({ ok: true } as const);
+      setMade(null);
       setLoaded({ state: "ready", policies: read });
-      const names = made.created.length > 0 ? `: ${made.created.join(", ")}` : "";
+      const names = created.length > 0 ? `: ${created.join(", ")}` : "";
       setLine(
         saved.ok
           ? {
               kind: "ok",
-              text: made.created.length > 0 ? `Made ${made.created.length} on your ${EBAY_NAME} account${names}. Picked where you had nothing yet.` : "You already had everything. Pick away.",
+              text:
+                created.length > 0
+                  ? `Made ${created.length} on your ${EBAY_NAME} account${names}. Picked where you had nothing yet.`
+                  : "You already had everything. Pick away.",
             }
           : { kind: "error", text: saved.error },
       );
       onDone();
     } catch {
+      if (created !== null) setMade(created);
       setLine({ kind: "error", text: `Couldn't set up your ${EBAY_NAME} policies. Give it another try.` });
     } finally {
       setBusy(false);
     }
   };
 
+  const label = made !== null ? "Try again" : "Set me up";
   return (
     <div className="space-y-3 rounded-md border border-dashed border-rule-strong p-4">
       <p id={describeId} className="text-sm text-ink-2">
@@ -304,7 +321,7 @@ function SetMeUp({
         aria-describedby={describeId}
         className="max-sm:min-h-11"
       >
-        {busy ? "Setting you up…" : "Set me up"}
+        {busy ? "Setting you up…" : label}
       </NeonButton>
     </div>
   );
@@ -312,13 +329,18 @@ function SetMeUp({
 
 type FormLine = { kind: "saving" | "saved" | "error"; text: string } | null;
 
+type FieldErrors = { postalCode?: string; city?: string; stateOrProvince?: string };
+
+const ZIP_HINT = "A ZIP code, like 53703 or 53703-1234.";
+
+const locationKey = (l: EbayLocation | null) => (l ? `${l.postalCode}|${l.city}|${l.stateOrProvince}` : "none");
+
 /**
  * Where cards ship from: eBay shows it on every listing and needs it before
  * one goes up. Prefilled with what's saved; Enter in any field saves.
  */
 function LocationSection({ saved }: { saved: EbayLocation | null }) {
   const headingId = useId();
-  // Keyed by what's saved, so a save from elsewhere refills the fields.
   return (
     <section aria-labelledby={headingId} className={SECTION}>
       <div>
@@ -327,40 +349,82 @@ function LocationSection({ saved }: { saved: EbayLocation | null }) {
         </h2>
         <p className={`${NOTE} mt-1`}>{EBAY_NAME} shows buyers where a card ships from. US addresses only for now.</p>
       </div>
-      <LocationForm key={saved ? `${saved.postalCode}|${saved.city}|${saved.stateOrProvince}` : "none"} saved={saved} />
+      <LocationForm saved={saved} />
     </section>
   );
 }
 
+/**
+ * Stays mounted through a save, so focus and the "Saved." line survive the
+ * query catching up. A save from elsewhere refills the fields, unless the
+ * collector has typed since. A refused submit marks every field it needs
+ * and moves focus to the first, once its error is on it.
+ */
 function LocationForm({ saved }: { saved: EbayLocation | null }) {
   const saveLocation = useAction(api.ebayConnect.saveLocation);
   const [postalCode, setPostalCode] = useState(saved?.postalCode ?? "");
   const [city, setCity] = useState(saved?.city ?? "");
   const [stateOrProvince, setStateOrProvince] = useState(saved?.stateOrProvince ?? "");
-  const [zipError, setZipError] = useState("");
+  const [dirty, setDirty] = useState(false);
+  const [seen, setSeen] = useState(() => locationKey(saved));
+  const [errors, setErrors] = useState<FieldErrors>({});
   const [line, setLine] = useState<FormLine>(null);
   const busy = line?.kind === "saving";
+  const zipRef = useRef<HTMLInputElement>(null);
+  const cityRef = useRef<HTMLInputElement>(null);
+  const stateRef = useRef<HTMLInputElement>(null);
+  const focusField = useRef<HTMLInputElement | null>(null);
+
+  // What's saved changed: refill, unless the collector is mid-edit.
+  const key = locationKey(saved);
+  if (key !== seen) {
+    setSeen(key);
+    if (!dirty) {
+      setPostalCode(saved?.postalCode ?? "");
+      setCity(saved?.city ?? "");
+      setStateOrProvince(saved?.stateOrProvince ?? "");
+    }
+  }
+
+  // After the errors render (aria-invalid and the message on the field), focus the first.
+  useEffect(() => {
+    focusField.current?.focus();
+    focusField.current = null;
+  }, [errors]);
+
+  const edit = (field: keyof FieldErrors, set: (v: string) => void) => (e: ChangeEvent<HTMLInputElement>) => {
+    set(e.target.value);
+    setDirty(true);
+    if (errors[field]) setErrors((prev) => ({ ...prev, [field]: undefined }));
+  };
 
   const submit = async () => {
     if (busy) return;
     const zip = postalCode.trim();
-    if (!isZip(zip)) {
-      setZipError("A five-digit ZIP code, like 53703.");
+    const next: FieldErrors = {};
+    if (!isZip(zip)) next.postalCode = ZIP_HINT;
+    if (!city.trim()) next.city = "Add the city your cards ship from.";
+    if (!stateOrProvince.trim()) next.stateOrProvince = "Add the state, like WI.";
+    if (next.postalCode || next.city || next.stateOrProvince) {
+      focusField.current = next.postalCode ? zipRef.current : next.city ? cityRef.current : stateRef.current;
+      setErrors(next);
+      setLine(null);
       return;
     }
-    setZipError("");
-    if (!city.trim() || !stateOrProvince.trim()) {
-      setLine({ kind: "error", text: "Fill in the city and state too." });
-      return;
-    }
+    setErrors({});
+    const sent = { postalCode: zip, city: city.trim(), stateOrProvince: stateOrProvince.trim().toUpperCase() };
     setLine({ kind: "saving", text: "Saving…" });
     try {
-      const answer = await saveLocation({
-        postalCode: zip,
-        city: city.trim(),
-        stateOrProvince: stateOrProvince.trim().toUpperCase(),
-      });
-      setLine(answer.ok ? { kind: "saved", text: "Saved. Your cards ship from here." } : { kind: "error", text: answer.error });
+      const answer = await saveLocation(sent);
+      if (answer.ok) {
+        setPostalCode(sent.postalCode);
+        setCity(sent.city);
+        setStateOrProvince(sent.stateOrProvince);
+        setDirty(false);
+        setLine({ kind: "saved", text: "Saved. Your cards ship from here." });
+      } else {
+        setLine({ kind: "error", text: answer.error });
+      }
     } catch {
       setLine({ kind: "error", text: `That didn't save to ${EBAY_NAME}. Give it another try.` });
     }
@@ -369,6 +433,7 @@ function LocationForm({ saved }: { saved: EbayLocation | null }) {
   return (
     <form
       className="space-y-4"
+      noValidate
       onSubmit={(e) => {
         e.preventDefault();
         void submit();
@@ -376,23 +441,37 @@ function LocationForm({ saved }: { saved: EbayLocation | null }) {
     >
       <div className="grid gap-4 sm:grid-cols-[minmax(0,8rem)_minmax(0,1fr)_minmax(0,6rem)]">
         <Input
+          ref={zipRef}
           label="ZIP code"
           className="min-h-11"
           value={postalCode}
-          onChange={(e) => setPostalCode(e.target.value)}
+          onChange={edit("postalCode", setPostalCode)}
           inputMode="numeric"
           autoComplete="postal-code"
-          error={zipError || undefined}
+          aria-required="true"
+          error={errors.postalCode}
         />
-        <Input label="City" className="min-h-11" value={city} onChange={(e) => setCity(e.target.value)} autoComplete="address-level2" />
         <Input
+          ref={cityRef}
+          label="City"
+          className="min-h-11"
+          value={city}
+          onChange={edit("city", setCity)}
+          autoComplete="address-level2"
+          aria-required="true"
+          error={errors.city}
+        />
+        <Input
+          ref={stateRef}
           label="State"
           className="min-h-11"
           value={stateOrProvince}
-          onChange={(e) => setStateOrProvince(e.target.value)}
+          onChange={edit("stateOrProvince", setStateOrProvince)}
           autoComplete="address-level1"
+          aria-required="true"
           maxLength={2}
           placeholder="WI"
+          error={errors.stateOrProvince}
         />
       </div>
       <NeonButton

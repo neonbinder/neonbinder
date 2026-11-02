@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import ModeRadioGroup from "@/components/primitives/ModeRadioGroup";
 import type { PolicyOption } from "@/lib/marketplace/ebay-setup";
 
@@ -7,6 +7,8 @@ export type SaveAnswer = { ok: true } | { ok: false; error: string };
 
 type SaveState = "idle" | "saving" | "saved" | "failed";
 
+const GONE_LINE = "The policy you picked here isn't on your eBay account anymore. Pick another.";
+
 /**
  * NEO-415 — one eBay policy slot on Profile → eBay: the seller's own
  * policies as choice cards (a radio group: Tab lands on the pick, arrows
@@ -14,6 +16,11 @@ type SaveState = "idle" | "saving" | "saved" | "failed";
  * as they move), so only the latest reports. A refused or failed save puts
  * the old pick back, moves focus to it while focus is still in the group,
  * and says why in an alert (the DefaultConditionSection pattern).
+ *
+ * One live line says it all: saving, saved, a refusal, or that the saved
+ * policy is no longer on the account. While it holds a refusal or that
+ * warning, the radiogroup is described by it, so focus on the group reads
+ * it too.
  *
  * The saved value comes from `ebayConnect.connectionState`; the local pick
  * holds until the query catches up, so the cards never flick back while the
@@ -43,6 +50,7 @@ export default function PolicyPicker({
   const latestPick = useRef(0);
   const groupRef = useRef<HTMLDivElement>(null);
   const [rollbacks, setRollbacks] = useState(0);
+  const lineId = useId();
 
   // The query caught up with the pick: let it speak for the value again.
   if (pending !== null && saved === pending && saveState !== "saving") setPending(null);
@@ -80,6 +88,15 @@ export default function PolicyPicker({
   };
 
   const gone = saved !== null && pending === null && !options.some((o) => o.value === saved);
+  const failed = saveState === "failed";
+  const warnGone = gone && !failed && saveState !== "saving";
+  let text = "";
+  if (saveState === "saving") text = "Saving…";
+  else if (failed) text = `${error}${gone ? ` ${GONE_LINE}` : saved ? " Your old pick is back." : ""}`;
+  else if (warnGone) text = GONE_LINE;
+  else if (saveState === "saved") text = "Saved.";
+  // The group is described by the line only while it says something about the pick.
+  const describes = failed || warnGone;
 
   return (
     <div className="space-y-2">
@@ -90,25 +107,28 @@ export default function PolicyPicker({
             <p className="rounded-md border border-dashed border-rule-strong px-3 py-2 text-sm text-ink-3">{emptyLine}</p>
           </>
         ) : (
-          <ModeRadioGroup label={label} value={value} options={options} onChange={(next) => void choose(next)} />
+          <ModeRadioGroup
+            label={label}
+            value={value}
+            options={options}
+            onChange={(next) => void choose(next)}
+            describedBy={describes ? lineId : undefined}
+          />
         )}
       </div>
-      {gone && (
-        <p className="text-sm text-notice-warn-ink">
-          The policy you picked here isn&apos;t on your eBay account anymore. Pick another.
-        </p>
-      )}
       {children}
-      {/* One live region, remounted as an alert on failure; empty, it takes no room. */}
+      {/* One live region, remounted as an alert on failure. */}
       <p
-        key={saveState === "failed" ? "failed" : "ok"}
-        role={saveState === "failed" ? "alert" : "status"}
-        aria-live={saveState === "failed" ? undefined : "polite"}
-        className={"text-sm " + (saveState === "failed" ? "text-neon-pink-text" : "text-ink-3")}
+        id={lineId}
+        key={failed ? "failed" : "ok"}
+        role={failed ? "alert" : "status"}
+        aria-live={failed ? undefined : "polite"}
+        className={
+          "text-sm " +
+          (failed ? "text-neon-pink-text" : warnGone ? "text-notice-warn-ink" : "text-ink-3")
+        }
       >
-        {saveState === "saving" && "Saving…"}
-        {saveState === "saved" && "Saved."}
-        {saveState === "failed" && `${error}${saved ? " Your old pick is back." : ""}`}
+        {text}
       </p>
     </div>
   );

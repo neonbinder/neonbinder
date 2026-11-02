@@ -32,6 +32,11 @@ export interface ModeRadioGroupProps<T extends string = string> {
   options: ReadonlyArray<ModeRadioOption<T>>;
   onChange: (value: T) => void;
   className?: string;
+  /**
+   * Id(s) of a line that describes the whole group, such as a save that
+   * failed or a pick that is gone. It is set on the radiogroup.
+   */
+  describedBy?: string;
 }
 
 export function ModeRadioGroup<T extends string = string>({
@@ -40,6 +45,7 @@ export function ModeRadioGroup<T extends string = string>({
   options,
   onChange,
   className = "",
+  describedBy,
 }: ModeRadioGroupProps<T>) {
   const baseId = useId();
   const labelId = `${baseId}-label`;
@@ -92,7 +98,7 @@ export function ModeRadioGroup<T extends string = string>({
       <span id={labelId} className="mb-2 block text-sm font-medium text-ink-2">
         {label}
       </span>
-      <div role="radiogroup" aria-labelledby={labelId} className="flex flex-wrap gap-2">
+      <div role="radiogroup" aria-labelledby={labelId} aria-describedby={describedBy} className="flex flex-wrap gap-2">
         {options.map((option, index) => {
           const checked = index === checkedIndex && option.value === value;
           // Named by the label alone (the description is its description), so

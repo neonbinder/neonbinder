@@ -38,8 +38,14 @@ import SetupSections, { SECTION } from "./SetupSections";
  * eBay paused for everyone, and the seller account in use by another NB
  * account. Every refusal is an alert; progress is a polite status.
  *
- * Focus: after connecting, the Connection heading (the button that started
- * it is a page load ago); after disconnecting, Connect (Disconnect is gone).
+ * Focus: after connecting, or coming back having said no, the Connection
+ * heading (the button that started it is a page load ago); after
+ * disconnecting, Connect (Disconnect is gone); after backing out of the
+ * Disconnect confirm, Disconnect. While the confirm is up, the page behind it
+ * is inert.
+ *
+ * The phase line mounts empty and the return's phase is set after mount, so
+ * "Hooking up…" is announced rather than present on arrival.
  */
 
 /** Codes already handed to the server: StrictMode's second effect run, or a remount, must not spend one twice. */
@@ -68,9 +74,7 @@ export default function EbayPanel() {
   const oauthState = params.get("state");
   const declinedParam = params.get("error");
 
-  const [phase, setPhase] = useState<Phase>(() =>
-    code && oauthState ? { kind: "completing" } : declinedParam ? { kind: "declined" } : { kind: "idle" },
-  );
+  const [phase, setPhase] = useState<Phase>({ kind: "idle" });
   const [confirming, setConfirming] = useState(false);
   const [disconnecting, setDisconnecting] = useState(false);
   const [disconnectError, setDisconnectError] = useState<string | null>(null);
@@ -80,18 +84,27 @@ export default function EbayPanel() {
   const consentId = useId();
   const headingRef = useRef<HTMLHeadingElement>(null);
   const connectRef = useRef<HTMLButtonElement>(null);
+  const disconnectRef = useRef<HTMLButtonElement>(null);
+  /** Backed out of the confirm: Disconnect gets focus back once the page is live again. */
+  const restoreDisconnect = useRef(false);
   /** Where focus goes once the server's state catches up with what just happened. */
   const focusNext = useRef<null | "heading" | "connect">(null);
 
   // eBay's return: spend the code once, then clean the URL (replace: no Back step).
   useEffect(() => {
     if (!code || !oauthState) {
-      if (declinedParam) setParams({}, { replace: true });
+      if (declinedParam) {
+        setParams({}, { replace: true });
+        focusNext.current = "heading";
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- deliberate second commit: the phase line mounts empty, so filling it is announced
+        setPhase({ kind: "declined" });
+      }
       return;
     }
     setParams({}, { replace: true });
     if (spentCodes.has(code)) return;
     spentCodes.add(code);
+    setPhase({ kind: "completing" });
     completeConnect({ code, state: oauthState }).then(
       (answer) => {
         if (answer.ok) {
@@ -111,7 +124,7 @@ export default function EbayPanel() {
 
   const status = connection?.status;
   useEffect(() => {
-    if (focusNext.current === "heading" && status && status !== "notConnected") {
+    if (focusNext.current === "heading" && status && (status !== "notConnected" || phase.kind === "declined")) {
       focusNext.current = null;
       headingRef.current?.focus();
     } else if (focusNext.current === "connect" && (status === "notConnected" || status === "needsReauth")) {
@@ -119,6 +132,13 @@ export default function EbayPanel() {
       connectRef.current?.focus();
     }
   }, [status, phase]);
+
+  useEffect(() => {
+    if (!confirming && restoreDisconnect.current) {
+      restoreDisconnect.current = false;
+      disconnectRef.current?.focus();
+    }
+  }, [confirming]);
 
   const connect = async () => {
     if (phase.kind === "leaving" || phase.kind === "completing" || !connection?.configured) return;
@@ -154,52 +174,56 @@ export default function EbayPanel() {
 
   return (
     <div className="space-y-6">
-      <section aria-labelledby={headingId} className={SECTION}>
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-          <h2
-            ref={headingRef}
-            id={headingId}
-            tabIndex={-1}
-            className="rounded-sm text-xl font-semibold text-ink focus-outline"
-          >
-            {EBAY_NAME}
-          </h2>
+      {/* Inert while the confirm is up: only the dialog can be reached. */}
+      <div className="space-y-6" inert={confirming || undefined}>
+        <section aria-labelledby={headingId} className={SECTION}>
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+            <h2
+              ref={headingRef}
+              id={headingId}
+              tabIndex={-1}
+              className="rounded-sm text-xl font-semibold text-ink focus-outline"
+            >
+              {EBAY_NAME}
+            </h2>
+            {sandbox && (
+              <span className="rounded-full border border-pick-teal-rule bg-pick-teal px-2 py-0.5 text-xs font-medium text-pick-teal-ink">
+                Sandbox
+              </span>
+            )}
+          </div>
           {sandbox && (
-            <span className="rounded-full border border-pick-teal-rule bg-pick-teal px-2 py-0.5 text-xs font-medium text-pick-teal-ink">
-              Sandbox
-            </span>
+            <p className="text-sm text-ink-3">
+              Test mode: this NeonBinder talks to {EBAY_NAME}&apos;s sandbox, so nothing lists for real.
+            </p>
           )}
-        </div>
-        {sandbox && (
-          <p className="text-sm text-ink-3">
-            Test mode: this NeonBinder talks to {EBAY_NAME}&apos;s sandbox, so nothing lists for real.
-          </p>
-        )}
 
-        {connection === undefined ? (
-          <p role="status" className="text-sm text-ink-3" aria-busy="true">
-            Checking your {EBAY_NAME} connection…
-          </p>
-        ) : (
-          <ConnectionBody
-            connection={connection}
-            phase={phase}
-            reasonId={reasonId}
-            consentId={consentId}
-            connectRef={connectRef}
-            onConnect={() => void connect()}
-            onDisconnect={() => {
-              setDisconnectError(null);
-              setConfirming(true);
-            }}
-          />
-        )}
+          {connection === undefined ? (
+            <p role="status" className="text-sm text-ink-3">
+              Checking your {EBAY_NAME} connection…
+            </p>
+          ) : (
+            <ConnectionBody
+              connection={connection}
+              phase={phase}
+              reasonId={reasonId}
+              consentId={consentId}
+              connectRef={connectRef}
+              disconnectRef={disconnectRef}
+              onConnect={() => void connect()}
+              onDisconnect={() => {
+                setDisconnectError(null);
+                setConfirming(true);
+              }}
+            />
+          )}
 
-        {/* What just happened: always mounted, so it speaks when it fills. */}
-        <PhaseLine phase={phase} />
-      </section>
+          {/* What just happened: always mounted, so it speaks when it fills. */}
+          <PhaseLine phase={phase} />
+        </section>
 
-      {connection?.status === "connected" && <SetupSections connection={connection} />}
+        {connection?.status === "connected" && <SetupSections connection={connection} />}
+      </div>
 
       {confirming && (
         <ConfirmDialog
@@ -210,7 +234,10 @@ export default function EbayPanel() {
           busy={disconnecting}
           error={disconnectError}
           onConfirm={() => void confirmDisconnect()}
-          onCancel={() => setConfirming(false)}
+          onCancel={() => {
+            restoreDisconnect.current = true;
+            setConfirming(false);
+          }}
         />
       )}
     </div>
@@ -243,6 +270,7 @@ function ConnectionBody({
   reasonId,
   consentId,
   connectRef,
+  disconnectRef,
   onConnect,
   onDisconnect,
 }: {
@@ -251,6 +279,7 @@ function ConnectionBody({
   reasonId: string;
   consentId: string;
   connectRef: RefObject<HTMLButtonElement | null>;
+  disconnectRef: RefObject<HTMLButtonElement | null>;
   onConnect: () => void;
   onDisconnect: () => void;
 }) {
@@ -269,7 +298,14 @@ function ConnectionBody({
     </NeonButton>
   );
   const disconnectButton = (
-    <NeonButton type="button" variant="negative" outline onClick={onDisconnect} className="max-sm:min-h-11">
+    <NeonButton
+      ref={disconnectRef}
+      type="button"
+      variant="negative"
+      outline
+      onClick={onDisconnect}
+      className="max-sm:min-h-11"
+    >
       Disconnect {EBAY_NAME}
     </NeonButton>
   );
