@@ -727,6 +727,7 @@ describe("applyParallelGroupings — two faults in one plan: the earlier check i
     "promoMoved",
     "reparentGone",
     "reparentMoved",
+    "reparentForeign",
     "twoMoves",
     "hasParallels",
     "promoChain",
@@ -744,6 +745,7 @@ describe("applyParallelGroupings — two faults in one plan: the earlier check i
     promoMoved: 2, // promotion loop: source in another variant type
     reparentGone: 3, // reparenting loop: target deleted
     reparentMoved: 3, // reparenting loop: row is not a parallel
+    reparentForeign: 3, // reparenting loop: row's parent in another variant type
     twoMoves: 3, // reparenting loop: row also demoted
     hasParallels: 4, // promotion checks: source keeps parallels
     promoChain: 4, // promotion checks: target is itself promoted
@@ -803,6 +805,13 @@ describe("applyParallelGroupings — two faults in one plan: the earlier check i
         const target = await insertInsert(t, vt, "Target rm");
         plan.reparentings.push({ parallelId: notParallel, newInsertId: target });
         return { plan, sentence: groupingRefusal.moved("Not parallel rm") };
+      }
+      case "reparentForeign": {
+        const elsewhere = await insertInsert(t, otherVt, "Elsewhere rf");
+        const stray = await insertParallel(t, elsewhere, "Stray rf");
+        const target = await insertInsert(t, vt, "Target rf");
+        plan.reparentings.push({ parallelId: stray, newInsertId: target });
+        return { plan, sentence: groupingRefusal.moved("Stray rf") };
       }
       case "twoMoves": {
         const home = await insertInsert(t, vt, "Home tm");
@@ -1082,6 +1091,39 @@ describe("applyParallelGroupings — refusals are operator sentences, never ids 
     ).rejects.toThrow(groupingRefusal.moved("Stray"));
   });
 
+  test("a parallel of ANOTHER variant type cannot be reparented into this one", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const vt = await insertVariantType(t, "insert");
+    const otherVt = await insertVariantType(t, "insert");
+    const chrome = await insertInsert(t, vt, "Chrome");
+    const otherInsert = await insertInsert(t, otherVt, "Elsewhere");
+    const stray = await insertParallel(t, otherInsert, "Stray");
+    const before = await t.run(async (ctx) =>
+      (await ctx.db.query("selectorOptions").collect()).sort((a, b) =>
+        a._id < b._id ? -1 : 1,
+      ),
+    );
+
+    await expect(
+      asAdmin.mutation(api.selectorOptions.applyParallelGroupings, {
+        variantTypeId: vt,
+        promotions: [],
+        demotions: [],
+        reparentings: [{ parallelId: stray, newInsertId: chrome }],
+      }),
+    ).rejects.toThrow(groupingRefusal.moved("Stray"));
+    // Nothing written: the stray stays under the other type's insert, and
+    // neither parent's children (nor any count) moved.
+    const after = await t.run(async (ctx) =>
+      (await ctx.db.query("selectorOptions").collect()).sort((a, b) =>
+        a._id < b._id ? -1 : 1,
+      ),
+    );
+    expect(after).toEqual(before);
+    expect((await getRow(t, stray))?.parentId).toBe(otherInsert);
+  });
+
   test("a deleted row is the generic refresh sentence", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
@@ -1110,5 +1152,93 @@ describe("applyParallelGroupings — refusals are operator sentences, never ids 
       groupingRefusal.tooMany(200),
     ];
     for (const s of sentences) expect(s).not.toMatch(/[a-z0-9]{20,}/);
+  });
+});
+
+/**
+ * NEO-418 (security audit) — the read waves collect a parallels range keyed
+ * on an argument id only after that id's row passed the cheap scope check
+ * (an insert of the named variant type). A plan naming a large insert of
+ * ANOTHER variant type is refused after a handful of row reads; it never
+ * walks that insert's parallels. convex-test's `documentsRead` cap is the
+ * only way to see a read set (the answer is the same either way).
+ *
+ * Measured: with the range prefetched before the check, this plan reads the
+ * foreign insert's 60 parallels and dies on the cap with Convex's
+ * "Scanned too many documents" error instead of the operator sentence; with
+ * the range gated on scope it reads 3 rows (variant type, source, target).
+ */
+describe("applyParallelGroupings — a refused plan never reads a foreign insert's parallels (NEO-418)", () => {
+  const FOREIGN_PARALLELS = 60;
+  const READ_CAP = 20;
+
+  test("a promotion source from another variant type is refused before its parallels are read", async () => {
+    const t = convexTest({
+      schema,
+      modules,
+      transactionLimits: { documentsRead: READ_CAP },
+    });
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    // Seeded in one transaction with inserts only (inserts are not reads),
+    // so the cap that applies to every `t.run` is not spent on setup.
+    const { vt, chrome, foreign } = await t.run(async (ctx) => {
+      const base = { platformData: {}, lastUpdated: SENTINEL } as const;
+      const vt = await ctx.db.insert("selectorOptions", {
+        ...base,
+        level: "variantType",
+        value: "Inserts",
+        children: [],
+      });
+      const otherVt = await ctx.db.insert("selectorOptions", {
+        ...base,
+        level: "variantType",
+        value: "Inserts",
+        children: [],
+      });
+      const chrome = await ctx.db.insert("selectorOptions", {
+        ...base,
+        level: "insert",
+        value: "Chrome",
+        parentId: vt,
+        children: [],
+      });
+      const foreign = await ctx.db.insert("selectorOptions", {
+        ...base,
+        level: "insert",
+        value: "Foreign",
+        parentId: otherVt,
+        children: [],
+      });
+      for (let i = 0; i < FOREIGN_PARALLELS; i++) {
+        await ctx.db.insert("selectorOptions", {
+          ...base,
+          level: "parallel",
+          value: `Foreign parallel ${i}`,
+          parentId: foreign,
+          children: [],
+        });
+      }
+      return { vt, chrome, foreign };
+    });
+
+    let refusal: unknown;
+    try {
+      await asAdmin.mutation(api.selectorOptions.applyParallelGroupings, {
+        variantTypeId: vt,
+        promotions: [{ insertId: foreign, targetInsertId: chrome }],
+        demotions: [],
+      });
+    } catch (err) {
+      refusal = err;
+    }
+    // The operator sentence, exactly — not the scan-limit system error a
+    // prefetch of the foreign range would raise under this cap.
+    expect(refusal).toBeInstanceOf(ConvexError);
+    expect((refusal as ConvexError<string>).data).toBe(
+      groupingRefusal.moved("Foreign"),
+    );
+    // Nothing moved.
+    const row = await t.run(async (ctx) => ctx.db.get(foreign));
+    expect(row?.level).toBe("insert");
   });
 });

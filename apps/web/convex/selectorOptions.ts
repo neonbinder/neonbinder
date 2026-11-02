@@ -7620,8 +7620,14 @@ export const applyParallelGroupings = mutation({
     // read (`readRow`, `parallelsOf`).
     //
     // The waves read what a VALID plan reads anyway (the apply pass's
-    // `getChildren` parents included). A plan that is refused may read a few
-    // rows past the fault, which costs nothing: it throws.
+    // `getChildren` parents included). A refused plan may read a few ROWS
+    // past its fault, never a RANGE: a parallels range keyed on an argument
+    // id is collected only once that id's row has passed the cheap scope
+    // check (an insert of this variant type) from the cache. A plan naming
+    // the largest inserts of OTHER variant types is therefore refused after
+    // a handful of row reads, with the operator's sentence, rather than
+    // walking ranges outside the scope the caller named (and possibly dying
+    // on the transaction's read limit with a system error instead).
     const rowCache = new Map<Id<"selectorOptions">, Doc<"selectorOptions"> | null>();
     const readRow = async (id: Id<"selectorOptions">) => {
       if (!rowCache.has(id)) rowCache.set(id, await ctx.db.get(id));
@@ -7672,30 +7678,46 @@ export const applyParallelGroupings = mutation({
       args.promotions.map((p) => [p.insertId, p] as const),
     );
 
-    // Wave 1: everything the arguments name. The variant type; each demoted
-    // row; each promotion's source and target; each reparented row. Ranges:
-    // each promoted source's own parallels, and each promotion target's
-    // parallels for the duplicate guard (none for a target this plan
-    // demotes: it has none).
+    // Wave 1: every ROW the arguments name, and no range. The variant type;
+    // each demoted row; each promotion's source and target; each reparented
+    // row and its target.
     await prefetch(
       [
         args.variantTypeId,
         ...args.demotions.map((d) => d.parallelId),
         ...args.promotions.flatMap((p) => [p.insertId, p.targetInsertId]),
-        ...(args.reparentings ?? []).map((r) => r.parallelId),
+        ...(args.reparentings ?? []).flatMap((r) => [
+          r.parallelId,
+          r.newInsertId,
+        ]),
       ],
-      [
-        ...lastPromotion.keys(),
-        ...[...lastPromotion.values()]
-          .map((p) => p.targetInsertId)
-          .filter((id) => !demotedIds.has(id)),
-      ],
+      [],
     );
 
-    // Wave 2: what the rows from wave 1 point at. Each demoted row's parent;
-    // each real (not same-parent) reparenting's target and current parent,
-    // and that target's parallels for the duplicate guard. Read only where
-    // the row is a parallel with a parent, as the checks below require.
+    // Wave 2: what the rows from wave 1 point at, and the ranges of the rows
+    // that passed the scope check. Rows: each demoted row's parent; each real
+    // (not same-parent) reparenting's current parent. Read only where the row
+    // is a parallel with a parent, as the checks below require. Ranges, only
+    // when the variant type takes sub-variants at all (every range serves a
+    // promotion or reparenting, refused outright otherwise): each promoted
+    // source's own parallels, and each promotion or reparenting target's
+    // parallels for the duplicate guard, each only for a row that is an
+    // insert of THIS variant type (none for a target this plan demotes: it
+    // has none). Anything skipped falls back to `parallelsOf`.
+    const variantTypeRow = rowCache.get(args.variantTypeId);
+    const rangesInScope =
+      !!variantTypeRow &&
+      variantTypeRow.level === "variantType" &&
+      subVariantsAllowedUnder(variantTypeRow);
+    const isInsertInScope = (id: Id<"selectorOptions">) => {
+      const row = rowCache.get(id);
+      return (
+        rangesInScope &&
+        !!row &&
+        row.level === "insert" &&
+        row.parentId === args.variantTypeId
+      );
+    };
     const isParallelRow = (
       row: Doc<"selectorOptions"> | null | undefined,
     ): row is Doc<"selectorOptions"> & { parentId: Id<"selectorOptions"> } =>
@@ -7715,11 +7737,19 @@ export const applyParallelGroupings = mutation({
     for (const r of args.reparentings ?? []) {
       const row = rowCache.get(r.parallelId);
       if (!isParallelRow(row) || row.parentId === r.newInsertId) continue;
-      wave2Rows.push(r.newInsertId, row.parentId);
+      wave2Rows.push(row.parentId);
       lastReparentTarget.set(r.parallelId, r.newInsertId);
     }
-    for (const targetId of lastReparentTarget.values()) {
-      if (!demotedIds.has(targetId)) wave2Parallels.push(targetId);
+    for (const sourceId of lastPromotion.keys()) {
+      if (isInsertInScope(sourceId)) wave2Parallels.push(sourceId);
+    }
+    for (const targetId of [
+      ...[...lastPromotion.values()].map((p) => p.targetInsertId),
+      ...lastReparentTarget.values(),
+    ]) {
+      if (!demotedIds.has(targetId) && isInsertInScope(targetId)) {
+        wave2Parallels.push(targetId);
+      }
     }
     await prefetch(wave2Rows, wave2Parallels);
 
@@ -7872,6 +7902,20 @@ export const applyParallelGroupings = mutation({
       if (row.parentId === r.newInsertId) {
         // No-op: same parent. Skip silently.
         continue;
+      }
+      // NEO-418 (security audit) — the same scope rule a demotion holds: the
+      // row must be a parallel of an insert IN THIS variant type. Only the
+      // target used to be checked, so a call naming type A could pull a
+      // parallel out from under an insert of type B. Same sentence as the
+      // demotion: the row is not where this screen showed it. The current
+      // parent came in read wave 2.
+      const currentParent = await readRow(row.parentId);
+      if (
+        !currentParent ||
+        currentParent.level !== "insert" ||
+        currentParent.parentId !== args.variantTypeId
+      ) {
+        throw new ConvexError(groupingRefusal.moved(row.value));
       }
       // One row, two moves: ungrouped to an insert AND moved under another
       // insert. The apply passes would leave it an insert with an insert for
