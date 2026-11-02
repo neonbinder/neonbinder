@@ -164,3 +164,4 @@
 - [Mocked useConvex must be stable](reference_mocked_useconvex_must_be_stable.md) — fresh client per render loops an on-demand read effect; hoist it; inline .then in the effect
 - [users table is never written](reference_users_table_is_never_written.md) — never join it for names; profile names, else Clerk via adminResolveOwnerLabels (label===id means none)
 - [Intake tab test mocks the store wholesale](reference_intake_tab_test_mocks_store_wholesale.md) — new store hooks or a mode.tsx import (ParamLink) break RealAddCardsTab.test at import; mock ../mode; ParamLink needs CollectionModeProvider
+- [No jest-dom matchers](reference_no_jest_dom_matchers_in_unit_tests.md) — toBeInTheDocument/toHaveAttribute throw; use getByRole, getAttribute, textContent

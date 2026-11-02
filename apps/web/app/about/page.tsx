@@ -1,4 +1,4 @@
-import { useNavigate } from "react-router";
+import { Link, useNavigate } from "react-router";
 import { BrandMark } from "@/components/primitives/BrandMark";
 
 export default function AboutPage() {
@@ -76,6 +76,16 @@ export default function AboutPage() {
           <div className="text-center py-16 border-t border-rule mt-12">
             <p className="text-lg text-ink-3 mb-8 max-w-2xl mx-auto">
               Ready to revolutionize how you manage your card collection? Join collectors and sellers across the country who trust Neon Binder.
+            </p>
+            <p className="text-ink-3">
+              Curious what we keep and why? Read our{" "}
+              <Link
+                to="/privacy"
+                className="text-neon-blue-text underline underline-offset-2 hover:text-neon-teal-text focus-outline rounded-sm"
+              >
+                Privacy Policy
+              </Link>
+              .
             </p>
           </div>
         </div>
