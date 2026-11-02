@@ -96,7 +96,17 @@ function notEndedLine(n: number): string {
 /** The panel's own region: no card of its own, it sits in the Credentials box like the sign-in forms do. */
 const CONNECTION = "flex flex-col gap-4";
 
-export default function EbayPanel() {
+export default function EbayPanel({
+  onHoldChange,
+}: {
+  /**
+   * True while the Disconnect confirm is up or a disconnect is running: the
+   * page keeps this panel on screen and its platform tabs still until it
+   * settles, so neither a tab nor Back can unmount it mid-request and drop
+   * what it has to say (how many listings are still up).
+   */
+  onHoldChange?: (holding: boolean) => void;
+} = {}) {
   const raw = useQuery(api.ebayConnect.connectionState, {});
   const connection: EbayConnectionState | undefined = raw;
   const beginConnect = useMutation(api.ebayConnect.beginConnect);
@@ -160,14 +170,27 @@ export default function EbayPanel() {
     );
   }, [code, oauthState, declinedReturn, completeConnect, navigate, pathname, search, hash]);
 
+  const holding = confirming || disconnecting;
+  useEffect(() => {
+    onHoldChange?.(holding);
+  }, [holding, onHoldChange]);
+  // Unmounting lets go, whatever it was holding.
+  useEffect(() => () => onHoldChange?.(false), [onHoldChange]);
+
   const status = connection?.status;
   useEffect(() => {
+    const connectShows = status === "notConnected" || status === "needsReauth";
     if (focusNext.current === "heading" && status && (status !== "notConnected" || phase.kind === "declined")) {
       focusNext.current = null;
       headingRef.current?.focus();
-    } else if (focusNext.current === "connect" && (status === "notConnected" || status === "needsReauth")) {
+    } else if (focusNext.current === "connect" && connectShows) {
       focusNext.current = null;
       connectRef.current?.focus();
+    } else if (focusNext.current === "connect" && phase.kind === "error" && status && !connectShows) {
+      // A refusal while eBay is paused, the seller account is taken, or it's
+      // already connected: there is no Connect to land on, and the alert says
+      // it all. Disarm, so a later, unrelated status change can't pull focus.
+      focusNext.current = null;
     }
   }, [status, phase]);
 

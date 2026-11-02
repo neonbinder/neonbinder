@@ -124,6 +124,29 @@ describe("Connect refusals", () => {
   });
 });
 
+describe("Focus waits only for what can still happen", () => {
+  it.each(["paused", "sellerConflict"] as const)(
+    "a refused return while %s doesn't leave focus armed for a later status change",
+    async (status) => {
+      connection = state({ status, ebayUsername: "cardshark88" });
+      fn("ebayConnect:completeConnect").mockResolvedValue({ ok: false, error: "eBay said no to that one." });
+      // A fresh code per case: a spent one is never sent twice.
+      const view = renderAt(`/profile/ebay?code=c9-${status}&state=n9`);
+      expect((await screen.findByRole("alert")).textContent).toBe("eBay said no to that one.");
+      const elsewhere = document.createElement("button");
+      document.body.appendChild(elsewhere);
+      elsewhere.focus();
+      // Much later, the status moves on its own (the pause lifts, the seller frees up).
+      connection = state({ status: "notConnected" });
+      view.again();
+      await act(async () => {});
+      expect(screen.getByRole("button", { name: "Connect eBay" })).toBeTruthy();
+      expect(document.activeElement).toBe(elsewhere);
+      elsewhere.remove();
+    },
+  );
+});
+
 describe("Disconnect leftovers", () => {
   async function disconnectWith(answer: unknown) {
     connection = state({ status: "connected", ebayUsername: "cardshark88" });

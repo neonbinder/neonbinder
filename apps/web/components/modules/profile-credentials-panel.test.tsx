@@ -53,6 +53,8 @@ const mocks = vi.hoisted(() => ({
   saveCredentials: vi.fn(),
   testSiteCredentials: vi.fn(),
   getSiteCredentials: vi.fn(),
+  ebayDisconnect: vi.fn(),
+  ebayReadPolicies: vi.fn(),
 }));
 
 // Stub the generated api with plain string tokens so `useAction` can tell the
@@ -83,6 +85,9 @@ vi.mock("@/convex/_generated/api", () => ({
       disconnect: "ebayConnect:disconnect",
       readPolicies: "ebayConnect:readPolicies",
       savePolicies: "ebayConnect:savePolicies",
+      saveLocation: "ebayConnect:saveLocation",
+      setBestOffer: "ebayConnect:setBestOffer",
+      createStandardPolicies: "ebayConnect:createStandardPolicies",
     },
   },
 }));
@@ -104,6 +109,8 @@ const EBAY_NOT_CONNECTED = {
   setupComplete: false,
   missing: ["shippingUnder20", "shipping20Plus", "payment", "returns", "location"],
 };
+const EBAY_CONNECTED = { ...EBAY_NOT_CONNECTED, status: "connected", ebayUsername: "cardshark88" };
+let ebayConnection: unknown = EBAY_NOT_CONNECTED;
 
 vi.mock("convex/react", () => ({
   // Routed by ref: the panel subscribes to the NEO-287 pause query as well as
@@ -114,10 +121,16 @@ vi.mock("convex/react", () => ({
       : ref === "listingSync:listingSettings"
         ? undefined
         : ref === "ebayConnect:connectionState"
-          ? EBAY_NOT_CONNECTED
+          ? ebayConnection
           : mocks.profile,
-  useMutation: () => vi.fn(),
+  // The eBay panel's Best Offer switch chains an optimistic update.
+  useMutation: () => {
+    const mutation = vi.fn();
+    return Object.assign(mutation, { withOptimisticUpdate: () => mutation });
+  },
   useAction: (ref: string) => {
+    if (ref === "ebayConnect:disconnect") return mocks.ebayDisconnect;
+    if (ref === "ebayConnect:readPolicies") return mocks.ebayReadPolicies;
     if (ref === "credentials:saveCredentials") return mocks.saveCredentials;
     if (ref === "credentials:testSiteCredentials")
       return mocks.testSiteCredentials;
@@ -170,6 +183,8 @@ beforeEach(() => {
   mocks.testSiteCredentials.mockResolvedValue({ success: true, message: "ok" });
   setProfile([]);
   setPaused([]);
+  ebayConnection = EBAY_NOT_CONNECTED;
+  mocks.ebayReadPolicies.mockResolvedValue({ ok: true, fulfillment: [], payment: [], returns: [] });
 });
 
 describe("CredentialsPanel — state matrix", () => {
@@ -601,5 +616,78 @@ describe("CredentialsPanel — the listing consent beside Connect", () => {
     setProfile([{ site: BSC, hasCredentials: true, needsReauth: false }]);
     render(<CredentialsPanel />, { wrapper: Router });
     expect(screen.queryByText(CONSENT_HEADING)).toBeNull();
+  });
+});
+
+/**
+ * NEO-415 audit — the platform rides in the URL, so Back and Forward can
+ * move it while a request is still out (the tabs are off then, history is
+ * not). The page holds the platform the request belongs to until it
+ * settles, and puts the URL back on it.
+ */
+describe("CredentialsPanel — Back while a request is out", () => {
+  function deferred<T>() {
+    let resolve: (v: T) => void = () => {};
+    const promise = new Promise<T>((r) => (resolve = r));
+    return { promise, resolve };
+  }
+
+  it("a sign-in's answer is said under its own platform, never the one Back went to", async () => {
+    setProfile([]);
+    const answer = deferred<{ success: boolean; message: string }>();
+    mocks.saveCredentials.mockReturnValue(answer.promise);
+    renderAt("/profile/credentials?platform=sportlots");
+    fireEvent.click(screen.getByRole("tab", { name: "BuySportsCards" }));
+    expect(here).toBe("/profile/credentials?platform=buysportscards");
+    fireEvent.change(document.getElementById("username")!, { target: { value: "collector" } });
+    fireEvent.change(document.getElementById("password")!, { target: { value: "hunter2" } });
+    fireEvent.submit(document.querySelector("form")!);
+    await waitFor(() => expect(mocks.saveCredentials).toHaveBeenCalledWith(expect.objectContaining({ site: BSC })));
+
+    act(() => back());
+    // Held: still BuySportsCards, and the URL is put back on it.
+    await waitFor(() => expect(here).toBe("/profile/credentials?platform=buysportscards"));
+    expect(screen.getByRole("tab", { name: "BuySportsCards" }).getAttribute("aria-selected")).toBe("true");
+
+    await act(async () => answer.resolve({ success: false, message: "BuySportsCards turned that sign-in down." }));
+    expect(screen.getByRole("alert").textContent).toContain("BuySportsCards turned that sign-in down.");
+    expect(screen.getByRole("tab", { name: "BuySportsCards" }).getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByRole("tabpanel", { name: "BuySportsCards" })).toBeTruthy();
+    expect(here).toBe("/profile/credentials?platform=buysportscards");
+    // Never switched away underneath: what was typed is still there to fix and resend.
+    expect((document.getElementById("username") as HTMLInputElement).value).toBe("collector");
+  });
+
+  it("eBay's Disconnect holds the tabs (inert behind the confirm, off while it runs) and Back can't drop its alert", async () => {
+    setProfile([]);
+    ebayConnection = EBAY_CONNECTED;
+    const answer = deferred<{ ok: true; notEnded: number }>();
+    mocks.ebayDisconnect.mockReturnValue(answer.promise);
+    renderAt("/profile/credentials?platform=sportlots");
+    fireEvent.click(screen.getByRole("tab", { name: "eBay" }));
+    expect(here).toBe("/profile/credentials?platform=ebay");
+
+    const ebayTab = screen.getByRole("tab", { name: "eBay" });
+    expect(ebayTab.closest("[inert]")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Disconnect eBay" }));
+    const dialog = screen.getByRole("dialog", { name: "Disconnect eBay?" });
+    // Behind the confirm, the platform picker is out of reach.
+    expect(ebayTab.closest("[inert]")).not.toBeNull();
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Yes, disconnect" }));
+    await waitFor(() => expect(mocks.ebayDisconnect).toHaveBeenCalledTimes(1));
+    expect((screen.getByRole("tab", { name: "SportLots" }) as HTMLButtonElement).disabled).toBe(true);
+
+    act(() => back());
+    await waitFor(() => expect(here).toBe("/profile/credentials?platform=ebay"));
+    expect(screen.getByRole("tab", { name: "eBay" }).getAttribute("aria-selected")).toBe("true");
+
+    ebayConnection = EBAY_NOT_CONNECTED;
+    await act(async () => answer.resolve({ ok: true, notEnded: 2 }));
+    expect(screen.getByRole("alert").textContent).toContain("2 NeonBinder listings are still up on eBay");
+    expect(screen.getByRole("tab", { name: "eBay" }).getAttribute("aria-selected")).toBe("true");
+    // Settled: the tabs work again.
+    expect((screen.getByRole("tab", { name: "SportLots" }) as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.getByRole("tab", { name: "eBay" }).closest("[inert]")).toBeNull();
   });
 });

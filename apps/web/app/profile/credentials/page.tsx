@@ -1,4 +1,4 @@
-import { useState, useEffect, useId, useRef } from "react";
+import { useCallback, useState, useEffect, useId, useRef } from "react";
 import { useAction, useQuery } from "convex/react";
 import { useSearchParams } from "react-router";
 import { api } from "@/convex/_generated/api";
@@ -37,25 +37,38 @@ const SITE_TABS = [...SUPPORTED_SITES, EBAY_SITE];
  * collector switched between. No parameter, or one this page doesn't know:
  * the first platform.
  */
-function usePickedSite(): [string, (key: string) => void] {
+function usePickedSite(): {
+  picked: string;
+  /** A push: switching platforms is going somewhere, so Back comes back. */
+  pick: (key: string) => void;
+  /** A replace: puts the URL back on a platform without a history step. */
+  keep: (key: string) => void;
+} {
   const [params, setParams] = useSearchParams();
   const asked = params.get(PLATFORM_PARAM);
   const picked = SITE_TABS.some((s) => s.key === asked) ? asked! : SUPPORTED_SITES[0].key;
+  const go = useCallback(
+    (key: string, replace: boolean) =>
+      setParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          next.set(PLATFORM_PARAM, key);
+          return next;
+        },
+        { replace },
+      ),
+    [setParams],
+  );
   const pick = (key: string) => {
-    if (key === picked) return;
-    // A push: switching platforms is going somewhere, so Back comes back.
-    setParams((prev) => {
-      const next = new URLSearchParams(prev);
-      next.set(PLATFORM_PARAM, key);
-      return next;
-    });
+    if (key !== picked) go(key, false);
   };
-  return [picked, pick];
+  const keep = useCallback((key: string) => go(key, true), [go]);
+  return { picked, pick, keep };
 }
 
 export default function CredentialsPanel() {
   useDocumentTitle("Credentials | Neon Binder");
-  const [selectedSite, setSelectedSite] = usePickedSite();
+  const { picked: urlSite, pick: pickSite, keep: keepSite } = usePickedSite();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -79,6 +92,27 @@ export default function CredentialsPanel() {
   const [verifiedThisSession, setVerifiedThisSession] = useState(false);
   const [editMode, setEditMode] = useState(false);
   const [confirmingClear, setConfirmingClear] = useState(false);
+  // NEO-415: the eBay panel's Disconnect confirm is up, or a disconnect is running.
+  const [ebayHolding, setEbayHolding] = useState(false);
+
+  // A platform's request in flight holds the page on that platform until it
+  // settles. The tabs are off meanwhile, but Back and Forward still move
+  // `?platform=`; following them would show one platform's answer under
+  // another's name (a BuySportsCards refusal under SportLots) or unmount the
+  // eBay panel mid-disconnect and drop its "still up on eBay" alert. So the
+  // shown platform stays put, and the URL is put back on it (replace: the
+  // Back press simply doesn't take while the page is busy). Only this page's
+  // own request holds; another tab's lock just turns the tabs off.
+  const holding = isLoading || ebayHolding;
+  const [heldSite, setHeldSite] = useState<string | null>(null);
+  if (holding && heldSite === null) setHeldSite(urlSite);
+  // Let go once settled and the URL is back on it (putting it back is a
+  // router transition, so it can trail the request settling by a render).
+  if (!holding && heldSite !== null && urlSite === heldSite) setHeldSite(null);
+  const selectedSite = heldSite ?? urlSite;
+  useEffect(() => {
+    if (heldSite !== null && urlSite !== heldSite) keepSite(heldSite);
+  }, [heldSite, urlSite, keepSite]);
 
   // Refs for clear-confirm modal focus management (2.4.3 Focus Order, 2.1.1 Keyboard)
   const clearTriggerRef = useRef<HTMLElement | null>(null);
@@ -151,6 +185,8 @@ export default function CredentialsPanel() {
         cred.lockedAt + CRED_LOCK_LEASE_MS > Date.now(),
     ) || false;
   const credsBusy = isLoading || anyCredentialOpInFlight;
+  // The platform tabs also wait on eBay's Disconnect (its confirm and its run).
+  const tabsOff = credsBusy || ebayHolding;
 
   // Reset form fields and edit mode when site changes
   useEffect(() => {
@@ -350,7 +386,8 @@ export default function CredentialsPanel() {
           browser needs to type-to-select). Buttons are
           click-driven, accessible (role="tab" each + role="tablist"),
           and announce as a platform group to screen readers. */}
-      <div>
+      {/* Inert behind eBay's Disconnect confirm: only the dialog can be reached. */}
+      <div inert={ebayHolding || undefined}>
         <span
           id="site-select-label"
           className="block text-sm font-medium mb-2"
@@ -373,8 +410,8 @@ export default function CredentialsPanel() {
                 id={`site-tab-${site.key}`}
                 aria-selected={isSelected}
                 aria-controls="site-credentials-panel"
-                onClick={() => { if (!credsBusy) setSelectedSite(site.key); }}
-                disabled={credsBusy}
+                onClick={() => { if (!tabsOff) pickSite(site.key); }}
+                disabled={tabsOff}
                 className={
                   "px-4 py-2 rounded-md border text-sm font-medium transition-colors focus-outline disabled:opacity-50 disabled:cursor-not-allowed " +
                   (isSelected
@@ -394,7 +431,7 @@ export default function CredentialsPanel() {
         role="tabpanel"
         aria-labelledby={`site-tab-${selectedSite}`}
       >
-        <EbayPanel />
+        <EbayPanel onHoldChange={setEbayHolding} />
       </div>
     ) : (
       <>
