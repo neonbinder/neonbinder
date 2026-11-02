@@ -6,3 +6,4 @@
 - [Retry chain plus sweep overlap](retry-chain-plus-sweep-overlap.md) — delay ladder longer than the sweep threshold runs two chains; ask for an overlap test; failure-only UI gets a component test, not a backdoor
 - [Scheduled deadline keyed on row id](scheduled-deadline-keyed-on-row-id.md) — a deadline that carries only the row id fires on a retried/restarted row; require a test running the old deadline after the reset
 - [Seeded terminal-state spec](seeded-terminal-state-spec.md) — a spec that seeds a failed row then drives the real path: trace it to a terminal 4xx, check close keeps the screen, prove the cap variant; gate sign-in on LAUNCH_GATE
+- [Consent-flow return leg unproven](third-party-consent-flow-return-leg-unproven.md) — seed-hop connect leaves begin/return/error legs without live proof; instant isVisible branches on server-read controls

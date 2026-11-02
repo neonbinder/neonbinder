@@ -36,6 +36,26 @@ Traps found (check on any change to this surface):
 - **Testing-only grant forms** (refresh-token seed) should be refused by the
   service itself in production, not only by a Convex env check.
 
+Re-audit after the fix round (what held, what to re-check):
+
+- Shape that closed the blocker: parse the notice, look up owners by the
+  immutable id, ack 200 with NO action when nobody matches, and only for a
+  matched owner call the service verifier (raw bytes first, then the SDK's
+  re-serialised form; both derive the userId from the same JSON.parse, so
+  the fallback cannot split "what was signed" from "who is deleted").
+- Residual trap: the owner pre-check makes the verify path reachable by
+  anyone who owns ONE connected eBay id (their own). Random well-formed kids
+  are never cached, so each forged notice is an eBay getPublicKey call and a
+  hit on the shared verify rate bucket. Ask for a negative cache / budget on
+  uncached kids, or a per-ebayUserId invalid-verdict throttle in Convex.
+- Pre-verify branching (200 no-owner vs 412 owner) is a membership oracle
+  on eBay user ids; low value while those ids are opaque.
+- Owner match via the listing-state stamp (`platformAccountId`) can name an
+  owner who has since connected a DIFFERENT account (sellerConflict leaves
+  the old stamp), so a genuine deletion of the old account disconnects the
+  new one. Any "owner of account X" lookup that unions a historical stamp
+  must check the owner's current account before destructive steps.
+
 **How to apply:** for any marketplace webhook or OAuth flow, ask: what does a
 forged request delete, which branch matches on less than the claimed pair,
 and where does a stored secret get overwritten before identity is known.

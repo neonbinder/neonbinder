@@ -18,6 +18,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
 import {
+  CHECKLIST_SITES,
   KNOWN_SITES,
   SITE_TO_SIDE,
   isKnownSite,
@@ -140,5 +141,13 @@ describe("getPausedPlatforms — the wire shape", () => {
       .withIdentity(SIGNED_IN)
       .query(api.marketplacePause.getPausedPlatforms, {});
     expect(result).toEqual(["sportlots"]);
+  });
+});
+
+describe("CHECKLIST_SITES (NEO-415)", () => {
+  test("is the two sites a checklist sync fetches from; eBay is a listing destination only", () => {
+    expect([...CHECKLIST_SITES]).toEqual(["buysportscards", "sportlots"]);
+    expect(CHECKLIST_SITES).not.toContain("ebay");
+    expect(KNOWN_SITES).toContain("ebay");
   });
 });
