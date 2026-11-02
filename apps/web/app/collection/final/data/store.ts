@@ -90,7 +90,14 @@ import type {
   PocketPlacement,
   SmartRule,
   InventoryCards,
+  ListingPlatform,
+  ListingGateView,
+  ListingSettings,
   QuantityResult,
+  SalesPage,
+  SetProblems,
+  SyncStatus,
+  SyncVariantResult,
   Side,
   SystemKind,
   AddResult,
@@ -501,6 +508,39 @@ export interface BinderMemoryExtension {
   remember(scope: Scope): void;
 }
 
+/**
+ * NEO-370 — listing the collector's box copies on a marketplace (capability
+ * `marketplaceListing`): the Convex store's only. The demo never touches a
+ * marketplace, so it has none and hides every listing control. NB is the
+ * only truth: a platform shows NB's box count, and nothing here edits a
+ * listing by hand. Saving a marketplace sign-in on the Profile is what
+ * starts syncing (NEO-370 Rev 5), not anything here.
+ */
+export interface ListingExtension {
+  /** Where the collector stands with each platform; `undefined` while loading. */
+  useSettings(): ListingSettings | undefined;
+  /**
+   * Sync: read this checklist's sheet on every platform the collector lists
+   * on and set every card to NB's counts. Resolves with whether it was
+   * queued, or why the server let it pass (just synced, or nothing lists).
+   */
+  syncVariant(variantId: VariantId): Promise<SyncVariantResult>;
+  /** A box's "Listed on marketplaces". Rejects with the server's words (a binder, say). */
+  setContainerListed(containerId: ContainerId, listed: boolean): Promise<void>;
+  /** The Sync status tab: running, queued and each set's last result. `undefined` while loading. */
+  useSyncStatus(): SyncStatus | undefined;
+  /** One set's whole held-back list, read once on demand. */
+  loadSetProblems(variantId: VariantId, platform: ListingPlatform): Promise<SetProblems>;
+  /** The Sales list, newest first. Call it every render, like a hook. */
+  useSales(): SalesPage;
+  /**
+   * The listing gate for adds into `homeId` (a variant's common price
+   * included), and whether the collector syncs at all; `undefined` while
+   * loading. Call it every render, like a hook.
+   */
+  useGate(homeId: ContainerId | null, variantId: VariantId | null): ListingGateView | undefined;
+}
+
 export interface CollectionStoreValue {
   kind: "demo" | "convex";
   capabilities: Capabilities;
@@ -510,6 +550,7 @@ export interface CollectionStoreValue {
   sharing?: SharingExtension;
   photos?: CopyPhotosExtension;
   binderMemory?: BinderMemoryExtension;
+  listing?: ListingExtension;
 }
 
 export const CollectionStoreContext = createContext<CollectionStoreValue | null>(null);
@@ -546,6 +587,30 @@ export function usePhotosOf(copies: readonly Copy[]): ReadonlyMap<CopyId, CopyPh
 /** NEO-374 — where the page opens; `undefined` when the store has no such setting (the demo). */
 export function useBinderMemory(): BinderMemoryExtension | undefined {
   return useCollectionStore().binderMemory;
+}
+
+/**
+ * NEO-370 — marketplace listing; `undefined` when the store has none (the
+ * demo) or the capability is off. Hide every listing control when it is.
+ */
+export function useListing(): ListingExtension | undefined {
+  // Not `useCollectionStore`: a checklist drawn outside a store (a test's) simply lists nowhere.
+  const store = useContext(CollectionStoreContext);
+  return store?.capabilities.marketplaceListing ? store.listing : undefined;
+}
+
+/** A store that lists nowhere (the demo, a test's): never syncing, never gated. */
+export const NO_LISTING_GATE: ListingGateView = { syncing: false, applies: false, commonPriceCents: null };
+const noGate = (): ListingGateView => NO_LISTING_GATE;
+
+/**
+ * NEO-370 — the listing gate for adds into `homeId` (`ListingGateView`):
+ * `NO_LISTING_GATE` in a store with no listing, `undefined` while loading.
+ * Call it every render, like a hook.
+ */
+export function useListingGate(homeId: ContainerId | null, variantId: VariantId | null): ListingGateView | undefined {
+  const ext = useListing();
+  return (ext?.useGate ?? noGate)(homeId, variantId);
 }
 
 /** NEO-360 — real share links; `undefined` when the store has none (the demo). */

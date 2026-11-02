@@ -50,6 +50,11 @@ test(
       await page.getByRole("button", { name: "Dismiss pause notice" }).click();
       await expect(page.getByText("SportLots is on pause.")).toBeHidden();
     }
+    // A reader scrolls the page to the column: how far down the cascade sits
+    // depends on the Admin tabs above it (they wrap to a second line at this
+    // width), and the proof is the list's own scroll, not the page's. Only the
+    // page moves here: the heading sits outside the list's scroll box.
+    await columnHeading(page, "Sports").evaluate((el) => el.scrollIntoView({ block: "start" }));
     await expect(racing).toBeInViewport();
     await expect(baseball).not.toBeInViewport();
     await expectAccessible(page, { label: "Sports column re-expanded at its selection" });

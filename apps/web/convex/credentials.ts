@@ -411,6 +411,87 @@ async function withCredentialLock<T>(
 }
 
 /**
+ * The connect-and-store half of `saveCredentials` (NEO-141), shared with the
+ * testing seed (`storeTestCredentials`). `listing` says what the stored
+ * sign-in does to marketplace listing (NEO-370 Revision 5, see
+ * `userProfile.updateSiteCredentialStatus`): "save" for the collector's own
+ * save, "testOff" only from the testing seed.
+ */
+async function connectAndStore(
+  ctx: ActionCtx,
+  userId: string,
+  site: string,
+  username: string,
+  password: string,
+  listing: "save" | "testOff",
+): Promise<{ success: boolean; message: string }> {
+  return withCredentialLock(ctx, userId, site, "store", async () => {
+    try {
+      // NEO-141: connect-and-store. The password is handed to the login
+      // route for this one request only — the browser service persists the
+      // resulting session, never the password. There is therefore no
+      // "store now, verify later": a login we cannot complete gives us
+      // nothing worth storing.
+      const outcome = await runSiteLogin(
+        ctx,
+        userId,
+        site,
+        { username, password },
+        "saveCredentials",
+      );
+
+      if (!outcome.success) {
+        // Store NOTHING on failure. Leaving `hasCredentials` untouched is
+        // the whole point: a half-saved credential is what NEO-140 was.
+        //
+        // NEO-281: only send the user to their password when the
+        // marketplace actually refused it. If it never answered, say so.
+        // NEO-287: and if the operator paused the marketplace, the login
+        // was never attempted — the paused copy goes out verbatim and is
+        // never rewritten into "check your username and password".
+        // NEO-288: a site-side refusal (challenge / automated_access)
+        // arrives here as `transient` with the per-site `siteMessage`
+        // already in `message`, so it too goes out verbatim.
+        return {
+          success: false,
+          message: outcome.paused || outcome.transient
+            ? outcome.message
+            : `Could not sign in to ${siteDisplayName(site)}. Nothing was saved — check your username and password and try again.`,
+        };
+      }
+
+      await ctx.runMutation(internal.userProfile.updateSiteCredentialStatus, {
+        userId,
+        site: site,
+        hasCredentials: true,
+        // A successful login is proof no re-auth is pending.
+        needsReauth: false,
+        listing,
+      });
+
+      return {
+        success: true,
+        message: `Connected to ${siteDisplayName(site)} successfully. Your password was not stored — only the session it created.`,
+      };
+    } catch (error) {
+      const detail = error instanceof Error
+        ? `${error.name}: ${error.message}${error.cause ? ` (cause: ${String(error.cause)})` : ""}`
+        : String(error);
+      console.error(
+        `[saveCredentials] store site=${site} url=${browserUrl()} threw: ${detail}`,
+      );
+      return {
+        success: false,
+        message: credentialFailureMessage(error, site),
+      };
+    }
+  }, {
+    success: false,
+    message: "Another credential operation is in progress — try again.",
+  });
+}
+
+/**
  * Save (or clear) credentials for a site — the single client-facing entry
  * point for both operations (NEO-89: previously two separate public actions,
  * `storeSiteCredentials` and `deleteSiteCredentials`, each paired with its
@@ -483,69 +564,9 @@ export const saveCredentials = action({
       validateInputLength(username, "Username");
       validateInputLength(password, "Password");
 
-      return withCredentialLock(ctx, userId, args.site, "store", async () => {
-        try {
-          // NEO-141: connect-and-store. The password is handed to the login
-          // route for this one request only — the browser service persists the
-          // resulting session, never the password. There is therefore no
-          // "store now, verify later": a login we cannot complete gives us
-          // nothing worth storing.
-          const outcome = await runSiteLogin(
-            ctx,
-            userId,
-            args.site,
-            { username, password },
-            "saveCredentials",
-          );
-
-          if (!outcome.success) {
-            // Store NOTHING on failure. Leaving `hasCredentials` untouched is
-            // the whole point: a half-saved credential is what NEO-140 was.
-            //
-            // NEO-281: only send the user to their password when the
-            // marketplace actually refused it. If it never answered, say so.
-            // NEO-287: and if the operator paused the marketplace, the login
-            // was never attempted — the paused copy goes out verbatim and is
-            // never rewritten into "check your username and password".
-            // NEO-288: a site-side refusal (challenge / automated_access)
-            // arrives here as `transient` with the per-site `siteMessage`
-            // already in `message`, so it too goes out verbatim.
-            return {
-              success: false,
-              message: outcome.paused || outcome.transient
-                ? outcome.message
-                : `Could not sign in to ${siteDisplayName(args.site)}. Nothing was saved — check your username and password and try again.`,
-            };
-          }
-
-          await ctx.runMutation(internal.userProfile.updateSiteCredentialStatus, {
-            userId,
-            site: args.site,
-            hasCredentials: true,
-            // A successful login is proof no re-auth is pending.
-            needsReauth: false,
-          });
-
-          return {
-            success: true,
-            message: `Connected to ${siteDisplayName(args.site)} successfully. Your password was not stored — only the session it created.`,
-          };
-        } catch (error) {
-          const detail = error instanceof Error
-            ? `${error.name}: ${error.message}${error.cause ? ` (cause: ${String(error.cause)})` : ""}`
-            : String(error);
-          console.error(
-            `[saveCredentials] store site=${args.site} url=${browserUrl()} threw: ${detail}`,
-          );
-          return {
-            success: false,
-            message: credentialFailureMessage(error, args.site),
-          };
-        }
-      }, {
-        success: false,
-        message: "Another credential operation is in progress — try again.",
-      });
+      // NEO-370 Revision 5: the collector's own save starts listing on a
+      // listing platform's site (and clears an E2E test marker).
+      return connectAndStore(ctx, userId, args.site, username, password, "save");
     }
 
     // Clear branch — both username and password omitted/blank.
@@ -584,6 +605,37 @@ export const saveCredentials = action({
       success: false,
       message: "Another credential operation is in progress — try again.",
     });
+  },
+});
+
+/**
+ * NEO-370 Revision 5 — the testing seed's connect-and-store
+ * (`testing.seedMyTestCredentials`): `saveCredentials`' store path for the
+ * seeded user, where the seed decides whether the stored sign-in lists
+ * (`listing` true: as a collector's own save) or not (false: the E2E test
+ * marker, `marketplaceListingStates.testListingOff`). Internal, and fails
+ * closed where the testing flag is unset (production), so no product path
+ * can reach the marker.
+ */
+export const storeTestCredentials = internalAction({
+  args: {
+    userId: v.string(),
+    site: v.string(),
+    username: v.string(),
+    password: v.string(),
+    listing: v.boolean(),
+  },
+  returns: v.object({ success: v.boolean(), message: v.string() }),
+  handler: async (ctx, args) => {
+    if (!process.env.TESTING_RESET_SECRET) {
+      throw new Error("Test credential seeding is not enabled on this deployment");
+    }
+    if (!isSupportedSite(args.site)) {
+      return { success: false, message: `Unsupported site: ${args.site}` };
+    }
+    validateInputLength(args.username, "Username");
+    validateInputLength(args.password, "Password");
+    return connectAndStore(ctx, args.userId, args.site, args.username, args.password, args.listing ? "save" : "testOff");
   },
 });
 
@@ -828,136 +880,220 @@ export const getSiteToken = internalAction({
     if (!userId) {
       throw new Error("Not authenticated");
     }
-
-    // NEO-287: a paused marketplace is not contacted at all — not even to
-    // read the cached token, because a cached-but-stale token would lead
-    // straight into `refreshSiteToken` and a stored-session login. Returning
-    // null here means the adapters take their `no_credentials` exit, which
-    // writes nothing (no `needsReauth`, no NEO-278 stamp, no self-heal), so
-    // the stored session and every flag come out of the pause exactly as they
-    // went in. The adapters guard this earlier still (before asking for the
-    // token); this is the backstop for any caller that does not.
-    if (isPlatformPaused(args.site)) {
-      console.log(
-        JSON.stringify({ msg: "marketplace_token_paused", site: args.site, op: "getSiteToken" }),
-      );
-      return null;
-    }
-
-    try {
-      const cached = await readCachedToken(args.site, userId);
-
-      if (cached === "not_found") {
-        // The secret doesn't exist at all — not "stale," genuinely absent.
-        // Self-heal the Convex flag rather than wasting a doomed re-auth
-        // attempt (there's nothing to log in with). This is the fix for
-        // NEO-89: whatever caused the drift (an interrupted delete, a
-        // deleted-out-from-under-us secret), the UI now corrects itself the
-        // next time anyone hits this path instead of staying wrong forever.
-        //
-        // NEO-140 narrowed what reaches here. `readCachedToken` used to return
-        // "not_found" for a plain "no token cached yet" 404 too, so this
-        // destructive branch fired on a perfectly healthy account — the single
-        // most damaging line in the credential flow. It is now reachable only
-        // when the browser service says the SECRET is missing.
-        //
-        // Guard: skip if a saveCredentials store/delete is actively holding
-        // the lock right now — a 404 mid-write is an expected transient, not
-        // proof of absence, and self-healing here would both race the flag
-        // the in-flight op is about to set and clobber the lock entry it's
-        // holding (security-auditor finding, NEO-89 review).
-        const locked = await ctx.runQuery(internal.userProfile.hasLiveCredentialLock, {
-          userId,
-          site: args.site,
-        });
-        if (!locked) {
-          // TOCTOU: the lock check races the store it is meant to defer to.
-          // A store can hold the lock while we read the secret mid-write (404),
-          // then set `hasCredentials: true` and RELEASE before the check above
-          // runs — so the guard reads "unlocked" and we delete the flag that
-          // store just wrote. The window is small but the loss is total, since
-          // nothing on any success path re-asserts the flag.
-          //
-          // Confirm before destroying. A second read costs one round trip on a
-          // path that has already conceded a re-auth, and it collapses the race:
-          // if the store finished, the secret now exists and this read no longer
-          // says "not_found". Never delete on a single observation — that is the
-          // whole lesson of NEO-140.
-          const confirmed = await readCachedToken(args.site, userId);
-          if (confirmed === "not_found") {
-            await ctx.runMutation(internal.userProfile.removeSiteCredentialStatus, {
-              userId,
-              site: args.site,
-            });
-          }
-        }
-        return null;
-      }
-
-      if (!cached) {
-        // No cached token, but the secret itself exists. Mint a fresh token
-        // via re-auth before giving up — otherwise the caller fails with
-        // `no_credentials` even though credentials exist. Confirmed E2E root
-        // cause: a worker's token was evicted ~18min after warm, so a later
-        // sport/year fetch got a null token and the column came up empty (no
-        // Football, etc.).
-        //
-        // NEO-140: this branch was written for the seeded-but-never-warmed
-        // case, but was UNREACHABLE for it — that case produced a 404, which
-        // the old `readCachedToken` collapsed into "not_found", so it took the
-        // destructive branch above instead of landing here. Now that 204 (and
-        // a legacy "No token available" 404) map to `null`, the branch finally
-        // does the job it was written for. This restores intended behaviour
-        // rather than adding new behaviour.
-        //
-        // If the re-auth fails because the session is unrecoverable, the
-        // authenticate* action flags `needsReauth` on its way out; we return
-        // null and never delete.
-        const minted = await refreshSiteToken(ctx, userId, args.site);
-        if (!minted) return null;
-        const afterMint = await readCachedToken(args.site, userId);
-        return afterMint === "not_found" ? null : afterMint;
-      }
-
-      const isFresh =
-        typeof cached.expiresAt === "number" &&
-        cached.expiresAt > Date.now() + TOKEN_REFRESH_LEEWAY_MS;
-      if (isFresh) return cached;
-
-      // Stale (or unknown expiry) — kick off a re-auth via the site's
-      // own authenticate action. Each site has its own action because
-      // the login flow + post-login bookkeeping (e.g. BSC sellerId
-      // capture) differs per marketplace.
-      const refreshed = await refreshSiteToken(ctx, userId, args.site);
-      if (!refreshed) {
-        // Refresh failed (or was skipped by the NEO-278 re-auth backoff);
-        // fall back to the (likely stale) cached token rather than null —
-        // let the caller's 401 path surface a clear "please re-login" error
-        // if the cache really is dead.
-        return cached;
-      }
-
-      const fresh = await readCachedToken(args.site, userId);
-      return fresh === "not_found" ? null : (fresh ?? cached);
-    } catch (error) {
-      console.error(`Failed to retrieve token for ${args.site}`);
-      // NEO-321 follow-up — why, scrubbed (the error can name a browser
-      // route with the credential key in it). The caller sees only "no
-      // token", so this line is the only place the reason survives.
-      const detail =
-        error instanceof Error ? `${error.name}: ${error.message}` : String(error);
-      console.error(
-        JSON.stringify({
-          msg: "site_token_failed",
-          site: args.site,
-          errorClass: classifyAdapterError(detail),
-          error: scrubLogText(detail),
-        }),
-      );
-      return null;
-    }
+    return await siteTokenFor(ctx, userId, args.site);
   },
 });
+
+/**
+ * NEO-370 — the user an identity-less entry acts for. `explicitUserId` is the
+ * owner the scheduler passed; a caller that DOES carry an identity may only
+ * name itself. Both present and different is a bug or an attack, never a
+ * fallback: it throws. Neither present throws "Not authenticated".
+ */
+export async function actingUserId(
+  ctx: Pick<ActionCtx, "auth">,
+  explicitUserId: string | undefined,
+): Promise<string> {
+  const identity = await getCurrentUserId(ctx);
+  if (explicitUserId !== undefined && identity && identity !== explicitUserId) {
+    throw new Error("A signed-in caller can only act for itself");
+  }
+  const userId = explicitUserId ?? identity;
+  if (!userId) throw new Error("Not authenticated");
+  return userId;
+}
+
+/**
+ * NEO-370 — `getSiteToken` for work that runs with NO caller identity: a
+ * scheduled listing drain or the order poll acts for the collector it was
+ * scheduled for, and the identity a user-driven call would carry is absent.
+ * The same body as `getSiteToken` (pause, the NEO-140 self-heal rules, the
+ * NEO-278 backoff, the credential lock), keyed on the `userId` the scheduler
+ * passed instead of on `ctx.auth`.
+ *
+ * Internal only, like `getSiteToken`: never reachable over RPC, and a caller
+ * must only ever pass the owner of the row it is working on.
+ */
+export const getSiteTokenForUser = internalAction({
+  args: {
+    site: v.union(v.literal("buysportscards"), v.literal("sportlots")),
+    userId: v.string(),
+  },
+  returns: v.union(
+    v.object({
+      token: v.string(),
+      expiresAt: v.optional(v.float64()),
+    }),
+    v.null(),
+  ),
+  handler: async (ctx, args): Promise<{ token: string; expiresAt?: number } | null> => {
+    const userId = await actingUserId(ctx, args.userId);
+    return await siteTokenFor(ctx, userId, args.site, { explicitUserId: true });
+  },
+});
+
+/**
+ * NEO-370 — `refreshSiteTokenAfterRejection` for identity-less work (see
+ * `getSiteTokenForUser`). Same guards: the pause, the NEO-278 backoff and the
+ * credential lock. Answers `{ refreshed: false }` for any of them or a failed
+ * login; never throws for a refresh failure.
+ */
+export const refreshSiteTokenForUser = internalAction({
+  args: {
+    site: v.union(v.literal("buysportscards"), v.literal("sportlots")),
+    userId: v.string(),
+  },
+  returns: v.object({ refreshed: v.boolean() }),
+  handler: async (ctx, args): Promise<{ refreshed: boolean }> => {
+    const userId = await actingUserId(ctx, args.userId);
+    if (isPlatformPaused(args.site)) return { refreshed: false };
+    return {
+      refreshed: await refreshSiteToken(ctx, userId, args.site, { explicitUserId: true }),
+    };
+  },
+});
+
+/**
+ * The body of `getSiteToken` / `getSiteTokenForUser`. `explicitUserId` makes a
+ * refresh name the user to the login action rather than leave it to the
+ * caller's identity (which identity-less work does not have).
+ */
+async function siteTokenFor(
+  ctx: ActionCtx,
+  userId: string,
+  site: string,
+  opts: { explicitUserId?: boolean } = {},
+): Promise<{ token: string; expiresAt?: number } | null> {
+  // `args.site` keeps the body as it was in `getSiteToken`.
+  const args = { site };
+  // NEO-287: a paused marketplace is not contacted at all — not even to
+  // read the cached token, because a cached-but-stale token would lead
+  // straight into `refreshSiteToken` and a stored-session login. Returning
+  // null here means the adapters take their `no_credentials` exit, which
+  // writes nothing (no `needsReauth`, no NEO-278 stamp, no self-heal), so
+  // the stored session and every flag come out of the pause exactly as they
+  // went in. The adapters guard this earlier still (before asking for the
+  // token); this is the backstop for any caller that does not.
+  if (isPlatformPaused(args.site)) {
+    console.log(
+      JSON.stringify({ msg: "marketplace_token_paused", site: args.site, op: "getSiteToken" }),
+    );
+    return null;
+  }
+
+  try {
+    const cached = await readCachedToken(args.site, userId);
+
+    if (cached === "not_found") {
+      // The secret doesn't exist at all — not "stale," genuinely absent.
+      // Self-heal the Convex flag rather than wasting a doomed re-auth
+      // attempt (there's nothing to log in with). This is the fix for
+      // NEO-89: whatever caused the drift (an interrupted delete, a
+      // deleted-out-from-under-us secret), the UI now corrects itself the
+      // next time anyone hits this path instead of staying wrong forever.
+      //
+      // NEO-140 narrowed what reaches here. `readCachedToken` used to return
+      // "not_found" for a plain "no token cached yet" 404 too, so this
+      // destructive branch fired on a perfectly healthy account — the single
+      // most damaging line in the credential flow. It is now reachable only
+      // when the browser service says the SECRET is missing.
+      //
+      // Guard: skip if a saveCredentials store/delete is actively holding
+      // the lock right now — a 404 mid-write is an expected transient, not
+      // proof of absence, and self-healing here would both race the flag
+      // the in-flight op is about to set and clobber the lock entry it's
+      // holding (security-auditor finding, NEO-89 review).
+      const locked = await ctx.runQuery(internal.userProfile.hasLiveCredentialLock, {
+        userId,
+        site: args.site,
+      });
+      if (!locked) {
+        // TOCTOU: the lock check races the store it is meant to defer to.
+        // A store can hold the lock while we read the secret mid-write (404),
+        // then set `hasCredentials: true` and RELEASE before the check above
+        // runs — so the guard reads "unlocked" and we delete the flag that
+        // store just wrote. The window is small but the loss is total, since
+        // nothing on any success path re-asserts the flag.
+        //
+        // Confirm before destroying. A second read costs one round trip on a
+        // path that has already conceded a re-auth, and it collapses the race:
+        // if the store finished, the secret now exists and this read no longer
+        // says "not_found". Never delete on a single observation — that is the
+        // whole lesson of NEO-140.
+        const confirmed = await readCachedToken(args.site, userId);
+        if (confirmed === "not_found") {
+          await ctx.runMutation(internal.userProfile.removeSiteCredentialStatus, {
+            userId,
+            site: args.site,
+          });
+        }
+      }
+      return null;
+    }
+
+    if (!cached) {
+      // No cached token, but the secret itself exists. Mint a fresh token
+      // via re-auth before giving up — otherwise the caller fails with
+      // `no_credentials` even though credentials exist. Confirmed E2E root
+      // cause: a worker's token was evicted ~18min after warm, so a later
+      // sport/year fetch got a null token and the column came up empty (no
+      // Football, etc.).
+      //
+      // NEO-140: this branch was written for the seeded-but-never-warmed
+      // case, but was UNREACHABLE for it — that case produced a 404, which
+      // the old `readCachedToken` collapsed into "not_found", so it took the
+      // destructive branch above instead of landing here. Now that 204 (and
+      // a legacy "No token available" 404) map to `null`, the branch finally
+      // does the job it was written for. This restores intended behaviour
+      // rather than adding new behaviour.
+      //
+      // If the re-auth fails because the session is unrecoverable, the
+      // authenticate* action flags `needsReauth` on its way out; we return
+      // null and never delete.
+      const minted = await refreshSiteToken(ctx, userId, args.site, opts);
+      if (!minted) return null;
+      const afterMint = await readCachedToken(args.site, userId);
+      return afterMint === "not_found" ? null : afterMint;
+    }
+
+    const isFresh =
+      typeof cached.expiresAt === "number" &&
+      cached.expiresAt > Date.now() + TOKEN_REFRESH_LEEWAY_MS;
+    if (isFresh) return cached;
+
+    // Stale (or unknown expiry) — kick off a re-auth via the site's
+    // own authenticate action. Each site has its own action because
+    // the login flow + post-login bookkeeping (e.g. BSC sellerId
+    // capture) differs per marketplace.
+    const refreshed = await refreshSiteToken(ctx, userId, args.site, opts);
+    if (!refreshed) {
+      // Refresh failed (or was skipped by the NEO-278 re-auth backoff);
+      // fall back to the (likely stale) cached token rather than null —
+      // let the caller's 401 path surface a clear "please re-login" error
+      // if the cache really is dead.
+      return cached;
+    }
+
+    const fresh = await readCachedToken(args.site, userId);
+    return fresh === "not_found" ? null : (fresh ?? cached);
+  } catch (error) {
+    console.error(`Failed to retrieve token for ${args.site}`);
+    // NEO-321 follow-up — why, scrubbed (the error can name a browser
+    // route with the credential key in it). The caller sees only "no
+    // token", so this line is the only place the reason survives.
+    const detail =
+      error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+    console.error(
+      JSON.stringify({
+        msg: "site_token_failed",
+        site: args.site,
+        errorClass: classifyAdapterError(detail),
+        error: scrubLogText(detail),
+      }),
+    );
+    return null;
+  }
+}
 
 /**
  * NEO-278: how long `getSiteToken` waits after a `reauth_required` outcome
@@ -1041,7 +1177,12 @@ async function refreshSiteToken(
   },
   userId: string,
   site: string,
+  opts: { explicitUserId?: boolean } = {},
 ): Promise<boolean> {
+  // NEO-370: identity-less work names the user to the login action; a
+  // user-driven call leaves it to the identity it carries (its args stay
+  // `{}`, exactly as before).
+  const loginArgs = opts.explicitUserId ? { userId } : {};
   // NEO-278: checked BEFORE contending for the lock, so a suppressed refresh
   // costs one indexed query rather than a lock round-trip. Returning false
   // here lands on the same fallbacks a failed refresh does — the cached token
@@ -1057,13 +1198,13 @@ async function refreshSiteToken(
   return withCredentialLock(ctx, userId, site, "test", async () => {
     try {
       if (site === "buysportscards") {
-        const result = (await ctx.runAction(internal.credentials.authenticateBsc, {})) as {
+        const result = (await ctx.runAction(internal.credentials.authenticateBsc, loginArgs)) as {
           success: boolean;
         };
         return result.success;
       }
       if (site === "sportlots") {
-        const result = (await ctx.runAction(internal.credentials.authenticateSportlots, {})) as {
+        const result = (await ctx.runAction(internal.credentials.authenticateSportlots, loginArgs)) as {
           success: boolean;
         };
         return result.success;
@@ -1640,19 +1781,19 @@ async function applyLoginOutcome(
  * expose the success/sellerId metadata to unauthorized callers.
  */
 export const authenticateBsc = internalAction({
-  args: {},
+  // NEO-370 — `userId` is passed only by identity-less work (a scheduled
+  // listing drain or order poll, through `refreshSiteTokenForUser`); a
+  // user-driven call sends `{}` and is the caller's identity, as before.
+  args: { userId: v.optional(v.string()) },
   returns: v.object({
     success: v.boolean(),
     message: v.string(),
     details: v.optional(v.string()),
   }),
-  handler: async (ctx): Promise<{ success: boolean; message: string; details?: string }> => {
+  handler: async (ctx, args): Promise<{ success: boolean; message: string; details?: string }> => {
     console.log("[authenticateBsc] Starting BSC authentication");
-    const userId = await getCurrentUserId(ctx);
-    if (!userId) {
-      console.log("[authenticateBsc] Not authenticated - no userId");
-      throw new Error("Not authenticated");
-    }
+    // Throws for no user at all, and for an identity naming another user.
+    const userId = await actingUserId(ctx, args.userId);
 
     try {
       console.log(
@@ -1701,17 +1842,16 @@ export const authenticateBsc = internalAction({
  * testSiteCredentials; never invoked over Convex RPC.
  */
 export const authenticateSportlots = internalAction({
-  args: {},
+  // NEO-370 — see `authenticateBsc`.
+  args: { userId: v.optional(v.string()) },
   returns: v.object({
     success: v.boolean(),
     message: v.string(),
     details: v.optional(v.string()),
   }),
-  handler: async (ctx): Promise<{ success: boolean; message: string; details?: string }> => {
-    const userId = await getCurrentUserId(ctx);
-    if (!userId) {
-      throw new Error("Not authenticated");
-    }
+  handler: async (ctx, args): Promise<{ success: boolean; message: string; details?: string }> => {
+    // Throws for no user at all, and for an identity naming another user.
+    const userId = await actingUserId(ctx, args.userId);
 
     try {
       // Stored-session path — see authenticateBsc.

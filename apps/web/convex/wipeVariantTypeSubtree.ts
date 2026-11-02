@@ -46,8 +46,10 @@
  * a card (`collectionWants`) never holds a card back; `removeCardRow` deletes
  * it with the card. A smart binder's rule names only set-level-and-above
  * selector rows (sport, brand, set), never a subtree row, so containers are
- * untouched and not in the graph. There are still no listing,
- * sales or print tables (`labelPurchases` carries no card link). The other
+ * untouched and not in the graph. NEO-370's listing tables (outbox,
+ * per-variant sync records, sales) name cards and variants but never refuse
+ * the wipe; see their entries. There is still no print table
+ * (`labelPurchases` carries no card link). The other
  * holdings beyond the checklist are cross-listings, staged checklist reviews
  * and card scans an operator uploaded (`cardChecklist.imageUrls`), and the dry
  * run lists every row that carries one.
@@ -218,6 +220,21 @@ export const SUBTREE_REFERENCE_GRAPH = {
     fields: ["cardId", "candidates[]", "variations[]"],
     handling:
       "NEO-379 the matcher's proposal for one scanned pair. Never refuses the wipe and is untouched: listIntakeMatches skips a card that is gone, and the next sync re-matches the pair",
+  },
+  listingOutbox: {
+    fields: ["cardId", "variantId"],
+    handling:
+      "NEO-370 a card waiting to be pushed to a platform. Never refuses the wipe and is untouched: the drainer reads the card's current row, treats a gone card as done and deletes the outbox row (the next by-set run zeroes what the platform still lists)",
+  },
+  marketplaceListingSyncs: {
+    fields: ["variantId", "problems[].cardId"],
+    handling:
+      "NEO-370 a summary of one variant's last push. Never refuses the wipe and is untouched: the panel reads it from a variant the page shows, so a gone variant's record is never read, and a gone card in its problems renders as no card",
+  },
+  marketplaceSales: {
+    fields: ["items[].cardId"],
+    handling:
+      "NEO-370 a record of what sold. Never refuses the wipe and is untouched: an item whose card is gone shows without its NB card, and its applied flag already did its work",
   },
   privateSets: {
     fields: ["sportId"],

@@ -171,6 +171,27 @@ crons.daily(
 );
 
 /**
+ * NEO-370 — read what sold on BuySportsCards and apply it to the collector's
+ * box copies, and push the box changes nothing else has pushed yet. Every 15
+ * minutes: the poll reads order history across ALL statuses back to a stored
+ * cursor, so an order that ships inside the window is still caught. One
+ * scheduled `pollOwner` per owner with BSC credentials saved and a listing
+ * state that lists and is not dormant (NEO-370 Revision 5: a saved sign-in
+ * is listing, so pushing and polling go together; nothing while BSC is
+ * paused), plus one pass that sets up sign-ins saved before that rule;
+ * an owner with nothing new costs one history page. After each owner's poll
+ * their listing drain runs when changes are queued (`finishPoll`): the
+ * drain's only timed trigger, and what picks up an intake run left without
+ * "Done adding photos". See `listingSales.ts`.
+ */
+crons.interval(
+  "poll BuySportsCards sales",
+  { minutes: 15 },
+  internal.listingSales.pollAll,
+  {},
+);
+
+/**
  * NEO-410 — re-queue any smart binder whose fits have been pending (rule
  * just saved, recompute scheduled) for more than ten minutes. A recompute
  * that throws retries itself; this catches the one Convex never finished

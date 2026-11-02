@@ -48,6 +48,7 @@
 import { createElement, useEffect, useMemo, useRef, type ReactNode } from "react";
 import {
   useAction,
+  useConvex,
   useMutation,
   usePaginatedQuery,
   useQueries,
@@ -91,6 +92,7 @@ import {
   type CopyPhotosExtension,
   type SharingExtension,
   type BinderMemoryExtension,
+  type ListingExtension,
 } from "./store";
 import {
   DEFAULT_CONDITION,
@@ -119,6 +121,7 @@ import {
   type Variant,
   type VariantKind,
   type VariantId,
+  type ContainerId,
   type VariantRef,
   type ShareProfile,
   type Want,
@@ -127,7 +130,13 @@ import {
   type DeclinedCard,
   type FoundCards,
   type SmartRule,
+  type ListingGateView,
+  type ListingSettings,
+  type Sale,
+  type SalesPage,
+  type SyncStatus,
 } from "./types";
+import { toSetProblems, toSyncStatus } from "./syncStatus";
 
 type RawCopy = Infer<typeof copyValidator>;
 type RawContainer = FunctionReturnType<typeof api.collectionContainers.list>[number];
@@ -456,6 +465,8 @@ function toContainer(raw: RawContainer): Container {
     count: raw.count ?? null,
     ...(raw.slug ? { slug: raw.slug } : {}),
     ...(raw.visibility === "public" ? { isPublic: true } : {}),
+    // NEO-370: only a box carries it, and only once switched off (absent = listed).
+    ...(raw.kind === "box" && raw.listedOnMarketplaces === false ? { listedOnMarketplaces: false } : {}),
   };
 }
 
@@ -2757,6 +2768,116 @@ function useConvexBinderMemory(): BinderMemoryExtension {
 }
 
 // ---------------------------------------------------------------------------
+// Marketplace listing (NEO-370)
+// ---------------------------------------------------------------------------
+
+/** Orders the Sales list asks for at a time (the server caps a page at 50). */
+const SALES_PER_PAGE = 20;
+
+type RawSale = FunctionReturnType<typeof api.listingSync.listSales>["page"][number];
+
+function toSale(raw: RawSale): Sale {
+  return {
+    id: raw._id,
+    platform: raw.platform,
+    orderNo: raw.orderNo,
+    orderDate: raw.orderDate,
+    status: raw.status,
+    totals: raw.totals,
+    items: raw.items.map((item) => ({
+      ...(item.cardId !== undefined ? { cardId: item.cardId } : {}),
+      condition: item.condition,
+      quantity: item.quantity,
+      priceCents: item.priceCents,
+      applied: item.applied,
+      ...(item.problem !== undefined ? { problem: item.problem } : {}),
+      ...(item.shortBy !== undefined ? { shortBy: item.shortBy } : {}),
+    })),
+  };
+}
+
+function useListingSettings(): ListingSettings | undefined {
+  return useQuery(api.listingSync.listingSettings, {});
+}
+
+/** NEO-370 — the listing gate (`listingGate.forHome`): a handful of reads, safe to subscribe. */
+function useListingGateQuery(homeId: ContainerId | null, variantId: VariantId | null): ListingGateView | undefined {
+  return useQuery(api.listingGate.forHome, {
+    ...(homeId ? { homeId } : {}),
+    ...(variantId ? { variantId } : {}),
+  });
+}
+
+function useSyncStatusQuery(): SyncStatus | undefined {
+  const raw = useQuery(api.listingSync.syncStatus, {});
+  return useMemo(() => (raw === undefined ? undefined : toSyncStatus(raw)), [raw]);
+}
+
+function useSalesPage(): SalesPage {
+  const pages = usePaginatedQuery(api.listingSync.listSales, {}, { initialNumItems: SALES_PER_PAGE });
+  const { results, status, loadMore } = pages;
+  const sales = useMemo(
+    () => (status === "LoadingFirstPage" ? undefined : results.map(toSale)),
+    [status, results],
+  );
+  return {
+    sales,
+    canLoadMore: status === "CanLoadMore",
+    loadingMore: status === "LoadingMore",
+    loadMore: () => loadMore(SALES_PER_PAGE),
+  };
+}
+
+function useConvexListing(): ListingExtension {
+  const convex = useConvex();
+  const sync = useMutation(api.listingSync.syncVariant);
+  const setListedBase = useMutation(api.collectionContainers.setContainerListed);
+  // The box's setting flips on the shelf at once; the server's answer settles it.
+  const setListed = useMemo(
+    () =>
+      setListedBase.withOptimisticUpdate((local, args) => {
+        const shelf = local.getQuery(api.collectionContainers.list, {});
+        if (!shelf) return;
+        local.setQuery(
+          api.collectionContainers.list,
+          {},
+          shelf.map((c) => {
+            if (c._id !== args.containerId) return c;
+            // The server keeps only `false` (absent = listed).
+            const { listedOnMarketplaces: _was, ...rest } = c;
+            return args.listed ? rest : { ...rest, listedOnMarketplaces: false as const };
+          }),
+        );
+      }),
+    [setListedBase],
+  );
+  return useMemo<ListingExtension>(
+    () => ({
+      useSettings: useListingSettings,
+      useSyncStatus: useSyncStatusQuery,
+      useSales: useSalesPage,
+      useGate: useListingGateQuery,
+      async syncVariant(variantId) {
+        const { queued, ignored } = await sync({ variantId: variantId as Id<"selectorOptions"> });
+        return { queued, ...(ignored ? { ignored } : {}) };
+      },
+      async setContainerListed(containerId, listed) {
+        await setListed({ containerId: containerId as Id<"collectionContainers">, listed });
+      },
+      async loadSetProblems(variantId, platform) {
+        // Read once, on demand: a full held-back list is never subscribed.
+        const raw = await convex.query(api.listingSync.syncSetProblems, {
+          variantId: variantId as Id<"selectorOptions">,
+          platform,
+        });
+        return toSetProblems(raw);
+      },
+    }),
+    [convex, sync, setListed],
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Provider
 // ---------------------------------------------------------------------------
 
@@ -2776,9 +2897,19 @@ export function ConvexCollectionProvider({ children }: { children: ReactNode }) 
   const sharing = useConvexSharing();
   const photos = useConvexCopyPhotos();
   const binderMemory = useConvexBinderMemory();
+  const listing = useConvexListing();
   const value = useMemo<CollectionStoreValue>(
-    () => ({ kind: "convex", capabilities: REAL_CAPABILITIES, data: CONVEX_DATA, actions, sharing, photos, binderMemory }),
-    [actions, sharing, photos, binderMemory],
+    () => ({
+      kind: "convex",
+      capabilities: REAL_CAPABILITIES,
+      data: CONVEX_DATA,
+      actions,
+      sharing,
+      photos,
+      binderMemory,
+      listing,
+    }),
+    [actions, sharing, photos, binderMemory, listing],
   );
   return createElement(
     CollectionStoreContext.Provider,
@@ -2826,4 +2957,5 @@ export const __test = {
   isPlainRow,
   patchInventory,
   optimisticIdFor,
+  toSale,
 };

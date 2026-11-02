@@ -12,10 +12,11 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import schema from "./schema";
 import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
-import { drainScheduled } from "../lib/testing/drain-scheduled";
+import { cancelScheduled, drainScheduled } from "../lib/testing/drain-scheduled";
 import { seedCollectionCatalog } from "../lib/testing/collection-fixture";
 import { insertTestCard } from "../lib/testing/card-row";
-import { noteIntakePairsChanged } from "./intakeRuns";
+import { priceEveryVariant } from "../lib/testing/common-prices";
+import { INTAKE_SETTLE_SCAN, noteIntakePairsChanged } from "./intakeRuns";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -568,6 +569,383 @@ describe("the collector's answers (NEO-382)", () => {
   });
 });
 
+describe("NEO-370 — a settled box run kicks the collector's listing drain", () => {
+  type W = Awaited<ReturnType<typeof world>>;
+  /**
+   * Listing started on BSC, and the photo session closed by the collector
+   * ("Done adding photos"): the only close that may trigger a sync.
+   */
+  const listOn = async (w: W) => {
+    // NEO-370: a syncing collector's box saves need a price (`listingGate`).
+    await priceEveryVariant(w.t, ME.subject);
+    await w.t.run(async (ctx) => {
+      await ctx.db.insert("marketplaceListingStates", {
+        ownerId: ME.subject,
+        platform: "bsc",
+        listingStartedAt: 1,
+        lastUpdated: 0,
+      });
+      await ctx.db.insert("userProfiles", {
+        userId: ME.subject,
+        siteCredentials: [{ site: "buysportscards", hasCredentials: true }],
+      } as never);
+      const job = (await ctx.db.query("placeholderJobs").collect())[0];
+      await ctx.db.patch(job._id, { streamClosedBy: "user" });
+    });
+  };
+  const closedBy = (w: W, by: "user" | "idle" | undefined) =>
+    w.t.run(async (ctx) => {
+      const job = (await ctx.db.query("placeholderJobs").collect())[0];
+      await ctx.db.patch(job._id, { streamClosedBy: by });
+    });
+  const drainsOf = async (w: W) =>
+    (await w.t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect())).filter((f) =>
+      f.name.includes("drainOwner"),
+    );
+  /** Hold the scheduler's clock so a kicked drain stays pending (it would reach BSC). */
+  async function held<T>(w: W, body: () => Promise<T>): Promise<T> {
+    vi.useFakeTimers({ toFake: ["setTimeout"] });
+    try {
+      return await body();
+    } finally {
+      await cancelScheduled(w.t as never);
+      vi.useRealTimers();
+    }
+  }
+  const two = () => world([
+    { number: "1", players: ["Doc Gooden"] },
+    { number: "2", players: ["Darryl Strawberry"] },
+  ]);
+
+  test("the last pair answered (a set-aside) kicks one drain; the saves before it kick none", async () => {
+    const w = await two();
+    await listOn(w);
+    const runId = await startRun(w, w.fx.baseId);
+    await held(w, async () => {
+      await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[0], quantity: 1 });
+      expect(await drainsOf(w)).toEqual([]);
+      await w.me.mutation(api.intakeRuns.setIntakeMatchAside, { runId, pairId: w.pairIds[1], setAside: true });
+      const drains = await drainsOf(w);
+      expect(drains.map((d) => d.args[0])).toEqual([{ ownerId: ME.subject, platform: "bsc" }]);
+    });
+  });
+
+  test("the last pair saved kicks the drain", async () => {
+    const w = await two();
+    await listOn(w);
+    const runId = await startRun(w, w.fx.baseId);
+    await held(w, async () => {
+      await w.me.mutation(api.intakeRuns.setIntakeMatchAside, { runId, pairId: w.pairIds[1], setAside: true });
+      expect(await drainsOf(w)).toEqual([]);
+      await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[0], quantity: 1 });
+      expect(await drainsOf(w)).toHaveLength(1);
+    });
+  });
+
+  test("photos still processing: every pair saved kicks nothing yet", async () => {
+    const w = await two();
+    await listOn(w);
+    await w.t.run(async (ctx) => {
+      const job = (await ctx.db.query("placeholderJobs").collect())[0];
+      await ctx.db.patch(job._id, { status: "processing" });
+    });
+    const runId = await startRun(w, w.fx.baseId);
+    await held(w, async () => {
+      await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[0], quantity: 1 });
+      await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[1], quantity: 1 });
+      expect(await drainsOf(w)).toEqual([]);
+    });
+  });
+
+  test("every pair answered while photos process: the job finishing kicks the drain", async () => {
+    for (const finish of ["succeeded", "failed"] as const) {
+      const w = await two();
+      await listOn(w);
+      await w.t.run(async (ctx) => {
+        const job = (await ctx.db.query("placeholderJobs").collect())[0];
+        await ctx.db.patch(job._id, { status: "processing" });
+      });
+      const runId = await startRun(w, w.fx.baseId);
+      await held(w, async () => {
+        await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[0], quantity: 1 });
+        await w.me.mutation(api.intakeRuns.setIntakeMatchAside, { runId, pairId: w.pairIds[1], setAside: true });
+        expect(await drainsOf(w)).toEqual([]);
+        if (finish === "succeeded") {
+          await w.t.mutation(internal.placeholderPipeline.markJobSucceeded, { jobId: JOB });
+        } else {
+          await w.t.mutation(internal.placeholderPipeline.markJobFailed, { jobId: JOB, errorCode: "TEST" });
+        }
+        expect((await drainsOf(w)).map((d) => d.args[0])).toEqual([{ ownerId: ME.subject, platform: "bsc" }]);
+      });
+    }
+  });
+
+  test("a job finishing with a pair still unanswered kicks nothing", async () => {
+    const w = await two();
+    await listOn(w);
+    await w.t.run(async (ctx) => {
+      const job = (await ctx.db.query("placeholderJobs").collect())[0];
+      await ctx.db.patch(job._id, { status: "processing" });
+    });
+    const runId = await startRun(w, w.fx.baseId);
+    await held(w, async () => {
+      await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[0], quantity: 1 });
+      await w.t.mutation(internal.placeholderPipeline.markJobSucceeded, { jobId: JOB });
+      expect(await drainsOf(w)).toEqual([]);
+    });
+  });
+
+  test("everything set aside (nothing saved) kicks nothing", async () => {
+    const w = await two();
+    await listOn(w);
+    const runId = await startRun(w, w.fx.baseId);
+    await held(w, async () => {
+      await w.me.mutation(api.intakeRuns.setIntakeMatchAside, { runId, pairId: w.pairIds[0], setAside: true });
+      await w.me.mutation(api.intakeRuns.setIntakeMatchAside, { runId, pairId: w.pairIds[1], setAside: true });
+      expect(await drainsOf(w)).toEqual([]);
+    });
+  });
+
+  test("a binder run never kicks: the home is read first and a binder is not for sale", async () => {
+    const w = await two();
+    await listOn(w);
+    const runId = await startRun(w, w.fx.baseId);
+    await w.t.run(async (ctx) => {
+      await ctx.db.patch(w.boxId, { kind: "binder" });
+    });
+    await held(w, async () => {
+      await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[0], quantity: 1 });
+      await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[1], quantity: 1 });
+      expect(await drainsOf(w)).toEqual([]);
+    });
+  });
+
+  test("a job that already failed counts as finished: the last save kicks the drain", async () => {
+    const w = await two();
+    await listOn(w);
+    await w.t.run(async (ctx) => {
+      const job = (await ctx.db.query("placeholderJobs").collect())[0];
+      await ctx.db.patch(job._id, { status: "failed" });
+    });
+    const runId = await startRun(w, w.fx.baseId);
+    await held(w, async () => {
+      await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[0], quantity: 1 });
+      expect(await drainsOf(w)).toEqual([]);
+      await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[1], quantity: 1 });
+      expect(await drainsOf(w)).toHaveLength(1);
+    });
+  });
+
+  describe("the settle scan is bounded", () => {
+    /** Pad the run with already-set-aside rows so it holds `total` match rows. */
+    async function padTo(w: W, runId: Id<"intakeRuns">, total: number) {
+      await w.t.run(async (ctx) => {
+        const have = (await ctx.db.query("intakeMatches").withIndex("by_run", (q) => q.eq("runId", runId)).collect()).length;
+        for (let i = have; i < total; i++) {
+          await ctx.db.insert("intakeMatches", {
+            runId,
+            userId: ME.subject,
+            pairId: w.pairIds[0],
+            frontIndex: 1000 + 2 * i,
+            backIndex: 1001 + 2 * i,
+            readKey: `pad-${i}`,
+            confidence: 0,
+            band: "none",
+            reason: "playerOnly",
+            candidates: [],
+            variations: [],
+            setAside: true,
+          });
+        }
+      });
+    }
+
+    test("a run of exactly INTAKE_SETTLE_SCAN rows still settles and kicks", async () => {
+      const w = await two();
+      await listOn(w);
+      const runId = await startRun(w, w.fx.baseId);
+      await padTo(w, runId, INTAKE_SETTLE_SCAN);
+      await held(w, async () => {
+        await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[0], quantity: 1 });
+        await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[1], quantity: 1 });
+        expect(await drainsOf(w)).toHaveLength(1);
+      });
+    });
+
+    test("a run larger than INTAKE_SETTLE_SCAN is not checked on a save: no kick", async () => {
+      const w = await two();
+      await listOn(w);
+      const runId = await startRun(w, w.fx.baseId);
+      await padTo(w, runId, INTAKE_SETTLE_SCAN + 1);
+      await held(w, async () => {
+        await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[0], quantity: 1 });
+        await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[1], quantity: 1 });
+        expect(await drainsOf(w)).toEqual([]);
+      });
+    });
+  });
+
+  test("answering a repeat as a second copy kicks nothing; saving that copy does", async () => {
+    const w = await world([
+      { number: "1", players: ["Doc Gooden"] },
+      { number: "2", players: ["Darryl Strawberry"] },
+      { number: "2", players: ["Darryl Strawberry"] },
+    ]);
+    await listOn(w);
+    const runId = await startRun(w, w.fx.baseId);
+    await held(w, async () => {
+      await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[0], quantity: 1 });
+      await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[1], quantity: 1 });
+      await w.me.mutation(api.intakeRuns.answerIntakeRepeat, { runId, pairId: w.pairIds[2], secondCopy: true });
+      expect(await drainsOf(w)).toEqual([]);
+      await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[2], quantity: 1 });
+      expect(await drainsOf(w)).toHaveLength(1);
+    });
+  });
+
+  test("a re-scan answered as set aside settles the run and kicks", async () => {
+    const w = await world([
+      { number: "2", players: ["Darryl Strawberry"] },
+      { number: "2", players: ["Darryl Strawberry"] },
+    ]);
+    await listOn(w);
+    const runId = await startRun(w, w.fx.baseId);
+    await held(w, async () => {
+      await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[0], quantity: 1 });
+      await w.me.mutation(api.intakeRuns.answerIntakeRepeat, { runId, pairId: w.pairIds[1], secondCopy: false });
+      expect(await drainsOf(w)).toHaveLength(1);
+    });
+  });
+
+  test("bringing a set-aside pair back (setAside: false) kicks nothing, and the run is unsettled again", async () => {
+    const w = await two();
+    await listOn(w);
+    const runId = await startRun(w, w.fx.baseId);
+    await held(w, async () => {
+      await w.me.mutation(api.intakeRuns.setIntakeMatchAside, { runId, pairId: w.pairIds[1], setAside: true });
+      await w.me.mutation(api.intakeRuns.setIntakeMatchAside, { runId, pairId: w.pairIds[1], setAside: false });
+      expect(await drainsOf(w)).toEqual([]);
+      // The brought-back pair is open again: saving the other alone does not settle.
+      await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[0], quantity: 1 });
+      expect(await drainsOf(w)).toEqual([]);
+    });
+  });
+
+  test("a session closed by the idle sweep never kicks, however settled the run", async () => {
+    const w = await two();
+    await listOn(w);
+    await closedBy(w, "idle");
+    const runId = await startRun(w, w.fx.baseId);
+    await held(w, async () => {
+      await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[0], quantity: 1 });
+      await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[1], quantity: 1 });
+      expect(await drainsOf(w)).toEqual([]);
+    });
+  });
+
+  test("a finished job no one closed (an upload batch, or a session before this rule) never kicks", async () => {
+    const w = await two();
+    await listOn(w);
+    await closedBy(w, undefined);
+    const runId = await startRun(w, w.fx.baseId);
+    await held(w, async () => {
+      await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[0], quantity: 1 });
+      await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[1], quantity: 1 });
+      expect(await drainsOf(w)).toEqual([]);
+    });
+  });
+
+  test("every pair answered while still collecting: Done adding photos closes the session and kicks", async () => {
+    const w = await two();
+    await listOn(w);
+    await w.t.run(async (ctx) => {
+      const job = (await ctx.db.query("placeholderJobs").collect())[0];
+      await ctx.db.patch(job._id, {
+        status: "collecting",
+        streamClosedBy: undefined,
+        totalImages: 4,
+        processedImages: 4,
+        failedImages: 0,
+        lastActivityAt: Date.now(),
+      });
+    });
+    const runId = await startRun(w, w.fx.baseId);
+    await held(w, async () => {
+      await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[0], quantity: 1 });
+      await w.me.mutation(api.intakeRuns.setIntakeMatchAside, { runId, pairId: w.pairIds[1], setAside: true });
+      expect(await drainsOf(w)).toEqual([]);
+      const closed = await w.me.mutation(api.placeholderStream.closePlaceholderStream, { jobId: JOB });
+      expect(closed).toMatchObject({ closed: true, status: "succeeded" });
+      const job = await w.t.run(async (ctx) => (await ctx.db.query("placeholderJobs").collect())[0]);
+      expect(job.streamClosedBy).toBe("user");
+      expect((await drainsOf(w)).map((d) => d.args[0])).toEqual([{ ownerId: ME.subject, platform: "bsc" }]);
+    });
+  });
+
+  test("the idle sweep closing a settled session records it and kicks nothing", async () => {
+    const w = await two();
+    await listOn(w);
+    await w.t.run(async (ctx) => {
+      const job = (await ctx.db.query("placeholderJobs").collect())[0];
+      await ctx.db.patch(job._id, {
+        status: "collecting",
+        streamClosedBy: undefined,
+        totalImages: 4,
+        processedImages: 4,
+        failedImages: 0,
+        lastActivityAt: 1,
+      });
+    });
+    const runId = await startRun(w, w.fx.baseId);
+    await held(w, async () => {
+      await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[0], quantity: 1 });
+      await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[1], quantity: 1 });
+      expect(await w.t.mutation(internal.placeholderStream.sweepIdleStreams, {})).toMatchObject({ closed: 1 });
+      const job = await w.t.run(async (ctx) => (await ctx.db.query("placeholderJobs").collect())[0]);
+      expect(job.streamClosedBy).toBe("idle");
+      expect(job.status).toBe("succeeded");
+      expect(await drainsOf(w)).toEqual([]);
+    });
+  });
+
+  test("an in-person box (not listed on marketplaces) never kicks", async () => {
+    const w = await two();
+    await listOn(w);
+    await w.t.run((ctx) => ctx.db.patch(w.boxId, { listedOnMarketplaces: false }));
+    const runId = await startRun(w, w.fx.baseId);
+    await held(w, async () => {
+      await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[0], quantity: 1 });
+      await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[1], quantity: 1 });
+      expect(await drainsOf(w)).toEqual([]);
+    });
+  });
+
+  test("a collector not listing (no saved sign-in started it): the settled run schedules no drain", async () => {
+    const w = await two();
+    await listOn(w);
+    await w.t.run(async (ctx) => {
+      const state = (await ctx.db.query("marketplaceListingStates").collect())[0];
+      await ctx.db.patch(state._id, { listingStartedAt: undefined });
+    });
+    const runId = await startRun(w, w.fx.baseId);
+    await held(w, async () => {
+      await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[0], quantity: 1 });
+      await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[1], quantity: 1 });
+      expect(await drainsOf(w)).toEqual([]);
+    });
+  });
+
+  test("a collector who lists nowhere: the settled run schedules no drain", async () => {
+    const w = await two();
+    const runId = await startRun(w, w.fx.baseId);
+    await held(w, async () => {
+      await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[0], quantity: 1 });
+      await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[1], quantity: 1 });
+      expect(await drainsOf(w)).toEqual([]);
+    });
+  });
+});
+
 describe("the set builder reset", () => {
   test("drains intake matches and runs, matches first", async () => {
     const w = await world([
@@ -587,5 +965,66 @@ describe("the set builder reset", () => {
       ...(await ctx.db.query("intakeRuns").collect()),
     ]);
     expect(left).toEqual([]);
+  });
+});
+
+describe("NEO-370 — the listing gate on photo intake saves", () => {
+  const syncOn = (w: Awaited<ReturnType<typeof world>>) =>
+    w.t.run((ctx) =>
+      ctx.db.insert("marketplaceListingStates", {
+        ownerId: ME.subject,
+        platform: "bsc",
+        listingStartedAt: 1,
+        lastUpdated: 0,
+      }),
+    );
+
+  test("the run's price goes on the saved copy, so it lists at it", async () => {
+    const w = await world([{ number: "1", players: ["Doc Gooden"] }]);
+    await syncOn(w);
+    const runId = await w.me.mutation(api.intakeRuns.createIntakeRun, {
+      jobId: JOB,
+      homeId: w.boxId,
+      variantId: w.fx.baseId,
+      defaults: { condition: "Near Mint", minPriceCents: 75 },
+    });
+    await drainScheduled(w.t);
+    const { copyId } = await w.me.mutation(api.intakeRuns.saveIntakeMatch, {
+      runId,
+      pairId: w.pairIds[0],
+      quantity: 1,
+    });
+    const copy = await w.t.run((ctx) => ctx.db.get(copyId));
+    expect(copy).toMatchObject({ minPriceCents: 75, condition: "Near Mint", homeId: w.boxId });
+  });
+
+  test("a save into a listed box with the price taken off the run is refused, writing nothing", async () => {
+    const w = await world([{ number: "1", players: ["Doc Gooden"] }]);
+    await syncOn(w);
+    const runId = await w.me.mutation(api.intakeRuns.createIntakeRun, {
+      jobId: JOB,
+      homeId: w.boxId,
+      variantId: w.fx.baseId,
+      defaults: { minPriceCents: 75 },
+    });
+    await drainScheduled(w.t);
+    await w.me.mutation(api.intakeRuns.setIntakeRunDefaults, { runId, defaults: {} });
+    await expect(
+      w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[0], quantity: 1 }),
+    ).rejects.toThrow(/For sale sells on your marketplaces, so cards going in need a price first/);
+    expect(await w.t.run((ctx) => ctx.db.query("collectionCopies").collect())).toEqual([]);
+    // A per-card price answers it too.
+    await w.me.mutation(api.intakeRuns.saveIntakeMatch, {
+      runId,
+      pairId: w.pairIds[0],
+      quantity: 1,
+      details: { minPriceCents: 30 },
+    });
+  });
+
+  test("a collector who syncs nowhere saves into a box with no price, as before", async () => {
+    const w = await world([{ number: "1", players: ["Doc Gooden"] }]);
+    const runId = await startRun(w, w.fx.baseId);
+    await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[0], quantity: 1 });
   });
 });

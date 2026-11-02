@@ -37,6 +37,7 @@ import {
   setBuilderReady,
   syncChecklistButton,
 } from "../support/set-builder";
+import { TOPPS_1988 } from "../support/collection";
 import { addAsNewStep, advanceToSave, answerStepAsNew, confirmSaveButton, reviewWizard } from "../support/wizard";
 import type { Page } from "@playwright/test";
 
@@ -89,6 +90,63 @@ async function fetchChecklist(
 }
 
 /**
+ * Walk the entity-review wizard of a freshly fetched Base checklist to its
+ * Save step and save: bulk-add the unknown players, then answer every team,
+ * league and pick step one at a time (live enrichment lookups), leave the
+ * post-name steps on their defaults, confirm. Shared by the seed's big Base
+ * checklists; `maxSteps` bounds the walk (a team/league/pick step each).
+ */
+async function walkWizardToSave(page: Page, maxSteps: number) {
+  const wizard = reviewWizard(page);
+  await wizard.getByRole("button", { name: /^Add remaining players as new/ }).click();
+  // Enabled only: the button is aria-disabled while the row's enrichment
+  // lookup is in flight, and between rows.
+  // Any state: a league step's primary is held until a level is pressed
+  // (NEO-331), and answerStepAsNew presses "Other" first.
+  const addAsNew = addAsNewStep(page);
+  // NEO-335: "names done" is two footer states. With every name decided the
+  // wizard walks on to "Cards with no team" / "Card titles" (footer "Next
+  // (Enter)", no Confirm & Save), then "Ready to save" (the only step with
+  // Confirm & Save). Neither button is on screen while a name is undecided.
+  const namesDone = wizard.getByRole("button", { name: /^Next \(Enter\)$|Confirm & Save/ });
+  // NEO-330: with the reference catalogue loaded the Base batch is a
+  // handful of names, and some are same-name players the bulk leaves for
+  // the operator. Such a row is the PICK step (NEO-332), inserted ready, so
+  // it can be on screen from the start. It is answered by LINKING the top
+  // candidate, never `Add as New Player` (that mints one more same-name
+  // player). No spec reads these rows and the reset rebuilds them. Scoped
+  // to the candidate list so the footer's `Link to existing instead` is out.
+  const pickStep = wizard.getByRole("heading", { level: 3, name: /^Which .* is this\?$/ });
+  const firstCandidate = wizard
+    .getByRole("list", { name: "Players already filed under this name" })
+    .getByRole("button", { name: /^Link to / })
+    .first();
+  // Teams and leagues are walked one at a time (enrichment lookups; the
+  // flow's 240 s per step and 250 steps at most). The wait wakes on every
+  // answerable outcome: a team/league step, a pick step, or the end.
+  for (let i = 0; i < maxSteps; i++) {
+    await expect(addAsNew.or(pickStep).or(namesDone).first()).toBeVisible({ timeout: 240_000 });
+    if (await namesDone.isVisible()) break;
+    if (await pickStep.isVisible()) {
+      const step = ((await pickStep.textContent()) ?? "").trim();
+      await firstCandidate.click();
+      // By the exact heading: a following pick step has another name.
+      await expect(
+        wizard.getByRole("heading", { level: 3, name: step, exact: true }),
+        `"${step}" is still on screen after Link to`,
+      ).toBeHidden();
+    } else {
+      await answerStepAsNew(page);
+    }
+  }
+  // The teams / titles steps, each left on its defaults by Next (the answers
+  // the old final step's Confirm & Save saved), then the Save step. The seed
+  // is a data-loading track; it proves none of those steps.
+  await advanceToSave(page);
+  await confirmSaveButton(page).click();
+}
+
+/**
  * Open an insert/parallel level and get `name` listed: the first visit opens
  * the reconciliation dialog for the whole level (save every ready set),
  * a later one just lists the rows.
@@ -115,7 +173,7 @@ async function reconcileAndFind(page: Page, column: "Inserts" | "Parallels", nam
 }
 
 test(
-  "Setup — global reset + warm + sync 2024 Topps Chrome Baseball (Base + Insert + Parallel) + 2026 Bowman's SportLots review",
+  "Setup — global reset + warm + sync 2024 Topps Chrome Baseball (Base + Insert + Parallel) + 1988 Topps Baseball (Base) + 2026 Bowman's SportLots review",
   { tag: ["@setup"] },
   async ({ page, signIn, env }) => {
     // ── sign in, per-user reset, seed creds, land on /admin ────────────────
@@ -256,52 +314,7 @@ test(
     // Players & Teams" is gone.
     const wizard = reviewWizard(page);
     if (await wizard.isVisible()) {
-      await wizard.getByRole("button", { name: /^Add remaining players as new/ }).click();
-      // Enabled only: the button is aria-disabled while the row's enrichment
-      // lookup is in flight, and between rows.
-      // Any state: a league step's primary is held until a level is pressed
-      // (NEO-331), and answerStepAsNew presses "Other" first.
-      const addAsNew = addAsNewStep(page);
-      // NEO-335: "names done" is two footer states. With every name decided the
-      // wizard walks on to "Cards with no team" / "Card titles" (footer "Next
-      // (Enter)", no Confirm & Save), then "Ready to save" (the only step with
-      // Confirm & Save). Neither button is on screen while a name is undecided.
-      const namesDone = wizard.getByRole("button", { name: /^Next \(Enter\)$|Confirm & Save/ });
-      // NEO-330: with the reference catalogue loaded the Base batch is a
-      // handful of names, and some are same-name players the bulk leaves for
-      // the operator. Such a row is the PICK step (NEO-332), inserted ready, so
-      // it can be on screen from the start. It is answered by LINKING the top
-      // candidate, never `Add as New Player` (that mints one more same-name
-      // player). No spec reads these rows and the reset rebuilds them. Scoped
-      // to the candidate list so the footer's `Link to existing instead` is out.
-      const pickStep = wizard.getByRole("heading", { level: 3, name: /^Which .* is this\?$/ });
-      const firstCandidate = wizard
-        .getByRole("list", { name: "Players already filed under this name" })
-        .getByRole("button", { name: /^Link to / })
-        .first();
-      // Teams and leagues are walked one at a time (enrichment lookups; the
-      // flow's 240 s per step and 250 steps at most). The wait wakes on every
-      // answerable outcome: a team/league step, a pick step, or the end.
-      for (let i = 0; i < 250; i++) {
-        await expect(addAsNew.or(pickStep).or(namesDone).first()).toBeVisible({ timeout: 240_000 });
-        if (await namesDone.isVisible()) break;
-        if (await pickStep.isVisible()) {
-          const step = ((await pickStep.textContent()) ?? "").trim();
-          await firstCandidate.click();
-          // By the exact heading: a following pick step has another name.
-          await expect(
-            wizard.getByRole("heading", { level: 3, name: step, exact: true }),
-            `"${step}" is still on screen after Link to`,
-          ).toBeHidden();
-        } else {
-          await answerStepAsNew(page);
-        }
-      }
-      // The teams / titles steps, each left on its defaults by Next (the answers
-      // the old final step's Confirm & Save saved), then the Save step. The seed
-      // is a data-loading track; it proves none of those steps.
-      await advanceToSave(page);
-      await confirmSaveButton(page).click();
+      await walkWizardToSave(page, 250);
     }
     await expect(page.getByText(/Saved 335 cards/)).toBeVisible({ timeout: 120_000 });
     await expect(page.getByText(/^#[0-9]/).first()).toBeVisible();
@@ -377,6 +390,32 @@ test(
       });
     }
     await expect(page.getByText("No cards in this checklist yet.")).toBeVisible({ timeout: 15_000 });
+
+    // ── 1988 Topps Baseball: Base fetched and saved (NEO-370 fixture) ──────
+    // The one real set the BuySportsCards LISTING spec writes quantities to
+    // (SET-REGISTRY.md, "1988 Topps Baseball"). Provisioned like any synced
+    // set: the year's cold manufacturer sync, the Base mapped in the picker,
+    // the checklist fetched, the wizard walked, the cards saved. Nothing about
+    // BuySportsCards' seller side is touched here: this only gives the set its
+    // NB rows, each carrying BSC's card id. Placed before the Bowman block
+    // because that one returns early under a SportLots pause.
+    // PROVISIONAL ceilings (no seed has run this block yet): the first seed
+    // measures them; the registry row records the figures.
+    await drillToColdManufacturer(page, env, {
+      sport: TOPPS_1988.sport,
+      year: TOPPS_1988.year,
+      manufacturer: TOPPS_1988.manufacturer,
+      // Under a SportLots pause the brand is hand-made and BSC's sets are
+      // filed under it by name; wait for them either way.
+      expectSets: true,
+    });
+    await drillToBaseVariant(page, env, { year: TOPPS_1988.year, set: TOPPS_1988.set });
+    await fetchChecklist(page, env.SL_PAUSED, { open: 120_000, settle: 120_000 });
+    if (await wizard.isVisible()) {
+      await walkWizardToSave(page, 500);
+    }
+    await expect(page.getByText(/Saved [0-9]+ cards/)).toBeVisible({ timeout: 120_000 });
+    await expect(page.getByText(/^#[0-9]/).first()).toBeVisible();
 
     // ── 2026 Bowman: sort SportLots sets (NEO-312 fixture) ─────────────────
     const BRAND = "Bowman";

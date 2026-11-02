@@ -22,4 +22,5 @@
 - [Schema pins: text scan vs export walk](schema-pins-text-scan-vs-export-walk.md) — wipe-graph pin greps table-block text; reference-seed pin walks schema.export(); ids in a shared validator const hit only the second
 - [Cached lookup answer must reverify membership](cached-lookup-answer-must-reverify-membership.md) — a cached name→id answer confirmed by get alone survives rename/alias/sport removal; re-check membership in memory; Convex arrays cap at 8,192
 - [Table-number discovery by normalizeId](table-number-discovery-by-normalize-id.md) — normalizeId is a SYNC syscall: budget = 1 s execution, cost = numbers x pending tables per query; start at 10001; convex-test cannot pin it
+- [Outbox rows per platform, seq-guarded clear](outbox-rows-per-platform-seq-guarded-clear.md) — change outbox: row per (owner, platform, item); upsert bumps seq; drainer deletes only at the seq it pushed
 - [Workpool cancel does not stop running work](workpool-cancel-does-not-stop-running-work.md) — cancel only blocks retries; the running attempt's real result or 'canceled' still hits onComplete later; reset-in-place rows need a generation guard (workId or context gen)

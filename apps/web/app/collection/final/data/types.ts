@@ -59,7 +59,7 @@ export type Side = "collection" | "inventory";
  * both sides. The old `"inventory"` key is retired: a `?tab=inventory` link
  * redirects (replace) to `/inventory?tab=boxes`.
  */
-export type CollectionTab = "cards" | "binders" | "boxes" | "checklists" | "add";
+export type CollectionTab = "cards" | "binders" | "boxes" | "checklists" | "add" | "sales" | "sync";
 
 // ---------------------------------------------------------------------------
 // Catalog
@@ -540,6 +540,11 @@ export interface Container {
   slug?: string;
   /** NEO-360 — anyone with the link can read it (a binder or the Want List). */
   isPublic?: boolean;
+  /**
+   * NEO-370 — a box only: false when it is in-person inventory, whose copies
+   * count 0 on every marketplace. Absent reads as listed.
+   */
+  listedOnMarketplaces?: boolean;
 }
 
 /**
@@ -821,6 +826,13 @@ export interface Capabilities {
   intake: boolean;
   /** NEO-377 — a front and back photo on each copy line (`useCopyPhotos`). */
   copyPhotos: boolean;
+  /**
+   * NEO-370 — listing box copies on a marketplace (`useListing`): a
+   * checklist's Sync button, a box's "Listed on marketplaces", the Sales
+   * and Sync status tabs.
+   * Signed-in only: the demo never touches a marketplace.
+   */
+  marketplaceListing: boolean;
 }
 
 export const ALL_CAPABILITIES: Capabilities = {
@@ -839,6 +851,8 @@ export const ALL_CAPABILITIES: Capabilities = {
   inventory: true,
   intake: true,
   copyPhotos: true,
+  // The demo never touches Convex, so it never lists anywhere.
+  marketplaceListing: false,
 };
 
 export const NO_CAPABILITIES: Capabilities = {
@@ -856,6 +870,7 @@ export const NO_CAPABILITIES: Capabilities = {
   inventory: false,
   intake: false,
   copyPhotos: false,
+  marketplaceListing: false,
 };
 
 /**
@@ -875,6 +890,7 @@ export const REAL_CAPABILITIES: Capabilities = {
   binderSettings: true,
   intake: true,
   copyPhotos: true,
+  marketplaceListing: true,
 };
 
 // ---------------------------------------------------------------------------
@@ -894,6 +910,189 @@ export interface ShareProfile {
 
 export interface ShareLinkParts {
   slug: string;
+}
+
+// ---------------------------------------------------------------------------
+// Marketplace listing (NEO-370)
+// ---------------------------------------------------------------------------
+
+/** A marketplace NB lists box copies on. Only BuySportsCards today. */
+export type ListingPlatform = "bsc";
+
+/**
+ * Where the collector stands with one listing platform (NEO-370 Rev 5).
+ * A saved, unpaused sign-in IS syncing (listing and the sales poll); there
+ * is no Start and no pause: removing the sign-in stops both.
+ */
+export interface ListingPlatformSettings {
+  /** Their sign-in for it is saved (Profile → Credentials). */
+  connected: boolean;
+  /**
+   * Syncing there: a saved sign-in, the platform not paused and the seller
+   * account not in use elsewhere. Everything in a listed box goes up, and
+   * sales come back.
+   */
+  listing: boolean;
+  /** Since when (ms), as the server stamps it; may be absent. */
+  listingSince?: number;
+  /** The saved sign-in died: they must sign in again on their Profile. */
+  needsReauth: boolean;
+  /** NB has paused the platform for everyone; changes wait until it is back. */
+  paused: boolean;
+  /**
+   * Their seller account already lists from another NeonBinder account, so
+   * this one can't: nothing goes up or comes in from this one.
+   */
+  sellerConflict: boolean;
+}
+
+export type ListingSettings = Record<ListingPlatform, ListingPlatformSettings>;
+
+/**
+ * NEO-370 — the listing gate as a screen reads it (`convex/listingGate.ts`
+ * `forHome`): whether the collector is set up for syncing at all, whether
+ * adds into the home need a price and a condition first (it lists on
+ * marketplaces and they sync), and their common price for the variant, in
+ * cents, when it does. What the copy will carry is combined with it through
+ * `convex/lib/listingReadiness.ts`, the rule the server enforces.
+ */
+export interface ListingGateView {
+  syncing: boolean;
+  applies: boolean;
+  commonPriceCents: number | null;
+}
+
+/**
+ * Why one card of a checklist did not list (NB's own words for it live in
+ * `lib/marketplace/listing-copy`). Mirrors `listingProblemReasonValidator` in
+ * convex/schema.ts.
+ */
+export type ListingProblemReason =
+  | "noLink"
+  | "sharedLink"
+  | "numberMismatch"
+  | "noPrice"
+  | "priceTooHigh"
+  | "noCondition"
+  | "graded"
+  | "notOnSheet"
+  | "rejected";
+
+/** One card a sync held back, named as the collector reads it. */
+export interface SyncProblem {
+  reason: ListingProblemReason;
+  /** NB's card number; absent for a platform row NB cannot tie to a card. */
+  cardNo?: string;
+  /** The card's player(s), as NB names them. */
+  cardLabel?: string;
+  /** For `rejected`: a short excerpt of what the platform said. */
+  detail?: string;
+}
+
+/** What Sync answered: `queued`, or why it let the press pass. */
+export interface SyncVariantResult {
+  queued: boolean;
+  ignored?: "throttled" | "notListing";
+}
+
+/** A card waiting for the next sync. The queue holds cards, not diffs: NB's counts are what go up. */
+export interface QueuedSyncCard {
+  cardId: CardId;
+  cardNo?: string;
+  cardLabel?: string;
+  variantId: VariantId;
+  setLabel: string;
+  /** When it was queued (ms). */
+  changedAt: number;
+}
+
+/** One set's last sync on a platform. Last result only: there is no run log. */
+export interface SyncSetResult {
+  variantId: VariantId;
+  setLabel: string;
+  status: "idle" | "running" | "error";
+  lastRunAt?: number;
+  lastSuccessAt?: number;
+  /** NB's sentence for what went wrong last time. */
+  lastError?: string;
+  counts?: { listed: number; pushed: number; zeroed: number; skipped: number };
+  problemsTotal: number;
+  /** The first few only; the rest come from `loadSetProblems`. */
+  problems: SyncProblem[];
+}
+
+/** One platform on the Sync status tab. */
+export interface PlatformSyncStatus extends ListingPlatformSettings {
+  platform: ListingPlatform;
+  /** A sync going on now. */
+  running: { startedAt: number; setLabel?: string; variantId?: VariantId } | null;
+  /** When the next sync is due (ms), when one is scheduled. */
+  scheduledAt?: number;
+  /** When the last sync finished (ms). */
+  lastDrainAt?: number;
+  /** Oldest first, capped; `more` when there are others. */
+  queued: { cards: QueuedSyncCard[]; more: boolean };
+  /** Most recent first, capped. */
+  sets: SyncSetResult[];
+}
+
+export interface SyncStatus {
+  platforms: PlatformSyncStatus[];
+}
+
+/** One set's whole held-back list, read on demand. */
+export interface SetProblems {
+  problems: SyncProblem[];
+  problemsTotal: number;
+}
+
+/** Why a sold line was not (fully) taken out of the collector's boxes. */
+export type SaleItemProblem = "unmatched" | "linkMismatch" | "oversold";
+
+export interface SaleItem {
+  /** The NB card it sold as; absent when NB could not match it. */
+  cardId?: CardId;
+  /** The platform's condition word, verbatim. */
+  condition: string;
+  quantity: number;
+  /** Per copy, in cents. */
+  priceCents: number;
+  /** Taken out of the collector's boxes. */
+  applied: boolean;
+  problem?: SaleItemProblem;
+  /** `oversold` only: how many sold that NB had no box copy for. */
+  shortBy?: number;
+}
+
+/** One order a collector received on a platform. Money is integer cents. */
+export interface Sale {
+  id: string;
+  platform: ListingPlatform;
+  /** The number the platform shows the seller. */
+  orderNo: string;
+  /** When it was ordered (ms). */
+  orderDate: number;
+  /** The platform's status word, verbatim ("SHIPPED"). */
+  status: string;
+  totals: {
+    subtotalCents?: number;
+    shippingCents?: number;
+    feesCents?: number;
+    netCents?: number;
+    totalCents?: number;
+  };
+  items: SaleItem[];
+}
+
+/** The Sales list, newest first, a page at a time. */
+export interface SalesPage {
+  /** Undefined while the first page loads. */
+  sales: Sale[] | undefined;
+  /** More can be loaded. */
+  canLoadMore: boolean;
+  /** A page is on its way. */
+  loadingMore: boolean;
+  loadMore: () => void;
 }
 
 // ---------------------------------------------------------------------------

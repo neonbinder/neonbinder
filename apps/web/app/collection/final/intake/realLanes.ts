@@ -62,6 +62,20 @@ export function laneOf(images: IntakeImage[], pairs: IntakePair[], matches: Inta
   };
 }
 
+/**
+ * NEO-370 Rev 4 — every column but Saved is clear: nothing reading, pairing,
+ * matching or waiting on the collector (a pair set aside sits apart and
+ * does not hold the run open). Once it is, after "Done adding photos", the
+ * run's cards sync to the collector's marketplaces.
+ */
+export function columnsClear(lanes: Pick<Lanes, "reading" | "loose" | "matching" | "review">): boolean {
+  return lanes.reading.length + lanes.loose.length + lanes.matching.length + lanes.review.length === 0;
+}
+
+/** What leaving asks after "Done adding photos", until the columns clear. */
+export const LEAVE_INTAKE_LINE =
+  "This run isn't finished: some cards are still working or need you. Leave anyway? Anything headed to your marketplaces goes up on the next 15-minute round instead.";
+
 /** What preprocess read off a pair's two photos, front first. */
 export function readOf(images: Map<number, IntakeImage>, frontIndex: number, backIndex: number): PairRead {
   const front = images.get(frontIndex);

@@ -47,6 +47,9 @@ export const SECTIONS = [
   // NEO-361. What collectors asked us to add; approving one usually means a
   // trip to the Set Builder, which leads the list.
   { label: "Card Requests", path: "/admin/card-requests" },
+  // NEO-370. Every collector's marketplace sync, read-only: the same screen
+  // as Inventory → Sync status, for troubleshooting.
+  { label: "Sync Status", path: "/admin/sync-status" },
 ];
 
 export default function AdminSectionLayout() {

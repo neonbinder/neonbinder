@@ -22,6 +22,10 @@ function TestingSeedCredentialsContent() {
   // "buysportscards") narrows seeding to a subset — the credential-gate fixtures
   // seed exactly one platform so the other reads as missing. Omitted → seed all.
   const sitesParam = searchParams.get("sites");
+  // NEO-370: `listing=on` makes the seeded marketplace sign-ins list (counts
+  // pushed, sales polled), as a collector's own save does. Omitted, the
+  // account carries the test marker and lists nowhere.
+  const listingOn = searchParams.get("listing") === "on";
   const [status, setStatus] = useState("Initializing...");
   const ranRef = useRef(false);
 
@@ -48,7 +52,7 @@ function TestingSeedCredentialsContent() {
         const sites = sitesParam
           ? sitesParam.split(",").map((s) => s.trim()).filter(Boolean)
           : undefined;
-        const result = await seedAction(sites ? { sites } : {});
+        const result = await seedAction({ ...(sites ? { sites } : {}), ...(listingOn ? { listing: true } : {}) });
         const summary = result.seeded
           .map((s) => `${s.site}=${s.skipped ? "skip" : s.stored ? "stored" : "fail"}`)
           .join(" ");
@@ -82,7 +86,7 @@ function TestingSeedCredentialsContent() {
         setStatus(`Error: ${msg}`);
       }
     })();
-  }, [isAuthenticated, isLoading, navigate, redirect, seedAction, sitesParam]);
+  }, [isAuthenticated, isLoading, listingOn, navigate, redirect, seedAction, sitesParam]);
 
   return (
     <div className="flex items-center justify-center min-h-screen bg-surface">

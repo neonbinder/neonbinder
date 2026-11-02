@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import {
   canRetryPhoto,
   cardLabel,
+  columnsClear,
   failedText,
   MAX_PHOTO_RETRIES,
   runSummary,
@@ -150,5 +151,15 @@ describe("NEO-411: failed photos end, and can be sent again", () => {
     );
     expect(runSummary({ ...base, saved: 4 })).toBe("4 saved.");
     expect(runSummary({ ...base, saved: 4, unread: 1 })).toBe("4 saved. 1 photo couldn't be read.");
+  });
+});
+
+describe("NEO-370: leaving after Done waits for the columns", () => {
+  const lanes = { reading: [] as number[], loose: [] as number[], matching: [] as number[], review: [] as number[] };
+  test("clear only when every column but Saved is empty", () => {
+    expect(columnsClear(lanes as never)).toBe(true);
+    for (const lane of ["reading", "loose", "matching", "review"] as const) {
+      expect(columnsClear({ ...lanes, [lane]: [1] } as never)).toBe(false);
+    }
   });
 });

@@ -32,16 +32,53 @@ export function collectorCascade(page: Page, name = "Sport, year, brand and set"
   return { cascade, drill };
 }
 
-/** From the Checklists tab to the seed's 2024 Topps Chrome Base checklist; returns its region. */
-export async function drillToCollectorBase(page: Page): Promise<Locator> {
+/** A real set the collector's cascade can be driven to: sport, year, brand, set, and its Base. */
+export interface CollectorSet {
+  sport: string;
+  year: string;
+  manufacturer: string;
+  set: string;
+}
+
+/** The seed's 2024 Topps Chrome (the default of `drillToCollectorBase`). */
+export const TOPPS_CHROME_2024: CollectorSet = {
+  sport: "Baseball",
+  year: "2024",
+  manufacturer: "Topps",
+  set: "Topps Chrome",
+};
+
+/**
+ * 1988 Topps Baseball (BSC's "1988 Topps", year stripped to the set "Topps"
+ * under the brand "Topps"): the BuySportsCards listing spec's fixture
+ * (NEO-370), provisioned by `setup.spec.ts`.
+ */
+export const TOPPS_1988: CollectorSet = {
+  sport: "Baseball",
+  year: "1988",
+  manufacturer: "Topps",
+  set: "Topps",
+};
+
+/** The checklist's own name: "2024 Topps Chrome Base", "1988 Topps Base". */
+export function baseChecklistTitle(target: CollectorSet): string {
+  return `${target.year} ${target.set} Base`;
+}
+
+/**
+ * From the Checklists tab to a seeded set's Base checklist (the seed's 2024
+ * Topps Chrome unless `target` says otherwise); returns its region.
+ */
+export async function drillToCollectorBase(page: Page, target: CollectorSet = TOPPS_CHROME_2024): Promise<Locator> {
   const { drill } = collectorCascade(page);
-  await drill("Sports", "Baseball", "Years");
-  await drill("Years", "2024", "Brands");
-  await drill("Brands", "Topps", "Sets");
-  await drill("Sets", "Topps Chrome", "Variant Types");
+  await drill("Sports", target.sport, "Years");
+  await drill("Years", target.year, "Brands");
+  await drill("Brands", target.manufacturer, "Sets");
+  await drill("Sets", target.set, "Variant Types");
   await drill("Variant Types", "Base");
-  const checklist = page.getByRole("region", { name: "2024 Topps Chrome Base" });
-  await expect(checklist.getByRole("heading", { level: 3, name: "2024 Topps Chrome Base" })).toBeVisible();
+  const title = baseChecklistTitle(target);
+  const checklist = page.getByRole("region", { name: title });
+  await expect(checklist.getByRole("heading", { level: 3, name: title })).toBeVisible();
   return checklist;
 }
 
