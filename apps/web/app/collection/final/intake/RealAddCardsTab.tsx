@@ -1,4 +1,15 @@
-import { createContext, useContext, useEffect, useId, useMemo, useRef, useState, type ReactNode, type Ref } from "react";
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useEffectEvent,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+  type Ref,
+} from "react";
 import { useSearchParams } from "react-router";
 import { useMutation, useQuery } from "convex/react";
 import NeonButton from "@/components/modules/NeonButton";
@@ -227,9 +238,16 @@ export default function RealAddCardsTab() {
       return next;
     });
 
+  // A drop while `loading` waits here, then takes the normal path below once
+  // the shelf and the run are in. The latest drop wins, as a new pick does.
+  const queued = useRef<File[] | null>(null);
   const onFiles = async (chosen: File[]) => {
     setFiles(chosen);
-    if (chosen.length === 0 || uploading || loading) return;
+    if (chosen.length === 0 || uploading) return;
+    if (loading) {
+      queued.current = chosen;
+      return;
+    }
     if (classifyIntake(chosen).kind === "invalid") return;
     // Held by the listing gate: the reason is beside the zone (it never opens a picker then).
     if (lock.locked) return;
@@ -272,6 +290,15 @@ export default function RealAddCardsTab() {
       setStatus(writeErrorMessage(error));
     }
   };
+
+  const sendQueued = useEffectEvent(() => {
+    const chosen = queued.current;
+    queued.current = null;
+    if (chosen) void onFiles(chosen);
+  });
+  useEffect(() => {
+    if (!loading) sendQueued();
+  }, [loading]);
 
   const setupBar = (
     <div className="flex flex-wrap items-end gap-4 rounded-lg border border-panel-rule bg-panel p-4 shadow-offset">

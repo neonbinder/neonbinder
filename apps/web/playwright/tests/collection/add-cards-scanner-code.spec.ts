@@ -6,6 +6,11 @@
 // the empty session. Both sides: the Collection files into a binder, the
 // Inventory into a box (its own Main, which every account has).
 //
+// NEO-416: a photo dropped while the shelf and the ?run= run are still loading
+// is queued and sent into that same run once they load (never "Make a binder
+// first", never a new run). That half is proven by unit tests: the loading
+// window cannot be targeted live, and the photo specs drive real preprocess.
+//
 // The app itself (apps/scanner) needs a real scanner and a real API key,
 // so its side of the join is pinned in convex/intakeScanner.test.ts,
 // convex/scannerContract.test.ts and apps/scanner's unit tests, not here.
@@ -63,11 +68,13 @@ test(
       // The same run after a reload: asking again gives the same code.
       // A reload is a fresh launch (R4: gate on the destination's heading under
       // the launch gate). Use a scanner is aria-disabled while the binders and
-      // the open run load (NEO-416), and click() waits for it to be enabled,
-      // so asking before they are back neither says "Make a binder first" nor
-      // starts a second run: it answers with the open run's code.
+      // the open run load (NEO-416), so the button is only offered once they
+      // are back and asking neither says "Make a binder first" nor starts a
+      // second run: it answers with the open run's code. Waiting for the
+      // enabled button is the cold-launch gate (R4); the click then runs at 7 s.
       await page.reload();
       await expect(page.getByRole("heading", { level: 1, name: "Collection" })).toBeVisible({ timeout: LAUNCH_GATE });
+      await expect(page.getByRole("button", { name: "Use a scanner", disabled: false })).toBeVisible({ timeout: LAUNCH_GATE });
       await page.getByRole("button", { name: "Use a scanner" }).click();
       await expect(page.getByRole("group", { name: "Scanner code" }).getByText(code.split("").join(" "))).toHaveCount(1);
 

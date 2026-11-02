@@ -544,8 +544,9 @@ describe("RealAddCardsTab while the shelf or the open run loads (NEO-416)", () =
     );
   }
   const scanner = () => screen.getByRole("button", { name: "Use a scanner" });
-  const drop = async () => {
-    await act(async () => mocks.dropzone.at(-1)!.onFiles([new File(["x"], "front.jpg", { type: "image/jpeg" })]));
+  const photoFile = (name = "front.jpg") => new File(["x"], name, { type: "image/jpeg" });
+  const drop = async (files = [photoFile()]) => {
+    await act(async () => mocks.dropzone.at(-1)!.onFiles(files));
   };
   const start = () => mocks.mutation("placeholderStream.startPlaceholderStream");
   const create = () => mocks.mutation("intakeRuns.createIntakeRun");
@@ -555,6 +556,9 @@ describe("RealAddCardsTab while the shelf or the open run loads (NEO-416)", () =
     // The writes a second run would make, answering as the server would.
     start().mockResolvedValue({ started: true, jobId: "job-second" });
     create().mockResolvedValue("intakerunsecond00001");
+    mocks.upload.mockImplementation((files: File[], { jobId }: { jobId?: string }) =>
+      Promise.resolve({ ok: true, jobId: jobId ?? "job-fresh", uploaded: files.length, failed: 0, total: files.length }),
+    );
     mocks.data.homes = [{ id: "home1", name: "Binder", kind: "binder" }];
   });
 
@@ -562,7 +566,12 @@ describe("RealAddCardsTab while the shelf or the open run loads (NEO-416)", () =
     const runId = freshRunId();
     mocks.data.run = undefined;
     mocks.data.job = undefined;
-    render(<Loading initial={`/collection/final/intake?run=${runId}`} />);
+    const initial = `/collection/final/intake?run=${runId}`;
+    const { container, rerender } = render(<Loading initial={initial} />);
+    await expectAccessibleInBothModes(container, {
+      label: "Intake, while the open run loads",
+      rerender: () => rerender(<Loading initial={initial} />),
+    });
     fireEvent.click(scanner());
     await act(async () => {});
     expect(start()).not.toHaveBeenCalled();
@@ -571,25 +580,71 @@ describe("RealAddCardsTab while the shelf or the open run loads (NEO-416)", () =
     expect(scanner().getAttribute("aria-disabled")).toBe("true");
   });
 
-  it("on ?run= with the run still loading, a photo drop sends nothing into a fresh job", async () => {
+  it("on ?run= with the run still loading, a photo drop waits, then goes into the open run's job", async () => {
+    const runId = freshRunId();
     mocks.data.run = undefined;
     mocks.data.job = undefined;
-    render(<Loading initial={`/collection/final/intake?run=${freshRunId()}`} />);
-    await drop();
+    const initial = `/collection/final/intake?run=${runId}`;
+    const { rerender } = render(<Loading initial={initial} />);
+    const files = [photoFile()];
+    await drop(files);
     expect(mocks.upload).not.toHaveBeenCalled();
+    // The run arrives.
+    setRun(runId);
+    rerender(<Loading initial={initial} />);
+    await act(async () => {});
+    expect(mocks.upload).toHaveBeenCalledTimes(1);
+    expect(mocks.upload).toHaveBeenCalledWith(files, { source: "web", jobId: `job-${runId}` });
     expect(create()).not.toHaveBeenCalled();
+    expect(screen.getByRole("status", { name: "Page address" }).textContent).toBe(`?run=${runId}`);
   });
 
-  it("while the shelf loads, neither Use a scanner nor a drop says to make a binder", async () => {
+  it("while the shelf loads, Use a scanner does nothing and says nothing", async () => {
     mocks.data.run = null;
     mocks.data.job = null;
     mocks.data.containers = undefined;
     mocks.data.homes = [];
     render(<Loading initial="/collection/final/intake" />);
     fireEvent.click(scanner());
-    await drop();
+    await act(async () => {});
     expect(screen.queryAllByText(MAKE_ONE)).toEqual([]);
     expect(start()).not.toHaveBeenCalled();
+  });
+
+  it("a drop while the shelf loads waits, then files into the binder the shelf answers (the latest drop wins)", async () => {
+    mocks.data.run = null;
+    mocks.data.job = null;
+    mocks.data.containers = undefined;
+    mocks.data.homes = [];
+    const { rerender } = render(<Loading initial="/collection/final/intake" />);
+    await drop([photoFile("first.jpg")]);
+    const second = [photoFile("second.jpg"), photoFile("second-back.jpg")];
+    await drop(second);
+    expect(mocks.upload).not.toHaveBeenCalled();
+    expect(screen.queryAllByText(MAKE_ONE)).toEqual([]);
+    // The shelf arrives, with a binder on it.
+    mocks.data.containers = [];
+    mocks.data.homes = [{ id: "home1", name: "Binder", kind: "binder" }];
+    rerender(<Loading initial="/collection/final/intake" />);
+    await act(async () => {});
+    expect(mocks.upload).toHaveBeenCalledTimes(1);
+    expect(mocks.upload).toHaveBeenCalledWith(second, { source: "web", jobId: undefined });
+    expect(create()).toHaveBeenCalledWith(expect.objectContaining({ jobId: "job-fresh", homeId: "home1" }));
+    expect(screen.queryAllByText(MAKE_ONE)).toEqual([]);
+  });
+
+  it("a drop while the shelf loads, onto a shelf that loads empty, then says to make a binder", async () => {
+    mocks.data.run = null;
+    mocks.data.job = null;
+    mocks.data.containers = undefined;
+    mocks.data.homes = [];
+    const { rerender } = render(<Loading initial="/collection/final/intake" />);
+    await drop();
+    expect(screen.queryAllByText(MAKE_ONE)).toEqual([]);
+    mocks.data.containers = [];
+    rerender(<Loading initial="/collection/final/intake" />);
+    await act(async () => {});
+    expect(screen.getByText(MAKE_ONE, { selector: '[role="status"]' })).toBeTruthy();
     expect(mocks.upload).not.toHaveBeenCalled();
   });
 
