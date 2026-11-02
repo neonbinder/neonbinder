@@ -36,7 +36,10 @@ import SetupSections, { SECTION } from "./SetupSections";
  * on this NeonBinder (Connect disabled with the reason), not connected (the
  * consent heading and line beside Connect), connected, the consent ran out,
  * eBay paused for everyone, and the seller account in use by another NB
- * account. Every refusal is an alert; progress is a polite status.
+ * account. Every refusal is an alert, the server's own sentence when it
+ * sent one (Connect's start refusing, a return from a different seller
+ * account); progress is a polite status. A disconnect that couldn't take
+ * every NB listing down says how many are still up, in an alert.
  *
  * Focus: after connecting, or coming back having said no, the Connection
  * heading (the button that started it is a page load ago); after
@@ -57,10 +60,33 @@ type Phase =
   | { kind: "connected"; username: string }
   | { kind: "declined" }
   | { kind: "error"; error: string }
-  | { kind: "leaving" };
+  | { kind: "leaving" }
+  /** Disconnected; `notEnded` of NB's eBay listings couldn't be taken down. */
+  | { kind: "disconnected"; notEnded: number };
 
 const NOT_CONFIGURED_LINE = `${EBAY_NAME} isn't hooked up on this NeonBinder yet.`;
 const CONNECT_FAILED = `Couldn't reach ${EBAY_NAME} to connect. Give it another try.`;
+
+/** What Connect's start said back: the consent URL, or the server's refusal. */
+type BeginAnswer = { authorizeUrl: string } | { ok: false; error: string };
+
+/** The server's own sentence from a refusal thrown as a ConvexError, if it sent one. */
+function refusalSentence(error: unknown): string | null {
+  const data = (error as { data?: unknown } | null)?.data;
+  if (typeof data === "string" && data.trim()) return data;
+  if (data && typeof data === "object") {
+    const message = (data as { message?: unknown; error?: unknown }).message ?? (data as { error?: unknown }).error;
+    if (typeof message === "string" && message.trim()) return message;
+  }
+  return null;
+}
+
+/** The alert after a disconnect that couldn't take every NB listing down. */
+function notEndedLine(n: number): string {
+  const listings = n === 1 ? "1 NeonBinder listing is" : `${n} NeonBinder listings are`;
+  const them = n === 1 ? "it" : "them";
+  return `Disconnected, but ${listings} still up on ${EBAY_NAME} and we couldn't take ${them} down. End ${them} on ${EBAY_NAME} so nothing sells that you no longer have.`;
+}
 
 export default function EbayPanel() {
   useDocumentTitle("eBay | Neon Binder");
@@ -115,9 +141,9 @@ export default function EbayPanel() {
           setPhase({ kind: "error", error: answer.error });
         }
       },
-      () => {
+      (error: unknown) => {
         focusNext.current = "connect";
-        setPhase({ kind: "error", error: CONNECT_FAILED });
+        setPhase({ kind: "error", error: refusalSentence(error) ?? CONNECT_FAILED });
       },
     );
   }, [code, oauthState, declinedParam, completeConnect, setParams]);
@@ -144,10 +170,15 @@ export default function EbayPanel() {
     if (phase.kind === "leaving" || phase.kind === "completing" || !connection?.configured) return;
     setPhase({ kind: "leaving" });
     try {
-      const { authorizeUrl } = await beginConnect({});
-      window.location.assign(authorizeUrl);
-    } catch {
-      setPhase({ kind: "error", error: CONNECT_FAILED });
+      const answer = (await beginConnect({})) as BeginAnswer;
+      if ("authorizeUrl" in answer) {
+        window.location.assign(answer.authorizeUrl);
+        return;
+      }
+      setPhase({ kind: "error", error: answer.error || CONNECT_FAILED });
+    } catch (error) {
+      // A refusal ("Disconnect eBay first…") arrives as the server's sentence.
+      setPhase({ kind: "error", error: refusalSentence(error) ?? CONNECT_FAILED });
     }
   };
 
@@ -160,9 +191,11 @@ export default function EbayPanel() {
         setDisconnectError(`Couldn't disconnect from ${EBAY_NAME}. Give it another try.`);
         return;
       }
+      // Not every server answers with a count yet; none means none left up.
+      const notEnded = "notEnded" in answer && typeof answer.notEnded === "number" ? answer.notEnded : 0;
       focusNext.current = "connect";
       setConfirming(false);
-      setPhase({ kind: "idle" });
+      setPhase({ kind: "disconnected", notEnded });
     } catch {
       setDisconnectError(`Couldn't disconnect from ${EBAY_NAME}. Give it another try.`);
     } finally {
@@ -245,13 +278,18 @@ export default function EbayPanel() {
 }
 
 function PhaseLine({ phase }: { phase: Phase }) {
-  const error = phase.kind === "error";
+  const error = phase.kind === "error" || (phase.kind === "disconnected" && phase.notEnded > 0);
   let text = "";
   if (phase.kind === "completing") text = `Hooking up your ${EBAY_NAME} account…`;
   else if (phase.kind === "leaving") text = `Off to ${EBAY_NAME} to say yes…`;
   else if (phase.kind === "connected") text = `Connected to ${EBAY_NAME} as ${phase.username}. Now pick your shipping below.`;
   else if (phase.kind === "declined") text = `No worries, ${EBAY_NAME} isn't connected. Connect whenever you're ready.`;
-  else if (error) text = phase.error;
+  else if (phase.kind === "disconnected")
+    text =
+      phase.notEnded > 0
+        ? notEndedLine(phase.notEnded)
+        : `Disconnected from ${EBAY_NAME}. Every listing NeonBinder put up there is down.`;
+  else if (phase.kind === "error") text = phase.error;
   return (
     <p
       key={error ? "error" : "ok"}

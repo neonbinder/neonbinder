@@ -7,6 +7,7 @@ import {
   isE2E,
   readE2ETags,
 } from "@/lib/observability/e2e-diagnostics";
+import { scrubOAuthParams } from "@/lib/observability/scrub-oauth-params";
 
 declare global {
   interface Window {
@@ -38,7 +39,13 @@ export function PostHogProvider({ children }: { children: React.ReactNode }) {
     // (NEO-13 switched it off here entirely for Maestro's CDP driver; Maestro
     // is gone since NEO-341.)
     if (isE2E()) {
-      posthog.init(posthogKey, { ...base, ...e2eDiagnosticConfig() });
+      const diagnostic = e2eDiagnosticConfig();
+      const keep = diagnostic.before_send;
+      posthog.init(posthogKey, {
+        ...base,
+        ...diagnostic,
+        before_send: [...(Array.isArray(keep) ? keep : keep ? [keep] : []), scrubOAuthParams],
+      });
       posthog.register(readE2ETags(window.__NB_E2E));
       e2eDiagnostic("e2e_page_start", { path: window.location.pathname });
       return;
@@ -47,6 +54,9 @@ export function PostHogProvider({ children }: { children: React.ReactNode }) {
     posthog.init(posthogKey, {
       ...base,
       capture_exceptions: true,
+      // NEO-415: the eBay return lands on /profile/ebay?code=…&state=…; the
+      // first pageview (and anything else carrying the URL) must not ship them.
+      before_send: scrubOAuthParams,
       debug: import.meta.env.MODE === "development",
     });
   }, []);

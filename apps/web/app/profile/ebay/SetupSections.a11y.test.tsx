@@ -25,7 +25,7 @@ vi.mock("convex/react", () => {
   const bind = (ref: Parameters<typeof getFunctionName>[0]) => {
     const name = getFunctionName(ref);
     if (!bound.has(name)) {
-      const call = (...args: unknown[]) => fn(name)(...args);
+      const call = (...args: unknown[]) => (fn(name) as (...a: unknown[]) => unknown)(...args);
       bound.set(name, Object.assign(call, { withOptimisticUpdate: () => call }));
     }
     return bound.get(name);
