@@ -1,5 +1,5 @@
 // NEO-415 (R1): eBay's consent round trip, both ends, without an eBay account.
-// A collector who presses Connect on Profile -> eBay is sent to eBay's own
+// A collector who presses Connect on Profile -> Credentials -> eBay is sent to eBay's own
 // authorize page (the sandbox's, here), asking for what NeonBinder needs; and a
 // return from eBay that NeonBinder did not start (a code with a state it never
 // issued) is refused in NeonBinder's words, as an alert, with the code and the
@@ -31,7 +31,7 @@ const SANDBOX_AUTHORIZE = /^https:\/\/auth\.sandbox\.ebay\.com\/oauth2\/authoriz
 const SANDBOX_HOST = /^https:\/\/auth\.sandbox\.ebay\.com\//;
 
 test(
-  "Profile -> eBay: Connect leaves for eBay's sandbox consent page, and a return with a state NeonBinder never issued is refused clean",
+  "Profile -> Credentials -> eBay: Connect leaves for eBay's sandbox consent page, and a return with a state NeonBinder never issued is refused clean",
   { tag: ["@profile", "@credentials"] },
   async ({ page, signIn, env }) => {
     const connect = page.getByRole("button", { name: "Connect eBay", exact: true });
@@ -74,7 +74,7 @@ test(
     await page.unroute(SANDBOX_HOST);
     // Back steps to the page Connect was pressed on, not connected, Connect ready again.
     await page.goBack();
-    await expect(page).toHaveURL(/\/profile\/ebay$/);
+    await expect(page).toHaveURL(/\/profile\/credentials\?platform=ebay$/);
     await expect(page.getByRole("heading", { name: "Profile Settings" })).toBeVisible({ timeout: LAUNCH_GATE });
     await expect(connect).toBeVisible();
 
@@ -85,14 +85,14 @@ test(
     const refusal = page.getByRole("alert").filter({ hasText: STALE_HOOKUP });
     await expect(refusal).toBeVisible();
     // The code and the state are gone from the address bar (replaced, so Back cannot land on them).
-    await expect(page).toHaveURL(/\/profile\/ebay$/);
+    await expect(page).toHaveURL(/\/profile\/credentials\?platform=ebay$/);
     // Nothing connected, and the keyboard is on Connect to try again.
     await expect(page.getByText(/^Rockin' on eBay as /)).toBeHidden();
     await expect(page.getByText("Heads up: connecting starts listing", { exact: true })).toBeVisible();
     await expect(connect).toBeFocused();
     await expectAccessible(page, { label: "Profile, eBay return refused" });
     await page.goBack();
-    await expect(page).toHaveURL(/\/profile\/ebay$/);
+    await expect(page).toHaveURL(/\/profile\/credentials\?platform=ebay$/);
     await expect(page).not.toHaveURL(/code=|state=/);
   },
 );

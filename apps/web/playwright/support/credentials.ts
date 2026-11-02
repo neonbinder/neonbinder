@@ -107,15 +107,15 @@ export async function saveBscSignIn(page: Page, opts: { listing?: boolean } = {}
 // NEO-415: eBay. It signs in by eBay's own consent screen, never a password,
 // so a spec cannot connect it through the UI. The seed hop connects the
 // sandbox seller with a refresh token the deployment holds (the same
-// `/testing/seed-credentials` route, `sites=ebay`), and Profile -> eBay
-// (`/profile/ebay`) is where the connection is read, renewed and removed.
+// `/testing/seed-credentials` route, `sites=ebay`), and Profile -> Credentials -> eBay
+// (its eBay tab; `/profile/ebay` forwards there) is where the connection is read, renewed and removed.
 // ---------------------------------------------------------------------------
 
-/** What Profile -> eBay says when the deployment has no eBay wiring. */
+/** What Profile -> Credentials -> eBay says when the deployment has no eBay wiring. */
 export const EBAY_NOT_HOOKED_UP = "eBay isn't hooked up on this NeonBinder yet.";
 
 /**
- * Wait until Profile -> eBay's connection card has settled into ONE of its
+ * Wait until Profile -> Credentials -> eBay's connection card has settled into ONE of its
  * states (every state carries a Connect or a Disconnect button, the not-wired
  * one a disabled Connect), and FAIL LOUDLY, naming the missing setup, when the
  * deployment is not wired to eBay. A spec for eBay is never skipped for want
@@ -140,7 +140,7 @@ export async function expectEbayHookedUp(page: Page): Promise<void> {
 /**
  * Connect the worker's sandbox eBay seller the way the bootstrap saves the
  * other sign-ins: the `/testing/seed-credentials` hop (no password, GUIDE hard
- * rule 7). The page must already be signed in. Lands on Profile -> eBay.
+ * rule 7). The page must already be signed in. Lands on Profile -> Credentials -> eBay.
  *
  * `listing: true` (`listing=on`) is what a collector's own Connect does:
  * connected IS listing. Without it the hop marks the connection "not syncing".
@@ -168,7 +168,7 @@ export async function saveEbayConnection(page: Page, opts: { listing?: boolean; 
 }
 
 /**
- * Disconnect eBay through the product (Profile -> eBay -> Disconnect eBay,
+ * Disconnect eBay through the product (Profile -> Credentials -> eBay -> Disconnect eBay,
  * confirmed): it takes down every listing NeonBinder put up on eBay, drops the
  * queue and the saved setup, and leaves the account not connected. Safe to call
  * when eBay is not connected (it then only opens the page and returns).

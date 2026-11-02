@@ -676,7 +676,7 @@ with Cancel then Close.
 a checklist side.** Pausing it never changes a set-builder sync, so the
 Set Builder's pause strip never names it. Only `collection/inventory-ebay-
 sandbox-listing-1988-topps-base` branches on `env.EBAY_PAUSED`: paused, the seed
-hop skips eBay and Profile -> eBay and Sync status say it is on a break (copy in
+hop skips eBay and Profile -> Credentials -> eBay and Sync status say it is on a break (copy in
 `lib/marketplace/listing-copy.ts`); live, it runs the whole sandbox listing. The
 repository variable's key check in `e2e.yml` accepts `ebay`.
 

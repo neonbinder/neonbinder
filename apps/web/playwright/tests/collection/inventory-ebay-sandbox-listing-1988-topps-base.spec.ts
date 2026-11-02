@@ -8,7 +8,7 @@
 //      the runner's `PAUSED_PLATFORMS` too) takes the paused branch instead:
 //      Profile and Sync status say eBay is on a break and the seed hop
 //      connects nothing. Both branches end in hard asserts (R2).
-//   1. Profile -> eBay, not connected: the consent warning before Connect, and
+//   1. Profile -> Credentials -> eBay, not connected: the consent warning before Connect, and
 //      the sandbox line (the safety assert: nothing here lists for real).
 //   2. They make their box and set every OTHER box they have to in-person
 //      (a connection that lists walks every card in a listed box), then Sync
@@ -183,9 +183,9 @@ test(
     const disconnectButton = page.getByRole("button", { name: "Disconnect eBay", exact: true });
     const connectedLine = page.getByText(/^Rockin' on eBay as .+ since .+\.$/);
     const checklistSteps = page.getByRole("status").filter({ hasText: /to go\. Nothing lists on eBay until they're done\.$/ });
-    const allSet = page.getByRole("heading", { level: 2, name: "You're all set", exact: true });
+    const allSet = page.getByRole("heading", { level: 3, name: "You're all set", exact: true });
 
-    // --- 1. Profile -> eBay, before anything: wired, sandbox, not connected -------------
+    // --- 1. Profile -> Credentials -> eBay, before anything: wired, sandbox, not connected -------------
     await signIn("/profile/ebay");
     await expect(page.getByRole("heading", { name: "Profile Settings" })).toBeVisible({ timeout: LAUNCH_GATE });
     // Fails loudly, naming the setup, when this deployment has no eBay wiring.
@@ -247,7 +247,7 @@ test(
     await expectAccessible(page, { label: "Inventory Sync status, eBay not connected" });
     // The way there is a link; Back steps to Sync status.
     await before.getByRole("link", { name: "Connect eBay on your Profile", exact: true }).click();
-    await expect(page).toHaveURL(/\/profile\/ebay$/);
+    await expect(page).toHaveURL(/\/profile\/credentials\?platform=ebay$/);
     await expect(connectButton).toBeVisible();
     await page.goBack();
     await expect(page).toHaveURL(/[?&]tab=sync/);
@@ -265,7 +265,7 @@ test(
     await expect(
       page.getByText("Nothing goes up until your setup below is done. Then every raw card in a listed box lists at its box count."),
     ).toBeVisible();
-    await expect(page.getByRole("heading", { level: 2, name: "Finish these and your boxes go up", exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { level: 3, name: "Finish these and your boxes go up", exact: true })).toBeVisible();
     await expect(checklistSteps).toHaveText("5 to go. Nothing lists on eBay until they're done.");
     await expect(allSet).toBeHidden();
 
@@ -280,13 +280,13 @@ test(
     await expectAccessible(page, { label: "Inventory Sync status, eBay setup unfinished" });
     const finishSetup = unfinished.getByRole("link", { name: "Finish your eBay setup", exact: true });
     await finishSetup.click();
-    await expect(page).toHaveURL(/\/profile\/ebay$/);
+    await expect(page).toHaveURL(/\/profile\/credentials\?platform=ebay$/);
     await expect(connectedLine).toBeVisible();
     await page.goBack();
     await expect(page).toHaveURL(/[?&]tab=sync/);
     await expect(unfinished.getByText("Setup unfinished", { exact: true })).toBeVisible();
     await finishSetup.click();
-    await expect(page).toHaveURL(/\/profile\/ebay$/);
+    await expect(page).toHaveURL(/\/profile\/credentials\?platform=ebay$/);
 
     // --- 4. Setup: ships from, shipping, payment, returns --------------------------------
     // The seller's policies are read from eBay when the page opens (a live round
@@ -296,10 +296,10 @@ test(
     const underTwenty = page.getByRole("radiogroup", { name: "Cards under $20", exact: true });
     const setMeUp = page.getByRole("button", { name: "Set me up", exact: true });
     await expect(setMeUp.or(underTwenty.getByRole("radio").first()).first()).toBeVisible();
-    await expect(page.getByRole("heading", { level: 2, name: "Ships from", exact: true })).toBeVisible();
-    await expect(page.getByRole("heading", { level: 2, name: "Shipping", exact: true })).toBeVisible();
-    await expect(page.getByRole("heading", { level: 2, name: "Payment and returns", exact: true })).toBeVisible();
-    await expect(page.getByRole("heading", { level: 2, name: "Offers", exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { level: 3, name: "Ships from", exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { level: 3, name: "Shipping", exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { level: 3, name: "Payment and returns", exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { level: 3, name: "Offers", exact: true })).toBeVisible();
     await expect(page.getByRole("checkbox", { name: "Take Best Offers", exact: true })).toBeChecked();
 
     // Ships from comes first: eBay prices each buyer's shipping from its ZIP, so
@@ -373,7 +373,7 @@ test(
     // The last pick finishes the setup: the checklist folds to "You're all set".
     await expect(allSet).toBeVisible();
     await expect(checklistSteps).toBeHidden();
-    await expect(page.getByRole("heading", { level: 2, name: "Finish these and your boxes go up", exact: true })).toBeHidden();
+    await expect(page.getByRole("heading", { level: 3, name: "Finish these and your boxes go up", exact: true })).toBeHidden();
     await expect(page.getByText("Everything in a listed box lists on eBay at your count.", { exact: true })).toBeVisible();
     await expect(
       page.getByText("Every raw card in a listed box goes up at its box count, and sales land in Inventory, under Sales. Disconnecting stops both."),
