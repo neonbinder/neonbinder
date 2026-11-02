@@ -159,7 +159,8 @@ export default function RealAddCardsTab() {
   useWarmPreprocess();
   const side = useSide();
   const kind = side === "inventory" ? "box" : "binder";
-  const homes = homesOnSide(useContainers(), side);
+  const containers = useContainers();
+  const homes = homesOnSide(containers, side);
   const { notify } = usePageApi();
   const [params, setParams] = useSearchParams();
   const runParam = params.get(RUN_PARAM);
@@ -169,6 +170,10 @@ export default function RealAddCardsTab() {
 
   const run = useQuery(api.intakeRuns.getIntakeRun, runId ? { runId } : "skip");
   const recent = useQuery(api.intakeRuns.listMyIntakeRuns, runParam ? "skip" : {});
+  // NEO-416 — loading is not "nothing there": until the homes and the `?run=`
+  // run load, a drop or "Use a scanner" would read as no home ("Make a binder
+  // first") or no run (a second run, and the URL moved off this one).
+  const loading = containers === undefined || (runId !== null && run === undefined);
 
   // Setup before the run exists. Once it does, the run's own fields rule.
   const [homeId, setHomeId] = useState<string>("");
@@ -224,7 +229,7 @@ export default function RealAddCardsTab() {
 
   const onFiles = async (chosen: File[]) => {
     setFiles(chosen);
-    if (chosen.length === 0 || uploading) return;
+    if (chosen.length === 0 || uploading || loading) return;
     if (classifyIntake(chosen).kind === "invalid") return;
     // Held by the listing gate: the reason is beside the zone (it never opens a picker then).
     if (lock.locked) return;
@@ -385,6 +390,7 @@ export default function RealAddCardsTab() {
                   : null
               }
               kind={kind}
+              loading={loading}
               onRunStarted={openRun}
             />
           )}

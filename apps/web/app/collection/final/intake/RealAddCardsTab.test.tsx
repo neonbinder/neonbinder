@@ -14,7 +14,7 @@
 
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
-import { MemoryRouter } from "react-router";
+import { MemoryRouter, useLocation } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PageApiContext, type PageApi } from "../pageApi";
 import { LEAVE_INTAKE_LINE } from "./realLanes";
@@ -45,8 +45,11 @@ const mocks = vi.hoisted(() => {
       gate: undefined as ListingGateView | undefined,
       side: "collection" as "collection" | "inventory",
       homes: [] as { id: string; name: string; kind: "binder" | "box" }[],
+      /** What `useContainers` answers; undefined = the shelf is still loading (NEO-416). */
+      containers: [] as unknown[] | undefined,
     },
-    dropzone: [] as { heldBy?: string; heldLabel?: string }[],
+    upload: vi.fn(),
+    dropzone: [] as { heldBy?: string; heldLabel?: string; onFiles: (files: File[]) => void }[],
     guardOptions: [] as { onStay?: () => boolean }[],
   };
 });
@@ -79,7 +82,7 @@ vi.mock("convex/react", () => ({
 }));
 vi.mock("../data/store", () => ({
   useSide: () => mocks.data.side,
-  useContainers: () => [],
+  useContainers: () => mocks.data.containers,
   homesOnSide: () => mocks.data.homes,
   useDefaultCondition: () => "Near Mint",
   useListingGate: () => mocks.data.gate,
@@ -87,7 +90,7 @@ vi.mock("../data/store", () => ({
 }));
 vi.mock("@/src/hooks/useWarmPreprocess", () => ({ useWarmPreprocess: () => undefined }));
 vi.mock("@/src/hooks/usePlaceholderUpload", () => ({
-  usePlaceholderUpload: () => ({ uploading: false, upload: vi.fn() }),
+  usePlaceholderUpload: () => ({ uploading: false, upload: mocks.upload }),
 }));
 vi.mock("@/src/hooks/useLeaveGuard", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/src/hooks/useLeaveGuard")>();
@@ -102,7 +105,7 @@ vi.mock("@/src/hooks/useLeaveGuard", async (importOriginal) => {
 // The real zone's held state has its own test (dropzone.test.tsx); this one
 // records what the tab hands it and stands in a control that carries it.
 vi.mock("@/app/print/placeholders/dropzone", () => ({
-  Dropzone: (p: { heldBy?: string; heldLabel?: string }) => {
+  Dropzone: (p: { heldBy?: string; heldLabel?: string; onFiles: (files: File[]) => void }) => {
     mocks.dropzone.push(p);
     return (
       <button type="button" aria-disabled={p.heldBy ? "true" : undefined} aria-describedby={p.heldBy}>
@@ -189,6 +192,8 @@ beforeEach(() => {
   mocks.data.gate = undefined;
   mocks.data.side = "collection";
   mocks.data.homes = [];
+  mocks.data.containers = [];
+  mocks.upload.mockReset();
   notify.mockClear();
 });
 afterEach(() => {
@@ -516,5 +521,89 @@ describe("RealAddCardsTab \"See what's syncing\" after Done (NEO-370)", () => {
     await pressDone();
     expect(link()).not.toBeNull();
     await expectAccessibleInBothModes(container, { label: "Intake, after Done", rerender: () => rerender(<Tab runId={runId} />) });
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* NEO-416 — loading is not "nothing there"                            */
+/* ------------------------------------------------------------------ */
+
+describe("RealAddCardsTab while the shelf or the open run loads (NEO-416)", () => {
+  /** The page's search, shown so a test can see whether `?run=` moved. */
+  function Url() {
+    return <output aria-label="Page address">{useLocation().search}</output>;
+  }
+  function Loading({ initial }: { initial: string }) {
+    return (
+      <MemoryRouter initialEntries={[initial]}>
+        <PageApiContext.Provider value={pageApi}>
+          <RealAddCardsTab />
+          <Url />
+        </PageApiContext.Provider>
+      </MemoryRouter>
+    );
+  }
+  const scanner = () => screen.getByRole("button", { name: "Use a scanner" });
+  const drop = async () => {
+    await act(async () => mocks.dropzone.at(-1)!.onFiles([new File(["x"], "front.jpg", { type: "image/jpeg" })]));
+  };
+  const start = () => mocks.mutation("placeholderStream.startPlaceholderStream");
+  const create = () => mocks.mutation("intakeRuns.createIntakeRun");
+  const MAKE_ONE = "Make a binder first: the cards need somewhere to go.";
+
+  beforeEach(() => {
+    // The writes a second run would make, answering as the server would.
+    start().mockResolvedValue({ started: true, jobId: "job-second" });
+    create().mockResolvedValue("intakerunsecond00001");
+    mocks.data.homes = [{ id: "home1", name: "Binder", kind: "binder" }];
+  });
+
+  it("on ?run= with the run still loading, Use a scanner starts no second run and keeps the URL", async () => {
+    const runId = freshRunId();
+    mocks.data.run = undefined;
+    mocks.data.job = undefined;
+    render(<Loading initial={`/collection/final/intake?run=${runId}`} />);
+    fireEvent.click(scanner());
+    await act(async () => {});
+    expect(start()).not.toHaveBeenCalled();
+    expect(create()).not.toHaveBeenCalled();
+    expect(screen.getByRole("status", { name: "Page address" }).textContent).toBe(`?run=${runId}`);
+    expect(scanner().getAttribute("aria-disabled")).toBe("true");
+  });
+
+  it("on ?run= with the run still loading, a photo drop sends nothing into a fresh job", async () => {
+    mocks.data.run = undefined;
+    mocks.data.job = undefined;
+    render(<Loading initial={`/collection/final/intake?run=${freshRunId()}`} />);
+    await drop();
+    expect(mocks.upload).not.toHaveBeenCalled();
+    expect(create()).not.toHaveBeenCalled();
+  });
+
+  it("while the shelf loads, neither Use a scanner nor a drop says to make a binder", async () => {
+    mocks.data.run = null;
+    mocks.data.job = null;
+    mocks.data.containers = undefined;
+    mocks.data.homes = [];
+    render(<Loading initial="/collection/final/intake" />);
+    fireEvent.click(scanner());
+    await drop();
+    expect(screen.queryAllByText(MAKE_ONE)).toEqual([]);
+    expect(start()).not.toHaveBeenCalled();
+    expect(mocks.upload).not.toHaveBeenCalled();
+  });
+
+  it("once the shelf is loaded and empty, both still say to make a binder", async () => {
+    mocks.data.run = null;
+    mocks.data.job = null;
+    mocks.data.homes = [];
+    render(<Loading initial="/collection/final/intake" />);
+    expect(scanner().getAttribute("aria-disabled")).not.toBe("true");
+    fireEvent.click(scanner());
+    expect((await screen.findByRole("alert")).textContent).toBe(MAKE_ONE);
+    await drop();
+    expect(screen.getByText(MAKE_ONE, { selector: '[role="status"]' })).toBeTruthy();
+    expect(start()).not.toHaveBeenCalled();
+    expect(mocks.upload).not.toHaveBeenCalled();
   });
 });

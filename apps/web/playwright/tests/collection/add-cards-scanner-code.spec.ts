@@ -61,13 +61,13 @@ test(
       await expectAccessible(page, { label: "Scanner code shown" });
 
       // The same run after a reload: asking again gives the same code.
-      // A reload is a fresh launch: wait under the launch gate for the open
-      // run itself to be back (its "Done adding photos"), not just the page
-      // heading. Clicked before the run and binder load, Use a scanner has
-      // neither and says "Make a binder first" (CI run 41383411397, phone).
+      // A reload is a fresh launch (R4: gate on the destination's heading under
+      // the launch gate). Use a scanner is aria-disabled while the binders and
+      // the open run load (NEO-416), and click() waits for it to be enabled,
+      // so asking before they are back neither says "Make a binder first" nor
+      // starts a second run: it answers with the open run's code.
       await page.reload();
       await expect(page.getByRole("heading", { level: 1, name: "Collection" })).toBeVisible({ timeout: LAUNCH_GATE });
-      await expect(page.getByRole("button", { name: "Done adding photos" })).toBeVisible({ timeout: LAUNCH_GATE });
       await page.getByRole("button", { name: "Use a scanner" }).click();
       await expect(page.getByRole("group", { name: "Scanner code" }).getByText(code.split("").join(" "))).toHaveCount(1);
 
