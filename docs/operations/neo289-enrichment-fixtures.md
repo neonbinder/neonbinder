@@ -89,7 +89,10 @@ is not part of the key.
   session on this laptop (not a shared *server* — NEO-249/288). **Announce
   before setting it** the same way any dev-affecting env change should be
   announced, so a concurrent session isn't surprised that its Wikidata
-  lookups suddenly answer from a Baseball-only Topps Chrome recording.
+  lookups suddenly answer from the recording. Since NEO-413 that includes
+  every name the recording lacks: it comes back a no-match (error-level
+  `enrichment_fixture_live_refused`) and is never looked up live, so a real
+  lookup on dev is a permanent no-match while the switch is on.
 - **Prod:** never set either var. See §1.
 
 ## 3. Coverage report (informational, non-blocking)

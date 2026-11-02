@@ -200,6 +200,8 @@ interface SparqlBinding {
 }
 
 interface SparqlResults {
+  /** Present on a well-formed reply; read only for its count (NEO-413). */
+  head?: { vars?: string[] };
   results: {
     bindings: Array<Record<string, SparqlBinding>>;
   };
@@ -256,8 +258,19 @@ type SparqlReplyMeta = {
   status: number;
   contentLength: string | null;
   xCache: string | null;
+  /** The edge's single verdict (`hit-front`, `hit-local`, `miss`, `pass`). */
+  xCacheStatus: string | null;
+  serverTiming: string | null;
   age: string | null;
+  date: string | null;
   servedBy: string | null;
+  /** Wikimedia's id for this request: what to hand them to ask what happened. */
+  requestId: string | null;
+  /** Set by `runSparqlWithMeta`: fetch to parsed body, this attempt. */
+  elapsedMs?: number;
+  /** Counts off the parsed body, never the body: rows, and result variables. */
+  rows?: number;
+  vars?: number;
 };
 
 function replyMeta(response: Response): SparqlReplyMeta {
@@ -272,8 +285,12 @@ function replyMeta(response: Response): SparqlReplyMeta {
     status: response.status,
     contentLength: header("content-length"),
     xCache: header("x-cache"),
+    xCacheStatus: header("x-cache-status"),
+    serverTiming: header("server-timing"),
     age: header("age"),
+    date: header("date"),
     servedBy: header("x-served-by"),
+    requestId: header("x-request-id") ?? header("x-wmf-request-id"),
   };
 }
 
@@ -323,6 +340,19 @@ async function sparqlAttempt(url: string): Promise<SparqlAttemptOutcome> {
   }
 }
 
+/**
+ * NEO-413 — the pause before an empty search is asked again. A module
+ * variable so unit tests can set it to 0 (`__setEmptySearchReaskBackoffForTests`):
+ * a real 1.5 s wait in every empty-search test slowed the suite and let a
+ * timed-out test's late re-ask land on the next test's stubs.
+ */
+let emptySearchReaskBackoffMs = WIKIDATA_RETRY_BACKOFF_MS;
+
+/** Test seam only. Pass `undefined` to restore the production pause. */
+export function __setEmptySearchReaskBackoffForTests(ms: number | undefined): void {
+  emptySearchReaskBackoffMs = ms ?? WIKIDATA_RETRY_BACKOFF_MS;
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -368,7 +398,15 @@ async function runSparqlWithMeta(
   for (let attempt = 1; ; attempt++) {
     const startedAt = Date.now();
     const outcome = await sparqlAttempt(url);
-    if (outcome.ok) return { results: outcome.results, meta: outcome.meta };
+    if (outcome.ok) {
+      const meta: SparqlReplyMeta = {
+        ...outcome.meta,
+        elapsedMs: Date.now() - startedAt,
+        rows: outcome.results.results?.bindings?.length ?? 0,
+        vars: outcome.results.head?.vars?.length ?? 0,
+      };
+      return { results: outcome.results, meta };
+    }
     const fast = Date.now() - startedAt < WIKIDATA_FAST_FAILURE_MS;
     if (outcome.retryable && fast && attempt < WIKIDATA_MAX_ATTEMPTS) {
       // Structured, and deliberately WITHOUT the query: the existing lines
@@ -835,13 +873,23 @@ export function membershipIsOutsidePlayerSport(
  * reply had become a permanent wrong answer.
  *
  * What: log what the empty reply looked like (`wikidata_search_empty`: the
- * kind, the status, the cache and backend headers; never the name or the
- * body), pause `WIKIDATA_RETRY_BACKOFF_MS`, and ask again. The second request
- * carries a trailing SPARQL comment so its URL differs: the endpoint caches
- * GET answers, and an identical URL could be served the same cached empty
- * reply. Whatever the second reply says is the answer; a second empty is a
- * genuine no-match. A transport failure on the second request trips the
- * trace exactly as `runSparql` always has, so the pool's ladder handles it.
+ * kind, the status, the cache verdict and age, the backend, Wikimedia's
+ * request id, the elapsed ms, and the row and variable counts; never the
+ * name, the query or the body), pause `WIKIDATA_RETRY_BACKOFF_MS`, and ask
+ * again. A fast reply with an `age` is a cached answer; a slow one is
+ * typically the query's MWAPI sub-call failing inside the endpoint, which
+ * also comes back as a 200 with no rows. The second request carries a
+ * trailing SPARQL comment with a per-call nonce so its URL is new: the
+ * endpoint caches GET answers by URL. Whatever the second reply says is the
+ * answer: `wikidata_search_empty_recovered` (warn: the first empty was
+ * wrong) or `wikidata_search_empty_confirmed` (a genuine no-match). A
+ * transport failure on the second request trips the trace exactly as
+ * `runSparql` always has, so the pool's ladder handles it, and logs
+ * `wikidata_search_empty_reask_failed`.
+ *
+ * Cost: a genuine no-match now makes two requests and waits 1.5 s, inside
+ * the pool slot it already holds. Accepted with the plan (Jason, 2026-11-01:
+ * "Yes to empty reply as well").
  *
  * Why in-call and not the pool's ladder: the ladder is for "Wikidata could
  * not be reached" and ends a never-recovering row in an error state. A
@@ -857,21 +905,30 @@ async function runEntitySearch(
 ): Promise<SparqlResults | null> {
   const first = await runSparqlWithMeta(query, trace);
   if (!first || first.results.results.bindings.length > 0) return first?.results ?? null;
-  console.warn(JSON.stringify({ msg: "wikidata_search_empty", kind, attempt: 1, ...first.meta }));
-  await sleep(WIKIDATA_RETRY_BACKOFF_MS);
-  const second = await runSparqlWithMeta(`${query}\n# re-ask after an empty reply (NEO-413)\n`, trace);
-  if (second) {
-    const rows = second.results.results.bindings.length;
-    console.warn(
-      JSON.stringify({
-        msg: rows > 0 ? "wikidata_search_empty_recovered" : "wikidata_search_empty",
-        kind,
-        attempt: 2,
-        ...second.meta,
-      }),
-    );
+  // A genuine no-match is common, so the empty and confirmed lines are LOG
+  // level; only a recovery (proof the first empty was wrong) warns.
+  console.log(JSON.stringify({ msg: "wikidata_search_empty", kind, attempt: 1, ...first.meta }));
+  await sleep(emptySearchReaskBackoffMs);
+  // The nonce keeps the re-ask's URL unique per call, so it cannot be served
+  // a cached answer to an earlier re-ask either.
+  const second = await runSparqlWithMeta(
+    `${query}\n# re-ask after an empty reply (NEO-413) ${Date.now().toString(36)}\n`,
+    trace,
+  );
+  if (!second) {
+    console.warn(JSON.stringify({ msg: "wikidata_search_empty_reask_failed", kind }));
+    return null;
   }
-  return second?.results ?? null;
+  const recovered = second.results.results.bindings.length > 0;
+  const line = JSON.stringify({
+    msg: recovered ? "wikidata_search_empty_recovered" : "wikidata_search_empty_confirmed",
+    kind,
+    attempt: 2,
+    ...second.meta,
+  });
+  if (recovered) console.warn(line);
+  else console.log(line);
+  return second.results;
 }
 
 /**

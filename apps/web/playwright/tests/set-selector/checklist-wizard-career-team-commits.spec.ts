@@ -48,7 +48,9 @@ test(
     await wizard.getByRole("spinbutton", { name: /^To year/ }).fill("2005");
     await wizard.getByRole("button", { name: "Add career team" }).click();
 
-    // The new name is looked up (live), then raised as its own New Team step.
+    // The new name is looked up (a recorded no-match since NEO-413: no live
+    // request), then raised as its own New Team step. The ceiling stays the
+    // walk util's lookup ceiling: the lookup still waits in the shared pool.
     const lookingUp = wizard.getByText(/still looking up/);
     const newTeam = wizard.getByRole("heading", { name: `New Team: ${team}` });
     await expect(newTeam.or(lookingUp).first()).toBeVisible();

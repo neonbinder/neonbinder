@@ -390,7 +390,9 @@ export type FixtureRead<K extends FixtureKind> =
  *   recorded `null` → miss — a name search that found nothing says
  *   nothing about an id-path lookup, and a staged career team must never be
  *   handed a no-match its id would have answered. (Coordinator decision,
- *   2026-09-20.) An entry with a result but no `wikidataId` (an ESPN-only
+ *   2026-09-20.) That holds where the switch is off. Under the recording
+ *   (NEO-413) such a miss is refused rather than sent live, so record the
+ *   team with its id if a spec depends on the answer. An entry with a result but no `wikidataId` (an ESPN-only
  *   team) is honoured: there is no id to disagree with.
  *
  * Logs one structured `hit`/`miss` line per call when the switch is on;
@@ -496,6 +498,9 @@ export function liveLookupAllowed(
       kind,
       name,
       sportQid: sportQid ?? null,
+      // A sport with no Wikidata QID is a different fix (configure the sport)
+      // from a name the recording lacks (record it).
+      reason: sportQid === undefined ? "no_sport_qid" : "not_recorded",
       detail: "not in the recording; answered as no-match without a live request (NEO-413)",
     }),
   );

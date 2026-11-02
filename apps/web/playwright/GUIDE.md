@@ -379,9 +379,12 @@ Idioms:
   "Base SL BSC" to a screen reader; pick rows by their own visible text with
   `columnOption()` (`.filter({ has: getByText(name, { exact: true }) })`).
 - **Fresh-only specs** (wikidata live proof, the committing wizard flows, the
-  specs that take a name from `support/recorded-names.ts`) pass
+  specs that persist a name from `support/recorded-names.ts`) pass
   once per seed. A second local run fails at its "nothing exists yet"
-  precondition; that is correct, not flaky. Re-seed.
+  precondition; that is correct, not flaky. Re-seed. Dev is never re-seeded
+  for you, so on dev each of these specs runs ONCE per worker index (8-11
+  are dev's): after that, run it against the PR's preview instead, or
+  announce a dev reset first.
 
 ## Desktop and mobile
 

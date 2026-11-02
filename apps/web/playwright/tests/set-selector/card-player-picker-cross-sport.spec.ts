@@ -73,10 +73,15 @@ test(
     await expect(page.getByText(/^[\d,]+ players?$/)).toBeVisible();
     await page.getByRole("textbox", { name: "Filter players" }).fill(PLAYER);
     await expect(page.getByText(/^[\d,+]+ match(es)?$/).first()).toBeVisible();
+    // His row, and only his: "<name> Football ...". NEO-413: the name is real
+    // and two words, and the filter's search matches ANY word, so Baseball's
+    // namesakes still list under Baseball; what must go is HIS row (1 -> 0).
+    const escaped = PLAYER.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const hisRow = page.getByRole("main").getByRole("button", { name: new RegExp(`^${escaped}\\s*Football`) });
+    await expect(hisRow).toHaveCount(1);
     const sport = page.getByRole("combobox", { name: "Sport" });
     await sport.selectOption("Baseball");
-    await expect(page.getByText("No players match that filter.")).toBeVisible();
-    await expect(page.getByText("0 matches", { exact: true })).toBeVisible();
+    await expect(hisRow).toHaveCount(0);
     await sport.selectOption("Football");
     const row = page.getByRole("button", { name: new RegExp(PLAYER) });
     await row.first().click();

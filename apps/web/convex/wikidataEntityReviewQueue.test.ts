@@ -32,7 +32,7 @@
  */
 
 import { convexTest } from "convex-test";
-import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi, beforeAll, afterAll } from "vitest";
 import { internal } from "./_generated/api";
 import schema from "./schema";
 import { normalizeTeamName } from "./teams";
@@ -41,12 +41,18 @@ import {
   lookupPlayerEnrichment,
   lookupTeamEnrichment,
   membershipIsOutsidePlayerSport,
+  newLookupTrace,
   WIKIDATA_FETCH_TIMEOUT_MS,
 } from "./adapters/wikidata";
 import { isNonRetryableError } from "@convex-dev/workpool";
 // NEO-236: the ESPN team list is memoised per league path for the life of the
 // module, and the knownQid cases below stub a different body for "baseball/mlb".
 import { __resetEspnTeamListCache } from "./adapters/espn";
+
+// NEO-413: no real 1.5 s pause before an empty search is re-asked.
+import { __setEmptySearchReaskBackoffForTests } from "./adapters/wikidata";
+beforeAll(() => __setEmptySearchReaskBackoffForTests(0));
+afterAll(() => __setEmptySearchReaskBackoffForTests(undefined));
 
 // ---------------------------------------------------------------------------
 // Fixture builders — mirrors convex/wikidataEnrichTeam.test.ts's binding
@@ -285,12 +291,19 @@ describe("lookupPlayerEnrichment", () => {
 
   // NEO-413: one empty search reply is not believed until it is asked again.
   const BASEBALL_CTX = { label: "Baseball", wikidata: { sportQid: "Q5369", hallOfFameQid: "Q1194380" }, espn: { path: "baseball/mlb", leagueName: "Major League Baseball" } };
-  const searchEmptyLines = (warn: { mock: { calls: unknown[][] } }) =>
-    warn.mock.calls
-      .map((call) => call[0])
-      .filter((first): first is string => typeof first === "string" && first.startsWith("{"))
-      .map((first) => JSON.parse(first) as Record<string, unknown>)
-      .filter((line) => String(line.msg).startsWith("wikidata_search_empty"));
+  // The empty and confirmed lines are console.log; a recovery and a failed
+  // re-ask are console.warn. One spy per level, merged in emission order.
+  const spyBothLevels = () => {
+    const lines: Array<Record<string, unknown>> = [];
+    const capture = (level: string) => (first?: unknown) => {
+      if (typeof first !== "string" || !first.startsWith("{")) return;
+      const line = JSON.parse(first) as Record<string, unknown>;
+      if (String(line.msg).startsWith("wikidata_search_empty")) lines.push({ level, ...line });
+    };
+    vi.spyOn(console, "log").mockImplementation(capture("log"));
+    vi.spyOn(console, "warn").mockImplementation(capture("warn"));
+    return lines;
+  };
 
   test("an empty search reply is asked once more, on a different URL, and a match on the re-ask is used", async () => {
     const urls: string[] = [];
@@ -306,7 +319,7 @@ describe("lookupPlayerEnrichment", () => {
         return jsonResponse(makePlayerSearchBody(searches === 1 ? null : "Q1000"));
       }) as unknown as typeof fetch,
     );
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const lines = spyBothLevels();
 
     const result = await lookupPlayerEnrichment("Recovered Prospect", BASEBALL_CTX);
 
@@ -317,11 +330,11 @@ describe("lookupPlayerEnrichment", () => {
     expect(urls[0]).not.toContain("re-ask after an empty reply");
     expect(urls[1]).toContain("# re-ask after an empty reply (NEO-413)");
     expect(urls[1]).not.toBe(urls[0]);
-    const lines = searchEmptyLines(warn);
-    expect(lines.map((l) => [l.msg, l.kind, l.attempt, l.status])).toEqual([
-      ["wikidata_search_empty", "player", 1, 200],
-      ["wikidata_search_empty_recovered", "player", 2, 200],
+    expect(lines.map((l) => [l.level, l.msg, l.kind, l.attempt, l.status, l.rows])).toEqual([
+      ["log", "wikidata_search_empty", "player", 1, 200, 0],
+      ["warn", "wikidata_search_empty_recovered", "player", 2, 200, 1],
     ]);
+    expect(typeof lines[0].elapsedMs).toBe("number");
     // Reply metadata only: never the name or the query.
     expect(JSON.stringify(lines)).not.toContain("Recovered Prospect");
     expect(JSON.stringify(lines)).not.toContain("SELECT");
@@ -336,14 +349,38 @@ describe("lookupPlayerEnrichment", () => {
         return jsonResponse(makePlayerSearchBody(null));
       }) as unknown as typeof fetch,
     );
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const lines = spyBothLevels();
 
     await expect(lookupPlayerEnrichment("Nobody At All", BASEBALL_CTX)).resolves.toBeNull();
 
     expect(calls).toBe(2);
-    expect(searchEmptyLines(warn).map((l) => [l.msg, l.attempt])).toEqual([
-      ["wikidata_search_empty", 1],
-      ["wikidata_search_empty", 2],
+    expect(lines.map((l) => [l.level, l.msg, l.attempt])).toEqual([
+      ["log", "wikidata_search_empty", 1],
+      ["log", "wikidata_search_empty_confirmed", 2],
+    ]);
+  });
+
+  test("a re-ask that cannot reach Wikidata says so, and answers null like any transport failure", async () => {
+    let calls = 0;
+    vi.stubGlobal(
+      "fetch",
+      (async () => {
+        calls += 1;
+        if (calls === 1) return jsonResponse(makePlayerSearchBody(null));
+        return new Response("unavailable", { status: 503 });
+      }) as unknown as typeof fetch,
+    );
+    const lines = spyBothLevels();
+
+    const trace = newLookupTrace();
+    await expect(lookupPlayerEnrichment("Nobody Reachable", BASEBALL_CTX, trace)).resolves.toBeNull();
+    // The failed re-ask trips the trace, so the work item retries on the
+    // pool's ladder rather than recording a no-match.
+    expect(trace.unavailable).toBe(true);
+
+    expect(lines.map((l) => [l.level, l.msg])).toEqual([
+      ["log", "wikidata_search_empty"],
+      ["warn", "wikidata_search_empty_reask_failed"],
     ]);
   });
 
@@ -358,13 +395,13 @@ describe("lookupPlayerEnrichment", () => {
         return stub(url);
       }) as unknown as typeof fetch,
     );
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const lines = spyBothLevels();
 
     const result = await lookupPlayerEnrichment("Derek Jeter", BASEBALL_CTX);
 
     expect(result?.wikidataId).toBe("Q1000");
     expect(searches).toBe(1);
-    expect(searchEmptyLines(warn)).toEqual([]);
+    expect(lines).toEqual([]);
   });
 
   test("returns null for a sport with no sportConfig.wikidata mapping, without calling fetch at all", async () => {

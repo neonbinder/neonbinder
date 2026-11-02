@@ -697,9 +697,10 @@ jobs:
       # AND tolerating a missing function are both deliberate: this can run
       # before the Convex-side change (enrichmentFixtures.ts) has landed on
       # this preview, and coverage drifting (a fixture set going stale) is an
-      # operator signal, not a CI failure — the seed itself already fell back
-      # to live lookups for anything uncovered, so the suite is correct either
-      # way. The coverage action is read-only and internal (reachable only
+      # operator signal, not a CI failure. Since NEO-413 an uncovered name is
+      # NOT looked up live: it is answered no-match (logged as
+      # `enrichment_fixture_live_refused`), so a gap here means a bare seed row,
+      # not just a slower seed. The coverage action is read-only and internal (reachable only
       # with the deploy key), so it takes just the `confirm` literal — NOT the
       # `ALLOW_ENRICHMENT_FIXTURE_CAPTURE` deployment env var that arms the
       # capture action: a shell env var on `convex run` never reaches the
