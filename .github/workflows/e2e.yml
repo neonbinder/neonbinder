@@ -424,9 +424,9 @@ jobs:
               [ -z "$_key" ] && continue
               _key_lower="$(echo "$_key" | tr '[:upper:]' '[:lower:]')"
               case "$_key_lower" in
-                buysportscards|sportlots) ;;
+                buysportscards|sportlots|ebay) ;;
                 *)
-                  echo "::error::vars.NEONBINDER_PAUSED_PLATFORMS contains an unknown platform key '$_key' (from '$PAUSED_PLATFORMS'). Valid keys: buysportscards, sportlots."
+                  echo "::error::vars.NEONBINDER_PAUSED_PLATFORMS contains an unknown platform key '$_key' (from '$PAUSED_PLATFORMS'). Valid keys: buysportscards, sportlots, ebay."
                   exit 1
                   ;;
               esac
@@ -1127,9 +1127,9 @@ jobs:
               [ -z "$_key" ] && continue
               _key_lower="$(echo "$_key" | tr '[:upper:]' '[:lower:]')"
               case "$_key_lower" in
-                buysportscards|sportlots) ;;
+                buysportscards|sportlots|ebay) ;;
                 *)
-                  echo "::error::vars.NEONBINDER_PAUSED_PLATFORMS contains an unknown platform key '$_key' (from '$PAUSED_PLATFORMS'). Valid keys: buysportscards, sportlots."
+                  echo "::error::vars.NEONBINDER_PAUSED_PLATFORMS contains an unknown platform key '$_key' (from '$PAUSED_PLATFORMS'). Valid keys: buysportscards, sportlots, ebay."
                   exit 1
                   ;;
               esac

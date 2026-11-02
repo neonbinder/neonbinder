@@ -243,3 +243,123 @@ export async function openListFilters(page: Page, isMobile: boolean): Promise<vo
   await button.click();
   await expect(button).toHaveAttribute("aria-expanded", "true");
 }
+
+/**
+ * On My Boxes (`/inventory?tab=boxes`): every box the worker has EXCEPT
+ * `keep` goes in-person, BEFORE a marketplace connection starts listing
+ * (saving one walks every card in a listed box, so stock an earlier spec left
+ * on this worker must not reach a real marketplace). The boxes on the shelf
+ * and Unsorted in "Special places" are each opened and their "Listed on
+ * marketplaces" turned off (a box starts on), and each ends unchecked,
+ * asserted. They are left in-person afterwards: putting them back would queue
+ * their cards. The Up for Trade pile is not a box that lists. Used by the
+ * listing specs (BuySportsCards, eBay); one implementation.
+ */
+export async function putOtherBoxesInPerson(page: Page, keep: string): Promise<void> {
+  const boxName = keep;
+  const boxes = page.getByRole("list", { name: "Your boxes" });
+  const said = (text: string | RegExp) => page.getByRole("status").filter({ hasText: text });
+  // Every other box the worker has: the boxes on the shelf and Unsorted in
+  // "Special places" (the Up for Trade pile is not a box that lists). Each is
+  // opened and its "Listed on marketplaces" turned off (a box starts on), and
+  // each ends unchecked, asserted. They are left in-person afterwards:
+  // putting them back would queue their cards.
+  const special = page.getByRole("list", { name: "Special places" });
+  const spineRe = /^(.+), box, (?!.*up for trade)/;
+  const spines = boxes.getByRole("button", { name: spineRe }).or(special.getByRole("button", { name: spineRe }));
+  // The shelf has settled when Unsorted is drawn and no box is still "counting"
+  // (its spine reads ", box, counting" until its count is known).
+  await expect(special.getByRole("button", { name: /^Unsorted, box, / })).toBeVisible();
+  await expect(
+    boxes.getByRole("button", { name: /, box, counting$/ }).or(special.getByRole("button", { name: /, box, counting$/ })),
+  ).toHaveCount(0);
+  const boxNameOf = (spineName: string) => spineRe.exec(spineName)![1];
+  const readBoxes = async () => {
+    const names: string[] = [];
+    for (let i = 0, n = await spines.count(); i < n; i++) names.push(await nameOf(spines.nth(i)));
+    return names;
+  };
+  const others = (await readBoxes()).filter((name) => boxNameOf(name) !== boxName);
+  // Unsorted is never skipped: it is the box most likely to hold earlier stock.
+  expect(others.map(boxNameOf), "the shelf names Unsorted").toContain("Unsorted");
+  for (const spineName of others) {
+    const box = boxNameOf(spineName);
+    await boxes.getByRole("button", { name: spineName, exact: true }).or(special.getByRole("button", { name: spineName, exact: true })).click();
+    await expect(page).toHaveURL(/[?&]b=[^&]+/);
+    const toggle = page.getByRole("checkbox", { name: "Listed on marketplaces", exact: true });
+    await expect(toggle).toBeVisible();
+    if (await toggle.isChecked()) {
+      await toggle.uncheck();
+      await expect(said(`${box} is in-person only now.`)).toBeVisible();
+    }
+    await expect(toggle).not.toBeChecked();
+    await backToBoxes(page);
+  }
+  // Nothing arrived on the shelf while they were handled: a late box fails here, never skipped.
+  const handled = new Set([boxName, ...others.map(boxNameOf)]);
+  await expect
+    .poll(async () => (await readBoxes()).map(boxNameOf).filter((name) => !handled.has(name)))
+    .toEqual([]);
+}
+
+/**
+ * On the open checklist `title`: clear its common price (read as `was`
+ * first). The listing specs' tidy-up and failure hooks use it, so a rerun
+ * starts without one and sees the listing gate's hold.
+ */
+export async function clearChecklistCommonPrice(page: Page, checklist: Locator, title: string, was: string): Promise<void> {
+  await checklist.getByRole("button", { name: `Change the common price for ${title}`, exact: true }).click();
+  const priceField = checklist.getByRole("textbox", { name: "Common price", exact: true });
+  await expect(priceField).toHaveValue(was);
+  await priceField.fill("");
+  await page.keyboard.press("Enter");
+  await expect(page.getByRole("status").filter({ hasText: `Cleared the common price for ${title}` })).toBeVisible();
+}
+
+/**
+ * On the Inventory Checklists tab with the Adding-to box picked: set the
+ * `cards`' quantities in `box` to 0 (only those not already 0) on the Base
+ * checklist of `target`. Returns the checklist. Idempotent, for the listing
+ * specs' tidy-up and failure hooks.
+ *
+ * `arrival` says how the tab was reached. The Checklists tab link reopens the
+ * checklist last open on the same page ("Checklists opens where you left it"),
+ * so after a tab change within the page it is already open ("reopened"); a
+ * fresh page load starts at the cascade ("fresh") and drills.
+ */
+export async function emptyBoxCards(
+  page: Page,
+  target: CollectorSet,
+  box: string,
+  cards: readonly string[],
+  isMobile: boolean,
+  arrival: "fresh" | "reopened",
+): Promise<Locator> {
+  const title = baseChecklistTitle(target);
+  const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const adding = page.getByRole("combobox", { name: "Adding to" });
+  await expect(adding).toBeVisible();
+  let checklist: Locator;
+  if (arrival === "fresh") {
+    checklist = await drillToCollectorBase(page, target);
+  } else {
+    checklist = page.getByRole("region", { name: title });
+    await expect(checklist.getByRole("heading", { level: 3, name: title })).toBeVisible();
+  }
+  await adding.selectOption({ label: box });
+  const boxList = checklist.getByRole("list", { name: `Quantities in ${box}` });
+  for (const short of cards) {
+    const field = quantityField(boxList, short, box);
+    await expect(field).toBeVisible();
+    if ((await field.inputValue()) !== "0") {
+      await field.fill("0");
+      // The key that leaves a quantity field: Tab on a desktop, Enter on a phone.
+      await page.keyboard.press(isMobile ? "Enter" : "Tab");
+      await expect(field).toHaveValue("0");
+      await expect(
+        page.getByRole("status").filter({ hasText: new RegExp(`^Pulled \\d+ of ${escape(short)} from `) }),
+      ).toBeVisible();
+    }
+  }
+  return checklist;
+}

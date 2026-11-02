@@ -224,7 +224,7 @@ test("<title states the feature>", { tag: ["@set-selector"] }, async ({ page, si
 
 - `support/fixtures.ts`: `test` with `env` (`WORKER_INDEX`, `WORKER_KEY`,
   `ATTEMPT_ID`, `ATTEMPT_TOKEN`, `TEST_USERNAME`, `PAUSED_PLATFORMS`,
-  `SL_PAUSED`) and `signIn(redirect, { account? })`, which opens
+  `SL_PAUSED`, `EBAY_PAUSED`) and `signIn(redirect, { account? })`, which opens
   `/testing/sign-in?redirect=<redirect>[&account=<a>]&worker=<n>` (a nested
   `?` stays literal and a nested `&` is written `%26`). `LAUNCH_GATE` (45 s).
   `expectAccessible(page, { within?, label? })`, the axe check, run in light
@@ -235,7 +235,10 @@ test("<title states the feature>", { tag: ["@set-selector"] }, async ({ page, si
 - `support/env.ts`: how `env` is built (`makeEnv`, `isSlPaused`); import types
   from here, do not re-derive.
 - `support/credentials.ts`: `loginToBsc(page)`, `loginToSportLots(page, env)`,
-  `LIVE_LOGIN`.
+  `LIVE_LOGIN`, the BSC sign-in seed pair (`removeBscSignIn`,
+  `saveBscSignIn`) and eBay's (`saveEbayConnection`, `removeEbayConnection`,
+  `expectEbayHookedUp`, which FAILS a spec loudly, naming the missing setup,
+  when the deployment has no eBay wiring; NEO-415).
 - `support/set-builder.ts`: the cascade. `setBuilderReady`, `columnHeading`,
   `columnSearch`, `columnOption`, `columnSelection`, `pick`,
   `addCustomEntry`, `addCustomManufacturer`, `selectOrCreate`,
@@ -570,6 +573,7 @@ seed:
 | *(omitted)* | BSC + SportLots credentials (+ the EasyPost key, when configured) |
 | `sportlots` / `buysportscards` | just that platform's credentials (credential-gate fixtures) |
 | `label-scans` | one `labelPurchases` row plus a four-scan tracker snapshot, for `labels/scan-visibility` |
+| `ebay` | connects the sandbox seller by refresh token (`DEV_EBAY_REFRESH_TOKEN` on the deployment; no password, no browser login) and, with `listing=on`, starts listing. SKIPPED, not failed, when eBay is unwired, the token is unset or eBay is paused: the eBay listing spec then fails loudly on its next assert, by name (NEO-415) |
 
 A fixture selector is handled before the credential loop, so asking for it
 alone performs no marketplace login. The handler (`convex/testing.ts`) writes
@@ -592,8 +596,8 @@ other.
 ## Operator switches (`PAUSED_PLATFORMS`, NEO-287)
 
 One operator switch changes what the suite can prove: the Convex env var
-`NEONBINDER_PAUSED_PLATFORMS` (comma-separated credential site keys, today
-`sportlots`) stops all contact with that marketplace (no sign-ins, session
+`NEONBINDER_PAUSED_PLATFORMS` (comma-separated credential site keys:
+`buysportscards`, `sportlots`, `ebay`; today `sportlots`) stops all contact with that marketplace (no sign-ins, session
 checks, selector or checklist fetches on that side) while every link and
 stored session stays put. Specs are **never skipped** under it: every spec
 that needs the paused marketplace has a paused branch asserting the paused
@@ -615,7 +619,8 @@ gh run view <run-id> --log | grep -m1 "PAUSED_PLATFORMS: "
 An empty value after the colon means live. A failure diagnosed on the paused
 branch of a live run (or the reverse) is a misread, not a finding.
 
-**How a spec knows.** `env.SL_PAUSED` is derived from `PAUSED_PLATFORMS` in
+**How a spec knows.** `env.SL_PAUSED` (and, for the eBay listing spec,
+`env.EBAY_PAUSED`) is derived from `PAUSED_PLATFORMS` in
 the process environment (`support/env.ts`, unset reads as not paused). CI
 (`e2e.yml`) exports the shell variable from the repository variable of the
 same name and writes the same value onto the PR's Convex preview before
@@ -663,6 +668,21 @@ skipped: no SportLots ids on this path." (a notice, not an error; the seed's
 strict asserts key on failure copy), and a BSC-only Base still reads as
 unmapped, so its picker re-opens on every visit and read-only drills leave it
 with Cancel then Close.
+
+**eBay is a pausable site too (NEO-415), but it is a listing destination, not
+a checklist side.** Pausing it never changes a set-builder sync, so the
+Set Builder's pause strip never names it. Only `collection/inventory-ebay-
+sandbox-listing-1988-topps-base` branches on `env.EBAY_PAUSED`: paused, the seed
+hop skips eBay and Profile -> eBay and Sync status say it is on a break (copy in
+`lib/marketplace/listing-copy.ts`); live, it runs the whole sandbox listing. The
+repository variable's key check in `e2e.yml` accepts `ebay`.
+
+**A marketplace credential that is simply missing is not a pause.** There is no
+sanctioned skip: a spec that needs eBay's wiring (`EBAY_CLIENT_ID`,
+`EBAY_RU_NAME`, `EBAY_ENVIRONMENT=sandbox`, `DEV_EBAY_REFRESH_TOKEN`) goes RED on
+a deployment without it, with a message naming what to set
+(`expectEbayHookedUp`, `saveEbayConnection`). Hard rule 1 and R2: a green run
+must mean the feature was exercised.
 
 ## SportLots never rejects a password in E2E (NEO-288)
 

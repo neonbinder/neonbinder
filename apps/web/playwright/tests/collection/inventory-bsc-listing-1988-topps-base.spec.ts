@@ -66,10 +66,13 @@ import {
   cardsWord,
   createBox,
   deleteOpenBox,
+  clearChecklistCommonPrice,
   drillToCollectorBase,
+  emptyBoxCards,
   goViaShell,
   inventoryTabs,
   nameOf,
+  putOtherBoxesInPerson,
   quantityField,
 } from "../../support/collection";
 import { removeBscSignIn, saveBscSignIn } from "../../support/credentials";
@@ -97,11 +100,16 @@ const written: { box?: string; cards?: [string, string]; started?: boolean; remo
 const leaveKey = (isMobile: boolean) => (isMobile ? "Enter" : "Tab");
 
 /** What the checklist's inert Sync says when no marketplace sign-in is syncing. */
-const NOT_LISTING_LINE = "Nothing to sync to yet. Save a marketplace sign-in on your Profile.";
+const NOT_LISTING_LINE = "Nothing to sync to yet. Connect a marketplace on your Profile.";
 /** The consent warning beside Connect on the sign-in form (lib/marketplace/listing-copy.ts). */
 const CONSENT_HEADING = "Heads up: connecting starts listing";
 
-/** The Sync status screen's BuySportsCards section and this set's "Last sync by set" row, in `scope` (the page, or an admin's collector). */
+/**
+ * The Sync status screen's BuySportsCards section and this set's "Last sync by
+ * set" row, in `scope` (the page, or an admin's collector). Since NEO-415 the
+ * screen has an eBay section too, saying the same things ("Nothing syncing
+ * right now."), so every read of it goes through this section.
+ */
 function syncStatus(scope: Page | Locator) {
   const platform = scope.getByRole("region", { name: BSC, exact: true });
   const row = platform
@@ -144,57 +152,12 @@ async function stopListing(page: Page, alreadyRemoved = false): Promise<void> {
  * the tidy-up and by the failure hook, so a rerun starts without one and sees
  * the listing gate's hold.
  */
-async function clearCommonPrice(page: Page, checklist: Locator, was: string): Promise<void> {
-  await checklist.getByRole("button", { name: `Change the common price for ${TITLE}`, exact: true }).click();
-  const priceField = checklist.getByRole("textbox", { name: "Common price", exact: true });
-  await expect(priceField).toHaveValue(was);
-  await priceField.fill("");
-  await page.keyboard.press("Enter");
-  await expect(page.getByRole("status").filter({ hasText: `Cleared the common price for ${TITLE}` })).toBeVisible();
-}
+const clearCommonPrice = (page: Page, checklist: Locator, was: string) =>
+  clearChecklistCommonPrice(page, checklist, TITLE, was);
 
-/**
- * On the Inventory Checklists tab with the Adding-to box picked: set both cards'
- * quantities in `box` to 0 (only those not already 0). Returns the checklist.
- * Idempotent, for the tidy-up and for the failure hook.
- *
- * `arrival` says how the tab was reached. The Checklists tab link reopens the
- * checklist last open on the same page ("Checklists opens where you left it"),
- * so after a tab change within the page it is already open ("reopened"); a
- * fresh page load starts at the cascade ("fresh") and drills.
- */
-async function emptyBox(
-  page: Page,
-  box: string,
-  cards: readonly string[],
-  isMobile: boolean,
-  arrival: "fresh" | "reopened",
-): Promise<Locator> {
-  const adding = page.getByRole("combobox", { name: "Adding to" });
-  await expect(adding).toBeVisible();
-  let checklist: Locator;
-  if (arrival === "fresh") {
-    checklist = await drillToCollectorBase(page, TOPPS_1988);
-  } else {
-    checklist = page.getByRole("region", { name: TITLE });
-    await expect(checklist.getByRole("heading", { level: 3, name: TITLE })).toBeVisible();
-  }
-  await adding.selectOption({ label: box });
-  const boxList = checklist.getByRole("list", { name: `Quantities in ${box}` });
-  for (const short of cards) {
-    const field = quantityField(boxList, short, box);
-    await expect(field).toBeVisible();
-    if ((await field.inputValue()) !== "0") {
-      await field.fill("0");
-      await page.keyboard.press(leaveKey(isMobile));
-      await expect(field).toHaveValue("0");
-      await expect(
-        page.getByRole("status").filter({ hasText: new RegExp(`^Pulled \\d+ of ${escapeRegExp(short)} from `) }),
-      ).toBeVisible();
-    }
-  }
-  return checklist;
-}
+/** On the Inventory Checklists tab: set both cards' quantities in `box` to 0 (see `emptyBoxCards`). */
+const emptyBox = (page: Page, box: string, cards: readonly string[], isMobile: boolean, arrival: "fresh" | "reopened") =>
+  emptyBoxCards(page, TOPPS_1988, box, cards, isMobile, arrival);
 
 // Pass or fail, the worker ends connected to BSC and NOT listing. On a failure
 // the touched BSC rows are first brought to 0 on a SECOND page (the failing page
@@ -215,7 +178,8 @@ test.afterEach(async ({ context, isMobile }, testInfo) => {
         await clean.goto("/inventory?tab=sync");
         await expect(clean.getByRole("heading", { level: 1, name: "Inventory" })).toBeVisible({ timeout: LAUNCH_GATE });
         // Live BSC round trip (GUIDE hard rule 3), the same constant as the flow.
-        await expect(clean.getByText(/^Nothing syncing right now\./)).toBeVisible({ timeout: BSC_ROUND_TRIP });
+        // (Scoped to the BuySportsCards section: Sync status has an eBay section too, NEO-415, and it says the same.)
+        await expect(syncStatus(clean).platform.getByText(/^Nothing syncing right now\./)).toBeVisible({ timeout: BSC_ROUND_TRIP });
         await clean.goto("/inventory?tab=checklists");
         const checklist = await emptyBox(clean, written.box, written.cards, isMobile, "fresh");
         await checklist.getByRole("button", { name: `Sync ${TITLE}`, exact: true }).click();
@@ -284,47 +248,8 @@ test(
     await backToBoxes(page);
     await expect(boxSpine(0)).toBeVisible();
 
-    // Every other box the worker has: the boxes on the shelf and Unsorted in
-    // "Special places" (the Up for Trade pile is not a box that lists). Each is
-    // opened and its "Listed on marketplaces" turned off (a box starts on), and
-    // each ends unchecked, asserted. They are left in-person afterwards:
-    // putting them back would queue their cards.
-    const special = page.getByRole("list", { name: "Special places" });
-    const spineRe = /^(.+), box, (?!.*up for trade)/;
-    const spines = boxes.getByRole("button", { name: spineRe }).or(special.getByRole("button", { name: spineRe }));
-    // The shelf has settled when Unsorted is drawn and no box is still "counting"
-    // (its spine reads ", box, counting" until its count is known).
-    await expect(special.getByRole("button", { name: /^Unsorted, box, / })).toBeVisible();
-    await expect(
-      boxes.getByRole("button", { name: /, box, counting$/ }).or(special.getByRole("button", { name: /, box, counting$/ })),
-    ).toHaveCount(0);
-    const boxNameOf = (spineName: string) => spineRe.exec(spineName)![1];
-    const readBoxes = async () => {
-      const names: string[] = [];
-      for (let i = 0, n = await spines.count(); i < n; i++) names.push(await nameOf(spines.nth(i)));
-      return names;
-    };
-    const others = (await readBoxes()).filter((name) => boxNameOf(name) !== boxName);
-    // Unsorted is never skipped: it is the box most likely to hold earlier stock.
-    expect(others.map(boxNameOf), "the shelf names Unsorted").toContain("Unsorted");
-    for (const spineName of others) {
-      const box = boxNameOf(spineName);
-      await boxes.getByRole("button", { name: spineName, exact: true }).or(special.getByRole("button", { name: spineName, exact: true })).click();
-      await expect(page).toHaveURL(/[?&]b=[^&]+/);
-      const toggle = page.getByRole("checkbox", { name: "Listed on marketplaces", exact: true });
-      await expect(toggle).toBeVisible();
-      if (await toggle.isChecked()) {
-        await toggle.uncheck();
-        await expect(said(`${box} is in-person only now.`)).toBeVisible();
-      }
-      await expect(toggle).not.toBeChecked();
-      await backToBoxes(page);
-    }
-    // Nothing arrived on the shelf while they were handled: a late box fails here, never skipped.
-    const handled = new Set([boxName, ...others.map(boxNameOf)]);
-    await expect
-      .poll(async () => (await readBoxes()).map(boxNameOf).filter((name) => !handled.has(name)))
-      .toEqual([]);
+    // Every other box the worker has goes in-person BEFORE syncing starts (see the helper).
+    await putOtherBoxesInPerson(page, boxName);
 
     // --- Before syncing: the worker is seeded "not syncing" -----------------------
     // Sync is shown but inert with its reason, Sync status says Not syncing, and
