@@ -1,0 +1,33 @@
+<!doctype html>
+<!--
+  NEO-422: eBay's production OAuth return page (production RuName).
+  Standalone on purpose: no app shell, no analytics, no third-party request,
+  so eBay's code and state never leave this page except to /profile/ebay on a
+  production origin. ebay-return.js reads data-ebay-return-mode and forwards
+  or shows the lost-trip message. sandbox-return.html is its sandbox twin;
+  keep the two in step.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="referrer" content="no-referrer" />
+    <meta name="robots" content="noindex" />
+    <meta name="color-scheme" content="dark light" />
+    <title>Heading back · NeonBinder</title>
+    <link rel="icon" href="/favicon.ico" />
+    <link rel="stylesheet" href="/oauth/ebay/ebay-return.css" />
+    <script type="module" src="/oauth/ebay/ebay-return.js" data-ebay-return-mode="production"></script>
+  </head>
+  <body>
+    <main>
+      <span class="mark" role="img" aria-label="Neon Binder"></span>
+      <p role="status" class="status" data-ebay-return="status">Taking you back to NeonBinder…</p>
+      <div class="lost" data-ebay-return="lost" hidden>
+        <h1>That eBay trip got lost</h1>
+        <p>The trip home from eBay came back scrambled, so nothing got connected. Rewind and give it another spin.</p>
+        <a class="button" href="/profile/ebay">Back to eBay settings</a>
+      </div>
+    </main>
+  </body>
+</html>
