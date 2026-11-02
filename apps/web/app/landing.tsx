@@ -310,6 +310,22 @@ export default function LandingPage() {
             and do not express it in vh. */}
         <div aria-hidden="true" className="h-[208px]" />
       </main>
+      <footer className="border-t border-rule px-4 py-6 sm:px-8">
+        <nav aria-label="Site" className="max-w-4xl mx-auto">
+          <ul className="flex flex-wrap justify-center gap-x-6 gap-y-2 text-sm text-ink-3">
+            <li>
+              <Link to="/about" className="underline underline-offset-2 hover:text-ink focus-outline rounded-sm">
+                About
+              </Link>
+            </li>
+            <li>
+              <Link to="/privacy" className="underline underline-offset-2 hover:text-ink focus-outline rounded-sm">
+                Privacy
+              </Link>
+            </li>
+          </ul>
+        </nav>
+      </footer>
     </>
   );
 }
