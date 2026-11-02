@@ -23,10 +23,16 @@ test(
 
     // Every request any page makes, for the last assertion: nothing may leave
     // the page's own origin (no analytics, no error tracker, no auth widget).
+    // vercel.live is Vercel's preview toolbar, which Vercel injects into
+    // preview deployments only (the CI target) and never into production; the
+    // same exclusion as support/a11y.ts EXCLUDED_REGIONS.
+    const VERCEL_PREVIEW_TOOLBAR = "https://vercel.live";
     const foreign: string[] = [];
     page.on("request", (req) => {
       const url = new URL(req.url());
-      if (url.protocol.startsWith("http") && url.origin !== ownOrigin) foreign.push(req.url());
+      if (!url.protocol.startsWith("http") || url.origin === ownOrigin) return;
+      if (url.origin === VERCEL_PREVIEW_TOOLBAR) return;
+      foreign.push(req.url());
     });
 
     // The destination is answered with an empty page: /profile/ebay lands with
