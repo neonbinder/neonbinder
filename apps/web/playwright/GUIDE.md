@@ -55,12 +55,6 @@ Reference specs that show the patterns below:
    and commented at the site with which exception it is:
    - a step that directly drives a live BSC/SportLots round trip on data that
      is not pre-synced;
-   - eBay SANDBOX round trips in `collection/inventory-ebay-sandbox-listing-
-     1988-topps-base` (NEO-415), on ONE named ceiling, `EBAY_ROUND_TRIP`
-     (20 s): **PENDING Jason's sign-off**. It is PROVISIONAL and UNMEASURED
-     (copied from `BSC_ROUND_TRIP`), and the measurement is still to be
-     recorded in the spec and the registry row. Until he signs it off it is a
-     placeholder, never a precedent;
    - the seed's cold syncs (`setup.spec.ts` is exempt as a class: it is a
      data-loading track, and its ceilings are the measured COLD-path values.
      A measurement means nothing until you know which branch, warm or cold,

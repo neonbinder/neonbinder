@@ -182,6 +182,19 @@ describe("CredentialsPanel — state matrix", () => {
     expect(screen.queryByText("Security Information")).toBeNull();
   });
 
+  it("NEO-415: every site's panel is named by its own tab", () => {
+    setProfile([]);
+    render(
+      <MemoryRouter>
+        <CredentialsPanel />
+      </MemoryRouter>,
+    );
+    for (const name of ["BuySportsCards", "SportLots", "eBay"]) {
+      fireEvent.click(screen.getByRole("tab", { name }));
+      expect(screen.getByRole("tabpanel", { name })).toBeTruthy();
+    }
+  });
+
   it("routes the re-auth primary action into the sign-in form", () => {
     setProfile([{ site: BSC, hasCredentials: true, needsReauth: true }]);
     render(<CredentialsPanel />);

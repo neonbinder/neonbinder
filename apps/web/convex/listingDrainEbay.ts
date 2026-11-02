@@ -72,6 +72,7 @@ import {
   centsToEbayValue,
   contentFingerprint,
   ebayListingText,
+  ebayPackageFor,
   foldEbayTargets,
   fulfillmentSlotFor,
   missingRequiredAspects,
@@ -108,12 +109,6 @@ const MAX_DETAIL = 160;
 const OFFER_EXISTS_ERROR_IDS = new Set([25002]);
 /** A picture is re-uploaded when an unused one expires within this long. */
 const IMAGE_FRESH_MS = 24 * 60 * 60 * 1000;
-/** Package NB declares for a raw card (a letter: ESE needs one). UNVERIFIED as ESE-sufficient. */
-const CARD_PACKAGE = {
-  packageType: "LETTER",
-  weight: { value: 1, unit: "OUNCE" },
-  dimensions: { length: 6, width: 4, height: 0.25, unit: "INCH" },
-} as const;
 
 type Platform = "ebay";
 
@@ -984,6 +979,9 @@ async function syncEbayVariant(
       aspects,
       condition: EBAY_DESCRIPTOR_VALUE[t.conditionCode],
       photos: photos.map((p) => p.key),
+      // The package follows the price slot, so a price crossing $20 re-sends
+      // the item with its new weight even when nothing else changed.
+      package: ebayPackageFor(priceCents),
     });
     const link = links.get(t.sku) ?? null;
     const pushed = link?.pushed ?? null;
@@ -1347,7 +1345,7 @@ function inventoryItemBody(plan: Plan): Record<string, unknown> {
       { name: EBAY_CARD_CONDITION_DESCRIPTOR, values: [EBAY_DESCRIPTOR_VALUE[plan.target.conditionCode]] },
     ],
     availability: { shipToLocationAvailability: { quantity: plan.target.quantity } },
-    packageWeightAndSize: CARD_PACKAGE,
+    packageWeightAndSize: ebayPackageFor(plan.target.priceCents as number),
     product: {
       title: plan.text.title,
       description: plan.text.description,

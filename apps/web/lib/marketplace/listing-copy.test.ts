@@ -38,6 +38,13 @@ describe("listing copy per platform (NEO-415)", () => {
     expect(sellerConflictLine(EBAY_NAME)).toContain("That eBay seller account");
   });
 
+  it("the seller-conflict line names the username inside the sentence, never after it", () => {
+    expect(sellerConflictLine(EBAY_NAME, "cardshark88")).toBe(
+      "That eBay seller account (cardshark88) already lists from another NeonBinder account, so nothing goes up or comes in from this one.",
+    );
+    expect(sellerConflictLine(EBAY_NAME, null)).toBe(sellerConflictLine(EBAY_NAME));
+  });
+
   it("the setup and consent lines never use an internal word", () => {
     for (const line of [EBAY_SETUP_LINE, EBAY_CONSENT_LINE]) {
       expect(line).not.toMatch(/outbox|lease|drain|SKU|offer id|inventory item/i);

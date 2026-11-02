@@ -343,6 +343,8 @@ export default function CredentialsPanel() {
                 key={site.key}
                 type="button"
                 role="tab"
+                // ARIA needs the id: the panel is labelled by its tab.
+                id={`site-tab-${site.key}`}
                 aria-selected={isSelected}
                 aria-controls="site-credentials-panel"
                 onClick={() => { if (!credsBusy) setSelectedSite(site.key); }}
@@ -361,7 +363,12 @@ export default function CredentialsPanel() {
         </div>
       </div>
     {pointer ? (
-      <div id="site-credentials-panel" role="tabpanel" className="space-y-2">
+      <div
+        id="site-credentials-panel"
+        role="tabpanel"
+        aria-labelledby={`site-tab-${selectedSite}`}
+        className="space-y-2"
+      >
         <h2 className="text-xl font-semibold">{pointer.label}</h2>
         <p className="text-sm text-ink-2">
           {pointer.label} skips the password. You connect it on {pointer.label}&apos;s own sign-in screen, and pick your
@@ -379,6 +386,7 @@ export default function CredentialsPanel() {
     <div
       id="site-credentials-panel"
       role="tabpanel"
+      aria-labelledby={`site-tab-${selectedSite}`}
     >
       <h2 className="text-xl font-semibold mb-2">
         {siteMeta?.label} Credentials

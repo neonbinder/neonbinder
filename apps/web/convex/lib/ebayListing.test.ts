@@ -3,6 +3,11 @@ import { encodeId } from "./convexIdCodec";
 import {
   EBAY_ASPECT_VALUE_MAX,
   EBAY_DESCRIPTOR_VALUE,
+  EBAY_ENVELOPE_PACKAGE,
+  EBAY_ENVELOPE_WEIGHT_OZ,
+  EBAY_ESE_SERVICE_CODE,
+  EBAY_MAILER_PACKAGE,
+  EBAY_MAILER_WEIGHT_OZ,
   EBAY_ORDER_STATUSES,
   EBAY_SKU_MAX,
   buildEbayAspects,
@@ -12,6 +17,8 @@ import {
   ebayBucketOf,
   ebayOrderDisposition,
   ebayOrderStatus,
+  ebayPackageFor,
+  ebayServiceTakesCalculated,
   ebaySetupMissing,
   ebayStatusDisposition,
   ebayValueToCents,
@@ -278,6 +285,44 @@ describe("price to shipping slot and floor (NEO-415)", () => {
     [2001, "twentyPlus"],
   ] as const)("%i cents uses the %s slot", (cents, slot) => {
     expect(fulfillmentSlotFor(cents)).toBe(slot);
+  });
+
+  test("the two raw-card weights are Jason's: 1 oz in an envelope, 6 oz in a packaged bubble mailer", () => {
+    expect(EBAY_ENVELOPE_WEIGHT_OZ).toBe(1);
+    expect(EBAY_MAILER_WEIGHT_OZ).toBe(6);
+    expect(EBAY_ENVELOPE_PACKAGE).toEqual({
+      packageType: "LETTER",
+      weight: { value: 1, unit: "OUNCE" },
+      dimensions: { length: 6, width: 4, height: 0.25, unit: "INCH" },
+    });
+    expect(EBAY_MAILER_PACKAGE).toMatchObject({ packageType: "PADDED_BAGS", weight: { value: 6, unit: "OUNCE" } });
+    // Standard Envelope takes letters no thicker than 0.25" and no larger than 6.125" x 11.5".
+    const { length, width, height } = EBAY_ENVELOPE_PACKAGE.dimensions;
+    expect(height).toBeLessThanOrEqual(0.25);
+    expect(Math.min(length, width)).toBeLessThanOrEqual(6.125);
+    expect(Math.max(length, width)).toBeLessThanOrEqual(11.5);
+  });
+
+  test.each([
+    [99, EBAY_ENVELOPE_PACKAGE],
+    [1999, EBAY_ENVELOPE_PACKAGE],
+    [2000, EBAY_MAILER_PACKAGE],
+    [250000, EBAY_MAILER_PACKAGE],
+  ] as const)("%i cents ships in the package of its slot", (cents, pkg) => {
+    expect(ebayPackageFor(cents)).toBe(pkg);
+    expect(ebayPackageFor(cents) === EBAY_MAILER_PACKAGE).toBe(fulfillmentSlotFor(cents) === "twentyPlus");
+  });
+
+  test("a calculated rate is refused only when eBay lists the service's cost types without CALCULATED", () => {
+    const svc = (costTypes: string[]) => [{ code: EBAY_ESE_SERVICE_CODE, costTypes }];
+    expect(ebayServiceTakesCalculated(svc(["CALCULATED", "FLAT"]), EBAY_ESE_SERVICE_CODE)).toBe(true);
+    expect(ebayServiceTakesCalculated(svc(["flat_rate", "calculated"]), EBAY_ESE_SERVICE_CODE)).toBe(true);
+    expect(ebayServiceTakesCalculated(svc(["FLAT_RATE"]), EBAY_ESE_SERVICE_CODE)).toBe(false);
+    expect(ebayServiceTakesCalculated(svc(["FLAT_RATE", "FREIGHT"]), EBAY_ESE_SERVICE_CODE)).toBe(false);
+    // Not listed, or listed without cost types: eBay decides when the policy is made.
+    expect(ebayServiceTakesCalculated(svc([]), EBAY_ESE_SERVICE_CODE)).toBe(true);
+    expect(ebayServiceTakesCalculated([], EBAY_ESE_SERVICE_CODE)).toBe(true);
+    expect(ebayServiceTakesCalculated(svc(["FLAT_RATE"]), "USPSGroundAdvantage")).toBe(true);
   });
 
   const copy = (over: Partial<EbayListingCopy> = {}): EbayListingCopy => ({
@@ -548,7 +593,7 @@ describe("projectEbayOrder (NEO-415)", () => {
 
 describe("ebaySetupMissing (NEO-415)", () => {
   test("null settings lack everything, in page order", () => {
-    expect(ebaySetupMissing(null)).toEqual(["shippingUnder20", "shipping20Plus", "payment", "returns", "location"]);
+    expect(ebaySetupMissing(null)).toEqual(["location", "shippingUnder20", "shipping20Plus", "payment", "returns"]);
   });
 
   test("a location without a merchant key still counts as missing", () => {

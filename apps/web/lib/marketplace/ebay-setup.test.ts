@@ -71,12 +71,13 @@ describe("eBay setup helpers (NEO-415)", () => {
   });
 
   it("the checklist ticks off what isn't missing, in the page's order", () => {
+    // Ships from leads: Set me up prices shipping from its ZIP.
     expect(setupChecklist(["payment", "location"]).map((s) => [s.gap, s.done])).toEqual([
+      ["location", false],
       ["shippingUnder20", true],
       ["shipping20Plus", true],
       ["payment", false],
       ["returns", true],
-      ["location", false],
     ]);
   });
 
@@ -93,6 +94,8 @@ describe("eBay setup helpers (NEO-415)", () => {
         { id: "a", name: "A", eseFit: true, eseOnly: false, freeShipping: false, summary: "Standard Envelope $1.00" },
         { id: "b", name: "B", eseFit: false, eseOnly: false, freeShipping: false, summary: "" },
         { id: "c", name: "C", eseFit: true, eseOnly: false, freeShipping: false, summary: "" },
+        { id: "d", name: "D", eseFit: true, eseOnly: false, freeShipping: false, summary: "USPS Ground Advantage $4.50" },
+        { id: "e", name: "E", eseFit: true, eseOnly: true, freeShipping: false, summary: "eBay standard envelope, free" },
       ],
       payment: [{ id: "p", name: "Pay" }],
       returns: [
@@ -100,12 +103,20 @@ describe("eBay setup helpers (NEO-415)", () => {
         { id: "r2", name: "R2", summary: "" },
       ],
     };
+    // Standard Envelope is said once: the prefix only where the summary doesn't already name it.
     expect(under20Options(policies).map((o) => o.description)).toEqual([
-      "Takes Standard Envelope. Standard Envelope $1.00",
+      "Standard Envelope $1.00",
       undefined,
       "Takes Standard Envelope.",
+      "Takes Standard Envelope. USPS Ground Advantage $4.50",
+      "eBay standard envelope, free",
     ]);
-    expect(over20Options(policies).map((o) => o.description)).toEqual(["Standard Envelope $1.00", undefined, undefined]);
+    expect(over20Options(policies).map((o) => o.description)).toEqual([
+      "Standard Envelope $1.00",
+      undefined,
+      undefined,
+      "USPS Ground Advantage $4.50",
+    ]);
     expect(paymentOptions(policies)).toEqual([{ value: "p", label: "Pay" }]);
     expect(returnOptions(policies).map((o) => [o.value, o.description])).toEqual([
       ["r1", "30 days, buyer pays return shipping"],
@@ -144,7 +155,7 @@ describe("eBay setup helpers (NEO-415)", () => {
   });
 
   it("the checklist has a step for every setup gap the server can name, and an empty missing list is all done", () => {
-    expect(SETUP_STEPS.map((s) => s.gap)).toEqual(["shippingUnder20", "shipping20Plus", "payment", "returns", "location"]);
+    expect(SETUP_STEPS.map((s) => s.gap)).toEqual(["location", "shippingUnder20", "shipping20Plus", "payment", "returns"]);
     expect(setupChecklist([]).every((s) => s.done)).toBe(true);
     expect(setupChecklist(SETUP_STEPS.map((s) => s.gap)).every((s) => !s.done)).toBe(true);
   });

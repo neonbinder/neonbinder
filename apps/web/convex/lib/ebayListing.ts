@@ -463,6 +463,73 @@ export function fulfillmentSlotFor(priceCents: number): "under20" | "twentyPlus"
   return priceCents >= EBAY_ESE_PRICE_CAP_CENTS ? "twentyPlus" : "under20";
 }
 
+// ── Shipping: cost type and package ─────────────────────────────────────────
+
+/**
+ * eBay's calculated-shipping cost type (Sell Account ShippingOption.costType:
+ * "the shipping rate varies by the ship-to location and size and weight of
+ * the package"). With it the policy carries no shipping cost; eBay prices
+ * each order from the item's package and the seller's ship-from postal code.
+ */
+export const EBAY_COST_TYPE_CALCULATED = "CALCULATED";
+export const EBAY_COST_TYPE_FLAT_RATE = "FLAT_RATE";
+
+/**
+ * False only when eBay's own shipping metadata lists `code` with its cost
+ * types and CALCULATED is not among them (Sell Metadata
+ * `getShippingServices` → `shippingCostTypes`). A service the metadata does
+ * not mention, or lists without cost types, is left to eBay to accept or
+ * refuse when the policy is made.
+ */
+export function ebayServiceTakesCalculated(
+  services: ReadonlyArray<{ code: string; costTypes: readonly string[] }>,
+  code: string,
+): boolean {
+  const service = services.find((s) => s.code === code);
+  if (!service || service.costTypes.length === 0) return true;
+  return service.costTypes.some((t) => t.toUpperCase() === EBAY_COST_TYPE_CALCULATED);
+}
+
+/**
+ * Package weights NB declares for a RAW card, in ounces (Jason, NEO-415):
+ * a single card in a Standard Envelope letter is 1 oz; a card packaged in a
+ * bubble mailer (tracked, $20 and up) is 6 oz. Calculated shipping prices
+ * from these. Graded cards are held from eBay today; when they list they
+ * need their own weight (a slab ships heavier), so add a third package then
+ * rather than reusing either of these.
+ */
+export const EBAY_ENVELOPE_WEIGHT_OZ = 1;
+export const EBAY_MAILER_WEIGHT_OZ = 6;
+
+/**
+ * Sell Inventory `packageWeightAndSize` for a raw card under $20: a letter
+ * (eBay Standard Envelope takes letters up to 6.125" × 11.5" × 0.25").
+ * `packageType` values are PackageTypeEnum's; the enum's values are not in
+ * the published OpenAPI document (it links out), so LETTER and PADDED_BAGS
+ * are UNVERIFIED against the contract (they match eBay's Trading
+ * ShippingPackageCodeType Letter / PaddedBags). Dimensions are NB product
+ * defaults: eBay says calculated shipping needs them.
+ */
+export const EBAY_ENVELOPE_PACKAGE = {
+  packageType: "LETTER",
+  weight: { value: EBAY_ENVELOPE_WEIGHT_OZ, unit: "OUNCE" },
+  dimensions: { length: 6, width: 4, height: 0.25, unit: "INCH" },
+} as const;
+
+/** `packageWeightAndSize` for a raw card at $20 and up: a padded (bubble) mailer, tracked. */
+export const EBAY_MAILER_PACKAGE = {
+  packageType: "PADDED_BAGS",
+  weight: { value: EBAY_MAILER_WEIGHT_OZ, unit: "OUNCE" },
+  dimensions: { length: 10, width: 6, height: 1, unit: "INCH" },
+} as const;
+
+export type EbayPackage = typeof EBAY_ENVELOPE_PACKAGE | typeof EBAY_MAILER_PACKAGE;
+
+/** The package a raw card ships in at this price: it follows the shipping slot. */
+export function ebayPackageFor(priceCents: number): EbayPackage {
+  return fulfillmentSlotFor(priceCents) === "twentyPlus" ? EBAY_MAILER_PACKAGE : EBAY_ENVELOPE_PACKAGE;
+}
+
 export interface NarrowReturnPolicy {
   id: string;
   name: string;
@@ -696,7 +763,7 @@ export function isUsStateCode(value: string): boolean {
 
 // ── Settings completeness ───────────────────────────────────────────────────
 
-export type EbaySetupItem = "shippingUnder20" | "shipping20Plus" | "payment" | "returns" | "location";
+export type EbaySetupItem = "location" | "shippingUnder20" | "shipping20Plus" | "payment" | "returns";
 
 /** What the collector's eBay settings still lack before anything may list (in page order). */
 export function ebaySetupMissing(
@@ -710,11 +777,12 @@ export function ebaySetupMissing(
   } | null,
 ): EbaySetupItem[] {
   const missing: EbaySetupItem[] = [];
+  // Ships from comes first: Set me up's calculated policies need the ZIP.
+  if (!settings?.location || !settings.merchantLocationKey) missing.push("location");
   if (!settings?.fulfillmentPolicyUnder20Id) missing.push("shippingUnder20");
   if (!settings?.fulfillmentPolicy20PlusId) missing.push("shipping20Plus");
   if (!settings?.paymentPolicyId) missing.push("payment");
   if (!settings?.returnPolicyId) missing.push("returns");
-  if (!settings?.location || !settings.merchantLocationKey) missing.push("location");
   return missing;
 }
 

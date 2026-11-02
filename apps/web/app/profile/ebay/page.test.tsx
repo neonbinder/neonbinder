@@ -26,7 +26,7 @@ vi.mock("convex/react", () => {
   const bind = (ref: Parameters<typeof getFunctionName>[0]) => {
     const name = getFunctionName(ref);
     if (!bound.has(name)) {
-      const call = (...args: unknown[]) => fn(name)(...args);
+      const call = (...args: unknown[]) => (fn(name) as (...a: unknown[]) => unknown)(...args);
       bound.set(name, Object.assign(call, { withOptimisticUpdate: () => call }));
     }
     return bound.get(name);
@@ -175,9 +175,9 @@ describe("Profile → eBay, connection", () => {
   });
 
   it.each([
-    ["needsReauth", "Connect eBay again", /pass ran out/],
+    ["needsReauth", "Connect eBay again", /^Your eBay connection ran out\.$/],
     ["paused", "Disconnect eBay", /eBay is on a break/],
-    ["sellerConflict", "Disconnect eBay", /already lists from another NeonBinder account/],
+    ["sellerConflict", "Disconnect eBay", /^That eBay seller account \(cardshark88\) already lists from another NeonBinder account/],
   ] as const)("%s says so and offers %s", (status, button, line) => {
     connection = state({ status, ebayUsername: "cardshark88" });
     renderAt();
@@ -220,6 +220,13 @@ describe("Profile → eBay, setup", () => {
   });
 
   it("Set me up shows when nothing fits, makes the policies and picks the empty slots", async () => {
+    // Ship-from saved first: Set me up waits for it.
+    connection = state({
+      status: "connected",
+      ebayUsername: "cardshark88",
+      settings: { ...SETTINGS_EMPTY, location: { postalCode: "53703", city: "Madison", stateOrProvince: "WI" } },
+      missing: ["shippingUnder20", "shipping20Plus", "payment", "returns"],
+    });
     fn("ebayConnect:readPolicies").mockResolvedValueOnce({ ok: true, fulfillment: [], payment: [], returns: [] });
     fn("ebayConnect:createStandardPolicies").mockResolvedValue({
       ok: true,
@@ -256,7 +263,41 @@ describe("Profile → eBay, setup", () => {
     expect(within(list).getByText("1 to go. Nothing lists on eBay until they're done.")).toBeTruthy();
     connection = state({ status: "connected", ebayUsername: "cardshark88", missing: [], setupComplete: true });
     view.rerenderFresh();
-    expect(screen.getByRole("region", { name: "You're all set" })).toBeTruthy();
+    const done = screen.getByRole("region", { name: "You're all set" });
+    // Finished in this visit: the folded line mounts empty and fills, so it is announced.
+    await waitFor(() =>
+      expect(within(done).getByRole("status").textContent).toBe("Everything in a listed box lists on eBay at your count."),
+    );
+    expect(screen.queryByRole("region", { name: "Finish these and your boxes go up" })).toBeNull();
+  });
+
+  it("until it's done the checklist leads, and each step lands on its section's heading", async () => {
+    connection = state({ status: "connected", ebayUsername: "cardshark88", missing: ["payment", "location"] });
+    renderAt();
+    const list = await screen.findByRole("region", { name: "Finish these and your boxes go up" });
+    const regions = screen.getAllByRole("region").map((r) => r.getAttribute("aria-labelledby"));
+    // Right under the connection, ahead of every setup section; Ships from leads them.
+    expect(regions.indexOf(list.getAttribute("aria-labelledby"))).toBe(1);
+    expect(screen.getAllByRole("region").map((r) => r.querySelector("h2")?.textContent)).toEqual([
+      "eBay",
+      "Finish these and your boxes go up",
+      "Ships from",
+      "Shipping",
+      "Payment and returns",
+      "Offers",
+    ]);
+    expect(within(list).getAllByRole("link")[0].textContent).toMatch(/^Where your cards ship from/);
+    for (const [step, heading] of [
+      ["Where your cards ship from, still to do", "Ships from"],
+      ["Shipping for cards under $20, done", "Shipping"],
+      ["Shipping for cards $20 and up, done", "Shipping"],
+      ["Payment, still to do", "Payment and returns"],
+      ["Returns, done", "Payment and returns"],
+    ] as const) {
+      // happy-dom has no layout, so it pads the sr-only span with a space a browser leaves out.
+      fireEvent.click(within(list).getByRole("link", { name: (name) => name.replace(" ,", ",") === step }));
+      expect(document.activeElement).toBe(screen.getByRole("heading", { level: 2, name: heading }));
+    }
   });
 
   it("passes axe in light and dark, not connected and connected with setup", async () => {

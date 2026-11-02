@@ -100,7 +100,7 @@ describe("Ships from", () => {
     fireEvent.change(screen.getByLabelText("ZIP code"), { target: { value: "53703" } });
     fireEvent.change(screen.getByLabelText("City"), { target: { value: "Madison" } });
     fireEvent.change(screen.getByLabelText("State"), { target: { value: "wi" } });
-    const save = screen.getByRole("button", { name: "Save ships-from" });
+    const save = screen.getByRole("button", { name: "Save location" });
     save.focus();
     fireEvent.click(save);
     await screen.findByText("Saved. Your cards ship from here.");
@@ -127,7 +127,7 @@ describe("Ships from", () => {
     const st = screen.getByLabelText("State");
     for (const field of [zip, city, st]) expect(field.getAttribute("aria-required")).toBe("true");
     fireEvent.change(zip, { target: { value: "5370" } });
-    fireEvent.click(screen.getByRole("button", { name: "Save ships-from" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save location" }));
     await waitFor(() => expect(document.activeElement).toBe(zip));
     for (const field of [zip, city, st]) expect(field.getAttribute("aria-invalid")).toBe("true");
     const said = (el: HTMLElement) =>
@@ -142,9 +142,17 @@ describe("Ships from", () => {
 
     // A valid ZIP alone moves focus on to the next field that still needs filling.
     fireEvent.change(zip, { target: { value: "53703-1234" } });
-    fireEvent.click(screen.getByRole("button", { name: "Save ships-from" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save location" }));
     await waitFor(() => expect(document.activeElement).toBe(city));
     expect(zip.getAttribute("aria-invalid")).toBeNull();
+  });
+
+  it("State is hinted under the field, never with a placeholder that reads as a saved value", () => {
+    renderAt();
+    const st = screen.getByLabelText("State");
+    expect(st.getAttribute("placeholder")).toBeNull();
+    const hint = document.getElementById(st.getAttribute("aria-describedby") ?? "");
+    expect(hint?.textContent).toBe("Two letters, like WI.");
   });
 
   it("a save from elsewhere refills untouched fields, never ones being typed in", () => {
@@ -172,6 +180,43 @@ describe("Set me up", () => {
     payment: [{ id: "p9", name: MADE[2] }],
     returns: [{ id: "r9", name: MADE[3], summary: "" }],
   };
+
+  const SHIPS_FROM = { postalCode: "53703", city: "Madison", stateOrProvince: "WI" };
+  // Set me up waits for a saved ship-from (eBay prices shipping from its ZIP).
+  beforeEach(() => {
+    connection = state({ settings: { ...SETTINGS, location: SHIPS_FROM }, missing: ["shippingUnder20"] });
+  });
+
+  it("with no ship-from saved it stays reachable, says why beside it, and makes nothing", async () => {
+    connection = state();
+    fn("ebayConnect:readPolicies").mockResolvedValueOnce(NOTHING);
+    renderAt();
+    const button = await screen.findByRole("button", { name: "Set me up" });
+    expect(button.getAttribute("aria-disabled")).toBe("true");
+    expect((button as HTMLButtonElement).disabled).toBe(false);
+    const why = "Save where you ship from first, up in Ships from. eBay prices each buyer's shipping from your ZIP.";
+    expect(screen.getByText(why)).toBeTruthy();
+    expect(button.getAttribute("aria-describedby")?.split(" ")[0]).toBe(screen.getByText(why).id);
+    fireEvent.click(button);
+    expect(fns["ebayConnect:createStandardPolicies"]).toBeUndefined();
+
+    // Saved: the button wakes up and the line goes.
+    connection = state({ settings: { ...SETTINGS, location: SHIPS_FROM }, missing: ["shippingUnder20"] });
+    cleanup();
+    fn("ebayConnect:readPolicies").mockResolvedValueOnce(NOTHING);
+    renderAt();
+    const ready = await screen.findByRole("button", { name: "Set me up" });
+    expect(ready.getAttribute("aria-disabled")).toBeNull();
+    expect(screen.queryByText(why)).toBeNull();
+  });
+
+  it("says buyers pay eBay's own rate for the card's weight", async () => {
+    fn("ebayConnect:readPolicies").mockResolvedValueOnce(NOTHING);
+    renderAt();
+    const button = await screen.findByRole("button", { name: "Set me up" });
+    const said = document.getElementById(button.getAttribute("aria-describedby")!)!.textContent;
+    expect(said).toContain("On the first two, buyers pay eBay's own rate for the card's weight.");
+  });
 
   it("says it's working in a polite status while it runs", async () => {
     fn("ebayConnect:readPolicies").mockResolvedValueOnce(NOTHING);
@@ -224,6 +269,30 @@ describe("Live lines and focus", () => {
     cleanup();
     renderAt();
     expect(screen.getByText(/Pulling your policies/).getAttribute("aria-busy")).toBeNull();
+  });
+
+  it("an empty live line leaves the flow (no phantom gap) but stays in the tree to speak", async () => {
+    renderAt();
+    await screen.findByRole("radiogroup", { name: "$20 and up" });
+    // happy-dom loads no CSS: pin the class and that the line really is :empty.
+    const empty = screen.getAllByRole("status").filter((s) => s.childNodes.length === 0);
+    expect(empty.length).toBeGreaterThan(0);
+    for (const line of empty) {
+      expect(line.className.includes("empty:absolute") || line.className.includes("min-h-5")).toBe(true);
+    }
+    // A picker's line holds its room, so "Saving…" never shoves the next picker down.
+    const under = screen.getByRole("radiogroup", { name: "Cards under $20" });
+    let picker = under.parentElement;
+    while (picker && !picker.querySelector(':scope > [role="status"]')) picker = picker.parentElement;
+    expect(picker!.querySelector(':scope > [role="status"]')!.className).toContain("min-h-5");
+  });
+
+  it("the policies area has its final two cards while eBay is still answering", () => {
+    fn("ebayConnect:readPolicies").mockReturnValue(new Promise(() => {}));
+    renderAt();
+    expect(screen.getByRole("region", { name: "Shipping" }).textContent).toContain("Pulling your policies from eBay…");
+    expect(screen.getByRole("region", { name: "Payment and returns" })).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Shipping, payment and returns" })).toBeNull();
   });
 
   it("coming back from eBay having said no lands focus on the heading", async () => {

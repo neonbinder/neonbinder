@@ -55,7 +55,9 @@ const ESE = "US_eBayStandardEnvelope";
 interface FakePolicy {
   id: string;
   name: string;
-  services: Array<{ code: string; cost: string; free?: boolean }>;
+  /** The DOMESTIC cost type a policy NB made was sent with (fixture policies leave it out). */
+  costType?: string;
+  services: Array<{ code: string; cost: string | null; free?: boolean }>;
 }
 
 class World {
@@ -65,7 +67,12 @@ class World {
   fulfillment: FakePolicy[] = [];
   payment: Array<{ id: string; name: string }> = [];
   returns: Array<{ id: string; name: string }> = [];
-  shippingServices: Array<{ shippingService: string; internationalService?: boolean; validForSellingFlow?: boolean }> = [
+  shippingServices: Array<{
+    shippingService: string;
+    internationalService?: boolean;
+    validForSellingFlow?: boolean;
+    shippingCostTypes?: string[];
+  }> = [
     { shippingService: "USPSGroundAdvantage", validForSellingFlow: true },
     { shippingService: "USPSPriorityMail", validForSellingFlow: true },
   ];
@@ -116,7 +123,7 @@ class World {
               optionType: "DOMESTIC",
               shippingServices: f.services.map((s) => ({
                 shippingServiceCode: s.code,
-                shippingCost: { value: s.cost },
+                ...(s.cost === null ? {} : { shippingCost: { value: s.cost } }),
                 freeShipping: s.free === true,
               })),
             },
@@ -132,8 +139,14 @@ class World {
     }
     if (p === "/sell/account/v1/fulfillment_policy/" && method === "POST") {
       const id = `F${++this.next}`;
-      const svc = json.shippingOptions[0].shippingServices[0];
-      this.fulfillment.push({ id, name: json.name, services: [{ code: svc.shippingServiceCode, cost: svc.shippingCost.value, free: svc.freeShipping }] });
+      const option = json.shippingOptions[0];
+      const svc = option.shippingServices[0];
+      this.fulfillment.push({
+        id,
+        name: json.name,
+        costType: option.costType,
+        services: [{ code: svc.shippingServiceCode, cost: svc.shippingCost?.value ?? null, free: svc.freeShipping }],
+      });
       return ok({ fulfillmentPolicyId: id }, 201);
     }
     if (p === "/sell/account/v1/payment_policy" && method === "POST") {
@@ -238,7 +251,7 @@ describe("connectionState", () => {
     const s = await setup({ connected: false });
     const st = await s.me.query(api.ebayConnect.connectionState, {});
     expect(st).toMatchObject({ configured: false, environment: null, status: "notConnected", ebayUsername: null, setupComplete: false });
-    expect(st.missing).toEqual(["shippingUnder20", "shipping20Plus", "payment", "returns", "location"]);
+    expect(st.missing).toEqual(["location", "shippingUnder20", "shipping20Plus", "payment", "returns"]);
     expect(st.settings.bestOffer).toBe(true);
   });
 
@@ -495,9 +508,15 @@ describe("savePolicies", () => {
   });
 });
 
+/** A saved ship-from location: Set me up makes calculated policies, which price from it. */
+const SHIPS_FROM = {
+  location: { postalCode: "53703", city: "Madison", stateOrProvince: "WI" },
+  merchantLocationKey: "neonbinder-main",
+};
+
 describe("createStandardPolicies (Set me up)", () => {
   test("on a fresh account makes the three shipping policies, payment and returns, and fills the empty slots", async () => {
-    const s = await setup({ settings: {} });
+    const s = await setup({ settings: SHIPS_FROM });
     const r = await s.me.action(api.ebayConnect.createStandardPolicies, {});
     expect(r).toEqual({
       ok: true,
@@ -515,16 +534,94 @@ describe("createStandardPolicies (Set me up)", () => {
     expect(world.fulfillment.find((f) => f.name === NB_POLICY_NAMES.free)?.services[0]).toMatchObject({ cost: "0.00", free: true });
   });
 
+  test("the envelope and tracked policies are calculated by weight (no NB amount); Free Shipping stays a $0 flat rate", async () => {
+    const s = await setup({ settings: SHIPS_FROM });
+    await s.me.action(api.ebayConnect.createStandardPolicies, {});
+    const sent = (name: string) => world.ebayPosts("/sell/account/v1/fulfillment_policy/").find((c) => c.json.name === name)?.json;
+    for (const name of [NB_POLICY_NAMES.ese, NB_POLICY_NAMES.tracked]) {
+      const body = sent(name);
+      expect(body.shippingOptions).toHaveLength(1);
+      expect(body.shippingOptions[0]).toMatchObject({ optionType: "DOMESTIC", costType: "CALCULATED" });
+      expect(body.shippingOptions[0].shippingServices).toHaveLength(1);
+      expect(body.shippingOptions[0].shippingServices[0]).toEqual({
+        shippingServiceCode: name === NB_POLICY_NAMES.ese ? ESE : "USPSGroundAdvantage",
+        freeShipping: false,
+        sortOrder: 1,
+      });
+      expect(body.shippingOptions[0].packageHandlingCost).toBeUndefined();
+      expect(body.handlingTime).toEqual({ value: 1, unit: "DAY" });
+    }
+    const free = sent(NB_POLICY_NAMES.free);
+    expect(free.shippingOptions[0]).toMatchObject({ optionType: "DOMESTIC", costType: "FLAT_RATE" });
+    expect(free.shippingOptions[0].shippingServices[0]).toEqual({
+      shippingServiceCode: "USPSGroundAdvantage",
+      shippingCost: { value: "0.00", currency: "USD" },
+      freeShipping: true,
+      sortOrder: 1,
+    });
+    // Read back, the calculated policies show as calculated.
+    const read = await s.me.action(api.ebayConnect.readPolicies, {});
+    const summary = (name: string) => (read.ok ? read.fulfillment.find((p) => p.name === name)?.summary : undefined);
+    expect(summary(NB_POLICY_NAMES.ese)).toBe("Standard Envelope calculated");
+    expect(summary(NB_POLICY_NAMES.tracked)).toBe("USPSGroundAdvantage calculated");
+  });
+
+  test("without a saved ship-from location it makes nothing and says to save one first", async () => {
+    const s = await setup({ settings: {} });
+    const r = await s.me.action(api.ebayConnect.createStandardPolicies, {});
+    expect(r).toEqual({ ok: false, error: expect.stringContaining("Save where you ship from first") });
+    expect(world.ebayWrites()).toEqual([]);
+    expect(world.calls.filter((c) => c.host === "ebay")).toEqual([]);
+    const row = await settingsRow(s);
+    expect(row?.fulfillmentPolicyUnder20Id).toBeUndefined();
+  });
+
+  test.each([
+    ["Standard Envelope", [{ shippingService: ESE, validForSellingFlow: true, shippingCostTypes: ["FLAT_RATE"] }]],
+    ["USPS Ground Advantage", [{ shippingService: "USPSGroundAdvantage", validForSellingFlow: true, shippingCostTypes: ["FLAT_RATE"] }]],
+  ])("when eBay's metadata says %s has no calculated rate, it makes nothing (NB never invents a rate)", async (service, extra) => {
+    world.shippingServices = [
+      { shippingService: "USPSGroundAdvantage", validForSellingFlow: true, shippingCostTypes: ["FLAT_RATE", "CALCULATED"] },
+      { shippingService: ESE, validForSellingFlow: true, shippingCostTypes: ["CALCULATED", "FLAT"] },
+    ].map((x) => extra.find((e) => e.shippingService === x.shippingService) ?? x);
+    const s = await setup({ settings: SHIPS_FROM });
+    const r = await s.me.action(api.ebayConnect.createStandardPolicies, {});
+    expect(r).toEqual({ ok: false, error: expect.stringContaining(service) });
+    expect(world.ebayWrites()).toEqual([]);
+  });
+
+  test("eBay's metadata listing CALCULATED (any case, beside FLAT) is enough to make the calculated policies", async () => {
+    world.shippingServices = [
+      { shippingService: "USPSGroundAdvantage", validForSellingFlow: true, shippingCostTypes: ["FLAT_RATE", "CALCULATED"] },
+      { shippingService: ESE, validForSellingFlow: true, shippingCostTypes: ["calculated", "FLAT"] },
+    ];
+    const s = await setup({ settings: SHIPS_FROM });
+    const r = await s.me.action(api.ebayConnect.createStandardPolicies, {});
+    expect(r.ok).toBe(true);
+    expect(world.fulfillment.find((f) => f.name === NB_POLICY_NAMES.ese)?.costType).toBe("CALCULATED");
+  });
+
+  test("a policy NB already made is reused by name, so a missing calculated rate does not block a second press", async () => {
+    const s = await setup({ settings: SHIPS_FROM });
+    await s.me.action(api.ebayConnect.createStandardPolicies, {});
+    world.shippingServices = [
+      { shippingService: "USPSGroundAdvantage", validForSellingFlow: true, shippingCostTypes: ["FLAT_RATE"] },
+      { shippingService: ESE, validForSellingFlow: true, shippingCostTypes: ["FLAT_RATE"] },
+    ];
+    const again = await s.me.action(api.ebayConnect.createStandardPolicies, {});
+    expect(again).toEqual({ ok: true, created: [] });
+  });
+
   test("the Ground Advantage code comes from eBay's metadata, not from NB", async () => {
     world.shippingServices = [{ shippingService: "USPSGroundAdvantage2", validForSellingFlow: true }];
-    const s = await setup({ settings: {} });
+    const s = await setup({ settings: SHIPS_FROM });
     await s.me.action(api.ebayConnect.createStandardPolicies, {});
     expect(world.fulfillment.find((f) => f.name === NB_POLICY_NAMES.tracked)?.services[0].code).toBe("USPSGroundAdvantage2");
   });
 
   test("without Ground Advantage in eBay's list it makes nothing and says why", async () => {
     world.shippingServices = [{ shippingService: "USPSPriorityMail", validForSellingFlow: true }];
-    const s = await setup({ settings: {} });
+    const s = await setup({ settings: SHIPS_FROM });
     const r = await s.me.action(api.ebayConnect.createStandardPolicies, {});
     expect(r).toMatchObject({ ok: false, error: expect.stringContaining("Ground Advantage") });
     expect(world.ebayWrites()).toEqual([]);
@@ -532,7 +629,7 @@ describe("createStandardPolicies (Set me up)", () => {
 
   test("opts the account into business policies first when it is not in", async () => {
     world.optedIn = false;
-    const s = await setup({ settings: {} });
+    const s = await setup({ settings: SHIPS_FROM });
     const r = await s.me.action(api.ebayConnect.createStandardPolicies, {});
     expect(r.ok).toBe(true);
     expect(world.ebayPosts("/sell/account/v1/program/opt_in")).toHaveLength(1);
@@ -540,7 +637,7 @@ describe("createStandardPolicies (Set me up)", () => {
   });
 
   test("a second press makes nothing new (idempotent by name)", async () => {
-    const s = await setup({ settings: {} });
+    const s = await setup({ settings: SHIPS_FROM });
     await s.me.action(api.ebayConnect.createStandardPolicies, {});
     const before = world.fulfillment.length;
     const again = await s.me.action(api.ebayConnect.createStandardPolicies, {});
@@ -549,7 +646,7 @@ describe("createStandardPolicies (Set me up)", () => {
   });
 
   test("never replaces a slot the collector already chose", async () => {
-    const s = await setup({ settings: { fulfillmentPolicyUnder20Id: "MINE-U20", paymentPolicyId: "MINE-PAY" } });
+    const s = await setup({ settings: { ...SHIPS_FROM, fulfillmentPolicyUnder20Id: "MINE-U20", paymentPolicyId: "MINE-PAY" } });
     world.payment = [{ id: "MINE-PAY", name: "My pay" }];
     await s.me.action(api.ebayConnect.createStandardPolicies, {});
     const row = await settingsRow(s);
@@ -561,7 +658,7 @@ describe("createStandardPolicies (Set me up)", () => {
   test("keeps the seller's own payment and return policies: makes none, picks the only one, leaves several to the collector", async () => {
     world.payment = [{ id: "P-ONLY", name: "Mine" }];
     world.returns = [{ id: "R-A", name: "A" }, { id: "R-B", name: "B" }];
-    const s = await setup({ settings: {} });
+    const s = await setup({ settings: SHIPS_FROM });
     const r = await s.me.action(api.ebayConnect.createStandardPolicies, {});
     expect(r.ok && r.created).not.toContain(NB_POLICY_NAMES.payment);
     expect(r.ok && r.created).not.toContain(NB_POLICY_NAMES.returns);
@@ -573,7 +670,7 @@ describe("createStandardPolicies (Set me up)", () => {
   });
 
   test("if a policy fails mid-way, what was made is kept and found by name next time", async () => {
-    const s = await setup({ settings: {} });
+    const s = await setup({ settings: SHIPS_FROM });
     const real = world.fetch;
     let posts = 0;
     vi.stubGlobal("fetch", (async (url: string | URL | Request, init?: RequestInit) => {

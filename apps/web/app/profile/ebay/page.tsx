@@ -22,7 +22,9 @@ import SetupSections, { SECTION } from "./SetupSections";
  * consent screen (no password ever reaches NB), then picks their own
  * shipping, payment and returns policies, where cards ship from and Best
  * Offer. Connected IS listing (NEO-370 Rev 5), but nothing goes up until the
- * setup is finished; the checklist at the foot says what's left.
+ * setup is finished; the checklist under the connection says what's left,
+ * each step a link to its section, and folds to one line at the foot once
+ * it's done.
  *
  * The round trip: Connect asks the server for eBay's consent URL
  * (`beginConnect`, which keeps a one-time `state`) and leaves for it; eBay
@@ -220,7 +222,7 @@ export default function EbayPanel() {
               {EBAY_NAME}
             </h2>
             {sandbox && (
-              <span className="rounded-full border border-pick-teal-rule bg-pick-teal px-2 py-0.5 text-xs font-medium text-pick-teal-ink">
+              <span className="rounded-full border border-pick-purple-rule bg-pick-purple px-2 py-0.5 text-xs font-medium text-pick-purple-ink">
                 Sandbox
               </span>
             )}
@@ -282,7 +284,7 @@ function PhaseLine({ phase }: { phase: Phase }) {
   let text = "";
   if (phase.kind === "completing") text = `Hooking up your ${EBAY_NAME} account…`;
   else if (phase.kind === "leaving") text = `Off to ${EBAY_NAME} to say yes…`;
-  else if (phase.kind === "connected") text = `Connected to ${EBAY_NAME} as ${phase.username}. Now pick your shipping below.`;
+  else if (phase.kind === "connected") text = `Connected to ${EBAY_NAME} as ${phase.username}. Start with where you ship from, below.`;
   else if (phase.kind === "declined") text = `No worries, ${EBAY_NAME} isn't connected. Connect whenever you're ready.`;
   else if (phase.kind === "disconnected")
     text =
@@ -290,12 +292,14 @@ function PhaseLine({ phase }: { phase: Phase }) {
         ? notEndedLine(phase.notEnded)
         : `Disconnected from ${EBAY_NAME}. Every listing NeonBinder put up there is down.`;
   else if (phase.kind === "error") text = phase.error;
+  // `empty:absolute`: out of the flow while empty (still in the tree, so it
+  // speaks when it fills), so it leaves no phantom gap at the card's foot.
   return (
     <p
       key={error ? "error" : "ok"}
       role={error ? "alert" : "status"}
       aria-live={error ? undefined : "polite"}
-      className={`text-sm ${error ? "text-neon-pink-text" : phase.kind === "connected" ? "text-notice-success-ink" : "text-ink-3"}`}
+      className={`text-sm empty:absolute ${error ? "text-neon-pink-text" : phase.kind === "connected" ? "text-neon-green-text" : "text-ink-3"}`}
     >
       {text}
     </p>
@@ -397,7 +401,7 @@ function ConnectionBody({
       return (
         <div className="space-y-4">
           <p className="rounded-md border border-notice-warn-rule bg-notice-warn-bg p-3 text-sm text-notice-warn-ink">
-            <strong className="block">Your {EBAY_NAME} pass ran out.</strong>
+            <strong className="block">Your {EBAY_NAME} connection ran out.</strong>
             Nothing goes up or comes in until you connect again. Your setup stays saved.
           </p>
           <div className="flex flex-col gap-3 sm:flex-row">
@@ -419,8 +423,7 @@ function ConnectionBody({
       return (
         <div className="space-y-4">
           <p className="rounded-md border border-notice-warn-rule bg-notice-warn-bg p-3 text-sm text-notice-warn-ink">
-            {sellerConflictLine(EBAY_NAME)}
-            {connection.ebayUsername ? ` (${connection.ebayUsername})` : ""}
+            {sellerConflictLine(EBAY_NAME, connection.ebayUsername)}
           </p>
           <p className="text-sm text-ink-2">Disconnect it here, then connect the seller account that belongs to you.</p>
           {disconnectButton}

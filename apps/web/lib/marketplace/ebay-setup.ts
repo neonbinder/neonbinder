@@ -72,12 +72,19 @@ export interface PolicyOption {
   description?: string;
 }
 
-/** Every policy fits a card under $20; one that takes Standard Envelope says so first. */
+/**
+ * Every policy fits a card under $20; one that takes Standard Envelope says
+ * so first, unless the server's summary already names it (said once, never
+ * twice).
+ */
 export function under20Options(policies: EbayPolicies): PolicyOption[] {
   return policies.fulfillment.map((p) => ({
     value: p.id,
     label: p.name,
-    description: p.eseFit ? joinLines("Takes Standard Envelope.", p.summary) : p.summary || undefined,
+    description:
+      p.eseFit && !/standard envelope/i.test(p.summary)
+        ? joinLines("Takes Standard Envelope.", p.summary)
+        : p.summary || undefined,
   }));
 }
 
@@ -149,13 +156,17 @@ export function standardPicks(settings: EbaySettings, policies: EbayPolicies, cr
   return picks;
 }
 
-/** The setup checklist, in the page's order: each step and whether it's done. */
+/**
+ * The setup checklist, in the page's order: each step and whether it's done.
+ * Where cards ship from leads: eBay prices each buyer's shipping from that
+ * ZIP, so "Set me up" waits for it.
+ */
 export const SETUP_STEPS: ReadonlyArray<{ gap: EbaySetupGap; label: string }> = [
+  { gap: "location", label: "Where your cards ship from" },
   { gap: "shippingUnder20", label: "Shipping for cards under $20" },
   { gap: "shipping20Plus", label: "Shipping for cards $20 and up" },
   { gap: "payment", label: "Payment" },
   { gap: "returns", label: "Returns" },
-  { gap: "location", label: "Where your cards ship from" },
 ];
 
 export function setupChecklist(missing: ReadonlyArray<EbaySetupGap>): Array<{ gap: EbaySetupGap; label: string; done: boolean }> {

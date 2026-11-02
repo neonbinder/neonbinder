@@ -169,7 +169,7 @@ describe("the Sales tab", () => {
       ],
     });
     const orders = screen.getByRole("list", { name: "Orders, newest first" });
-    const order = within(orders).getByRole("article", { name: "Order 100245" });
+    const order = within(orders).getByRole("article", { name: "BuySportsCards order 100245" });
     expect(order.textContent).toContain("Ready to ship");
     expect(order.textContent).toContain("6 cards, $12.50, you keep $10.50");
     const lines = within(order).getAllByRole("listitem").map((li) => li.textContent);
@@ -206,7 +206,7 @@ describe("the Sales tab", () => {
     expect(document.activeElement).toBe(button);
     const next = [...first, sale({ id: "o3", orderNo: "3" }), sale({ id: "o4", orderNo: "4" })];
     rerender({ sales: next, canLoadMore: true, loadingMore: false });
-    expect(document.activeElement).toBe(screen.getByRole("heading", { level: 3, name: "Order 3" }));
+    expect(document.activeElement).toBe(screen.getByRole("heading", { level: 3, name: "BuySportsCards order 3" }));
     expect(status.textContent).toBe("Showing 4 sales.");
 
     fireEvent.click(screen.getByRole("button", { name: "Show more sales" }));
@@ -214,7 +214,7 @@ describe("the Sales tab", () => {
     const last = [...next, sale({ id: "o5", orderNo: "5" })];
     rerender({ sales: last, canLoadMore: false, loadingMore: false });
     expect(screen.queryByRole("button", { name: "Show more sales" })).toBeNull();
-    expect(document.activeElement).toBe(screen.getByRole("heading", { level: 3, name: "Order 5" }));
+    expect(document.activeElement).toBe(screen.getByRole("heading", { level: 3, name: "BuySportsCards order 5" }));
     expect(status.textContent).toBe("Showing 5 sales. That's every sale.");
   });
 
@@ -224,10 +224,10 @@ describe("the Sales tab", () => {
     fireEvent.click(screen.getByRole("button", { name: "Show more sales" }));
     // A render before the store starts loading (here its paging flag moved first): nothing moves yet.
     rerender({ sales: first, canLoadMore: false });
-    expect(document.activeElement).not.toBe(screen.getByRole("heading", { level: 3, name: "Order 1" }));
+    expect(document.activeElement).not.toBe(screen.getByRole("heading", { level: 3, name: "BuySportsCards order 1" }));
     rerender({ sales: first, canLoadMore: false, loadingMore: true });
     rerender({ sales: first, canLoadMore: false, loadingMore: false });
-    expect(document.activeElement).toBe(screen.getByRole("heading", { level: 3, name: "Order 1" }));
+    expect(document.activeElement).toBe(screen.getByRole("heading", { level: 3, name: "BuySportsCards order 1" }));
   });
 
   it("NEO-415: an eBay order says eBay, reads eBay's words, and links to itself (sandbox too)", () => {
@@ -248,8 +248,9 @@ describe("the Sales tab", () => {
       },
       { sandbox: true },
     );
-    const order = screen.getByRole("article", { name: "Order 12-34567-89012" });
-    expect(within(order).getByText("eBay")).toBeTruthy();
+    // The marketplace is in the order's name, so moving by heading says which one sold it.
+    const order = screen.getByRole("article", { name: "eBay order 12-34567-89012" });
+    expect(within(order).getByRole("heading", { level: 3, name: "eBay order 12-34567-89012" })).toBeTruthy();
     expect(within(order).getByText("Ready to ship")).toBeTruthy();
     expect(within(order).getByText("(Near Mint or better)")).toBeTruthy();
     expect(within(order).getByText("An eBay card we can't match")).toBeTruthy();

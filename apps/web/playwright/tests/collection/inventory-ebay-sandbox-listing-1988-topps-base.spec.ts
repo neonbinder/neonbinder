@@ -49,10 +49,11 @@
 // end, none). The spec never calls eBay itself and shows no eBay
 // listing of its own (a product gap if a collector should see one).
 //
-// Waits. The only waits above 7 s are the live eBay round trips, all on
-// `EBAY_ROUND_TRIP` (below): reading the seller's policies, "Set me up",
-// saving a pick or the ships-from address (each is an eBay call), the Sync
-// results and the disconnect's takedown. The seed hop is one full page load
+// Waits. Every step gets the standard 7 s budget (GUIDE hard rule 3), the
+// eBay calls included: reading the seller's policies, "Set me up", saving a
+// pick or the ships-from address, the Sync results and the disconnect's
+// takedown. A step that needs longer is a finding to report, never a number to
+// raise. The only longer wait is the seed hop's one full page load
 // (`LAUNCH_GATE`). No timer and no cron path: the 15-minute poll is
 // deliberately not exercised.
 //
@@ -91,19 +92,6 @@ import {
 } from "../../support/collection";
 import { expectEbayHookedUp, removeEbayConnection, saveEbayConnection } from "../../support/credentials";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
-
-/**
- * GUIDE hard rule 3 asks for a signed-off ceiling on a step that directly
- * drives a live marketplace round trip, and eBay's is not on its list yet.
- * PROVISIONAL AND UNMEASURED: 20 s is the BuySportsCards figure
- * (`BSC_ROUND_TRIP`), copied here so the first run has something to read; no
- * eBay run has happened. It needs Jason's sign-off, with the measurement
- * (policies read, "Set me up", a pick saved, ships-from saved, one Sync to "2
- * listed" with two photo uploads, the in-person Sync to "taken to 0", the
- * disconnect), recorded here and in the registry row. A genuinely slower
- * sandbox is a finding to report, never a number to raise.
- */
-const EBAY_ROUND_TRIP = 20_000;
 
 const EBAY = "eBay";
 const TITLE = baseChecklistTitle(TOPPS_1988);
@@ -169,7 +157,7 @@ test.afterEach(async ({ context }, testInfo) => {
       }
     } finally {
       if (written.connected && !written.disconnected) {
-        await removeEbayConnection(clean, { gate: LAUNCH_GATE, roundTrip: EBAY_ROUND_TRIP });
+        await removeEbayConnection(clean, { gate: LAUNCH_GATE });
       }
     }
   } finally {
@@ -300,28 +288,58 @@ test(
     await finishSetup.click();
     await expect(page).toHaveURL(/\/profile\/ebay$/);
 
-    // --- 4. Setup: shipping, payment, returns, ships from ---------------------------------
+    // --- 4. Setup: ships from, shipping, payment, returns --------------------------------
     // The seller's policies are read from eBay when the page opens (a live round
     // trip). The read has finished when either "Set me up" (the account has
     // nothing that fits a slot) or the first of the seller's own policies for
     // Cards under $20 is on screen; only then is it decided which arm runs.
     const underTwenty = page.getByRole("radiogroup", { name: "Cards under $20", exact: true });
     const setMeUp = page.getByRole("button", { name: "Set me up", exact: true });
-    await expect(setMeUp.or(underTwenty.getByRole("radio").first()).first()).toBeVisible({ timeout: EBAY_ROUND_TRIP });
+    await expect(setMeUp.or(underTwenty.getByRole("radio").first()).first()).toBeVisible();
+    await expect(page.getByRole("heading", { level: 2, name: "Ships from", exact: true })).toBeVisible();
     await expect(page.getByRole("heading", { level: 2, name: "Shipping", exact: true })).toBeVisible();
     await expect(page.getByRole("heading", { level: 2, name: "Payment and returns", exact: true })).toBeVisible();
-    await expect(page.getByRole("heading", { level: 2, name: "Ships from", exact: true })).toBeVisible();
     await expect(page.getByRole("heading", { level: 2, name: "Offers", exact: true })).toBeVisible();
     await expect(page.getByRole("checkbox", { name: "Take Best Offers", exact: true })).toBeChecked();
+
+    // Ships from comes first: eBay prices each buyer's shipping from its ZIP, so
+    // "Set me up" waits for it (reachable but aria-disabled, and the server
+    // refuses too). Where Set me up is offered, it says so until the location
+    // is saved.
+    const setMeUpOffered = await setMeUp.isVisible();
+    if (setMeUpOffered) {
+      await expect(setMeUp).toBeDisabled();
+      await expect(page.getByText(/^Save where you ship from first, up in Ships from\./)).toBeVisible();
+    }
+    await expect(page.getByRole("button", { name: "Save location", exact: true })).toBeVisible();
+    await page.getByRole("textbox", { name: "ZIP code", exact: true }).fill(SHIPS_FROM.zip);
+    await page.getByRole("textbox", { name: "City", exact: true }).fill(SHIPS_FROM.city);
+    const stateField = page.getByRole("textbox", { name: "State", exact: true });
+    await stateField.fill(SHIPS_FROM.state);
+    // Enter in the last field saves (the form is a form).
+    await page.keyboard.press("Enter");
+    // Saving the address makes the seller's inventory location on eBay (a live round trip).
+    await expect(said("Saved. Your cards ship from here.")).toBeVisible();
+    // The location is done; the four policy slots are still to do.
+    await expect(checklistSteps).toHaveText("4 to go. Nothing lists on eBay until they're done.");
+    await expect(allSet).toBeHidden();
+    // The form stays mounted through the save and the query catching up: the
+    // keyboard is still in the field it saved from, and the line is still said.
+    await expect(stateField).toBeFocused();
+    await expect(said("Saved. Your cards ship from here.")).toBeVisible();
+    await expect(page.getByRole("textbox", { name: "ZIP code", exact: true })).toHaveValue(SHIPS_FROM.zip);
+    await expectAccessible(page, { label: "Profile, eBay connected, location saved, policies still to pick" });
+
     // "Set me up" is offered only where the seller's account has nothing that
     // fits a slot: on a fresh sandbox seller it makes NeonBinder's standard
     // policies on eBay; once they exist (an earlier run made them) it is gone
     // and the seller's own policies are picked below. Both arms end by naming
     // NeonBinder's tracked and free policies for the $20 and up slot.
-    if (await setMeUp.isVisible()) {
+    if (setMeUpOffered) {
+      await expect(setMeUp).toBeEnabled();
       await setMeUp.click();
       // A live round trip to eBay: opt in, make the policies, read them back.
-      await expect(said(/^(Made \d+ on your eBay account|You already had everything)/)).toBeVisible({ timeout: EBAY_ROUND_TRIP });
+      await expect(said(/^(Made \d+ on your eBay account|You already had everything)/)).toBeVisible();
     } else {
       // The policies are already there: the seller's own are offered for the cheap cards.
       await expect(underTwenty.getByRole("radio").first()).toBeVisible();
@@ -339,7 +357,7 @@ test(
     await free.click();
     await expect(free).toBeChecked();
     // Saving a pick re-reads the seller's policies on eBay (a live round trip).
-    await expect(said(/^Saved\.$/)).toBeVisible({ timeout: EBAY_ROUND_TRIP });
+    await expect(said(/^Saved\.$/)).toBeVisible();
     await expect(tracked, `NeonBinder's "${TRACKED_POLICY}" policy is on the sandbox seller (Set me up makes it)`).toBeVisible();
     await tracked.click();
     await expect(tracked).toBeChecked();
@@ -352,30 +370,14 @@ test(
       await radios.first().click();
       await expect(page.getByRole("radiogroup", { name: group, exact: true }).getByRole("radio", { checked: true })).toHaveCount(1);
     }
-    await expectAccessible(page, { label: "Profile, eBay connected, shipping payment and returns picked" });
-    // Saving a pick re-reads the seller's policies on eBay (a live round trip).
-    await expect(checklistSteps).toHaveText("1 to go. Nothing lists on eBay until they're done.", { timeout: EBAY_ROUND_TRIP });
-    await expect(allSet).toBeHidden();
-
-    // Ships from: eBay shows buyers where a card ships from, and wants it before a listing.
-    await page.getByRole("textbox", { name: "ZIP code", exact: true }).fill(SHIPS_FROM.zip);
-    await page.getByRole("textbox", { name: "City", exact: true }).fill(SHIPS_FROM.city);
-    const stateField = page.getByRole("textbox", { name: "State", exact: true });
-    await stateField.fill(SHIPS_FROM.state);
-    // Enter in the last field saves (the form is a form).
-    await page.keyboard.press("Enter");
-    // Saving the address makes the seller's inventory location on eBay (a live round trip).
-    await expect(said("Saved. Your cards ship from here.")).toBeVisible({ timeout: EBAY_ROUND_TRIP });
-    await expect(allSet).toBeVisible({ timeout: EBAY_ROUND_TRIP });
-    // The form stays mounted through the save and the query catching up: the
-    // keyboard is still in the field it saved from, and the line is still said.
-    await expect(stateField).toBeFocused();
-    await expect(said("Saved. Your cards ship from here.")).toBeVisible();
+    // The last pick finishes the setup: the checklist folds to "You're all set".
+    await expect(allSet).toBeVisible();
+    await expect(checklistSteps).toBeHidden();
+    await expect(page.getByRole("heading", { level: 2, name: "Finish these and your boxes go up", exact: true })).toBeHidden();
     await expect(page.getByText("Everything in a listed box lists on eBay at your count.", { exact: true })).toBeVisible();
     await expect(
       page.getByText("Every raw card in a listed box goes up at its box count, and sales land in Inventory, under Sales. Disconnecting stops both."),
     ).toBeVisible();
-    await expect(page.getByRole("textbox", { name: "ZIP code", exact: true })).toHaveValue(SHIPS_FROM.zip);
     await expectAccessible(page, { label: "Profile, eBay connected and set up" });
 
     // --- 5. Stock the box: a price, one copy each of two cards, a photo each ------------
@@ -479,10 +481,10 @@ test(
     const { platform, row } = syncStatus(page);
     await expect(platform.getByRole("heading", { level: 2, name: EBAY, exact: true })).toBeVisible();
     await expect(platform.getByText("Listing", { exact: true })).toBeVisible();
-    // Live eBay round trip (EBAY_ROUND_TRIP above): two photo uploads, the
+    // Live eBay round trip: two photo uploads, the
     // items and offers, publish. The line is the drain's own count: the two
     // cards with a photo are listed, the third is the one skipped.
-    await expect(row.getByText(/^2 listed(, \d+ updated)?, 1 skipped$/)).toBeVisible({ timeout: EBAY_ROUND_TRIP });
+    await expect(row.getByText(/^2 listed(, \d+ updated)?, 1 skipped$/)).toBeVisible();
     await expect(row.getByText(/^Synced /)).toBeVisible();
     // Held back is exactly that one card, with the reason a collector can act on
     // (the copy is problemCopy("ebay").noPhoto in inventory/listing/copy.ts).
@@ -518,8 +520,8 @@ test(
     await expect(said(`Syncing ${TITLE} now. Watch it on Sync status.`)).toBeVisible();
     await tabs.getByRole("link", { name: "Sync status", exact: true }).click();
     await expect(page).toHaveURL(/[?&]tab=sync/);
-    // Live eBay round trip (EBAY_ROUND_TRIP above): the set was 2 listed a minute ago.
-    await expect(row.getByText(/^0 listed(, \d+ updated)?, 2 taken to 0$/)).toBeVisible({ timeout: EBAY_ROUND_TRIP });
+    // Live eBay round trip: the set was 2 listed a minute ago.
+    await expect(row.getByText(/^0 listed(, \d+ updated)?, 2 taken to 0$/)).toBeVisible();
     await expect(row.getByText(/held back/)).toHaveCount(0);
 
     // The Sales tab names eBay: its orders page is one link away. (No order has
@@ -571,7 +573,7 @@ test(
     await expectAccessible(page, { within: confirm, label: "Profile, Disconnect eBay confirm" });
     await confirm.getByRole("button", { name: "Yes, disconnect" }).click();
     // The takedown reads eBay's listings and withdraws what is live (a live round trip).
-    await expect(connectButton).toBeVisible({ timeout: EBAY_ROUND_TRIP });
+    await expect(connectButton).toBeVisible();
     written.disconnected = true;
     await expect(confirm).toBeHidden();
     await expect(connectedLine).toBeHidden();

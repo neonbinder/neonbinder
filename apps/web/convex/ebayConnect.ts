@@ -46,10 +46,13 @@ import { kickListingDrain, listingStateOf, pushesCounts, stopListingForSite } fr
 import { platformSettings } from "./listingSync";
 import { ebayAuthorizeUrl, ebayConfig, ebayConfigured } from "./lib/ebayEnv";
 import {
+  EBAY_COST_TYPE_CALCULATED,
+  EBAY_COST_TYPE_FLAT_RATE,
   EBAY_ESE_SERVICE_CODE,
   EBAY_MARKETPLACE_ID,
   EBAY_MERCHANT_LOCATION_KEY,
   ebaySetupMissing,
+  ebayServiceTakesCalculated,
   isRecord,
   isUsPostalCode,
   isUsStateCode,
@@ -96,6 +99,10 @@ const ESE_FOR_20_PLUS =
 const POLICY_GONE = "eBay doesn't have that policy on your account anymore. Pick another.";
 const OPT_IN_PENDING =
   "eBay is still switching on business policies for your account. Try Set me up again in a few minutes.";
+const SHIP_FROM_FIRST =
+  "Save where you ship from first. eBay works out each buyer's shipping from your ZIP code and the card's weight.";
+const NO_CALCULATED = (service: string) =>
+  `eBay isn't offering weight-based rates for ${service} on your account, so NeonBinder made nothing. Pick your own shipping policies instead.`;
 
 /** How long a Connect press's nonce is good for. */
 const CONNECT_NONCE_TTL_MS = 15 * 60 * 1000;
@@ -115,10 +122,13 @@ export const NB_POLICY_NAMES = {
   payment: "NB Payment",
   returns: "NB Returns (30 days)",
 } as const;
-/** Defaults for those policies. Product defaults, open for Jason to change. */
+/**
+ * Defaults for those policies. Product defaults, open for Jason to change.
+ * No shipping amounts: the envelope and tracked policies are CALCULATED, so
+ * buyers pay eBay's own rate for the card's package weight
+ * (lib/ebayListing.ts `ebayPackageFor`) from the seller's ship-from ZIP.
+ */
 const NB_POLICY_DEFAULTS = {
-  eseCost: "1.00",
-  trackedCost: "4.99",
   handlingDays: 1,
   returnDays: 30,
 } as const;
@@ -132,11 +142,11 @@ const locationValidator = v.object({
 });
 
 const setupItemValidator = v.union(
+  v.literal("location"),
   v.literal("shippingUnder20"),
   v.literal("shipping20Plus"),
   v.literal("payment"),
   v.literal("returns"),
-  v.literal("location"),
 );
 
 const connectionStateValidator = v.object({
@@ -656,7 +666,16 @@ export const readPolicies = action({
 
 const CATEGORY_TYPES = [{ name: "ALL_EXCLUDING_MOTORS_VEHICLES" }];
 
-function fulfillmentBody(name: string, serviceCode: string, cost: string, free: boolean): Record<string, unknown> {
+/**
+ * A one-service domestic fulfillment policy (Sell Account
+ * FulfillmentPolicyRequest).
+ *   calculated  costType CALCULATED and no shippingCost: eBay prices each
+ *               order from the item's package weight and size and the
+ *               ship-from postal code (the offer's inventory location)
+ *   free        costType FLAT_RATE at $0.00 with freeShipping
+ */
+function fulfillmentBody(name: string, serviceCode: string, pricing: "calculated" | "free"): Record<string, unknown> {
+  const free = pricing === "free";
   return {
     name,
     marketplaceId: EBAY_MARKETPLACE_ID,
@@ -665,11 +684,11 @@ function fulfillmentBody(name: string, serviceCode: string, cost: string, free: 
     shippingOptions: [
       {
         optionType: "DOMESTIC",
-        costType: "FLAT_RATE",
+        costType: free ? EBAY_COST_TYPE_FLAT_RATE : EBAY_COST_TYPE_CALCULATED,
         shippingServices: [
           {
             shippingServiceCode: serviceCode,
-            shippingCost: { value: free ? "0.00" : cost, currency: "USD" },
+            ...(free ? { shippingCost: { value: "0.00", currency: "USD" } } : {}),
             freeShipping: free,
             sortOrder: 1,
           },
@@ -678,6 +697,13 @@ function fulfillmentBody(name: string, serviceCode: string, cost: string, free: 
     ],
   };
 }
+
+/** Whether the owner has saved where they ship from (calculated shipping prices from it). */
+export const shipFromSaved = internalQuery({
+  args: { ownerId: v.string() },
+  returns: v.boolean(),
+  handler: async (ctx, args) => !ebaySetupMissing(await settingsOf(ctx, args.ownerId)).includes("location"),
+});
 
 /**
  * eBay's USPS Ground Advantage service code, read from eBay's own metadata
@@ -691,11 +717,13 @@ function groundAdvantageCode(services: Array<{ code: string; international: bool
 
 /**
  * "Set me up": NB's standard policies on the collector's eBay account —
- * Standard Envelope (cards under $20), Tracked (USPS Ground Advantage) and
- * Free Shipping (Ground Advantage at $0), plus a payment and a return policy
+ * Standard Envelope (cards under $20) and Tracked (USPS Ground Advantage),
+ * both calculated by weight so buyers pay eBay's own rates, and Free
+ * Shipping (Ground Advantage at $0), plus a payment and a return policy
  * only when the account has none. Opts the account into business policies
  * first when needed. Idempotent by name: a policy NB already made is not
- * made again. Fills only EMPTY settings slots with what it made.
+ * made again. Fills only EMPTY settings slots with what it made. Refuses
+ * until the ship-from location is saved, since calculated rates need it.
  */
 export const createStandardPolicies = action({
   args: {},
@@ -705,6 +733,8 @@ export const createStandardPolicies = action({
     const opened = await sessionFor(ctx, ownerId);
     if (!opened.ok) return opened;
     const session = opened.session;
+    // Calculated shipping prices from the ship-from ZIP: no location, no policies.
+    if (!(await ctx.runQuery(internal.ebayConnect.shipFromSaved, { ownerId }))) return { ok: false, error: SHIP_FROM_FIRST };
     let read = await readPolicyLists(ctx, session);
     if (!read.ok) return read;
     let justOptedIn = false;
@@ -727,6 +757,14 @@ export const createStandardPolicies = action({
       tracked: byName.get(NB_POLICY_NAMES.tracked),
       free: byName.get(NB_POLICY_NAMES.free),
     };
+    // NB never invents a shipping rate: when eBay's own metadata says a
+    // service has no calculated rate, nothing is made and the collector picks.
+    if (!ids.ese && !ebayServiceTakesCalculated(services.value, EBAY_ESE_SERVICE_CODE)) {
+      return { ok: false, error: NO_CALCULATED("Standard Envelope") };
+    }
+    if (!ids.tracked && !ebayServiceTakesCalculated(services.value, ground)) {
+      return { ok: false, error: NO_CALCULATED("USPS Ground Advantage") };
+    }
     const make = async (
       slot: keyof typeof ids,
       kind: "fulfillment_policy" | "payment_policy" | "return_policy",
@@ -742,16 +780,16 @@ export const createStandardPolicies = action({
     const steps: Array<() => Promise<Fail | null>> = [];
     if (!ids.ese) {
       steps.push(() =>
-        make("ese", "fulfillment_policy", NB_POLICY_NAMES.ese, fulfillmentBody(NB_POLICY_NAMES.ese, EBAY_ESE_SERVICE_CODE, NB_POLICY_DEFAULTS.eseCost, false)),
+        make("ese", "fulfillment_policy", NB_POLICY_NAMES.ese, fulfillmentBody(NB_POLICY_NAMES.ese, EBAY_ESE_SERVICE_CODE, "calculated")),
       );
     }
     if (!ids.tracked) {
       steps.push(() =>
-        make("tracked", "fulfillment_policy", NB_POLICY_NAMES.tracked, fulfillmentBody(NB_POLICY_NAMES.tracked, ground, NB_POLICY_DEFAULTS.trackedCost, false)),
+        make("tracked", "fulfillment_policy", NB_POLICY_NAMES.tracked, fulfillmentBody(NB_POLICY_NAMES.tracked, ground, "calculated")),
       );
     }
     if (!ids.free) {
-      steps.push(() => make("free", "fulfillment_policy", NB_POLICY_NAMES.free, fulfillmentBody(NB_POLICY_NAMES.free, ground, "0.00", true)));
+      steps.push(() => make("free", "fulfillment_policy", NB_POLICY_NAMES.free, fulfillmentBody(NB_POLICY_NAMES.free, ground, "free")));
     }
     if (read.lists.payment.length === 0) {
       steps.push(() =>

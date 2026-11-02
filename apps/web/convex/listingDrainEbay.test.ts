@@ -496,6 +496,25 @@ describe("eBay drain: the first sync", () => {
     expect([slot(0), slot(1), slot(2)]).toEqual(["FP-ESE", "FP-TRACKED", "FP-TRACKED"]);
   });
 
+  test("the package follows the slot: a 1 oz letter under $20, a 6 oz padded mailer at $20.00 and up", async () => {
+    const s = await setup();
+    const v = await seedVariant(s.t, { cards: [{ number: "1" }, { number: "2" }] });
+    await addWithPhoto(s, v.cardIds[0], { homeId: s.box, condition: "Near Mint", minPriceCents: 1999 });
+    await addWithPhoto(s, v.cardIds[1], { homeId: s.box, condition: "Near Mint", minPriceCents: 2000 });
+    await listOnEbay(s);
+    await queue(s, v.cardIds.map((cardId) => ({ cardId, variantId: v.variantId })));
+
+    await drain(s);
+
+    const pkg = (i: number) => ebay.items.get(`NB2-${v.cardIds[i]}-NM`).packageWeightAndSize;
+    expect(pkg(0)).toMatchObject({ packageType: "LETTER", weight: { value: 1, unit: "OUNCE" } });
+    expect(pkg(1)).toMatchObject({ packageType: "PADDED_BAGS", weight: { value: 6, unit: "OUNCE" } });
+    // Calculated shipping wants dimensions on every item.
+    for (const i of [0, 1]) {
+      expect(pkg(i).dimensions).toMatchObject({ unit: "INCH", length: expect.any(Number), width: expect.any(Number), height: expect.any(Number) });
+    }
+  });
+
   test("a floor under $0.99 lists at $0.99", async () => {
     const s = await setup();
     const { card } = await oneCard(s, 10);
@@ -581,10 +600,12 @@ describe("eBay drain: only what changed is sent", () => {
     expect((await linkOf(s, card, "NM"))?.pushed?.quantity).toBe(3);
   });
 
-  test("a price crossing $20 swaps the offer's shipping policy without resending the item", async () => {
+  test("a price crossing $20 swaps the offer's shipping policy and resends the item at the mailer weight", async () => {
     const s = await setup();
     const { v, card, copy } = await oneCard(s, 1999);
     await drain(s);
+    const sku = `NB2-${card}-NM`;
+    expect(ebay.items.get(sku).packageWeightAndSize.weight).toEqual({ value: 1, unit: "OUNCE" });
     ebay.calls = [];
     await s.t.run(async (ctx) => {
       await ctx.db.patch(copy.copyId as Id<"collectionCopies">, { minPriceCents: 2000 });
@@ -594,9 +615,46 @@ describe("eBay drain: only what changed is sent", () => {
     await drain(s);
 
     const paths = ebay.writes().map((c) => `${c.method} ${c.path}`);
-    expect(paths).toEqual([`PUT /sell/inventory/v1/offer/${ebay.offerFor(`NB2-${card}-NM`)?.offerId}`]);
-    expect(ebay.offerFor(`NB2-${card}-NM`)?.body.listingPolicies.fulfillmentPolicyId).toBe("FP-TRACKED");
+    expect(paths).toEqual([
+      "POST /sell/inventory/v1/bulk_create_or_replace_inventory_item",
+      `PUT /sell/inventory/v1/offer/${ebay.offerFor(sku)?.offerId}`,
+    ]);
+    expect(ebay.to("/commerce/media/v1_beta/image/create_image_from_file")).toHaveLength(0);
+    expect(ebay.items.get(sku).packageWeightAndSize).toMatchObject({ packageType: "PADDED_BAGS", weight: { value: 6, unit: "OUNCE" } });
+    expect(ebay.offerFor(sku)?.body.listingPolicies.fulfillmentPolicyId).toBe("FP-TRACKED");
     expect((await linkOf(s, card, "NM"))?.pushed).toMatchObject({ priceCents: 2000, fulfillmentPolicyId: "FP-TRACKED" });
+  });
+
+  test("a price falling back under $20 returns the item to the 1 oz letter and the envelope policy", async () => {
+    const s = await setup();
+    const { v, card, copy } = await oneCard(s, 2500);
+    await drain(s);
+    const sku = `NB2-${card}-NM`;
+    expect(ebay.items.get(sku).packageWeightAndSize.weight).toEqual({ value: 6, unit: "OUNCE" });
+    await s.t.run(async (ctx) => {
+      await ctx.db.patch(copy.copyId as Id<"collectionCopies">, { minPriceCents: 1500 });
+    });
+    await queue(s, [{ cardId: card, variantId: v.variantId, seq: 2 }]);
+
+    await drain(s);
+
+    expect(ebay.items.get(sku).packageWeightAndSize).toMatchObject({ packageType: "LETTER", weight: { value: 1, unit: "OUNCE" } });
+    expect(ebay.offerFor(sku)?.body.listingPolicies.fulfillmentPolicyId).toBe("FP-ESE");
+  });
+
+  test("a price change inside one slot keeps the package, so the item is not resent", async () => {
+    const s = await setup();
+    const { v, card, copy } = await oneCard(s, 2500);
+    await drain(s);
+    ebay.calls = [];
+    await s.t.run(async (ctx) => {
+      await ctx.db.patch(copy.copyId as Id<"collectionCopies">, { minPriceCents: 3000 });
+    });
+    await queue(s, [{ cardId: card, variantId: v.variantId, seq: 2 }]);
+
+    await drain(s);
+
+    expect(ebay.writes().map((c) => c.path)).toEqual(["/sell/inventory/v1/bulk_update_price_quantity"]);
   });
 
   test("a Best Offer change replaces the offer's terms", async () => {

@@ -18,7 +18,8 @@ const GONE_LINE = "The policy you picked here isn't on your eBay account anymore
  * and says why in an alert (the DefaultConditionSection pattern).
  *
  * One live line says it all: saving, saved, a refusal, or that the saved
- * policy is no longer on the account. While it holds a refusal or that
+ * policy is no longer on the account. It holds one line's room even while
+ * empty, so "Saving…" never shoves the next picker down as arrows choose. While it holds a refusal or that
  * warning, the radiogroup is described by it, so focus on the group reads
  * it too.
  *
@@ -99,7 +100,7 @@ export default function PolicyPicker({
   const describes = failed || warnGone;
 
   return (
-    <div className="space-y-2">
+    <div className="flex flex-col gap-2">
       <div ref={groupRef}>
         {options.length === 0 ? (
           <>
@@ -124,7 +125,7 @@ export default function PolicyPicker({
         role={failed ? "alert" : "status"}
         aria-live={failed ? undefined : "polite"}
         className={
-          "text-sm " +
+          "min-h-5 text-sm " +
           (failed ? "text-neon-pink-text" : warnGone ? "text-notice-warn-ink" : "text-ink-3")
         }
       >

@@ -173,9 +173,9 @@ export async function saveEbayConnection(page: Page, opts: { listing?: boolean; 
  * queue and the saved setup, and leaves the account not connected. Safe to call
  * when eBay is not connected (it then only opens the page and returns).
  * `gate` is the page-load wait (`LAUNCH_GATE` on a page that has not loaded the
- * app yet); `roundTrip` the wait for the takedown, a live eBay round trip.
+ * app yet). The takedown gets the standard 7 s budget.
  */
-export async function removeEbayConnection(page: Page, opts: { gate: number; roundTrip: number }): Promise<void> {
+export async function removeEbayConnection(page: Page, opts: { gate: number }): Promise<void> {
   await page.goto("/profile/ebay");
   await expect(page.getByRole("heading", { name: "Profile Settings" })).toBeVisible({ timeout: opts.gate });
   const connect = page.getByRole("button", { name: /^Connect eBay/ });
@@ -184,7 +184,7 @@ export async function removeEbayConnection(page: Page, opts: { gate: number; rou
   if (await disconnect.isVisible()) {
     await disconnect.click();
     await page.getByRole("dialog", { name: "Disconnect eBay?", exact: true }).getByRole("button", { name: "Yes, disconnect" }).click();
-    await expect(disconnect).toBeHidden({ timeout: opts.roundTrip });
+    await expect(disconnect).toBeHidden();
   }
   await expect(page.getByRole("button", { name: "Connect eBay", exact: true })).toBeVisible();
 }

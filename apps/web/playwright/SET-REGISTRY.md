@@ -1022,14 +1022,15 @@ product (a saved sign-in, Sync).
 | cron | the 15-minute order poll and re-sync are deliberately NOT exercised (Jason, 2026-11-01); the account is not syncing again before the spec ends, so a poll never meets this account |
 | measured | **Round trip, 2026-11-01 CI (desktop):** Sync → "2 listed" 9.9 s, the in-person Sync → "0 listed ... 2 taken to 0" 9.4 s (so one BSC row per card, item 4 below); `BSC_ROUND_TRIP` is 20 s from these. **Still to record:** (1) the seed block's wall time and the saved card count (`Saved N cards`) and the wizard steps it walked (it uses the live enrichment lookups: the committed recording holds none of this set's names, and extending it needs the set's staged names from a committed run, see `docs/operations/neo289-enrichment-fixtures.md` §4a); (2) one "Sync → N listed" BSC round trip, the figure `BSC_ROUND_TRIP` in the spec is checked against, and the hook's sign-in remove + save-again time (`SEED_SIGN_IN` is the bootstrap's 90 s); (3) whether the first two cards carry both a BSC card id and a SportLots one; (4) whether the zeroing Sync reads "2 taken to 0" (one BSC row per card) |
 
-### 1988 Topps Baseball — the eBay sandbox listing fixture (NEO-415) ⚠️ NEEDS SIGN-OFF
+### 1988 Topps Baseball — the eBay sandbox listing fixture (NEO-415)
 
 `tests/collection/inventory-ebay-sandbox-listing-1988-topps-base.spec.ts` proves
 that a collector's box counts reach eBay (NEO-415, eBay as a card-level
 listing platform) against eBay's SANDBOX: Profile -> eBay (the consent warning,
 the sandbox line), the connection (the seed hop, `sites=ebay`, `listing=on`),
-the setup (Set me up where the seller's account has no policies, a pick in
-each of Cards under $20 / $20 and up / Payment / Returns, Ships from), a box
+the setup (Ships from first, since Set me up is disabled until the location is
+saved; then Set me up where the seller's account has no policies, and a pick in
+each of Cards under $20 / $20 and up / Payment / Returns, ending on "You're all set"), a box
 with the first three cards (one copy each, a photo on two), the checklist's Sync
 and the Sync status tab's eBay section reading "2 listed, 1 skipped" with the
 photoless card held back by name and reason; then the box's "Listed on marketplaces" turned off, Sync, "0 listed ... 2
@@ -1051,7 +1052,7 @@ that set's cards.
 | end state | **eBay NOT connected** (Profile -> eBay offers Connect), the box deleted, the common price cleared, every other box in-person. The takedown is the product's Disconnect, which withdraws every live listing NeonBinder put up. Standard policies and inventory items made on the sandbox seller stay on eBay (no NB action removes them); the next run finds the policies and picks them. The afterEach runs on a pass too: on a failure it clears the common price, then disconnects |
 | re-runs | **safe to re-run on the same seed** (the box is minted per attempt; the connection is made and removed each run). The first steps need eBay not connected, which the previous run's hook (or the bootstrap's reseed) guarantees |
 | cron | the 15-minute order poll and re-sync are deliberately NOT exercised; the account is disconnected before the spec ends, so a poll never meets it |
-| measured | **Nothing yet.** `EBAY_ROUND_TRIP` in the spec is 20 s copied from `BSC_ROUND_TRIP` and is PROVISIONAL: it needs Jason's sign-off with a measurement from the first run (policies read, Set me up, a pick saved, the address saved, Sync to "2 listed", the in-person Sync, the disconnect). **To record after the first run:** each of those times; whether the sandbox seller already had policies (Set me up offered or not); whether the two cards were listed or held back (a missing item detail or a photo rule would show as "held back" with its reason) |
+| measured | **Nothing yet.** Every step runs on the standard 7 s budget (GUIDE hard rule 3), the eBay calls included; there is no raised ceiling, so a sandbox call slower than 7 s is a product finding to report, never a number to raise. **To record after the first run:** the time of each live eBay step (policies read, Set me up, a pick saved, the address saved, Sync to "2 listed", the in-person Sync, the disconnect); whether the sandbox seller already had policies (Set me up offered or not); whether the two cards were listed or held back (a missing item detail or a photo rule would show as "held back" with its reason) |
 
 ### Topps 206 — the unmapped-Base fixture for `base-mapping-cancel-recovers` (NEO-248) ✅ APPROVED
 

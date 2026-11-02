@@ -31,10 +31,25 @@ import PolicyPicker, { type SaveAnswer } from "./PolicyPicker";
  * and the checklist that says what still stands between their boxes and
  * eBay. Every save is the server's: a refusal comes back as NB's sentence
  * and is said in an alert.
+ *
+ * Ships from comes first: eBay prices each buyer's shipping from its ZIP, so
+ * "Set me up" waits for it (the server refuses until it's saved).
+ *
+ * Until the setup is done the checklist leads, right under the connection,
+ * and each step is a link that focuses its section's heading; done, it folds
+ * to one line at the foot.
+ *
+ * A card is a flex column with a gap, not `space-y`: its live lines sit
+ * `empty:absolute`, so an empty one leaves no phantom gap at the foot and
+ * still speaks when it fills.
  */
 
-export const SECTION = "space-y-5 rounded-lg border border-rule p-6";
+export const SECTION = "flex flex-col gap-5 rounded-lg border border-rule p-6";
 const NOTE = "text-sm text-ink-3";
+/** A section heading a checklist step can land on. */
+const LANDING = "rounded-sm text-xl font-semibold text-ink focus-outline";
+/** A live line: out of the flow while empty, in the accessibility tree always. */
+const LIVE = "text-sm empty:absolute";
 
 type SetupLine = { kind: "progress" | "ok" | "error"; text: string } | null;
 
@@ -71,37 +86,63 @@ export default function SetupSections({ connection }: { connection: EbayConnecti
 
   const save = async (picks: EbayPolicyPicks): Promise<SaveAnswer> => savePolicies(picks);
 
+  const shippingId = useId();
+  const moneyId = useId();
+  const locationId = useId();
+  const landings: Record<EbaySetupGap, string> = {
+    shippingUnder20: shippingId,
+    shipping20Plus: shippingId,
+    payment: moneyId,
+    returns: moneyId,
+    location: locationId,
+  };
+
+  // Finishing the last step in this visit is announced; arriving already set up is not.
+  const complete = connection.setupComplete;
+  const [sawUnfinished, setSawUnfinished] = useState(!complete);
+  if (!complete && !sawUnfinished) setSawUnfinished(true);
+
   return (
     <>
+      {!complete && <SetupChecklist missing={connection.missing} complete={false} landings={landings} />}
+      <LocationSection saved={connection.settings.location} headingId={locationId} />
       <PoliciesBody
         loaded={loaded}
         connection={connection}
         save={save}
         reread={reread}
         setLoaded={setLoaded}
+        shippingId={shippingId}
+        moneyId={moneyId}
       />
-      <LocationSection saved={connection.settings.location} />
       <OffersSection connection={connection} />
-      <SetupChecklist missing={connection.missing} complete={connection.setupComplete} />
+      {complete && <SetupChecklist missing={connection.missing} complete announce={sawUnfinished} />}
     </>
   );
 }
 
+/**
+ * Shipping, then Payment and returns: both cards with their final headings
+ * from the start, so the page never changes shape when eBay answers. The
+ * read's progress or failure sits in the first.
+ */
 function PoliciesBody({
   loaded,
   connection,
   save,
   reread,
   setLoaded,
+  shippingId,
+  moneyId,
 }: {
   loaded: Loaded;
   connection: EbayConnectionState;
   save: (picks: EbayPolicyPicks) => Promise<SaveAnswer>;
   reread: () => void;
   setLoaded: (next: Loaded) => void;
+  shippingId: string;
+  moneyId: string;
 }) {
-  const shippingId = useId();
-  const moneyId = useId();
   const settings = connection.settings;
   // Set me up's answer lives here, not in its box: the box goes once nothing
   // is missing, and its answer must outlive it.
@@ -113,17 +154,27 @@ function PoliciesBody({
     if (focusShipping > 0) shippingHeading.current?.focus();
   }, [focusShipping]);
 
-  if (loaded.state !== "ready") {
-    return (
+  const policies = loaded.state === "ready" ? loaded.policies : null;
+  const hidden = policies ? hiddenFrom20Plus(policies) : 0;
+
+  return (
+    <>
       <section aria-labelledby={shippingId} className={SECTION}>
-        <h2 id={shippingId} className="text-xl font-semibold text-ink">
-          Shipping, payment and returns
-        </h2>
-        {loaded.state === "loading" ? (
+        <div>
+          <h2 ref={shippingHeading} id={shippingId} tabIndex={-1} className={LANDING}>
+            Shipping
+          </h2>
+          <p className={`${NOTE} mt-1`}>
+            Pick from your own {EBAY_NAME} shipping policies. Cards under $20 can ride Standard Envelope; $20 and up
+            need a tracked service.
+          </p>
+        </div>
+        {loaded.state === "loading" && (
           <p role="status" className={NOTE}>
             Pulling your policies from {EBAY_NAME}…
           </p>
-        ) : (
+        )}
+        {loaded.state === "error" && (
           <div className="space-y-3">
             <p role="alert" className="text-sm text-neon-pink-text">
               {loaded.error}
@@ -133,30 +184,8 @@ function PoliciesBody({
             </NeonButton>
           </div>
         )}
-      </section>
-    );
-  }
-
-  const policies = loaded.policies;
-  const hidden = hiddenFrom20Plus(policies);
-
-  return (
-    <>
-      <section aria-labelledby={shippingId} className={SECTION}>
-        <div>
-          <h2
-            ref={shippingHeading}
-            id={shippingId}
-            tabIndex={-1}
-            className="rounded-sm text-xl font-semibold text-ink focus-outline"
-          >
-            Shipping
-          </h2>
-          <p className={`${NOTE} mt-1`}>
-            Pick from your own {EBAY_NAME} shipping policies. Cards under $20 can ride Standard Envelope; $20 and up
-            need a tracked service.
-          </p>
-        </div>
+        {policies && (
+          <>
         <PolicyPicker
           label="Cards under $20"
           options={under20Options(policies)}
@@ -187,16 +216,18 @@ function PoliciesBody({
             onDone={() => setFocusShipping((n) => n + 1)}
           />
         )}
+          </>
+        )}
         {/* Always mounted, so progress and the answer are announced as they fill it. */}
         <p
           key={setupLine?.kind === "error" ? "error" : "ok"}
           role={setupLine?.kind === "error" ? "alert" : "status"}
           aria-live={setupLine?.kind === "error" ? undefined : "polite"}
-          className={`text-sm ${
+          className={`${LIVE} ${
             setupLine?.kind === "error"
               ? "text-neon-pink-text"
               : setupLine?.kind === "ok"
-                ? "text-notice-success-ink"
+                ? "text-neon-green-text"
                 : "text-ink-3"
           }`}
         >
@@ -206,11 +237,13 @@ function PoliciesBody({
 
       <section aria-labelledby={moneyId} className={SECTION}>
         <div>
-          <h2 id={moneyId} className="text-xl font-semibold text-ink">
+          <h2 id={moneyId} tabIndex={-1} className={LANDING}>
             Payment and returns
           </h2>
           <p className={`${NOTE} mt-1`}>Your {EBAY_NAME} policies again. Every card NeonBinder lists uses these.</p>
         </div>
+        {policies && (
+          <>
         <PolicyPicker
           label="Payment"
           options={paymentOptions(policies)}
@@ -225,6 +258,8 @@ function PoliciesBody({
           onSave={(id) => save({ returnPolicyId: id })}
           emptyLine={`No returns policy on your ${EBAY_NAME} account yet. Set me up, under Shipping, makes one.`}
         />
+          </>
+        )}
       </section>
     </>
   );
@@ -232,9 +267,14 @@ function PoliciesBody({
 
 /**
  * "Set me up": makes NB's standard policies on the seller's eBay account
- * (Standard Envelope under $20, tracked Ground Advantage, free shipping, and
- * payment and returns only where there are none), reads them back, and
- * picks them for any slot still empty. A slot already picked stays put.
+ * (Standard Envelope under $20 and tracked Ground Advantage, both priced by
+ * eBay for the card's weight, free shipping, and payment and returns only
+ * where there are none), reads them back, and picks them for any slot still
+ * empty. A slot already picked stays put.
+ *
+ * Waits for Ships from: eBay prices each buyer's shipping from that ZIP, so
+ * until it's saved the button stays (reachable, `aria-disabled`, never
+ * hidden) and a line beside it, which describes it, says to save that first.
  *
  * Made but not read back: the box stays, says so, and its button becomes
  * "Try again", which reads and picks without making anything twice. Focus
@@ -259,9 +299,12 @@ function SetMeUp({
   /** What the last run made, when reading it back failed: a retry picks from these. */
   const [made, setMade] = useState<string[] | null>(null);
   const describeId = useId();
+  const waitId = useId();
+  // Matches the server's own gate (`ebaySetupMissing`): no saved ship-from, no Set me up.
+  const needsLocation = connection.missing.includes("location");
 
   const run = async () => {
-    if (busy) return;
+    if (busy || needsLocation) return;
     setBusy(true);
     setLine({ kind: "progress", text: "Setting you up…" });
     let created = made;
@@ -310,19 +353,28 @@ function SetMeUp({
     <div className="space-y-3 rounded-md border border-dashed border-rule-strong p-4">
       <p id={describeId} className="text-sm text-ink-2">
         Nothing here fits? Set me up makes three shipping policies on your {EBAY_NAME} account: Standard Envelope for
-        cards under $20, tracked USPS Ground Advantage, and free shipping. It adds payment and returns too if you have
-        none. Then it picks them for you.
+        cards under $20, tracked USPS Ground Advantage, and free shipping. On the first two, buyers pay
+        {` ${EBAY_NAME}'s `}own rate for the card&apos;s weight. It adds payment and returns too if you have none.
+        Then it picks them for you.
       </p>
-      <NeonButton
-        type="button"
-        onClick={() => void run()}
-        aria-disabled={busy || undefined}
-        aria-busy={busy || undefined}
-        aria-describedby={describeId}
-        className="max-sm:min-h-11"
-      >
-        {busy ? "Setting you up…" : label}
-      </NeonButton>
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+        <NeonButton
+          type="button"
+          onClick={() => void run()}
+          aria-disabled={busy || needsLocation || undefined}
+          aria-busy={busy || undefined}
+          aria-describedby={needsLocation ? `${waitId} ${describeId}` : describeId}
+          className="max-sm:min-h-11"
+        >
+          {busy ? "Setting you up…" : label}
+        </NeonButton>
+        {needsLocation && (
+          <p id={waitId} className="text-sm text-ink-2">
+            Save where you ship from first, up in Ships from. {EBAY_NAME} prices each buyer&apos;s shipping from your
+            ZIP.
+          </p>
+        )}
+      </div>
     </div>
   );
 }
@@ -339,12 +391,11 @@ const locationKey = (l: EbayLocation | null) => (l ? `${l.postalCode}|${l.city}|
  * Where cards ship from: eBay shows it on every listing and needs it before
  * one goes up. Prefilled with what's saved; Enter in any field saves.
  */
-function LocationSection({ saved }: { saved: EbayLocation | null }) {
-  const headingId = useId();
+function LocationSection({ saved, headingId }: { saved: EbayLocation | null; headingId: string }) {
   return (
     <section aria-labelledby={headingId} className={SECTION}>
       <div>
-        <h2 id={headingId} className="text-xl font-semibold text-ink">
+        <h2 id={headingId} tabIndex={-1} className={LANDING}>
           Ships from
         </h2>
         <p className={`${NOTE} mt-1`}>{EBAY_NAME} shows buyers where a card ships from. US addresses only for now.</p>
@@ -432,7 +483,7 @@ function LocationForm({ saved }: { saved: EbayLocation | null }) {
 
   return (
     <form
-      className="space-y-4"
+      className="flex flex-col gap-4"
       noValidate
       onSubmit={(e) => {
         e.preventDefault();
@@ -470,24 +521,23 @@ function LocationForm({ saved }: { saved: EbayLocation | null }) {
           autoComplete="address-level1"
           aria-required="true"
           maxLength={2}
-          placeholder="WI"
+          helperText="Two letters, like WI."
           error={errors.stateOrProvince}
         />
       </div>
       <NeonButton
         type="submit"
-        variant="secondary"
         aria-disabled={busy || undefined}
         aria-busy={busy || undefined}
-        className="max-sm:min-h-11"
+        className="self-start max-sm:min-h-11"
       >
-        {busy ? "Saving…" : "Save ships-from"}
+        {busy ? "Saving…" : "Save location"}
       </NeonButton>
       <p
         key={line?.kind === "error" ? "error" : "ok"}
         role={line?.kind === "error" ? "alert" : "status"}
         aria-live={line?.kind === "error" ? undefined : "polite"}
-        className={`text-sm ${line?.kind === "error" ? "text-neon-pink-text" : "text-ink-3"}`}
+        className={`${LIVE} ${line?.kind === "error" ? "text-neon-pink-text" : "text-ink-3"}`}
       >
         {line?.kind === "saving" ? "" : (line?.text ?? "")}
       </p>
@@ -543,7 +593,7 @@ function OffersSection({ connection }: { connection: EbayConnectionState }) {
         key={failed ? "failed" : "ok"}
         role={failed ? "alert" : "status"}
         aria-live={failed ? undefined : "polite"}
-        className={`text-sm ${failed ? "text-neon-pink-text" : "text-ink-3"}`}
+        className={`${LIVE} ${failed ? "text-neon-pink-text" : "text-ink-3"}`}
       >
         {failed ? "That didn't save, so Best Offer is back how it was. Give it another try." : ""}
       </p>
@@ -564,38 +614,73 @@ const STEP_TONES: Record<RunLineKind, string> = {
 
 /**
  * What still stands between the collector's boxes and eBay, one line a
- * step, ticking off as each saves (the run ledger's glyphs). Done, it folds
- * to one line. That line is a polite live region, so finishing the last step
- * is announced.
+ * step, ticking off as each saves (the run ledger's glyphs). Each step is a
+ * link that focuses its section's heading: an in-page jump, so it stays out
+ * of history (no hash in the URL, nothing for Back to step through).
+ *
+ * Done, it folds to one line at the foot. That line is a polite live region;
+ * when the last step was finished in this visit (`announce`) it mounts empty
+ * and fills, so finishing is announced rather than present on arrival.
  */
-export function SetupChecklist({ missing, complete }: { missing: EbaySetupGap[]; complete: boolean }) {
+export function SetupChecklist(
+  props:
+    | { missing: EbaySetupGap[]; complete: false; landings: Record<EbaySetupGap, string> }
+    | { missing: EbaySetupGap[]; complete: true; announce?: boolean },
+) {
   const headingId = useId();
-  const steps = setupChecklist(missing);
+  if (props.complete) return <SetupDone headingId={headingId} announce={props.announce ?? false} />;
+  const steps = setupChecklist(props.missing);
+  const { landings } = props;
+  return (
+    <section aria-labelledby={headingId} className="space-y-3 rounded-lg bg-raised p-6 shadow-offset">
+      <h2 id={headingId} className="text-xl font-semibold text-ink">
+        Finish these and your boxes go up
+      </h2>
+      <ul className="space-y-1">
+        {steps.map((step) => (
+          <li key={step.gap} className="flex items-center gap-2 text-sm">
+            <RunGlyph kind={step.done ? "built" : "waiting"} tones={STEP_TONES} />
+            <a
+              href={`#${landings[step.gap]}`}
+              onClick={(e) => {
+                e.preventDefault();
+                document.getElementById(landings[step.gap])?.focus();
+              }}
+              className={`inline-flex min-h-6 items-center rounded-sm underline decoration-rule-strong underline-offset-4 hover:decoration-current focus-outline max-sm:min-h-11 ${
+                step.done ? "text-ink-3" : "text-ink"
+              }`}
+            >
+              {step.label}
+              <span className="sr-only">{step.done ? ", done" : ", still to do"}</span>
+            </a>
+          </li>
+        ))}
+      </ul>
+      <p role="status" aria-live="polite" className="text-sm text-ink-3">
+        {`${steps.filter((s) => !s.done).length} to go. Nothing lists on ${EBAY_NAME} until they're done.`}
+      </p>
+    </section>
+  );
+}
+
+const DONE_LINE = `Everything in a listed box lists on ${EBAY_NAME} at your count.`;
+
+function SetupDone({ headingId, announce }: { headingId: string; announce: boolean }) {
+  const [said, setSaid] = useState(!announce);
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- deliberate second commit: the line mounts empty, so filling it is announced
+    setSaid(true);
+  }, []);
   return (
     <section
       aria-labelledby={headingId}
-      className={`space-y-3 rounded-lg p-6 ${complete ? "border border-notice-success-rule bg-notice-success-bg" : "bg-raised shadow-offset"}`}
+      className="space-y-3 rounded-lg border border-notice-success-rule bg-notice-success-bg p-6"
     >
-      <h2 id={headingId} className={`text-xl font-semibold ${complete ? "text-notice-success-ink" : "text-ink"}`}>
-        {complete ? "You're all set" : "Finish these and your boxes go up"}
+      <h2 id={headingId} className="text-xl font-semibold text-notice-success-ink">
+        You&apos;re all set
       </h2>
-      {!complete && (
-        <ul className="space-y-1.5">
-          {steps.map((step) => (
-            <li key={step.gap} className="flex items-start gap-2 text-sm">
-              <RunGlyph kind={step.done ? "built" : "waiting"} tones={STEP_TONES} />
-              <span className={step.done ? "text-ink-3" : "text-ink"}>
-                {step.label}
-                <span className="sr-only">{step.done ? ", done" : ", still to do"}</span>
-              </span>
-            </li>
-          ))}
-        </ul>
-      )}
-      <p role="status" aria-live="polite" className={`text-sm ${complete ? "text-notice-success-ink" : "text-ink-3"}`}>
-        {complete
-          ? `Everything in a listed box lists on ${EBAY_NAME} at your count.`
-          : `${steps.filter((s) => !s.done).length} to go. Nothing lists on ${EBAY_NAME} until they're done.`}
+      <p role="status" aria-live="polite" className="text-sm text-notice-success-ink">
+        {said ? DONE_LINE : ""}
       </p>
     </section>
   );

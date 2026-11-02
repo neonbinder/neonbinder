@@ -51,8 +51,9 @@ export const EBAY_CONSENT_LINE =
 export const LISTING_CONSENT: Partial<Record<string, string>> = { buysportscards: CONSENT_LINE };
 
 /** The seller account lists from another NB account: said wherever listing's state is. */
-export function sellerConflictLine(name: string): string {
-  return `That ${name} seller account already lists from another NeonBinder account, so nothing goes up or comes in from this one.`;
+export function sellerConflictLine(name: string, username?: string | null): string {
+  const who = username ? ` (${username})` : "";
+  return `That ${name} seller account${who} already lists from another NeonBinder account, so nothing goes up or comes in from this one.`;
 }
 export const SELLER_CONFLICT_LINE = sellerConflictLine(BSC_NAME);
 

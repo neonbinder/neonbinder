@@ -187,10 +187,10 @@ function Order({ sale, cards, sandbox }: { sale: Sale; cards: ReadonlyMap<CardId
     <li>
       <article aria-labelledby={titleId} className="rounded-lg bg-raised text-ink shadow-offset">
         <header className="flex flex-wrap items-baseline gap-x-3 gap-y-1 px-4 pt-3 pb-2.5">
+          {/* The marketplace is in the name: BSC and eBay orders share one list. */}
           <h3 id={titleId} tabIndex={-1} className="rounded-sm text-base font-semibold tabular-nums focus-outline">
-            Order {sale.orderNo}
+            {name} order {sale.orderNo}
           </h3>
-          <span className="text-sm font-medium text-ink-2">{name}</span>
           <span className="rounded-full border border-rule-strong px-2 py-0.5 text-xs font-medium text-ink-2">
             {orderStatus(sale.status, sale.platform)}
           </span>
