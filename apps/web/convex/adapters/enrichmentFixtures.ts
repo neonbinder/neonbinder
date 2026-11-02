@@ -22,9 +22,10 @@
  *   built with that QID. The reader keys on the CALLER's sport, so a Hockey
  *   entry answers a Hockey lookup only.
  * - `readFixture` is the only reader. The three lookup wrappers in
- *   `wikidata.ts` consult it first and fall through to the live body on a
- *   miss. A name outside the recording still goes live, so the fixture is
- *   never a ceiling on what the wizard can do.
+ *   `wikidata.ts` consult it first. On a miss they ask `liveLookupAllowed`:
+ *   with the switch off (production) the live body runs; with it on, only
+ *   the live-proof player goes live and every other miss is refused as a
+ *   no-match with an error-level log line (NEO-413).
  * - `captureFromCli` / `coverageReportFromCli` (`convex/enrichmentFixtures.ts`)
  *   produce and audit the file. They share `fixtureKey` with the reader:
  *   there is ONE normaliser, and it lives here.
@@ -385,11 +386,13 @@ export type FixtureRead<K extends FixtureKind> =
  * - `knownQid` supplied → the caller's id is a fact (it came off the same
  *   Wikidata statement that staged the row) and the live path would READ that
  *   record rather than search by name, so the recording is honoured only when
- *   it agrees: recorded `wikidataId` equal → hit; different → miss (live);
- *   recorded `null` → miss (live) — a name search that found nothing says
+ *   it agrees: recorded `wikidataId` equal → hit; different → miss;
+ *   recorded `null` → miss — a name search that found nothing says
  *   nothing about an id-path lookup, and a staged career team must never be
  *   handed a no-match its id would have answered. (Coordinator decision,
- *   2026-09-20.) An entry with a result but no `wikidataId` (an ESPN-only
+ *   2026-09-20.) That holds where the switch is off. Under the recording
+ *   (NEO-413) such a miss is refused rather than sent live, so record the
+ *   team with its id if a spec depends on the answer. An entry with a result but no `wikidataId` (an ESPN-only
  *   team) is honoured: there is no id to disagree with.
  *
  * Logs one structured `hit`/`miss` line per call when the switch is on;
@@ -435,6 +438,73 @@ export function readFixture<K extends FixtureKind>(
   }
   log("hit");
   return { hit: true, result: entry.result as FixtureResultFor<K> | null };
+}
+
+// ---------------------------------------------------------------------------
+// The one live lookup (NEO-413)
+// ---------------------------------------------------------------------------
+
+/**
+ * NEO-413 — the only name a recording-enabled deployment may send to live
+ * Wikidata: the live-enrichment spec's (`player-live-wikidata-enrichment`).
+ *
+ * Why: a recording-enabled deployment is a test target, and every name that
+ * misses the recording used to fall through to query.wikidata.org. On
+ * 2026-11-01 a passing CI run still sent 26 names live (made-up spec names
+ * and seven real names nobody had recorded). Each one put the suite's result
+ * in the hands of a service outside our control. Jason, 2026-11-01: "We
+ * should only be sending one made up name to ensure that functionality
+ * works." So on such a deployment a miss is answered as a no-match, with
+ * an error-level log line naming it, and only this entry goes live.
+ *
+ * Keyed like the recording (`fixtureKey`), so the sport counts: the same
+ * name in another sport is refused.
+ */
+export const LIVE_LOOKUP_ALLOWED: ReadonlyArray<{
+  kind: FixtureKind;
+  sportQid: string;
+  name: string;
+}> = [{ kind: "player", sportQid: "Q41466", name: "Vladislav Tretiak" }];
+
+/**
+ * NEO-413 — may this lookup leave the deployment? Call it AFTER a recording
+ * miss. Always true where the recording is off (production, and dev or a
+ * preview with the switch unset), so nothing changes there. Where it is on,
+ * true only for `LIVE_LOOKUP_ALLOWED`; anything else logs
+ * `enrichment_fixture_live_refused` at error level and the caller answers
+ * no-match without a request.
+ *
+ * `sportQid` may be undefined (a league in a custom sport has no key): such a
+ * lookup is refused too, because the live league search still runs without
+ * one. The line carries the kind, the name and the sport QID only, the same
+ * fields `readFixture` already logs; the calling function is the line's own
+ * Convex log identifier.
+ */
+export function liveLookupAllowed(
+  kind: FixtureKind,
+  sportQid: string | undefined,
+  name: string,
+): boolean {
+  if (!enrichmentFixturesEnabled()) return true;
+  if (sportQid !== undefined) {
+    const key = fixtureKey(kind, sportQid, name);
+    if (LIVE_LOOKUP_ALLOWED.some((a) => fixtureKey(a.kind, a.sportQid, a.name) === key)) {
+      return true;
+    }
+  }
+  console.error(
+    JSON.stringify({
+      msg: "enrichment_fixture_live_refused",
+      kind,
+      name,
+      sportQid: sportQid ?? null,
+      // A sport with no Wikidata QID is a different fix (configure the sport)
+      // from a name the recording lacks (record it).
+      reason: sportQid === undefined ? "no_sport_qid" : "not_recorded",
+      detail: "not in the recording; answered as no-match without a live request (NEO-413)",
+    }),
+  );
+  return false;
 }
 
 // ---------------------------------------------------------------------------

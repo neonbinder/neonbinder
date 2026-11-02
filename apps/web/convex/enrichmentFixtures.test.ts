@@ -16,7 +16,7 @@
  */
 
 import { convexTest } from "convex-test";
-import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi, beforeAll, afterAll } from "vitest";
 import { internal } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
@@ -39,6 +39,11 @@ import {
 import { __resetEspnTeamListCache } from "./adapters/espn";
 import { normalizeTeamName } from "./teams";
 
+// NEO-413: no real 1.5 s pause before an empty search is re-asked.
+import { __setEmptySearchReaskBackoffForTests } from "./adapters/wikidata";
+beforeAll(() => __setEmptySearchReaskBackoffForTests(0));
+afterAll(() => __setEmptySearchReaskBackoffForTests(undefined));
+
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
 }).glob("./**/*.*s");
@@ -48,6 +53,12 @@ const SPORT: SportEnrichmentContext = {
   label: "Baseball",
   espn: { path: "baseball/mlb", leagueName: "Major League Baseball" },
   wikidata: { sportQid: SPORT_QID, hallOfFameQid: "Q809892" },
+};
+
+/** NEO-413: the sport of the one name allowed to go live under the recording. */
+const HOCKEY: SportEnrichmentContext = {
+  label: "Hockey",
+  wikidata: { sportQid: "Q41466" },
 };
 
 const CONFIRM = "CAPTURE_ENRICHMENT_FIXTURES" as const;
@@ -389,14 +400,45 @@ describe("lookup wrappers — hit means zero requests", () => {
   });
 });
 
-describe("lookup wrappers — miss, off and mismatch fall through to the live body", () => {
-  test("a name with no entry goes live", async () => {
+describe("lookup wrappers — off falls through to the live body; under the recording a miss is refused (NEO-413)", () => {
+  /** The `enrichment_fixture_live_refused` lines `console.error` received. */
+  function refusals(spy: { mock: { calls: unknown[][] } }): Array<Record<string, unknown>> {
+    return spy.mock.calls
+      .map((call) => String(call[0]))
+      .filter((line) => line.includes("enrichment_fixture_live_refused"))
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+  }
+
+  test("a name with no entry is refused: no request, a no-match, and one error line naming it", async () => {
     fixtureOn();
-    const fetch = countingFetch();
+    const fetch = forbidFetch();
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
     __setEnrichmentFixtureForTests(fixtureWith({}));
     await expect(lookupPlayerEnrichment("Tony Gwynn", SPORT)).resolves.toBeNull();
-    expect(fetch.calls.length).toBeGreaterThan(0);
-    expect(fetch.calls[0]).toContain("query.wikidata.org");
+    expect(fetch.calls()).toBe(0);
+    expect(refusals(errors)).toEqual([
+      expect.objectContaining({ kind: "player", name: "Tony Gwynn", sportQid: SPORT_QID }),
+    ]);
+  });
+
+  test("the one allowed name (Tretiak, Hockey) still goes live under the recording", async () => {
+    fixtureOn();
+    const fetch = countingFetch();
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    __setEnrichmentFixtureForTests(fixtureWith({}));
+    await lookupPlayerEnrichment("Vladislav Tretiak", HOCKEY);
+    expect(fetch.calls.some((u) => u.includes("query.wikidata.org"))).toBe(true);
+    expect(refusals(errors)).toEqual([]);
+  });
+
+  test("the allowed name in another sport is refused: the sport is part of the key", async () => {
+    fixtureOn();
+    const fetch = forbidFetch();
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    __setEnrichmentFixtureForTests(fixtureWith({}));
+    await expect(lookupPlayerEnrichment("Vladislav Tretiak", SPORT)).resolves.toBeNull();
+    expect(fetch.calls()).toBe(0);
+    expect(refusals(errors)).toHaveLength(1);
   });
 
   test("flag set but TESTING_RESET_SECRET unset ⇒ inert: the entry is ignored and the call goes live", async () => {
@@ -421,8 +463,7 @@ describe("lookup wrappers — miss, off and mismatch fall through to the live bo
     expect(fetch.calls.length).toBe(2);
   });
 
-  test("team knownQid mismatch ⇒ live (ESPN and Wikidata are asked)", async () => {
-    fixtureOn();
+  test("switch off ⇒ a team knownQid mismatch reads live (ESPN and Wikidata are asked)", async () => {
     const fetch = countingFetch(happyRoute);
     __setEnrichmentFixtureForTests(
       fixtureWith({ [fixtureKey("team", SPORT_QID, "San Diego Padres")]: { kind: "team", name: "San Diego Padres", result: recordedTeam } }),
@@ -433,31 +474,48 @@ describe("lookup wrappers — miss, off and mismatch fall through to the live bo
     expect(fetch.calls.some((u) => u.includes("query.wikidata.org"))).toBe(true);
   });
 
-  test("a staged career team with a Wikidata id bypasses a recorded null and reads its record live", async () => {
+  test("under the recording a team knownQid mismatch is a miss, and refused: neither ESPN nor Wikidata is asked", async () => {
     fixtureOn();
-    const fetch = countingFetch(happyRoute);
+    const fetch = forbidFetch();
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    __setEnrichmentFixtureForTests(
+      fixtureWith({ [fixtureKey("team", SPORT_QID, "San Diego Padres")]: { kind: "team", name: "San Diego Padres", result: recordedTeam } }),
+    );
+    await expect(lookupTeamEnrichment("San Diego Padres", SPORT, "Q7777")).resolves.toBeNull();
+    expect(fetch.calls()).toBe(0);
+  });
+
+  test("under the recording a staged career team with an id over a recorded null is refused; without the id the null is honoured", async () => {
+    fixtureOn();
+    const fetch = forbidFetch();
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
     __setEnrichmentFixtureForTests(
       fixtureWith({ [fixtureKey("team", SPORT_QID, "San Diego Padres")]: { kind: "team", name: "San Diego Padres", result: null } }),
     );
-    const live = await lookupTeamEnrichment("San Diego Padres", SPORT, "Q2000");
-    expect(live?.wikidataId).toBe("Q2000");
-    // Id path: the detail query ran, the name search did not.
-    expect(fetch.calls.some((u) => decodeURIComponent(u).includes("wdt:P118"))).toBe(true);
-    expect(fetch.calls.some((u) => decodeURIComponent(u).includes("?team wikibase:apiOutputItem"))).toBe(false);
-    // And without the id, the same recorded null is honoured with no request.
-    fetch.calls.length = 0;
+    await expect(lookupTeamEnrichment("San Diego Padres", SPORT, "Q2000")).resolves.toBeNull();
     await expect(lookupTeamEnrichment("San Diego Padres", SPORT)).resolves.toBeNull();
-    expect(fetch.calls).toEqual([]);
+    expect(fetch.calls()).toBe(0);
+    // Only the id-path read was a miss; the honoured null is a hit, not a refusal.
+    expect(refusals(errors)).toHaveLength(1);
   });
 
-  test("a custom sport (no sportQid) has no fixture key and goes live", async () => {
+  test("a custom sport (no sportQid) has no fixture key; under the recording it is refused, not searched live", async () => {
     fixtureOn();
-    const fetch = countingFetch();
+    const fetch = forbidFetch();
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
     __setEnrichmentFixtureForTests(
       fixtureWith({ [fixtureKey("league", SPORT_QID, "Some League")]: { kind: "league", name: "Some League", result: null } }),
     );
+    await expect(lookupLeagueEnrichment("Some League", undefined)).resolves.toBeNull();
+    expect(fetch.calls()).toBe(0);
+    expect(refusals(errors)).toEqual([expect.objectContaining({ kind: "league", sportQid: null })]);
+  });
+
+  test("switch off ⇒ a custom-sport league searches live, unchanged", async () => {
+    const fetch = countingFetch();
+    __setEnrichmentFixtureForTests(fixtureWith({}));
     await lookupLeagueEnrichment("Some League", undefined);
-    expect(fetch.calls.length).toBe(1);
+    expect(fetch.calls.some((u) => u.includes("query.wikidata.org"))).toBe(true);
   });
 });
 

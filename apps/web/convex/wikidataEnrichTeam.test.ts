@@ -22,12 +22,17 @@
  */
 
 import { convexTest } from "convex-test";
-import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi, beforeAll, afterAll } from "vitest";
 import { internal } from "./_generated/api";
 import schema from "./schema";
 import { Id } from "./_generated/dataModel";
 import { normalizeTeamName } from "./teams";
 import { __resetEspnTeamListCache } from "./adapters/espn";
+
+// NEO-413: no real 1.5 s pause before an empty search is re-asked.
+import { __setEmptySearchReaskBackoffForTests } from "./adapters/wikidata";
+beforeAll(() => __setEmptySearchReaskBackoffForTests(0));
+afterAll(() => __setEmptySearchReaskBackoffForTests(undefined));
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;

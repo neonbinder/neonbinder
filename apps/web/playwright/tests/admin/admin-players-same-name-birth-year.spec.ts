@@ -3,15 +3,27 @@
 //   no birth year, one row on file        -> ADOPT ("already exists")
 //   a birth year no row on file carries   -> FORK  ("Added <name>.")
 //   a birth year exactly one row carries  -> ADOPT
-// The name is one search token (no hyphens): players.search tokenizes.
+//
+// NEO-413: the name is a real person from support/recorded-names.ts whose
+// Baseball lookup the recording holds as a no-match, so neither create sends
+// anything to Wikidata. One name per worker; FRESH-ONLY (re-seed before
+// re-running). players.search tokenizes, so a filter on a two-word name also
+// lists other players sharing a word: the "how many of him" assertions count
+// the rows whose accessible name starts with his full name and his sport,
+// never the list's match counter.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { expectPlayersLoaded } from "../../support/players";
+import { recordedNoMatchName } from "../../support/recorded-names";
 
 test(
   "Player Management — a birth year is bounded, shows on the row, and is what lets a repeated name become a genuinely second player",
   { tag: ["@admin"] },
   async ({ page, signIn, env }) => {
-    const name = `Samename${env.ATTEMPT_TOKEN}`;
+    const name = recordedNoMatchName(env, "admin-players-same-name-birth-year");
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    // His rows, and only his: "<name> Baseball b. 1960 ...".
+    const rowsOfHim = () =>
+      page.getByRole("main").getByRole("button", { name: new RegExp(`^${escaped}\\s*Baseball`) });
     await signIn("/admin/players");
     await expectPlayersLoaded(page, LAUNCH_GATE);
 
@@ -51,9 +63,8 @@ test(
 
     // (c) The year is stored: a fresh search re-reads the row.
     await filter.fill(name);
-    await expect(page.getByText("1 match", { exact: true })).toBeVisible();
-    const list = page.getByRole("main");
-    await expect(list.getByText(/b\. 1960/)).toBeVisible();
+    await expect(rowsOfHim()).toHaveCount(1);
+    await expect(rowsOfHim().getByText(/b\. 1960/)).toBeVisible();
 
     // (d)+(e) Repeating the name demotes creation to "Create anyway"; with no
     // year it ADOPTS the player already on file.
@@ -62,8 +73,8 @@ test(
     await newName.fill(name);
     await page.getByRole("button", { name: `Create player ${name} anyway` }).click();
     await expect(page.getByText("That player already exists — opened it.")).toBeVisible();
-    await expect(page.getByText("1 match", { exact: true })).toBeVisible();
-    await expect(list.getByText(/b\. 1960/)).toBeVisible();
+    await expect(rowsOfHim()).toHaveCount(1);
+    await expect(rowsOfHim().getByText(/b\. 1960/)).toBeVisible();
 
     // (f) "Create anyway" with a year nobody carries FORKS a second player.
     await page.getByRole("button", { name: "Add player" }).click();
@@ -72,8 +83,8 @@ test(
     await birthYear.fill("1975");
     await page.getByRole("button", { name: `Create player ${name} anyway` }).click();
     await expect(created).toBeVisible();
-    await expect(page.getByText("2 matches", { exact: true })).toBeVisible();
-    await expect(list.getByText(/b\. 1960/)).toBeVisible();
-    await expect(list.getByText(/b\. 1975/)).toBeVisible();
+    await expect(rowsOfHim()).toHaveCount(2);
+    await expect(rowsOfHim().filter({ hasText: /b\. 1960/ })).toHaveCount(1);
+    await expect(rowsOfHim().filter({ hasText: /b\. 1975/ })).toHaveCount(1);
   },
 );

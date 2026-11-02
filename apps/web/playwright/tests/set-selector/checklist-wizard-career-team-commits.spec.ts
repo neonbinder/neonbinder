@@ -2,6 +2,7 @@
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { setBuilderReady } from "../../support/set-builder";
 import { expectTeamsLoaded, teamsCounter } from "../../support/players";
+import { recordedNoMatchName } from "../../support/recorded-names";
 import {
   advanceToSave,
   fetchOneMarketplaceSetChecklistToWizard,
@@ -17,13 +18,18 @@ import {
 // every Orioles player, so that fetch committed straight through with no
 // wizard. MEASURED on PR #314's preview: 18 cards, 15 unknown names, all
 // players, 0 teams. Re-seed before re-running.
+// NEO-413: the staged career team is looked up when it stages, so it is a
+// real club from support/recorded-names.ts (a hurling club, one word) that the
+// recording holds as a Hockey no-match and the reference catalogue does not
+// hold: the lookup sends nothing to Wikidata, the step still reads "New Team",
+// and Team Management's filter finds this one row. One name per worker.
 const SET = "Memphis RiverKings CHL";
 
 test(
   "Entity review — a hand-staged career team survives the commit and becomes a real team row",
   { tag: ["@set-selector"] },
   async ({ page, signIn, env }) => {
-    const team = `MintedTeam${env.ATTEMPT_TOKEN}`;
+    const team = recordedNoMatchName(env, "checklist-wizard-career-team-commits");
 
     await signIn("/set-selector");
     await expect(setBuilderReady(page)).toBeVisible({ timeout: LAUNCH_GATE });
@@ -42,7 +48,9 @@ test(
     await wizard.getByRole("spinbutton", { name: /^To year/ }).fill("2005");
     await wizard.getByRole("button", { name: "Add career team" }).click();
 
-    // The new name is looked up (live), then raised as its own New Team step.
+    // The new name is looked up (a recorded no-match since NEO-413: no live
+    // request), then raised as its own New Team step. The ceiling stays the
+    // walk util's lookup ceiling: the lookup still waits in the shared pool.
     const lookingUp = wizard.getByText(/still looking up/);
     const newTeam = wizard.getByRole("heading", { name: `New Team: ${team}` });
     await expect(newTeam.or(lookingUp).first()).toBeVisible();

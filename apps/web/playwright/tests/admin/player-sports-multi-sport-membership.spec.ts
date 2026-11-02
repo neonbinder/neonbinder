@@ -2,15 +2,19 @@
 // NEO-313 case B: a football player is given Baseball too. He is listed as a
 // baseball player ("Also: Baseball"), a baseball card's picker finds him on
 // its default path, and Baseball cannot be removed while that card links him.
+// NEO-413: the player is a real person from support/recorded-names.ts whose
+// Football lookup the recording holds as a no-match, so his add sends nothing
+// to Wikidata. One name per worker; FRESH-ONLY (re-seed before re-running).
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { addPlayerByHand, expectPlayersLoaded, PLAYERS_MATCHES, playersCounter } from "../../support/players";
 import { drillToCustom } from "../../support/set-builder";
+import { recordedNoMatchName } from "../../support/recorded-names";
 
 test(
   "Player sports — give a football player Baseball too; he is listed as a baseball player, a baseball card's picker finds him without a switch, and Baseball cannot be removed while that card links him (NEO-313)",
   { tag: ["@admin"] },
   async ({ page, signIn, env }) => {
-    const player = `Gm${env.ATTEMPT_TOKEN}`;
+    const player = recordedNoMatchName(env, "player-sports-multi-sport-membership");
     const cardNumber = `316-${env.ATTEMPT_ID}`;
     const set = `msp-${env.WORKER_INDEX}`;
 

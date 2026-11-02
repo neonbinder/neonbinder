@@ -26,12 +26,17 @@
  */
 
 import { convexTest } from "convex-test";
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { afterEach, describe, expect, test, vi, beforeAll, afterAll } from "vitest";
 import { internal } from "./_generated/api";
 import schema from "./schema";
 import { Id } from "./_generated/dataModel";
 import { normalizeLeagueName } from "./leagues";
 import { isNonRetryableError } from "@convex-dev/workpool";
+
+// NEO-413: no real 1.5 s pause before an empty search is re-asked.
+import { __setEmptySearchReaskBackoffForTests } from "./adapters/wikidata";
+beforeAll(() => __setEmptySearchReaskBackoffForTests(0));
+afterAll(() => __setEmptySearchReaskBackoffForTests(undefined));
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -287,7 +292,8 @@ describe("enrichLeague", () => {
 
     // Nothing written at all, not even `lastUpdated`.
     expect(await getLeague(t, leagueId)).toEqual(before);
-    expect(stub.searchCalls()).toBe(1);
+    // An empty search is asked once more before it counts (NEO-413).
+    expect(stub.searchCalls()).toBe(2);
     expect(stub.detailCalls()).toBe(0);
   });
 
@@ -457,7 +463,8 @@ describe("enrichLeague", () => {
     await expect(
       t.action(internal.adapters.wikidata.enrichLeague, { leagueId }),
     ).resolves.toBeNull();
-    expect(stub.searchCalls()).toBe(1);
+    // Final after the one re-ask an empty search gets (NEO-413).
+    expect(stub.searchCalls()).toBe(2);
     expect(stub.detailCalls()).toBe(0);
     expect(await getLeague(t, leagueId)).toEqual(before);
   });
@@ -481,7 +488,12 @@ describe("enrichLeague", () => {
 
     await t.action(internal.adapters.wikidata.enrichLeague, { leagueId });
 
-    expect(queries).toHaveLength(1);
+    // The empty reply is asked once more (NEO-413), as the same query plus a
+    // comment, so both carry the filters.
+    expect(queries).toHaveLength(2);
+    expect(queries[1]).toContain("# re-ask after an empty reply (NEO-413)");
+    expect(queries[1]).toContain("wdt:P31/wdt:P279* wd:Q623109");
+    expect(queries[1]).toContain("wdt:P641 wd:Q5369");
     expect(queries[0]).toContain("wdt:P31/wdt:P279* wd:Q623109");
     expect(queries[0]).toContain("wdt:P641 wd:Q5369");
     // Relevance order has to be asked for: without it the search returned the
@@ -568,13 +580,17 @@ describe("enrichLeague", () => {
 
     await t.action(internal.adapters.wikidata.enrichLeague, { leagueId });
 
-    expect(queries).toHaveLength(1);
-    // Not the whole payload, not a fragment of it, not the filter it would
-    // have ridden in on.
-    expect(queries[0]).not.toContain(evilSportQid);
-    expect(queries[0]).not.toContain("UNION");
-    expect(queries[0]).not.toContain("wdt:P641");
-    // Degraded, not disabled: the class filter is still doing its job.
-    expect(queries[0]).toContain("wdt:P31/wdt:P279* wd:Q623109");
+    // The empty reply is asked once more (NEO-413); neither request may
+    // carry the payload.
+    expect(queries).toHaveLength(2);
+    for (const q of queries) {
+      // Not the whole payload, not a fragment of it, not the filter it would
+      // have ridden in on.
+      expect(q).not.toContain(evilSportQid);
+      expect(q).not.toContain("UNION");
+      expect(q).not.toContain("wdt:P641");
+      // Degraded, not disabled: the class filter is still doing its job.
+      expect(q).toContain("wdt:P31/wdt:P279* wd:Q623109");
+    }
   });
 });

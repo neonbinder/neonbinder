@@ -88,3 +88,160 @@ export function recordedNoMatchPlayer(env: FlowEnv, pool: RecordedNamePool): str
   }
   return name;
 }
+
+/** Wikidata sport QIDs the pools below are recorded under. */
+const BASEBALL = "Q5369";
+const FOOTBALL = "Q41323";
+const HOCKEY = "Q41466";
+
+/**
+ * NEO-413 (Jason, 2026-11-01: "We should only be sending one made up name to
+ * ensure that functionality works"): real names for every OTHER spec whose
+ * player, league or team reaches the enrichment lookup. Before this, eleven
+ * specs minted a token (`Gm<token>`, `Lg<token>`, `ProbeTeam<token>`, ...) for
+ * a row the product looks up, and every run sent those to Wikidata live.
+ *
+ * Each name is a real person, league or club, chosen so that:
+ *   - the recording holds its lookup, in the pool's sport, as a genuine
+ *     no-match (`result: null`, captured live on 2026-11-01), so the row
+ *     stays as bare as the minted name's did and no request is made;
+ *   - it is absent from the reference catalogue: every player was checked
+ *     in Baseball, Football and Hockey, and every club in those and Soccer,
+ *     against the catalogue on dev the same day (leagues have no by-name
+ *     lookup to check with; the specs' exact-count filters would show a
+ *     clash). So a create is a create, and a filter finds this row only.
+ * The players are 1996 Venezuelan Winter League and 1990s minor-league
+ * hockey names (real people Wikidata does not know); the leagues are cricket,
+ * hurling, netball, handball, volleyball, floorball and bandy competitions;
+ * the clubs are hurling and Gaelic football clubs, each ONE word: a team
+ * name is typed into a team picker, and `teams.search` matches any shared
+ * word (SET-REGISTRY.md, "A name typed into a team picker must be a SINGLE
+ * search token"), so each club was also checked to find no team at all on
+ * dev's catalogue. A league or club from another sport is a no-match by
+ * construction: the lookup filters on the pool's sport.
+ *
+ * Same contract as `RECORDED_NO_MATCH_PLAYERS` above: one pool per spec (a
+ * spec with two lookups has a pool per role), one name per worker, never
+ * shared, and the specs are FRESH-ONLY. `convex/enrichmentFixtureFile.test.ts`
+ * fails if any name stops being a recorded no-match of its kind and sport, or
+ * appears in two pools.
+ */
+export const RECORDED_NO_MATCH_NAMES = {
+  "player-sports-multi-sport-membership": {
+    kind: "player",
+    sportQid: FOOTBALL,
+    names: [
+      "Alejandro Alvarez", "Angel Pocho Gomez", "Carlos Tovar Trillo",
+      "Gustavo Jose Gil", "Ivan Paz Montiel", "Jesus Avila", "Jesus Chalao Mendez",
+      "Jesus Marquez", "Jesus Mendoza", "Johnny Gonzalez", "Jose Cheo Garcia",
+      "Jose Luis Ramos",
+    ],
+  },
+  "card-player-picker-cross-sport": {
+    kind: "player",
+    sportQid: FOOTBALL,
+    names: [
+      "Jose Luis Zambrano", "Juan Munoz", "Julio Cesar Strauss",
+      "Luis Rafael Salazar", "Luis Tinoco", "Manuel Gonzalez", "Mario Gonzalez",
+      "Mauricio Ruiz", "Miguel Campos", "Omar Sanchez", "Richard Fernandez",
+      "Richard Romero",
+    ],
+  },
+  "checklist-wizard-link-commits": {
+    kind: "player",
+    sportQid: FOOTBALL,
+    names: [
+      "Rigoberto Mendoza", "Tomas Salazar", "Vicente Garcia", "Vitico Davalillo",
+      "Wilfredo Romero", "William Martinez", "Brian Gallentine", "Bryan Forslund",
+      "Dean Zayonce", "Doug Stromback", "Mark Yannetti", "Craig Hamelin",
+    ],
+  },
+  "admin-players-same-name-birth-year": {
+    kind: "player",
+    sportQid: BASEBALL,
+    names: [
+      "Adrian Jordan", "Agustin Gomez", "Alfredo Ortiz", "Antonio Castillo",
+      "Carlos Aguilar", "Cesar Diaz", "Edwin Marquez", "Erick Perez",
+      "Francisco Munoz", "Freddy Gonzalez", "Hector Ortega", "Jaime Torres",
+    ],
+  },
+  "league-management-add-and-edit": {
+    kind: "league",
+    sportQid: BASEBALL,
+    names: [
+      "Ranji Trophy", "Plunket Shield", "Sheffield Shield", "Vitality Blast",
+      "Duleep Trophy", "Irani Cup", "Vijay Hazare Trophy", "Syed Mushtaq Ali Trophy",
+      "Logan Cup", "Ford Trophy", "Marsh Cup", "Super Smash",
+    ],
+  },
+  "team-picker-ranks-by-set-context": {
+    kind: "league",
+    sportQid: BASEBALL,
+    names: [
+      "Bob Willis Trophy", "County Championship", "Handbollsligan", "PlusLiga",
+      "SuperLega", "Salibandyliiga", "Svenska Superligan", "Efeler Ligi",
+      "Sultanlar Ligi", "Christy Ring Cup", "Joe McDonagh Cup",
+      "Suncorp Super Netball",
+    ],
+  },
+  "checklist-wizard-career-team-entry:league": {
+    kind: "league",
+    sportQid: BASEBALL,
+    names: [
+      "Netball Superleague", "ANZ Premiership", "Bandyallsvenskan", "Currie Cup",
+      "Nicky Rackard Cup", "Lory Meagher Cup", "Tailteann Cup", "Hogan Cup",
+      "Deodhar Trophy", "Rachael Heyhoe Flint Trophy", "Charlotte Edwards Cup",
+      "Sigerson Cup",
+    ],
+  },
+  "checklist-wizard-career-team-entry:first-team": {
+    kind: "team",
+    sportQid: BASEBALL,
+    names: [
+      "Ballygunner", "Kilmallock", "Cuala", "Sixmilebridge", "Clarinbridge",
+      "Portumna", "Slaughtneil", "Toomevara", "Patrickswell", "Kiltormer", "Athenry",
+      "Birr",
+    ],
+  },
+  "checklist-wizard-career-team-entry:second-team": {
+    kind: "team",
+    sportQid: BASEBALL,
+    names: [
+      "Ballyea", "Newtownshandrum", "Cushendall", "Loughgiel", "Ballycran",
+      "Portaferry", "Crossmaglen", "Kilcoo", "Corofin", "Mullinalaghta", "Kilmacud",
+      "Ballyboden",
+    ],
+  },
+  "checklist-one-marketplace-skips-match-dialog": {
+    kind: "team",
+    sportQid: HOCKEY,
+    names: [
+      "Castlehaven", "Craughwell", "Loughrea", "Mullinavat", "Dicksboro",
+      "Tullaroan", "Thomastown", "Mooncoin", "Templetuohy", "Borrisoleigh",
+      "Kiladangan", "Roscrea",
+    ],
+  },
+  "checklist-wizard-career-team-commits": {
+    kind: "team",
+    sportQid: HOCKEY,
+    names: [
+      "Cappawhite", "Moycarkey", "Nenagh", "Lismore", "Dungarvan", "Fourmilewater",
+      "Kilruane", "Clonoulty", "Ballinderreen", "Dunloy", "Ballyhale",
+      "Carrickshock",
+    ],
+  },
+} as const satisfies Record<
+  string,
+  { kind: "player" | "league" | "team"; sportQid: string; names: readonly string[] }
+>;
+
+export type RecordedNoMatchPool = keyof typeof RECORDED_NO_MATCH_NAMES;
+
+/** This worker's name from `pool` (one pool per spec role; see above). */
+export function recordedNoMatchName(env: FlowEnv, pool: RecordedNoMatchPool): string {
+  const name = RECORDED_NO_MATCH_NAMES[pool].names[Number(env.WORKER_INDEX)];
+  if (!name) {
+    throw new Error(`recorded-names: pool ${pool} has no name for worker ${env.WORKER_INDEX}`);
+  }
+  return name;
+}

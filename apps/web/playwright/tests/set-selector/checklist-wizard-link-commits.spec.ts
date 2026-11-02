@@ -11,17 +11,20 @@
 // exactly ONE "Wayne Gretzky", home sport Hockey ("Gretzky" also finds Brent
 // Gretzky, a different accessible name). If a bundle refresh drops him or adds
 // a second one, change the literals to another single-row Hockey player. The
-// cross-sport target is MINTED (the catalogue's Football names would crowd any
-// search).
+// cross-sport target is a REAL name the catalogue does not hold in any sport
+// (NEO-413, support/recorded-names.ts): its Football lookup is a recorded
+// no-match, so the add sends nothing to Wikidata, and its full name finds
+// only that row among the catalogue's Football players.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { addPlayerByHand, expectPlayersLoaded, PLAYERS_MATCHES, playersCounter } from "../../support/players";
 import { advanceToSave, fetchOneMarketplaceSetChecklistToWizard, readBackDecision, reviewWizard, stepCounter, walkToPlayerRow } from "../../support/wizard";
+import { recordedNoMatchName } from "../../support/recorded-names";
 
 test(
   "Entity review — Link to Existing decisions, including one to a player of another sport, are carried through Confirm & Save into the committed checklist",
   { tag: ["@set-selector"] },
   async ({ page, signIn, env }) => {
-    const gw = `Gw${env.ATTEMPT_TOKEN}`;
+    const gw = recordedNoMatchName(env, "checklist-wizard-link-commits");
 
     await signIn("/admin/players");
     await expectPlayersLoaded(page, LAUNCH_GATE);

@@ -1,17 +1,25 @@
 // Origin: .maestro/flows/set-selector/checklist-wizard-career-team-entry.yaml (Maestro suite retired in NEO-341; see git history)
 // Cancels out at the end and discards, so nothing is committed.
+//
+// NEO-413: both career teams and the league are looked up when they stage, so
+// each is a real name from support/recorded-names.ts (two one-word hurling
+// or Gaelic football clubs, a netball or hurling competition) that the recording holds as a
+// Baseball no-match and the reference catalogue does not hold: the lookups
+// send nothing to Wikidata and every step still reads "New Team"/"New League".
+// One name per worker per role. The batch is discarded, so nothing is
+// written and the spec stays re-runnable.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { setBuilderReady } from "../../support/set-builder";
+import { recordedNoMatchName } from "../../support/recorded-names";
 import { cancelAndDiscard, discardResumedReviewBatch, fetchChecklistToWizard, readBackDecision, readStep, reviewWizard, stepCounter, walkToPlayerRow } from "../../support/wizard";
 
 test(
   "Entity review — a player row takes hand-entered career teams, refuses an entry with no from-year, and carries the staged history into the Add as New decision",
   { tag: ["@set-selector"] },
   async ({ page, signIn, env }) => {
-    const token = env.ATTEMPT_TOKEN;
-    const probe = `ProbeTeam${token}`;
-    const temp = `TempTeam${token}`;
-    const league = `Lg${token}`;
+    const probe = recordedNoMatchName(env, "checklist-wizard-career-team-entry:first-team");
+    const temp = recordedNoMatchName(env, "checklist-wizard-career-team-entry:second-team");
+    const league = recordedNoMatchName(env, "checklist-wizard-career-team-entry:league");
 
     await signIn("/set-selector");
     await expect(setBuilderReady(page)).toBeVisible({ timeout: LAUNCH_GATE });
@@ -90,7 +98,7 @@ test(
     // to is undecided like the player was), so x has not moved.
     await expect(stepCounter(page)).toHaveText(new RegExp(`^Step ${stepBefore} of [0-9]+$`));
 
-    await wizard.getByRole("combobox", { name: "League" }).fill(token);
+    await wizard.getByRole("combobox", { name: "League" }).fill(league);
     await wizard.getByRole("option", { name: `${league} (new)` }).click();
     await expect(wizard.getByRole("combobox", { name: "League" })).toHaveValue(`${league} (new)`);
     await wizard.getByRole("button", { name: "Add as New Team" }).click();
