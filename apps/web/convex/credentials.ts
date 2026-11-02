@@ -2105,7 +2105,9 @@ export const connectEbay = internalAction({
         }
         if (recorded.staleLinks) {
           // Link rows left from the account a Disconnect could not fully
-          // end: their offer ids mean nothing on this account.
+          // end: their offer ids mean nothing on this account, so they are
+          // deleted (accepted in security review: those listings stay up on
+          // the old account, and Disconnect told the collector how many).
           let pages = 0;
           for (let cursor: string | null = null; pages < MAX_STALE_LINK_PAGES; pages += 1) {
             const page: { cursor: string; isDone: boolean } = await ctx.runMutation(

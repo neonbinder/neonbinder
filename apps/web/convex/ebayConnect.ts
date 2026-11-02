@@ -521,7 +521,21 @@ export const ebayDrainRunning = internalQuery({
   },
 });
 
-/** How long Disconnect waits for a running drain to stand down before it goes ahead. */
+/** The owner's live eBay listings NB knows of (what a refused Disconnect reports as not ended). */
+async function countLiveEbayLinks(ctx: Pick<ActionCtx, "runQuery">, ownerId: string): Promise<number> {
+  let live = 0;
+  for (let cursor: string | null = null; ; ) {
+    const page: { offers: Array<{ sku: string; offerId: string }>; cursor: string; isDone: boolean } = await ctx.runQuery(
+      internal.ebayConnect.liveEbayLinksPage,
+      { ownerId, cursor },
+    );
+    live += page.offers.length;
+    if (page.isDone) return live;
+    cursor = page.cursor;
+  }
+}
+
+/** How long Disconnect waits for a running drain to stand down; past it, Disconnect refuses and deletes nothing. */
 const DRAIN_STAND_DOWN_WAIT_MS = 60_000;
 const DRAIN_STAND_DOWN_POLL_MS = 2_000;
 
@@ -551,7 +565,11 @@ export const disconnect = action({
       }
       await new Promise((resolve) => setTimeout(resolve, DRAIN_STAND_DOWN_POLL_MS));
     }
-    const result = await ctx.runAction(internal.credentials.disconnectEbayAndWithdraw, { userId: ownerId });
+    // A drain still running could publish after the withdraw read the links:
+    // touch nothing and let the collector press Disconnect again.
+    const result = drainStoodDown
+      ? await ctx.runAction(internal.credentials.disconnectEbayAndWithdraw, { userId: ownerId })
+      : { ok: false, notEnded: await countLiveEbayLinks(ctx, ownerId) };
     console.log(
       JSON.stringify({
         msg: "ebay_disconnect",
@@ -959,8 +977,8 @@ async function sha256Hex(text: string): Promise<string> {
 const JSON_HEADERS = { "content-type": "application/json", "cache-control": "no-store" };
 /** What NB reads of a notice at all. */
 const MAX_NOTICE_BYTES = 64 * 1024;
-/** What the verifier takes (`services/browser`, `MAX_NOTIFICATION_BODY_LENGTH`); a real notice is well under 1 KB. */
-const MAX_VERIFIABLE_NOTICE_CHARS = 8192;
+/** Below what the verifier takes (`services/browser`, its JSON body limit); a real notice is well under 1 KB. */
+const MAX_VERIFIABLE_NOTICE_CHARS = 4096;
 const MAX_SIGNATURE_HEADER_CHARS = 4096;
 const EBAY_USER_ID_RE = /^[A-Za-z0-9._-]{1,64}$/;
 /** Owners one eBay account can match (seller conflicts are off on sandbox testing deployments). */
@@ -999,7 +1017,10 @@ function deletionNoticeUserId(raw: string): string | null {
 }
 
 function logNotice(outcome: string, startedAt: number, extra: Record<string, number> = {}): void {
-  console.log(
+  // Warn, never error: a flood of forged notices (the verifier's key-fetch
+  // cap answers 502, so `unavailable`) must not page anyone.
+  const log = outcome === "unavailable" || outcome === "notConfigured" ? console.warn : console.log;
+  log(
     JSON.stringify({
       msg: "ebay_account_deletion",
       platform: "ebay",
@@ -1030,6 +1051,9 @@ export const ebayDeletionNotice = httpAction(async (ctx, req) => {
     : [];
   if (ebayUserId === null || owners.length === 0) {
     // Not a deletion notice, or not a seller NB knows: nothing to act on.
+    // Accepted (security review): 200 here vs 412 below tells a caller
+    // whether an eBay user id is an NB seller (a membership oracle); the id
+    // is opaque and nothing is acted on without a verified signature.
     logNotice(ebayUserId === null ? "not_a_deletion" : "no_owner", startedAt);
     return new Response(null, { status: 200 });
   }
@@ -1088,9 +1112,19 @@ export const ownersForEbayAccount = internalQuery({
  * stale-account clear delete every row.
  */
 export const purgeEbayLinksPage = internalMutation({
-  args: { ownerId: v.string(), keepLive: v.boolean(), cursor: v.union(v.string(), v.null()) },
+  args: {
+    ownerId: v.string(),
+    keepLive: v.boolean(),
+    cursor: v.union(v.string(), v.null()),
+    /** Delete only while the listing state is still bound to this eBay account (else nothing, done). */
+    whileStamped: v.optional(v.string()),
+  },
   returns: v.object({ cursor: v.string(), isDone: v.boolean(), keptLive: v.number() }),
   handler: async (ctx, args) => {
+    if (args.whileStamped !== undefined) {
+      const state = await listingStateOf(ctx, args.ownerId, "ebay");
+      if (state?.platformAccountId !== args.whileStamped) return { cursor: "", isDone: true, keptLive: 0 };
+    }
     const page = await ctx.db
       .query("marketplaceListingLinks")
       .withIndex("by_owner_platform_card_condition", (q) => q.eq("ownerId", args.ownerId).eq("platform", "ebay"))
@@ -1129,12 +1163,13 @@ export async function purgeEbayLinks(
   ctx: Pick<ActionCtx, "runMutation">,
   ownerId: string,
   keepLive: boolean,
+  whileStamped?: string,
 ): Promise<number> {
   let keptLive = 0;
   for (let cursor: string | null = null; ; ) {
     const page: { cursor: string; isDone: boolean; keptLive: number } = await ctx.runMutation(
       internal.ebayConnect.purgeEbayLinksPage,
-      { ownerId, keepLive, cursor },
+      { ownerId, keepLive, cursor, ...(whileStamped !== undefined ? { whileStamped } : {}) },
     );
     keptLive += page.keptLive;
     if (page.isDone) return keptLive;
@@ -1165,6 +1200,40 @@ export const forgetEbayAccount = internalMutation({
   },
 });
 
+/**
+ * How a deleted eBay account relates to an owner the sweep matched:
+ * `account` (the profile names it, or names none: the owner's eBay data is
+ * that account's) or `oldStamp` (the profile names a DIFFERENT account now;
+ * only the listing state still carries the deleted one, from before a
+ * reconnect). An `oldStamp` owner's session and sales belong to the new
+ * account and are never touched.
+ */
+export const ebayDeletionMatch = internalQuery({
+  args: { ownerId: v.string(), ebayUserId: v.string() },
+  returns: v.union(v.literal("account"), v.literal("oldStamp")),
+  handler: async (ctx, args) => {
+    const profile = await ctx.db
+      .query("userProfiles")
+      .withIndex("by_user", (q) => q.eq("userId", args.ownerId))
+      .first();
+    const named = profile?.marketplaceAccountIds?.ebayUserId;
+    return named === undefined || named === args.ebayUserId ? "account" : "oldStamp";
+  },
+});
+
+/** Clears the deleted account's stamp from the owner's listing state (the `oldStamp` case). */
+export const clearEbayAccountStamp = internalMutation({
+  args: { ownerId: v.string(), ebayUserId: v.string() },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const state = await listingStateOf(ctx, args.ownerId, "ebay");
+    if (state && state.platformAccountId === args.ebayUserId) {
+      await ctx.db.patch(state._id, { platformAccountId: undefined, lastUpdated: Date.now() });
+    }
+    return null;
+  },
+});
+
 /** Wait before try `attempt` (1-based) of the scheduled delete: doubling from a minute, at most an hour. */
 export function deletionRetryDelayMs(attempt: number): number {
   return Math.min(DELETION_RETRY_BASE_MS * 2 ** Math.max(0, attempt - 1), DELETION_RETRY_MAX_MS);
@@ -1177,6 +1246,10 @@ export function deletionRetryDelayMs(attempt: number): number {
  * row (eBay ends a deleted account's listings itself), the eBay sales and
  * sync records (eBay's rule for a deleted account), the settings row, and
  * the eBay user id NB kept. NB's own copies, cards and boxes stay.
+ *
+ * An owner matched only through an old listing-state stamp while the
+ * profile names a different account keeps its session and sales; only the
+ * old account's link rows and the stamp go (`ebayDeletionMatch`).
  *
  * Owners it could not finish (the credential lock held, the service down)
  * are tried again together in ONE scheduled retry, with backoff, up to
@@ -1192,6 +1265,16 @@ export const processAccountDeletion = internalAction({
       args.ownerIds ?? (await ctx.runQuery(internal.ebayConnect.ownersForEbayAccount, { ebayUserId: args.ebayUserId }));
     const failed: string[] = [];
     for (const ownerId of owners.slice(0, MAX_DELETION_OWNERS)) {
+      const match = await ctx.runQuery(internal.ebayConnect.ebayDeletionMatch, { ownerId, ebayUserId: args.ebayUserId });
+      if (match === "oldStamp") {
+        // Matched only through the listing state; the owner is on another
+        // eBay account now. While the state is still bound to the deleted
+        // account every link row is that account's (a drain binds the new
+        // one before its first write), so only those rows and the stamp go.
+        await purgeEbayLinks(ctx, ownerId, false, args.ebayUserId);
+        await ctx.runMutation(internal.ebayConnect.clearEbayAccountStamp, { ownerId, ebayUserId: args.ebayUserId });
+        continue;
+      }
       const disconnected = await ctx.runAction(internal.credentials.disconnectEbay, { userId: ownerId });
       if (!disconnected.ok) {
         failed.push(ownerId);

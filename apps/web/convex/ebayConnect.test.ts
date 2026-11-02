@@ -762,6 +762,31 @@ describe("disconnect", () => {
     expect(await settingsRow(s)).not.toBeNull();
   });
 
+  test("a drain that does not stand down within the wait refuses the disconnect and deletes nothing", async () => {
+    const s = await connectedWithListings();
+    await s.t.run(async (ctx) => {
+      const st = await ctx.db.query("marketplaceListingStates").first();
+      await ctx.db.patch(st!._id, { drainLeaseToken: "held-by-a-run", drainLeaseExpiresAt: Date.now() + 60 * 60 * 1000 });
+    });
+    vi.useFakeTimers({ toFake: ["setTimeout"] });
+    try {
+      const pending = s.me.action(api.ebayConnect.disconnect, {});
+      for (let i = 0; i < 40; i += 1) await vi.advanceTimersByTimeAsync(2_000);
+      // The wait is measured on the wall clock: step it past the minute.
+      const realNow = Date.now;
+      vi.spyOn(Date, "now").mockImplementation(() => realNow() + 2 * 60_000);
+      for (let i = 0; i < 3; i += 1) await vi.advanceTimersByTimeAsync(2_000);
+      expect(await pending).toEqual({ ok: false, notEnded: 2 });
+    } finally {
+      vi.restoreAllMocks();
+      vi.useRealTimers();
+    }
+    expect(world.events).toEqual([]);
+    expect(await links(s)).toHaveLength(3);
+    expect(await settingsRow(s)).not.toBeNull();
+    expect(await s.t.run(async (ctx) => (await ctx.db.query("userProfiles").first())?.marketplaceAccountIds?.ebayUserId)).toBe("EB-1");
+  });
+
   test("a reconnect to the same account after listings eBay would not end keeps those links; a different account clears them", async () => {
     world.failWithdraw = true;
     const s = await connectedWithListings();
@@ -889,6 +914,36 @@ describe("eBay Marketplace Account Deletion endpoint", () => {
     expect((await counts(s)).links).toBe(0);
   });
 
+  test("an owner matched only by an old listing-state stamp, now on another account, loses only that account's links and the stamp", async () => {
+    const { s } = await sellerWithData();
+    await s.t.run(async (ctx) => {
+      const p = await ctx.db.query("userProfiles").first();
+      await ctx.db.patch(p!._id, { marketplaceAccountIds: { ebayUserId: "EB-NEW" } });
+    });
+    expect((await postSigned(s.t, notice("EB-1", "slabking"))).status).toBe(200);
+    await drainScheduled(s.t);
+    expect(await counts(s)).toEqual({ links: 0, ebaySales: 1, bscSales: 1, settings: 1, cards: 1, ebayUserId: "EB-NEW" });
+    expect(world.events).not.toContain("forget-session");
+    const st = await s.t.run(async (ctx) => ctx.db.query("marketplaceListingStates").first());
+    expect(st?.platformAccountId).toBeUndefined();
+  });
+
+  test("an old-stamp purge deletes nothing once the state is bound to another account", async () => {
+    const { s } = await sellerWithData();
+    await s.t.run(async (ctx) => {
+      const st = await ctx.db.query("marketplaceListingStates").first();
+      await ctx.db.patch(st!._id, { platformAccountId: "EB-NEW" });
+    });
+    const page = await s.t.mutation(internal.ebayConnect.purgeEbayLinksPage, {
+      ownerId: OWNER,
+      keepLive: false,
+      cursor: null,
+      whileStamped: "EB-1",
+    });
+    expect(page.isDone).toBe(true);
+    expect((await counts(s)).links).toBe(1);
+  });
+
   test("a notice whose signature does not verify is refused 412 and nothing is scheduled or deleted", async () => {
     world.verifyAnswer = Response.json({ valid: false });
     const { s } = await sellerWithData();
@@ -956,7 +1011,7 @@ describe("eBay Marketplace Account Deletion endpoint", () => {
 
   test("a notice too long for the verifier is refused 412 rather than sent", async () => {
     const { s } = await sellerWithData();
-    const long = { ...notice("EB-1", "slabking"), pad: "x".repeat(9000) };
+    const long = { ...notice("EB-1", "slabking"), pad: "x".repeat(4100) };
     expect((await postSigned(s.t, long)).status).toBe(412);
     expect(verifyCalls()).toHaveLength(0);
   });

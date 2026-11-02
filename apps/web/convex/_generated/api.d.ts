@@ -9,7 +9,9 @@
  */
 
 import type * as adapters_base from "../adapters/base.js";
+import type * as adapters_bscSeller from "../adapters/bscSeller.js";
 import type * as adapters_buysportscards from "../adapters/buysportscards.js";
+import type * as adapters_ebaySeller from "../adapters/ebaySeller.js";
 import type * as adapters_enrichmentFixtures from "../adapters/enrichmentFixtures.js";
 import type * as adapters_espn from "../adapters/espn.js";
 import type * as adapters_gcs from "../adapters/gcs.js";
@@ -90,13 +92,24 @@ import type * as leagues from "../leagues.js";
 import type * as lib_baseMatchProbe from "../lib/baseMatchProbe.js";
 import type * as lib_batchIdReads from "../lib/batchIdReads.js";
 import type * as lib_bscAttributeTokens from "../lib/bscAttributeTokens.js";
+import type * as lib_bscConditions from "../lib/bscConditions.js";
+import type * as lib_bscHttp from "../lib/bscHttp.js";
+import type * as lib_bscMoney from "../lib/bscMoney.js";
+import type * as lib_bscOrders from "../lib/bscOrders.js";
+import type * as lib_bscSheetPlan from "../lib/bscSheetPlan.js";
 import type * as lib_catalogView from "../lib/catalogView.js";
 import type * as lib_cloudRunAuth from "../lib/cloudRunAuth.js";
 import type * as lib_convexIdCodec from "../lib/convexIdCodec.js";
 import type * as lib_easypostWebhookSignature from "../lib/easypostWebhookSignature.js";
+import type * as lib_ebayEnv from "../lib/ebayEnv.js";
+import type * as lib_ebayListing from "../lib/ebayListing.js";
 import type * as lib_entityNearMatch from "../lib/entityNearMatch.js";
 import type * as lib_googleIdTokenVerify from "../lib/googleIdTokenVerify.js";
 import type * as lib_intakeMatch from "../lib/intakeMatch.js";
+import type * as lib_listingCopyOrder from "../lib/listingCopyOrder.js";
+import type * as lib_listingLabels from "../lib/listingLabels.js";
+import type * as lib_listingReadiness from "../lib/listingReadiness.js";
+import type * as lib_listingSku from "../lib/listingSku.js";
 import type * as lib_marketplaceFetchFailure from "../lib/marketplaceFetchFailure.js";
 import type * as lib_marketplacePause from "../lib/marketplacePause.js";
 import type * as lib_pairing_dhash from "../lib/pairing/dhash.js";
@@ -182,7 +195,9 @@ import type {
 
 declare const fullApi: ApiFromModules<{
   "adapters/base": typeof adapters_base;
+  "adapters/bscSeller": typeof adapters_bscSeller;
   "adapters/buysportscards": typeof adapters_buysportscards;
+  "adapters/ebaySeller": typeof adapters_ebaySeller;
   "adapters/enrichmentFixtures": typeof adapters_enrichmentFixtures;
   "adapters/espn": typeof adapters_espn;
   "adapters/gcs": typeof adapters_gcs;
@@ -263,13 +278,24 @@ declare const fullApi: ApiFromModules<{
   "lib/baseMatchProbe": typeof lib_baseMatchProbe;
   "lib/batchIdReads": typeof lib_batchIdReads;
   "lib/bscAttributeTokens": typeof lib_bscAttributeTokens;
+  "lib/bscConditions": typeof lib_bscConditions;
+  "lib/bscHttp": typeof lib_bscHttp;
+  "lib/bscMoney": typeof lib_bscMoney;
+  "lib/bscOrders": typeof lib_bscOrders;
+  "lib/bscSheetPlan": typeof lib_bscSheetPlan;
   "lib/catalogView": typeof lib_catalogView;
   "lib/cloudRunAuth": typeof lib_cloudRunAuth;
   "lib/convexIdCodec": typeof lib_convexIdCodec;
   "lib/easypostWebhookSignature": typeof lib_easypostWebhookSignature;
+  "lib/ebayEnv": typeof lib_ebayEnv;
+  "lib/ebayListing": typeof lib_ebayListing;
   "lib/entityNearMatch": typeof lib_entityNearMatch;
   "lib/googleIdTokenVerify": typeof lib_googleIdTokenVerify;
   "lib/intakeMatch": typeof lib_intakeMatch;
+  "lib/listingCopyOrder": typeof lib_listingCopyOrder;
+  "lib/listingLabels": typeof lib_listingLabels;
+  "lib/listingReadiness": typeof lib_listingReadiness;
+  "lib/listingSku": typeof lib_listingSku;
   "lib/marketplaceFetchFailure": typeof lib_marketplaceFetchFailure;
   "lib/marketplacePause": typeof lib_marketplacePause;
   "lib/pairing/dhash": typeof lib_pairing_dhash;
