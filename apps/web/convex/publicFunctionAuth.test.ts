@@ -2656,6 +2656,58 @@ describe("NEO-379: the intake run functions are signed-in, and the reads answer 
   });
 });
 
+describe("NEO-386: the scanner code functions are signed-in", () => {
+  test("both reject an anonymous caller", async () => {
+    const t = convexTest(schema, modules);
+    const runId = await t.run(async (ctx) => {
+      const homeId = await ctx.db.insert("collectionContainers", {
+        ownerId: "someone",
+        kind: "box",
+        name: "B",
+        lastUpdated: 0,
+      });
+      return await ctx.db.insert("intakeRuns", {
+        userId: "someone",
+        jobId: "job-x",
+        homeId,
+        createdAt: 0,
+        lastActivityAt: 0,
+      });
+    });
+    await expect(t.mutation(api.intakeScanner.scannerCodeForIntakeRun, { runId })).rejects.toThrow(
+      /Not authenticated/,
+    );
+    await expect(
+      t.query(api.intakeScanner.joinIntakeRunByScannerCode, { code: "ABCDEF" }),
+    ).rejects.toThrow(/Not authenticated/);
+  });
+
+  test("another signed-in collector gets no code and no run", async () => {
+    const t = convexTest(schema, modules);
+    const runId = await t.run(async (ctx) => {
+      const homeId = await ctx.db.insert("collectionContainers", {
+        ownerId: "someone",
+        kind: "box",
+        name: "B",
+        lastUpdated: 0,
+      });
+      return await ctx.db.insert("intakeRuns", {
+        userId: "someone",
+        jobId: "job-x",
+        homeId,
+        createdAt: 0,
+        lastActivityAt: 0,
+        scannerCode: "ABCDEF",
+      });
+    });
+    const other = t.withIdentity(SIGNED_IN);
+    await expect(other.mutation(api.intakeScanner.scannerCodeForIntakeRun, { runId })).rejects.toThrow(
+      /Intake run not found/,
+    );
+    expect(await other.query(api.intakeScanner.joinIntakeRunByScannerCode, { code: "ABCDEF" })).toBeNull();
+  });
+});
+
 /**
  * NEO-407 — `latencyProbe.ping` / `pingMutation` / `pingWrite`: public and ANONYMOUS by
  * intent (the E2E latency probe calls them with no session). Pinned: anonymous
