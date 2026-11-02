@@ -41,6 +41,7 @@ import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import { internalMutation, internalQuery } from "./_generated/server";
 import { internal } from "./_generated/api";
+import { ebayConditionCodeValidator } from "./schema";
 import { copyPhotoObjectKey, MAX_COPY_PHOTO_BYTES } from "./copyPhotos";
 import { commonPriceCentsOf } from "./listingGate";
 import { titleChainFacts } from "./listingShortName";
@@ -209,7 +210,7 @@ export const ebayVariantCardIdsPage = internalQuery({
 const linkOutValidator = v.object({
   linkId: v.id("marketplaceListingLinks"),
   cardId: v.id("cardChecklist"),
-  conditionCode: v.string(),
+  conditionCode: ebayConditionCodeValidator,
   sku: v.string(),
   offerId: v.union(v.string(), v.null()),
   listingId: v.union(v.string(), v.null()),
@@ -400,10 +401,12 @@ export const ebayCopyPhotos = internalQuery({
 
 const linkWriteValidator = v.object({
   cardId: v.id("cardChecklist"),
-  conditionCode: v.string(),
+  conditionCode: ebayConditionCodeValidator,
   sku: v.string(),
   offerId: v.optional(v.string()),
   listingId: v.optional(v.string()),
+  /** The listing id a republish just replaced; kept in `previousListingIds` so a late sale on it still routes. */
+  retiredListingId: v.optional(v.string()),
   status: v.union(v.literal("draft"), v.literal("live"), v.literal("ended")),
   /** null clears what was pushed (a withdrawn listing keeps it: pass it again). */
   pushed: v.optional(
@@ -420,6 +423,9 @@ const linkWriteValidator = v.object({
   images: v.optional(v.array(v.object({ url: v.string(), photoToken: v.string(), expiresAt: v.optional(v.number()) }))),
 });
 type LinkWrite = typeof linkWriteValidator.type;
+
+/** Earlier listing ids one link remembers (`marketplaceListingLinks.previousListingIds`). */
+const MAX_PREVIOUS_LISTING_IDS = 5;
 
 /**
  * Upserts link rows (one per owner, eBay, card, bucket). Only the run
@@ -451,9 +457,17 @@ export const recordEbayLinks = internalMutation({
             .eq("conditionCode", link.conditionCode),
         )
         .unique();
+      const previous = existing?.previousListingIds ?? [];
+      const retired =
+        link.retiredListingId !== undefined &&
+        link.retiredListingId !== (link.listingId ?? existing?.listingId) &&
+        !previous.includes(link.retiredListingId)
+          ? { previousListingIds: [link.retiredListingId, ...previous].slice(0, MAX_PREVIOUS_LISTING_IDS) }
+          : {};
       const fields = {
         sku: link.sku,
         status: link.status,
+        ...retired,
         ...(link.offerId !== undefined ? { offerId: link.offerId } : {}),
         ...(link.listingId !== undefined ? { listingId: link.listingId } : {}),
         ...(link.pushed !== undefined ? { pushed: link.pushed } : {}),
@@ -647,7 +661,83 @@ interface Plan {
   needsPriceQty: boolean;
   offerId: string | null;
   listingId: string | null;
+  /** The listing id a publish in this run replaced (a republish), for `previousListingIds`. */
+  retiredListingId: string | null;
   failed: boolean;
+}
+
+/**
+ * Withdraws the owner's live eBay listings for some cards (a gone variant's
+ * queued cards) and records each one ended. Best effort per listing; a 404
+ * is already down. `failedCards` are cards whose listing eBay would not end.
+ */
+async function withdrawLiveForCards(
+  ctx: DrainCtx,
+  run: RunState,
+  args: { ownerId: string; leaseToken: string },
+  cardIds: ReadonlyArray<Id<"cardChecklist">>,
+): Promise<{ kind: "done" | "off"; failedCards: string[] } | { kind: "stop"; failure: EbayFailure; failedCards: string[] }> {
+  const live: LinkOut[] = [];
+  for (let i = 0; i < cardIds.length; i += READ_CHUNK) {
+    const page = await ctx.runQuery(internal.listingDrainEbay.ebayLinksForCards, {
+      ownerId: args.ownerId,
+      cardIds: cardIds.slice(i, i + READ_CHUNK),
+    });
+    for (const link of page) if (link.status === "live" && link.offerId) live.push(link);
+  }
+  if (live.length === 0) return { kind: "done", failedCards: [] };
+  if (!run.session && !run.sessionFailure) {
+    const opened = await openEbaySellerSession(ctx, args.ownerId);
+    if (opened.ok) run.session = opened.value;
+    else run.sessionFailure = opened.failure;
+  }
+  const failedCards = new Set<string>();
+  if (!run.session) {
+    for (const link of live) failedCards.add(link.cardId);
+    return { kind: "stop", failure: run.sessionFailure as EbayFailure, failedCards: [...failedCards] };
+  }
+  const writes: LinkWrite[] = [];
+  const flush = async () => {
+    for (let i = 0; i < writes.length; i += 100) {
+      await ctx.runMutation(internal.listingDrainEbay.recordEbayLinks, {
+        ownerId: args.ownerId,
+        leaseToken: args.leaseToken,
+        links: writes.slice(i, i + 100),
+      });
+    }
+    writes.length = 0;
+  };
+  for (const link of live) {
+    const held = await ctx.runQuery(internal.listingDrain.drainHeld, {
+      ownerId: args.ownerId,
+      platform: "ebay",
+      leaseToken: args.leaseToken,
+    });
+    if (!held) {
+      await flush();
+      return { kind: "off", failedCards: [...failedCards] };
+    }
+    const r = await withdrawOffer(ctx, run.session, link.offerId as string);
+    if (!r.ok && STOPPING.has(r.failure.kind)) {
+      await flush();
+      for (const l of live) if (l.status === "live") failedCards.add(l.cardId);
+      return { kind: "stop", failure: r.failure, failedCards: [...failedCards] };
+    }
+    if (!r.ok && r.failure.httpStatus !== 404) {
+      failedCards.add(link.cardId);
+      continue;
+    }
+    link.status = "ended";
+    writes.push({
+      cardId: link.cardId,
+      conditionCode: link.conditionCode,
+      sku: link.sku,
+      status: "ended",
+      ...(link.pushed ? { pushed: { ...link.pushed, quantity: 0 } } : {}),
+    });
+  }
+  await flush();
+  return { kind: "done", failedCards: [...failedCards] };
 }
 
 async function syncEbayVariant(
@@ -678,22 +768,32 @@ async function syncEbayVariant(
   const keepQueued = new Set<string>();
   const mineCards = new Map(snapshot.map((r) => [r.rowId as string, r.cardId as string]));
   const finish = async (outcome: FinishOutcome, clearMine: boolean): Promise<void> => {
-    const mine = clearMine ? rows.mine.filter((r) => !keepQueued.has(mineCards.get(r.rowId) ?? "")) : [];
+    const kept = (r: { rowId: string }) => !keepQueued.has(mineCards.get(r.rowId) ?? "");
+    const mine = clearMine ? rows.mine.filter(kept) : [];
     await ctx.runMutation(internal.listingDrain.finishVariant, {
       ownerId,
       platform,
       variantId,
       leaseToken,
       outcome,
-      clear: [...mine, ...rows.gone],
+      clear: [...mine, ...rows.gone.filter(kept)],
       repoint: rows.repoint,
     });
   };
 
   const input = await ctx.runQuery(internal.listingDrainEbay.ebayVariantInput, { ownerId, variantId });
   if (input.kind === "gone") {
+    // Nothing can be listed under a gone variant, but a live listing NB made
+    // for one of its queued cards still comes down.
+    const goneCards = [...new Set(snapshot.map((r) => r.cardId))];
+    const left = await withdrawLiveForCards(ctx, run, { ownerId, leaseToken }, goneCards);
+    if (left.kind === "off") {
+      await finish({ kind: "error", error: STOPPED_ERROR }, false);
+      return { kind: "off" };
+    }
+    for (const cardId of left.failedCards) keepQueued.add(cardId);
     await finish({ kind: "error", error: "This variant is gone from NeonBinder." }, true);
-    return { kind: "error" };
+    return left.kind === "stop" ? { kind: "stop", failure: left.failure } : { kind: "error" };
   }
   if (input.settings === null) {
     // claimDrain checked; settings cleared under the run. Leave the queue.
@@ -722,6 +822,10 @@ async function syncEbayVariant(
   const fullRead = args.full || claim.lastSuccessAt === null || claim.fullReadRequested;
   const inPlay = new Set<string>(fold.targets.map((t) => t.cardId as string));
   for (const r of snapshot) if (r.currentVariantId === variantId) inPlay.add(r.cardId);
+  // A card gone from the catalog with a queued row: its live listing (if
+  // any) is not a target, so it is withdrawn below like any count at zero.
+  const goneCardIds = new Set<string>(snapshot.filter((r) => r.currentVariantId === null).map((r) => r.cardId as string));
+  for (const id of goneCardIds) inPlay.add(id);
   for (const h of fold.holds) inPlay.add(h.cardId);
   if (fullRead) {
     for (let cursor: string | null = null; ; ) {
@@ -910,6 +1014,7 @@ async function syncEbayVariant(
       needsPriceQty: false,
       offerId: link?.offerId ?? null,
       listingId: link?.listingId ?? null,
+      retiredListingId: null,
       failed: false,
     };
     if (live) {
@@ -1120,8 +1225,11 @@ async function syncEbayVariant(
     const byOffer = new Map(r.value.map((e) => [e.offerId, e]));
     for (const plan of chunk) {
       const e = byOffer.get(plan.offerId);
-      if (e && e.statusCode >= 200 && e.statusCode < 300 && e.listingId) plan.listingId = e.listingId;
-      else reject(plan, e?.errorIds ?? []);
+      if (e && e.statusCode >= 200 && e.statusCode < 300 && e.listingId) {
+        // A republish gets a new listing id; a late sale may still name the old one.
+        if (plan.listingId !== null && plan.listingId !== e.listingId) plan.retiredListingId = plan.listingId;
+        plan.listingId = e.listingId;
+      } else reject(plan, e?.errorIds ?? []);
     }
   }
 
@@ -1161,6 +1269,7 @@ async function syncEbayVariant(
       sku: plan.target.sku,
       offerId: plan.offerId,
       ...(plan.listingId ? { listingId: plan.listingId } : {}),
+      ...(plan.retiredListingId ? { retiredListingId: plan.retiredListingId } : {}),
       status: isLive ? "live" : "draft",
       ...(plan.images ? { images: plan.images } : {}),
       pushed: {
@@ -1190,6 +1299,8 @@ async function syncEbayVariant(
     // 404: eBay no longer has the offer live (ended or sold out elsewhere).
     if (!r.ok && r.failure.httpStatus !== 404) {
       problems.push({ cardId: link.cardId, reason: "rejected", detail: "eBay didn't take NeonBinder's zero for this listing." });
+      // A gone card has no other way back to this listing: keep its row queued.
+      if (goneCardIds.has(link.cardId)) keepQueued.add(link.cardId);
       continue;
     }
     zeroed += 1;

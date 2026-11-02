@@ -2938,15 +2938,21 @@ describe("NEO-415: eBay connection surface", () => {
   });
 
   test.each([
-    ["ebayConnect.ts", "recordConnection", "internalMutation"],
+    ["ebayConnect.ts", "recordEbayConnection", "internalMutation"],
+    ["ebayConnect.ts", "connectGuard", "internalQuery"],
+    ["ebayConnect.ts", "forgetEbayConnection", "internalMutation"],
+    ["ebayConnect.ts", "markEbayLinksEnded", "internalMutation"],
+    ["ebayConnect.ts", "purgeEbayHistoryPage", "internalMutation"],
     ["ebayConnect.ts", "consumeConnectNonce", "internalMutation"],
     ["ebayConnect.ts", "writePolicySettings", "internalMutation"],
     ["ebayConnect.ts", "writeLocationSettings", "internalMutation"],
     ["ebayConnect.ts", "fillEmptyPolicySlots", "internalMutation"],
-    ["ebayConnect.ts", "purgeEbayDataPage", "internalMutation"],
+    ["ebayConnect.ts", "purgeEbayLinksPage", "internalMutation"],
     ["ebayConnect.ts", "processAccountDeletion", "internalAction"],
     ["credentials.ts", "connectEbay", "internalAction"],
     ["credentials.ts", "disconnectEbay", "internalAction"],
+    ["credentials.ts", "disconnectEbayAndWithdraw", "internalAction"],
+    ["credentials.ts", "verifyEbayNotification", "internalAction"],
     ["listingDrainEbay.ts", "recordEbayLinks", "internalMutation"],
   ])("%s :: %s is declared %s", (file, fn, kind) => {
     const src = readFileSync(join(__dirname, file), "utf8");
@@ -2959,5 +2965,20 @@ describe("NEO-415: eBay connection surface", () => {
     expect(connect.slice(0, connect.indexOf("\n});\n"))).toContain(
       "if (args.refreshToken !== undefined && !process.env.TESTING_RESET_SECRET)",
     );
+    expect(connect.slice(0, connect.indexOf("\n});\n"))).toContain(
+      'if (args.refreshToken !== undefined && ebayConfig()?.environment !== "sandbox")',
+    );
+  });
+
+  test("the eBay account-deletion POST verifies the signature before it schedules anything", () => {
+    const src = readFileSync(join(__dirname, "ebayConnect.ts"), "utf8");
+    const start = src.indexOf("export const ebayDeletionNotice = httpAction(");
+    expect(start).toBeGreaterThanOrEqual(0);
+    const body = src.slice(start, src.indexOf("\n});\n", start));
+    const verify = body.indexOf("internal.credentials.verifyEbayNotification");
+    const schedule = body.indexOf("ctx.scheduler.runAfter");
+    expect(verify).toBeGreaterThan(0);
+    expect(schedule).toBeGreaterThan(verify);
+    expect(body.indexOf("ctx.scheduler")).toBe(schedule);
   });
 });

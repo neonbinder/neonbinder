@@ -68,7 +68,6 @@ import {
   openEbaySellerSession,
   optInToProgram,
   upsertInventoryLocation,
-  withdrawOffer,
   type EbayFailure,
   type EbaySellerSession,
 } from "./adapters/ebaySeller";
@@ -80,6 +79,7 @@ const NOT_CONFIGURED = "eBay isn't hooked up on this NeonBinder yet.";
 const PAUSED = "eBay is on pause for now. Check back soon.";
 const NOT_CONNECTED = "Connect your eBay seller account first.";
 const NONCE_STALE = "That eBay hookup timed out. Press Connect again.";
+const ACCOUNT_SWITCH = "Disconnect eBay first, then connect the other account.";
 const CONNECT_ERRORS: Record<EbayConnectError, string> = {
   busy: "NeonBinder is already working on your eBay hookup. Give it a sec and try again.",
   notConfigured: NOT_CONFIGURED,
@@ -88,6 +88,8 @@ const CONNECT_ERRORS: Record<EbayConnectError, string> = {
   serviceNotReady: "NeonBinder's eBay hookup is still warming up. Try again in a few minutes.",
   badRequest: "That eBay answer didn't look right. Press Connect again.",
   internal: "Something hiccuped on our side. Try again in a bit.",
+  accountSwitch: ACCOUNT_SWITCH,
+  environmentMismatch: "NeonBinder's eBay hookup is crossed up on our side. We're on it; try again later.",
 };
 const ESE_FOR_20_PLUS =
   "Standard Envelope only covers cards under $20. Pick a policy with tracked shipping for cards $20 and up.";
@@ -102,6 +104,8 @@ const MAX_STATE_LENGTH = 128;
 const MAX_POLICY_ID = 64;
 /** Rows one purge or listing page touches. */
 const PURGE_PAGE = 200;
+/** Sale rows one purge page deletes (they are the larger rows). */
+const SALES_PURGE_PAGE = 100;
 
 /** NB's standard policies "Set me up" makes on the seller's account (names are the idempotency key). */
 export const NB_POLICY_NAMES = {
@@ -268,15 +272,24 @@ function newNonce(): string {
   return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-/** Starts a Connect press: a fresh nonce (replacing any earlier one) and eBay's consent URL. */
+/**
+ * Starts a Connect press: a fresh nonce (replacing any earlier one) and eBay's
+ * consent URL. Refused (an NB sentence) while eBay is connected and working:
+ * switching seller accounts goes through Disconnect, which ends NB's
+ * listings on the old account first. A connection that needs signing in
+ * again (`needsReauth`) may start one; the service then holds it to the
+ * same account (`credentials.connectEbay`).
+ */
 export const beginConnect = mutation({
   args: {},
-  returns: v.object({ authorizeUrl: v.string() }),
-  handler: async (ctx) => {
+  returns: v.union(v.object({ authorizeUrl: v.string() }), errorResult),
+  handler: async (ctx): Promise<{ authorizeUrl: string } | Fail> => {
     const ownerId = await requireSignedIn(ctx);
     const config = ebayConfig();
-    if (!config) throw new Error(NOT_CONFIGURED);
-    if (isPlatformPaused("ebay")) throw new Error(PAUSED);
+    if (!config) return { ok: false, error: NOT_CONFIGURED };
+    if (isPlatformPaused("ebay")) return { ok: false, error: PAUSED };
+    const platform = await platformSettings(ctx, ownerId, "ebay");
+    if (platform.connected && !platform.needsReauth) return { ok: false, error: ACCOUNT_SWITCH };
     const nonce = newNonce();
     await patchSettings(ctx, ownerId, { connectNonce: nonce, connectNonceAt: Date.now() });
     return { authorizeUrl: ebayAuthorizeUrl(config, nonce) };
@@ -299,18 +312,80 @@ export const consumeConnectNonce = internalMutation({
   },
 });
 
-/** `credentials.connectEbay` records the display username and when the connection started. */
-export const recordConnection = internalMutation({
-  args: { ownerId: v.string(), ebayUsername: v.string() },
-  returns: v.null(),
+/** True when the owner has any eBay link row (a listing NB made, live or not). */
+async function hasEbayLinks(ctx: Pick<QueryCtx, "db">, ownerId: string): Promise<boolean> {
+  const first = await ctx.db
+    .query("marketplaceListingLinks")
+    .withIndex("by_owner_platform_card_condition", (q) => q.eq("ownerId", ownerId).eq("platform", "ebay"))
+    .first();
+  return first !== null;
+}
+
+/**
+ * Before a connect reaches the browser service: the eBay account it must
+ * stay on, or null when any account may connect. NB's link rows hold offer
+ * ids on the account the profile names, so while any exist a re-auth must
+ * come back as that same seller (the service refuses a different one with
+ * `409 account_mismatch` BEFORE it overwrites the stored session).
+ */
+export const connectGuard = internalQuery({
+  args: { ownerId: v.string() },
+  returns: v.object({ expectEbayUserId: v.union(v.string(), v.null()) }),
   handler: async (ctx, args) => {
+    const profile = await ctx.db
+      .query("userProfiles")
+      .withIndex("by_user", (q) => q.eq("userId", args.ownerId))
+      .first();
+    const known = profile?.marketplaceAccountIds?.ebayUserId;
+    if (known === undefined) return { expectEbayUserId: null };
+    return { expectEbayUserId: (await hasEbayLinks(ctx, args.ownerId)) ? known : null };
+  },
+});
+
+/**
+ * `credentials.connectEbay`, after the service stored a session: checks the
+ * account and only then records it, in one transaction. A DIFFERENT seller
+ * than the one the profile names, while link rows exist, is refused writing
+ * nothing (`accountSwitch`; the service's own check normally stops it
+ * first). Otherwise the seller's immutable eBay user id goes on the profile
+ * (`marketplaceAccountIds.ebayUserId`, the one-owner-per-account key the
+ * listing setup checks next), with the display username and when the
+ * connection started. `staleLinks`: the profile named no account (a
+ * Disconnect cleared it) but link rows are left from a different account the
+ * listing state last bound (listings eBay would not end at Disconnect); the
+ * caller clears them, since their offer ids mean nothing on this account.
+ */
+export const recordEbayConnection = internalMutation({
+  args: { ownerId: v.string(), ebayUserId: v.string(), ebayUsername: v.string() },
+  returns: v.union(
+    v.object({ kind: v.literal("accountSwitch") }),
+    v.object({ kind: v.literal("recorded"), staleLinks: v.boolean() }),
+  ),
+  handler: async (ctx, args) => {
+    if (!EBAY_USER_ID_RE.test(args.ebayUserId)) throw new Error("eBay user id has an unexpected shape");
+    const profile = await ctx.db
+      .query("userProfiles")
+      .withIndex("by_user", (q) => q.eq("userId", args.ownerId))
+      .first();
+    const known = profile?.marketplaceAccountIds?.ebayUserId;
+    const linked = await hasEbayLinks(ctx, args.ownerId);
+    if (known !== undefined && known !== args.ebayUserId && linked) return { kind: "accountSwitch" as const };
+    const state = await listingStateOf(ctx, args.ownerId, "ebay");
+    const staleLinks =
+      known === undefined &&
+      linked &&
+      state?.platformAccountId !== undefined &&
+      state.platformAccountId !== args.ebayUserId;
+    const accounts = { ...(profile?.marketplaceAccountIds ?? {}), ebayUserId: args.ebayUserId };
+    if (profile) await ctx.db.patch(profile._id, { marketplaceAccountIds: accounts });
+    else await ctx.db.insert("userProfiles", { userId: args.ownerId, marketplaceAccountIds: accounts });
     await patchSettings(ctx, args.ownerId, {
       ebayUsername: args.ebayUsername.slice(0, 64),
       connectedAt: Date.now(),
       connectNonce: undefined,
       connectNonceAt: undefined,
     });
-    return null;
+    return { kind: "recorded" as const, staleLinks };
   },
 });
 
@@ -384,87 +459,107 @@ export const stopEbayListing = internalMutation({
   },
 });
 
-/** Disconnect's last step: the settings row goes (a reconnect starts setup fresh). */
-export const deleteEbaySettings = internalMutation({
+/**
+ * Disconnect's bookkeeping, under the credential lock once the session is
+ * gone: the settings row (a reconnect starts setup fresh) and the eBay user
+ * id on the profile. The listing state keeps the account it last bound
+ * (`platformAccountId`), so a later connect can tell whether link rows left
+ * live belong to the account coming back (`recordEbayConnection`).
+ */
+export const forgetEbayConnection = internalMutation({
   args: { ownerId: v.string() },
   returns: v.null(),
   handler: async (ctx, args) => {
     const row = await settingsOf(ctx, args.ownerId);
     if (row) await ctx.db.delete(row._id);
+    const profile = await ctx.db
+      .query("userProfiles")
+      .withIndex("by_user", (q) => q.eq("userId", args.ownerId))
+      .first();
+    if (profile?.marketplaceAccountIds?.ebayUserId !== undefined) {
+      const { ebayUserId: _gone, ...rest } = profile.marketplaceAccountIds;
+      await ctx.db.patch(profile._id, { marketplaceAccountIds: rest });
+    }
     return null;
   },
 });
 
-/** Time Disconnect spends taking listings down before it gives up on the rest. */
-const WITHDRAW_BUDGET_MS = 8 * 60 * 1000;
-
 /**
- * Takes every live NB listing on the owner's eBay account down
- * (`withdrawOffer`), best effort: a listing eBay will not end is logged and
- * counted, never a reason to keep the session. Returns how many were ended
- * and how many were not; null when eBay could not be reached at all (not
- * wired, paused, no session), which the caller logs.
+ * Marks link rows ended after Disconnect withdrew their listings on eBay
+ * (the drain's own zero writes the same: status `ended`, pushed quantity 0).
+ * By SKU; a SKU with no row or two rows is skipped.
  */
-async function withdrawAllLive(ctx: ActionCtx, ownerId: string): Promise<{ ended: number; failed: number } | null> {
-  if (!ebayConfigured() || isPlatformPaused("ebay")) return null;
-  const opened = await openEbaySellerSession(ctx, ownerId);
-  if (!opened.ok) return null;
-  const startedAt = Date.now();
-  let ended = 0;
-  let failed = 0;
-  for (let cursor: string | null = null; ; ) {
-    const page: { offers: Array<{ sku: string; offerId: string }>; cursor: string; isDone: boolean } = await ctx.runQuery(
-      internal.ebayConnect.liveEbayLinksPage,
-      { ownerId, cursor },
-    );
-    for (const offer of page.offers) {
-      if (Date.now() - startedAt > WITHDRAW_BUDGET_MS) {
-        failed += 1;
-        continue;
-      }
-      const r = await withdrawOffer(ctx, opened.value, offer.offerId);
-      // 404: eBay no longer has it live.
-      if (r.ok || r.failure.httpStatus === 404) ended += 1;
-      else failed += 1;
+export const markEbayLinksEnded = internalMutation({
+  args: { ownerId: v.string(), skus: v.array(v.string()) },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const now = Date.now();
+    for (const sku of args.skus.slice(0, PURGE_PAGE)) {
+      const rows = await ctx.db
+        .query("marketplaceListingLinks")
+        .withIndex("by_owner_platform_sku", (q) => q.eq("ownerId", args.ownerId).eq("platform", "ebay").eq("sku", sku))
+        .take(2);
+      if (rows.length !== 1) continue;
+      const row = rows[0];
+      await ctx.db.patch(row._id, {
+        status: "ended",
+        ...(row.pushed ? { pushed: { ...row.pushed, quantity: 0 } } : {}),
+        lastUpdated: now,
+      });
     }
-    if (page.isDone) break;
-    cursor = page.cursor;
-  }
-  return { ended, failed };
-}
+    return null;
+  },
+});
+
+/** Whether a drain run still holds the owner's eBay lease (Disconnect waits for it to stand down). */
+export const ebayDrainRunning = internalQuery({
+  args: { ownerId: v.string() },
+  returns: v.boolean(),
+  handler: async (ctx, args) => {
+    const state = await listingStateOf(ctx, args.ownerId, "ebay");
+    return state?.drainLeaseToken !== undefined && (state.drainLeaseExpiresAt ?? 0) > Date.now();
+  },
+});
+
+/** How long Disconnect waits for a running drain to stand down before it goes ahead. */
+const DRAIN_STAND_DOWN_WAIT_MS = 60_000;
+const DRAIN_STAND_DOWN_POLL_MS = 2_000;
 
 /**
- * Disconnects eBay. NB's listings come down first: listing stops (so no
- * drain puts them back), every live NB listing is withdrawn on eBay (best
- * effort; otherwise eBay keeps selling quantities NB no longer updates),
- * then the stored session, the link rows and the settings go. Sales history
- * stays.
+ * Disconnects eBay. Listing stops first (the queue cleared; a running drain
+ * stands down at its next write, and Disconnect waits for it, up to a
+ * minute). Then, under the credential lock so no publish or token refresh
+ * runs beside it (`credentials.disconnectEbayAndWithdraw`): every live NB
+ * listing is withdrawn on eBay and its link marked ended (best effort;
+ * otherwise eBay keeps selling quantities NB no longer updates), the stored
+ * session goes, the link rows go except any still live, and the settings and
+ * the eBay user id NB kept go. Sales history stays. `notEnded`: live
+ * listings NB could not take down; the collector ends those on eBay.
  */
 export const disconnect = action({
   args: {},
-  returns: v.object({ ok: v.boolean() }),
-  handler: async (ctx): Promise<{ ok: boolean }> => {
+  returns: v.object({ ok: v.boolean(), notEnded: v.number() }),
+  handler: async (ctx): Promise<{ ok: boolean; notEnded: number }> => {
     const ownerId = await requireSignedIn(ctx);
     const startedAt = Date.now();
     await ctx.runMutation(internal.ebayConnect.stopEbayListing, { ownerId });
-    const withdrawn = await withdrawAllLive(ctx, ownerId);
-    const result = await ctx.runAction(internal.credentials.disconnectEbay, { userId: ownerId });
-    if (result.ok) {
-      for (let page = 0; page < 500; page += 1) {
-        const more = await ctx.runMutation(internal.ebayConnect.purgeEbayDataPage, { ownerId, history: false });
-        if (!more) break;
+    let drainStoodDown = true;
+    for (const waitStarted = Date.now(); await ctx.runQuery(internal.ebayConnect.ebayDrainRunning, { ownerId }); ) {
+      if (Date.now() - waitStarted >= DRAIN_STAND_DOWN_WAIT_MS) {
+        drainStoodDown = false;
+        break;
       }
-      await ctx.runMutation(internal.ebayConnect.deleteEbaySettings, { ownerId });
+      await new Promise((resolve) => setTimeout(resolve, DRAIN_STAND_DOWN_POLL_MS));
     }
+    const result = await ctx.runAction(internal.credentials.disconnectEbayAndWithdraw, { userId: ownerId });
     console.log(
       JSON.stringify({
         msg: "ebay_disconnect",
         platform: "ebay",
         operation: "disconnect",
         ok: result.ok,
-        withdrawReached: withdrawn !== null,
-        ended: withdrawn?.ended ?? 0,
-        failed: withdrawn?.failed ?? 0,
+        drainStoodDown,
+        notEnded: result.notEnded,
         durationMs: Date.now() - startedAt,
       }),
     );
@@ -831,15 +926,22 @@ export const setBestOffer = mutation({
 //
 // https://developer.ebay.com/marketplace-account-deletion
 // GET  ?challenge_code=… → 200 {"challengeResponse": hex(sha256(challengeCode + verificationToken + endpoint))}
-// POST {metadata:{topic:"MARKETPLACE_ACCOUNT_DELETION"}, notification:{data:{username, userId, eiasToken}}} → 200,
-//      then NB deletes its eBay-side data for that seller (scheduled).
+// POST {metadata:{topic:"MARKETPLACE_ACCOUNT_DELETION"}, notification:{data:{username, userId, eiasToken}}}
 //
-// The POST carries an `X-EBAY-SIGNATURE` header NB does NOT verify here:
-// verifying needs eBay's public key, fetched with an application token,
-// which needs the client secret only the browser service holds. Until a
-// verify route exists there, the scheduled delete acts only when BOTH the
-// eBay user id and the username match what NB stored at Connect, and deletes
-// only NB's eBay-side linkage (never a copy, card or box).
+// eBay pushes a notice for EVERY eBay account deleted, not only sellers NB
+// knows. The POST is unauthenticated, so nothing is acted on until its
+// `X-EBAY-SIGNATURE` is verified: the browser service holds the app
+// credentials eBay's public key needs (`credentials.verifyEbayNotification`).
+// Verifying is rate limited, so a notice naming no NB owner is acknowledged
+// (200) without it: nothing would be acted on anyway. For a notice that
+// names one:
+//   signature invalid            → 412, nothing scheduled
+//   verifier unreachable         → 500, nothing scheduled (eBay retries)
+//   verification not configured  → 503, nothing scheduled
+//   verified                     → scheduled delete, 200
+// Owners are matched on the immutable eBay user id alone (a username can be
+// renamed, and is public). The delete removes only NB's eBay-side data,
+// never a copy, card or box.
 
 /** Where eBay calls: the deployment's site URL plus the route, unless set explicitly. */
 function deletionEndpointUrl(): string | null {
@@ -855,8 +957,18 @@ async function sha256Hex(text: string): Promise<string> {
 }
 
 const JSON_HEADERS = { "content-type": "application/json", "cache-control": "no-store" };
+/** What NB reads of a notice at all. */
 const MAX_NOTICE_BYTES = 64 * 1024;
+/** What the verifier takes (`services/browser`, `MAX_NOTIFICATION_BODY_LENGTH`); a real notice is well under 1 KB. */
+const MAX_VERIFIABLE_NOTICE_CHARS = 8192;
+const MAX_SIGNATURE_HEADER_CHARS = 4096;
 const EBAY_USER_ID_RE = /^[A-Za-z0-9._-]{1,64}$/;
+/** Owners one eBay account can match (seller conflicts are off on sandbox testing deployments). */
+const MAX_DELETION_OWNERS = 50;
+/** Tries of the scheduled delete for owners it could not finish, then it gives up (logged). */
+const MAX_DELETION_ATTEMPTS = 10;
+const DELETION_RETRY_BASE_MS = 60_000;
+const DELETION_RETRY_MAX_MS = 60 * 60_000;
 
 /** GET: eBay's endpoint-validation challenge. */
 export const ebayDeletionChallenge = httpAction(async (_ctx, req) => {
@@ -871,75 +983,138 @@ export const ebayDeletionChallenge = httpAction(async (_ctx, req) => {
   return new Response(JSON.stringify({ challengeResponse }), { status: 200, headers: JSON_HEADERS });
 });
 
-/** POST: a seller deleted their eBay account. Acknowledge at once; delete on the scheduler. */
-export const ebayDeletionNotice = httpAction(async (ctx, req) => {
-  const raw = await req.text().catch(() => "");
-  if (raw.length > MAX_NOTICE_BYTES) return new Response(null, { status: 413 });
+/** The eBay user id an account-deletion notice names, or null when it is not one. */
+function deletionNoticeUserId(raw: string): string | null {
   let body: unknown = null;
   try {
     body = JSON.parse(raw);
   } catch {
-    body = null;
+    return null;
   }
   const metadata = isRecord(body) && isRecord(body.metadata) ? body.metadata : null;
   const notification = isRecord(body) && isRecord(body.notification) ? body.notification : null;
   const data = notification && isRecord(notification.data) ? notification.data : null;
-  const userId = typeof data?.userId === "string" ? data.userId.trim() : "";
-  const username = typeof data?.username === "string" ? data.username.trim().slice(0, 64) : "";
-  if (metadata?.topic === "MARKETPLACE_ACCOUNT_DELETION" && EBAY_USER_ID_RE.test(userId) && username.length > 0) {
-    await ctx.scheduler.runAfter(0, internal.ebayConnect.processAccountDeletion, { ebayUserId: userId, ebayUsername: username });
-  }
+  const userId = typeof data?.userId === "string" ? data.userId : "";
+  return metadata?.topic === "MARKETPLACE_ACCOUNT_DELETION" && EBAY_USER_ID_RE.test(userId) ? userId : null;
+}
+
+function logNotice(outcome: string, startedAt: number, extra: Record<string, number> = {}): void {
   console.log(
-    JSON.stringify({ msg: "ebay_account_deletion", platform: "ebay", operation: "notice", accepted: userId.length > 0 }),
+    JSON.stringify({
+      msg: "ebay_account_deletion",
+      platform: "ebay",
+      operation: "notice",
+      outcome,
+      ...extra,
+      durationMs: Date.now() - startedAt,
+    }),
   );
-  // eBay wants a 2xx for every notice, including ones for sellers NB never saw.
+}
+
+/** POST: a seller deleted their eBay account. Verified before anything is scheduled (see above). */
+export const ebayDeletionNotice = httpAction(async (ctx, req) => {
+  const startedAt = Date.now();
+  const declared = Number(req.headers.get("content-length") ?? "");
+  if (Number.isFinite(declared) && declared > MAX_NOTICE_BYTES) {
+    logNotice("too_large", startedAt);
+    return new Response(null, { status: 413 });
+  }
+  const raw = await req.text().catch(() => "");
+  if (raw.length > MAX_NOTICE_BYTES) {
+    logNotice("too_large", startedAt);
+    return new Response(null, { status: 413 });
+  }
+  const ebayUserId = deletionNoticeUserId(raw);
+  const owners: string[] = ebayUserId
+    ? await ctx.runQuery(internal.ebayConnect.ownersForEbayAccount, { ebayUserId })
+    : [];
+  if (ebayUserId === null || owners.length === 0) {
+    // Not a deletion notice, or not a seller NB knows: nothing to act on.
+    logNotice(ebayUserId === null ? "not_a_deletion" : "no_owner", startedAt);
+    return new Response(null, { status: 200 });
+  }
+  if (!process.env.EBAY_DELETION_VERIFICATION_TOKEN?.trim() || !ebayConfigured()) {
+    logNotice("not_configured", startedAt);
+    return new Response(null, { status: 503 });
+  }
+  const signatureHeader = req.headers.get("x-ebay-signature") ?? "";
+  if (
+    signatureHeader.length === 0 ||
+    signatureHeader.length > MAX_SIGNATURE_HEADER_CHARS ||
+    raw.length > MAX_VERIFIABLE_NOTICE_CHARS
+  ) {
+    logNotice("invalid", startedAt);
+    return new Response(null, { status: 412 });
+  }
+  const verdict = await ctx.runAction(internal.credentials.verifyEbayNotification, { signatureHeader, body: raw });
+  if (verdict !== "valid") {
+    logNotice(verdict, startedAt);
+    return new Response(null, { status: verdict === "invalid" ? 412 : verdict === "notConfigured" ? 503 : 500 });
+  }
+  await ctx.scheduler.runAfter(0, internal.ebayConnect.processAccountDeletion, { ebayUserId, attempt: 0 });
+  logNotice("scheduled", startedAt, { owners: owners.length });
   return new Response(null, { status: 200 });
 });
 
-/** The NB owners holding this eBay seller account, where the stored username matches too. */
+/**
+ * The NB owners holding this eBay seller account, by its immutable user id
+ * alone: the profiles that name it (connected now), and the listing states
+ * that last bound it (a Disconnect cleared the profile but left link rows
+ * eBay would not end).
+ */
 export const ownersForEbayAccount = internalQuery({
-  args: { ebayUserId: v.string(), ebayUsername: v.string() },
+  args: { ebayUserId: v.string() },
   returns: v.array(v.string()),
   handler: async (ctx, args) => {
+    const owners = new Set<string>();
     const profiles = await ctx.db
       .query("userProfiles")
       .withIndex("by_ebay_user", (q) => q.eq("marketplaceAccountIds.ebayUserId", args.ebayUserId))
-      .take(10);
-    const owners: string[] = [];
-    for (const profile of profiles) {
-      const settings = await settingsOf(ctx, profile.userId);
-      const stored = settings?.ebayUsername;
-      // Connect stores the id as the username when eBay sent none.
-      if (stored === undefined || stored.toLowerCase() === args.ebayUsername.toLowerCase() || stored === args.ebayUserId) {
-        owners.push(profile.userId);
-      }
-    }
-    return owners;
+      .take(MAX_DELETION_OWNERS);
+    for (const profile of profiles) owners.add(profile.userId);
+    const states = await ctx.db
+      .query("marketplaceListingStates")
+      .withIndex("by_platform_account", (q) => q.eq("platform", "ebay").eq("platformAccountId", args.ebayUserId))
+      .take(MAX_DELETION_OWNERS);
+    for (const state of states) owners.add(state.ownerId);
+    return [...owners].slice(0, MAX_DELETION_OWNERS);
   },
 });
 
 /**
- * One page of an owner's NB-side eBay data: link rows, then (with
- * `history`, the account-deletion path) eBay sales and sync records. True
- * when more remain.
+ * One page of the owner's eBay link rows, deleted. `keepLive` (Disconnect)
+ * leaves a row still `live` (a listing eBay would not end) so a reconnect to
+ * the same account can manage it again; the account-deletion sweep and a
+ * stale-account clear delete every row.
  */
-export const purgeEbayDataPage = internalMutation({
-  args: { ownerId: v.string(), history: v.boolean() },
-  returns: v.boolean(),
+export const purgeEbayLinksPage = internalMutation({
+  args: { ownerId: v.string(), keepLive: v.boolean(), cursor: v.union(v.string(), v.null()) },
+  returns: v.object({ cursor: v.string(), isDone: v.boolean(), keptLive: v.number() }),
   handler: async (ctx, args) => {
-    const links = await ctx.db
+    const page = await ctx.db
       .query("marketplaceListingLinks")
       .withIndex("by_owner_platform_card_condition", (q) => q.eq("ownerId", args.ownerId).eq("platform", "ebay"))
-      .take(PURGE_PAGE);
-    for (const row of links) await ctx.db.delete(row._id);
-    if (links.length === PURGE_PAGE) return true;
-    if (!args.history) return false;
+      .paginate({ numItems: PURGE_PAGE, cursor: args.cursor });
+    let keptLive = 0;
+    for (const row of page.page) {
+      if (args.keepLive && row.status === "live") keptLive += 1;
+      else await ctx.db.delete(row._id);
+    }
+    return { cursor: page.continueCursor, isDone: page.isDone, keptLive };
+  },
+});
+
+/** One page of the owner's eBay sales and sync records, deleted (account deletion only). True when more remain. */
+export const purgeEbayHistoryPage = internalMutation({
+  args: { ownerId: v.string() },
+  returns: v.boolean(),
+  handler: async (ctx, args) => {
     const sales = await ctx.db
       .query("marketplaceSales")
       .withIndex("by_owner_platform_order", (q) => q.eq("ownerId", args.ownerId).eq("platform", "ebay"))
-      .take(PURGE_PAGE);
+      .take(SALES_PURGE_PAGE);
     for (const row of sales) await ctx.db.delete(row._id);
-    if (sales.length === PURGE_PAGE) return true;
+    if (sales.length === SALES_PURGE_PAGE) return true;
     const syncs = await ctx.db
       .query("marketplaceListingSyncs")
       .withIndex("by_owner_platform_run", (q) => q.eq("ownerId", args.ownerId).eq("platform", "ebay"))
@@ -948,6 +1123,24 @@ export const purgeEbayDataPage = internalMutation({
     return syncs.length === PURGE_PAGE;
   },
 });
+
+/** Pages through every link row of the owner (see `purgeEbayLinksPage`). Returns the live rows kept. */
+export async function purgeEbayLinks(
+  ctx: Pick<ActionCtx, "runMutation">,
+  ownerId: string,
+  keepLive: boolean,
+): Promise<number> {
+  let keptLive = 0;
+  for (let cursor: string | null = null; ; ) {
+    const page: { cursor: string; isDone: boolean; keptLive: number } = await ctx.runMutation(
+      internal.ebayConnect.purgeEbayLinksPage,
+      { ownerId, keepLive, cursor },
+    );
+    keptLive += page.keptLive;
+    if (page.isDone) return keptLive;
+    cursor = page.cursor;
+  }
+}
 
 /** Last step: the settings row, the eBay user id on the profile, and the account stamp on the state row. */
 export const forgetEbayAccount = internalMutation({
@@ -972,38 +1165,64 @@ export const forgetEbayAccount = internalMutation({
   },
 });
 
+/** Wait before try `attempt` (1-based) of the scheduled delete: doubling from a minute, at most an hour. */
+export function deletionRetryDelayMs(attempt: number): number {
+  return Math.min(DELETION_RETRY_BASE_MS * 2 ** Math.max(0, attempt - 1), DELETION_RETRY_MAX_MS);
+}
+
 /**
- * Deletes NB's eBay-side data for a seller who deleted their eBay account:
- * the stored session and saved sign-in (`credentials.disconnectEbay`, which
- * stops listing), the link rows, the eBay sales and sync records, the
- * settings row, and the eBay user id NB kept. NB's own copies, cards and
- * boxes stay. Safe to retry: every step is a no-op once done.
+ * Deletes NB's eBay-side data for a seller who deleted their eBay account
+ * (scheduled only for a VERIFIED notice): the stored session and saved
+ * sign-in (`credentials.disconnectEbay`, which stops listing), every link
+ * row (eBay ends a deleted account's listings itself), the eBay sales and
+ * sync records (eBay's rule for a deleted account), the settings row, and
+ * the eBay user id NB kept. NB's own copies, cards and boxes stay.
+ *
+ * Owners it could not finish (the credential lock held, the service down)
+ * are tried again together in ONE scheduled retry, with backoff, up to
+ * `MAX_DELETION_ATTEMPTS` tries in all; then it gives up, logged. Safe to
+ * retry: every step is a no-op once done.
  */
 export const processAccountDeletion = internalAction({
-  args: { ebayUserId: v.string(), ebayUsername: v.string() },
+  args: { ebayUserId: v.string(), ownerIds: v.optional(v.array(v.string())), attempt: v.number() },
   returns: v.null(),
   handler: async (ctx, args) => {
     const startedAt = Date.now();
-    const owners: string[] = await ctx.runQuery(internal.ebayConnect.ownersForEbayAccount, args);
-    for (const ownerId of owners) {
+    const owners: string[] =
+      args.ownerIds ?? (await ctx.runQuery(internal.ebayConnect.ownersForEbayAccount, { ebayUserId: args.ebayUserId }));
+    const failed: string[] = [];
+    for (const ownerId of owners.slice(0, MAX_DELETION_OWNERS)) {
       const disconnected = await ctx.runAction(internal.credentials.disconnectEbay, { userId: ownerId });
       if (!disconnected.ok) {
-        // The lock is held or the service is down: try again shortly.
-        await ctx.scheduler.runAfter(60_000, internal.ebayConnect.processAccountDeletion, args);
+        failed.push(ownerId);
         continue;
       }
+      await purgeEbayLinks(ctx, ownerId, false);
       for (let page = 0; page < 500; page += 1) {
-        const more = await ctx.runMutation(internal.ebayConnect.purgeEbayDataPage, { ownerId, history: true });
+        const more = await ctx.runMutation(internal.ebayConnect.purgeEbayHistoryPage, { ownerId });
         if (!more) break;
       }
       await ctx.runMutation(internal.ebayConnect.forgetEbayAccount, { ownerId, ebayUserId: args.ebayUserId });
     }
-    console.log(
+    const nextAttempt = args.attempt + 1;
+    const retrying = failed.length > 0 && nextAttempt < MAX_DELETION_ATTEMPTS;
+    if (retrying) {
+      await ctx.scheduler.runAfter(deletionRetryDelayMs(nextAttempt), internal.ebayConnect.processAccountDeletion, {
+        ebayUserId: args.ebayUserId,
+        ownerIds: failed,
+        attempt: nextAttempt,
+      });
+    }
+    const log = failed.length > 0 && !retrying ? console.error : console.log;
+    log(
       JSON.stringify({
         msg: "ebay_account_deletion",
         platform: "ebay",
         operation: "process",
+        attempt: args.attempt,
         owners: owners.length,
+        failed: failed.length,
+        outcome: failed.length === 0 ? "done" : retrying ? "retry_scheduled" : "gave_up",
         durationMs: Date.now() - startedAt,
       }),
     );

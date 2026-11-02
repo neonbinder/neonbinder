@@ -30,7 +30,7 @@ import { CLERK_USER_ID_RE, placeholderJobPrefix } from "./lib/placeholderObjects
 // NEO-287 — the operator switch. A paused marketplace is seeded as `skipped`,
 // before any read of its stored credentials.
 import { isPlatformPaused } from "./marketplacePause";
-import { ebayConfigured } from "./lib/ebayEnv";
+import { ebayConfig, ebayConfigured } from "./lib/ebayEnv";
 import type { Id } from "./_generated/dataModel";
 import { dropOwnerPhotos } from "./copyPhotos";
 import { getOrCreateMain } from "./collection";
@@ -537,11 +537,12 @@ export const seedMyTestCredentials = action({
       // connects with a refresh token minted out of band for the sandbox
       // seller (`DEV_EBAY_REFRESH_TOKEN`), through the browser service's
       // refresh-token grant (`credentials.connectEbay`, refused off testing
-      // deployments). One token exchange, no browser login, so it simply
+      // deployments and off the eBay sandbox, as the service refuses it in
+      // production). One token exchange, no browser login, so it simply
       // reconnects every time. Skipped like any site with no dev secret.
       if (site === "ebay") {
         const refreshToken = process.env.DEV_EBAY_REFRESH_TOKEN;
-        if (!refreshToken || !ebayConfigured()) {
+        if (!refreshToken || !ebayConfigured() || ebayConfig()?.environment !== "sandbox") {
           seeded.push({ site, stored: false, skipped: true });
           continue;
         }

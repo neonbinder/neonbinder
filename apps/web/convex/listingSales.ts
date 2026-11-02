@@ -485,11 +485,19 @@ async function applyEbayLine(
     refuse("unmatched");
     return null;
   }
-  const link = await ctx.db
+  // `take(2)`, not `unique()`: two link rows for one SKU must refuse the
+  // line (exactly-one guard), never throw and wedge every later order.
+  const matches = await ctx.db
     .query("marketplaceListingLinks")
     .withIndex("by_owner_platform_sku", (q) => q.eq("ownerId", ownerId).eq("platform", "ebay").eq("sku", item.sellerSku as string))
-    .unique();
-  if (!link || link.cardId !== cardId || link.listingId === undefined || link.listingId !== item.platformCardId) {
+    .take(2);
+  const link = matches.length === 1 ? matches[0] : null;
+  // The line's listing must be this link's: the current one, or one a
+  // republish replaced (a late sale on the earlier listing).
+  const ownListing =
+    link !== null &&
+    (link.listingId === item.platformCardId || (link.previousListingIds ?? []).includes(item.platformCardId));
+  if (!link || link.cardId !== cardId || !ownListing) {
     refuse("linkMismatch", cardId);
     return null;
   }

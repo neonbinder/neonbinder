@@ -1,0 +1,1004 @@
+/**
+ * NEO-415 — a collector's eBay connection and settings (`ebayConnect.ts`):
+ * every public function refuses an anonymous caller, the Connect nonce
+ * (one-use, expiring, replaced by a new press), the policy rules (an
+ * ESE-only policy never fills the $20-and-up slot), "Set me up" filling only
+ * empty slots, the ship-from location, Best Offer, Disconnect's ordering
+ * (listings come down before the session is forgotten), and eBay's
+ * Marketplace Account Deletion endpoint.
+ *
+ * `fetch` is stubbed for both the browser service (token exchange, session
+ * delete) and a small in-memory eBay seller account. Nothing leaves the test.
+ */
+import { createHash } from "node:crypto";
+import { convexTest } from "convex-test";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { api, internal } from "./_generated/api";
+import schema from "./schema";
+import { __resetContractCache } from "./credentials";
+import { NB_POLICY_NAMES, deletionRetryDelayMs } from "./ebayConnect";
+import { drainScheduled } from "../lib/testing/drain-scheduled";
+
+const modules = (import.meta as unknown as {
+  glob: (pattern: string) => Record<string, () => Promise<unknown>>;
+}).glob("./**/*.*s");
+
+const creds = vi.hoisted(() => ({ token: "tok-1" as string | null }));
+
+vi.mock("./credentials", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./credentials")>();
+  const { internalAction } = await import("./_generated/server");
+  const { v } = await import("convex/values");
+  return {
+    ...actual,
+    getSiteTokenForUser: internalAction({
+      args: { site: v.string(), userId: v.string() },
+      returns: v.any(),
+      handler: async () => (creds.token === null ? null : { token: creds.token }),
+    }),
+    refreshSiteTokenForUser: internalAction({
+      args: { site: v.string(), userId: v.string() },
+      returns: v.any(),
+      handler: async () => ({ refreshed: false }),
+    }),
+  };
+});
+
+const OWNER = "collector_conn_001";
+const ME = { subject: OWNER, issuer: "https://clerk.test" };
+const NOW = 1_700_000_000_000;
+const BROWSER = "http://localhost:9999";
+const ESE = "US_eBayStandardEnvelope";
+
+// ── A fake seller account plus the browser service ───────────────────────────
+
+interface FakePolicy {
+  id: string;
+  name: string;
+  services: Array<{ code: string; cost: string; free?: boolean }>;
+}
+
+class World {
+  events: string[] = [];
+  calls: Array<{ host: "browser" | "ebay"; method: string; path: string; json: any }> = [];
+  optedIn = true;
+  fulfillment: FakePolicy[] = [];
+  payment: Array<{ id: string; name: string }> = [];
+  returns: Array<{ id: string; name: string }> = [];
+  shippingServices: Array<{ shippingService: string; internationalService?: boolean; validForSellingFlow?: boolean }> = [
+    { shippingService: "USPSGroundAdvantage", validForSellingFlow: true },
+    { shippingService: "USPSPriorityMail", validForSellingFlow: true },
+  ];
+  locationStatus = 204;
+  failWithdraw = false;
+  failBrowserDelete = false;
+  connectResponse: Response = Response.json({ username: "slabking", ebayUserId: "EB-9", environment: "sandbox", expiresAt: 1 });
+  verifyAnswer: Response = Response.json({ valid: true });
+  next = 0;
+
+  fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+    const u = new URL(String(url));
+    const method = init?.method ?? "GET";
+    const json = typeof init?.body === "string" ? JSON.parse(init.body) : undefined;
+    if (u.origin === BROWSER) {
+      if (u.pathname === "/health") return Response.json({ status: "ok", environment: "test", contractVersion: 1 });
+      this.calls.push({ host: "browser", method, path: u.pathname, json });
+      if (u.pathname === "/oauth/ebay/connect") return this.connectResponse.clone();
+      if (u.pathname === "/webhooks/ebay/verify") return this.verifyAnswer.clone();
+      if (method === "GET" && /^\/credentials\/[^/]+\/token$/.test(u.pathname)) {
+        return creds.token === null
+          ? Response.json({ error: "Credentials not found" }, { status: 404 })
+          : Response.json({ token: creds.token, expiresAt: Date.now() + 60 * 60 * 1000 });
+      }
+      if (method === "DELETE" && u.pathname.startsWith("/credentials/")) {
+        this.events.push("forget-session");
+        return new Response(null, { status: this.failBrowserDelete ? 500 : 204 });
+      }
+      throw new Error(`unexpected browser call ${method} ${u.pathname}`);
+    }
+    this.calls.push({ host: "ebay", method, path: u.pathname, json });
+    const ok = (body: unknown, status = 200) => Response.json(body, { status });
+    const p = u.pathname;
+    if (p === "/sell/account/v1/program/get_opted_in_programs") {
+      return ok({ programs: this.optedIn ? [{ programType: "SELLING_POLICY_MANAGEMENT" }] : [] });
+    }
+    if (p === "/sell/account/v1/program/opt_in") {
+      this.optedIn = true;
+      return ok({});
+    }
+    if (p === "/sell/account/v1/fulfillment_policy" && method === "GET") {
+      return ok({
+        fulfillmentPolicies: this.fulfillment.map((f) => ({
+          fulfillmentPolicyId: f.id,
+          name: f.name,
+          shippingOptions: [
+            {
+              optionType: "DOMESTIC",
+              shippingServices: f.services.map((s) => ({
+                shippingServiceCode: s.code,
+                shippingCost: { value: s.cost },
+                freeShipping: s.free === true,
+              })),
+            },
+          ],
+        })),
+      });
+    }
+    if (p === "/sell/account/v1/payment_policy" && method === "GET") {
+      return ok({ paymentPolicies: this.payment.map((x) => ({ paymentPolicyId: x.id, name: x.name })) });
+    }
+    if (p === "/sell/account/v1/return_policy" && method === "GET") {
+      return ok({ returnPolicies: this.returns.map((x) => ({ returnPolicyId: x.id, name: x.name, returnsAccepted: false })) });
+    }
+    if (p === "/sell/account/v1/fulfillment_policy/" && method === "POST") {
+      const id = `F${++this.next}`;
+      const svc = json.shippingOptions[0].shippingServices[0];
+      this.fulfillment.push({ id, name: json.name, services: [{ code: svc.shippingServiceCode, cost: svc.shippingCost.value, free: svc.freeShipping }] });
+      return ok({ fulfillmentPolicyId: id }, 201);
+    }
+    if (p === "/sell/account/v1/payment_policy" && method === "POST") {
+      const id = `P${++this.next}`;
+      this.payment.push({ id, name: json.name });
+      return ok({ paymentPolicyId: id }, 201);
+    }
+    if (p === "/sell/account/v1/return_policy" && method === "POST") {
+      const id = `R${++this.next}`;
+      this.returns.push({ id, name: json.name });
+      return ok({ returnPolicyId: id }, 201);
+    }
+    if (p.endsWith("/get_shipping_services")) return ok({ shippingServices: this.shippingServices });
+    if (/^\/sell\/inventory\/v1\/location\/[^/]+$/.test(p)) {
+      return new Response(null, { status: this.locationStatus });
+    }
+    const wd = /^\/sell\/inventory\/v1\/offer\/([^/]+)\/withdraw$/.exec(p);
+    if (wd) {
+      this.events.push(`withdraw:${wd[1]}`);
+      return this.failWithdraw ? ok({ errors: [{ errorId: 1 }] }, 500) : ok({});
+    }
+    throw new Error(`unexpected eBay call ${method} ${p}`);
+  }) as typeof fetch;
+
+  ebayWrites() {
+    return this.calls.filter((c) => c.host === "ebay" && c.method !== "GET");
+  }
+  ebayPosts(path: string) {
+    return this.calls.filter((c) => c.host === "ebay" && c.method === "POST" && c.path === path);
+  }
+}
+
+let world: World;
+
+beforeEach(() => {
+  world = new World();
+  creds.token = "tok-1";
+  process.env.NEONBINDER_BROWSER_URL = BROWSER;
+  __resetContractCache();
+  vi.stubEnv("EBAY_CLIENT_ID", "cid");
+  vi.stubEnv("EBAY_RU_NAME", "ru");
+  vi.stubEnv("EBAY_ENVIRONMENT", "sandbox");
+  vi.stubEnv("NEONBINDER_PAUSED_PLATFORMS", "");
+  vi.stubEnv("TESTING_RESET_SECRET", "");
+  vi.stubGlobal("fetch", world.fetch);
+});
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
+  delete process.env.NEONBINDER_BROWSER_URL;
+});
+
+type T = ReturnType<typeof convexTest>;
+
+async function setup(opts: { connected?: boolean; settings?: Record<string, unknown> | null } = {}) {
+  const t = convexTest(schema, modules);
+  const me = t.withIdentity(ME);
+  await t.run(async (ctx) => {
+    await ctx.db.insert("userProfiles", {
+      userId: OWNER,
+      marketplaceAccountIds: { ebayUserId: "EB-1" },
+      siteCredentials: opts.connected === false ? [] : [{ site: "ebay", hasCredentials: true }],
+    } as never);
+    if (opts.settings !== null && opts.settings !== undefined) {
+      await ctx.db.insert("ebaySellerSettings", { ownerId: OWNER, ebayUsername: "slabking", lastUpdated: NOW, ...opts.settings } as never);
+    }
+  });
+  return { t, me };
+}
+type S = Awaited<ReturnType<typeof setup>>;
+
+const settingsRow = (s: S) => s.t.run(async (ctx) => await ctx.db.query("ebaySellerSettings").first());
+const fulfillmentNames = () => world.fulfillment.map((f) => f.name);
+
+// ── Authentication ───────────────────────────────────────────────────────────
+
+describe("every public function needs a signed-in caller", () => {
+  test("anonymous callers are refused and nothing is written or sent", async () => {
+    const t = convexTest(schema, modules);
+    const attempts: Array<() => Promise<unknown>> = [
+      () => t.query(api.ebayConnect.connectionState, {}),
+      () => t.mutation(api.ebayConnect.beginConnect, {}),
+      () => t.mutation(api.ebayConnect.setBestOffer, { on: false }),
+      () => t.action(api.ebayConnect.completeConnect, { code: "c", state: "s" }),
+      () => t.action(api.ebayConnect.disconnect, {}),
+      () => t.action(api.ebayConnect.readPolicies, {}),
+      () => t.action(api.ebayConnect.createStandardPolicies, {}),
+      () => t.action(api.ebayConnect.savePolicies, { paymentPolicyId: "x" }),
+      () => t.action(api.ebayConnect.saveLocation, { postalCode: "53703", city: "Madison", stateOrProvince: "WI" }),
+    ];
+    for (const attempt of attempts) await expect(attempt()).rejects.toThrow(/Not authenticated/);
+    expect(await t.run(async (ctx) => ctx.db.query("ebaySellerSettings").collect())).toEqual([]);
+    expect(world.calls).toEqual([]);
+  });
+});
+
+// ── connectionState ──────────────────────────────────────────────────────────
+
+describe("connectionState", () => {
+  test("an unconfigured deployment says so, with nothing to connect to", async () => {
+    vi.stubEnv("EBAY_CLIENT_ID", "");
+    const s = await setup({ connected: false });
+    const st = await s.me.query(api.ebayConnect.connectionState, {});
+    expect(st).toMatchObject({ configured: false, environment: null, status: "notConnected", ebayUsername: null, setupComplete: false });
+    expect(st.missing).toEqual(["shippingUnder20", "shipping20Plus", "payment", "returns", "location"]);
+    expect(st.settings.bestOffer).toBe(true);
+  });
+
+  test("connected with complete settings is setupComplete; a missing slot is named", async () => {
+    const s = await setup({
+      settings: {
+        fulfillmentPolicyUnder20Id: "a",
+        fulfillmentPolicy20PlusId: "b",
+        paymentPolicyId: "c",
+        returnPolicyId: "d",
+        merchantLocationKey: "k",
+        location: { postalCode: "53703", city: "Madison", stateOrProvince: "WI" },
+        connectedAt: NOW,
+      },
+    });
+    const st = await s.me.query(api.ebayConnect.connectionState, {});
+    expect(st).toMatchObject({ configured: true, environment: "sandbox", status: "connected", ebayUsername: "slabking", since: NOW, setupComplete: true, missing: [] });
+    await s.t.run(async (ctx) => {
+      const row = await ctx.db.query("ebaySellerSettings").first();
+      await ctx.db.patch(row!._id, { paymentPolicyId: undefined });
+    });
+    expect((await s.me.query(api.ebayConnect.connectionState, {})).missing).toEqual(["payment"]);
+  });
+
+  test("never returns the connect nonce", async () => {
+    const s = await setup({ settings: { connectNonce: "SECRET-NONCE", connectNonceAt: NOW } });
+    expect(JSON.stringify(await s.me.query(api.ebayConnect.connectionState, {}))).not.toContain("SECRET-NONCE");
+  });
+
+  test("status words: needsReauth, paused and not connected", async () => {
+    const s = await setup({ settings: {} });
+    await s.t.run(async (ctx) => {
+      const p = await ctx.db.query("userProfiles").first();
+      await ctx.db.patch(p!._id, { siteCredentials: [{ site: "ebay", hasCredentials: true, needsReauth: true }] } as never);
+    });
+    expect((await s.me.query(api.ebayConnect.connectionState, {})).status).toBe("needsReauth");
+    vi.stubEnv("NEONBINDER_PAUSED_PLATFORMS", "ebay");
+    expect((await s.me.query(api.ebayConnect.connectionState, {})).status).toBe("paused");
+    vi.stubEnv("NEONBINDER_PAUSED_PLATFORMS", "");
+    await s.t.run(async (ctx) => {
+      const p = await ctx.db.query("userProfiles").first();
+      await ctx.db.patch(p!._id, { siteCredentials: [] } as never);
+    });
+    const st = await s.me.query(api.ebayConnect.connectionState, {});
+    expect(st).toMatchObject({ status: "notConnected", ebayUsername: null, since: null });
+  });
+});
+
+// ── Connect: nonce lifecycle ─────────────────────────────────────────────────
+
+describe("beginConnect and completeConnect", () => {
+  const stateOf = (r: { authorizeUrl: string } | { ok: false; error: string }) =>
+    new URL((r as { authorizeUrl: string }).authorizeUrl).searchParams.get("state") as string;
+
+  test("beginConnect stores a nonce and puts it in the consent URL as state", async () => {
+    const s = await setup({ connected: false });
+    const begun = await s.me.mutation(api.ebayConnect.beginConnect, {});
+    const authorizeUrl = (begun as { authorizeUrl: string }).authorizeUrl;
+    const url = new URL(authorizeUrl);
+    expect(url.origin).toBe("https://auth.sandbox.ebay.com");
+    const row = await settingsRow(s);
+    expect(row?.connectNonce).toBe(stateOf(begun));
+    expect(row?.connectNonce).toMatch(/^[0-9a-f]{48}$/);
+  });
+
+  test("a second press replaces the first nonce, which then no longer works", async () => {
+    const s = await setup({ connected: false });
+    const first = stateOf(await s.me.mutation(api.ebayConnect.beginConnect, {}));
+    const second = stateOf(await s.me.mutation(api.ebayConnect.beginConnect, {}));
+    expect(second).not.toBe(first);
+    const r = await s.me.action(api.ebayConnect.completeConnect, { code: "c1", state: first });
+    expect(r).toMatchObject({ ok: false, error: expect.stringContaining("timed out") });
+    expect(world.calls).toEqual([]);
+  });
+
+  test("beginConnect answers a sentence, and writes nothing, when eBay is not configured or paused", async () => {
+    const s = await setup({ connected: false });
+    vi.stubEnv("NEONBINDER_PAUSED_PLATFORMS", "ebay");
+    expect(await s.me.mutation(api.ebayConnect.beginConnect, {})).toMatchObject({ ok: false, error: expect.stringContaining("pause") });
+    vi.stubEnv("NEONBINDER_PAUSED_PLATFORMS", "");
+    vi.stubEnv("EBAY_RU_NAME", "");
+    expect(await s.me.mutation(api.ebayConnect.beginConnect, {})).toMatchObject({ ok: false, error: expect.stringContaining("isn't hooked up") });
+    expect(await settingsRow(s)).toBeNull();
+  });
+
+  test("beginConnect is refused while eBay is connected and working: switching accounts goes through Disconnect", async () => {
+    const s = await setup({ connected: true, settings: {} });
+    const r = await s.me.mutation(api.ebayConnect.beginConnect, {});
+    expect(r).toEqual({ ok: false, error: "Disconnect eBay first, then connect the other account." });
+    expect((await settingsRow(s))?.connectNonce).toBeUndefined();
+  });
+
+  test("beginConnect is allowed when the connection needs signing in again", async () => {
+    const s = await setup({ connected: true, settings: {} });
+    await s.t.run(async (ctx) => {
+      const p = await ctx.db.query("userProfiles").first();
+      await ctx.db.patch(p!._id, { siteCredentials: [{ site: "ebay", hasCredentials: true, needsReauth: true }] } as never);
+    });
+    const r = await s.me.mutation(api.ebayConnect.beginConnect, {});
+    expect("authorizeUrl" in r).toBe(true);
+  });
+
+  test("the right state connects: code goes to the browser service, username comes back, nonce is spent", async () => {
+    const s = await setup({ connected: false });
+    const state = stateOf(await s.me.mutation(api.ebayConnect.beginConnect, {}));
+    const r = await s.me.action(api.ebayConnect.completeConnect, { code: "v^1.1%23abc", state });
+    expect(r).toEqual({ ok: true, ebayUsername: "slabking" });
+    const connect = world.calls.find((c) => c.path === "/oauth/ebay/connect");
+    // The URL-encoded code is decoded before the browser service sees it.
+    expect(connect?.json).toEqual({ key: `ebay-credentials-${OWNER}`, code: "v^1.1#abc" });
+    const row = await settingsRow(s);
+    expect(row?.connectNonce).toBeUndefined();
+    expect(row?.ebayUsername).toBe("slabking");
+    await drainScheduled(s.t);
+  });
+
+  test("replaying a spent state is refused", async () => {
+    const s = await setup({ connected: false });
+    const state = stateOf(await s.me.mutation(api.ebayConnect.beginConnect, {}));
+    await s.me.action(api.ebayConnect.completeConnect, { code: "c", state });
+    world.calls = [];
+    const again = await s.me.action(api.ebayConnect.completeConnect, { code: "c", state });
+    expect(again).toMatchObject({ ok: false, error: expect.stringContaining("timed out") });
+    expect(world.calls).toEqual([]);
+    await drainScheduled(s.t);
+  });
+
+  test("a wrong state is refused and leaves the live nonce for the real redirect", async () => {
+    const s = await setup({ connected: false });
+    const state = stateOf(await s.me.mutation(api.ebayConnect.beginConnect, {}));
+    const wrong = await s.me.action(api.ebayConnect.completeConnect, { code: "c", state: "not-the-nonce" });
+    expect(wrong).toMatchObject({ ok: false });
+    expect((await settingsRow(s))?.connectNonce).toBe(state);
+    expect(world.calls).toEqual([]);
+    const right = await s.me.action(api.ebayConnect.completeConnect, { code: "c", state });
+    expect(right.ok).toBe(true);
+    await drainScheduled(s.t);
+  });
+
+  test("an expired nonce is refused and cleared", async () => {
+    const s = await setup({ connected: false });
+    const state = stateOf(await s.me.mutation(api.ebayConnect.beginConnect, {}));
+    await s.t.run(async (ctx) => {
+      const row = await ctx.db.query("ebaySellerSettings").first();
+      await ctx.db.patch(row!._id, { connectNonceAt: Date.now() - 16 * 60 * 1000 });
+    });
+    const r = await s.me.action(api.ebayConnect.completeConnect, { code: "c", state });
+    expect(r).toMatchObject({ ok: false, error: expect.stringContaining("timed out") });
+    expect((await settingsRow(s))?.connectNonce).toBeUndefined();
+    expect(world.calls).toEqual([]);
+  });
+
+  test("another collector's nonce is no good for this caller", async () => {
+    const s = await setup({ connected: false });
+    const state = stateOf(await s.me.mutation(api.ebayConnect.beginConnect, {}));
+    const other = s.t.withIdentity({ subject: "someone_else", issuer: "https://clerk.test" });
+    const r = await other.action(api.ebayConnect.completeConnect, { code: "c", state });
+    expect(r.ok).toBe(false);
+    expect(world.calls).toEqual([]);
+    expect((await settingsRow(s))?.connectNonce).toBe(state);
+  });
+
+  test("a code or state of absurd length is refused before the nonce is spent", async () => {
+    const s = await setup({ connected: false });
+    const state = stateOf(await s.me.mutation(api.ebayConnect.beginConnect, {}));
+    expect((await s.me.action(api.ebayConnect.completeConnect, { code: "x".repeat(5000), state })).ok).toBe(false);
+    expect((await s.me.action(api.ebayConnect.completeConnect, { code: "c", state: "s".repeat(200) })).ok).toBe(false);
+    expect((await s.me.action(api.ebayConnect.completeConnect, { code: "", state })).ok).toBe(false);
+    expect((await settingsRow(s))?.connectNonce).toBe(state);
+  });
+
+  test("a malformed percent-escape in the code is refused with a sentence, not thrown", async () => {
+    const s = await setup({ connected: false });
+    const state = stateOf(await s.me.mutation(api.ebayConnect.beginConnect, {}));
+    const r = await s.me.action(api.ebayConnect.completeConnect, { code: "%E0%A4%A", state });
+    expect(r).toMatchObject({ ok: false });
+    expect(world.calls.filter((c) => c.path === "/oauth/ebay/connect")).toEqual([]);
+  });
+
+  test("eBay refusing consent comes back as an NB sentence", async () => {
+    const s = await setup({ connected: false });
+    const state = stateOf(await s.me.mutation(api.ebayConnect.beginConnect, {}));
+    world.connectResponse = Response.json({ error_class: "consent_refused" }, { status: 401 });
+    const r = await s.me.action(api.ebayConnect.completeConnect, { code: "c", state });
+    expect(r).toEqual({ ok: false, error: expect.stringContaining("say yes") });
+  });
+});
+
+// ── Policies ─────────────────────────────────────────────────────────────────
+
+describe("savePolicies", () => {
+  async function accountWithPolicies() {
+    world.fulfillment = [
+      { id: "F-ESE", name: "Envelope only", services: [{ code: ESE, cost: "1.00" }] },
+      { id: "F-MIX", name: "Envelope or parcel", services: [{ code: ESE, cost: "1.00" }, { code: "USPSGroundAdvantage", cost: "4.99" }] },
+      { id: "F-GA", name: "Ground", services: [{ code: "USPSGroundAdvantage", cost: "4.99" }] },
+    ];
+    world.payment = [{ id: "P1", name: "Pay" }];
+    world.returns = [{ id: "R1", name: "Ret" }];
+    return setup({ settings: {} });
+  }
+
+  test("an ESE-only policy is refused for $20 and up", async () => {
+    const s = await accountWithPolicies();
+    const r = await s.me.action(api.ebayConnect.savePolicies, { fulfillmentPolicy20PlusId: "F-ESE" });
+    expect(r).toMatchObject({ ok: false, error: expect.stringContaining("under $20") });
+    expect((await settingsRow(s))?.fulfillmentPolicy20PlusId).toBeUndefined();
+  });
+
+  test("ESE-only is fine for the under-$20 slot; a mixed or parcel policy is fine for $20+", async () => {
+    const s = await accountWithPolicies();
+    expect(await s.me.action(api.ebayConnect.savePolicies, { fulfillmentPolicyUnder20Id: "F-ESE", fulfillmentPolicy20PlusId: "F-MIX" })).toEqual({ ok: true });
+    expect(await settingsRow(s)).toMatchObject({ fulfillmentPolicyUnder20Id: "F-ESE", fulfillmentPolicy20PlusId: "F-MIX" });
+    expect(await s.me.action(api.ebayConnect.savePolicies, { fulfillmentPolicy20PlusId: "F-GA", paymentPolicyId: "P1", returnPolicyId: "R1" })).toEqual({ ok: true });
+    expect(await settingsRow(s)).toMatchObject({ fulfillmentPolicy20PlusId: "F-GA", paymentPolicyId: "P1", returnPolicyId: "R1" });
+  });
+
+  test("a policy the account no longer has is refused, and nothing in the same save lands", async () => {
+    const s = await accountWithPolicies();
+    const r = await s.me.action(api.ebayConnect.savePolicies, { fulfillmentPolicyUnder20Id: "F-ESE", paymentPolicyId: "GONE" });
+    expect(r).toMatchObject({ ok: false, error: expect.stringContaining("anymore") });
+    expect((await settingsRow(s))?.fulfillmentPolicyUnder20Id).toBeUndefined();
+  });
+
+  test("empty and oversized ids are refused without asking eBay", async () => {
+    const s = await accountWithPolicies();
+    expect((await s.me.action(api.ebayConnect.savePolicies, { paymentPolicyId: "" })).ok).toBe(false);
+    expect((await s.me.action(api.ebayConnect.savePolicies, { paymentPolicyId: "x".repeat(65) })).ok).toBe(false);
+    expect(world.calls).toEqual([]);
+  });
+
+  test("not connected: told to connect first, nothing sent", async () => {
+    const s = await setup({ connected: false, settings: {} });
+    creds.token = null;
+    const r = await s.me.action(api.ebayConnect.savePolicies, { paymentPolicyId: "P1" });
+    expect(r).toMatchObject({ ok: false, error: expect.stringContaining("Connect") });
+    expect(world.calls).toEqual([]);
+  });
+
+  test("an account not in business policies reads as empty lists", async () => {
+    world.optedIn = false;
+    const s = await setup({ settings: {} });
+    expect(await s.me.action(api.ebayConnect.readPolicies, {})).toEqual({ ok: true, fulfillment: [], payment: [], returns: [] });
+  });
+
+  test("readPolicies tells the picker which fulfillment policies fit", async () => {
+    const s = await accountWithPolicies();
+    const r = await s.me.action(api.ebayConnect.readPolicies, {});
+    expect(r.ok && r.fulfillment.map((p) => [p.id, p.eseFit, p.eseOnly])).toEqual([
+      ["F-ESE", true, true],
+      ["F-MIX", true, false],
+      ["F-GA", false, false],
+    ]);
+  });
+});
+
+describe("createStandardPolicies (Set me up)", () => {
+  test("on a fresh account makes the three shipping policies, payment and returns, and fills the empty slots", async () => {
+    const s = await setup({ settings: {} });
+    const r = await s.me.action(api.ebayConnect.createStandardPolicies, {});
+    expect(r).toEqual({
+      ok: true,
+      created: [NB_POLICY_NAMES.ese, NB_POLICY_NAMES.tracked, NB_POLICY_NAMES.free, NB_POLICY_NAMES.payment, NB_POLICY_NAMES.returns],
+    });
+    const row = await settingsRow(s);
+    const idOf = (name: string) => world.fulfillment.find((f) => f.name === name)?.id;
+    expect(row?.fulfillmentPolicyUnder20Id).toBe(idOf(NB_POLICY_NAMES.ese));
+    expect(row?.fulfillmentPolicy20PlusId).toBe(idOf(NB_POLICY_NAMES.tracked));
+    expect(row?.paymentPolicyId).toBe(world.payment[0].id);
+    expect(row?.returnPolicyId).toBe(world.returns[0].id);
+    // The ESE policy uses the envelope; the tracked ones use the Ground Advantage code eBay's metadata listed.
+    expect(world.fulfillment.find((f) => f.name === NB_POLICY_NAMES.ese)?.services[0].code).toBe(ESE);
+    expect(world.fulfillment.find((f) => f.name === NB_POLICY_NAMES.tracked)?.services[0].code).toBe("USPSGroundAdvantage");
+    expect(world.fulfillment.find((f) => f.name === NB_POLICY_NAMES.free)?.services[0]).toMatchObject({ cost: "0.00", free: true });
+  });
+
+  test("the Ground Advantage code comes from eBay's metadata, not from NB", async () => {
+    world.shippingServices = [{ shippingService: "USPSGroundAdvantage2", validForSellingFlow: true }];
+    const s = await setup({ settings: {} });
+    await s.me.action(api.ebayConnect.createStandardPolicies, {});
+    expect(world.fulfillment.find((f) => f.name === NB_POLICY_NAMES.tracked)?.services[0].code).toBe("USPSGroundAdvantage2");
+  });
+
+  test("without Ground Advantage in eBay's list it makes nothing and says why", async () => {
+    world.shippingServices = [{ shippingService: "USPSPriorityMail", validForSellingFlow: true }];
+    const s = await setup({ settings: {} });
+    const r = await s.me.action(api.ebayConnect.createStandardPolicies, {});
+    expect(r).toMatchObject({ ok: false, error: expect.stringContaining("Ground Advantage") });
+    expect(world.ebayWrites()).toEqual([]);
+  });
+
+  test("opts the account into business policies first when it is not in", async () => {
+    world.optedIn = false;
+    const s = await setup({ settings: {} });
+    const r = await s.me.action(api.ebayConnect.createStandardPolicies, {});
+    expect(r.ok).toBe(true);
+    expect(world.ebayPosts("/sell/account/v1/program/opt_in")).toHaveLength(1);
+    expect(world.ebayPosts("/sell/account/v1/program/opt_in")[0].json).toEqual({ programType: "SELLING_POLICY_MANAGEMENT" });
+  });
+
+  test("a second press makes nothing new (idempotent by name)", async () => {
+    const s = await setup({ settings: {} });
+    await s.me.action(api.ebayConnect.createStandardPolicies, {});
+    const before = world.fulfillment.length;
+    const again = await s.me.action(api.ebayConnect.createStandardPolicies, {});
+    expect(again).toEqual({ ok: true, created: [] });
+    expect(world.fulfillment).toHaveLength(before);
+  });
+
+  test("never replaces a slot the collector already chose", async () => {
+    const s = await setup({ settings: { fulfillmentPolicyUnder20Id: "MINE-U20", paymentPolicyId: "MINE-PAY" } });
+    world.payment = [{ id: "MINE-PAY", name: "My pay" }];
+    await s.me.action(api.ebayConnect.createStandardPolicies, {});
+    const row = await settingsRow(s);
+    expect(row?.fulfillmentPolicyUnder20Id).toBe("MINE-U20");
+    expect(row?.paymentPolicyId).toBe("MINE-PAY");
+    expect(row?.fulfillmentPolicy20PlusId).toBe(world.fulfillment.find((f) => f.name === NB_POLICY_NAMES.tracked)?.id);
+  });
+
+  test("keeps the seller's own payment and return policies: makes none, picks the only one, leaves several to the collector", async () => {
+    world.payment = [{ id: "P-ONLY", name: "Mine" }];
+    world.returns = [{ id: "R-A", name: "A" }, { id: "R-B", name: "B" }];
+    const s = await setup({ settings: {} });
+    const r = await s.me.action(api.ebayConnect.createStandardPolicies, {});
+    expect(r.ok && r.created).not.toContain(NB_POLICY_NAMES.payment);
+    expect(r.ok && r.created).not.toContain(NB_POLICY_NAMES.returns);
+    expect(world.ebayPosts("/sell/account/v1/payment_policy")).toEqual([]);
+    expect(world.ebayPosts("/sell/account/v1/return_policy")).toEqual([]);
+    const row = await settingsRow(s);
+    expect(row?.paymentPolicyId).toBe("P-ONLY");
+    expect(row?.returnPolicyId).toBeUndefined();
+  });
+
+  test("if a policy fails mid-way, what was made is kept and found by name next time", async () => {
+    const s = await setup({ settings: {} });
+    const real = world.fetch;
+    let posts = 0;
+    vi.stubGlobal("fetch", (async (url: string | URL | Request, init?: RequestInit) => {
+      if (String(url).endsWith("/fulfillment_policy/") && ++posts === 2) return Response.json({ errors: [{ errorId: 1, message: "RAW" }] }, { status: 500 });
+      return real(url, init);
+    }) as typeof fetch);
+    const r = await s.me.action(api.ebayConnect.createStandardPolicies, {});
+    expect(r.ok).toBe(false);
+    expect(JSON.stringify(r)).not.toContain("RAW");
+    expect(fulfillmentNames()).toEqual([NB_POLICY_NAMES.ese]);
+    expect((await settingsRow(s))?.fulfillmentPolicyUnder20Id).toBe(world.fulfillment[0].id);
+  });
+});
+
+// ── Location and Best Offer ──────────────────────────────────────────────────
+
+describe("saveLocation", () => {
+  test("normalises, pushes the inventory location, and stores it with its key", async () => {
+    const s = await setup({ settings: {} });
+    const r = await s.me.action(api.ebayConnect.saveLocation, { postalCode: " 53703 ", city: "  Madison  ", stateOrProvince: "wi" });
+    expect(r).toEqual({ ok: true });
+    expect(await settingsRow(s)).toMatchObject({
+      location: { postalCode: "53703", city: "Madison", stateOrProvince: "WI" },
+      merchantLocationKey: "neonbinder-main",
+    });
+    expect(world.ebayPosts("/sell/inventory/v1/location/neonbinder-main")[0].json.location.address).toMatchObject({ country: "US", stateOrProvince: "WI" });
+  });
+
+  test.each([
+    [{ postalCode: "5370", city: "Madison", stateOrProvince: "WI" }, "ZIP"],
+    [{ postalCode: "53703", city: "   ", stateOrProvince: "WI" }, "city"],
+    [{ postalCode: "53703", city: "Madison", stateOrProvince: "Wisconsin" }, "two-letter"],
+  ])("a bad location %j is refused (%s) before eBay is asked", async (args, word) => {
+    const s = await setup({ settings: {} });
+    const r = await s.me.action(api.ebayConnect.saveLocation, args);
+    expect(r).toMatchObject({ ok: false, error: expect.stringContaining(word) });
+    expect(world.calls).toEqual([]);
+    expect((await settingsRow(s))?.location).toBeUndefined();
+  });
+
+  test("when eBay won't take the location nothing is stored", async () => {
+    world.locationStatus = 400;
+    const s = await setup({ settings: {} });
+    const r = await s.me.action(api.ebayConnect.saveLocation, { postalCode: "53703", city: "Madison", stateOrProvince: "WI" });
+    expect(r.ok).toBe(false);
+    expect((await settingsRow(s))?.location).toBeUndefined();
+  });
+});
+
+describe("setBestOffer", () => {
+  test("turning it off and on writes the setting; repeating the same value writes nothing", async () => {
+    const s = await setup({ settings: {} });
+    await s.me.mutation(api.ebayConnect.setBestOffer, { on: true });
+    expect((await settingsRow(s))?.bestOffer).toBeUndefined();
+    await s.me.mutation(api.ebayConnect.setBestOffer, { on: false });
+    expect((await settingsRow(s))?.bestOffer).toBe(false);
+    const stamp = (await settingsRow(s))?.lastUpdated;
+    await s.me.mutation(api.ebayConnect.setBestOffer, { on: false });
+    expect((await settingsRow(s))?.lastUpdated).toBe(stamp);
+    await s.me.mutation(api.ebayConnect.setBestOffer, { on: true });
+    expect((await s.me.query(api.ebayConnect.connectionState, {})).settings.bestOffer).toBe(true);
+    await drainScheduled(s.t);
+  });
+
+  test("a change re-queues the owner's listed cards when they list on eBay", async () => {
+    const s = await setup({ settings: {} });
+    await s.t.run(async (ctx) => {
+      await ctx.db.insert("marketplaceListingStates", { ownerId: OWNER, platform: "ebay", listingStartedAt: NOW, lastUpdated: NOW });
+    });
+    await s.me.mutation(api.ebayConnect.setBestOffer, { on: false });
+    const scheduled = await s.t.run(async (ctx) => (await ctx.db.system.query("_scheduled_functions").collect()).map((f) => f.name));
+    expect(scheduled.some((n) => n.includes("startListingWalk"))).toBe(true);
+    await drainScheduled(s.t);
+  });
+});
+
+// ── Disconnect ───────────────────────────────────────────────────────────────
+
+describe("disconnect", () => {
+  async function connectedWithListings() {
+    const s = await setup({ settings: { connectedAt: NOW } });
+    await s.t.run(async (ctx) => {
+      await ctx.db.insert("marketplaceListingStates", { ownerId: OWNER, platform: "ebay", listingStartedAt: NOW, platformAccountId: "EB-1", lastUpdated: NOW });
+      const sel = await ctx.db.insert("selectorOptions", { level: "sport", value: "x", platformData: {}, isCustom: false, children: [], lastUpdated: NOW } as never);
+      const card = await ctx.db.insert("cardChecklist", {
+        selectorOptionId: sel,
+        cardNumber: "1",
+        cardName: "P",
+        listingTitle: "t",
+        sportId: sel,
+        platformData: {},
+        isCustom: false,
+        sortOrder: 0,
+        lastUpdated: NOW,
+      } as never);
+      const link = (conditionCode: "NM" | "EX" | "VG" | "PR", status: "live" | "ended" | "draft", offerId: string) =>
+        ctx.db.insert("marketplaceListingLinks", {
+          ownerId: OWNER,
+          platform: "ebay",
+          cardId: card,
+          conditionCode,
+          sku: `NB2-${card}-${conditionCode}`,
+          offerId,
+          ...(status === "live" ? { listingId: `L-${offerId}` } : {}),
+          status,
+          lastUpdated: NOW,
+        });
+      await link("NM", "live", "O-LIVE-1");
+      await link("EX", "live", "O-LIVE-2");
+      await link("VG", "ended", "O-ENDED");
+      await ctx.db.insert("marketplaceSales", {
+        ownerId: OWNER,
+        platform: "ebay",
+        orderId: "ORD1",
+        orderNo: "ORD1",
+        orderDate: NOW,
+        status: "PAID",
+        totals: {},
+        items: [],
+        firstSeenAt: NOW,
+        lastUpdated: NOW,
+      } as never);
+    });
+    return s;
+  }
+  const links = (s: S) => s.t.run(async (ctx) => await ctx.db.query("marketplaceListingLinks").collect());
+
+  test("takes every live listing down before the session is forgotten, then clears links, settings and the account id but keeps sales", async () => {
+    const s = await connectedWithListings();
+    const r = await s.me.action(api.ebayConnect.disconnect, {});
+    expect(r).toEqual({ ok: true, notEnded: 0 });
+    expect([...world.events].slice(0, 2).sort()).toEqual(["withdraw:O-LIVE-1", "withdraw:O-LIVE-2"]);
+    expect(world.events.at(-1)).toBe("forget-session");
+    expect(world.events).not.toContain("withdraw:O-ENDED");
+    expect(await links(s)).toEqual([]);
+    expect(await settingsRow(s)).toBeNull();
+    expect(await s.t.run(async (ctx) => (await ctx.db.query("userProfiles").first())?.marketplaceAccountIds?.ebayUserId ?? null)).toBeNull();
+    expect(await s.t.run(async (ctx) => ctx.db.query("marketplaceSales").collect())).toHaveLength(1);
+    expect((await s.me.query(api.ebayConnect.connectionState, {})).status).toBe("notConnected");
+  });
+
+  test("listing stops before the first withdraw, so no drain can put a listing back", async () => {
+    const s = await connectedWithListings();
+    let startedWhenWithdrawn: number | undefined | "unset" = "unset";
+    const real = world.fetch;
+    vi.stubGlobal("fetch", (async (url: string | URL | Request, init?: RequestInit) => {
+      if (String(url).includes("/withdraw") && startedWhenWithdrawn === "unset") {
+        const st = await s.t.run(async (ctx) => ctx.db.query("marketplaceListingStates").first());
+        startedWhenWithdrawn = st?.listingStartedAt;
+      }
+      return real(url, init);
+    }) as typeof fetch);
+    await s.me.action(api.ebayConnect.disconnect, {});
+    expect(startedWhenWithdrawn).toBeUndefined();
+  });
+
+  test("a listing eBay will not end is counted and its link kept live; the session still goes", async () => {
+    world.failWithdraw = true;
+    const s = await connectedWithListings();
+    expect(await s.me.action(api.ebayConnect.disconnect, {})).toEqual({ ok: true, notEnded: 2 });
+    expect(world.events.at(-1)).toBe("forget-session");
+    expect(await settingsRow(s)).toBeNull();
+    // Only the two rows still live survive; the ended one is gone.
+    expect((await links(s)).map((l) => [l.conditionCode, l.status]).sort()).toEqual([["EX", "live"], ["NM", "live"]]);
+  });
+
+  test("with no eBay token at all nothing is withdrawn: every live listing counts as not ended, and the session still goes", async () => {
+    creds.token = null;
+    const s = await connectedWithListings();
+    expect(await s.me.action(api.ebayConnect.disconnect, {})).toEqual({ ok: true, notEnded: 2 });
+    expect(world.events).toEqual(["forget-session"]);
+  });
+
+  test("a paused eBay sends no withdraw", async () => {
+    vi.stubEnv("NEONBINDER_PAUSED_PLATFORMS", "ebay");
+    const s = await connectedWithListings();
+    expect(await s.me.action(api.ebayConnect.disconnect, {})).toEqual({ ok: true, notEnded: 2 });
+    expect(world.events).toEqual(["forget-session"]);
+  });
+
+  test("if the stored session cannot be deleted, links and settings are kept so a retry is possible", async () => {
+    world.failBrowserDelete = true;
+    const s = await connectedWithListings();
+    expect(await s.me.action(api.ebayConnect.disconnect, {})).toEqual({ ok: false, notEnded: 0 });
+    expect(await links(s)).toHaveLength(3);
+    expect(await settingsRow(s)).not.toBeNull();
+  });
+
+  test("a reconnect to the same account after listings eBay would not end keeps those links; a different account clears them", async () => {
+    world.failWithdraw = true;
+    const s = await connectedWithListings();
+    await s.me.action(api.ebayConnect.disconnect, {});
+    world.failWithdraw = false;
+    const state = stateOfBegun(await s.me.mutation(api.ebayConnect.beginConnect, {}));
+    world.connectResponse = Response.json({ username: "someone-else", ebayUserId: "EB-OTHER", environment: "sandbox", expiresAt: 1 });
+    const r = await s.me.action(api.ebayConnect.completeConnect, { code: "c", state });
+    expect(r).toMatchObject({ ok: true });
+    expect(await links(s)).toEqual([]);
+    await drainScheduled(s.t);
+  });
+});
+
+function stateOfBegun(r: { authorizeUrl: string } | { ok: false; error: string }): string {
+  return new URL((r as { authorizeUrl: string }).authorizeUrl).searchParams.get("state") as string;
+}
+
+// ── Marketplace Account Deletion ─────────────────────────────────────────────
+
+describe("eBay Marketplace Account Deletion endpoint", () => {
+  const PATH = "/webhooks/ebay/account-deletion";
+  const ENDPOINT = "https://nb-test.convex.site/webhooks/ebay/account-deletion";
+  const post = (t: T, body: unknown) => t.fetch(PATH, { method: "POST", headers: { "content-type": "application/json" }, body: typeof body === "string" ? body : JSON.stringify(body) });
+  const notice = (userId: string, username: string, topic = "MARKETPLACE_ACCOUNT_DELETION") => ({
+    metadata: { topic, schemaVersion: "1.0" },
+    notification: { notificationId: "n1", data: { username, userId, eiasToken: "e" } },
+  });
+
+  beforeEach(() => {
+    vi.stubEnv("EBAY_DELETION_VERIFICATION_TOKEN", "verify-token-0123456789-0123456789-0123456789");
+    vi.stubEnv("EBAY_DELETION_ENDPOINT_URL", ENDPOINT);
+  });
+
+  test("GET answers the challenge with sha256(code + token + endpoint) as hex", async () => {
+    const t = convexTest(schema, modules);
+    const res = await t.fetch(`${PATH}?challenge_code=abc123`, { method: "GET" });
+    expect(res.status).toBe(200);
+    const expected = createHash("sha256").update("abc123" + "verify-token-0123456789-0123456789-0123456789" + ENDPOINT).digest("hex");
+    expect(await res.json()).toEqual({ challengeResponse: expected });
+  });
+
+  test("GET without the token or endpoint configured answers 503; without a challenge code, 400", async () => {
+    const t = convexTest(schema, modules);
+    expect((await t.fetch(`${PATH}`, { method: "GET" })).status).toBe(400);
+    expect((await t.fetch(`${PATH}?challenge_code=${"x".repeat(600)}`, { method: "GET" })).status).toBe(400);
+    vi.stubEnv("EBAY_DELETION_VERIFICATION_TOKEN", "");
+    expect((await t.fetch(`${PATH}?challenge_code=a`, { method: "GET" })).status).toBe(503);
+  });
+
+  test("GET falls back to the deployment's site URL plus the route", async () => {
+    vi.stubEnv("EBAY_DELETION_ENDPOINT_URL", "");
+    vi.stubEnv("CONVEX_SITE_URL", "https://site.example/");
+    const t = convexTest(schema, modules);
+    const res = await t.fetch(`${PATH}?challenge_code=zz`, { method: "GET" });
+    const expected = createHash("sha256").update("zz" + "verify-token-0123456789-0123456789-0123456789" + "https://site.example/webhooks/ebay/account-deletion").digest("hex");
+    expect(await res.json()).toEqual({ challengeResponse: expected });
+  });
+
+  async function sellerWithData() {
+    const s = await setup({ settings: { ebayUsername: "SlabKing" } });
+    const cardAndCopy = await s.t.run(async (ctx) => {
+      const sel = await ctx.db.insert("selectorOptions", { level: "sport", value: "x", platformData: {}, isCustom: false, children: [], lastUpdated: NOW } as never);
+      const card = await ctx.db.insert("cardChecklist", {
+        selectorOptionId: sel, cardNumber: "1", cardName: "P", listingTitle: "t", sportId: sel, platformData: {}, isCustom: false, sortOrder: 0, lastUpdated: NOW,
+      } as never);
+      await ctx.db.insert("marketplaceListingLinks", { ownerId: OWNER, platform: "ebay", cardId: card, conditionCode: "NM", sku: "S", status: "live", offerId: "O", listingId: "L", lastUpdated: NOW });
+      await ctx.db.insert("marketplaceSales", { ownerId: OWNER, platform: "ebay", orderId: "O1", orderNo: "O1", orderDate: NOW, status: "PAID", totals: {}, items: [], firstSeenAt: NOW, lastUpdated: NOW } as never);
+      await ctx.db.insert("marketplaceSales", { ownerId: OWNER, platform: "bsc", orderId: "B1", orderNo: "B1", orderDate: NOW, status: "SHIPPED", totals: {}, items: [], firstSeenAt: NOW, lastUpdated: NOW } as never);
+      await ctx.db.insert("marketplaceListingStates", { ownerId: OWNER, platform: "ebay", listingStartedAt: NOW, platformAccountId: "EB-1", lastUpdated: NOW });
+      return card;
+    });
+    return { s, card: cardAndCopy };
+  }
+  const counts = (s: S) =>
+    s.t.run(async (ctx) => ({
+      links: (await ctx.db.query("marketplaceListingLinks").collect()).length,
+      ebaySales: (await ctx.db.query("marketplaceSales").collect()).filter((x) => x.platform === "ebay").length,
+      bscSales: (await ctx.db.query("marketplaceSales").collect()).filter((x) => x.platform === "bsc").length,
+      settings: (await ctx.db.query("ebaySellerSettings").collect()).length,
+      cards: (await ctx.db.query("cardChecklist").collect()).length,
+      ebayUserId: (await ctx.db.query("userProfiles").first())?.marketplaceAccountIds?.ebayUserId ?? null,
+    }));
+
+  const signed = { "x-ebay-signature": "eyJhbGciOiJFQ0RTQSJ9.sig" };
+  const postSigned = (t: T, body: unknown, headers: Record<string, string> = signed) =>
+    t.fetch(PATH, { method: "POST", headers: { "content-type": "application/json", ...headers }, body: typeof body === "string" ? body : JSON.stringify(body) });
+  const verifyCalls = () => world.calls.filter((c) => c.path === "/webhooks/ebay/verify");
+
+  test("a verified notice for a connected seller deletes their NB-side eBay data and keeps NB's own", async () => {
+    const { s } = await sellerWithData();
+    const raw = JSON.stringify(notice("EB-1", "slabking"));
+    const res = await postSigned(s.t, raw);
+    expect(res.status).toBe(200);
+    await drainScheduled(s.t);
+    // The verifier got the header and the raw body exactly as received.
+    expect(verifyCalls()).toHaveLength(1);
+    expect(verifyCalls()[0].json).toEqual({ signatureHeader: signed["x-ebay-signature"], body: raw });
+    expect(await counts(s)).toEqual({ links: 0, ebaySales: 0, bscSales: 1, settings: 0, cards: 1, ebayUserId: null });
+    expect(world.events).toContain("forget-session");
+    const st = await s.t.run(async (ctx) => ctx.db.query("marketplaceListingStates").first());
+    expect(st?.platformAccountId).toBeUndefined();
+  });
+
+  test("the seller is matched on eBay's immutable user id alone: a renamed account still matches, another id does not", async () => {
+    const { s } = await sellerWithData();
+    await postSigned(s.t, notice("EB-OTHER", "slabking"));
+    await drainScheduled(s.t);
+    expect((await counts(s)).links).toBe(1);
+    expect(verifyCalls()).toHaveLength(0);
+    await postSigned(s.t, notice("EB-1", "a-new-username"));
+    await drainScheduled(s.t);
+    expect((await counts(s)).links).toBe(0);
+  });
+
+  test("a seller who disconnected but still has link rows (listings eBay would not end) is found through the listing state", async () => {
+    const { s } = await sellerWithData();
+    await s.t.run(async (ctx) => {
+      const p = await ctx.db.query("userProfiles").first();
+      await ctx.db.patch(p!._id, { marketplaceAccountIds: {} });
+    });
+    expect(await s.t.query(internal.ebayConnect.ownersForEbayAccount, { ebayUserId: "EB-1" })).toEqual([OWNER]);
+    await postSigned(s.t, notice("EB-1", "slabking"));
+    await drainScheduled(s.t);
+    expect((await counts(s)).links).toBe(0);
+  });
+
+  test("a notice whose signature does not verify is refused 412 and nothing is scheduled or deleted", async () => {
+    world.verifyAnswer = Response.json({ valid: false });
+    const { s } = await sellerWithData();
+    const res = await postSigned(s.t, notice("EB-1", "slabking"));
+    expect(res.status).toBe(412);
+    await drainScheduled(s.t);
+    expect(await counts(s)).toEqual({ links: 1, ebaySales: 1, bscSales: 1, settings: 1, cards: 1, ebayUserId: "EB-1" });
+    expect(world.events).toEqual([]);
+  });
+
+  test.each([
+    ["the verifier unreachable", () => Response.json({ error_class: "ebay_unavailable" }, { status: 502 }), 500],
+    ["verification not configured on the service", () => Response.json({ error_class: "ebay_not_configured" }, { status: 503 }), 503],
+  ])("%s answers %i so eBay retries, and deletes nothing", async (_label, make, status) => {
+    world.verifyAnswer = make();
+    const { s } = await sellerWithData();
+    const res = await postSigned(s.t, notice("EB-1", "slabking"));
+    expect(res.status).toBe(status);
+    await drainScheduled(s.t);
+    expect((await counts(s)).links).toBe(1);
+  });
+
+  test("a notice with no signature header is refused 412 without asking the verifier", async () => {
+    const { s } = await sellerWithData();
+    expect((await postSigned(s.t, notice("EB-1", "slabking"), {})).status).toBe(412);
+    expect((await postSigned(s.t, notice("EB-1", "slabking"), { "x-ebay-signature": "s".repeat(5000) })).status).toBe(412);
+    expect(verifyCalls()).toHaveLength(0);
+    expect((await counts(s)).links).toBe(1);
+  });
+
+  test("with the verification token unset a notice for a known seller answers 503", async () => {
+    vi.stubEnv("EBAY_DELETION_VERIFICATION_TOKEN", "");
+    const { s } = await sellerWithData();
+    expect((await postSigned(s.t, notice("EB-1", "slabking"))).status).toBe(503);
+    expect(verifyCalls()).toHaveLength(0);
+  });
+
+  test("a notice for a seller NB never saw is acknowledged 200 without spending a verification", async () => {
+    const t = convexTest(schema, modules);
+    expect((await postSigned(t, notice("EB-NOBODY", "nobody"))).status).toBe(200);
+    expect((await post(t, notice("EB-NOBODY", "nobody"))).status).toBe(200);
+    expect(verifyCalls()).toHaveLength(0);
+  });
+
+  test.each([
+    ["a different topic", notice("EB-1", "slabking", "SOMETHING_ELSE")],
+    ["an id with illegal characters", notice("EB 1; drop", "slabking")],
+    ["a body that is not JSON", "not json{"],
+    ["an empty object", {}],
+  ])("%s is acknowledged and does nothing", async (_label, body) => {
+    const { s } = await sellerWithData();
+    const res = await postSigned(s.t, body);
+    expect(res.status).toBe(200);
+    await drainScheduled(s.t);
+    expect(verifyCalls()).toHaveLength(0);
+    expect((await counts(s)).links).toBe(1);
+    expect((await counts(s)).settings).toBe(1);
+  });
+
+  test("an oversized POST is refused 413, by declared length or by body", async () => {
+    const t = convexTest(schema, modules);
+    expect((await postSigned(t, JSON.stringify({ pad: "x".repeat(70 * 1024) }))).status).toBe(413);
+    expect((await t.fetch(PATH, { method: "POST", headers: { "content-length": String(70 * 1024) }, body: "{}" })).status).toBe(413);
+  });
+
+  test("a notice too long for the verifier is refused 412 rather than sent", async () => {
+    const { s } = await sellerWithData();
+    const long = { ...notice("EB-1", "slabking"), pad: "x".repeat(9000) };
+    expect((await postSigned(s.t, long)).status).toBe(412);
+    expect(verifyCalls()).toHaveLength(0);
+  });
+
+  test("a retry once the data is gone is a harmless no-op", async () => {
+    const { s } = await sellerWithData();
+    await postSigned(s.t, notice("EB-1", "slabking"));
+    await drainScheduled(s.t);
+    const again = await postSigned(s.t, notice("EB-1", "slabking"));
+    expect(again.status).toBe(200);
+    await drainScheduled(s.t);
+    expect((await counts(s)).bscSales).toBe(1);
+  });
+
+  describe("the scheduled delete", () => {
+    const retries = (s: S) =>
+      s.t.run(async (ctx) =>
+        (await ctx.db.system.query("_scheduled_functions").collect())
+          .filter((f) => f.name.includes("processAccountDeletion") && f.state.kind === "pending")
+          .map((f) => f.args[0] as { ebayUserId: string; ownerIds?: string[]; attempt: number }),
+      );
+
+    test("an owner it could not finish is retried alone, with a counted attempt, and nothing else is touched", async () => {
+      world.failBrowserDelete = true;
+      const { s } = await sellerWithData();
+      await s.t.action(internal.ebayConnect.processAccountDeletion, { ebayUserId: "EB-1", attempt: 0 });
+      expect(await retries(s)).toEqual([{ ebayUserId: "EB-1", ownerIds: [OWNER], attempt: 1 }]);
+      expect((await counts(s)).links).toBe(1);
+    });
+
+    test("it gives up after the last attempt instead of scheduling forever", async () => {
+      world.failBrowserDelete = true;
+      const { s } = await sellerWithData();
+      await s.t.action(internal.ebayConnect.processAccountDeletion, { ebayUserId: "EB-1", ownerIds: [OWNER], attempt: 9 });
+      expect(await retries(s)).toEqual([]);
+    });
+
+    test("the retry delay doubles from a minute and stops at an hour", () => {
+      expect([1, 2, 3, 4].map(deletionRetryDelayMs)).toEqual([60_000, 120_000, 240_000, 480_000]);
+      expect(deletionRetryDelayMs(8)).toBe(3_600_000);
+      expect(deletionRetryDelayMs(50)).toBe(3_600_000);
+      expect(deletionRetryDelayMs(0)).toBe(60_000);
+    });
+  });
+});

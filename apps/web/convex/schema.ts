@@ -873,6 +873,13 @@ export const cardRequestKindValidator = v.union(v.literal("card"), v.literal("se
 export const listingPlatformValidator = v.union(v.literal("bsc"), v.literal("ebay"));
 
 /**
+ * NEO-415: NB's condition buckets for a card-level listing (eBay's four
+ * ungraded card grades, `lib/ebayListing.EBAY_CONDITION_CODES`). Part of the
+ * link row's key (`marketplaceListingLinks.by_owner_platform_card_condition`).
+ */
+export const ebayConditionCodeValidator = v.union(v.literal("NM"), v.literal("EX"), v.literal("VG"), v.literal("PR"));
+
+/**
  * NEO-370 — why one card of a variant did not list on a platform, as the
  * variant panel's "Can't list on <platform>" disclosure reports it.
  * NB-authored: every value is decided by NB's own pre-flight or by NB's
@@ -888,7 +895,9 @@ export const listingPlatformValidator = v.union(v.literal("bsc"), v.literal("eba
  *   notOnSheet     the platform's sheet for this variant has no row for it
  *   rejected       the platform refused the row; `detail` says what it said
  *   missingAspect  (eBay) a field eBay requires for the card category is not
- *                  one NB can fill for this card; `detail` names the field
+ *                  one NB can fill for this card; `detail` is eBay's aspect
+ *                  name as eBay sent it: it describes eBay's requirement,
+ *                  never NB data
  *   noPhoto        (eBay) the copy NB would list has no photo; eBay needs one
  *   setupIncomplete (eBay) the collector's eBay settings (shipping, payment,
  *                  returns, location) are not complete, so nothing was sent
@@ -4802,23 +4811,32 @@ export default defineSchema({
    * offer is kept so the listing is published again when stock returns).
    * `pushed` is what the live listing carries, as NB sent it; absent until a
    * publish succeeds. `images` are the eBay-hosted pictures NB uploaded from
-   * the copy's photos, front first (`photoToken` names which photo, so a new
+   * the copy's photos, at most two (front, back), front first (`photoToken` names which photo, so a new
    * photo uploads again; `expiresAt` from eBay, an unused upload expires).
    *
    * Never deleted by the drain: a card that leaves the variant or the
-   * catalog keeps its row (an `ended` one costs nothing). Cleared only by
-   * Disconnect (after it ends every live listing), the per-user test reset
-   * and the eBay account-deletion sweep.
+   * catalog keeps its row (an `ended` one costs nothing; a gone card's live
+   * listing is withdrawn when the drain settles its queued row). Cleared only
+   * by Disconnect (every row except one still `live` because eBay would not
+   * end it), the per-user test reset and the eBay account-deletion sweep
+   * (every row: eBay ends a deleted account's listings itself).
    */
   marketplaceListingLinks: defineTable({
     ownerId: v.string(),
     platform: listingPlatformValidator,
     cardId: v.id("cardChecklist"),
-    /** NB's condition bucket for the listing (eBay: NM | EX | VG | PR). */
-    conditionCode: v.string(),
+    /** NB's condition bucket for the listing (`ebayConditionCodeValidator`). */
+    conditionCode: ebayConditionCodeValidator,
     sku: v.string(),
     offerId: v.optional(v.string()),
     listingId: v.optional(v.string()),
+    /**
+     * Listing ids this link carried before a republish gave it a new one
+     * (eBay ends a withdrawn listing and publishes a new one when stock
+     * returns), newest first, at most five. A late sale on an earlier
+     * listing still routes to this card (`listingSales.applyEbayLine`).
+     */
+    previousListingIds: v.optional(v.array(v.string())),
     status: v.union(v.literal("draft"), v.literal("live"), v.literal("ended")),
     pushed: v.optional(
       v.object({

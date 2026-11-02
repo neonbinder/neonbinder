@@ -86,3 +86,4 @@
 - [Neo370 scheduled marketplace poll](patterns_neo370_scheduled_marketplace_poll.md) — 24/7 poll: credential gating; backoff == interval; tick overlap; Rev 5: re-assert bypasses test marker, all-rows seller holder, per-tick scan
 - [Neo411 retry generation and dispatcher](patterns_neo411_retry_generation_and_dispatcher.md) — retry door needs an attempt generation (stale deadline, workpool cancel leaves running action whose completion lands); undici timeouts 0 needs per-call signal; audit exact-pinned undici
 - [Neo370 listing gate doors](patterns_neo370_listing_gate_doors.md) — readiness gate on adds: restore/undo/move/empty/flag-flip doors bypass it; owner-scoped forHome shape that held
+- [Neo415 eBay OAuth + deletion webhook](patterns_neo415_ebay_oauth_and_deletion_webhook.md) — nonce/state shape that held; unsigned deletion POST must verify signature; retry fan-out; reconnect overwrite
