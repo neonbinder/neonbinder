@@ -12,6 +12,7 @@ import { describe, expect, test } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
+import { ConvexError } from "convex/values";
 import { groupingRefusal } from "./selectorOptions";
 
 const modules = (
@@ -697,6 +698,369 @@ describe("applyParallelGroupings — the first refusal is unchanged by batched r
     // All-or-nothing, as before: nothing moved.
     expect((await getRow(t, chrome))?.level).toBe("insert");
     expect((await getRow(t, autos))?.parentId).toBe(prizm);
+  });
+});
+
+/**
+ * NEO-418 — refusal precedence, table-driven. Every pair of faults, in both
+ * argument orders, is refused with the sentence the ORIGINAL (one awaited
+ * read at a time) check order produces: demotions, then promotion sources
+ * and targets, then reparenting sources, then the promotion target / own
+ * parallels checks, then the reparenting target checks. Within one stage the
+ * entry that comes first in the arguments wins. The `STAGE` numbers below are
+ * that order; they are the oracle, not a copy of the handler.
+ */
+describe("applyParallelGroupings — two faults in one plan: the earlier check in the original order wins (NEO-418)", () => {
+  type T = ReturnType<typeof convexTest>;
+  type RowId = Id<"selectorOptions">;
+  type Plan = {
+    promotions: Array<{ insertId: RowId; targetInsertId: RowId }>;
+    demotions: Array<{ parallelId: RowId }>;
+    reparentings: Array<{ parallelId: RowId; newInsertId: RowId }>;
+  };
+  type Fault = { plan: Plan; sentence: string };
+
+  const KINDS = [
+    "demoteGone",
+    "demoteMoved",
+    "promoGone",
+    "promoMoved",
+    "reparentGone",
+    "reparentMoved",
+    "twoMoves",
+    "hasParallels",
+    "promoChain",
+    "promoNotAnInsert",
+    "reparentChain",
+    "reparentNotAnInsert",
+  ] as const;
+  type Kind = (typeof KINDS)[number];
+
+  /** Position in the original check order; lower is refused first. */
+  const STAGE: Record<Kind, number> = {
+    demoteGone: 1, // demotion loop: row deleted
+    demoteMoved: 1, // demotion loop: parent in another variant type
+    promoGone: 2, // promotion loop: source deleted
+    promoMoved: 2, // promotion loop: source in another variant type
+    reparentGone: 3, // reparenting loop: target deleted
+    reparentMoved: 3, // reparenting loop: row is not a parallel
+    twoMoves: 3, // reparenting loop: row also demoted
+    hasParallels: 4, // promotion checks: source keeps parallels
+    promoChain: 4, // promotion checks: target is itself promoted
+    promoNotAnInsert: 4, // promotion checks: target is a parallel
+    reparentChain: 5, // reparenting checks: target is itself reparented
+    reparentNotAnInsert: 5, // reparenting checks: target is a parallel
+  };
+
+  const emptyPlan = (): Plan => ({ promotions: [], demotions: [], reparentings: [] });
+
+  /** Fresh rows for one fault; every name is unique to its kind. */
+  async function build(
+    t: T,
+    kind: Kind,
+    vt: RowId,
+    otherVt: RowId,
+  ): Promise<Fault> {
+    const plan = emptyPlan();
+    const removed = async (id: RowId) => {
+      await t.run(async (ctx) => ctx.db.delete(id));
+      return id;
+    };
+    switch (kind) {
+      case "demoteGone": {
+        const home = await insertInsert(t, vt, "Home dg");
+        const gone = await removed(await insertParallel(t, home, "Gone dg"));
+        plan.demotions.push({ parallelId: gone });
+        return { plan, sentence: groupingRefusal.gone() };
+      }
+      case "demoteMoved": {
+        const elsewhere = await insertInsert(t, otherVt, "Elsewhere dm");
+        const stray = await insertParallel(t, elsewhere, "Stray dm");
+        plan.demotions.push({ parallelId: stray });
+        return { plan, sentence: groupingRefusal.moved("Stray dm") };
+      }
+      case "promoGone": {
+        const gone = await removed(await insertInsert(t, vt, "Gone pg"));
+        const target = await insertInsert(t, vt, "Target pg");
+        plan.promotions.push({ insertId: gone, targetInsertId: target });
+        return { plan, sentence: groupingRefusal.gone() };
+      }
+      case "promoMoved": {
+        const foreign = await insertInsert(t, otherVt, "Foreign pm");
+        const target = await insertInsert(t, vt, "Target pm");
+        plan.promotions.push({ insertId: foreign, targetInsertId: target });
+        return { plan, sentence: groupingRefusal.moved("Foreign pm") };
+      }
+      case "reparentGone": {
+        const home = await insertInsert(t, vt, "Home rg");
+        const moving = await insertParallel(t, home, "Moving rg");
+        const gone = await removed(await insertInsert(t, vt, "Gone rg"));
+        plan.reparentings.push({ parallelId: moving, newInsertId: gone });
+        return { plan, sentence: groupingRefusal.gone() };
+      }
+      case "reparentMoved": {
+        const notParallel = await insertInsert(t, vt, "Not parallel rm");
+        const target = await insertInsert(t, vt, "Target rm");
+        plan.reparentings.push({ parallelId: notParallel, newInsertId: target });
+        return { plan, sentence: groupingRefusal.moved("Not parallel rm") };
+      }
+      case "twoMoves": {
+        const home = await insertInsert(t, vt, "Home tm");
+        const other = await insertInsert(t, vt, "Other tm");
+        const both = await insertParallel(t, home, "Both tm");
+        plan.demotions.push({ parallelId: both });
+        plan.reparentings.push({ parallelId: both, newInsertId: other });
+        return { plan, sentence: groupingRefusal.twoMoves("Both tm") };
+      }
+      case "hasParallels": {
+        const keeper = await insertInsert(t, vt, "Keeper hp");
+        await insertParallel(t, keeper, "Kept hp");
+        const target = await insertInsert(t, vt, "Target hp");
+        plan.promotions.push({ insertId: keeper, targetInsertId: target });
+        return { plan, sentence: groupingRefusal.hasParallels("Keeper hp") };
+      }
+      case "promoChain": {
+        const x = await insertInsert(t, vt, "X pc");
+        const middle = await insertInsert(t, vt, "Middle pc");
+        const top = await insertInsert(t, vt, "Top pc");
+        plan.promotions.push(
+          { insertId: x, targetInsertId: middle },
+          { insertId: middle, targetInsertId: top },
+        );
+        return { plan, sentence: groupingRefusal.chain("Middle pc") };
+      }
+      case "promoNotAnInsert": {
+        const x = await insertInsert(t, vt, "X pn");
+        const home = await insertInsert(t, vt, "Home pn");
+        const parallel = await insertParallel(t, home, "Parallel pn");
+        plan.promotions.push({ insertId: x, targetInsertId: parallel });
+        return { plan, sentence: groupingRefusal.notAnInsert("Parallel pn") };
+      }
+      case "reparentChain": {
+        const a = await insertInsert(t, vt, "A rc");
+        const b = await insertInsert(t, vt, "B rc");
+        const first = await insertParallel(t, a, "First rc");
+        const second = await insertParallel(t, b, "Second rc");
+        plan.reparentings.push(
+          { parallelId: first, newInsertId: b },
+          { parallelId: second, newInsertId: first },
+        );
+        return { plan, sentence: groupingRefusal.chain("First rc") };
+      }
+      case "reparentNotAnInsert": {
+        const a = await insertInsert(t, vt, "A rn");
+        const b = await insertInsert(t, vt, "B rn");
+        const moving = await insertParallel(t, a, "Moving rn");
+        const parallel = await insertParallel(t, b, "Parallel rn");
+        plan.reparentings.push({ parallelId: moving, newInsertId: parallel });
+        return { plan, sentence: groupingRefusal.notAnInsert("Parallel rn") };
+      }
+    }
+  }
+
+  /** The ConvexError's sentence, exactly (not a substring match). */
+  async function refusalOf(run: Promise<unknown>): Promise<string> {
+    try {
+      await run;
+    } catch (err) {
+      if (err instanceof ConvexError && typeof err.data === "string") return err.data;
+      throw err;
+    }
+    throw new Error("expected the plan to be refused, but it was applied");
+  }
+
+  const allRows = (t: T) =>
+    t.run(async (ctx) =>
+      (await ctx.db.query("selectorOptions").collect()).sort((a, b) =>
+        a._id < b._id ? -1 : 1,
+      ),
+    );
+
+  async function world() {
+    const t = convexTest(schema, modules);
+    const vt = await insertVariantType(t, "insert");
+    const otherVt = await insertVariantType(t, "insert");
+    return { t, vt, otherVt, asAdmin: t.withIdentity(ADMIN_IDENTITY) };
+  }
+
+  test.each(KINDS)("%s on its own is refused with its own sentence", async (kind) => {
+    const { t, vt, otherVt, asAdmin } = await world();
+    const fault = await build(t, kind, vt, otherVt);
+    expect(
+      await refusalOf(
+        asAdmin.mutation(api.selectorOptions.applyParallelGroupings, {
+          variantTypeId: vt,
+          ...fault.plan,
+        }),
+      ),
+    ).toBe(fault.sentence);
+  });
+
+  const pairs = KINDS.flatMap((first) =>
+    KINDS.filter((second) => second !== first).map((second) => [first, second] as const),
+  );
+
+  test.each(pairs)("%s listed before %s", async (first, second) => {
+    const { t, vt, otherVt, asAdmin } = await world();
+    const a = await build(t, first, vt, otherVt);
+    const b = await build(t, second, vt, otherVt);
+    // Same stage: the entry that comes first in the arguments is refused.
+    const expected = STAGE[second] < STAGE[first] ? b.sentence : a.sentence;
+    const before = await allRows(t);
+
+    expect(
+      await refusalOf(
+        asAdmin.mutation(api.selectorOptions.applyParallelGroupings, {
+          variantTypeId: vt,
+          promotions: [...a.plan.promotions, ...b.plan.promotions],
+          demotions: [...a.plan.demotions, ...b.plan.demotions],
+          reparentings: [...a.plan.reparentings, ...b.plan.reparentings],
+        }),
+      ),
+    ).toBe(expected);
+    // All-or-nothing: a refused plan writes nothing.
+    expect(await allRows(t)).toEqual(before);
+  });
+});
+
+/**
+ * NEO-418 — wave 2 skips a same-parent reparenting (it is a silent no-op in
+ * the check), and must not let that entry replace a real move of the same row
+ * either way round.
+ */
+describe("applyParallelGroupings — a same-parent reparenting is a no-op (NEO-418)", () => {
+  async function seed(t: ReturnType<typeof convexTest>) {
+    const vt = await insertVariantType(t, "insert");
+    const home = await insertInsert(t, vt, "Home");
+    const other = await insertInsert(t, vt, "Other");
+    const moving = await insertParallel(t, home, "Moving");
+    const sibling = await insertParallel(t, home, "Sibling");
+    return { vt, home, other, moving, sibling };
+  }
+
+  test("a lone same-parent entry moves nothing and reports none", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const s = await seed(t);
+    const before = await Promise.all([s.moving, s.sibling, s.home, s.other].map((id) => getRow(t, id)));
+
+    const result = await asAdmin.mutation(api.selectorOptions.applyParallelGroupings, {
+      variantTypeId: s.vt,
+      promotions: [],
+      demotions: [],
+      reparentings: [{ parallelId: s.moving, newInsertId: s.home }],
+    });
+
+    expect(result).toEqual({ success: true, promoted: 0, demoted: 0, reparented: 0 });
+    const after = await Promise.all([s.moving, s.sibling, s.home, s.other].map((id) => getRow(t, id)));
+    expect(after).toEqual(before);
+  });
+
+  for (const [label, order] of [
+    ["same-parent first", ["same", "real"]],
+    ["real move first", ["real", "same"]],
+  ] as const) {
+    test(`${label}: the real move lands, the same-parent entry never undoes it`, async () => {
+      const t = convexTest(schema, modules);
+      const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+      const s = await seed(t);
+      const entry = {
+        same: { parallelId: s.moving, newInsertId: s.home },
+        real: { parallelId: s.moving, newInsertId: s.other },
+      };
+
+      const result = await asAdmin.mutation(api.selectorOptions.applyParallelGroupings, {
+        variantTypeId: s.vt,
+        promotions: [],
+        demotions: [],
+        reparentings: order.map((k) => entry[k]),
+      });
+
+      expect(result).toEqual({ success: true, promoted: 0, demoted: 0, reparented: 1 });
+      expect((await getRow(t, s.moving))?.parentId).toBe(s.other);
+      expect((await getRow(t, s.home))?.children).toEqual([s.sibling]);
+      expect((await getRow(t, s.other))?.children).toEqual([s.moving]);
+    });
+  }
+});
+
+/**
+ * NEO-418 — a promotion and a reparenting that land under one target in the
+ * same save both write that target's children array from the one in-memory
+ * set; neither may drop the target's existing children or the other arrival.
+ */
+describe("applyParallelGroupings — a promotion and a reparenting under one target (NEO-418)", () => {
+  test("the target's children hold its existing parallel and both arrivals", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const vt = await insertVariantType(t, "insert");
+    const target = await insertInsert(t, vt, "Target");
+    const home = await insertInsert(t, vt, "Home");
+    const promoted = await insertInsert(t, vt, "Promoted");
+    const existing = await insertParallel(t, target, "Existing");
+    const moving = await insertParallel(t, home, "Moving");
+
+    const result = await asAdmin.mutation(api.selectorOptions.applyParallelGroupings, {
+      variantTypeId: vt,
+      promotions: [{ insertId: promoted, targetInsertId: target }],
+      demotions: [],
+      reparentings: [{ parallelId: moving, newInsertId: target }],
+    });
+
+    expect(result).toEqual({ success: true, promoted: 1, demoted: 0, reparented: 1 });
+    // Promotions apply before reparentings, after what was already there.
+    expect((await getRow(t, target))?.children).toEqual([existing, promoted, moving]);
+    expect((await getRow(t, home))?.children).toEqual([]);
+    expect(new Set((await getRow(t, vt))?.children)).toEqual(new Set([target, home]));
+    expect((await getRow(t, promoted))?.parentId).toBe(target);
+    expect((await getRow(t, moving))?.parentId).toBe(target);
+  });
+});
+
+/**
+ * NEO-418 — a demoted target's own parallels are never read for the
+ * duplicate guard (after the plan its children are exactly what arrives), so
+ * whatever the parallels range holds under it cannot leak in. A stray
+ * parallel row filed under the demoted row (corrupt, but constructible) shares
+ * a marketplace id with an arrival; the original ignores it, and so must the
+ * cached version.
+ */
+describe("applyParallelGroupings — a demoted target promoted onto and reparented onto (NEO-418)", () => {
+  test("only what arrives is compared; a stray row under the demoted target does not block", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const vt = await insertVariantType(t, "insert");
+    const chrome = await insertInsert(t, vt, "Chrome");
+    const autos = await insertParallel(t, chrome, "Autos", undefined, { bsc: { b0: "autos-v" } });
+    const gold = await insertInsert(t, vt, "Gold", undefined, { bsc: { b0: "gold-v" } });
+    const silver = await insertParallel(t, chrome, "Silver", undefined, { bsc: { b0: "silver-v" } });
+    // A twin of Gold already under Chrome, and the stray under Autos.
+    await insertParallel(t, chrome, "Gold Twin", undefined, { bsc: { b0: "gold-v" } });
+    await t.run(async (ctx) =>
+      ctx.db.insert("selectorOptions", {
+        level: "parallel",
+        value: "Gold Stray",
+        parentId: autos,
+        platformData: { bsc: { b0: "gold-v" } },
+        children: [],
+        lastUpdated: SENTINEL,
+      }),
+    );
+
+    const result = await asAdmin.mutation(api.selectorOptions.applyParallelGroupings, {
+      variantTypeId: vt,
+      promotions: [{ insertId: gold, targetInsertId: autos }],
+      demotions: [{ parallelId: autos }],
+      reparentings: [{ parallelId: silver, newInsertId: autos }],
+    });
+
+    expect(result).toEqual({ success: true, promoted: 1, demoted: 1, reparented: 1 });
+    expect((await getRow(t, autos))?.level).toBe("insert");
+    expect((await getRow(t, autos))?.children).toEqual([gold, silver]);
+    expect((await getRow(t, gold))?.parentId).toBe(autos);
+    expect((await getRow(t, silver))?.parentId).toBe(autos);
+    expect((await getRow(t, chrome))?.children).not.toContain(silver);
+    expect((await getRow(t, chrome))?.children).not.toContain(autos);
   });
 });
 

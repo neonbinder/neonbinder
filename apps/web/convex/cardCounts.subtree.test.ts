@@ -497,6 +497,99 @@ describe("a re-parented row takes its subtree count with it", () => {
     await expectAllTrue(t, s);
   });
 
+  // NEO-418 — the mutation's counts end to end, with no spy on the ledger:
+  // the stored subtree counts after a promote / demote / same-parent plan.
+  test("applyParallelGroupings: a promoted insert's cards leave no trace on the shared ancestors and land on its new parent", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    await insertCounted(t, s.insert, "1");
+    await insertCounted(t, s.parallel, "2");
+    const first = await insertCounted(t, s.silver, "3");
+    await insertCounted(t, s.silver, "4", { variationOfCardId: first });
+    expect(await subtree(t, s.insert)).toEqual({ all: 2, base: 2 });
+
+    await t.withIdentity(ADMIN).mutation(api.selectorOptions.applyParallelGroupings, {
+      variantTypeId: s.insertType,
+      promotions: [{ insertId: s.silver, targetInsertId: s.insert }],
+      demotions: [],
+    });
+
+    expect(await subtree(t, s.silver)).toEqual({ all: 2, base: 1 });
+    expect(await subtree(t, s.insert)).toEqual({ all: 4, base: 3 });
+    // The type, the set and the brand above both parents are where they were.
+    expect(await subtree(t, s.insertType)).toEqual({ all: 4, base: 3 });
+    expect(await subtree(t, s.set)).toEqual({ all: 4, base: 3 });
+    await expectAllTrue(t, s);
+  });
+
+  test("applyParallelGroupings: a demoted parallel's cards leave its old insert and stay under the type", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    await insertCounted(t, s.insert, "1");
+    const first = await insertCounted(t, s.parallel, "2");
+    await insertCounted(t, s.parallel, "3", { variationOfCardId: first });
+    expect(await subtree(t, s.insert)).toEqual({ all: 3, base: 2 });
+
+    await t.withIdentity(ADMIN).mutation(api.selectorOptions.applyParallelGroupings, {
+      variantTypeId: s.insertType,
+      promotions: [],
+      demotions: [{ parallelId: s.parallel }],
+    });
+
+    expect(await subtree(t, s.parallel)).toEqual({ all: 2, base: 1 });
+    expect(await subtree(t, s.insert)).toEqual({ all: 1, base: 1 });
+    expect(await subtree(t, s.insertType)).toEqual({ all: 3, base: 2 });
+    expect(await subtree(t, s.set)).toEqual({ all: 3, base: 2 });
+    await expectAllTrue(t, s);
+  });
+
+  test("applyParallelGroupings: a same-parent reparenting alone leaves every count where it was", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    await insertCounted(t, s.parallel, "1");
+    await insertCounted(t, s.insert, "2");
+    const rows = [s.parallel, s.insert, s.silver, s.insertType, s.set];
+    const before = await Promise.all(rows.map((id) => subtree(t, id)));
+
+    await t.withIdentity(ADMIN).mutation(api.selectorOptions.applyParallelGroupings, {
+      variantTypeId: s.insertType,
+      promotions: [],
+      demotions: [],
+      reparentings: [{ parallelId: s.parallel, newInsertId: s.insert }],
+    });
+
+    expect(await Promise.all(rows.map((id) => subtree(t, id)))).toEqual(before);
+    expect(before[0]).toEqual({ all: 1, base: 1 });
+    await expectAllTrue(t, s);
+  });
+
+  for (const order of [["same", "real"], ["real", "same"]] as const) {
+    test(`applyParallelGroupings: a same-parent entry and a real move of one row (${order.join(" then ")}) count the move once`, async () => {
+      const t = convexTest(schema, modules);
+      const s = await seed(t);
+      await insertCounted(t, s.parallel, "1");
+      await insertCounted(t, s.parallel, "2");
+      await insertCounted(t, s.insert, "3");
+      const entry = {
+        same: { parallelId: s.parallel, newInsertId: s.insert },
+        real: { parallelId: s.parallel, newInsertId: s.silver },
+      };
+
+      await t.withIdentity(ADMIN).mutation(api.selectorOptions.applyParallelGroupings, {
+        variantTypeId: s.insertType,
+        promotions: [],
+        demotions: [],
+        reparentings: order.map((k) => entry[k]),
+      });
+
+      expect((await t.run((ctx) => ctx.db.get(s.parallel)))?.parentId).toBe(s.silver);
+      expect(await subtree(t, s.insert)).toEqual({ all: 1, base: 1 });
+      expect(await subtree(t, s.silver)).toEqual({ all: 2, base: 2 });
+      expect(await subtree(t, s.insertType)).toEqual({ all: 3, base: 3 });
+      await expectAllTrue(t, s);
+    });
+  }
+
   // NEO-418 — `applyParallelGroupings` hands `moveSubtree` the row it read
   // before its own level/parent patch, to save the re-read. The ledger must
   // land exactly what it lands when it reads the row itself.
