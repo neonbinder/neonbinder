@@ -25,6 +25,17 @@ describe("scrubOAuthParams (NEO-415)", () => {
     expect(out.u).toBe("https://a.test/?next=%2Fprofile%2Febay%3Fcode%3D<redacted>%26state%3D<redacted>%26x%3D1");
   });
 
+  it("redacts NEO-422's composite state (nonce, dot, base64url origin) whole, plain or percent-encoded", () => {
+    const state = `${"a".repeat(48)}.aHR0cHM6Ly9uZW9uYmluZGVyLWFiYzEyM2RlZi1uZW9uLWJpbmRlci52ZXJjZWwuYXBw`;
+    const out = scrubOAuthParams({
+      u: `https://x.test/profile/ebay?code=c1&state=${state}&expires_in=299`,
+      v: `https://a.test/?next=%2Fprofile%2Febay%3Fstate%3D${state}%26code%3Dc1`,
+    });
+    expect(JSON.stringify(out)).not.toContain("aHR0c");
+    expect(out.u).toBe("https://x.test/profile/ebay?code=<redacted>&state=<redacted>&expires_in=299");
+    expect(out.v).toBe("https://a.test/?next=%2Fprofile%2Febay%3Fstate%3D<redacted>%26code%3D<redacted>");
+  });
+
   it("leaves look-alikes and clean payloads alone, and returns them untouched", () => {
     const clean = { u: "https://x.test/profile/ebay", note: "zip code=53703 in the form", n: 1 };
     expect(scrubOAuthParams(clean)).toBe(clean);

@@ -129,13 +129,16 @@ describe("Profile → eBay, connection", () => {
 
   it("not connected: the consent sits beside Connect, and Connect leaves for eBay", async () => {
     const assign = vi.fn();
-    vi.stubGlobal("location", { ...window.location, assign });
+    // NEO-422: the origin Connect was pressed on goes to the server, which folds it into the OAuth state.
+    const origin = "https://neonbinder-abc123def-neon-binder.vercel.app";
+    vi.stubGlobal("location", { ...window.location, origin, assign });
     fn("ebayConnect:beginConnect").mockResolvedValue({ authorizeUrl: "https://auth.ebay.test/consent?x=1" });
     renderAt();
     expect(screen.getByText("Heads up: connecting starts listing")).toBeTruthy();
     const connect = screen.getByRole("button", { name: "Connect eBay" });
     fireEvent.click(connect);
     await waitFor(() => expect(assign).toHaveBeenCalledWith("https://auth.ebay.test/consent?x=1"));
+    expect(fns["ebayConnect:beginConnect"]).toHaveBeenCalledWith({ returnOrigin: origin });
     vi.unstubAllGlobals();
   });
 
@@ -151,6 +154,23 @@ describe("Profile → eBay, connection", () => {
     await act(async () => finish({ ok: true, ebayUsername: "cardshark88" }));
     expect(screen.getByText(/Connected to eBay as cardshark88/)).toBeTruthy();
     await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("heading", { level: 2, name: "eBay" })));
+  });
+
+  it("a return carrying NEO-422's composite state hands it to the server untouched", async () => {
+    fn("ebayConnect:completeConnect").mockResolvedValue({ ok: true, ebayUsername: "cardshark88" });
+    const composite = `${"a".repeat(48)}.aHR0cDovL2xvY2FsaG9zdDozMDAw`;
+    renderAt(`/profile/ebay?code=v%5E1.1%23i%5E1&state=${composite}&expires_in=299`);
+    await waitFor(() => expect(where).toBe("/profile/ebay"));
+    expect(fns["ebayConnect:completeConnect"]).toHaveBeenCalledWith({ code: "v^1.1#i^1", state: composite });
+  });
+
+  it("eBay's decline, forwarded with the composite state, is said in NB words and cleaned up without spending anything", async () => {
+    const composite = `${"b".repeat(48)}.aHR0cDovL2xvY2FsaG9zdDozMDAw`;
+    renderAt(`/profile/ebay?error=access_denied&error_description=User+declined%2C+sorry&state=${composite}`);
+    expect(await screen.findByText(/No worries, eBay isn't connected/)).toBeTruthy();
+    await waitFor(() => expect(where).toBe("/profile/ebay"));
+    expect(fns["ebayConnect:completeConnect"]).toBeUndefined();
+    expect(document.body.textContent).not.toContain("User declined");
   });
 
   it("a refused return says why in an alert", async () => {

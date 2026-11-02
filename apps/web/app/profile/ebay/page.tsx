@@ -172,7 +172,9 @@ export default function EbayPanel() {
     if (phase.kind === "leaving" || phase.kind === "completing" || !connection?.configured) return;
     setPhase({ kind: "leaving" });
     try {
-      const answer = (await beginConnect({})) as BeginAnswer;
+      // eBay returns to one fixed page on the production site (NEO-422); the
+      // origin rides in the OAuth state so that page sends the collector back here.
+      const answer = (await beginConnect({ returnOrigin: window.location.origin })) as BeginAnswer;
       if ("authorizeUrl" in answer) {
         window.location.assign(answer.authorizeUrl);
         return;

@@ -3,8 +3,10 @@
  * before NeonBinder lists anything there.
  *
  * eBay signs in by OAuth consent, never by password: `beginConnect` mints a
- * one-use nonce (the OAuth `state`) and hands the web eBay's consent URL;
- * eBay redirects back to the web with `code` and `state`; `completeConnect`
+ * one-use nonce (the OAuth `state`, which also names the origin to come back
+ * to) and hands the web eBay's consent URL; eBay redirects to NB's fixed
+ * return page (NEO-422), which forwards to the web with `code` and `state`;
+ * `completeConnect`
  * checks the nonce and has the browser service exchange the code and store
  * the session (`credentials.connectEbay`). Convex holds no eBay token or
  * client secret: only the has-credentials flag, the seller's eBay user id
@@ -44,7 +46,7 @@ import { requireSignedIn } from "./auth";
 import { isPlatformPaused } from "./marketplacePause";
 import { kickListingDrain, listingStateOf, pushesCounts, stopListingForSite } from "./listingOutbox";
 import { platformSettings } from "./listingSync";
-import { ebayAuthorizeUrl, ebayConfig, ebayConfigured } from "./lib/ebayEnv";
+import { ebayAuthorizeUrl, ebayConfig, ebayConfigured, type EbayEnvironment } from "./lib/ebayEnv";
 import {
   EBAY_COST_TYPE_CALCULATED,
   EBAY_COST_TYPE_FLAT_RATE,
@@ -75,6 +77,7 @@ import {
   type EbaySellerSession,
 } from "./adapters/ebaySeller";
 import type { EbayConnectError } from "./credentials";
+import { encodeEbayReturnState, isAllowedEbayReturnOrigin } from "../lib/marketplace/ebay-oauth-return";
 
 // ── Copy (NB voice; the web shows these sentences as they are) ─────────────
 
@@ -107,7 +110,23 @@ const NO_CALCULATED = (service: string) =>
 /** How long a Connect press's nonce is good for. */
 const CONNECT_NONCE_TTL_MS = 15 * 60 * 1000;
 const MAX_CODE_LENGTH = 4096;
+/**
+ * The longest `state` NB issues or accepts back. NEO-422's composite state is
+ * the 48-hex nonce, a dot, and base64url of the origin Connect was pressed
+ * on; the longest origin the return pages forward to (a Vercel hash preview,
+ * `https://neonbinder-<9>-neon-binder.vercel.app`, 51 chars) makes 48 + 1 +
+ * 68 = 117. An origin too long to fit could never be one the return page
+ * forwards to, so `returnStateFor` falls back to the bare nonce for it.
+ */
 const MAX_STATE_LENGTH = 128;
+/** A cheap cap before parsing: anything longer cannot fit MAX_STATE_LENGTH anyway. */
+const MAX_RETURN_ORIGIN_LENGTH = 256;
+/**
+ * Where both RuNames' accept URLs live (NEO-422): the production keyset's
+ * points at `/oauth/ebay/return`, the sandbox keyset's at
+ * `/oauth/ebay/sandbox-return`, both on this origin.
+ */
+const EBAY_RETURN_PAGE_ORIGIN = "https://www.neonbinder.io";
 const MAX_POLICY_ID = 64;
 /** Rows one purge or listing page touches. */
 const PURGE_PAGE = 200;
@@ -283,26 +302,67 @@ function newNonce(): string {
 }
 
 /**
+ * The OAuth `state` for a Connect pressed on `returnOrigin` (NEO-422): eBay
+ * always sends the collector to one fixed return page on the production
+ * site (the RuName's accept URL), which forwards to `/profile/ebay` on the
+ * origin named in the state, so a preview or local build gets its own code
+ * back. `<nonce>.<base64url(origin)>`, encoded by the return page's own
+ * module so the two can never drift.
+ *
+ * Only a bare http(s) origin (what `window.location.origin` gives) that the
+ * return page for this deployment's keyset would forward to is encoded: the
+ * production page (production keys) takes only NB's production origins, the
+ * sandbox page also takes local dev and Vercel hash previews. The check is
+ * the return page's own allowlist (`isAllowedEbayReturnOrigin`), run as that
+ * page would run it, so a state NB issues never strands the collector on the
+ * "trip got lost" page and production state never names a preview or local
+ * origin. Anything else, or nothing, falls back to the bare nonce, which the
+ * return page reads as "stay on my origin".
+ */
+export function returnStateFor(
+  nonce: string,
+  returnOrigin: string | undefined,
+  environment: EbayEnvironment,
+): string {
+  if (returnOrigin === undefined || returnOrigin.length === 0) return nonce;
+  if (returnOrigin.length > MAX_RETURN_ORIGIN_LENGTH) return nonce;
+  let parsed: URL;
+  try {
+    parsed = new URL(returnOrigin);
+  } catch {
+    return nonce;
+  }
+  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return nonce;
+  if (parsed.origin !== returnOrigin) return nonce;
+  if (!isAllowedEbayReturnOrigin(returnOrigin, EBAY_RETURN_PAGE_ORIGIN, environment)) return nonce;
+  const state = encodeEbayReturnState(nonce, returnOrigin);
+  return state.length <= MAX_STATE_LENGTH ? state : nonce;
+}
+
+/**
  * Starts a Connect press: a fresh nonce (replacing any earlier one) and eBay's
- * consent URL. Refused (an NB sentence) while eBay is connected and working:
+ * consent URL. The stored `connectNonce` is the WHOLE state eBay echoes back
+ * (nonce plus return origin), so `consumeConnectNonce` compares it as one
+ * opaque string. Refused (an NB sentence) while eBay is connected and working:
  * switching seller accounts goes through Disconnect, which ends NB's
  * listings on the old account first. A connection that needs signing in
  * again (`needsReauth`) may start one; the service then holds it to the
  * same account (`credentials.connectEbay`).
  */
 export const beginConnect = mutation({
-  args: {},
+  /** `returnOrigin`: the web's `window.location.origin`, where eBay's return page sends the collector back. */
+  args: { returnOrigin: v.optional(v.string()) },
   returns: v.union(v.object({ authorizeUrl: v.string() }), errorResult),
-  handler: async (ctx): Promise<{ authorizeUrl: string } | Fail> => {
+  handler: async (ctx, args): Promise<{ authorizeUrl: string } | Fail> => {
     const ownerId = await requireSignedIn(ctx);
     const config = ebayConfig();
     if (!config) return { ok: false, error: NOT_CONFIGURED };
     if (isPlatformPaused("ebay")) return { ok: false, error: PAUSED };
     const platform = await platformSettings(ctx, ownerId, "ebay");
     if (platform.connected && !platform.needsReauth) return { ok: false, error: ACCOUNT_SWITCH };
-    const nonce = newNonce();
-    await patchSettings(ctx, ownerId, { connectNonce: nonce, connectNonceAt: Date.now() });
-    return { authorizeUrl: ebayAuthorizeUrl(config, nonce) };
+    const state = returnStateFor(newNonce(), args.returnOrigin, config.environment);
+    await patchSettings(ctx, ownerId, { connectNonce: state, connectNonceAt: Date.now() });
+    return { authorizeUrl: ebayAuthorizeUrl(config, state) };
   },
 });
 

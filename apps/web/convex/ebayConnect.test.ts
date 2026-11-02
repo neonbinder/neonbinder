@@ -16,7 +16,8 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import { __resetContractCache } from "./credentials";
-import { NB_POLICY_NAMES, deletionRetryDelayMs } from "./ebayConnect";
+import { NB_POLICY_NAMES, deletionRetryDelayMs, returnStateFor } from "./ebayConnect";
+import { ebayReturnTarget } from "../lib/marketplace/ebay-oauth-return";
 import { drainScheduled } from "../lib/testing/drain-scheduled";
 
 const modules = (import.meta as unknown as {
@@ -315,6 +316,128 @@ describe("beginConnect and completeConnect", () => {
     const row = await settingsRow(s);
     expect(row?.connectNonce).toBe(stateOf(begun));
     expect(row?.connectNonce).toMatch(/^[0-9a-f]{48}$/);
+  });
+
+  // NEO-422: eBay returns to one fixed page on the production site; the origin
+  // Connect was pressed on rides in the state so that page can send it home.
+  const PREVIEW = "https://neonbinder-abc123def-neon-binder.vercel.app";
+
+  test("a Connect from a preview folds its origin into the state, which the return page reads back and completeConnect accepts whole", async () => {
+    const s = await setup({ connected: false });
+    const state = stateOf(await s.me.mutation(api.ebayConnect.beginConnect, { returnOrigin: PREVIEW }));
+    expect(state).toMatch(/^[0-9a-f]{48}\.[A-Za-z0-9_-]+$/);
+    // The whole state is what is kept, so the comparison on return is unchanged.
+    expect((await settingsRow(s))?.connectNonce).toBe(state);
+    // The sandbox return page on production forwards it to the preview, query intact.
+    const search = `?code=v%5E1.1%23abc&state=${state}&expires_in=299`;
+    expect(ebayReturnTarget(search, "https://www.neonbinder.io", "sandbox")).toEqual({
+      ok: true,
+      url: `${PREVIEW}/profile/ebay${search}`,
+    });
+    const r = await s.me.action(api.ebayConnect.completeConnect, { code: "v%5E1.1%23abc", state });
+    expect(r).toEqual({ ok: true, ebayUsername: "slabking" });
+    expect((await settingsRow(s))?.connectNonce).toBeUndefined();
+    await drainScheduled(s.t);
+  });
+
+  test("the nonce alone does not complete a composite state", async () => {
+    const s = await setup({ connected: false });
+    const state = stateOf(await s.me.mutation(api.ebayConnect.beginConnect, { returnOrigin: PREVIEW }));
+    const r = await s.me.action(api.ebayConnect.completeConnect, { code: "c", state: state.split(".")[0] });
+    expect(r).toMatchObject({ ok: false, error: expect.stringContaining("timed out") });
+    expect((await settingsRow(s))?.connectNonce).toBe(state);
+    expect(world.calls).toEqual([]);
+  });
+
+  test("a junk returnOrigin never reaches the state: the bare nonce is used, which keeps the return on its own origin", async () => {
+    const s = await setup({ connected: false });
+    const junk = [
+      "",
+      "not a url",
+      "javascript:alert(1)",
+      "ftp://neonbinder.io",
+      "https://neonbinder.io/",
+      "https://neonbinder.io/profile/ebay",
+      "https://user@neonbinder.io",
+      "https://NEONBINDER.io",
+      "https://neonbinder.io:443",
+      "https://neonbinder.io\\@evil.test",
+      `https://${"a".repeat(300)}.test`,
+    ];
+    for (const returnOrigin of junk) {
+      const state = stateOf(await s.me.mutation(api.ebayConnect.beginConnect, { returnOrigin }));
+      expect(state, returnOrigin).toMatch(/^[0-9a-f]{48}$/);
+      expect((await settingsRow(s))?.connectNonce).toBe(state);
+    }
+  });
+
+  test("returnStateFor: every origin the return pages forward to fits the state cap; one that cannot fit falls back", () => {
+    const nonce = "f".repeat(48);
+    for (const origin of [PREVIEW, "https://www.neonbinder.io", "https://neonbinder.io", "http://localhost:3000", "http://127.0.0.1:65535"]) {
+      const state = returnStateFor(nonce, origin, "sandbox");
+      expect(state.length, origin).toBeLessThanOrEqual(128);
+      expect(state.startsWith(`${nonce}.`), origin).toBe(true);
+      expect(ebayReturnTarget(`?state=${state}`, "https://www.neonbinder.io", "sandbox"), origin).toEqual({
+        ok: true,
+        url: `${origin}/profile/ebay?state=${state}`,
+      });
+    }
+    // A bare origin too long to fit 128 is one no return page forwards to anyway.
+    expect(returnStateFor(nonce, `https://${"a".repeat(60)}.test`, "sandbox")).toBe(nonce);
+    expect(returnStateFor(nonce, undefined, "sandbox")).toBe(nonce);
+  });
+
+  test("returnStateFor encodes only what the keyset's return page would forward to", () => {
+    const nonce = "f".repeat(48);
+    // Production keys → the production page: NB's production origins only.
+    for (const origin of ["https://www.neonbinder.io", "https://neonbinder.io"]) {
+      const state = returnStateFor(nonce, origin, "production");
+      expect(state.startsWith(`${nonce}.`), origin).toBe(true);
+      expect(ebayReturnTarget(`?state=${state}`, "https://www.neonbinder.io", "production"), origin).toEqual({
+        ok: true,
+        url: `${origin}/profile/ebay?state=${state}`,
+      });
+    }
+    for (const origin of [PREVIEW, "http://localhost:3000", "http://127.0.0.1:5173"]) {
+      expect(returnStateFor(nonce, origin, "production"), origin).toBe(nonce);
+      expect(returnStateFor(nonce, origin, "sandbox"), origin).not.toBe(nonce);
+    }
+    // Bare origins neither page forwards to: someone else's site, a Vercel branch alias, a foreign Vercel app.
+    for (const origin of [
+      "https://evil.test",
+      "https://neonbinder-git-some-branch-neon-binder.vercel.app",
+      "https://neonbinder-abc123def-someone-else.vercel.app",
+      "https://localhost:3000",
+    ]) {
+      expect(returnStateFor(nonce, origin, "sandbox"), origin).toBe(nonce);
+      expect(returnStateFor(nonce, origin, "production"), origin).toBe(nonce);
+    }
+  });
+
+  test("on production eBay keys a Connect from a preview or local build gets the bare nonce; from production, its origin", async () => {
+    vi.stubEnv("EBAY_ENVIRONMENT", "production");
+    const s = await setup({ connected: false });
+    for (const returnOrigin of [PREVIEW, "http://localhost:3000"]) {
+      const begun = await s.me.mutation(api.ebayConnect.beginConnect, { returnOrigin });
+      expect(new URL((begun as { authorizeUrl: string }).authorizeUrl).origin).toBe("https://auth.ebay.com");
+      const state = stateOf(begun);
+      expect(state, returnOrigin).toMatch(/^[0-9a-f]{48}$/);
+      expect((await settingsRow(s))?.connectNonce).toBe(state);
+    }
+    const state = stateOf(await s.me.mutation(api.ebayConnect.beginConnect, { returnOrigin: "https://www.neonbinder.io" }));
+    expect(state).toMatch(/^[0-9a-f]{48}\.[A-Za-z0-9_-]+$/);
+    expect(ebayReturnTarget(`?code=c&state=${state}`, "https://www.neonbinder.io", "production")).toEqual({
+      ok: true,
+      url: `https://www.neonbinder.io/profile/ebay?code=c&state=${state}`,
+    });
+  });
+
+  test("a composite state from a preview still goes through completeConnect's length check", async () => {
+    const s = await setup({ connected: false });
+    const state = stateOf(await s.me.mutation(api.ebayConnect.beginConnect, { returnOrigin: PREVIEW }));
+    expect(state.length).toBeLessThanOrEqual(128);
+    expect((await s.me.action(api.ebayConnect.completeConnect, { code: "c", state: `${state}${"A".repeat(129 - state.length)}` })).ok).toBe(false);
+    expect((await settingsRow(s))?.connectNonce).toBe(state);
   });
 
   test("a second press replaces the first nonce, which then no longer works", async () => {
