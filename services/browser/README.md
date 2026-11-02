@@ -117,9 +117,10 @@ token. Plain HTTP, no Chromium. Both routes refuse any key that is not an
 
 | Route | What it does |
 |---|---|
-| `POST /oauth/ebay/connect` `{key, code}` | Exchange the consent's authorization code (redirect_uri = the RuName), read the seller's eBay username (Commerce Identity `getUser`), store `{username, ebayUserId, token, expiresAt, refreshToken, refreshExpiresAt}`. Returns `{username, ebayUserId, expiresAt}`; `ebayUserId` is eBay's immutable user id, which seller-conflict and account deletion key on |
-| `POST /oauth/ebay/connect` `{key, refreshToken}` | The testing seed: the same, from a refresh token minted out of band |
+| `POST /oauth/ebay/connect` `{key, code, expectEbayUserId?}` | Exchange the consent's authorization code (redirect_uri = the RuName), read the seller's identity (Commerce Identity `getUser`; `userId` must match `^[A-Za-z0-9._-]{1,64}$`), store `{username, ebayUserId, token, expiresAt, refreshToken, refreshExpiresAt}`. Returns `{username, ebayUserId, environment, expiresAt}`. With `expectEbayUserId`, a different eBay account is `409 account_mismatch` and nothing is written |
+| `POST /oauth/ebay/connect` `{key, refreshToken, expectEbayUserId?}` | The testing seed: the same, from a refresh token minted out of band. Refused (`400`) when `EBAY_ENVIRONMENT=production` |
 | `POST /oauth/ebay/refresh` `{key}` | Mint a new access token from the stored refresh token, store it, return `{token, expiresAt}` |
+| `POST /webhooks/ebay/verify` `{signatureHeader, body}` | Verify an eBay Notification API push (`X-EBAY-SIGNATURE`, ECDSA over SHA-1, key from `getPublicKey` with a cached application token). Returns `{valid}`; a malformed header or unknown key is `valid:false`, failing to reach eBay is `502`. Own rate-limit bucket |
 
 Reads and disconnect use the existing `GET /credentials/:key/token`,
 `/metadata` and `DELETE /credentials/:key`. Errors are `{error_class}` only:

@@ -238,6 +238,7 @@ describe("POST /oauth/ebay/connect — code grant", () => {
     assert.deepEqual(res.body, {
       username: "neon_seller_1",
       ebayUserId: "abc123immutable",
+      environment: "sandbox",
       expiresAt: NOW + ACCESS_TTL_S * 1000,
     });
     assertNoSecretsIn(res.text, "connect response");
@@ -279,8 +280,17 @@ describe("POST /oauth/ebay/connect — code grant", () => {
     env.EBAY_ENVIRONMENT = "production";
     const res = await post("/oauth/ebay/connect", { key: KEY, code: CODE });
     assert.equal(res.status, 200);
+    assert.equal(res.body.environment, "production");
     assert.equal(ebay.calls[0].url, "https://api.ebay.com/identity/v1/oauth2/token");
     assert.equal(ebay.calls[1].url, "https://apiz.ebay.com/commerce/identity/v1/user/");
+  });
+
+  it("accepts a 64-char userId using every allowed character class", async () => {
+    const id = `Ab9._-${"z".repeat(58)}`;
+    ebay.identity = () => json(200, { userId: id, username: "neon_seller_1" });
+    const res = await post("/oauth/ebay/connect", { key: KEY, code: CODE });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.ebayUserId, id);
   });
 
   it("replaces a previous session wholesale", async () => {
@@ -311,6 +321,7 @@ describe("POST /oauth/ebay/connect — refresh-token seed", () => {
     assert.deepEqual(res.body, {
       username: "neon_seller_1",
       ebayUserId: "abc123immutable",
+      environment: "sandbox",
       expiresAt: NOW + ACCESS_TTL_S * 1000,
     });
     assertNoSecretsIn(res.text, "seed connect response");
@@ -330,6 +341,66 @@ describe("POST /oauth/ebay/connect — refresh-token seed", () => {
     });
     assert.equal(ebayLogLines()[0].grant, "refresh_token");
   });
+});
+
+describe("POST /oauth/ebay/connect — refresh-token seed in production", () => {
+  it("is refused with 400 bad_request before eBay is called", async () => {
+    env.EBAY_ENVIRONMENT = "production";
+    const res = await post("/oauth/ebay/connect", { key: KEY, refreshToken: SEED_REFRESH });
+    assert.equal(res.status, 400);
+    assert.deepEqual(res.body, { error_class: "bad_request" });
+    assert.equal(ebay.calls.length, 0);
+    assert.equal(store.writes, 0);
+    assert.equal(ebayLogLines()[0].error_class, "seed_in_production");
+  });
+});
+
+describe("POST /oauth/ebay/connect — expectEbayUserId", () => {
+  it("matching id → 200 and stored", async () => {
+    const res = await post("/oauth/ebay/connect", {
+      key: KEY,
+      code: CODE,
+      expectEbayUserId: "abc123immutable",
+    });
+    assert.equal(res.status, 200);
+    assert.equal(store.map.get(KEY).ebayUserId, "abc123immutable");
+  });
+
+  it("a different eBay account → 409 account_mismatch, the stored session untouched", async () => {
+    seedConnected();
+    const before = { ...store.map.get(KEY) };
+    ebay.identity = () => json(200, { userId: "someoneElse99", username: "other_seller" });
+    const res = await post("/oauth/ebay/connect", {
+      key: KEY,
+      code: CODE,
+      expectEbayUserId: "abc123immutable",
+    });
+    assert.equal(res.status, 409);
+    assert.deepEqual(res.body, { error_class: "account_mismatch" });
+    assertNoSecretsIn(res.text, "409 response");
+    assert.equal(store.writes, 0);
+    assert.deepEqual(store.map.get(KEY), before);
+  });
+
+  it("also applies to the seed form", async () => {
+    ebay.token = () => json(200, { access_token: ACCESS, expires_in: ACCESS_TTL_S });
+    const res = await post("/oauth/ebay/connect", {
+      key: KEY,
+      refreshToken: SEED_REFRESH,
+      expectEbayUserId: "notTheSameId",
+    });
+    assert.equal(res.status, 409);
+    assert.equal(store.map.has(KEY), false);
+  });
+
+  for (const bad of ["", "has space", "a/b", "x".repeat(65), 42, null]) {
+    it(`a malformed expectEbayUserId (${JSON.stringify(bad)}) → 400, eBay not called`, async () => {
+      const res = await post("/oauth/ebay/connect", { key: KEY, code: CODE, expectEbayUserId: bad });
+      assert.equal(res.status, 400);
+      assert.deepEqual(res.body, { error_class: "bad_request" });
+      assert.equal(ebay.calls.length, 0);
+    });
+  }
 });
 
 describe("POST /oauth/ebay/connect — failures", () => {
@@ -406,6 +477,10 @@ describe("POST /oauth/ebay/connect — failures", () => {
     ["no userId", { username: "neon_seller_1" }],
     ["no username", { userId: "abc123immutable" }],
     ["blank userId", { userId: "  ", username: "neon_seller_1" }],
+    ["a userId with a slash", { userId: "abc/123", username: "neon_seller_1" }],
+    ["a userId with a space", { userId: "abc 123", username: "neon_seller_1" }],
+    ["a 65-char userId", { userId: "a".repeat(65), username: "neon_seller_1" }],
+    ["a non-string userId", { userId: 12345, username: "neon_seller_1" }],
   ]) {
     it(`identity 200 with ${name} → 502, nothing stored`, async () => {
       ebay.identity = () => json(200, identity);

@@ -160,7 +160,7 @@ export function logCanaryPauseLookupFailed(props: CanaryPauseLookupFailedLine): 
  */
 export interface EbayOAuthLine {
   msg: "ebay_oauth_call";
-  operation: "connect" | "refresh";
+  operation: "connect" | "refresh" | "verify";
   /** "code" or "refresh_token" on connect; omitted on refresh. */
   grant?: "code" | "refresh_token";
   environment?: "sandbox" | "production";
@@ -173,6 +173,8 @@ export interface EbayOAuthLine {
   ebay_status?: number;
   /** eBay's OAuth `error` code, only from the known RFC 6749 set. */
   ebay_error?: string;
+  /** verify only: the verdict. Never the header, body or kid. */
+  valid?: boolean;
 }
 
 export function logEbayOAuthOp(props: EbayOAuthLine): void {
@@ -189,6 +191,7 @@ export function logEbayOAuthOp(props: EbayOAuthLine): void {
         error_class: props.error_class,
         ebay_status: props.ebay_status,
         ebay_error: props.ebay_error,
+        valid: props.valid,
       }),
     );
   } catch {

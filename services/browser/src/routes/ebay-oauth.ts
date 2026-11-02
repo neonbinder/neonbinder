@@ -1,6 +1,7 @@
 import { Request, Response, Router } from "express";
 import { Credentials, SecretsManagerService } from "../services/secrets-manager";
 import {
+  EBAY_USER_ID_PATTERN,
   EbayOAuthConfig,
   EbayOAuthError,
   EbayTokenResult,
@@ -10,15 +11,19 @@ import {
   readEbayOAuthConfig,
   refreshAccessToken,
 } from "../services/ebay-oauth";
+import { EbayNotificationVerifier } from "../services/ebay-notification";
 import { EbayOAuthLine, logEbayOAuthOp } from "../observability";
 
 /**
  * NEO-415 — eBay connect and refresh.
  *
- *   POST /oauth/ebay/connect  { key, code } | { key, refreshToken }
- *     → 200 { username, ebayUserId, expiresAt }
+ *   POST /oauth/ebay/connect  { key, code, expectEbayUserId? }
+ *                           | { key, refreshToken, expectEbayUserId? }  (not in production)
+ *     → 200 { username, ebayUserId, environment, expiresAt }
  *   POST /oauth/ebay/refresh  { key }
  *     → 200 { token, expiresAt }
+ *   POST /webhooks/ebay/verify  { signatureHeader, body }
+ *     → 200 { valid }
  *
  * Both are reached the way every other route is: Cloud Run IAM in front (only
  * the Convex service account may invoke), the global per-credential-key rate
@@ -67,6 +72,7 @@ export type EbayOAuthErrorClass =
   | "reauth_required"
   | "ebay_unavailable"
   | "ebay_not_configured"
+  | "account_mismatch"
   | "internal";
 
 /** The slice of SecretsManagerService these routes use; injectable for tests. */
@@ -85,7 +91,13 @@ export interface EbayOAuthRouterDeps {
   now?: () => number;
 }
 
-type ConnectBody = { key?: unknown; code?: unknown; refreshToken?: unknown };
+type ConnectBody = {
+  key?: unknown;
+  code?: unknown;
+  refreshToken?: unknown;
+  expectEbayUserId?: unknown;
+};
+type VerifyBody = { signatureHeader?: unknown; body?: unknown };
 type RefreshBody = { key?: unknown };
 
 function validKey(key: unknown): key is string {
@@ -114,6 +126,8 @@ export function createEbayOAuthRouter(deps: EbayOAuthRouterDeps = {}): Router {
   const readEnv = deps.env ?? (() => process.env);
   const now = deps.now ?? Date.now;
   const ebayDeps = { fetchImpl: deps.fetchImpl, now };
+  // One per router: it holds the app-token and public-key caches.
+  const verifier = new EbayNotificationVerifier(ebayDeps);
 
   function finish(
     res: Response,
@@ -161,14 +175,24 @@ export function createEbayOAuthRouter(deps: EbayOAuthRouterDeps = {}): Router {
       const body = (req.body ?? {}) as ConnectBody;
       const code = grantValue(body.code);
       const refreshToken = grantValue(body.refreshToken);
+      const expectEbayUserId = body.expectEbayUserId;
       // Exactly one of the two, each a bounded non-empty string.
       if (
         !validKey(body.key) ||
         code === null ||
         refreshToken === null ||
-        (code === undefined) === (refreshToken === undefined)
+        (code === undefined) === (refreshToken === undefined) ||
+        (expectEbayUserId !== undefined &&
+          (typeof expectEbayUserId !== "string" || !EBAY_USER_ID_PATTERN.test(expectEbayUserId)))
       ) {
         fail(res, base, startMs, 400, "bad_request");
+        return;
+      }
+      // The refresh-token form exists for the testing seed only. In production
+      // it would let anything holding a seller's refresh token bind that eBay
+      // account to an NB user without that seller's consent on this app.
+      if (refreshToken !== undefined && config.environment === "production") {
+        fail(res, { ...base, grant: "refresh_token", error_class: "seed_in_production" }, startMs, 400, "bad_request");
         return;
       }
       const key = body.key;
@@ -210,6 +234,14 @@ export function createEbayOAuthRouter(deps: EbayOAuthRouterDeps = {}): Router {
         return;
       }
 
+      // Reconnecting must land on the same eBay account the caller already
+      // has linked. A different account is refused BEFORE anything is
+      // written, so the stored session (and its linkage) stays as it was.
+      if (expectEbayUserId !== undefined && identity.userId !== expectEbayUserId) {
+        fail(res, line, startMs, 409, "account_mismatch");
+        return;
+      }
+
       // A new consent replaces whatever was stored: it is a complete session,
       // and a previous seller's tokens must not survive into it.
       const credentials: Credentials = {
@@ -237,6 +269,7 @@ export function createEbayOAuthRouter(deps: EbayOAuthRouterDeps = {}): Router {
       finish(res, line, startMs, 200, {
         username: identity.username,
         ebayUserId: identity.userId,
+        environment: config.environment,
         expiresAt: tokens.expiresAt,
       });
     },
@@ -341,6 +374,55 @@ export function createEbayOAuthRouter(deps: EbayOAuthRouterDeps = {}): Router {
 
       res.set("Cache-Control", "no-store");
       finish(res, line, startMs, 200, { token: tokens.accessToken, expiresAt: tokens.expiresAt });
+    },
+  );
+
+  /**
+   * Verify an eBay Notification API push (Marketplace Account Deletion).
+   *
+   * Convex receives the push on its public http route and asks this service
+   * because the check needs an application token, which needs the client
+   * secret. `body` is the notification body text exactly as received;
+   * `signatureHeader` is the `X-EBAY-SIGNATURE` value as received ("" when
+   * absent). Both are attacker-controlled, so every "this is not eBay's"
+   * outcome is a plain `200 {valid:false}`; only failing to reach eBay is an
+   * error. See services/ebay-notification.ts for the steps and their source.
+   */
+  router.post(
+    "/webhooks/ebay/verify",
+    async (req: Request<{}, {}, VerifyBody>, res: Response) => {
+      const startMs = Date.now();
+      const config = readEbayOAuthConfig(readEnv());
+      const line = { operation: "verify" as const, environment: config?.environment };
+      if (!config) {
+        fail(res, line, startMs, 503, "ebay_not_configured");
+        return;
+      }
+      const { signatureHeader, body } = (req.body ?? {}) as VerifyBody;
+      // Wrong TYPES are a Convex bug, not hostile input: say so.
+      if (typeof signatureHeader !== "string" || typeof body !== "string") {
+        fail(res, line, startMs, 400, "bad_request");
+        return;
+      }
+      let valid: boolean;
+      try {
+        valid = await verifier.verify(config, signatureHeader, body);
+      } catch (err) {
+        if (err instanceof EbayOAuthError) {
+          fail(
+            res,
+            { ...line, ...ebayDetail(err), error_class: `ebay_${err.kind}` },
+            startMs,
+            502,
+            "ebay_unavailable",
+          );
+          return;
+        }
+        console.error("eBay notification verify failed:", err instanceof Error ? err.name : "unknown");
+        fail(res, line, startMs, 500, "internal");
+        return;
+      }
+      finish(res, { ...line, valid }, startMs, 200, { valid });
     },
   );
 

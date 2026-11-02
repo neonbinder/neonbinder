@@ -65,8 +65,19 @@ export const EBAY_SCOPES: readonly string[] = [
 /** Per-call budget. eBay's token endpoint answers in well under a second. */
 export const EBAY_REQUEST_TIMEOUT_MS = 10_000;
 
-/** No real eBay username or user id comes near this; it bounds what we store and return. */
+/** No real eBay username comes near this; it bounds what we store and return. */
 const MAX_USERNAME_LENGTH = 128;
+
+/**
+ * The shape of an eBay immutable user id, as Convex validates it too
+ * (NEO-415 security review). Anchored, so a value that merely CONTAINS a
+ * valid id is refused. An id outside it is treated as a malformed eBay
+ * answer: nothing is stored.
+ */
+export const EBAY_USER_ID_PATTERN = /^[A-Za-z0-9._-]{1,64}$/;
+
+/** The scope a client-credentials (application) token is minted with. */
+export const EBAY_APP_SCOPE = "https://api.ebay.com/oauth/api_scope";
 
 /**
  * Read the eBay app configuration from the environment.
@@ -330,6 +341,22 @@ function identityField(value: unknown): string | undefined {
 }
 
 /**
+ * Client-credentials grant: an APPLICATION token, which acts as NB's app and
+ * no seller. The Notification API's getPublicKey takes one. eBay issues them
+ * for about two hours; callers cache it (see AppTokenCache).
+ */
+export async function fetchApplicationToken(
+  config: EbayOAuthConfig,
+  deps: EbayOAuthDeps = {},
+): Promise<EbayTokenResult> {
+  return tokenGrant(
+    config,
+    new URLSearchParams({ grant_type: "client_credentials", scope: EBAY_APP_SCOPE }),
+    deps,
+  );
+}
+
+/**
  * The signed-in seller's eBay identity, from Commerce Identity `getUser`.
  * eBay documents both `userId` and `username` as always present; a response
  * missing either is `malformed`.
@@ -357,9 +384,9 @@ export async function fetchEbayIdentity(
   }
   if (!res.ok) throw new EbayOAuthError("unavailable", { upstreamStatus: res.status });
   const body = await readJson(res);
-  const userId = identityField(body?.userId);
+  const userId = typeof body?.userId === "string" ? body.userId : undefined;
   const username = identityField(body?.username);
-  if (!userId || !username) {
+  if (!userId || !EBAY_USER_ID_PATTERN.test(userId) || !username) {
     throw new EbayOAuthError("malformed", { upstreamStatus: res.status });
   }
   return { userId, username };
