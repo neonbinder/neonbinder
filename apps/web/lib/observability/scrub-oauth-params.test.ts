@@ -20,6 +20,16 @@ describe("scrubOAuthParams (NEO-415)", () => {
     expect(out.breadcrumbs[0].data.to).toBe("/profile/ebay");
   });
 
+  it("the landing's forward to Credentials: the landing address is redacted, the eBay tab's address is kept", () => {
+    // /profile/ebay swaps itself for Profile → Credentials with eBay picked;
+    // the code rides in location state, never the URL, so the forward's
+    // breadcrumb carries it only on the landing side.
+    const crumb = { data: { from: "/profile/ebay?code=c1&state=n1", to: "/profile/credentials?platform=ebay" } };
+    const out = scrubOAuthParams(crumb);
+    expect(out.data.from).toBe("/profile/ebay?code=<redacted>&state=<redacted>");
+    expect(out.data.to).toBe("/profile/credentials?platform=ebay");
+  });
+
   it("redacts the percent-encoded form inside another URL's value", () => {
     const out = scrubOAuthParams({ u: "https://a.test/?next=%2Fprofile%2Febay%3Fcode%3Dv%5E1.1%26state%3Dn9%26x%3D1" });
     expect(out.u).toBe("https://a.test/?next=%2Fprofile%2Febay%3Fcode%3D<redacted>%26state%3D<redacted>%26x%3D1");

@@ -1,13 +1,15 @@
 import { useState, useEffect, useId, useRef } from "react";
 import { useAction, useQuery } from "convex/react";
-import { Link } from "react-router";
+import { useSearchParams } from "react-router";
 import { api } from "@/convex/_generated/api";
 import NeonButton from "@/components/modules/NeonButton";
 import { Input } from "@/components/primitives/Input";
 import { usePausedPlatforms } from "@/src/hooks/usePausedPlatforms";
 import { PAUSE_NOTICE_COPY } from "@/lib/marketplace/pause-notice";
-import { CONSENT_HEADING, EBAY_PATH, LISTING_CONSENT } from "@/lib/marketplace/listing-copy";
+import { CONSENT_HEADING, LISTING_CONSENT, PLATFORM_PARAM } from "@/lib/marketplace/listing-copy";
+import { useDocumentTitle } from "@/src/hooks/useDocumentTitle";
 import BscListingSection from "./BscListingSection";
+import EbayPanel from "./ebay/EbayPanel";
 
 const SUPPORTED_SITES = [
   { key: "buysportscards", label: "BuySportsCards" },
@@ -19,17 +21,41 @@ const SUPPORTED_SITES = [
 
 /**
  * NEO-415 — eBay has no password to save: it connects by eBay's own consent
- * screen, on its own Profile page (it lists, so it carries shipping, payment
- * and returns too). Its tab here is a pointer there, so a collector who looks
- * for eBay among the sign-ins finds the way, and nothing here can save,
- * test or clear an eBay sign-in.
+ * screen, and its whole setup (the connection, shipping, payment, returns,
+ * ships-from, Best Offer) lives in its tab here, so every marketplace is
+ * managed in one place (Jason, 2026-11-02). Nothing here can save, test or
+ * clear an eBay sign-in: its tab draws `EbayPanel` instead of the form.
  */
-const POINTER_SITES = [{ key: "ebay", label: "eBay", path: EBAY_PATH }];
+const EBAY_SITE = { key: "ebay", label: "eBay" };
 
-const SITE_TABS = [...SUPPORTED_SITES, ...POINTER_SITES];
+const SITE_TABS = [...SUPPORTED_SITES, EBAY_SITE];
+
+/**
+ * The picked platform lives in the URL (`?platform=`), so a link can open
+ * a platform (the inventory's "Finish your eBay setup", the Set Builder's
+ * sign-in notices), a refresh keeps it, and Back steps through the tabs the
+ * collector switched between. No parameter, or one this page doesn't know:
+ * the first platform.
+ */
+function usePickedSite(): [string, (key: string) => void] {
+  const [params, setParams] = useSearchParams();
+  const asked = params.get(PLATFORM_PARAM);
+  const picked = SITE_TABS.some((s) => s.key === asked) ? asked! : SUPPORTED_SITES[0].key;
+  const pick = (key: string) => {
+    if (key === picked) return;
+    // A push: switching platforms is going somewhere, so Back comes back.
+    setParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.set(PLATFORM_PARAM, key);
+      return next;
+    });
+  };
+  return [picked, pick];
+}
 
 export default function CredentialsPanel() {
-  const [selectedSite, setSelectedSite] = useState(SUPPORTED_SITES[0].key);
+  useDocumentTitle("Credentials | Neon Binder");
+  const [selectedSite, setSelectedSite] = usePickedSite();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -72,7 +98,7 @@ export default function CredentialsPanel() {
   // Get user profile to check if credentials are stored
   const profile = useQuery(api.userProfile.getUserProfile);
   const siteMeta = SUPPORTED_SITES.find((s) => s.key === selectedSite);
-  const pointer = POINTER_SITES.find((s) => s.key === selectedSite);
+  const ebay = selectedSite === EBAY_SITE.key;
 
   const siteCredential = profile?.siteCredentials?.find(
     (cred) => cred.site === selectedSite,
@@ -362,24 +388,13 @@ export default function CredentialsPanel() {
           })}
         </div>
       </div>
-    {pointer ? (
+    {ebay ? (
       <div
         id="site-credentials-panel"
         role="tabpanel"
         aria-labelledby={`site-tab-${selectedSite}`}
-        className="space-y-2"
       >
-        <h2 className="text-xl font-semibold">{pointer.label}</h2>
-        <p className="text-sm text-ink-2">
-          {pointer.label} skips the password. You connect it on {pointer.label}&apos;s own sign-in screen, and pick your
-          shipping, payment and returns right after.
-        </p>
-        <Link
-          to={pointer.path}
-          className="inline-flex min-h-11 items-center rounded-sm text-sm font-medium text-neon-blue-text underline focus-outline"
-        >
-          Set up {pointer.label} on its own page
-        </Link>
+        <EbayPanel />
       </div>
     ) : (
       <>

@@ -1,5 +1,5 @@
 /**
- * NEO-415 — Profile → eBay, the accessibility audit's fixes: the ships-from
+ * NEO-415 — Profile → Credentials → eBay, the accessibility audit's fixes: the ships-from
  * form keeps focus and its "Saved." line through a save, marks and focuses
  * what a refused submit needs; Set me up says it's working, and a failed
  * read-back keeps the box and focus with a Try again that makes nothing
@@ -33,7 +33,8 @@ vi.mock("convex/react", () => {
   return { useQuery: () => connection, useMutation: bind, useAction: bind };
 });
 
-import EbayPanel from "./page";
+import EbayPanel from "./EbayPanel";
+import EbayReturnLanding from "@/app/profile/ebay/page";
 
 const SETTINGS: EbayConnectionState["settings"] = {
   fulfillmentPolicyUnder20Id: null,
@@ -72,14 +73,15 @@ function tree(url: string) {
     <Theme>
       <MemoryRouter initialEntries={[url]}>
         <Routes>
-          <Route path="/profile/ebay" element={<EbayPanel />} />
+          <Route path="/profile/ebay" element={<EbayReturnLanding />} />
+          <Route path="/profile/credentials" element={<EbayPanel />} />
         </Routes>
       </MemoryRouter>
     </Theme>
   );
 }
 
-function renderAt(url = "/profile/ebay") {
+function renderAt(url = "/profile/credentials?platform=ebay") {
   const view = render(tree(url));
   return { ...view, again: () => view.rerender(tree(url)) };
 }
@@ -240,7 +242,7 @@ describe("Set me up", () => {
     expect(alert.textContent).toBe("eBay didn't answer. Your new policies are made, so Try again just picks them.");
     const retry = screen.getByRole("button", { name: "Try again" });
     expect(document.activeElement).toBe(retry);
-    expect(screen.getByRole("heading", { level: 2, name: "Shipping" })).toBeTruthy();
+    expect(screen.getByRole("heading", { level: 3, name: "Shipping" })).toBeTruthy();
 
     fn("ebayConnect:readPolicies").mockResolvedValueOnce(MADE_POLICIES);
     fireEvent.click(retry);
@@ -255,7 +257,7 @@ describe("Set me up", () => {
     expect(fns["ebayConnect:createStandardPolicies"]).toHaveBeenCalledTimes(1);
     expect((await screen.findByText(/^Made 4 on your eBay account/)).getAttribute("role")).toBe("status");
     expect(screen.queryByRole("alert")).toBeNull();
-    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("heading", { level: 2, name: "Shipping" })));
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("heading", { level: 3, name: "Shipping" })));
   });
 });
 

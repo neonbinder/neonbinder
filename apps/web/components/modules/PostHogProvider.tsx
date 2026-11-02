@@ -54,8 +54,9 @@ export function PostHogProvider({ children }: { children: React.ReactNode }) {
     posthog.init(posthogKey, {
       ...base,
       capture_exceptions: true,
-      // NEO-415: the eBay return lands on /profile/ebay?code=…&state=…; the
-      // first pageview (and anything else carrying the URL) must not ship them.
+      // NEO-415: the eBay return lands on /profile/ebay?code=…&state=… (and
+      // forwards to Credentials at once); the first pageview, and anything else
+      // carrying that landing address, must not ship them.
       before_send: scrubOAuthParams,
       debug: import.meta.env.MODE === "development",
     });

@@ -550,7 +550,7 @@ export const saveCredentials = action({
     // eBay's own consent page (`ebayConnect.beginConnect` / `completeConnect`)
     // and disconnects there too.
     if (args.site === "ebay") {
-      return { success: false, message: "eBay connects from Profile → eBay, not with a password." };
+      return { success: false, message: "eBay connects under Profile → Credentials → eBay, not with a password." };
     }
     if (!isSupportedSite(args.site)) {
       return { success: false, message: `Unsupported site: ${args.site}` };

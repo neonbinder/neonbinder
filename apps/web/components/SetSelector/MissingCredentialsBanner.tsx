@@ -1,4 +1,5 @@
 import { Link } from "react-router";
+import { credentialsPathFor } from "@/lib/marketplace/listing-copy";
 
 const SITE_LABEL: Record<string, string> = {
   buysportscards: "BuySportsCards",
@@ -29,7 +30,8 @@ export default function MissingCredentialsBanner({
         work. Set them up on your Profile.
       </p>
       <Link
-        to="/profile/credentials"
+        // Opens Credentials on the first platform still missing.
+        to={credentialsPathFor(missing[0] ?? "buysportscards")}
         aria-label="Configure credentials in Profile"
         className="inline-block px-4 py-2 rounded-md bg-neon-green text-on-neon-green font-semibold hover:opacity-90 focus-outline"
         style={{ fontFamily: "'Lexend', sans-serif" }}

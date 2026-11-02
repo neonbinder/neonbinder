@@ -2,10 +2,13 @@
  * NEO-415 — redacts the OAuth return's `code` and `state` query parameters
  * from anything headed to Sentry or PostHog.
  *
- * eBay sends the collector back to `/profile/ebay?code=…&state=…`. The page
- * spends the code and replaces the URL at once, but the first pageview, the
- * pageload transaction, an error in between and a session recording all see
- * the address as it arrived. The code is single use and short lived, and the
+ * eBay sends the collector back to `/profile/ebay?code=…&state=…`. That
+ * landing swaps itself at once for Profile → Credentials with eBay picked
+ * (`/profile/credentials?platform=ebay`), handing the code over in location
+ * state, never a URL, and the panel spends it and clears it. But the first
+ * pageview, the pageload transaction, the forward's navigation breadcrumb, an
+ * error in between and a session recording all see the landing address as
+ * it arrived. The code is single use and short lived, and the
  * state is a one-time nonce, but neither belongs in a third party's store.
  *
  * Same shape as `scrubSignedStorageUrls`: a stringify → replace → parse pass

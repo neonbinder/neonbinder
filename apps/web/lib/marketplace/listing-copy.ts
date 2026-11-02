@@ -1,6 +1,6 @@
 /**
  * NEO-370 — the listing words said on more than one screen: the Profile's
- * sign-in form and BuySportsCards panel, the eBay page (NEO-415), and the
+ * sign-in form and BuySportsCards panel, the eBay panel (NEO-415), and the
  * inventory's Sync button, Sync status and Sales tabs. Rev 5: a saved,
  * unpaused connection IS syncing (listing and sales); there is no Start. One
  * place, so a sentence reads the same everywhere. NB voice: short, plain, a
@@ -22,11 +22,30 @@ export const PLATFORM_NAME: Record<ListingPlatformKey, string> = { bsc: BSC_NAME
 /** Where a collector saves (or renews) their marketplace sign-in, which starts syncing. */
 export const CREDENTIALS_PATH = "/profile/credentials";
 
-/** NEO-415 — eBay connects by eBay's own consent screen, on its own Profile page. */
-export const EBAY_PATH = "/profile/ebay";
+/**
+ * The query parameter that picks a platform on Profile → Credentials, by the
+ * page's own site key ("buysportscards", "sportlots", "ebay"). In the URL so
+ * a link, a refresh and Back all land on the same platform.
+ */
+export const PLATFORM_PARAM = "platform";
+
+/** Profile → Credentials with one platform picked. */
+export function credentialsPathFor(siteKey: string): string {
+  return `${CREDENTIALS_PATH}?${PLATFORM_PARAM}=${encodeURIComponent(siteKey)}`;
+}
+
+/**
+ * NEO-415 — eBay's connection and listing setup, under Profile → Credentials.
+ * (`/profile/ebay` is only where eBay's consent screen sends the collector
+ * back; it forwards here.)
+ */
+export const EBAY_PATH = credentialsPathFor("ebay");
 
 /** Where each platform is connected, renewed and disconnected. */
-export const PLATFORM_PROFILE_PATH: Record<ListingPlatformKey, string> = { bsc: CREDENTIALS_PATH, ebay: EBAY_PATH };
+export const PLATFORM_PROFILE_PATH: Record<ListingPlatformKey, string> = {
+  bsc: credentialsPathFor("buysportscards"),
+  ebay: EBAY_PATH,
+};
 
 /**
  * What connecting a BSC sign-in does, said beside Connect on the sign-in
@@ -39,7 +58,7 @@ export const CONSENT_LINE =
   `Connecting lists every card in your boxes on ${BSC_NAME} at your box counts, and brings your sales back here. Cards you already list there, in any set you have in your boxes, go to your counts too. A card that isn't in a box, or sits in an in-person box, goes to 0.`;
 
 /**
- * NEO-415 — the same promise for eBay, said beside Connect on the eBay page.
+ * NEO-415 — the same promise for eBay, said beside Connect on the eBay panel.
  * eBay listings are NB's own (one per card and condition), so nothing the
  * seller already lists there is touched; only what NB put up follows the
  * box counts.

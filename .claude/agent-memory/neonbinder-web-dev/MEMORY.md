@@ -168,3 +168,4 @@
 - [happy-dom pads inline span in a11y name](reference_happy_dom_pads_inline_span_in_accessible_name.md) — "Label , done" in vitest vs "Label, done" in Chrome; normalise in the test
 - [Static page outside the SPA shell](reference_static_page_outside_the_spa_shell.md) — public/ HTML + vercel rewrite before catch-all + vite dev/preview rewrite; JS in lib/ emitted; template for happy-dom
 - [No jest-dom matchers](reference_no_jest_dom_matchers_in_unit_tests.md) — toBeInTheDocument/toHaveAttribute throw; use getByRole, getAttribute, textContent
+- [Fixed redirect target becomes a landing](reference_fixed_redirect_target_becomes_a_landing.md) — moved UI off an OAuth return route: landing Navigates replace + location.state; NavLink cannot light an alias

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   BSC_NAME,
   CREDENTIALS_PATH,
+  credentialsPathFor,
   EBAY_CONSENT_LINE,
   EBAY_NAME,
   EBAY_PATH,
@@ -19,8 +20,13 @@ import {
 describe("listing copy per platform (NEO-415)", () => {
   it("names and Profile pages are keyed by NB's own platform key", () => {
     expect(PLATFORM_NAME).toEqual({ bsc: BSC_NAME, ebay: "eBay" });
-    expect(PLATFORM_PROFILE_PATH).toEqual({ bsc: CREDENTIALS_PATH, ebay: "/profile/ebay" });
-    expect(EBAY_PATH).toBe("/profile/ebay");
+    // Both land on Profile → Credentials with their own platform picked.
+    expect(PLATFORM_PROFILE_PATH).toEqual({
+      bsc: "/profile/credentials?platform=buysportscards",
+      ebay: "/profile/credentials?platform=ebay",
+    });
+    expect(EBAY_PATH).toBe(`${CREDENTIALS_PATH}?platform=ebay`);
+    expect(credentialsPathFor("sportlots")).toBe("/profile/credentials?platform=sportlots");
   });
 
   it("the BSC sentences are unchanged by the generalisation", () => {

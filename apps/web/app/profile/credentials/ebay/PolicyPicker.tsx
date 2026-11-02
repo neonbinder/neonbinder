@@ -10,7 +10,7 @@ type SaveState = "idle" | "saving" | "saved" | "failed";
 const GONE_LINE = "The policy you picked here isn't on your eBay account anymore. Pick another.";
 
 /**
- * NEO-415 — one eBay policy slot on Profile → eBay: the seller's own
+ * NEO-415 — one eBay policy slot on Profile → Credentials → eBay: the seller's own
  * policies as choice cards (a radio group: Tab lands on the pick, arrows
  * choose). A pick shows at once and saves; picks can overlap (arrows choose
  * as they move), so only the latest reports. A refused or failed save puts

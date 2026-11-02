@@ -21,6 +21,7 @@ import BinderLayout from "@/src/layouts/binder-layout";
 import AdminLayout from "@/src/layouts/AdminLayout";
 import AdminSectionLayout from "@/src/layouts/admin-section-layout";
 import ProfileLayout from "@/src/layouts/profile-layout";
+import EbayReturnLanding from "@/app/profile/ebay/page";
 import PrintLayout from "@/src/layouts/print-layout";
 
 import {
@@ -67,7 +68,6 @@ const TestSeedPlaceholderUpload = lazy(() => import("@/app/testing/seed-placehol
 const Dashboard = lazy(loadDashboard);
 const ProfilePublic = lazy(loadProfilePublic);
 const ProfileCredentials = lazy(() => import("@/app/profile/credentials/page"));
-const ProfileEbay = lazy(() => import("@/app/profile/ebay/page"));
 const ProfileShipping = lazy(() => import("@/app/profile/shipping/page"));
 const ProfilePostage = lazy(() => import("@/app/profile/postage/page"));
 const ProfilePrizes = lazy(() => import("@/app/profile/prizes/page"));
@@ -227,9 +227,12 @@ const SentryErrorBoundary = Sentry.withErrorBoundary(
                 <Route index element={<Navigate to="/profile/public" replace />} />
                 <Route path="public" element={<Deferred><ProfilePublic /></Deferred>} />
                 <Route path="credentials" element={<Deferred><ProfileCredentials /></Deferred>} />
-                {/* NEO-415 — eBay connects by eBay's consent screen and
-                    returns here with ?code=&state= (the RuName's accept URL). */}
-                <Route path="ebay" element={<Deferred><ProfileEbay /></Deferred>} />
+                {/* NEO-415 — eBay's consent screen returns here with
+                    ?code=&state= (NEO-422's return pages forward to it). Not a
+                    section: it forwards to Credentials with eBay picked, the
+                    return riding in location state. Eager, so the trip home
+                    costs no extra chunk before the panel's. */}
+                <Route path="ebay" element={<EbayReturnLanding />} />
                 <Route path="shipping" element={<Deferred><ProfileShipping /></Deferred>} />
                 <Route path="postage" element={<Deferred><ProfilePostage /></Deferred>} />
                 <Route path="prizes" element={<Deferred><ProfilePrizes /></Deferred>} />

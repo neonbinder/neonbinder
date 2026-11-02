@@ -1,5 +1,5 @@
 /**
- * NEO-415 — Profile → eBay, what the server refuses and what a disconnect
+ * NEO-415 — Profile → Credentials → eBay, what the server refuses and what a disconnect
  * leaves behind: Connect's start refusing ("Disconnect eBay first…"), as an
  * answer or a thrown ConvexError; a return from a different seller account;
  * and a disconnect that couldn't take every NB listing down. Each is said in
@@ -31,7 +31,8 @@ vi.mock("convex/react", () => {
   return { useQuery: () => connection, useMutation: bind, useAction: bind };
 });
 
-import EbayPanel from "./page";
+import EbayPanel from "./EbayPanel";
+import EbayReturnLanding from "@/app/profile/ebay/page";
 
 function state(over: Partial<EbayConnectionState> = {}): EbayConnectionState {
   return {
@@ -59,14 +60,15 @@ function tree(url: string) {
     <Theme>
       <MemoryRouter initialEntries={[url]}>
         <Routes>
-          <Route path="/profile/ebay" element={<EbayPanel />} />
+          <Route path="/profile/ebay" element={<EbayReturnLanding />} />
+          <Route path="/profile/credentials" element={<EbayPanel />} />
         </Routes>
       </MemoryRouter>
     </Theme>
   );
 }
 
-function renderAt(url = "/profile/ebay") {
+function renderAt(url = "/profile/credentials?platform=ebay") {
   const view = render(tree(url));
   return { ...view, again: () => view.rerender(tree(url)) };
 }

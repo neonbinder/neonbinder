@@ -25,7 +25,8 @@ import { EBAY_NAME } from "@/lib/marketplace/listing-copy";
 import PolicyPicker, { type SaveAnswer } from "./PolicyPicker";
 
 /**
- * NEO-415 — Profile → eBay's setup, shown while eBay is connected: the
+ * NEO-415 — the eBay tab's setup on Profile → Credentials, shown while eBay
+ * is connected: the
  * seller's own shipping, payment and returns policies (read live from eBay
  * when the page opens, never subscribed), where cards ship from, Best Offer,
  * and the checklist that says what still stands between their boxes and
@@ -44,10 +45,15 @@ import PolicyPicker, { type SaveAnswer } from "./PolicyPicker";
  * still speaks when it fills.
  */
 
-export const SECTION = "flex flex-col gap-5 rounded-lg border border-rule p-6";
+/**
+ * A setup card. It sits inside the Credentials box, so it is the inner box
+ * BuySportsCards' listing section uses (rounded-md, p-4), not a page card,
+ * and its heading is an h3 under the panel's "eBay".
+ */
+const SECTION = "flex flex-col gap-4 rounded-md border border-rule p-4 sm:p-5";
 const NOTE = "text-sm text-ink-3";
 /** A section heading a checklist step can land on. */
-const LANDING = "rounded-sm text-xl font-semibold text-ink focus-outline";
+const LANDING = "rounded-sm text-lg font-semibold text-ink focus-outline";
 /** A live line: out of the flow while empty, in the accessibility tree always. */
 const LIVE = "text-sm empty:absolute";
 
@@ -161,9 +167,9 @@ function PoliciesBody({
     <>
       <section aria-labelledby={shippingId} className={SECTION}>
         <div>
-          <h2 ref={shippingHeading} id={shippingId} tabIndex={-1} className={LANDING}>
+          <h3 ref={shippingHeading} id={shippingId} tabIndex={-1} className={LANDING}>
             Shipping
-          </h2>
+          </h3>
           <p className={`${NOTE} mt-1`}>
             Pick from your own {EBAY_NAME} shipping policies. Cards under $20 can ride Standard Envelope; $20 and up
             need a tracked service.
@@ -237,9 +243,9 @@ function PoliciesBody({
 
       <section aria-labelledby={moneyId} className={SECTION}>
         <div>
-          <h2 id={moneyId} tabIndex={-1} className={LANDING}>
+          <h3 id={moneyId} tabIndex={-1} className={LANDING}>
             Payment and returns
-          </h2>
+          </h3>
           <p className={`${NOTE} mt-1`}>Your {EBAY_NAME} policies again. Every card NeonBinder lists uses these.</p>
         </div>
         {policies && (
@@ -395,9 +401,9 @@ function LocationSection({ saved, headingId }: { saved: EbayLocation | null; hea
   return (
     <section aria-labelledby={headingId} className={SECTION}>
       <div>
-        <h2 id={headingId} tabIndex={-1} className={LANDING}>
+        <h3 id={headingId} tabIndex={-1} className={LANDING}>
           Ships from
-        </h2>
+        </h3>
         <p className={`${NOTE} mt-1`}>{EBAY_NAME} shows buyers where a card ships from. US addresses only for now.</p>
       </div>
       <LocationForm saved={saved} />
@@ -576,9 +582,9 @@ function OffersSection({ connection }: { connection: EbayConnectionState }) {
 
   return (
     <section aria-labelledby={headingId} className={SECTION}>
-      <h2 id={headingId} className="text-xl font-semibold text-ink">
+      <h3 id={headingId} className="text-lg font-semibold text-ink">
         Offers
-      </h2>
+      </h3>
       <div className="space-y-1">
         {/* The whole row is the label: a 44px target, and the switch's name. */}
         <label htmlFor={switchId} className="flex min-h-11 cursor-pointer items-center gap-3">
@@ -632,10 +638,10 @@ export function SetupChecklist(
   const steps = setupChecklist(props.missing);
   const { landings } = props;
   return (
-    <section aria-labelledby={headingId} className="space-y-3 rounded-lg bg-raised p-6 shadow-offset">
-      <h2 id={headingId} className="text-xl font-semibold text-ink">
+    <section aria-labelledby={headingId} className="space-y-3 rounded-md bg-raised p-4 shadow-offset sm:p-5">
+      <h3 id={headingId} className="text-lg font-semibold text-ink">
         Finish these and your boxes go up
-      </h2>
+      </h3>
       <ul className="space-y-1">
         {steps.map((step) => (
           <li key={step.gap} className="flex items-center gap-2 text-sm">
@@ -674,11 +680,11 @@ function SetupDone({ headingId, announce }: { headingId: string; announce: boole
   return (
     <section
       aria-labelledby={headingId}
-      className="space-y-3 rounded-lg border border-notice-success-rule bg-notice-success-bg p-6"
+      className="space-y-3 rounded-md border border-notice-success-rule bg-notice-success-bg p-4 sm:p-5"
     >
-      <h2 id={headingId} className="text-xl font-semibold text-notice-success-ink">
+      <h3 id={headingId} className="text-lg font-semibold text-notice-success-ink">
         You&apos;re all set
-      </h2>
+      </h3>
       <p role="status" aria-live="polite" className="text-sm text-notice-success-ink">
         {said ? DONE_LINE : ""}
       </p>

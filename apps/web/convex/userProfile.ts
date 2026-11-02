@@ -6,8 +6,11 @@ import { DEFAULT_CONDITION } from "./collection";
 import { listingPlatformForSite, stopListingForSite } from "./listingOutbox";
 import { holdTestListingOff, setUpListing } from "./listingSync";
 
+// Mirrors schema.ts `userProfiles.marketplaceAccountIds`: a field missing here
+// fails getUserProfile's return validation for every profile that has it.
 const marketplaceAccountIdsValidator = v.optional(v.object({
   bscSellerId: v.optional(v.string()),
+  ebayUserId: v.optional(v.string()),
 }));
 
 /**

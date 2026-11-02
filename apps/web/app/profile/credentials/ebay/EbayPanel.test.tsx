@@ -1,7 +1,9 @@
 /**
- * NEO-415 — Profile → eBay. The page's own logic against a mocked Convex:
- * each connection state, the consent round trip (Connect leaves for eBay;
- * the return spends its code once and cleans the URL), Disconnect's
+ * NEO-415 — Profile → Credentials → eBay. The panel's own logic against a
+ * mocked Convex: each connection state, the consent round trip (Connect
+ * leaves for eBay; the return lands on /profile/ebay, which forwards to the
+ * eBay tab with the code in location state, and the panel spends it once and
+ * clears it), Disconnect's
  * confirm, and the setup (the $20-and-up picker leaving Standard
  * Envelope-only policies out, a refused save rolling back with an alert,
  * Set me up, and the checklist).
@@ -38,7 +40,8 @@ vi.mock("convex/react", () => {
   };
 });
 
-import EbayPanel from "./page";
+import EbayPanel from "./EbayPanel";
+import EbayReturnLanding from "@/app/profile/ebay/page";
 
 const SETTINGS_EMPTY: EbayConnectionState["settings"] = {
   fulfillmentPolicyUnder20Id: null,
@@ -73,22 +76,28 @@ const POLICIES: EbayPolicies = {
   returns: [{ id: "r1", name: "No returns", summary: "Returns not accepted" }],
 };
 
+const TAB = "/profile/credentials?platform=ebay";
+
 let where = "";
+let whereState: unknown = undefined;
 function Where() {
   const loc = useLocation();
   useEffect(() => {
     where = `${loc.pathname}${loc.search}`;
+    whereState = loc.state;
   }, [loc]);
   return null;
 }
 
-function renderAt(url = "/profile/ebay") {
+/** The eBay tab, behind the landing eBay's consent screen returns to. */
+function renderAt(url = TAB) {
   const tree = () => (
     <Theme>
       <MemoryRouter initialEntries={[url]}>
         <Routes>
+          <Route path="/profile/ebay" element={<EbayReturnLanding />} />
           <Route
-            path="/profile/ebay"
+            path="/profile/credentials"
             element={
               <>
                 <EbayPanel />
@@ -105,6 +114,8 @@ function renderAt(url = "/profile/ebay") {
 }
 
 beforeEach(() => {
+  where = "";
+  whereState = undefined;
   for (const key of Object.keys(fns)) delete fns[key];
   connection = state();
   fn("ebayConnect:readPolicies").mockResolvedValue({ ok: true, ...POLICIES });
@@ -113,7 +124,7 @@ beforeEach(() => {
 
 afterEach(cleanup);
 
-describe("Profile → eBay, connection", () => {
+describe("Profile → Credentials → eBay, connection", () => {
   it("not hooked up on this NeonBinder: Connect is inert and says why", () => {
     connection = state({ configured: false, environment: null });
     renderAt();
@@ -142,12 +153,14 @@ describe("Profile → eBay, connection", () => {
     vi.unstubAllGlobals();
   });
 
-  it("eBay's return spends the code once, cleans the URL, and lands focus on the heading", async () => {
+  it("eBay's return lands on the eBay tab, spends the code once, keeps it out of the URL and clears it, and lands focus on the heading", async () => {
     let finish: (v: unknown) => void = () => {};
     fn("ebayConnect:completeConnect").mockReturnValue(new Promise((r) => (finish = r)));
     renderAt("/profile/ebay?code=abc&state=nonce1&expires_in=299");
     expect(screen.getByText("Hooking up your eBay account…")).toBeTruthy();
-    await waitFor(() => expect(where).toBe("/profile/ebay"));
+    await waitFor(() => expect(where).toBe(TAB));
+    // Handed over in location state, then cleared: nothing for a refresh or Back to replay.
+    await waitFor(() => expect(whereState).toBeNull());
     expect(fns["ebayConnect:completeConnect"]).toHaveBeenCalledTimes(1);
     expect(fns["ebayConnect:completeConnect"]).toHaveBeenCalledWith({ code: "abc", state: "nonce1" });
     connection = state({ status: "connected", ebayUsername: "cardshark88", since: Date.UTC(2026, 10, 2, 12) });
@@ -160,7 +173,7 @@ describe("Profile → eBay, connection", () => {
     fn("ebayConnect:completeConnect").mockResolvedValue({ ok: true, ebayUsername: "cardshark88" });
     const composite = `${"a".repeat(48)}.aHR0cDovL2xvY2FsaG9zdDozMDAw`;
     renderAt(`/profile/ebay?code=v%5E1.1%23i%5E1&state=${composite}&expires_in=299`);
-    await waitFor(() => expect(where).toBe("/profile/ebay"));
+    await waitFor(() => expect(where).toBe(TAB));
     expect(fns["ebayConnect:completeConnect"]).toHaveBeenCalledWith({ code: "v^1.1#i^1", state: composite });
   });
 
@@ -168,7 +181,8 @@ describe("Profile → eBay, connection", () => {
     const composite = `${"b".repeat(48)}.aHR0cDovL2xvY2FsaG9zdDozMDAw`;
     renderAt(`/profile/ebay?error=access_denied&error_description=User+declined%2C+sorry&state=${composite}`);
     expect(await screen.findByText(/No worries, eBay isn't connected/)).toBeTruthy();
-    await waitFor(() => expect(where).toBe("/profile/ebay"));
+    await waitFor(() => expect(where).toBe(TAB));
+    await waitFor(() => expect(whereState).toBeNull());
     expect(fns["ebayConnect:completeConnect"]).toBeUndefined();
     expect(document.body.textContent).not.toContain("User declined");
   });
@@ -208,7 +222,7 @@ describe("Profile → eBay, connection", () => {
   });
 });
 
-describe("Profile → eBay, setup", () => {
+describe("Profile → Credentials → eBay, setup", () => {
   beforeEach(() => {
     connection = state({ status: "connected", ebayUsername: "cardshark88", since: Date.UTC(2026, 10, 2, 12) });
   });
@@ -273,7 +287,7 @@ describe("Profile → eBay, setup", () => {
       }),
     );
     expect((await screen.findByText(/^Made 3 on your eBay account/)).getAttribute("role")).toBe("status");
-    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("heading", { level: 2, name: "Shipping" })));
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("heading", { level: 3, name: "Shipping" })));
   });
 
   it("the checklist says what's left, then folds to one line", async () => {
@@ -298,7 +312,8 @@ describe("Profile → eBay, setup", () => {
     const regions = screen.getAllByRole("region").map((r) => r.getAttribute("aria-labelledby"));
     // Right under the connection, ahead of every setup section; Ships from leads them.
     expect(regions.indexOf(list.getAttribute("aria-labelledby"))).toBe(1);
-    expect(screen.getAllByRole("region").map((r) => r.querySelector("h2")?.textContent)).toEqual([
+    // The panel's heading is an h2 (it sits under the Credentials tab); its setup cards are h3s beneath it.
+    expect(screen.getAllByRole("region").map((r) => r.querySelector("h2, h3")?.textContent)).toEqual([
       "eBay",
       "Finish these and your boxes go up",
       "Ships from",
@@ -316,8 +331,17 @@ describe("Profile → eBay, setup", () => {
     ] as const) {
       // happy-dom has no layout, so it pads the sr-only span with a space a browser leaves out.
       fireEvent.click(within(list).getByRole("link", { name: (name) => name.replace(" ,", ",") === step }));
-      expect(document.activeElement).toBe(screen.getByRole("heading", { level: 2, name: heading }));
+      expect(document.activeElement).toBe(screen.getByRole("heading", { level: 3, name: heading }));
     }
+  });
+
+  it("a plain visit to /profile/ebay (an old link) just opens the eBay tab and spends nothing", async () => {
+    connection = state();
+    renderAt("/profile/ebay");
+    await waitFor(() => expect(where).toBe(TAB));
+    expect(whereState).toBeNull();
+    expect(screen.getByRole("button", { name: "Connect eBay" })).toBeTruthy();
+    expect(fns["ebayConnect:completeConnect"]).toBeUndefined();
   });
 
   it("passes axe in light and dark, not connected and connected with setup", async () => {

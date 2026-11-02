@@ -35,6 +35,7 @@ function renderAt(path: string) {
         <Route path="/profile" element={<ProfileLayout />}>
           <Route path="public" element={<div>public panel</div>} />
           <Route path="credentials" element={<div>credentials panel</div>} />
+          <Route path="ebay" element={<div>ebay landing</div>} />
           <Route path="shipping" element={<div>shipping panel</div>} />
           <Route path="postage" element={<div>postage panel</div>} />
           <Route path="prizes" element={<div>prizes panel</div>} />
@@ -57,9 +58,8 @@ describe("ProfileLayout", () => {
       ]),
     ).toEqual([
       ["Public Profile", "/profile/public"],
+      // NEO-415: eBay is managed under Credentials; it has no tab of its own.
       ["Credentials", "/profile/credentials"],
-      // NEO-415: eBay connects on its own page, beside Credentials.
-      ["eBay", "/profile/ebay"],
       ["Shipping", "/profile/shipping"],
       ["Postage", "/profile/postage"],
       ["Prize Pool", "/profile/prizes"],
@@ -72,6 +72,9 @@ describe("ProfileLayout", () => {
   it.each([
     ["/profile/public", "Public Profile"],
     ["/profile/credentials", "Credentials"],
+    ["/profile/credentials?platform=ebay", "Credentials"],
+    // NEO-415: eBay's return landing forwards into Credentials, so it is Credentials.
+    ["/profile/ebay", "Credentials"],
     ["/profile/shipping", "Shipping"],
     ["/profile/postage", "Postage"],
     ["/profile/prizes", "Prize Pool"],
@@ -85,6 +88,12 @@ describe("ProfileLayout", () => {
     // Exactly one — two current sections is as wrong as none.
     const nav = screen.getByRole("navigation", { name: "Profile sections" });
     expect(nav.querySelectorAll("[aria-current='page']").length).toBe(1);
+  });
+
+  it("NEO-415: has no eBay section", () => {
+    renderAt("/profile/ebay");
+    const nav = screen.getByRole("navigation", { name: "Profile sections" });
+    expect(Array.from(nav.querySelectorAll("a")).map((a) => a.textContent)).not.toContain("eBay");
   });
 
   it("keeps the heading every Maestro flow gates on", () => {

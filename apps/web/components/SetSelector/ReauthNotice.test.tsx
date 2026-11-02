@@ -72,7 +72,8 @@ describe("ReauthNotice", () => {
     expect(status.textContent).toContain(REAUTH_NOTICE_COPY.body);
 
     const link = screen.getByRole("link", { name: REAUTH_NOTICE_COPY.link });
-    expect(link.getAttribute("href")).toBe("/profile/credentials");
+    // Picks the platform that needs it, so the link lands on its sign-in.
+    expect(link.getAttribute("href")).toBe("/profile/credentials?platform=sportlots");
     // A real anchor: reachable by Tab, activatable by Enter.
     expect(link.tagName).toBe("A");
   });

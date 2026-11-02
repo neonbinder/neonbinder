@@ -244,7 +244,7 @@ describe("the Sync status screen", () => {
       expect(screen.queryByText("Not started")).toBeNull();
       if (line) expect(screen.getByText(line instanceof RegExp ? line : (t) => t.startsWith(line))).toBeTruthy();
       if (!link) expect(screen.queryByRole("link")).toBeNull();
-      if (link) expect(screen.getByRole("link", { name: link }).getAttribute("href")).toBe("/profile/credentials");
+      if (link) expect(screen.getByRole("link", { name: link }).getAttribute("href")).toBe("/profile/credentials?platform=buysportscards");
       await expectAccessibleInBothModes(view.container, { label: `Sync status, ${word}`, rerender });
       cleanup();
       draw({ platforms: [bsc(over)] }, { readOnly: true });
@@ -431,7 +431,7 @@ describe("the Sync status tab", () => {
     );
     const ebay = screen.getByRole("region", { name: "eBay" });
     expect(within(ebay).getByText("Setup unfinished")).toBeTruthy();
-    expect(within(ebay).getByRole("link", { name: "Finish your eBay setup" }).getAttribute("href")).toBe("/profile/ebay");
+    expect(within(ebay).getByRole("link", { name: "Finish your eBay setup" }).getAttribute("href")).toBe("/profile/credentials?platform=ebay");
     expect(within(ebay).getByText(/eBay listings need a photo/)).toBeTruthy();
     expect(within(ebay).getByText("eBay wants this card's Team, and we don't have it yet, so it's held back.", { exact: false })).toBeTruthy();
     // BSC reads as before.

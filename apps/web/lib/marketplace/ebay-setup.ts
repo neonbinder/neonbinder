@@ -1,6 +1,6 @@
 /**
- * NEO-415 — the pure half of Profile → eBay: the shapes the page reads from
- * `convex/ebayConnect.ts` (mirroring its validators, so the page compiles
+ * NEO-415 — the pure half of Profile → Credentials → eBay: the shapes the
+ * panel reads from `convex/ebayConnect.ts` (mirroring its validators, so it compiles
  * against NB's words for them), which policies each picker offers, what
  * "Set me up" picks for an empty slot, and the setup checklist's lines.
  *

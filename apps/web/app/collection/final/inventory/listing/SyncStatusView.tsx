@@ -59,7 +59,7 @@ export interface SyncStatusViewProps {
   /**
    * NEO-415 — platforms connected but not set up yet (eBay's shipping,
    * payment, returns or ships-from unpicked): said under the name, with the
-   * way to the eBay page. The collector's tab only; the admin view leaves it
+   * way to the eBay panel. The collector's tab only; the admin view leaves it
    * out (it can't read another collector's setup).
    */
   unfinishedSetup?: ReadonlyArray<ListingPlatform>;
