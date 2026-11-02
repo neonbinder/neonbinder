@@ -27,9 +27,16 @@
 // runs in the quick-add form's picker (chips are local state) and the form is
 // cancelled. The set (Baseball > 2024 > Topps > tpr-<worker> > Insert > Base)
 // and the minted teams/league stand; per-worker only (SET-REGISTRY.md `tpr-`).
+// NEO-413: the minor league is the one row here the product looks up, so it
+// is a real league from support/recorded-names.ts (recorded as a Baseball
+// no-match: creating it sends nothing to Wikidata) rather than a minted
+// token. The four teams are never looked up and keep their minted prefix,
+// which is what the ranking needs. One league per worker, so this spec is
+// FRESH-ONLY: a second run finds the league and no `Create “...”` row.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { setBuilderReady, drillToCustom } from "../../support/set-builder";
 import type { Locator, Page } from "@playwright/test";
+import { recordedNoMatchName } from "../../support/recorded-names";
 
 test(
   "Team picker ranks by the set's league and year — active league teams, then active minor-league teams, then the league's other eras, then the rest (NEO-331)",
@@ -37,7 +44,7 @@ test(
   async ({ page, signIn, env }) => {
     const T = env.ATTEMPT_TOKEN;
     const P = `TPR${T}Q`;
-    const LEAGUE = `TPRLg${T}M`;
+    const LEAGUE = recordedNoMatchName(env, "team-picker-ranks-by-set-context");
     const MLB = "Major League Baseball";
 
     await signIn("/set-selector");

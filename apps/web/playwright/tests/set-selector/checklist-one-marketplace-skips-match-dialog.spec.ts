@@ -13,12 +13,16 @@
 // read back off the cards in the drawer, and a teams-only re-sync review.
 //
 // WRITES BEYOND THE CARDS, deliberately: ONE player (whichever Roanoke name the
-// wizard presents first) and TWO teams, `RXT<token>` (the career team) and
-// `RXO<token>T` (the "Other team..." create), each a single search token per
-// attempt. RXO ends in a LETTER so it cannot be a prefix of another attempt's
-// longer token (Convex search treats the last term as a prefix, which would
-// turn the picker's "No matches." into a match and Enter into a pick). All
-// three are global; the same trade checklist-wizard-career-team-commits makes.
+// wizard presents first) and TWO teams: the career team, a real one-word club
+// from support/recorded-names.ts (NEO-413: it is looked up when it stages, and the
+// recording holds it as a Hockey no-match the catalogue does not hold, so the
+// lookup sends nothing to Wikidata and its step still reads "New Team"), and
+// `RXO<token>T` (the "Other team..." create, never looked up), a single search
+// token per attempt. RXO ends in a LETTER so it cannot be a prefix of another
+// attempt's longer token (Convex search treats the last term as a prefix,
+// which would turn the picker's "No matches." into a match and Enter into a
+// pick). All three are global; the same trade
+// checklist-wizard-career-team-commits makes.
 //
 // Sole writer of the Roanoke Express ECHL set; fresh-only (it commits the
 // checklist). Re-seed before re-running.
@@ -34,6 +38,7 @@ import {
   syncChecklistButton,
 } from "../../support/set-builder";
 import { editCardButton } from "../../support/cards";
+import { recordedNoMatchName } from "../../support/recorded-names";
 import {
   advanceToSave,
   confirmSaveButton,
@@ -141,7 +146,7 @@ test(
     // (careerTeamVerdict): the set year is 1995 and the staged stint 1994-1996
     // covers it. The mechanics are checklist-wizard-career-team-commits, reused
     // step for step. readyToCreate: this spec creates the player.
-    const team = `RXT${env.ATTEMPT_TOKEN}`;
+    const team = recordedNoMatchName(env, "checklist-one-marketplace-skips-match-dialog");
     const other = `RXO${env.ATTEMPT_TOKEN}T`;
     await walkToPlayerRow(page, { readyToCreate: true });
     const careerTeam = wizard.getByRole("combobox", { name: "Career team name" });

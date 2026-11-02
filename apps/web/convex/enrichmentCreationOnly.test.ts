@@ -37,7 +37,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { convexTest } from "convex-test";
-import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi, beforeAll, afterAll } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import { __resetEspnTeamListCache } from "./adapters/espn";
@@ -46,6 +46,11 @@ import { normalizeTeamName } from "./teams";
 import { normalizePlayerName } from "./players";
 import { normalizeLeagueName } from "./leagues";
 import { drainScheduled } from "../lib/testing/drain-scheduled";
+
+// NEO-413: no real 1.5 s pause before an empty search is re-asked.
+import { __setEmptySearchReaskBackoffForTests } from "./adapters/wikidata";
+beforeAll(() => __setEmptySearchReaskBackoffForTests(0));
+afterAll(() => __setEmptySearchReaskBackoffForTests(undefined));
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;

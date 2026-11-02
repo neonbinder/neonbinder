@@ -27,7 +27,7 @@
  */
 
 import { convexTest } from "convex-test";
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { afterEach, describe, expect, test, vi, beforeAll, afterAll } from "vitest";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -38,6 +38,11 @@ import { Id } from "./_generated/dataModel";
 import { normalizeLeagueName } from "./leagues";
 import { backstopEntityReviewRowImpl } from "./entityReviewQueue";
 import { normalizeTeamName } from "./teams";
+
+// NEO-413: no real 1.5 s pause before an empty search is re-asked.
+import { __setEmptySearchReaskBackoffForTests } from "./adapters/wikidata";
+beforeAll(() => __setEmptySearchReaskBackoffForTests(0));
+afterAll(() => __setEmptySearchReaskBackoffForTests(undefined));
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;

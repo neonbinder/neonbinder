@@ -1948,13 +1948,21 @@ export const search = query({
 
     const limit = clampLimit(args.limit, SEARCH_DEFAULT_LIMIT, SEARCH_MAX_LIMIT);
 
-    const docs = await ctx.db
+    const homeDocs = await ctx.db
       .query("players")
       .withSearchIndex("search_name", (q) => {
         const search = q.search("name", term);
         return args.sportId ? search.eq("sportId", args.sportId) : search;
       })
       .take(limit);
+    const readings = entityNameQueryReadings(term);
+    /** Every typed token is the prefix of one of the name's tokens. */
+    const matchesEveryToken = (nameNormalized: string) => {
+      const nameTokens = nameNormalized.split(" ");
+      return readings.some(
+        (tokens) => tokens.length > 0 && tokens.every((t) => nameTokens.some((n) => n.startsWith(t))),
+      );
+    };
 
     /*
      * NEO-313 — a multi-sport member of THIS sport is a player of this sport.
@@ -1972,29 +1980,44 @@ export const search = query({
      * (`entityNameQueryReadings`), so "J. T. R", one keystroke short of
      * "J. T. Re", still finds "jt realmuto" instead of looking for "jtr".
      */
-    if (args.sportId && docs.length < limit) {
-      const readings = entityNameQueryReadings(term);
-      if (readings[0].length > 0) {
-        const members = await ctx.db
-          .query("playerSports")
-          .withIndex("by_sport_id", (q) => q.eq("sportId", args.sportId!))
-          .take(SEARCH_MEMBER_SCAN);
-        const seen = new Set<string>(docs.map((d) => d._id as string));
-        for (const row of members) {
-          if (docs.length >= limit) break;
-          if (seen.has(row.playerId as string)) continue;
-          const nameTokens = row.nameNormalized.split(" ");
-          const matches = readings.some((tokens) =>
-            tokens.every((t) => nameTokens.some((n) => n.startsWith(t))),
-          );
-          if (!matches) continue;
-          const player = await ctx.db.get(row.playerId);
-          if (!player) continue;
-          seen.add(row.playerId as string);
-          docs.push(player);
-        }
+    /*
+     * NEO-414 — the member leg runs even when the home leg came back full.
+     *
+     * It used to run only while the home leg returned fewer than `limit`
+     * rows. The search index matches ANY typed word, so a two-word name
+     * whose surname is common in this sport ("Alejandro Alvarez" in
+     * Baseball) fills the home leg with other Alvarezes and the member was
+     * never looked for: a football player given Baseball vanished from every
+     * baseball picker. Found when the E2E suite stopped minting
+     * one-of-a-kind tokens and used real names.
+     *
+     * Then every row that matches EVERY typed word goes first, home or
+     * member, in the order found; the home leg's partial matches fill what
+     * is left. So the person typed in full is never pushed out by namesakes.
+     */
+    const memberDocs: Doc<"players">[] = [];
+    if (args.sportId && readings[0].length > 0) {
+      const members = await ctx.db
+        .query("playerSports")
+        .withIndex("by_sport_id", (q) => q.eq("sportId", args.sportId!))
+        .take(SEARCH_MEMBER_SCAN);
+      const seen = new Set<string>(homeDocs.map((d) => d._id as string));
+      for (const row of members) {
+        if (memberDocs.length >= limit) break;
+        if (seen.has(row.playerId as string)) continue;
+        if (!matchesEveryToken(row.nameNormalized)) continue;
+        const player = await ctx.db.get(row.playerId);
+        if (!player) continue;
+        seen.add(row.playerId as string);
+        memberDocs.push(player);
       }
     }
+    const full = (doc: Doc<"players">) => matchesEveryToken(doc.nameNormalized);
+    const docs = [
+      ...homeDocs.filter(full),
+      ...memberDocs,
+      ...homeDocs.filter((doc) => !full(doc)),
+    ].slice(0, limit);
 
     const sportValueById = new Map<string, string>();
     const teamById = new Map<string, Doc<"teams"> | null>();

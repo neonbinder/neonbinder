@@ -2,17 +2,21 @@
 // NEO-313: switch the quick-add player search to Football and put a football
 // player on a baseball card; the card carries him with his sport, and he stays
 // out of Baseball's roster on /admin/players.
+// NEO-413: the player is a real person from support/recorded-names.ts whose
+// Football lookup the recording holds as a no-match, so his add sends nothing
+// to Wikidata. One name per worker; FRESH-ONLY (re-seed before re-running).
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { addPlayerByHand } from "../../support/players";
 import { confirmDeleteCardButton, deleteCardButton, editCardButton, openVariant } from "../../support/cards";
 import { drillToCustom } from "../../support/set-builder";
+import { recordedNoMatchName } from "../../support/recorded-names";
 
 test(
   "Card player picker — switch the search to Football and put a football player on a baseball card; the card carries him with his sport, and he stays out of Baseball's roster (NEO-313)",
   { tag: ["@set-selector"] },
   async ({ page, signIn, env }) => {
     const A = env.ATTEMPT_ID;
-    const PLAYER = `Gp${env.ATTEMPT_TOKEN}`;
+    const PLAYER = recordedNoMatchName(env, "card-player-picker-cross-sport");
     const card = `315-${A}`;
     const target = {
       sport: "Baseball",
@@ -69,10 +73,15 @@ test(
     await expect(page.getByText(/^[\d,]+ players?$/)).toBeVisible();
     await page.getByRole("textbox", { name: "Filter players" }).fill(PLAYER);
     await expect(page.getByText(/^[\d,+]+ match(es)?$/).first()).toBeVisible();
+    // His row, and only his: "<name> Football ...". NEO-413: the name is real
+    // and two words, and the filter's search matches ANY word, so Baseball's
+    // namesakes still list under Baseball; what must go is HIS row (1 -> 0).
+    const escaped = PLAYER.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const hisRow = page.getByRole("main").getByRole("button", { name: new RegExp(`^${escaped}\\s*Football`) });
+    await expect(hisRow).toHaveCount(1);
     const sport = page.getByRole("combobox", { name: "Sport" });
     await sport.selectOption("Baseball");
-    await expect(page.getByText("No players match that filter.")).toBeVisible();
-    await expect(page.getByText("0 matches", { exact: true })).toBeVisible();
+    await expect(hisRow).toHaveCount(0);
     await sport.selectOption("Football");
     const row = page.getByRole("button", { name: new RegExp(PLAYER) });
     await row.first().click();
