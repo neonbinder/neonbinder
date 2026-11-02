@@ -22,7 +22,15 @@
       "destination": "https://o4510257330520064.ingest.us.sentry.io/$1"
     },
     {
-      "source": "/((?!assets|ingest|monitoring).*)",
+      "source": "/oauth/ebay/return",
+      "destination": "/oauth/ebay/return.html"
+    },
+    {
+      "source": "/oauth/ebay/sandbox-return",
+      "destination": "/oauth/ebay/sandbox-return.html"
+    },
+    {
+      "source": "/((?!assets|ingest|monitoring|oauth/).*)",
       "destination": "/index.html"
     }
   ]
