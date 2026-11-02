@@ -339,16 +339,24 @@ export class CardCountLedger {
    * flags are never cleared. A moved row that is itself a sport, year or
    * manufacturer row carries no subtree counts: its own `hasCards` is what
    * travels.
+   *
+   * NEO-418 — `knownRow`, when given, is `rowId` as the caller already read
+   * it in this transaction, and saves the re-read. Only `level`, `hasCards`
+   * and the two subtree counts are read from it, so it may be the row from
+   * BEFORE the caller's own level/parent patch, as long as that patch wrote
+   * none of the three counts fields and did not move the row between a
+   * flag level (sport, year, manufacturer) and a counted one.
    */
   async moveSubtree(
     ctx: CountCtx,
     rowId: RowId,
     fromParentId: RowId | undefined,
     toParentId: RowId | undefined,
+    knownRow?: Row | null,
   ): Promise<void> {
     if (fromParentId === toParentId) return;
     if (fromParentId) await this.rememberChain(ctx, fromParentId);
-    const row = await ctx.db.get(rowId);
+    const row = knownRow !== undefined ? knownRow : await ctx.db.get(rowId);
     if (row && carriesHasCards(row.level)) {
       if (row.hasCards === true && toParentId) this.flagChains.push(toParentId);
       return;

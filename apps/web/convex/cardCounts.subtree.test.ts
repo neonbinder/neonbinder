@@ -497,6 +497,65 @@ describe("a re-parented row takes its subtree count with it", () => {
     await expectAllTrue(t, s);
   });
 
+  // NEO-418 — `applyParallelGroupings` hands `moveSubtree` the row it read
+  // before its own level/parent patch, to save the re-read. The ledger must
+  // land exactly what it lands when it reads the row itself.
+  for (const known of [true, false]) {
+    test(`moveSubtree given the pre-patch row lands what it lands reading the row (counts ${known ? "known" : "unknown"})`, async () => {
+      const run = async (passRow: boolean) => {
+        const t = convexTest(schema, modules);
+        const s = await seed(t, { known });
+        if (known) {
+          const first = await insertCounted(t, s.parallel, "1");
+          await insertCounted(t, s.parallel, "2", { variationOfCardId: first });
+        }
+        vi.spyOn(console, "warn").mockImplementation(() => {});
+        const reread = await t.run(async (ctx) => {
+          const before = (await ctx.db.get(s.parallel))!;
+          await ctx.db.patch(s.parallel, { parentId: s.silver, lastUpdated: NOW + 1 });
+          // Every `get` the ledger makes while moving, to prove the row is
+          // not re-read when it is handed over.
+          const gets: RowId[] = [];
+          const watched = {
+            db: {
+              ...ctx.db,
+              get: (id: RowId) => {
+                gets.push(id);
+                return ctx.db.get(id);
+              },
+            },
+          } as unknown as typeof ctx;
+          const ledger = createCardCountLedger();
+          await ledger.moveSubtree(
+            watched,
+            s.parallel,
+            s.insert,
+            s.silver,
+            ...(passRow ? [before] : []),
+          );
+          await ledger.flush(ctx);
+          return gets.includes(s.parallel);
+        });
+        const rows = [s.parallel, s.insert, s.silver, s.insertType, s.set];
+        const stored = [];
+        for (const id of rows) stored.push(await subtree(t, id));
+        return { reread, stored };
+      };
+      const withRow = await run(true);
+      const withoutRow = await run(false);
+      expect(withRow.reread).toBe(false);
+      expect(withoutRow.reread).toBe(true);
+      expect(withRow.stored).toEqual(withoutRow.stored);
+      if (known) {
+        // Not vacuous: the cards really moved from Gold to Silver.
+        expect(withRow.stored[1]).toEqual({ all: 0, base: 0 });
+        expect(withRow.stored[2]).toEqual({ all: 2, base: 1 });
+      } else {
+        expect(withRow.stored.every((c) => c.all === undefined)).toBe(true);
+      }
+    });
+  }
+
   test("rehomeSetRowsToBrand: a set moved to another brand moves its cards across brands", async () => {
     const t = convexTest(schema, modules);
     const s = await seed(t);

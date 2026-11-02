@@ -603,6 +603,103 @@ describe("applyParallelGroupings — chains are refused, server-side (NEO-300)",
   });
 });
 
+/**
+ * NEO-418 — the handler now reads in two concurrent waves before it checks
+ * anything, then validates in the order it always did. A plan with two
+ * faults must still be refused with the FIRST one in that order, even when
+ * the later fault's evidence arrived in an earlier wave. Each case also
+ * proves the later fault is real on its own, so the pair is not vacuous.
+ */
+describe("applyParallelGroupings — the first refusal is unchanged by batched reads (NEO-418)", () => {
+  test("a demotion refusal (its parent, read second) beats a deleted promotion source (read first)", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const vt = await insertVariantType(t, "insert");
+    const chrome = await insertInsert(t, vt, "Chrome");
+    const otherVt = await insertVariantType(t, "insert");
+    const stray = await insertParallel(t, await insertInsert(t, otherVt, "Elsewhere"), "Stray");
+    const gone = await insertInsert(t, vt, "Gone");
+    await t.run(async (ctx) => ctx.db.delete(gone));
+    const promotions = [{ insertId: gone, targetInsertId: chrome }];
+
+    await expect(
+      asAdmin.mutation(api.selectorOptions.applyParallelGroupings, {
+        variantTypeId: vt,
+        promotions,
+        demotions: [{ parallelId: stray }],
+      }),
+    ).rejects.toThrow(groupingRefusal.moved("Stray"));
+    await expect(
+      asAdmin.mutation(api.selectorOptions.applyParallelGroupings, {
+        variantTypeId: vt,
+        promotions,
+        demotions: [],
+      }),
+    ).rejects.toThrow(groupingRefusal.gone());
+  });
+
+  test("a later promotion's deleted target beats an earlier promotion that keeps parallels", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const vt = await insertVariantType(t, "insert");
+    const chrome = await insertInsert(t, vt, "Chrome");
+    const prizm = await insertInsert(t, vt, "Prizm");
+    const gold = await insertInsert(t, vt, "Gold");
+    await insertParallel(t, chrome, "Refractor");
+    const gone = await insertInsert(t, vt, "Gone");
+    await t.run(async (ctx) => ctx.db.delete(gone));
+    const keepsParallels = { insertId: chrome, targetInsertId: prizm };
+
+    // Every source and target is checked before any source's own parallels.
+    await expect(
+      asAdmin.mutation(api.selectorOptions.applyParallelGroupings, {
+        variantTypeId: vt,
+        promotions: [keepsParallels, { insertId: gold, targetInsertId: gone }],
+        demotions: [],
+      }),
+    ).rejects.toThrow(groupingRefusal.gone());
+    await expect(
+      asAdmin.mutation(api.selectorOptions.applyParallelGroupings, {
+        variantTypeId: vt,
+        promotions: [keepsParallels],
+        demotions: [],
+      }),
+    ).rejects.toThrow(groupingRefusal.hasParallels("Chrome"));
+  });
+
+  test("a reparenting's deleted target (read second) beats a promotion that keeps parallels (read first)", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const vt = await insertVariantType(t, "insert");
+    const chrome = await insertInsert(t, vt, "Chrome");
+    const prizm = await insertInsert(t, vt, "Prizm");
+    await insertParallel(t, chrome, "Refractor");
+    const autos = await insertParallel(t, prizm, "Autos");
+    const gone = await insertInsert(t, vt, "Gone");
+    await t.run(async (ctx) => ctx.db.delete(gone));
+    const promotions = [{ insertId: chrome, targetInsertId: prizm }];
+
+    await expect(
+      asAdmin.mutation(api.selectorOptions.applyParallelGroupings, {
+        variantTypeId: vt,
+        promotions,
+        demotions: [],
+        reparentings: [{ parallelId: autos, newInsertId: gone }],
+      }),
+    ).rejects.toThrow(groupingRefusal.gone());
+    await expect(
+      asAdmin.mutation(api.selectorOptions.applyParallelGroupings, {
+        variantTypeId: vt,
+        promotions,
+        demotions: [],
+      }),
+    ).rejects.toThrow(groupingRefusal.hasParallels("Chrome"));
+    // All-or-nothing, as before: nothing moved.
+    expect((await getRow(t, chrome))?.level).toBe("insert");
+    expect((await getRow(t, autos))?.parentId).toBe(prizm);
+  });
+});
+
 describe("applyParallelGroupings — refusals are operator sentences, never ids (NEO-300)", () => {
   test("a row from ANOTHER variant type cannot be demoted into this one", async () => {
     const t = convexTest(schema, modules);
