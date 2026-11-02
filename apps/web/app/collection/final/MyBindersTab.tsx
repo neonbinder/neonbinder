@@ -24,6 +24,7 @@ import BinderSettingsDialog from "./binders/BinderSettingsDialog";
 import BinderView from "./binders/BinderView";
 import "./binders/binders.css";
 import BoxDesk, { TradeBox } from "./binders/BoxDesk";
+import BoxListedToggle from "./binders/BoxListedToggle";
 import {
   cardDragId,
   copyDragId,
@@ -110,6 +111,7 @@ import {
   useContainers,
   useCopiesOfCards,
   useDemoExtension,
+  useListing,
   useOwnedCards,
   useRuleMatches,
   useScope,
@@ -285,6 +287,8 @@ export default function MyBindersTab({
   const isTradeBox = inventory && isTrade;
   const isSmart = !!container?.rule;
   const isBox = !!container && container.kind === "box" && isHome(container);
+  // NEO-370: a box's "Listed on marketplaces"; absent in a store that lists nowhere (the demo).
+  const listing = useListing();
   const homeOpen = isHome(container) ? container : undefined;
 
   const [stepState, setStepState] = useState<{ view: string; at: number }>({
@@ -1510,27 +1514,30 @@ export default function MyBindersTab({
                 <p className="py-8 text-center text-ink-2">Lifting the lid…</p>
               )
             ) : isBox && container ? (
-              listCopies && cards ? (
-                <BoxDesk
-                  box={container}
-                  copies={listCopies}
-                  cards={cards}
-                  truncated={!!listPage?.truncated}
-                  onMore={more}
-                  onOpen={(card, copy) =>
-                    openCard(card.id, {
-                      copyId: copy.id,
-                      seed: card,
-                      list: listCopies.map((c) => c.cardId),
-                    })
-                  }
-                  onPlace={placeInBox}
-                  found={foundCopy}
-                  draggingId={activeId}
-                />
-              ) : (
-                <p className="py-8 text-center text-ink-2">Lifting the lid…</p>
-              )
+              <>
+                {listing && <BoxListedToggle box={container} listing={listing} notify={(text) => notify(text)} />}
+                {listCopies && cards ? (
+                  <BoxDesk
+                    box={container}
+                    copies={listCopies}
+                    cards={cards}
+                    truncated={!!listPage?.truncated}
+                    onMore={more}
+                    onOpen={(card, copy) =>
+                      openCard(card.id, {
+                        copyId: copy.id,
+                        seed: card,
+                        list: listCopies.map((c) => c.cardId),
+                      })
+                    }
+                    onPlace={placeInBox}
+                    found={foundCopy}
+                    draggingId={activeId}
+                  />
+                ) : (
+                  <p className="py-8 text-center text-ink-2">Lifting the lid…</p>
+                )}
+              </>
             ) : undefined}
           </BinderView>
         )}

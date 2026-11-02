@@ -12,6 +12,14 @@
  * Only `condition` changes: no line folds and no count, tally, slot or
  * `lastUpdated` moves. Safe to re-run: a copy that has a condition is skipped.
  *
+ * NEO-370: a box copy is for sale, and its condition picks the marketplace
+ * row it lists on (a copy with none lists nowhere). So a set copy that sits
+ * in a box of an owner who lists is queued for listing, the way every copy
+ * write queues it (`collection.applyCopyChanges`). The page only notes the
+ * cards; `listingOutbox.queueOwnerCards` queues them, `LISTING_CHUNK` cards a
+ * run, so the page's own budget stays the copies' patches. An owner who lists
+ * nowhere costs one read per page.
+ *
  * ## Operator command
  *
  *   # Dry run: one page, how many copies it would set (writes nothing)
@@ -28,11 +36,16 @@
 
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
+import type { Id } from "./_generated/dataModel";
 import { internalMutation } from "./_generated/server";
-import { defaultConditionOf, type Condition } from "./collection";
+import { defaultConditionOf, HomeSides, type Condition } from "./collection";
+import { listsAnywhere } from "./listingOutbox";
 
 /** Copies read per page: one read each, plus one profile read per owner on the page. */
 export const COPY_PAGE = 500;
+
+/** Cards one `queueOwnerCards` run queues (the house enable-walk page). */
+export const LISTING_CHUNK = 200;
 
 export const run = internalMutation({
   args: { arm: v.optional(v.boolean()), cursor: v.optional(v.string()) },
@@ -49,6 +62,8 @@ export const run = internalMutation({
       .query("collectionCopies")
       .paginate({ numItems: COPY_PAGE, cursor: args.cursor ?? null });
     const defaults = new Map<string, Condition>();
+    // Owner → their box copies' cards to queue, or null when they list nowhere.
+    const listing = new Map<string, { sides: HomeSides; cardIds: Set<Id<"cardChecklist"> | Id<"privateCards">> } | null>();
     let set = 0;
     for (const row of page.page) {
       if (row.condition !== undefined || row.grading !== undefined) continue;
@@ -60,6 +75,23 @@ export const run = internalMutation({
         defaults.set(row.ownerId, condition);
       }
       await ctx.db.patch(row._id, { condition });
+      let owner = listing.get(row.ownerId);
+      if (owner === undefined) {
+        owner = (await listsAnywhere(ctx, row.ownerId))
+          ? { sides: new HomeSides(ctx, row.ownerId), cardIds: new Set() }
+          : null;
+        listing.set(row.ownerId, owner);
+      }
+      if (owner && (await owner.sides.is(row.homeId, "inventory"))) owner.cardIds.add(row.cardId);
+    }
+    for (const [ownerId, owner] of listing) {
+      const cardIds = [...(owner?.cardIds ?? [])];
+      for (let i = 0; i < cardIds.length; i += LISTING_CHUNK) {
+        await ctx.scheduler.runAfter(0, internal.listingOutbox.queueOwnerCards, {
+          ownerId,
+          cardIds: cardIds.slice(i, i + LISTING_CHUNK),
+        });
+      }
     }
     if (armed && !page.isDone) {
       await ctx.scheduler.runAfter(0, internal.backfillCopyCondition.run, {

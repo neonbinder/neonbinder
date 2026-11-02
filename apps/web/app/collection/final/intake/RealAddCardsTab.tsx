@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useId, useMemo, useRef, useState, type ReactNode, type Ref } from "react";
 import { useSearchParams } from "react-router";
 import { useMutation, useQuery } from "convex/react";
 import NeonButton from "@/components/modules/NeonButton";
@@ -8,19 +8,23 @@ import type { Id } from "@/convex/_generated/dataModel";
 import { classifyIntake } from "@/lib/placeholders/intake-kind";
 import { usePlaceholderUpload } from "@/src/hooks/usePlaceholderUpload";
 import { useWarmPreprocess } from "@/src/hooks/useWarmPreprocess";
+import { useLeaveGuard } from "@/src/hooks/useLeaveGuard";
 import { Dropzone } from "@/app/print/placeholders/dropzone";
 import { ScanImage } from "@/app/print/placeholders/scan-image";
 import Overlay from "../../prototypes/p1/Overlay";
 import Cascade from "../catalog/Cascade";
 import { EMPTY_DRILL, type Drill } from "../catalog/drill";
 import { useDrillState } from "../catalog/useDrillState";
-import { homesOnSide, useContainers, useDefaultCondition, useSide, writeErrorMessage } from "../data/store";
+import { homesOnSide, useContainers, useDefaultCondition, useListingGate, useSide, writeErrorMessage } from "../data/store";
+import { intakeGateLine, ListingGateNote, SyncStatusLink, useListingLock } from "../inventory/listing/ListingGate";
 import { usePageApi } from "../pageApi";
 import {
   EMPTY_LANES,
   canRetryPhoto,
   cardLabel,
+  columnsClear,
   failedText,
+  LEAVE_INTAKE_LINE,
   laneOf,
   proposedCount,
   readOf,
@@ -65,15 +69,39 @@ const LocalPhotos = createContext<ReadonlyMap<string, string>>(new Map());
  * s swaps sides, u unpairs, d sets it aside, v steps through its other
  * pictures. In the count field only digits type; Enter saves and moves on.
  *
- * Not yet: photos onto the saved line (NEO-377), the price and the common
- * price prompt (NEO-378), rotate/re-crop/reject one side, and finding the
- * set from the photos when none is picked.
+ * The listing gate (NEO-370): a run into a box that lists on marketplaces,
+ * for a collector set up for syncing, needs a price on its cards before any
+ * photo goes up: the run's Min price (Defaults), else the common price for
+ * the picked set. Until then the drop zone is held with the reason beside it
+ * and a button that opens the field; the server refuses the run (and each
+ * save) the same way. After "Done adding photos" on such a run, "See what's
+ * syncing" links to Inventory → Sync status.
+ *
+ * Not yet: photos onto the saved line (NEO-377), the common price prompt
+ * (NEO-378), rotate/re-crop/reject one side, and finding the set from the
+ * photos when none is picked.
  */
 
 export const RUN_PARAM = "run";
 const TILE_ATTR = "data-intake-tile";
 const REVIEW_HEADING_ID = "intake-needs-you";
 const PAIRING_HEADING_ID = "intake-pairing";
+/** Marks "Done adding photos" for focus moves (a control carries no DOM id). */
+const DONE_ATTR = "data-intake-done";
+
+/**
+ * After a Back the user answered "Stay" (`useLeaveGuard`): focus on "Done
+ * adding photos" when it is drawn, else the Pairing column's heading. False
+ * while neither is drawn yet (the page is still loading), so it is tried again.
+ */
+function parkAfterStay(): boolean {
+  const target =
+    document.querySelector<HTMLElement>(`[${DONE_ATTR}]`) ?? document.getElementById(PAIRING_HEADING_ID);
+  if (!target) return false;
+  target.focus({ preventScroll: true });
+  target.scrollIntoView?.({ block: "nearest" });
+  return true;
+}
 
 /**
  * NEO-411: a Try again moves the photo out of the pile, so its button unmounts
@@ -105,6 +133,8 @@ interface RunDefaults {
   acquiredOn?: string;
   location?: string;
   notes?: string;
+  /** NEO-378's floor for every card in the run; blank sells at the common price. */
+  minPriceCents?: number;
 }
 
 interface VariantPick {
@@ -164,6 +194,26 @@ export default function RealAddCardsTab() {
   // scanner code don't blink out while a just-started run catches up.
   const collecting = !run || job === undefined || job?.status === "collecting";
 
+  // NEO-370 — the listing gate, on what the run (or the setup) will give its cards.
+  const shownDefaults: RunDefaults = run?.defaults ?? defaults;
+  const homeKind = run ? run.homeKind : kind;
+  const homeName = run ? run.homeName : (homes.find((h) => h.id === pickedHome)?.name ?? `the ${kind}`);
+  const lock = useListingLock({
+    homeId: run ? run.homeId : pickedHome || null,
+    variantId: run ? (run.variantId ?? null) : (variant?.variantId ?? null),
+    condition: shownDefaults.condition ?? usualCondition,
+    ownPriceCents: shownDefaults.minPriceCents,
+    graded: shownDefaults.grading !== undefined,
+  });
+  const gateNoteId = useId();
+  const priceRef = useRef<HTMLInputElement>(null);
+  const conditionRef = useRef<HTMLSelectElement>(null);
+  /** The note's button: open Defaults with the missing field focused (once the panel is drawn). */
+  const openMissingField = (field: "price" | "condition") => {
+    setPanel("defaults");
+    requestAnimationFrame(() => (field === "price" ? priceRef.current : conditionRef.current)?.focus());
+  };
+
   const openRun = (id: Id<"intakeRuns"> | null) =>
     setParams((p) => {
       const next = new URLSearchParams(p);
@@ -176,6 +226,8 @@ export default function RealAddCardsTab() {
     setFiles(chosen);
     if (chosen.length === 0 || uploading) return;
     if (classifyIntake(chosen).kind === "invalid") return;
+    // Held by the listing gate: the reason is beside the zone (it never opens a picker then).
+    if (lock.locked) return;
     if (!run && !pickedHome) {
       setStatus(`Make a ${kind} first: the cards need somewhere to go.`);
       return;
@@ -274,7 +326,10 @@ export default function RealAddCardsTab() {
       {panel === "defaults" && (
         <div id="intake-defaults-panel" className="w-full border-t border-rule pt-3">
           <DefaultsFields
-            value={run?.defaults ?? defaults}
+            value={shownDefaults}
+            showPrice={homeKind === "box"}
+            priceRef={priceRef}
+            conditionRef={conditionRef}
             onChange={(next) => {
               if (run) {
                 setRunDefaults({ runId: run._id, defaults: next }).catch((e: unknown) => notify(writeErrorMessage(e)));
@@ -297,19 +352,42 @@ export default function RealAddCardsTab() {
           </button>
         </p>
       )}
+      {collecting && lock.locked && (
+        <ListingGateNote id={gateNoteId} line={intakeGateLine(homeName, lock)}>
+          <NeonButton
+            size="1"
+            variant="secondary"
+            outline
+            className="max-sm:min-h-11"
+            onClick={() => openMissingField(lock.needsPrice ? "price" : "condition")}
+          >
+            {lock.needsPrice ? "Set a Min price" : "Pick a condition"}
+          </NeonButton>
+        </ListingGateNote>
+      )}
       {collecting ? (
         <>
-          <Dropzone quiet files={files} disabled={uploading} onFiles={(chosen) => void onFiles(chosen)} />
-          <ScannerJoin
-            runId={run?._id ?? null}
-            newRun={
-              pickedHome
-                ? { homeId: pickedHome as Id<"collectionContainers">, variantId: variant?.variantId, defaults }
-                : null
-            }
-            kind={kind}
-            onRunStarted={openRun}
+          <Dropzone
+            quiet
+            files={files}
+            disabled={uploading}
+            heldBy={lock.locked ? gateNoteId : undefined}
+            heldLabel={heldHeadline(lock)}
+            onFiles={(chosen) => void onFiles(chosen)}
           />
+          {/* A scanner starts the run too, so it waits behind the same price-and-condition hold. */}
+          {(!lock.locked || run) && (
+            <ScannerJoin
+              runId={run?._id ?? null}
+              newRun={
+                pickedHome
+                  ? { homeId: pickedHome as Id<"collectionContainers">, variantId: variant?.variantId, defaults }
+                  : null
+              }
+              kind={kind}
+              onRunStarted={openRun}
+            />
+          )}
         </>
       ) : (
         <p className="m-0 rounded-md border border-rule p-3 text-sm text-ink-2">
@@ -333,6 +411,28 @@ export default function RealAddCardsTab() {
 /* ------------------------------------------------------------------ */
 /* Setup pieces                                                        */
 /* ------------------------------------------------------------------ */
+
+/** Cents as the Min price field shows them ("1.50"); blank for none. */
+function centsText(cents: number | undefined): string {
+  return cents === undefined ? "" : (cents / 100).toFixed(2);
+}
+
+/**
+ * The Min price field's text as cents: blank is none (`undefined`), "$1,250.5"
+ * is 125050; anything else, or more than two decimals, is "invalid".
+ */
+export function parseMinPrice(text: string): number | undefined | "invalid" {
+  const t = text.trim().replace(/[$,\s]/g, "");
+  if (t === "") return undefined;
+  if (!/^\d+(\.\d{0,2})?$|^\.\d{1,2}$/.test(t)) return "invalid";
+  return Math.round(Number(t) * 100);
+}
+
+/** The held drop zone's headline (NEO-370): what to do before the photos. */
+function heldHeadline(missing: { needsPrice: boolean; needsCondition: boolean }): string {
+  if (missing.needsPrice && missing.needsCondition) return "Set a price and a condition, then drop your photos";
+  return missing.needsPrice ? "Set a price, then drop your photos" : "Pick a condition, then drop your photos";
+}
 
 /**
  * The set pick: the collection's own cascade (sport to variant) behind one
@@ -398,7 +498,22 @@ function RealSetButton({
 const FIELD = `rounded-md border border-field-rule bg-field px-2 py-1 text-sm text-ink ${RING}`;
 
 /** The run's batch defaults: every card starts with these. */
-function DefaultsFields({ value, onChange }: { value: RunDefaults; onChange: (next: RunDefaults) => void }) {
+function DefaultsFields({
+  value,
+  onChange,
+  showPrice,
+  priceRef,
+  conditionRef,
+}: {
+  value: RunDefaults;
+  onChange: (next: RunDefaults) => void;
+  /** A box run: the cards can carry a Min price (NEO-378). */
+  showPrice: boolean;
+  priceRef?: Ref<HTMLInputElement>;
+  conditionRef?: Ref<HTMLSelectElement>;
+}) {
+  const priceHelpId = useId();
+  const priceErrorId = useId();
   // No "your usual" choice: the field shows the seller's default (Profile →
   // Settings) until they pick another.
   const usualCondition = useDefaultCondition();
@@ -411,11 +526,25 @@ function DefaultsFields({ value, onChange }: { value: RunDefaults; onChange: (ne
   };
   const g = draft.grading;
   const cost = draft.costCents === undefined ? "" : (draft.costCents / 100).toFixed(2);
+  const [priceText, setPriceText] = useState(() => centsText(value.minPriceCents));
+  const [priceBad, setPriceBad] = useState(false);
+  /** Min price: blank clears it, a price sets it (shown back to the cent), anything else is refused in place. */
+  const commitPrice = () => {
+    const cents = parseMinPrice(priceText);
+    if (cents === "invalid") {
+      setPriceBad(true);
+      return;
+    }
+    setPriceBad(false);
+    setPriceText(centsText(cents));
+    if (cents !== draft.minPriceCents) commit({ minPriceCents: cents });
+  };
   return (
     <div className="grid gap-3 sm:grid-cols-3">
       <label className="flex flex-col gap-1 text-xs text-ink-3">
         Condition
         <select
+          ref={conditionRef}
           className={FIELD}
           value={draft.condition ?? usualCondition}
           onChange={(e) => commit({ condition: e.target.value as Condition })}
@@ -461,6 +590,39 @@ function DefaultsFields({ value, onChange }: { value: RunDefaults; onChange: (ne
           }}
         />
       </label>
+      {showPrice && (
+        <div className="flex flex-col gap-1 text-xs text-ink-3">
+          {/* The help sits outside the label, so the field's name is "Min price" alone. */}
+          <label className="flex flex-col gap-1">
+            Min price
+            <Input
+              ref={priceRef}
+              bare
+              className={FIELD}
+              type="text"
+              inputMode="decimal"
+              placeholder="Common price"
+              value={priceText}
+              aria-invalid={priceBad || undefined}
+              aria-describedby={priceBad ? `${priceErrorId} ${priceHelpId}` : priceHelpId}
+              onChange={(e) => setPriceText(e.target.value)}
+              onBlur={commitPrice}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  commitPrice();
+                }
+              }}
+            />
+          </label>
+          {priceBad && (
+            <span id={priceErrorId} role="alert" className="text-notice-danger-ink">
+              Type a price like 1.50
+            </span>
+          )}
+          <span id={priceHelpId}>Leave it blank to sell at your common price.</span>
+        </div>
+      )}
       <label className="flex flex-col gap-1 text-xs text-ink-3">
         Acquired
         <Input bare type="date" className={FIELD} value={draft.acquiredOn ?? ""} onChange={(e) => commit({ acquiredOn: e.target.value || undefined })} />
@@ -508,6 +670,13 @@ function RecentRuns({ runs, onOpen }: { runs: RunSummary[]; onOpen: (id: Id<"int
 /* The live workspace                                                  */
 /* ------------------------------------------------------------------ */
 
+/**
+ * NEO-370 Rev 4 — the runs this tab saw "Done adding photos" pressed on.
+ * Outside component state so a Back that the leave guard sends straight back
+ * (a remount) still knows the run is waiting on its columns.
+ */
+const doneRuns = new Set<string>();
+
 const LANE_LABEL = {
   reading: "Cropping & reading",
   pairing: "Pairing",
@@ -535,7 +704,15 @@ function RunWorkspace({ run, jobOpen }: { run: RunSummary; jobOpen: boolean }) {
   const unpair = useMutation(api.placeholderPairing.unpairPlaceholderImages);
   const pairUp = useMutation(api.placeholderPairing.manuallyPairPlaceholderImages);
   const closeStream = useMutation(api.placeholderStream.closePlaceholderStream);
+  const [done, setDone] = useState(() => doneRuns.has(run._id));
+  const markDone = (on: boolean) => {
+    if (on) doneRuns.add(run._id);
+    else doneRuns.delete(run._id);
+    setDone(on);
+  };
   const retry = useMutation(api.placeholderStream.retryPlaceholderImage);
+  // NEO-370: after Done, a run into a box that syncs links to Sync status.
+  const syncsHere = useListingGate(run.homeId, null)?.applies === true;
 
   const [selected, setSelected] = useState<Id<"placeholderPairs"> | null>(null);
   const [openId, setOpenId] = useState<Id<"placeholderPairs"> | null>(null);
@@ -661,6 +838,15 @@ function RunWorkspace({ run, jobOpen }: { run: RunSummary; jobOpen: boolean }) {
   // NEO-411: a photo that failed is not "read", so the summary says so.
   const unread = lanes.loose.filter((i) => i.status === "failed").length;
   const summary = runSummary({ loading, working, waiting: review.length, saved: lanes.saved.length, unread });
+  // After Done and until every column but Saved clears, leaving warns (the
+  // sync waits on those columns; leave anyway and the 15-minute round sends it).
+  const clear = !loading && columnsClear(lanes);
+  useEffect(() => {
+    if (done && clear) doneRuns.delete(run._id);
+  }, [done, clear, run._id]);
+  // A Back answered "Stay" leaves focus nowhere (the page may have remounted):
+  // park it on "Done adding photos" when it is drawn, else the first column's heading.
+  useLeaveGuard(done && !loading && !clear, LEAVE_INTAKE_LINE, { onStay: parkAfterStay });
 
   return (
     <div className="space-y-3">
@@ -688,18 +874,28 @@ function RunWorkspace({ run, jobOpen }: { run: RunSummary; jobOpen: boolean }) {
         <p role="status" aria-live="polite" className="sr-only">
           {loading ? "" : working > 0 ? "Working on your photos." : summary}
         </p>
-        {/* A scanner run (NEO-386) opens before any photo, so it closes with none. */}
-        {jobOpen && (
-          <NeonButton
-            size="1"
-            variant="secondary"
-            outline
-            className="ml-auto"
-            onClick={() => void closeStream({ jobId: run.jobId }).catch(fail)}
-          >
-            Done adding photos
-          </NeonButton>
-        )}
+        <div className="ml-auto flex flex-wrap items-center gap-3">
+          {/* A scanner run (NEO-386) opens before any photo, so it closes with none. */}
+          {jobOpen && (
+            <NeonButton
+              size="1"
+              variant="secondary"
+              outline
+              {...{ [DONE_ATTR]: "" }}
+              onClick={() => {
+                markDone(true);
+                void closeStream({ jobId: run.jobId }).catch((e: unknown) => {
+                  markDone(false);
+                  fail(e);
+                });
+              }}
+            >
+              Done adding photos
+            </NeonButton>
+          )}
+          {/* Always mounted (a live region announces what lands in it), empty until Done. */}
+          <span role="status">{done && syncsHere && <SyncStatusLink className="inline-block max-sm:py-2" />}</span>
+        </div>
       </div>
 
       <details className="rounded-md border border-rule px-3 py-2 text-sm text-ink-2">

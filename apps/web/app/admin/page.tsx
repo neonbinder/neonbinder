@@ -1,5 +1,6 @@
 import { Link } from "react-router";
 import {
+  ArrowPathIcon,
   BuildingOffice2Icon,
   InboxArrowDownIcon,
   SignalIcon,
@@ -74,6 +75,12 @@ const TOOL_DETAILS: Record<
       "Review the cards and sets collectors asked us to add: approve one as a catalog card, or decline it with a note.",
     icon: InboxArrowDownIcon,
     accent: "text-neon-blue-text group-hover:border-neon-blue/50",
+  },
+  "/admin/sync-status": {
+    description:
+      "See every collector's marketplace sync: what's running, what's queued, and each set's last result. Read-only.",
+    icon: ArrowPathIcon,
+    accent: "text-neon-yellow-text group-hover:border-neon-yellow/50",
   },
 };
 

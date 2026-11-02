@@ -17,9 +17,21 @@
  * re-scan?", setting a pair aside, and the card search for "Wrong card? Find
  * it". Nothing here saves on its own: every save is a collector's click.
  *
+ * NEO-370: a run that saves into a listed box syncs to the collector's
+ * listing platforms once the collector pressed "Done adding photos" (the
+ * stream was closed by them, `placeholderJobs.streamClosedBy === "user"`)
+ * AND every column but Saved is clear: its photos are all processed (the job
+ * finished) and every pair is saved or set aside. At that point the listing
+ * drain runs (`kickListingIfRunSettled`). A run whose stream the idle sweep
+ * closed, or that was left without Done, waits for the 15-minute cron.
+ *
+ * NEO-370: a collector set up for syncing starts a run into a listed box
+ * with a price and a condition, and every save from it carries them
+ * (`listingGate.ts`); the run's price is the saved copy's own floor.
+ *
  * Not here yet: attaching the pair's photos to the saved line (NEO-377), the
- * per-copy price and the common-price prompt (NEO-378), and the catalog-wide
- * set finder for a run with no variant.
+ * common-price prompt (NEO-378), and the catalog-wide set finder for a run
+ * with no variant.
  */
 
 import { internalMutation, mutation, query } from "./_generated/server";
@@ -31,8 +43,11 @@ import { requireSignedIn, getCurrentUserId } from "./auth";
 import {
   addOne,
   applyCopyChanges,
+  COLLECTION_ERRORS,
   defaultConditionOf,
+  isPriceCents,
   MAX_COPY_QUANTITY,
+  refuse,
 } from "./collection";
 import {
   intakeBandValidator,
@@ -40,6 +55,8 @@ import {
   intakeReasonValidator,
   collectionContainerKindValidator,
 } from "./schema";
+import { kickOwnerDrains, listsOnMarketplaces } from "./listingOutbox";
+import { ListingGate } from "./listingGate";
 import {
   intakeNamesFor,
   matchIntakePair,
@@ -56,6 +73,47 @@ const MAX_DEFAULT_TEXT = 500;
 
 /** Variant ancestry walked for a `cardNumberPrefix` (variant → set). */
 const MAX_PREFIX_HOPS = 4;
+
+/**
+ * Match rows the settle check reads. A larger run is not checked on each
+ * save (the 15-minute cron runs its drain).
+ */
+export const INTAKE_SETTLE_SCAN = 1000;
+
+/** Job statuses after which no more photos arrive or get processed. */
+const JOB_DONE = new Set(["succeeded", "failed"]);
+
+/**
+ * NEO-370: run the collector's listing drain once a listed-box run is
+ * settled: the collector pressed "Done adding photos" (Jason, 2026-11-01:
+ * that click means no more photos are coming, not "sync now"), the job
+ * finished processing every photo, and every pair of the run is saved or set
+ * aside (at least one saved), so every column but Saved is clear. Called
+ * after each save and set-aside, and when the job finishes. Cheap until
+ * then: the home is read first (a binder or an in-person box stops there),
+ * then the job, then the run's match rows (bounded). The kick itself is a
+ * no-op when the collector lists nowhere or nothing is queued.
+ */
+export async function kickListingIfRunSettled(ctx: MutationCtx, run: Doc<"intakeRuns">): Promise<boolean> {
+  const home = await ctx.db.get(run.homeId);
+  if (!home || !listsOnMarketplaces(home)) return false;
+  const job = await ctx.db
+    .query("placeholderJobs")
+    .withIndex("by_job", (q) => q.eq("jobId", run.jobId))
+    .unique();
+  if (!job || !JOB_DONE.has(job.status)) return false;
+  // Only "Done adding photos" counts: never the idle sweep, never a run left open.
+  if (job.streamClosedBy !== "user") return false;
+  const rows = await ctx.db
+    .query("intakeMatches")
+    .withIndex("by_run", (q) => q.eq("runId", run._id))
+    .take(INTAKE_SETTLE_SCAN + 1);
+  if (rows.length === 0 || rows.length > INTAKE_SETTLE_SCAN) return false;
+  if (rows.some((row) => row.savedAt === undefined && !row.setAside)) return false;
+  if (!rows.some((row) => row.savedAt !== undefined)) return false;
+  await kickOwnerDrains(ctx, run.userId);
+  return true;
+}
 
 async function ownedRun(
   ctx: QueryCtx,
@@ -91,6 +149,13 @@ async function requireVariant(
   if (!card) throw new Error("That variant has no cards to match against");
 }
 
+/** A run's Min price: whole cents, zero to the cap, by the copies' rule; else refused. */
+function minPrice(n: number | undefined): number | undefined {
+  if (n === undefined) return undefined;
+  if (!isPriceCents(n)) refuse(COLLECTION_ERRORS.invalid, "Minimum price needs to be a dollar amount of zero or more.");
+  return n;
+}
+
 function cleanDefaults(
   defaults: Doc<"intakeRuns">["defaults"],
 ): Doc<"intakeRuns">["defaults"] {
@@ -111,7 +176,9 @@ function cleanDefaults(
     acquiredOn: text(defaults.acquiredOn),
     location: text(defaults.location),
     notes: text(defaults.notes),
-    minPriceCents: cents(defaults.minPriceCents, "Minimum price"),
+    // NEO-370: the copies' own price rule (`isPriceCents`), so a run that
+    // could never save is refused at its start, in the words a save would use.
+    minPriceCents: minPrice(defaults.minPriceCents),
   };
 }
 
@@ -130,6 +197,22 @@ export async function noteIntakePairsChanged(
     .first();
   if (!run) return;
   await queueSync(ctx, run);
+}
+
+/**
+ * NEO-370 — a placeholder job reached a terminal status (succeeded, failed
+ * or cancelled). A run whose pairs were all answered before the job finished
+ * (its last photo failed, say) settles now, so its saved box copies reach the
+ * listing platforms without waiting for the 15-minute cron. Called by every
+ * writer of a job's terminal status, in the same transaction, after the patch.
+ */
+export async function noteIntakeJobFinished(ctx: MutationCtx, jobId: string): Promise<boolean> {
+  const run = await ctx.db
+    .query("intakeRuns")
+    .withIndex("by_job", (q) => q.eq("jobId", jobId))
+    .first();
+  if (!run) return false;
+  return await kickListingIfRunSettled(ctx, run);
 }
 
 async function queueSync(ctx: MutationCtx, run: Doc<"intakeRuns">): Promise<void> {
@@ -171,13 +254,28 @@ export const createIntakeRun = mutation({
       .first();
     if (existing) return existing._id;
 
+    // NEO-370: a run into a listed box, by a collector set up for syncing,
+    // starts with a price (the run's own, else the picked variant's common
+    // price) and a condition, as every save from it will need
+    // (`listingGate.ts`). A run with no variant yet prices by its own default.
+    const defaults = cleanDefaults(args.defaults);
+    const gate = new ListingGate(ctx, userId);
+    if (await gate.applies(home)) {
+      await gate.require(home, {
+        ...(args.variantId ? { variantId: args.variantId } : {}),
+        graded: defaults?.grading !== undefined,
+        condition: defaults?.condition ?? (await defaultConditionOf(ctx, userId)),
+        ...(defaults?.minPriceCents !== undefined ? { ownPriceCents: defaults.minPriceCents } : {}),
+      });
+    }
+
     const now = Date.now();
     const runId = await ctx.db.insert("intakeRuns", {
       userId,
       jobId: args.jobId,
       homeId: args.homeId,
       variantId: args.variantId,
-      defaults: cleanDefaults(args.defaults),
+      defaults,
       createdAt: now,
       lastActivityAt: now,
     });
@@ -538,7 +636,9 @@ export const saveIntakeMatch = mutation({
       Object.entries(args.details ?? {}).filter(([, value]) => value !== undefined),
     );
     const d = cleanDefaults({ ...run.defaults, ...overrides }) ?? {};
-    // The per-copy price (`minPriceCents`) waits for NEO-378's field on copies.
+    // NEO-370: the run's price goes on the copy (NEO-378's `minPriceCents`),
+    // so a listed box's saves list at it. `addOne` refuses a save into a
+    // listed box with no price and no common price (`listingGate.ts`).
     const { result, change } = await addOne(
       ctx,
       run.userId,
@@ -551,6 +651,7 @@ export const saveIntakeMatch = mutation({
         acquiredOn: d.acquiredOn,
         location: d.location,
         notes: d.notes,
+        ...(d.minPriceCents !== undefined ? { minPriceCents: d.minPriceCents } : {}),
         homeId: run.homeId,
       },
       await defaultConditionOf(ctx, run.userId),
@@ -564,6 +665,7 @@ export const saveIntakeMatch = mutation({
       savedAt: now,
     });
     await ctx.db.patch(run._id, { lastActivityAt: now });
+    await kickListingIfRunSettled(ctx, run);
     return { copyId: result.copyId, alreadySaved: false };
   },
 });
@@ -589,6 +691,7 @@ export const answerIntakeRepeat = mutation({
       args.secondCopy ? { repeatIsSecondCopy: true } : { setAside: true },
     );
     await ctx.db.patch(run._id, { lastActivityAt: Date.now() });
+    if (!args.secondCopy) await kickListingIfRunSettled(ctx, run);
     return null;
   },
 });
@@ -611,6 +714,7 @@ export const setIntakeMatchAside = mutation({
       ...(args.setAside ? {} : { repeatIsSecondCopy: undefined }),
     });
     await ctx.db.patch(run._id, { lastActivityAt: Date.now() });
+    if (args.setAside) await kickListingIfRunSettled(ctx, run);
     return null;
   },
 });

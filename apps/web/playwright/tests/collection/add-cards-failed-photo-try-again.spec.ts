@@ -11,6 +11,11 @@
 // at once: the photo leaves the failed state, is read again, and ends failed a
 // second time. That second end is the property under test: it ends.
 //
+// NEO-370: the closed run still holds the failed photo, so its Pairing column
+// is not clear and leaving the page asks first (`useLeaveGuard`, a confirm).
+// The spec answers Stay on an in-app tab link (the URL and the run stay), then
+// Leave on the same link (the page moves). Back after that returns to the run.
+//
 // R7: writes only the account's own run (the seed cancels the account's open
 // runs first, for the active-run cap) and Main, which it reads but never
 // writes a copy into. Self-cleaning: the run is closed at the end
@@ -78,5 +83,40 @@ test(
     await expect(pairing.getByText("Couldn't read it. Scan it again.", { exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: "Done adding photos" })).toHaveCount(0);
     await expectAccessible(page, { label: "Add cards, a closed run with a photo that was never read" });
+
+    // --- Leaving now asks: Stay keeps the run, Leave moves on ------------------
+    const runUrl = page.url();
+    const tabs = page.getByRole("navigation", { name: "Collection sections" });
+    const myCards = tabs.getByRole("link", { name: "My Cards", exact: true });
+    const asked: Array<{ type: string; message: string }> = [];
+    page.once("dialog", (dialog) => {
+      asked.push({ type: dialog.type(), message: dialog.message() });
+      void dialog.dismiss();
+    });
+    await myCards.click();
+    expect(asked).toHaveLength(1);
+    expect(asked[0].type).toBe("confirm");
+    expect(asked[0].message).toMatch(/^This run isn't finished: some cards are still working or need you\. Leave anyway\?/);
+    // Stay: nothing moved. Same URL, same tab, and the unread photo is still in the pile.
+    await expect(page).toHaveURL(runUrl);
+    await expect(tabs.getByRole("link", { name: "Add cards", exact: true })).toHaveAttribute("aria-current", "page");
+    await expect(myCards).not.toHaveAttribute("aria-current", "page");
+    await expect(pairing.getByText("Couldn't read it. Scan it again.", { exact: true })).toBeVisible();
+
+    // Leave: the same link, answered yes, moves to My Cards.
+    page.once("dialog", (dialog) => {
+      asked.push({ type: dialog.type(), message: dialog.message() });
+      void dialog.accept();
+    });
+    await myCards.click();
+    expect(asked).toHaveLength(2);
+    expect(asked[1].message).toBe(asked[0].message);
+    await expect(myCards).toHaveAttribute("aria-current", "page");
+    await expect(page).not.toHaveURL(/[?&]run=/);
+    // Back is a step in the URL: it returns to the run (no question on the way back,
+    // the guard belongs to the run's screen).
+    await page.goBack();
+    await expect(page).toHaveURL(runUrl);
+    await expect(pairing.getByText("Couldn't read it. Scan it again.", { exact: true })).toBeVisible();
   },
 );

@@ -11,6 +11,7 @@ import {
   type CollectionActions,
   type CollectionData,
   type CollectionStoreValue,
+  type ListingExtension,
 } from "./data/store";
 import {
   REAL_CAPABILITIES,
@@ -166,8 +167,11 @@ function makeStore({
   capabilities = REAL_CAPABILITIES,
   boxCopies = [],
   binderMemory,
+  listing,
 }: {
   loading?: boolean;
+  /** NEO-370 — the store's marketplace-listing half; absent in a store with none. */
+  listing?: ListingExtension;
   capabilities?: Capabilities;
   /** Copies in a box: only the every-home read (`useCopiesOfCards`) lists them, as on Convex. */
   boxCopies?: Copy[];
@@ -308,7 +312,7 @@ function makeStore({
     useRuleBrands: (id) => (id === null ? undefined : L([])),
     useCommonPrices: (ids) => (ids === null ? undefined : L({})),
   };
-  const value: CollectionStoreValue = { kind: "convex", capabilities, data, actions, binderMemory };
+  const value: CollectionStoreValue = { kind: "convex", capabilities, data, actions, binderMemory, listing };
   return { value, actions, undo, log };
 }
 
@@ -351,6 +355,10 @@ function renderAt(start: string, store = makeStore()) {
 
 const pageUrl = () => screen.getByRole("status", { name: "Page URL" }).textContent ?? "";
 const searchBox = () => screen.getByRole("searchbox", { name: "Search every card" });
+/** The listing gate's refusal text (`convex/listingGate.ts`), as a ConvexError hands it over. */
+const GATE_WORDS =
+  "Show box sells on your marketplaces, so cards going in need a price first. Set a common price for the checklist, or give the card a price of its own.";
+
 const statuses = () => screen.getAllByRole("status").map((s) => s.textContent);
 
 beforeEach(() => {
@@ -969,6 +977,56 @@ describe("Inventory is on for the real collection (NEO-364)", () => {
     expect(within(into).getAllByRole("option").map((o) => o.textContent)).toEqual(["Unsorted", "Show box"]);
   });
 
+  it("a Sell the listing gate refuses says the gate's own words on the status line, and the copy stays where it was (NEO-370)", async () => {
+    const store = makeStore();
+    store.actions.moveCopy.mockRejectedValueOnce(
+      Object.assign(new Error("[Request ID: x] Server Error"), { data: { code: "LISTING_NEEDS_DETAILS", message: GATE_WORDS } }),
+    );
+    renderAt(`/collection?tab=checklists&set=${SET.id}&type=vt-base`, store);
+    fireEvent.click(screen.getByRole("button", { name: "Details for #1 Shohei Ohtani" }));
+    const drawer = screen.getByRole("dialog");
+    fireEvent.click(within(drawer).getByRole("button", { name: "Sell #1 Shohei Ohtani, Raw" }));
+    const form = within(drawer).getByRole("form", { name: "Sell Raw" });
+    fireEvent.change(within(form).getByRole("combobox", { name: "Into which box" }), { target: { value: "box-show" } });
+    fireEvent.submit(form);
+    await waitFor(() => expect(store.actions.moveCopy).toHaveBeenCalledWith(COPY_OHTANI, "box-show", undefined));
+    await waitFor(() => expect(within(drawer).getAllByRole("status").some((s) => s.textContent === GATE_WORDS)).toBe(true));
+    expect(within(drawer).queryByRole("button", { name: "Undo" })).toBeNull();
+    expect(within(drawer).queryByText(/up for sale in/)).toBeNull();
+  });
+
+  it("an undo the listing gate refuses (a removed line put back into a listed box) says why on the status line, never Undone. (NEO-370)", async () => {
+    const store = makeStore();
+    store.undo.mockImplementationOnce(async () => {
+      throw Object.assign(new Error("[Request ID: x] Server Error"), { data: { code: "LISTING_NEEDS_DETAILS", message: GATE_WORDS } });
+    });
+    renderAt(`/collection?tab=checklists&set=${SET.id}&type=vt-base`, store);
+    fireEvent.click(screen.getByRole("button", { name: "Details for #1 Shohei Ohtani" }));
+    const drawer = screen.getByRole("dialog");
+    fireEvent.click(within(drawer).getByRole("button", { name: "Remove #1 Shohei Ohtani, Raw" }));
+    await waitFor(() => expect(within(drawer).getByRole("button", { name: "Undo" })).toBeTruthy());
+    fireEvent.click(within(drawer).getByRole("button", { name: "Undo" }));
+    await waitFor(() =>
+      expect(within(drawer).getAllByRole("status").some((s) => s.textContent === `That undo didn't go through. ${GATE_WORDS}`)).toBe(true),
+    );
+    expect(within(drawer).getAllByRole("status").some((s) => s.textContent === "Undone.")).toBe(false);
+  });
+
+  it("Move here into an open box the listing gate refuses says the gate's words on the status line (NEO-370)", async () => {
+    // The Inventory side hunts what the boxes hold: a card in Unsorted, moved into the open Show box.
+    const inUnsorted: Copy = { ...COPY_OHTANI, id: "copy-unsorted", homeId: "box-unsorted", homeKind: "box", homeName: "Unsorted" };
+    const store = makeStore({ boxCopies: [inUnsorted] });
+    store.actions.moveCopy.mockRejectedValueOnce(
+      Object.assign(new Error("[Request ID: x] Server Error"), { data: { code: "LISTING_NEEDS_DETAILS", message: GATE_WORDS } }),
+    );
+    renderAt("/inventory?tab=boxes&b=box-show", store);
+    fireEvent.change(screen.getByRole("searchbox", { name: "Hunt for one of your cards" }), { target: { value: "ohtani" } });
+    fireEvent.click(await screen.findByRole("button", { name: /^Move here: .*Shohei Ohtani/ }));
+    await waitFor(() => expect(store.actions.moveCopy).toHaveBeenCalledWith(inUnsorted, "box-show", {}));
+    await waitFor(() => expect(statuses()).toContain(GATE_WORDS));
+    expect(statuses().some((t) => t?.startsWith("Moved "))).toBe(false);
+  });
+
   it("the collection's checklists never show a quantity field: Have / Want / Trade stay", () => {
     renderAt(`/collection?tab=checklists&set=${SET.id}&type=vt-base`);
     expect(screen.getAllByRole("button", { name: /^Have #/ }).length).toBeGreaterThan(0);
@@ -995,3 +1053,81 @@ describe("Inventory is on for the real collection (NEO-364)", () => {
 function escapeRe(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
+
+
+/** NEO-370 — a listing half whose reads are still loading: enough to open the Sales and Sync status tabs. */
+const LISTING: ListingExtension = {
+  useSettings: () => undefined,
+  syncVariant: vi.fn(async () => ({ queued: true })),
+  setContainerListed: vi.fn(async () => {}),
+  useSyncStatus: () => ({ platforms: [] }),
+  loadSetProblems: vi.fn(async () => ({ problems: [], problemsTotal: 0 })),
+  useSales: () => ({ sales: [], canLoadMore: false, loadingMore: false, loadMore: () => {} }),
+  useGate: () => undefined,
+};
+
+const inventoryTabs = () =>
+  within(screen.getByRole("navigation", { name: "Inventory sections" }))
+    .getAllByRole("link")
+    .map((l) => l.textContent);
+
+describe("the Sales tab (NEO-370)", () => {
+  it("a store with a listing extension ends the inventory's tabs with Sales, then Sync status", () => {
+    renderAt("/inventory", makeStore({ listing: LISTING }));
+    const names = inventoryTabs();
+    expect(names.slice(-2)).toEqual(["Sales", "Sync status"]);
+    expect(names).toContain("Add cards");
+  });
+
+  it("Sync status is deep-linkable (?tab=sync), and /collection?tab=sync goes there", async () => {
+    renderAt("/collection?tab=sync", makeStore({ listing: LISTING }));
+    await waitFor(() => expect(pageUrl()).toBe("/inventory?tab=sync"));
+    expect(await screen.findByText(/^No marketplaces hooked up yet\./)).toBeTruthy();
+    const link = within(screen.getByRole("navigation", { name: "Inventory sections" })).getByRole("link", {
+      name: "Sync status",
+    });
+    expect(link.getAttribute("aria-current")).toBe("page");
+  });
+
+  it("/collection?tab=sales goes to the inventory's Sales tab", async () => {
+    renderAt("/collection?tab=sales", makeStore({ listing: LISTING }));
+    await waitFor(() => expect(pageUrl()).toBe("/inventory?tab=sales"));
+    expect(await screen.findByRole("heading", { level: 2, name: "What sold" })).toBeTruthy();
+  });
+
+  it("without a listing extension the tabs are absent", () => {
+    renderAt("/inventory", makeStore());
+    expect(inventoryTabs()).not.toContain("Sales");
+    expect(inventoryTabs()).not.toContain("Sync status");
+  });
+
+  it("without a listing extension, tab=sales renders no Sales content and opens the first tab", () => {
+    renderAt("/inventory?tab=sales", makeStore());
+    expect(screen.queryByRole("list", { name: "Orders, newest first" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "What sold" })).toBeNull();
+    expect(inventoryTabs()).not.toContain("Sales");
+  });
+
+  it("an open box carries Listed on marketplaces; a binder never does", async () => {
+    renderAt("/inventory?tab=boxes&b=box-show", makeStore({ listing: LISTING }));
+    const toggle = (await screen.findByRole("checkbox", { name: "Listed on marketplaces" })) as HTMLInputElement;
+    expect(toggle.checked).toBe(true);
+    fireEvent.click(toggle);
+    expect(LISTING.setContainerListed).toHaveBeenCalledWith("box-show", false);
+    cleanup();
+    renderAt("/collection?tab=binders&b=binder-rainbow", makeStore({ listing: LISTING }));
+    await screen.findByRole("heading", { level: 2, name: "Ohtani rainbow" });
+    expect(screen.queryByRole("checkbox", { name: "Listed on marketplaces" })).toBeNull();
+  });
+
+  it("without a listing half (the demo's case) an open box has no Listed on marketplaces", async () => {
+    renderAt("/inventory?tab=boxes&b=box-show", makeStore());
+    await screen.findByRole("heading", { level: 2, name: "Show box" });
+    expect(screen.queryByRole("checkbox", { name: "Listed on marketplaces" })).toBeNull();
+  });
+
+  it("the flag alone is not enough: capabilities on but no listing half still hides the tab", () => {
+    renderAt("/inventory", makeStore({ capabilities: { ...REAL_CAPABILITIES, marketplaceListing: true } }));
+    expect(inventoryTabs()).not.toContain("Sales");
+  });
+});

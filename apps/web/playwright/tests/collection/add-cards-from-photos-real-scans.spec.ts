@@ -195,6 +195,11 @@ test(
     // --- Done adding photos: the session closes ---------------------------------------
     await page.getByRole("button", { name: "Done adding photos" }).click();
     await expect(page.getByText("This run's photos are all in. To add more, start a new run.")).toBeVisible();
+    // NEO-370: after Done, leaving asks while any column but Saved holds something.
+    // Every pair is saved, so none does and the page loads below without a question.
+    for (const column of ["Cropping & reading", "Pairing", "Matching", "Needs you"]) {
+      await expect(page.getByRole("region", { name: `${column}, 0`, exact: true })).toBeVisible();
+    }
 
     // --- In the binder, then clean up ----------------------------------------------
     await page.goto("/collection?tab=checklists");

@@ -8268,6 +8268,12 @@ type SetBuilderResetResult = {
   variantCommonPricesDeleted: number;
   /** NEO-379 — intake runs and their matches, drained before the containers. */
   intakeRunsDeleted: number;
+  /**
+   * NEO-370 — collectors' marketplace listing rows (outbox, per-variant
+   * syncs, per-platform states, sales), drained before the variants and
+   * cards they name.
+   */
+  marketplaceListingDeleted: number;
   selectorOptionsDeleted: number;
   /** NEO-313 — the derived player → cards index, drained before the cards. */
   cardPlayerLinksDeleted: number;
@@ -8377,6 +8383,7 @@ async function runSetBuilderReset(
     collectionBuildingSetsDeleted: 0,
     variantCommonPricesDeleted: 0,
     intakeRunsDeleted: 0,
+    marketplaceListingDeleted: 0,
     selectorOptionsDeleted: 0,
     cardPlayerLinksDeleted: 0,
     cardTeamLinksDeleted: 0,
@@ -8401,7 +8408,7 @@ async function runSetBuilderReset(
   // tables it does drain — and every table that points INTO the skipped
   // eight (slSetReviews, selectorSyncStatus, collectionCopies, collectionWants,
   // collectionContainers, collectionBuildingSets, variantCommonPrices,
-  // cardPlayerLinks, cardTeamLinks, cardChecklist, cardCrossListings,
+  // the NEO-370 listing tables, cardPlayerLinks, cardTeamLinks, cardChecklist, cardCrossListings,
   // entityReviewQueue, checklistCandidates) is among them.
   const allSteps: Array<[keyof typeof counts, ResetBatchRef]> = [
     // NEO-306 — FIRST: a review doc points at a year and a brand row, so it
@@ -8468,6 +8475,16 @@ async function runSetBuilderReset(
     [
       "variantCommonPricesDeleted",
       internal.selectorOptions.resetVariantCommonPricesBatch,
+    ],
+    // NEO-370 — a listing outbox row names a card and a variant, a sync
+    // record a variant (and cards in its problems), a sale's items cards; so
+    // all four go BEFORE the selector rows and the cards. The per-platform
+    // states name neither, but they carry order cursors and drain leases a
+    // reused deployment must not inherit. Not reference-seed tables: every
+    // scope drains them.
+    [
+      "marketplaceListingDeleted",
+      internal.selectorOptions.resetMarketplaceListingBatch,
     ],
     // Well inside MAX_RETURNED_IDS: this list is one LEVEL's options for one
     // parent, de-duplicated — the biggest real case is a year's set list,
@@ -8747,6 +8764,8 @@ export const resetSetBuilderDataFromCli = internalAction({
     collectionBuildingSetsDeleted: v.number(),
     variantCommonPricesDeleted: v.number(),
     intakeRunsDeleted: v.number(),
+    // NEO-370 — collectors' marketplace listing rows, all four tables.
+    marketplaceListingDeleted: v.number(),
     selectorOptionsDeleted: v.number(),
     // NEO-313 — the derived player → cards index.
     cardPlayerLinksDeleted: v.number(),
@@ -9396,6 +9415,53 @@ export const resetVariantCommonPricesBatch = internalMutation({
       await ctx.db.delete(row._id);
     }
     return { deleted: rows.length, hasMore: rows.length === RESET_BATCH_SIZE };
+  },
+});
+
+/**
+ * Internal: drain the NEO-370 listing tables, looped by `runSetBuilderReset`
+ * BEFORE the selector rows and cards they name: `listingOutbox`, then
+ * `marketplaceListingSyncs`, `marketplaceListingStates` and
+ * `marketplaceSales`, filling one batch across them (the
+ * `resetIntakeRunsBatch` shape). Sales take a smaller share because a sale
+ * carries its items array. Every collector's, across every account; armed
+ * like every batch here.
+ */
+const RESET_SALES_BATCH_SIZE = 100;
+export const resetMarketplaceListingBatch = internalMutation({
+  args: {},
+  returns: v.object({
+    deleted: v.number(),
+    hasMore: v.boolean(),
+  }),
+  handler: async (ctx) => {
+    assertResetArmed();
+    let room = RESET_BATCH_SIZE;
+    let deleted = 0;
+    for (const table of [
+      "listingOutbox",
+      "marketplaceListingSyncs",
+      "marketplaceListingStates",
+    ] as const) {
+      if (room <= 0) break;
+      const rows = await ctx.db.query(table).take(room);
+      for (const row of rows) await ctx.db.delete(row._id);
+      room -= rows.length;
+      deleted += rows.length;
+    }
+    if (room > 0) {
+      const sales = await ctx.db
+        .query("marketplaceSales")
+        .take(Math.min(room, RESET_SALES_BATCH_SIZE));
+      for (const row of sales) await ctx.db.delete(row._id);
+      // A full sales page means there may be more, whatever room is left.
+      if (sales.length === Math.min(room, RESET_SALES_BATCH_SIZE)) {
+        return { deleted: deleted + sales.length, hasMore: true };
+      }
+      deleted += sales.length;
+      room -= sales.length;
+    }
+    return { deleted, hasMore: room <= 0 };
   },
 });
 

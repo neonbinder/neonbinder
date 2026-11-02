@@ -23,3 +23,8 @@ not in `main/apps/web/`, so it always refuses. Do the manual symlink above
 (after `cmp` of the two `apps/web/package-lock.json`). With parallel builders
 in one worktree, leave the gitignored link for the coordinator to remove
 rather than pulling it out from under another agent's gate run.
+
+`apps/web` is **npm** (`package-lock.json`, no `yarn.lock`). A brief that says
+`yarn install` is wrong: yarn ignores the lockfile and writes a stray
+`yarn.lock`. If no `node_modules` exists and no other agent is using one,
+`npm ci --no-audit --no-fund` in `apps/web` took about a minute (2026-11-01).

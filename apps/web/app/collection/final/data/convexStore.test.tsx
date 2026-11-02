@@ -25,6 +25,7 @@ import {
   useTradeCopies,
   useVariantCompletion,
   useWants,
+  writeErrorMessage,
 } from "./store";
 import { REAL_CAPABILITIES, type Card, type Copy } from "./types";
 
@@ -52,7 +53,8 @@ const paged = vi.hoisted(() => ({ pages: new Map<string, unknown[][]>(), loadMor
  */
 const local = vi.hoisted(() => ({
   data: new Map<string, { name: string; args: unknown; value: unknown }>(),
-  failures: new Map<string, string>(),
+  /** A string rejects with a plain Error; an object rejects as a ConvexError carrying it as `data`. */
+  failures: new Map<string, string | { code: string; message: string }>(),
   key(name: string, args: unknown) {
     return `${name}|${JSON.stringify(args)}`;
   },
@@ -109,6 +111,13 @@ vi.mock("convex/react", async () => {
           return [key, typeof answer === "function" ? answer(args) : answer];
         }),
       ),
+    // NEO-370: the client the Sync status tab reads a set's held-back list with.
+    useConvex: () => ({
+      query: async (ref: Parameters<typeof nameOf>[0], args: unknown) => {
+        const answer = loaded.get(nameOf(ref));
+        return typeof answer === "function" ? answer(args) : answer;
+      },
+    }),
     // NEO-377: the copy-photo actions; no test here reaches them.
     useAction: (ref: Parameters<typeof nameOf>[0]) => async () => {
       throw new Error(`unexpected action ${nameOf(ref)}`);
@@ -118,7 +127,11 @@ vi.mock("convex/react", async () => {
       const send = async (args: unknown) => {
         calls.list.push({ name, args });
         const failure = local.failures.get(name);
-        if (failure) throw new Error(failure);
+        if (failure) {
+          if (typeof failure === "string") throw new Error(failure);
+          const { ConvexError } = await import("convex/values");
+          throw new ConvexError(failure);
+        }
         const answer = calls.answers.get(name);
         return (typeof answer === "function" ? answer(args) : answer) ?? null;
       };
@@ -179,6 +192,13 @@ const COPY: Copy = {
   costBasis: 1.25,
   acquiredAt: "2026-10-01",
   notes: "",
+};
+
+/** The listing gate's refusal as the server throws it (`convex/listingGate.ts`). */
+const GATE = {
+  code: "LISTING_NEEDS_DETAILS",
+  message:
+    "Show box sells on your marketplaces, so cards going in need a price first. Set a common price for the checklist, or give the card a price of its own.",
 };
 
 beforeEach(() => {
@@ -1264,6 +1284,50 @@ describe("optimistic updates: a copy is never shown in two places", () => {
     expect(count(MAIN)).toEqual({ copies: 3, lines: 1 });
   });
 
+  it("a move the listing gate refuses rolls every list back and rejects with the gate's own words", async () => {
+    seed();
+    const before = local.snapshot();
+    local.failures.set("collection:moveCopy", GATE);
+    const refused = await actions().moveCopy(move, BOX).then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(writeErrorMessage(refused)).toBe(GATE.message);
+    expect(refused).toMatchObject({ data: { code: "LISTING_NEEDS_DETAILS" } });
+    expect([...local.data.entries()]).toEqual([...before.entries()]);
+    expect(rowsIn("collection:copiesInContainer", MAIN).map((r) => r._id)).toEqual(["copy1"]);
+    expect(rowsIn("collection:copiesInContainer", BOX)).toEqual([]);
+    expect(count(BOX)).toEqual({ copies: 0, lines: 0 });
+  });
+
+  it("the undo of a removal into a listed box that the gate refuses rejects with the gate's words, and the restore is rolled back", async () => {
+    seed([], [base({ homeId: BOX, quantity: 1 })]);
+    const removed = { cardId: "card1", details: { quantity: 1, homeId: BOX } };
+    calls.answers.set("collection:removeCopy", { removed });
+    const r = await actions().removeCopy({ ...COPY_AT(BOX), quantity: 1, homeKind: "box" });
+    local.failures.set("collection:restoreCopy", GATE);
+    const before = local.snapshot();
+    const refused = await r.undo().then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(writeErrorMessage(refused)).toBe(GATE.message);
+    expect([...local.data.entries()]).toEqual([...before.entries()]);
+  });
+
+  it("the restoreCopy action, refused by the gate, rejects with its words and draws nothing", async () => {
+    seed([], []);
+    const before = local.snapshot();
+    local.failures.set("collection:restoreCopy", GATE);
+    const refused = await actions().restoreCopy({ ...COPY_AT(BOX), quantity: 1, homeKind: "box" }).then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(writeErrorMessage(refused)).toBe(GATE.message);
+    expect([...local.data.entries()]).toEqual([...before.entries()]);
+    expect(rowsIn("collection:copiesInContainer", BOX)).toEqual([]);
+  });
+
   it("setTrade flags the line without moving it: it joins the trade pile and stays in its home", async () => {
     seed();
     calls.answers.set("collection:setTrade", { previous: false });
@@ -1512,6 +1576,23 @@ describe("the Inventory list and quick counts (NEO-364)", () => {
       local.failures.set("collectionInventory:setBoxQuantity", "Nope");
       const before = local.snapshot();
       await expect(actions().setBoxQuantity(CARD, BOX_C, 2)).rejects.toThrow("Nope");
+      expect([...local.data.entries()]).toEqual([...before.entries()]);
+    });
+
+    it("an undo the listing gate refuses reaches the caller with the gate's own words, and the drawn undo rolls back", async () => {
+      loaded.set("collectionContainers:list", SHELF);
+      local.set("collectionContainers:list", {}, SHELF);
+      local.set("collection:copiesOf", { cardId: "card1" }, []);
+      calls.answers.set("collectionInventory:setBoxQuantity", result([{ op: "restore", quantity: 2 }], 0, 2));
+      const r = await actions().setBoxQuantity(CARD, BOX_C, 2);
+      local.failures.set("collectionInventory:undoBoxQuantity", GATE);
+      const before = local.snapshot();
+      const refused = await r.undo().then(
+        () => null,
+        (e: unknown) => e,
+      );
+      expect(writeErrorMessage(refused)).toBe(GATE.message);
+      expect(refused).toMatchObject({ data: { code: "LISTING_NEEDS_DETAILS" } });
       expect([...local.data.entries()]).toEqual([...before.entries()]);
     });
   });

@@ -133,6 +133,7 @@
 - [Lazy component test preload](reference_lazy_component_test_preload.md) — lazy() child + findBy times out under load; import the module in beforeAll
 - [Radix Themes tooltip needs Theme in tests](reference_radix_themes_tooltip_needs_theme_in_tests.md) — Tooltip throws outside <Theme> in component tests; child aria-describedby overrides the trigger; headless .focus() never opens it, Tab does
 - [happy-dom target=_blank click fetches](reference_happy_dom_target_blank_click_fetches.md) — new window fetches the href (ECONNREFUSED noise); preventDefault on document for that click
+- [happy-dom has no window.confirm](reference_happy_dom_has_no_window_confirm.md) — define it per test; a new convex/react export in the store breaks every hand-built mock
 - [axe contrast ignores aria-hidden](reference_axe_contrast_ignores_aria_hidden.md) — aria-hidden/role=img text is still measured; user-colour previews go in an <img alt> (SVG foreignObject)
 - [Tailwind JS-config colours are inlined](reference_tailwind_js_config_colours_are_inlined.md) — neon-* compile to literal hex; redeclare in @theme to theme them by variable
 - [Radix scale overrides lose to Radix](reference_radix_scale_overrides_lose_to_radix.md) — Radix sets --green-9/--focus-8 on the Theme element, so html-level remaps never reach it; set them there, probe computed values
@@ -158,3 +159,8 @@
 - [HMR context-module edit crashes the page](reference_hmr_context_module_edit_crashes_the_page.md) — sibling edits mode.tsx → "outside Provider"; reload. select-on-focus field: → test selectionEnd only
 - [Sticky sub-bar must bump scroll padding](reference_sticky_subbar_must_bump_scroll_padding.md) — a bar sticking under the sm-sticky header needs html scroll-padding-top grown inline while mounted; hint text outside the sticky part
 - [sr-only escapes an unpositioned scroller](reference_sr_only_escapes_unpositioned_scroller.md) — overflow-x rail with sr-only kids widens the page unless the scroller is `relative`
+- [Leave hook survives StrictMode](reference_leave_hook_survives_strictmode.md) — leave-time writes in effect cleanup fire on dev double mount; defer + cancel by view id
+- [Unit axe helper](reference_unit_axe_helper.md) — lib/testing/axe.ts: axe in happy-dom, E2E tags, light+dark, no contrast; for states E2E cannot stage
+- [Mocked useConvex must be stable](reference_mocked_useconvex_must_be_stable.md) — fresh client per render loops an on-demand read effect; hoist it; inline .then in the effect
+- [users table is never written](reference_users_table_is_never_written.md) — never join it for names; profile names, else Clerk via adminResolveOwnerLabels (label===id means none)
+- [Intake tab test mocks the store wholesale](reference_intake_tab_test_mocks_store_wholesale.md) — new store hooks or a mode.tsx import (ParamLink) break RealAddCardsTab.test at import; mock ../mode; ParamLink needs CollectionModeProvider

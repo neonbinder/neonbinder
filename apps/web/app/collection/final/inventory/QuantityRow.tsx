@@ -105,6 +105,7 @@ export default function QuantityRow({
   onRowClick,
   onOpenChecklist,
   groupRef,
+  raiseHeld,
 }: {
   card: Card;
   /** The card's box copies (any box; never a binder copy). `undefined` while they load. */
@@ -121,6 +122,13 @@ export default function QuantityRow({
   /** Search results: the opener for the card's checklist. */
   onOpenChecklist?: () => void;
   groupRef?: Ref<HTMLLIElement>;
+  /**
+   * NEO-370 — raising this box's count is held (the listing gate): `noteId` is
+   * the note saying why, which the field points at; `message` is what a typed
+   * raise says when it is refused. The + is off. Lowering always writes:
+   * taking cards out is never blocked (Jason, 2026-11-01).
+   */
+  raiseHeld?: { noteId: string; message: string };
 }) {
   const api = usePageApi();
   const writes = useCollectionActions();
@@ -177,6 +185,13 @@ export default function QuantityRow({
       refuseOverCap(base, box.id);
       return false;
     }
+    if (raiseHeld && quantity > base) {
+      // A raise the listing gate holds: nothing written, the number goes back.
+      setDraft(pending.current > 0 ? { text: String(base), boxId: box.id } : null);
+      setStatus({ kind: "error", message: raiseHeld.message });
+      api.notify(`${shortCardName(card)} didn't change. ${raiseHeld.message}`);
+      return false;
+    }
     send(quantity, box);
     return true;
   };
@@ -188,7 +203,7 @@ export default function QuantityRow({
    * left (the field keeps the focus, see `onMouseDown` below) goes first.
    */
   const addOne = () => {
-    if (!box || copies === undefined) return;
+    if (!box || copies === undefined || raiseHeld) return;
     // A typed number the cap refused stays refused: the + adds nothing to it.
     if (!commit()) return;
     const base = latest();
@@ -277,7 +292,9 @@ export default function QuantityRow({
   if (showSet) sub.push(setAndVariant(card));
   if (run) sub.push(run);
   if (card.cardVariation) sub.push(`${card.cardVariation} variation`);
-  const describedBy = [status.kind === "error" ? errorId : null, others ? othersId : null].filter(Boolean).join(" ");
+  const describedBy = [raiseHeld?.noteId ?? null, status.kind === "error" ? errorId : null, others ? othersId : null]
+    .filter(Boolean)
+    .join(" ");
 
   return (
     <li
@@ -367,7 +384,10 @@ export default function QuantityRow({
             size="1"
             tabIndex={-1}
             aria-label={addLabel}
-            disabled={!ready}
+            disabled={!ready || raiseHeld !== undefined}
+            // Held: the reason, for the pointer (title) and for anyone who reaches it.
+            aria-describedby={raiseHeld?.noteId}
+            title={raiseHeld?.message}
             onMouseDown={(e) => e.preventDefault()}
             onClick={(e) => {
               e.stopPropagation();

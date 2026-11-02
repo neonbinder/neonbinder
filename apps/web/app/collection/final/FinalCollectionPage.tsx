@@ -70,6 +70,9 @@ import type {
 import { useHomeName, useScopedName } from "./catalog/home";
 import { DRAWER_MODE_PARAM, DRAWER_PARAM, viewOf } from "./drawerParams";
 import InventoryListTab from "./inventory/InventoryListTab";
+// The Sales and Sync status tabs (NEO-370) load only when opened.
+const SalesTab = lazy(() => import("./inventory/listing/SalesTab"));
+const SyncStatusTab = lazy(() => import("./inventory/listing/SyncStatusTab"));
 // The inventory Checklists' target box (`box=`, NEO-364 D8): replaced in
 // place by the picker, carried here on each drill step within Checklists
 // like the scope, and dropped on a tab change (the Inventory list's rail
@@ -167,6 +170,10 @@ const TABS: Record<Side, TabDef[]> = {
     { key: "boxes", label: "My Boxes" },
     { key: "checklists", label: "Checklists" },
     { key: "add", label: "Add cards", needs: "intake" },
+    // NEO-370 — orders from the marketplaces the collector lists on.
+    { key: "sales", label: "Sales", needs: "marketplaceListing" },
+    // NEO-370 Rev 4 — what is syncing, what waits, and each set's last result.
+    { key: "sync", label: "Sync status", needs: "marketplaceListing" },
   ],
 };
 
@@ -190,6 +197,8 @@ function redirectFor(side: Side, params: URLSearchParams): { side: Side; tab: Co
   if (side === "collection" && (tab === "inventory" || tab === "boxes")) return { side: "inventory", tab: "boxes" };
   if (side === "inventory" && tab === "inventory") return { side: "inventory", tab: "boxes" };
   if (side === "inventory" && tab === "binders") return { side: "collection", tab: "binders" };
+  // NEO-370: sales are the inventory's (what sold came out of a box).
+  if (side === "collection" && (tab === "sales" || tab === "sync")) return { side: "inventory", tab };
   return null;
 }
 
@@ -301,7 +310,12 @@ function SidePage({ onExit }: { onExit?: () => void }) {
 function CollectionPage({ side, onExit }: { side: Side; onExit?: () => void }) {
   const { mode, keepParams } = useCollectionMode();
   const isPublic = mode === "public";
-  const { capabilities, demo, binderMemory, kind: storeKind } = useCollectionStore();
+  const { capabilities: storeCapabilities, demo, binderMemory, listing, kind: storeKind } = useCollectionStore();
+  // NEO-370: listing needs the store's listing half as well as the flag.
+  const capabilities = useMemo<Capabilities>(
+    () => ({ ...storeCapabilities, marketplaceListing: storeCapabilities.marketplaceListing && listing !== undefined }),
+    [storeCapabilities, listing],
+  );
   const containers = useContainers();
   const tabs = tabsFor(side, capabilities);
   const [params, setParams] = useCollectionParams();
@@ -863,6 +877,16 @@ function CollectionPage({ side, onExit }: { side: Side; onExit?: () => void }) {
                 {!redirect && tab === "add" && capabilities.intake && (
                   <Suspense fallback={<SkeletonBars rows={4} />}>
                     {storeKind === "convex" ? <RealAddCardsTab /> : <AddCardsTab />}
+                  </Suspense>
+                )}
+                {!redirect && tab === "sales" && capabilities.marketplaceListing && (
+                  <Suspense fallback={<SkeletonBars rows={4} />}>
+                    <SalesTab />
+                  </Suspense>
+                )}
+                {!redirect && tab === "sync" && capabilities.marketplaceListing && (
+                  <Suspense fallback={<SkeletonBars rows={4} />}>
+                    <SyncStatusTab />
                   </Suspense>
                 )}
                 {!redirect && tab === "checklists" && (

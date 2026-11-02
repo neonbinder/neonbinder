@@ -36,7 +36,9 @@
  * Trade's switch is `publicProfile.setShelfVisibility`). The anonymous reads
  * are `publicCollection.ts`'s.
  *
- * NB fields only: no marketplace field exists on a container.
+ * NB fields only: no marketplace field exists on a container. A box's
+ * "Listed on marketplaces" setting (NEO-370, `setContainerListed`) is NB's
+ * own: whether its copies count on the platforms, never a platform value.
  */
 
 import { v } from "convex/values";
@@ -75,6 +77,7 @@ import {
   collectionLabelValidator,
   collectionRuleValidator,
 } from "./schema";
+import { queueBoxForListing } from "./listingSync";
 import { MAX_SORTED_LINES, cleanRule, forgetDeclines, ruleNameValidator, ruleNames, scheduleFits } from "./binderRules";
 import { SPINE_FONTS } from "../lib/print/spine-fonts";
 import { SLUG_RULE, cleanSlug, freeSlug, suggestSlug } from "../lib/collection/share-links";
@@ -136,6 +139,11 @@ export const containerValidator = v.object({
   slug: v.optional(v.string()),
   /** NEO-360 — present only when public (a binder, or the Want List). */
   visibility: v.optional(v.literal("public")),
+  /**
+   * NEO-370 — a box's "Listed on marketplaces" setting: present (`false`)
+   * only on an in-person box. Absent means listed (every box by default).
+   */
+  listedOnMarketplaces: v.optional(v.literal(false)),
   lastUpdated: v.number(),
 });
 
@@ -156,6 +164,7 @@ function containerOut(
     count,
     ...(row.slug ? { slug: row.slug } : {}),
     ...(row.visibility === "public" ? { visibility: "public" as const } : {}),
+    ...(row.kind === "box" && row.listedOnMarketplaces === false ? { listedOnMarketplaces: false as const } : {}),
     lastUpdated: row.lastUpdated,
   };
 }
@@ -651,6 +660,41 @@ export const setVisibility = mutation({
     };
     if (hasOwnLink(row) && !row.slug) patch.slug = await freeSlugFor(ctx, ownerId, suggestSlug(row.name), row._id);
     await ctx.db.patch(row._id, patch);
+    return null;
+  },
+});
+
+/**
+ * NEO-370 — a box's one marketplace setting, "Listed on marketplaces" (on by
+ * default). Off makes the box in-person inventory: its copies stay for sale
+ * in NB but count 0 on every listing platform. Per box only, never per copy.
+ *
+ * A change queues every card in the box on every platform the collector
+ * lists on (a saved sign-in, `listingSync.queueBoxForListing`), like a move does;
+ * the next sync trigger pushes it. Debounced per box: a flip while the box's
+ * last walk is still pending schedules nothing (that walk follows the box's
+ * current setting), so a run of flips is one walk, never one each. Setting it
+ * to what it already is writes nothing. Refuses a binder (and the shelf rows,
+ * which are never boxes); Unsorted is a box and takes it.
+ */
+export const setContainerListed = mutation({
+  args: { containerId: v.id("collectionContainers"), listed: v.boolean() },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const ownerId = await requireSignedIn(ctx);
+    const row = await ownContainer(ctx, ownerId, args.containerId);
+    if (row.kind !== "box") {
+      refuse(
+        COLLECTION_ERRORS.invalid,
+        "Only a box lists on marketplaces. A binder is your collection, never for sale.",
+      );
+    }
+    if ((row.listedOnMarketplaces !== false) === args.listed) return null;
+    await ctx.db.patch(row._id, {
+      listedOnMarketplaces: args.listed ? undefined : false,
+      lastUpdated: Date.now(),
+    });
+    await queueBoxForListing(ctx, ownerId, row, args.listed);
     return null;
   },
 });

@@ -95,7 +95,11 @@ Things that look like failures during the apps/web fast gates but are not.
    exiting with code 1" — looks like a project/glob problem, is not. Use
    `${=FILES}`, `xargs`, or just a directory filter (`npx vitest run
    convex/`, ~25s for all of convex). Also: `--project convex-lib` is not
-   needed for a path filter (NEO-331).
+   needed for a path filter (NEO-331). Keep the trailing slash: the filter
+   is a substring, so `npx vitest run convex` also runs every
+   `app/**/convexStore*.test.tsx`, and a frontend sibling mid-edit there
+   reds a backend-only run (NEO-370). `eslint convex` exits 2 ("all files
+   ignored"): convex/ is outside the lint config, typecheck is its gate.
 
 9. **To run a PROPOSED test without putting a file in the shared tree**
    (a sibling's `test:unit` would collect it), write it in the scratchpad

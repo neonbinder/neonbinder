@@ -78,6 +78,8 @@ import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { internalAction, internalMutation, mutation, query } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { noteArrivals } from "./binderFits";
+import { enqueueListingCards, listsOnMarketplaces } from "./listingOutbox";
+import { ListingGate, type GatedCopy } from "./listingGate";
 import { requireSignedIn } from "./auth";
 import { findSetForSelectorOption } from "./lib/selectorAncestry";
 import {
@@ -904,7 +906,9 @@ async function collectionLinesOf(
  *      binder home; a distinct card gained when a card's first collection
  *      line arrives, lost when its last one goes),
  *   2. every container's own count (`moveCounts`, both sides, Trade too),
- *   3. the building-set `cards` (the same gained/lost cards, by set).
+ *   3. the building-set `cards` (the same gained/lost cards, by set),
+ *   4. NEO-370: the listing outbox, for every card a write touched in a box
+ *      (`enqueueListingCards`).
  *
  * A card's collection presence before the write is its collection lines now
  * minus the net collection lines the changes added, so a card is read only
@@ -954,6 +958,21 @@ export async function applyCopyChanges(
     ownerId,
     changes.map((c) => ({ cardId: c.cardId, homeId: c.after?.homeId ?? null, fromId: c.before?.homeId ?? null })),
   );
+  // NEO-370: a box copy is for sale, so a write whose row lived in a box
+  // before or after may change what the collector lists. Queue those cards
+  // for every platform they list on (a sale applied from one platform comes
+  // through here too, which is how it reaches the others). Any box, listed
+  // or in-person: the drain reads the whole variant and counts only the
+  // listed boxes, so a move from one to the other is pushed as a 0 or a
+  // count. Binder-only writes queue nothing; an owner who lists nowhere
+  // costs one read.
+  const forSale: CopyCardId[] = [];
+  for (const change of changes) {
+    const wasBoxed = change.before !== null && (await sides.is(change.before.homeId, "inventory"));
+    const isBoxed = change.after !== null && (await sides.is(change.after.homeId, "inventory"));
+    if (wasBoxed || isBoxed) forSale.push(change.cardId);
+  }
+  await enqueueListingCards(ctx, { ownerId, cardIds: forSale });
 }
 
 /**
@@ -1395,6 +1414,11 @@ async function moveCounts(
  * the caller applies every add's change once (`applyCopyChanges`), after all
  * its adds. `ownerId` must be the signed-in caller (or a row they own), never
  * a value taken from a client's arguments.
+ *
+ * NEO-370: an add into a listed box by a collector set up for syncing needs
+ * a price and a condition (`listingGate.ts`), or it is refused before
+ * anything is written. A caller adding many cards passes one `gate`, so the
+ * owner's listing state and each common price are read once.
  */
 export async function addOne(
   ctx: MutationCtx,
@@ -1402,6 +1426,7 @@ export async function addOne(
   cardId: CopyCardId,
   raw: DetailsArg,
   defaultCondition: Condition,
+  gate: ListingGate = new ListingGate(ctx, ownerId),
 ): Promise<{
   result: typeof addResultValidator.type;
   change: CountChange;
@@ -1410,6 +1435,7 @@ export async function addOne(
   const home = await resolveHome(ctx, ownerId, raw.homeId);
   checkSlot(home, cleaned.slot);
   const place = await placeOfCopyCard(ctx, ownerId, cardId);
+  await gate.require(home, gatedCopy(place, cleaned));
   const lines = await ctx.db
     .query("collectionCopies")
     .withIndex("by_owner_and_card", (q) => q.eq("ownerId", ownerId).eq("cardId", cardId))
@@ -1461,6 +1487,23 @@ export async function addOne(
  * (`applyCopyChanges`): NEO-364, a binder-to-box move (Sell) leaves the tally,
  * a box-to-binder one (Take off sale) joins it.
  */
+/**
+ * NEO-370 — what the listing gate reads of a copy headed for a home: its
+ * variant (for the common price; none for a private card, which never lists),
+ * whether it is graded, its condition and its own price.
+ */
+function gatedCopy(
+  place: Pick<Place, "variantId">,
+  details: { grading?: unknown; condition?: string; minPriceCents?: number },
+): GatedCopy {
+  return {
+    ...(place.variantId !== undefined ? { variantId: place.variantId } : { privateCard: true }),
+    graded: details.grading !== undefined,
+    condition: details.condition,
+    ...(details.minPriceCents !== undefined ? { ownPriceCents: details.minPriceCents } : {}),
+  };
+}
+
 export async function moveCopyCore(
   ctx: MutationCtx,
   ownerId: string,
@@ -1491,6 +1534,19 @@ export async function moveCopyCore(
     refuse(COLLECTION_ERRORS.notFound, "That binder or box isn't in your collection.");
   }
   checkSlot(home, slot);
+  // NEO-370: cards moving INTO a listed box from a home that does not list
+  // (a binder, an in-person box) are an add there, held by the listing gate
+  // as `addOne` is. A move between listed homes changes nothing it reads.
+  if (toHomeId !== row.homeId) {
+    const source = await ctx.db.get(row.homeId);
+    if (!source || !listsOnMarketplaces(source)) {
+      const own = ctx.db.normalizeId("privateCards", row.cardId) !== null;
+      await new ListingGate(ctx, ownerId).require(
+        home,
+        gatedCopy(own ? {} : { variantId: row.variantId }, row),
+      );
+    }
+  }
   const lines = await ctx.db
     .query("collectionCopies")
     .withIndex("by_owner_and_card", (q) => q.eq("ownerId", ownerId).eq("cardId", row.cardId))
@@ -2280,8 +2336,16 @@ export const addHaves = mutation({
     const out = [];
     const changes: CountChange[] = [];
     const defaultCondition = await defaultConditionOf(ctx, ownerId);
+    const gate = new ListingGate(ctx, ownerId);
     for (const cardId of args.cardIds) {
-      const added = await addOne(ctx, ownerId, cardId, haveDetails(args.acquiredOn, args.homeId), defaultCondition);
+      const added = await addOne(
+        ctx,
+        ownerId,
+        cardId,
+        haveDetails(args.acquiredOn, args.homeId),
+        defaultCondition,
+        gate,
+      );
       out.push({ cardId, ...added.result });
       changes.push(added.change);
     }
@@ -2423,6 +2487,8 @@ export const restoreCopy = mutation({
       cleaned.slot = await firstOpenPocket(ctx, ownerId, home._id);
     }
     const place = await placeOfCopyCard(ctx, ownerId, args.cardId);
+    // NEO-370: a line put back is an add, held by the listing gate as `addOne` is.
+    await new ListingGate(ctx, ownerId).require(home, gatedCopy(place, cleaned));
     const lines = await ctx.db
       .query("collectionCopies")
       .withIndex("by_owner_and_card", (q) => q.eq("ownerId", ownerId).eq("cardId", args.cardId))

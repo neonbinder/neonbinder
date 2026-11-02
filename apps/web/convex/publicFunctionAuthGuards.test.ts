@@ -1156,3 +1156,133 @@ describe("NEO-335 — a refused short-name write persists nothing", () => {
     expect(cards).toHaveLength(0);
   });
 });
+
+describe("NEO-370 — listing reads ship no lease, SKU, order id or marketplace card id", () => {
+  // The returns validators are what keep these server-side; a validator that
+  // re-admitted one would pass every listing test that only reads the fields
+  // it expects. Mirrors listingSync.test.ts, with every hidden field planted.
+  const OWNER = { subject: "lister_neo370", issuer: "https://clerk.example.com", tokenIdentifier: "clerk|lister_neo370" };
+
+  test("the Sync status reads (the owner's and the admin's), listSales and the listing gate ship none of the hidden fields", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const cardId = await t.run((ctx) =>
+      insertTestCard(ctx, {
+        selectorOptionId: sportId,
+        cardNumber: "1",
+        cardName: "Aaron Judge",
+        platformData: {},
+        sortOrder: 0,
+        lastUpdated: Date.now(),
+      }),
+    );
+    await t.run(async (ctx) => {
+      await ctx.db.insert("marketplaceListingSyncs", {
+        ownerId: OWNER.subject,
+        variantId: sportId,
+        platform: "bsc",
+        status: "running",
+        leaseToken: "HIDDEN-lease",
+        leaseExpiresAt: 1,
+        problems: [{ cardId, platformCardId: "HIDDEN-card-id", reason: "notOnSheet" }],
+        problemsTotal: 1,
+        conditionsPushed: [],
+        lastUpdated: 1,
+      });
+      await ctx.db.insert("marketplaceListingStates", {
+        ownerId: OWNER.subject,
+        platform: "bsc",
+        listingStartedAt: 1,
+        platformAccountId: "HIDDEN-seller-account",
+        drainLeaseToken: "HIDDEN-drain-lease",
+        drainLeaseExpiresAt: Date.now() + 60_000,
+        lastUpdated: 1,
+      });
+      await ctx.db.insert("listingOutbox", {
+        ownerId: OWNER.subject,
+        platform: "bsc",
+        cardId,
+        variantId: sportId,
+        seq: 1,
+        changedAt: 1,
+      });
+      await ctx.db.insert("marketplaceSales", {
+        ownerId: OWNER.subject,
+        platform: "bsc",
+        orderId: "HIDDEN-order-id",
+        orderNo: "A-1",
+        orderDate: 1,
+        status: "SHIPPED",
+        totals: { totalCents: 100 },
+        items: [
+          {
+            platformCardId: "HIDDEN-sale-card-id",
+            cardId,
+            condition: "near_mint",
+            quantity: 1,
+            priceCents: 100,
+            sellerSku: "HIDDEN-sku",
+            applied: true,
+            appliedAt: 1,
+          },
+        ],
+        firstSeenAt: 1,
+        lastUpdated: 1,
+      });
+    });
+    const me = t.withIdentity(OWNER);
+    const admin = t.withIdentity({ subject: "admin_neo370", role: "admin" });
+    const status = await me.query(api.listingSync.syncStatus, {});
+    const problems = await me.query(api.listingSync.syncSetProblems, { variantId: sportId, platform: "bsc" });
+    const adminAll = await admin.query(api.listingSync.adminSyncStatus, {});
+    const adminOne = await admin.query(api.listingSync.adminSyncStatus, { ownerId: OWNER.subject });
+    const adminProblems = await admin.query(api.listingSync.adminSyncSetProblems, {
+      ownerId: OWNER.subject,
+      variantId: sportId,
+      platform: "bsc",
+    });
+    const sales = await me.query(api.listingSync.listSales, { paginationOpts: { numItems: 5, cursor: null } });
+    // The listing gate (NEO-370): three plain answers, never the state row it reads.
+    const boxId = await t.run((ctx) =>
+      ctx.db.insert("collectionContainers", { ownerId: OWNER.subject, kind: "box", name: "Box", lastUpdated: 0 }),
+    );
+    const gate = await me.query(api.listingGate.forHome, { homeId: boxId, variantId: sportId });
+    expect(Object.keys(gate).sort()).toEqual(["applies", "commonPriceCents", "syncing"]);
+    expect(status.platforms[0].sets).toHaveLength(1);
+    expect(status.platforms[0].queued.cards).toHaveLength(1);
+    expect(status.platforms[0].running).not.toBeNull();
+    expect(problems.problems).toHaveLength(1);
+    expect(adminAll.owners.map((o) => o.ownerId)).toEqual([OWNER.subject]);
+    expect(sales.page).toHaveLength(1);
+    const shipped = JSON.stringify([status, problems, adminAll, adminOne, adminProblems, sales, gate]);
+    expect(shipped).not.toContain("HIDDEN");
+    for (const key of [
+      "leaseToken",
+      "drainLeaseToken",
+      "platformAccountId",
+      "sellerSku",
+      "orderId",
+      "platformCardId",
+      "appliedAt",
+    ]) {
+      expect(shipped).not.toContain(`"${key}"`);
+    }
+  });
+
+  test("Sync and a box's listed setting refuse an anonymous caller and write nothing", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const boxId = await t.run((ctx) =>
+      ctx.db.insert("collectionContainers", { ownerId: OWNER.subject, kind: "box", name: "Box", lastUpdated: 0 }),
+    );
+    await expect(t.mutation(api.listingSync.syncVariant, { variantId: sportId })).rejects.toThrow();
+    await expect(
+      t.mutation(api.collectionContainers.setContainerListed, { containerId: boxId, listed: false }),
+    ).rejects.toThrow();
+    expect(await t.run((ctx) => ctx.db.query("marketplaceListingStates").collect())).toEqual([]);
+    expect(await t.run((ctx) => ctx.db.query("listingOutbox").collect())).toEqual([]);
+    expect((await t.run((ctx) => ctx.db.get(boxId)))?.listedOnMarketplaces).toBeUndefined();
+    const scheduled = await t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect());
+    expect(scheduled).toEqual([]);
+  });
+});
