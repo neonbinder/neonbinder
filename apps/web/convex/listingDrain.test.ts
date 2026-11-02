@@ -685,8 +685,10 @@ describe("drainOwner: per-variant failures", () => {
     const report = await drainOwnerImpl(stubCtx(s.t), { ownerId: OWNER, platform: "bsc" });
     expect(report.stoppedFor).toBe("signedOut");
     expect(creds.refreshCalls).toBe(1);
-    // Exactly one request went out: the refresh failed, nothing was retried.
-    expect(bsc.authHeaders).toHaveLength(1);
+    // Only the first round of concurrent sheet reads went out (one per
+    // condition, all on the old token): the refresh failed, nothing was
+    // retried and no further read was started.
+    expect(bsc.authHeaders).toEqual(MODERN.map(() => "Bearer tok-1"));
     expect(await record(s, v.variantId)).toMatchObject({ status: "error" });
     expect(await outbox(s)).toHaveLength(1);
     const st = await state(s);
