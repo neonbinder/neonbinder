@@ -61,7 +61,11 @@ test(
       await expectAccessible(page, { label: "Scanner code shown" });
 
       // The same run after a reload: asking again gives the same code.
+      // A reload is a fresh launch: wait for the page's own marker under the
+      // launch gate before acting (GUIDE: navigation), as the other reload
+      // specs do.
       await page.reload();
+      await expect(page.getByRole("heading", { level: 1, name: "Collection" })).toBeVisible({ timeout: LAUNCH_GATE });
       await page.getByRole("button", { name: "Use a scanner" }).click();
       await expect(page.getByRole("group", { name: "Scanner code" }).getByText(code.split("").join(" "))).toHaveCount(1);
 
