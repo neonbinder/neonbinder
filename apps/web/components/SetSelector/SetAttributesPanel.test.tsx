@@ -1792,6 +1792,250 @@ describe("SetAttributesPanel — Autograph format row (NEO-345)", () => {
 });
 
 // ---------------------------------------------------------------------------
+// NEO-412 — "Saved" only once the write has landed
+// ---------------------------------------------------------------------------
+
+/**
+ * The four rows that used to toast "Saved" BEFORE awaiting their mutation
+ * (feature, Card prefix, Short name for titles, Autograph format) now say
+ * "Saving {label}…" while it is in flight. CI caught the old order: a spec
+ * waited for "Saved Short name for titles", pressed Regenerate, and the title
+ * query read the row 40 ms before the write landed.
+ */
+describe("SetAttributesPanel — Saving until the write lands (NEO-412)", () => {
+  /** A mutation held open until the test settles it. */
+  function deferred() {
+    let resolve!: (value: null) => void;
+    let reject!: (reason: unknown) => void;
+    const promise = new Promise<null>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    return { promise, resolve, reject };
+  }
+
+  const shortNameField = () =>
+    screen.getByLabelText("Value for Short name for titles") as HTMLInputElement;
+
+  /** Type into the short-name field and blur, which commits it. */
+  async function commitShortName(value: string) {
+    const input = shortNameField();
+    await act(async () => {
+      input.focus();
+      fireEvent.focus(input);
+      fireEvent.change(input, { target: { value } });
+      input.blur();
+      fireEvent.blur(input);
+    });
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    currentRow = makeRow({ level: "insert", value: "Hologram" });
+    currentChain = makeChain("Baseball");
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it("short name: says Saving, never Saved, while the write is in flight; Saved once it lands", async () => {
+    const write = deferred();
+    mockSetSelectorOptionListingShortName.mockReturnValueOnce(write.promise);
+    renderPanel();
+    await commitShortName("UD Hologram");
+
+    expect(mockSetSelectorOptionListingShortName).toHaveBeenCalledTimes(1);
+    const toast = screen.getByRole("status");
+    expect(toast.textContent).toBe("Saving Short name for titles…");
+    expect(screen.queryByText("Saved Short name for titles")).toBeNull();
+
+    await act(async () => {
+      write.resolve(null);
+    });
+    expect(screen.getByText("Saved Short name for titles")).toBeTruthy();
+    expect(screen.queryByText("Saving Short name for titles…")).toBeNull();
+  });
+
+  it("short name: a clear says Saving, then Cleared once it lands", async () => {
+    currentRow = makeRow({
+      level: "insert",
+      value: "Hologram",
+      metadata: { listingShortName: "UD Holo" },
+    });
+    const write = deferred();
+    mockSetSelectorOptionListingShortName.mockReturnValueOnce(write.promise);
+    renderPanel();
+    await commitShortName("");
+
+    expect(screen.getByText("Saving Short name for titles…")).toBeTruthy();
+    expect(screen.queryByText("Cleared Short name for titles")).toBeNull();
+    await act(async () => {
+      write.resolve(null);
+    });
+    expect(screen.getByText("Cleared Short name for titles")).toBeTruthy();
+  });
+
+  it("short name: a refusal replaces Saving with Failed, and Saved is never shown", async () => {
+    const write = deferred();
+    mockSetSelectorOptionListingShortName.mockReturnValueOnce(write.promise);
+    renderPanel();
+    await commitShortName("x".repeat(61));
+    expect(screen.getByText("Saving Short name for titles…")).toBeTruthy();
+
+    await act(async () => {
+      write.reject(new ConvexError("A short name is at most 60 characters."));
+    });
+    expect(
+      screen.getByText("Failed: A short name is at most 60 characters."),
+    ).toBeTruthy();
+    expect(screen.queryByText("Saved Short name for titles")).toBeNull();
+    expect(screen.queryByText("Saving Short name for titles…")).toBeNull();
+  });
+
+  it("short name: an unchanged value raises no Saving toast and writes nothing", async () => {
+    currentRow = makeRow({
+      level: "insert",
+      value: "Hologram",
+      metadata: { listingShortName: "UD Holo" },
+    });
+    renderPanel();
+    await commitShortName("UD Holo");
+    expect(mockSetSelectorOptionListingShortName).not.toHaveBeenCalled();
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+
+  it("an earlier toast's timer never clears a later Saving or Saved early", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    // First save lands at once: "Saved", due to clear at 6 s.
+    mockSetSelectorOptionListingShortName.mockResolvedValueOnce(null);
+    renderPanel();
+    await commitShortName("First");
+    expect(screen.getByText("Saved Short name for titles")).toBeTruthy();
+
+    // 4 s later a second save starts and is held open.
+    await act(async () => {
+      vi.advanceTimersByTime(4000);
+    });
+    const write = deferred();
+    mockSetSelectorOptionListingShortName.mockReturnValueOnce(write.promise);
+    await commitShortName("Second");
+    expect(screen.getByText("Saving Short name for titles…")).toBeTruthy();
+
+    // Past the first toast's 6 s, and long after: Saving is still up, since
+    // that timer was cancelled and a pending save sets none of its own.
+    await act(async () => {
+      vi.advanceTimersByTime(30_000);
+    });
+    expect(screen.getByText("Saving Short name for titles…")).toBeTruthy();
+
+    // The write lands: the new "Saved" gets its full 6 s.
+    await act(async () => {
+      write.resolve(null);
+    });
+    expect(screen.getByText("Saved Short name for titles")).toBeTruthy();
+    await act(async () => {
+      vi.advanceTimersByTime(5900);
+    });
+    expect(screen.getByText("Saved Short name for titles")).toBeTruthy();
+    await act(async () => {
+      vi.advanceTimersByTime(200);
+    });
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+
+  it("a Failed toast is not wiped by the timer of the toast before it", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    mockSetSelectorOptionListingShortName.mockResolvedValueOnce(null);
+    renderPanel();
+    await commitShortName("First");
+    expect(screen.getByText("Saved Short name for titles")).toBeTruthy();
+
+    mockSetSelectorOptionListingShortName.mockRejectedValueOnce(
+      new ConvexError("A short name is at most 60 characters."),
+    );
+    await commitShortName("x".repeat(61));
+    expect(
+      screen.getByText("Failed: A short name is at most 60 characters."),
+    ).toBeTruthy();
+    await act(async () => {
+      vi.advanceTimersByTime(10_000);
+    });
+    expect(
+      screen.getByText("Failed: A short name is at most 60 characters."),
+    ).toBeTruthy();
+  });
+
+  it("Autograph format: says Saving while the write is in flight, Saved once it lands", async () => {
+    const write = deferred();
+    mockSetAutographFormat.mockReturnValueOnce(write.promise);
+    renderPanel();
+    await act(async () => {
+      fireEvent.change(
+        screen.getByLabelText("Value for Autograph format"),
+        { target: { value: "On Card" } },
+      );
+    });
+
+    expect(mockSetAutographFormat).toHaveBeenCalledTimes(1);
+    expect(screen.getByText("Saving Autograph format…")).toBeTruthy();
+    expect(screen.queryByText("Saved Autograph format")).toBeNull();
+    await act(async () => {
+      write.resolve(null);
+    });
+    expect(screen.getByText("Saved Autograph format")).toBeTruthy();
+  });
+
+  it("Card prefix: says Saving while the write is in flight, Failed on a refusal", async () => {
+    currentRow = makeRow({ level: "insert", value: "Refractor" });
+    const write = deferred();
+    mockSetSelectorOptionCardNumberPrefix.mockReturnValueOnce(write.promise);
+    renderPanel();
+    const input = screen.getByLabelText("Value for Card prefix") as HTMLInputElement;
+    await act(async () => {
+      input.focus();
+      fireEvent.focus(input);
+      fireEvent.change(input, { target: { value: "DK-" } });
+      input.blur();
+      fireEvent.blur(input);
+    });
+
+    expect(screen.getByText("Saving Card prefix…")).toBeTruthy();
+    expect(screen.queryByText("Saved Card prefix")).toBeNull();
+    await act(async () => {
+      write.reject(new ConvexError("A card prefix is at most 32 characters."));
+    });
+    expect(
+      screen.getByText("Failed: A card prefix is at most 32 characters."),
+    ).toBeTruthy();
+    expect(screen.queryByText("Saved Card prefix")).toBeNull();
+  });
+
+  it("a feature row: says Saving while the write is in flight, Saved once it lands", async () => {
+    currentRow = makeRow({ level: "setName", value: "2024 Topps Chrome" });
+    const write = deferred();
+    mockSetSelectorOptionFeature.mockReturnValueOnce(write.promise);
+    renderPanel();
+    const input = screen.getByLabelText("Value for Season") as HTMLInputElement;
+    await act(async () => {
+      input.focus();
+      fireEvent.focus(input);
+      fireEvent.change(input, { target: { value: "2024-25" } });
+      input.blur();
+      fireEvent.blur(input);
+    });
+
+    expect(screen.getByText("Saving Season…")).toBeTruthy();
+    expect(screen.queryByText("Saved Season")).toBeNull();
+    await act(async () => {
+      write.resolve(null);
+    });
+    expect(screen.getByText("Saved Season")).toBeTruthy();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // NEO-237 — Brand row (BrandPrefixRow) and the via-All-Brands toggle
 // ---------------------------------------------------------------------------
 
