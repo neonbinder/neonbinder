@@ -1,0 +1,141 @@
+/*
+ * NEO-422: the eBay OAuth return pages (return.html, sandbox-return.html).
+ * They live outside the app shell, so they cannot read app/theme.css: the
+ * house colours are copied here as hex, per mode, from app/theme.css (dark is
+ * the neon-on-black original, light is "Trapper Keeper Glo"). The pages follow
+ * the system setting only; they never load app code that knows the user's own
+ * Light/Dark choice. No web fonts: Lexend is used if the machine has it, and
+ * nothing is fetched from a third party.
+ */
+
+:root {
+  color-scheme: dark;
+  --surface: #0a0a0a;
+  --ink: #ffffff;
+  --ink-2: #cbd5e1;
+  --heading: #ff40a3; /* --neon-pink-text */
+  --fill: #00d558; /* --neon-green */
+  --fill-hover: #00d558d9; /* --neon-green-hover */
+  --on-fill: #000000; /* --on-neon-green */
+  --focus: #00c2ff;
+  --mark: #00d558;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    color-scheme: light;
+    --surface: #f7f8fc;
+    --ink: #18122b;
+    --ink-2: #322b48;
+    --heading: #c40068;
+    --fill: #00d558;
+    --fill-hover: #33e07c;
+    --on-fill: #000000;
+    --focus: #7a2bd9;
+    --mark: #007a3b;
+  }
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+  background: var(--surface);
+  color: var(--ink);
+  font-family: "Lexend", Arial, Helvetica, sans-serif;
+  line-height: 1.5;
+}
+
+main {
+  min-height: 100vh;
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1.25rem;
+  padding: 3rem 1rem;
+  text-align: center;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+/* The logo: the neon art on black, the one-colour Mark on light (as BrandMark). */
+.mark {
+  display: block;
+  width: 56px;
+  height: 56px;
+  background: url("/logo-120.png") center / contain no-repeat;
+}
+
+@media (prefers-color-scheme: light) {
+  .mark {
+    background: var(--mark);
+    -webkit-mask: url("/logo-mark.svg") center / contain no-repeat;
+    mask: url("/logo-mark.svg") center / contain no-repeat;
+  }
+}
+
+.status {
+  margin: 0;
+  font-size: 1.125rem;
+  color: var(--ink-2);
+}
+
+.lost {
+  max-width: 28rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1.25rem;
+}
+
+h1 {
+  margin: 0;
+  font-size: 1.875rem;
+  line-height: 1.2;
+  font-weight: 700;
+  color: var(--heading);
+  text-wrap: balance;
+}
+
+.lost p {
+  margin: 0;
+  font-size: 1.125rem;
+  color: var(--ink-2);
+  text-wrap: pretty;
+}
+
+/* NeonButton primary, size 3: green fill, black ink. */
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 48px;
+  padding: 0 1.25rem;
+  border-radius: 8px;
+  background: var(--fill);
+  color: var(--on-fill);
+  font-size: 1rem;
+  font-weight: 500;
+  text-decoration: none;
+}
+
+@media (hover: hover) {
+  .button:hover {
+    background: var(--fill-hover);
+  }
+}
+
+.button:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
