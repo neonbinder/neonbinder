@@ -107,6 +107,31 @@ Two status contracts on this router are load-bearing and must not drift:
   it rejected in its error text, so `redactWebhookToken` scrubs
   `/webhooks/easypost/<token>` on the way out of both the client and the router.
 
+### eBay OAuth routes (NEO-415)
+
+eBay is a listing destination reached through its REST APIs with a per-seller
+OAuth user token. The app's client secret and each seller's refresh token
+(about 18 months) stay in this service; Convex sees only the two-hour access
+token. Plain HTTP, no Chromium. Both routes refuse any key that is not an
+`ebay-credentials-*` secret.
+
+| Route | What it does |
+|---|---|
+| `POST /oauth/ebay/connect` `{key, code}` | Exchange the consent's authorization code (redirect_uri = the RuName), read the seller's eBay username (Commerce Identity `getUser`), store `{username, ebayUserId, token, expiresAt, refreshToken, refreshExpiresAt}`. Returns `{username, ebayUserId, expiresAt}`; `ebayUserId` is eBay's immutable user id, which seller-conflict and account deletion key on |
+| `POST /oauth/ebay/connect` `{key, refreshToken}` | The testing seed: the same, from a refresh token minted out of band |
+| `POST /oauth/ebay/refresh` `{key}` | Mint a new access token from the stored refresh token, store it, return `{token, expiresAt}` |
+
+Reads and disconnect use the existing `GET /credentials/:key/token`,
+`/metadata` and `DELETE /credentials/:key`. Errors are `{error_class}` only:
+`400 bad_request`, `401 consent_refused` (connect) / `401 reauth_required`
+(refresh: eBay refused the refresh token, or nothing is stored), `502
+ebay_unavailable`, `503 ebay_not_configured`, `500 internal` (a Secret Manager
+fault, never reported as a re-auth). Configuration: `EBAY_ENVIRONMENT`
+(`sandbox` or `production`, anything else is "not configured"),
+`EBAY_CLIENT_ID`, `EBAY_CLIENT_SECRET`, `EBAY_RU_NAME`. Each call logs one
+`ebay_oauth_call` line, kept apart from `browser_login_call` so the login
+alert metrics are unaffected.
+
 ## Docker
 
 Build and run with Docker:
