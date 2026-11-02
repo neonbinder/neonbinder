@@ -166,3 +166,5 @@
 - [Intake tab test mocks the store wholesale](reference_intake_tab_test_mocks_store_wholesale.md) — new store hooks or a mode.tsx import (ParamLink) break RealAddCardsTab.test at import; mock ../mode; ParamLink needs CollectionModeProvider
 - [Convex hook mocks need stable identities](reference_convex_hook_mocks_need_stable_identities.md) — a fresh vi.fn per useAction call loops effects; cache per getFunctionName
 - [happy-dom pads inline span in a11y name](reference_happy_dom_pads_inline_span_in_accessible_name.md) — "Label , done" in vitest vs "Label, done" in Chrome; normalise in the test
+- [Static page outside the SPA shell](reference_static_page_outside_the_spa_shell.md) — public/ HTML + vercel rewrite before catch-all + vite dev/preview rewrite; JS in lib/ emitted; template for happy-dom
+- [No jest-dom matchers](reference_no_jest_dom_matchers_in_unit_tests.md) — toBeInTheDocument/toHaveAttribute throw; use getByRole, getAttribute, textContent

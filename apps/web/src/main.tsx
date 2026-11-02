@@ -41,6 +41,7 @@ import {
 // every visitor of the landing page.
 import Home from "@/app/page";
 const About = lazy(() => import("@/app/about/page"));
+const Privacy = lazy(() => import("@/app/privacy/page"));
 const BinderTracking = lazy(() => import("@/app/binder-tracking/page"));
 const AiCardIdentification = lazy(() => import("@/app/ai-card-identification/page"));
 const ManagingInventory = lazy(() => import("@/app/managing-inventory/page"));
@@ -146,6 +147,7 @@ const SentryErrorBoundary = Sentry.withErrorBoundary(
           {/* Public routes */}
           <Route path="/" element={<Home />} />
           <Route path="/about" element={<Deferred><About /></Deferred>} />
+          <Route path="/privacy" element={<Deferred><Privacy /></Deferred>} />
           <Route path="/binder-tracking" element={<Deferred><BinderTracking /></Deferred>} />
           <Route
             path="/ai-card-identification"
