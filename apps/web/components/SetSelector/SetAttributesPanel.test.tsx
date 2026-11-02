@@ -344,6 +344,17 @@ function renderPanel(
   );
 }
 
+/**
+ * NEO-412 — the panel's failure `alert` is always mounted (empty when idle),
+ * so a test after another control's alert reads the alerts that say something.
+ */
+function alertTexts(): string[] {
+  return screen
+    .getAllByRole("alert")
+    .map((a) => a.textContent ?? "")
+    .filter((t) => t.length > 0);
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -779,8 +790,9 @@ describe("SetAttributesPanel — delete affordance (NEO-219)", () => {
     renderPanel();
     const trash = screen.getByLabelText("Delete 2024 Topps Chrome");
     fireEvent.click(trash);
-    const alert = await screen.findByRole("alert");
-    expect(alert.textContent).toBe("Couldn't check what is below it — try again.");
+    await waitFor(() =>
+      expect(alertTexts()).toEqual(["Couldn't check what is below it — try again."]),
+    );
     expect(screen.queryByText(/Request ID/)).toBeNull();
     // A failed check is not a refusal: the control stays live, not dimmed.
     expect(trash.getAttribute("aria-disabled")).toBeNull();
@@ -883,9 +895,9 @@ describe("SetAttributesPanel — delete affordance (NEO-219)", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Yes, delete" }));
 
     await waitFor(() => {
-      expect(
-        screen.getByRole("alert").textContent,
-      ).toBe("Holds 4 cards — delete what is below it first");
+      expect(alertTexts()).toEqual([
+        "Holds 4 cards — delete what is below it first",
+      ]);
     });
     // The dialog stays open — the answer belongs where the question was asked.
     expect(screen.getByRole("dialog")).toBeTruthy();
@@ -1903,7 +1915,7 @@ describe("SetAttributesPanel — Saving until the write lands (NEO-412)", () => 
     renderPanel();
     await commitShortName("UD Holo");
     expect(mockSetSelectorOptionListingShortName).not.toHaveBeenCalled();
-    expect(screen.queryByRole("status")).toBeNull();
+    expect(screen.getByRole("status").textContent).toBe("");
   });
 
   it("an earlier toast's timer never clears a later Saving or Saved early", async () => {
@@ -1942,7 +1954,7 @@ describe("SetAttributesPanel — Saving until the write lands (NEO-412)", () => 
     await act(async () => {
       vi.advanceTimersByTime(200);
     });
-    expect(screen.queryByRole("status")).toBeNull();
+    expect(screen.getByRole("status").textContent).toBe("");
   });
 
   it("a Failed toast is not wiped by the timer of the toast before it", async () => {
@@ -2032,6 +2044,177 @@ describe("SetAttributesPanel — Saving until the write lands (NEO-412)", () => 
       write.resolve(null);
     });
     expect(screen.getByText("Saved Season")).toBeTruthy();
+  });
+
+  /** Commit a value to the Season text row (a generic feature row). */
+  async function commitSeason(value: string) {
+    const input = screen.getByLabelText("Value for Season") as HTMLInputElement;
+    await act(async () => {
+      input.focus();
+      fireEvent.focus(input);
+      fireEvent.change(input, { target: { value } });
+      input.blur();
+      fireEvent.blur(input);
+    });
+  }
+
+  it("a feature row: a clear says Saving, then Cleared once it lands", async () => {
+    currentRow = makeRow({ level: "setName", features: { season: "2020-21" } });
+    const write = deferred();
+    mockSetSelectorOptionFeature.mockReturnValueOnce(write.promise);
+    renderPanel();
+    await commitSeason("");
+
+    expect(mockSetSelectorOptionFeature).toHaveBeenCalledWith({
+      selectorOptionId: SELECTOR_OPTION_ID,
+      key: "season",
+      value: "",
+    });
+    expect(screen.getByText("Saving Season…")).toBeTruthy();
+    expect(screen.queryByText("Cleared Season")).toBeNull();
+    await act(async () => {
+      write.resolve(null);
+    });
+    expect(screen.getByText("Cleared Season")).toBeTruthy();
+  });
+
+  it("a feature row: a refusal replaces Saving with Failed, and Saved is never shown", async () => {
+    currentRow = makeRow({ level: "setName", value: "2024 Topps Chrome" });
+    const write = deferred();
+    mockSetSelectorOptionFeature.mockReturnValueOnce(write.promise);
+    renderPanel();
+    await commitSeason("2024");
+    expect(screen.getByText("Saving Season…")).toBeTruthy();
+
+    await act(async () => {
+      write.reject(new ConvexError("Season must look like 2020-21."));
+    });
+    expect(screen.getByRole("alert").textContent).toBe(
+      "Failed: Season must look like 2020-21.",
+    );
+    expect(screen.getByRole("status").textContent).toBe("");
+    expect(screen.queryByText("Saved Season")).toBeNull();
+  });
+
+  it("Autograph format: a clear says Saving, then Cleared once it lands", async () => {
+    currentRow = makeRow({
+      level: "parallel",
+      value: "Gold",
+      features: { autographFormat: "On Card" },
+    });
+    const write = deferred();
+    mockSetAutographFormat.mockReturnValueOnce(write.promise);
+    renderPanel();
+    await act(async () => {
+      fireEvent.change(screen.getByLabelText("Value for Autograph format"), {
+        target: { value: "" },
+      });
+    });
+
+    expect(mockSetAutographFormat).toHaveBeenCalledWith({
+      selectorOptionId: SELECTOR_OPTION_ID,
+      value: "",
+    });
+    expect(screen.getByText("Saving Autograph format…")).toBeTruthy();
+    expect(screen.queryByText("Cleared Autograph format")).toBeNull();
+    await act(async () => {
+      write.resolve(null);
+    });
+    expect(screen.getByText("Cleared Autograph format")).toBeTruthy();
+  });
+
+  it("Autograph format: a refusal replaces Saving with Failed, and Saved is never shown", async () => {
+    const write = deferred();
+    mockSetAutographFormat.mockReturnValueOnce(write.promise);
+    renderPanel();
+    await act(async () => {
+      fireEvent.change(screen.getByLabelText("Value for Autograph format"), {
+        target: { value: "Sticker/Label" },
+      });
+    });
+    expect(screen.getByText("Saving Autograph format…")).toBeTruthy();
+
+    await act(async () => {
+      write.reject(new ConvexError("Not a leaf with cards."));
+    });
+    expect(screen.getByRole("alert").textContent).toBe(
+      "Failed: Not a leaf with cards.",
+    );
+    expect(screen.queryByText("Saved Autograph format")).toBeNull();
+    expect(screen.queryByText("Saving Autograph format…")).toBeNull();
+  });
+
+  it("both live regions are mounted and empty before anything is saved", () => {
+    renderPanel();
+    const status = screen.getByRole("status");
+    expect(status.textContent).toBe("");
+    expect(status.getAttribute("aria-live")).toBe("polite");
+    expect(status.getAttribute("aria-atomic")).toBe("true");
+    expect(status.getAttribute("aria-busy")).toBeNull();
+    expect(screen.getByRole("alert").textContent).toBe("");
+  });
+
+  it("Saving and Saved change the text of the status region that was already there", async () => {
+    renderPanel();
+    const status = screen.getByRole("status");
+    const write = deferred();
+    mockSetSelectorOptionListingShortName.mockReturnValueOnce(write.promise);
+    await commitShortName("UD Hologram");
+    // The same node, not a new one inserted with its text.
+    expect(screen.getByRole("status")).toBe(status);
+    expect(status.textContent).toBe("Saving Short name for titles…");
+    await act(async () => {
+      write.resolve(null);
+    });
+    expect(screen.getByRole("status")).toBe(status);
+    expect(status.textContent).toBe("Saved Short name for titles");
+    expect(screen.getByRole("alert").textContent).toBe("");
+  });
+
+  it("a failure is the alert, never the status; the next status clears it, and vice versa", async () => {
+    renderPanel();
+    mockSetSelectorOptionListingShortName.mockRejectedValueOnce(
+      new ConvexError("A short name is at most 60 characters."),
+    );
+    await commitShortName("x".repeat(61));
+    expect(screen.getByRole("alert").textContent).toBe(
+      "Failed: A short name is at most 60 characters.",
+    );
+    expect(screen.getByRole("status").textContent).toBe("");
+
+    // A new save: its Saving clears the failure.
+    const write = deferred();
+    mockSetSelectorOptionListingShortName.mockReturnValueOnce(write.promise);
+    await commitShortName("UD Holo");
+    expect(screen.getByRole("status").textContent).toBe(
+      "Saving Short name for titles…",
+    );
+    expect(screen.getByRole("alert").textContent).toBe("");
+
+    // It fails too: the failure clears the Saving.
+    await act(async () => {
+      write.reject(new ConvexError("A short name cannot hold control characters."));
+    });
+    expect(screen.getByRole("alert").textContent).toBe(
+      "Failed: A short name cannot hold control characters.",
+    );
+    expect(screen.getByRole("status").textContent).toBe("");
+  });
+
+  it("unmounting with a toast's dismissal pending cancels the timer", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    mockSetSelectorOptionListingShortName.mockResolvedValueOnce(null);
+    const { unmount } = renderPanel();
+    await commitShortName("UD Holo");
+    expect(screen.getByText("Saved Short name for titles")).toBeTruthy();
+    expect(vi.getTimerCount()).toBe(1);
+
+    unmount();
+    expect(vi.getTimerCount()).toBe(0);
+    // Nothing left to fire, and nothing throws if time moves on.
+    act(() => {
+      vi.advanceTimersByTime(10_000);
+    });
   });
 });
 
@@ -2886,7 +3069,7 @@ describe("SetAttributesPanel — Team row (NEO-277)", () => {
 
       fireEvent.click(screen.getByLabelText(PICK));
 
-      const toast = await screen.findByRole("status");
+      const toast = await screen.findByRole("alert");
       await waitFor(() =>
         expect(toast.textContent).toBe(
           "Failed: Still applying the last team change. Try again in a moment.",
@@ -2910,7 +3093,8 @@ describe("SetAttributesPanel — Team row (NEO-277)", () => {
     renderPanel();
 
     fireEvent.click(screen.getByLabelText(PICK));
-    let toast = await screen.findByRole("status");
+    // NEO-412 — a failure is the panel's `alert`, not its `status`.
+    let toast = await screen.findByRole("alert");
     await waitFor(() =>
       expect(toast.textContent).toBe(
         "Failed: That row is gone. Refresh and try again.",
@@ -2927,7 +3111,7 @@ describe("SetAttributesPanel — Team row (NEO-277)", () => {
 
     fireEvent.click(screen.getByLabelText("Remove team team-bulls"));
     fireEvent.click(screen.getByRole("button", { name: "Clear team" }));
-    toast = await screen.findByRole("status");
+    toast = await screen.findByRole("alert");
     await waitFor(() =>
       expect(toast.textContent).toBe(
         "Failed: That row is gone. Refresh and try again.",
@@ -2946,7 +3130,7 @@ describe("SetAttributesPanel — Team row (NEO-277)", () => {
 
     fireEvent.click(screen.getByLabelText(PICK));
 
-    const toast = await screen.findByRole("status");
+    const toast = await screen.findByRole("alert");
     await waitFor(() =>
       expect(toast.textContent).toBe("Failed: Could not save Team"),
     );
@@ -2966,7 +3150,7 @@ describe("SetAttributesPanel — Team row (NEO-277)", () => {
 
     fireEvent.click(screen.getByLabelText(PICK));
 
-    const toast = await screen.findByRole("status");
+    const toast = await screen.findByRole("alert");
     await waitFor(() =>
       expect(toast.textContent).toBe(
         "Failed: That team belongs to another sport.",

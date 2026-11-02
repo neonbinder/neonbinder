@@ -262,10 +262,14 @@ export default function SetAttributesPanel({
   );
 
   const [expanded, setExpanded] = useState(!defaultCollapsed);
+  // NEO-412 — the panel's two toasts, at most one showing: a confirmation or
+  // progress line (`toast`, the polite status region) and a failure
+  // (`failure`, the alert region). Raising either clears the other.
   const [toast, setToast] = useState<string | null>(null);
-  // NEO-412 — the one pending dismissal. Every toast replaces the one before
-  // it, so it also cancels that toast's timer: otherwise "Saving…"'s timer
-  // (or an older save's) wipes the "Saved" that followed it.
+  const [failure, setFailure] = useState<string | null>(null);
+  // The one pending dismissal. Every toast replaces the one before it, so it
+  // also cancels that toast's timer: otherwise "Saving…"'s timer (or an older
+  // save's) wipes the "Saved" that followed it.
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(
     () => () => {
@@ -384,18 +388,24 @@ export default function SetAttributesPanel({
   const headerTitle = `Attributes for ${row.value} (${LEVEL_LABEL[leafLevel]})`;
 
   /**
-   * Put `message` in the toast, replacing whatever is there and cancelling
-   * its dismissal. `dismissAfterMs` schedules this one's; without it the
-   * toast stays until the next one replaces it.
+   * Put `message` in the `kind` toast, replacing whatever either toast shows
+   * and cancelling its dismissal. `dismissAfterMs` schedules this one's;
+   * without it the toast stays until the next one replaces it.
    */
-  const raiseToast = (message: string, dismissAfterMs?: number) => {
+  const raiseToast = (
+    kind: "status" | "failure",
+    message: string,
+    dismissAfterMs?: number,
+  ) => {
     if (toastTimer.current) clearTimeout(toastTimer.current);
     toastTimer.current = null;
-    setToast(message);
+    setToast(kind === "status" ? message : null);
+    setFailure(kind === "failure" ? message : null);
     if (dismissAfterMs !== undefined) {
       toastTimer.current = setTimeout(() => {
         toastTimer.current = null;
         setToast(null);
+        setFailure(null);
       }, dismissAfterMs);
     }
   };
@@ -407,20 +417,24 @@ export default function SetAttributesPanel({
    * than an inline setToast: each caller raising a 6s toast has to agree on
    * the 6s.
    */
-  const showToast = (message: string) => raiseToast(message, 6000);
+  const showToast = (message: string) => raiseToast("status", message, 6000);
 
   /**
    * NEO-412 — "Saving {label}…" while a write is in flight. It never dismisses
    * itself: the save's own "Saved"/"Cleared"/"Failed" replaces it, so the
    * panel never says Saved before the server has the value.
    */
-  const showSavingToast = (label: string) => raiseToast(`Saving ${label}…`);
+  const showSavingToast = (label: string) =>
+    raiseToast("status", `Saving ${label}…`);
 
   /**
-   * A failure stays up until the next toast replaces it, as it always has;
-   * routed through `raiseToast` so an earlier toast's timer cannot wipe it.
+   * A failure stays up until the next toast replaces it, as it always has.
+   * It goes to the alert region, not the status one: it is news the operator
+   * must act on, not a confirmation. Routed through `raiseToast` so an
+   * earlier toast's timer cannot wipe it.
    */
-  const showFailedToast = (message: string) => raiseToast(`Failed: ${message}`);
+  const showFailedToast = (message: string) =>
+    raiseToast("failure", `Failed: ${message}`);
 
   /**
    * NEO-217 — an empty value CLEARS the attribute; it is not a no-op.
@@ -814,23 +828,36 @@ export default function SetAttributesPanel({
         </div>
       )}
 
-      {toast && (
-        // NEO-47: position the save confirmation FIXED in the viewport, not
-        // in-flow above the grid. A save made while scrolled down to the
-        // feature rows would otherwise render the toast off-screen above
-        // the fold — invisible to the user (and the e2e assertion).
-        //
-        // NEO-239: outside the `expanded` branch, so a confirmation raised
-        // while the panel is collapsed is still seen. (The header control that
-        // first needed this, "Mark as base set", went with NEO-334.)
-        <div
-          className="pointer-events-none fixed top-20 left-1/2 -translate-x-1/2 z-50 px-4 py-2 bg-raised-deep border border-neon-green-text/60 rounded text-xs text-neon-green-text shadow-lg"
-          role="status"
-          aria-live="polite"
-        >
-          {toast}
+      {/* NEO-47: position the save confirmation FIXED in the viewport, not
+          in-flow above the grid. A save made while scrolled down to the
+          feature rows would otherwise render the toast off-screen above the
+          fold — invisible to the user (and the e2e assertion).
+
+          NEO-239: outside the `expanded` branch, so a confirmation raised
+          while the panel is collapsed is still seen. (The header control that
+          first needed this, "Mark as base set", went with NEO-334.)
+
+          NEO-412: both regions are always mounted (empty when idle): a live
+          region inserted with its text is not reliably announced; a text
+          change on a mounted node is. The box is drawn only while there is a
+          message. The status region is the panel's one `status`; a failure
+          is the separate `alert`, in the negative colour. */}
+      <div className="pointer-events-none fixed top-20 left-1/2 -translate-x-1/2 z-50">
+        <div role="status" aria-live="polite" aria-atomic="true">
+          {toast && (
+            <div className="px-4 py-2 bg-raised-deep border border-neon-green-text/60 rounded text-xs text-neon-green-text shadow-lg">
+              {toast}
+            </div>
+          )}
         </div>
-      )}
+        <div role="alert" aria-atomic="true">
+          {failure && (
+            <div className="px-4 py-2 bg-raised-deep border border-neon-pink-text/60 rounded text-xs text-neon-pink-text shadow-lg">
+              {failure}
+            </div>
+          )}
+        </div>
+      </div>
 
       {expanded && (
         <>
