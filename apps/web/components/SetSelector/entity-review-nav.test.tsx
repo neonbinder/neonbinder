@@ -28,10 +28,13 @@ import {
   describeDecision,
   isPresentable,
   nextUndecided,
+  preselectFor,
+  preselectReasonLine,
   resolveNav,
   returnStackFrom,
   summarizeDecisions,
   type NavDecision,
+  type NavPreselect,
   type NavRow,
   type NavState,
 } from "./entity-review-nav";
@@ -464,6 +467,72 @@ describe("describeDecision", () => {
   it("describes an undecided row", () => {
     expect(describeDecision(undefined)).toBe("Not yet decided");
     expect(describeDecision(null)).toBe("Not yet decided");
+  });
+
+  it("NEO-424: says why the batch linked a name on its own", () => {
+    expect(
+      describeDecision(
+        { action: "link", linkedPlayerId: "p1", autoLinked: "setHistory" },
+        "Mike Shinoda",
+      ),
+    ).toBe("Matched from this set: Mike Shinoda");
+    expect(
+      describeDecision(
+        { action: "link", linkedPlayerId: "p1", autoLinked: "hallOfFame" },
+        "Bob Allen",
+      ),
+    ).toBe("Hall of Famer: Bob Allen");
+    // A team auto-link reads the same way.
+    expect(
+      describeDecision(
+        { action: "link", linkedTeamId: "t1", autoLinked: "setHistory" },
+        "Linkin Park",
+      ),
+    ).toBe("Matched from this set: Linkin Park");
+  });
+
+  it("NEO-424: an auto-link's reason stands alone while the name loads", () => {
+    expect(
+      describeDecision({ action: "link", linkedPlayerId: "p1", autoLinked: "setHistory" }),
+    ).toBe("Matched from this set");
+    expect(
+      describeDecision({ action: "link", linkedPlayerId: "p1", autoLinked: "hallOfFame" }),
+    ).toBe("Matched to a Hall of Famer");
+  });
+});
+
+describe("NEO-424 — the suggested player", () => {
+  const preselect: NavPreselect = {
+    playerId: "p-shinoda",
+    name: "Mike Shinoda",
+    sportId: "sport-nonsport",
+    sportValue: "Non Sport",
+    reason: "onlyNamesake",
+  };
+
+  it("reads it off player rows only", () => {
+    expect(
+      preselectFor({ _id: "r1", status: "ready", kind: "player", enrichment: { preselect } }),
+    ).toEqual(preselect);
+    expect(
+      preselectFor({ _id: "r2", status: "ready", kind: "team", enrichment: { preselect } }),
+    ).toBeNull();
+    expect(preselectFor({ _id: "r3", status: "ready", kind: "player" })).toBeNull();
+  });
+
+  it("says where each suggestion came from", () => {
+    expect(preselectReasonLine(preselect)).toBe(
+      "We've got one Mike Shinoda on file, in Non Sport. Same one?",
+    );
+    expect(preselectReasonLine({ ...preselect, reason: "priorYearProduct" })).toBe(
+      "Last year's edition of this set had Mike Shinoda (Non Sport). Same one?",
+    );
+    expect(preselectReasonLine({ ...preselect, reason: "setHistory" })).toBe(
+      "Another card in this set is already linked to Mike Shinoda (Non Sport). Same one?",
+    );
+    expect(preselectReasonLine({ ...preselect, reason: "hallOfFame" })).toBe(
+      "Mike Shinoda (Non Sport) is the Hall of Famer by that name. Same one?",
+    );
   });
 });
 

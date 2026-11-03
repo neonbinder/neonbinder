@@ -105,6 +105,8 @@ import {
   countUndecided,
   describeDecision,
   isAmbiguousPlayerRow,
+  preselectFor,
+  preselectReasonLine,
   resolveNav,
   returnStackFrom,
   summarizeDecisions,
@@ -1297,6 +1299,54 @@ export default function EntityReviewWizard({
   const pickStep = sameNameCandidates.length > 0 && !createNewChosen;
   const createNewStep = sameNameCandidates.length > 0 && createNewChosen;
   /**
+   * NEO-424 — a player the batch suggests for a name it could not answer:
+   * last year's edition of this product carried the name (`priorYearProduct`),
+   * or exactly one player anywhere answers to it (`onlyNamesake`). The footer
+   * primary becomes "Link to {name} ({sport})" and creating demotes to the
+   * same "Add as New Player anyway" text link the exact match uses.
+   *
+   * Only where nothing better is on screen. Same-name candidates mean the pick
+   * step is asking "which of ours?", and the suggestion is one of its rows if
+   * it belongs there at all. An exact row in the row's own sport is the
+   * stronger, live answer, and `showExactHierarchy` already promotes it. A row
+   * read back from the decided list is not asking anything.
+   *
+   * The sport is always in the label, even when it is the set's own: the
+   * suggestion can come from another sport (the server re-points the row's
+   * sport when the link is recorded), and the operator confirms WHICH player,
+   * so a label that sometimes omits it would read the same for two different
+   * targets.
+   */
+  const preselect =
+    current && !reviewingDecided ? preselectFor(current) : null;
+  // `!createNewChosen` — "Add as New Player anyway" on a row still waiting
+  // for its lookup opens the plain New Player step (NEO-332's Create new
+  // flow), and that step asks nothing about the suggestion. Change clears the
+  // flag (`handleChangeDecision` → `clearCreateNew`), so the suggestion comes
+  // back with the row.
+  const showPreselect =
+    preselect !== null &&
+    sameNameCandidates.length === 0 &&
+    exactRows.length === 0 &&
+    !createNewChosen;
+  const preselectLinkLabel = showPreselect
+    ? `Link to ${preselect.name} (${preselect.sportValue})`
+    : "";
+  /**
+   * NEO-424 — the preselect step proper: a suggested player on a row the
+   * server inserted READY with no lookup (`playerLookupAwaitsCreateNew`).
+   * There is no new player in question yet, so, as on the pick step, nothing
+   * that builds one is offered: no hand-typed career teams, no "Decide team"
+   * (the server refuses typed staging until the lookup is requested), and no
+   * automatic staging pass. "Add as New Player anyway" is the Create new
+   * press that requests the lookup and opens the New Player step.
+   */
+  const preselectAwaitingLookup =
+    showPreselect &&
+    current !== null &&
+    current.status === "ready" &&
+    !current.enrichment?.wikidataId;
+  /**
    * NEO-332 — has the live same-name check answered for the player on screen?
    * Stored candidates settle it without the query; otherwise `nearMatches`
    * must have loaded before "this is not a pick step" can be believed. Read
@@ -1857,7 +1907,11 @@ export default function EntityReviewWizard({
      * `pickStep` is false for a row that is about to become one. One query
      * round trip is the whole cost, on a pass that is belt-and-braces anyway.
      */
-    if (pickStep || !sameNameEvidenceLoaded) return;
+    // NEO-424 — and never on a preselect step still waiting for its lookup,
+    // for the same reason: the press that opens the New Player step requests
+    // the lookup, and staging must follow it, not run once ahead of it and
+    // be marked done.
+    if (pickStep || preselectAwaitingLookup || !sameNameEvidenceLoaded) return;
     if (stagedPlayersRef.current.has(current._id)) return;
     stagedPlayersRef.current.add(current._id);
     const stagedRowId = current._id;
@@ -1903,7 +1957,7 @@ export default function EntityReviewWizard({
     // whose identity stability is the hook's business, would re-run this on
     // every render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [current, pickStep, sameNameEvidenceLoaded]);
+  }, [current, pickStep, preselectAwaitingLookup, sameNameEvidenceLoaded]);
 
   // Closing the "Link to Existing" search whenever the presented row changes
   // so it doesn't stay open for the wrong row. Keyed on the row id, so it no
@@ -3672,7 +3726,7 @@ export default function EntityReviewWizard({
   /** NEO-332 — the read-back's distinguishing line for a same-name link. */
   const sameNameLinkDetailFor = (row: (typeof rows)[number]) => {
     const candidate = sameNameLinkFor(row);
-    return candidate ? candidateDetail(candidate) : null;
+    return candidate ? candidateDetail(candidate, row.setSportValue) : null;
   };
 
   /**
@@ -3800,24 +3854,46 @@ export default function EntityReviewWizard({
         */}
         <NeonButton
           ref={primaryDecisionRef}
-          variant={pickStep || (!showExactHierarchy && hasCloseOnly) ? "secondary" : "primary"}
+          variant={
+            pickStep || (!showExactHierarchy && !showPreselect && hasCloseOnly)
+              ? "secondary"
+              : "primary"
+          }
           aria-disabled={
-            busy || (!pickStep && createHeld && !(showExactHierarchy && exactMatch))
+            busy ||
+            (!pickStep && createHeld && !(showExactHierarchy && exactMatch) && !showPreselect)
               ? true
               : undefined
           }
-          aria-describedby={!pickStep && createBlocked ? createBlockedId : undefined}
+          aria-describedby={
+            !pickStep && !showPreselect && createBlocked ? createBlockedId : undefined
+          }
           aria-label={
             pickStep
               ? "Create new"
               : showExactHierarchy && exactMatch
                 ? exactMatchLinkLabel
-                : `Add as New ${kindLabel(current.kind)}`
+                : showPreselect
+                  ? preselectLinkLabel
+                  : `Add as New ${kindLabel(current.kind)}`
           }
           onClick={(e) => {
             if (busy) return;
             if (pickStep) {
               enterCreateNew(current._id, e.timeStamp);
+              return;
+            }
+            // NEO-424 — the suggested player. A guest link: the server
+            // re-points this row's sport to the player's own and adds
+            // nothing to their sports (`linkOptions` carries no
+            // `addSetSport` on a row still in the set's sport).
+            if (showPreselect) {
+              void handleLink(
+                current._id,
+                "player",
+                preselect.playerId as Id<"players">,
+                linkOptions,
+              );
               return;
             }
             if (showExactHierarchy && exactMatch) {
@@ -3834,7 +3910,9 @@ export default function EntityReviewWizard({
             // Moving focus to the heading stops a second Enter, not a second
             // click; this stops the click.
             if (
-              createNewStep &&
+              // NEO-424 — `createNewChosen`, not `createNewStep`: the
+              // preselect's "anyway" opens the same step with no list.
+              createNewChosen &&
               e.timeStamp - (createNewPressedAtRef.current[current._id] ?? -Infinity) <
                 CREATE_NEW_DOUBLE_CLICK_MS
             ) {
@@ -3851,7 +3929,9 @@ export default function EntityReviewWizard({
             ? "Create new"
             : showExactHierarchy && exactMatch
               ? exactMatchLinkLabel
-              : `Add as New ${kindLabel(current.kind)}`}
+              : showPreselect
+                ? preselectLinkLabel
+                : `Add as New ${kindLabel(current.kind)}`}
         </NeonButton>
 
         {/*
@@ -3866,13 +3946,23 @@ export default function EntityReviewWizard({
           footer's height does not move. (The row's Back is no longer a link:
           it is the 32px outlined button, `OUTLINED_BACK_BUTTON_CLASS`.)
         */}
-        {showExactHierarchy && (
+        {/* NEO-424 — and the same demotion under a suggested player. */}
+        {(showExactHierarchy || showPreselect) && (
           <button
             type="button"
-            aria-disabled={busy || createHeld ? true : undefined}
-            aria-describedby={createBlocked ? createBlockedId : undefined}
-            onClick={() => {
+            aria-disabled={busy || (createHeld && !preselectAwaitingLookup) ? true : undefined}
+            aria-describedby={
+              createBlocked && !preselectAwaitingLookup ? createBlockedId : undefined
+            }
+            onClick={(e) => {
               if (busy) return;
+              // NEO-424 — on a row still waiting for its lookup this is the
+              // Create new press: request the lookup and open the New Player
+              // step. It records nothing. The exact-match case still creates.
+              if (preselectAwaitingLookup) {
+                enterCreateNew(current._id, e.timeStamp);
+                return;
+              }
               if (createHeld) {
                 pressHeldCreate();
                 return;
@@ -4248,10 +4338,23 @@ export default function EntityReviewWizard({
                       the New Player step does not repeat it. Hidden while the
                       link search is open, which lists `Link to …` buttons of
                       its own. */}
+                  {/* NEO-424 — why the footer suggests a player. One line,
+                      in the same solid blue rule the pick step's list wears
+                      (a row we HAVE), so the operator reads the evidence
+                      before the button that acts on it. One text node, so a
+                      direct-text matcher reads the whole sentence. Hidden
+                      while the link search is open, as the pick list is. */}
+                  {showPreselect && !linkingOpen && (
+                    <p className="mt-2 border-l-4 border-l-selection pl-3 text-sm text-ink-2">
+                      {preselectReasonLine(preselect)}
+                    </p>
+                  )}
+
                   {pickStep && !linkingOpen && (
                     <SameNamePlayerPanel
                       candidates={sameNameCandidates}
                       scanCapped={sameNameScanCapped}
+                      setSportValue={current.setSportValue}
                       disabled={busy}
                       onPick={(playerId) => {
                         if (busy) return;
@@ -4521,7 +4624,10 @@ export default function EntityReviewWizard({
                                                 player, and skips a name too long
                                                 to compose), pressing it stages
                                                 one and then goes there. */}
-                                            {(
+                                            {/* NEO-424 — except on a preselect
+                                                step still waiting for its
+                                                lookup. */}
+                                            {!preselectAwaitingLookup && (
                                               <button
                                                 type="button"
                                                 aria-label={`Decide team ${ct.name}`}
@@ -5039,7 +5145,10 @@ export default function EntityReviewWizard({
                           />
                         )}
 
-                        {current.kind === "player" && (
+                        {/* NEO-424 — not on a preselect step still waiting
+                            for its lookup: no new player is in question yet,
+                            and the server refuses typed staging there. */}
+                        {current.kind === "player" && !preselectAwaitingLookup && (
                           <div className="space-y-1.5">
                             <p className="text-sm text-ink-3">
                               Add career team history manually
@@ -5809,7 +5918,7 @@ export default function EntityReviewWizard({
                   {/* NEO-236 — the same route as the blocked chip's, for the
                       operator reading the footer rather than the list. Goes to
                       the FIRST step still waiting. */}
-                  {blockingStep && (
+                  {blockingStep && !preselectAwaitingLookup && (
                     <button
                       type="button"
                       aria-label={`Decide team ${blockingStep.name}`}

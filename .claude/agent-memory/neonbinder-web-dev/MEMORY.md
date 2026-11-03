@@ -167,3 +167,4 @@
 - [Batch reads in waves, validate in order](reference_batch_reads_in_waves_validate_in_order.md) — Promise.all read waves then original-order checks; ranges only after scope passes; moveSubtree pin regex is one-line
 - [Static page outside the SPA shell](reference_static_page_outside_the_spa_shell.md) — public/ HTML + vercel rewrite before catch-all + vite dev/preview rewrite; JS in lib/ emitted; template for happy-dom
 - [No jest-dom matchers](reference_no_jest_dom_matchers_in_unit_tests.md) — toBeInTheDocument/toHaveAttribute throw; use getByRole, getAttribute, textContent
+- [Structural row types must not narrow server unions](reference_structural_row_types_must_not_narrow_server_unions.md) — NavRow union narrower than the validator breaks every nav-helper call site; mirror schema.ts exactly
