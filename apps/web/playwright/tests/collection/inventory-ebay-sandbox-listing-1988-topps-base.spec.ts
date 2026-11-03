@@ -34,13 +34,19 @@
 // Standard Envelope; NEO-423 tracks making them later), so the sandbox seller
 // account MUST already hold the fulfillment policy "NB Tracked (USPS Ground
 // Advantage)" and "NB Free Shipping" (both left there by earlier runs, when
-// Set me up still made them). The spec picks NB Tracked for cards under $20
-// and, after a pick of NB Free Shipping to prove a changed pick saves, NB
-// Tracked for $20 and up. If either is missing the spec fails naming it; add
-// it on the sandbox seller by hand (eBay's business policies), never in code.
+// Set me up still made them). The spec picks NB Free Shipping for cards under
+// $20, the price it lists at: eBay's sandbox cannot rate CALCULATED shipping,
+// so a publish against the calculated NB Tracked policy fails 25007 every
+// time, while the flat free policy publishes (production sellers use
+// calculated shipping). For $20 and up it picks NB Free Shipping and then NB
+// Tracked, to prove a changed pick saves (no card here lists at $20 or more,
+// so that calculated pick is never published). If either is missing the spec
+// fails naming it; add it on the sandbox seller by hand (eBay's business
+// policies), never in code.
 //   5. They set a common price, put one copy each of the first three 1988 Topps
 //      Base cards in the box and attach a photo to the first two only (eBay
-//      listings need one), press Sync, follow "See what's syncing" (Back
+//      listings need one; each field then reads 0 and names its copy "Raw
+//      with photo", as a quick count no longer counts it), press Sync, follow "See what's syncing" (Back
 //      returns), and Sync status reads the eBay section's set with 2 listed and
 //      1 skipped: the third card is held back, named, with eBay's no-photo
 //      reason.
@@ -48,8 +54,10 @@
 //      set reads 0 listed, with the two cards taken to 0 and nothing held back.
 //      The Sales tab names eBay (its orders link and its empty state; Back
 //      returns).
-//   7. They tidy up (cards out of the box, the common price cleared, the box
-//      deleted) and Disconnect eBay (the confirm dialog), which takes down
+//   7. They tidy up (cards out of the box: the photoless one by its quantity,
+//      the two with a photo through the card drawer's Remove, since a quick
+//      count never changes a copy with a photo (NEO-377); the common price
+//      cleared, the box deleted) and Disconnect eBay (the confirm dialog), which takes down
 //      anything NeonBinder put up on eBay and leaves the account not
 //      connected. The afterEach does the same on a failure.
 //
@@ -348,7 +356,7 @@ test(
     // "Set me up" renders in the same paint, so its presence is settled then.
     const underTwenty = page.getByRole("radiogroup", { name: "Cards under $20", exact: true });
     const setMeUp = page.getByRole("button", { name: "Set me up", exact: true });
-    await expect(underTwenty.getByRole("radio").first(), mustHoldPolicy(TRACKED_POLICY, "Cards under $20")).toBeVisible();
+    await expect(underTwenty.getByRole("radio").first(), mustHoldPolicy(FREE_POLICY, "Cards under $20")).toBeVisible();
     await expect(page.getByRole("heading", { level: 3, name: "Ships from", exact: true })).toBeVisible();
     await expect(page.getByRole("heading", { level: 3, name: "Shipping", exact: true })).toBeVisible();
     await expect(page.getByRole("heading", { level: 3, name: "Payment and returns", exact: true })).toBeVisible();
@@ -439,14 +447,16 @@ test(
     await tracked.click();
     await expect(tracked).toBeChecked();
     await expect(twentyPlus.getByRole("radio", { checked: true })).toHaveCount(1);
-    // Cards under $20 (the price this spec lists at): the seller's NB Tracked
-    // policy, picked BY NAME (calculated Ground Advantage, priced by eBay at
-    // the 3 oz saved above). Every run starts from an empty setup (a
-    // disconnect clears it), so this pick always saves.
-    const underTwentyTracked = underTwenty.getByRole("radio", { name: TRACKED_POLICY, exact: true });
-    await expect(underTwentyTracked, mustHoldPolicy(TRACKED_POLICY, "Cards under $20")).toBeVisible();
-    await underTwentyTracked.click();
-    await expect(underTwentyTracked).toBeChecked();
+    // Cards under $20 (the price this spec lists at): the seller's flat NB
+    // Free Shipping policy, picked BY NAME. eBay's sandbox cannot rate
+    // CALCULATED shipping, so publishing against the calculated NB Tracked
+    // policy fails 25007 every time; production sellers use calculated
+    // shipping. Every run starts from an empty setup (a disconnect clears
+    // it), so this pick always saves.
+    const underTwentyFree = underTwenty.getByRole("radio", { name: FREE_POLICY, exact: true });
+    await expect(underTwentyFree, mustHoldPolicy(FREE_POLICY, "Cards under $20")).toBeVisible();
+    await underTwentyFree.click();
+    await expect(underTwentyFree).toBeChecked();
     await expect(underTwenty.getByRole("radio", { checked: true })).toHaveCount(1);
     // The other two slots: the first of the seller's own policies, where
     // "Set me up" has not already picked one (a click on the picked one changes nothing).
@@ -512,6 +522,18 @@ test(
     await expect(fieldB).toHaveValue("0");
     const fieldC = quantityField(boxList, c, boxName);
     await expect(fieldC).toHaveValue("0");
+    // A copy with a photo is the collector's own record, not a quick count
+    // (NEO-377: the server's quick count never changes it). So once a card's
+    // copy has its photo, the field counts it no more and names it after the
+    // number instead ("also here: Raw with photo", the field's description);
+    // the card without one still reads 1.
+    const expectPhotoCopiesAside = async () => {
+      for (const field of [fieldA, fieldB]) {
+        await expect(field).toHaveValue("0");
+        await expect(field).toHaveAccessibleDescription(/also here: Raw with photo/);
+      }
+      await expect(fieldC).toHaveValue("1");
+    };
     await fieldA.fill("1");
     await page.keyboard.press(leaveKey(isMobile));
     await expect(fieldB).toBeFocused();
@@ -556,11 +578,30 @@ test(
       await drawer.getByRole("button", { name: "Close card detail" }).click();
       await expect(drawer).toBeHidden();
     };
+    // The tidy-up's half of the same drawer (step 7): Details opens editing the
+    // card's one line, Cancel puts its Edit and Remove back, and Remove takes
+    // the copy, photo and all, out of the box.
+    const removeOnlyCopy = async (short: string) => {
+      const drawer = page.getByRole("dialog", { name: new RegExp(`^${escapeRegExp(SET_LABEL)} ${escapeRegExp(short)}`) });
+      await checklist.getByRole("button", { name: `Details for ${short}`, exact: true }).click();
+      const yourCopies = drawer.getByRole("region", { name: `Your copies of ${short}`, exact: true });
+      await expect(yourCopies.getByRole("heading", { name: "Your copies (1 line)", exact: true })).toBeVisible();
+      const editForm = yourCopies.getByRole("form", { name: /^Edit Raw, / });
+      await expect(editForm).toBeVisible();
+      await editForm.getByRole("button", { name: "Cancel", exact: true }).click();
+      await expect(editForm).toBeHidden();
+      await yourCopies.getByRole("button", { name: new RegExp(`^Remove ${escapeRegExp(short)}, Raw, `) }).click();
+      await expect(yourCopies.getByText("None yet. Fill in what you know below and add it.")).toBeVisible();
+      await drawer.getByRole("button", { name: "Close card detail" }).click();
+      await expect(drawer).toBeHidden();
+      // Out of the box: nothing counted, nothing named beside the number.
+      const field = quantityField(boxList, short, boxName);
+      await expect(field).toHaveValue("0");
+      await expect(field).not.toHaveAccessibleDescription(/also here/);
+    };
     await attachPhoto(a, PHOTOS[0], "Card drawer, a boxed copy with its front photo");
     await attachPhoto(b, PHOTOS[1]);
-    await expect(fieldA).toHaveValue("1");
-    await expect(fieldB).toHaveValue("1");
-    await expect(fieldC).toHaveValue("1");
+    await expectPhotoCopiesAside();
 
     // --- Sync: eBay takes the two with photos and holds the third back ---------------------------------
     await sync.click();
@@ -608,9 +649,7 @@ test(
     await page.goBack();
     await expect(page).toHaveURL(/[?&]tab=checklists/);
     await expect(checklist.getByRole("heading", { level: 3, name: TITLE })).toBeVisible();
-    await expect(fieldA).toHaveValue("1");
-    await expect(fieldB).toHaveValue("1");
-    await expect(fieldC).toHaveValue("1");
+    await expectPhotoCopiesAside();
 
     // --- 6. The box goes in-person: Sync takes both down ----------------------------------
     await page.goto("/inventory?tab=boxes");
@@ -669,7 +708,13 @@ test(
     // since the drill above: the tab link reopens 1988 Topps Base.
     await tabs.getByRole("link", { name: "Checklists", exact: true }).click();
     await expect(page).toHaveURL(/[?&]tab=checklists/);
-    await emptyBoxCards(page, TOPPS_1988, boxName, [a, b, c], isMobile, "reopened");
+    // The card with no photo: a quick count to 0.
+    await emptyBoxCards(page, TOPPS_1988, boxName, [c], isMobile, "reopened");
+    // The two with a photo: a quick count can't take them out (see step 5), so
+    // each goes the way a collector removes a copy, from the card's drawer,
+    // the same drawer that added its photo.
+    await removeOnlyCopy(a);
+    await removeOnlyCopy(b);
     await clearChecklistCommonPrice(page, checklist, TITLE, COMMON_PRICE);
     written.priced = false;
 
