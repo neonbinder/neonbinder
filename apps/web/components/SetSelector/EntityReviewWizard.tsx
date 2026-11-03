@@ -288,6 +288,12 @@ const NO_ALIAS_HOLDERS: ReadonlyArray<never> = [];
 
 /** Past this many decided rows the history list collapses behind a disclosure. */
 const DECIDED_LIST_INLINE_MAX = 5;
+/**
+ * NEO-424 — how long the Decided list may be and still start open on a batch
+ * that opened with every name decided. Past it the list is collapsed and the
+ * Save step's line points at it.
+ */
+const AUTO_LINKED_LIST_OPEN_MAX = 25;
 
 /**
  * NEO-332 — how long after "Create new" a click on the same footer slot, now
@@ -812,6 +818,14 @@ export default function EntityReviewWizard({
   const pendingStepFocusRef = useRef<null | "heading" | "primary">(null);
   /** The live step's heading — focus target on entering the New Player step. */
   const stepHeadingRef = useRef<HTMLHeadingElement>(null);
+  /**
+   * NEO-424 (a11y) — the row a Change was pressed for, until its cleared
+   * decision reaches the batch. That is when the row leaves the Decided list
+   * and the Change button the operator is standing on unmounts; the row on
+   * screen is the same one throughout, so the `presentedRowId` park never
+   * runs. See the effect beside that one.
+   */
+  const pendingDropFocusRef = useRef<string | null>(null);
   /** The footer's primary slot — "Create new" on the pick step. */
   const primaryDecisionRef = useRef<HTMLButtonElement>(null);
   /** NEO-332 (a11y S5) — the fixed footer, to tell "focus is on a decision
@@ -2567,6 +2581,7 @@ export default function EntityReviewWizard({
     setNav(next);
     // NEO-332 — a reopened same-name row starts again at its pick step.
     clearCreateNew(rowId);
+    pendingDropFocusRef.current = rowId;
     void decide(rowId, () => clearDecision({ reviewRowId: rowId }), "drop");
   };
 
@@ -2899,6 +2914,29 @@ export default function EntityReviewWizard({
       (!root.contains(active) && !active.closest('[role="dialog"], [role="alertdialog"]'));
     if (lost) stepHeadingRef.current?.focus();
   }, [presentedRowId]);
+
+  /*
+   * NEO-424 (a11y) — park focus once a Change's clear has landed.
+   *
+   * The row comes back live in the same render that drops it from the
+   * Decided list, so the pressed Change is gone and focus falls to <body>.
+   * Only when it really did: a control that kept focus, or a dialog stacked
+   * over this one, is left alone. A Change that was refused leaves the row
+   * decided, and moving to another row ends the wait either way.
+   */
+  useEffect(() => {
+    const rowId = pendingDropFocusRef.current;
+    if (!rowId) return;
+    if (presentedRowId !== rowId) {
+      pendingDropFocusRef.current = null;
+      return;
+    }
+    if (reviewingDecided) return;
+    pendingDropFocusRef.current = null;
+    const active = document.activeElement;
+    if (active && active !== document.body && active.isConnected) return;
+    stepHeadingRef.current?.focus();
+  }, [presentedRowId, reviewingDecided]);
 
   /*
    * NEO-332 (a11y S5) — the live fallback turned the open New Player step into
@@ -3703,21 +3741,38 @@ export default function EntityReviewWizard({
   const decidedRows = rows.filter((r) => r.decision);
   /** NEO-424 — "· 6 linked for you" beside the count, or null. */
   const autoLinkedNote = autoLinkedSummaryNote(rows);
+  /**
+   * NEO-424 — a batch that opened with every name decided starts with the
+   * list open (it is the whole review), up to a cap: past that it is a wall,
+   * so it stays collapsed and the line above it says where to look.
+   */
+  const autoOpenDecided =
+    openedWithEveryNameDecided && decidedRows.length <= AUTO_LINKED_LIST_OPEN_MAX;
   const decidedListExpanded =
-    decidedListOpen ??
-    (openedWithEveryNameDecided || decidedRows.length <= DECIDED_LIST_INLINE_MAX);
+    decidedListOpen ?? (autoOpenDecided || decidedRows.length <= DECIDED_LIST_INLINE_MAX);
   /**
    * NEO-424 — the Save step's line over a batch that opened with nothing to
    * answer. Counted live, so a link the operator Changed and decided by hand
-   * stops being one the line speaks for; gone once none is left.
+   * stops being one the line speaks for; gone once none is left. When the
+   * list also holds the operator's own decisions (a "Back to matching" return
+   * trip), it says how many of them are links.
    */
   const autoLinkedOnSave = openedWithEveryNameDecided ? countAutoLinked(rows) : 0;
-  const autoLinkedIntro =
-    autoLinkedOnSave === 0
-      ? null
-      : autoLinkedOnSave === 1
-        ? "This name was linked for you. Give it a look before you save."
-        : "These names were linked for you. Give them a look before you save.";
+  const autoLinkedIntro = (() => {
+    if (autoLinkedOnSave === 0) return null;
+    const one = autoLinkedOnSave === 1;
+    const who =
+      autoLinkedOnSave === decidedRows.length
+        ? one
+          ? "This name was"
+          : "These names were"
+        : `${autoLinkedOnSave} of these names ${one ? "was" : "were"}`;
+    const them = one ? "it" : "them";
+    const look = autoOpenDecided
+      ? `Give ${them} a look before you save.`
+      : `Open Decided below to give ${them} a look.`;
+    return `${who} linked for you. ${look}`;
+  })();
 
   /** The most recent single-row decision still standing. */
   const backTargetId = (() => {
@@ -5669,7 +5724,7 @@ export default function EntityReviewWizard({
                       key={row._id}
                       className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-xs"
                     >
-                      <span className="text-ink-2">{row.name}</span>
+                      <span className="min-w-0 break-words text-ink-2">{row.name}</span>
                       {/* Same 1.4.3 correction: this line states what the
                           batch will DO with the name beside it, so it is
                           content rather than decoration. */}

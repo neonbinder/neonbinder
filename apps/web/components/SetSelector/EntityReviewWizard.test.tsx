@@ -9801,6 +9801,38 @@ describe("NEO-424: a batch that opens with every name linked for you", () => {
     );
   });
 
+  /**
+   * a11y — the Change pressed is the row's own, and it unmounts the moment
+   * the cleared decision reaches the batch (the row leaves the Decided list).
+   * The row on screen does not change, so the "focus lost on a new step"
+   * park never runs; without its own park focus falls to <body>, outside the
+   * aria-modal dialog.
+   */
+  it("parks focus on the reopened step's heading once Change's clear lands", async () => {
+    const rows = autoLinkedBatch();
+    currentRows = rows;
+    const { rerender } = renderWizard();
+
+    const change = screen.getByRole("button", { name: "Change decision for St. Louis Browns" });
+    act(() => change.focus());
+    fireEvent.click(change);
+    await waitFor(() =>
+      expect(mockClearDecision).toHaveBeenCalledWith({ reviewRowId: rows[2]._id }),
+    );
+
+    // The clear reaches the batch: the row is live again.
+    currentRows = rows.map((r, i) => (i === 2 ? { ...r, decision: undefined } : r));
+    await act(async () => {
+      rerenderWizard(rerender);
+    });
+
+    expect(
+      screen.queryByRole("button", { name: "Change decision for St. Louis Browns" }),
+    ).toBeNull();
+    const heading = screen.getByRole("heading", { level: 3, name: /St\. Louis Browns/ });
+    expect(document.activeElement).toBe(heading);
+  });
+
   it("reads one link in the singular", () => {
     currentLinkedPlayers = [{ _id: "p-morgan", name: "Joe Morgan" }];
     currentRows = [
@@ -9816,6 +9848,67 @@ describe("NEO-424: a batch that opens with every name linked for you", () => {
     );
     expect(
       screen.getByText("This name was linked for you. Give it a look before you save."),
+    ).toBeTruthy();
+  });
+
+  it("keeps a list past 25 collapsed and points the line at it", () => {
+    currentLinkedPlayers = Array.from({ length: 26 }, (_, i) => ({
+      _id: `p-${i}`,
+      name: `Linked Player ${i}`,
+    }));
+    currentRows = Array.from({ length: 26 }, (_, i) =>
+      makeRow({
+        name: `Linked Player ${i}`,
+        decision: { action: "link", linkedPlayerId: `p-${i}`, autoLinked: "setHistory" },
+      }),
+    );
+    renderWizard();
+
+    const summary = screen.getByText("Decided (26)").closest("summary");
+    expect(summary?.textContent).toBe("Decided (26) · 26 linked for you");
+    expect((summary?.parentElement as HTMLDetailsElement).open).toBe(false);
+    const intro = screen.getByText(
+      "These names were linked for you. Open Decided below to give them a look.",
+    );
+    expect(
+      screen.getByRole("button", { name: CONFIRM_SAVE_NAME }).getAttribute("aria-describedby"),
+    ).toBe(intro.id);
+  });
+
+  /**
+   * A "Back to matching" return trip can open on a batch holding the
+   * operator's own decisions beside the links; the line counts the links.
+   */
+  it("counts the links when the list also holds the operator's own decisions", () => {
+    const rows = autoLinkedBatch().slice(0, 3);
+    currentRows = [
+      ...rows,
+      makeRow({ name: "Their Own Pick", decision: { action: "create" } }),
+      makeRow({ name: "Not A Person", decision: { action: "skip" } }),
+    ];
+    renderWizard();
+
+    expect(screen.getByText("Decided (5)").closest("summary")?.textContent).toBe(
+      "Decided (5) · 3 linked for you",
+    );
+    expect(
+      screen.getByText("3 of these names were linked for you. Give them a look before you save."),
+    ).toBeTruthy();
+  });
+
+  it("counts one link among the operator's decisions in the singular", () => {
+    currentLinkedPlayers = [{ _id: "p-morgan", name: "Joe Morgan" }];
+    currentRows = [
+      makeRow({
+        name: "Joe Morgan",
+        decision: { action: "link", linkedPlayerId: "p-morgan", autoLinked: "hallOfFame" },
+      }),
+      makeRow({ name: "Their Own Pick", decision: { action: "create" } }),
+    ];
+    renderWizard();
+
+    expect(
+      screen.getByText("1 of these names was linked for you. Give it a look before you save."),
     ).toBeTruthy();
   });
 
