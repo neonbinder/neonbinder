@@ -3,7 +3,7 @@
 - [Eslint does not cover plain ts](reference_eslint_does_not_cover_plain_ts.md) — apps/web `npm run lint` visits no plain `.ts` file, so Convex adapters and lib/ are gated only by tsc + vitest
 - [Worktree node_modules linking](reference_worktree_node_modules_linking.md) — link-deps.sh checks the repo root, not apps/web; symlink main/apps/web/node_modules by hand after cmp on the lockfile
 - [Generated api.d.ts needs a hand edit in worktrees](reference_generated_api_needs_hand_edit_in_worktrees.md) — add a new module's two lines by hand; an entry for a missing file typechecks green (skipLibCheck) and reads as any
-- [Narrowing a Convex validator is a runtime break](reference_narrowing_convex_validator_is_a_runtime_break.md) — tsc stays green; grep forwards of stored sub-objects before narrowing; widening a stored element breaks echoing returns
+- [Narrowing a Convex validator is a runtime break](reference_narrowing_convex_validator_is_a_runtime_break.md) — tsc stays green; grep forwards before narrowing; retiring stored literals: keep schema wide, narrow the return
 - [Swept log markers are pinned](reference_swept_log_markers_are_pinned.md) — resolvabilityLogSafety.test.ts asserts exact skip/coverage log prefixes exist; keep the marker text, append detail after it
 - [PRODUCT BUG tests are fix requests](feedback_product_bug_tests_are_fix_requests.md) — a red test titled "PRODUCT BUG (file:line)" is a fix for the file owner; run untracked sibling tests in the fast gate, never edit the test
 - [Read budget by construction in convex-test](reference_convex_test_read_budget_by_construction.md) — Proxy over ctx.db counts reads; optional pre-read index + both paths pinned equal; t.run cannot return a Map; empty BSC list = failed side
@@ -50,6 +50,6 @@
 - [BSC seller sheet reads must be serial](reference_bsc_seller_sheet_reads_must_be_serial.md) — concurrent seller/bulk-upload/results reads per seller return twin (card, condition) rows; every card held back (NEO-415)
 - [eBay sandbox diverges from the contract](reference_ebay_sandbox_diverges_from_the_contract.md) — location create on existing key = 400 (read first); Ground Advantage behind an old code (match description); Media Location header; eSE 20403: send carrier "eBay Send" (unconfirmed)
 - [BSC seller sheet has no all-conditions read](reference_bsc_seller_sheet_has_no_all_conditions_read.md) — omit/null condition = 500; ""/"all" = one blank template per card, hides listings; templates mint new productIds per read
-- [eBay sandbox refuses eSE policies](reference_ebay_sandbox_refuses_ese_policy.md) — 20403 "valid shipping service" on US_eBayStandardEnvelope though metadata says validForSellingFlow; no body fix
+- [eBay sandbox refuses eSE policies](reference_ebay_sandbox_refuses_ese_policy.md) — 20403 on any eSE policy create (confirmed by hand); no body fix; NB makes no shipping policies until NEO-423
 - [Ledger error finish settles working as failed](reference_progress_ledger_error_finish_settles_working_failed.md) — ledger.fail the earlier step, endWorking before an error finish
 - [eBay Media 500 190000 is ambiguous](reference_ebay_media_500_is_ambiguous.md) — malformed-request answer too; no upload on sandbox, items need imageUrls (25717): fixed test picture; JS doc pages

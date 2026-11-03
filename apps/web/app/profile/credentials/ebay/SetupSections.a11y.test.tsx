@@ -1,9 +1,10 @@
 /**
  * NEO-415 — Profile → Credentials → eBay, the accessibility audit's fixes: the ships-from
  * form keeps focus and its "Saved." line through a save, marks and focuses
- * what a refused submit needs; Set me up says it's working, picks from the
- * policies its run hands back (no second read), and a failed pick keeps the
- * box and focus with a Try again that reads and makes nothing twice; status lines carry no aria-busy; eBay's "no" return focuses the
+ * what a refused submit needs; Set me up (payment and returns only, under
+ * their card, waiting for nothing) says it's working and offers the policies
+ * its run hands back (no second read, no pick of its own); status lines
+ * carry no aria-busy; eBay's "no" return focuses the
  * heading; the page is inert behind the Disconnect confirm and Cancel hands
  * focus back; a picker's refusal or gone pick describes its radiogroup.
  */
@@ -186,57 +187,57 @@ describe("Ships from", () => {
 });
 
 describe("Set me up", () => {
+  // Payment and returns only: shipping is the seller's own pick, never made for them (NEO-423).
   const NOTHING = { ok: true, fulfillment: [], payment: [], returns: [] };
-  const MADE = ["NB Envelope or Tracked (under $20)", "NB Tracked (USPS Ground Advantage)", "NB Payment", "NB Returns"];
+  const MADE = ["NB Payment", "NB Returns (30 days)"];
   const MADE_POLICIES = {
     ok: true,
-    fulfillment: [
-      { id: "n1", name: MADE[0], eseFit: true, eseOnly: true, freeShipping: false, summary: "" },
-      { id: "n2", name: MADE[1], eseFit: false, eseOnly: false, freeShipping: false, summary: "" },
-    ],
-    payment: [{ id: "p9", name: MADE[2] }],
-    returns: [{ id: "r9", name: MADE[3], summary: "" }],
+    fulfillment: [{ id: "f-ga", name: "Tracked", eseFit: false, eseOnly: false, freeShipping: false, summary: "" }],
+    payment: [{ id: "p9", name: MADE[0] }],
+    returns: [{ id: "r9", name: MADE[1], summary: "" }],
   };
   /** The policy lists a run hands back (`createStandardPolicies`'s `policies`): a read's answer without its `ok`. */
   const listsOf = ({ fulfillment, payment, returns }: typeof MADE_POLICIES) => ({ fulfillment, payment, returns });
   /** The read the page makes when it opens; a run that hands back its policies makes no other. */
   const reads = () => fns["ebayConnect:readPolicies"].mock.calls.length;
+  const moneyHeading = () => screen.getByRole("heading", { level: 3, name: "Payment and returns" });
 
   const SHIPS_FROM = { postalCode: "53703", city: "Madison", stateOrProvince: "WI" };
-  // Set me up waits for a saved ship-from (eBay prices shipping from its ZIP).
   beforeEach(() => {
-    connection = state({ settings: { ...SETTINGS, location: SHIPS_FROM }, missing: ["shippingUnder20"] });
+    connection = state({ settings: { ...SETTINGS, location: SHIPS_FROM }, missing: ["payment", "returns"] });
   });
 
-  it("with no ship-from saved it stays reachable, says why beside it, and makes nothing", async () => {
+  it("waits for nothing: with no ship-from saved it is enabled and runs", async () => {
     connection = state();
     fn("ebayConnect:readPolicies").mockResolvedValueOnce(NOTHING);
+    fn("ebayConnect:createStandardPolicies").mockResolvedValue({ ok: true, created: MADE, policies: listsOf(MADE_POLICIES) });
     renderAt();
     const button = await screen.findByRole("button", { name: "Set me up" });
-    expect(button.getAttribute("aria-disabled")).toBe("true");
-    expect((button as HTMLButtonElement).disabled).toBe(false);
-    const why = "Save where you ship from first, up in Ships from. eBay prices each buyer's shipping from your ZIP.";
-    expect(screen.getByText(why)).toBeTruthy();
-    expect(button.getAttribute("aria-describedby")?.split(" ")[0]).toBe(screen.getByText(why).id);
+    expect(button.getAttribute("aria-disabled")).toBeNull();
+    expect(screen.queryByText(/^Save where you ship from first/)).toBeNull();
     fireEvent.click(button);
-    expect(fns["ebayConnect:createStandardPolicies"]).toBeUndefined();
-
-    // Saved: the button wakes up and the line goes.
-    connection = state({ settings: { ...SETTINGS, location: SHIPS_FROM }, missing: ["shippingUnder20"] });
-    cleanup();
-    fn("ebayConnect:readPolicies").mockResolvedValueOnce(NOTHING);
-    renderAt();
-    const ready = await screen.findByRole("button", { name: "Set me up" });
-    expect(ready.getAttribute("aria-disabled")).toBeNull();
-    expect(screen.queryByText(why)).toBeNull();
+    expect((await screen.findByText(/^Made 2 on your eBay account/)).getAttribute("role")).toBe("status");
+    expect(fns["ebayConnect:createStandardPolicies"]).toHaveBeenCalledTimes(1);
   });
 
-  it("says buyers pay eBay's own rate for the card's weight", async () => {
+  it("sits under Payment and returns and says it never makes shipping", async () => {
     fn("ebayConnect:readPolicies").mockResolvedValueOnce(NOTHING);
     renderAt();
-    const button = await screen.findByRole("button", { name: "Set me up" });
+    const money = screen.getByRole("region", { name: "Payment and returns" });
+    const button = await within(money).findByRole("button", { name: "Set me up" });
     const said = document.getElementById(button.getAttribute("aria-describedby")!)!.textContent;
-    expect(said).toContain("On the first two, buyers pay eBay's own rate for the card's weight.");
+    expect(said).toBe(
+      "Missing one? Set me up makes NeonBinder's standard payment and returns policies on your eBay account, only the ones you don't have, then picks them for you. Shipping stays your pick.",
+    );
+    expect(within(screen.getByRole("region", { name: "Shipping" })).queryByRole("button", { name: "Set me up" })).toBeNull();
+  });
+
+  it("is not offered once payment and returns are there, even with no shipping policy", async () => {
+    fn("ebayConnect:readPolicies").mockResolvedValueOnce({ ...NOTHING, payment: POLICIES.payment, returns: POLICIES.returns });
+    renderAt();
+    await screen.findByRole("radiogroup", { name: "Payment" });
+    expect(screen.getByText("No shipping policies on your eBay account yet.")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Set me up" })).toBeNull();
   });
 
   it("says it's working in a polite status while it runs", async () => {
@@ -249,137 +250,42 @@ describe("Set me up", () => {
     expect(working.getAttribute("aria-busy")).toBeNull();
   });
 
-  it("picks from the policies the run hands back, without reading eBay again", async () => {
+  it("offers what the run made without reading eBay again, and saves nothing itself (the server picks)", async () => {
     fn("ebayConnect:readPolicies").mockResolvedValueOnce(NOTHING);
     fn("ebayConnect:createStandardPolicies").mockResolvedValue({ ok: true, created: MADE, policies: listsOf(MADE_POLICIES) });
-    renderAt();
+    const view = renderAt();
     fireEvent.click(await screen.findByRole("button", { name: "Set me up" }));
-    await waitFor(() =>
-      expect(fns["ebayConnect:savePolicies"]).toHaveBeenCalledWith({
-        fulfillmentPolicyUnder20Id: "n1",
-        fulfillmentPolicy20PlusId: "n2",
-        paymentPolicyId: "p9",
-        returnPolicyId: "r9",
-      }),
+    expect((await screen.findByText(/^Made 2 on your eBay account/)).textContent).toBe(
+      "Made 2 on your eBay account: NB Payment, NB Returns (30 days). Picked where you had nothing yet.",
     );
-    expect((await screen.findByText(/^Made 4 on your eBay account/)).getAttribute("role")).toBe("status");
-    // The made policies are on the pickers straight away.
-    expect(screen.getByRole("radio", { name: MADE[2] })).toBeTruthy();
+    // The made policies are on the pickers straight away; the page sends no pick of its own.
+    expect(screen.getByRole("radio", { name: MADE[0] })).toBeTruthy();
+    expect(fns["ebayConnect:savePolicies"]).not.toHaveBeenCalled();
     expect(reads()).toBe(1);
+    await waitFor(() => expect(document.activeElement).toBe(moneyHeading()));
+
+    // The server's own fill lands through the connection state: the picks show, shipping stays unpicked.
+    connection = state({
+      settings: { ...SETTINGS, location: SHIPS_FROM, paymentPolicyId: "p9", returnPolicyId: "r9" },
+      missing: ["shippingUnder20", "shipping20Plus"],
+    });
+    view.again();
+    expect(screen.getByRole("radio", { name: MADE[0] }).getAttribute("aria-checked")).toBe("true");
+    expect(screen.getByRole("radio", { name: MADE[1] }).getAttribute("aria-checked")).toBe("true");
+    const under = screen.getByRole("radiogroup", { name: "Cards under $20" });
+    expect(within(under).getByRole("radio", { name: "Tracked" }).getAttribute("aria-checked")).toBe("false");
+    // Nothing missing now: the box is gone.
+    expect(screen.queryByRole("button", { name: "Set me up" })).toBeNull();
   });
 
-  it("made but not picked: the box stays with focus, and Try again reads and picks without making twice", async () => {
+  it("nothing new to make says so", async () => {
     fn("ebayConnect:readPolicies").mockResolvedValueOnce(NOTHING);
-    fn("ebayConnect:createStandardPolicies").mockResolvedValue({ ok: true, created: MADE, policies: listsOf(MADE_POLICIES) });
-    // The pick never lands: the policies are made, nothing is picked.
-    fn("ebayConnect:savePolicies").mockRejectedValueOnce(new Error("network"));
-    renderAt();
-    const button = await screen.findByRole("button", { name: "Set me up" });
-    button.focus();
-    fireEvent.click(button);
-    const retry = await screen.findByRole("button", { name: "Try again" });
-    expect(document.activeElement).toBe(retry);
-    expect(screen.getByRole("heading", { level: 3, name: "Shipping" })).toBeTruthy();
-    expect(reads()).toBe(1);
-
-    // Try again reads; that read failing says what's done, what isn't, and what Try again does, in one message.
-    fn("ebayConnect:readPolicies").mockResolvedValueOnce({ ok: false, error: "eBay didn't answer." });
-    fireEvent.click(retry);
-    const alert = await saidAlert();
-    expect(alert.textContent).toBe(
-      "Your new policies are made, but we couldn't read them back just now, so nothing's picked yet. Give it a bit, then press Try again to pick them. It won't make them twice.",
-    );
-    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Try again" }));
-
-    fn("ebayConnect:readPolicies").mockResolvedValueOnce(MADE_POLICIES);
-    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
-    await waitFor(() => expect(fns["ebayConnect:savePolicies"]).toHaveBeenCalledTimes(2));
-    expect(fns["ebayConnect:savePolicies"]).toHaveBeenLastCalledWith({
-      fulfillmentPolicyUnder20Id: "n1",
-      fulfillmentPolicy20PlusId: "n2",
-      paymentPolicyId: "p9",
-      returnPolicyId: "r9",
-    });
-    expect(fns["ebayConnect:createStandardPolicies"]).toHaveBeenCalledTimes(1);
-    expect((await screen.findByText(/^Made 4 on your eBay account/)).getAttribute("role")).toBe("status");
-    expect(spokenAlerts()).toEqual([]);
-    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("heading", { level: 3, name: "Shipping" })));
-  });
-
-  // eBay turned the Standard Envelope policy down (the sandbox does): the rest is made and picked,
-  // and cards under $20 stay the collector's pick. NB never puts a parcel policy there for them.
-  const NO_ENVELOPE = ["NB Tracked (USPS Ground Advantage)", "NB Free Shipping", "NB Payment", "NB Returns"];
-  const NO_ENVELOPE_POLICIES = {
-    ok: true,
-    fulfillment: [
-      { id: "n2", name: NO_ENVELOPE[0], eseFit: false, eseOnly: false, freeShipping: false, summary: "" },
-      { id: "n3", name: NO_ENVELOPE[1], eseFit: false, eseOnly: false, freeShipping: true, summary: "" },
-    ],
-    payment: [{ id: "p9", name: NO_ENVELOPE[2] }],
-    returns: [{ id: "r9", name: NO_ENVELOPE[3], summary: "" }],
-  };
-
-  it("eBay turning down the envelope still reads as made: a status line, the rest picked, cards under $20 left to the collector", async () => {
-    fn("ebayConnect:readPolicies").mockResolvedValueOnce(NOTHING);
-    fn("ebayConnect:createStandardPolicies").mockResolvedValue({
-      ok: true,
-      created: NO_ENVELOPE,
-      envelopeRefused: true,
-      policies: listsOf(NO_ENVELOPE_POLICIES),
-    });
+    fn("ebayConnect:createStandardPolicies").mockResolvedValue({ ok: true, created: [], policies: listsOf(MADE_POLICIES) });
     renderAt();
     fireEvent.click(await screen.findByRole("button", { name: "Set me up" }));
-    await waitFor(() =>
-      expect(fns["ebayConnect:savePolicies"]).toHaveBeenCalledWith({
-        fulfillmentPolicy20PlusId: "n2",
-        paymentPolicyId: "p9",
-        returnPolicyId: "r9",
-      }),
-    );
-    const line = await screen.findByText(/^Made 4 on your eBay account/);
+    const line = await screen.findByText("You already had everything. Pick away.");
     expect(line.getAttribute("role")).toBe("status");
-    expect(line.textContent).toBe(
-      "Made 4 on your eBay account: NB Tracked (USPS Ground Advantage), NB Free Shipping, NB Payment, NB Returns. Picked where you had nothing yet. eBay wouldn't make the Envelope or Tracked policy, so pick one of yours for cards under $20.",
-    );
     expect(spokenAlerts()).toEqual([]);
-    expect(reads()).toBe(1);
-  });
-
-  it("nothing new to make and eBay turning down the envelope says so, as a status line", async () => {
-    fn("ebayConnect:readPolicies").mockResolvedValueOnce(NOTHING);
-    fn("ebayConnect:createStandardPolicies").mockResolvedValue({
-      ok: true,
-      created: [],
-      envelopeRefused: true,
-      policies: listsOf(NO_ENVELOPE_POLICIES),
-    });
-    renderAt();
-    fireEvent.click(await screen.findByRole("button", { name: "Set me up" }));
-    const line = await screen.findByText(/^You already had the rest\./);
-    expect(line.getAttribute("role")).toBe("status");
-    expect(line.textContent).toBe(
-      "You already had the rest. eBay wouldn't make the Envelope or Tracked policy, so pick one of yours for cards under $20.",
-    );
-    expect(spokenAlerts()).toEqual([]);
-  });
-
-  it("the envelope note survives a Try again after the pick failed", async () => {
-    fn("ebayConnect:readPolicies").mockResolvedValueOnce(NOTHING);
-    fn("ebayConnect:createStandardPolicies").mockResolvedValue({
-      ok: true,
-      created: NO_ENVELOPE,
-      envelopeRefused: true,
-      policies: listsOf(NO_ENVELOPE_POLICIES),
-    });
-    fn("ebayConnect:savePolicies").mockRejectedValueOnce(new Error("network"));
-    renderAt();
-    fireEvent.click(await screen.findByRole("button", { name: "Set me up" }));
-    const retry = await screen.findByRole("button", { name: "Try again" });
-    fn("ebayConnect:readPolicies").mockResolvedValueOnce(NO_ENVELOPE_POLICIES);
-    fireEvent.click(retry);
-    const line = await screen.findByText(/^Made 4 on your eBay account/);
-    expect(line.textContent).toMatch(/so pick one of yours for cards under \$20\.$/);
-    expect(fns["ebayConnect:createStandardPolicies"]).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -389,11 +295,8 @@ describe("Set me up's step ledger", () => {
   const LEDGER = "Set me up, step by step";
   const NAMES = {
     check: "Check your eBay account",
-    tracked: "NB Tracked (USPS Ground Advantage)",
-    free: "NB Free Shipping",
     payment: "NB Payment",
     returns: "NB Returns (30 days)",
-    ese: "NB Envelope or Tracked (under $20)",
   } as const;
   type Key = keyof typeof NAMES;
   type Status = "waiting" | "working" | "done" | "failed" | "had" | "stopped";
@@ -402,14 +305,14 @@ describe("Set me up's step ledger", () => {
     steps: (Object.keys(statuses) as Key[]).map((step) => ({ step, label: NAMES[step], status: statuses[step]! })),
   });
   const withRun = (progress: ReturnType<typeof run> | null) =>
-    state({ settings: { ...SETTINGS, location: SHIPS_FROM }, missing: ["shippingUnder20"], setupProgress: progress });
+    state({ settings: { ...SETTINGS, location: SHIPS_FROM }, missing: ["payment", "returns"], setupProgress: progress });
   const STARTED = Date.UTC(2026, 10, 2, 13);
   /**
-   * The polite line Set me up speaks through: the Shipping card's last status
-   * (the pickers' own lines sit above the ledger, the alert after it).
+   * The polite line Set me up speaks through: the Payment and returns card's
+   * last status (the pickers' own lines sit above the ledger, the alert after it).
    */
   const runLine = () => {
-    const line = within(screen.getByRole("region", { name: "Shipping" })).getAllByRole("status").at(-1)!;
+    const line = within(screen.getByRole("region", { name: "Payment and returns" })).getAllByRole("status").at(-1)!;
     expect(line.getAttribute("aria-live")).toBe("polite");
     return [line];
   };
@@ -423,25 +326,24 @@ describe("Set me up's step ledger", () => {
 
   it("shows the press's own run as a list of named steps, never an earlier run's finished ledger", async () => {
     // A run from an earlier visit is on the row: nothing shows for it, before or right after the press.
-    connection = withRun(run(STARTED - 60_000, { check: "done", tracked: "done", free: "done", ese: "done" }));
+    connection = withRun(run(STARTED - 60_000, { check: "done", payment: "done", returns: "done" }));
     const view = renderAt();
     expect(screen.queryByRole("list", { name: LEDGER })).toBeNull();
     fireEvent.click(await screen.findByRole("button", { name: "Set me up" }));
     view.again();
     expect(screen.queryByRole("list", { name: LEDGER })).toBeNull();
 
-    connection = withRun(run(STARTED, { check: "done", tracked: "working", free: "waiting", payment: "waiting", returns: "waiting", ese: "waiting" }));
+    connection = withRun(run(STARTED, { check: "done", payment: "working", returns: "waiting" }));
     view.again();
     const ledger = screen.getByRole("list", { name: LEDGER });
     expect(ledger.tagName).toBe("OL");
+    // In the card whose policies it makes.
+    expect(ledger.closest("section")).toBe(screen.getByRole("region", { name: "Payment and returns" }));
     const items = within(ledger).getAllByRole("listitem");
     expect(items.map((li) => li.getAttribute("aria-label"))).toEqual([
       "Check your eBay account, done",
-      "NB Tracked (USPS Ground Advantage), working",
-      "NB Free Shipping, waiting",
-      "NB Payment, waiting",
+      "NB Payment, working",
       "NB Returns (30 days), waiting",
-      "NB Envelope or Tracked (under $20), waiting",
     ]);
     // Each item's own words say what its name says (the state in a hidden tail where the glyph shows it).
     for (const li of items) expect(li.textContent).toBe(li.getAttribute("aria-label"));
@@ -464,22 +366,19 @@ describe("Set me up's step ledger", () => {
     expect(line[0].getAttribute("aria-live")).toBe("polite");
     expect(line[0].textContent).toBe("Setting you up…");
 
-    connection = withRun(run(STARTED, { check: "done", tracked: "working", free: "waiting", ese: "had" }));
+    connection = withRun(run(STARTED, { check: "done", payment: "working", returns: "waiting" }));
     view.again();
     expect(runLine()[0].textContent).toBe("Checked your eBay account. 2 to make.");
 
-    connection = withRun(run(STARTED, { check: "done", tracked: "done", free: "working", ese: "had" }));
+    connection = withRun(run(STARTED, { check: "done", payment: "done", returns: "working" }));
     view.again();
-    expect(runLine()[0].textContent).toBe("Made NB Tracked (USPS Ground Advantage). 1 of 2 made.");
+    expect(runLine()[0].textContent).toBe("Made NB Payment. 1 of 2 made.");
     // The same ledger read again (a fresh array) is no news: the line holds, and stays one region.
-    connection = withRun(run(STARTED, { check: "done", tracked: "done", free: "working", ese: "had" }));
+    connection = withRun(run(STARTED, { check: "done", payment: "done", returns: "working" }));
     view.again();
     line = runLine();
     expect(line).toHaveLength(1);
-    expect(line[0].textContent).toBe("Made NB Tracked (USPS Ground Advantage). 1 of 2 made.");
-    expect(screen.getByRole("listitem", { name: "NB Envelope or Tracked (under $20), already on eBay" }).textContent).toBe(
-      "NB Envelope or Tracked (under $20), already on eBay",
-    );
+    expect(line[0].textContent).toBe("Made NB Payment. 1 of 2 made.");
     expect(document.activeElement).toBe(button);
   });
 
@@ -487,10 +386,13 @@ describe("Set me up's step ledger", () => {
     const view = renderAt();
     fireEvent.click(await screen.findByRole("button", { name: "Set me up" }));
     expect(runLine()[0].textContent).toBe("Setting you up…");
-    // The first read the page gets is already past the account check.
-    connection = withRun(run(STARTED, { check: "done", tracked: "working", free: "waiting", payment: "waiting", returns: "waiting", ese: "waiting" }));
+    // The first read the page gets is already past the account check, which found payment already there.
+    connection = withRun(run(STARTED, { check: "done", payment: "had", returns: "working" }));
     view.again();
-    expect(runLine()[0].textContent).toBe("Checked your eBay account. 5 to make.");
+    expect(runLine()[0].textContent).toBe("Checked your eBay account. 1 to make.");
+    expect(screen.getByRole("listitem", { name: "NB Payment, already on eBay" }).textContent).toBe(
+      "NB Payment, already on eBay",
+    );
   });
 
   it("Set me up again after a refusal speaks through the same status node, and the refusal leaves the alert", async () => {
@@ -511,55 +413,50 @@ describe("Set me up's step ledger", () => {
     expect(alert.textContent).toBe("");
   });
 
-  it("eBay turning the envelope down shows a warning on that step, and the answer is still the success line", async () => {
-    const made = [NAMES.tracked, NAMES.free, NAMES.payment, NAMES.returns];
+  it("the answer lands with every step ticked, no read of eBay after the run, and the ledger outlives the box", async () => {
     const view = renderAt();
     fireEvent.click(await screen.findByRole("button", { name: "Set me up" }));
-    connection = withRun(run(STARTED, { check: "done", tracked: "done", free: "done", payment: "done", returns: "done", ese: "working" }));
+    connection = withRun(run(STARTED, { check: "done", payment: "done", returns: "done" }));
     view.again();
-    connection = withRun(run(STARTED, { check: "done", tracked: "done", free: "done", payment: "done", returns: "done", ese: "failed" }));
-    view.again();
-    expect(runLine()[0].textContent).toBe("eBay said no to NB Envelope or Tracked (under $20).");
-    const refused = screen.getByRole("listitem", { name: "NB Envelope or Tracked (under $20), eBay said no" });
-    // Said on screen, not by colour and glyph alone.
-    expect(refused.textContent).toBe("NB Envelope or Tracked (under $20), eBay said no");
-
     const policies = {
-      fulfillment: [{ id: "n2", name: NAMES.tracked, eseFit: false, eseOnly: false, freeShipping: false, summary: "" }],
+      fulfillment: [],
       payment: [{ id: "p9", name: NAMES.payment }],
       returns: [{ id: "r9", name: NAMES.returns, summary: "" }],
     };
-    await act(async () => finish({ ok: true, created: made, envelopeRefused: true, policies }));
-    const answer = await screen.findByText(/^Made 4 on your eBay account/);
+    await act(async () => finish({ ok: true, created: [NAMES.payment, NAMES.returns], policies }));
+    const answer = await screen.findByText(/^Made 2 on your eBay account/);
     expect(answer.getAttribute("role")).toBe("status");
-    // The answer lands with every step ticked: no read of eBay after the run (only the page's opening one).
     expect(fns["ebayConnect:readPolicies"]).toHaveBeenCalledTimes(1);
     expect(spokenAlerts()).toEqual([]);
-    // The ledger outlives the Set me up box, so the warning stays beside the answer.
-    expect(screen.getByRole("listitem", { name: "NB Envelope or Tracked (under $20), eBay said no" })).toBeTruthy();
+    // Nothing missing now, so the box is gone; the ledger stays beside the answer.
+    expect(screen.queryByRole("button", { name: "Set me up" })).toBeNull();
+    expect(screen.getByRole("listitem", { name: "NB Returns (30 days), done" })).toBeTruthy();
   });
 
-  it("an earlier refusal: the step reads eBay said no, the rest not made, and the answer is the alert", async () => {
+  it("a refusal: the step reads eBay said no, the rest not made, and the answer is the alert", async () => {
     const view = renderAt();
     fireEvent.click(await screen.findByRole("button", { name: "Set me up" }));
-    connection = withRun(run(STARTED, { check: "done", tracked: "done", free: "failed", payment: "stopped", ese: "stopped" }));
+    connection = withRun(run(STARTED, { check: "done", payment: "failed", returns: "stopped" }));
     view.again();
-    await act(async () => finish({ ok: false, error: "eBay turned down the free shipping policy, so Set me up stopped there." }));
-    expect((await saidAlert()).textContent).toBe("eBay turned down the free shipping policy, so Set me up stopped there.");
-    expect(screen.getByRole("listitem", { name: "NB Free Shipping, eBay said no" })).toBeTruthy();
-    expect(screen.getByRole("listitem", { name: "NB Payment, not made" }).textContent).toBe("NB Payment, not made");
+    await act(async () => finish({ ok: false, error: "eBay turned down the payment policy, so Set me up stopped there." }));
+    expect((await saidAlert()).textContent).toBe("eBay turned down the payment policy, so Set me up stopped there.");
+    // Said on screen, not by colour and glyph alone.
+    expect(screen.getByRole("listitem", { name: "NB Payment, eBay said no" }).textContent).toBe("NB Payment, eBay said no");
+    expect(screen.getByRole("listitem", { name: "NB Returns (30 days), not made" }).textContent).toBe(
+      "NB Returns (30 days), not made",
+    );
   });
 
   it("a run that died under a step never leaves it spinning once the press is over", async () => {
     const view = renderAt();
     fireEvent.click(await screen.findByRole("button", { name: "Set me up" }));
-    connection = withRun(run(STARTED, { check: "done", tracked: "working", ese: "waiting" }));
+    connection = withRun(run(STARTED, { check: "done", payment: "working", returns: "waiting" }));
     view.again();
-    expect(screen.getByRole("listitem", { name: "NB Tracked (USPS Ground Advantage), working" })).toBeTruthy();
+    expect(screen.getByRole("listitem", { name: "NB Payment, working" })).toBeTruthy();
     await act(async () => finish(Promise.reject(new Error("boom"))));
     await saidAlert();
-    expect(screen.getByRole("listitem", { name: "NB Tracked (USPS Ground Advantage), eBay said no" })).toBeTruthy();
-    expect(screen.getByRole("listitem", { name: "NB Envelope or Tracked (under $20), not made" })).toBeTruthy();
+    expect(screen.getByRole("listitem", { name: "NB Payment, eBay said no" })).toBeTruthy();
+    expect(screen.getByRole("listitem", { name: "NB Returns (30 days), not made" })).toBeTruthy();
   });
 });
 
@@ -627,12 +524,15 @@ describe("Policy pickers", () => {
     fn("ebayConnect:savePolicies").mockResolvedValue({ ok: false, error: "That one didn't save." });
     renderAt();
     const under = await screen.findByRole("radiogroup", { name: "Cards under $20" });
-    expect(under.getAttribute("aria-describedby")).toBeNull();
+    // At rest the slot's hint describes it.
+    const hintId = under.getAttribute("aria-describedby");
+    expect(document.getElementById(hintId!)?.textContent).toBe("A policy with Standard Envelope or tracked shipping fits here.");
     await act(async () => {
       fireEvent.click(within(under).getByRole("radio", { name: "Tracked" }));
     });
     const alert = await saidAlert();
-    expect(under.getAttribute("aria-describedby")).toBe(alert.id);
+    // The refusal first, then the hint.
+    expect(under.getAttribute("aria-describedby")).toBe(`${alert.id} ${hintId}`);
   });
 
   it("a saved policy gone from the account is said in the live line, which describes the group", async () => {

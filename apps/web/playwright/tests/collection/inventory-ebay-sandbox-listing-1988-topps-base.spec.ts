@@ -23,10 +23,21 @@
 //      back to the page (Back returns).
 //   4. Setup: the weight of a single card set to 3 oz (Enter saves; a reload
 //      still shows it), Ships from, "Set me up" where the seller's account has
-//      nothing that fits (it makes NeonBinder's standard shipping, payment and
-//      returns policies on eBay), then a pick in each of Cards under $20 (NB's
-//      Envelope or Tracked policy), $20 and up, Payment and Returns; the
+//      no payment or returns policy (it makes NeonBinder's standard ones on
+//      eBay; it never makes shipping policies, NEO-423), then a pick in each of
+//      Cards under $20 and $20 and up from the seller's OWN shipping policies
+//      (see "Sandbox seller precondition" below), Payment and Returns; the
 //      checklist reads "You're all set". The weight stays 3 oz for the listing run.
+//
+// Sandbox seller precondition (also in SET-REGISTRY.md). NeonBinder no longer
+// makes shipping policies (eBay's sandbox refuses every create holding
+// Standard Envelope; NEO-423 tracks making them later), so the sandbox seller
+// account MUST already hold the fulfillment policy "NB Tracked (USPS Ground
+// Advantage)" and "NB Free Shipping" (both left there by earlier runs, when
+// Set me up still made them). The spec picks NB Tracked for cards under $20
+// and, after a pick of NB Free Shipping to prove a changed pick saves, NB
+// Tracked for $20 and up. If either is missing the spec fails naming it; add
+// it on the sandbox seller by hand (eBay's business policies), never in code.
 //   5. They set a common price, put one copy each of the first three 1988 Topps
 //      Base cards in the box and attach a photo to the first two only (eBay
 //      listings need one), press Sync, follow "See what's syncing" (Back
@@ -72,9 +83,10 @@
 // no card, player, team or variant of the set. Its NB writes are the signed-in
 // user's own rows (the eBay connection and setup, a minted box, three box copies
 // (a photo on two), the common price, and every other box set to in-person,
-// which is left that way). It makes NeonBinder's standard policies on the
-// sandbox seller's eBay account where it has none ("Set me up"); those stay on
-// eBay and are found again by the next run. The listings end taken down and the
+// which is left that way). It makes NeonBinder's standard payment and returns
+// policies on the sandbox seller's eBay account where it has none ("Set me
+// up"); those stay on eBay and are found again by the next run. It makes no
+// shipping policy. The listings end taken down and the
 // connection ends removed, on a pass by the steps and on a failure by the hook
 // on a second page (so the failure screenshot keeps the page that failed).
 //
@@ -111,13 +123,19 @@ const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const FIXTURES = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "fixtures", "intake");
 const PHOTOS = ["01-mcfadden-front.jpg", "03-bowe-front.jpg"] as const;
 
-/** NeonBinder's own policy names on the seller's eBay account (NB_POLICY_NAMES in convex/ebayConnect.ts: what "Set me up" makes). */
+/**
+ * The sandbox seller's own shipping policies the spec picks (made by hand or
+ * by an earlier NB that still made shipping policies; NB makes none now).
+ */
 const TRACKED_POLICY = "NB Tracked (USPS Ground Advantage)";
 const FREE_POLICY = "NB Free Shipping";
-/** The under-$20 policy: the buyer picks Standard Envelope or tracked. */
-const ENVELOPE_POLICY = "NB Envelope or Tracked (under $20)";
+/** Why a missing shipping policy fails the run: a sandbox-account precondition, not a product bug. */
+const mustHoldPolicy = (name: string, slot: string) =>
+  `the eBay sandbox seller must already hold the shipping policy "${name}" (offered under ${slot}). ` +
+  "NeonBinder no longer makes shipping policies (NEO-423), so add it on the sandbox seller's eBay account by hand " +
+  "(see the spec header and SET-REGISTRY.md)";
 
-/** At or above eBay's $0.99 floor, and under $20 (the Envelope or Tracked slot). */
+/** At or above eBay's $0.99 floor, and under $20 (the Cards under $20 slot). */
 const COMMON_PRICE = "1.00";
 /** A US address, the page's own example ZIP. */
 const SHIPS_FROM = { zip: "53703", city: "Madison", state: "WI" };
@@ -324,27 +342,27 @@ test(
     await expect(weight.getByRole("radio", { checked: true })).toHaveCount(1);
 
     // The seller's policies are read from eBay when the page opens (a live round
-    // trip). The read has finished when either "Set me up" (the account has
-    // nothing that fits a slot) or the first of the seller's own policies for
-    // Cards under $20 is on screen; only then is it decided which arm runs.
+    // trip). The read has finished when the first of the seller's own policies
+    // for Cards under $20 is on screen. The sandbox seller always has shipping
+    // policies (the precondition above), so the read landing IS that radio;
+    // "Set me up" renders in the same paint, so its presence is settled then.
     const underTwenty = page.getByRole("radiogroup", { name: "Cards under $20", exact: true });
     const setMeUp = page.getByRole("button", { name: "Set me up", exact: true });
-    await expect(setMeUp.or(underTwenty.getByRole("radio").first()).first()).toBeVisible();
+    await expect(underTwenty.getByRole("radio").first(), mustHoldPolicy(TRACKED_POLICY, "Cards under $20")).toBeVisible();
     await expect(page.getByRole("heading", { level: 3, name: "Ships from", exact: true })).toBeVisible();
     await expect(page.getByRole("heading", { level: 3, name: "Shipping", exact: true })).toBeVisible();
     await expect(page.getByRole("heading", { level: 3, name: "Payment and returns", exact: true })).toBeVisible();
     await expect(page.getByRole("heading", { level: 3, name: "Offers", exact: true })).toBeVisible();
     await expect(page.getByRole("checkbox", { name: "Take Best Offers", exact: true })).toBeChecked();
+    // Shipping is the seller's own pick: the page says so, and offers nothing that makes one.
+    await expect(
+      page.getByText(`Pick two of your own ${EBAY} shipping policies: one for cards under $20, one for $20 and up.`, { exact: true }),
+    ).toBeVisible();
 
-    // Ships from comes first: eBay prices each buyer's shipping from its ZIP, so
-    // "Set me up" waits for it (reachable but aria-disabled, and the server
-    // refuses too). Where Set me up is offered, it says so until the location
-    // is saved.
+    // Ships from comes first on the page. "Set me up" (offered only while the
+    // account has no payment or returns policy) waits for nothing: it makes no
+    // shipping policy, so it needs no ship-from address.
     const setMeUpOffered = await setMeUp.isVisible();
-    if (setMeUpOffered) {
-      await expect(setMeUp).toBeDisabled();
-      await expect(page.getByText(/^Save where you ship from first, up in Ships from\./)).toBeVisible();
-    }
     await expect(page.getByRole("button", { name: "Save location", exact: true })).toBeVisible();
     await page.getByRole("textbox", { name: "ZIP code", exact: true }).fill(SHIPS_FROM.zip);
     await page.getByRole("textbox", { name: "City", exact: true }).fill(SHIPS_FROM.city);
@@ -364,34 +382,29 @@ test(
     await expect(page.getByRole("textbox", { name: "ZIP code", exact: true })).toHaveValue(SHIPS_FROM.zip);
     await expectAccessible(page, { label: "Profile, eBay connected, location saved, policies still to pick" });
 
-    // "Set me up" is offered only where the seller's account has nothing that
-    // fits a slot: on a fresh sandbox seller it makes NeonBinder's standard
-    // policies on eBay; once they exist (an earlier run made them) it is gone
-    // and the seller's own policies are picked below. Both arms end by naming
-    // NeonBinder's tracked and free policies for the $20 and up slot.
+    // "Set me up" is offered only where the seller's account has no payment or
+    // no returns policy: it makes NeonBinder's standard ones on eBay (never a
+    // shipping policy); once they exist (an earlier run made them) it is gone.
     if (setMeUpOffered) {
       await expect(setMeUp).toBeEnabled();
       await setMeUp.click();
       // A live round trip to eBay per policy (each create takes seconds), so
       // the page ticks each step off as eBay answers: "Set me up, step by
-      // step", the account check first, then every policy in run order. Each
-      // wait below covers exactly ONE step landing, within the standard
+      // step", the account check first, then payment and returns in run order.
+      // Each wait below covers exactly ONE step landing, within the standard
       // budget (the sync ledger's pattern, `followRunToEnd`). The ledger is
       // this press's own run: the page never shows an earlier run's.
       const ledger = page.getByRole("list", { name: "Set me up, step by step", exact: true });
       await expect(ledger).toBeVisible();
       const steps = ledger.getByRole("listitem");
-      // The answer: "Made N on your eBay account …", or on a re-run where
-      // NeonBinder's policies already exist, "You already had everything".
-      // ("You already had the rest" is the answer only if eBay turned the
-      // Envelope or Tracked policy down, which the ledger asserts below never
-      // happens.) All of these are the success status line, never the error.
-      const answer = said(/^(Made \d+ on your eBay account|You already had everything|You already had the rest)/);
+      // The answer: "Made N on your eBay account …", or "You already had
+      // everything" on a re-run. Both are the success status line, never the error.
+      const answer = said(/^(Made \d+ on your eBay account|You already had everything)/);
       // Walked in run order (`nth` is the step's place in the run, which never
       // changes; the steps after the account check appear once it lands). One
-      // pass per step, at most six (the check and five policies); a step
+      // pass per step, at most three (the check, payment, returns); a step
       // already settled (done, or already on eBay) passes at once.
-      for (let i = 0; i < 7; i++) {
+      for (let i = 0; i < 4; i++) {
         const step = steps.nth(i);
         // Either this step is on the ledger, or every step has landed and the run has answered.
         await expect(step.or(answer).first()).toBeVisible();
@@ -404,47 +417,36 @@ test(
         await expect(step).toHaveAccessibleName(/, (done|eBay said no|already on eBay|not made)$/);
       }
       await expect(answer).toBeVisible();
-      // Every policy is made now or was already there; eBay refuses none, the
-      // Envelope or Tracked policy included (the under-$20 pick below needs it).
-      for (const name of [ENVELOPE_POLICY, TRACKED_POLICY, FREE_POLICY]) {
-        await expect(
-          ledger.getByRole("listitem", { name: new RegExp(`^${escapeRegExp(name)}, (done|already on eBay)$`) }),
-          `Set me up made NeonBinder's "${name}" policy on the sandbox seller (or it was already there)`,
-        ).toBeVisible();
-      }
+      // Every step is made now or was already there, and none of them is shipping.
       await expect(ledger.getByRole("listitem", { name: /, eBay said no$/ })).toHaveCount(0);
       await expect(ledger.getByRole("listitem", { name: /, (working|waiting|not made)$/ })).toHaveCount(0);
-    } else {
-      // The policies are already there: the seller's own are offered for the cheap cards.
-      await expect(underTwenty.getByRole("radio").first()).toBeVisible();
+      await expect(ledger.getByRole("listitem", { name: new RegExp(`^(${escapeRegExp(TRACKED_POLICY)}|${escapeRegExp(FREE_POLICY)}),`) })).toHaveCount(0);
     }
-    // $20 and up: a tracked policy, picked BY NAME (Standard Envelope only
-    // covers cards under $20, so the picker offers none). NeonBinder's own
-    // policy names are the ones "Set me up" makes (NB_POLICY_NAMES in
-    // convex/ebayConnect.ts). Free shipping first, then tracked: a pick that
-    // CHANGES the saved one saves (whatever "Set me up" picked), says "Saved.",
-    // and the second pick leaves tracked chosen.
+    // $20 and up: a tracked policy, picked BY NAME from the seller's own
+    // (Standard Envelope only covers cards under $20, so the picker offers no
+    // envelope-only policy). Free shipping first, then tracked: a pick that
+    // CHANGES the saved one saves, says "Saved.", and the second pick leaves
+    // tracked chosen.
     const twentyPlus = page.getByRole("radiogroup", { name: "$20 and up", exact: true });
     const free = twentyPlus.getByRole("radio", { name: FREE_POLICY, exact: true });
     const tracked = twentyPlus.getByRole("radio", { name: TRACKED_POLICY, exact: true });
-    await expect(free, `NeonBinder's "${FREE_POLICY}" policy is on the sandbox seller (Set me up makes it)`).toBeVisible();
+    await expect(free, mustHoldPolicy(FREE_POLICY, "$20 and up")).toBeVisible();
     await free.click();
     await expect(free).toBeChecked();
     // Saving a pick re-reads the seller's policies on eBay (a live round trip).
     await expect(said(/^Saved\.$/)).toBeVisible();
-    await expect(tracked, `NeonBinder's "${TRACKED_POLICY}" policy is on the sandbox seller (Set me up makes it)`).toBeVisible();
+    await expect(tracked, mustHoldPolicy(TRACKED_POLICY, "$20 and up")).toBeVisible();
     await tracked.click();
     await expect(tracked).toBeChecked();
     await expect(twentyPlus.getByRole("radio", { checked: true })).toHaveCount(1);
-    // Cards under $20 (the price this spec lists at): NeonBinder's Envelope
-    // or Tracked policy, picked BY NAME (the buyer picks Standard Envelope or
-    // tracked, each priced by eBay at the 3 oz saved above). Picking it every
-    // run (a click on the picked one changes nothing) means the listing below
-    // always goes up under it, whatever an earlier run left chosen.
-    const underTwentyEnvelope = underTwenty.getByRole("radio", { name: ENVELOPE_POLICY, exact: true });
-    await expect(underTwentyEnvelope, `NeonBinder's "${ENVELOPE_POLICY}" policy is offered for cards under $20`).toBeVisible();
-    await underTwentyEnvelope.click();
-    await expect(underTwentyEnvelope).toBeChecked();
+    // Cards under $20 (the price this spec lists at): the seller's NB Tracked
+    // policy, picked BY NAME (calculated Ground Advantage, priced by eBay at
+    // the 3 oz saved above). Every run starts from an empty setup (a
+    // disconnect clears it), so this pick always saves.
+    const underTwentyTracked = underTwenty.getByRole("radio", { name: TRACKED_POLICY, exact: true });
+    await expect(underTwentyTracked, mustHoldPolicy(TRACKED_POLICY, "Cards under $20")).toBeVisible();
+    await underTwentyTracked.click();
+    await expect(underTwentyTracked).toBeChecked();
     await expect(underTwenty.getByRole("radio", { checked: true })).toHaveCount(1);
     // The other two slots: the first of the seller's own policies, where
     // "Set me up" has not already picked one (a click on the picked one changes nothing).

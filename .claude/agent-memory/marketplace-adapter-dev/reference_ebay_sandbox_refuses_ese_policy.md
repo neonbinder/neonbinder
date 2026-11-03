@@ -26,8 +26,14 @@ Production sellers do carry eSE policies (CALCULATED, carrier "eBay Send"),
 but those were made in Seller Hub, not through the API, so API creation on
 production is plausible but unproven.
 
+Confirmed by hand (Jason, 2026-11, eBay's API Explorer): any create naming
+eSE is refused, whatever carrier or cost type. So Set me up stopped making
+shipping policies altogether (NEO-423 tracks bringing them back); the seller
+picks their own shipping policies, and only payment/returns are made.
+
 **How to apply:** never "fix" a sandbox 20403 on eSE by changing the body or
-switching to FLAT_RATE; the `ebay_policy_service_refused` log line in
-`ebayConnect.ts` records what the metadata said. Sandbox E2E must prove the
-listing flow without eSE. See [[action-stubs-pin-old-return-shapes]] for the
+switching to FLAT_RATE. The policy read logs the raw fulfillment-policy body
+(`ebay_fulfillment_policies_raw`, temporary for NEO-423) to see what eSE
+policies made elsewhere carry. Sandbox E2E must prove the listing flow
+without NB-made eSE. See [[action-stubs-pin-old-return-shapes]] for the
 adapter-shape rule if the metadata narrowing changes again.

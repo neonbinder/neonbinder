@@ -1,5 +1,6 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ChangeEvent } from "react";
 import { useAction, useMutation } from "convex/react";
+import { ArrowTopRightOnSquareIcon } from "@heroicons/react/24/outline";
 import { api } from "@/convex/_generated/api";
 import NeonButton from "@/components/modules/NeonButton";
 import { Input } from "@/components/primitives/Input";
@@ -9,7 +10,6 @@ import { RunGlyph, type RunLineKind } from "@/components/modules/RunLedger";
 import {
   hiddenFrom20Plus,
   isZip,
-  needsStandardPolicies,
   over20Options,
   paymentOptions,
   returnOptions,
@@ -19,7 +19,6 @@ import {
   setupLandedLine,
   setupStepName,
   shownSetupStatus,
-  standardPicks,
   under20Options,
   type EbayConnectionState,
   type EbayLocation,
@@ -43,8 +42,9 @@ import { refusalSentence } from "./refusal";
  * eBay. Every save is the server's: a refusal comes back as NB's sentence
  * and is said in an alert.
  *
- * Ships from comes first: eBay prices each buyer's shipping from its ZIP, so
- * "Set me up" waits for it (the server refuses until it's saved).
+ * Ships from comes first: eBay shows it on every listing. Shipping is always
+ * the seller's own pick from their own eBay policies; Set me up makes only
+ * payment and returns (NEO-423 tracks NB making shipping policies).
  *
  * Until the setup is done the checklist leads, right under the connection,
  * and each step is a link that focuses its section's heading; done, it folds
@@ -72,14 +72,6 @@ type SetupLine = { kind: "progress" | "ok" | "error"; text: string } | null;
 type Loaded = { state: "loading" } | { state: "error"; error: string } | { state: "ready"; policies: EbayPolicies };
 
 const READ_FAILED = `Couldn't reach ${EBAY_NAME} for your policies. Give it another try.`;
-/**
- * Set me up made the policies, but reading them back to pick them failed: Try
- * again picks, and makes nothing. The read's cause isn't always eBay, so the
- * line never blames it.
- */
-const MADE_NOT_PICKED =
-  "Your new policies are made, but we couldn't read them back just now, so nothing's picked yet. Give it a bit, then press Try again to pick them. It won't make them twice.";
-
 /** The connection as `ebayConnect.connectionState` answers it: the setup, plus the weight of a single card. */
 export type EbayConnection = EbayConnectionState & { cardWeightOz: number };
 
@@ -152,6 +144,11 @@ export default function SetupSections({ connection }: { connection: EbayConnecti
  * Shipping, then Payment and returns: both cards with their final headings
  * from the start, so the page never changes shape when eBay answers. The
  * read's progress or failure sits in the first.
+ *
+ * Shipping is always the seller's own pick from their own eBay shipping
+ * policies (NB makes none: NEO-423). With none on the account at all, the
+ * card says so, links out to make one on eBay, and offers a fresh read for
+ * when they're back.
  */
 function PoliciesBody({
   loaded,
@@ -182,26 +179,26 @@ function PoliciesBody({
   const run = pressedOver !== undefined && progress && progress.startedAt !== pressedOver ? progress : null;
   const running = setupLine?.kind === "progress";
   const landed = useLandedLine(run);
-  const shippingHeading = useRef<HTMLHeadingElement>(null);
-  const [focusShipping, setFocusShipping] = useState(0);
+  const moneyHeading = useRef<HTMLHeadingElement>(null);
+  const [focusMoney, setFocusMoney] = useState(0);
   useEffect(() => {
-    // The Set me up button may be gone: land on Shipping, where the picks now show.
-    if (focusShipping > 0) shippingHeading.current?.focus();
-  }, [focusShipping]);
+    // The Set me up button may be gone: land on Payment and returns, where the picks now show.
+    if (focusMoney > 0) moneyHeading.current?.focus();
+  }, [focusMoney]);
 
   const policies = loaded.state === "ready" ? loaded.policies : null;
   const hidden = policies ? hiddenFrom20Plus(policies) : 0;
+  const sandbox = connection.environment === "sandbox";
 
   return (
     <>
       <section aria-labelledby={shippingId} className={SECTION}>
         <div>
-          <h3 ref={shippingHeading} id={shippingId} tabIndex={-1} className={LANDING}>
+          <h3 id={shippingId} tabIndex={-1} className={LANDING}>
             Shipping
           </h3>
           <p className={`${NOTE} mt-1`}>
-            Pick from your own {EBAY_NAME} shipping policies. Cards under $20 can ride Standard Envelope; $20 and up
-            need a tracked service.
+            Pick two of your own {EBAY_NAME} shipping policies: one for cards under $20, one for $20 and up.
           </p>
         </div>
         {loaded.state === "loading" && (
@@ -219,39 +216,68 @@ function PoliciesBody({
             </NeonButton>
           </div>
         )}
+        {policies && policies.fulfillment.length === 0 && <NoShippingPolicies sandbox={sandbox} reread={reread} />}
+        {policies && policies.fulfillment.length > 0 && (
+          <>
+            <PolicyPicker
+              label="Cards under $20"
+              options={under20Options(policies)}
+              saved={settings.fulfillmentPolicyUnder20Id}
+              onSave={(id) => save({ fulfillmentPolicyUnder20Id: id })}
+              emptyLine={`No shipping policies on your ${EBAY_NAME} account yet.`}
+              hint={UNDER_20_HINT}
+            />
+            <PolicyPicker
+              label="$20 and up"
+              options={over20Options(policies)}
+              saved={settings.fulfillmentPolicy20PlusId}
+              onSave={(id) => save({ fulfillmentPolicy20PlusId: id })}
+              emptyLine={`Nothing here can ship a $20 card yet. Standard Envelope only covers cards under $20.`}
+              hint={OVER_20_HINT}
+            >
+              {hidden > 0 && policies.fulfillment.length > hidden && (
+                <p className={NOTE}>
+                  {hidden === 1 ? "One Standard Envelope policy sits" : `${hidden} Standard Envelope policies sit`} this
+                  one out: Standard Envelope only covers cards under $20.
+                </p>
+              )}
+              {policies.fulfillment.length === hidden && <MakeOnEbay sandbox={sandbox} reread={reread} what="tracked" />}
+            </PolicyPicker>
+          </>
+        )}
+      </section>
+
+      <section aria-labelledby={moneyId} className={SECTION}>
+        <div>
+          <h3 ref={moneyHeading} id={moneyId} tabIndex={-1} className={LANDING}>
+            Payment and returns
+          </h3>
+          <p className={`${NOTE} mt-1`}>Your {EBAY_NAME} policies again. Every card NeonBinder lists uses these.</p>
+        </div>
         {policies && (
           <>
-        <PolicyPicker
-          label="Cards under $20"
-          options={under20Options(policies)}
-          saved={settings.fulfillmentPolicyUnder20Id}
-          onSave={(id) => save({ fulfillmentPolicyUnder20Id: id })}
-          emptyLine={`No shipping policies on your ${EBAY_NAME} account yet.`}
-        />
-        <PolicyPicker
-          label="$20 and up"
-          options={over20Options(policies)}
-          saved={settings.fulfillmentPolicy20PlusId}
-          onSave={(id) => save({ fulfillmentPolicy20PlusId: id })}
-          emptyLine={`Nothing here can ship a $20 card yet. Standard Envelope only covers cards under $20.`}
-        >
-          {hidden > 0 && policies.fulfillment.length > hidden && (
-            <p className={NOTE}>
-              {hidden === 1 ? "One Standard Envelope policy sits" : `${hidden} Standard Envelope policies sit`} this one
-              out: Standard Envelope only covers cards under $20.
-            </p>
-          )}
-        </PolicyPicker>
-        {needsStandardPolicies(policies) && (
-          <SetMeUp
-            connection={connection}
-            save={save}
-            setLoaded={setLoaded}
-            setLine={setSetupLine}
-            onStart={() => setPressedOver(connection.setupProgress?.startedAt ?? null)}
-            onDone={() => setFocusShipping((n) => n + 1)}
-          />
-        )}
+            <PolicyPicker
+              label="Payment"
+              options={paymentOptions(policies)}
+              saved={settings.paymentPolicyId}
+              onSave={(id) => save({ paymentPolicyId: id })}
+              emptyLine={`No payment policy on your ${EBAY_NAME} account yet. Set me up, just below, makes one.`}
+            />
+            <PolicyPicker
+              label="Returns"
+              options={returnOptions(policies)}
+              saved={settings.returnPolicyId}
+              onSave={(id) => save({ returnPolicyId: id })}
+              emptyLine={`No returns policy on your ${EBAY_NAME} account yet. Set me up, just below, makes one.`}
+            />
+            {needsSetMeUp(policies) && (
+              <SetMeUp
+                setLoaded={setLoaded}
+                setLine={setSetupLine}
+                onStart={() => setPressedOver(connection.setupProgress?.startedAt ?? null)}
+                onDone={() => setFocusMoney((n) => n + 1)}
+              />
+            )}
           </>
         )}
         {/* Outside the Set me up box, so the run's ledger outlives the box once nothing is missing. */}
@@ -275,165 +301,136 @@ function PoliciesBody({
           {setupLine?.kind === "error" ? setupLine.text : ""}
         </p>
       </section>
-
-      <section aria-labelledby={moneyId} className={SECTION}>
-        <div>
-          <h3 id={moneyId} tabIndex={-1} className={LANDING}>
-            Payment and returns
-          </h3>
-          <p className={`${NOTE} mt-1`}>Your {EBAY_NAME} policies again. Every card NeonBinder lists uses these.</p>
-        </div>
-        {policies && (
-          <>
-        <PolicyPicker
-          label="Payment"
-          options={paymentOptions(policies)}
-          saved={settings.paymentPolicyId}
-          onSave={(id) => save({ paymentPolicyId: id })}
-          emptyLine={`No payment policy on your ${EBAY_NAME} account yet. Set me up, under Shipping, makes one.`}
-        />
-        <PolicyPicker
-          label="Returns"
-          options={returnOptions(policies)}
-          saved={settings.returnPolicyId}
-          onSave={(id) => save({ returnPolicyId: id })}
-          emptyLine={`No returns policy on your ${EBAY_NAME} account yet. Set me up, under Shipping, makes one.`}
-        />
-          </>
-        )}
-      </section>
     </>
   );
 }
 
-/**
- * "Set me up": makes NB's standard policies on the seller's eBay account
- * (one for cards under $20 that lets the buyer pick Standard Envelope or
- * tracked, tracked Ground Advantage for $20 and up, both priced by eBay for
- * the card's weight, free shipping, and payment and returns only
- * where there are none), and picks them for any slot still empty from the
- * policy lists the run hands back (no second read of eBay). A slot already
- * picked stays put.
- *
- * Waits for Ships from: eBay prices each buyer's shipping from that ZIP, so
- * until it's saved the button stays (reachable, `aria-disabled`, never
- * hidden) and a line beside it, which describes it, says to save that first.
- *
- * Made but not picked (the pick failed after the run made its policies): the
- * box stays, says so, and its button becomes "Try again", which reads the
- * policies from eBay and picks without making anything twice. Focus
- * stays on that button; on success it moves to the Shipping heading.
- */
-/** eBay turned down the under-$20 (Standard Envelope or tracked) policy; everything else Set me up does still happened. */
-const NO_ENVELOPE = `${EBAY_NAME} wouldn't make the Envelope or Tracked policy, so pick one of yours for cards under $20.`;
+/** What fits each shipping slot, said under its cards. */
+const UNDER_20_HINT = "A policy with Standard Envelope or tracked shipping fits here.";
+const OVER_20_HINT = "Ship these tracked: pick a policy with a tracked service.";
 
-/** What Set me up says when it's done: what it made, and whether cards under $20 are still the collector's pick. */
-function setMeUpDone(created: readonly string[], envelopeRefused: boolean): string {
-  if (created.length === 0) return envelopeRefused ? `You already had the rest. ${NO_ENVELOPE}` : "You already had everything. Pick away.";
-  const made = `Made ${created.length} on your ${EBAY_NAME} account: ${created.join(", ")}. Picked where you had nothing yet.`;
-  return envelopeRefused ? `${made} ${NO_ENVELOPE}` : made;
+/** eBay's business policies page, where a seller makes shipping policies (the sandbox's own on a sandbox connection). */
+function ebayPoliciesUrl(sandbox: boolean): string {
+  return `${sandbox ? "https://www.sandbox.ebay.com" : "https://www.ebay.com"}/bp/manage`;
+}
+
+/**
+ * The way out to eBay to make a shipping policy, and back: a link that opens
+ * eBay's business policies in a new tab, and a fresh read of the account for
+ * when the new policy is made (or was there all along).
+ */
+function MakeOnEbay({ sandbox, reread, what }: { sandbox: boolean; reread: () => void; what: "shipping" | "tracked" }) {
+  return (
+    <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
+      <a
+        href={ebayPoliciesUrl(sandbox)}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="inline-flex min-h-6 items-center gap-1 rounded-sm py-0.5 text-sm font-medium text-neon-blue-text underline focus-outline max-sm:min-h-11"
+      >
+        Make a {what} policy on {EBAY_NAME}
+        <ArrowTopRightOnSquareIcon aria-hidden="true" className="h-4 w-4" />
+        <span className="sr-only"> (opens in a new tab)</span>
+      </a>
+      <NeonButton type="button" variant="secondary" outline onClick={reread} className="max-sm:min-h-11">
+        Check {EBAY_NAME} again
+      </NeonButton>
+    </div>
+  );
+}
+
+/** The account holds no shipping policy at all: nothing to pick until the seller makes one on eBay. */
+function NoShippingPolicies({ sandbox, reread }: { sandbox: boolean; reread: () => void }) {
+  return (
+    <div className="flex flex-col gap-3 rounded-md border border-dashed border-rule-strong p-4">
+      <p className="text-sm text-ink">No shipping policies on your {EBAY_NAME} account yet.</p>
+      <p className={NOTE}>
+        Make one on {EBAY_NAME}, then check again here. Under $20, Standard Envelope or tracked fits; $20 and up
+        should ship tracked. One tracked policy can cover both.
+      </p>
+      <MakeOnEbay sandbox={sandbox} reread={reread} what="shipping" />
+    </div>
+  );
+}
+
+/** Set me up is offered while the account has no payment policy or no returns policy. */
+function needsSetMeUp(policies: EbayPolicies): boolean {
+  return policies.payment.length === 0 || policies.returns.length === 0;
+}
+
+/**
+ * "Set me up": makes NB's standard payment and returns policies on the
+ * seller's eBay account, only where there are none (never shipping: the
+ * seller picks their own, NEO-423). The server fills any payment or returns
+ * slot still empty as part of the run (a slot already picked stays put), so
+ * the pickers show the picks as soon as the connection state catches up; the
+ * page saves nothing itself. The run hands back the account's policy lists,
+ * so the pickers offer what it made without a second read of eBay.
+ *
+ * Offered whenever payment or returns is missing; it waits for nothing else.
+ * On success focus moves to the Payment and returns heading (the box may be
+ * gone); on a refusal or a failure it stays on the button.
+ */
+/** What Set me up says when it's done: what it made, if anything. */
+function setMeUpDone(created: readonly string[]): string {
+  if (created.length === 0) return "You already had everything. Pick away.";
+  return `Made ${created.length} on your ${EBAY_NAME} account: ${created.join(", ")}. Picked where you had nothing yet.`;
 }
 
 function SetMeUp({
-  connection,
-  save,
   setLoaded,
   setLine,
   onStart,
   onDone,
 }: {
-  connection: EbayConnectionState;
-  save: (picks: EbayPolicyPicks) => Promise<SaveAnswer>;
   setLoaded: (next: Loaded) => void;
   setLine: (line: SetupLine) => void;
-  /** A run on eBay is about to start (not a Try again, which only reads): its ledger is the one to show. */
+  /** A run on eBay is about to start: its ledger is the one to show. */
   onStart: () => void;
   onDone: () => void;
 }) {
   const create = useAction(api.ebayConnect.createStandardPolicies);
-  const readPolicies = useAction(api.ebayConnect.readPolicies);
   const [busy, setBusy] = useState(false);
-  /** What the last run made, when reading it back failed: a retry picks from these. */
-  const [made, setMade] = useState<string[] | null>(null);
-  /** The last run's eBay turned the under-$20 policy down (kept for a retry of the read). */
-  const [envelopeRefused, setEnvelopeRefused] = useState(false);
   const describeId = useId();
-  const waitId = useId();
-  // Matches the server's own gate (`ebaySetupMissing`): no saved ship-from, no Set me up.
-  const needsLocation = connection.missing.includes("location");
 
   const run = async () => {
-    if (busy || needsLocation) return;
+    if (busy) return;
     setBusy(true);
     setLine({ kind: "progress", text: "Setting you up…" });
-    let created = made;
-    let noEnvelope = envelopeRefused;
     try {
-      let read: EbayPolicies;
-      if (created === null) {
-        onStart();
-        const answer = await create({});
-        if (!answer.ok) {
-          setLine({ kind: "error", text: answer.error });
-          return;
-        }
-        created = answer.created;
-        noEnvelope = answer.envelopeRefused === true;
-        setEnvelopeRefused(noEnvelope);
-        // The run hands back the account's policies, made ones included: no second trip to eBay.
-        read = answer.policies;
-      } else {
-        // Try again after a run that made its policies but never picked them: read, pick, make nothing.
-        const again = await readPolicies({});
-        if (!again.ok) {
-          // One message of our own, not the read's sentence with ours stuck on (both said "Try again"): what's
-          // done, what isn't, and what the button does now. The connection's own state says any lost sign-in.
-          setLine({ kind: "error", text: MADE_NOT_PICKED });
-          return;
-        }
-        read = again;
+      onStart();
+      const answer = await create({});
+      if (!answer.ok) {
+        setLine({ kind: "error", text: answer.error });
+        return;
       }
-      const picks = standardPicks(connection.settings, read, created);
-      const saved = Object.keys(picks).length > 0 ? await save(picks) : ({ ok: true } as const);
-      setMade(null);
-      setLoaded({ state: "ready", policies: read });
-      setLine(saved.ok ? { kind: "ok", text: setMeUpDone(created, noEnvelope) } : { kind: "error", text: saved.error });
+      // The run hands back the account's policies, made ones included: no second trip to eBay.
+      setLoaded({ state: "ready", policies: answer.policies });
+      setLine({ kind: "ok", text: setMeUpDone(answer.created) });
       onDone();
     } catch {
-      if (created !== null) setMade(created);
       setLine({ kind: "error", text: `Couldn't set up your ${EBAY_NAME} policies. Give it another try.` });
     } finally {
       setBusy(false);
     }
   };
 
-  const label = made !== null ? "Try again" : "Set me up";
   return (
     <div className="space-y-3 rounded-md border border-dashed border-rule-strong p-4">
       <p id={describeId} className="text-sm text-ink-2">
-        Nothing here fits? Set me up makes three shipping policies on your {EBAY_NAME} account. Under $20, the buyer
-        picks Standard Envelope or tracked; $20 and up ships tracked with USPS Ground Advantage; and there&apos;s free
-        shipping too. On the first two, buyers pay{` ${EBAY_NAME}'s `}own rate for the card&apos;s weight. It adds
-        payment and returns too if you have none. Then it picks them for you.
+        Missing one? Set me up makes NeonBinder&apos;s standard payment and returns policies on your {EBAY_NAME}{" "}
+        account, only the ones you don&apos;t have, then picks them for you. Shipping stays your pick.
       </p>
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-        <NeonButton
-          type="button"
-          onClick={() => void run()}
-          aria-disabled={busy || needsLocation || undefined}
-          aria-busy={busy || undefined}
-          aria-describedby={needsLocation ? `${waitId} ${describeId}` : describeId}
-          className="max-sm:min-h-11"
-        >
-          {busy ? "Setting you up…" : label}
-        </NeonButton>
-        {needsLocation && (
-          <p id={waitId} className="text-sm text-ink-2">
-            Save where you ship from first, up in Ships from. {EBAY_NAME} prices each buyer&apos;s shipping from your
-            ZIP.
-          </p>
-        )}
-      </div>
+      <NeonButton
+        type="button"
+        onClick={() => void run()}
+        aria-disabled={busy || undefined}
+        aria-busy={busy || undefined}
+        aria-describedby={describeId}
+        className="max-sm:min-h-11"
+      >
+        {busy ? "Setting you up…" : "Set me up"}
+      </NeonButton>
     </div>
   );
 }

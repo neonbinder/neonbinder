@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
   hiddenFrom20Plus,
   isZip,
-  needsStandardPolicies,
   over20Options,
   paymentOptions,
   returnOptions,
@@ -28,11 +27,12 @@ const EMPTY: EbaySettings = {
   bestOffer: true,
 };
 
+/** The account after Set me up: the seller's own shipping policies, and the payment and returns NB made. */
 const MADE: EbayPolicies = {
   fulfillment: [
-    { id: "ese", name: "NB Standard Envelope (under $20)", eseFit: true, eseOnly: true, freeShipping: false, summary: "" },
-    { id: "free", name: "NB Free Shipping", eseFit: false, eseOnly: false, freeShipping: true, summary: "" },
-    { id: "trk", name: "NB Tracked (USPS Ground Advantage)", eseFit: false, eseOnly: false, freeShipping: false, summary: "" },
+    { id: "ese", name: "My envelope", eseFit: true, eseOnly: true, freeShipping: false, summary: "" },
+    { id: "free", name: "My free shipping", eseFit: false, eseOnly: false, freeShipping: true, summary: "" },
+    { id: "trk", name: "My tracked", eseFit: false, eseOnly: false, freeShipping: false, summary: "" },
     { id: "mine", name: "My old policy", eseFit: false, eseOnly: false, freeShipping: false, summary: "" },
   ],
   payment: [{ id: "pay", name: "NB Payment" }],
@@ -41,7 +41,7 @@ const MADE: EbayPolicies = {
     { id: "ret", name: "NB Returns", summary: "" },
   ],
 };
-const CREATED = ["NB Standard Envelope (under $20)", "NB Tracked (USPS Ground Advantage)", "NB Free Shipping", "NB Payment", "NB Returns"];
+const CREATED = ["NB Payment", "NB Returns"];
 
 describe("eBay setup helpers (NEO-415)", () => {
   it("$20 and up never offers a Standard Envelope-only policy", () => {
@@ -50,33 +50,23 @@ describe("eBay setup helpers (NEO-415)", () => {
     expect(under20Options(MADE)[0].description).toBe("Takes Standard Envelope.");
   });
 
-  it("Set me up is offered only when a slot has nothing that fits", () => {
-    expect(needsStandardPolicies(MADE)).toBe(false);
-    expect(needsStandardPolicies({ ...MADE, payment: [] })).toBe(true);
-    expect(needsStandardPolicies({ ...MADE, fulfillment: MADE.fulfillment.filter((p) => !p.eseFit) })).toBe(true);
-    expect(needsStandardPolicies({ ...MADE, fulfillment: MADE.fulfillment.filter((p) => p.eseOnly) })).toBe(true);
-  });
-
-  it("after Set me up, empty slots take what it made: tracked (not free) for $20 and up", () => {
-    expect(standardPicks(EMPTY, MADE, CREATED)).toEqual({
-      fulfillmentPolicyUnder20Id: "ese",
-      fulfillmentPolicy20PlusId: "trk",
-      paymentPolicyId: "pay",
-      returnPolicyId: "ret",
-    });
+  it("after Set me up, the empty payment and returns slots take what it made; shipping is never picked for the collector", () => {
+    expect(standardPicks(EMPTY, MADE, CREATED)).toEqual({ paymentPolicyId: "pay", returnPolicyId: "ret" });
+    // Even a shipping policy whose name Set me up reported is never picked (NB makes none, NEO-423).
+    const picks = standardPicks(EMPTY, MADE, [...CREATED, "My envelope", "My tracked"]);
+    expect(picks).not.toHaveProperty("fulfillmentPolicyUnder20Id");
+    expect(picks).not.toHaveProperty("fulfillmentPolicy20PlusId");
   });
 
   it("never changes a slot already picked, and never picks a policy it didn't make", () => {
-    const settings = { ...EMPTY, fulfillmentPolicy20PlusId: "mine", returnPolicyId: "ret-old" };
-    expect(standardPicks(settings, MADE, ["NB Standard Envelope (under $20)"])).toEqual({
-      fulfillmentPolicyUnder20Id: "ese",
+    const settings = { ...EMPTY, returnPolicyId: "ret-old" };
+    expect(standardPicks(settings, MADE, [])).toEqual({
       // The only payment policy there is.
       paymentPolicyId: "pay",
     });
   });
 
   it("the checklist ticks off what isn't missing, in the page's order", () => {
-    // Ships from leads: Set me up prices shipping from its ZIP.
     expect(setupChecklist(["payment", "location"]).map((s) => [s.gap, s.done])).toEqual([
       ["location", false],
       ["shippingUnder20", true],
@@ -129,23 +119,12 @@ describe("eBay setup helpers (NEO-415)", () => {
     ]);
   });
 
-  it("an account with no policies offers empty pickers and always needs Set me up", () => {
+  it("an account with no policies offers empty pickers and picks nothing", () => {
     const none: EbayPolicies = { fulfillment: [], payment: [], returns: [] };
     expect(under20Options(none)).toEqual([]);
     expect(over20Options(none)).toEqual([]);
     expect(hiddenFrom20Plus(none)).toBe(0);
-    expect(needsStandardPolicies(none)).toBe(true);
     expect(standardPicks(EMPTY, none, CREATED)).toEqual({});
-  });
-
-  it("$20 and up falls back to the free-shipping policy when the tracked one is the only choice left, never to a Standard Envelope-only one", () => {
-    const onlyFree: EbayPolicies = {
-      ...MADE,
-      fulfillment: MADE.fulfillment.filter((p) => p.id === "ese" || p.id === "free"),
-    };
-    expect(standardPicks(EMPTY, onlyFree, CREATED).fulfillmentPolicy20PlusId).toBe("free");
-    const onlyEse: EbayPolicies = { ...MADE, fulfillment: MADE.fulfillment.filter((p) => p.id === "ese") };
-    expect(standardPicks(EMPTY, onlyEse, CREATED).fulfillmentPolicy20PlusId).toBeUndefined();
   });
 
   it("with several payment or return policies and none made, those slots stay for the collector", () => {
@@ -154,7 +133,7 @@ describe("eBay setup helpers (NEO-415)", () => {
       payment: [{ id: "p1", name: "One" }, { id: "p2", name: "Two" }],
       returns: [{ id: "r1", name: "One", summary: "" }, { id: "r2", name: "Two", summary: "" }],
     };
-    const picks = standardPicks(EMPTY, several, ["NB Standard Envelope (under $20)"]);
+    const picks = standardPicks(EMPTY, several, []);
     expect(picks.paymentPolicyId).toBeUndefined();
     expect(picks.returnPolicyId).toBeUndefined();
   });
@@ -173,37 +152,35 @@ describe("eBay setup helpers (NEO-415)", () => {
 });
 
 describe("Set me up's ledger words", () => {
-  const LABEL = { check: "Check your eBay account", tracked: "NB Tracked", free: "NB Free Shipping", ese: "NB Envelope" } as const;
+  const LABEL = { check: "Check your eBay account", payment: "NB Payment", returns: "NB Returns (30 days)" } as const;
   const steps = (statuses: Partial<Record<keyof typeof LABEL, EbaySetupStepStatus>>): EbaySetupStep[] =>
     (Object.keys(statuses) as Array<keyof typeof LABEL>).map((step) => ({ step, label: LABEL[step], status: statuses[step]! }));
 
   it("names a step by its label and state, in words", () => {
-    expect(setupStepName("NB Free Shipping", "done")).toBe("NB Free Shipping, done");
-    expect(setupStepName("NB Envelope", "failed")).toBe("NB Envelope, eBay said no");
-    expect(setupStepName("NB Tracked", "had")).toBe("NB Tracked, already on eBay");
-    expect(setupStepName("NB Tracked", "stopped")).toBe("NB Tracked, not made");
+    expect(setupStepName("NB Payment", "done")).toBe("NB Payment, done");
+    expect(setupStepName("NB Returns (30 days)", "failed")).toBe("NB Returns (30 days), eBay said no");
+    expect(setupStepName("NB Payment", "had")).toBe("NB Payment, already on eBay");
+    expect(setupStepName("NB Payment", "stopped")).toBe("NB Payment, not made");
   });
 
   it("the account check landing says how many are to make, or that there's nothing to make", () => {
-    expect(setupLandedLine(steps({ check: "working" }), steps({ check: "done", tracked: "working", free: "waiting", ese: "had" }))).toBe(
+    expect(setupLandedLine(steps({ check: "working" }), steps({ check: "done", payment: "working", returns: "waiting" }))).toBe(
       "Checked your eBay account. 2 to make.",
     );
-    expect(setupLandedLine(steps({ check: "working" }), steps({ check: "done", tracked: "had", free: "had", ese: "had" }))).toBe(
-      "Checked your eBay account. You've got them all.",
-    );
+    expect(setupLandedLine(steps({ check: "working" }), steps({ check: "done" }))).toBe("Checked your eBay account. You've got them all.");
   });
 
   it("a made policy counts what's made of what's to make; nothing landed says nothing", () => {
-    const before = steps({ check: "done", tracked: "working", free: "waiting", ese: "waiting" });
-    const after = steps({ check: "done", tracked: "done", free: "working", ese: "waiting" });
-    expect(setupLandedLine(before, after)).toBe("Made NB Tracked. 1 of 3 made.");
+    const before = steps({ check: "done", payment: "working", returns: "waiting" });
+    const after = steps({ check: "done", payment: "done", returns: "working" });
+    expect(setupLandedLine(before, after)).toBe("Made NB Payment. 1 of 2 made.");
     expect(setupLandedLine(after, after)).toBe("");
   });
 
   it("a snag outranks a check mark landing in the same read", () => {
-    const before = steps({ check: "done", tracked: "working", free: "waiting", ese: "waiting" });
-    const after = steps({ check: "done", tracked: "done", free: "failed", ese: "stopped" });
-    expect(setupLandedLine(before, after)).toBe("eBay said no to NB Free Shipping.");
+    const before = steps({ check: "done", payment: "working", returns: "waiting" });
+    const after = steps({ check: "done", payment: "done", returns: "failed" });
+    expect(setupLandedLine(before, after)).toBe("eBay said no to NB Returns (30 days).");
   });
 
   it("a failed account check says nothing (the error alert does)", () => {

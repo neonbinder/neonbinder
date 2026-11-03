@@ -14,10 +14,11 @@
  *
  * Connected = listing (NEO-370 Revision 5), but nothing reaches eBay until
  * the collector's settings are complete (`lib/ebayListing.ebaySetupMissing`):
- * two shipping policies (cards under $20, and $20 and up), a payment and a
- * return policy (the collector's OWN eBay business policies, read in, or
- * NB's standard ones made on their account by "Set me up"), and a ship-from
- * location. Until then the drain refuses with `setupIncomplete`
+ * two shipping policies (cards under $20, and $20 and up; always the
+ * collector's OWN eBay business policies, picked here, since NB makes no
+ * shipping policy until NEO-423), a payment and a return policy (the
+ * collector's own, or NB's standard ones made on their account by "Set me
+ * up" when they have none), and a ship-from location. Until then the drain refuses with `setupIncomplete`
  * (`listingDrain.claimDrain`) and the queue waits. A settings save re-queues
  * the owner's listed boxes so every live listing picks the change up.
  *
@@ -48,20 +49,12 @@ import { kickListingDrain, listingStateOf, pushesCounts, stopListingForSite } fr
 import { platformSettings } from "./listingSync";
 import { ebayAuthorizeUrl, ebayConfig, ebayConfigured, type EbayEnvironment } from "./lib/ebayEnv";
 import {
-  EBAY_COST_TYPE_CALCULATED,
-  EBAY_COST_TYPE_FLAT_RATE,
   EBAY_DEFAULT_CARD_WEIGHT_OZ,
-  EBAY_ESE_CARRIER,
-  EBAY_ESE_SERVICE_CODE,
   EBAY_MAX_CARD_WEIGHT_OZ,
   EBAY_MARKETPLACE_ID,
   EBAY_MERCHANT_LOCATION_KEY,
-  EBAY_USPS_CARRIER_FALLBACK,
-  ebayGroundAdvantageService,
-  ebayServiceCarrier,
   ebayServiceNames,
   ebaySetupMissing,
-  ebayServiceTakesCalculated,
   isRecord,
   isUsPostalCode,
   isValidCardWeightOz,
@@ -80,12 +73,10 @@ import {
   getShippingServices,
   openEbaySellerSession,
   optInToProgram,
-  redactEbayText,
   sayEbayFailure as sayEbayStepFailure,
   upsertInventoryLocation,
   type EbayFailure,
   type EbaySellerSession,
-  type EbayShippingServiceInfo,
 } from "./adapters/ebaySeller";
 import type { EbayConnectError } from "./credentials";
 import { ebaySetupStepValidator } from "./schema";
@@ -114,29 +105,19 @@ const ESE_FOR_20_PLUS =
 const POLICY_GONE = "eBay doesn't have that policy on your account anymore. Pick another.";
 const OPT_IN_PENDING =
   "eBay is still switching on business policies for your account. Try Set me up again in a few minutes.";
-const SHIP_FROM_FIRST =
-  "Save where you ship from first. eBay works out each buyer's shipping from your ZIP code and the card's weight.";
 const LOCATION_REFUSED = "eBay wouldn't take that address. Check the ZIP, city and state, then save again.";
 const POLICIES_REFUSED = "eBay wouldn't hand over your policies just now. Try again in a bit.";
 const OPT_IN_REFUSED =
   "eBay wouldn't switch on business policies for your account. Try Set me up again in a bit, or switch them on in eBay's Seller Hub.";
-const SERVICES_REFUSED = "eBay wouldn't list its shipping services just now. Try Set me up again in a bit.";
-const NO_GROUND_ADVANTAGE = "eBay didn't offer USPS Ground Advantage, so NeonBinder couldn't make tracked shipping.";
 /** Set me up hit a busy or unreadable eBay: pressing again is safe, since it finds what it made by name. */
 const SET_ME_UP_BUSY = "eBay's not answering right now. Press Set me up again in a bit; it never makes anything twice.";
 /** Which of NB's standard policies eBay refused, and what the collector can do instead. */
 const SET_ME_UP_REFUSED = {
-  ese: "eBay turned down the Envelope or Tracked policy, so Set me up stopped there. Pick one of your own shipping policies for cards under $20, or make one on eBay and come back.",
-  tracked:
-    "eBay turned down the tracked USPS Ground Advantage policy, so Set me up stopped there. Pick one of your own shipping policies for cards $20 and up, or make one on eBay and come back.",
-  free: "eBay turned down the free shipping policy, so Set me up stopped there. Pick one of your own shipping policies, or make one on eBay and come back.",
   payment: "eBay turned down the payment policy, so Set me up stopped there. Make a payment policy on eBay, then pick it here.",
   returns: "eBay turned down the returns policy, so Set me up stopped there. Make a return policy on eBay, then pick it here.",
 } as const;
 /** `setCardWeight` refused a weight outside 1–3 whole ounces. */
 export const CARD_WEIGHT_REFUSED = `Pick a whole number of ounces from ${EBAY_DEFAULT_CARD_WEIGHT_OZ} to ${EBAY_MAX_CARD_WEIGHT_OZ}. Standard Envelope tops out at ${EBAY_MAX_CARD_WEIGHT_OZ} oz.`;
-const NO_CALCULATED = (service: string) =>
-  `eBay isn't offering weight-based rates for ${service} on your account, so NeonBinder made nothing. Pick your own shipping policies instead.`;
 
 /** How long a Connect press's nonce is good for. */
 const CONNECT_NONCE_TTL_MS = 15 * 60 * 1000;
@@ -166,28 +147,16 @@ const SALES_PURGE_PAGE = 100;
 
 /**
  * NB's standard policies "Set me up" makes on the seller's account (names are
- * the idempotency key). `ese` is the under-$20 default and holds BOTH eBay
- * Standard Envelope and USPS Ground Advantage, so the buyer picks envelope or
- * tracked at checkout; `tracked` (the $20+ default) holds Ground Advantage
- * alone, since a $20+ card on a policy offering the envelope would charge the
- * buyer only the envelope's rate (Jason, NEO-415).
+ * the idempotency key): a payment and a return policy, each only when the
+ * account has none. Shipping policies are the seller's own, picked on the
+ * page; NB makes none (NEO-423).
  */
 export const NB_POLICY_NAMES = {
-  ese: "NB Envelope or Tracked (under $20)",
-  tracked: "NB Tracked (USPS Ground Advantage)",
-  free: "NB Free Shipping",
   payment: "NB Payment",
   returns: "NB Returns (30 days)",
 } as const;
-/**
- * Defaults for those policies. Product defaults, open for Jason to change.
- * No shipping amounts: the envelope-or-tracked and tracked policies are
- * CALCULATED, so buyers pay eBay's own rate for the card's package weight
- * (lib/ebayListing.ts `ebayPackageFor`, which reads the collector's card
- * weight) from the seller's ship-from ZIP.
- */
+/** Defaults for those policies. Product defaults, open for Jason to change. */
 const NB_POLICY_DEFAULTS = {
-  handlingDays: 1,
   returnDays: 30,
 } as const;
 
@@ -206,6 +175,24 @@ const setupItemValidator = v.union(
   v.literal("payment"),
   v.literal("returns"),
 );
+
+/**
+ * A Set me up step as the page reads it: the account check, or one of the
+ * policies NB makes today (payment and returns). The stored row's validator
+ * (`schema.ebaySetupStepValidator`) still names the retired shipping steps
+ * (tracked, free, ese) so rows written before NEO-423 stay valid;
+ * `connectionState` leaves those lines out (`isShownSetupStep`).
+ */
+const shownSetupStepValidator = v.object({
+  step: v.union(v.literal("check"), v.literal("payment"), v.literal("returns")),
+  label: v.string(),
+  status: ebaySetupStepValidator.fields.status,
+});
+type ShownSetupStep = typeof shownSetupStepValidator.type;
+
+function isShownSetupStep(step: typeof ebaySetupStepValidator.type): step is ShownSetupStep {
+  return step.step === "check" || step.step === "payment" || step.step === "returns";
+}
 
 const connectionStateValidator = v.object({
   configured: v.boolean(),
@@ -232,7 +219,7 @@ const connectionStateValidator = v.object({
   setupComplete: v.boolean(),
   missing: v.array(setupItemValidator),
   /** The latest Set me up run, step by step (the page shows the one its own press started). */
-  setupProgress: v.union(v.object({ startedAt: v.number(), steps: v.array(ebaySetupStepValidator) }), v.null()),
+  setupProgress: v.union(v.object({ startedAt: v.number(), steps: v.array(shownSetupStepValidator) }), v.null()),
 });
 
 const errorResult = v.object({ ok: v.literal(false), error: v.string() });
@@ -339,7 +326,7 @@ export const connectionState = query({
       setupComplete: missing.length === 0,
       missing,
       setupProgress: row?.setupProgress
-        ? { startedAt: row.setupProgress.startedAt, steps: row.setupProgress.steps }
+        ? { startedAt: row.setupProgress.startedAt, steps: row.setupProgress.steps.filter(isShownSetupStep) }
         : null,
     };
   },
@@ -720,18 +707,17 @@ interface PolicyLists {
  * policies yet). eBay's shipping metadata is read beside them so a policy's
  * summary names each service by eBay's own name, never its code; when that
  * read fails the summaries say "eBay shipping" and the lists still load.
- * `services`: the metadata, when it was read (Set me up reuses it).
  */
 async function readPolicyLists(
   ctx: ActionCtx,
   session: EbaySellerSession,
   operation: PolicyReadOperation,
-): Promise<{ ok: true; lists: PolicyLists; optedIn: boolean; services: EbayShippingServiceInfo[] | null } | Fail> {
+): Promise<{ ok: true; lists: PolicyLists; optedIn: boolean } | Fail> {
   const startedAt = Date.now();
   const programs = await getOptedInPrograms(ctx, session);
   if (!programs.ok) return { ok: false, error: sayEbayFailure(programs.failure, POLICIES_REFUSED) };
   if (!programs.value.includes(SELLING_POLICY_MANAGEMENT)) {
-    return { ok: true, lists: { fulfillment: [], payment: [], returns: [] }, optedIn: false, services: null };
+    return { ok: true, lists: { fulfillment: [], payment: [], returns: [] }, optedIn: false };
   }
   const [fulfillment, payment, returns, metadata] = await Promise.all([
     getPolicies(ctx, session, "fulfillment_policy"),
@@ -741,13 +727,11 @@ async function readPolicyLists(
   ]);
   for (const r of [fulfillment, payment, returns]) if (!r.ok) return { ok: false, error: sayEbayFailure(r.failure, POLICIES_REFUSED) };
   if (!fulfillment.ok || !payment.ok || !returns.ok) return { ok: false, error: CONNECT_ERRORS.unavailable };
-  logFulfillmentPoliciesRead(operation, fulfillment.value, Date.now() - startedAt);
-  const services = metadata.ok ? metadata.value : null;
-  const names = ebayServiceNames(services ?? []);
+  logFulfillmentPoliciesRaw(operation, fulfillment.value, Date.now() - startedAt, session);
+  const names = ebayServiceNames(metadata.ok ? metadata.value : []);
   return {
     ok: true,
     optedIn: true,
-    services,
     lists: {
       fulfillment: readFulfillmentPolicies(fulfillment.value).map((p) => ({ id: p.id, name: p.name, ...policyFitness(p, names) })),
       payment: readPaymentPolicies(payment.value),
@@ -758,67 +742,55 @@ async function readPolicyLists(
 
 type PolicyReadOperation = "readPolicies" | "createStandardPolicies" | "savePolicies";
 
-const POLICY_LOG_MAX = 10;
-const POLICY_LOG_SERVICES_MAX = 6;
+/**
+ * Characters of eBay's body one raw line carries. A longer body is split
+ * across lines (never truncated), well under any log line limit.
+ */
+export const RAW_POLICY_LOG_CHUNK_CHARS = 8_000;
 
 /**
- * One structured line per policy read: the seller's fulfillment policies as
- * eBay holds them (at most 10), so a publish eBay refuses for its
- * fulfillment policy (25007, "add at least one valid shipping service
- * option") can be read against what the policy carries. Fields from the
- * policy body only, each string redacted and capped (`redactEbayText`);
- * policy ids are the seller's own policies, never an account id.
+ * TEMPORARY, remove with NEO-423. One structured line,
+ * `ebay_fulfillment_policies_raw`, per fulfillment-policy read: eBay's
+ * response body exactly as it came back (every policy, every field), plus the
+ * eBay environment, so the production policy shapes are in the logs while
+ * NEO-423 (NB making shipping policies again) is worked out. Jason approved
+ * logging the whole body: he is the only user.
+ *
+ * The body is eBay's GET answer only; the request, its Authorization header
+ * and the session token never reach this function, and the token is masked
+ * anyway should eBay ever echo it. A body longer than
+ * `RAW_POLICY_LOG_CHUNK_CHARS` goes out as `parts` lines, each carrying
+ * `bodyChunk` (its slice of the body's JSON text) and `part`, joined in
+ * order under one `readId`.
  */
-export function logFulfillmentPoliciesRead(operation: PolicyReadOperation, body: unknown, ms: number): void {
-  const list = isRecord(body) && Array.isArray(body.fulfillmentPolicies) ? body.fulfillmentPolicies : [];
-  const text = (raw: unknown, max = 64): string | null => redactEbayText(raw, max);
-  const policies = list.slice(0, POLICY_LOG_MAX).map((p) => {
-    if (!isRecord(p)) return { unreadable: true };
-    const options = Array.isArray(p.shippingOptions) ? p.shippingOptions.filter(isRecord) : [];
-    const domestic: Array<Record<string, unknown>> = [];
-    let international = 0;
-    for (const o of options) {
-      const services = Array.isArray(o.shippingServices) ? o.shippingServices.filter(isRecord) : [];
-      if (o.optionType !== "DOMESTIC") {
-        international += services.length;
-        continue;
-      }
-      for (const svc of services.slice(0, POLICY_LOG_SERVICES_MAX)) {
-        domestic.push({
-          code: text(svc.shippingServiceCode),
-          carrier: text(svc.shippingCarrierCode),
-          costType: text(o.costType, 24),
-          free: svc.freeShipping === true,
-          cost: isRecord(svc.shippingCost) ? text(svc.shippingCost.value, 16) : null,
-        });
-      }
-    }
-    const handling = isRecord(p.handlingTime)
-      ? { value: typeof p.handlingTime.value === "number" ? p.handlingTime.value : null, unit: text(p.handlingTime.unit, 16) }
-      : null;
-    return {
-      // eBay's policy ids are long digit runs, which `redactEbayText` would mask: capped only.
-      id: typeof p.fulfillmentPolicyId === "string" ? p.fulfillmentPolicyId.slice(0, 64) : null,
-      name: text(p.name),
-      marketplaceId: text(p.marketplaceId, 24),
-      categoryTypes: (Array.isArray(p.categoryTypes) ? p.categoryTypes : [])
-        .slice(0, 4)
-        .map((c) => (isRecord(c) ? text(c.name, 40) : null)),
-      handlingTime: handling,
-      domestic,
-      international,
-    };
-  });
-  console.log(
-    JSON.stringify({
-      msg: "ebay_fulfillment_policies_read",
-      platform: "ebay",
-      operation,
-      ms,
-      count: list.length,
-      policies,
-    }),
-  );
+export function logFulfillmentPoliciesRaw(
+  operation: PolicyReadOperation,
+  body: unknown,
+  ms: number,
+  session: Pick<EbaySellerSession, "token" | "config">,
+): void {
+  let text = JSON.stringify(body ?? null);
+  for (const form of new Set([session.token, JSON.stringify(session.token).slice(1, -1)])) {
+    if (form.length > 0) text = text.split(form).join("[redacted]");
+  }
+  const head = {
+    msg: "ebay_fulfillment_policies_raw",
+    platform: "ebay",
+    operation,
+    environment: session.config.environment,
+    ms,
+    count: isRecord(body) && Array.isArray(body.fulfillmentPolicies) ? body.fulfillmentPolicies.length : null,
+  };
+  if (text.length <= RAW_POLICY_LOG_CHUNK_CHARS) {
+    console.log(JSON.stringify({ ...head, body: JSON.parse(text) as unknown }));
+    return;
+  }
+  const readId = newNonce().slice(0, 16);
+  const parts = Math.ceil(text.length / RAW_POLICY_LOG_CHUNK_CHARS);
+  for (let i = 0; i < parts; i++) {
+    const bodyChunk = text.slice(i * RAW_POLICY_LOG_CHUNK_CHARS, (i + 1) * RAW_POLICY_LOG_CHUNK_CHARS);
+    console.log(JSON.stringify({ ...head, readId, part: i + 1, parts, bodyChunk }));
+  }
 }
 
 /** The three policy lists as the pickers read them (`PolicyLists`): `readPolicies`, and Set me up's answer. */
@@ -855,188 +827,31 @@ export const readPolicies = action({
 
 const CATEGORY_TYPES = [{ name: "ALL_EXCLUDING_MOTORS_VEHICLES" }];
 
-/** A shipping service as a policy names it: eBay's service code and the carrier code beside it. */
-interface PolicyService {
-  code: string;
-  carrier: string;
-}
+// NB's own shipping policies (envelope-or-tracked, tracked, free) are not made
+// here any more: eBay's sandbox refused every create naming Standard Envelope
+// (20403). The removed code is in git history; NEO-423 brings it back, and
+// with it the ship-from gate on Set me up (calculated rates price from it).
 
 /**
- * A domestic fulfillment policy (Sell Account FulfillmentPolicyRequest)
- * offering `services` in order (sortOrder 1, 2, …), one cost type for all.
- *   calculated  costType CALCULATED and no shippingCost: eBay prices each
- *               order from the item's package weight and size and the
- *               ship-from postal code (the offer's inventory location)
- *   free        costType FLAT_RATE at $0.00 with freeShipping
- * Every service names its carrier (`shippingCarrierCode`: USPS for the
- * envelope, eBay's metadata for the rest; `policyService`). The contract calls the field optional, but
- * eBay's own live eSE policies all carry it, and NB's first create without
- * it was refused (20403). Fields eBay echoes back on a read
- * (`packageHandlingCost` 0.0, `shipToLocations` {}, `globalShipping` false,
- * `buyerResponsibleFor*` false) are not sent: the contract requires none of
- * them and each is eBay's default.
- */
-export function fulfillmentBody(
-  name: string,
-  services: readonly PolicyService[],
-  pricing: "calculated" | "free",
-): Record<string, unknown> {
-  const free = pricing === "free";
-  return {
-    name,
-    marketplaceId: EBAY_MARKETPLACE_ID,
-    categoryTypes: CATEGORY_TYPES,
-    handlingTime: { value: NB_POLICY_DEFAULTS.handlingDays, unit: "DAY" },
-    shippingOptions: [
-      {
-        optionType: "DOMESTIC",
-        costType: free ? EBAY_COST_TYPE_FLAT_RATE : EBAY_COST_TYPE_CALCULATED,
-        shippingServices: services.map((service, i) => ({
-          shippingCarrierCode: service.carrier,
-          shippingServiceCode: service.code,
-          ...(free ? { shippingCost: { value: "0.00", currency: "USD" } } : {}),
-          freeShipping: free,
-          sortOrder: i + 1,
-        })),
-      },
-    ],
-  };
-}
-
-/**
- * What eBay's own shipping metadata said about a service eBay then refused in
- * a fulfillment policy: one structured line beside the adapter's
- * `ebay_seller_error`, so a red live run shows whether the metadata listed
- * the service, flagged it valid for selling, and with which carrier, cost
- * types, category and package limits. eBay's public catalogue only (codes,
- * names, flags), plus what NB sent: never a token, an id or the seller.
- * `sameCarrier`: the other codes eBay lists under that carrier, in case the
- * metadata names the service differently from the code NB sent.
- */
-export function logRefusedPolicyService(
-  policy: string,
-  sent: { code: string; carrier: string; costType: string },
-  services: EbayShippingServiceInfo[],
-  failure: EbayFailure,
-): void {
-  const entry = services.find((s) => s.code === sent.code) ?? null;
-  const carrier = entry?.carrier ?? null;
-  const sameCarrier = carrier
-    ? services
-        .filter((s) => s.code !== sent.code && s.carrier === carrier)
-        .slice(0, 10)
-        .map((s) => s.code)
-    : [];
-  console.warn(
-    JSON.stringify({
-      msg: "ebay_policy_service_refused",
-      platform: "ebay",
-      operation: "createStandardPolicies",
-      policy,
-      ...(failure.httpStatus !== undefined ? { httpStatus: failure.httpStatus } : {}),
-      ...(failure.errorIds ? { errorIds: failure.errorIds } : {}),
-      sent,
-      servicesListed: services.length,
-      listed: entry !== null,
-      ...(entry
-        ? {
-            metadata: {
-              description: entry.description,
-              carrier: entry.carrier,
-              validForSellingFlow: entry.validForSellingStated ? entry.validForSelling : "absent",
-              costTypes: entry.costTypes,
-              category: entry.category,
-              international: entry.international,
-              minDays: entry.minDays,
-              maxDays: entry.maxDays,
-              packageLimits: entry.packageLimits,
-            },
-          }
-        : {}),
-      sameCarrier,
-    }),
-  );
-}
-
-/**
- * eBay saying no to a request (a 4xx other than 429), as opposed to eBay
- * busy, a timeout, no network or a signed-out session. The same split
- * `sayEbayFailure` makes between its refused and busy sentences.
- */
-function isEbayRefusal(failure: EbayFailure): boolean {
-  if (failure.kind !== "http") return false;
-  const status = failure.httpStatus ?? 0;
-  return status >= 400 && status < 500 && status !== 429;
-}
-
-/** `code` with the carrier eBay's metadata lists for it (`fallback` when it lists none). */
-function policyService(services: EbayShippingServiceInfo[], code: string, fallback: string): PolicyService {
-  return { code, carrier: ebayServiceCarrier(services, code, fallback) };
-}
-
-/** Whether the owner has saved where they ship from (calculated shipping prices from it). */
-export const shipFromSaved = internalQuery({
-  args: { ownerId: v.string() },
-  returns: v.boolean(),
-  handler: async (ctx, args) => !ebaySetupMissing(await settingsOf(ctx, args.ownerId)).includes("location"),
-});
-
-/**
- * eBay's USPS Ground Advantage service code, read from eBay's own metadata
- * (never hard-coded; the rule is `lib/ebayListing.ebayGroundAdvantageService`).
- * Null when eBay lists none, or several that fit equally. A miss logs the
- * domestic USPS services eBay did list (eBay's public catalogue: codes and
- * names, nothing of the seller's), so a red live run shows what to match.
- */
-function groundAdvantageCode(services: EbayShippingServiceInfo[]): string | null {
-  const found = ebayGroundAdvantageService(services);
-  if (found) return found.code;
-  const usps = services
-    .filter((s) => !s.international && (/usps/i.test(s.code) || /usps/i.test(s.description ?? "") || /usps/i.test(s.carrier ?? "")))
-    .slice(0, 25)
-    .map((s) => ({ code: s.code, description: s.description, validForSelling: s.validForSelling, costTypes: s.costTypes }));
-  console.warn(
-    JSON.stringify({
-      msg: "ebay_ground_advantage_unresolved",
-      platform: "ebay",
-      operation: "createStandardPolicies",
-      servicesListed: services.length,
-      usps,
-    }),
-  );
-  return null;
-}
-
-/**
- * "Set me up": NB's standard policies on the collector's eBay account —
- * Envelope or Tracked (cards under $20: Standard Envelope and USPS Ground
- * Advantage in one policy, the buyer picks) and Tracked (Ground Advantage
- * alone, $20 and up), both calculated by weight so buyers pay eBay's own
- * rates, and Free
- * Shipping (Ground Advantage at $0), plus a payment and a return policy
- * only when the account has none. Opts the account into business policies
- * first when needed. Idempotent by name: a policy NB already made is not
- * made again. Fills only EMPTY settings slots with what it made. Refuses
- * until the ship-from location is saved, since calculated rates need it.
- *
- * The envelope policy is made LAST, and eBay turning it down (a 4xx) is not a
- * failure: what was made before it stays made and fills its slots, and the
- * answer says `envelopeRefused` so the collector picks their own policy for
- * cards under $20 (NB never puts a parcel policy there for them). eBay's
- * sandbox refuses the envelope in a policy even though its own metadata lists
- * it, so this is what lets everything else be set up. Any other refusal, or
- * eBay busy on the envelope, stops and says so as before.
+ * "Set me up": checks the collector's eBay account and makes NB's payment and
+ * return policies, each only when the account has none (an account with
+ * exactly one has it picked; several are left to the collector). Opts the
+ * account into business policies first when needed. Idempotent by name: a
+ * policy NB already made is not made again. Fills only EMPTY payment and
+ * return slots; the two shipping slots are never filled here, only by the
+ * collector's pick (`savePolicies`). NB makes no shipping policy (NEO-423),
+ * so nothing here needs the ship-from location.
  *
  * Each eBay create takes seconds, so the run reports as it goes (Jason's
  * per-step ledger, as the listing sync's): `setupProgress` on the settings
- * row holds the account check, then every policy in run order (already
- * there, or made now), each ticking off as eBay answers (`SetupLedger`).
+ * row holds the account check, then each policy NB makes, ticking off as
+ * eBay answers (`SetupLedger`).
  *
  * `policies`: the account's policy lists once the run is done, as
- * `readPolicies` gives them, so the page picks from them without reading eBay
- * again (that read took seconds after every step had ticked off). They are
- * the run's own opening read plus each policy it made, narrowed from what NB
- * sent under the id eBay gave it (`madePolicy`).
+ * `readPolicies` gives them (the collector's own shipping policies included),
+ * so the page picks from them without reading eBay again. They are the run's
+ * own opening read plus each policy it made, narrowed from what NB sent under
+ * the id eBay gave it (`madePolicy`).
  */
 export const createStandardPolicies = action({
   args: {},
@@ -1044,7 +859,6 @@ export const createStandardPolicies = action({
     v.object({
       ok: v.literal(true),
       created: v.array(v.string()),
-      envelopeRefused: v.optional(v.literal(true)),
       policies: v.object(policyListsFields),
     }),
     errorResult,
@@ -1053,8 +867,6 @@ export const createStandardPolicies = action({
     const ownerId = await requireSignedIn(ctx);
     const opened = await sessionFor(ctx, ownerId);
     if (!opened.ok) return opened;
-    // Calculated shipping prices from the ship-from ZIP: no location, no policies.
-    if (!(await ctx.runQuery(internal.ebayConnect.shipFromSaved, { ownerId }))) return { ok: false, error: SHIP_FROM_FIRST };
     // From here every eBay call is a step on the page's ledger (each one ~4 s on eBay).
     const ledger = new SetupLedger(ctx, ownerId);
     await ledger.begin();
@@ -1070,14 +882,15 @@ export const createStandardPolicies = action({
   },
 });
 
-type SetMeUpAnswer = { ok: true; created: string[]; envelopeRefused?: true; policies: PolicyLists } | Fail;
+type SetMeUpAnswer = { ok: true; created: string[]; policies: PolicyLists } | Fail;
 type SetupStep = typeof ebaySetupStepValidator.type;
 type SetupStepKey = SetupStep["step"];
-type PolicySlot = Exclude<SetupStepKey, "check">;
+/** The policies Set me up makes (the schema's step union still names the retired shipping steps, for old rows). */
+type PolicySlot = keyof typeof NB_POLICY_NAMES;
 
 /** The first line of Set me up's ledger: reading what the account already has. */
 export const SETUP_CHECK_LABEL = "Check your eBay account";
-/** Steps one Set me up ledger keeps (it plans at most six). */
+/** Steps one Set me up ledger keeps (it plans at most three). */
 const MAX_SETUP_STEPS = 10;
 
 /**
@@ -1103,10 +916,10 @@ class SetupLedger {
     return this.write(true);
   }
 
-  /** The account check landed; the steps to come, in run order (`had`: already on the account). No write. */
-  plan(rest: ReadonlyArray<{ step: PolicySlot; had: boolean }>): void {
+  /** The account check landed; the steps to come, in run order. No write. */
+  plan(rest: ReadonlyArray<PolicySlot>): void {
     this.set("check", "done");
-    for (const r of rest) this.steps.push({ step: r.step, label: NB_POLICY_NAMES[r.step], status: r.had ? "had" : "waiting" });
+    for (const step of rest) this.steps.push({ step, label: NB_POLICY_NAMES[step], status: "waiting" });
   }
 
   /** A step landed. No write: the next start, or the finish, carries it. */
@@ -1194,7 +1007,7 @@ export const writeSetupProgress = internalMutation({
   },
 });
 
-/** Set me up's work once the ledger has begun: the account check, then each policy NB makes, in order. */
+/** Set me up's work once the ledger has begun: the account check, then the payment and return policies NB makes. */
 async function setMeUp(ctx: ActionCtx, ownerId: string, session: EbaySellerSession, ledger: SetupLedger): Promise<SetMeUpAnswer> {
   let read = await readPolicyLists(ctx, session, "createStandardPolicies");
   if (!read.ok) return read;
@@ -1206,12 +1019,7 @@ async function setMeUp(ctx: ActionCtx, ownerId: string, session: EbaySellerSessi
     read = await readPolicyLists(ctx, session, "createStandardPolicies");
     if (!read.ok) return { ok: false, error: OPT_IN_PENDING };
   }
-  const services = read.services ? { ok: true as const, value: read.services } : await getShippingServices(ctx, session);
-  if (!services.ok) return { ok: false, error: sayEbayFailure(services.failure, SERVICES_REFUSED, SET_ME_UP_BUSY) };
-  const ground = groundAdvantageCode(services.value);
-  if (!ground) return { ok: false, error: NO_GROUND_ADVANTAGE };
 
-  const byName = new Map(read.lists.fulfillment.map((p) => [p.name, p.id]));
   const created: string[] = [];
   // What the account holds once the run is done: what it had, then what it made.
   const lists: PolicyLists = {
@@ -1219,176 +1027,72 @@ async function setMeUp(ctx: ActionCtx, ownerId: string, session: EbaySellerSessi
     payment: [...read.lists.payment],
     returns: [...read.lists.returns],
   };
-  const names = ebayServiceNames(services.value);
-  const ids: { ese?: string; tracked?: string; free?: string; payment?: string; returns?: string } = {
-    ese: byName.get(NB_POLICY_NAMES.ese),
-    tracked: byName.get(NB_POLICY_NAMES.tracked),
-    free: byName.get(NB_POLICY_NAMES.free),
+  const ids: Partial<Record<PolicySlot, string>> = {};
+  const bodies: Record<PolicySlot, { kind: "payment_policy" | "return_policy"; body: Record<string, unknown> }> = {
+    payment: {
+      kind: "payment_policy",
+      body: {
+        name: NB_POLICY_NAMES.payment,
+        marketplaceId: EBAY_MARKETPLACE_ID,
+        categoryTypes: CATEGORY_TYPES,
+        immediatePay: true,
+      },
+    },
+    returns: {
+      kind: "return_policy",
+      body: {
+        name: NB_POLICY_NAMES.returns,
+        marketplaceId: EBAY_MARKETPLACE_ID,
+        categoryTypes: CATEGORY_TYPES,
+        returnsAccepted: true,
+        returnPeriod: { value: NB_POLICY_DEFAULTS.returnDays, unit: "DAY" },
+        returnShippingCostPayer: "BUYER",
+        refundMethod: "MONEY_BACK",
+      },
+    },
   };
-  // NB never invents a shipping rate: when eBay's own metadata says a
-  // service has no calculated rate, nothing is made and the collector picks.
-  if (!ids.ese && !ebayServiceTakesCalculated(services.value, EBAY_ESE_SERVICE_CODE)) {
-    return { ok: false, error: NO_CALCULATED("Standard Envelope") };
+  const toMake: PolicySlot[] = [];
+  for (const slot of ["payment", "returns"] as const) {
+    const had = read.lists[slot];
+    if (had.length === 0) toMake.push(slot);
+    else if (had.length === 1) ids[slot] = had[0].id;
   }
-  // Ground Advantage rides in both the tracked and the envelope policy.
-  if ((!ids.tracked || !ids.ese) && !ebayServiceTakesCalculated(services.value, ground)) {
-    return { ok: false, error: NO_CALCULATED("USPS Ground Advantage") };
-  }
-  // Carrier USPS always, as eBay documents the envelope (`EBAY_ESE_CARRIER`).
-  const envelope: PolicyService = { code: EBAY_ESE_SERVICE_CODE, carrier: EBAY_ESE_CARRIER };
-  // Ground Advantage is a USPS service by construction (`ebayGroundAdvantageService`).
-  const tracked = policyService(services.value, ground, EBAY_USPS_CARRIER_FALLBACK);
-  let envelopeRefused = false;
-  const make = async (
-    slot: PolicySlot,
-    kind: "fulfillment_policy" | "payment_policy" | "return_policy",
-    name: string,
-    body: Record<string, unknown>,
-    sent: ReadonlyArray<{ code: string; carrier: string; costType: string }> = [],
-  ): Promise<Fail | null> => {
+  ledger.plan(toMake);
+  const fill = () =>
+    ctx.runMutation(internal.ebayConnect.fillEmptyPolicySlots, {
+      ownerId,
+      runId: ledger.runId,
+      ...(ids.payment ? { payment: ids.payment } : {}),
+      ...(ids.returns ? { returns: ids.returns } : {}),
+    });
+  for (const slot of toMake) {
+    await ledger.start(slot);
+    const { kind, body } = bodies[slot];
     const r = await createPolicy(ctx, session, kind, body);
     if (!r.ok) {
       ledger.land(slot, "failed");
-      // One line per service the policy named: eBay's answer does not say which it refused.
-      for (const one of sent) logRefusedPolicyService(slot, one, services.value, r.failure);
-      // The envelope (always the last step) turned down: everything before it stands.
-      if (slot === "ese" && isEbayRefusal(r.failure)) {
-        envelopeRefused = true;
-        return null;
-      }
+      // What was made stays made (and is found by name next time).
+      await fill();
       if (justOptedIn) return { ok: false, error: OPT_IN_PENDING };
       return { ok: false, error: sayEbayFailure(r.failure, SET_ME_UP_REFUSED[slot], SET_ME_UP_BUSY) };
     }
     ledger.land(slot, "done");
     ids[slot] = r.value;
-    created.push(name);
-    madePolicy(lists, kind, r.value, body, names);
-    return null;
-  };
-  const steps: Array<{ slot: PolicySlot; run: () => Promise<Fail | null> }> = [];
-  const sent = (list: readonly PolicyService[], costType: string) =>
-    list.map((service) => ({ code: service.code, carrier: service.carrier, costType }));
-  if (!ids.tracked) {
-    steps.push({
-      slot: "tracked",
-      run: () =>
-        make(
-          "tracked",
-          "fulfillment_policy",
-          NB_POLICY_NAMES.tracked,
-          fulfillmentBody(NB_POLICY_NAMES.tracked, [tracked], "calculated"),
-          sent([tracked], EBAY_COST_TYPE_CALCULATED),
-        ),
-    });
-  }
-  if (!ids.free) {
-    steps.push({
-      slot: "free",
-      run: () =>
-        make(
-          "free",
-          "fulfillment_policy",
-          NB_POLICY_NAMES.free,
-          fulfillmentBody(NB_POLICY_NAMES.free, [tracked], "free"),
-          sent([tracked], EBAY_COST_TYPE_FLAT_RATE),
-        ),
-    });
-  }
-  if (read.lists.payment.length === 0) {
-    steps.push({
-      slot: "payment",
-      run: () =>
-        make("payment", "payment_policy", NB_POLICY_NAMES.payment, {
-          name: NB_POLICY_NAMES.payment,
-          marketplaceId: EBAY_MARKETPLACE_ID,
-          categoryTypes: CATEGORY_TYPES,
-          immediatePay: true,
-        }),
-    });
-  } else if (read.lists.payment.length === 1) {
-    ids.payment = read.lists.payment[0].id;
-  }
-  if (read.lists.returns.length === 0) {
-    steps.push({
-      slot: "returns",
-      run: () =>
-        make("returns", "return_policy", NB_POLICY_NAMES.returns, {
-          name: NB_POLICY_NAMES.returns,
-          marketplaceId: EBAY_MARKETPLACE_ID,
-          categoryTypes: CATEGORY_TYPES,
-          returnsAccepted: true,
-          returnPeriod: { value: NB_POLICY_DEFAULTS.returnDays, unit: "DAY" },
-          returnShippingCostPayer: "BUYER",
-          refundMethod: "MONEY_BACK",
-        }),
-    });
-  } else if (read.lists.returns.length === 1) {
-    ids.returns = read.lists.returns[0].id;
-  }
-  // Last, so eBay turning the envelope down leaves everything else made.
-  if (!ids.ese) {
-    steps.push({
-      slot: "ese",
-      run: () =>
-        make(
-          "ese",
-          "fulfillment_policy",
-          NB_POLICY_NAMES.ese,
-          // Envelope first, tracked second: the buyer picks at checkout.
-          fulfillmentBody(NB_POLICY_NAMES.ese, [envelope, tracked], "calculated"),
-          sent([envelope, tracked], EBAY_COST_TYPE_CALCULATED),
-        ),
-    });
-  }
-  // The ledger, in run order: the three shipping policies always (already
-  // there, or to make), payment and returns only when NB makes them.
-  const making = new Set(steps.map((s) => s.slot));
-  ledger.plan(
-    (["tracked", "free", "payment", "returns", "ese"] as const)
-      .filter((slot) => making.has(slot) || slot === "tracked" || slot === "free" || slot === "ese")
-      .map((slot) => ({ step: slot, had: !making.has(slot) })),
-  );
-  const fill = () =>
-    ctx.runMutation(internal.ebayConnect.fillEmptyPolicySlots, {
-      ownerId,
-      runId: ledger.runId,
-      ...(ids.ese ? { under20: ids.ese } : {}),
-      ...(ids.tracked ? { twentyPlus: ids.tracked } : {}),
-      ...(ids.payment ? { payment: ids.payment } : {}),
-      ...(ids.returns ? { returns: ids.returns } : {}),
-    });
-  for (const step of steps) {
-    await ledger.start(step.slot);
-    const failed = await step.run();
-    if (failed) {
-      // What was made stays made (and is found by name next time).
-      await fill();
-      return failed;
-    }
+    created.push(NB_POLICY_NAMES[slot]);
+    madePolicy(lists, kind, r.value, body);
   }
   await fill();
-  return envelopeRefused ? { ok: true, created, envelopeRefused: true, policies: lists } : { ok: true, created, policies: lists };
+  return { ok: true, created, policies: lists };
 }
 
 /**
  * Adds a policy Set me up just made to `lists`, narrowed exactly as a read of
  * the account narrows it (the same `lib/ebayListing` readers): the body NB
  * sent, under the id eBay's create answered with. Every field those readers
- * look at (name, domestic services and their cost, the return terms) is one
- * NB set in that body.
+ * look at (name, the return terms) is one NB set in that body.
  */
-function madePolicy(
-  lists: PolicyLists,
-  kind: "fulfillment_policy" | "payment_policy" | "return_policy",
-  id: string,
-  body: Record<string, unknown>,
-  names: ReadonlyMap<string, string>,
-): void {
-  if (kind === "fulfillment_policy") {
-    for (const p of readFulfillmentPolicies({ fulfillmentPolicies: [{ ...body, fulfillmentPolicyId: id }] })) {
-      lists.fulfillment.push({ id: p.id, name: p.name, ...policyFitness(p, names) });
-    }
-  } else if (kind === "payment_policy") {
+function madePolicy(lists: PolicyLists, kind: "payment_policy" | "return_policy", id: string, body: Record<string, unknown>): void {
+  if (kind === "payment_policy") {
     lists.payment.push(...readPaymentPolicies({ paymentPolicies: [{ ...body, paymentPolicyId: id }] }));
   } else {
     lists.returns.push(...readReturnPolicies({ returnPolicies: [{ ...body, returnPolicyId: id }] }));
@@ -1396,19 +1100,19 @@ function madePolicy(
 }
 
 /**
- * "Set me up" fills the settings slots the collector has not chosen yet; a
- * chosen slot is never replaced. Only on the row the run began on: no row (a
- * disconnect mid-run deleted it) or a row another run, or a fresh connection,
- * now holds (`setupProgress.runId` is not this run's) is left alone, so a
- * policy id from the account that was there never lands on what replaced it.
+ * "Set me up" fills the payment and return slots the collector has not
+ * chosen yet; a chosen slot is never replaced, and the two shipping slots are
+ * never filled here (only the collector's pick, `savePolicies`, sets them).
+ * Only on the row the run began on: no row (a disconnect mid-run deleted it)
+ * or a row another run, or a fresh connection, now holds
+ * (`setupProgress.runId` is not this run's) is left alone, so a policy id
+ * from the account that was there never lands on what replaced it.
  */
 export const fillEmptyPolicySlots = internalMutation({
   args: {
     ownerId: v.string(),
     /** The Set me up run filling (`SetupLedger.runId`). */
     runId: v.string(),
-    under20: v.optional(v.string()),
-    twentyPlus: v.optional(v.string()),
     payment: v.optional(v.string()),
     returns: v.optional(v.string()),
   },
@@ -1417,8 +1121,6 @@ export const fillEmptyPolicySlots = internalMutation({
     const row = await settingsOf(ctx, args.ownerId);
     if (!row || row.setupProgress?.runId !== args.runId) return null;
     const patch: Partial<Doc<"ebaySellerSettings">> = {};
-    if (args.under20 && !row.fulfillmentPolicyUnder20Id) patch.fulfillmentPolicyUnder20Id = args.under20;
-    if (args.twentyPlus && !row.fulfillmentPolicy20PlusId) patch.fulfillmentPolicy20PlusId = args.twentyPlus;
     if (args.payment && !row.paymentPolicyId) patch.paymentPolicyId = args.payment;
     if (args.returns && !row.returnPolicyId) patch.returnPolicyId = args.returns;
     if (Object.keys(patch).length === 0) return null;

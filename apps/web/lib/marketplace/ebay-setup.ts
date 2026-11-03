@@ -47,8 +47,11 @@ export interface EbayConnectionState {
   setupProgress?: EbaySetupProgress | null;
 }
 
-/** One step of Set me up's run: the account check, or one of NB's policies. */
-export type EbaySetupStepKey = "check" | "tracked" | "free" | "payment" | "returns" | "ese";
+/**
+ * One step of Set me up's run: the account check, or one of the policies NB
+ * makes (payment and returns; NB makes no shipping policy, NEO-423).
+ */
+export type EbaySetupStepKey = "check" | "payment" | "returns";
 /** `had`: already on the account, so nothing made; `stopped`: an earlier step stopped the run first. */
 export type EbaySetupStepStatus = "waiting" | "working" | "done" | "failed" | "had" | "stopped";
 
@@ -135,38 +138,15 @@ export function returnOptions(policies: EbayPolicies): PolicyOption[] {
 }
 
 /**
- * "Set me up" is offered when the account has nothing that fits a slot: no
- * Standard Envelope policy for cheap cards, nothing that may ship a $20 card,
- * or no payment or returns policy at all.
- */
-export function needsStandardPolicies(policies: EbayPolicies): boolean {
-  return (
-    !policies.fulfillment.some((p) => p.eseFit) ||
-    !policies.fulfillment.some((p) => !p.eseOnly) ||
-    policies.payment.length === 0 ||
-    policies.returns.length === 0
-  );
-}
-
-/**
- * After "Set me up": for each slot still empty, the policy it just made that
- * fits it. Under $20 takes the Standard Envelope one; $20 and up the tracked
- * one (not the free-shipping one, which gives postage away); payment and
- * returns the one it made, or the only one there is. A slot already picked
- * is never changed.
+ * After "Set me up": the payment and returns slots still empty take the
+ * policy it just made, or the only one there is. A slot already picked is
+ * never changed. The two shipping slots are never picked here: they are the
+ * collector's own choice from their own policies (NB makes no shipping
+ * policy, NEO-423).
  */
 export function standardPicks(settings: EbaySettings, policies: EbayPolicies, created: string[]): EbayPolicyPicks {
   const made = new Set(created);
   const picks: EbayPolicyPicks = {};
-  const fresh = policies.fulfillment.filter((p) => made.has(p.name));
-  if (!settings.fulfillmentPolicyUnder20Id) {
-    const pick = fresh.find((p) => p.eseFit);
-    if (pick) picks.fulfillmentPolicyUnder20Id = pick.id;
-  }
-  if (!settings.fulfillmentPolicy20PlusId) {
-    const pick = fresh.find((p) => !p.eseOnly && !p.eseFit && !p.freeShipping) ?? fresh.find((p) => !p.eseOnly);
-    if (pick) picks.fulfillmentPolicy20PlusId = pick.id;
-  }
   if (!settings.paymentPolicyId) {
     const pick = policies.payment.find((p) => made.has(p.name)) ?? (policies.payment.length === 1 ? policies.payment[0] : undefined);
     if (pick) picks.paymentPolicyId = pick.id;
@@ -178,11 +158,7 @@ export function standardPicks(settings: EbaySettings, policies: EbayPolicies, cr
   return picks;
 }
 
-/**
- * The setup checklist, in the page's order: each step and whether it's done.
- * Where cards ship from leads: eBay prices each buyer's shipping from that
- * ZIP, so "Set me up" waits for it.
- */
+/** The setup checklist, in the page's order: each step and whether it's done. */
 export const SETUP_STEPS: ReadonlyArray<{ gap: EbaySetupGap; label: string }> = [
   { gap: "location", label: "Where your cards ship from" },
   { gap: "shippingUnder20", label: "Shipping for cards under $20" },
@@ -209,7 +185,7 @@ export const SETUP_STEP_WORD: Record<EbaySetupStepStatus, string> = {
   stopped: "not made",
 };
 
-/** A Set me up step's accessible name: "NB Free Shipping, done". */
+/** A Set me up step's accessible name: "NB Payment, done". */
 export function setupStepName(label: string, status: EbaySetupStepStatus): string {
   return `${label}, ${SETUP_STEP_WORD[status]}`;
 }

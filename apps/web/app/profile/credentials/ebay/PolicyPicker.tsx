@@ -23,6 +23,9 @@ const GONE_LINE = "The policy you picked here isn't on your eBay account anymore
  * warning, the radiogroup is described by it, so focus on the group reads
  * it too.
  *
+ * A `hint` says what fits the slot under the cards, and describes the group
+ * after any refusal or warning (the Packing weight's pattern).
+ *
  * The saved value comes from `ebayConnect.connectionState`; the local pick
  * holds until the query catches up, so the cards never flick back while the
  * save's action has answered and the query has not.
@@ -33,6 +36,7 @@ export default function PolicyPicker({
   saved,
   onSave,
   emptyLine,
+  hint,
   children,
 }: {
   /** The group's visible label and accessible name. */
@@ -42,7 +46,9 @@ export default function PolicyPicker({
   onSave: (id: string) => Promise<SaveAnswer>;
   /** Said instead of the cards when there is nothing to pick. */
   emptyLine: string;
-  /** A note under the cards (what the picker leaves out, say). */
+  /** What fits this slot, under the cards; it describes the group. */
+  hint?: string;
+  /** A note under the cards (what the picker leaves out, or where to make one). */
   children?: ReactNode;
 }) {
   const [pending, setPending] = useState<string | null>(null);
@@ -52,6 +58,7 @@ export default function PolicyPicker({
   const groupRef = useRef<HTMLDivElement>(null);
   const [rollbacks, setRollbacks] = useState(0);
   const lineId = useId();
+  const hintId = useId();
 
   // The query caught up with the pick: let it speak for the value again.
   if (pending !== null && saved === pending && saveState !== "saving") setPending(null);
@@ -98,6 +105,7 @@ export default function PolicyPicker({
   else if (saveState === "saved") text = "Saved.";
   // The group is described by the line only while it says something about the pick.
   const describes = failed || warnGone;
+  const describedBy = [describes ? lineId : null, hint ? hintId : null].filter(Boolean).join(" ") || undefined;
 
   return (
     <div className="flex flex-col gap-2">
@@ -113,10 +121,15 @@ export default function PolicyPicker({
             value={value}
             options={options}
             onChange={(next) => void choose(next)}
-            describedBy={describes ? lineId : undefined}
+            describedBy={describedBy}
           />
         )}
       </div>
+      {hint && (
+        <p id={hintId} className="text-sm text-ink-3">
+          {hint}
+        </p>
+      )}
       {children}
       {/* One live region, remounted as an alert on failure. */}
       <p

@@ -6,7 +6,9 @@
  * clears it), Disconnect's
  * confirm, and the setup (the $20-and-up picker leaving Standard
  * Envelope-only policies out, a refused save rolling back with an alert,
- * Set me up, the weight of a single card, and the checklist).
+ * the seller's own shipping picks and the way out to eBay when they have
+ * none, Set me up for payment and returns, the weight of a single card, and
+ * the checklist).
  */
 
 import { useEffect } from "react";
@@ -268,41 +270,93 @@ describe("Profile → Credentials → eBay, setup", () => {
     expect(fns["ebayConnect:savePolicies"]).toHaveBeenCalledWith({ fulfillmentPolicy20PlusId: "f-ga" });
   });
 
-  it("Set me up shows when nothing fits, makes the policies and picks the empty slots", async () => {
-    // Ship-from saved first: Set me up waits for it.
+  it("a pick in each shipping slot saves the seller's own policy, and each slot says what fits it", async () => {
+    renderAt();
+    const under = await screen.findByRole("radiogroup", { name: "Cards under $20" });
+    const over = screen.getByRole("radiogroup", { name: "$20 and up" });
+    const said = (group: HTMLElement) =>
+      (group.getAttribute("aria-describedby") ?? "")
+        .split(" ")
+        .map((id) => document.getElementById(id)?.textContent)
+        .join(" ");
+    expect(said(under)).toBe("A policy with Standard Envelope or tracked shipping fits here.");
+    expect(said(over)).toBe("Ship these tracked: pick a policy with a tracked service.");
+    fireEvent.click(within(under).getByRole("radio", { name: "PWE or BMWT" }));
+    await waitFor(() => expect(fns["ebayConnect:savePolicies"]).toHaveBeenCalledWith({ fulfillmentPolicyUnder20Id: "f-both" }));
+    fireEvent.click(within(over).getByRole("radio", { name: "Tracked" }));
+    await waitFor(() => expect(fns["ebayConnect:savePolicies"]).toHaveBeenCalledWith({ fulfillmentPolicy20PlusId: "f-ga" }));
+    expect(within(under).getByRole("radio", { name: "PWE or BMWT" }).getAttribute("aria-checked")).toBe("true");
+    expect(within(over).getByRole("radio", { name: "Tracked" }).getAttribute("aria-checked")).toBe("true");
+    // Shipping is never made for the seller: no Set me up while payment and returns are there.
+    expect(screen.queryByRole("button", { name: "Set me up" })).toBeNull();
+    expect(fns["ebayConnect:createStandardPolicies"]).toBeUndefined();
+  });
+
+  it("no shipping policies at all: says so, links out to make one on eBay, and Check eBay again reads afresh", async () => {
+    fn("ebayConnect:readPolicies").mockResolvedValueOnce({ ok: true, ...POLICIES, fulfillment: [] });
+    renderAt();
+    const shipping = screen.getByRole("region", { name: "Shipping" });
+    expect(await within(shipping).findByText("No shipping policies on your eBay account yet.")).toBeTruthy();
+    expect(within(shipping).queryByRole("radiogroup")).toBeNull();
+    const make = within(shipping).getByRole("link", { name: "Make a shipping policy on eBay (opens in a new tab)" });
+    // A production connection goes to eBay itself.
+    expect(make.getAttribute("href")).toBe("https://www.ebay.com/bp/manage");
+    expect(make.getAttribute("target")).toBe("_blank");
+    expect(make.getAttribute("rel")).toBe("noopener noreferrer");
+    // Payment and returns are there, so nothing is offered to make shipping.
+    expect(screen.queryByRole("button", { name: "Set me up" })).toBeNull();
+
+    // Made one on eBay: the next read finds it and the pickers come up.
+    fireEvent.click(within(shipping).getByRole("button", { name: "Check eBay again" }));
+    expect(await screen.findByRole("radiogroup", { name: "Cards under $20" })).toBeTruthy();
+    expect(fns["ebayConnect:readPolicies"]).toHaveBeenCalledTimes(2);
+    expect(within(shipping).queryByText("No shipping policies on your eBay account yet.")).toBeNull();
+  });
+
+  it("on a sandbox connection the eBay link goes to the sandbox", async () => {
+    connection = state({ status: "connected", ebayUsername: "cardshark88", environment: "sandbox" });
+    fn("ebayConnect:readPolicies").mockResolvedValueOnce({ ok: true, ...POLICIES, fulfillment: [] });
+    renderAt();
+    const make = await screen.findByRole("link", { name: "Make a shipping policy on eBay (opens in a new tab)" });
+    expect(make.getAttribute("href")).toBe("https://www.sandbox.ebay.com/bp/manage");
+  });
+
+  it("only Standard Envelope policies: $20 and up says so and links out to make a tracked one", async () => {
+    fn("ebayConnect:readPolicies").mockResolvedValueOnce({ ok: true, ...POLICIES, fulfillment: [POLICIES.fulfillment[0]] });
+    renderAt();
+    expect(await screen.findByText("Nothing here can ship a $20 card yet. Standard Envelope only covers cards under $20.")).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Make a tracked policy on eBay (opens in a new tab)" })).toBeTruthy();
+    expect(screen.getByRole("radiogroup", { name: "Cards under $20" })).toBeTruthy();
+  });
+
+  it("Set me up shows when payment or returns are missing, makes only those, and leaves the picking to the server", async () => {
+    // No ship-from saved: Set me up waits for nothing.
     connection = state({
       status: "connected",
       ebayUsername: "cardshark88",
-      settings: { ...SETTINGS_EMPTY, location: { postalCode: "53703", city: "Madison", stateOrProvince: "WI" } },
-      missing: ["shippingUnder20", "shipping20Plus", "payment", "returns"],
+      missing: ["shippingUnder20", "shipping20Plus", "payment", "returns", "location"],
     });
-    fn("ebayConnect:readPolicies").mockResolvedValueOnce({ ok: true, fulfillment: [], payment: [], returns: [] });
+    fn("ebayConnect:readPolicies").mockResolvedValueOnce({ ok: true, fulfillment: POLICIES.fulfillment, payment: [], returns: [] });
     fn("ebayConnect:createStandardPolicies").mockResolvedValue({
       ok: true,
-      created: ["NB Envelope or Tracked (under $20)", "NB Tracked (USPS Ground Advantage)", "NB Free Shipping"],
+      created: ["NB Payment", "NB Returns (30 days)"],
       // The account's policies once the run is done: the page picks from these, not from a second read.
       policies: {
-        fulfillment: [
-          { id: "n1", name: "NB Envelope or Tracked (under $20)", eseFit: true, eseOnly: false, freeShipping: false, summary: "" },
-          { id: "n2", name: "NB Tracked (USPS Ground Advantage)", eseFit: false, eseOnly: false, freeShipping: false, summary: "" },
-          { id: "n3", name: "NB Free Shipping", eseFit: false, eseOnly: false, freeShipping: true, summary: "" },
-        ],
-        payment: [{ id: "p1", name: "Payment" }],
-        returns: [{ id: "r1", name: "Returns", summary: "" }],
+        fulfillment: POLICIES.fulfillment,
+        payment: [{ id: "p1", name: "NB Payment" }],
+        returns: [{ id: "r1", name: "NB Returns (30 days)", summary: "" }],
       },
     });
     renderAt();
-    fireEvent.click(await screen.findByRole("button", { name: "Set me up" }));
+    const money = screen.getByRole("region", { name: "Payment and returns" });
+    fireEvent.click(await within(money).findByRole("button", { name: "Set me up" }));
+    expect((await screen.findByText(/^Made 2 on your eBay account/)).getAttribute("role")).toBe("status");
+    // The run fills the empty payment and returns slots on the server; the page sends no pick, and never one for shipping.
+    expect(fns["ebayConnect:savePolicies"]).not.toHaveBeenCalled();
+    expect(within(money).getByRole("radio", { name: "NB Payment" })).toBeTruthy();
     await waitFor(() =>
-      expect(fns["ebayConnect:savePolicies"]).toHaveBeenCalledWith({
-        fulfillmentPolicyUnder20Id: "n1",
-        fulfillmentPolicy20PlusId: "n2",
-        paymentPolicyId: "p1",
-        returnPolicyId: "r1",
-      }),
+      expect(document.activeElement).toBe(screen.getByRole("heading", { level: 3, name: "Payment and returns" })),
     );
-    expect((await screen.findByText(/^Made 3 on your eBay account/)).getAttribute("role")).toBe("status");
-    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("heading", { level: 3, name: "Shipping" })));
     // Only the read the page opened with: after a run, eBay is not asked again.
     expect(fns["ebayConnect:readPolicies"]).toHaveBeenCalledTimes(1);
   });
@@ -414,5 +468,11 @@ describe("Profile → Credentials → eBay, setup", () => {
     const second = renderAt();
     await screen.findByRole("radiogroup", { name: "$20 and up" });
     await expectAccessibleInBothModes(second.container, { label: "eBay, connected", rerender: second.rerenderFresh });
+    cleanup();
+    // No shipping policies on the account: the way out to eBay, and Set me up for payment and returns.
+    fn("ebayConnect:readPolicies").mockResolvedValue({ ok: true, fulfillment: [], payment: [], returns: [] });
+    const third = renderAt();
+    await screen.findByRole("link", { name: "Make a shipping policy on eBay (opens in a new tab)" });
+    await expectAccessibleInBothModes(third.container, { label: "eBay, no shipping policies", rerender: third.rerenderFresh });
   });
 });
