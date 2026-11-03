@@ -32,11 +32,21 @@
  *
  * `cardChecklist` rows are committed cards; a fetch's candidates live in
  * `checklistCandidates` until the operator confirms them, and are never read
- * here. The printed name is `playerLinks[].nameOnCard` (NEO-254), the string
- * the card actually carried, normalised with the same `normalizePlayerName`
- * the gate keys on. A legacy card with `playerIds` and no `playerLinks` falls
- * back to the linked player's own name key, which is what the NEO-254
- * backfill wrote for such rows anyway.
+ * here. Each linked player is keyed under three kinds of name, all through
+ * the `normalizePlayerName` the gate keys on:
+ *
+ *  - the PRINTED name, `playerLinks[].nameOnCard` (NEO-254), the string the
+ *    card actually carried;
+ *  - the player's PRIMARY name;
+ *  - every one of his ALIASES.
+ *
+ * The last two are what make a cross-sport player printed one way on the
+ * base card and another way on an insert ("Vincent Jackson" / "Bo Jackson")
+ * the same history. They are safe because the player IS linked in this set:
+ * the keys only say which names he answers to, and two different players
+ * under one key still make a pick step, never a link. A legacy card with
+ * `playerIds` and no `playerLinks` contributes the same primary and alias
+ * keys, which is what the NEO-254 backfill wrote for such rows anyway.
  *
  * ## Budgets (plan decision D12)
  *
@@ -238,9 +248,9 @@ export const historyCardBatch = internalQuery({
 });
 
 /**
- * The players behind a list of ids: their name key (for a legacy card's
- * fallback), home sport and its label (for an auto-link row's sport and a
- * preselect's "(Football)"). Dangling ids are left out. Refused above
+ * The players behind a list of ids: their name keys (primary name and every
+ * alias, for the history index), home sport and its label (for an auto-link
+ * row's sport and a preselect's "(Football)"). Dangling ids are left out. Refused above
  * `SET_HISTORY_IDS_PER_CALL`, like `findSkippedEntityNames`, so a caller that
  * forgets to slice is told rather than quietly served a short answer.
  */
@@ -250,6 +260,8 @@ export const historyPlayersByIds = internalQuery({
     v.object({
       playerId: v.id("players"),
       nameNormalized: v.string(),
+      /** NEO-424 — every alias, normalised, deduped, own name left out. */
+      aliasesNormalized: v.array(v.string()),
       sportId: v.id("selectorOptions"),
       sportValue: v.union(v.string(), v.null()),
     }),
@@ -265,6 +277,7 @@ export const historyPlayersByIds = internalQuery({
     const out: Array<{
       playerId: Id<"players">;
       nameNormalized: string;
+      aliasesNormalized: string[];
       sportId: Id<"selectorOptions">;
       sportValue: string | null;
     }> = [];
@@ -279,6 +292,13 @@ export const historyPlayersByIds = internalQuery({
       out.push({
         playerId,
         nameNormalized: player.nameNormalized,
+        aliasesNormalized: Array.from(
+          new Set(
+            (player.aliases ?? [])
+              .map((alias) => normalizePlayerName(alias))
+              .filter((key) => key.length > 0 && key !== player.nameNormalized),
+          ),
+        ),
         sportId: player.sportId,
         sportValue: sportValueById.get(sportKey) ?? null,
       });
@@ -438,7 +458,8 @@ export async function scanSetHistory(
 
   const playersByName = new Map<string, Set<string>>();
   const teamIds = new Set<string>();
-  const legacy = new Set<Id<"players">>();
+  /** Every player linked on a committed card, printed name or legacy. */
+  const linked = new Set<Id<"players">>();
   const add = (nameNormalized: string, playerId: string) => {
     const held = playersByName.get(nameNormalized);
     if (held) held.add(playerId);
@@ -460,20 +481,33 @@ export async function scanSetHistory(
       nodeIds: nodeIds.slice(index, index + SET_HISTORY_NODES_PER_CALL),
       cursor,
     });
-    for (const link of batch.links) add(link.nameNormalized, link.playerId as string);
-    for (const id of batch.legacyPlayerIds) legacy.add(id);
+    for (const link of batch.links) {
+      add(link.nameNormalized, link.playerId as string);
+      linked.add(link.playerId);
+    }
+    for (const id of batch.legacyPlayerIds) linked.add(id);
     for (const id of batch.teamIds) teamIds.add(id as string);
     index += batch.nodesDone;
     cursor = batch.cursor;
   }
 
-  // Legacy cards (no `playerLinks`): the linked player's own name key.
-  const legacyIds = Array.from(legacy);
-  for (let start = 0; start < legacyIds.length; start += SET_HISTORY_IDS_PER_CALL) {
+  /*
+   * NEO-424 — every linked player's primary name and aliases (see the module
+   * note), which is also how a legacy card without `playerLinks` is keyed at
+   * all. One point read per DISTINCT linked player, `SET_HISTORY_IDS_PER_CALL`
+   * per call: a set links a few hundred players, so this is a handful of
+   * calls, and the player rows carry the aliases inline (no extra index
+   * read). A player deleted since his card was committed adds no keys; his
+   * printed name still does, and the gate's home-sport pass sends such a
+   * link to review.
+   */
+  const linkedIds = Array.from(linked);
+  for (let start = 0; start < linkedIds.length; start += SET_HISTORY_IDS_PER_CALL) {
     for (const row of await ctx.runQuery(internal.setHistory.historyPlayersByIds, {
-      playerIds: legacyIds.slice(start, start + SET_HISTORY_IDS_PER_CALL),
+      playerIds: linkedIds.slice(start, start + SET_HISTORY_IDS_PER_CALL),
     })) {
       add(row.nameNormalized, row.playerId as string);
+      for (const alias of row.aliasesNormalized) add(alias, row.playerId as string);
     }
   }
 

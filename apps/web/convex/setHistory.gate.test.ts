@@ -336,23 +336,71 @@ describe("the gate: what counts as set history", () => {
     expect(row.decision).toMatchObject({ linkedPlayerId: bo, autoLinked: "setHistory" });
   });
 
-  test("history is the PRINTED name: a card that printed 'Bo Jackson' for another man names him", async () => {
+  test("history keys a linked player on the PRINTED name, his primary name and his aliases", async () => {
     const t = newT();
     const baseball = await sport(t, "Baseball");
+    const football = await sport(t, "Football");
     const p = await product(t, baseball, { year: "2024" });
-    const vincent = await player(t, baseball, "Vincent Edward Jackson");
+    // Cross-sport, so no in-sport lookup can answer either name: only the
+    // set's history can.
+    const vincent = await player(t, football, "Vincent Jackson", {
+      aliases: ["Bo Jackson"],
+    });
     await committed(t, p.base, "1", { printed: [["Bo Jackson", vincent]] });
 
-    const printed = await gate(t, p.insert, baseball, ["Bo Jackson"]);
-    expect((await rowsOf(t, printed.batchId))[0]?.decision).toMatchObject({
-      linkedPlayerId: vincent,
+    const result = await gate(t, p.insert, baseball, ["Bo Jackson", "Vincent Jackson"]);
+
+    const rows = await rowsOf(t, result.batchId);
+    expect(rows.map((r) => r.name).sort()).toEqual(["Bo Jackson", "Vincent Jackson"]);
+    for (const row of rows) {
+      expect(row.sportId).toBe(football);
+      expect(row.decision).toMatchObject({
+        action: "link",
+        linkedPlayerId: vincent,
+        autoLinked: "setHistory",
+      });
+    }
+    expect(result.unknownPlayers).toEqual([]);
+  });
+
+  test("an ALIAS the set never printed still names the linked player", async () => {
+    const t = newT();
+    const baseball = await sport(t, "Baseball");
+    const football = await sport(t, "Football");
+    const p = await product(t, baseball, { year: "2024" });
+    const vincent = await player(t, football, "Vincent Jackson", {
+      aliases: ["Bo Jackson"],
     });
-    // His own name was never printed in this set, so it says nothing.
-    const own = await gate(t, p.insert, baseball, ["Vincent Edward Jackson"]);
-    // (The batch is the same open one; what matters is no row for his own name.)
-    expect((await rowsOf(t, own.batchId)).map((r) => r.name)).not.toContain(
-      "Vincent Edward Jackson",
-    );
+    await committed(t, p.base, "1", { printed: [["Vincent Jackson", vincent]] });
+
+    const result = await gate(t, p.insert, baseball, ["Bo Jackson"]);
+
+    expect((await rowsOf(t, result.batchId))[0]?.decision).toMatchObject({
+      linkedPlayerId: vincent,
+      autoLinked: "setHistory",
+    });
+  });
+
+  test("two linked players answering to one name (printed for one, alias of the other) is a pick", async () => {
+    const t = newT();
+    const baseball = await sport(t, "Baseball");
+    const football = await sport(t, "Football");
+    const p = await product(t, baseball, { year: "2024" });
+    const bo = await player(t, football, "Bo Jackson");
+    const vincent = await player(t, football, "Vincent Jackson", {
+      aliases: ["Bo Jackson"],
+    });
+    await committed(t, p.base, "1", { printed: [["Bo Jackson", bo]] });
+    await committed(t, p.base, "2", { printed: [["Vincent Jackson", vincent]] });
+
+    const result = await gate(t, p.insert, baseball, ["Bo Jackson"]);
+
+    const [row] = await rowsOf(t, result.batchId);
+    expect(row.decision).toBeUndefined();
+    expect(
+      (row.enrichment?.existingCandidates ?? []).map((c) => c.playerId).sort(),
+    ).toEqual([bo, vincent].sort());
+    expect(result.ambiguousPlayers).toEqual(["Bo Jackson"]);
   });
 
   test("a legacy card with playerIds and no playerLinks is keyed by the player's own name", async () => {
