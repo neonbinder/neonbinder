@@ -1258,6 +1258,46 @@ describe("eBay drain: eBay's answers", () => {
     expect(await stepsOf(s, v.variantId)).toEqual(["photos: done", "items: done", "offers: done", "publish: failed"]);
   });
 
+  test("a publish that fails outright still records every listing that went live before the run stopped", async () => {
+    const s = await setup();
+    const v = await seedVariant(s.t, { cards: [{ number: "1" }, { number: "2" }, { number: "3" }] });
+    for (const cardId of v.cardIds) await addWithPhoto(s, cardId, { homeId: s.box, condition: "Near Mint", minPriceCents: 500 });
+    await listOnEbay(s);
+    await queue(s, v.cardIds.map((cardId) => ({ cardId, variantId: v.variantId })));
+    // The other two are still in flight when the first one fails.
+    ebay.publishGate = () => new Promise((r) => setTimeout(r, 10));
+    const real = ebay.fetch;
+    let failedOffer: string | null = null;
+    vi.stubGlobal("fetch", (async (url: string | URL | Request, init?: RequestInit) => {
+      const m = /\/offer\/([^/]+)\/publish$/.exec(new URL(String(url)).pathname);
+      if (m && failedOffer === null) {
+        failedOffer = decodeURIComponent(m[1]);
+        return Response.json({ errors: [{ errorId: 1 }] }, { status: 503 });
+      }
+      return real(url, init);
+    }) as typeof fetch);
+
+    await drain(s);
+
+    expect((await record(s, v.variantId))?.lastError).toBe(EBAY_STEP_SAYS.publish.busy);
+    const failedSku = ebay.offers.get(failedOffer as unknown as string)?.sku;
+    let live = 0;
+    for (const cardId of v.cardIds) {
+      const link = await linkOf(s, cardId, "NM");
+      const offer = ebay.offerFor(`NB2-${cardId}-NM`);
+      if (offer?.sku === failedSku) {
+        expect(link).toMatchObject({ status: "draft" });
+        expect(link?.listingId).toBeUndefined();
+      } else {
+        // Live on eBay, and NB knows it: the listing id is linked now, not on the next run.
+        expect(offer?.status).toBe("PUBLISHED");
+        expect(link).toMatchObject({ status: "live", listingId: offer?.listingId, pushed: { quantity: 1, priceCents: 500 } });
+        live += 1;
+      }
+    }
+    expect(live).toBe(2);
+  });
+
   test("a publish eBay refuses leaves the offer linked as a draft and reports it", async () => {
     const s = await setup();
     const { v, card } = await oneCard(s);

@@ -23,6 +23,7 @@ import {
   CARD_WEIGHT_REFUSED,
   NB_POLICY_NAMES,
   RAW_POLICY_LOG_CHUNK_CHARS,
+  RAW_POLICY_LOG_MAX_PARTS,
   SETUP_CHECK_LABEL,
   deletionRetryDelayMs,
   logFulfillmentPoliciesRaw,
@@ -35,7 +36,8 @@ const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
 }).glob("./**/*.*s");
 
-const creds = vi.hoisted(() => ({ token: "tok-1" as string | null }));
+/** `refreshTo`: a refresh the next 401 gets (the stored token becomes this); null = the refresh does not renew. */
+const creds = vi.hoisted(() => ({ token: "tok-1" as string | null, refreshTo: null as string | null }));
 
 vi.mock("./credentials", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./credentials")>();
@@ -51,7 +53,12 @@ vi.mock("./credentials", async (importOriginal) => {
     refreshSiteTokenForUser: internalAction({
       args: { site: v.string(), userId: v.string() },
       returns: v.any(),
-      handler: async () => ({ refreshed: false }),
+      handler: async () => {
+        if (creds.refreshTo === null) return { refreshed: false };
+        creds.token = creds.refreshTo;
+        creds.refreshTo = null;
+        return { refreshed: true };
+      },
     }),
   };
 });
@@ -229,6 +236,7 @@ let world: World;
 beforeEach(() => {
   world = new World();
   creds.token = "tok-1";
+  creds.refreshTo = null;
   process.env.NEONBINDER_BROWSER_URL = BROWSER;
   __resetContractCache();
   vi.stubEnv("EBAY_CLIENT_ID", "cid");
@@ -761,6 +769,72 @@ describe("savePolicies", () => {
       ms: 7,
       count: 1,
       body: { fulfillmentPolicies: [{ name: "[redacted]", description: "x" }] },
+    });
+  });
+
+  test("the raw line masks every token the session held, not only the one it holds now", () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const session = { token: "tok-NEW-2", pastTokens: ["tok-OLD-1"], config: { environment: "sandbox" } } as never;
+    logFulfillmentPoliciesRaw("readPolicies", { fulfillmentPolicies: [{ name: "tok-OLD-1", description: "tok-NEW-2 and tok-OLD-1" }] }, 1, session);
+    const text = String(log.mock.calls[0][0]);
+    expect(text).not.toMatch(/tok-OLD-1|tok-NEW-2/);
+    expect(JSON.parse(text).body).toEqual({ fulfillmentPolicies: [{ name: "[redacted]", description: "[redacted] and [redacted]" }] });
+  });
+
+  test("a token refreshed in the middle of a policy read is masked in the raw line, old and new", async () => {
+    const s = await accountWithPolicies();
+    creds.refreshTo = "tok-2";
+    const real = world.fetch;
+    let refused = false;
+    vi.stubGlobal("fetch", (async (url: string | URL | Request, init?: RequestInit) => {
+      const u = new URL(String(url));
+      const auth = ((init?.headers ?? {}) as Record<string, string>).Authorization ?? "";
+      // The payment read is refused once (its token expired), forcing a refresh mid-read.
+      if (u.pathname === "/sell/account/v1/payment_policy" && !refused) {
+        refused = true;
+        return new Response("", { status: 401 });
+      }
+      // eBay echoing the token it was sent, in a policy name.
+      if (u.pathname === "/sell/account/v1/fulfillment_policy" && (init?.method ?? "GET") === "GET") {
+        const answer = (await (await real(url, init)).json()) as { fulfillmentPolicies: Array<Record<string, unknown>> };
+        answer.fulfillmentPolicies[0].name = `sent ${auth.replace(/^Bearer /, "")}`;
+        return Response.json(answer);
+      }
+      return real(url, init);
+    }) as typeof fetch);
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const r = await s.me.action(api.ebayConnect.readPolicies, {});
+    const lines = log.mock.calls.map((c) => String(c[0]));
+    log.mockRestore();
+    expect(r.ok).toBe(true);
+    expect(refused).toBe(true);
+    const raw = lines.filter((l) => l.includes('"ebay_fulfillment_policies_raw"'));
+    expect(raw).toHaveLength(1);
+    expect(raw[0]).toContain("sent [redacted]");
+    expect(lines.join("\n")).not.toMatch(/tok-1|tok-2/);
+  });
+
+  test("a body past the part cap logs its first parts, then one truncated line", () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const body = { fulfillmentPolicies: [{ name: "big", description: "x".repeat(RAW_POLICY_LOG_CHUNK_CHARS * (RAW_POLICY_LOG_MAX_PARTS + 5)) }] };
+    logFulfillmentPoliciesRaw("readPolicies", body, 2, { token: "tok-1", config: { environment: "production" } } as never);
+    const lines = log.mock.calls.map((c) => JSON.parse(String(c[0])) as Record<string, unknown>);
+    const total = Math.ceil(JSON.stringify(body).length / RAW_POLICY_LOG_CHUNK_CHARS);
+    expect(RAW_POLICY_LOG_MAX_PARTS).toBe(40);
+    expect(lines).toHaveLength(RAW_POLICY_LOG_MAX_PARTS + 1);
+    lines.slice(0, -1).forEach((line, i) => expect(line).toMatchObject({ part: i + 1, parts: total, bodyChunk: expect.any(String) }));
+    expect(lines[lines.length - 1]).toEqual({
+      msg: "ebay_fulfillment_policies_raw",
+      platform: "ebay",
+      operation: "readPolicies",
+      environment: "production",
+      ms: 2,
+      count: 1,
+      readId: lines[0].readId,
+      truncated: true,
+      partsLogged: RAW_POLICY_LOG_MAX_PARTS,
+      parts: total,
+      bodyChars: JSON.stringify(body).length,
     });
   });
 

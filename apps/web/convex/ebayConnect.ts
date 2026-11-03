@@ -744,9 +744,15 @@ type PolicyReadOperation = "readPolicies" | "createStandardPolicies" | "savePoli
 
 /**
  * Characters of eBay's body one raw line carries. A longer body is split
- * across lines (never truncated), well under any log line limit.
+ * across lines, well under any log line limit.
  */
 export const RAW_POLICY_LOG_CHUNK_CHARS = 8_000;
+/**
+ * Body lines one read writes at most (40 x 8,000 characters, about 320 KB of
+ * policies). A longer body logs its first parts and then one
+ * `truncated: true` line, so one read can never flood the log.
+ */
+export const RAW_POLICY_LOG_MAX_PARTS = 40;
 
 /**
  * TEMPORARY, remove with NEO-423. One structured line,
@@ -757,20 +763,28 @@ export const RAW_POLICY_LOG_CHUNK_CHARS = 8_000;
  * logging the whole body: he is the only user.
  *
  * The body is eBay's GET answer only; the request, its Authorization header
- * and the session token never reach this function, and the token is masked
- * anyway should eBay ever echo it. A body longer than
- * `RAW_POLICY_LOG_CHUNK_CHARS` goes out as `parts` lines, each carrying
- * `bodyChunk` (its slice of the body's JSON text) and `part`, joined in
- * order under one `readId`.
+ * and the session token never reach this function, and every token the
+ * session has held is masked anyway should eBay ever echo one (the current
+ * token and any a refresh replaced during the read, `pastTokens`). A body
+ * longer than `RAW_POLICY_LOG_CHUNK_CHARS` goes out as `parts` lines, each
+ * carrying `bodyChunk` (its slice of the body's JSON text) and `part`, joined
+ * in order under one `readId`; past `RAW_POLICY_LOG_MAX_PARTS` the rest is
+ * left out and one last line says `truncated: true`.
  */
 export function logFulfillmentPoliciesRaw(
   operation: PolicyReadOperation,
   body: unknown,
   ms: number,
-  session: Pick<EbaySellerSession, "token" | "config">,
+  session: Pick<EbaySellerSession, "token" | "config" | "pastTokens">,
 ): void {
   let text = JSON.stringify(body ?? null);
-  for (const form of new Set([session.token, JSON.stringify(session.token).slice(1, -1)])) {
+  const forms = new Set<string>();
+  for (const token of [session.token, ...(session.pastTokens ?? [])]) {
+    forms.add(token);
+    forms.add(JSON.stringify(token).slice(1, -1));
+  }
+  // Longest first, so a token that contains another is masked whole.
+  for (const form of [...forms].sort((a, b) => b.length - a.length)) {
     if (form.length > 0) text = text.split(form).join("[redacted]");
   }
   const head = {
@@ -787,9 +801,13 @@ export function logFulfillmentPoliciesRaw(
   }
   const readId = newNonce().slice(0, 16);
   const parts = Math.ceil(text.length / RAW_POLICY_LOG_CHUNK_CHARS);
-  for (let i = 0; i < parts; i++) {
+  const logged = Math.min(parts, RAW_POLICY_LOG_MAX_PARTS);
+  for (let i = 0; i < logged; i++) {
     const bodyChunk = text.slice(i * RAW_POLICY_LOG_CHUNK_CHARS, (i + 1) * RAW_POLICY_LOG_CHUNK_CHARS);
     console.log(JSON.stringify({ ...head, readId, part: i + 1, parts, bodyChunk }));
+  }
+  if (logged < parts) {
+    console.log(JSON.stringify({ ...head, readId, truncated: true, partsLogged: logged, parts, bodyChars: text.length }));
   }
 }
 

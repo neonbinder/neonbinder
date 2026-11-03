@@ -1446,13 +1446,38 @@ async function syncEbayVariant(
     }
   }
 
+  /** A listing's link as this run leaves it: live with its listing id, or a draft. */
+  const landedLink = (plan: Plan): LinkWrite => ({
+    cardId: plan.target.cardId,
+    conditionCode: plan.target.conditionCode,
+    sku: plan.target.sku,
+    offerId: plan.offerId as string,
+    ...(plan.listingId ? { listingId: plan.listingId } : {}),
+    ...(plan.retiredListingId ? { retiredListingId: plan.retiredListingId } : {}),
+    status: plan.listingId !== null ? "live" : "draft",
+    ...(plan.images ? { images: plan.images } : {}),
+    pushed: {
+      quantity: plan.target.quantity,
+      priceCents: plan.target.priceCents as number,
+      fulfillmentPolicyId: plan.fulfillmentPolicyId,
+      paymentPolicyId: settings.paymentPolicyId,
+      returnPolicyId: settings.returnPolicyId,
+      bestOffer: settings.bestOffer,
+      contentHash: plan.contentHash,
+    },
+  });
+
   // 6. Publish new and returning listings: one publish per offer, at most
   //    EBAY_PUBLISH_CONCURRENCY at once. eBay refusing an offer rejects that
   //    card; a call that fails outright (eBay busy, signed out, an answer NB
   //    can't read) starts no further publish and stops the run once the ones
-  //    in flight are back, as a failed bulk call did.
+  //    in flight are back, as a failed bulk call did. Every publish that
+  //    landed before the stop is recorded first (its listing id, and the one
+  //    a republish replaced): a live listing NB does not know about is a lost
+  //    link.
   const publishes = plans.filter((p) => p.needsPublish && !p.failed && p.offerId);
   await step("publish", publishes.length > 0);
+  const publishedNow: Plan[] = [];
   const publishHalt: { failure: EbayFailure | null } = { failure: null };
   await inPool(
     publishes,
@@ -1468,11 +1493,13 @@ async function syncEbayVariant(
         // A republish gets a new listing id; a late sale may still name the old one.
         if (plan.listingId !== null && plan.listingId !== e.listingId) plan.retiredListingId = plan.listingId;
         plan.listingId = e.listingId;
+        publishedNow.push(plan);
       } else reject(plan, "publish", e.errorIds, e.errors);
     },
     () => publishHalt.failure !== null,
   );
   if (publishHalt.failure) {
+    for (const plan of publishedNow) linkWrites.push(landedLink(plan));
     const stop = await stopOn({ ok: false, failure: publishHalt.failure });
     if (stop) return stop;
   }
@@ -1482,27 +1509,8 @@ async function syncEbayVariant(
   for (const plan of plans) {
     if (plan.failed || !plan.offerId) continue;
     // Every plan still standing either was live or was published just now.
-    const isLive = plan.listingId !== null;
     pushedCount += 1;
-    linkWrites.push({
-      cardId: plan.target.cardId,
-      conditionCode: plan.target.conditionCode,
-      sku: plan.target.sku,
-      offerId: plan.offerId,
-      ...(plan.listingId ? { listingId: plan.listingId } : {}),
-      ...(plan.retiredListingId ? { retiredListingId: plan.retiredListingId } : {}),
-      status: isLive ? "live" : "draft",
-      ...(plan.images ? { images: plan.images } : {}),
-      pushed: {
-        quantity: plan.target.quantity,
-        priceCents: plan.target.priceCents as number,
-        fulfillmentPolicyId: plan.fulfillmentPolicyId,
-        paymentPolicyId: settings.paymentPolicyId,
-        returnPolicyId: settings.returnPolicyId,
-        bestOffer: settings.bestOffer,
-        contentHash: plan.contentHash,
-      },
-    });
+    linkWrites.push(landedLink(plan));
   }
   // A listing that failed after its offer existed keeps its link, unchanged.
   await flushLinks();

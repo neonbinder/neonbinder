@@ -812,6 +812,8 @@ describe("the 401 refresh path", () => {
     expect(seen[1].headers.Authorization).toBe("Bearer tok-2");
     expect(s.reauthAttempted).toBe(true);
     expect(s.dead).toBe(false);
+    // The replaced token is kept so a raw log written after the refresh can still mask it.
+    expect(s.pastTokens).toEqual(["tok-1"]);
   });
 
   test("a second 401 after a refresh kills the session; later calls do not touch eBay", async () => {

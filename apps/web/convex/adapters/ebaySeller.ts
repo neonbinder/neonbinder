@@ -100,6 +100,12 @@ export interface EbaySellerSession {
    * spent, killing) the session (`reauthOnce`).
    */
   reauth?: Promise<boolean>;
+  /**
+   * Tokens this session held before its current one (a refresh replaced
+   * them), so a log line masks every token the session ever sent, not only
+   * the one it holds when the line is written.
+   */
+  pastTokens?: string[];
 }
 
 type SessionCtx = Pick<ActionCtx, "runAction">;
@@ -347,6 +353,7 @@ async function reauthOnce(ctx: SessionCtx, session: EbaySellerSession): Promise<
       }
       logCall("reauth", refreshStartedAt, next ? "ok" : "failed");
       if (!next) return false;
+      (session.pastTokens ??= []).push(session.token);
       session.token = next.token;
       return true;
     })();
