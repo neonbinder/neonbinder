@@ -736,24 +736,23 @@ async function readPolicyLists(
   };
 }
 
-const policiesResult = v.union(
-  v.object({
-    ok: v.literal(true),
-    fulfillment: v.array(
-      v.object({
-        id: v.string(),
-        name: v.string(),
-        eseFit: v.boolean(),
-        eseOnly: v.boolean(),
-        freeShipping: v.boolean(),
-        summary: v.string(),
-      }),
-    ),
-    payment: v.array(v.object({ id: v.string(), name: v.string() })),
-    returns: v.array(v.object({ id: v.string(), name: v.string(), summary: v.string() })),
-  }),
-  errorResult,
-);
+/** The three policy lists as the pickers read them (`PolicyLists`): `readPolicies`, and Set me up's answer. */
+const policyListsFields = {
+  fulfillment: v.array(
+    v.object({
+      id: v.string(),
+      name: v.string(),
+      eseFit: v.boolean(),
+      eseOnly: v.boolean(),
+      freeShipping: v.boolean(),
+      summary: v.string(),
+    }),
+  ),
+  payment: v.array(v.object({ id: v.string(), name: v.string() })),
+  returns: v.array(v.object({ id: v.string(), name: v.string(), summary: v.string() })),
+};
+
+const policiesResult = v.union(v.object({ ok: v.literal(true), ...policyListsFields }), errorResult);
 
 /** The collector's eBay business policies, for the pickers. */
 export const readPolicies = action({
@@ -943,11 +942,22 @@ function groundAdvantageCode(services: EbayShippingServiceInfo[]): string | null
  * per-step ledger, as the listing sync's): `setupProgress` on the settings
  * row holds the account check, then every policy in run order (already
  * there, or made now), each ticking off as eBay answers (`SetupLedger`).
+ *
+ * `policies`: the account's policy lists once the run is done, as
+ * `readPolicies` gives them, so the page picks from them without reading eBay
+ * again (that read took seconds after every step had ticked off). They are
+ * the run's own opening read plus each policy it made, narrowed from what NB
+ * sent under the id eBay gave it (`madePolicy`).
  */
 export const createStandardPolicies = action({
   args: {},
   returns: v.union(
-    v.object({ ok: v.literal(true), created: v.array(v.string()), envelopeRefused: v.optional(v.literal(true)) }),
+    v.object({
+      ok: v.literal(true),
+      created: v.array(v.string()),
+      envelopeRefused: v.optional(v.literal(true)),
+      policies: v.object(policyListsFields),
+    }),
     errorResult,
   ),
   handler: async (ctx): Promise<SetMeUpAnswer> => {
@@ -971,7 +981,7 @@ export const createStandardPolicies = action({
   },
 });
 
-type SetMeUpAnswer = { ok: true; created: string[]; envelopeRefused?: true } | Fail;
+type SetMeUpAnswer = { ok: true; created: string[]; envelopeRefused?: true; policies: PolicyLists } | Fail;
 type SetupStep = typeof ebaySetupStepValidator.type;
 type SetupStepKey = SetupStep["step"];
 type PolicySlot = Exclude<SetupStepKey, "check">;
@@ -1114,6 +1124,13 @@ async function setMeUp(ctx: ActionCtx, ownerId: string, session: EbaySellerSessi
 
   const byName = new Map(read.lists.fulfillment.map((p) => [p.name, p.id]));
   const created: string[] = [];
+  // What the account holds once the run is done: what it had, then what it made.
+  const lists: PolicyLists = {
+    fulfillment: [...read.lists.fulfillment],
+    payment: [...read.lists.payment],
+    returns: [...read.lists.returns],
+  };
+  const names = ebayServiceNames(services.value);
   const ids: { ese?: string; tracked?: string; free?: string; payment?: string; returns?: string } = {
     ese: byName.get(NB_POLICY_NAMES.ese),
     tracked: byName.get(NB_POLICY_NAMES.tracked),
@@ -1153,6 +1170,7 @@ async function setMeUp(ctx: ActionCtx, ownerId: string, session: EbaySellerSessi
     ledger.land(slot, "done");
     ids[slot] = r.value;
     created.push(name);
+    madePolicy(lists, kind, r.value, body, names);
     return null;
   };
   const steps: Array<{ slot: PolicySlot; run: () => Promise<Fail | null> }> = [];
@@ -1255,7 +1273,32 @@ async function setMeUp(ctx: ActionCtx, ownerId: string, session: EbaySellerSessi
     }
   }
   await fill();
-  return envelopeRefused ? { ok: true, created, envelopeRefused: true } : { ok: true, created };
+  return envelopeRefused ? { ok: true, created, envelopeRefused: true, policies: lists } : { ok: true, created, policies: lists };
+}
+
+/**
+ * Adds a policy Set me up just made to `lists`, narrowed exactly as a read of
+ * the account narrows it (the same `lib/ebayListing` readers): the body NB
+ * sent, under the id eBay's create answered with. Every field those readers
+ * look at (name, domestic services and their cost, the return terms) is one
+ * NB set in that body.
+ */
+function madePolicy(
+  lists: PolicyLists,
+  kind: "fulfillment_policy" | "payment_policy" | "return_policy",
+  id: string,
+  body: Record<string, unknown>,
+  names: ReadonlyMap<string, string>,
+): void {
+  if (kind === "fulfillment_policy") {
+    for (const p of readFulfillmentPolicies({ fulfillmentPolicies: [{ ...body, fulfillmentPolicyId: id }] })) {
+      lists.fulfillment.push({ id: p.id, name: p.name, ...policyFitness(p, names) });
+    }
+  } else if (kind === "payment_policy") {
+    lists.payment.push(...readPaymentPolicies({ paymentPolicies: [{ ...body, paymentPolicyId: id }] }));
+  } else {
+    lists.returns.push(...readReturnPolicies({ returnPolicies: [{ ...body, returnPolicyId: id }] }));
+  }
 }
 
 /**

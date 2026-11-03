@@ -303,15 +303,17 @@ function PoliciesBody({
  * "Set me up": makes NB's standard policies on the seller's eBay account
  * (Standard Envelope under $20 and tracked Ground Advantage, both priced by
  * eBay for the card's weight, free shipping, and payment and returns only
- * where there are none), reads them back, and picks them for any slot still
- * empty. A slot already picked stays put.
+ * where there are none), and picks them for any slot still empty from the
+ * policy lists the run hands back (no second read of eBay). A slot already
+ * picked stays put.
  *
  * Waits for Ships from: eBay prices each buyer's shipping from that ZIP, so
  * until it's saved the button stays (reachable, `aria-disabled`, never
  * hidden) and a line beside it, which describes it, says to save that first.
  *
- * Made but not read back: the box stays, says so, and its button becomes
- * "Try again", which reads and picks without making anything twice. Focus
+ * Made but not picked (the pick failed after the run made its policies): the
+ * box stays, says so, and its button becomes "Try again", which reads the
+ * policies from eBay and picks without making anything twice. Focus
  * stays on that button; on success it moves to the Shipping heading.
  */
 /** eBay turned down the Standard Envelope policy; everything else Set me up does still happened. */
@@ -359,6 +361,7 @@ function SetMeUp({
     let created = made;
     let noEnvelope = envelopeRefused;
     try {
+      let read: EbayPolicies;
       if (created === null) {
         onStart();
         const answer = await create({});
@@ -369,14 +372,18 @@ function SetMeUp({
         created = answer.created;
         noEnvelope = answer.envelopeRefused === true;
         setEnvelopeRefused(noEnvelope);
-      }
-      const read = await readPolicies({});
-      if (!read.ok) {
-        setMade(created);
-        // One message of our own, not the read's sentence with ours stuck on (both said "Try again"): what's
-        // done, what isn't, and what the button does now. The connection's own state says any lost sign-in.
-        setLine({ kind: "error", text: MADE_NOT_PICKED });
-        return;
+        // The run hands back the account's policies, made ones included: no second trip to eBay.
+        read = answer.policies;
+      } else {
+        // Try again after a run that made its policies but never picked them: read, pick, make nothing.
+        const again = await readPolicies({});
+        if (!again.ok) {
+          // One message of our own, not the read's sentence with ours stuck on (both said "Try again"): what's
+          // done, what isn't, and what the button does now. The connection's own state says any lost sign-in.
+          setLine({ kind: "error", text: MADE_NOT_PICKED });
+          return;
+        }
+        read = again;
       }
       const picks = standardPicks(connection.settings, read, created);
       const saved = Object.keys(picks).length > 0 ? await save(picks) : ({ ok: true } as const);

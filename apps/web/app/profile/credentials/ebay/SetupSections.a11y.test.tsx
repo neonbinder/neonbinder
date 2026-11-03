@@ -1,9 +1,9 @@
 /**
  * NEO-415 — Profile → Credentials → eBay, the accessibility audit's fixes: the ships-from
  * form keeps focus and its "Saved." line through a save, marks and focuses
- * what a refused submit needs; Set me up says it's working, and a failed
- * read-back keeps the box and focus with a Try again that makes nothing
- * twice; status lines carry no aria-busy; eBay's "no" return focuses the
+ * what a refused submit needs; Set me up says it's working, picks from the
+ * policies its run hands back (no second read), and a failed pick keeps the
+ * box and focus with a Try again that reads and makes nothing twice; status lines carry no aria-busy; eBay's "no" return focuses the
  * heading; the page is inert behind the Disconnect confirm and Cancel hands
  * focus back; a picker's refusal or gone pick describes its radiogroup.
  */
@@ -195,6 +195,10 @@ describe("Set me up", () => {
     payment: [{ id: "p9", name: MADE[2] }],
     returns: [{ id: "r9", name: MADE[3], summary: "" }],
   };
+  /** The policy lists a run hands back (`createStandardPolicies`'s `policies`): a read's answer without its `ok`. */
+  const listsOf = ({ fulfillment, payment, returns }: typeof MADE_POLICIES) => ({ fulfillment, payment, returns });
+  /** The read the page makes when it opens; a run that hands back its policies makes no other. */
+  const reads = () => fns["ebayConnect:readPolicies"].mock.calls.length;
 
   const SHIPS_FROM = { postalCode: "53703", city: "Madison", stateOrProvince: "WI" };
   // Set me up waits for a saved ship-from (eBay prices shipping from its ZIP).
@@ -243,25 +247,11 @@ describe("Set me up", () => {
     expect(working.getAttribute("aria-busy")).toBeNull();
   });
 
-  it("made but not read back: the box stays with focus, and Try again picks without making twice", async () => {
+  it("picks from the policies the run hands back, without reading eBay again", async () => {
     fn("ebayConnect:readPolicies").mockResolvedValueOnce(NOTHING);
-    fn("ebayConnect:createStandardPolicies").mockResolvedValue({ ok: true, created: MADE });
-    fn("ebayConnect:readPolicies").mockResolvedValueOnce({ ok: false, error: "eBay didn't answer." });
+    fn("ebayConnect:createStandardPolicies").mockResolvedValue({ ok: true, created: MADE, policies: listsOf(MADE_POLICIES) });
     renderAt();
-    const button = await screen.findByRole("button", { name: "Set me up" });
-    button.focus();
-    fireEvent.click(button);
-    const alert = await saidAlert();
-    // One message, not eBay's sentence with ours stuck on: what's done, what isn't, and what Try again does.
-    expect(alert.textContent).toBe(
-      "Your new policies are made, but we couldn't read them back just now, so nothing's picked yet. Give it a bit, then press Try again to pick them. It won't make them twice.",
-    );
-    const retry = screen.getByRole("button", { name: "Try again" });
-    expect(document.activeElement).toBe(retry);
-    expect(screen.getByRole("heading", { level: 3, name: "Shipping" })).toBeTruthy();
-
-    fn("ebayConnect:readPolicies").mockResolvedValueOnce(MADE_POLICIES);
-    fireEvent.click(retry);
+    fireEvent.click(await screen.findByRole("button", { name: "Set me up" }));
     await waitFor(() =>
       expect(fns["ebayConnect:savePolicies"]).toHaveBeenCalledWith({
         fulfillmentPolicyUnder20Id: "n1",
@@ -270,6 +260,44 @@ describe("Set me up", () => {
         returnPolicyId: "r9",
       }),
     );
+    expect((await screen.findByText(/^Made 4 on your eBay account/)).getAttribute("role")).toBe("status");
+    // The made policies are on the pickers straight away.
+    expect(screen.getByRole("radio", { name: MADE[2] })).toBeTruthy();
+    expect(reads()).toBe(1);
+  });
+
+  it("made but not picked: the box stays with focus, and Try again reads and picks without making twice", async () => {
+    fn("ebayConnect:readPolicies").mockResolvedValueOnce(NOTHING);
+    fn("ebayConnect:createStandardPolicies").mockResolvedValue({ ok: true, created: MADE, policies: listsOf(MADE_POLICIES) });
+    // The pick never lands: the policies are made, nothing is picked.
+    fn("ebayConnect:savePolicies").mockRejectedValueOnce(new Error("network"));
+    renderAt();
+    const button = await screen.findByRole("button", { name: "Set me up" });
+    button.focus();
+    fireEvent.click(button);
+    const retry = await screen.findByRole("button", { name: "Try again" });
+    expect(document.activeElement).toBe(retry);
+    expect(screen.getByRole("heading", { level: 3, name: "Shipping" })).toBeTruthy();
+    expect(reads()).toBe(1);
+
+    // Try again reads; that read failing says what's done, what isn't, and what Try again does, in one message.
+    fn("ebayConnect:readPolicies").mockResolvedValueOnce({ ok: false, error: "eBay didn't answer." });
+    fireEvent.click(retry);
+    const alert = await saidAlert();
+    expect(alert.textContent).toBe(
+      "Your new policies are made, but we couldn't read them back just now, so nothing's picked yet. Give it a bit, then press Try again to pick them. It won't make them twice.",
+    );
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Try again" }));
+
+    fn("ebayConnect:readPolicies").mockResolvedValueOnce(MADE_POLICIES);
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    await waitFor(() => expect(fns["ebayConnect:savePolicies"]).toHaveBeenCalledTimes(2));
+    expect(fns["ebayConnect:savePolicies"]).toHaveBeenLastCalledWith({
+      fulfillmentPolicyUnder20Id: "n1",
+      fulfillmentPolicy20PlusId: "n2",
+      paymentPolicyId: "p9",
+      returnPolicyId: "r9",
+    });
     expect(fns["ebayConnect:createStandardPolicies"]).toHaveBeenCalledTimes(1);
     expect((await screen.findByText(/^Made 4 on your eBay account/)).getAttribute("role")).toBe("status");
     expect(spokenAlerts()).toEqual([]);
@@ -291,8 +319,12 @@ describe("Set me up", () => {
 
   it("eBay turning down the envelope still reads as made: a status line, the rest picked, cards under $20 left to the collector", async () => {
     fn("ebayConnect:readPolicies").mockResolvedValueOnce(NOTHING);
-    fn("ebayConnect:createStandardPolicies").mockResolvedValue({ ok: true, created: NO_ENVELOPE, envelopeRefused: true });
-    fn("ebayConnect:readPolicies").mockResolvedValueOnce(NO_ENVELOPE_POLICIES);
+    fn("ebayConnect:createStandardPolicies").mockResolvedValue({
+      ok: true,
+      created: NO_ENVELOPE,
+      envelopeRefused: true,
+      policies: listsOf(NO_ENVELOPE_POLICIES),
+    });
     renderAt();
     fireEvent.click(await screen.findByRole("button", { name: "Set me up" }));
     await waitFor(() =>
@@ -308,12 +340,17 @@ describe("Set me up", () => {
       "Made 4 on your eBay account: NB Tracked (USPS Ground Advantage), NB Free Shipping, NB Payment, NB Returns. Picked where you had nothing yet. eBay wouldn't make a Standard Envelope policy, so pick one of yours for cards under $20.",
     );
     expect(spokenAlerts()).toEqual([]);
+    expect(reads()).toBe(1);
   });
 
   it("nothing new to make and eBay turning down the envelope says so, as a status line", async () => {
     fn("ebayConnect:readPolicies").mockResolvedValueOnce(NOTHING);
-    fn("ebayConnect:createStandardPolicies").mockResolvedValue({ ok: true, created: [], envelopeRefused: true });
-    fn("ebayConnect:readPolicies").mockResolvedValueOnce(NO_ENVELOPE_POLICIES);
+    fn("ebayConnect:createStandardPolicies").mockResolvedValue({
+      ok: true,
+      created: [],
+      envelopeRefused: true,
+      policies: listsOf(NO_ENVELOPE_POLICIES),
+    });
     renderAt();
     fireEvent.click(await screen.findByRole("button", { name: "Set me up" }));
     const line = await screen.findByText(/^You already had the rest\./);
@@ -324,10 +361,15 @@ describe("Set me up", () => {
     expect(spokenAlerts()).toEqual([]);
   });
 
-  it("the envelope note survives a Try again after the read back failed", async () => {
+  it("the envelope note survives a Try again after the pick failed", async () => {
     fn("ebayConnect:readPolicies").mockResolvedValueOnce(NOTHING);
-    fn("ebayConnect:createStandardPolicies").mockResolvedValue({ ok: true, created: NO_ENVELOPE, envelopeRefused: true });
-    fn("ebayConnect:readPolicies").mockResolvedValueOnce({ ok: false, error: "eBay didn't answer." });
+    fn("ebayConnect:createStandardPolicies").mockResolvedValue({
+      ok: true,
+      created: NO_ENVELOPE,
+      envelopeRefused: true,
+      policies: listsOf(NO_ENVELOPE_POLICIES),
+    });
+    fn("ebayConnect:savePolicies").mockRejectedValueOnce(new Error("network"));
     renderAt();
     fireEvent.click(await screen.findByRole("button", { name: "Set me up" }));
     const retry = await screen.findByRole("button", { name: "Try again" });
@@ -480,15 +522,16 @@ describe("Set me up's step ledger", () => {
     // Said on screen, not by colour and glyph alone.
     expect(refused.textContent).toBe("NB Standard Envelope (under $20), eBay said no");
 
-    fn("ebayConnect:readPolicies").mockResolvedValueOnce({
-      ok: true,
+    const policies = {
       fulfillment: [{ id: "n2", name: NAMES.tracked, eseFit: false, eseOnly: false, freeShipping: false, summary: "" }],
       payment: [{ id: "p9", name: NAMES.payment }],
       returns: [{ id: "r9", name: NAMES.returns, summary: "" }],
-    });
-    await act(async () => finish({ ok: true, created: made, envelopeRefused: true }));
+    };
+    await act(async () => finish({ ok: true, created: made, envelopeRefused: true, policies }));
     const answer = await screen.findByText(/^Made 4 on your eBay account/);
     expect(answer.getAttribute("role")).toBe("status");
+    // The answer lands with every step ticked: no read of eBay after the run (only the page's opening one).
+    expect(fns["ebayConnect:readPolicies"]).toHaveBeenCalledTimes(1);
     expect(spokenAlerts()).toEqual([]);
     // The ledger outlives the Set me up box, so the warning stays beside the answer.
     expect(screen.getByRole("listitem", { name: "NB Standard Envelope (under $20), eBay said no" })).toBeTruthy();

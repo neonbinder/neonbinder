@@ -723,6 +723,7 @@ describe("createStandardPolicies (Set me up)", () => {
       ok: true,
       // The envelope last: eBay turning it down leaves the rest made.
       created: [NB_POLICY_NAMES.tracked, NB_POLICY_NAMES.free, NB_POLICY_NAMES.payment, NB_POLICY_NAMES.returns, NB_POLICY_NAMES.ese],
+      policies: expect.any(Object),
     });
     expect(r).not.toHaveProperty("envelopeRefused");
     const row = await settingsRow(s);
@@ -735,6 +736,57 @@ describe("createStandardPolicies (Set me up)", () => {
     expect(world.fulfillment.find((f) => f.name === NB_POLICY_NAMES.ese)?.services[0].code).toBe(ESE);
     expect(world.fulfillment.find((f) => f.name === NB_POLICY_NAMES.tracked)?.services[0].code).toBe("USPSGroundAdvantage");
     expect(world.fulfillment.find((f) => f.name === NB_POLICY_NAMES.free)?.services[0]).toMatchObject({ cost: "0.00", free: true });
+  });
+
+  test("hands back the account's policies, what it had and what it made, as a read would: the page reads eBay no more", async () => {
+    world.shippingServices = [
+      { shippingService: "USPSGroundAdvantage", description: "USPS Ground Advantage", validForSellingFlow: true },
+      { shippingService: ESE, description: "eBay Standard Envelope", validForSellingFlow: true },
+    ];
+    world.fulfillment = [{ id: "F-MINE", name: "My parcel", services: [{ code: "USPSGroundAdvantage", cost: "4.99" }] }];
+    world.payment = [{ id: "P-MINE", name: "My pay" }];
+    const s = await setup({ settings: SHIPS_FROM });
+    const r = await s.me.action(api.ebayConnect.createStandardPolicies, {});
+    if (!r.ok) throw new Error(r.error);
+    const idOf = (name: string) => world.fulfillment.find((f) => f.name === name)!.id;
+    expect(r.policies).toEqual({
+      fulfillment: [
+        { id: "F-MINE", name: "My parcel", eseFit: false, eseOnly: false, freeShipping: false, summary: "USPS Ground Advantage, $4.99" },
+        {
+          id: idOf(NB_POLICY_NAMES.tracked),
+          name: NB_POLICY_NAMES.tracked,
+          eseFit: false,
+          eseOnly: false,
+          freeShipping: false,
+          summary: "USPS Ground Advantage, eBay's rate by weight",
+        },
+        {
+          id: idOf(NB_POLICY_NAMES.free),
+          name: NB_POLICY_NAMES.free,
+          eseFit: false,
+          eseOnly: false,
+          freeShipping: true,
+          summary: "USPS Ground Advantage, free",
+        },
+        {
+          id: idOf(NB_POLICY_NAMES.ese),
+          name: NB_POLICY_NAMES.ese,
+          eseFit: true,
+          eseOnly: true,
+          freeShipping: false,
+          summary: "Standard Envelope, eBay's rate by weight",
+        },
+      ],
+      payment: [{ id: "P-MINE", name: "My pay" }],
+      returns: [{ id: world.returns[0].id, name: NB_POLICY_NAMES.returns, summary: "30 days, buyer pays return shipping" }],
+    });
+    // The shipping and payment lists are what reading the account now says, entry for entry.
+    const read = await s.me.action(api.ebayConnect.readPolicies, {});
+    expect(read.ok && { fulfillment: read.fulfillment, payment: read.payment }).toEqual({
+      fulfillment: r.policies.fulfillment,
+      payment: r.policies.payment,
+    });
+    await drainScheduled(s.t);
   });
 
   test("the envelope and tracked policies are calculated by weight (no NB amount); Free Shipping stays a $0 flat rate", async () => {
@@ -857,7 +909,7 @@ describe("createStandardPolicies (Set me up)", () => {
       { shippingService: ESE, validForSellingFlow: true, shippingCostTypes: ["FLAT_RATE"] },
     ];
     const again = await s.me.action(api.ebayConnect.createStandardPolicies, {});
-    expect(again).toEqual({ ok: true, created: [] });
+    expect(again).toEqual({ ok: true, created: [], policies: expect.any(Object) });
   });
 
   test("the Ground Advantage code comes from eBay's metadata, not from NB", async () => {
@@ -907,7 +959,7 @@ describe("createStandardPolicies (Set me up)", () => {
     await s.me.action(api.ebayConnect.createStandardPolicies, {});
     const before = world.fulfillment.length;
     const again = await s.me.action(api.ebayConnect.createStandardPolicies, {});
-    expect(again).toEqual({ ok: true, created: [] });
+    expect(again).toEqual({ ok: true, created: [], policies: expect.any(Object) });
     expect(world.fulfillment).toHaveLength(before);
   });
 
@@ -1049,6 +1101,7 @@ describe("createStandardPolicies (Set me up)", () => {
         ok: true,
         created: [NB_POLICY_NAMES.tracked, NB_POLICY_NAMES.free, NB_POLICY_NAMES.payment, NB_POLICY_NAMES.returns],
         envelopeRefused: true,
+        policies: expect.any(Object),
       });
       const lines = warn.mock.calls.map((c) => String(c[0])).filter((l) => l.includes('"ebay_policy_service_refused"'));
       expect(lines).toHaveLength(1);
@@ -1161,8 +1214,11 @@ describe("createStandardPolicies (Set me up)", () => {
       ok: true,
       created: [NB_POLICY_NAMES.tracked, NB_POLICY_NAMES.free, NB_POLICY_NAMES.payment, NB_POLICY_NAMES.returns],
       envelopeRefused: true,
+      policies: expect.any(Object),
     });
     expect(JSON.stringify(r)).not.toContain("RAW-EBAY-TEXT");
+    // The refused envelope is in no list: only what eBay made is.
+    expect(r.ok && r.policies.fulfillment.map((p) => p.name)).toEqual([NB_POLICY_NAMES.tracked, NB_POLICY_NAMES.free]);
     expect(fulfillmentNames()).toEqual([NB_POLICY_NAMES.tracked, NB_POLICY_NAMES.free]);
     const row = await settingsRow(s);
     expect(row?.fulfillmentPolicy20PlusId).toBe(world.fulfillment[0].id);
@@ -1175,7 +1231,7 @@ describe("createStandardPolicies (Set me up)", () => {
 
     // Pressing again: the rest is found by name, only the envelope is asked for again.
     const again = await s.me.action(api.ebayConnect.createStandardPolicies, {});
-    expect(again).toEqual({ ok: true, created: [], envelopeRefused: true });
+    expect(again).toEqual({ ok: true, created: [], envelopeRefused: true, policies: expect.any(Object) });
     expect(fulfillmentNames()).toEqual([NB_POLICY_NAMES.tracked, NB_POLICY_NAMES.free]);
   });
 
@@ -1265,7 +1321,7 @@ describe("Set me up's progress (the page's step ledger)", () => {
     await s.me.action(api.ebayConnect.createStandardPolicies, {});
     const settled = (await settingsRow(s))?.lastUpdated;
     const seen = recordLedgerAtEachCreate(s);
-    expect(await s.me.action(api.ebayConnect.createStandardPolicies, {})).toEqual({ ok: true, created: [] });
+    expect(await s.me.action(api.ebayConnect.createStandardPolicies, {})).toEqual({ ok: true, created: [], policies: expect.any(Object) });
     expect(seen).toEqual([]);
     expect(lineOf((await progressOf(s))?.steps)).toEqual(["check:done", "tracked:had", "free:had", "ese:had"]);
     // Progress is not a settings change: nothing new filled, so lastUpdated stays.

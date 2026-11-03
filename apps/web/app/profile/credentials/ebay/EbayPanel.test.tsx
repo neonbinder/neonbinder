@@ -278,16 +278,16 @@ describe("Profile → Credentials → eBay, setup", () => {
     fn("ebayConnect:createStandardPolicies").mockResolvedValue({
       ok: true,
       created: ["NB Standard Envelope (under $20)", "NB Tracked (USPS Ground Advantage)", "NB Free Shipping"],
-    });
-    fn("ebayConnect:readPolicies").mockResolvedValue({
-      ok: true,
-      fulfillment: [
-        { id: "n1", name: "NB Standard Envelope (under $20)", eseFit: true, eseOnly: true, freeShipping: false, summary: "" },
-        { id: "n2", name: "NB Tracked (USPS Ground Advantage)", eseFit: false, eseOnly: false, freeShipping: false, summary: "" },
-        { id: "n3", name: "NB Free Shipping", eseFit: false, eseOnly: false, freeShipping: true, summary: "" },
-      ],
-      payment: [{ id: "p1", name: "Payment" }],
-      returns: [{ id: "r1", name: "Returns", summary: "" }],
+      // The account's policies once the run is done: the page picks from these, not from a second read.
+      policies: {
+        fulfillment: [
+          { id: "n1", name: "NB Standard Envelope (under $20)", eseFit: true, eseOnly: true, freeShipping: false, summary: "" },
+          { id: "n2", name: "NB Tracked (USPS Ground Advantage)", eseFit: false, eseOnly: false, freeShipping: false, summary: "" },
+          { id: "n3", name: "NB Free Shipping", eseFit: false, eseOnly: false, freeShipping: true, summary: "" },
+        ],
+        payment: [{ id: "p1", name: "Payment" }],
+        returns: [{ id: "r1", name: "Returns", summary: "" }],
+      },
     });
     renderAt();
     fireEvent.click(await screen.findByRole("button", { name: "Set me up" }));
@@ -301,6 +301,8 @@ describe("Profile → Credentials → eBay, setup", () => {
     );
     expect((await screen.findByText(/^Made 3 on your eBay account/)).getAttribute("role")).toBe("status");
     await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("heading", { level: 3, name: "Shipping" })));
+    // Only the read the page opened with: after a run, eBay is not asked again.
+    expect(fns["ebayConnect:readPolicies"]).toHaveBeenCalledTimes(1);
   });
 
   it("the checklist says what's left, then folds to one line", async () => {
