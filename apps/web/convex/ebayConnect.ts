@@ -54,6 +54,7 @@ import {
   EBAY_MARKETPLACE_ID,
   EBAY_MERCHANT_LOCATION_KEY,
   ebayGroundAdvantageService,
+  ebayServiceNames,
   ebaySetupMissing,
   ebayServiceTakesCalculated,
   isRecord,
@@ -107,6 +108,22 @@ const OPT_IN_PENDING =
 const SHIP_FROM_FIRST =
   "Save where you ship from first. eBay works out each buyer's shipping from your ZIP code and the card's weight.";
 const LOCATION_REFUSED = "eBay wouldn't take that address. Check the ZIP, city and state, then save again.";
+const POLICIES_REFUSED = "eBay wouldn't hand over your policies just now. Try again in a bit.";
+const OPT_IN_REFUSED =
+  "eBay wouldn't switch on business policies for your account. Try Set me up again in a bit, or switch them on in eBay's Seller Hub.";
+const SERVICES_REFUSED = "eBay wouldn't list its shipping services just now. Try Set me up again in a bit.";
+const NO_GROUND_ADVANTAGE = "eBay didn't offer USPS Ground Advantage, so NeonBinder couldn't make tracked shipping.";
+/** Set me up hit a busy or unreadable eBay: pressing again is safe, since it finds what it made by name. */
+const SET_ME_UP_BUSY = "eBay's not answering right now. Press Set me up again in a bit; it never makes anything twice.";
+/** Which of NB's standard policies eBay refused, and what the collector can do instead. */
+const SET_ME_UP_REFUSED = {
+  ese: "eBay turned down the Standard Envelope policy, so Set me up stopped there. Pick one of your own shipping policies for cards under $20, or make one on eBay and come back.",
+  tracked:
+    "eBay turned down the tracked USPS Ground Advantage policy, so Set me up stopped there. Pick one of your own shipping policies for cards $20 and up, or make one on eBay and come back.",
+  free: "eBay turned down the free shipping policy, so Set me up stopped there. Pick one of your own shipping policies, or make one on eBay and come back.",
+  payment: "eBay turned down the payment policy, so Set me up stopped there. Make a payment policy on eBay, then pick it here.",
+  returns: "eBay turned down the returns policy, so Set me up stopped there. Make a return policy on eBay, then pick it here.",
+} as const;
 const NO_CALCULATED = (service: string) =>
   `eBay isn't offering weight-based rates for ${service} on your account, so NeonBinder made nothing. Pick your own shipping policies instead.`;
 
@@ -242,6 +259,20 @@ async function settingsChanged(ctx: MutationCtx, ownerId: string): Promise<void>
 
 function connectionFailure(failure: EbayFailure): string {
   return failure.message;
+}
+
+/**
+ * An eBay failure in NB's words for the step that hit it. The adapter's own
+ * sentences (signed out, timeout, no network, not connected) pass through;
+ * eBay saying no (a 4xx) gets `refused`, the step's own sentence; eBay busy
+ * (5xx, 429) or an answer NB couldn't read gets `busy`. eBay's status and
+ * error ids are already in the `ebay_seller_error` log line.
+ */
+function sayEbayFailure(failure: EbayFailure, refused: string, busy: string = CONNECT_ERRORS.unavailable): string {
+  if (failure.kind === "bad_response") return busy;
+  if (failure.kind !== "http") return failure.message;
+  const status = failure.httpStatus ?? 0;
+  return status >= 500 || status === 429 ? busy : refused;
 }
 
 /** Opens a seller session for the signed-in owner, or says why not (an NB sentence). */
@@ -666,28 +697,38 @@ interface PolicyLists {
   returns: Array<{ id: string; name: string; summary: string }>;
 }
 
-/** The seller's three policy lists (empty when the account is not in business policies yet). */
+/**
+ * The seller's three policy lists (empty when the account is not in business
+ * policies yet). eBay's shipping metadata is read beside them so a policy's
+ * summary names each service by eBay's own name, never its code; when that
+ * read fails the summaries say "eBay shipping" and the lists still load.
+ * `services`: the metadata, when it was read (Set me up reuses it).
+ */
 async function readPolicyLists(
   ctx: ActionCtx,
   session: EbaySellerSession,
-): Promise<{ ok: true; lists: PolicyLists; optedIn: boolean } | Fail> {
+): Promise<{ ok: true; lists: PolicyLists; optedIn: boolean; services: EbayShippingServiceInfo[] | null } | Fail> {
   const programs = await getOptedInPrograms(ctx, session);
-  if (!programs.ok) return { ok: false, error: programs.failure.message };
+  if (!programs.ok) return { ok: false, error: sayEbayFailure(programs.failure, POLICIES_REFUSED) };
   if (!programs.value.includes(SELLING_POLICY_MANAGEMENT)) {
-    return { ok: true, lists: { fulfillment: [], payment: [], returns: [] }, optedIn: false };
+    return { ok: true, lists: { fulfillment: [], payment: [], returns: [] }, optedIn: false, services: null };
   }
-  const [fulfillment, payment, returns] = await Promise.all([
+  const [fulfillment, payment, returns, metadata] = await Promise.all([
     getPolicies(ctx, session, "fulfillment_policy"),
     getPolicies(ctx, session, "payment_policy"),
     getPolicies(ctx, session, "return_policy"),
+    getShippingServices(ctx, session),
   ]);
-  for (const r of [fulfillment, payment, returns]) if (!r.ok) return { ok: false, error: r.failure.message };
+  for (const r of [fulfillment, payment, returns]) if (!r.ok) return { ok: false, error: sayEbayFailure(r.failure, POLICIES_REFUSED) };
   if (!fulfillment.ok || !payment.ok || !returns.ok) return { ok: false, error: CONNECT_ERRORS.unavailable };
+  const services = metadata.ok ? metadata.value : null;
+  const names = ebayServiceNames(services ?? []);
   return {
     ok: true,
     optedIn: true,
+    services,
     lists: {
-      fulfillment: readFulfillmentPolicies(fulfillment.value).map((p) => ({ id: p.id, name: p.name, ...policyFitness(p) })),
+      fulfillment: readFulfillmentPolicies(fulfillment.value).map((p) => ({ id: p.id, name: p.name, ...policyFitness(p, names) })),
       payment: readPaymentPolicies(payment.value),
       returns: readReturnPolicies(returns.value),
     },
@@ -819,15 +860,15 @@ export const createStandardPolicies = action({
     let justOptedIn = false;
     if (!read.optedIn) {
       const optIn = await optInToProgram(ctx, session, SELLING_POLICY_MANAGEMENT);
-      if (!optIn.ok) return { ok: false, error: optIn.failure.message };
+      if (!optIn.ok) return { ok: false, error: sayEbayFailure(optIn.failure, OPT_IN_REFUSED, SET_ME_UP_BUSY) };
       justOptedIn = true;
       read = await readPolicyLists(ctx, session);
       if (!read.ok) return { ok: false, error: OPT_IN_PENDING };
     }
-    const services = await getShippingServices(ctx, session);
-    if (!services.ok) return { ok: false, error: services.failure.message };
+    const services = read.services ? { ok: true as const, value: read.services } : await getShippingServices(ctx, session);
+    if (!services.ok) return { ok: false, error: sayEbayFailure(services.failure, SERVICES_REFUSED, SET_ME_UP_BUSY) };
     const ground = groundAdvantageCode(services.value);
-    if (!ground) return { ok: false, error: "eBay didn't offer USPS Ground Advantage, so NeonBinder couldn't make tracked shipping." };
+    if (!ground) return { ok: false, error: NO_GROUND_ADVANTAGE };
 
     const byName = new Map(read.lists.fulfillment.map((p) => [p.name, p.id]));
     const created: string[] = [];
@@ -851,7 +892,10 @@ export const createStandardPolicies = action({
       body: Record<string, unknown>,
     ): Promise<Fail | null> => {
       const r = await createPolicy(ctx, session, kind, body);
-      if (!r.ok) return { ok: false, error: justOptedIn ? OPT_IN_PENDING : r.failure.message };
+      if (!r.ok) {
+        if (justOptedIn) return { ok: false, error: OPT_IN_PENDING };
+        return { ok: false, error: sayEbayFailure(r.failure, SET_ME_UP_REFUSED[slot], SET_ME_UP_BUSY) };
+      }
       ids[slot] = r.value;
       created.push(name);
       return null;
@@ -1031,12 +1075,7 @@ export const saveLocation = action({
     if (!opened.ok) return opened;
     const location = { postalCode, city, stateOrProvince };
     const r = await upsertInventoryLocation(ctx, opened.session, EBAY_MERCHANT_LOCATION_KEY, location);
-    if (!r.ok) {
-      // An eBay refusal is said in NB's words; signed-out, timeout and network
-      // failures already are.
-      if (r.failure.kind !== "http") return { ok: false, error: r.failure.message };
-      return { ok: false, error: (r.failure.httpStatus ?? 0) >= 500 ? CONNECT_ERRORS.unavailable : LOCATION_REFUSED };
-    }
+    if (!r.ok) return { ok: false, error: sayEbayFailure(r.failure, LOCATION_REFUSED) };
     await ctx.runMutation(internal.ebayConnect.writeLocationSettings, {
       ownerId,
       location,

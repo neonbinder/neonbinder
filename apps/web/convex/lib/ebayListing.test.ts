@@ -19,6 +19,7 @@ import {
   ebayOrderDisposition,
   ebayOrderStatus,
   ebayPackageFor,
+  ebayServiceNames,
   ebayServiceTakesCalculated,
   ebaySetupMissing,
   ebayStatusDisposition,
@@ -228,7 +229,7 @@ describe("policy fitness (NEO-415)", () => {
 
   test("ESE-only fits under $20 and is flagged eseOnly", () => {
     const f = policyFitness(policy([{ code: "US_eBayStandardEnvelope", costCents: 100, free: false }]));
-    expect(f).toMatchObject({ eseFit: true, eseOnly: true, freeShipping: false, summary: "Standard Envelope $1.00" });
+    expect(f).toMatchObject({ eseFit: true, eseOnly: true, freeShipping: false, summary: "Standard Envelope, $1.00" });
   });
 
   test("ESE plus a parcel service is a fit and not ESE-only", () => {
@@ -244,6 +245,29 @@ describe("policy fitness (NEO-415)", () => {
   test("a free service marks the policy free, by flag or by a zero cost", () => {
     expect(policyFitness(policy([{ code: "USPSGroundAdvantage", costCents: null, free: true }])).freeShipping).toBe(true);
     expect(policyFitness(policy([{ code: "USPSGroundAdvantage", costCents: 0, free: false }])).freeShipping).toBe(true);
+  });
+
+  test("the summary names each service by eBay's own name, never its code; calculated reads as eBay's rate by weight", () => {
+    const names = ebayServiceNames([
+      { code: "USPSParcel", description: "USPS Ground Advantage" },
+      { code: "USPSPriority", description: null },
+      { code: "Blank", description: "   " },
+    ]);
+    const f = policyFitness(
+      policy([
+        { code: "US_eBayStandardEnvelope", costCents: null, free: false },
+        { code: "USPSParcel", costCents: null, free: false },
+        { code: "USPSPriority", costCents: 950, free: false },
+        { code: "Blank", costCents: 0, free: false },
+      ]),
+      names,
+    );
+    expect(f.summary).toBe(
+      "Standard Envelope, eBay's rate by weight; USPS Ground Advantage, eBay's rate by weight; eBay shipping, $9.50; eBay shipping, free",
+    );
+    expect(f.summary).not.toMatch(/USPSParcel|USPSPriority|Blank/);
+    // No metadata at all: still no code.
+    expect(policyFitness(policy([{ code: "USPSParcel", costCents: null, free: true }])).summary).toBe("eBay shipping, free");
   });
 
   test("a policy with no domestic service is neither ESE-fit nor ESE-only", () => {

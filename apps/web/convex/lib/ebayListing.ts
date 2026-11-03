@@ -440,7 +440,11 @@ export function readFulfillmentPolicies(body: unknown): NarrowFulfillmentPolicy[
  *             $20 or more (ESE covers items under $20): refused for $20+
  *   freeShipping any domestic service is free
  */
-export function policyFitness(policy: NarrowFulfillmentPolicy): {
+export function policyFitness(
+  policy: NarrowFulfillmentPolicy,
+  /** eBay's own name for each service code, from its shipping metadata (`description`); may be empty. */
+  serviceNames: ReadonlyMap<string, string> = new Map(),
+): {
   eseFit: boolean;
   eseOnly: boolean;
   freeShipping: boolean;
@@ -450,12 +454,36 @@ export function policyFitness(policy: NarrowFulfillmentPolicy): {
   const eseOnly = policy.domestic.length > 0 && policy.domestic.every((s) => s.code === EBAY_ESE_SERVICE_CODE);
   const freeShipping = policy.domestic.some((s) => s.free || s.costCents === 0);
   const parts = policy.domestic.slice(0, 4).map((s) => {
-    const name = s.code === EBAY_ESE_SERVICE_CODE ? "Standard Envelope" : s.code;
-    const price = s.free || s.costCents === 0 ? "free" : s.costCents !== null ? `$${centsToEbayValue(s.costCents)}` : "calculated";
-    return `${name} ${price}`;
+    const name = ebayServiceLabel(s.code, serviceNames);
+    const price =
+      s.free || s.costCents === 0 ? "free" : s.costCents !== null ? `$${centsToEbayValue(s.costCents)}` : EBAY_CALCULATED_LABEL;
+    return `${name}, ${price}`;
   });
-  const summary = parts.length > 0 ? parts.join(", ") : "No domestic shipping";
+  const summary = parts.length > 0 ? parts.join("; ") : "No domestic shipping";
   return { eseFit, eseOnly, freeShipping, summary: summary.slice(0, 160) };
+}
+
+/** How a calculated service's price reads on the picker: eBay prices it from the card's package weight. */
+export const EBAY_CALCULATED_LABEL = "eBay's rate by weight";
+/** A service eBay's metadata gave no name for. Never the raw code. */
+export const EBAY_UNNAMED_SERVICE_LABEL = "eBay shipping";
+
+/**
+ * A shipping service as the collector reads it, never eBay's raw code:
+ * Standard Envelope by NB's name for it; anything else by eBay's own name
+ * from its shipping metadata; a code eBay gave no name for is "eBay shipping".
+ */
+export function ebayServiceLabel(code: string, serviceNames: ReadonlyMap<string, string>): string {
+  if (code === EBAY_ESE_SERVICE_CODE) return "Standard Envelope";
+  const name = serviceNames.get(code)?.replace(/\s+/g, " ").trim();
+  return name ? name.slice(0, 60) : EBAY_UNNAMED_SERVICE_LABEL;
+}
+
+/** Code → eBay's own name, for the services its metadata named. */
+export function ebayServiceNames(services: ReadonlyArray<{ code: string; description: string | null }>): Map<string, string> {
+  const names = new Map<string, string>();
+  for (const s of services) if (s.description && s.description.trim()) names.set(s.code, s.description);
+  return names;
 }
 
 /** The shipping slot a price uses: $20.00 and up → the 20+ policy. */

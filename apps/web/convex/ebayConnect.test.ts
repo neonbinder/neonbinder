@@ -644,6 +644,54 @@ describe("savePolicies", () => {
     expect(await s.me.action(api.ebayConnect.readPolicies, {})).toEqual({ ok: true, fulfillment: [], payment: [], returns: [] });
   });
 
+  test("a policy's summary names each service by eBay's own name from its metadata, never the code", async () => {
+    world.shippingServices = [
+      { shippingService: "USPSParcel", description: "USPS Ground Advantage", validForSellingFlow: true },
+      { shippingService: ESE, description: "eBay Standard Envelope", validForSellingFlow: true },
+    ];
+    world.fulfillment = [
+      { id: "F-1", name: "Tracked", services: [{ code: "USPSParcel", cost: null }] },
+      { id: "F-2", name: "Mixed", services: [{ code: ESE, cost: "1.00" }, { code: "USPSParcel", cost: "4.99" }] },
+      { id: "F-3", name: "Odd", services: [{ code: "SomeOtherCode", cost: "3.00" }] },
+    ];
+    const s = await setup({ settings: {} });
+    const r = await s.me.action(api.ebayConnect.readPolicies, {});
+    expect(r.ok && r.fulfillment.map((p) => p.summary)).toEqual([
+      "USPS Ground Advantage, eBay's rate by weight",
+      "Standard Envelope, $1.00; USPS Ground Advantage, $4.99",
+      "eBay shipping, $3.00",
+    ]);
+    expect(JSON.stringify(r)).not.toMatch(/USPSParcel|SomeOtherCode/);
+  });
+
+  test("the policies still load when eBay's shipping metadata does not answer (services read as eBay shipping)", async () => {
+    world.fulfillment = [{ id: "F-1", name: "Tracked", services: [{ code: "USPSParcel", cost: null }] }];
+    const s = await setup({ settings: {} });
+    const real = world.fetch;
+    vi.stubGlobal("fetch", (async (url: string | URL | Request, init?: RequestInit) => {
+      if (String(url).endsWith("/get_shipping_services")) return Response.json({ errors: [{ errorId: 1 }] }, { status: 500 });
+      return real(url, init);
+    }) as typeof fetch);
+    const r = await s.me.action(api.ebayConnect.readPolicies, {});
+    expect(r.ok && r.fulfillment.map((p) => p.summary)).toEqual(["eBay shipping, eBay's rate by weight"]);
+  });
+
+  test("a refused or failed policy read says so in NB's words, never eBay's status or the call", async () => {
+    const s = await setup({ settings: {} });
+    const real = world.fetch;
+    let status = 400;
+    vi.stubGlobal("fetch", (async (url: string | URL | Request, init?: RequestInit) => {
+      if (String(url).includes("/payment_policy")) return Response.json({ errors: [{ errorId: 20001 }] }, { status });
+      return real(url, init);
+    }) as typeof fetch);
+    expect(await s.me.action(api.ebayConnect.readPolicies, {})).toEqual({
+      ok: false,
+      error: "eBay wouldn't hand over your policies just now. Try again in a bit.",
+    });
+    status = 503;
+    expect(await s.me.action(api.ebayConnect.readPolicies, {})).toEqual({ ok: false, error: "eBay's not answering right now. Try again in a bit." });
+  });
+
   test("readPolicies tells the picker which fulfillment policies fit", async () => {
     const s = await accountWithPolicies();
     const r = await s.me.action(api.ebayConnect.readPolicies, {});
@@ -709,8 +757,9 @@ describe("createStandardPolicies (Set me up)", () => {
     // Read back, the calculated policies show as calculated.
     const read = await s.me.action(api.ebayConnect.readPolicies, {});
     const summary = (name: string) => (read.ok ? read.fulfillment.find((p) => p.name === name)?.summary : undefined);
-    expect(summary(NB_POLICY_NAMES.ese)).toBe("Standard Envelope calculated");
-    expect(summary(NB_POLICY_NAMES.tracked)).toBe("USPSGroundAdvantage calculated");
+    expect(summary(NB_POLICY_NAMES.ese)).toBe("Standard Envelope, eBay's rate by weight");
+    // The fake metadata gives Ground Advantage no name: the picker says "eBay shipping", never the code.
+    expect(summary(NB_POLICY_NAMES.tracked)).toBe("eBay shipping, eBay's rate by weight");
   });
 
   test("without a saved ship-from location it makes nothing and says to save one first", async () => {
@@ -829,6 +878,72 @@ describe("createStandardPolicies (Set me up)", () => {
     const row = await settingsRow(s);
     expect(row?.paymentPolicyId).toBe("P-ONLY");
     expect(row?.returnPolicyId).toBeUndefined();
+  });
+
+  test.each([
+    ["ese", "the Standard Envelope policy", "for cards under $20"],
+    ["tracked", "the tracked USPS Ground Advantage policy", "for cards $20 and up"],
+    ["free", "the free shipping policy", "Pick one of your own shipping policies"],
+    ["payment", "the payment policy", "Make a payment policy on eBay"],
+    ["returns", "the returns policy", "Make a return policy on eBay"],
+  ] as const)("eBay refusing NB's %s policy says which one and what to do instead, never eBay's status or call", async (slot, which, todo) => {
+    const s = await setup({ settings: SHIPS_FROM });
+    const real = world.fetch;
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.stubGlobal("fetch", (async (url: string | URL | Request, init?: RequestInit) => {
+      const body = typeof init?.body === "string" ? JSON.parse(init.body) : null;
+      if (init?.method === "POST" && body?.name === NB_POLICY_NAMES[slot]) {
+        return Response.json({ errors: [{ errorId: 20403, message: "RAW-EBAY-TEXT" }] }, { status: 400 });
+      }
+      return real(url, init);
+    }) as typeof fetch);
+    const r = await s.me.action(api.ebayConnect.createStandardPolicies, {});
+    const lines = log.mock.calls.map((c) => String(c[0]));
+    log.mockRestore();
+    expect(r.ok).toBe(false);
+    const error = r.ok ? "" : r.error;
+    expect(error).toContain(`eBay turned down ${which}, so Set me up stopped there.`);
+    expect(error).toContain(todo);
+    expect(error).not.toMatch(/answered|400|create_|RAW-EBAY-TEXT/);
+    // The status, the call and eBay's error id are in the structured log instead.
+    const logged = lines.filter((l) => l.includes('"ebay_seller_error"')).map((l) => JSON.parse(l));
+    expect(logged).toContainEqual(expect.objectContaining({ httpStatus: 400, errorIds: [20403], operation: expect.stringMatching(/^create_/) }));
+    await drainScheduled(s.t);
+  });
+
+  test("eBay busy while Set me up makes a policy: press again, nothing is made twice", async () => {
+    const s = await setup({ settings: SHIPS_FROM });
+    const real = world.fetch;
+    vi.stubGlobal("fetch", (async (url: string | URL | Request, init?: RequestInit) => {
+      if (init?.method === "POST" && String(url).endsWith("/fulfillment_policy/")) return Response.json({}, { status: 503 });
+      return real(url, init);
+    }) as typeof fetch);
+    expect(await s.me.action(api.ebayConnect.createStandardPolicies, {})).toEqual({
+      ok: false,
+      error: "eBay's not answering right now. Press Set me up again in a bit; it never makes anything twice.",
+    });
+  });
+
+  test("eBay refusing the business-policies opt-in, or its shipping services, says so in NB's words", async () => {
+    world.optedIn = false;
+    const s = await setup({ settings: SHIPS_FROM });
+    const real = world.fetch;
+    let failing = "/program/opt_in";
+    vi.stubGlobal("fetch", (async (url: string | URL | Request, init?: RequestInit) => {
+      if (String(url).endsWith(failing)) return Response.json({ errors: [{ errorId: 1 }] }, { status: 400 });
+      return real(url, init);
+    }) as typeof fetch);
+    expect(await s.me.action(api.ebayConnect.createStandardPolicies, {})).toEqual({
+      ok: false,
+      error: "eBay wouldn't switch on business policies for your account. Try Set me up again in a bit, or switch them on in eBay's Seller Hub.",
+    });
+    world.optedIn = true;
+    failing = "/get_shipping_services";
+    expect(await s.me.action(api.ebayConnect.createStandardPolicies, {})).toEqual({
+      ok: false,
+      error: "eBay wouldn't list its shipping services just now. Try Set me up again in a bit.",
+    });
+    expect(world.ebayPosts("/sell/account/v1/fulfillment_policy/")).toEqual([]);
   });
 
   test("if a policy fails mid-way, what was made is kept and found by name next time", async () => {

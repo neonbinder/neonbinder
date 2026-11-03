@@ -290,6 +290,53 @@ describe("request shapes and headers", () => {
     expect(seen).toHaveLength(1);
   });
 
+  test("a failure says it in NB's words: never eBay's status, the call, or eBay's text", async () => {
+    answers.push(
+      json({ errors: [{ errorId: 1, message: "RAW" }] }, 400),
+      json({}, 503),
+      json({}, 429),
+      new Response("<html>nope</html>", { status: 200 }),
+    );
+    const said: string[] = [];
+    for (let i = 0; i < 4; i++) {
+      const r = await getPolicies(noCredentialCalls, session(), "payment_policy");
+      said.push(r.ok ? "" : r.failure.message);
+    }
+    expect(said).toEqual([
+      "eBay turned that one down. Try again in a bit.",
+      "eBay's not answering right now. Try again in a bit.",
+      "eBay's not answering right now. Try again in a bit.",
+      "eBay sent back something NeonBinder couldn't read. Try again in a bit.",
+    ]);
+    expect(said.join(" ")).not.toMatch(/answered|get_payment_policy|RAW|\d{3}/);
+  });
+
+  test("a bulk call refused outright says it in NB's words and logs the ids", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    answers.push(json({ errors: [{ errorId: 25001 }] }, 400));
+    const r = await bulkPublishOffers(noCredentialCalls, session(), ["O1"]);
+    const lines = log.mock.calls.map((c) => JSON.parse(String(c[0])));
+    log.mockRestore();
+    expect(r).toMatchObject({ ok: false, failure: { kind: "http", httpStatus: 400, errorIds: [25001], message: "eBay turned that one down. Try again in a bit." } });
+    expect(lines).toContainEqual({ msg: "ebay_seller_error", platform: "ebay", operation: "bulkPublishOffer", httpStatus: 400, errorIds: [25001] });
+  });
+
+  test("an answer that is not JSON is logged with its reason, not its body", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    answers.push(new Response("SECRET-BODY", { status: 200 }));
+    await getPolicies(noCredentialCalls, session(), "return_policy");
+    const lines = log.mock.calls.map((c) => String(c[0]));
+    log.mockRestore();
+    expect(lines.map((l) => JSON.parse(l))).toContainEqual({
+      msg: "ebay_seller_error",
+      platform: "ebay",
+      operation: "get_return_policy",
+      httpStatus: 200,
+      reason: "body_not_json",
+    });
+    expect(lines.join("\n")).not.toContain("SECRET-BODY");
+  });
+
   test("a refusal logs eBay's numeric error ids and nothing of its message text", async () => {
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
     answers.push(json({ errors: [{ errorId: 25803, message: "SECRET-ECHO", longMessage: "SECRET-ECHO" }] }, 400));

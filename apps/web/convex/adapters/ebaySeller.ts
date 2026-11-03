@@ -97,6 +97,29 @@ type SessionCtx = Pick<ActionCtx, "runAction">;
 
 const SIGNED_OUT = "eBay signed NeonBinder out. Connect eBay again under Profile.";
 
+/**
+ * What a failure SAYS (NB copy; callers show it as it is, or put their own
+ * sentence for the step in its place). The operation and status never go in
+ * it: they go to the structured `ebay_seller_error` log line.
+ */
+export const EBAY_SAYS = {
+  timeout: "eBay took too long to answer. Try again in a bit.",
+  network: "NeonBinder couldn't reach eBay. Try again in a bit.",
+  busy: "eBay's not answering right now. Try again in a bit.",
+  refused: "eBay turned that one down. Try again in a bit.",
+  unreadable: "eBay sent back something NeonBinder couldn't read. Try again in a bit.",
+} as const;
+
+/** The NB sentence for an eBay HTTP failure: a server-side or rate-limit status is eBay being busy, anything else a refusal. */
+function httpSays(status: number): string {
+  return status >= 500 || status === 429 ? EBAY_SAYS.busy : EBAY_SAYS.refused;
+}
+
+/** One structured line per failed eBay answer: operation, status, eBay's numeric error ids, never its text. */
+function logFailure(operation: string, httpStatus: number, extra: { errorIds?: number[]; reason?: string }): void {
+  console.log(JSON.stringify({ msg: "ebay_seller_error", platform: "ebay", operation, httpStatus, ...extra }));
+}
+
 function failure(kind: EbayFailureKind, message: string, extra: { httpStatus?: number; errorIds?: number[] } = {}): EbayFailure {
   return {
     kind,
@@ -215,7 +238,7 @@ async function send(ctx: SessionCtx, session: EbaySellerSession, opts: SendOptio
     } catch (err) {
       const kind = isAbort(err) ? "timeout" : "network";
       logCall(opts.operation, startedAt, kind);
-      return failure(kind, kind === "timeout" ? "eBay took too long to answer." : "NeonBinder couldn't reach eBay.");
+      return failure(kind, kind === "timeout" ? EBAY_SAYS.timeout : EBAY_SAYS.network);
     }
   };
 
@@ -257,9 +280,11 @@ async function send(ctx: SessionCtx, session: EbaySellerSession, opts: SendOptio
   try {
     text = await readCappedText(res, opts.maxBytes);
   } catch (err) {
+    const timedOut = isAbort(err);
+    logFailure(opts.operation, res.status, { reason: timedOut ? "body_timeout" : "body_unreadable" });
     return {
       ok: false,
-      failure: failure(isAbort(err) ? "timeout" : "bad_response", `eBay's answer to ${opts.operation} could not be read.`, {
+      failure: failure(timedOut ? "timeout" : "bad_response", timedOut ? EBAY_SAYS.timeout : EBAY_SAYS.unreadable, {
         httpStatus: res.status,
       }),
     };
@@ -277,22 +302,22 @@ async function send(ctx: SessionCtx, session: EbaySellerSession, opts: SendOptio
     const errorIds = errorIdsOf(body);
     // eBay's numeric error ids only (never its message text, which can echo
     // the request): what a red live run needs to tell one refusal from another.
-    console.log(
-      JSON.stringify({ msg: "ebay_seller_error", platform: "ebay", operation: opts.operation, httpStatus: res.status, errorIds }),
-    );
+    logFailure(opts.operation, res.status, { errorIds });
     return {
       ok: false,
-      failure: failure("http", `eBay answered ${res.status} to ${opts.operation}.`, {
+      failure: failure("http", httpSays(res.status), {
         httpStatus: res.status,
         errorIds,
       }),
     };
   }
   if (text === null) {
-    return { ok: false, failure: failure("bad_response", `eBay's answer to ${opts.operation} was too large to read.`, { httpStatus: res.status }) };
+    logFailure(opts.operation, res.status, { reason: "body_too_large" });
+    return { ok: false, failure: failure("bad_response", EBAY_SAYS.unreadable, { httpStatus: res.status }) };
   }
   if (body === undefined) {
-    return { ok: false, failure: failure("bad_response", `eBay's answer to ${opts.operation} was not JSON.`, { httpStatus: res.status }) };
+    logFailure(opts.operation, res.status, { reason: "body_not_json" });
+    return { ok: false, failure: failure("bad_response", EBAY_SAYS.unreadable, { httpStatus: res.status }) };
   }
   return { ok: true, value: { status: res.status, body, location: res.headers.get("location") } };
 }
@@ -645,12 +670,11 @@ async function bulk(
   if (!r.ok) return r;
   const entries = readBulk(r.value.body);
   if (r.value.status >= 400 && entries.length === 0) {
+    const errorIds = errorIdsOf(r.value.body);
+    logFailure(operation, r.value.status, { errorIds });
     return {
       ok: false,
-      failure: failure("http", `eBay answered ${r.value.status} to ${operation}.`, {
-        httpStatus: r.value.status,
-        errorIds: errorIdsOf(r.value.body),
-      }),
+      failure: failure("http", httpSays(r.value.status), { httpStatus: r.value.status, errorIds }),
     };
   }
   return { ok: true, value: entries };

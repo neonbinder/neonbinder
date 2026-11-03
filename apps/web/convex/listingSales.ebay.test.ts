@@ -514,7 +514,8 @@ describe("paging and the cursor", () => {
     pages = [[order(s, "A", NOW + 100)], [order(s, "B", NOW + 200)]];
     failPage = 1;
     const report = await poll(s);
-    expect(report.error).toMatch(/500/);
+    // eBay's 500 is said in NB's words; the status lives in the structured log only.
+    expect(report.error).toBe("eBay's not answering right now. Try again in a bit.");
     expect((await state(s))?.orderCursorAt).toBe(before);
     expect((await state(s))?.lastPollError).toBeTypeOf("string");
     expect(await totalQty(s)).toBe(9);
