@@ -105,7 +105,9 @@ export default function PolicyPicker({
   else if (saveState === "saved") text = "Saved.";
   // The group is described by the line only while it says something about the pick.
   const describes = failed || warnGone;
-  const describedBy = [describes ? lineId : null, hint ? hintId : null].filter(Boolean).join(" ") || undefined;
+  // The hint speaks to the cards, so it shows only while there are some to pick.
+  const showHint = hint !== undefined && options.length > 0;
+  const describedBy = [describes ? lineId : null, showHint ? hintId : null].filter(Boolean).join(" ") || undefined;
 
   return (
     <div className="flex flex-col gap-2">
@@ -125,7 +127,7 @@ export default function PolicyPicker({
           />
         )}
       </div>
-      {hint && (
+      {showHint && (
         <p id={hintId} className="text-sm text-ink-3">
           {hint}
         </p>

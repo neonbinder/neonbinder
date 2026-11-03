@@ -60,3 +60,26 @@ Re-audit after the fix round (what held, what to re-check):
 forged request delete, which branch matches on less than the claimed pair,
 and where does a stored secret get overwritten before identity is known.
 Related: [[patterns-neo141-credential-rework]], [[patterns-neo172-machine-auth]].
+
+Third round (policy-setup rework, per-offer publish):
+
+- **Single-flight token refresh shape that held** (`reauthOnce` in the eBay
+  seller adapter): capture the token synchronously before the attempt's first
+  await; on 401, retry if the session token already moved, else await the ONE
+  shared refresh promise and require the token to differ from the one sent.
+  A 401 on the NEW token then kills instead of looping. Re-check these three
+  properties whenever a concurrent pool (Promise.all / inPool) is added to a
+  session-bearing adapter.
+- **Raw upstream-body debug logs**: masking must happen on the whole
+  serialised text BEFORE chunking (a token split across chunks evades a
+  per-chunk mask); mask both the raw and JSON-escaped forms. Residuals to
+  flag: only the CURRENT token is masked (a refresh mid-Promise.all swaps
+  it), a 2 MB cap at 8k/line is ~260 lines per read, and "temporary,
+  approved for one user" has no env gate, so a second production seller's
+  free-text policy fields land in logs too.
+- **New public mutation registered only in its domain test** (not in
+  publicFunctionAuth.test.ts) recurred here (`setCardWeight`); always diff
+  the registry file when the diff adds `= mutation({`.
+- Sandbox-only substitute data (fixed test picture) is safe when the switch
+  and the API host derive from ONE env read in one function; confirm a
+  production test pins the exact production value, not just "uploaded".

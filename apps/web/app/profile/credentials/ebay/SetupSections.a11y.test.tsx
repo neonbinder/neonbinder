@@ -460,6 +460,65 @@ describe("Set me up's step ledger", () => {
   });
 });
 
+describe("Reading eBay again", () => {
+  const NO_SHIPPING = { ok: true, ...POLICIES, fulfillment: [] };
+  const shippingHeading = () => screen.getByRole("heading", { level: 3, name: "Shipping" });
+  /** The Shipping card's own live line (always mounted): its last status. */
+  const readLine = () => within(screen.getByRole("region", { name: "Shipping" })).getAllByRole("status").at(-1)!;
+
+  it("still none: focus goes back to Check eBay again and the line says so; again, it says so again", async () => {
+    fn("ebayConnect:readPolicies").mockResolvedValue(NO_SHIPPING);
+    renderAt();
+    const check = await screen.findByRole("button", { name: "Check eBay again" });
+    const line = readLine();
+    expect(line.getAttribute("aria-live")).toBe("polite");
+    expect(line.textContent).toBe("");
+    check.focus();
+    fireEvent.click(check);
+    // While eBay is read the button is gone: focus waits on the heading, never on the page body.
+    expect(document.activeElement).toBe(shippingHeading());
+    const again = await screen.findByRole("button", { name: "Check eBay again" });
+    await waitFor(() => expect(document.activeElement).toBe(again));
+    expect(line.textContent).toBe("Still no shipping policies on eBay. Make one there, then check again.");
+    // The same line, still mounted: a second press empties it and fills it again, so it is said again.
+    fireEvent.click(again);
+    expect(line.textContent).toBe("");
+    await waitFor(() => expect(line.textContent).toBe("Still no shipping policies on eBay. Make one there, then check again."));
+    expect(readLine()).toBe(line);
+    expect(fns["ebayConnect:readPolicies"]).toHaveBeenCalledTimes(3);
+  });
+
+  it("policies back: focus stays on the Shipping heading, the pickers show and the line says so", async () => {
+    fn("ebayConnect:readPolicies").mockResolvedValueOnce(NO_SHIPPING);
+    renderAt();
+    fireEvent.click(await screen.findByRole("button", { name: "Check eBay again" }));
+    expect(await screen.findByRole("radiogroup", { name: "Cards under $20" })).toBeTruthy();
+    await waitFor(() => expect(readLine().textContent).toBe("Your shipping policies are in. Pick away."));
+    expect(document.activeElement).toBe(shippingHeading());
+    expect(screen.queryByRole("button", { name: "Check eBay again" })).toBeNull();
+  });
+
+  it("only Standard Envelope still: focus back on Check eBay again under $20 and up, and the line says what's missing", async () => {
+    const eseOnly = { ok: true, ...POLICIES, fulfillment: [POLICIES.fulfillment[0]] };
+    fn("ebayConnect:readPolicies").mockResolvedValue(eseOnly);
+    renderAt();
+    fireEvent.click(await screen.findByRole("button", { name: "Check eBay again" }));
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("button", { name: "Check eBay again" })));
+    expect(readLine().textContent).toBe("Still nothing on eBay that can ship a $20 card. Make a tracked policy, then check again.");
+  });
+
+  it("Try eBay again after a failed read parks focus on the heading, which keeps it when the pickers come", async () => {
+    fn("ebayConnect:readPolicies").mockResolvedValueOnce({ ok: false, error: "eBay didn't answer." });
+    renderAt();
+    expect((await saidAlert()).textContent).toBe("eBay didn't answer.");
+    fireEvent.click(screen.getByRole("button", { name: "Try eBay again" }));
+    expect(document.activeElement).toBe(shippingHeading());
+    expect(await screen.findByRole("radiogroup", { name: "Cards under $20" })).toBeTruthy();
+    await waitFor(() => expect(readLine().textContent).toBe("Your shipping policies are in. Pick away."));
+    expect(document.activeElement).toBe(shippingHeading());
+  });
+});
+
 describe("Live lines and focus", () => {
   it("no status line carries aria-busy while loading", () => {
     connection = undefined;
@@ -519,6 +578,16 @@ describe("Live lines and focus", () => {
 });
 
 describe("Policy pickers", () => {
+  it("a slot's hint shows only while it has cards to pick", async () => {
+    // Only a Standard Envelope policy: nothing for $20 and up, so no hint there, only the empty line.
+    fn("ebayConnect:readPolicies").mockResolvedValueOnce({ ok: true, ...POLICIES, fulfillment: [POLICIES.fulfillment[0]] });
+    renderAt();
+    await screen.findByRole("radiogroup", { name: "Cards under $20" });
+    expect(screen.getByText("A policy with Standard Envelope or tracked shipping fits here.")).toBeTruthy();
+    expect(screen.getByText("Nothing here can ship a $20 card yet. Standard Envelope only covers cards under $20.")).toBeTruthy();
+    expect(screen.queryByText("Ship these tracked: pick a policy with a tracked service.")).toBeNull();
+  });
+
   it("a refusal describes its radiogroup", async () => {
     connection = state({ settings: { ...SETTINGS, fulfillmentPolicy20PlusId: "f-ga" } });
     fn("ebayConnect:savePolicies").mockResolvedValue({ ok: false, error: "That one didn't save." });

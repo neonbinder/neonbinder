@@ -1,4 +1,4 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState, type ChangeEvent } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type ChangeEvent, type Ref } from "react";
 import { useAction, useMutation } from "convex/react";
 import { ArrowTopRightOnSquareIcon } from "@heroicons/react/24/outline";
 import { api } from "@/convex/_generated/api";
@@ -79,27 +79,33 @@ export default function SetupSections({ connection }: { connection: EbayConnecti
   const readPolicies = useAction(api.ebayConnect.readPolicies);
   const savePolicies = useAction(api.ebayConnect.savePolicies);
   const [loaded, setLoaded] = useState<Loaded>({ state: "loading" });
-  const [reads, setReads] = useState(0);
+  // Only the newest read lands: an older one answering late never overwrites it.
+  const latestRead = useRef(0);
 
-  // Read once on open, and again after "Set me up" or a retry: an action,
-  // not a subscription (eBay owns the answer).
+  // An action, not a subscription (eBay owns the answer). The answer is
+  // returned too, so a press can say what came back.
+  const read = useCallback(async (): Promise<Loaded> => {
+    const mine = ++latestRead.current;
+    let next: Loaded;
+    try {
+      const answer = await readPolicies({});
+      next = answer.ok ? { state: "ready", policies: answer } : { state: "error", error: answer.error };
+    } catch {
+      next = { state: "error", error: READ_FAILED };
+    }
+    if (mine === latestRead.current) setLoaded(next);
+    return next;
+  }, [readPolicies]);
+
+  // Read once on open.
   useEffect(() => {
-    let live = true;
-    readPolicies({}).then(
-      (answer) => {
-        if (!live) return;
-        setLoaded(answer.ok ? { state: "ready", policies: answer } : { state: "error", error: answer.error });
-      },
-      () => live && setLoaded({ state: "error", error: READ_FAILED }),
-    );
-    return () => {
-      live = false;
-    };
-  }, [readPolicies, reads]);
+    void read();
+  }, [read]);
 
-  const reread = () => {
+  /** Read again ("Try eBay again", "Check eBay again"). */
+  const reread = (): Promise<Loaded> => {
     setLoaded({ state: "loading" });
-    setReads((n) => n + 1);
+    return read();
   };
 
   const save = async (picks: EbayPolicyPicks): Promise<SaveAnswer> => savePolicies(picks);
@@ -162,12 +168,44 @@ function PoliciesBody({
   loaded: Loaded;
   connection: EbayConnectionState;
   save: (picks: EbayPolicyPicks) => Promise<SaveAnswer>;
-  reread: () => void;
+  reread: () => Promise<Loaded>;
   setLoaded: (next: Loaded) => void;
   shippingId: string;
   moneyId: string;
 }) {
   const settings = connection.settings;
+  const shippingHeading = useRef<HTMLHeadingElement>(null);
+  const checkAgain = useRef<HTMLButtonElement>(null);
+  // What the last re-read found, said in a line that is always mounted (the
+  // buttons that asked unmount while it reads, so they can't say it).
+  const [readLine, setReadLine] = useState("");
+  // Where focus goes once a re-read's answer is on screen: a count, so the same place twice still moves it.
+  const [refocus, setRefocus] = useState<{ n: number; to: "heading" | "check" }>({ n: 0, to: "heading" });
+  useEffect(() => {
+    if (refocus.n === 0) return;
+    (refocus.to === "check" ? checkAgain.current : shippingHeading.current)?.focus();
+  }, [refocus]);
+
+  /**
+   * The button pressed unmounts while eBay is read, so focus parks on the
+   * Shipping heading first. Pickers back: it stays there and the line says
+   * so. Still nothing to pick: back to "Check eBay again", and the line says
+   * that too. A failed read says itself in its alert.
+   */
+  const recheck = async () => {
+    shippingHeading.current?.focus();
+    setReadLine("");
+    const next = await reread();
+    if (next.state !== "ready") return;
+    const still =
+      next.policies.fulfillment.length === 0
+        ? STILL_NO_SHIPPING
+        : over20Options(next.policies).length === 0
+          ? STILL_NO_TRACKED
+          : null;
+    setReadLine(still ?? SHIPPING_IN);
+    setRefocus((r) => ({ n: r.n + 1, to: still ? "check" : "heading" }));
+  };
   // Set me up's answer lives here, not in its box: the box goes once nothing
   // is missing, and its answer must outlive it.
   const [setupLine, setSetupLine] = useState<SetupLine>(null);
@@ -194,7 +232,7 @@ function PoliciesBody({
     <>
       <section aria-labelledby={shippingId} className={SECTION}>
         <div>
-          <h3 id={shippingId} tabIndex={-1} className={LANDING}>
+          <h3 ref={shippingHeading} id={shippingId} tabIndex={-1} className={LANDING}>
             Shipping
           </h3>
           <p className={`${NOTE} mt-1`}>
@@ -211,12 +249,14 @@ function PoliciesBody({
             <p role="alert" className="text-sm text-neon-pink-text">
               {loaded.error}
             </p>
-            <NeonButton type="button" variant="secondary" outline onClick={reread} className="max-sm:min-h-11">
+            <NeonButton type="button" variant="secondary" outline onClick={() => void recheck()} className="max-sm:min-h-11">
               Try {EBAY_NAME} again
             </NeonButton>
           </div>
         )}
-        {policies && policies.fulfillment.length === 0 && <NoShippingPolicies sandbox={sandbox} reread={reread} />}
+        {policies && policies.fulfillment.length === 0 && (
+          <NoShippingPolicies sandbox={sandbox} onCheck={() => void recheck()} checkRef={checkAgain} />
+        )}
         {policies && policies.fulfillment.length > 0 && (
           <>
             <PolicyPicker
@@ -241,10 +281,15 @@ function PoliciesBody({
                   one out: Standard Envelope only covers cards under $20.
                 </p>
               )}
-              {policies.fulfillment.length === hidden && <MakeOnEbay sandbox={sandbox} reread={reread} what="tracked" />}
+              {policies.fulfillment.length === hidden && (
+                <MakeOnEbay sandbox={sandbox} onCheck={() => void recheck()} checkRef={checkAgain} what="tracked" />
+              )}
             </PolicyPicker>
           </>
         )}
+        <p role="status" aria-live="polite" className={`${LIVE} text-ink-2`}>
+          {readLine}
+        </p>
       </section>
 
       <section aria-labelledby={moneyId} className={SECTION}>
@@ -314,12 +359,19 @@ function ebayPoliciesUrl(sandbox: boolean): string {
   return `${sandbox ? "https://www.sandbox.ebay.com" : "https://www.ebay.com"}/bp/manage`;
 }
 
+/** What a re-read found, said in the Shipping card's live line. */
+const STILL_NO_SHIPPING = `Still no shipping policies on ${EBAY_NAME}. Make one there, then check again.`;
+const STILL_NO_TRACKED = `Still nothing on ${EBAY_NAME} that can ship a $20 card. Make a tracked policy, then check again.`;
+const SHIPPING_IN = "Your shipping policies are in. Pick away.";
+
+type CheckProps = { sandbox: boolean; onCheck: () => void; checkRef: Ref<HTMLButtonElement> };
+
 /**
  * The way out to eBay to make a shipping policy, and back: a link that opens
  * eBay's business policies in a new tab, and a fresh read of the account for
  * when the new policy is made (or was there all along).
  */
-function MakeOnEbay({ sandbox, reread, what }: { sandbox: boolean; reread: () => void; what: "shipping" | "tracked" }) {
+function MakeOnEbay({ sandbox, onCheck, checkRef, what }: CheckProps & { what: "shipping" | "tracked" }) {
   return (
     <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
       <a
@@ -332,7 +384,7 @@ function MakeOnEbay({ sandbox, reread, what }: { sandbox: boolean; reread: () =>
         <ArrowTopRightOnSquareIcon aria-hidden="true" className="h-4 w-4" />
         <span className="sr-only"> (opens in a new tab)</span>
       </a>
-      <NeonButton type="button" variant="secondary" outline onClick={reread} className="max-sm:min-h-11">
+      <NeonButton ref={checkRef} type="button" variant="secondary" outline onClick={onCheck} className="max-sm:min-h-11">
         Check {EBAY_NAME} again
       </NeonButton>
     </div>
@@ -340,7 +392,7 @@ function MakeOnEbay({ sandbox, reread, what }: { sandbox: boolean; reread: () =>
 }
 
 /** The account holds no shipping policy at all: nothing to pick until the seller makes one on eBay. */
-function NoShippingPolicies({ sandbox, reread }: { sandbox: boolean; reread: () => void }) {
+function NoShippingPolicies({ sandbox, onCheck, checkRef }: CheckProps) {
   return (
     <div className="flex flex-col gap-3 rounded-md border border-dashed border-rule-strong p-4">
       <p className="text-sm text-ink">No shipping policies on your {EBAY_NAME} account yet.</p>
@@ -348,7 +400,7 @@ function NoShippingPolicies({ sandbox, reread }: { sandbox: boolean; reread: () 
         Make one on {EBAY_NAME}, then check again here. Under $20, Standard Envelope or tracked fits; $20 and up
         should ship tracked. One tracked policy can cover both.
       </p>
-      <MakeOnEbay sandbox={sandbox} reread={reread} what="shipping" />
+      <MakeOnEbay sandbox={sandbox} onCheck={onCheck} checkRef={checkRef} what="shipping" />
     </div>
   );
 }

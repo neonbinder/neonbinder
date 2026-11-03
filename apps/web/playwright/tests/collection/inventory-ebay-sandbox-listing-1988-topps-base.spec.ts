@@ -43,11 +43,25 @@
 // so that calculated pick is never published). If either is missing the spec
 // fails naming it; add it on the sandbox seller by hand (eBay's business
 // policies), never in code.
+//
+// What this spec cannot prove, and where it is proven instead. Because the
+// sandbox seller must hold shipping policies for the listing to go up, the
+// page's no-shipping-policies state (the "Make a shipping policy on eBay"
+// link and "Check eBay again", with its focus and live line) never shows here;
+// it, and "Set me up never makes a shipping policy", are proven by the
+// component tests (app/profile/credentials/ebay/*.test.tsx) and the
+// createStandardPolicies unit tests (convex/ebayConnect.test.ts) only. The
+// sandbox seller already holds payment and returns too, so on CI Set me up is
+// not offered and its offered arm below does not run (the not-offered arm
+// asserts that, by name). Likewise the 3 oz card weight reaching the package
+// eBay prices is unit-only (convex/listingDrainEbay.test.ts, the item's
+// packageWeightAndSize): the sandbox does not show the item body back, so
+// the spec proves the weight is saved and kept (step 4), not what eBay got.
 //   5. They set a common price, put one copy each of the first three 1988 Topps
 //      Base cards in the box and attach a photo to the first two only (eBay
 //      listings need one; each field then reads 0 and names its copy "Raw
-//      with photo", as a quick count no longer counts it), press Sync, follow "See what's syncing" (Back
-//      returns), and Sync status reads the eBay section's set with 2 listed and
+//      with photo", as a quick count no longer counts it), press Sync,
+//      follow "See what's syncing" (Back returns), and Sync status reads the eBay section's set with 2 listed and
 //      1 skipped: the third card is held back, named, with eBay's no-photo
 //      reason.
 //   6. They turn the box's "Listed on marketplaces" off, Sync again, and the
@@ -57,9 +71,9 @@
 //   7. They tidy up (cards out of the box: the photoless one by its quantity,
 //      the two with a photo through the card drawer's Remove, since a quick
 //      count never changes a copy with a photo (NEO-377); the common price
-//      cleared, the box deleted) and Disconnect eBay (the confirm dialog), which takes down
-//      anything NeonBinder put up on eBay and leaves the account not
-//      connected. The afterEach does the same on a failure.
+//      cleared, the box deleted) and Disconnect eBay (the confirm dialog),
+//      which takes down anything NeonBinder put up on eBay and leaves the
+//      account not connected. The afterEach does the same on a failure.
 //
 // What "2 listed" proves about eBay. The drain reads the seller's inventory,
 // creates the inventory items and offers, PUBLISHES them and reads the result;
@@ -429,6 +443,19 @@ test(
       await expect(ledger.getByRole("listitem", { name: /, eBay said no$/ })).toHaveCount(0);
       await expect(ledger.getByRole("listitem", { name: /, (working|waiting|not made)$/ })).toHaveCount(0);
       await expect(ledger.getByRole("listitem", { name: new RegExp(`^(${escapeRegExp(TRACKED_POLICY)}|${escapeRegExp(FREE_POLICY)}),`) })).toHaveCount(0);
+    } else {
+      // The arm CI takes: the sandbox seller already holds payment and returns
+      // policies, so nothing is offered to make, and shipping is still theirs
+      // to pick. Asserted, not assumed: Set me up is gone, both of the seller's
+      // own payment and returns policies are offered, and the page still says
+      // shipping is the seller's pick.
+      await expect(setMeUp).toBeHidden();
+      for (const group of ["Payment", "Returns"]) {
+        await expect(page.getByRole("radiogroup", { name: group, exact: true }).getByRole("radio").first()).toBeVisible();
+      }
+      await expect(
+        page.getByText(`Pick two of your own ${EBAY} shipping policies: one for cards under $20, one for $20 and up.`, { exact: true }),
+      ).toBeVisible();
     }
     // $20 and up: a tracked policy, picked BY NAME from the seller's own
     // (Standard Envelope only covers cards under $20, so the picker offers no
@@ -581,17 +608,19 @@ test(
     // The tidy-up's half of the same drawer (step 7): Details opens editing the
     // card's one line, Cancel puts its Edit and Remove back, and Remove takes
     // the copy, photo and all, out of the box.
-    const removeOnlyCopy = async (short: string) => {
+    const removeOnlyCopy = async (short: string, axe = false) => {
       const drawer = page.getByRole("dialog", { name: new RegExp(`^${escapeRegExp(SET_LABEL)} ${escapeRegExp(short)}`) });
       await checklist.getByRole("button", { name: `Details for ${short}`, exact: true }).click();
       const yourCopies = drawer.getByRole("region", { name: `Your copies of ${short}`, exact: true });
       await expect(yourCopies.getByRole("heading", { name: "Your copies (1 line)", exact: true })).toBeVisible();
       const editForm = yourCopies.getByRole("form", { name: /^Edit Raw, / });
       await expect(editForm).toBeVisible();
+      if (axe) await expectAccessible(page, { within: drawer, label: "Card drawer, a boxed copy with its photo, editing" });
       await editForm.getByRole("button", { name: "Cancel", exact: true }).click();
       await expect(editForm).toBeHidden();
       await yourCopies.getByRole("button", { name: new RegExp(`^Remove ${escapeRegExp(short)}, Raw, `) }).click();
       await expect(yourCopies.getByText("None yet. Fill in what you know below and add it.")).toBeVisible();
+      if (axe) await expectAccessible(page, { within: drawer, label: "Card drawer, its only copy removed" });
       await drawer.getByRole("button", { name: "Close card detail" }).click();
       await expect(drawer).toBeHidden();
       // Out of the box: nothing counted, nothing named beside the number.
@@ -602,6 +631,8 @@ test(
     await attachPhoto(a, PHOTOS[0], "Card drawer, a boxed copy with its front photo");
     await attachPhoto(b, PHOTOS[1]);
     await expectPhotoCopiesAside();
+    // The box's quantities with the photo copies named beside their fields.
+    await expectAccessible(page, { within: boxList, label: "Inventory checklist, boxed copies with a photo named beside the field" });
 
     // --- Sync: eBay takes the two with photos and holds the third back ---------------------------------
     await sync.click();
@@ -713,7 +744,7 @@ test(
     // The two with a photo: a quick count can't take them out (see step 5), so
     // each goes the way a collector removes a copy, from the card's drawer,
     // the same drawer that added its photo.
-    await removeOnlyCopy(a);
+    await removeOnlyCopy(a, true);
     await removeOnlyCopy(b);
     await clearChecklistCommonPrice(page, checklist, TITLE, COMMON_PRICE);
     written.priced = false;

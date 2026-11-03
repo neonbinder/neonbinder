@@ -2914,11 +2914,12 @@ describe("NEO-370: listing is the signed-in collector's own", () => {
 });
 
 describe("NEO-415: eBay connection surface", () => {
-  test("the connection query and the two mutations refuse an anonymous caller", async () => {
+  test("the connection query and the mutations refuse an anonymous caller", async () => {
     const t = convexTest(schema, modules);
     await expect(t.query(api.ebayConnect.connectionState, {})).rejects.toThrow(/Not authenticated/);
     await expect(t.mutation(api.ebayConnect.beginConnect, {})).rejects.toThrow(/Not authenticated/);
     await expect(t.mutation(api.ebayConnect.setBestOffer, { on: false })).rejects.toThrow(/Not authenticated/);
+    await expect(t.mutation(api.ebayConnect.setCardWeight, { ounces: 2 })).rejects.toThrow(/Not authenticated/);
     expect(await t.run(async (ctx) => ctx.db.query("ebaySellerSettings").collect())).toEqual([]);
   });
 
