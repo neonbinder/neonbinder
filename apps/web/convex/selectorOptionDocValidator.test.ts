@@ -281,3 +281,66 @@ describe("selectorOptions returns-validator drift", () => {
     });
   });
 });
+
+/**
+ * NEO-418 — `getInsertTreeByVariantType` collects every insert's parallels in
+ * one concurrent wave. The pairing of an insert with ITS OWN parallels, and
+ * the order of the inserts, must survive that: `Promise.all` keeps the order
+ * of the array it is given, and each branch must read its own insert's range.
+ */
+describe("getInsertTreeByVariantType with several inserts (NEO-418)", () => {
+  test("lists inserts in index order, each with only its own parallels, and an insert with none gets []", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+
+    const { variantTypeId, ids } = await t.run(async (ctx) => {
+      const row = (
+        level: "variantType" | "insert" | "parallel",
+        value: string,
+        parentId?: Id<"selectorOptions">,
+      ) =>
+        ctx.db.insert("selectorOptions", {
+          level,
+          value,
+          ...(parentId ? { parentId } : {}),
+          platformData: {},
+          children: [],
+          lastUpdated: 1,
+        });
+      const variantTypeId = await row("variantType", "Inserts");
+      // Created Zulu, Alpha, Mike: the index orders by creation, not by name,
+      // so a branch that sorted or raced would show here.
+      const zulu = await row("insert", "Zulu", variantTypeId);
+      const alpha = await row("insert", "Alpha", variantTypeId);
+      const mike = await row("insert", "Mike", variantTypeId);
+      // Parallels created interleaved across inserts, none under Alpha.
+      const zuluGold = await row("parallel", "Zulu Gold", zulu);
+      const mikeBlue = await row("parallel", "Mike Blue", mike);
+      const zuluRed = await row("parallel", "Zulu Red", zulu);
+      const mikeGreen = await row("parallel", "Mike Green", mike);
+      const mikePink = await row("parallel", "Mike Pink", mike);
+      // A parallel of a row in another variant type must not leak in.
+      const otherVt = await row("variantType", "Other Inserts");
+      const otherInsert = await row("insert", "Other", otherVt);
+      await row("parallel", "Other Gold", otherInsert);
+      return {
+        variantTypeId,
+        ids: { zulu, alpha, mike, zuluGold, zuluRed, mikeBlue, mikeGreen, mikePink },
+      };
+    });
+
+    const tree = await asAdmin.query(api.selectorOptions.getInsertTreeByVariantType, {
+      variantTypeId,
+    });
+
+    expect(tree.map((n) => n.insert._id)).toEqual([ids.zulu, ids.alpha, ids.mike]);
+    expect(tree.map((n) => n.parallels.map((p) => p._id))).toEqual([
+      [ids.zuluGold, ids.zuluRed],
+      [],
+      [ids.mikeBlue, ids.mikeGreen, ids.mikePink],
+    ]);
+    for (const node of tree) {
+      for (const p of node.parallels) expect(p.parentId).toBe(node.insert._id);
+    }
+  });
+});
