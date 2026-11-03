@@ -664,6 +664,68 @@ describe("the gate: a printed team name that set history answers (rule F)", () =
   });
 });
 
+// ─── D4: the client is told about a batch of auto-links ─────────────────────
+
+describe("the gate: autoLinkedCount tells the client a batch holds decided rows (D4)", () => {
+  test("no unknowns, one team and one player auto-linked: the count is 2 and the batch holds both", async () => {
+    // The dev incident: a fetch whose only review rows were auto-links came
+    // back with both unknown lists empty, so the client committed it unseen.
+    const t = newT();
+    const baseball = await sport(t, "Baseball");
+    const football = await sport(t, "Football");
+    const p = await product(t, baseball, { year: "2010" });
+    // Two closed eras the 2010 set year cannot separate: the in-sport lookup
+    // answers null, and only set history can name the row.
+    const browns1883 = await team(t, baseball, "St. Louis", "Browns");
+    const browns1902 = await team(t, baseball, "St. Louis", "Browns");
+    await t.run(async (ctx) => {
+      await ctx.db.patch(browns1883, { yearsActive: { from: 1883, to: 1898 } });
+      await ctx.db.patch(browns1902, { yearsActive: { from: 1902, to: 1953 } });
+    });
+    // A player of another sport the set already linked: history outranks the
+    // in-sport lookup, which finds nobody.
+    const bo = await player(t, football, "Bo Jackson");
+    await committed(t, p.base, "1", {
+      printed: [["Bo Jackson", bo]],
+      teamIds: [browns1902],
+    });
+
+    const result = await gate(t, p.insert, baseball, ["Bo Jackson"], ["St. Louis Browns"]);
+
+    expect(result.unknownPlayers).toEqual([]);
+    expect(result.unknownTeams).toEqual([]);
+    expect(result.batchId).toBeDefined();
+    expect(result.autoLinkedCount).toBe(2);
+    const rows = await rowsOf(t, result.batchId);
+    expect(rows.map((r) => r.decision)).toEqual(
+      expect.arrayContaining([
+        { action: "link", linkedTeamId: browns1902, autoLinked: "setHistory" },
+        { action: "link", linkedPlayerId: bo, autoLinked: "setHistory" },
+      ]),
+    );
+    expect(rows).toHaveLength(2);
+  });
+
+  test("nothing auto-linked: the count is 0, with or without unknowns", async () => {
+    const t = newT();
+    const baseball = await sport(t, "Baseball");
+    const p = await product(t, baseball, { year: "2024" });
+    const bo = await player(t, baseball, "Bo Jackson");
+    await committed(t, p.base, "1", { printed: [["Bo Jackson", bo]] });
+
+    // History and the lookup agree (D3): silent, no batch.
+    const silent = await gate(t, p.insert, baseball, ["Bo Jackson"]);
+    expect(silent.batchId).toBeUndefined();
+    expect(silent.autoLinkedCount).toBe(0);
+
+    // An unknown name opens a batch, but nothing in it was decided for the operator.
+    const unknown = await gate(t, p.insert, baseball, ["Nobody Anywhere"], ["Nowhere Nobodies"]);
+    expect(unknown.batchId).toBeDefined();
+    expect(unknown.unknownTeams).toEqual(["Nowhere Nobodies"]);
+    expect(unknown.autoLinkedCount).toBe(0);
+  });
+});
+
 // ─── Rule E: preselects ─────────────────────────────────────────────────────
 
 describe("the gate: E1, the same product one year earlier", () => {

@@ -1334,6 +1334,14 @@ async function resolveUnknownsAndStartBatch(
   unknownTeams: string[];
   ambiguousPlayers: string[];
   batchId?: string;
+  /**
+   * NEO-424 (D4) — how many decided auto-link rows (players and teams
+   * together) the batch was started with. Those names are in neither unknown
+   * list, so a batch holding only auto-links would otherwise look like
+   * "nothing to review" to the client and be committed unseen. 0 when no
+   * batch was started.
+   */
+  autoLinkedCount: number;
 }> {
   const unknownPlayers: string[] = [];
   const unknownTeams: string[] = [];
@@ -2010,7 +2018,15 @@ async function resolveUnknownsAndStartBatch(
     });
   }
 
-  return { unknownPlayers, unknownTeams, ambiguousPlayers, batchId };
+  return {
+    unknownPlayers,
+    unknownTeams,
+    ambiguousPlayers,
+    batchId,
+    // `opensBatch` is true whenever there are auto-links, so a started batch
+    // carries every one of them; with no batch there is nothing to show.
+    autoLinkedCount: batchId !== undefined ? autoLinks.length : 0,
+  };
 }
 
 /**
@@ -15559,6 +15575,12 @@ export const resolveChecklistEntities = action({
     // player/team spelling that already resolved. See listingTitleContext.ts.
     // Optional so the wire change is purely additive; always sent.
     titleContext: v.optional(titleContextValidator),
+    // NEO-424 (D4) — decided auto-link rows (set history, Hall of Fame) the
+    // batch holds, players and teams together. They are in neither unknown
+    // list, so this is what tells the client a batch with no unknowns still
+    // has rows the operator must see before the commit. Optional so the wire
+    // change is purely additive; this action always sends it.
+    autoLinkedCount: v.optional(v.number()),
   }),
   handler: async (ctx, args): Promise<{
     unknownPlayers: string[];
@@ -15566,6 +15588,7 @@ export const resolveChecklistEntities = action({
     ambiguousPlayers?: string[];
     batchId?: string;
     titleContext?: TitleContext;
+    autoLinkedCount?: number;
   }> => {
     await requireAdmin(ctx);
     assertCardBatchWithinLimits(args.cards, "resolveChecklistEntities");
