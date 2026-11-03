@@ -1,6 +1,9 @@
 import { ipKeyGenerator } from "express-rate-limit";
 import type { Request } from "express";
 
+/** See the NEO-415 note in credentialRateLimitKey. */
+const EBAY_WEBHOOK_VERIFY_PATH = "/webhooks/ebay/verify";
+
 /**
  * Rate-limit bucket key — PER CREDENTIAL KEY (≈ per user+site), NOT per IP.
  *
@@ -51,6 +54,12 @@ import type { Request } from "express";
  * refresh has its own server-side cooldown in Convex for that reason.
  */
 export function credentialRateLimitKey(req: Request): string {
+  // NEO-415: the eBay notification verify route carries no credential key, so
+  // it would fall into the IP bucket, which behind Cloud Run IAM is the one
+  // budget every keyless call shares. A burst of eBay pushes (the deletion
+  // topic is sent for eBay accounts at large, not only NB sellers) must not
+  // 429 those, nor they it, so it gets a bucket of its own.
+  if (req.path === EBAY_WEBHOOK_VERIFY_PATH) return "webhook:ebay";
   const credKey =
     keyFromPath(req.path ?? "") ??
     (req.params as { key?: string } | undefined)?.key ??

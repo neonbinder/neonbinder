@@ -9,6 +9,9 @@
 //                                                        rewrite timings.json from one or more
 //                                                        (merged) Playwright JSON reports, each
 //                                                        spec's median over the reports
+//   node playwright/shard-plan.mjs --seller   the marketplace-seller specs (NEO-415), which
+//                                                        no shard runs: e2e.yml's seller-desktop /
+//                                                        seller-mobile jobs do, one PR at a time
 //   node playwright/shard-plan.mjs --projects  the spec projects, one per line
 //                                                        (e2e.yml's gate reads it)
 //
@@ -45,7 +48,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { ignoredSpecs } from "./project-scope.mjs";
+import { ignoredSpecs, SELLER_SPECS, SELLER_TAG } from "./project-scope.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const WEB = path.resolve(HERE, "..");
@@ -60,13 +63,41 @@ const MAX_SPEC_SECONDS = 3600;
 
 const toPosix = (p) => p.split(path.sep).join("/");
 
-function listSpecs(project) {
-  const ignored = new Set(ignoredSpecs(project));
+function allSpecs() {
   return fs
     .readdirSync(TESTS, { recursive: true })
     .map((p) => toPosix(String(p)))
-    .filter((p) => p.endsWith(".spec.ts") && !EXCLUDED.has(p) && !ignored.has(p))
+    .filter((p) => p.endsWith(".spec.ts") && !EXCLUDED.has(p))
     .sort();
+}
+
+// NEO-415: the seller specs (project-scope.mjs) are planned in no shard, and the
+// tag and the list must name the same files. Checked on every plan.
+function checkSellerTags(specs) {
+  const tagged = specs.filter((s) => fs.readFileSync(path.join(TESTS, s), "utf8").includes(`"${SELLER_TAG}"`));
+  const missing = SELLER_SPECS.filter((s) => !specs.includes(s));
+  const untagged = SELLER_SPECS.filter((s) => !tagged.includes(s));
+  const unlisted = tagged.filter((s) => !SELLER_SPECS.includes(s));
+  const problems = [
+    ...missing.map((s) => `SELLER_SPECS names ${s}, which does not exist`),
+    ...untagged.map((s) => `${s} is in SELLER_SPECS but lacks the ${SELLER_TAG} tag`),
+    ...unlisted.map((s) => `${s} carries ${SELLER_TAG} but is not in SELLER_SPECS (project-scope.mjs)`),
+  ];
+  if (problems.length) throw new Error(`seller-spec list and tag disagree:\n  ${problems.join("\n  ")}`);
+}
+
+/** The specs a shard may be handed on `project`: everything but the ignored and the seller specs. */
+function listSpecs(project) {
+  const specs = allSpecs();
+  checkSellerTags(specs);
+  const ignored = new Set([...ignoredSpecs(project), ...SELLER_SPECS]);
+  return specs.filter((p) => !ignored.has(p));
+}
+
+/** The seller specs `seller-<pass>` runs on `project` (all of them; none is project-ignored). */
+function listSellerSpecs() {
+  checkSellerTags(allSpecs());
+  return [...SELLER_SPECS].sort();
 }
 
 /** Seconds per spec on `project`, falling back to the desktop value. */
@@ -194,7 +225,10 @@ if (pIdx !== -1) {
   if (!PROJECTS.includes(project)) throw new Error(`--project must be one of ${PROJECTS.join(", ")}, got '${project}'`);
   args.splice(pIdx, 2);
 }
-if (args[0] === "--projects") {
+if (args[0] === "--seller") {
+  const rel = toPosix(path.relative(WEB, TESTS));
+  for (const spec of listSellerSpecs()) console.log(`${rel}/${spec}`);
+} else if (args[0] === "--projects") {
   for (const p of PROJECTS) console.log(p);
 } else if (args[0] === "--from-results") {
   if (!args[1]) throw new Error("usage: shard-plan.mjs --from-results <results.json>...");

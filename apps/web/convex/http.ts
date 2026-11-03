@@ -3,6 +3,7 @@ import { exchangeMachineToken } from "./machineAuth";
 import { servicePausedPlatforms } from "./marketplacePause";
 import { serveCopyPhoto } from "./copyPhotos";
 import { handleEasypostWebhook } from "./shipmentTracking";
+import { ebayDeletionChallenge, ebayDeletionNotice } from "./ebayConnect";
 
 const http = httpRouter();
 
@@ -82,6 +83,24 @@ http.route({
   pathPrefix: "/copy-photo/",
   method: "GET",
   handler: serveCopyPhoto,
+});
+
+// ─── eBay Marketplace Account Deletion (NEO-415) ─────────────────────────────
+// eBay requires every app that stores eBay user data to take these notices:
+// GET answers the endpoint-validation challenge, POST acknowledges a deleted
+// eBay account and schedules NB's eBay-side cleanup for that seller. Both
+// handlers live in `ebayConnect.ts` beside the connection they undo; the
+// POST's limits (no signature check yet, the id-plus-username match) are
+// documented there.
+http.route({
+  path: "/webhooks/ebay/account-deletion",
+  method: "GET",
+  handler: ebayDeletionChallenge,
+});
+http.route({
+  path: "/webhooks/ebay/account-deletion",
+  method: "POST",
+  handler: ebayDeletionNotice,
 });
 
 export default http;

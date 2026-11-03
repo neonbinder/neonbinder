@@ -9,7 +9,6 @@ These platforms primarily deal with complete sets (currently being refactored fo
 
 ## ListByCard Platforms  
 These platforms primarily deal with individual cards:
-- **eBay** (`ebay.ts`)
 - **MySlabs** (`myslabs.ts`)
 - **MyCardPost** (`mycardpost.ts`)
 
@@ -35,22 +34,8 @@ Each platform has its own adapter file that implements either `CardAdapter` or `
 // This functionality will be replaced with new available sets identification features
 ```
 
-#### Search for Cards (eBay, MySlabs, MyCardPost)
+#### Search for Cards (MySlabs, MyCardPost)
 ```typescript
-// Search eBay (requires App ID)
-const ebayResults = await convex.runAction(
-  api.adapters.ebay.searchEbay,
-  {
-    cardName: "Mike Trout",
-    year: 2023,
-    sport: "baseball",
-    manufacturer: "Topps",
-    condition: "mint",
-    maxPrice: 50,
-    appId: "your-ebay-app-id",
-  }
-);
-
 // Search MySlabs
 const mySlabsResults = await convex.runAction(
   api.adapters.myslabs.searchMySlabs,
@@ -88,8 +73,7 @@ const allCardResults = await convex.runAction(
     manufacturer: "Topps",
     condition: "mint",
     maxPrice: 100,
-    platforms: ["ebay", "myslabs", "mycardpost"], // Optional: specify platforms
-    ebayAppId: "your-ebay-app-id", // Required for eBay searches
+    platforms: ["myslabs", "mycardpost"], // Optional: specify platforms
   }
 );
 ```
@@ -163,12 +147,15 @@ const allCardResults = await convex.runAction(
 
 ## Configuration
 
-### eBay Configuration
-eBay requires an App ID for API access. You'll need to:
-1. Register as an eBay developer
-2. Create an application
-3. Get your App ID
-4. Pass the App ID when calling eBay searches
+### eBay (listing, not search)
+NEO-415 retired the eBay Browse search stub (`ebay.ts`). eBay is a real
+integration now, as a LISTING destination: `ebaySeller.ts` is the seller-side
+REST client (Inventory, Account, Metadata, Taxonomy, Media, Fulfillment) the
+eBay drain (`../listingDrainEbay.ts`), the order poll (`../listingSales.ts`)
+and the connection screen (`../ebayConnect.ts`) call, with the pure rules in
+`../lib/ebayListing.ts`. The collector connects by OAuth consent; the browser
+service holds the tokens and the client secret. Unconfigured (`EBAY_CLIENT_ID`,
+`EBAY_RU_NAME`, `EBAY_ENVIRONMENT` unset in Convex env) everything eBay is off.
 
 ### Error Handling
 All adapters include error handling and will return empty results if a platform is unavailable or returns an error. Check the console logs for detailed error information.
@@ -188,5 +175,5 @@ To add a new platform:
 - All adapters use Convex actions since they need to make HTTP requests
 - The base adapter provides common HTTP functionality and error handling
 - Each platform may have different API structures, so adapters normalize the responses
-- Some platforms may require authentication (like eBay)
+- Some platforms may require authentication
 - Rate limiting and API quotas should be considered for production use 

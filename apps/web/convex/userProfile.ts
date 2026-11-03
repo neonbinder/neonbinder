@@ -6,8 +6,11 @@ import { DEFAULT_CONDITION } from "./collection";
 import { listingPlatformForSite, stopListingForSite } from "./listingOutbox";
 import { holdTestListingOff, setUpListing } from "./listingSync";
 
+// Mirrors schema.ts `userProfiles.marketplaceAccountIds`: a field missing here
+// fails getUserProfile's return validation for every profile that has it.
 const marketplaceAccountIdsValidator = v.optional(v.object({
   bscSellerId: v.optional(v.string()),
+  ebayUserId: v.optional(v.string()),
 }));
 
 /**
@@ -118,7 +121,7 @@ export const getThemePreference = query({
 export const setMarketplaceAccountIdInternal = internalMutation({
   args: {
     userId: v.string(),
-    site: v.union(v.literal("buysportscards")),
+    site: v.union(v.literal("buysportscards"), v.literal("ebay")),
     accountId: v.string(),
   },
   returns: v.null(),
@@ -134,7 +137,10 @@ export const setMarketplaceAccountIdInternal = internalMutation({
         `[setMarketplaceAccountIdInternal] accountId length out of range (1-64), got ${args.accountId.length}`,
       );
     }
-    if (!/^[A-Za-z0-9_-]+$/.test(args.accountId)) {
+    // NEO-415: eBay's immutable user id (Commerce Identity `userId`) may
+    // also carry dots; nothing else widens.
+    const allowed = args.site === "ebay" ? /^[A-Za-z0-9._-]+$/ : /^[A-Za-z0-9_-]+$/;
+    if (!allowed.test(args.accountId)) {
       throw new Error(
         `[setMarketplaceAccountIdInternal] accountId contains invalid characters (allow A-Z a-z 0-9 _ -)`,
       );
@@ -148,6 +154,7 @@ export const setMarketplaceAccountIdInternal = internalMutation({
     const nextAccounts = {
       ...(profile?.marketplaceAccountIds ?? {}),
       ...(args.site === "buysportscards" ? { bscSellerId: args.accountId } : {}),
+      ...(args.site === "ebay" ? { ebayUserId: args.accountId } : {}),
     };
 
     if (profile) {

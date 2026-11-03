@@ -143,6 +143,8 @@ async function seedUser(
       status: "idle",
       problems: [],
       conditionsPushed: ["near_mint"],
+      // NEO-415: the run's steps ride on the row, so the row's delete clears them.
+      progress: { runStartedAt: 0, steps: [{ kind: "read", condition: "Near Mint", status: "done", finishedAt: 0 }] },
       lastUpdated: 0,
     });
     await ctx.db.insert("marketplaceListingStates", {

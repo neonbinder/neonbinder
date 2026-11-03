@@ -16,11 +16,9 @@ export const searchAllCardPlatforms = internalAction({
     maxPrice: v.optional(v.number()),
     minPrice: v.optional(v.number()),
     platforms: v.optional(v.array(v.union(
-      v.literal("ebay"),
       v.literal("myslabs"),
       v.literal("mycardpost")
     ))),
-    ebayAppId: v.optional(v.string()),
   },
   returns: v.object({
     results: v.array(v.object({
@@ -42,7 +40,7 @@ export const searchAllCardPlatforms = internalAction({
     totalResults: v.number(),
   }),
   handler: async (ctx, args) => {
-    const platforms = args.platforms || ["ebay", "myslabs", "mycardpost"];
+    const platforms = args.platforms || ["myslabs", "mycardpost"];
     const results: Array<{ platform: string; listings: CardListingsResponse['listings']; totalCount: number }> = [];
 
     // Search each platform in parallel
@@ -51,15 +49,6 @@ export const searchAllCardPlatforms = internalAction({
         let result: CardListingsResponse;
         
         switch (platform) {
-          case "ebay":
-            if (!args.ebayAppId) {
-              throw new Error("eBay App ID is required for eBay searches");
-            }
-            result = await ctx.runAction(internal.adapters.ebay.searchEbay, {
-              ...args,
-              appId: args.ebayAppId,
-            });
-            break;
           case "myslabs":
             result = await ctx.runAction(internal.adapters.myslabs.searchMySlabs, args);
             break;

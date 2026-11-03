@@ -175,7 +175,8 @@ crons.daily(
  * box copies, and push the box changes nothing else has pushed yet. Every 15
  * minutes: the poll reads order history across ALL statuses back to a stored
  * cursor, so an order that ships inside the window is still caught. One
- * scheduled `pollOwner` per owner with BSC credentials saved and a listing
+ * scheduled `pollOwner` per owner and listing platform (BSC, and eBay since
+ * NEO-415 when this deployment is wired to it) with credentials saved and a listing
  * state that lists and is not dormant (NEO-370 Revision 5: a saved sign-in
  * is listing, so pushing and polling go together; nothing while BSC is
  * paused), plus one pass that sets up sign-ins saved before that rule;
@@ -185,7 +186,7 @@ crons.daily(
  * "Done adding photos". See `listingSales.ts`.
  */
 crons.interval(
-  "poll BuySportsCards sales",
+  "poll marketplace sales",
   { minutes: 15 },
   internal.listingSales.pollAll,
   {},

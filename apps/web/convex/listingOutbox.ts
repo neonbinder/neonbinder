@@ -37,6 +37,7 @@ import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { internalMutation } from "./_generated/server";
 import { isPlatformPaused } from "./marketplacePause";
+import { ebayConfigured, ebaySellerConflictsEnforced } from "./lib/ebayEnv";
 
 export type ListingPlatform = Doc<"marketplaceListingStates">["platform"];
 type StateRow = Doc<"marketplaceListingStates">;
@@ -66,10 +67,25 @@ export const WAKE_SCAN_CARDS = 50;
 export const CLEAR_PAGE_ROWS = 500;
 
 /** Every listing platform NB has, in the order the Sync status tab shows them. */
-export const LISTING_PLATFORMS: ReadonlyArray<ListingPlatform> = ["bsc"];
+export const LISTING_PLATFORMS: ReadonlyArray<ListingPlatform> = ["bsc", "ebay"];
 
-/** The credential site key each listing platform signs in through. */
-export const LISTING_CREDENTIAL_SITE: Record<ListingPlatform, string> = { bsc: "buysportscards" };
+/**
+ * The credential site key each listing platform signs in through. NEO-415:
+ * eBay's "sign-in" is its OAuth connection (`ebayConnect`), recorded on the
+ * same `userProfiles.siteCredentials` entry shape under site "ebay".
+ */
+export const LISTING_CREDENTIAL_SITE: Record<ListingPlatform, string> = { bsc: "buysportscards", ebay: "ebay" };
+
+/**
+ * NB can reach the platform at all on this deployment and NB has not paused
+ * it: not paused (`marketplacePause`), and for eBay, wired
+ * (`lib/ebayEnv.ebayConfigured`; unset env means eBay is skipped quietly).
+ */
+export function platformReachable(platform: ListingPlatform): boolean {
+  if (isPlatformPaused(LISTING_CREDENTIAL_SITE[platform])) return false;
+  if (platform === "ebay" && !ebayConfigured()) return false;
+  return true;
+}
 
 /** The listing platform a credential site serves, or null for none. */
 export function listingPlatformForSite(site: string): ListingPlatform | null {
@@ -105,7 +121,7 @@ export function pushesCounts(
 export function pushesCountsNow(
   state: Pick<StateRow, "platform" | "listingStartedAt" | "dormant" | "testListingOff">,
 ): boolean {
-  return pushesCounts(state) && !isPlatformPaused(LISTING_CREDENTIAL_SITE[state.platform]);
+  return pushesCounts(state) && platformReachable(state.platform);
 }
 
 /**
@@ -138,6 +154,10 @@ export function carriesPlatformRef(card: Pick<CardRow, "platformData">, platform
   switch (platform) {
     case "bsc":
       return typeof card.platformData?.bsc?.ref === "string" && card.platformData.bsc.ref.length > 0;
+    case "ebay":
+      // NEO-415: eBay lists at the card level from NB's own data; NB makes the
+      // listing and keys it by NB's SKU, so every catalog card can list there.
+      return true;
   }
 }
 
@@ -335,6 +355,24 @@ export async function wakeVariant(
 }
 
 /**
+ * NEO-415: `wakeVariant` on every platform the owner pushes counts to. For a
+ * change that moves every listing of the variant at once without touching a
+ * copy (the owner's common price): the platform's run re-reads all the
+ * owner's copies of the variant, so one wake card is enough. Enqueues only.
+ */
+export async function wakeVariantEverywhere(
+  ctx: MutationCtx,
+  ownerId: string,
+  variantId: Id<"selectorOptions">,
+): Promise<number> {
+  let written = 0;
+  for (const state of await statesOf(ctx, ownerId)) {
+    if (pushesCounts(state)) written += await wakeVariant(ctx, ownerId, state.platform, variantId);
+  }
+  return written;
+}
+
+/**
  * Queue `cardIds` for `ownerId` (`enqueueListingCards`), from a copy writer
  * that does its own page and hands the listing work on rather than spend its
  * transaction on it (`backfillCopyCondition`). The caller bounds `cardIds`.
@@ -406,6 +444,8 @@ export async function kickOwnerDrains(ctx: MutationCtx, ownerId: string): Promis
 
 async function kickWithState(ctx: MutationCtx, state: StateRow, now: number): Promise<DrainKick> {
   if (!pushesCounts(state)) return "notListing";
+  // NEO-415: a deployment not wired to eBay keeps the queue and runs nothing.
+  if (state.platform === "ebay" && !ebayConfigured()) return "notListing";
   const pending = await ctx.db
     .query("listingOutbox")
     .withIndex("by_owner_platform_variant", (q) => q.eq("ownerId", state.ownerId).eq("platform", state.platform))
@@ -490,7 +530,10 @@ export async function listingCredentialOf(
   return {
     hasCredentials: entry?.hasCredentials === true,
     needsReauth: entry?.needsReauth === true,
-    sellerId: platform === "bsc" ? (profile?.marketplaceAccountIds?.bscSellerId ?? null) : null,
+    sellerId:
+      platform === "bsc"
+        ? (profile?.marketplaceAccountIds?.bscSellerId ?? null)
+        : (profile?.marketplaceAccountIds?.ebayUserId ?? null),
   };
 }
 
@@ -509,6 +552,9 @@ export async function sellerAccountHolder(
   accountId: string,
   ownerId: string,
 ): Promise<StateRow | null> {
+  // NEO-415: the eBay sandbox can name one mock user for every seller, so a
+  // testing deployment on the sandbox does not hold suite accounts apart.
+  if (platform === "ebay" && !ebaySellerConflictsEnforced()) return null;
   const holders = await ctx.db
     .query("marketplaceListingStates")
     .withIndex("by_platform_account", (q) => q.eq("platform", platform).eq("platformAccountId", accountId))

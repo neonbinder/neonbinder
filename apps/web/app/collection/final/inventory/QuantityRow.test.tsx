@@ -178,6 +178,14 @@ describe("the field's number", () => {
     expect(screen.getByText("also here: PSA 9, Raw Near Mint ×2")).toBeTruthy();
   });
 
+  it("NEO-377: a copy with a photo is never counted (the server's quick count can't change it), and is named after the field", () => {
+    setup([{ card: ELLY, copies: [line({ id: "photo", quantity: 1, hasPhotos: true })] }]);
+    // Counted, it would read 1 and a 0 typed over it could never land.
+    expect(field().value).toBe("0");
+    const others = screen.getByText("also here: Raw with photo");
+    expect(field().getAttribute("aria-describedby")?.split(" ")).toContain(others.id);
+  });
+
   it("with every copy plain, says nothing after the field and describes it by nothing", () => {
     setup();
     expect(screen.queryByText(/also here/)).toBeNull();

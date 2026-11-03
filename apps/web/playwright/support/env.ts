@@ -12,6 +12,7 @@
  * | (new) WORKER_KEY   | env.WORKER_KEY           | `<worker><d|m>`: per worker AND project  |
  * | PAUSED_PLATFORMS   | env.PAUSED_PLATFORMS     | from process.env.PAUSED_PLATFORMS        |
  * | output.SL_PAUSED   | env.SL_PAUSED            | util-paused-platforms.yaml's boolean     |
+ * | (new, NEO-415)     | env.EBAY_PAUSED          | PAUSED_PLATFORMS names ebay              |
  *
  * ATTEMPT_ID spelling: CI Maestro used `r<n>-a<attempt>-<RANDOM>` and local
  * Maestro `w<n>-a<attempt>-<RANDOM>`. Playwright uses `pw<n><p>-a1-<random>`,
@@ -42,6 +43,8 @@ export interface FlowEnv {
   PAUSED_PLATFORMS: string;
   /** True when PAUSED_PLATFORMS names sportlots (util-paused-platforms.yaml). */
   SL_PAUSED: boolean;
+  /** True when PAUSED_PLATFORMS names ebay (NEO-415): the eBay listing spec's paused branch. */
+  EBAY_PAUSED: boolean;
 }
 
 export function workerIndex(): string {
@@ -57,12 +60,22 @@ export function pausedPlatforms(): string {
   return process.env.PAUSED_PLATFORMS ?? "";
 }
 
-/** util/util-paused-platforms.yaml, verbatim logic. */
-export function isSlPaused(paused = pausedPlatforms()): boolean {
+/** Whether the comma-separated switch value names `site` (trimmed, case-insensitive). */
+function pausedNames(site: string, paused: string): boolean {
   return paused
     .split(",")
     .map((s) => s.trim().toLowerCase())
-    .includes("sportlots");
+    .includes(site);
+}
+
+/** util/util-paused-platforms.yaml, verbatim logic. */
+export function isSlPaused(paused = pausedPlatforms()): boolean {
+  return pausedNames("sportlots", paused);
+}
+
+/** NEO-415: the same switch, for eBay (`NEONBINDER_PAUSED_PLATFORMS=ebay`). */
+export function isEbayPaused(paused = pausedPlatforms()): boolean {
+  return pausedNames("ebay", paused);
 }
 
 /**
@@ -91,5 +104,6 @@ export function makeEnv(projectName: string): FlowEnv {
     TEST_USERNAME: `neontester-pw${key}-${Math.floor(Date.now() / 1000)}-${rand(100000)}`,
     PAUSED_PLATFORMS: pausedPlatforms(),
     SL_PAUSED: isSlPaused(),
+    EBAY_PAUSED: isEbayPaused(),
   };
 }

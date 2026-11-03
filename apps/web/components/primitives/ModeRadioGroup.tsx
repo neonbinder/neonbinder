@@ -16,7 +16,8 @@ import React, { useId, useRef } from "react";
  * 3, Bright as a brand-new Trapper Keeper".
  *
  * Layout: the cards share a row and wrap below ~9rem each, so at 320px they
- * stack one per line instead of overflowing.
+ * stack one per line instead of overflowing. Every card is at least 44px tall
+ * (min-h-11), a label-only card included, so each is a full-size target.
  */
 export interface ModeRadioOption<T extends string = string> {
   value: T;
@@ -31,6 +32,11 @@ export interface ModeRadioGroupProps<T extends string = string> {
   options: ReadonlyArray<ModeRadioOption<T>>;
   onChange: (value: T) => void;
   className?: string;
+  /**
+   * Id(s) of a line that describes the whole group, such as a save that
+   * failed or a pick that is gone. It is set on the radiogroup.
+   */
+  describedBy?: string;
 }
 
 export function ModeRadioGroup<T extends string = string>({
@@ -39,6 +45,7 @@ export function ModeRadioGroup<T extends string = string>({
   options,
   onChange,
   className = "",
+  describedBy,
 }: ModeRadioGroupProps<T>) {
   const baseId = useId();
   const labelId = `${baseId}-label`;
@@ -91,7 +98,7 @@ export function ModeRadioGroup<T extends string = string>({
       <span id={labelId} className="mb-2 block text-sm font-medium text-ink-2">
         {label}
       </span>
-      <div role="radiogroup" aria-labelledby={labelId} className="flex flex-wrap gap-2">
+      <div role="radiogroup" aria-labelledby={labelId} aria-describedby={describedBy} className="flex flex-wrap gap-2">
         {options.map((option, index) => {
           const checked = index === checkedIndex && option.value === value;
           // Named by the label alone (the description is its description), so
@@ -112,7 +119,7 @@ export function ModeRadioGroup<T extends string = string>({
               tabIndex={index === checkedIndex ? 0 : -1}
               onClick={() => choose(index)}
               onKeyDown={(event) => onKeyDown(event, index)}
-              className={`flex min-w-0 grow basis-36 items-start gap-3 rounded-md border px-3 py-2.5 text-left transition-colors focus-outline ${
+              className={`flex min-h-11 min-w-0 grow basis-36 items-start gap-3 rounded-md border px-3 py-2.5 text-left transition-colors focus-outline ${
                 checked
                   ? "border-selection bg-raised-deep"
                   : "border-field-rule bg-field hover:bg-hover"

@@ -25,3 +25,23 @@ export const PROJECT_IGNORE = {
 export function ignoredSpecs(project) {
   return PROJECT_IGNORE[project] ?? [];
 }
+
+// Specs that write to a marketplace seller account shared by EVERY PR's CI
+// (NEO-415): one BuySportsCards test seller and one eBay sandbox seller. Two
+// PRs running one at once clobber each other (one preview's sync zeroes the
+// other's listings; overlapping BSC sheet reads make BSC create twin rows),
+// and sharding cannot fix that. So they are planned in NO shard: e2e.yml's
+// `seller-desktop` / `seller-mobile` jobs run them, one PR at a time repo-wide
+// (a queue, never a cancel), and the `e2e` gate still requires a passing
+// result for each on BOTH projects.
+//
+// Each listed spec carries the tag below; shard-plan.mjs refuses to plan if the
+// tag and this list disagree in either direction, so a new seller spec cannot
+// slip into a shard (or a listed one lose its tag) unnoticed. Paths are
+// relative to playwright/tests/.
+export const SELLER_TAG = "@marketplace-seller";
+/** @type {string[]} */
+export const SELLER_SPECS = [
+  "collection/inventory-bsc-listing-1988-topps-base.spec.ts",
+  "collection/inventory-ebay-sandbox-listing-1988-topps-base.spec.ts",
+];

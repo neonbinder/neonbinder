@@ -46,14 +46,18 @@ import {
   listingCredentialOf,
   listingStateOf,
   listsOnMarketplaces,
+  platformReachable,
   pushesCounts,
   sellerAccountHolder,
   wakeVariant,
   type ListingPlatform,
 } from "./listingOutbox";
 import {
+  collectionCopyConditionValidator,
   listingPlatformValidator,
   listingProblemReasonValidator,
+  listingSyncStepKindValidator,
+  listingSyncStepStatusValidator,
   saleItemProblemValidator,
 } from "./schema";
 
@@ -116,10 +120,10 @@ type PlatformSettings = typeof platformSettingsValidator.type;
 
 /** The owner lists on the platform now: the state row's rule (`pushesCounts`) and the platform not paused. */
 function listsNow(row: Doc<"marketplaceListingStates"> | null, platform: ListingPlatform): boolean {
-  return row !== null && pushesCounts(row) && !isPlatformPaused(LISTING_CREDENTIAL_SITE[platform]);
+  return row !== null && pushesCounts(row) && platformReachable(platform);
 }
 
-async function platformSettings(
+export async function platformSettings(
   ctx: QueryCtx,
   ownerId: string,
   platform: ListingPlatform,
@@ -141,10 +145,13 @@ async function platformSettings(
 /** Where the collector stands with each listing platform. Small and subscribable. */
 export const listingSettings = query({
   args: {},
-  returns: v.object({ bsc: platformSettingsValidator }),
+  returns: v.object({ bsc: platformSettingsValidator, ebay: platformSettingsValidator }),
   handler: async (ctx) => {
     const ownerId = await requireSignedIn(ctx);
-    return { bsc: await platformSettings(ctx, ownerId, "bsc") };
+    return {
+      bsc: await platformSettings(ctx, ownerId, "bsc"),
+      ebay: await platformSettings(ctx, ownerId, "ebay"),
+    };
   },
 });
 
@@ -630,9 +637,7 @@ export const syncVariant = mutation({
   }),
   handler: async (ctx, args) => {
     const ownerId = await requireSignedIn(ctx);
-    const platforms = (await listingPlatformsOf(ctx, ownerId)).filter(
-      (platform) => !isPlatformPaused(LISTING_CREDENTIAL_SITE[platform]),
-    );
+    const platforms = (await listingPlatformsOf(ctx, ownerId)).filter(platformReachable);
     if (platforms.length === 0) return { queued: false, ignored: "notListing" as const };
     let queued = false;
     let throttled = 0;
@@ -761,6 +766,41 @@ const syncProblemValidator = v.object({
 });
 type SyncProblem = typeof syncProblemValidator.type;
 
+/**
+ * NEO-415 — one step of a set's run, in run order, as the tab ticks it off.
+ * NB vocabulary only (the web writes the label from `kind` and NB's
+ * condition names). `conditions` is every NB condition a read or confirm
+ * covers (BSC folds Mint and Near Mint into one modern sheet), `condition`
+ * its first; a read or confirm with neither covers the sheets NB lists
+ * nothing under.
+ */
+const syncStepValidator = v.object({
+  kind: listingSyncStepKindValidator,
+  condition: v.optional(collectionCopyConditionValidator),
+  conditions: v.optional(v.array(collectionCopyConditionValidator)),
+  status: listingSyncStepStatusValidator,
+});
+type SyncStep = typeof syncStepValidator.type;
+
+/**
+ * A record's steps as the tab shows them (no extra reads: the ledger rides on
+ * the record). A run that died holding its lease reads as finished: what it
+ * was working on failed, what it never reached is dropped.
+ */
+function stepsOf(record: Doc<"marketplaceListingSyncs">, died: boolean): SyncStep[] {
+  const out: SyncStep[] = [];
+  for (const s of record.progress?.steps ?? []) {
+    if (died && s.status === "waiting") continue;
+    out.push({
+      kind: s.kind,
+      ...(s.condition !== undefined ? { condition: s.condition } : {}),
+      ...(s.conditions !== undefined ? { conditions: s.conditions } : {}),
+      status: died && s.status === "working" ? "failed" : s.status,
+    });
+  }
+  return out;
+}
+
 const countsValidator = v.object({
   listed: v.number(),
   pushed: v.number(),
@@ -782,6 +822,8 @@ const platformStatusValidator = v.object({
       startedAt: v.number(),
       setLabel: v.optional(v.string()),
       variantId: v.optional(v.id("selectorOptions")),
+      /** NEO-415: the running set's steps so far, in run order (empty until its plan is written). */
+      steps: v.array(syncStepValidator),
     }),
   ),
   /** A sync is scheduled to start (kicked, not yet running). */
@@ -814,6 +856,8 @@ const platformStatusValidator = v.object({
       problemsTotal: v.number(),
       /** The first few only; the rest through `syncSetProblems`. */
       problems: v.array(syncProblemValidator),
+      /** NEO-415: this set's run, in order: the one running now, else the last one. */
+      steps: v.array(syncStepValidator),
     }),
   ),
 });
@@ -875,6 +919,7 @@ async function platformStatus(
       ...(runningRecord
         ? { variantId: runningRecord.variantId, setLabel: await labels.setLabel(runningRecord.variantId) }
         : {}),
+      steps: runningRecord ? stepsOf(runningRecord, false) : [],
     };
   }
 
@@ -915,6 +960,7 @@ async function platformStatus(
       ...(r.counts !== undefined ? { counts: r.counts } : {}),
       problemsTotal: r.problemsTotal ?? r.problems.length,
       problems,
+      steps: stepsOf(r, r.status === "running" && !live(r)),
     });
   }
 

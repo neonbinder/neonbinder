@@ -30,6 +30,19 @@ describe("PausedNotice", () => {
     expect(screen.queryByRole("status")).toBeNull();
   });
 
+  it("renders nothing when only eBay is paused: it is a listing destination with no checklist side (NEO-415)", () => {
+    const { container } = render(<PausedNotice sites={["ebay"]} />);
+    expect(container.textContent).toBe("");
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+
+  it("names only SportLots when eBay is paused beside it (NEO-415)", () => {
+    render(<PausedNotice sites={["ebay", SL]} />);
+    const text = screen.getByRole("status").textContent ?? "";
+    expect(text).toContain("SportLots is on pause.");
+    expect(text).not.toMatch(/eBay/);
+  });
+
   it("names the one paused site and says what stays true", () => {
     render(<PausedNotice sites={[SL]} />);
 

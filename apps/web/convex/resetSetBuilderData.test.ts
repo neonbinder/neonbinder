@@ -1246,6 +1246,19 @@ describe("NEO-330: scope exceptReferenceSeed", () => {
         platform: "bsc",
         lastUpdated: 0,
       });
+      // NEO-415 — one eBay link row naming the card (NB's linkage to a
+      // listing it made). It names a card, never a selector row.
+      await ctx.db.insert("marketplaceListingLinks", {
+        ownerId: "user",
+        platform: "ebay",
+        cardId: card._id,
+        conditionCode: "NM",
+        sku: `NB2-${card._id}-NM`,
+        offerId: "O1",
+        listingId: "L1",
+        status: "live",
+        lastUpdated: 0,
+      });
       await ctx.db.insert("marketplaceSales", {
         ownerId: "user",
         platform: "bsc",
@@ -1288,6 +1301,19 @@ describe("NEO-330: scope exceptReferenceSeed", () => {
     expect([...DEPENDANTS].sort()).toEqual([...SELECTOR_DEPENDANT_TABLES].sort());
   });
 
+  test("NEO-415: the scoped reset also drains the eBay link rows, which name cards but are not in the loader's selector-dependant list", async () => {
+    vi.stubEnv("ALLOW_RESET_SET_BUILDER_DATA", "true");
+    const t = convexTest(schema, modules);
+    await seedAll(t);
+    expect(await t.run(async (ctx) => (await ctx.db.query("marketplaceListingLinks").collect()).length)).toBe(1);
+    expect(SELECTOR_DEPENDANT_TABLES).not.toContain("marketplaceListingLinks");
+
+    const result = await runScoped(t, "exceptReferenceSeed");
+
+    expect(result.complete).toBe(true);
+    expect(await t.run(async (ctx) => await ctx.db.query("marketplaceListingLinks").collect())).toEqual([]);
+  });
+
   test("leaves all eight reference tables' rows untouched and drains every dependant", async () => {
     vi.stubEnv("ALLOW_RESET_SET_BUILDER_DATA", "true");
     const t = convexTest(schema, modules);
@@ -1320,7 +1346,8 @@ describe("NEO-330: scope exceptReferenceSeed", () => {
       collectionBuildingSetsDeleted: 11,
       variantCommonPricesDeleted: 2,
       intakeRunsDeleted: 2,
-      marketplaceListingDeleted: 4,
+      // NEO-370: outbox, sync record, state, sale; NEO-415: the eBay link row.
+      marketplaceListingDeleted: 5,
       selectorOptionsDeleted: 0,
       cardPlayerLinksDeleted: 1,
       cardTeamLinksDeleted: 9,
