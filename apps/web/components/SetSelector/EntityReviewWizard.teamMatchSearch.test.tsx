@@ -53,6 +53,10 @@ vi.mock("../../convex/_generated/api", () => ({
       search: "players.search",
       getManyByIds: "players.getManyByIds",
     },
+    // NEO-426: the sports flagged "No teams in this sport" (undefined = none).
+    sportTeamless: {
+      listTeamlessSportIds: "sportTeamless.listTeamlessSportIds",
+    },
     teams: {
       nearMatches: "teams.nearMatches",
       pickerCandidates: "teams.pickerCandidates",

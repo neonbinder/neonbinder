@@ -1,8 +1,8 @@
 /**
  * NEO-426 — "this sport has no teams", read in exactly one place.
  *
- * A `level: "sport"` row may carry `hasNoTeams: true` (Pokémon, Magic, a
- * non-sport set). Every reader goes through `isTeamlessSport` (or the server
+ * A `level: "sport"` row may carry `hasNoTeams: true`: a sport whose people
+ * never play for a team (Non-Sport, Golf, Tennis, Boxing). Every reader goes through `isTeamlessSport` (or the server
  * set built from it, `teamlessSportIdSet` in convex/sportTeamless.ts), never
  * through the sport's display name: the flag is NB's own fact about the row,
  * so renaming the sport never changes what it means (product invariant 4).
@@ -45,8 +45,10 @@ export function isTeamlessSport(row: TeamlessSportRow | null | undefined): boole
  *  - nothing listed claims a team (a printed team string or BSC's raw value
  *    the operator did not rule "not a team") — invariant 8: data that names
  *    a team holds the guess back;
- *  - the team lookup did not fail (a missing answer goes to a person, it is
- *    not read as "no team").
+ *  - the team lookup did not fail, and a card that carries a BSC ref (so a
+ *    lookup is owed: the fetch asks BSC about every teamless BSC card) has
+ *    an ANSWERED one. A failed lookup and a missing one alike go to a
+ *    person: no answer is never read as "no team" (invariant 8).
  *
  * A team from the set level or already stored on a re-synced row still wins:
  * the answer this feeds (`teamNone`) is dropped by `settleCardTeamAnswer`
@@ -59,6 +61,8 @@ export function defaultsToNoTeamOnCommit(card: {
   teamCount: number;
   pendingTeamCount: number;
   hasListedTeamClaim: boolean;
+  /** The card carries a BSC ref, so the fetch owed it a team lookup. */
+  hasBscRef: boolean;
   teamLookup?: "answered" | "failed";
 }): boolean {
   return (
@@ -68,6 +72,7 @@ export function defaultsToNoTeamOnCommit(card: {
     card.teamCount === 0 &&
     card.pendingTeamCount === 0 &&
     !card.hasListedTeamClaim &&
-    card.teamLookup !== "failed"
+    card.teamLookup !== "failed" &&
+    (!card.hasBscRef || card.teamLookup === "answered")
   );
 }

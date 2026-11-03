@@ -572,17 +572,18 @@ export default function SetAttributesPanel({
   /**
    * NEO-426 — the sport row's "No teams in this sport" toggle. The toast
    * waits for the server, like the SportLots link's: the flag changes how
-   * every later save of this sport's cards defaults, so "Saved" should mean
-   * it happened. Saved/Cleared, the panel's own pair, keyed on the cell's
-   * label.
+   * every later save of this sport's cards defaults, so the toast should mean
+   * it happened. Its own words rather than the panel's Saved/Cleared pair,
+   * because "Saved Teams" reads as the opposite of switching teams off; and
+   * the failure line is whole as it stands, so no `Failed:` prefix (a
+   * server's own operator-facing reason still wins, as everywhere here).
    */
   const handleToggleHasNoTeams = async (hasNoTeams: boolean) => {
-    const label = SPORT_TEAMS_LABEL;
     try {
       await setSportHasNoTeams({ sportId: selectorOptionId, hasNoTeams });
-      showToast(hasNoTeams ? `Saved ${label}` : `Cleared ${label}`);
+      showToast(hasNoTeams ? SPORT_TEAMS_OFF_TOAST : SPORT_TEAMS_ON_TOAST);
     } catch (e) {
-      setToast(`Failed: ${userFacingMessage(e, `Could not save ${label}`)}`);
+      setToast(userFacingMessage(e, SPORT_TEAMS_FLIP_FAILED_TOAST));
     }
   };
 
@@ -1266,12 +1267,16 @@ function SlViaAllBrandsToggle({
   );
 }
 
-/** NEO-426 — the cell's label: `Set feature Teams`, and the toast's `Saved Teams` / `Cleared Teams`. */
+/** NEO-426 — the cell's eyebrow, and its label `Set feature Teams`. */
 const SPORT_TEAMS_LABEL = "Teams";
 /** NEO-426 — the toggle's visible words, which are also its accessible name. */
 export const SPORT_HAS_NO_TEAMS_TOGGLE_TEXT = "No teams in this sport";
 /** NEO-426 — what the toggle does, under it and read as its description. */
-const SPORT_HAS_NO_TEAMS_HINT = "Cards save as No team unless one is picked.";
+const SPORT_HAS_NO_TEAMS_HINT = "Players from this sport save with No team unless the card has one.";
+/** NEO-426 — the toasts: switched on, switched off, and a flip that failed. */
+const SPORT_TEAMS_OFF_TOAST = "Teams off for this sport. Cards save as No team.";
+const SPORT_TEAMS_ON_TOAST = "Teams are back on for this sport.";
+const SPORT_TEAMS_FLIP_FAILED_TOAST = "Couldn't flip that. Try again.";
 
 /**
  * NEO-426 — "No teams in this sport", as a pressed toggle in a sport row's

@@ -85,8 +85,9 @@ export { MAX_CARD_TEAMS };
  *
  * ## A teamless sport is a default, never a block (NEO-426)
  *
- * A sport row an operator flagged "No teams in this sport" (Pokémon, Magic,
- * any non-sport set; `isTeamlessSport`, never the sport's name) changes the
+ * A sport row an operator flagged "No teams in this sport" (a sport whose
+ * people never play for a team: Non-Sport, Golf, Tennis, Boxing;
+ * `isTeamlessSport`, never the sport's name) changes the
  * DEFAULT for one kind of card: one that would save with no team, has at
  * least one person on it, and every one of those people has that sport as
  * their HOME sport (`players.sportId`; extra sports never count). Such a card
@@ -100,8 +101,10 @@ export { MAX_CARD_TEAMS };
  * the default goes to the operator as before, per invariant 8:
  *  - a card with nobody on it (nothing says what sport it is);
  *  - a mixed card (any person whose home sport has teams, or is unknown);
- *  - a card whose listing names a team the operator has not ruled on, or
- *    whose team lookup failed — a data claim holds the default back too.
+ *  - a card whose listing names a team the operator has not ruled on, whose
+ *    team lookup failed, or that carries a BSC ref without an ANSWERED
+ *    lookup (one is owed, so a missing answer is not "no team") — a data
+ *    claim, or the want of one, holds the default back too.
  *
  * Membership stays synchronous: it reads only facts the host already holds
  * (`StoredPeople.teamlessSportIds`, `linkedPlayerSportIds`,
@@ -152,6 +155,13 @@ export interface PreviewCardForTeams {
    * commit's `commitTeamHint` reads it the same way.
    */
   rawTeamName?: string;
+  /**
+   * NEO-426 — read for one fact only: does the card carry a BSC ref? Such a
+   * card was owed a team lookup, so the teamless-sport default needs an
+   * ANSWERED one (`teamLookup`), exactly as the commit's
+   * `defaultsToNoTeamOnCommit` does with `hasBscRef`. Never a key.
+   */
+  platformData?: { bsc?: { ref: string } };
 }
 
 /** The operator's answer for one card, as the commit reads it. */
@@ -624,12 +634,14 @@ function hasTeamlessFacts(view: NamesView): boolean {
  * NEO-426 — does the teamless-sport default answer this would-be-teamless
  * card? At least one person, every one of them teamless, and no data claim
  * standing: no listed team the operator has not ruled on, and a lookup that
- * did not fail (invariant 8 — a claim holds the default back as it holds
- * any guess back).
+ * did not fail — and, on a card with a BSC ref, one that ANSWERED (a missing
+ * answer is not "no team"). Invariant 8: a claim holds the default back as
+ * it holds any guess back. Mirrors the commit's `defaultsToNoTeamOnCommit`.
  */
 function takesNoTeamByDefault(card: PreviewCardForTeams, index: number, view: NamesView): boolean {
   if (!hasTeamlessFacts(view)) return false;
   if (card.teamLookup === "failed") return false;
+  if (card.platformData?.bsc?.ref && card.teamLookup !== "answered") return false;
   if (hasListedTeamClaim(card, view)) return false;
   if (hasUnaccountedPlayer(card, index, view)) return false;
   const players = cardPlayers(card, index, view);

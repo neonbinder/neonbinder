@@ -23,6 +23,8 @@ vi.mock("convex/react", () => ({
   useQuery: (ref: string, args: unknown) => {
     if (args === "skip") return undefined;
     if (ref === "entityReviewQueue.getBatch") return currentRows;
+    // NEO-426: the flagged sports have loaded (none flagged); the step counter waits for them.
+    if (ref === "sportTeamless.listTeamlessSportIds") return [];
     return undefined;
   },
   useQueries: (queries: Record<string, { args: { players: unknown[] } }>) => {

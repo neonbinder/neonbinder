@@ -21928,6 +21928,7 @@ export const commitCardChecklist = action({
           hasListedTeamClaim:
             commitTeamHint(c.rawTeamName, teamSources, skippedTeamKeys) !==
             undefined,
+          hasBscRef: Boolean(c.platformData.bsc?.ref),
           teamLookup: c.teamLookup,
         });
       // "No team on this card" — teams win. A card carrying any team id or a

@@ -24,6 +24,7 @@ import {
   STEP_SUBTITLE,
   stepNumber,
   trackSteps,
+  TEAMS_STEP_DROPPED_LINE,
   upcomingReviewStepKind,
   type StepRow,
 } from "./entity-review-steps";
@@ -235,6 +236,82 @@ describe("cardsForTeamsStep — optimistic while names are open", () => {
     // An undecided row in this sitting outranks the record, and is still
     // assumed to resolve.
     expect(cardsForTeamsStep(cards, [teamRow(null)], undefined, people)).toEqual([1]);
+  });
+});
+
+describe("cardsForTeamsStep — the teamless-sport default (NEO-426)", () => {
+  const people = storedPeople(undefined, undefined, undefined, {
+    teamlessPlayerNames: ["Pika Chu"],
+  });
+
+  it("drops a card whose every player's sport has no teams", () => {
+    const cards = [
+      { cardNumber: "1", cardName: "A", players: ["Pika Chu"] },
+      { cardNumber: "2", cardName: "B", players: ["Johnny Bench"] },
+    ];
+    expect(cardsForTeamsStep(cards, [], undefined, people)).toEqual([1]);
+  });
+
+  it("is empty, so the step is not counted, when the auto cards are all there is", () => {
+    const cards = [{ cardNumber: "1", cardName: "A", players: ["Pika Chu"] }];
+    const ids = cardsForTeamsStep(cards, [], undefined, people);
+    expect(ids).toEqual([]);
+    expect(plannedTotal(plan(0, ids.length > 0))).toBe(1);
+  });
+
+  it("without the facts the same card is counted, as before", () => {
+    const cards = [{ cardNumber: "1", cardName: "A", players: ["Pika Chu"] }];
+    expect(cardsForTeamsStep(cards, [], undefined, undefined)).toEqual([0]);
+  });
+});
+
+describe("trackSteps — the teams step and the teamless-sport default (NEO-426)", () => {
+  const player: StepRow = { _id: "p", kind: "player", name: "Jim Thome" };
+  const input = (over: Partial<Parameters<typeof trackSteps>[1]>) => ({
+    rows: [player],
+    teamsStep: false,
+    titlesStep: false,
+    onSave: false,
+    ...over,
+  });
+
+  it("shrinks, and says so, when the default answers every card before the walker reaches the step", () => {
+    const first = trackSteps(null, input({ teamsStep: true }));
+    expect(first.count.total).toBe(3);
+    const shrunk = trackSteps(first, input({ teamsStep: false, teamsStepDefaulted: true }));
+    expect(shrunk.count.total).toBe(2);
+    expect(shrunk.count.teamsStep).toBe(false);
+    expect(shrunk.growth).toEqual({ seq: 1, text: TEAMS_STEP_DROPPED_LINE });
+  });
+
+  it("keeps the step's place when it goes away for any other reason (not defaulted)", () => {
+    const first = trackSteps(null, input({ teamsStep: true }));
+    const same = trackSteps(first, input({ teamsStep: false }));
+    expect(same.count.total).toBe(3);
+    expect(same.count.teamsStep).toBe(true);
+  });
+
+  it("never shrinks on Save", () => {
+    const first = trackSteps(null, input({ teamsStep: true }));
+    const onSave = trackSteps(first, input({ teamsStep: false, teamsStepDefaulted: true, onSave: true }));
+    expect(onSave.count.total).toBe(3);
+    expect(onSave.growth).toBeNull();
+  });
+
+  it("an unknown teams step holds what was counted: neither added nor dropped", () => {
+    const first = trackSteps(null, input({ teamsStep: true }));
+    const held = trackSteps(first, input({ teamsStep: false, teamsStepDefaulted: true, teamsStepKnown: false }));
+    expect(held).toBe(first);
+    const noneCounted = trackSteps(trackSteps(null, input({})), input({ teamsStep: true, teamsStepKnown: false }));
+    expect(noneCounted.count.teamsStep).toBe(false);
+    expect(noneCounted.count.total).toBe(2);
+  });
+
+  it("once known, a step that was held back is added and announced as usual", () => {
+    const first = trackSteps(null, input({}));
+    const known = trackSteps(first, input({ teamsStep: true }));
+    expect(known.count.total).toBe(3);
+    expect(known.growth?.seq).toBe(1);
   });
 });
 

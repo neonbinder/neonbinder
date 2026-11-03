@@ -2984,3 +2984,61 @@ describe("NEO-415: eBay connection surface", () => {
     expect(body.indexOf("ctx.scheduler")).toBe(schedule);
   });
 });
+
+/**
+ * NEO-426 — "No teams in this sport". Both are public because the Set details
+ * panel and the checklist wizard call them; both are admin-only like every
+ * other set-builder door. The two internal reads the fetch and the commit use
+ * must stay internal: they take arbitrary player ids.
+ */
+describe("NEO-426: the teamless-sport doors are admin-gated", () => {
+  test("sportTeamless.setHasNoTeams refuses a signed-out caller and a non-admin, then lands for an admin", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const call = (tt: ReturnType<typeof convexTest>) =>
+      tt.mutation(api.sportTeamless.setHasNoTeams, { sportId, hasNoTeams: true });
+    await expect(call(t)).rejects.toThrow();
+    await expect(call(t.withIdentity(SIGNED_IN))).rejects.toThrow();
+    expect((await t.run(async (ctx) => ctx.db.get(sportId)))!.hasNoTeams).toBeUndefined();
+    await call(t.withIdentity(ADMIN));
+    expect((await t.run(async (ctx) => ctx.db.get(sportId)))!.hasNoTeams).toBe(true);
+  });
+
+  test("sportTeamless.setHasNoTeams on a non-sport row throws and leaves the field absent", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const yearId = await t.run(async (ctx) =>
+      ctx.db.insert("selectorOptions", {
+        level: "year",
+        value: "2024",
+        platformData: {},
+        parentId: sportId,
+        children: [],
+        lastUpdated: 1_700_000_000_000,
+      }),
+    );
+    await expect(
+      t.withIdentity(ADMIN).mutation(api.sportTeamless.setHasNoTeams, { sportId: yearId, hasNoTeams: true }),
+    ).rejects.toThrow();
+    const row = await t.run(async (ctx) => ctx.db.get(yearId));
+    expect("hasNoTeams" in row!).toBe(false);
+  });
+
+  test("sportTeamless.listTeamlessSportIds refuses a signed-out caller and a non-admin, and answers an admin", async () => {
+    const t = convexTest(schema, modules);
+    await seedSport(t);
+    await expect(t.query(api.sportTeamless.listTeamlessSportIds, {})).rejects.toThrow();
+    await expect(t.withIdentity(SIGNED_IN).query(api.sportTeamless.listTeamlessSportIds, {})).rejects.toThrow();
+    await expect(t.withIdentity(ADMIN).query(api.sportTeamless.listTeamlessSportIds, {})).resolves.toEqual([]);
+  });
+
+  test.each([
+    ["sportTeamless.ts", "teamlessSportIdList", "internalQuery"],
+    ["sportTeamless.ts", "playersWithTeamlessHomeSport", "internalQuery"],
+    ["sportTeamless.ts", "setHasNoTeams", "mutation"],
+    ["sportTeamless.ts", "listTeamlessSportIds", "query"],
+  ])("%s :: %s is declared %s", (file, fn, kind) => {
+    const src = readFileSync(join(__dirname, file), "utf8");
+    expect(src).toContain(`export const ${fn} = ${kind}({`);
+  });
+});

@@ -112,6 +112,10 @@ vi.mock("../../convex/_generated/api", () => ({
     autographFormat: {
       setAutographFormat: "autographFormat.setAutographFormat",
     },
+    // NEO-426 — the sport row's "No teams in this sport" toggle, bound at render.
+    sportTeamless: {
+      setHasNoTeams: "sportTeamless.setHasNoTeams",
+    },
     // NEO-306 — "Make insert of…", asking the server at render.
     setInsertConversion: {
       getMakeInsertEligibility: "sic.getMakeInsertEligibility",
@@ -139,6 +143,8 @@ const mockMoveSetToBrand = vi.fn();
 const mockSetSelectorOptionTeams = vi.fn();
 /** NEO-345 */
 const mockSetAutographFormat = vi.fn();
+/** NEO-426 — `sportTeamless.setHasNoTeams`. */
+const mockSetHasNoTeams = vi.fn();
 /**
  * NEO-277 — the Team row's two one-shot reads go through `useConvex().query`,
  * not `useQuery`; routed by the same string refs.
@@ -199,6 +205,7 @@ vi.mock("convex/react", () => ({
       return mockSetManufacturerSlViaAllBrands;
     if (mutation === "brandView.moveSetToBrand") return mockMoveSetToBrand;
     if (mutation === "autographFormat.setAutographFormat") return mockSetAutographFormat;
+    if (mutation === "sportTeamless.setHasNoTeams") return mockSetHasNoTeams;
     return vi.fn();
   },
   useConvex: () => ({
@@ -3436,4 +3443,103 @@ describe("SetAttributesPanel — set ⇄ parallel row actions (NEO-305)", () => 
       expect(screen.queryByRole("button", { name: "Promote to set" })).toBeNull();
     },
   );
+});
+
+// ---------------------------------------------------------------------------
+// NEO-426 — "No teams in this sport", the sport row's flag
+// ---------------------------------------------------------------------------
+
+describe("SetAttributesPanel — No teams in this sport (NEO-426)", () => {
+  const TOGGLE = "No teams in this sport";
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockSetHasNoTeams.mockResolvedValue(null);
+    currentChain = makeChain("Baseball");
+  });
+
+  const sportRow = (hasNoTeams?: boolean) => ({
+    ...makeRow({ level: "sport", value: "Pokemon" }),
+    ...(hasNoTeams === undefined ? {} : { hasNoTeams }),
+  });
+
+  it("renders on a sport row, as an unpressed toggle with its helper line", () => {
+    currentRow = sportRow();
+    renderPanel();
+    expect(screen.getByLabelText("Set feature Teams")).toBeTruthy();
+    const toggle = screen.getByRole("button", { name: TOGGLE });
+    expect(toggle.getAttribute("aria-pressed")).toBe("false");
+    expect(screen.getByText("Players from this sport save with No team unless the card has one.")).toBeTruthy();
+  });
+
+  it("is pressed when the sport carries the flag", () => {
+    currentRow = sportRow(true);
+    renderPanel();
+    expect(screen.getByRole("button", { name: TOGGLE }).getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("a stored false reads as unpressed", () => {
+    currentRow = sportRow(false);
+    renderPanel();
+    expect(screen.getByRole("button", { name: TOGGLE }).getAttribute("aria-pressed")).toBe("false");
+  });
+
+  it.each(["year", "manufacturer", "setName", "variantType", "insert", "parallel"])(
+    "is absent at level %s, even if the row somehow carries the field",
+    (level) => {
+      currentRow = { ...makeRow({ level, value: "Whatever" }), hasNoTeams: true };
+      renderPanel();
+      expect(screen.queryByLabelText("Set feature Teams")).toBeNull();
+      expect(screen.queryByRole("button", { name: TOGGLE })).toBeNull();
+    },
+  );
+
+  it("turning it on calls setHasNoTeams(sportId, true) and toasts that teams are off for this sport", async () => {
+    currentRow = sportRow();
+    renderPanel();
+    fireEvent.click(screen.getByRole("button", { name: TOGGLE }));
+    await waitFor(() => {
+      expect(mockSetHasNoTeams).toHaveBeenCalledWith({
+        sportId: SELECTOR_OPTION_ID,
+        hasNoTeams: true,
+      });
+    });
+    await waitFor(() => expect(screen.getByText("Teams off for this sport. Cards save as No team.")).toBeTruthy());
+  });
+
+  it("turning it off calls setHasNoTeams(sportId, false) and toasts that teams are back on", async () => {
+    currentRow = sportRow(true);
+    renderPanel();
+    fireEvent.click(screen.getByRole("button", { name: TOGGLE }));
+    await waitFor(() => {
+      expect(mockSetHasNoTeams).toHaveBeenCalledWith({
+        sportId: SELECTOR_OPTION_ID,
+        hasNoTeams: false,
+      });
+    });
+    await waitFor(() => expect(screen.getByText("Teams are back on for this sport.")).toBeTruthy());
+  });
+
+  it("a refusal shows a failure toast and no success toast", async () => {
+    mockSetHasNoTeams.mockRejectedValue(new Error("boom"));
+    currentRow = sportRow();
+    renderPanel();
+    fireEvent.click(screen.getByRole("button", { name: TOGGLE }));
+    await waitFor(() => expect(screen.getByText("Couldn't flip that. Try again.")).toBeTruthy());
+    expect(screen.queryByText("Teams off for this sport. Cards save as No team.")).toBeNull();
+  });
+
+  it("a second press while the save is in flight is ignored", async () => {
+    let release: (v: null) => void = () => {};
+    mockSetHasNoTeams.mockReturnValue(new Promise<null>((r) => (release = r)));
+    currentRow = sportRow();
+    renderPanel();
+    const toggle = screen.getByRole("button", { name: TOGGLE });
+    fireEvent.click(toggle);
+    fireEvent.click(toggle);
+    expect(mockSetHasNoTeams).toHaveBeenCalledTimes(1);
+    expect(toggle.getAttribute("aria-disabled")).toBe("true");
+    release(null);
+    await waitFor(() => expect(toggle.getAttribute("aria-disabled")).toBeNull());
+  });
 });

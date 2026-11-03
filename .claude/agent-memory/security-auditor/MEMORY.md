@@ -89,3 +89,4 @@
 - [Neo415 eBay OAuth + deletion webhook](patterns_neo415_ebay_oauth_and_deletion_webhook.md) — nonce/state shape; deletion POST signature; single-flight refresh; raw-body log mask before chunking
 - [CI cross-run queue](patterns_ci_cross_run_queue.md) — gh-api run/job polling mutex: fork runs forge holders (filter head_repository), partial reads fail open, per-repo token budget
 - [Per-owner progress field](patterns_per_owner_progress_field.md) — internal, patch-only, run-id guarded writer; sibling writes in the run must be patch-only too or a mid-run disconnect resurrects the row
+- [Patterns neo426 teamless sport default](patterns_neo426_teamless_sport_default.md) — server auto-stamp of a suppression flag: compare to what the wire already sends; absent lookup != answered

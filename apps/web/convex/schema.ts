@@ -470,9 +470,10 @@ export const selectorOptionFields = {
     })),
   })),
   /**
-   * NEO-426 — this SPORT has no teams (Pokémon, Magic, a non-sport set):
-   * cards whose every player's HOME sport (`players.sportId`) carries this
-   * flag save as "No team" by default, with no Teams step to answer.
+   * NEO-426 — this SPORT has no teams: a sport whose people never play for
+   * a team (Non-Sport, Golf, Tennis, Boxing). Cards with at least one
+   * person, whose every player's HOME sport (`players.sportId`) carries
+   * this flag, save as "No team" by default, with no Teams step to answer.
    *
    * Meaningful on `level: "sport"` rows only, and set only there
    * (`sportTeamless.setHasNoTeams` refuses any other level). Read only
@@ -484,9 +485,9 @@ export const selectorOptionFields = {
    * A DEFAULT, never a block. Nothing refuses, strips or hides a team
    * because of it: a set-level team, a resolved printed team, an operator
    * pick or a later edit always wins, and a team added afterwards is kept.
-   * A listed team name, a failed team lookup, a card with no players or a
-   * player from another sport sends the card to the operator as before
-   * (invariant 8).
+   * A listed team name, a failed or missing team lookup, a card with no
+   * players or a player from another sport sends the card to the operator
+   * as before (invariant 8).
    *
    * ABSENT means "this sport has teams", which is what every row written
    * before this field says, so there is nothing to backfill. `false` is
