@@ -647,7 +647,7 @@ test(
     await expect(platform.getByRole("heading", { level: 2, name: EBAY, exact: true })).toBeVisible();
     await expect(platform.getByText("Listing", { exact: true })).toBeVisible();
     // The live eBay round trip, step by step (the run's ledger on Sync status),
-    // each within the standard budget: the new run is in view (its ledger under
+    // each within the standard budget except going live (below): the new run is in view (its ledger under
     // Running now, or its own result line if it already finished), then the
     // items, the offers and going live land in turn (no photo uploads: the
     // sandbox has no picture upload, see the header). The
@@ -663,7 +663,13 @@ test(
     await expect(run.step("Upload photos").or(run.step("List the cards")).first()).toBeVisible();
     await expect(run.step("List the cards")).toBeVisible();
     await expect(run.step("Set prices")).toBeVisible();
-    await expect(run.step("Go live")).toBeVisible();
+    // Going live is the one step with a longer budget, a ceiling Jason signed
+    // off on 2026-11-03 (GUIDE hard rule 2). The step is one eBay publishOffer
+    // call per offer, all in parallel, so it lasts as long as the slowest call.
+    // Measured on the sandbox: 5.1, 9.0, 9.1 and 10.9 s in CI, 6.1 s on dev;
+    // our own work in the step is well under a second. Void it if the step
+    // gains any work of ours, or if offers stop publishing in parallel.
+    await expect(run.step("Go live")).toBeVisible({ timeout: 15_000 });
     await expect(listedLine).toBeVisible();
     await expect(row.getByText(/^Synced /)).toBeVisible();
     // Held back is exactly that one card, with the reason a collector can act on
