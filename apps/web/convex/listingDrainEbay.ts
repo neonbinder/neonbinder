@@ -574,6 +574,15 @@ export function sayEbayStepFailure(step: EbayStep | "aspects", failure: EbayFail
   return sayEbayFailure(failure, says.refused, says.busy);
 }
 
+/**
+ * A picture upload eBay refused for that card's file: a 400 (the Media API's
+ * own refusals, too large, too many pixels or an unsupported format, are
+ * 400s). Every other failure is about eBay or the account, not the picture.
+ */
+export function photoRefused(failure: EbayFailure): boolean {
+  return failure.kind === "http" && failure.httpStatus === 400;
+}
+
 function rejectedDetail(step: EbayStep, errorIds: readonly number[]): string {
   // eBay's numeric ids go to the log, never the sync record.
   console.log(
@@ -1173,18 +1182,27 @@ async function syncEbayVariant(
   };
 
   await step("photos", needsUpload);
+  // An upload eBay answers with a 400 is that card's picture refused
+  // (`photoRefused`): the card says so and is not retried until something
+  // about it changes. Any other upload failure (eBay busy: a 5xx such as
+  // its 190000, a 429, slow, unreachable or unreadable; or a 403) stops the
+  // uploads for this run: every card still needing one stays queued, the
+  // photos step ends failed and the variant ends saying so in NB words, so
+  // the next run (the sales poll's kick or a Sync press) tries again.
+  let photosStopped: EbayFailure | null = null;
   for (const plan of plans.filter((p) => p.needsItem)) {
     const live = plan.link?.status === "live";
     const stored = plan.link?.images ?? [];
     const images: Array<{ url: string; photoToken: string; expiresAt?: number }> = [];
     let complete = true;
+    let refused: readonly number[] | null = null;
     for (const photo of plan.photos) {
       const known = stored.find((image) => reusable(image, photo.key, live));
       if (known) {
         images.push(known);
         continue;
       }
-      if (uploads >= MAX_EBAY_UPLOADS_PER_VARIANT) {
+      if (uploads >= MAX_EBAY_UPLOADS_PER_VARIANT || photosStopped !== null) {
         complete = false;
         break;
       }
@@ -1206,6 +1224,8 @@ async function syncEbayVariant(
       });
       if (!up.ok) {
         if (STOPPING.has(up.failure.kind)) return (await stopOn(up)) as VariantResult;
+        if (photoRefused(up.failure)) refused = up.failure.errorIds ?? [];
+        else photosStopped = up.failure;
         complete = false;
         break;
       }
@@ -1214,6 +1234,11 @@ async function syncEbayVariant(
         photoToken: photo.key,
         ...(up.value.expiresAt !== null ? { expiresAt: up.value.expiresAt } : {}),
       });
+    }
+    if (refused !== null) {
+      // eBay said no to this card's picture: the card says so in NB words.
+      reject(plan, "photos", refused);
+      continue;
     }
     if (!complete) {
       // Some picture could not be sent this run: the card stays queued for the next.
@@ -1224,6 +1249,9 @@ async function syncEbayVariant(
     plan.images = images;
     plan.imageUrls = images.map((image) => image.url);
   }
+  // The photos step failed when eBay's upload stopped; the run goes on for
+  // the cards whose pictures are in hand, and ends naming the photos step.
+  if (photosStopped !== null) ledger.fail("photos");
 
   // 2. Inventory items.
   const itemPlans = plans.filter((p) => p.needsItem && !p.failed);
@@ -1436,6 +1464,23 @@ async function syncEbayVariant(
   const conditionsPushed = [
     ...new Set(plans.filter((p) => !p.failed && p.listingId !== null).map((p) => p.target.conditionCode as EbayConditionCode)),
   ];
+  if (photosStopped !== null) {
+    // eBay's photo upload stopped part-way: what landed is recorded and its
+    // rows clear; the cards still waiting on a picture keep theirs. The steps
+    // after the photos finished, so they end done; only photos reads failed.
+    ledger.endWorking();
+    await finish(
+      {
+        kind: "error",
+        error: sayEbayStepFailure("photos", photosStopped),
+        problems: problems.slice(0, MAX_STORED_PROBLEMS),
+        problemsTotal: problems.length,
+        conditionsPushed,
+      },
+      true,
+    );
+    return { kind: "error" };
+  }
   await finish(
     {
       kind: "ok",

@@ -519,6 +519,22 @@ describe("request shapes and headers", () => {
     expect(seen[0].headers["Content-Type"]).toBeUndefined();
   });
 
+  test("uploadImage's body is the Media contract's multipart: one part named image, carrying the file name, its type and the bytes", async () => {
+    answers.push(json({ imageUrl: "https://i.ebayimg.com/x.jpg" }, 201));
+    const bytes = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3]);
+    await uploadImage(noCredentialCalls, session(), { bytes: bytes.buffer, contentType: "image/jpeg", fileName: "front.jpg" });
+    const encoded = new Response(seen[0].init.body as FormData);
+    const contentType = encoded.headers.get("content-type") ?? "";
+    expect(contentType).toMatch(/^multipart\/form-data; boundary=/);
+    const raw = new Uint8Array(await encoded.arrayBuffer());
+    const text = new TextDecoder("latin1").decode(raw);
+    expect(text.match(/Content-Disposition: form-data;/g)).toHaveLength(1);
+    expect(text).toContain('Content-Disposition: form-data; name="image"; filename="front.jpg"\r\nContent-Type: image/jpeg\r\n\r\n');
+    expect(text).toContain(new TextDecoder("latin1").decode(bytes));
+    expect(seen[0].init.method).toBe("POST");
+    expect(seen[0].headers.Authorization).toMatch(/^Bearer /);
+  });
+
   test("uploadImage: a 201 with no URL in its body reads the image named by the Location header, on the media host", async () => {
     answers.push(
       new Response(null, { status: 201, headers: { location: "https://apim.sandbox.ebay.com/commerce/media/v1_beta/image/v1%7C1234%7C0" } }),

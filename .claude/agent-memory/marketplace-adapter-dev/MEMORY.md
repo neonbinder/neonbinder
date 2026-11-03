@@ -51,3 +51,5 @@
 - [eBay sandbox diverges from the contract](reference_ebay_sandbox_diverges_from_the_contract.md) — location create on existing key = 400 (read first); Ground Advantage behind an old code (match description); Media Location header; eSE 20403: send carrier "eBay Send" (unconfirmed)
 - [BSC seller sheet has no all-conditions read](reference_bsc_seller_sheet_has_no_all_conditions_read.md) — omit/null condition = 500; ""/"all" = one blank template per card, hides listings; templates mint new productIds per read
 - [eBay sandbox refuses eSE policies](reference_ebay_sandbox_refuses_ese_policy.md) — 20403 "valid shipping service" on US_eBayStandardEnvelope though metadata says validForSellingFlow; no body fix
+- [Ledger error finish settles working as failed](reference_progress_ledger_error_finish_settles_working_failed.md) — ledger.fail the earlier step, endWorking before an error finish
+- [eBay Media 500 190000 is ambiguous](reference_ebay_media_500_is_ambiguous.md) — also a malformed-request answer; rule out via the OAS3 file, Convex udf-runtime FormData source, Node multipart pin

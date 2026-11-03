@@ -1413,3 +1413,127 @@ describe("eBay drain: the run's steps (NEO-415)", () => {
     expect(await stepsOf(s, v.variantId)).toBeNull();
   });
 });
+
+// ── Photo uploads eBay will not take ─────────────────────────────────────────
+
+const MEDIA_CREATE = "/commerce/media/v1_beta/image/create_image_from_file";
+
+/**
+ * Answers the next uploads from `answers` (a status and eBay error id each;
+ * `null` lets the fake take it), then the fake answers as usual. Counts every
+ * upload attempt in `uploads`.
+ */
+function mediaAnswers(answers: Array<{ status: number; errorId: number } | null>) {
+  const real = ebay.fetch;
+  const seen = { uploads: 0 };
+  vi.stubGlobal("fetch", (async (url: string | URL | Request, init?: RequestInit) => {
+    if (new URL(String(url)).pathname === MEDIA_CREATE) {
+      seen.uploads += 1;
+      const next = answers.shift();
+      if (next) {
+        ebay.calls.push({ method: "POST", path: MEDIA_CREATE, query: new URLSearchParams(), json: undefined, auth: "" });
+        return Response.json(
+          { errors: [{ errorId: next.errorId, domain: "API_MEDIA", category: "APPLICATION", message: "RAW-EBAY-TEXT" }] },
+          { status: next.status },
+        );
+      }
+    }
+    return real(url, init);
+  }) as typeof fetch);
+  return seen;
+}
+
+/** Two listed cards with photos, queued. */
+async function twoCards(s: S) {
+  const v = await seedVariant(s.t, { cards: [{ number: "1" }, { number: "2" }] });
+  for (const cardId of v.cardIds) {
+    await addWithPhoto(s, cardId, { homeId: s.box, condition: "Near Mint", minPriceCents: 500 });
+  }
+  await listOnEbay(s);
+  await queue(s, v.cardIds.map((cardId) => ({ cardId, variantId: v.variantId })));
+  return v;
+}
+
+describe("eBay drain: photo uploads eBay will not take", () => {
+  test("eBay's upload failing (500, its 190000) stops the uploads, fails the photos step in NB words and keeps every card queued", async () => {
+    const s = await setup();
+    const v = await twoCards(s);
+    const media = mediaAnswers([{ status: 500, errorId: 190000 }, { status: 500, errorId: 190000 }]);
+
+    const report = await drain(s);
+
+    // One upload, then no more this run: eBay is not hammered card by card.
+    expect(media.uploads).toBe(1);
+    expect(ebay.writes().filter((c) => c.path !== MEDIA_CREATE)).toEqual([]);
+    expect(report.variants).toEqual([{ variantId: v.variantId, result: "error" }]);
+    const rec = await record(s, v.variantId);
+    expect(rec?.status).toBe("error");
+    expect(rec?.lastError).toBe(EBAY_STEP_SAYS.photos.busy);
+    expect(await stepsOf(s, v.variantId)).toEqual(["photos: failed"]);
+    const json = JSON.stringify(rec);
+    expect(json).not.toContain("190000");
+    expect(json).not.toContain("RAW-EBAY-TEXT");
+    // Not lost: both cards wait for the next run.
+    expect((await outbox(s)).map((r) => r.cardId).sort()).toEqual([...v.cardIds].sort());
+    expect(await links(s)).toEqual([]);
+  });
+
+  test("the next run, with eBay's upload back, lists the cards the failed run kept queued", async () => {
+    const s = await setup();
+    const v = await twoCards(s);
+    mediaAnswers([{ status: 500, errorId: 190000 }]);
+    await drain(s);
+
+    await drain(s);
+
+    for (const cardId of v.cardIds) {
+      expect(ebay.offerFor(`NB2-${cardId}-NM`)?.status).toBe("PUBLISHED");
+    }
+    const rec = await record(s, v.variantId);
+    expect(rec).toMatchObject({ status: "idle", counts: { listed: 2, pushed: 2, zeroed: 0, skipped: 0 } });
+    expect(rec?.lastError).toBeUndefined();
+    expect(await stepsOf(s, v.variantId)).toEqual(["photos: done", "items: done", "offers: done", "publish: done"]);
+    expect(await outbox(s)).toHaveLength(0);
+  });
+
+  test("an upload that fails after another landed: the first card lists, the second stays queued, the run says photos", async () => {
+    const s = await setup();
+    const v = await twoCards(s);
+    const media = mediaAnswers([null, { status: 503, errorId: 190000 }]);
+
+    await drain(s);
+
+    expect(media.uploads).toBe(2);
+    const published = v.cardIds.filter((cardId) => ebay.offerFor(`NB2-${cardId}-NM`)?.status === "PUBLISHED");
+    expect(published).toHaveLength(1);
+    const waiting = v.cardIds.filter((cardId) => !published.includes(cardId));
+    expect((await outbox(s)).map((r) => r.cardId)).toEqual(waiting);
+    expect(await linkOf(s, published[0], "NM")).toMatchObject({ status: "live" });
+    const rec = await record(s, v.variantId);
+    expect(rec?.status).toBe("error");
+    expect(rec?.lastError).toBe(EBAY_STEP_SAYS.photos.busy);
+    expect(rec?.conditionsPushed).toEqual(["NM"]);
+    expect(await stepsOf(s, v.variantId)).toEqual(["photos: failed", "items: done", "offers: done", "publish: done"]);
+  });
+
+  test("a picture eBay refuses (400) is that card's problem in NB words; the other card lists and the run is ok", async () => {
+    const s = await setup();
+    const v = await twoCards(s);
+    const media = mediaAnswers([{ status: 400, errorId: 190203 }]);
+
+    await drain(s);
+
+    expect(media.uploads).toBe(2);
+    const rec = await record(s, v.variantId);
+    expect(rec?.status).toBe("idle");
+    expect(rec?.problems).toEqual([expect.objectContaining({ reason: "rejected", detail: EBAY_CARD_REJECTED.photos })]);
+    const refusedCard = rec?.problems[0].cardId;
+    const other = v.cardIds.find((cardId) => cardId !== refusedCard);
+    expect(ebay.offerFor(`NB2-${other}-NM`)?.status).toBe("PUBLISHED");
+    expect(ebay.offerFor(`NB2-${refusedCard}-NM`)).toBeUndefined();
+    expect(JSON.stringify(rec)).not.toContain("190203");
+    expect(await stepsOf(s, v.variantId)).toEqual(["photos: done", "items: done", "offers: done", "publish: done"]);
+    // A refused picture is not retried every run: its row clears with the rest.
+    expect(await outbox(s)).toHaveLength(0);
+  });
+});
