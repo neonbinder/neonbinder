@@ -340,7 +340,15 @@ test(
       await expect(setMeUp).toBeEnabled();
       await setMeUp.click();
       // A live round trip to eBay: opt in, make the policies, read them back.
-      await expect(said(/^(Made \d+ on your eBay account|You already had everything)/)).toBeVisible();
+      // Set me up makes Standard Envelope last, and eBay's sandbox turns that
+      // one down (it lists the service but refuses it in a policy), so the
+      // usual answer here is the partial one: "Made N on your eBay account …
+      // eBay wouldn't make a Standard Envelope policy, so pick one of yours
+      // for cards under $20." On a re-run, where the rest already exists and
+      // the envelope never got made, it is "You already had the rest. …". All
+      // of these are the success status line, never the error. Cards under $20
+      // is then picked by hand in the loop below, as the line asks.
+      await expect(said(/^(Made \d+ on your eBay account|You already had everything|You already had the rest)/)).toBeVisible();
     } else {
       // The policies are already there: the seller's own are offered for the cheap cards.
       await expect(underTwenty.getByRole("radio").first()).toBeVisible();
@@ -363,9 +371,20 @@ test(
     await tracked.click();
     await expect(tracked).toBeChecked();
     await expect(twentyPlus.getByRole("radio", { checked: true })).toHaveCount(1);
-    // The other three slots: the first of the seller's own policies, where
+    // Cards under $20 (the price this spec lists at): NeonBinder's tracked
+    // policy, picked BY NAME. The sandbox turns Standard Envelope down, so Set
+    // me up leaves this slot to the collector, and an under-$20 slot takes any
+    // policy. Picking it every run (a click on the picked one changes nothing)
+    // means the listing below always goes up under a tracked policy, whatever
+    // an earlier run left chosen.
+    const underTwentyTracked = underTwenty.getByRole("radio", { name: TRACKED_POLICY, exact: true });
+    await expect(underTwentyTracked, `NeonBinder's "${TRACKED_POLICY}" policy is offered for cards under $20`).toBeVisible();
+    await underTwentyTracked.click();
+    await expect(underTwentyTracked).toBeChecked();
+    await expect(underTwenty.getByRole("radio", { checked: true })).toHaveCount(1);
+    // The other two slots: the first of the seller's own policies, where
     // "Set me up" has not already picked one (a click on the picked one changes nothing).
-    for (const group of ["Cards under $20", "Payment", "Returns"]) {
+    for (const group of ["Payment", "Returns"]) {
       const radios = page.getByRole("radiogroup", { name: group, exact: true }).getByRole("radio");
       await expect(radios.first()).toBeVisible();
       await radios.first().click();

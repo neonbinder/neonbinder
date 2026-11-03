@@ -50,3 +50,4 @@
 - [BSC seller sheet reads must be serial](reference_bsc_seller_sheet_reads_must_be_serial.md) — concurrent seller/bulk-upload/results reads per seller return twin (card, condition) rows; every card held back (NEO-415)
 - [eBay sandbox diverges from the contract](reference_ebay_sandbox_diverges_from_the_contract.md) — location create on existing key = 400 (read first); Ground Advantage behind an old code (match description); Media Location header; eSE 20403: send carrier "eBay Send" (unconfirmed)
 - [BSC seller sheet has no all-conditions read](reference_bsc_seller_sheet_has_no_all_conditions_read.md) — omit/null condition = 500; ""/"all" = one blank template per card, hides listings; templates mint new productIds per read
+- [eBay sandbox refuses eSE policies](reference_ebay_sandbox_refuses_ese_policy.md) — 20403 "valid shipping service" on US_eBayStandardEnvelope though metadata says validForSellingFlow; no body fix

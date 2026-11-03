@@ -262,6 +262,68 @@ describe("Set me up", () => {
     expect(screen.queryByRole("alert")).toBeNull();
     await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("heading", { level: 3, name: "Shipping" })));
   });
+
+  // eBay turned the Standard Envelope policy down (the sandbox does): the rest is made and picked,
+  // and cards under $20 stay the collector's pick. NB never puts a parcel policy there for them.
+  const NO_ENVELOPE = ["NB Tracked (USPS Ground Advantage)", "NB Free Shipping", "NB Payment", "NB Returns"];
+  const NO_ENVELOPE_POLICIES = {
+    ok: true,
+    fulfillment: [
+      { id: "n2", name: NO_ENVELOPE[0], eseFit: false, eseOnly: false, freeShipping: false, summary: "" },
+      { id: "n3", name: NO_ENVELOPE[1], eseFit: false, eseOnly: false, freeShipping: true, summary: "" },
+    ],
+    payment: [{ id: "p9", name: NO_ENVELOPE[2] }],
+    returns: [{ id: "r9", name: NO_ENVELOPE[3], summary: "" }],
+  };
+
+  it("eBay turning down the envelope still reads as made: a status line, the rest picked, cards under $20 left to the collector", async () => {
+    fn("ebayConnect:readPolicies").mockResolvedValueOnce(NOTHING);
+    fn("ebayConnect:createStandardPolicies").mockResolvedValue({ ok: true, created: NO_ENVELOPE, envelopeRefused: true });
+    fn("ebayConnect:readPolicies").mockResolvedValueOnce(NO_ENVELOPE_POLICIES);
+    renderAt();
+    fireEvent.click(await screen.findByRole("button", { name: "Set me up" }));
+    await waitFor(() =>
+      expect(fns["ebayConnect:savePolicies"]).toHaveBeenCalledWith({
+        fulfillmentPolicy20PlusId: "n2",
+        paymentPolicyId: "p9",
+        returnPolicyId: "r9",
+      }),
+    );
+    const line = await screen.findByText(/^Made 4 on your eBay account/);
+    expect(line.getAttribute("role")).toBe("status");
+    expect(line.textContent).toBe(
+      "Made 4 on your eBay account: NB Tracked (USPS Ground Advantage), NB Free Shipping, NB Payment, NB Returns. Picked where you had nothing yet. eBay wouldn't make a Standard Envelope policy, so pick one of yours for cards under $20.",
+    );
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("nothing new to make and eBay turning down the envelope says so, as a status line", async () => {
+    fn("ebayConnect:readPolicies").mockResolvedValueOnce(NOTHING);
+    fn("ebayConnect:createStandardPolicies").mockResolvedValue({ ok: true, created: [], envelopeRefused: true });
+    fn("ebayConnect:readPolicies").mockResolvedValueOnce(NO_ENVELOPE_POLICIES);
+    renderAt();
+    fireEvent.click(await screen.findByRole("button", { name: "Set me up" }));
+    const line = await screen.findByText(/^You already had the rest\./);
+    expect(line.getAttribute("role")).toBe("status");
+    expect(line.textContent).toBe(
+      "You already had the rest. eBay wouldn't make a Standard Envelope policy, so pick one of yours for cards under $20.",
+    );
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("the envelope note survives a Try again after the read back failed", async () => {
+    fn("ebayConnect:readPolicies").mockResolvedValueOnce(NOTHING);
+    fn("ebayConnect:createStandardPolicies").mockResolvedValue({ ok: true, created: NO_ENVELOPE, envelopeRefused: true });
+    fn("ebayConnect:readPolicies").mockResolvedValueOnce({ ok: false, error: "eBay didn't answer." });
+    renderAt();
+    fireEvent.click(await screen.findByRole("button", { name: "Set me up" }));
+    const retry = await screen.findByRole("button", { name: "Try again" });
+    fn("ebayConnect:readPolicies").mockResolvedValueOnce(NO_ENVELOPE_POLICIES);
+    fireEvent.click(retry);
+    const line = await screen.findByText(/^Made 4 on your eBay account/);
+    expect(line.textContent).toMatch(/so pick one of yours for cards under \$20\.$/);
+    expect(fns["ebayConnect:createStandardPolicies"]).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("Live lines and focus", () => {

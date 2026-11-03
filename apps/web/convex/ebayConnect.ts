@@ -811,6 +811,72 @@ export function fulfillmentBody(name: string, service: PolicyService, pricing: "
   };
 }
 
+/**
+ * What eBay's own shipping metadata said about a service eBay then refused in
+ * a fulfillment policy: one structured line beside the adapter's
+ * `ebay_seller_error`, so a red live run shows whether the metadata listed
+ * the service, flagged it valid for selling, and with which carrier, cost
+ * types, category and package limits. eBay's public catalogue only (codes,
+ * names, flags), plus what NB sent: never a token, an id or the seller.
+ * `sameCarrier`: the other codes eBay lists under that carrier, in case the
+ * metadata names the service differently from the code NB sent.
+ */
+export function logRefusedPolicyService(
+  policy: string,
+  sent: { code: string; carrier: string; costType: string },
+  services: EbayShippingServiceInfo[],
+  failure: EbayFailure,
+): void {
+  const entry = services.find((s) => s.code === sent.code) ?? null;
+  const carrier = entry?.carrier ?? null;
+  const sameCarrier = carrier
+    ? services
+        .filter((s) => s.code !== sent.code && s.carrier === carrier)
+        .slice(0, 10)
+        .map((s) => s.code)
+    : [];
+  console.warn(
+    JSON.stringify({
+      msg: "ebay_policy_service_refused",
+      platform: "ebay",
+      operation: "createStandardPolicies",
+      policy,
+      ...(failure.httpStatus !== undefined ? { httpStatus: failure.httpStatus } : {}),
+      ...(failure.errorIds ? { errorIds: failure.errorIds } : {}),
+      sent,
+      servicesListed: services.length,
+      listed: entry !== null,
+      ...(entry
+        ? {
+            metadata: {
+              description: entry.description,
+              carrier: entry.carrier,
+              validForSellingFlow: entry.validForSellingStated ? entry.validForSelling : "absent",
+              costTypes: entry.costTypes,
+              category: entry.category,
+              international: entry.international,
+              minDays: entry.minDays,
+              maxDays: entry.maxDays,
+              packageLimits: entry.packageLimits,
+            },
+          }
+        : {}),
+      sameCarrier,
+    }),
+  );
+}
+
+/**
+ * eBay saying no to a request (a 4xx other than 429), as opposed to eBay
+ * busy, a timeout, no network or a signed-out session. The same split
+ * `sayEbayFailure` makes between its refused and busy sentences.
+ */
+function isEbayRefusal(failure: EbayFailure): boolean {
+  if (failure.kind !== "http") return false;
+  const status = failure.httpStatus ?? 0;
+  return status >= 400 && status < 500 && status !== 429;
+}
+
 /** `code` with the carrier eBay's metadata lists for it (`fallback` when it lists none). */
 function policyService(services: EbayShippingServiceInfo[], code: string, fallback: string): PolicyService {
   return { code, carrier: ebayServiceCarrier(services, code, fallback) };
@@ -858,11 +924,22 @@ function groundAdvantageCode(services: EbayShippingServiceInfo[]): string | null
  * first when needed. Idempotent by name: a policy NB already made is not
  * made again. Fills only EMPTY settings slots with what it made. Refuses
  * until the ship-from location is saved, since calculated rates need it.
+ *
+ * Standard Envelope is made LAST, and eBay turning it down (a 4xx) is not a
+ * failure: what was made before it stays made and fills its slots, and the
+ * answer says `envelopeRefused` so the collector picks their own policy for
+ * cards under $20 (NB never puts a parcel policy there for them). eBay's
+ * sandbox refuses the envelope in a policy even though its own metadata lists
+ * it, so this is what lets everything else be set up. Any other refusal, or
+ * eBay busy on the envelope, stops and says so as before.
  */
 export const createStandardPolicies = action({
   args: {},
-  returns: v.union(v.object({ ok: v.literal(true), created: v.array(v.string()) }), errorResult),
-  handler: async (ctx): Promise<{ ok: true; created: string[] } | Fail> => {
+  returns: v.union(
+    v.object({ ok: v.literal(true), created: v.array(v.string()), envelopeRefused: v.optional(v.literal(true)) }),
+    errorResult,
+  ),
+  handler: async (ctx): Promise<{ ok: true; created: string[]; envelopeRefused?: true } | Fail> => {
     const ownerId = await requireSignedIn(ctx);
     const opened = await sessionFor(ctx, ownerId);
     if (!opened.ok) return opened;
@@ -902,14 +979,22 @@ export const createStandardPolicies = action({
     const envelope = policyService(services.value, EBAY_ESE_SERVICE_CODE, EBAY_ESE_CARRIER_FALLBACK);
     // Ground Advantage is a USPS service by construction (`ebayGroundAdvantageService`).
     const tracked = policyService(services.value, ground, EBAY_USPS_CARRIER_FALLBACK);
+    let envelopeRefused = false;
     const make = async (
       slot: keyof typeof ids,
       kind: "fulfillment_policy" | "payment_policy" | "return_policy",
       name: string,
       body: Record<string, unknown>,
+      sent?: { code: string; carrier: string; costType: string },
     ): Promise<Fail | null> => {
       const r = await createPolicy(ctx, session, kind, body);
       if (!r.ok) {
+        if (sent) logRefusedPolicyService(slot, sent, services.value, r.failure);
+        // The envelope (always the last step) turned down: everything before it stands.
+        if (slot === "ese" && isEbayRefusal(r.failure)) {
+          envelopeRefused = true;
+          return null;
+        }
         if (justOptedIn) return { ok: false, error: OPT_IN_PENDING };
         return { ok: false, error: sayEbayFailure(r.failure, SET_ME_UP_REFUSED[slot], SET_ME_UP_BUSY) };
       }
@@ -918,18 +1003,28 @@ export const createStandardPolicies = action({
       return null;
     };
     const steps: Array<() => Promise<Fail | null>> = [];
-    if (!ids.ese) {
-      steps.push(() =>
-        make("ese", "fulfillment_policy", NB_POLICY_NAMES.ese, fulfillmentBody(NB_POLICY_NAMES.ese, envelope, "calculated")),
-      );
-    }
+    const sent = (service: PolicyService, costType: string) => ({ code: service.code, carrier: service.carrier, costType });
     if (!ids.tracked) {
       steps.push(() =>
-        make("tracked", "fulfillment_policy", NB_POLICY_NAMES.tracked, fulfillmentBody(NB_POLICY_NAMES.tracked, tracked, "calculated")),
+        make(
+          "tracked",
+          "fulfillment_policy",
+          NB_POLICY_NAMES.tracked,
+          fulfillmentBody(NB_POLICY_NAMES.tracked, tracked, "calculated"),
+          sent(tracked, EBAY_COST_TYPE_CALCULATED),
+        ),
       );
     }
     if (!ids.free) {
-      steps.push(() => make("free", "fulfillment_policy", NB_POLICY_NAMES.free, fulfillmentBody(NB_POLICY_NAMES.free, tracked, "free")));
+      steps.push(() =>
+        make(
+          "free",
+          "fulfillment_policy",
+          NB_POLICY_NAMES.free,
+          fulfillmentBody(NB_POLICY_NAMES.free, tracked, "free"),
+          sent(tracked, EBAY_COST_TYPE_FLAT_RATE),
+        ),
+      );
     }
     if (read.lists.payment.length === 0) {
       steps.push(() =>
@@ -958,6 +1053,18 @@ export const createStandardPolicies = action({
     } else if (read.lists.returns.length === 1) {
       ids.returns = read.lists.returns[0].id;
     }
+    // Last, so eBay turning the envelope down leaves everything else made.
+    if (!ids.ese) {
+      steps.push(() =>
+        make(
+          "ese",
+          "fulfillment_policy",
+          NB_POLICY_NAMES.ese,
+          fulfillmentBody(NB_POLICY_NAMES.ese, envelope, "calculated"),
+          sent(envelope, EBAY_COST_TYPE_CALCULATED),
+        ),
+      );
+    }
     for (const step of steps) {
       const failed = await step();
       if (failed) {
@@ -979,7 +1086,7 @@ export const createStandardPolicies = action({
       ...(ids.payment ? { payment: ids.payment } : {}),
       ...(ids.returns ? { returns: ids.returns } : {}),
     });
-    return { ok: true, created };
+    return envelopeRefused ? { ok: true, created, envelopeRefused: true } : { ok: true, created };
   },
 });
 

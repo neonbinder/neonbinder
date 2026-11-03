@@ -515,14 +515,64 @@ export async function createPolicy(
 
 // ── Metadata: shipping services ─────────────────────────────────────────────
 
+/**
+ * Metadata `PackageLimits`: the physical limits eBay states for a service
+ * (its units beside them). Only the fields eBay sent, as numbers or unit words.
+ */
+export type EbayPackageLimits = Partial<Record<(typeof PACKAGE_LIMIT_NUMBERS)[number], number>> & {
+  weightUnit?: string;
+  dimensionUnit?: string;
+};
+
+const PACKAGE_LIMIT_NUMBERS = [
+  "maxWeight",
+  "minWeight",
+  "maxLength",
+  "minLength",
+  "maxWidth",
+  "minWidth",
+  "maxHeight",
+  "minHeight",
+  "maxGirth",
+  "minGirth",
+] as const;
+
+function readPackageLimits(raw: unknown): EbayPackageLimits | null {
+  if (!isRecord(raw)) return null;
+  const out: EbayPackageLimits = {};
+  for (const k of PACKAGE_LIMIT_NUMBERS) {
+    const n = raw[k];
+    if (typeof n === "number" && Number.isFinite(n)) out[k] = n;
+  }
+  for (const k of ["weightUnit", "dimensionUnit"] as const) {
+    const u = raw[k];
+    if (typeof u === "string" && u.length > 0) out[k] = u.slice(0, 20);
+  }
+  return Object.keys(out).length > 0 ? out : null;
+}
+
+function wholeOrNull(n: unknown): number | null {
+  return typeof n === "number" && Number.isInteger(n) && n >= 0 && n < 1000 ? n : null;
+}
+
 export interface EbayShippingServiceInfo {
   code: string;
   /** eBay's localized name for the service (Metadata `ShippingService.description`), e.g. "USPS Ground Advantage". */
   description: string | null;
   carrier: string | null;
   international: boolean;
+  /** `validForSellingFlow` is true. False when eBay said false OR left it out (`validForSellingStated` tells which). */
   validForSelling: boolean;
+  /** Whether eBay sent `validForSellingFlow` at all (diagnostics only). */
+  validForSellingStated: boolean;
   costTypes: string[];
+  /** Metadata `shippingCategory` (ECONOMY, STANDARD, …), as eBay wrote it. Diagnostics only. */
+  category: string | null;
+  /** Metadata `minShippingTime` / `maxShippingTime`, business days. Diagnostics only. */
+  minDays: number | null;
+  maxDays: number | null;
+  /** Metadata `packageLimits`; null when eBay states none. Diagnostics only. */
+  packageLimits: EbayPackageLimits | null;
 }
 
 /** `GET /sell/metadata/v1/shipping/marketplace/EBAY_US/get_shipping_services`, narrowed. */
@@ -545,9 +595,14 @@ export async function getShippingServices(ctx: SessionCtx, session: EbaySellerSe
       carrier: typeof s.shippingCarrier === "string" ? s.shippingCarrier.slice(0, 40) : null,
       international: s.internationalService === true,
       validForSelling: s.validForSellingFlow === true,
+      validForSellingStated: typeof s.validForSellingFlow === "boolean",
       costTypes: Array.isArray(s.shippingCostTypes)
-        ? s.shippingCostTypes.filter((t): t is string => typeof t === "string").slice(0, 10)
+        ? s.shippingCostTypes.filter((t): t is string => typeof t === "string").map((t) => t.slice(0, 20)).slice(0, 10)
         : [],
+      category: typeof s.shippingCategory === "string" ? s.shippingCategory.slice(0, 40) : null,
+      minDays: wholeOrNull(s.minShippingTime),
+      maxDays: wholeOrNull(s.maxShippingTime),
+      packageLimits: readPackageLimits(s.packageLimits),
     });
   }
   return { ok: true, value: out };

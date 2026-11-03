@@ -293,6 +293,16 @@ function PoliciesBody({
  * "Try again", which reads and picks without making anything twice. Focus
  * stays on that button; on success it moves to the Shipping heading.
  */
+/** eBay turned down the Standard Envelope policy; everything else Set me up does still happened. */
+const NO_ENVELOPE = `${EBAY_NAME} wouldn't make a Standard Envelope policy, so pick one of yours for cards under $20.`;
+
+/** What Set me up says when it's done: what it made, and whether cards under $20 are still the collector's pick. */
+function setMeUpDone(created: readonly string[], envelopeRefused: boolean): string {
+  if (created.length === 0) return envelopeRefused ? `You already had the rest. ${NO_ENVELOPE}` : "You already had everything. Pick away.";
+  const made = `Made ${created.length} on your ${EBAY_NAME} account: ${created.join(", ")}. Picked where you had nothing yet.`;
+  return envelopeRefused ? `${made} ${NO_ENVELOPE}` : made;
+}
+
 function SetMeUp({
   connection,
   save,
@@ -311,6 +321,8 @@ function SetMeUp({
   const [busy, setBusy] = useState(false);
   /** What the last run made, when reading it back failed: a retry picks from these. */
   const [made, setMade] = useState<string[] | null>(null);
+  /** The last run's eBay turned the Standard Envelope policy down (kept for a retry of the read). */
+  const [envelopeRefused, setEnvelopeRefused] = useState(false);
   const describeId = useId();
   const waitId = useId();
   // Matches the server's own gate (`ebaySetupMissing`): no saved ship-from, no Set me up.
@@ -321,6 +333,7 @@ function SetMeUp({
     setBusy(true);
     setLine({ kind: "progress", text: "Setting you up…" });
     let created = made;
+    let noEnvelope = envelopeRefused;
     try {
       if (created === null) {
         const answer = await create({});
@@ -329,6 +342,8 @@ function SetMeUp({
           return;
         }
         created = answer.created;
+        noEnvelope = answer.envelopeRefused === true;
+        setEnvelopeRefused(noEnvelope);
       }
       const read = await readPolicies({});
       if (!read.ok) {
@@ -342,18 +357,7 @@ function SetMeUp({
       const saved = Object.keys(picks).length > 0 ? await save(picks) : ({ ok: true } as const);
       setMade(null);
       setLoaded({ state: "ready", policies: read });
-      const names = created.length > 0 ? `: ${created.join(", ")}` : "";
-      setLine(
-        saved.ok
-          ? {
-              kind: "ok",
-              text:
-                created.length > 0
-                  ? `Made ${created.length} on your ${EBAY_NAME} account${names}. Picked where you had nothing yet.`
-                  : "You already had everything. Pick away.",
-            }
-          : { kind: "error", text: saved.error },
-      );
+      setLine(saved.ok ? { kind: "ok", text: setMeUpDone(created, noEnvelope) } : { kind: "error", text: saved.error });
       onDone();
     } catch {
       if (created !== null) setMade(created);

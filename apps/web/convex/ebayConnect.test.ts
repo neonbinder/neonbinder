@@ -75,6 +75,10 @@ class World {
     validForSellingFlow?: boolean;
     shippingCostTypes?: string[];
     shippingCarrier?: string;
+    shippingCategory?: string;
+    minShippingTime?: number;
+    maxShippingTime?: number;
+    packageLimits?: Record<string, unknown>;
   }> = [
     { shippingService: "USPSGroundAdvantage", validForSellingFlow: true, shippingCarrier: "USPS" },
     { shippingService: "USPSPriorityMail", validForSellingFlow: true, shippingCarrier: "USPS" },
@@ -717,8 +721,10 @@ describe("createStandardPolicies (Set me up)", () => {
     const r = await s.me.action(api.ebayConnect.createStandardPolicies, {});
     expect(r).toEqual({
       ok: true,
-      created: [NB_POLICY_NAMES.ese, NB_POLICY_NAMES.tracked, NB_POLICY_NAMES.free, NB_POLICY_NAMES.payment, NB_POLICY_NAMES.returns],
+      // The envelope last: eBay turning it down leaves the rest made.
+      created: [NB_POLICY_NAMES.tracked, NB_POLICY_NAMES.free, NB_POLICY_NAMES.payment, NB_POLICY_NAMES.returns, NB_POLICY_NAMES.ese],
     });
+    expect(r).not.toHaveProperty("envelopeRefused");
     const row = await settingsRow(s);
     const idOf = (name: string) => world.fulfillment.find((f) => f.name === name)?.id;
     expect(row?.fulfillmentPolicyUnder20Id).toBe(idOf(NB_POLICY_NAMES.ese));
@@ -930,7 +936,6 @@ describe("createStandardPolicies (Set me up)", () => {
   });
 
   test.each([
-    ["ese", "the Standard Envelope policy", "for cards under $20"],
     ["tracked", "the tracked USPS Ground Advantage policy", "for cards $20 and up"],
     ["free", "the free shipping policy", "Pick one of your own shipping policies"],
     ["payment", "the payment policy", "Make a payment policy on eBay"],
@@ -957,6 +962,8 @@ describe("createStandardPolicies (Set me up)", () => {
     // The status, the call and eBay's error id are in the structured log instead.
     const logged = lines.filter((l) => l.includes('"ebay_seller_error"')).map((l) => JSON.parse(l));
     expect(logged).toContainEqual(expect.objectContaining({ httpStatus: 400, errorIds: [20403], operation: expect.stringMatching(/^create_/) }));
+    // Set me up stopped at the refusal: the envelope, always last, was never asked for.
+    expect(world.calls.some((c) => c.method === "POST" && c.json?.name === NB_POLICY_NAMES.ese)).toBe(false);
     await drainScheduled(s.t);
   });
 
@@ -995,6 +1002,134 @@ describe("createStandardPolicies (Set me up)", () => {
     expect(world.ebayPosts("/sell/account/v1/fulfillment_policy/")).toEqual([]);
   });
 
+  test("eBay refusing the envelope policy logs what its own metadata said about the service it refused, and nothing of the seller", async () => {
+    world.shippingServices = [
+      { shippingService: "USPSGroundAdvantage", validForSellingFlow: true, shippingCarrier: "USPS", shippingCostTypes: ["CALCULATED"] },
+      {
+        shippingService: ESE,
+        description: "eBay Standard Envelope for eligible items up to $20",
+        validForSellingFlow: true,
+        shippingCarrier: "EBAY_SEND",
+        shippingCategory: "STANDARD",
+        minShippingTime: 3,
+        maxShippingTime: 6,
+        shippingCostTypes: ["CALCULATED", "FLAT"],
+        packageLimits: { maxWeight: 3, weightUnit: "OUNCE" },
+      },
+      { shippingService: "US_eBayOtherSend", validForSellingFlow: true, shippingCarrier: "EBAY_SEND" },
+    ];
+    const s = await setup({ settings: SHIPS_FROM });
+    const real = world.fetch;
+    let refused = 0;
+    vi.stubGlobal("fetch", (async (url: string | URL | Request, init?: RequestInit) => {
+      const body = typeof init?.body === "string" ? JSON.parse(init.body) : null;
+      if (init?.method === "POST" && body?.name === NB_POLICY_NAMES.ese) {
+        refused++;
+        return Response.json(
+          {
+            errors: [
+              {
+                errorId: 20403,
+                message: "Invalid .",
+                longMessage: "Please select a valid shipping service.",
+                inputRefIds: ["service"],
+                parameters: [{ name: "XPATH", value: "DomesticItemShippingService[0].shippingService" }],
+              },
+            ],
+          },
+          { status: 400 },
+        );
+      }
+      return real(url, init);
+    }) as typeof fetch);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      expect(await s.me.action(api.ebayConnect.createStandardPolicies, {})).toEqual({
+        ok: true,
+        created: [NB_POLICY_NAMES.tracked, NB_POLICY_NAMES.free, NB_POLICY_NAMES.payment, NB_POLICY_NAMES.returns],
+        envelopeRefused: true,
+      });
+      const lines = warn.mock.calls.map((c) => String(c[0])).filter((l) => l.includes('"ebay_policy_service_refused"'));
+      expect(lines).toHaveLength(1);
+      expect(JSON.parse(lines[0])).toEqual({
+        msg: "ebay_policy_service_refused",
+        platform: "ebay",
+        operation: "createStandardPolicies",
+        policy: "ese",
+        httpStatus: 400,
+        errorIds: [20403],
+        sent: { code: ESE, carrier: "EBAY_SEND", costType: "CALCULATED" },
+        servicesListed: 3,
+        listed: true,
+        metadata: {
+          description: "eBay Standard Envelope for eligible items up to $20",
+          carrier: "EBAY_SEND",
+          validForSellingFlow: true,
+          costTypes: ["CALCULATED", "FLAT"],
+          category: "STANDARD",
+          international: false,
+          minDays: 3,
+          maxDays: 6,
+          packageLimits: { maxWeight: 3, weightUnit: "OUNCE" },
+        },
+        sameCarrier: ["US_eBayOtherSend"],
+      });
+      // eBay's catalogue and what NB sent: never the token, the seller or a policy id.
+      const everything = [...warn.mock.calls, ...log.mock.calls].map((c) => String(c[0])).join("\n");
+      expect(everything).not.toContain("tok-1");
+      expect(lines[0]).not.toContain("slabking");
+      expect(lines[0]).not.toContain("EB-1");
+      // The envelope was asked for once, last.
+      expect(refused).toBe(1);
+    } finally {
+      warn.mockRestore();
+      log.mockRestore();
+    }
+  });
+
+  test("a validForSellingFlow eBay left out is logged as absent, not as false", async () => {
+    world.shippingServices = [
+      { shippingService: "USPSGroundAdvantage", validForSellingFlow: true },
+      { shippingService: ESE },
+    ];
+    const s = await setup({ settings: SHIPS_FROM });
+    const real = world.fetch;
+    vi.stubGlobal("fetch", (async (url: string | URL | Request, init?: RequestInit) => {
+      const body = typeof init?.body === "string" ? JSON.parse(init.body) : null;
+      if (init?.method === "POST" && body?.name === NB_POLICY_NAMES.ese) {
+        return Response.json({ errors: [{ errorId: 20403 }] }, { status: 400 });
+      }
+      return real(url, init);
+    }) as typeof fetch);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await s.me.action(api.ebayConnect.createStandardPolicies, {});
+      const line = warn.mock.calls.map((c) => String(c[0])).find((l) => l.includes('"ebay_policy_service_refused"'));
+      expect(JSON.parse(line ?? "{}")).toMatchObject({
+        policy: "ese",
+        listed: true,
+        // No carrier in the metadata: NB sent its fallback, and there is no carrier to list siblings under.
+        sent: { code: ESE, carrier: "eBay Send", costType: "CALCULATED" },
+        metadata: { validForSellingFlow: "absent", carrier: null, costTypes: [], packageLimits: null },
+        sameCarrier: [],
+      });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  test("a create that goes through logs no refusal line", async () => {
+    const s = await setup({ settings: SHIPS_FROM });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect((await s.me.action(api.ebayConnect.createStandardPolicies, {})).ok).toBe(true);
+      expect(warn.mock.calls.some((c) => String(c[0]).includes("ebay_policy_service_refused"))).toBe(false);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   test("if a policy fails mid-way, what was made is kept and found by name next time", async () => {
     const s = await setup({ settings: SHIPS_FROM });
     const real = world.fetch;
@@ -1006,8 +1141,58 @@ describe("createStandardPolicies (Set me up)", () => {
     const r = await s.me.action(api.ebayConnect.createStandardPolicies, {});
     expect(r.ok).toBe(false);
     expect(JSON.stringify(r)).not.toContain("RAW");
-    expect(fulfillmentNames()).toEqual([NB_POLICY_NAMES.ese]);
-    expect((await settingsRow(s))?.fulfillmentPolicyUnder20Id).toBe(world.fulfillment[0].id);
+    // Tracked first, then free (refused here): tracked stays made and fills its slot.
+    expect(fulfillmentNames()).toEqual([NB_POLICY_NAMES.tracked]);
+    expect((await settingsRow(s))?.fulfillmentPolicy20PlusId).toBe(world.fulfillment[0].id);
+  });
+
+  test("eBay turning down the envelope keeps everything made before it, fills those slots, leaves cards under $20 empty, deletes nothing", async () => {
+    const s = await setup({ settings: SHIPS_FROM });
+    const real = world.fetch;
+    vi.stubGlobal("fetch", (async (url: string | URL | Request, init?: RequestInit) => {
+      const body = typeof init?.body === "string" ? JSON.parse(init.body) : null;
+      if (init?.method === "POST" && body?.name === NB_POLICY_NAMES.ese) {
+        return Response.json({ errors: [{ errorId: 20403, longMessage: "RAW-EBAY-TEXT" }] }, { status: 400 });
+      }
+      return real(url, init);
+    }) as typeof fetch);
+    const r = await s.me.action(api.ebayConnect.createStandardPolicies, {});
+    expect(r).toEqual({
+      ok: true,
+      created: [NB_POLICY_NAMES.tracked, NB_POLICY_NAMES.free, NB_POLICY_NAMES.payment, NB_POLICY_NAMES.returns],
+      envelopeRefused: true,
+    });
+    expect(JSON.stringify(r)).not.toContain("RAW-EBAY-TEXT");
+    expect(fulfillmentNames()).toEqual([NB_POLICY_NAMES.tracked, NB_POLICY_NAMES.free]);
+    const row = await settingsRow(s);
+    expect(row?.fulfillmentPolicy20PlusId).toBe(world.fulfillment[0].id);
+    expect(row?.paymentPolicyId).toBe(world.payment[0].id);
+    expect(row?.returnPolicyId).toBe(world.returns[0].id);
+    // Cards under $20 stay the collector's pick: never a parcel policy put there for them.
+    expect(row?.fulfillmentPolicyUnder20Id).toBeUndefined();
+    // Nothing was taken down on eBay.
+    expect(world.calls.filter((c) => c.host === "ebay" && c.method === "DELETE")).toEqual([]);
+
+    // Pressing again: the rest is found by name, only the envelope is asked for again.
+    const again = await s.me.action(api.ebayConnect.createStandardPolicies, {});
+    expect(again).toEqual({ ok: true, created: [], envelopeRefused: true });
+    expect(fulfillmentNames()).toEqual([NB_POLICY_NAMES.tracked, NB_POLICY_NAMES.free]);
+  });
+
+  test("eBay busy on the envelope is not a refusal: it stops and says press again, keeping what was made", async () => {
+    const s = await setup({ settings: SHIPS_FROM });
+    const real = world.fetch;
+    vi.stubGlobal("fetch", (async (url: string | URL | Request, init?: RequestInit) => {
+      const body = typeof init?.body === "string" ? JSON.parse(init.body) : null;
+      if (init?.method === "POST" && body?.name === NB_POLICY_NAMES.ese) return Response.json({}, { status: 503 });
+      return real(url, init);
+    }) as typeof fetch);
+    expect(await s.me.action(api.ebayConnect.createStandardPolicies, {})).toEqual({
+      ok: false,
+      error: "eBay's not answering right now. Press Set me up again in a bit; it never makes anything twice.",
+    });
+    expect(fulfillmentNames()).toEqual([NB_POLICY_NAMES.tracked, NB_POLICY_NAMES.free]);
+    expect((await settingsRow(s))?.fulfillmentPolicy20PlusId).toBe(world.fulfillment[0].id);
   });
 });
 

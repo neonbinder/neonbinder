@@ -206,12 +206,72 @@ describe("request shapes and headers", () => {
           carrier: "USPS",
           international: false,
           validForSelling: true,
+          validForSellingStated: true,
           costTypes: ["FLAT_RATE"],
+          category: null,
+          minDays: null,
+          maxDays: null,
+          packageLimits: null,
         },
-        { code: "USPSFirstClass", description: null, carrier: null, international: false, validForSelling: true, costTypes: [] },
+        {
+          code: "USPSFirstClass",
+          description: null,
+          carrier: null,
+          international: false,
+          validForSelling: true,
+          validForSellingStated: true,
+          costTypes: [],
+          category: null,
+          minDays: null,
+          maxDays: null,
+          packageLimits: null,
+        },
       ],
     });
     expect(seen[0].url.pathname).toBe("/sell/metadata/v1/shipping/marketplace/EBAY_US/get_shipping_services");
+  });
+
+  test("getShippingServices keeps what eBay states about a service for the refusal log: category, days, package limits, and whether validForSellingFlow was sent", async () => {
+    answers.push(
+      json({
+        shippingServices: [
+          {
+            shippingService: "US_eBayStandardEnvelope",
+            description: "eBay Standard Envelope",
+            shippingCarrier: "EBAY_SEND",
+            shippingCategory: "STANDARD",
+            minShippingTime: 3,
+            maxShippingTime: 6,
+            validForSellingFlow: true,
+            shippingCostTypes: ["CALCULATED", "FLAT"],
+            packageLimits: { maxWeight: 3, weightUnit: "OUNCE", maxLength: "9", dimensionUnit: "" },
+          },
+          { shippingService: "NoFlag", minShippingTime: -1, maxShippingTime: 1.5, packageLimits: {} },
+        ],
+      }),
+    );
+    const r = await getShippingServices(noCredentialCalls, session());
+    expect(r.ok && r.value[0]).toMatchObject({
+      code: "US_eBayStandardEnvelope",
+      carrier: "EBAY_SEND",
+      category: "STANDARD",
+      minDays: 3,
+      maxDays: 6,
+      validForSelling: true,
+      validForSellingStated: true,
+      costTypes: ["CALCULATED", "FLAT"],
+      // Only finite numbers and non-empty unit words: the string "9" and the empty unit are dropped.
+      packageLimits: { maxWeight: 3, weightUnit: "OUNCE" },
+    });
+    // A flag eBay left out reads false for selling, and says it was left out.
+    expect(r.ok && r.value[1]).toMatchObject({
+      validForSelling: false,
+      validForSellingStated: false,
+      minDays: null,
+      maxDays: null,
+      packageLimits: null,
+      category: null,
+    });
   });
 
   test("upsertInventoryLocation: a location eBay does not have yet is created, enabled, as a US warehouse", async () => {
