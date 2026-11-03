@@ -5,7 +5,7 @@ import { Theme } from "@radix-ui/themes";
 import SyncButton, { NOT_LISTING_LINE, syncToast } from "./SyncButton";
 import { SYNC_STATUS_LINK } from "./ListingGate";
 import { CollectionModeProvider } from "../../mode";
-import { LISTING, NOT_SYNCING, stubListing } from "./stubListing";
+import { LISTING, NOT_CONNECTED, NOT_SYNCING, stubListing } from "./stubListing";
 import { expectAccessibleInBothModes } from "@/lib/testing/axe";
 import { PageApiContext, type PageApi } from "../../pageApi";
 import { CollectionStoreContext, type CollectionData, type CollectionStoreValue } from "../../data/store";
@@ -30,7 +30,7 @@ function setup(opts: {
   const notify = vi.fn();
   const syncVariant = vi.fn(opts.sync ?? (async () => ({ queued: true })));
   const listing = stubListing({
-    useSettings: () => (opts.settings === null ? undefined : { bsc: opts.settings ?? LISTING }),
+    useSettings: () => (opts.settings === null ? undefined : { bsc: opts.settings ?? LISTING, ebay: NOT_CONNECTED }),
     syncVariant,
     useGate: () => ({ syncing: opts.syncing ?? true, applies: false, commonPriceCents: null }),
   });
@@ -129,7 +129,7 @@ describe("the checklist's Sync button", () => {
     const reason = document.getElementById(b.getAttribute("aria-describedby")!);
     expect(reason?.textContent).toBe(NOT_LISTING_LINE);
     // Rev 5: no Start to point at; saving a sign-in is what syncs.
-    expect(NOT_LISTING_LINE).toBe("Nothing to sync to yet. Save a marketplace sign-in on your Profile.");
+    expect(NOT_LISTING_LINE).toBe("Nothing to sync to yet. Connect a marketplace on your Profile.");
     fireEvent.click(b);
     expect(syncVariant).not.toHaveBeenCalled();
     expect(notify).toHaveBeenCalledWith(NOT_LISTING_LINE);

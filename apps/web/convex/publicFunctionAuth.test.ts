@@ -90,7 +90,7 @@ describe("NEO-154: adapter actions are internal, not public", () => {
   // The obvious test — call it and expect "not found" — does not work and,
   // worse, passes for the wrong reason. `convex-test` resolves a function by
   // its module path and does NOT enforce the public/internal boundary, so
-  // `t.action(api.adapters.ebay.searchEbay, {})` happily runs an
+  // `t.action(api.adapters.myslabs.searchMySlabs, {})` happily runs an
   // `internalAction` and fails on ARGUMENT VALIDATION instead. A regex loose
   // enough to accept that error accepts a genuinely-public function too.
   //
@@ -98,8 +98,6 @@ describe("NEO-154: adapter actions are internal, not public", () => {
   // public `api` from it via `FilterApi`), so the declaration is the honest
   // thing to assert.
   test.each([
-    ["adapters/ebay.ts", "searchEbay"],
-    ["adapters/ebay.ts", "testCredentials"],
     ["adapters/index.ts", "searchAllCardPlatforms"],
     ["adapters/index.ts", "getAvailableSetParameters"],
     ["adapters/mycardpost.ts", "searchMyCardPost"],
@@ -2912,5 +2910,77 @@ describe("NEO-370: listing is the signed-in collector's own", () => {
   ])("%s :: %s is declared %s", (file, fn, kind) => {
     const src = readFileSync(join(__dirname, file), "utf8");
     expect(src).toContain(`export const ${fn} = ${kind}({`);
+  });
+});
+
+describe("NEO-415: eBay connection surface", () => {
+  test("the connection query and the mutations refuse an anonymous caller", async () => {
+    const t = convexTest(schema, modules);
+    await expect(t.query(api.ebayConnect.connectionState, {})).rejects.toThrow(/Not authenticated/);
+    await expect(t.mutation(api.ebayConnect.beginConnect, {})).rejects.toThrow(/Not authenticated/);
+    await expect(t.mutation(api.ebayConnect.setBestOffer, { on: false })).rejects.toThrow(/Not authenticated/);
+    await expect(t.mutation(api.ebayConnect.setCardWeight, { ounces: 2 })).rejects.toThrow(/Not authenticated/);
+    expect(await t.run(async (ctx) => ctx.db.query("ebaySellerSettings").collect())).toEqual([]);
+  });
+
+  test.each([
+    "completeConnect",
+    "disconnect",
+    "readPolicies",
+    "createStandardPolicies",
+    "savePolicies",
+    "saveLocation",
+  ])("ebayConnect :: %s is a public action that starts with requireSignedIn", (fn) => {
+    const src = readFileSync(join(__dirname, "ebayConnect.ts"), "utf8");
+    const start = src.indexOf(`export const ${fn} = action({`);
+    expect(start).toBeGreaterThanOrEqual(0);
+    const body = src.slice(start, src.indexOf("\n});\n", start));
+    expect(body).toContain("await requireSignedIn(ctx)");
+  });
+
+  test.each([
+    ["ebayConnect.ts", "recordEbayConnection", "internalMutation"],
+    ["ebayConnect.ts", "connectGuard", "internalQuery"],
+    ["ebayConnect.ts", "forgetEbayConnection", "internalMutation"],
+    ["ebayConnect.ts", "markEbayLinksEnded", "internalMutation"],
+    ["ebayConnect.ts", "purgeEbayHistoryPage", "internalMutation"],
+    ["ebayConnect.ts", "consumeConnectNonce", "internalMutation"],
+    ["ebayConnect.ts", "writePolicySettings", "internalMutation"],
+    ["ebayConnect.ts", "writeLocationSettings", "internalMutation"],
+    ["ebayConnect.ts", "fillEmptyPolicySlots", "internalMutation"],
+    ["ebayConnect.ts", "writeSetupProgress", "internalMutation"],
+    ["ebayConnect.ts", "purgeEbayLinksPage", "internalMutation"],
+    ["ebayConnect.ts", "processAccountDeletion", "internalAction"],
+    ["credentials.ts", "connectEbay", "internalAction"],
+    ["credentials.ts", "disconnectEbay", "internalAction"],
+    ["credentials.ts", "disconnectEbayAndWithdraw", "internalAction"],
+    ["credentials.ts", "verifyEbayNotification", "internalAction"],
+    ["listingDrainEbay.ts", "recordEbayLinks", "internalMutation"],
+  ])("%s :: %s is declared %s", (file, fn, kind) => {
+    const src = readFileSync(join(__dirname, file), "utf8");
+    expect(src).toContain(`export const ${fn} = ${kind}({`);
+  });
+
+  test("an eBay session is seeded from a refresh token only on a testing deployment", () => {
+    const src = readFileSync(join(__dirname, "credentials.ts"), "utf8");
+    const connect = src.slice(src.indexOf("export const connectEbay"));
+    expect(connect.slice(0, connect.indexOf("\n});\n"))).toContain(
+      "if (args.refreshToken !== undefined && !process.env.TESTING_RESET_SECRET)",
+    );
+    expect(connect.slice(0, connect.indexOf("\n});\n"))).toContain(
+      'if (args.refreshToken !== undefined && ebayConfig()?.environment !== "sandbox")',
+    );
+  });
+
+  test("the eBay account-deletion POST verifies the signature before it schedules anything", () => {
+    const src = readFileSync(join(__dirname, "ebayConnect.ts"), "utf8");
+    const start = src.indexOf("export const ebayDeletionNotice = httpAction(");
+    expect(start).toBeGreaterThanOrEqual(0);
+    const body = src.slice(start, src.indexOf("\n});\n", start));
+    const verify = body.indexOf("internal.credentials.verifyEbayNotification");
+    const schedule = body.indexOf("ctx.scheduler.runAfter");
+    expect(verify).toBeGreaterThan(0);
+    expect(schedule).toBeGreaterThan(verify);
+    expect(body.indexOf("ctx.scheduler")).toBe(schedule);
   });
 });

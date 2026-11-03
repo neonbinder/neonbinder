@@ -1,6 +1,6 @@
 import { useLayoutEffect, useRef } from "react";
 import { useQuery } from "convex/react";
-import { NavLink, Outlet, useLocation } from "react-router";
+import { Link, Outlet, matchPath, useLocation } from "react-router";
 import { api } from "@/convex/_generated/api";
 
 /**
@@ -26,13 +26,24 @@ import { api } from "@/convex/_generated/api";
  * that gate holds on all four sub-routes.
  *
  * These are links, not an ARIA tab widget: the panels are separate documents
- * reached by URL, so <nav> + NavLink's implicit aria-current="page" is the
+ * reached by URL, so <nav> + aria-current="page" on the lit link is the
  * honest markup, and Tab/Enter reach them without roving-focus machinery.
  */
 
-const SECTIONS = [
+type Section = {
+  label: string;
+  path: string;
+  /** Other addresses that are this section (a landing that forwards into it): it lights for them too. */
+  aliases?: string[];
+};
+
+const SECTIONS: Section[] = [
   { label: "Public Profile", path: "/profile/public" },
-  { label: "Credentials", path: "/profile/credentials" },
+  // NEO-415: every marketplace is managed here, eBay included (its own tab
+  // went, Jason 2026-11-02). /profile/ebay stays only as the address eBay's
+  // consent screen sends the collector back to; it forwards into this
+  // section with eBay picked, so it lights Credentials.
+  { label: "Credentials", path: "/profile/credentials", aliases: ["/profile/ebay"] },
   { label: "Shipping", path: "/profile/shipping" },
   { label: "Postage", path: "/profile/postage" },
   { label: "Prize Pool", path: "/profile/prizes" },
@@ -70,6 +81,7 @@ function useWarmProfileQueries() {
   useQuery(api.publicProfile.getMyPublicProfile); // public + shipping
   useQuery(api.shipping.getMyReturnAddress); // shipping
   useQuery(api.userProfile.getDefaultCondition); // settings: default card condition
+  useQuery(api.ebayConnect.connectionState); // credentials, eBay tab: connection and setup
 }
 
 /**
@@ -105,9 +117,15 @@ function useActiveTabInView() {
   return listRef;
 }
 
+/** The section the address belongs to, its own path or an alias (prefix match, as NavLink's). */
+function isCurrent(section: Section, pathname: string): boolean {
+  return [section.path, ...(section.aliases ?? [])].some((path) => matchPath({ path, end: false }, pathname) !== null);
+}
+
 export default function ProfileLayout() {
   useWarmProfileQueries();
   const listRef = useActiveTabInView();
+  const { pathname } = useLocation();
 
   return (
     <div className="space-y-8">
@@ -135,21 +153,25 @@ export default function ProfileLayout() {
           ref={listRef}
           className="relative flex flex-nowrap gap-x-4 overflow-x-auto overscroll-x-contain snap-x snap-proximity [scrollbar-width:none] shadow-[inset_0_-1px_0_var(--rule)]"
         >
-          {SECTIONS.map((section) => (
-            <li key={section.path} className="shrink-0 snap-start last:snap-end">
-              <NavLink
-                to={section.path}
-                className={({ isActive }) =>
-                  "block whitespace-nowrap px-2 py-3 border-b-2 text-sm font-medium transition-colors focus-outline focus-visible:-outline-offset-4! rounded-sm " +
-                  (isActive
-                    ? "border-neon-purple text-neon-purple-text"
-                    : "border-transparent text-ink-3 hover:text-ink hover:border-control")
-                }
-              >
-                {section.label}
-              </NavLink>
-            </li>
-          ))}
+          {SECTIONS.map((section) => {
+            const current = isCurrent(section, pathname);
+            return (
+              <li key={section.path} className="shrink-0 snap-start last:snap-end">
+                <Link
+                  to={section.path}
+                  aria-current={current ? "page" : undefined}
+                  className={
+                    "block whitespace-nowrap px-2 py-3 border-b-2 text-sm font-medium transition-colors focus-outline focus-visible:-outline-offset-4! rounded-sm " +
+                    (current
+                      ? "border-neon-purple text-neon-purple-text"
+                      : "border-transparent text-ink-3 hover:text-ink hover:border-control")
+                  }
+                >
+                  {section.label}
+                </Link>
+              </li>
+            );
+          })}
         </ul>
       </nav>
 

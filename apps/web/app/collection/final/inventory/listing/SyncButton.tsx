@@ -42,8 +42,8 @@ export function listsAnywhere(settings: ListingSettings | undefined): boolean {
   return !!settings && Object.values(settings).some((p) => p.listing);
 }
 
-/** Said when nothing can sync: no saved, unpaused marketplace sign-in anywhere. */
-export const NOT_LISTING_LINE = "Nothing to sync to yet. Save a marketplace sign-in on your Profile.";
+/** Said when nothing can sync: no saved, unpaused marketplace connection anywhere (a BSC sign-in, or eBay). */
+export const NOT_LISTING_LINE = "Nothing to sync to yet. Connect a marketplace on your Profile.";
 
 /** What the toast says after a press. */
 export function syncToast(title: string, result: SyncVariantResult): string {

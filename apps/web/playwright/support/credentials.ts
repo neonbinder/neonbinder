@@ -102,3 +102,89 @@ export async function saveBscSignIn(page: Page, opts: { listing?: boolean } = {}
   await expect(page.getByRole("heading", { name: "Profile Settings" })).toBeVisible({ timeout: SEED_SIGN_IN });
   await expect(page.getByText("Connected to BuySportsCards")).toBeVisible();
 }
+
+// ---------------------------------------------------------------------------
+// NEO-415: eBay. It signs in by eBay's own consent screen, never a password,
+// so a spec cannot connect it through the UI. The seed hop connects the
+// sandbox seller with a refresh token the deployment holds (the same
+// `/testing/seed-credentials` route, `sites=ebay`), and Profile -> Credentials -> eBay
+// (its eBay tab; `/profile/ebay` forwards there) is where the connection is read, renewed and removed.
+// ---------------------------------------------------------------------------
+
+/** What Profile -> Credentials -> eBay says when the deployment has no eBay wiring. */
+export const EBAY_NOT_HOOKED_UP = "eBay isn't hooked up on this NeonBinder yet.";
+
+/**
+ * Wait until Profile -> Credentials -> eBay's connection card has settled into ONE of its
+ * states (every state carries a Connect or a Disconnect button, the not-wired
+ * one a disabled Connect), and FAIL LOUDLY, naming the missing setup, when the
+ * deployment is not wired to eBay. A spec for eBay is never skipped for want
+ * of its credentials (GUIDE hard rule 1): a deployment without them is a red
+ * run that says what to set.
+ */
+export async function expectEbayHookedUp(page: Page): Promise<void> {
+  const connect = page.getByRole("button", { name: /^Connect eBay/ });
+  const disconnect = page.getByRole("button", { name: "Disconnect eBay", exact: true });
+  // One of the card's controls is showing: the connection state has arrived.
+  await expect(connect.or(disconnect).first()).toBeVisible();
+  if (await page.getByText(EBAY_NOT_HOOKED_UP, { exact: true }).isVisible()) {
+    throw new Error(
+      "eBay is not configured on this deployment, so the eBay listing spec cannot run. " +
+        "Set EBAY_CLIENT_ID, EBAY_RU_NAME and EBAY_ENVIRONMENT=sandbox on the Convex deployment, " +
+        "the eBay client secret on the browser service it calls, and DEV_EBAY_REFRESH_TOKEN " +
+        "(a sandbox seller's refresh token) beside them. This spec never skips for missing setup.",
+    );
+  }
+}
+
+/**
+ * Connect the worker's sandbox eBay seller the way the bootstrap saves the
+ * other sign-ins: the `/testing/seed-credentials` hop (no password, GUIDE hard
+ * rule 7). The page must already be signed in. Lands on Profile -> Credentials -> eBay.
+ *
+ * `listing: true` (`listing=on`) is what a collector's own Connect does:
+ * connected IS listing. Without it the hop marks the connection "not syncing".
+ * Only the eBay listing spec passes `listing: true`; pair it with
+ * `removeEbayConnection`.
+ *
+ * `gate` is the wait for the full page load the hop ends in (the caller's
+ * `LAUNCH_GATE`: the hop is one token exchange with eBay, not a live sign-in).
+ * A hop that FAILS prints "Seed failed (...)" and goes nowhere; that is thrown
+ * here with its reason. A hop that SKIPS (no refresh token on the deployment,
+ * or eBay paused) lands on the page with eBay not connected: the caller's next
+ * assertion names it. A deployment with no eBay wiring throws from
+ * `expectEbayHookedUp`.
+ */
+export async function saveEbayConnection(page: Page, opts: { listing?: boolean; gate: number }): Promise<void> {
+  const listing = opts.listing ? "&listing=on" : "";
+  await page.goto(`/testing/seed-credentials?sites=ebay${listing}&redirect=/profile/ebay`);
+  const landed = page.getByRole("heading", { name: "Profile Settings" });
+  const seedFailed = page.getByText(/^\[testing-seed\] Seed failed/);
+  await expect(landed.or(seedFailed)).toBeVisible({ timeout: opts.gate });
+  if (await seedFailed.isVisible()) {
+    throw new Error(`The eBay seed hop failed: ${(await seedFailed.innerText()).replace(/\s+/g, " ")}`);
+  }
+  await expectEbayHookedUp(page);
+}
+
+/**
+ * Disconnect eBay through the product (Profile -> Credentials -> eBay -> Disconnect eBay,
+ * confirmed): it takes down every listing NeonBinder put up on eBay, drops the
+ * queue and the saved setup, and leaves the account not connected. Safe to call
+ * when eBay is not connected (it then only opens the page and returns).
+ * `gate` is the page-load wait (`LAUNCH_GATE` on a page that has not loaded the
+ * app yet). The takedown gets the standard 7 s budget.
+ */
+export async function removeEbayConnection(page: Page, opts: { gate: number }): Promise<void> {
+  await page.goto("/profile/ebay");
+  await expect(page.getByRole("heading", { name: "Profile Settings" })).toBeVisible({ timeout: opts.gate });
+  const connect = page.getByRole("button", { name: /^Connect eBay/ });
+  const disconnect = page.getByRole("button", { name: "Disconnect eBay", exact: true });
+  await expect(connect.or(disconnect).first()).toBeVisible();
+  if (await disconnect.isVisible()) {
+    await disconnect.click();
+    await page.getByRole("dialog", { name: "Disconnect eBay?", exact: true }).getByRole("button", { name: "Yes, disconnect" }).click();
+    await expect(disconnect).toBeHidden();
+  }
+  await expect(page.getByRole("button", { name: "Connect eBay", exact: true })).toBeVisible();
+}

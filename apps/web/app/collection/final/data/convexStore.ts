@@ -130,6 +130,7 @@ import {
   type DeclinedCard,
   type FoundCards,
   type SmartRule,
+  type EbaySetupView,
   type ListingGateView,
   type ListingSettings,
   type Sale,
@@ -2808,6 +2809,26 @@ function useListingGateQuery(homeId: ContainerId | null, variantId: VariantId | 
   });
 }
 
+/**
+ * NEO-415 — the eBay connection as the inventory says it: one small read
+ * (`ebayConnect.connectionState`, the collector's own settings row and
+ * credential flags), safe to subscribe.
+ */
+function useEbaySetupQuery(): EbaySetupView | undefined {
+  const state = useQuery(api.ebayConnect.connectionState, {});
+  return useMemo(
+    () =>
+      state === undefined
+        ? undefined
+        : {
+            connected: state.status !== "notConnected",
+            setupComplete: state.setupComplete,
+            sandbox: state.environment === "sandbox",
+          },
+    [state],
+  );
+}
+
 function useSyncStatusQuery(): SyncStatus | undefined {
   const raw = useQuery(api.listingSync.syncStatus, {});
   return useMemo(() => (raw === undefined ? undefined : toSyncStatus(raw)), [raw]);
@@ -2857,6 +2878,7 @@ function useConvexListing(): ListingExtension {
       useSyncStatus: useSyncStatusQuery,
       useSales: useSalesPage,
       useGate: useListingGateQuery,
+      useEbaySetup: useEbaySetupQuery,
       async syncVariant(variantId) {
         const { queued, ignored } = await sync({ variantId: variantId as Id<"selectorOptions"> });
         return { queued, ...(ignored ? { ignored } : {}) };

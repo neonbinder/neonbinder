@@ -52,6 +52,7 @@ import { action, httpAction, internalAction, internalMutation, internalQuery, mu
 import { internal } from "./_generated/api";
 import { getCurrentUserId, requireSignedIn } from "./auth";
 import { COLLECTION_ERRORS, refuse } from "./collection";
+import { enqueueListingCards } from "./listingOutbox";
 import { deleteObject, headObject, r2Config, signedGetUrl, signedPutUrl } from "./lib/r2";
 
 type PhotoRow = Doc<"collectionCopyPhotos">;
@@ -356,6 +357,10 @@ export const commitUpload = internalMutation({
     for (const row of old) await ctx.db.patch(row._id, { status: "replaced", since: now });
     await ctx.db.patch(photo._id, { status: "live", since: now });
     if (!copy.hasPhotos) await ctx.db.patch(copy._id, { hasPhotos: true });
+    // NEO-415: a card-level listing shows the copy's photos, so a photo
+    // change queues the card on every listing platform (intake's "Done
+    // adding photos" lands here too).
+    await enqueueListingCards(ctx, { ownerId: args.ownerId, cardIds: [copy.cardId] });
     return null;
   },
 });
@@ -407,6 +412,7 @@ export const remove = mutation({
     if (photos.length === gone.length && row.hasPhotos) {
       await ctx.db.patch(row._id, { hasPhotos: undefined });
     }
+    if (gone.length > 0) await enqueueListingCards(ctx, { ownerId, cardIds: [row.cardId] });
     return null;
   },
 });
@@ -421,9 +427,11 @@ export const swap = mutation({
     if (!row || row.ownerId !== ownerId) {
       refuse(COLLECTION_ERRORS.notFound, "That copy isn't in your collection.");
     }
-    for (const photo of await livePhotosOf(ctx, row._id)) {
+    const photos = await livePhotosOf(ctx, row._id);
+    for (const photo of photos) {
       await ctx.db.patch(photo._id, { side: photo.side === "front" ? "back" : "front" });
     }
+    if (photos.length > 0) await enqueueListingCards(ctx, { ownerId, cardIds: [row.cardId] });
     return null;
   },
 });
