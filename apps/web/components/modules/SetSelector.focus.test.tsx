@@ -31,6 +31,7 @@ vi.mock("../../convex/_generated/api", () => ({
       getSelectorOptionById: "getSelectorOptionById",
       getAncestorChain: "getAncestorChain",
       getCardChecklist: "getCardChecklist",
+      getSelectorOptions: "getSelectorOptions",
     },
     parallelChecklistBuild: { getParallelsForBuild: "getParallelsForBuild" },
     drillPath: { resolveDrillPath: "resolveDrillPath" },
@@ -67,6 +68,12 @@ const world: {
    * the "Select Base Set" picker, a dialog that takes focus, with a Close.
    */
   mappingUi: boolean;
+  /**
+   * NEO-425 — what the picked insert's sub-variant list answers
+   * (`getSelectorOptions` at level `parallel`): `undefined` while loading,
+   * `[]` for an insert with none (no Sub-Variants column: a leaf).
+   */
+  subVariants: unknown[] | undefined;
 } = {
   cards: [],
   chain: [],
@@ -76,6 +83,7 @@ const world: {
   lingering: null,
   rowOverride: {},
   mappingUi: false,
+  subVariants: [{ _id: "parallel-1", value: "Gold" }],
 };
 
 const ROWS: Record<string, unknown> = {
@@ -106,6 +114,7 @@ vi.mock("convex/react", () => ({
     }
     if (ref === "getAncestorChain") return world.chain;
     if (ref === "getCardChecklist") return world.cards;
+    if (ref === "getSelectorOptions") return world.subVariants;
     return undefined;
   },
   useMutation: () => vi.fn(),
@@ -116,15 +125,20 @@ vi.mock("../../convex/bscFacets", () => ({
   bscSourceView: () => ({ sources: [] }),
 }));
 
-// A column is on the page only when it is visible, like the real one.
+// A column is on the page only when it is visible, like the real one, and
+// its wrapper names its level as the real one does (NEO-425: the cascade
+// finds the Inserts column's card through it).
 vi.mock("../SetSelector/ResilientEntityColumn", () => ({
   default: ({
     selector,
     isVisible,
+    level,
   }: {
     selector: React.ReactNode;
     isVisible?: boolean;
-  }) => (isVisible === false ? null : <div>{selector}</div>),
+    level?: string;
+  }) =>
+    isVisible === false ? null : <div data-cascade-level={level}>{selector}</div>,
 }));
 
 /** Declared at module scope, referenced only at render time by the mocks below. */
@@ -223,7 +237,6 @@ vi.mock("../SetSelector/ManufacturerForm", () => ({ default: () => null }));
 vi.mock("../SetSelector/SetForm", () => ({ default: () => null }));
 vi.mock("../SetSelector/SetVariantForm", () => ({ default: () => null }));
 vi.mock("../SetSelector/VariantForm", () => ({ default: () => null }));
-vi.mock("../SetSelector/ParallelForm", () => ({ default: () => null }));
 vi.mock("../SetSelector/BaseMappingForm", () => ({
   default: (p: { onClose: (reason: "mapped" | "dismissed") => void }) =>
     world.mappingUi ? <MappingStub onClose={p.onClose} /> : null,
@@ -341,6 +354,7 @@ beforeEach(() => {
   world.lingering = null;
   world.rowOverride = {};
   world.mappingUi = false;
+  world.subVariants = [{ _id: "parallel-1", value: "Gold" }];
   navigateRef = null;
 });
 
@@ -506,7 +520,11 @@ describe("SetSelector focus — a terminal selection (D3)", () => {
     expect(focused()).toBe(screen.getByRole("button", { name: "Sync card checklist" }));
   });
 
-  /** Pick down to a leaf parallel under the insert `insert-1`. */
+  /**
+   * Pick down to a leaf parallel under the insert `insert-1`. Picking the
+   * insert leaves focus on its card (NEO-425), so the operator moves into the
+   * Sub-Variants column's box before picking there, as Tab would take them.
+   */
   async function drillToLeafParallel() {
     world.picks.type = "vt-insert";
     await pick("sport");
@@ -515,6 +533,7 @@ describe("SetSelector focus — a terminal selection (D3)", () => {
     await pick("set");
     await pick("type");
     await pick("insert");
+    combobox("parallel").focus();
     await pick("parallel");
   }
 
@@ -866,6 +885,150 @@ describe("SetSelector focus — never taken from a field being typed into", () =
     typeInto(combobox("sport"), "Base");
     await pick("sport");
     expect(focused()).toBe(combobox("year"));
+  });
+});
+
+describe("SetSelector focus — an insert and its Sub-Variants column (NEO-425)", () => {
+  const insertChip = () => screen.getByRole("button", { name: "insert chip" });
+  const fetchButton = () => screen.getByRole("button", { name: "Sync card checklist" });
+  const INSERT_LINK = "/?sport=sp&year=yr&brand=br&set=st&type=vt-insert&insert=insert-1";
+
+  /** Pick down to the variant type `vt-insert`; its Inserts column is open. */
+  async function drillToInsertType() {
+    world.picks.type = "vt-insert";
+    await pick("sport");
+    await pick("year");
+    await pick("manufacturer");
+    await pick("set");
+    await pick("type");
+    expect(focused()).toBe(combobox("insert"));
+  }
+
+  it("picking an insert WITH sub-variants opens the column and leaves focus on the insert's card", async () => {
+    mount();
+    await drillToInsertType();
+    await pick("insert");
+
+    // The column is open (its box is on the page) ...
+    expect(combobox("parallel")).toBeTruthy();
+    // ... and focus stayed on the insert, not in that box (Jason, 2026-11-03).
+    expect(focused()).toBe(insertChip());
+  });
+
+  it("an Enter pick in the Inserts box lands on the insert's card too", async () => {
+    mount();
+    await drillToInsertType();
+    await act(async () => {
+      fireEvent.keyDown(combobox("insert"), { key: "Enter" });
+    });
+
+    expect(combobox("parallel")).toBeTruthy();
+    expect(focused()).toBe(insertChip());
+  });
+
+  it("an insert with NO sub-variants opens no column: it is a leaf, and focus goes to Fetch", async () => {
+    world.subVariants = [];
+    world.cards = [];
+    mount();
+    await drillToInsertType();
+    await pick("insert");
+
+    expect(focused()).toBe(fetchButton());
+    expect(screen.queryByRole("combobox", { name: "parallel search" })).toBeNull();
+  });
+
+  it("an insert with no sub-variants and cards lands on the attributes toggle", async () => {
+    world.subVariants = [];
+    world.cards = [{ _id: "c1" }];
+    mount();
+    await drillToInsertType();
+    await pick("insert");
+
+    expect(focused()).toBe(screen.getByRole("button", { name: "Edit attributes" }));
+  });
+
+  it("while the sub-variants load, the insert is not treated as a leaf; rows then open the column on the card", async () => {
+    world.subVariants = undefined;
+    world.cards = [];
+    const view = mount();
+    await drillToInsertType();
+    await pick("insert");
+    expect(focused()).not.toBe(fetchButton());
+    expect(screen.queryByRole("combobox", { name: "parallel search" })).toBeNull();
+
+    world.subVariants = [{ _id: "parallel-1", value: "Gold" }];
+    await act(async () => view.rerender(<SetSelector />));
+    expect(combobox("parallel")).toBeTruthy();
+    expect(focused()).toBe(insertChip());
+  });
+
+  it("while the sub-variants load, then none: focus goes to Fetch once the answer is in", async () => {
+    world.subVariants = undefined;
+    world.cards = [];
+    const view = mount();
+    await drillToInsertType();
+    await pick("insert");
+    expect(focused()).not.toBe(fetchButton());
+
+    world.subVariants = [];
+    await act(async () => view.rerender(<SetSelector />));
+    expect(focused()).toBe(fetchButton());
+  });
+
+  it("first rows landing later (Group Parallels) open the column and move nothing: focus on <body> stays", async () => {
+    world.subVariants = [];
+    world.cards = [];
+    const view = mount();
+    await drillToInsertType();
+    await pick("insert");
+    expect(focused()).toBe(fetchButton());
+    fetchButton().blur();
+    expect(focused()).toBe(document.body);
+
+    world.subVariants = [{ _id: "parallel-1", value: "Gold" }];
+    await act(async () => view.rerender(<SetSelector />));
+    expect(combobox("parallel")).toBeTruthy();
+    expect(focused()).toBe(document.body);
+  });
+
+  it("first rows landing later move nothing off a control in the column row either", async () => {
+    world.subVariants = [];
+    world.cards = [];
+    const view = mount();
+    await drillToInsertType();
+    await pick("insert");
+    // Where the grouping dialog hands focus back: a button in the row.
+    const control = screen.getByText("collapse-insert");
+    control.focus();
+
+    world.subVariants = [{ _id: "parallel-1", value: "Gold" }];
+    await act(async () => view.rerender(<SetSelector />));
+    expect(combobox("parallel")).toBeTruthy();
+    expect(focused()).toBe(control);
+  });
+
+  it("a restored link to an insert with sub-variants lands on the insert's card", async () => {
+    mount(INSERT_LINK);
+    await act(async () => {});
+    expect(combobox("parallel")).toBeTruthy();
+    expect(focused()).toBe(insertChip());
+  });
+
+  it("a restored link to an insert with none lands on Fetch", async () => {
+    world.subVariants = [];
+    world.cards = [];
+    mount(INSERT_LINK);
+    await act(async () => {});
+    expect(focused()).toBe(fetchButton());
+  });
+
+  it("a restored link to a sub-variant of an insert that has none drops it and treats the insert as the leaf", async () => {
+    world.subVariants = [];
+    world.cards = [];
+    mount(`${INSERT_LINK}&parallel=parallel-1`);
+    await act(async () => {});
+    expect(screen.queryByRole("combobox", { name: "parallel search" })).toBeNull();
+    expect(focused()).toBe(fetchButton());
   });
 });
 

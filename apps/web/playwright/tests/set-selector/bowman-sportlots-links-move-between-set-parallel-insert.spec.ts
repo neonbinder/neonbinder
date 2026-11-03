@@ -88,7 +88,6 @@ test(
     // render. `.*` after the name admits a twin suffix ` (#<id>)`.
     await expect(page.getByRole("button", { name: new RegExp(`^Parallels: ${COLOUR}.* — change$`) })).toBeVisible();
     await expect(columnSearch(page, "Parallels")).toBeHidden();
-    await expect(page.getByRole("button", { name: "Sync Sub-Variants" })).toBeHidden();
     await expect(page.getByRole("button", { name: "Add custom Sub-Variants" })).toBeHidden();
     await expect(page.getByText(new RegExp(`Attributes for ${COLOUR}`))).toBeVisible();
     await expectAccessible(page, { label: "Blue parallel with its attributes" });
@@ -194,13 +193,16 @@ test(
       await columnOption(page, "Parallels", NEW_PARALLEL).click();
 
       // CLAIM 10, POSITIVE HALF (NEO-334, live only: paused, no moved row exists
-      // to stand on): an insert has a sub-variants column. The pick collapsed
-      // the Parallels column to its card (the gate: the click took, R2), and the
-      // seventh column's own "Sync Sub-Variants" is on screen.
+      // to stand on): an insert has a sub-variants column (this one has Red
+      // Ink, so NEO-425 shows it). The pick collapsed the Parallels column to
+      // its card (the gate: the click took, R2), and the seventh column's own
+      // "+ Custom" is on screen. Sub-variants are NB's own rows, so that column
+      // carries no Sync button (NEO-425).
       await expect(
         page.getByRole("button", { name: new RegExp(`^Parallels: ${NEW_PARALLEL}.* — change$`) }),
       ).toBeVisible();
-      await expect(page.getByRole("button", { name: "Sync Sub-Variants" })).toBeVisible();
+      await expect(page.getByRole("button", { name: "Add custom Sub-Variants" })).toBeVisible();
+      await expect(page.getByRole("button", { name: "Sync Sub-Variants" })).toBeHidden();
 
       await expect(page.getByText("Multi-source sets")).toBeVisible();
       const chip = page.getByRole("button", { name: new RegExp(`^Remove .*${NEW_PARALLEL}$`) });
