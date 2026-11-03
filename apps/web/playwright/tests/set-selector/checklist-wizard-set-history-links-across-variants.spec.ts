@@ -20,12 +20,16 @@
 //      Famer"; Change on Joe Morgan lists both namesakes, then re-links; the
 //      St. Louis Browns are LINKED to the catalogue's 1902-1953 row from the
 //      team step.
+//   4. Turkey Red (team rule): the St. Louis Browns arrive linked from the set's
+//      history; every other name is already answered, so the wizard opens on its
+//      Save step for that one link ("This name was linked for you. Give it a look
+//      before you save.") with its Decided line and Change, and saves on Confirm.
 // Finally STAR's player page lists exactly his two cards as Baseball guest cards.
 //
 // FIXTURE (SET-REGISTRY.md -> "Baseball -> 2010 -> Topps -> Topps -- the NEO-424
 // set-history fixture"; the set approved by Jason 2026-11-03, the variants chosen
-// by the dev probe): SOLE WRITER of those three inserts and of the year, BSC only;
-// FRESH-ONLY (R7a): it commits three checklists, so a re-run on the same seed
+// by the dev probe): SOLE WRITER of those four inserts and of the year, BSC only;
+// FRESH-ONLY (R7a): it commits four checklists, so a re-run on the same seed
 // fails at "No cards in this checklist yet." by name; each project gets its own
 // seed (GUIDE "Desktop and mobile"). No other flow touches 2010.
 //
@@ -74,7 +78,9 @@ const FIRST = "Team Bonus";
 const SECOND = "Silk Collection";
 /** Hall of Fame phase: Bob Gibson and Joe Morgan, two on file each, none active in 2010. */
 const THIRD = "Peak Performance";
-const INSERTS = [FIRST, SECOND, THIRD];
+/** Team phase: the Browns, linked on THIRD; the wizard opens on its Save step for them alone. */
+const FOURTH = "Turkey Red";
+const INSERTS = [FIRST, SECOND, THIRD, FOURTH];
 const BRANTLEY = "Michael Brantley";
 const GIBSON = "Bob Gibson";
 const MORGAN = "Joe Morgan";
@@ -148,7 +154,7 @@ async function skipEverythingLeft(page: Page): Promise<void> {
 /**
  * Open `name` under the set's Insert type and fetch its checklist, leaving the
  * wizard open. Contract: ENTRY the Variant Types column is open with Insert
- * listed. `reconcile` (live only) makes this spec's three inserts their own
+ * listed. `reconcile` (live only) makes this spec's four inserts their own
  * sets in the Reconcile Inserts dialog, by their exact buttons, never "Keep
  * all"; the paused column fills from BSC alone and has nothing to reconcile.
  * EXIT the "Tidy up this set" dialog is open (a fetch that saved straight
@@ -209,7 +215,7 @@ async function fetchInsertToWizard(
 }
 
 test(
-  "Entity review — a name linked on a committed card of the set links to the same player on the set's next variant (a player of another sport, a Hall of Famer), shows in the Decided list, and Change reopens it on the suggestion (NEO-424)",
+  "Entity review — a name linked on a committed card of the set links to the same player on the set's next variant (a player of another sport, a Hall of Famer, a team), shows in the Decided list, and Change reopens it on the suggestion (NEO-424)",
   { tag: ["@set-selector"] },
   async ({ page, signIn, env }) => {
     const wizard = reviewWizard(page);
@@ -356,15 +362,39 @@ test(
     // The other historic clubs and every other name are skipped; nothing else is minted.
     await skipEverythingLeft(page);
     await advanceToSave(page);
-    // Read the link back off the Save step's summary of the batch (the Decided
-    // list is not rendered once every name is decided, and the footer's Back
-    // opens the batch's last row, not the one decided a moment ago). A FULL
-    // match: no "remembered as" tail.
-    await expect(wizard.getByText(`Linked to ${BROWNS}`, { exact: true })).toBeVisible();
+    // Read the link back where a user reads it: the Save step's Decided list,
+    // opened first (this batch had names to answer, so the list starts closed
+    // past five rows). A FULL match: no "remembered as" tail.
+    const savedDecided = await openDecidedList(page);
+    await expect(
+      savedDecided
+        .getByRole("listitem")
+        .filter({ has: page.getByText(BROWNS, { exact: true }) })
+        .getByText(`Linked to ${BROWNS}`, { exact: true }),
+    ).toBeVisible();
     await confirmSaveButton(page).click();
     await expect(page.getByText(/Saved [1-9][0-9]* cards?/)).toBeVisible();
 
-    // ── PHASE 4: STAR's page lists both cards as Baseball GUEST cards ──
+    // ── PHASE 4: FOURTH. The team rule: the Browns arrive linked; the wizard opens on Save ──
+    // Every other name is already answered by what THIRD committed, so the only
+    // thing this fetch has is one link made for the operator. That alone opens
+    // the wizard, on its Save step (never a silent commit), with the Decided list
+    // open at any length and a line saying the name was linked for them.
+    await drillToSet(page, env, TARGET);
+    await fetchInsertToWizard(page, env, FOURTH, { reconcile: false });
+    await expect(wizard.getByText("Ready to save", { exact: true })).toBeVisible();
+    await expect(
+      wizard.getByText("This name was linked for you. Give it a look before you save.", { exact: true }),
+    ).toBeVisible();
+    const teamDecided = await openDecidedList(page);
+    const browns = teamDecided.getByRole("listitem").filter({ has: page.getByText(BROWNS, { exact: true }) });
+    await expect(browns.getByText(`Linked to ${BROWNS} · already on another card in this set`)).toBeVisible();
+    await expect(browns.getByRole("button", { name: `Change decision for ${BROWNS}` })).toBeVisible();
+    await expectAccessible(page, { within: wizard, label: "Entity review wizard, a links-only Save step" });
+    await confirmSaveButton(page).click();
+    await expect(page.getByText(/Saved [1-9][0-9]* cards?/)).toBeVisible();
+
+    // ── PHASE 5: STAR's page lists both cards as Baseball GUEST cards ──
     await page.goto("/admin/players");
     await expectPlayersLoaded(page);
     await page.getByRole("textbox", { name: "Filter players" }).fill(STAR);
