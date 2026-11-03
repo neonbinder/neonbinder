@@ -41,8 +41,9 @@
 //
 // Waits. A Sync is a live BSC round trip of serial sheet reads, a PUT and a
 // read-back, and Sync status ticks each of those off as it lands (a ledger of
-// steps: "Read Excellent, done"). So the spec waits for each step in turn with
-// the standard 7 s, never for the whole trip at once (GUIDE hard rule 3; Jason,
+// steps: "Read Excellent, done"). So the spec walks the run (`followRunToEnd`):
+// every wait is the standard 7 s for exactly ONE step to land, never for the
+// whole trip or for several steps at once (GUIDE hard rule 3; Jason,
 // 2026-11-02), then for the set's result line. The only wait above 7 s is the
 // seed hop's sign-in when the sign-in is saved again (`saveBscSignIn`). No
 // timer and no cron path: the 15-minute cron is deliberately not exercised.
@@ -248,7 +249,7 @@ test.afterEach(async ({ context, isMobile }, testInfo) => {
 
 test(
   "Inventory: Sync lists a box's 1988 Topps Base cards on BuySportsCards and an in-person box takes them off",
-  { tag: ["@collection"] },
+  { tag: ["@collection", "@marketplace-seller"] },
   async ({ page, signIn, env, isMobile }) => {
     // The hook's record of how far this run got starts empty.
     written.box = undefined;
@@ -493,16 +494,18 @@ test(
     await expect(fieldA).toHaveValue("1");
     await tabs.getByRole("link", { name: "Sync status", exact: true }).click();
     await expect(page).toHaveURL(/[?&]tab=sync/);
-    // The live BSC round trip, step by step (see "Waits" above): the new run is
-    // in view (its ledger under Running now, or its own result line if it
-    // already finished), then a sheet read, the send and the confirm land in
-    // turn, 7 s each (how many sheets are read is not fixed, see "The ledger's
-    // steps" above). The line is the drain's own count: 2 rows on BSC show
-    // NB's stock after the read-back (2 updated, or none when BSC already
-    // showed them); "skipped" would be a held-back card.
+    // The live BSC round trip, one step per wait (see "Waits" above): the new
+    // run is in view (its ledger under Running now, or its own result line if it
+    // already finished); the walk then waits 7 s for the step the run is on to
+    // land, again and again, until the send is done (the sheet reads are serial
+    // and how many there are is not fixed, see "The ledger's steps" above); the
+    // confirm is one more step; then the result line. The line is the drain's
+    // own count: 2 rows on BSC show NB's stock after the read-back (2 updated,
+    // or none when BSC already showed them); "skipped" would be a held-back card.
     const run = syncRun(platform, SET_LABEL, BSC);
     const listedLine = row.getByText(/^2 listed(, 2 updated)?$/);
     await expect(run.underWay(listedLine)).toBeVisible();
+    await followRunToEnd(platform, run, run.step(SEND));
     await expect(run.readLanded()).toBeVisible();
     await expect(run.step(SEND)).toBeVisible();
     await expect(run.confirmLanded()).toBeVisible();
@@ -571,12 +574,14 @@ test(
     // The live BSC round trip, step by step. The set was 2 listed a minute ago,
     // so the row still shows the LAST run's finished steps until this one
     // claims the set: gate on the new run (its ledger, or its own result line).
-    // A read, the send (it carries the two zeros) and a confirm land in turn;
-    // how many sheets it reads is not fixed (see "The ledger's steps" above), so
-    // one read is the assertion.
+    // Walked one step per wait, like the listing run, until the send (it carries
+    // the two zeros) is done; then a confirm, then the result line. How many
+    // sheets it reads is not fixed (see "The ledger's steps" above), so one
+    // read is the assertion.
     const takeDown = syncRun(platform, SET_LABEL, BSC);
     const takenLine = row.getByText(/^0 listed(, \d+ updated)?, 2 taken to 0$/);
     await expect(takeDown.underWay(takenLine)).toBeVisible();
+    await followRunToEnd(platform, takeDown, takeDown.step(SEND));
     await expect(takeDown.readLanded()).toBeVisible();
     await expect(takeDown.step(SEND)).toBeVisible();
     await expect(takeDown.confirmLanded()).toBeVisible();

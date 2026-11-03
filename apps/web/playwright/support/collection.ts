@@ -436,22 +436,35 @@ export function syncRun(platform: Locator, setLabel: string, platformName: strin
 }
 
 /**
- * Follows the set's run under way to its end, one step at a time, each step
- * within the standard budget: used where a spec does not know which steps a
- * run holds (a failure hook cleaning up). Returns when the platform says
- * "Nothing syncing right now."; a bounded loop, one pass per step (a modern
- * set's longest plan is ten steps).
+ * Walks the set's run under way one step at a time: every wait covers exactly
+ * ONE step landing, within the standard budget, so a run of many serial sheet
+ * reads is never held to one 7 s window. Each pass waits for the step the run
+ * is on (the first working or waiting item of the running list) to reach done
+ * (or failed: the run goes on past a snag), then looks again.
+ *
+ * Used where a spec does not know how many steps a run holds: a throttled
+ * press reads fewer sheets, a failure hook cleans up whatever is in flight, and
+ * a run that has already ended (its finished, folded row) needs no walking.
+ * It returns when the platform says "Nothing syncing right now." or, if given,
+ * when `until` is visible (e.g. the send's done item, after which the spec
+ * waits for the confirm and the result line itself). A bounded loop, one pass
+ * per step (a modern set's longest plan is ten steps).
  */
-export async function followRunToEnd(platform: Locator, run: ReturnType<typeof syncRun>): Promise<void> {
+export async function followRunToEnd(
+  platform: Locator,
+  run: ReturnType<typeof syncRun>,
+  until?: Locator,
+): Promise<void> {
   const idle = platform.getByText(/^Nothing syncing right now\./);
+  const over = until ? idle.or(until).first() : idle;
   const open = run.running.getByRole("listitem", { name: /, (working|waiting)$/ });
   for (let pass = 0; pass < 12; pass++) {
-    // Either the run is over, or it shows the step it is on.
-    await expect(idle.or(open.first())).toBeVisible();
-    if (await idle.isVisible()) return;
+    // Either the walk is over, or the run shows the step it is on.
+    await expect(over.or(open.first()).first()).toBeVisible();
+    if (await over.isVisible()) return;
     const label = ((await open.first().textContent()) ?? "").trim().replace(/, (working|waiting)$/, "");
-    // That step lands (or snags: the run goes on past it) or the run ends.
-    await expect(run.step(label).or(run.step(label, "failed")).or(idle).first()).toBeVisible();
+    // That one step lands (or snags), or the run ends, or the walk's goal is reached.
+    await expect(run.step(label).or(run.step(label, "failed")).or(over).first()).toBeVisible();
   }
-  await expect(idle).toBeVisible();
+  await expect(over).toBeVisible();
 }
