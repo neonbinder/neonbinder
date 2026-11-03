@@ -9,6 +9,7 @@ import { LoginDiagnostic } from "./services/login-diagnostic";
 import { credentialRateLimitKey } from "./rate-limit";
 import { createCredentialsRouter } from "./routes/credentials";
 import { createEasypostRouter } from "./routes/easypost";
+import { createEbayOAuthRouter } from "./routes/ebay-oauth";
 import { parseTransientCredentials } from "./transient-credentials";
 import { respondIfCanaryPaused } from "./canary-pause";
 import {
@@ -440,6 +441,14 @@ app.use(createCredentialsRouter());
 // (PUT /easypost/:key) — see its header for why that does not reintroduce
 // what NEO-141 removed.
 app.use(createEasypostRouter());
+
+// --- eBay OAuth (NEO-415) ---
+//
+// Connect (code or seed refresh-token grant) and refresh. Mounted as a Router
+// for the same NEO-141 testability reason. Plain HTTP, no Chromium. The
+// refresh token and the app's client secret never leave this process; see the
+// header of ./routes/ebay-oauth for the response contract.
+app.use(createEbayOAuthRouter());
 
 const PORT: number = parseInt(process.env.PORT || "8080", 10);
 app.listen(PORT, () => console.log(`[${ENV}] Listening on port ${PORT}`));

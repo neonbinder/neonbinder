@@ -52,6 +52,6 @@ describe("MissingCredentialsBanner", () => {
     renderBanner(["sportlots"]);
     expect(
       screen.getByLabelText("Configure credentials in Profile").getAttribute("href"),
-    ).toBe("/profile/credentials");
+    ).toBe("/profile/credentials?platform=sportlots");
   });
 });

@@ -1,6 +1,6 @@
 import type { FunctionReturnType } from "convex/server";
 import type { api } from "@/convex/_generated/api";
-import type { PlatformSyncStatus, SetProblems, SyncProblem, SyncStatus } from "./types";
+import type { PlatformSyncStatus, SetProblems, SyncProblem, SyncStatus, SyncStep } from "./types";
 
 /**
  * NEO-370 — the Sync status reads (`listingSync.syncStatus`, and the admin's
@@ -27,6 +27,21 @@ function toProblem(raw: RawProblem): SyncProblem {
   };
 }
 
+/**
+ * NEO-415 — a run's steps (`running.steps`, and each set's `steps`; the
+ * server always sends both, empty before a plan is written): kind, NB
+ * condition(s) and state, in run order. The one place the steps are read.
+ */
+type RawStep = RawPlatform["sets"][number]["steps"][number];
+function toSteps(steps: ReadonlyArray<RawStep>): SyncStep[] {
+  return steps.map((step) => ({
+    kind: step.kind,
+    ...(step.condition !== undefined ? { condition: step.condition } : {}),
+    ...(step.conditions !== undefined ? { conditions: [...step.conditions] } : {}),
+    status: step.status,
+  }));
+}
+
 function toPlatform(raw: RawPlatform): PlatformSyncStatus {
   return {
     platform: raw.platform,
@@ -40,6 +55,7 @@ function toPlatform(raw: RawPlatform): PlatformSyncStatus {
           startedAt: raw.running.startedAt,
           ...(raw.running.setLabel !== undefined ? { setLabel: raw.running.setLabel } : {}),
           ...(raw.running.variantId !== undefined ? { variantId: raw.running.variantId } : {}),
+          steps: toSteps(raw.running.steps),
         }
       : null,
     ...(raw.scheduledAt !== undefined ? { scheduledAt: raw.scheduledAt } : {}),
@@ -65,6 +81,7 @@ function toPlatform(raw: RawPlatform): PlatformSyncStatus {
       ...(s.counts ? { counts: s.counts } : {}),
       problems: s.problems.map(toProblem),
       problemsTotal: Math.max(s.problemsTotal, s.problems.length),
+      steps: toSteps(s.steps),
     })),
   };
 }

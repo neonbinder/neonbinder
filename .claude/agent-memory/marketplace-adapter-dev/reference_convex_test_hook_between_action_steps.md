@@ -35,3 +35,10 @@ an HTTP call (a query, then `fetch`, then the writing mutation), the
 the stub writes the change (e.g. an operator's ruling landing mid-lookup), and
 the later mutation sees it on its fresh read. Works from a plain `t.action`;
 no `vi.mock`, no separate file.
+
+**Reading, not writing, works the same way.** To prove a subscribed record
+changes step by step while an action runs (a per-step progress ledger), read
+the record with `t.run` inside the fetch stub (or a fake's `onSheetRead` /
+`onPut` / `onItems` hook) and push a snapshot per call; assert the whole
+snapshot list. A ledger that only lands at the finish leaves every snapshot
+stale, so the test goes red on exactly that bug.

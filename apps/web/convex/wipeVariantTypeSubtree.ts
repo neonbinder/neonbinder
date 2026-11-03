@@ -48,7 +48,8 @@
  * selector rows (sport, brand, set), never a subtree row, so containers are
  * untouched and not in the graph. NEO-370's listing tables (outbox,
  * per-variant sync records, sales) name cards and variants but never refuse
- * the wipe; see their entries. There is still no print table
+ * the wipe; see their entries. Nor do NEO-415's eBay link rows
+ * (`marketplaceListingLinks`). There is still no print table
  * (`labelPurchases` carries no card link). The other
  * holdings beyond the checklist are cross-listings, staged checklist reviews
  * and card scans an operator uploaded (`cardChecklist.imageUrls`), and the dry
@@ -235,6 +236,11 @@ export const SUBTREE_REFERENCE_GRAPH = {
     fields: ["items[].cardId"],
     handling:
       "NEO-370 a record of what sold. Never refuses the wipe and is untouched: an item whose card is gone shows without its NB card, and its applied flag already did its work",
+  },
+  marketplaceListingLinks: {
+    fields: ["cardId"],
+    handling:
+      "NEO-415 NB's link to a card-level listing it made (eBay). Never refuses the wipe and is untouched: a card a collector still owns a copy of already refuses it (collectionCopies), so a wiped card's listing was withdrawn when its last copy went (and the drainer withdraws a gone card's live listing when it settles the card's queued row); a sale naming the gone card is left unmatched",
   },
   privateSets: {
     fields: ["sportId"],

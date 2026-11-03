@@ -387,8 +387,10 @@ describe("the drain kick (kickOwnerDrains: Sync, the end of a saved sign-in's wa
 describe("listingSettings", () => {
   test("not listing and not connected by default", async () => {
     const s = await fresh();
+    // NEO-415: eBay answers in the same shape beside BSC.
     expect(await s.me.query(api.listingSync.listingSettings, {})).toEqual({
       bsc: { connected: false, listing: false, needsReauth: false, paused: false, sellerConflict: false },
+      ebay: { connected: false, listing: false, needsReauth: false, paused: false, sellerConflict: false },
     });
   });
 

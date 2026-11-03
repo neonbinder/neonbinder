@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { KNOWN_SITES } from "@/convex/lib/marketplacePause";
+import { CHECKLIST_SITES } from "@/convex/lib/marketplacePause";
 import {
   PAUSE_NOTICE_COPY,
   pausedStripText,
@@ -72,13 +72,17 @@ export default function PausedNotice({ sites }: PausedNoticeProps) {
   // Lazy initialiser: one synchronous read on mount, then React state owns it.
   const [dismissedKey, setDismissedKey] = useState<string | null>(readDismissed);
 
-  const sorted = [...new Set(sites)].sort();
+  // Only sites a checklist sync fetches from: a paused listing destination
+  // (eBay) does not change what the sync does, so this strip says nothing of it.
+  const sorted = [...new Set(sites)]
+    .filter((site) => (CHECKLIST_SITES as readonly string[]).includes(site))
+    .sort();
   if (sorted.length === 0) return null;
 
   const key = sorted.join(",");
   if (dismissedKey === key) return null;
 
-  const { lead, body } = pausedStripText(sorted, KNOWN_SITES);
+  const { lead, body } = pausedStripText(sorted, CHECKLIST_SITES);
 
   const onDismiss = () => {
     writeDismissed(key);

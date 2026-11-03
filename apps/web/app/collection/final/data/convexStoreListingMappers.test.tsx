@@ -44,9 +44,9 @@ describe("toSyncStatus", () => {
   });
 
   it("a run with no set yet keeps only its start", () => {
-    const [p] = toSyncStatus({ platforms: [platform({ running: { startedAt: 5 }, lastDrainAt: 3, scheduledAt: 9 })] } as RawStatus)
+    const [p] = toSyncStatus({ platforms: [platform({ running: { startedAt: 5, steps: [] }, lastDrainAt: 3, scheduledAt: 9 })] } as RawStatus)
       .platforms;
-    expect(p.running).toEqual({ startedAt: 5 });
+    expect(p.running).toEqual({ startedAt: 5, steps: [] });
     expect(p).toMatchObject({ lastDrainAt: 3, scheduledAt: 9 });
   });
 
@@ -79,6 +79,7 @@ describe("toSyncStatus", () => {
               status: "idle",
               problemsTotal: 1,
               problems: [{ reason: "noPrice" }, { reason: "graded", cardNo: "3" }],
+              steps: [],
             },
           ],
         }),
@@ -87,6 +88,42 @@ describe("toSyncStatus", () => {
     expect(p.sets[0].problemsTotal).toBe(2);
     expect(p.sets[0].problems).toEqual([{ reason: "noPrice" }, { reason: "graded", cardNo: "3" }]);
     expect(p.sets[0]).not.toHaveProperty("counts");
+  });
+
+  it("NEO-415: the run's steps pass through, kind, NB condition and state only, in run order", () => {
+    const steps = [
+      { kind: "read", condition: "Mint", conditions: ["Mint", "Near Mint"], status: "done", finishedAt: 4 },
+      { kind: "send", status: "working" },
+    ];
+    const [p] = toSyncStatus({
+      platforms: [
+        platform({
+          running: { startedAt: 5, variantId: "v1", steps },
+          sets: [{ variantId: "v1", setLabel: "Base", status: "running", problemsTotal: 0, problems: [], steps }],
+        }),
+      ],
+    } as RawStatus).platforms;
+    const want = [
+      { kind: "read", condition: "Mint", conditions: ["Mint", "Near Mint"], status: "done" },
+      { kind: "send", status: "working" },
+    ];
+    expect(p.running?.steps).toEqual(want);
+    expect(p.sets[0].steps).toEqual(want);
+    expect(p.sets[0].steps?.[1]).not.toHaveProperty("condition");
+    expect(p.sets[0].steps?.[1]).not.toHaveProperty("conditions");
+  });
+
+  it("NEO-415: a run with no plan yet, and a set never run since, carry empty ledgers", () => {
+    const [p] = toSyncStatus({
+      platforms: [
+        platform({
+          running: { startedAt: 5, steps: [] },
+          sets: [{ variantId: "v1", setLabel: "Base", status: "idle", problemsTotal: 0, problems: [], steps: [] }],
+        }),
+      ],
+    } as RawStatus).platforms;
+    expect(p.running?.steps).toEqual([]);
+    expect(p.sets[0].steps).toEqual([]);
   });
 
   it("toSetProblems keeps a larger total (a capped list)", () => {

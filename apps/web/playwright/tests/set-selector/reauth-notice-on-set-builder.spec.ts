@@ -32,10 +32,12 @@ test(
       await expect(page.getByRole("button", { name: "Dismiss sign-in notice" })).toBeVisible();
       await expectAccessible(page, { label: "Set Builder with the lapsed-session notice" });
 
-      // The link lands on the credentials page.
+      // The link lands on the credentials page, on the marketplace that lapsed (NEO-415).
       await signInAgain.click();
       await expect(page.getByRole("heading", { name: "Profile Settings" })).toBeVisible();
-      await expect(page.getByText(/BuySportsCards Credentials/).first()).toBeVisible();
+      await expect(page).toHaveURL(/\/profile\/credentials\?platform=sportlots$/);
+      await expect(page.getByRole("tab", { name: "SportLots", exact: true })).toHaveAttribute("aria-selected", "true");
+      await expect(page.getByText(/SportLots Credentials/).first()).toBeVisible();
       await expectAccessible(page, { label: "Profile credentials page" });
 
       // The notice survives a reload until it is dismissed.

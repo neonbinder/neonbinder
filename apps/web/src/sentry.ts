@@ -1,5 +1,9 @@
 import * as Sentry from "@sentry/react";
 import { scrubSignedStorageUrls } from "../lib/observability/scrub-signed-urls";
+import { scrubOAuthParams } from "../lib/observability/scrub-oauth-params";
+
+/** Every URL scrub, in one pass per payload (signed storage URLs, then the eBay return's code and state). */
+const scrub = <T>(value: T): T => scrubOAuthParams(scrubSignedStorageUrls(value));
 
 // Skip Sentry entirely when running under E2E tests, so test sessions never
 // reach Sentry as errors, traces or replays. (It began as a Maestro
@@ -23,7 +27,7 @@ if (import.meta.env.VITE_CLERK_TESTING_ENABLED !== "true") {
         // Scrub the raw rrweb recording frame before it's buffered — this is
         // the Session Replay "network entry" capture path, separate from the
         // breadcrumb/span pipeline below.
-        beforeAddRecordingEvent: (event) => scrubSignedStorageUrls(event),
+        beforeAddRecordingEvent: (event) => scrub(event),
         // Explicit, not inherited: these are the library defaults, but they
         // are load-bearing for /profile/api-keys — the reveal-once API-key
         // dialog is on-screen text, and replay films 10% of sessions (100%
@@ -42,9 +46,13 @@ if (import.meta.env.VITE_CLERK_TESTING_ENABLED !== "true") {
 
     // XHR/fetch breadcrumbs (e.g. the signed PUT/POST in direct-upload.ts)
     // carry the full request URL, query string included.
-    beforeBreadcrumb: (breadcrumb) => scrubSignedStorageUrls(breadcrumb),
+    beforeBreadcrumb: (breadcrumb) => scrub(breadcrumb),
     // browserTracingIntegration's auto-instrumented spans record the request
     // URL on `http.url` — same signed-capability leak, different pipeline.
-    beforeSendTransaction: (event) => scrubSignedStorageUrls(event),
+    beforeSendTransaction: (event) => scrub(event),
+    // NEO-415: an error's `request.url` (and its breadcrumbs) can carry the
+    // eBay return's one-time `code` and `state`; the pageload transaction
+    // above can too.
+    beforeSend: (event) => scrub(event),
   });
 }
