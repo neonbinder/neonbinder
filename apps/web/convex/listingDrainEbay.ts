@@ -99,11 +99,11 @@ import {
 import {
   bulkCreateOffers,
   bulkCreateOrReplaceInventoryItems,
-  bulkPublishOffers,
   bulkUpdatePriceQuantity,
   getCardCategoryAspects,
   getOfferBySku,
   openEbaySellerSession,
+  publishOffer,
   sayEbayFailure,
   updateOffer,
   uploadImage,
@@ -126,6 +126,34 @@ const MAX_DETAIL = 160;
 const OFFER_EXISTS_ERROR_IDS = new Set([25002]);
 /** A picture is re-uploaded when an unused one expires within this long. */
 const IMAGE_FRESH_MS = 24 * 60 * 60 * 1000;
+/**
+ * Offer publishes in flight at once. One publish call per offer, side by
+ * side, so the Go live step takes about as long as the slowest one, not the
+ * ~9 s eBay's bulk publish took for two offers.
+ */
+export const EBAY_PUBLISH_CONCURRENCY = 10;
+
+/**
+ * Runs `work` over `items` with at most `limit` in flight, in order of
+ * start. Once `halted()` says so, no further item starts; those in flight
+ * finish.
+ */
+export async function inPool<T>(
+  items: readonly T[],
+  limit: number,
+  work: (item: T) => Promise<void>,
+  halted: () => boolean = () => false,
+): Promise<void> {
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    while (next < items.length && !halted()) {
+      const item = items[next];
+      next += 1;
+      await work(item);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(Math.max(limit, 1), items.length) }, worker));
+}
 
 type Platform = "ebay";
 
@@ -1418,24 +1446,35 @@ async function syncEbayVariant(
     }
   }
 
-  // 6. Publish new and returning listings.
+  // 6. Publish new and returning listings: one publish per offer, at most
+  //    EBAY_PUBLISH_CONCURRENCY at once. eBay refusing an offer rejects that
+  //    card; a call that fails outright (eBay busy, signed out, an answer NB
+  //    can't read) starts no further publish and stops the run once the ones
+  //    in flight are back, as a failed bulk call did.
   const publishes = plans.filter((p) => p.needsPublish && !p.failed && p.offerId);
   await step("publish", publishes.length > 0);
-  for (let i = 0; i < publishes.length; i += EBAY_BULK_LIMIT) {
-    const chunk = publishes.slice(i, i + EBAY_BULK_LIMIT);
-    const r = await bulkPublishOffers(ctx, session, chunk.map((p) => p.offerId as string));
-    const stop = await stopOn(r);
-    if (stop) return stop;
-    if (!r.ok) continue;
-    const byOffer = new Map(r.value.map((e) => [e.offerId, e]));
-    for (const plan of chunk) {
-      const e = byOffer.get(plan.offerId);
-      if (e && e.statusCode >= 200 && e.statusCode < 300 && e.listingId) {
+  const publishHalt: { failure: EbayFailure | null } = { failure: null };
+  await inPool(
+    publishes,
+    EBAY_PUBLISH_CONCURRENCY,
+    async (plan) => {
+      const r = await publishOffer(ctx, session, plan.offerId as string);
+      if (!r.ok) {
+        publishHalt.failure ??= r.failure;
+        return;
+      }
+      const e = r.value;
+      if (e.statusCode >= 200 && e.statusCode < 300 && e.listingId) {
         // A republish gets a new listing id; a late sale may still name the old one.
         if (plan.listingId !== null && plan.listingId !== e.listingId) plan.retiredListingId = plan.listingId;
         plan.listingId = e.listingId;
-      } else reject(plan, "publish", e?.errorIds ?? [], e?.errors);
-    }
+      } else reject(plan, "publish", e.errorIds, e.errors);
+    },
+    () => publishHalt.failure !== null,
+  );
+  if (publishHalt.failure) {
+    const stop = await stopOn({ ok: false, failure: publishHalt.failure });
+    if (stop) return stop;
   }
 
   // Record every listing that landed.

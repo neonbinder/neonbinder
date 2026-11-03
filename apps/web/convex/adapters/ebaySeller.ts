@@ -94,6 +94,12 @@ export interface EbaySellerSession {
   config: EbayConfig;
   reauthAttempted: boolean;
   dead: boolean;
+  /**
+   * The session's one token refresh, once started: concurrent calls that hit
+   * a 401 together all wait on it instead of each spending (or, finding it
+   * spent, killing) the session (`reauthOnce`).
+   */
+  reauth?: Promise<boolean>;
 }
 
 type SessionCtx = Pick<ActionCtx, "runAction">;
@@ -319,8 +325,40 @@ function headersFor(session: EbaySellerSession, opts: SendOptions): Record<strin
 }
 
 /**
+ * The session's single token refresh. The first caller starts it; a caller
+ * arriving while it runs, or after, gets the same answer. A session opened
+ * with `reauthAttempted` already true (its owner holds the credential lock)
+ * never refreshes. True when the session now holds a fresh token.
+ */
+async function reauthOnce(ctx: SessionCtx, session: EbaySellerSession): Promise<boolean> {
+  if (!session.reauth) {
+    if (session.reauthAttempted) return false;
+    session.reauthAttempted = true;
+    session.reauth = (async () => {
+      const refreshStartedAt = Date.now();
+      let next: { token: string } | null = null;
+      try {
+        const r = await ctx.runAction(internal.credentials.refreshSiteTokenForUser, { site: SITE, userId: session.ownerId });
+        if (r.refreshed) {
+          next = await ctx.runAction(internal.credentials.getSiteTokenForUser, { site: SITE, userId: session.ownerId });
+        }
+      } catch {
+        next = null;
+      }
+      logCall("reauth", refreshStartedAt, next ? "ok" : "failed");
+      if (!next) return false;
+      session.token = next.token;
+      return true;
+    })();
+  }
+  return await session.reauth;
+}
+
+/**
  * One request with the session's token: a 401 refreshes once per session and
- * retries once; a second 401 kills the session. A non-2xx other than 401
+ * retries once; a second 401 kills the session. Calls running at once share
+ * that one refresh: a call whose 401 came with the token another call has
+ * since replaced retries with the new one. A non-2xx other than 401
  * fails `http` with eBay's error ids. Returns the parsed JSON (null for an
  * empty body) with the status and any `Location` header.
  */
@@ -350,31 +388,20 @@ async function send(ctx: SessionCtx, session: EbaySellerSession, opts: SendOptio
     }
   };
 
+  // The token this attempt carries (`attempt` reads it before its first await).
+  const sentWith = session.token;
   let res = await attempt();
   if (!(res instanceof Response)) return { ok: false, failure: res };
   if (res.status === 401) {
     await res.text().catch(() => "");
-    if (session.reauthAttempted) {
+    // Already replaced by a concurrent call's refresh: retry with it. Otherwise
+    // refresh (or wait on the refresh already running); a refresh that gives
+    // back the token that was just refused is no refresh.
+    const fresh = session.token !== sentWith || ((await reauthOnce(ctx, session)) && session.token !== sentWith);
+    if (session.dead || !fresh) {
       session.dead = true;
       return { ok: false, failure: failure("signed_out", SIGNED_OUT, { httpStatus: 401 }) };
     }
-    session.reauthAttempted = true;
-    const refreshStartedAt = Date.now();
-    let next: { token: string } | null = null;
-    try {
-      const r = await ctx.runAction(internal.credentials.refreshSiteTokenForUser, { site: SITE, userId: session.ownerId });
-      if (r.refreshed) {
-        next = await ctx.runAction(internal.credentials.getSiteTokenForUser, { site: SITE, userId: session.ownerId });
-      }
-    } catch {
-      next = null;
-    }
-    logCall("reauth", refreshStartedAt, next ? "ok" : "failed");
-    if (!next) {
-      session.dead = true;
-      return { ok: false, failure: failure("signed_out", SIGNED_OUT, { httpStatus: 401 }) };
-    }
-    session.token = next.token;
     res = await attempt();
     if (!(res instanceof Response)) return { ok: false, failure: res };
     if (res.status === 401) {
@@ -867,19 +894,45 @@ export async function bulkCreateOffers(
   return await bulk(ctx, session, "bulkCreateOffer", "/sell/inventory/v1/bulk_create_offer", offers);
 }
 
-/** `POST /sell/inventory/v1/bulk_publish_offer` (≤25). */
-export async function bulkPublishOffers(
-  ctx: SessionCtx,
-  session: EbaySellerSession,
-  offerIds: string[],
-): Promise<EbayResult<EbayBulkEntry[]>> {
-  return await bulk(
-    ctx,
-    session,
-    "bulkPublishOffer",
-    "/sell/inventory/v1/bulk_publish_offer",
-    offerIds.map((offerId) => ({ offerId })),
-  );
+/** eBay's answer to one offer's publish: its listing on success, its error ids and details when refused. */
+export interface EbayPublishAnswer {
+  statusCode: number;
+  listingId: string | null;
+  errorIds: number[];
+  /** eBay's text and parameters, redacted and capped (`ebayErrorDetailsOf`): the log line only. */
+  errors: EbayErrorDetail[];
+}
+
+/**
+ * Statuses where eBay refused THIS offer (its body names why), as opposed to
+ * eBay busy, signed out or refusing the seller: those stay failures.
+ */
+const PUBLISH_REFUSAL_STATUSES = [400, 404, 409, 422];
+
+/**
+ * `POST /sell/inventory/v1/offer/{offerId}/publish`: one offer goes live.
+ * One call per offer, run side by side by the drain, because eBay's
+ * bulk_publish_offer took ~9 s for two offers on the sandbox while a single
+ * publish answers in about the time of one. A refusal of this offer
+ * (`PUBLISH_REFUSAL_STATUSES` with a JSON body) is an answer, with eBay's
+ * ids and details, like a bulk call's per-entry result; anything else fails.
+ */
+export async function publishOffer(ctx: SessionCtx, session: EbaySellerSession, offerId: string): Promise<EbayResult<EbayPublishAnswer>> {
+  const r = await send(ctx, session, {
+    operation: "publishOffer",
+    method: "POST",
+    path: `/sell/inventory/v1/offer/${encodeURIComponent(offerId)}/publish`,
+    timeoutMs: EBAY_TIMEOUTS_MS.write,
+    maxBytes: EBAY_MAX_BYTES.small,
+    bodyStatuses: PUBLISH_REFUSAL_STATUSES,
+  });
+  if (!r.ok) return r;
+  const body = r.value.body;
+  const listingId = isRecord(body) && typeof body.listingId === "string" && body.listingId.length > 0 && body.listingId.length <= 64 ? body.listingId : null;
+  return {
+    ok: true,
+    value: { statusCode: r.value.status, listingId, errorIds: errorIdsOf(body), errors: ebayErrorDetailsOf(body) },
+  };
 }
 
 /** `POST /sell/inventory/v1/bulk_update_price_quantity` (≤25), published offers only. */

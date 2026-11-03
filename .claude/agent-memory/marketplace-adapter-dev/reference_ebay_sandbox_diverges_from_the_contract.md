@@ -46,3 +46,13 @@ logs `errorIds` plus `errors[]` (message, longMessage, parameters,
 inputRefIds) redacted by `redactEbayText`; read those before guessing a body
 change. Treat every documented status/field as a hypothesis until a sandbox
 run confirms it.
+
+**Publishing: calculated shipping and bulk speed.** The sandbox cannot rate
+CALCULATED shipping: publishing an offer whose fulfillment policy is
+calculated fails 25007 every time, while a flat (free) policy publishes, so
+sandbox E2E picks a flat policy for the slot it lists in. And
+`bulk_publish_offer` took ~9 s for two offers there, over the 7 s step
+budget; the drain publishes one `offer/{id}/publish` per offer side by side
+instead. Concurrent calls on one session need the single-flight refresh in
+`send` (`reauthOnce`), or simultaneous 401s kill the session.
+

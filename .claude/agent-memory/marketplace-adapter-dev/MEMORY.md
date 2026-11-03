@@ -48,7 +48,7 @@
 - [Work under the credential lock reads tokens directly](reference_work_under_the_credential_lock_reads_tokens_directly.md) — getSiteTokenForUser/re-auth contend for the held lock (busy = no token); read cache, refresh body, reauthAttempted:true
 - [Public refusals: return or ConvexError](reference_public_refusals_are_returns_or_convex_error.md) — a plain Error from a public function is "Server Error" in prod; return {ok:false,error}
 - [BSC seller sheet reads must be serial](reference_bsc_seller_sheet_reads_must_be_serial.md) — concurrent seller/bulk-upload/results reads per seller return twin (card, condition) rows; every card held back (NEO-415)
-- [eBay sandbox diverges from the contract](reference_ebay_sandbox_diverges_from_the_contract.md) — location create on existing key = 400 (read first); Ground Advantage behind an old code (match description); Media Location header; eSE 20403: send carrier "eBay Send" (unconfirmed)
+- [eBay sandbox diverges from the contract](reference_ebay_sandbox_diverges_from_the_contract.md) — location 400 on existing key; GA behind old code; calculated shipping publish = 25007; bulk publish ~9 s, publish per offer
 - [BSC seller sheet has no all-conditions read](reference_bsc_seller_sheet_has_no_all_conditions_read.md) — omit/null condition = 500; ""/"all" = one blank template per card, hides listings; templates mint new productIds per read
 - [eBay sandbox refuses eSE policies](reference_ebay_sandbox_refuses_ese_policy.md) — 20403 on any eSE policy create (confirmed by hand); no body fix; NB makes no shipping policies until NEO-423
 - [Ledger error finish settles working as failed](reference_progress_ledger_error_finish_settles_working_failed.md) — ledger.fail the earlier step, endWorking before an error finish

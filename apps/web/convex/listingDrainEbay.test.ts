@@ -20,7 +20,7 @@ import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
 import { drainOwnerImpl, type DrainCtx, type DrainReport } from "./listingDrain";
 import { EBAY_SETUP_INCOMPLETE_ERROR } from "./listingDrain";
-import { EBAY_CARD_REJECTED, EBAY_STEP_SAYS } from "./listingDrainEbay";
+import { EBAY_CARD_REJECTED, EBAY_PUBLISH_CONCURRENCY, EBAY_STEP_SAYS, inPool } from "./listingDrainEbay";
 import { EBAY_SANDBOX_TEST_PICTURE_URL } from "./lib/ebayEnv";
 import { drainScheduled } from "../lib/testing/drain-scheduled";
 
@@ -111,6 +111,10 @@ class FakeEbay {
   /** Answers every call 401 while > 0. */
   unauthorized = 0;
   onItems?: (skus: string[]) => Promise<void>;
+  /** Awaited inside each publish call (the offer id): holds publishes open to measure how many run at once. */
+  publishGate?: (offerId: string) => Promise<void>;
+  publishing = 0;
+  maxPublishing = 0;
 
   fetch = (async (url: string | URL | Request, init?: RequestInit) => {
     const u = new URL(String(url));
@@ -173,16 +177,20 @@ class FakeEbay {
         }),
       });
     }
-    if (p === "/sell/inventory/v1/bulk_publish_offer") {
-      return json({
-        responses: (call.json.requests as any[]).map((r) => {
-          const offer = this.offers.get(r.offerId);
-          if (!offer) return { offerId: r.offerId, statusCode: 404, errors: [{ errorId: 25713 }] };
-          offer.status = "PUBLISHED";
-          offer.listingId ??= `L${++this.seq}`;
-          return { offerId: r.offerId, statusCode: 200, listingId: offer.listingId };
-        }),
-      });
+    const pub = /^\/sell\/inventory\/v1\/offer\/([^/]+)\/publish$/.exec(p);
+    if (pub && call.method === "POST") {
+      this.publishing += 1;
+      this.maxPublishing = Math.max(this.maxPublishing, this.publishing);
+      try {
+        await this.publishGate?.(decodeURIComponent(pub[1]));
+      } finally {
+        this.publishing -= 1;
+      }
+      const offer = this.offers.get(decodeURIComponent(pub[1]));
+      if (!offer) return json({ errors: [{ errorId: 25713 }] }, 404);
+      offer.status = "PUBLISHED";
+      offer.listingId ??= `L${++this.seq}`;
+      return json({ listingId: offer.listingId, warnings: [] });
     }
     if (p === "/sell/inventory/v1/bulk_update_price_quantity") {
       return json({
@@ -228,6 +236,10 @@ class FakeEbay {
 
   to(path: string) {
     return this.calls.filter((c) => c.path === path);
+  }
+  /** Every single-offer publish call, in the order sent. */
+  publishes() {
+    return this.calls.filter((c) => c.method === "POST" && /^\/sell\/inventory\/v1\/offer\/[^/]+\/publish$/.test(c.path));
   }
   writes() {
     return this.calls.filter((c) => c.method !== "GET");
@@ -593,7 +605,7 @@ describe("eBay drain: the first sync", () => {
     expect(await outbox(s)).toHaveLength(0);
   });
 
-  test("more than 25 listings go to eBay in chunks of 25", async () => {
+  test("more than 25 listings go to eBay in chunks of 25, and each offer is published on its own", async () => {
     const s = await setup();
     const v = await seedVariant(s.t, { cards: Array.from({ length: 26 }, (_, i) => ({ number: String(i + 1) })) });
     for (const cardId of v.cardIds) await addWithPhoto(s, cardId, { homeId: s.box, condition: "Near Mint", minPriceCents: 500 });
@@ -605,7 +617,8 @@ describe("eBay drain: the first sync", () => {
     const sizes = (path: string) => ebay.to(path).map((c) => c.json.requests.length);
     expect(sizes("/sell/inventory/v1/bulk_create_or_replace_inventory_item")).toEqual([25, 1]);
     expect(sizes("/sell/inventory/v1/bulk_create_offer")).toEqual([25, 1]);
-    expect(sizes("/sell/inventory/v1/bulk_publish_offer")).toEqual([25, 1]);
+    expect(ebay.publishes()).toHaveLength(26);
+    expect(ebay.maxPublishing).toBeLessThanOrEqual(EBAY_PUBLISH_CONCURRENCY);
     expect((await record(s, v.variantId))?.counts).toMatchObject({ listed: 26, pushed: 26 });
   });
 });
@@ -798,7 +811,7 @@ describe("eBay drain: withdraw at zero and republish", () => {
     await drain(s);
 
     const paths = ebay.writes().map((c) => `${c.method} ${c.path}`);
-    expect(paths).toContain("POST /sell/inventory/v1/bulk_publish_offer");
+    expect(paths).toContain(`POST /sell/inventory/v1/offer/${offerId}/publish`);
     expect(paths).toContain(`PUT /sell/inventory/v1/offer/${offerId}`);
     expect(paths).not.toContain("POST /sell/inventory/v1/bulk_create_offer");
     expect(ebay.offerFor(`NB2-${card}-NM`)?.status).toBe("PUBLISHED");
@@ -1170,8 +1183,79 @@ describe("eBay drain: eBay's answers", () => {
     const sku = `NB2-${card}-NM`;
     ebay.offers.set("OLD", { offerId: "OLD", sku, status: "PUBLISHED", listingId: "LIVE9", body: {} });
     await drain(s);
-    expect(ebay.to("/sell/inventory/v1/bulk_publish_offer")).toHaveLength(0);
+    expect(ebay.publishes()).toHaveLength(0);
     expect(await linkOf(s, card, "NM")).toMatchObject({ offerId: "OLD", listingId: "LIVE9", status: "live" });
+  });
+
+  /** Twelve cards in one variant, each with a photo, listed and queued. */
+  async function twelveCards(s: S) {
+    const v = await seedVariant(s.t, { cards: Array.from({ length: 12 }, (_, i) => ({ number: String(i + 1) })) });
+    for (const cardId of v.cardIds) await addWithPhoto(s, cardId, { homeId: s.box, condition: "Near Mint", minPriceCents: 500 });
+    await listOnEbay(s);
+    await queue(s, v.cardIds.map((cardId) => ({ cardId, variantId: v.variantId })));
+    return v;
+  }
+
+  test("offers are published side by side, never more than EBAY_PUBLISH_CONCURRENCY at once", async () => {
+    const s = await setup();
+    const v = await twelveCards(s);
+    ebay.publishGate = () => new Promise((r) => setTimeout(r, 10));
+    await drain(s);
+    expect(EBAY_PUBLISH_CONCURRENCY).toBe(10);
+    expect(ebay.publishes()).toHaveLength(12);
+    // All ten start before any answers: wall clock is the slowest publish, not their sum.
+    expect(ebay.maxPublishing).toBe(EBAY_PUBLISH_CONCURRENCY);
+    for (const cardId of v.cardIds) expect(await linkOf(s, cardId, "NM")).toMatchObject({ status: "live", listingId: expect.any(String) });
+    expect((await record(s, v.variantId))?.counts).toMatchObject({ listed: 12, pushed: 12 });
+  });
+
+  test("eBay refusing one offer's publish rejects that card only; the others go live", async () => {
+    const s = await setup();
+    const v = await seedVariant(s.t, { cards: [{ number: "1" }, { number: "2" }] });
+    for (const cardId of v.cardIds) await addWithPhoto(s, cardId, { homeId: s.box, condition: "Near Mint", minPriceCents: 500 });
+    await listOnEbay(s);
+    await queue(s, v.cardIds.map((cardId) => ({ cardId, variantId: v.variantId })));
+    const [refused, fine] = v.cardIds;
+    const real = ebay.fetch;
+    vi.stubGlobal("fetch", (async (url: string | URL | Request, init?: RequestInit) => {
+      const m = /\/offer\/([^/]+)\/publish$/.exec(new URL(String(url)).pathname);
+      if (m && ebay.offers.get(decodeURIComponent(m[1]))?.sku === `NB2-${refused}-NM`) {
+        return Response.json({ errors: [{ errorId: 25007, message: "RAW-EBAY-TEXT" }] }, { status: 400 });
+      }
+      return real(url, init);
+    }) as typeof fetch);
+    const logs = vi.spyOn(console, "log");
+    await drain(s);
+    const rejected = logs.mock.calls.map((c) => String(c[0])).filter((l) => l.includes("ebay_listing_rejected"));
+    logs.mockRestore();
+    expect(rejected).toHaveLength(1);
+    expect(JSON.parse(rejected[0])).toMatchObject({ operation: "publish", errorIds: [25007] });
+    expect(await linkOf(s, refused, "NM")).toMatchObject({ status: "draft" });
+    expect(await linkOf(s, fine, "NM")).toMatchObject({ status: "live", listingId: expect.any(String) });
+    const rec = await record(s, v.variantId);
+    expect(rec?.status).not.toBe("error");
+    expect(rec?.problems).toEqual([expect.objectContaining({ cardId: refused, reason: "rejected", detail: EBAY_CARD_REJECTED.publish })]);
+    expect(JSON.stringify(rec)).not.toContain("RAW-EBAY-TEXT");
+  });
+
+  test("a publish that fails outright starts no further publish and stops the run once those in flight are back", async () => {
+    const s = await setup();
+    const v = await twelveCards(s);
+    ebay.publishGate = () => new Promise((r) => setTimeout(r, 10));
+    const real = ebay.fetch;
+    let publishCalls = 0;
+    vi.stubGlobal("fetch", (async (url: string | URL | Request, init?: RequestInit) => {
+      if (/\/offer\/[^/]+\/publish$/.test(new URL(String(url)).pathname)) {
+        publishCalls += 1;
+        if (publishCalls === 1) return Response.json({ errors: [{ errorId: 1 }] }, { status: 503 });
+      }
+      return real(url, init);
+    }) as typeof fetch);
+    await drain(s);
+    // The first ten started together; none started after the failure.
+    expect(publishCalls).toBe(EBAY_PUBLISH_CONCURRENCY);
+    expect((await record(s, v.variantId))?.lastError).toBe(EBAY_STEP_SAYS.publish.busy);
+    expect(await stepsOf(s, v.variantId)).toEqual(["photos: done", "items: done", "offers: done", "publish: failed"]);
   });
 
   test("a publish eBay refuses leaves the offer linked as a draft and reports it", async () => {
@@ -1179,9 +1263,8 @@ describe("eBay drain: eBay's answers", () => {
     const { v, card } = await oneCard(s);
     const real = ebay.fetch;
     vi.stubGlobal("fetch", (async (url: string | URL | Request, init?: RequestInit) => {
-      if (String(url).endsWith("/bulk_publish_offer")) {
-        const body = JSON.parse(String(init?.body));
-        return Response.json({ responses: body.requests.map((r: any) => ({ offerId: r.offerId, statusCode: 400, errors: [{ errorId: 25007 }] })) });
+      if (new URL(String(url)).pathname.endsWith("/publish")) {
+        return Response.json({ errors: [{ errorId: 25007 }] }, { status: 400 });
       }
       return real(url, init);
     }) as typeof fetch);
@@ -1443,7 +1526,7 @@ describe("eBay drain: the run's steps (NEO-415)", () => {
 
     const order = ebay.writes().map((c) => c.path);
     const update = order.indexOf("/sell/inventory/v1/bulk_update_price_quantity");
-    const publish = order.indexOf("/sell/inventory/v1/bulk_publish_offer");
+    const publish = order.findIndex((path) => path.endsWith("/publish"));
     expect(update).toBeGreaterThanOrEqual(0);
     expect(publish).toBeGreaterThan(update);
     expect(ebay.offerFor(`NB2-${live}-NM`)?.body.availableQuantity).toBe(3);
@@ -1499,7 +1582,7 @@ describe("eBay drain: the run's steps (NEO-415)", () => {
   test("eBay busy on the publish names the publish step and the way forward", async () => {
     const s = await setup();
     const { v } = await oneCard(s);
-    failPath("/bulk_publish_offer", 503);
+    failPath("/publish", 503);
 
     await drain(s);
 
@@ -1777,5 +1860,47 @@ describe("eBay drain: the sandbox has no picture upload", () => {
       expect.objectContaining({ url: "https://i.ebayimg.com/m1.jpg" }),
     ]);
     expect(await stepsOf(s, v.variantId)).toEqual(["photos: done", "items: done", "offers: done", "publish: done"]);
+  });
+});
+
+describe("inPool", () => {
+  test("runs every item with at most `limit` in flight, starting them in order", async () => {
+    let inFlight = 0;
+    let most = 0;
+    const started: number[] = [];
+    await inPool(
+      Array.from({ length: 7 }, (_, i) => i),
+      3,
+      async (i) => {
+        started.push(i);
+        inFlight += 1;
+        most = Math.max(most, inFlight);
+        await new Promise((r) => setTimeout(r, 1));
+        inFlight -= 1;
+      },
+    );
+    expect(started).toEqual([0, 1, 2, 3, 4, 5, 6]);
+    expect(most).toBe(3);
+  });
+
+  test("starts nothing once halted; an empty list or a zero limit is fine", async () => {
+    const started: number[] = [];
+    let halt = false;
+    await inPool(
+      [0, 1, 2, 3, 4],
+      2,
+      async (i) => {
+        started.push(i);
+        if (i === 1) halt = true;
+      },
+      () => halt,
+    );
+    expect(started).toEqual([0, 1]);
+    await inPool([], 10, async () => {
+      throw new Error("never");
+    });
+    const one: number[] = [];
+    await inPool([9], 0, async (i) => void one.push(i));
+    expect(one).toEqual([9]);
   });
 });

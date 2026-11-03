@@ -7,7 +7,6 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
   bulkCreateOffers,
   bulkCreateOrReplaceInventoryItems,
-  bulkPublishOffers,
   bulkUpdatePriceQuantity,
   createPolicy,
   ebayErrorDetailsOf,
@@ -20,6 +19,7 @@ import {
   getShippingServices,
   openEbaySellerSession,
   optInToProgram,
+  publishOffer,
   redactEbayText,
   updateOffer,
   upsertInventoryLocation,
@@ -376,11 +376,11 @@ describe("request shapes and headers", () => {
   test("a bulk call refused outright says it in NB's words and logs the ids", async () => {
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
     answers.push(json({ errors: [{ errorId: 25001 }] }, 400));
-    const r = await bulkPublishOffers(noCredentialCalls, session(), ["O1"]);
+    const r = await bulkCreateOffers(noCredentialCalls, session(), [{ sku: "A" }]);
     const lines = log.mock.calls.map((c) => JSON.parse(String(c[0])));
     log.mockRestore();
     expect(r).toMatchObject({ ok: false, failure: { kind: "http", httpStatus: 400, errorIds: [25001], message: "eBay turned that one down. Try again in a bit." } });
-    expect(lines).toContainEqual({ msg: "ebay_seller_error", platform: "ebay", operation: "bulkPublishOffer", httpStatus: 400, errorIds: [25001] });
+    expect(lines).toContainEqual({ msg: "ebay_seller_error", platform: "ebay", operation: "bulkCreateOffer", httpStatus: 400, errorIds: [25001] });
   });
 
   test("an answer that is not JSON is logged with its reason, not its body", async () => {
@@ -686,13 +686,10 @@ describe("bulk calls", () => {
     }
   });
 
-  test("publish sends offer ids; price/quantity sends the nested update shape", async () => {
-    answers.push(json({ responses: [{ offerId: "O1", statusCode: 200, listingId: "L1" }] }), json({ responses: [] }));
-    const pub = await bulkPublishOffers(noCredentialCalls, session(), ["O1"]);
-    expect(pub.ok && pub.value[0]).toMatchObject({ offerId: "O1", listingId: "L1" });
-    expect(seen[0].json).toEqual({ requests: [{ offerId: "O1" }] });
+  test("price/quantity sends the nested update shape", async () => {
+    answers.push(json({ responses: [] }));
     await bulkUpdatePriceQuantity(noCredentialCalls, session(), [{ sku: "S", offerId: "O1", quantity: 3, price: { value: "4.50", currency: "USD" } }]);
-    expect(seen[1].json).toEqual({
+    expect(seen[0].json).toEqual({
       requests: [
         {
           sku: "S",
@@ -701,6 +698,44 @@ describe("bulk calls", () => {
         },
       ],
     });
+  });
+
+  test("publishOffer posts to the one offer's publish path, no body, and reads the listing id", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    answers.push(json({ listingId: "110012345", warnings: [] }));
+    const r = await publishOffer(noCredentialCalls, session(), "O 1/x");
+    const lines = log.mock.calls.map((c) => JSON.parse(String(c[0])));
+    log.mockRestore();
+    expect(r).toEqual({ ok: true, value: { statusCode: 200, listingId: "110012345", errorIds: [], errors: [] } });
+    expect(seen[0].init.method).toBe("POST");
+    expect(seen[0].url.pathname).toBe("/sell/inventory/v1/offer/O%201%2Fx/publish");
+    expect(seen[0].init.body).toBeUndefined();
+    expect(seen[0].init.redirect).toBe("error");
+    expect(lines).toContainEqual(expect.objectContaining({ msg: "ebay_seller_call", operation: "publishOffer", outcome: "ok", httpStatus: 200 }));
+  });
+
+  test.each([400, 404, 409, 422])("publishOffer: eBay refusing the offer (%i) is an answer with its ids and redacted details", async (status) => {
+    answers.push(json({ errors: [{ errorId: 25007, message: "Add a valid shipping service seller@example.com" }] }, status));
+    const r = await publishOffer(noCredentialCalls, session(), "O1");
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value).toMatchObject({ statusCode: status, listingId: null, errorIds: [25007] });
+    expect(r.value.errors[0].message).toBe("Add a valid shipping service [redacted]");
+  });
+
+  test.each([
+    [503, "http"],
+    [500, "http"],
+    [429, "http"],
+    [403, "http"],
+  ] as const)("publishOffer: a %i fails the call (eBay busy or refusing the seller, not this offer)", async (status, kind) => {
+    answers.push(json({ errors: [{ errorId: 1 }] }, status));
+    expect(await publishOffer(noCredentialCalls, session(), "O1")).toMatchObject({ ok: false, failure: { kind, httpStatus: status } });
+  });
+
+  test("publishOffer: a 400 that is not JSON fails the call", async () => {
+    answers.push(new Response("<html>bad</html>", { status: 400 }));
+    expect(await publishOffer(noCredentialCalls, session(), "O1")).toMatchObject({ ok: false, failure: { httpStatus: 400 } });
   });
 
   test("entries beyond fifty are ignored and unreadable ones skipped", async () => {
@@ -806,6 +841,53 @@ describe("the 401 refresh path", () => {
     const runAction = vi.fn().mockRejectedValue(new Error("service down"));
     const s = session();
     expect(await getOptedInPrograms({ runAction } as never, s)).toMatchObject({ ok: false, failure: { kind: "signed_out" } });
+    expect(s.dead).toBe(true);
+  });
+
+  test("calls hit by a 401 at once share one refresh and all retry with the new token", async () => {
+    answers.push(json({}, 401), json({}, 401), json({}, 401), json({ listingId: "L1" }), json({ listingId: "L2" }), json({ listingId: "L3" }));
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const runAction = vi
+      .fn()
+      .mockImplementationOnce(async () => {
+        await gate;
+        return { refreshed: true };
+      })
+      .mockResolvedValueOnce({ token: "tok-2" });
+    const s = session();
+    const all = Promise.all(["O1", "O2", "O3"].map((id) => publishOffer({ runAction } as never, s, id)));
+    // Let all three 401s land while the one refresh is still running.
+    await new Promise((r) => setTimeout(r, 0));
+    release();
+    const rs = await all;
+    expect(rs.every((r) => r.ok)).toBe(true);
+    expect(runAction).toHaveBeenCalledTimes(2);
+    expect(seen.slice(0, 3).map((x) => x.headers.Authorization)).toEqual(["Bearer tok-1", "Bearer tok-1", "Bearer tok-1"]);
+    expect(seen.slice(3).map((x) => x.headers.Authorization)).toEqual(["Bearer tok-2", "Bearer tok-2", "Bearer tok-2"]);
+    expect(s.dead).toBe(false);
+  });
+
+  test("calls hit by a 401 at once all fail signed out when the one refresh does not renew", async () => {
+    answers.push(json({}, 401), json({}, 401));
+    const runAction = vi.fn().mockResolvedValueOnce({ refreshed: false });
+    const s = session();
+    const rs = await Promise.all(["O1", "O2"].map((id) => publishOffer({ runAction } as never, s, id)));
+    expect(rs).toEqual([
+      expect.objectContaining({ ok: false, failure: expect.objectContaining({ kind: "signed_out" }) }),
+      expect.objectContaining({ ok: false, failure: expect.objectContaining({ kind: "signed_out" }) }),
+    ]);
+    expect(runAction).toHaveBeenCalledTimes(1);
+    expect(seen).toHaveLength(2);
+    expect(s.dead).toBe(true);
+  });
+
+  test("a session opened under the credential lock (reauthAttempted) never refreshes", async () => {
+    answers.push(json({}, 401));
+    const runAction = vi.fn();
+    const s = session({ reauthAttempted: true });
+    expect(await getOptedInPrograms({ runAction } as never, s)).toMatchObject({ ok: false, failure: { kind: "signed_out" } });
+    expect(runAction).not.toHaveBeenCalled();
     expect(s.dead).toBe(true);
   });
 
