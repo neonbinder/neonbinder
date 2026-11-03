@@ -1293,7 +1293,7 @@ async function syncVariant(
   };
 
   // Read every sheet that matters.
-  const sheet = await readBscSheets(ctx, session, input.requests, conditions);
+  const sheet = await readSheets(ctx, session, input.requests, conditions);
   if (!sheet.ok) return await fail(sheet.failure);
 
   // Seller id for the PUT.
@@ -1389,7 +1389,7 @@ async function syncVariant(
 
     // Confirm by reading back every condition the push touched.
     const touched = [...new Set(plan.puts.map((p) => p.condition))];
-    const back = await readBscSheets(ctx, session, input.requests, touched);
+    const back = await readSheets(ctx, session, input.requests, touched);
     if (!back.ok) return await fail(back.failure, problems);
     const after = new Map<string, number>();
     for (const row of back.sheet.rows) after.set(photoKeyFor(row.bscCardId, row.condition), row.quantity);
@@ -1442,66 +1442,39 @@ export function distinctCards(problems: readonly StoredProblem[]): number {
 }
 
 /**
- * How many sheet reads one drain has in flight at once. A sheet read takes
- * 3–6 s on BSC's side, and a full read of a modern variant is its four
- * conditions, so four reads at once answer that read in one round instead of
- * four. The cap is NB's own (BSC does not rate limit us): it bounds how many
- * sheet bodies (each up to `BSC_SELLER_MAX_BYTES.sheet`) one action holds at
- * once when a vintage variant's ten conditions meet a facet fan-out.
- */
-export const BSC_SHEET_READ_CONCURRENCY = 4;
-
-/**
  * Every (condition × facet request) sheet, narrowed as each is read (only
  * readable rows are kept), rows deduped by BSC product id.
  *
- * The reads run concurrently (`BSC_SHEET_READ_CONCURRENCY` at a time, started
- * in condition × request order) and the answers are folded in that same
- * order once all are in, so the result is exactly what reading them one by
- * one gives: the same row wins a product id two sheets share, and the failure
- * returned is the first in that order. Once any read fails no further read is
- * started (reads already under way finish; nothing is left running when this
- * returns).
+ * One read at a time, on purpose. NEO-415 tried four concurrent reads per
+ * seller and BSC's answers came back with two rows (two product ids) for one
+ * card in one condition, so the planner held every card back as
+ * `duplicate_sheet_row` and nothing listed or came down. Serial reads never
+ * showed it. Keep this loop serial unless BSC is shown to answer overlapping
+ * sheet reads for one seller correctly.
  */
-export async function readBscSheets(
+async function readSheets(
   ctx: DrainCtx,
   session: BscSellerSession,
   requests: ReadonlyArray<Record<string, string[]>>,
   conditions: readonly string[],
 ): Promise<{ ok: true; sheet: NarrowedBscSheet } | { ok: false; failure: BscSellerFailure }> {
-  const calls = conditions.flatMap((condition) => requests.map((filters) => ({ filters, condition })));
-  const results: Array<Awaited<ReturnType<typeof readBscSellerSheet>> | undefined> = new Array(calls.length);
-  let next = 0;
-  let failed = false;
-  const worker = async (): Promise<void> => {
-    while (!failed && next < calls.length) {
-      const i = next++;
-      const r = await readBscSellerSheet(ctx, session, calls[i]);
-      results[i] = r;
-      if (!r.ok) failed = true;
-    }
-  };
-  await Promise.all(
-    Array.from({ length: Math.min(BSC_SHEET_READ_CONCURRENCY, calls.length) }, () => worker()),
-  );
-
   const sheets: NarrowedBscSheet[] = [];
   const seenProducts = new Set<string>();
-  for (const r of results) {
-    // Reads are started in order, so every read before the first failure
-    // ran; an unstarted one only ever follows a failure.
-    if (r === undefined) continue;
-    if (!r.ok) return { ok: false, failure: r.failure };
-    const rows: BscSheetRow[] = [];
-    for (const row of r.value.rows) {
-      const productId = typeof row.raw.productId === "string" ? row.raw.productId : null;
-      if (productId !== null) {
-        if (seenProducts.has(productId)) continue;
-        seenProducts.add(productId);
+  for (const condition of conditions) {
+    for (const filters of requests) {
+      const r = await readBscSellerSheet(ctx, session, { filters, condition });
+      if (!r.ok) return { ok: false, failure: r.failure };
+      const rows: BscSheetRow[] = [];
+      for (const row of r.value.rows) {
+        const productId = typeof row.raw.productId === "string" ? row.raw.productId : null;
+        if (productId !== null) {
+          if (seenProducts.has(productId)) continue;
+          seenProducts.add(productId);
+        }
+        rows.push(row);
       }
-      rows.push(row);
+      sheets.push({ ...r.value, rows });
     }
-    sheets.push({ ...r.value, rows });
   }
   return { ok: true, sheet: joinNarrowedSheets(sheets) };
 }

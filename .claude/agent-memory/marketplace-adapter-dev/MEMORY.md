@@ -47,3 +47,4 @@
 - [eBay Sell API shapes come from the OAS specs](reference_ebay_sell_api_shapes_come_from_the_oas_specs.md) — no schemas on doc pages; bulk 400 per-entry; 25002 adopt; enums via SDK; cost types loose; hash every item field
 - [Work under the credential lock reads tokens directly](reference_work_under_the_credential_lock_reads_tokens_directly.md) — getSiteTokenForUser/re-auth contend for the held lock (busy = no token); read cache, refresh body, reauthAttempted:true
 - [Public refusals: return or ConvexError](reference_public_refusals_are_returns_or_convex_error.md) — a plain Error from a public function is "Server Error" in prod; return {ok:false,error}
+- [BSC seller sheet reads must be serial](reference_bsc_seller_sheet_reads_must_be_serial.md) — concurrent seller/bulk-upload/results reads per seller return twin (card, condition) rows; every card held back (NEO-415)

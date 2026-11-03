@@ -7,8 +7,7 @@
  * with NO caller identity, so every call is made for an explicit owner: the
  * token comes from `credentials.getSiteTokenForUser`, and a 401 refreshes
  * through `credentials.refreshSiteTokenForUser` (the NEO-278 backoff and the
- * credential lock apply) ONCE per session, then retries once. Calls that run
- * at once and see a 401 together share that one refresh. A 401 on the retry
+ * credential lock apply) ONCE per session, then retries once. A second 401
  * kills the session: nothing more is sent (the NEO-325 rule).
  *
  * The pause switch (`NEONBINDER_PAUSED_PLATFORMS`) is honoured before any
@@ -98,9 +97,8 @@ export type BscSellerResult<T> = { ok: true; value: T } | { ok: false; failure: 
 /**
  * One owner's BSC session for one drain or poll. `token` is replaced in place
  * after a refresh, so later calls send the new one. At most one refresh per
- * session (`reauthAttempted`), shared by every call that sees a 401 while it
- * runs; `dead` means BSC refused it after that, and every later call fails
- * `signed_out` without a request.
+ * session (`reauthAttempted`); `dead` means BSC refused it after that, and
+ * every later call fails `signed_out` without a request.
  */
 export interface BscSellerSession {
   ownerId: string;
@@ -198,94 +196,10 @@ export async function readCappedText(res: Response, maxBytes: number): Promise<s
   return text + decoder.decode();
 }
 
-const SIGNED_OUT_MESSAGE = "BuySportsCards signed NeonBinder out. Sign in again under Profile.";
-
 /**
- * The session's one refresh, shared. Calls on one session may run at once
- * (the drain reads several sheets concurrently), so several can see a 401
- * together: they all wait on this one refresh rather than each starting one.
- * `done` resolves true once `session.token` holds the new token, false (with
- * the session marked dead) when the refresh failed; `settled` turns true
- * when it has answered.
- */
-interface SessionRefresh {
-  done: Promise<boolean>;
-  settled: boolean;
-}
-const sessionRefreshes = new WeakMap<BscSellerSession, SessionRefresh>();
-
-async function refreshSessionToken(ctx: SessionCtx, session: BscSellerSession): Promise<boolean> {
-  const refreshStartedAt = Date.now();
-  let refreshed = false;
-  try {
-    const r = await ctx.runAction(internal.credentials.refreshSiteTokenForUser, {
-      site: SITE,
-      userId: session.ownerId,
-    });
-    refreshed = r.refreshed;
-  } catch {
-    refreshed = false;
-  }
-  let next: { token: string } | null = null;
-  if (refreshed) {
-    try {
-      next = await ctx.runAction(internal.credentials.getSiteTokenForUser, { site: SITE, userId: session.ownerId });
-    } catch {
-      next = null;
-    }
-  }
-  logCall("reauth", refreshStartedAt, next ? "ok" : "failed");
-  if (!next) {
-    session.dead = true;
-    return false;
-  }
-  session.token = next.token;
-  return true;
-}
-
-/** True when the session's one refresh has already answered (or was spent elsewhere). */
-function refreshSpent(session: BscSellerSession): boolean {
-  if (!session.reauthAttempted) return false;
-  const refresh = sessionRefreshes.get(session);
-  return refresh === undefined || refresh.settled;
-}
-
-/**
- * After a 401: true when the call may retry once with `session.token`.
- * `sentAfterRefresh` says the refused request already carried the refreshed
- * token, so the 401 kills the session, as a 401 on a retry does. Otherwise
- * the request went out on the old token: a refresh under way (or one that
- * answered while this request was out) is waited on and its answer shared,
- * and with none yet this call starts the session's one refresh. A dead
- * session never retries.
- */
-async function reauthorize(ctx: SessionCtx, session: BscSellerSession, sentAfterRefresh: boolean): Promise<boolean> {
-  if (session.dead) return false;
-  if (sentAfterRefresh) {
-    session.dead = true;
-    return false;
-  }
-  let refresh = sessionRefreshes.get(session);
-  if (refresh === undefined) {
-    session.reauthAttempted = true;
-    const started: SessionRefresh = { done: Promise.resolve(false), settled: false };
-    started.done = refreshSessionToken(ctx, session).then((ok) => {
-      started.settled = true;
-      return ok;
-    });
-    sessionRefreshes.set(session, started);
-    refresh = started;
-  }
-  const ok = await refresh.done;
-  // Another call's retry may have been refused while this one waited.
-  return ok && !session.dead;
-}
-
-/**
- * One request with the session's token: a 401 refreshes once per session
- * (shared by every call that sees a 401 at the same time) and retries once;
- * a 401 on the retry kills the session. Returns the parsed JSON body (or
- * null for an empty 2xx body).
+ * One request with the session's token: a 401 refreshes once per session and
+ * retries once; a second 401 kills the session. Returns the parsed JSON body
+ * (or null for an empty 2xx body).
  */
 async function send(
   ctx: SessionCtx,
@@ -293,12 +207,10 @@ async function send(
   opts: SendOptions,
 ): Promise<BscSellerResult<unknown>> {
   if (session.dead) {
-    return { ok: false, failure: failure("signed_out", SIGNED_OUT_MESSAGE, 401) };
+    return { ok: false, failure: failure("signed_out", "BuySportsCards signed NeonBinder out. Sign in again under Profile.", 401) };
   }
-  let sentAfterRefresh = false;
   const attempt = async (): Promise<Response | BscSellerFailure> => {
     const startedAt = Date.now();
-    sentAfterRefresh = refreshSpent(session);
     try {
       const res = await fetch(`${BSC_API_BASE}/${opts.path}`, {
         method: opts.method,
@@ -329,15 +241,42 @@ async function send(
 
   if (res.status === 401) {
     await res.text().catch(() => "");
-    if (!(await reauthorize(ctx, session, sentAfterRefresh))) {
-      return { ok: false, failure: failure("signed_out", SIGNED_OUT_MESSAGE, 401) };
+    if (session.reauthAttempted) {
+      session.dead = true;
+      return { ok: false, failure: failure("signed_out", "BuySportsCards signed NeonBinder out. Sign in again under Profile.", 401) };
     }
+    session.reauthAttempted = true;
+    const refreshStartedAt = Date.now();
+    let refreshed = false;
+    try {
+      const r = await ctx.runAction(internal.credentials.refreshSiteTokenForUser, {
+        site: SITE,
+        userId: session.ownerId,
+      });
+      refreshed = r.refreshed;
+    } catch {
+      refreshed = false;
+    }
+    let next: { token: string } | null = null;
+    if (refreshed) {
+      try {
+        next = await ctx.runAction(internal.credentials.getSiteTokenForUser, { site: SITE, userId: session.ownerId });
+      } catch {
+        next = null;
+      }
+    }
+    logCall("reauth", refreshStartedAt, next ? "ok" : "failed");
+    if (!next) {
+      session.dead = true;
+      return { ok: false, failure: failure("signed_out", "BuySportsCards signed NeonBinder out. Sign in again under Profile.", 401) };
+    }
+    session.token = next.token;
     res = await attempt();
     if (!(res instanceof Response)) return { ok: false, failure: res };
     if (res.status === 401) {
       await res.text().catch(() => "");
       session.dead = true;
-      return { ok: false, failure: failure("signed_out", SIGNED_OUT_MESSAGE, 401) };
+      return { ok: false, failure: failure("signed_out", "BuySportsCards signed NeonBinder out. Sign in again under Profile.", 401) };
     }
   }
 

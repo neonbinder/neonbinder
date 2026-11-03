@@ -432,6 +432,50 @@ describe("drainOwner: the first sync of a variant", () => {
     expect(st?.platformAccountId).toBe("seller-1");
   });
 
+  // NEO-415: four concurrent sheet reads per seller made BSC answer with two
+  // rows for one card in one condition, and every card was held back
+  // (`duplicate_sheet_row`). The drain reads BSC's sheet one request at a time.
+  test("never has two sheet reads in flight at once", async () => {
+    const s = await setup();
+    const v = await seedVariant(s.t, {
+      cards: [
+        { number: "1", ref: "bsc-1" },
+        { number: "2", ref: "bsc-2" },
+      ],
+    });
+    const bsc = new FakeBsc(
+      [
+        { bscCardId: "bsc-1", cardNo: "1" },
+        { bscCardId: "bsc-2", cardNo: "2" },
+      ],
+      MODERN,
+    );
+    let inFlight = 0;
+    let maxInFlight = 0;
+    bsc.onSheetRead = async () => {
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      // Hold each answer long enough for an overlapping read to start.
+      await new Promise((r) => setTimeout(r, 5));
+      inFlight -= 1;
+    };
+    vi.stubGlobal("fetch", bsc.fetch);
+    await add(s, v.cardIds[0], { homeId: s.box, condition: "Near Mint", minPriceCents: 50 });
+    await add(s, v.cardIds[1], { homeId: s.box, condition: "Near Mint", minPriceCents: 50 });
+    await listOnBsc(s);
+    await queue(s, [
+      { cardId: v.cardIds[0], variantId: v.variantId },
+      { cardId: v.cardIds[1], variantId: v.variantId },
+    ]);
+
+    await drain(s);
+
+    // The full read (every modern condition) plus the read-back, one by one.
+    expect(bsc.sheetReads.length).toBeGreaterThan(MODERN.length);
+    expect(maxInFlight).toBe(1);
+    expect(await record(s, v.variantId)).toMatchObject({ status: "idle", counts: { listed: 2, skipped: 0 } });
+  });
+
   test("a later sync reads only the targets' conditions and the ones NB pushed before", async () => {
     const s = await setup();
     const v = await seedVariant(s.t, { cards: [{ number: "1", ref: "bsc-1" }] });
@@ -685,10 +729,8 @@ describe("drainOwner: per-variant failures", () => {
     const report = await drainOwnerImpl(stubCtx(s.t), { ownerId: OWNER, platform: "bsc" });
     expect(report.stoppedFor).toBe("signedOut");
     expect(creds.refreshCalls).toBe(1);
-    // Only the first round of concurrent sheet reads went out (one per
-    // condition, all on the old token): the refresh failed, nothing was
-    // retried and no further read was started.
-    expect(bsc.authHeaders).toEqual(MODERN.map(() => "Bearer tok-1"));
+    // Exactly one request went out: the refresh failed, nothing was retried.
+    expect(bsc.authHeaders).toHaveLength(1);
     expect(await record(s, v.variantId)).toMatchObject({ status: "error" });
     expect(await outbox(s)).toHaveLength(1);
     const st = await state(s);
