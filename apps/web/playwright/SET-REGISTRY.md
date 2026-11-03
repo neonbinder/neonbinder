@@ -111,7 +111,7 @@ BuySportsCards alone for the whole run:
 | Football → 2014 (the whole year) → Topps → Topps (the flagship) | `Base` — the year's Years, Manufacturers and year-wide Sets synced cold in-flow; `Topps`' Variant Types synced; the Base picker CONFIRMED on both sides; the checklist fetched and COMMITTED in-flow through the Match Cards dialog, with BSC's #442 unlinked and then deliberately linked to a SportLots-only card and saved under the SportLots name; any review-wizard names SKIPPED (NOT pre-synced) | `tests/set-selector/checklist-team-leader-cards-pair-and-picked-name-saves.spec.ts` — **sole writer** of the year, not self-cleaning (the run-start reset is its cleanup). ✅ **Approved by Jason 2026-10-13** (NEO-343/NEO-344) — see "Football → 2014 — the NEO-343 team-leader fixture" |
 | Baseball → 1988 → Topps → Topps (BSC's "1988 Topps") | `Base` — the year's Manufacturers and Sets synced cold, Base MAPPED on both sides, the full checklist (BSC's 1988 Topps base, about 792 cards) fetched and SAVED by the SEED, wizard walked (NEO-370; the live count is recorded below after the first seed) | `tests/setup.spec.ts` provisions it; `tests/collection/inventory-bsc-listing-1988-topps-base.spec.ts` is the **sole writer of its BuySportsCards quantities** (it writes no card, player, team or variant of the set). ✅ **Approved by Jason 2026-11-01** (NEO-370) — see "1988 Topps Baseball — the BuySportsCards listing fixture" |
 | Baseball → 1988 → Topps → Topps (the same set, for eBay) | `Base` as above (no new set, no new row) | `tests/collection/inventory-ebay-sandbox-listing-1988-topps-base.spec.ts` is the **sole writer of the eBay SANDBOX seller account's listings** (it writes no card, player, team or variant of the set, and no BuySportsCards quantity). Like the BuySportsCards spec it runs only in the `seller-*` jobs (tag `@marketplace-seller`), one PR at a time repo-wide (NEO-415). **Needs Jason's approval (NEO-415)** — see "1988 Topps Baseball — the eBay sandbox listing fixture" |
-| Baseball → 2010 → Topps → Topps (the flagship) | `Insert` → `Team Bonus` (20 cards) and `Silk Collection` (201 cards) — the year's Years, Manufacturers and Sets synced cold in-flow, Variant Types synced on first entry, both fetched BSC only and COMMITTED in-flow (NOT pre-synced). `Team Bonus`: its one unknown name, `Kendry Morales`, moved to Football and added as a new player (Baseball not added to his sports). `Silk Collection`: Morales arrives auto-linked from the set's history, is changed and re-linked from the wizard, the one other unknown name (`Michael Brantley`) SKIPPED. The Base is never fetched | `tests/set-selector/checklist-wizard-set-history-links-across-variants.spec.ts` — **sole writer** of those two inserts and of the year. ✅ **Set approved by Jason 2026-11-03** (NEO-424; Team Bonus/Silk Collection chosen by the probe) — see "Baseball → 2010 — the NEO-424 set-history fixture" |
+| Baseball → 2010 → Topps → Topps (the flagship) | `Insert` → `Team Bonus` (20 cards), `Silk Collection` (201 cards) and `Peak Performance` (100 cards) — the year's Years, Manufacturers and Sets synced cold in-flow, Variant Types synced on first entry, both fetched BSC only and COMMITTED in-flow (NOT pre-synced). `Team Bonus`: its one unknown name, `Kendry Morales`, moved to Football and added as a new player (Baseball not added to his sports). `Silk Collection`: Morales arrives auto-linked from the set's history, is changed and re-linked from the wizard, the one other unknown name (`Michael Brantley`, a Football player of that name made from `/admin/players` first) shows the one-namesake suggestion and is SKIPPED. `Peak Performance`: Bob Gibson and Joe Morgan arrive linked as Hall of Famers, Joe Morgan changed and re-linked, the St. Louis Browns LINKED to the catalogue's 1902–1953 row, the other names SKIPPED. The Base is never fetched | `tests/set-selector/checklist-wizard-set-history-links-across-variants.spec.ts` — **sole writer** of those three inserts and of the year, and of the Football player `Michael Brantley`. ✅ **Set approved by Jason 2026-11-03** (NEO-424; Team Bonus/Silk Collection chosen by the probe) — see "Baseball → 2010 — the NEO-424 set-history fixture" |
 
 ### 2024 Topps NHL Sticker Collection — NEO-211, sole-writer ⚠️ SUBSTITUTED, NEEDS SIGN-OFF
 
@@ -2059,14 +2059,38 @@ lets the operator change it.
 1. **`Team Bonus`** (20 cards). Its one unknown name is `Kendry Morales`; he is
    moved to Football in the wizard ("Sport for this name") and added as a new
    player with "Also add Baseball to their sports" left unticked. Saved.
-2. **`Silk Collection`** (201 cards). The wizard opens with `Kendry Morales`
-   already decided ("Linked to Kendry Morales (Football) · already on another
-   card in this set") in the Decided list; `Michael Brantley`, the one other
-   unknown name, is skipped. Change reopens the step on `Link to Kendry Morales
-   (Football)` with `Add as New Player anyway` demoted; pressing it reads back
-   `Linked to Kendry Morales`. Saved.
-3. **Read-back.** His player page lists both cards as Baseball guest cards (the
-   auto-link added no sport) and no second `Kendry Morales` was minted.
+2. **`Silk Collection`** (201 cards). Before anything: a FOOTBALL player named
+   `Michael Brantley` is made from `/admin/players` (his Football lookup is
+   recorded as a no-match). The wizard opens with `Kendry Morales` already
+   decided ("Linked to Kendry Morales (Football) · already on another card in
+   this set") in the Decided list; `Michael Brantley`, the one other unknown
+   name, shows the one-namesake suggestion (`Link to Michael Brantley
+   (Football)` primary, `Add as New Player anyway` demoted, "We've only got one
+   Michael Brantley (Football) on file. Same one?") and is skipped, not linked.
+   Change on Morales reopens the step on `Link to Kendry Morales (Football)`;
+   pressing it reads back `Linked to Kendry Morales`. Saved.
+3. **`Peak Performance`** (100 cards; unknown rows: three historic clubs, Bob
+   Gibson, Joe Morgan). Gibson and Morgan have two Baseball namesakes each and
+   none active in 2010, exactly one a Hall of Famer: they arrive linked ("Linked
+   to Joe Morgan · the Hall of Famer", no sport suffix, both Baseball). Change on
+   Morgan lists both namesakes (the pick step); the b. 1943 Hall of Famer is
+   linked again. The St. Louis Browns' team step is answered by LINKING the
+   catalogue's row of that exact name (`same name · MLB · 1902–1953`), the
+   remember-box unticked (no alias); the other two clubs and every other name are
+   skipped.
+4. **Read-back.** Kendry Morales's player page lists both Team Bonus and Silk
+   Collection cards as Baseball guest cards (the auto-link added no sport) and
+   no second `Kendry Morales` was minted.
+
+**`Turkey Red` (100 cards) is NOT in the spec, and is committed on dev.**
+Planned as the team-rule phase (the Browns and Joe Morgan arriving linked from
+Peak Performance's history). Measured on dev 2026-11-03: once Peak Performance
+was committed, fetching Turkey Red opened NO wizard and committed straight
+through, with Joe Morgan's `#TR82` linked to the same b. 1943 player as
+`#PP-70`: a name the operator linked in one variant is already answered when the
+next variant is fetched, so there is no visible row to assert. Registered here
+because the dev probe committed it; it needs an owner decision before a team-rule
+assertion is possible.
 
 **Measured on dev, 2026-11-03, BSC only (every fetch discarded).** `Team Bonus`:
 20 cards, `Step 1 of 2`, one unknown name (Kendry Morales). `Silk Collection`:

@@ -302,6 +302,16 @@ undated clubs Minnesota Twins / Seattle Mariners / Toronto Blue Jays, enwiki
 sport (no `sportQid`). Without it the unrecorded Baseball miss is refused at
 error level on every run of the spec. A genuine capture, not a `null`.
 
+The same spec reaches four more lookups, each captured the same way (every
+`transportFailed` false) and merged under step 5: `Michael Brantley` as a
+Football no-match (the FOOTBALL player the spec adds from `/admin/players`; his
+Baseball row is inserted READY and is never looked up), and two historic clubs
+the Peak Performance wizard stages as team steps, as Baseball hits:
+`St. Louis Browns` (`Q504309`, MLB, from 1882) and `Washington Senators`
+(`Q329816`, American League, from 1961). The recorded Wikidata answers are
+Wikidata's own; the wizard still links the Browns to the catalogue's 1902-1953
+row by name.
+
 ## 4b. Other sports, explicit names, and no Wikidata from your machine (2026-10-30)
 
 **Entries for another sport.** The file's `sportQid` is the default sport of

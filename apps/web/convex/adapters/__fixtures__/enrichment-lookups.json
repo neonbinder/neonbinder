@@ -587,6 +587,12 @@
       "sportQid": "Q41323",
       "result": null
     },
+    "player|Q41323|michael brantley": {
+      "kind": "player",
+      "name": "Michael Brantley",
+      "sportQid": "Q41323",
+      "result": null
+    },
     "player|Q41323|miguel campos": {
       "kind": "player",
       "name": "Miguel Campos",
@@ -18479,6 +18485,18 @@
         }
       }
     },
+    "team|Q5369|st. louis browns": {
+      "kind": "team",
+      "name": "St. Louis Browns",
+      "result": {
+        "wikidataId": "Q504309",
+        "league": "Major League Baseball",
+        "leagueWikidataId": "Q1163715",
+        "yearsActive": {
+          "from": 1882
+        }
+      }
+    },
     "team|Q5369|st. louis cardinals": {
       "kind": "team",
       "name": "St. Louis Cardinals",
@@ -18692,6 +18710,18 @@
           "secondary": "#11225b"
         },
         "espnId": "20"
+      }
+    },
+    "team|Q5369|washington senators": {
+      "kind": "team",
+      "name": "Washington Senators",
+      "result": {
+        "wikidataId": "Q329816",
+        "league": "American League",
+        "leagueWikidataId": "Q465469",
+        "yearsActive": {
+          "from": 1961
+        }
       }
     },
     "team|Q5369|wei chuan dragons": {
