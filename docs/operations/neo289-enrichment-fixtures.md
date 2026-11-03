@@ -282,6 +282,19 @@ those (§3).
 The preview answers from the new entries only after its bundle is rebuilt,
 because the JSON is imported at build time: the next push to the PR.
 
+**NEO-424 entry (2026-11-03): `Kendry Morales` as a Football no-match.** The
+set-history spec (`checklist-wizard-set-history-links-across-variants`) moves
+this real checklist name from Baseball to Football in the wizard and adds him
+there, which re-queues his lookup in Football. He is a baseball player, so the
+Football answer is a no-match, and without a recorded entry the deployment
+would refuse the miss with an error-level log line (NEO-413). Captured by this
+section's method: `lookupPlayerEnrichmentLive("Kendry Morales", <football
+sportConfig>, trace)` from a laptop (`sportQid` `Q41323`, hall of fame
+`Q778412`), which searched twice (`wikidata_search_empty`, then
+`wikidata_search_empty_confirmed`), logged `wikidata_player_no_match`, and
+left `trace.transportFailed` false, so the `null` is a completed search and not
+an outage. One entry, merged per step 5 (only the new key, keys re-sorted).
+
 ## 4b. Other sports, explicit names, and no Wikidata from your machine (2026-10-30)
 
 **Entries for another sport.** The file's `sportQid` is the default sport of

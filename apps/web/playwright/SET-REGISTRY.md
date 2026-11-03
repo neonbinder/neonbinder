@@ -111,7 +111,7 @@ BuySportsCards alone for the whole run:
 | Football → 2014 (the whole year) → Topps → Topps (the flagship) | `Base` — the year's Years, Manufacturers and year-wide Sets synced cold in-flow; `Topps`' Variant Types synced; the Base picker CONFIRMED on both sides; the checklist fetched and COMMITTED in-flow through the Match Cards dialog, with BSC's #442 unlinked and then deliberately linked to a SportLots-only card and saved under the SportLots name; any review-wizard names SKIPPED (NOT pre-synced) | `tests/set-selector/checklist-team-leader-cards-pair-and-picked-name-saves.spec.ts` — **sole writer** of the year, not self-cleaning (the run-start reset is its cleanup). ✅ **Approved by Jason 2026-10-13** (NEO-343/NEO-344) — see "Football → 2014 — the NEO-343 team-leader fixture" |
 | Baseball → 1988 → Topps → Topps (BSC's "1988 Topps") | `Base` — the year's Manufacturers and Sets synced cold, Base MAPPED on both sides, the full checklist (BSC's 1988 Topps base, about 792 cards) fetched and SAVED by the SEED, wizard walked (NEO-370; the live count is recorded below after the first seed) | `tests/setup.spec.ts` provisions it; `tests/collection/inventory-bsc-listing-1988-topps-base.spec.ts` is the **sole writer of its BuySportsCards quantities** (it writes no card, player, team or variant of the set). ✅ **Approved by Jason 2026-11-01** (NEO-370) — see "1988 Topps Baseball — the BuySportsCards listing fixture" |
 | Baseball → 1988 → Topps → Topps (the same set, for eBay) | `Base` as above (no new set, no new row) | `tests/collection/inventory-ebay-sandbox-listing-1988-topps-base.spec.ts` is the **sole writer of the eBay SANDBOX seller account's listings** (it writes no card, player, team or variant of the set, and no BuySportsCards quantity). Like the BuySportsCards spec it runs only in the `seller-*` jobs (tag `@marketplace-seller`), one PR at a time repo-wide (NEO-415). **Needs Jason's approval (NEO-415)** — see "1988 Topps Baseball — the eBay sandbox listing fixture" |
-| Baseball → 2023 → Topps → Topps Chrome NPB | `Base` — fetched and COMMITTED in-flow, BSC only (NOT pre-synced): ONE name moved to Football and added as a new player with "Also add Baseball to their sports" unticked, every other name SKIPPED; then ONE `Insert` (⚠️ name TO BE CONFIRMED by the probe) made a set, fetched and COMMITTED the same way, the auto-link on that name changed and re-linked from the wizard | `tests/set-selector/checklist-wizard-set-history-links-across-variants.spec.ts` — **sole writer**. ✅ **Approved by Jason 2026-11-03** (NEO-424) — see "Topps Chrome NPB 2023 — the NEO-424 set-history fixture" |
+| Baseball → 2010 → Topps → Topps (the flagship) | `Insert` → `Team Bonus` (20 cards) and `Silk Collection` (201 cards) — the year's Years, Manufacturers and Sets synced cold in-flow, Variant Types synced on first entry, both fetched BSC only and COMMITTED in-flow (NOT pre-synced). `Team Bonus`: its one unknown name, `Kendry Morales`, moved to Football and added as a new player (Baseball not added to his sports). `Silk Collection`: Morales arrives auto-linked from the set's history, is changed and re-linked from the wizard, the one other unknown name (`Michael Brantley`) SKIPPED. The Base is never fetched | `tests/set-selector/checklist-wizard-set-history-links-across-variants.spec.ts` — **sole writer** of those two inserts and of the year. ✅ **Set approved by Jason 2026-11-03** (NEO-424; Team Bonus/Silk Collection chosen by the probe) — see "Baseball → 2010 — the NEO-424 set-history fixture" |
 
 ### 2024 Topps NHL Sticker Collection — NEO-211, sole-writer ⚠️ SUBSTITUTED, NEEDS SIGN-OFF
 
@@ -2031,58 +2031,67 @@ exception, taken because the alternative is a flake with no relationship to the
 feature under test.
 
 
-### Topps Chrome NPB 2023 — the NEO-424 set-history fixture (Base + one Insert) ✅ APPROVED by Jason 2026-11-03
+### Baseball → 2010 — the NEO-424 set-history fixture (Topps › Insert › Team Bonus + Silk Collection) ✅ Set approved by Jason 2026-11-03 (NEO-424; Team Bonus/Silk Collection chosen by the probe)
 
-`Baseball → 2023 → Topps → Topps Chrome NPB` belongs to exactly one flow,
-`checklist-wizard-set-history-links-across-variants`. `tests/setup.spec.ts`
-provisions nothing for it: the flow's `fetchOneMarketplaceSetChecklistToWizard`
-drills Baseball → 2023 → Topps cold (Years, Manufacturers, year-wide Sets),
-syncs the set's Variant Types and cancels the Base picker (BSC only), the same
-shape as the four 1995 hockey fixtures. No other flow drills Baseball → 2023.
-The 2024 `Topps Chrome NPB` (above) is a different set row under a different
-year and is **never touched**: its Base belongs to
-`checklist-wizard-same-name-pick-step`, which must not be committed.
+`Baseball → 2010 → Topps → Topps` belongs to exactly one flow,
+`checklist-wizard-set-history-links-across-variants`. No other flow touches
+2010. `tests/setup.spec.ts` provisions nothing for it: the flow drills the year
+cold (Years, Manufacturers, the year-wide Sets sync), selects the set and syncs
+its Variant Types on first entry (`Base`, `Insert`, `Parallel`).
 
-**What the flow does.** NEO-424 proves that a name linked on a committed card
-of a set links to the same player when ANOTHER variant of that set is synced,
+**The paused drill hand-makes the `Topps` manufacturer row.** NeonBinder's
+Manufacturer rows come from SportLots' brand list only, so under the pause the
+2010 Manufacturers column holds just the pinned "All Brands" view and the cold
+drill (`drillToColdManufacturer`) makes `Topps` through the column's own
+"+ Custom" form. This flow is that row's sole writer. Live, the brand comes
+from SportLots' list.
+
+**Why this set, why insert to insert.** Set history covers the whole set, so
+the flow never fetches the Base: its live BSC fetch took ~62 s to open the
+wizard (measured on dev 2026-11-03; 86 name rows, mostly team-name and
+leader cards presented as players), over the 7 s budget. The two inserts open in
+1.5–5.2 s each (same probe).
+
+**What the flow does.** NEO-424 proves that a name linked on a committed card of
+a set links to the same player when ANOTHER variant of the set is synced,
 whatever sport the player is filed under, and that the wizard shows the link and
 lets the operator change it.
-1. **Base.** Fetch (BSC only). One name, `STAR`, is moved to Football in the
-   wizard ("Sport for this name") and added with "Also add Baseball to their
-   sports" left unticked; every other name is skipped (no other player is
-   minted); saved.
-2. **Insert.** The set's one insert (`INSERT`) is made a set (paused: the column
-   fills from BSC; live: its exact "Make its own set" button, never "Keep all")
-   and fetched. The wizard opens with `STAR` already decided,
-   `Linked to STAR (Football) · already on another card in this set`. Change reopens the step on `Link to STAR
-   (Football)` with `Add as New Player anyway` demoted; pressing the link reads
-   back `Linked to STAR`; the rest are skipped; saved.
-3. **Read-back.** `STAR`'s player page lists both cards as Baseball guest cards
-   (the auto-link added no sport) and no second `STAR` was minted.
+1. **`Team Bonus`** (20 cards). Its one unknown name is `Kendry Morales`; he is
+   moved to Football in the wizard ("Sport for this name") and added as a new
+   player with "Also add Baseball to their sports" left unticked. Saved.
+2. **`Silk Collection`** (201 cards). The wizard opens with `Kendry Morales`
+   already decided ("Linked to Kendry Morales (Football) · already on another
+   card in this set") in the Decided list; `Michael Brantley`, the one other
+   unknown name, is skipped. Change reopens the step on `Link to Kendry Morales
+   (Football)` with `Add as New Player anyway` demoted; pressing it reads back
+   `Linked to Kendry Morales`. Saved.
+3. **Read-back.** His player page lists both cards as Baseball guest cards (the
+   auto-link added no sport) and no second `Kendry Morales` was minted.
+
+**Measured on dev, 2026-11-03, BSC only (every fetch discarded).** `Team Bonus`:
+20 cards, `Step 1 of 2`, one unknown name (Kendry Morales). `Silk Collection`:
+201 cards, `Step 1 of 3`, two unknown names (Michael Brantley, Kendry Morales).
+Both names are absent from every other spec and registry entry. The Base (for reference, never fetched here): 7 unknown
+real players (Michael Dunn, Rickie Weeks, Kendry Morales, Jon Niese, Michael
+Brantley, Joe Morgan and Chris Young, the last two pick steps) among 86 rows.
+⚠️ Not measured: that Morales has exactly one card on each insert (the wizard
+shows no card numbers and a discarded fetch stores none); the spec's last
+assertion counts his cards (2) and fails by name if either insert repeats him.
 
 **Fresh-only, sole writer.** It commits both checklists and creates one global
-Football `players` row named `STAR` that nothing deletes. Each project (desktop,
-mobile) runs on its own seed, so it passes once per seed; a re-run on the same
-seed fails at `No cards in this checklist yet.`, by name. Not self-cleaning (the
-run-start reset is its cleanup).
+Football `players` row named `Kendry Morales` that nothing deletes. Each project
+(desktop, mobile) runs on its own seed, so it passes once per seed; a re-run on
+the same seed fails at `No cards in this checklist yet.`, by name. Not
+self-cleaning (the run-start reset is its cleanup).
 
-⚠️ **Two measurements the probe must fill in before the first run** (nothing is
-recorded here yet; do not write a number until one was read off a real fetch):
-* `STAR` and `INSERT`. `STAR` must be (a) a name on the 2023 Base that the
-  reference catalogue does NOT hold in Baseball, or the Base wizard never
-  presents it (a famous NPB name is the likeliest to be known already, so
-  expect a lesser player), (b) a card in `INSERT`, spelled the same way, and
-  (c) absent from the 2024 NPB Base, so the pick-step spec's fetch (which is
-  never to commit) is not changed by this spec's Football `STAR`.
-* the Base's unknown-name count and the insert's card count, and what the insert
-  fetch stages beyond `STAR` (all skipped).
-
-⚠️ **The Football lookup (ruling: Jason's coordinator, 2026-11-03).** Moving `STAR`
-to Football re-queues the row's enrichment lookup in Football, and no error line
-is accepted. Once the probe confirms `STAR`, a recorded Football no-match for it
-is added to `enrichment-lookups.json` (and `docs/operations/neo289-enrichment-fixtures.md`
-§4a), as a genuine captured answer. Until then this fixture is not ready to run.
-
+**Recorded lookup.** Moving the row to Football re-queues its enrichment lookup
+in Football. His Football no-match is recorded (captured 2026-11-03, a completed
+search confirmed twice; `docs/operations/neo289-enrichment-fixtures.md` §4a), so
+the add sends nothing to Wikidata and logs no refusal.
+⚠️ The row's FIRST lookup, in Baseball when the wizard opens, is a miss in the
+recording and is refused at error level (NEO-413). The live Baseball answer is a
+hit (a Wikidata id, three undated clubs), so recording it changes the step the
+wizard shows; that is for the owner to decide.
 
 ### Per-attempt custom SPORT rows — `custom-entry-survives-resync`, self-cleaning
 
