@@ -74,6 +74,11 @@ const world: {
    * `[]` for an insert with none (no Sub-Variants column: a leaf).
    */
   subVariants: unknown[] | undefined;
+  /**
+   * NEO-425 — a level whose column is led by a stall banner's Retry button,
+   * ahead of its card, so the cascade cannot find that column's card.
+   */
+  stallLead: string | null;
 } = {
   cards: [],
   chain: [],
@@ -84,6 +89,7 @@ const world: {
   rowOverride: {},
   mappingUi: false,
   subVariants: [{ _id: "parallel-1", value: "Gold" }],
+  stallLead: null,
 };
 
 const ROWS: Record<string, unknown> = {
@@ -153,6 +159,7 @@ function Stub({ level, ...props }: { level: string } & Record<string, unknown>) 
   const open = !selected || expanded;
   return (
     <div>
+      {world.stallLead === level ? <button>{`retry-${level}`}</button> : null}
       {open ? (
         <input
           role="combobox"
@@ -278,10 +285,13 @@ vi.mock("../SetSelector/CardChecklist", () => ({
     </div>
   ),
 }));
+// Its delete reports the level of the row it was showing, as the real
+// panel's delete does once the server has deleted it (NEO-219).
 vi.mock("../SetSelector/SetAttributesPanel", () => ({
-  default: () => (
+  default: ({ onDeleted }: { onDeleted?: (level: string) => void }) => (
     <div role="region" aria-label="Set attributes panel">
       <button aria-label="Edit attributes">Edit attributes</button>
+      <button onClick={() => onDeleted?.("parallel")}>delete-sub-variant</button>
     </div>
   ),
 }));
@@ -355,6 +365,7 @@ beforeEach(() => {
   world.rowOverride = {};
   world.mappingUi = false;
   world.subVariants = [{ _id: "parallel-1", value: "Gold" }];
+  world.stallLead = null;
   navigateRef = null;
 });
 
@@ -412,6 +423,37 @@ describe("SetSelector focus — the cascade (NEO-224)", () => {
 
     await act(async () => navigateRef!(1));
     expect(focused()).toBe(combobox("manufacturer"));
+  });
+
+  it("a selection change (Back) that leaves the SAME column open moves nothing", async () => {
+    // Insert rows with no sub-variants, so the Inserts column is the deepest.
+    world.picks.type = "vt-insert";
+    world.subVariants = [];
+    mount();
+    await pick("sport");
+    await pick("year");
+    await pick("manufacturer");
+    await pick("set");
+    await pick("type");
+    await pick("insert");
+    world.picks.insert = "insert-2";
+    await pick("insert");
+    // Re-open the Inserts column from its card: it is the deepest open column
+    // again, now with a selection. (The real column puts focus in its own box
+    // on a re-open; the stub does not, and this test needs it elsewhere.)
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "insert chip" }));
+    });
+    expect(combobox("insert")).toBeTruthy();
+    const control = screen.getByText("collapse-insert");
+    control.focus();
+
+    // Back changes the selection (insert-2 -> insert-1) but the Inserts
+    // column is still the deepest open one: the effect is keyed on the
+    // column, so focus is not pulled into its box.
+    await goBack();
+    expect(combobox("insert")).toBeTruthy();
+    expect(focused()).toBe(control);
   });
 
   it("a re-render that opens no new column moves nothing", async () => {
@@ -926,6 +968,16 @@ describe("SetSelector focus — an insert and its Sub-Variants column (NEO-425)"
     expect(focused()).toBe(insertChip());
   });
 
+  it("with no insert card to stay on (a stall's Retry leads the column), focus goes into the new column's box, never <body>", async () => {
+    world.stallLead = "insert";
+    mount();
+    await drillToInsertType();
+    await pick("insert");
+
+    expect(screen.getByRole("button", { name: "insert chip" })).toBeTruthy();
+    expect(focused()).toBe(combobox("parallel"));
+  });
+
   it("an insert with NO sub-variants opens no column: it is a leaf, and focus goes to Fetch", async () => {
     world.subVariants = [];
     world.cards = [];
@@ -1005,6 +1057,138 @@ describe("SetSelector focus — an insert and its Sub-Variants column (NEO-425)"
     await act(async () => view.rerender(<SetSelector />));
     expect(combobox("parallel")).toBeTruthy();
     expect(focused()).toBe(control);
+  });
+
+  // ── The column's LAST row leaves (NEO-425 audit) ──
+  // Not a pick: the D3 rule stands down, and focus that was in the column
+  // (which unmounts with it) is parked on the insert's card, never <body>.
+
+  /** Keyboard: Enter on the insert opens its column; Tab into the column's box. */
+  async function insertWithColumnFromKeyboard() {
+    world.cards = [];
+    const view = mount();
+    await drillToInsertType();
+    await act(async () => {
+      fireEvent.keyDown(combobox("insert"), { key: "Enter" });
+    });
+    expect(focused()).toBe(insertChip());
+    combobox("parallel").focus();
+    expect(focused()).toBe(combobox("parallel"));
+    return view;
+  }
+
+  it("the last sub-variant leaving while focus is in the column's box parks focus on the insert's card", async () => {
+    const view = await insertWithColumnFromKeyboard();
+
+    world.subVariants = [];
+    await act(async () => view.rerender(<SetSelector />));
+
+    // Positive first: the column is gone, and the insert's checklist is up.
+    expect(screen.queryByRole("combobox", { name: "parallel search" })).toBeNull();
+    expect(fetchButton()).toBeTruthy();
+    // Focus is on the insert, not on <body>, and D3 did not take it to Fetch.
+    expect(focused()).toBe(insertChip());
+  });
+
+  it("the last sub-variant leaving while its own card has focus (picked, then Escape) parks on the insert's card", async () => {
+    const view = await insertWithColumnFromKeyboard();
+    await act(async () => {
+      fireEvent.keyDown(combobox("parallel"), { key: "Enter" });
+    });
+    // Where Escape puts focus on a column with a selection: its card.
+    const subChip = screen.getByRole("button", { name: "parallel chip" });
+    subChip.focus();
+    expect(focused()).toBe(subChip);
+
+    world.subVariants = [];
+    await act(async () => view.rerender(<SetSelector />));
+
+    expect(screen.queryByRole("button", { name: "parallel chip" })).toBeNull();
+    expect(fetchButton()).toBeTruthy();
+    expect(focused()).toBe(insertChip());
+  });
+
+  it("the last sub-variant leaving while focus is elsewhere in the row (the Group Parallels button) moves nothing", async () => {
+    const view = await insertWithColumnFromKeyboard();
+    await act(async () => {
+      fireEvent.keyDown(combobox("parallel"), { key: "Enter" });
+    });
+    // Where the grouping dialog hands focus back: a button in the Inserts
+    // column, outside the Sub-Variants column.
+    const control = screen.getByText("collapse-insert");
+    control.focus();
+
+    world.subVariants = [];
+    await act(async () => view.rerender(<SetSelector />));
+
+    expect(screen.queryByRole("button", { name: "parallel chip" })).toBeNull();
+    expect(fetchButton()).toBeTruthy();
+    // The insert is now a leaf, but rows leaving are not a pick: no D3.
+    expect(focused()).toBe(control);
+  });
+
+  it("deleting the last sub-variant parks focus on the insert's card, not on Fetch", async () => {
+    const view = await insertWithColumnFromKeyboard();
+    await act(async () => {
+      fireEvent.keyDown(combobox("parallel"), { key: "Enter" });
+    });
+    const del = screen.getByText("delete-sub-variant");
+    del.focus();
+
+    // The server has deleted it: the list answers empty, then the panel
+    // reports the delete (a mutation resolves after its queries update).
+    world.subVariants = [];
+    await act(async () => view.rerender(<SetSelector />));
+    await act(async () => {
+      fireEvent.click(screen.getByText("delete-sub-variant"));
+    });
+
+    expect(screen.queryByRole("combobox", { name: "parallel search" })).toBeNull();
+    expect(fetchButton()).toBeTruthy();
+    expect(focused()).toBe(insertChip());
+  });
+
+  it("deleting a sub-variant that has siblings parks focus on the insert's card too", async () => {
+    world.subVariants = [
+      { _id: "parallel-1", value: "Gold" },
+      { _id: "parallel-2", value: "Blue" },
+    ];
+    const view = await insertWithColumnFromKeyboard();
+    await act(async () => {
+      fireEvent.keyDown(combobox("parallel"), { key: "Enter" });
+    });
+    screen.getByText("delete-sub-variant").focus();
+
+    world.subVariants = [{ _id: "parallel-2", value: "Blue" }];
+    await act(async () => view.rerender(<SetSelector />));
+    await act(async () => {
+      fireEvent.click(screen.getByText("delete-sub-variant"));
+    });
+
+    // The column stays, open with nothing picked, and focus is on the insert.
+    expect(combobox("parallel")).toBeTruthy();
+    expect(focused()).toBe(insertChip());
+  });
+
+  it("Back off a sub-variant, with its column re-opened, leaves focus in that column (same column, no new landing)", async () => {
+    mount();
+    await drillToInsertType();
+    await pick("insert");
+    await pick("parallel");
+    // Re-open the Sub-Variants column from its card; the real column puts
+    // focus in its own box on a re-open (EntitySelector), so the test does.
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "parallel chip" }));
+    });
+    combobox("parallel").focus();
+    expect(focused()).toBe(combobox("parallel"));
+
+    // Back drops the sub-variant: the same column is still the deepest open
+    // one, now with nothing picked. That is not a column opening, so focus is
+    // not sent back to the insert's card.
+    await goBack();
+    expect(combobox("parallel")).toBeTruthy();
+    expect(focused()).toBe(combobox("parallel"));
   });
 
   it("a restored link to an insert with sub-variants lands on the insert's card", async () => {

@@ -51,7 +51,10 @@ import {
   useRef,
   useState,
 } from "react";
-import type { KeyboardEvent as ReactKeyboardEvent } from "react";
+import type {
+  FocusEvent as ReactFocusEvent,
+  KeyboardEvent as ReactKeyboardEvent,
+} from "react";
 import { useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import { slotEntries, slotIds, slotLabel } from "../../convex/platformSlots";
@@ -201,13 +204,19 @@ function insertColumnCard(row: HTMLElement): HTMLElement | null {
  * column renders exactly one). NEO-425, the one exception (Jason,
  * 2026-11-03): when the column that opened is an insert's Sub-Variants column
  * with nothing picked in it, focus stays on the insert the operator just
- * picked, i.e. the Inserts column's card.
+ * picked, i.e. the Inserts column's card. When that card is not on the page
+ * (the Inserts column is open, or a stall banner's Retry leads it), the
+ * exception has nowhere to land, so the NEO-224 rule applies instead: focus
+ * goes into the new column's box rather than being left on `<body>`.
  */
 function cascadeLandingSpot(
   row: HTMLElement,
   stayOnInsert: boolean,
 ): HTMLElement | null {
-  if (stayOnInsert) return insertColumnCard(row);
+  if (stayOnInsert) {
+    const card = insertColumnCard(row);
+    if (card) return card;
+  }
   const boxes = row.querySelectorAll<HTMLElement>('[role="combobox"]');
   return boxes[boxes.length - 1] ?? null;
 }
@@ -811,10 +820,18 @@ export default function SetSelector() {
   //
   // NEO-224: a `replace`, not a push — the row is gone, so Back must not walk
   // the operator onto it again.
+  //
+  // NEO-425: a deleted sub-variant parks on its insert's card instead, the
+  // same place picking that insert leaves focus. Whether its siblings keep
+  // the Sub-Variants column open or it was the last one (the column goes and
+  // the insert is a leaf), the cascade and the D3 rule both leave a collapsed
+  // card alone, so the operator always lands on the insert.
   const handleRowDeleted = (level: SelectorLevel) => {
     drillClearFrom(level);
     resetBaseMappingDismissals();
-    columnRowRef.current?.focus();
+    const row = columnRowRef.current;
+    if (!row) return;
+    ((level === "parallel" ? insertColumnCard(row) : null) ?? row).focus();
   };
 
   /**
@@ -1249,6 +1266,54 @@ export default function SetSelector() {
   const keyboardCommitRef = useRef(false);
   const pageRef = useRef<HTMLDivElement | null>(null);
   const terminalHandledForRef = useRef<string | null>(null);
+
+  /**
+   * NEO-425 — the Sub-Variants column going away because its LAST row left
+   * (deleted, or Group Parallels sent it back to the top level) while the
+   * same insert stays picked. That is not a pick, just as rows arriving are
+   * not one, so:
+   *
+   *  - the D3 rule stands down for the selection it leaves (the insert, now a
+   *    leaf): focus is not pulled off wherever the operator has it, such as
+   *    the "Group Parallels" button the dialog hands focus back to;
+   *  - if focus was inside the column, it went with the column, and is
+   *    parked on the insert's card rather than left on `<body>`.
+   *
+   * `focusInSubVariantsRef` says where focus last ENTERED in the column row
+   * (`onFocus` on the row, which React delivers as `focusin`): a browser fires
+   * nothing when it drops focus from a removed element, so this is what still
+   * knows focus was in the column after the column is gone. Declared before
+   * the D3 effect so both run in the commit the column leaves, this one first.
+   */
+  const focusInSubVariantsRef = useRef(false);
+  const noteRowFocus = (event: ReactFocusEvent<HTMLDivElement>) => {
+    focusInSubVariantsRef.current =
+      event.target instanceof Element &&
+      !!event.target.closest('[data-cascade-level="parallel"]');
+  };
+  const subVariantsShownForRef = useRef<string | null>(null);
+  useEffect(() => {
+    const shownFor = subVariantColumnVisible ? selectedVariantId : null;
+    const was = subVariantsShownForRef.current;
+    subVariantsShownForRef.current = shownFor;
+    const lastRowLeft =
+      was !== null &&
+      shownFor === null &&
+      was === selectedVariantId &&
+      subVariantRows !== undefined &&
+      subVariantRows.length === 0;
+    if (!lastRowLeft) return;
+    terminalHandledForRef.current = selectionKey;
+    const wasInColumn = focusInSubVariantsRef.current;
+    focusInSubVariantsRef.current = false;
+    if (!wasInColumn) return;
+    const active = document.activeElement;
+    if (active && active !== document.body && active.isConnected) return;
+    const row = columnRowRef.current;
+    if (!row) return;
+    (insertColumnCard(row) ?? row).focus({ preventScroll: true });
+  }, [subVariantColumnVisible, selectedVariantId, subVariantRows, selectionKey]);
+
   useEffect(() => {
     if (terminalChecklistId === null) {
       // Leaving terminal by a new selection re-arms the rule; leaving it by
@@ -1399,6 +1464,7 @@ export default function SetSelector() {
         tabIndex={-1}
         data-set-selector-scroll
         onKeyDownCapture={noteKeyboardCommit}
+        onFocus={noteRowFocus}
         className="relative flex flex-row gap-4 overflow-x-auto pb-4 pl-4 focus:outline-none"
       >
         {drill.resolving ? (

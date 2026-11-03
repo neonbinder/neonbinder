@@ -16,14 +16,21 @@
 //      focus on the insert just picked (its card), not in the new column's
 //      search box: the one exception to the NEO-224 cascade focus rule.
 //      Driven from the keyboard, the way that rule is used.
+//   4. The column closes when its last sub-variant leaves: with the
+//      sub-variant picked, Group Parallels sends it back to the top level and
+//      the column goes, leaving the insert as a leaf with its own checklist.
+//      Rows leaving are not a pick either, so focus is not pulled anywhere:
+//      it is back on the "Group Parallels" button the dialog returns it to,
+//      never dropped on <body>.
 //
 // R7/R7a - ISOLATION: every write lands in ONE per-attempt hand-made set,
 // `svl<token>`, under `E2E Test Sport <worker>` > 2026 > Topps
 // (drillToCustomSet; SET-REGISTRY.md, Custom sets). Hand-made, so no
 // marketplace side is resolvable beneath it and nothing waits on BSC or
 // SportLots: every wait is the 7 s budget. Per-attempt because the flow turns
-// one of its inserts into a sub-variant, and a rerun must start with three
-// top-level inserts. Nothing is deleted; the set is the debris.
+// one of its inserts into a sub-variant (and back), and a rerun must start
+// with three top-level inserts and a host with no sub-variant. Nothing is
+// deleted; the set is the debris.
 //
 // MINTED NAMES are single tokens from env.ATTEMPT_TOKEN: `svl<token>` (set),
 // `svlhost` / `svlsub` / `svlleaf` + token (inserts). None is a word-prefix of
@@ -121,5 +128,28 @@ test(
     await expect(columnSelection(page, "Inserts", HOST)).toBeFocused();
     await expect(columnSearch(page, "Parallels")).not.toBeFocused();
     await expectAccessible(page, { label: "Insert with sub-variants, focus on the insert" });
+
+    // ── CLAIM 4: THE COLUMN CLOSES WHEN ITS LAST SUB-VARIANT LEAVES ──
+    // Pick the sub-variant, then send it back to the top level.
+    await columnOption(page, "Parallels", SUB).click();
+    await expect(columnSelection(page, "Parallels", SUB)).toBeVisible();
+    await groupParallels.click();
+    await expect(grouping.getByText(/Drag inserts under a parent/)).toBeVisible();
+    await grouping.getByRole("button", { name: `Remove ${SUB} from parallels` }).click();
+    await expect(grouping.getByText("0 promotions, 1 demotion")).toBeVisible();
+    await grouping.getByRole("button", { name: "Save 1 change" }).click();
+    await expect(grouping).toBeHidden();
+
+    // Positive first: the host is still the pick, and its own checklist is up
+    // (an empty one, so its fetch is what it offers) ...
+    await expect(columnSelection(page, "Inserts", HOST)).toBeVisible();
+    await expect(syncChecklistButton(page)).toBeVisible();
+    // ... and the column is gone, with the sub-variant it held.
+    await expect(columnSelection(page, "Parallels", SUB)).toBeHidden();
+    await expect(columnSearch(page, "Parallels")).toBeHidden();
+    await expect(addSubVariant).toBeHidden();
+    // Rows leaving are not a pick: focus is where the dialog handed it back.
+    await expect(groupParallels).toBeFocused();
+    await expectAccessible(page, { label: "Insert whose last sub-variant left, a leaf again" });
   },
 );

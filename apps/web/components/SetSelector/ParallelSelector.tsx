@@ -36,7 +36,7 @@ export default function ParallelSelector({
       // so the sync hint every other column carries would be untrue here.
       // The cascade hides this column while an insert has none, so the line
       // is only ever seen for the moment after the last one goes.
-      emptyText="No sub-variants under this insert."
+      emptyText="No parallels under this insert."
     />
   );
 }
