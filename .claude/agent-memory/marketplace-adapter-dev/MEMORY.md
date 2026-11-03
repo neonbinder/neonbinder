@@ -43,3 +43,4 @@
 - [convex-test ids fail real-id codecs](reference_convex_test_ids_fail_real_id_codecs.md) — mock id-checksum codecs (listingSku); fake timers when a test only inspects scheduled network actions
 - [Hold a runAfter(0) action in convex-test](reference_hold_runafter0_in_convex_test.md) — fake setTimeout, hand-run walks, cancel before useRealTimers; count drains in any state
 - [Scratch test typecheck: node-types noise](reference_scratch_test_typecheck_node_types_noise.md) — fixture-reading tests report TS2591/TS2304 under the convex tsconfig; encodeId mints real ids for lib tests
+- [playerIds key pin reads any line](reference_playerids_key_pin_reads_any_line.md) — playerLinksPin flags any `^playerIds:` line in selectorOptions.ts, types and runQuery args too; keep such keys inline

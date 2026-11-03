@@ -25,3 +25,4 @@
 - [Prototype shared types are live](prototype-shared-types-are-live-do-not-edit-them.md) — p1-p5 still routed; adapt at demoStore, never edit prototypes/_shared shapes
 - [Kept-counter semantics change is a write-path audit](kept-counter-semantics-change-is-a-write-path-audit.md) — tally/count meaning changes touch every mutation + recount + derived counts + backfill; never a read filter
 - [Scheduled marketplace work has no caller identity](scheduled-marketplace-work-has-no-caller-identity.md) — getSiteToken needs a signed-in user: internal userId token path + per-user fan-out; new browser routes ship with a per-feature contract minimum
+- [Reversible auto-links are decisions, not fast-path answers](reversible-auto-links-are-decisions-not-fast-path-answers.md) — a visible/undoable auto-link is a review row with a decision; never in checklistNameResolutions; prelude must read the decision before the exactly-one fast path (NEO-424)

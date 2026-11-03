@@ -1410,7 +1410,68 @@ export type CardYearNarrowing = {
    * a budget of at least one, so the first name can never see it.
    */
   transactionBudgetExhausted?: boolean;
+  /**
+   * NEO-424 — `playerId` came from the Hall of Fame tie-break (rule 6 below),
+   * not from the year or the team. Set only alongside a `playerId`.
+   *
+   * The review gate turns this into a VISIBLE link (a decided review row the
+   * operator can Change) rather than a silent one, because "the famous one"
+   * is a weaker kind of evidence than a year or a printed team: it is right
+   * for a Frank Thomas insert in a modern set and wrong the day a set prints
+   * the other one.
+   */
+  viaHallOfFame?: boolean;
 };
+
+/**
+ * NEO-424 — the Hall of Fame tie-break's guard: does any RIVAL of the Hall of
+ * Famer have a stint, in ANY year, on a team the card names?
+ *
+ * Rule 8 of the product invariant: a team on the card is a data claim, and a
+ * guess may never contradict one. If the card says "Pirates" and the other
+ * Frank Thomas played for the Pirates, "the famous one" is not a safe answer
+ * and the name goes to a human. The Hall of Famer's OWN stints are not read:
+ * a card naming his team corroborates him, it cannot contradict him.
+ *
+ * Any year, not the card's year, deliberately: this branch only runs when
+ * nobody is known to have been active in the card's year, so a year filter
+ * would leave nothing to compare and the guard would never fire.
+ *
+ * Reads through the same memo and meters as the year tie-break above it, under
+ * the same per-name allowance (`CARD_YEAR_TEAM_READS_PER_NAME`). Returns
+ * `"blown"` when that allowance runs out before every rival stint was
+ * consulted; the caller treats that as "cannot rule it out" and links nobody,
+ * for the reason the year tie-break never decides on a partial read.
+ */
+async function rivalsNameACardTeam(
+  ctx: QueryCtx | MutationCtx,
+  rivals: ReadonlyArray<Doc<"players">>,
+  teamKeys: ReadonlySet<string>,
+  cache: CardYearTeamCache,
+): Promise<boolean | "blown"> {
+  const consulted = new Set<string>();
+  for (const player of rivals) {
+    for (const stint of player.teamYears ?? []) {
+      const key = stint.teamId as string;
+      if (!consulted.has(key)) {
+        if (consulted.size >= CARD_YEAR_TEAM_READS_PER_NAME) return "blown";
+        consulted.add(key);
+      }
+      if (!cache.keysById.has(key)) {
+        cache.reads++;
+        const team = await ctx.db.get(stint.teamId);
+        cache.keysById.set(
+          key,
+          team
+            ? [normalizeEntityName(teamFullName(team)), normalizeEntityName(team.name)]
+            : [],
+        );
+      }
+      if (cache.keysById.get(key)!.some((k) => k && teamKeys.has(k))) return true;
+    }
+  }
+  return false;
+}
 
 /**
  * NEO-254 — narrow several same-name players down using the card's own year.
@@ -1429,7 +1490,16 @@ export type CardYearNarrowing = {
  *    team covering the card year, that survivor wins outright — this is the
  *    case two brothers or two contemporaries with one name produce, where the
  *    year alone cannot separate them.
- * 5. Otherwise exactly one survivor wins; anything else is review.
+ * 5. Otherwise exactly one survivor wins.
+ * 6. NEO-424 — the Hall of Fame tie-break. Only when nobody is KNOWN to have
+ *    been active in the card's year (`activePlayerIds` is empty) and rules
+ *    1–5 left no winner. The pool is the survivors when two or more stand,
+ *    and every candidate when none does (the legend-in-a-modern-set case:
+ *    both Frank Thomases retired long before the card, so the year rules
+ *    everybody out). Exactly one Hall of Famer in the pool wins, provided no
+ *    rival has a stint on a team the card names (`rivalsNameACardTeam`). Two
+ *    Hall of Famers, or none, is review. Reported as `viaHallOfFame`.
+ * 7. Anything else is review.
  *
  * ## Why this is a narrowing and never a decision
  *
@@ -1567,10 +1637,38 @@ export async function narrowSameNamePlayersByCardYear(
     }
   }
 
-  return {
-    playerId: survivors.length === 1 ? survivors[0]._id : null,
-    activePlayerIds,
-  };
+  if (survivors.length === 1) {
+    return { playerId: survivors[0]._id, activePlayerIds };
+  }
+
+  /*
+   * NEO-424 — rule 6, the Hall of Fame tie-break. After the team tie-break,
+   * never before it: a team printed on the card is stronger evidence than
+   * fame, and when it picked someone this line is never reached.
+   */
+  if (activePlayerIds.length === 0) {
+    const pool = survivors.length >= 2 ? survivors : candidates;
+    const famers = pool.filter((player) => player.isHallOfFame === true);
+    if (famers.length === 1) {
+      const famer = famers[0];
+      if (teamKeys.size === 0) {
+        return { playerId: famer._id, activePlayerIds, viaHallOfFame: true };
+      }
+      const cache = opts.teamCache ?? createCardYearTeamCache();
+      // Same contract as the year tie-break's check above: evaluated whole on
+      // a fresh allowance, or deferred whole to the next transaction.
+      if (cache.reads >= cache.budget) {
+        return { playerId: null, activePlayerIds, transactionBudgetExhausted: true };
+      }
+      const rivals = pool.filter((player) => player._id !== famer._id);
+      const contradicted = await rivalsNameACardTeam(ctx, rivals, teamKeys, cache);
+      if (contradicted === false) {
+        return { playerId: famer._id, activePlayerIds, viaHallOfFame: true };
+      }
+    }
+  }
+
+  return { playerId: null, activePlayerIds };
 }
 
 /**
@@ -1629,8 +1727,34 @@ export const resolveNameForReview = internalQuery({
      * operator will one day want to audit.
      */
     narrowedByCardYear: v.optional(v.boolean()),
+    /**
+     * NEO-424 — WHICH narrowing produced `playerId`, present exactly when
+     * `narrowedByCardYear` is. `"cardYear"` is the year (and team) tie-break,
+     * an inference the gate makes silently and logs; `"hallOfFame"` is rule 6
+     * of `narrowSameNamePlayersByCardYear`, which the gate turns into a
+     * VISIBLE decided row the operator can Change. `narrowedByCardYear` stays
+     * true for both so its existing readers keep their meaning ("not the only
+     * row of that name").
+     */
+    narrowedBy: v.optional(v.union(v.literal("cardYear"), v.literal("hallOfFame"))),
+    /**
+     * NEO-424 — the in-sport rows behind `matchCount`, when there are two or
+     * more (capped like `matchCount`). The set-history gate offers them beside
+     * a history link as the rivals the operator can Change to. Absent for 0
+     * and 1, where `playerId` already says everything.
+     */
+    candidatePlayerIds: v.optional(v.array(v.id("players"))),
   }),
-  handler: async (ctx, args) => {
+  handler: async (
+    ctx,
+    args,
+  ): Promise<{
+    matchCount: number;
+    playerId?: Id<"players">;
+    narrowedByCardYear?: boolean;
+    narrowedBy?: "cardYear" | "hallOfFame";
+    candidatePlayerIds?: Array<Id<"players">>;
+  }> => {
     const normalized = normalizePlayerName(args.name);
     // A name that normalizes to nothing (punctuation only) can never match a
     // stored key. Reported as no match, so it goes to review rather than being
@@ -1649,8 +1773,15 @@ export const resolveNameForReview = internalQuery({
     });
     return {
       matchCount: candidates.length,
+      candidatePlayerIds: candidates.map((player) => player._id),
       ...(narrowed.playerId
-        ? { playerId: narrowed.playerId, narrowedByCardYear: true }
+        ? {
+            playerId: narrowed.playerId,
+            narrowedByCardYear: true,
+            narrowedBy: narrowed.viaHallOfFame
+              ? ("hallOfFame" as const)
+              : ("cardYear" as const),
+          }
         : {}),
     };
   },
@@ -1720,15 +1851,42 @@ export async function buildExistingPlayerCandidates(
         ).activePlayerIds.map((id) => id as string),
   );
 
+  return await renderExistingPlayerCandidates(ctx, candidates, normalized, activeInSetYear);
+}
+
+/** One entry of the wizard's "which of these is it?" list. */
+export type ExistingPlayerCandidate = {
+  playerId: Id<"players">;
+  name: string;
+  birthYear?: number;
+  careerSummary: string;
+  activeInSetYear?: boolean;
+  matchedAlias?: string;
+  /**
+   * NEO-424 — the player's HOME sport label, set only by
+   * `buildExistingPlayerCandidatesForIds`, whose candidates can come from any
+   * sport. The wizard prints it beside a candidate whose sport is not the
+   * set's ("Bo Jackson · Football").
+   */
+  sportValue?: string;
+};
+
+/**
+ * The rendering half of `buildExistingPlayerCandidates`, shared since NEO-424
+ * with `buildExistingPlayerCandidatesForIds` so the two lists cannot disagree
+ * about what a candidate looks like. `nameNormalized` is only used to say which
+ * alias matched; `sportValueById`, when given, labels each candidate with its
+ * home sport.
+ */
+async function renderExistingPlayerCandidates(
+  ctx: QueryCtx | MutationCtx,
+  candidates: ReadonlyArray<Doc<"players">>,
+  normalized: string,
+  activeInSetYear: ReadonlySet<string>,
+  sportValueById?: ReadonlyMap<string, string>,
+): Promise<ExistingPlayerCandidate[]> {
   const teamNameById = new Map<string, string>();
-  const results: Array<{
-    playerId: Id<"players">;
-    name: string;
-    birthYear?: number;
-    careerSummary: string;
-    activeInSetYear?: boolean;
-    matchedAlias?: string;
-  }> = [];
+  const results: ExistingPlayerCandidate[] = [];
 
   for (const player of candidates) {
     // `sortTeamYears` because the summary reads chronologically and nothing
@@ -1770,9 +1928,153 @@ export async function buildExistingPlayerCandidates(
       ...(matchedAliasFor(player, normalized)
         ? { matchedAlias: matchedAliasFor(player, normalized)! }
         : {}),
+      ...(sportValueById?.has(player.sportId as string)
+        ? { sportValue: sportValueById.get(player.sportId as string)! }
+        : {}),
     });
   }
   return results;
+}
+
+/**
+ * NEO-424 — the most players `buildExistingPlayerCandidatesForIds` renders.
+ *
+ * Its callers hand it a set-history answer plus the in-sport rivals: one
+ * history player and at most `PLAYER_AMBIGUITY_SCAN_LIMIT` rivals, or the two
+ * or three players one set has linked under one name. 16 is headroom over
+ * both, and with `CAREER_SUMMARY_MAX_TEAMS + 1` team reads per player keeps
+ * the worst case a few dozen point reads inside the mutation that calls it.
+ * Ids past it are dropped, in input order (the caller puts its strongest
+ * candidate first).
+ */
+export const MAX_CANDIDATES_FOR_IDS = 16;
+
+/**
+ * NEO-424 — the wizard's candidate list built from player IDS, in any sport.
+ *
+ * `buildExistingPlayerCandidates` starts from a name and a sport, which cannot
+ * express the set-history answer: the players this set has already linked a
+ * name to are whoever they are, and one of them may be a football player
+ * guest-linked onto a baseball card (Bo Jackson). This one starts from the ids
+ * the gate found and renders them the same way, each labelled with its home
+ * sport so the wizard can say which sport a candidate plays.
+ *
+ * Differences from the name-keyed builder, all deliberate:
+ *
+ *  - It returns ONE candidate too. A lone id here is not "the only row of that
+ *    name" (which is no choice); it is the history player beside zero in-sport
+ *    rivals, and the Change path needs it on the list.
+ *  - Order is the caller's, deduped, so the history player stays first.
+ *  - Dangling ids (a player deleted since the gate) are dropped silently.
+ *  - `activeInSetYear` is computed per player from the same span helpers the
+ *    narrowing uses, not by running the narrowing, because the narrowing says
+ *    nothing about a pool of one.
+ *
+ * `name` is the checklist string the row is for, used only to say which alias
+ * matched. Exported as a plain function, like its sibling, because its caller
+ * (`entityReviewQueue.startBatch`) is a mutation.
+ */
+export async function buildExistingPlayerCandidatesForIds(
+  ctx: QueryCtx | MutationCtx,
+  playerIds: ReadonlyArray<Id<"players">>,
+  opts?: { name?: string; cardYear?: number; currentYear?: number },
+): Promise<ExistingPlayerCandidate[]> {
+  const seen = new Set<string>();
+  const ids: Array<Id<"players">> = [];
+  for (const id of playerIds) {
+    if (seen.has(id as string)) continue;
+    seen.add(id as string);
+    ids.push(id);
+    if (ids.length >= MAX_CANDIDATES_FOR_IDS) break;
+  }
+  const players: Array<Doc<"players">> = [];
+  for (const id of ids) {
+    const player = await ctx.db.get(id);
+    if (player) players.push(player);
+  }
+  if (players.length === 0) return [];
+
+  const sportValueById = new Map<string, string>();
+  for (const player of players) {
+    const key = player.sportId as string;
+    if (sportValueById.has(key)) continue;
+    const sport = await ctx.db.get(player.sportId);
+    if (sport?.value) sportValueById.set(key, sport.value);
+  }
+
+  const active = new Set<string>();
+  const { cardYear } = opts ?? {};
+  if (cardYear !== undefined && Number.isInteger(cardYear)) {
+    const currentYear = opts?.currentYear ?? new Date().getFullYear();
+    for (const player of players) {
+      const span = careerSpan(player.teamYears ?? [], currentYear);
+      if (span !== null && spanCoversCardYear(span, cardYear, CARD_YEAR_TOLERANCE)) {
+        active.add(player._id as string);
+      }
+    }
+  }
+
+  return await renderExistingPlayerCandidates(
+    ctx,
+    players,
+    opts?.name ? normalizePlayerName(opts.name) : "",
+    active,
+    sportValueById,
+  );
+}
+
+/**
+ * NEO-424 (rule E2) — every player who answers to this name in ANY sport,
+ * distinct, capped at `limit`.
+ *
+ * The review gate's "only namesake" preselect: a name that matches nobody in
+ * the set's sport but exactly one player elsewhere (a football player on a
+ * baseball card) is offered as "Link to <name> (<sport>)" for the operator to
+ * confirm. The gate only ever branches on "exactly one", so `limit` need only
+ * be large enough to see a second distinct id; the caller passes a small
+ * number.
+ *
+ * Two index-prefix reads, never a scan: `players.by_name_normalized` (the
+ * cross-sport index the primary name already has) and the `aliasNormalized`
+ * prefix of `playerAliases.by_alias_normalized_and_sport_id`. `playerSports`
+ * is not read: it adds sports to a player the first read already found, never
+ * a new player. An alias row whose player is gone is skipped, as in
+ * `sameNamePlayers`.
+ *
+ * Read-only and never a decision: a single namesake becomes a PRESELECT the
+ * operator confirms, never a link.
+ */
+export async function namesakesAcrossSports(
+  ctx: QueryCtx | MutationCtx,
+  nameNormalized: string,
+  limit: number,
+): Promise<Array<Doc<"players">>> {
+  if (!nameNormalized || limit <= 0) return [];
+  const byName = await ctx.db
+    .query("players")
+    .withIndex("by_name_normalized", (q) => q.eq("nameNormalized", nameNormalized))
+    .take(limit);
+  const seen = new Set<string>(byName.map((player) => player._id as string));
+  const merged = [...byName];
+  if (merged.length >= limit) return merged;
+  const aliasRows = await ctx.db
+    .query("playerAliases")
+    .withIndex("by_alias_normalized_and_sport_id", (q) =>
+      q.eq("aliasNormalized", nameNormalized),
+    )
+    // One alias row per sport the player belongs to, so a player can appear
+    // several times here; read a little past `limit` so those repeats do not
+    // hide a second distinct player.
+    .take(limit * 4);
+  for (const row of aliasRows) {
+    if (merged.length >= limit) break;
+    const key = row.playerId as string;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const player = await ctx.db.get(row.playerId);
+    if (player) merged.push(player);
+  }
+  return merged;
 }
 
 /**
