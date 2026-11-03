@@ -15,6 +15,7 @@ import {
   centsToEbayValue,
   contentFingerprint,
   ebayBucketOf,
+  ebayGroundAdvantageService,
   ebayOrderDisposition,
   ebayOrderStatus,
   ebayPackageFor,
@@ -619,5 +620,64 @@ describe("ebaySetupMissing (NEO-415)", () => {
         location: {},
       }),
     ).toEqual([]);
+  });
+});
+
+describe("ebayGroundAdvantageService: eBay's Ground Advantage code, read from its metadata (NEO-415)", () => {
+  const svc = (code: string, description: string | null, over: Partial<{ carrier: string | null; international: boolean; validForSelling: boolean }> = {}) => ({
+    code,
+    description,
+    carrier: "USPS" as string | null,
+    international: false,
+    validForSelling: true,
+    ...over,
+  });
+
+  test("a code that names it wins (separators and case ignored)", () => {
+    expect(ebayGroundAdvantageService([svc("USPSPriority", "USPS Priority Mail"), svc("USPSGroundAdvantage", null)])?.code).toBe("USPSGroundAdvantage");
+    expect(ebayGroundAdvantageService([svc("US_USPS_Ground_Advantage", null)])?.code).toBe("US_USPS_Ground_Advantage");
+  });
+
+  test("no code names it: eBay's name for it decides (the code eBay kept from before the rename)", () => {
+    const list = [svc("USPSPriority", "USPS Priority Mail"), svc("USPSParcel", "USPS Ground Advantage"), svc("USPSMedia", "USPS Media Mail")];
+    expect(ebayGroundAdvantageService(list)?.code).toBe("USPSParcel");
+  });
+
+  test("the name match ignores case, trademark marks and a trailing note", () => {
+    expect(ebayGroundAdvantageService([svc("USPSParcel", "USPS Ground Advantage™ (2 to 5 business days)")])?.code).toBe("USPSParcel");
+    expect(ebayGroundAdvantageService([svc("USPSParcel", "usps ground advantage")])?.code).toBe("USPSParcel");
+  });
+
+  test("an exact name beats a longer one that also says it", () => {
+    const list = [svc("USPSGACubic", "USPS Ground Advantage Cubic"), svc("USPSParcel", "USPS Ground Advantage")];
+    expect(ebayGroundAdvantageService(list)?.code).toBe("USPSParcel");
+  });
+
+  test("only a longer name says it: taken when exactly one does and USPS is the carrier or in the name", () => {
+    expect(ebayGroundAdvantageService([svc("X1", "Ground Advantage (USPS)", { carrier: null })])?.code).toBe("X1");
+    expect(ebayGroundAdvantageService([svc("X1", "Ground Advantage Economy", { carrier: "USPS" })])?.code).toBe("X1");
+    expect(ebayGroundAdvantageService([svc("X1", "Ground Advantage Economy", { carrier: "UPS" })])).toBeNull();
+  });
+
+  test("international and not-valid-for-selling services never count", () => {
+    expect(ebayGroundAdvantageService([svc("USPSGroundAdvantage", null, { international: true })])).toBeNull();
+    expect(ebayGroundAdvantageService([svc("USPSParcel", "USPS Ground Advantage", { validForSelling: false })])).toBeNull();
+  });
+
+  test("several codes name it: a USPS-prefixed one is preferred, then eBay's name decides among them", () => {
+    expect(ebayGroundAdvantageService([svc("EBAYGroundAdvantage", null), svc("USPSGroundAdvantage", null)])?.code).toBe("USPSGroundAdvantage");
+    const two = [svc("USPSGroundAdvantageCubic", "USPS Ground Advantage Cubic"), svc("USPSGroundAdvantage", "USPS Ground Advantage")];
+    expect(ebayGroundAdvantageService(two)?.code).toBe("USPSGroundAdvantage");
+  });
+
+  test("a tie is never given to the first candidate", () => {
+    expect(ebayGroundAdvantageService([svc("A", "USPS Ground Advantage"), svc("B", "USPS Ground Advantage")])).toBeNull();
+    expect(ebayGroundAdvantageService([svc("USPSGroundAdvantage1", null), svc("USPSGroundAdvantage2", null)])).toBeNull();
+    expect(ebayGroundAdvantageService([svc("A", "USPS Ground Advantage Plus"), svc("B", "USPS Ground Advantage Cubic")])).toBeNull();
+  });
+
+  test("nothing that says Ground Advantage: null", () => {
+    expect(ebayGroundAdvantageService([svc("USPSPriority", "USPS Priority Mail"), svc("USPSFirstClass", "USPS First Class Mail")])).toBeNull();
+    expect(ebayGroundAdvantageService([])).toBeNull();
   });
 });

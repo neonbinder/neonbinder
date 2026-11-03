@@ -180,7 +180,15 @@ describe("request shapes and headers", () => {
     answers.push(
       json({
         shippingServices: [
-          { shippingService: "USPSGroundAdvantage", shippingCarrier: "USPS", internationalService: false, validForSellingFlow: true, shippingCostTypes: ["FLAT_RATE", 7] },
+          {
+            shippingService: "USPSParcel",
+            description: "USPS Ground Advantage",
+            shippingCarrier: "USPS",
+            internationalService: false,
+            validForSellingFlow: true,
+            shippingCostTypes: ["FLAT_RATE", 7],
+          },
+          { shippingService: "USPSFirstClass", description: 12, validForSellingFlow: true },
           { shippingService: "x".repeat(81) },
           "junk",
         ],
@@ -189,32 +197,108 @@ describe("request shapes and headers", () => {
     const r = await getShippingServices(noCredentialCalls, session());
     expect(r).toEqual({
       ok: true,
-      value: [{ code: "USPSGroundAdvantage", carrier: "USPS", international: false, validForSelling: true, costTypes: ["FLAT_RATE"] }],
+      value: [
+        {
+          code: "USPSParcel",
+          description: "USPS Ground Advantage",
+          carrier: "USPS",
+          international: false,
+          validForSelling: true,
+          costTypes: ["FLAT_RATE"],
+        },
+        { code: "USPSFirstClass", description: null, carrier: null, international: false, validForSelling: true, costTypes: [] },
+      ],
     });
     expect(seen[0].url.pathname).toBe("/sell/metadata/v1/shipping/marketplace/EBAY_US/get_shipping_services");
   });
 
-  test("upsertInventoryLocation creates, then on 409 updates the address", async () => {
-    answers.push(json({}, 409), new Response(null, { status: 204 }));
+  test("upsertInventoryLocation: a location eBay does not have yet is created, enabled, as a US warehouse", async () => {
+    answers.push(json({ errors: [{ errorId: 25805 }] }, 404), new Response(null, { status: 204 }));
     const r = await upsertInventoryLocation(noCredentialCalls, session(), "neonbinder-main", {
       postalCode: "53703",
       city: "Madison",
       stateOrProvince: "WI",
     });
     expect(r).toEqual({ ok: true, value: null });
-    expect(seen[0].url.pathname).toBe("/sell/inventory/v1/location/neonbinder-main");
-    expect(seen[0].json).toMatchObject({
+    expect(seen.map((c) => [c.init.method, c.url.pathname])).toEqual([
+      ["GET", "/sell/inventory/v1/location/neonbinder-main"],
+      ["POST", "/sell/inventory/v1/location/neonbinder-main"],
+    ]);
+    expect(seen[1].json).toEqual({
       location: { address: { city: "Madison", stateOrProvince: "WI", postalCode: "53703", country: "US" } },
       locationTypes: ["WAREHOUSE"],
+      name: "NeonBinder",
+      merchantLocationStatus: "ENABLED",
     });
-    expect(seen[1].url.pathname).toBe("/sell/inventory/v1/location/neonbinder-main/update_location_details");
   });
 
-  test("upsertInventoryLocation does not retry on a non-409 failure", async () => {
-    answers.push(json({}, 400));
+  test("upsertInventoryLocation: a location eBay already has gets its address updated, never created again", async () => {
+    // The sandbox answers a create of an existing key with 400 (the contract says 409).
+    answers.push(json({ merchantLocationKey: "neonbinder-main", merchantLocationStatus: "ENABLED" }), new Response(null, { status: 204 }));
+    const r = await upsertInventoryLocation(noCredentialCalls, session(), "neonbinder-main", {
+      postalCode: "53703",
+      city: "Madison",
+      stateOrProvince: "WI",
+    });
+    expect(r).toEqual({ ok: true, value: null });
+    expect(seen.map((c) => [c.init.method, c.url.pathname])).toEqual([
+      ["GET", "/sell/inventory/v1/location/neonbinder-main"],
+      ["POST", "/sell/inventory/v1/location/neonbinder-main/update_location_details"],
+    ]);
+    expect(seen[1].json).toEqual({
+      location: { address: { city: "Madison", stateOrProvince: "WI", postalCode: "53703", country: "US" } },
+      locationTypes: ["WAREHOUSE"],
+      name: "NeonBinder",
+    });
+  });
+
+  test("upsertInventoryLocation: a location the seller disabled is updated, then enabled", async () => {
+    answers.push(json({ merchantLocationStatus: "DISABLED" }), new Response(null, { status: 204 }), json({}));
+    const r = await upsertInventoryLocation(noCredentialCalls, session(), "k", { postalCode: "53703", city: "Madison", stateOrProvince: "WI" });
+    expect(r).toEqual({ ok: true, value: null });
+    expect(seen.map((c) => c.url.pathname)).toEqual([
+      "/sell/inventory/v1/location/k",
+      "/sell/inventory/v1/location/k/update_location_details",
+      "/sell/inventory/v1/location/k/enable",
+    ]);
+    expect(seen[2].init.body).toBeUndefined();
+  });
+
+  test("upsertInventoryLocation: a create that loses a race to another save reads again and updates", async () => {
+    answers.push(json({}, 404), json({ errors: [{ errorId: 25803 }] }, 400), json({ merchantLocationStatus: "ENABLED" }), new Response(null, { status: 204 }));
+    const r = await upsertInventoryLocation(noCredentialCalls, session(), "k", { postalCode: "53703", city: "Madison", stateOrProvince: "WI" });
+    expect(r).toEqual({ ok: true, value: null });
+    expect(seen.map((c) => [c.init.method, c.url.pathname])).toEqual([
+      ["GET", "/sell/inventory/v1/location/k"],
+      ["POST", "/sell/inventory/v1/location/k"],
+      ["GET", "/sell/inventory/v1/location/k"],
+      ["POST", "/sell/inventory/v1/location/k/update_location_details"],
+    ]);
+  });
+
+  test("upsertInventoryLocation: a refused create of a location still not there is the create's own failure", async () => {
+    answers.push(json({}, 404), json({ errors: [{ errorId: 25801 }] }, 400), json({}, 404));
     const r = await upsertInventoryLocation(noCredentialCalls, session(), "k", { postalCode: "1", city: "c", stateOrProvince: "WI" });
-    expect(r).toMatchObject({ ok: false, failure: { httpStatus: 400 } });
+    expect(r).toMatchObject({ ok: false, failure: { kind: "http", httpStatus: 400, errorIds: [25801] } });
+    expect(seen).toHaveLength(3);
+  });
+
+  test("upsertInventoryLocation: a failed read (not a 404) stops before any write", async () => {
+    answers.push(json({}, 500));
+    const r = await upsertInventoryLocation(noCredentialCalls, session(), "k", { postalCode: "1", city: "c", stateOrProvince: "WI" });
+    expect(r).toMatchObject({ ok: false, failure: { httpStatus: 500 } });
     expect(seen).toHaveLength(1);
+  });
+
+  test("a refusal logs eBay's numeric error ids and nothing of its message text", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    answers.push(json({ errors: [{ errorId: 25803, message: "SECRET-ECHO", longMessage: "SECRET-ECHO" }] }, 400));
+    await getPolicies(noCredentialCalls, session(), "payment_policy");
+    const lines = log.mock.calls.map((c) => String(c[0]));
+    log.mockRestore();
+    const errorLine = lines.map((l) => JSON.parse(l)).find((l) => l.msg === "ebay_seller_error");
+    expect(errorLine).toEqual({ msg: "ebay_seller_error", platform: "ebay", operation: "get_payment_policy", httpStatus: 400, errorIds: [25803] });
+    expect(lines.join("\n")).not.toContain("SECRET-ECHO");
   });
 
   test("getCardCategoryAspects reads category 261328 in tree 0", async () => {
@@ -233,6 +317,36 @@ describe("request shapes and headers", () => {
     expect(seen[0].init.body).toBeInstanceOf(FormData);
     expect((seen[0].init.body as FormData).get("image")).toBeInstanceOf(Blob);
     expect(seen[0].headers["Content-Type"]).toBeUndefined();
+  });
+
+  test("uploadImage: a 201 with no URL in its body reads the image named by the Location header, on the media host", async () => {
+    answers.push(
+      new Response(null, { status: 201, headers: { location: "https://apim.sandbox.ebay.com/commerce/media/v1_beta/image/v1%7C1234%7C0" } }),
+      json({ imageUrl: "https://i.ebayimg.com/images/g/abc/s-l1600.jpg", expirationDate: "2027-01-01T00:00:00.000Z" }),
+    );
+    const r = await uploadImage(noCredentialCalls, session(), { bytes: new ArrayBuffer(1), contentType: "image/jpeg", fileName: "a.jpg" });
+    expect(r).toEqual({ ok: true, value: { url: "https://i.ebayimg.com/images/g/abc/s-l1600.jpg", expiresAt: Date.UTC(2027, 0, 1) } });
+    expect(seen).toHaveLength(2);
+    expect(seen[1].init.method).toBe("GET");
+    expect(seen[1].url.origin).toBe("https://apim.sandbox.ebay.com");
+    expect(seen[1].url.pathname).toBe("/commerce/media/v1_beta/image/v1%7C1234%7C0");
+  });
+
+  test("uploadImage: a Location on another host is still read from the configured media host only", async () => {
+    answers.push(
+      new Response(null, { status: 201, headers: { location: "https://evil.example/commerce/media/v1_beta/image/IMG1" } }),
+      json({ imageUrl: "https://i.ebayimg.com/x.jpg" }),
+    );
+    const r = await uploadImage(noCredentialCalls, session(), { bytes: new ArrayBuffer(1), contentType: "image/jpeg", fileName: "a.jpg" });
+    expect(r.ok).toBe(true);
+    expect(seen[1].url.href).toBe("https://apim.sandbox.ebay.com/commerce/media/v1_beta/image/IMG1");
+  });
+
+  test("uploadImage: no URL in the body and no image id in a Location is a bad_response, with no second call", async () => {
+    answers.push(new Response(null, { status: 201, headers: { location: "https://apim.sandbox.ebay.com/somewhere/else" } }));
+    const r = await uploadImage(noCredentialCalls, session(), { bytes: new ArrayBuffer(1), contentType: "image/jpeg", fileName: "a.jpg" });
+    expect(r).toMatchObject({ ok: false, failure: { kind: "bad_response" } });
+    expect(seen).toHaveLength(1);
   });
 
   test("uploadImage refuses a non-https image URL", async () => {

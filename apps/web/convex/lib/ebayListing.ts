@@ -490,6 +490,68 @@ export function ebayServiceTakesCalculated(
   return service.costTypes.some((t) => t.toUpperCase() === EBAY_COST_TYPE_CALCULATED);
 }
 
+/** A shipping service as eBay's metadata lists it (`adapters/ebaySeller.getShippingServices`). */
+export interface EbayMetadataService {
+  code: string;
+  description: string | null;
+  carrier: string | null;
+  international: boolean;
+  validForSelling: boolean;
+}
+
+/** Lower case, trademark marks dropped, every run of other characters one space. */
+function serviceWords(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[™®©]/g, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+/** The phrase that names the service, as words. */
+const GROUND_ADVANTAGE_WORDS = "ground advantage";
+/** USPS's own name for it (the carrier's name, not an eBay code). */
+const GROUND_ADVANTAGE_NAME = "usps ground advantage";
+
+/**
+ * eBay's USPS Ground Advantage service, read from eBay's own shipping
+ * metadata, never a hard-coded code: eBay kept older codes when USPS renamed
+ * its ground services in 2023 (sellers report Ground Advantage behind
+ * `USPSParcel`), so the code alone may not say "Ground Advantage" at all.
+ * Only domestic services valid for selling count. In order, each step taking
+ * exactly one service or passing its candidates on:
+ *   1. code   the code names it ("groundadvantage", separators ignored);
+ *             several → the ones whose code starts with "USPS"
+ *   2. name   eBay's localized name is exactly "USPS Ground Advantage"
+ *             (case, ™/® and a trailing "(…)" note ignored)
+ *   3. words  the name says "ground advantage" and the carrier or the name
+ *             says USPS
+ * Still several at a step (or none anywhere) → null: NB never gives a tie to
+ * the first candidate, and makes no tracked policy on a guess.
+ */
+export function ebayGroundAdvantageService(services: ReadonlyArray<EbayMetadataService>): EbayMetadataService | null {
+  const pool = services.filter((s) => !s.international && s.validForSelling);
+  const one = <T>(list: T[]): T | null => (list.length === 1 ? list[0] : null);
+
+  const byCode = pool.filter((s) => serviceWords(s.code).replace(/ /g, "").includes("groundadvantage"));
+  if (byCode.length === 1) return byCode[0];
+  const uspsCodes = byCode.filter((s) => /^usps/i.test(s.code));
+  if (uspsCodes.length === 1) return uspsCodes[0];
+  // Several codes name it: the name decides among them; no code names it: among all.
+  const named = byCode.length > 0 ? (uspsCodes.length > 0 ? uspsCodes : byCode) : pool;
+
+  const nameOf = (s: EbayMetadataService) => serviceWords((s.description ?? "").replace(/\s*\([^)]*\)\s*$/, ""));
+  const exact = named.filter((s) => nameOf(s) === GROUND_ADVANTAGE_NAME);
+  if (exact.length > 0) return one(exact);
+
+  const words = named.filter((s) => {
+    const name = nameOf(s);
+    if (!` ${name} `.includes(` ${GROUND_ADVANTAGE_WORDS} `)) return false;
+    return /\busps\b/.test(serviceWords(s.description ?? "")) || serviceWords(s.carrier ?? "") === "usps";
+  });
+  return one(words);
+}
+
 /**
  * Package weights NB declares for a RAW card, in ounces (Jason, NEO-415):
  * a single card in a Standard Envelope letter is 1 oz; a card packaged in a

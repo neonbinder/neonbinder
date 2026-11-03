@@ -70,6 +70,7 @@ class World {
   returns: Array<{ id: string; name: string }> = [];
   shippingServices: Array<{
     shippingService: string;
+    description?: string;
     internationalService?: boolean;
     validForSellingFlow?: boolean;
     shippingCostTypes?: string[];
@@ -77,7 +78,10 @@ class World {
     { shippingService: "USPSGroundAdvantage", validForSellingFlow: true },
     { shippingService: "USPSPriorityMail", validForSellingFlow: true },
   ];
+  /** What eBay answers a create of a location that is not there yet. */
   locationStatus = 204;
+  /** The seller's inventory location on eBay, by key (it outlives a Disconnect). */
+  locations = new Map<string, { address: Record<string, string>; status: "ENABLED" | "DISABLED" }>();
   failWithdraw = false;
   failBrowserDelete = false;
   connectResponse: Response = Response.json({ username: "slabking", ebayUserId: "EB-9", environment: "sandbox", expiresAt: 1 });
@@ -161,8 +165,28 @@ class World {
       return ok({ returnPolicyId: id }, 201);
     }
     if (p.endsWith("/get_shipping_services")) return ok({ shippingServices: this.shippingServices });
-    if (/^\/sell\/inventory\/v1\/location\/[^/]+$/.test(p)) {
-      return new Response(null, { status: this.locationStatus });
+    const loc = /^\/sell\/inventory\/v1\/location\/([^/]+)(?:\/(update_location_details|enable))?$/.exec(p);
+    if (loc) {
+      const [, key, verb] = loc;
+      const held = this.locations.get(key);
+      if (method === "GET" && !verb) {
+        return held ? ok({ merchantLocationKey: key, merchantLocationStatus: held.status, location: { address: held.address } }) : ok({ errors: [{ errorId: 25805 }] }, 404);
+      }
+      if (method === "POST" && !verb) {
+        // What the sandbox did on a key it already held: 400, not the contract's 409.
+        if (held) return ok({ errors: [{ errorId: 25803 }] }, 400);
+        if (this.locationStatus < 300) this.locations.set(key, { address: json.location.address, status: "ENABLED" });
+        return new Response(null, { status: this.locationStatus });
+      }
+      if (method === "POST" && verb === "update_location_details" && held) {
+        held.address = json.location.address;
+        return new Response(null, { status: 204 });
+      }
+      if (method === "POST" && verb === "enable" && held) {
+        held.status = "ENABLED";
+        return ok({});
+      }
+      return ok({ errors: [{ errorId: 25805 }] }, 404);
     }
     const wd = /^\/sell\/inventory\/v1\/offer\/([^/]+)\/withdraw$/.exec(p);
     if (wd) {
@@ -742,6 +766,21 @@ describe("createStandardPolicies (Set me up)", () => {
     expect(world.fulfillment.find((f) => f.name === NB_POLICY_NAMES.tracked)?.services[0].code).toBe("USPSGroundAdvantage2");
   });
 
+  test("Ground Advantage behind an older code is found by eBay's name for it, and that code is what the policies send", async () => {
+    // CI run 41545461855: the sandbox's metadata named no code "…GroundAdvantage…".
+    world.shippingServices = [
+      { shippingService: "USPSPriority", description: "USPS Priority Mail", validForSellingFlow: true },
+      { shippingService: "USPSParcel", description: "USPS Ground Advantage", validForSellingFlow: true, shippingCostTypes: ["CALCULATED", "FLAT"] },
+      { shippingService: ESE, description: "eBay Standard Envelope", validForSellingFlow: true, shippingCostTypes: ["CALCULATED", "FLAT"] },
+    ];
+    const s = await setup({ settings: SHIPS_FROM });
+    const r = await s.me.action(api.ebayConnect.createStandardPolicies, {});
+    expect(r.ok).toBe(true);
+    expect(world.fulfillment.find((f) => f.name === NB_POLICY_NAMES.tracked)?.services[0].code).toBe("USPSParcel");
+    expect(world.fulfillment.find((f) => f.name === NB_POLICY_NAMES.free)?.services[0].code).toBe("USPSParcel");
+    await drainScheduled(s.t);
+  });
+
   test("without Ground Advantage in eBay's list it makes nothing and says why", async () => {
     world.shippingServices = [{ shippingService: "USPSPriorityMail", validForSellingFlow: true }];
     const s = await setup({ settings: SHIPS_FROM });
@@ -834,12 +873,34 @@ describe("saveLocation", () => {
     expect((await settingsRow(s))?.location).toBeUndefined();
   });
 
-  test("when eBay won't take the location nothing is stored", async () => {
+  test("when eBay won't take the location nothing is stored, and the collector is told in NB's words", async () => {
     world.locationStatus = 400;
     const s = await setup({ settings: {} });
     const r = await s.me.action(api.ebayConnect.saveLocation, { postalCode: "53703", city: "Madison", stateOrProvince: "WI" });
-    expect(r.ok).toBe(false);
+    expect(r).toEqual({ ok: false, error: "eBay wouldn't take that address. Check the ZIP, city and state, then save again." });
     expect((await settingsRow(s))?.location).toBeUndefined();
+  });
+
+  test("the location already on eBay (it outlives a Disconnect) is updated, not created again", async () => {
+    // CI run 41545461855: the desktop pass made the location; the mobile pass's
+    // save then created it again, and the sandbox answered 400.
+    world.locations.set("neonbinder-main", { address: { postalCode: "10001", city: "New York", stateOrProvince: "NY", country: "US" }, status: "ENABLED" });
+    const s = await setup({ settings: {} });
+    const r = await s.me.action(api.ebayConnect.saveLocation, { postalCode: "53703", city: "Madison", stateOrProvince: "WI" });
+    expect(r).toEqual({ ok: true });
+    expect(world.ebayPosts("/sell/inventory/v1/location/neonbinder-main")).toEqual([]);
+    expect(world.locations.get("neonbinder-main")?.address).toMatchObject({ postalCode: "53703", city: "Madison", stateOrProvince: "WI" });
+    expect((await settingsRow(s))?.location).toEqual({ postalCode: "53703", city: "Madison", stateOrProvince: "WI" });
+    await drainScheduled(s.t);
+  });
+
+  test("saving twice works: the second save updates the location the first one made", async () => {
+    const s = await setup({ settings: {} });
+    expect(await s.me.action(api.ebayConnect.saveLocation, { postalCode: "53703", city: "Madison", stateOrProvince: "WI" })).toEqual({ ok: true });
+    expect(await s.me.action(api.ebayConnect.saveLocation, { postalCode: "53711", city: "Madison", stateOrProvince: "WI" })).toEqual({ ok: true });
+    expect(world.ebayPosts("/sell/inventory/v1/location/neonbinder-main")).toHaveLength(1);
+    expect(world.locations.get("neonbinder-main")?.address.postalCode).toBe("53711");
+    await drainScheduled(s.t);
   });
 });
 

@@ -53,6 +53,7 @@ import {
   EBAY_ESE_SERVICE_CODE,
   EBAY_MARKETPLACE_ID,
   EBAY_MERCHANT_LOCATION_KEY,
+  ebayGroundAdvantageService,
   ebaySetupMissing,
   ebayServiceTakesCalculated,
   isRecord,
@@ -75,6 +76,7 @@ import {
   upsertInventoryLocation,
   type EbayFailure,
   type EbaySellerSession,
+  type EbayShippingServiceInfo,
 } from "./adapters/ebaySeller";
 import type { EbayConnectError } from "./credentials";
 import { encodeEbayReturnState, isAllowedEbayReturnOrigin } from "../lib/marketplace/ebay-oauth-return";
@@ -104,6 +106,7 @@ const OPT_IN_PENDING =
   "eBay is still switching on business policies for your account. Try Set me up again in a few minutes.";
 const SHIP_FROM_FIRST =
   "Save where you ship from first. eBay works out each buyer's shipping from your ZIP code and the card's weight.";
+const LOCATION_REFUSED = "eBay wouldn't take that address. Check the ZIP, city and state, then save again.";
 const NO_CALCULATED = (service: string) =>
   `eBay isn't offering weight-based rates for ${service} on your account, so NeonBinder made nothing. Pick your own shipping policies instead.`;
 
@@ -767,12 +770,28 @@ export const shipFromSaved = internalQuery({
 
 /**
  * eBay's USPS Ground Advantage service code, read from eBay's own metadata
- * (never hard-coded): a domestic service valid for selling whose code names
- * Ground Advantage. Null when eBay lists none.
+ * (never hard-coded; the rule is `lib/ebayListing.ebayGroundAdvantageService`).
+ * Null when eBay lists none, or several that fit equally. A miss logs the
+ * domestic USPS services eBay did list (eBay's public catalogue: codes and
+ * names, nothing of the seller's), so a red live run shows what to match.
  */
-function groundAdvantageCode(services: Array<{ code: string; international: boolean; validForSelling: boolean }>): string | null {
-  const domestic = services.filter((s) => !s.international && s.validForSelling && /groundadvantage/i.test(s.code));
-  return (domestic.find((s) => /^USPS/i.test(s.code)) ?? domestic[0])?.code ?? null;
+function groundAdvantageCode(services: EbayShippingServiceInfo[]): string | null {
+  const found = ebayGroundAdvantageService(services);
+  if (found) return found.code;
+  const usps = services
+    .filter((s) => !s.international && (/usps/i.test(s.code) || /usps/i.test(s.description ?? "") || /usps/i.test(s.carrier ?? "")))
+    .slice(0, 25)
+    .map((s) => ({ code: s.code, description: s.description, validForSelling: s.validForSelling, costTypes: s.costTypes }));
+  console.warn(
+    JSON.stringify({
+      msg: "ebay_ground_advantage_unresolved",
+      platform: "ebay",
+      operation: "createStandardPolicies",
+      servicesListed: services.length,
+      usps,
+    }),
+  );
+  return null;
 }
 
 /**
@@ -1012,7 +1031,12 @@ export const saveLocation = action({
     if (!opened.ok) return opened;
     const location = { postalCode, city, stateOrProvince };
     const r = await upsertInventoryLocation(ctx, opened.session, EBAY_MERCHANT_LOCATION_KEY, location);
-    if (!r.ok) return { ok: false, error: r.failure.message };
+    if (!r.ok) {
+      // An eBay refusal is said in NB's words; signed-out, timeout and network
+      // failures already are.
+      if (r.failure.kind !== "http") return { ok: false, error: r.failure.message };
+      return { ok: false, error: (r.failure.httpStatus ?? 0) >= 500 ? CONNECT_ERRORS.unavailable : LOCATION_REFUSED };
+    }
     await ctx.runMutation(internal.ebayConnect.writeLocationSettings, {
       ownerId,
       location,

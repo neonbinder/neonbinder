@@ -274,11 +274,17 @@ async function send(ctx: SessionCtx, session: EbaySellerSession, opts: SendOptio
   }
   const bodyAnswer = opts.bodyStatuses?.includes(res.status) === true && isRecord(body);
   if (!res.ok && !bodyAnswer) {
+    const errorIds = errorIdsOf(body);
+    // eBay's numeric error ids only (never its message text, which can echo
+    // the request): what a red live run needs to tell one refusal from another.
+    console.log(
+      JSON.stringify({ msg: "ebay_seller_error", platform: "ebay", operation: opts.operation, httpStatus: res.status, errorIds }),
+    );
     return {
       ok: false,
       failure: failure("http", `eBay answered ${res.status} to ${opts.operation}.`, {
         httpStatus: res.status,
-        errorIds: errorIdsOf(body),
+        errorIds,
       }),
     };
   }
@@ -376,6 +382,8 @@ export async function createPolicy(
 
 export interface EbayShippingServiceInfo {
   code: string;
+  /** eBay's localized name for the service (Metadata `ShippingService.description`), e.g. "USPS Ground Advantage". */
+  description: string | null;
   carrier: string | null;
   international: boolean;
   validForSelling: boolean;
@@ -398,6 +406,7 @@ export async function getShippingServices(ctx: SessionCtx, session: EbaySellerSe
     if (!isRecord(s) || typeof s.shippingService !== "string" || s.shippingService.length > 80) continue;
     out.push({
       code: s.shippingService,
+      description: typeof s.description === "string" ? s.description.slice(0, 120) : null,
       carrier: typeof s.shippingCarrier === "string" ? s.shippingCarrier.slice(0, 40) : null,
       international: s.internationalService === true,
       validForSelling: s.validForSellingFlow === true,
@@ -412,9 +421,38 @@ export async function getShippingServices(ctx: SessionCtx, session: EbaySellerSe
 // ── Inventory location ──────────────────────────────────────────────────────
 
 /**
- * Creates the seller's inventory location `key` (`POST /location/{key}`), or
- * updates its address when it already exists (409 →
- * `POST /location/{key}/update_location_details`). A WAREHOUSE in the US.
+ * `GET /sell/inventory/v1/location/{key}`: whether the seller already has
+ * the location, and whether it is enabled. A 404 is "not there".
+ */
+async function readInventoryLocation(
+  ctx: SessionCtx,
+  session: EbaySellerSession,
+  key: string,
+): Promise<EbayResult<{ exists: false } | { exists: true; disabled: boolean }>> {
+  const r = await send(ctx, session, {
+    operation: "getInventoryLocation",
+    method: "GET",
+    path: `/sell/inventory/v1/location/${encodeURIComponent(key)}`,
+    timeoutMs: EBAY_TIMEOUTS_MS.read,
+    maxBytes: EBAY_MAX_BYTES.small,
+  });
+  if (!r.ok) return r.failure.httpStatus === 404 ? { ok: true, value: { exists: false } } : r;
+  const status = isRecord(r.value.body) ? r.value.body.merchantLocationStatus : undefined;
+  return { ok: true, value: { exists: true, disabled: status === "DISABLED" } };
+}
+
+/**
+ * Makes the seller's inventory location `key` say `address`: a WAREHOUSE in
+ * the US. Safe to repeat. The location is READ first (`GET /location/{key}`):
+ *   not there  → `POST /location/{key}` (create, enabled)
+ *   there      → `POST /location/{key}/update_location_details` (the address
+ *                of a warehouse may change any number of times), then
+ *                `POST /location/{key}/enable` if the seller disabled it
+ * Reading first is what makes a second save work: eBay's contract says an
+ * existing key answers create with 409, but the sandbox answered 400 (the
+ * key survives a Disconnect, so every save after the first hits it). A
+ * create that fails anyway (a save racing another) reads again and updates
+ * when the location turned out to be there; otherwise its own failure stands.
  */
 export async function upsertInventoryLocation(
   ctx: SessionCtx,
@@ -423,10 +461,35 @@ export async function upsertInventoryLocation(
   address: { postalCode: string; city: string; stateOrProvince: string },
 ): Promise<EbayResult<null>> {
   const addr = { city: address.city, stateOrProvince: address.stateOrProvince, postalCode: address.postalCode, country: "US" };
+  const path = `/sell/inventory/v1/location/${encodeURIComponent(key)}`;
+  const update = async (disabled: boolean): Promise<EbayResult<null>> => {
+    const updated = await send(ctx, session, {
+      operation: "updateInventoryLocation",
+      method: "POST",
+      path: `${path}/update_location_details`,
+      json: { location: { address: addr }, locationTypes: ["WAREHOUSE"], name: "NeonBinder" },
+      timeoutMs: EBAY_TIMEOUTS_MS.write,
+      maxBytes: EBAY_MAX_BYTES.small,
+    });
+    if (!updated.ok) return updated;
+    if (!disabled) return { ok: true, value: null };
+    const enabled = await send(ctx, session, {
+      operation: "enableInventoryLocation",
+      method: "POST",
+      path: `${path}/enable`,
+      timeoutMs: EBAY_TIMEOUTS_MS.write,
+      maxBytes: EBAY_MAX_BYTES.small,
+    });
+    return enabled.ok ? { ok: true, value: null } : enabled;
+  };
+
+  const before = await readInventoryLocation(ctx, session, key);
+  if (!before.ok) return before;
+  if (before.value.exists) return await update(before.value.disabled);
   const created = await send(ctx, session, {
     operation: "createInventoryLocation",
     method: "POST",
-    path: `/sell/inventory/v1/location/${encodeURIComponent(key)}`,
+    path,
     json: {
       location: { address: addr },
       locationTypes: ["WAREHOUSE"],
@@ -437,16 +500,10 @@ export async function upsertInventoryLocation(
     maxBytes: EBAY_MAX_BYTES.small,
   });
   if (created.ok) return { ok: true, value: null };
-  if (created.failure.httpStatus !== 409) return created;
-  const updated = await send(ctx, session, {
-    operation: "updateInventoryLocation",
-    method: "POST",
-    path: `/sell/inventory/v1/location/${encodeURIComponent(key)}/update_location_details`,
-    json: { location: { address: addr }, locationTypes: ["WAREHOUSE"], name: "NeonBinder" },
-    timeoutMs: EBAY_TIMEOUTS_MS.write,
-    maxBytes: EBAY_MAX_BYTES.small,
-  });
-  return updated.ok ? { ok: true, value: null } : updated;
+  if (created.failure.httpStatus !== 400 && created.failure.httpStatus !== 409) return created;
+  const after = await readInventoryLocation(ctx, session, key);
+  if (!after.ok || !after.value.exists) return created;
+  return await update(after.value.disabled);
 }
 
 // ── Taxonomy ────────────────────────────────────────────────────────────────
@@ -466,12 +523,41 @@ export async function getCardCategoryAspects(ctx: SessionCtx, session: EbaySelle
 
 // ── Media ───────────────────────────────────────────────────────────────────
 
+const MEDIA_IMAGE_PATH = "/commerce/media/v1_beta/image";
+/** The image id segment at the end of create's `Location` header (`…/commerce/media/v1_beta/image/{image_id}`). */
+const IMAGE_ID_IN_LOCATION = /\/commerce\/media\/v1_beta\/image\/([^/?#]{1,256})\/?$/;
+
+/** The image id a `Location` header names (decoded; printable, no slash), or null. */
+function imageIdOf(location: string | null, base: string): string | null {
+  if (!location) return null;
+  try {
+    const segment = IMAGE_ID_IN_LOCATION.exec(new URL(location, base).pathname)?.[1];
+    const id = segment === undefined ? null : decodeURIComponent(segment);
+    return id !== null && /^[\x21-\x7e]{1,128}$/.test(id) && !id.includes("/") ? id : null;
+  } catch {
+    return null;
+  }
+}
+
+/** An ImageResponse body narrowed to its https URL and expiry, or null. */
+function readImageResponse(body: unknown): { url: string; expiresAt: number | null } | null {
+  const b = isRecord(body) ? body : {};
+  const url = typeof b.imageUrl === "string" ? b.imageUrl : null;
+  if (!url || !url.startsWith("https://") || url.length > 500) return null;
+  const expires = typeof b.expirationDate === "string" ? Date.parse(b.expirationDate) : NaN;
+  return { url, expiresAt: Number.isFinite(expires) ? expires : null };
+}
+
 /**
  * Uploads one picture (`POST /commerce/media/v1_beta/image/create_image_from_file`
- * on the `apim.` host, multipart) and returns eBay's hosted URL. The 201
- * body is an ImageResponse (`imageUrl`, `expirationDate`) per the spec; the
- * multipart field name `image` is UNVERIFIED (the published spec omits the
- * request body; eBay's guide names the field "image").
+ * on the `apim.` host, multipart, the file in the form field `image`: the
+ * Media contract's method description gives `image: "sample_picture.jpg"`)
+ * and returns eBay's hosted URL. The contract types the 201 body as an
+ * ImageResponse (`imageUrl`, `expirationDate`) but tells callers to capture
+ * the image id from the `Location` header and read it with `getImage`; when
+ * the body carries no usable URL, that is what happens
+ * (`GET /commerce/media/v1_beta/image/{image_id}` on the configured media
+ * host, never the header's own host).
  */
 export async function uploadImage(
   ctx: SessionCtx,
@@ -482,7 +568,7 @@ export async function uploadImage(
     operation: "createImageFromFile",
     method: "POST",
     host: "media",
-    path: "/commerce/media/v1_beta/image/create_image_from_file",
+    path: `${MEDIA_IMAGE_PATH}/create_image_from_file`,
     form: () => {
       const form = new FormData();
       form.append("image", new Blob([args.bytes], { type: args.contentType }), args.fileName);
@@ -492,13 +578,22 @@ export async function uploadImage(
     maxBytes: EBAY_MAX_BYTES.small,
   });
   if (!r.ok) return r;
-  const body = isRecord(r.value.body) ? r.value.body : {};
-  const url = typeof body.imageUrl === "string" ? body.imageUrl : null;
-  if (!url || !url.startsWith("https://") || url.length > 500) {
-    return { ok: false, failure: failure("bad_response", "eBay didn't say where it put the photo.") };
-  }
-  const expires = typeof body.expirationDate === "string" ? Date.parse(body.expirationDate) : NaN;
-  return { ok: true, value: { url, expiresAt: Number.isFinite(expires) ? expires : null } };
+  const noUrl = { ok: false as const, failure: failure("bad_response", "eBay didn't say where it put the photo.") };
+  const direct = readImageResponse(r.value.body);
+  if (direct) return { ok: true, value: direct };
+  const imageId = imageIdOf(r.value.location, session.config.mediaBase);
+  if (!imageId) return noUrl;
+  const read = await send(ctx, session, {
+    operation: "getImage",
+    method: "GET",
+    host: "media",
+    path: `${MEDIA_IMAGE_PATH}/${encodeURIComponent(imageId)}`,
+    timeoutMs: EBAY_TIMEOUTS_MS.read,
+    maxBytes: EBAY_MAX_BYTES.small,
+  });
+  if (!read.ok) return read;
+  const image = readImageResponse(read.value.body);
+  return image ? { ok: true, value: image } : noUrl;
 }
 
 // ── Inventory: items and offers ─────────────────────────────────────────────
