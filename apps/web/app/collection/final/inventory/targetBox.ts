@@ -89,9 +89,17 @@ export function resolveTargetBox(
 // The quantity
 // ---------------------------------------------------------------------------
 
-/** True when a line is plain: raw in the default condition, nothing else noted about it, not up for trade (D9). */
+/**
+ * True when a line is plain: raw in the default condition, nothing else noted
+ * about it, no photo, not up for trade (D9). The server's `isPlainLine`
+ * (convex/collectionInventory.ts) decides what a quick count may change, so
+ * this must read every line the same way: a line it counts here and the
+ * server won't touch would be a count the field can never set (NEO-377: a
+ * copy with a photo is the collector's own record, never a quick count's).
+ */
 export function isPlainLine(copy: Copy, defaultCondition: Condition = DEFAULT_CONDITION): boolean {
   return (
+    copy.hasPhotos !== true &&
     !copy.graded &&
     (!copy.condition || copy.condition === defaultCondition) &&
     !copy.serialNumber &&
@@ -114,7 +122,7 @@ export function plainQuantity(lines: readonly Copy[], defaultCondition: Conditio
   return lines.reduce((n, c) => (isPlainLine(c, defaultCondition) ? n + c.quantity : n), 0);
 }
 
-/** "PSA 9", "Raw Mint ×3", "Raw · 23/50", "Raw, for trade": one other line, short. */
+/** "PSA 9", "Raw Mint ×3", "Raw 23/50", "Raw for trade", "Raw with photo": one other line, short. */
 function otherLineText(copy: Copy, defaultCondition: Condition): string {
   // The default condition goes unsaid: it is what the field counts.
   const condition = copy.condition !== defaultCondition ? copy.condition : undefined;
@@ -125,7 +133,8 @@ function otherLineText(copy: Copy, defaultCondition: Condition): string {
       : "Raw";
   if (copy.serialNumber) text += ` ${copy.serialNumber}`;
   if (copy.upForTrade) text += " for trade";
-  else if (!copy.graded && !condition && !copy.serialNumber) text += " with notes";
+  // Nothing above sets it apart: say what does (its photo, else the details only the drawer shows).
+  else if (!copy.graded && !condition && !copy.serialNumber) text += copy.hasPhotos ? " with photo" : " with notes";
   if (copy.quantity > 1) text += ` ×${copy.quantity}`;
   return text;
 }

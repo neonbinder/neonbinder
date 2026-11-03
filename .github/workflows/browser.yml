@@ -106,6 +106,44 @@ jobs:
 
       - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
 
+      - id: ebay
+        name: Preflight eBay config (sandbox, dev project)
+        env:
+          EBAY_CLIENT_ID: ${{ vars.EBAY_CLIENT_ID_SANDBOX }}
+          EBAY_RU_NAME: ${{ vars.EBAY_RU_NAME_SANDBOX }}
+          GCP_PROJECT: neonbinder-dev
+        # NEO-415. Fail the deploy loudly rather than ship a revision whose eBay
+        # routes answer 503 ebay_not_configured, or hand Cloud Run a secret
+        # reference whose latest version is not enabled (an opaque deploy
+        # failure). Resolves `latest` to its number and pins that number in the
+        # deploy: Cloud Run reads secret env vars at instance start, so a
+        # floating :latest would take a newly added version live on the next
+        # cold start without a deploy. Needs the deployer's viewer grant on the
+        # secret (neonbinder_ioc).
+        run: |
+          set -uo pipefail
+          missing=()
+          [ -n "$EBAY_CLIENT_ID" ] || missing+=("repo variable EBAY_CLIENT_ID_SANDBOX")
+          [ -n "$EBAY_RU_NAME" ] || missing+=("repo variable EBAY_RU_NAME_SANDBOX")
+          if ! out=$(gcloud secrets versions describe latest \
+              --secret=ebay-client-secret --project="$GCP_PROJECT" \
+              --format='value(state,name)' 2>&1); then
+            missing+=("secret ebay-client-secret readable in $GCP_PROJECT (gcloud: $(printf '%s' "$out" | head -n1))")
+          else
+            state=$(printf '%s' "$out" | awk '{print $1}')
+            version=$(printf '%s' "$out" | awk '{print $2}' | awk -F/ '{print $NF}')
+            if [ "$state" != "ENABLED" ] || ! [[ "$version" =~ ^[0-9]+$ ]]; then
+              missing+=("the latest version of secret ebay-client-secret in $GCP_PROJECT to be ENABLED (state: $state)")
+            else
+              echo "version=$version" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+          if [ "${#missing[@]}" -gt 0 ]; then
+            for m in "${missing[@]}"; do echo "::error::eBay config missing: $m"; done
+            echo "::error::See NEO-415. Set the repo variables with gh variable set and add the secret version with gcloud secrets versions add ebay-client-secret."
+            exit 1
+          fi
+
       - name: Configure Docker for GCR
         run: gcloud auth configure-docker --quiet
 
@@ -136,7 +174,13 @@ jobs:
           region: us-central1
           image: gcr.io/neonbinder-dev/neonbinder-browser-preview:pr-${{ github.event.pull_request.number }}
           project_id: neonbinder-dev
-          env_vars: ENVIRONMENT=dev
+          env_vars: |
+            ENVIRONMENT=dev
+            EBAY_CLIENT_ID=${{ vars.EBAY_CLIENT_ID_SANDBOX }}
+            EBAY_RU_NAME=${{ vars.EBAY_RU_NAME_SANDBOX }}
+            EBAY_ENVIRONMENT=sandbox
+          secrets: |
+            EBAY_CLIENT_SECRET=ebay-client-secret:${{ steps.ebay.outputs.version }}
           no_traffic: true
           tag: pr-${{ github.event.pull_request.number }}
           # NEO-299: explicit per-deploy cap — see the env block comment above.

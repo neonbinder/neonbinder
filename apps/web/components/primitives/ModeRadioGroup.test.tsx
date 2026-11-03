@@ -81,6 +81,19 @@ describe("ModeRadioGroup", () => {
     expect(radio("Light").getAttribute("aria-checked")).toBe("true");
   });
 
+  it("every card is a 44px target, a label-only card included", () => {
+    // happy-dom has no layout, so this pins the class that sets the floor.
+    render(
+      <ModeRadioGroup
+        label="Size"
+        value="a"
+        options={[{ value: "a", label: "Only a label" }, { value: "b", label: "B", description: "With a line" }]}
+        onChange={() => {}}
+      />,
+    );
+    for (const name of ["Only a label", "B"]) expect(radio(name).className).toContain("min-h-11");
+  });
+
   it("ignores keys it does not own (Tab leaves the group)", () => {
     const onChange = vi.fn();
     render(<Harness onChange={onChange} />);

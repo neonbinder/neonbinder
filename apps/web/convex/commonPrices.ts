@@ -22,6 +22,7 @@ import type { QueryCtx } from "./_generated/server";
 import { mutation, query } from "./_generated/server";
 import { requireSignedIn } from "./auth";
 import { COLLECTION_ERRORS, isPriceCents, refuse } from "./collection";
+import { wakeVariantEverywhere } from "./listingOutbox";
 
 /** Variants one read may ask about (a set's scoreboard is well under this). */
 export const MAX_COMMON_PRICE_READ = 200;
@@ -95,14 +96,20 @@ export const set = mutation({
     }
     const row = await ownRow(ctx, ownerId, variantId);
     const previous = row ? row.priceCents : null;
+    // NEO-415: the common price is the floor of every copy of the variant
+    // without its own, so a change re-prices the owner's listings of it.
     if (args.priceCents === null) {
-      if (row) await ctx.db.delete(row._id);
+      if (row) {
+        await ctx.db.delete(row._id);
+        await wakeVariantEverywhere(ctx, ownerId, variantId);
+      }
       return { previous };
     }
     const now = Date.now();
     if (row) {
       if (row.priceCents !== args.priceCents) {
         await ctx.db.patch(row._id, { priceCents: args.priceCents, lastUpdated: now });
+        await wakeVariantEverywhere(ctx, ownerId, variantId);
       }
       return { previous };
     }
@@ -119,6 +126,7 @@ export const set = mutation({
       priceCents: args.priceCents,
       lastUpdated: now,
     });
+    await wakeVariantEverywhere(ctx, ownerId, variantId);
     return { previous };
   },
 });

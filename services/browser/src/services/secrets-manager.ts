@@ -72,6 +72,14 @@ export interface Credentials {
    * tries the cookie and lets B2C answer.
    */
   ssoExpiresAt?: number;
+  /**
+   * eBay only. NEO-415. The seller's IMMUTABLE eBay user id (Commerce
+   * Identity `userId`), captured at connect. `username` is the seller's
+   * display name on eBay and can change; this cannot, so seller-conflict
+   * detection and the Marketplace Account Deletion notification (which names
+   * the userId) key on it. An identifier, not credential material.
+   */
+  ebayUserId?: string;
 }
 
 /**
@@ -366,6 +374,11 @@ export class SecretsManagerService {
       if (ssoCookies) result.ssoCookies = ssoCookies;
       if (typeof credentials.ssoExpiresAt === "number") {
         result.ssoExpiresAt = credentials.ssoExpiresAt;
+      }
+      // NEO-415: without this line a stored ebayUserId is dropped on read, and
+      // the next /oauth/ebay/refresh (read → merge → write) erases it.
+      if (typeof credentials.ebayUserId === "string" && credentials.ebayUserId.length > 0) {
+        result.ebayUserId = credentials.ebayUserId;
       }
       return result;
     } catch (error: any) {
