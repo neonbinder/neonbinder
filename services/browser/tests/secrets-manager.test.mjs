@@ -952,6 +952,32 @@ describe("SecretsManagerService.getCredentials — NEO-141 payload shape", () =>
     assert.equal(creds.refreshToken, "placeholder-refresh", "and the refresh fields are untouched");
   });
 
+  it("NEO-415: ROUND-TRIPS ebayUserId through store → read", async () => {
+    // Same field-stripping trap: dropped on read, the eBay refresh route's
+    // read → merge → write would erase the id seller-conflict keys on.
+    activeClient = makeReadClient({});
+    const service = new SecretsManagerService();
+
+    await service.updateCredentials(KEY, {
+      username: "seller_display_name",
+      ebayUserId: "placeholder-immutable-id",
+      token: "placeholder-token",
+      refreshToken: "placeholder-refresh",
+    });
+    const creds = await service.getCredentials(KEY);
+
+    assert.equal(creds.ebayUserId, "placeholder-immutable-id", "ebayUserId must survive the round trip");
+    assert.equal(creds.username, "seller_display_name");
+  });
+
+  it("NEO-415: drops a non-string or empty ebayUserId", async () => {
+    for (const bad of [42, "", null, { id: "x" }]) {
+      activeClient = makeReadClient({ payload: { username: "seller@example.com", ebayUserId: bad } });
+      const creds = await new SecretsManagerService().getCredentials(KEY);
+      assert.equal(creds.ebayUserId, undefined);
+    }
+  });
+
   it("NEO-278: drops an ssoCookies entry carrying a control character", async () => {
     // RFC 6265 forbids them, and fetch() would reject the Cookie header with
     // a TypeError whose message quotes the entire header — the session.

@@ -2,6 +2,7 @@ import { defineConfig, loadEnv, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { sentryVitePlugin } from "@sentry/vite-plugin";
+import fs from "fs";
 import path from "path";
 import { issueClerkTestingTokens } from "./lib/testing/issue-clerk-tokens";
 
@@ -173,6 +174,57 @@ function clerkTestingApiPlugin(): Plugin {
   };
 }
 
+// NEO-422: eBay's OAuth return pages are standalone static HTML in
+// public/oauth/ebay/, served OUTSIDE the app shell so eBay's code and state
+// never reach PostHog, Sentry or Clerk. Their extensionless paths are rewritten
+// to the files here for `vite dev` and `vite preview`, as vercel.json's
+// rewrites do on Vercel; without it Vite's SPA fallback serves index.html and
+// boots the whole app on that URL. Keep this map and vercel.json in step.
+const STATIC_PAGE_REWRITES: Record<string, string> = {
+  "/oauth/ebay/return": "/oauth/ebay/return.html",
+  "/oauth/ebay/sandbox-return": "/oauth/ebay/sandbox-return.html",
+};
+
+// The pages' script is the app's own parser module, served unbundled at this
+// URL: read from lib/ in dev, emitted byte for byte into dist at build (where
+// `vite preview` and Vercel serve it as a plain static file). It lives in lib/
+// rather than public/ so app code can import it without Vite's public-dir
+// warning, and so there is one copy.
+const EBAY_RETURN_SCRIPT_URL = "/oauth/ebay/ebay-return.js";
+const EBAY_RETURN_SCRIPT_SOURCE = path.resolve(__dirname, "lib/marketplace/ebay-oauth-return.js");
+
+function staticPageRewritesPlugin(): Plugin {
+  const rewrite = (req: { url?: string }, _res: unknown, next: () => void) => {
+    const url = req.url ?? "";
+    const queryAt = url.indexOf("?");
+    const pathname = queryAt === -1 ? url : url.slice(0, queryAt);
+    const target = STATIC_PAGE_REWRITES[pathname];
+    if (target) req.url = target + (queryAt === -1 ? "" : url.slice(queryAt));
+    next();
+  };
+  return {
+    name: "static-page-rewrites",
+    configureServer(server) {
+      server.middlewares.use(rewrite);
+      server.middlewares.use(EBAY_RETURN_SCRIPT_URL, (_req, res) => {
+        res.setHeader("Content-Type", "text/javascript; charset=utf-8");
+        res.setHeader("Cache-Control", "no-cache");
+        res.end(fs.readFileSync(EBAY_RETURN_SCRIPT_SOURCE, "utf8"));
+      });
+    },
+    configurePreviewServer(server) {
+      server.middlewares.use(rewrite);
+    },
+    generateBundle() {
+      this.emitFile({
+        type: "asset",
+        fileName: EBAY_RETURN_SCRIPT_URL.slice(1),
+        source: fs.readFileSync(EBAY_RETURN_SCRIPT_SOURCE, "utf8"),
+      });
+    },
+  };
+}
+
 export default defineConfig(async ({ mode }) => {
   // Load .env* into process.env for server-side code (Vite only populates
   // import.meta.env.VITE_* by default; the dev-only Clerk testing middleware
@@ -185,6 +237,7 @@ export default defineConfig(async ({ mode }) => {
     tailwindcss(),
     ...(mkcertPlugin ? [mkcertPlugin] : []),
     clerkTestingApiPlugin(),
+    staticPageRewritesPlugin(),
     sentryVitePlugin({
       org: "neon-binder",
       project: "javascript-nextjs",

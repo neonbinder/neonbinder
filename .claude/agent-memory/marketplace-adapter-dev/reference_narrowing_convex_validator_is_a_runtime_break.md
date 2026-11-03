@@ -31,3 +31,10 @@ array whole with the OLD element validator (e.g. an internal read returning
 caller feeds those elements back into. tsc stays green (`doc.entries` is
 assignable). Project at the read (`entries.map(bare)`) and pin it with a
 test that stores the new field and then runs the path that reads it back.
+
+**Retiring literals from a stored union.** Removing values from a stored
+`v.union` makes any dev/preview row that still holds them refuse the next
+schema push. Keep the stored validator wide, give the public `returns` a
+narrow copy (reuse the sibling fields via `validator.fields.x`), and filter
+with a type guard at the read; pin it with a test that stores an old value
+and reads it back (ebayConnect `shownSetupStepValidator`, NEO-415).

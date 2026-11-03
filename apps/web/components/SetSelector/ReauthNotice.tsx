@@ -4,6 +4,7 @@ import {
   REAUTH_NOTICE_COPY,
   joinSiteLabels,
 } from "@/lib/marketplace/reauth-notice";
+import { credentialsPathFor } from "@/lib/marketplace/listing-copy";
 
 /**
  * NEO-278 — "your marketplace session lapsed" notice for the sync surfaces.
@@ -134,7 +135,8 @@ export default function ReauthNotice({
         {REAUTH_NOTICE_COPY.body}
       </p>
       <Link
-        to="/profile/credentials"
+        // Straight to the first platform that needs it (the page picks it from the URL).
+        to={credentialsPathFor(sites[0])}
         className="shrink-0 inline-block px-3 py-1.5 rounded-md bg-neon-green text-on-neon-green text-xs font-semibold hover:opacity-90 focus-outline"
       >
         {REAUTH_NOTICE_COPY.link}

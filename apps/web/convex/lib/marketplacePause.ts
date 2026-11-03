@@ -38,15 +38,26 @@ export const PAUSED_PLATFORMS_ENV = "NEONBINDER_PAUSED_PLATFORMS";
  * `app/profile/credentials/page.tsx` — the three are the same vocabulary and
  * `credentials.ts` cannot export its copy across the `"use node"` boundary.
  */
-export const KNOWN_SITES = ["buysportscards", "sportlots"] as const;
+export const KNOWN_SITES = ["buysportscards", "sportlots", "ebay"] as const;
 
 export type KnownSite = (typeof KNOWN_SITES)[number];
 
-/** Site key → the slot side `marketplaceResolvability` judges. */
-export const SITE_TO_SIDE: Readonly<Record<KnownSite, PlatformSide>> = {
+/**
+ * Site key → the slot side `marketplaceResolvability` judges. NEO-415: eBay
+ * is a listing destination only (no checklist side, no selector slot), so it
+ * has no side and pausing it never touches a checklist fetch.
+ */
+export const SITE_TO_SIDE: Readonly<Partial<Record<KnownSite, PlatformSide>>> = {
   buysportscards: "bsc",
   sportlots: "sportlots",
 };
+
+/**
+ * The sites that have a checklist side (BSC, SportLots): the ones a
+ * checklist sync fetches from, so the only ones the Set Builder's pause strip
+ * talks about. eBay is a listing destination with no checklist side.
+ */
+export const CHECKLIST_SITES: readonly KnownSite[] = KNOWN_SITES.filter((site) => SITE_TO_SIDE[site] !== undefined);
 
 export function isKnownSite(site: string): site is KnownSite {
   return (KNOWN_SITES as readonly string[]).includes(site);
@@ -94,6 +105,9 @@ export function sidesOfSites(
   sites: ReadonlySet<KnownSite>,
 ): ReadonlySet<PlatformSide> {
   const sides = new Set<PlatformSide>();
-  for (const site of sites) sides.add(SITE_TO_SIDE[site]);
+  for (const site of sites) {
+    const side = SITE_TO_SIDE[site];
+    if (side !== undefined) sides.add(side);
+  }
   return sides;
 }

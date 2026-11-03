@@ -18,6 +18,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
 import {
+  CHECKLIST_SITES,
   KNOWN_SITES,
   SITE_TO_SIDE,
   isKnownSite,
@@ -80,10 +81,12 @@ describe("parsePausedPlatforms", () => {
 });
 
 describe("isKnownSite", () => {
-  test("recognises exactly the two credential site keys", () => {
+  test("recognises exactly the three credential site keys", () => {
     expect(isKnownSite("sportlots")).toBe(true);
     expect(isKnownSite("buysportscards")).toBe(true);
-    expect(isKnownSite("ebay")).toBe(false);
+    // NEO-415: eBay is a listing platform the operator can pause too.
+    expect(isKnownSite("ebay")).toBe(true);
+    expect(isKnownSite("mercari")).toBe(false);
     expect(isKnownSite("")).toBe(false);
   });
 });
@@ -92,6 +95,8 @@ describe("sidesOfSites / SITE_TO_SIDE", () => {
   test("maps each site key to its slot side", () => {
     expect(SITE_TO_SIDE.sportlots).toBe("sportlots");
     expect(SITE_TO_SIDE.buysportscards).toBe("bsc");
+    // eBay has no checklist side: pausing it never touches a fetch.
+    expect(SITE_TO_SIDE.ebay).toBeUndefined();
   });
 
   test("sidesOfSites converts a site set to a side set", () => {
@@ -101,12 +106,13 @@ describe("sidesOfSites / SITE_TO_SIDE", () => {
       sidesOfSites(new Set(["sportlots", "buysportscards"] as const)),
     ).toEqual(new Set(["sportlots", "bsc"]));
     expect(sidesOfSites(new Set())).toEqual(new Set());
+    expect(sidesOfSites(new Set(["ebay", "sportlots"] as const))).toEqual(new Set(["sportlots"]));
   });
 });
 
 describe("KNOWN_SITES", () => {
-  test("is exactly the two credential site keys, in a fixed order", () => {
-    expect(KNOWN_SITES).toEqual(["buysportscards", "sportlots"]);
+  test("is exactly the three credential site keys, in a fixed order", () => {
+    expect(KNOWN_SITES).toEqual(["buysportscards", "sportlots", "ebay"]);
   });
 });
 
@@ -129,11 +135,19 @@ describe("getPausedPlatforms — the wire shape", () => {
   });
 
   test("an unknown key in the env var never reaches the wire", async () => {
-    process.env.NEONBINDER_PAUSED_PLATFORMS = "sportlots,ebay";
+    process.env.NEONBINDER_PAUSED_PLATFORMS = "sportlots,mercari";
     const t = convexTest(schema, modules);
     const result = await t
       .withIdentity(SIGNED_IN)
       .query(api.marketplacePause.getPausedPlatforms, {});
     expect(result).toEqual(["sportlots"]);
+  });
+});
+
+describe("CHECKLIST_SITES (NEO-415)", () => {
+  test("is the two sites a checklist sync fetches from; eBay is a listing destination only", () => {
+    expect([...CHECKLIST_SITES]).toEqual(["buysportscards", "sportlots"]);
+    expect(CHECKLIST_SITES).not.toContain("ebay");
+    expect(KNOWN_SITES).toContain("ebay");
   });
 });

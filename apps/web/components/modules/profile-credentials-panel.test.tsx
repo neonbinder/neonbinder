@@ -24,14 +24,17 @@
  */
 
 import {
+  act,
   fireEvent,
   render,
   screen,
   waitFor,
   within,
 } from "@testing-library/react";
+import { useEffect, type ReactNode } from "react";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { Theme } from "@radix-ui/themes";
+import { MemoryRouter, useLocation, useNavigate } from "react-router";
 import { expectAccessibleInBothModes } from "@/lib/testing/axe";
 import { CONSENT_HEADING, CONSENT_LINE } from "@/lib/marketplace/listing-copy";
 
@@ -50,6 +53,8 @@ const mocks = vi.hoisted(() => ({
   saveCredentials: vi.fn(),
   testSiteCredentials: vi.fn(),
   getSiteCredentials: vi.fn(),
+  ebayDisconnect: vi.fn(),
+  ebayReadPolicies: vi.fn(),
 }));
 
 // Stub the generated api with plain string tokens so `useAction` can tell the
@@ -71,8 +76,41 @@ vi.mock("@/convex/_generated/api", () => ({
     listingSync: {
       listingSettings: "listingSync:listingSettings",
     },
+    // NEO-415: the eBay tab draws the eBay panel (its own tests are in
+    // app/profile/credentials/ebay/). Not connected here.
+    ebayConnect: {
+      connectionState: "ebayConnect:connectionState",
+      beginConnect: "ebayConnect:beginConnect",
+      completeConnect: "ebayConnect:completeConnect",
+      disconnect: "ebayConnect:disconnect",
+      readPolicies: "ebayConnect:readPolicies",
+      savePolicies: "ebayConnect:savePolicies",
+      saveLocation: "ebayConnect:saveLocation",
+      setBestOffer: "ebayConnect:setBestOffer",
+      createStandardPolicies: "ebayConnect:createStandardPolicies",
+    },
   },
 }));
+
+const EBAY_NOT_CONNECTED = {
+  configured: true,
+  environment: "production",
+  status: "notConnected",
+  ebayUsername: null,
+  since: null,
+  settings: {
+    fulfillmentPolicyUnder20Id: null,
+    fulfillmentPolicy20PlusId: null,
+    paymentPolicyId: null,
+    returnPolicyId: null,
+    location: null,
+    bestOffer: true,
+  },
+  setupComplete: false,
+  missing: ["shippingUnder20", "shipping20Plus", "payment", "returns", "location"],
+};
+const EBAY_CONNECTED = { ...EBAY_NOT_CONNECTED, status: "connected", ebayUsername: "cardshark88" };
+let ebayConnection: unknown = EBAY_NOT_CONNECTED;
 
 vi.mock("convex/react", () => ({
   // Routed by ref: the panel subscribes to the NEO-287 pause query as well as
@@ -82,9 +120,17 @@ vi.mock("convex/react", () => ({
       ? mocks.paused
       : ref === "listingSync:listingSettings"
         ? undefined
-        : mocks.profile,
-  useMutation: () => vi.fn(),
+        : ref === "ebayConnect:connectionState"
+          ? ebayConnection
+          : mocks.profile,
+  // The eBay panel's Best Offer switch chains an optimistic update.
+  useMutation: () => {
+    const mutation = vi.fn();
+    return Object.assign(mutation, { withOptimisticUpdate: () => mutation });
+  },
   useAction: (ref: string) => {
+    if (ref === "ebayConnect:disconnect") return mocks.ebayDisconnect;
+    if (ref === "ebayConnect:readPolicies") return mocks.ebayReadPolicies;
     if (ref === "credentials:saveCredentials") return mocks.saveCredentials;
     if (ref === "credentials:testSiteCredentials")
       return mocks.testSiteCredentials;
@@ -93,6 +139,33 @@ vi.mock("convex/react", () => ({
 }));
 
 import CredentialsPanel from "@/app/profile/credentials/page";
+
+/** The platform rides in the URL (`?platform=`), so every render needs a router. */
+function Router({ children }: { children: ReactNode }) {
+  return <MemoryRouter>{children}</MemoryRouter>;
+}
+
+/** Where the panel left the URL, and a Back button, for the history cases. */
+let here = "";
+let back: () => void = () => {};
+function Here() {
+  const loc = useLocation();
+  const navigate = useNavigate();
+  useEffect(() => {
+    here = `${loc.pathname}${loc.search}`;
+    back = () => navigate(-1);
+  }, [loc, navigate]);
+  return null;
+}
+
+function renderAt(url: string) {
+  return render(
+    <MemoryRouter initialEntries={[url]}>
+      <CredentialsPanel />
+      <Here />
+    </MemoryRouter>,
+  );
+}
 
 function setProfile(siteCredentials: SiteCredential[]) {
   mocks.profile = { siteCredentials };
@@ -110,12 +183,14 @@ beforeEach(() => {
   mocks.testSiteCredentials.mockResolvedValue({ success: true, message: "ok" });
   setProfile([]);
   setPaused([]);
+  ebayConnection = EBAY_NOT_CONNECTED;
+  mocks.ebayReadPolicies.mockResolvedValue({ ok: true, fulfillment: [], payment: [], returns: [] });
 });
 
 describe("CredentialsPanel — state matrix", () => {
   it("renders the re-auth state when needsReauth is true (and credentials are still held)", () => {
     setProfile([{ site: BSC, hasCredentials: true, needsReauth: true }]);
-    render(<CredentialsPanel />);
+    render(<CredentialsPanel />, { wrapper: Router });
 
     expect(
       screen.queryByText("Sign in to BuySportsCards again"),
@@ -140,7 +215,7 @@ describe("CredentialsPanel — state matrix", () => {
 
   it("renders the connected state when needsReauth is false", () => {
     setProfile([{ site: BSC, hasCredentials: true, needsReauth: false }]);
-    render(<CredentialsPanel />);
+    render(<CredentialsPanel />, { wrapper: Router });
 
     expect(screen.queryByText("Connected to BuySportsCards")).not.toBeNull();
     expect(screen.queryByText("Sign in to BuySportsCards again")).toBeNull();
@@ -153,7 +228,7 @@ describe("CredentialsPanel — state matrix", () => {
 
   it("treats a missing needsReauth field (legacy row) as connected, not as re-auth", () => {
     setProfile([{ site: BSC, hasCredentials: true }]);
-    render(<CredentialsPanel />);
+    render(<CredentialsPanel />, { wrapper: Router });
 
     expect(screen.queryByText("Connected to BuySportsCards")).not.toBeNull();
     expect(screen.queryByText("Sign in to BuySportsCards again")).toBeNull();
@@ -161,16 +236,77 @@ describe("CredentialsPanel — state matrix", () => {
 
   it("renders the sign-in form when no credentials are held", () => {
     setProfile([]);
-    render(<CredentialsPanel />);
+    render(<CredentialsPanel />, { wrapper: Router });
 
     expect(screen.queryByRole("button", { name: "Connect" })).not.toBeNull();
     expect(screen.queryByText("Connected to BuySportsCards")).toBeNull();
     expect(screen.queryByText("Connection not yet verified")).toBeNull();
   });
 
+  it("NEO-415: the eBay tab is eBay's whole setup, in place, with no sign-in form", () => {
+    setProfile([]);
+    render(<CredentialsPanel />, { wrapper: Router });
+    fireEvent.click(screen.getByRole("tab", { name: "eBay" }));
+    const panel = screen.getByRole("tabpanel", { name: "eBay" });
+    expect(within(panel).getByRole("heading", { level: 2, name: "eBay" })).toBeTruthy();
+    expect(within(panel).getByRole("button", { name: "Connect eBay" })).toBeTruthy();
+    // No pointer away: the setup lives here now.
+    expect(screen.queryByRole("link", { name: /own page/ })).toBeNull();
+    // Nothing password-shaped: no sign-in form, no password security notes.
+    expect(screen.queryByRole("button", { name: "Connect" })).toBeNull();
+    expect(document.getElementById("password")).toBeNull();
+    expect(screen.queryByText("Security Information")).toBeNull();
+  });
+
+  it("NEO-415: ?platform= opens that platform, and an unknown one opens the first", () => {
+    setProfile([]);
+    const view = renderAt("/profile/credentials?platform=ebay");
+    expect(screen.getByRole("tab", { name: "eBay" }).getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByRole("button", { name: "Connect eBay" })).toBeTruthy();
+    view.unmount();
+    renderAt("/profile/credentials?platform=sportlots");
+    expect(screen.getByRole("tab", { name: "SportLots" }).getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByRole("heading", { name: "SportLots Credentials" })).toBeTruthy();
+  });
+
+  it("NEO-415: an unknown or missing platform opens BuySportsCards", () => {
+    setProfile([]);
+    renderAt("/profile/credentials?platform=mercari");
+    expect(screen.getByRole("tab", { name: "BuySportsCards" }).getAttribute("aria-selected")).toBe("true");
+  });
+
+  it("NEO-415: switching platforms puts it in the URL, and Back steps back through them", () => {
+    setProfile([]);
+    renderAt("/profile/credentials");
+    fireEvent.click(screen.getByRole("tab", { name: "SportLots" }));
+    expect(here).toBe("/profile/credentials?platform=sportlots");
+    fireEvent.click(screen.getByRole("tab", { name: "eBay" }));
+    expect(here).toBe("/profile/credentials?platform=ebay");
+    expect(screen.getByRole("button", { name: "Connect eBay" })).toBeTruthy();
+    act(() => back());
+    expect(here).toBe("/profile/credentials?platform=sportlots");
+    expect(screen.getByRole("tab", { name: "SportLots" }).getAttribute("aria-selected")).toBe("true");
+    act(() => back());
+    expect(here).toBe("/profile/credentials");
+    expect(screen.getByRole("tab", { name: "BuySportsCards" }).getAttribute("aria-selected")).toBe("true");
+  });
+
+  it("NEO-415: every site's panel is named by its own tab", () => {
+    setProfile([]);
+    render(
+      <MemoryRouter>
+        <CredentialsPanel />
+      </MemoryRouter>,
+    );
+    for (const name of ["BuySportsCards", "SportLots", "eBay"]) {
+      fireEvent.click(screen.getByRole("tab", { name }));
+      expect(screen.getByRole("tabpanel", { name })).toBeTruthy();
+    }
+  });
+
   it("routes the re-auth primary action into the sign-in form", () => {
     setProfile([{ site: BSC, hasCredentials: true, needsReauth: true }]);
-    render(<CredentialsPanel />);
+    render(<CredentialsPanel />, { wrapper: Router });
 
     fireEvent.click(screen.getByRole("button", { name: "Sign in again" }));
 
@@ -185,7 +321,7 @@ describe("CredentialsPanel — paused (NEO-287)", () => {
   it("paused and connected: names the platform, disables Sign-in/Test with distinct labels, keeps Clear enabled", () => {
     setPaused([BSC]);
     setProfile([{ site: BSC, hasCredentials: true, needsReauth: false }]);
-    render(<CredentialsPanel />);
+    render(<CredentialsPanel />, { wrapper: Router });
 
     expect(screen.getByText("BuySportsCards is on pause")).not.toBeNull();
     expect(
@@ -207,7 +343,7 @@ describe("CredentialsPanel — paused (NEO-287)", () => {
   it("paused and connected: no re-auth card even when needsReauth is also true", () => {
     setPaused([BSC]);
     setProfile([{ site: BSC, hasCredentials: true, needsReauth: true }]);
-    render(<CredentialsPanel />);
+    render(<CredentialsPanel />, { wrapper: Router });
 
     expect(screen.getByText("BuySportsCards is on pause")).not.toBeNull();
     expect(screen.queryByText("Sign in to BuySportsCards again")).toBeNull();
@@ -217,7 +353,7 @@ describe("CredentialsPanel — paused (NEO-287)", () => {
   it("paused and NOT connected: the paused card renders, and no sign-in form", () => {
     setPaused([BSC]);
     setProfile([]);
-    render(<CredentialsPanel />);
+    render(<CredentialsPanel />, { wrapper: Router });
 
     expect(screen.getByText("BuySportsCards is on pause")).not.toBeNull();
     expect(
@@ -231,7 +367,7 @@ describe("CredentialsPanel — paused (NEO-287)", () => {
   it("the SportLots tab is untouched by a BSC-only pause", () => {
     setPaused([BSC]);
     setProfile([{ site: "sportlots", hasCredentials: true, needsReauth: false }]);
-    render(<CredentialsPanel />);
+    render(<CredentialsPanel />, { wrapper: Router });
 
     fireEvent.click(screen.getByRole("tab", { name: "SportLots" }));
 
@@ -245,7 +381,7 @@ describe("CredentialsPanel — paused (NEO-287)", () => {
   it("suppresses the 'Connection not yet verified' nudge while paused", () => {
     setPaused([BSC]);
     setProfile([{ site: BSC, hasCredentials: true, needsReauth: false }]);
-    render(<CredentialsPanel />);
+    render(<CredentialsPanel />, { wrapper: Router });
 
     expect(screen.queryByText("Connection not yet verified")).toBeNull();
   });
@@ -254,7 +390,7 @@ describe("CredentialsPanel — paused (NEO-287)", () => {
 describe("CredentialsPanel — keyboard submit", () => {
   it("submits the form (Enter) rather than requiring a click", async () => {
     setProfile([]);
-    const { container } = render(<CredentialsPanel />);
+    const { container } = render(<CredentialsPanel />, { wrapper: Router });
 
     fireEvent.change(document.getElementById("username")!, {
       target: { value: "collector" },
@@ -284,7 +420,7 @@ describe("CredentialsPanel — keyboard submit", () => {
 
   it("keeps every other control in the form out of the submit path", () => {
     setProfile([{ site: BSC, hasCredentials: true }]);
-    render(<CredentialsPanel />);
+    render(<CredentialsPanel />, { wrapper: Router });
     fireEvent.click(screen.getByRole("button", { name: "Sign in again" }));
 
     for (const name of [
@@ -306,7 +442,7 @@ describe("CredentialsPanel — keyboard submit", () => {
       message: serverMessage,
     });
     setProfile([]);
-    const { container } = render(<CredentialsPanel />);
+    const { container } = render(<CredentialsPanel />, { wrapper: Router });
 
     fireEvent.change(document.getElementById("username")!, {
       target: { value: "collector" },
@@ -330,7 +466,7 @@ describe("CredentialsPanel — keyboard submit", () => {
 describe("CredentialsPanel — busy label matches the disabled condition", () => {
   it("shows 'Clearing...' on the confirm button whenever it is disabled", () => {
     setProfile([{ site: BSC, hasCredentials: true }]);
-    const { rerender } = render(<CredentialsPanel />);
+    const { rerender } = render(<CredentialsPanel />, { wrapper: Router });
 
     fireEvent.click(screen.getByRole("button", { name: "Clear Credentials" }));
     const dialog = () => within(screen.getByRole("dialog"));
@@ -360,7 +496,7 @@ describe("CredentialsPanel — busy label matches the disabled condition", () =>
     setProfile([
       { site: BSC, hasCredentials: true, lockedAt: Date.now() },
     ]);
-    render(<CredentialsPanel />);
+    render(<CredentialsPanel />, { wrapper: Router });
 
     for (const name of ["Testing...", "Clearing..."]) {
       const button = screen.getByRole("button", { name }) as HTMLButtonElement;
@@ -375,7 +511,7 @@ describe("CredentialsPanel — busy label matches the disabled condition", () =>
 describe("CredentialsPanel — copy no longer claims we store passwords", () => {
   it("drops every storage claim from the security list", () => {
     setProfile([]);
-    render(<CredentialsPanel />);
+    render(<CredentialsPanel />, { wrapper: Router });
 
     // The claim appears twice on purpose — once in the panel intro, once as a
     // security bullet — so match the bullet exactly.
@@ -395,14 +531,14 @@ describe("CredentialsPanel — copy no longer claims we store passwords", () => 
 
   it("uses the marketplace's own casing for SportLots", () => {
     setProfile([]);
-    render(<CredentialsPanel />);
+    render(<CredentialsPanel />, { wrapper: Router });
 
     expect(screen.queryByRole("tab", { name: "SportLots" })).not.toBeNull();
   });
 
   it("describes the password field with the SportLots advice, on SportLots only", () => {
     setProfile([]);
-    render(<CredentialsPanel />);
+    render(<CredentialsPanel />, { wrapper: Router });
 
     expect(
       document.getElementById("password")?.getAttribute("aria-describedby"),
@@ -420,7 +556,7 @@ describe("CredentialsPanel — copy no longer claims we store passwords", () => 
 
   it("gives the credential fields real autocomplete tokens", () => {
     setProfile([]);
-    render(<CredentialsPanel />);
+    render(<CredentialsPanel />, { wrapper: Router });
 
     expect(
       document.getElementById("username")?.getAttribute("autocomplete"),
@@ -446,7 +582,7 @@ describe("CredentialsPanel — the listing consent beside Connect", () => {
         <CredentialsPanel />
       </Theme>
     );
-    const view = render(tree());
+    const view = render(tree(), { wrapper: Router });
     const description = document.getElementById(connect().getAttribute("aria-describedby")!);
     expect(description?.textContent).toBe(`${CONSENT_HEADING}${CONSENT_LINE}`);
     expect(CONSENT_HEADING).toBe("Heads up: connecting starts listing");
@@ -463,14 +599,14 @@ describe("CredentialsPanel — the listing consent beside Connect", () => {
 
   it("signing in again over a saved sign-in still says it, beside Connect", () => {
     setProfile([{ site: BSC, hasCredentials: true, needsReauth: true }]);
-    render(<CredentialsPanel />);
+    render(<CredentialsPanel />, { wrapper: Router });
     fireEvent.click(screen.getByRole("button", { name: "Sign in again" }));
     expect(document.getElementById(connect().getAttribute("aria-describedby")!)?.textContent).toContain(CONSENT_LINE);
   });
 
   it("SportLots does not list yet: no warning, and Connect describes nothing", () => {
     setProfile([]);
-    render(<CredentialsPanel />);
+    render(<CredentialsPanel />, { wrapper: Router });
     fireEvent.click(screen.getByRole("tab", { name: "SportLots" }));
     expect(connect().getAttribute("aria-describedby")).toBeNull();
     expect(screen.queryByText(CONSENT_HEADING)).toBeNull();
@@ -478,7 +614,80 @@ describe("CredentialsPanel — the listing consent beside Connect", () => {
 
   it("connected: the form (and its warning) are gone", () => {
     setProfile([{ site: BSC, hasCredentials: true, needsReauth: false }]);
-    render(<CredentialsPanel />);
+    render(<CredentialsPanel />, { wrapper: Router });
     expect(screen.queryByText(CONSENT_HEADING)).toBeNull();
+  });
+});
+
+/**
+ * NEO-415 audit — the platform rides in the URL, so Back and Forward can
+ * move it while a request is still out (the tabs are off then, history is
+ * not). The page holds the platform the request belongs to until it
+ * settles, and puts the URL back on it.
+ */
+describe("CredentialsPanel — Back while a request is out", () => {
+  function deferred<T>() {
+    let resolve: (v: T) => void = () => {};
+    const promise = new Promise<T>((r) => (resolve = r));
+    return { promise, resolve };
+  }
+
+  it("a sign-in's answer is said under its own platform, never the one Back went to", async () => {
+    setProfile([]);
+    const answer = deferred<{ success: boolean; message: string }>();
+    mocks.saveCredentials.mockReturnValue(answer.promise);
+    renderAt("/profile/credentials?platform=sportlots");
+    fireEvent.click(screen.getByRole("tab", { name: "BuySportsCards" }));
+    expect(here).toBe("/profile/credentials?platform=buysportscards");
+    fireEvent.change(document.getElementById("username")!, { target: { value: "collector" } });
+    fireEvent.change(document.getElementById("password")!, { target: { value: "hunter2" } });
+    fireEvent.submit(document.querySelector("form")!);
+    await waitFor(() => expect(mocks.saveCredentials).toHaveBeenCalledWith(expect.objectContaining({ site: BSC })));
+
+    act(() => back());
+    // Held: still BuySportsCards, and the URL is put back on it.
+    await waitFor(() => expect(here).toBe("/profile/credentials?platform=buysportscards"));
+    expect(screen.getByRole("tab", { name: "BuySportsCards" }).getAttribute("aria-selected")).toBe("true");
+
+    await act(async () => answer.resolve({ success: false, message: "BuySportsCards turned that sign-in down." }));
+    expect(screen.getByRole("alert").textContent).toContain("BuySportsCards turned that sign-in down.");
+    expect(screen.getByRole("tab", { name: "BuySportsCards" }).getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByRole("tabpanel", { name: "BuySportsCards" })).toBeTruthy();
+    expect(here).toBe("/profile/credentials?platform=buysportscards");
+    // Never switched away underneath: what was typed is still there to fix and resend.
+    expect((document.getElementById("username") as HTMLInputElement).value).toBe("collector");
+  });
+
+  it("eBay's Disconnect holds the tabs (inert behind the confirm, off while it runs) and Back can't drop its alert", async () => {
+    setProfile([]);
+    ebayConnection = EBAY_CONNECTED;
+    const answer = deferred<{ ok: true; notEnded: number }>();
+    mocks.ebayDisconnect.mockReturnValue(answer.promise);
+    renderAt("/profile/credentials?platform=sportlots");
+    fireEvent.click(screen.getByRole("tab", { name: "eBay" }));
+    expect(here).toBe("/profile/credentials?platform=ebay");
+
+    const ebayTab = screen.getByRole("tab", { name: "eBay" });
+    expect(ebayTab.closest("[inert]")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Disconnect eBay" }));
+    const dialog = screen.getByRole("dialog", { name: "Disconnect eBay?" });
+    // Behind the confirm, the platform picker is out of reach.
+    expect(ebayTab.closest("[inert]")).not.toBeNull();
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Yes, disconnect" }));
+    await waitFor(() => expect(mocks.ebayDisconnect).toHaveBeenCalledTimes(1));
+    expect((screen.getByRole("tab", { name: "SportLots" }) as HTMLButtonElement).disabled).toBe(true);
+
+    act(() => back());
+    await waitFor(() => expect(here).toBe("/profile/credentials?platform=ebay"));
+    expect(screen.getByRole("tab", { name: "eBay" }).getAttribute("aria-selected")).toBe("true");
+
+    ebayConnection = EBAY_NOT_CONNECTED;
+    await act(async () => answer.resolve({ ok: true, notEnded: 2 }));
+    expect(screen.getByRole("alert").textContent).toContain("2 NeonBinder listings are still up on eBay");
+    expect(screen.getByRole("tab", { name: "eBay" }).getAttribute("aria-selected")).toBe("true");
+    // Settled: the tabs work again.
+    expect((screen.getByRole("tab", { name: "SportLots" }) as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.getByRole("tab", { name: "eBay" }).closest("[inert]")).toBeNull();
   });
 });

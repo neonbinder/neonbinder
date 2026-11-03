@@ -30,6 +30,7 @@ import { CLERK_USER_ID_RE, placeholderJobPrefix } from "./lib/placeholderObjects
 // NEO-287 — the operator switch. A paused marketplace is seeded as `skipped`,
 // before any read of its stored credentials.
 import { isPlatformPaused } from "./marketplacePause";
+import { ebayConfig, ebayConfigured } from "./lib/ebayEnv";
 import type { Id } from "./_generated/dataModel";
 import { dropOwnerPhotos } from "./copyPhotos";
 import { getOrCreateMain } from "./collection";
@@ -208,7 +209,16 @@ export const resetMyTestState = mutation({
       .query("marketplaceSales")
       .withIndex("by_owner_date", (q) => q.eq("ownerId", userId))
       .collect();
-    for (const row of [...listingOutbox, ...listingSyncs, ...listingStates, ...sales]) {
+    // NEO-415 — the caller's eBay link rows and eBay settings.
+    const listingLinks = await ctx.db
+      .query("marketplaceListingLinks")
+      .withIndex("by_owner_platform_card_condition", (q) => q.eq("ownerId", userId))
+      .collect();
+    const ebaySettings = await ctx.db
+      .query("ebaySellerSettings")
+      .withIndex("by_owner", (q) => q.eq("ownerId", userId))
+      .collect();
+    for (const row of [...listingOutbox, ...listingSyncs, ...listingStates, ...sales, ...listingLinks, ...ebaySettings]) {
       await ctx.db.delete(row._id);
     }
 
@@ -223,7 +233,12 @@ export const resetMyTestState = mutation({
       collectionBuildingSets: collectionBuildingSets.length,
       variantCommonPrices: variantCommonPrices.length,
       marketplaceListing:
-        listingOutbox.length + listingSyncs.length + listingStates.length + sales.length,
+        listingOutbox.length +
+        listingSyncs.length +
+        listingStates.length +
+        sales.length +
+        listingLinks.length +
+        ebaySettings.length,
     };
   },
 });
@@ -516,6 +531,27 @@ export const seedMyTestCredentials = action({
       if (isPlatformPaused(site)) {
         console.log(JSON.stringify({ msg: "seed_credentials_paused", site }));
         seeded.push({ site, stored: false, skipped: true });
+        continue;
+      }
+      // NEO-415 — eBay signs in by OAuth, so the seed holds no password: it
+      // connects with a refresh token minted out of band for the sandbox
+      // seller (`DEV_EBAY_REFRESH_TOKEN`), through the browser service's
+      // refresh-token grant (`credentials.connectEbay`, refused off testing
+      // deployments and off the eBay sandbox, as the service refuses it in
+      // production). One token exchange, no browser login, so it simply
+      // reconnects every time. Skipped like any site with no dev secret.
+      if (site === "ebay") {
+        const refreshToken = process.env.DEV_EBAY_REFRESH_TOKEN;
+        if (!refreshToken || !ebayConfigured() || ebayConfig()?.environment !== "sandbox") {
+          seeded.push({ site, stored: false, skipped: true });
+          continue;
+        }
+        const connected = await ctx.runAction(internal.credentials.connectEbay, {
+          userId,
+          refreshToken,
+          listing: args.listing === true ? "save" : "testOff",
+        });
+        seeded.push({ site, stored: connected.ok, ...(connected.ok ? {} : { reason: connected.error }) });
         continue;
       }
       const envKeys = SEED_SITE_ENV[site];

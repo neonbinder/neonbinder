@@ -224,7 +224,7 @@ test("<title states the feature>", { tag: ["@set-selector"] }, async ({ page, si
 
 - `support/fixtures.ts`: `test` with `env` (`WORKER_INDEX`, `WORKER_KEY`,
   `ATTEMPT_ID`, `ATTEMPT_TOKEN`, `TEST_USERNAME`, `PAUSED_PLATFORMS`,
-  `SL_PAUSED`) and `signIn(redirect, { account? })`, which opens
+  `SL_PAUSED`, `EBAY_PAUSED`) and `signIn(redirect, { account? })`, which opens
   `/testing/sign-in?redirect=<redirect>[&account=<a>]&worker=<n>` (a nested
   `?` stays literal and a nested `&` is written `%26`). `LAUNCH_GATE` (45 s).
   `expectAccessible(page, { within?, label? })`, the axe check, run in light
@@ -235,7 +235,10 @@ test("<title states the feature>", { tag: ["@set-selector"] }, async ({ page, si
 - `support/env.ts`: how `env` is built (`makeEnv`, `isSlPaused`); import types
   from here, do not re-derive.
 - `support/credentials.ts`: `loginToBsc(page)`, `loginToSportLots(page, env)`,
-  `LIVE_LOGIN`.
+  `LIVE_LOGIN`, the BSC sign-in seed pair (`removeBscSignIn`,
+  `saveBscSignIn`) and eBay's (`saveEbayConnection`, `removeEbayConnection`,
+  `expectEbayHookedUp`, which FAILS a spec loudly, naming the missing setup,
+  when the deployment has no eBay wiring; NEO-415).
 - `support/set-builder.ts`: the cascade. `setBuilderReady`, `columnHeading`,
   `columnSearch`, `columnOption`, `columnSelection`, `pick`,
   `addCustomEntry`, `addCustomManufacturer`, `selectOrCreate`,
@@ -246,6 +249,7 @@ test("<title states the feature>", { tag: ["@set-selector"] }, async ({ page, si
 - `support/cards.ts`: hand-made card helpers for a worker's own subtree
   (`addCustomCard`, `addCardViaForm`, `openVariant`, `ensureAndSelect`,
   edit/delete button locators).
+- `support/collection.ts`: the collector's `/collection` and Inventory helpers (`drillToCollectorBase`, boxes, quantity fields), and `syncRun` / `followRunToEnd` for Sync status's per-step ledger (NEO-415): a live marketplace round trip is waited on one step at a time ("Read Excellent, done"), each within the standard 7 s, gated by `underWay` so the last run's finished ledger never stands in for the new one. A finished BuySportsCards row folds (reads become "Gathering data", double-checks drop), so a BSC read or confirm is waited on with `readLanded` / `confirmLanded`, never a bare `step`.
 - `support/cross-list.ts`: cross-release import (`openCrossListForm`,
   `pickCrossListSource`, `crossListCards`).
 - `support/players.ts`: `/admin/players` (`expectPlayersLoaded`,
@@ -573,6 +577,7 @@ seed:
 | *(omitted)* | BSC + SportLots credentials (+ the EasyPost key, when configured) |
 | `sportlots` / `buysportscards` | just that platform's credentials (credential-gate fixtures) |
 | `label-scans` | one `labelPurchases` row plus a four-scan tracker snapshot, for `labels/scan-visibility` |
+| `ebay` | connects the sandbox seller by refresh token (`DEV_EBAY_REFRESH_TOKEN` on the deployment; no password, no browser login) and, with `listing=on`, starts listing. SKIPPED, not failed, when eBay is unwired, the token is unset or eBay is paused: the eBay listing spec then fails loudly on its next assert, by name (NEO-415) |
 
 A fixture selector is handled before the credential loop, so asking for it
 alone performs no marketplace login. The handler (`convex/testing.ts`) writes
@@ -595,8 +600,8 @@ other.
 ## Operator switches (`PAUSED_PLATFORMS`, NEO-287)
 
 One operator switch changes what the suite can prove: the Convex env var
-`NEONBINDER_PAUSED_PLATFORMS` (comma-separated credential site keys, today
-`sportlots`) stops all contact with that marketplace (no sign-ins, session
+`NEONBINDER_PAUSED_PLATFORMS` (comma-separated credential site keys:
+`buysportscards`, `sportlots`, `ebay`; today `sportlots`) stops all contact with that marketplace (no sign-ins, session
 checks, selector or checklist fetches on that side) while every link and
 stored session stays put. Specs are **never skipped** under it: every spec
 that needs the paused marketplace has a paused branch asserting the paused
@@ -618,7 +623,8 @@ gh run view <run-id> --log | grep -m1 "PAUSED_PLATFORMS: "
 An empty value after the colon means live. A failure diagnosed on the paused
 branch of a live run (or the reverse) is a misread, not a finding.
 
-**How a spec knows.** `env.SL_PAUSED` is derived from `PAUSED_PLATFORMS` in
+**How a spec knows.** `env.SL_PAUSED` (and, for the eBay listing spec,
+`env.EBAY_PAUSED`) is derived from `PAUSED_PLATFORMS` in
 the process environment (`support/env.ts`, unset reads as not paused). CI
 (`e2e.yml`) exports the shell variable from the repository variable of the
 same name and writes the same value onto the PR's Convex preview before
@@ -666,6 +672,21 @@ skipped: no SportLots ids on this path." (a notice, not an error; the seed's
 strict asserts key on failure copy), and a BSC-only Base still reads as
 unmapped, so its picker re-opens on every visit and read-only drills leave it
 with Cancel then Close.
+
+**eBay is a pausable site too (NEO-415), but it is a listing destination, not
+a checklist side.** Pausing it never changes a set-builder sync, so the
+Set Builder's pause strip never names it. Only `collection/inventory-ebay-
+sandbox-listing-1988-topps-base` branches on `env.EBAY_PAUSED`: paused, the seed
+hop skips eBay and Profile -> Credentials -> eBay and Sync status say it is on a break (copy in
+`lib/marketplace/listing-copy.ts`); live, it runs the whole sandbox listing. The
+repository variable's key check in `e2e.yml` accepts `ebay`.
+
+**A marketplace credential that is simply missing is not a pause.** There is no
+sanctioned skip: a spec that needs eBay's wiring (`EBAY_CLIENT_ID`,
+`EBAY_RU_NAME`, `EBAY_ENVIRONMENT=sandbox`, `DEV_EBAY_REFRESH_TOKEN`) goes RED on
+a deployment without it, with a message naming what to set
+(`expectEbayHookedUp`, `saveEbayConnection`). Hard rule 1 and R2: a green run
+must mean the feature was exercised.
 
 ## SportLots never rejects a password in E2E (NEO-288)
 
@@ -829,7 +850,7 @@ timeboxed check and then push; CI validates.
 PR in two passes, each on a freshly seeded preview:
 
 ```
-setup -> seed -> shard-desktop x8 -> seed-mobile -> shard-mobile x8 -> e2e (gate) -> report
+setup -> seed -> shard-desktop x8 + seller-desktop -> seed-mobile -> shard-mobile x8 + seller-mobile -> e2e (gate) -> report
 ```
 
 `seed` is the scripted reset plus the `setup` project (worker 0); the desktop
@@ -856,11 +877,44 @@ each spec's desktop time and `byProject["e2e-mobile"]` its mobile time (a
 project with no value for a spec falls back to the desktop one, so a
 desktop-only file still plans both passes).
 
+**Marketplace-seller specs (NEO-415).** Every PR's CI uses one shared
+BuySportsCards test seller and one shared eBay sandbox seller. Two PRs
+running `inventory-bsc-listing-1988-topps-base` or
+`inventory-ebay-sandbox-listing-1988-topps-base` at once clobber each other (one
+preview's sync zeroes the other's listings; overlapping BSC sheet reads make
+BSC create twin rows), and sharding cannot help. So these specs are in
+`SELLER_SPECS` (`playwright/project-scope.mjs`), carry the tag
+`@marketplace-seller`, and are planned in NO shard: `shard-plan.mjs` refuses to
+plan if the tag and the list disagree, `shard-plan.mjs --seller` prints them, and
+the `e2e` gate still requires each to pass on BOTH projects (planned set = shard
+plan + seller list). The `seller-desktop` job (starts beside the desktop shards;
+`seed-mobile` needs it, since its reset would wipe the preview it runs on) and the
+`seller-mobile` job (beside the mobile shards) run them as worker 8, after the
+`bootstrap` project. Each waits its turn in a repo-wide queue
+(`.github/scripts/seller-queue.sh`, one script for both jobs): it polls this
+repo's in-progress runs about every 100 s and goes when no seller job is running
+and none that started earlier is waiting. First come first served; it never
+cancels a waiting PR (GitHub's `concurrency` group would drop all but one pending
+job). Only runs whose head repository is this repository are read (a fork's
+edited workflow cannot forge a holder), and the poll fails closed: any API error
+or truncated listing waits rather than goes. A cancelled or dead holder stops
+counting at once; the wait is capped at 60 min, then the job fails with a message
+(re-run the workflow; the message says whether the cause was a busy queue or
+API errors). Artifacts: `pw-report-seller-<pass>`, `convex-logs-seller-<pass>`.
+**Limit:** the queue serializes the job window only. A run cancelled mid-spec
+(`cancel-in-progress` on a new push) can leave its preview connected to the
+shared sellers, or its listings up, until the next reset or the PR closes; the
+next holder's spec starts from whatever the seller shows. A new spec that writes to
+a shared marketplace seller account joins the list AND takes the tag. **Locally,
+do not run these two specs while any PR's E2E is in its seller job** (check
+`gh run list --status in_progress`), and not against the shared seller from two
+sessions at once.
+
 **Reading a red run.**
 1. Find which spec failed in the "Playwright E2E" check or the sticky comment.
 2. Download the artifacts BEFORE any rerun: `pw-report-desktop-<n>` or
    `pw-report-mobile-<n>` (the shard's screenshots and report),
-   `pw-report-seed` / `pw-report-seed-mobile` (a pass's seed), and `pw-merged`
+   `pw-report-seller-desktop` / `pw-report-seller-mobile` (the two listing specs), `pw-report-seed` / `pw-report-seed-mobile` (a pass's seed), and `pw-merged`
    (both passes' merged report and results).
    `gh run download <run-id> -n pw-merged` (and the shard).
 3. Open the failure screenshot and the spec's `error-context.md` (the ARIA

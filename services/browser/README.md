@@ -107,6 +107,32 @@ Two status contracts on this router are load-bearing and must not drift:
   it rejected in its error text, so `redactWebhookToken` scrubs
   `/webhooks/easypost/<token>` on the way out of both the client and the router.
 
+### eBay OAuth routes (NEO-415)
+
+eBay is a listing destination reached through its REST APIs with a per-seller
+OAuth user token. The app's client secret and each seller's refresh token
+(about 18 months) stay in this service; Convex sees only the two-hour access
+token. Plain HTTP, no Chromium. Both routes refuse any key that is not an
+`ebay-credentials-*` secret.
+
+| Route | What it does |
+|---|---|
+| `POST /oauth/ebay/connect` `{key, code, expectEbayUserId?}` | Exchange the consent's authorization code (redirect_uri = the RuName), read the seller's identity (Commerce Identity `getUser`; `userId` must match `^[A-Za-z0-9._-]{1,64}$`), store `{username, ebayUserId, token, expiresAt, refreshToken, refreshExpiresAt}`. Returns `{username, ebayUserId, environment, expiresAt}`. With `expectEbayUserId`, a different eBay account is `409 account_mismatch` and nothing is written |
+| `POST /oauth/ebay/connect` `{key, refreshToken, expectEbayUserId?}` | The testing seed: the same, from a refresh token minted out of band. Refused (`400`) when `EBAY_ENVIRONMENT=production` |
+| `POST /oauth/ebay/refresh` `{key}` | Mint a new access token from the stored refresh token, store it, return `{token, expiresAt}` |
+| `POST /webhooks/ebay/verify` `{signatureHeader, body}` | Verify an eBay Notification API push (`X-EBAY-SIGNATURE`, ECDSA over SHA-1, key from `getPublicKey` with a cached application token). Returns `{valid}`; a malformed header or unknown key is `valid:false`, failing to reach eBay is `502`. Own rate-limit bucket |
+
+Reads and disconnect use the existing `GET /credentials/:key/token`,
+`/metadata` and `DELETE /credentials/:key`. Errors are `{error_class}` only:
+`400 bad_request`, `401 consent_refused` (connect) / `401 reauth_required`
+(refresh: eBay refused the refresh token, or nothing is stored), `502
+ebay_unavailable`, `503 ebay_not_configured`, `500 internal` (a Secret Manager
+fault, never reported as a re-auth). Configuration: `EBAY_ENVIRONMENT`
+(`sandbox` or `production`, anything else is "not configured"),
+`EBAY_CLIENT_ID`, `EBAY_CLIENT_SECRET`, `EBAY_RU_NAME`. Each call logs one
+`ebay_oauth_call` line, kept apart from `browser_login_call` so the login
+alert metrics are unaffected.
+
 ## Docker
 
 Build and run with Docker:

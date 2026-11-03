@@ -66,6 +66,7 @@ describe("a plain line (D9)", () => {
     ["a location", { location: "Shelf 2" }],
     ["a note", { notes: "corner ding" }],
     ["up for trade", { upForTrade: true }],
+    ["a photo (NEO-377, as the server's isPlainLine)", { hasPhotos: true }],
   ] as const)("is not plain with %s", (_why, over) => {
     expect(isPlainLine(copy(over))).toBe(false);
   });
@@ -92,6 +93,13 @@ describe("the quantity (D9)", () => {
   it("is 0 with no lines, or only lines that are not plain", () => {
     expect(plainQuantity([])).toBe(0);
     expect(plainQuantity([copy({ graded: { grader: "PSA", grade: "9" } })])).toBe(0);
+  });
+
+  it("never counts a copy with a photo: the server's quick count can't change it, so the field would never reach 0", () => {
+    const lines = [copy({ id: "photo", hasPhotos: true }), copy({ id: "plain", quantity: 2 })];
+    expect(plainQuantity(lines)).toBe(2);
+    expect(plainQuantity([copy({ hasPhotos: true })])).toBe(0);
+    expect(otherLines(lines)).toEqual({ count: 1, text: "also here: Raw with photo" });
   });
 
   it("linesInBox keeps this box's live lines only, and nothing while either is unknown", () => {
@@ -123,6 +131,13 @@ describe("the other lines, read-only after the field", () => {
     expect(otherLines([copy({ upForTrade: true })])!.text).toBe("also here: Raw for trade");
     expect(otherLines([copy({ notes: "ding" })])!.text).toBe("also here: Raw with notes");
     expect(otherLines([copy({ graded: { grader: "BGS", grade: "" } })])!.text).toBe("also here: BGS ?");
+  });
+
+  it("says a photo where nothing else sets the line apart, and leaves it to the grade or serial when one does", () => {
+    expect(otherLines([copy({ hasPhotos: true, quantity: 2 })])!.text).toBe("also here: Raw with photo ×2");
+    expect(otherLines([copy({ hasPhotos: true, notes: "ding" })])!.text).toBe("also here: Raw with photo");
+    expect(otherLines([copy({ hasPhotos: true, serialNumber: "23/50" })])!.text).toBe("also here: Raw 23/50");
+    expect(otherLines([copy({ hasPhotos: true, upForTrade: true })])!.text).toBe("also here: Raw for trade");
   });
 
   it("NEO-380: leaves the default condition unsaid and names any other", () => {
