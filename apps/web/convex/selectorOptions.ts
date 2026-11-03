@@ -7426,20 +7426,20 @@ export const getInsertTreeByVariantType = query({
       )
       .collect();
 
-    const tree: Array<{
-      insert: (typeof inserts)[number];
-      parallels: (typeof inserts)[number][];
-    }> = [];
-    for (const ins of inserts) {
-      const parallels = await ctx.db
-        .query("selectorOptions")
-        .withIndex("by_level_and_parent", (q) =>
-          q.eq("level", "parallel").eq("parentId", ins._id),
-        )
-        .collect();
-      tree.push({ insert: ins, parallels });
-    }
-    return tree;
+    // NEO-418 — every insert's parallels in one concurrent wave, not one
+    // awaited read per insert: Convex batches reads issued together.
+    // `Promise.all` keeps the inserts' order.
+    return Promise.all(
+      inserts.map(async (ins) => ({
+        insert: ins,
+        parallels: await ctx.db
+          .query("selectorOptions")
+          .withIndex("by_level_and_parent", (q) =>
+            q.eq("level", "parallel").eq("parentId", ins._id),
+          )
+          .collect(),
+      })),
+    );
   },
 });
 
@@ -7609,7 +7609,151 @@ export const applyParallelGroupings = mutation({
       );
     }
 
-    const variantType = await ctx.db.get(args.variantTypeId);
+    // ---- NEO-418: read first, in two concurrent waves, then validate ----
+    //
+    // Convex batches the reads a function issues together, so every read the
+    // checks below need is issued up front in two `Promise.all` waves rather
+    // than awaited one loop iteration at a time. The checks then run over the
+    // cache in exactly the order they always did, so a plan with several
+    // faults is refused with the same sentence as before. Nothing throws
+    // inside a wave; a read the waves did not foresee falls back to a plain
+    // read (`readRow`, `parallelsOf`).
+    //
+    // The waves read what a VALID plan reads anyway (the apply pass's
+    // `getChildren` parents included). A refused plan may read a few ROWS
+    // past its fault, never a RANGE: a parallels range keyed on an argument
+    // id is collected only once that id's row has passed the cheap scope
+    // check (an insert of this variant type) from the cache. A plan naming
+    // the largest inserts of OTHER variant types is therefore refused after
+    // a handful of row reads, with the operator's sentence, rather than
+    // walking ranges outside the scope the caller named (and possibly dying
+    // on the transaction's read limit with a system error instead).
+    const rowCache = new Map<Id<"selectorOptions">, Doc<"selectorOptions"> | null>();
+    const readRow = async (id: Id<"selectorOptions">) => {
+      if (!rowCache.has(id)) rowCache.set(id, await ctx.db.get(id));
+      return rowCache.get(id) ?? null;
+    };
+    /** A row's `level=parallel` children, keyed by the parent. */
+    const parallelsCache = new Map<
+      Id<"selectorOptions">,
+      Doc<"selectorOptions">[]
+    >();
+    const collectParallels = (parentId: Id<"selectorOptions">) =>
+      ctx.db
+        .query("selectorOptions")
+        .withIndex("by_level_and_parent", (q) =>
+          q.eq("level", "parallel").eq("parentId", parentId),
+        )
+        .collect();
+    const parallelsOf = async (parentId: Id<"selectorOptions">) => {
+      let found = parallelsCache.get(parentId);
+      if (!found) {
+        found = await collectParallels(parentId);
+        parallelsCache.set(parentId, found);
+      }
+      return found;
+    };
+    /** One wave: every uncached row and parallels range, concurrently. */
+    const prefetch = async (
+      rowIds: Iterable<Id<"selectorOptions">>,
+      parallelParentIds: Iterable<Id<"selectorOptions">>,
+    ) => {
+      const rows = [...new Set(rowIds)].filter((id) => !rowCache.has(id));
+      const parents = [...new Set(parallelParentIds)].filter(
+        (id) => !parallelsCache.has(id),
+      );
+      const [rowDocs, parallelDocs] = await Promise.all([
+        Promise.all(rows.map((id) => ctx.db.get(id))),
+        Promise.all(parents.map(collectParallels)),
+      ]);
+      rows.forEach((id, i) => rowCache.set(id, rowDocs[i]));
+      parents.forEach((id, i) => parallelsCache.set(id, parallelDocs[i]));
+    };
+
+    // The checks below collapse each list per row moved (last entry wins;
+    // see the NEO-296 note), so a target's range is collected for a row's
+    // final target only, as they do.
+    const demotedIds = new Set(args.demotions.map((d) => d.parallelId));
+    const lastPromotion = new Map(
+      args.promotions.map((p) => [p.insertId, p] as const),
+    );
+
+    // Wave 1: every ROW the arguments name, and no range. The variant type;
+    // each demoted row; each promotion's source and target; each reparented
+    // row and its target.
+    await prefetch(
+      [
+        args.variantTypeId,
+        ...args.demotions.map((d) => d.parallelId),
+        ...args.promotions.flatMap((p) => [p.insertId, p.targetInsertId]),
+        ...(args.reparentings ?? []).flatMap((r) => [
+          r.parallelId,
+          r.newInsertId,
+        ]),
+      ],
+      [],
+    );
+
+    // Wave 2: what the rows from wave 1 point at, and the ranges of the rows
+    // that passed the scope check. Rows: each demoted row's parent; each real
+    // (not same-parent) reparenting's current parent. Read only where the row
+    // is a parallel with a parent, as the checks below require. Ranges, only
+    // when the variant type takes sub-variants at all (every range serves a
+    // promotion or reparenting, refused outright otherwise): each promoted
+    // source's own parallels, and each promotion or reparenting target's
+    // parallels for the duplicate guard, each only for a row that is an
+    // insert of THIS variant type (none for a target this plan demotes: it
+    // has none). Anything skipped falls back to `parallelsOf`.
+    const variantTypeRow = rowCache.get(args.variantTypeId);
+    const rangesInScope =
+      !!variantTypeRow &&
+      variantTypeRow.level === "variantType" &&
+      subVariantsAllowedUnder(variantTypeRow);
+    const isInsertInScope = (id: Id<"selectorOptions">) => {
+      const row = rowCache.get(id);
+      return (
+        rangesInScope &&
+        !!row &&
+        row.level === "insert" &&
+        row.parentId === args.variantTypeId
+      );
+    };
+    const isParallelRow = (
+      row: Doc<"selectorOptions"> | null | undefined,
+    ): row is Doc<"selectorOptions"> & { parentId: Id<"selectorOptions"> } =>
+      !!row && row.level === "parallel" && !!row.parentId;
+    const wave2Rows: Id<"selectorOptions">[] = [];
+    const wave2Parallels: Id<"selectorOptions">[] = [];
+    for (const d of args.demotions) {
+      const row = rowCache.get(d.parallelId);
+      if (isParallelRow(row)) wave2Rows.push(row.parentId);
+    }
+    // A same-parent entry is skipped and does not replace an earlier one,
+    // exactly as the reparenting loop below keeps it.
+    const lastReparentTarget = new Map<
+      Id<"selectorOptions">,
+      Id<"selectorOptions">
+    >();
+    for (const r of args.reparentings ?? []) {
+      const row = rowCache.get(r.parallelId);
+      if (!isParallelRow(row) || row.parentId === r.newInsertId) continue;
+      wave2Rows.push(row.parentId);
+      lastReparentTarget.set(r.parallelId, r.newInsertId);
+    }
+    for (const sourceId of lastPromotion.keys()) {
+      if (isInsertInScope(sourceId)) wave2Parallels.push(sourceId);
+    }
+    for (const targetId of [
+      ...[...lastPromotion.values()].map((p) => p.targetInsertId),
+      ...lastReparentTarget.values(),
+    ]) {
+      if (!demotedIds.has(targetId) && isInsertInScope(targetId)) {
+        wave2Parallels.push(targetId);
+      }
+    }
+    await prefetch(wave2Rows, wave2Parallels);
+
+    const variantType = await readRow(args.variantTypeId);
     if (!variantType || variantType.level !== "variantType") {
       throw new ConvexError(groupingRefusal.gone());
     }
@@ -7632,7 +7776,10 @@ export const applyParallelGroupings = mutation({
     ): Promise<Set<Id<"selectorOptions">>> => {
       let set = childrenMap.get(id);
       if (!set) {
-        const row = await ctx.db.get(id);
+        // NEO-418 — from the validation waves where read. The apply pass
+        // patches no `children` before the flush, so the cached row's array
+        // is the stored one.
+        const row = await readRow(id);
         set = new Set(row?.children ?? []);
         childrenMap.set(id, set);
       }
@@ -7689,11 +7836,6 @@ export const applyParallelGroupings = mutation({
     // NEO-300 — every refusal below is an operator's sentence, not a
     // developer's: a plain `Error` message is hidden on prod, and an id means
     // nothing to the person who dragged the rows. See `groupingRefusal`.
-    const rowCache = new Map<Id<"selectorOptions">, Doc<"selectorOptions"> | null>();
-    const readRow = async (id: Id<"selectorOptions">) => {
-      if (!rowCache.has(id)) rowCache.set(id, await ctx.db.get(id));
-      return rowCache.get(id) ?? null;
-    };
 
     // ---- Demotions first: their rows may be TARGETS below ----
     //
@@ -7761,6 +7903,20 @@ export const applyParallelGroupings = mutation({
         // No-op: same parent. Skip silently.
         continue;
       }
+      // NEO-418 (security audit) — the same scope rule a demotion holds: the
+      // row must be a parallel of an insert IN THIS variant type. Only the
+      // target used to be checked, so a call naming type A could pull a
+      // parallel out from under an insert of type B. Same sentence as the
+      // demotion: the row is not where this screen showed it. The current
+      // parent came in read wave 2.
+      const currentParent = await readRow(row.parentId);
+      if (
+        !currentParent ||
+        currentParent.level !== "insert" ||
+        currentParent.parentId !== args.variantTypeId
+      ) {
+        throw new ConvexError(groupingRefusal.moved(row.value));
+      }
       // One row, two moves: ungrouped to an insert AND moved under another
       // insert. The apply passes would leave it an insert with an insert for
       // a parent. Refused rather than guessing which move was meant.
@@ -7800,12 +7956,7 @@ export const applyParallelGroupings = mutation({
       // with parallels beneath it. Judged AFTER the plan — a parallel of the
       // source that this same plan demotes or reparents away does not count
       // (arrivals under the source are already refused as a chain above).
-      const ownParallels = await ctx.db
-        .query("selectorOptions")
-        .withIndex("by_level_and_parent", (q) =>
-          q.eq("level", "parallel").eq("parentId", insertId),
-        )
-        .collect();
+      const ownParallels = await parallelsOf(insertId);
       if (ownParallels.some((p) => !leavingParent.has(p._id))) {
         throw new ConvexError(groupingRefusal.hasParallels(source.value));
       }
@@ -7894,12 +8045,7 @@ export const applyParallelGroupings = mutation({
         // of its own: after the plan its children are exactly what arrives.
         const current = demotionTargets.has(target._id)
           ? []
-          : await ctx.db
-              .query("selectorOptions")
-              .withIndex("by_level_and_parent", (q) =>
-                q.eq("level", "parallel").eq("parentId", target._id),
-              )
-              .collect();
+          : await parallelsOf(target._id);
         landed = current.filter((p) => !leavingParent.has(p._id));
         landedByTarget.set(target._id, landed);
       }
@@ -7937,6 +8083,10 @@ export const applyParallelGroupings = mutation({
       targetId,
       platformFacets,
     } of promotionTargets.values()) {
+      // NEO-418 — the row as validated, BEFORE this patch, handed to the
+      // ledger so it is not re-read: the patch moves it between two counted
+      // levels and writes none of the counts the ledger reads.
+      const moved = rowCache.get(sourceId);
       await ctx.db.patch(sourceId, {
         level: "parallel",
         parentId: targetId,
@@ -7944,7 +8094,7 @@ export const applyParallelGroupings = mutation({
         lastUpdated: now,
       });
       // Validated above: a promoted source is an insert under this type.
-      await countLedger.moveSubtree(ctx, sourceId, args.variantTypeId, targetId);
+      await countLedger.moveSubtree(ctx, sourceId, args.variantTypeId, targetId, moved);
       variantTypeChildren.delete(sourceId);
       const targetChildren = await getChildren(targetId);
       targetChildren.add(sourceId);
@@ -7955,12 +8105,13 @@ export const applyParallelGroupings = mutation({
       parallelId,
       oldParentId,
     } of demotionTargets.values()) {
+      const moved = rowCache.get(parallelId); // NEO-418, as for promotions
       await ctx.db.patch(parallelId, {
         level: "insert",
         parentId: args.variantTypeId,
         lastUpdated: now,
       });
-      await countLedger.moveSubtree(ctx, parallelId, oldParentId, args.variantTypeId);
+      await countLedger.moveSubtree(ctx, parallelId, oldParentId, args.variantTypeId, moved);
       const oldParentChildren = await getChildren(oldParentId);
       oldParentChildren.delete(parallelId);
       variantTypeChildren.add(parallelId);
@@ -7972,11 +8123,12 @@ export const applyParallelGroupings = mutation({
       oldParentId,
       newParentId,
     } of reparentingTargets.values()) {
+      const moved = rowCache.get(parallelId); // NEO-418, as for promotions
       await ctx.db.patch(parallelId, {
         parentId: newParentId,
         lastUpdated: now,
       });
-      await countLedger.moveSubtree(ctx, parallelId, oldParentId, newParentId);
+      await countLedger.moveSubtree(ctx, parallelId, oldParentId, newParentId, moved);
       const oldChildren = await getChildren(oldParentId);
       oldChildren.delete(parallelId);
       const newChildren = await getChildren(newParentId);
