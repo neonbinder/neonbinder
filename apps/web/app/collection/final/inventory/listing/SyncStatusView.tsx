@@ -328,7 +328,12 @@ function StepLedger({
   const labels = stepLabels(steps, platform);
   return (
     // role="list": Safari/VoiceOver drops a list's semantics under list-style: none unless it is said outright.
-    <ol role="list" aria-label={name} className={inline ? "flex flex-wrap gap-x-4 text-ink-2" : "space-y-0.5"}>
+    <ol
+      role="list"
+      aria-label={name}
+      // text-sm on the ledger itself, so both placements match the line they sit under.
+      className={`text-sm ${inline ? "flex flex-wrap gap-x-4 text-ink-2" : "space-y-0.5"}`}
+    >
       {steps.map((step, i) => (
         <li
           key={labels[i]}
