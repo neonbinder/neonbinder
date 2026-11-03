@@ -70,7 +70,14 @@ const OWNER = "collector_ebay_001";
 const OTHER = "collector_ebay_002";
 const ME = { subject: OWNER };
 const NOW = 1_700_000_000_000;
-const API = "https://api.sandbox.ebay.com";
+/**
+ * The hosts the fake answers on: those of the eBay the env names. The suite
+ * runs as production (where photos upload); the sandbox tests switch it.
+ */
+const ebayHosts = (): string[] =>
+  process.env.EBAY_ENVIRONMENT === "sandbox"
+    ? ["https://api.sandbox.ebay.com", "https://apim.sandbox.ebay.com"]
+    : ["https://api.ebay.com", "https://apim.ebay.com"];
 
 // ── A fake eBay seller ───────────────────────────────────────────────────────
 
@@ -113,7 +120,7 @@ class FakeEbay {
       auth: headers.Authorization ?? "",
     };
     this.calls.push(call);
-    if (u.origin !== API && u.origin !== "https://apim.sandbox.ebay.com") throw new Error(`unexpected host ${u.origin}`);
+    if (!ebayHosts().includes(u.origin)) throw new Error(`unexpected host ${u.origin}`);
     if (init?.redirect !== "error") throw new Error("an eBay call must refuse redirects");
     if (this.unauthorized > 0) {
       this.unauthorized -= 1;
@@ -408,7 +415,7 @@ beforeEach(() => {
   ebay = new FakeEbay();
   vi.stubEnv("EBAY_CLIENT_ID", "cid");
   vi.stubEnv("EBAY_RU_NAME", "ru");
-  vi.stubEnv("EBAY_ENVIRONMENT", "sandbox");
+  vi.stubEnv("EBAY_ENVIRONMENT", "production");
   vi.stubEnv("NEONBINDER_PAUSED_PLATFORMS", "");
   vi.stubGlobal("fetch", ebay.fetch);
 });
@@ -1535,5 +1542,67 @@ describe("eBay drain: photo uploads eBay will not take", () => {
     expect(await stepsOf(s, v.variantId)).toEqual(["photos: done", "items: done", "offers: done", "publish: done"]);
     // A refused picture is not retried every run: its row clears with the rest.
     expect(await outbox(s)).toHaveLength(0);
+  });
+});
+
+describe("eBay drain: the sandbox has no picture upload", () => {
+  // eBay's Media API reference, Input on createImageFromFile and
+  // createImageFromUrl: "This method is not supported in Sandbox environment."
+
+  test("on the sandbox nothing is uploaded: no photos step, items go with no pictures, nothing is stored as one", async () => {
+    vi.stubEnv("EBAY_ENVIRONMENT", "sandbox");
+    const s = await setup();
+    const { v, card } = await oneCard(s, 500);
+    const media = mediaAnswers([]);
+
+    const report = await drain(s);
+
+    expect(report).toMatchObject({ claimed: true, stoppedFor: "done" });
+    expect(media.uploads).toBe(0);
+    expect(ebay.to(MEDIA_CREATE)).toHaveLength(0);
+    expect(photoFetches).toEqual([]);
+    const sku = `NB2-${card}-NM`;
+    expect(ebay.items.get(sku)?.product.imageUrls).toEqual([]);
+    expect(ebay.offerFor(sku)?.status).toBe("PUBLISHED");
+    const link = await linkOf(s, card, "NM");
+    expect(link).toMatchObject({ sku, status: "live" });
+    expect(link?.images ?? []).toEqual([]);
+    expect(await stepsOf(s, v.variantId)).toEqual(["items: done", "offers: done", "publish: done"]);
+    expect(await record(s, v.variantId)).toMatchObject({ status: "idle", counts: { listed: 1, pushed: 1, zeroed: 0, skipped: 0 } });
+    expect(await outbox(s)).toHaveLength(0);
+  });
+
+  test("on the sandbox a card whose copy has no photo is still held back noPhoto; the card with one lists", async () => {
+    vi.stubEnv("EBAY_ENVIRONMENT", "sandbox");
+    const s = await setup();
+    const v = await seedVariant(s.t, { cards: [{ number: "1" }, { number: "2" }] });
+    const [noPhoto, ok] = v.cardIds;
+    await add(s, noPhoto, { homeId: s.box, condition: "Near Mint", minPriceCents: 500 });
+    await addWithPhoto(s, ok, { homeId: s.box, condition: "Near Mint", minPriceCents: 500 });
+    await listOnEbay(s);
+    await queue(s, v.cardIds.map((cardId) => ({ cardId, variantId: v.variantId })));
+
+    await drain(s);
+
+    const rec = await record(s, v.variantId);
+    expect(rec?.problems).toEqual([expect.objectContaining({ cardId: noPhoto, reason: "noPhoto" })]);
+    expect([...ebay.items.keys()]).toEqual([`NB2-${ok}-NM`]);
+    expect(ebay.to(MEDIA_CREATE)).toHaveLength(0);
+  });
+
+  test("on production the same card's photo is uploaded and its picture sent and stored", async () => {
+    const s = await setup();
+    const { v, card } = await oneCard(s, 500);
+
+    await drain(s);
+
+    expect(ebay.to(MEDIA_CREATE)).toHaveLength(1);
+    expect(photoFetches).toHaveLength(1);
+    const sku = `NB2-${card}-NM`;
+    expect(ebay.items.get(sku)?.product.imageUrls).toEqual(["https://i.ebayimg.com/m1.jpg"]);
+    expect((await linkOf(s, card, "NM"))?.images).toEqual([
+      expect.objectContaining({ url: "https://i.ebayimg.com/m1.jpg" }),
+    ]);
+    expect(await stepsOf(s, v.variantId)).toEqual(["photos: done", "items: done", "offers: done", "publish: done"]);
   });
 });

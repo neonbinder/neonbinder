@@ -1,6 +1,6 @@
 ---
 name: ebay-media-500-is-ambiguous
-description: eBay Media API 500 errorId 190000 ("internal system or process") is also returned for malformed requests; how to rule out NB's request without calling eBay (OpenAPI spec, Convex runtime FormData source, Node multipart test)
+description: eBay Media API 500 errorId 190000 is also returned for malformed requests and for every upload on the sandbox (no picture upload there, the drain skips it) though publish still lists imageUrls as required; how to rule out NB's request and how to read eBay's JS-rendered method pages
 metadata:
   type: reference
 ---
@@ -9,6 +9,30 @@ eBay's Media API (`/commerce/media/v1_beta`) answers 500 with errorId 190000
 for its own outages AND, per an eBay Community thread, for requests missing
 required parts. Never read a 190000 as "eBay is down" until the request is
 ruled out.
+
+**The image methods do not exist on the sandbox.** eBay's method pages for
+`createImageFromFile` and `createImageFromUrl` say "This method is not
+supported in Sandbox environment." On `apim.sandbox.ebay.com` both answer
+500 / 190000 to every well-formed request (signed-in user token with
+`sell.inventory`; our headers, Authorization only, and a public HTTPS URL all
+fail alike). An app-only (client-credentials) token gets 403 / 1100 instead.
+Read that line on the method page before calling any eBay method on the
+sandbox; the OAS3 file does not carry it. The drain therefore skips the
+upload on the sandbox behind one predicate (`ebayHasPictureUpload` in
+`lib/ebayEnv.ts`). But eBay's "Required fields for publishing an offer"
+guide lists `product.imageUrls` as required to publish, and the Product
+field says "at least one image URL must be specified before an offer can be
+published", with no sandbox exception on either page. `imageUrls` also
+accepts self-hosted HTTPS URLs, which is the lever if a picture-less
+sandbox publish is refused.
+
+Reading those pages: `developer.ebay.com/develop/api/sell/<api>` is one
+JS-rendered page per API (the old `api-docs/.../methods/<m>` URLs redirect
+to an anchor on it). WebFetch sees only the nav. In the built-in browser,
+filter `document.body.innerText` lines for "Sandbox environment" after the
+anchor loads; each method's Input says "is supported" or "is not supported
+in Sandbox environment". Field descriptions are not in the rendered text;
+take those from the OAS3 file.
 
 How to rule it out without calling eBay:
 - The machine-readable contract is the OAS3 file

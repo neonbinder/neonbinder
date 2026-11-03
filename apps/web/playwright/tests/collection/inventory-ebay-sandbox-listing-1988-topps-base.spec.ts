@@ -41,9 +41,13 @@
 //      connected. The afterEach does the same on a failure.
 //
 // What "2 listed" proves about eBay. The drain reads the seller's inventory,
-// uploads each card's photo, creates the inventory items and offers, PUBLISHES
-// them and reads the result; a card eBay would not take becomes a held-back
-// card with a reason (no photo, a missing item detail, a rejection). So the end
+// creates the inventory items and offers, PUBLISHES them and reads the result;
+// a card eBay would not take becomes a held-back card with a reason (no photo,
+// a missing item detail, a rejection). It uploads no photo here: eBay's
+// sandbox has no picture upload (its Media API reference: "This method is not
+// supported in Sandbox environment."), so on the sandbox the drain sends the
+// items with no pictures (`ebayHasPictureUpload`, lib/ebayEnv.ts). NB still
+// requires the photo: a card without one is held back on both. So the end
 // state of a sync is two things together: the set's "N listed" count line and
 // the "held back" list (here exactly the one card left without a photo; at the
 // end, none). The spec never calls eBay itself and shows no eBay
@@ -500,7 +504,8 @@ test(
     await expect(rowOf(c).getByText("Saved")).toBeVisible();
     await expect(said(new RegExp(`^Boxed 1 more of ${escapeRegExp(c)}\\.`))).toBeVisible();
 
-    // A photo on the first two copies: eBay listings need one. The third copy
+    // A photo on the first two copies: NB lists on eBay only with one (on the
+    // sandbox the photo stays in NB; eBay gets none, see the header). The third copy
     // gets none, on purpose: a card without a photo must be held back, with
     // its reason, on the very Sync that lists the other two. (Why a third card,
     // not a photo added to the held one for a second Sync: a press within a
@@ -547,15 +552,17 @@ test(
     // The live eBay round trip, step by step (the run's ledger on Sync status),
     // each within the standard budget: the new run is in view (its ledger under
     // Running now, or its own result line if it already finished), then the
-    // photo uploads, the items, the offers and going live land in turn. The
+    // items, the offers and going live land in turn (no photo uploads: the
+    // sandbox has no picture upload, see the header). The
     // line is the drain's own count: the two cards with a photo are listed,
     // the third is the one skipped.
     const run = syncRun(platform, SET_LABEL, EBAY);
     const listedLine = row.getByText(/^2 listed(, \d+ updated)?, 1 skipped$/);
     await expect(run.underWay(listedLine)).toBeVisible();
-    // Uploading photos is a step only while a picture has to go up (a rerun on
-    // the same account may reuse the last run's), so the first step to land is
-    // either it or the items that follow it.
+    // Uploading photos is a step only while a picture has to go up, and on the
+    // sandbox none ever does (no picture upload there), so the first step to
+    // land is the items. The "Upload photos" alternative is kept so the same
+    // line reads right against production eBay, where it is the first step.
     await expect(run.step("Upload photos").or(run.step("List the cards")).first()).toBeVisible();
     await expect(run.step("List the cards")).toBeVisible();
     await expect(run.step("Set prices")).toBeVisible();

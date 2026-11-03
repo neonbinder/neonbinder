@@ -23,7 +23,9 @@
  *   2. reads NB's link rows for the cards in play (every card of the variant
  *      on a full read: first run or a Sync press; else the queued cards and
  *      the targets), and decides per listing what changed;
- *   3. uploads photos (Media API) for listings whose picture changed,
+ *   3. uploads photos (Media API) for listings whose picture changed
+ *      (never on eBay's sandbox, which has no picture upload:
+ *      `ebayHasPictureUpload`; there items go with no pictures),
  *      replaces inventory items whose content changed, creates offers for new
  *      listings (adopting an offer eBay already holds for the SKU), replaces
  *      offers whose policies changed, updates price and quantity on live
@@ -106,6 +108,7 @@ import {
   type EbayResult,
   type EbaySellerSession,
 } from "./adapters/ebaySeller";
+import { ebayHasPictureUpload } from "./lib/ebayEnv";
 
 // ── Limits ─────────────────────────────────────────────────────────────────
 
@@ -1150,12 +1153,16 @@ async function syncEbayVariant(
     image.photoToken === key &&
     (live || image.expiresAt === undefined || image.expiresAt > Date.now() + IMAGE_FRESH_MS);
 
+  // The listings whose pictures this run hands to eBay: every listing whose
+  // item is being sent, except on eBay's sandbox, which has no picture
+  // upload (`ebayHasPictureUpload`). There nothing is uploaded or stored and
+  // the items go with no pictures; NB's no-photo hold is unchanged.
+  const uploadPlans = ebayHasPictureUpload(session.config) ? plans.filter((p) => p.needsItem) : [];
+
   // NEO-415: the plan, the steps this run will take, in order. A step the
   // run turns out not to need (every card before it fell out) is dropped.
-  const needsUpload = plans.some(
-    (p) =>
-      p.needsItem &&
-      p.photos.some((photo) => !(p.link?.images ?? []).some((image) => reusable(image, photo.key, p.link?.status === "live"))),
+  const needsUpload = uploadPlans.some((p) =>
+    p.photos.some((photo) => !(p.link?.images ?? []).some((image) => reusable(image, photo.key, p.link?.status === "live"))),
   );
   ledger.plan(
     (
@@ -1190,7 +1197,7 @@ async function syncEbayVariant(
   // photos step ends failed and the variant ends saying so in NB words, so
   // the next run (the sales poll's kick or a Sync press) tries again.
   let photosStopped: EbayFailure | null = null;
-  for (const plan of plans.filter((p) => p.needsItem)) {
+  for (const plan of uploadPlans) {
     const live = plan.link?.status === "live";
     const stored = plan.link?.images ?? [];
     const images: Array<{ url: string; photoToken: string; expiresAt?: number }> = [];

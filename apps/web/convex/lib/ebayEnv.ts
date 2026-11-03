@@ -70,6 +70,24 @@ export function ebayConfig(): EbayConfig | null {
   };
 }
 
+/**
+ * eBay's sandbox has no picture upload. The Media API reference says it
+ * under Input on both upload methods, createImageFromFile and
+ * createImageFromUrl: "This method is not supported in Sandbox environment."
+ * (https://developer.ebay.com/develop/api/sell/media_api). Every well-formed
+ * upload there answers 500 / errorId 190000, so a drain that tried would
+ * never list a card.
+ *
+ * On the sandbox the eBay drain therefore uploads nothing and sends its
+ * items with no pictures. NB's own rule does not move: a card whose copy
+ * has no photo is still held back (`noPhoto`) on both environments; only
+ * the hand-off of that photo to eBay is skipped. Production always uploads.
+ * Read in one place, the drain's photos step (`listingDrainEbay`).
+ */
+export function ebayHasPictureUpload(config: EbayConfig): boolean {
+  return config.environment !== "sandbox";
+}
+
 /** True when the deployment is wired to eBay. */
 export function ebayConfigured(): boolean {
   return ebayConfig() !== null;
