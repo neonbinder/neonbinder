@@ -169,6 +169,7 @@ describe("syncStatus", () => {
           { cardNo: "1", cardLabel: "Dwight Gooden", reason: "rejected", detail: "Price too low" },
           { reason: "notOnSheet" },
         ],
+        steps: [],
       },
     ]);
     const json = JSON.stringify(p);
@@ -185,7 +186,7 @@ describe("syncStatus", () => {
     const s = await setup();
     const expires = Date.now() + 5 * 60_000;
     await listOn(s, ME.subject, { drainLeaseToken: "drain-secret", drainLeaseExpiresAt: expires });
-    expect((await bsc(s)).running).toEqual({ startedAt: expires - DRAIN_LEASE_MS });
+    expect((await bsc(s)).running).toEqual({ startedAt: expires - DRAIN_LEASE_MS, steps: [] });
     await record(s, s.fx.goldId, {
       status: "running",
       lastRunAt: 1000,
@@ -193,7 +194,7 @@ describe("syncStatus", () => {
       leaseExpiresAt: Date.now() + 60_000,
     });
     const p = await bsc(s);
-    expect(p.running).toEqual({ startedAt: expires - DRAIN_LEASE_MS, variantId: s.fx.goldId, setLabel: GOLD_LABEL });
+    expect(p.running).toEqual({ startedAt: expires - DRAIN_LEASE_MS, variantId: s.fx.goldId, setLabel: GOLD_LABEL, steps: [] });
     expect(p.sets.map((x) => x.status)).toEqual(["running"]);
     expect(JSON.stringify(p)).not.toContain("drain-secret");
   });
@@ -220,7 +221,64 @@ describe("syncStatus", () => {
     const s = await setup();
     await listOn(s);
     await record(s, s.fx.baseId, { status: "running", lastRunAt: 1234, leaseExpiresAt: Date.now() + 60_000 });
-    expect((await bsc(s)).running).toEqual({ startedAt: 1234, variantId: s.fx.baseId, setLabel: BASE_LABEL });
+    expect((await bsc(s)).running).toEqual({ startedAt: 1234, variantId: s.fx.baseId, setLabel: BASE_LABEL, steps: [] });
+  });
+
+  test("NEO-415: the running set's steps, and each set's last run, in run order (NB condition names only)", async () => {
+    const s = await setup();
+    await listOn(s);
+    const steps = [
+      { kind: "read", condition: "Mint", conditions: ["Mint", "Near Mint"], status: "done", finishedAt: 5 },
+      { kind: "read", condition: "Excellent", conditions: ["Excellent"], status: "working" },
+      { kind: "send", status: "waiting" },
+    ];
+    await record(s, s.fx.baseId, {
+      status: "running",
+      lastRunAt: 50,
+      leaseToken: "lease-secret",
+      leaseExpiresAt: Date.now() + 60_000,
+      progress: { runStartedAt: 50, steps },
+    });
+    await record(s, s.fx.goldId, {
+      status: "idle",
+      lastRunAt: 10,
+      progress: { runStartedAt: 10, steps: [{ kind: "read", status: "done", finishedAt: 11 }, { kind: "send", status: "done", finishedAt: 12 }] },
+    });
+    const live = [
+      { kind: "read", condition: "Mint", conditions: ["Mint", "Near Mint"], status: "done" },
+      { kind: "read", condition: "Excellent", conditions: ["Excellent"], status: "working" },
+      { kind: "send", status: "waiting" },
+    ];
+    const p = await bsc(s);
+    expect(p.running).toMatchObject({ variantId: s.fx.baseId, steps: live });
+    expect(p.sets.map((x) => [x.variantId, x.steps])).toEqual([
+      [s.fx.baseId, live],
+      [s.fx.goldId, [{ kind: "read", status: "done" }, { kind: "send", status: "done" }]],
+    ]);
+  });
+
+  test("NEO-415: a run that died holding its lease reads finished: its working step failed, nothing waiting", async () => {
+    const s = await setup();
+    await listOn(s);
+    await record(s, s.fx.baseId, {
+      status: "running",
+      lastRunAt: 50,
+      leaseExpiresAt: Date.now() - 1,
+      progress: {
+        runStartedAt: 50,
+        steps: [
+          { kind: "read", condition: "Poor", conditions: ["Poor"], status: "done", finishedAt: 5 },
+          { kind: "send", status: "working" },
+          { kind: "confirm", condition: "Poor", conditions: ["Poor"], status: "waiting" },
+        ],
+      },
+    });
+    const p = await bsc(s);
+    expect(p.running).toBeNull();
+    expect(p.sets[0].steps).toEqual([
+      { kind: "read", condition: "Poor", conditions: ["Poor"], status: "done" },
+      { kind: "send", status: "failed" },
+    ]);
   });
 
   test("a set gone from NB reads as such; a queued card gone from the catalog keeps its id only", async () => {

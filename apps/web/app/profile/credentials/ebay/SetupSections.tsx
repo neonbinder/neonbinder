@@ -62,6 +62,8 @@ type SetupLine = { kind: "progress" | "ok" | "error"; text: string } | null;
 type Loaded = { state: "loading" } | { state: "error"; error: string } | { state: "ready"; policies: EbayPolicies };
 
 const READ_FAILED = `Couldn't reach ${EBAY_NAME} for your policies. Give it another try.`;
+/** Set me up made the policies, but reading them back to pick them failed: Try again picks, and makes nothing. */
+const MADE_NOT_PICKED = `Your new policies are made, but ${EBAY_NAME} wouldn't hand them back just now, so nothing's picked yet. Give it a bit, then press Try again to pick them. It won't make them twice.`;
 
 export default function SetupSections({ connection }: { connection: EbayConnectionState }) {
   const readPolicies = useAction(api.ebayConnect.readPolicies);
@@ -326,7 +328,9 @@ function SetMeUp({
       const read = await readPolicies({});
       if (!read.ok) {
         setMade(created);
-        setLine({ kind: "error", text: `${read.error} Your new policies are made, so Try again just picks them.` });
+        // One message of our own, not the read's sentence with ours stuck on (both said "Try again"): what's
+        // done, what isn't, and what the button does now. The connection's own state says any lost sign-in.
+        setLine({ kind: "error", text: MADE_NOT_PICKED });
         return;
       }
       const picks = standardPicks(connection.settings, read, created);

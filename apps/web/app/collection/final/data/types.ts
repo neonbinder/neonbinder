@@ -1028,6 +1028,29 @@ export interface QueuedSyncCard {
   changedAt: number;
 }
 
+/**
+ * NEO-415 — one step of a sync run, in run order: BuySportsCards reads each
+ * condition, sends the changes once, then checks each condition back; eBay
+ * uploads photos, writes the items, sets the offers, publishes, and takes
+ * down what went to 0. The server stores kind and NB condition only; the
+ * words are the web's (`stepLabels` in the listing copy), never a
+ * marketplace value. Mirrors `marketplaceListingSyncs.progress.steps`.
+ */
+export type SyncStepKind = "read" | "send" | "confirm" | "photos" | "items" | "offers" | "publish" | "withdraw";
+export type SyncStepStatus = "waiting" | "working" | "done" | "failed";
+export interface SyncStep {
+  kind: SyncStepKind;
+  /** NB's condition, for a read or a check-back (the first of `conditions`). */
+  condition?: Condition;
+  /**
+   * Every NB condition one read or check-back covers (one marketplace sheet
+   * can hold two of NB's). Neither field: the step covers the conditions NB
+   * lists nothing under.
+   */
+  conditions?: Condition[];
+  status: SyncStepStatus;
+}
+
 /** One set's last sync on a platform. Last result only: there is no run log. */
 export interface SyncSetResult {
   variantId: VariantId;
@@ -1041,13 +1064,15 @@ export interface SyncSetResult {
   problemsTotal: number;
   /** The first few only; the rest come from `loadSetProblems`. */
   problems: SyncProblem[];
+  /** NEO-415 — the last run's steps (the run going now while `running`); absent from an older server. */
+  steps?: SyncStep[];
 }
 
 /** One platform on the Sync status tab. */
 export interface PlatformSyncStatus extends ListingPlatformSettings {
   platform: ListingPlatform;
   /** A sync going on now. */
-  running: { startedAt: number; setLabel?: string; variantId?: VariantId } | null;
+  running: { startedAt: number; setLabel?: string; variantId?: VariantId; steps?: SyncStep[] } | null;
   /** When the next sync is due (ms), when one is scheduled. */
   scheduledAt?: number;
   /** When the last sync finished (ms). */

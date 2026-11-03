@@ -919,6 +919,54 @@ export const listingProblemReasonValidator = v.union(
 );
 
 /**
+ * NEO-415 — one step of a variant's listing run, as the Sync status tab shows
+ * it (`marketplaceListingSyncs.progress`). NB vocabulary only: the web writes
+ * each label from `kind` and NB's condition names; no marketplace value is
+ * stored here.
+ *   read     (BSC) read one condition's sheet
+ *   send     (BSC) the PUT carrying the changes
+ *   confirm  (BSC) read one condition back after the PUT
+ *   photos   (BSC seller photos, eBay pictures) upload photos
+ *   items    (eBay) create or replace inventory items
+ *   offers   (eBay) create or update offers, and price-and-quantity updates
+ *   publish  (eBay) publish offers
+ *   withdraw (eBay) take down listings whose count went to 0
+ * `condition` and `conditions` are set on read and confirm only: the NB
+ * conditions that sheet carries (`conditions`, best first; BSC folds Mint
+ * and Near Mint into one modern sheet), `condition` its first. A read or
+ * confirm with neither covers the sheets NB lists nothing under (old rows
+ * NB may still have to zero).
+ */
+export const listingSyncStepKindValidator = v.union(
+  v.literal("read"),
+  v.literal("send"),
+  v.literal("confirm"),
+  v.literal("photos"),
+  v.literal("items"),
+  v.literal("offers"),
+  v.literal("publish"),
+  v.literal("withdraw"),
+);
+export const listingSyncStepStatusValidator = v.union(
+  v.literal("waiting"),
+  v.literal("working"),
+  v.literal("done"),
+  v.literal("failed"),
+);
+export const listingSyncStepValidator = v.object({
+  kind: listingSyncStepKindValidator,
+  condition: v.optional(collectionCopyConditionValidator),
+  conditions: v.optional(v.array(collectionCopyConditionValidator)),
+  status: listingSyncStepStatusValidator,
+  finishedAt: v.optional(v.number()),
+});
+export const listingSyncProgressValidator = v.object({
+  /** The claim that started this run (`listingDrain.claimVariant`). */
+  runStartedAt: v.number(),
+  steps: v.array(listingSyncStepValidator),
+});
+
+/**
  * NEO-370 — why a sold line was not (fully) applied to the collector's box
  * copies. NB-authored, like the listing reasons above.
  *   unmatched    no NB card could be found for the line (SKU and id both fail)
@@ -4517,6 +4565,16 @@ export default defineSchema({
      * later than `lastRunAt` (the claim stamps `lastRunAt`, so one run).
      */
     resyncRequestedAt: v.optional(v.number()),
+    /**
+     * NEO-415 — the run's steps, in run order, so the Sync status tab can tick
+     * them off as they land. The claim starts an empty ledger; the drainer
+     * writes the plan and flips one step per small write (`working` → `done`),
+     * appending steps it learns later and dropping ones the run turns out not
+     * to need. The finish drops every step still `waiting`; a failed run ends
+     * with the step it died on `failed`. Kept as the last run's ledger until
+     * the next claim replaces it. Small (a vintage BSC run is ~22 steps).
+     */
+    progress: v.optional(listingSyncProgressValidator),
     lastUpdated: v.number(),
   })
     // The drainer's claim and a Sync press (all three, `.unique()`); a

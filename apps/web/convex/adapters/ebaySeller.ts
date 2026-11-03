@@ -95,7 +95,7 @@ export interface EbaySellerSession {
 
 type SessionCtx = Pick<ActionCtx, "runAction">;
 
-const SIGNED_OUT = "eBay signed NeonBinder out. Connect eBay again under Profile.";
+const SIGNED_OUT = "eBay signed NeonBinder out. Connect eBay again in Profile → Credentials → eBay.";
 
 /**
  * What a failure SAYS (NB copy; callers show it as it is, or put their own
@@ -109,6 +109,20 @@ export const EBAY_SAYS = {
   refused: "eBay turned that one down. Try again in a bit.",
   unreadable: "eBay sent back something NeonBinder couldn't read. Try again in a bit.",
 } as const;
+
+/**
+ * An eBay failure in NB's words for the step that hit it. The adapter's own
+ * sentences (signed out, timeout, no network, not connected) pass through;
+ * eBay saying no (a 4xx) gets `refused`, the step's own sentence; eBay busy
+ * (5xx, 429) or an answer NB couldn't read gets `busy`. eBay's status and
+ * error ids are already in the `ebay_seller_error` log line.
+ */
+export function sayEbayFailure(failure: EbayFailure, refused: string, busy: string = EBAY_SAYS.busy): string {
+  if (failure.kind === "bad_response") return busy;
+  if (failure.kind !== "http") return failure.message;
+  const status = failure.httpStatus ?? 0;
+  return status >= 500 || status === 429 ? busy : refused;
+}
 
 /** The NB sentence for an eBay HTTP failure: a server-side or rate-limit status is eBay being busy, anything else a refusal. */
 function httpSays(status: number): string {
@@ -171,7 +185,7 @@ export async function openEbaySellerSession(ctx: SessionCtx, ownerId: string): P
   }
   logCall("token", startedAt, token ? "ok" : "no_token");
   if (!token) {
-    return { ok: false, failure: failure("no_token", "NeonBinder couldn't reach your eBay account. Connect eBay again under Profile.") };
+    return { ok: false, failure: failure("no_token", "NeonBinder couldn't reach your eBay account. Connect eBay again in Profile → Credentials → eBay.") };
   }
   return { ok: true, value: { ownerId, token: token.token, config, reauthAttempted: false, dead: false } };
 }

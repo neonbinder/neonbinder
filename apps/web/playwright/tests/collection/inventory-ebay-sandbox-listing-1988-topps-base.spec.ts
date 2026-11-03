@@ -89,6 +89,7 @@ import {
   nameOf,
   putOtherBoxesInPerson,
   quantityField,
+  syncRun,
 } from "../../support/collection";
 import { expectEbayHookedUp, removeEbayConnection, saveEbayConnection } from "../../support/credentials";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
@@ -246,7 +247,7 @@ test(
     await expect(before.getByText("Listing", { exact: true })).toBeHidden();
     await expectAccessible(page, { label: "Inventory Sync status, eBay not connected" });
     // The way there is a link; Back steps to Sync status.
-    await before.getByRole("link", { name: "Connect eBay on your Profile", exact: true }).click();
+    await before.getByRole("link", { name: "Connect eBay in Profile → Credentials", exact: true }).click();
     await expect(page).toHaveURL(/\/profile\/credentials\?platform=ebay$/);
     await expect(connectButton).toBeVisible();
     await page.goBack();
@@ -481,10 +482,23 @@ test(
     const { platform, row } = syncStatus(page);
     await expect(platform.getByRole("heading", { level: 2, name: EBAY, exact: true })).toBeVisible();
     await expect(platform.getByText("Listing", { exact: true })).toBeVisible();
-    // Live eBay round trip: two photo uploads, the
-    // items and offers, publish. The line is the drain's own count: the two
-    // cards with a photo are listed, the third is the one skipped.
-    await expect(row.getByText(/^2 listed(, \d+ updated)?, 1 skipped$/)).toBeVisible();
+    // The live eBay round trip, step by step (the run's ledger on Sync status),
+    // each within the standard budget: the new run is in view (its ledger under
+    // Running now, or its own result line if it already finished), then the
+    // photo uploads, the items, the offers and going live land in turn. The
+    // line is the drain's own count: the two cards with a photo are listed,
+    // the third is the one skipped.
+    const run = syncRun(platform, SET_LABEL, EBAY);
+    const listedLine = row.getByText(/^2 listed(, \d+ updated)?, 1 skipped$/);
+    await expect(run.underWay(listedLine)).toBeVisible();
+    // Uploading photos is a step only while a picture has to go up (a rerun on
+    // the same account may reuse the last run's), so the first step to land is
+    // either it or the items that follow it.
+    await expect(run.step("Upload photos").or(run.step("List the cards")).first()).toBeVisible();
+    await expect(run.step("List the cards")).toBeVisible();
+    await expect(run.step("Set prices")).toBeVisible();
+    await expect(run.step("Go live")).toBeVisible();
+    await expect(listedLine).toBeVisible();
     await expect(row.getByText(/^Synced /)).toBeVisible();
     // Held back is exactly that one card, with the reason a collector can act on
     // (the copy is problemCopy("ebay").noPhoto in inventory/listing/copy.ts).
@@ -492,7 +506,11 @@ test(
     const heldBack = row.getByRole("listitem").filter({ hasText: "eBay listings need a photo. Add one to a copy of this card and it goes up." });
     await expect(heldBack).toHaveCount(1);
     await expect(heldBack).toContainText(c.split(" ")[0]);
-    await expectAccessible(page, { label: "Inventory Sync status, eBay 2 listed and a card held back for no photo" });
+    // Finished, the set's row keeps the run's steps, in run order (so the axe
+    // check below has the ledger showing).
+    await expect(run.last).toBeVisible();
+    await expect(run.last.getByRole("listitem")).toContainText([/^List the cards, done$/, /^Set prices, done$/, /^Go live, done$/]);
+    await expectAccessible(page, { label: "Inventory Sync status, eBay 2 listed, the run's steps done and a card held back for no photo" });
     await page.goBack();
     await expect(page).toHaveURL(/[?&]tab=checklists/);
     await expect(checklist.getByRole("heading", { level: 3, name: TITLE })).toBeVisible();
@@ -520,8 +538,14 @@ test(
     await expect(said(`Syncing ${TITLE} now. Watch it on Sync status.`)).toBeVisible();
     await tabs.getByRole("link", { name: "Sync status", exact: true }).click();
     await expect(page).toHaveURL(/[?&]tab=sync/);
-    // Live eBay round trip: the set was 2 listed a minute ago.
-    await expect(row.getByText(/^0 listed(, \d+ updated)?, 2 taken to 0$/)).toBeVisible();
+    // The live eBay round trip, step by step: the set was 2 listed a minute ago,
+    // so the row still shows the LAST run's finished steps until this one claims
+    // the set; gate on the new run (its ledger, or its own result line).
+    const takeDown = syncRun(platform, SET_LABEL, EBAY);
+    const takenLine = row.getByText(/^0 listed(, \d+ updated)?, 2 taken to 0$/);
+    await expect(takeDown.underWay(takenLine)).toBeVisible();
+    await expect(takeDown.step("Take down cards at 0")).toBeVisible();
+    await expect(takenLine).toBeVisible();
     await expect(row.getByText(/held back/)).toHaveCount(0);
 
     // The Sales tab names eBay: its orders page is one link away. (No order has

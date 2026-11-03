@@ -1,4 +1,11 @@
-import type { ListingPlatform, ListingProblemReason, SaleItem, SyncProblem } from "../../data/types";
+import type {
+  ListingPlatform,
+  ListingProblemReason,
+  SaleItem,
+  SyncProblem,
+  SyncStep,
+  SyncStepStatus,
+} from "../../data/types";
 import { BSC_NAME, EBAY_NAME, PLATFORM_NAME } from "@/lib/marketplace/listing-copy";
 
 export {
@@ -50,6 +57,11 @@ export function ordersUrl(platform: ListingPlatform, sandbox = false): string {
   return BSC_ORDERS_URL;
 }
 
+/** Where a platform's connection and settings live, said as the path a collector clicks: "Profile → Credentials → eBay". */
+export function credentialsWords(platform: ListingPlatform): string {
+  return `Profile → Credentials → ${PLATFORM_NAME[platform]}`;
+}
+
 /** Why a card didn't list on a platform, in a collector's words. */
 export function problemCopy(platform: ListingPlatform): Record<ListingProblemReason, string> {
   const name = PLATFORM_NAME[platform];
@@ -65,7 +77,7 @@ export function problemCopy(platform: ListingPlatform): Record<ListingProblemRea
     rejected: `${name} turned this one down.`,
     missingAspect: `${name} wants a card detail we don't have yet, so it's held back.`,
     noPhoto: `${name} listings need a photo. Add one to a copy of this card and it goes up.`,
-    setupIncomplete: `Finish your ${name} setup on your Profile and this one goes up.`,
+    setupIncomplete: `Finish your ${name} setup in ${credentialsWords(platform)} and this one goes up.`,
   };
 }
 
@@ -91,8 +103,10 @@ export function problemCopyReadOnly(platform: ListingPlatform): Record<ListingPr
 export const PROBLEM_COPY_READ_ONLY: Record<ListingProblemReason, string> = problemCopyReadOnly("bsc");
 
 /**
- * The full sentence for one problem: what the platform said when it refused
- * a row, and for `missingAspect` the detail it wants, when the server names
+ * The full sentence for one problem: for `rejected`, NB's own sentence for
+ * what didn't go through (the server writes it: eBay's `EBAY_CARD_REJECTED`,
+ * BSC's `rejectedPushDetail`), said as ours, never framed as a quote from the
+ * platform; for `missingAspect` the detail it wants, when the server names
  * it ("Team").
  */
 export function problemSentence(
@@ -105,7 +119,7 @@ export function problemSentence(
     return `${PLATFORM_NAME[platform]} wants this card's ${detail}, and we don't have it yet, so it's held back.`;
   }
   const base = (readOnly ? problemCopyReadOnly(platform) : problemCopy(platform))[problem.reason];
-  if (problem.reason === "rejected" && detail) return `${base} They said: “${detail}”`;
+  if (problem.reason === "rejected" && detail) return `${base} ${/[.!?]$/.test(detail) ? detail : `${detail}.`}`;
   return base;
 }
 
@@ -237,4 +251,93 @@ export function saleItemProblem(
       return `Sold ${item.quantity} on ${name} but only ${had} in your boxes. We took ${had === 1 ? "that one" : had === 0 ? "none" : `those ${had}`}; ${short} more ${short === 1 ? "needs" : "need"} a look.`;
     }
   }
+}
+
+type StepWords = Pick<SyncStep, "kind" | "condition" | "conditions">;
+
+/**
+ * The NB conditions one step covers, said as a list: "Near Mint", "Mint and
+ * Near Mint", "Mint, Near Mint and Excellent". None named: the step covers
+ * the conditions NB lists nothing under.
+ */
+function conditionWords(step: StepWords): string {
+  const named = step.conditions?.length ? step.conditions : step.condition ? [step.condition] : [];
+  if (named.length === 0) return "the other conditions";
+  if (named.length === 1) return named[0];
+  return `${named.slice(0, -1).join(", ")} and ${named[named.length - 1]}`;
+}
+
+/**
+ * NEO-415 — a sync step in the collector's words, from its kind and NB's own
+ * condition names (never a marketplace value): "Read Near Mint", "Send
+ * changes to BuySportsCards", "Double-check Near Mint"; eBay's "Upload
+ * photos" through "Take down cards at 0".
+ */
+function stepLabel(step: StepWords, platform: ListingPlatform): string {
+  const condition = conditionWords(step);
+  switch (step.kind) {
+    case "read":
+      return `Read ${condition}`;
+    case "send":
+      return `Send changes to ${PLATFORM_NAME[platform]}`;
+    case "confirm":
+      return `Double-check ${condition}`;
+    case "photos":
+      return "Upload photos";
+    case "items":
+      return "List the cards";
+    case "offers":
+      return "Set prices";
+    case "publish":
+      return "Go live";
+    case "withdraw":
+      return "Take down cards at 0";
+  }
+}
+
+/**
+ * Every step's label, in run order, each one unique within the run (a list
+ * item's name must tell it apart from its neighbours): a repeat, which a
+ * well-formed plan never has, gets its count, "Read Good (2)".
+ */
+export function stepLabels(steps: ReadonlyArray<StepWords>, platform: ListingPlatform): string[] {
+  const seen = new Map<string, number>();
+  return steps.map((step) => {
+    const label = stepLabel(step, platform);
+    const n = (seen.get(label) ?? 0) + 1;
+    seen.set(label, n);
+    return n === 1 ? label : `${label} (${n})`;
+  });
+}
+
+/** A step's state, as its list item says it. */
+export const STEP_STATE_WORD: Record<SyncStepStatus, string> = {
+  waiting: "waiting",
+  working: "working",
+  done: "done",
+  failed: "failed",
+};
+
+/** A step's accessible name: "Read Near Mint, done". */
+export function stepName(label: string, status: SyncStepStatus): string {
+  return `${label}, ${STEP_STATE_WORD[status]}`;
+}
+
+/** The running ledger's list name: "Sync steps for 1989 Upper Deck Base on BuySportsCards". */
+export function runStepsName(setLabel: string | undefined, platform: ListingPlatform): string {
+  return `Sync steps for ${setLabel ?? "this set"} on ${PLATFORM_NAME[platform]}`;
+}
+
+/** A set row's ledger list name: "Last sync steps for 1990 Score Base on BuySportsCards". */
+export function lastStepsName(setLabel: string, platform: ListingPlatform): string {
+  return `Last sync steps for ${setLabel} on ${PLATFORM_NAME[platform]}`;
+}
+
+/**
+ * What the run's one polite line says when steps land: the newest one done
+ * and the tally, or the step that hit a snag. Steps going from waiting to
+ * working are not said (the spinner shows it; saying it doubles the chatter).
+ */
+export function stepLandedLine(label: string, status: "done" | "failed", done: number, total: number): string {
+  return status === "failed" ? `${label} hit a snag.` : `${label}, done. ${done} of ${total} steps done.`;
 }

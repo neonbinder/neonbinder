@@ -239,7 +239,10 @@ describe("Set me up", () => {
     button.focus();
     fireEvent.click(button);
     const alert = await screen.findByRole("alert");
-    expect(alert.textContent).toBe("eBay didn't answer. Your new policies are made, so Try again just picks them.");
+    // One message, not eBay's sentence with ours stuck on: what's done, what isn't, and what Try again does.
+    expect(alert.textContent).toBe(
+      "Your new policies are made, but eBay wouldn't hand them back just now, so nothing's picked yet. Give it a bit, then press Try again to pick them. It won't make them twice.",
+    );
     const retry = screen.getByRole("button", { name: "Try again" });
     expect(document.activeElement).toBe(retry);
     expect(screen.getByRole("heading", { level: 3, name: "Shipping" })).toBeTruthy();

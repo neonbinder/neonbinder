@@ -74,6 +74,7 @@ import {
   getShippingServices,
   openEbaySellerSession,
   optInToProgram,
+  sayEbayFailure as sayEbayStepFailure,
   upsertInventoryLocation,
   type EbayFailure,
   type EbaySellerSession,
@@ -261,18 +262,9 @@ function connectionFailure(failure: EbayFailure): string {
   return failure.message;
 }
 
-/**
- * An eBay failure in NB's words for the step that hit it. The adapter's own
- * sentences (signed out, timeout, no network, not connected) pass through;
- * eBay saying no (a 4xx) gets `refused`, the step's own sentence; eBay busy
- * (5xx, 429) or an answer NB couldn't read gets `busy`. eBay's status and
- * error ids are already in the `ebay_seller_error` log line.
- */
+/** An eBay failure in NB's words for the step that hit it (`adapters/ebaySeller.sayEbayFailure`; busy defaults to "unavailable"). */
 function sayEbayFailure(failure: EbayFailure, refused: string, busy: string = CONNECT_ERRORS.unavailable): string {
-  if (failure.kind === "bad_response") return busy;
-  if (failure.kind !== "http") return failure.message;
-  const status = failure.httpStatus ?? 0;
-  return status >= 500 || status === 429 ? busy : refused;
+  return sayEbayStepFailure(failure, refused, busy);
 }
 
 /** Opens a seller session for the signed-in owner, or says why not (an NB sentence). */

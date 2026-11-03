@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { Theme } from "@radix-ui/themes";
-import SyncStatusView, { countsLine, platformState, setKind, setLine } from "./SyncStatusView";
+import SyncStatusView, { countsLine, platformState, setKind, setLine, stepKind } from "./SyncStatusView";
 import SyncStatusTab, { finishedLine } from "./SyncStatusTab";
 import { stubListing } from "./stubListing";
 import {
@@ -14,6 +14,8 @@ import {
   REAUTH_LINE_READ_ONLY,
   SELLER_CONFLICT_LINE,
   problemSentence,
+  stepLabels,
+  stepName,
   whenSynced,
 } from "./copy";
 import { expectAccessibleInBothModes } from "@/lib/testing/axe";
@@ -24,6 +26,7 @@ import {
   type SetProblems,
   type SyncSetResult,
   type SyncStatus,
+  type SyncStep,
 } from "../../data/types";
 
 /**
@@ -73,7 +76,7 @@ const SEVEN_HELD: SyncSetResult = set({
     { reason: "noPrice", cardNo: "1", cardLabel: "Nolan Ryan" },
     { reason: "priceTooHigh", cardNo: "2", cardLabel: "Barry Bonds" },
     { reason: "sharedLink", cardNo: "3", cardLabel: "Ken Griffey Jr." },
-    { reason: "rejected", cardNo: "4", cardLabel: "Frank Thomas", detail: "duplicate" },
+    { reason: "rejected", cardNo: "4", cardLabel: "Frank Thomas", detail: "NeonBinder sent 2 for Near Mint, but the listing didn't take it." },
     { reason: "noLink" },
   ],
 });
@@ -171,7 +174,10 @@ describe("the Sync status screen", () => {
     expect(rows[0].textContent).toContain("12 listed, 3 updated, 1 taken to 0");
     expect(rows[1].textContent).toContain("7 held back:");
     expect(rows[1].textContent).toContain(`#1 Nolan Ryan ${PROBLEM_COPY.noPrice}`);
-    expect(rows[1].textContent).toContain("They said: “duplicate”");
+    expect(rows[1].textContent).toContain(
+      "BuySportsCards turned this one down. NeonBinder sent 2 for Near Mint, but the listing didn't take it.",
+    );
+    expect(rows[1].textContent).not.toContain("They said");
     expect(rows[1].textContent).toContain("A BuySportsCards card we can't match");
     expect(rows[2].textContent).toContain(`Hit a snag ${whenSynced(T)}: BuySportsCards timed out. The next round tries again.`);
     await expectAccessibleInBothModes(view.container, { label: "Sync status, sets with problems", rerender });
@@ -230,7 +236,7 @@ describe("the Sync status screen", () => {
     // Rev 5: a saved, unpaused sign-in IS listing, so a pause (or a dead
     // sign-in) arrives with listing false and must still read as itself.
     const cases: [Partial<PlatformSyncStatus>, string, string | RegExp | null, string | null][] = [
-      [{ connected: false, listing: false }, "Not connected", /^No BuySportsCards sign-in saved/, "Connect BuySportsCards on your Profile"],
+      [{ connected: false, listing: false }, "Not connected", /^No BuySportsCards sign-in saved/, "Connect BuySportsCards in Profile → Credentials"],
       [{ needsReauth: true }, "Needs sign-in", REAUTH_LINE, "Sign in to BuySportsCards again"],
       [{ needsReauth: true, listing: false }, "Needs sign-in", REAUTH_LINE, "Sign in to BuySportsCards again"],
       [{ paused: true, listing: false }, "On a break", PAUSED_LINE, null],
@@ -251,6 +257,13 @@ describe("the Sync status screen", () => {
       expect(screen.queryByRole("link")).toBeNull();
       cleanup();
     }
+  });
+
+  it("NEO-415: eBay not connected points at Profile → Credentials → eBay, in words and link", () => {
+    draw({ platforms: [bsc({ platform: "ebay", connected: false, listing: false })] });
+    const link = screen.getByRole("link", { name: "Connect eBay in Profile → Credentials" });
+    expect(link.getAttribute("href")).toBe("/profile/credentials?platform=ebay");
+    expect(screen.queryByText(/on your Profile/)).toBeNull();
   });
 
   it("the admin's copy never talks to the collector: no 'you', no 'Press', no 'on your Profile'", async () => {
@@ -431,11 +444,211 @@ describe("the Sync status tab", () => {
     );
     const ebay = screen.getByRole("region", { name: "eBay" });
     expect(within(ebay).getByText("Setup unfinished")).toBeTruthy();
+    // Held back for setup: the line says where eBay's settings live now.
+    expect(within(ebay).getByText(/Finish your eBay setup in Profile → Credentials → eBay and this one goes up\./)).toBeTruthy();
     expect(within(ebay).getByRole("link", { name: "Finish your eBay setup" }).getAttribute("href")).toBe("/profile/credentials?platform=ebay");
     expect(within(ebay).getByText(/eBay listings need a photo/)).toBeTruthy();
     expect(within(ebay).getByText("eBay wants this card's Team, and we don't have it yet, so it's held back.", { exact: false })).toBeTruthy();
     // BSC reads as before.
     expect(within(screen.getByRole("region", { name: "BuySportsCards" })).getByText("Listing")).toBeTruthy();
     await expectAccessibleInBothModes(view.container, { label: "Sync status, eBay unfinished", rerender });
+  });
+});
+
+/**
+ * NEO-415 — the run's steps as a check-mark ledger: each condition read, the
+ * one send, each condition checked back (eBay: photos, items, offers,
+ * publish, take down). Labels are NB's own words with NB's condition names;
+ * each step is a list item named "label, state", in a list named for the set
+ * and platform, and one polite line says each step as it lands.
+ */
+describe("the sync steps ledger", () => {
+  const BSC_RUN: SyncStep[] = [
+    { kind: "read", condition: "Near Mint", status: "done" },
+    { kind: "read", condition: "Excellent", status: "working" },
+    { kind: "send", status: "waiting" },
+    { kind: "confirm", condition: "Near Mint", status: "waiting" },
+  ];
+  const runningBsc = (steps: SyncStep[]) =>
+    bsc({
+      running: { startedAt: T, setLabel: "1989 Upper Deck Base", variantId: "v1", steps },
+      sets: [set({ status: "running", steps })],
+    });
+
+  const names = (list: HTMLElement) =>
+    within(list)
+      .getAllByRole("listitem")
+      .map((li) => li.getAttribute("aria-label"));
+
+  it("running: each step under Running now, named label and state, in run order", async () => {
+    const { view, rerender } = draw({ platforms: [runningBsc(BSC_RUN)] });
+    const list = within(section("Running now")).getByRole("list", {
+      name: "Sync steps for 1989 Upper Deck Base on BuySportsCards",
+    });
+    expect(names(list)).toEqual([
+      "Read Near Mint, done",
+      "Read Excellent, working",
+      "Send changes to BuySportsCards, waiting",
+      "Double-check Near Mint, waiting",
+    ]);
+    // Each item's own words say the same (a reader in browse mode hears the content).
+    expect(within(list).getByRole("listitem", { name: "Read Near Mint, done" }).textContent).toBe("Read Near Mint, done");
+    // The running set's row does not draw the same ledger twice.
+    expect(within(section("Last sync by set")).queryByRole("list", { name: /steps for/ })).toBeNull();
+    expect(screen.getAllByRole("list", { name: /steps for 1989 Upper Deck Base/ })).toHaveLength(1);
+    await expectAccessibleInBothModes(view.container, { label: "Sync status, steps running", rerender });
+  });
+
+  it("last sync: each set row keeps its last run's steps, the failed one marked", async () => {
+    const { view, rerender } = draw({
+      platforms: [
+        bsc({
+          sets: [
+            set({
+              status: "error",
+              lastError: "BuySportsCards timed out",
+              steps: [
+                { kind: "read", condition: "Near Mint", status: "done" },
+                { kind: "read", condition: "Excellent", status: "done" },
+                { kind: "send", status: "failed" },
+              ],
+            }),
+            set({
+              variantId: "v2",
+              setLabel: "1990 Score Base",
+              steps: [
+                { kind: "read", condition: "Mint", status: "done" },
+                { kind: "send", status: "done" },
+                { kind: "confirm", condition: "Mint", status: "done" },
+              ],
+            }),
+          ],
+        }),
+      ],
+    });
+    const sets = section("Last sync by set");
+    expect(
+      names(within(sets).getByRole("list", { name: "Last sync steps for 1989 Upper Deck Base on BuySportsCards" })),
+    ).toEqual(["Read Near Mint, done", "Read Excellent, done", "Send changes to BuySportsCards, failed"]);
+    expect(names(within(sets).getByRole("list", { name: "Last sync steps for 1990 Score Base on BuySportsCards" }))).toEqual([
+      "Read Mint, done",
+      "Send changes to BuySportsCards, done",
+      "Double-check Mint, done",
+    ]);
+    await expectAccessibleInBothModes(view.container, { label: "Sync status, last-run steps", rerender });
+  });
+
+  it("eBay: its own steps in NB's words, never eBay's", async () => {
+    const steps: SyncStep[] = [
+      { kind: "photos", status: "done" },
+      { kind: "items", status: "done" },
+      { kind: "offers", status: "working" },
+      { kind: "publish", status: "waiting" },
+      { kind: "withdraw", status: "waiting" },
+    ];
+    const { view, rerender } = draw({
+      platforms: [bsc({ platform: "ebay", running: { startedAt: T, setLabel: "1988 Topps Base", variantId: "v1", steps } })],
+    });
+    expect(names(screen.getByRole("list", { name: "Sync steps for 1988 Topps Base on eBay" }))).toEqual([
+      "Upload photos, done",
+      "List the cards, done",
+      "Set prices, working",
+      "Go live, waiting",
+      "Take down cards at 0, waiting",
+    ]);
+    await expectAccessibleInBothModes(view.container, { label: "Sync status, eBay steps", rerender });
+  });
+
+  it("BSC: one sheet's two conditions read as one step, photos go up before the send, the rest read last", () => {
+    draw({
+      platforms: [
+        bsc({
+          running: {
+            startedAt: T,
+            setLabel: "1989 Upper Deck Base",
+            variantId: "v1",
+            steps: [
+              { kind: "read", condition: "Mint", conditions: ["Mint", "Near Mint"], status: "done" },
+              { kind: "read", condition: "Excellent", status: "done" },
+              { kind: "read", status: "done" },
+              { kind: "photos", status: "done" },
+              { kind: "send", status: "working" },
+              { kind: "confirm", condition: "Mint", conditions: ["Mint", "Near Mint"], status: "waiting" },
+              { kind: "confirm", status: "waiting" },
+            ],
+          },
+        }),
+      ],
+    });
+    expect(names(screen.getByRole("list", { name: "Sync steps for 1989 Upper Deck Base on BuySportsCards" }))).toEqual([
+      "Read Mint and Near Mint, done",
+      "Read Excellent, done",
+      "Read the other conditions, done",
+      "Upload photos, done",
+      "Send changes to BuySportsCards, working",
+      "Double-check Mint and Near Mint, waiting",
+      "Double-check the other conditions, waiting",
+    ]);
+  });
+
+  it("no steps from the server: no ledger, the line as before", () => {
+    draw({ platforms: [bsc({ running: { startedAt: T, setLabel: "1989 Upper Deck Base" }, sets: [set()] })] });
+    expect(screen.queryByRole("list", { name: /steps for/ })).toBeNull();
+  });
+
+  it("says each step as it lands, once, in one polite line; arriving mid-run says nothing", () => {
+    const { view } = draw({ platforms: [runningBsc(BSC_RUN)] });
+    const line = () => within(section("Running now")).getByRole("status");
+    expect(line().textContent).toBe("");
+
+    const tree = (steps: SyncStep[]) => (
+      <Theme>
+        <MemoryRouter>
+          <SyncStatusView status={{ platforms: [runningBsc(steps)] }} loadProblems={async () => ({ problems: [], problemsTotal: 0 })} />
+        </MemoryRouter>
+      </Theme>
+    );
+    const next: SyncStep[] = [
+      BSC_RUN[0],
+      { ...BSC_RUN[1], status: "done" },
+      { ...BSC_RUN[2], status: "working" },
+      BSC_RUN[3],
+    ];
+    view.rerender(tree(next));
+    expect(line().textContent).toBe("Read Excellent, done. 2 of 4 steps done.");
+    // A step going from waiting to working is not said.
+    view.rerender(tree(next.map((s) => ({ ...s }))));
+    expect(line().textContent).toBe("Read Excellent, done. 2 of 4 steps done.");
+
+    view.rerender(tree([next[0], next[1], { ...next[2], status: "failed" }]));
+    expect(line().textContent).toBe("Send changes to BuySportsCards hit a snag.");
+  });
+
+  it("labels: one sheet's conditions said as a list, none named is the rest, each unique within a run", () => {
+    expect(
+      stepLabels(
+        [
+          { kind: "read", condition: "Good" },
+          { kind: "read", condition: "Good" },
+          { kind: "read", condition: "Mint", conditions: ["Mint", "Near Mint"] },
+          { kind: "confirm", conditions: ["Mint", "Near Mint", "Excellent"] },
+          { kind: "read" },
+          { kind: "confirm" },
+        ],
+        "bsc",
+      ),
+    ).toEqual([
+      "Read Good",
+      "Read Good (2)",
+      "Read Mint and Near Mint",
+      "Double-check Mint, Near Mint and Excellent",
+      "Read the other conditions",
+      "Double-check the other conditions",
+    ]);
+    expect(stepName("Go live", "working")).toBe("Go live, working");
+    expect(stepKind("waiting")).toBe("waiting");
+    expect(stepKind("working")).toBe("building");
+    expect(stepKind("done")).toBe("built");
+    expect(stepKind("failed")).toBe("failed");
   });
 });

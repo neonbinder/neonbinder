@@ -26,7 +26,9 @@
  *      for every condition that matters, plans with `planBscSheet`, uploads
  *      seller photos, PUTs the changed rows, reads the changed conditions back
  *      to confirm, then writes the sync record and deletes the rows whose
- *      `seq` did not move.
+ *      `seq` did not move. NEO-415: each of those steps (one read per
+ *      condition sheet, photos, the send, one confirm per condition sent) is
+ *      ticked off on the sync record as it lands (`ProgressLedger`).
  *   3. Stops after a time budget and reschedules itself at once when work
  *      remains, or when a kick landed while it ran (`drainRequested`).
  *      Otherwise rows that land after it wait for the next kick.
@@ -44,7 +46,7 @@ import type { Doc, Id } from "./_generated/dataModel";
 import type { ActionCtx, MutationCtx, QueryCtx } from "./_generated/server";
 import { internalAction, internalMutation, internalQuery } from "./_generated/server";
 import { internal } from "./_generated/api";
-import { listingPlatformValidator, listingProblemReasonValidator } from "./schema";
+import { listingPlatformValidator, listingProblemReasonValidator, listingSyncStepValidator } from "./schema";
 import { listingCredentialOf, listsOnMarketplaces, pushesCounts, sellerAccountHolder } from "./listingOutbox";
 import { ebayConfigured } from "./lib/ebayEnv";
 import { ebaySetupMissing } from "./lib/ebayListing";
@@ -60,6 +62,7 @@ import {
   isBscConditionOfEra,
   nbConditionsFor,
   type BscEra,
+  type NbCondition,
 } from "./lib/bscConditions";
 import {
   foldBscTargets,
@@ -126,7 +129,7 @@ const fullVariantIdsValidator = v.optional(v.array(v.id("selectorOptions")));
 
 /** NEO-415 — the sentence a variant held back by unfinished eBay settings shows. */
 export const EBAY_SETUP_INCOMPLETE_ERROR =
-  "Finish your eBay setup (shipping, payment, returns and ship-from) and these cards go up.";
+  "Finish your eBay setup (shipping, payment, returns and ship-from) in Profile → Credentials → eBay, and these cards go up.";
 /** Variants one refused claim marks (the rest are marked by later kicks). */
 const SETUP_MARK_VARIANTS = 10;
 
@@ -165,7 +168,8 @@ async function markSetupIncomplete(ctx: MutationCtx, ownerId: string, now: numbe
         ...marked,
       });
     } else if (record.status !== "running" && record.lastError !== EBAY_SETUP_INCOMPLETE_ERROR) {
-      await ctx.db.patch(record._id, marked);
+      // No run happened: the last run's steps would read as this one's.
+      await ctx.db.patch(record._id, { ...marked, progress: undefined });
     }
   }
 }
@@ -465,6 +469,8 @@ export const claimVariant = internalMutation({
         q.eq("ownerId", args.ownerId).eq("variantId", args.variantId).eq("platform", args.platform),
       )
       .unique();
+    // NEO-415: a claimed run starts an empty ledger (the last run's goes).
+    const progress = { runStartedAt: now, steps: [] };
     if (!record) {
       await ctx.db.insert("marketplaceListingSyncs", {
         ownerId: args.ownerId,
@@ -476,6 +482,7 @@ export const claimVariant = internalMutation({
         lastRunAt: now,
         problems: [],
         conditionsPushed: [],
+        progress,
         lastUpdated: now,
       });
       return { claimed: true as const, lastSuccessAt: null, fullReadRequested: false, conditionsPushed: [] };
@@ -490,6 +497,7 @@ export const claimVariant = internalMutation({
       leaseToken: args.leaseToken,
       leaseExpiresAt: now + VARIANT_LEASE_MS,
       lastRunAt: now,
+      progress,
       lastUpdated: now,
     });
     return {
@@ -544,6 +552,8 @@ export const finishVariant = internalMutation({
     repoint: v.array(
       v.object({ rowId: v.id("listingOutbox"), seq: v.number(), variantId: v.id("selectorOptions") }),
     ),
+    /** NEO-415: the run's ledger as the drainer holds it (settled here; absent keeps the stored one, settled). */
+    progress: v.optional(v.array(listingSyncStepValidator)),
   },
   returns: v.object({ cleared: v.number(), repointed: v.number(), recorded: v.boolean() }),
   handler: async (ctx, args) => {
@@ -574,8 +584,19 @@ export const finishVariant = internalMutation({
     const o = args.outcome;
     const pushed = new Set(record.conditionsPushed);
     for (const c of o.conditionsPushed ?? []) pushed.add(c);
+    const steps = args.progress ?? record.progress?.steps;
+    const progress =
+      steps === undefined
+        ? {}
+        : {
+            progress: {
+              runStartedAt: record.progress?.runStartedAt ?? record.lastRunAt ?? now,
+              steps: settleSteps(steps, o.kind, now),
+            },
+          };
     if (o.kind === "ok") {
       await ctx.db.patch(record._id, {
+        ...progress,
         status: "idle",
         leaseToken: undefined,
         leaseExpiresAt: undefined,
@@ -589,6 +610,7 @@ export const finishVariant = internalMutation({
       });
     } else {
       await ctx.db.patch(record._id, {
+        ...progress,
         status: "error",
         leaseToken: undefined,
         leaseExpiresAt: undefined,
@@ -602,6 +624,188 @@ export const finishVariant = internalMutation({
     return { cleared, repointed, recorded: true };
   },
 });
+
+// ── Run progress (NEO-415) ─────────────────────────────────────────────────
+
+export type ListingSyncStep = typeof listingSyncStepValidator.type;
+export type ListingSyncStepKind = ListingSyncStep["kind"];
+
+/** Steps one ledger keeps (a vintage BSC run is ~22). */
+export const MAX_PROGRESS_STEPS = 40;
+
+/**
+ * A finished run's ledger: steps still `waiting` are dropped (the run never
+ * needed them, or died before them); a step still `working` ends `done` on a
+ * clean finish and `failed` otherwise (the step the run died on).
+ */
+export function settleSteps(
+  steps: readonly ListingSyncStep[],
+  outcome: "ok" | "error",
+  now: number,
+): ListingSyncStep[] {
+  return steps
+    .filter((s) => s.status !== "waiting")
+    .slice(0, MAX_PROGRESS_STEPS)
+    .map((s) =>
+      s.status === "working" ? { ...s, status: outcome === "ok" ? ("done" as const) : ("failed" as const), finishedAt: now } : s,
+    );
+}
+
+/**
+ * Writes a running variant's ledger. Only the run holding the variant's
+ * lease writes; a run that lost it writes nothing. One small patch per step.
+ */
+export const writeProgress = internalMutation({
+  args: {
+    ownerId: v.string(),
+    platform: listingPlatformValidator,
+    variantId: v.id("selectorOptions"),
+    leaseToken: v.string(),
+    steps: v.array(listingSyncStepValidator),
+  },
+  returns: v.boolean(),
+  handler: async (ctx, args) => {
+    const record = await ctx.db
+      .query("marketplaceListingSyncs")
+      .withIndex("by_owner_variant_platform", (q) =>
+        q.eq("ownerId", args.ownerId).eq("variantId", args.variantId).eq("platform", args.platform),
+      )
+      .unique();
+    if (!record || record.status !== "running" || record.leaseToken !== args.leaseToken) return false;
+    await ctx.db.patch(record._id, {
+      progress: {
+        runStartedAt: record.progress?.runStartedAt ?? record.lastRunAt ?? Date.now(),
+        steps: args.steps.slice(0, MAX_PROGRESS_STEPS),
+      },
+    });
+    return true;
+  },
+});
+
+/** A step as the drainer plans it: an internal key (never stored) plus what is stored. */
+export interface PlannedStep {
+  key: string;
+  kind: ListingSyncStepKind;
+  /** NB conditions a read or confirm covers, best first; empty or absent for other steps. */
+  conditions?: readonly NbCondition[];
+}
+
+/**
+ * The drainer's in-memory ledger for one variant run. `start` is the one
+ * write per step: it ends the step that was working (`done`) and starts the
+ * next. Appends, inserts, drops and failures ride on the next write, or on
+ * `finishVariant` (which settles what is left). Keys are the drainer's own;
+ * only kind, NB conditions, status and finish time are stored.
+ */
+export class ProgressLedger {
+  private entries: Array<{ key: string; step: ListingSyncStep }> = [];
+
+  constructor(
+    private readonly ctx: DrainCtx,
+    private readonly ids: {
+      ownerId: string;
+      platform: Platform;
+      variantId: Id<"selectorOptions">;
+      leaseToken: string;
+    },
+    private readonly now: () => number = Date.now,
+  ) {}
+
+  private static toStep(p: PlannedStep): ListingSyncStep {
+    const conditions = p.conditions ?? [];
+    return {
+      kind: p.kind,
+      ...(conditions.length > 0 ? { condition: conditions[0], conditions: [...conditions] } : {}),
+      status: "waiting",
+    };
+  }
+
+  has(key: string): boolean {
+    return this.entries.some((e) => e.key === key);
+  }
+
+  /** Replaces the plan (every step `waiting`). No write. */
+  plan(steps: readonly PlannedStep[]): void {
+    this.entries = steps.map((p) => ({ key: p.key, step: ProgressLedger.toStep(p) }));
+  }
+
+  /** Adds steps at the end (or before `beforeKey`). No write. */
+  add(steps: readonly PlannedStep[], beforeKey?: string): void {
+    const fresh = steps.filter((p) => !this.has(p.key)).map((p) => ({ key: p.key, step: ProgressLedger.toStep(p) }));
+    const at = beforeKey === undefined ? -1 : this.entries.findIndex((e) => e.key === beforeKey);
+    if (at < 0) this.entries.push(...fresh);
+    else this.entries.splice(at, 0, ...fresh);
+  }
+
+  /** Removes a step the run turns out not to need. No write. */
+  drop(key: string): void {
+    this.entries = this.entries.filter((e) => e.key !== key);
+  }
+
+  /** Marks a step failed (the run goes on past it). No write. */
+  fail(key: string): void {
+    const entry = this.entries.find((e) => e.key === key);
+    if (entry) entry.step = { ...entry.step, status: "failed", finishedAt: this.now() };
+  }
+
+  /** Ends the working step `done`. No write. */
+  endWorking(): void {
+    const at = this.now();
+    for (const e of this.entries) {
+      if (e.step.status === "working") e.step = { ...e.step, status: "done", finishedAt: at };
+    }
+  }
+
+  /** Ends the working step `done` and starts `key`: one write. Already working: nothing. */
+  async start(key: string): Promise<void> {
+    const entry = this.entries.find((e) => e.key === key);
+    if (!entry || entry.step.status === "working") return;
+    this.endWorking();
+    entry.step = { ...entry.step, status: "working" };
+    await this.write();
+  }
+
+  /** Writes the ledger as it stands (the plan, before the first step starts). */
+  async write(): Promise<void> {
+    await this.ctx.runMutation(internal.listingDrain.writeProgress, { ...this.ids, steps: this.steps() });
+  }
+
+  steps(): ListingSyncStep[] {
+    return this.entries.map((e) => e.step);
+  }
+}
+
+/**
+ * The read (or confirm) steps of some BSC condition sheets, in read order:
+ * one per sheet NB has a condition name for (era order), then one step for
+ * every sheet NB lists nothing under (a full read's leftovers; their names
+ * are BSC's and are never shown). `order` is the sheets in that order.
+ */
+export function bscSheetSteps(
+  kind: "read" | "confirm",
+  sheets: readonly string[],
+  era: BscEra,
+): { steps: PlannedStep[]; order: string[]; keyOf: (sheet: string) => string } {
+  const named: PlannedStep[] = [];
+  const namedSheets: string[] = [];
+  const otherSheets: string[] = [];
+  const keys = new Map<string, string>();
+  for (const sheet of sheets) {
+    if (keys.has(sheet)) continue;
+    const nb = nbConditionsFor(sheet, era);
+    if (nb.length > 0) {
+      const key = `${kind}:${sheet}`;
+      keys.set(sheet, key);
+      named.push({ key, kind, conditions: nb });
+      namedSheets.push(sheet);
+    } else {
+      keys.set(sheet, `${kind}:other`);
+      otherSheets.push(sheet);
+    }
+  }
+  const steps = otherSheets.length > 0 ? [...named, { key: `${kind}:other`, kind }] : named;
+  return { steps, order: [...namedSheets, ...otherSheets], keyOf: (sheet) => keys.get(sheet) ?? `${kind}:other` };
+}
 
 // ── One NB owner per seller account ────────────────────────────────────────
 
@@ -1163,6 +1367,8 @@ async function syncVariant(
     return { kind: "skipped" };
   }
 
+  // NEO-415: the run's steps, ticked off on the sync record as they land.
+  const ledger = new ProgressLedger(ctx, { ownerId, platform, variantId, leaseToken }, opts.now);
   const finish = async (outcome: FinishOutcome, clearMine: boolean): Promise<unknown> =>
     await ctx.runMutation(internal.listingDrain.finishVariant, {
       ownerId,
@@ -1172,6 +1378,7 @@ async function syncVariant(
       outcome,
       clear: clearMine ? [...rows.mine, ...rows.gone] : rows.gone,
       repoint: rows.repoint,
+      progress: ledger.steps(),
     });
 
   const input = await ctx.runQuery(internal.listingDrain.variantSyncInput, { ownerId, variantId });
@@ -1271,6 +1478,12 @@ async function syncVariant(
     return { kind: "ok" };
   }
 
+  // The plan: one read per condition sheet, then the send. Photos and the
+  // confirms are added once the reads say whether they are needed.
+  const reads = bscSheetSteps("read", conditions, era);
+  ledger.plan([...reads.steps, { key: "send", kind: "send" }]);
+  await ledger.write();
+
   const opened = await getSession();
   if (!opened.ok) {
     await finish({ kind: "error", error: opened.failure.message }, false);
@@ -1292,8 +1505,8 @@ async function syncVariant(
       : { kind: "error" };
   };
 
-  // Read every sheet that matters.
-  const sheet = await readSheets(ctx, session, input.requests, conditions);
+  // Read every sheet that matters, one at a time, ticking each condition off.
+  const sheet = await readSheets(ctx, session, input.requests, reads.order, (c) => ledger.start(reads.keyOf(c)));
   if (!sheet.ok) return await fail(sheet.failure);
 
   // Seller id for the PUT.
@@ -1310,6 +1523,10 @@ async function syncVariant(
     sheetRows: sheet.sheet.rows,
     copies,
     fetchPhoto: opts.fetchPhoto ?? defaultFetchPhoto,
+    onStart: async () => {
+      ledger.add([{ key: "photos", kind: "photos" }], "send");
+      await ledger.start("photos");
+    },
   });
   if (!photoKeys.ok) return await fail(photoKeys.failure);
 
@@ -1335,6 +1552,19 @@ async function syncVariant(
 
   let pushed = 0;
   let zeroed = 0;
+  // The send, and one confirm per condition it touches (era order); nothing
+  // to send drops the send step.
+  const touchedSet = new Set(plan.puts.map((p) => p.condition as string));
+  const confirms = bscSheetSteps(
+    "confirm",
+    [...bscConditionsForEra(era).filter((c) => touchedSet.has(c)), ...touchedSet],
+    era,
+  );
+  if (plan.puts.length === 0) ledger.drop("send");
+  else {
+    ledger.add(confirms.steps);
+    await ledger.start("send");
+  }
   if (plan.puts.length > 0) {
     if (sellerId === null) {
       const fetched = await fetchBscSellerId(ctx, session);
@@ -1386,10 +1616,13 @@ async function syncVariant(
       }
     }
     if (putFailure?.kind === "signed_out") return await fail(putFailure, problems);
+    // A chunk BSC refused: the send failed, the read-back still runs.
+    if (putFailure) ledger.fail("send");
 
     // Confirm by reading back every condition the push touched.
-    const touched = [...new Set(plan.puts.map((p) => p.condition))];
-    const back = await readSheets(ctx, session, input.requests, touched);
+    const back = await readSheets(ctx, session, input.requests, confirms.order, (c) =>
+      ledger.start(confirms.keyOf(c)),
+    );
     if (!back.ok) return await fail(back.failure, problems);
     const after = new Map<string, number>();
     for (const row of back.sheet.rows) after.set(photoKeyFor(row.bscCardId, row.condition), row.quantity);
@@ -1410,6 +1643,8 @@ async function syncVariant(
     }
     pushed += zeroed;
     if (putFailure) {
+      // The last confirm landed; the run's failure is the send's.
+      ledger.endWorking();
       await finish(
         {
           kind: "error",
@@ -1457,10 +1692,13 @@ async function readSheets(
   session: BscSellerSession,
   requests: ReadonlyArray<Record<string, string[]>>,
   conditions: readonly string[],
+  /** NEO-415: awaited before a condition's first read (the ledger's step write); keeps the reads serial. */
+  onCondition?: (condition: string) => Promise<void>,
 ): Promise<{ ok: true; sheet: NarrowedBscSheet } | { ok: false; failure: BscSellerFailure }> {
   const sheets: NarrowedBscSheet[] = [];
   const seenProducts = new Set<string>();
   for (const condition of conditions) {
+    await onCondition?.(condition);
     for (const filters of requests) {
       const r = await readBscSellerSheet(ctx, session, { filters, condition });
       if (!r.ok) return { ok: false, failure: r.failure };
@@ -1496,6 +1734,8 @@ async function uploadPhotos(
     sheetRows: readonly BscSheetRow[];
     copies: readonly CopyOut[];
     fetchPhoto: (key: string, maxBytes: number) => Promise<ArrayBuffer | null>;
+    /** NEO-415: awaited once, before the first upload, when any row wants a photo. */
+    onStart?: () => Promise<void>;
   },
 ): Promise<{ ok: true; value: Map<string, BscPhotoKeys> } | { ok: false; failure: BscSellerFailure }> {
   const keys = new Map<string, BscPhotoKeys>();
@@ -1517,6 +1757,7 @@ async function uploadPhotos(
     if (front || back) wanted.push({ key, copyId: t.oldestCopyId, front, back });
   }
   if (wanted.length === 0) return { ok: true, value: keys };
+  await args.onStart?.();
 
   const photos = await ctx.runQuery(internal.listingDrain.copyPhotosForListing, {
     ownerId: args.ownerId,

@@ -10,6 +10,8 @@ import type {
   SyncProblem,
   SyncSetResult,
   SyncStatus,
+  SyncStep,
+  SyncStepStatus,
   VariantId,
 } from "../../data/types";
 import {
@@ -23,7 +25,13 @@ import {
   problemSentence,
   reauthLine,
   reauthLineReadOnly,
+  STEP_STATE_WORD,
+  lastStepsName,
+  runStepsName,
   sellerConflictLine,
+  stepLabels,
+  stepLandedLine,
+  stepName,
   whenSynced,
 } from "./copy";
 
@@ -170,7 +178,7 @@ function StateNote({ p, readOnly, unfinished }: { p: PlatformSyncStatus; readOnl
     return (
       <p className="text-sm text-ink-2">
         {ebay ? `${name} isn't connected, so nothing lists there.` : `No ${name} sign-in saved, so nothing lists there.`}
-        {profile(`Connect ${name} on your Profile`)}
+        {profile(`Connect ${name} in Profile → Credentials`)}
       </p>
     );
   }
@@ -243,6 +251,8 @@ function Platform({
 // everyone view) would only be noise in the landmark list.
 function RunningNow({ p, level }: { p: PlatformSyncStatus; level: number }) {
   const name = PLATFORM_NAME[p.platform];
+  const steps = p.running?.steps;
+  const landed = useLandedLine(p.running ? p.running.startedAt : null, steps, p.platform);
   return (
     <section className={`space-y-1.5 ${RULE}`}>
       <Heading level={level} className="text-base font-semibold">
@@ -263,8 +273,109 @@ function RunningNow({ p, level }: { p: PlatformSyncStatus; level: number }) {
           {p.scheduledAt ? ` Next round around ${whenSynced(p.scheduledAt)}.` : ""}
         </p>
       )}
+      {p.running && steps && steps.length > 0 && (
+        <div className="pl-6">
+          <StepLedger steps={steps} platform={p.platform} name={runStepsName(p.running.setLabel, p.platform)} />
+        </div>
+      )}
+      {/* One polite line for the run, mounted empty so its first step is a change it speaks. */}
+      <LiveLine text={landed} />
     </section>
   );
+}
+
+/** Which ledger glyph a step wears. */
+export function stepKind(status: SyncStepStatus): RunLineKind {
+  if (status === "working") return "building";
+  if (status === "done") return "built";
+  return status;
+}
+
+/** The step's words beside its glyph: settled ink once it lands, quiet while it waits. */
+const STEP_TEXT: Record<SyncStepStatus, string> = {
+  waiting: "text-ink-3",
+  working: "font-medium text-ink",
+  done: "text-ink",
+  failed: "font-medium text-neon-pink-text",
+};
+
+/**
+ * NEO-415 — the run's steps as the check-mark ledger (Jason, 2026-11-02:
+ * check marks beside the conditions, turning green as they land): RunGlyph's
+ * clock → spinner → green check, or the snag. Each step is a list item named
+ * "label, state", and its own words say the same (the state in a visually
+ * hidden tail), so a reader in browse mode and a spec's `getByRole` agree.
+ * `inline` wraps the steps onto a line or two, for a set row's last run.
+ */
+function StepLedger({
+  steps,
+  platform,
+  name,
+  inline = false,
+}: {
+  steps: ReadonlyArray<SyncStep>;
+  platform: ListingPlatform;
+  name: string;
+  inline?: boolean;
+}) {
+  const labels = stepLabels(steps, platform);
+  return (
+    <ol aria-label={name} className={inline ? "flex flex-wrap gap-x-4 text-ink-2" : "space-y-0.5"}>
+      {steps.map((step, i) => (
+        <li
+          key={labels[i]}
+          aria-label={stepName(labels[i], step.status)}
+          className="flex items-start gap-1.5 py-0.5 leading-5"
+        >
+          <RunGlyph kind={stepKind(step.status)} tones={TONES} />
+          <span className={STEP_TEXT[step.status]}>
+            {labels[i]}
+            <span className="sr-only">, {STEP_STATE_WORD[step.status]}</span>
+          </span>
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+/**
+ * What the run's live line says: each read of the status compared with the
+ * last, during render. A step that lands (done, or a snag) is said once;
+ * a step starting is not, and arriving mid-run says nothing. A new run (a new
+ * start) starts the comparison over.
+ */
+function useLandedLine(run: number | null, steps: ReadonlyArray<SyncStep> | undefined, platform: ListingPlatform): string {
+  const [seen, setSeen] = useState({ run, steps, line: "" });
+  if (seen.run !== run || seen.steps !== steps) {
+    const same = seen.run === run;
+    const said = same ? landedLine(seen.steps, steps, platform) : "";
+    setSeen({ run, steps, line: said || (same ? seen.line : "") });
+  }
+  return seen.line;
+}
+
+/** The newest step to land between two reads, as one sentence; "" when none did. */
+export function landedLine(
+  before: ReadonlyArray<SyncStep> | undefined,
+  now: ReadonlyArray<SyncStep> | undefined,
+  platform: ListingPlatform,
+): string {
+  if (!before || !now || now.length === 0) return "";
+  const beforeLabels = stepLabels(before, platform);
+  const was = new Map(beforeLabels.map((label, i) => [label, before[i].status]));
+  const labels = stepLabels(now, platform);
+  let landed: { label: string; status: "done" | "failed" } | null = null;
+  for (let i = 0; i < now.length; i++) {
+    const status = now[i].status;
+    if (status !== "done" && status !== "failed") continue;
+    if (was.get(labels[i]) === status) continue;
+    landed = { label: labels[i], status };
+    // A snag outranks a check mark; otherwise the latest in run order.
+    if (status === "failed") break;
+  }
+  if (!landed) return "";
+  const done = now.filter((step) => step.status === "done").length;
+  return stepLandedLine(landed.label, landed.status, done, now.length);
 }
 
 /** Said for a queued card that has since left the catalog (no number, no name). */
@@ -323,6 +434,10 @@ function Sets({
   readOnly: boolean;
 }) {
   const headingId = useId();
+  // The set syncing now shows its steps under Running now; its row leaves them out rather than draw them twice.
+  const live = p.running?.steps?.length ? p.running : null;
+  const drawnAbove = (set: SyncSetResult) =>
+    live !== null && set.status === "running" && (live.variantId === undefined || live.variantId === set.variantId);
   return (
     <section className={`space-y-2 ${RULE}`}>
       <Heading level={level} id={headingId} className="text-base font-semibold">
@@ -337,7 +452,14 @@ function Sets({
       ) : (
         <ol aria-labelledby={headingId} className="space-y-3">
           {p.sets.map((set) => (
-            <SetRow key={set.variantId} set={set} platform={p.platform} loadProblems={loadProblems} readOnly={readOnly} />
+            <SetRow
+              key={set.variantId}
+              set={set}
+              platform={p.platform}
+              loadProblems={loadProblems}
+              readOnly={readOnly}
+              showSteps={!drawnAbove(set)}
+            />
           ))}
         </ol>
       )}
@@ -383,11 +505,13 @@ function SetRow({
   platform,
   loadProblems,
   readOnly,
+  showSteps,
 }: {
   set: SyncSetResult;
   platform: ListingPlatform;
   loadProblems: SyncStatusViewProps["loadProblems"];
   readOnly: boolean;
+  showSteps: boolean;
 }) {
   const listId = useId();
   const [open, setOpen] = useState(false);
@@ -429,6 +553,9 @@ function SetRow({
           <span className="font-semibold text-ink">{set.setLabel}</span>{" "}
           <span className={set.status === "error" ? "text-neon-pink-text" : "text-ink-2"}>{setLine(set, platform)}</span>
         </p>
+        {showSteps && set.steps && set.steps.length > 0 && (
+          <StepLedger steps={set.steps} platform={platform} name={lastStepsName(set.setLabel, platform)} inline />
+        )}
         {counts && <p className="tabular-nums text-ink-3">{counts}</p>}
         {total > 0 && (
           <div className="space-y-1.5">

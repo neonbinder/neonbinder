@@ -363,3 +363,66 @@ export async function emptyBoxCards(
   }
   return checklist;
 }
+
+/**
+ * NEO-415: Sync status's step ledger for one set on one marketplace, so a spec
+ * waits on each step of a live round trip (the standard 7 s each) instead of on
+ * the whole trip. `platform` is the platform's region on Sync status;
+ * `platformName` is how the screen names it ("BuySportsCards", "eBay").
+ *
+ * A run's steps live in one of two lists, never both: "Sync steps for <set> on
+ * <platform>" under Running now while the run is under way, "Last sync steps
+ * for <set> on <platform>" on the set's row once it has finished. `steps`
+ * matches either, so a step's `done` is found whichever side of the run's end
+ * the spec happens to look from.
+ *
+ * Stale ledgers: the row keeps the PREVIOUS run's steps (all done) until the
+ * next run claims the set. A spec therefore calls `underWay` first, with the
+ * new run's own result line, before it trusts a `done` step.
+ */
+export function syncRun(platform: Locator, setLabel: string, platformName: string) {
+  const running = platform.getByRole("list", { name: `Sync steps for ${setLabel} on ${platformName}`, exact: true });
+  const last = platform.getByRole("list", { name: `Last sync steps for ${setLabel} on ${platformName}`, exact: true });
+  const steps = running.or(last);
+  /**
+   * A step in `state` ("done" unless said), by its label: the whole label as a
+   * string, or a pattern for the label alone (the state is appended to it).
+   */
+  const step = (label: string | RegExp, state: "done" | "working" | "waiting" | "failed" = "done"): Locator =>
+    typeof label === "string"
+      ? steps.getByRole("listitem", { name: `${label}, ${state}`, exact: true })
+      : steps.getByRole("listitem", { name: new RegExp(`${label.source.replace(/\$$/, "")}, ${state}$`, label.flags) });
+  return {
+    running,
+    last,
+    steps,
+    step,
+    /**
+     * The new run is visible: its ledger under Running now, or (a run that
+     * finished before the spec looked) its own result line. Gate every `step`
+     * wait on this, so the last run's finished ledger can never stand in.
+     */
+    underWay: (resultLine: Locator): Locator => running.or(resultLine).first(),
+  };
+}
+
+/**
+ * Follows the set's run under way to its end, one step at a time, each step
+ * within the standard budget: used where a spec does not know which steps a
+ * run holds (a failure hook cleaning up). Returns when the platform says
+ * "Nothing syncing right now."; a bounded loop, one pass per step (a modern
+ * set's longest plan is ten steps).
+ */
+export async function followRunToEnd(platform: Locator, run: ReturnType<typeof syncRun>): Promise<void> {
+  const idle = platform.getByText(/^Nothing syncing right now\./);
+  const open = run.running.getByRole("listitem", { name: /, (working|waiting)$/ });
+  for (let pass = 0; pass < 12; pass++) {
+    // Either the run is over, or it shows the step it is on.
+    await expect(idle.or(open.first())).toBeVisible();
+    if (await idle.isVisible()) return;
+    const label = ((await open.first().textContent()) ?? "").trim().replace(/, (working|waiting)$/, "");
+    // That step lands (or snags: the run goes on past it) or the run ends.
+    await expect(run.step(label).or(run.step(label, "failed")).or(idle).first()).toBeVisible();
+  }
+  await expect(idle).toBeVisible();
+}

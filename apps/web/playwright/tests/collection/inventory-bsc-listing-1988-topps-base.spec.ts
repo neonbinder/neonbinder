@@ -39,11 +39,23 @@
 // no "held back" line. The spec never calls BSC and shows no BSC quantity of
 // its own (a product gap if a collector should see one).
 //
-// Waits. The only waits above 7 s are the live BSC round trips (GUIDE hard
-// rule 3's live-marketplace exception): `BSC_ROUND_TRIP` on the Sync status
-// results and the cleanup's idle wait, and the seed hop's sign-in
-// (`SEED_SIGN_IN`) when the sign-in is saved again. No timer and no cron path:
-// the 15-minute cron is deliberately not exercised.
+// Waits. A Sync is a live BSC round trip of serial sheet reads, a PUT and a
+// read-back, and Sync status ticks each of those off as it lands (a ledger of
+// steps: "Read Excellent, done"). So the spec waits for each step in turn with
+// the standard 7 s, never for the whole trip at once (GUIDE hard rule 3; Jason,
+// 2026-11-02), then for the set's result line. The only wait above 7 s is the
+// seed hop's sign-in when the sign-in is saved again (`saveBscSignIn`). No
+// timer and no cron path: the 15-minute cron is deliberately not exercised.
+//
+// The ledger's steps (convex/listingDrain.ts `bscSheetSteps`; labels in
+// inventory/listing/copy.ts). 1988 is after the 1980 vintage cutoff, so BSC's
+// modern conditions are read, in BSC's order, each named by the NB conditions
+// that fold into it (Mint and Near Mint share a sheet, Very Good and Good
+// share one). A Sync press reads every sheet when it is the first in a minute
+// (and a set's first run always does), so the first Sync here asserts all four,
+// in order. The second (take-down) Sync reads only the sheets NB pushed to when
+// its press falls inside that minute (the box write already queued the run), so
+// it asserts what both runs hold: a read, the send, a confirm.
 //
 // Sync's toast. A press that sets a run going toasts "Syncing <title> now.
 // Watch it on Sync status."; both presses assert it before reading the result.
@@ -69,23 +81,31 @@ import {
   clearChecklistCommonPrice,
   drillToCollectorBase,
   emptyBoxCards,
+  followRunToEnd,
   goViaShell,
   inventoryTabs,
   nameOf,
   putOtherBoxesInPerson,
   quantityField,
+  syncRun,
 } from "../../support/collection";
 import { removeBscSignIn, saveBscSignIn } from "../../support/credentials";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 
 /**
- * GUIDE hard rule 3, the live-marketplace exception: a step that directly
- * drives a live BSC round trip. One Sync starts: BSC login/refresh, up to four
- * condition sheets read (1988 is after the 1980 vintage cutoff), one PUT, one
- * read-back. Measured on CI (desktop, 2026-11-01): 9.9 s to "2 listed" and
- * 9.4 s to "2 taken to 0"; the ceiling is about twice that (see the registry row).
+ * A first Sync's read steps for a modern set, in run order (`bscSheetSteps`
+ * over BSC's modern conditions: near_mint, excellent, very_good, poor, each
+ * named by the NB conditions that fold into it, `nbConditionsFor`).
  */
-const BSC_ROUND_TRIP = 20_000;
+const MODERN_READS = ["Read Mint and Near Mint", "Read Excellent", "Read Very Good and Good", "Read Poor"] as const;
+/** The Send step's label. */
+const SEND = "Send changes to BuySportsCards";
+/**
+ * The confirm step: one per condition the push touched. Both cards sit in the
+ * collector's default condition, so there is one; which condition it is is the
+ * account's setting, not this spec's feature.
+ */
+const CONFIRM = /^Double-check .+/;
 
 const BSC = "BuySportsCards";
 const TITLE = baseChecklistTitle(TOPPS_1988);
@@ -177,15 +197,22 @@ test.afterEach(async ({ context, isMobile }, testInfo) => {
         // so the Sync below is the one that sees the zeros.
         await clean.goto("/inventory?tab=sync");
         await expect(clean.getByRole("heading", { level: 1, name: "Inventory" })).toBeVisible({ timeout: LAUNCH_GATE });
-        // Live BSC round trip (GUIDE hard rule 3), the same constant as the flow.
-        // (Scoped to the BuySportsCards section: Sync status has an eBay section too, NEO-415, and it says the same.)
-        await expect(syncStatus(clean).platform.getByText(/^Nothing syncing right now\./)).toBeVisible({ timeout: BSC_ROUND_TRIP });
+        // Followed step by step, each within the standard budget (the run's
+        // ledger). Scoped to the BuySportsCards section: Sync status has an
+        // eBay section too (NEO-415), and it says the same.
+        const before = syncStatus(clean);
+        await followRunToEnd(before.platform, syncRun(before.platform, SET_LABEL, BSC));
         await clean.goto("/inventory?tab=checklists");
         const checklist = await emptyBox(clean, written.box, written.cards, isMobile, "fresh");
         await checklist.getByRole("button", { name: `Sync ${TITLE}`, exact: true }).click();
         await clean.goto("/inventory?tab=sync");
-        // Live BSC round trip, as above.
-        await expect(syncStatus(clean).row.getByText(/^0 listed/)).toBeVisible({ timeout: BSC_ROUND_TRIP });
+        // The zeroing run, followed step by step as above, then its result line.
+        const zeroing = syncStatus(clean);
+        const zeroingRun = syncRun(zeroing.platform, SET_LABEL, BSC);
+        const zeroed = zeroing.row.getByText(/^0 listed/);
+        await expect(zeroingRun.underWay(zeroed)).toBeVisible();
+        await followRunToEnd(zeroing.platform, zeroingRun);
+        await expect(zeroed).toBeVisible();
       }
     } finally {
       try {
@@ -456,13 +483,29 @@ test(
     await expect(fieldA).toHaveValue("1");
     await tabs.getByRole("link", { name: "Sync status", exact: true }).click();
     await expect(page).toHaveURL(/[?&]tab=sync/);
-    // Live BSC round trip (BSC_ROUND_TRIP above). The line is the drain's own
-    // count: 2 rows on BSC show NB's stock after the read-back (2 updated, or
-    // none when BSC already showed them); "skipped" would be a held-back card.
-    await expect(row.getByText(/^2 listed(, 2 updated)?$/)).toBeVisible({ timeout: BSC_ROUND_TRIP });
+    // The live BSC round trip, step by step (see "Waits" above): the new run is
+    // in view (its ledger under Running now, or its own result line if it
+    // already finished), then each sheet read, the send and the confirm land
+    // in turn, 7 s each. The line is the drain's own count: 2 rows on BSC show
+    // NB's stock after the read-back (2 updated, or none when BSC already
+    // showed them); "skipped" would be a held-back card.
+    const run = syncRun(platform, SET_LABEL, BSC);
+    const listedLine = row.getByText(/^2 listed(, 2 updated)?$/);
+    await expect(run.underWay(listedLine)).toBeVisible();
+    for (const read of MODERN_READS) await expect(run.step(read)).toBeVisible();
+    await expect(run.step(SEND)).toBeVisible();
+    await expect(run.step(CONFIRM).first()).toBeVisible();
+    await expect(listedLine).toBeVisible();
     await expect(row.getByText(/^Synced /)).toBeVisible();
     await expect(row.getByText(/held back/)).toHaveCount(0);
-    await expectAccessible(page, { label: "Inventory Sync status, 2 listed" });
+    // Finished, the set's row keeps the run's steps, in run order.
+    await expect(run.last).toBeVisible();
+    await expect(run.last.getByRole("listitem")).toContainText([
+      ...MODERN_READS.map((read) => new RegExp(`^${escapeRegExp(read)}, done$`)),
+      new RegExp(`^${escapeRegExp(SEND)}, done$`),
+      /^Double-check .+, done$/,
+    ]);
+    await expectAccessible(page, { label: "Inventory Sync status, 2 listed, the run's steps done" });
 
     // --- Admin: the same result, read-only, for this collector --------------------
     // (Worker accounts are admins: the admin specs sign in as them.)
@@ -517,8 +560,19 @@ test(
     await expect(said(`Syncing ${TITLE} now. Watch it on Sync status.`)).toBeVisible();
     await tabs.getByRole("link", { name: "Sync status", exact: true }).click();
     await expect(page).toHaveURL(/[?&]tab=sync/);
-    // Live BSC round trip (BSC_ROUND_TRIP above): the set was 2 listed a minute ago.
-    await expect(row.getByText(/^0 listed(, \d+ updated)?, 2 taken to 0$/)).toBeVisible({ timeout: BSC_ROUND_TRIP });
+    // The live BSC round trip, step by step. The set was 2 listed a minute ago,
+    // so the row still shows the LAST run's finished steps until this one
+    // claims the set: gate on the new run (its ledger, or its own result line).
+    // A read, the send (it carries the two zeros) and a confirm land in turn;
+    // how many sheets this run reads depends on whether its press was the first
+    // in a minute (see "Waits"), so one read is the assertion.
+    const takeDown = syncRun(platform, SET_LABEL, BSC);
+    const takenLine = row.getByText(/^0 listed(, \d+ updated)?, 2 taken to 0$/);
+    await expect(takeDown.underWay(takenLine)).toBeVisible();
+    await expect(takeDown.step(/^Read .+/).first()).toBeVisible();
+    await expect(takeDown.step(SEND)).toBeVisible();
+    await expect(takeDown.step(CONFIRM).first()).toBeVisible();
+    await expect(takenLine).toBeVisible();
     await expect(row.getByText(/held back/)).toHaveCount(0);
 
     // --- Tidy up through the product: the box's cards, the common price, the box

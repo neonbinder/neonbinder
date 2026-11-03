@@ -27,8 +27,9 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
-import { drainOwnerImpl, rejectedPushDetail, type DrainCtx } from "./listingDrain";
+import { drainOwnerImpl, rejectedPushDetail, settleSteps, type DrainCtx } from "./listingDrain";
 import { kickOwnerDrains } from "./listingOutbox";
+import { cancelScheduled } from "../lib/testing/drain-scheduled";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -586,6 +587,9 @@ describe("drainOwner: the outbox rows", () => {
     const next = await pendingDrains(s);
     expect(next).toHaveLength(1);
     expect(next[0].args[0]).toEqual({ ownerId: OWNER, platform: "bsc" });
+    // The rescheduled run fires 1 s later on the real clock, after this test
+    // unstubs fetch: cancel it so it never reaches the network guard (NEO-188).
+    await cancelScheduled(s.t);
   });
 
   test("a deleted card's row is cleared and a moved card's row follows it to its new variant", async () => {
@@ -848,6 +852,9 @@ describe("drainOwner: the time budget", () => {
     expect(st?.drainScheduledAt).toBeTypeOf("number");
     const scheduled = await s.t.run(async (ctx) => ctx.db.system.query("_scheduled_functions").collect());
     expect(scheduled.some((f) => f.name.includes("listingDrain") && f.state.kind === "pending")).toBe(true);
+    // The rescheduled run fires 1 s later on the real clock, after this test
+    // unstubs fetch: cancel it so it never reaches the network guard (NEO-188).
+    await cancelScheduled(s.t);
   });
 });
 
@@ -1217,5 +1224,258 @@ describe("drainOwner: one NB owner per seller account", () => {
     const st = await state(s);
     expect(st?.dormant).toBeUndefined();
     expect(st?.platformAccountId).toBe("seller-1");
+  });
+});
+
+// ── NEO-415: the run's steps on the sync record ─────────────────────────────
+
+/** A record's ledger, compact: "kind Cond/Cond: status" (NB condition names only). */
+const stepsOf = async (s: S, variantId: Id<"selectorOptions">): Promise<string[] | null> => {
+  const rec = await record(s, variantId);
+  return (
+    rec?.progress?.steps.map((x) => `${x.kind}${x.conditions ? ` ${x.conditions.join("/")}` : ""}: ${x.status}`) ?? null
+  );
+};
+
+/** Two cards: a Near Mint #1 and an Excellent #2, both in a listed box, queued. */
+async function twoCards(s: S, opts: { year?: string; conditions?: readonly string[] } = {}) {
+  const v = await seedVariant(s.t, {
+    ...(opts.year ? { year: opts.year } : {}),
+    cards: [
+      { number: "1", ref: "bsc-1" },
+      { number: "2", ref: "bsc-2" },
+    ],
+  });
+  const bsc = new FakeBsc(
+    [
+      { bscCardId: "bsc-1", cardNo: "1" },
+      { bscCardId: "bsc-2", cardNo: "2" },
+    ],
+    opts.conditions ?? MODERN,
+  );
+  vi.stubGlobal("fetch", bsc.fetch);
+  const first = await add(s, v.cardIds[0], { homeId: s.box, condition: "Near Mint", minPriceCents: 50 });
+  await add(s, v.cardIds[1], { homeId: s.box, condition: "Excellent", minPriceCents: 50 });
+  await listOnBsc(s);
+  await queue(s, [
+    { cardId: v.cardIds[0], variantId: v.variantId },
+    { cardId: v.cardIds[1], variantId: v.variantId },
+  ]);
+  return { v, bsc, first };
+}
+
+describe("drainOwner: the run's steps (NEO-415)", () => {
+  test("one read per condition sheet, the send, a confirm per condition sent: each flips as it happens", async () => {
+    const s = await setup();
+    const { v, bsc } = await twoCards(s);
+    const seen: Array<string[] | null> = [];
+    bsc.onSheetRead = async () => {
+      seen.push(await stepsOf(s, v.variantId));
+    };
+    bsc.onPut = async () => {
+      seen.push(await stepsOf(s, v.variantId));
+    };
+
+    await drain(s);
+
+    const plan = ["read Mint/Near Mint", "read Excellent", "read Very Good/Good", "read Poor", "send"];
+    const at = (working: number, labels: string[]) =>
+      labels.map((l, i) => `${l}: ${i < working ? "done" : i === working ? "working" : "waiting"}`);
+    const confirms = ["confirm Mint/Near Mint", "confirm Excellent"];
+    expect(seen).toEqual([
+      // The four reads, one at a time.
+      at(0, plan),
+      at(1, plan),
+      at(2, plan),
+      at(3, plan),
+      // The PUT: every read done, the confirms known now and waiting.
+      at(4, [...plan, ...confirms]),
+      // The read-back, condition by condition.
+      at(5, [...plan, ...confirms]),
+      at(6, [...plan, ...confirms]),
+    ]);
+    const rec = await record(s, v.variantId);
+    expect(rec?.status).toBe("idle");
+    expect(await stepsOf(s, v.variantId)).toEqual([...plan, ...confirms].map((l) => `${l}: done`));
+    expect(rec?.progress?.steps.every((x) => typeof x.finishedAt === "number")).toBe(true);
+    // A read names its NB conditions, best first; `condition` is the first.
+    expect(rec?.progress?.steps[0]).toMatchObject({ kind: "read", condition: "Mint", conditions: ["Mint", "Near Mint"] });
+    expect(rec?.progress?.runStartedAt).toBe(rec?.lastRunAt);
+    // Never a BSC condition key.
+    expect(JSON.stringify(rec?.progress)).not.toMatch(/near_mint|very_good|excellent|poor"/);
+  });
+
+  test("a run with nothing to send drops the send: no step is left waiting", async () => {
+    const s = await setup();
+    const { v } = await twoCards(s);
+    await drain(s);
+    await queue(s, [{ cardId: v.cardIds[0], variantId: v.variantId, seq: 2 }]);
+
+    await drain(s);
+
+    // The later run reads the targets' conditions and the ones pushed before; nothing changed.
+    expect(await stepsOf(s, v.variantId)).toEqual(["read Mint/Near Mint: done", "read Excellent: done"]);
+  });
+
+  test("a read BSC fails marks that read failed and drops every later step", async () => {
+    const s = await setup();
+    const { v, bsc } = await twoCards(s);
+    let reads = 0;
+    vi.stubGlobal("fetch", (async (url: string | URL | Request, init?: RequestInit) => {
+      if (String(url).endsWith("seller/bulk-upload/results") && ++reads === 2) return new Response("", { status: 500 });
+      return bsc.fetch(url, init);
+    }) as typeof fetch);
+
+    await drain(s);
+
+    expect((await record(s, v.variantId))?.status).toBe("error");
+    expect(await stepsOf(s, v.variantId)).toEqual(["read Mint/Near Mint: done", "read Excellent: failed"]);
+    expect(bsc.puts).toEqual([]);
+  });
+
+  test("a PUT BSC refuses marks the send failed; the read-back still runs and its confirms finish", async () => {
+    const s = await setup();
+    const { v, bsc } = await twoCards(s);
+    vi.stubGlobal("fetch", (async (url: string | URL | Request, init?: RequestInit) => {
+      if (String(url).endsWith("seller/bulk-upload") && init?.method === "PUT") return new Response("", { status: 400 });
+      return bsc.fetch(url, init);
+    }) as typeof fetch);
+
+    await drain(s);
+
+    expect((await record(s, v.variantId))?.status).toBe("error");
+    expect(await stepsOf(s, v.variantId)).toEqual([
+      "read Mint/Near Mint: done",
+      "read Excellent: done",
+      "read Very Good/Good: done",
+      "read Poor: done",
+      "send: failed",
+      "confirm Mint/Near Mint: done",
+      "confirm Excellent: done",
+    ]);
+  });
+
+  test("vintage: one read per NB condition, the sheets NB lists nothing under read last as one step", async () => {
+    const s = await setup();
+    const VINTAGE = ["mint", "nm-mt", "nm", "ex-mt", "ex", "vg-ex", "vg", "good", "fair", "poor-v"];
+    const { v, bsc } = await twoCards(s, { year: "1975", conditions: VINTAGE });
+
+    await drain(s);
+
+    expect(await stepsOf(s, v.variantId)).toEqual([
+      "read Mint: done",
+      "read Near Mint: done",
+      "read Excellent: done",
+      "read Very Good: done",
+      "read Good: done",
+      "read Poor: done",
+      "read: done",
+      "send: done",
+      "confirm Near Mint: done",
+      "confirm Excellent: done",
+    ]);
+    // Still every sheet, still one at a time; NB's named sheets first.
+    expect(bsc.sheetReads.slice(0, VINTAGE.length).map((r) => r.condition)).toEqual([
+      "mint",
+      "nm",
+      "ex",
+      "vg",
+      "good",
+      "poor-v",
+      "nm-mt",
+      "ex-mt",
+      "vg-ex",
+      "fair",
+    ]);
+    expect(JSON.stringify((await record(s, v.variantId))?.progress)).not.toMatch(/nm-mt|ex-mt|vg-ex|fair|poor-v/);
+  });
+
+  test("seller photos are a step of their own, between the reads and the send", async () => {
+    const s = await setup();
+    const { v, bsc, first } = await twoCards(s);
+    await s.t.run(async (ctx) => {
+      await ctx.db.patch(first.copyId as Id<"collectionCopies">, { hasPhotos: true });
+      await ctx.db.insert("collectionCopyPhotos", {
+        ownerId: OWNER,
+        copyId: first.copyId as Id<"collectionCopies">,
+        side: "front",
+        token: "tokfront",
+        contentType: "image/jpeg",
+        imageBytes: 1000,
+        thumbBytes: 100,
+        status: "live",
+        since: NOW,
+      });
+    });
+    const seen: Array<string[] | null> = [];
+    vi.stubGlobal("fetch", (async (url: string | URL | Request, init?: RequestInit) => {
+      if (String(url).includes("/attachment")) {
+        seen.push(await stepsOf(s, v.variantId));
+        return Response.json({ objectKey: "seller/photo-1.jpg" });
+      }
+      return bsc.fetch(url, init);
+    }) as typeof fetch);
+
+    await drainOwnerImpl(stubCtx(s.t), { ownerId: OWNER, platform: "bsc" }, { fetchPhoto: async () => new ArrayBuffer(8) });
+
+    expect(seen[0]).toEqual([
+      "read Mint/Near Mint: done",
+      "read Excellent: done",
+      "read Very Good/Good: done",
+      "read Poor: done",
+      "photos: working",
+      "send: waiting",
+    ]);
+    expect(await stepsOf(s, v.variantId)).toEqual([
+      "read Mint/Near Mint: done",
+      "read Excellent: done",
+      "read Very Good/Good: done",
+      "read Poor: done",
+      "photos: done",
+      "send: done",
+      "confirm Mint/Near Mint: done",
+      "confirm Excellent: done",
+    ]);
+  });
+
+  test("a sign-in BSC refuses on the first read fails that read and leaves nothing waiting", async () => {
+    const s = await setup();
+    const { v, bsc } = await twoCards(s);
+    bsc.unauthorized = 99;
+    creds.refreshed = false;
+    await drain(s);
+    expect((await record(s, v.variantId))?.status).toBe("error");
+    expect(await stepsOf(s, v.variantId)).toEqual(["read Mint/Near Mint: failed"]);
+  });
+});
+
+describe("claimVariant: a new run's ledger", () => {
+  test("the claim replaces the last run's steps with an empty ledger stamped with the run's start", async () => {
+    const s = await setup();
+    const { v } = await twoCards(s);
+    await drain(s);
+    expect((await stepsOf(s, v.variantId))?.length).toBeGreaterThan(0);
+    await s.t.run(async (ctx) => {
+      const st = await ctx.db.query("marketplaceListingStates").first();
+      await ctx.db.patch(st!._id, { drainLeaseToken: "lease-2", drainLeaseExpiresAt: Date.now() + 60_000 });
+    });
+    const claim = await s.t.mutation(internal.listingDrain.claimVariant, {
+      ownerId: OWNER,
+      platform: "bsc",
+      variantId: v.variantId,
+      leaseToken: "lease-2",
+    });
+    expect(claim.claimed).toBe(true);
+    const rec = await record(s, v.variantId);
+    expect(rec?.progress).toEqual({ runStartedAt: rec?.lastRunAt, steps: [] });
+  });
+});
+
+describe("settleSteps", () => {
+  const step = (status: "waiting" | "working" | "done" | "failed") => ({ kind: "read" as const, status });
+  test("drops waiting steps; a working step ends done on ok and failed on error", () => {
+    const steps = [step("done"), step("working"), step("waiting")];
+    expect(settleSteps(steps, "ok", 5)).toEqual([step("done"), { ...step("done"), finishedAt: 5 }]);
+    expect(settleSteps(steps, "error", 5)).toEqual([step("done"), { ...step("failed"), finishedAt: 5 }]);
   });
 });

@@ -20,6 +20,7 @@ import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
 import { drainOwnerImpl, type DrainCtx, type DrainReport } from "./listingDrain";
 import { EBAY_SETUP_INCOMPLETE_ERROR } from "./listingDrain";
+import { EBAY_CARD_REJECTED, EBAY_STEP_SAYS } from "./listingDrainEbay";
 import { drainScheduled } from "../lib/testing/drain-scheduled";
 
 const modules = (import.meta as unknown as {
@@ -902,6 +903,48 @@ describe("eBay drain: the setup gate and configuration", () => {
     expect(await outbox(s)).toHaveLength(1);
   });
 
+  test("the sentences that send a seller to their eBay settings name Profile → Credentials → eBay", async () => {
+    const s = await setup();
+    const { v } = await oneCard(s);
+    creds.token = null;
+    await drain(s);
+    expect((await record(s, v.variantId))?.lastError).toBe(
+      "NeonBinder couldn't reach your eBay account. Connect eBay again in Profile → Credentials → eBay.",
+    );
+    ebay.unauthorized = 99;
+    creds.token = "tok-1";
+    await drain(s);
+    expect((await record(s, v.variantId))?.lastError).toBe(
+      "eBay signed NeonBinder out. Connect eBay again in Profile → Credentials → eBay.",
+    );
+    expect(EBAY_SETUP_INCOMPLETE_ERROR).toBe(
+      "Finish your eBay setup (shipping, payment, returns and ship-from) in Profile → Credentials → eBay, and these cards go up.",
+    );
+    expect(EBAY_STEP_SAYS.offers.refused).toBe(
+      "eBay turned down this set's prices and policies. Check your shipping, payment and returns picks in Profile → Credentials → eBay, then press Sync.",
+    );
+    expect(EBAY_CARD_REJECTED.offers).toBe(
+      "Its price or your eBay shipping, payment and returns picks didn't pass. Check them in Profile → Credentials → eBay, then press Sync.",
+    );
+    const all = [...Object.values(EBAY_STEP_SAYS).flatMap((x) => [x.refused, x.busy]), ...Object.values(EBAY_CARD_REJECTED)];
+    expect(all.filter((line) => line.includes("Profile") && !line.includes("Profile → Credentials → eBay"))).toEqual([]);
+    // A card's detail is stored capped at 160 characters: every one fits whole.
+    expect(Object.values(EBAY_CARD_REJECTED).every((line) => line.length <= 160)).toBe(true);
+  });
+
+  test("a seller account NB cannot name sends them to Credentials → eBay", async () => {
+    const s = await setup();
+    const { v } = await oneCard(s);
+    await s.t.run(async (ctx) => {
+      const profile = await ctx.db.query("userProfiles").first();
+      await ctx.db.patch(profile!._id, { marketplaceAccountIds: {} } as never);
+    });
+    await drain(s);
+    expect((await record(s, v.variantId))?.lastError).toBe(
+      "NeonBinder doesn't know which eBay account this is. Connect eBay again in Profile → Credentials → eBay.",
+    );
+  });
+
   test("a paused eBay stops the drain before any call", async () => {
     vi.stubEnv("NEONBINDER_PAUSED_PLATFORMS", "ebay");
     const s = await setup();
@@ -943,7 +986,7 @@ describe("eBay drain: the setup gate and configuration", () => {
 });
 
 describe("eBay drain: eBay's answers", () => {
-  test("an item eBay refuses is rejected with its error id only, and the other card still lists", async () => {
+  test("an item eBay refuses is rejected in NB's words (its error id only in the log), and the other card still lists", async () => {
     const s = await setup();
     const v = await seedVariant(s.t, { cards: [{ number: "1" }, { number: "2" }] });
     await addWithPhoto(s, v.cardIds[0], { homeId: s.box, condition: "Near Mint", minPriceCents: 500 }, "a");
@@ -952,13 +995,19 @@ describe("eBay drain: eBay's answers", () => {
     await queue(s, v.cardIds.map((cardId) => ({ cardId, variantId: v.variantId })));
     ebay.rejectItemSkus.add(`NB2-${v.cardIds[0]}-NM`);
 
+    const logs = vi.spyOn(console, "log");
     await drain(s);
 
     const rec = await record(s, v.variantId);
-    expect(rec?.problems).toEqual([
-      { cardId: v.cardIds[0], reason: "rejected", detail: "eBay refused this listing (error 25709)." },
-    ]);
+    expect(rec?.problems).toEqual([{ cardId: v.cardIds[0], reason: "rejected", detail: EBAY_CARD_REJECTED.items }]);
     expect(JSON.stringify(rec)).not.toContain("RAW-EBAY-TEXT");
+    expect(JSON.stringify(rec)).not.toContain("25709");
+    // eBay's id goes to the structured log line, with the step it hit.
+    const rejected = logs.mock.calls.map((c) => String(c[0])).filter((l) => l.includes("ebay_listing_rejected"));
+    expect(rejected.map((l) => JSON.parse(l))).toEqual([
+      { msg: "ebay_listing_rejected", platform: "ebay", operation: "items", errorIds: [25709] },
+    ]);
+    logs.mockRestore();
     expect(await linkOf(s, v.cardIds[0], "NM")).toBeNull();
     expect((await linkOf(s, v.cardIds[1], "NM"))?.status).toBe("live");
     expect(rec?.counts).toMatchObject({ listed: 1, skipped: 1 });
@@ -1005,7 +1054,7 @@ describe("eBay drain: eBay's answers", () => {
 
     expect(await linkOf(s, card, "NM")).toMatchObject({ status: "draft" });
     expect((await linkOf(s, card, "NM"))?.listingId).toBeUndefined();
-    expect((await record(s, v.variantId))?.problems[0]).toMatchObject({ reason: "rejected", detail: "eBay refused this listing (error 25007)." });
+    expect((await record(s, v.variantId))?.problems[0]).toMatchObject({ reason: "rejected", detail: EBAY_CARD_REJECTED.publish });
     expect((await record(s, v.variantId))?.counts.listed).toBe(0);
   });
 });
@@ -1184,5 +1233,153 @@ describe("eBay drain: a card or variant that left the catalog", () => {
 
     expect(ebay.calls.filter((c) => c.path.endsWith("/withdraw"))).toHaveLength(1);
     expect((await linkOf(s, card, "NM"))?.status).toBe("ended");
+  });
+});
+
+// ── NEO-415: the run's steps on the sync record, and the step's own words ──
+
+/** A record's ledger, compact: "kind: status". */
+const stepsOf = async (s: S, variantId: Id<"selectorOptions">): Promise<string[] | null> => {
+  const rec = await record(s, variantId);
+  return rec?.progress?.steps.map((x) => `${x.kind}: ${x.status}`) ?? null;
+};
+
+/** Answers one eBay path with `status` (an error body carrying `errorId`), every other call as the fake does. */
+function failPath(suffix: string, status: number, errorId = 25001) {
+  const real = ebay.fetch;
+  vi.stubGlobal("fetch", (async (url: string | URL | Request, init?: RequestInit) => {
+    if (new URL(String(url)).pathname.endsWith(suffix)) {
+      return Response.json({ errors: [{ errorId, message: "RAW-EBAY-TEXT" }] }, { status });
+    }
+    return real(url, init);
+  }) as typeof fetch);
+}
+
+describe("eBay drain: the run's steps (NEO-415)", () => {
+  test("a first listing ticks off photos, items, offers and publish in order, one at a time", async () => {
+    const s = await setup();
+    const { v } = await oneCard(s);
+    const seen: Array<string[] | null> = [];
+    ebay.onItems = async () => {
+      seen.push(await stepsOf(s, v.variantId));
+    };
+
+    await drain(s);
+
+    // While the items went up: photos done, items working, the rest waiting.
+    expect(seen).toEqual([["photos: done", "items: working", "offers: waiting", "publish: waiting"]]);
+    const rec = await record(s, v.variantId);
+    expect(rec?.progress?.steps.map((x) => `${x.kind}: ${x.status}`)).toEqual([
+      "photos: done",
+      "items: done",
+      "offers: done",
+      "publish: done",
+    ]);
+    expect(rec?.progress?.steps.every((x) => typeof x.finishedAt === "number" && x.condition === undefined)).toBe(true);
+    expect(rec?.progress?.runStartedAt).toBe(rec?.lastRunAt);
+  });
+
+  test("only the steps the run takes: a count change is one offers step; a count at 0 is one withdraw step", async () => {
+    const s = await setup();
+    const { v, card } = await oneCard(s);
+    await drain(s);
+    await addWithPhoto(s, card, { homeId: s.box, condition: "Near Mint", minPriceCents: 500, quantity: 2 }, "tokX");
+    await queue(s, [{ cardId: card, variantId: v.variantId, seq: 2 }]);
+    await drain(s);
+    expect(await stepsOf(s, v.variantId)).toEqual(["offers: done"]);
+
+    await s.t.run(async (ctx) => {
+      const copies = await ctx.db.query("collectionCopies").collect();
+      for (const c of copies) await ctx.db.delete(c._id);
+    });
+    await queue(s, [{ cardId: card, variantId: v.variantId, seq: 3 }]);
+    await drain(s);
+    expect(await stepsOf(s, v.variantId)).toEqual(["withdraw: done"]);
+  });
+
+  test("nothing to send leaves no steps behind", async () => {
+    const s = await setup();
+    const { v, card } = await oneCard(s);
+    await drain(s);
+    await queue(s, [{ cardId: card, variantId: v.variantId, seq: 2 }]);
+    await drain(s);
+    expect(await stepsOf(s, v.variantId)).toEqual([]);
+  });
+
+  test("eBay refusing the items marks that step failed, drops the later steps, and says so in NB words", async () => {
+    const s = await setup();
+    const { v } = await oneCard(s);
+    failPath("/bulk_create_or_replace_inventory_item", 400, 25709);
+
+    await drain(s);
+
+    const rec = await record(s, v.variantId);
+    expect(rec?.status).toBe("error");
+    expect(rec?.lastError).toBe(EBAY_STEP_SAYS.items.refused);
+    expect(await stepsOf(s, v.variantId)).toEqual(["photos: done", "items: failed"]);
+    const json = JSON.stringify(rec);
+    expect(json).not.toContain("25709");
+    expect(json).not.toContain("RAW-EBAY-TEXT");
+    expect(json).not.toContain("turned that one down");
+  });
+
+  test("eBay busy on the publish names the publish step and the way forward", async () => {
+    const s = await setup();
+    const { v } = await oneCard(s);
+    failPath("/bulk_publish_offer", 503);
+
+    await drain(s);
+
+    expect((await record(s, v.variantId))?.lastError).toBe(EBAY_STEP_SAYS.publish.busy);
+    expect(await stepsOf(s, v.variantId)).toEqual(["photos: done", "items: done", "offers: done", "publish: failed"]);
+  });
+
+  test("eBay refusing the offers says which step and what to check", async () => {
+    const s = await setup();
+    const { v } = await oneCard(s);
+    failPath("/bulk_create_offer", 400);
+    await drain(s);
+    expect((await record(s, v.variantId))?.lastError).toBe(EBAY_STEP_SAYS.offers.refused);
+    expect(await stepsOf(s, v.variantId)).toEqual(["photos: done", "items: done", "offers: failed"]);
+  });
+
+  test("eBay refusing the category read (before any step) says so in NB words, with no steps", async () => {
+    const s = await setup();
+    const { v } = await oneCard(s);
+    failPath("/get_item_aspects_for_category", 400);
+    await drain(s);
+    expect((await record(s, v.variantId))?.lastError).toBe(EBAY_STEP_SAYS.aspects.refused);
+    expect(await stepsOf(s, v.variantId)).toEqual([]);
+  });
+
+  test("a withdraw eBay refuses: the step finishes (the run goes on), the card says so in NB words", async () => {
+    const s = await setup();
+    const { v, card, copy } = await oneCard(s);
+    await drain(s);
+    await s.t.run(async (ctx) => {
+      await ctx.db.patch(copy.copyId as Id<"collectionCopies">, { homeId: s.inPerson });
+    });
+    await queue(s, [{ cardId: card, variantId: v.variantId, seq: 2 }]);
+    failPath("/withdraw", 400, 25013);
+    await drain(s);
+    const rec = await record(s, v.variantId);
+    expect(rec?.problems).toEqual([expect.objectContaining({ reason: "rejected", detail: EBAY_CARD_REJECTED.withdraw })]);
+    expect(JSON.stringify(rec)).not.toContain("25013");
+    expect(await stepsOf(s, v.variantId)).toEqual(["withdraw: done"]);
+  });
+
+  test("an unfinished-setup mark clears the last run's steps (no run happened)", async () => {
+    const s = await setup();
+    const { v, card } = await oneCard(s);
+    await drain(s);
+    expect(await stepsOf(s, v.variantId)).toHaveLength(4);
+    await s.t.run(async (ctx) => {
+      const row = await ctx.db.query("ebaySellerSettings").first();
+      await ctx.db.patch(row!._id, { paymentPolicyId: undefined });
+    });
+    await queue(s, [{ cardId: card, variantId: v.variantId, seq: 2 }]);
+    await drain(s);
+    expect(await record(s, v.variantId)).toMatchObject({ lastError: EBAY_SETUP_INCOMPLETE_ERROR });
+    expect(await stepsOf(s, v.variantId)).toBeNull();
   });
 });

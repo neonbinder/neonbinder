@@ -26,11 +26,17 @@
  *   3. uploads photos (Media API) for listings whose picture changed,
  *      replaces inventory items whose content changed, creates offers for new
  *      listings (adopting an offer eBay already holds for the SKU), replaces
- *      offers whose policies changed, publishes new and returning listings,
- *      updates price and quantity on live ones, and withdraws a live listing
- *      whose count went to 0 (its link goes `ended`; the offer is kept so the
- *      listing is published again when stock returns);
+ *      offers whose policies changed, updates price and quantity on live
+ *      ones, publishes new and returning listings, and withdraws a live
+ *      listing whose count went to 0 (its link goes `ended`; the offer is
+ *      kept so the listing is published again when stock returns);
  *   4. writes the link rows as each step lands and the variant's summary.
+ *
+ * NEO-415: the steps it takes (photos, items, offers, publish, withdraw;
+ * only those this run needs) are ticked off on the sync record one write
+ * each (`listingDrain.ProgressLedger`), and a step eBay stops is said in NB
+ * words for that step (`EBAY_STEP_SAYS`); eBay's status and error ids stay
+ * in the structured log lines.
  *
  * Only what changed is sent (eBay limits revisions per listing per day). A
  * held-back card with a live listing is left as it is (the BSC rule): a hold
@@ -48,7 +54,9 @@ import { titleChainFacts } from "./listingShortName";
 import { teamFullName } from "../lib/teams/team-name";
 import {
   DRAIN_BUDGET_MS,
+  EBAY_SETUP_INCOMPLETE_ERROR,
   MAX_STORED_PROBLEMS,
+  ProgressLedger,
   defaultFetchPhoto,
   distinctCards,
   newToken,
@@ -90,6 +98,7 @@ import {
   getCardCategoryAspects,
   getOfferBySku,
   openEbaySellerSession,
+  sayEbayFailure,
   updateOffer,
   uploadImage,
   withdrawOffer,
@@ -510,11 +519,67 @@ interface RunState {
 
 const STOPPING: ReadonlySet<EbayFailure["kind"]> = new Set(["signed_out", "paused", "no_token", "notConfigured"]);
 
-function rejectedDetail(errorIds: readonly number[]): string {
-  return (errorIds.length > 0
-    ? `eBay refused this listing (error ${errorIds.slice(0, 3).join(", ")}).`
-    : "eBay refused this listing."
-  ).slice(0, MAX_DETAIL);
+/** The eBay steps a variant run takes, in order (`marketplaceListingSyncs.progress`). */
+type EbayStep = "photos" | "items" | "offers" | "publish" | "withdraw";
+
+/**
+ * NEO-415 — what the Sync status tab says when eBay stops a whole step:
+ * which step, and what the seller can do. `refused` is eBay saying no (a
+ * 4xx); `busy` is eBay busy, slow, unreachable or unreadable. eBay's status,
+ * operation and error ids stay in the structured log lines, never here.
+ */
+export const EBAY_STEP_SAYS: Record<EbayStep | "aspects", { refused: string; busy: string }> = {
+  aspects: {
+    refused: "eBay wouldn't say what a sports card listing needs, so nothing in this set went up. Press Sync to try again in a bit.",
+    busy: "eBay's not answering about what a card listing needs right now. This set goes up on the next sync, or press Sync.",
+  },
+  photos: {
+    refused: "eBay turned down this set's card photos, so nothing new went up. Check the photos on these cards, then press Sync.",
+    busy: "eBay's photo upload isn't answering right now. These cards go up on the next sync, or press Sync.",
+  },
+  items: {
+    refused: "eBay turned down the card details for this set, so nothing new went up. Press Sync to try again; if it keeps happening, let us know.",
+    busy: "eBay wasn't taking card details just now. This set goes up on the next sync, or press Sync.",
+  },
+  offers: {
+    refused: "eBay turned down this set's prices and policies. Check your shipping, payment and returns picks in Profile → Credentials → eBay, then press Sync.",
+    busy: "eBay wasn't taking prices just now. This set catches up on the next sync, or press Sync.",
+  },
+  publish: {
+    refused: "eBay wouldn't put this set's listings live. Check eBay's Seller Hub for a selling limit or an account hold, then press Sync.",
+    busy: "eBay wasn't putting listings live just now. They go up on the next sync, or press Sync.",
+  },
+  withdraw: {
+    refused: "eBay wouldn't take down the listings that sold out here. Press Sync to try again, or end them in eBay's Seller Hub.",
+    busy: "eBay wasn't taking listings down just now. NeonBinder tries again on the next sync, or press Sync.",
+  },
+};
+
+/**
+ * One card eBay turned down, by step (shown after "eBay turned this one
+ * down."). Never eBay's text or error ids: those go to the log line.
+ */
+export const EBAY_CARD_REJECTED: Record<EbayStep, string> = {
+  photos: "Its photos didn't go through. Check them on the card, then press Sync.",
+  items: "Its card details (title, photos or facts) didn't pass. Check the card, then press Sync.",
+  offers: "Its price or your eBay shipping, payment and returns picks didn't pass. Check them in Profile → Credentials → eBay, then press Sync.",
+  publish: "It didn't go live. Check eBay's Seller Hub for a selling limit, then press Sync.",
+  withdraw: "eBay didn't take NeonBinder's zero for this listing.",
+};
+
+/** A step's failure in NB words: the adapter's own sentences for a session or pause; the step's for the rest. */
+export function sayEbayStepFailure(step: EbayStep | "aspects", failure: EbayFailure): string {
+  const says = EBAY_STEP_SAYS[step];
+  if (failure.kind === "timeout" || failure.kind === "network") return says.busy;
+  return sayEbayFailure(failure, says.refused, says.busy);
+}
+
+function rejectedDetail(step: EbayStep, errorIds: readonly number[]): string {
+  // eBay's numeric ids go to the log, never the sync record.
+  console.log(
+    JSON.stringify({ msg: "ebay_listing_rejected", platform: "ebay", operation: step, errorIds: errorIds.slice(0, 5) }),
+  );
+  return EBAY_CARD_REJECTED[step].slice(0, MAX_DETAIL);
 }
 
 const SELLER_CONFLICT_ERROR =
@@ -762,6 +827,8 @@ async function syncEbayVariant(
   // Cards whose queued rows must survive this run (a photo upload deferred).
   const keepQueued = new Set<string>();
   const mineCards = new Map(snapshot.map((r) => [r.rowId as string, r.cardId as string]));
+  // NEO-415: the run's steps, ticked off on the sync record as they land.
+  const ledger = new ProgressLedger(ctx, { ownerId, platform, variantId, leaseToken }, opts.now);
   const finish = async (outcome: FinishOutcome, clearMine: boolean): Promise<void> => {
     const kept = (r: { rowId: string }) => !keepQueued.has(mineCards.get(r.rowId) ?? "");
     const mine = clearMine ? rows.mine.filter(kept) : [];
@@ -773,6 +840,7 @@ async function syncEbayVariant(
       outcome,
       clear: [...mine, ...rows.gone.filter(kept)],
       repoint: rows.repoint,
+      progress: ledger.steps(),
     });
   };
 
@@ -792,7 +860,7 @@ async function syncEbayVariant(
   }
   if (input.settings === null) {
     // claimDrain checked; settings cleared under the run. Leave the queue.
-    await finish({ kind: "error", error: "Finish your eBay setup (shipping, payment, returns and ship-from) and these cards go up." }, false);
+    await finish({ kind: "error", error: EBAY_SETUP_INCOMPLETE_ERROR }, false);
     return { kind: "error" };
   }
   const settings = input.settings;
@@ -884,11 +952,13 @@ async function syncEbayVariant(
     if (opened.ok) run.session = opened.value;
     else run.sessionFailure = opened.failure;
   }
+  /** The step a failure is said against (none: the adapter's own sentence, e.g. a dead session). */
+  let failingStep: EbayStep | "aspects" | null = null;
   const fail = async (failure: EbayFailure): Promise<VariantResult> => {
     await finish(
       {
         kind: "error",
-        error: failure.message,
+        error: failingStep === null ? failure.message : sayEbayStepFailure(failingStep, failure),
         problems: problems.slice(0, MAX_STORED_PROBLEMS),
         problemsTotal: problems.length,
       },
@@ -900,7 +970,7 @@ async function syncEbayVariant(
   const session = run.session;
 
   if (input.ebayUserId === null) {
-    return await fail({ kind: "bad_response", message: "NeonBinder doesn't know which eBay account this is. Connect eBay again under Profile." });
+    return await fail({ kind: "bad_response", message: "NeonBinder doesn't know which eBay account this is. Connect eBay again in Profile → Credentials → eBay." });
   }
   if (run.boundAccount !== input.ebayUserId) {
     const binding = await ctx.runMutation(internal.listingDrain.bindSellerAccount, {
@@ -925,7 +995,10 @@ async function syncEbayVariant(
     if (read.ok) run.aspects = readCategoryAspects(read.value);
     else run.aspectsFailure = read.failure;
   }
-  if (priced.length > 0 && !run.aspects) return await fail(run.aspectsFailure as EbayFailure);
+  if (priced.length > 0 && !run.aspects) {
+    failingStep = "aspects";
+    return await fail(run.aspectsFailure as EbayFailure);
+  }
   const aspectRules = run.aspects ?? { required: [], maxLengths: new Map<string, number>() };
 
   // NB facts and photos for the priced targets.
@@ -1048,9 +1121,9 @@ async function syncEbayVariant(
     }
     linkWrites.length = 0;
   };
-  const reject = (plan: Plan, errorIds: readonly number[]) => {
+  const reject = (plan: Plan, step: EbayStep, errorIds: readonly number[]) => {
     plan.failed = true;
-    problems.push({ cardId: plan.target.cardId, reason: "rejected", detail: rejectedDetail(errorIds) });
+    problems.push({ cardId: plan.target.cardId, reason: "rejected", detail: rejectedDetail(step, errorIds) });
   };
   const stopOn = async (r: EbayResult<unknown>): Promise<VariantResult | null> => {
     if (r.ok) return null;
@@ -1067,6 +1140,39 @@ async function syncEbayVariant(
   const reusable = (image: { photoToken: string; expiresAt?: number }, key: string, live: boolean): boolean =>
     image.photoToken === key &&
     (live || image.expiresAt === undefined || image.expiresAt > Date.now() + IMAGE_FRESH_MS);
+
+  // NEO-415: the plan, the steps this run will take, in order. A step the
+  // run turns out not to need (every card before it fell out) is dropped.
+  const needsUpload = plans.some(
+    (p) =>
+      p.needsItem &&
+      p.photos.some((photo) => !(p.link?.images ?? []).some((image) => reusable(image, photo.key, p.link?.status === "live"))),
+  );
+  ledger.plan(
+    (
+      [
+        ["photos", needsUpload],
+        ["items", plans.some((p) => p.needsItem)],
+        ["offers", plans.some((p) => p.needsOffer !== null || p.needsPriceQty)],
+        ["publish", plans.some((p) => p.needsPublish)],
+        ["withdraw", toWithdraw.length > 0],
+      ] as Array<[EbayStep, boolean]>
+    )
+      .filter(([, wanted]) => wanted)
+      .map(([kind]) => ({ key: kind, kind })),
+  );
+  // No write here: the first step's start writes the whole plan.
+  /** Starts a step (one write) and names it for a failure; not needed now: dropped. */
+  const step = async (kind: EbayStep, needed: boolean): Promise<void> => {
+    if (!needed) {
+      ledger.drop(kind);
+      return;
+    }
+    failingStep = kind;
+    await ledger.start(kind);
+  };
+
+  await step("photos", needsUpload);
   for (const plan of plans.filter((p) => p.needsItem)) {
     const live = plan.link?.status === "live";
     const stored = plan.link?.images ?? [];
@@ -1121,6 +1227,7 @@ async function syncEbayVariant(
 
   // 2. Inventory items.
   const itemPlans = plans.filter((p) => p.needsItem && !p.failed);
+  await step("items", itemPlans.length > 0);
   for (let i = 0; i < itemPlans.length; i += EBAY_BULK_LIMIT) {
     if (!(await drainHeld())) {
       await flushLinks();
@@ -1135,7 +1242,7 @@ async function syncEbayVariant(
     const bySku = new Map(r.value.map((e) => [e.sku, e]));
     for (const plan of chunk) {
       const e = bySku.get(plan.target.sku);
-      if (!e || e.statusCode < 200 || e.statusCode >= 300) reject(plan, e?.errorIds ?? []);
+      if (!e || e.statusCode < 200 || e.statusCode >= 300) reject(plan, "items", e?.errorIds ?? []);
     }
   }
 
@@ -1156,6 +1263,10 @@ async function syncEbayVariant(
     merchantLocationKey: settings.merchantLocationKey,
   });
   const creates = plans.filter((p) => p.needsOffer === "create" && !p.failed);
+  await step(
+    "offers",
+    plans.some((p) => !p.failed && ((p.needsOffer !== null && (p.needsOffer === "create" || p.offerId)) || (p.needsPriceQty && p.offerId))),
+  );
   for (let i = 0; i < creates.length; i += EBAY_BULK_LIMIT) {
     const chunk = creates.slice(i, i + EBAY_BULK_LIMIT);
     const r = await bulkCreateOffers(ctx, session, chunk.map((p) => offerBody(p, true)));
@@ -1179,10 +1290,10 @@ async function syncEbayVariant(
           plan.needsOffer = "replace";
           if (found.value.published && found.value.listingId) plan.needsPublish = false;
         } else {
-          reject(plan, e.errorIds);
+          reject(plan, "offers", e.errorIds);
         }
       } else {
-        reject(plan, e?.errorIds ?? []);
+        reject(plan, "offers", e?.errorIds ?? []);
       }
       if (plan.offerId && !plan.failed) {
         linkWrites.push({
@@ -1209,29 +1320,11 @@ async function syncEbayVariant(
     }
     const r = await updateOffer(ctx, session, plan.offerId as string, offerBody(plan, false));
     if (!r.ok && STOPPING.has(r.failure.kind)) return (await stopOn(r)) as VariantResult;
-    if (!r.ok) reject(plan, r.failure.errorIds ?? []);
+    if (!r.ok) reject(plan, "offers", r.failure.errorIds ?? []);
   }
 
-  // 5. Publish new and returning listings.
-  const publishes = plans.filter((p) => p.needsPublish && !p.failed && p.offerId);
-  for (let i = 0; i < publishes.length; i += EBAY_BULK_LIMIT) {
-    const chunk = publishes.slice(i, i + EBAY_BULK_LIMIT);
-    const r = await bulkPublishOffers(ctx, session, chunk.map((p) => p.offerId as string));
-    const stop = await stopOn(r);
-    if (stop) return stop;
-    if (!r.ok) continue;
-    const byOffer = new Map(r.value.map((e) => [e.offerId, e]));
-    for (const plan of chunk) {
-      const e = byOffer.get(plan.offerId);
-      if (e && e.statusCode >= 200 && e.statusCode < 300 && e.listingId) {
-        // A republish gets a new listing id; a late sale may still name the old one.
-        if (plan.listingId !== null && plan.listingId !== e.listingId) plan.retiredListingId = plan.listingId;
-        plan.listingId = e.listingId;
-      } else reject(plan, e?.errorIds ?? []);
-    }
-  }
-
-  // 6. Price and quantity on live listings that changed only those.
+  // 5. Price and quantity on live listings that changed only those (the
+  //    offers step: an update of the offer and its item's quantity).
   const priceQty = plans.filter((p) => p.needsPriceQty && !p.failed && p.offerId);
   for (let i = 0; i < priceQty.length; i += EBAY_BULK_LIMIT) {
     const chunk = priceQty.slice(i, i + EBAY_BULK_LIMIT);
@@ -1250,7 +1343,27 @@ async function syncEbayVariant(
     if (!r.ok) continue;
     for (const plan of chunk) {
       const e = r.value.find((x) => x.offerId === plan.offerId || x.sku === plan.target.sku);
-      if (!e || e.statusCode < 200 || e.statusCode >= 300) reject(plan, e?.errorIds ?? []);
+      if (!e || e.statusCode < 200 || e.statusCode >= 300) reject(plan, "offers", e?.errorIds ?? []);
+    }
+  }
+
+  // 6. Publish new and returning listings.
+  const publishes = plans.filter((p) => p.needsPublish && !p.failed && p.offerId);
+  await step("publish", publishes.length > 0);
+  for (let i = 0; i < publishes.length; i += EBAY_BULK_LIMIT) {
+    const chunk = publishes.slice(i, i + EBAY_BULK_LIMIT);
+    const r = await bulkPublishOffers(ctx, session, chunk.map((p) => p.offerId as string));
+    const stop = await stopOn(r);
+    if (stop) return stop;
+    if (!r.ok) continue;
+    const byOffer = new Map(r.value.map((e) => [e.offerId, e]));
+    for (const plan of chunk) {
+      const e = byOffer.get(plan.offerId);
+      if (e && e.statusCode >= 200 && e.statusCode < 300 && e.listingId) {
+        // A republish gets a new listing id; a late sale may still name the old one.
+        if (plan.listingId !== null && plan.listingId !== e.listingId) plan.retiredListingId = plan.listingId;
+        plan.listingId = e.listingId;
+      } else reject(plan, "publish", e?.errorIds ?? []);
     }
   }
 
@@ -1287,6 +1400,7 @@ async function syncEbayVariant(
   // 7. Withdraw live listings whose count went to 0.
   let zeroed = 0;
   const withdrawn = new Set<string>();
+  await step("withdraw", toWithdraw.length > 0);
   for (const link of toWithdraw) {
     if (!(await drainHeld())) {
       await finish({ kind: "error", error: STOPPED_ERROR }, false);
@@ -1296,7 +1410,7 @@ async function syncEbayVariant(
     if (!r.ok && STOPPING.has(r.failure.kind)) return (await stopOn(r)) as VariantResult;
     // 404: eBay no longer has the offer live (ended or sold out elsewhere).
     if (!r.ok && r.failure.httpStatus !== 404) {
-      problems.push({ cardId: link.cardId, reason: "rejected", detail: "eBay didn't take NeonBinder's zero for this listing." });
+      problems.push({ cardId: link.cardId, reason: "rejected", detail: rejectedDetail("withdraw", r.failure.errorIds ?? []) });
       // A gone card has no other way back to this listing: keep its row queued.
       if (goneCardIds.has(link.cardId)) keepQueued.add(link.cardId);
       continue;

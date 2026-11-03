@@ -33,7 +33,8 @@ describe("listing copy, per platform (NEO-415)", () => {
     const copy = problemCopy("ebay");
     for (const sentence of Object.values(copy)) expect(sentence).not.toMatch(/BuySportsCards|\$999/);
     expect(copy.noPhoto).toBe("eBay listings need a photo. Add one to a copy of this card and it goes up.");
-    expect(copy.setupIncomplete).toBe("Finish your eBay setup on your Profile and this one goes up.");
+    // NEO-415: eBay's settings live under Profile → Credentials → eBay; the line says so, never just "your Profile".
+    expect(copy.setupIncomplete).toBe("Finish your eBay setup in Profile → Credentials → eBay and this one goes up.");
     expect(copy.missingAspect).toContain("eBay");
     expect(problemCopyReadOnly("ebay").setupIncomplete).toBe("The collector's eBay setup isn't finished.");
     expect(problemCopyReadOnly("ebay").noPhoto).toContain("eBay listings need one");
@@ -47,9 +48,18 @@ describe("listing copy, per platform (NEO-415)", () => {
     expect(problemSentence({ reason: "missingAspect", detail: "   " }, false, "ebay")).toBe(problemCopy("ebay").missingAspect);
   });
 
-  it("a rejected row quotes the platform's detail only when it gave one", () => {
-    expect(problemSentence({ reason: "rejected", detail: "eBay refused this listing (error 25709)." }, false, "ebay")).toBe(
-      "eBay turned this one down. They said: “eBay refused this listing (error 25709).”",
+  it("a rejected row's detail is NB's own sentence, said as ours, never as a quote from the platform", () => {
+    // EBAY_CARD_REJECTED (convex/listingDrainEbay.ts) and BSC's rejectedPushDetail are both NB-written.
+    const ebay = "Its photos didn't go through. Check them on the card, then press Sync.";
+    expect(problemSentence({ reason: "rejected", detail: ebay }, false, "ebay")).toBe(`eBay turned this one down. ${ebay}`);
+    const bsc = "NeonBinder sent 3 for Near Mint, but the listing didn't take it.";
+    expect(problemSentence({ reason: "rejected", detail: bsc }, false, "bsc")).toBe(`BuySportsCards turned this one down. ${bsc}`);
+    for (const platform of ["ebay", "bsc"] as const) {
+      expect(problemSentence({ reason: "rejected", detail: "Check the card" }, false, platform)).not.toMatch(/They said|“|”/);
+    }
+    // A detail with no full stop still ends as a sentence; none at all leaves the reason alone.
+    expect(problemSentence({ reason: "rejected", detail: "Check the card" }, false, "ebay")).toBe(
+      "eBay turned this one down. Check the card.",
     );
     expect(problemSentence({ reason: "rejected" }, false, "ebay")).toBe("eBay turned this one down.");
   });
