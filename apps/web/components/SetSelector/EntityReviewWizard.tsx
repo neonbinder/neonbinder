@@ -99,6 +99,7 @@ import {
   type TeamAnswer,
 } from "./teams-on-cards";
 import {
+  countAutoLinked,
   countBulkCreatable,
   countPendingBulkCreatable,
   countPendingUndecided,
@@ -967,6 +968,36 @@ export default function EntityReviewWizard({
 
   /** Overrides the >5 collapse of the decided list once the operator toggles it. */
   const [decidedListOpen, setDecidedListOpen] = useState<boolean | null>(null);
+  /**
+   * NEO-424 — did this batch OPEN with every name already decided?
+   *
+   * That is the batch whose only names are links the server made on its own
+   * (set history, the Hall of Fame tie-break), plus at most the operator's
+   * own earlier decisions on a "Back to matching" return trip. The parent
+   * opens the wizard for it so every link is seen before the save, and the
+   * Decided list on Save is then the whole of the review — so it starts
+   * expanded whatever its length, and a line above it says why the dialog
+   * opened at all.
+   *
+   * Latched from the batch's FIRST read and keyed on the batch: a Change and
+   * a re-decision later in the same sitting must not flip the list shut (or
+   * the line away) under the operator. Render-phase, the "storing
+   * information from previous renders" pattern.
+   */
+  const [openedAllDecided, setOpenedAllDecided] = useState<{
+    batchId: string;
+    value: boolean;
+  } | null>(null);
+  if (rows !== undefined && !teamsOnly && openedAllDecided?.batchId !== batchId) {
+    setOpenedAllDecided({
+      batchId,
+      value: rows.length > 0 && rows.every((r) => r.decision != null),
+    });
+  }
+  const openedWithEveryNameDecided =
+    openedAllDecided?.batchId === batchId && openedAllDecided.value;
+  /** NEO-424 (a11y) — that line; it describes the autofocused Confirm & Save. */
+  const autoLinkedIntroId = useId();
 
   /**
    * NEO-335 — the operator's picks on the teams step, by line.
@@ -3673,7 +3704,20 @@ export default function EntityReviewWizard({
   /** NEO-424 — "· 6 linked for you" beside the count, or null. */
   const autoLinkedNote = autoLinkedSummaryNote(rows);
   const decidedListExpanded =
-    decidedListOpen ?? decidedRows.length <= DECIDED_LIST_INLINE_MAX;
+    decidedListOpen ??
+    (openedWithEveryNameDecided || decidedRows.length <= DECIDED_LIST_INLINE_MAX);
+  /**
+   * NEO-424 — the Save step's line over a batch that opened with nothing to
+   * answer. Counted live, so a link the operator Changed and decided by hand
+   * stops being one the line speaks for; gone once none is left.
+   */
+  const autoLinkedOnSave = openedWithEveryNameDecided ? countAutoLinked(rows) : 0;
+  const autoLinkedIntro =
+    autoLinkedOnSave === 0
+      ? null
+      : autoLinkedOnSave === 1
+        ? "This name was linked for you. Give it a look before you save."
+        : "These names were linked for you. Give them a look before you save.";
 
   /** The most recent single-row decision still standing. */
   const backTargetId = (() => {
@@ -5451,6 +5495,14 @@ export default function EntityReviewWizard({
                       </div>
                     ))}
                 </dl>
+                {/* NEO-424 — the batch opened with every name decided, most
+                    of them links made for the operator: say so, and let the
+                    Decided list below (expanded) be the review. */}
+                {autoLinkedIntro && (
+                  <p id={autoLinkedIntroId} className="text-sm text-ink-2">
+                    {autoLinkedIntro}
+                  </p>
+                )}
                 {commitError && (
                   /*
                     NEO-220 — a failed commit is recoverable, so say so and show
@@ -5868,6 +5920,10 @@ export default function EntityReviewWizard({
                        */
                       className={footerFieldClass("btn-confirm-save")}
                       aria-label={saving ? CONFIRM_SAVING_LABEL : CONFIRM_SAVE_LABEL}
+                      // NEO-424 (a11y) — autofocused on a batch that opened
+                      // with every name linked for the operator, so it says
+                      // why the dialog is up, as the teams step's Next does.
+                      aria-describedby={autoLinkedIntro ? autoLinkedIntroId : undefined}
                       /*
                        * NEO-294 — `aria-disabled`, not native `disabled`.
                        *

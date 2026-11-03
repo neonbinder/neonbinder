@@ -9712,6 +9712,139 @@ describe("NEO-424: a link the batch made says why in the decided list", () => {
   });
 });
 
+describe("NEO-424: a batch that opens with every name linked for you", () => {
+  /**
+   * Six links (one past the list's inline maximum of five) and nothing for
+   * the operator to answer: the batch `resolveUnknownsAndStartBatch` opens
+   * when set history and the Hall of Fame tie-break decide every name. The
+   * parent now opens the wizard for it rather than committing silently, so
+   * the Save step has to carry the review.
+   */
+  const autoLinkedBatch = () => {
+    currentLinkedPlayers = [
+      { _id: "p-morgan", name: "Joe Morgan" },
+      { _id: "p-shinoda", name: "Mike Shinoda" },
+      { _id: "p-a", name: "Player A" },
+      { _id: "p-b", name: "Player B" },
+      { _id: "p-c", name: "Player C" },
+    ];
+    currentLinkedTeams = [{ _id: "team-browns", name: "St. Louis Browns", location: "" }];
+    return [
+      makeRow({
+        name: "Joe Morgan",
+        decision: { action: "link", linkedPlayerId: "p-morgan", autoLinked: "hallOfFame" },
+      }),
+      makeRow({
+        name: "Mike Shinoda",
+        decision: { action: "link", linkedPlayerId: "p-shinoda", autoLinked: "setHistory" },
+      }),
+      makeRow({
+        kind: "team",
+        name: "St. Louis Browns",
+        decision: { action: "link", linkedTeamId: "team-browns", autoLinked: "setHistory" },
+      }),
+      ...["Player A", "Player B", "Player C"].map((name, i) =>
+        makeRow({
+          name,
+          decision: {
+            action: "link",
+            linkedPlayerId: ["p-a", "p-b", "p-c"][i],
+            autoLinked: "setHistory",
+          },
+        }),
+      ),
+    ];
+  };
+
+  it("opens on Save with every link's line, the summary and a Change each, the list expanded", () => {
+    currentRows = autoLinkedBatch();
+    renderWizard();
+
+    expect(screen.getByRole("heading", { name: SAVE_HEADING })).toBeTruthy();
+    // The E2E driver's exact count node, then the note, in one summary.
+    const count = screen.getByText("Decided (6)");
+    const summary = count.closest("summary");
+    expect(summary?.textContent).toBe("Decided (6) · 6 linked for you");
+    // Past five rows the list collapses; not on this batch — it IS the review.
+    expect((summary?.parentElement as HTMLDetailsElement).open).toBe(true);
+
+    const list = screen.getByRole("list", { name: "Decided names" });
+    expect(list.textContent).toContain("Linked to Joe Morgan · the Hall of Famer");
+    expect(list.textContent).toContain(
+      "Linked to Mike Shinoda · already on another card in this set",
+    );
+    expect(list.textContent).toContain(
+      "Linked to St. Louis Browns · already on another card in this set",
+    );
+    for (const who of ["Joe Morgan", "Mike Shinoda", "St. Louis Browns", "Player A"]) {
+      expect(screen.getByRole("button", { name: `Change decision for ${who}` })).toBeTruthy();
+    }
+
+    // Why the dialog is up at all, and the autofocused Save says it too.
+    const intro = screen.getByText(
+      "These names were linked for you. Give them a look before you save.",
+    );
+    const confirm = screen.getByRole("button", { name: CONFIRM_SAVE_NAME });
+    expect(confirm.getAttribute("aria-describedby")).toBe(intro.id);
+    expect(document.activeElement).toBe(confirm);
+  });
+
+  it("reopens a link with Change, through the same clearDecision every decided row uses", async () => {
+    const rows = autoLinkedBatch();
+    currentRows = rows;
+    renderWizard();
+
+    fireEvent.click(screen.getByRole("button", { name: "Change decision for St. Louis Browns" }));
+
+    await waitFor(() =>
+      expect(mockClearDecision).toHaveBeenCalledWith({ reviewRowId: rows[2]._id }),
+    );
+  });
+
+  it("reads one link in the singular", () => {
+    currentLinkedPlayers = [{ _id: "p-morgan", name: "Joe Morgan" }];
+    currentRows = [
+      makeRow({
+        name: "Joe Morgan",
+        decision: { action: "link", linkedPlayerId: "p-morgan", autoLinked: "hallOfFame" },
+      }),
+    ];
+    renderWizard();
+
+    expect(screen.getByText("Decided (1)").closest("summary")?.textContent).toBe(
+      "Decided (1) · 1 linked for you",
+    );
+    expect(
+      screen.getByText("This name was linked for you. Give it a look before you save."),
+    ).toBeTruthy();
+  });
+
+  /**
+   * The latch is the batch's FIRST read. A batch that opened with a name to
+   * answer reaches Save the ordinary way: past five rows the list collapses
+   * as it always has, and there is no "linked for you" line over it — the
+   * summary's note is what says it there.
+   */
+  it("leaves a batch that opened with a name to answer as it was", () => {
+    const rows = autoLinkedBatch();
+    const last = rows[5];
+    currentRows = [...rows.slice(0, 5), { ...last, decision: undefined }];
+    const { rerender } = renderWizard();
+    expect(screen.queryByRole("heading", { name: SAVE_HEADING })).toBeNull();
+
+    currentRows = rows;
+    rerenderWizard(rerender);
+
+    expect(screen.getByRole("heading", { name: SAVE_HEADING })).toBeTruthy();
+    const summary = screen.getByText("Decided (6)").closest("summary");
+    expect((summary?.parentElement as HTMLDetailsElement).open).toBe(false);
+    expect(screen.queryByText(/linked for you\. Give/)).toBeNull();
+    expect(
+      screen.getByRole("button", { name: CONFIRM_SAVE_NAME }).getAttribute("aria-describedby"),
+    ).toBeNull();
+  });
+});
+
 describe("NEO-424: the suggested player is the New Player step's primary", () => {
   const preselect = {
     playerId: "p-shinoda",
