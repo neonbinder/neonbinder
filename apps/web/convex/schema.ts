@@ -4852,6 +4852,11 @@ export default defineSchema({
    * typed; it is pushed to eBay as the inventory location
    * `merchantLocationKey` when saved (`ebayConnect.saveLocation`) and only
    * stored once eBay took it. `bestOffer` absent means ON (the default).
+   * `cardWeightOz` is the collector's "weight of a single card", whole
+   * ounces 1–3 (`ebayConnect.setCardWeight`; Standard Envelope tops out at
+   * 3 oz); absent means 1. It is the weight of the letter package every card
+   * under $20 lists with (`lib/ebayListing.ebayPackageFor`); $20 and up ships
+   * in a 6 oz mailer whatever it says.
    *
    * `connectNonce` / `connectNonceAt` are the OAuth `state` of the Connect
    * press in flight: server-minted, single-use, short-lived, and never
@@ -4874,6 +4879,8 @@ export default defineSchema({
     ),
     /** Absent = on. */
     bestOffer: v.optional(v.boolean()),
+    /** Whole ounces 1–3; absent = 1 (`lib/ebayListing.EBAY_DEFAULT_CARD_WEIGHT_OZ`). */
+    cardWeightOz: v.optional(v.number()),
     /** The connected seller's eBay username, for display only (eBay's; may change). */
     ebayUsername: v.optional(v.string()),
     /** When the current eBay connection was made. */

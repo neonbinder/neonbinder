@@ -523,12 +523,36 @@ describe("eBay drain: the first sync", () => {
     await drain(s);
 
     const pkg = (i: number) => ebay.items.get(`NB2-${v.cardIds[i]}-NM`).packageWeightAndSize;
-    expect(pkg(0)).toMatchObject({ packageType: "LETTER", weight: { value: 1, unit: "OUNCE" } });
+    // No card weight saved: the letter weighs the default 1 oz, 6 x 4 x 1 in.
+    expect(pkg(0)).toEqual({
+      packageType: "LETTER",
+      weight: { value: 1, unit: "OUNCE" },
+      dimensions: { length: 6, width: 4, height: 1, unit: "INCH" },
+    });
     expect(pkg(1)).toMatchObject({ packageType: "PADDED_BAGS", weight: { value: 6, unit: "OUNCE" } });
     // Calculated shipping wants dimensions on every item.
     for (const i of [0, 1]) {
       expect(pkg(i).dimensions).toMatchObject({ unit: "INCH", length: expect.any(Number), width: expect.any(Number), height: expect.any(Number) });
     }
+  });
+
+  test("the letter weighs the collector's card weight; the $20+ mailer stays 6 oz whatever it says", async () => {
+    const s = await setup();
+    await s.t.run(async (ctx) => {
+      const row = await ctx.db.query("ebaySellerSettings").unique();
+      await ctx.db.patch(row!._id, { cardWeightOz: 3 });
+    });
+    const v = await seedVariant(s.t, { cards: [{ number: "1" }, { number: "2" }] });
+    await addWithPhoto(s, v.cardIds[0], { homeId: s.box, condition: "Near Mint", minPriceCents: 1999 });
+    await addWithPhoto(s, v.cardIds[1], { homeId: s.box, condition: "Near Mint", minPriceCents: 2000 });
+    await listOnEbay(s);
+    await queue(s, v.cardIds.map((cardId) => ({ cardId, variantId: v.variantId })));
+
+    await drain(s);
+
+    const pkg = (i: number) => ebay.items.get(`NB2-${v.cardIds[i]}-NM`).packageWeightAndSize;
+    expect(pkg(0)).toMatchObject({ packageType: "LETTER", weight: { value: 3, unit: "OUNCE" } });
+    expect(pkg(1)).toMatchObject({ packageType: "PADDED_BAGS", weight: { value: 6, unit: "OUNCE" } });
   });
 
   test("a floor under $0.99 lists at $0.99", async () => {
@@ -671,6 +695,50 @@ describe("eBay drain: only what changed is sent", () => {
     await drain(s);
 
     expect(ebay.writes().map((c) => c.path)).toEqual(["/sell/inventory/v1/bulk_update_price_quantity"]);
+  });
+
+  test("a changed card weight resends a live card under $20 at the new weight; nothing else is sent", async () => {
+    const s = await setup();
+    const { v, card } = await oneCard(s, 1999);
+    await drain(s);
+    const sku = `NB2-${card}-NM`;
+    expect(ebay.items.get(sku).packageWeightAndSize.weight).toEqual({ value: 1, unit: "OUNCE" });
+    const before = (await linkOf(s, card, "NM"))?.pushed?.contentHash;
+    ebay.calls = [];
+    await s.t.run(async (ctx) => {
+      const row = await ctx.db.query("ebaySellerSettings").unique();
+      await ctx.db.patch(row!._id, { cardWeightOz: 3 });
+    });
+    await queue(s, [{ cardId: card, variantId: v.variantId, seq: 2 }]);
+
+    await drain(s);
+
+    expect(ebay.to("/sell/inventory/v1/bulk_create_or_replace_inventory_item")).toHaveLength(1);
+    expect(ebay.to("/commerce/media/v1_beta/image/create_image_from_file")).toHaveLength(0);
+    expect(ebay.items.get(sku).packageWeightAndSize).toMatchObject({ packageType: "LETTER", weight: { value: 3, unit: "OUNCE" } });
+    // The fingerprint covers the package, so the next run with the same weight sends nothing.
+    const after = (await linkOf(s, card, "NM"))?.pushed?.contentHash;
+    expect(after).not.toBe(before);
+    ebay.calls = [];
+    await queue(s, [{ cardId: card, variantId: v.variantId, seq: 3 }]);
+    await drain(s);
+    expect(ebay.writes()).toEqual([]);
+  });
+
+  test("a changed card weight sends nothing for a card at $20 and up (its mailer does not change)", async () => {
+    const s = await setup();
+    const { v, card } = await oneCard(s, 2500);
+    await drain(s);
+    ebay.calls = [];
+    await s.t.run(async (ctx) => {
+      const row = await ctx.db.query("ebaySellerSettings").unique();
+      await ctx.db.patch(row!._id, { cardWeightOz: 2 });
+    });
+    await queue(s, [{ cardId: card, variantId: v.variantId, seq: 2 }]);
+
+    await drain(s);
+
+    expect(ebay.writes()).toEqual([]);
   });
 
   test("a Best Offer change replaces the offer's terms", async () => {

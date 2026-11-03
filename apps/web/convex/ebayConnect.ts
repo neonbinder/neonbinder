@@ -29,7 +29,7 @@
  * linkage or a choice the collector makes; none decides NB behaviour on its
  * own, and the ESE-only check reads eBay's service CODE, never a name.
  */
-import { v } from "convex/values";
+import { ConvexError, v } from "convex/values";
 import type { Doc } from "./_generated/dataModel";
 import type { ActionCtx, MutationCtx, QueryCtx } from "./_generated/server";
 import {
@@ -50,8 +50,10 @@ import { ebayAuthorizeUrl, ebayConfig, ebayConfigured, type EbayEnvironment } fr
 import {
   EBAY_COST_TYPE_CALCULATED,
   EBAY_COST_TYPE_FLAT_RATE,
-  EBAY_ESE_CARRIER_FALLBACK,
+  EBAY_DEFAULT_CARD_WEIGHT_OZ,
+  EBAY_ESE_CARRIER,
   EBAY_ESE_SERVICE_CODE,
+  EBAY_MAX_CARD_WEIGHT_OZ,
   EBAY_MARKETPLACE_ID,
   EBAY_MERCHANT_LOCATION_KEY,
   EBAY_USPS_CARRIER_FALLBACK,
@@ -62,6 +64,7 @@ import {
   ebayServiceTakesCalculated,
   isRecord,
   isUsPostalCode,
+  isValidCardWeightOz,
   isUsStateCode,
   policyFitness,
   readFulfillmentPolicies,
@@ -123,13 +126,15 @@ const NO_GROUND_ADVANTAGE = "eBay didn't offer USPS Ground Advantage, so NeonBin
 const SET_ME_UP_BUSY = "eBay's not answering right now. Press Set me up again in a bit; it never makes anything twice.";
 /** Which of NB's standard policies eBay refused, and what the collector can do instead. */
 const SET_ME_UP_REFUSED = {
-  ese: "eBay turned down the Standard Envelope policy, so Set me up stopped there. Pick one of your own shipping policies for cards under $20, or make one on eBay and come back.",
+  ese: "eBay turned down the Envelope or Tracked policy, so Set me up stopped there. Pick one of your own shipping policies for cards under $20, or make one on eBay and come back.",
   tracked:
     "eBay turned down the tracked USPS Ground Advantage policy, so Set me up stopped there. Pick one of your own shipping policies for cards $20 and up, or make one on eBay and come back.",
   free: "eBay turned down the free shipping policy, so Set me up stopped there. Pick one of your own shipping policies, or make one on eBay and come back.",
   payment: "eBay turned down the payment policy, so Set me up stopped there. Make a payment policy on eBay, then pick it here.",
   returns: "eBay turned down the returns policy, so Set me up stopped there. Make a return policy on eBay, then pick it here.",
 } as const;
+/** `setCardWeight` refused a weight outside 1–3 whole ounces. */
+export const CARD_WEIGHT_REFUSED = `Pick a whole number of ounces from ${EBAY_DEFAULT_CARD_WEIGHT_OZ} to ${EBAY_MAX_CARD_WEIGHT_OZ}. Standard Envelope tops out at ${EBAY_MAX_CARD_WEIGHT_OZ} oz.`;
 const NO_CALCULATED = (service: string) =>
   `eBay isn't offering weight-based rates for ${service} on your account, so NeonBinder made nothing. Pick your own shipping policies instead.`;
 
@@ -159,9 +164,16 @@ const PURGE_PAGE = 200;
 /** Sale rows one purge page deletes (they are the larger rows). */
 const SALES_PURGE_PAGE = 100;
 
-/** NB's standard policies "Set me up" makes on the seller's account (names are the idempotency key). */
+/**
+ * NB's standard policies "Set me up" makes on the seller's account (names are
+ * the idempotency key). `ese` is the under-$20 default and holds BOTH eBay
+ * Standard Envelope and USPS Ground Advantage, so the buyer picks envelope or
+ * tracked at checkout; `tracked` (the $20+ default) holds Ground Advantage
+ * alone, since a $20+ card on a policy offering the envelope would charge the
+ * buyer only the envelope's rate (Jason, NEO-415).
+ */
 export const NB_POLICY_NAMES = {
-  ese: "NB Standard Envelope (under $20)",
+  ese: "NB Envelope or Tracked (under $20)",
   tracked: "NB Tracked (USPS Ground Advantage)",
   free: "NB Free Shipping",
   payment: "NB Payment",
@@ -169,9 +181,10 @@ export const NB_POLICY_NAMES = {
 } as const;
 /**
  * Defaults for those policies. Product defaults, open for Jason to change.
- * No shipping amounts: the envelope and tracked policies are CALCULATED, so
- * buyers pay eBay's own rate for the card's package weight
- * (lib/ebayListing.ts `ebayPackageFor`) from the seller's ship-from ZIP.
+ * No shipping amounts: the envelope-or-tracked and tracked policies are
+ * CALCULATED, so buyers pay eBay's own rate for the card's package weight
+ * (lib/ebayListing.ts `ebayPackageFor`, which reads the collector's card
+ * weight) from the seller's ship-from ZIP.
  */
 const NB_POLICY_DEFAULTS = {
   handlingDays: 1,
@@ -214,6 +227,8 @@ const connectionStateValidator = v.object({
     location: v.union(locationValidator, v.null()),
     bestOffer: v.boolean(),
   }),
+  /** The collector's "weight of a single card", whole ounces 1–3 (`ebaySellerSettings.cardWeightOz`, absent = 1). */
+  cardWeightOz: v.number(),
   setupComplete: v.boolean(),
   missing: v.array(setupItemValidator),
   /** The latest Set me up run, step by step (the page shows the one its own press started). */
@@ -320,6 +335,7 @@ export const connectionState = query({
         location: row?.location ?? null,
         bestOffer: row?.bestOffer !== false,
       },
+      cardWeightOz: row?.cardWeightOz ?? EBAY_DEFAULT_CARD_WEIGHT_OZ,
       setupComplete: missing.length === 0,
       missing,
       setupProgress: row?.setupProgress
@@ -846,21 +862,25 @@ interface PolicyService {
 }
 
 /**
- * A one-service domestic fulfillment policy (Sell Account
- * FulfillmentPolicyRequest).
+ * A domestic fulfillment policy (Sell Account FulfillmentPolicyRequest)
+ * offering `services` in order (sortOrder 1, 2, …), one cost type for all.
  *   calculated  costType CALCULATED and no shippingCost: eBay prices each
  *               order from the item's package weight and size and the
  *               ship-from postal code (the offer's inventory location)
  *   free        costType FLAT_RATE at $0.00 with freeShipping
- * Every service names its carrier (`shippingCarrierCode`, from eBay's
- * metadata; `policyService`). The contract calls the field optional, but
+ * Every service names its carrier (`shippingCarrierCode`: USPS for the
+ * envelope, eBay's metadata for the rest; `policyService`). The contract calls the field optional, but
  * eBay's own live eSE policies all carry it, and NB's first create without
  * it was refused (20403). Fields eBay echoes back on a read
  * (`packageHandlingCost` 0.0, `shipToLocations` {}, `globalShipping` false,
  * `buyerResponsibleFor*` false) are not sent: the contract requires none of
  * them and each is eBay's default.
  */
-export function fulfillmentBody(name: string, service: PolicyService, pricing: "calculated" | "free"): Record<string, unknown> {
+export function fulfillmentBody(
+  name: string,
+  services: readonly PolicyService[],
+  pricing: "calculated" | "free",
+): Record<string, unknown> {
   const free = pricing === "free";
   return {
     name,
@@ -871,15 +891,13 @@ export function fulfillmentBody(name: string, service: PolicyService, pricing: "
       {
         optionType: "DOMESTIC",
         costType: free ? EBAY_COST_TYPE_FLAT_RATE : EBAY_COST_TYPE_CALCULATED,
-        shippingServices: [
-          {
-            shippingCarrierCode: service.carrier,
-            shippingServiceCode: service.code,
-            ...(free ? { shippingCost: { value: "0.00", currency: "USD" } } : {}),
-            freeShipping: free,
-            sortOrder: 1,
-          },
-        ],
+        shippingServices: services.map((service, i) => ({
+          shippingCarrierCode: service.carrier,
+          shippingServiceCode: service.code,
+          ...(free ? { shippingCost: { value: "0.00", currency: "USD" } } : {}),
+          freeShipping: free,
+          sortOrder: i + 1,
+        })),
       },
     ],
   };
@@ -991,15 +1009,17 @@ function groundAdvantageCode(services: EbayShippingServiceInfo[]): string | null
 
 /**
  * "Set me up": NB's standard policies on the collector's eBay account —
- * Standard Envelope (cards under $20) and Tracked (USPS Ground Advantage),
- * both calculated by weight so buyers pay eBay's own rates, and Free
+ * Envelope or Tracked (cards under $20: Standard Envelope and USPS Ground
+ * Advantage in one policy, the buyer picks) and Tracked (Ground Advantage
+ * alone, $20 and up), both calculated by weight so buyers pay eBay's own
+ * rates, and Free
  * Shipping (Ground Advantage at $0), plus a payment and a return policy
  * only when the account has none. Opts the account into business policies
  * first when needed. Idempotent by name: a policy NB already made is not
  * made again. Fills only EMPTY settings slots with what it made. Refuses
  * until the ship-from location is saved, since calculated rates need it.
  *
- * Standard Envelope is made LAST, and eBay turning it down (a 4xx) is not a
+ * The envelope policy is made LAST, and eBay turning it down (a 4xx) is not a
  * failure: what was made before it stays made and fills its slots, and the
  * answer says `envelopeRefused` so the collector picks their own policy for
  * cards under $20 (NB never puts a parcel policy there for them). eBay's
@@ -1210,10 +1230,12 @@ async function setMeUp(ctx: ActionCtx, ownerId: string, session: EbaySellerSessi
   if (!ids.ese && !ebayServiceTakesCalculated(services.value, EBAY_ESE_SERVICE_CODE)) {
     return { ok: false, error: NO_CALCULATED("Standard Envelope") };
   }
-  if (!ids.tracked && !ebayServiceTakesCalculated(services.value, ground)) {
+  // Ground Advantage rides in both the tracked and the envelope policy.
+  if ((!ids.tracked || !ids.ese) && !ebayServiceTakesCalculated(services.value, ground)) {
     return { ok: false, error: NO_CALCULATED("USPS Ground Advantage") };
   }
-  const envelope = policyService(services.value, EBAY_ESE_SERVICE_CODE, EBAY_ESE_CARRIER_FALLBACK);
+  // Carrier USPS always, as eBay documents the envelope (`EBAY_ESE_CARRIER`).
+  const envelope: PolicyService = { code: EBAY_ESE_SERVICE_CODE, carrier: EBAY_ESE_CARRIER };
   // Ground Advantage is a USPS service by construction (`ebayGroundAdvantageService`).
   const tracked = policyService(services.value, ground, EBAY_USPS_CARRIER_FALLBACK);
   let envelopeRefused = false;
@@ -1222,12 +1244,13 @@ async function setMeUp(ctx: ActionCtx, ownerId: string, session: EbaySellerSessi
     kind: "fulfillment_policy" | "payment_policy" | "return_policy",
     name: string,
     body: Record<string, unknown>,
-    sent?: { code: string; carrier: string; costType: string },
+    sent: ReadonlyArray<{ code: string; carrier: string; costType: string }> = [],
   ): Promise<Fail | null> => {
     const r = await createPolicy(ctx, session, kind, body);
     if (!r.ok) {
       ledger.land(slot, "failed");
-      if (sent) logRefusedPolicyService(slot, sent, services.value, r.failure);
+      // One line per service the policy named: eBay's answer does not say which it refused.
+      for (const one of sent) logRefusedPolicyService(slot, one, services.value, r.failure);
       // The envelope (always the last step) turned down: everything before it stands.
       if (slot === "ese" && isEbayRefusal(r.failure)) {
         envelopeRefused = true;
@@ -1243,7 +1266,8 @@ async function setMeUp(ctx: ActionCtx, ownerId: string, session: EbaySellerSessi
     return null;
   };
   const steps: Array<{ slot: PolicySlot; run: () => Promise<Fail | null> }> = [];
-  const sent = (service: PolicyService, costType: string) => ({ code: service.code, carrier: service.carrier, costType });
+  const sent = (list: readonly PolicyService[], costType: string) =>
+    list.map((service) => ({ code: service.code, carrier: service.carrier, costType }));
   if (!ids.tracked) {
     steps.push({
       slot: "tracked",
@@ -1252,8 +1276,8 @@ async function setMeUp(ctx: ActionCtx, ownerId: string, session: EbaySellerSessi
           "tracked",
           "fulfillment_policy",
           NB_POLICY_NAMES.tracked,
-          fulfillmentBody(NB_POLICY_NAMES.tracked, tracked, "calculated"),
-          sent(tracked, EBAY_COST_TYPE_CALCULATED),
+          fulfillmentBody(NB_POLICY_NAMES.tracked, [tracked], "calculated"),
+          sent([tracked], EBAY_COST_TYPE_CALCULATED),
         ),
     });
   }
@@ -1265,8 +1289,8 @@ async function setMeUp(ctx: ActionCtx, ownerId: string, session: EbaySellerSessi
           "free",
           "fulfillment_policy",
           NB_POLICY_NAMES.free,
-          fulfillmentBody(NB_POLICY_NAMES.free, tracked, "free"),
-          sent(tracked, EBAY_COST_TYPE_FLAT_RATE),
+          fulfillmentBody(NB_POLICY_NAMES.free, [tracked], "free"),
+          sent([tracked], EBAY_COST_TYPE_FLAT_RATE),
         ),
     });
   }
@@ -1310,8 +1334,9 @@ async function setMeUp(ctx: ActionCtx, ownerId: string, session: EbaySellerSessi
           "ese",
           "fulfillment_policy",
           NB_POLICY_NAMES.ese,
-          fulfillmentBody(NB_POLICY_NAMES.ese, envelope, "calculated"),
-          sent(envelope, EBAY_COST_TYPE_CALCULATED),
+          // Envelope first, tracked second: the buyer picks at checkout.
+          fulfillmentBody(NB_POLICY_NAMES.ese, [envelope, tracked], "calculated"),
+          sent([envelope, tracked], EBAY_COST_TYPE_CALCULATED),
         ),
     });
   }
@@ -1509,6 +1534,29 @@ export const setBestOffer = mutation({
     const row = await settingsOf(ctx, ownerId);
     if ((row?.bestOffer !== false) === args.on) return null;
     await patchSettings(ctx, ownerId, { bestOffer: args.on });
+    await settingsChanged(ctx, ownerId);
+    return null;
+  },
+});
+
+// ── Card weight ────────────────────────────────────────────────────────────
+
+/**
+ * The collector's "weight of a single card": what the letter package of every
+ * card under $20 weighs on eBay (`lib/ebayListing.ebayPackageFor`), whole
+ * ounces 1–3 (Standard Envelope tops out at 3 oz). Re-queues, so cards
+ * already listed carry the new weight (it is in the drain's content
+ * fingerprint). Unchanged weight: nothing written, nothing queued.
+ */
+export const setCardWeight = mutation({
+  args: { ounces: v.number() },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const ownerId = await requireSignedIn(ctx);
+    if (!isValidCardWeightOz(args.ounces)) throw new ConvexError(CARD_WEIGHT_REFUSED);
+    const row = await settingsOf(ctx, ownerId);
+    if ((row?.cardWeightOz ?? EBAY_DEFAULT_CARD_WEIGHT_OZ) === args.ounces) return null;
+    await patchSettings(ctx, ownerId, { cardWeightOz: args.ounces });
     await settingsChanged(ctx, ownerId);
     return null;
   },

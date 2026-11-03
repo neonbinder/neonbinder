@@ -435,9 +435,12 @@ export function readFulfillmentPolicies(body: unknown): NarrowFulfillmentPolicy[
 
 /**
  * What NB reads off a fulfillment policy for the two shipping slots.
- *   eseFit    it offers eBay Standard Envelope (a fit for cards under $20)
+ *   eseFit    it offers eBay Standard Envelope (a fit for cards under $20,
+ *             alone or beside a tracked service, as NB's own "Envelope or
+ *             Tracked" policy does)
  *   eseOnly   ESE is its ONLY domestic service, so it cannot ship a card of
- *             $20 or more (ESE covers items under $20): refused for $20+
+ *             $20 or more (ESE covers items under $20): refused for $20+.
+ *             A policy holding ESE plus a tracked service is not eseOnly.
  *   freeShipping any domestic service is free
  */
 export function policyFitness(
@@ -524,15 +527,19 @@ export function ebayServiceTakesCalculated(
 }
 
 /**
- * The carrier code a policy names beside a service when eBay's metadata gives
- * none. Sell Account `ShippingService.shippingCarrierCode` takes an eBay enum
- * value; the contract calls it optional, but eBay's own live eSE policies
- * (as `getFulfillmentPolicies` returns them) all carry it: "eBay Send" beside
- * `US_eBayStandardEnvelope`, "USPS" beside every USPS service. UNVERIFIED
- * against the contract (it links the enum out to Trading `GeteBayDetails`).
+ * The carrier code a policy names beside a USPS service when eBay's metadata
+ * gives none. Sell Account `ShippingService.shippingCarrierCode` takes an eBay
+ * enum value; the contract calls it optional, but eBay's own live policies
+ * (as `getFulfillmentPolicies` returns them) carry it beside every service.
  */
-export const EBAY_ESE_CARRIER_FALLBACK = "eBay Send";
 export const EBAY_USPS_CARRIER_FALLBACK = "USPS";
+/**
+ * The carrier NB names beside `US_eBayStandardEnvelope`, always, whatever
+ * eBay's metadata lists: eBay's documented Standard Envelope policy body
+ * pairs the envelope with carrier "USPS" (it rides USPS letter mail), and a
+ * policy NB sent with the metadata's "eBay Send" was refused (20403).
+ */
+export const EBAY_ESE_CARRIER = "USPS";
 
 /**
  * The carrier code for `code` as eBay's own shipping metadata lists it
@@ -612,43 +619,69 @@ export function ebayGroundAdvantageService(services: ReadonlyArray<EbayMetadataS
 }
 
 /**
- * Package weights NB declares for a RAW card, in ounces (Jason, NEO-415):
- * a single card in a Standard Envelope letter is 1 oz; a card packaged in a
- * bubble mailer (tracked, $20 and up) is 6 oz. Calculated shipping prices
- * from these. Graded cards are held from eBay today; when they list they
- * need their own weight (a slab ships heavier), so add a third package then
- * rather than reusing either of these.
+ * Package weights NB declares for a RAW card, in ounces (Jason, NEO-415).
+ * Under $20 the card ships as a letter weighing what the collector set as
+ * "weight of a single card" (`ebaySellerSettings.cardWeightOz`, whole ounces
+ * 1–3, absent = 1): many sellers always send a 3 oz envelope because of
+ * their packaging, and 3 oz is where eBay Standard Envelope tops out (a USPS
+ * letter rule), so nothing heavier is accepted. At $20 and up it ships in a bubble mailer, always 6 oz.
+ * Calculated shipping prices from these. Graded cards are held from eBay
+ * today; when they list they need their own weight (a slab ships heavier),
+ * so add a third package then rather than reusing either of these.
  */
-export const EBAY_ENVELOPE_WEIGHT_OZ = 1;
+export const EBAY_DEFAULT_CARD_WEIGHT_OZ = 1;
+export const EBAY_MAX_CARD_WEIGHT_OZ = 3;
 export const EBAY_MAILER_WEIGHT_OZ = 6;
 
-/**
- * Sell Inventory `packageWeightAndSize` for a raw card under $20: a letter
- * (eBay Standard Envelope takes letters up to 6.125" × 11.5" × 0.25").
- * `packageType` values are PackageTypeEnum's; the enum's values are not in
- * the published OpenAPI document (it links out), so LETTER and PADDED_BAGS
- * are UNVERIFIED against the contract (they match eBay's Trading
- * ShippingPackageCodeType Letter / PaddedBags). Dimensions are NB product
- * defaults: eBay says calculated shipping needs them.
- */
-export const EBAY_ENVELOPE_PACKAGE = {
-  packageType: "LETTER",
-  weight: { value: EBAY_ENVELOPE_WEIGHT_OZ, unit: "OUNCE" },
-  dimensions: { length: 6, width: 4, height: 0.25, unit: "INCH" },
-} as const;
+/** A "weight of a single card" NB accepts: a whole number of ounces, 1 to 3. */
+export function isValidCardWeightOz(ounces: number): boolean {
+  return Number.isInteger(ounces) && ounces >= 1 && ounces <= EBAY_MAX_CARD_WEIGHT_OZ;
+}
 
-/** `packageWeightAndSize` for a raw card at $20 and up: a padded (bubble) mailer, tracked. */
-export const EBAY_MAILER_PACKAGE = {
+/** Sell Inventory `packageWeightAndSize` as NB sends it. */
+export interface EbayPackage {
+  packageType: "LETTER" | "PADDED_BAGS";
+  weight: { value: number; unit: "OUNCE" };
+  dimensions: { length: number; width: number; height: number; unit: "INCH" };
+}
+
+/**
+ * `packageWeightAndSize` for a raw card under $20: a letter, 6 x 4 x 1 in,
+ * weighing the collector's card weight. The dimensions are the ones Jason's
+ * working production listings carry (Trading API: Letter, 6 x 4 x 1 in; the
+ * thickness is a whole number there, and 1 is what eBay took). `packageType`
+ * values are PackageTypeEnum's; the enum's values are not in the published
+ * OpenAPI document (it links out), so LETTER and PADDED_BAGS are UNVERIFIED
+ * against the contract (they match eBay's Trading ShippingPackageCodeType
+ * Letter / PaddedBags). eBay says calculated shipping needs dimensions.
+ */
+export function ebayEnvelopePackage(cardWeightOz: number = EBAY_DEFAULT_CARD_WEIGHT_OZ): EbayPackage {
+  const ounces = isValidCardWeightOz(cardWeightOz) ? cardWeightOz : EBAY_DEFAULT_CARD_WEIGHT_OZ;
+  return {
+    packageType: "LETTER",
+    weight: { value: ounces, unit: "OUNCE" },
+    dimensions: { length: 6, width: 4, height: 1, unit: "INCH" },
+  };
+}
+
+/** The letter at the default weight (1 oz). */
+export const EBAY_ENVELOPE_PACKAGE: EbayPackage = ebayEnvelopePackage();
+
+/** `packageWeightAndSize` for a raw card at $20 and up: a padded (bubble) mailer, tracked, 6 oz whatever the card weight. */
+export const EBAY_MAILER_PACKAGE: EbayPackage = {
   packageType: "PADDED_BAGS",
   weight: { value: EBAY_MAILER_WEIGHT_OZ, unit: "OUNCE" },
   dimensions: { length: 10, width: 6, height: 1, unit: "INCH" },
-} as const;
+};
 
-export type EbayPackage = typeof EBAY_ENVELOPE_PACKAGE | typeof EBAY_MAILER_PACKAGE;
-
-/** The package a raw card ships in at this price: it follows the shipping slot. */
-export function ebayPackageFor(priceCents: number): EbayPackage {
-  return fulfillmentSlotFor(priceCents) === "twentyPlus" ? EBAY_MAILER_PACKAGE : EBAY_ENVELOPE_PACKAGE;
+/**
+ * The package a raw card ships in at this price: it follows the shipping
+ * slot. Under $20 the letter weighs `cardWeightOz` (the collector's setting;
+ * anything that is not a whole 1–3 reads as the default); $20 and up is the
+ * 6 oz mailer.
+ */
+export function ebayPackageFor(priceCents: number, cardWeightOz: number = EBAY_DEFAULT_CARD_WEIGHT_OZ): EbayPackage {
+  return fulfillmentSlotFor(priceCents) === "twentyPlus" ? EBAY_MAILER_PACKAGE : ebayEnvelopePackage(cardWeightOz);
 }
 
 export interface NarrowReturnPolicy {

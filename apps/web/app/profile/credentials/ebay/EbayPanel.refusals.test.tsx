@@ -12,9 +12,8 @@ import { Theme } from "@radix-ui/themes";
 import { ConvexError } from "convex/values";
 import { getFunctionName } from "convex/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { EbayConnectionState } from "@/lib/marketplace/ebay-setup";
 
-let connection: EbayConnectionState | undefined;
+let connection: EbayConnection | undefined;
 const fns: Record<string, ReturnType<typeof vi.fn>> = {};
 const fn = (name: string) => (fns[name] ??= vi.fn());
 
@@ -32,9 +31,10 @@ vi.mock("convex/react", () => {
 });
 
 import EbayPanel from "./EbayPanel";
+import type { EbayConnection } from "./SetupSections";
 import EbayReturnLanding from "@/app/profile/ebay/page";
 
-function state(over: Partial<EbayConnectionState> = {}): EbayConnectionState {
+function state(over: Partial<EbayConnection> = {}): EbayConnection {
   return {
     configured: true,
     environment: "production",
@@ -50,6 +50,7 @@ function state(over: Partial<EbayConnectionState> = {}): EbayConnectionState {
       bestOffer: true,
     },
     setupComplete: false,
+    cardWeightOz: 1,
     missing: [],
     ...over,
   };

@@ -13,8 +13,9 @@ import {
   pausedLine,
   sellerConflictLine,
 } from "@/lib/marketplace/listing-copy";
-import SetupSections from "./SetupSections";
+import SetupSections, { type EbayConnection } from "./SetupSections";
 import { ebayReturnFrom } from "./oauth-return";
+import { refusalSentence } from "./refusal";
 
 /**
  * Profile → Credentials → eBay — NEO-415. eBay is NB's first card-level
@@ -75,17 +76,6 @@ const CONNECT_FAILED = `Couldn't reach ${EBAY_NAME} to connect. Give it another 
 /** What Connect's start said back: the consent URL, or the server's refusal. */
 type BeginAnswer = { authorizeUrl: string } | { ok: false; error: string };
 
-/** The server's own sentence from a refusal thrown as a ConvexError, if it sent one. */
-function refusalSentence(error: unknown): string | null {
-  const data = (error as { data?: unknown } | null)?.data;
-  if (typeof data === "string" && data.trim()) return data;
-  if (data && typeof data === "object") {
-    const message = (data as { message?: unknown; error?: unknown }).message ?? (data as { error?: unknown }).error;
-    if (typeof message === "string" && message.trim()) return message;
-  }
-  return null;
-}
-
 /** The alert after a disconnect that couldn't take every NB listing down. */
 function notEndedLine(n: number): string {
   const listings = n === 1 ? "1 NeonBinder listing is" : `${n} NeonBinder listings are`;
@@ -108,7 +98,7 @@ export default function EbayPanel({
   onHoldChange?: (holding: boolean) => void;
 } = {}) {
   const raw = useQuery(api.ebayConnect.connectionState, {});
-  const connection: EbayConnectionState | undefined = raw;
+  const connection: EbayConnection | undefined = raw;
   const beginConnect = useMutation(api.ebayConnect.beginConnect);
   const completeConnect = useAction(api.ebayConnect.completeConnect);
   const disconnect = useAction(api.ebayConnect.disconnect);

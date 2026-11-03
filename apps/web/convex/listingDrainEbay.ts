@@ -74,6 +74,7 @@ import {
 } from "./listingDrain";
 import {
   EBAY_BULK_LIMIT,
+  EBAY_DEFAULT_CARD_WEIGHT_OZ,
   EBAY_CARD_CATEGORY_ID,
   EBAY_CARD_CONDITION_DESCRIPTOR,
   EBAY_DESCRIPTOR_VALUE,
@@ -92,6 +93,7 @@ import {
   type EbayAspectFacts,
   type EbayConditionCode,
   type EbayHold,
+  type EbayPackage,
   type EbayTarget,
 } from "./lib/ebayListing";
 import {
@@ -136,6 +138,8 @@ const settingsOutValidator = v.object({
   returnPolicyId: v.string(),
   merchantLocationKey: v.string(),
   bestOffer: v.boolean(),
+  /** The letter package's weight for cards under $20 (`ebaySellerSettings.cardWeightOz`, absent = 1). */
+  cardWeightOz: v.number(),
 });
 type EbaySettingsOut = typeof settingsOutValidator.type;
 
@@ -188,6 +192,7 @@ export const ebayVariantInput = internalQuery({
             returnPolicyId: row.returnPolicyId,
             merchantLocationKey: row.merchantLocationKey,
             bestOffer: row.bestOffer !== false,
+            cardWeightOz: row.cardWeightOz ?? EBAY_DEFAULT_CARD_WEIGHT_OZ,
           }
         : null;
     const profile = await ctx.db
@@ -743,6 +748,8 @@ interface Plan {
   imageUrls: string[];
   /** The pictures as uploaded (or reused), front first; null until step 1 ran. */
   images: Array<{ url: string; photoToken: string; expiresAt?: number }> | null;
+  /** The package the item is sent with (`ebayPackageFor`: price slot and card weight), as fingerprinted. */
+  package: EbayPackage;
   contentHash: string;
   /** What the step list must do. */
   needsItem: boolean;
@@ -1077,14 +1084,16 @@ async function syncEbayVariant(
     const priceCents = t.priceCents as number;
     const slot = fulfillmentSlotFor(priceCents);
     const fulfillmentPolicyId = slot === "twentyPlus" ? settings.fulfillmentPolicy20PlusId : settings.fulfillmentPolicyUnder20Id;
+    // The package follows the price slot and, under $20, the collector's
+    // card weight; it is in the fingerprint, so a price crossing $20 or a
+    // changed card weight re-sends the item even when nothing else changed.
+    const pkg = ebayPackageFor(priceCents, settings.cardWeightOz);
     const contentHash = contentFingerprint({
       text,
       aspects,
       condition: EBAY_DESCRIPTOR_VALUE[t.conditionCode],
       photos: photos.map((p) => p.key),
-      // The package follows the price slot, so a price crossing $20 re-sends
-      // the item with its new weight even when nothing else changed.
-      package: ebayPackageFor(priceCents),
+      package: pkg,
     });
     const link = links.get(t.sku) ?? null;
     const pushed = link?.pushed ?? null;
@@ -1108,6 +1117,7 @@ async function syncEbayVariant(
       photos,
       imageUrls: [],
       images: null,
+      package: pkg,
       contentHash,
       needsItem: true,
       needsOffer: link?.offerId ? "replace" : "create",
@@ -1537,7 +1547,7 @@ function inventoryItemBody(plan: Plan): Record<string, unknown> {
       { name: EBAY_CARD_CONDITION_DESCRIPTOR, values: [EBAY_DESCRIPTOR_VALUE[plan.target.conditionCode]] },
     ],
     availability: { shipToLocationAvailability: { quantity: plan.target.quantity } },
-    packageWeightAndSize: ebayPackageFor(plan.target.priceCents as number),
+    packageWeightAndSize: plan.package,
     product: {
       title: plan.text.title,
       description: plan.text.description,

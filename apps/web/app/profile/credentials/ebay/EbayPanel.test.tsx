@@ -6,7 +6,7 @@
  * clears it), Disconnect's
  * confirm, and the setup (the $20-and-up picker leaving Standard
  * Envelope-only policies out, a refused save rolling back with an alert,
- * Set me up, and the checklist).
+ * Set me up, the weight of a single card, and the checklist).
  */
 
 import { useEffect } from "react";
@@ -18,7 +18,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { EbayConnectionState, EbayPolicies } from "@/lib/marketplace/ebay-setup";
 import { expectAccessibleInBothModes } from "@/lib/testing/axe";
 
-let connection: EbayConnectionState | undefined;
+let connection: EbayConnection | undefined;
 const fns: Record<string, ReturnType<typeof vi.fn>> = {};
 const fn = (name: string) => (fns[name] ??= vi.fn());
 
@@ -54,6 +54,7 @@ vi.mock("convex/react", () => {
 });
 
 import EbayPanel from "./EbayPanel";
+import type { EbayConnection } from "./SetupSections";
 import EbayReturnLanding from "@/app/profile/ebay/page";
 
 const SETTINGS_EMPTY: EbayConnectionState["settings"] = {
@@ -65,7 +66,7 @@ const SETTINGS_EMPTY: EbayConnectionState["settings"] = {
   bestOffer: true,
 };
 
-function state(over: Partial<EbayConnectionState> = {}): EbayConnectionState {
+function state(over: Partial<EbayConnection> = {}): EbayConnection {
   return {
     configured: true,
     environment: "production",
@@ -74,6 +75,7 @@ function state(over: Partial<EbayConnectionState> = {}): EbayConnectionState {
     since: null,
     settings: SETTINGS_EMPTY,
     setupComplete: false,
+    cardWeightOz: 1,
     missing: ["shippingUnder20", "shipping20Plus", "payment", "returns", "location"],
     ...over,
   };
@@ -277,11 +279,11 @@ describe("Profile → Credentials → eBay, setup", () => {
     fn("ebayConnect:readPolicies").mockResolvedValueOnce({ ok: true, fulfillment: [], payment: [], returns: [] });
     fn("ebayConnect:createStandardPolicies").mockResolvedValue({
       ok: true,
-      created: ["NB Standard Envelope (under $20)", "NB Tracked (USPS Ground Advantage)", "NB Free Shipping"],
+      created: ["NB Envelope or Tracked (under $20)", "NB Tracked (USPS Ground Advantage)", "NB Free Shipping"],
       // The account's policies once the run is done: the page picks from these, not from a second read.
       policies: {
         fulfillment: [
-          { id: "n1", name: "NB Standard Envelope (under $20)", eseFit: true, eseOnly: true, freeShipping: false, summary: "" },
+          { id: "n1", name: "NB Envelope or Tracked (under $20)", eseFit: true, eseOnly: false, freeShipping: false, summary: "" },
           { id: "n2", name: "NB Tracked (USPS Ground Advantage)", eseFit: false, eseOnly: false, freeShipping: false, summary: "" },
           { id: "n3", name: "NB Free Shipping", eseFit: false, eseOnly: false, freeShipping: true, summary: "" },
         ],
@@ -303,6 +305,49 @@ describe("Profile → Credentials → eBay, setup", () => {
     await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("heading", { level: 3, name: "Shipping" })));
     // Only the read the page opened with: after a run, eBay is not asked again.
     expect(fns["ebayConnect:readPolicies"]).toHaveBeenCalledTimes(1);
+  });
+
+  it("the weight of a single card reads 1 oz by default, and says what it's for", async () => {
+    renderAt();
+    const weight = screen.getByRole("radiogroup", { name: "Weight of a single card" });
+    expect(within(weight).getAllByRole("radio").map((r) => r.textContent)).toEqual(["1 oz", "2 oz", "3 oz"]);
+    expect(within(weight).getByRole("radio", { name: "1 oz" }).getAttribute("aria-checked")).toBe("true");
+    expect(within(weight).getAllByRole("radio", { checked: true })).toHaveLength(1);
+    const hint = document.getElementById(weight.getAttribute("aria-describedby")!)!;
+    expect(hint.textContent).toBe(
+      "Weigh one card packed to mail: sleeve, toploader, envelope and all. eBay charges buyers shipping by it, and Standard Envelope tops out at 3 oz.",
+    );
+  });
+
+  it("the saved weight is the one shown", () => {
+    connection = state({ status: "connected", ebayUsername: "cardshark88", cardWeightOz: 3 });
+    renderAt();
+    const weight = screen.getByRole("radiogroup", { name: "Weight of a single card" });
+    expect(within(weight).getByRole("radio", { name: "3 oz" }).getAttribute("aria-checked")).toBe("true");
+  });
+
+  it("Enter on a weight saves it and says so", async () => {
+    fn("ebayConnect:setCardWeight").mockResolvedValue(null);
+    renderAt();
+    const three = within(screen.getByRole("radiogroup", { name: "Weight of a single card" })).getByRole("radio", { name: "3 oz" });
+    three.focus();
+    await act(async () => {
+      fireEvent.keyDown(three, { key: "Enter" });
+    });
+    expect(fns["ebayConnect:setCardWeight"]).toHaveBeenCalledTimes(1);
+    expect(fns["ebayConnect:setCardWeight"]).toHaveBeenCalledWith({ ounces: 3 });
+    expect((await screen.findByText("Saved. Each card weighs in at 3 oz.")).getAttribute("role")).toBe("status");
+    expect(spokenAlerts()).toHaveLength(0);
+  });
+
+  it("picking the weight already saved sends nothing", async () => {
+    renderAt();
+    const one = within(screen.getByRole("radiogroup", { name: "Weight of a single card" })).getByRole("radio", { name: "1 oz" });
+    one.focus();
+    await act(async () => {
+      fireEvent.keyDown(one, { key: "Enter" });
+    });
+    expect(fns["ebayConnect:setCardWeight"]).toBeUndefined();
   });
 
   it("the checklist says what's left, then folds to one line", async () => {
@@ -334,6 +379,7 @@ describe("Profile → Credentials → eBay, setup", () => {
       "Ships from",
       "Shipping",
       "Payment and returns",
+      "Packing",
       "Offers",
     ]);
     expect(within(list).getAllByRole("link")[0].textContent).toMatch(/^Where your cards ship from/);

@@ -3,9 +3,11 @@ import { encodeId } from "./convexIdCodec";
 import {
   EBAY_ASPECT_VALUE_MAX,
   EBAY_DESCRIPTOR_VALUE,
+  EBAY_DEFAULT_CARD_WEIGHT_OZ,
   EBAY_ENVELOPE_PACKAGE,
-  EBAY_ENVELOPE_WEIGHT_OZ,
+  EBAY_ESE_CARRIER,
   EBAY_ESE_SERVICE_CODE,
+  EBAY_MAX_CARD_WEIGHT_OZ,
   EBAY_MAILER_PACKAGE,
   EBAY_MAILER_WEIGHT_OZ,
   EBAY_ORDER_STATUSES,
@@ -18,11 +20,11 @@ import {
   ebayGroundAdvantageService,
   ebayOrderDisposition,
   ebayOrderStatus,
+  ebayEnvelopePackage,
   ebayPackageFor,
   ebayServiceNames,
   ebayServiceTakesCalculated,
   ebayServiceCarrier,
-  EBAY_ESE_CARRIER_FALLBACK,
   EBAY_USPS_CARRIER_FALLBACK,
   ebaySetupMissing,
   ebayStatusDisposition,
@@ -30,6 +32,7 @@ import {
   foldEbayTargets,
   fulfillmentSlotFor,
   isFinalEbayStatus,
+  isValidCardWeightOz,
   missingRequiredAspects,
   nbConditionsOfBucket,
   ordersModifiedSinceFilter,
@@ -245,6 +248,22 @@ describe("policy fitness (NEO-415)", () => {
     expect(f).toMatchObject({ eseFit: true, eseOnly: false });
   });
 
+  test("NB's own Envelope or Tracked policy (both calculated) fits under $20 and is allowed for $20+ too (not envelope-only)", () => {
+    const f = policyFitness(
+      policy([
+        { code: "US_eBayStandardEnvelope", costCents: null, free: false },
+        { code: "USPSParcel", costCents: null, free: false },
+      ]),
+      new Map([["USPSParcel", "USPS Ground Advantage"]]),
+    );
+    expect(f).toEqual({
+      eseFit: true,
+      eseOnly: false,
+      freeShipping: false,
+      summary: "Standard Envelope, eBay's rate by weight; USPS Ground Advantage, eBay's rate by weight",
+    });
+  });
+
   test("a free service marks the policy free, by flag or by a zero cost", () => {
     expect(policyFitness(policy([{ code: "USPSGroundAdvantage", costCents: null, free: true }])).freeShipping).toBe(true);
     expect(policyFitness(policy([{ code: "USPSGroundAdvantage", costCents: 0, free: false }])).freeShipping).toBe(true);
@@ -315,20 +334,26 @@ describe("price to shipping slot and floor (NEO-415)", () => {
     expect(fulfillmentSlotFor(cents)).toBe(slot);
   });
 
-  test("the two raw-card weights are Jason's: 1 oz in an envelope, 6 oz in a packaged bubble mailer", () => {
-    expect(EBAY_ENVELOPE_WEIGHT_OZ).toBe(1);
+  test("the raw-card packages are Jason's: a 6 x 4 x 1 in letter at 1 oz by default, a 6 oz packaged bubble mailer", () => {
+    expect(EBAY_DEFAULT_CARD_WEIGHT_OZ).toBe(1);
     expect(EBAY_MAILER_WEIGHT_OZ).toBe(6);
+    // The letter his working production listings carry (Trading API: Letter, 6 x 4 x 1 in, whole-inch thickness).
     expect(EBAY_ENVELOPE_PACKAGE).toEqual({
       packageType: "LETTER",
       weight: { value: 1, unit: "OUNCE" },
-      dimensions: { length: 6, width: 4, height: 0.25, unit: "INCH" },
+      dimensions: { length: 6, width: 4, height: 1, unit: "INCH" },
     });
-    expect(EBAY_MAILER_PACKAGE).toMatchObject({ packageType: "PADDED_BAGS", weight: { value: 6, unit: "OUNCE" } });
-    // Standard Envelope takes letters no thicker than 0.25" and no larger than 6.125" x 11.5".
-    const { length, width, height } = EBAY_ENVELOPE_PACKAGE.dimensions;
-    expect(height).toBeLessThanOrEqual(0.25);
-    expect(Math.min(length, width)).toBeLessThanOrEqual(6.125);
-    expect(Math.max(length, width)).toBeLessThanOrEqual(11.5);
+    expect(EBAY_MAILER_PACKAGE).toEqual({
+      packageType: "PADDED_BAGS",
+      weight: { value: 6, unit: "OUNCE" },
+      dimensions: { length: 10, width: 6, height: 1, unit: "INCH" },
+    });
+  });
+
+  test("a card weight is a whole 1, 2 or 3 oz: Standard Envelope tops out at 3 oz", () => {
+    expect(EBAY_MAX_CARD_WEIGHT_OZ).toBe(3);
+    for (const ok of [1, 2, 3]) expect(isValidCardWeightOz(ok)).toBe(true);
+    for (const bad of [0, 4, 16, 1.5, 2.0001, -1, Number.NaN, Number.POSITIVE_INFINITY]) expect(isValidCardWeightOz(bad)).toBe(false);
   });
 
   test.each([
@@ -337,8 +362,25 @@ describe("price to shipping slot and floor (NEO-415)", () => {
     [2000, EBAY_MAILER_PACKAGE],
     [250000, EBAY_MAILER_PACKAGE],
   ] as const)("%i cents ships in the package of its slot", (cents, pkg) => {
-    expect(ebayPackageFor(cents)).toBe(pkg);
-    expect(ebayPackageFor(cents) === EBAY_MAILER_PACKAGE).toBe(fulfillmentSlotFor(cents) === "twentyPlus");
+    expect(ebayPackageFor(cents)).toEqual(pkg);
+    expect(ebayPackageFor(cents).packageType === "PADDED_BAGS").toBe(fulfillmentSlotFor(cents) === "twentyPlus");
+  });
+
+  test("under $20 the letter weighs the collector's card weight; $20 and up the mailer stays 6 oz", () => {
+    expect(ebayPackageFor(1999, 3)).toEqual({ ...EBAY_ENVELOPE_PACKAGE, weight: { value: 3, unit: "OUNCE" } });
+    expect(ebayPackageFor(99, 2).weight).toEqual({ value: 2, unit: "OUNCE" });
+    expect(ebayPackageFor(2000, 3)).toEqual(EBAY_MAILER_PACKAGE);
+    // A weight NB would never store reads as the default rather than reaching eBay.
+    for (const bad of [0, 4, 1.5, Number.NaN]) expect(ebayPackageFor(99, bad)).toEqual(EBAY_ENVELOPE_PACKAGE);
+    expect(ebayEnvelopePackage(3).dimensions).toEqual(EBAY_ENVELOPE_PACKAGE.dimensions);
+  });
+
+  test("the item fingerprint changes when the card weight changes the package", () => {
+    const content = (pkg: unknown) => contentFingerprint({ text: { title: "t", description: "d" }, package: pkg });
+    expect(content(ebayPackageFor(99, 1))).not.toBe(content(ebayPackageFor(99, 3)));
+    expect(content(ebayPackageFor(99, 2))).toBe(content(ebayPackageFor(99, 2)));
+    // $20 and up ignores the card weight, so it changes nothing there.
+    expect(content(ebayPackageFor(2500, 1))).toBe(content(ebayPackageFor(2500, 3)));
   });
 
   test("a calculated rate is refused when eBay does not list the service, or lists its cost types without CALCULATED", () => {
@@ -367,8 +409,9 @@ describe("price to shipping slot and floor (NEO-415)", () => {
     expect(ebayServiceCarrier(services, "Blank", "FALLBACK")).toBe("FALLBACK");
     expect(ebayServiceCarrier(services, "Missing", "FALLBACK")).toBe("FALLBACK");
     expect(ebayServiceCarrier(services, "usps_parcel", "FALLBACK")).toBe("FALLBACK");
-    expect(EBAY_ESE_CARRIER_FALLBACK).toBe("eBay Send");
     expect(EBAY_USPS_CARRIER_FALLBACK).toBe("USPS");
+    // The envelope's carrier is fixed, as eBay documents it, never read from the metadata.
+    expect(EBAY_ESE_CARRIER).toBe("USPS");
   });
 
   const copy = (over: Partial<EbayListingCopy> = {}): EbayListingCopy => ({

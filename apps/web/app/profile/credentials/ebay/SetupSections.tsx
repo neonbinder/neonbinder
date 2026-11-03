@@ -1,9 +1,10 @@
-import { useEffect, useId, useRef, useState, type ChangeEvent } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState, type ChangeEvent } from "react";
 import { useAction, useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import NeonButton from "@/components/modules/NeonButton";
 import { Input } from "@/components/primitives/Input";
 import { Switch } from "@/components/primitives/Switch";
+import ModeRadioGroup from "@/components/primitives/ModeRadioGroup";
 import { RunGlyph, type RunLineKind } from "@/components/modules/RunLedger";
 import {
   hiddenFrom20Plus,
@@ -29,13 +30,15 @@ import {
   type EbaySetupStepStatus,
 } from "@/lib/marketplace/ebay-setup";
 import { EBAY_NAME } from "@/lib/marketplace/listing-copy";
+import { EBAY_MAX_CARD_WEIGHT_OZ, isValidCardWeightOz } from "@/convex/lib/ebayListing";
 import PolicyPicker, { type SaveAnswer } from "./PolicyPicker";
+import { refusalSentence } from "./refusal";
 
 /**
  * NEO-415 — the eBay tab's setup on Profile → Credentials, shown while eBay
  * is connected: the
  * seller's own shipping, payment and returns policies (read live from eBay
- * when the page opens, never subscribed), where cards ship from, Best Offer,
+ * when the page opens, never subscribed), where cards ship from, the weight of a single card, Best Offer,
  * and the checklist that says what still stands between their boxes and
  * eBay. Every save is the server's: a refusal comes back as NB's sentence
  * and is said in an alert.
@@ -77,7 +80,10 @@ const READ_FAILED = `Couldn't reach ${EBAY_NAME} for your policies. Give it anot
 const MADE_NOT_PICKED =
   "Your new policies are made, but we couldn't read them back just now, so nothing's picked yet. Give it a bit, then press Try again to pick them. It won't make them twice.";
 
-export default function SetupSections({ connection }: { connection: EbayConnectionState }) {
+/** The connection as `ebayConnect.connectionState` answers it: the setup, plus the weight of a single card. */
+export type EbayConnection = EbayConnectionState & { cardWeightOz: number };
+
+export default function SetupSections({ connection }: { connection: EbayConnection }) {
   const readPolicies = useAction(api.ebayConnect.readPolicies);
   const savePolicies = useAction(api.ebayConnect.savePolicies);
   const [loaded, setLoaded] = useState<Loaded>({ state: "loading" });
@@ -135,6 +141,7 @@ export default function SetupSections({ connection }: { connection: EbayConnecti
         shippingId={shippingId}
         moneyId={moneyId}
       />
+      <PackingSection saved={connection.cardWeightOz} />
       <OffersSection connection={connection} />
       {complete && <SetupChecklist missing={connection.missing} complete announce={sawUnfinished} />}
     </>
@@ -301,8 +308,9 @@ function PoliciesBody({
 
 /**
  * "Set me up": makes NB's standard policies on the seller's eBay account
- * (Standard Envelope under $20 and tracked Ground Advantage, both priced by
- * eBay for the card's weight, free shipping, and payment and returns only
+ * (one for cards under $20 that lets the buyer pick Standard Envelope or
+ * tracked, tracked Ground Advantage for $20 and up, both priced by eBay for
+ * the card's weight, free shipping, and payment and returns only
  * where there are none), and picks them for any slot still empty from the
  * policy lists the run hands back (no second read of eBay). A slot already
  * picked stays put.
@@ -316,8 +324,8 @@ function PoliciesBody({
  * policies from eBay and picks without making anything twice. Focus
  * stays on that button; on success it moves to the Shipping heading.
  */
-/** eBay turned down the Standard Envelope policy; everything else Set me up does still happened. */
-const NO_ENVELOPE = `${EBAY_NAME} wouldn't make a Standard Envelope policy, so pick one of yours for cards under $20.`;
+/** eBay turned down the under-$20 (Standard Envelope or tracked) policy; everything else Set me up does still happened. */
+const NO_ENVELOPE = `${EBAY_NAME} wouldn't make the Envelope or Tracked policy, so pick one of yours for cards under $20.`;
 
 /** What Set me up says when it's done: what it made, and whether cards under $20 are still the collector's pick. */
 function setMeUpDone(created: readonly string[], envelopeRefused: boolean): string {
@@ -347,7 +355,7 @@ function SetMeUp({
   const [busy, setBusy] = useState(false);
   /** What the last run made, when reading it back failed: a retry picks from these. */
   const [made, setMade] = useState<string[] | null>(null);
-  /** The last run's eBay turned the Standard Envelope policy down (kept for a retry of the read). */
+  /** The last run's eBay turned the under-$20 policy down (kept for a retry of the read). */
   const [envelopeRefused, setEnvelopeRefused] = useState(false);
   const describeId = useId();
   const waitId = useId();
@@ -403,10 +411,10 @@ function SetMeUp({
   return (
     <div className="space-y-3 rounded-md border border-dashed border-rule-strong p-4">
       <p id={describeId} className="text-sm text-ink-2">
-        Nothing here fits? Set me up makes three shipping policies on your {EBAY_NAME} account: Standard Envelope for
-        cards under $20, tracked USPS Ground Advantage, and free shipping. On the first two, buyers pay
-        {` ${EBAY_NAME}'s `}own rate for the card&apos;s weight. It adds payment and returns too if you have none.
-        Then it picks them for you.
+        Nothing here fits? Set me up makes three shipping policies on your {EBAY_NAME} account. Under $20, the buyer
+        picks Standard Envelope or tracked; $20 and up ships tracked with USPS Ground Advantage; and there&apos;s free
+        shipping too. On the first two, buyers pay{` ${EBAY_NAME}'s `}own rate for the card&apos;s weight. It adds
+        payment and returns too if you have none. Then it picks them for you.
       </p>
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
         <NeonButton
@@ -664,6 +672,95 @@ function LocationForm({ saved }: { saved: EbayLocation | null }) {
         {line?.kind === "saving" ? "" : (line?.text ?? "")}
       </p>
     </form>
+  );
+}
+
+/** Every weight the server takes (whole ounces, 1 up to the Standard Envelope's limit), as choice cards. */
+const WEIGHT_OPTIONS = Array.from({ length: EBAY_MAX_CARD_WEIGHT_OZ }, (_, i) => i + 1)
+  .filter(isValidCardWeightOz)
+  .map((ounces) => ({ value: String(ounces), label: `${ounces} oz` }));
+
+const WEIGHT_HINT = `Weigh one card packed to mail: sleeve, toploader, envelope and all. ${EBAY_NAME} charges buyers shipping by it, and Standard Envelope tops out at ${EBAY_MAX_CARD_WEIGHT_OZ} oz.`;
+
+/**
+ * The weight of a single card, packed (1 oz by default): eBay's calculated
+ * shipping charges the buyer by it, and plenty of sellers' envelopes go out
+ * heavier than a bare card. Saved like Best Offer: a pick shows at once (an
+ * optimistic update on the connection state) and saves; Enter, Space or an
+ * arrow picks (the radio group pattern). A refusal is rolled back by Convex,
+ * the server's own sentence is said in an alert that describes the group,
+ * and focus lands on the weight that's back while it is still in the group.
+ * Picks can overlap as arrows move, so only the latest reports.
+ */
+function PackingSection({ saved }: { saved: number }) {
+  const headingId = useId();
+  const hintId = useId();
+  const lineId = useId();
+  const groupRef = useRef<HTMLDivElement>(null);
+  const latestPick = useRef(0);
+  const [line, setLine] = useState<FormLine>(null);
+  const [rollbacks, setRollbacks] = useState(0);
+  const setCardWeight = useMutation(api.ebayConnect.setCardWeight).withOptimisticUpdate((local, args) => {
+    const current = local.getQuery(api.ebayConnect.connectionState, {});
+    if (!current) return;
+    local.setQuery(api.ebayConnect.connectionState, {}, { ...current, cardWeightOz: args.ounces });
+  });
+
+  useLayoutEffect(() => {
+    if (rollbacks === 0) return;
+    const group = groupRef.current;
+    // Only while focus is still in the group; never pull it back from elsewhere.
+    if (!group || !group.contains(document.activeElement)) return;
+    group.querySelector<HTMLElement>('[role="radio"][aria-checked="true"]')?.focus();
+  }, [rollbacks]);
+
+  const choose = async (next: string) => {
+    const ounces = Number(next);
+    if (!isValidCardWeightOz(ounces) || ounces === saved) return;
+    const pick = ++latestPick.current;
+    setLine({ kind: "saving", text: "Saving…" });
+    try {
+      await setCardWeight({ ounces });
+      if (pick === latestPick.current) setLine({ kind: "saved", text: `Saved. Each card weighs in at ${ounces} oz.` });
+    } catch (error) {
+      if (pick !== latestPick.current) return;
+      setLine({ kind: "error", text: `${refusalSentence(error) ?? "That didn't save."} Your old weight is back.` });
+      setRollbacks((n) => n + 1);
+    }
+  };
+
+  const failed = line?.kind === "error";
+  return (
+    <section aria-labelledby={headingId} className={SECTION}>
+      <h3 id={headingId} className="text-lg font-semibold text-ink">
+        Packing
+      </h3>
+      <div className="flex flex-col gap-2">
+        <div ref={groupRef}>
+          <ModeRadioGroup
+            label="Weight of a single card"
+            value={String(saved)}
+            options={WEIGHT_OPTIONS}
+            onChange={(next) => void choose(next)}
+            describedBy={failed ? `${lineId} ${hintId}` : hintId}
+            className="max-w-md"
+          />
+        </div>
+        <p id={hintId} className={NOTE}>
+          {WEIGHT_HINT}
+        </p>
+        {/* One live line holding a line's room, remounted as an alert on a refusal. */}
+        <p
+          id={lineId}
+          key={failed ? "failed" : "ok"}
+          role={failed ? "alert" : "status"}
+          aria-live={failed ? undefined : "polite"}
+          className={`min-h-5 text-sm ${failed ? "text-neon-pink-text" : "text-ink-3"}`}
+        >
+          {line?.text ?? ""}
+        </p>
+      </div>
+    </section>
   );
 }
 

@@ -15,7 +15,7 @@ import { getFunctionName } from "convex/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { EbayConnectionState, EbayPolicies } from "@/lib/marketplace/ebay-setup";
 
-let connection: EbayConnectionState | undefined;
+let connection: EbayConnection | undefined;
 const fns: Record<string, ReturnType<typeof vi.fn>> = {};
 const fn = (name: string) => (fns[name] ??= vi.fn());
 
@@ -47,6 +47,7 @@ vi.mock("convex/react", () => {
 });
 
 import EbayPanel from "./EbayPanel";
+import type { EbayConnection } from "./SetupSections";
 import EbayReturnLanding from "@/app/profile/ebay/page";
 
 const SETTINGS: EbayConnectionState["settings"] = {
@@ -58,7 +59,7 @@ const SETTINGS: EbayConnectionState["settings"] = {
   bestOffer: true,
 };
 
-function state(over: Partial<EbayConnectionState> = {}): EbayConnectionState {
+function state(over: Partial<EbayConnection> = {}): EbayConnection {
   return {
     configured: true,
     environment: "production",
@@ -67,6 +68,7 @@ function state(over: Partial<EbayConnectionState> = {}): EbayConnectionState {
     since: Date.UTC(2026, 10, 2, 12),
     settings: SETTINGS,
     setupComplete: false,
+    cardWeightOz: 1,
     missing: ["location"],
     ...over,
   };
@@ -185,7 +187,7 @@ describe("Ships from", () => {
 
 describe("Set me up", () => {
   const NOTHING = { ok: true, fulfillment: [], payment: [], returns: [] };
-  const MADE = ["NB Standard Envelope (under $20)", "NB Tracked (USPS Ground Advantage)", "NB Payment", "NB Returns"];
+  const MADE = ["NB Envelope or Tracked (under $20)", "NB Tracked (USPS Ground Advantage)", "NB Payment", "NB Returns"];
   const MADE_POLICIES = {
     ok: true,
     fulfillment: [
@@ -337,7 +339,7 @@ describe("Set me up", () => {
     const line = await screen.findByText(/^Made 4 on your eBay account/);
     expect(line.getAttribute("role")).toBe("status");
     expect(line.textContent).toBe(
-      "Made 4 on your eBay account: NB Tracked (USPS Ground Advantage), NB Free Shipping, NB Payment, NB Returns. Picked where you had nothing yet. eBay wouldn't make a Standard Envelope policy, so pick one of yours for cards under $20.",
+      "Made 4 on your eBay account: NB Tracked (USPS Ground Advantage), NB Free Shipping, NB Payment, NB Returns. Picked where you had nothing yet. eBay wouldn't make the Envelope or Tracked policy, so pick one of yours for cards under $20.",
     );
     expect(spokenAlerts()).toEqual([]);
     expect(reads()).toBe(1);
@@ -356,7 +358,7 @@ describe("Set me up", () => {
     const line = await screen.findByText(/^You already had the rest\./);
     expect(line.getAttribute("role")).toBe("status");
     expect(line.textContent).toBe(
-      "You already had the rest. eBay wouldn't make a Standard Envelope policy, so pick one of yours for cards under $20.",
+      "You already had the rest. eBay wouldn't make the Envelope or Tracked policy, so pick one of yours for cards under $20.",
     );
     expect(spokenAlerts()).toEqual([]);
   });
@@ -391,7 +393,7 @@ describe("Set me up's step ledger", () => {
     free: "NB Free Shipping",
     payment: "NB Payment",
     returns: "NB Returns (30 days)",
-    ese: "NB Standard Envelope (under $20)",
+    ese: "NB Envelope or Tracked (under $20)",
   } as const;
   type Key = keyof typeof NAMES;
   type Status = "waiting" | "working" | "done" | "failed" | "had" | "stopped";
@@ -439,7 +441,7 @@ describe("Set me up's step ledger", () => {
       "NB Free Shipping, waiting",
       "NB Payment, waiting",
       "NB Returns (30 days), waiting",
-      "NB Standard Envelope (under $20), waiting",
+      "NB Envelope or Tracked (under $20), waiting",
     ]);
     // Each item's own words say what its name says (the state in a hidden tail where the glyph shows it).
     for (const li of items) expect(li.textContent).toBe(li.getAttribute("aria-label"));
@@ -475,8 +477,8 @@ describe("Set me up's step ledger", () => {
     line = runLine();
     expect(line).toHaveLength(1);
     expect(line[0].textContent).toBe("Made NB Tracked (USPS Ground Advantage). 1 of 2 made.");
-    expect(screen.getByRole("listitem", { name: "NB Standard Envelope (under $20), already on eBay" }).textContent).toBe(
-      "NB Standard Envelope (under $20), already on eBay",
+    expect(screen.getByRole("listitem", { name: "NB Envelope or Tracked (under $20), already on eBay" }).textContent).toBe(
+      "NB Envelope or Tracked (under $20), already on eBay",
     );
     expect(document.activeElement).toBe(button);
   });
@@ -517,10 +519,10 @@ describe("Set me up's step ledger", () => {
     view.again();
     connection = withRun(run(STARTED, { check: "done", tracked: "done", free: "done", payment: "done", returns: "done", ese: "failed" }));
     view.again();
-    expect(runLine()[0].textContent).toBe("eBay said no to NB Standard Envelope (under $20).");
-    const refused = screen.getByRole("listitem", { name: "NB Standard Envelope (under $20), eBay said no" });
+    expect(runLine()[0].textContent).toBe("eBay said no to NB Envelope or Tracked (under $20).");
+    const refused = screen.getByRole("listitem", { name: "NB Envelope or Tracked (under $20), eBay said no" });
     // Said on screen, not by colour and glyph alone.
-    expect(refused.textContent).toBe("NB Standard Envelope (under $20), eBay said no");
+    expect(refused.textContent).toBe("NB Envelope or Tracked (under $20), eBay said no");
 
     const policies = {
       fulfillment: [{ id: "n2", name: NAMES.tracked, eseFit: false, eseOnly: false, freeShipping: false, summary: "" }],
@@ -534,7 +536,7 @@ describe("Set me up's step ledger", () => {
     expect(fns["ebayConnect:readPolicies"]).toHaveBeenCalledTimes(1);
     expect(spokenAlerts()).toEqual([]);
     // The ledger outlives the Set me up box, so the warning stays beside the answer.
-    expect(screen.getByRole("listitem", { name: "NB Standard Envelope (under $20), eBay said no" })).toBeTruthy();
+    expect(screen.getByRole("listitem", { name: "NB Envelope or Tracked (under $20), eBay said no" })).toBeTruthy();
   });
 
   it("an earlier refusal: the step reads eBay said no, the rest not made, and the answer is the alert", async () => {
@@ -557,7 +559,7 @@ describe("Set me up's step ledger", () => {
     await act(async () => finish(Promise.reject(new Error("boom"))));
     await saidAlert();
     expect(screen.getByRole("listitem", { name: "NB Tracked (USPS Ground Advantage), eBay said no" })).toBeTruthy();
-    expect(screen.getByRole("listitem", { name: "NB Standard Envelope (under $20), not made" })).toBeTruthy();
+    expect(screen.getByRole("listitem", { name: "NB Envelope or Tracked (under $20), not made" })).toBeTruthy();
   });
 });
 
@@ -642,5 +644,41 @@ describe("Policy pickers", () => {
     const line = document.getElementById(id!)!;
     expect(line.getAttribute("role")).toBe("status");
     expect(line.textContent).toBe("The policy you picked here isn't on your eBay account anymore. Pick another.");
+  });
+});
+
+describe("Weight of a single card", () => {
+  it("a refusal is said inline in an alert that describes the group, the old weight comes back, and focus lands on it", async () => {
+    // The server's refusal arrives as a ConvexError carrying its sentence.
+    fn("ebayConnect:setCardWeight").mockRejectedValue(
+      Object.assign(new Error("ConvexError"), { data: "Pick a whole number of ounces from 1 to 3." }),
+    );
+    renderAt();
+    const weight = screen.getByRole("radiogroup", { name: "Weight of a single card" });
+    const hintId = weight.getAttribute("aria-describedby");
+    expect(hintId).toBeTruthy();
+    const two = within(weight).getByRole("radio", { name: "2 oz" });
+    two.focus();
+    await act(async () => {
+      fireEvent.keyDown(two, { key: "Enter" });
+    });
+    expect(fns["ebayConnect:setCardWeight"]).toHaveBeenCalledWith({ ounces: 2 });
+    const alert = await saidAlert();
+    expect(alert.textContent).toBe("Pick a whole number of ounces from 1 to 3. Your old weight is back.");
+    // Inline: the alert sits in the weight's own section, and describes the group ahead of the hint.
+    expect(alert.closest("section")).toBe(weight.closest("section"));
+    expect(weight.getAttribute("aria-describedby")).toBe(`${alert.id} ${hintId}`);
+    const one = within(weight).getByRole("radio", { name: "1 oz" });
+    expect(one.getAttribute("aria-checked")).toBe("true");
+    await waitFor(() => expect(document.activeElement).toBe(one));
+  });
+
+  it("a failure with no sentence of the server's still says what happened", async () => {
+    fn("ebayConnect:setCardWeight").mockRejectedValue(new Error("network"));
+    renderAt();
+    await act(async () => {
+      fireEvent.click(within(screen.getByRole("radiogroup", { name: "Weight of a single card" })).getByRole("radio", { name: "3 oz" }));
+    });
+    expect((await saidAlert()).textContent).toBe("That didn't save. Your old weight is back.");
   });
 });
