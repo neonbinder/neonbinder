@@ -84,6 +84,7 @@ import {
   type EbayShippingServiceInfo,
 } from "./adapters/ebaySeller";
 import type { EbayConnectError } from "./credentials";
+import { ebaySetupStepValidator } from "./schema";
 import { encodeEbayReturnState, isAllowedEbayReturnOrigin } from "../lib/marketplace/ebay-oauth-return";
 
 // ── Copy (NB voice; the web shows these sentences as they are) ─────────────
@@ -214,6 +215,8 @@ const connectionStateValidator = v.object({
   }),
   setupComplete: v.boolean(),
   missing: v.array(setupItemValidator),
+  /** The latest Set me up run, step by step (the page shows the one its own press started). */
+  setupProgress: v.union(v.object({ startedAt: v.number(), steps: v.array(ebaySetupStepValidator) }), v.null()),
 });
 
 const errorResult = v.object({ ok: v.literal(false), error: v.string() });
@@ -318,6 +321,9 @@ export const connectionState = query({
       },
       setupComplete: missing.length === 0,
       missing,
+      setupProgress: row?.setupProgress
+        ? { startedAt: row.setupProgress.startedAt, steps: row.setupProgress.steps }
+        : null,
     };
   },
 });
@@ -932,6 +938,11 @@ function groundAdvantageCode(services: EbayShippingServiceInfo[]): string | null
  * sandbox refuses the envelope in a policy even though its own metadata lists
  * it, so this is what lets everything else be set up. Any other refusal, or
  * eBay busy on the envelope, stops and says so as before.
+ *
+ * Each eBay create takes seconds, so the run reports as it goes (Jason's
+ * per-step ledger, as the listing sync's): `setupProgress` on the settings
+ * row holds the account check, then every policy in run order (already
+ * there, or made now), each ticking off as eBay answers (`SetupLedger`).
  */
 export const createStandardPolicies = action({
   args: {},
@@ -939,73 +950,217 @@ export const createStandardPolicies = action({
     v.object({ ok: v.literal(true), created: v.array(v.string()), envelopeRefused: v.optional(v.literal(true)) }),
     errorResult,
   ),
-  handler: async (ctx): Promise<{ ok: true; created: string[]; envelopeRefused?: true } | Fail> => {
+  handler: async (ctx): Promise<SetMeUpAnswer> => {
     const ownerId = await requireSignedIn(ctx);
     const opened = await sessionFor(ctx, ownerId);
     if (!opened.ok) return opened;
-    const session = opened.session;
     // Calculated shipping prices from the ship-from ZIP: no location, no policies.
     if (!(await ctx.runQuery(internal.ebayConnect.shipFromSaved, { ownerId }))) return { ok: false, error: SHIP_FROM_FIRST };
-    let read = await readPolicyLists(ctx, session);
-    if (!read.ok) return read;
-    let justOptedIn = false;
-    if (!read.optedIn) {
-      const optIn = await optInToProgram(ctx, session, SELLING_POLICY_MANAGEMENT);
-      if (!optIn.ok) return { ok: false, error: sayEbayFailure(optIn.failure, OPT_IN_REFUSED, SET_ME_UP_BUSY) };
-      justOptedIn = true;
-      read = await readPolicyLists(ctx, session);
-      if (!read.ok) return { ok: false, error: OPT_IN_PENDING };
+    // From here every eBay call is a step on the page's ledger (each one ~4 s on eBay).
+    const ledger = new SetupLedger(ctx, ownerId);
+    await ledger.begin();
+    let answer: SetMeUpAnswer;
+    try {
+      answer = await setMeUp(ctx, ownerId, opened.session, ledger);
+    } catch (e) {
+      await ledger.finish(false);
+      throw e;
     }
-    const services = read.services ? { ok: true as const, value: read.services } : await getShippingServices(ctx, session);
-    if (!services.ok) return { ok: false, error: sayEbayFailure(services.failure, SERVICES_REFUSED, SET_ME_UP_BUSY) };
-    const ground = groundAdvantageCode(services.value);
-    if (!ground) return { ok: false, error: NO_GROUND_ADVANTAGE };
+    await ledger.finish(answer.ok);
+    return answer;
+  },
+});
 
-    const byName = new Map(read.lists.fulfillment.map((p) => [p.name, p.id]));
-    const created: string[] = [];
-    const ids: { ese?: string; tracked?: string; free?: string; payment?: string; returns?: string } = {
-      ese: byName.get(NB_POLICY_NAMES.ese),
-      tracked: byName.get(NB_POLICY_NAMES.tracked),
-      free: byName.get(NB_POLICY_NAMES.free),
-    };
-    // NB never invents a shipping rate: when eBay's own metadata says a
-    // service has no calculated rate, nothing is made and the collector picks.
-    if (!ids.ese && !ebayServiceTakesCalculated(services.value, EBAY_ESE_SERVICE_CODE)) {
-      return { ok: false, error: NO_CALCULATED("Standard Envelope") };
+type SetMeUpAnswer = { ok: true; created: string[]; envelopeRefused?: true } | Fail;
+type SetupStep = typeof ebaySetupStepValidator.type;
+type SetupStepKey = SetupStep["step"];
+type PolicySlot = Exclude<SetupStepKey, "check">;
+
+/** The first line of Set me up's ledger: reading what the account already has. */
+export const SETUP_CHECK_LABEL = "Check your eBay account";
+/** Steps one Set me up ledger keeps (it plans at most six). */
+const MAX_SETUP_STEPS = 10;
+
+/**
+ * Set me up's progress on the owner's settings row, for the page to tick off
+ * (`connectionState.setupProgress`). One write when the run begins (the
+ * account check working), one as each step starts (the step before it lands
+ * in the same write), one when the run ends. Progress is cosmetic: a write
+ * that fails is logged and the run goes on.
+ */
+class SetupLedger {
+  readonly runId = newNonce();
+  readonly startedAt = Date.now();
+  private steps: SetupStep[] = [{ step: "check", label: SETUP_CHECK_LABEL, status: "working" }];
+  /** False once the row refused a write (a newer run took over, or eBay was disconnected). */
+  private live = true;
+
+  constructor(
+    private readonly ctx: ActionCtx,
+    private readonly ownerId: string,
+  ) {}
+
+  begin(): Promise<void> {
+    return this.write(true);
+  }
+
+  /** The account check landed; the steps to come, in run order (`had`: already on the account). No write. */
+  plan(rest: ReadonlyArray<{ step: PolicySlot; had: boolean }>): void {
+    this.set("check", "done");
+    for (const r of rest) this.steps.push({ step: r.step, label: NB_POLICY_NAMES[r.step], status: r.had ? "had" : "waiting" });
+  }
+
+  /** A step landed. No write: the next start, or the finish, carries it. */
+  land(step: PolicySlot, status: "done" | "failed"): void {
+    this.set(step, status);
+  }
+
+  /** `step` starts: one write. */
+  async start(step: PolicySlot): Promise<void> {
+    this.set(step, "working");
+    await this.write(false);
+  }
+
+  /** The run ended: a step still working ends as the run did, and a step never reached is `stopped`. */
+  async finish(ok: boolean): Promise<void> {
+    this.steps = this.steps.map((s) =>
+      s.status === "working"
+        ? { ...s, status: ok ? "done" : "failed" }
+        : s.status === "waiting"
+          ? { ...s, status: "stopped" }
+          : s,
+    );
+    await this.write(false);
+  }
+
+  private set(step: SetupStepKey, status: SetupStep["status"]): void {
+    this.steps = this.steps.map((s) => (s.step === step ? { ...s, status } : s));
+  }
+
+  private async write(begin: boolean): Promise<void> {
+    if (!this.live) return;
+    try {
+      this.live = await this.ctx.runMutation(internal.ebayConnect.writeSetupProgress, {
+        ownerId: this.ownerId,
+        runId: this.runId,
+        startedAt: this.startedAt,
+        steps: this.steps,
+        ...(begin ? { begin: true } : {}),
+      });
+    } catch (e) {
+      this.live = false;
+      console.warn(
+        JSON.stringify({
+          msg: "ebay_setup_progress_write_failed",
+          platform: "ebay",
+          operation: "createStandardPolicies",
+          // The error's kind, or a short cut of its message: never the whole text.
+          error: e instanceof Error ? e.name : String(e).slice(0, 80),
+        }),
+      );
     }
-    if (!ids.tracked && !ebayServiceTakesCalculated(services.value, ground)) {
-      return { ok: false, error: NO_CALCULATED("USPS Ground Advantage") };
+  }
+}
+
+/**
+ * Writes Set me up's progress on the owner's existing settings row (never
+ * makes one: a disconnect mid-run deleted it, and progress must not bring it
+ * back). `begin` starts a run, unless a newer one already has (`startedAt`
+ * orders runs); any other write lands only while its run is the row's
+ * (`runId`), so a stale run never overwrites a newer one. Not a settings
+ * change: `lastUpdated` stays and nothing is re-queued.
+ */
+export const writeSetupProgress = internalMutation({
+  args: {
+    ownerId: v.string(),
+    runId: v.string(),
+    startedAt: v.number(),
+    steps: v.array(ebaySetupStepValidator),
+    begin: v.optional(v.literal(true)),
+  },
+  returns: v.boolean(),
+  handler: async (ctx, args) => {
+    const row = await settingsOf(ctx, args.ownerId);
+    if (!row) return false;
+    const current = row.setupProgress;
+    if (args.begin) {
+      if (current && current.runId !== args.runId && current.startedAt > args.startedAt) return false;
+    } else if (!current || current.runId !== args.runId) {
+      return false;
     }
-    const envelope = policyService(services.value, EBAY_ESE_SERVICE_CODE, EBAY_ESE_CARRIER_FALLBACK);
-    // Ground Advantage is a USPS service by construction (`ebayGroundAdvantageService`).
-    const tracked = policyService(services.value, ground, EBAY_USPS_CARRIER_FALLBACK);
-    let envelopeRefused = false;
-    const make = async (
-      slot: keyof typeof ids,
-      kind: "fulfillment_policy" | "payment_policy" | "return_policy",
-      name: string,
-      body: Record<string, unknown>,
-      sent?: { code: string; carrier: string; costType: string },
-    ): Promise<Fail | null> => {
-      const r = await createPolicy(ctx, session, kind, body);
-      if (!r.ok) {
-        if (sent) logRefusedPolicyService(slot, sent, services.value, r.failure);
-        // The envelope (always the last step) turned down: everything before it stands.
-        if (slot === "ese" && isEbayRefusal(r.failure)) {
-          envelopeRefused = true;
-          return null;
-        }
-        if (justOptedIn) return { ok: false, error: OPT_IN_PENDING };
-        return { ok: false, error: sayEbayFailure(r.failure, SET_ME_UP_REFUSED[slot], SET_ME_UP_BUSY) };
+    await ctx.db.patch(row._id, {
+      setupProgress: { runId: args.runId, startedAt: args.startedAt, steps: args.steps.slice(0, MAX_SETUP_STEPS) },
+    });
+    return true;
+  },
+});
+
+/** Set me up's work once the ledger has begun: the account check, then each policy NB makes, in order. */
+async function setMeUp(ctx: ActionCtx, ownerId: string, session: EbaySellerSession, ledger: SetupLedger): Promise<SetMeUpAnswer> {
+  let read = await readPolicyLists(ctx, session);
+  if (!read.ok) return read;
+  let justOptedIn = false;
+  if (!read.optedIn) {
+    const optIn = await optInToProgram(ctx, session, SELLING_POLICY_MANAGEMENT);
+    if (!optIn.ok) return { ok: false, error: sayEbayFailure(optIn.failure, OPT_IN_REFUSED, SET_ME_UP_BUSY) };
+    justOptedIn = true;
+    read = await readPolicyLists(ctx, session);
+    if (!read.ok) return { ok: false, error: OPT_IN_PENDING };
+  }
+  const services = read.services ? { ok: true as const, value: read.services } : await getShippingServices(ctx, session);
+  if (!services.ok) return { ok: false, error: sayEbayFailure(services.failure, SERVICES_REFUSED, SET_ME_UP_BUSY) };
+  const ground = groundAdvantageCode(services.value);
+  if (!ground) return { ok: false, error: NO_GROUND_ADVANTAGE };
+
+  const byName = new Map(read.lists.fulfillment.map((p) => [p.name, p.id]));
+  const created: string[] = [];
+  const ids: { ese?: string; tracked?: string; free?: string; payment?: string; returns?: string } = {
+    ese: byName.get(NB_POLICY_NAMES.ese),
+    tracked: byName.get(NB_POLICY_NAMES.tracked),
+    free: byName.get(NB_POLICY_NAMES.free),
+  };
+  // NB never invents a shipping rate: when eBay's own metadata says a
+  // service has no calculated rate, nothing is made and the collector picks.
+  if (!ids.ese && !ebayServiceTakesCalculated(services.value, EBAY_ESE_SERVICE_CODE)) {
+    return { ok: false, error: NO_CALCULATED("Standard Envelope") };
+  }
+  if (!ids.tracked && !ebayServiceTakesCalculated(services.value, ground)) {
+    return { ok: false, error: NO_CALCULATED("USPS Ground Advantage") };
+  }
+  const envelope = policyService(services.value, EBAY_ESE_SERVICE_CODE, EBAY_ESE_CARRIER_FALLBACK);
+  // Ground Advantage is a USPS service by construction (`ebayGroundAdvantageService`).
+  const tracked = policyService(services.value, ground, EBAY_USPS_CARRIER_FALLBACK);
+  let envelopeRefused = false;
+  const make = async (
+    slot: PolicySlot,
+    kind: "fulfillment_policy" | "payment_policy" | "return_policy",
+    name: string,
+    body: Record<string, unknown>,
+    sent?: { code: string; carrier: string; costType: string },
+  ): Promise<Fail | null> => {
+    const r = await createPolicy(ctx, session, kind, body);
+    if (!r.ok) {
+      ledger.land(slot, "failed");
+      if (sent) logRefusedPolicyService(slot, sent, services.value, r.failure);
+      // The envelope (always the last step) turned down: everything before it stands.
+      if (slot === "ese" && isEbayRefusal(r.failure)) {
+        envelopeRefused = true;
+        return null;
       }
-      ids[slot] = r.value;
-      created.push(name);
-      return null;
-    };
-    const steps: Array<() => Promise<Fail | null>> = [];
-    const sent = (service: PolicyService, costType: string) => ({ code: service.code, carrier: service.carrier, costType });
-    if (!ids.tracked) {
-      steps.push(() =>
+      if (justOptedIn) return { ok: false, error: OPT_IN_PENDING };
+      return { ok: false, error: sayEbayFailure(r.failure, SET_ME_UP_REFUSED[slot], SET_ME_UP_BUSY) };
+    }
+    ledger.land(slot, "done");
+    ids[slot] = r.value;
+    created.push(name);
+    return null;
+  };
+  const steps: Array<{ slot: PolicySlot; run: () => Promise<Fail | null> }> = [];
+  const sent = (service: PolicyService, costType: string) => ({ code: service.code, carrier: service.carrier, costType });
+  if (!ids.tracked) {
+    steps.push({
+      slot: "tracked",
+      run: () =>
         make(
           "tracked",
           "fulfillment_policy",
@@ -1013,10 +1168,12 @@ export const createStandardPolicies = action({
           fulfillmentBody(NB_POLICY_NAMES.tracked, tracked, "calculated"),
           sent(tracked, EBAY_COST_TYPE_CALCULATED),
         ),
-      );
-    }
-    if (!ids.free) {
-      steps.push(() =>
+    });
+  }
+  if (!ids.free) {
+    steps.push({
+      slot: "free",
+      run: () =>
         make(
           "free",
           "fulfillment_policy",
@@ -1024,22 +1181,26 @@ export const createStandardPolicies = action({
           fulfillmentBody(NB_POLICY_NAMES.free, tracked, "free"),
           sent(tracked, EBAY_COST_TYPE_FLAT_RATE),
         ),
-      );
-    }
-    if (read.lists.payment.length === 0) {
-      steps.push(() =>
+    });
+  }
+  if (read.lists.payment.length === 0) {
+    steps.push({
+      slot: "payment",
+      run: () =>
         make("payment", "payment_policy", NB_POLICY_NAMES.payment, {
           name: NB_POLICY_NAMES.payment,
           marketplaceId: EBAY_MARKETPLACE_ID,
           categoryTypes: CATEGORY_TYPES,
           immediatePay: true,
         }),
-      );
-    } else if (read.lists.payment.length === 1) {
-      ids.payment = read.lists.payment[0].id;
-    }
-    if (read.lists.returns.length === 0) {
-      steps.push(() =>
+    });
+  } else if (read.lists.payment.length === 1) {
+    ids.payment = read.lists.payment[0].id;
+  }
+  if (read.lists.returns.length === 0) {
+    steps.push({
+      slot: "returns",
+      run: () =>
         make("returns", "return_policy", NB_POLICY_NAMES.returns, {
           name: NB_POLICY_NAMES.returns,
           marketplaceId: EBAY_MARKETPLACE_ID,
@@ -1049,13 +1210,15 @@ export const createStandardPolicies = action({
           returnShippingCostPayer: "BUYER",
           refundMethod: "MONEY_BACK",
         }),
-      );
-    } else if (read.lists.returns.length === 1) {
-      ids.returns = read.lists.returns[0].id;
-    }
-    // Last, so eBay turning the envelope down leaves everything else made.
-    if (!ids.ese) {
-      steps.push(() =>
+    });
+  } else if (read.lists.returns.length === 1) {
+    ids.returns = read.lists.returns[0].id;
+  }
+  // Last, so eBay turning the envelope down leaves everything else made.
+  if (!ids.ese) {
+    steps.push({
+      slot: "ese",
+      run: () =>
         make(
           "ese",
           "fulfillment_policy",
@@ -1063,37 +1226,50 @@ export const createStandardPolicies = action({
           fulfillmentBody(NB_POLICY_NAMES.ese, envelope, "calculated"),
           sent(envelope, EBAY_COST_TYPE_CALCULATED),
         ),
-      );
-    }
-    for (const step of steps) {
-      const failed = await step();
-      if (failed) {
-        // What was made stays made (and is found by name next time).
-        await ctx.runMutation(internal.ebayConnect.fillEmptyPolicySlots, {
-          ownerId,
-          ...(ids.ese ? { under20: ids.ese } : {}),
-          ...(ids.tracked ? { twentyPlus: ids.tracked } : {}),
-          ...(ids.payment ? { payment: ids.payment } : {}),
-          ...(ids.returns ? { returns: ids.returns } : {}),
-        });
-        return failed;
-      }
-    }
-    await ctx.runMutation(internal.ebayConnect.fillEmptyPolicySlots, {
+    });
+  }
+  // The ledger, in run order: the three shipping policies always (already
+  // there, or to make), payment and returns only when NB makes them.
+  const making = new Set(steps.map((s) => s.slot));
+  ledger.plan(
+    (["tracked", "free", "payment", "returns", "ese"] as const)
+      .filter((slot) => making.has(slot) || slot === "tracked" || slot === "free" || slot === "ese")
+      .map((slot) => ({ step: slot, had: !making.has(slot) })),
+  );
+  const fill = () =>
+    ctx.runMutation(internal.ebayConnect.fillEmptyPolicySlots, {
       ownerId,
+      runId: ledger.runId,
       ...(ids.ese ? { under20: ids.ese } : {}),
       ...(ids.tracked ? { twentyPlus: ids.tracked } : {}),
       ...(ids.payment ? { payment: ids.payment } : {}),
       ...(ids.returns ? { returns: ids.returns } : {}),
     });
-    return envelopeRefused ? { ok: true, created, envelopeRefused: true } : { ok: true, created };
-  },
-});
+  for (const step of steps) {
+    await ledger.start(step.slot);
+    const failed = await step.run();
+    if (failed) {
+      // What was made stays made (and is found by name next time).
+      await fill();
+      return failed;
+    }
+  }
+  await fill();
+  return envelopeRefused ? { ok: true, created, envelopeRefused: true } : { ok: true, created };
+}
 
-/** "Set me up" fills the settings slots the collector has not chosen yet; a chosen slot is never replaced. */
+/**
+ * "Set me up" fills the settings slots the collector has not chosen yet; a
+ * chosen slot is never replaced. Only on the row the run began on: no row (a
+ * disconnect mid-run deleted it) or a row another run, or a fresh connection,
+ * now holds (`setupProgress.runId` is not this run's) is left alone, so a
+ * policy id from the account that was there never lands on what replaced it.
+ */
 export const fillEmptyPolicySlots = internalMutation({
   args: {
     ownerId: v.string(),
+    /** The Set me up run filling (`SetupLedger.runId`). */
+    runId: v.string(),
     under20: v.optional(v.string()),
     twentyPlus: v.optional(v.string()),
     payment: v.optional(v.string()),
@@ -1102,13 +1278,14 @@ export const fillEmptyPolicySlots = internalMutation({
   returns: v.null(),
   handler: async (ctx, args) => {
     const row = await settingsOf(ctx, args.ownerId);
+    if (!row || row.setupProgress?.runId !== args.runId) return null;
     const patch: Partial<Doc<"ebaySellerSettings">> = {};
-    if (args.under20 && !row?.fulfillmentPolicyUnder20Id) patch.fulfillmentPolicyUnder20Id = args.under20;
-    if (args.twentyPlus && !row?.fulfillmentPolicy20PlusId) patch.fulfillmentPolicy20PlusId = args.twentyPlus;
-    if (args.payment && !row?.paymentPolicyId) patch.paymentPolicyId = args.payment;
-    if (args.returns && !row?.returnPolicyId) patch.returnPolicyId = args.returns;
+    if (args.under20 && !row.fulfillmentPolicyUnder20Id) patch.fulfillmentPolicyUnder20Id = args.under20;
+    if (args.twentyPlus && !row.fulfillmentPolicy20PlusId) patch.fulfillmentPolicy20PlusId = args.twentyPlus;
+    if (args.payment && !row.paymentPolicyId) patch.paymentPolicyId = args.payment;
+    if (args.returns && !row.returnPolicyId) patch.returnPolicyId = args.returns;
     if (Object.keys(patch).length === 0) return null;
-    await patchSettings(ctx, args.ownerId, patch);
+    await ctx.db.patch(row._id, { ...patch, lastUpdated: Date.now() });
     await settingsChanged(ctx, args.ownerId);
     return null;
   },

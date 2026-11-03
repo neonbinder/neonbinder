@@ -19,6 +19,19 @@ let connection: EbayConnectionState | undefined;
 const fns: Record<string, ReturnType<typeof vi.fn>> = {};
 const fn = (name: string) => (fns[name] ??= vi.fn());
 
+/**
+ * The alerts saying something. The Set me up line keeps an alert mounted empty
+ * (filled when a refusal comes, so it is announced), so "the alert" is the one
+ * with words in it.
+ */
+const spokenAlerts = () => screen.queryAllByRole("alert").filter((a) => (a.textContent ?? "") !== "");
+const saidAlert = () =>
+  waitFor(() => {
+    const said = spokenAlerts();
+    expect(said).toHaveLength(1);
+    return said[0];
+  });
+
 vi.mock("convex/react", () => {
   // Stable per function, as Convex's own hooks are: the page's effects depend on them.
   const bound = new Map<string, unknown>();
@@ -238,7 +251,7 @@ describe("Set me up", () => {
     const button = await screen.findByRole("button", { name: "Set me up" });
     button.focus();
     fireEvent.click(button);
-    const alert = await screen.findByRole("alert");
+    const alert = await saidAlert();
     // One message, not eBay's sentence with ours stuck on: what's done, what isn't, and what Try again does.
     expect(alert.textContent).toBe(
       "Your new policies are made, but we couldn't read them back just now, so nothing's picked yet. Give it a bit, then press Try again to pick them. It won't make them twice.",
@@ -259,7 +272,7 @@ describe("Set me up", () => {
     );
     expect(fns["ebayConnect:createStandardPolicies"]).toHaveBeenCalledTimes(1);
     expect((await screen.findByText(/^Made 4 on your eBay account/)).getAttribute("role")).toBe("status");
-    expect(screen.queryByRole("alert")).toBeNull();
+    expect(spokenAlerts()).toEqual([]);
     await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("heading", { level: 3, name: "Shipping" })));
   });
 
@@ -294,7 +307,7 @@ describe("Set me up", () => {
     expect(line.textContent).toBe(
       "Made 4 on your eBay account: NB Tracked (USPS Ground Advantage), NB Free Shipping, NB Payment, NB Returns. Picked where you had nothing yet. eBay wouldn't make a Standard Envelope policy, so pick one of yours for cards under $20.",
     );
-    expect(screen.queryByRole("alert")).toBeNull();
+    expect(spokenAlerts()).toEqual([]);
   });
 
   it("nothing new to make and eBay turning down the envelope says so, as a status line", async () => {
@@ -308,7 +321,7 @@ describe("Set me up", () => {
     expect(line.textContent).toBe(
       "You already had the rest. eBay wouldn't make a Standard Envelope policy, so pick one of yours for cards under $20.",
     );
-    expect(screen.queryByRole("alert")).toBeNull();
+    expect(spokenAlerts()).toEqual([]);
   });
 
   it("the envelope note survives a Try again after the read back failed", async () => {
@@ -323,6 +336,185 @@ describe("Set me up", () => {
     const line = await screen.findByText(/^Made 4 on your eBay account/);
     expect(line.textContent).toMatch(/so pick one of yours for cards under \$20\.$/);
     expect(fns["ebayConnect:createStandardPolicies"]).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("Set me up's step ledger", () => {
+  const SHIPS_FROM = { postalCode: "53703", city: "Madison", stateOrProvince: "WI" };
+  const NOTHING = { ok: true, fulfillment: [], payment: [], returns: [] };
+  const LEDGER = "Set me up, step by step";
+  const NAMES = {
+    check: "Check your eBay account",
+    tracked: "NB Tracked (USPS Ground Advantage)",
+    free: "NB Free Shipping",
+    payment: "NB Payment",
+    returns: "NB Returns (30 days)",
+    ese: "NB Standard Envelope (under $20)",
+  } as const;
+  type Key = keyof typeof NAMES;
+  type Status = "waiting" | "working" | "done" | "failed" | "had" | "stopped";
+  const run = (startedAt: number, statuses: Partial<Record<Key, Status>>) => ({
+    startedAt,
+    steps: (Object.keys(statuses) as Key[]).map((step) => ({ step, label: NAMES[step], status: statuses[step]! })),
+  });
+  const withRun = (progress: ReturnType<typeof run> | null) =>
+    state({ settings: { ...SETTINGS, location: SHIPS_FROM }, missing: ["shippingUnder20"], setupProgress: progress });
+  const STARTED = Date.UTC(2026, 10, 2, 13);
+  /**
+   * The polite line Set me up speaks through: the Shipping card's last status
+   * (the pickers' own lines sit above the ledger, the alert after it).
+   */
+  const runLine = () => {
+    const line = within(screen.getByRole("region", { name: "Shipping" })).getAllByRole("status").at(-1)!;
+    expect(line.getAttribute("aria-live")).toBe("polite");
+    return [line];
+  };
+
+  let finish: (answer: unknown) => void;
+  beforeEach(() => {
+    connection = withRun(null);
+    fn("ebayConnect:readPolicies").mockResolvedValueOnce(NOTHING);
+    fn("ebayConnect:createStandardPolicies").mockReturnValue(new Promise((resolve) => (finish = resolve)));
+  });
+
+  it("shows the press's own run as a list of named steps, never an earlier run's finished ledger", async () => {
+    // A run from an earlier visit is on the row: nothing shows for it, before or right after the press.
+    connection = withRun(run(STARTED - 60_000, { check: "done", tracked: "done", free: "done", ese: "done" }));
+    const view = renderAt();
+    expect(screen.queryByRole("list", { name: LEDGER })).toBeNull();
+    fireEvent.click(await screen.findByRole("button", { name: "Set me up" }));
+    view.again();
+    expect(screen.queryByRole("list", { name: LEDGER })).toBeNull();
+
+    connection = withRun(run(STARTED, { check: "done", tracked: "working", free: "waiting", payment: "waiting", returns: "waiting", ese: "waiting" }));
+    view.again();
+    const ledger = screen.getByRole("list", { name: LEDGER });
+    expect(ledger.tagName).toBe("OL");
+    const items = within(ledger).getAllByRole("listitem");
+    expect(items.map((li) => li.getAttribute("aria-label"))).toEqual([
+      "Check your eBay account, done",
+      "NB Tracked (USPS Ground Advantage), working",
+      "NB Free Shipping, waiting",
+      "NB Payment, waiting",
+      "NB Returns (30 days), waiting",
+      "NB Standard Envelope (under $20), waiting",
+    ]);
+    // Each item's own words say what its name says (the state in a hidden tail where the glyph shows it).
+    for (const li of items) expect(li.textContent).toBe(li.getAttribute("aria-label"));
+    // The glyph is decoration: the words carry the state.
+    for (const svg of ledger.querySelectorAll("svg")) expect(svg.getAttribute("aria-hidden")).toBe("true");
+  });
+
+  it("says each step once as it lands, through one polite line, and keeps it until the next one lands", async () => {
+    const view = renderAt();
+    const button = await screen.findByRole("button", { name: "Set me up" });
+    button.focus();
+    fireEvent.click(button);
+    // While it runs, the keyboard stays where it pressed (the box stays, its button busy).
+    expect(document.activeElement).toBe(button);
+    expect(button.getAttribute("aria-busy")).toBe("true");
+    connection = withRun(run(STARTED, { check: "working" }));
+    view.again();
+    let line = runLine();
+    expect(line).toHaveLength(1);
+    expect(line[0].getAttribute("aria-live")).toBe("polite");
+    expect(line[0].textContent).toBe("Setting you up…");
+
+    connection = withRun(run(STARTED, { check: "done", tracked: "working", free: "waiting", ese: "had" }));
+    view.again();
+    expect(runLine()[0].textContent).toBe("Checked your eBay account. 2 to make.");
+
+    connection = withRun(run(STARTED, { check: "done", tracked: "done", free: "working", ese: "had" }));
+    view.again();
+    expect(runLine()[0].textContent).toBe("Made NB Tracked (USPS Ground Advantage). 1 of 2 made.");
+    // The same ledger read again (a fresh array) is no news: the line holds, and stays one region.
+    connection = withRun(run(STARTED, { check: "done", tracked: "done", free: "working", ese: "had" }));
+    view.again();
+    line = runLine();
+    expect(line).toHaveLength(1);
+    expect(line[0].textContent).toBe("Made NB Tracked (USPS Ground Advantage). 1 of 2 made.");
+    expect(screen.getByRole("listitem", { name: "NB Standard Envelope (under $20), already on eBay" }).textContent).toBe(
+      "NB Standard Envelope (under $20), already on eBay",
+    );
+    expect(document.activeElement).toBe(button);
+  });
+
+  it("a run the page first hears of mid-way still says the step that already landed", async () => {
+    const view = renderAt();
+    fireEvent.click(await screen.findByRole("button", { name: "Set me up" }));
+    expect(runLine()[0].textContent).toBe("Setting you up…");
+    // The first read the page gets is already past the account check.
+    connection = withRun(run(STARTED, { check: "done", tracked: "working", free: "waiting", payment: "waiting", returns: "waiting", ese: "waiting" }));
+    view.again();
+    expect(runLine()[0].textContent).toBe("Checked your eBay account. 5 to make.");
+  });
+
+  it("Set me up again after a refusal speaks through the same status node, and the refusal leaves the alert", async () => {
+    fn("ebayConnect:createStandardPolicies").mockResolvedValueOnce({ ok: false, error: "eBay's not answering right now." });
+    renderAt();
+    const button = await screen.findByRole("button", { name: "Set me up" });
+    const status = runLine()[0];
+    const alert = screen.getAllByRole("alert").at(-1)!;
+    fireEvent.click(button);
+    await waitFor(() => expect(alert.textContent).toBe("eBay's not answering right now."));
+    expect(status.textContent).toBe("");
+    // The second press (the mock's pending promise now): the same nodes, only their words change.
+    fireEvent.click(button);
+    await waitFor(() => expect(status.textContent).toBe("Setting you up…"));
+    expect(runLine()[0]).toBe(status);
+    expect(status.isConnected).toBe(true);
+    expect(screen.getAllByRole("alert").at(-1)).toBe(alert);
+    expect(alert.textContent).toBe("");
+  });
+
+  it("eBay turning the envelope down shows a warning on that step, and the answer is still the success line", async () => {
+    const made = [NAMES.tracked, NAMES.free, NAMES.payment, NAMES.returns];
+    const view = renderAt();
+    fireEvent.click(await screen.findByRole("button", { name: "Set me up" }));
+    connection = withRun(run(STARTED, { check: "done", tracked: "done", free: "done", payment: "done", returns: "done", ese: "working" }));
+    view.again();
+    connection = withRun(run(STARTED, { check: "done", tracked: "done", free: "done", payment: "done", returns: "done", ese: "failed" }));
+    view.again();
+    expect(runLine()[0].textContent).toBe("eBay said no to NB Standard Envelope (under $20).");
+    const refused = screen.getByRole("listitem", { name: "NB Standard Envelope (under $20), eBay said no" });
+    // Said on screen, not by colour and glyph alone.
+    expect(refused.textContent).toBe("NB Standard Envelope (under $20), eBay said no");
+
+    fn("ebayConnect:readPolicies").mockResolvedValueOnce({
+      ok: true,
+      fulfillment: [{ id: "n2", name: NAMES.tracked, eseFit: false, eseOnly: false, freeShipping: false, summary: "" }],
+      payment: [{ id: "p9", name: NAMES.payment }],
+      returns: [{ id: "r9", name: NAMES.returns, summary: "" }],
+    });
+    await act(async () => finish({ ok: true, created: made, envelopeRefused: true }));
+    const answer = await screen.findByText(/^Made 4 on your eBay account/);
+    expect(answer.getAttribute("role")).toBe("status");
+    expect(spokenAlerts()).toEqual([]);
+    // The ledger outlives the Set me up box, so the warning stays beside the answer.
+    expect(screen.getByRole("listitem", { name: "NB Standard Envelope (under $20), eBay said no" })).toBeTruthy();
+  });
+
+  it("an earlier refusal: the step reads eBay said no, the rest not made, and the answer is the alert", async () => {
+    const view = renderAt();
+    fireEvent.click(await screen.findByRole("button", { name: "Set me up" }));
+    connection = withRun(run(STARTED, { check: "done", tracked: "done", free: "failed", payment: "stopped", ese: "stopped" }));
+    view.again();
+    await act(async () => finish({ ok: false, error: "eBay turned down the free shipping policy, so Set me up stopped there." }));
+    expect((await saidAlert()).textContent).toBe("eBay turned down the free shipping policy, so Set me up stopped there.");
+    expect(screen.getByRole("listitem", { name: "NB Free Shipping, eBay said no" })).toBeTruthy();
+    expect(screen.getByRole("listitem", { name: "NB Payment, not made" }).textContent).toBe("NB Payment, not made");
+  });
+
+  it("a run that died under a step never leaves it spinning once the press is over", async () => {
+    const view = renderAt();
+    fireEvent.click(await screen.findByRole("button", { name: "Set me up" }));
+    connection = withRun(run(STARTED, { check: "done", tracked: "working", ese: "waiting" }));
+    view.again();
+    expect(screen.getByRole("listitem", { name: "NB Tracked (USPS Ground Advantage), working" })).toBeTruthy();
+    await act(async () => finish(Promise.reject(new Error("boom"))));
+    await saidAlert();
+    expect(screen.getByRole("listitem", { name: "NB Tracked (USPS Ground Advantage), eBay said no" })).toBeTruthy();
+    expect(screen.getByRole("listitem", { name: "NB Standard Envelope (under $20), not made" })).toBeTruthy();
   });
 });
 
@@ -394,7 +586,7 @@ describe("Policy pickers", () => {
     await act(async () => {
       fireEvent.click(within(under).getByRole("radio", { name: "Tracked" }));
     });
-    const alert = await screen.findByRole("alert");
+    const alert = await saidAlert();
     expect(under.getAttribute("aria-describedby")).toBe(alert.id);
   });
 

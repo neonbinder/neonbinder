@@ -107,6 +107,7 @@ const PHOTOS = ["01-mcfadden-front.jpg", "03-bowe-front.jpg"] as const;
 /** NeonBinder's own policy names on the seller's eBay account (NB_POLICY_NAMES in convex/ebayConnect.ts: what "Set me up" makes). */
 const TRACKED_POLICY = "NB Tracked (USPS Ground Advantage)";
 const FREE_POLICY = "NB Free Shipping";
+const ENVELOPE_POLICY = "NB Standard Envelope (under $20)";
 
 /** At or above eBay's $0.99 floor, and under $20 (the Standard Envelope slot). */
 const COMMON_PRICE = "1.00";
@@ -339,16 +340,52 @@ test(
     if (setMeUpOffered) {
       await expect(setMeUp).toBeEnabled();
       await setMeUp.click();
-      // A live round trip to eBay: opt in, make the policies, read them back.
-      // Set me up makes Standard Envelope last, and eBay's sandbox turns that
-      // one down (it lists the service but refuses it in a policy), so the
-      // usual answer here is the partial one: "Made N on your eBay account …
-      // eBay wouldn't make a Standard Envelope policy, so pick one of yours
-      // for cards under $20." On a re-run, where the rest already exists and
-      // the envelope never got made, it is "You already had the rest. …". All
-      // of these are the success status line, never the error. Cards under $20
-      // is then picked by hand in the loop below, as the line asks.
-      await expect(said(/^(Made \d+ on your eBay account|You already had everything|You already had the rest)/)).toBeVisible();
+      // A live round trip to eBay per policy (each create takes seconds), so
+      // the page ticks each step off as eBay answers: "Set me up, step by
+      // step", the account check first, then every policy in run order. Each
+      // wait below covers exactly ONE step landing, within the standard
+      // budget (the sync ledger's pattern, `followRunToEnd`). The ledger is
+      // this press's own run: the page never shows an earlier run's.
+      const ledger = page.getByRole("list", { name: "Set me up, step by step", exact: true });
+      await expect(ledger).toBeVisible();
+      const steps = ledger.getByRole("listitem");
+      // The answer: Set me up makes Standard Envelope last, and eBay's sandbox
+      // turns that one down (it lists the service but refuses it in a policy),
+      // so the usual answer here is the partial one: "Made N on your eBay
+      // account … eBay wouldn't make a Standard Envelope policy, so pick one
+      // of yours for cards under $20." On a re-run, where the rest already
+      // exists and the envelope never got made, it is "You already had the
+      // rest. …". All of these are the success status line, never the error.
+      // Cards under $20 is then picked by hand in the loop below, as the line
+      // asks.
+      const answer = said(/^(Made \d+ on your eBay account|You already had everything|You already had the rest)/);
+      // Walked in run order (`nth` is the step's place in the run, which never
+      // changes; the steps after the account check appear once it lands). One
+      // pass per step, at most six (the check and five policies); a step
+      // already settled (done, or already on eBay) passes at once.
+      for (let i = 0; i < 7; i++) {
+        const step = steps.nth(i);
+        // Either this step is on the ledger, or every step has landed and the run has answered.
+        await expect(step.or(answer).first()).toBeVisible();
+        if (await answer.isVisible()) break;
+        if (i === 1) {
+          // The running ledger (the check landed, a policy under way), checked once.
+          await expectAccessible(page, { within: ledger, label: "Profile, eBay Set me up running" });
+        }
+        // That one step lands: done, eBay said no (the run stops there), or nothing to do.
+        await expect(step).toHaveAccessibleName(/, (done|eBay said no|already on eBay|not made)$/);
+      }
+      await expect(answer).toBeVisible();
+      // Only the envelope may be refused (the sandbox's quirk): every other
+      // policy is made now or was already there.
+      await expect(
+        ledger.getByRole("listitem", { name: new RegExp(`^${escapeRegExp(ENVELOPE_POLICY)}, (done|eBay said no|already on eBay)$`) }),
+      ).toBeVisible();
+      for (const name of [TRACKED_POLICY, FREE_POLICY]) {
+        await expect(ledger.getByRole("listitem", { name: new RegExp(`^${escapeRegExp(name)}, (done|already on eBay)$`) })).toBeVisible();
+      }
+      await expect(ledger.getByRole("listitem", { name: /, eBay said no$/ }).filter({ hasNotText: ENVELOPE_POLICY })).toHaveCount(0);
+      await expect(ledger.getByRole("listitem", { name: /, (working|waiting|not made)$/ })).toHaveCount(0);
     } else {
       // The policies are already there: the seller's own are offered for the cheap cards.
       await expect(underTwenty.getByRole("radio").first()).toBeVisible();

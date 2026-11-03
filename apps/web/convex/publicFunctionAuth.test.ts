@@ -2947,6 +2947,7 @@ describe("NEO-415: eBay connection surface", () => {
     ["ebayConnect.ts", "writePolicySettings", "internalMutation"],
     ["ebayConnect.ts", "writeLocationSettings", "internalMutation"],
     ["ebayConnect.ts", "fillEmptyPolicySlots", "internalMutation"],
+    ["ebayConnect.ts", "writeSetupProgress", "internalMutation"],
     ["ebayConnect.ts", "purgeEbayLinksPage", "internalMutation"],
     ["ebayConnect.ts", "processAccountDeletion", "internalAction"],
     ["credentials.ts", "connectEbay", "internalAction"],

@@ -12,7 +12,12 @@ import {
   over20Options,
   paymentOptions,
   returnOptions,
+  SET_ME_UP_STEPS_NAME,
+  SETUP_STEP_WORD,
   setupChecklist,
+  setupLandedLine,
+  setupStepName,
+  shownSetupStatus,
   standardPicks,
   under20Options,
   type EbayConnectionState,
@@ -20,6 +25,8 @@ import {
   type EbayPolicies,
   type EbayPolicyPicks,
   type EbaySetupGap,
+  type EbaySetupStep,
+  type EbaySetupStepStatus,
 } from "@/lib/marketplace/ebay-setup";
 import { EBAY_NAME } from "@/lib/marketplace/listing-copy";
 import PolicyPicker, { type SaveAnswer } from "./PolicyPicker";
@@ -160,6 +167,14 @@ function PoliciesBody({
   // Set me up's answer lives here, not in its box: the box goes once nothing
   // is missing, and its answer must outlive it.
   const [setupLine, setSetupLine] = useState<SetupLine>(null);
+  // Set me up's ledger is the run THIS press started: the stored run's start
+  // as the press saw it (null: none yet), so an earlier run's finished ledger
+  // never stands in while the new one begins. Unset until a press.
+  const [pressedOver, setPressedOver] = useState<number | null | undefined>(undefined);
+  const progress = connection.setupProgress ?? null;
+  const run = pressedOver !== undefined && progress && progress.startedAt !== pressedOver ? progress : null;
+  const running = setupLine?.kind === "progress";
+  const landed = useLandedLine(run);
   const shippingHeading = useRef<HTMLHeadingElement>(null);
   const [focusShipping, setFocusShipping] = useState(0);
   useEffect(() => {
@@ -226,25 +241,31 @@ function PoliciesBody({
             save={save}
             setLoaded={setLoaded}
             setLine={setSetupLine}
+            onStart={() => setPressedOver(connection.setupProgress?.startedAt ?? null)}
             onDone={() => setFocusShipping((n) => n + 1)}
           />
         )}
           </>
         )}
-        {/* Always mounted, so progress and the answer are announced as they fill it. */}
+        {/* Outside the Set me up box, so the run's ledger outlives the box once nothing is missing. */}
+        {run && <SetupLedger steps={run.steps} running={running} />}
+        {/*
+          Both always mounted, empty until they speak, so each says what fills
+          it (a node that mounts already holding text is often not announced,
+          and a press after an error must not swap the status for a new one).
+          The polite line covers the whole run: while it goes it says each step
+          as it lands (visually hidden, since the ledger and the button show the
+          same), then the answer replaces it. A refusal goes in the alert.
+        */}
         <p
-          key={setupLine?.kind === "error" ? "error" : "ok"}
-          role={setupLine?.kind === "error" ? "alert" : "status"}
-          aria-live={setupLine?.kind === "error" ? undefined : "polite"}
-          className={`${LIVE} ${
-            setupLine?.kind === "error"
-              ? "text-neon-pink-text"
-              : setupLine?.kind === "ok"
-                ? "text-neon-green-text"
-                : "text-ink-3"
-          }`}
+          role="status"
+          aria-live="polite"
+          className={`${LIVE} ${setupLine?.kind === "ok" ? "text-neon-green-text" : "sr-only"}`}
         >
-          {setupLine?.text ?? ""}
+          {setupLine?.kind === "error" ? "" : (running && landed) || (setupLine?.text ?? "")}
+        </p>
+        <p role="alert" className={`${LIVE} text-neon-pink-text`}>
+          {setupLine?.kind === "error" ? setupLine.text : ""}
         </p>
       </section>
 
@@ -308,12 +329,15 @@ function SetMeUp({
   save,
   setLoaded,
   setLine,
+  onStart,
   onDone,
 }: {
   connection: EbayConnectionState;
   save: (picks: EbayPolicyPicks) => Promise<SaveAnswer>;
   setLoaded: (next: Loaded) => void;
   setLine: (line: SetupLine) => void;
+  /** A run on eBay is about to start (not a Try again, which only reads): its ledger is the one to show. */
+  onStart: () => void;
   onDone: () => void;
 }) {
   const create = useAction(api.ebayConnect.createStandardPolicies);
@@ -336,6 +360,7 @@ function SetMeUp({
     let noEnvelope = envelopeRefused;
     try {
       if (created === null) {
+        onStart();
         const answer = await create({});
         if (!answer.ok) {
           setLine({ kind: "error", text: answer.error });
@@ -396,6 +421,77 @@ function SetMeUp({
       </div>
     </div>
   );
+}
+
+/** Which ledger glyph a Set me up step wears (the run ledger's clock, spinner, check and snag). */
+const STEP_GLYPH: Record<EbaySetupStepStatus, RunLineKind> = {
+  waiting: "waiting",
+  working: "building",
+  done: "built",
+  failed: "failed",
+  had: "skipped",
+  stopped: "stopped",
+};
+
+/** The step's words: settled ink once it lands, quiet while it waits or when there was nothing to do. */
+const STEP_TEXT: Record<EbaySetupStepStatus, string> = {
+  waiting: "text-ink-3",
+  working: "font-medium text-ink",
+  done: "text-ink",
+  failed: "font-medium text-neon-pink-text",
+  had: "text-ink-2",
+  stopped: "text-ink-3",
+};
+
+/** States a sighted reader can't tell from the glyph alone say their word on screen too. */
+const SAYS_STATE: ReadonlySet<EbaySetupStepStatus> = new Set(["failed", "had", "stopped"]);
+
+/**
+ * Set me up's run, one line a step, as the listing sync's ledger (Jason's
+ * per-step pattern): clock → spinner → green check, a pink warning where eBay
+ * said no. Each list item is named "label, state" and its own words say the
+ * same, so a reader in browse mode and a spec's `getByRole` agree.
+ */
+function SetupLedger({ steps, running }: { steps: ReadonlyArray<EbaySetupStep>; running: boolean }) {
+  return (
+    // role="list": Safari/VoiceOver drops a list's semantics under list-style: none unless it is said outright.
+    <ol role="list" aria-label={SET_ME_UP_STEPS_NAME} className="space-y-0.5 border-l-2 border-rule pl-3 text-sm">
+      {steps.map((step) => {
+        const status = shownSetupStatus(step.status, running);
+        const word = SETUP_STEP_WORD[status];
+        return (
+          <li key={step.step} aria-label={setupStepName(step.label, status)} className="flex items-start gap-1.5 py-0.5 leading-5">
+            <RunGlyph kind={STEP_GLYPH[status]} tones={STEP_TONES} />
+            <span className={STEP_TEXT[status]}>
+              {step.label}
+              {SAYS_STATE.has(status) ? <span>, {word}</span> : <span className="sr-only">, {word}</span>}
+            </span>
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
+
+/**
+ * The live line's sentence for a Set me up run, from each read compared with
+ * the last, during render (by value, so a fresh array holding the same ledger
+ * changes nothing). A step landing is said once and stays until the next one
+ * lands; a new run starts silent.
+ */
+function useLandedLine(run: { startedAt: number; steps: ReadonlyArray<EbaySetupStep> } | null): string {
+  const key = run ? `${run.startedAt}#${run.steps.map((s) => `${s.step}:${s.status}`).join("|")}` : "";
+  const [seen, setSeen] = useState(() => ({ key, run, line: "" }));
+  if (seen.key !== key) {
+    const sameRun = seen.run !== null && run !== null && seen.run.startedAt === run.startedAt;
+    // A run's first read may already be under way (the check landed before the
+    // page heard): compare it with the same steps all still waiting, so that
+    // landing is said too.
+    const before = sameRun && seen.run ? seen.run.steps : run ? run.steps.map((s) => ({ ...s, status: "waiting" as const })) : [];
+    const said = run ? setupLandedLine(before, run.steps) : "";
+    setSeen({ key, run, line: said || (sameRun ? seen.line : "") });
+  }
+  return seen.line;
 }
 
 type FormLine = { kind: "saving" | "saved" | "error"; text: string } | null;

@@ -7,11 +7,16 @@ import {
   paymentOptions,
   returnOptions,
   setupChecklist,
+  setupLandedLine,
+  setupStepName,
+  shownSetupStatus,
   SETUP_STEPS,
   standardPicks,
   under20Options,
   type EbayPolicies,
   type EbaySettings,
+  type EbaySetupStep,
+  type EbaySetupStepStatus,
 } from "./ebay-setup";
 
 const EMPTY: EbaySettings = {
@@ -164,5 +169,53 @@ describe("eBay setup helpers (NEO-415)", () => {
     expect(isZip("  53703  ")).toBe(true);
     expect(isZip("537031234")).toBe(false);
     expect(isZip("")).toBe(false);
+  });
+});
+
+describe("Set me up's ledger words", () => {
+  const LABEL = { check: "Check your eBay account", tracked: "NB Tracked", free: "NB Free Shipping", ese: "NB Envelope" } as const;
+  const steps = (statuses: Partial<Record<keyof typeof LABEL, EbaySetupStepStatus>>): EbaySetupStep[] =>
+    (Object.keys(statuses) as Array<keyof typeof LABEL>).map((step) => ({ step, label: LABEL[step], status: statuses[step]! }));
+
+  it("names a step by its label and state, in words", () => {
+    expect(setupStepName("NB Free Shipping", "done")).toBe("NB Free Shipping, done");
+    expect(setupStepName("NB Envelope", "failed")).toBe("NB Envelope, eBay said no");
+    expect(setupStepName("NB Tracked", "had")).toBe("NB Tracked, already on eBay");
+    expect(setupStepName("NB Tracked", "stopped")).toBe("NB Tracked, not made");
+  });
+
+  it("the account check landing says how many are to make, or that there's nothing to make", () => {
+    expect(setupLandedLine(steps({ check: "working" }), steps({ check: "done", tracked: "working", free: "waiting", ese: "had" }))).toBe(
+      "Checked your eBay account. 2 to make.",
+    );
+    expect(setupLandedLine(steps({ check: "working" }), steps({ check: "done", tracked: "had", free: "had", ese: "had" }))).toBe(
+      "Checked your eBay account. You've got them all.",
+    );
+  });
+
+  it("a made policy counts what's made of what's to make; nothing landed says nothing", () => {
+    const before = steps({ check: "done", tracked: "working", free: "waiting", ese: "waiting" });
+    const after = steps({ check: "done", tracked: "done", free: "working", ese: "waiting" });
+    expect(setupLandedLine(before, after)).toBe("Made NB Tracked. 1 of 3 made.");
+    expect(setupLandedLine(after, after)).toBe("");
+  });
+
+  it("a snag outranks a check mark landing in the same read", () => {
+    const before = steps({ check: "done", tracked: "working", free: "waiting", ese: "waiting" });
+    const after = steps({ check: "done", tracked: "done", free: "failed", ese: "stopped" });
+    expect(setupLandedLine(before, after)).toBe("eBay said no to NB Free Shipping.");
+  });
+
+  it("a failed account check says nothing (the error alert does)", () => {
+    expect(setupLandedLine(steps({ check: "working" }), steps({ check: "failed" }))).toBe("");
+  });
+
+  it("once the press is over, a step left working reads failed and one left waiting reads not made", () => {
+    expect(shownSetupStatus("working", true)).toBe("working");
+    expect(shownSetupStatus("waiting", true)).toBe("waiting");
+    expect(shownSetupStatus("working", false)).toBe("failed");
+    expect(shownSetupStatus("waiting", false)).toBe("stopped");
+    expect(shownSetupStatus("done", false)).toBe("done");
+    expect(shownSetupStatus("had", false)).toBe("had");
   });
 });

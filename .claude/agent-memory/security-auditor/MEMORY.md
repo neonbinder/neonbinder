@@ -88,3 +88,4 @@
 - [Neo370 listing gate doors](patterns_neo370_listing_gate_doors.md) — readiness gate on adds: restore/undo/move/empty/flag-flip doors bypass it; owner-scoped forHome shape that held
 - [Neo415 eBay OAuth + deletion webhook](patterns_neo415_ebay_oauth_and_deletion_webhook.md) — nonce/state shape that held; unsigned deletion POST must verify signature; retry fan-out; reconnect overwrite
 - [CI cross-run queue](patterns_ci_cross_run_queue.md) — gh-api run/job polling mutex: fork runs forge holders (filter head_repository), partial reads fail open, per-repo token budget
+- [Per-owner progress field](patterns_per_owner_progress_field.md) — internal, patch-only, run-id guarded writer; sibling writes in the run must be patch-only too or a mid-run disconnect resurrects the row

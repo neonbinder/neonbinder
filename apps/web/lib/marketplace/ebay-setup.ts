@@ -11,6 +11,8 @@
  * marketplace value NB behaviour depends on.
  */
 
+import { EBAY_NAME } from "./listing-copy";
+
 /** Where the collector's eBay connection stands (`ebayConnect.connectionState`). */
 export type EbayStatus = "notConnected" | "connected" | "needsReauth" | "paused" | "sellerConflict";
 
@@ -41,6 +43,26 @@ export interface EbayConnectionState {
   settings: EbaySettings;
   setupComplete: boolean;
   missing: EbaySetupGap[];
+  /** The latest Set me up run, step by step (absent in fixtures that predate it). */
+  setupProgress?: EbaySetupProgress | null;
+}
+
+/** One step of Set me up's run: the account check, or one of NB's policies. */
+export type EbaySetupStepKey = "check" | "tracked" | "free" | "payment" | "returns" | "ese";
+/** `had`: already on the account, so nothing made; `stopped`: an earlier step stopped the run first. */
+export type EbaySetupStepStatus = "waiting" | "working" | "done" | "failed" | "had" | "stopped";
+
+export interface EbaySetupStep {
+  step: EbaySetupStepKey;
+  /** NB's words for it (the policy's NB name), from the server. */
+  label: string;
+  status: EbaySetupStepStatus;
+}
+
+/** `ebayConnect.connectionState.setupProgress`: one run, from its start. */
+export interface EbaySetupProgress {
+  startedAt: number;
+  steps: EbaySetupStep[];
 }
 
 export interface EbayFulfillmentPolicy {
@@ -172,6 +194,68 @@ export const SETUP_STEPS: ReadonlyArray<{ gap: EbaySetupGap; label: string }> = 
 export function setupChecklist(missing: ReadonlyArray<EbaySetupGap>): Array<{ gap: EbaySetupGap; label: string; done: boolean }> {
   const open = new Set(missing);
   return SETUP_STEPS.map((step) => ({ ...step, done: !open.has(step.gap) }));
+}
+
+/** The Set me up ledger's list name. */
+export const SET_ME_UP_STEPS_NAME = "Set me up, step by step";
+
+/** A Set me up step's state, as its list item says it. */
+export const SETUP_STEP_WORD: Record<EbaySetupStepStatus, string> = {
+  waiting: "waiting",
+  working: "working",
+  done: "done",
+  failed: `${EBAY_NAME} said no`,
+  had: `already on ${EBAY_NAME}`,
+  stopped: "not made",
+};
+
+/** A Set me up step's accessible name: "NB Free Shipping, done". */
+export function setupStepName(label: string, status: EbaySetupStepStatus): string {
+  return `${label}, ${SETUP_STEP_WORD[status]}`;
+}
+
+/**
+ * How a step shows. While the run goes, as stored; once the page's run is
+ * over, a step the server never settled (the run died under it) is not left
+ * spinning: working reads failed, and waiting reads not made.
+ */
+export function shownSetupStatus(status: EbaySetupStepStatus, running: boolean): EbaySetupStepStatus {
+  if (running) return status;
+  if (status === "working") return "failed";
+  if (status === "waiting") return "stopped";
+  return status;
+}
+
+/** The policies the run makes (not the account check, not one already there). */
+function toMake(steps: ReadonlyArray<EbaySetupStep>): EbaySetupStep[] {
+  return steps.filter((s) => s.step !== "check" && s.status !== "had");
+}
+
+/**
+ * The newest step to land between two reads of one run, as the live line's
+ * one sentence; "" when none did. A snag outranks a check mark; otherwise the
+ * latest in run order. The account check landing says how many are to make.
+ */
+export function setupLandedLine(before: ReadonlyArray<EbaySetupStep>, now: ReadonlyArray<EbaySetupStep>): string {
+  const was = new Map(before.map((s) => [s.step, s.status]));
+  let landed: EbaySetupStep | null = null;
+  for (const step of now) {
+    if (step.status !== "done" && step.status !== "failed") continue;
+    if (was.get(step.step) === step.status) continue;
+    landed = step;
+    if (step.status === "failed") break;
+  }
+  if (!landed) return "";
+  const making = toMake(now);
+  if (landed.step === "check") {
+    if (landed.status === "failed") return "";
+    return making.length === 0
+      ? `Checked your ${EBAY_NAME} account. You've got them all.`
+      : `Checked your ${EBAY_NAME} account. ${making.length} to make.`;
+  }
+  if (landed.status === "failed") return `${EBAY_NAME} said no to ${landed.label}.`;
+  const made = making.filter((s) => s.status === "done").length;
+  return `Made ${landed.label}. ${made} of ${making.length} made.`;
 }
 
 /** A US ZIP, five digits or ZIP+4. */

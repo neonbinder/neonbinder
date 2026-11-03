@@ -22,6 +22,19 @@ let connection: EbayConnectionState | undefined;
 const fns: Record<string, ReturnType<typeof vi.fn>> = {};
 const fn = (name: string) => (fns[name] ??= vi.fn());
 
+/**
+ * The alerts saying something. The Set me up line keeps an alert mounted empty
+ * (filled when a refusal comes, so it is announced), so "the alert" is the one
+ * with words in it.
+ */
+const spokenAlerts = () => screen.queryAllByRole("alert").filter((a) => (a.textContent ?? "") !== "");
+const saidAlert = () =>
+  waitFor(() => {
+    const said = spokenAlerts();
+    expect(said).toHaveLength(1);
+    return said[0];
+  });
+
 vi.mock("convex/react", () => {
   // Stable per function, as Convex's own hooks are: the page's effects depend on them.
   const bound = new Map<string, unknown>();
@@ -190,7 +203,7 @@ describe("Profile → Credentials → eBay, connection", () => {
   it("a refused return says why in an alert", async () => {
     fn("ebayConnect:completeConnect").mockResolvedValue({ ok: false, error: "eBay said no to that one. Connect again." });
     renderAt("/profile/ebay?code=def&state=nonce2");
-    expect((await screen.findByRole("alert")).textContent).toBe("eBay said no to that one. Connect again.");
+    expect((await saidAlert()).textContent).toBe("eBay said no to that one. Connect again.");
   });
 
   it("connected: who, since when, and a Disconnect that asks first", async () => {
@@ -246,7 +259,7 @@ describe("Profile → Credentials → eBay, setup", () => {
     renderAt();
     const over = await screen.findByRole("radiogroup", { name: "$20 and up" });
     fireEvent.click(within(over).getByRole("radio", { name: "Tracked" }));
-    expect((await screen.findByRole("alert")).textContent).toBe(
+    expect((await saidAlert()).textContent).toBe(
       "That policy can't ship a $20 card. Your old pick is back.",
     );
     expect(within(over).getByRole("radio", { name: "PWE or BMWT" }).getAttribute("aria-checked")).toBe("true");

@@ -953,6 +953,40 @@ export const listingSyncStepStatusValidator = v.union(
   v.literal("done"),
   v.literal("failed"),
 );
+/**
+ * NEO-415 — one step of eBay "Set me up" (`ebayConnect.createStandardPolicies`):
+ * which policy (or the look at the account before any), its label in NB's
+ * words (NB's own policy names), and where it stands. `had`: the account
+ * already has it, so nothing is made; `stopped`: an earlier step stopped the
+ * run before this one.
+ */
+export const ebaySetupStepValidator = v.object({
+  step: v.union(
+    v.literal("check"),
+    v.literal("tracked"),
+    v.literal("free"),
+    v.literal("payment"),
+    v.literal("returns"),
+    v.literal("ese"),
+  ),
+  label: v.string(),
+  status: v.union(
+    v.literal("waiting"),
+    v.literal("working"),
+    v.literal("done"),
+    v.literal("failed"),
+    v.literal("had"),
+    v.literal("stopped"),
+  ),
+});
+
+/** The latest Set me up run on `ebaySellerSettings.setupProgress`. */
+export const ebaySetupProgressValidator = v.object({
+  runId: v.string(),
+  startedAt: v.number(),
+  steps: v.array(ebaySetupStepValidator),
+});
+
 export const listingSyncStepValidator = v.object({
   kind: listingSyncStepKindValidator,
   condition: v.optional(collectionCopyConditionValidator),
@@ -4846,6 +4880,14 @@ export default defineSchema({
     connectedAt: v.optional(v.number()),
     connectNonce: v.optional(v.string()),
     connectNonceAt: v.optional(v.number()),
+    /**
+     * The latest "Set me up" run, step by step, so the page can tick each
+     * policy off as eBay answers (`ebayConnect.createStandardPolicies`). One
+     * run at a time: `runId` is the writer's guard (a stale run writes
+     * nothing), `startedAt` orders runs. NB's own words (labels are NB's
+     * policy names); nothing reads it but the page.
+     */
+    setupProgress: v.optional(ebaySetupProgressValidator),
     lastUpdated: v.number(),
   })
     // Every read and write is one owner's row (`.unique()`); the per-user test

@@ -16,7 +16,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import { __resetContractCache } from "./credentials";
-import { NB_POLICY_NAMES, deletionRetryDelayMs, fulfillmentBody, returnStateFor } from "./ebayConnect";
+import { NB_POLICY_NAMES, SETUP_CHECK_LABEL, deletionRetryDelayMs, fulfillmentBody, returnStateFor } from "./ebayConnect";
 import { ebayReturnTarget } from "../lib/marketplace/ebay-oauth-return";
 import { drainScheduled } from "../lib/testing/drain-scheduled";
 
@@ -1193,6 +1193,260 @@ describe("createStandardPolicies (Set me up)", () => {
     });
     expect(fulfillmentNames()).toEqual([NB_POLICY_NAMES.tracked, NB_POLICY_NAMES.free]);
     expect((await settingsRow(s))?.fulfillmentPolicy20PlusId).toBe(world.fulfillment[0].id);
+  });
+});
+
+// ── Set me up's progress ledger ──────────────────────────────────────────────
+
+/** A ledger as "step:status" strings, in order. */
+type Step = { step: string; label: string; status: string };
+const lineOf = (steps: readonly Step[] | undefined) => (steps ?? []).map((x) => `${x.step}:${x.status}`);
+const progressOf = async (s: S) => (await settingsRow(s))?.setupProgress;
+
+/**
+ * Wraps the fake eBay so every policy create first records the ledger as it
+ * stands at that moment (the step being made should read `working`), then
+ * answers as `answer` says (default: the fake's own create).
+ */
+function recordLedgerAtEachCreate(s: S, answer?: (name: string) => Response | null | Promise<Response | null>) {
+  const seen: Array<{ name: string; steps: string[] }> = [];
+  const real = world.fetch;
+  vi.stubGlobal("fetch", (async (url: string | URL | Request, init?: RequestInit) => {
+    const body = typeof init?.body === "string" ? JSON.parse(init.body) : null;
+    if (init?.method === "POST" && typeof body?.name === "string" && /_policy\/?$/.test(new URL(String(url)).pathname)) {
+      seen.push({ name: body.name, steps: lineOf((await progressOf(s))?.steps) });
+      const r = await answer?.(body.name);
+      if (r) return r;
+    }
+    return real(url, init);
+  }) as typeof fetch);
+  return seen;
+}
+
+describe("Set me up's progress (the page's step ledger)", () => {
+  test("plans every step up front, writes each one working as it starts, and ticks it done as it lands", async () => {
+    const s = await setup({ settings: SHIPS_FROM });
+    const seen = recordLedgerAtEachCreate(s);
+    const r = await s.me.action(api.ebayConnect.createStandardPolicies, {});
+    expect(r.ok).toBe(true);
+    // One snapshot per eBay create, in run order: everything before it done, it working, the rest waiting.
+    expect(seen).toEqual([
+      { name: NB_POLICY_NAMES.tracked, steps: ["check:done", "tracked:working", "free:waiting", "payment:waiting", "returns:waiting", "ese:waiting"] },
+      { name: NB_POLICY_NAMES.free, steps: ["check:done", "tracked:done", "free:working", "payment:waiting", "returns:waiting", "ese:waiting"] },
+      { name: NB_POLICY_NAMES.payment, steps: ["check:done", "tracked:done", "free:done", "payment:working", "returns:waiting", "ese:waiting"] },
+      { name: NB_POLICY_NAMES.returns, steps: ["check:done", "tracked:done", "free:done", "payment:done", "returns:working", "ese:waiting"] },
+      { name: NB_POLICY_NAMES.ese, steps: ["check:done", "tracked:done", "free:done", "payment:done", "returns:done", "ese:working"] },
+    ]);
+    const progress = await progressOf(s);
+    expect(progress?.steps).toEqual([
+      { step: "check", label: SETUP_CHECK_LABEL, status: "done" },
+      { step: "tracked", label: NB_POLICY_NAMES.tracked, status: "done" },
+      { step: "free", label: NB_POLICY_NAMES.free, status: "done" },
+      { step: "payment", label: NB_POLICY_NAMES.payment, status: "done" },
+      { step: "returns", label: NB_POLICY_NAMES.returns, status: "done" },
+      { step: "ese", label: NB_POLICY_NAMES.ese, status: "done" },
+    ]);
+    await drainScheduled(s.t);
+  });
+
+  test("the page reads it from connectionState: when the run started and its steps, never the writer's run id", async () => {
+    const s = await setup({ settings: SHIPS_FROM });
+    expect((await s.me.query(api.ebayConnect.connectionState, {})).setupProgress).toBeNull();
+    await s.me.action(api.ebayConnect.createStandardPolicies, {});
+    const st = await s.me.query(api.ebayConnect.connectionState, {});
+    const stored = await progressOf(s);
+    expect(st.setupProgress).toEqual({ startedAt: stored?.startedAt, steps: stored?.steps });
+    expect(st.setupProgress).not.toHaveProperty("runId");
+    await drainScheduled(s.t);
+  });
+
+  test("a policy already on the account is listed as had and never made; payment and returns the seller has are not listed", async () => {
+    const s = await setup({ settings: SHIPS_FROM });
+    await s.me.action(api.ebayConnect.createStandardPolicies, {});
+    const settled = (await settingsRow(s))?.lastUpdated;
+    const seen = recordLedgerAtEachCreate(s);
+    expect(await s.me.action(api.ebayConnect.createStandardPolicies, {})).toEqual({ ok: true, created: [] });
+    expect(seen).toEqual([]);
+    expect(lineOf((await progressOf(s))?.steps)).toEqual(["check:done", "tracked:had", "free:had", "ese:had"]);
+    // Progress is not a settings change: nothing new filled, so lastUpdated stays.
+    expect((await settingsRow(s))?.lastUpdated).toBe(settled);
+    await drainScheduled(s.t);
+  });
+
+  test("eBay turning the envelope down shows it failed, everything before it done, and the run is still the partial success", async () => {
+    const s = await setup({ settings: SHIPS_FROM });
+    recordLedgerAtEachCreate(s, (name) =>
+      name === NB_POLICY_NAMES.ese ? Response.json({ errors: [{ errorId: 20403 }] }, { status: 400 }) : null,
+    );
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      const r = await s.me.action(api.ebayConnect.createStandardPolicies, {});
+      expect(r).toMatchObject({ ok: true, envelopeRefused: true });
+    } finally {
+      warn.mockRestore();
+      log.mockRestore();
+    }
+    expect(lineOf((await progressOf(s))?.steps)).toEqual([
+      "check:done",
+      "tracked:done",
+      "free:done",
+      "payment:done",
+      "returns:done",
+      "ese:failed",
+    ]);
+    await drainScheduled(s.t);
+  });
+
+  test("an earlier refusal marks that step failed, and the steps after it are stopped, never asked for", async () => {
+    const s = await setup({ settings: SHIPS_FROM });
+    const seen = recordLedgerAtEachCreate(s, (name) =>
+      name === NB_POLICY_NAMES.free ? Response.json({ errors: [{ errorId: 20403 }] }, { status: 400 }) : null,
+    );
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect((await s.me.action(api.ebayConnect.createStandardPolicies, {})).ok).toBe(false);
+    } finally {
+      log.mockRestore();
+      warn.mockRestore();
+    }
+    expect(seen.map((x) => x.name)).toEqual([NB_POLICY_NAMES.tracked, NB_POLICY_NAMES.free]);
+    expect(lineOf((await progressOf(s))?.steps)).toEqual([
+      "check:done",
+      "tracked:done",
+      "free:failed",
+      "payment:stopped",
+      "returns:stopped",
+      "ese:stopped",
+    ]);
+    await drainScheduled(s.t);
+  });
+
+  test("eBay busy on a step fails that step the same way (the run stops, nothing after it runs)", async () => {
+    const s = await setup({ settings: SHIPS_FROM });
+    recordLedgerAtEachCreate(s, (name) => (name === NB_POLICY_NAMES.payment ? Response.json({}, { status: 503 }) : null));
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      expect(await s.me.action(api.ebayConnect.createStandardPolicies, {})).toEqual({
+        ok: false,
+        error: "eBay's not answering right now. Press Set me up again in a bit; it never makes anything twice.",
+      });
+    } finally {
+      log.mockRestore();
+    }
+    expect(lineOf((await progressOf(s))?.steps)).toEqual([
+      "check:done",
+      "tracked:done",
+      "free:done",
+      "payment:failed",
+      "returns:stopped",
+      "ese:stopped",
+    ]);
+    await drainScheduled(s.t);
+  });
+
+  test("a refusal while checking the account fails the check, with nothing planned after it", async () => {
+    world.shippingServices = [{ shippingService: "USPSPriorityMail", validForSellingFlow: true }];
+    const s = await setup({ settings: SHIPS_FROM });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect((await s.me.action(api.ebayConnect.createStandardPolicies, {})).ok).toBe(false);
+    } finally {
+      warn.mockRestore();
+    }
+    expect((await progressOf(s))?.steps).toEqual([{ step: "check", label: SETUP_CHECK_LABEL, status: "failed" }]);
+  });
+
+  test("no ship-from saved: refused before any eBay call, so no ledger is started", async () => {
+    const s = await setup({ settings: {} });
+    expect((await s.me.action(api.ebayConnect.createStandardPolicies, {})).ok).toBe(false);
+    expect(await progressOf(s)).toBeUndefined();
+  });
+
+  test("a disconnect mid-run: the fill makes no settings row back, with the old account's policy ids or any other", async () => {
+    const s = await setup({ settings: SHIPS_FROM });
+    let gone = false;
+    recordLedgerAtEachCreate(s, async (name) => {
+      if (name === NB_POLICY_NAMES.free && !gone) {
+        gone = true;
+        // Disconnect's bookkeeping lands while eBay is making the next policy.
+        await s.t.mutation(internal.ebayConnect.forgetEbayConnection, { ownerId: OWNER });
+      }
+      return null;
+    });
+    await s.me.action(api.ebayConnect.createStandardPolicies, {});
+    expect(gone).toBe(true);
+    expect(await settingsRow(s)).toBeNull();
+    await drainScheduled(s.t);
+  });
+
+  test("a reconnect mid-run (a fresh row, no run on it): the fill writes nothing to it", async () => {
+    const s = await setup({ settings: SHIPS_FROM });
+    let swapped = false;
+    recordLedgerAtEachCreate(s, async (name) => {
+      if (name === NB_POLICY_NAMES.free && !swapped) {
+        swapped = true;
+        await s.t.run(async (ctx) => {
+          const old = await ctx.db.query("ebaySellerSettings").first();
+          if (old) await ctx.db.delete(old._id);
+          await ctx.db.insert("ebaySellerSettings", { ownerId: OWNER, ebayUsername: "newseller", connectedAt: NOW, lastUpdated: NOW });
+        });
+      }
+      return null;
+    });
+    await s.me.action(api.ebayConnect.createStandardPolicies, {});
+    expect(swapped).toBe(true);
+    const row = await settingsRow(s);
+    expect(row).toMatchObject({ ebayUsername: "newseller", lastUpdated: NOW });
+    expect(row?.fulfillmentPolicyUnder20Id).toBeUndefined();
+    expect(row?.fulfillmentPolicy20PlusId).toBeUndefined();
+    expect(row?.paymentPolicyId).toBeUndefined();
+    expect(row?.returnPolicyId).toBeUndefined();
+    // And no ledger of the old run was written onto it.
+    expect(row?.setupProgress).toBeUndefined();
+    await drainScheduled(s.t);
+  });
+
+  describe("the stale-run guard (writeSetupProgress)", () => {
+    const steps = (status: "working" | "done") => [{ step: "check" as const, label: SETUP_CHECK_LABEL, status }];
+    const write = (s: S, runId: string, startedAt: number, status: "working" | "done", begin?: true) =>
+      s.t.mutation(internal.ebayConnect.writeSetupProgress, {
+        ownerId: OWNER,
+        runId,
+        startedAt,
+        steps: steps(status),
+        ...(begin ? { begin } : {}),
+      });
+
+    test("a newer run takes the row over; the older run's later writes are refused and change nothing", async () => {
+      const s = await setup({ settings: SHIPS_FROM });
+      expect(await write(s, "old", NOW, "working", true)).toBe(true);
+      expect(await write(s, "new", NOW + 1, "working", true)).toBe(true);
+      expect(await write(s, "old", NOW, "done")).toBe(false);
+      expect(await progressOf(s)).toEqual({ runId: "new", startedAt: NOW + 1, steps: steps("working") });
+      expect(await write(s, "new", NOW + 1, "done")).toBe(true);
+      expect((await progressOf(s))?.steps).toEqual(steps("done"));
+    });
+
+    test("a run that begins after a newer one already has is refused", async () => {
+      const s = await setup({ settings: SHIPS_FROM });
+      expect(await write(s, "new", NOW + 5, "working", true)).toBe(true);
+      expect(await write(s, "late", NOW, "working", true)).toBe(false);
+      expect((await progressOf(s))?.runId).toBe("new");
+    });
+
+    test("a write with no run begun is refused", async () => {
+      const s = await setup({ settings: SHIPS_FROM });
+      expect(await write(s, "never-begun", NOW, "done")).toBe(false);
+      expect(await progressOf(s)).toBeUndefined();
+    });
+
+    test("never makes a settings row (a disconnect mid-run deleted it; progress must not bring it back)", async () => {
+      const s = await setup({ settings: null });
+      expect(await write(s, "run", NOW, "working", true)).toBe(false);
+      expect(await settingsRow(s)).toBeNull();
+    });
   });
 });
 
