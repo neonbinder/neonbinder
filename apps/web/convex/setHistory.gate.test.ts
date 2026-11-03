@@ -493,7 +493,7 @@ describe("the gate: what counts as set history", () => {
     expect(row.sportId).toBe(baseball);
   });
 
-  test("the variant being fetched is not history, but its sibling parallels are", async () => {
+  test("a sibling parallel's cards are history", async () => {
     const t = newT();
     const baseball = await sport(t, "Baseball");
     const football = await sport(t, "Football");
@@ -504,9 +504,6 @@ describe("the gate: what counts as set history", () => {
     await player(t, baseball, "Bo Jackson");
     await committed(t, gold, "1", { printed: [["Bo Jackson", bo]] });
 
-    // Fetching Gold itself: its own cards are what is about to be re-committed.
-    const self = await gate(t, gold, baseball, ["Bo Jackson"]);
-    expect(self.batchId).toBeUndefined();
     // Fetching Blue: Gold is another variant's earlier answer.
     const sibling = await gate(t, blue, baseball, ["Bo Jackson"]);
     expect((await rowsOf(t, sibling.batchId))[0]?.decision).toMatchObject({
@@ -939,7 +936,6 @@ describe("scanSetHistory: an incomplete history is not used at all", () => {
 
     const history = await scanSetHistory(fake, {
       selectorOptionId: "x" as Id<"selectorOptions">,
-      excludeSelf: true,
     });
 
     expect(history.complete).toBe(false);
@@ -968,7 +964,6 @@ describe("scanSetHistory: an incomplete history is not used at all", () => {
 
     const history = await scanSetHistory(fake, {
       selectorOptionId: "x" as Id<"selectorOptions">,
-      excludeSelf: true,
     });
 
     expect(calls).toBe(SET_HISTORY_MAX_CALLS);
@@ -1000,7 +995,6 @@ describe("scanSetHistory: an incomplete history is not used at all", () => {
 
     const history = await scanSetHistory(actionCtxFor(t), {
       selectorOptionId: p.insert,
-      excludeSelf: true,
     });
     expect(history.complete).toBe(false);
 
@@ -1014,7 +1008,7 @@ describe("scanSetHistory: an incomplete history is not used at all", () => {
 });
 
 describe("historyNodes and historyCardBatch: slicing", () => {
-  test("parallel-level nodes come LAST, and the fetched variant is left out", async () => {
+  test("parallel-level nodes come LAST", async () => {
     const t = newT();
     const baseball = await sport(t, "Baseball");
     const p = await product(t, baseball, { year: "2024" });
@@ -1024,19 +1018,11 @@ describe("historyNodes and historyCardBatch: slicing", () => {
 
     const all = await t.query(internal.setHistory.historyNodes, {
       selectorOptionId: p.base,
-      excludeSelf: false,
     });
     expect(all.truncated).toBe(false);
     expect(all.nodeIds[all.nodeIds.length - 1]).toBe(gold);
     expect(all.nodeIds.indexOf(promo)).toBeLessThan(all.nodeIds.indexOf(gold));
     expect(all.nodeIds).toContain(p.base);
-
-    const noSelf = await t.query(internal.setHistory.historyNodes, {
-      selectorOptionId: p.base,
-      excludeSelf: true,
-    });
-    expect(noSelf.nodeIds).not.toContain(p.base);
-    expect(noSelf.nodeIds).toContain(gold);
   });
 
   test("a set with no setName ancestor is an empty, COMPLETE history", async () => {
@@ -1046,7 +1032,6 @@ describe("historyNodes and historyCardBatch: slicing", () => {
 
     const result = await t.query(internal.setHistory.historyNodes, {
       selectorOptionId: orphan,
-      excludeSelf: true,
     });
 
     expect(result).toEqual({ nodeIds: [], truncated: false });
@@ -1093,7 +1078,6 @@ describe("historyNodes and historyCardBatch: slicing", () => {
     // And the whole scan sees every one of them, exactly once.
     const history = await scanSetHistory(actionCtxFor(t), {
       selectorOptionId: p.insert,
-      excludeSelf: true,
     });
     expect(history.complete).toBe(true);
     expect(history.playersByName.size).toBe(total);
@@ -1125,7 +1109,6 @@ describe("historyNodes and historyCardBatch: slicing", () => {
 
     const history = await scanSetHistory(actionCtxFor(t), {
       selectorOptionId: p.base,
-      excludeSelf: true,
     });
     expect(history.complete).toBe(true);
     expect(history.stats.calls).toBe(1);

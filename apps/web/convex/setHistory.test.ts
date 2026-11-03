@@ -156,9 +156,14 @@ describe("resolveChecklistEntities — set history (NEO-424)", () => {
     });
   });
 
-  test("the variant being fetched is not its own history", async () => {
+  test("re-sync: a name linked on the fetched variant's own card is auto-linked to that player", async () => {
     const t = convexTest(schema, modules);
-    const { baseball, base, otherBo } = await seedSet(t);
+    const { baseball, football, base, bo } = await seedSet(t);
+    // Base's card #1 is the only card in the set that carries Bo (football).
+    const carriers = (await t.run((ctx) => ctx.db.query("cardChecklist").collect())).filter(
+      (card) => card.playerIds?.includes(bo),
+    );
+    expect(carriers.map((card) => card.selectorOptionId)).toEqual([base]);
 
     const result = await t.withIdentity(ADMIN_IDENTITY).action(
       api.selectorOptions.resolveChecklistEntities,
@@ -170,14 +175,20 @@ describe("resolveChecklistEntities — set history (NEO-424)", () => {
         ],
       },
     );
-    // Only Base holds history, and Base is the variant being fetched: today's
-    // in-sport lookup answers, silently.
+
+    // Fetching Base again: its own committed card is the set's earlier
+    // answer, so the name links to Bo over the baseball namesake.
     expect(result.unknownPlayers).toEqual([]);
-    expect(result.batchId).toBeUndefined();
-    expect(result.titleContext?.players).toEqual([
-      { printed: "Bo Jackson", name: "Bo Jackson" },
-    ]);
-    void otherBo;
+    const rows = (
+      await t.run((ctx) => ctx.db.query("entityReviewQueue").collect())
+    ).filter((row) => row.batchId === result.batchId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      kind: "player",
+      name: "Bo Jackson",
+      sportId: football,
+      decision: { action: "link", linkedPlayerId: bo, autoLinked: "setHistory" },
+    });
   });
 });
 

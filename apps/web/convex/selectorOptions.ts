@@ -1502,7 +1502,6 @@ async function resolveUnknownsAndStartBatch(
     playerByNorm.size > 0 || teamByNorm.size > 0
       ? await scanSetHistory(ctx, {
           selectorOptionId: args.selectorOptionId,
-          excludeSelf: true,
         })
       : null;
   if (history) {
@@ -1778,7 +1777,6 @@ async function resolveUnknownsAndStartBatch(
     if (priorProductId) {
       const prior = await scanSetHistory(ctx, {
         selectorOptionId: priorProductId,
-        excludeSelf: false,
       });
       if (prior.complete) {
         for (const name of queuedPlayerNames) {

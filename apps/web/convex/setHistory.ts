@@ -2,9 +2,10 @@
  * NEO-424 — what a set has ALREADY decided about a name, for the review gate.
  *
  * Jason's rule A: a name already linked on a committed card anywhere in the
- * set (base, inserts, parallels; not the variant being fetched) to exactly one
- * player IS that player, in any sport, with no wizard step. A name the set has
- * linked to two or more players is a pick step between exactly those players.
+ * set (base, inserts, parallels, the variant being fetched included) to
+ * exactly one player IS that player, in any sport, with no wizard step. A
+ * name the set has linked to two or more players is a pick step between
+ * exactly those players.
  * Set history outranks today's in-sport lookup, because it is the operator's
  * own earlier answer for this very product: Bo Jackson linked once on the
  * base card of a baseball set is Bo Jackson on its inserts too, whatever the
@@ -116,10 +117,9 @@ export const NAMESAKE_NAMES_PER_CALL = 150;
  * nodes last.
  *
  * The root is the `setName` row `selectorOptionId` sits under (itself, when it
- * is one). With `excludeSelf`, `selectorOptionId` itself is left out: that is
- * the variant being fetched, whose own cards are what the fetch is about to
- * re-commit and so are not "the set's earlier answer". Its sub-variants stay
- * in, because they are other cards.
+ * is one). Every node under it counts, the variant being fetched included: on
+ * a re-sync, a name already linked on that variant's own committed cards is
+ * the set's earlier answer like any other (Jason, 2026-11-03).
  *
  * No `setName` ancestor (an orphaned subtree, a fixture without one) is an
  * empty, COMPLETE history: there is no set to have decided anything.
@@ -127,7 +127,6 @@ export const NAMESAKE_NAMES_PER_CALL = 150;
 export const historyNodes = internalQuery({
   args: {
     selectorOptionId: v.id("selectorOptions"),
-    excludeSelf: v.boolean(),
   },
   returns: v.object({
     nodeIds: v.array(v.id("selectorOptions")),
@@ -141,12 +140,9 @@ export const historyNodes = internalQuery({
       rootId,
       SET_HISTORY_MAX_NODES,
     );
-    const kept = nodes.filter(
-      (node) => !(args.excludeSelf && node._id === args.selectorOptionId),
-    );
     const nodeIds = [
-      ...kept.filter((node) => node.level !== "parallel"),
-      ...kept.filter((node) => node.level === "parallel"),
+      ...nodes.filter((node) => node.level !== "parallel"),
+      ...nodes.filter((node) => node.level === "parallel"),
     ].map((node) => node._id);
     return { nodeIds, truncated };
   },
@@ -446,13 +442,13 @@ const emptyHistory = (
 });
 
 /**
- * Scan a set's committed cards. `excludeSelf` leaves `selectorOptionId` (the
- * variant being fetched) out; pass false to scan a whole other set by its
- * `setName` id (rule E1's prior-year product).
+ * Scan the committed cards of the whole set `selectorOptionId` sits in: the
+ * variant being fetched, or another set's `setName` id (rule E1's prior-year
+ * product).
  */
 export async function scanSetHistory(
   ctx: ActionCtx,
-  args: { selectorOptionId: Id<"selectorOptions">; excludeSelf: boolean },
+  args: { selectorOptionId: Id<"selectorOptions"> },
 ): Promise<SetHistory> {
   const { nodeIds, truncated } = await ctx.runQuery(
     internal.setHistory.historyNodes,
