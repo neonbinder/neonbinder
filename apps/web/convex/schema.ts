@@ -469,6 +469,31 @@ export const selectorOptionFields = {
       hallOfFameQid: v.optional(v.string()),
     })),
   })),
+  /**
+   * NEO-426 — this SPORT has no teams (Pokémon, Magic, a non-sport set):
+   * cards whose every player's HOME sport (`players.sportId`) carries this
+   * flag save as "No team" by default, with no Teams step to answer.
+   *
+   * Meaningful on `level: "sport"` rows only, and set only there
+   * (`sportTeamless.setHasNoTeams` refuses any other level). Read only
+   * through `isTeamlessSport` (convex/lib/teamlessSport.ts) and the server
+   * set `teamlessSportIdSet`, never by the sport's display name: the flag is
+   * NB's own fact about the row, set by an operator in Set details, so a
+   * rename never changes it (product invariant 4).
+   *
+   * A DEFAULT, never a block. Nothing refuses, strips or hides a team
+   * because of it: a set-level team, a resolved printed team, an operator
+   * pick or a later edit always wins, and a team added afterwards is kept.
+   * A listed team name, a failed team lookup, a card with no players or a
+   * player from another sport sends the card to the operator as before
+   * (invariant 8).
+   *
+   * ABSENT means "this sport has teams", which is what every row written
+   * before this field says, so there is nothing to backfill. `false` is
+   * never stored: a clear removes the field. NB data only: no adapter or
+   * sync reads or writes it.
+   */
+  hasNoTeams: v.optional(v.boolean()),
   // NEO-211 — a marketplace label this row's operator has already said NO to.
   //
   // The sync never renames a row: it stores what the marketplace calls the set

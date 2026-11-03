@@ -25,3 +25,4 @@
 - [Prototype shared types are live](prototype-shared-types-are-live-do-not-edit-them.md) — p1-p5 still routed; adapt at demoStore, never edit prototypes/_shared shapes
 - [Kept-counter semantics change is a write-path audit](kept-counter-semantics-change-is-a-write-path-audit.md) — tally/count meaning changes touch every mutation + recount + derived counts + backfill; never a read filter
 - [Scheduled marketplace work has no caller identity](scheduled-marketplace-work-has-no-caller-identity.md) — getSiteToken needs a signed-in user: internal userId token path + per-user fan-out; new browser routes ship with a per-feature contract minimum
+- [Teams-step membership is synchronous](teams-step-membership-is-synchronous.md) — decide "who is on the Cards with no team step" from rows + fetch-time preview facts, never evidence; the step counter never shrinks

@@ -54,6 +54,9 @@ import {
   titleContextValidator,
   type ResolvedNames,
 } from "./listingTitleContext";
+// NEO-426 — "this sport has no teams", read through one server helper.
+import { TEAMLESS_PLAYER_LOOKUP_PAGE } from "./sportTeamless";
+import { defaultsToNoTeamOnCommit } from "./lib/teamlessSport";
 import { generateSku } from "./sku";
 import {
   insertCardRow,
@@ -15143,6 +15146,82 @@ export const fetchCardChecklist = action({
 });
 
 /**
+ * NEO-426 — which of these players' HOME sport is flagged "no teams", for an
+ * ACTION (the fetch's resolve pass and the commit).
+ *
+ * The flagged sports are read ONCE per call, and with none flagged (the usual
+ * case) no player is read at all. Otherwise each distinct player is read
+ * once, in bounded slices: an action is not a transaction, so each
+ * `runQuery` is its own and the union of the slices is the whole answer.
+ * Extra sports (`playerSports`) never count; a missing player is not
+ * teamless.
+ */
+async function teamlessHomeSportPlayerIds(
+  ctx: ActionCtx,
+  candidatePlayerIds: Iterable<Id<"players">>,
+): Promise<Set<string>> {
+  const out = new Set<string>();
+  const ids = Array.from(new Set(candidatePlayerIds));
+  if (ids.length === 0) return out;
+  const teamlessSportIds = await ctx.runQuery(
+    internal.sportTeamless.teamlessSportIdList,
+    {},
+  );
+  if (teamlessSportIds.length === 0) return out;
+  for (let start = 0; start < ids.length; start += TEAMLESS_PLAYER_LOOKUP_PAGE) {
+    for (const id of await ctx.runQuery(
+      internal.sportTeamless.playersWithTeamlessHomeSport,
+      {
+        candidatePlayerIds: ids.slice(start, start + TEAMLESS_PLAYER_LOOKUP_PAGE),
+        teamlessSportIds,
+      },
+    )) {
+      out.add(id);
+    }
+  }
+  return out;
+}
+
+/**
+ * NEO-426 — the printed player spellings on these cards whose resolved
+ * player's HOME sport (`players.sportId`) is flagged "no teams".
+ *
+ * Reads only what the resolve gate already answered (`resolved.playerIdByNorm`),
+ * so a name the gate left unknown, ambiguous or skipped is never in it: the
+ * wizard decides those players' sport itself once they are linked. Extra
+ * sports (`playerSports`) never count.
+ *
+ * Spellings come back verbatim (trimmed), like `titleContext`, so the browser
+ * matches a card's own string without re-implementing the normaliser.
+ */
+async function collectTeamlessPlayerNames(
+  ctx: ActionCtx,
+  args: {
+    cards: ReadonlyArray<{ players?: string[] }>;
+    resolved: ResolvedNames;
+  },
+): Promise<string[]> {
+  const teamlessPlayerIds = await teamlessHomeSportPlayerIds(
+    ctx,
+    args.resolved.playerIdByNorm.values(),
+  );
+  if (teamlessPlayerIds.size === 0) return [];
+
+  const names = new Set<string>();
+  for (const card of args.cards) {
+    for (const raw of card.players ?? []) {
+      const trimmed = raw.trim();
+      if (!trimmed || names.has(trimmed)) continue;
+      const playerId = args.resolved.playerIdByNorm.get(
+        normalizePlayerName(trimmed),
+      );
+      if (playerId && teamlessPlayerIds.has(playerId)) names.add(trimmed);
+    }
+  }
+  return [...names];
+}
+
+/**
  * Action — NEO-137: resolve player/team unknowns for the CONFIRMED card set.
  *
  * This used to be step 5 of `fetchCardChecklist`. It moved out because
@@ -15185,6 +15264,13 @@ export const resolveChecklistEntities = action({
     // player/team spelling that already resolved. See listingTitleContext.ts.
     // Optional so the wire change is purely additive; always sent.
     titleContext: v.optional(titleContextValidator),
+    // NEO-426 — the printed player spellings on `cards` (trimmed, verbatim,
+    // deduped) whose RESOLVED player's home sport is flagged "no teams". The
+    // wizard reads them to save those players' cards as No team by default.
+    // A fact about the players, never a block: a card carrying any team still
+    // keeps it. Optional so the wire change is purely additive; always sent
+    // (empty when no sport is flagged).
+    teamlessPlayerNames: v.optional(v.array(v.string())),
   }),
   handler: async (ctx, args): Promise<{
     unknownPlayers: string[];
@@ -15192,6 +15278,7 @@ export const resolveChecklistEntities = action({
     ambiguousPlayers?: string[];
     batchId?: string;
     titleContext?: TitleContext;
+    teamlessPlayerNames?: string[];
   }> => {
     await requireAdmin(ctx);
     assertCardBatchWithinLimits(args.cards, "resolveChecklistEntities");
@@ -15252,7 +15339,12 @@ export const resolveChecklistEntities = action({
       cards: args.cards,
       resolved: resolvedNames,
     });
-    return { ...result, titleContext };
+    // NEO-426 — after the gate too, from its own resolved ids.
+    const teamlessPlayerNames = await collectTeamlessPlayerNames(ctx, {
+      cards: args.cards,
+      resolved: resolvedNames,
+    });
+    return { ...result, titleContext, teamlessPlayerNames };
   },
 });
 /**
@@ -21647,6 +21739,17 @@ export const commitCardChecklist = action({
     const skippedTeamKeys = new Set(
       prelude.skippedTeamNames.map((n) => normalizeEntityName(n)),
     );
+    // NEO-426 — the players this commit resolved whose HOME sport is flagged
+    // "no teams", and the player names the review ruled "not a person", for
+    // the default below (`defaultsToNoTeamOnCommit`). Skips keyed as
+    // `entityReviewSkips` keys them, like `skippedTeamKeys`.
+    const teamlessPlayerIds = await teamlessHomeSportPlayerIds(
+      ctx,
+      playerIdByName.values(),
+    );
+    const skippedPlayerKeys = new Set(
+      prelude.skippedPlayerNames.map((n) => normalizeEntityName(n)),
+    );
     // ── NEO-203: which existing row each incoming card updates ──────────────
     const match = resolveExistingIds(args.cards, prelude);
     const conflictIndices = new Set(match.conflicts.map((c) => c.index));
@@ -21800,11 +21903,38 @@ export const commitCardChecklist = action({
         pendingTeamNames.length === 0
           ? commitTeamHint(c.rawTeamName, teamSources, skippedTeamKeys)
           : undefined;
+      // NEO-426 — "No team" by DEFAULT: every player on the card plays a
+      // sport flagged "no teams", and nothing on the card names or waits on a
+      // team. Never a block: it only feeds the answer below, which every team
+      // still beats (here, and in the chunk via `settleCardTeamAnswer`, which
+      // drops it when the leaf's set-level team fills an insert or a re-synced
+      // row already carries a team). Stamped exactly as the operator's
+      // answer, so an existing teamless row is stamped on re-sync too.
+      const autoTeamNone =
+        teamlessPlayerIds.size > 0 &&
+        defaultsToNoTeamOnCommit({
+          playerIds,
+          unaccountedPlayerNameCount: (c.players ?? [])
+            .map((p) => p.trim())
+            .filter(
+              (p) =>
+                p &&
+                !playerIdByName.has(p) &&
+                !skippedPlayerKeys.has(normalizeEntityName(p)),
+            ).length,
+          teamlessPlayerIds,
+          teamCount: teamOnCardIds.length,
+          pendingTeamCount: pendingTeamNames.length,
+          hasListedTeamClaim:
+            commitTeamHint(c.rawTeamName, teamSources, skippedTeamKeys) !==
+            undefined,
+          teamLookup: c.teamLookup,
+        });
       // "No team on this card" — teams win. A card carrying any team id or a
       // pending team name drops the answer here; the chunk drops it again if
       // the leaf's set-level team fills the card on insert.
       const teamNone =
-        c.teamNone === true &&
+        (c.teamNone === true || autoTeamNone) &&
         teamOnCardIds.length === 0 &&
         pendingTeamNames.length === 0;
       // Reconciliation markers live in `attributes` so they are visible on the

@@ -93,10 +93,12 @@ import {
   type WizardStepKind,
 } from "./entity-review-steps";
 import {
+  autoNoTeamIndexes,
   storedPeople,
   type GroupChoice,
   type PreviewCardForTeams,
   type TeamAnswer,
+  type TeamlessFacts,
 } from "./teams-on-cards";
 import {
   countBulkCreatable,
@@ -449,6 +451,7 @@ export default function EntityReviewWizard({
   cardsWithNoPlayers,
   skippedPlayerNames,
   skippedTeamNames,
+  teamlessPlayerNames,
   teamsOnly = false,
   titleContext,
   existingCardIndexes = NO_CARD_INDEXES,
@@ -528,6 +531,15 @@ export default function EntityReviewWizard({
    * count) reads it here instead.
    */
   skippedTeamNames?: readonly string[];
+  /**
+   * NEO-426 — printed player names the fetch resolved to a known player whose
+   * HOME sport has no teams (`resolveChecklistEntities`' `teamlessPlayerNames`),
+   * raw. With the flagged sports (read here) and a linked player's own sport,
+   * it is what lets the teams step leave out a card every one of whose people
+   * plays a teamless sport: the commit saves it as "No team", and the Save
+   * step says how many.
+   */
+  teamlessPlayerNames?: readonly string[];
   /**
    * NEO-335 — there are no names to review (the name is historical: it is
    * the "no names" entry). The wizard opens past the names, on whichever of
@@ -1354,6 +1366,31 @@ export default function EntityReviewWizard({
     api.players.getManyByIds,
     linkedPlayerIds.length > 0 ? { ids: linkedPlayerIds } : "skip",
   );
+  /**
+   * NEO-426 — the sports flagged "No teams in this sport", for the teams
+   * step's default (a few dozen sport rows at most). Only with a teams step to
+   * feed; until it lands nothing is teamless, so every card is asked about,
+   * as before.
+   */
+  const teamlessSportIds = useQuery(
+    api.sportTeamless.listTeamlessSportIds,
+    isOpen && previewCards !== undefined && onTeamAnswersChange !== undefined ? {} : "skip",
+  );
+  /**
+   * NEO-426 — the teamless-sport default's facts, built once for the step
+   * model and the teams step alike. A linked player's home sport comes off
+   * the player rows already read for their names: no second read.
+   */
+  const teamlessFacts = useMemo<TeamlessFacts | undefined>(() => {
+    if (!teamlessSportIds?.length && !teamlessPlayerNames?.length) return undefined;
+    const linkedPlayerSportIds = new Map<string, string>();
+    for (const p of linkedPlayers ?? []) linkedPlayerSportIds.set(p._id, p.sportId);
+    return {
+      teamlessSportIds: teamlessSportIds ?? [],
+      linkedPlayerSportIds,
+      teamlessPlayerNames: teamlessPlayerNames ?? [],
+    };
+  }, [teamlessSportIds, linkedPlayers, teamlessPlayerNames]);
 
   /** id → display name, for `describeDecision`'s "Linked to {name}". */
   const linkedNameById = useMemo(() => {
@@ -2838,14 +2875,33 @@ export default function EntityReviewWizard({
    * being decided (see `cardsForTeamsStep`), exact once they all are.
    */
   const storedNames = useMemo(
-    () => storedPeople(cardsWithNoPlayers, skippedPlayerNames, skippedTeamNames),
-    [cardsWithNoPlayers, skippedPlayerNames, skippedTeamNames],
+    () => storedPeople(cardsWithNoPlayers, skippedPlayerNames, skippedTeamNames, teamlessFacts),
+    [cardsWithNoPlayers, skippedPlayerNames, skippedTeamNames, teamlessFacts],
   );
   const teamsStepCards = useMemo(
     () =>
       teamsStepEnabled && previewCards && rows
         ? cardsForTeamsStep(previewCards, rows, cardsWithSettledTeam, storedNames)
         : [],
+    [teamsStepEnabled, previewCards, rows, cardsWithSettledTeam, storedNames],
+  );
+  /**
+   * NEO-426 — how many cards the teamless-sport default saves as "No team"
+   * without asking (`autoNoTeamIndexes`). Read on the Save step only, where
+   * every name is decided, so the count is exact; the commit stamps them.
+   */
+  const autoNoTeamCount = useMemo(
+    () =>
+      teamsStepEnabled && previewCards && rows
+        ? autoNoTeamIndexes(
+            previewCards,
+            rows,
+            cardsWithSettledTeam && cardsWithSettledTeam.length > 0
+              ? new Set(cardsWithSettledTeam)
+              : undefined,
+            storedNames,
+          ).length
+        : 0,
     [teamsStepEnabled, previewCards, rows, cardsWithSettledTeam, storedNames],
   );
   /** The teams step reports up through here so the titles step can read it. */
@@ -5264,6 +5320,17 @@ export default function EntityReviewWizard({
                       </div>
                     ))}
                 </dl>
+                {/* NEO-426 — the cards the teamless-sport default saves as
+                    "No team" without a teams-step line. Said here because it
+                    is the one place they are not asked about; a team added
+                    later in the card editor sticks. */}
+                {autoNoTeamCount > 0 && (
+                  <p className="text-sm text-ink-3">
+                    {autoNoTeamCount === 1
+                      ? "1 card will save with no team: its players' sport has no teams."
+                      : `${autoNoTeamCount} cards will save with no team: their players' sport has no teams.`}
+                  </p>
+                )}
                 {commitError && (
                   /*
                     NEO-220 — a failed commit is recoverable, so say so and show
@@ -5379,6 +5446,7 @@ export default function EntityReviewWizard({
                   playerlessIndexes={cardsWithNoPlayers}
                   skippedPlayerNames={skippedPlayerNames}
                   skippedTeamNames={skippedTeamNames}
+                  teamless={teamlessFacts}
                   disabled={saving}
                   showSetTeamHint={showSetTeamHint}
                 />
