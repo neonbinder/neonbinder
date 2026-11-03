@@ -167,12 +167,12 @@ describe("admin Sync Status", () => {
     // Held-back reasons are about the card, not an instruction to its owner.
     expect(screen.getAllByText(/No price yet: no common price on the set/).length).toBeGreaterThan(0);
     expect(screen.queryByText(/Set a common price above/)).toBeNull();
-    // NEO-415: each set's last-run ledger reads the same here as on the collector's tab.
+    // NEO-415: each set's last-run ledger reads the same here as on the collector's tab (reads folded).
     const ledger = within(screen.getByRole("region", { name: "Doc's Cards" })).getByRole("list", {
       name: "Last sync steps for 1990 Score Base on BuySportsCards",
     });
     expect(within(ledger).getAllByRole("listitem").map((li) => li.getAttribute("aria-label"))).toEqual([
-      "Read Near Mint, done",
+      "Gathering data, done",
       "Send changes to BuySportsCards, done",
     ]);
     await expectAccessibleInBothModes(view.container, { label: "admin Sync Status, everyone", rerender });

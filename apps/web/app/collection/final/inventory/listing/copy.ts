@@ -310,6 +310,9 @@ export function stepLabels(steps: ReadonlyArray<StepWords>, platform: ListingPla
   });
 }
 
+/** A set row's last run folds every read into this one line (the run going now keeps each read). */
+export const GATHERING_DATA = "Gathering data";
+
 /** A step's state, as its list item says it. */
 export const STEP_STATE_WORD: Record<SyncStepStatus, string> = {
   waiting: "waiting",

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { Theme } from "@radix-ui/themes";
-import SyncStatusView, { countsLine, platformState, setKind, setLine, stepKind } from "./SyncStatusView";
+import SyncStatusView, { countsLine, foldedLines, platformState, runLines, setKind, setLine, stepKind } from "./SyncStatusView";
 import SyncStatusTab from "./SyncStatusTab";
 import { stubListing } from "./stubListing";
 import {
@@ -526,7 +526,7 @@ describe("the sync steps ledger", () => {
     await expectAccessibleInBothModes(view.container, { label: "Sync status, steps running", rerender });
   });
 
-  it("last sync: each set row keeps its last run's steps, the failed one marked", async () => {
+  it("last sync: each set row keeps its last run's steps, reads folded, the failed one marked", async () => {
     const { view, rerender } = draw({
       platforms: [
         bsc({
@@ -556,11 +556,10 @@ describe("the sync steps ledger", () => {
     const sets = section("Last sync by set");
     expect(
       names(within(sets).getByRole("list", { name: "Last sync steps for 1989 Upper Deck Base on BuySportsCards" })),
-    ).toEqual(["Read Near Mint, done", "Read Excellent, done", "Send changes to BuySportsCards, failed"]);
+    ).toEqual(["Gathering data, done", "Send changes to BuySportsCards, failed"]);
     expect(names(within(sets).getByRole("list", { name: "Last sync steps for 1990 Score Base on BuySportsCards" }))).toEqual([
-      "Read Mint, done",
+      "Gathering data, done",
       "Send changes to BuySportsCards, done",
-      "Double-check Mint, done",
     ]);
     await expectAccessibleInBothModes(view.container, { label: "Sync status, last-run steps", rerender });
   });
@@ -781,6 +780,105 @@ describe("the sync steps ledger", () => {
       });
       cleanup();
     }
+  });
+
+  describe("a set row's last run, folded (Jason: \"Gathering data\" then each step that updates)", () => {
+    const VINTAGE_DONE: SyncStep[] = [
+      { kind: "read", condition: "Near Mint", status: "done" },
+      { kind: "read", condition: "Excellent", status: "done" },
+      { kind: "read", condition: "Very Good", status: "done" },
+      { kind: "read", condition: "Good", status: "done" },
+      { kind: "read", status: "done" },
+      { kind: "photos", status: "done" },
+      { kind: "send", status: "done" },
+      { kind: "confirm", condition: "Near Mint", status: "done" },
+      { kind: "confirm", condition: "Excellent", status: "done" },
+      { kind: "confirm", condition: "Very Good", status: "done" },
+      { kind: "confirm", condition: "Good", status: "done" },
+      { kind: "confirm", status: "done" },
+    ];
+    const fold = (steps: SyncStep[], platform: "bsc" | "ebay" = "bsc") =>
+      foldedLines(steps, platform).map((l) => `${l.label}, ${l.status}`);
+
+    it("vintage BSC, all done, with photos: one Gathering data, then the updates; check-backs go", () => {
+      expect(fold(VINTAGE_DONE)).toEqual([
+        "Gathering data, done",
+        "Upload photos, done",
+        "Send changes to BuySportsCards, done",
+      ]);
+      // The run going now keeps every step.
+      expect(runLines(VINTAGE_DONE, "bsc")).toHaveLength(12);
+    });
+
+    it("a read that failed makes Gathering data failed", () => {
+      expect(
+        fold([
+          { kind: "read", condition: "Near Mint", status: "done" },
+          { kind: "read", condition: "Excellent", status: "failed" },
+        ]),
+      ).toEqual(["Gathering data, failed"]);
+    });
+
+    it("a check-back that failed stays, under its own label, so a failure never disappears", () => {
+      expect(
+        fold([
+          { kind: "read", condition: "Mint", conditions: ["Mint", "Near Mint"], status: "done" },
+          { kind: "read", condition: "Excellent", status: "done" },
+          { kind: "send", status: "done" },
+          { kind: "confirm", condition: "Mint", conditions: ["Mint", "Near Mint"], status: "done" },
+          { kind: "confirm", condition: "Excellent", status: "failed" },
+        ]),
+      ).toEqual(["Gathering data, done", "Send changes to BuySportsCards, done", "Double-check Excellent, failed"]);
+    });
+
+    it("unfinished reads (not on a finished row, but drawn safely) wear the least-finished state", () => {
+      expect(
+        fold([
+          { kind: "read", condition: "Near Mint", status: "done" },
+          { kind: "read", condition: "Excellent", status: "working" },
+          { kind: "read", condition: "Good", status: "waiting" },
+          { kind: "send", status: "waiting" },
+        ]),
+      ).toEqual(["Gathering data, waiting", "Send changes to BuySportsCards, waiting"]);
+    });
+
+    it("eBay has no reads: its row is unchanged", () => {
+      const ebay: SyncStep[] = [
+        { kind: "photos", status: "done" },
+        { kind: "items", status: "done" },
+        { kind: "offers", status: "done" },
+        { kind: "publish", status: "done" },
+        { kind: "withdraw", status: "failed" },
+      ];
+      expect(fold(ebay, "ebay")).toEqual([
+        "Upload photos, done",
+        "List the cards, done",
+        "Set prices, done",
+        "Go live, done",
+        "Take down cards at 0, failed",
+      ]);
+    });
+
+    it("drawn: the row's list holds the folded lines; Running now still shows every step", () => {
+      draw({
+        platforms: [
+          bsc({
+            running: { startedAt: T, setLabel: "1990 Score Base", variantId: "v2", steps: VINTAGE_DONE.slice(0, 3) },
+            sets: [set({ variantId: "v2", setLabel: "1990 Score Base", status: "running" }), set({ steps: VINTAGE_DONE })],
+          }),
+        ],
+      });
+      expect(names(screen.getByRole("list", { name: "Last sync steps for 1989 Upper Deck Base on BuySportsCards" }))).toEqual([
+        "Gathering data, done",
+        "Upload photos, done",
+        "Send changes to BuySportsCards, done",
+      ]);
+      expect(names(screen.getByRole("list", { name: "Sync steps for 1990 Score Base on BuySportsCards" }))).toEqual([
+        "Read Near Mint, done",
+        "Read Excellent, done",
+        "Read Very Good, done",
+      ]);
+    });
   });
 
   it("labels: one sheet's conditions said as a list, none named is the rest, each unique within a run", () => {

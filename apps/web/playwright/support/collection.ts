@@ -371,14 +371,26 @@ export async function emptyBoxCards(
  * `platformName` is how the screen names it ("BuySportsCards", "eBay").
  *
  * A run's steps live in one of two lists, never both: "Sync steps for <set> on
- * <platform>" under Running now while the run is under way, "Last sync steps
- * for <set> on <platform>" on the set's row once it has finished. `steps`
- * matches either, so a step's `done` is found whichever side of the run's end
- * the spec happens to look from.
+ * <platform>" under Running now while the run is under way (every step, one
+ * item each), "Last sync steps for <set> on <platform>" on the set's row once
+ * it has finished. The finished BuySportsCards row FOLDS: every `Read ...`
+ * becomes one "Gathering data" item at the first read's place, the
+ * `Double-check ...` steps are dropped (unless one failed), and the update
+ * steps (`Upload photos`, `Send changes to ...`) stay. eBay's finished row is
+ * unchanged. So:
+ *  - `step` matches the same label in either list: right for the steps both
+ *    lists hold (the send, eBay's steps), WRONG for a BSC read or confirm,
+ *    which the finished row no longer has;
+ *  - `readLanded` / `confirmLanded` (BSC) are the right waits for those two:
+ *    each is satisfied by the running list's done item, or by the finished
+ *    row's folded form, so a run that ends before the spec looks cannot hang
+ *    them.
  *
- * Stale ledgers: the row keeps the PREVIOUS run's steps (all done) until the
- * next run claims the set. A spec therefore calls `underWay` first, with the
- * new run's own result line, before it trusts a `done` step.
+ * Stale ledgers: the row keeps the PREVIOUS run's finished steps until the
+ * next run claims the set (the claim empties them, and the row draws none while
+ * the set is running). A spec therefore calls `underWay` first, with the new
+ * run's own result line, before it trusts any step: after that, the running
+ * list is the new run's, and a finished row can only be the new run's too.
  */
 export function syncRun(platform: Locator, setLabel: string, platformName: string) {
   const running = platform.getByRole("list", { name: `Sync steps for ${setLabel} on ${platformName}`, exact: true });
@@ -392,11 +404,28 @@ export function syncRun(platform: Locator, setLabel: string, platformName: strin
     typeof label === "string"
       ? steps.getByRole("listitem", { name: `${label}, ${state}`, exact: true })
       : steps.getByRole("listitem", { name: new RegExp(`${label.source.replace(/\$$/, "")}, ${state}$`, label.flags) });
+  /** BSC: a sheet read has landed: the running list's done read, or the finished row's "Gathering data". */
+  const readLanded = (): Locator =>
+    running
+      .getByRole("listitem", { name: /^Read .+, done$/ })
+      .first()
+      .or(last.getByRole("listitem", { name: "Gathering data, done", exact: true }));
+  /**
+   * BSC: a confirm has landed: the running list's done `Double-check ...`, or the
+   * finished row (which no longer lists confirms) once its send is done.
+   */
+  const confirmLanded = (): Locator =>
+    running
+      .getByRole("listitem", { name: /^Double-check .+, done$/ })
+      .first()
+      .or(last.getByRole("listitem", { name: /^Send changes to .+, done$/ }));
   return {
     running,
     last,
     steps,
     step,
+    readLanded,
+    confirmLanded,
     /**
      * The new run is visible: its ledger under Running now, or (a run that
      * finished before the spec looked) its own result line. Gate every `step`

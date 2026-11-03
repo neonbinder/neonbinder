@@ -50,7 +50,12 @@
 // The ledger's steps (convex/listingDrain.ts `bscSheetSteps`; labels in
 // inventory/listing/copy.ts): one "Read <conditions>" per BSC sheet, "Send
 // changes to BuySportsCards", then one "Double-check <conditions>" per sheet
-// the send touched. How many sheets a run reads is NOT fixed by this fixture: a
+// the send touched, all listed under Running now while the run is under way.
+// Once it has finished, the set's row folds them: the reads become one
+// "Gathering data" item, the double-checks are dropped, the send stays. A wait
+// for a read or a confirm therefore goes through `readLanded` / `confirmLanded`
+// (the running item, or the folded row if the run ended first), never a bare
+// `step`. How many sheets a run reads is NOT fixed by this fixture: a
 // run reads every sheet only on a set's first run, when the press asks for a
 // full read (stamped unless it falls within a minute of the last press or lands
 // on a run already under way) or when the caller says so (`full`); otherwise
@@ -98,20 +103,25 @@ import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtu
 
 /** The Send step's label. */
 const SEND = "Send changes to BuySportsCards";
-/** A condition sheet read (how many a run holds is not fixed, see "The ledger's steps"). */
-const READ = /^Read .+/;
-/**
- * The confirm step: one per condition the push touched. Both cards sit in the
- * collector's default condition, so there is one; which condition it is is the
- * account's setting, not this spec's feature.
- */
-const CONFIRM = /^Double-check .+/;
-
 const BSC = "BuySportsCards";
 const TITLE = baseChecklistTitle(TOPPS_1988);
 /** The set as Sync status names it: a Base checklist reads as the set alone. */
 const SET_LABEL = `${TOPPS_1988.year} ${TOPPS_1988.set}`;
 const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * The finished set row's "Last sync steps" list, folded: "Gathering data" (all
+ * the sheet reads), then the update steps in run order. The positive asserts
+ * come first, so the negative ones below cannot pass on a missing list.
+ */
+async function expectFoldedLastRun(run: ReturnType<typeof syncRun>): Promise<void> {
+  await expect(run.last).toBeVisible();
+  await expect(run.last.getByRole("listitem")).toContainText([
+    /^Gathering data, done$/,
+    new RegExp(`^${escapeRegExp(SEND)}, done$`),
+  ]);
+  await expect(run.last.getByRole("listitem", { name: /^(Read|Double-check) / })).toHaveCount(0);
+}
 
 /** What the failing run needs undone, filled as the flow goes. */
 const written: { box?: string; cards?: [string, string]; started?: boolean; removed?: boolean; stopped?: boolean; priced?: boolean } = {};
@@ -493,19 +503,16 @@ test(
     const run = syncRun(platform, SET_LABEL, BSC);
     const listedLine = row.getByText(/^2 listed(, 2 updated)?$/);
     await expect(run.underWay(listedLine)).toBeVisible();
-    await expect(run.step(READ).first()).toBeVisible();
+    await expect(run.readLanded()).toBeVisible();
     await expect(run.step(SEND)).toBeVisible();
-    await expect(run.step(CONFIRM).first()).toBeVisible();
+    await expect(run.confirmLanded()).toBeVisible();
     await expect(listedLine).toBeVisible();
     await expect(row.getByText(/^Synced /)).toBeVisible();
     await expect(row.getByText(/held back/)).toHaveCount(0);
-    // Finished, the set's row keeps the run's steps, in run order.
-    await expect(run.last).toBeVisible();
-    await expect(run.last.getByRole("listitem")).toContainText([
-      /^Read .+, done$/,
-      new RegExp(`^${escapeRegExp(SEND)}, done$`),
-      /^Double-check .+, done$/,
-    ]);
+    // Finished, the set's row folds the run (see "The ledger's steps"): the
+    // reads are one "Gathering data", then the update steps in run order (an
+    // "Upload photos" may sit before the send); no read or confirm item is left.
+    await expectFoldedLastRun(run);
     await expectAccessible(page, { label: "Inventory Sync status, 2 listed, the run's steps done" });
 
     // --- Admin: the same result, read-only, for this collector --------------------
@@ -570,11 +577,12 @@ test(
     const takeDown = syncRun(platform, SET_LABEL, BSC);
     const takenLine = row.getByText(/^0 listed(, \d+ updated)?, 2 taken to 0$/);
     await expect(takeDown.underWay(takenLine)).toBeVisible();
-    await expect(takeDown.step(READ).first()).toBeVisible();
+    await expect(takeDown.readLanded()).toBeVisible();
     await expect(takeDown.step(SEND)).toBeVisible();
-    await expect(takeDown.step(CONFIRM).first()).toBeVisible();
+    await expect(takeDown.confirmLanded()).toBeVisible();
     await expect(takenLine).toBeVisible();
     await expect(row.getByText(/held back/)).toHaveCount(0);
+    await expectFoldedLastRun(takeDown);
 
     // --- Tidy up through the product: the box's cards, the common price, the box
     // Zero before deleting, so no copy falls into the Unsorted box (a listed one).

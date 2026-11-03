@@ -25,6 +25,7 @@ import {
   problemSentence,
   reauthLine,
   reauthLineReadOnly,
+  GATHERING_DATA,
   STEP_STATE_WORD,
   lastStepsName,
   runStepsName,
@@ -284,7 +285,7 @@ function RunningNow({ p, level }: { p: PlatformSyncStatus; level: number }) {
       )}
       {p.running && steps && steps.length > 0 && (
         <div className="pl-6">
-          <StepLedger steps={steps} platform={p.platform} name={runStepsName(p.running.setLabel, p.platform)} />
+          <StepLedger lines={runLines(steps, p.platform)} name={runStepsName(p.running.setLabel, p.platform)} />
         </div>
       )}
     </section>
@@ -306,6 +307,48 @@ const STEP_TEXT: Record<SyncStepStatus, string> = {
   failed: "font-medium text-neon-pink-text",
 };
 
+/** One ledger line: its label (unique within the list) and its state. */
+export type LedgerLine = { label: string; status: SyncStepStatus };
+
+/** Every step of a run, one line each, in run order: the "Running now" ledger. */
+export function runLines(steps: ReadonlyArray<SyncStep>, platform: ListingPlatform): LedgerLine[] {
+  const labels = stepLabels(steps, platform);
+  return steps.map((step, i) => ({ label: labels[i], status: step.status }));
+}
+
+/** Least finished first: a fold of several steps wears the state of its least-finished one. */
+const FOLD_ORDER: readonly SyncStepStatus[] = ["failed", "waiting", "working", "done"];
+
+/**
+ * A set row's last run, folded (Jason, 2026-11-02: "collapse those rows down
+ * to show just 'Gathering data' and then each of the steps that actually does
+ * an update"; the full detail stays on the run going now):
+ *
+ * - Every read folds into one "Gathering data" line, where the first read
+ *   stood. It failed if any read failed; otherwise it wears its least-finished
+ *   read's state (done, on a finished row).
+ * - The steps that change something stay, in run order, with their own
+ *   labels: Upload photos, Send changes, and eBay's list, price, go live and
+ *   take down.
+ * - Check-backs are reads too, so they go, except one that failed: a
+ *   failure never disappears from the row.
+ */
+export function foldedLines(steps: ReadonlyArray<SyncStep>, platform: ListingPlatform): LedgerLine[] {
+  const labels = stepLabels(steps, platform);
+  const reads = steps.filter((step) => step.kind === "read");
+  const gathered = FOLD_ORDER.find((status) => reads.some((step) => step.status === status)) ?? "done";
+  const lines: LedgerLine[] = [];
+  steps.forEach((step, i) => {
+    if (step.kind === "read") {
+      if (step === reads[0]) lines.push({ label: GATHERING_DATA, status: gathered });
+      return;
+    }
+    if (step.kind === "confirm" && step.status !== "failed") return;
+    lines.push({ label: labels[i], status: step.status });
+  });
+  return lines;
+}
+
 /**
  * NEO-415 — the run's steps as the check-mark ledger (Jason, 2026-11-02:
  * check marks beside the conditions, turning green as they land): RunGlyph's
@@ -314,18 +357,7 @@ const STEP_TEXT: Record<SyncStepStatus, string> = {
  * hidden tail), so a reader in browse mode and a spec's `getByRole` agree.
  * `inline` wraps the steps onto a line or two, for a set row's last run.
  */
-function StepLedger({
-  steps,
-  platform,
-  name,
-  inline = false,
-}: {
-  steps: ReadonlyArray<SyncStep>;
-  platform: ListingPlatform;
-  name: string;
-  inline?: boolean;
-}) {
-  const labels = stepLabels(steps, platform);
+function StepLedger({ lines, name, inline = false }: { lines: ReadonlyArray<LedgerLine>; name: string; inline?: boolean }) {
   return (
     // role="list": Safari/VoiceOver drops a list's semantics under list-style: none unless it is said outright.
     <ol
@@ -334,17 +366,17 @@ function StepLedger({
       // text-sm on the ledger itself, so both placements match the line they sit under.
       className={`text-sm ${inline ? "flex flex-wrap gap-x-4 text-ink-2" : "space-y-0.5"}`}
     >
-      {steps.map((step, i) => (
+      {lines.map(({ label, status }) => (
         <li
-          key={labels[i]}
+          key={label}
           // A listitem takes no name from its content, so specs' getByRole("listitem", { name }) needs this aria-label.
-          aria-label={stepName(labels[i], step.status)}
+          aria-label={stepName(label, status)}
           className="flex items-start gap-1.5 py-0.5 leading-5"
         >
-          <RunGlyph kind={stepKind(step.status)} tones={TONES} />
-          <span className={STEP_TEXT[step.status]}>
-            {labels[i]}
-            <span className="sr-only">, {STEP_STATE_WORD[step.status]}</span>
+          <RunGlyph kind={stepKind(status)} tones={TONES} />
+          <span className={STEP_TEXT[status]}>
+            {label}
+            <span className="sr-only">, {STEP_STATE_WORD[status]}</span>
           </span>
         </li>
       ))}
@@ -642,7 +674,7 @@ function SetRow({
           <span className={set.status === "error" ? "text-neon-pink-text" : "text-ink-2"}>{setLine(set, platform)}</span>
         </p>
         {showSteps && set.steps && set.steps.length > 0 && (
-          <StepLedger steps={set.steps} platform={platform} name={lastStepsName(set.setLabel, platform)} inline />
+          <StepLedger lines={foldedLines(set.steps, platform)} name={lastStepsName(set.setLabel, platform)} inline />
         )}
         {counts && <p className="tabular-nums text-ink-3">{counts}</p>}
         {total > 0 && (

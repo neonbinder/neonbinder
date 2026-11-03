@@ -249,7 +249,7 @@ test("<title states the feature>", { tag: ["@set-selector"] }, async ({ page, si
 - `support/cards.ts`: hand-made card helpers for a worker's own subtree
   (`addCustomCard`, `addCardViaForm`, `openVariant`, `ensureAndSelect`,
   edit/delete button locators).
-- `support/collection.ts`: the collector's `/collection` and Inventory helpers (`drillToCollectorBase`, boxes, quantity fields), and `syncRun` / `followRunToEnd` for Sync status's per-step ledger (NEO-415): a live marketplace round trip is waited on one step at a time ("Read Excellent, done"), each within the standard 7 s, gated by `underWay` so the last run's finished ledger never stands in for the new one.
+- `support/collection.ts`: the collector's `/collection` and Inventory helpers (`drillToCollectorBase`, boxes, quantity fields), and `syncRun` / `followRunToEnd` for Sync status's per-step ledger (NEO-415): a live marketplace round trip is waited on one step at a time ("Read Excellent, done"), each within the standard 7 s, gated by `underWay` so the last run's finished ledger never stands in for the new one. A finished BuySportsCards row folds (reads become "Gathering data", double-checks drop), so a BSC read or confirm is waited on with `readLanded` / `confirmLanded`, never a bare `step`.
 - `support/cross-list.ts`: cross-release import (`openCrossListForm`,
   `pickCrossListSource`, `crossListCards`).
 - `support/players.ts`: `/admin/players` (`expectPlayersLoaded`,
