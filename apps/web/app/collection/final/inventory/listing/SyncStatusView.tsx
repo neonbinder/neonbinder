@@ -30,6 +30,8 @@ import {
   runStepsName,
   sellerConflictLine,
   stepLabels,
+  runSnagLine,
+  runSyncedLine,
   stepLandedLine,
   stepName,
   whenSynced,
@@ -104,6 +106,7 @@ export default function SyncStatusView({
   level = 2,
   unfinishedSetup = [],
 }: SyncStatusViewProps) {
+  const runLine = useRunLine(status.platforms);
   if (status.platforms.length === 0) {
     return (
       <p className="rounded-md border border-dashed border-rule-strong px-3 py-2 text-sm text-ink-3">
@@ -127,6 +130,13 @@ export default function SyncStatusView({
   }
   return (
     <div className="space-y-6">
+      {/*
+        The one polite line for every platform's run, mounted empty so its
+        first sentence is a change it speaks. One region, not one per
+        platform: two runs ending in the same read are one sentence, never
+        two regions changing at once (a reader can drop one).
+      */}
+      <LiveLine text={runLine} />
       {status.platforms.map((p) => (
         <Platform
           key={p.platform}
@@ -252,7 +262,6 @@ function Platform({
 function RunningNow({ p, level }: { p: PlatformSyncStatus; level: number }) {
   const name = PLATFORM_NAME[p.platform];
   const steps = p.running?.steps;
-  const landed = useLandedLine(p.running ? p.running.startedAt : null, steps, p.platform);
   return (
     <section className={`space-y-1.5 ${RULE}`}>
       <Heading level={level} className="text-base font-semibold">
@@ -278,8 +287,6 @@ function RunningNow({ p, level }: { p: PlatformSyncStatus; level: number }) {
           <StepLedger steps={steps} platform={p.platform} name={runStepsName(p.running.setLabel, p.platform)} />
         </div>
       )}
-      {/* One polite line for the run, mounted empty so its first step is a change it speaks. */}
-      <LiveLine text={landed} />
     </section>
   );
 }
@@ -320,10 +327,12 @@ function StepLedger({
 }) {
   const labels = stepLabels(steps, platform);
   return (
-    <ol aria-label={name} className={inline ? "flex flex-wrap gap-x-4 text-ink-2" : "space-y-0.5"}>
+    // role="list": Safari/VoiceOver drops a list's semantics under list-style: none unless it is said outright.
+    <ol role="list" aria-label={name} className={inline ? "flex flex-wrap gap-x-4 text-ink-2" : "space-y-0.5"}>
       {steps.map((step, i) => (
         <li
           key={labels[i]}
+          // A listitem takes no name from its content, so specs' getByRole("listitem", { name }) needs this aria-label.
           aria-label={stepName(labels[i], step.status)}
           className="flex items-start gap-1.5 py-0.5 leading-5"
         >
@@ -338,20 +347,94 @@ function StepLedger({
   );
 }
 
+/** A ledger by value (kind, conditions, state), so an equal read in a new array is no change. */
+function stepsKey(steps: ReadonlyArray<SyncStep> | undefined): string {
+  if (!steps) return "";
+  return steps.map((s) => `${s.kind}:${(s.conditions ?? (s.condition ? [s.condition] : [])).join("+")}:${s.status}`).join("|");
+}
+
+/** One platform's run as the last read saw it. */
+type SeenRun = {
+  key: string;
+  stepsKey: string;
+  run: { variantId?: VariantId; setLabel?: string; steps: ReadonlyArray<SyncStep> } | null;
+};
+
+function seenRunOf(p: PlatformSyncStatus): SeenRun {
+  const running = p.running;
+  return {
+    key: running ? `${running.startedAt}|${running.variantId ?? ""}` : "",
+    stepsKey: stepsKey(running?.steps),
+    run: running ? { variantId: running.variantId, setLabel: running.setLabel, steps: running.steps ?? [] } : null,
+  };
+}
+
 /**
- * What the run's live line says: each read of the status compared with the
- * last, during render. A step that lands (done, or a snag) is said once;
- * a step starting is not, and arriving mid-run says nothing. A new run (a new
- * start) starts the comparison over.
+ * What the screen's one live line says, from each read of the status
+ * compared with the last, during render (by value, so a fresh array holding
+ * the same ledger changes nothing and never loops). Every platform's news
+ * from one read is one line, in platform order.
+ *
+ * - A step that lands (done, or a snag) is said once; a step starting is
+ *   not, and arriving mid-run says nothing.
+ * - When a run ends (or moves on to another set), how it ended is said once
+ *   from that set's row: its last steps, which may have landed in the same
+ *   read that cleared the run.
+ * - A run starting or ending with nothing to say clears the line, so the
+ *   same sentence next time is a change the reader hears.
  */
-function useLandedLine(run: number | null, steps: ReadonlyArray<SyncStep> | undefined, platform: ListingPlatform): string {
-  const [seen, setSeen] = useState({ run, steps, line: "" });
-  if (seen.run !== run || seen.steps !== steps) {
-    const same = seen.run === run;
-    const said = same ? landedLine(seen.steps, steps, platform) : "";
-    setSeen({ run, steps, line: said || (same ? seen.line : "") });
+function useRunLine(platforms: ReadonlyArray<PlatformSyncStatus>): string {
+  const now = platforms.map((p) => ({ p, at: seenRunOf(p) }));
+  const signature = now.map(({ p, at }) => `${p.platform}#${at.key}#${at.stepsKey}`).join("~");
+  const [seen, setSeen] = useState(() => ({
+    signature,
+    runs: new Map(now.map(({ p, at }) => [p.platform, at])),
+    line: "",
+  }));
+  if (seen.signature !== signature) {
+    const said: string[] = [];
+    let runChanged = false;
+    for (const { p, at } of now) {
+      const was = seen.runs.get(p.platform);
+      if (!was) continue; // A platform that just appeared has nothing to say yet.
+      if (was.key === at.key) {
+        if (was.stepsKey !== at.stepsKey) said.push(landedLine(was.run?.steps, at.run?.steps, p.platform));
+        continue;
+      }
+      runChanged = true;
+      if (was.run) said.push(endedLine(was.run, p));
+    }
+    const line = said.filter(Boolean).join(" ");
+    setSeen({
+      signature,
+      runs: new Map(now.map(({ p, at }) => [p.platform, at])),
+      line: line || (runChanged ? "" : seen.line),
+    });
   }
   return seen.line;
+}
+
+/**
+ * How a run that just ended went, from its set's row: the step that hit a
+ * snag, or "Synced 1989 Upper Deck Base with BuySportsCards. 4 of 4 steps
+ * done." Nothing when the row isn't there or carries no ledger.
+ */
+export function endedLine(
+  run: { variantId?: VariantId; setLabel?: string; steps: ReadonlyArray<SyncStep> },
+  p: Pick<PlatformSyncStatus, "platform" | "sets">,
+): string {
+  if (run.variantId === undefined) return "";
+  const row = p.sets.find((set) => set.variantId === run.variantId);
+  const steps = row?.steps;
+  if (!row || !steps || steps.length === 0) return "";
+  const labels = stepLabels(steps, p.platform);
+  const failed = steps.findIndex((step) => step.status === "failed");
+  if (failed >= 0) return stepLandedLine(labels[failed], "failed", 0, steps.length);
+  const setLabel = run.setLabel ?? row.setLabel;
+  if (row.status === "error") return runSnagLine(setLabel, p.platform);
+  if (row.status === "running") return landedLine(run.steps, steps, p.platform);
+  const done = steps.filter((step) => step.status === "done").length;
+  return runSyncedLine(setLabel, p.platform, done, steps.length);
 }
 
 /** The newest step to land between two reads, as one sentence; "" when none did. */

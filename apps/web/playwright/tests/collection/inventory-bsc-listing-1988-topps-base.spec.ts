@@ -48,14 +48,18 @@
 // timer and no cron path: the 15-minute cron is deliberately not exercised.
 //
 // The ledger's steps (convex/listingDrain.ts `bscSheetSteps`; labels in
-// inventory/listing/copy.ts). 1988 is after the 1980 vintage cutoff, so BSC's
-// modern conditions are read, in BSC's order, each named by the NB conditions
-// that fold into it (Mint and Near Mint share a sheet, Very Good and Good
-// share one). A Sync press reads every sheet when it is the first in a minute
-// (and a set's first run always does), so the first Sync here asserts all four,
-// in order. The second (take-down) Sync reads only the sheets NB pushed to when
-// its press falls inside that minute (the box write already queued the run), so
-// it asserts what both runs hold: a read, the send, a confirm.
+// inventory/listing/copy.ts): one "Read <conditions>" per BSC sheet, "Send
+// changes to BuySportsCards", then one "Double-check <conditions>" per sheet
+// the send touched. How many sheets a run reads is NOT fixed by this fixture: a
+// run reads every sheet only on a set's first run, when the press asks for a
+// full read (stamped unless it falls within a minute of the last press or lands
+// on a run already under way) or when the caller says so (`full`); otherwise
+// it reads only the sheets NB has cards in or pushed to before
+// (`syncVariant`'s `fullRead`). The spec reruns on the same seed and its
+// cleanup Sync runs on a failure, so a run here can be either. Both Syncs
+// therefore assert what every run holds, in order: a read, the send, a
+// confirm. Which condition the confirm names is the account's default
+// condition, not this spec's feature.
 //
 // Sync's toast. A press that sets a run going toasts "Syncing <title> now.
 // Watch it on Sync status."; both presses assert it before reading the result.
@@ -92,14 +96,10 @@ import {
 import { removeBscSignIn, saveBscSignIn } from "../../support/credentials";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 
-/**
- * A first Sync's read steps for a modern set, in run order (`bscSheetSteps`
- * over BSC's modern conditions: near_mint, excellent, very_good, poor, each
- * named by the NB conditions that fold into it, `nbConditionsFor`).
- */
-const MODERN_READS = ["Read Mint and Near Mint", "Read Excellent", "Read Very Good and Good", "Read Poor"] as const;
 /** The Send step's label. */
 const SEND = "Send changes to BuySportsCards";
+/** A condition sheet read (how many a run holds is not fixed, see "The ledger's steps"). */
+const READ = /^Read .+/;
 /**
  * The confirm step: one per condition the push touched. Both cards sit in the
  * collector's default condition, so there is one; which condition it is is the
@@ -485,14 +485,15 @@ test(
     await expect(page).toHaveURL(/[?&]tab=sync/);
     // The live BSC round trip, step by step (see "Waits" above): the new run is
     // in view (its ledger under Running now, or its own result line if it
-    // already finished), then each sheet read, the send and the confirm land
-    // in turn, 7 s each. The line is the drain's own count: 2 rows on BSC show
+    // already finished), then a sheet read, the send and the confirm land in
+    // turn, 7 s each (how many sheets are read is not fixed, see "The ledger's
+    // steps" above). The line is the drain's own count: 2 rows on BSC show
     // NB's stock after the read-back (2 updated, or none when BSC already
     // showed them); "skipped" would be a held-back card.
     const run = syncRun(platform, SET_LABEL, BSC);
     const listedLine = row.getByText(/^2 listed(, 2 updated)?$/);
     await expect(run.underWay(listedLine)).toBeVisible();
-    for (const read of MODERN_READS) await expect(run.step(read)).toBeVisible();
+    await expect(run.step(READ).first()).toBeVisible();
     await expect(run.step(SEND)).toBeVisible();
     await expect(run.step(CONFIRM).first()).toBeVisible();
     await expect(listedLine).toBeVisible();
@@ -501,7 +502,7 @@ test(
     // Finished, the set's row keeps the run's steps, in run order.
     await expect(run.last).toBeVisible();
     await expect(run.last.getByRole("listitem")).toContainText([
-      ...MODERN_READS.map((read) => new RegExp(`^${escapeRegExp(read)}, done$`)),
+      /^Read .+, done$/,
       new RegExp(`^${escapeRegExp(SEND)}, done$`),
       /^Double-check .+, done$/,
     ]);
@@ -564,12 +565,12 @@ test(
     // so the row still shows the LAST run's finished steps until this one
     // claims the set: gate on the new run (its ledger, or its own result line).
     // A read, the send (it carries the two zeros) and a confirm land in turn;
-    // how many sheets this run reads depends on whether its press was the first
-    // in a minute (see "Waits"), so one read is the assertion.
+    // how many sheets it reads is not fixed (see "The ledger's steps" above), so
+    // one read is the assertion.
     const takeDown = syncRun(platform, SET_LABEL, BSC);
     const takenLine = row.getByText(/^0 listed(, \d+ updated)?, 2 taken to 0$/);
     await expect(takeDown.underWay(takenLine)).toBeVisible();
-    await expect(takeDown.step(/^Read .+/).first()).toBeVisible();
+    await expect(takeDown.step(READ).first()).toBeVisible();
     await expect(takeDown.step(SEND)).toBeVisible();
     await expect(takeDown.step(CONFIRM).first()).toBeVisible();
     await expect(takenLine).toBeVisible();

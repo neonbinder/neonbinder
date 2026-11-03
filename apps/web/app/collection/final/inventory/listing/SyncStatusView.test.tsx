@@ -3,7 +3,7 @@ import { act, cleanup, fireEvent, render, screen, within } from "@testing-librar
 import { MemoryRouter } from "react-router";
 import { Theme } from "@radix-ui/themes";
 import SyncStatusView, { countsLine, platformState, setKind, setLine, stepKind } from "./SyncStatusView";
-import SyncStatusTab, { finishedLine } from "./SyncStatusTab";
+import SyncStatusTab from "./SyncStatusTab";
 import { stubListing } from "./stubListing";
 import {
   PAUSED_LINE,
@@ -105,6 +105,8 @@ function draw(
 /** A platform's part, by its heading (the parts are plain sections, not named regions). */
 const section = (name: string) => screen.getByRole("heading", { name }).closest("section") as HTMLElement;
 const flush = () => act(async () => {});
+/** The screen's one run line: the view's first polite region (each set row's own comes after). */
+const runLine = () => screen.getAllByRole("status")[0];
 
 afterEach(cleanup);
 
@@ -357,32 +359,40 @@ describe("the Sync status tab", () => {
     expect(tab(undefined, false).container.textContent).toBe("");
   });
 
-  it("says once, politely, when one of my sets finishes or hits a snag; queue churn says nothing", () => {
-    const running = (over: Partial<SyncSetResult> = {}) => set({ status: "running", ...over });
+  it("BSC and eBay runs ending in one read are one sentence in one polite line; queue churn says nothing", () => {
+    const bscSteps = (last: SyncStep["status"]): SyncStep[] => [
+      { kind: "read", condition: "Near Mint", status: "done" },
+      { kind: "send", status: "done" },
+      { kind: "confirm", condition: "Near Mint", status: last },
+    ];
+    const ebaySteps = (last: SyncStep["status"]): SyncStep[] => [
+      { kind: "photos", status: "done" },
+      { kind: "items", status: "done" },
+      { kind: "offers", status: last },
+    ];
     const before: SyncStatus = {
-      platforms: [bsc({ sets: [running(), running({ variantId: "v3", setLabel: "1991 Fleer Base" }), set({ variantId: "v4" })] })],
-    };
-    const after: SyncStatus = {
       platforms: [
         bsc({
-          sets: [
-            set(),
-            set({ variantId: "v3", setLabel: "1991 Fleer Base", status: "error" }),
-            set({ variantId: "v4" }),
-          ],
+          running: { startedAt: T, setLabel: "1989 Upper Deck Base", variantId: "v1", steps: bscSteps("working") },
+          sets: [set({ status: "running", steps: bscSteps("working") })],
+        }),
+        bsc({
+          platform: "ebay",
+          running: { startedAt: T, setLabel: "1988 Topps Base", variantId: "v8", steps: ebaySteps("working") },
+          sets: [set({ variantId: "v8", setLabel: "1988 Topps Base", status: "running", steps: ebaySteps("working") })],
         }),
       ],
     };
-    expect(finishedLine(before, after)).toBe(
-      "1989 Upper Deck Base finished syncing with BuySportsCards. 1991 Fleer Base hit a snag syncing with BuySportsCards.",
-    );
-    // Nothing was running: nothing to say (a queued card coming or going included).
-    const churn: SyncStatus = {
-      platforms: [bsc({ sets: [set()], queued: { cards: [{ cardId: "c1", variantId: "v1", setLabel: "x", changedAt: T }], more: false } })],
+    // One read: both runs gone, BSC's last check landed, eBay's offers hit a snag.
+    const after: SyncStatus = {
+      platforms: [
+        bsc({ sets: [set({ steps: bscSteps("done") })] }),
+        bsc({
+          platform: "ebay",
+          sets: [set({ variantId: "v8", setLabel: "1988 Topps Base", status: "error", steps: ebaySteps("failed") })],
+        }),
+      ],
     };
-    expect(finishedLine({ platforms: [bsc({ sets: [set()] })] }, churn)).toBe("");
-    expect(finishedLine(undefined, after)).toBe("");
-
     let current: SyncStatus = before;
     const value = {
       kind: "convex",
@@ -401,15 +411,32 @@ describe("the Sync status tab", () => {
       </Theme>
     );
     const view = render(tree());
-    const line = () => view.container.querySelector("div.space-y-4 > p[role='status']")!;
-    expect(line().textContent).toBe("");
+    // One run line for the whole screen: none per platform, and the tab adds none of its own.
+    const runLines = () => screen.getAllByRole("status").filter((el) => !el.closest("li"));
+    expect(runLines()).toHaveLength(1);
+    expect(within(screen.getByRole("region", { name: "BuySportsCards" })).queryAllByRole("status")).toHaveLength(0);
+    expect(within(screen.getByRole("region", { name: "eBay" })).queryAllByRole("status")).toHaveLength(0);
+    expect(runLine().textContent).toBe("");
+
     current = after;
     view.rerender(tree());
-    expect(line().textContent).toBe(finishedLine(before, after));
-    // A later read with nothing newly finished keeps the line (no re-announce, no clear).
-    current = { platforms: [bsc({ sets: after.platforms[0].sets })] };
+    expect(runLine().textContent).toBe(
+      "Synced 1989 Upper Deck Base with BuySportsCards. 3 of 3 steps done. Set prices hit a snag.",
+    );
+    // A later read with nothing new, and a queued card coming and going, say nothing (no re-announce, no clear).
+    current = {
+      platforms: [
+        bsc({
+          sets: after.platforms[0].sets,
+          queued: { cards: [{ cardId: "c1", variantId: "v1", setLabel: "x", changedAt: T }], more: false },
+        }),
+        after.platforms[1],
+      ],
+    };
     view.rerender(tree());
-    expect(line().textContent).toBe(finishedLine(before, after));
+    expect(runLine().textContent).toBe(
+      "Synced 1989 Upper Deck Base with BuySportsCards. 3 of 3 steps done. Set prices hit a snag.",
+    );
   });
 
   it("loading shows a skeleton, then the platform", () => {
@@ -598,7 +625,7 @@ describe("the sync steps ledger", () => {
 
   it("says each step as it lands, once, in one polite line; arriving mid-run says nothing", () => {
     const { view } = draw({ platforms: [runningBsc(BSC_RUN)] });
-    const line = () => within(section("Running now")).getByRole("status");
+    const line = runLine;
     expect(line().textContent).toBe("");
 
     const tree = (steps: SyncStep[]) => (
@@ -622,6 +649,138 @@ describe("the sync steps ledger", () => {
 
     view.rerender(tree([next[0], next[1], { ...next[2], status: "failed" }]));
     expect(line().textContent).toBe("Send changes to BuySportsCards hit a snag.");
+  });
+
+  /** The view over one platform, redrawn in place (the same tree, so the live line's state carries). */
+  function live(first: PlatformSyncStatus, opts: { readOnly?: boolean } = {}) {
+    const tree = (p: PlatformSyncStatus) => (
+      <Theme>
+        <MemoryRouter>
+          <SyncStatusView
+            status={{ platforms: [p] }}
+            loadProblems={async () => ({ problems: [], problemsTotal: 0 })}
+            readOnly={opts.readOnly}
+          />
+        </MemoryRouter>
+      </Theme>
+    );
+    const view = render(tree(first));
+    const line = runLine;
+    return { view, line, redraw: (p: PlatformSyncStatus) => view.rerender(tree(p)) };
+  }
+  const lastStep = (status: SyncStep["status"]): SyncStep[] => [
+    { kind: "read", condition: "Near Mint", status: "done" },
+    { kind: "read", condition: "Excellent", status: "done" },
+    { kind: "send", status: "done" },
+    { kind: "confirm", condition: "Near Mint", status },
+  ];
+
+  it("a run that ends says how it went once, even when its last step lands in the read that clears it", () => {
+    const { line, redraw } = live(runningBsc(lastStep("working")));
+    expect(line().textContent).toBe("");
+    // One read: the run is gone, and its row holds the last step done.
+    redraw(bsc({ running: null, lastDrainAt: T, sets: [set({ steps: lastStep("done") })] }));
+    expect(line().textContent).toBe("Synced 1989 Upper Deck Base with BuySportsCards. 4 of 4 steps done.");
+    // Later reads of the finished state say nothing more.
+    redraw(bsc({ running: null, lastDrainAt: T, sets: [set({ steps: lastStep("done") })] }));
+    expect(line().textContent).toBe("Synced 1989 Upper Deck Base with BuySportsCards. 4 of 4 steps done.");
+  });
+
+  it("a run that ends on a snag names the step, or the set when no step owns it (the admin hears it too)", () => {
+    const failed: SyncStep[] = [
+      { kind: "read", condition: "Near Mint", status: "done" },
+      { kind: "send", status: "failed" },
+    ];
+    const first = live(runningBsc(lastStep("waiting").slice(0, 3)), { readOnly: true });
+    first.redraw(bsc({ running: null, sets: [set({ status: "error", lastError: "BuySportsCards timed out", steps: failed })] }));
+    expect(first.line().textContent).toBe("Send changes to BuySportsCards hit a snag.");
+    cleanup();
+
+    const second = live(runningBsc(lastStep("working")));
+    second.redraw(bsc({ running: null, sets: [set({ status: "error", steps: lastStep("done").slice(0, 3) })] }));
+    expect(second.line().textContent).toBe("1989 Upper Deck Base hit a snag with BuySportsCards.");
+  });
+
+  it("a run that moves on to the next set says how the first one ended", () => {
+    const { line, redraw } = live(runningBsc(lastStep("working")));
+    redraw(
+      bsc({
+        running: { startedAt: T + 1, setLabel: "1990 Score Base", variantId: "v2", steps: [{ kind: "read", condition: "Mint", status: "working" }] },
+        sets: [set({ variantId: "v2", setLabel: "1990 Score Base", status: "running" }), set({ steps: lastStep("done") })],
+      }),
+    );
+    expect(line().textContent).toBe("Synced 1989 Upper Deck Base with BuySportsCards. 4 of 4 steps done.");
+  });
+
+  it("an equal ledger in a new array is no change: no render loop, nothing said again", () => {
+    const { line, redraw } = live(runningBsc(BSC_RUN));
+    const landed: SyncStep[] = [BSC_RUN[0], { ...BSC_RUN[1], status: "done" }, BSC_RUN[2], BSC_RUN[3]];
+    redraw(runningBsc(landed));
+    expect(line().textContent).toBe("Read Excellent, done. 2 of 4 steps done.");
+    const writes: MutationRecord[] = [];
+    const watch = new MutationObserver((records) => writes.push(...records));
+    watch.observe(line(), { childList: true, characterData: true, subtree: true });
+    for (let i = 0; i < 5; i++) {
+      redraw(runningBsc(landed.map((s) => ({ ...s }))));
+    }
+    writes.push(...watch.takeRecords());
+    watch.disconnect();
+    expect(writes).toHaveLength(0);
+    expect(line().textContent).toBe("Read Excellent, done. 2 of 4 steps done.");
+  });
+
+  it("axe, both themes: every step state, in the running ledger and the set rows' inline one, collector and admin", async () => {
+    const all: SyncStep[] = [
+      { kind: "read", condition: "Near Mint", status: "done" },
+      { kind: "read", condition: "Excellent", status: "working" },
+      { kind: "send", status: "waiting" },
+    ];
+    const status: SyncStatus = {
+      platforms: [
+        bsc({
+          running: { startedAt: T, setLabel: "1989 Upper Deck Base", variantId: "v1", steps: all },
+          sets: [
+            set({ status: "running", steps: all }),
+            // A set whose row still says running while another run is drawn above: its inline ledger shows working and waiting.
+            set({ variantId: "v2", setLabel: "1990 Score Base", status: "running", steps: all }),
+            set({
+              variantId: "v3",
+              setLabel: "1991 Fleer Base",
+              status: "error",
+              lastError: "BuySportsCards timed out",
+              steps: [
+                { kind: "read", condition: "Mint", status: "done" },
+                { kind: "send", status: "failed" },
+              ],
+            }),
+          ],
+        }),
+        bsc({
+          platform: "ebay",
+          sets: [
+            set({
+              steps: [
+                { kind: "photos", status: "done" },
+                { kind: "items", status: "done" },
+                { kind: "offers", status: "failed" },
+              ],
+            }),
+          ],
+        }),
+      ],
+    };
+    for (const readOnly of [false, true]) {
+      const { view, rerender } = draw(status, { readOnly });
+      const sets = within(screen.getByRole("region", { name: "BuySportsCards" }));
+      expect(sets.getByRole("list", { name: "Last sync steps for 1990 Score Base on BuySportsCards" })).toBeTruthy();
+      expect(sets.getByRole("listitem", { name: "Send changes to BuySportsCards, failed" })).toBeTruthy();
+      expect(screen.getAllByRole("list", { name: /steps for/ }).every((l) => l.getAttribute("role") === "list")).toBe(true);
+      await expectAccessibleInBothModes(view.container, {
+        label: `Sync status, every step state${readOnly ? ", admin" : ""}`,
+        rerender,
+      });
+      cleanup();
+    }
   });
 
   it("labels: one sheet's conditions said as a list, none named is the rest, each unique within a run", () => {

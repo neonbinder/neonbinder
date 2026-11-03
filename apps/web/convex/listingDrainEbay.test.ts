@@ -1279,6 +1279,36 @@ describe("eBay drain: the run's steps (NEO-415)", () => {
     expect(rec?.progress?.runStartedAt).toBe(rec?.lastRunAt);
   });
 
+  test("a live card's price and quantity update goes out before a new card is published, and the ledger reads offers then publish", async () => {
+    const s = await setup();
+    const v = await seedVariant(s.t, { cards: [{ number: "1" }, { number: "2" }] });
+    const [live, fresh] = v.cardIds;
+    await addWithPhoto(s, live, { homeId: s.box, condition: "Near Mint", minPriceCents: 500 });
+    await listOnEbay(s);
+    await queue(s, [{ cardId: live, variantId: v.variantId }]);
+    await drain(s);
+    // The live card's count changes and a new card arrives, in one run.
+    await addWithPhoto(s, live, { homeId: s.box, condition: "Near Mint", minPriceCents: 500, quantity: 2 }, "tokLive2");
+    await addWithPhoto(s, fresh, { homeId: s.box, condition: "Near Mint", minPriceCents: 500 });
+    await queue(s, [
+      { cardId: live, variantId: v.variantId, seq: 2 },
+      { cardId: fresh, variantId: v.variantId },
+    ]);
+    ebay.calls = [];
+
+    await drain(s);
+
+    const order = ebay.writes().map((c) => c.path);
+    const update = order.indexOf("/sell/inventory/v1/bulk_update_price_quantity");
+    const publish = order.indexOf("/sell/inventory/v1/bulk_publish_offer");
+    expect(update).toBeGreaterThanOrEqual(0);
+    expect(publish).toBeGreaterThan(update);
+    expect(ebay.offerFor(`NB2-${live}-NM`)?.body.availableQuantity).toBe(3);
+    expect(ebay.offerFor(`NB2-${fresh}-NM`)?.status).toBe("PUBLISHED");
+    const steps = await stepsOf(s, v.variantId);
+    expect(steps).toEqual(["photos: done", "items: done", "offers: done", "publish: done"]);
+  });
+
   test("only the steps the run takes: a count change is one offers step; a count at 0 is one withdraw step", async () => {
     const s = await setup();
     const { v, card } = await oneCard(s);

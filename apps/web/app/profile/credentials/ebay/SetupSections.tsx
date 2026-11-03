@@ -62,8 +62,13 @@ type SetupLine = { kind: "progress" | "ok" | "error"; text: string } | null;
 type Loaded = { state: "loading" } | { state: "error"; error: string } | { state: "ready"; policies: EbayPolicies };
 
 const READ_FAILED = `Couldn't reach ${EBAY_NAME} for your policies. Give it another try.`;
-/** Set me up made the policies, but reading them back to pick them failed: Try again picks, and makes nothing. */
-const MADE_NOT_PICKED = `Your new policies are made, but ${EBAY_NAME} wouldn't hand them back just now, so nothing's picked yet. Give it a bit, then press Try again to pick them. It won't make them twice.`;
+/**
+ * Set me up made the policies, but reading them back to pick them failed: Try
+ * again picks, and makes nothing. The read's cause isn't always eBay, so the
+ * line never blames it.
+ */
+const MADE_NOT_PICKED =
+  "Your new policies are made, but we couldn't read them back just now, so nothing's picked yet. Give it a bit, then press Try again to pick them. It won't make them twice.";
 
 export default function SetupSections({ connection }: { connection: EbayConnectionState }) {
   const readPolicies = useAction(api.ebayConnect.readPolicies);

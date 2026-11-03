@@ -338,6 +338,16 @@ export function lastStepsName(setLabel: string, platform: ListingPlatform): stri
  * and the tally, or the step that hit a snag. Steps going from waiting to
  * working are not said (the spinner shows it; saying it doubles the chatter).
  */
+/** The run's last word when it ends clean: "Synced 1989 Upper Deck Base with BuySportsCards. 4 of 4 steps done." */
+export function runSyncedLine(setLabel: string, platform: ListingPlatform, done: number, total: number): string {
+  return `Synced ${setLabel} with ${PLATFORM_NAME[platform]}. ${done} of ${total} steps done.`;
+}
+
+/** The run's last word when it ended on a snag no step owns: "1991 Fleer Base hit a snag with BuySportsCards." */
+export function runSnagLine(setLabel: string, platform: ListingPlatform): string {
+  return `${setLabel} hit a snag with ${PLATFORM_NAME[platform]}.`;
+}
+
 export function stepLandedLine(label: string, status: "done" | "failed", done: number, total: number): string {
   return status === "failed" ? `${label} hit a snag.` : `${label}, done. ${done} of ${total} steps done.`;
 }

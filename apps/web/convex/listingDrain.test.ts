@@ -27,7 +27,14 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
-import { drainOwnerImpl, rejectedPushDetail, settleSteps, type DrainCtx } from "./listingDrain";
+import {
+  drainOwnerImpl,
+  MAX_PROGRESS_STEPS,
+  ProgressLedger,
+  rejectedPushDetail,
+  settleSteps,
+  type DrainCtx,
+} from "./listingDrain";
 import { kickOwnerDrains } from "./listingOutbox";
 import { cancelScheduled } from "../lib/testing/drain-scheduled";
 
@@ -1477,5 +1484,155 @@ describe("settleSteps", () => {
     const steps = [step("done"), step("working"), step("waiting")];
     expect(settleSteps(steps, "ok", 5)).toEqual([step("done"), { ...step("done"), finishedAt: 5 }]);
     expect(settleSteps(steps, "error", 5)).toEqual([step("done"), { ...step("failed"), finishedAt: 5 }]);
+  });
+});
+
+describe("writeProgress: the lease guard", () => {
+  const waiting = (n: number) => Array.from({ length: n }, () => ({ kind: "read" as const, status: "waiting" as const }));
+
+  /** A variant whose record is `running` under lease-2 (the drain lease is held by the same token). */
+  async function running() {
+    const s = await setup();
+    const { v } = await twoCards(s);
+    await drain(s);
+    await s.t.run(async (ctx) => {
+      const st = await ctx.db.query("marketplaceListingStates").first();
+      await ctx.db.patch(st!._id, { drainLeaseToken: "lease-2", drainLeaseExpiresAt: Date.now() + 60_000 });
+    });
+    await s.t.mutation(internal.listingDrain.claimVariant, {
+      ownerId: OWNER,
+      platform: "bsc",
+      variantId: v.variantId,
+      leaseToken: "lease-2",
+    });
+    return { s, v };
+  }
+  const write = (s: S, variantId: Id<"selectorOptions">, leaseToken: string, steps: ReturnType<typeof waiting>) =>
+    s.t.mutation(internal.listingDrain.writeProgress, { ownerId: OWNER, platform: "bsc", variantId, leaseToken, steps });
+
+  test("a matching lease token writes the steps and returns true", async () => {
+    const { s, v } = await running();
+    expect(await write(s, v.variantId, "lease-2", waiting(2))).toBe(true);
+    expect((await record(s, v.variantId))?.progress?.steps).toEqual(waiting(2));
+  });
+
+  test("a wrong lease token returns false and leaves the stored steps alone", async () => {
+    const { s, v } = await running();
+    await write(s, v.variantId, "lease-2", waiting(2));
+    expect(await write(s, v.variantId, "someone-else", waiting(5))).toBe(false);
+    expect((await record(s, v.variantId))?.progress?.steps).toEqual(waiting(2));
+  });
+
+  test("a record no longer running returns false and leaves the stored steps alone", async () => {
+    const { s, v } = await running();
+    await write(s, v.variantId, "lease-2", waiting(2));
+    await s.t.run(async (ctx) => {
+      const rec = await ctx.db.query("marketplaceListingSyncs").first();
+      await ctx.db.patch(rec!._id, { status: "idle" });
+    });
+    expect(await write(s, v.variantId, "lease-2", waiting(5))).toBe(false);
+    expect((await record(s, v.variantId))?.progress?.steps).toEqual(waiting(2));
+  });
+
+  test("more than MAX_PROGRESS_STEPS steps are cut to the limit", async () => {
+    const { s, v } = await running();
+    expect(await write(s, v.variantId, "lease-2", waiting(MAX_PROGRESS_STEPS + 7))).toBe(true);
+    expect((await record(s, v.variantId))?.progress?.steps).toHaveLength(MAX_PROGRESS_STEPS);
+  });
+});
+
+describe("ProgressLedger", () => {
+  const ids = { ownerId: OWNER, platform: "bsc" as const, variantId: "v1" as Id<"selectorOptions">, leaseToken: "l" };
+  function ledger() {
+    const runMutation = vi.fn(async () => true);
+    const l = new ProgressLedger({ runMutation } as unknown as DrainCtx, ids, () => 7);
+    return { l, runMutation };
+  }
+  const kinds = (l: ProgressLedger) => l.steps().map((x) => `${x.kind}:${x.status}`);
+
+  test("add with a beforeKey inserts ahead of that step; an unknown beforeKey appends", () => {
+    const { l } = ledger();
+    l.plan([{ key: "a", kind: "read" }, { key: "c", kind: "send" }]);
+    l.add([{ key: "b", kind: "confirm" }], "c");
+    expect(kinds(l)).toEqual(["read:waiting", "confirm:waiting", "send:waiting"]);
+    l.add([{ key: "z", kind: "photos" }], "nope");
+    expect(kinds(l).at(-1)).toBe("photos:waiting");
+  });
+
+  test("add skips a key the ledger already has", () => {
+    const { l } = ledger();
+    l.plan([{ key: "a", kind: "read" }]);
+    l.add([{ key: "a", kind: "send" }]);
+    expect(kinds(l)).toEqual(["read:waiting"]);
+  });
+
+  test("start on a step already working, or on an unknown key, writes nothing", async () => {
+    const { l, runMutation } = ledger();
+    l.plan([{ key: "a", kind: "read" }]);
+    await l.start("a");
+    expect(runMutation).toHaveBeenCalledTimes(1);
+    await l.start("a");
+    await l.start("missing");
+    expect(runMutation).toHaveBeenCalledTimes(1);
+    expect(kinds(l)).toEqual(["read:working"]);
+  });
+
+  test("start ends the working step done and starts the next in one write", async () => {
+    const { l, runMutation } = ledger();
+    l.plan([{ key: "a", kind: "read" }, { key: "b", kind: "send" }]);
+    await l.start("a");
+    await l.start("b");
+    expect(runMutation).toHaveBeenCalledTimes(2);
+    expect(kinds(l)).toEqual(["read:done", "send:working"]);
+    expect(l.steps()[0].finishedAt).toBe(7);
+  });
+
+  test("fail on an unknown key changes nothing", () => {
+    const { l } = ledger();
+    l.plan([{ key: "a", kind: "read" }]);
+    l.fail("missing");
+    expect(kinds(l)).toEqual(["read:waiting"]);
+    l.fail("a");
+    expect(kinds(l)).toEqual(["read:failed"]);
+  });
+});
+
+describe("finishVariant: progress", () => {
+  test("with progress omitted it keeps the stored steps and settles them", async () => {
+    const s = await setup();
+    const { v } = await twoCards(s);
+    await drain(s);
+    await s.t.run(async (ctx) => {
+      const st = await ctx.db.query("marketplaceListingStates").first();
+      await ctx.db.patch(st!._id, { drainLeaseToken: "lease-2", drainLeaseExpiresAt: Date.now() + 60_000 });
+    });
+    await s.t.mutation(internal.listingDrain.claimVariant, {
+      ownerId: OWNER,
+      platform: "bsc",
+      variantId: v.variantId,
+      leaseToken: "lease-2",
+    });
+    const steps = [
+      { kind: "read" as const, status: "done" as const, finishedAt: 1 },
+      { kind: "send" as const, status: "working" as const },
+      { kind: "confirm" as const, status: "waiting" as const },
+    ];
+    await s.t.mutation(internal.listingDrain.writeProgress, {
+      ownerId: OWNER, platform: "bsc", variantId: v.variantId, leaseToken: "lease-2", steps,
+    });
+
+    const out = await s.t.mutation(internal.listingDrain.finishVariant, {
+      ownerId: OWNER,
+      platform: "bsc",
+      variantId: v.variantId,
+      leaseToken: "lease-2",
+      outcome: { kind: "error", error: "boom" },
+      clear: [],
+      repoint: [],
+    });
+
+    expect(out.recorded).toBe(true);
+    const stored = (await record(s, v.variantId))?.progress?.steps;
+    expect(stored?.map((x) => `${x.kind}:${x.status}`)).toEqual(["read:done", "send:failed"]);
   });
 });

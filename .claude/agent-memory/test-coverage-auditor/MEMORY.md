@@ -7,3 +7,4 @@
 - [Scheduled deadline keyed on row id](scheduled-deadline-keyed-on-row-id.md) — a deadline that carries only the row id fires on a retried/restarted row; require a test running the old deadline after the reset
 - [Seeded terminal-state spec](seeded-terminal-state-spec.md) — a spec that seeds a failed row then drives the real path: trace it to a terminal 4xx, check close keeps the screen, prove the cap variant; gate sign-in on LAUNCH_GATE
 - [Consent-flow return leg unproven](third-party-consent-flow-return-leg-unproven.md) — seed-hop connect leaves begin/return/error legs without live proof; instant isVisible branches on server-read controls
+- [Progress ledger live-spec gaps](progress-ledger-live-spec-gaps.md) — lease guard, call-order claim, rerun-dependent step list, axe only on finished state

@@ -241,7 +241,7 @@ describe("Set me up", () => {
     const alert = await screen.findByRole("alert");
     // One message, not eBay's sentence with ours stuck on: what's done, what isn't, and what Try again does.
     expect(alert.textContent).toBe(
-      "Your new policies are made, but eBay wouldn't hand them back just now, so nothing's picked yet. Give it a bit, then press Try again to pick them. It won't make them twice.",
+      "Your new policies are made, but we couldn't read them back just now, so nothing's picked yet. Give it a bit, then press Try again to pick them. It won't make them twice.",
     );
     const retry = screen.getByRole("button", { name: "Try again" });
     expect(document.activeElement).toBe(retry);
