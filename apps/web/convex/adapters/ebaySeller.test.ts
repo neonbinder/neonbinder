@@ -624,8 +624,8 @@ describe("bulk calls", () => {
     expect(r).toEqual({
       ok: true,
       value: [
-        { statusCode: 200, sku: "A", offerId: null, listingId: null, errorIds: [] },
-        { statusCode: 400, sku: "B", offerId: null, listingId: null, errorIds: [25001] },
+        { statusCode: 200, sku: "A", offerId: null, listingId: null, errorIds: [], errors: [] },
+        { statusCode: 400, sku: "B", offerId: null, listingId: null, errorIds: [25001], errors: [] },
       ],
     });
   });
@@ -634,6 +634,46 @@ describe("bulk calls", () => {
     answers.push(json({ responses: [{ sku: "A", statusCode: 400, errors: [{ errorId: 25002 }] }] }, 400));
     const r = await bulkCreateOffers(noCredentialCalls, session(), [{ sku: "A" }]);
     expect(r.ok && r.value[0].errorIds).toEqual([25002]);
+  });
+
+  test("a 400 bulk entry carries eBay's message and parameters, redacted and capped, for the log line", async () => {
+    const token = "v^1.1#i^1#r^0#I^3#p^3#f^0#t^H4sIAAAAAAAAAOVYa2wUVRTe";
+    answers.push(
+      json(
+        {
+          responses: [
+            {
+              sku: "NB2-abc-NM",
+              statusCode: 400,
+              errors: [
+                {
+                  errorId: 25717,
+                  message: "Invalid value. contact seller@example.com",
+                  longMessage: `The value is too long. ${token}`,
+                  parameters: [
+                    { name: "sku", value: "NB2-abc-NM" },
+                    ...Array.from({ length: 12 }, (_, i) => ({ name: `p${i}`, value: "x".repeat(500) })),
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+        400,
+      ),
+    );
+    const r = await bulkCreateOrReplaceInventoryItems(noCredentialCalls, session(), [{ sku: "NB2-abc-NM" }]);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const [detail] = r.value[0].errors;
+    expect(r.value[0].errorIds).toEqual([25717]);
+    expect(detail.errorId).toBe(25717);
+    expect(detail.message).toBe("Invalid value. contact [redacted]");
+    expect(detail.longMessage).toBe("The value is too long. [redacted]");
+    expect(detail.parameters?.[0]).toEqual({ name: "sku", value: "NB2-abc-NM" });
+    expect(detail.parameters).toHaveLength(8);
+    expect(JSON.stringify(r.value)).not.toContain("seller@example.com");
+    expect(JSON.stringify(r.value)).not.toContain("H4sIAAAAAAAAAOVYa2wUVRTe");
   });
 
   test("a 400 with no per-entry responses fails, with ids and no eBay text", async () => {

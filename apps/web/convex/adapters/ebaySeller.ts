@@ -795,6 +795,8 @@ export interface EbayBulkEntry {
   offerId: string | null;
   listingId: string | null;
   errorIds: number[];
+  /** eBay's text and parameters for this entry, redacted and capped (`ebayErrorDetailsOf`): the log line only. */
+  errors: EbayErrorDetail[];
 }
 
 function readBulk(body: unknown): EbayBulkEntry[] {
@@ -809,6 +811,7 @@ function readBulk(body: unknown): EbayBulkEntry[] {
       offerId: str(e.offerId),
       listingId: str(e.listingId),
       errorIds: errorIdsOf(e),
+      errors: ebayErrorDetailsOf(e),
     });
   }
   return out;
@@ -836,7 +839,8 @@ async function bulk(
   const entries = readBulk(r.value.body);
   if (r.value.status >= 400 && entries.length === 0) {
     const errorIds = errorIdsOf(r.value.body);
-    logFailure(operation, r.value.status, { errorIds });
+    const errors = ebayErrorDetailsOf(r.value.body);
+    logFailure(operation, r.value.status, { errorIds, ...(errors.length > 0 ? { errors } : {}) });
     return {
       ok: false,
       failure: failure("http", httpSays(r.value.status), { httpStatus: r.value.status, errorIds }),

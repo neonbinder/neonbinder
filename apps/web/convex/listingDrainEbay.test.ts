@@ -105,6 +105,8 @@ class FakeEbay {
   seq = 0;
   required: string[] = ["Sport", "Card Number"];
   rejectItemSkus = new Set<string>();
+  /** The error a rejected item's entry carries. */
+  itemRejection: Record<string, unknown> = { errorId: 25709, message: "RAW-EBAY-TEXT" };
   /** Answers every call 401 while > 0. */
   unauthorized = 0;
   onItems?: (skus: string[]) => Promise<void>;
@@ -143,15 +145,20 @@ class FakeEbay {
     if (p === "/sell/inventory/v1/bulk_create_or_replace_inventory_item") {
       const reqs = call.json.requests as any[];
       await this.onItems?.(reqs.map((r) => r.sku));
-      return json({
-        responses: reqs.map((r) => {
-          if (this.rejectItemSkus.has(r.sku)) {
-            return { sku: r.sku, statusCode: 400, errors: [{ errorId: 25709, message: "RAW-EBAY-TEXT" }] };
-          }
-          this.items.set(r.sku, r);
-          return { sku: r.sku, statusCode: 200 };
-        }),
-      });
+      // eBay answers the whole call 400 when every entry failed.
+      const allRejected = reqs.every((r) => this.rejectItemSkus.has(r.sku));
+      return json(
+        {
+          responses: reqs.map((r) => {
+            if (this.rejectItemSkus.has(r.sku)) {
+              return { sku: r.sku, statusCode: 400, errors: [this.itemRejection] };
+            }
+            this.items.set(r.sku, r);
+            return { sku: r.sku, statusCode: 200 };
+          }),
+        },
+        allRejected ? 400 : 200,
+      );
     }
     if (p === "/sell/inventory/v1/bulk_create_offer") {
       return json({
@@ -1012,12 +1019,65 @@ describe("eBay drain: eBay's answers", () => {
     // eBay's id goes to the structured log line, with the step it hit.
     const rejected = logs.mock.calls.map((c) => String(c[0])).filter((l) => l.includes("ebay_listing_rejected"));
     expect(rejected.map((l) => JSON.parse(l))).toEqual([
-      { msg: "ebay_listing_rejected", platform: "ebay", operation: "items", errorIds: [25709] },
+      {
+        msg: "ebay_listing_rejected",
+        platform: "ebay",
+        operation: "items",
+        errorIds: [25709],
+        errors: [{ errorId: 25709, message: "RAW-EBAY-TEXT" }],
+      },
     ]);
     logs.mockRestore();
     expect(await linkOf(s, v.cardIds[0], "NM")).toBeNull();
     expect((await linkOf(s, v.cardIds[1], "NM"))?.status).toBe("live");
     expect(rec?.counts).toMatchObject({ listed: 1, skipped: 1 });
+  });
+
+  test("a bulk item call eBay answers 400 logs each entry's message and parameters, and the record keeps NB's words", async () => {
+    const s = await setup();
+    const { v, card } = await oneCard(s);
+    const sku = `NB2-${card}-NM`;
+    ebay.rejectItemSkus.add(sku);
+    ebay.itemRejection = {
+      errorId: 25717,
+      domain: "API_INVENTORY",
+      category: "REQUEST",
+      message: "RAW-EBAY-TEXT about an aspect",
+      longMessage: "RAW-EBAY-LONG the value of Card Number is too long",
+      parameters: [
+        { name: "aspectName", value: "Card Number" },
+        { name: "field", value: "product.aspects.Card Number" },
+      ],
+    };
+
+    const logs = vi.spyOn(console, "log");
+    await drain(s);
+
+    const rejected = logs.mock.calls.map((c) => String(c[0])).filter((l) => l.includes("ebay_listing_rejected"));
+    logs.mockRestore();
+    expect(rejected.map((l) => JSON.parse(l))).toEqual([
+      {
+        msg: "ebay_listing_rejected",
+        platform: "ebay",
+        operation: "items",
+        errorIds: [25717],
+        errors: [
+          {
+            errorId: 25717,
+            message: "RAW-EBAY-TEXT about an aspect",
+            longMessage: "RAW-EBAY-LONG the value of Card Number is too long",
+            parameters: [
+              { name: "aspectName", value: "Card Number" },
+              { name: "field", value: "product.aspects.Card Number" },
+            ],
+          },
+        ],
+      },
+    ]);
+    const rec = await record(s, v.variantId);
+    expect(rec?.problems).toEqual([{ cardId: card, reason: "rejected", detail: EBAY_CARD_REJECTED.items }]);
+    expect(JSON.stringify(rec)).not.toContain("RAW-EBAY");
+    expect(JSON.stringify(rec)).not.toContain("25717");
   });
 
   test("an offer eBay already holds for the SKU (25002) is adopted and brought to NB's values", async () => {

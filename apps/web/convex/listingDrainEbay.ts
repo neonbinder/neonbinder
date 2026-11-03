@@ -104,6 +104,7 @@ import {
   updateOffer,
   uploadImage,
   withdrawOffer,
+  type EbayErrorDetail,
   type EbayFailure,
   type EbayResult,
   type EbaySellerSession,
@@ -586,10 +587,18 @@ export function photoRefused(failure: EbayFailure): boolean {
   return failure.kind === "http" && failure.httpStatus === 400;
 }
 
-function rejectedDetail(step: EbayStep, errorIds: readonly number[]): string {
-  // eBay's numeric ids go to the log, never the sync record.
+function rejectedDetail(step: EbayStep, errorIds: readonly number[], errors: readonly EbayErrorDetail[] = []): string {
+  // eBay's numeric ids and, from a bulk entry, its redacted text and
+  // parameters (`ebayErrorDetailsOf`) go to the log, never the sync record.
+  // A single call's text is already on its own `ebay_seller_error` line.
   console.log(
-    JSON.stringify({ msg: "ebay_listing_rejected", platform: "ebay", operation: step, errorIds: errorIds.slice(0, 5) }),
+    JSON.stringify({
+      msg: "ebay_listing_rejected",
+      platform: "ebay",
+      operation: step,
+      errorIds: errorIds.slice(0, 5),
+      ...(errors.length > 0 ? { errors: errors.slice(0, 5) } : {}),
+    }),
   );
   return EBAY_CARD_REJECTED[step].slice(0, MAX_DETAIL);
 }
@@ -1133,9 +1142,9 @@ async function syncEbayVariant(
     }
     linkWrites.length = 0;
   };
-  const reject = (plan: Plan, step: EbayStep, errorIds: readonly number[]) => {
+  const reject = (plan: Plan, step: EbayStep, errorIds: readonly number[], errors?: readonly EbayErrorDetail[]) => {
     plan.failed = true;
-    problems.push({ cardId: plan.target.cardId, reason: "rejected", detail: rejectedDetail(step, errorIds) });
+    problems.push({ cardId: plan.target.cardId, reason: "rejected", detail: rejectedDetail(step, errorIds, errors) });
   };
   const stopOn = async (r: EbayResult<unknown>): Promise<VariantResult | null> => {
     if (r.ok) return null;
@@ -1277,7 +1286,7 @@ async function syncEbayVariant(
     const bySku = new Map(r.value.map((e) => [e.sku, e]));
     for (const plan of chunk) {
       const e = bySku.get(plan.target.sku);
-      if (!e || e.statusCode < 200 || e.statusCode >= 300) reject(plan, "items", e?.errorIds ?? []);
+      if (!e || e.statusCode < 200 || e.statusCode >= 300) reject(plan, "items", e?.errorIds ?? [], e?.errors);
     }
   }
 
@@ -1325,10 +1334,10 @@ async function syncEbayVariant(
           plan.needsOffer = "replace";
           if (found.value.published && found.value.listingId) plan.needsPublish = false;
         } else {
-          reject(plan, "offers", e.errorIds);
+          reject(plan, "offers", e.errorIds, e.errors);
         }
       } else {
-        reject(plan, "offers", e?.errorIds ?? []);
+        reject(plan, "offers", e?.errorIds ?? [], e?.errors);
       }
       if (plan.offerId && !plan.failed) {
         linkWrites.push({
@@ -1378,7 +1387,7 @@ async function syncEbayVariant(
     if (!r.ok) continue;
     for (const plan of chunk) {
       const e = r.value.find((x) => x.offerId === plan.offerId || x.sku === plan.target.sku);
-      if (!e || e.statusCode < 200 || e.statusCode >= 300) reject(plan, "offers", e?.errorIds ?? []);
+      if (!e || e.statusCode < 200 || e.statusCode >= 300) reject(plan, "offers", e?.errorIds ?? [], e?.errors);
     }
   }
 
@@ -1398,7 +1407,7 @@ async function syncEbayVariant(
         // A republish gets a new listing id; a late sale may still name the old one.
         if (plan.listingId !== null && plan.listingId !== e.listingId) plan.retiredListingId = plan.listingId;
         plan.listingId = e.listingId;
-      } else reject(plan, "publish", e?.errorIds ?? []);
+      } else reject(plan, "publish", e?.errorIds ?? [], e?.errors);
     }
   }
 
