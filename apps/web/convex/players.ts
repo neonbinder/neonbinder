@@ -2034,6 +2034,10 @@ export async function buildExistingPlayerCandidatesForIds(
  * be large enough to see a second distinct id; the caller passes a small
  * number.
  *
+ * Returns `complete: false` when the alias range was cut by
+ * `NAMESAKE_ALIAS_ROWS_CAP` before `limit` distinct players were seen: the
+ * caller must then treat the answer as "not exactly one".
+ *
  * Two index-prefix reads, never a scan: `players.by_name_normalized` (the
  * cross-sport index the primary name already has) and the `aliasNormalized`
  * prefix of `playerAliases.by_alias_normalized_and_sport_id`. `playerSports`
@@ -2048,25 +2052,33 @@ export async function namesakesAcrossSports(
   ctx: QueryCtx | MutationCtx,
   nameNormalized: string,
   limit: number,
-): Promise<Array<Doc<"players">>> {
-  if (!nameNormalized || limit <= 0) return [];
+  /** Test seam: can only SHRINK `NAMESAKE_ALIAS_ROWS_CAP`. */
+  opts?: { aliasRowsCap?: number },
+): Promise<{ players: Array<Doc<"players">>; complete: boolean }> {
+  if (!nameNormalized || limit <= 0) return { players: [], complete: true };
+  const aliasRowsCap = Math.max(
+    1,
+    Math.min(NAMESAKE_ALIAS_ROWS_CAP, Math.floor(opts?.aliasRowsCap ?? NAMESAKE_ALIAS_ROWS_CAP)),
+  );
   const byName = await ctx.db
     .query("players")
     .withIndex("by_name_normalized", (q) => q.eq("nameNormalized", nameNormalized))
     .take(limit);
   const seen = new Set<string>(byName.map((player) => player._id as string));
   const merged = [...byName];
-  if (merged.length >= limit) return merged;
+  // `limit` distinct players already answers "not exactly one" for good.
+  if (merged.length >= limit) return { players: merged, complete: true };
   const aliasRows = await ctx.db
     .query("playerAliases")
     .withIndex("by_alias_normalized_and_sport_id", (q) =>
       q.eq("aliasNormalized", nameNormalized),
     )
-    // One alias row per sport the player belongs to, so a player can appear
-    // several times here; read a little past `limit` so those repeats do not
-    // hide a second distinct player.
-    .take(limit * 4);
-  for (const row of aliasRows) {
+    // One alias row per sport the player belongs to, so one player can fill
+    // many rows of this range. Read one past the cap to tell "the range ended"
+    // from "the cap ended it".
+    .take(aliasRowsCap + 1);
+  const overflowed = aliasRows.length > aliasRowsCap;
+  for (const row of aliasRows.slice(0, aliasRowsCap)) {
     if (merged.length >= limit) break;
     const key = row.playerId as string;
     if (seen.has(key)) continue;
@@ -2074,8 +2086,20 @@ export async function namesakesAcrossSports(
     const player = await ctx.db.get(row.playerId);
     if (player) merged.push(player);
   }
-  return merged;
+  // NEO-424 (security audit) — the cap cut the range before `limit` distinct
+  // players were seen, so a second namesake may sit past it. "Exactly one"
+  // must not be decided on that: the answer is reported incomplete and the
+  // caller makes no preselect.
+  return { players: merged, complete: merged.length >= limit || !overflowed };
 }
+
+/**
+ * NEO-424 — alias rows `namesakesAcrossSports` reads for one name. An alias
+ * row exists per sport a player belongs to, so this covers several players
+ * across every sport we track; reaching it makes the answer incomplete,
+ * never "exactly one".
+ */
+export const NAMESAKE_ALIAS_ROWS_CAP = 64;
 
 /**
  * List players for the picker UI. Filterable by sport for binder shells

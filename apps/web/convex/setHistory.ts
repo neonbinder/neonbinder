@@ -396,8 +396,13 @@ export const findOnlyNamesakes = internalQuery({
       sportValue: string;
     }> = [];
     for (const nameNormalized of new Set(args.names)) {
-      const found = await namesakesAcrossSports(ctx, nameNormalized, 2);
-      if (found.length !== 1) continue;
+      const { players: found, complete } = await namesakesAcrossSports(
+        ctx,
+        nameNormalized,
+        2,
+      );
+      // An answer cut short by the alias cap is not "exactly one".
+      if (!complete || found.length !== 1) continue;
       const [player] = found;
       const sportKey = player.sportId as string;
       if (!sportValueById.has(sportKey)) {

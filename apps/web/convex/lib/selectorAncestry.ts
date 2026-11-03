@@ -233,6 +233,14 @@ export async function collectSubtreeNodes(
 }
 
 /**
+ * NEO-424 — the most children `findPriorYearSameProduct` reads under any one
+ * row. Far above any real level (a sport's years are ~150; a year's brands and
+ * a brand's sets are dozens to low hundreds), so a real hierarchy never
+ * reaches it; what it bounds is a malformed or runaway one.
+ */
+export const PRIOR_PRODUCT_CHILD_CAP = 500;
+
+/**
  * NEO-424 (rule E1) — the same product one year earlier: the `setName` row
  * whose value equals this set's, under a `manufacturer` whose value equals
  * this set's manufacturer, under the `year` exactly one before this set's
@@ -250,13 +258,27 @@ export async function collectSubtreeNodes(
  * the cost of a miss is only that the operator is not offered a default.
  *
  * Reads: the ancestor walk (≤ 4 point reads) plus three `by_level_and_parent`
- * ranges, each the children of one row — a sport's years (dozens), a year's
- * manufacturers and a manufacturer's sets (a handful each).
+ * ranges, each the children of one row — a sport's years (a century and a
+ * half at most), a year's manufacturers and a manufacturer's sets. Each range
+ * is BOUNDED at `PRIOR_PRODUCT_CHILD_CAP` rows (read as `.take(cap + 1)`), and
+ * a range that overflows its cap is undefined: an "exactly one" decided on
+ * part of a range is the partial-evidence answer the set-history module
+ * refuses everywhere ("incomplete means unused"). The cost of hitting it is
+ * only a missing preselect.
  */
 export async function findPriorYearSameProduct(
   ctx: Pick<QueryCtx, "db">,
   selectorOptionId: Id<"selectorOptions">,
+  /**
+   * Test seam. `cap` can only SHRINK `PRIOR_PRODUCT_CHILD_CAP`, never raise
+   * it — the bound is the query's, not the caller's.
+   */
+  opts?: { cap?: number },
 ): Promise<Id<"selectorOptions"> | undefined> {
+  const cap = Math.max(
+    1,
+    Math.min(PRIOR_PRODUCT_CHILD_CAP, Math.floor(opts?.cap ?? PRIOR_PRODUCT_CHILD_CAP)),
+  );
   const setId = await findSetForSelectorOption(ctx, selectorOptionId);
   if (!setId) return undefined;
   const set = await ctx.db.get(setId);
@@ -273,39 +295,35 @@ export async function findPriorYearSameProduct(
 
   const exactlyOne = <T,>(rows: T[]): T | undefined =>
     rows.length === 1 ? rows[0] : undefined;
+  /** The children of `parentId` at `level`, or null when they exceed `cap`. */
+  const childrenWithin = async (
+    level: "year" | "manufacturer" | "setName",
+    parentId: Id<"selectorOptions">,
+  ) => {
+    const rows = await ctx.db
+      .query("selectorOptions")
+      .withIndex("by_level_and_parent", (q) =>
+        q.eq("level", level).eq("parentId", parentId),
+      )
+      .take(cap + 1);
+    return rows.length > cap ? null : rows;
+  };
 
+  const years = await childrenWithin("year", sportId);
+  if (!years) return undefined;
   const priorYear = exactlyOne(
-    (
-      await ctx.db
-        .query("selectorOptions")
-        .withIndex("by_level_and_parent", (q) =>
-          q.eq("level", "year").eq("parentId", sportId),
-        )
-        .collect()
-    ).filter((row) => parseYear(row.value) === yearNumber - 1),
+    years.filter((row) => parseYear(row.value) === yearNumber - 1),
   );
   if (!priorYear) return undefined;
+  const manufacturers = await childrenWithin("manufacturer", priorYear._id);
+  if (!manufacturers) return undefined;
   const priorManufacturer = exactlyOne(
-    (
-      await ctx.db
-        .query("selectorOptions")
-        .withIndex("by_level_and_parent", (q) =>
-          q.eq("level", "manufacturer").eq("parentId", priorYear._id),
-        )
-        .collect()
-    ).filter((row) => row.value === manufacturer.value),
+    manufacturers.filter((row) => row.value === manufacturer.value),
   );
   if (!priorManufacturer) return undefined;
-  const priorSet = exactlyOne(
-    (
-      await ctx.db
-        .query("selectorOptions")
-        .withIndex("by_level_and_parent", (q) =>
-          q.eq("level", "setName").eq("parentId", priorManufacturer._id),
-        )
-        .collect()
-    ).filter((row) => row.value === set.value),
-  );
+  const sets = await childrenWithin("setName", priorManufacturer._id);
+  if (!sets) return undefined;
+  const priorSet = exactlyOne(sets.filter((row) => row.value === set.value));
   return priorSet?._id;
 }
 

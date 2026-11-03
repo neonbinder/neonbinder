@@ -9,8 +9,16 @@ import { describe, expect, test } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
-import { normalizePlayerName } from "./players";
+import {
+  NAMESAKE_ALIAS_ROWS_CAP,
+  namesakesAcrossSports,
+  normalizePlayerName,
+} from "./players";
 import { setHistoryVerdict } from "./setHistory";
+import {
+  PRIOR_PRODUCT_CHILD_CAP,
+  findPriorYearSameProduct,
+} from "./lib/selectorAncestry";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -260,5 +268,121 @@ describe("narrowSameNamePlayersByCardYear — Hall of Fame (NEO-424 rule D)", ()
     });
     expect(resolved.playerId).toBeUndefined();
     expect(resolved.candidatePlayerIds).toHaveLength(2);
+  });
+});
+
+describe("findPriorYearSameProduct — bounded reads (NEO-424 security audit)", () => {
+  /** Baseball › {2023, 2024} › Topps › Series 1, plus `extraYears` filler years. */
+  async function seedYears(t: T, extraYears: number) {
+    return t.run(async (ctx) => {
+      const now = Date.now();
+      const node = (fields: { level: "sport" | "year" | "manufacturer" | "setName"; value: string; parentId?: Id<"selectorOptions"> }) =>
+        ctx.db.insert("selectorOptions", { ...fields, platformData: {}, children: [], lastUpdated: now });
+      const sport = await node({ level: "sport", value: "Baseball" });
+      for (let i = 0; i < extraYears; i++) {
+        await node({ level: "year", value: String(1000 + i), parentId: sport });
+      }
+      const ids: Record<string, Id<"selectorOptions">> = {};
+      for (const y of ["2023", "2024"]) {
+        const year = await node({ level: "year", value: y, parentId: sport });
+        const brand = await node({ level: "manufacturer", value: "Topps", parentId: year });
+        ids[y] = await node({ level: "setName", value: "Series 1", parentId: brand });
+      }
+      return ids;
+    });
+  }
+
+  test("exactly at the cap the prior product is found", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seedYears(t, PRIOR_PRODUCT_CHILD_CAP - 2);
+    const found = await t.run((ctx) => findPriorYearSameProduct(ctx, ids["2024"]));
+    expect(found).toBe(ids["2023"]);
+  });
+
+  test("one past the cap is undefined: an overflowing range is never read in part", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seedYears(t, PRIOR_PRODUCT_CHILD_CAP - 1);
+    const found = await t.run((ctx) => findPriorYearSameProduct(ctx, ids["2024"]));
+    // `t.run` hands an undefined back as null.
+    expect(found).toBeNull();
+  });
+
+  test("the test seam can only shrink the cap", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seedYears(t, 1);
+    expect(
+      await t.run((ctx) => findPriorYearSameProduct(ctx, ids["2024"], { cap: 2 })),
+    ).toBeNull();
+    expect(
+      await t.run((ctx) => findPriorYearSameProduct(ctx, ids["2024"], { cap: 10_000 })),
+    ).toBe(ids["2023"]);
+  });
+});
+
+describe("namesakesAcrossSports — alias cap (NEO-424 security audit)", () => {
+  /** Player A answers to "Bo Jackson" in `aRows` sports; B, optionally, in one more. */
+  async function seedAliases(t: T, aRows: number, withB: boolean) {
+    return t.run(async (ctx) => {
+      const now = Date.now();
+      const sports: Array<Id<"selectorOptions">> = [];
+      for (let i = 0; i <= aRows; i++) {
+        sports.push(
+          await ctx.db.insert("selectorOptions", {
+            level: "sport",
+            value: `Sport ${i}`,
+            platformData: {},
+            children: [],
+            lastUpdated: now,
+          }),
+        );
+      }
+      const key = normalizePlayerName("Bo Jackson");
+      const a = await ctx.db.insert("players", {
+        name: "Vincent Jackson",
+        nameNormalized: normalizePlayerName("Vincent Jackson"),
+        sportId: sports[0],
+        lastUpdated: now,
+      });
+      for (let i = 0; i < aRows; i++) {
+        await ctx.db.insert("playerAliases", { playerId: a, sportId: sports[i], aliasNormalized: key });
+      }
+      if (withB) {
+        const b = await ctx.db.insert("players", {
+          name: "Robert Jackson",
+          nameNormalized: normalizePlayerName("Robert Jackson"),
+          sportId: sports[aRows],
+          lastUpdated: now,
+        });
+        await ctx.db.insert("playerAliases", { playerId: b, sportId: sports[aRows], aliasNormalized: key });
+      }
+      return { a, key };
+    });
+  }
+
+  test("one player's alias rows filling the cap make the answer incomplete, not 'exactly one'", async () => {
+    const t = convexTest(schema, modules);
+    const { key } = await seedAliases(t, NAMESAKE_ALIAS_ROWS_CAP + 1, true);
+    const result = await t.run((ctx) => namesakesAcrossSports(ctx, key, 2));
+    // Either the cap hid B (incomplete) or B was seen (two): never one.
+    expect(result.complete && result.players.length === 1).toBe(false);
+    expect(await t.query(internal.setHistory.findOnlyNamesakes, { names: [key] })).toEqual([]);
+  });
+
+  test("an overflowing range with no second player is still incomplete", async () => {
+    const t = convexTest(schema, modules);
+    const { key } = await seedAliases(t, NAMESAKE_ALIAS_ROWS_CAP + 1, false);
+    const result = await t.run((ctx) => namesakesAcrossSports(ctx, key, 2));
+    expect(result).toMatchObject({ complete: false });
+    expect(result.players).toHaveLength(1);
+  });
+
+  test("a range within the cap is complete and one player is one namesake", async () => {
+    const t = convexTest(schema, modules);
+    const { a, key } = await seedAliases(t, NAMESAKE_ALIAS_ROWS_CAP, false);
+    const result = await t.run((ctx) => namesakesAcrossSports(ctx, key, 2));
+    expect(result.complete).toBe(true);
+    expect(result.players.map((p) => p._id)).toEqual([a]);
+    const [only] = await t.query(internal.setHistory.findOnlyNamesakes, { names: [key] });
+    expect(only?.playerId).toBe(a);
   });
 });

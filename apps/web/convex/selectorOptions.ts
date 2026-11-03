@@ -1675,11 +1675,11 @@ async function resolveUnknownsAndStartBatch(
        * the right call far more often than it is not, but it is still an
        * inference, and the day it goes wrong the only question that matters is
        * "which cards did this happen to". So it leaves a trace naming the row
-       * chosen, the set it happened in, and the name — enough to find every
-       * affected card and to re-run the decision by hand.
+       * chosen and the set it happened in — enough to find every affected
+       * card and to re-run the decision by hand.
        *
-       * The NAME is safe to log: it is a checklist string off a marketplace
-       * payload, not anything a user typed about themselves.
+       * NEO-424 (security audit) — ids only: `playerId` and the set identify
+       * the name, so the checklist string itself is no longer logged.
        *
        * NEO-424 — `narrowedBy` says which narrowing it was; a Hall of Fame
        * answer reaches this line only when set history named the same player.
@@ -1690,7 +1690,6 @@ async function resolveUnknownsAndStartBatch(
           selectorOptionId: args.selectorOptionId,
           sportId: args.sportId,
           setYear,
-          name,
           playerId: resolved.playerId,
           matchCount: resolved.matchCount,
           usedCardTeamNames: cardTeamNames.length > 0,
