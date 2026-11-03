@@ -10,6 +10,7 @@ import {
   bulkPublishOffers,
   bulkUpdatePriceQuantity,
   createPolicy,
+  ebayErrorDetailsOf,
   errorIdsOf,
   getCardCategoryAspects,
   getOfferBySku,
@@ -19,6 +20,7 @@ import {
   getShippingServices,
   openEbaySellerSession,
   optInToProgram,
+  redactEbayText,
   updateOffer,
   upsertInventoryLocation,
   uploadImage,
@@ -337,15 +339,106 @@ describe("request shapes and headers", () => {
     expect(lines.join("\n")).not.toContain("SECRET-BODY");
   });
 
-  test("a refusal logs eBay's numeric error ids and nothing of its message text", async () => {
+  test("a refusal logs eBay's ids, its text and the field it names; the failure itself still says only NB's words", async () => {
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
-    answers.push(json({ errors: [{ errorId: 25803, message: "SECRET-ECHO", longMessage: "SECRET-ECHO" }] }, 400));
-    await getPolicies(noCredentialCalls, session(), "payment_policy");
+    // The shape of the sandbox's answer to an eSE fulfillment policy (20403).
+    answers.push(
+      json(
+        {
+          errors: [
+            {
+              errorId: 20403,
+              domain: "API_ACCOUNT",
+              category: "REQUEST",
+              message: "Invalid .",
+              longMessage: "Please select a valid shipping service.",
+              inputRefIds: ["service"],
+              parameters: [{ name: "XPATH", value: "DomesticItemShippingService[0].shippingService" }],
+            },
+          ],
+        },
+        400,
+      ),
+    );
+    const r = await createPolicy(noCredentialCalls, session(), "fulfillment_policy", { name: "NB Standard Envelope (under $20)" });
     const lines = log.mock.calls.map((c) => String(c[0]));
     log.mockRestore();
     const errorLine = lines.map((l) => JSON.parse(l)).find((l) => l.msg === "ebay_seller_error");
-    expect(errorLine).toEqual({ msg: "ebay_seller_error", platform: "ebay", operation: "get_payment_policy", httpStatus: 400, errorIds: [25803] });
-    expect(lines.join("\n")).not.toContain("SECRET-ECHO");
+    expect(errorLine).toEqual({
+      msg: "ebay_seller_error",
+      platform: "ebay",
+      operation: "create_fulfillment_policy",
+      httpStatus: 400,
+      errorIds: [20403],
+      errors: [
+        {
+          errorId: 20403,
+          message: "Invalid .",
+          longMessage: "Please select a valid shipping service.",
+          parameters: [{ name: "XPATH", value: "DomesticItemShippingService[0].shippingService" }],
+          inputRefIds: ["service"],
+        },
+      ],
+    });
+    expect(r).toMatchObject({ ok: false, failure: { kind: "http", errorIds: [20403], message: "eBay turned that one down. Try again in a bit." } });
+    expect(JSON.stringify(r)).not.toMatch(/shipping service|XPATH/);
+  });
+
+  test("the logged eBay text never carries the token, the request body or what looks like the seller's data", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const token = "v^1.1#i^1#r^1#p^3#I^3#f^0#t^Ul4xMF8yOjNBQjE2RkE4QkQ0RjE2QzI3NjhGNTlBRTg0NkM4MkQzXzNfMSNFXjI2MA==";
+    answers.push(
+      json(
+        {
+          errors: [
+            {
+              errorId: 25002,
+              message: `Bearer ${token} rejected for jane.doe@example.com at 53703, order 12-34567-89012`,
+              longMessage: `See https://api.sandbox.ebay.com/sell/inventory/v1/offer?sku=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 ${"x ".repeat(400)}`,
+              parameters: [
+                { name: "postalCode", value: "53703" },
+                { name: "token", value: token },
+                { name: "   " },
+                "junk",
+              ],
+              inputRefIds: [7, "eyJhbGciOiJSUzI1NiJ9abcdefghijklmnopqrstuvwxyz0123.eyJzdWIiOiJ4In0"],
+            },
+          ],
+        },
+        400,
+      ),
+    );
+    await createPolicy(noCredentialCalls, session({ token }), "fulfillment_policy", { name: "SECRET-BODY-NAME" });
+    const lines = log.mock.calls.map((c) => String(c[0]));
+    log.mockRestore();
+    const all = lines.join("\n");
+    for (const leak of [token, "Ul4xMF8y", "jane.doe", "example.com", "53703", "34567", "89012", "sku=", "SECRET-BODY-NAME", "eyJhbGci", "tok-1"]) {
+      expect(all).not.toContain(leak);
+    }
+    const errorLine = lines.map((l) => JSON.parse(l)).find((l) => l.msg === "ebay_seller_error");
+    const [detail] = errorLine.errors;
+    expect(detail.message).toBe("Bearer [redacted] rejected for [redacted] at [redacted], order 12-[redacted]-[redacted]");
+    expect(detail.longMessage.length).toBeLessThanOrEqual(300);
+    expect(detail.parameters).toEqual([
+      { name: "postalCode", value: "[redacted]" },
+      { name: "token", value: "[redacted]" },
+    ]);
+    expect(detail.inputRefIds).toEqual(["[redacted]"]);
+  });
+
+  test("an error body with ids only logs the ids and no errors list", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    answers.push(json({ errors: [{ errorId: 25803 }, { errorId: 25804, message: "" }] }, 400));
+    await getPolicies(noCredentialCalls, session(), "payment_policy");
+    const lines = log.mock.calls.map((c) => JSON.parse(String(c[0])));
+    log.mockRestore();
+    expect(lines.find((l) => l.msg === "ebay_seller_error")).toEqual({
+      msg: "ebay_seller_error",
+      platform: "ebay",
+      operation: "get_payment_policy",
+      httpStatus: 400,
+      errorIds: [25803, 25804],
+    });
   });
 
   test("getCardCategoryAspects reads category 261328 in tree 0", async () => {
@@ -518,6 +611,31 @@ describe("error handling", () => {
     answers.push(new TypeError("fetch failed"), Object.assign(new Error("t"), { name: "TimeoutError" }));
     expect(await getPolicies(noCredentialCalls, session(), "payment_policy")).toMatchObject({ ok: false, failure: { kind: "network" } });
     expect(await getPolicies(noCredentialCalls, session(), "payment_policy")).toMatchObject({ ok: false, failure: { kind: "timeout" } });
+  });
+
+  test("ebayErrorDetailsOf caps errors and parameters, keeps field paths, and drops a longMessage that repeats the message", () => {
+    const many = { errors: Array.from({ length: 9 }, (_, i) => ({ errorId: i, message: `m${i}`, longMessage: `m${i}` })) };
+    const details = ebayErrorDetailsOf(many);
+    expect(details).toHaveLength(5);
+    expect(details[0]).toEqual({ errorId: 0, message: "m0" });
+    const params = ebayErrorDetailsOf({
+      errors: [{ parameters: Array.from({ length: 12 }, (_, i) => ({ name: `f${i}`, value: "Fulfillment.shippingOptions[0].costType" })) }],
+    });
+    expect(params[0].parameters).toHaveLength(8);
+    expect(params[0].parameters?.[0]).toEqual({ name: "f0", value: "Fulfillment.shippingOptions[0].costType" });
+    expect(ebayErrorDetailsOf(null)).toEqual([]);
+    expect(ebayErrorDetailsOf({ warnings: [{ message: "w" }] })).toEqual([]);
+  });
+
+  test("redactEbayText keeps eBay's words and field paths, and takes out long runs, emails and long digit runs", () => {
+    expect(redactEbayText("Invalid  shippingServiceCode.\n Please check.")).toBe("Invalid shippingServiceCode. Please check.");
+    expect(redactEbayText("DomesticItemShippingService[0].shippingService")).toBe("DomesticItemShippingService[0].shippingService");
+    expect(redactEbayText("a.ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefgh.b")).toBe("[redacted]");
+    expect(redactEbayText("mail a@b.co now")).toBe("mail [redacted] now");
+    expect(redactEbayText("zip 1234 and 12345")).toBe("zip 1234 and [redacted]");
+    expect(redactEbayText("   ")).toBeNull();
+    expect(redactEbayText(42)).toBeNull();
+    expect(redactEbayText("word ".repeat(100), 20)).toHaveLength(20);
   });
 
   test("errorIdsOf reads integer ids only, capped at 20", () => {

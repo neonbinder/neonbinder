@@ -19,7 +19,10 @@
  * Every answer is narrowed here or in `lib/ebayListing.ts` before anything
  * else reads it; failures carry an NB-written sentence plus eBay's numeric
  * error ids (never eBay's message text, which can echo the request). Logs
- * carry platform, operation, status and timing, never a token or a body.
+ * carry platform, operation, status and timing, never a token or a body;
+ * a refusal's log line also carries eBay's error text and parameters,
+ * redacted and capped (`ebayErrorDetailsOf`), so a red live run names the
+ * field eBay objected to.
  *
  * Shapes are from eBay's published OpenAPI documents, read 2026-11-01:
  *   Sell Inventory v1   https://developer.ebay.com/api-docs/sell/inventory/resources/methods
@@ -129,8 +132,16 @@ function httpSays(status: number): string {
   return status >= 500 || status === 429 ? EBAY_SAYS.busy : EBAY_SAYS.refused;
 }
 
-/** One structured line per failed eBay answer: operation, status, eBay's numeric error ids, never its text. */
-function logFailure(operation: string, httpStatus: number, extra: { errorIds?: number[]; reason?: string }): void {
+/**
+ * One structured line per failed eBay answer: operation, status, eBay's
+ * numeric error ids and, for a refusal, `errors` (`ebayErrorDetailsOf`).
+ * Never the token, the request or the raw body.
+ */
+function logFailure(
+  operation: string,
+  httpStatus: number,
+  extra: { errorIds?: number[]; errors?: EbayErrorDetail[]; reason?: string },
+): void {
   console.log(JSON.stringify({ msg: "ebay_seller_error", platform: "ebay", operation, httpStatus, ...extra }));
 }
 
@@ -169,6 +180,89 @@ export function errorIdsOf(body: unknown): number[] {
     if (isRecord(e) && typeof e.errorId === "number" && Number.isInteger(e.errorId)) ids.push(e.errorId);
   }
   return ids;
+}
+
+/**
+ * What one eBay error says, for the log line only (never the UI, never the
+ * sync record): eBay's message, longMessage, parameters (name/value) and
+ * inputRefIds. eBay's Account errors are templates ("Invalid {fieldName}.
+ * {additionalInfo}", e.g. 20403), so the field eBay objected to is in this
+ * text or in a parameter, never in the id alone.
+ */
+export interface EbayErrorDetail {
+  errorId?: number;
+  message?: string;
+  longMessage?: string;
+  parameters?: Array<{ name: string; value?: string }>;
+  inputRefIds?: string[];
+}
+
+const DETAIL_ERRORS_MAX = 5;
+const DETAIL_PARAMETERS_MAX = 8;
+const DETAIL_REFS_MAX = 8;
+const DETAIL_TEXT_MAX = 300;
+const DETAIL_VALUE_MAX = 120;
+const DETAIL_NAME_MAX = 60;
+const REDACTED = "[redacted]";
+/** A dotted field path, optionally indexed: `A[0].b.c`. */
+const FIELD_PATH = /^[A-Za-z0-9_.[\]]+$/;
+const LONG_WORD = /[A-Za-z0-9_]{33,}/;
+
+/**
+ * eBay's text with what could be the seller's data or a credential taken
+ * out: an email address, any unbroken run of 33+ characters that is not a
+ * dotted field path (a token, a URL, base64), any run of 33+ letters and
+ * digits even inside a path, and any run of 5+ digits (a ZIP, a phone
+ * number, an order or item id). Whitespace collapsed; capped. Null when
+ * nothing is left. eBay's own wording and field paths such as
+ * `DomesticItemShippingService[0].shippingService` pass through.
+ */
+export function redactEbayText(raw: unknown, max: number = DETAIL_TEXT_MAX): string | null {
+  if (typeof raw !== "string") return null;
+  const text = raw
+    .slice(0, 4 * max)
+    .replace(/\S+@\S+/g, REDACTED)
+    .replace(/\S{33,}/g, (run) => (FIELD_PATH.test(run) && !LONG_WORD.test(run) ? run : REDACTED))
+    .replace(/\d{5,}/g, REDACTED)
+    .replace(/\s+/g, " ")
+    .trim();
+  if (text === "") return null;
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
+/** eBay's error text and parameters out of an `{ errors: [...] }` body, redacted and capped; [] when none says anything. */
+export function ebayErrorDetailsOf(body: unknown): EbayErrorDetail[] {
+  if (!isRecord(body) || !Array.isArray(body.errors)) return [];
+  const out: EbayErrorDetail[] = [];
+  for (const e of body.errors.slice(0, DETAIL_ERRORS_MAX)) {
+    if (!isRecord(e)) continue;
+    const detail: EbayErrorDetail = {};
+    if (typeof e.errorId === "number" && Number.isInteger(e.errorId)) detail.errorId = e.errorId;
+    const message = redactEbayText(e.message);
+    if (message) detail.message = message;
+    const longMessage = redactEbayText(e.longMessage);
+    if (longMessage && longMessage !== message) detail.longMessage = longMessage;
+    if (Array.isArray(e.parameters)) {
+      const parameters: Array<{ name: string; value?: string }> = [];
+      for (const p of e.parameters.slice(0, DETAIL_PARAMETERS_MAX)) {
+        if (!isRecord(p)) continue;
+        const name = redactEbayText(p.name, DETAIL_NAME_MAX);
+        if (!name) continue;
+        const value = redactEbayText(p.value, DETAIL_VALUE_MAX);
+        parameters.push(value ? { name, value } : { name });
+      }
+      if (parameters.length > 0) detail.parameters = parameters;
+    }
+    if (Array.isArray(e.inputRefIds)) {
+      const refs = e.inputRefIds
+        .slice(0, DETAIL_REFS_MAX)
+        .map((r) => redactEbayText(r, DETAIL_VALUE_MAX))
+        .filter((r): r is string => r !== null);
+      if (refs.length > 0) detail.inputRefIds = refs;
+    }
+    if (detail.message || detail.longMessage || detail.parameters || detail.inputRefIds) out.push(detail);
+  }
+  return out;
 }
 
 /** Opens a session for `ownerId`, or says why it cannot. Reads the token once. */
@@ -314,9 +408,11 @@ async function send(ctx: SessionCtx, session: EbaySellerSession, opts: SendOptio
   const bodyAnswer = opts.bodyStatuses?.includes(res.status) === true && isRecord(body);
   if (!res.ok && !bodyAnswer) {
     const errorIds = errorIdsOf(body);
-    // eBay's numeric error ids only (never its message text, which can echo
-    // the request): what a red live run needs to tell one refusal from another.
-    logFailure(opts.operation, res.status, { errorIds });
+    // eBay's ids, plus its text and parameters redacted (`ebayErrorDetailsOf`):
+    // what a red live run needs to name the refusal and the field. The text
+    // goes to this log line only; the failure carries NB's sentence.
+    const errors = ebayErrorDetailsOf(body);
+    logFailure(opts.operation, res.status, { errorIds, ...(errors.length > 0 ? { errors } : {}) });
     return {
       ok: false,
       failure: failure("http", httpSays(res.status), {
