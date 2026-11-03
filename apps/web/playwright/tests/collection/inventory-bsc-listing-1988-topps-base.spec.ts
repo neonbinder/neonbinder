@@ -583,7 +583,14 @@ test(
     await expect(takeDown.underWay(takenLine)).toBeVisible();
     await followRunToEnd(platform, takeDown, takeDown.step(SEND));
     await expect(takeDown.readLanded()).toBeVisible();
-    await expect(takeDown.step(SEND)).toBeVisible();
+    // A run that read the sheets and sent nothing means BSC showed no stock of
+    // these two cards to take to 0 (the run's "Send" step is dropped when the
+    // plan has no PUT): the cards were already at 0 there, which is not this
+    // spec's takedown, so it is a red and says so.
+    await expect(
+      takeDown.step(SEND),
+      "the takedown run read BSC's sheets and found no stock of the two cards to take to 0, so it sent nothing (the seller account is shared: something else zeroed them first?)",
+    ).toBeVisible();
     await expect(takeDown.confirmLanded()).toBeVisible();
     await expect(takenLine).toBeVisible();
     await expect(row.getByText(/held back/)).toHaveCount(0);

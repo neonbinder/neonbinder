@@ -506,13 +506,19 @@ test(
     // not a photo added to the held one for a second Sync: a press within a
     // minute of the last stamped press is throttled, and the second press would
     // stamp the set, throttling the in-person Sync that follows it.)
-    // The card's drawer, the boxed copy's line, its Photos box.
+    // The card's drawer, the boxed copy's line, its Photos box. A box row's
+    // Details opens the drawer already editing the card's ONE line (the line
+    // has no Edit button while its form is up), the same as a click on a
+    // collection row does (copy-photos-add-replace-remove). The heading says
+    // the card has exactly one line, so this is that case and not another.
     const attachPhoto = async (short: string, photo: string, axeLabel?: string) => {
       const drawer = page.getByRole("dialog", { name: new RegExp(`^${escapeRegExp(SET_LABEL)} ${escapeRegExp(short)}`) });
       await checklist.getByRole("button", { name: `Details for ${short}`, exact: true }).click();
       const yourCopies = drawer.getByRole("region", { name: `Your copies of ${short}`, exact: true });
-      await yourCopies.getByRole("button", { name: new RegExp(`^Edit ${escapeRegExp(short)}, Raw, `) }).click();
-      const panel = yourCopies.getByRole("form", { name: /^Edit Raw, / }).getByRole("region", { name: "Photos", exact: true });
+      await expect(yourCopies.getByRole("heading", { name: "Your copies (1 line)", exact: true })).toBeVisible();
+      const editForm = yourCopies.getByRole("form", { name: /^Edit Raw, / });
+      await expect(editForm).toBeVisible();
+      const panel = editForm.getByRole("region", { name: "Photos", exact: true });
       await expect(panel.getByText("No front photo yet")).toBeAttached();
       await panel.getByLabel("Front photo file", { exact: true }).setInputFiles(path.join(FIXTURES, photo));
       await expect(panel.getByRole("status")).toHaveText("Front photo saved.");
