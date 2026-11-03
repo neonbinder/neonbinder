@@ -116,6 +116,13 @@ export type NavRow = {
   /** A team row's own name, and a player row's career-team labels — the two
    *  sides the blocker rule matches on. Optional so a test may omit them. */
   name?: string;
+  /**
+   * NEO-424 — the row's own sport and the batch's, for the decided list: an
+   * auto-linked row sits in the linked player's HOME sport, which may not be
+   * the set's, and the read-back names it when it differs. Optional, as above.
+   */
+  sportValue?: string;
+  setSportValue?: string;
   enrichment?: {
     careerTeams?: readonly { name: string }[];
     /**
@@ -159,11 +166,47 @@ export function preselectReasonLine(preselect: NavPreselect): string {
     case "setHistory":
       return `Another card in this set is already linked to ${who}. Same one?`;
     case "hallOfFame":
-      return `${who} is the Hall of Famer by that name. Same one?`;
+      return `None of the ${preselect.name}s on file played that year, but one's in the Hall of Fame (${preselect.sportValue}). Same one?`;
     case "onlyNamesake":
     default:
-      return `We've got one ${preselect.name} on file, in ${preselect.sportValue}. Same one?`;
+      return `We've only got one ${who} on file. Same one?`;
   }
+}
+
+/** NEO-424 — did the batch make this row's link on its own? */
+export function isAutoLinked(row: NavRow): boolean {
+  return row.decision?.action === "link" && row.decision.autoLinked !== undefined;
+}
+
+/** NEO-424 — how many rows the batch linked on its own, for the decided summary. */
+export function countAutoLinked(rows: readonly NavRow[]): number {
+  return rows.reduce((n, r) => (isAutoLinked(r) ? n + 1 : n), 0);
+}
+
+/**
+ * NEO-424 — the decided list summary's note, `· 6 linked for you`, or null
+ * when the batch linked none on its own. It follows `Decided (14)` in a span
+ * of its own: the E2E driver opens the list by that count's exact text
+ * (`/^Decided \([0-9]+\)$/` in playwright/support/wizard.ts), so the count
+ * keeps a node to itself.
+ */
+export function autoLinkedSummaryNote(rows: readonly NavRow[]): string | null {
+  const auto = countAutoLinked(rows);
+  return auto > 0 ? ` · ${auto} linked for you` : null;
+}
+
+/**
+ * NEO-424 — the auto-linked row's sport when it is not the set's, for the
+ * read-back ("Linked to Mike Shinoda (Non Sport) · …"). Null when the two
+ * agree or either is unknown. Compared case- and space-insensitively, as the
+ * pick step's sport label is. Display only.
+ */
+export function autoLinkOtherSport(row: NavRow): string | null {
+  if (!isAutoLinked(row)) return null;
+  const own = row.sportValue?.trim();
+  const set = row.setSportValue?.trim();
+  if (!own || !set) return null;
+  return own.toLowerCase() === set.toLowerCase() ? null : own;
 }
 
 /**
@@ -848,29 +891,37 @@ function settle(nav: NavState, next: NavState): NavState {
  * qualify ("Linked to an existing record, b. 1852") says nothing useful.
  */
 /*
- * NEO-424 — a link the batch made on its own says WHY, because the operator
- * never pressed anything for it and the decided list is the only place they
- * learn it happened: "Matched from this set: Mike Shinoda" (the name is
- * already linked on another card in this set), "Hall of Famer: Bob Allen"
- * (the year narrowing's tie-break). Same words in the decided list and the
- * read-only panel, and the same "Change" undoes either. While the linked
- * player's name is still loading the reason stands alone rather than
- * borrowing "an existing record".
+ * NEO-424 — a link the batch made on its own reads with the same verb as any
+ * link, and then says WHY, because the operator never pressed anything for it
+ * and the decided list is the only place they learn it happened:
+ * "Linked to Mike Shinoda · already on another card in this set", "Linked to
+ * Bob Allen · the Hall of Famer" (the year narrowing's tie-break).
+ * `otherSport` (see `autoLinkOtherSport`) follows the name when the player is
+ * filed under another sport: "Linked to Mike Shinoda (Non Sport) · …". Same
+ * words in the decided list and the read-only panel, and the same "Change"
+ * undoes either. While the name is still loading the line still says why,
+ * rather than borrowing "an existing record".
  */
 export function describeDecision(
   decision: NavDecision | null | undefined,
   linkedName?: string | null,
   rememberedName?: string | null,
   linkedDetail?: string | null,
+  otherSport?: string | null,
 ): string {
   if (!decision) return "Not yet decided";
   if (decision.action === "create") return "Added as new";
   if (decision.action === "skip") return "Skipped";
-  if (decision.autoLinked === "setHistory") {
-    return linkedName ? `Matched from this set: ${linkedName}` : "Matched from this set";
-  }
-  if (decision.autoLinked === "hallOfFame") {
-    return linkedName ? `Hall of Famer: ${linkedName}` : "Matched to a Hall of Famer";
+  if (decision.autoLinked) {
+    const who = linkedName
+      ? `${linkedName}${otherSport ? ` (${otherSport})` : ""}`
+      : null;
+    if (decision.autoLinked === "hallOfFame") {
+      return who ? `Linked to ${who} · the Hall of Famer` : "Linked to the Hall of Famer";
+    }
+    return who
+      ? `Linked to ${who} · already on another card in this set`
+      : `Linked to a ${decision.linkedTeamId ? "team" : "player"} already in this set`;
   }
   const linked = linkedName
     ? linkedDetail

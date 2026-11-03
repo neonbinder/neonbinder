@@ -1,7 +1,8 @@
 // NEO-424: a player name already linked on a COMMITTED card elsewhere in the
 // same set links to that same player when another variant of the set is synced,
 // whatever sport the player is filed under, and the wizard SHOWS the link in its
-// Decided list ("Matched from this set: <name>") with a Change that reopens the
+// Decided list ("Linked to <name> (<sport>) · already on another card in this
+// set") with a Change that reopens the
 // step on the suggestion ("Link to <name> (<sport>)", creating demoted to
 // "Add as New Player anyway"). Proved on live data through the operator's own
 // path (Sync card checklist -> "Tidy up this set" -> Confirm & Save), twice:
@@ -9,7 +10,8 @@
 //      "Also add Baseball to their sports" left unticked, every other name
 //      skipped, saved. STAR is therefore a Football player, on a Baseball card.
 //   2. The set's one INSERT is synced: the wizard opens with STAR already
-//      decided, "Matched from this set: STAR", in the Decided list. Change
+//      decided, "Linked to STAR (Football) · already on another card in this
+//      set", in the Decided list. Change
 //      reopens the step on "Link to STAR (Football)"; pressing it reads back as
 //      "Linked to STAR"; the rest are skipped and the insert is saved.
 //   3. STAR's player page lists BOTH cards, each a Baseball guest card (the
@@ -235,7 +237,9 @@ test(
     });
     const decided = await openDecidedList(page);
     const starRow = decided.getByRole("listitem").filter({ has: page.getByText(STAR, { exact: true }) });
-    await expect(starRow.getByText(`Matched from this set: ${STAR}`)).toBeVisible();
+    await expect(
+      starRow.getByText(`Linked to ${STAR} (Football) · already on another card in this set`),
+    ).toBeVisible();
     await expect(starRow.getByRole("button", { name: `Change decision for ${STAR}` })).toBeVisible();
     // The positive above is paired with its negative: he is not an undecided name.
     await expect(wizard.getByRole("button", { name: `Skip ${STAR} — not a person`, exact: true })).toBeHidden();

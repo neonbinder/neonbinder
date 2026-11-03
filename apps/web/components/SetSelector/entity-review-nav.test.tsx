@@ -28,6 +28,9 @@ import {
   describeDecision,
   isPresentable,
   nextUndecided,
+  autoLinkOtherSport,
+  countAutoLinked,
+  autoLinkedSummaryNote,
   preselectFor,
   preselectReasonLine,
   resolveNav,
@@ -469,35 +472,82 @@ describe("describeDecision", () => {
     expect(describeDecision(null)).toBe("Not yet decided");
   });
 
-  it("NEO-424: says why the batch linked a name on its own", () => {
+  it("NEO-424: an auto-link uses the shared verb and says why after it", () => {
     expect(
       describeDecision(
         { action: "link", linkedPlayerId: "p1", autoLinked: "setHistory" },
         "Mike Shinoda",
       ),
-    ).toBe("Matched from this set: Mike Shinoda");
+    ).toBe("Linked to Mike Shinoda · already on another card in this set");
     expect(
       describeDecision(
         { action: "link", linkedPlayerId: "p1", autoLinked: "hallOfFame" },
         "Bob Allen",
       ),
-    ).toBe("Hall of Famer: Bob Allen");
+    ).toBe("Linked to Bob Allen · the Hall of Famer");
     // A team auto-link reads the same way.
     expect(
       describeDecision(
         { action: "link", linkedTeamId: "t1", autoLinked: "setHistory" },
         "Linkin Park",
       ),
-    ).toBe("Matched from this set: Linkin Park");
+    ).toBe("Linked to Linkin Park · already on another card in this set");
   });
 
-  it("NEO-424: an auto-link's reason stands alone while the name loads", () => {
+  it("NEO-424: names the player's sport only when it is not the set's", () => {
+    expect(
+      describeDecision(
+        { action: "link", linkedPlayerId: "p1", autoLinked: "setHistory" },
+        "Mike Shinoda",
+        "Mike Shinoda",
+        null,
+        "Non Sport",
+      ),
+    ).toBe("Linked to Mike Shinoda (Non Sport) · already on another card in this set");
+    const auto = (sportValue: string) => ({
+      _id: "r1",
+      status: "ready" as const,
+      kind: "player" as const,
+      sportValue,
+      setSportValue: "Baseball",
+      decision: { action: "link" as const, linkedPlayerId: "p1", autoLinked: "setHistory" as const },
+    });
+    expect(autoLinkOtherSport(auto("Non Sport"))).toBe("Non Sport");
+    expect(autoLinkOtherSport(auto(" baseball "))).toBeNull();
+    // An operator's own link never carries it.
+    expect(
+      autoLinkOtherSport({ ...auto("Non Sport"), decision: { action: "link", linkedPlayerId: "p1" } }),
+    ).toBeNull();
+  });
+
+  it("NEO-424: an auto-link still says why while the name loads", () => {
     expect(
       describeDecision({ action: "link", linkedPlayerId: "p1", autoLinked: "setHistory" }),
-    ).toBe("Matched from this set");
+    ).toBe("Linked to a player already in this set");
+    expect(
+      describeDecision({ action: "link", linkedTeamId: "t1", autoLinked: "setHistory" }),
+    ).toBe("Linked to a team already in this set");
     expect(
       describeDecision({ action: "link", linkedPlayerId: "p1", autoLinked: "hallOfFame" }),
-    ).toBe("Matched to a Hall of Famer");
+    ).toBe("Linked to the Hall of Famer");
+  });
+});
+
+describe("NEO-424 — the decided summary counts the batch's own links", () => {
+  const auto: NavRow = {
+    _id: "a",
+    status: "ready",
+    decision: { action: "link", linkedPlayerId: "p1", autoLinked: "setHistory" },
+  };
+  const mine: NavRow = { _id: "m", status: "ready", decision: { action: "create" } };
+  const open: NavRow = { _id: "o", status: "ready" };
+
+  it("says how many were linked for you, only when any were", () => {
+    expect(autoLinkedSummaryNote([auto, { ...auto, _id: "b" }, mine, open])).toBe(
+      " · 2 linked for you",
+    );
+    expect(autoLinkedSummaryNote([mine, open])).toBeNull();
+    expect(countAutoLinked([auto, mine])).toBe(1);
   });
 });
 
@@ -522,7 +572,7 @@ describe("NEO-424 — the suggested player", () => {
 
   it("says where each suggestion came from", () => {
     expect(preselectReasonLine(preselect)).toBe(
-      "We've got one Mike Shinoda on file, in Non Sport. Same one?",
+      "We've only got one Mike Shinoda (Non Sport) on file. Same one?",
     );
     expect(preselectReasonLine({ ...preselect, reason: "priorYearProduct" })).toBe(
       "Last year's edition of this set had Mike Shinoda (Non Sport). Same one?",
@@ -531,7 +581,7 @@ describe("NEO-424 — the suggested player", () => {
       "Another card in this set is already linked to Mike Shinoda (Non Sport). Same one?",
     );
     expect(preselectReasonLine({ ...preselect, reason: "hallOfFame" })).toBe(
-      "Mike Shinoda (Non Sport) is the Hall of Famer by that name. Same one?",
+      "None of the Mike Shinodas on file played that year, but one's in the Hall of Fame (Non Sport). Same one?",
     );
   });
 });

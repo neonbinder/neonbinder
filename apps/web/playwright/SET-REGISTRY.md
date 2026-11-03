@@ -2054,7 +2054,7 @@ lets the operator change it.
 2. **Insert.** The set's one insert (`INSERT`) is made a set (paused: the column
    fills from BSC; live: its exact "Make its own set" button, never "Keep all")
    and fetched. The wizard opens with `STAR` already decided,
-   `Matched from this set: STAR`. Change reopens the step on `Link to STAR
+   `Linked to STAR (Football) · already on another card in this set`. Change reopens the step on `Link to STAR
    (Football)` with `Add as New Player anyway` demoted; pressing the link reads
    back `Linked to STAR`; the rest are skipped; saved.
 3. **Read-back.** `STAR`'s player page lists both cards as Baseball guest cards
