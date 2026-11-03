@@ -1130,6 +1130,8 @@ export interface DrainOptions {
   now?: () => number;
   /** Fetches one R2 object's bytes; the real one signs with `lib/r2`. */
   fetchPhoto?: (key: string, maxBytes: number) => Promise<ArrayBuffer | null>;
+  /** The wait before an eBay publish's one busy retry (`publishOffer`); tests pass one that returns at once. */
+  pause?: (ms: number) => Promise<void>;
 }
 
 export interface DrainReport {

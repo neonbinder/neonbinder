@@ -1469,9 +1469,11 @@ async function syncEbayVariant(
 
   // 6. Publish new and returning listings: one publish per offer, at most
   //    EBAY_PUBLISH_CONCURRENCY at once. eBay refusing an offer rejects that
-  //    card; a call that fails outright (eBay busy, signed out, an answer NB
-  //    can't read) starts no further publish and stops the run once the ones
-  //    in flight are back, as a failed bulk call did. Every publish that
+  //    card; eBay busy (5xx, 429) is retried once inside `publishOffer`, and
+  //    that publish counts as in flight until its retry is back. A call that
+  //    still fails outright (eBay busy twice, signed out, an answer NB can't
+  //    read) starts no further publish and stops the run once the ones in
+  //    flight are back, as a failed bulk call did. Every publish that
   //    landed before the stop is recorded first (its listing id, and the one
   //    a republish replaced): a live listing NB does not know about is a lost
   //    link.
@@ -1483,7 +1485,7 @@ async function syncEbayVariant(
     publishes,
     EBAY_PUBLISH_CONCURRENCY,
     async (plan) => {
-      const r = await publishOffer(ctx, session, plan.offerId as string);
+      const r = await publishOffer(ctx, session, plan.offerId as string, opts.pause);
       if (!r.ok) {
         publishHalt.failure ??= r.failure;
         return;

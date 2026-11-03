@@ -22,6 +22,7 @@ import { drainOwnerImpl, type DrainCtx, type DrainReport } from "./listingDrain"
 import { EBAY_SETUP_INCOMPLETE_ERROR } from "./listingDrain";
 import { EBAY_CARD_REJECTED, EBAY_PUBLISH_CONCURRENCY, EBAY_STEP_SAYS, inPool } from "./listingDrainEbay";
 import { EBAY_SANDBOX_TEST_PICTURE_URL } from "./lib/ebayEnv";
+import { EBAY_PUBLISH_RETRY_PAUSE_MS } from "./adapters/ebaySeller";
 import { drainScheduled } from "../lib/testing/drain-scheduled";
 
 const modules = (import.meta as unknown as {
@@ -421,8 +422,18 @@ const fetchPhoto = async (key: string): Promise<ArrayBuffer | null> => {
   return new ArrayBuffer(8);
 };
 
+/**
+ * The wait before a busy publish's one retry: returns at once (no real
+ * second), counting the waits and the time each asked for. A test that needs
+ * the wait held open replaces `pause`.
+ */
+let pauses: number[] = [];
+let pause = async (ms: number): Promise<void> => {
+  pauses.push(ms);
+};
+
 const drain = (s: S, extra: { fullVariantIds?: Array<Id<"selectorOptions">> } = {}): Promise<DrainReport> =>
-  drainOwnerImpl(stubCtx(s.t), { ownerId: OWNER, platform: "ebay", ...extra }, { fetchPhoto });
+  drainOwnerImpl(stubCtx(s.t), { ownerId: OWNER, platform: "ebay", ...extra }, { fetchPhoto, pause: (ms) => pause(ms) });
 
 let ebay: FakeEbay;
 
@@ -432,6 +443,10 @@ beforeEach(() => {
   creds.tokenCalls = 0;
   creds.refreshCalls = 0;
   photoFetches = [];
+  pauses = [];
+  pause = async (ms: number): Promise<void> => {
+    pauses.push(ms);
+  };
   ebay = new FakeEbay();
   vi.stubEnv("EBAY_CLIENT_ID", "cid");
   vi.stubEnv("EBAY_RU_NAME", "ru");
@@ -1244,16 +1259,21 @@ describe("eBay drain: eBay's answers", () => {
     ebay.publishGate = () => new Promise((r) => setTimeout(r, 10));
     const real = ebay.fetch;
     let publishCalls = 0;
+    let busyOffer: string | null = null;
     vi.stubGlobal("fetch", (async (url: string | URL | Request, init?: RequestInit) => {
-      if (/\/offer\/[^/]+\/publish$/.test(new URL(String(url)).pathname)) {
+      const m = /\/offer\/([^/]+)\/publish$/.exec(new URL(String(url)).pathname);
+      if (m) {
         publishCalls += 1;
-        if (publishCalls === 1) return Response.json({ errors: [{ errorId: 1 }] }, { status: 503 });
+        busyOffer ??= m[1];
+        // eBay stays busy for this offer: its one retry fails too.
+        if (m[1] === busyOffer) return Response.json({ errors: [{ errorId: 1 }] }, { status: 503 });
       }
       return real(url, init);
     }) as typeof fetch);
     await drain(s);
-    // The first ten started together; none started after the failure.
-    expect(publishCalls).toBe(EBAY_PUBLISH_CONCURRENCY);
+    // The first ten started together, plus the busy one's single retry; none started after it failed.
+    expect(publishCalls).toBe(EBAY_PUBLISH_CONCURRENCY + 1);
+    expect(pauses).toHaveLength(1);
     expect((await record(s, v.variantId))?.lastError).toBe(EBAY_STEP_SAYS.publish.busy);
     expect(await stepsOf(s, v.variantId)).toEqual(["photos: done", "items: done", "offers: done", "publish: failed"]);
   });
@@ -1270,8 +1290,9 @@ describe("eBay drain: eBay's answers", () => {
     let failedOffer: string | null = null;
     vi.stubGlobal("fetch", (async (url: string | URL | Request, init?: RequestInit) => {
       const m = /\/offer\/([^/]+)\/publish$/.exec(new URL(String(url)).pathname);
-      if (m && failedOffer === null) {
-        failedOffer = decodeURIComponent(m[1]);
+      if (m) failedOffer ??= decodeURIComponent(m[1]);
+      // Busy for that one offer, its retry included.
+      if (m && decodeURIComponent(m[1]) === failedOffer) {
         return Response.json({ errors: [{ errorId: 1 }] }, { status: 503 });
       }
       return real(url, init);
@@ -1322,6 +1343,144 @@ describe("eBay drain: eBay's answers", () => {
     expect((await linkOf(s, card, "NM"))?.listingId).toBeUndefined();
     expect((await record(s, v.variantId))?.problems[0]).toMatchObject({ reason: "rejected", detail: EBAY_CARD_REJECTED.publish });
     expect((await record(s, v.variantId))?.counts.listed).toBe(0);
+  });
+});
+
+// ── NEO-415: one retry when eBay answers a publish busy (5xx or 429) ────────
+
+/**
+ * Answers each publish through `answer(sku, nth)` (nth = that offer's 1-based
+ * publish count): a status gets an error body, null goes to the fake eBay.
+ * Returns the SKUs published, in the order sent.
+ */
+function publishAnswers(answer: (sku: string, nth: number) => number | null): string[] {
+  const order: string[] = [];
+  const counts = new Map<string, number>();
+  const real = ebay.fetch;
+  vi.stubGlobal("fetch", (async (url: string | URL | Request, init?: RequestInit) => {
+    const m = /\/offer\/([^/]+)\/publish$/.exec(new URL(String(url)).pathname);
+    if (m) {
+      const sku = ebay.offers.get(decodeURIComponent(m[1]))?.sku ?? "?";
+      const nth = (counts.get(sku) ?? 0) + 1;
+      counts.set(sku, nth);
+      order.push(sku);
+      const status = answer(sku, nth);
+      if (status !== null) return Response.json({ errors: [{ errorId: 25001, message: "RAW-EBAY-TEXT" }] }, { status });
+    }
+    return real(url, init);
+  }) as typeof fetch);
+  return order;
+}
+
+const publishCallLines = (log: { mock: { calls: unknown[][] } }) =>
+  log.mock.calls
+    .map((c) => String(c[0]))
+    .filter((l) => l.startsWith("{"))
+    .map((l) => JSON.parse(l) as Record<string, unknown>)
+    .filter((l) => l.operation === "publishOffer");
+
+describe("eBay drain: a busy publish is tried once more", () => {
+  test.each([500, 429])("eBay busy (%i) then fine: the one retry goes live and the run carries on", async (status) => {
+    const s = await setup();
+    const { v, card } = await oneCard(s);
+    const order = publishAnswers((_sku, nth) => (nth === 1 ? status : null));
+    const log = vi.spyOn(console, "log");
+
+    await drain(s);
+
+    const lines = publishCallLines(log);
+    log.mockRestore();
+    expect(order).toHaveLength(2);
+    expect(pauses).toEqual([EBAY_PUBLISH_RETRY_PAUSE_MS]);
+    expect(await linkOf(s, card, "NM")).toMatchObject({ status: "live", listingId: expect.any(String) });
+    const rec = await record(s, v.variantId);
+    expect(rec?.lastError).toBeUndefined();
+    expect(rec?.counts).toMatchObject({ listed: 1, pushed: 1 });
+    expect(await stepsOf(s, v.variantId)).toEqual(["photos: done", "items: done", "offers: done", "publish: done"]);
+    // Each try has its own call line; the retry's says so. eBay's text stays out of the call lines.
+    const calls = lines.filter((l) => l.msg === "ebay_seller_call");
+    expect(calls).toEqual([
+      expect.objectContaining({ outcome: "http_error", httpStatus: status }),
+      expect.objectContaining({ outcome: "ok", httpStatus: 200, attempt: 2 }),
+    ]);
+    expect(calls[0]).not.toHaveProperty("attempt");
+    expect(lines.filter((l) => l.msg === "ebay_seller_error")).toEqual([expect.objectContaining({ httpStatus: status, errorIds: [25001] })]);
+  });
+
+  test("eBay busy twice: the run stops as eBay busy, as before", async () => {
+    const s = await setup();
+    const { v, card } = await oneCard(s);
+    const order = publishAnswers(() => 500);
+    const log = vi.spyOn(console, "log");
+
+    await drain(s);
+
+    const errors = publishCallLines(log).filter((l) => l.msg === "ebay_seller_error");
+    log.mockRestore();
+    expect(order).toHaveLength(2);
+    expect(pauses).toHaveLength(1);
+    expect(errors).toEqual([
+      expect.not.objectContaining({ attempt: expect.anything() }),
+      expect.objectContaining({ httpStatus: 500, attempt: 2 }),
+    ]);
+    expect((await record(s, v.variantId))?.lastError).toBe(EBAY_STEP_SAYS.publish.busy);
+    expect(await stepsOf(s, v.variantId)).toEqual(["photos: done", "items: done", "offers: done", "publish: failed"]);
+    expect(await linkOf(s, card, "NM")).toMatchObject({ status: "draft" });
+  });
+
+  test("eBay refusing the offer (400) is not retried: that card is rejected", async () => {
+    const s = await setup();
+    const { v, card } = await oneCard(s);
+    const order = publishAnswers(() => 400);
+    await drain(s);
+    expect(order).toHaveLength(1);
+    expect(pauses).toEqual([]);
+    expect(await linkOf(s, card, "NM")).toMatchObject({ status: "draft" });
+    expect((await record(s, v.variantId))?.problems[0]).toMatchObject({ reason: "rejected", detail: EBAY_CARD_REJECTED.publish });
+  });
+
+  test("eBay refusing the seller (403) is not retried: the run stops", async () => {
+    const s = await setup();
+    const { v } = await oneCard(s);
+    const order = publishAnswers(() => 403);
+    await drain(s);
+    expect(order).toHaveLength(1);
+    expect(pauses).toEqual([]);
+    expect((await record(s, v.variantId))?.lastError).toBe(EBAY_STEP_SAYS.publish.refused);
+    expect(await stepsOf(s, v.variantId)).toEqual(["photos: done", "items: done", "offers: done", "publish: failed"]);
+  });
+
+  test("a retry waiting out its pause counts as in flight: another publish stopping the run still records the retry's listing", async () => {
+    const s = await setup();
+    const v = await seedVariant(s.t, { cards: [{ number: "1" }, { number: "2" }] });
+    for (const cardId of v.cardIds) await addWithPhoto(s, cardId, { homeId: s.box, condition: "Near Mint", minPriceCents: 500 });
+    await listOnEbay(s);
+    await queue(s, v.cardIds.map((cardId) => ({ cardId, variantId: v.variantId })));
+    const [retried, stopper] = v.cardIds;
+    const retriedSku = `NB2-${retried}-NM`;
+    let stopperAnswered!: () => void;
+    const stopperBack = new Promise<void>((r) => (stopperAnswered = r));
+    const order = publishAnswers((sku, nth) => {
+      if (sku === retriedSku) return nth === 1 ? 503 : null;
+      stopperAnswered();
+      return 403;
+    });
+    // Hold the retry until the other publish has failed outright and halted the pool.
+    pause = async (ms) => {
+      pauses.push(ms);
+      await stopperBack;
+      await new Promise((r) => setTimeout(r, 5));
+    };
+
+    await drain(s);
+
+    expect(order).toEqual([retriedSku, `NB2-${stopper}-NM`, retriedSku]);
+    expect((await record(s, v.variantId))?.lastError).toBe(EBAY_STEP_SAYS.publish.refused);
+    // Live on eBay through the retry, and linked in this run: no lost link.
+    const offer = ebay.offerFor(retriedSku);
+    expect(offer?.status).toBe("PUBLISHED");
+    expect(await linkOf(s, retried, "NM")).toMatchObject({ status: "live", listingId: offer?.listingId });
+    expect(await linkOf(s, stopper, "NM")).toMatchObject({ status: "draft" });
   });
 });
 

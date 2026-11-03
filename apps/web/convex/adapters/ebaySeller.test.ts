@@ -19,6 +19,7 @@ import {
   getShippingServices,
   openEbaySellerSession,
   optInToProgram,
+  EBAY_PUBLISH_RETRY_PAUSE_MS,
   publishOffer,
   redactEbayText,
   updateOffer,
@@ -89,6 +90,24 @@ function session(over: Partial<EbaySellerSession> = {}): EbaySellerSession {
 }
 
 const noCredentialCalls = { runAction: vi.fn() } as never;
+
+/** The wait before a busy publish's retry, returning at once; records each wait asked for. */
+const pauses: number[] = [];
+const noPause = async (ms: number): Promise<void> => {
+  pauses.push(ms);
+};
+beforeEach(() => {
+  pauses.length = 0;
+});
+
+/** The JSON log lines `log` captured for one operation. */
+function linesFor(log: { mock: { calls: unknown[][] } }, operation: string): Array<Record<string, unknown>> {
+  return log.mock.calls
+    .map((c) => String(c[0]))
+    .filter((l) => l.startsWith("{"))
+    .map((l) => JSON.parse(l) as Record<string, unknown>)
+    .filter((l) => l.operation === operation);
+}
 
 describe("openEbaySellerSession", () => {
   test("refuses with notConfigured when the env is unset, without reading a token", async () => {
@@ -723,14 +742,15 @@ describe("bulk calls", () => {
     expect(r.value.errors[0].message).toBe("Add a valid shipping service [redacted]");
   });
 
-  test.each([
-    [503, "http"],
-    [500, "http"],
-    [429, "http"],
-    [403, "http"],
-  ] as const)("publishOffer: a %i fails the call (eBay busy or refusing the seller, not this offer)", async (status, kind) => {
-    answers.push(json({ errors: [{ errorId: 1 }] }, status));
-    expect(await publishOffer(noCredentialCalls, session(), "O1")).toMatchObject({ ok: false, failure: { kind, httpStatus: status } });
+  test.each([503, 500, 429])("publishOffer: a %i twice fails the call (eBay busy, not this offer)", async (status) => {
+    answers.push(json({ errors: [{ errorId: 1 }] }, status), json({ errors: [{ errorId: 1 }] }, status));
+    expect(await publishOffer(noCredentialCalls, session(), "O1", noPause)).toMatchObject({ ok: false, failure: { kind: "http", httpStatus: status } });
+    expect(seen).toHaveLength(2);
+  });
+
+  test("publishOffer: a 403 fails the call (eBay refusing the seller, not this offer)", async () => {
+    answers.push(json({ errors: [{ errorId: 1 }] }, 403));
+    expect(await publishOffer(noCredentialCalls, session(), "O1", noPause)).toMatchObject({ ok: false, failure: { kind: "http", httpStatus: 403 } });
   });
 
   test("publishOffer: a 400 that is not JSON fails the call", async () => {
@@ -742,6 +762,140 @@ describe("bulk calls", () => {
     answers.push(json({ responses: [...Array.from({ length: 60 }, (_, i) => ({ sku: `S${i}`, statusCode: 200 })), "junk"] }));
     const r = await bulkCreateOffers(noCredentialCalls, session(), []);
     expect(r.ok && r.value).toHaveLength(50);
+  });
+});
+
+describe("publishOffer: one retry when eBay is busy", () => {
+  test("500 then 200: published, after one retry and one pause; each try logs its own line", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    answers.push(json({ errors: [{ errorId: 25001, message: "System error" }] }, 500), json({ listingId: "L7" }));
+    const r = await publishOffer(noCredentialCalls, session(), "O1", noPause);
+    const lines = linesFor(log, "publishOffer");
+    log.mockRestore();
+    expect(r).toEqual({ ok: true, value: { statusCode: 200, listingId: "L7", errorIds: [], errors: [] } });
+    expect(seen).toHaveLength(2);
+    expect(seen.map((x) => x.url.pathname)).toEqual(["/sell/inventory/v1/offer/O1/publish", "/sell/inventory/v1/offer/O1/publish"]);
+    expect(pauses).toEqual([EBAY_PUBLISH_RETRY_PAUSE_MS]);
+    expect(lines.map((l) => l.msg)).toEqual(["ebay_seller_call", "ebay_seller_error", "ebay_seller_call"]);
+    expect(lines[0]).toMatchObject({ outcome: "http_error", httpStatus: 500 });
+    expect(lines[0]).not.toHaveProperty("attempt");
+    expect(lines[1]).toMatchObject({ httpStatus: 500, errorIds: [25001] });
+    expect(lines[1]).not.toHaveProperty("attempt");
+    expect(lines[2]).toMatchObject({ outcome: "ok", httpStatus: 200, attempt: 2 });
+    // No token in any line.
+    expect(JSON.stringify(lines)).not.toContain("tok-1");
+  });
+
+  test("429 then 200: published", async () => {
+    answers.push(json({ errors: [{ errorId: 2001 }] }, 429), json({ listingId: "L8" }));
+    const r = await publishOffer(noCredentialCalls, session(), "O1", noPause);
+    expect(r).toMatchObject({ ok: true, value: { statusCode: 200, listingId: "L8" } });
+    expect(seen).toHaveLength(2);
+    expect(pauses).toEqual([EBAY_PUBLISH_RETRY_PAUSE_MS]);
+  });
+
+  test("500 then 500: the second answer is the failure, as before; never a third try", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    answers.push(json({ errors: [{ errorId: 25001 }] }, 500), json({ errors: [{ errorId: 25001 }] }, 500));
+    const r = await publishOffer(noCredentialCalls, session(), "O1", noPause);
+    const errors = linesFor(log, "publishOffer").filter((l) => l.msg === "ebay_seller_error");
+    log.mockRestore();
+    expect(r).toMatchObject({ ok: false, failure: { kind: "http", httpStatus: 500, errorIds: [25001] } });
+    expect(seen).toHaveLength(2);
+    expect(pauses).toHaveLength(1);
+    expect(errors).toHaveLength(2);
+    expect(errors[0]).not.toHaveProperty("attempt");
+    expect(errors[1]).toMatchObject({ httpStatus: 500, attempt: 2 });
+  });
+
+  test("500 then a refusal: the retry's answer is the result", async () => {
+    answers.push(json({}, 500), json({ errors: [{ errorId: 25007 }] }, 400));
+    const r = await publishOffer(noCredentialCalls, session(), "O1", noPause);
+    expect(r).toMatchObject({ ok: true, value: { statusCode: 400, listingId: null, errorIds: [25007] } });
+    expect(seen).toHaveLength(2);
+  });
+
+  test.each([400, 404, 409, 422])("a %i refusal of the offer is not retried", async (status) => {
+    answers.push(json({ errors: [{ errorId: 25007 }] }, status));
+    const r = await publishOffer(noCredentialCalls, session(), "O1", noPause);
+    expect(r).toMatchObject({ ok: true, value: { statusCode: status } });
+    expect(seen).toHaveLength(1);
+    expect(pauses).toEqual([]);
+  });
+
+  test.each([403, 400])("a %i that fails the call is not retried", async (status) => {
+    // A 400 that is not JSON is no answer: it fails the call, still without a retry.
+    answers.push(status === 400 ? new Response("<html>bad</html>", { status }) : json({ errors: [{ errorId: 1 }] }, status));
+    expect(await publishOffer(noCredentialCalls, session(), "O1", noPause)).toMatchObject({ ok: false, failure: { httpStatus: status } });
+    expect(seen).toHaveLength(1);
+    expect(pauses).toEqual([]);
+  });
+
+  test("a timeout, a network failure and an unreadable answer are not retried", async () => {
+    answers.push(Object.assign(new Error("t"), { name: "TimeoutError" }));
+    expect(await publishOffer(noCredentialCalls, session(), "O1", noPause)).toMatchObject({ ok: false, failure: { kind: "timeout" } });
+    answers.push(new TypeError("fetch failed"));
+    expect(await publishOffer(noCredentialCalls, session(), "O1", noPause)).toMatchObject({ ok: false, failure: { kind: "network" } });
+    answers.push(new Response("<html>ok?</html>", { status: 200 }));
+    expect(await publishOffer(noCredentialCalls, session(), "O1", noPause)).toMatchObject({ ok: false, failure: { kind: "bad_response" } });
+    expect(seen).toHaveLength(3);
+    expect(pauses).toEqual([]);
+  });
+
+  test("a 401 the refresh cannot fix is signed out, not retried as busy", async () => {
+    answers.push(json({}, 401));
+    const runAction = vi.fn().mockResolvedValueOnce({ refreshed: false });
+    const s = session();
+    expect(await publishOffer({ runAction } as never, s, "O1", noPause)).toMatchObject({ ok: false, failure: { kind: "signed_out" } });
+    expect(seen).toHaveLength(1);
+    expect(pauses).toEqual([]);
+    expect(s.dead).toBe(true);
+  });
+
+  test("a 401 refreshed, then busy, then fine: one refresh, one busy retry, both with the new token", async () => {
+    answers.push(json({}, 401), json({}, 503), json({ listingId: "L9" }));
+    const runAction = vi.fn().mockResolvedValueOnce({ refreshed: true }).mockResolvedValueOnce({ token: "tok-2" });
+    const s = session();
+    const r = await publishOffer({ runAction } as never, s, "O1", noPause);
+    expect(r).toMatchObject({ ok: true, value: { listingId: "L9" } });
+    expect(runAction).toHaveBeenCalledTimes(2);
+    expect(seen.map((x) => x.headers.Authorization)).toEqual(["Bearer tok-1", "Bearer tok-2", "Bearer tok-2"]);
+    expect(pauses).toHaveLength(1);
+  });
+
+  test("busy, then a 401 on the retry after the session's one refresh: signed out, no further call", async () => {
+    answers.push(json({}, 503), json({}, 401));
+    const runAction = vi.fn();
+    const s = session({ reauthAttempted: true });
+    expect(await publishOffer({ runAction } as never, s, "O1", noPause)).toMatchObject({ ok: false, failure: { kind: "signed_out" } });
+    expect(seen).toHaveLength(2);
+    expect(runAction).not.toHaveBeenCalled();
+    expect(s.dead).toBe(true);
+  });
+
+  test("a session another call killed during the pause is not called again", async () => {
+    answers.push(json({}, 503));
+    const s = session();
+    const r = await publishOffer(noCredentialCalls, s, "O1", async () => {
+      s.dead = true;
+    });
+    expect(r).toMatchObject({ ok: false, failure: { kind: "signed_out" } });
+    expect(seen).toHaveLength(1);
+  });
+
+  test("without an injected pause the retry waits EBAY_PUBLISH_RETRY_PAUSE_MS of real time", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout"] });
+    try {
+      answers.push(json({}, 500), json({ listingId: "L1" }));
+      const pending = publishOffer(noCredentialCalls, session(), "O1");
+      await vi.advanceTimersByTimeAsync(EBAY_PUBLISH_RETRY_PAUSE_MS - 1);
+      expect(seen).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(await pending).toMatchObject({ ok: true, value: { listingId: "L1" } });
+      expect(seen).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

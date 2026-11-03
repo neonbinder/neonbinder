@@ -53,3 +53,4 @@
 - [eBay sandbox refuses eSE policies](reference_ebay_sandbox_refuses_ese_policy.md) — 20403 on any eSE policy create (confirmed by hand); no body fix; NB makes no shipping policies until NEO-423
 - [Ledger error finish settles working as failed](reference_progress_ledger_error_finish_settles_working_failed.md) — ledger.fail the earlier step, endWorking before an error finish
 - [eBay Media 500 190000 is ambiguous](reference_ebay_media_500_is_ambiguous.md) — malformed-request answer too; no upload on sandbox, items need imageUrls (25717): fixed test picture; JS doc pages
+- [Adapter retry pause is injected](reference_adapter_retry_pause_is_injected.md) — optional `pause` param threaded via DrainOptions; instant counting pause in drain tests; fake only setTimeout for the default

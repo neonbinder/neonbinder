@@ -152,7 +152,7 @@ function httpSays(status: number): string {
 function logFailure(
   operation: string,
   httpStatus: number,
-  extra: { errorIds?: number[]; errors?: EbayErrorDetail[]; reason?: string },
+  extra: { errorIds?: number[]; errors?: EbayErrorDetail[]; reason?: string; attempt?: number },
 ): void {
   console.log(JSON.stringify({ msg: "ebay_seller_error", platform: "ebay", operation, httpStatus, ...extra }));
 }
@@ -166,7 +166,8 @@ function failure(kind: EbayFailureKind, message: string, extra: { httpStatus?: n
   };
 }
 
-function logCall(operation: string, startedAt: number, outcome: string, httpStatus?: number): void {
+/** `attempt` is set only on a busy retry (`publishOffer`), so a first call's line is unchanged. */
+function logCall(operation: string, startedAt: number, outcome: string, httpStatus?: number, attempt?: number): void {
   console.log(
     JSON.stringify({
       msg: "ebay_seller_call",
@@ -174,6 +175,7 @@ function logCall(operation: string, startedAt: number, outcome: string, httpStat
       operation,
       outcome,
       ...(httpStatus !== undefined ? { httpStatus } : {}),
+      ...(attempt !== undefined ? { attempt } : {}),
       durationMs: Date.now() - startedAt,
     }),
   );
@@ -309,6 +311,8 @@ interface SendOptions {
   maxBytes: number;
   /** Non-2xx statuses whose body is still the answer (a bulk call's 400 carries per-entry results). */
   bodyStatuses?: number[];
+  /** Which try this is when the caller retries a busy answer (2); its log lines carry it. Absent on a first try. */
+  attempt?: number;
 }
 
 interface SendValue {
@@ -361,6 +365,10 @@ async function reauthOnce(ctx: SessionCtx, session: EbaySellerSession): Promise<
   return await session.reauth;
 }
 
+function attemptOf(opts: SendOptions): { attempt?: number } {
+  return opts.attempt !== undefined ? { attempt: opts.attempt } : {};
+}
+
 /**
  * One request with the session's token: a 401 refreshes once per session and
  * retries once; a second 401 kills the session. Calls running at once share
@@ -386,11 +394,11 @@ async function send(ctx: SessionCtx, session: EbaySellerSession, opts: SendOptio
         redirect: "error",
         signal: AbortSignal.timeout(opts.timeoutMs),
       });
-      logCall(opts.operation, startedAt, res.ok ? "ok" : "http_error", res.status);
+      logCall(opts.operation, startedAt, res.ok ? "ok" : "http_error", res.status, opts.attempt);
       return res;
     } catch (err) {
       const kind = isAbort(err) ? "timeout" : "network";
-      logCall(opts.operation, startedAt, kind);
+      logCall(opts.operation, startedAt, kind, undefined, opts.attempt);
       return failure(kind, kind === "timeout" ? EBAY_SAYS.timeout : EBAY_SAYS.network);
     }
   };
@@ -423,7 +431,7 @@ async function send(ctx: SessionCtx, session: EbaySellerSession, opts: SendOptio
     text = await readCappedText(res, opts.maxBytes);
   } catch (err) {
     const timedOut = isAbort(err);
-    logFailure(opts.operation, res.status, { reason: timedOut ? "body_timeout" : "body_unreadable" });
+    logFailure(opts.operation, res.status, { reason: timedOut ? "body_timeout" : "body_unreadable", ...attemptOf(opts) });
     return {
       ok: false,
       failure: failure(timedOut ? "timeout" : "bad_response", timedOut ? EBAY_SAYS.timeout : EBAY_SAYS.unreadable, {
@@ -446,7 +454,7 @@ async function send(ctx: SessionCtx, session: EbaySellerSession, opts: SendOptio
     // what a red live run needs to name the refusal and the field. The text
     // goes to this log line only; the failure carries NB's sentence.
     const errors = ebayErrorDetailsOf(body);
-    logFailure(opts.operation, res.status, { errorIds, ...(errors.length > 0 ? { errors } : {}) });
+    logFailure(opts.operation, res.status, { errorIds, ...(errors.length > 0 ? { errors } : {}), ...attemptOf(opts) });
     return {
       ok: false,
       failure: failure("http", httpSays(res.status), {
@@ -456,11 +464,11 @@ async function send(ctx: SessionCtx, session: EbaySellerSession, opts: SendOptio
     };
   }
   if (text === null) {
-    logFailure(opts.operation, res.status, { reason: "body_too_large" });
+    logFailure(opts.operation, res.status, { reason: "body_too_large", ...attemptOf(opts) });
     return { ok: false, failure: failure("bad_response", EBAY_SAYS.unreadable, { httpStatus: res.status }) };
   }
   if (body === undefined) {
-    logFailure(opts.operation, res.status, { reason: "body_not_json" });
+    logFailure(opts.operation, res.status, { reason: "body_not_json", ...attemptOf(opts) });
     return { ok: false, failure: failure("bad_response", EBAY_SAYS.unreadable, { httpStatus: res.status }) };
   }
   return { ok: true, value: { status: res.status, body, location: res.headers.get("location") } };
@@ -916,6 +924,24 @@ export interface EbayPublishAnswer {
  */
 const PUBLISH_REFUSAL_STATUSES = [400, 404, 409, 422];
 
+/** How long `publishOffer` waits before its one retry of a busy answer (5xx or 429). */
+export const EBAY_PUBLISH_RETRY_PAUSE_MS = 1_000;
+
+/** A wait; injected in tests so a retry costs no real time. */
+export type EbayPause = (ms: number) => Promise<void>;
+
+const realPause: EbayPause = (ms) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+/**
+ * eBay said it is busy: an HTTP answer of 5xx or 429. Not a refusal (4xx), a
+ * sign-out (401, handled inside `send`), a timeout, a network failure or an
+ * answer NB couldn't read.
+ */
+function isBusyAnswer(f: EbayFailure): boolean {
+  if (f.kind !== "http" || f.httpStatus === undefined) return false;
+  return f.httpStatus >= 500 || f.httpStatus === 429;
+}
+
 /**
  * `POST /sell/inventory/v1/offer/{offerId}/publish`: one offer goes live.
  * One call per offer, run side by side by the drain, because eBay's
@@ -923,16 +949,33 @@ const PUBLISH_REFUSAL_STATUSES = [400, 404, 409, 422];
  * publish answers in about the time of one. A refusal of this offer
  * (`PUBLISH_REFUSAL_STATUSES` with a JSON body) is an answer, with eBay's
  * ids and details, like a bulk call's per-entry result; anything else fails.
+ *
+ * eBay busy (5xx or 429) is tried once more after
+ * `EBAY_PUBLISH_RETRY_PAUSE_MS` (the sandbox has answered one publish of a
+ * pair 500/25001 while the other went live); that second answer is the
+ * result, whatever it is. Each try logs its own `ebay_seller_call` line, the
+ * retry's with `attempt: 2`. The retry goes through `send`, so a 401 on it
+ * shares the session's one refresh and a dead session is not called again.
  */
-export async function publishOffer(ctx: SessionCtx, session: EbaySellerSession, offerId: string): Promise<EbayResult<EbayPublishAnswer>> {
-  const r = await send(ctx, session, {
+export async function publishOffer(
+  ctx: SessionCtx,
+  session: EbaySellerSession,
+  offerId: string,
+  pause: EbayPause = realPause,
+): Promise<EbayResult<EbayPublishAnswer>> {
+  const opts: SendOptions = {
     operation: "publishOffer",
     method: "POST",
     path: `/sell/inventory/v1/offer/${encodeURIComponent(offerId)}/publish`,
     timeoutMs: EBAY_TIMEOUTS_MS.write,
     maxBytes: EBAY_MAX_BYTES.small,
     bodyStatuses: PUBLISH_REFUSAL_STATUSES,
-  });
+  };
+  let r = await send(ctx, session, opts);
+  if (!r.ok && isBusyAnswer(r.failure)) {
+    await pause(EBAY_PUBLISH_RETRY_PAUSE_MS);
+    r = await send(ctx, session, { ...opts, attempt: 2 });
+  }
   if (!r.ok) return r;
   const body = r.value.body;
   const listingId = isRecord(body) && typeof body.listingId === "string" && body.listingId.length > 0 && body.listingId.length <= 64 ? body.listingId : null;
