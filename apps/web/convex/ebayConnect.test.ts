@@ -16,7 +16,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import { __resetContractCache } from "./credentials";
-import { NB_POLICY_NAMES, deletionRetryDelayMs, returnStateFor } from "./ebayConnect";
+import { NB_POLICY_NAMES, deletionRetryDelayMs, fulfillmentBody, returnStateFor } from "./ebayConnect";
 import { ebayReturnTarget } from "../lib/marketplace/ebay-oauth-return";
 import { drainScheduled } from "../lib/testing/drain-scheduled";
 
@@ -74,9 +74,11 @@ class World {
     internationalService?: boolean;
     validForSellingFlow?: boolean;
     shippingCostTypes?: string[];
+    shippingCarrier?: string;
   }> = [
-    { shippingService: "USPSGroundAdvantage", validForSellingFlow: true },
-    { shippingService: "USPSPriorityMail", validForSellingFlow: true },
+    { shippingService: "USPSGroundAdvantage", validForSellingFlow: true, shippingCarrier: "USPS" },
+    { shippingService: "USPSPriorityMail", validForSellingFlow: true, shippingCarrier: "USPS" },
+    { shippingService: ESE, validForSellingFlow: true, shippingCarrier: "eBay Send" },
   ];
   /** What eBay answers a create of a location that is not there yet. */
   locationStatus = 204;
@@ -739,6 +741,7 @@ describe("createStandardPolicies (Set me up)", () => {
       expect(body.shippingOptions[0]).toMatchObject({ optionType: "DOMESTIC", costType: "CALCULATED" });
       expect(body.shippingOptions[0].shippingServices).toHaveLength(1);
       expect(body.shippingOptions[0].shippingServices[0]).toEqual({
+        shippingCarrierCode: name === NB_POLICY_NAMES.ese ? "eBay Send" : "USPS",
         shippingServiceCode: name === NB_POLICY_NAMES.ese ? ESE : "USPSGroundAdvantage",
         freeShipping: false,
         sortOrder: 1,
@@ -749,6 +752,7 @@ describe("createStandardPolicies (Set me up)", () => {
     const free = sent(NB_POLICY_NAMES.free);
     expect(free.shippingOptions[0]).toMatchObject({ optionType: "DOMESTIC", costType: "FLAT_RATE" });
     expect(free.shippingOptions[0].shippingServices[0]).toEqual({
+      shippingCarrierCode: "USPS",
       shippingServiceCode: "USPSGroundAdvantage",
       shippingCost: { value: "0.00", currency: "USD" },
       freeShipping: true,
@@ -797,6 +801,48 @@ describe("createStandardPolicies (Set me up)", () => {
     expect(world.fulfillment.find((f) => f.name === NB_POLICY_NAMES.ese)?.costType).toBe("CALCULATED");
   });
 
+  test("a Standard Envelope eBay's metadata does not list is never asked for: it makes nothing and says so", async () => {
+    world.shippingServices = [{ shippingService: "USPSGroundAdvantage", validForSellingFlow: true, shippingCostTypes: ["CALCULATED"] }];
+    const s = await setup({ settings: SHIPS_FROM });
+    const r = await s.me.action(api.ebayConnect.createStandardPolicies, {});
+    expect(r).toEqual({ ok: false, error: expect.stringContaining("Standard Envelope") });
+    expect(world.ebayWrites()).toEqual([]);
+  });
+
+  test("each service's carrier code is the one eBay's metadata lists for that exact code", async () => {
+    world.shippingServices = [
+      { shippingService: "USPSParcel", description: "USPS Ground Advantage", validForSellingFlow: true, shippingCarrier: "USPS-FROM-METADATA" },
+      { shippingService: ESE, description: "eBay Standard Envelope", validForSellingFlow: true, shippingCarrier: "ESE-CARRIER-FROM-METADATA" },
+      // A service sharing a name with nothing NB sends: its carrier is never borrowed.
+      { shippingService: "USPSPriority", description: "USPS Ground Advantage Priority", validForSellingFlow: true, shippingCarrier: "WRONG" },
+    ];
+    const s = await setup({ settings: SHIPS_FROM });
+    expect((await s.me.action(api.ebayConnect.createStandardPolicies, {})).ok).toBe(true);
+    const carrierOf = (name: string) =>
+      world.ebayPosts("/sell/account/v1/fulfillment_policy/").find((c) => c.json.name === name)?.json.shippingOptions[0].shippingServices[0]
+        .shippingCarrierCode;
+    expect(carrierOf(NB_POLICY_NAMES.ese)).toBe("ESE-CARRIER-FROM-METADATA");
+    expect(carrierOf(NB_POLICY_NAMES.tracked)).toBe("USPS-FROM-METADATA");
+    expect(carrierOf(NB_POLICY_NAMES.free)).toBe("USPS-FROM-METADATA");
+    await drainScheduled(s.t);
+  });
+
+  test("a service eBay lists without a carrier gets eBay's usual one: eBay Send for the envelope, USPS for Ground Advantage", async () => {
+    world.shippingServices = [
+      { shippingService: "USPSGroundAdvantage", validForSellingFlow: true },
+      { shippingService: ESE, validForSellingFlow: true, shippingCarrier: "  " },
+    ];
+    const s = await setup({ settings: SHIPS_FROM });
+    expect((await s.me.action(api.ebayConnect.createStandardPolicies, {})).ok).toBe(true);
+    const carrierOf = (name: string) =>
+      world.ebayPosts("/sell/account/v1/fulfillment_policy/").find((c) => c.json.name === name)?.json.shippingOptions[0].shippingServices[0]
+        .shippingCarrierCode;
+    expect(carrierOf(NB_POLICY_NAMES.ese)).toBe("eBay Send");
+    expect(carrierOf(NB_POLICY_NAMES.tracked)).toBe("USPS");
+    expect(carrierOf(NB_POLICY_NAMES.free)).toBe("USPS");
+    await drainScheduled(s.t);
+  });
+
   test("a policy NB already made is reused by name, so a missing calculated rate does not block a second press", async () => {
     const s = await setup({ settings: SHIPS_FROM });
     await s.me.action(api.ebayConnect.createStandardPolicies, {});
@@ -809,7 +855,10 @@ describe("createStandardPolicies (Set me up)", () => {
   });
 
   test("the Ground Advantage code comes from eBay's metadata, not from NB", async () => {
-    world.shippingServices = [{ shippingService: "USPSGroundAdvantage2", validForSellingFlow: true }];
+    world.shippingServices = [
+      { shippingService: "USPSGroundAdvantage2", validForSellingFlow: true },
+      { shippingService: ESE, validForSellingFlow: true },
+    ];
     const s = await setup({ settings: SHIPS_FROM });
     await s.me.action(api.ebayConnect.createStandardPolicies, {});
     expect(world.fulfillment.find((f) => f.name === NB_POLICY_NAMES.tracked)?.services[0].code).toBe("USPSGroundAdvantage2");
@@ -1450,6 +1499,66 @@ describe("eBay Marketplace Account Deletion endpoint", () => {
       expect(deletionRetryDelayMs(8)).toBe(3_600_000);
       expect(deletionRetryDelayMs(50)).toBe(3_600_000);
       expect(deletionRetryDelayMs(0)).toBe(60_000);
+    });
+  });
+});
+
+describe("fulfillmentBody (Set me up's shipping policies)", () => {
+  const envelope = { code: ESE, carrier: "eBay Send" };
+  const ground = { code: "USPSParcel", carrier: "USPS" };
+  const common = {
+    marketplaceId: "EBAY_US",
+    categoryTypes: [{ name: "ALL_EXCLUDING_MOTORS_VEHICLES" }],
+    handlingTime: { value: 1, unit: "DAY" },
+  };
+
+  test("the Standard Envelope policy is calculated by weight and names its carrier", () => {
+    expect(fulfillmentBody(NB_POLICY_NAMES.ese, envelope, "calculated")).toEqual({
+      name: NB_POLICY_NAMES.ese,
+      ...common,
+      shippingOptions: [
+        {
+          optionType: "DOMESTIC",
+          costType: "CALCULATED",
+          shippingServices: [{ shippingCarrierCode: "eBay Send", shippingServiceCode: ESE, freeShipping: false, sortOrder: 1 }],
+        },
+      ],
+    });
+  });
+
+  test("the tracked policy is calculated by weight on Ground Advantage with its carrier", () => {
+    expect(fulfillmentBody(NB_POLICY_NAMES.tracked, ground, "calculated")).toEqual({
+      name: NB_POLICY_NAMES.tracked,
+      ...common,
+      shippingOptions: [
+        {
+          optionType: "DOMESTIC",
+          costType: "CALCULATED",
+          shippingServices: [{ shippingCarrierCode: "USPS", shippingServiceCode: "USPSParcel", freeShipping: false, sortOrder: 1 }],
+        },
+      ],
+    });
+  });
+
+  test("the free policy is a $0.00 flat rate with free shipping and its carrier", () => {
+    expect(fulfillmentBody(NB_POLICY_NAMES.free, ground, "free")).toEqual({
+      name: NB_POLICY_NAMES.free,
+      ...common,
+      shippingOptions: [
+        {
+          optionType: "DOMESTIC",
+          costType: "FLAT_RATE",
+          shippingServices: [
+            {
+              shippingCarrierCode: "USPS",
+              shippingServiceCode: "USPSParcel",
+              shippingCost: { value: "0.00", currency: "USD" },
+              freeShipping: true,
+              sortOrder: 1,
+            },
+          ],
+        },
+      ],
     });
   });
 });

@@ -21,6 +21,9 @@ import {
   ebayPackageFor,
   ebayServiceNames,
   ebayServiceTakesCalculated,
+  ebayServiceCarrier,
+  EBAY_ESE_CARRIER_FALLBACK,
+  EBAY_USPS_CARRIER_FALLBACK,
   ebaySetupMissing,
   ebayStatusDisposition,
   ebayValueToCents,
@@ -338,16 +341,34 @@ describe("price to shipping slot and floor (NEO-415)", () => {
     expect(ebayPackageFor(cents) === EBAY_MAILER_PACKAGE).toBe(fulfillmentSlotFor(cents) === "twentyPlus");
   });
 
-  test("a calculated rate is refused only when eBay lists the service's cost types without CALCULATED", () => {
+  test("a calculated rate is refused when eBay does not list the service, or lists its cost types without CALCULATED", () => {
     const svc = (costTypes: string[]) => [{ code: EBAY_ESE_SERVICE_CODE, costTypes }];
     expect(ebayServiceTakesCalculated(svc(["CALCULATED", "FLAT"]), EBAY_ESE_SERVICE_CODE)).toBe(true);
     expect(ebayServiceTakesCalculated(svc(["flat_rate", "calculated"]), EBAY_ESE_SERVICE_CODE)).toBe(true);
     expect(ebayServiceTakesCalculated(svc(["FLAT_RATE"]), EBAY_ESE_SERVICE_CODE)).toBe(false);
     expect(ebayServiceTakesCalculated(svc(["FLAT_RATE", "FREIGHT"]), EBAY_ESE_SERVICE_CODE)).toBe(false);
-    // Not listed, or listed without cost types: eBay decides when the policy is made.
+    // Listed without cost types: eBay decides when the policy is made.
     expect(ebayServiceTakesCalculated(svc([]), EBAY_ESE_SERVICE_CODE)).toBe(true);
-    expect(ebayServiceTakesCalculated([], EBAY_ESE_SERVICE_CODE)).toBe(true);
-    expect(ebayServiceTakesCalculated(svc(["FLAT_RATE"]), "USPSGroundAdvantage")).toBe(true);
+    // Not listed: NB cannot verify the service exists, so it is never asked for.
+    expect(ebayServiceTakesCalculated([], EBAY_ESE_SERVICE_CODE)).toBe(false);
+    expect(ebayServiceTakesCalculated(svc(["CALCULATED"]), "USPSGroundAdvantage")).toBe(false);
+  });
+
+  test("a service's carrier code is eBay's metadata value for that exact code, else the fallback", () => {
+    const services = [
+      { code: EBAY_ESE_SERVICE_CODE, carrier: "eBay Send" },
+      { code: "USPSParcel", carrier: " USPS " },
+      { code: "NoCarrier", carrier: null },
+      { code: "Blank", carrier: "  " },
+    ];
+    expect(ebayServiceCarrier(services, EBAY_ESE_SERVICE_CODE, "FALLBACK")).toBe("eBay Send");
+    expect(ebayServiceCarrier(services, "USPSParcel", "FALLBACK")).toBe("USPS");
+    expect(ebayServiceCarrier(services, "NoCarrier", "FALLBACK")).toBe("FALLBACK");
+    expect(ebayServiceCarrier(services, "Blank", "FALLBACK")).toBe("FALLBACK");
+    expect(ebayServiceCarrier(services, "Missing", "FALLBACK")).toBe("FALLBACK");
+    expect(ebayServiceCarrier(services, "usps_parcel", "FALLBACK")).toBe("FALLBACK");
+    expect(EBAY_ESE_CARRIER_FALLBACK).toBe("eBay Send");
+    expect(EBAY_USPS_CARRIER_FALLBACK).toBe("USPS");
   });
 
   const copy = (over: Partial<EbayListingCopy> = {}): EbayListingCopy => ({

@@ -23,16 +23,23 @@ First live eBay sandbox run of NEO-415 (2026-11-02) showed the contract
   `getImage`. Handle both; call the configured media host, never the
   header's host.
 - **ESE fulfillment policy in the sandbox** is refused with errorId 20403,
-  CALCULATED (NB's run) and FLAT_RATE + freeShipping (a community poster,
-  whose longMessage was "Please select a valid shipping service", parameter
+  CALCULATED with no carrier (NB's run) and FLAT_RATE + freeShipping with
+  carrier USPS (a community poster, whose longMessage was "Please select a valid shipping service", parameter
   XPATH `DomesticItemShippingService[0].shippingService`). eBay's only
-  published eSE example is FLAT_RATE; nothing documents CALCULATED either way.
+  published eSE example is FLAT_RATE; live policies show CALCULATED works.
+  Common factor of both refusals: the carrier was missing or wrong (fix
+  unconfirmed until a sandbox run).
 - **20403 is a template**, "Invalid {fieldName}. {additionalInfo}" in the
   Account contract; it is also returned for a bad policy id and for a seller
   not opted in. The id alone never names the field.
-- `ebayServiceTakesCalculated` answers true when the code is ABSENT from the
-  metadata (unknown is not no), so it passing proves nothing about whether
-  eBay lists the service at all.
+- **Carrier code is "optional" in the contract, carried in practice.** NB's
+  first eSE create sent no `shippingCarrierCode` and was refused. Live
+  production eSE policies (CALCULATED, as `getFulfillmentPolicies` returns
+  them) carry `"eBay Send"` beside `US_eBayStandardEnvelope` and `"USPS"`
+  beside USPS services. Policies now send the carrier the Metadata
+  `shippingCarrier` lists for the exact code, those two as fallbacks.
+- A pre-check that answers true for a service ABSENT from the metadata
+  proves nothing; absent now refuses (`ebayServiceTakesCalculated`).
 
 **How to apply:** the `ebay_seller_error` line in `adapters/ebaySeller.ts`
 logs `errorIds` plus `errors[]` (message, longMessage, parameters,

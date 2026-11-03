@@ -50,10 +50,13 @@ import { ebayAuthorizeUrl, ebayConfig, ebayConfigured, type EbayEnvironment } fr
 import {
   EBAY_COST_TYPE_CALCULATED,
   EBAY_COST_TYPE_FLAT_RATE,
+  EBAY_ESE_CARRIER_FALLBACK,
   EBAY_ESE_SERVICE_CODE,
   EBAY_MARKETPLACE_ID,
   EBAY_MERCHANT_LOCATION_KEY,
+  EBAY_USPS_CARRIER_FALLBACK,
   ebayGroundAdvantageService,
+  ebayServiceCarrier,
   ebayServiceNames,
   ebaySetupMissing,
   ebayServiceTakesCalculated,
@@ -762,6 +765,12 @@ export const readPolicies = action({
 
 const CATEGORY_TYPES = [{ name: "ALL_EXCLUDING_MOTORS_VEHICLES" }];
 
+/** A shipping service as a policy names it: eBay's service code and the carrier code beside it. */
+interface PolicyService {
+  code: string;
+  carrier: string;
+}
+
 /**
  * A one-service domestic fulfillment policy (Sell Account
  * FulfillmentPolicyRequest).
@@ -769,8 +778,15 @@ const CATEGORY_TYPES = [{ name: "ALL_EXCLUDING_MOTORS_VEHICLES" }];
  *               order from the item's package weight and size and the
  *               ship-from postal code (the offer's inventory location)
  *   free        costType FLAT_RATE at $0.00 with freeShipping
+ * Every service names its carrier (`shippingCarrierCode`, from eBay's
+ * metadata; `policyService`). The contract calls the field optional, but
+ * eBay's own live eSE policies all carry it, and NB's first create without
+ * it was refused (20403). Fields eBay echoes back on a read
+ * (`packageHandlingCost` 0.0, `shipToLocations` {}, `globalShipping` false,
+ * `buyerResponsibleFor*` false) are not sent: the contract requires none of
+ * them and each is eBay's default.
  */
-function fulfillmentBody(name: string, serviceCode: string, pricing: "calculated" | "free"): Record<string, unknown> {
+export function fulfillmentBody(name: string, service: PolicyService, pricing: "calculated" | "free"): Record<string, unknown> {
   const free = pricing === "free";
   return {
     name,
@@ -783,7 +799,8 @@ function fulfillmentBody(name: string, serviceCode: string, pricing: "calculated
         costType: free ? EBAY_COST_TYPE_FLAT_RATE : EBAY_COST_TYPE_CALCULATED,
         shippingServices: [
           {
-            shippingServiceCode: serviceCode,
+            shippingCarrierCode: service.carrier,
+            shippingServiceCode: service.code,
             ...(free ? { shippingCost: { value: "0.00", currency: "USD" } } : {}),
             freeShipping: free,
             sortOrder: 1,
@@ -792,6 +809,11 @@ function fulfillmentBody(name: string, serviceCode: string, pricing: "calculated
       },
     ],
   };
+}
+
+/** `code` with the carrier eBay's metadata lists for it (`fallback` when it lists none). */
+function policyService(services: EbayShippingServiceInfo[], code: string, fallback: string): PolicyService {
+  return { code, carrier: ebayServiceCarrier(services, code, fallback) };
 }
 
 /** Whether the owner has saved where they ship from (calculated shipping prices from it). */
@@ -877,6 +899,9 @@ export const createStandardPolicies = action({
     if (!ids.tracked && !ebayServiceTakesCalculated(services.value, ground)) {
       return { ok: false, error: NO_CALCULATED("USPS Ground Advantage") };
     }
+    const envelope = policyService(services.value, EBAY_ESE_SERVICE_CODE, EBAY_ESE_CARRIER_FALLBACK);
+    // Ground Advantage is a USPS service by construction (`ebayGroundAdvantageService`).
+    const tracked = policyService(services.value, ground, EBAY_USPS_CARRIER_FALLBACK);
     const make = async (
       slot: keyof typeof ids,
       kind: "fulfillment_policy" | "payment_policy" | "return_policy",
@@ -895,16 +920,16 @@ export const createStandardPolicies = action({
     const steps: Array<() => Promise<Fail | null>> = [];
     if (!ids.ese) {
       steps.push(() =>
-        make("ese", "fulfillment_policy", NB_POLICY_NAMES.ese, fulfillmentBody(NB_POLICY_NAMES.ese, EBAY_ESE_SERVICE_CODE, "calculated")),
+        make("ese", "fulfillment_policy", NB_POLICY_NAMES.ese, fulfillmentBody(NB_POLICY_NAMES.ese, envelope, "calculated")),
       );
     }
     if (!ids.tracked) {
       steps.push(() =>
-        make("tracked", "fulfillment_policy", NB_POLICY_NAMES.tracked, fulfillmentBody(NB_POLICY_NAMES.tracked, ground, "calculated")),
+        make("tracked", "fulfillment_policy", NB_POLICY_NAMES.tracked, fulfillmentBody(NB_POLICY_NAMES.tracked, tracked, "calculated")),
       );
     }
     if (!ids.free) {
-      steps.push(() => make("free", "fulfillment_policy", NB_POLICY_NAMES.free, fulfillmentBody(NB_POLICY_NAMES.free, ground, "free")));
+      steps.push(() => make("free", "fulfillment_policy", NB_POLICY_NAMES.free, fulfillmentBody(NB_POLICY_NAMES.free, tracked, "free")));
     }
     if (read.lists.payment.length === 0) {
       steps.push(() =>

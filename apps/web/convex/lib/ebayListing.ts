@@ -503,19 +503,50 @@ export const EBAY_COST_TYPE_CALCULATED = "CALCULATED";
 export const EBAY_COST_TYPE_FLAT_RATE = "FLAT_RATE";
 
 /**
- * False only when eBay's own shipping metadata lists `code` with its cost
- * types and CALCULATED is not among them (Sell Metadata
- * `getShippingServices` → `shippingCostTypes`). A service the metadata does
- * not mention, or lists without cost types, is left to eBay to accept or
- * refuse when the policy is made.
+ * Whether NB may make a calculated policy on `code`, by eBay's own shipping
+ * metadata (Sell Metadata `getShippingServices`):
+ *   not listed           false: NB cannot verify the service exists on this
+ *                        account, so it makes nothing rather than ask eBay
+ *                        for a service its metadata never offered
+ *   listed, cost types   true only when CALCULATED is among them (case
+ *                        ignored; eBay writes them loosely, e.g. "FLAT")
+ *   listed, none given   true: the metadata says nothing about cost types,
+ *                        so eBay decides when the policy is made
  */
 export function ebayServiceTakesCalculated(
   services: ReadonlyArray<{ code: string; costTypes: readonly string[] }>,
   code: string,
 ): boolean {
   const service = services.find((s) => s.code === code);
-  if (!service || service.costTypes.length === 0) return true;
+  if (!service) return false;
+  if (service.costTypes.length === 0) return true;
   return service.costTypes.some((t) => t.toUpperCase() === EBAY_COST_TYPE_CALCULATED);
+}
+
+/**
+ * The carrier code a policy names beside a service when eBay's metadata gives
+ * none. Sell Account `ShippingService.shippingCarrierCode` takes an eBay enum
+ * value; the contract calls it optional, but eBay's own live eSE policies
+ * (as `getFulfillmentPolicies` returns them) all carry it: "eBay Send" beside
+ * `US_eBayStandardEnvelope`, "USPS" beside every USPS service. UNVERIFIED
+ * against the contract (it links the enum out to Trading `GeteBayDetails`).
+ */
+export const EBAY_ESE_CARRIER_FALLBACK = "eBay Send";
+export const EBAY_USPS_CARRIER_FALLBACK = "USPS";
+
+/**
+ * The carrier code for `code` as eBay's own shipping metadata lists it
+ * (Metadata `ShippingService.shippingCarrier`, "the code for the shipping
+ * carrier"), else `fallback`. Read by the exact service code, never by a
+ * display name.
+ */
+export function ebayServiceCarrier(
+  services: ReadonlyArray<{ code: string; carrier: string | null }>,
+  code: string,
+  fallback: string,
+): string {
+  const carrier = services.find((s) => s.code === code)?.carrier?.trim();
+  return carrier ? carrier : fallback;
 }
 
 /** A shipping service as eBay's metadata lists it (`adapters/ebaySeller.getShippingServices`). */
