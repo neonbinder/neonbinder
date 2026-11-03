@@ -218,7 +218,9 @@ test(
     await expect(stepCounter(page)).toHaveText(/^Step 1 of [0-9]+$/);
     await walkToPlayerRow(page);
     await skipUntilPlayerRow(page, STAR);
-    await expect(wizard.getByRole("heading", { level: 3, name: `New Player: ${STAR}` })).toBeVisible();
+    // The step is a New player step (the subtitle) headed by the name alone.
+    await expect(wizard.getByRole("heading", { level: 3, name: STAR, exact: true })).toBeVisible();
+    await expect(wizard.getByText("New player", { exact: true })).toBeVisible();
     await wizard.getByRole("button", { name: `Sport for this name: ${TARGET.sport}` }).click();
     const chooser = wizard.getByRole("listbox", { name: "Choose a sport" });
     await expect(chooser).toBeVisible();
