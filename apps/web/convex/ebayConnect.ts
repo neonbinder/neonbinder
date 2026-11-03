@@ -77,6 +77,7 @@ import {
   getShippingServices,
   openEbaySellerSession,
   optInToProgram,
+  redactEbayText,
   sayEbayFailure as sayEbayStepFailure,
   upsertInventoryLocation,
   type EbayFailure,
@@ -708,7 +709,9 @@ interface PolicyLists {
 async function readPolicyLists(
   ctx: ActionCtx,
   session: EbaySellerSession,
+  operation: PolicyReadOperation,
 ): Promise<{ ok: true; lists: PolicyLists; optedIn: boolean; services: EbayShippingServiceInfo[] | null } | Fail> {
+  const startedAt = Date.now();
   const programs = await getOptedInPrograms(ctx, session);
   if (!programs.ok) return { ok: false, error: sayEbayFailure(programs.failure, POLICIES_REFUSED) };
   if (!programs.value.includes(SELLING_POLICY_MANAGEMENT)) {
@@ -722,6 +725,7 @@ async function readPolicyLists(
   ]);
   for (const r of [fulfillment, payment, returns]) if (!r.ok) return { ok: false, error: sayEbayFailure(r.failure, POLICIES_REFUSED) };
   if (!fulfillment.ok || !payment.ok || !returns.ok) return { ok: false, error: CONNECT_ERRORS.unavailable };
+  logFulfillmentPoliciesRead(operation, fulfillment.value, Date.now() - startedAt);
   const services = metadata.ok ? metadata.value : null;
   const names = ebayServiceNames(services ?? []);
   return {
@@ -734,6 +738,71 @@ async function readPolicyLists(
       returns: readReturnPolicies(returns.value),
     },
   };
+}
+
+type PolicyReadOperation = "readPolicies" | "createStandardPolicies" | "savePolicies";
+
+const POLICY_LOG_MAX = 10;
+const POLICY_LOG_SERVICES_MAX = 6;
+
+/**
+ * One structured line per policy read: the seller's fulfillment policies as
+ * eBay holds them (at most 10), so a publish eBay refuses for its
+ * fulfillment policy (25007, "add at least one valid shipping service
+ * option") can be read against what the policy carries. Fields from the
+ * policy body only, each string redacted and capped (`redactEbayText`);
+ * policy ids are the seller's own policies, never an account id.
+ */
+export function logFulfillmentPoliciesRead(operation: PolicyReadOperation, body: unknown, ms: number): void {
+  const list = isRecord(body) && Array.isArray(body.fulfillmentPolicies) ? body.fulfillmentPolicies : [];
+  const text = (raw: unknown, max = 64): string | null => redactEbayText(raw, max);
+  const policies = list.slice(0, POLICY_LOG_MAX).map((p) => {
+    if (!isRecord(p)) return { unreadable: true };
+    const options = Array.isArray(p.shippingOptions) ? p.shippingOptions.filter(isRecord) : [];
+    const domestic: Array<Record<string, unknown>> = [];
+    let international = 0;
+    for (const o of options) {
+      const services = Array.isArray(o.shippingServices) ? o.shippingServices.filter(isRecord) : [];
+      if (o.optionType !== "DOMESTIC") {
+        international += services.length;
+        continue;
+      }
+      for (const svc of services.slice(0, POLICY_LOG_SERVICES_MAX)) {
+        domestic.push({
+          code: text(svc.shippingServiceCode),
+          carrier: text(svc.shippingCarrierCode),
+          costType: text(o.costType, 24),
+          free: svc.freeShipping === true,
+          cost: isRecord(svc.shippingCost) ? text(svc.shippingCost.value, 16) : null,
+        });
+      }
+    }
+    const handling = isRecord(p.handlingTime)
+      ? { value: typeof p.handlingTime.value === "number" ? p.handlingTime.value : null, unit: text(p.handlingTime.unit, 16) }
+      : null;
+    return {
+      // eBay's policy ids are long digit runs, which `redactEbayText` would mask: capped only.
+      id: typeof p.fulfillmentPolicyId === "string" ? p.fulfillmentPolicyId.slice(0, 64) : null,
+      name: text(p.name),
+      marketplaceId: text(p.marketplaceId, 24),
+      categoryTypes: (Array.isArray(p.categoryTypes) ? p.categoryTypes : [])
+        .slice(0, 4)
+        .map((c) => (isRecord(c) ? text(c.name, 40) : null)),
+      handlingTime: handling,
+      domestic,
+      international,
+    };
+  });
+  console.log(
+    JSON.stringify({
+      msg: "ebay_fulfillment_policies_read",
+      platform: "ebay",
+      operation,
+      ms,
+      count: list.length,
+      policies,
+    }),
+  );
 }
 
 /** The three policy lists as the pickers read them (`PolicyLists`): `readPolicies`, and Set me up's answer. */
@@ -762,7 +831,7 @@ export const readPolicies = action({
     const ownerId = await requireSignedIn(ctx);
     const opened = await sessionFor(ctx, ownerId);
     if (!opened.ok) return opened;
-    const read = await readPolicyLists(ctx, opened.session);
+    const read = await readPolicyLists(ctx, opened.session, "readPolicies");
     if (!read.ok) return read;
     return { ok: true, ...read.lists };
   },
@@ -1107,14 +1176,14 @@ export const writeSetupProgress = internalMutation({
 
 /** Set me up's work once the ledger has begun: the account check, then each policy NB makes, in order. */
 async function setMeUp(ctx: ActionCtx, ownerId: string, session: EbaySellerSession, ledger: SetupLedger): Promise<SetMeUpAnswer> {
-  let read = await readPolicyLists(ctx, session);
+  let read = await readPolicyLists(ctx, session, "createStandardPolicies");
   if (!read.ok) return read;
   let justOptedIn = false;
   if (!read.optedIn) {
     const optIn = await optInToProgram(ctx, session, SELLING_POLICY_MANAGEMENT);
     if (!optIn.ok) return { ok: false, error: sayEbayFailure(optIn.failure, OPT_IN_REFUSED, SET_ME_UP_BUSY) };
     justOptedIn = true;
-    read = await readPolicyLists(ctx, session);
+    read = await readPolicyLists(ctx, session, "createStandardPolicies");
     if (!read.ok) return { ok: false, error: OPT_IN_PENDING };
   }
   const services = read.services ? { ok: true as const, value: read.services } : await getShippingServices(ctx, session);
@@ -1369,7 +1438,7 @@ export const savePolicies = action({
     }
     const opened = await sessionFor(ctx, ownerId);
     if (!opened.ok) return opened;
-    const read = await readPolicyLists(ctx, opened.session);
+    const read = await readPolicyLists(ctx, opened.session, "savePolicies");
     if (!read.ok) return read;
     const fulfillment = new Map(read.lists.fulfillment.map((p) => [p.id, p]));
     if (args.fulfillmentPolicyUnder20Id !== undefined && !fulfillment.has(args.fulfillmentPolicyUnder20Id)) {

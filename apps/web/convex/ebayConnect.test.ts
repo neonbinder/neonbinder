@@ -16,7 +16,14 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import { __resetContractCache } from "./credentials";
-import { NB_POLICY_NAMES, SETUP_CHECK_LABEL, deletionRetryDelayMs, fulfillmentBody, returnStateFor } from "./ebayConnect";
+import {
+  NB_POLICY_NAMES,
+  SETUP_CHECK_LABEL,
+  deletionRetryDelayMs,
+  fulfillmentBody,
+  logFulfillmentPoliciesRead,
+  returnStateFor,
+} from "./ebayConnect";
 import { ebayReturnTarget } from "../lib/marketplace/ebay-oauth-return";
 import { drainScheduled } from "../lib/testing/drain-scheduled";
 
@@ -696,6 +703,53 @@ describe("savePolicies", () => {
     });
     status = 503;
     expect(await s.me.action(api.ebayConnect.readPolicies, {})).toEqual({ ok: false, error: "eBay's not answering right now. Try again in a bit." });
+  });
+
+  test("a policy read logs one ebay_fulfillment_policies_read line with what each fulfillment policy carries", async () => {
+    const s = await accountWithPolicies();
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    await s.me.action(api.ebayConnect.readPolicies, {});
+    const lines = log.mock.calls
+      .map((c) => JSON.parse(String(c[0])) as Record<string, unknown>)
+      .filter((l) => l.msg === "ebay_fulfillment_policies_read");
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatchObject({ platform: "ebay", operation: "readPolicies", count: 3, ms: expect.any(Number) });
+    expect((lines[0].policies as Array<{ id: string }>).map((p) => p.id)).toEqual(["F-ESE", "F-MIX", "F-GA"]);
+  });
+
+  test("the policy-read line: body fields only, ids kept, strings redacted and capped, at most 10 policies", () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const policy = (i: number) => ({
+      fulfillmentPolicyId: `6219${i}000000`,
+      name: i === 0 ? "NB Tracked seller@example.com" : `Policy ${i}`,
+      marketplaceId: "EBAY_US",
+      categoryTypes: [{ name: "ALL_EXCLUDING_MOTORS_VEHICLES", default: true }],
+      handlingTime: { value: 1, unit: "DAY" },
+      shippingOptions: [
+        {
+          optionType: "DOMESTIC",
+          costType: "CALCULATED",
+          shippingServices: [{ shippingServiceCode: "USPSGroundAdvantage", shippingCarrierCode: "USPS", freeShipping: false }],
+        },
+        { optionType: "INTERNATIONAL", costType: "FLAT_RATE", shippingServices: [{ shippingServiceCode: "X" }, { shippingServiceCode: "Y" }] },
+      ],
+      shipToLocations: { regionIncluded: [{ regionName: "US" }] },
+    });
+    logFulfillmentPoliciesRead("createStandardPolicies", { fulfillmentPolicies: Array.from({ length: 12 }, (_, i) => policy(i)) }, 42);
+    expect(log).toHaveBeenCalledTimes(1);
+    const line = JSON.parse(String(log.mock.calls[0][0])) as { policies: unknown[] } & Record<string, unknown>;
+    expect(line).toMatchObject({ msg: "ebay_fulfillment_policies_read", platform: "ebay", operation: "createStandardPolicies", ms: 42, count: 12 });
+    expect(line.policies).toHaveLength(10);
+    expect(line.policies[0]).toEqual({
+      id: "62190000000",
+      name: "NB Tracked [redacted]",
+      marketplaceId: "EBAY_US",
+      categoryTypes: ["ALL_EXCLUDING_MOTORS_VEHICLES"],
+      handlingTime: { value: 1, unit: "DAY" },
+      domestic: [{ code: "USPSGroundAdvantage", carrier: "USPS", costType: "CALCULATED", free: false, cost: null }],
+      international: 2,
+    });
+    expect(String(log.mock.calls[0][0])).not.toContain("example.com");
   });
 
   test("readPolicies tells the picker which fulfillment policies fit", async () => {

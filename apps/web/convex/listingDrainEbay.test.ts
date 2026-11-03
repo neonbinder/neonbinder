@@ -1118,8 +1118,15 @@ describe("eBay drain: eBay's answers", () => {
       return real(url, init);
     }) as typeof fetch);
 
+    const logs = vi.spyOn(console, "log");
     await drain(s);
 
+    // The log line names the offer's fulfillment policy (a 25007 is about that policy).
+    const rejected = logs.mock.calls.map((c) => String(c[0])).filter((l) => l.includes("ebay_listing_rejected"));
+    logs.mockRestore();
+    expect(rejected.map((l) => JSON.parse(l))).toEqual([
+      { msg: "ebay_listing_rejected", platform: "ebay", operation: "publish", errorIds: [25007], fulfillmentPolicyId: "FP-ESE" },
+    ]);
     expect(await linkOf(s, card, "NM")).toMatchObject({ status: "draft" });
     expect((await linkOf(s, card, "NM"))?.listingId).toBeUndefined();
     expect((await record(s, v.variantId))?.problems[0]).toMatchObject({ reason: "rejected", detail: EBAY_CARD_REJECTED.publish });

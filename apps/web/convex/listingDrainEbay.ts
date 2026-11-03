@@ -589,7 +589,13 @@ export function photoRefused(failure: EbayFailure): boolean {
   return failure.kind === "http" && failure.httpStatus === 400;
 }
 
-function rejectedDetail(step: EbayStep, errorIds: readonly number[], errors: readonly EbayErrorDetail[] = []): string {
+function rejectedDetail(
+  step: EbayStep,
+  errorIds: readonly number[],
+  errors: readonly EbayErrorDetail[] = [],
+  /** The offer's fulfillment policy, when the step was its publish (a 25007 names that policy). */
+  fulfillmentPolicyId?: string,
+): string {
   // eBay's numeric ids and, from a bulk entry, its redacted text and
   // parameters (`ebayErrorDetailsOf`) go to the log, never the sync record.
   // A single call's text is already on its own `ebay_seller_error` line.
@@ -600,6 +606,7 @@ function rejectedDetail(step: EbayStep, errorIds: readonly number[], errors: rea
       operation: step,
       errorIds: errorIds.slice(0, 5),
       ...(errors.length > 0 ? { errors: errors.slice(0, 5) } : {}),
+      ...(fulfillmentPolicyId ? { fulfillmentPolicyId: fulfillmentPolicyId.slice(0, 64) } : {}),
     }),
   );
   return EBAY_CARD_REJECTED[step].slice(0, MAX_DETAIL);
@@ -1146,7 +1153,8 @@ async function syncEbayVariant(
   };
   const reject = (plan: Plan, step: EbayStep, errorIds: readonly number[], errors?: readonly EbayErrorDetail[]) => {
     plan.failed = true;
-    problems.push({ cardId: plan.target.cardId, reason: "rejected", detail: rejectedDetail(step, errorIds, errors) });
+    const policyId = step === "publish" ? plan.fulfillmentPolicyId : undefined;
+    problems.push({ cardId: plan.target.cardId, reason: "rejected", detail: rejectedDetail(step, errorIds, errors, policyId) });
   };
   const stopOn = async (r: EbayResult<unknown>): Promise<VariantResult | null> => {
     if (r.ok) return null;
