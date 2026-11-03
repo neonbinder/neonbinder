@@ -49,3 +49,4 @@
 - [Public refusals: return or ConvexError](reference_public_refusals_are_returns_or_convex_error.md) — a plain Error from a public function is "Server Error" in prod; return {ok:false,error}
 - [BSC seller sheet reads must be serial](reference_bsc_seller_sheet_reads_must_be_serial.md) — concurrent seller/bulk-upload/results reads per seller return twin (card, condition) rows; every card held back (NEO-415)
 - [eBay sandbox diverges from the contract](reference_ebay_sandbox_diverges_from_the_contract.md) — location create on existing key = 400 (read first); Ground Advantage behind an old code (match description); Media Location header
+- [BSC seller sheet has no all-conditions read](reference_bsc_seller_sheet_has_no_all_conditions_read.md) — omit/null condition = 500; ""/"all" = one blank template per card, hides listings; templates mint new productIds per read

@@ -9,6 +9,6 @@ Never read BuySportsCards' seller sheet (`POST seller/bulk-upload/results`) conc
 
 The `seenProducts` dedupe in `listingDrain.ts` cannot hide this, because the twin rows have different productIds (BSC mints a fresh productId for a blank template row).
 
-**Why:** a live listing/take-down spec failed on both CI projects right after the change. The drain logs showed the same call sequence as the serial run (4 reads, PUT, read-back), so only BSC's answers differed. It is not known whether BSC's duplicate rows are transient or persist on the account.
+**Why:** a live listing/take-down spec failed on both CI projects right after the change. The drain logs showed the same call sequence as the serial run (4 reads, PUT, read-back), so only BSC's answers differed. The duplicates appear to persist: hours later a serial read still showed two listed rows (two productIds) for one card in one condition, so the account needs cleaning by hand before a spec on that set can pass.
 
 **How to apply:** treat any proposal to parallelise BSC seller calls on one session as unsafe until shown otherwise against a real account. Speed up by reading fewer sheets, not by overlapping them. A unit test in `listingDrain.test.ts` pins `maxInFlight === 1`. Related: [[adapter-reauth-goes-through-refresh-site-token]].
