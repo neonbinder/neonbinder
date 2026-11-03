@@ -134,6 +134,33 @@ async function nextCardUntilTeamChip(page: Page, maxCards = 30): Promise<void> {
   await expect(chip.first(), "no further card carries a team chip").toBeVisible();
 }
 
+// NEO-426: the "No teams in this sport" flag is global to the deployment, so it
+// must never outlive this spec, pass or fail. The body turns it ON in STEP 0 and
+// OFF again in STEP 12; when the run dies in between, this hook does the OFF on a
+// SECOND page (the failing page stays as the screenshot saw it), the pattern
+// inventory-bsc-listing-1988-topps-base uses for its own global state. Idempotent:
+// it does only what the run got far enough to need, and reads the switch back.
+const teamlessFlag = { touched: false, cleared: false };
+
+test.afterEach(async ({ context }) => {
+  if (!teamlessFlag.touched || teamlessFlag.cleared) return;
+  const clean = await context.newPage();
+  try {
+    await clean.goto("/set-selector");
+    await expect(setBuilderReady(clean)).toBeVisible({ timeout: LAUNCH_GATE });
+    const { toggle } = await openTeamlessSwitch(clean);
+    await expect(toggle).toHaveAttribute("aria-pressed", /^(true|false)$/);
+    if ((await toggle.getAttribute("aria-pressed")) === "true") {
+      await toggle.click();
+      await expect(clean.getByText(TEAMS_BACK_TOAST)).toBeVisible();
+    }
+    await expect(toggle).toHaveAttribute("aria-pressed", "false");
+    teamlessFlag.cleared = true;
+  } finally {
+    await clean.close();
+  }
+});
+
 test(
   "Checklist — a set with exactly ONE marketplace attached skips the Match Cards dialog and keeps every fetched card",
   { tag: ["@set-selector"] },
@@ -146,6 +173,8 @@ test(
     // earlier run that died before its cleanup) is cleared first, so the press
     // below always turns it on and both directions are exercised.
     const { panel: sportPanel, toggle: noTeamsSwitch } = await openTeamlessSwitch(page);
+    // From here the flag may be changed by this run: the afterEach owns putting it back.
+    teamlessFlag.touched = true;
     await expect(noTeamsSwitch).toHaveAttribute("aria-pressed", /^(true|false)$/);
     if ((await noTeamsSwitch.getAttribute("aria-pressed")) === "true") {
       await noTeamsSwitch.click();
@@ -277,6 +306,8 @@ test(
     await wizard.getByRole("button", { name: /^Sport for this name: / }).click();
     const sportChooser = wizard.getByRole("listbox", { name: "Choose a sport" });
     await expect(sportChooser).toBeVisible();
+    await expect(sportChooser.getByRole("option", { name: TEAMLESS_SPORT, exact: true })).toBeVisible();
+    await expectAccessible(page, { within: wizard, label: "Entity review wizard, Sport for this name chooser open" });
     await sportChooser.getByRole("option", { name: TEAMLESS_SPORT, exact: true }).click();
     await expect(sportChooser).toBeHidden();
     await walkToPlayerRow(page, { readyToCreate: true });
@@ -576,5 +607,6 @@ test(
     await cleanupSwitch.click();
     await expect(page.getByText(TEAMS_BACK_TOAST)).toBeVisible();
     await expect(cleanupSwitch).toHaveAttribute("aria-pressed", "false");
+    teamlessFlag.cleared = true;
   },
 );
