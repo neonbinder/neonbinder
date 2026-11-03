@@ -168,7 +168,7 @@ test.afterEach(async ({ context }, testInfo) => {
 
 test(
   "Inventory: connecting eBay and finishing its setup lists a box's 1988 Topps Base cards on the eBay sandbox, and an in-person box takes them down",
-  { tag: ["@collection"] },
+  { tag: ["@collection", "@marketplace-seller"] },
   async ({ page, signIn, env, isMobile }) => {
     // The hook's record of how far this run got starts empty.
     written.connected = false;

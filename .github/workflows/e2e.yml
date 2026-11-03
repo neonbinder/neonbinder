@@ -84,6 +84,15 @@ permissions:
 #                  mobile timings. `bootstrap` is a dependency of e2e-mobile
 #                  too, so each mobile shard re-seeds its account after the
 #                  reset.
+#   seller-desktop / seller-mobile (NEO-415)
+#                → the two marketplace-seller listing specs (project-scope.mjs
+#                  SELLER_SPECS, tag @marketplace-seller), which no shard runs:
+#                  every PR's CI shares one BuySportsCards and one eBay sandbox
+#                  seller account, so they run one PR at a time repo-wide behind
+#                  an in-job queue (never a cancel; see the job). Worker 8.
+#                  seller-desktop starts beside the desktop shards and
+#                  seed-mobile needs it (its reset would wipe the preview it
+#                  runs on); seller-mobile starts beside the mobile shards.
 #   e2e          → the single ruleset-gated verdict (job id and name are
 #                  load-bearing: pr-pipeline.yml's `e2e` job and ci-gate read
 #                  it). Merges every pass's report and is green iff all five
@@ -115,7 +124,8 @@ permissions:
 # Accepted as the main red-run diagnostic: real marketplace passwords never
 # reach the browser. Artifact names:
 # pw-report-seed, pw-report-desktop-<i>, pw-report-seed-mobile,
-# pw-report-mobile-<i>, pw-merged (+ convex-logs-* on the first shard of each
+# pw-report-mobile-<i>, pw-report-seller-desktop, pw-report-seller-mobile,
+# pw-merged (+ convex-logs-* on the first shard of each
 # pass and each seed).
 
 jobs:
@@ -1048,13 +1058,173 @@ jobs:
           retention-days: 14
 
 
+  seller-desktop:
+    # NEO-415: the marketplace-seller specs (playwright/project-scope.mjs
+    # SELLER_SPECS: the BuySportsCards and eBay sandbox listing specs) on the
+    # desktop project. Every PR's CI shares ONE BuySportsCards test seller and
+    # ONE eBay sandbox seller, so two PRs running these at once clobber each
+    # other; sharding cannot fix that. No shard runs them (shard-plan.mjs
+    # leaves them out); this job does, and only after it has had its turn in a
+    # repo-wide queue (the seller-queue step).
+    #
+    # Ordering inside one PR: starts beside the desktop shards (right after `seed`) and seed-mobile waits for it, because seed-mobile's reset wipes the preview this job runs on. A long queue therefore delays the mobile pass; that is the price of never running during our own reset.
+    needs: [setup, seed]
+    if: ${{ !cancelled() && needs.setup.result == 'success' && needs.seed.result == 'success' }}
+    name: Marketplace seller specs (desktop)
+    runs-on: ubuntu-latest
+    # install ~3 min + queue wait (bounded below) + the specs (step-bounded) + teardown.
+    timeout-minutes: 100
+    permissions:
+      contents: read
+      actions: read   # the queue reads other runs' jobs
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: apps/web/.nvmrc
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+
+      # The queue (logic and trust rules: .github/scripts/seller-queue.sh).
+      # A GitHub `concurrency` group cannot do this: with cancel-in-progress
+      # false it still CANCELS an older *pending* job when a newer one joins, so
+      # with three PRs in flight the middle one would be dropped. The script
+      # instead polls this repo's own in-progress runs (head repo == this repo,
+      # fail closed on any API error) and goes first come, first served, never
+      # cancelling anyone. Waiting is after install so the job's place in line
+      # is its start time and the specs begin the moment the turn comes. The wait
+      # is capped at 60 min; a cancelled or dead holder stops counting at once.
+      # The literal name is defined in .github/scripts/seller-queue.sh (STEP_NAME);
+      # keep them identical (seller-queue.test.mjs checks).
+      - name: Wait for the seller queue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SELLER_QUEUE_MAX_MIN: "60"
+        run: |
+          "$GITHUB_WORKSPACE/.github/scripts/seller-queue.sh"
+
+      - name: Start Convex log capture (seller desktop)
+        env:
+          CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_PREVIEW_DEPLOY_KEY }}
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
+        run: |
+          set -uo pipefail
+          "$GITHUB_WORKSPACE/.github/scripts/convex-env-retry.sh" --version
+          if [ -z "${CONVEX_DEPLOY_KEY:-}" ]; then
+            echo "::warning::CONVEX_PREVIEW_DEPLOY_KEY not set — skipping Convex log capture for the seller desktop job."
+            exit 0
+          fi
+          RAW_LOG_FILE="${RUNNER_TEMP}/convex-logs-seller-desktop.raw.jsonl"
+          rm -f "$RAW_LOG_FILE"
+          nohup npx --yes convex@1.39.1 logs --deployment "$CONVEX_NAME" --jsonl \
+            > "$RAW_LOG_FILE" 2>"${RUNNER_TEMP}/convex-logs-seller-desktop.stderr.log" &
+          disown
+          echo "CONVEX_LOGS_SELLER_PID=$!" >> "$GITHUB_ENV"
+
+      - name: Run the marketplace seller specs (desktop)
+        # The specs take minutes; a hang must not hold every other PR's queue.
+        timeout-minutes: 25
+        env:
+          CI: "true"
+          APP_URL: http://localhost:3000
+          PREVIEW_URL: ${{ needs.setup.outputs.url }}
+          VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+          # Worker 8: no shard uses it (shards are 0-7); accounts 0-11 exist.
+          # The `bootstrap` project dependency seeds it first, as for a shard.
+          WORKER_INDEX: "8"
+          PAUSED_PLATFORMS: ${{ vars.NEONBINDER_PAUSED_PLATFORMS }}
+          PW_REPORT_DIR: playwright/report
+          PROJECT: e2e
+        run: |
+          set -euo pipefail
+          files=$(node playwright/shard-plan.mjs --seller)
+          if [ -z "$files" ]; then
+            # No file arguments would run the WHOLE suite; refuse.
+            echo "::error::The seller spec list is empty."
+            exit 1
+          fi
+          echo "Seller job runs --project=$PROJECT:"; echo "$files"
+          start=$(date +%s)
+          # shellcheck disable=SC2086 # one path per line, no spaces
+          npx playwright test "--project=$PROJECT" $files || code=$?
+          echo "Seller specs ($PROJECT): exit ${code:-0}, $(( $(date +%s) - start ))s"
+          exit "${code:-0}"
+
+      - name: Stop Convex log capture (seller desktop)
+        if: always()
+        run: |
+          set -uo pipefail
+          if [ -n "${CONVEX_LOGS_SELLER_PID:-}" ]; then
+            kill "${CONVEX_LOGS_SELLER_PID}" 2>/dev/null || true
+            wait "${CONVEX_LOGS_SELLER_PID}" 2>/dev/null || true
+          fi
+          RAW_LOG_FILE="${RUNNER_TEMP}/convex-logs-seller-desktop.raw.jsonl"
+          OUT_FILE="convex-logs-seller-desktop.jsonl"
+          if [ -s "$RAW_LOG_FILE" ]; then
+            # Same filter as the shards' capture (keep ERROR/WARN and our
+            # structured lines, every completion's timing; drop INFO chatter).
+            jq -c '
+                ((.logLines // [])
+                | map(select(
+                    .level == "ERROR" or .level == "WARN"
+                    or ((.messages // []) | join(" ") | test("\"msg\""))
+                  )))
+                as $keep
+                | if .kind == "Completion" then
+                    {identifier, udfType, timestamp, executionTimestamp,
+                     executionTime, userExecutionTime, requestId, executionId,
+                     parentExecutionId, cachedResult, willRetry, occInfo, kind, error,
+                     readDocs: .usageStats.databaseReadDocuments,
+                     readBytes: .usageStats.databaseReadBytes,
+                     writeDocs: .usageStats.databaseWriteDocuments,
+                     logLines: $keep}
+                  else
+                    select((.error != null) or ($keep | length) > 0)
+                    | {identifier, udfType, timestamp, requestId, executionId, kind, error, logLines: $keep}
+                  end
+              ' "$RAW_LOG_FILE" > "$OUT_FILE" 2>"${RUNNER_TEMP}/convex-logs-seller-desktop-jq.stderr.log" || true
+            gzip -f "$OUT_FILE" || true
+          else
+            echo "No Convex logs captured for the seller desktop job."
+          fi
+
+      - name: Upload Convex log capture (seller desktop)
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: convex-logs-seller-desktop
+          path: apps/web/convex-logs-seller-desktop.jsonl.gz
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Upload seller report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pw-report-seller-desktop
+          # Same paths and the same published-content rule as the shard reports.
+          path: |
+            apps/web/playwright/report/
+            apps/web/playwright/results/**/*.png
+          if-no-files-found: ignore
+          retention-days: 14
+
   seed-mobile:
     # The second pass's seed: the same Convex env switches, scripted reset and
     # `setup` project as `seed` (see its comments), run again so every spec
     # starts the mobile pass on a fresh baseline. Strictly after every
     # desktop shard (the reset wipes the shared preview), and independent of
     # their verdict so a red desktop pass still yields mobile results.
-    needs: [setup, seed, shard-desktop]
+    needs: [setup, seed, shard-desktop, seller-desktop]
     if: ${{ !cancelled() && needs.setup.result == 'success' && needs.seed.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -1711,6 +1881,166 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+  seller-mobile:
+    # NEO-415: the marketplace-seller specs (playwright/project-scope.mjs
+    # SELLER_SPECS: the BuySportsCards and eBay sandbox listing specs) on the
+    # mobile project. Every PR's CI shares ONE BuySportsCards test seller and
+    # ONE eBay sandbox seller, so two PRs running these at once clobber each
+    # other; sharding cannot fix that. No shard runs them (shard-plan.mjs
+    # leaves them out); this job does, and only after it has had its turn in a
+    # repo-wide queue (the seller-queue step).
+    #
+    # Ordering inside one PR: starts beside the mobile shards (right after `seed-mobile`) and nothing waits on it but the `e2e` gate, so a long queue delays only the verdict.
+    needs: [setup, seed-mobile]
+    if: ${{ !cancelled() && needs.setup.result == 'success' && needs.seed-mobile.result == 'success' }}
+    name: Marketplace seller specs (mobile)
+    runs-on: ubuntu-latest
+    # install ~3 min + queue wait (bounded below) + the specs (step-bounded) + teardown.
+    timeout-minutes: 100
+    permissions:
+      contents: read
+      actions: read   # the queue reads other runs' jobs
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: apps/web/.nvmrc
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+
+      # The queue (logic and trust rules: .github/scripts/seller-queue.sh).
+      # A GitHub `concurrency` group cannot do this: with cancel-in-progress
+      # false it still CANCELS an older *pending* job when a newer one joins, so
+      # with three PRs in flight the middle one would be dropped. The script
+      # instead polls this repo's own in-progress runs (head repo == this repo,
+      # fail closed on any API error) and goes first come, first served, never
+      # cancelling anyone. Waiting is after install so the job's place in line
+      # is its start time and the specs begin the moment the turn comes. The wait
+      # is capped at 60 min; a cancelled or dead holder stops counting at once.
+      # The literal name is defined in .github/scripts/seller-queue.sh (STEP_NAME);
+      # keep them identical (seller-queue.test.mjs checks).
+      - name: Wait for the seller queue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SELLER_QUEUE_MAX_MIN: "60"
+        run: |
+          "$GITHUB_WORKSPACE/.github/scripts/seller-queue.sh"
+
+      - name: Start Convex log capture (seller mobile)
+        env:
+          CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_PREVIEW_DEPLOY_KEY }}
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
+        run: |
+          set -uo pipefail
+          "$GITHUB_WORKSPACE/.github/scripts/convex-env-retry.sh" --version
+          if [ -z "${CONVEX_DEPLOY_KEY:-}" ]; then
+            echo "::warning::CONVEX_PREVIEW_DEPLOY_KEY not set — skipping Convex log capture for the seller mobile job."
+            exit 0
+          fi
+          RAW_LOG_FILE="${RUNNER_TEMP}/convex-logs-seller-mobile.raw.jsonl"
+          rm -f "$RAW_LOG_FILE"
+          nohup npx --yes convex@1.39.1 logs --deployment "$CONVEX_NAME" --jsonl \
+            > "$RAW_LOG_FILE" 2>"${RUNNER_TEMP}/convex-logs-seller-mobile.stderr.log" &
+          disown
+          echo "CONVEX_LOGS_SELLER_PID=$!" >> "$GITHUB_ENV"
+
+      - name: Run the marketplace seller specs (mobile)
+        # The specs take minutes; a hang must not hold every other PR's queue.
+        timeout-minutes: 25
+        env:
+          CI: "true"
+          APP_URL: http://localhost:3000
+          PREVIEW_URL: ${{ needs.setup.outputs.url }}
+          VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+          # Worker 8: no shard uses it (shards are 0-7); accounts 0-11 exist.
+          # The `bootstrap` project dependency seeds it first, as for a shard.
+          WORKER_INDEX: "8"
+          PAUSED_PLATFORMS: ${{ vars.NEONBINDER_PAUSED_PLATFORMS }}
+          PW_REPORT_DIR: playwright/report
+          PROJECT: e2e-mobile
+        run: |
+          set -euo pipefail
+          files=$(node playwright/shard-plan.mjs --seller)
+          if [ -z "$files" ]; then
+            # No file arguments would run the WHOLE suite; refuse.
+            echo "::error::The seller spec list is empty."
+            exit 1
+          fi
+          echo "Seller job runs --project=$PROJECT:"; echo "$files"
+          start=$(date +%s)
+          # shellcheck disable=SC2086 # one path per line, no spaces
+          npx playwright test "--project=$PROJECT" $files || code=$?
+          echo "Seller specs ($PROJECT): exit ${code:-0}, $(( $(date +%s) - start ))s"
+          exit "${code:-0}"
+
+      - name: Stop Convex log capture (seller mobile)
+        if: always()
+        run: |
+          set -uo pipefail
+          if [ -n "${CONVEX_LOGS_SELLER_PID:-}" ]; then
+            kill "${CONVEX_LOGS_SELLER_PID}" 2>/dev/null || true
+            wait "${CONVEX_LOGS_SELLER_PID}" 2>/dev/null || true
+          fi
+          RAW_LOG_FILE="${RUNNER_TEMP}/convex-logs-seller-mobile.raw.jsonl"
+          OUT_FILE="convex-logs-seller-mobile.jsonl"
+          if [ -s "$RAW_LOG_FILE" ]; then
+            # Same filter as the shards' capture (keep ERROR/WARN and our
+            # structured lines, every completion's timing; drop INFO chatter).
+            jq -c '
+                ((.logLines // [])
+                | map(select(
+                    .level == "ERROR" or .level == "WARN"
+                    or ((.messages // []) | join(" ") | test("\"msg\""))
+                  )))
+                as $keep
+                | if .kind == "Completion" then
+                    {identifier, udfType, timestamp, executionTimestamp,
+                     executionTime, userExecutionTime, requestId, executionId,
+                     parentExecutionId, cachedResult, willRetry, occInfo, kind, error,
+                     readDocs: .usageStats.databaseReadDocuments,
+                     readBytes: .usageStats.databaseReadBytes,
+                     writeDocs: .usageStats.databaseWriteDocuments,
+                     logLines: $keep}
+                  else
+                    select((.error != null) or ($keep | length) > 0)
+                    | {identifier, udfType, timestamp, requestId, executionId, kind, error, logLines: $keep}
+                  end
+              ' "$RAW_LOG_FILE" > "$OUT_FILE" 2>"${RUNNER_TEMP}/convex-logs-seller-mobile-jq.stderr.log" || true
+            gzip -f "$OUT_FILE" || true
+          else
+            echo "No Convex logs captured for the seller mobile job."
+          fi
+
+      - name: Upload Convex log capture (seller mobile)
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: convex-logs-seller-mobile
+          path: apps/web/convex-logs-seller-mobile.jsonl.gz
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Upload seller report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pw-report-seller-mobile
+          # Same paths and the same published-content rule as the shard reports.
+          path: |
+            apps/web/playwright/report/
+            apps/web/playwright/results/**/*.png
+          if-no-files-found: ignore
+          retention-days: 14
+
   # Single stable gate required by the `production` ruleset (through pr-pipeline's
   # `e2e` job and `ci-gate`). The shard matrices emit "shard-desktop (N)" / "shard-mobile (N)" checks whose
   # names change with the matrix length, so they can't be the required check.
@@ -1722,7 +2052,7 @@ jobs:
   #     project (desktop and mobile) — so a shard, or one project's half of
   #     it, that died before reporting cannot pass by omission.
   e2e:
-    needs: [setup, seed, shard-desktop, seed-mobile, shard-mobile]
+    needs: [setup, seed, shard-desktop, seller-desktop, seed-mobile, shard-mobile, seller-mobile]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -1742,8 +2072,10 @@ jobs:
           R_SHARD_DESKTOP: ${{ needs.shard-desktop.result }}
           R_SEED_MOBILE: ${{ needs.seed-mobile.result }}
           R_SHARD_MOBILE: ${{ needs.shard-mobile.result }}
+          R_SELLER_DESKTOP: ${{ needs.seller-desktop.result }}
+          R_SELLER_MOBILE: ${{ needs.seller-mobile.result }}
         run: |
-          echo "jobs: setup=$R_SETUP seed=$R_SEED shard-desktop=$R_SHARD_DESKTOP seed-mobile=$R_SEED_MOBILE shard-mobile=$R_SHARD_MOBILE"
+          echo "jobs: setup=$R_SETUP seed=$R_SEED shard-desktop=$R_SHARD_DESKTOP seller-desktop=$R_SELLER_DESKTOP seed-mobile=$R_SEED_MOBILE shard-mobile=$R_SHARD_MOBILE seller-mobile=$R_SELLER_MOBILE"
           if [ "$R_SETUP" != "success" ] || [ "$R_SEED" != "success" ] || [ "$R_SEED_MOBILE" != "success" ]; then
             echo "::error::setup or a seed did not succeed (setup=$R_SETUP seed=$R_SEED seed-mobile=$R_SEED_MOBILE)"
             # Record, don't exit: the reports still merge and publish so a red
@@ -1808,7 +2140,10 @@ jobs:
           # (NEO-389).
           node playwright/shard-plan.mjs --projects > projects.txt
           while read -r proj; do
-            node playwright/shard-plan.mjs 1 1 --project "$proj" | sed 's#^playwright/tests/##' | sort -u > "planned-${proj}.txt"
+            # Shards plan everything but the marketplace-seller specs (NEO-415),
+            # which the seller-<pass> jobs run; both sets are required here.
+            { node playwright/shard-plan.mjs 1 1 --project "$proj"; node playwright/shard-plan.mjs --seller; } \
+              | sed 's#^playwright/tests/##' | sort -u > "planned-${proj}.txt"
             if [ ! -s "planned-${proj}.txt" ]; then
               echo "::error::The shard planner lists no specs for ${proj}."
               exit 1
@@ -1887,6 +2222,8 @@ jobs:
         env:
           R_SHARD_DESKTOP: ${{ needs.shard-desktop.result }}
           R_SHARD_MOBILE: ${{ needs.shard-mobile.result }}
+          R_SELLER_DESKTOP: ${{ needs.seller-desktop.result }}
+          R_SELLER_MOBILE: ${{ needs.seller-mobile.result }}
         run: |
           if [ "${UPSTREAM_FAILED:-0}" = "1" ]; then
             echo "::error::Upstream verdict: setup or a seed did not succeed (see the Upstream jobs step)"
@@ -1894,6 +2231,10 @@ jobs:
           fi
           if [ "$R_SHARD_DESKTOP" != "success" ] || [ "$R_SHARD_MOBILE" != "success" ]; then
             echo "::error::a shard job did not succeed (desktop=$R_SHARD_DESKTOP mobile=$R_SHARD_MOBILE)"
+            exit 1
+          fi
+          if [ "$R_SELLER_DESKTOP" != "success" ] || [ "$R_SELLER_MOBILE" != "success" ]; then
+            echo "::error::a marketplace seller job did not succeed (desktop=$R_SELLER_DESKTOP mobile=$R_SELLER_MOBILE)"
             exit 1
           fi
 

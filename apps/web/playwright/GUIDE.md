@@ -850,7 +850,7 @@ timeboxed check and then push; CI validates.
 PR in two passes, each on a freshly seeded preview:
 
 ```
-setup -> seed -> shard-desktop x8 -> seed-mobile -> shard-mobile x8 -> e2e (gate) -> report
+setup -> seed -> shard-desktop x8 + seller-desktop -> seed-mobile -> shard-mobile x8 + seller-mobile -> e2e (gate) -> report
 ```
 
 `seed` is the scripted reset plus the `setup` project (worker 0); the desktop
@@ -877,11 +877,44 @@ each spec's desktop time and `byProject["e2e-mobile"]` its mobile time (a
 project with no value for a spec falls back to the desktop one, so a
 desktop-only file still plans both passes).
 
+**Marketplace-seller specs (NEO-415).** Every PR's CI uses one shared
+BuySportsCards test seller and one shared eBay sandbox seller. Two PRs
+running `inventory-bsc-listing-1988-topps-base` or
+`inventory-ebay-sandbox-listing-1988-topps-base` at once clobber each other (one
+preview's sync zeroes the other's listings; overlapping BSC sheet reads make
+BSC create twin rows), and sharding cannot help. So these specs are in
+`SELLER_SPECS` (`playwright/project-scope.mjs`), carry the tag
+`@marketplace-seller`, and are planned in NO shard: `shard-plan.mjs` refuses to
+plan if the tag and the list disagree, `shard-plan.mjs --seller` prints them, and
+the `e2e` gate still requires each to pass on BOTH projects (planned set = shard
+plan + seller list). The `seller-desktop` job (starts beside the desktop shards;
+`seed-mobile` needs it, since its reset would wipe the preview it runs on) and the
+`seller-mobile` job (beside the mobile shards) run them as worker 8, after the
+`bootstrap` project. Each waits its turn in a repo-wide queue
+(`.github/scripts/seller-queue.sh`, one script for both jobs): it polls this
+repo's in-progress runs about every 100 s and goes when no seller job is running
+and none that started earlier is waiting. First come first served; it never
+cancels a waiting PR (GitHub's `concurrency` group would drop all but one pending
+job). Only runs whose head repository is this repository are read (a fork's
+edited workflow cannot forge a holder), and the poll fails closed: any API error
+or truncated listing waits rather than goes. A cancelled or dead holder stops
+counting at once; the wait is capped at 60 min, then the job fails with a message
+(re-run the workflow; the message says whether the cause was a busy queue or
+API errors). Artifacts: `pw-report-seller-<pass>`, `convex-logs-seller-<pass>`.
+**Limit:** the queue serializes the job window only. A run cancelled mid-spec
+(`cancel-in-progress` on a new push) can leave its preview connected to the
+shared sellers, or its listings up, until the next reset or the PR closes; the
+next holder's spec starts from whatever the seller shows. A new spec that writes to
+a shared marketplace seller account joins the list AND takes the tag. **Locally,
+do not run these two specs while any PR's E2E is in its seller job** (check
+`gh run list --status in_progress`), and not against the shared seller from two
+sessions at once.
+
 **Reading a red run.**
 1. Find which spec failed in the "Playwright E2E" check or the sticky comment.
 2. Download the artifacts BEFORE any rerun: `pw-report-desktop-<n>` or
    `pw-report-mobile-<n>` (the shard's screenshots and report),
-   `pw-report-seed` / `pw-report-seed-mobile` (a pass's seed), and `pw-merged`
+   `pw-report-seller-desktop` / `pw-report-seller-mobile` (the two listing specs), `pw-report-seed` / `pw-report-seed-mobile` (a pass's seed), and `pw-merged`
    (both passes' merged report and results).
    `gh run download <run-id> -n pw-merged` (and the shard).
 3. Open the failure screenshot and the spec's `error-context.md` (the ARIA
