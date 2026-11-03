@@ -10166,6 +10166,23 @@
         "enwikiTitle": "Ken Griffey Jr."
       }
     },
+    "player|Q5369|kendry morales": {
+      "kind": "player",
+      "name": "Kendry Morales",
+      "result": {
+        "wikidataId": "Q1185217",
+        "careerTeams": [],
+        "undatedCareerTeams": [
+          "Minnesota Twins",
+          "Seattle Mariners",
+          "Toronto Blue Jays"
+        ],
+        "isHallOfFame": false,
+        "description": "Cuban baseball player",
+        "birthYear": 1983,
+        "enwikiTitle": "Kendrys Morales"
+      }
+    },
     "player|Q5369|kenley jansen": {
       "kind": "player",
       "name": "Kenley Jansen",

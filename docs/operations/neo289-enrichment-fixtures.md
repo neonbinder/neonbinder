@@ -295,6 +295,13 @@ sportConfig>, trace)` from a laptop (`sportQid` `Q41323`, hall of fame
 left `trace.transportFailed` false, so the `null` is a completed search and not
 an outage. One entry, merged per step 5 (only the new key, keys re-sorted).
 
+His FIRST lookup, in Baseball when the wizard opens on his row, is recorded too:
+that live answer is a **hit** (`wikidataId` `Q1185217`, born 1983, three
+undated clubs Minnesota Twins / Seattle Mariners / Toronto Blue Jays, enwiki
+"Kendrys Morales"), captured the same way, and merged as the file's default
+sport (no `sportQid`). Without it the unrecorded Baseball miss is refused at
+error level on every run of the spec. A genuine capture, not a `null`.
+
 ## 4b. Other sports, explicit names, and no Wikidata from your machine (2026-10-30)
 
 **Entries for another sport.** The file's `sportQid` is the default sport of

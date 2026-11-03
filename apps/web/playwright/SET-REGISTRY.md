@@ -2088,10 +2088,9 @@ self-cleaning (the run-start reset is its cleanup).
 in Football. His Football no-match is recorded (captured 2026-11-03, a completed
 search confirmed twice; `docs/operations/neo289-enrichment-fixtures.md` §4a), so
 the add sends nothing to Wikidata and logs no refusal.
-⚠️ The row's FIRST lookup, in Baseball when the wizard opens, is a miss in the
-recording and is refused at error level (NEO-413). The live Baseball answer is a
-hit (a Wikidata id, three undated clubs), so recording it changes the step the
-wizard shows; that is for the owner to decide.
+The row's FIRST lookup, in Baseball when the wizard opens, is recorded too: a genuine
+live hit (a Wikidata id, born 1983, three undated clubs), so the step shows that
+Wikidata match, and no refusal is logged.
 
 ### Per-attempt custom SPORT rows — `custom-entry-survives-resync`, self-cleaning
 
