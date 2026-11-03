@@ -45,8 +45,9 @@
 // a card eBay would not take becomes a held-back card with a reason (no photo,
 // a missing item detail, a rejection). It uploads no photo here: eBay's
 // sandbox has no picture upload (its Media API reference: "This method is not
-// supported in Sandbox environment."), so on the sandbox the drain sends the
-// items with no pictures (`ebayHasPictureUpload`, lib/ebayEnv.ts). NB still
+// supported in Sandbox environment."), so on the sandbox the drain sends each
+// item with NB's fixed sandbox test picture instead, as the sandbox refuses an
+// item with none (errorId 25717; `EBAY_SANDBOX_TEST_PICTURE_URL`). NB still
 // requires the photo: a card without one is held back on both. So the end
 // state of a sync is two things together: the set's "N listed" count line and
 // the "held back" list (here exactly the one card left without a photo; at the

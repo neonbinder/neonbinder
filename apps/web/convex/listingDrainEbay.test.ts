@@ -21,6 +21,7 @@ import schema from "./schema";
 import { drainOwnerImpl, type DrainCtx, type DrainReport } from "./listingDrain";
 import { EBAY_SETUP_INCOMPLETE_ERROR } from "./listingDrain";
 import { EBAY_CARD_REJECTED, EBAY_STEP_SAYS } from "./listingDrainEbay";
+import { EBAY_SANDBOX_TEST_PICTURE_URL } from "./lib/ebayEnv";
 import { drainScheduled } from "../lib/testing/drain-scheduled";
 
 const modules = (import.meta as unknown as {
@@ -1608,8 +1609,10 @@ describe("eBay drain: photo uploads eBay will not take", () => {
 describe("eBay drain: the sandbox has no picture upload", () => {
   // eBay's Media API reference, Input on createImageFromFile and
   // createImageFromUrl: "This method is not supported in Sandbox environment."
+  // Yet the sandbox refuses an item with no picture (errorId 25717), so each
+  // item carries NB's fixed sandbox test picture instead.
 
-  test("on the sandbox nothing is uploaded: no photos step, items go with no pictures, nothing is stored as one", async () => {
+  test("on the sandbox nothing is uploaded: no photos step, items carry NB's test picture, nothing is stored as one", async () => {
     vi.stubEnv("EBAY_ENVIRONMENT", "sandbox");
     const s = await setup();
     const { v, card } = await oneCard(s, 500);
@@ -1622,7 +1625,7 @@ describe("eBay drain: the sandbox has no picture upload", () => {
     expect(ebay.to(MEDIA_CREATE)).toHaveLength(0);
     expect(photoFetches).toEqual([]);
     const sku = `NB2-${card}-NM`;
-    expect(ebay.items.get(sku)?.product.imageUrls).toEqual([]);
+    expect(ebay.items.get(sku)?.product.imageUrls).toEqual([EBAY_SANDBOX_TEST_PICTURE_URL]);
     expect(ebay.offerFor(sku)?.status).toBe("PUBLISHED");
     const link = await linkOf(s, card, "NM");
     expect(link).toMatchObject({ sku, status: "live" });
@@ -1647,7 +1650,42 @@ describe("eBay drain: the sandbox has no picture upload", () => {
     const rec = await record(s, v.variantId);
     expect(rec?.problems).toEqual([expect.objectContaining({ cardId: noPhoto, reason: "noPhoto" })]);
     expect([...ebay.items.keys()]).toEqual([`NB2-${ok}-NM`]);
+    expect(ebay.items.get(`NB2-${ok}-NM`)?.product.imageUrls).toEqual([EBAY_SANDBOX_TEST_PICTURE_URL]);
     expect(ebay.to(MEDIA_CREATE)).toHaveLength(0);
+  });
+
+  test("on the sandbox a second run with nothing changed sends no write (the test picture never moves the fingerprint)", async () => {
+    vi.stubEnv("EBAY_ENVIRONMENT", "sandbox");
+    const s = await setup();
+    const { v, card } = await oneCard(s);
+    await drain(s);
+    ebay.calls = [];
+    await queue(s, [{ cardId: card, variantId: v.variantId, seq: 2 }]);
+
+    await drain(s);
+
+    expect(ebay.writes()).toEqual([]);
+    expect(await record(s, v.variantId)).toMatchObject({ status: "idle", counts: { listed: 1, pushed: 0, zeroed: 0 } });
+    expect(await outbox(s)).toHaveLength(0);
+  });
+
+  test("on the sandbox a changed photo still resends the item, with the same test picture and no upload", async () => {
+    vi.stubEnv("EBAY_ENVIRONMENT", "sandbox");
+    const s = await setup();
+    const { v, card } = await oneCard(s);
+    await drain(s);
+    ebay.calls = [];
+    await s.t.run(async (ctx) => {
+      const photo = (await ctx.db.query("collectionCopyPhotos").collect())[0];
+      await ctx.db.patch(photo._id, { token: "tokRetaken" });
+    });
+    await queue(s, [{ cardId: card, variantId: v.variantId, seq: 2 }]);
+
+    await drain(s);
+
+    expect(ebay.to("/sell/inventory/v1/bulk_create_or_replace_inventory_item")).toHaveLength(1);
+    expect(ebay.to(MEDIA_CREATE)).toHaveLength(0);
+    expect(ebay.items.get(`NB2-${card}-NM`)?.product.imageUrls).toEqual([EBAY_SANDBOX_TEST_PICTURE_URL]);
   });
 
   test("on production the same card's photo is uploaded and its picture sent and stored", async () => {

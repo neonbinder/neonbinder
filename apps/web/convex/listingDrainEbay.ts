@@ -25,7 +25,9 @@
  *      the targets), and decides per listing what changed;
  *   3. uploads photos (Media API) for listings whose picture changed
  *      (never on eBay's sandbox, which has no picture upload:
- *      `ebayHasPictureUpload`; there items go with no pictures),
+ *      `ebayHasPictureUpload`; there items carry NB's fixed sandbox test
+ *      picture, `EBAY_SANDBOX_TEST_PICTURE_URL`, as eBay refuses an item
+ *      with none: 25717),
  *      replaces inventory items whose content changed, creates offers for new
  *      listings (adopting an offer eBay already holds for the SKU), replaces
  *      offers whose policies changed, updates price and quantity on live
@@ -109,7 +111,7 @@ import {
   type EbayResult,
   type EbaySellerSession,
 } from "./adapters/ebaySeller";
-import { ebayHasPictureUpload } from "./lib/ebayEnv";
+import { EBAY_SANDBOX_TEST_PICTURE_URL, ebayHasPictureUpload } from "./lib/ebayEnv";
 
 // ── Limits ─────────────────────────────────────────────────────────────────
 
@@ -1164,9 +1166,16 @@ async function syncEbayVariant(
 
   // The listings whose pictures this run hands to eBay: every listing whose
   // item is being sent, except on eBay's sandbox, which has no picture
-  // upload (`ebayHasPictureUpload`). There nothing is uploaded or stored and
-  // the items go with no pictures; NB's no-photo hold is unchanged.
-  const uploadPlans = ebayHasPictureUpload(session.config) ? plans.filter((p) => p.needsItem) : [];
+  // upload (`ebayHasPictureUpload`). There nothing is uploaded or stored
+  // (`images` stays null) and every item sent carries NB's fixed sandbox
+  // test picture instead, because the sandbox refuses an item with no
+  // picture (25717). NB's no-photo hold is unchanged, and the content
+  // fingerprint reads the copy's photo keys, never these URLs.
+  const uploadsPictures = ebayHasPictureUpload(session.config);
+  const uploadPlans = uploadsPictures ? plans.filter((p) => p.needsItem) : [];
+  if (!uploadsPictures) {
+    for (const p of plans) if (p.needsItem) p.imageUrls = [EBAY_SANDBOX_TEST_PICTURE_URL];
+  }
 
   // NEO-415: the plan, the steps this run will take, in order. A step the
   // run turns out not to need (every card before it fell out) is dropped.

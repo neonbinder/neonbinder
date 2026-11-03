@@ -52,4 +52,4 @@
 - [BSC seller sheet has no all-conditions read](reference_bsc_seller_sheet_has_no_all_conditions_read.md) — omit/null condition = 500; ""/"all" = one blank template per card, hides listings; templates mint new productIds per read
 - [eBay sandbox refuses eSE policies](reference_ebay_sandbox_refuses_ese_policy.md) — 20403 "valid shipping service" on US_eBayStandardEnvelope though metadata says validForSellingFlow; no body fix
 - [Ledger error finish settles working as failed](reference_progress_ledger_error_finish_settles_working_failed.md) — ledger.fail the earlier step, endWorking before an error finish
-- [eBay Media 500 190000 is ambiguous](reference_ebay_media_500_is_ambiguous.md) — malformed-request answer too; no upload on sandbox (skipped), yet publish needs imageUrls; reading JS doc pages
+- [eBay Media 500 190000 is ambiguous](reference_ebay_media_500_is_ambiguous.md) — malformed-request answer too; no upload on sandbox, items need imageUrls (25717): fixed test picture; JS doc pages

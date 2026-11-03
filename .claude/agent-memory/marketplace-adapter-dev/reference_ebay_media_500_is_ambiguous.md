@@ -1,6 +1,6 @@
 ---
 name: ebay-media-500-is-ambiguous
-description: eBay Media API 500 errorId 190000 is also returned for malformed requests and for every upload on the sandbox (no picture upload there, the drain skips it) though publish still lists imageUrls as required; how to rule out NB's request and how to read eBay's JS-rendered method pages
+description: eBay Media API 500 errorId 190000 is also returned for malformed requests and for every upload on the sandbox (no picture upload there, the drain skips it); the sandbox still refuses items with empty imageUrls (25717), so sandbox items carry one fixed self-hosted test picture; how to rule out NB's request and read eBay's JS-rendered method pages
 metadata:
   type: reference
 ---
@@ -22,9 +22,21 @@ upload on the sandbox behind one predicate (`ebayHasPictureUpload` in
 `lib/ebayEnv.ts`). But eBay's "Required fields for publishing an offer"
 guide lists `product.imageUrls` as required to publish, and the Product
 field says "at least one image URL must be specified before an offer can be
-published", with no sandbox exception on either page. `imageUrls` also
-accepts self-hosted HTTPS URLs, which is the lever if a picture-less
-sandbox publish is refused.
+published", with no sandbox exception on either page.
+
+**And the sandbox enforces it, earlier than publish.** A picture-less item
+is refused at `bulkCreateOrReplaceInventoryItem` itself, per item: errorId
+25717 "imageUrls cannot be null or empty." (parameter `imageUrls`). The
+lever is that `product.imageUrls` accepts self-hosted HTTPS URLs: on the
+sandbox only, every item sent carries one fixed public NB-hosted image of a
+fictional test card (`EBAY_SANDBOX_TEST_PICTURE_URL`, beside the predicate in
+`lib/ebayEnv.ts`; the drain sets it where the predicate is read, nowhere
+else). It is never stored as a card's picture (link `images` stay empty)
+and stays out of the item content fingerprint, which hashes the copy's own
+photo keys, so an unchanged card is not resent each run and a retaken photo
+still resends it. Production never reads it. If you add a sandbox
+divergence like this, keep the env check in that one place and pin it with
+a test that goes red when the substitute is removed.
 
 Reading those pages: `developer.ebay.com/develop/api/sell/<api>` is one
 JS-rendered page per API (the old `api-docs/.../methods/<m>` URLs redirect

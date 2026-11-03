@@ -78,15 +78,31 @@ export function ebayConfig(): EbayConfig | null {
  * upload there answers 500 / errorId 190000, so a drain that tried would
  * never list a card.
  *
- * On the sandbox the eBay drain therefore uploads nothing and sends its
- * items with no pictures. NB's own rule does not move: a card whose copy
- * has no photo is still held back (`noPhoto`) on both environments; only
- * the hand-off of that photo to eBay is skipped. Production always uploads.
- * Read in one place, the drain's photos step (`listingDrainEbay`).
+ * On the sandbox the eBay drain therefore uploads nothing and sends each
+ * item with NB's fixed sandbox test picture instead
+ * (`EBAY_SANDBOX_TEST_PICTURE_URL`). NB's own rule does not move: a card
+ * whose copy has no photo is still held back (`noPhoto`) on both
+ * environments; only the hand-off of that photo to eBay is skipped.
+ * Production always uploads. Read in one place, the drain's photos step
+ * (`listingDrainEbay`).
  */
 export function ebayHasPictureUpload(config: EbayConfig): boolean {
   return config.environment !== "sandbox";
 }
+
+/**
+ * The one picture every item carries on eBay's SANDBOX, never production.
+ * The sandbox has no picture upload (above), yet its Inventory API refuses
+ * an item with no picture: `bulkCreateOrReplaceInventoryItem` answers
+ * errorId 25717 "imageUrls cannot be null or empty." eBay's Inventory spec
+ * lets `product.imageUrls` be self-hosted by the seller (HTTPS), so the
+ * sandbox items point at this public NB-hosted image. It is a fictional
+ * test card, never real NB data: nothing stores it as a card's picture
+ * (the link's `images` stay empty) and it plays no part in the item's
+ * content fingerprint. Production never reads it; it uploads the copy's
+ * own photos. Read only where `ebayHasPictureUpload` is false.
+ */
+export const EBAY_SANDBOX_TEST_PICTURE_URL = "https://www.neonbinder.io/placeholder-fixtures/01-vorkle-front.jpg";
 
 /** True when the deployment is wired to eBay. */
 export function ebayConfigured(): boolean {
