@@ -110,6 +110,7 @@ BuySportsCards alone for the whole run:
 | Baseball → 2024 → Topps → Topps (the flagship: BSC's Series 1 + 2 set) | `Insert` — Variant Types synced on first entry; the `Insert` reconcile SAVED twice (once built, once re-synced): every Ready set it holds, including `City Connect Swatch Collection Relics (Series One)` linked to SportLots **299607** and `… (Series Two)` linked to **307437**. No checklist is fetched (NOT pre-synced; the `Topps` row itself is the seed's 2024 Topps Sets sync) | `tests/set-selector/reconcile-sportlots-twins-save-each-to-its-own-set.spec.ts` — **sole writer**, not self-cleaning (the run-start reset is its cleanup). ✅ Approved by Jason 2026-10-08 (NEO-325); see "SportLots twin names" |
 | Football → 2014 (the whole year) → Topps → Topps (the flagship) | `Base` — the year's Years, Manufacturers and year-wide Sets synced cold in-flow; `Topps`' Variant Types synced; the Base picker CONFIRMED on both sides; the checklist fetched and COMMITTED in-flow through the Match Cards dialog, with BSC's #442 unlinked and then deliberately linked to a SportLots-only card and saved under the SportLots name; any review-wizard names SKIPPED (NOT pre-synced) | `tests/set-selector/checklist-team-leader-cards-pair-and-picked-name-saves.spec.ts` — **sole writer** of the year, not self-cleaning (the run-start reset is its cleanup). ✅ **Approved by Jason 2026-10-13** (NEO-343/NEO-344) — see "Football → 2014 — the NEO-343 team-leader fixture" |
 | Baseball → 1988 → Topps → Topps (BSC's "1988 Topps") | `Base` — the year's Manufacturers and Sets synced cold, Base MAPPED on both sides, the full checklist (BSC's 1988 Topps base, about 792 cards) fetched and SAVED by the SEED, wizard walked (NEO-370; the live count is recorded below after the first seed) | `tests/setup.spec.ts` provisions it; `tests/collection/inventory-bsc-listing-1988-topps-base.spec.ts` is the **sole writer of its BuySportsCards quantities** (it writes no card, player, team or variant of the set). ✅ **Approved by Jason 2026-11-01** (NEO-370) — see "1988 Topps Baseball — the BuySportsCards listing fixture" |
+| Baseball → 2023 → Topps → Topps Chrome NPB | `Base` — fetched and COMMITTED in-flow, BSC only (NOT pre-synced): ONE name moved to Football and added as a new player with "Also add Baseball to their sports" unticked, every other name SKIPPED; then ONE `Insert` (⚠️ name TO BE CONFIRMED by the probe) made a set, fetched and COMMITTED the same way, the auto-link on that name changed and re-linked from the wizard | `tests/set-selector/checklist-wizard-set-history-links-across-variants.spec.ts` — **sole writer**. ✅ **Approved by Jason 2026-11-03** (NEO-424) — see "Topps Chrome NPB 2023 — the NEO-424 set-history fixture" |
 
 ### 2024 Topps NHL Sticker Collection — NEO-211, sole-writer ⚠️ SUBSTITUTED, NEEDS SIGN-OFF
 
@@ -1994,6 +1995,59 @@ a team"` guard that skips a team row if that is what came up. On the 87-in-88
 path the guard costs one poll and does nothing — a deliberate, documented R10
 exception, taken because the alternative is a flake with no relationship to the
 feature under test.
+
+
+### Topps Chrome NPB 2023 — the NEO-424 set-history fixture (Base + one Insert) ✅ APPROVED by Jason 2026-11-03
+
+`Baseball → 2023 → Topps → Topps Chrome NPB` belongs to exactly one flow,
+`checklist-wizard-set-history-links-across-variants`. `tests/setup.spec.ts`
+provisions nothing for it: the flow's `fetchOneMarketplaceSetChecklistToWizard`
+drills Baseball → 2023 → Topps cold (Years, Manufacturers, year-wide Sets),
+syncs the set's Variant Types and cancels the Base picker (BSC only), the same
+shape as the four 1995 hockey fixtures. No other flow drills Baseball → 2023.
+The 2024 `Topps Chrome NPB` (above) is a different set row under a different
+year and is **never touched**: its Base belongs to
+`checklist-wizard-same-name-pick-step`, which must not be committed.
+
+**What the flow does.** NEO-424 proves that a name linked on a committed card
+of a set links to the same player when ANOTHER variant of that set is synced,
+whatever sport the player is filed under, and that the wizard shows the link and
+lets the operator change it.
+1. **Base.** Fetch (BSC only). One name, `STAR`, is moved to Football in the
+   wizard ("Sport for this name") and added with "Also add Baseball to their
+   sports" left unticked; every other name is skipped (no other player is
+   minted); saved.
+2. **Insert.** The set's one insert (`INSERT`) is made a set (paused: the column
+   fills from BSC; live: its exact "Make its own set" button, never "Keep all")
+   and fetched. The wizard opens with `STAR` already decided,
+   `Matched from this set: STAR`. Change reopens the step on `Link to STAR
+   (Football)` with `Add as New Player anyway` demoted; pressing the link reads
+   back `Linked to STAR`; the rest are skipped; saved.
+3. **Read-back.** `STAR`'s player page lists both cards as Baseball guest cards
+   (the auto-link added no sport) and no second `STAR` was minted.
+
+**Fresh-only, sole writer.** It commits both checklists and creates one global
+Football `players` row named `STAR` that nothing deletes. Each project (desktop,
+mobile) runs on its own seed, so it passes once per seed; a re-run on the same
+seed fails at `No cards in this checklist yet.`, by name. Not self-cleaning (the
+run-start reset is its cleanup).
+
+⚠️ **Two measurements the probe must fill in before the first run** (nothing is
+recorded here yet; do not write a number until one was read off a real fetch):
+* `STAR` and `INSERT`. `STAR` must be (a) a name on the 2023 Base that the
+  reference catalogue does NOT hold in Baseball, or the Base wizard never
+  presents it (a famous NPB name is the likeliest to be known already, so
+  expect a lesser player), (b) a card in `INSERT`, spelled the same way, and
+  (c) absent from the 2024 NPB Base, so the pick-step spec's fetch (which is
+  never to commit) is not changed by this spec's Football `STAR`.
+* the Base's unknown-name count and the insert's card count, and what the insert
+  fetch stages beyond `STAR` (all skipped).
+
+⚠️ **The Football lookup (ruling: Jason's coordinator, 2026-11-03).** Moving `STAR`
+to Football re-queues the row's enrichment lookup in Football, and no error line
+is accepted. Once the probe confirms `STAR`, a recorded Football no-match for it
+is added to `enrichment-lookups.json` (and `docs/operations/neo289-enrichment-fixtures.md`
+§4a), as a genuine captured answer. Until then this fixture is not ready to run.
 
 
 ### Per-attempt custom SPORT rows — `custom-entry-survives-resync`, self-cleaning

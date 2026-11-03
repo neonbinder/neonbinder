@@ -80,3 +80,4 @@
 - [Find live lookups from convex logs](patterns_find_live_lookups_from_convex_logs.md) — list every Wikidata miss of a CI run from the convex-logs artifacts, which ones were genuine no-matches, and how a spec avoids a lookup (support/recorded-names.ts)
 - [Marketplace listing spec shape](patterns_marketplace_listing_spec_shape.md) — NEO-370: what "N listed" proves, leave+Back flush, distinct counts, afterEach on a second page
 - [Listing spec Rev 4 shape](patterns_marketplace_listing_rev4_shape.md) — NEO-370 Rev 4: Start on Profile, Sync status row, stop = remove sign-in, first-Sync throttle toast
+- [Button name substring hides demoted variants](patterns_button_name_substring_hides_demoted_variants.md) — "Add as New Player" substring-matches the demoted "... anyway"; creating specs use answerPlayerAsNew (two-press aware), never the bare name

@@ -364,6 +364,56 @@ export function addAsNewStep(page: Page): Locator {
 }
 
 /**
+ * The presented New Player step's create button, in either of its two shapes
+ * (NEO-424, rule E(2)): "Add as New Player" when nothing on file answers to the
+ * name, and "Add as New Player anyway" when exactly one player in some other
+ * sport does (the step then leads with "Link to <name> (<sport>)" and demotes
+ * creating). A spec whose intent is to CREATE the player takes this, the way
+ * `answerStepAsNew` already does for teams and leagues. Contract: a locator,
+ * nothing waited for. A spec that asserts the step's identity (the pick step's
+ * "Create new" lands on exactly "Add as New Player") keeps the exact name.
+ */
+export function addAsNewPlayerButton(page: Page): Locator {
+  return reviewWizard(page).getByRole("button", { name: /^Add as New Player( anyway)?$/ });
+}
+
+/**
+ * Answer the presented New Player step as a CREATE and return once the wizard
+ * has moved off the row (NEO-424). The caller's intent is "this player is
+ * new"; the helper owns the step's two shapes:
+ *  - "Add as New Player": one press records the create.
+ *  - "Add as New Player anyway" (a suggested player leads with "Link to ..."):
+ *    on a row the batch inserted READY with no lookup, that press only OPENS
+ *    the plain New Player step and records nothing, so the helper then waits
+ *    for that step's own "Add as New Player" primary and presses it. On a row
+ *    whose lookup already ran, the press records the create and the walk moves
+ *    on (the counter's x moves), which is checked first so the NEXT row's
+ *    primary is never mistaken for the plain step.
+ * A catalogue refresh that turns a fixture name into a suggestion therefore
+ * changes nothing for the specs that create.
+ *
+ * Contract: ENTRY a player row is presented with a create button on screen
+ * (waited for, 7 s). EXIT the counter has left the step it was on, i.e. one
+ * decision was recorded (a name step's x is the decided count plus one). Pin
+ * y never.
+ */
+export async function answerPlayerAsNew(page: Page): Promise<void> {
+  const wizard = reviewWizard(page);
+  const button = addAsNewPlayerButton(page);
+  await expect(button).toBeVisible();
+  const demoted = /anyway$/.test(((await button.textContent()) ?? "").trim());
+  const { x } = await readStep(page);
+  await button.click();
+  if (demoted) {
+    const plain = wizard.getByRole("button", { name: "Add as New Player", exact: true });
+    const moved = stepCounter(page).filter({ hasNotText: new RegExp(`^Step ${x} of `) });
+    await expect(plain.or(moved).first()).toBeVisible();
+    if (!(await moved.isVisible())) await plain.click();
+  }
+  await expectStepLeft(page, x);
+}
+
+/**
  * The presented New Team / New League step's heading ("New League: Pacific
  * League"). Its accessible name is the step's identity: it goes away exactly
  * when the step does.
