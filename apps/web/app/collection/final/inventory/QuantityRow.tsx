@@ -69,7 +69,8 @@ function rowControls(from: HTMLElement): HTMLElement[] {
  * field instead of Have / Want / Trade.
  *
  * The field is how many PLAIN copies of the card sit in the target box (raw,
- * nothing noted, not up for trade). Leaving it writes the new number in one
+ * nothing noted, not up for trade; a photo alone changes none of that, NEO-431,
+ * so a line added by hand with photos is the one it edits). Leaving it writes the new number in one
  * go (`setBoxQuantity`), through the page's commit queue, so Tab never waits
  * on a write. After it: the card's other lines in that box, read-only
  * ("also here: PSA 9, Raw Mint"), and Details for everything else. They sit

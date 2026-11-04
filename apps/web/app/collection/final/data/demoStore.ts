@@ -1172,7 +1172,7 @@ export function DemoCollectionProvider({ storageKey, children }: { storageKey?: 
     }),
     [state.cardRequests, state.requestCard, state.browseFilter, state.setBrowseFilter, state.reset],
   );
-  const photos = useDemoCopyPhotos(state.state.copies);
+  const photos = useDemoCopyPhotos(state.state.copies, state.run);
   const value = useMemo<CollectionStoreValue>(
     () => ({ kind: "demo", capabilities: ALL_CAPABILITIES, data: DEMO_DATA, actions, demo, photos }),
     [actions, demo, photos],
@@ -1193,8 +1193,18 @@ export function DemoCollectionProvider({ storageKey, children }: { storageKey?: 
  * real ones, then kept on this page only (object URLs, gone on reload). No
  * upload, no account.
  */
-function useDemoCopyPhotos(copies: readonly { id: string; cardId: string }[]): CopyPhotosExtension {
+function useDemoCopyPhotos(
+  copies: readonly { id: string; cardId: string }[],
+  run: DemoState["run"],
+): CopyPhotosExtension {
   const [byCopy, setByCopy] = useState<ReadonlyMap<CopyId, CopyPhotos>>(new Map());
+  // Each write builds on this, so it can also mark the line (`hasPhotos`, what
+  // the store's fold and quick-count rules read) from the same answer.
+  const latest = useRef(byCopy);
+  const keep = useCallback((next: ReadonlyMap<CopyId, CopyPhotos>) => {
+    latest.current = next;
+    setByCopy(next);
+  }, []);
   const usePhotos = useCallback(
     (copies: readonly Copy[]) => {
       const out = new Map<CopyId, CopyPhotos>();
@@ -1214,35 +1224,35 @@ function useDemoCopyPhotos(copies: readonly { id: string; cardId: string }[]): C
   const addPhoto = useCallback(async (copy: Copy, side: PhotoSide, file: File) => {
     const resized = await resizeCopyPhoto(file);
     const urls = { imageUrl: URL.createObjectURL(resized.image), thumbUrl: URL.createObjectURL(resized.thumb) };
-    setByCopy((prev) => {
-      const next = new Map(prev);
-      drop(prev.get(copy.id)?.[side]);
-      next.set(copy.id, { ...prev.get(copy.id), [side]: urls });
-      return next;
-    });
-  }, []);
+    const prev = latest.current;
+    const next = new Map(prev);
+    drop(prev.get(copy.id)?.[side]);
+    next.set(copy.id, { ...prev.get(copy.id), [side]: urls });
+    keep(next);
+    run((s) => demoOps.setHasPhotos(s, copy.id, true));
+  }, [keep, run]);
   const removePhoto = useCallback(async (copy: Copy, side: PhotoSide) => {
-    setByCopy((prev) => {
-      const had = prev.get(copy.id);
-      if (!had?.[side]) return prev;
-      drop(had[side]);
-      const next = new Map(prev);
-      const rest: CopyPhotos = { ...had };
-      delete rest[side];
-      if (rest.front || rest.back) next.set(copy.id, rest);
-      else next.delete(copy.id);
-      return next;
-    });
-  }, []);
+    const prev = latest.current;
+    const had = prev.get(copy.id);
+    if (!had?.[side]) return;
+    drop(had[side]);
+    const next = new Map(prev);
+    const rest: CopyPhotos = { ...had };
+    delete rest[side];
+    const left = !!(rest.front || rest.back);
+    if (left) next.set(copy.id, rest);
+    else next.delete(copy.id);
+    keep(next);
+    if (!left) run((s) => demoOps.setHasPhotos(s, copy.id, false));
+  }, [keep, run]);
   const swapPhotos = useCallback(async (copy: Copy) => {
-    setByCopy((prev) => {
-      const had = prev.get(copy.id);
-      if (!had) return prev;
-      const next = new Map(prev);
-      next.set(copy.id, { ...(had.back ? { front: had.back } : {}), ...(had.front ? { back: had.front } : {}) });
-      return next;
-    });
-  }, []);
+    const prev = latest.current;
+    const had = prev.get(copy.id);
+    if (!had) return;
+    const next = new Map(prev);
+    next.set(copy.id, { ...(had.back ? { front: had.back } : {}), ...(had.front ? { back: had.front } : {}) });
+    keep(next);
+  }, [keep]);
   const useCardImages = useCallback(
     (cardIds: readonly string[]) => {
       // Only lines still in the collection count.

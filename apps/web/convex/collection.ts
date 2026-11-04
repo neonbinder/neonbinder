@@ -445,7 +445,9 @@ export function checkSlot(home: Pick<ContainerRow, "kind" | "system">, slot: num
 
 /**
  * One of a kind: a cert, a serial number, or (NEO-377) a photo of that very
- * copy. Never folds, either way.
+ * copy. Never folds, either way. (A quick count's raise may still stack onto a
+ * line with photos, on purpose and outside this rule: `photoLineToRaise` in
+ * collectionInventory.ts.)
  */
 export function isOneOfAKind(d: { grading?: { cert?: string }; serialNumber?: string; hasPhotos?: true }): boolean {
   return Boolean(d.grading?.cert || d.serialNumber || d.hasPhotos);

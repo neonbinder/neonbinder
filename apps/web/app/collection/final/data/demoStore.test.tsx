@@ -14,6 +14,7 @@ import {
   useCopiesInVariant,
   useCopiesOf,
   useCopiesOfCards,
+  useCopyPhotos,
   useBuildingSets,
   useDemoExtension,
   useDrill,
@@ -41,6 +42,14 @@ import {
  * The Convex client module is mocked EMPTY: touching it would throw.
  */
 vi.mock("convex/react", () => ({}));
+vi.mock("@/lib/collection/copy-photo-resize", async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  resizeCopyPhoto: vi.fn(async () => ({
+    contentType: "image/jpeg",
+    image: new Blob(["image"], { type: "image/jpeg" }),
+    thumb: new Blob(["thumb"], { type: "image/jpeg" }),
+  })),
+}));
 
 const CHROME = "2024-topps-chrome-baseball";
 const CHROME_BASE = demoVariantId(CHROME, { type: "Base", name: null });
@@ -236,6 +245,91 @@ describe("writing through the contract", () => {
 
 /** The seed's copies the collection shows: every one not in the Show box (NEO-359). */
 const collectionSeed = () => initialCollectionState().copies.filter((c) => c.homeId !== SHOW_BOX_ID);
+
+describe("a demo line with photos behaves like the real store's (NEO-431)", () => {
+  const file = new File(["x"], "front.jpg", { type: "image/jpeg" });
+  const usePhotoRig = (cardId: string) => {
+    const copies = useCopiesOf(cardId);
+    const ext = useCopyPhotos();
+    return { actions: useCollectionActions(), copies, ext, photos: ext?.usePhotos(copies ?? []) };
+  };
+  const original = { create: URL.createObjectURL, revoke: URL.revokeObjectURL };
+  beforeEach(() => {
+    let n = 0;
+    URL.createObjectURL = vi.fn(() => `blob:demo-${(n += 1)}`);
+    URL.revokeObjectURL = vi.fn();
+  });
+  afterEach(() => {
+    URL.createObjectURL = original.create;
+    URL.revokeObjectURL = original.revoke;
+  });
+  /** A card in Unsorted, one line, with a front photo. */
+  const seeded = async () => {
+    const card = demoCard(initialCollectionState().copies[0].cardId)!;
+    const box = { id: UNSORTED_BOX_ID, kind: "box", name: "Unsorted" } as never;
+    const rendered = renderHook(() => usePhotoRig(card.id), { wrapper });
+    const { result } = rendered;
+    let copyId = "";
+    await act(async () => {
+      copyId = (await result.current.actions.addLineItem(card, { ...emptyCopyDetails(), homeId: UNSORTED_BOX_ID }, { keepsOwnLine: true })).copyId;
+    });
+    const line = () => result.current.copies!.find((c) => c.id === copyId)!;
+    await act(async () => {
+      await result.current.ext!.addPhoto(line(), "front", file);
+    });
+    return { card, box, result, rendered, copyId, line };
+  };
+
+  it("adding a photo marks the line, and taking the last one off clears it", async () => {
+    const { result, line } = await seeded();
+    expect(line().hasPhotos).toBe(true);
+    await act(async () => {
+      await result.current.ext!.removePhoto(line(), "front");
+    });
+    expect(line().hasPhotos).toBeUndefined();
+  });
+
+  it("a plain add never stacks onto the photo line", async () => {
+    const { card, result, copyId, line } = await seeded();
+    let merged = true;
+    await act(async () => {
+      merged = (await result.current.actions.addLineItem(card, { ...emptyCopyDetails(), homeId: UNSORTED_BOX_ID })).merged;
+    });
+    expect(merged).toBe(false);
+    expect(line().quantity).toBe(1);
+    expect(result.current.copies!.filter((c) => c.id !== copyId && c.homeId === UNSORTED_BOX_ID)).toHaveLength(1);
+  });
+
+  it("a raise stacks onto it, a count to 0 takes it, and the Undo brings it back with its photo", async () => {
+    const { card, box, result, copyId, line } = await seeded();
+    await act(async () => {
+      await result.current.actions.setBoxQuantity(card, box, 2);
+    });
+    expect(line()).toMatchObject({ quantity: 2, hasPhotos: true });
+    expect(result.current.photos?.get(copyId)?.front).toBeDefined();
+
+    let undo = async () => {};
+    await act(async () => {
+      undo = (await result.current.actions.setBoxQuantity(card, box, 0)).undo;
+    });
+    expect(line()).toBeUndefined();
+    await act(async () => {
+      await undo();
+    });
+    expect(line()).toMatchObject({ quantity: 2, hasPhotos: true });
+    expect(result.current.photos?.get(copyId)?.front).toBeDefined();
+  });
+
+  it("a reload loses the page's photos, so no stored line stays marked", async () => {
+    const { rendered, card, copyId, line } = await seeded();
+    expect(line().hasPhotos).toBe(true);
+    rendered.unmount();
+    const again = renderHook(() => usePhotoRig(card.id), { wrapper });
+    const stored = again.result.current.copies!.find((c) => c.id === copyId)!;
+    expect(stored.quantity).toBe(1);
+    expect(stored.hasPhotos).toBeUndefined();
+  });
+});
 
 describe("everything I own", () => {
   it("lists every held card once, the newest Have first, with its count", async () => {

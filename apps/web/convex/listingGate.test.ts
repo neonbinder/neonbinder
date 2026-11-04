@@ -23,7 +23,7 @@
 
 import { convexTest } from "convex-test";
 import { afterEach, describe, expect, test } from "vitest";
-import { api } from "./_generated/api";
+import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
 import { seedCollectionCatalog } from "../lib/testing/collection-fixture";
@@ -392,6 +392,36 @@ describe("the other add doors (security review)", () => {
     });
     await s.me.mutation(api.collectionInventory.undoBoxQuantity, { inverse: raised.inverse });
     expect((await copies(s)).map((c) => c.quantity)).toEqual([1]);
+  });
+
+  test("NEO-431: a line with photos obeys the gate as any other: a raise and the Undo that puts it back are held, a count to 0 never is", async () => {
+    const s = await setup();
+    await raise(s, s.box, 1);
+    const [line] = await copies(s);
+    const { photoId } = await s.t.mutation(internal.copyPhotos.reserveUpload, {
+      ownerId: ME.subject,
+      copyId: line._id,
+      side: "front",
+      contentType: "image/jpeg",
+      imageBytes: 1,
+      thumbBytes: 1,
+    });
+    await s.t.mutation(internal.copyPhotos.commitUpload, { ownerId: ME.subject, photoId });
+    await syncOn(s);
+    expect(await codeOf(raise(s, s.box, 2))).toBe(LISTING_GATE_ERROR);
+    expect((await copies(s)).map((c) => c.quantity)).toEqual([1]);
+    const zero = await raise(s, s.box, 0);
+    expect(await copies(s)).toEqual([]);
+    // Held: nothing comes back, and the photo keeps waiting for a later Undo.
+    expect(await codeOf(s.me.mutation(api.collectionInventory.undoBoxQuantity, { inverse: zero.inverse }))).toBe(
+      LISTING_GATE_ERROR,
+    );
+    expect(await copies(s)).toEqual([]);
+    expect((await s.t.run((ctx) => ctx.db.get(photoId)))?.status).toBe("detached");
+    await priceBase(s);
+    await s.me.mutation(api.collectionInventory.undoBoxQuantity, { inverse: zero.inverse });
+    expect((await copies(s)).map((c) => [c.quantity, c.hasPhotos])).toEqual([[1, true]]);
+    expect((await s.t.run((ctx) => ctx.db.get(photoId)))?.status).toBe("live");
   });
 
   test("a move INTO a listed box from a home that does not list is held; graded, out, and box to box are not", async () => {

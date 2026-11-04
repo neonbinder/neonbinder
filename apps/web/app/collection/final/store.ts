@@ -96,6 +96,13 @@ export type DemoCopy = Omit<CopyDetails, "homeId"> & {
   id: CopyId;
   cardId: CardId;
   homeId: ContainerId;
+  /**
+   * The line has photos, as the real `collectionCopies.hasPhotos`. The photos
+   * themselves are object URLs held by the page (`useDemoCopyPhotos`), keyed on
+   * the copy's id, so this only ever lasts as long as the page: `loadState`
+   * drops it.
+   */
+  hasPhotos?: boolean;
 };
 
 /** A container as the demo stores it (counts are derived, never stored). */
@@ -376,7 +383,10 @@ function loadState(storageKey: string): CollectionState {
     const raw = window.sessionStorage.getItem(storageKey);
     if (raw) {
       const parsed = JSON.parse(raw) as CollectionState;
-      if (parsed.version === STATE_VERSION) return parsed;
+      // A reload lost the demo's photos (object URLs), so no stored line has any.
+      if (parsed.version === STATE_VERSION) {
+        return { ...parsed, copies: parsed.copies.map(({ hasPhotos: _gone, ...copy }) => copy) };
+      }
     }
   } catch {
     // Unavailable or corrupt storage: start from the seed.
@@ -404,7 +414,7 @@ function indexOfCopy(state: CollectionState, id: CopyId): number {
   return i;
 }
 
-/** Two line items are the same stack when everything but quantity and date match. */
+/** Two line items are the same stack when everything but quantity and date match. A line with photos is no stack (the server's `isOneOfAKind`). */
 export function sameLineItem(a: Omit<DemoCopy, "id" | "cardId">, b: Omit<DemoCopy, "id" | "cardId">): boolean {
   return (
     a.homeId === b.homeId &&
@@ -418,6 +428,8 @@ export function sameLineItem(a: Omit<DemoCopy, "id" | "cardId">, b: Omit<DemoCop
     !b.graded?.cert &&
     !a.serialNumber &&
     !b.serialNumber &&
+    !a.hasPhotos &&
+    !b.hasPhotos &&
     (a.costBasis ?? null) === (b.costBasis ?? null) &&
     (a.minPrice ?? null) === (b.minPrice ?? null) &&
     (a.location ?? "") === (b.location ?? "") &&
@@ -490,7 +502,7 @@ function checkSlot(state: CollectionState, homeId: ContainerId, slot: number | u
  * A PLAIN line (NEO-364, D9): what quick quantity entry counts and writes. Raw
  * (no grade) in the default condition (NEO-380; the demo has no setting, so
  * `DEFAULT_CONDITION`, or none), no serial, cost, location or notes, not up
- * for trade. Its row (`slot`) and date do not matter.
+ * for trade. Its row (`slot`), date and photos do not matter (NEO-431).
  */
 export function isPlainLine(copy: Omit<DemoCopy, "id" | "cardId">): boolean {
   return (
@@ -689,16 +701,20 @@ export const demoOps = {
     if (dest.system === "trade") throw new DemoRefusal("Flag the card Up for Trade instead: it stays where it lives.");
     if (dest.rule) throw new DemoRefusal(`${dest.name} fills itself. Move the card somewhere else.`);
     checkSlot(state, to, slot);
+    const moving = Math.min(source.quantity, Math.max(1, Math.floor(quantity ?? source.quantity)));
+    const split = moving < source.quantity;
+    // A line's photos travel only with the whole line; a part split off is a
+    // plain stack that may fold (as the server's `moveOne`).
+    const { hasPhotos: _photos, ...withoutPhotos } = source;
+    const carried = split ? withoutPhotos : source;
     if (slot === undefined && keepsPockets(dest)) {
       slot =
         to === source.homeId && source.slot !== undefined
           ? source.slot
-          : arrivingPocket(state.copies, source.cardId, clean({ ...source, homeId: to, slot: undefined }), id);
+          : arrivingPocket(state.copies, source.cardId, clean({ ...carried, homeId: to, slot: undefined }), id);
     }
-    const moving = Math.min(source.quantity, Math.max(1, Math.floor(quantity ?? source.quantity)));
-    const split = moving < source.quantity;
     const from = { homeId: source.homeId, ...(source.slot === undefined ? {} : { slot: source.slot }), quantity: moving };
-    const landed = clean({ ...source, homeId: to, slot, quantity: moving });
+    const landed = clean({ ...carried, homeId: to, slot, quantity: moving });
     const twin = state.copies.find((c) => c.id !== id && c.cardId === source.cardId && sameLineItem(c, landed));
     if (!twin && slot !== undefined && pocketHolder(state, to, slot, new Set([id]))) {
       throw new DemoRefusal("That pocket already holds a card.");
@@ -733,6 +749,19 @@ export const demoOps = {
       throw new DemoRefusal("A card in a binder always sits in a pocket. Move it to another pocket instead.");
     }
     return demoOps.moveCopy(state, id, copy.homeId, undefined, slot ?? undefined);
+  },
+
+  /**
+   * Marks whether a line has photos (the photos themselves live with the page).
+   * A line already gone stays gone: its photos wait for the undo that brings it
+   * back, marked as it was.
+   */
+  setHasPhotos(state: CollectionState, id: CopyId, on: boolean): OpResult<null> {
+    const copy = state.copies.find((c) => c.id === id);
+    if (!copy || !!copy.hasPhotos === on) return { state, result: null };
+    const { hasPhotos: _was, ...rest } = copy;
+    const next: DemoCopy = on ? { ...rest, hasPhotos: true } : rest;
+    return { state: { ...state, copies: state.copies.map((c) => (c.id === id ? next : c)) }, result: null };
   },
 
   /** Returns the flag it had. */
@@ -942,11 +971,13 @@ export const demoOps = {
   /**
    * NEO-364 (D9): sets how many PLAIN copies of `cardId` sit in `boxId` (a
    * box, Unsorted included; never a binder). Raising adds raw copies acquired
-   * `today`, unslotted, folding into today's plain unslotted line. Lowering
-   * takes from the plain lines newest first (a line at 0 goes). The card's
-   * other lines in the box are never touched; the current value writes
-   * nothing. The result's `undo` is what `restoreLines` needs to put exactly
-   * those lines back.
+   * `today`, unslotted, folding into today's plain unslotted line, unless every
+   * plain line has photos: then they stack onto the newest of those (NEO-431).
+   * Lowering takes from the lines without photos, then those with them, newest
+   * first in each (a line at 0 goes). The card's other lines in the box are
+   * never touched; the current value writes nothing. The result's `undo` is
+   * what `restoreLines` needs to put exactly those lines back, photos included
+   * (they wait with the page, keyed on the copy's id).
    */
   setBoxQuantity(
     state: CollectionState,
@@ -975,8 +1006,11 @@ export const demoOps = {
     let copies = [...state.copies];
     if (quantity > before) {
       const adding = quantity - before;
-      // Never past the cap: today's line is part of `before`, so it ends at most at `quantity`.
-      const into = plain.find(({ copy }) => copy.slot === undefined && copy.acquiredAt === today);
+      // Never past the cap: the line is part of `before`, so it ends at most at `quantity`.
+      // The reducer appends each new line, so the last one in the list is the newest.
+      const into = plain.every(({ copy }) => copy.hasPhotos)
+        ? plain[plain.length - 1]
+        : plain.find(({ copy }) => !copy.hasPhotos && copy.slot === undefined && copy.acquiredAt === today);
       if (into) {
         was.push(into);
         copies[into.index] = { ...into.copy, quantity: into.copy.quantity + adding };
@@ -997,8 +1031,10 @@ export const demoOps = {
     } else {
       let taking = before - quantity;
       const gone = new Set<CopyId>();
-      // Newest first: the reducer appends each new line, so the last one in the list.
-      for (const entry of [...plain].reverse()) {
+      // Lines without photos, then those with them. Newest first in each: the
+      // reducer appends each new line, so the last one in the list.
+      const newest = [...plain].reverse();
+      for (const entry of [...newest.filter(({ copy }) => !copy.hasPhotos), ...newest.filter(({ copy }) => copy.hasPhotos)]) {
         if (taking === 0) break;
         const take = Math.min(taking, entry.copy.quantity);
         taking -= take;

@@ -10,7 +10,7 @@
 
 import { convexTest } from "convex-test";
 import { describe, expect, test } from "vitest";
-import { api } from "./_generated/api";
+import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import { MAX_COPY_QUANTITY, MAX_LINES_PER_CARD } from "./collection";
 import { MAX_INVENTORY_LINES } from "./collectionInventory";
@@ -488,6 +488,333 @@ describe("undoBoxQuantity", () => {
       }),
     ).rejects.toThrow(/changed since/);
     expect(await rowsOf(s)).toEqual([]);
+  });
+});
+
+describe("a line with photos (NEO-431)", () => {
+  const undoOf = (s: S, inverse: unknown) => s.me.mutation(api.collectionInventory.undoBoxQuantity, { inverse: inverse as never });
+  /** Steps 1 and 3 of an upload, without R2 in between. */
+  async function photograph(s: S, copyId: Id<"collectionCopies">, side: "front" | "back" = "front") {
+    const { photoId } = await s.t.mutation(internal.copyPhotos.reserveUpload, {
+      ownerId: ME.subject,
+      copyId,
+      side,
+      contentType: "image/jpeg",
+      imageBytes: 300_000,
+      thumbBytes: 20_000,
+    });
+    await s.t.mutation(internal.copyPhotos.commitUpload, { ownerId: ME.subject, photoId });
+    return photoId;
+  }
+  const photoStatus = (s: S, id: Id<"collectionCopyPhotos">) => s.t.run(async (ctx) => (await ctx.db.get(id))?.status);
+  /** A line in Box A with a front photo. */
+  async function photoLine(s: S, details: Record<string, unknown> = {}) {
+    const { copyId } = await add(s, s.fx.gooden1, { homeId: s.boxA, ...details });
+    const photoId = await photograph(s, copyId);
+    return { copyId, photoId };
+  }
+  const lines = (s: S) => linesIn(s, s.fx.gooden1, s.boxA);
+  const count = (rows: Array<{ _id: string; quantity: number }>) => rows.map((r) => [r._id, r.quantity]);
+
+  test("counts as plain: the number it already holds writes nothing", async () => {
+    const s = await setup();
+    await photoLine(s);
+    const same = await setQty(s, s.fx.gooden1, s.boxA, 1);
+    expect(same).toMatchObject({ before: 1, after: 1 });
+    expect(same.inverse.steps).toEqual([]);
+  });
+
+  test("with another detail it stays aside: not counted, not touched", async () => {
+    const s = await setup();
+    const { copyId } = await photoLine(s, { notes: "corner ding" });
+    const raised = await setQty(s, s.fx.gooden1, s.boxA, 1);
+    expect(raised.before).toBe(0);
+    const zero = await setQty(s, s.fx.gooden1, s.boxA, 0);
+    expect(zero.before).toBe(1);
+    expect((await lines(s)).map((r) => r._id)).toEqual([copyId]);
+  });
+
+  describe("raising", () => {
+    test("with only a photo line, stacks onto it, sharing its photos; the Undo takes the copies back off it, the redo puts them on again", async () => {
+      const s = await setup();
+      const { copyId, photoId } = await photoLine(s, { acquiredOn: "2026-01-01" });
+      const raised = await setQty(s, s.fx.gooden1, s.boxA, 3);
+      expect(raised).toMatchObject({ before: 1, after: 3 });
+      expect(await lines(s)).toEqual([expect.objectContaining({ _id: copyId, quantity: 3, hasPhotos: true, acquiredOn: "2026-01-01" })]);
+      expect(await photoStatus(s, photoId)).toBe("live");
+      await exact(s);
+
+      const undone = await undoOf(s, raised.inverse);
+      expect(undone).toMatchObject({ before: 3, after: 1 });
+      expect(count(await lines(s))).toEqual([[copyId, 1]]);
+      expect(await photoStatus(s, photoId)).toBe("live");
+      await exact(s);
+
+      await undoOf(s, undone.inverse);
+      expect(count(await lines(s))).toEqual([[copyId, 3]]);
+      await exact(s);
+    });
+
+    test("with two photo lines and nothing else, stacks onto the newest", async () => {
+      const s = await setup();
+      const older = await photoLine(s);
+      const newer = await photoLine(s);
+      await s.t.run((ctx) => ctx.db.patch(older.copyId, { lastUpdated: 1 }));
+      await setQty(s, s.fx.gooden1, s.boxA, 3);
+      const rows = await lines(s);
+      expect(rows.find((r) => r._id === newer.copyId)?.quantity).toBe(2);
+      expect(rows.find((r) => r._id === older.copyId)?.quantity).toBe(1);
+      await exact(s);
+    });
+
+    test("with a line without photos dated today, folds there; the photo line stays as it was", async () => {
+      const s = await setup();
+      const { copyId } = await photoLine(s, { acquiredOn: TODAY });
+      const bare = (await add(s, s.fx.gooden1, { homeId: s.boxA, acquiredOn: TODAY })).copyId;
+      await setQty(s, s.fx.gooden1, s.boxA, 4);
+      const rows = await lines(s);
+      expect(rows.find((r) => r._id === bare)?.quantity).toBe(3);
+      expect(rows.find((r) => r._id === copyId)?.quantity).toBe(1);
+      expect(rows).toHaveLength(2);
+      await exact(s);
+    });
+
+    test("with an older line without photos, starts today's line, as today; never onto the photo line", async () => {
+      const s = await setup();
+      const { copyId } = await photoLine(s, { acquiredOn: TODAY });
+      await add(s, s.fx.gooden1, { homeId: s.boxA, acquiredOn: "2026-01-01" });
+      await setQty(s, s.fx.gooden1, s.boxA, 3);
+      const rows = await lines(s);
+      expect(rows).toHaveLength(3);
+      expect(rows.find((r) => r._id === copyId)?.quantity).toBe(1);
+      expect(shape(rows.filter((r) => r._id !== copyId))).toEqual(["1@2026-01-01", `1@${TODAY}`].sort());
+      await exact(s);
+    });
+
+    test("a photo line beside a line with other details still takes the raise: only plain lines decide", async () => {
+      const s = await setup();
+      const { copyId } = await photoLine(s);
+      await add(s, s.fx.gooden1, { homeId: s.boxA, notes: "corner ding" });
+      await setQty(s, s.fx.gooden1, s.boxA, 2);
+      const rows = await lines(s);
+      expect(rows).toHaveLength(2);
+      expect(rows.find((r) => r._id === copyId)?.quantity).toBe(2);
+    });
+
+    test("a photo line in another box is no target: this box starts its own line", async () => {
+      const s = await setup();
+      const { copyId } = await photoLine(s);
+      await setQty(s, s.fx.gooden1, s.boxB, 1);
+      expect(count(await lines(s))).toEqual([[copyId, 1]]);
+      expect(await linesIn(s, s.fx.gooden1, s.boxB)).toEqual([expect.objectContaining({ quantity: 1 })]);
+      expect((await linesIn(s, s.fx.gooden1, s.boxB))[0].hasPhotos).toBeUndefined();
+    });
+
+    test("the cap holds on the stack", async () => {
+      const s = await setup();
+      await photoLine(s, { quantity: MAX_COPY_QUANTITY });
+      await expect(setQty(s, s.fx.gooden1, s.boxA, MAX_COPY_QUANTITY + 1)).rejects.toThrow();
+      expect(sum(await lines(s))).toBe(MAX_COPY_QUANTITY);
+    });
+
+    test("a plain add and an undone lower still never stack onto it", async () => {
+      const s = await setup();
+      const { copyId } = await photoLine(s, { acquiredOn: "2026-01-01" });
+      const bare = await add(s, s.fx.gooden1, { homeId: s.boxA, acquiredOn: "2026-01-01" });
+      expect(bare.merged).toBeFalsy();
+      const lowered = await setQty(s, s.fx.gooden1, s.boxA, 1);
+      await undoOf(s, lowered.inverse);
+      const rows = await lines(s);
+      expect(rows).toHaveLength(2);
+      expect(rows.find((r) => r._id === copyId)?.quantity).toBe(1);
+      await exact(s);
+    });
+  });
+
+  describe("lowering", () => {
+    test("takes the lines without photos first, even when the photo line is newer", async () => {
+      const s = await setup();
+      const bare = (await add(s, s.fx.gooden1, { homeId: s.boxA, quantity: 2, acquiredOn: "2026-01-01" })).copyId;
+      await s.t.run((ctx) => ctx.db.patch(bare, { lastUpdated: 1 }));
+      const { copyId, photoId } = await photoLine(s, { quantity: 2 });
+      await setQty(s, s.fx.gooden1, s.boxA, 3);
+      expect(count(await lines(s)).sort()).toEqual([[bare, 1], [copyId, 2]].sort());
+      await setQty(s, s.fx.gooden1, s.boxA, 2);
+      expect(count(await lines(s))).toEqual([[copyId, 2]]);
+      expect(await photoStatus(s, photoId)).toBe("live");
+      await exact(s);
+    });
+
+    test("takes newest first within each group", async () => {
+      const s = await setup();
+      const bareOld = (await add(s, s.fx.gooden1, { homeId: s.boxA, acquiredOn: "2026-01-01" })).copyId;
+      const bareNew = (await add(s, s.fx.gooden1, { homeId: s.boxA, acquiredOn: "2026-01-02" })).copyId;
+      const photoOld = await photoLine(s);
+      const photoNew = await photoLine(s);
+      await s.t.run(async (ctx) => {
+        await ctx.db.patch(bareOld, { lastUpdated: 10 });
+        await ctx.db.patch(bareNew, { lastUpdated: 20 });
+        await ctx.db.patch(photoOld.copyId, { lastUpdated: 1 });
+        await ctx.db.patch(photoNew.copyId, { lastUpdated: 2 });
+      });
+      await setQty(s, s.fx.gooden1, s.boxA, 3);
+      expect((await lines(s)).some((r) => r._id === bareNew)).toBe(false);
+      await setQty(s, s.fx.gooden1, s.boxA, 2);
+      expect((await lines(s)).some((r) => r._id === bareOld)).toBe(false);
+      await setQty(s, s.fx.gooden1, s.boxA, 1);
+      expect(count(await lines(s))).toEqual([[photoOld.copyId, 1]]);
+      expect(await photoStatus(s, photoNew.photoId)).toBe("detached");
+      expect(await photoStatus(s, photoOld.photoId)).toBe("live");
+    });
+
+    test("part of a photo line keeps its photos; the Undo sets it back", async () => {
+      const s = await setup();
+      const { copyId, photoId } = await photoLine(s, { quantity: 3 });
+      const lowered = await setQty(s, s.fx.gooden1, s.boxA, 2);
+      expect(await lines(s)).toEqual([expect.objectContaining({ _id: copyId, quantity: 2, hasPhotos: true })]);
+      expect(await photoStatus(s, photoId)).toBe("live");
+      await undoOf(s, lowered.inverse);
+      expect(count(await lines(s))).toEqual([[copyId, 3]]);
+      await exact(s);
+    });
+  });
+
+  describe("a count to 0, its Undo and its redo", () => {
+    test("the line goes, its photos wait, and the Undo brings it back with both sides, its row and its date", async () => {
+      const s = await setup();
+      const { copyId, photoId } = await photoLine(s, { quantity: 2, acquiredOn: "2026-01-01", slot: 3 });
+      const back = await photograph(s, copyId, "back");
+      const zero = await setQty(s, s.fx.gooden1, s.boxA, 0);
+      expect(zero).toMatchObject({ before: 2, after: 0 });
+      expect(await lines(s)).toEqual([]);
+      expect(await photoStatus(s, photoId)).toBe("detached");
+      expect(await photoStatus(s, back)).toBe("detached");
+      await exact(s);
+
+      const undone = await undoOf(s, zero.inverse);
+      expect(undone).toMatchObject({ before: 0, after: 2 });
+      const [row] = await lines(s);
+      expect(row).toMatchObject({ quantity: 2, hasPhotos: true, acquiredOn: "2026-01-01", slot: 3 });
+      expect(await photoStatus(s, photoId)).toBe("live");
+      expect(await photoStatus(s, back)).toBe("live");
+      const [urls] = await s.me.query(api.copyPhotos.photosOf, { copyIds: [row._id] });
+      expect(urls.front).toBeDefined();
+      expect(urls.back).toBeDefined();
+      await exact(s);
+    });
+
+    test("redo and undo again never strand or lose the photos", async () => {
+      const s = await setup();
+      const { photoId } = await photoLine(s);
+      const zero = await setQty(s, s.fx.gooden1, s.boxA, 0);
+      const undone = await undoOf(s, zero.inverse);
+      const redone = await undoOf(s, undone.inverse);
+      expect(redone).toMatchObject({ before: 1, after: 0 });
+      expect(await lines(s)).toEqual([]);
+      expect(await photoStatus(s, photoId)).toBe("detached");
+      await exact(s);
+      const again = await undoOf(s, redone.inverse);
+      expect(again).toMatchObject({ before: 0, after: 1 });
+      expect(await lines(s)).toEqual([expect.objectContaining({ quantity: 1, hasPhotos: true })]);
+      expect(await photoStatus(s, photoId)).toBe("live");
+      await exact(s);
+    });
+
+    test("a bare line and a photo line of the same date both come back apart, the photos on the right one", async () => {
+      const s = await setup();
+      // The photo line first: a plain add would fold, and the photo land on the stack.
+      const { photoId } = await photoLine(s, { acquiredOn: "2026-01-01" });
+      await add(s, s.fx.gooden1, { homeId: s.boxA, quantity: 2, acquiredOn: "2026-01-01" });
+      const zero = await setQty(s, s.fx.gooden1, s.boxA, 0);
+      await undoOf(s, zero.inverse);
+      const rows = await lines(s);
+      expect(rows.map((r) => [r.quantity, r.hasPhotos === true]).sort()).toEqual([[1, true], [2, false]]);
+      expect(await photoStatus(s, photoId)).toBe("live");
+      await exact(s);
+    });
+
+    test("a restore with photos never folds into a bare line that has appeared since", async () => {
+      const s = await setup();
+      const { photoId } = await photoLine(s, { acquiredOn: "2026-01-01" });
+      const zero = await setQty(s, s.fx.gooden1, s.boxA, 0);
+      await add(s, s.fx.gooden1, { homeId: s.boxA, acquiredOn: "2026-01-01" });
+      await undoOf(s, zero.inverse);
+      const rows = await lines(s);
+      expect(rows.map((r) => [r.quantity, r.hasPhotos === true]).sort()).toEqual([[1, false], [1, true]]);
+      expect(await photoStatus(s, photoId)).toBe("live");
+      await exact(s);
+    });
+
+    test("photos already swept: the line comes back bare, and its redo removes it", async () => {
+      const s = await setup();
+      const { photoId } = await photoLine(s);
+      const zero = await setQty(s, s.fx.gooden1, s.boxA, 0);
+      await s.t.run((ctx) => ctx.db.delete(photoId));
+      const undone = await undoOf(s, zero.inverse);
+      const [row] = await lines(s);
+      expect(row.quantity).toBe(1);
+      expect(row.hasPhotos).toBeUndefined();
+      await undoOf(s, undone.inverse);
+      expect(await lines(s)).toEqual([]);
+      await exact(s);
+    });
+
+    test("another collector's forged restore can't take detached photos", async () => {
+      const s = await setup();
+      const { photoId } = await photoLine(s);
+      const zero = await setQty(s, s.fx.gooden1, s.boxA, 0);
+      const step = zero.inverse.steps[0];
+      expect(step.op === "restore" && step.photoIds).toEqual([photoId]);
+      const theirBox = (await s.them.mutation(api.collectionContainers.create, { kind: "box", name: "Theirs" })).containerId;
+      await s.them.mutation(api.collectionInventory.undoBoxQuantity, {
+        inverse: { cardId: s.fx.gooden1, boxId: theirBox, steps: [step] },
+      });
+      const theirs = await rowsOf(s, THEM.subject);
+      expect(theirs).toEqual([expect.objectContaining({ quantity: 1 })]);
+      expect(theirs[0].hasPhotos).toBeUndefined();
+      expect(await photoStatus(s, photoId)).toBe("detached");
+    });
+  });
+
+  describe("changed since", () => {
+    test("a line a raise made and the collector then photographed is theirs: the Undo refuses and it stands", async () => {
+      const s = await setup();
+      const raised = await setQty(s, s.fx.gooden1, s.boxA, 1);
+      const [row] = await lines(s);
+      const photoId = await photograph(s, row._id);
+      await expect(undoOf(s, raised.inverse)).rejects.toThrow(/changed since/i);
+      expect(await lines(s)).toEqual([expect.objectContaining({ _id: row._id, hasPhotos: true })]);
+      expect(await photoStatus(s, photoId)).toBe("live");
+    });
+
+    test("a redo whose line lost its photos since refuses, and the line stands", async () => {
+      const s = await setup();
+      await photoLine(s);
+      const zero = await setQty(s, s.fx.gooden1, s.boxA, 0);
+      const undone = await undoOf(s, zero.inverse);
+      const [row] = await lines(s);
+      await s.me.mutation(api.copyPhotos.remove, { copyId: row._id, side: "front" });
+      await expect(undoOf(s, undone.inverse)).rejects.toThrow(/changed since/i);
+      expect(count(await lines(s))).toEqual([[row._id, 1]]);
+    });
+
+    test("a stack the collector changed since refuses, and keeps its photos", async () => {
+      const s = await setup();
+      const { copyId, photoId } = await photoLine(s);
+      const raised = await setQty(s, s.fx.gooden1, s.boxA, 2);
+      await s.me.mutation(api.collection.updateCopy, { copyId, details: { quantity: 5, homeId: s.boxA, acquiredOn: TODAY } as never });
+      await expect(undoOf(s, raised.inverse)).rejects.toThrow(/changed since/i);
+      expect(await photoStatus(s, photoId)).toBe("live");
+    });
+
+    test("a photo line since given another detail is out of the count: the Undo refuses", async () => {
+      const s = await setup();
+      const { copyId } = await photoLine(s);
+      const raised = await setQty(s, s.fx.gooden1, s.boxA, 2);
+      await s.me.mutation(api.collection.updateCopy, { copyId, details: { quantity: 2, homeId: s.boxA, notes: "corner ding" } as never });
+      await expect(undoOf(s, raised.inverse)).rejects.toThrow(/changed since/i);
+      expect(count(await lines(s))).toEqual([[copyId, 2]]);
+    });
   });
 });
 

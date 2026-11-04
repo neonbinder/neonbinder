@@ -398,6 +398,35 @@ describe("folds, removes and undo", () => {
     vi.useRealTimers();
   });
 
+  test("NEO-431: a quick count's photos wait the same hour: inside it the Undo puts them back, past the sweep the line comes back bare", async () => {
+    const s = await setup();
+    vi.useFakeTimers();
+    const box = (await s.me.mutation(api.collectionContainers.create, { kind: "box", name: "Box" })).containerId;
+    const copyId = await addCopy(s, { homeId: box });
+    const photoId = await photograph(s, copyId, "front");
+    const count = (quantity: number) =>
+      s.me.mutation(api.collectionInventory.setBoxQuantity, { cardId: s.fx.gooden1, boxId: box, quantity });
+
+    const zero = await count(0);
+    vi.advanceTimersByTime(PHOTO_HOLD_MS - 1000);
+    expect(await s.t.mutation(internal.copyPhotos.sweepCopyPhotos, {})).toEqual({ pending: 0, detached: 0, replaced: 0 });
+    await s.me.mutation(api.collectionInventory.undoBoxQuantity, { inverse: zero.inverse });
+    const [back] = (await s.t.run((ctx) => ctx.db.query("collectionCopies").collect())).filter((r) => r.homeId === box);
+    expect(back.hasPhotos).toBe(true);
+    expect((await photoRows(s))[0]).toMatchObject({ _id: photoId, copyId: back._id, status: "live" });
+
+    // A line brought back gets a fresh hour the next time it is counted away.
+    const again = await count(0);
+    vi.advanceTimersByTime(PHOTO_HOLD_MS + 1);
+    expect(await s.t.mutation(internal.copyPhotos.sweepCopyPhotos, {})).toEqual({ pending: 0, detached: 1, replaced: 0 });
+    await s.me.mutation(api.collectionInventory.undoBoxQuantity, { inverse: again.inverse });
+    const [bare] = (await s.t.run((ctx) => ctx.db.query("collectionCopies").collect())).filter((r) => r.homeId === box);
+    expect(bare.quantity).toBe(1);
+    expect(bare.hasPhotos).toBeUndefined();
+    expect(await photoRows(s)).toEqual([]);
+    vi.useRealTimers();
+  });
+
   test("the global reset drains every photo, with its objects, before the copies", async () => {
     const s = await setup();
     vi.stubEnv("ALLOW_RESET_SET_BUILDER_DATA", "true");

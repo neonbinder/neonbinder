@@ -19,15 +19,19 @@
  * collector's default condition (NEO-380, `defaultConditionOf`; a line stored
  * before conditions were required, with none, counts too), ungraded, no
  * serial, no cost, no floor price of its own (NEO-378), no location, no notes,
- * not up for trade; where in the box (`slot`) and when acquired (`acquiredOn`)
- * are ignored. Every other line of the card in that box is the collector's own
+ * not up for trade; where in the box (`slot`), when acquired (`acquiredOn`) and
+ * whether it has photos are ignored (NEO-431: a photo alone sets no line
+ * apart). Every other line of the card in that box is the collector's own
  * detail and is never touched here (the client shows it beside the number).
  *
  *   - Raise by n: n raw copies in the default condition, acquired today (the caller's today, else the
  *     server's UTC date), not placed in a row, folding into today's plain
- *     unplaced line when there is one (the fold rule, `foldsInto`).
- *   - Lower by n: taken off the plain lines newest first (`newerLine`); a
- *     line that reaches 0 is deleted.
+ *     unplaced line when there is one (the fold rule, `foldsInto`). NEO-431:
+ *     when every plain line in the box has photos, the copies stack onto the
+ *     newest of those instead and share its photos (`photoLineToRaise`).
+ *   - Lower by n: taken off the lines without photos first, then the ones with
+ *     them, newest first in each (`lowerOrder`); a line that reaches 0 is
+ *     deleted, and its photos wait an hour for the Undo (`detachPhotos`).
  *   - The same number: nothing is written.
  *
  * NEO-370: a raise into a listed box needs the variant's common price and a
@@ -48,6 +52,7 @@ import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx } from "./_generated/server";
 import { mutation, query } from "./_generated/server";
 import { requireSignedIn } from "./auth";
+import { detachPhotos, reattachPhotos } from "./copyPhotos";
 import { ListingGate } from "./listingGate";
 import {
   COLLECTION_ERRORS,
@@ -87,17 +92,22 @@ export const MAX_INVENTORY_LINES = 2000;
 /**
  * One step of a quick count's undo, on one line of the card in the box:
  *   - `remove`: delete the line, which must hold exactly `quantity` (the
- *     undo of an insert);
+ *     undo of an insert). `hasPhotos` says the line had photos when the step
+ *     was written (a restore's redo); a line that gained or lost them since
+ *     has changed, so the step refuses;
  *   - `set`: the line holds `from`; make it `to` (the undo of a quantity
  *     change);
  *   - `restore`: put back a deleted plain line (the undo of a delete),
- *     folding into an identical line if one is there now.
+ *     folding into an identical line if one is there now. With `photoIds`
+ *     (NEO-431) it is always a line of its own and takes back those photos,
+ *     the ones the hourly sweep has not reached yet.
  */
 export const boxQuantityStepValidator = v.union(
   v.object({
     op: v.literal("remove"),
     copyId: v.id("collectionCopies"),
     quantity: v.number(),
+    hasPhotos: v.optional(v.literal(true)),
   }),
   v.object({
     op: v.literal("set"),
@@ -110,6 +120,7 @@ export const boxQuantityStepValidator = v.union(
     quantity: v.number(),
     acquiredOn: v.optional(v.string()),
     slot: v.optional(v.number()),
+    photoIds: v.optional(v.array(v.id("collectionCopyPhotos"))),
   }),
 );
 
@@ -163,17 +174,16 @@ export const inventoryCardValidator = v.object({
  * A plain line: what a quick count counts and changes. Raw in the
  * collector's default condition (or with none, from before NEO-380),
  * ungraded, no serial, no cost, no own minimum price, no location, no notes,
- * not up for trade; its slot and acquired date do not matter.
+ * not up for trade; its slot, acquired date and photos do not matter.
  */
 export function isPlainLine(
   row: Pick<
     CopyRow,
-    "condition" | "grading" | "serialNumber" | "costCents" | "minPriceCents" | "location" | "notes" | "upForTrade" | "hasPhotos"
+    "condition" | "grading" | "serialNumber" | "costCents" | "minPriceCents" | "location" | "notes" | "upForTrade"
   >,
   defaultCondition: Condition,
 ): boolean {
   return (
-    row.hasPhotos !== true &&
     (row.condition === undefined || row.condition === defaultCondition) &&
     row.grading === undefined &&
     row.serialNumber === undefined &&
@@ -234,6 +244,70 @@ function plainIn(
   return { rows, copies };
 }
 
+/** Newest first, as `newerLine` reads it. */
+function byNewest(a: CopyRow, b: CopyRow): number {
+  return newerLine(a, b) ? -1 : newerLine(b, a) ? 1 : 0;
+}
+
+/**
+ * The order a lower takes from the plain lines: those without photos first,
+ * since a photo line is the one the collector made a record of, then those
+ * with them; newest first in each. `applyBoxQuantity` in the client's
+ * convexStore.ts draws this same order.
+ */
+function lowerOrder(rows: ReadonlyArray<CopyRow>): CopyRow[] {
+  return [...rows].sort((a, b) => Number(a.hasPhotos === true) - Number(b.hasPhotos === true) || byNewest(a, b));
+}
+
+/**
+ * The line a raise stacks onto outside the fold rule: when every plain line
+ * has photos, the newest of them. `undefined` when a line without photos is
+ * there, or no plain line at all: the fold rule decides then. Only a raise
+ * asks this. `foldsInto` still refuses a photo line for everything else, so
+ * an add, a move or an undo's restore never lands on one. A raise cannot pass
+ * the cap here: the line is part of `before`, so it ends at the asked number
+ * at most.
+ */
+function photoLineToRaise(rows: ReadonlyArray<CopyRow>): CopyRow | undefined {
+  if (rows.some((row) => row.hasPhotos !== true)) return undefined;
+  return [...rows].sort(byNewest)[0];
+}
+
+/** Put `quantity` more copies on an existing line. */
+async function raiseLine(
+  ctx: MutationCtx,
+  row: CopyRow,
+  adding: number,
+  now: number,
+): Promise<{ undo: Step; change: CountChange; row: CopyRow }> {
+  const quantity = row.quantity + adding;
+  await ctx.db.patch(row._id, { quantity, lastUpdated: now });
+  return {
+    undo: { op: "set", copyId: row._id, from: quantity, to: row.quantity },
+    change: changeOf(row, counted(row), counted({ ...row, quantity })),
+    row: { ...row, quantity, lastUpdated: now },
+  };
+}
+
+/**
+ * Delete a plain line, its photos detached for the Undo (as `removeCopy` does).
+ * Returns the step that puts it back and the row change.
+ */
+async function deleteLine(ctx: MutationCtx, row: CopyRow): Promise<{ undo: Step; change: CountChange }> {
+  const photoIds = await detachPhotos(ctx, row);
+  await ctx.db.delete(row._id);
+  return {
+    undo: {
+      op: "restore",
+      quantity: row.quantity,
+      ...(row.acquiredOn ? { acquiredOn: row.acquiredOn } : {}),
+      ...(row.slot !== undefined ? { slot: row.slot } : {}),
+      ...(photoIds ? { photoIds } : {}),
+    },
+    change: changeOf(row, counted(row), null),
+  };
+}
+
 const CHANGED_SINCE =
   "That count changed since, so it can't be undone. Type the number you want instead.";
 
@@ -247,7 +321,8 @@ type Place = { variantId: Id<"selectorOptions">; setId: Id<"selectorOptions"> };
  * as it now stands (the folded line patched, or the inserted one), so a
  * caller holding the card's lines in memory can keep them current without
  * reading them again. `place` gives the card's variant and set for an
- * insert; a caller that inserts more than once passes a memo.
+ * insert; a caller that inserts more than once passes a memo. `ownLine` always
+ * inserts: a line about to take photos back never folds.
  */
 async function putPlain(
   ctx: MutationCtx,
@@ -259,6 +334,7 @@ async function putPlain(
   defaultCondition: Condition,
   now: number,
   place: () => Promise<Place> = () => placeOf(ctx, cardId),
+  { ownLine = false }: { ownLine?: boolean } = {},
 ): Promise<{ undo: Step; change: CountChange; row: CopyRow }> {
   const next: StoredDetails = {
     quantity: details.quantity,
@@ -267,18 +343,10 @@ async function putPlain(
     homeId: box._id,
     ...(details.slot !== undefined ? { slot: details.slot } : {}),
   };
-  const into = lines.find(
-    (row) => foldsInto(foldShape(row), next) && row.quantity + details.quantity <= MAX_COPY_QUANTITY,
-  );
-  if (into) {
-    const quantity = into.quantity + details.quantity;
-    await ctx.db.patch(into._id, { quantity, lastUpdated: now });
-    return {
-      undo: { op: "set", copyId: into._id, from: quantity, to: into.quantity },
-      change: changeOf(into, counted(into), counted({ ...into, quantity })),
-      row: { ...into, quantity, lastUpdated: now },
-    };
-  }
+  const into = ownLine
+    ? undefined
+    : lines.find((row) => foldsInto(foldShape(row), next) && row.quantity + details.quantity <= MAX_COPY_QUANTITY);
+  if (into) return await raiseLine(ctx, into, details.quantity, now);
   if (lines.length >= MAX_LINES_PER_CARD) {
     refuse(COLLECTION_ERRORS.limit, `You already have ${MAX_LINES_PER_CARD} lines of this card. Stack some together first.`);
   }
@@ -301,8 +369,8 @@ async function putPlain(
 /**
  * Set how many plain copies of `cardId` are in `boxId` (see the header):
  * raise adds raw copies acquired `acquiredOn` (the caller's today; default
- * the server's UTC date), lower takes them off the plain lines newest first,
- * the same number writes nothing. One transaction. Refuses a binder, a shelf
+ * the server's UTC date), lower takes them off the plain lines in
+ * `lowerOrder`, the same number writes nothing. One transaction. Refuses a binder, a shelf
  * row, a box that is not the caller's, and a number outside 0 to
  * `MAX_COPY_QUANTITY`.
  */
@@ -351,35 +419,33 @@ export const setBoxQuantity = mutation({
           condition: defaultCondition,
         });
       }
-      const put = await putPlain(
-        ctx,
-        ownerId,
-        args.cardId,
-        box,
-        lines,
-        { quantity: args.quantity - before, acquiredOn },
-        defaultCondition,
-        now,
-        placeOnce,
-      );
+      const adding = args.quantity - before;
+      const photoLine = photoLineToRaise(plain.rows);
+      const put = photoLine
+        ? await raiseLine(ctx, photoLine, adding, now)
+        : await putPlain(
+            ctx,
+            ownerId,
+            args.cardId,
+            box,
+            lines,
+            { quantity: adding, acquiredOn },
+            defaultCondition,
+            now,
+            placeOnce,
+          );
       undo.push(put.undo);
       changes.push(put.change);
     } else {
       let left = before - args.quantity;
-      const newestFirst = [...plain.rows].sort((a, b) => (newerLine(a, b) ? -1 : newerLine(b, a) ? 1 : 0));
-      for (const row of newestFirst) {
+      for (const row of lowerOrder(plain.rows)) {
         if (left === 0) break;
         const take = Math.min(left, row.quantity);
         left -= take;
         if (take === row.quantity) {
-          await ctx.db.delete(row._id);
-          undo.push({
-            op: "restore",
-            quantity: row.quantity,
-            ...(row.acquiredOn ? { acquiredOn: row.acquiredOn } : {}),
-            ...(row.slot !== undefined ? { slot: row.slot } : {}),
-          });
-          changes.push(changeOf(row, counted(row), null));
+          const gone = await deleteLine(ctx, row);
+          undo.push(gone.undo);
+          changes.push(gone.change);
         } else {
           const quantity = row.quantity - take;
           await ctx.db.patch(row._id, { quantity, lastUpdated: now });
@@ -451,9 +517,19 @@ export const undoBoxQuantity = mutation({
           refuse(COLLECTION_ERRORS.invalid, CHANGED_SINCE);
         }
         checkSlot(box, step.slot);
-        const put = await putPlain(ctx, ownerId, cardId, box, lines, step, defaultCondition, now, placeOnce);
-        keep(put.row);
-        redo.push(put.undo);
+        const taking = (step.photoIds?.length ?? 0) > 0;
+        const put = await putPlain(ctx, ownerId, cardId, box, lines, step, defaultCondition, now, placeOnce, {
+          ownLine: taking,
+        });
+        // Photos the sweep already took leave a line with none, which is what
+        // its redo then expects.
+        if (taking && (await reattachPhotos(ctx, ownerId, step.photoIds ?? [], put.row._id))) {
+          keep({ ...put.row, hasPhotos: true });
+          redo.push({ op: "remove", copyId: put.row._id, quantity: step.quantity, hasPhotos: true });
+        } else {
+          keep(put.row);
+          redo.push(put.undo);
+        }
         changes.push(put.change);
         continue;
       }
@@ -468,16 +544,15 @@ export const undoBoxQuantity = mutation({
         refuse(COLLECTION_ERRORS.invalid, CHANGED_SINCE);
       }
       if (step.op === "remove") {
-        if (row.quantity !== step.quantity) refuse(COLLECTION_ERRORS.invalid, CHANGED_SINCE);
-        await ctx.db.delete(row._id);
+        // A line photographed since the raise that made it is the collector's
+        // record now: taking the raise back must not delete it.
+        if (row.quantity !== step.quantity || (row.hasPhotos === true) !== (step.hasPhotos === true)) {
+          refuse(COLLECTION_ERRORS.invalid, CHANGED_SINCE);
+        }
+        const gone = await deleteLine(ctx, row);
         drop(row._id);
-        redo.push({
-          op: "restore",
-          quantity: row.quantity,
-          ...(row.acquiredOn ? { acquiredOn: row.acquiredOn } : {}),
-          ...(row.slot !== undefined ? { slot: row.slot } : {}),
-        });
-        changes.push(changeOf(row, counted(row), null));
+        redo.push(gone.undo);
+        changes.push(gone.change);
       } else {
         if (row.quantity !== step.from) refuse(COLLECTION_ERRORS.invalid, CHANGED_SINCE);
         checkQuantity(step.to, 1);
