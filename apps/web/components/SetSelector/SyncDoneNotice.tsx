@@ -85,9 +85,9 @@ export default function SyncDoneNotice({
    * as an UNANCHORED regex) finds both. Same ambiguity class as the bare
    * "Collapse" this ticket already fixed, and the same remedy.
    *
-   * Optional because two callers outside this change's scope (VariantForm,
-   * ParallelForm) still render the notice inside a sync form; they keep the
-   * old bare name until they are given one.
+   * Optional because a caller outside this change's scope (VariantForm)
+   * still renders the notice inside a sync form; it keeps the old bare name
+   * until it is given one. (ParallelForm was the other; NEO-425 removed it.)
    */
   columnLabel?: string;
   /**
@@ -104,8 +104,8 @@ export default function SyncDoneNotice({
   const hasTwins = !!twins && twins.entries.length > 0;
   // NEO-325 (a11y re-audit N1): with nothing to say, the live region is still
   // rendered, empty and unstyled, in the SAME element the notice fills. A
-  // caller that keeps this mounted for the whole sync (VariantForm,
-  // ParallelForm) then has a region that exists before its text arrives,
+  // caller that keeps this mounted for the whole sync (VariantForm) then
+  // has a region that exists before its text arrives,
   // which is what gets a polite region announced. (EntityColumn mounts it
   // only with content; its toast announces the transition instead.)
   if (!message && notices.length === 0 && !hasTwins) return <div role="status" />;

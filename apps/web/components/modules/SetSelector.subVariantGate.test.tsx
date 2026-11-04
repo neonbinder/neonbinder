@@ -1,8 +1,15 @@
 /**
  * NEO-334 — the set builder's last column, Sub-Variants (level `parallel`,
- * "Sync Sub-Variants" / "+ Custom"), exists ONLY when the selected variant
+ * "+ Custom" only since NEO-425), exists ONLY when the selected variant
  * type is an Insert type. Never under Base, a Parallel type, a Promo type, or
  * a type with no kind (Jason, 2026-10-10).
+ *
+ * NEO-425 (Jason, 2026-11-03) — and only when the insert HAS sub-variants.
+ * Sub-variants are NB-only (no marketplace has them), so the column has no
+ * Sync button, and an insert with none is a leaf: no column at all. Whether it
+ * has any is read from the same `getSelectorOptions` subscription the
+ * column's own list holds; until that answers, the column is not drawn and a
+ * `parallel` id in the drill stands.
  *
  * The gate is the variant type's TITLE (NEO-334: "Insert" or "Inserts",
  * read through `variantTypeKind`), never a flag: a type titled "Insert Set"
@@ -20,7 +27,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import React from "react";
 import { MemoryRouter, useLocation } from "react-router";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const INSERT_TYPE = {
   _id: "vt-insert",
@@ -67,6 +74,7 @@ vi.mock("../../convex/_generated/api", () => ({
     selectorOptions: {
       getSelectorOptionById: "getSelectorOptionById",
       getAncestorChain: "getAncestorChain",
+      getSelectorOptions: "getSelectorOptions",
     },
     parallelChecklistBuild: {
       getParallelsForBuild: "getParallelsForBuild",
@@ -78,8 +86,22 @@ vi.mock("../../convex/_generated/api", () => ({
   },
 }));
 
+/**
+ * What `getSelectorOptions({ level: "parallel", parentId })` answers, per
+ * insert: an insert missing from the map is still loading. Tests reassign it;
+ * `beforeEach` gives `ins1` one sub-variant.
+ */
+const subVariants: { byInsert: Record<string, unknown[]> } = { byInsert: {} };
+/** Every `getSelectorOptions` args object the page subscribed with. */
+const subVariantReads: unknown[] = [];
+
 vi.mock("convex/react", () => ({
   useQuery: (ref: string, args: unknown) => {
+    if (ref === "getSelectorOptions" && args !== "skip") {
+      subVariantReads.push(args);
+      const { parentId } = args as { parentId: string };
+      return subVariants.byInsert[parentId];
+    }
     // Every id is "valid" here, so the resolver answers with the whole path:
     // the page itself, not the resolver, has to cope with a stale parallel.
     if (ref === "resolveDrillPath" && args !== "skip") {
@@ -103,18 +125,30 @@ vi.mock("../../convex/bscFacets", () => ({
   bscSourceView: () => ({ sources: [] }),
 }));
 
-/** Renders the column's selector and its extra actions, tagged by level. */
+/**
+ * Renders the column's selector and its extra actions, tagged by level, with
+ * the two props NEO-425 sets on the Sub-Variants column (the real button row
+ * is EntityColumn's, proved in EntityColumn.hideSync.test.tsx).
+ */
 vi.mock("../SetSelector/ResilientEntityColumn", () => ({
   default: ({
     selector,
     extraActions,
     level,
+    hideSync,
+    addButtonText,
   }: {
     selector: React.ReactNode;
     extraActions?: React.ReactNode;
     level: string;
+    hideSync?: boolean;
+    addButtonText: string;
   }) => (
-    <div data-testid={`column-${level}`}>
+    <div
+      data-testid={`column-${level}`}
+      data-hide-sync={hideSync ? "yes" : "no"}
+      data-noun={addButtonText}
+    >
       {selector}
       {extraActions}
     </div>
@@ -171,7 +205,6 @@ vi.mock("../SetSelector/ManufacturerForm", () => ({ default: () => null }));
 vi.mock("../SetSelector/SetForm", () => ({ default: () => null }));
 vi.mock("../SetSelector/SetVariantForm", () => ({ default: () => null }));
 vi.mock("../SetSelector/VariantForm", () => ({ default: () => null }));
-vi.mock("../SetSelector/ParallelForm", () => ({ default: () => null }));
 vi.mock("../SetSelector/ParallelGroupingModal", () => ({ default: () => null }));
 vi.mock("../SetSelector/MultiSourcePanel", () => ({ default: () => null }));
 vi.mock("../SetSelector/SetAttributesPanel", () => ({ default: () => null }));
@@ -204,6 +237,11 @@ const pickTypeAndInsert = (typeId: string) => {
 const subVariantColumn = () => screen.queryByTestId("column-parallel");
 const groupParallels = () => screen.queryByRole("button", { name: "Group Parallels" });
 const search = () => screen.getByTestId("location").getAttribute("data-search") ?? "";
+
+beforeEach(() => {
+  subVariants.byInsert = { ins1: [{ _id: "par1", value: "Gold" }] };
+  subVariantReads.length = 0;
+});
 
 describe("SetSelector — the Sub-Variants column only under an Insert type (NEO-334)", () => {
   it("opens under an insert of an Insert type, with Group Parallels on the inserts column", () => {
@@ -275,6 +313,98 @@ describe("SetSelector — a stale sub-variant in the drill (NEO-334)", () => {
     expect(
       screen.getByTestId("sub-variant-selector").getAttribute("data-selected"),
     ).toBe("par1");
+    expect(screen.getByTestId("checklist").getAttribute("data-variant-id")).toBe("par1");
+  });
+});
+
+describe("SetSelector — the Sub-Variants column needs sub-variants (NEO-425)", () => {
+  it("has no Sync button: the column is passed hideSync, and its noun for + Custom", () => {
+    renderAt(DRILLED_TO_A_SET);
+    pickTypeAndInsert("vt-insert");
+
+    const column = subVariantColumn();
+    expect(column?.getAttribute("data-hide-sync")).toBe("yes");
+    // "Add custom Sub-Variants" and the stall banner are named from it.
+    expect(column?.getAttribute("data-noun")).toBe("Sub-Variants");
+  });
+
+  it("reads the count through the column's own subscription (same args, same key order)", () => {
+    renderAt(DRILLED_TO_A_SET);
+    pickTypeAndInsert("vt-insert");
+
+    expect(subVariantReads.length).toBeGreaterThan(0);
+    for (const args of subVariantReads) {
+      expect(JSON.stringify(args)).toBe(
+        JSON.stringify({ level: "parallel", parentId: "ins1" }),
+      );
+    }
+  });
+
+  it("an insert with no sub-variants opens no column: it is a leaf with its own checklist", () => {
+    subVariants.byInsert = { ins1: [] };
+    renderAt(DRILLED_TO_A_SET);
+    pickTypeAndInsert("vt-insert");
+
+    // Positive first: the insert is picked and its checklist is open.
+    expect(screen.getByTestId("checklist").getAttribute("data-variant-id")).toBe("ins1");
+    expect(subVariantColumn()).toBeNull();
+    expect(screen.queryByTestId("sub-variant-selector")).toBeNull();
+    // Group Parallels stays: it is how an insert gets its first sub-variant.
+    expect(groupParallels()).toBeTruthy();
+    // The deepest column announced is the inserts column, not a Parallels one.
+    expect(screen.getByRole("status").textContent).toBe("Inserts column opened");
+  });
+
+  it("draws no column while the sub-variants are still loading", () => {
+    subVariants.byInsert = {};
+    renderAt(DRILLED_TO_A_SET);
+    pickTypeAndInsert("vt-insert");
+
+    expect(screen.getByTestId("checklist").getAttribute("data-variant-id")).toBe("ins1");
+    expect(subVariantColumn()).toBeNull();
+  });
+
+  it("opens the column when the insert's first rows land (Group Parallels made them)", () => {
+    subVariants.byInsert = { ins1: [] };
+    const view = renderAt(DRILLED_TO_A_SET);
+    pickTypeAndInsert("vt-insert");
+    expect(subVariantColumn()).toBeNull();
+
+    subVariants.byInsert = { ins1: [{ _id: "par1", value: "Gold" }] };
+    view.rerender(
+      <MemoryRouter>
+        <SetSelector />
+        <LocationProbe />
+      </MemoryRouter>,
+    );
+    expect(subVariantColumn()).toBeTruthy();
+  });
+
+  it("does not read sub-variants under a type known not to be an Insert type", () => {
+    renderAt(DRILLED_TO_A_SET);
+    pickTypeAndInsert("vt-parallel");
+
+    expect(screen.getByTestId("checklist").getAttribute("data-variant-id")).toBe("ins1");
+    expect(subVariantReads).toHaveLength(0);
+  });
+});
+
+describe("SetSelector — a sub-variant in the drill of an insert that has none (NEO-425)", () => {
+  it("is dropped from the URL, and the checklist is the insert's", async () => {
+    subVariants.byInsert = { ins1: [] };
+    renderAt(`${DRILLED_TO_A_SET}&type=vt-insert&insert=ins1&parallel=par1`);
+
+    await waitFor(() => expect(search()).not.toContain("parallel=par1"));
+    expect(search()).toContain("insert=ins1");
+    expect(subVariantColumn()).toBeNull();
+    expect(screen.getByTestId("checklist").getAttribute("data-variant-id")).toBe("ins1");
+  });
+
+  it("stands while the sub-variants load, so a real one does not flash its insert's checklist", () => {
+    subVariants.byInsert = {};
+    renderAt(`${DRILLED_TO_A_SET}&type=vt-insert&insert=ins1&parallel=par1`);
+
+    expect(search()).toContain("parallel=par1");
     expect(screen.getByTestId("checklist").getAttribute("data-variant-id")).toBe("par1");
   });
 });

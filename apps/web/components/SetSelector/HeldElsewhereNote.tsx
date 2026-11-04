@@ -22,9 +22,9 @@ import { HOLDER_PATH_SEPARATOR, type HeldRow } from "./held-elsewhere";
  * the list, labelled by that id. Without `summaryId` (the modal header, which
  * is not live) it draws the summary too.
  *
- * `toggleLabel` is per caller on purpose. Sync Inserts and Sync Sub-Variants
- * can each have a panel up at once, and two disclosures with one accessible
- * name are ambiguous both for a screen reader and for a Maestro text match.
+ * `toggleLabel` is per caller on purpose. Two panels can be up at once (a
+ * sync form and the reconcile dialog), and two disclosures with one
+ * accessible name are ambiguous for a screen reader and for a text match.
  */
 export default function HeldElsewhereNote({
   rows,
@@ -160,13 +160,6 @@ export function linkedElsewhereSummary(n: number): string {
   return n === 1
     ? "1 already linked to a row elsewhere. Leaving it be."
     : `${n} already linked to rows elsewhere. Leaving those be.`;
-}
-
-/** Sub-Variants: rows held by another insert, or by another insert's parallels. */
-export function heldElsewhereSummary(n: number, variantsLabel: string): string {
-  return n === 1
-    ? `1 already lives elsewhere in ${variantsLabel}. Leaving it be.`
-    : `${n} already live elsewhere in ${variantsLabel}. Leaving those be.`;
 }
 
 /**
