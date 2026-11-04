@@ -22,7 +22,7 @@
 // `PhotoFixture-`); each seed cancels the account's open runs first, for the
 // active-run cap, and they stand until the global reset.
 //
-// R5: every wait is the standard 7 s; the first seed is a full page load, so its
+// R5: every wait but the retry's final state (approved below) is the standard 7 s; the first seed is a full page load, so its
 // gate is LAUNCH_GATE.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 
@@ -81,8 +81,16 @@ test(
     await tryAgain.click();
     // No scans stand behind the seeded pair, so the retry cannot land photos: it
     // ends on the aged-out line, which offers the card's form instead of another try.
-    await expect(tile.getByText("The scans aged out.", { exact: true })).toBeVisible();
-    await expect(tile.getByText("Slipping in the photos…", { exact: true })).toHaveCount(0);
+    // The press answers within the standard budget: the spinner, or on a warm
+    // service the result itself (the spinner can come and go between looks).
+    const agedOut = tile.getByText("The scans aged out.", { exact: true });
+    const slipping = tile.getByText("Slipping in the photos…", { exact: true });
+    await expect(slipping.or(agedOut).first()).toBeVisible();
+    // Extra budget, approved by Jason 2026-11-04 for this one wait: the retry's
+    // final state runs behind a call to preprocess, measured at 19.2 s cold (CI
+    // run 41845075490), because a seeded run has not warmed the service.
+    await expect(agedOut).toBeVisible({ timeout: 30_000 });
+    await expect(slipping).toHaveCount(0);
     await expect(addPhoto).toBeVisible();
     await expect(tryAgain).toHaveCount(0);
     await expect(saved).toHaveAccessibleName("Saved, 1");
