@@ -102,7 +102,7 @@
 // the server derives both sizes of each side from the scan and files them on
 // the copy. A step that needs longer is a finding to report, never a number to
 // raise. The longer waits are the seed hop's one full page load (`LAUNCH_GATE`),
-// the scan pair's crop and read (`SCAN_READ`, the placeholder pipeline's own
+// the scan pair's crop and read (`PAIR_PROCESSING`, the placeholder pipeline's own
 // exception) and the signed-off "Go live" ceiling at its call. No timer and no
 // cron path: the 15-minute poll is deliberately not exercised.
 //
@@ -172,9 +172,9 @@ const SCAN_PAIR = ["01-mcfadden-front.jpg", "02-mcfadden-back.jpg"] as const;
  * pipeline-fast-crops-inset-scans gives six photos on that path; a real model
  * read cannot fit the 7 s budget, so this is the placeholder pipeline's own
  * exception, as the real-scans spec's PIPELINE is. Every collector action
- * around it runs at 7 s.
+ * around it runs at 7 s. Signed off by Jason, 2026-11-03.
  */
-const SCAN_READ = 60_000;
+const PAIR_PROCESSING = 60_000;
 
 /**
  * The sandbox seller's own shipping policies the spec picks (made by hand or
@@ -622,8 +622,8 @@ test(
     written.runUrl = page.url();
     const waiting = page.getByRole("region", { name: /^Needs you, \d+$/ });
     const savedLane = page.getByRole("region", { name: /^Saved, \d+$/ });
-    // Read, paired and matched on the fast path (SCAN_READ, above).
-    await expect(waiting).toHaveAccessibleName("Needs you, 1", { timeout: SCAN_READ });
+    // Read, paired and matched on the fast path (PAIR_PROCESSING, above).
+    await expect(waiting).toHaveAccessibleName("Needs you, 1", { timeout: PAIR_PROCESSING });
     await waiting.getByRole("button", { name: /^Review / }).click();
     const review = page.getByRole("dialog");
     await review.getByRole("button", { name: "Wrong card? Find it" }).click();
