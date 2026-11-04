@@ -354,6 +354,34 @@ describe("moving a copy through the contract", () => {
     expect(result.current.copies!.find((c) => c.id === stack.id)?.quantity).toBe(4);
   });
 
+  it("NEO-431: keepsOwnLine starts its own line beside a twin, in its own pocket; a plain add still stacks", async () => {
+    const { result } = renderHook(() => useMoveRig(cardId()), { wrapper });
+    const copy = result.current.copies![0];
+    const twin = { ...emptyCopyDetails(), condition: "Mint" as const, notes: "own line", quantity: 1 };
+    const card = demoCard(copy.cardId)!;
+    let plain = "";
+    await act(async () => {
+      plain = (await result.current.actions.addLineItem(card, twin)).copyId;
+    });
+    let own = "";
+    let undo: () => Promise<void> = async () => {};
+    await act(async () => {
+      const r = await result.current.actions.addLineItem(card, twin, { keepsOwnLine: true });
+      expect(r.merged).toBe(false);
+      own = r.copyId;
+      undo = r.undo;
+    });
+    const lineOf = (id: string) => result.current.copies!.find((c) => c.id === id)!;
+    expect(own).not.toBe(plain);
+    expect(lineOf(plain).quantity).toBe(1);
+    expect(lineOf(own).slot).not.toBe(lineOf(plain).slot);
+    await act(async () => {
+      expect(await result.current.actions.addLineItem(card, twin)).toMatchObject({ copyId: plain, merged: true });
+    });
+    await act(undo);
+    expect(result.current.copies!.some((c) => c.id === own)).toBe(false);
+  });
+
   it("folds into an identical line in the destination and the undo splits it back out", async () => {
     const { result } = renderHook(() => useMoveRig(cardId()), { wrapper });
     const copy = result.current.copies![0];

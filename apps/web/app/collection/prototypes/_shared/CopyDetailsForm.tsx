@@ -83,6 +83,12 @@ export interface CopyDetailsFormProps {
   defaultCondition?: Condition;
   /** NEO-377: more of the line to edit, above the buttons (its photos). */
   extra?: ReactNode;
+  /**
+   * NEO-431: the save is still going (photos uploading). The save button says
+   * `savingLabel` and takes no second press; Cancel and Escape wait too.
+   */
+  saving?: boolean;
+  savingLabel?: string;
 }
 
 const CONDITIONS: Condition[] = [
@@ -129,6 +135,8 @@ export default function CopyDetailsForm({
   minPrice,
   defaultCondition,
   extra,
+  saving = false,
+  savingLabel = "Saving…",
 }: CopyDetailsFormProps) {
   const headingId = useId();
   const minPriceHelpId = useId();
@@ -156,7 +164,7 @@ export default function CopyDetailsForm({
 
   function submit(e: FormEvent) {
     e.preventDefault();
-    if (!quantityValid) return;
+    if (!quantityValid || saving) return;
     onSave(condition && !value.condition ? { ...value, condition } : value);
   }
 
@@ -164,7 +172,7 @@ export default function CopyDetailsForm({
     if (e.key === "Escape") {
       e.preventDefault();
       e.stopPropagation();
-      onCancel();
+      if (!saving) onCancel();
     }
   }
 
@@ -475,18 +483,23 @@ export default function CopyDetailsForm({
       <div className="mt-5 flex flex-wrap justify-end gap-3">
         <button
           type="button"
-          onClick={onCancel}
-          className="rounded-md border border-control px-4 py-2 text-sm font-medium text-ink-2 hover:border-ink-3 hover:text-ink focus-outline"
+          onClick={() => {
+            if (!saving) onCancel();
+          }}
+          aria-disabled={saving || undefined}
+          className="rounded-md border border-control px-4 py-2 text-sm font-medium text-ink-2 hover:border-ink-3 hover:text-ink focus-outline aria-disabled:cursor-not-allowed aria-disabled:opacity-60"
         >
           Cancel
         </button>
+        {/* aria-disabled, not disabled: the keyboard stays on the button while it saves. */}
         <NeonButton
           type="submit"
           variant="primary"
           disabled={!quantityValid}
+          aria-disabled={saving || undefined}
           className="focus-outline"
         >
-          {saveLabel}
+          {saving ? savingLabel : saveLabel}
         </NeonButton>
       </div>
     </form>

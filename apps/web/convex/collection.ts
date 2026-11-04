@@ -1419,6 +1419,11 @@ async function moveCounts(
  * a price and a condition (`listingGate.ts`), or it is refused before
  * anything is written. A caller adding many cards passes one `gate`, so the
  * owner's listing state and each common price are read once.
+ *
+ * NEO-431: `keepsOwnLine` starts a new line even when an identical one is
+ * there, and in a binder takes the first open pocket rather than that line's.
+ * An add whose photos follow it is one of a kind, but its photos arrive after
+ * the add, so the fold rule's photo check (`isOneOfAKind`) can't see them yet.
  */
 export async function addOne(
   ctx: MutationCtx,
@@ -1427,6 +1432,7 @@ export async function addOne(
   raw: DetailsArg,
   defaultCondition: Condition,
   gate: ListingGate = new ListingGate(ctx, ownerId),
+  { keepsOwnLine = false }: { keepsOwnLine?: boolean } = {},
 ): Promise<{
   result: typeof addResultValidator.type;
   change: CountChange;
@@ -1441,11 +1447,13 @@ export async function addOne(
     .withIndex("by_owner_and_card", (q) => q.eq("ownerId", ownerId).eq("cardId", cardId))
     .take(MAX_LINES_PER_CARD + 1);
   if (cleaned.slot === undefined && keepsPockets(home)) {
-    cleaned.slot = await arrivingPocket(ctx, ownerId, home, lines, { ...cleaned, homeId: home._id });
+    cleaned.slot = keepsOwnLine
+      ? await firstOpenPocket(ctx, ownerId, home._id)
+      : await arrivingPocket(ctx, ownerId, home, lines, { ...cleaned, homeId: home._id });
   }
   const next: StoredDetails = { ...cleaned, homeId: home._id };
   const now = Date.now();
-  const into = lines.find((row) => foldsInto(foldShape(row), next));
+  const into = keepsOwnLine ? undefined : lines.find((row) => foldsInto(foldShape(row), next));
   if (into) {
     const quantity = into.quantity + next.quantity;
     if (quantity > MAX_COPY_QUANTITY) {
@@ -2356,7 +2364,12 @@ export const addHaves = mutation({
 
 /** Add a line item with full details. Folds into an identical row (see the header). */
 export const addLineItem = mutation({
-  args: { cardId: copyCardIdValidator, details: copyDetailsValidator },
+  args: {
+    cardId: copyCardIdValidator,
+    details: copyDetailsValidator,
+    /** NEO-431: never fold; this add's photos follow it (`addOne`). */
+    keepsOwnLine: v.optional(v.boolean()),
+  },
   returns: addResultValidator,
   handler: async (ctx, args) => {
     const ownerId = await requireSignedIn(ctx);
@@ -2366,6 +2379,8 @@ export const addLineItem = mutation({
       args.cardId,
       args.details,
       await defaultConditionOf(ctx, ownerId),
+      undefined,
+      { keepsOwnLine: args.keepsOwnLine },
     );
     await applyCopyChanges(ctx, ownerId, [change]);
     return result;

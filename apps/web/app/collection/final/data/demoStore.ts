@@ -1015,8 +1015,8 @@ function demoActions(stateRef: { current: DemoState }): CollectionActions {
       };
     },
 
-    async addLineItem(card, details) {
-      const r = run((s) => demoOps.addLine(s, card.id, details));
+    async addLineItem(card, details, options) {
+      const r = run((s) => demoOps.addLine(s, card.id, details, !options?.keepsOwnLine));
       return { copyId: r.copyId, merged: r.merged, undo: undoAdd(r) };
     },
 

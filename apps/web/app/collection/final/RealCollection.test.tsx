@@ -11,6 +11,7 @@ import {
   type CollectionActions,
   type CollectionData,
   type CollectionStoreValue,
+  type CopyPhotosExtension,
   type ListingExtension,
 } from "./data/store";
 import {
@@ -168,7 +169,10 @@ function makeStore({
   boxCopies = [],
   binderMemory,
   listing,
+  photos,
 }: {
+  /** NEO-377 — the store's copy-photo half; absent in a store with none. */
+  photos?: CopyPhotosExtension;
   loading?: boolean;
   /** NEO-370 — the store's marketplace-listing half; absent in a store with none. */
   listing?: ListingExtension;
@@ -312,7 +316,7 @@ function makeStore({
     useRuleBrands: (id) => (id === null ? undefined : L([])),
     useCommonPrices: (ids) => (ids === null ? undefined : L({})),
   };
-  const value: CollectionStoreValue = { kind: "convex", capabilities, data, actions, binderMemory, listing };
+  const value: CollectionStoreValue = { kind: "convex", capabilities, data, actions, binderMemory, listing, photos };
   return { value, actions, undo, log };
 }
 
@@ -842,6 +846,102 @@ describe("the card drawer on the real collection", () => {
     expect(details).not.toHaveProperty("demo");
     expect(details.homeId).toBe("main");
     await waitFor(() => expect(within(drawer).getAllByRole("status").some((s) => s.textContent?.startsWith("Added #2 Aaron Judge"))).toBe(true));
+  });
+
+  describe("an add with held photos (NEO-431)", () => {
+    const photosExt = () =>
+      ({
+        usePhotos: () => new Map(),
+        useCardImages: () => new Map(),
+        addPhoto: vi.fn(async () => {}),
+        removePhoto: vi.fn(async () => {}),
+        swapPhotos: vi.fn(async () => {}),
+      }) satisfies CopyPhotosExtension;
+    const jpeg = () => new File(["x"], "card.jpg", { type: "image/jpeg" });
+    function openAddForm(photos: CopyPhotosExtension) {
+      const store = makeStore({ photos });
+      renderAt(`/collection?tab=checklists&set=${SET.id}&type=vt-base`, store);
+      fireEvent.click(screen.getByRole("button", { name: "Details for #2 Aaron Judge" }));
+      const drawer = screen.getByRole("dialog");
+      const form = within(drawer).getByRole("form", { name: "Add a copy" });
+      const box = within(form).getByRole("region", { name: "Photos" });
+      const pick = (side: "front" | "back") =>
+        act(async () => {
+          fireEvent.change(box.querySelector(`[data-copy-photo-input="${side}"]`)!, { target: { files: [jpeg()] } });
+        });
+      return { ...store, drawer, form, box, pick };
+    }
+    beforeEach(() => {
+      URL.createObjectURL = vi.fn(() => "blob:held");
+      URL.revokeObjectURL = vi.fn();
+    });
+
+    it("a plain add from the same form stays a plain add", async () => {
+      const photos = photosExt();
+      const { actions, form, drawer } = openAddForm(photos);
+      fireEvent.click(within(form).getByRole("button", { name: "Add to collection" }));
+      expect(actions.addLineItem.mock.calls[0]).toHaveLength(2);
+      await waitFor(() => expect(within(drawer).getAllByRole("status").some((s) => s.textContent?.startsWith("Added #2"))).toBe(true));
+      expect(photos.addPhoto).not.toHaveBeenCalled();
+    });
+
+    it("keeps its own line, uploads against the id the write answered, and Add is busy until they land", async () => {
+      const photos = photosExt();
+      let finish = () => {};
+      photos.addPhoto.mockImplementationOnce(() => new Promise<void>((resolve) => (finish = resolve)));
+      const { actions, form, box, pick, drawer } = openAddForm(photos);
+      await pick("front");
+      await pick("back");
+      expect(photos.addPhoto).not.toHaveBeenCalled();
+
+      fireEvent.click(within(form).getByRole("button", { name: "Add to collection" }));
+      const busy = await within(form).findByRole("button", { name: "Adding…" });
+      expect(busy.getAttribute("aria-disabled")).toBe("true");
+      await waitFor(() => expect(photos.addPhoto).toHaveBeenCalledTimes(1));
+      expect(actions.addLineItem.mock.calls[0]).toEqual([JUDGE, expect.objectContaining({ quantity: 1 }), { keepsOwnLine: true }]);
+      const [copy, side] = photos.addPhoto.mock.calls[0] as unknown as [Copy, string, File];
+      expect(copy.id).toBe("new-line");
+      expect(side).toBe("front");
+      expect(within(box).getByRole("status").textContent).toBe("Saving your photos…");
+
+      // A second press and Cancel both wait; nothing is sent twice.
+      fireEvent.click(busy);
+      fireEvent.submit(form);
+      fireEvent.click(within(form).getByRole("button", { name: "Cancel" }));
+      fireEvent.keyDown(form, { key: "Escape" });
+      expect(actions.addLineItem).toHaveBeenCalledTimes(1);
+      expect(within(drawer).getByRole("form", { name: "Add a copy" })).toBe(form);
+
+      await act(async () => finish());
+      await waitFor(() => expect(photos.addPhoto).toHaveBeenCalledTimes(2));
+      expect((photos.addPhoto.mock.calls[1] as unknown as [Copy, string, File])[1]).toBe("back");
+      await waitFor(() =>
+        expect(within(drawer).getAllByRole("status").some((s) => /^Added #2 Aaron Judge, .*, with its front and back photos\.$/.test(s.textContent ?? ""))).toBe(true),
+      );
+      expect(actions.addLineItem).toHaveBeenCalledTimes(1);
+    });
+
+    it("refused (a card at its line limit): the existing refusal shows and the photos stay in the form", async () => {
+      const photos = photosExt();
+      const { actions, form, box, pick, drawer } = openAddForm(photos);
+      actions.addLineItem.mockRejectedValueOnce(new Error("You already have 200 lines of this card. Stack some together first."));
+      await pick("front");
+      fireEvent.click(within(form).getByRole("button", { name: "Add to collection" }));
+      await waitFor(() =>
+        expect(within(drawer).getAllByRole("status").some((s) => s.textContent === "You already have 200 lines of this card. Stack some together first.")).toBe(true),
+      );
+      expect(photos.addPhoto).not.toHaveBeenCalled();
+      expect(within(box).getByRole("link", { name: /^Front of your new copy/ })).toBeTruthy();
+      expect(URL.revokeObjectURL).not.toHaveBeenCalled();
+      // Add is ready for another go.
+      expect(within(form).getByRole("button", { name: "Add to collection" }).getAttribute("aria-disabled")).toBeNull();
+    });
+
+    it("a store without photos shows no photo box in the Add form", () => {
+      renderAt(`/collection?tab=checklists&set=${SET.id}&type=vt-base`);
+      fireEvent.click(screen.getByRole("button", { name: "Details for #2 Aaron Judge" }));
+      expect(within(screen.getByRole("dialog")).queryByRole("region", { name: "Photos" })).toBeNull();
+    });
   });
 
   it("edits and removes a copy, each with Undo", async () => {

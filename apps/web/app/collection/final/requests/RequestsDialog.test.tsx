@@ -5,7 +5,7 @@
  * withdraw. The server half is collectionRequests.test.ts; E2E proves it live.
  */
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EMPTY_DRILL } from "../catalog/drill";
 
 const calls = vi.hoisted(() => [] as { name: string; args: unknown }[]);
@@ -77,7 +77,9 @@ describe("Request a card", () => {
     fireEvent.change(within(form).getByLabelText("Card number"), { target: { value: "#41" } });
     fireEvent.change(within(form).getByLabelText("Player"), { target: { value: "Reggie White" } });
     fireEvent.click(within(form).getByRole("button", { name: "Send request" }));
-    expect((await within(form).findByRole("status")).textContent).toContain("Sent #41 Reggie White.");
+    await waitFor(() =>
+      expect(within(form).getAllByRole("status").some((s) => s.textContent?.includes("Sent #41 Reggie White."))).toBe(true),
+    );
     expect(calls).toEqual([
       {
         name: "collectionRequests:requestCard",
@@ -97,6 +99,74 @@ describe("Request a card", () => {
     await waitFor(() => expect(calls).toHaveLength(1));
     expect(calls[0].args).toMatchObject({ setId: "st", variantName: "Gold Foil" });
     expect(calls[0].args).not.toHaveProperty("variantId");
+  });
+});
+
+describe("Request a card's photos (NEO-431)", () => {
+  const jpeg = (name = "card.jpg") => new File(["x"], name, { type: "image/jpeg" });
+  const pick = (form: HTMLElement, side: "Front" | "Back", file: File) =>
+    fireEvent.change(within(form).getByLabelText(`${side} photo file`), { target: { files: [file] } });
+  const fill = (form: HTMLElement) => {
+    fireEvent.change(within(form).getByLabelText("Card number"), { target: { value: "41" } });
+    fireEvent.change(within(form).getByLabelText("Player"), { target: { value: "Reggie White" } });
+  };
+  let n = 0;
+  beforeEach(() => {
+    n = 0;
+    URL.createObjectURL = vi.fn(() => `blob:request-${++n}`);
+    URL.revokeObjectURL = vi.fn();
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("holds them, uploads nothing until Send, then sends both and clears the box", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ storageId: `st${fetchMock.mock.calls.length}` }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    answers.set("collectionRequests:generateUploadUrl", "https://upload.example/1");
+    open();
+    const form = screen.getByRole("form", { name: "Request a card" });
+    const box = within(form).getByRole("region", { name: "Photos" });
+    expect(box.textContent).toContain("Stashed here until you send the request.");
+    expect(box.textContent).not.toContain("Saved as soon as");
+    pick(form, "Front", jpeg());
+    pick(form, "Back", jpeg());
+    await within(box).findByRole("link", { name: /^Back of this card/ });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(calls).toEqual([]);
+
+    fill(form);
+    fireEvent.click(within(form).getByRole("button", { name: "Send request" }));
+    await waitFor(() => expect(calls.some((c) => c.name === "collectionRequests:requestCard")).toBe(true));
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(calls.find((c) => c.name === "collectionRequests:requestCard")?.args).toMatchObject({
+      frontImageId: "st1",
+      backImageId: "st2",
+    });
+    await waitFor(() => expect(within(form).getByText("No front photo yet")).toBeTruthy());
+    expect(within(form).getByText("No back photo yet")).toBeTruthy();
+    expect(within(form).getByRole("region", { name: "Photos" }).querySelector('[role="status"]')?.textContent).toBe("");
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:request-1");
+  });
+
+  it("turns away what photoProblem turns away, in the form's own alert, and a good pick clears it", async () => {
+    open();
+    const form = screen.getByRole("form", { name: "Request a card" });
+    pick(form, "Front", new File(["x"], "list.pdf", { type: "application/pdf" }));
+    expect(within(form).getByRole("alert").textContent).toMatch(/isn't a photo/);
+    expect(within(form).getByText("No front photo yet")).toBeTruthy();
+
+    pick(form, "Front", new File([new Uint8Array(10 * 1024 * 1024 + 1)], "huge.jpg", { type: "image/jpeg" }));
+    expect(within(form).getByRole("alert").textContent).toMatch(/over 10 MB/);
+
+    pick(form, "Front", jpeg());
+    expect(within(form).getByRole("alert").textContent).toBe("");
+    await within(form).findByRole("link", { name: /^Front of this card/ });
+  });
+
+  it("offers its own accepted types", () => {
+    open();
+    const form = screen.getByRole("form", { name: "Request a card" });
+    const input = within(form).getByLabelText("Front photo file") as HTMLInputElement;
+    expect(input.accept).toBe("image/jpeg,image/png,image/webp,image/heic,image/heif");
   });
 });
 

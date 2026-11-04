@@ -2058,7 +2058,9 @@ function useConvexActions(): CollectionActions {
         );
       }),
       addLineItem: addLineItemBase.withOptimisticUpdate((local, args) =>
-        applyAdd(local, args.cardId, cards.current.get(args.cardId), args.details, true, () => optimisticIdFor(args)),
+        applyAdd(local, args.cardId, cards.current.get(args.cardId), args.details, !args.keepsOwnLine, () =>
+          optimisticIdFor(args),
+        ),
       ),
       restoreCopy: restoreCopyBase.withOptimisticUpdate((local, args) =>
         applyAdd(local, args.cardId, cards.current.get(args.cardId), args.details, false, () => optimisticIdFor(args)),
@@ -2329,9 +2331,13 @@ function useConvexActions(): CollectionActions {
         };
       },
 
-      async addLineItem(card, details) {
+      async addLineItem(card, details, options) {
         placeCard(card);
-        const result = await m.addLineItem({ cardId: asCard(card.id), details: toRawDetails(details) });
+        const result = await m.addLineItem({
+          cardId: asCard(card.id),
+          details: toRawDetails(details),
+          ...(options?.keepsOwnLine ? { keepsOwnLine: true } : {}),
+        });
         return { copyId: result.copyId, merged: result.merged, undo: undoAdd(card, details.homeId, result) };
       },
 

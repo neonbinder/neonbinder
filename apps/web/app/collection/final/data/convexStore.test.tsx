@@ -604,6 +604,19 @@ describe("every write's undo is the inverse write", () => {
     expect(writes()[1]).toEqual({ name: "collection:removeCopy", args: { copyId: "new1" } });
   });
 
+  it("NEO-431: a plain add sends no keepsOwnLine; an add with photos coming does, and its undo removes the line", async () => {
+    calls.answers.set("collection:addLineItem", { copyId: "new1", merged: false });
+    const a = actions();
+    await a.addLineItem(CARD, { quantity: 1, acquiredAt: "2026-11-01", notes: "" });
+    expect(writes()[0].args).not.toHaveProperty("keepsOwnLine");
+    const result = await a.addLineItem(CARD, { quantity: 1, acquiredAt: "2026-11-01", notes: "" }, { keepsOwnLine: true });
+    expect(writes()[1].args).toMatchObject({ cardId: "card1", keepsOwnLine: true });
+    // The answer's id, never a placeholder: `addPhoto` refuses those.
+    expect(result.copyId).toBe("new1");
+    await act(result.undo);
+    expect(writes()[2]).toEqual({ name: "collection:removeCopy", args: { copyId: "new1" } });
+  });
+
   it("Have, folded into a stack: the undo puts the stack back as it was", async () => {
     const previous = { quantity: 1, acquiredOn: "2026-10-23", homeId: "home1" };
     calls.answers.set("collection:addHave", { copyId: "stack1", merged: true, previous });
@@ -1123,6 +1136,41 @@ describe("writes: moves, trade, wants and containers", () => {
       "collectionContainers:empty",
       "collectionContainers:remove",
     ]);
+  });
+});
+
+describe("optimistic updates: an add with photos coming (NEO-431)", () => {
+  const twin = {
+    _id: "copy1",
+    cardId: "card1",
+    variantId: "base1",
+    setId: "set1",
+    homeId: "home1",
+    quantity: 1,
+    condition: "Excellent",
+    acquiredOn: "2026-11-01",
+    lastUpdated: 1,
+  };
+  const details = { quantity: 1, condition: "Excellent" as const, acquiredAt: "2026-11-01", notes: "", homeId: "home1" };
+
+  it("draws its own row beside an identical one, where a plain add stacks", async () => {
+    local.set("collection:copiesOf", { cardId: "card1" }, [twin]);
+    calls.answers.set("collection:addLineItem", { copyId: "new1", merged: false });
+    const a = renderHook(() => useCollectionActions(), { wrapper }).result.current;
+    void a.addLineItem(CARD, details, { keepsOwnLine: true });
+    const own = local.get("collection:copiesOf", { cardId: "card1" }) as (typeof twin)[];
+    expect(own).toHaveLength(2);
+    expect(own.find((r) => r._id === "copy1")?.quantity).toBe(1);
+    expect(isOptimisticId(own.find((r) => r._id !== "copy1")!._id)).toBe(true);
+    await act(async () => {});
+
+    local.set("collection:copiesOf", { cardId: "card1" }, [twin]);
+    calls.answers.set("collection:addLineItem", { copyId: "copy1", merged: true, previous: { quantity: 1 } });
+    void a.addLineItem(CARD, details);
+    const stacked = local.get("collection:copiesOf", { cardId: "card1" }) as (typeof twin)[];
+    expect(stacked).toHaveLength(1);
+    expect(stacked[0].quantity).toBe(2);
+    await act(async () => {});
   });
 });
 
