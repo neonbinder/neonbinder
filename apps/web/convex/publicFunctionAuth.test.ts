@@ -2368,6 +2368,15 @@ describe("NEO-358: the collection and its catalog reads require a signed-in call
     ["copyPhotos.ts", "liveByToken", "internalQuery"],
     ["copyPhotos.ts", "deleteObjects", "internalAction"],
     ["copyPhotos.ts", "sweepCopyPhotos", "internalMutation"],
+    // NEO-427 — a save's photos: these take a match or an ownerId argument.
+    ["intakeRuns.ts", "intakePhotoWork", "internalQuery"],
+    ["intakeRuns.ts", "recordIntakePhotos", "internalMutation"],
+    ["intakeRuns.ts", "expireIntakePhotoAttach", "internalMutation"],
+    ["intakeRuns.ts", "beginIntakePhotoRetry", "internalMutation"],
+    ["intakeRuns.ts", "intakeRunSavedMatches", "internalQuery"],
+    ["intakeRuns.ts", "recordIntakePhotoSide", "internalMutation"],
+    ["intakePhotos.ts", "attachIntakePhotos", "internalAction"],
+    ["intakePhotos.ts", "reattachIntakeRunPhotos", "internalAction"],
   ])(
     "%s :: %s is declared %s",
     (file, fn, kind) => {
@@ -2596,7 +2605,7 @@ describe("NEO-360: the public share-link reads are public by intent; the switche
 describe("NEO-379: the intake run functions are signed-in, and the reads answer a stranger with nothing", () => {
   test("the writes reject an anonymous caller; the reads return null or empty", async () => {
     const t = convexTest(schema, modules);
-    const { homeId, runId, pairId, cardId } = await t.run(async (ctx) => {
+    const { homeId, runId, pairId, cardId, matchId } = await t.run(async (ctx) => {
       const homeId = await ctx.db.insert("collectionContainers", {
         ownerId: "someone",
         kind: "box",
@@ -2634,7 +2643,23 @@ describe("NEO-379: the intake run functions are signed-in, and the reads answer 
         sortOrder: 0,
         lastUpdated: 0,
       } as never);
-      return { homeId, runId, pairId, cardId };
+      const matchId = await ctx.db.insert("intakeMatches", {
+        runId,
+        userId: "someone",
+        pairId,
+        frontIndex: 0,
+        backIndex: 1,
+        readKey: "1",
+        cardId,
+        band: "matched",
+        reason: "numberAndPlayer",
+        confidence: 97,
+        candidates: [],
+        variations: [],
+        photos: "failed",
+        photoFailure: "error",
+      } as never);
+      return { homeId, runId, pairId, cardId, matchId };
     });
     const writes = [
       () => t.mutation(api.intakeRuns.createIntakeRun, { jobId: "job-x", homeId }),
@@ -2645,8 +2670,11 @@ describe("NEO-379: the intake run functions are signed-in, and the reads answer 
       () => t.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId, quantity: 1 }),
       () => t.mutation(api.intakeRuns.answerIntakeRepeat, { runId, pairId, secondCopy: true }),
       () => t.mutation(api.intakeRuns.setIntakeMatchAside, { runId, pairId, setAside: true }),
+      // NEO-427: the Saved tile's Try again.
+      () => t.action(api.intakePhotos.retryIntakePhotos, { matchId }),
     ];
     for (const call of writes) await expect(call()).rejects.toThrow(/Not authenticated/);
+    expect((await t.run((ctx) => ctx.db.get(matchId)))?.photos).toBe("failed");
     expect(await t.query(api.intakeRuns.getIntakeRun, { runId })).toBeNull();
     expect(await t.query(api.intakeRuns.listIntakeMatches, { runId })).toEqual([]);
     expect(await t.query(api.intakeRuns.listMyIntakeRuns, {})).toEqual([]);

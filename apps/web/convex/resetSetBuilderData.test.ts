@@ -436,6 +436,7 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
       collectionBuildingSetsDeleted: 11,
       variantCommonPricesDeleted: 2,
       intakeRunsDeleted: 0,
+      placeholderJobsDeleted: 0,
       marketplaceListingDeleted: 0,
       selectorOptionsDeleted: 3,
       cardPlayerLinksDeleted: 0,
@@ -556,6 +557,7 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
       collectionBuildingSetsDeleted: 0,
       variantCommonPricesDeleted: 0,
       intakeRunsDeleted: 0,
+      placeholderJobsDeleted: 0,
       marketplaceListingDeleted: 0,
       selectorOptionsDeleted: 0,
       cardPlayerLinksDeleted: 0,
@@ -630,6 +632,7 @@ describe("NEO-254: the reset yields at RESET_TIME_BUDGET_MS and resumes", () => 
       collectionBuildingSetsDeleted: 0,
       variantCommonPricesDeleted: 0,
       intakeRunsDeleted: 0,
+      placeholderJobsDeleted: 0,
       marketplaceListingDeleted: 0,
       selectorOptionsDeleted: 0,
       cardPlayerLinksDeleted: 0,
@@ -672,6 +675,7 @@ describe("NEO-254: the reset yields at RESET_TIME_BUDGET_MS and resumes", () => 
       collectionBuildingSetsDeleted: 11,
       variantCommonPricesDeleted: 2,
       intakeRunsDeleted: 0,
+      placeholderJobsDeleted: 0,
       marketplaceListingDeleted: 0,
       selectorOptionsDeleted: 3,
       cardPlayerLinksDeleted: 0,
@@ -1222,6 +1226,39 @@ describe("NEO-330: scope exceptReferenceSeed", () => {
         candidates: [card._id],
         variations: [],
       });
+      // NEO-427 — a photo job left collecting, with an image and a pair.
+      await ctx.db.insert("placeholderJobs", {
+        jobId: "job-1",
+        userId: "user",
+        objectPath: "placeholder/user/job-1",
+        createdAt: 1,
+        mode: "stream",
+        status: "collecting",
+        startedAt: 1,
+        totalImages: 2,
+        processedImages: 0,
+        failedImages: 0,
+        rejectedEntries: 0,
+        nextEntryIndex: 2,
+        lastActivityAt: 1,
+      });
+      await ctx.db.insert("placeholderImages", {
+        jobId: "job-1",
+        userId: "user",
+        entryIndex: 0,
+        originalName: "front.jpg",
+        status: "queued",
+        queuedAt: 1,
+      });
+      await ctx.db.insert("placeholderPairs", {
+        jobId: "job-1",
+        userId: "user",
+        frontIndex: 0,
+        backIndex: 1,
+        confidence: "exact",
+        mechanism: "adjacency",
+        score: 1,
+      });
       // NEO-370 — one row in each listing table: the card queued for BSC,
       // its variant's sync record, the owner's BSC state and one sale.
       await ctx.db.insert("listingOutbox", {
@@ -1314,6 +1351,19 @@ describe("NEO-330: scope exceptReferenceSeed", () => {
     expect(await t.run(async (ctx) => await ctx.db.query("marketplaceListingLinks").collect())).toEqual([]);
   });
 
+  test("NEO-427: every scope drains the photo pipeline, so a collecting job from an earlier run holds no slot", async () => {
+    vi.stubEnv("ALLOW_RESET_SET_BUILDER_DATA", "true");
+    const t = convexTest(schema, modules);
+    await seedAll(t);
+
+    const result = await runScoped(t, "exceptReferenceSeed");
+
+    expect(result.complete).toBe(true);
+    for (const table of ["placeholderJobs", "placeholderImages", "placeholderPairs"] as const) {
+      expect(await t.run(async (ctx) => await ctx.db.query(table).collect())).toEqual([]);
+    }
+  });
+
   test("leaves all eight reference tables' rows untouched and drains every dependant", async () => {
     vi.stubEnv("ALLOW_RESET_SET_BUILDER_DATA", "true");
     const t = convexTest(schema, modules);
@@ -1346,6 +1396,8 @@ describe("NEO-330: scope exceptReferenceSeed", () => {
       collectionBuildingSetsDeleted: 11,
       variantCommonPricesDeleted: 2,
       intakeRunsDeleted: 2,
+      // NEO-427: the job, its image, its pair, and the pair the intake match names.
+      placeholderJobsDeleted: 4,
       // NEO-370: outbox, sync record, state, sale; NEO-415: the eBay link row.
       marketplaceListingDeleted: 5,
       selectorOptionsDeleted: 0,

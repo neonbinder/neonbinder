@@ -53,6 +53,8 @@ import {
   COLLECTION_ERRORS,
   MAX_COPY_QUANTITY,
   MAX_LINES_PER_CARD,
+  TOO_MANY_LINES,
+  foldTargetOf,
   applyCopyChanges,
   changeOf,
   checkSlot,
@@ -267,7 +269,9 @@ async function putPlain(
     homeId: box._id,
     ...(details.slot !== undefined ? { slot: details.slot } : {}),
   };
-  const into = lines.find(
+  const into = await foldTargetOf(
+    ctx,
+    lines,
     (row) => foldsInto(foldShape(row), next) && row.quantity + details.quantity <= MAX_COPY_QUANTITY,
   );
   if (into) {
@@ -280,7 +284,7 @@ async function putPlain(
     };
   }
   if (lines.length >= MAX_LINES_PER_CARD) {
-    refuse(COLLECTION_ERRORS.limit, `You already have ${MAX_LINES_PER_CARD} lines of this card. Stack some together first.`);
+    refuse(COLLECTION_ERRORS.limit, TOO_MANY_LINES);
   }
   const { variantId, setId } = await place();
   const fields = { ownerId, cardId, variantId, setId, ...next, lastUpdated: now };

@@ -41,6 +41,11 @@ import workpool from "@convex-dev/workpool/convex.config";
  * SPARQL caller in the deployment share ONE 5-wide lane regardless of how many
  * batches are running. See convex/wikidataPool.ts for the instance.
  *
+ * `intakePhotoPool` (NEO-427) is the queue in front of the same FAST service for
+ * a scanned pair's photos: a "Save all" on a big run is two derives a card, and
+ * they must not take the instances the run's own processing needs. See
+ * convex/intakePhotoPool.ts for the instance and its width.
+ *
  * NOTE: adding another pool means adding another `app.use(workpool, {...})`
  * here with a distinct `name`. Constructing a second `Workpool` class instance
  * against the SAME component does not give you a second pool — the component
@@ -52,5 +57,6 @@ const app = defineApp();
 app.use(workpool, { name: "fastPreprocessPool" });
 app.use(workpool, { name: "heavyPreprocessPool" });
 app.use(workpool, { name: "wikidataPool" });
+app.use(workpool, { name: "intakePhotoPool" });
 
 export default app;

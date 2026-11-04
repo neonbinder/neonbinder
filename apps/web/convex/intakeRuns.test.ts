@@ -8,7 +8,7 @@
  */
 
 import { convexTest } from "convex-test";
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import schema from "./schema";
 import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
@@ -16,6 +16,8 @@ import { cancelScheduled, drainScheduled } from "../lib/testing/drain-scheduled"
 import { seedCollectionCatalog } from "../lib/testing/collection-fixture";
 import { insertTestCard } from "../lib/testing/card-row";
 import { priceEveryVariant } from "../lib/testing/common-prices";
+import { defaultConditionOf, lineAwaitingScans, MAX_INTAKE_PHOTO_ATTEMPTS } from "./collection";
+import { intakePhotoPool } from "./intakePhotoPool";
 import { INTAKE_SETTLE_SCAN, noteIntakePairsChanged } from "./intakeRuns";
 
 const modules = (import.meta as unknown as {
@@ -27,14 +29,35 @@ const THEM = { subject: "user_intakeThem002" };
 const JOB = "job-intake-1";
 
 let harnesses: Array<ReturnType<typeof convexTest>> = [];
+// No test registers a component, so the queue in front of a save's photos stands in.
+const enqueued = () => vi.mocked(intakePhotoPool.enqueueAction);
+beforeEach(() => {
+  vi.spyOn(intakePhotoPool, "enqueueAction").mockResolvedValue("work" as never);
+});
 afterEach(async () => {
   for (const t of harnesses) await drainScheduled(t);
   harnesses = [];
+  vi.restoreAllMocks();
 });
 
 interface Scan {
   number?: string;
   players?: string[];
+}
+
+/** The match row of a pair (the sync has made it by the time a test asks). */
+async function matchOf(
+  w: Awaited<ReturnType<typeof world>>,
+  pairId: Id<"placeholderPairs">,
+): Promise<Id<"intakeMatches">> {
+  return await w.t.run(async (ctx) => {
+    const row = await ctx.db
+      .query("intakeMatches")
+      .withIndex("by_pair", (q) => q.eq("pairId", pairId))
+      .first();
+    if (!row) throw new Error("no match row yet");
+    return row._id;
+  });
 }
 
 /**
@@ -402,10 +425,10 @@ describe("the collector's answers (NEO-382)", () => {
     ).rejects.toThrow(/already saved/);
   });
 
-  test("a save folds into an identical line already in the home", async () => {
+  test("NEO-427: a scanned save keeps its own line beside an identical one", async () => {
     const w = await world([{ number: "1", players: ["Doc Gooden"] }]);
-    await w.t.run(async (ctx) => {
-      await ctx.db.insert("collectionCopies", {
+    const twin = await w.t.run((ctx) =>
+      ctx.db.insert("collectionCopies", {
         ownerId: ME.subject,
         cardId: w.fx.gooden1,
         homeId: w.boxId,
@@ -414,17 +437,43 @@ describe("the collector's answers (NEO-382)", () => {
         costCents: 10,
         location: "Shelf 2",
         lastUpdated: 0,
-      });
-    });
+      }),
+    );
     const runId = await startRun(w, w.fx.baseId);
     const saved = await w.me.mutation(api.intakeRuns.saveIntakeMatch, {
       runId,
       pairId: w.pairIds[0],
       quantity: 1,
     });
+    expect(saved.copyId).not.toBe(twin);
     const copies = await copiesOf(w, w.fx.gooden1);
-    expect(copies).toHaveLength(1);
-    expect(copies[0]).toMatchObject({ _id: saved.copyId, quantity: 4 });
+    expect(copies.map((c) => c.quantity).sort()).toEqual([1, 3]);
+    expect(copies.find((c) => c._id === twin)).toMatchObject({ quantity: 3 });
+  });
+
+  test("NEO-427: in a binder it takes the first open pocket, not its identical twin's", async () => {
+    const w = await world([{ number: "1", players: ["Doc Gooden"] }]);
+    await w.t.run(async (ctx) => {
+      await ctx.db.patch(w.boxId, { kind: "binder" });
+      await ctx.db.insert("collectionCopies", {
+        ownerId: ME.subject,
+        cardId: w.fx.gooden1,
+        homeId: w.boxId,
+        slot: 0,
+        quantity: 3,
+        condition: "Near Mint",
+        costCents: 10,
+        location: "Shelf 2",
+        lastUpdated: 0,
+      });
+    });
+    const runId = await startRun(w, w.fx.baseId);
+    const { copyId } = await w.me.mutation(api.intakeRuns.saveIntakeMatch, {
+      runId,
+      pairId: w.pairIds[0],
+      quantity: 1,
+    });
+    expect(await w.t.run((ctx) => ctx.db.get(copyId))).toMatchObject({ quantity: 1, slot: 1 });
   });
 
   test("a double scan must be answered: a second copy saves, a re-scan is set aside", async () => {
@@ -616,13 +665,142 @@ describe("NEO-370 — a settled box run kicks the collector's listing drain", ()
     { number: "1", players: ["Doc Gooden"] },
     { number: "2", players: ["Darryl Strawberry"] },
   ]);
+  /** The third scan is the same card as the first: say it is a second copy so it can be saved. */
+  const allowRepeats = (w: W) =>
+    w.t.run(async (ctx) => {
+      for (const row of await ctx.db.query("intakeMatches").collect()) {
+        if (row.repeatOfPairId) await ctx.db.patch(row._id, { repeatIsSecondCopy: true });
+      }
+    });
+  const three = () => world([
+    { number: "1", players: ["Doc Gooden"] },
+    { number: "2", players: ["Darryl Strawberry"] },
+    { number: "1", players: ["Doc Gooden"] },
+  ]);
+  /** A save whose photos have landed, so the test below proves its own rule rather than NEO-427's hold. */
+  const saveWithPhotos = async (w: W, runId: Id<"intakeRuns">, pairId: Id<"placeholderPairs">) => {
+    await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId, quantity: 1 });
+    await w.t.mutation(internal.intakeRuns.recordIntakePhotos, {
+      matchId: await matchOf(w, pairId),
+      photos: "attached",
+    });
+  };
+
+  test("NEO-427: photos on their way hold the kick, and their report (either way) releases it", async () => {
+    for (const photos of ["attached", "failed"] as const) {
+      const w = await two();
+      await listOn(w);
+      const runId = await startRun(w, w.fx.baseId);
+      await held(w, async () => {
+        await w.me.mutation(api.intakeRuns.setIntakeMatchAside, { runId, pairId: w.pairIds[1], setAside: true });
+        await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[0], quantity: 1 });
+        expect(await drainsOf(w)).toEqual([]);
+        await w.t.mutation(internal.intakeRuns.recordIntakePhotos, {
+          matchId: await matchOf(w, w.pairIds[0]),
+          photos,
+        });
+        expect(await drainsOf(w)).toHaveLength(1);
+      });
+    }
+  });
+
+  test("NEO-427: a pair saved before photos came along (no state) holds nothing", async () => {
+    const w = await two();
+    await listOn(w);
+    const runId = await startRun(w, w.fx.baseId);
+    await held(w, async () => {
+      await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[0], quantity: 1 });
+      const matchId = await matchOf(w, w.pairIds[0]);
+      await w.t.run((ctx) => ctx.db.patch(matchId, { photos: undefined }));
+      await w.me.mutation(api.intakeRuns.setIntakeMatchAside, { runId, pairId: w.pairIds[1], setAside: true });
+      expect(await drainsOf(w)).toHaveLength(1);
+    });
+  });
+
+  test("NEO-427: an attach that never reports stops holding once it times out", async () => {
+    const w = await two();
+    await listOn(w);
+    const runId = await startRun(w, w.fx.baseId);
+    await held(w, async () => {
+      await w.me.mutation(api.intakeRuns.setIntakeMatchAside, { runId, pairId: w.pairIds[1], setAside: true });
+      await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[0], quantity: 1 });
+      await w.t.mutation(internal.intakeRuns.expireIntakePhotoAttach, {
+        matchId: await matchOf(w, w.pairIds[0]),
+        attempt: 1,
+      });
+      expect(await drainsOf(w)).toHaveLength(1);
+    });
+  });
+
+  test("NEO-427: with several saves pending, only the last report releases the kick", async () => {
+    const w = await three();
+    await listOn(w);
+    const runId = await startRun(w, w.fx.baseId);
+    await held(w, async () => {
+      await allowRepeats(w);
+      const ids: Array<Id<"intakeMatches">> = [];
+      for (const pairId of w.pairIds) {
+        await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId, quantity: 1 });
+        ids.push(await matchOf(w, pairId));
+      }
+      const report = (matchId: Id<"intakeMatches">, photos: "attached" | "failed") =>
+        w.t.mutation(internal.intakeRuns.recordIntakePhotos, { matchId, photos });
+      await report(ids[2], "attached");
+      await report(ids[0], "failed");
+      expect(await drainsOf(w)).toEqual([]);
+      await report(ids[1], "attached");
+      expect(await drainsOf(w)).toHaveLength(1);
+    });
+  });
+
+  test("NEO-427: a run whose only unsettled rows are failed still settles, and pre-existing rows hold nothing", async () => {
+    const w = await three();
+    await listOn(w);
+    const runId = await startRun(w, w.fx.baseId);
+    await held(w, async () => {
+      await allowRepeats(w);
+      for (const pairId of w.pairIds) {
+        await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId, quantity: 1 });
+      }
+      const [a, b, c] = await Promise.all(w.pairIds.map((pairId) => matchOf(w, pairId)));
+      await w.t.run((ctx) => ctx.db.patch(a, { photos: undefined }));
+      await w.t.mutation(internal.intakeRuns.recordIntakePhotos, { matchId: b, photos: "failed", photoFailure: "scanGone" });
+      expect(await drainsOf(w)).toEqual([]); // c is still pending
+      await w.t.mutation(internal.intakeRuns.recordIntakePhotos, { matchId: c, photos: "failed" });
+      expect(await drainsOf(w)).toHaveLength(1);
+    });
+  });
+
+  test("NEO-427: a retry back at pending holds a later kick", async () => {
+    const w = await two();
+    await listOn(w);
+    const runId = await startRun(w, w.fx.baseId);
+    const live = async () => (await drainsOf(w)).filter((f) => f.state.kind !== "canceled");
+    await held(w, async () => {
+      await w.me.mutation(api.intakeRuns.setIntakeMatchAside, { runId, pairId: w.pairIds[1], setAside: true });
+      await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[0], quantity: 1 });
+      const matchId = await matchOf(w, w.pairIds[0]);
+      await w.t.mutation(internal.intakeRuns.recordIntakePhotos, { matchId, photos: "failed" });
+      expect(await live()).toHaveLength(1);
+      await cancelScheduled(w.t as never);
+      expect(await live()).toEqual([]);
+      await w.t.mutation(internal.intakeRuns.beginIntakePhotoRetry, { matchId, ownerId: ME.subject });
+      // The set-aside undone and redone is another "answered" moment: the pending retry holds it.
+      await w.me.mutation(api.intakeRuns.setIntakeMatchAside, { runId, pairId: w.pairIds[1], setAside: false });
+      await w.me.mutation(api.intakeRuns.setIntakeMatchAside, { runId, pairId: w.pairIds[1], setAside: true });
+      expect(await live()).toEqual([]);
+      await w.t.mutation(internal.intakeRuns.recordIntakePhotos, { matchId, photos: "attached" });
+      const row = await w.t.run((ctx) => ctx.db.get(matchId));
+      expect(row?.photos).toBe("attached");
+    });
+  });
 
   test("the last pair answered (a set-aside) kicks one drain; the saves before it kick none", async () => {
     const w = await two();
     await listOn(w);
     const runId = await startRun(w, w.fx.baseId);
     await held(w, async () => {
-      await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[0], quantity: 1 });
+      await saveWithPhotos(w, runId, w.pairIds[0]);
       expect(await drainsOf(w)).toEqual([]);
       await w.me.mutation(api.intakeRuns.setIntakeMatchAside, { runId, pairId: w.pairIds[1], setAside: true });
       const drains = await drainsOf(w);
@@ -637,7 +815,7 @@ describe("NEO-370 — a settled box run kicks the collector's listing drain", ()
     await held(w, async () => {
       await w.me.mutation(api.intakeRuns.setIntakeMatchAside, { runId, pairId: w.pairIds[1], setAside: true });
       expect(await drainsOf(w)).toEqual([]);
-      await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[0], quantity: 1 });
+      await saveWithPhotos(w, runId, w.pairIds[0]);
       expect(await drainsOf(w)).toHaveLength(1);
     });
   });
@@ -651,8 +829,8 @@ describe("NEO-370 — a settled box run kicks the collector's listing drain", ()
     });
     const runId = await startRun(w, w.fx.baseId);
     await held(w, async () => {
-      await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[0], quantity: 1 });
-      await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[1], quantity: 1 });
+      await saveWithPhotos(w, runId, w.pairIds[0]);
+      await saveWithPhotos(w, runId, w.pairIds[1]);
       expect(await drainsOf(w)).toEqual([]);
     });
   });
@@ -667,7 +845,7 @@ describe("NEO-370 — a settled box run kicks the collector's listing drain", ()
       });
       const runId = await startRun(w, w.fx.baseId);
       await held(w, async () => {
-        await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[0], quantity: 1 });
+        await saveWithPhotos(w, runId, w.pairIds[0]);
         await w.me.mutation(api.intakeRuns.setIntakeMatchAside, { runId, pairId: w.pairIds[1], setAside: true });
         expect(await drainsOf(w)).toEqual([]);
         if (finish === "succeeded") {
@@ -689,7 +867,7 @@ describe("NEO-370 — a settled box run kicks the collector's listing drain", ()
     });
     const runId = await startRun(w, w.fx.baseId);
     await held(w, async () => {
-      await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[0], quantity: 1 });
+      await saveWithPhotos(w, runId, w.pairIds[0]);
       await w.t.mutation(internal.placeholderPipeline.markJobSucceeded, { jobId: JOB });
       expect(await drainsOf(w)).toEqual([]);
     });
@@ -714,8 +892,8 @@ describe("NEO-370 — a settled box run kicks the collector's listing drain", ()
       await ctx.db.patch(w.boxId, { kind: "binder" });
     });
     await held(w, async () => {
-      await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[0], quantity: 1 });
-      await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[1], quantity: 1 });
+      await saveWithPhotos(w, runId, w.pairIds[0]);
+      await saveWithPhotos(w, runId, w.pairIds[1]);
       expect(await drainsOf(w)).toEqual([]);
     });
   });
@@ -729,9 +907,9 @@ describe("NEO-370 — a settled box run kicks the collector's listing drain", ()
     });
     const runId = await startRun(w, w.fx.baseId);
     await held(w, async () => {
-      await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[0], quantity: 1 });
+      await saveWithPhotos(w, runId, w.pairIds[0]);
       expect(await drainsOf(w)).toEqual([]);
-      await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[1], quantity: 1 });
+      await saveWithPhotos(w, runId, w.pairIds[1]);
       expect(await drainsOf(w)).toHaveLength(1);
     });
   });
@@ -766,8 +944,8 @@ describe("NEO-370 — a settled box run kicks the collector's listing drain", ()
       const runId = await startRun(w, w.fx.baseId);
       await padTo(w, runId, INTAKE_SETTLE_SCAN);
       await held(w, async () => {
-        await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[0], quantity: 1 });
-        await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[1], quantity: 1 });
+        await saveWithPhotos(w, runId, w.pairIds[0]);
+        await saveWithPhotos(w, runId, w.pairIds[1]);
         expect(await drainsOf(w)).toHaveLength(1);
       });
     });
@@ -778,8 +956,8 @@ describe("NEO-370 — a settled box run kicks the collector's listing drain", ()
       const runId = await startRun(w, w.fx.baseId);
       await padTo(w, runId, INTAKE_SETTLE_SCAN + 1);
       await held(w, async () => {
-        await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[0], quantity: 1 });
-        await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[1], quantity: 1 });
+        await saveWithPhotos(w, runId, w.pairIds[0]);
+        await saveWithPhotos(w, runId, w.pairIds[1]);
         expect(await drainsOf(w)).toEqual([]);
       });
     });
@@ -794,11 +972,11 @@ describe("NEO-370 — a settled box run kicks the collector's listing drain", ()
     await listOn(w);
     const runId = await startRun(w, w.fx.baseId);
     await held(w, async () => {
-      await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[0], quantity: 1 });
-      await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[1], quantity: 1 });
+      await saveWithPhotos(w, runId, w.pairIds[0]);
+      await saveWithPhotos(w, runId, w.pairIds[1]);
       await w.me.mutation(api.intakeRuns.answerIntakeRepeat, { runId, pairId: w.pairIds[2], secondCopy: true });
       expect(await drainsOf(w)).toEqual([]);
-      await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[2], quantity: 1 });
+      await saveWithPhotos(w, runId, w.pairIds[2]);
       expect(await drainsOf(w)).toHaveLength(1);
     });
   });
@@ -811,7 +989,7 @@ describe("NEO-370 — a settled box run kicks the collector's listing drain", ()
     await listOn(w);
     const runId = await startRun(w, w.fx.baseId);
     await held(w, async () => {
-      await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[0], quantity: 1 });
+      await saveWithPhotos(w, runId, w.pairIds[0]);
       await w.me.mutation(api.intakeRuns.answerIntakeRepeat, { runId, pairId: w.pairIds[1], secondCopy: false });
       expect(await drainsOf(w)).toHaveLength(1);
     });
@@ -826,7 +1004,7 @@ describe("NEO-370 — a settled box run kicks the collector's listing drain", ()
       await w.me.mutation(api.intakeRuns.setIntakeMatchAside, { runId, pairId: w.pairIds[1], setAside: false });
       expect(await drainsOf(w)).toEqual([]);
       // The brought-back pair is open again: saving the other alone does not settle.
-      await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[0], quantity: 1 });
+      await saveWithPhotos(w, runId, w.pairIds[0]);
       expect(await drainsOf(w)).toEqual([]);
     });
   });
@@ -837,8 +1015,8 @@ describe("NEO-370 — a settled box run kicks the collector's listing drain", ()
     await closedBy(w, "idle");
     const runId = await startRun(w, w.fx.baseId);
     await held(w, async () => {
-      await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[0], quantity: 1 });
-      await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[1], quantity: 1 });
+      await saveWithPhotos(w, runId, w.pairIds[0]);
+      await saveWithPhotos(w, runId, w.pairIds[1]);
       expect(await drainsOf(w)).toEqual([]);
     });
   });
@@ -849,8 +1027,8 @@ describe("NEO-370 — a settled box run kicks the collector's listing drain", ()
     await closedBy(w, undefined);
     const runId = await startRun(w, w.fx.baseId);
     await held(w, async () => {
-      await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[0], quantity: 1 });
-      await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[1], quantity: 1 });
+      await saveWithPhotos(w, runId, w.pairIds[0]);
+      await saveWithPhotos(w, runId, w.pairIds[1]);
       expect(await drainsOf(w)).toEqual([]);
     });
   });
@@ -871,7 +1049,7 @@ describe("NEO-370 — a settled box run kicks the collector's listing drain", ()
     });
     const runId = await startRun(w, w.fx.baseId);
     await held(w, async () => {
-      await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[0], quantity: 1 });
+      await saveWithPhotos(w, runId, w.pairIds[0]);
       await w.me.mutation(api.intakeRuns.setIntakeMatchAside, { runId, pairId: w.pairIds[1], setAside: true });
       expect(await drainsOf(w)).toEqual([]);
       const closed = await w.me.mutation(api.placeholderStream.closePlaceholderStream, { jobId: JOB });
@@ -898,8 +1076,8 @@ describe("NEO-370 — a settled box run kicks the collector's listing drain", ()
     });
     const runId = await startRun(w, w.fx.baseId);
     await held(w, async () => {
-      await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[0], quantity: 1 });
-      await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[1], quantity: 1 });
+      await saveWithPhotos(w, runId, w.pairIds[0]);
+      await saveWithPhotos(w, runId, w.pairIds[1]);
       expect(await w.t.mutation(internal.placeholderStream.sweepIdleStreams, {})).toMatchObject({ closed: 1 });
       const job = await w.t.run(async (ctx) => (await ctx.db.query("placeholderJobs").collect())[0]);
       expect(job.streamClosedBy).toBe("idle");
@@ -914,8 +1092,8 @@ describe("NEO-370 — a settled box run kicks the collector's listing drain", ()
     await w.t.run((ctx) => ctx.db.patch(w.boxId, { listedOnMarketplaces: false }));
     const runId = await startRun(w, w.fx.baseId);
     await held(w, async () => {
-      await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[0], quantity: 1 });
-      await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[1], quantity: 1 });
+      await saveWithPhotos(w, runId, w.pairIds[0]);
+      await saveWithPhotos(w, runId, w.pairIds[1]);
       expect(await drainsOf(w)).toEqual([]);
     });
   });
@@ -929,8 +1107,8 @@ describe("NEO-370 — a settled box run kicks the collector's listing drain", ()
     });
     const runId = await startRun(w, w.fx.baseId);
     await held(w, async () => {
-      await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[0], quantity: 1 });
-      await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[1], quantity: 1 });
+      await saveWithPhotos(w, runId, w.pairIds[0]);
+      await saveWithPhotos(w, runId, w.pairIds[1]);
       expect(await drainsOf(w)).toEqual([]);
     });
   });
@@ -939,10 +1117,504 @@ describe("NEO-370 — a settled box run kicks the collector's listing drain", ()
     const w = await two();
     const runId = await startRun(w, w.fx.baseId);
     await held(w, async () => {
-      await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[0], quantity: 1 });
-      await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[1], quantity: 1 });
+      await saveWithPhotos(w, runId, w.pairIds[0]);
+      await saveWithPhotos(w, runId, w.pairIds[1]);
       expect(await drainsOf(w)).toEqual([]);
     });
+  });
+});
+
+describe("NEO-427 — a save's photos", () => {
+  type W = Awaited<ReturnType<typeof world>>;
+  async function saved(w: W) {
+    const runId = await startRun(w, w.fx.baseId);
+    vi.useFakeTimers({ toFake: ["setTimeout"] });
+    const { copyId } = await w.me.mutation(api.intakeRuns.saveIntakeMatch, {
+      runId,
+      pairId: w.pairIds[0],
+      quantity: 1,
+    });
+    const matchId = await matchOf(w, w.pairIds[0]);
+    return { runId, copyId, matchId };
+  }
+  const tile = async (w: W, runId: Id<"intakeRuns">) => {
+    const rows = await w.me.query(api.intakeRuns.listIntakeMatches, { runId });
+    const { photos, photoFailure } = rows[0];
+    return { photos, photoFailure };
+  };
+  const fail = (w: W, matchId: Id<"intakeMatches">, photoFailure: "scanGone" | "unusable" | "error") =>
+    w.t.mutation(internal.intakeRuns.recordIntakePhotos, { matchId, photos: "failed", photoFailure });
+  const live = (w: W, copyId: Id<"collectionCopies">, side: "front" | "back") =>
+    w.t.run(async (ctx) => {
+      await ctx.db.insert("collectionCopyPhotos", {
+        ownerId: ME.subject,
+        copyId,
+        side,
+        token: `${side}${"0".repeat(32 - side.length)}`,
+        contentType: "image/jpeg",
+        imageBytes: 1,
+        thumbBytes: 1,
+        status: "live",
+        since: 0,
+      });
+      await ctx.db.patch(copyId, { hasPhotos: true });
+    });
+  const one = () => world([{ number: "1", players: ["Doc Gooden"] }]);
+  const scheduledNames = async (w: W) =>
+    (await w.t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect())).map((f) => f.name);
+
+  afterEach(async () => {
+    for (const t of harnesses) await cancelScheduled(t as never);
+    vi.useRealTimers();
+  });
+
+  test("a save goes pending and queues the attach and its timeout; saving again queues nothing", async () => {
+    const w = await one();
+    const { runId, copyId, matchId } = await saved(w);
+    expect(await tile(w, runId)).toEqual({ photos: "pending", photoFailure: undefined });
+    expect(enqueued()).toHaveBeenCalledTimes(1);
+    expect(enqueued().mock.calls[0][2]).toEqual({ matchId });
+    expect((await scheduledNames(w)).filter((n) => n.includes("attachIntakePhotos"))).toEqual([]);
+    expect((await scheduledNames(w)).filter((n) => n.includes("expireIntakePhotoAttach"))).toHaveLength(1);
+    const before = (await scheduledNames(w)).length;
+    await expect(
+      w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[0], quantity: 1 }),
+    ).resolves.toEqual({ copyId, alreadySaved: true });
+    expect((await scheduledNames(w)).length).toBe(before);
+    expect(enqueued()).toHaveBeenCalledTimes(1);
+    expect(await w.t.query(internal.intakeRuns.intakePhotoWork, { matchId })).toEqual({
+      ownerId: ME.subject,
+      copyId,
+      jobId: JOB,
+      frontIndex: 0,
+      backIndex: 1,
+    });
+    expect(await w.t.query(internal.intakeRuns.intakeRunSavedMatches, { runId })).toEqual([matchId]);
+  });
+
+  test("a row not saved yet has no photo work, and isn't among a run's saved rows", async () => {
+    const w = await one();
+    const runId = await startRun(w, w.fx.baseId);
+    const matchId = await matchOf(w, w.pairIds[0]);
+    expect(await w.t.query(internal.intakeRuns.intakePhotoWork, { matchId })).toBeNull();
+    expect(await w.t.query(internal.intakeRuns.intakeRunSavedMatches, { runId })).toEqual([]);
+  });
+
+  test("a report sets the state; a late failure never takes back photos that landed", async () => {
+    const w = await one();
+    const { runId, matchId } = await saved(w);
+    await fail(w, matchId, "scanGone");
+    expect(await tile(w, runId)).toEqual({ photos: "failed", photoFailure: "scanGone" });
+    await w.t.mutation(internal.intakeRuns.recordIntakePhotos, { matchId, photos: "attached" });
+    expect(await tile(w, runId)).toEqual({ photos: "attached", photoFailure: undefined });
+    await fail(w, matchId, "error");
+    expect(await tile(w, runId)).toEqual({ photos: "attached", photoFailure: undefined });
+  });
+
+  test("the timeout calls a pending attach failed, and leaves any other state alone", async () => {
+    const w = await one();
+    const { runId, matchId } = await saved(w);
+    await w.t.mutation(internal.intakeRuns.expireIntakePhotoAttach, { matchId, attempt: 1 });
+    expect(await tile(w, runId)).toEqual({ photos: "failed", photoFailure: "error" });
+    await fail(w, matchId, "scanGone");
+    await w.t.mutation(internal.intakeRuns.expireIntakePhotoAttach, { matchId, attempt: 1 });
+    expect(await tile(w, runId)).toEqual({ photos: "failed", photoFailure: "scanGone" });
+  });
+
+  test("the timeout firing after the photos landed changes nothing, and a missing row is a no-op", async () => {
+    const w = await one();
+    const { runId, matchId } = await saved(w);
+    await w.t.mutation(internal.intakeRuns.recordIntakePhotos, { matchId, photos: "attached" });
+    await w.t.mutation(internal.intakeRuns.expireIntakePhotoAttach, { matchId, attempt: 1 });
+    expect(await tile(w, runId)).toEqual({ photos: "attached", photoFailure: undefined });
+    await w.t.run((ctx) => ctx.db.delete(matchId));
+    await expect(w.t.mutation(internal.intakeRuns.expireIntakePhotoAttach, { matchId, attempt: 1 })).resolves.toBeNull();
+    await expect(
+      w.t.mutation(internal.intakeRuns.recordIntakePhotos, { matchId, photos: "attached" }),
+    ).resolves.toBeNull();
+  });
+
+  test("Try again is refused on a row with no photo state, and on one still pending", async () => {
+    const w = await one();
+    const { matchId } = await saved(w);
+    const retry = () => w.t.mutation(internal.intakeRuns.beginIntakePhotoRetry, { matchId, ownerId: ME.subject });
+    await w.t.run((ctx) => ctx.db.patch(matchId, { photos: undefined }));
+    await expect(retry()).rejects.toThrow(/on their way/);
+    await w.t.mutation(internal.intakeRuns.recordIntakePhotos, { matchId, photos: "attached" });
+    await expect(retry()).rejects.toThrow(/on their way/);
+  });
+
+  test("Try again: only the owner's failed row, with its copy still there, goes back to pending", async () => {
+    const w = await one();
+    const { runId, copyId, matchId } = await saved(w);
+    const retry = (ownerId: string) => w.t.mutation(internal.intakeRuns.beginIntakePhotoRetry, { matchId, ownerId });
+    await expect(retry(ME.subject)).rejects.toThrow(/on their way/);
+    await fail(w, matchId, "error");
+    await expect(retry(THEM.subject)).rejects.toThrow(/isn't in this run/);
+    const timeouts = async () => (await scheduledNames(w)).filter((n) => n.includes("expireIntakePhotoAttach")).length;
+    const before = await timeouts();
+    await retry(ME.subject);
+    expect(await tile(w, runId)).toEqual({ photos: "pending", photoFailure: undefined });
+    expect(await timeouts()).toBe(before + 1);
+    expect(enqueued()).toHaveBeenCalledTimes(2);
+    expect(enqueued().mock.calls[1][2]).toEqual({ matchId });
+    await fail(w, matchId, "error");
+    await w.t.run((ctx) => ctx.db.delete(copyId));
+    await expect(retry(ME.subject)).rejects.toThrow(/left your collection/);
+  });
+
+  test("a stale timer does nothing: a Try again gets its full time", async () => {
+    const w = await one();
+    const { runId, matchId } = await saved(w);
+    await fail(w, matchId, "error");
+    await w.t.mutation(internal.intakeRuns.beginIntakePhotoRetry, { matchId, ownerId: ME.subject });
+    await w.t.mutation(internal.intakeRuns.expireIntakePhotoAttach, { matchId, attempt: 1 });
+    expect(await tile(w, runId)).toEqual({ photos: "pending", photoFailure: undefined });
+    await w.t.mutation(internal.intakeRuns.expireIntakePhotoAttach, { matchId, attempt: 2 });
+    expect(await tile(w, runId)).toEqual({ photos: "failed", photoFailure: "error" });
+  });
+
+  test("Try again is refused when it can't help, in words that say what to do", async () => {
+    const w = await one();
+    const { runId, matchId } = await saved(w);
+    const retry = () => w.t.mutation(internal.intakeRuns.beginIntakePhotoRetry, { matchId, ownerId: ME.subject });
+    const offered = async () => (await w.me.query(api.intakeRuns.listIntakeMatches, { runId }))[0].photoCanRetry;
+    await fail(w, matchId, "scanGone");
+    expect(await offered()).toBe(false);
+    await expect(retry()).rejects.toThrow("Those scans aged out. Add a photo from the card instead.");
+    await fail(w, matchId, "unusable");
+    expect(await offered()).toBe(false);
+    await expect(retry()).rejects.toThrow("Those scans won't cut it. Add a photo from the card instead.");
+    expect(await tile(w, runId)).toEqual({ photos: "failed", photoFailure: "unusable" });
+  });
+
+  test("Try again runs out after its tries, the save's included", async () => {
+    const w = await one();
+    const { runId, matchId } = await saved(w);
+    const offered = async () => (await w.me.query(api.intakeRuns.listIntakeMatches, { runId }))[0].photoCanRetry;
+    for (let attempt = 1; attempt < MAX_INTAKE_PHOTO_ATTEMPTS; attempt++) {
+      await fail(w, matchId, "error");
+      expect(await offered()).toBe(true);
+      await w.t.mutation(internal.intakeRuns.beginIntakePhotoRetry, { matchId, ownerId: ME.subject });
+    }
+    await fail(w, matchId, "error");
+    expect(await offered()).toBe(false);
+    await expect(
+      w.t.mutation(internal.intakeRuns.beginIntakePhotoRetry, { matchId, ownerId: ME.subject }),
+    ).rejects.toThrow(`We've tried these scans ${MAX_INTAKE_PHOTO_ATTEMPTS} times. Add a photo from the card instead.`);
+    expect(enqueued()).toHaveBeenCalledTimes(MAX_INTAKE_PHOTO_ATTEMPTS);
+  });
+
+  test("a side the scan landed on stays done, so a photo taken off doesn't keep the tile asking", async () => {
+    const w = await one();
+    const { runId, copyId, matchId } = await saved(w);
+    const side = (s: "front" | "back") => w.t.mutation(internal.intakeRuns.recordIntakePhotoSide, { matchId, side: s });
+    await side("front");
+    await side("front");
+    expect((await w.t.run((ctx) => ctx.db.get(matchId)))?.photoSidesAttached).toEqual(["front"]);
+    expect((await w.t.query(internal.intakeRuns.intakePhotoWork, { matchId }))?.photoSidesAttached).toEqual(["front"]);
+    await fail(w, matchId, "error");
+    // The front landed and was taken off; the back never came.
+    expect(await tile(w, runId)).toEqual({ photos: "failed", photoFailure: "error" });
+    await live(w, copyId, "back");
+    expect(await tile(w, runId)).toEqual({ photos: "attached", photoFailure: undefined });
+    await w.t.run((ctx) => ctx.db.delete(matchId));
+    await expect(side("back")).resolves.toBeNull();
+  });
+
+  describe("a hand-added twin stays out of a line whose photos are due", () => {
+    const addTwin = (w: W) =>
+      w.me.mutation(api.collection.addLineItem, {
+        cardId: w.fx.gooden1,
+        details: { quantity: 1, condition: "Near Mint", costCents: 10, location: "Shelf 2", homeId: w.boxId },
+      });
+    const lines = async (w: W) =>
+      (await w.t.run((ctx) => ctx.db.query("collectionCopies").collect())).map((c) => c.quantity).sort();
+
+    test("while they're on their way", async () => {
+      const w = await one();
+      await saved(w);
+      await addTwin(w);
+      expect(await lines(w)).toEqual([1, 1]);
+    });
+
+    test("after a failure, with Try again left", async () => {
+      const w = await one();
+      const { matchId } = await saved(w);
+      await fail(w, matchId, "error");
+      await addTwin(w);
+      expect(await lines(w)).toEqual([1, 1]);
+    });
+
+    test("in a binder it takes the next pocket, rather than being refused the line's", async () => {
+      const w = await one();
+      await w.t.run((ctx) => ctx.db.patch(w.boxId, { kind: "binder" }));
+      const { copyId } = await saved(w);
+      const { copyId: twin } = await addTwin(w);
+      expect(twin).not.toBe(copyId);
+      const [a, b] = await w.t.run(async (ctx) => [await ctx.db.get(copyId), await ctx.db.get(twin)]);
+      expect(a).toMatchObject({ slot: 0, quantity: 1 });
+      expect(b).toMatchObject({ slot: 1, quantity: 1 });
+    });
+
+    test("through the box's quantity field too", async () => {
+      const w = await one();
+      const { copyId } = await saved(w);
+      const acquiredOn = "2026-01-01";
+      await w.t.run(async (ctx) => {
+        const condition = await defaultConditionOf(ctx as never, ME.subject);
+        await ctx.db.patch(copyId, { condition, acquiredOn, costCents: undefined, location: undefined });
+      });
+      await w.me.mutation(api.collectionInventory.setBoxQuantity, {
+        cardId: w.fx.gooden1,
+        boxId: w.boxId,
+        quantity: 2,
+        acquiredOn,
+      });
+      expect(await lines(w)).toEqual([1, 1]);
+    });
+
+    test("a line whose photos landed (attached, none left on it) folds as a plain stack", async () => {
+      const w = await one();
+      const { copyId, matchId } = await saved(w);
+      await w.t.mutation(internal.intakeRuns.recordIntakePhotos, { matchId, photos: "attached" });
+      const { copyId: twin } = await addTwin(w);
+      expect(twin).toBe(copyId);
+      expect(await lines(w)).toEqual([2]);
+    });
+
+    test("a hand line already there takes the twin; the scanned line is left out of the stack", async () => {
+      const w = await one();
+      const hand = await addTwin(w); // first, so it is the plain line
+      const { copyId: scanned } = await saved(w);
+      expect(scanned).not.toBe(hand.copyId);
+      const { copyId: again } = await addTwin(w);
+      expect(again).toBe(hand.copyId);
+      const quantities = await w.t.run(async (ctx) => [
+        (await ctx.db.get(hand.copyId))?.quantity,
+        (await ctx.db.get(scanned))?.quantity,
+      ]);
+      expect(quantities).toEqual([2, 1]);
+    });
+
+    test("NEO-427 gap: moving a hand copy onto a line whose photos are due does not stack it there", async () => {
+      const w = await one();
+      const { copyId: scanned } = await saved(w);
+      const other = await w.t.run((ctx) =>
+        ctx.db.insert("collectionContainers", { ownerId: ME.subject, kind: "box", name: "Second", lastUpdated: 0 }),
+      );
+      const { copyId: hand } = await w.me.mutation(api.collection.addLineItem, {
+        cardId: w.fx.gooden1,
+        details: { quantity: 1, condition: "Near Mint", costCents: 10, location: "Shelf 2", homeId: other },
+      });
+      await w.me.mutation(api.collection.moveCopy, { copyId: hand, toHomeId: w.boxId });
+      expect(await lines(w)).toEqual([1, 1]);
+      expect((await w.t.run((ctx) => ctx.db.get(scanned)))?.quantity).toBe(1);
+    });
+
+    test("NEO-427 gap: moving the scanned line itself onto an identical line elsewhere keeps its copy for the photos", async () => {
+      const w = await one();
+      const { copyId: scanned } = await saved(w);
+      const other = await w.t.run((ctx) =>
+        ctx.db.insert("collectionContainers", { ownerId: ME.subject, kind: "box", name: "Second", lastUpdated: 0 }),
+      );
+      await w.me.mutation(api.collection.addLineItem, {
+        cardId: w.fx.gooden1,
+        details: { quantity: 1, condition: "Near Mint", costCents: 10, location: "Shelf 2", homeId: other },
+      });
+      await w.me.mutation(api.collection.moveCopy, { copyId: scanned, toHomeId: other });
+      // The photos are still due on this copy: it must still be there for them.
+      expect(await w.t.run((ctx) => ctx.db.get(scanned))).not.toBeNull();
+    });
+
+    test.each([
+      ["aged-out scans", "scanGone"],
+      ["unusable scans", "unusable"],
+    ] as const)("Try again can't help %s, so the line folds again", async (_label, photoFailure) => {
+      const w = await one();
+      const { copyId, matchId } = await saved(w);
+      await fail(w, matchId, photoFailure);
+      const { copyId: twin } = await addTwin(w);
+      expect(twin).toBe(copyId);
+      expect(await lines(w)).toEqual([2]);
+    });
+
+    test("out of tries, the line folds again", async () => {
+      const w = await one();
+      const { copyId, matchId } = await saved(w);
+      await w.t.run((ctx) => ctx.db.patch(matchId, { photos: "failed", photoFailure: "error", photoAttempt: MAX_INTAKE_PHOTO_ATTEMPTS }));
+      expect(await w.t.run((ctx) => lineAwaitingScans(ctx, copyId))).toBe(false);
+      const { copyId: twin } = await addTwin(w);
+      expect(twin).toBe(copyId);
+    });
+
+    test("a moved binder line takes an open pocket, not its twin's", async () => {
+      const w = await one();
+      const { copyId: scanned } = await saved(w);
+      const binder = await w.t.run((ctx) =>
+        ctx.db.insert("collectionContainers", { ownerId: ME.subject, kind: "binder", name: "Second", lastUpdated: 0 }),
+      );
+      await w.me.mutation(api.collection.addLineItem, {
+        cardId: w.fx.gooden1,
+        details: { quantity: 1, condition: "Near Mint", costCents: 10, location: "Shelf 2", homeId: binder },
+      });
+      await w.me.mutation(api.collection.moveCopy, { copyId: scanned, toHomeId: binder });
+      expect(await w.t.run((ctx) => ctx.db.get(scanned))).toMatchObject({ homeId: binder, slot: 1, quantity: 1 });
+    });
+
+    test("moving part of the line lets the part that leaves fold; the line stays", async () => {
+      const w = await one();
+      const { copyId: scanned } = await saved(w);
+      await w.t.run((ctx) => ctx.db.patch(scanned, { quantity: 3 }));
+      const other = await w.t.run((ctx) =>
+        ctx.db.insert("collectionContainers", { ownerId: ME.subject, kind: "box", name: "Second", lastUpdated: 0 }),
+      );
+      const row = await w.t.run((ctx) => ctx.db.get(scanned));
+      const { copyId: hand } = await w.me.mutation(api.collection.addLineItem, {
+        cardId: w.fx.gooden1,
+        details: {
+          quantity: 1,
+          condition: row?.condition ?? "Near Mint",
+          costCents: row?.costCents,
+          location: row?.location,
+          acquiredOn: row?.acquiredOn,
+          homeId: other,
+        },
+      });
+      await w.me.mutation(api.collection.moveCopy, { copyId: scanned, toHomeId: other, quantity: 2 });
+      const [left, stack] = await w.t.run(async (ctx) => [await ctx.db.get(scanned), await ctx.db.get(hand)]);
+      expect(left?.quantity).toBe(1);
+      expect(stack?.quantity).toBe(3);
+    });
+
+    test("emptying a box never merges the line away, nor stacks onto one", async () => {
+      const w = await one();
+      const { copyId: scanned } = await saved(w);
+      const unsorted = await w.t.run((ctx) =>
+        ctx.db.insert("collectionContainers", {
+          ownerId: ME.subject,
+          kind: "box",
+          name: "Unsorted",
+          system: "unsorted",
+          lastUpdated: 0,
+        }),
+      );
+      const row = await w.t.run((ctx) => ctx.db.get(scanned));
+      await w.me.mutation(api.collection.addLineItem, {
+        cardId: w.fx.gooden1,
+        details: {
+          quantity: 1,
+          condition: row?.condition ?? "Near Mint",
+          costCents: row?.costCents,
+          location: row?.location,
+          acquiredOn: row?.acquiredOn,
+          homeId: unsorted,
+        },
+      });
+      await w.me.mutation(api.collectionContainers.empty, { containerId: w.boxId });
+      expect(await w.t.run((ctx) => ctx.db.get(scanned))).toMatchObject({ homeId: unsorted, quantity: 1 });
+      expect(await lines(w)).toEqual([1, 1]);
+    });
+
+    test("a line with no photo state folds as ever", async () => {
+      const w = await one();
+      const { copyId, matchId } = await saved(w);
+      await w.t.run((ctx) => ctx.db.patch(matchId, { photos: undefined }));
+      const { copyId: twin } = await addTwin(w);
+      expect(twin).toBe(copyId);
+      expect(await lines(w)).toEqual([2]);
+    });
+  });
+
+  test("a failed tile stops asking when the copy leaves, or the collector makes it up by hand", async () => {
+    const w = await one();
+    const { runId, copyId, matchId } = await saved(w);
+    // Aged-out scans asked for a photo: any one answers them.
+    await fail(w, matchId, "scanGone");
+    expect(await tile(w, runId)).toEqual({ photos: "failed", photoFailure: "scanGone" });
+    await live(w, copyId, "back");
+    expect(await tile(w, runId)).toEqual({ photos: "attached", photoFailure: undefined });
+    // Try again asks for both sides: one is not enough.
+    await fail(w, matchId, "error");
+    expect(await tile(w, runId)).toEqual({ photos: "failed", photoFailure: "error" });
+    await live(w, copyId, "front");
+    expect(await tile(w, runId)).toEqual({ photos: "attached", photoFailure: undefined });
+    await w.t.run(async (ctx) => {
+      await ctx.db.delete(copyId);
+    });
+    expect(await tile(w, runId)).toEqual({ photos: undefined, photoFailure: undefined });
+  });
+});
+
+describe("seedMyTestSavedPhotoFailureRun (the E2E fixture)", () => {
+  const before = process.env.TESTING_RESET_SECRET;
+  afterEach(() => {
+    if (before === undefined) delete process.env.TESTING_RESET_SECRET;
+    else process.env.TESTING_RESET_SECRET = before;
+  });
+  const USER = { subject: "user_seedSavedPhotos01", role: "admin" };
+  const catalog = async () => {
+    const t = convexTest(schema, modules);
+    harnesses.push(t);
+    await seedCollectionCatalog(t);
+    return t;
+  };
+
+  test.each([
+    ["scanGone", false],
+    ["unusable", false],
+    ["error", true],
+  ] as const)("%s: a Saved tile over a real copy, in its own box and set", async (photoFailure, canRetry) => {
+    process.env.TESTING_RESET_SECRET = "test-only";
+    const t = await catalog();
+    const me = t.withIdentity(USER);
+    const { runId, copyId } = await me.mutation(api.testing.seedMyTestSavedPhotoFailureRun, { photoFailure });
+    const [row] = await me.query(api.intakeRuns.listIntakeMatches, { runId });
+    expect(row).toMatchObject({
+      photos: "failed",
+      photoFailure,
+      photoCanRetry: canRetry,
+      savedCopyId: copyId,
+      savedQuantity: 1,
+      card: { cardNumber: "1", cardName: "Testcard" },
+    });
+    const { copy, home, set } = await t.run(async (ctx) => {
+      const copy = (await ctx.db.get(copyId))!;
+      return { copy, home: await ctx.db.get(copy.homeId), set: await ctx.db.get(copy.setId as Id<"selectorOptions">) };
+    });
+    expect(copy).toMatchObject({ ownerId: USER.subject, quantity: 1 });
+    expect(home).toMatchObject({ ownerId: USER.subject, kind: "box", listedOnMarketplaces: false });
+    expect(set?.value).toBe(home?.name);
+    expect(await me.query(api.intakeRuns.getIntakeRun, { runId })).not.toBeNull();
+  });
+
+  test("Try again on the error state runs the retry path", async () => {
+    process.env.TESTING_RESET_SECRET = "test-only";
+    const t = await catalog();
+    const me = t.withIdentity(USER);
+    const { runId } = await me.mutation(api.testing.seedMyTestSavedPhotoFailureRun, { photoFailure: "error" });
+    const [row] = await me.query(api.intakeRuns.listIntakeMatches, { runId });
+    await t.mutation(internal.intakeRuns.beginIntakePhotoRetry, { matchId: row._id, ownerId: USER.subject });
+    expect((await me.query(api.intakeRuns.listIntakeMatches, { runId }))[0].photos).toBe("pending");
+    expect(enqueued()).toHaveBeenCalledTimes(1);
+    await cancelScheduled(t as never);
+  });
+
+  test("fails closed without the testing flag, refuses a signed-out caller, and needs the real chain", async () => {
+    delete process.env.TESTING_RESET_SECRET;
+    const t = await catalog();
+    await expect(
+      t.withIdentity(USER).mutation(api.testing.seedMyTestSavedPhotoFailureRun, { photoFailure: "error" }),
+    ).rejects.toThrow(/not enabled on this deployment/i);
+    process.env.TESTING_RESET_SECRET = "test-only";
+    await expect(t.mutation(api.testing.seedMyTestSavedPhotoFailureRun, { photoFailure: "error" })).rejects.toThrow(
+      /not authenticated/i,
+    );
+    const bare = convexTest(schema, modules);
+    await expect(
+      bare.withIdentity(USER).mutation(api.testing.seedMyTestSavedPhotoFailureRun, { photoFailure: "error" }),
+    ).rejects.toThrow(/needs Baseball > 2024 > Topps/);
+    expect(await t.run((ctx) => ctx.db.query("intakeMatches").collect())).toEqual([]);
   });
 });
 

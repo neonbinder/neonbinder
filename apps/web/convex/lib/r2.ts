@@ -78,6 +78,29 @@ export async function headObject(
   return { bytes: Number(res.headers.get("content-length") ?? "-1"), contentType: res.headers.get("content-type") };
 }
 
+/**
+ * Write one object from here (a browser uses `signedPutUrl`). Unsigned payload,
+ * so the signature does not bind these bytes; only the deployment holds the key.
+ */
+export async function putObject(
+  config: R2Config,
+  key: string,
+  body: Uint8Array<ArrayBuffer>,
+  contentType: string,
+  timeoutMs: number,
+): Promise<void> {
+  const res = await config.client.fetch(`${config.base}/${key.split("/").map(encodeURIComponent).join("/")}`, {
+    method: "PUT",
+    headers: { "content-type": contentType },
+    body,
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  if (!res.ok) {
+    await res.text().catch(() => "");
+    throw new Error(`R2 PUT failed: ${res.status}`);
+  }
+}
+
 /** Delete one object. A missing one is fine (S3 answers 204 either way). */
 export async function deleteObject(config: R2Config, key: string): Promise<void> {
   const res = await config.client.fetch(`${config.base}/${key.split("/").map(encodeURIComponent).join("/")}`, {

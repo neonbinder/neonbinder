@@ -36,6 +36,32 @@ export const getGCSClient = (): Storage => {
 };
 
 /**
+ * One object's bytes, or null when there is no such object or it is over
+ * `maxBytes`. Asks for no more than `maxBytes + 1` bytes, so an oversized object
+ * costs nothing to refuse. Any other failure throws: it says nothing about
+ * whether the object is there.
+ */
+export async function readObjectWithin(
+  bucketName: string,
+  objectName: string,
+  maxBytes: number,
+): Promise<Uint8Array<ArrayBuffer> | null> {
+  try {
+    const [bytes] = await getGCSClient().bucket(bucketName).file(objectName).download({ start: 0, end: maxBytes });
+    return bytes.byteLength > maxBytes ? null : Uint8Array.from(bytes);
+  } catch (err) {
+    if ((err as { code?: unknown }).code === 404) return null;
+    throw err;
+  }
+}
+
+/** Whether an object exists. A failure to find out throws. */
+export async function objectExists(bucketName: string, objectName: string): Promise<boolean> {
+  const [exists] = await getGCSClient().bucket(bucketName).file(objectName).exists();
+  return exists;
+}
+
+/**
  * Upload a prize image to Google Cloud Storage
  */
 export const uploadPrizeImage = action({

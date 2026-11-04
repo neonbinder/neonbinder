@@ -54,6 +54,7 @@ MS_FIELDS: tuple[str, ...] = (
     "classify_ms",
     "rotate_ms",
     "write_ms",
+    "copy_photos_ms",
 )
 
 # Fields that count events. `increment_current` accepts only these, for the
@@ -110,6 +111,8 @@ class Timings:
     classify_retried: bool = False
     rotate_ms: float = 0.0
     write_ms: float = 0.0
+    # Making and storing the sizes a saved copy keeps (NEO-427).
+    copy_photos_ms: float = 0.0
     source: str | None = None
     escalated: bool = False
     baseline_supplied: bool = False
@@ -158,6 +161,7 @@ class Timings:
         body["classify_retried"] = self.classify_retried
         body["rotate_ms"] = round(self.rotate_ms)
         body["write_ms"] = round(self.write_ms)
+        body["copy_photos_ms"] = round(self.copy_photos_ms)
         body["total_ms"] = round((time.perf_counter() - self.started) * 1000.0)
         body["source"] = self.source
         body["escalated"] = self.escalated

@@ -8424,6 +8424,12 @@ type SetBuilderResetResult = {
   /** NEO-379 — intake runs and their matches, drained before the containers. */
   intakeRunsDeleted: number;
   /**
+   * NEO-427 — the photo pipeline's jobs, images and pairs. A job counts against
+   * its owner's limits until swept, so an E2E run must not inherit an earlier
+   * run's on the same deployment.
+   */
+  placeholderJobsDeleted: number;
+  /**
    * NEO-370 — collectors' marketplace listing rows (outbox, per-variant
    * syncs, per-platform states, sales), drained before the variants and
    * cards they name.
@@ -8538,6 +8544,7 @@ async function runSetBuilderReset(
     collectionBuildingSetsDeleted: 0,
     variantCommonPricesDeleted: 0,
     intakeRunsDeleted: 0,
+    placeholderJobsDeleted: 0,
     marketplaceListingDeleted: 0,
     selectorOptionsDeleted: 0,
     cardPlayerLinksDeleted: 0,
@@ -8608,6 +8615,15 @@ async function runSetBuilderReset(
     [
       "intakeRunsDeleted",
       internal.selectorOptions.resetIntakeRunsBatch,
+    ],
+    // NEO-427 — the photo jobs those runs read, after the runs. A collecting job
+    // holds one of its owner's active slots for 30 idle minutes and every job
+    // counts against the hourly starts, so these rows outliving the reset made a
+    // rerun on the same preview refuse a spec's photos. Not reference-seed
+    // tables: every scope drains them.
+    [
+      "placeholderJobsDeleted",
+      internal.selectorOptions.resetPlaceholderJobsBatch,
     ],
     // NEO-358 — the binders and boxes those copies lived in, AFTER the copies
     // (a copy's `homeId` names one) and the wants (NEO-359: a want's
@@ -8919,6 +8935,8 @@ export const resetSetBuilderDataFromCli = internalAction({
     collectionBuildingSetsDeleted: v.number(),
     variantCommonPricesDeleted: v.number(),
     intakeRunsDeleted: v.number(),
+    // NEO-427 — the photo pipeline's jobs, images and pairs.
+    placeholderJobsDeleted: v.number(),
     // NEO-370 — collectors' marketplace listing rows, all four tables.
     marketplaceListingDeleted: v.number(),
     selectorOptionsDeleted: v.number(),
@@ -9369,6 +9387,35 @@ export const resetIntakeRunsBatch = internalMutation({
     }
     const deleted = matches.length + runs.length;
     return { deleted, hasMore: deleted === RESET_BATCH_SIZE };
+  },
+});
+
+/**
+ * Internal: drain `placeholderPairs`, `placeholderImages`, then `placeholderJobs`,
+ * looped by `runSetBuilderReset` after the intake runs that read them. NEO-427.
+ * Every account's, armed like every batch here. Jobs last, so a pair or image
+ * never outlives the job that owns it.
+ */
+export const resetPlaceholderJobsBatch = internalMutation({
+  args: {},
+  returns: v.object({
+    deleted: v.number(),
+    hasMore: v.boolean(),
+  }),
+  handler: async (ctx) => {
+    assertResetArmed();
+    let room = RESET_BATCH_SIZE;
+    for (const table of [
+      "placeholderPairs",
+      "placeholderImages",
+      "placeholderJobs",
+    ] as const) {
+      if (room <= 0) break;
+      const rows = await ctx.db.query(table).take(room);
+      for (const row of rows) await ctx.db.delete(row._id);
+      room -= rows.length;
+    }
+    return { deleted: RESET_BATCH_SIZE - room, hasMore: room <= 0 };
   },
 });
 
