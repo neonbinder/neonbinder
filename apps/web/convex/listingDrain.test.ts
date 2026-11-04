@@ -1523,6 +1523,33 @@ describe("claimVariant: a new run's ledger", () => {
   });
 });
 
+describe("a BSC run with nothing to read or send (NEO-433)", () => {
+  test("it replaces the last run's steps with the compare step alone, done, and pushes nothing", async () => {
+    const s = await setup();
+    const { v } = await twoCards(s);
+    await drain(s);
+    expect((await stepsOf(s, v.variantId))?.length).toBeGreaterThan(1);
+    // Nothing held any more, and no condition NB pushed before: nothing to read.
+    await s.t.run(async (ctx) => {
+      for (const c of await ctx.db.query("collectionCopies").collect()) await ctx.db.delete(c._id);
+      const rec = await ctx.db.query("marketplaceListingSyncs").first();
+      await ctx.db.patch(rec!._id, { conditionsPushed: [] });
+    });
+    await queue(s, [
+      { cardId: v.cardIds[0], variantId: v.variantId, seq: 2 },
+      { cardId: v.cardIds[1], variantId: v.variantId, seq: 2 },
+    ]);
+
+    await drain(s);
+
+    expect(await stepsOf(s, v.variantId)).toEqual(["check: done"]);
+    const rec = await record(s, v.variantId);
+    expect(rec?.status).toBe("idle");
+    expect(rec?.counts?.pushed).toBe(0);
+    expect(rec?.progress?.steps[0].finishedAt).toBeTypeOf("number");
+  });
+});
+
 describe("settleSteps", () => {
   const step = (status: "waiting" | "working" | "done" | "failed") => ({ kind: "read" as const, status });
   test("drops waiting steps; a working step ends done on ok and failed on error", () => {

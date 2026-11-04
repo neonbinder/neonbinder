@@ -249,6 +249,7 @@ describe("the checklist's Sync button", () => {
 
   it("syncToast covers each answer", () => {
     expect(syncToast("Base", { queued: true })).toBe("Syncing Base now. Watch it on Sync status.");
+    expect(syncToast("Base", { queued: false, ignored: "throttled" })).toBe("Base just synced. Give it a minute, then Sync again.");
     expect(syncToast("Base", { queued: false, ignored: "notListing" })).toBe(NOT_LISTING_LINE);
     expect(syncToast("Base", { queued: false })).toBe(
       "Nothing in Base links to a marketplace you list on, so there's nothing to sync.",

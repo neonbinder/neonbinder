@@ -540,6 +540,11 @@ export type FinishOutcome = typeof finishOutcomeValidator.type;
  * `clear` rows are deleted, `repoint` rows get their card's current variant,
  * each only if its `seq` is still the one the snapshot read (a change landing
  * mid-push keeps its row for the next run).
+ *
+ * NEO-433 — an `ok` outcome never stores an empty ledger: a run replaces the
+ * last run's steps with its own, and a run that had nothing to do says so with
+ * its one `check` step, done. The drainers hold this up: eBay starts `check`
+ * right after the claim, BSC either reads at least one sheet or starts `check`.
  */
 export const finishVariant = internalMutation({
   args: {
@@ -1467,6 +1472,9 @@ async function syncVariant(
   const foldProblems = fold.problems;
 
   if (conditions.length === 0) {
+    // Nothing to read or send: the compare with the boxes is the whole run.
+    ledger.plan([{ key: "check", kind: "check" }]);
+    await ledger.start("check");
     const stored = foldProblems.map((p) => toStoredProblem(p, cardIds)).filter((p): p is StoredProblem => p !== null);
     await finish(
       {

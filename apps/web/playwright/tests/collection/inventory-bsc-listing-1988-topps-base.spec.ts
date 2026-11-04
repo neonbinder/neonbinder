@@ -45,8 +45,25 @@
 // every wait is the standard 7 s for exactly ONE step to land, never for the
 // whole trip or for several steps at once (GUIDE hard rule 3; Jason,
 // 2026-11-02), then for the set's result line. The only wait above 7 s is the
-// seed hop's sign-in when the sign-in is saved again (`saveBscSignIn`). No
-// timer and no cron path: the 15-minute cron is deliberately not exercised.
+// seed hop's sign-in when the sign-in is saved again (`saveBscSignIn`).
+//
+// Two triggers (NEO-433). A set's sync is set going by the press of the
+// checklist's Sync and by the 15-minute sales poll, and the poll can list a
+// stocked box before the press lands. Both orders are real product behaviour,
+// so the spec neither forces the press to win nor turns the poll off; it keeps
+// the slow axe checks out of the window between its last write and the press,
+// and holds either order to a hard end state:
+//   - press first: the cards are queued until the press, the press sends them
+//     (the ledger holds a read, the send, a double-check), the row reads
+//     "2 listed, 2 updated" (or "2 listed" when BSC already showed them);
+//   - poll first: the Sync status row already reads "2 listed" with its folded
+//     "Gathering data" item, and the press is a full read that sends nothing:
+//     the row reads "2 listed" and the ledger is the ONE "Gathering data" item
+//     (a run that sends nothing still holds a check step, "Compare with your
+//     boxes", which the finished row folds into it).
+// A run that sent nothing is told apart by the absence of the send step, and
+// asserted as such; a missing ledger is red in either order. The in-person
+// press has the same two orders (a poll that takes the cards off first).
 //
 // The ledger's steps (convex/listingDrain.ts `bscSheetSteps`; labels in
 // inventory/listing/copy.ts): one "Read <conditions>" per BSC sheet, "Send
@@ -112,15 +129,23 @@ const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /**
  * The finished set row's "Last sync steps" list, folded: "Gathering data" (all
- * the sheet reads), then the update steps in run order. The positive asserts
- * come first, so the negative ones below cannot pass on a missing list.
+ * the sheet reads, or the check of a run that sent nothing), then the update
+ * steps in run order. The positive asserts come first, so the negative ones
+ * below cannot pass on a missing list. `sent` false is a run that sent nothing
+ * (NEO-433, the poll listed first): its ledger is the one gathering item and
+ * has no send.
  */
-async function expectFoldedLastRun(run: ReturnType<typeof syncRun>): Promise<void> {
+async function expectFoldedLastRun(run: ReturnType<typeof syncRun>, sent = true): Promise<void> {
   await expect(run.last).toBeVisible();
-  await expect(run.last.getByRole("listitem")).toContainText([
-    /^Gathering data, done$/,
-    new RegExp(`^${escapeRegExp(SEND)}, done$`),
-  ]);
+  if (sent) {
+    await expect(run.last.getByRole("listitem")).toContainText([
+      /^Gathering data, done$/,
+      new RegExp(`^${escapeRegExp(SEND)}, done$`),
+    ]);
+  } else {
+    await expect(run.gathered()).toBeVisible();
+    await expect(run.last.getByRole("listitem")).toHaveCount(1);
+  }
   await expect(run.last.getByRole("listitem", { name: /^(Read|Double-check) / })).toHaveCount(0);
 }
 
@@ -454,16 +479,33 @@ test(
     await expect(page).toHaveURL(/[?&]tab=sync/);
     await expect(tabs.getByRole("link", { name: "Sync status", exact: true })).toHaveAttribute("aria-current", "page");
     const { platform, row } = syncStatus(page);
+    const run = syncRun(platform, SET_LABEL, BSC);
     await expect(platform.getByRole("heading", { level: 2, name: BSC, exact: true })).toBeVisible();
     await expect(platform.getByText("Listing", { exact: true })).toBeVisible();
-    await expect(platform.getByRole("heading", { level: 3, name: "Queued for the next sync (2)", exact: true })).toBeVisible();
-    const queued = platform.getByRole("list", { name: "Queued for the next sync (2)" }).getByRole("listitem");
-    await expect(queued).toHaveCount(2);
-    for (const short of [a, b]) {
-      const number = escapeRegExp(short.split(" ")[0]);
-      await expect(queued.filter({ hasText: new RegExp(`^${number} .* in ${escapeRegExp(SET_LABEL)}`) })).toHaveCount(1);
+    // Either the two cards wait for the next sync, or the 15-minute poll has
+    // already listed them (the header's two orders). The poll's own result is
+    // the row reading 2 listed with its folded "Gathering data" item.
+    const queuedHeading = platform.getByRole("heading", { level: 3, name: "Queued for the next sync (2)", exact: true });
+    const polledLine = row.getByText(/^2 listed(, 2 updated)?$/);
+    await expect(queuedHeading.or(polledLine).first()).toBeVisible();
+    if (await queuedHeading.isVisible()) {
+      const queuedList = platform.getByRole("list", { name: "Queued for the next sync (2)" });
+      const queued = queuedList.getByRole("listitem");
+      await expect(queued).toHaveCount(2);
+      for (const short of [a, b]) {
+        const number = escapeRegExp(short.split(" ")[0]);
+        await expect(queued.filter({ hasText: new RegExp(`^${number} .* in ${escapeRegExp(SET_LABEL)}`) })).toHaveCount(1);
+      }
+      // Only the queued list: the whole-page check on this screen runs after the press (below),
+      // so the poll has no slow check to win its window against.
+      await expectAccessible(page, { within: queuedList, label: "Inventory Sync status, two cards queued" });
+    } else {
+      // The poll listed them first: its finished row, with its folded ledger.
+      await expect(polledLine).toBeVisible();
+      await expect(row.getByText(/^Synced /)).toBeVisible();
+      await expect(run.gathered()).toBeVisible();
+      await expectAccessible(page, { within: row, label: "Inventory Sync status, the poll already listed the two cards" });
     }
-    await expectAccessible(page, { label: "Inventory Sync status, two cards queued" });
 
     // --- 2. Sync: BSC takes both, Sync status says 2 listed --------------------
     // Back steps to the checklist the cards were boxed on, quantities as left.
@@ -498,24 +540,39 @@ test(
     // run is in view (its ledger under Running now, or its own result line if it
     // already finished); the walk then waits 7 s for the step the run is on to
     // land, again and again, until the send is done (the sheet reads are serial
-    // and how many there are is not fixed, see "The ledger's steps" above); the
-    // confirm is one more step; then the result line. The line is the drain's
-    // own count: 2 rows on BSC show NB's stock after the read-back (2 updated,
-    // or none when BSC already showed them); "skipped" would be a held-back card.
-    const run = syncRun(platform, SET_LABEL, BSC);
+    // and how many there are is not fixed, see "The ledger's steps" above) or
+    // the platform is idle (a press after the poll listed the box sends nothing).
+    // The line is the drain's own count: 2 rows on BSC show NB's stock after the
+    // read-back (2 updated, or none when BSC already showed them); "skipped"
+    // would be a held-back card.
     const listedLine = row.getByText(/^2 listed(, 2 updated)?$/);
+    const listedNoSend = row.getByText("2 listed", { exact: true });
     await expect(run.underWay(listedLine)).toBeVisible();
     await followRunToEnd(platform, run, run.step(SEND));
     await expect(run.readLanded()).toBeVisible();
-    await expect(run.step(SEND)).toBeVisible();
-    await expect(run.confirmLanded()).toBeVisible();
-    await expect(listedLine).toBeVisible();
-    await expect(row.getByText(/^Synced /)).toBeVisible();
-    await expect(row.getByText(/held back/)).toHaveCount(0);
-    // Finished, the set's row folds the run (see "The ledger's steps"): the
-    // reads are one "Gathering data", then the update steps in run order (an
-    // "Upload photos" may sit before the send); no read or confirm item is left.
-    await expectFoldedLastRun(run);
+    // The press sent (its send step landed), or it sent nothing and the row says
+    // "2 listed" with no "updated": one of the two is on screen, and it decides the branch.
+    await expect(run.step(SEND).or(listedNoSend).first()).toBeVisible();
+    const sent = await run.step(SEND).isVisible();
+    if (sent) {
+      // Press first: the double-check, the result and the folded ledger (reads, then the send).
+      await expect(run.confirmLanded()).toBeVisible();
+      await expect(listedLine).toBeVisible();
+      await expect(row.getByText(/^Synced /)).toBeVisible();
+      await expect(row.getByText(/held back/)).toHaveCount(0);
+      // Finished, the set's row folds the run (see "The ledger's steps"): the
+      // reads are one "Gathering data", then the update steps in run order (an
+      // "Upload photos" may sit before the send); no read or confirm item is left.
+      await expectFoldedLastRun(run);
+    } else {
+      // Poll first: the poll listed the two cards, so the press read and sent
+      // nothing: the row says 2 listed, synced, nothing held back, and its ledger
+      // is the one "Gathering data" item, with no send step.
+      await expect(listedNoSend).toBeVisible();
+      await expect(row.getByText(/^Synced /)).toBeVisible();
+      await expect(row.getByText(/held back/)).toHaveCount(0);
+      await expectFoldedLastRun(run, false);
+    }
     await expectAccessible(page, { label: "Inventory Sync status, 2 listed, the run's steps done" });
 
     // --- Admin: the same result, read-only, for this collector --------------------
@@ -575,26 +632,32 @@ test(
     // so the row still shows the LAST run's finished steps until this one
     // claims the set: gate on the new run (its ledger, or its own result line).
     // Walked one step per wait, like the listing run, until the send (it carries
-    // the two zeros) is done; then a confirm, then the result line. How many
-    // sheets it reads is not fixed (see "The ledger's steps" above), so one
-    // read is the assertion.
+    // the two zeros) is done or the platform is idle; then the result line. How
+    // many sheets it reads is not fixed (see "The ledger's steps" above), so one
+    // data-gathering step is the assertion.
     const takeDown = syncRun(platform, SET_LABEL, BSC);
     const takenLine = row.getByText(/^0 listed(, \d+ updated)?, 2 taken to 0$/);
     await expect(takeDown.underWay(takenLine)).toBeVisible();
     await followRunToEnd(platform, takeDown, takeDown.step(SEND));
     await expect(takeDown.readLanded()).toBeVisible();
-    // A run that read the sheets and sent nothing means BSC showed no stock of
-    // these two cards to take to 0 (the run's "Send" step is dropped when the
-    // plan has no PUT): the cards were already at 0 there, which is not this
-    // spec's takedown, so it is a red and says so.
-    await expect(
-      takeDown.step(SEND),
-      "the takedown run read BSC's sheets and found no stock of the two cards to take to 0, so it sent nothing (the seller account is shared: something else zeroed them first?)",
-    ).toBeVisible();
-    await expect(takeDown.confirmLanded()).toBeVisible();
-    await expect(takenLine).toBeVisible();
-    await expect(row.getByText(/held back/)).toHaveCount(0);
-    await expectFoldedLastRun(takeDown);
+    // Press first: the run sent the two zeros. Poll first (the header's two
+    // orders): the poll already took the cards off, and the press, a full read,
+    // sent nothing. The send step is the evidence of which it was, and each side
+    // is asserted hard: a send needs its double-check and folded ledger, a run
+    // that sent nothing is the one "Gathering data" item. (A seller account some
+    // OTHER session zeroed first looks the same as the poll here; the line's
+    // "2 taken to 0" still has to be NB's.)
+    const tookDown = await takeDown.step(SEND).isVisible();
+    if (tookDown) {
+      await expect(takeDown.confirmLanded()).toBeVisible();
+      await expect(takenLine).toBeVisible();
+      await expect(row.getByText(/held back/)).toHaveCount(0);
+      await expectFoldedLastRun(takeDown);
+    } else {
+      await expect(takenLine).toBeVisible();
+      await expect(row.getByText(/held back/)).toHaveCount(0);
+      await expectFoldedLastRun(takeDown, false);
+    }
 
     // --- Tidy up through the product: the box's cards, the common price, the box
     // Zero before deleting, so no copy falls into the Unsorted box (a listed one).

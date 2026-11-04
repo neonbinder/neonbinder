@@ -269,13 +269,15 @@ function conditionWords(step: StepWords): string {
 
 /**
  * NEO-415 — a sync step in the collector's words, from its kind and NB's own
- * condition names (never a marketplace value): "Read Near Mint", "Send
- * changes to BuySportsCards", "Double-check Near Mint"; eBay's "Upload
- * photos" through "Take down cards at 0".
+ * condition names (never a marketplace value): "Compare with your boxes",
+ * "Read Near Mint", "Send changes to BuySportsCards", "Double-check Near
+ * Mint"; eBay's "Upload photos" through "Take down cards at 0".
  */
 function stepLabel(step: StepWords, platform: ListingPlatform): string {
   const condition = conditionWords(step);
   switch (step.kind) {
+    case "check":
+      return "Compare with your boxes";
     case "read":
       return `Read ${condition}`;
     case "send":
@@ -310,7 +312,7 @@ export function stepLabels(steps: ReadonlyArray<StepWords>, platform: ListingPla
   });
 }
 
-/** A set row's last run folds every read into this one line (the run going now keeps each read). */
+/** A set row's last run folds its compare and every read into this one line (the run going now keeps each). */
 export const GATHERING_DATA = "Gathering data";
 
 /** A step's state, as its list item says it. */
@@ -336,6 +338,11 @@ export function lastStepsName(setLabel: string, platform: ListingPlatform): stri
   return `Last sync steps for ${setLabel} on ${PLATFORM_NAME[platform]}`;
 }
 
+/** "4 of 4 steps done.", or "1 of 1 step done." for a run with nothing to do. */
+function stepTally(done: number, total: number): string {
+  return `${done} of ${total} ${total === 1 ? "step" : "steps"} done.`;
+}
+
 /**
  * What the run's one polite line says when steps land: the newest one done
  * and the tally, or the step that hit a snag. Steps going from waiting to
@@ -343,7 +350,7 @@ export function lastStepsName(setLabel: string, platform: ListingPlatform): stri
  */
 /** The run's last word when it ends clean: "Synced 1989 Upper Deck Base with BuySportsCards. 4 of 4 steps done." */
 export function runSyncedLine(setLabel: string, platform: ListingPlatform, done: number, total: number): string {
-  return `Synced ${setLabel} with ${PLATFORM_NAME[platform]}. ${done} of ${total} steps done.`;
+  return `Synced ${setLabel} with ${PLATFORM_NAME[platform]}. ${stepTally(done, total)}`;
 }
 
 /** The run's last word when it ended on a snag no step owns: "1991 Fleer Base hit a snag with BuySportsCards." */
@@ -352,5 +359,5 @@ export function runSnagLine(setLabel: string, platform: ListingPlatform): string
 }
 
 export function stepLandedLine(label: string, status: "done" | "failed", done: number, total: number): string {
-  return status === "failed" ? `${label} hit a snag.` : `${label}, done. ${done} of ${total} steps done.`;
+  return status === "failed" ? `${label} hit a snag.` : `${label}, done. ${stepTally(done, total)}`;
 }

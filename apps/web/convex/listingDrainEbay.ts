@@ -894,6 +894,10 @@ async function syncEbayVariant(
   const mineCards = new Map(snapshot.map((r) => [r.rowId as string, r.cardId as string]));
   // NEO-415: the run's steps, ticked off on the sync record as they land.
   const ledger = new ProgressLedger(ctx, { ownerId, platform, variantId, leaseToken }, opts.now);
+  // The compare comes first, so the tab has a step to show through the session
+  // and aspects reads, and a run with nothing to send still ends on it.
+  ledger.plan([{ key: "check", kind: "check" }]);
+  await ledger.start("check");
   const finish = async (outcome: FinishOutcome, clearMine: boolean): Promise<void> => {
     const kept = (r: { rowId: string }) => !keepQueued.has(mineCards.get(r.rowId) ?? "");
     const mine = clearMine ? rows.mine.filter(kept) : [];
@@ -1223,12 +1227,13 @@ async function syncEbayVariant(
     for (const p of plans) if (p.needsItem) p.imageUrls = [EBAY_SANDBOX_TEST_PICTURE_URL];
   }
 
-  // NEO-415: the plan, the steps this run will take, in order. A step the
-  // run turns out not to need (every card before it fell out) is dropped.
+  // NEO-415: the plan, the steps this run will take after the compare, in
+  // order. A step the run turns out not to need (every card before it fell
+  // out) is dropped.
   const needsUpload = uploadPlans.some((p) =>
     p.photos.some((photo) => !(p.link?.images ?? []).some((image) => reusable(image, photo.key, p.link?.status === "live"))),
   );
-  ledger.plan(
+  ledger.add(
     (
       [
         ["photos", needsUpload],

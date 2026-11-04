@@ -1238,17 +1238,96 @@ describe("syncVariant", () => {
     expect(await s.me.mutation(api.listingSync.syncVariant, { variantId: s.fx.baseId })).toEqual({ queued: true });
   });
 
-  test("a press while the set's run holds its lease is throttled", async () => {
+  test("a press while the set's run holds its lease is taken: queued, not ignored, with the cards queued, the stamp set and a kick", async () => {
     const s = await fresh();
     holdDrains();
     await addTo(s, s.fx.gooden1, s.box);
-    await listOn(s);
-    await record(s, { status: "running", leaseToken: "lease", leaseExpiresAt: Date.now() + 60_000 });
+    await listOn(s, ME.subject, { drainLeaseToken: "owner-lease", drainLeaseExpiresAt: Date.now() + 60_000 });
+    const id = await record(s, { status: "running", leaseToken: "lease", leaseExpiresAt: Date.now() + 60_000, lastRunAt: Date.now() - 5_000 });
+
+    const result = await s.me.mutation(api.listingSync.syncVariant, { variantId: s.fx.baseId });
+
+    expect(result.queued).toBe(true);
+    expect(result.ignored).toBeUndefined();
+    expect((await outbox(s)).map((r) => r.cardId)).toEqual([s.fx.gooden1]);
+    const stamped = await s.t.run((ctx) => ctx.db.get(id));
+    expect(stamped?.resyncRequestedAt).toBeGreaterThan(stamped?.lastRunAt ?? 0);
+    // The owner's drain is busy: the kick asks it to run again on release.
+    expect((await states(s))[0].drainRequested).toBe(true);
+  });
+
+  test("a press during a run is carried through: the run goes again on release, reads in full, and the queued row survives the running run's finish", async () => {
+    const s = await fresh();
+    holdDrains();
+    await connect(s);
+    await addTo(s, s.fx.gooden1, s.box);
+    await listOn(s, ME.subject, { drainLeaseToken: "owner-lease", drainLeaseExpiresAt: Date.now() + 60_000 });
+    await record(s, { status: "running", leaseToken: "lease", leaseExpiresAt: Date.now() + 60_000, lastRunAt: Date.now() - 5_000 });
+    // The row the running run's snapshot holds.
+    const snapshotRowId = await queueOne(s);
+
+    const pressed = await s.me.mutation(api.listingSync.syncVariant, { variantId: s.fx.baseId });
+    expect(pressed.queued).toBe(true);
+    expect((await states(s))[0].drainRequested).toBe(true);
+    const [queued] = await outbox(s);
+    expect(queued.cardId).toBe(s.fx.gooden1);
+    expect(queued.seq).toBeGreaterThan(1);
+
+    // The running run finishes, clearing the row it read: the press's row stays.
+    const finished = await s.t.mutation(internal.listingDrain.finishVariant, {
+      ownerId: ME.subject,
+      platform: "bsc",
+      variantId: s.fx.baseId,
+      leaseToken: "lease",
+      outcome: { kind: "ok", counts: { listed: 0, pushed: 0, zeroed: 0, skipped: 0 }, problems: [], problemsTotal: 0, conditionsPushed: [] },
+      clear: [{ rowId: snapshotRowId, seq: 1 }],
+      repoint: [],
+    });
+    expect(finished).toMatchObject({ cleared: 0, recorded: true });
+    expect((await outbox(s)).map((r) => r._id)).toEqual([snapshotRowId]);
+
+    // It releases and, since a kick landed while it ran, runs again.
+    const released = await s.t.mutation(internal.listingDrain.releaseDrain, {
+      ownerId: ME.subject,
+      platform: "bsc",
+      leaseToken: "owner-lease",
+      next: "done",
+    });
+    expect(released).toMatchObject({ released: true });
+    expect(released.scheduledInMs).not.toBeNull();
+    expect(await drains(s)).toHaveLength(1);
+
+    // That next run claims, and its claim of the variant reads every condition.
+    expect(await s.t.mutation(internal.listingDrain.claimDrain, { ownerId: ME.subject, platform: "bsc", leaseToken: "lease-2" })).toEqual({ claimed: true });
+    const claim = await s.t.mutation(internal.listingDrain.claimVariant, {
+      ownerId: ME.subject,
+      platform: "bsc",
+      variantId: s.fx.baseId,
+      leaseToken: "lease-2",
+    });
+    expect(claim).toMatchObject({ claimed: true, fullReadRequested: true });
+  });
+
+  test("a press inside a minute of the last is still throttled while the set's run is under way", async () => {
+    const s = await fresh();
+    holdDrains();
+    await addTo(s, s.fx.gooden1, s.box);
+    await listOn(s, ME.subject, { drainLeaseToken: "owner-lease", drainLeaseExpiresAt: Date.now() + 60_000 });
+    await record(s, {
+      status: "running",
+      leaseToken: "lease",
+      leaseExpiresAt: Date.now() + 60_000,
+      lastRunAt: Date.now() - 20_000,
+      resyncRequestedAt: Date.now() - 10_000,
+    });
+
     expect(await s.me.mutation(api.listingSync.syncVariant, { variantId: s.fx.baseId })).toEqual({
       queued: false,
       ignored: "throttled",
     });
     expect(await outbox(s)).toEqual([]);
+    expect((await states(s))[0].drainRequested).toBeUndefined();
+    expect(await drainsEver(s)).toEqual([]);
   });
 
   test("no record yet, a change boxed seconds ago: the press is taken (queued) and runs the drain, nothing re-queued", async () => {
@@ -1263,7 +1342,7 @@ describe("syncVariant", () => {
     expect(await drains(s)).toHaveLength(1);
   });
 
-  test("throttled only when the press is dropped: a recent Sync press, or the set's run under way, kicks nothing", async () => {
+  test("throttled only when the press is dropped: a recent Sync press kicks nothing, a run under way no longer drops it", async () => {
     const s = await fresh();
     holdDrains();
     await addTo(s, s.fx.gooden1, s.box);
@@ -1273,15 +1352,16 @@ describe("syncVariant", () => {
       queued: false,
       ignored: "throttled",
     });
+    expect(await outbox(s)).toEqual([]);
+    expect(await drainsEver(s)).toEqual([]);
+    // The same record with its run under way and no recent press: taken.
     await s.t.run((ctx) =>
       ctx.db.patch(id, { resyncRequestedAt: undefined, status: "running", leaseToken: "l", leaseExpiresAt: Date.now() + 60_000 }),
     );
-    expect(await s.me.mutation(api.listingSync.syncVariant, { variantId: s.fx.baseId })).toEqual({
-      queued: false,
-      ignored: "throttled",
-    });
-    expect(await outbox(s)).toEqual([]);
-    expect(await drainsEver(s)).toEqual([]);
+    const result = await s.me.mutation(api.listingSync.syncVariant, { variantId: s.fx.baseId });
+    expect(result.queued).toBe(true);
+    expect(result.ignored).toBeUndefined();
+    expect(await outbox(s)).toHaveLength(1);
   });
 
   test("a set I hold no copy of and never synced: nothing to sync here, nothing written or kicked", async () => {

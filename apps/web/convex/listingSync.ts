@@ -65,7 +65,7 @@ import {
 export const QUEUE_PAGE_LINES = 200;
 /** Orders one Sales page returns at most. */
 export const MAX_SALES_PAGE = 50;
-/** A Sync pressed within this long of the last one (or during a run) is ignored. */
+/** A Sync pressed within this long of the last one is ignored. */
 export const RESYNC_THROTTLE_MS = 60_000;
 
 /** The Sync status tab's caps, per platform (NEO-392: a subscribed read stays small). */
@@ -620,14 +620,17 @@ async function recordOf(
  * the drain now.
  *
  * Answers `ignored: "notListing"` (and writes nothing) when the collector
- * has no saved sign-in on a platform NB has not paused. A press while the variant's run is under way, or within
- * `RESYNC_THROTTLE_MS` of the last press, is dropped on that platform: the run
- * under way, or about to start, reads the set in full. `queued` is true when
- * at least one platform took the press (queued work, or kicked a drain for a
- * change already queued); `ignored: "throttled"` only when every listing
- * platform dropped it. `queued: false` with no reason: nothing to sync here
- * (the set has no card any listing platform can list, or the collector holds
- * no copy of it and never synced it).
+ * has no saved sign-in on a platform NB has not paused. A press within
+ * `RESYNC_THROTTLE_MS` of the last press is dropped on that platform: the run
+ * it asked for reads the set in full. A press while the variant's run is under
+ * way is taken: that run claimed before the press, so what it reads is fixed,
+ * and the queued cards and the stamp send the set round again in full once it
+ * releases. `queued` is true when at least one platform
+ * took the press (queued work, or kicked a drain for a change already queued);
+ * `ignored: "throttled"` only when every listing platform dropped it.
+ * `queued: false` with no reason: nothing to sync here (the set has no card
+ * any listing platform can list, or the collector holds no copy of it and
+ * never synced it).
  */
 export const syncVariant = mutation({
   args: { variantId: v.id("selectorOptions") },
@@ -661,9 +664,7 @@ async function syncOnePlatform(
   const now = Date.now();
   const record = await recordOf(ctx, ownerId, variantId, platform);
   if (record) {
-    const running = record.status === "running" && (record.leaseExpiresAt ?? 0) > now;
-    const recent = record.resyncRequestedAt !== undefined && now - record.resyncRequestedAt < RESYNC_THROTTLE_MS;
-    if (running || recent) return "throttled";
+    if (record.resyncRequestedAt !== undefined && now - record.resyncRequestedAt < RESYNC_THROTTLE_MS) return "throttled";
   } else {
     // Never run yet (its first run reads every condition anyway): no record
     // to stamp. A change queued for the variant in the last minute (a box
@@ -694,6 +695,10 @@ async function syncOnePlatform(
   if (written === 0 && (record !== null || holdsCopy)) written = await wakeVariant(ctx, ownerId, platform, variantId);
   if (written === 0) return "nothing";
   if (record) await ctx.db.patch(record._id, { resyncRequestedAt: now, lastUpdated: now });
+  // A run under way claimed before this press, so it keeps what it reads. The
+  // re-queued rows outlive its finish (their `seq` moved), the kick asks it to
+  // run again on release, and the stamp is later than its `lastRunAt`, so that
+  // next run reads the set in full.
   await kickListingDrain(ctx, ownerId, platform);
   return "queued";
 }

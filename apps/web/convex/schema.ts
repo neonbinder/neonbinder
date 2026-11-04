@@ -929,6 +929,9 @@ export const listingProblemReasonValidator = v.union(
  * it (`marketplaceListingSyncs.progress`). NB vocabulary only: the web writes
  * each label from `kind` and NB's condition names; no marketplace value is
  * stored here.
+ *   check    compare the collector's boxes with what is listed: the first step
+ *            of an eBay run, and all of a run that finds nothing to do, so a
+ *            run that sent nothing still says what it did
  *   read     (BSC) read one condition's sheet
  *   send     (BSC) the PUT carrying the changes
  *   confirm  (BSC) read one condition back after the PUT
@@ -944,6 +947,7 @@ export const listingProblemReasonValidator = v.union(
  * NB may still have to zero).
  */
 export const listingSyncStepKindValidator = v.union(
+  v.literal("check"),
   v.literal("read"),
   v.literal("send"),
   v.literal("confirm"),
@@ -4632,8 +4636,10 @@ export default defineSchema({
      * writes the plan and flips one step per small write (`working` → `done`),
      * appending steps it learns later and dropping ones the run turns out not
      * to need. The finish drops every step still `waiting`; a failed run ends
-     * with the step it died on `failed`. Kept as the last run's ledger until
-     * the next claim replaces it. Small (a vintage BSC run is ~22 steps).
+     * with the step it died on `failed`; a clean run with nothing to do ends
+     * on its one `check` step (`listingDrain.finishVariant`). Kept as the last
+     * run's ledger until the next claim replaces it. Small (a vintage BSC run
+     * is ~22 steps).
      */
     progress: v.optional(listingSyncProgressValidator),
     lastUpdated: v.number(),

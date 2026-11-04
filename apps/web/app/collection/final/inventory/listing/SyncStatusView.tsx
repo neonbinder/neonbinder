@@ -324,9 +324,10 @@ const FOLD_ORDER: readonly SyncStepStatus[] = ["failed", "waiting", "working", "
  * to show just 'Gathering data' and then each of the steps that actually does
  * an update"; the full detail stays on the run going now):
  *
- * - Every read folds into one "Gathering data" line, where the first read
- *   stood. It failed if any read failed; otherwise it wears its least-finished
- *   read's state (done, on a finished row).
+ * - The compare with the boxes and every read fold into one "Gathering data"
+ *   line, where the first of them stood (so a run with nothing to do still
+ *   shows it). It failed if any of them failed; otherwise it wears its
+ *   least-finished one's state (done, on a finished row).
  * - The steps that change something stay, in run order, with their own
  *   labels: Upload photos, Send changes, and eBay's list, price, go live and
  *   take down.
@@ -335,12 +336,12 @@ const FOLD_ORDER: readonly SyncStepStatus[] = ["failed", "waiting", "working", "
  */
 export function foldedLines(steps: ReadonlyArray<SyncStep>, platform: ListingPlatform): LedgerLine[] {
   const labels = stepLabels(steps, platform);
-  const reads = steps.filter((step) => step.kind === "read");
-  const gathered = FOLD_ORDER.find((status) => reads.some((step) => step.status === status)) ?? "done";
+  const gathering = steps.filter((step) => step.kind === "check" || step.kind === "read");
+  const gathered = FOLD_ORDER.find((status) => gathering.some((step) => step.status === status)) ?? "done";
   const lines: LedgerLine[] = [];
   steps.forEach((step, i) => {
-    if (step.kind === "read") {
-      if (step === reads[0]) lines.push({ label: GATHERING_DATA, status: gathered });
+    if (step.kind === "check" || step.kind === "read") {
+      if (step === gathering[0]) lines.push({ label: GATHERING_DATA, status: gathered });
       return;
     }
     if (step.kind === "confirm" && step.status !== "failed") return;

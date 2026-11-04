@@ -842,6 +842,32 @@ describe("the sync steps ledger", () => {
       ).toEqual(["Gathering data, waiting", "Send changes to BuySportsCards, waiting"]);
     });
 
+    it("a run that only compared folds to one Gathering data line, done", () => {
+      expect(fold([{ kind: "check", status: "done" }], "ebay")).toEqual(["Gathering data, done"]);
+      expect(fold([{ kind: "check", status: "done" }], "bsc")).toEqual(["Gathering data, done"]);
+    });
+
+    it("the compare folds with the reads into one Gathering data line, where the first of them stood", () => {
+      expect(
+        fold([
+          { kind: "check", status: "done" },
+          { kind: "photos", status: "done" },
+          { kind: "items", status: "done" },
+        ], "ebay"),
+      ).toEqual(["Gathering data, done", "Upload photos, done", "List the cards, done"]);
+      expect(
+        fold([
+          { kind: "check", status: "done" },
+          { kind: "read", condition: "Near Mint", status: "done" },
+          { kind: "send", status: "done" },
+        ]),
+      ).toEqual(["Gathering data, done", "Send changes to BuySportsCards, done"]);
+    });
+
+    it("a compare that failed makes Gathering data failed", () => {
+      expect(fold([{ kind: "check", status: "failed" }], "ebay")).toEqual(["Gathering data, failed"]);
+    });
+
     it("eBay has no reads: its row is unchanged", () => {
       const ebay: SyncStep[] = [
         { kind: "photos", status: "done" },
@@ -879,6 +905,35 @@ describe("the sync steps ledger", () => {
         "Read Very Good, done",
       ]);
     });
+  });
+
+  it("the compare step reads \"Compare with your boxes\" on both platforms, in the running ledger", () => {
+    expect(stepLabels([{ kind: "check" }], "ebay")).toEqual(["Compare with your boxes"]);
+    expect(stepLabels([{ kind: "check" }], "bsc")).toEqual(["Compare with your boxes"]);
+    const steps: SyncStep[] = [{ kind: "check", status: "working" }];
+    draw({
+      platforms: [
+        bsc({
+          platform: "ebay",
+          running: { startedAt: T, setLabel: "1988 Topps Base", variantId: "v1", steps },
+          sets: [set({ variantId: "v1", setLabel: "1988 Topps Base", status: "running", steps })],
+        }),
+      ],
+    });
+    expect(names(screen.getByRole("list", { name: "Sync steps for 1988 Topps Base on eBay" }))).toEqual([
+      "Compare with your boxes, working",
+    ]);
+  });
+
+  it("a one-step run says \"1 of 1 step done.\", singular, as it lands and when it ends", () => {
+    const working: SyncStep[] = [{ kind: "check", status: "working" }];
+    const done: SyncStep[] = [{ kind: "check", status: "done" }];
+    const { line, redraw } = live(runningBsc(working));
+    expect(line().textContent).toBe("");
+    redraw(runningBsc(done));
+    expect(line().textContent).toBe("Compare with your boxes, done. 1 of 1 step done.");
+    redraw(bsc({ running: null, lastDrainAt: T, sets: [set({ steps: done })] }));
+    expect(line().textContent).toBe("Synced 1989 Upper Deck Base with BuySportsCards. 1 of 1 step done.");
   });
 
   it("labels: one sheet's conditions said as a list, none named is the rest, each unique within a run", () => {

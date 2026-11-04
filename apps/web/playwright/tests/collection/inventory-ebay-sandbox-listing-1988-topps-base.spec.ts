@@ -106,8 +106,23 @@
 // the copy. A step that needs longer is a finding to report, never a number to
 // raise. The longer waits are the seed hop's one full page load (`LAUNCH_GATE`),
 // the scan pair's crop and read (`PAIR_PROCESSING`, the placeholder pipeline's own
-// exception) and the signed-off "Go live" ceiling at its call. No timer and no
-// cron path: the 15-minute poll is deliberately not exercised.
+// exception) and the signed-off "Go live" ceiling at its call.
+//
+// Two triggers (NEO-433). A set's sync is set going by the press of the
+// checklist's Sync and by the 15-minute sales poll, and the poll can list a
+// stocked box before the press lands. Both orders are real product behaviour,
+// so the spec neither forces the press to win nor turns the poll off; it presses
+// as soon as its last write is in (the slow axe check waits until after the
+// Sync assertions) and holds either order to a hard end state:
+//   - press first: the press sends the cards. The row reads "2 listed, 2
+//     updated, 1 skipped" and its ledger holds "Gathering data" (the run's
+//     check, folded) then List the cards, Set prices and Go live, all done;
+//   - poll first: the poll already listed them, and the press is a full read
+//     that sends nothing. The row reads "2 listed, 1 skipped" with no
+//     "updated", and the ledger is the ONE "Gathering data, done" item.
+// The line says which order it was, and each order's ledger is asserted hard, so
+// a run whose ledger never shows goes red in either. The in-person press at
+// step 6 has the same two orders (a poll that takes the cards down first).
 //
 // Sync's toast. A press that sets a run going toasts "Syncing <title> now.
 // Watch it on Sync status."; both presses assert it before reading the result.
@@ -149,6 +164,7 @@ import {
   deleteOpenBox,
   drillToCollectorBase,
   emptyBoxCards,
+  followRunToEnd,
   inventoryTabs,
   nameOf,
   putOtherBoxesInPerson,
@@ -757,11 +773,11 @@ test(
       await expect(field).not.toHaveAccessibleDescription(/also here/);
     };
     await attachPhoto(b, HAND_PHOTO, "Card drawer, a boxed copy with its front photo");
-    await expectPhotoCopiesAside();
-    // The box's quantities with the photo copies named beside their fields.
-    await expectAccessible(page, { within: boxList, label: "Inventory checklist, boxed copies with a photo named beside the field" });
 
     // --- Sync: eBay takes the two with photos and holds the third back ---------------------------------
+    // Pressed the moment the last write (the photo above) is in: nothing slow sits
+    // between them, so the 15-minute poll has the narrowest window to list the
+    // box first (the header's two orders; the poll may still win it).
     await sync.click();
     await expect(said(`Syncing ${TITLE} now. Watch it on Sync status.`)).toBeVisible();
     // After the press, a link to the result sits under Sync. It lands on Sync
@@ -774,29 +790,24 @@ test(
     await expect(platform.getByRole("heading", { level: 2, name: EBAY, exact: true })).toBeVisible();
     await expect(platform.getByText("Listing", { exact: true })).toBeVisible();
     // The live eBay round trip, step by step (the run's ledger on Sync status),
-    // each within the standard budget except going live (below): the new run is in view (its ledger under
-    // Running now, or its own result line if it already finished), then the
-    // items, the offers and going live land in turn (no photo uploads: the
-    // sandbox has no picture upload, see the header). The
-    // line is the drain's own count: the two cards with a photo are listed,
-    // the third is the one skipped.
+    // each within the standard budget except going live (below): the new run is
+    // in view (its ledger under Running now, or its own result line if it
+    // already finished), then the walk waits for the step the run is on to land,
+    // again and again, until the platform is idle. A press that sends walks
+    // (the check,) the items, the offers and going live (no photo uploads: the
+    // sandbox has no picture upload, see the header); a press that lands after
+    // the poll listed the box walks the check alone. The line is the drain's own
+    // count: the two cards with a photo are listed, the third is the one skipped.
     const run = syncRun(platform, SET_LABEL, EBAY);
-    const listedLine = row.getByText(/^2 listed(, \d+ updated)?, 1 skipped$/);
+    const listedLine = row.getByText(/^2 listed(, 2 updated)?, 1 skipped$/);
     await expect(run.underWay(listedLine)).toBeVisible();
-    // Uploading photos is a step only while a picture has to go up, and on the
-    // sandbox none ever does (no picture upload there), so the first step to
-    // land is the items. The "Upload photos" alternative is kept so the same
-    // line reads right against production eBay, where it is the first step.
-    await expect(run.step("Upload photos").or(run.step("List the cards")).first()).toBeVisible();
-    await expect(run.step("List the cards")).toBeVisible();
-    await expect(run.step("Set prices")).toBeVisible();
     // Going live is the one step with a longer budget, a ceiling Jason signed
-    // off on 2026-11-03 (GUIDE hard rule 2). The step is one eBay publishOffer
+    // off on 2026-11-03 (GUIDE hard rule 3). The step is one eBay publishOffer
     // call per offer, all in parallel, so it lasts as long as the slowest call.
     // Measured on the sandbox: 5.1, 9.0, 9.1 and 10.9 s in CI, 6.1 s on dev;
     // our own work in the step is well under a second. Void it if the step
     // gains any work of ours, or if offers stop publishing in parallel.
-    await expect(run.step("Go live")).toBeVisible({ timeout: 15_000 });
+    await followRunToEnd(platform, run, undefined, { "Go live": 15_000 });
     await expect(listedLine).toBeVisible();
     await expect(row.getByText(/^Synced /)).toBeVisible();
     // Held back is exactly that one card, with the reason a collector can act on
@@ -805,15 +816,30 @@ test(
     const heldBack = row.getByRole("listitem").filter({ hasText: "eBay listings need a photo. Add one to a copy of this card and it goes up." });
     await expect(heldBack).toHaveCount(1);
     await expect(heldBack).toContainText(c.split(" ")[0]);
-    // Finished, the set's row keeps the run's steps, in run order (so the axe
-    // check below has the ledger showing).
+    // Finished, the set's row keeps the run's steps (R2): every finished run has a
+    // ledger, and its data gathering folds to "Gathering data, done" in both orders.
+    // These asserts come BEFORE the branch, so a row with no ledger is red whichever
+    // order the line names.
     await expect(run.last).toBeVisible();
-    await expect(run.last.getByRole("listitem")).toContainText([/^List the cards, done$/, /^Set prices, done$/, /^Go live, done$/]);
+    await expect(run.gathered()).toBeVisible();
+    const pressSent = / updated, /.test((await listedLine.textContent()) ?? "");
+    if (pressSent) {
+      // Press first: the press sent the cards, so the ledger holds the sending steps, in run order.
+      await expect(run.last.getByRole("listitem")).toContainText([/^List the cards, done$/, /^Set prices, done$/, /^Go live, done$/]);
+    } else {
+      // Poll first: the poll listed the cards (the line's "2 listed" is the proof they are
+      // up); the press read and sent nothing, so the ledger is the one gathering item.
+      await expect(run.last.getByRole("listitem")).toHaveCount(1);
+    }
+    // The ledger is showing (either order), so the axe check has it.
     await expectAccessible(page, { label: "Inventory Sync status, eBay 2 listed, the run's steps done and a card held back for no photo" });
     await page.goBack();
     await expect(page).toHaveURL(/[?&]tab=checklists/);
     await expect(checklist.getByRole("heading", { level: 3, name: TITLE })).toBeVisible();
     await expectPhotoCopiesAside();
+    // The box's quantities with the photo copies named beside their fields: the same
+    // field state as before the Sync (the slow whole-page check waits for the press to be done).
+    await expectAccessible(page, { within: boxList, label: "Inventory checklist, boxed copies with a photo named beside the field" });
 
     // --- 6. The box goes in-person: Sync takes both down ----------------------------------
     await page.goto("/inventory?tab=boxes");
@@ -838,13 +864,28 @@ test(
     await expect(page).toHaveURL(/[?&]tab=sync/);
     // The live eBay round trip, step by step: the set was 2 listed a minute ago,
     // so the row still shows the LAST run's finished steps until this one claims
-    // the set; gate on the new run (its ledger, or its own result line).
+    // the set; gate on the new run (its ledger, or its own result line), then walk
+    // it to idle. The poll can take the cards down before the press does (the
+    // header's two orders): the press is then a full read that sends nothing.
     const takeDown = syncRun(platform, SET_LABEL, EBAY);
     const takenLine = row.getByText(/^0 listed(, \d+ updated)?, 2 taken to 0$/);
     await expect(takeDown.underWay(takenLine)).toBeVisible();
-    await expect(takeDown.step("Take down cards at 0")).toBeVisible();
+    await followRunToEnd(platform, takeDown);
     await expect(takenLine).toBeVisible();
+    await expect(row.getByText(/^Synced /)).toBeVisible();
     await expect(row.getByText(/held back/)).toHaveCount(0);
+    // The ledger is asserted BEFORE the branch (R2), so a row with none is red in either order.
+    await expect(takeDown.last).toBeVisible();
+    await expect(takeDown.gathered()).toBeVisible();
+    const takeDownStep = takeDown.last.getByRole("listitem", { name: "Take down cards at 0, done", exact: true });
+    if (await takeDownStep.isVisible()) {
+      // Press first: the press withdrew the cards.
+      await expect(takeDown.last.getByRole("listitem")).toContainText([/^Gathering data, done$/, /^Take down cards at 0, done$/]);
+    } else {
+      // Poll first: the poll already took them down (the line's "2 taken to 0" is the
+      // proof); the press read and sent nothing, so the ledger is the one gathering item.
+      await expect(takeDown.last.getByRole("listitem")).toHaveCount(1);
+    }
 
     // The Sales tab names eBay: its orders page is one link away. (No order has
     // come in: the poll is a timer this spec does not wait for.) Back steps to Sync status.
