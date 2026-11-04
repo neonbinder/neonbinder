@@ -32,6 +32,11 @@ export default function ParallelSelector({
       // -900 fill in dark, a pale tint in light, the -700 edge in both.
       selectedColor="bg-pick-amber border-pick-amber-rule"
       isItemTerminal={() => true}
+      // NEO-425: sub-variants are NB's own rows and no marketplace has them,
+      // so the sync hint every other column carries would be untrue here.
+      // The cascade hides this column while an insert has none, so the line
+      // is only ever seen for the moment after the last one goes.
+      emptyText="No parallels under this insert."
     />
   );
 }
