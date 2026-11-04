@@ -2540,6 +2540,7 @@ function useConvexActions(): CollectionActions {
         return {
           before: r.before,
           after: r.after,
+          tookPhotos: r.inverse.steps.some((step) => step.op === "restore" && (step.photoIds?.length ?? 0) > 0),
           undo: async () => {
             // The same number wrote nothing, so there is nothing to put back.
             if (r.inverse.steps.length === 0) return;

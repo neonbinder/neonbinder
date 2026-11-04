@@ -424,6 +424,33 @@ describe("the other add doors (security review)", () => {
     expect((await s.t.run((ctx) => ctx.db.get(photoId)))?.status).toBe("live");
   });
 
+  test("NEO-431: a raise onto a photo line is judged on that line's condition: none is refused, its own stacks", async () => {
+    const s = await setup();
+    await raise(s, s.box, 1);
+    const [line] = await copies(s);
+    const { photoId } = await s.t.mutation(internal.copyPhotos.reserveUpload, {
+      ownerId: ME.subject,
+      copyId: line._id,
+      side: "front",
+      contentType: "image/jpeg",
+      imageBytes: 1,
+      thumbBytes: 1,
+    });
+    await s.t.mutation(internal.copyPhotos.commitUpload, { ownerId: ME.subject, photoId });
+    await priceBase(s);
+    await syncOn(s);
+    expect((await copies(s))[0].condition).toBeDefined();
+    await raise(s, s.box, 2);
+    expect((await copies(s)).map((c) => c.quantity)).toEqual([2]);
+    // A line from before every add carried a condition.
+    await s.t.run((ctx) => ctx.db.patch(line._id, { condition: undefined }));
+    expect(await refusal(raise(s, s.box, 3))).toEqual({
+      code: LISTING_GATE_ERROR,
+      message: listingGateMessage("Show box", { needsPrice: false, needsCondition: true }),
+    });
+    expect((await copies(s)).map((c) => c.quantity)).toEqual([2]);
+  });
+
   test("a move INTO a listed box from a home that does not list is held; graded, out, and box to box are not", async () => {
     const s = await setup();
     await s.me.mutation(api.collection.addHave, { cardId: s.fx.gooden1, homeId: s.binder });

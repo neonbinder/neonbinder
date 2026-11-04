@@ -1608,6 +1608,13 @@ describe("the Inventory list and quick counts (NEO-364)", () => {
       expect(writes()).toHaveLength(1);
     });
 
+    it("says photos went only when the inverse puts some back", async () => {
+      calls.answers.set("collectionInventory:setBoxQuantity", result([{ op: "restore", quantity: 2, photoIds: ["ph1"] }], 2, 0));
+      expect((await actions().setBoxQuantity(CARD, BOX_C, 0)).tookPhotos).toBe(true);
+      calls.answers.set("collectionInventory:setBoxQuantity", result([{ op: "restore", quantity: 2 }], 2, 0));
+      expect((await actions().setBoxQuantity(CARD, BOX_C, 0)).tookPhotos).toBe(false);
+    });
+
     it("refuses a binder, a fraction, a negative and a count past the cap before anything is sent", async () => {
       const a = actions();
       await expect(a.setBoxQuantity(CARD, { ...BOX_C, kind: "binder" }, 1)).rejects.toThrow(/box/i);
@@ -1810,6 +1817,61 @@ describe("the Inventory list and quick counts (NEO-364)", () => {
           ["bare", 1, undefined],
           ["step0", 2, true],
         ]);
+      });
+
+      it("adversarial: the undo of a raise onto a photo line sets it back; the redo puts it on again, with no line drawn either way", async () => {
+        seed([photo("p", { quantity: 2 })]);
+        applyBoxQuantity(await store(), "k1", UNSORTED, 5, "2026-10-25", PLACE, draw);
+        expect(lines()).toEqual([["p", 5]]);
+        applyBoxSteps(await store(), { cardId: "k1", boxId: UNSORTED, steps: [{ op: "set", copyId: "p", from: 5, to: 2 }] } as never, PLACE, (n) => `step${n}` as never);
+        expect(lines()).toEqual([["p", 2]]);
+        applyBoxSteps(await store(), { cardId: "k1", boxId: UNSORTED, steps: [{ op: "set", copyId: "p", from: 2, to: 5 }] } as never, PLACE, (n) => `step${n}` as never);
+        expect(lines()).toEqual([["p", 5]]);
+        expect(drawn).toBe(0);
+      });
+
+      it("adversarial: one inverse restoring a bare line and two photo lines of the same date draws two photo lines and folds the bare one", async () => {
+        seed([row("bare", UNSORTED, { quantity: 1, condition: "Excellent", acquiredOn: "2026-10-01" })]);
+        applyBoxSteps(
+          await store(),
+          {
+            cardId: "k1",
+            boxId: UNSORTED,
+            steps: [
+              { op: "restore", quantity: 2, acquiredOn: "2026-10-01" },
+              { op: "restore", quantity: 1, acquiredOn: "2026-10-01", photoIds: ["a"] },
+              { op: "restore", quantity: 3, acquiredOn: "2026-10-01", photoIds: ["b"] },
+            ],
+          } as never,
+          PLACE,
+          (n) => `step${n}` as never,
+        );
+        expect(copiesOf().map((r) => [r._id, r.quantity, (r as { hasPhotos?: boolean }).hasPhotos === true]).sort()).toEqual([
+          ["bare", 3, false],
+          ["step1", 1, true],
+          ["step2", 3, true],
+        ]);
+      });
+
+      it("adversarial: a raise whose total would pass the cap cannot be drawn onto a photo line past it", async () => {
+        seed([photo("p", { quantity: 999 - 1 })]);
+        applyBoxQuantity(await store(), "k1", UNSORTED, 999, "2026-10-25", PLACE, draw);
+        expect(lines()).toEqual([["p", 999]]);
+      });
+
+      it("adversarial: with a legacy photo line (no condition) alone, a raise stacks onto it as the server does", async () => {
+        seed([row("legacy", UNSORTED, { quantity: 1, hasPhotos: true })]);
+        applyBoxQuantity(await store(), "k1", UNSORTED, 2, "2026-10-25", PLACE, draw);
+        expect(lines()).toEqual([["legacy", 2]]);
+        expect(drawn).toBe(0);
+      });
+
+      it("adversarial: equal lastUpdated, two photo lines: the later listed is the newest, for a raise and for a lowering", async () => {
+        seed([photo("first", { lastUpdated: 5 }), photo("second", { lastUpdated: 5 })]);
+        applyBoxQuantity(await store(), "k1", UNSORTED, 3, "2026-10-25", PLACE, draw);
+        expect(lines()).toEqual([["first", 1], ["second", 2]]);
+        applyBoxQuantity(await store(), "k1", UNSORTED, 1, "2026-10-25", PLACE, draw);
+        expect(lines()).toEqual([["first", 1]]);
       });
 
       it("a restore without photos never folds into an identical photo line", async () => {

@@ -35,9 +35,11 @@ export const BLANK_MESSAGE = "Nothing changed. Type 0 to clear it.";
 type Status = { kind: "idle" } | { kind: "saving" } | { kind: "saved" } | { kind: "error"; message: string };
 
 /** What the status line says once a quantity lands. */
-export function quantityMessage(name: string, box: Pick<Container, "name">, r: Pick<QuantityResult, "before" | "after">): string {
+export function quantityMessage(name: string, box: Pick<Container, "name">, r: Pick<QuantityResult, "before" | "after" | "tookPhotos">): string {
   if (r.after > r.before) return `Boxed ${r.after - r.before} more of ${name}. ${r.after} in ${box.name}.`;
-  if (r.after < r.before) return `Pulled ${r.before - r.after} of ${name} from ${box.name}. ${r.after} left.`;
+  if (r.after < r.before) {
+    return `Pulled ${r.before - r.after} of ${name} from ${box.name}${r.tookPhotos ? ", with its photos" : ""}. ${r.after} left.`;
+  }
   return `${name} stays at ${r.after} in ${box.name}.`;
 }
 

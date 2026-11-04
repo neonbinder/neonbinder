@@ -35,8 +35,10 @@
  *   - The same number: nothing is written.
  *
  * NEO-370: a raise into a listed box needs the variant's common price and a
- * condition when the collector is set up for syncing (`listingGate.ts`); a
- * lower, and an undo, are never held.
+ * condition when the collector is set up for syncing (`listingGate.ts`). So
+ * does an undo or redo that restores or raises a line; a lower never is held.
+ * A raise onto a line with photos is judged on that line's own condition, since
+ * that is what the copies take.
  *
  * Every write returns `inverse`: the exact row-level undo (each touched line
  * put back as it was), which `undoBoxQuantity` applies after checking every
@@ -412,15 +414,16 @@ export const setBoxQuantity = mutation({
       const gate = new ListingGate(ctx, ownerId);
       let place: Promise<Place> | undefined;
       const placeOnce = () => (place ??= placeOf(ctx, args.cardId));
+      const photoLine = photoLineToRaise(plain.rows);
       if (await gate.applies(box)) {
+        // A raise onto a photo line takes that line's condition, not the default.
         await gate.require(box, {
           variantId: (await placeOnce()).variantId,
           graded: false,
-          condition: defaultCondition,
+          condition: photoLine ? photoLine.condition : defaultCondition,
         });
       }
       const adding = args.quantity - before;
-      const photoLine = photoLineToRaise(plain.rows);
       const put = photoLine
         ? await raiseLine(ctx, photoLine, adding, now)
         : await putPlain(

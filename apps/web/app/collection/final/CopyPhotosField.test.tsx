@@ -50,7 +50,7 @@ function renderDrawer() {
 function openPhotos(drawer: HTMLElement) {
   const edit = drawer.querySelector<HTMLButtonElement>(`[data-copy-edit="${STACK.id}"]`)!;
   fireEvent.click(edit);
-  return within(drawer).getByRole("region", { name: "Photos" });
+  return within(drawer).getByRole("region", { name: /^Photos of / });
 }
 const pickFile = (drawer: HTMLElement, side: "front" | "back", file: File) => {
   const input = drawer.querySelector<HTMLInputElement>(`[data-copy-photo-input="${side}"]`)!;
@@ -103,7 +103,7 @@ describe("a copy line's photos, in its Edit form", () => {
     await waitFor(() => expect(within(box).getByRole("alert").textContent).toMatch(/isn't a photo/));
     await act(async () => pickFile(drawer, "back", jpeg()));
     await waitFor(() => expect(within(box).getByRole("link", { name: /^Back of / })).toBeTruthy());
-    expect(within(box).queryByRole("alert")).toBeNull();
+    expect(within(box).getByRole("alert").textContent).toBe("");
 
     fireEvent.click(within(box).getByRole("button", { name: "Swap front and back" }));
     await waitFor(() => expect(within(box).getByRole("status").textContent).toBe("Front and back swapped."));
@@ -164,7 +164,7 @@ function renderHeld(props: Partial<React.ComponentProps<typeof HeldPhotosField>>
     );
   }
   const view = render(<Parent />);
-  const box = screen.getByRole("region", { name: "Photos" });
+  const box = screen.getByRole("region", { name: /^Photos of / });
   const pick = (side: "front" | "back", file: File) =>
     fireEvent.change(box.querySelector<HTMLInputElement>(`[data-copy-photo-input="${side}"]`)!, {
       target: { files: [file] },
@@ -186,15 +186,15 @@ describe("held photos (NEO-431): nothing to save against yet", () => {
     await act(async () => pick("front", first));
     expect(held().front).toBe(first);
     expect(within(box).getByRole("status").textContent).toBe("Front photo picked.");
-    const link = within(box).getByRole("link", { name: "Front of your new copy, full size (opens a new tab)" });
-    expect(link.getAttribute("href")).toBe("blob:demo-1");
-    expect(link.querySelector("img")?.getAttribute("src")).toBe("blob:demo-1");
+    expect(within(box).getByRole("img", { name: "Front of your new copy" }).getAttribute("src")).toBe("blob:demo-1");
+    // Nothing is saved yet, so there is no full size to open.
+    expect(within(box).queryByRole("link")).toBeNull();
 
     const second = jpeg("second.jpg");
     await act(async () => pick("front", second));
     expect(held().front).toBe(second);
     expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:demo-1");
-    expect(within(box).getByRole("link", { name: /^Front of / }).getAttribute("href")).toBe("blob:demo-2");
+    expect(within(box).getByRole("img", { name: /^Front of / }).getAttribute("src")).toBe("blob:demo-2");
 
     await act(async () => fireEvent.click(within(box).getByRole("button", { name: "Remove front" })));
     expect(held().front).toBeUndefined();
@@ -235,11 +235,11 @@ describe("held photos (NEO-431): nothing to save against yet", () => {
       types: ["application/x-neonbinder-photo-side"],
       files: [],
     };
-    fireEvent.dragStart(within(box).getByRole("link", { name: /^Front of / }), { dataTransfer });
+    fireEvent.dragStart(within(box).getByRole("img", { name: /^Front of / }), { dataTransfer });
     await act(async () => fireEvent.drop(back, { dataTransfer }));
     expect(held()).toEqual({ front: a, back: b });
     // A drop on its own side does nothing.
-    fireEvent.dragStart(within(box).getByRole("link", { name: /^Front of / }), { dataTransfer });
+    fireEvent.dragStart(within(box).getByRole("img", { name: /^Front of / }), { dataTransfer });
     await act(async () => fireEvent.drop(front, { dataTransfer }));
     expect(held()).toEqual({ front: a, back: b });
   });
@@ -254,7 +254,7 @@ describe("held photos (NEO-431): nothing to save against yet", () => {
     expect(within(box).getByRole("alert").textContent).toMatch(/Two photos at most/);
 
     await act(async () => fireEvent.click(within(box).getByRole("button", { name: "Remove back" })));
-    expect(within(box).queryByRole("alert")).toBeNull();
+    expect(within(box).getByRole("alert").textContent).toBe("");
     await act(async () => {
       fireEvent.drop(box, { dataTransfer: { files: [c], types: ["Files"], getData: () => "" } });
     });
@@ -304,8 +304,8 @@ describe("held photos (NEO-431): nothing to save against yet", () => {
         saving="Saving your photos…"
       />,
     );
-    const box = screen.getByRole("region", { name: "Photos" });
-    await within(box).findByRole("link", { name: /^Front of / });
+    const box = screen.getByRole("region", { name: /^Photos of / });
+    await within(box).findByRole("img", { name: /^Front of / });
     expect(within(box).getByRole("status").textContent).toBe("Saving your photos…");
     const remove = within(box).getByRole("button", { name: "Remove front" });
     expect(remove.getAttribute("aria-disabled")).toBe("true");
@@ -317,12 +317,175 @@ describe("held photos (NEO-431): nothing to save against yet", () => {
   });
 });
 
+describe("held photos: adversarial pass (NEO-431)", () => {
+  const dropOf = (files: File[], extra: object = {}) => ({ dataTransfer: { files, types: ["Files"], getData: () => "", ...extra } });
+
+  it("every object URL made is revoked exactly once across pick, replace, swap, remove and unmount", async () => {
+    const { box, pick, unmount } = renderHeld();
+    await act(async () => pick("front", jpeg("a.jpg")));
+    await act(async () => pick("back", jpeg("b.jpg")));
+    await act(async () => pick("front", jpeg("c.jpg")));
+    await act(async () => fireEvent.click(within(box).getByRole("button", { name: "Swap front and back" })));
+    await act(async () => fireEvent.click(within(box).getByRole("button", { name: "Remove back" })));
+    await act(async () => pick("back", jpeg("d.jpg")));
+    unmount();
+    const made = (URL.createObjectURL as ReturnType<typeof vi.fn>).mock.results.map((r) => r.value as string);
+    const revoked = (URL.revokeObjectURL as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0] as string);
+    expect(new Set(revoked).size).toBe(revoked.length);
+    expect([...revoked].sort()).toEqual([...made].sort());
+  });
+
+  it("the same file on both sides gets two URLs, and removing one side does not revoke the other's", async () => {
+    const { box, pick } = renderHeld();
+    const same = jpeg("same.jpg");
+    await act(async () => pick("front", same));
+    await act(async () => pick("back", same));
+    const tiles = within(box).getAllByRole("img");
+    expect(new Set(tiles.map((tile) => tile.getAttribute("src"))).size).toBe(2);
+    const backSrc = within(box).getByRole("img", { name: /^Back of / }).getAttribute("src");
+    await act(async () => fireEvent.click(within(box).getByRole("button", { name: "Remove front" })));
+    expect(URL.revokeObjectURL).not.toHaveBeenCalledWith(backSrc);
+    expect(within(box).getByRole("img", { name: /^Back of / }).getAttribute("src")).toBe(backSrc);
+  });
+
+  it("a swap leaves no side showing a revoked address once the effects settle", async () => {
+    const { box, pick } = renderHeld();
+    await act(async () => pick("front", jpeg("a.jpg")));
+    await act(async () => pick("back", jpeg("b.jpg")));
+    await act(async () => fireEvent.click(within(box).getByRole("button", { name: "Swap front and back" })));
+    const revoked = new Set((URL.revokeObjectURL as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0]));
+    for (const tile of within(box).getAllByRole("img")) expect(revoked.has(tile.getAttribute("src"))).toBe(false);
+  });
+
+  it("a picture is not shown at an address revoked a render ago: remove then pick again", async () => {
+    const { box, pick } = renderHeld();
+    await act(async () => pick("front", jpeg("a.jpg")));
+    await act(async () => fireEvent.click(within(box).getByRole("button", { name: "Remove front" })));
+    await act(async () => pick("front", jpeg("b.jpg")));
+    const revoked = new Set((URL.revokeObjectURL as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0]));
+    expect(revoked.has(within(box).getByRole("img", { name: /^Front of / }).getAttribute("src"))).toBe(false);
+  });
+
+  it("three files dropped on the BACK side: the first two are held, front then back, and the third is said to be left out", async () => {
+    const { box, held } = renderHeld();
+    const [a, b, c] = [jpeg("a.jpg"), jpeg("b.jpg"), jpeg("c.jpg")];
+    await act(async () => {
+      fireEvent.drop(box.querySelector('[data-copy-photo-side="back"]')!, dropOf([a, b, c]));
+    });
+    expect(held()).toEqual({ front: a, back: b });
+    expect(within(box).getByRole("alert").textContent).toMatch(/Two photos at most/);
+  });
+
+  it("a photo and a PDF dropped together: the photo is held and the PDF is said to be left out", async () => {
+    const { box, held } = renderHeld();
+    const a = jpeg("a.jpg");
+    await act(async () => {
+      fireEvent.drop(box, dropOf([new File(["%PDF"], "list.pdf", { type: "application/pdf" }), a]));
+    });
+    expect(held()).toEqual({ front: a });
+    expect(within(box).getByRole("alert").textContent).toMatch(/other files were left out/);
+  });
+
+  it("a file the browser can't name (empty type) is held, left to the resize step to judge", async () => {
+    const { box, held } = renderHeld();
+    const odd = new File(["x"], "scan", { type: "" });
+    await act(async () => {
+      fireEvent.drop(box, dropOf([odd]));
+    });
+    expect(held()).toEqual({ front: odd });
+  });
+
+  it("while saving, a drop of two files, a drop of three and a drag-swap each change nothing and say why", async () => {
+    const onChange = vi.fn();
+    const a = jpeg("a.jpg");
+    render(
+      <HeldPhotosField files={{ front: a }} onChange={onChange} line="x" accept="image/jpeg" help="h" saving="Saving your photos…" />,
+    );
+    const box = screen.getByRole("region", { name: /^Photos of / });
+    await act(async () => {
+      fireEvent.drop(box, dropOf([jpeg("b.jpg"), jpeg("c.jpg")]));
+    });
+    expect(onChange).not.toHaveBeenCalled();
+    expect(within(box).getByRole("alert").textContent).toMatch(/Still saving/);
+    await act(async () => {
+      fireEvent.drop(box, dropOf([jpeg("b.jpg"), jpeg("c.jpg"), jpeg("d.jpg")]));
+    });
+    expect(onChange).not.toHaveBeenCalled();
+    let payload = "";
+    const dataTransfer = {
+      clearData: () => {},
+      setData: (_t: string, v: string) => {
+        payload = v;
+      },
+      getData: () => payload,
+      types: ["application/x-neonbinder-photo-side"],
+      files: [],
+    };
+    fireEvent.dragStart(within(box).getByRole("img", { name: /^Front of / }), { dataTransfer });
+    await act(async () => fireEvent.drop(box.querySelector('[data-copy-photo-side="back"]')!, { dataTransfer }));
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("a photo dragged from ANOTHER box onto this one changes nothing", async () => {
+    const { box, held } = renderHeld();
+    await act(async () => {
+      fireEvent.drop(box.querySelector('[data-copy-photo-side="back"]')!, {
+        dataTransfer: { files: [], types: ["application/x-neonbinder-photo-side"], getData: () => "some-other-box|front" },
+      });
+    });
+    expect(held()).toEqual({});
+  });
+
+  it("one file dropped on the box when both sides are full replaces the front, and says so in the status", async () => {
+    const { box, held, pick } = renderHeld();
+    const [a, b, c] = [jpeg("a.jpg"), jpeg("b.jpg"), jpeg("c.jpg")];
+    await act(async () => pick("front", a));
+    await act(async () => pick("back", b));
+    await act(async () => {
+      fireEvent.drop(box, dropOf([c]));
+    });
+    expect(held()).toEqual({ front: c, back: b });
+    expect(within(box).getByRole("status").textContent).toBe("Front photo picked.");
+  });
+
+  it("the box's alert is mounted before there is anything to say, so the refusal is announced", () => {
+    const { box } = renderHeld();
+    expect(within(box).getByRole("alert").textContent).toBe("");
+  });
+
+  it.each(["image/svg+xml", "image/gif", "image/bmp"])("a dropped %s is refused and not held: a browser can draw it but can't save it", async (type) => {
+    const { box, held } = renderHeld();
+    await act(async () => {
+      fireEvent.drop(box, dropOf([new File(["<svg/>"], "logo", { type })]));
+    });
+    expect(held()).toEqual({});
+    expect(within(box).getByRole("alert").textContent).toBe("Only photos can be added here.");
+  });
+
+  it.each(["image/jpeg", "image/png", "image/webp", "image/heic", "image/heif"])("a dropped %s is held", async (type) => {
+    const { box, held } = renderHeld();
+    const file = new File(["x"], "card", { type });
+    await act(async () => {
+      fireEvent.drop(box, dropOf([file]));
+    });
+    expect(held()).toEqual({ front: file });
+  });
+
+  it("a refusal from an earlier pick is cleared by the next good pick", async () => {
+    const { box, pick } = renderHeld();
+    await act(async () => pick("front", new File(["x"], "n.txt", { type: "text/plain" })));
+    expect(within(box).getByRole("alert").textContent).toBe("Only photos can be added here.");
+    await act(async () => pick("front", jpeg()));
+    expect(within(box).getByRole("alert").textContent).toBe("");
+  });
+});
+
 describe("the drawer's Add form holds photos (NEO-431)", () => {
   /** Opens the Add form under the stack's line. */
   function openAdd(drawer: HTMLElement) {
     fireEvent.click(within(drawer).getByRole("button", { name: /^Add another copy of / }));
     const form = within(drawer).getByRole("form", { name: "Add another copy" });
-    return { form, box: within(form).getByRole("region", { name: "Photos" }) };
+    return { form, box: within(form).getByRole("region", { name: /^Photos of / }) };
   }
   const pickIn = (box: HTMLElement, side: "front" | "back", file: File) =>
     fireEvent.change(box.querySelector<HTMLInputElement>(`[data-copy-photo-input="${side}"]`)!, { target: { files: [file] } });
@@ -381,7 +544,7 @@ describe("the drawer's Add form holds photos (NEO-431)", () => {
     const edit = await within(drawer).findByRole("form", { name: /^Edit Raw/ });
     expect(lineCount(drawer)).toBe(before + 1);
     expect(within(drawer).queryByRole("form", { name: "Add another copy" })).toBeNull();
-    const field = within(edit).getByRole("region", { name: "Photos" });
+    const field = within(edit).getByRole("region", { name: /^Photos of / });
     expect(within(field).getByRole("alert").textContent).toMatch(/^Your copy is in, but the back photo didn't save\. .*Add it again here\.$/);
     expect(within(field).getByRole("link", { name: /^Front of / })).toBeTruthy();
     expect(within(field).getByText("No back photo yet")).toBeTruthy();
@@ -391,7 +554,7 @@ describe("the drawer's Add form holds photos (NEO-431)", () => {
     // Trying again there works, and clears the failure.
     await act(async () => pickIn(field, "back", jpeg()));
     await waitFor(() => expect(within(field).getByRole("status").textContent).toBe("Back photo saved."));
-    expect(within(field).queryByRole("alert")).toBeNull();
+    expect(within(field).getByRole("alert").textContent).toBe("");
 
     // Reopening the form later doesn't bring an old failure back.
     fireEvent.click(within(edit).getByRole("button", { name: "Cancel" }));
@@ -399,7 +562,7 @@ describe("the drawer's Add form holds photos (NEO-431)", () => {
     const lineEdit = within(drawer).getAllByRole("button", { name: /^Edit / }).at(-1)!;
     fireEvent.click(lineEdit);
     const reopened = await within(drawer).findByRole("form", { name: /^Edit Raw/ });
-    expect(within(reopened).queryByRole("alert")).toBeNull();
+    expect(within(within(reopened).getByRole("region", { name: /^Photos of / })).getByRole("alert").textContent).toBe("");
   });
 
   it("Cancel throws the held photos away", async () => {

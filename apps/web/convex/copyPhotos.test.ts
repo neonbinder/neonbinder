@@ -374,6 +374,61 @@ describe("folds, removes and undo", () => {
     expect((await photoRows(s))[0].status).toBe("detached");
   });
 
+  test("NEO-431: a replayed Undo refuses on a photo that is already live, and writes nothing", async () => {
+    const s = await setup();
+    const copyId = await addCopy(s);
+    await photograph(s, copyId, "front");
+    const { removed } = await s.me.mutation(api.collection.removeCopy, { copyId });
+    const { copyId: back } = await s.me.mutation(api.collection.restoreCopy, removed);
+    await expect(s.me.mutation(api.collection.restoreCopy, removed)).rejects.toThrow(/already back on a line/);
+    const lines = await s.t.run(async (ctx) => await ctx.db.query("collectionCopies").collect());
+    expect(lines.map((line) => line._id)).toEqual([back]);
+    expect((await photoRows(s)).map((photo) => photo.copyId)).toEqual([back]);
+  });
+
+  test("NEO-431: an Undo naming the caller's pending or replaced photo skips it and the line comes back bare", async () => {
+    const s = await setup();
+    const copyId = await addCopy(s);
+    const replaced = await photograph(s, copyId, "front");
+    await photograph(s, copyId, "front");
+    const { photoId: pending } = await s.t.mutation(internal.copyPhotos.reserveUpload, {
+      ownerId: ME.subject,
+      copyId,
+      side: "back",
+      contentType: "image/jpeg",
+      imageBytes: 300_000,
+      thumbBytes: 20_000,
+    });
+    const other = await addCopy(s, { grading: { grader: "PSA", grade: "9" } });
+    const { removed } = await s.me.mutation(api.collection.removeCopy, { copyId: other });
+    const { copyId: back } = await s.me.mutation(api.collection.restoreCopy, {
+      ...removed,
+      photoIds: [replaced, pending],
+    });
+    expect((await copyRow(s, back))?.hasPhotos).toBeUndefined();
+    const rows = await photoRows(s);
+    expect(rows.find((photo) => photo._id === replaced)?.status).toBe("replaced");
+    expect(rows.find((photo) => photo._id === pending)?.status).toBe("pending");
+    expect(rows.some((photo) => photo.copyId === back)).toBe(false);
+  });
+
+  test("NEO-431: an Undo naming a photo the sweep already took still brings the line back, bare", async () => {
+    const s = await setup();
+    vi.useFakeTimers();
+    try {
+      const copyId = await addCopy(s);
+      await photograph(s, copyId, "front");
+      const { removed } = await s.me.mutation(api.collection.removeCopy, { copyId });
+      vi.advanceTimersByTime(PHOTO_HOLD_MS + 1);
+      await s.t.mutation(internal.copyPhotos.sweepCopyPhotos, {});
+      expect(await photoRows(s)).toEqual([]);
+      const { copyId: back } = await s.me.mutation(api.collection.restoreCopy, removed);
+      expect((await copyRow(s, back))?.hasPhotos).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   test("the sweep clears stale pending and detached photos, not live ones", async () => {
     const s = await setup();
     vi.useFakeTimers();

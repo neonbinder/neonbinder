@@ -321,7 +321,7 @@ export default function RequestCardForm({
         line="this card"
         accept={PHOTO_TYPES.join(",")}
         help="Optional. Stashed here until you send the request."
-        saving={sending ? "Sending your photos…" : undefined}
+        saving={sending ? (held.front || held.back ? "Sending your photos…" : "Sending…") : undefined}
         check={photoProblem}
         onProblem={setProblem}
       />

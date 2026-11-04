@@ -569,6 +569,8 @@ export interface BoxQuantityOpResult {
   before: number;
   after: number;
   undo: BoxQuantityUndo;
+  /** A line with photos went with the count (its Undo brings them back). */
+  tookPhotos?: boolean;
 }
 
 export interface RemoveOpResult {
@@ -998,7 +1000,12 @@ export const demoOps = {
     const before = plain.reduce((n, { copy }) => n + copy.quantity, 0);
     const result = (next: CollectionState, undo: BoxQuantityUndo): OpResult<BoxQuantityOpResult> => ({
       state: next,
-      result: { before, after: quantity, undo },
+      result: {
+        before,
+        after: quantity,
+        undo,
+        ...(undo.was.some(({ copy }) => copy.hasPhotos && !next.copies.some((c) => c.id === copy.id)) ? { tookPhotos: true } : {}),
+      },
     });
     if (before === quantity) return result(state, { was: [], made: [] });
     const was: BoxQuantityUndo["was"] = [];
@@ -1047,12 +1054,27 @@ export const demoOps = {
     return result({ ...state, copies }, { was, made });
   },
 
-  /** Puts back exactly the lines a `setBoxQuantity` touched: the lines it made go, the ones it changed or took return as they were. */
+  /**
+   * Puts back exactly the lines a `setBoxQuantity` touched: the lines it made go,
+   * the ones it changed or took return as they were. A line still here keeps the
+   * photos it has now, which the count never changed. A line it made that has been
+   * photographed since is refused, as the server refuses to delete it.
+   */
   restoreLines(state: CollectionState, undo: BoxQuantityUndo): OpResult<null> {
     if (undo.was.length === 0 && undo.made.length === 0) return { state, result: null };
     const made = new Set(undo.made);
+    if (state.copies.some((c) => made.has(c.id) && c.hasPhotos)) {
+      throw new DemoRefusal("That count changed since, so it can't be undone. Type the number you want instead.");
+    }
     const was = new Map(undo.was.map((w) => [w.copy.id, w.copy]));
-    const copies = state.copies.filter((c) => !made.has(c.id)).map((c) => was.get(c.id) ?? c);
+    const copies = state.copies
+      .filter((c) => !made.has(c.id))
+      .map((c) => {
+        const back = was.get(c.id);
+        if (!back) return c;
+        const { hasPhotos: _then, ...fields } = back;
+        return c.hasPhotos ? { ...fields, hasPhotos: true } : fields;
+      });
     const present = new Set(copies.map((c) => c.id));
     for (const { copy, index } of [...undo.was].sort((a, b) => a.index - b.index)) {
       if (present.has(copy.id)) continue;

@@ -1,7 +1,7 @@
 /**
  * NEO-377, NEO-431 — the one photo box: the front and the back side by side,
- * each with Add (or Replace) and Remove. A photo opens full size in a new tab.
- * Three places show it: a line's Edit form, the drawer's Add form and Request
+ * each with Add (or Replace) and Remove. A saved photo opens full size in a new
+ * tab; a held one is only on this page, so it has no link. Three places show it: a line's Edit form, the drawer's Add form and Request
  * a card. It looks and behaves the same in all three; what differs is when a
  * photo saves.
  *
@@ -28,11 +28,15 @@ import type { Copy, CopyPhotos, PhotoSide } from "./data/types";
 export const PHOTO_SIDES: readonly PhotoSide[] = ["front", "back"];
 const SIDE_WORD: Record<PhotoSide, string> = { front: "Front", back: "Back" };
 const DIMMED = "aria-disabled:cursor-not-allowed aria-disabled:opacity-60";
+const TILE_IMAGE = "aspect-[5/7] w-full rounded-sm border border-rule object-contain text-xs text-ink-3";
 /** The drag payload of one photo tile, so a drop can tell a swap from a file. */
 const SIDE_DRAG = "application/x-neonbinder-photo-side";
 const NOT_A_PHOTO = "Only photos can be added here.";
 /** What a drop lets through. An empty type is a file the browser can't name: a later step decides. */
 const looksLikePhoto = (file: File) => file.type.startsWith("image/") || file.type === "";
+const HOLDABLE_TYPES = new Set(COPY_PHOTO_ACCEPT.split(","));
+/** What the box holds by default: the types a photo can be saved from, or a type the browser can't name. */
+const notHoldable = (file: File) => (file.type === "" || HOLDABLE_TYPES.has(file.type) ? null : NOT_A_PHOTO);
 
 /** A line's front thumbnail beside its words, when it has one. */
 export function LineThumb({ photos, line }: { photos: CopyPhotos | undefined; line: string }) {
@@ -77,6 +81,8 @@ function PhotosBox({
   busy,
   status,
   error,
+  ownAlert = true,
+  openFullSize,
   className = "mt-4",
   onPut,
   onRemove,
@@ -95,6 +101,10 @@ function PhotosBox({
   busy: boolean;
   status: string;
   error: string | null;
+  /** False when the form has its own alert and `onRefuse` goes there: nothing would ever be said in this one. */
+  ownAlert?: boolean;
+  /** A photo's tile links to the full size. Only a saved photo has an address worth opening. */
+  openFullSize: boolean;
   className?: string;
   onPut: (picked: readonly PickedPhoto[]) => void;
   /** `done` parks the keyboard: Remove unmounts itself. */
@@ -170,6 +180,18 @@ function PhotosBox({
     if (skipped && !busy) onRefuse(skipped);
   };
 
+  /** A photo's tile, dragged onto the other side to swap them. */
+  const dragTile = (side: PhotoSide) => ({
+    draggable: true,
+    onDragStart: (e: DragEvent) => {
+      // Not the photo's own address: its URL never leaves the page in a drag.
+      e.dataTransfer.clearData();
+      e.dataTransfer.setData(SIDE_DRAG, `${boxId}|${side}`);
+      e.dataTransfer.effectAllowed = "move";
+    },
+    onDragEnd: () => setOver(null),
+  });
+
   return (
     <section
       aria-labelledby={headingId}
@@ -185,7 +207,7 @@ function PhotosBox({
       data-copy-photos-field={boxId}
     >
       <h3 id={headingId} className="text-sm font-semibold text-ink">
-        Photos
+        Photos<span className="sr-only"> of {line}</span>
       </h3>
       <p id={helpId} className="mt-0.5 text-xs text-ink-3">
         {help}
@@ -208,19 +230,12 @@ function PhotosBox({
               data-copy-photo-side={side}
             >
               <p className="text-xs text-ink-3">{word}</p>
-              {shown ? (
+              {shown && openFullSize ? (
                 <a
                   href={shown.imageUrl}
                   target="_blank"
                   rel="noopener noreferrer"
-                  draggable
-                  onDragStart={(e) => {
-                    // Not the link's own address: the photo URL never leaves the page in a drag.
-                    e.dataTransfer.clearData();
-                    e.dataTransfer.setData(SIDE_DRAG, `${boxId}|${side}`);
-                    e.dataTransfer.effectAllowed = "move";
-                  }}
-                  onDragEnd={() => setOver(null)}
+                  {...dragTile(side)}
                   className={`mt-1 block cursor-grab rounded-sm focus-outline ${
                     over === side ? "ring-4 ring-selection" : ""
                   }`}
@@ -231,10 +246,23 @@ function PhotosBox({
                     // The link names it. This is for a picture the browser can't draw (a HEIC off Safari).
                     alt={`${word} side`}
                     draggable={false}
-                    className="aspect-[5/7] w-full rounded-sm border border-rule object-contain text-xs text-ink-3"
+                    className={TILE_IMAGE}
                     decoding="async"
                   />
                 </a>
+              ) : shown ? (
+                <div
+                  {...dragTile(side)}
+                  className={`mt-1 cursor-grab rounded-sm ${over === side ? "ring-4 ring-selection" : ""}`}
+                >
+                  <img
+                    src={shown.thumbUrl}
+                    alt={`${word} of ${line}`}
+                    draggable={false}
+                    className={TILE_IMAGE}
+                    decoding="async"
+                  />
+                </div>
               ) : (
                 <div
                   className={`mt-1 flex aspect-[5/7] w-full items-center justify-center rounded-sm border border-dashed text-ink-3 ${
@@ -308,9 +336,10 @@ function PhotosBox({
       <p className="mt-2 text-xs text-ink-3" role="status">
         {status}
       </p>
-      {error && (
-        <p className="mt-1 text-xs text-neon-pink-text" role="alert">
-          {error}
+      {/* Mounted from the start, so a screen reader announces what lands in it. */}
+      {ownAlert && (
+        <p className="mt-1 min-h-4 text-xs text-neon-pink-text" role="alert">
+          {error ?? ""}
         </p>
       )}
     </section>
@@ -363,6 +392,7 @@ export default function CopyPhotosField({
       busy={busy}
       status={status}
       error={error}
+      openFullSize
       onPut={(picked) => {
         const words = picked.map((p) => p.side).join(" and ");
         const saved = picked.length > 1 ? "Front and back photos saved." : `${SIDE_WORD[picked[0].side]} photo saved.`;
@@ -406,7 +436,7 @@ export function HeldPhotosField({
   accept,
   help,
   saving,
-  check = (file) => (looksLikePhoto(file) ? null : NOT_A_PHOTO),
+  check = notHoldable,
   onProblem,
   className,
 }: {
@@ -446,6 +476,8 @@ export function HeldPhotosField({
       busy={saving !== undefined}
       status={saving ?? status}
       error={error}
+      ownAlert={!onProblem}
+      openFullSize={false}
       className={className}
       onPut={(picked) => {
         const good = picked.filter((p) => check(p.file) === null);

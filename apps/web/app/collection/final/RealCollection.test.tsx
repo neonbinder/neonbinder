@@ -167,6 +167,7 @@ function makeStore({
   loading = false,
   capabilities = REAL_CAPABILITIES,
   boxCopies = [],
+  extraCopies = [],
   binderMemory,
   listing,
   photos,
@@ -179,6 +180,8 @@ function makeStore({
   capabilities?: Capabilities;
   /** Copies in a box: only the every-home read (`useCopiesOfCards`) lists them, as on Convex. */
   boxCopies?: Copy[];
+  /** More lines the card drawer lists, as a line just added would be. */
+  extraCopies?: Copy[];
   /** NEO-374 — Profile → Settings' where-it-opens, as the Convex store hands it over. */
   binderMemory?: BinderMemoryExtension;
 } = {}) {
@@ -263,7 +266,7 @@ function makeStore({
       return L({ cards, truncated: false });
     },
     useBuildingSets: () => L([SET]),
-    useCopiesOf: (id) => (id === null ? undefined : L([COPY_OHTANI, COPY_GOLD].filter((c) => c.cardId === id))),
+    useCopiesOf: (id) => (id === null ? undefined : L([COPY_OHTANI, COPY_GOLD, ...extraCopies].filter((c) => c.cardId === id))),
     useCopiesInVariant: (id) => (id === null ? undefined : L([COPY_OHTANI, COPY_GOLD].filter((c) => c.variantId === id))),
     useSummary: () => L({ copies: 2, cards: 2, exact: true, offBuild: 0 }),
     useContainers: () => L(CONTAINERS),
@@ -864,7 +867,7 @@ describe("the card drawer on the real collection", () => {
       fireEvent.click(screen.getByRole("button", { name: "Details for #2 Aaron Judge" }));
       const drawer = screen.getByRole("dialog");
       const form = within(drawer).getByRole("form", { name: "Add a copy" });
-      const box = within(form).getByRole("region", { name: "Photos" });
+      const box = within(form).getByRole("region", { name: /^Photos of / });
       const pick = (side: "front" | "back") =>
         act(async () => {
           fireEvent.change(box.querySelector(`[data-copy-photo-input="${side}"]`)!, { target: { files: [jpeg()] } });
@@ -931,7 +934,7 @@ describe("the card drawer on the real collection", () => {
         expect(within(drawer).getAllByRole("status").some((s) => s.textContent === "You already have 200 lines of this card. Stack some together first.")).toBe(true),
       );
       expect(photos.addPhoto).not.toHaveBeenCalled();
-      expect(within(box).getByRole("link", { name: /^Front of your new copy/ })).toBeTruthy();
+      expect(within(box).getByRole("img", { name: /^Front of your new copy/ })).toBeTruthy();
       expect(URL.revokeObjectURL).not.toHaveBeenCalled();
       // Add is ready for another go.
       expect(within(form).getByRole("button", { name: "Add to collection" }).getAttribute("aria-disabled")).toBeNull();
@@ -940,7 +943,266 @@ describe("the card drawer on the real collection", () => {
     it("a store without photos shows no photo box in the Add form", () => {
       renderAt(`/collection?tab=checklists&set=${SET.id}&type=vt-base`);
       fireEvent.click(screen.getByRole("button", { name: "Details for #2 Aaron Judge" }));
-      expect(within(screen.getByRole("dialog")).queryByRole("region", { name: "Photos" })).toBeNull();
+      expect(within(screen.getByRole("dialog")).queryByRole("region", { name: /^Photos of / })).toBeNull();
+    });
+  });
+
+  describe("an add with held photos: adversarial pass (NEO-431)", () => {
+    const photosExt = () =>
+      ({
+        usePhotos: () => new Map(),
+        useCardImages: () => new Map(),
+        addPhoto: vi.fn(async (_copy: Copy, _side: string, _file: File) => {}),
+        removePhoto: vi.fn(async () => {}),
+        swapPhotos: vi.fn(async () => {}),
+      }) satisfies CopyPhotosExtension;
+    const jpeg = (name = "card.jpg") => new File(["x"], name, { type: "image/jpeg" });
+    /** Ohtani already has a line (`copy-1`), so the write answering with that id stands in for "the new line is in the list". */
+    function openAnotherCopy(photos: CopyPhotosExtension) {
+      const store = makeStore({ photos });
+      store.actions.addLineItem.mockResolvedValue({ copyId: "copy-1", merged: false, undo: store.undo });
+      renderAt(`/collection?tab=checklists&set=${SET.id}&type=vt-base`, store);
+      fireEvent.click(screen.getByRole("button", { name: "Details for #1 Shohei Ohtani" }));
+      const drawer = screen.getByRole("dialog");
+      fireEvent.click(within(drawer).getByRole("button", { name: /add another copy|add a copy/i }));
+      const form = within(drawer).getByRole("form", { name: "Add another copy" });
+      const box = within(form).getByRole("region", { name: /^Photos of / });
+      const pick = (side: "front" | "back", file = jpeg()) =>
+        act(async () => {
+          fireEvent.change(box.querySelector(`[data-copy-photo-input="${side}"]`)!, { target: { files: [file] } });
+        });
+      return { ...store, drawer, form, box, pick };
+    }
+    let seq = 0;
+    beforeEach(() => {
+      URL.createObjectURL = vi.fn(() => `blob:held-${(seq += 1)}`);
+      URL.revokeObjectURL = vi.fn();
+    });
+
+    it("one photo fails: the copy stays, the photo that made it is not tried again, the failed side's Add is where the keyboard lands", async () => {
+      const photos = photosExt();
+      photos.addPhoto.mockImplementation(async (_c, side) => {
+        if (side === "back") throw new Error("That photo is too big. Add it again.");
+      });
+      const { form, drawer, pick } = openAnotherCopy(photos);
+      await pick("front");
+      await pick("back");
+      fireEvent.click(within(form).getByRole("button", { name: /^Add to collection$/ }));
+      await waitFor(() => expect(photos.addPhoto).toHaveBeenCalledTimes(2));
+      await waitFor(() =>
+        expect(within(drawer).getAllByRole("status").some((s) => /Its back photo didn't save\. Try again under Edit\./.test(s.textContent ?? ""))).toBe(true),
+      );
+      // Edit opens by itself with the failure in the photo field.
+      const editForm = await within(drawer).findByRole("form", { name: /edit/i });
+      expect(within(editForm).getByRole("alert").textContent).toMatch(/Your copy is in, but the back photo didn't save\. That photo is too big\. Add it again\. Add it again here\./);
+      expect(photos.addPhoto).toHaveBeenCalledTimes(2);
+      expect(photos.addPhoto.mock.calls.map((c) => c[1])).toEqual(["front", "back"]);
+    });
+
+    it("both photos fail: one message names both, once per distinct reason", async () => {
+      const photos = photosExt();
+      photos.addPhoto.mockRejectedValue(new Error("Couldn't reach the photo store."));
+      const { form, drawer, pick } = openAnotherCopy(photos);
+      await pick("front");
+      await pick("back");
+      fireEvent.click(within(form).getByRole("button", { name: /^Add to collection$/ }));
+      const editForm = await within(drawer).findByRole("form", { name: /edit/i });
+      const alertText = within(editForm).getByRole("alert").textContent ?? "";
+      expect(alertText).toContain("front and back photos didn't save");
+      expect(alertText).toContain("Add them again here.");
+      expect(alertText.match(/Couldn't reach the photo store\./g)).toHaveLength(1);
+      // Neither attempt was skipped because the other failed.
+      expect(photos.addPhoto).toHaveBeenCalledTimes(2);
+      expect(
+        within(drawer).getAllByRole("status").some((s) => /\. Its front and back photos didn't save\. Try again under Edit\.$/.test(s.textContent ?? "")),
+      ).toBe(true);
+    });
+
+    describe("a photo fails while another line's Edit form is open", () => {
+      const NEW_LINE: Copy = { ...COPY_OHTANI, id: "copy-new", quantity: 2 };
+      /** Line X (`copy-1`) open in Edit with a draft in it, and an add with one held photo ready to go. */
+      async function editingX() {
+        const photos = photosExt();
+        photos.addPhoto.mockRejectedValue(new Error("Nope."));
+        const store = makeStore({ photos, extraCopies: [NEW_LINE] });
+        store.actions.addLineItem.mockResolvedValue({ copyId: NEW_LINE.id, merged: false, undo: store.undo });
+        renderAt(`/collection?tab=checklists&set=${SET.id}&type=vt-base`, store);
+        fireEvent.click(screen.getByRole("button", { name: /^Details for #1 Shohei Ohtani/ }));
+        const drawer = screen.getByRole("dialog");
+        const editButton = (id: string) => drawer.querySelector<HTMLElement>(`[data-copy-edit="${id}"]`)!;
+        const editor = (id: string) => drawer.querySelector<HTMLElement>(`[data-copy-editor="${id}"]`);
+        fireEvent.click(editButton("copy-1"));
+        const notes = within(editor("copy-1")!).getByRole("textbox", { name: /^Notes/ }) as HTMLInputElement;
+        fireEvent.change(notes, { target: { value: "My draft" } });
+        fireEvent.click(within(drawer).getByRole("button", { name: /^Add another copy of / }));
+        const form = within(drawer).getByRole("form", { name: "Add another copy" });
+        const box = within(form).getByRole("region", { name: /^Photos of / });
+        await act(async () => {
+          fireEvent.change(box.querySelector('[data-copy-photo-input="front"]')!, { target: { files: [jpeg()] } });
+        });
+        const add = within(form).getByRole("button", { name: /^Add to collection$/ });
+        return { drawer, form, notes, add, editButton, editor };
+      }
+      const failureSaid = (drawer: HTMLElement) =>
+        waitFor(() =>
+          expect(within(drawer).getAllByRole("status").some((s) => /Its front photo didn't save\./.test(s.textContent ?? ""))).toBe(true),
+        );
+      /** Longer than any queued focus move or open would take. */
+      const settle = () => act(async () => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+
+      it("X keeps its draft and the keyboard, and the new line's Edit opened by hand shows the failure", async () => {
+        const { drawer, notes, add, editButton, editor } = await editingX();
+        notes.focus();
+        fireEvent.click(add);
+        await failureSaid(drawer);
+        await settle();
+        expect(editor("copy-new")).toBeNull();
+        expect(notes.isConnected).toBe(true);
+        expect(notes.value).toBe("My draft");
+        expect(document.activeElement).toBe(notes);
+
+        fireEvent.click(editButton("copy-new"));
+        const field = within(editor("copy-new")!).getByRole("region", { name: /^Photos of / });
+        expect(within(field).getByRole("alert").textContent).toMatch(/^Your copy is in, but the front photo didn't save\./);
+        await waitFor(() => expect(document.activeElement).toBe(within(field).getByRole("button", { name: "Add front" })));
+      });
+
+      it("the keyboard still in the Add form goes back to Add as it folds, leaving X alone", async () => {
+        const { drawer, notes, add, editor } = await editingX();
+        add.focus();
+        fireEvent.click(add);
+        await failureSaid(drawer);
+        await waitFor(() => expect(document.activeElement).toBe(within(drawer).getByRole("button", { name: /^Add another copy of / })));
+        expect(editor("copy-1")).not.toBeNull();
+        expect(notes.value).toBe("My draft");
+      });
+
+      it("Cancel on X leaves the failure waiting for the new line's own form, which stays shut until asked", async () => {
+        const { drawer, add, editButton, editor } = await editingX();
+        fireEvent.click(add);
+        await failureSaid(drawer);
+        fireEvent.click(within(editor("copy-1")!).getByRole("button", { name: "Cancel" }));
+        await settle();
+        expect(editor("copy-new")).toBeNull();
+        fireEvent.click(editButton("copy-new"));
+        const field = within(editor("copy-new")!).getByRole("region", { name: /^Photos of / });
+        expect(within(field).getByRole("alert").textContent).toMatch(/front photo didn't save/);
+        // Once it has been read in its form, Cancel there drops it.
+        fireEvent.click(within(editor("copy-new")!).getByRole("button", { name: "Cancel" }));
+        await waitFor(() => expect(editor("copy-new")).toBeNull());
+        fireEvent.click(editButton("copy-new"));
+        expect(within(within(editor("copy-new")!).getByRole("region", { name: /^Photos of / })).getByRole("alert").textContent).toBe("");
+      });
+
+      it("with no form open it opens the new line's Edit by itself, once, and that form can be closed", async () => {
+        const photos = photosExt();
+        photos.addPhoto.mockRejectedValue(new Error("Nope."));
+        const store = makeStore({ photos, extraCopies: [NEW_LINE] });
+        store.actions.addLineItem.mockResolvedValue({ copyId: NEW_LINE.id, merged: false, undo: store.undo });
+        renderAt(`/collection?tab=checklists&set=${SET.id}&type=vt-base`, store);
+        fireEvent.click(screen.getByRole("button", { name: /^Details for #1 Shohei Ohtani/ }));
+        const drawer = screen.getByRole("dialog");
+        fireEvent.click(within(drawer).getByRole("button", { name: /^Add another copy of / }));
+        const form = within(drawer).getByRole("form", { name: "Add another copy" });
+        await act(async () => {
+          fireEvent.change(form.querySelector('[data-copy-photo-input="front"]')!, { target: { files: [jpeg()] } });
+        });
+        fireEvent.click(within(form).getByRole("button", { name: /^Add to collection$/ }));
+        await waitFor(() => expect(drawer.querySelector('[data-copy-editor="copy-new"]')).not.toBeNull());
+        const opened = drawer.querySelector<HTMLElement>('[data-copy-editor="copy-new"]')!;
+        fireEvent.click(within(opened).getByRole("button", { name: "Cancel" }));
+        await settle();
+        expect(drawer.querySelector('[data-copy-editor="copy-new"]')).toBeNull();
+      });
+    });
+
+    it("a box add with photos says it's for sale, last", async () => {
+      const photos = photosExt();
+      renderAt(`/inventory?tab=checklists&set=${SET.id}&type=vt-base`, makeStore({ photos }));
+      fireEvent.click(screen.getByRole("button", { name: "Details for #2 Aaron Judge" }));
+      const drawer = screen.getByRole("dialog");
+      const form = within(drawer).getByRole("form", { name: "Add a copy" });
+      await act(async () => {
+        fireEvent.change(form.querySelector('[data-copy-photo-input="front"]')!, { target: { files: [jpeg()] } });
+      });
+      fireEvent.click(within(form).getByRole("button", { name: "Add to inventory" }));
+      await waitFor(() => expect(photos.addPhoto).toHaveBeenCalledTimes(1));
+      await waitFor(() =>
+        expect(within(drawer).getAllByRole("status").some((s) => /, with its front photo\. It's for sale\.$/.test(s.textContent ?? ""))).toBe(true),
+      );
+    });
+
+    it("Cancel on the opened Edit form drops the failure, so reopening Edit shows no stale alert", async () => {
+      const photos = photosExt();
+      photos.addPhoto.mockRejectedValue(new Error("Nope."));
+      const { form, drawer, pick } = openAnotherCopy(photos);
+      await pick("front");
+      fireEvent.click(within(form).getByRole("button", { name: /^Add to collection$/ }));
+      const editForm = await within(drawer).findByRole("form", { name: /edit/i });
+      expect(within(editForm).getByRole("alert").textContent).toMatch(/front photo didn't save/);
+      fireEvent.click(within(editForm).getByRole("button", { name: "Cancel" }));
+      await waitFor(() => expect(within(drawer).queryByRole("form", { name: /edit/i })).toBeNull());
+      fireEvent.click(within(drawer).getAllByRole("button", { name: /^Edit/ })[0]);
+      const again = await within(drawer).findByRole("form", { name: /edit/i });
+      expect(within(again).getByRole("alert").textContent).toBe("");
+    });
+
+    it("the draft resets after a good add: no held photo rides along into the next add, and no object URL is left unrevoked", async () => {
+      const photos = photosExt();
+      const { form, box, pick, drawer } = openAnotherCopy(photos);
+      await pick("front");
+      await pick("back");
+      const made = (URL.createObjectURL as ReturnType<typeof vi.fn>).mock.results.map((r) => r.value);
+      fireEvent.click(within(form).getByRole("button", { name: /^Add to collection$/ }));
+      await waitFor(() => expect(photos.addPhoto).toHaveBeenCalledTimes(2));
+      await waitFor(() => expect(within(drawer).getAllByRole("status").some((s) => /with its front and back photos/.test(s.textContent ?? ""))).toBe(true));
+      for (const url of made) expect(URL.revokeObjectURL).toHaveBeenCalledWith(url);
+      expect(box.isConnected && within(box).queryByRole("img")).toBeFalsy();
+    });
+
+    it("Enter, Enter and a click on the busy button send one add", async () => {
+      const photos = photosExt();
+      let finish = () => {};
+      photos.addPhoto.mockImplementationOnce(() => new Promise<void>((resolve) => (finish = resolve)));
+      const { actions, form, pick } = openAnotherCopy(photos);
+      await pick("front");
+      // Each event is its own discrete event, so React has re-rendered between them.
+      fireEvent.submit(form);
+      fireEvent.submit(form);
+      fireEvent.click(within(form).getByRole("button", { name: "Adding…" }));
+      expect(actions.addLineItem).toHaveBeenCalledTimes(1);
+      await act(async () => finish());
+    });
+
+    it("the Close button mid-upload does not lose the failure notice: the toast still says what happened", async () => {
+      const photos = photosExt();
+      let fail = (_e: Error) => {};
+      photos.addPhoto.mockImplementationOnce(() => new Promise<void>((_, reject) => (fail = reject)));
+      const { form, pick, drawer } = openAnotherCopy(photos);
+      await pick("front");
+      fireEvent.click(within(form).getByRole("button", { name: /^Add to collection$/ }));
+      await waitFor(() => expect(photos.addPhoto).toHaveBeenCalledTimes(1));
+      fireEvent.click(within(drawer).getByRole("button", { name: "Close card detail" }));
+      await act(async () => fail(new Error("Gone.")));
+      expect(screen.getAllByRole("status").some((s) => /front photo didn't save/.test(s.textContent ?? ""))).toBe(true);
+    });
+
+    it("the line-limit refusal keeps both held files, Add is ready, and a retry that succeeds uploads exactly those two files", async () => {
+      const photos = photosExt();
+      const { actions, form, pick, drawer } = openAnotherCopy(photos);
+      actions.addLineItem.mockRejectedValueOnce(new Error("You already have 200 lines of this card. Stack some together first."));
+      const front = jpeg("front.jpg");
+      const back = jpeg("back.jpg");
+      await pick("front", front);
+      await pick("back", back);
+      fireEvent.click(within(form).getByRole("button", { name: /^Add to collection$/ }));
+      await waitFor(() => expect(actions.addLineItem).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(within(form).getByRole("button", { name: /^Add to collection$/ }).getAttribute("aria-disabled")).toBeNull());
+      expect(photos.addPhoto).not.toHaveBeenCalled();
+      fireEvent.click(within(form).getByRole("button", { name: /^Add to collection$/ }));
+      await waitFor(() => expect(photos.addPhoto).toHaveBeenCalledTimes(2));
+      expect(photos.addPhoto.mock.calls.map((c) => (c[2] as File).name)).toEqual(["front.jpg", "back.jpg"]);
+      expect(drawer.isConnected).toBe(true);
     });
   });
 

@@ -25,3 +25,4 @@
 - [Prototype shared types are live](prototype-shared-types-are-live-do-not-edit-them.md) — p1-p5 still routed; adapt at demoStore, never edit prototypes/_shared shapes
 - [Kept-counter semantics change is a write-path audit](kept-counter-semantics-change-is-a-write-path-audit.md) — tally/count meaning changes touch every mutation + recount + derived counts + backfill; never a read filter
 - [Scheduled marketplace work has no caller identity](scheduled-marketplace-work-has-no-caller-identity.md) — getSiteToken needs a signed-in user: internal userId token path + per-user fan-out; new browser routes ship with a per-feature contract minimum
+- [Quick-count undo restore tolerates a changed count](quick-count-undo-restore-tolerates-a-changed-count.md) — never an expected-count guard on the inverse; replay/forgery protection lives on photo-row status (NEO-431)

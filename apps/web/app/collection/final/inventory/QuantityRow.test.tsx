@@ -648,6 +648,13 @@ describe("the status line's words", () => {
     expect(quantityMessage("#1 A", unsorted, { before: 5, after: 2 })).toBe("Pulled 3 of #1 A from Unsorted. 2 left.");
     expect(quantityMessage("#1 A", unsorted, { before: 2, after: 2 })).toBe("#1 A stays at 2 in Unsorted.");
   });
+
+  it("says when a line's photos went with the count", () => {
+    expect(quantityMessage("#1 A", unsorted, { before: 2, after: 0, tookPhotos: true })).toBe(
+      "Pulled 2 of #1 A from Unsorted, with its photos. 0 left.",
+    );
+    expect(quantityMessage("#1 A", unsorted, { before: 2, after: 0, tookPhotos: false })).toBe("Pulled 2 of #1 A from Unsorted. 0 left.");
+  });
 });
 
 describe("a row that outlives its own commit", () => {

@@ -1,6 +1,7 @@
 import {
   useEffect,
   useId,
+  useMemo,
   useRef,
   useState,
   type ComponentProps,
@@ -254,17 +255,25 @@ export default function CardDetail({
   /** An add's photos are uploading: Add says so and takes no second press. */
   const [addingPhotos, setAddingPhotos] = useState(false);
   /**
-   * The new line a photo failed on. `opened` once its Edit form has been opened
-   * for it; until then `CopyList` opens it as soon as the line is in the list.
+   * The new line a photo failed on. `autoOpen`: `CopyList` opens its Edit form as
+   * soon as the line is in the list; false when another line's form was in use as
+   * the add finished, since opening this one would throw that draft away. `opened`
+   * once its form has been opened, by either route: the failure shows in it once.
    */
   const [failedAdd, setFailedAdd] = useState<{
     copyId: CopyId;
     side: PhotoSide;
     message: string;
+    autoOpen: boolean;
     opened: boolean;
   } | null>(null);
   /** The line whose form is open, by its line key (`CopyList`), so it lives through the store's id swap. */
   const [editing, setEditing] = useState<{ key: string; value: FormValue; trade: boolean } | null>(null);
+  /** `editing` as of now, for an upload that finishes long after the Add press that started it. */
+  const editingNow = useRef(editing);
+  useEffect(() => {
+    editingNow.current = editing;
+  }, [editing]);
 
   /** The add form, open by the Add button or an "add" open; always shown while there is no copy to list. */
   const [adding, setAdding] = useState(mode === "add");
@@ -399,18 +408,24 @@ export default function CardDetail({
         .then((r) => {
           setAddingPhotos(false);
           if (!r) return;
+          // Read before the form folds. A keyboard already at work elsewhere stays there.
+          const active = document.activeElement;
+          const inAddForm = !active || active === document.body || !!addRef.current?.contains(active);
+          const otherFormOpen = editingNow.current !== null;
+          const failed = r.failed.length > 0;
           resetDraft();
           setAdding(false);
-          if (r.failed.length > 0) {
+          if (failed) {
             setFailedAdd({
               copyId: r.copyId,
               side: r.failed[0].side,
               message: failedPhotoMessage(r.failed),
+              autoOpen: !otherFormOpen,
               opened: false,
             });
-          } else {
-            setAddFocus("button");
           }
+          // An Edit form opening on the failure takes the keyboard itself.
+          if (otherFormOpen ? inAddForm : !failed) setAddFocus("button");
         });
       return;
     }
@@ -431,6 +446,9 @@ export default function CardDetail({
       });
   };
 
+  /** This line's form is closing, and its failure with it. Another line's waits for its own form. */
+  const clearFailedAddOn = (copy: Copy) => setFailedAdd((now) => (now?.copyId === copy.id ? null : now));
+
   const save = (copy: Copy, value: FormValue, trade: boolean, key: string) => {
     const patch: Partial<CopyDetails> = {
       ...fromForm(value, copy.homeKind === "box" || copy.minPrice !== undefined),
@@ -444,7 +462,7 @@ export default function CardDetail({
       .then((r) => {
         if (r) {
           setEditing(null);
-          setFailedAdd(null);
+          clearFailedAddOn(copy);
           setRefocus({ key, into: "edit" });
         }
       });
@@ -589,7 +607,7 @@ export default function CardDetail({
               onSave={(value) => save(copy, value, editing.trade, editing.key)}
               onCancel={() => {
                 setEditing(null);
-                setFailedAdd(null);
+                clearFailedAddOn(copy);
                 setRefocus({ key: editing.key, into: "edit" });
               }}
               hideSaleFields
@@ -605,13 +623,15 @@ export default function CardDetail({
           )
         }
         onEdit={(copy, key) => {
-          const failed = failedAdd && !failedAdd.opened && failedAdd.copyId === copy.id ? failedAdd : null;
+          const waiting = failedAdd && !failedAdd.opened ? failedAdd : null;
+          const here = waiting?.copyId === copy.id;
           setEditing({ key, value: toForm(copy), trade: copy.upForTrade });
           // A photo to try again: the keyboard goes to that side's Add.
-          setRefocus({ key, into: failed ? failed.side : "form" });
-          setFailedAdd(failed ? { ...failed, opened: true } : null);
+          setRefocus({ key, into: here ? waiting.side : "form" });
+          // Another line's form: the failure still waits for its own, but won't take this one's place.
+          setFailedAdd(waiting && (here ? { ...waiting, opened: true } : { ...waiting, autoOpen: false }));
         }}
-        openEditId={failedAdd && !failedAdd.opened ? failedAdd.copyId : null}
+        openEditId={failedAdd && failedAdd.autoOpen && !failedAdd.opened ? failedAdd.copyId : null}
         photoError={failedAdd}
         onRemove={remove}
         showTrade={capabilities.trade}
@@ -841,7 +861,7 @@ export function CopyList({
   /** NEO-431 — what this line's photo field says when it opens. */
   photoError?: { copyId: CopyId; message: string } | null;
 }) {
-  const lines = copies ?? [];
+  const lines = useMemo(() => copies ?? [], [copies]);
   const sectionRef = useRef<HTMLElement>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
   /** A removal in flight from this list: the copy going, and whose button takes the keyboard. */
@@ -881,7 +901,8 @@ export function CopyList({
     if (!openEditId) return;
     const copy = lines.find((c) => c.id === openEditId);
     if (copy) onEdit?.(copy, keyOf(copy));
-  });
+    // `onEdit` opens it and clears `openEditId`, so this fires once however often a parent redraws.
+  }, [openEditId, lines, onEdit, keyOf]);
   /** NEO-377 — copy photos (capability `copyPhotos`): edited in the line's form. */
   const photosExt = useCopyPhotos();
   const photoMap = usePhotosOf(lines);

@@ -4,7 +4,7 @@
  * or typed, and My requests puts a confirm that counts the copies in front of
  * withdraw. The server half is collectionRequests.test.ts; E2E proves it live.
  */
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EMPTY_DRILL } from "../catalog/drill";
 
@@ -124,12 +124,12 @@ describe("Request a card's photos (NEO-431)", () => {
     answers.set("collectionRequests:generateUploadUrl", "https://upload.example/1");
     open();
     const form = screen.getByRole("form", { name: "Request a card" });
-    const box = within(form).getByRole("region", { name: "Photos" });
+    const box = within(form).getByRole("region", { name: /^Photos of / });
     expect(box.textContent).toContain("Stashed here until you send the request.");
     expect(box.textContent).not.toContain("Saved as soon as");
     pick(form, "Front", jpeg());
     pick(form, "Back", jpeg());
-    await within(box).findByRole("link", { name: /^Back of this card/ });
+    await within(box).findByRole("img", { name: /^Back of this card/ });
     expect(fetchMock).not.toHaveBeenCalled();
     expect(calls).toEqual([]);
 
@@ -143,7 +143,7 @@ describe("Request a card's photos (NEO-431)", () => {
     });
     await waitFor(() => expect(within(form).getByText("No front photo yet")).toBeTruthy());
     expect(within(form).getByText("No back photo yet")).toBeTruthy();
-    expect(within(form).getByRole("region", { name: "Photos" }).querySelector('[role="status"]')?.textContent).toBe("");
+    expect(within(form).getByRole("region", { name: /^Photos of / }).querySelector('[role="status"]')?.textContent).toBe("");
     expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:request-1");
   });
 
@@ -159,7 +159,37 @@ describe("Request a card's photos (NEO-431)", () => {
 
     pick(form, "Front", jpeg());
     expect(within(form).getByRole("alert").textContent).toBe("");
-    await within(form).findByRole("link", { name: /^Front of this card/ });
+    await within(form).findByRole("img", { name: /^Front of this card/ });
+  });
+
+  it("while it sends, the box only mentions photos when there are some", async () => {
+    let answer: (value: unknown) => void = () => {};
+    answers.set("collectionRequests:requestCard", () => new Promise((resolve) => (answer = resolve)));
+    open();
+    const form = screen.getByRole("form", { name: "Request a card" });
+    const box = within(form).getByRole("region", { name: /^Photos of / });
+    fill(form);
+    fireEvent.click(within(form).getByRole("button", { name: "Send request" }));
+    await waitFor(() => expect(within(box).getByRole("status").textContent).toBe("Sending…"));
+    await act(async () => answer({ requestId: "r1", privateCardId: "p1" }));
+    // A sent request starts the box over, so this is a new one.
+    await waitFor(() => expect(within(within(form).getByRole("region", { name: /^Photos of / })).getByRole("status").textContent).toBe(""));
+  });
+
+  it("while it sends with a photo, the box says the photos are going", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ storageId: "st1" }), { status: 200 })));
+    answers.set("collectionRequests:generateUploadUrl", "https://upload.example/1");
+    let answer: (value: unknown) => void = () => {};
+    answers.set("collectionRequests:requestCard", () => new Promise((resolve) => (answer = resolve)));
+    open();
+    const form = screen.getByRole("form", { name: "Request a card" });
+    const box = within(form).getByRole("region", { name: /^Photos of / });
+    pick(form, "Front", jpeg());
+    await within(box).findByRole("img", { name: /^Front of this card/ });
+    fill(form);
+    fireEvent.click(within(form).getByRole("button", { name: "Send request" }));
+    await waitFor(() => expect(within(box).getByRole("status").textContent).toBe("Sending your photos…"));
+    await act(async () => answer({ requestId: "r1", privateCardId: "p1" }));
   });
 
   it("offers its own accepted types", () => {

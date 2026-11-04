@@ -1127,6 +1127,7 @@ function demoActions(stateRef: { current: DemoState }): CollectionActions {
       return {
         before: r.before,
         after: r.after,
+        tookPhotos: r.tookPhotos,
         undo: async () => {
           run((s) => demoOps.restoreLines(s, r.undo));
         },
