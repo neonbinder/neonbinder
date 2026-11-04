@@ -3953,7 +3953,7 @@ describe("SetAttributesPanel — No teams in this sport (NEO-426)", () => {
     currentRow = sportRow();
     renderPanel();
     fireEvent.click(screen.getByRole("button", { name: TOGGLE }));
-    await waitFor(() => expect(screen.getByText("Couldn't flip that. Try again.")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("Failed: Couldn't flip that. Try again.")).toBeTruthy());
     expect(screen.queryByText("Teams off for this sport. Cards save as No team.")).toBeNull();
   });
 

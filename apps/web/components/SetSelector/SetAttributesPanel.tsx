@@ -640,7 +640,7 @@ export default function SetAttributesPanel({
       await setSportHasNoTeams({ sportId: selectorOptionId, hasNoTeams });
       showToast(hasNoTeams ? SPORT_TEAMS_OFF_TOAST : SPORT_TEAMS_ON_TOAST);
     } catch (e) {
-      setToast(userFacingMessage(e, SPORT_TEAMS_FLIP_FAILED_TOAST));
+      showFailedToast(userFacingMessage(e, SPORT_TEAMS_FLIP_FAILED_TOAST));
     }
   };
 
