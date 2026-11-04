@@ -1132,7 +1132,13 @@ const PHOTO_TONES: Record<RunLineKind, string> = {
   failed: "text-notice-warn-ink",
   unfinished: "text-notice-warn-ink",
 };
-const PHOTO_ACTION = `-my-1.5 block py-1.5 text-neon-blue-text underline aria-disabled:cursor-not-allowed aria-disabled:opacity-60 ${RING}`;
+/**
+ * A tile's only action, so a thumb gets 44px on a phone. The text still takes
+ * one line of the stack. The extra reaches up over the words above, and down
+ * only as far as the tile's own padding and border: past them it would give the
+ * lane's scrolling list something to scroll. `relative` keeps it above those words.
+ */
+const PHOTO_ACTION = `-my-1.5 block py-1.5 max-sm:relative max-sm:-mb-2 max-sm:-mt-5 max-sm:min-w-11 max-sm:pb-2 max-sm:pt-5 text-neon-blue-text underline aria-disabled:cursor-not-allowed aria-disabled:opacity-60 ${RING}`;
 
 /** Focus has nowhere to be: it fell to the page with something that unmounted. */
 const focusFell = () => !document.activeElement || document.activeElement === document.body;

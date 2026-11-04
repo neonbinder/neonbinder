@@ -295,7 +295,9 @@ describe("setBoxQuantity: refusals", () => {
         });
       }
     });
-    await expect(setQty(s, s.fx.gooden1, s.boxA, 1)).rejects.toThrow(/lines of this card/);
+    await expect(setQty(s, s.fx.gooden1, s.boxA, 1)).rejects.toThrow(
+      "You already have 200 lines of this card. Remove one, or stack any without photos, to make room.",
+    );
     expect(await linesIn(s, s.fx.gooden1, s.boxA)).toEqual([]);
   });
 });

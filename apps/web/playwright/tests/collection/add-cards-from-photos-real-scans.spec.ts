@@ -204,6 +204,7 @@ test(
     await expect(saved.getByText("Slipping in the photos…", { exact: true })).toHaveCount(0);
     await expect(saved.getByText("Photos didn't stick.", { exact: true })).toHaveCount(0);
     await expect(saved.getByText("The scans aged out.", { exact: true })).toHaveCount(0);
+    await expect(saved.getByText("These scans won't cut it.", { exact: true })).toHaveCount(0);
     // The new state, on the whole screen: four saved tiles, each with its photo line.
     await expectAccessible(page, { label: "Add cards, saved cards with their photos in" });
 
@@ -247,7 +248,10 @@ test(
       const photos = yourCopies.getByRole("region", { name: "Photos", exact: true });
       await expect(photos.getByRole("link", { name: /^Front of .*, full size \(opens a new tab\)$/ })).toBeVisible();
       await expect(photos.getByRole("link", { name: /^Back of .*, full size \(opens a new tab\)$/ })).toBeVisible();
-      if (number === "160") await expectAccessible(page, { label: "Card drawer, a saved copy with its scanned photos", within: drawer });
+      // One check for the one-line card and one for the two-line card.
+      if (number !== "47") {
+        await expectAccessible(page, { label: `Card drawer, ${lines === 1 ? "a saved copy" : "two saved copies"} with scanned photos`, within: drawer });
+      }
       await yourCopies.getByRole("form", { name: /^Edit Raw, / }).getByRole("button", { name: "Cancel", exact: true }).click();
       // Cancel closes the form: the line's Edit is back, and so is every other line's.
       await expect(editLine).toHaveCount(lines);

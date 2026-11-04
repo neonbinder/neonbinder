@@ -1546,6 +1546,78 @@ describe("NEO-427 — a save's photos", () => {
   });
 });
 
+describe("seedMyTestSavedPhotoFailureRun (the E2E fixture)", () => {
+  const before = process.env.TESTING_RESET_SECRET;
+  afterEach(() => {
+    if (before === undefined) delete process.env.TESTING_RESET_SECRET;
+    else process.env.TESTING_RESET_SECRET = before;
+  });
+  const USER = { subject: "user_seedSavedPhotos01", role: "admin" };
+  const catalog = async () => {
+    const t = convexTest(schema, modules);
+    harnesses.push(t);
+    await seedCollectionCatalog(t);
+    return t;
+  };
+
+  test.each([
+    ["scanGone", false],
+    ["unusable", false],
+    ["error", true],
+  ] as const)("%s: a Saved tile over a real copy, in its own box and set", async (photoFailure, canRetry) => {
+    process.env.TESTING_RESET_SECRET = "test-only";
+    const t = await catalog();
+    const me = t.withIdentity(USER);
+    const { runId, copyId } = await me.mutation(api.testing.seedMyTestSavedPhotoFailureRun, { photoFailure });
+    const [row] = await me.query(api.intakeRuns.listIntakeMatches, { runId });
+    expect(row).toMatchObject({
+      photos: "failed",
+      photoFailure,
+      photoCanRetry: canRetry,
+      savedCopyId: copyId,
+      savedQuantity: 1,
+      card: { cardNumber: "1", cardName: "Testcard" },
+    });
+    const { copy, home, set } = await t.run(async (ctx) => {
+      const copy = (await ctx.db.get(copyId))!;
+      return { copy, home: await ctx.db.get(copy.homeId), set: await ctx.db.get(copy.setId as Id<"selectorOptions">) };
+    });
+    expect(copy).toMatchObject({ ownerId: USER.subject, quantity: 1 });
+    expect(home).toMatchObject({ ownerId: USER.subject, kind: "box", listedOnMarketplaces: false });
+    expect(set?.value).toBe(home?.name);
+    expect(await me.query(api.intakeRuns.getIntakeRun, { runId })).not.toBeNull();
+  });
+
+  test("Try again on the error state runs the retry path", async () => {
+    process.env.TESTING_RESET_SECRET = "test-only";
+    const t = await catalog();
+    const me = t.withIdentity(USER);
+    const { runId } = await me.mutation(api.testing.seedMyTestSavedPhotoFailureRun, { photoFailure: "error" });
+    const [row] = await me.query(api.intakeRuns.listIntakeMatches, { runId });
+    await t.mutation(internal.intakeRuns.beginIntakePhotoRetry, { matchId: row._id, ownerId: USER.subject });
+    expect((await me.query(api.intakeRuns.listIntakeMatches, { runId }))[0].photos).toBe("pending");
+    expect(enqueued()).toHaveBeenCalledTimes(1);
+    await cancelScheduled(t as never);
+  });
+
+  test("fails closed without the testing flag, refuses a signed-out caller, and needs the real chain", async () => {
+    delete process.env.TESTING_RESET_SECRET;
+    const t = await catalog();
+    await expect(
+      t.withIdentity(USER).mutation(api.testing.seedMyTestSavedPhotoFailureRun, { photoFailure: "error" }),
+    ).rejects.toThrow(/not enabled on this deployment/i);
+    process.env.TESTING_RESET_SECRET = "test-only";
+    await expect(t.mutation(api.testing.seedMyTestSavedPhotoFailureRun, { photoFailure: "error" })).rejects.toThrow(
+      /not authenticated/i,
+    );
+    const bare = convexTest(schema, modules);
+    await expect(
+      bare.withIdentity(USER).mutation(api.testing.seedMyTestSavedPhotoFailureRun, { photoFailure: "error" }),
+    ).rejects.toThrow(/needs Baseball > 2024 > Topps/);
+    expect(await t.run((ctx) => ctx.db.query("intakeMatches").collect())).toEqual([]);
+  });
+});
+
 describe("the set builder reset", () => {
   test("drains intake matches and runs, matches first", async () => {
     const w = await world([

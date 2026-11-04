@@ -59,12 +59,15 @@
 // the spec proves the weight is saved and kept (step 4), not what eBay got.
 //   5. They set a common price, then put one copy each of the first three 1988
 //      Topps Base cards in the box, with a photo on two of them only (eBay
-//      listings need one): the FIRST comes from a scanned pair (NEO-427: Add
+//      listings need one): the FIRST has a plain quick-count copy and then a
+//      second line from a scanned pair (NEO-427: the oldest copy WITH photos
+//      feeds the listing, so the older photoless line does not hold it; Add
 //      cards, a real scan pair read and matched, the card picked by hand, Save;
 //      the tile says "Photos are in!", the scans ride on the saved copy with no
 //      further action), the SECOND gets a photo by hand in its drawer, the third
-//      none. Each photo card's field then reads 0 and names its copy "Raw with
-//      photo", as a quick count no longer counts it. They press Sync, follow
+//      none. A photo copy is named "Raw with photo" beside its card's field and
+//      no longer counted by it (the second card reads 0; the first still reads its
+//      plain copy's 1). They press Sync, follow
 //      "See what's syncing" (Back returns), and Sync status reads the eBay
 //      section's set with 2 listed and 1 skipped: the third card is held back,
 //      named, with eBay's no-photo reason. This is the proof the scanner's
@@ -590,7 +593,25 @@ test(
     const fieldC = quantityField(boxList, c, boxName);
     await expect(fieldC).toHaveValue("0");
 
-    // --- The first card comes from a scanned pair (NEO-427) --------------------
+    // --- The first card gets a plain copy first (NEO-427: oldest copy WITH photos) ---
+    // One quick-count copy of the first card, no photo, before the scan run. The
+    // scan then saves as a SECOND line of the same card (a scanned save never
+    // folds), and the listing has to take its photos from the scanned line, not
+    // hold the card for the older line that has none. eBay lists one offer per
+    // card and condition at the group's quantity (both copies, 2); no screen
+    // shows that number, so the proof is that the card still lists, and the
+    // box's count below (copies, not cards).
+    const rowOf = (short: string) =>
+      boxList
+        .getByRole("listitem")
+        .filter({ has: page.getByRole("textbox", { name: `Quantity of ${short} in ${boxName}`, exact: true }) });
+    await fieldA.fill("1");
+    await page.keyboard.press(leaveKey(isMobile));
+    await expect(fieldB).toBeFocused();
+    await expect(rowOf(a).getByText("Saved")).toBeVisible();
+    await expect(said(new RegExp(`^Boxed 1 more of ${escapeRegExp(a)}\\.`))).toBeVisible();
+
+    // --- The first card then comes from a scanned pair (NEO-427) --------------------
     // Add cards, into this box, in this set: the pair is read and matched, the
     // card is picked by hand (the scan names a number and a player that mean
     // nothing in 1988 Topps), and Save puts the scans on the copy it makes.
@@ -638,7 +659,10 @@ test(
     const scanTile = savedLane.getByRole("listitem").filter({ hasText: "Saved +1" });
     await expect(scanTile).toHaveCount(1);
     await expect(scanTile.getByText("Photos are in!", { exact: true })).toBeVisible();
-    await expect(scanTile.getByText("Photos didn't stick.", { exact: true })).toHaveCount(0);
+    // Positive first (above): none of the other four photo lines is on it.
+    for (const other of ["Slipping in the photos…", "Photos didn't stick.", "The scans aged out.", "These scans won't cut it."]) {
+      await expect(scanTile.getByText(other, { exact: true })).toHaveCount(0);
+    }
     await expectAccessible(page, { label: "Add cards, a box run's saved card with its photos in" });
     // To the checklist and Back: the run is on the URL, so Back is the run again.
     await tabs.getByRole("link", { name: "Checklists", exact: true }).click();
@@ -652,8 +676,9 @@ test(
     await expect(page).toHaveURL(/[?&]tab=checklists/);
     await expect(checklist.getByRole("heading", { level: 3, name: TITLE })).toBeVisible();
     await adding.selectOption({ label: boxName });
-    // The scanned copy is in the box with its photos: a quick count never counts it.
-    await expect(fieldA).toHaveValue("0");
+    // The scanned copy is a second line in the box, with its photos: the quick count
+    // still reads the plain copy's 1, and the photo copy is named beside it.
+    await expect(fieldA).toHaveValue("1");
     await expect(fieldA).toHaveAccessibleDescription(/also here: Raw with photo/);
 
     // --- The other two: one copy each by quick count --------------------------------
@@ -663,10 +688,11 @@ test(
     // number instead ("also here: Raw with photo", the field's description);
     // the card without one still reads 1.
     const expectPhotoCopiesAside = async () => {
-      for (const field of [fieldA, fieldB]) {
-        await expect(field).toHaveValue("0");
-        await expect(field).toHaveAccessibleDescription(/also here: Raw with photo/);
-      }
+      // The first card: its plain copy counts 1, its scanned copy is named beside it.
+      await expect(fieldA).toHaveValue("1");
+      await expect(fieldA).toHaveAccessibleDescription(/also here: Raw with photo/);
+      await expect(fieldB).toHaveValue("0");
+      await expect(fieldB).toHaveAccessibleDescription(/also here: Raw with photo/);
       await expect(fieldC).toHaveValue("1");
     };
     await fieldB.fill("1");
@@ -674,10 +700,6 @@ test(
     await expect(fieldC).toBeFocused();
     await fieldC.fill("1");
     await page.keyboard.press(leaveKey(isMobile));
-    const rowOf = (short: string) =>
-      boxList
-        .getByRole("listitem")
-        .filter({ has: page.getByRole("textbox", { name: `Quantity of ${short} in ${boxName}`, exact: true }) });
     await expect(rowOf(b).getByText("Saved")).toBeVisible();
     await expect(rowOf(c).getByText("Saved")).toBeVisible();
     await expect(said(new RegExp(`^Boxed 1 more of ${escapeRegExp(c)}\\.`))).toBeVisible();
@@ -794,8 +816,9 @@ test(
     // --- 6. The box goes in-person: Sync takes both down ----------------------------------
     await page.goto("/inventory?tab=boxes");
     await expect(page.getByRole("heading", { level: 1, name: "Inventory" })).toBeVisible({ timeout: LAUNCH_GATE });
-    await expect(boxSpine(3)).toBeVisible();
-    await boxSpine(3).click();
+    // Four copies for sale: the first card's plain and scanned copies, the second's and the third's.
+    await expect(boxSpine(4)).toBeVisible();
+    await boxSpine(4).click();
     await expect(page.getByRole("heading", { level: 2, name: boxName, exact: true })).toBeVisible();
     const listed = page.getByRole("checkbox", { name: "Listed on marketplaces", exact: true });
     // On by default.
@@ -848,9 +871,9 @@ test(
     // since the drill above: the tab link reopens 1988 Topps Base.
     await tabs.getByRole("link", { name: "Checklists", exact: true }).click();
     await expect(page).toHaveURL(/[?&]tab=checklists/);
-    // The card with no photo: a quick count to 0.
-    await emptyBoxCards(page, TOPPS_1988, boxName, [c], isMobile, "reopened");
-    // The two with a photo: a quick count can't take them out (see step 5), so
+    // The copies with no photo: a quick count to 0 (the first card's plain copy, the third card).
+    await emptyBoxCards(page, TOPPS_1988, boxName, [a, c], isMobile, "reopened");
+    // The two cards' photo copies: a quick count can't take them out (see step 5), so
     // each goes the way a collector removes a copy, from the card's drawer,
     // the same drawer that added its photo.
     await removeOnlyCopy(a, true);
