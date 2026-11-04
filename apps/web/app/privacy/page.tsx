@@ -7,7 +7,7 @@ import { useDocumentTitle } from "@/src/hooks/useDocumentTitle";
 export const PRIVACY_CONTACT_EMAIL = "support@neonbinder.io";
 
 /** The date this policy last changed, shown at the top. Update it with the text. */
-const LAST_UPDATED = { iso: "2026-11-02", label: "November 2, 2026" };
+const LAST_UPDATED = { iso: "2026-11-03", label: "November 3, 2026" };
 
 /**
  * NEO-421 — the public privacy policy at /privacy. eBay asks for its URL
@@ -191,6 +191,12 @@ export default function PrivacyPage() {
                 Storage bucket and are deleted automatically after two days. To figure out which card is
                 which, our image service reads them with Google Cloud Vision and Anthropic&apos;s Claude.
               </P>
+              <P>
+                When you save a scanned card, we make a full-size image and a thumbnail from its front
+                and back and keep them on that copy in Cloudflare R2, just like a photo you add yourself.
+                They stay until you replace or remove them, and they go on the listing when that copy
+                lists on a marketplace you&apos;ve connected.
+              </P>
             </Sub>
             <Sub title="Marketplace connections">
               <P>
@@ -332,7 +338,8 @@ export default function PrivacyPage() {
           <Section id="keeping-data">
             <P>
               We keep your data while your account is open, because it&apos;s your collection. Card scans
-              are deleted after two days. Photos you replace or remove are deleted from storage soon
+              are deleted after two days, apart from the photos we make from them for a card you save,
+              which stay on that copy. Photos you replace or remove are deleted from storage soon
               after. When you ask us to delete your account, we delete it and the data tied to it.
               PostHog and Sentry keep analytics and error reports for their own standard periods.
             </P>

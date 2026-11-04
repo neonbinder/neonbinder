@@ -63,6 +63,10 @@ clients that can't send the raw photo and let the service crop.
 - `POST /crop` — run one or all crop strategies on an image and return raw
   crops, no orient/classify. Companion to `/process` for human-in-the-loop
   picking when the cascade's automatic choice looks wrong.
+- `POST /derive-copy-photos` — one processed entry's listing size (1600px long
+  edge) and thumbnail (360px), base64-encoded JPEG with no EXIF, for Convex to
+  store on the copy saved from it (NEO-427). A scan the bucket has already
+  expired answers `404 OUTPUT_NOT_FOUND`, which Convex tells the collector.
 
 Auth: all non-health endpoints require the `x-internal-key` header matching
 the `INTERNAL_API_KEY` env var (sourced from Secret Manager in Cloud Run).

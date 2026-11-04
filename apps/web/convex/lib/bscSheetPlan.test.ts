@@ -45,6 +45,7 @@ function copy(over: Partial<ListingCopy> & { cardN?: number; boxN?: number } = {
     quantity: 1,
     condition: "Near Mint",
     creationTime: 1_700_000_000_000 + copySeq * 1000,
+    hasPhotos: false,
     ...rest,
   };
 }
@@ -83,6 +84,7 @@ function target(over: Partial<BscTarget> & { cardN?: number } = {}): BscTarget {
     priceCents: 50,
     sku: buildListingSku({ cardId, bscCondition, boxId: box(1) }),
     oldestCopyId: copyId(9000 + cardN),
+    photoCopyId: null,
     ...rest,
   };
 }

@@ -683,6 +683,11 @@ export const intakeDefaultsValidator = v.object({
   notes: v.optional(v.string()),
   minPriceCents: v.optional(v.number()),
 });
+/** NEO-427 — a saved pair's scans on their way onto its line (`intakeMatches.photos`). */
+export const intakePhotosValidator = v.union(v.literal("pending"), v.literal("attached"), v.literal("failed"));
+/** NEO-427 — why a "failed" attach failed (`intakeMatches.photoFailure`). */
+export const intakePhotoFailureValidator = v.union(v.literal("scanGone"), v.literal("error"));
+
 /** NEO-379 — the matcher's confidence band (`convex/lib/intakeMatch.ts`). */
 export const intakeBandValidator = v.union(
   v.literal("matched"),
@@ -898,7 +903,8 @@ export const ebayConditionCodeValidator = v.union(v.literal("NM"), v.literal("EX
  *                  one NB can fill for this card; `detail` is eBay's aspect
  *                  name as eBay sent it: it describes eBay's requirement,
  *                  never NB data
- *   noPhoto        (eBay) the copy NB would list has no photo; eBay needs one
+ *   noPhoto        (eBay) no copy in the (card, condition) group has a photo;
+ *                  eBay needs one
  *   setupIncomplete (eBay) the collector's eBay settings (shipping, payment,
  *                  returns, location) are not complete, so nothing was sent
  * A new reason widens this union (additive, deploy before writing it).
@@ -3815,9 +3821,19 @@ export default defineSchema({
     savedCopyId: v.optional(v.id("collectionCopies")),
     savedQuantity: v.optional(v.number()),
     savedAt: v.optional(v.number()),
+    // NEO-427 — the pair's scans going onto the saved line
+    // (`intakePhotos.attachIntakePhotos`). "pending" from the save until the
+    // attach reports, and it holds the run's listing kick; a row saved before
+    // this shipped has neither field and holds nothing. `photoFailure` says
+    // why a "failed" attach failed: "scanGone" (the scan aged out of the
+    // upload bucket, so Try again can't help) or "error" (Try again might).
+    photos: v.optional(intakePhotosValidator),
+    photoFailure: v.optional(intakePhotoFailureValidator),
   })
     .index("by_run", ["runId"])
-    .index("by_pair", ["pairId"]),
+    .index("by_pair", ["pairId"])
+    // A line whose scans are still due stays out of the fold (`linesAwaitingScans`).
+    .index("by_saved_copy", ["savedCopyId"]),
 
   // Deployment-wide preprocess warm-up state (NEO-299). One row per fixed
   // `key`; today the only key is "heavyWarmup", read and written solely by
@@ -4444,11 +4460,16 @@ export default defineSchema({
     // hourly upload cap still counts it and the sweep deletes its files.
     status: v.union(v.literal("pending"), v.literal("live"), v.literal("detached"), v.literal("replaced")),
     since: v.number(),
+    // NEO-427 — "intake": made from a scanned pair when it was saved, not
+    // added by hand. Exempt from the hourly upload cap, either way.
+    source: v.optional(v.literal("intake")),
   })
     .index("by_copy_and_status", ["copyId", "status"])
-    // The hourly upload cap (prefix ownerId, range on _creationTime) and the
-    // per-account test reset.
+    // The per-account test reset.
     .index("by_owner", ["ownerId"])
+    // The hourly upload cap counts hand uploads only: `source` absent, range
+    // on _creationTime.
+    .index("by_owner_and_source", ["ownerId", "source"])
     .index("by_token", ["token"])
     .index("by_status_and_since", ["status", "since"]),
 

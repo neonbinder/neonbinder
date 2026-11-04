@@ -84,6 +84,7 @@ import type * as features_listingInputs from "../features/listingInputs.js";
 import type * as features_listingLimits from "../features/listingLimits.js";
 import type * as franchises from "../franchises.js";
 import type * as http from "../http.js";
+import type * as intakePhotos from "../intakePhotos.js";
 import type * as intakeRuns from "../intakeRuns.js";
 import type * as intakeScanner from "../intakeScanner.js";
 import type * as knownBrands from "../knownBrands.js";
@@ -270,6 +271,7 @@ declare const fullApi: ApiFromModules<{
   "features/listingLimits": typeof features_listingLimits;
   franchises: typeof franchises;
   http: typeof http;
+  intakePhotos: typeof intakePhotos;
   intakeRuns: typeof intakeRuns;
   intakeScanner: typeof intakeScanner;
   knownBrands: typeof knownBrands;

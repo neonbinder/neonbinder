@@ -76,6 +76,7 @@ vi.mock("convex/react", () => ({
     }
   },
   useMutation: (ref: string) => mocks.mutation(ref),
+  useAction: (ref: string) => mocks.mutation(ref),
 }));
 vi.mock("../data/store", () => ({
   useSide: () => mocks.data.side,
@@ -127,7 +128,8 @@ vi.mock("../../prototypes/p1/Overlay", () => ({ default: ({ children }: { childr
 
 let confirm: ReturnType<typeof vi.fn>;
 const notify = vi.fn();
-const pageApi = { notify, inform: vi.fn() } as unknown as PageApi;
+const openCard = vi.fn();
+const pageApi = { notify, openCard, inform: vi.fn() } as unknown as PageApi;
 
 let seq = 0;
 /** A fresh run per test: `doneRuns` is module state and would leak between them. */
@@ -516,5 +518,118 @@ describe("RealAddCardsTab \"See what's syncing\" after Done (NEO-370)", () => {
     await pressDone();
     expect(link()).not.toBeNull();
     await expectAccessibleInBothModes(container, { label: "Intake, after Done", rerender: () => rerender(<Tab runId={runId} />) });
+  });
+});
+
+describe("NEO-427: a Saved tile says where its photos are", () => {
+  const CARD = "#47 Le'Veon Bell";
+  const saved = (extra: Record<string, unknown>) => ({
+    _id: "match1",
+    pairId: "pair1",
+    frontIndex: 0,
+    backIndex: 1,
+    cardId: "card1",
+    card: { _id: "card1", cardNumber: "47", cardName: "Le'Veon Bell" },
+    candidates: [],
+    variations: [],
+    band: "matched",
+    reason: "numberAndPlayer",
+    confidence: 97,
+    haveHere: 1,
+    savedCopyId: "copy1",
+    savedQuantity: 1,
+    savedAt: 5,
+    ...extra,
+  });
+  const show = (extra: Record<string, unknown>) => {
+    const runId = freshRunId();
+    setRun(runId, { images: [] });
+    mocks.data.matches = [saved(extra)];
+    return { runId, ...render(<Tab runId={runId} />) };
+  };
+  const retryPhotos = () => mocks.mutation("intakePhotos.retryIntakePhotos");
+  beforeEach(() => {
+    openCard.mockClear();
+    retryPhotos().mockClear();
+  });
+
+  it("says nothing extra for a pair saved before photos came along", async () => {
+    show({});
+    await screen.findByText("Saved +1");
+    expect(screen.queryByText("Photos are in!")).toBeNull();
+    expect(screen.queryByRole("button", { name: /photos for|Add a photo/ })).toBeNull();
+  });
+
+  it("while they're on their way, then once they're in, with no control to press", async () => {
+    show({ photos: "pending" });
+    await screen.findByText("Slipping in the photos…");
+    expect(screen.queryByRole("button", { name: /Try again/ })).toBeNull();
+    cleanup();
+    show({ photos: "attached" });
+    await screen.findByText("Photos are in!");
+    expect(screen.queryByRole("button", { name: /Try again/ })).toBeNull();
+  });
+
+  it("didn't stick: Try again sends the row back, once, and focus stays on the tile", async () => {
+    const { rerender, runId } = show({ photos: "failed", photoFailure: "error" });
+    await screen.findByText("Photos didn't stick.");
+    const again = screen.getByRole("button", { name: `Try again: photos for ${CARD}` });
+    again.focus();
+    fireEvent.click(again);
+    fireEvent.click(again);
+    expect(retryPhotos()).toHaveBeenCalledTimes(1);
+    expect(retryPhotos()).toHaveBeenCalledWith({ matchId: "match1" });
+    mocks.data.matches = [saved({ photos: "pending" })];
+    rerender(<Tab runId={runId} />);
+    const line = await screen.findByText("Slipping in the photos…");
+    await waitFor(() => expect(document.activeElement).toBe(line));
+  });
+
+  it("didn't stick: a refused Try again says why, and can be pressed again", async () => {
+    retryPhotos().mockImplementationOnce(() => Promise.reject(new Error("That card left your collection.")));
+    show({ photos: "failed", photoFailure: "error" });
+    const again = await screen.findByRole("button", { name: `Try again: photos for ${CARD}` });
+    fireEvent.click(again);
+    await waitFor(() => expect(notify).toHaveBeenCalledWith("That card left your collection."));
+    fireEvent.click(again);
+    expect(retryPhotos()).toHaveBeenCalledTimes(2);
+  });
+
+  it("the scans aged out: no Try again, Add a photo opens that copy's form on the card", async () => {
+    show({ photos: "failed", photoFailure: "scanGone" });
+    await screen.findByText("The scans aged out.");
+    expect(screen.queryByRole("button", { name: /Try again/ })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: `Add a photo to ${CARD}` }));
+    expect(openCard).toHaveBeenCalledWith("card1", { copyId: "copy1", edit: true });
+  });
+
+  it("speaks a change once, and not what was already so when the run opened", async () => {
+    const { rerender, runId, container } = show({ photos: "attached" });
+    await screen.findByText("Photos are in!");
+    const said = () => Array.from(container.querySelectorAll('[role="status"]')).map((n) => n.textContent);
+    expect(said().join(" ")).not.toContain("Photos are in for");
+    mocks.data.matches = [saved({ photos: "failed", photoFailure: "error" })];
+    rerender(<Tab runId={runId} />);
+    await waitFor(() =>
+      expect(said()).toContain(`Photos didn't stick on ${CARD}. Try again from its tile in Saved.`),
+    );
+  });
+
+  it("every state passes axe, light and dark", async () => {
+    const states: Array<{ photos: string; photoFailure?: string }> = [
+      { photos: "pending" },
+      { photos: "attached" },
+      { photos: "failed", photoFailure: "error" },
+      { photos: "failed", photoFailure: "scanGone" },
+    ];
+    for (const state of states) {
+      const { container, rerender, runId } = show(state);
+      await screen.findByText("Saved +1");
+      await expectAccessibleInBothModes(container, {
+        label: `Saved tile, ${state.photoFailure ?? state.photos}`,
+        rerender: () => rerender(<Tab runId={runId} />),
+      });
+      cleanup();
+    }
   });
 });

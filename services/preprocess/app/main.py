@@ -11,6 +11,8 @@ NEO-170:  `/extract` + `/process-entry` — stateless batch routes behind the
           routes read and write GCS at keys derived from `{user_id, job_id,
           index}` (`app.jobs.layout`) and return metadata only. Same thin-layer
           rule: this file does auth, request shape and error-code mapping.
+NEO-427:  `/derive-copy-photos` — the listing and thumbnail sizes of one processed
+          entry, returned to Convex, which stores them on the saved copy.
 """
 
 from __future__ import annotations
@@ -31,6 +33,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from app import cropper
 from app.classify import ClassifyError
+from app.copy_photos import CopyPhotoTooLargeError, derive_copy_photos
 from app.cropper import (
     CROP_QUALITIES,
     CROP_QUALITY_FAST,
@@ -165,7 +168,8 @@ NOT_CONFIGURED_RETRY_AFTER_SECONDS = 30
 
 # Extensions /process-entry probes for an extracted object, most common first.
 # Exactly the set /extract can write — the values of
-# `zipsafe.EXTENSION_BY_CONTENT_TYPE`.
+# `zipsafe.EXTENSION_BY_CONTENT_TYPE`. /derive-copy-photos probes an output
+# object the same way, because /process-entry names it from the same map.
 _EXTRACTED_EXTENSIONS = ("jpg", "png", "webp")
 
 # Storage client for the batch routes. Construction is credential-free (the
@@ -826,6 +830,30 @@ class ProcessEntryResponse(BaseModel):
     baseline: BaselineOrientation | None = None
 
 
+class DeriveCopyPhotosRequest(BaseModel):
+    """Body for POST /derive-copy-photos. Same no-path rule as `ExtractRequest`."""
+
+    job_id: str = Field(description="The jobId minted by createPlaceholderUploadUrl (a UUID).")
+    user_id: str = Field(description="The Clerk subject id that owns the job.")
+    entry_index: int = Field(
+        ge=0,
+        le=zipsafe.MAX_ZIP_ENTRIES,
+        description="The entry's zip ordinal, from /extract.",
+    )
+
+
+class DeriveCopyPhotosResponse(BaseModel):
+    """Response body for POST /derive-copy-photos: both sizes, base64-encoded.
+
+    Unlike the other batch routes this one returns image bytes, because the
+    objects they become live in R2, which this service holds no key for.
+    """
+
+    image: str
+    thumb: str
+    content_type: str
+
+
 def _invalid_identifier_response(exc: InvalidJobIdentifierError) -> JSONResponse:
     return JSONResponse(
         status_code=status.HTTP_400_BAD_REQUEST,
@@ -1328,4 +1356,99 @@ def _process_entry(
         cropped_source=result.source,
         dhash=dhash_hex,
         output_written=output_written,
+    )
+
+
+@app.post("/derive-copy-photos", response_model=DeriveCopyPhotosResponse)
+def derive_copy_photos_route(
+    request: DeriveCopyPhotosRequest,
+    x_internal_key: Annotated[str | None, Header()] = None,
+) -> DeriveCopyPhotosResponse | JSONResponse:
+    """Make the sizes a saved copy keeps from one entry's processed output.
+
+    Reads the object /process-entry wrote for this ordinal and writes nothing,
+    so it is safe to repeat. Runs on either role: there is no model involved.
+
+    Failure codes: `INVALID_IDENTIFIER` (400), `OUTPUT_NOT_FOUND` (404,
+    terminal: the bucket's lifecycle rule removed the scan, or it was never
+    processed), `OUTPUT_TOO_MANY_PIXELS` (413, terminal), `OUTPUT_UNDECODABLE`
+    and `PHOTO_TOO_LARGE` (422, terminal: the same bytes fail the same way),
+    `EXTRACT_NOT_CONFIGURED` (503, retryable); storage failures surface as 502.
+    """
+    _verify_internal_key(x_internal_key)
+
+    try:
+        layout.validate_identifiers(request.user_id, request.job_id)
+    except InvalidJobIdentifierError as exc:
+        return _invalid_identifier_response(exc)
+
+    bucket = os.environ.get(layout.BUCKET_ENV)
+    if not bucket:
+        return _not_configured_response()
+
+    try:
+        output_bytes: bytes | None = None
+        for extension in _EXTRACTED_EXTENSIONS:
+            candidate = ObjectRef(
+                bucket=bucket,
+                name=layout.output_image_object(
+                    request.user_id, request.job_id, request.entry_index, extension
+                ),
+            )
+            output_stat = _object_store.stat(candidate)
+            if output_stat is not None:
+                output_bytes = _object_store.download(
+                    candidate, max_bytes=zipsafe.MAX_ENTRY_UNCOMPRESSED_BYTES, stat=output_stat
+                )
+                break
+    except Exception:
+        logger.exception("derive_copy_photos: output read failed")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="placeholder storage unavailable",
+        ) from None
+
+    if output_bytes is None:
+        return JSONResponse(
+            status_code=status.HTTP_404_NOT_FOUND,
+            content={
+                "error_code": "OUTPUT_NOT_FOUND",
+                "detail": "no processed image at this index",
+            },
+        )
+
+    # Written by this service, but from pixels a signed POST policy never
+    # bounded; the same guard as every other first full-size decode here.
+    try:
+        check_raster_size(output_bytes)
+    except RasterTooLargeError as exc:
+        return JSONResponse(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            content={"error_code": "OUTPUT_TOO_MANY_PIXELS", "detail": str(exc)},
+        )
+
+    try:
+        derived = derive_copy_photos(output_bytes)
+    except CopyPhotoTooLargeError as exc:
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            content={"error_code": "PHOTO_TOO_LARGE", "detail": str(exc)},
+        )
+    except Exception:
+        logger.exception("derive_copy_photos: output undecodable")
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            content={"error_code": "OUTPUT_UNDECODABLE", "detail": "processed image undecodable"},
+        )
+
+    logger.info(
+        "derive_copy_photos: index=%d image_bytes=%d thumb_bytes=%d",
+        request.entry_index,
+        len(derived.image),
+        len(derived.thumb),
+    )
+    return DeriveCopyPhotosResponse(
+        image=base64.b64encode(derived.image).decode("ascii"),
+        thumb=base64.b64encode(derived.thumb).decode("ascii"),
+        content_type=derived.content_type,
     )

@@ -1,7 +1,8 @@
 import { createContext, useContext, useEffect, useId, useMemo, useRef, useState, type ReactNode, type Ref } from "react";
 import { useSearchParams } from "react-router";
-import { useMutation, useQuery } from "convex/react";
+import { useAction, useMutation, useQuery } from "convex/react";
 import NeonButton from "@/components/modules/NeonButton";
+import { LiveLine, RunGlyph, type RunLineKind } from "@/components/modules/RunLedger";
 import { Input } from "@/components/primitives/Input";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
@@ -26,6 +27,10 @@ import {
   failedText,
   LEAVE_INTAKE_LINE,
   laneOf,
+  photoLine,
+  photoNews,
+  photoStates,
+  type PhotoStates,
   proposedCount,
   readOf,
   reasonText,
@@ -77,9 +82,12 @@ const LocalPhotos = createContext<ReadonlyMap<string, string>>(new Map());
  * save) the same way. After "Done adding photos" on such a run, "See what's
  * syncing" links to Inventory → Sync status.
  *
- * Not yet: photos onto the saved line (NEO-377), the common price prompt
- * (NEO-378), rotate/re-crop/reject one side, and finding the set from the
- * photos when none is picked.
+ * A saved card takes its scans with it (NEO-427): the server puts the pair on
+ * the saved line after the save, and the tile says how that went (`PhotoLine`),
+ * with one polite line for what landed (`usePhotoNews`).
+ *
+ * Not yet: the common price prompt (NEO-378), rotate/re-crop/reject one side,
+ * and finding the set from the photos when none is picked.
  */
 
 export const RUN_PARAM = "run";
@@ -721,6 +729,7 @@ function RunWorkspace({ run, jobOpen }: { run: RunSummary; jobOpen: boolean }) {
   const saving = useRef(new Set<string>());
 
   const fail = (e: unknown) => notify(writeErrorMessage(e));
+  const photoLiveLine = usePhotoNews(matches);
   const canSave = (row: IntakeMatchRow) => !!row.cardId && !(row.repeatOfPairId && !row.repeatIsSecondCopy);
   const actions: RowActions = {
     save: (row, total) => {
@@ -874,6 +883,7 @@ function RunWorkspace({ run, jobOpen }: { run: RunSummary; jobOpen: boolean }) {
         <p role="status" aria-live="polite" className="sr-only">
           {loading ? "" : working > 0 ? "Working on your photos." : summary}
         </p>
+        <LiveLine text={photoLiveLine} />
         <div className="ml-auto flex flex-wrap items-center gap-3">
           {/* A scanner run (NEO-386) opens before any photo, so it closes with none. */}
           {jobOpen && (
@@ -1015,6 +1025,7 @@ function RunWorkspace({ run, jobOpen }: { run: RunSummary; jobOpen: boolean }) {
                 <span className="min-w-0">
                   <span className="block truncate font-medium text-ink-2">{cardLabel(row.card)}</span>
                   <span className="block text-neon-green-text">Saved +{row.savedQuantity ?? 1}</span>
+                  <PhotoLine row={row} />
                 </span>
               </div>
             </li>
@@ -1059,6 +1070,102 @@ function RunWorkspace({ run, jobOpen }: { run: RunSummary; jobOpen: boolean }) {
         </Overlay>
       )}
     </div>
+  );
+}
+
+/**
+ * NEO-427 — what to say out loud about the run's photos. The first read only
+ * learns where things stand, so opening a run says nothing.
+ */
+function usePhotoNews(matches: IntakeMatchRow[] | undefined): string {
+  const [news, setNews] = useState("");
+  const seen = useRef<PhotoStates | null>(null);
+  useEffect(() => {
+    if (!matches) return;
+    const before = seen.current;
+    seen.current = photoStates(matches);
+    const said = before ? photoNews(before, matches) : "";
+    if (said) setNews(said);
+  }, [matches]);
+  return news;
+}
+
+/** The glyph's colour: the shape says the state (`RunGlyph`), and these clear 4.5:1 on a tile in both modes. */
+const PHOTO_TONES: Record<RunLineKind, string> = {
+  waiting: "text-ink-3",
+  building: "text-neon-blue-text motion-safe:animate-spin",
+  built: "text-neon-green-text",
+  skipped: "text-ink-3",
+  blocked: "text-notice-warn-ink",
+  stopped: "text-ink-3",
+  failed: "text-notice-warn-ink",
+  unfinished: "text-notice-warn-ink",
+};
+const PHOTO_ACTION = `-my-1.5 block py-1.5 text-neon-blue-text underline ${RING}`;
+
+/**
+ * NEO-427 — a Saved tile's second word: its photos on their way, on the line,
+ * or what to do about them. Failing never touches the save above it. Try again
+ * unmounts as the row goes back to pending, so focus lands on this line's own
+ * words instead of falling to the page (WCAG 2.4.3).
+ */
+function PhotoLine({ row }: { row: IntakeMatchRow }) {
+  const { notify, openCard } = usePageApi();
+  const retryPhotos = useAction(api.intakePhotos.retryIntakePhotos);
+  const words = useRef<HTMLSpanElement>(null);
+  const retrying = useRef(false);
+  const refocus = useRef(false);
+  const failed = row.photos === "failed";
+  useEffect(() => {
+    if (failed || !refocus.current) return;
+    refocus.current = false;
+    words.current?.focus({ preventScroll: true });
+  }, [failed]);
+  const line = photoLine(row);
+  if (!line) return null;
+  const label = cardLabel(row.card);
+  const kind: RunLineKind = failed ? "failed" : row.photos === "pending" ? "building" : "built";
+  return (
+    <>
+      <span className={`mt-0.5 flex items-start gap-1 ${failed ? "text-notice-warn-ink" : "text-ink-2"}`}>
+        <RunGlyph kind={kind} tones={PHOTO_TONES} />
+        <span ref={words} tabIndex={-1} className={`rounded-sm ${RING}`}>
+          {line}
+        </span>
+      </span>
+      {failed && row.photoFailure !== "scanGone" && (
+        <button
+          type="button"
+          className={PHOTO_ACTION}
+          aria-label={`Try again: photos for ${label}`}
+          onClick={() => {
+            if (retrying.current) return;
+            retrying.current = true;
+            refocus.current = true;
+            retryPhotos({ matchId: row._id })
+              .catch((e: unknown) => {
+                refocus.current = false;
+                notify(writeErrorMessage(e));
+              })
+              .finally(() => {
+                retrying.current = false;
+              });
+          }}
+        >
+          Try again
+        </button>
+      )}
+      {failed && row.photoFailure === "scanGone" && row.cardId && (
+        <button
+          type="button"
+          className={PHOTO_ACTION}
+          aria-label={`Add a photo to ${label}`}
+          onClick={() => row.cardId && openCard(row.cardId, { copyId: row.savedCopyId, edit: true })}
+        >
+          Add a photo
+        </button>
+      )}
+    </>
   );
 }
 

@@ -1445,6 +1445,51 @@ describe("drainOwner: the run's steps (NEO-415)", () => {
     ]);
   });
 
+  test("NEO-427: a row's seller photo comes from the oldest copy with one, not the oldest copy", async () => {
+    const s = await setup();
+    const { v, bsc, first } = await twoCards(s);
+    // `first` is the older line and has no photo; a newer line of the same card and condition does.
+    const newer = await add(s, v.cardIds[0], {
+      homeId: s.box,
+      condition: "Near Mint",
+      minPriceCents: 50,
+      notes: "the scanned one",
+    });
+    expect(newer.copyId).not.toBe(first.copyId);
+    await s.t.run(async (ctx) => {
+      await ctx.db.patch(newer.copyId as Id<"collectionCopies">, { hasPhotos: true });
+      await ctx.db.insert("collectionCopyPhotos", {
+        ownerId: OWNER,
+        copyId: newer.copyId as Id<"collectionCopies">,
+        side: "front",
+        token: "toknewer",
+        contentType: "image/jpeg",
+        imageBytes: 1000,
+        thumbBytes: 100,
+        status: "live",
+        since: NOW,
+      });
+    });
+    vi.stubGlobal("fetch", (async (url: string | URL | Request, init?: RequestInit) => {
+      if (String(url).includes("/attachment")) return Response.json({ objectKey: "seller/photo-1.jpg" });
+      return bsc.fetch(url, init);
+    }) as typeof fetch);
+    const fetched: string[] = [];
+
+    await drainOwnerImpl(
+      stubCtx(s.t),
+      { ownerId: OWNER, platform: "bsc" },
+      {
+        fetchPhoto: async (key) => {
+          fetched.push(key);
+          return new ArrayBuffer(8);
+        },
+      },
+    );
+
+    expect(fetched).toEqual(["copy-photos/toknewer/image.jpg"]);
+  });
+
   test("a sign-in BSC refuses on the first read fails that read and leaves nothing waiting", async () => {
     const s = await setup();
     const { v, bsc } = await twoCards(s);

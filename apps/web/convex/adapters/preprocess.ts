@@ -12,6 +12,8 @@
  *   POST /extract        → unzip the upload, list the entries it accepted (FAST)
  *   POST /process-entry  → crop + orient + classify + hash ONE entry (FAST first,
  *                          HEAVY on escalation)
+ *   POST /derive-copy-photos → the sizes a saved copy keeps, from one entry's
+ *                          processed output (FAST; NEO-427)
  *   POST /warmup         → force an instance resident (FAST fired directly on
  *                          start; HEAVY enqueued on the heavy pool, to the
  *                          instance limit, on start and on the first escalation)
@@ -582,6 +584,62 @@ export async function callProcessEntryHeavy(
     { jobId: args.jobId, entryIndex: args.entryIndex },
   );
   return normalizeProcessEntry(wire);
+}
+
+/**
+ * The code `/derive-copy-photos` answers when an entry's processed scan is not
+ * in the bucket: its lifecycle rule removed it, so a retry can't bring it back.
+ * A bare 404 (a revision without the route) is not this.
+ */
+export const OUTPUT_NOT_FOUND_CODE = "OUTPUT_NOT_FOUND";
+
+const BASE64_RE = /^[A-Za-z0-9+/]+={0,2}$/;
+
+type DeriveCopyPhotosWire = { image?: unknown; thumb?: unknown; content_type?: unknown };
+
+/** The sizes a saved copy keeps of one entry, decoded and checked for shape. */
+export type DerivedCopyPhotos = {
+  image: Uint8Array<ArrayBuffer>;
+  thumb: Uint8Array<ArrayBuffer>;
+  contentType: "image/jpeg" | "image/webp";
+};
+
+function decodeBase64(value: unknown, field: string): Uint8Array<ArrayBuffer> {
+  if (typeof value !== "string" || !BASE64_RE.test(value)) {
+    throw new Error(`preprocess returned an unreadable ${field} from /derive-copy-photos`);
+  }
+  return Uint8Array.from(Buffer.from(value, "base64"));
+}
+
+/**
+ * The listing size and thumbnail of one processed entry (NEO-427). FAST: there
+ * is no model in it. Writes nothing on the service, so it is safe to repeat.
+ *
+ * Thrown as every other call here is: terminal on the 4xx codes (404
+ * `OUTPUT_NOT_FOUND_CODE` is the one a caller reads), plain on a transient
+ * failure. The sizes are for the caller to check against what it stores.
+ */
+export async function callDeriveCopyPhotos(
+  ctx: ActionCtx,
+  args: { jobId: string; userId: string; entryIndex: number },
+): Promise<DerivedCopyPhotos> {
+  const wire = await preprocessPost<DeriveCopyPhotosWire>(
+    ctx,
+    FAST_SERVICE(),
+    "/derive-copy-photos",
+    { job_id: args.jobId, user_id: args.userId, entry_index: args.entryIndex },
+    "preprocessDeriveCopyPhotos",
+    PREPROCESS_FAST_TIMEOUT_MS,
+    { jobId: args.jobId, entryIndex: args.entryIndex },
+  );
+  if (wire.content_type !== "image/jpeg" && wire.content_type !== "image/webp") {
+    throw new Error("preprocess returned an unknown content type from /derive-copy-photos");
+  }
+  return {
+    image: decodeBase64(wire.image, "image"),
+    thumb: decodeBase64(wire.thumb, "thumb"),
+    contentType: wire.content_type,
+  };
 }
 
 /**

@@ -130,6 +130,67 @@ export function reasonText(row: Pick<IntakeMatchRow, "reason" | "candidates">, r
   return reasons[row.reason];
 }
 
+/** NEO-427 — the words on a Saved tile for where its photos are. Nothing for a pair saved before photos came along. */
+export function photoLine(row: Pick<IntakeMatchRow, "photos" | "photoFailure">): string | null {
+  switch (row.photos) {
+    case "pending":
+      return "Slipping in the photos…";
+    case "attached":
+      return "Photos are in!";
+    case "failed":
+      return row.photoFailure === "scanGone" ? "The scans aged out." : "Photos didn't stick.";
+    default:
+      return null;
+  }
+}
+
+/** Where a row's photos are, for spotting a change. */
+export type PhotoStates = ReadonlyMap<string, string>;
+
+export function photoStates(
+  rows: ReadonlyArray<Pick<IntakeMatchRow, "pairId" | "photos" | "photoFailure">>,
+): PhotoStates {
+  return new Map(rows.map((row) => [row.pairId, `${row.photos ?? ""}:${row.photoFailure ?? ""}`]));
+}
+
+/**
+ * NEO-427 — the one polite line for photos that just landed or failed since
+ * `before`. A row not seen before says nothing, so opening a finished run stays
+ * quiet; a "Save all" batch is said once, as a count, rather than card by card.
+ */
+export function photoNews(before: PhotoStates, rows: readonly IntakeMatchRow[]): string {
+  const now = photoStates(rows);
+  const landed = (photos: string, photoFailure?: string) =>
+    rows.filter(
+      (row) =>
+        row.photos === photos &&
+        row.photoFailure === photoFailure &&
+        before.has(row.pairId) &&
+        before.get(row.pairId) !== now.get(row.pairId),
+    );
+  const say = (found: IntakeMatchRow[], one: (label: string) => string, many: (n: number) => string) =>
+    found.length === 0 ? "" : found.length === 1 ? one(cardLabel(found[0].card)) : many(found.length);
+  return [
+    say(
+      landed("attached"),
+      (card) => `Photos are in for ${card}.`,
+      (n) => `Photos are in for ${n} cards.`,
+    ),
+    say(
+      landed("failed", "error"),
+      (card) => `Photos didn't stick on ${card}. Try again from its tile in Saved.`,
+      (n) => `Photos didn't stick on ${n} cards. Try again from their tiles in Saved.`,
+    ),
+    say(
+      landed("failed", "scanGone"),
+      (card) => `The scans for ${card} aged out. Add a photo from its tile in Saved.`,
+      (n) => `The scans for ${n} cards aged out. Add photos from their tiles in Saved.`,
+    ),
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+
 /** The line's count once saved: what is already here, plus this scan. */
 export function proposedCount(row: Pick<IntakeMatchRow, "haveHere">): number {
   return row.haveHere + 1;

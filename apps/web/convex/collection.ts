@@ -103,6 +103,8 @@ type ContainerRow = Doc<"collectionContainers">;
 export const MAX_COPY_QUANTITY = 999;
 /** Line items one collector may hold of one card. Bounds the fold scan. */
 export const MAX_LINES_PER_CARD = 200;
+/** At the line limit. A line with photos can't stack, so removing one is always on offer. */
+export const TOO_MANY_LINES = `You already have ${MAX_LINES_PER_CARD} lines of this card. Remove one, or stack any without photos, to make room.`;
 /** Cards `addHaves` and copies `removeCopies` take per call. */
 export const MAX_BATCH = 200;
 /** Lines one variant's copy list reads. */
@@ -449,6 +451,27 @@ export function checkSlot(home: Pick<ContainerRow, "kind" | "system">, slot: num
  */
 export function isOneOfAKind(d: { grading?: { cert?: string }; serialNumber?: string; hasPhotos?: true }): boolean {
   return Boolean(d.grading?.cert || d.serialNumber || d.hasPhotos);
+}
+
+/**
+ * NEO-427 — which of these lines (identical twins of an arriving copy) are
+ * scanned lines whose photos are still due: on their way, or failed with a Try
+ * again left. Nothing folds in, or the stack would share one copy's photos.
+ * Reads only for a twin, which an add rarely has.
+ */
+export async function linesAwaitingScans(
+  ctx: Pick<QueryCtx, "db">,
+  twins: readonly CopyRow[],
+): Promise<Array<Id<"collectionCopies">>> {
+  const awaiting: Array<Id<"collectionCopies">> = [];
+  for (const row of twins) {
+    const match = await ctx.db
+      .query("intakeMatches")
+      .withIndex("by_saved_copy", (q) => q.eq("savedCopyId", row._id))
+      .first();
+    if (match?.photos === "pending" || match?.photos === "failed") awaiting.push(row._id);
+  }
+  return awaiting;
 }
 
 /** A line's details plus its photo marker: the shape the fold rule reads. */
@@ -1419,6 +1442,11 @@ async function moveCounts(
  * a price and a condition (`listingGate.ts`), or it is refused before
  * anything is written. A caller adding many cards passes one `gate`, so the
  * owner's listing state and each common price are read once.
+ *
+ * NEO-427: `keepsOwnLine` starts a new line even when an identical one is
+ * there, and in a binder takes the first open pocket rather than that line's.
+ * A scanned save is a photo of this very copy, and its photos arrive after the
+ * save, so the fold rule's photo check (`isOneOfAKind`) can't see them yet.
  */
 export async function addOne(
   ctx: MutationCtx,
@@ -1427,6 +1455,7 @@ export async function addOne(
   raw: DetailsArg,
   defaultCondition: Condition,
   gate: ListingGate = new ListingGate(ctx, ownerId),
+  { keepsOwnLine = false }: { keepsOwnLine?: boolean } = {},
 ): Promise<{
   result: typeof addResultValidator.type;
   change: CountChange;
@@ -1440,12 +1469,23 @@ export async function addOne(
     .query("collectionCopies")
     .withIndex("by_owner_and_card", (q) => q.eq("ownerId", ownerId).eq("cardId", cardId))
     .take(MAX_LINES_PER_CARD + 1);
+  // The pocket isn't picked yet, so a twin here is one that fits at its own.
+  const awaiting = keepsOwnLine
+    ? []
+    : await linesAwaitingScans(
+        ctx,
+        lines.filter((row) => foldsInto(foldShape(row), { ...cleaned, homeId: home._id, slot: cleaned.slot ?? row.slot })),
+      );
   if (cleaned.slot === undefined && keepsPockets(home)) {
-    cleaned.slot = await arrivingPocket(ctx, ownerId, home, lines, { ...cleaned, homeId: home._id });
+    cleaned.slot = keepsOwnLine
+      ? await firstOpenPocket(ctx, ownerId, home._id)
+      : await arrivingPocket(ctx, ownerId, home, lines, { ...cleaned, homeId: home._id }, awaiting);
   }
   const next: StoredDetails = { ...cleaned, homeId: home._id };
   const now = Date.now();
-  const into = lines.find((row) => foldsInto(foldShape(row), next));
+  const into = keepsOwnLine
+    ? undefined
+    : lines.find((row) => !awaiting.includes(row._id) && foldsInto(foldShape(row), next));
   if (into) {
     const quantity = into.quantity + next.quantity;
     if (quantity > MAX_COPY_QUANTITY) {
@@ -1459,7 +1499,7 @@ export async function addOne(
     };
   }
   if (lines.length >= MAX_LINES_PER_CARD) {
-    refuse(COLLECTION_ERRORS.limit, `You already have ${MAX_LINES_PER_CARD} lines of this card. Stack some together first.`);
+    refuse(COLLECTION_ERRORS.limit, TOO_MANY_LINES);
   }
   await assertPocketFree(ctx, ownerId, home, next.slot, []);
   const copyId = await ctx.db.insert("collectionCopies", {
@@ -1597,7 +1637,7 @@ export async function moveCopyCore(
     copyId = row._id;
   } else {
     if (lines.length >= MAX_LINES_PER_CARD) {
-      refuse(COLLECTION_ERRORS.limit, `You already have ${MAX_LINES_PER_CARD} lines of this card. Stack some together first.`);
+      refuse(COLLECTION_ERRORS.limit, TOO_MANY_LINES);
     }
     await ctx.db.patch(row._id, { quantity: row.quantity - quantity, lastUpdated: now });
     changes.push(changeOf(row, counted(row), counted({ ...row, quantity: row.quantity - quantity })));
@@ -2494,7 +2534,7 @@ export const restoreCopy = mutation({
       .withIndex("by_owner_and_card", (q) => q.eq("ownerId", ownerId).eq("cardId", args.cardId))
       .take(MAX_LINES_PER_CARD);
     if (lines.length >= MAX_LINES_PER_CARD) {
-      refuse(COLLECTION_ERRORS.limit, `You already have ${MAX_LINES_PER_CARD} lines of this card. Stack some together first.`);
+      refuse(COLLECTION_ERRORS.limit, TOO_MANY_LINES);
     }
     const copyId = await ctx.db.insert("collectionCopies", {
       ownerId,

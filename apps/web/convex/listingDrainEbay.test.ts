@@ -949,6 +949,45 @@ describe("eBay drain: held-back cards", () => {
     expect((await record(s, v.variantId))?.problems[0]).toMatchObject({ reason: "noPrice" });
   });
 
+  test("NEO-427: the oldest copy with photos supplies them when the oldest copy has none", async () => {
+    const s = await setup();
+    const v = await seedVariant(s.t, { cards: [{ number: "1" }] });
+    const card = v.cardIds[0];
+    const details = { homeId: s.box, condition: "Near Mint", minPriceCents: 500 };
+    await add(s, card, { ...details, acquiredOn: "2020-01-01" });
+    await addWithPhoto(s, card, { ...details, acquiredOn: "2021-01-01" }, "tmiddle");
+    await addWithPhoto(s, card, { ...details, acquiredOn: "2022-01-01" }, "tnewest");
+    await listOnEbay(s);
+    await queue(s, [{ cardId: card, variantId: v.variantId }]);
+
+    await drain(s);
+
+    expect((await record(s, v.variantId))?.problems).toEqual([]);
+    expect(ebay.items.has(`NB2-${card}-NM`)).toBe(true);
+    expect(photoFetches).toEqual(["copy-photos/tmiddle/image.jpg"]);
+  });
+
+  test("NEO-427: a group held noPhoto is one where no copy has a photo", async () => {
+    const s = await setup();
+    const v = await seedVariant(s.t, { cards: [{ number: "1" }] });
+    const card = v.cardIds[0];
+    const details = { homeId: s.box, minPriceCents: 500 };
+    await add(s, card, { ...details, condition: "Near Mint", acquiredOn: "2020-01-01" });
+    await add(s, card, { ...details, condition: "Near Mint", acquiredOn: "2021-01-01" });
+    // The photo is on a copy in another condition, so it is another listing's.
+    await addWithPhoto(s, card, { ...details, condition: "Good" }, "tgood");
+    await listOnEbay(s);
+    await queue(s, [{ cardId: card, variantId: v.variantId }]);
+
+    await drain(s);
+
+    expect((await record(s, v.variantId))?.problems).toEqual([
+      expect.objectContaining({ cardId: card, reason: "noPhoto" }),
+    ]);
+    expect(ebay.items.has(`NB2-${card}-NM`)).toBe(false);
+    expect(photoFetches).toEqual(["copy-photos/tgood/image.jpg"]);
+  });
+
   test("a card whose photo is oversized is held back noPhoto", async () => {
     const s = await setup();
     const { v } = await oneCard(s);

@@ -5,6 +5,9 @@ import {
   columnsClear,
   failedText,
   MAX_PHOTO_RETRIES,
+  photoLine,
+  photoNews,
+  photoStates,
   runSummary,
   laneOf,
   proposedCount,
@@ -161,5 +164,66 @@ describe("NEO-370: leaving after Done waits for the columns", () => {
     for (const lane of ["reading", "loose", "matching", "review"] as const) {
       expect(columnsClear({ ...lanes, [lane]: [1] } as never)).toBe(false);
     }
+  });
+});
+
+describe("NEO-427: a Saved tile's photos", () => {
+  const saved = (i: number, extra: Partial<IntakeMatchRow>) =>
+    match(i, i + 1, {
+      savedAt: 1,
+      card: { _id: `c${i}`, cardNumber: String(i), cardName: `Player ${i}` } as IntakeMatchRow["card"],
+      ...extra,
+    });
+
+  test("each state has its words; a pair saved before photos came along has none", () => {
+    expect(photoLine(saved(0, { photos: "pending" }))).toBe("Slipping in the photos…");
+    expect(photoLine(saved(0, { photos: "attached" }))).toBe("Photos are in!");
+    expect(photoLine(saved(0, { photos: "failed", photoFailure: "error" }))).toBe("Photos didn't stick.");
+    expect(photoLine(saved(0, { photos: "failed", photoFailure: "scanGone" }))).toBe("The scans aged out.");
+    expect(photoLine(saved(0, {}))).toBeNull();
+  });
+
+  test("news says what changed, by name for one and by count for many", () => {
+    const pending = [saved(0, { photos: "pending" }), saved(2, { photos: "pending" }), saved(4, { photos: "pending" })];
+    const before = photoStates(pending);
+    expect(photoNews(before, pending)).toBe("");
+    expect(photoNews(before, [saved(0, { photos: "attached" }), pending[1], pending[2]])).toBe(
+      "Photos are in for #0 Player 0.",
+    );
+    expect(photoNews(before, [saved(0, { photos: "attached" }), saved(2, { photos: "attached" }), pending[2]])).toBe(
+      "Photos are in for 2 cards.",
+    );
+    expect(
+      photoNews(before, [
+        saved(0, { photos: "attached" }),
+        saved(2, { photos: "failed", photoFailure: "error" }),
+        saved(4, { photos: "failed", photoFailure: "scanGone" }),
+      ]),
+    ).toBe(
+      "Photos are in for #0 Player 0. Photos didn't stick on #2 Player 2. Try again from its tile in Saved. The scans for #4 Player 4 aged out. Add a photo from its tile in Saved.",
+    );
+    expect(
+      photoNews(before, [
+        saved(0, { photos: "failed", photoFailure: "error" }),
+        saved(2, { photos: "failed", photoFailure: "error" }),
+        saved(4, { photos: "pending" }),
+      ]),
+    ).toBe("Photos didn't stick on 2 cards. Try again from their tiles in Saved.");
+    expect(
+      photoNews(before, [
+        saved(0, { photos: "failed", photoFailure: "scanGone" }),
+        saved(2, { photos: "failed", photoFailure: "scanGone" }),
+        saved(4, { photos: "pending" }),
+      ]),
+    ).toBe("The scans for 2 cards aged out. Add photos from their tiles in Saved.");
+  });
+
+  test("a row seen for the first time says nothing, so opening a finished run stays quiet", () => {
+    expect(photoNews(new Map(), [saved(0, { photos: "attached" })])).toBe("");
+  });
+
+  test("going back to pending (Try again) says nothing: focus lands on the line itself", () => {
+    const failed = [saved(0, { photos: "failed", photoFailure: "error" })];
+    expect(photoNews(photoStates(failed), [saved(0, { photos: "pending" })])).toBe("");
   });
 });

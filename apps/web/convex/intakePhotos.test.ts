@@ -1,0 +1,369 @@
+/**
+ * NEO-427 — a scanned pair's photos onto the saved copy (`convex/intakePhotos.ts`):
+ * both sides go to R2 and live, a repeat fills only what is missing, a photo
+ * the collector added stays, and every failure ends on the row, never on the
+ * save.
+ *
+ * The preprocess service and R2 are a stubbed `fetch`; the copy rows are real.
+ */
+
+import { convexTest } from "convex-test";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { api, internal } from "./_generated/api";
+import type { Id } from "./_generated/dataModel";
+import schema from "./schema";
+import { seedCollectionCatalog } from "../lib/testing/collection-fixture";
+
+const modules = (import.meta as unknown as {
+  glob: (pattern: string) => Record<string, () => Promise<unknown>>;
+}).glob("./**/*.*s");
+
+const OWNER = "user_scannerOwner1";
+const JOB = "3f2504e0-4f89-11d3-9a0c-0305e82c3301";
+const FRONT = 6;
+const BACK = 7;
+
+type Derive = (entryIndex: number) => Response;
+
+const json = (status: number, body: unknown) =>
+  new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+const gone = () => json(404, { error_code: "OUTPUT_NOT_FOUND", detail: "no processed image at this index" });
+const derived = (entryIndex: number) =>
+  json(200, {
+    image: Buffer.from(`image-${entryIndex}`).toString("base64"),
+    thumb: Buffer.from(`thumb-${entryIndex}`).toString("base64"),
+    content_type: "image/jpeg",
+  });
+
+/** What reached each outside service. */
+let derives: Array<{ job_id: string; user_id: string; entry_index: number }>;
+let puts: Array<{ key: string; body: string; contentType: string | null }>;
+let onDerive: Derive;
+let onPut: (key: string) => Response | Promise<Response>;
+
+beforeEach(() => {
+  derives = [];
+  puts = [];
+  onDerive = derived;
+  onPut = () => new Response(null, { status: 200 });
+  vi.stubEnv("NEONBINDER_PREPROCESS_URL", "http://localhost:8081");
+  vi.stubEnv("NEONBINDER_PREPROCESS_FAST_URL", "");
+  vi.stubEnv("R2_ENDPOINT", "https://acct.r2.example");
+  vi.stubEnv("R2_BUCKET", "photos");
+  vi.stubEnv("R2_ACCESS_KEY_ID", "AKIDEXAMPLE");
+  vi.stubEnv("R2_SECRET_ACCESS_KEY", "secret");
+  vi.spyOn(console, "warn").mockImplementation(() => {});
+  // Scheduled functions stay parked; the retry waits (2s, 8s) pass at once.
+  vi.useFakeTimers({ toFake: ["setTimeout"] });
+  const parked = globalThis.setTimeout;
+  vi.stubGlobal("setTimeout", ((fn: () => void, ms?: number) => {
+    if (ms === 2_000 || ms === 8_000) {
+      fn();
+      return 0;
+    }
+    return parked(fn, ms);
+  }) as unknown as typeof setTimeout);
+  vi.stubGlobal("fetch", (async (input: string | URL | Request, init?: RequestInit) => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    const url = new URL(request.url);
+    if (url.pathname === "/derive-copy-photos") {
+      const body = (await request.json()) as (typeof derives)[number];
+      derives.push(body);
+      return onDerive(body.entry_index);
+    }
+    expect(request.method).toBe("PUT");
+    const key = decodeURIComponent(url.pathname.replace(/^\/photos\//, ""));
+    puts.push({ key, body: await request.text(), contentType: request.headers.get("content-type") });
+    return await onPut(key);
+  }) as unknown as typeof fetch);
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.useRealTimers();
+  vi.unstubAllEnvs();
+  vi.restoreAllMocks();
+});
+
+async function world(opts: { saved?: boolean; photos?: "pending" | "failed" } = {}) {
+  const t = convexTest(schema, modules);
+  const fx = await seedCollectionCatalog(t);
+  const me = t.withIdentity({ subject: OWNER });
+  const { copyId } = await me.mutation(api.collection.addLineItem, {
+    cardId: fx.gooden1,
+    details: { quantity: 1 },
+  });
+  const matchId = await t.run(async (ctx) => {
+    const copy = await ctx.db.get(copyId);
+    const now = Date.now();
+    const runId = await ctx.db.insert("intakeRuns", {
+      userId: OWNER,
+      jobId: JOB,
+      homeId: copy!.homeId,
+      createdAt: now,
+      lastActivityAt: now,
+    });
+    const pairId = await ctx.db.insert("placeholderPairs", {
+      jobId: JOB,
+      userId: OWNER,
+      frontIndex: FRONT,
+      backIndex: BACK,
+      confidence: "exact",
+      mechanism: "adjacency",
+      score: 1,
+    });
+    return await ctx.db.insert("intakeMatches", {
+      runId,
+      userId: OWNER,
+      pairId,
+      frontIndex: FRONT,
+      backIndex: BACK,
+      readKey: "",
+      confidence: 1,
+      band: "matched",
+      reason: "numberAndPlayer",
+      candidates: [],
+      variations: [],
+      ...(opts.saved === false ? {} : { savedCopyId: copyId, savedQuantity: 1, savedAt: now }),
+      ...(opts.photos ? { photos: opts.photos } : {}),
+    });
+  });
+  const row = () => t.run(async (ctx) => await ctx.db.get(matchId));
+  const photos = () =>
+    t.run(async (ctx) =>
+      (await ctx.db.query("collectionCopyPhotos").collect()).sort((a, b) => a.side.localeCompare(b.side)),
+    );
+  const copy = () => t.run(async (ctx) => await ctx.db.get(copyId));
+  const attach = () => t.action(internal.intakePhotos.attachIntakePhotos, { matchId });
+  /** A photo the collector added by hand. */
+  const handPhoto = async (side: "front" | "back") => {
+    const { photoId } = await t.mutation(internal.copyPhotos.reserveUpload, {
+      ownerId: OWNER,
+      copyId,
+      side,
+      contentType: "image/webp",
+      imageBytes: 100,
+      thumbBytes: 10,
+    });
+    await t.mutation(internal.copyPhotos.commitUpload, { ownerId: OWNER, photoId });
+    return photoId;
+  };
+  return { t, me, copyId, matchId, row, photos, copy, attach, handPhoto };
+}
+
+describe("attachIntakePhotos", () => {
+  test("both sides go to R2 in both sizes and go live on the copy", async () => {
+    const w = await world({ photos: "pending" });
+    await w.attach();
+
+    expect(derives).toEqual([
+      { job_id: JOB, user_id: OWNER, entry_index: FRONT },
+      { job_id: JOB, user_id: OWNER, entry_index: BACK },
+    ]);
+    const rows = await w.photos();
+    expect(rows.map((r) => [r.side, r.status, r.source])).toEqual([
+      ["back", "live", "intake"],
+      ["front", "live", "intake"],
+    ]);
+    const front = rows[1];
+    expect(front.imageBytes).toBe(`image-${FRONT}`.length);
+    expect(front.thumbBytes).toBe(`thumb-${FRONT}`.length);
+    expect(puts).toContainEqual({
+      key: `copy-photos/${front.token}/image.jpg`,
+      body: `image-${FRONT}`,
+      contentType: "image/jpeg",
+    });
+    expect(puts).toContainEqual({
+      key: `copy-photos/${front.token}/thumb.jpg`,
+      body: `thumb-${FRONT}`,
+      contentType: "image/jpeg",
+    });
+    expect(puts).toHaveLength(4);
+    expect((await w.copy())?.hasPhotos).toBe(true);
+    const row = await w.row();
+    expect(row?.photos).toBe("attached");
+    expect(row?.photoFailure).toBeUndefined();
+  });
+
+  test("running again changes nothing and asks the service for nothing", async () => {
+    const w = await world();
+    await w.attach();
+    const before = await w.photos();
+    derives = [];
+    puts = [];
+    await w.attach();
+    expect(derives).toEqual([]);
+    expect(puts).toEqual([]);
+    expect((await w.photos()).map((r) => r._id)).toEqual(before.map((r) => r._id));
+    expect((await w.row())?.photos).toBe("attached");
+  });
+
+  test("a side the collector already photographed is left alone", async () => {
+    const w = await world();
+    const hand = await w.handPhoto("front");
+    await w.attach();
+    expect(derives.map((d) => d.entry_index)).toEqual([BACK]);
+    const rows = await w.photos();
+    expect(rows.find((r) => r.side === "front")).toMatchObject({ _id: hand, status: "live" });
+    expect(rows.find((r) => r.side === "back")).toMatchObject({ status: "live", source: "intake" });
+    expect((await w.row())?.photos).toBe("attached");
+  });
+
+  test("a hand photo arriving mid-attach stands; the scan's row is left for the sweep", async () => {
+    const w = await world();
+    let hand: Id<"collectionCopyPhotos"> | undefined;
+    onPut = async (key) => {
+      // The front's thumb is the attach's last step before its check.
+      if (puts.length === 2) hand = await w.handPhoto("front");
+      expect(key).toContain("copy-photos/");
+      return new Response(null, { status: 200 });
+    };
+    await w.attach();
+    const fronts = (await w.photos()).filter((r) => r.side === "front");
+    expect(hand).toBeDefined();
+    expect(fronts.find((r) => r._id === hand)?.status).toBe("live");
+    expect(fronts.find((r) => r._id !== hand)).toMatchObject({ status: "pending", source: "intake" });
+    expect((await w.row())?.photos).toBe("attached");
+  });
+
+  test("scans the bucket has expired say so, and nothing is reserved", async () => {
+    const w = await world({ photos: "pending" });
+    onDerive = gone;
+    await w.attach();
+    expect(derives).toHaveLength(2); // terminal: no retries
+    expect(await w.photos()).toEqual([]);
+    expect(puts).toEqual([]);
+    expect(await w.row()).toMatchObject({ photos: "failed", photoFailure: "scanGone" });
+    expect(await w.copy()).toMatchObject({ quantity: 1 });
+  });
+
+  test("one side gone keeps the side that made it", async () => {
+    const w = await world();
+    onDerive = (entryIndex) => (entryIndex === BACK ? gone() : derived(entryIndex));
+    await w.attach();
+    expect((await w.photos()).map((r) => [r.side, r.status])).toEqual([["front", "live"]]);
+    expect(await w.row()).toMatchObject({ photos: "failed", photoFailure: "scanGone" });
+    expect((await w.copy())?.hasPhotos).toBe(true);
+  });
+
+  test("a 404 with no code (a revision without the route) is not a gone scan", async () => {
+    const w = await world();
+    onDerive = () => new Response("Not Found", { status: 404 });
+    await w.attach();
+    expect(await w.row()).toMatchObject({ photos: "failed", photoFailure: "error" });
+  });
+
+  test("a failure Try again could fix outranks a gone scan", async () => {
+    const w = await world();
+    onDerive = (entryIndex) => (entryIndex === BACK ? gone() : json(422, { error_code: "OUTPUT_UNDECODABLE" }));
+    await w.attach();
+    expect(await w.row()).toMatchObject({ photos: "failed", photoFailure: "error" });
+  });
+
+  test("a busy service gets two more tries, then the row says failed", async () => {
+    const w = await world();
+    const tries = new Map<number, number>();
+    onDerive = (entryIndex) => {
+      tries.set(entryIndex, (tries.get(entryIndex) ?? 0) + 1);
+      return entryIndex === FRONT && tries.get(entryIndex)! < 3 ? json(429, {}) : derived(entryIndex);
+    };
+    await w.attach();
+    expect(tries.get(FRONT)).toBe(3);
+    expect((await w.row())?.photos).toBe("attached");
+
+    const down = await world();
+    derives = [];
+    onDerive = () => json(503, {});
+    await down.attach();
+    expect(derives).toHaveLength(6);
+    expect(await down.row()).toMatchObject({ photos: "failed", photoFailure: "error" });
+    expect(await down.photos()).toEqual([]);
+  });
+
+  test("a failed PUT leaves the copy as it was and the upload pending for the sweep", async () => {
+    const w = await world();
+    onPut = () => new Response("denied", { status: 403 });
+    await w.attach();
+    expect((await w.photos()).map((r) => r.status)).toEqual(["pending", "pending"]);
+    expect((await w.copy())?.hasPhotos).toBeUndefined();
+    expect(await w.row()).toMatchObject({ photos: "failed", photoFailure: "error" });
+  });
+
+  test("R2 not set up fails the row without asking the service", async () => {
+    const w = await world();
+    vi.stubEnv("R2_BUCKET", "");
+    await w.attach();
+    expect(derives).toEqual([]);
+    expect(await w.row()).toMatchObject({ photos: "failed", photoFailure: "error" });
+  });
+
+  test("a row never saved has nowhere to go: nothing runs and nothing is recorded", async () => {
+    const w = await world({ saved: false });
+    await w.attach();
+    expect(derives).toEqual([]);
+    expect((await w.row())?.photos).toBeUndefined();
+  });
+});
+
+describe("retryIntakePhotos", () => {
+  test("a failed row goes back through and fills only what is missing", async () => {
+    const w = await world();
+    onDerive = (entryIndex) => (entryIndex === BACK ? json(422, {}) : derived(entryIndex));
+    await w.attach();
+    expect((await w.row())?.photos).toBe("failed");
+
+    derives = [];
+    onDerive = derived;
+    await w.me.action(api.intakePhotos.retryIntakePhotos, { matchId: w.matchId });
+    expect(derives.map((d) => d.entry_index)).toEqual([BACK]);
+    expect((await w.row())?.photos).toBe("attached");
+  });
+
+  test("signed out, or someone else's row, is refused before anything runs", async () => {
+    const w = await world({ photos: "failed" });
+    await expect(w.t.action(api.intakePhotos.retryIntakePhotos, { matchId: w.matchId })).rejects.toThrow();
+    await expect(
+      w.t.withIdentity({ subject: "user_someoneElse" }).action(api.intakePhotos.retryIntakePhotos, { matchId: w.matchId }),
+    ).rejects.toThrow();
+    expect(derives).toEqual([]);
+    expect((await w.row())?.photos).toBe("failed");
+  });
+
+  test("a row that isn't failed is refused", async () => {
+    const w = await world({ photos: "pending" });
+    await expect(w.me.action(api.intakePhotos.retryIntakePhotos, { matchId: w.matchId })).rejects.toThrow();
+    expect(derives).toEqual([]);
+  });
+});
+
+describe("reattachIntakeRunPhotos", () => {
+  test("a run saved before the fix gets its photos and reports what happened", async () => {
+    const w = await world();
+    const runId = (await w.row())!.runId;
+    expect((await w.row())?.photos).toBeUndefined();
+    const report = await w.t.action(internal.intakePhotos.reattachIntakeRunPhotos, { runId });
+    expect(report).toEqual({ matches: 1, attached: 1, failed: 0, continued: false });
+    expect((await w.row())?.photos).toBe("attached");
+    expect(await w.photos()).toHaveLength(2);
+  });
+
+  test("gone scans count as failed; an offset past the rows does nothing", async () => {
+    const w = await world();
+    const runId = (await w.row())!.runId;
+    onDerive = gone;
+    expect(await w.t.action(internal.intakePhotos.reattachIntakeRunPhotos, { runId })).toEqual({
+      matches: 1,
+      attached: 0,
+      failed: 1,
+      continued: false,
+    });
+    derives = [];
+    expect(await w.t.action(internal.intakePhotos.reattachIntakeRunPhotos, { runId, offset: 1 })).toEqual({
+      matches: 0,
+      attached: 0,
+      failed: 0,
+      continued: false,
+    });
+    expect(derives).toEqual([]);
+  });
+});

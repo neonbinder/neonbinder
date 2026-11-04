@@ -2368,6 +2368,12 @@ describe("NEO-358: the collection and its catalog reads require a signed-in call
     ["copyPhotos.ts", "liveByToken", "internalQuery"],
     ["copyPhotos.ts", "deleteObjects", "internalAction"],
     ["copyPhotos.ts", "sweepCopyPhotos", "internalMutation"],
+    // NEO-427 — a save's photos: these take a match or an ownerId argument.
+    ["intakeRuns.ts", "intakePhotoWork", "internalQuery"],
+    ["intakeRuns.ts", "recordIntakePhotos", "internalMutation"],
+    ["intakeRuns.ts", "expireIntakePhotoAttach", "internalMutation"],
+    ["intakeRuns.ts", "beginIntakePhotoRetry", "internalMutation"],
+    ["intakeRuns.ts", "intakeRunSavedMatches", "internalQuery"],
   ])(
     "%s :: %s is declared %s",
     (file, fn, kind) => {
