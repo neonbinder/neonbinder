@@ -52,25 +52,41 @@ test(
     await retry.focus();
     await page.keyboard.press("Enter");
     await expect(page.getByRole("status").filter({ hasText: `Trying ${name} again.` })).toBeVisible();
-    await expect(pairing.getByRole("button", { name: `Try again: ${name}` })).toHaveCount(0);
     // The pressed button leaves with the photo; focus lands on the pile's heading,
     // not the page.
-    await expect(page.getByRole("heading", { name: "Pairing" })).toBeFocused();
+    const pairingHeading = page.getByRole("heading", { name: "Pairing" });
+    await expect(pairingHeading).toBeFocused();
 
     // ...and it ends: read again, it fails again (there is no photo behind it),
-    // and the pile says so and still offers another try.
+    // and the pile says so and still offers another try. The old reason is gone
+    // for good (the new one reads differently), which, unlike the button's few
+    // moments out of the pile, is still true whenever this line runs.
+    await expect(pairing.getByText("Took too long to read", { exact: true })).toHaveCount(0);
     await expect(pairing.getByText("Couldn't read it", { exact: true })).toBeVisible({ timeout: FAST_READ });
     await expect(pairing.getByRole("button", { name: `Try again: ${name}` })).toBeVisible();
     await expect(page.getByRole("status").filter({ hasText: "0 saved. 1 photo couldn't be read." })).toHaveCount(1);
 
     // Two more tries use up the photo's three; the run is still open, but the
     // pile stops offering it and says what to do instead.
+    //
+    // Each press is told apart from the last by focus, not by the button's brief
+    // absence: the photo is out of the pile only while it is read, and the fast
+    // service answers "no such photo" in well under a second, so a wait for the
+    // button to be gone can miss that window. The press starts on the button
+    // (focus moves there), and focus returns to the pile's heading only when the
+    // server took the retry and the photo has left the pile (the same update),
+    // so the heading holding focus again is this round's press, which a stale
+    // button or a press that did nothing cannot produce. The status line's
+    // "Trying ... again." is not asserted here: it stays up for 10 s, so the
+    // previous round's would satisfy it. Three presses against a cap of three
+    // reach "Scan it again" only if each one was taken.
     for (let n = 2; n <= 3; n++) {
-      await pairing.getByRole("button", { name: `Try again: ${name}` }).click();
-      await expect(page.getByRole("status").filter({ hasText: `Trying ${name} again.` })).toBeVisible();
-      // Gone from the pile while it is read (the last round's "Couldn't read it"
-      // must not satisfy this round's wait).
-      await expect(pairing.getByRole("button", { name: `Try again: ${name}` })).toHaveCount(0);
+      const again = pairing.getByRole("button", { name: `Try again: ${name}` });
+      await again.focus();
+      await again.click();
+      await expect(pairingHeading).toBeFocused();
+      // The photo is out of the pile by now, so the last round's "Couldn't read it"
+      // is gone and this wait is for this round's.
       await expect(pairing.getByText(n < 3 ? "Couldn't read it" : "Couldn't read it. Scan it again.", { exact: true })).toBeVisible({
         timeout: FAST_READ,
       });
