@@ -233,8 +233,10 @@ test(
       const short = `#${number}`;
       await expect(
         checklist.getByRole("button", { name: new RegExp(`^Have ${escapeRe(short)}, `), pressed: true }),
-      ).toBeVisible();
-      await checklist.getByRole("button", { name: `Details for ${short}`, exact: true }).click();
+      ).toHaveCount(lines);
+      // A card with one line says "Details for #160"; a stacked card's name says which line it opens.
+      const details = lines === 1 ? `Details for ${short}` : `Details for ${short}, Raw, Excellent, in Main, line 1`;
+      await checklist.getByRole("button", { name: details, exact: true }).click();
       const drawer = page.getByRole("dialog", { name: new RegExp(`^2024 ${escapeRe(setName)}.*${escapeRe(short)}`) });
       const yourCopies = drawer.getByRole("region", { name: `Your copies of ${short}` });
       const remove = yourCopies.getByRole("button", { name: new RegExp(`^Remove ${escapeRe(short)}, `) });
