@@ -6,8 +6,11 @@
 // mirrors the title. Every claim below is that one rule seen from a different
 // side, on a type the operator titled by hand:
 //
-//   1. "Inserts" is an Insert type: its column reads "Inserts", and an insert
-//      under it opens the Sub-Variants column, which takes a sub-variant.
+//   1. "Inserts" is an Insert type: its column reads "Inserts", Group
+//      Parallels can nest one insert under another, and the insert that then
+//      has a sub-variant opens the Sub-Variants column (NEO-425: the column
+//      shows only for an insert that has some, and Group Parallels is the
+//      door to the first one).
 //   2. Singular and plural are one word: "Insert" beside "Inserts" is refused.
 //   3. "Parallel" is a Parallel type: an insert under it opens NO Sub-Variants
 //      column, and its checklist holds the build-from-Base stand-in instead of
@@ -40,7 +43,8 @@
 // under test and are deliberately NOT minted: the per-attempt set scopes them.
 //
 // R9: the Sport > Year > Manufacturer > Set drill goes through drillToCustom.
-// The variant types and rows are created inline from the selected set, because
+// The variant types and rows are created inline from the selected set (the
+// sub-variant as an insert, then moved under its insert by Group Parallels), because
 // the drill helpers cannot drill to two of these types: they wait for
 // `${type}s` as the Variants header, which would be "Insertss" for "Inserts",
 // and "Base" has no Variants column at all (claim 5).
@@ -139,22 +143,36 @@ test(
     // Positive after the negative: the column is back on its card, and "Inserts" is still the pick.
     await expect(columnSelection(page, "Variant Types", "Inserts")).toBeVisible();
 
-    // ── CLAIM 1, continued: AN INSERT UNDER "Inserts" OPENS THE SUB-VARIANTS COLUMN ──
+    // ── CLAIM 1, continued: AN INSERT UNDER "Inserts" TAKES A SUB-VARIANT ──
+    // NEO-425: an insert with no sub-variants opens no column, so the first
+    // one comes from Group Parallels: SUB is made as an insert, then moved
+    // under INSERT. The door is shown only under an Insert type.
     await addCustomEntry(page, "Inserts", INSERT, { confirm: "required" });
+    await addCustomEntry(page, "Inserts", SUB, { confirm: "required" });
     await columnOption(page, "Inserts", INSERT).click();
     await expect(columnSelection(page, "Inserts", INSERT)).toBeVisible();
 
-    // The Sub-Variants column is there. Its "+ Custom" is named from its Sync
-    // button ("Sync Sub-Variants" -> "Add custom Sub-Variants"), a name no other
-    // column carries; the column's own header reads "Parallels", so it is
-    // reached by these button names, not by a heading.
-    await expect(page.getByRole("button", { name: "Add custom Sub-Variants" })).toBeVisible();
-    await addCustomEntry(page, "Sub-Variants", SUB, { confirm: "required" });
+    const grouping = page.getByRole("dialog", { name: "Group Parallels" });
+    await page.getByRole("button", { name: "Group Parallels" }).click();
+    await expect(grouping.getByText(/Drag inserts under a parent/)).toBeVisible();
+    await grouping.getByRole("checkbox", { name: `Select ${SUB}` }).click();
+    await grouping.getByText(`Parallels of "${INSERT}"`).click();
+    await expect(grouping.getByText("1 promotion, 0 demotions")).toBeVisible();
+    await grouping.getByRole("button", { name: "Save 1 change" }).click();
     // A refusal here would mean "Inserts" was not read as an Insert type (the
-    // server guard assertSubVariantParent reads the parent type's TITLE). The row
-    // is in the column.
-    const subRow = page.getByRole("option").filter({ has: page.getByText(SUB, { exact: true }) });
+    // server guard assertSubVariantParent reads the parent type's TITLE), and
+    // the dialog would stay open on its error.
+    await expect(grouping).toBeHidden();
+
+    // The Sub-Variants column is there, holding the row. Its "+ Custom" is
+    // named from the column's noun ("Add custom Sub-Variants"), a name no
+    // other column carries; the column's own header reads "Parallels", so it
+    // is reached by that button name, not by a heading. Sub-variants are NB's
+    // own rows, so the column has no Sync button.
+    const subRow = columnOption(page, "Parallels", SUB);
     await expect(subRow).toBeVisible();
+    await expect(page.getByRole("button", { name: "Add custom Sub-Variants" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Sync Sub-Variants" })).toBeHidden();
     await expectAccessible(page, { label: "Sub-Variants column under an Insert type" });
 
     // ── CLAIM 3: "Parallel" IS A PARALLEL TYPE, SO THERE IS NO SUB-VARIANTS COLUMN ──
