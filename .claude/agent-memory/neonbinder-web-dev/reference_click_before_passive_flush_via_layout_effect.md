@@ -23,4 +23,4 @@ effect's own logic is what closes the state (a reset-on-prop-change effect sees
 the press's "custom" and closes it); that needs the reset moved out of a passive
 effect.
 
-Related: [[reference-rerender-same-element-bails-out]].
+Related: [[rerender-same-element-bails-out]].

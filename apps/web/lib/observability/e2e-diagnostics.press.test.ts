@@ -6,7 +6,8 @@
  *
  * NEO-417 — the press recorder. What is pinned: real users get no listeners at
  * all, any number of holders means one set of listeners, the shape a red's
- * timeline is read from, and that typed text never leaves the page.
+ * timeline is read from, that field values and plain-element text are never
+ * read, and that a control's own name is, even when it echoes what was typed.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -248,17 +249,22 @@ describe("describePress", () => {
   });
 });
 
-describe("typed text never appears", () => {
-  const SECRET = "typed-away";
+const SECRET = "typed-away";
 
-  const describeOn = (el: Element) => {
-    let described: Record<string, unknown> = {};
-    el.addEventListener("click", (e) => {
-      described = describePress(e);
-    });
-    el.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    return JSON.stringify(described);
-  };
+const describeOn = (el: Element) => {
+  let described: Record<string, unknown> = {};
+  el.addEventListener("click", (e) => {
+    described = describePress(e);
+  });
+  el.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  return JSON.stringify(described);
+};
+
+describe("field values and plain-element text are never read", () => {
+  it("from a plain element that repeats what was typed", () => {
+    const p = fixture(`<p>Create set '${SECRET}'?</p>`).querySelector("p")!;
+    expect(describeOn(p)).not.toContain(SECRET);
+  });
 
   it("from an input, naming it by its label or placeholder", () => {
     const body = fixture(`
@@ -300,5 +306,37 @@ describe("typed text never appears", () => {
       `<a href="#x"><textarea>${SECRET}</textarea>Open</a>`,
     ).querySelector("a")!;
     expect(describeOn(anchor)).not.toContain(SECRET);
+  });
+});
+
+// Stated, not endorsed: these are the shapes of TeamPicker's and PlayerPicker's
+// create options, which put the live query in the control's own name.
+describe("a control's own name can echo what was typed", () => {
+  it("through an aria-label holding the query, as TeamPicker's does", () => {
+    const button = fixture(
+      `<button type="button" aria-label="New team ${SECRET}">New team</button>`,
+    ).querySelector("button")!;
+    expect(describeOn(button)).toContain(`New team ${SECRET}`);
+  });
+
+  it("through an aria-label and visible text, as PlayerPicker's does", () => {
+    const option = fixture(
+      `<div role="option" aria-label="Create player ${SECRET}">+ Create "${SECRET}"</div>`,
+    ).querySelector("div")!;
+    expect(describeOn(option)).toContain(`Create player ${SECRET}`);
+  });
+
+  it("through a control's visible text when it has no aria-label", () => {
+    const button = fixture(`<button>+ Create "${SECRET}"</button>`).querySelector("button")!;
+    expect(describeOn(button)).toContain(SECRET);
+  });
+
+  it("only up to the name's cap", () => {
+    const query = "q".repeat(200);
+    const button = fixture(
+      `<button aria-label="New team ${query}">New team</button>`,
+    ).querySelector("button")!;
+    const name = `New team ${query}`.slice(0, 60);
+    expect(JSON.parse(describeOn(button)).name).toBe(name);
   });
 });

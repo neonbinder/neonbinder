@@ -149,10 +149,15 @@ function shortName(text: string | null | undefined): string | null {
 }
 
 /**
- * The target's name: its aria-label, else a control's own short text. Never a
- * form field's value, and never the text of a plain element, because a sentence
+ * The target's name: its aria-label, else a control's own short text. A form
+ * field's value is never read, nor is a plain element's text, because a sentence
  * on the page can echo what was just typed ("Create set 'x'?"). A plain element
  * gets the nearest aria-label instead, which says where it sits.
+ *
+ * A control's own name is still read, and it can echo typed text: TeamPicker's
+ * and PlayerPicker's create options carry the live query in their aria-label, so
+ * a press on one records up to the first {@link MAX_PRESS_NAME_LENGTH} characters
+ * of that name.
  */
 function pressTargetName(target: Element): string | null {
   const entry = target.closest(TEXT_ENTRY);
