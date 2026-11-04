@@ -172,3 +172,4 @@
 - [Fixed redirect target becomes a landing](reference_fixed_redirect_target_becomes_a_landing.md) — moved UI off an OAuth return route: landing Navigates replace + location.state; NavLink cannot light an alias
 - [listitem has no name from content](reference_listitem_has_no_name_from_content.md) — getByRole("listitem", { name }) needs aria-label on the li; keep the text the same, state in an sr-only tail
 - [Walk a ledger by position](reference_walk_a_ledger_by_position.md) — reading open.first()'s label races the last landing; nth(i) + toHaveAccessibleName
+- [Click before the passive flush](reference_click_before_passive_flush_via_layout_effect.md) — click from a child useLayoutEffect to test a press beating a pending effect; functional updater fixes only stale closures
