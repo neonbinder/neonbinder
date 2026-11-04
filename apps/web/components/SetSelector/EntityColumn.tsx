@@ -7,7 +7,10 @@ import NeonButton from "../modules/NeonButton";
 import { CUSTOM_BUTTON_LABEL } from "./control-labels";
 import { useFieldTestClass } from "@/src/hooks/useFieldTestClass";
 import { activateOnEnter } from "@/lib/dom/activate-on-enter";
-import { e2eDiagnostic } from "@/lib/observability/e2e-diagnostics";
+import {
+  e2eDiagnostic,
+  holdE2EPressListeners,
+} from "@/lib/observability/e2e-diagnostics";
 import SelectorSyncReviewModal, {
   MAX_DECISIONS_PER_CALL,
   type SelectorSyncSuggestion,
@@ -475,6 +478,9 @@ export default function EntityColumn({
   // so closing the form doesn't immediately retrigger it. A fresh
   // parentId (user picks a different parent) gets its own attempt.
   const autoSyncedRef = useRef<Set<string>>(new Set());
+  // NEO-417: the key the last run asked to sync, until the next run sees how
+  // that came out. See the auto-sync effect.
+  const autoSyncAttemptRef = useRef<string | null>(null);
 
   // Has this column finished its first sync (data loaded, or a sync cycle
   // completed)? Freeze-on-interaction only engages after this, so a never-
@@ -557,6 +563,8 @@ export default function EntityColumn({
       e2eDiagnostic("e2e_column", { action: "unmount", level: level ?? null });
     // eslint-disable-next-line react-hooks/exhaustive-deps -- mount/unmount only
   }, []);
+  // NEO-417: the press recorder is on for as long as any column is mounted.
+  useEffect(() => holdE2EPressListeners(), []);
   useEffect(() => {
     if (diagModeRef.current === mode) return;
     e2eDiagnostic("e2e_column", {
@@ -759,6 +767,21 @@ export default function EntityColumn({
           ? "sync"
           : "idle";
 
+  // NEO-417: what is on screen, which `mode` alone does not say: the idle <->
+  // syncing swap never touches it, and that swap takes "+ Custom" off the page.
+  const diagBranchRef = useRef(branchKey);
+  useEffect(() => {
+    if (diagBranchRef.current === branchKey) return;
+    e2eDiagnostic("e2e_column", {
+      action: "branch",
+      level: level ?? null,
+      from: diagBranchRef.current,
+      to: branchKey,
+      has_interacted: hasInteracted,
+    });
+    diagBranchRef.current = branchKey;
+  }, [branchKey, level, hasInteracted]);
+
   // NEO-260 (a11y) — park focus on ANY branch swap, not just the custom form.
   //
   // Whatever this column is showing, swapping to a different branch unmounts
@@ -827,7 +850,18 @@ export default function EntityColumn({
   // auto-synced this (level, parentId) — switch to sync mode. The form itself
   // auto-runs `fetchRawOptions`/`fetchAggregatedOptions` on mount, so this is
   // the only nudge needed.
+  //
+  // NEO-417: `mode` here is this effect's closure, and it can be stale. This
+  // effect may still be waiting to flush when a click lands, and React flushes
+  // it ahead of rendering the click, so its write queues AFTER the handler's. A
+  // plain setMode("sync") then overrides the "+ Custom" press, so the write only
+  // ever leaves idle. The key is burned on the next run, once `mode` says whether
+  // the sync really opened: a press that won means no sync happened, and
+  // cancelling it lands where a press made before the list loaded lands.
   useEffect(() => {
+    const attempted = autoSyncAttemptRef.current;
+    autoSyncAttemptRef.current = null;
+    if (attempted && mode === "sync") autoSyncedRef.current.add(attempted);
     if (useEnsureSync) return; // new path handles populate via ensureSelectorOptions
     if (hideSync) return; // NEO-425: nothing to sync from
     if (!isVisible) return;
@@ -838,8 +872,8 @@ export default function EntityColumn({
     if (items.length > 0) return;
     const key = `${level}:${parentId ?? "root"}`;
     if (autoSyncedRef.current.has(key)) return;
-    autoSyncedRef.current.add(key);
-    setMode("sync");
+    autoSyncAttemptRef.current = key;
+    setMode((m) => (m === "idle" ? "sync" : m));
   }, [isVisible, mode, level, parentId, items, hasInteracted, useEnsureSync, hideSync]);
 
   // NEO-47 new path: on an empty column, ask the backend to populate (once per
@@ -862,8 +896,11 @@ export default function EntityColumn({
     api.selectorOptions.addCustomSelectorOption,
   );
 
+  // NEO-417: only ever leaves sync. A freeze can unmount the form with its fetch
+  // still running, and that fetch calling back must not close a custom form
+  // opened since.
   const handleFormDone = () => {
-    setMode("idle");
+    setMode((m) => (m === "sync" ? "idle" : m));
   };
 
   // NEO-211 (plan D): dismiss clears the SERVER's notice, not just this
