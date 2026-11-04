@@ -26,7 +26,9 @@ from fastapi.testclient import TestClient
 from PIL import Image
 
 from app import cropper
+from app import main as main_module
 from app.classify import ClassifyResult
+from app.copy_photos import CopyPhotoTooLargeError
 from app.dhash import compute_dhash
 from app.exif import EXIF_ORIENTATION_TAG, apply_exif_orientation, read_exif_orientation
 from app.imaging import MAX_IMAGE_PIXELS
@@ -43,6 +45,9 @@ USER = "user_2abcDEF123"
 JOB = "3f2504e0-4f89-11d3-9a0c-0305e82c3301"
 EXTRACTED_PREFIX = f"placeholders/{USER}/{JOB}/extracted/"
 OUTPUT_PREFIX = f"placeholders/{USER}/{JOB}/output/images/"
+COPY_PREFIX = f"placeholders/{USER}/{JOB}/output/copy-photos/"
+COPY_IMAGE_PREFIX = f"{COPY_PREFIX}image/"
+COPY_THUMB_PREFIX = f"{COPY_PREFIX}thumb/"
 
 DHASH_HEX_RE = re.compile(r"\A[0-9a-f]{16}\Z")
 
@@ -421,6 +426,241 @@ class TestWriteOnceOutput:
         assert first.json()["output_written"] is True
         assert second.json()["output_written"] is False
         assert fake_gcs.writes.count(f"{OUTPUT_PREFIX}0000.jpg") == 1
+
+
+def _card_with_metadata() -> bytes:
+    """A card-shaped JPEG carrying GPS EXIF, a comment and XMP."""
+    exif = Image.Exif()
+    exif[0x8825] = {1: "N", 2: (41.0, 52.0, 0.0)}
+    out = io.BytesIO()
+    Image.open(io.BytesIO(_card_bytes())).save(
+        out,
+        format="JPEG",
+        quality=85,
+        exif=exif,
+        comment=b"scanned at home",
+        xmp=b"<x:xmpmeta>home address</x:xmpmeta>",
+    )
+    return out.getvalue()
+
+
+def _assert_carries_metadata(data: bytes) -> None:
+    """The precondition: without this, a clean result proves nothing."""
+    with Image.open(io.BytesIO(data)) as img:
+        assert img.getexif().get_ifd(0x8825)
+        assert img.info["comment"] == b"scanned at home"
+        assert b"home address" in img.info["xmp"]
+
+
+class TestCopyPhotoSizes:
+    """NEO-427: the two sizes land beside the output, so a save never calls back."""
+
+    @staticmethod
+    def _size_of(fake: FakeStorageClient, name: str) -> tuple[int, int]:
+        with Image.open(io.BytesIO(fake.read(BUCKET, name))) as img:
+            assert img.format == "JPEG"
+            return img.size
+
+    def test_written_on_the_fast_path(self, fake_gcs, monkeypatch, timing_lines):
+        monkeypatch.setenv("PREPROCESS_ROLE", "fast")
+        monkeypatch.setattr("app.cropper.tiered.fast_tiered_crop", lambda b: b)
+        _spy_model_session(monkeypatch)
+        _tracking_orient(monkeypatch, text_count=12)
+        _tracking_classify(monkeypatch)
+        fake_gcs.seed(BUCKET, f"{EXTRACTED_PREFIX}0003.jpg", _card_bytes(), "image/jpeg")
+
+        response = _post_entry(entry_index=3)
+
+        assert response.json()["needs_escalation"] is False
+        assert response.json()["output_written"] is True
+        assert self._size_of(fake_gcs, f"{COPY_IMAGE_PREFIX}0003.jpg") == (500, 700)
+        assert self._size_of(fake_gcs, f"{COPY_THUMB_PREFIX}0003.jpg") == (257, 360)
+        (line,) = timing_lines.bodies()
+        assert line["copy_photos_ms"] >= 0
+
+    def test_written_on_the_heavy_path(self, fake_gcs, monkeypatch):
+        monkeypatch.delenv("PREPROCESS_ROLE", raising=False)
+        monkeypatch.setattr("app.cropper.tiered.fast_tiered_crop", lambda _b: None)
+        _stub_orient(monkeypatch, text_count=12)
+        _stub_classify(monkeypatch)
+        good_crop = _card_bytes()
+        monkeypatch.setattr("app.cropper.pil_trim.trim_dark", lambda _b: good_crop)
+        fake_gcs.seed(BUCKET, f"{EXTRACTED_PREFIX}0000.jpg", _jpeg((40, 20)), "image/jpeg")
+
+        response = _post_entry(entry_index=0)
+
+        assert response.json()["cropped_source"] == "pil_trim_dark"
+        assert self._size_of(fake_gcs, f"{COPY_IMAGE_PREFIX}0000.jpg") == (500, 700)
+        assert self._size_of(fake_gcs, f"{COPY_THUMB_PREFIX}0000.jpg") == (257, 360)
+
+    def test_made_from_the_rotated_output(self, fake_gcs, monkeypatch):
+        _stub_orient(monkeypatch, rotation=90)
+        _stub_classify(monkeypatch)
+        monkeypatch.setattr("app.cropper.tiered.fast_tiered_crop", lambda b: b)
+        fake_gcs.seed(BUCKET, f"{EXTRACTED_PREFIX}0000.jpg", _card_bytes((500, 700)), "image/jpeg")
+
+        assert _post_entry(entry_index=0).status_code == 200
+
+        with Image.open(io.BytesIO(fake_gcs.read(BUCKET, f"{OUTPUT_PREFIX}0000.jpg"))) as output:
+            assert output.size == (700, 500)
+        assert self._size_of(fake_gcs, f"{COPY_IMAGE_PREFIX}0000.jpg") == (700, 500)
+
+    @staticmethod
+    def _assert_no_metadata(fake: FakeStorageClient, name: str) -> None:
+        data = fake.read(BUCKET, name)
+        with Image.open(io.BytesIO(data)) as img:
+            assert dict(img.getexif()) == {}
+            assert not img.getexif().get_ifd(0x8825)
+            for key in ("exif", "comment", "xmp"):
+                assert key not in img.info
+        for marker in (b"home address", b"scanned at home"):
+            assert marker not in data
+
+    def test_sizes_carry_none_of_the_crops_metadata(self, fake_gcs, monkeypatch):
+        crop = _card_with_metadata()
+        _assert_carries_metadata(crop)
+        monkeypatch.setattr("app.cropper.tiered.fast_tiered_crop", lambda _b: crop)
+        _stub_orient(monkeypatch)
+        _stub_classify(monkeypatch)
+        fake_gcs.seed(BUCKET, f"{EXTRACTED_PREFIX}0000.jpg", _card_bytes(), "image/jpeg")
+
+        response = _post_entry(entry_index=0)
+
+        assert response.json()["output_written"] is True
+        # The output keeps what the crop had, so the sizes really had it to shed.
+        _assert_carries_metadata(fake_gcs.read(BUCKET, f"{OUTPUT_PREFIX}0000.jpg"))
+        self._assert_no_metadata(fake_gcs, f"{COPY_IMAGE_PREFIX}0000.jpg")
+        self._assert_no_metadata(fake_gcs, f"{COPY_THUMB_PREFIX}0000.jpg")
+
+    def test_retry_sizes_carry_none_of_the_stored_outputs_metadata(self, fake_gcs, monkeypatch):
+        stored = _card_with_metadata()
+        _assert_carries_metadata(stored)
+        monkeypatch.setattr("app.cropper.tiered.fast_tiered_crop", lambda b: b)
+        _stub_orient(monkeypatch)
+        _stub_classify(monkeypatch)
+        fake_gcs.seed(BUCKET, f"{EXTRACTED_PREFIX}0000.jpg", _card_bytes(), "image/jpeg")
+        fake_gcs.seed(BUCKET, f"{OUTPUT_PREFIX}0000.jpg", stored, "image/jpeg")
+
+        response = _post_entry(entry_index=0)
+
+        assert response.json()["output_written"] is False
+        self._assert_no_metadata(fake_gcs, f"{COPY_IMAGE_PREFIX}0000.jpg")
+        self._assert_no_metadata(fake_gcs, f"{COPY_THUMB_PREFIX}0000.jpg")
+
+    def test_a_declined_entry_writes_no_sizes(self, fake_gcs, monkeypatch):
+        monkeypatch.setenv("PREPROCESS_ROLE", "fast")
+        monkeypatch.setattr("app.cropper.tiered.fast_tiered_crop", lambda _b: None)
+        _spy_model_session(monkeypatch)
+        _tracking_orient(monkeypatch)
+        fake_gcs.seed(BUCKET, f"{EXTRACTED_PREFIX}0000.jpg", _card_bytes(), "image/jpeg")
+
+        assert _post_entry(entry_index=0).json()["needs_escalation"] is True
+
+        assert not any(name.startswith(COPY_PREFIX) for name in fake_gcs.names(BUCKET))
+
+    def test_a_sizing_failure_leaves_the_entry_succeeded(self, fake_gcs, monkeypatch, timing_lines):
+        _stub_orient(monkeypatch)
+        _stub_classify(monkeypatch)
+        fake_gcs.seed(BUCKET, f"{EXTRACTED_PREFIX}0000.jpg", _jpeg(), "image/jpeg")
+
+        def _boom(_bytes):
+            raise CopyPhotoTooLargeError("no JPEG quality fits")
+
+        monkeypatch.setattr("app.main.derive_copy_photos", _boom)
+
+        response = _post_entry(entry_index=0)
+
+        assert response.status_code == 200, response.text
+        assert response.json()["output_written"] is True
+        assert f"{OUTPUT_PREFIX}0000.jpg" in fake_gcs.names(BUCKET)
+        assert not any(name.startswith(COPY_PREFIX) for name in fake_gcs.names(BUCKET))
+        assert len(timing_lines.bodies()) == 1
+
+    def test_a_storage_failure_on_the_sizes_leaves_the_entry_succeeded(self, fake_gcs, monkeypatch):
+        _stub_orient(monkeypatch)
+        _stub_classify(monkeypatch)
+        fake_gcs.seed(BUCKET, f"{EXTRACTED_PREFIX}0000.jpg", _jpeg(), "image/jpeg")
+        store = main_module._object_store
+        real_create = store.create
+
+        def _create(ref, data, *, content_type):
+            if ref.name.startswith(COPY_THUMB_PREFIX):
+                raise RuntimeError("storage down")
+            real_create(ref, data, content_type=content_type)
+
+        monkeypatch.setattr(store, "create", _create)
+
+        response = _post_entry(entry_index=0)
+
+        assert response.status_code == 200, response.text
+        assert response.json()["output_written"] is True
+        # One size alone stands, and the attach falls back on the missing one.
+        assert f"{COPY_IMAGE_PREFIX}0000.jpg" in fake_gcs.names(BUCKET)
+        assert f"{COPY_THUMB_PREFIX}0000.jpg" not in fake_gcs.names(BUCKET)
+
+    def test_retry_makes_the_sizes_from_the_output_that_stands(self, fake_gcs, monkeypatch):
+        # The first attempt wrote its output and died. The retry's own crop is
+        # not what stands, so it is not what the sizes may be made from.
+        _stub_orient(monkeypatch)
+        _stub_classify(monkeypatch)
+        monkeypatch.setattr("app.cropper.tiered.fast_tiered_crop", lambda b: b)
+        fake_gcs.seed(BUCKET, f"{EXTRACTED_PREFIX}0000.jpg", _card_bytes((500, 700)), "image/jpeg")
+        fake_gcs.seed(BUCKET, f"{OUTPUT_PREFIX}0000.jpg", _card_bytes((300, 400)), "image/jpeg")
+
+        response = _post_entry(entry_index=0)
+
+        assert response.status_code == 200, response.text
+        assert response.json()["output_written"] is False
+        assert self._size_of(fake_gcs, f"{COPY_IMAGE_PREFIX}0000.jpg") == (300, 400)
+        assert self._size_of(fake_gcs, f"{COPY_THUMB_PREFIX}0000.jpg") == (270, 360)
+
+    def test_retry_fills_in_a_missing_size_and_keeps_the_other(self, fake_gcs, monkeypatch):
+        _stub_orient(monkeypatch)
+        _stub_classify(monkeypatch)
+        fake_gcs.seed(BUCKET, f"{EXTRACTED_PREFIX}0000.jpg", _jpeg(), "image/jpeg")
+        fake_gcs.seed(BUCKET, f"{OUTPUT_PREFIX}0000.jpg", _jpeg(), "image/jpeg")
+        fake_gcs.seed(BUCKET, f"{COPY_IMAGE_PREFIX}0000.jpg", b"first-image", "image/jpeg")
+
+        assert _post_entry(entry_index=0).status_code == 200
+
+        assert fake_gcs.read(BUCKET, f"{COPY_IMAGE_PREFIX}0000.jpg") == b"first-image"
+        assert self._size_of(fake_gcs, f"{COPY_THUMB_PREFIX}0000.jpg") == (8, 8)
+
+    def test_retry_with_both_sizes_present_does_no_sizing(self, fake_gcs, monkeypatch):
+        _stub_orient(monkeypatch)
+        _stub_classify(monkeypatch)
+        fake_gcs.seed(BUCKET, f"{EXTRACTED_PREFIX}0000.jpg", _jpeg(), "image/jpeg")
+        fake_gcs.seed(BUCKET, f"{OUTPUT_PREFIX}0000.jpg", _jpeg(), "image/jpeg")
+        fake_gcs.seed(BUCKET, f"{COPY_IMAGE_PREFIX}0000.jpg", b"first-image", "image/jpeg")
+        fake_gcs.seed(BUCKET, f"{COPY_THUMB_PREFIX}0000.jpg", b"first-thumb", "image/jpeg")
+
+        def _never(_bytes):
+            raise AssertionError("both sizes stand; nothing should be made")
+
+        monkeypatch.setattr("app.main.derive_copy_photos", _never)
+
+        assert _post_entry(entry_index=0).status_code == 200
+
+        assert fake_gcs.read(BUCKET, f"{COPY_IMAGE_PREFIX}0000.jpg") == b"first-image"
+        assert fake_gcs.read(BUCKET, f"{COPY_THUMB_PREFIX}0000.jpg") == b"first-thumb"
+
+    def test_retry_over_an_undecodable_output_still_succeeds(self, fake_gcs, monkeypatch):
+        _stub_orient(monkeypatch)
+        _stub_classify(monkeypatch)
+        fake_gcs.seed(BUCKET, f"{EXTRACTED_PREFIX}0000.jpg", _jpeg(), "image/jpeg")
+        fake_gcs.seed(BUCKET, f"{OUTPUT_PREFIX}0000.jpg", b"not-an-image", "image/jpeg")
+
+        response = _post_entry(entry_index=0)
+
+        assert response.status_code == 200, response.text
+        assert not any(name.startswith(COPY_PREFIX) for name in fake_gcs.names(BUCKET))
+
+    def test_the_route_answer_names_no_size_object(self, fake_gcs, monkeypatch):
+        _stub_orient(monkeypatch)
+        _stub_classify(monkeypatch)
+        fake_gcs.seed(BUCKET, f"{EXTRACTED_PREFIX}0000.jpg", _jpeg(), "image/jpeg")
+
+        assert "copy-photos" not in _post_entry(entry_index=0).text
 
 
 class TestUpstreamFailures:
@@ -1012,6 +1252,7 @@ TIMING_KEYS = {
     "classify_retried",
     "rotate_ms",
     "write_ms",
+    "copy_photos_ms",
     "total_ms",
     "source",
     "escalated",

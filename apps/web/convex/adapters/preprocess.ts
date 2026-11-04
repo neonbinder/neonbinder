@@ -612,7 +612,8 @@ function decodeBase64(value: unknown, field: string): Uint8Array<ArrayBuffer> {
 }
 
 /**
- * The listing size and thumbnail of one processed entry (NEO-427). FAST: there
+ * The listing size and thumbnail of one processed entry (NEO-427), for an entry
+ * without the stored ones `/process-entry` writes (`intakePhotos.ts`). FAST: there
  * is no model in it. Writes nothing on the service, so it is safe to repeat.
  *
  * Thrown as every other call here is: terminal on the 4xx codes (404

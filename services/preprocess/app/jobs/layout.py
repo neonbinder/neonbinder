@@ -6,6 +6,8 @@ Every object a job reads or writes lives under one prefix:
         input.zip                 written by the browser via a signed POST policy
         extracted/{n:04d}.ext     one EXIF-uprighted original per accepted zip entry
         output/images/{n:04d}.ext one cropped, rotated image per processed entry
+        output/copy-photos/image/{n:04d}.jpg  that image's listing size
+        output/copy-photos/thumb/{n:04d}.jpg  that image's thumbnail
 
 **Convex owns all job state and results** (NEO-170): there is no status log and
 no manifest under this prefix, and nothing may recreate them — progress and
@@ -66,6 +68,7 @@ ROOT_PREFIX = "placeholders"
 INPUT_OBJECT = "input.zip"
 EXTRACTED_DIR = "extracted"
 OUTPUT_DIR = "output"
+COPY_PHOTOS_DIR = "copy-photos"
 
 # Zero-padding width for per-entry object names. Extracted and output objects
 # are located by their zip ordinal, and `/process-entry` finds an extracted
@@ -132,3 +135,18 @@ def extracted_image_object(user_id: str, job_id: str, index: int, extension: str
 def output_image_object(user_id: str, job_id: str, index: int, extension: str) -> str:
     """Key for one processed image (written by `/process-entry`)."""
     return f"{output_prefix(user_id, job_id)}images/{_indexed_name(index, extension)}"
+
+
+def copy_photo_image_object(user_id: str, job_id: str, index: int) -> str:
+    """Key for one processed image's listing size (NEO-427).
+
+    Written by `/process-entry` and read by Convex, which builds the same key in
+    `placeholderCopyPhotoObject` (convex/lib/placeholderObjects.ts). Always JPEG:
+    `app.copy_photos` makes nothing else.
+    """
+    return f"{output_prefix(user_id, job_id)}{COPY_PHOTOS_DIR}/image/{_indexed_name(index, 'jpg')}"
+
+
+def copy_photo_thumb_object(user_id: str, job_id: str, index: int) -> str:
+    """Key for one processed image's thumbnail. See `copy_photo_image_object`."""
+    return f"{output_prefix(user_id, job_id)}{COPY_PHOTOS_DIR}/thumb/{_indexed_name(index, 'jpg')}"

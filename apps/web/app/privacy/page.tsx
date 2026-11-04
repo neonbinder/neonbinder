@@ -7,7 +7,7 @@ import { useDocumentTitle } from "@/src/hooks/useDocumentTitle";
 export const PRIVACY_CONTACT_EMAIL = "support@neonbinder.io";
 
 /** The date this policy last changed, shown at the top. Update it with the text. */
-const LAST_UPDATED = { iso: "2026-11-03", label: "November 3, 2026" };
+const LAST_UPDATED = { iso: "2026-11-04", label: "November 4, 2026" };
 
 /**
  * NEO-421 — the public privacy policy at /privacy. eBay asks for its URL
@@ -188,13 +188,14 @@ export default function PrivacyPage() {
               </P>
               <P>
                 Card scans you upload to identify cards or make placeholders go to a private Google Cloud
-                Storage bucket and are deleted automatically after two days. To figure out which card is
-                which, our image service reads them with Google Cloud Vision and Anthropic&apos;s Claude.
+                Storage bucket, along with the cropped and resized images we make from them, and all of it
+                is deleted automatically after two days. To figure out which card is which, our image
+                service reads them with Google Cloud Vision and Anthropic&apos;s Claude.
               </P>
               <P>
-                When you save a scanned card, we make a full-size image and a thumbnail from the scans of
-                its front and back and keep them on that copy in Cloudflare R2, just like a photo you add
-                yourself. They stay until you replace or remove them. They go on the listing when that
+                When you save a scanned card, a full-size image and a thumbnail made from the scans of its
+                front and back go on that copy in Cloudflare R2, just like a photo you add yourself. They
+                stay until you replace or remove them. They go on the listing when that
                 copy lists on a marketplace you&apos;ve connected, and they show on your public profile
                 if you show that copy there.
               </P>

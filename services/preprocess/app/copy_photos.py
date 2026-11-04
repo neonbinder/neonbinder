@@ -3,6 +3,9 @@
 A card saved from a scanner run takes its photos from that run's cropped
 output. The collector's browser never holds those bytes, so this service makes
 the sizes Convex stores on the copy (`collectionCopyPhotos`, NEO-377).
+`/process-entry` makes them as it writes the output and stores them beside it,
+so a save only has to read them; `/derive-copy-photos` makes them on request for
+an entry that has none.
 
 The numbers mirror `COPY_PHOTO_LONG_EDGE`, `COPY_PHOTO_THUMB_EDGE`,
 `MAX_COPY_PHOTO_BYTES` and `MAX_COPY_THUMB_BYTES` in

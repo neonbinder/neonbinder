@@ -11,8 +11,9 @@ NEO-170:  `/extract` + `/process-entry` — stateless batch routes behind the
           routes read and write GCS at keys derived from `{user_id, job_id,
           index}` (`app.jobs.layout`) and return metadata only. Same thin-layer
           rule: this file does auth, request shape and error-code mapping.
-NEO-427:  `/derive-copy-photos` — the listing and thumbnail sizes of one processed
-          entry, returned to Convex, which stores them on the saved copy.
+NEO-427:  `/process-entry` also stores the listing and thumbnail sizes of the
+          output it writes, for Convex to read when the card is saved.
+          `/derive-copy-photos` makes them on request for an entry without them.
 """
 
 from __future__ import annotations
@@ -1112,6 +1113,10 @@ def process_entry(
     cropping. The rotated winning crop is written once to its derived output
     key; on retry the first write wins and `output_written` comes back False.
 
+    The sizes a saved copy keeps are stored beside that output, made from
+    whichever bytes won. Failing to make or store them never fails the entry:
+    a save without them asks `/derive-copy-photos` instead.
+
     Failure codes: `INVALID_IDENTIFIER` (400), `ENTRY_NOT_FOUND` (404,
     terminal — /extract never wrote this ordinal), `EXTRACT_NOT_CONFIGURED`
     (503, retryable); Vision/Anthropic and unexpected storage failures surface
@@ -1128,6 +1133,60 @@ def process_entry(
         return _process_entry(request, timings)
     finally:
         timings.emit()
+
+
+def _store_copy_photo_sizes(
+    request: ProcessEntryRequest,
+    bucket: str,
+    output_ref: ObjectRef,
+    fresh_output: bytes | None,
+    timings: Timings,
+) -> None:
+    """Store the two sizes a saved copy keeps beside an entry's output. Never raises.
+
+    `fresh_output` is the output this attempt just wrote. None means an earlier
+    attempt's object stands (first write wins), so the sizes are made from that
+    object rather than this attempt's crop, which may not be the same pixels.
+    That earlier attempt can have died before its sizes landed, or stored only
+    one, so a retry fills in whatever is missing.
+
+    Outputs are write-once and nothing replaces one, so sizes made here match the
+    output they were made from. The one exception: a retry whose crop comes out in
+    another format writes a second output under another extension and leaves the
+    sizes as they were, so they show the first attempt's crop of the same scan.
+    """
+    image_ref = ObjectRef(
+        bucket=bucket,
+        name=layout.copy_photo_image_object(request.user_id, request.job_id, request.entry_index),
+    )
+    thumb_ref = ObjectRef(
+        bucket=bucket,
+        name=layout.copy_photo_thumb_object(request.user_id, request.job_id, request.entry_index),
+    )
+    try:
+        with timings.measure("copy_photos_ms"):
+            source = fresh_output
+            if source is None:
+                if (
+                    _object_store.stat(image_ref) is not None
+                    and _object_store.stat(thumb_ref) is not None
+                ):
+                    return
+                source = _object_store.download(
+                    output_ref, max_bytes=zipsafe.MAX_ENTRY_UNCOMPRESSED_BYTES
+                )
+            check_raster_size(source)
+            derived = derive_copy_photos(source)
+            for ref, data in ((image_ref, derived.image), (thumb_ref, derived.thumb)):
+                try:
+                    _object_store.create(ref, data, content_type=derived.content_type)
+                except ObjectAlreadyExistsError:
+                    pass
+    except Exception:
+        logger.exception(
+            "process_entry: no copy photo sizes for index %d, a save will derive them",
+            request.entry_index,
+        )
 
 
 def _process_entry(
@@ -1334,6 +1393,10 @@ def _process_entry(
             detail="placeholder storage unavailable",
         ) from None
 
+    _store_copy_photo_sizes(
+        request, bucket, output_ref, rotated if output_written else None, timings
+    )
+
     logger.info(
         "process_entry: index=%d source=%s rotation=%d written=%s",
         request.entry_index,
@@ -1366,8 +1429,10 @@ def derive_copy_photos_route(
 ) -> DeriveCopyPhotosResponse | JSONResponse:
     """Make the sizes a saved copy keeps from one entry's processed output.
 
-    Reads the object /process-entry wrote for this ordinal and writes nothing,
-    so it is safe to repeat. Runs on either role: there is no model involved.
+    The fallback for an entry without stored sizes: one processed before
+    /process-entry stored them, or whose sizes could not be made then. Reads the
+    object /process-entry wrote for this ordinal and writes nothing, so it is
+    safe to repeat. Runs on either role: there is no model involved.
 
     Failure codes: `INVALID_IDENTIFIER` (400), `OUTPUT_NOT_FOUND` (404,
     terminal: the bucket's lifecycle rule removed the scan, or it was never

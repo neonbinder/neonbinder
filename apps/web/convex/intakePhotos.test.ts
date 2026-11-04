@@ -4,15 +4,19 @@
  * the collector added stays, and every failure ends on the row, never on the
  * save.
  *
- * The preprocess service and R2 are a stubbed `fetch`; the copy rows are real.
+ * The preprocess service and R2 are a stubbed `fetch`, the placeholder bucket is a
+ * fake Storage client, and the copy rows are real. By default the bucket holds each
+ * side's output but no stored sizes, so an attach falls back to the service.
  */
 
 import { convexTest } from "convex-test";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
+import { MAX_COPY_PHOTO_BYTES, MAX_COPY_THUMB_BYTES } from "./copyPhotos";
 import { intakePhotoPool } from "./intakePhotoPool";
 import { REATTACH_CONFIRM_PHRASE, REATTACH_ENV_FLAG } from "./intakePhotos";
+import { PLACEHOLDER_MAX_ENTRY_INDEX } from "./lib/placeholderObjects";
 import schema from "./schema";
 import { seedCollectionCatalog } from "../lib/testing/collection-fixture";
 
@@ -26,6 +30,56 @@ const FRONT = 6;
 const BACK = 7;
 
 const reattach = { confirm: REATTACH_CONFIRM_PHRASE } as const;
+
+const OUTPUT_DIR = `placeholders/${OWNER}/${JOB}/output`;
+const padded = (entryIndex: number) => String(entryIndex).padStart(4, "0");
+const outputKey = (entryIndex: number, extension = "jpg") => `${OUTPUT_DIR}/images/${padded(entryIndex)}.${extension}`;
+const sizeKey = (entryIndex: number, size: "image" | "thumb") =>
+  `${OUTPUT_DIR}/copy-photos/${size}/${padded(entryIndex)}.jpg`;
+
+/** The placeholder bucket's objects, and every ranged read of them. */
+let scans: Map<string, Buffer>;
+let scanReads: Array<{ bucket: string; name: string; start?: number; end?: number }>;
+let scanFailure: Error | undefined;
+let scansHang: boolean;
+
+vi.mock("@google-cloud/storage", () => {
+  class FakeFile {
+    constructor(
+      private bucketName: string,
+      private name: string,
+    ) {}
+    async download(options: { start?: number; end?: number }) {
+      if (scansHang) return await new Promise<never>(() => {});
+      if (scanFailure) throw scanFailure;
+      scanReads.push({ bucket: this.bucketName, name: this.name, start: options.start, end: options.end });
+      const bytes = scans.get(this.name);
+      if (!bytes) throw Object.assign(new Error("No such object"), { code: 404 });
+      return [bytes.subarray(options.start, options.end === undefined ? undefined : options.end + 1)];
+    }
+    async exists() {
+      if (scanFailure) throw scanFailure;
+      return [scans.has(this.name)];
+    }
+  }
+  class FakeStorage {
+    bucket(name: string) {
+      return { file: (fileName: string) => new FakeFile(name, fileName) };
+    }
+  }
+  return { Storage: FakeStorage };
+});
+
+/** Bytes that start the way a JPEG does, as every stored size must. */
+const storedBytes = (label: string) => Buffer.concat([Buffer.from([0xff, 0xd8, 0xff]), Buffer.from(label)]);
+/** The same bytes as the R2 stub reads a PUT's body. */
+const putBody = (label: string) => new TextDecoder().decode(storedBytes(label));
+
+/** Both sizes of an entry, stored as `/process-entry` stores them. */
+function storeSizes(entryIndex: number) {
+  scans.set(sizeKey(entryIndex, "image"), storedBytes(`stored-image-${entryIndex}`));
+  scans.set(sizeKey(entryIndex, "thumb"), storedBytes(`stored-thumb-${entryIndex}`));
+}
 
 type Derive = (entryIndex: number) => Response;
 
@@ -50,6 +104,13 @@ beforeEach(() => {
   puts = [];
   onDerive = derived;
   onPut = () => new Response(null, { status: 200 });
+  // Every entry a test here uses has been processed, unless the test says not.
+  scans = new Map(Array.from({ length: 16 }, (_, index) => [outputKey(index), Buffer.from("output")]));
+  scanReads = [];
+  scanFailure = undefined;
+  scansHang = false;
+  vi.stubEnv("GCS_PLACEHOLDER_BUCKET", "scans");
+  vi.stubEnv("GOOGLE_APPLICATION_CREDENTIALS_B64", Buffer.from("{}").toString("base64"));
   vi.stubEnv("NEONBINDER_PREPROCESS_URL", "http://localhost:8081");
   vi.stubEnv("NEONBINDER_PREPROCESS_FAST_URL", "");
   vi.stubEnv("R2_ENDPOINT", "https://acct.r2.example");
@@ -64,7 +125,7 @@ beforeEach(() => {
   vi.useFakeTimers({ toFake: ["setTimeout"] });
   const parked = globalThis.setTimeout;
   vi.stubGlobal("setTimeout", ((fn: () => void, ms?: number) => {
-    if (ms === 2_000 || ms === 8_000) {
+    if (ms === 2_000 || ms === 8_000 || (ms === 5_000 && scansHang)) {
       fn();
       return 0;
     }
@@ -233,7 +294,7 @@ describe("attachIntakePhotos", () => {
     expect((await w.row())?.photos).toBe("attached");
   });
 
-  test("scans the bucket has expired say so, and nothing is reserved", async () => {
+  test("scans expiring between the look and the derive say so, and nothing is reserved", async () => {
     const w = await world({ photos: "pending" });
     onDerive = gone;
     await w.attach();
@@ -351,6 +412,302 @@ describe("attachIntakePhotos", () => {
   });
 });
 
+describe("attachIntakePhotos reading stored sizes", () => {
+  test("both sizes stored: they go to R2 and the service is not called", async () => {
+    const w = await world({ photos: "pending" });
+    storeSizes(FRONT);
+    storeSizes(BACK);
+    await w.attach();
+
+    expect(derives).toEqual([]);
+    const rows = await w.photos();
+    expect(rows.map((r) => [r.side, r.status, r.source])).toEqual([
+      ["back", "live", "intake"],
+      ["front", "live", "intake"],
+    ]);
+    const front = rows[1];
+    expect(front.imageBytes).toBe(storedBytes(`stored-image-${FRONT}`).length);
+    expect(front.thumbBytes).toBe(storedBytes(`stored-thumb-${FRONT}`).length);
+    expect(puts).toContainEqual({
+      key: `copy-photos/${front.token}/image.jpg`,
+      body: putBody(`stored-image-${FRONT}`),
+      contentType: "image/jpeg",
+    });
+    expect(puts).toContainEqual({
+      key: `copy-photos/${front.token}/thumb.jpg`,
+      body: putBody(`stored-thumb-${FRONT}`),
+      contentType: "image/jpeg",
+    });
+    expect(puts).toHaveLength(4);
+    expect(await w.row()).toMatchObject({ photos: "attached" });
+  });
+
+  test("the keys come from the job row, in the named bucket, and each read is bounded", async () => {
+    const w = await world();
+    storeSizes(FRONT);
+    storeSizes(BACK);
+    await w.attach();
+    expect(scanReads).toContainEqual({
+      bucket: "scans",
+      name: `placeholders/${OWNER}/${JOB}/output/copy-photos/image/0006.jpg`,
+      start: 0,
+      end: MAX_COPY_PHOTO_BYTES,
+    });
+    expect(scanReads).toContainEqual({
+      bucket: "scans",
+      name: `placeholders/${OWNER}/${JOB}/output/copy-photos/thumb/0007.jpg`,
+      start: 0,
+      end: MAX_COPY_THUMB_BYTES,
+    });
+  });
+
+  test("neither size stored but the output there: the service makes them", async () => {
+    const w = await world();
+    await w.attach();
+    expect(derives.map((d) => d.entry_index)).toEqual([FRONT, BACK]);
+    expect((await w.photos()).map((r) => r.status)).toEqual(["live", "live"]);
+    expect(await w.row()).toMatchObject({ photos: "attached" });
+  });
+
+  test("a missing thumb alone falls back, and the stored image is not used", async () => {
+    const w = await world();
+    storeSizes(FRONT);
+    storeSizes(BACK);
+    scans.delete(sizeKey(BACK, "thumb"));
+    await w.attach();
+    expect(derives).toEqual([{ job_id: JOB, user_id: OWNER, entry_index: BACK }]);
+    expect(puts.map((p) => p.body).sort()).toEqual(
+      [`image-${BACK}`, `thumb-${BACK}`, putBody(`stored-image-${FRONT}`), putBody(`stored-thumb-${FRONT}`)].sort(),
+    );
+    expect(await w.row()).toMatchObject({ photos: "attached" });
+  });
+
+  test("a missing image alone falls back", async () => {
+    const w = await world();
+    storeSizes(FRONT);
+    storeSizes(BACK);
+    scans.delete(sizeKey(FRONT, "image"));
+    await w.attach();
+    expect(derives.map((d) => d.entry_index)).toEqual([FRONT]);
+    expect(await w.row()).toMatchObject({ photos: "attached" });
+  });
+
+  test("sizes gone and the output gone: scanGone with no call to the service", async () => {
+    const w = await world({ photos: "pending" });
+    scans.clear();
+    await w.attach();
+    expect(derives).toEqual([]);
+    expect(await w.photos()).toEqual([]);
+    expect(puts).toEqual([]);
+    expect(await w.row()).toMatchObject({ photos: "failed", photoFailure: "scanGone" });
+  });
+
+  test("one size left and the output gone is still a gone scan", async () => {
+    const w = await world();
+    scans.clear();
+    scans.set(sizeKey(FRONT, "image"), storedBytes("stored-image"));
+    await w.attach();
+    expect(derives).toEqual([]);
+    expect(await w.row()).toMatchObject({ photos: "failed", photoFailure: "scanGone" });
+  });
+
+  test("an output of any extension counts as there", async () => {
+    const w = await world();
+    scans.clear();
+    scans.set(outputKey(FRONT, "png"), Buffer.from("output"));
+    scans.set(outputKey(BACK, "webp"), Buffer.from("output"));
+    await w.attach();
+    expect(derives.map((d) => d.entry_index)).toEqual([FRONT, BACK]);
+    expect(await w.row()).toMatchObject({ photos: "attached" });
+  });
+
+  test("one side gone keeps the side with stored sizes", async () => {
+    const w = await world();
+    storeSizes(FRONT);
+    scans.delete(outputKey(BACK));
+    await w.attach();
+    expect(derives).toEqual([]);
+    expect((await w.photos()).map((r) => [r.side, r.status])).toEqual([["front", "live"]]);
+    expect(await w.row()).toMatchObject({ photos: "failed", photoFailure: "scanGone" });
+  });
+
+  test("a stored size over its limit is treated as missing", async () => {
+    const w = await world();
+    storeSizes(FRONT);
+    storeSizes(BACK);
+    scans.set(sizeKey(FRONT, "thumb"), Buffer.concat([storedBytes(""), Buffer.alloc(MAX_COPY_THUMB_BYTES)]));
+    await w.attach();
+    expect(derives.map((d) => d.entry_index)).toEqual([FRONT]);
+    expect(await w.row()).toMatchObject({ photos: "attached" });
+  });
+
+  test.each(["image", "thumb"] as const)("a stored %s that doesn't start like a JPEG is treated as missing", async (size) => {
+    const w = await world();
+    storeSizes(FRONT);
+    storeSizes(BACK);
+    scans.set(sizeKey(BACK, size), Buffer.from("<html>not a photo</html>"));
+    await w.attach();
+    expect(derives.map((d) => d.entry_index)).toEqual([BACK]);
+    expect(puts.map((p) => p.body)).not.toContain("<html>not a photo</html>");
+    expect(await w.row()).toMatchObject({ photos: "attached" });
+  });
+
+  test("a bucket that can't be read is not a gone scan: the service answers", async () => {
+    const w = await world();
+    scanFailure = Object.assign(new Error("forbidden"), { code: 403 });
+    await w.attach();
+    expect(derives.map((d) => d.entry_index)).toEqual([FRONT, BACK]);
+    expect(await w.row()).toMatchObject({ photos: "attached" });
+  });
+
+  test("a bucket that can't be read still takes the service's word that the scan is gone", async () => {
+    const w = await world();
+    scanFailure = Object.assign(new Error("forbidden"), { code: 403 });
+    onDerive = gone;
+    await w.attach();
+    expect(derives).toHaveLength(2);
+    expect(await w.row()).toMatchObject({ photos: "failed", photoFailure: "scanGone" });
+  });
+
+  test("a read that never answers gives way to the service", async () => {
+    const w = await world();
+    scansHang = true;
+    await w.attach();
+    expect(derives.map((d) => d.entry_index)).toEqual([FRONT, BACK]);
+    expect(await w.row()).toMatchObject({ photos: "attached" });
+  });
+
+  test("a failed read logs its code, never the message that names the object", async () => {
+    const w = await world();
+    const url = `https://storage.googleapis.com/download/storage/v1/b/scans/o/${encodeURIComponent(sizeKey(FRONT, "image"))}?alt=media`;
+    scanFailure = Object.assign(new Error(`request to ${url} failed`), { code: "ECONNRESET" });
+    const warn = vi.mocked(console.warn);
+    warn.mockClear();
+    await w.attach();
+    expect(derives).toHaveLength(2);
+    const logged = warn.mock.calls.flat().join("\n");
+    expect(logged).toContain("could not read stored sizes, asking the service (code ECONNRESET)");
+    for (const secret of ["storage.googleapis.com", "scans/o", OWNER, JOB, encodeURIComponent(OWNER)]) {
+      expect(logged).not.toContain(secret);
+    }
+  });
+
+  test("a code that isn't a plain code is not logged either", async () => {
+    const w = await world();
+    scanFailure = Object.assign(new Error("failed"), { code: `https://storage.googleapis.com/${OWNER}` });
+    const warn = vi.mocked(console.warn);
+    warn.mockClear();
+    await w.attach();
+    const logged = warn.mock.calls.flat().join("\n");
+    expect(logged).toContain("(code none)");
+    expect(logged).not.toContain(OWNER);
+  });
+
+  test("a credential that can't be parsed never reaches the log", async () => {
+    const w = await world();
+    // JSON.parse quotes the text in its message, whole when the text is this short.
+    vi.stubEnv("GOOGLE_APPLICATION_CREDENTIALS_B64", Buffer.from('{"k":SECRETKEY}').toString("base64"));
+    const warn = vi.mocked(console.warn);
+    warn.mockClear();
+    await w.attach();
+    expect(derives).toHaveLength(2);
+    const logged = warn.mock.calls.flat().join("\n");
+    expect(logged).toContain("could not read stored sizes, asking the service (code none)");
+    expect(logged).not.toContain("SECRETKEY");
+  });
+
+  describe("identifiers out of shape go to the service, with no read of the bucket", () => {
+    const refused = () => json(400, { error_code: "INVALID_IDENTIFIER", detail: "refused" });
+
+    test.each([
+      ["a path in the owner id", "../../user_other"],
+      ["an owner id of the wrong shape", "not_a_clerk_id"],
+    ])("%s", async (_name, userId) => {
+      const w = await world();
+      await w.t.run(async (ctx) => await ctx.db.patch(w.matchId, { userId }));
+      onDerive = refused;
+      await w.attach();
+      expect(scanReads).toEqual([]);
+      expect(derives).toHaveLength(2);
+      expect(derives[0].user_id).toBe(userId);
+      expect(await w.row()).toMatchObject({ photos: "failed", photoFailure: "error" });
+    });
+
+    test.each([
+      ["a path in the job id", "../other-job"],
+      ["a job id that isn't a UUID", "job-1"],
+      ["a UUID with a trailing newline", `${JOB}\n`],
+    ])("%s", async (_name, jobId) => {
+      const w = await world();
+      const runId = (await w.row())!.runId;
+      await w.t.run(async (ctx) => await ctx.db.patch(runId, { jobId }));
+      onDerive = refused;
+      await w.attach();
+      expect(scanReads).toEqual([]);
+      expect(derives).toHaveLength(2);
+      expect(derives[0].job_id).toBe(jobId);
+      expect(await w.row()).toMatchObject({ photos: "failed", photoFailure: "error" });
+    });
+
+    test.each([
+      ["negative", -1],
+      ["fractional", 1.5],
+      ["past the cap", PLACEHOLDER_MAX_ENTRY_INDEX + 1],
+    ])("an entry index that is %s", async (_name, frontIndex) => {
+      const w = await world();
+      storeSizes(BACK);
+      await w.t.run(async (ctx) => await ctx.db.patch(w.matchId, { frontIndex }));
+      onDerive = refused;
+      await w.attach();
+      expect(scanReads.every((read) => read.name.includes(padded(BACK)))).toBe(true);
+      expect(derives.map((d) => d.entry_index)).toEqual([frontIndex]);
+      expect(await w.row()).toMatchObject({ photos: "failed", photoFailure: "error" });
+    });
+
+    test("the highest entry index is still read from the bucket", async () => {
+      const w = await world();
+      storeSizes(PLACEHOLDER_MAX_ENTRY_INDEX);
+      storeSizes(BACK);
+      await w.t.run(
+        async (ctx) => await ctx.db.patch(w.matchId, { frontIndex: PLACEHOLDER_MAX_ENTRY_INDEX }),
+      );
+      await w.attach();
+      expect(derives).toEqual([]);
+      expect(await w.row()).toMatchObject({ photos: "attached" });
+    });
+  });
+
+  test("no bucket configured falls back to the service", async () => {
+    const w = await world();
+    vi.stubEnv("GCS_PLACEHOLDER_BUCKET", "");
+    await w.attach();
+    expect(derives.map((d) => d.entry_index)).toEqual([FRONT, BACK]);
+    expect(scanReads).toEqual([]);
+    expect(await w.row()).toMatchObject({ photos: "attached" });
+  });
+
+  test("a run saved before sizes were stored reattaches through the fallback; one with sizes makes no call", async () => {
+    const before = await world();
+    const runId = (await before.row())!.runId;
+    expect(await before.t.action(internal.intakePhotos.reattachIntakeRunPhotos, { ...reattach, runId })).toMatchObject({
+      attached: 1,
+      failed: 0,
+    });
+    expect(derives.map((d) => d.entry_index)).toEqual([FRONT, BACK]);
+
+    derives = [];
+    storeSizes(FRONT);
+    storeSizes(BACK);
+    const after = await world();
+    const afterRunId = (await after.row())!.runId;
+    expect(await after.t.action(internal.intakePhotos.reattachIntakeRunPhotos, { ...reattach, runId: afterRunId })).toMatchObject({
+      attached: 1,
+      failed: 0,
+    });
+    expect(derives).toEqual([]);
+  });
+});
+
 describe("retryIntakePhotos", () => {
   test("a failed row goes back through and fills only what is missing", async () => {
     const w = await world();
@@ -398,7 +755,7 @@ describe("reattachIntakeRunPhotos", () => {
   test("gone scans count as failed", async () => {
     const w = await world();
     const runId = (await w.row())!.runId;
-    onDerive = gone;
+    scans.clear();
     expect(await w.t.action(internal.intakePhotos.reattachIntakeRunPhotos, { ...reattach, runId })).toEqual({
       matches: 1,
       attached: 0,
@@ -406,6 +763,7 @@ describe("reattachIntakeRunPhotos", () => {
       skipped: 0,
       continued: false,
     });
+    expect(derives).toEqual([]);
   });
 
   test("unarmed, it refuses before reading anything", async () => {
