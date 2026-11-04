@@ -89,6 +89,12 @@ type EntitySelectorProps = {
    * memo, as for `getDisplayName`.
    */
   leadRow?: (item: SelectorItem) => boolean;
+  /**
+   * NEO-425 — the line an empty column shows with nothing typed. Defaults to
+   * the sync hint every marketplace-fed column uses; a column no marketplace
+   * fills (Sub-Variants) says something true instead.
+   */
+  emptyText?: string;
 };
 
 function getPlatformData(item: SelectorItem): {
@@ -255,6 +261,7 @@ function EntitySelector({
   isItemTerminal,
   pinnedEntries,
   leadRow,
+  emptyText: emptyTextProp,
 }: EntitySelectorProps) {
   const items = useQuery(query, queryArgs);
   const [searchFilter, setSearchFilter] = useState("");
@@ -654,7 +661,8 @@ function EntitySelector({
   // the cold-drill utils wait on the second one.
   const emptyText = searchFilter
     ? "No matches found"
-    : `No ${title.toLowerCase()} available. Sync from marketplaces to populate.`;
+    : (emptyTextProp ??
+      `No ${title.toLowerCase()} available. Sync from marketplaces to populate.`);
 
   // ONE return for the loading and the loaded column, so the search box is the
   // SAME element across the moment `items` lands. Focus the cascade put in it

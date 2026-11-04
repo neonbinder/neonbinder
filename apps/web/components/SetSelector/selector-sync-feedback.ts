@@ -3,8 +3,8 @@
  * the operator, rather than silently doing.
  *
  * Both live here because `EntityColumn` (levels 1-5, via `selectorSyncStatus`)
- * and `VariantForm` / `ParallelForm` (levels 6-7, via the store mutation's own
- * result) have to say exactly the same words about exactly the same events.
+ * and `VariantForm` (level 6, via the store mutation's own result; level 7's
+ * `ParallelForm` went with its Sync button in NEO-425) have to say exactly the same words about exactly the same events.
  * When the two surfaces drifted apart before, the same outage read as "nothing
  * happened" in one column and an error in another.
  *
@@ -280,7 +280,7 @@ export type SelectorLevel =
  * The ONE level→noun map for both NEO-211 surfaces.
  *
  * Derived from the PUBLIC labels the column buttons already use ("Sync Sets",
- * "Sync Sub-Variants"), not from `SetAttributesPanel`'s `LEVEL_LABEL`, which
+ * "Add custom Sub-Variants"), not from `SetAttributesPanel`'s `LEVEL_LABEL`, which
  * says "Parallel" where the columns say "Sub-Variant" and belongs to an older,
  * unrelated panel. Two maps that disagree about what a level is called is worse
  * than either one; this is the one these two new surfaces share, and renaming

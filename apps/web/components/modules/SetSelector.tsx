@@ -51,7 +51,10 @@ import {
   useRef,
   useState,
 } from "react";
-import type { KeyboardEvent as ReactKeyboardEvent } from "react";
+import type {
+  FocusEvent as ReactFocusEvent,
+  KeyboardEvent as ReactKeyboardEvent,
+} from "react";
 import { useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import { slotEntries, slotIds, slotLabel } from "../../convex/platformSlots";
@@ -80,7 +83,6 @@ import ManufacturerForm from "../SetSelector/ManufacturerForm";
 import SetForm from "../SetSelector/SetForm";
 import SetVariantForm from "../SetSelector/SetVariantForm";
 import VariantForm from "../SetSelector/VariantForm";
-import ParallelForm from "../SetSelector/ParallelForm";
 
 // NEO-83: ResilientEntityColumn wraps EntityColumn with a stalled-read backstop
 // (auto re-subscribe + Retry) so a column never hangs forever on "Loading…".
@@ -176,6 +178,47 @@ function isCollapsedCard(row: HTMLElement, el: Element | null): boolean {
     el.tagName === "BUTTON" &&
     el.getAttribute("aria-expanded") === "false"
   );
+}
+
+/**
+ * NEO-425 — the Inserts column's collapsed card ("Inserts: Anime — change"),
+ * where focus stays when picking an insert opens its Sub-Variants column.
+ * The column is found by the level its wrapper names
+ * (`ResilientEntityColumn`'s `data-cascade-level`), and the card is that
+ * column's FIRST button, because the column renders its selector first; any
+ * disclosure further down the column also carries `aria-expanded="false"`,
+ * which is why the first button is taken rather than the first match. `null`
+ * while the column is not on its card (re-opened, or a stall banner's Retry
+ * leads it).
+ */
+function insertColumnCard(row: HTMLElement): HTMLElement | null {
+  const first = row.querySelector<HTMLElement>(
+    '[data-cascade-level="insert"] button',
+  );
+  return first?.getAttribute("aria-expanded") === "false" ? first : null;
+}
+
+/**
+ * NEO-224 — where the cascade puts focus when the deepest open column
+ * changes: that column's search box, the last combobox in the row (every open
+ * column renders exactly one). NEO-425, the one exception (Jason,
+ * 2026-11-03): when the column that opened is an insert's Sub-Variants column
+ * with nothing picked in it, focus stays on the insert the operator just
+ * picked, i.e. the Inserts column's card. When that card is not on the page
+ * (the Inserts column is open, or a stall banner's Retry leads it), the
+ * exception has nowhere to land, so the NEO-224 rule applies instead: focus
+ * goes into the new column's box rather than being left on `<body>`.
+ */
+function cascadeLandingSpot(
+  row: HTMLElement,
+  stayOnInsert: boolean,
+): HTMLElement | null {
+  if (stayOnInsert) {
+    const card = insertColumnCard(row);
+    if (card) return card;
+  }
+  const boxes = row.querySelectorAll<HTMLElement>('[role="combobox"]');
+  return boxes[boxes.length - 1] ?? null;
 }
 
 /**
@@ -416,25 +459,66 @@ export default function SetSelector() {
   const isInsertTypeSelected = stableVariantTypeFlagsRef.current.isInsertType;
   const variantTypeKindRead = stableVariantTypeFlagsRef.current.kindRead;
   /**
-   * NEO-334 — the Sub-Variants column (level 7) is on screen only under an
-   * insert of an Insert type. `isInsertType` implies not-Base, so this is the
-   * whole gate.
+   * NEO-425 — the selected insert's sub-variants, read to know whether it has
+   * any. The SAME reference and args (key order included) the Sub-Variants
+   * column's own list subscribes to (ParallelSelector → EntitySelector, and
+   * EntityColumn's copy), so the Convex client holds one subscription for all
+   * three, and it is one insert's children: a handful of rows.
+   *
+   * Subscribed from the moment an insert is picked, while the variant type's
+   * kind is still loading too, so the answer is usually in by the time the
+   * kind is; skipped once the type is KNOWN not to be an Insert type.
    */
-  const subVariantColumnVisible = isInsertTypeSelected && !!selectedVariantId;
+  const subVariantRows = useQuery(
+    api.selectorOptions.getSelectorOptions,
+    selectedVariantId && !(variantTypeKindRead && !isInsertTypeSelected)
+      ? { level: "parallel", parentId: selectedVariantId }
+      : "skip",
+  );
   /**
-   * NEO-334 — the parallel selection the page acts on. Under a variant type
-   * that is KNOWN not to be an Insert type there is no Sub-Variants column,
-   * so a `parallel` id in the drill is not a selection: the checklist, the
-   * attributes panel and the build role all fall back to the insert. The
-   * resolver already drops such an id from a link (`resolveDrillPath`) and
-   * the effect below clears it from the URL; this is the render in between.
-   * While the kind is still loading the id stands, so a deep link to a real
+   * NEO-425 — KNOWN to have no Sub-Variants column: the type is not an Insert
+   * type (NEO-334), or it is and the insert has no sub-variants. Sub-variants
+   * are NB-only (no marketplace has them, so there is nothing to sync), and an
+   * insert without any is a leaf (Jason, 2026-11-03).
+   */
+  const noSubVariantColumn =
+    variantTypeKindRead &&
+    (!isInsertTypeSelected ||
+      (subVariantRows !== undefined && subVariantRows.length === 0));
+  /**
+   * NEO-334 / NEO-425 — the Sub-Variants column (level 7) is on screen only
+   * under an insert of an Insert type that has at least one sub-variant.
+   * `isInsertType` implies not-Base. Rows that land later (Group Parallels)
+   * open it reactively.
+   */
+  const subVariantColumnVisible =
+    isInsertTypeSelected &&
+    !!selectedVariantId &&
+    subVariantRows !== undefined &&
+    subVariantRows.length > 0;
+  /**
+   * NEO-334 / NEO-425 — while an insert is selected, whether a Sub-Variants
+   * column opens below it is not known until the type's kind AND (for an
+   * Insert type) the insert's sub-variants have answered, so the selection is
+   * not terminal yet either: no D3 focus, no flash of the insert as a leaf.
+   */
+  const subVariantColumnPending =
+    !!selectedVariantId &&
+    (!variantTypeKindRead ||
+      (isInsertTypeSelected && subVariantRows === undefined));
+  /**
+   * NEO-334 — the parallel selection the page acts on. When it is KNOWN that
+   * there is no Sub-Variants column (`noSubVariantColumn`), a `parallel` id in
+   * the drill is not a selection: the checklist, the attributes panel and the
+   * build role all fall back to the insert. The resolver already drops such an
+   * id from a link (`resolveDrillPath`) and the effect below clears it from
+   * the URL; this is the render in between. While the kind or the
+   * sub-variants are still loading the id stands, so a deep link to a real
    * sub-variant does not flash its insert's checklist first.
    */
-  const effectiveVariantOfVariantId =
-    variantTypeKindRead && !isInsertTypeSelected
-      ? null
-      : selectedVariantOfVariantId;
+  const effectiveVariantOfVariantId = noSubVariantColumn
+    ? null
+    : selectedVariantOfVariantId;
   const baseHasMapping = stableVariantTypeFlagsRef.current.hasMapping;
   // Pluralized variantType label ("Insert" → "Inserts") used as the column
   // header and Sync button text on the Variants column. Falls back to the
@@ -556,6 +640,14 @@ export default function SetSelector() {
       ? `${deepestOpenColumn.level}:${deepestOpenColumn.parentId ?? ""}`
       : null;
   /**
+   * NEO-425 — the deepest open column is an insert's Sub-Variants column with
+   * nothing picked in it, so the cascade's focus stays on the insert (see
+   * `cascadeLandingSpot`). Not when the operator re-opened a sub-variant's
+   * card: that column has a selection, and focus is already in its box.
+   */
+  const stayOnInsert =
+    deepestOpenColumn?.level === "parallel" && !deepestOpenColumn.selected;
+  /**
    * The selection itself, as one string. The terminal focus rule below fires
    * on a SELECTION that leaves no column open, and this is what tells a
    * selection apart from a collapse: collapsing a chip changes which columns
@@ -619,7 +711,7 @@ export default function SetSelector() {
   // said about where the operator now is. The button that replaced the panel is
   // the only control in that slot, so it is the unambiguous landing spot.
   //
-  // The same shape as VariantForm/ParallelForm/SyncDoneNotice: a ref tracks the
+  // The same shape as VariantForm/SyncDoneNotice: a ref tracks the
   // PREVIOUS value so this fires on the true→false transition only, and the
   // `activeElement === body` guard means a park never yanks focus away from an
   // operator who is already holding it somewhere else (a confirm that resolves
@@ -728,24 +820,32 @@ export default function SetSelector() {
   //
   // NEO-224: a `replace`, not a push — the row is gone, so Back must not walk
   // the operator onto it again.
+  //
+  // NEO-425: a deleted sub-variant parks on its insert's card instead, the
+  // same place picking that insert leaves focus. Whether its siblings keep
+  // the Sub-Variants column open or it was the last one (the column goes and
+  // the insert is a leaf), the cascade and the D3 rule both leave a collapsed
+  // card alone, so the operator always lands on the insert.
   const handleRowDeleted = (level: SelectorLevel) => {
     drillClearFrom(level);
     resetBaseMappingDismissals();
-    columnRowRef.current?.focus();
+    const row = columnRowRef.current;
+    if (!row) return;
+    ((level === "parallel" ? insertColumnCard(row) : null) ?? row).focus();
   };
 
   /**
-   * NEO-334 — a `parallel` id left in the drill under a variant type that is
-   * not an Insert type (an in-session link the resolver never saw, or a type
-   * whose kind was read after the pick) is cleared from the URL, so the
-   * address bar says what the page shows: the insert, with no Sub-Variants
-   * column. A `replace` — the operator did not navigate.
-   * `effectiveVariantOfVariantId` already ignores the id until this lands.
+   * NEO-334 — a `parallel` id left in the drill where there is no
+   * Sub-Variants column (a type that is not an Insert type, or NEO-425 an
+   * insert with no sub-variants: an in-session link the resolver never saw,
+   * or a kind read after the pick) is cleared from the URL, so the address
+   * bar says what the page shows: the insert, as a leaf. A `replace` — the
+   * operator did not navigate. `effectiveVariantOfVariantId` already ignores
+   * the id until this lands.
    */
-  const staleSubVariantId =
-    variantTypeKindRead && !isInsertTypeSelected
-      ? selectedVariantOfVariantId
-      : null;
+  const staleSubVariantId = noSubVariantColumn
+    ? selectedVariantOfVariantId
+    : null;
   useEffect(() => {
     if (staleSubVariantId) drillClearFrom("parallel");
   }, [staleSubVariantId, drillClearFrom]);
@@ -1018,6 +1118,11 @@ export default function SetSelector() {
    * set. Keyed on that column, so a re-render that opens nothing new moves
    * nothing.
    *
+   * NEO-425, the one exception: an insert whose pick opens its Sub-Variants
+   * column keeps focus on the insert's own card (`cascadeLandingSpot`), and a
+   * Sub-Variants column that opens without a pick (Group Parallels made the
+   * insert's first rows) moves nothing at all.
+   *
    * Only ever moves focus the cascade already owns — `<body>` (the row the
    * operator picked just unmounted) or somewhere inside the column row — and
    * never off a column's collapsed card, which is where Escape and Collapse
@@ -1045,9 +1150,8 @@ export default function SetSelector() {
   const truncatedOnLoad = drill.truncatedOnLoad;
   useEffect(() => {
     if (!truncatedOnLoad || openColumnKey === null) return;
-    const boxes =
-      columnRowRef.current?.querySelectorAll<HTMLElement>('[role="combobox"]');
-    const box = boxes?.[boxes.length - 1];
+    const row = columnRowRef.current;
+    const box = row ? cascadeLandingSpot(row, stayOnInsert) : null;
     if (!box) return;
     box.setAttribute("aria-describedby", truncatedNoticeId);
     return () => {
@@ -1055,16 +1159,35 @@ export default function SetSelector() {
         box.removeAttribute("aria-describedby");
       }
     };
-  }, [truncatedOnLoad, openColumnKey, truncatedNoticeId]);
+  }, [truncatedOnLoad, openColumnKey, stayOnInsert, truncatedNoticeId]);
+
+  /**
+   * NEO-425 — the last selection the cascade saw SETTLED (no link being
+   * checked, nothing pending about the Sub-Variants column). A Sub-Variants
+   * column that opens on a selection already settled was not opened by a
+   * pick: its first rows landed later (Group Parallels made them), so focus
+   * is left where the operator has it. Written by the effect after the focus
+   * effect, so the focus effect reads the value from before this commit.
+   */
+  const settledSelectionRef = useRef<string | null>(null);
+  const cascadeSettled = !drill.resolving && !subVariantColumnPending;
+  /** The open column the focus effect last ran for: it acts on a change only. */
+  const focusedForColumnRef = useRef<string | null>(null);
 
   useEffect(() => {
-    if (openColumnKey === null) return;
+    const previous = focusedForColumnRef.current;
+    focusedForColumnRef.current = openColumnKey;
+    if (openColumnKey === null || openColumnKey === previous) return;
     const row = columnRowRef.current;
     if (!row || !cascadeOwnsFocus(row)) return;
     if (isCollapsedCard(row, document.activeElement)) return;
-    const boxes = row.querySelectorAll<HTMLElement>('[role="combobox"]');
-    boxes[boxes.length - 1]?.focus({ preventScroll: true });
-  }, [openColumnKey]);
+    if (stayOnInsert && settledSelectionRef.current === selectionKey) return;
+    cascadeLandingSpot(row, stayOnInsert)?.focus({ preventScroll: true });
+  }, [openColumnKey, stayOnInsert, selectionKey]);
+
+  useEffect(() => {
+    if (cascadeSettled) settledSelectionRef.current = selectionKey;
+  }, [cascadeSettled, selectionKey]);
 
   /**
    * NEO-224 (Jason, D3) — a selection that leaves NO column open (Base, or a
@@ -1093,10 +1216,9 @@ export default function SetSelector() {
    * own, or a dialog (the Base mapping picker auto-opens on an unmapped Base)
    * is up.
    */
-  // NEO-334: with an insert selected and its variant type's kind still
-  // loading, whether a Sub-Variants column opens below it is not known yet,
-  // so the selection is not terminal yet either.
-  const subVariantColumnPending = !!selectedVariantId && !variantTypeKindRead;
+  // NEO-334 / NEO-425: `subVariantColumnPending` (above) holds the rule off
+  // while it is not yet known whether a Sub-Variants column opens below the
+  // insert.
   const terminalChecklistId =
     !drill.resolving && !subVariantColumnPending && openColumnKey === null
       ? cardChecklistId
@@ -1144,6 +1266,54 @@ export default function SetSelector() {
   const keyboardCommitRef = useRef(false);
   const pageRef = useRef<HTMLDivElement | null>(null);
   const terminalHandledForRef = useRef<string | null>(null);
+
+  /**
+   * NEO-425 — the Sub-Variants column going away because its LAST row left
+   * (deleted, or Group Parallels sent it back to the top level) while the
+   * same insert stays picked. That is not a pick, just as rows arriving are
+   * not one, so:
+   *
+   *  - the D3 rule stands down for the selection it leaves (the insert, now a
+   *    leaf): focus is not pulled off wherever the operator has it, such as
+   *    the "Group Parallels" button the dialog hands focus back to;
+   *  - if focus was inside the column, it went with the column, and is
+   *    parked on the insert's card rather than left on `<body>`.
+   *
+   * `focusInSubVariantsRef` says where focus last ENTERED in the column row
+   * (`onFocus` on the row, which React delivers as `focusin`): a browser fires
+   * nothing when it drops focus from a removed element, so this is what still
+   * knows focus was in the column after the column is gone. Declared before
+   * the D3 effect so both run in the commit the column leaves, this one first.
+   */
+  const focusInSubVariantsRef = useRef(false);
+  const noteRowFocus = (event: ReactFocusEvent<HTMLDivElement>) => {
+    focusInSubVariantsRef.current =
+      event.target instanceof Element &&
+      !!event.target.closest('[data-cascade-level="parallel"]');
+  };
+  const subVariantsShownForRef = useRef<string | null>(null);
+  useEffect(() => {
+    const shownFor = subVariantColumnVisible ? selectedVariantId : null;
+    const was = subVariantsShownForRef.current;
+    subVariantsShownForRef.current = shownFor;
+    const lastRowLeft =
+      was !== null &&
+      shownFor === null &&
+      was === selectedVariantId &&
+      subVariantRows !== undefined &&
+      subVariantRows.length === 0;
+    if (!lastRowLeft) return;
+    terminalHandledForRef.current = selectionKey;
+    const wasInColumn = focusInSubVariantsRef.current;
+    focusInSubVariantsRef.current = false;
+    if (!wasInColumn) return;
+    const active = document.activeElement;
+    if (active && active !== document.body && active.isConnected) return;
+    const row = columnRowRef.current;
+    if (!row) return;
+    (insertColumnCard(row) ?? row).focus({ preventScroll: true });
+  }, [subVariantColumnVisible, selectedVariantId, subVariantRows, selectionKey]);
+
   useEffect(() => {
     if (terminalChecklistId === null) {
       // Leaving terminal by a new selection re-arms the rule; leaving it by
@@ -1294,6 +1464,7 @@ export default function SetSelector() {
         tabIndex={-1}
         data-set-selector-scroll
         onKeyDownCapture={noteKeyboardCommit}
+        onFocus={noteRowFocus}
         className="relative flex flex-row gap-4 overflow-x-auto pb-4 pl-4 focus:outline-none"
       >
         {drill.resolving ? (
@@ -1499,7 +1670,10 @@ export default function SetSelector() {
             )}
 
             {/* 7. Variant of Variant (NB only — translates to variant on BSC/SL).
-                NEO-334: only under an insert of an Insert type (its kind). */}
+                NEO-334: only under an insert of an Insert type (its kind).
+                NEO-425: only when that insert has sub-variants, and with no
+                Sync: no marketplace has them. "+ Custom" stays; Group
+                Parallels on the Inserts column makes the first one. */}
             {subVariantColumnVisible && (
               <ResilientEntityColumn
                 selector={
@@ -1511,10 +1685,9 @@ export default function SetSelector() {
                     setExpanded={setVariantOfVariantExpanded}
                   />
                 }
-                renderForm={(onDone) => (
-                  <ParallelForm insertId={selectedVariantId!} onDone={onDone} />
-                )}
-                addButtonText="Sync Sub-Variants"
+                // The column's noun ("Add custom Sub-Variants"); never a button.
+                addButtonText="Sub-Variants"
+                hideSync
                 isVisible={true}
                 level="parallel"
                 parentId={selectedVariantId || undefined}

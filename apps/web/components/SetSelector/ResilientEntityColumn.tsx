@@ -231,7 +231,8 @@ export default function ResilientEntityColumn(
   };
 
   // "Sync Sports" → "Sports", "Sync Variant Types" → "Variant Types", etc.
-  // Mirrors EntityColumn's own label derivation.
+  // Mirrors EntityColumn's own label derivation. A column with `hideSync`
+  // passes the noun alone ("Sub-Variants"), which the replace leaves as is.
   const label = addButtonText.replace(/^Sync /, "");
 
   // `key={attempt}` is load-bearing — see the header comment. It fully
@@ -273,7 +274,14 @@ export default function ResilientEntityColumn(
   // put the level name on screen twice and make the E2E text selectors
   // ambiguous.
   return (
-    <div className="min-w-[260px] max-w-[min(340px,calc(100vw-80px))] flex-shrink-0 flex flex-col gap-4">
+    <div
+      // NEO-425: names the column for the cascade in
+      // components/modules/SetSelector.tsx, which parks focus on the Inserts
+      // column's card when an insert's Sub-Variants column opens. Product
+      // plumbing, like `data-set-selector-scroll`; specs never read it.
+      data-cascade-level={level}
+      className="min-w-[260px] max-w-[min(340px,calc(100vw-80px))] flex-shrink-0 flex flex-col gap-4"
+    >
       {isVisible && gaveUp ? (
         <div className="bg-raised p-4 rounded-lg shadow shadow-offset">
           <div
