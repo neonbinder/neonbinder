@@ -59,8 +59,8 @@
 // the spec proves the weight is saved and kept (step 4), not what eBay got.
 //   5. They set a common price, put one copy each of the first three 1988 Topps
 //      Base cards in the box and attach a photo to the first two only (eBay
-//      listings need one; each field then reads 0 and names its copy "Raw
-//      with photo", as a quick count no longer counts it), press Sync,
+//      listings need one; each field still reads 1 and names nothing "also
+//      here", since a photo alone sets no line apart, NEO-431), press Sync,
 //      follow "See what's syncing" (Back returns), and Sync status reads the eBay section's set with 2 listed and
 //      1 skipped: the third card is held back, named, with eBay's no-photo
 //      reason.
@@ -69,9 +69,9 @@
 //      The Sales tab names eBay (its orders link and its empty state; Back
 //      returns).
 //   7. They tidy up (cards out of the box: the photoless one by its quantity,
-//      the two with a photo through the card drawer's Remove, since a quick
-//      count never changes a copy with a photo (NEO-377); the common price
-//      cleared, the box deleted) and Disconnect eBay (the confirm dialog),
+//      the two with a photo through the card drawer's Remove, which also
+//      carries the drawer's axe states; the common price cleared, the box
+//      deleted) and Disconnect eBay (the confirm dialog),
 //      which takes down anything NeonBinder put up on eBay and leaves the
 //      account not connected. The afterEach does the same on a failure.
 //
@@ -549,17 +549,14 @@ test(
     await expect(fieldB).toHaveValue("0");
     const fieldC = quantityField(boxList, c, boxName);
     await expect(fieldC).toHaveValue("0");
-    // A copy with a photo is the collector's own record, not a quick count
-    // (NEO-377: the server's quick count never changes it). So once a card's
-    // copy has its photo, the field counts it no more and names it after the
-    // number instead ("also here: Raw with photo", the field's description);
-    // the card without one still reads 1.
-    const expectPhotoCopiesAside = async () => {
-      for (const field of [fieldA, fieldB]) {
-        await expect(field).toHaveValue("0");
-        await expect(field).toHaveAccessibleDescription(/also here: Raw with photo/);
+    // A photo alone sets no line apart (NEO-431): the quick count still counts
+    // a copy once it has its photo, so every field reads 1 and none names
+    // another line beside the number ("also here: ...", the field's description).
+    const expectPhotoCopiesCounted = async () => {
+      for (const field of [fieldA, fieldB, fieldC]) {
+        await expect(field).toHaveValue("1");
+        await expect(field).not.toHaveAccessibleDescription(/also here/);
       }
-      await expect(fieldC).toHaveValue("1");
     };
     await fieldA.fill("1");
     await page.keyboard.press(leaveKey(isMobile));
@@ -630,9 +627,9 @@ test(
     };
     await attachPhoto(a, PHOTOS[0], "Card drawer, a boxed copy with its front photo");
     await attachPhoto(b, PHOTOS[1]);
-    await expectPhotoCopiesAside();
-    // The box's quantities with the photo copies named beside their fields.
-    await expectAccessible(page, { within: boxList, label: "Inventory checklist, boxed copies with a photo named beside the field" });
+    await expectPhotoCopiesCounted();
+    // The box's quantities with the photo copies counted like any other.
+    await expectAccessible(page, { within: boxList, label: "Inventory checklist, boxed copies, two of them with a photo" });
 
     // --- Sync: eBay takes the two with photos and holds the third back ---------------------------------
     await sync.click();
@@ -686,7 +683,7 @@ test(
     await page.goBack();
     await expect(page).toHaveURL(/[?&]tab=checklists/);
     await expect(checklist.getByRole("heading", { level: 3, name: TITLE })).toBeVisible();
-    await expectPhotoCopiesAside();
+    await expectPhotoCopiesCounted();
 
     // --- 6. The box goes in-person: Sync takes both down ----------------------------------
     await page.goto("/inventory?tab=boxes");
@@ -747,9 +744,9 @@ test(
     await expect(page).toHaveURL(/[?&]tab=checklists/);
     // The card with no photo: a quick count to 0.
     await emptyBoxCards(page, TOPPS_1988, boxName, [c], isMobile, "reopened");
-    // The two with a photo: a quick count can't take them out (see step 5), so
-    // each goes the way a collector removes a copy, from the card's drawer,
-    // the same drawer that added its photo.
+    // The two with a photo: each goes the way a collector removes a copy they
+    // photographed, from the card's drawer (the same drawer that added its
+    // photo), which keeps the drawer's editing and removed states under axe.
     await removeOnlyCopy(a, true);
     await removeOnlyCopy(b);
     await clearChecklistCommonPrice(page, checklist, TITLE, COMMON_PRICE);
