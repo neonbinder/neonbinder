@@ -94,7 +94,9 @@ function deferred() {
 
 /** Lets the attach run until `check` holds. It may never: the caller asserts after. */
 async function until(check: () => boolean | Promise<boolean>) {
-  for (let turn = 0; turn < 500 && !(await check()); turn++) await new Promise((resolve) => setImmediate(resolve));
+  // By the clock, not a count of turns: a loaded CI runner gets through far fewer per step.
+  const giveUpAt = Date.now() + 4_000;
+  while (Date.now() < giveUpAt && !(await check())) await new Promise((resolve) => setImmediate(resolve));
 }
 
 const json = (status: number, body: unknown) =>
