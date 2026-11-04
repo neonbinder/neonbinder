@@ -61,7 +61,7 @@ test(
     const addForm = drawer.getByRole("form", { name: "Add another copy" });
     const addButton = drawer.getByRole("button", { name: `Add another copy of ${short}`, exact: true });
     await expect(addForm).toBeVisible();
-    const panel = addForm.getByRole("region", { name: "Photos", exact: true });
+    const panel = addForm.getByRole("region", { name: /^Photos of / });
     await expect(panel.getByText("No front photo yet")).toBeAttached();
     await expect(panel.getByText("No back photo yet")).toBeAttached();
     // Fully on screen before axe reads it (the drawer slides in).
@@ -73,11 +73,12 @@ test(
       await panel.getByLabel("Back photo file", { exact: true }).setInputFiles(photoFile("back.jpg"));
     };
     await hold();
-    // The previews are the page's own copies of the files (a blob address), not a saved photo's.
-    const heldFront = panel.getByRole("link", { name: "Front of your new copy, full size (opens a new tab)", exact: true });
-    const heldBack = panel.getByRole("link", { name: "Back of your new copy, full size (opens a new tab)", exact: true });
-    await expect(heldFront).toHaveAttribute("href", /^blob:/);
-    await expect(heldBack).toHaveAttribute("href", /^blob:/);
+    // A held tile is a picture only: no link to a full-size view until the copy is saved.
+    const heldFront = panel.getByRole("img", { name: "Front of your new copy", exact: true });
+    const heldBack = panel.getByRole("img", { name: "Back of your new copy", exact: true });
+    await expect(heldFront).toBeVisible();
+    await expect(heldBack).toBeVisible();
+    await expect(panel.getByRole("link", { name: /full size/ })).toHaveCount(0);
     await expect(panel.getByRole("button", { name: "Remove front", exact: true })).toBeVisible();
     await expect(panel.getByRole("button", { name: "Remove back", exact: true })).toBeVisible();
     await expect(panel.getByText("Stashed here until you add the copy.")).toBeVisible();

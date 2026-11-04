@@ -46,7 +46,7 @@ test(
     await expect(yourCopies.getByRole("heading", { name: "Your copies (1 line)" })).toBeVisible();
     const form = yourCopies.getByRole("form", { name: "Edit Raw, Excellent", exact: true });
     await expect(form).toBeVisible();
-    const panel = form.getByRole("region", { name: "Photos", exact: true });
+    const panel = form.getByRole("region", { name: /^Photos of / });
     await expect(panel.getByText("No front photo yet")).toBeAttached();
     await expectAccessible(page, { within: drawer, label: "Card drawer, editing, no photos" });
 

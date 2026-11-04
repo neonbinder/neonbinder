@@ -68,11 +68,13 @@ test(
     await expect(addForm).toBeVisible();
     // It lands in the box the field counts.
     await expect(addForm.getByRole("combobox", { name: "Where it lives" }).getByRole("option", { selected: true })).toHaveText("Unsorted");
-    const panel = addForm.getByRole("region", { name: "Photos", exact: true });
+    const panel = addForm.getByRole("region", { name: /^Photos of / });
     await panel.getByLabel("Front photo file", { exact: true }).setInputFiles(photoFile("front.jpg"));
     await panel.getByLabel("Back photo file", { exact: true }).setInputFiles(photoFile("back.jpg"));
-    await expect(panel.getByRole("link", { name: "Front of your new copy, full size (opens a new tab)", exact: true })).toBeVisible();
-    await expect(panel.getByRole("link", { name: "Back of your new copy, full size (opens a new tab)", exact: true })).toBeVisible();
+    // Held tiles are pictures only: nothing to open full size until the copy is saved.
+    await expect(panel.getByRole("img", { name: "Front of your new copy", exact: true })).toBeVisible();
+    await expect(panel.getByRole("img", { name: "Back of your new copy", exact: true })).toBeVisible();
+    await expect(panel.getByRole("link", { name: /full size/ })).toHaveCount(0);
     await addForm.getByRole("button", { name: "Add to inventory" }).click();
     await expect(addForm).toBeHidden();
     await expect(
@@ -104,7 +106,7 @@ test(
     // --- Typing 0 removes the line ------------------------------------------------------------
     await field.fill("0");
     await page.keyboard.press(advance);
-    await expect(said(`Pulled 2 of ${short} from Unsorted. 0 left.`)).toBeVisible();
+    await expect(said(`Pulled 2 of ${short} from Unsorted, with its photos. 0 left.`)).toBeVisible();
     await expect(field).toHaveValue("0");
 
     // --- Undo brings it back with its photos, and they load ----------------------------------
@@ -124,7 +126,7 @@ test(
     await expect(field).toHaveValue("2");
     await field.fill("0");
     await page.keyboard.press(advance);
-    await expect(said(`Pulled 2 of ${short} from Unsorted. 0 left.`)).toBeVisible();
+    await expect(said(`Pulled 2 of ${short} from Unsorted, with its photos. 0 left.`)).toBeVisible();
     await expect(field).toHaveValue("0");
   },
 );

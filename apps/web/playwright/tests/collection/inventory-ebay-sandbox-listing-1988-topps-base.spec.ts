@@ -594,7 +594,7 @@ test(
       await expect(yourCopies.getByRole("heading", { name: "Your copies (1 line)", exact: true })).toBeVisible();
       const editForm = yourCopies.getByRole("form", { name: /^Edit Raw, / });
       await expect(editForm).toBeVisible();
-      const panel = editForm.getByRole("region", { name: "Photos", exact: true });
+      const panel = editForm.getByRole("region", { name: /^Photos of / });
       await expect(panel.getByText("No front photo yet")).toBeAttached();
       await panel.getByLabel("Front photo file", { exact: true }).setInputFiles(path.join(FIXTURES, photo));
       await expect(panel.getByRole("status")).toHaveText("Front photo saved.");

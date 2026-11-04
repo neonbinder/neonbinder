@@ -79,12 +79,14 @@ test(
     await form.getByLabel("Card number", { exact: true }).fill(number);
     await form.getByLabel("Player", { exact: true }).fill(player);
     // Photos are optional and wait in the form (the shared photo box) until Send.
-    const photos = form.getByRole("region", { name: "Photos", exact: true });
+    const photos = form.getByRole("region", { name: /^Photos of / });
     await expect(photos.getByText("Optional. Stashed here until you send the request.")).toBeVisible();
     await photos.getByLabel("Front photo file", { exact: true }).setInputFiles(photoFile("front.jpg"));
     await photos.getByLabel("Back photo file", { exact: true }).setInputFiles(photoFile("back.jpg"));
-    await expect(photos.getByRole("link", { name: "Front of this card, full size (opens a new tab)", exact: true })).toBeVisible();
-    await expect(photos.getByRole("link", { name: "Back of this card, full size (opens a new tab)", exact: true })).toBeVisible();
+    await expect(photos.getByRole("img", { name: "Front of this card", exact: true })).toBeVisible();
+    await expect(photos.getByRole("img", { name: "Back of this card", exact: true })).toBeVisible();
+    // Held until Send, so there is nothing to open full size yet.
+    await expect(photos.getByRole("link", { name: /full size/ })).toHaveCount(0);
     await expectAccessible(page, { label: "Request a card, filled with photos" });
     await form.getByRole("button", { name: "Send request" }).click();
 
