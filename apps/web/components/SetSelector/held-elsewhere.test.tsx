@@ -9,7 +9,6 @@ import { describe, expect, it } from "vitest";
 import {
   mergeServerHeld,
   parallelsInTree,
-  rowsOutsideInsert,
   storeHoldsOf,
   type HeldRow,
 } from "./held-elsewhere";
@@ -170,13 +169,6 @@ describe("the elsewhere rule matches the store's", () => {
       ["p1", "Anime"],
       ["q1", "Chrome"],
     ]);
-  });
-
-  it("parallel sync under P: the other inserts and their parallels; never P or P's own", () => {
-    const rows = rowsOutsideInsert(TREE, "P");
-    expect(rows.map((r) => r.key)).toEqual(["Q", "q1"]);
-    expect(rows.find((r) => r.key === "Q")?.parentName).toBeUndefined();
-    expect(rows.find((r) => r.key === "q1")?.parentName).toBe("Chrome");
   });
 });
 

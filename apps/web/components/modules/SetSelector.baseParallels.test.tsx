@@ -187,7 +187,6 @@ vi.mock("../SetSelector/ManufacturerForm", () => ({ default: () => null }));
 vi.mock("../SetSelector/SetForm", () => ({ default: () => null }));
 vi.mock("../SetSelector/SetVariantForm", () => ({ default: () => null }));
 vi.mock("../SetSelector/VariantForm", () => ({ default: () => null }));
-vi.mock("../SetSelector/ParallelForm", () => ({ default: () => null }));
 vi.mock("../SetSelector/ParallelGroupingModal", () => ({ default: () => null }));
 vi.mock("../SetSelector/MultiSourcePanel", () => ({ default: () => null }));
 vi.mock("../SetSelector/SetAttributesPanel", () => ({ default: () => null }));
