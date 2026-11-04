@@ -28,9 +28,7 @@ export type Column =
   | "Sets"
   | "Variant Types"
   | "Inserts"
-  | "Parallels"
-  /** The seventh column: it exists only under an Insert-titled variant type (NEO-334). */
-  | "Sub-Variants";
+  | "Parallels";
 
 /** The panel's subtitle: the signal that the Set Builder (not the nav) has mounted. */
 export function setBuilderReady(page: Page): Locator {
@@ -86,7 +84,6 @@ export const CUSTOM_CONFIRM: Record<Column, string> = {
   "Variant Types": "Create variant type",
   Inserts: "Create insert",
   Parallels: "Create insert",
-  "Sub-Variants": "Create sub-variant",
 };
 
 export interface AddCustomEntryOptions {

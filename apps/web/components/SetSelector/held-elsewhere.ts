@@ -79,25 +79,6 @@ export function parallelsInTree(tree: InsertTree): HeldRow[] {
   return out;
 }
 
-/**
- * Sync Sub-Variants under `insertId`: every OTHER insert in the variant type
- * and every parallel under those. The parent's own parallels are the sync's
- * own rows; the parent itself is left out so a parallel whose id happens to
- * equal its parent's is not hidden from the one place it belongs.
- */
-export function rowsOutsideInsert(
-  tree: InsertTree,
-  insertId: string,
-): HeldRow[] {
-  const out: HeldRow[] = [];
-  for (const { insert, parallels } of tree) {
-    if (String(insert._id) === String(insertId)) continue;
-    out.push(held(insert));
-    for (const p of parallels) out.push(held(p, insert.value));
-  }
-  return out;
-}
-
 /** NEO-312 — what separates the steps of a holder's breadcrumb (house style). */
 export const HOLDER_PATH_SEPARATOR = " › ";
 

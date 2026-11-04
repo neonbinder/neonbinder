@@ -191,7 +191,17 @@ function breadcrumbOf(
  */
 export type EntityColumnProps = {
   selector: ReactNode;
-  renderForm: (onDone: () => void) => ReactNode;
+  /**
+   * The legacy sync form "Sync <X>" opens. Optional only for a column with
+   * `hideSync`, which has no Sync button to open it.
+   */
+  renderForm?: (onDone: () => void) => ReactNode;
+  /**
+   * The Sync button's text ("Sync Sets"). With "Sync " stripped it is also the
+   * column's noun: "+ Custom" is named "Add custom Sets" from it, and the
+   * stall banner says "Couldn't load sets". With `hideSync` there is no
+   * button, so pass the noun alone ("Sub-Variants").
+   */
   addButtonText: string;
   isVisible: boolean;
   level?: Level;
@@ -233,6 +243,12 @@ export type EntityColumnProps = {
    * line that says what to do instead ("Pick a brand to add a set").
    */
   hideCustom?: { reason: string };
+  /**
+   * NEO-425 — the column's rows exist only in NB (Sub-Variants: no
+   * marketplace has them), so there is nothing to sync. No "Sync <X>"
+   * button, and no auto-sync when the column opens empty. "+ Custom" stays.
+   */
+  hideSync?: boolean;
 };
 
 // Gap left between a newly-revealed column's edge and the scroll row's true
@@ -278,6 +294,7 @@ export default function EntityColumn({
   syncingLabel,
   onLoadingChange,
   hideCustom,
+  hideSync,
 }: EntityColumnProps) {
   const [mode, setMode] = useState<"idle" | "sync" | "custom">("idle");
   const [customValue, setCustomValue] = useState("");
@@ -807,6 +824,7 @@ export default function EntityColumn({
   // the only nudge needed.
   useEffect(() => {
     if (useEnsureSync) return; // new path handles populate via ensureSelectorOptions
+    if (hideSync) return; // NEO-425: nothing to sync from
     if (!isVisible) return;
     if (hasInteracted) return;
     if (mode !== "idle") return;
@@ -817,7 +835,7 @@ export default function EntityColumn({
     if (autoSyncedRef.current.has(key)) return;
     autoSyncedRef.current.add(key);
     setMode("sync");
-  }, [isVisible, mode, level, parentId, items, hasInteracted, useEnsureSync]);
+  }, [isVisible, mode, level, parentId, items, hasInteracted, useEnsureSync, hideSync]);
 
   // NEO-47 new path: on an empty column, ask the backend to populate (once per
   // key). The backend decides everything (already-populated / custom-subtree /
@@ -1546,13 +1564,15 @@ export default function EntityColumn({
     };
     return (
       <div className="flex gap-2 items-center flex-wrap">
-        <NeonButton
-          className={fieldClass("btn-sync")}
-          onClick={onSync}
-          onKeyDown={(e) => activateOnEnter(e, onSync)}
-        >
-          {addButtonText}
-        </NeonButton>
+        {!hideSync && (
+          <NeonButton
+            className={fieldClass("btn-sync")}
+            onClick={onSync}
+            onKeyDown={(e) => activateOnEnter(e, onSync)}
+          >
+            {addButtonText}
+          </NeonButton>
+        )}
         {/* After Sync, before "+ Custom", so `extraActions` ("Group Parallels")
             still sits last. */}
         {suggestionsPill}
@@ -1687,7 +1707,7 @@ export default function EntityColumn({
       {useEnsureSync
         ? newPathContent()
         : mode === "sync"
-          ? renderForm(handleFormDone)
+          ? (renderForm?.(handleFormDone) ?? null)
           : mode === "custom"
             ? customForm
             : idleButtons(() => setMode("sync"))}
