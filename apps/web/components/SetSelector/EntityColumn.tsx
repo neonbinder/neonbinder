@@ -425,10 +425,6 @@ export default function EntityColumn({
     [],
   );
 
-  useEffect(() => {
-    onLoadingChange?.(!!level && items === undefined);
-  }, [onLoadingChange, level, items]);
-
   // NEO-47 new-path hooks (active only when useEnsureSync). Reactive sync status
   // (null = idle) drives loading/error; ensureSelectorOptions is the one backend
   // door that decides whether/how to populate.
@@ -439,6 +435,15 @@ export default function EntityColumn({
   const ensureOptions = useAction(
     api.selectorOptions.ensureSelectorOptions,
   );
+
+  // NEO-427: the idle buttons wait for the status read, so a status read that
+  // stalls has to recover the way a stalled items read does.
+  useEffect(() => {
+    onLoadingChange?.(
+      !!level &&
+        (items === undefined || (!!useEnsureSync && syncStatus === undefined)),
+    );
+  }, [onLoadingChange, level, items, useEnsureSync, syncStatus]);
 
   // NEO-211 (plan C): derived state, not a pipeline — this just compares the
   // marketplace label the store already recorded against our own value. Wired
@@ -1690,7 +1695,10 @@ export default function EntityColumn({
             onDismiss={handleDismissNotice}
           />
         )}
-        {idleButtons(forceSync)}
+        {/* NEO-427: not before the status read lands. A notice it carries draws
+            above this row, and landing mid-press that shift ate the click. The
+            buttons and the notice arrive together. */}
+        {syncStatus !== undefined && idleButtons(forceSync)}
       </>
     );
   };

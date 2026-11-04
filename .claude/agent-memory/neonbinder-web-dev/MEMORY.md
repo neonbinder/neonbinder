@@ -173,3 +173,4 @@
 - [listitem has no name from content](reference_listitem_has_no_name_from_content.md) — getByRole("listitem", { name }) needs aria-label on the li; keep the text the same, state in an sr-only tail
 - [Walk a ledger by position](reference_walk_a_ledger_by_position.md) — reading open.first()'s label races the last landing; nth(i) + toHaveAccessibleName
 - [Tap target inside a scrolling list](reference_tap_target_inside_a_scrolling_list.md) — 44px target past the tile makes an overflow-auto lane scroll; extend upward, add `relative`
+- [Playwright click checks first mouse event only](reference_playwright_click_checks_first_mouse_event_only.md) — mid-press reflow: click() succeeds, onClick never runs; line up convex-logs with the click
