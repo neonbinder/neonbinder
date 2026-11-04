@@ -112,11 +112,12 @@
 // Sync's toast. A press that sets a run going toasts "Syncing <title> now.
 // Watch it on Sync status."; both presses assert it before reading the result.
 //
-// The scanned pair (NEO-427). The two scans are frame-filling 2014 Score
-// football photos (`fixtures/intake/01-mcfadden-*.jpg`), the kind the fast crop
-// stage takes without waking the heavy model. They name a number and a player
-// that mean nothing in 1988 Topps Baseball, so the card is picked by hand ("Wrong
-// card? Find it"), exactly as the real-scans spec fixes a misread: the pair is
+// The scanned pair (NEO-427). The two scans are the placeholder pipeline's own
+// scanner-bed cards (`public/placeholder-fixtures/01-vorkle-*.jpg`), which the fast
+// crop stage takes without waking the heavy model: every intake scan's back
+// escalates, so those would queue behind any other spec's heavy call. They name a
+// player that means nothing in 1988 Topps Baseball, so the card is picked by hand
+// ("Wrong card? Find it"), exactly as the real-scans spec fixes a misread: the pair is
 // the INPUT, the card is the first row of the checklist. The scanner app itself
 // needs a real scanner, so the run is the Add cards photo drop; the save and the
 // photo attach behind it are the same path a scanner run takes.
@@ -168,7 +169,8 @@ const FIXTURES = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "
 /** The second card's hand-added front photo. */
 const HAND_PHOTO = "03-bowe-front.jpg";
 /** The first card's scanned pair (front, then back), dropped into an Add cards run. */
-const SCAN_PAIR = ["01-mcfadden-front.jpg", "02-mcfadden-back.jpg"] as const;
+const SCAN_PAIR_FIXTURES = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "public", "placeholder-fixtures");
+const SCAN_PAIR = ["01-vorkle-front.jpg", "02-vorkle-back.jpg"] as const;
 /**
  * The scan pair's crop, read, pairing and match on the preprocess service's
  * FAST path (frame-filling scans; no heavy escalation). The same ceiling
@@ -637,7 +639,7 @@ test(
     // The price is set, so the listed box is not held: the zone takes the photos.
     const dropzone = page.getByLabel("Drag your card photos here, or browse your files");
     await expect(dropzone).not.toHaveAttribute("aria-disabled", "true");
-    await dropzone.setInputFiles(SCAN_PAIR.map((n) => path.join(FIXTURES, n)));
+    await dropzone.setInputFiles(SCAN_PAIR.map((n) => path.join(SCAN_PAIR_FIXTURES, n)));
     await expect(said("Sent 2 photos.")).toBeVisible();
     await expect(page).toHaveURL(/[?&]run=/);
     written.runUrl = page.url();
