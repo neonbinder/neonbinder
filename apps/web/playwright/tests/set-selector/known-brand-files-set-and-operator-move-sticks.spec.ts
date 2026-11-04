@@ -40,7 +40,7 @@ test(
     await expect(setBuilderReady(page)).toBeVisible({ timeout: LAUNCH_GATE });
 
     // ── STEP 1: cold drill to Baseball > 1990 > All Brands; the year-wide Sets sync has run.
-    await drillToColdManufacturer(page, env, { sport: SPORT, year: YEAR, manufacturer: "All Brands" });
+    await drillToColdManufacturer(page, env, { sport: SPORT, year: YEAR, manufacturer: "All Brands", expectSets: true });
     await expect(columnHeading(page, "Sets")).toBeVisible({ timeout: 15_000 });
 
     // ── STEP 2: the sync created a CMC brand row for the set; picking the set

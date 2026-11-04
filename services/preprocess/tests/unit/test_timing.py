@@ -38,6 +38,7 @@ EXPECTED_KEYS = {
     "classify_retried",
     "rotate_ms",
     "write_ms",
+    "copy_photos_ms",
     "total_ms",
     "source",
     "escalated",

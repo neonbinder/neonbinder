@@ -28,6 +28,11 @@
  *    then `commitUpload` makes the row `live`, retires the side's old photo
  *    (its objects deleted) and marks the copy `hasPhotos`.
  *
+ * NEO-427: a scanned pair's photos arrive the same way but server side
+ * (`intakePhotos.attachIntakePhotos`): `reserveUpload` with `source: "intake"`,
+ * Convex PUTs both files itself, then `commitUpload`. Those rows are outside
+ * the hourly cap, which counts hand uploads only; a job's entry cap bounds them.
+ *
  * A line with photos never folds (`isOneOfAKind`), so photos are never merged
  * into another line. Removing the copy DETACHES its photos (`detachPhotos`) so
  * the Undo can put them back (`reattachPhotos`, from `restoreCopy`).
@@ -235,6 +240,8 @@ export const reserveUpload = internalMutation({
     contentType: contentTypeValidator,
     imageBytes: v.number(),
     thumbBytes: v.number(),
+    /** NEO-427: a scanned pair's photo, outside the hourly cap. Internal callers only (`startUpload` never passes it). */
+    source: v.optional(v.literal("intake")),
   },
   returns: v.object({ photoId: v.id("collectionCopyPhotos"), token: v.string() }),
   handler: async (ctx, args) => {
@@ -251,12 +258,16 @@ export const reserveUpload = internalMutation({
       }
     }
     const now = Date.now();
-    const recent = await ctx.db
-      .query("collectionCopyPhotos")
-      .withIndex("by_owner", (q) => q.eq("ownerId", args.ownerId).gt("_creationTime", now - PHOTO_HOLD_MS))
-      .take(MAX_COPY_PHOTO_UPLOADS_PER_HOUR);
-    if (recent.length >= MAX_COPY_PHOTO_UPLOADS_PER_HOUR) {
-      refuse(COLLECTION_ERRORS.limit, "That's a lot of photos for one hour. Try again a little later.");
+    if (args.source === undefined) {
+      const recent = await ctx.db
+        .query("collectionCopyPhotos")
+        .withIndex("by_owner_and_source", (q) =>
+          q.eq("ownerId", args.ownerId).eq("source", undefined).gt("_creationTime", now - PHOTO_HOLD_MS),
+        )
+        .take(MAX_COPY_PHOTO_UPLOADS_PER_HOUR);
+      if (recent.length >= MAX_COPY_PHOTO_UPLOADS_PER_HOUR) {
+        refuse(COLLECTION_ERRORS.limit, "That's a lot of photos for one hour. Try again a little later.");
+      }
     }
     const token = newToken();
     const photoId = await ctx.db.insert("collectionCopyPhotos", {
@@ -269,6 +280,7 @@ export const reserveUpload = internalMutation({
       thumbBytes: args.thumbBytes,
       status: "pending",
       since: now,
+      ...(args.source ? { source: args.source } : {}),
     });
     return { photoId, token };
   },
@@ -354,6 +366,11 @@ export const commitUpload = internalMutation({
     // could write files no row owns.
     const now = Date.now();
     const old = (await livePhotosOf(ctx, copy._id)).filter((row) => row.side === photo.side);
+    // NEO-427: a scanner photo never replaces a live one. The collector's stands.
+    if (photo.source === "intake" && old.length > 0) {
+      await deletePhotoRows(ctx, [photo]);
+      return null;
+    }
     for (const row of old) await ctx.db.patch(row._id, { status: "replaced", since: now });
     await ctx.db.patch(photo._id, { status: "live", since: now });
     if (!copy.hasPhotos) await ctx.db.patch(copy._id, { hasPhotos: true });

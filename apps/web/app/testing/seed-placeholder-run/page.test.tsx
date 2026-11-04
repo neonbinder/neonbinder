@@ -19,6 +19,7 @@ const mocks = vi.hoisted(() => ({
   reset: vi.fn(),
   seed: vi.fn(),
   seedFailed: vi.fn(),
+  seedSavedFailure: vi.fn(),
 }));
 
 // Plain string tokens for the generated api so `useMutation` can tell the reset
@@ -32,6 +33,7 @@ vi.mock("@/convex/_generated/api", () => ({
     testing: {
       seedMyTestPlaceholderStream: "testing:seedMyTestPlaceholderStream",
       seedMyTestFailedPhotoRun: "testing:seedMyTestFailedPhotoRun",
+      seedMyTestSavedPhotoFailureRun: "testing:seedMyTestSavedPhotoFailureRun",
     },
   },
 }));
@@ -43,7 +45,9 @@ vi.mock("convex/react", () => ({
       ? mocks.reset
       : ref === "testing:seedMyTestFailedPhotoRun"
         ? mocks.seedFailed
-        : mocks.seed,
+        : ref === "testing:seedMyTestSavedPhotoFailureRun"
+          ? mocks.seedSavedFailure
+          : mocks.seed,
 }));
 
 import TestingSeedPlaceholderRunPage from "./page";
@@ -79,7 +83,27 @@ describe("TestingSeedPlaceholderRunPage", () => {
       mocks.calls.push("seedFailed");
       return { runId: "run123", originalName: "never-read-3f2a1b8c.jpg" };
     });
+    mocks.seedSavedFailure = vi.fn(async () => {
+      mocks.calls.push("seedSavedFailure");
+      return { runId: "run456", copyId: "copy456" };
+    });
     vi.stubEnv("VITE_CLERK_TESTING_ENABLED", "true");
+  });
+
+  it.each(["scanGone", "unusable", "error"])(
+    "NEO-427: with savedPhotoFailure=%s, resets, seeds that state and opens the run",
+    async (photoFailure) => {
+      renderPage(`/testing/seed-placeholder-run?savedPhotoFailure=${photoFailure}`);
+      await waitFor(() => expect(screen.getByText("add cards screen")).not.toBeNull());
+      expect(mocks.calls).toEqual(["reset", "seedSavedFailure"]);
+      expect(mocks.seedSavedFailure).toHaveBeenCalledWith({ photoFailure });
+    },
+  );
+
+  it("NEO-427: an unknown savedPhotoFailure stops at a status line, touching nothing", async () => {
+    renderPage("/testing/seed-placeholder-run?savedPhotoFailure=nope");
+    await waitFor(() => expect(screen.getByText(/Error: savedPhotoFailure must be one of/)).not.toBeNull());
+    expect(mocks.calls).toEqual([]);
   });
 
   it("NEO-411: with failedPhoto=1, resets, seeds the failed-photo run and opens it", async () => {

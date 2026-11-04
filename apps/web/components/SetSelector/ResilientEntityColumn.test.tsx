@@ -167,6 +167,51 @@ describe("ResilientEntityColumn — stalled-read backstop (NEO-83)", () => {
     expect(getByText("selector-probe")).toBeTruthy();
   });
 
+  // NEO-427: the idle buttons wait for the status read, so its stall recovers
+  // the same way. Each column's reads land milliseconds apart on a normal load.
+  it("does not fire on a normal load where status lands just after items", () => {
+    state.items = undefined;
+    state.status = undefined;
+    const { rerender, getByText, queryByRole } = render(columnElement());
+
+    state.items = [{ _id: "vt1", value: "Base" }];
+    rerender(columnElement());
+    act(() => {
+      vi.advanceTimersByTime(50);
+    });
+    state.status = null;
+    rerender(columnElement());
+    act(() => {
+      vi.advanceTimersByTime(SELECTOR_OPTIONS_STALL_BACKSTOP_MS * 3);
+    });
+
+    expect(getByText("+ Custom")).toBeTruthy();
+    expect(mountSpy).toHaveBeenCalledTimes(1);
+    expect(queryByRole("alert")).toBeNull();
+  });
+
+  it("re-subscribes when items are in but the status read stalls, and a late value clears the banner", () => {
+    state.items = [{ _id: "vt1", value: "Base" }];
+    state.status = undefined; // never resolves
+    const { rerender, getByRole, getByText, queryByRole, queryByText } = render(
+      columnElement(),
+    );
+    expect(queryByText("+ Custom")).toBeNull();
+
+    act(() => {
+      vi.advanceTimersByTime(SELECTOR_OPTIONS_STALL_BACKSTOP_MS);
+    });
+    expect(mountSpy).toHaveBeenCalledTimes(2);
+
+    driveToGiveUp();
+    expect(getByRole("alert")).toBeTruthy();
+
+    state.status = null;
+    rerender(columnElement());
+    expect(getByText("+ Custom")).toBeTruthy();
+    expect(queryByRole("alert")).toBeNull();
+  });
+
   it("shows error + Retry after the cap, and Retry re-subscribes", () => {
     state.items = undefined; // never resolves
     const { getByRole, getByText, queryByText } = render(columnElement());
