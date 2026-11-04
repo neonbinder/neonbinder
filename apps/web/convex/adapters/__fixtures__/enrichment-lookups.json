@@ -617,6 +617,12 @@
       "sportQid": "Q41323",
       "result": null
     },
+    "player|Q41323|rickie weeks": {
+      "kind": "player",
+      "name": "Rickie Weeks",
+      "sportQid": "Q41323",
+      "result": null
+    },
     "player|Q41323|rigoberto mendoza": {
       "kind": "player",
       "name": "Rigoberto Mendoza",
@@ -13809,6 +13815,48 @@
         "description": "American Hall of Fame baseball player (1958\u20132024)",
         "birthYear": 1958,
         "enwikiTitle": "Rickey Henderson"
+      }
+    },
+    "player|Q5369|rickie weeks": {
+      "kind": "player",
+      "name": "Rickie Weeks",
+      "result": {
+        "wikidataId": "Q3431635",
+        "careerTeams": [
+          {
+            "name": "Milwaukee Brewers",
+            "fromYear": 2003,
+            "toYear": 2014,
+            "wikidataId": "Q848103"
+          },
+          {
+            "name": "Seattle Mariners",
+            "fromYear": 2015,
+            "toYear": 2015,
+            "wikidataId": "Q466586"
+          },
+          {
+            "name": "Arizona Diamondbacks",
+            "fromYear": 2016,
+            "toYear": 2016,
+            "wikidataId": "Q670376"
+          },
+          {
+            "name": "Tampa Bay Rays",
+            "fromYear": 2017,
+            "toYear": 2017,
+            "wikidataId": "Q650865"
+          }
+        ],
+        "undatedCareerTeams": [
+          "Huntsville Stars",
+          "Nashville Sounds",
+          "Southern Jaguars baseball"
+        ],
+        "isHallOfFame": false,
+        "description": "American baseball player",
+        "birthYear": 1982,
+        "enwikiTitle": "Rickie Weeks Jr."
       }
     },
     "player|Q5369|rico brogna": {

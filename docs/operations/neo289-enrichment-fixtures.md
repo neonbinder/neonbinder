@@ -312,6 +312,25 @@ the Peak Performance wizard stages as team steps, as Baseball hits:
 Wikidata's own; the wizard still links the Browns to the catalogue's 1902-1953
 row by name.
 
+**NEO-424 entry (2026-11-04): `Rickie Weeks`, Baseball hit and Football
+no-match.** The same spec's prior-year phase (rule E1) adds `Rickie Weeks`, the
+one unknown name on the 2009 insert Career Best Jumbo Jerseys, as a Football
+player, exactly as it does `Kendry Morales`. His FIRST lookup, in Baseball when
+the wizard opens on his row, is a live **hit** (`wikidataId` `Q3431635`, born
+1982, four dated stints with Wikidata ids at clubs the catalogue already holds
+(Milwaukee Brewers, Seattle Mariners, Arizona Diamondbacks, Tampa Bay Rays) and
+three undated clubs, so no career team is staged; enwiki "Rickie Weeks Jr."),
+merged as the file's default sport (no `sportQid`). Moving the row to Football
+re-queues the lookup there, and his Football answer is a **no-match** (`sportQid`
+`Q41323`). Both captured by the method above with `lookupPlayerEnrichmentLive`
+from a laptop; each trace left `transportFailed` false, and the Football search
+ran twice (`wikidata_search_empty`, then `wikidata_search_empty_confirmed`)
+before `wikidata_player_no_match`, so the `null` is a completed search and not
+an outage. Two entries merged per step 5 (only the new keys, keys re-sorted);
+the coverage proof of step 4 reads both as hits. His row on the 2010 insert
+(Peak Performance Relics) is inserted ready as a suggestion and is never looked
+up.
+
 ## 4b. Other sports, explicit names, and no Wikidata from your machine (2026-10-30)
 
 **Entries for another sport.** The file's `sportQid` is the default sport of

@@ -83,3 +83,4 @@
 - [eBay listing spec shape](patterns_ebay_listing_spec_shape.md) — NEO-415: seed-hop connect, loud fail when unwired, Set me up branch, two Sync status regions, Switch is a checkbox
 - [Sync status step ledger waits](patterns_sync_status_step_ledger_waits.md) — NEO-415: wait per ledger step (7 s), gate on the new run (stale ledger), throttled press, optional eBay photo step
 - [Button name substring hides demoted variants](patterns_button_name_substring_hides_demoted_variants.md) — "Add as New Player" substring-matches the demoted "... anyway"; creating specs use answerPlayerAsNew (two-press aware), never the bare name
+- [Pick a wizard name from BSC facets + the gate resolver](patterns_pick_a_wizard_name_from_bsc_facets_and_the_gate_resolver.md) — no-login card lists, players:resolveNameForReview verdicts, selection recipe, what to record
