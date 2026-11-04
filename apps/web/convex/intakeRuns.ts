@@ -50,10 +50,12 @@ import { requireSignedIn, getCurrentUserId } from "./auth";
 import {
   addOne,
   applyCopyChanges,
+  canRetryIntakePhotos,
   COLLECTION_ERRORS,
   defaultConditionOf,
   isPriceCents,
   MAX_COPY_QUANTITY,
+  MAX_INTAKE_PHOTO_ATTEMPTS,
   refuse,
 } from "./collection";
 import {
@@ -65,6 +67,7 @@ import {
   collectionContainerKindValidator,
 } from "./schema";
 import { photoUrlsOf } from "./copyPhotos";
+import { intakePhotoPool } from "./intakePhotoPool";
 import { kickOwnerDrains, listsOnMarketplaces } from "./listingOutbox";
 import { ListingGate } from "./listingGate";
 import {
@@ -95,10 +98,13 @@ const JOB_DONE = new Set(["succeeded", "failed"]);
 
 /**
  * How long a save's photos may stay "pending" before they count as failed.
- * Past Convex's 10-minute action limit, so a live attach is never called dead;
- * a scheduled action that was lost would otherwise spin on its tile for good.
+ * The clock starts at the save, so it has to outlast the queue: 500 cards at a
+ * slow 30 seconds each, at `intakePhotoPool`'s prod width of 5, is 50 minutes
+ * (about 5 when warm). An attach that was lost would otherwise spin on its tile
+ * for good, and the listing drain doesn't wait on it past its next tick. A
+ * timeout that beats a slow attach is corrected by that attach's own report.
  */
-export const INTAKE_PHOTO_ATTACH_TIMEOUT_MS = 15 * 60 * 1000;
+export const INTAKE_PHOTO_ATTACH_TIMEOUT_MS = 60 * 60 * 1000;
 
 /**
  * NEO-370: run the collector's listing drain once a listed-box run is
@@ -473,6 +479,8 @@ const matchRowValidator = v.object({
   /** NEO-427 — the pair's scans on their way onto the saved line, and why they failed. */
   photos: v.optional(intakePhotosValidator),
   photoFailure: v.optional(intakePhotoFailureValidator),
+  /** True while Try again can still help a failed row. */
+  photoCanRetry: v.optional(v.boolean()),
   /** Copies of the proposed card already in the run's home ("You have N here"). */
   haveHere: v.number(),
 });
@@ -480,21 +488,24 @@ const matchRowValidator = v.object({
 /**
  * A row's photo state as its tile should say it. A failed attach stops asking
  * once there is nothing left to ask for: the copy left the collection (plain
- * Saved), or the collector made it up by hand (attached). Aged-out scans asked
- * for a photo, so any photo answers them; Try again asks for both sides. Reads
- * only for failed rows.
+ * Saved), or the collector made it up by hand (attached). With no Try again
+ * left the tile asks for a photo, so any photo answers it; Try again asks for
+ * both sides, and a side a scan landed on counts even if the collector has
+ * since taken it off. Reads only for failed rows.
  */
 async function photoStateOf(
   ctx: QueryCtx,
   row: Doc<"intakeMatches">,
-): Promise<Pick<Doc<"intakeMatches">, "photos" | "photoFailure">> {
+): Promise<Pick<Doc<"intakeMatches">, "photos" | "photoFailure"> & { photoCanRetry?: boolean }> {
   const { photos, photoFailure } = row;
   if (photos !== "failed" || !row.savedCopyId) return { photos, photoFailure };
   const copy = await ctx.db.get(row.savedCopyId);
   if (!copy) return {};
   const { front, back } = await photoUrlsOf(ctx, copy);
-  const madeUp = photoFailure === "scanGone" ? front || back : front && back;
-  return madeUp ? { photos: "attached" } : { photos, photoFailure };
+  const landed = (side: "front" | "back") => row.photoSidesAttached?.includes(side);
+  const canRetry = canRetryIntakePhotos(row);
+  const madeUp = canRetry ? (front || landed("front")) && (back || landed("back")) : front || back;
+  return madeUp ? { photos: "attached" } : { photos, photoFailure, photoCanRetry: canRetry };
 }
 
 /**
@@ -712,14 +723,12 @@ export const saveIntakeMatch = mutation({
       savedQuantity: args.quantity,
       savedAt: now,
       photos: "pending",
+      photoAttempt: 1,
     });
     await ctx.db.patch(run._id, { lastActivityAt: now });
     // The run can't settle on this save: its photos are pending. Their report
     // (`recordIntakePhotos`) makes the settle check.
-    await ctx.scheduler.runAfter(0, internal.intakePhotos.attachIntakePhotos, { matchId: row._id });
-    await ctx.scheduler.runAfter(INTAKE_PHOTO_ATTACH_TIMEOUT_MS, internal.intakeRuns.expireIntakePhotoAttach, {
-      matchId: row._id,
-    });
+    await queueIntakePhotoAttach(ctx, row._id, 1);
     return { copyId: result.copyId, alreadySaved: false };
   },
 });
@@ -819,6 +828,7 @@ export const intakePhotoWork = internalQuery({
       jobId: v.string(),
       frontIndex: v.number(),
       backIndex: v.number(),
+      photoSidesAttached: v.optional(v.array(v.union(v.literal("front"), v.literal("back")))),
     }),
   ),
   handler: async (ctx, args) => {
@@ -832,7 +842,34 @@ export const intakePhotoWork = internalQuery({
       jobId: run.jobId,
       frontIndex: row.frontIndex,
       backIndex: row.backIndex,
+      photoSidesAttached: row.photoSidesAttached,
     };
+  },
+});
+
+/** Queue one attempt at a saved pair's photos, with the timeout that clears it if it is lost. */
+async function queueIntakePhotoAttach(
+  ctx: MutationCtx,
+  matchId: Id<"intakeMatches">,
+  attempt: number,
+): Promise<void> {
+  await intakePhotoPool.enqueueAction(ctx, internal.intakePhotos.attachIntakePhotos, { matchId });
+  await ctx.scheduler.runAfter(INTAKE_PHOTO_ATTACH_TIMEOUT_MS, internal.intakeRuns.expireIntakePhotoAttach, {
+    matchId,
+    attempt,
+  });
+}
+
+/** One side's scan landed on the copy. Try again won't bring that side back if the collector takes it off. */
+export const recordIntakePhotoSide = internalMutation({
+  args: { matchId: v.id("intakeMatches"), side: v.union(v.literal("front"), v.literal("back")) },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const row = await ctx.db.get(args.matchId);
+    if (!row) return null;
+    const landed = row.photoSidesAttached ?? [];
+    if (!landed.includes(args.side)) await ctx.db.patch(row._id, { photoSidesAttached: [...landed, args.side] });
+    return null;
   },
 });
 
@@ -841,7 +878,7 @@ async function settleIntakePhotos(
   ctx: MutationCtx,
   row: Doc<"intakeMatches">,
   photos: "attached" | "failed",
-  photoFailure: "scanGone" | "error" | undefined,
+  photoFailure: Doc<"intakeMatches">["photoFailure"],
 ): Promise<void> {
   // A late failure never takes back photos that did land (a retry racing the
   // attach before it, or the timeout's guess).
@@ -869,18 +906,24 @@ export const recordIntakePhotos = internalMutation({
   },
 });
 
-/** An attach that never reported: its tile offers Try again, and the run settles. */
+/**
+ * An attach that never reported: its tile offers Try again, and the run
+ * settles. A timer from an earlier attempt does nothing, so a Try again gets
+ * its full time.
+ */
 export const expireIntakePhotoAttach = internalMutation({
-  args: { matchId: v.id("intakeMatches") },
+  args: { matchId: v.id("intakeMatches"), attempt: v.optional(v.number()) },
   returns: v.null(),
   handler: async (ctx, args) => {
     const row = await ctx.db.get(args.matchId);
-    if (row?.photos === "pending") await settleIntakePhotos(ctx, row, "failed", "error");
+    if (row?.photos === "pending" && row.photoAttempt === args.attempt) {
+      await settleIntakePhotos(ctx, row, "failed", "error");
+    }
     return null;
   },
 });
 
-/** Try again's database half: the caller's failed row goes back to pending. */
+/** Try again: the caller's failed row goes back to pending and joins the queue. */
 export const beginIntakePhotoRetry = internalMutation({
   args: { matchId: v.id("intakeMatches"), ownerId: v.string() },
   returns: v.null(),
@@ -892,13 +935,22 @@ export const beginIntakePhotoRetry = internalMutation({
     if (row.photos !== "failed") {
       refuse(COLLECTION_ERRORS.invalid, "Those photos are already in, or on their way.");
     }
+    if (row.photoFailure === "scanGone") {
+      refuse(COLLECTION_ERRORS.invalid, "Those scans aged out. Add a photo from the card instead.");
+    }
+    if (row.photoFailure === "unusable") {
+      refuse(COLLECTION_ERRORS.invalid, "Those scans won't cut it. Add a photo from the card instead.");
+    }
+    const tried = row.photoAttempt ?? 1;
+    if (tried >= MAX_INTAKE_PHOTO_ATTEMPTS) {
+      refuse(COLLECTION_ERRORS.limit, `We've tried these scans ${tried} times. Add a photo from the card instead.`);
+    }
     if (!row.savedCopyId || !(await ctx.db.get(row.savedCopyId))) {
       refuse(COLLECTION_ERRORS.notFound, "That card left your collection, so its photos have nowhere to go.");
     }
-    await ctx.db.patch(row._id, { photos: "pending", photoFailure: undefined });
-    await ctx.scheduler.runAfter(INTAKE_PHOTO_ATTACH_TIMEOUT_MS, internal.intakeRuns.expireIntakePhotoAttach, {
-      matchId: row._id,
-    });
+    const attempt = tried + 1;
+    await ctx.db.patch(row._id, { photos: "pending", photoFailure: undefined, photoAttempt: attempt });
+    await queueIntakePhotoAttach(ctx, row._id, attempt);
     return null;
   },
 });

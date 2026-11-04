@@ -138,7 +138,9 @@ export function photoLine(row: Pick<IntakeMatchRow, "photos" | "photoFailure">):
     case "attached":
       return "Photos are in!";
     case "failed":
-      return row.photoFailure === "scanGone" ? "The scans aged out." : "Photos didn't stick.";
+      if (row.photoFailure === "scanGone") return "The scans aged out.";
+      if (row.photoFailure === "unusable") return "These scans won't cut it.";
+      return "Photos didn't stick.";
     default:
       return null;
   }
@@ -147,48 +149,83 @@ export function photoLine(row: Pick<IntakeMatchRow, "photos" | "photoFailure">):
 /** Where a row's photos are, for spotting a change. */
 export type PhotoStates = ReadonlyMap<string, string>;
 
-export function photoStates(
-  rows: ReadonlyArray<Pick<IntakeMatchRow, "pairId" | "photos" | "photoFailure">>,
-): PhotoStates {
-  return new Map(rows.map((row) => [row.pairId, `${row.photos ?? ""}:${row.photoFailure ?? ""}`]));
+type PhotoRow = Pick<IntakeMatchRow, "pairId" | "photos" | "photoFailure" | "photoCanRetry">;
+
+export function photoStates(rows: readonly PhotoRow[]): PhotoStates {
+  return new Map(rows.map((row) => [row.pairId, `${row.photos ?? ""}:${row.photoFailure ?? ""}:${row.photoCanRetry ?? ""}`]));
+}
+
+/** How long a run's photos stay quiet before what landed is said at once. */
+export const PHOTO_NEWS_QUIET_MS = 1500;
+
+export type PhotoNewsKind = "attached" | "retry" | "stuck" | "scanGone" | "unusable";
+/** What just happened to some rows' photos, by pair: a later word on a pair replaces an earlier one. */
+export type PhotoChanges = ReadonlyMap<string, { kind: PhotoNewsKind; card: string }>;
+
+function newsKindOf(row: PhotoRow): PhotoNewsKind | null {
+  if (row.photos === "attached") return "attached";
+  if (row.photos !== "failed") return null;
+  if (row.photoFailure === "scanGone" || row.photoFailure === "unusable") return row.photoFailure;
+  return row.photoCanRetry ? "retry" : "stuck";
 }
 
 /**
- * NEO-427 — the one polite line for photos that just landed or failed since
- * `before`. A row not seen before says nothing, so opening a finished run stays
- * quiet; a "Save all" batch is said once, as a count, rather than card by card.
+ * NEO-427 — the rows whose photos landed or failed since `before`. A row not
+ * seen before says nothing, so opening a finished run stays quiet; going back
+ * to pending says nothing, because focus lands on the line itself.
  */
-export function photoNews(before: PhotoStates, rows: readonly IntakeMatchRow[]): string {
+export function photoChanges(before: PhotoStates, rows: readonly IntakeMatchRow[]): PhotoChanges {
   const now = photoStates(rows);
-  const landed = (photos: string, photoFailure?: string) =>
-    rows.filter(
-      (row) =>
-        row.photos === photos &&
-        row.photoFailure === photoFailure &&
-        before.has(row.pairId) &&
-        before.get(row.pairId) !== now.get(row.pairId),
-    );
-  const say = (found: IntakeMatchRow[], one: (label: string) => string, many: (n: number) => string) =>
-    found.length === 0 ? "" : found.length === 1 ? one(cardLabel(found[0].card)) : many(found.length);
+  const changes = new Map<string, { kind: PhotoNewsKind; card: string }>();
+  for (const row of rows) {
+    const kind = newsKindOf(row);
+    if (kind && before.has(row.pairId) && before.get(row.pairId) !== now.get(row.pairId)) {
+      changes.set(row.pairId, { kind, card: cardLabel(row.card) });
+    }
+  }
+  return changes;
+}
+
+/** The one polite line for some changes: by name for one card, as a count for many. */
+export function photoNewsOf(changes: PhotoChanges): string {
+  const all = [...changes.values()];
+  const say = (kind: PhotoNewsKind, one: (card: string) => string, many: (n: number) => string) => {
+    const found = all.filter((change) => change.kind === kind);
+    return found.length === 0 ? "" : found.length === 1 ? one(found[0].card) : many(found.length);
+  };
   return [
     say(
-      landed("attached"),
+      "attached",
       (card) => `Photos are in for ${card}.`,
       (n) => `Photos are in for ${n} cards.`,
     ),
     say(
-      landed("failed", "error"),
+      "retry",
       (card) => `Photos didn't stick on ${card}. Try again from its tile in Saved.`,
       (n) => `Photos didn't stick on ${n} cards. Try again from their tiles in Saved.`,
     ),
     say(
-      landed("failed", "scanGone"),
+      "stuck",
+      (card) => `Photos didn't stick on ${card}. Add a photo from its tile in Saved.`,
+      (n) => `Photos didn't stick on ${n} cards. Add photos from their tiles in Saved.`,
+    ),
+    say(
+      "scanGone",
       (card) => `The scans for ${card} aged out. Add a photo from its tile in Saved.`,
       (n) => `The scans for ${n} cards aged out. Add photos from their tiles in Saved.`,
+    ),
+    say(
+      "unusable",
+      (card) => `The scans for ${card} won't cut it. Add a photo from its tile in Saved.`,
+      (n) => `The scans for ${n} cards won't cut it. Add photos from their tiles in Saved.`,
     ),
   ]
     .filter(Boolean)
     .join(" ");
+}
+
+export function photoNews(before: PhotoStates, rows: readonly IntakeMatchRow[]): string {
+  return photoNewsOf(photoChanges(before, rows));
 }
 
 /** The line's count once saved: what is already here, plus this scan. */

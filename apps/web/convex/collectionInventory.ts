@@ -54,7 +54,7 @@ import {
   MAX_COPY_QUANTITY,
   MAX_LINES_PER_CARD,
   TOO_MANY_LINES,
-  linesAwaitingScans,
+  foldTargetOf,
   applyCopyChanges,
   changeOf,
   checkSlot,
@@ -269,11 +269,11 @@ async function putPlain(
     homeId: box._id,
     ...(details.slot !== undefined ? { slot: details.slot } : {}),
   };
-  const twins = lines.filter(
+  const into = await foldTargetOf(
+    ctx,
+    lines,
     (row) => foldsInto(foldShape(row), next) && row.quantity + details.quantity <= MAX_COPY_QUANTITY,
   );
-  const awaiting = await linesAwaitingScans(ctx, twins);
-  const into = twins.find((row) => !awaiting.includes(row._id));
   if (into) {
     const quantity = into.quantity + details.quantity;
     await ctx.db.patch(into._id, { quantity, lastUpdated: now });

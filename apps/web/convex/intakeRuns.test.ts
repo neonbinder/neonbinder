@@ -8,7 +8,7 @@
  */
 
 import { convexTest } from "convex-test";
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import schema from "./schema";
 import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
@@ -16,7 +16,8 @@ import { cancelScheduled, drainScheduled } from "../lib/testing/drain-scheduled"
 import { seedCollectionCatalog } from "../lib/testing/collection-fixture";
 import { insertTestCard } from "../lib/testing/card-row";
 import { priceEveryVariant } from "../lib/testing/common-prices";
-import { defaultConditionOf } from "./collection";
+import { defaultConditionOf, lineAwaitingScans, MAX_INTAKE_PHOTO_ATTEMPTS } from "./collection";
+import { intakePhotoPool } from "./intakePhotoPool";
 import { INTAKE_SETTLE_SCAN, noteIntakePairsChanged } from "./intakeRuns";
 
 const modules = (import.meta as unknown as {
@@ -28,9 +29,15 @@ const THEM = { subject: "user_intakeThem002" };
 const JOB = "job-intake-1";
 
 let harnesses: Array<ReturnType<typeof convexTest>> = [];
+// No test registers a component, so the queue in front of a save's photos stands in.
+const enqueued = () => vi.mocked(intakePhotoPool.enqueueAction);
+beforeEach(() => {
+  vi.spyOn(intakePhotoPool, "enqueueAction").mockResolvedValue("work" as never);
+});
 afterEach(async () => {
   for (const t of harnesses) await drainScheduled(t);
   harnesses = [];
+  vi.restoreAllMocks();
 });
 
 interface Scan {
@@ -717,7 +724,10 @@ describe("NEO-370 — a settled box run kicks the collector's listing drain", ()
     await held(w, async () => {
       await w.me.mutation(api.intakeRuns.setIntakeMatchAside, { runId, pairId: w.pairIds[1], setAside: true });
       await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[0], quantity: 1 });
-      await w.t.mutation(internal.intakeRuns.expireIntakePhotoAttach, { matchId: await matchOf(w, w.pairIds[0]) });
+      await w.t.mutation(internal.intakeRuns.expireIntakePhotoAttach, {
+        matchId: await matchOf(w, w.pairIds[0]),
+        attempt: 1,
+      });
       expect(await drainsOf(w)).toHaveLength(1);
     });
   });
@@ -1132,7 +1142,7 @@ describe("NEO-427 — a save's photos", () => {
     const { photos, photoFailure } = rows[0];
     return { photos, photoFailure };
   };
-  const fail = (w: W, matchId: Id<"intakeMatches">, photoFailure: "scanGone" | "error") =>
+  const fail = (w: W, matchId: Id<"intakeMatches">, photoFailure: "scanGone" | "unusable" | "error") =>
     w.t.mutation(internal.intakeRuns.recordIntakePhotos, { matchId, photos: "failed", photoFailure });
   const live = (w: W, copyId: Id<"collectionCopies">, side: "front" | "back") =>
     w.t.run(async (ctx) => {
@@ -1162,14 +1172,16 @@ describe("NEO-427 — a save's photos", () => {
     const w = await one();
     const { runId, copyId, matchId } = await saved(w);
     expect(await tile(w, runId)).toEqual({ photos: "pending", photoFailure: undefined });
-    const attaches = (await scheduledNames(w)).filter((n) => n.includes("attachIntakePhotos"));
-    expect(attaches).toHaveLength(1);
+    expect(enqueued()).toHaveBeenCalledTimes(1);
+    expect(enqueued().mock.calls[0][2]).toEqual({ matchId });
+    expect((await scheduledNames(w)).filter((n) => n.includes("attachIntakePhotos"))).toEqual([]);
     expect((await scheduledNames(w)).filter((n) => n.includes("expireIntakePhotoAttach"))).toHaveLength(1);
     const before = (await scheduledNames(w)).length;
     await expect(
       w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[0], quantity: 1 }),
     ).resolves.toEqual({ copyId, alreadySaved: true });
     expect((await scheduledNames(w)).length).toBe(before);
+    expect(enqueued()).toHaveBeenCalledTimes(1);
     expect(await w.t.query(internal.intakeRuns.intakePhotoWork, { matchId })).toEqual({
       ownerId: ME.subject,
       copyId,
@@ -1202,10 +1214,10 @@ describe("NEO-427 — a save's photos", () => {
   test("the timeout calls a pending attach failed, and leaves any other state alone", async () => {
     const w = await one();
     const { runId, matchId } = await saved(w);
-    await w.t.mutation(internal.intakeRuns.expireIntakePhotoAttach, { matchId });
+    await w.t.mutation(internal.intakeRuns.expireIntakePhotoAttach, { matchId, attempt: 1 });
     expect(await tile(w, runId)).toEqual({ photos: "failed", photoFailure: "error" });
     await fail(w, matchId, "scanGone");
-    await w.t.mutation(internal.intakeRuns.expireIntakePhotoAttach, { matchId });
+    await w.t.mutation(internal.intakeRuns.expireIntakePhotoAttach, { matchId, attempt: 1 });
     expect(await tile(w, runId)).toEqual({ photos: "failed", photoFailure: "scanGone" });
   });
 
@@ -1213,10 +1225,10 @@ describe("NEO-427 — a save's photos", () => {
     const w = await one();
     const { runId, matchId } = await saved(w);
     await w.t.mutation(internal.intakeRuns.recordIntakePhotos, { matchId, photos: "attached" });
-    await w.t.mutation(internal.intakeRuns.expireIntakePhotoAttach, { matchId });
+    await w.t.mutation(internal.intakeRuns.expireIntakePhotoAttach, { matchId, attempt: 1 });
     expect(await tile(w, runId)).toEqual({ photos: "attached", photoFailure: undefined });
     await w.t.run((ctx) => ctx.db.delete(matchId));
-    await expect(w.t.mutation(internal.intakeRuns.expireIntakePhotoAttach, { matchId })).resolves.toBeNull();
+    await expect(w.t.mutation(internal.intakeRuns.expireIntakePhotoAttach, { matchId, attempt: 1 })).resolves.toBeNull();
     await expect(
       w.t.mutation(internal.intakeRuns.recordIntakePhotos, { matchId, photos: "attached" }),
     ).resolves.toBeNull();
@@ -1244,9 +1256,70 @@ describe("NEO-427 — a save's photos", () => {
     await retry(ME.subject);
     expect(await tile(w, runId)).toEqual({ photos: "pending", photoFailure: undefined });
     expect(await timeouts()).toBe(before + 1);
+    expect(enqueued()).toHaveBeenCalledTimes(2);
+    expect(enqueued().mock.calls[1][2]).toEqual({ matchId });
     await fail(w, matchId, "error");
     await w.t.run((ctx) => ctx.db.delete(copyId));
     await expect(retry(ME.subject)).rejects.toThrow(/left your collection/);
+  });
+
+  test("a stale timer does nothing: a Try again gets its full time", async () => {
+    const w = await one();
+    const { runId, matchId } = await saved(w);
+    await fail(w, matchId, "error");
+    await w.t.mutation(internal.intakeRuns.beginIntakePhotoRetry, { matchId, ownerId: ME.subject });
+    await w.t.mutation(internal.intakeRuns.expireIntakePhotoAttach, { matchId, attempt: 1 });
+    expect(await tile(w, runId)).toEqual({ photos: "pending", photoFailure: undefined });
+    await w.t.mutation(internal.intakeRuns.expireIntakePhotoAttach, { matchId, attempt: 2 });
+    expect(await tile(w, runId)).toEqual({ photos: "failed", photoFailure: "error" });
+  });
+
+  test("Try again is refused when it can't help, in words that say what to do", async () => {
+    const w = await one();
+    const { runId, matchId } = await saved(w);
+    const retry = () => w.t.mutation(internal.intakeRuns.beginIntakePhotoRetry, { matchId, ownerId: ME.subject });
+    const offered = async () => (await w.me.query(api.intakeRuns.listIntakeMatches, { runId }))[0].photoCanRetry;
+    await fail(w, matchId, "scanGone");
+    expect(await offered()).toBe(false);
+    await expect(retry()).rejects.toThrow("Those scans aged out. Add a photo from the card instead.");
+    await fail(w, matchId, "unusable");
+    expect(await offered()).toBe(false);
+    await expect(retry()).rejects.toThrow("Those scans won't cut it. Add a photo from the card instead.");
+    expect(await tile(w, runId)).toEqual({ photos: "failed", photoFailure: "unusable" });
+  });
+
+  test("Try again runs out after its tries, the save's included", async () => {
+    const w = await one();
+    const { runId, matchId } = await saved(w);
+    const offered = async () => (await w.me.query(api.intakeRuns.listIntakeMatches, { runId }))[0].photoCanRetry;
+    for (let attempt = 1; attempt < MAX_INTAKE_PHOTO_ATTEMPTS; attempt++) {
+      await fail(w, matchId, "error");
+      expect(await offered()).toBe(true);
+      await w.t.mutation(internal.intakeRuns.beginIntakePhotoRetry, { matchId, ownerId: ME.subject });
+    }
+    await fail(w, matchId, "error");
+    expect(await offered()).toBe(false);
+    await expect(
+      w.t.mutation(internal.intakeRuns.beginIntakePhotoRetry, { matchId, ownerId: ME.subject }),
+    ).rejects.toThrow(`We've tried these scans ${MAX_INTAKE_PHOTO_ATTEMPTS} times. Add a photo from the card instead.`);
+    expect(enqueued()).toHaveBeenCalledTimes(MAX_INTAKE_PHOTO_ATTEMPTS);
+  });
+
+  test("a side the scan landed on stays done, so a photo taken off doesn't keep the tile asking", async () => {
+    const w = await one();
+    const { runId, copyId, matchId } = await saved(w);
+    const side = (s: "front" | "back") => w.t.mutation(internal.intakeRuns.recordIntakePhotoSide, { matchId, side: s });
+    await side("front");
+    await side("front");
+    expect((await w.t.run((ctx) => ctx.db.get(matchId)))?.photoSidesAttached).toEqual(["front"]);
+    expect((await w.t.query(internal.intakeRuns.intakePhotoWork, { matchId }))?.photoSidesAttached).toEqual(["front"]);
+    await fail(w, matchId, "error");
+    // The front landed and was taken off; the back never came.
+    expect(await tile(w, runId)).toEqual({ photos: "failed", photoFailure: "error" });
+    await live(w, copyId, "back");
+    expect(await tile(w, runId)).toEqual({ photos: "attached", photoFailure: undefined });
+    await w.t.run((ctx) => ctx.db.delete(matchId));
+    await expect(side("back")).resolves.toBeNull();
   });
 
   describe("a hand-added twin stays out of a line whose photos are due", () => {
@@ -1352,6 +1425,95 @@ describe("NEO-427 — a save's photos", () => {
       await w.me.mutation(api.collection.moveCopy, { copyId: scanned, toHomeId: other });
       // The photos are still due on this copy: it must still be there for them.
       expect(await w.t.run((ctx) => ctx.db.get(scanned))).not.toBeNull();
+    });
+
+    test.each([
+      ["aged-out scans", "scanGone"],
+      ["unusable scans", "unusable"],
+    ] as const)("Try again can't help %s, so the line folds again", async (_label, photoFailure) => {
+      const w = await one();
+      const { copyId, matchId } = await saved(w);
+      await fail(w, matchId, photoFailure);
+      const { copyId: twin } = await addTwin(w);
+      expect(twin).toBe(copyId);
+      expect(await lines(w)).toEqual([2]);
+    });
+
+    test("out of tries, the line folds again", async () => {
+      const w = await one();
+      const { copyId, matchId } = await saved(w);
+      await w.t.run((ctx) => ctx.db.patch(matchId, { photos: "failed", photoFailure: "error", photoAttempt: MAX_INTAKE_PHOTO_ATTEMPTS }));
+      expect(await w.t.run((ctx) => lineAwaitingScans(ctx, copyId))).toBe(false);
+      const { copyId: twin } = await addTwin(w);
+      expect(twin).toBe(copyId);
+    });
+
+    test("a moved binder line takes an open pocket, not its twin's", async () => {
+      const w = await one();
+      const { copyId: scanned } = await saved(w);
+      const binder = await w.t.run((ctx) =>
+        ctx.db.insert("collectionContainers", { ownerId: ME.subject, kind: "binder", name: "Second", lastUpdated: 0 }),
+      );
+      await w.me.mutation(api.collection.addLineItem, {
+        cardId: w.fx.gooden1,
+        details: { quantity: 1, condition: "Near Mint", costCents: 10, location: "Shelf 2", homeId: binder },
+      });
+      await w.me.mutation(api.collection.moveCopy, { copyId: scanned, toHomeId: binder });
+      expect(await w.t.run((ctx) => ctx.db.get(scanned))).toMatchObject({ homeId: binder, slot: 1, quantity: 1 });
+    });
+
+    test("moving part of the line lets the part that leaves fold; the line stays", async () => {
+      const w = await one();
+      const { copyId: scanned } = await saved(w);
+      await w.t.run((ctx) => ctx.db.patch(scanned, { quantity: 3 }));
+      const other = await w.t.run((ctx) =>
+        ctx.db.insert("collectionContainers", { ownerId: ME.subject, kind: "box", name: "Second", lastUpdated: 0 }),
+      );
+      const row = await w.t.run((ctx) => ctx.db.get(scanned));
+      const { copyId: hand } = await w.me.mutation(api.collection.addLineItem, {
+        cardId: w.fx.gooden1,
+        details: {
+          quantity: 1,
+          condition: row?.condition ?? "Near Mint",
+          costCents: row?.costCents,
+          location: row?.location,
+          acquiredOn: row?.acquiredOn,
+          homeId: other,
+        },
+      });
+      await w.me.mutation(api.collection.moveCopy, { copyId: scanned, toHomeId: other, quantity: 2 });
+      const [left, stack] = await w.t.run(async (ctx) => [await ctx.db.get(scanned), await ctx.db.get(hand)]);
+      expect(left?.quantity).toBe(1);
+      expect(stack?.quantity).toBe(3);
+    });
+
+    test("emptying a box never merges the line away, nor stacks onto one", async () => {
+      const w = await one();
+      const { copyId: scanned } = await saved(w);
+      const unsorted = await w.t.run((ctx) =>
+        ctx.db.insert("collectionContainers", {
+          ownerId: ME.subject,
+          kind: "box",
+          name: "Unsorted",
+          system: "unsorted",
+          lastUpdated: 0,
+        }),
+      );
+      const row = await w.t.run((ctx) => ctx.db.get(scanned));
+      await w.me.mutation(api.collection.addLineItem, {
+        cardId: w.fx.gooden1,
+        details: {
+          quantity: 1,
+          condition: row?.condition ?? "Near Mint",
+          costCents: row?.costCents,
+          location: row?.location,
+          acquiredOn: row?.acquiredOn,
+          homeId: unsorted,
+        },
+      });
+      await w.me.mutation(api.collectionContainers.empty, { containerId: w.boxId });
+      expect(await w.t.run((ctx) => ctx.db.get(scanned))).toMatchObject({ homeId: unsorted, quantity: 1 });
+      expect(await lines(w)).toEqual([1, 1]);
     });
 
     test("a line with no photo state folds as ever", async () => {

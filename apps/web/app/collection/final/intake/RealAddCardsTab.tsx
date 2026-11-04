@@ -27,9 +27,12 @@ import {
   failedText,
   LEAVE_INTAKE_LINE,
   laneOf,
+  PHOTO_NEWS_QUIET_MS,
+  photoChanges,
   photoLine,
-  photoNews,
+  photoNewsOf,
   photoStates,
+  type PhotoChanges,
   type PhotoStates,
   proposedCount,
   readOf,
@@ -42,6 +45,7 @@ import {
   whyNotSave,
 } from "./realLanes";
 import { HomeSelect, QTY_ATTR, RING, StageBadge } from "./ui";
+import { DRAWER_PARAM } from "../drawerParams";
 import { ScannerJoin } from "./ScannerJoin";
 import "./intake.css";
 
@@ -1075,18 +1079,45 @@ function RunWorkspace({ run, jobOpen }: { run: RunSummary; jobOpen: boolean }) {
 
 /**
  * NEO-427 — what to say out loud about the run's photos. The first read only
- * learns where things stand, so opening a run says nothing.
+ * learns where things stand, so opening a run says nothing. Rows land one by one
+ * during a "Save all", so they gather into one line: said after a quiet spell,
+ * or as soon as nothing is on its way. A failure starts a window that later
+ * rows don't push back. A live region speaks only a change, so the same words
+ * twice differ by a trailing space the ear can't hear.
  */
 function usePhotoNews(matches: IntakeMatchRow[] | undefined): string {
   const [news, setNews] = useState("");
   const seen = useRef<PhotoStates | null>(null);
+  const gathered = useRef<PhotoChanges>(new Map());
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const said = useRef(0);
   useEffect(() => {
     if (!matches) return;
     const before = seen.current;
     seen.current = photoStates(matches);
-    const said = before ? photoNews(before, matches) : "";
-    if (said) setNews(said);
+    if (!before) return;
+    gathered.current = new Map([...gathered.current, ...photoChanges(before, matches)]);
+    if (gathered.current.size === 0) return;
+    const say = () => {
+      timer.current = null;
+      const line = photoNewsOf(gathered.current);
+      gathered.current = new Map();
+      if (!line) return;
+      said.current += 1;
+      setNews(said.current % 2 === 0 ? `${line}\u00A0` : line);
+    };
+    const failing = [...gathered.current.values()].some((change) => change.kind !== "attached");
+    if (timer.current !== null && failing && matches.some((row) => row.photos === "pending")) return;
+    if (timer.current !== null) clearTimeout(timer.current);
+    if (matches.some((row) => row.photos === "pending")) timer.current = setTimeout(say, PHOTO_NEWS_QUIET_MS);
+    else say();
   }, [matches]);
+  useEffect(
+    () => () => {
+      if (timer.current !== null) clearTimeout(timer.current);
+    },
+    [],
+  );
   return news;
 }
 
@@ -1101,26 +1132,44 @@ const PHOTO_TONES: Record<RunLineKind, string> = {
   failed: "text-notice-warn-ink",
   unfinished: "text-notice-warn-ink",
 };
-const PHOTO_ACTION = `-my-1.5 block py-1.5 text-neon-blue-text underline ${RING}`;
+const PHOTO_ACTION = `-my-1.5 block py-1.5 text-neon-blue-text underline aria-disabled:cursor-not-allowed aria-disabled:opacity-60 ${RING}`;
+
+/** Focus has nowhere to be: it fell to the page with something that unmounted. */
+const focusFell = () => !document.activeElement || document.activeElement === document.body;
 
 /**
  * NEO-427 — a Saved tile's second word: its photos on their way, on the line,
- * or what to do about them. Failing never touches the save above it. Try again
- * unmounts as the row goes back to pending, so focus lands on this line's own
- * words instead of falling to the page (WCAG 2.4.3).
+ * or what to do about them. Failing never touches the save above it. A press
+ * takes its own button away: Try again as the row goes back to pending, Add a
+ * photo once the drawer's photo answers it (the drawer returns focus to the
+ * button, if the button is still there). Whichever, focus that fell to the page
+ * lands on this line's own words (WCAG 2.4.3); focus that is somewhere else
+ * stays there.
  */
 function PhotoLine({ row }: { row: IntakeMatchRow }) {
   const { notify, openCard } = usePageApi();
   const retryPhotos = useAction(api.intakePhotos.retryIntakePhotos);
+  const [params] = useSearchParams();
   const words = useRef<HTMLSpanElement>(null);
-  const retrying = useRef(false);
+  const [retrying, setRetrying] = useState(false);
+  const pressing = useRef(false);
   const refocus = useRef(false);
+  const addedFrom = useRef(false);
   const failed = row.photos === "failed";
+  const drawerOpen = params.has(DRAWER_PARAM);
+  const land = () => {
+    if (focusFell()) words.current?.focus({ preventScroll: true });
+  };
   useEffect(() => {
     if (failed || !refocus.current) return;
     refocus.current = false;
-    words.current?.focus({ preventScroll: true });
+    land();
   }, [failed]);
+  useEffect(() => {
+    if (drawerOpen || !addedFrom.current) return;
+    addedFrom.current = false;
+    land();
+  }, [drawerOpen]);
   const line = photoLine(row);
   if (!line) return null;
   const label = cardLabel(row.card);
@@ -1133,34 +1182,41 @@ function PhotoLine({ row }: { row: IntakeMatchRow }) {
           {line}
         </span>
       </span>
-      {failed && row.photoFailure !== "scanGone" && (
+      {failed && row.photoCanRetry && (
         <button
           type="button"
           className={PHOTO_ACTION}
           aria-label={`Try again: photos for ${label}`}
+          aria-disabled={retrying || undefined}
           onClick={() => {
-            if (retrying.current) return;
-            retrying.current = true;
+            if (pressing.current) return;
+            pressing.current = true;
             refocus.current = true;
+            setRetrying(true);
             retryPhotos({ matchId: row._id })
               .catch((e: unknown) => {
                 refocus.current = false;
                 notify(writeErrorMessage(e));
               })
               .finally(() => {
-                retrying.current = false;
+                pressing.current = false;
+                setRetrying(false);
               });
           }}
         >
           Try again
         </button>
       )}
-      {failed && row.photoFailure === "scanGone" && row.cardId && (
+      {failed && !row.photoCanRetry && row.cardId && (
         <button
           type="button"
           className={PHOTO_ACTION}
           aria-label={`Add a photo to ${label}`}
-          onClick={() => row.cardId && openCard(row.cardId, { copyId: row.savedCopyId, edit: true })}
+          onClick={() => {
+            if (!row.cardId) return;
+            addedFrom.current = true;
+            openCard(row.cardId, { copyId: row.savedCopyId, edit: true });
+          }}
         >
           Add a photo
         </button>

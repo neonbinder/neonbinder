@@ -9,9 +9,9 @@ The numbers mirror `COPY_PHOTO_LONG_EDGE`, `COPY_PHOTO_THUMB_EDGE`,
 `apps/web/convex/copyPhotos.ts`. Convex refuses anything over its own limits,
 so a drift here fails the attach rather than storing the wrong thing.
 
-Both files are JPEG with no EXIF block: a photo here ends up on public share
-pages and marketplace listings, and only the pixels and the colour profile
-belong there.
+Both files are JPEG with no EXIF, XMP or comment: a photo here ends up on public
+share pages and marketplace listings, and only the pixels and a colour profile
+of ordinary size belong there.
 """
 
 from __future__ import annotations
@@ -26,6 +26,11 @@ COPY_PHOTO_THUMB_EDGE = 360
 MAX_COPY_PHOTO_BYTES = 3 * 1024 * 1024
 MAX_COPY_THUMB_BYTES = 256 * 1024
 COPY_PHOTO_CONTENT_TYPE = "image/jpeg"
+
+# A profile bigger than this is dropped. An ordinary sRGB or Display P3 profile
+# is a few KB, and the thumbnail's whole limit is 256 KB, so a profile of that
+# order would fail the thumbnail every time whatever its pixels were.
+MAX_ICC_PROFILE_BYTES = 16 * 1024
 
 # Tried best first until a file fits its limit. A card at 1600px clears the
 # limit at the first step; the rest exist for an unusually noisy scan.
@@ -79,6 +84,11 @@ def derive_copy_photos(image_bytes: bytes) -> DerivedCopyPhotos:
         # applies when `convert` leaves the pixels in that space.
         icc_profile = source.info.get("icc_profile") if source.mode == "RGB" else None
         image = _to_rgb(source)
+    # `convert` carries the source's metadata along and JPEG save writes what it
+    # finds here (a comment, XMP), whatever is passed to `save`.
+    image.info.clear()
+    if icc_profile is not None and len(icc_profile) > MAX_ICC_PROFILE_BYTES:
+        icc_profile = None
 
     image.thumbnail((COPY_PHOTO_LONG_EDGE, COPY_PHOTO_LONG_EDGE), Image.Resampling.LANCZOS)
     encoded_image = _encode_within(image, MAX_COPY_PHOTO_BYTES, icc_profile)

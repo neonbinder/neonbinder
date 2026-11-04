@@ -38,3 +38,5 @@ seeded with many rows (the 1200-card cursor test in
 `cardChecklist.bscTeamEnrichment.test.ts`) can never be drained.
 
 Related: [[transient-parse-errors-are-hardware]], [[vitest-throwing-console-spy]].
+
+A mutation that enqueues directly (not through a schedule) throws the same error at the call. `vi.spyOn(pool, "enqueueAction").mockResolvedValue("work" as never)` in `beforeEach` stands in, and its `mock.calls` assert the enqueue really happened (NEO-427); restore in `afterEach`.

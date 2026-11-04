@@ -2,9 +2,9 @@
 
 Covers: auth, identifier validation, the unconfigured-bucket 503, the distinct
 OUTPUT_NOT_FOUND 404 Convex reads as "the scan is gone", the sizes and their
-byte limits, never enlarging, EXIF never surviving, the colour profile
-surviving, alpha flattening, extension probing, nothing written, and the
-terminal codes for bytes that can never succeed.
+byte limits, never enlarging, no metadata surviving, an ordinary colour profile
+surviving and an oversized one dropped, alpha flattening, extension probing,
+nothing written, and the terminal codes for bytes that can never succeed.
 
 Storage is the shared in-memory fake from `_fake_gcs` driven through the real
 `ObjectStore`. No network, no credentials.
@@ -18,7 +18,7 @@ import random
 
 import pytest
 from fastapi.testclient import TestClient
-from PIL import Image
+from PIL import Image, PngImagePlugin
 
 from app import copy_photos
 from app.imaging import MAX_IMAGE_PIXELS
@@ -195,16 +195,43 @@ class TestContents:
     def test_exif_never_reaches_the_copy(self, fake_gcs):
         exif = Image.Exif()
         exif[0x010F] = "Some Scanner Maker"
-        _store(fake_gcs, "0003.jpg", _encoded((64, 64), exif=exif.tobytes()), "image/jpeg")
+        scan = _encoded((64, 64), exif=exif.tobytes(), comment=b"scanned at home", xmp=b"<x/>")
+        assert Image.open(io.BytesIO(scan)).info.get("comment") == b"scanned at home"
+        _store(fake_gcs, "0003.jpg", scan, "image/jpeg")
         body = client.post("/derive-copy-photos", json=BODY, headers=HEADERS).json()
         for key in ("image", "thumb"):
-            assert not _decoded(body[key]).getexif()
+            decoded = _decoded(body[key])
+            assert not decoded.getexif()
+            assert "comment" not in decoded.info
+            assert "xmp" not in decoded.info
+            assert b"scanned at home" not in base64.b64decode(body[key])
+
+    def test_a_png_comment_never_reaches_the_copy(self, fake_gcs):
+        text = PngImagePlugin.PngInfo()
+        text.add_text("comment", "scanned at home")
+        scan = _encoded((64, 64), fmt="PNG", pnginfo=text)
+        assert Image.open(io.BytesIO(scan)).info.get("comment") == "scanned at home"
+        _store(fake_gcs, "0003.png", scan, "image/png")
+        body = client.post("/derive-copy-photos", json=BODY, headers=HEADERS).json()
+        assert "comment" not in _decoded(body["image"]).info
+        assert b"scanned at home" not in base64.b64decode(body["image"])
 
     def test_the_colour_profile_stays_with_the_pixels(self, fake_gcs):
         profile = b"not-a-real-profile-but-pillow-only-carries-it"
         _store(fake_gcs, "0003.jpg", _encoded((64, 64), icc_profile=profile), "image/jpeg")
         body = client.post("/derive-copy-photos", json=BODY, headers=HEADERS).json()
         assert _decoded(body["image"]).info.get("icc_profile") == profile
+
+    def test_an_oversized_colour_profile_is_dropped_rather_than_failing_the_thumbnail(
+        self, fake_gcs
+    ):
+        profile = random.Random(427).randbytes(300 * 1024)
+        _store(fake_gcs, "0003.jpg", _encoded((64, 64), icc_profile=profile), "image/jpeg")
+        res = client.post("/derive-copy-photos", json=BODY, headers=HEADERS)
+        assert res.status_code == 200
+        for key in ("image", "thumb"):
+            assert "icc_profile" not in _decoded(res.json()[key]).info
+            assert len(base64.b64decode(res.json()[key])) <= copy_photos.MAX_COPY_THUMB_BYTES
 
     def test_transparency_lands_on_white(self, fake_gcs):
         _store(fake_gcs, "0003.png", _encoded((64, 64), fmt="PNG", mode="RGBA"), "image/png")

@@ -686,7 +686,7 @@ export const intakeDefaultsValidator = v.object({
 /** NEO-427 — a saved pair's scans on their way onto its line (`intakeMatches.photos`). */
 export const intakePhotosValidator = v.union(v.literal("pending"), v.literal("attached"), v.literal("failed"));
 /** NEO-427 — why a "failed" attach failed (`intakeMatches.photoFailure`). */
-export const intakePhotoFailureValidator = v.union(v.literal("scanGone"), v.literal("error"));
+export const intakePhotoFailureValidator = v.union(v.literal("scanGone"), v.literal("unusable"), v.literal("error"));
 
 /** NEO-379 — the matcher's confidence band (`convex/lib/intakeMatch.ts`). */
 export const intakeBandValidator = v.union(
@@ -3826,13 +3826,19 @@ export default defineSchema({
     // attach reports, and it holds the run's listing kick; a row saved before
     // this shipped has neither field and holds nothing. `photoFailure` says
     // why a "failed" attach failed: "scanGone" (the scan aged out of the
-    // upload bucket, so Try again can't help) or "error" (Try again might).
+    // upload bucket) or "unusable" (no photo can be made of it), where Try
+    // again can't help, or "error", where it might. `photoAttempt` counts the
+    // save and each Try again, and a stale timeout does nothing by it.
+    // `photoSidesAttached` is the sides a scan has landed on, so Try again never
+    // brings back a photo the collector has since removed.
     photos: v.optional(intakePhotosValidator),
     photoFailure: v.optional(intakePhotoFailureValidator),
+    photoAttempt: v.optional(v.number()),
+    photoSidesAttached: v.optional(v.array(v.union(v.literal("front"), v.literal("back")))),
   })
     .index("by_run", ["runId"])
     .index("by_pair", ["pairId"])
-    // A line whose scans are still due stays out of the fold (`linesAwaitingScans`).
+    // A line whose scans are still due stays out of the fold (`lineAwaitingScans`).
     .index("by_saved_copy", ["savedCopyId"]),
 
   // Deployment-wide preprocess warm-up state (NEO-299). One row per fixed

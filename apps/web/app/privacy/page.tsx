@@ -192,10 +192,11 @@ export default function PrivacyPage() {
                 which, our image service reads them with Google Cloud Vision and Anthropic&apos;s Claude.
               </P>
               <P>
-                When you save a scanned card, we make a full-size image and a thumbnail from its front
-                and back and keep them on that copy in Cloudflare R2, just like a photo you add yourself.
-                They stay until you replace or remove them, and they go on the listing when that copy
-                lists on a marketplace you&apos;ve connected.
+                When you save a scanned card, we make a full-size image and a thumbnail from the scans of
+                its front and back and keep them on that copy in Cloudflare R2, just like a photo you add
+                yourself. They stay until you replace or remove them. They go on the listing when that
+                copy lists on a marketplace you&apos;ve connected, and they show on your public profile
+                if you show that copy there.
               </P>
             </Sub>
             <Sub title="Marketplace connections">

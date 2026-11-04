@@ -180,6 +180,7 @@ describe("NEO-427: a Saved tile's photos", () => {
     expect(photoLine(saved(0, { photos: "attached" }))).toBe("Photos are in!");
     expect(photoLine(saved(0, { photos: "failed", photoFailure: "error" }))).toBe("Photos didn't stick.");
     expect(photoLine(saved(0, { photos: "failed", photoFailure: "scanGone" }))).toBe("The scans aged out.");
+    expect(photoLine(saved(0, { photos: "failed", photoFailure: "unusable" }))).toBe("These scans won't cut it.");
     expect(photoLine(saved(0, {}))).toBeNull();
   });
 
@@ -196,7 +197,7 @@ describe("NEO-427: a Saved tile's photos", () => {
     expect(
       photoNews(before, [
         saved(0, { photos: "attached" }),
-        saved(2, { photos: "failed", photoFailure: "error" }),
+        saved(2, { photos: "failed", photoFailure: "error", photoCanRetry: true }),
         saved(4, { photos: "failed", photoFailure: "scanGone" }),
       ]),
     ).toBe(
@@ -204,8 +205,8 @@ describe("NEO-427: a Saved tile's photos", () => {
     );
     expect(
       photoNews(before, [
-        saved(0, { photos: "failed", photoFailure: "error" }),
-        saved(2, { photos: "failed", photoFailure: "error" }),
+        saved(0, { photos: "failed", photoFailure: "error", photoCanRetry: true }),
+        saved(2, { photos: "failed", photoFailure: "error", photoCanRetry: true }),
         saved(4, { photos: "pending" }),
       ]),
     ).toBe("Photos didn't stick on 2 cards. Try again from their tiles in Saved.");
@@ -216,6 +217,31 @@ describe("NEO-427: a Saved tile's photos", () => {
         saved(4, { photos: "pending" }),
       ]),
     ).toBe("The scans for 2 cards aged out. Add photos from their tiles in Saved.");
+    expect(
+      photoNews(before, [
+        saved(0, { photos: "failed", photoFailure: "unusable" }),
+        saved(2, { photos: "failed", photoFailure: "error" }),
+        pending[2],
+      ]),
+    ).toBe(
+      "Photos didn't stick on #2 Player 2. Add a photo from its tile in Saved. The scans for #0 Player 0 won't cut it. Add a photo from its tile in Saved.",
+    );
+    expect(
+      photoNews(before, [
+        saved(0, { photos: "failed", photoFailure: "unusable" }),
+        saved(2, { photos: "failed", photoFailure: "unusable" }),
+        saved(4, { photos: "failed", photoFailure: "error" }),
+      ]),
+    ).toBe(
+      "Photos didn't stick on #4 Player 4. Add a photo from its tile in Saved. The scans for 2 cards won't cut it. Add photos from their tiles in Saved.",
+    );
+    expect(
+      photoNews(before, [
+        saved(0, { photos: "failed", photoFailure: "error" }),
+        saved(2, { photos: "failed", photoFailure: "error" }),
+        pending[2],
+      ]),
+    ).toBe("Photos didn't stick on 2 cards. Add photos from their tiles in Saved.");
   });
 
   test("a row seen for the first time says nothing, so opening a finished run stays quiet", () => {

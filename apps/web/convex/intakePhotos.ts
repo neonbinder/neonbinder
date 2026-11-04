@@ -3,11 +3,12 @@
 /**
  * NEO-427 — a scanned pair's photos, onto the copy saved from it.
  *
- * `saveIntakeMatch` schedules `attachIntakePhotos` and returns; the save never
- * waits on this and nothing here touches the saved copy but its photos. For
- * each side the preprocess service makes the two sizes from the run's processed
- * output, a `source: "intake"` row is reserved, the files go to R2 from here,
- * and `commitUpload` makes the row live (and queues the card's listings). Then
+ * `saveIntakeMatch` enqueues `attachIntakePhotos` on `intakePhotoPool` and
+ * returns; the save never waits on this and nothing here touches the saved copy
+ * but its photos. For each side the preprocess service makes the two sizes from
+ * the run's processed output, a `source: "intake"` row is reserved, the files
+ * go to R2 from here, `commitUpload` makes the row live (and queues the card's
+ * listings), and `recordIntakePhotoSide` notes the side as done. Then
  * `recordIntakePhotos` writes how it ended, which lets the run's listing kick
  * go ahead.
  *
@@ -15,14 +16,15 @@
  * images, and R2 only takes a PUT signed for a known length, so no service can
  * be handed a URL ahead of knowing the size.
  *
- * Safe to run twice: a side with a live photo is left alone, so a retry fills
- * in only what is missing and a photo the collector added by hand stays.
- * Files of an attempt that dies before its commit belong to a pending row, and
+ * Safe to run twice: a side already attached is never attempted again, even
+ * when its photo is gone (the collector removed it, and it stays removed), and
+ * a side with a live photo is left alone, so a photo added by hand stays. Files
+ * of an attempt that dies before its commit belong to a pending row, and
  * `sweepCopyPhotos` removes both within the hour.
  */
 
 import { isNonRetryableError } from "@convex-dev/workpool";
-import { v } from "convex/values";
+import { ConvexError, v } from "convex/values";
 import type { Id } from "./_generated/dataModel";
 import { action, internalAction, type ActionCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
@@ -49,6 +51,19 @@ const R2_PUT_TIMEOUT_MS = 30_000;
  * take minutes when the service is down, and an action gets ten.
  */
 const REATTACH_BUDGET_MS = 2 * 60 * 1000;
+/** The exact string a `reattachIntakeRunPhotos` run must carry in `confirm`. */
+export const REATTACH_CONFIRM_PHRASE = "REATTACH INTAKE PHOTOS";
+/** The per-deployment arm for it. Only the literal `"true"` arms it. */
+export const REATTACH_ENV_FLAG = "ALLOW_REATTACH_INTAKE_PHOTOS";
+/**
+ * The service's verdicts on a scan's bytes. The same bytes fail the same way, so
+ * Try again can't help; the collector adds a photo instead.
+ */
+const UNUSABLE_SCAN_CODES: ReadonlySet<string | undefined> = new Set([
+  "PHOTO_TOO_LARGE",
+  "OUTPUT_TOO_MANY_PIXELS",
+  "OUTPUT_UNDECODABLE",
+]);
 
 type Side = "front" | "back";
 type Work = {
@@ -57,8 +72,12 @@ type Work = {
   jobId: string;
   frontIndex: number;
   backIndex: number;
+  photoSidesAttached?: Side[];
 };
-type AttachOutcome = { photos: "attached" } | { photos: "failed"; photoFailure: "scanGone" | "error" };
+type AttachOutcome =
+  | { photos: "attached" }
+  | { photos: "failed"; photoFailure: "scanGone" | "unusable" | "error" };
+type ReattachReport = { matches: number; attached: number; failed: number; skipped: number; continued: boolean };
 
 function messageOf(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -88,6 +107,7 @@ async function deriveWithRetry(ctx: ActionCtx, work: Work, entryIndex: number): 
 async function attachSide(
   ctx: ActionCtx,
   config: R2Config,
+  matchId: Id<"intakeMatches">,
   work: Work,
   side: Side,
   entryIndex: number,
@@ -123,17 +143,19 @@ async function attachSide(
   // hand meanwhile. Their photo stands; this row is left for the sweep.
   if ((await liveSides(ctx, work)).has(side)) return;
   await ctx.runMutation(internal.copyPhotos.commitUpload, { ownerId: work.ownerId, photoId });
+  await ctx.runMutation(internal.intakeRuns.recordIntakePhotoSide, { matchId, side });
 }
 
 /** Fills the copy's missing sides. Throws only on a failure before the sides start. */
 async function attachWork(ctx: ActionCtx, matchId: Id<"intakeMatches">, work: Work): Promise<AttachOutcome> {
   const live = await liveSides(ctx, work);
+  const attached = new Set(work.photoSidesAttached ?? []);
   const missing = (
     [
       ["front", work.frontIndex],
       ["back", work.backIndex],
     ] as const
-  ).filter(([side]) => !live.has(side));
+  ).filter(([side]) => !attached.has(side) && !live.has(side));
   if (missing.length === 0) return { photos: "attached" };
 
   const config = r2Config();
@@ -143,13 +165,16 @@ async function attachWork(ctx: ActionCtx, matchId: Id<"intakeMatches">, work: Wo
   }
 
   let scanGone = false;
+  let unusable = false;
   let errored = false;
   for (const [side, entryIndex] of missing) {
     try {
-      await attachSide(ctx, config, work, side, entryIndex);
+      await attachSide(ctx, config, matchId, work, side, entryIndex);
     } catch (err) {
       const message = messageOf(err);
-      if (parsePreprocessErrorCode(message) === OUTPUT_NOT_FOUND_CODE) scanGone = true;
+      const code = parsePreprocessErrorCode(message);
+      if (code === OUTPUT_NOT_FOUND_CODE) scanGone = true;
+      else if (UNUSABLE_SCAN_CODES.has(code)) unusable = true;
       else errored = true;
       console.warn(`[attachIntakePhotos] ${matchId} ${side}: ${message}`);
     }
@@ -157,6 +182,7 @@ async function attachWork(ctx: ActionCtx, matchId: Id<"intakeMatches">, work: Wo
   // A failure a retry could still fix outranks one it can't: Try again may
   // bring that side in, and then the tile says what is really left.
   if (errored) return { photos: "failed", photoFailure: "error" };
+  if (unusable) return { photos: "failed", photoFailure: "unusable" };
   if (scanGone) return { photos: "failed", photoFailure: "scanGone" };
   return { photos: "attached" };
 }
@@ -185,7 +211,11 @@ async function attachMatch(ctx: ActionCtx, matchId: Id<"intakeMatches">): Promis
   return outcome;
 }
 
-/** A save's photos, scheduled by `saveIntakeMatch`. */
+/**
+ * A save's photos, or a Try again's. Enqueued on `intakePhotoPool`. Never throws
+ * (`attachMatch`), so the pool's own retries have nothing to act on and the
+ * derive's two tries are the only ones.
+ */
 export const attachIntakePhotos = internalAction({
   args: { matchId: v.id("intakeMatches") },
   returns: v.null(),
@@ -195,52 +225,82 @@ export const attachIntakePhotos = internalAction({
   },
 });
 
-/** The saved tile's Try again. Refuses unless the row is the caller's and failed. */
+/**
+ * The saved tile's Try again. Refuses unless the row is the caller's and failed;
+ * `beginIntakePhotoRetry` puts the attach back on the pool.
+ */
 export const retryIntakePhotos = action({
   args: { matchId: v.id("intakeMatches") },
   returns: v.null(),
   handler: async (ctx, args): Promise<null> => {
     const ownerId = await requireSignedIn(ctx);
     await ctx.runMutation(internal.intakeRuns.beginIntakePhotoRetry, { matchId: args.matchId, ownerId });
-    await attachMatch(ctx, args.matchId);
     return null;
   },
 });
 
 /**
- * Puts photos on every saved row of a run saved before NEO-427, or one whose
- * scans are worth another try. Run by hand. Rows that already have both sides
- * cost one read each, and no row goes back to "pending", so this never holds a
- * run's listing kick. Continues itself when a long run outlasts its budget.
+ * Puts photos on the saved rows of a run saved before NEO-427. Run by hand from
+ * a terminal, armed: `REATTACH_ENV_FLAG` on the deployment and `confirm`.
+ *
+ * Skips a row already attached, and a line whose quantity is not what the row
+ * saved: before NEO-427 a save could fold into a stack, and one scan must not
+ * stand for every copy on it. No row goes back to "pending", so this never
+ * holds a run's listing kick.
+ *
+ * Continues itself when a long run outlasts its budget. `cursor` is the row to
+ * start from. A cursor row removed in between starts the walk over, which skips
+ * what is attached and never skips what isn't. The log line is the only place a
+ * continuation's outcome shows.
  */
 export const reattachIntakeRunPhotos = internalAction({
-  args: { runId: v.id("intakeRuns"), offset: v.optional(v.number()) },
+  args: {
+    confirm: v.literal(REATTACH_CONFIRM_PHRASE),
+    runId: v.id("intakeRuns"),
+    cursor: v.optional(v.id("intakeMatches")),
+  },
   returns: v.object({
     matches: v.number(),
     attached: v.number(),
     failed: v.number(),
+    skipped: v.number(),
     continued: v.boolean(),
   }),
-  handler: async (ctx, args): Promise<{ matches: number; attached: number; failed: number; continued: boolean }> => {
+  handler: async (ctx, args): Promise<ReattachReport> => {
+    if (process.env[REATTACH_ENV_FLAG] !== "true") {
+      throw new ConvexError({
+        code: "REATTACH_NOT_ARMED",
+        message: `Set ${REATTACH_ENV_FLAG}=true on this deployment to run this, and unset it after.`,
+      });
+    }
     const matchIds: Array<Id<"intakeMatches">> = await ctx.runQuery(internal.intakeRuns.intakeRunSavedMatches, {
       runId: args.runId,
     });
     const startedAt = Date.now();
-    const report = { matches: 0, attached: 0, failed: 0, continued: false };
-    for (let i = args.offset ?? 0; i < matchIds.length; i++) {
+    const report: ReattachReport = { matches: 0, attached: 0, failed: 0, skipped: 0, continued: false };
+    const start = args.cursor === undefined ? 0 : Math.max(matchIds.indexOf(args.cursor), 0);
+    for (let i = start; i < matchIds.length; i++) {
+      const matchId = matchIds[i];
       if (Date.now() - startedAt > REATTACH_BUDGET_MS) {
         await ctx.scheduler.runAfter(0, internal.intakePhotos.reattachIntakeRunPhotos, {
+          confirm: REATTACH_CONFIRM_PHRASE,
           runId: args.runId,
-          offset: i,
+          cursor: matchId,
         });
         report.continued = true;
         break;
       }
-      const outcome = await attachMatch(ctx, matchIds[i]);
+      const facts = await ctx.runQuery(internal.intakePhotoReattach.reattachRowFacts, { matchId });
+      if (!facts || facts.attached || !facts.sameQuantity) {
+        report.skipped += 1;
+        continue;
+      }
+      const outcome = await attachMatch(ctx, matchId);
       report.matches += 1;
       if (outcome?.photos === "attached") report.attached += 1;
       else if (outcome?.photos === "failed") report.failed += 1;
     }
+    console.log(JSON.stringify({ event: "reattachIntakeRunPhotos", runId: args.runId, ...report }));
     return report;
   },
 });

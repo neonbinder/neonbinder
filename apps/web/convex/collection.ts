@@ -453,25 +453,49 @@ export function isOneOfAKind(d: { grading?: { cert?: string }; serialNumber?: st
   return Boolean(d.grading?.cert || d.serialNumber || d.hasPhotos);
 }
 
+/** NEO-427 — how many times one saved pair's scans may be tried: the save, then each Try again. */
+export const MAX_INTAKE_PHOTO_ATTEMPTS = 5;
+
+/** NEO-427 — can Try again still help this row? Not with aged-out or unusable scans, nor out of tries. */
+export function canRetryIntakePhotos(
+  row: Pick<Doc<"intakeMatches">, "photos" | "photoFailure" | "photoAttempt">,
+): boolean {
+  return (
+    row.photos === "failed" &&
+    row.photoFailure !== "scanGone" &&
+    row.photoFailure !== "unusable" &&
+    (row.photoAttempt ?? 1) < MAX_INTAKE_PHOTO_ATTEMPTS
+  );
+}
+
 /**
- * NEO-427 — which of these lines (identical twins of an arriving copy) are
- * scanned lines whose photos are still due: on their way, or failed with a Try
- * again left. Nothing folds in, or the stack would share one copy's photos.
- * Reads only for a twin, which an add rarely has.
+ * NEO-427 — is this a scanned line whose photos are still due: on their way, or
+ * failed with a Try again left? Such a line neither takes a fold (the stack
+ * would share one copy's photos) nor folds away (the photos need the copy).
+ * Past that it is a plain line again.
  */
-export async function linesAwaitingScans(
+export async function lineAwaitingScans(ctx: Pick<QueryCtx, "db">, copyId: Id<"collectionCopies">): Promise<boolean> {
+  const match = await ctx.db
+    .query("intakeMatches")
+    .withIndex("by_saved_copy", (q) => q.eq("savedCopyId", copyId))
+    .first();
+  return match !== null && (match.photos === "pending" || canRetryIntakePhotos(match));
+}
+
+/**
+ * The line an arriving copy folds into: the first that `fits` and has no
+ * photos due. Every fold goes through here. It reads only for a line that fits,
+ * which an add rarely has.
+ */
+export async function foldTargetOf<Row extends Pick<CopyRow, "_id">>(
   ctx: Pick<QueryCtx, "db">,
-  twins: readonly CopyRow[],
-): Promise<Array<Id<"collectionCopies">>> {
-  const awaiting: Array<Id<"collectionCopies">> = [];
-  for (const row of twins) {
-    const match = await ctx.db
-      .query("intakeMatches")
-      .withIndex("by_saved_copy", (q) => q.eq("savedCopyId", row._id))
-      .first();
-    if (match?.photos === "pending" || match?.photos === "failed") awaiting.push(row._id);
+  lines: readonly Row[],
+  fits: (line: Row) => boolean,
+): Promise<Row | undefined> {
+  for (const line of lines) {
+    if (fits(line) && !(await lineAwaitingScans(ctx, line._id))) return line;
   }
-  return awaiting;
+  return undefined;
 }
 
 /** A line's details plus its photo marker: the shape the fold rule reads. */
@@ -1149,7 +1173,9 @@ export async function arrivingPocket(
   next: FoldShape,
   except: ReadonlyArray<Id<"collectionCopies">> = [],
 ): Promise<number> {
-  const twin = lines.find(
+  const twin = await foldTargetOf(
+    ctx,
+    lines,
     (row) =>
       !except.includes(row._id) &&
       row.homeId === home._id &&
@@ -1469,23 +1495,14 @@ export async function addOne(
     .query("collectionCopies")
     .withIndex("by_owner_and_card", (q) => q.eq("ownerId", ownerId).eq("cardId", cardId))
     .take(MAX_LINES_PER_CARD + 1);
-  // The pocket isn't picked yet, so a twin here is one that fits at its own.
-  const awaiting = keepsOwnLine
-    ? []
-    : await linesAwaitingScans(
-        ctx,
-        lines.filter((row) => foldsInto(foldShape(row), { ...cleaned, homeId: home._id, slot: cleaned.slot ?? row.slot })),
-      );
   if (cleaned.slot === undefined && keepsPockets(home)) {
     cleaned.slot = keepsOwnLine
       ? await firstOpenPocket(ctx, ownerId, home._id)
-      : await arrivingPocket(ctx, ownerId, home, lines, { ...cleaned, homeId: home._id }, awaiting);
+      : await arrivingPocket(ctx, ownerId, home, lines, { ...cleaned, homeId: home._id });
   }
   const next: StoredDetails = { ...cleaned, homeId: home._id };
   const now = Date.now();
-  const into = keepsOwnLine
-    ? undefined
-    : lines.find((row) => !awaiting.includes(row._id) && foldsInto(foldShape(row), next));
+  const into = keepsOwnLine ? undefined : await foldTargetOf(ctx, lines, (row) => foldsInto(foldShape(row), next));
   if (into) {
     const quantity = into.quantity + next.quantity;
     if (quantity > MAX_COPY_QUANTITY) {
@@ -1597,21 +1614,25 @@ export async function moveCopyCore(
   // off is a plain stack that may fold.
   const whole = quantity === row.quantity;
   const moving: FoldShape = whole && row.hasPhotos ? { ...rest, hasPhotos: true } : rest;
+  // NEO-427: a whole line whose photos are due stays a line, for them to land on.
+  const keepsLine = whole && (await lineAwaitingScans(ctx, row._id));
   if (slot === undefined && keepsPockets(home)) {
     // Every card in a binder sits in a pocket: staying in the same binder
     // keeps its own; arriving stacks on a twin or takes the first open one.
     slot =
       toHomeId === row.homeId && row.slot !== undefined
         ? row.slot
-        : await arrivingPocket(ctx, ownerId, home, lines, moving, [row._id]);
+        : keepsLine
+          ? await firstOpenPocket(ctx, ownerId, home._id)
+          : await arrivingPocket(ctx, ownerId, home, lines, moving, [row._id]);
   }
   if (toHomeId === row.homeId && slot === row.slot) {
     return { copyId: row._id, folded: false, split: false, from };
   }
   const next: StoredDetails = { ...rest, ...(slot !== undefined ? { slot } : {}) };
-  const into = lines.find(
-    (other) => other._id !== row._id && foldsInto(foldShape(other), { ...moving, ...next }),
-  );
+  const into = keepsLine
+    ? undefined
+    : await foldTargetOf(ctx, lines, (other) => other._id !== row._id && foldsInto(foldShape(other), { ...moving, ...next }));
   await assertPocketFree(ctx, ownerId, home, slot, [row._id, ...(into ? [into._id] : [])]);
   const now = Date.now();
   const changes: CountChange[] = [];
