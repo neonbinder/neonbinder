@@ -99,6 +99,11 @@ async function until(check: () => boolean | Promise<boolean>) {
   while (Date.now() < giveUpAt && !(await check())) await new Promise((resolve) => setImmediate(resolve));
 }
 
+/** Yields enough turns for anything already able to run to have run; for asserting what has NOT happened. */
+async function settled(turns = 50) {
+  for (let i = 0; i < turns; i++) await new Promise((resolve) => setImmediate(resolve));
+}
+
 const json = (status: number, body: unknown) =>
   new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 const gone = () => json(404, { error_code: "OUTPUT_NOT_FOUND", detail: "no processed image at this index" });
@@ -994,7 +999,8 @@ describe("attachIntakePhotos runs its sides together", () => {
     const attaching = w.attach().then(() => {
       finished = true;
     });
-    await until(() => finished);
+    await until(() => puts.length === 4);
+    await settled();
     expect(finished).toBe(false);
     thumbHeld.release();
     await attaching;
@@ -1029,7 +1035,8 @@ describe("attachIntakePhotos runs its sides together", () => {
       return derived(entryIndex);
     };
     const attaching = w.attach();
-    await until(() => derives.length === 2);
+    await until(() => derives.length === 1);
+    await settled();
     expect(derives.map((d) => d.entry_index)).toEqual([FRONT]);
     frontHeld.release();
     await attaching;
