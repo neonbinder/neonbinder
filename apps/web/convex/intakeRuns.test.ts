@@ -658,6 +658,18 @@ describe("NEO-370 — a settled box run kicks the collector's listing drain", ()
     { number: "1", players: ["Doc Gooden"] },
     { number: "2", players: ["Darryl Strawberry"] },
   ]);
+  /** The third scan is the same card as the first: say it is a second copy so it can be saved. */
+  const allowRepeats = (w: W) =>
+    w.t.run(async (ctx) => {
+      for (const row of await ctx.db.query("intakeMatches").collect()) {
+        if (row.repeatOfPairId) await ctx.db.patch(row._id, { repeatIsSecondCopy: true });
+      }
+    });
+  const three = () => world([
+    { number: "1", players: ["Doc Gooden"] },
+    { number: "2", players: ["Darryl Strawberry"] },
+    { number: "1", players: ["Doc Gooden"] },
+  ]);
   /** A save whose photos have landed, so the test below proves its own rule rather than NEO-427's hold. */
   const saveWithPhotos = async (w: W, runId: Id<"intakeRuns">, pairId: Id<"placeholderPairs">) => {
     await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId, quantity: 1 });
@@ -707,6 +719,69 @@ describe("NEO-370 — a settled box run kicks the collector's listing drain", ()
       await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[0], quantity: 1 });
       await w.t.mutation(internal.intakeRuns.expireIntakePhotoAttach, { matchId: await matchOf(w, w.pairIds[0]) });
       expect(await drainsOf(w)).toHaveLength(1);
+    });
+  });
+
+  test("NEO-427: with several saves pending, only the last report releases the kick", async () => {
+    const w = await three();
+    await listOn(w);
+    const runId = await startRun(w, w.fx.baseId);
+    await held(w, async () => {
+      await allowRepeats(w);
+      const ids: Array<Id<"intakeMatches">> = [];
+      for (const pairId of w.pairIds) {
+        await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId, quantity: 1 });
+        ids.push(await matchOf(w, pairId));
+      }
+      const report = (matchId: Id<"intakeMatches">, photos: "attached" | "failed") =>
+        w.t.mutation(internal.intakeRuns.recordIntakePhotos, { matchId, photos });
+      await report(ids[2], "attached");
+      await report(ids[0], "failed");
+      expect(await drainsOf(w)).toEqual([]);
+      await report(ids[1], "attached");
+      expect(await drainsOf(w)).toHaveLength(1);
+    });
+  });
+
+  test("NEO-427: a run whose only unsettled rows are failed still settles, and pre-existing rows hold nothing", async () => {
+    const w = await three();
+    await listOn(w);
+    const runId = await startRun(w, w.fx.baseId);
+    await held(w, async () => {
+      await allowRepeats(w);
+      for (const pairId of w.pairIds) {
+        await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId, quantity: 1 });
+      }
+      const [a, b, c] = await Promise.all(w.pairIds.map((pairId) => matchOf(w, pairId)));
+      await w.t.run((ctx) => ctx.db.patch(a, { photos: undefined }));
+      await w.t.mutation(internal.intakeRuns.recordIntakePhotos, { matchId: b, photos: "failed", photoFailure: "scanGone" });
+      expect(await drainsOf(w)).toEqual([]); // c is still pending
+      await w.t.mutation(internal.intakeRuns.recordIntakePhotos, { matchId: c, photos: "failed" });
+      expect(await drainsOf(w)).toHaveLength(1);
+    });
+  });
+
+  test("NEO-427: a retry back at pending holds a later kick", async () => {
+    const w = await two();
+    await listOn(w);
+    const runId = await startRun(w, w.fx.baseId);
+    const live = async () => (await drainsOf(w)).filter((f) => f.state.kind !== "canceled");
+    await held(w, async () => {
+      await w.me.mutation(api.intakeRuns.setIntakeMatchAside, { runId, pairId: w.pairIds[1], setAside: true });
+      await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[0], quantity: 1 });
+      const matchId = await matchOf(w, w.pairIds[0]);
+      await w.t.mutation(internal.intakeRuns.recordIntakePhotos, { matchId, photos: "failed" });
+      expect(await live()).toHaveLength(1);
+      await cancelScheduled(w.t as never);
+      expect(await live()).toEqual([]);
+      await w.t.mutation(internal.intakeRuns.beginIntakePhotoRetry, { matchId, ownerId: ME.subject });
+      // The set-aside undone and redone is another "answered" moment: the pending retry holds it.
+      await w.me.mutation(api.intakeRuns.setIntakeMatchAside, { runId, pairId: w.pairIds[1], setAside: false });
+      await w.me.mutation(api.intakeRuns.setIntakeMatchAside, { runId, pairId: w.pairIds[1], setAside: true });
+      expect(await live()).toEqual([]);
+      await w.t.mutation(internal.intakeRuns.recordIntakePhotos, { matchId, photos: "attached" });
+      const row = await w.t.run((ctx) => ctx.db.get(matchId));
+      expect(row?.photos).toBe("attached");
     });
   });
 
@@ -1134,6 +1209,29 @@ describe("NEO-427 — a save's photos", () => {
     expect(await tile(w, runId)).toEqual({ photos: "failed", photoFailure: "scanGone" });
   });
 
+  test("the timeout firing after the photos landed changes nothing, and a missing row is a no-op", async () => {
+    const w = await one();
+    const { runId, matchId } = await saved(w);
+    await w.t.mutation(internal.intakeRuns.recordIntakePhotos, { matchId, photos: "attached" });
+    await w.t.mutation(internal.intakeRuns.expireIntakePhotoAttach, { matchId });
+    expect(await tile(w, runId)).toEqual({ photos: "attached", photoFailure: undefined });
+    await w.t.run((ctx) => ctx.db.delete(matchId));
+    await expect(w.t.mutation(internal.intakeRuns.expireIntakePhotoAttach, { matchId })).resolves.toBeNull();
+    await expect(
+      w.t.mutation(internal.intakeRuns.recordIntakePhotos, { matchId, photos: "attached" }),
+    ).resolves.toBeNull();
+  });
+
+  test("Try again is refused on a row with no photo state, and on one still pending", async () => {
+    const w = await one();
+    const { matchId } = await saved(w);
+    const retry = () => w.t.mutation(internal.intakeRuns.beginIntakePhotoRetry, { matchId, ownerId: ME.subject });
+    await w.t.run((ctx) => ctx.db.patch(matchId, { photos: undefined }));
+    await expect(retry()).rejects.toThrow(/on their way/);
+    await w.t.mutation(internal.intakeRuns.recordIntakePhotos, { matchId, photos: "attached" });
+    await expect(retry()).rejects.toThrow(/on their way/);
+  });
+
   test("Try again: only the owner's failed row, with its copy still there, goes back to pending", async () => {
     const w = await one();
     const { runId, copyId, matchId } = await saved(w);
@@ -1201,6 +1299,59 @@ describe("NEO-427 — a save's photos", () => {
         acquiredOn,
       });
       expect(await lines(w)).toEqual([1, 1]);
+    });
+
+    test("a line whose photos landed (attached, none left on it) folds as a plain stack", async () => {
+      const w = await one();
+      const { copyId, matchId } = await saved(w);
+      await w.t.mutation(internal.intakeRuns.recordIntakePhotos, { matchId, photos: "attached" });
+      const { copyId: twin } = await addTwin(w);
+      expect(twin).toBe(copyId);
+      expect(await lines(w)).toEqual([2]);
+    });
+
+    test("a hand line already there takes the twin; the scanned line is left out of the stack", async () => {
+      const w = await one();
+      const hand = await addTwin(w); // first, so it is the plain line
+      const { copyId: scanned } = await saved(w);
+      expect(scanned).not.toBe(hand.copyId);
+      const { copyId: again } = await addTwin(w);
+      expect(again).toBe(hand.copyId);
+      const quantities = await w.t.run(async (ctx) => [
+        (await ctx.db.get(hand.copyId))?.quantity,
+        (await ctx.db.get(scanned))?.quantity,
+      ]);
+      expect(quantities).toEqual([2, 1]);
+    });
+
+    test("NEO-427 gap: moving a hand copy onto a line whose photos are due does not stack it there", async () => {
+      const w = await one();
+      const { copyId: scanned } = await saved(w);
+      const other = await w.t.run((ctx) =>
+        ctx.db.insert("collectionContainers", { ownerId: ME.subject, kind: "box", name: "Second", lastUpdated: 0 }),
+      );
+      const { copyId: hand } = await w.me.mutation(api.collection.addLineItem, {
+        cardId: w.fx.gooden1,
+        details: { quantity: 1, condition: "Near Mint", costCents: 10, location: "Shelf 2", homeId: other },
+      });
+      await w.me.mutation(api.collection.moveCopy, { copyId: hand, toHomeId: w.boxId });
+      expect(await lines(w)).toEqual([1, 1]);
+      expect((await w.t.run((ctx) => ctx.db.get(scanned)))?.quantity).toBe(1);
+    });
+
+    test("NEO-427 gap: moving the scanned line itself onto an identical line elsewhere keeps its copy for the photos", async () => {
+      const w = await one();
+      const { copyId: scanned } = await saved(w);
+      const other = await w.t.run((ctx) =>
+        ctx.db.insert("collectionContainers", { ownerId: ME.subject, kind: "box", name: "Second", lastUpdated: 0 }),
+      );
+      await w.me.mutation(api.collection.addLineItem, {
+        cardId: w.fx.gooden1,
+        details: { quantity: 1, condition: "Near Mint", costCents: 10, location: "Shelf 2", homeId: other },
+      });
+      await w.me.mutation(api.collection.moveCopy, { copyId: scanned, toHomeId: other });
+      // The photos are still due on this copy: it must still be there for them.
+      expect(await w.t.run((ctx) => ctx.db.get(scanned))).not.toBeNull();
     });
 
     test("a line with no photo state folds as ever", async () => {

@@ -209,6 +209,43 @@ describe("upload", () => {
     }
   });
 
+  test("NEO-427: a collector cannot mark their own upload as a scanner's to dodge the cap", async () => {
+    const s = await setup();
+    const copyId = await addCopy(s);
+    await expect(
+      s.me.action(api.copyPhotos.startUpload, {
+        copyId,
+        side: "front",
+        contentType: "image/jpeg",
+        imageBytes: 10,
+        thumbBytes: 10,
+        source: "intake",
+      } as never),
+    ).rejects.toThrow();
+    expect(await photoRows(s)).toEqual([]);
+  });
+
+  test("NEO-427: hand uploads made before the field existed (no source) still count toward the cap", async () => {
+    const s = await setup();
+    const copyId = await addCopy(s);
+    await s.t.run(async (ctx) => {
+      for (let i = 0; i < MAX_COPY_PHOTO_UPLOADS_PER_HOUR; i++) {
+        await ctx.db.insert("collectionCopyPhotos", {
+          ownerId: ME.subject,
+          copyId,
+          side: "back",
+          token: `old${i}`,
+          contentType: "image/jpeg",
+          imageBytes: 1,
+          thumbBytes: 1,
+          status: "replaced",
+          since: Date.now(),
+        });
+      }
+    });
+    await expect(photograph(s, copyId, "front")).rejects.toThrow(/a lot of photos/);
+  });
+
   test("NEO-427: with the side free, a scanner's photo goes live", async () => {
     const s = await setup();
     const copyId = await addCopy(s);

@@ -10,7 +10,11 @@
 //
 // The scans are six real 2014 Score football photos (McFadden #160, Bowe
 // #315, Bell #174, front then back) plus a re-scan of the Bowe card dropped
-// later into the same run (`playwright/fixtures/intake/`). The misread case is
+// later into the same run (`playwright/fixtures/intake/`). NEO-427: every save
+// brings its own scans along (the tile says "Photos are in!", and the card's
+// drawer holds the pair, the front and the back with their "full size" links),
+// and a scanned save never folds into a line that is already there, so the
+// second Bowe is a second line, each with its own photos. The misread case is
 // made certain rather than left to the reader (Jason, 2026-10-28): the set we
 // build gives #174 to another player and Bell his own #47, so Bell's photo
 // reads a number that names one card and a name that names another. That is
@@ -187,10 +191,21 @@ test(
     await boweYes.click();
     await expect(page.getByRole("region", { name: "Saved, 4" })).toBeVisible();
     await expect(waiting).toHaveAccessibleName("Needs you, 0");
-    const savedTiles = saved.getByRole("listitem").filter({ hasText: /Saved \+1$/ });
+    // NEO-427: every saved pair brings its scans to the copy it made, and says so
+    // on its tile (a Saved +1, then the photo line). The Bowe re-scan saved as a
+    // line of its own, so there are two Bowe tiles and each has its photos.
+    const savedTiles = saved.getByRole("listitem").filter({ hasText: /Saved \+1/ });
     for (const [label, n] of [["#160 Darren McFadden", 1], ["#315 Dwayne Bowe", 2], ["#47 Le'Veon Bell", 1]] as const) {
-      await expect(savedTiles.filter({ has: page.getByText(label, { exact: true }) })).toHaveCount(n);
+      const tiles = savedTiles.filter({ has: page.getByText(label, { exact: true }) });
+      await expect(tiles).toHaveCount(n);
+      await expect(tiles.filter({ has: page.getByText("Photos are in!", { exact: true }) })).toHaveCount(n);
     }
+    // Positive first (above): none of the four is still slipping them in or stuck.
+    await expect(saved.getByText("Slipping in the photos…", { exact: true })).toHaveCount(0);
+    await expect(saved.getByText("Photos didn't stick.", { exact: true })).toHaveCount(0);
+    await expect(saved.getByText("The scans aged out.", { exact: true })).toHaveCount(0);
+    // The new state, on the whole screen: four saved tiles, each with its photo line.
+    await expectAccessible(page, { label: "Add cards, saved cards with their photos in" });
 
     // --- Done adding photos: the session closes ---------------------------------------
     await page.getByRole("button", { name: "Done adding photos" }).click();
@@ -212,7 +227,8 @@ test(
     await checklists.drill("Variant Types", "Insert");
     await checklists.drill("Insert", "Base");
     const checklist = page.getByRole("region", { name: `2024 ${setName} Base`, exact: true });
-    for (const number of ["160", "315", "47"]) {
+    // One line per scan, never folded: the second Bowe copy is a line of its own.
+    for (const [number, lines] of [["160", 1], ["315", 2], ["47", 1]] as const) {
       const short = `#${number}`;
       await expect(
         checklist.getByRole("button", { name: new RegExp(`^Have ${escapeRe(short)}, `), pressed: true }),
@@ -221,9 +237,25 @@ test(
       const drawer = page.getByRole("dialog", { name: new RegExp(`^2024 ${escapeRe(setName)}.*${escapeRe(short)}`) });
       const yourCopies = drawer.getByRole("region", { name: `Your copies of ${short}` });
       const remove = yourCopies.getByRole("button", { name: new RegExp(`^Remove ${escapeRe(short)}, `) });
-      // One line each: the second Bowe copy folded into the first, not a line of its own.
-      await expect(remove).toHaveCount(1);
-      await remove.click();
+      await expect(remove).toHaveCount(lines);
+      // NEO-427: each line carries its pair: a thumbnail beside the line...
+      await expect(yourCopies.getByRole("img", { name: /^(Front|Back) of / })).toHaveCount(lines);
+      // ...and the line's own Edit form holds both sides, each opening full size.
+      const editLine = yourCopies.getByRole("button", { name: new RegExp(`^Edit ${escapeRe(short)}, `) });
+      await expect(editLine).toHaveCount(lines);
+      await editLine.first().click();
+      const photos = yourCopies.getByRole("region", { name: "Photos", exact: true });
+      await expect(photos.getByRole("link", { name: /^Front of .*, full size \(opens a new tab\)$/ })).toBeVisible();
+      await expect(photos.getByRole("link", { name: /^Back of .*, full size \(opens a new tab\)$/ })).toBeVisible();
+      if (number === "160") await expectAccessible(page, { label: "Card drawer, a saved copy with its scanned photos", within: drawer });
+      await yourCopies.getByRole("form", { name: /^Edit Raw, / }).getByRole("button", { name: "Cancel", exact: true }).click();
+      // Cancel closes the form: the line's Edit is back, and so is every other line's.
+      await expect(editLine).toHaveCount(lines);
+      await expect(photos).toBeHidden();
+      for (let left = lines; left > 0; left--) {
+        await remove.first().click();
+        await expect(remove).toHaveCount(left - 1);
+      }
       await expect(yourCopies.getByText("None yet. Fill in what you know below and add it.")).toBeVisible();
       await drawer.getByRole("button", { name: "Close card detail" }).click();
       await expect(drawer).toBeHidden();

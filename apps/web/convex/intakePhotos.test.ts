@@ -367,3 +367,246 @@ describe("reattachIntakeRunPhotos", () => {
     expect(derives).toEqual([]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Adversarial pass (NEO-427): overlapping runs, a copy that moves or goes
+// mid-attach, an expiry racing the attach, and the reattach continuation.
+// ---------------------------------------------------------------------------
+
+type World = Awaited<ReturnType<typeof world>>;
+
+/** Another saved pair on the world's run, with a copy of its own. */
+async function extraSavedPair(w: World, cardId: Id<"cardChecklist">, frontIndex: number, backIndex: number) {
+  const { copyId } = await w.me.mutation(api.collection.addLineItem, { cardId, details: { quantity: 1 } });
+  const matchId = await w.t.run(async (ctx) => {
+    const base = (await ctx.db.get(w.matchId))!;
+    const pairId = await ctx.db.insert("placeholderPairs", {
+      jobId: JOB,
+      userId: OWNER,
+      frontIndex,
+      backIndex,
+      confidence: "exact",
+      mechanism: "adjacency",
+      score: 1,
+    });
+    return await ctx.db.insert("intakeMatches", {
+      runId: base.runId,
+      userId: OWNER,
+      pairId,
+      frontIndex,
+      backIndex,
+      readKey: "",
+      confidence: 1,
+      band: "matched",
+      reason: "numberAndPlayer",
+      candidates: [],
+      variations: [],
+      savedCopyId: copyId,
+      savedQuantity: 1,
+      savedAt: Date.now(),
+    });
+  });
+  return { copyId, matchId };
+}
+
+describe("overlapping and interrupted attaches", () => {
+  test("two attaches at once leave one live photo a side and a row that says attached", async () => {
+    const w = await world({ photos: "pending" });
+    await Promise.all([w.attach(), w.attach()]);
+    // Both really ran the whole way (else this proves nothing about the commit guard).
+    expect(derives.length).toBeGreaterThan(2);
+    const rows = await w.photos();
+    const live = rows.filter((r) => r.status === "live");
+    expect(live.map((r) => r.side).sort()).toEqual(["back", "front"]);
+    expect(rows.every((r) => r.status === "live" || r.status === "pending")).toBe(true);
+    expect((await w.copy())?.hasPhotos).toBe(true);
+    expect((await w.row())?.photos).toBe("attached");
+  });
+
+  test("a retry racing the original attach cannot leave two live photos on a side", async () => {
+    const w = await world();
+    await Promise.all([w.attach(), w.attach(), w.attach()]);
+    const live = (await w.photos()).filter((r) => r.status === "live");
+    expect(live).toHaveLength(2);
+  });
+
+  test("the copy removed before the attach runs ends failed, with no live photo anywhere", async () => {
+    const w = await world({ photos: "pending" });
+    await w.me.mutation(api.collection.removeCopy, { copyId: w.copyId });
+    await w.attach();
+    expect((await w.photos()).filter((r) => r.status === "live")).toEqual([]);
+    expect(await w.row()).toMatchObject({ photos: "failed", photoFailure: "error" });
+  });
+
+  test("the copy removed mid-attach ends failed and leaves no live photo", async () => {
+    const w = await world({ photos: "pending" });
+    onPut = async () => {
+      if (puts.length === 1) await w.me.mutation(api.collection.removeCopy, { copyId: w.copyId });
+      return new Response(null, { status: 200 });
+    };
+    await w.attach();
+    expect((await w.photos()).filter((r) => r.status === "live")).toEqual([]);
+    expect((await w.row())?.photos).toBe("failed");
+  });
+
+  test("the copy moved to another box mid-attach still gets its photos", async () => {
+    const w = await world({ photos: "pending" });
+    const otherBox = await w.t.run((ctx) =>
+      ctx.db.insert("collectionContainers", { ownerId: OWNER, kind: "box", name: "Elsewhere", lastUpdated: 0 }),
+    );
+    onPut = async () => {
+      if (puts.length === 1) await w.me.mutation(api.collection.moveCopy, { copyId: w.copyId, toHomeId: otherBox });
+      return new Response(null, { status: 200 });
+    };
+    await w.attach();
+    expect((await w.photos()).filter((r) => r.status === "live").map((r) => r.copyId)).toEqual([w.copyId, w.copyId]);
+    expect((await w.copy())?.homeId).toBe(otherBox);
+    expect((await w.row())?.photos).toBe("attached");
+  });
+
+  test("the timeout firing mid-attach does not stop a success from landing", async () => {
+    const w = await world({ photos: "pending" });
+    onPut = async () => {
+      if (puts.length === 1) await w.t.mutation(internal.intakeRuns.expireIntakePhotoAttach, { matchId: w.matchId });
+      return new Response(null, { status: 200 });
+    };
+    await w.attach();
+    expect(await w.row()).toMatchObject({ photos: "attached" });
+    expect((await w.row())?.photoFailure).toBeUndefined();
+  });
+
+  test("a success after a timeout put the row at failed clears the failure reason", async () => {
+    const w = await world({ photos: "pending" });
+    await w.t.mutation(internal.intakeRuns.expireIntakePhotoAttach, { matchId: w.matchId });
+    expect(await w.row()).toMatchObject({ photos: "failed", photoFailure: "error" });
+    await w.attach();
+    const row = await w.row();
+    expect(row?.photos).toBe("attached");
+    expect(row?.photoFailure).toBeUndefined();
+  });
+
+  test("Try again on a gone scan with one side in asks only for the missing side, and stays gone", async () => {
+    const w = await world();
+    onDerive = (entryIndex) => (entryIndex === BACK ? gone() : derived(entryIndex));
+    await w.attach();
+    derives = [];
+    await w.me.action(api.intakePhotos.retryIntakePhotos, { matchId: w.matchId });
+    expect(derives.map((d) => d.entry_index)).toEqual([BACK]);
+    expect(await w.row()).toMatchObject({ photos: "failed", photoFailure: "scanGone" });
+    expect((await w.photos()).filter((r) => r.status === "live")).toHaveLength(1);
+  });
+
+  test("Try again on a match that no longer exists is refused", async () => {
+    const w = await world({ photos: "failed" });
+    await w.t.run((ctx) => ctx.db.delete(w.matchId));
+    await expect(w.me.action(api.intakePhotos.retryIntakePhotos, { matchId: w.matchId })).rejects.toThrow();
+    expect(derives).toEqual([]);
+  });
+
+  test("Try again on a row whose copy is gone is refused before the service is asked", async () => {
+    const w = await world({ photos: "failed" });
+    await w.me.mutation(api.collection.removeCopy, { copyId: w.copyId });
+    await expect(w.me.action(api.intakePhotos.retryIntakePhotos, { matchId: w.matchId })).rejects.toThrow(
+      /left your collection/,
+    );
+    expect(derives).toEqual([]);
+    expect((await w.row())?.photos).toBe("failed");
+  });
+});
+
+describe("reattachIntakeRunPhotos on rows with hand photos, and its continuation", () => {
+  test("both sides made up by hand: attached with no call to the service", async () => {
+    const w = await world();
+    await w.handPhoto("front");
+    await w.handPhoto("back");
+    const runId = (await w.row())!.runId;
+    const report = await w.t.action(internal.intakePhotos.reattachIntakeRunPhotos, { runId });
+    expect(report).toEqual({ matches: 1, attached: 1, failed: 0, continued: false });
+    expect(derives).toEqual([]);
+    expect((await w.photos()).map((r) => r.source)).toEqual([undefined, undefined]);
+    expect((await w.row())?.photos).toBe("attached");
+  });
+
+  test("a hand front keeps standing and only the back is asked for", async () => {
+    const w = await world();
+    const hand = await w.handPhoto("front");
+    const runId = (await w.row())!.runId;
+    await w.t.action(internal.intakePhotos.reattachIntakeRunPhotos, { runId });
+    expect(derives.map((d) => d.entry_index)).toEqual([BACK]);
+    const front = (await w.photos()).filter((r) => r.side === "front");
+    expect(front).toHaveLength(1);
+    expect(front[0]).toMatchObject({ _id: hand, status: "live" });
+  });
+
+  test("a row already failed that the run reattaches successfully ends attached", async () => {
+    const w = await world({ photos: "failed" });
+    const runId = (await w.row())!.runId;
+    await w.t.action(internal.intakePhotos.reattachIntakeRunPhotos, { runId });
+    expect((await w.row())?.photos).toBe("attached");
+  });
+
+  /** Time moves past the budget once the first derive has been answered. */
+  function budgetBlowsAfterFirstDerive() {
+    let skew = 0;
+    const real = Date.now.bind(Date);
+    vi.spyOn(Date, "now").mockImplementation(() => real() + skew);
+    onDerive = (entryIndex) => {
+      skew = 3 * 60 * 1000;
+      return derived(entryIndex);
+    };
+  }
+  const queuedReattaches = (w: World) =>
+    w.t.run(async (ctx) =>
+      (await ctx.db.system.query("_scheduled_functions").collect()).filter((f) =>
+        f.name.includes("reattachIntakeRunPhotos"),
+      ),
+    );
+
+  test("a run that outlasts its budget queues itself at the row it stopped on", async () => {
+    const w = await world();
+    const cards = await w.t.run(async (ctx) => (await ctx.db.query("cardChecklist").collect()).map((c) => c._id));
+    await extraSavedPair(w, cards[1], 8, 9);
+    budgetBlowsAfterFirstDerive();
+    const runId = (await w.row())!.runId;
+    const report = await w.t.action(internal.intakePhotos.reattachIntakeRunPhotos, { runId });
+    expect(report).toEqual({ matches: 1, attached: 1, failed: 0, continued: true });
+    const queued = await queuedReattaches(w);
+    expect(queued).toHaveLength(1);
+    expect(queued[0].args[0]).toEqual({ runId, offset: 1 });
+  });
+
+  test("a processed row removed between batches does not make the continuation skip the next one", async () => {
+    const w = await world();
+    const cards = await w.t.run(async (ctx) => (await ctx.db.query("cardChecklist").collect()).map((c) => c._id));
+    const second = await extraSavedPair(w, cards[1], 8, 9);
+    const runId = (await w.row())!.runId;
+    budgetBlowsAfterFirstDerive();
+    const first = await w.t.action(internal.intakePhotos.reattachIntakeRunPhotos, { runId });
+    expect(first.continued).toBe(true);
+    const offset = (await queuedReattaches(w))[0].args[0].offset as number;
+    // The sync drops the first row (its pair left the job) before the continuation runs.
+    await w.t.run((ctx) => ctx.db.delete(w.matchId));
+    derives = [];
+    onDerive = derived;
+    await w.t.action(internal.intakePhotos.reattachIntakeRunPhotos, { runId, offset });
+    expect(derives.map((d) => d.entry_index).sort()).toEqual([8, 9]);
+    expect((await w.t.run((ctx) => ctx.db.get(second.matchId)))?.photos).toBe("attached");
+  });
+
+  test("a row saved between batches is picked up by the continuation", async () => {
+    const w = await world();
+    const cards = await w.t.run(async (ctx) => (await ctx.db.query("cardChecklist").collect()).map((c) => c._id));
+    const second = await extraSavedPair(w, cards[1], 8, 9);
+    const runId = (await w.row())!.runId;
+    budgetBlowsAfterFirstDerive();
+    await w.t.action(internal.intakePhotos.reattachIntakeRunPhotos, { runId });
+    const late = await extraSavedPair(w, cards[2], 10, 11);
+    derives = [];
+    onDerive = derived;
+    const offset = (await queuedReattaches(w))[0].args[0].offset as number;
+    await w.t.action(internal.intakePhotos.reattachIntakeRunPhotos, { runId, offset });
+    expect(derives.map((d) => d.entry_index).sort((a, b) => a - b)).toEqual([8, 9, 10, 11]);
+    expect((await w.t.run((ctx) => ctx.db.get(second.matchId)))?.photos).toBe("attached");
+    expect((await w.t.run((ctx) => ctx.db.get(late.matchId)))?.photos).toBe("attached");
+  });
+});

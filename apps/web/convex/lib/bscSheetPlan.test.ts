@@ -108,6 +108,47 @@ describe("foldBscTargets (NEO-370)", () => {
     expect(problems).toEqual([]);
   });
 
+  test("the oldest copy with photos supplies them; the SKU's box stays the oldest copy's", () => {
+    const first = copy({ boxN: 1, creationTime: 1_000, hasPhotos: false });
+    const second = copy({ boxN: 2, creationTime: 2_000, hasPhotos: true });
+    const third = copy({ boxN: 3, creationTime: 3_000, hasPhotos: true });
+    const { targets } = foldBscTargets({ copies: [third, first, second], era: "modern", commonPriceCents: 40 });
+    expect(targets).toHaveLength(1);
+    expect(targets[0].photoCopyId).toBe(second.copyId);
+    expect(targets[0].oldestCopyId).toBe(first.copyId);
+    expect(targets[0].sku).toBe(buildListingSku({ cardId: card(1), bscCondition: "near_mint", boxId: box(1) }));
+  });
+
+  test("no photo on any copy of the group is null, and a photo in another condition doesn't leak across", () => {
+    const nm = copy({ condition: "Near Mint", hasPhotos: false });
+    const good = copy({ condition: "Good", hasPhotos: true });
+    const { targets } = foldBscTargets({ copies: [nm, good], era: "modern", commonPriceCents: 40 });
+    const byCondition = new Map(targets.map((t) => [t.bscCondition, t.photoCopyId]));
+    expect(byCondition.get("near_mint")).toBeNull();
+    expect([...byCondition.values()].filter((id) => id !== null)).toEqual([good.copyId]);
+  });
+
+  test("a zero-quantity or binder copy with photos never supplies them", () => {
+    const empty = copy({ creationTime: 0, quantity: 0, hasPhotos: true });
+    const binder = copy({ creationTime: 1, homeIsBox: false, hasPhotos: true });
+    const live = copy({ creationTime: 9_000_000_000, hasPhotos: true });
+    const { targets } = foldBscTargets({ copies: [empty, binder, live], era: "modern", commonPriceCents: 40 });
+    expect(targets[0].photoCopyId).toBe(live.copyId);
+  });
+
+  test("two photo copies on one age day: the earlier created supplies them, then the lower id", () => {
+    const day = 5 * 86_400_000;
+    const late = copy({ creationTime: day + 20, hasPhotos: true });
+    const early = copy({ creationTime: day + 10, hasPhotos: true });
+    const twin = copy({ creationTime: day + 10, hasPhotos: true });
+    const pick = (...copies: ListingCopy[]) =>
+      foldBscTargets({ copies, era: "modern", commonPriceCents: 40 }).targets[0].photoCopyId;
+    expect(pick(late, early)).toBe(early.copyId);
+    const lower = early.copyId < twin.copyId ? early.copyId : twin.copyId;
+    expect(pick(early, twin)).toBe(lower);
+    expect(pick(twin, early)).toBe(lower);
+  });
+
   test("Up for Trade box copies are for sale like any box copy", () => {
     // upForTrade is not an input: the home's kind alone decides.
     const { targets } = foldBscTargets({ copies: [copy({ quantity: 3 })], era: "modern", commonPriceCents: 40 });

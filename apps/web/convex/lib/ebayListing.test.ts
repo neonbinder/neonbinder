@@ -520,6 +520,30 @@ describe("price to shipping slot and floor (NEO-415)", () => {
     expect(targets.map((t) => t.photoCopyId).sort()).toEqual(["good", null].sort());
   });
 
+  test("a zero-quantity or binder copy with photos never supplies them", () => {
+    const { targets } = foldEbayTargets({
+      copies: [
+        copy({ copyId: "empty" as never, creationTime: 0, quantity: 0, hasPhotos: true }),
+        copy({ copyId: "binder" as never, creationTime: 1, homeIsBox: false, hasPhotos: true }),
+        copy({ copyId: "live" as never, creationTime: 9_000_000_000, hasPhotos: true }),
+      ],
+      commonPriceCents: null,
+    });
+    expect(targets[0].photoCopyId).toBe("live");
+  });
+
+  test("two photo copies of one age day: the earlier created, then the lower id, supplies them", () => {
+    const day = 5 * 86_400_000;
+    const pick = (copies: Array<[string, number]>) =>
+      foldEbayTargets({
+        copies: copies.map(([id, creationTime]) => copy({ copyId: id as never, creationTime, hasPhotos: true })),
+        commonPriceCents: null,
+      }).targets[0].photoCopyId;
+    expect(pick([["b", day + 10], ["a", day + 20]])).toBe("b");
+    expect(pick([["b", day + 10], ["a", day + 10]])).toBe("a");
+    expect(pick([["a", day + 10], ["b", day + 10]])).toBe("a");
+  });
+
   test("zero or fractional quantities are skipped", () => {
     const { targets } = foldEbayTargets({
       copies: [copy({ quantity: 0 }), copy({ quantity: 1.5 })],
