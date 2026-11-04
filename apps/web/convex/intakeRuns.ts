@@ -860,13 +860,21 @@ async function queueIntakePhotoAttach(
   });
 }
 
-/** One side's scan landed on the copy. Try again won't bring that side back if the collector takes it off. */
+/**
+ * One side's scan landed on the copy. Try again won't bring that side back if the
+ * collector takes it off. A copy removed while its sides were in flight has nothing
+ * landed on it (`commitUpload` drops the photo and says nothing), so that refuses and
+ * the side counts as failed.
+ */
 export const recordIntakePhotoSide = internalMutation({
   args: { matchId: v.id("intakeMatches"), side: v.union(v.literal("front"), v.literal("back")) },
   returns: v.null(),
   handler: async (ctx, args) => {
     const row = await ctx.db.get(args.matchId);
     if (!row) return null;
+    if (!row.savedCopyId || !(await ctx.db.get(row.savedCopyId))) {
+      refuse(COLLECTION_ERRORS.notFound, "That card left your collection, so its photos have nowhere to go.");
+    }
     const landed = row.photoSidesAttached ?? [];
     if (!landed.includes(args.side)) await ctx.db.patch(row._id, { photoSidesAttached: [...landed, args.side] });
     return null;

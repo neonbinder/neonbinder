@@ -13,10 +13,10 @@
  * from the saves, they would take the instances from the run's processing and be
  * shed with 429s.
  *
- * WHY THE WIDTH: sized for that fallback. An attach does its sides one after the
- * other, so it holds at most one FAST instance and this width is the most this
- * pool can take. A quarter of the ceiling leaves the rest to processing (prod 5 of
- * 20). The floor of 2 is for dev and previews (2 of 3), whose small ceiling would
+ * WHY THE WIDTH: sized for that fallback. An attach's sides run together but ask
+ * the service one at a time (`intakePhotos.oneAtATime`), so it holds at most one
+ * FAST instance and this width is the most this pool can take. A quarter of the
+ * ceiling leaves the rest to processing (prod 5 of 20). The floor of 2 is for dev and previews (2 of 3), whose small ceiling would
  * otherwise leave one lane; their volume is low, and `fastPreprocessPool`'s retries
  * cover a rare 429. At an estimated 3 seconds an attach through the fallback (not
  * measured), prod clears 500 cards in about 5 minutes, inside

@@ -12,6 +12,11 @@
  * `recordIntakePhotoSide` notes the side as done. Then `recordIntakePhotos`
  * writes how it ended, which lets the run's listing kick go ahead.
  *
+ * The sides run at the same time, and so do a side's two PUTs, because a collector
+ * is watching and the PUTs are nearly all of an attach's time. Nothing here cares
+ * which side lands first: every reader goes by a photo's `side`. The fallback's calls
+ * to the service are the one thing that stays one at a time (`oneAtATime`).
+ *
  * Reading them is the normal path because a call to the preprocess service queues
  * behind all of a run's scanning on the same instances, and a collector is
  * watching for these photos. `/derive-copy-photos` is the fallback for a side
@@ -99,9 +104,10 @@ type Work = {
   backIndex: number;
   photoSidesAttached?: Side[];
 };
-type AttachOutcome =
-  | { photos: "attached" }
-  | { photos: "failed"; photoFailure: "scanGone" | "unusable" | "error" };
+type PhotoFailure = "scanGone" | "unusable" | "error";
+type AttachOutcome = { photos: "attached" } | { photos: "failed"; photoFailure: PhotoFailure };
+/** Runs each task once the one asked for before it has finished, however that went. */
+type Lane = <T>(task: () => Promise<T>) => Promise<T>;
 type ReattachReport = { matches: number; attached: number; failed: number; skipped: number; continued: boolean };
 /** What the placeholder bucket holds for one entry. */
 type StoredEntry = { sizes: DerivedCopyPhotos } | "outputOnly" | "nothing";
@@ -143,6 +149,20 @@ async function deriveWithRetry(ctx: ActionCtx, work: Work, entryIndex: number): 
       await new Promise((resolve) => setTimeout(resolve, delay));
     }
   }
+}
+
+/**
+ * An attach's lane to the service. `intakePhotoPool`'s width is sized on an attach
+ * holding one FAST instance, so two sides falling back must not ask at once: on a
+ * preview, two attaches would be four calls against a ceiling of 3.
+ */
+function oneAtATime(): Lane {
+  let last: Promise<unknown> = Promise.resolve();
+  return (task) => {
+    const run = last.then(task, task);
+    last = run;
+    return run;
+  };
 }
 
 function startsLikeJpeg(bytes: Uint8Array): boolean {
@@ -210,7 +230,12 @@ async function within<T>(work: Promise<T>, ms: number): Promise<T> {
  * URL (bucket, user id, job id), a credential parse error's can quote the key, and
  * warnings reach public CI artifacts.
  */
-async function copyPhotosOf(ctx: ActionCtx, work: Work, entryIndex: number): Promise<DerivedCopyPhotos> {
+async function copyPhotosOf(
+  ctx: ActionCtx,
+  work: Work,
+  entryIndex: number,
+  serviceLane: Lane,
+): Promise<DerivedCopyPhotos> {
   let stored: StoredEntry = "outputOnly";
   try {
     stored = await within(lookInBucket(work, entryIndex), STORAGE_LOOK_TIMEOUT_MS);
@@ -218,7 +243,7 @@ async function copyPhotosOf(ctx: ActionCtx, work: Work, entryIndex: number): Pro
     console.warn(`[attachIntakePhotos] could not read stored sizes, asking the service (code ${codeOf(err)})`);
   }
   if (stored === "nothing") throw new ScanGoneError();
-  if (stored === "outputOnly") return await deriveWithRetry(ctx, work, entryIndex);
+  if (stored === "outputOnly") return await serviceLane(() => deriveWithRetry(ctx, work, entryIndex));
   return stored.sizes;
 }
 
@@ -229,8 +254,9 @@ async function attachSide(
   work: Work,
   side: Side,
   entryIndex: number,
+  serviceLane: Lane,
 ): Promise<void> {
-  const sizes = await copyPhotosOf(ctx, work, entryIndex);
+  const sizes = await copyPhotosOf(ctx, work, entryIndex, serviceLane);
   const { photoId, token }: { photoId: Id<"collectionCopyPhotos">; token: string } = await ctx.runMutation(
     internal.copyPhotos.reserveUpload,
     {
@@ -243,20 +269,20 @@ async function attachSide(
       source: "intake",
     },
   );
-  await putObject(
-    config,
-    copyPhotoObjectKey(token, "image", sizes.contentType),
-    sizes.image,
-    sizes.contentType,
-    R2_PUT_TIMEOUT_MS,
+  // Settled rather than `Promise.all`, so a failed PUT doesn't leave the other one
+  // running past the end of the action.
+  const sent = await Promise.allSettled(
+    (["image", "thumb"] as const).map((size) =>
+      putObject(
+        config,
+        copyPhotoObjectKey(token, size, sizes.contentType),
+        sizes[size],
+        sizes.contentType,
+        R2_PUT_TIMEOUT_MS,
+      ),
+    ),
   );
-  await putObject(
-    config,
-    copyPhotoObjectKey(token, "thumb", sizes.contentType),
-    sizes.thumb,
-    sizes.contentType,
-    R2_PUT_TIMEOUT_MS,
-  );
+  for (const put of sent) if (put.status === "rejected") throw put.reason;
   // Getting the sizes and the PUTs take time, and a collector can add this side by
   // hand meanwhile. Their photo stands; this row is left for the sweep.
   if ((await liveSides(ctx, work)).has(side)) return;
@@ -282,26 +308,27 @@ async function attachWork(ctx: ActionCtx, matchId: Id<"intakeMatches">, work: Wo
     return { photos: "failed", photoFailure: "error" };
   }
 
-  let scanGone = false;
-  let unusable = false;
-  let errored = false;
-  for (const [side, entryIndex] of missing) {
-    try {
-      await attachSide(ctx, config, matchId, work, side, entryIndex);
-    } catch (err) {
-      const message = messageOf(err);
-      const code = parsePreprocessErrorCode(message);
-      if (err instanceof ScanGoneError || code === OUTPUT_NOT_FOUND_CODE) scanGone = true;
-      else if (UNUSABLE_SCAN_CODES.has(code)) unusable = true;
-      else errored = true;
-      console.warn(`[attachIntakePhotos] ${matchId} ${side}: ${message}`);
-    }
-  }
+  const serviceLane = oneAtATime();
+  // Each side answers for itself, so one failing can't stop the other.
+  const failures = await Promise.all(
+    missing.map(async ([side, entryIndex]): Promise<PhotoFailure | null> => {
+      try {
+        await attachSide(ctx, config, matchId, work, side, entryIndex, serviceLane);
+        return null;
+      } catch (err) {
+        const message = messageOf(err);
+        const code = parsePreprocessErrorCode(message);
+        console.warn(`[attachIntakePhotos] ${matchId} ${side}: ${message}`);
+        if (err instanceof ScanGoneError || code === OUTPUT_NOT_FOUND_CODE) return "scanGone";
+        return UNUSABLE_SCAN_CODES.has(code) ? "unusable" : "error";
+      }
+    }),
+  );
   // A failure a retry could still fix outranks one it can't: Try again may
   // bring that side in, and then the tile says what is really left.
-  if (errored) return { photos: "failed", photoFailure: "error" };
-  if (unusable) return { photos: "failed", photoFailure: "unusable" };
-  if (scanGone) return { photos: "failed", photoFailure: "scanGone" };
+  if (failures.includes("error")) return { photos: "failed", photoFailure: "error" };
+  if (failures.includes("unusable")) return { photos: "failed", photoFailure: "unusable" };
+  if (failures.includes("scanGone")) return { photos: "failed", photoFailure: "scanGone" };
   return { photos: "attached" };
 }
 

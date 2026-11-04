@@ -81,7 +81,21 @@ function storeSizes(entryIndex: number) {
   scans.set(sizeKey(entryIndex, "thumb"), storedBytes(`stored-thumb-${entryIndex}`));
 }
 
-type Derive = (entryIndex: number) => Response;
+type Derive = (entryIndex: number) => Response | Promise<Response>;
+
+/** A promise the test answers when it chooses. */
+function deferred() {
+  let release = () => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return { held, release };
+}
+
+/** Lets the attach run until `check` holds. It may never: the caller asserts after. */
+async function until(check: () => boolean | Promise<boolean>) {
+  for (let turn = 0; turn < 500 && !(await check()); turn++) await new Promise((resolve) => setImmediate(resolve));
+}
 
 const json = (status: number, body: unknown) =>
   new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
@@ -279,19 +293,26 @@ describe("attachIntakePhotos", () => {
 
   test("a hand photo arriving mid-attach stands; the scan's row is left for the sweep", async () => {
     const w = await world();
-    let hand: Id<"collectionCopyPhotos"> | undefined;
+    let adding: Promise<Id<"collectionCopyPhotos">> | undefined;
     onPut = async (key) => {
-      // The front's thumb is the attach's last step before its check.
-      if (puts.length === 2) hand = await w.handPhoto("front");
+      // Every PUT waits on it, so it is in before either side reaches its check.
+      adding ??= w.handPhoto("front");
+      await adding;
       expect(key).toContain("copy-photos/");
       return new Response(null, { status: 200 });
     };
     await w.attach();
-    const fronts = (await w.photos()).filter((r) => r.side === "front");
+    const hand = await adding;
+    const rows = await w.photos();
+    const fronts = rows.filter((r) => r.side === "front");
     expect(hand).toBeDefined();
     expect(fronts.find((r) => r._id === hand)?.status).toBe("live");
     expect(fronts.find((r) => r._id !== hand)).toMatchObject({ status: "pending", source: "intake" });
-    expect((await w.row())?.photos).toBe("attached");
+    // The guard is per side: the other side's scan still goes live.
+    expect(rows.find((r) => r.side === "back")).toMatchObject({ status: "live", source: "intake" });
+    const row = await w.row();
+    expect(row?.photos).toBe("attached");
+    expect(row?.photoSidesAttached).toEqual(["back"]);
   });
 
   test("scans expiring between the look and the derive say so, and nothing is reserved", async () => {
@@ -342,7 +363,7 @@ describe("attachIntakePhotos", () => {
   test("a photo the collector removed does not come back, and the row stays attached", async () => {
     const w = await world();
     await w.attach();
-    expect((await w.row())?.photoSidesAttached).toEqual(["front", "back"]);
+    expect((await w.row())?.photoSidesAttached?.toSorted()).toEqual(["back", "front"]);
     await w.me.mutation(api.copyPhotos.remove, { copyId: w.copyId, side: "front" });
     derives = [];
     puts = [];
@@ -857,6 +878,209 @@ async function extraSavedPair(w: World, cardId: Id<"cardChecklist">, frontIndex:
   });
   return { copyId, matchId };
 }
+
+describe("attachIntakePhotos runs its sides together", () => {
+  /** The side a PUT's key belongs to, by its row's token. */
+  const sideOf = async (w: Awaited<ReturnType<typeof world>>, key: string) =>
+    (await w.photos()).find((r) => key.includes(r.token))?.side;
+
+  test("all four PUTs are in flight at once, and each side's bytes land on that side", async () => {
+    storeSizes(FRONT);
+    storeSizes(BACK);
+    const w = await world({ photos: "pending" });
+    const gate = deferred();
+    onPut = async () => {
+      await gate.held;
+      return new Response(null, { status: 200 });
+    };
+    const attaching = w.attach();
+    await until(() => puts.length === 4);
+    // No PUT has been answered, so a loop over the sides would have stopped at the front's.
+    expect(puts).toHaveLength(4);
+    gate.release();
+    await attaching;
+
+    const rows = await w.photos();
+    expect(rows.map((r) => [r.side, r.status])).toEqual([
+      ["back", "live"],
+      ["front", "live"],
+    ]);
+    for (const row of rows) {
+      const entry = row.side === "front" ? FRONT : BACK;
+      expect(puts).toContainEqual({
+        key: `copy-photos/${row.token}/image.jpg`,
+        body: putBody(`stored-image-${entry}`),
+        contentType: "image/jpeg",
+      });
+      expect(puts).toContainEqual({
+        key: `copy-photos/${row.token}/thumb.jpg`,
+        body: putBody(`stored-thumb-${entry}`),
+        contentType: "image/jpeg",
+      });
+    }
+    expect((await w.row())?.photoSidesAttached?.toSorted()).toEqual(["back", "front"]);
+  });
+
+  test("the back landing first still leaves the front as the front", async () => {
+    // The front has to ask the service, so the back reserves and commits ahead of it.
+    storeSizes(BACK);
+    const w = await world({ photos: "pending" });
+    const frontHeld = deferred();
+    onDerive = async (entryIndex) => {
+      await frontHeld.held;
+      return derived(entryIndex);
+    };
+    const attaching = w.attach();
+    await until(async () => (await w.photos()).some((r) => r.side === "back" && r.status === "live"));
+    expect((await w.photos()).map((r) => [r.side, r.status])).toEqual([["back", "live"]]);
+    frontHeld.release();
+    await attaching;
+
+    const rows = await w.photos();
+    const [front, back] = [rows.find((r) => r.side === "front")!, rows.find((r) => r.side === "back")!];
+    // The back's row is the older one, and nothing reads that as its place.
+    expect(back._creationTime).toBeLessThan(front._creationTime);
+    const [urls] = await w.me.query(api.copyPhotos.photosOf, { copyIds: [w.copyId] });
+    expect(urls.front?.imageUrl).toContain(front.token);
+    expect(urls.back?.imageUrl).toContain(back.token);
+    const listing = await w.t.query(internal.listingDrain.copyPhotosForListing, { ownerId: OWNER, copyIds: [w.copyId] });
+    expect(listing.find((p) => p.side === "front")?.key).toContain(front.token);
+    expect(listing.find((p) => p.side === "back")?.key).toContain(back.token);
+    expect((await w.row())?.photos).toBe("attached");
+  });
+
+  test("both sides landing together queue the card's listing once, on one outbox row", async () => {
+    storeSizes(FRONT);
+    storeSizes(BACK);
+    const w = await world({ photos: "pending" });
+    await w.t.run((ctx) =>
+      ctx.db.insert("marketplaceListingStates", { ownerId: OWNER, platform: "bsc", listingStartedAt: 1, lastUpdated: 0 }),
+    );
+    await w.attach();
+    const outbox = await w.t.run((ctx) => ctx.db.query("listingOutbox").collect());
+    expect(outbox).toHaveLength(1);
+    expect(outbox[0]).toMatchObject({ ownerId: OWNER, platform: "bsc", cardId: (await w.copy())?.cardId, seq: 2 });
+  });
+
+  test.each(["front", "back"] as const)("the %s's PUT failing still attaches the other side", async (failing) => {
+    storeSizes(FRONT);
+    storeSizes(BACK);
+    const w = await world({ photos: "pending" });
+    onPut = async (key) =>
+      (await sideOf(w, key)) === failing ? new Response("denied", { status: 403 }) : new Response(null, { status: 200 });
+    await w.attach();
+    const landed = failing === "front" ? "back" : "front";
+    const rows = await w.photos();
+    expect(rows.find((r) => r.side === landed)?.status).toBe("live");
+    expect(rows.find((r) => r.side === failing)?.status).toBe("pending");
+    expect((await w.copy())?.hasPhotos).toBe(true);
+    expect(await w.row()).toMatchObject({ photos: "failed", photoFailure: "error", photoSidesAttached: [landed] });
+  });
+
+  test("one size's PUT failing commits nothing for that side, and the attach waits for the other size", async () => {
+    storeSizes(FRONT);
+    storeSizes(BACK);
+    const w = await world({ photos: "pending" });
+    const thumbHeld = deferred();
+    onPut = async (key) => {
+      if ((await sideOf(w, key)) !== "front") return new Response(null, { status: 200 });
+      if (key.includes("/image.")) return new Response("denied", { status: 403 });
+      await thumbHeld.held;
+      return new Response(null, { status: 200 });
+    };
+    let finished = false;
+    const attaching = w.attach().then(() => {
+      finished = true;
+    });
+    await until(() => finished);
+    expect(finished).toBe(false);
+    thumbHeld.release();
+    await attaching;
+    expect((await w.photos()).find((r) => r.side === "front")?.status).toBe("pending");
+    expect((await w.row())?.photoFailure).toBe("error");
+  });
+
+  test.each([
+    ["error", "scanGone", "error"],
+    ["scanGone", "error", "error"],
+    ["unusable", "scanGone", "unusable"],
+    ["scanGone", "unusable", "unusable"],
+    ["error", "unusable", "error"],
+    ["unusable", "error", "error"],
+  ] as const)("front %s and back %s report %s", async (front, back, reported) => {
+    const answers = {
+      error: () => json(503, {}),
+      scanGone: gone,
+      unusable: () => json(422, { error_code: "OUTPUT_UNDECODABLE" }),
+    };
+    const w = await world({ photos: "pending" });
+    onDerive = (entryIndex) => answers[entryIndex === FRONT ? front : back]();
+    await w.attach();
+    expect(await w.row()).toMatchObject({ photos: "failed", photoFailure: reported });
+  });
+
+  test("two sides falling back ask the service one at a time", async () => {
+    const w = await world({ photos: "pending" });
+    const frontHeld = deferred();
+    onDerive = async (entryIndex) => {
+      if (entryIndex === FRONT) await frontHeld.held;
+      return derived(entryIndex);
+    };
+    const attaching = w.attach();
+    await until(() => derives.length === 2);
+    expect(derives.map((d) => d.entry_index)).toEqual([FRONT]);
+    frontHeld.release();
+    await attaching;
+    expect(derives.map((d) => d.entry_index)).toEqual([FRONT, BACK]);
+    expect((await w.row())?.photos).toBe("attached");
+  });
+
+  test("a side's derive failing doesn't stop the other side's from being asked", async () => {
+    const w = await world({ photos: "pending" });
+    onDerive = (entryIndex) => (entryIndex === FRONT ? gone() : derived(entryIndex));
+    await w.attach();
+    expect((await w.photos()).map((r) => [r.side, r.status])).toEqual([["back", "live"]]);
+    expect(await w.row()).toMatchObject({ photos: "failed", photoFailure: "scanGone" });
+  });
+
+  test("a side with stored sizes doesn't wait on the other side's derive", async () => {
+    storeSizes(BACK);
+    const w = await world({ photos: "pending" });
+    const frontHeld = deferred();
+    onDerive = async (entryIndex) => {
+      await frontHeld.held;
+      return derived(entryIndex);
+    };
+    const attaching = w.attach();
+    await until(() => puts.length === 2);
+    expect(puts).toHaveLength(2);
+    expect(derives.map((d) => d.entry_index)).toEqual([FRONT]);
+    frontHeld.release();
+    await attaching;
+    expect((await w.row())?.photos).toBe("attached");
+  });
+
+  test("the copy removed while both sides are mid-PUT ends failed, with no side counted as landed", async () => {
+    storeSizes(FRONT);
+    storeSizes(BACK);
+    const w = await world({ photos: "pending" });
+    const gate = deferred();
+    onPut = async () => {
+      await gate.held;
+      return new Response(null, { status: 200 });
+    };
+    const attaching = w.attach();
+    await until(() => puts.length === 4);
+    expect(puts).toHaveLength(4);
+    await w.me.mutation(api.collection.removeCopy, { copyId: w.copyId });
+    gate.release();
+    await attaching;
+    expect(await w.photos()).toEqual([]);
+    const row = await w.row();
+    expect(row).toMatchObject({ photos: "failed", photoFailure: "error" });
+    expect(row?.photoSidesAttached).toBeUndefined();
+  });
+});
 
 describe("overlapping and interrupted attaches", () => {
   test("two attaches at once leave one live photo a side and a row that says attached", async () => {
