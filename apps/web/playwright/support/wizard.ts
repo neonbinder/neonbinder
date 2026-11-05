@@ -603,6 +603,10 @@ export async function advanceToSave(page: Page): Promise<void> {
  *   next name step or, if that was the last name, to the first post-name step.
  *   Either footer offers a Back, so this takes "Back to previous decision" or
  *   "Back to previous step".
+ *   The caller WAITS for the walk to have moved before calling this
+ *   (`answerPlayerAsNew`'s `expectStepLeft`, or the live step's group/heading
+ *   `toBeHidden()` after a raw Link click); Back pressed while the decision is
+ *   in flight presents the decision before that row.
  * - `decision` the decision line, matched exactly when a string ("Skipped",
  *   "Added as new", "Linked to Shohei Ohtani") or by the regex given.
  * - `resume: true` presses the panel's "Next", handing the walk back its own

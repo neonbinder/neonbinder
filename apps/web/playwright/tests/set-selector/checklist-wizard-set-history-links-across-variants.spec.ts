@@ -367,6 +367,9 @@ test(
     ).toBeVisible();
     await expectAccessible(page, { within: wizard, label: "Entity review wizard, suggested player after Change" });
     await linkSuggested.click();
+    // The link must LAND before the read-back: Back pressed while a decision is
+    // in flight presents the decision BEFORE this row (the row is still on screen).
+    await expect(decision).toBeHidden();
     await readBackDecision(page, `Linked to ${STAR}`, { resume: true });
 
     await skipEverythingLeft(page);
@@ -396,6 +399,8 @@ test(
       .getByRole("button", { name: new RegExp(`^Link to ${MORGAN}, `) });
     await expect(namesakes).toHaveCount(2);
     await wizard.getByRole("button", { name: new RegExp(`^Link to ${MORGAN}, b\\. 1943`) }).click();
+    // As above: the pick step's heading goes only once the link has landed and the walk moved.
+    await expect(wizard.getByRole("heading", { level: 3, name: `Which ${MORGAN} is this?` })).toBeHidden();
     await readBackDecision(page, new RegExp(`^Linked to ${MORGAN}, b\\. 1943`), { resume: true });
 
     // The St. Louis Browns: LINKED to the catalogue's row of that exact name
@@ -449,7 +454,9 @@ test(
     await expectPlayersLoaded(page);
     await page.getByRole("textbox", { name: "Filter players" }).fill(STAR);
     await expect(playersCounter(page, PLAYERS_MATCHES)).toBeVisible();
-    await page.getByRole("button", { name: STAR }).click();
+    // The row reads name + sport and nothing else (his Football lookup is a recorded
+    // no-match: no birth year, no team); exact, because the filter is a substring.
+    await page.getByRole("button", { name: `${STAR} Football`, exact: true }).click();
     await expect(page.getByText("Sport: Football").first()).toBeVisible();
     const cards = page.getByRole("list", { name: `Cards for ${STAR}` });
     // Exactly the two inserts' cards; no second player was minted for the
@@ -505,6 +512,8 @@ test(
     await expect(wizard.getByText(`We've only got one ${WEEKS} (Football) on file. Same one?`)).toHaveCount(0);
     await expectAccessible(page, { within: wizard, label: "Entity review wizard, last year's edition suggests a player (rule E1)" });
     await linkWeeks.click();
+    // As above: Weeks's own step leaving is the link landing (he is the last name, so the walk goes on to a post-name step).
+    await expect(weeksStep).toBeHidden();
     await readBackDecision(page, new RegExp(`^Linked to ${WEEKS}`), { resume: true });
 
     await skipEverythingLeft(page);
@@ -517,7 +526,8 @@ test(
     await expectPlayersLoaded(page);
     await page.getByRole("textbox", { name: "Filter players" }).fill(WEEKS);
     await expect(playersCounter(page, PLAYERS_MATCHES)).toBeVisible();
-    await page.getByRole("button", { name: WEEKS }).click();
+    // Exact: the filter is a substring and lists the catalogue's "Rickie Weeks Jr." beside him.
+    await page.getByRole("button", { name: `${WEEKS} Football`, exact: true }).click();
     await expect(page.getByText("Sport: Football").first()).toBeVisible();
     const weeksCards = page.getByRole("list", { name: `Cards for ${WEEKS}` });
     // Exactly the two inserts' cards: the suggestion linked the 2010 card to
