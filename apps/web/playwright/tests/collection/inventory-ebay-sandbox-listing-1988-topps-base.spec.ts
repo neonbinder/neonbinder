@@ -849,7 +849,7 @@ test(
     // order the line names.
     await expect(run.last).toBeVisible();
     await expect(run.gathered()).toBeVisible();
-    const pressSent = / updated, /.test((await listedLine.textContent()) ?? "");
+    const pressSent = / \d+ updated\b/.test((await listedLine.textContent()) ?? "");
     if (pressSent) {
       // Press first: the press sent the cards, so the ledger holds the sending steps, in run order.
       await expect(run.last.getByRole("listitem")).toContainText([/^List the cards, done$/, /^Set prices, done$/, /^Go live, done$/]);

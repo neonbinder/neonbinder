@@ -519,9 +519,11 @@ export async function followRunToEnd(
  */
 export function queueSettled(platform: Locator, setLabel: string): Locator {
   const escaped = setLabel.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  // The row reads "<card> in <set> queued <when>", so a sibling set whose name
-  // starts with this one ("1988 Topps Traded") never counts as this set's.
-  const ofSet = new RegExp(` in ${escaped} queued `);
+  // The row's text is "<card> in <set>queued <when>" (two spans, no space in the
+  // DOM; hasNotText reads textContent, not the aria snapshot's spacing), so a
+  // sibling set whose name starts with this one ("1988 Topps Traded") never
+  // counts as this set's.
+  const ofSet = new RegExp(` in ${escaped}\\s*queued\\s`);
   return platform
     .getByText(/^Nothing waiting\./)
     .or(
