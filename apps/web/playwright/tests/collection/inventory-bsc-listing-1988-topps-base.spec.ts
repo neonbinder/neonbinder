@@ -41,7 +41,7 @@
 //
 // Waits. A Sync is a live BSC round trip of serial sheet reads, a PUT and a
 // read-back, and Sync status ticks each of those off as it lands (a ledger of
-// steps: "Read Excellent, done"). So the spec walks the run (`followRunToEnd`):
+// steps: "Read Excellent, done"). So the spec walks the run (`followRunToRest`):
 // every wait is the standard 7 s for exactly ONE step to land, never for the
 // whole trip or for several steps at once (GUIDE hard rule 3; Jason,
 // 2026-11-02), then for the set's result line. The only wait above 7 s is the
@@ -58,12 +58,23 @@
 //     "2 listed, 2 updated" (or "2 listed" when BSC already showed them);
 //   - poll first: the Sync status row already reads "2 listed" with its folded
 //     "Gathering data" item, and the press is a full read that sends nothing:
-//     the row reads "2 listed" and the ledger is the ONE "Gathering data" item
-//     (a run that sends nothing still holds a check step, "Compare with your
-//     boxes", which the finished row folds into it).
+//     the row reads "2 listed" and the ledger is exactly "Gathering data" then
+//     "Nothing new to send" (a run that sends nothing still holds a check step,
+//     "Compare with your boxes", which the finished row folds into the first).
 // A run that sent nothing is told apart by the absence of the send step, and
 // asserted as such; a missing ledger is red in either order. The in-person
 // press has the same two orders (a poll that takes the cards off first).
+//
+// A press is proven to have RUN before either order is read. The row a poll
+// leaves behind looks like a press's own, and the page says "Nothing syncing
+// right now." between two runs, so neither the row nor the idle line is evidence.
+// The press's queued cards are: the press writes them (its toast comes after),
+// and a run's finish clears them in the same write that records its result, but
+// only if the run claimed them (a run under way when the press landed leaves
+// them, and the set goes round again). So the spec walks step by step until the
+// queue holds no card of the set and the platform is idle (`followRunToRest`),
+// and only then reads the row and picks the order: a press whose run never
+// claims leaves its cards queued and goes red in both orders.
 //
 // The ledger's steps (convex/listingDrain.ts `bscSheetSteps`; labels in
 // inventory/listing/copy.ts): one "Read <conditions>" per BSC sheet, "Send
@@ -108,12 +119,15 @@ import {
   clearChecklistCommonPrice,
   drillToCollectorBase,
   emptyBoxCards,
+  expectNothingSent,
   followRunToEnd,
+  followRunToRest,
   goViaShell,
   inventoryTabs,
   nameOf,
   putOtherBoxesInPerson,
   quantityField,
+  queueSettled,
   syncRun,
 } from "../../support/collection";
 import { removeBscSignIn, saveBscSignIn } from "../../support/credentials";
@@ -132,8 +146,8 @@ const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
  * the sheet reads, or the check of a run that sent nothing), then the update
  * steps in run order. The positive asserts come first, so the negative ones
  * below cannot pass on a missing list. `sent` false is a run that sent nothing
- * (NEO-433, the poll listed first): its ledger is the one gathering item and
- * has no send.
+ * (NEO-433, the poll listed first): its ledger is exactly "Gathering data" then
+ * "Nothing new to send" and has no send; a sending run has no such line.
  */
 async function expectFoldedLastRun(run: ReturnType<typeof syncRun>, sent = true): Promise<void> {
   await expect(run.last).toBeVisible();
@@ -142,9 +156,9 @@ async function expectFoldedLastRun(run: ReturnType<typeof syncRun>, sent = true)
       /^Gathering data, done$/,
       new RegExp(`^${escapeRegExp(SEND)}, done$`),
     ]);
+    await expect(run.nothingNew()).toHaveCount(0);
   } else {
-    await expect(run.gathered()).toBeVisible();
-    await expect(run.last.getByRole("listitem")).toHaveCount(1);
+    await expectNothingSent(run);
   }
   await expect(run.last.getByRole("listitem", { name: /^(Read|Double-check) / })).toHaveCount(0);
 }
@@ -536,41 +550,39 @@ test(
     await expect(fieldA).toHaveValue("1");
     await tabs.getByRole("link", { name: "Sync status", exact: true }).click();
     await expect(page).toHaveURL(/[?&]tab=sync/);
-    // The live BSC round trip, one step per wait (see "Waits" above): the new
-    // run is in view (its ledger under Running now, or its own result line if it
-    // already finished); the walk then waits 7 s for the step the run is on to
-    // land, again and again, until the send is done (the sheet reads are serial
-    // and how many there are is not fixed, see "The ledger's steps" above) or
-    // the platform is idle (a press after the poll listed the box sends nothing).
+    // The live BSC round trip, one step per wait (see "Waits" above): the walk
+    // waits 7 s for the step the run is on to land, again and again, until the
+    // press's queued cards are gone and the platform is idle (header: a press
+    // proven to have run; the sheet reads are serial and how many there are is
+    // not fixed, see "The ledger's steps" above). Only then is the set's row
+    // read, and it is a run that started after the press, finished.
     // The line is the drain's own count: 2 rows on BSC show NB's stock after the
     // read-back (2 updated, or none when BSC already showed them); "skipped"
     // would be a held-back card.
     const listedLine = row.getByText(/^2 listed(, 2 updated)?$/);
     const listedNoSend = row.getByText("2 listed", { exact: true });
-    await expect(run.underWay(listedLine)).toBeVisible();
-    await followRunToEnd(platform, run, run.step(SEND));
-    await expect(run.readLanded()).toBeVisible();
-    // The press sent (its send step landed), or it sent nothing and the row says
-    // "2 listed" with no "updated": one of the two is on screen, and it decides the branch.
-    await expect(run.step(SEND).or(listedNoSend).first()).toBeVisible();
-    const sent = await run.step(SEND).isVisible();
+    await followRunToRest(platform, run, queueSettled(platform, SET_LABEL));
+    // The ledger is asserted BEFORE the branch (R2), so a row with none is red in either order.
+    await expect(run.last).toBeVisible();
+    await expect(run.gathered()).toBeVisible();
+    await expect(listedLine).toBeVisible();
+    await expect(row.getByText(/^Synced /)).toBeVisible();
+    await expect(row.getByText(/held back/)).toHaveCount(0);
+    // Press first: the send step is in the finished ledger. Poll first: the poll
+    // listed the two cards and the press, a full read, sent nothing.
+    const sent = await run.last.getByRole("listitem", { name: `${SEND}, done`, exact: true }).isVisible();
     if (sent) {
-      // Press first: the double-check, the result and the folded ledger (reads, then the send).
+      // The double-check and the folded ledger (reads, then the send).
+      await expect(run.readLanded()).toBeVisible();
       await expect(run.confirmLanded()).toBeVisible();
-      await expect(listedLine).toBeVisible();
-      await expect(row.getByText(/^Synced /)).toBeVisible();
-      await expect(row.getByText(/held back/)).toHaveCount(0);
       // Finished, the set's row folds the run (see "The ledger's steps"): the
       // reads are one "Gathering data", then the update steps in run order (an
       // "Upload photos" may sit before the send); no read or confirm item is left.
       await expectFoldedLastRun(run);
     } else {
-      // Poll first: the poll listed the two cards, so the press read and sent
-      // nothing: the row says 2 listed, synced, nothing held back, and its ledger
-      // is the one "Gathering data" item, with no send step.
+      // The row says "2 listed" with no "updated", and its ledger is the one
+      // "Gathering data" item, with no send step.
       await expect(listedNoSend).toBeVisible();
-      await expect(row.getByText(/^Synced /)).toBeVisible();
-      await expect(row.getByText(/held back/)).toHaveCount(0);
       await expectFoldedLastRun(run, false);
     }
     await expectAccessible(page, { label: "Inventory Sync status, 2 listed, the run's steps done" });
@@ -630,32 +642,35 @@ test(
     await expect(page).toHaveURL(/[?&]tab=sync/);
     // The live BSC round trip, step by step. The set was 2 listed a minute ago,
     // so the row still shows the LAST run's finished steps until this one
-    // claims the set: gate on the new run (its ledger, or its own result line).
-    // Walked one step per wait, like the listing run, until the send (it carries
-    // the two zeros) is done or the platform is idle; then the result line. How
-    // many sheets it reads is not fixed (see "The ledger's steps" above), so one
-    // data-gathering step is the assertion.
+    // claims the set: the walk ends only when the press's queued cards are gone
+    // and the platform is idle, so the row read next is a run that started after
+    // the press, finished. How many sheets it reads is not fixed (see "The
+    // ledger's steps" above), so one data-gathering step is the assertion.
     const takeDown = syncRun(platform, SET_LABEL, BSC);
     const takenLine = row.getByText(/^0 listed(, \d+ updated)?, 2 taken to 0$/);
-    await expect(takeDown.underWay(takenLine)).toBeVisible();
-    await followRunToEnd(platform, takeDown, takeDown.step(SEND));
-    await expect(takeDown.readLanded()).toBeVisible();
-    // Press first: the run sent the two zeros. Poll first (the header's two
-    // orders): the poll already took the cards off, and the press, a full read,
-    // sent nothing. The send step is the evidence of which it was, and each side
-    // is asserted hard: a send needs its double-check and folded ledger, a run
-    // that sent nothing is the one "Gathering data" item. (A seller account some
-    // OTHER session zeroed first looks the same as the poll here; the line's
-    // "2 taken to 0" still has to be NB's.)
-    const tookDown = await takeDown.step(SEND).isVisible();
+    await followRunToRest(platform, takeDown, queueSettled(platform, SET_LABEL));
+    // The ledger is asserted BEFORE the branch (R2), so a row with none is red in either order.
+    await expect(takeDown.last).toBeVisible();
+    await expect(takeDown.gathered()).toBeVisible();
+    await expect(takenLine).toBeVisible();
+    await expect(row.getByText(/held back/)).toHaveCount(0);
+    // Press first: the run sent the two zeros (the send step is in the finished
+    // ledger). Poll first (the header's two orders): the poll already took the
+    // cards off, and the press, a full read, sent nothing. Each side is asserted
+    // hard: a send needs its double-check and folded ledger (and no "Nothing new
+    // to send"), a run that sent nothing is "Gathering data" then "Nothing new to
+    // send". Accepted limit (Jason, NEO-433): a takedown that sent nothing cannot
+    // tell the poll taking the cards down first from anything else having zeroed
+    // them on the seller account. CI's seller queue runs these specs one at a
+    // time, so the poll is the only other writer there; locally, do not run this
+    // spec while another session uses the shared seller. The line's "2 taken to 0"
+    // still has to be NB's.
+    const tookDown = await takeDown.last.getByRole("listitem", { name: `${SEND}, done`, exact: true }).isVisible();
     if (tookDown) {
+      await expect(takeDown.readLanded()).toBeVisible();
       await expect(takeDown.confirmLanded()).toBeVisible();
-      await expect(takenLine).toBeVisible();
-      await expect(row.getByText(/held back/)).toHaveCount(0);
       await expectFoldedLastRun(takeDown);
     } else {
-      await expect(takenLine).toBeVisible();
-      await expect(row.getByText(/held back/)).toHaveCount(0);
       await expectFoldedLastRun(takeDown, false);
     }
 

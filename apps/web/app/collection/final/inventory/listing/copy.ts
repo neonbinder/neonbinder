@@ -315,6 +315,9 @@ export function stepLabels(steps: ReadonlyArray<StepWords>, platform: ListingPla
 /** A set row's last run folds its compare and every read into this one line (the run going now keeps each). */
 export const GATHERING_DATA = "Gathering data";
 
+/** The line after it when a clean run read everything and had nothing to send (a finished row only). */
+export const NOTHING_NEW_TO_SEND = "Nothing new to send";
+
 /** A step's state, as its list item says it. */
 export const STEP_STATE_WORD: Record<SyncStepStatus, string> = {
   waiting: "waiting",

@@ -99,7 +99,7 @@ describe("the checklist's Sync button", () => {
     const { notify } = setup({ sync: async () => ({ queued: false, ignored: "throttled" }) });
     fireEvent.click(button());
     await flush();
-    expect(notify).toHaveBeenCalledWith("1989 Upper Deck Base just synced. Give it a minute, then Sync again.");
+    expect(notify).toHaveBeenCalledWith("1989 Upper Deck Base is already in the works. Give it a minute, then Sync again.");
   });
 
   it("a server that says nothing lists points to the Profile", async () => {
@@ -249,7 +249,7 @@ describe("the checklist's Sync button", () => {
 
   it("syncToast covers each answer", () => {
     expect(syncToast("Base", { queued: true })).toBe("Syncing Base now. Watch it on Sync status.");
-    expect(syncToast("Base", { queued: false, ignored: "throttled" })).toBe("Base just synced. Give it a minute, then Sync again.");
+    expect(syncToast("Base", { queued: false, ignored: "throttled" })).toBe("Base is already in the works. Give it a minute, then Sync again.");
     expect(syncToast("Base", { queued: false, ignored: "notListing" })).toBe(NOT_LISTING_LINE);
     expect(syncToast("Base", { queued: false })).toBe(
       "Nothing in Base links to a marketplace you list on, so there's nothing to sync.",

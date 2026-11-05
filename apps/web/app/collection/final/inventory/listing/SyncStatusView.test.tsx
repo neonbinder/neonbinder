@@ -842,9 +842,53 @@ describe("the sync steps ledger", () => {
       ).toEqual(["Gathering data, waiting", "Send changes to BuySportsCards, waiting"]);
     });
 
-    it("a run that only compared folds to one Gathering data line, done", () => {
-      expect(fold([{ kind: "check", status: "done" }], "ebay")).toEqual(["Gathering data, done"]);
-      expect(fold([{ kind: "check", status: "done" }], "bsc")).toEqual(["Gathering data, done"]);
+    it("a clean finished run that only compared adds Nothing new to send after Gathering data (eBay)", () => {
+      expect(fold([{ kind: "check", status: "done" }], "ebay")).toEqual(["Gathering data, done", "Nothing new to send, done"]);
+    });
+
+    it("a clean finished BSC run that only read adds Nothing new to send", () => {
+      expect(
+        fold([
+          { kind: "read", condition: "Near Mint", status: "done" },
+          { kind: "read", condition: "Excellent", status: "done" },
+        ]),
+      ).toEqual(["Gathering data, done", "Nothing new to send, done"]);
+      expect(fold([{ kind: "check", status: "done" }], "bsc")).toEqual(["Gathering data, done", "Nothing new to send, done"]);
+    });
+
+    it("a failed run says no such thing", () => {
+      expect(fold([{ kind: "check", status: "failed" }], "ebay")).toEqual(["Gathering data, failed"]);
+      expect(
+        fold([
+          { kind: "read", condition: "Near Mint", status: "done" },
+          { kind: "read", condition: "Excellent", status: "failed" },
+        ]),
+      ).toEqual(["Gathering data, failed"]);
+    });
+
+    it("a row in error or still running says no such thing, even with every step so far done", () => {
+      const done: SyncStep[] = [{ kind: "check", status: "done" }];
+      expect(foldedLines(done, "ebay", "error").map((l) => l.label)).toEqual(["Gathering data"]);
+      expect(foldedLines(done, "ebay", "running").map((l) => l.label)).toEqual(["Gathering data"]);
+    });
+
+    it("a run with a sending, updating or take-down step says no such thing", () => {
+      for (const [kind, label] of [
+        ["send", "Send changes to BuySportsCards"],
+        ["photos", "Upload photos"],
+        ["items", "List the cards"],
+        ["offers", "Set prices"],
+        ["publish", "Go live"],
+        ["withdraw", "Take down cards at 0"],
+      ] as const) {
+        const lines = fold([{ kind: "check", status: "done" }, { kind, status: "done" }], kind === "send" ? "bsc" : "ebay");
+        expect(lines).toEqual(["Gathering data, done", `${label}, done`]);
+      }
+    });
+
+    it("the run going now keeps its own steps and never says it", () => {
+      expect(runLines([{ kind: "check", status: "done" }], "ebay").map((l) => l.label)).toEqual(["Compare with your boxes"]);
+      expect(fold([{ kind: "check", status: "working" }], "ebay")).toEqual(["Gathering data, working"]);
     });
 
     it("the compare folds with the reads into one Gathering data line, where the first of them stood", () => {
@@ -865,7 +909,7 @@ describe("the sync steps ledger", () => {
     });
 
     it("a compare that failed makes Gathering data failed", () => {
-      expect(fold([{ kind: "check", status: "failed" }], "ebay")).toEqual(["Gathering data, failed"]);
+      expect(fold([{ kind: "check", status: "failed" }, { kind: "read", status: "done" }], "bsc")).toEqual(["Gathering data, failed"]);
     });
 
     it("eBay has no reads: its row is unchanged", () => {

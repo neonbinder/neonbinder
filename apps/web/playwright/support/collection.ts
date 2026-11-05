@@ -367,6 +367,8 @@ export async function emptyBoxCards(
 /** The check step a run that sends nothing holds (NEO-433): running label, and what the finished row folds it into. */
 export const CHECK_STEP = "Compare with your boxes";
 const GATHERING_DATA = "Gathering data";
+/** The second folded line of a clean run that sent or changed nothing (NEO-433): the positive proof the press sent nothing. */
+export const NOTHING_NEW = "Nothing new to send";
 
 /**
  * NEO-415: Sync status's step ledger for one set on one marketplace, so a spec
@@ -446,6 +448,8 @@ export function syncRun(platform: Locator, setLabel: string, platformName: strin
     step,
     readLanded,
     gathered,
+    /** The "Nothing new to send" line of a finished run's ledger; absent on any run that sent or changed something. */
+    nothingNew: (): Locator => last.getByRole("listitem", { name: new RegExp(`^${NOTHING_NEW}`) }),
     confirmLanded,
     /**
      * The new run is visible: its ledger under Running now, or (a run that
@@ -497,4 +501,90 @@ export async function followRunToEnd(
     );
   }
   await expect(over).toBeVisible();
+}
+
+/**
+ * NEO-433: the queued rows a press writes are the evidence that a run which
+ * started AFTER the press has finished. A press writes (or touches) the set's
+ * queued cards before its toast, and the drain's finish clears them in the very
+ * write that records the run's result and releases its lease; a run that
+ * claimed before the press cannot clear them (their sequence moved), so the
+ * set goes round again. So "nothing queued for this set" on Sync status, with
+ * a press already toasted, means a run that read the press's rows has ended,
+ * and the set's row (line, ledger) is that run's. Nothing about a stale row
+ * left by the sales poll can satisfy it.
+ *
+ * Visible when the platform's queue holds no card of `setLabel`: the empty
+ * queue's "Nothing waiting." line, or a queue list with other sets' cards only.
+ */
+export function queueSettled(platform: Locator, setLabel: string): Locator {
+  const escaped = setLabel.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const ofSet = new RegExp(` in ${escaped}(?:\\b|$)`);
+  return platform
+    .getByText(/^Nothing waiting\./)
+    .or(
+      platform
+        .getByRole("list", { name: /^Queued for the next sync/ })
+        .filter({ hasNot: platform.getByRole("listitem").filter({ hasText: ofSet }) }),
+    );
+}
+
+/** The most steps `followRunToRest` walks: two runs at the ledger's cap (`MAX_PROGRESS_STEPS` 40) is the ceiling, in practice a set's run is under 25. */
+const MAX_REST_PASSES = 45;
+
+/**
+ * Walks the set to rest after a press: every wait covers exactly ONE step
+ * landing (the standard budget, or `slow[label]` for a step with a signed-off
+ * longer ceiling, recorded at the call site, GUIDE hard rule 3), until the
+ * press's queued rows are gone (`settled`, from `queueSettled`) and the
+ * platform is idle. Unlike `followRunToEnd` it never ends on an idle platform
+ * alone: a stale row left by the sales poll shows "Nothing syncing right now."
+ * too, and a press during a run goes round again after the first run ends,
+ * with an idle moment between the two. The press's rows are what tell the
+ * runs apart, so a press whose run never claims leaves them queued and this
+ * goes red, whichever way the poll raced it.
+ *
+ * Call it with the press already toasted, and read the set's row only after
+ * it returns: the row is then a run that started after the press, finished.
+ */
+export async function followRunToRest(
+  platform: Locator,
+  run: ReturnType<typeof syncRun>,
+  settled: Locator,
+  slow: Readonly<Record<string, number>> = {},
+): Promise<void> {
+  const idle = platform.getByText(/^Nothing syncing right now\./);
+  const open = run.running.getByRole("listitem", { name: /, (working|waiting)$/ });
+  for (let pass = 0; pass < MAX_REST_PASSES; pass++) {
+    // Either the press's rows are gone, or a run shows the step it is on (a run
+    // not yet claimed shows neither, and 7 s is the whole claim's budget).
+    await expect(settled.or(open.first()).first()).toBeVisible();
+    if (await settled.isVisible()) break;
+    // One look at the open steps that never waits (a compare-only run's one step is
+    // gone in a moment): none left means the step landed between the two looks.
+    const [text] = await open.allTextContents();
+    if (text === undefined) continue;
+    const label = text.trim().replace(/, (working|waiting)$/, "");
+    const budget = slow[label];
+    await expect(run.step(label).or(run.step(label, "failed")).or(settled).first()).toBeVisible(
+      budget === undefined ? undefined : { timeout: budget },
+    );
+  }
+  await expect(settled).toBeVisible();
+  await expect(idle).toBeVisible();
+}
+
+/**
+ * NEO-433: a finished run that sent and changed nothing (the sales poll got
+ * there first, so the press was a full read) shows exactly two folded lines, in
+ * this order: "Gathering data, done", then "Nothing new to send". That pair is
+ * the positive proof the press sent nothing; a spec's sending branch asserts
+ * `run.nothingNew()` absent instead.
+ */
+export async function expectNothingSent(run: ReturnType<typeof syncRun>): Promise<void> {
+  await expect(run.last).toBeVisible();
+  await expect(run.last.getByRole("listitem")).toHaveText([
+    new RegExp(`^${GATHERING_DATA}, done$`),
+    new RegExp(`^${NOTHING_NEW}`),
+  ]);
 }

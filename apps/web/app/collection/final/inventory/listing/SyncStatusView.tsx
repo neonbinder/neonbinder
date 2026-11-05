@@ -26,6 +26,7 @@ import {
   reauthLine,
   reauthLineReadOnly,
   GATHERING_DATA,
+  NOTHING_NEW_TO_SEND,
   STEP_STATE_WORD,
   lastStepsName,
   runStepsName,
@@ -333,8 +334,15 @@ const FOLD_ORDER: readonly SyncStepStatus[] = ["failed", "waiting", "working", "
  *   take down.
  * - Check-backs are reads too, so they go, except one that failed: a
  *   failure never disappears from the row.
+ * - A clean finished run (`rowStatus` idle, every step done) that only gathered
+ *   says so with a second line, "Nothing new to send". A row in error or still
+ *   running never does, even with every step so far done.
  */
-export function foldedLines(steps: ReadonlyArray<SyncStep>, platform: ListingPlatform): LedgerLine[] {
+export function foldedLines(
+  steps: ReadonlyArray<SyncStep>,
+  platform: ListingPlatform,
+  rowStatus: SyncSetResult["status"] = "idle",
+): LedgerLine[] {
   const labels = stepLabels(steps, platform);
   const gathering = steps.filter((step) => step.kind === "check" || step.kind === "read");
   const gathered = FOLD_ORDER.find((status) => gathering.some((step) => step.status === status)) ?? "done";
@@ -347,6 +355,8 @@ export function foldedLines(steps: ReadonlyArray<SyncStep>, platform: ListingPla
     if (step.kind === "confirm" && step.status !== "failed") return;
     lines.push({ label: labels[i], status: step.status });
   });
+  const onlyGathered = steps.length > 0 && gathering.length === steps.length && gathered === "done";
+  if (rowStatus === "idle" && onlyGathered) lines.push({ label: NOTHING_NEW_TO_SEND, status: "done" });
   return lines;
 }
 
@@ -675,7 +685,7 @@ function SetRow({
           <span className={set.status === "error" ? "text-neon-pink-text" : "text-ink-2"}>{setLine(set, platform)}</span>
         </p>
         {showSteps && set.steps && set.steps.length > 0 && (
-          <StepLedger lines={foldedLines(set.steps, platform)} name={lastStepsName(set.setLabel, platform)} inline />
+          <StepLedger lines={foldedLines(set.steps, platform, set.status)} name={lastStepsName(set.setLabel, platform)} inline />
         )}
         {counts && <p className="tabular-nums text-ink-3">{counts}</p>}
         {total > 0 && (

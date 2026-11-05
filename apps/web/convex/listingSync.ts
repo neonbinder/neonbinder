@@ -622,7 +622,9 @@ async function recordOf(
  * Answers `ignored: "notListing"` (and writes nothing) when the collector
  * has no saved sign-in on a platform NB has not paused. A press within
  * `RESYNC_THROTTLE_MS` of the last press is dropped on that platform: the run
- * it asked for reads the set in full. A press while the variant's run is under
+ * it asked for reads the set in full. A first press on a never-synced variant
+ * has no record to stamp, so a second press within the minute can run one more
+ * full read, after which the stamp holds. A press while the variant's run is under
  * way is taken: that run claimed before the press, so what it reads is fixed,
  * and the queued cards and the stamp send the set round again in full once it
  * releases. `queued` is true when at least one platform

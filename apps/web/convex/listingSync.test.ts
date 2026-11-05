@@ -1256,6 +1256,54 @@ describe("syncVariant", () => {
     expect((await states(s))[0].drainRequested).toBe(true);
   });
 
+  test("a press while the eBay run holds its lease is taken: queued on eBay, not ignored, stamped, and the busy drain is asked to run again", async () => {
+    const s = await fresh();
+    holdDrains();
+    vi.stubEnv("EBAY_CLIENT_ID", "client");
+    vi.stubEnv("EBAY_RU_NAME", "runame");
+    vi.stubEnv("EBAY_ENVIRONMENT", "sandbox");
+    try {
+      await addTo(s, s.fx.gooden1, s.box);
+      await priceEveryVariant(s.t, ME.subject);
+      await s.t.run((ctx) =>
+        ctx.db.insert("marketplaceListingStates", {
+          ownerId: ME.subject,
+          platform: "ebay",
+          listingStartedAt: 1,
+          lastUpdated: 0,
+          drainLeaseToken: "owner-lease",
+          drainLeaseExpiresAt: Date.now() + 60_000,
+        }),
+      );
+      const id = await s.t.run((ctx) =>
+        ctx.db.insert("marketplaceListingSyncs", {
+          ownerId: ME.subject,
+          variantId: s.fx.baseId,
+          platform: "ebay",
+          status: "running",
+          leaseToken: "lease",
+          leaseExpiresAt: Date.now() + 60_000,
+          lastSuccessAt: 500,
+          lastRunAt: Date.now() - 5_000,
+          problems: [],
+          conditionsPushed: [],
+          lastUpdated: 1,
+        }),
+      );
+
+      const result = await s.me.mutation(api.listingSync.syncVariant, { variantId: s.fx.baseId });
+
+      expect(result.queued).toBe(true);
+      expect(result.ignored).toBeUndefined();
+      expect((await outbox(s)).map((r) => [r.platform, r.cardId])).toEqual([["ebay", s.fx.gooden1]]);
+      const stamped = await s.t.run((ctx) => ctx.db.get(id));
+      expect(stamped?.resyncRequestedAt).toBeGreaterThan(stamped?.lastRunAt ?? 0);
+      expect((await states(s)).find((x) => x.platform === "ebay")?.drainRequested).toBe(true);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   test("a press during a run is carried through: the run goes again on release, reads in full, and the queued row survives the running run's finish", async () => {
     const s = await fresh();
     holdDrains();
