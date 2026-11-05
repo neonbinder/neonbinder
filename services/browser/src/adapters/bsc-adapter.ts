@@ -84,6 +84,14 @@ const BSC_UA =
 // cache entry that 401s, costing a wasted round trip on every call.
 const TOKEN_TTL_MS = 60 * 60 * 1000;
 
+// NEO-443: how long one GET /marketplace/user/profile may take, headers and
+// body together. Above 30s on purpose: dev logs show BSC answering non-OK at a
+// wall of almost exactly 30s, and valid answers as slow as 28s. A shorter limit
+// would hide the status we are trying to capture, and would send slow-but-valid
+// cached tokens to a refresh, which rotates the token and writes a Secret
+// Manager version (NEO-115).
+const BSC_PROFILE_TIMEOUT_MS = 35_000;
+
 /**
  * The fields we read off the B2C token endpoint, for both the
  * authorization_code and refresh_token grants.
@@ -259,9 +267,17 @@ interface B2CSettings {
   api?: string;
 }
 
+export interface BSCAdapterOptions {
+  /** Limit on one profile call, headers and body. Default 35s. */
+  profileTimeoutMs?: number;
+}
+
 export class BSCAdapter extends BaseAdapter {
-  constructor(page?: Page) {
+  private readonly profileTimeoutMs: number;
+
+  constructor(page?: Page, opts: BSCAdapterOptions = {}) {
     super(page, "BuySportsCards (BSC)");
+    this.profileTimeoutMs = opts.profileTimeoutMs ?? BSC_PROFILE_TIMEOUT_MS;
   }
 
   getHomeUrl(): string {
@@ -273,22 +289,58 @@ export class BSCAdapter extends BaseAdapter {
    * validate cached tokens and to capture the user's sellerId at login.
    * Returns null on any non-OK response so callers can choose between
    * re-authentication and graceful degradation.
+   *
+   * NEO-443: the whole call, headers and body, runs under profileTimeoutMs,
+   * and every call logs one line with its status or how it failed. A timeout,
+   * like any other throw, is logged and rethrown. It must not become null:
+   * null after a token was minted means success without the seller fields.
+   *
+   * SECURITY: these lines never carry the token, the Authorization header, the
+   * response body or a seller id. summarizeFetchError because a fetch error
+   * can quote the Authorization header, which is the token.
    */
   private async fetchSellerProfile(token: string): Promise<{ storeName?: string; sellerId?: string } | null> {
-    const response = await fetch("https://api-prod.buysportscards.com/marketplace/user/profile", {
-      headers: { "Authorization": `Bearer ${token}` },
-    });
-    if (!response.ok) return null;
-    const profile = (await response.json()) as BscProfileResponse;
-    const sellerProfile = profile?.sellerProfile;
-    if (!sellerProfile) {
-      console.warn(`[BSC Adapter] /marketplace/user/profile returned no sellerProfile. Top-level keys:`, Object.keys(profile ?? {}));
-      return {};
+    const startedAt = Date.now();
+    const signal = AbortSignal.timeout(this.profileTimeoutMs);
+    let status: number | undefined;
+    try {
+      const response = await fetch("https://api-prod.buysportscards.com/marketplace/user/profile", {
+        headers: { "Authorization": `Bearer ${token}` },
+        signal,
+      });
+      status = response.status;
+      if (!response.ok) {
+        console.warn(`[BSC Adapter] /marketplace/user/profile answered ${status} in ${Date.now() - startedAt}ms`);
+        return null;
+      }
+      // Logged after the body is read, so a stalled body logs one timed-out
+      // line rather than an "answered 200" followed by it.
+      const profile = (await response.json()) as BscProfileResponse;
+      console.log(`[BSC Adapter] /marketplace/user/profile answered ${status} in ${Date.now() - startedAt}ms`);
+      const sellerProfile = profile?.sellerProfile;
+      if (!sellerProfile) {
+        console.warn(`[BSC Adapter] /marketplace/user/profile returned no sellerProfile. Top-level keys:`, Object.keys(profile ?? {}));
+        return {};
+      }
+      return {
+        storeName: sellerProfile.sellerStoreName,
+        sellerId: sellerProfile.sellerId,
+      };
+    } catch (error) {
+      const elapsedMs = Date.now() - startedAt;
+      if (signal.aborted) {
+        console.warn(
+          `[BSC Adapter] /marketplace/user/profile timed out: limit ${this.profileTimeoutMs}ms, elapsed ${elapsedMs}ms, ` +
+            (status === undefined ? "no response headers" : `status ${status}, body stalled`),
+        );
+      } else {
+        console.warn(
+          `[BSC Adapter] /marketplace/user/profile threw after ${elapsedMs}ms` +
+            `${status === undefined ? "" : `, status ${status}`}: ${summarizeFetchError(error)}`,
+        );
+      }
+      throw error;
     }
-    return {
-      storeName: sellerProfile.sellerStoreName,
-      sellerId: sellerProfile.sellerId,
-    };
   }
 
   /**

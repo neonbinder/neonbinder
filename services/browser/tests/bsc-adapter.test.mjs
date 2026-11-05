@@ -26,6 +26,7 @@
 import { describe, it, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
+import { format } from "node:util";
 
 const require = createRequire(import.meta.url);
 
@@ -2418,5 +2419,376 @@ describe("BSCAdapter.login — NEO-278 silent SSO re-authorize", () => {
       { [SSO_COOKIE_NAME]: SSO_COOKIE_REISSUED },
       "the SSO cookie is still captured even though no refresh token came back",
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-443 — /marketplace/user/profile: a deadline, and one log line per call
+// ---------------------------------------------------------------------------
+//
+// The profile call had no timeout and logged no status, so a slow BSC answer
+// left nothing to read afterwards. These tests pin what the logs now say for
+// each outcome, and what a hang does to login():
+//   - on the cached-token check it is "couldn't validate", and login falls
+//     through to the refresh grant;
+//   - after a token was minted it fails the login. It must never become
+//     success without the seller fields, which is what returning null from a
+//     timeout would have done.
+//
+// The fetch mocks honour opts.signal the way real fetch does: rejecting with
+// signal.reason on abort. With no signal they never settle, which is what the
+// real hang looks like, and runLogin's guard turns that into a red test.
+
+describe("BSCAdapter — NEO-443 profile timeout and status logging", () => {
+  const KEY = "buysportscards-credentials-seller1";
+  const TEST_TIMEOUT_MS = 40;
+  const HANG_GUARD_MS = 2_000;
+  const PROFILE_PATH = "/marketplace/user/profile";
+
+  const CACHED_TOKEN = "cached-access-LEAKCANARY-token";
+  const SELLER_ID = "seller-LEAKCANARY-full-id";
+  const BODY_MARKER = "body-LEAKCANARY-field";
+  const NEVER_LOGGED = [
+    CACHED_TOKEN,
+    SELLER_ID,
+    BODY_MARKER,
+    "LEAKCANARY",
+    "Bearer",
+    "access-token-1", // minted by makeRefreshRouter
+    "refresh-token-",
+    "silent-access-token",
+    "fresh-access-token",
+  ];
+
+  /** A secret with a cached token and a live refresh token behind it. */
+  const cachedSecret = () => {
+    const writes = [];
+    return {
+      writes,
+      credentials: () => ({
+        username: "seller@example.com",
+        token: CACHED_TOKEN,
+        expiresAt: Date.now() + 60 * 60 * 1000,
+        refreshToken: "refresh-token-0",
+        refreshExpiresAt: Date.now() + 24 * 60 * 60 * 1000,
+      }),
+      updateCredentials: (_key, creds) => writes.push({ ...creds }),
+    };
+  };
+
+  const healthyProfile = () =>
+    makeResponse({
+      status: 200,
+      json: {
+        sellerProfile: { sellerStoreName: "Acme Cards", sellerId: SELLER_ID },
+        unrelated: BODY_MARKER,
+      },
+    });
+
+  /** Rejects with the signal's reason on abort; never settles without a signal. */
+  const hangUntilAborted = (opts) =>
+    new Promise((_resolve, reject) => {
+      const signal = opts?.signal;
+      if (!signal) return;
+      if (signal.aborted) {
+        reject(signal.reason);
+        return;
+      }
+      signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+    });
+
+  /**
+   * Wrap a router so profile calls go to `profile(callNumber, opts)` and
+   * everything else to the router. Records each profile call's opts.
+   */
+  function withProfile(router, profile) {
+    const profileCalls = [];
+    const handler = (url, opts = {}) => {
+      if (String(url).includes(PROFILE_PATH)) {
+        profileCalls.push(opts);
+        return profile(profileCalls.length, opts);
+      }
+      return router(url, opts);
+    };
+    handler.profileCalls = profileCalls;
+    return handler;
+  }
+
+  /**
+   * Run one login with console captured, the short test timeout, and a guard
+   * so a missing signal fails the test instead of hanging the suite. Settles
+   * to { result } or { thrown }, and checks the leak rule on every run.
+   */
+  async function runLogin(secret, fetchHandler) {
+    const BSCAdapter = loadBSCAdapter(secret);
+    const restoreFetch = stubFetch(fetchHandler);
+    const originals = { log: console.log, warn: console.warn, error: console.error };
+    const lines = [];
+    for (const level of Object.keys(originals)) {
+      console[level] = (...args) => lines.push({ level, text: format(...args) });
+    }
+    let guardTimer;
+    const guard = new Promise((_resolve, reject) => {
+      guardTimer = setTimeout(
+        () => reject(new Error(`login() still pending after ${HANG_GUARD_MS}ms`)),
+        HANG_GUARD_MS,
+      );
+    });
+    try {
+      const outcome = await Promise.race([
+        new BSCAdapter(undefined, { profileTimeoutMs: TEST_TIMEOUT_MS })
+          .login(KEY)
+          .then(
+            (result) => ({ result }),
+            (thrown) => ({ thrown }),
+          ),
+        guard,
+      ]);
+      assert.ok(lines.length > 0, "a leak check over no log lines would prove nothing");
+      for (const { text } of lines) {
+        for (const secretValue of NEVER_LOGGED) {
+          assert.ok(!text.includes(secretValue), `log line leaks "${secretValue}": ${text}`);
+        }
+      }
+      return { ...outcome, lines };
+    } finally {
+      clearTimeout(guardTimer);
+      Object.assign(console, originals);
+      restoreFetch();
+    }
+  }
+
+  /** The adapter's own per-call lines, leaving out logProfile's summary line. */
+  const profileLines = (lines) =>
+    lines.filter(({ text }) => /\/marketplace\/user\/profile (answered|timed out|threw)/.test(text));
+
+  const elapsedOf = (text) => Number(/elapsed (\d+)ms/.exec(text)?.[1]);
+
+  it("healthy cached token: success with the seller fields, one fetch, and the status in the logs", async () => {
+    const secret = cachedSecret();
+    const refresh = makeRefreshRouter({
+      tokenResponse: () => assert.fail("a healthy cached token must not touch the token endpoint"),
+    });
+    const router = withProfile(refresh, () => healthyProfile());
+
+    const { result, lines } = await runLogin(secret, router);
+
+    assert.equal(result.success, true);
+    assert.equal(result.storeName, "Acme Cards");
+    assert.equal(result.sellerId, SELLER_ID);
+    assert.equal(router.profileCalls.length, 1, "exactly one fetch");
+    assert.deepEqual(refresh.presented, []);
+    assert.equal(secret.writes.length, 0);
+
+    const logged = profileLines(lines);
+    assert.equal(logged.length, 1, "one line per call");
+    assert.equal(logged[0].level, "log", "a healthy answer is not a warning");
+    assert.match(logged[0].text, /\/marketplace\/user\/profile answered 200 in \d+ms/);
+  });
+
+  it("5xx: the cached token falls through to the refresh, and a 5xx after it still returns success with no seller fields", async () => {
+    // Existing behaviour, deliberately unchanged here: !response.ok is null,
+    // on the cached check and on the post-auth call alike. What is new is that
+    // both 503s are now on the record.
+    const secret = cachedSecret();
+    const router = withProfile(makeRefreshRouter(), () =>
+      makeResponse({ status: 503, ok: false, json: { error: BODY_MARKER } }),
+    );
+
+    const { result, lines } = await runLogin(secret, router);
+
+    assert.equal(result.success, true);
+    assert.match(result.message, /Refreshed token/);
+    assert.equal(result.storeName, undefined);
+    assert.equal(result.sellerId, undefined);
+    assert.equal(secret.writes.length, 1);
+    assert.equal(secret.writes[0].refreshToken, "refresh-token-1");
+
+    const logged = profileLines(lines);
+    assert.equal(logged.length, 2, "one line for each of the two calls");
+    for (const { level, text } of logged) {
+      assert.equal(level, "warn", "non-OK is a warning");
+      assert.match(text, /\/marketplace\/user\/profile answered 503 in \d+ms/);
+    }
+  });
+
+  it("hang on the cached-token check: logs the timeout, falls through to the refresh, succeeds with the seller fields", async () => {
+    const secret = cachedSecret();
+    const router = withProfile(makeRefreshRouter(), (call, opts) =>
+      call === 1 ? hangUntilAborted(opts) : healthyProfile(),
+    );
+
+    const { result, lines } = await runLogin(secret, router);
+
+    assert.equal(result.success, true);
+    assert.match(result.message, /Refreshed token/);
+    assert.equal(result.storeName, "Acme Cards");
+    assert.equal(result.sellerId, SELLER_ID);
+    assert.equal(secret.writes.length, 1, "the fall-through is one refresh, one write");
+
+    assert.equal(router.profileCalls.length, 2);
+    const [first, second] = router.profileCalls;
+    assert.ok(first.signal instanceof AbortSignal, "the signal must reach fetch");
+    assert.equal(first.signal.aborted, true, "and be what ended the hang");
+    assert.notEqual(second.signal, first.signal, "each call gets its own deadline");
+    assert.equal(second.signal.aborted, false);
+
+    const logged = profileLines(lines);
+    assert.equal(logged.length, 2);
+    assert.match(
+      logged[0].text,
+      new RegExp(
+        `/marketplace/user/profile timed out: limit ${TEST_TIMEOUT_MS}ms, elapsed \\d+ms, no response headers`,
+      ),
+    );
+    assert.ok(elapsedOf(logged[0].text) >= TEST_TIMEOUT_MS - 5, logged[0].text);
+    assert.match(logged[1].text, /answered 200 in \d+ms/);
+  });
+
+  describe("hang after a token was minted: never success without the seller fields", () => {
+    it("after a refresh: login throws the timeout, with the rotated token already persisted", async () => {
+      const secret = statefulSecret({
+        username: "seller@example.com",
+        token: "stale-access-token",
+        refreshToken: "refresh-token-0",
+        refreshExpiresAt: Date.now() + 24 * 60 * 60 * 1000,
+      });
+      const router = withProfile(makeRefreshRouter(), (_call, opts) => hangUntilAborted(opts));
+
+      const { result, thrown, lines } = await runLogin(secret, router);
+
+      assert.equal(result, undefined, `must not resolve: ${JSON.stringify(result)}`);
+      assert.equal(thrown?.name, "TimeoutError");
+      assert.equal(secret.state.writes.length, 1);
+      assert.equal(
+        secret.state.payload.refreshToken,
+        "refresh-token-1",
+        "the presented token is dead, so the rotated one must survive the failed login",
+      );
+      assert.match(
+        profileLines(lines)[0].text,
+        new RegExp(`timed out: limit ${TEST_TIMEOUT_MS}ms, elapsed \\d+ms, no response headers`),
+      );
+    });
+
+    it("after a silent re-authorize: login throws the timeout, with the tokens already persisted", async () => {
+      const secret = statefulSecret(REFRESH_DEAD_SSO_LIVE);
+      const router = withProfile(makeSilentRouter(), (_call, opts) => hangUntilAborted(opts));
+
+      const { result, thrown } = await runLogin(secret, router);
+
+      assert.equal(result, undefined, `must not resolve: ${JSON.stringify(result)}`);
+      assert.equal(thrown?.name, "TimeoutError");
+      assert.equal(secret.state.writes.length, 1);
+      assert.equal(secret.state.payload.token, "silent-access-token");
+    });
+
+    it("after a password sign-in: passwordLogin's own catch returns a generic failure, with the token already persisted", async () => {
+      // Differs from the two above on purpose: this call site already sits
+      // inside passwordLogin's try, so the throw never reaches the route.
+      const writes = [];
+      const router = withProfile(makeB2CRouter(), (_call, opts) => hangUntilAborted(opts));
+
+      const { result, thrown } = await runLogin(
+        {
+          credentials: { username: "seller@example.com", password: "placeholder-value" },
+          updateCredentials: (_key, creds) => writes.push({ ...creds }),
+        },
+        router,
+      );
+
+      assert.equal(thrown, undefined);
+      assert.equal(result.success, false);
+      assert.equal(result.error, "Authentication failed");
+      assert.equal(writes.length, 1);
+      assert.equal(writes[0].token, "fresh-access-token");
+    });
+  });
+
+  it("headers arrive, then the body stalls: the one log line carries the timed-out wording and the status", async () => {
+    const secret = cachedSecret();
+    const router = withProfile(makeRefreshRouter(), (call, opts) => {
+      if (call !== 1) return healthyProfile();
+      const stalled = makeResponse({ status: 200 });
+      stalled.json = () => hangUntilAborted(opts);
+      return stalled;
+    });
+
+    const { result, lines } = await runLogin(secret, router);
+
+    assert.equal(result.success, true, "a stalled body is 'could not validate', so the refresh runs");
+    assert.match(result.message, /Refreshed token/);
+
+    const logged = profileLines(lines);
+    assert.equal(logged.length, 2, "the stalled call must not also log an 'answered' line");
+    assert.match(
+      logged[0].text,
+      new RegExp(`timed out: limit ${TEST_TIMEOUT_MS}ms, elapsed \\d+ms, status 200`),
+    );
+    assert.doesNotMatch(logged[0].text, /no response headers/);
+    assert.match(logged[1].text, /answered 200 in \d+ms/);
+  });
+
+  it("any other throw: logs elapsed and the summarized error, and rethrows the original", async () => {
+    // The shape summarizeFetchError exists for: Node's fetch quotes the whole
+    // header value, which here is the bearer token.
+    const original = new TypeError(
+      `Headers.append: "Bearer ${CACHED_TOKEN}" is an invalid header value.`,
+    );
+    const secret = statefulSecret({
+      username: "seller@example.com",
+      token: "stale-access-token",
+      refreshToken: "refresh-token-0",
+      refreshExpiresAt: Date.now() + 24 * 60 * 60 * 1000,
+    });
+    const router = withProfile(makeRefreshRouter(), () => {
+      throw original;
+    });
+
+    // Sync throw from the mock and all: this is the post-auth call, so the
+    // original reaches the caller of login() untouched.
+    const { result, thrown, lines } = await runLogin(secret, router);
+
+    assert.equal(result, undefined);
+    assert.equal(thrown, original, "the original error object, not a wrapper");
+    const [line] = profileLines(lines);
+    assert.match(line.text, /\/marketplace\/user\/profile threw after \d+ms: TypeError: Headers\.append/);
+  });
+
+  it("a 200 that is not JSON logs the status and no part of the page", async () => {
+    // An HTML page on a 200. The JSON SyntaxError quotes where it choked, and
+    // summarizeFetchError elides that quote.
+    const secret = cachedSecret();
+    const page = `<html lang="en"><body>${BODY_MARKER} ${SELLER_ID}</body></html>`;
+    const router = withProfile(makeRefreshRouter(), (call) =>
+      call === 1 ? makeResponse({ status: 200, body: page }) : healthyProfile(),
+    );
+
+    const { result, lines } = await runLogin(secret, router);
+
+    assert.equal(result.success, true, "treated as 'could not validate', like any other throw");
+    assert.match(result.message, /Refreshed token/);
+    const [line] = profileLines(lines);
+    assert.match(line.text, /threw after \d+ms, status 200: SyntaxError/);
+    assert.doesNotMatch(line.text, /html/);
+  });
+
+  it("defaults to a 35s limit when the adapter is built with just a page", async () => {
+    const BSCAdapter = loadBSCAdapter(cachedSecret());
+    const restoreFetch = stubFetch(async () => healthyProfile());
+    const realTimeout = AbortSignal.timeout;
+    const limits = [];
+    AbortSignal.timeout = (ms) => {
+      limits.push(ms);
+      return realTimeout.call(AbortSignal, ms);
+    };
+    try {
+      const result = await new BSCAdapter(undefined).login(KEY);
+      assert.equal(result.success, true);
+      assert.deepEqual(limits, [35_000]);
+    } finally {
+      AbortSignal.timeout = realTimeout;
+      restoreFetch();
+    }
   });
 });
