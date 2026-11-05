@@ -101,7 +101,7 @@ function AppCrashFallback({ error }: { error: unknown }) {
       {reloading ? (
         <LoadingLine />
       ) : (
-        <div ref={message} role="alert" tabIndex={-1} className="rounded-sm focus-outline">
+        <div ref={message} role="alert" tabIndex={-1} className="outline-none">
           An error occurred. Please refresh the page.
         </div>
       )}
