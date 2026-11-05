@@ -75,8 +75,10 @@ if (import.meta.env.VITE_CLERK_TESTING_ENABLED !== "true") {
     // URL on `http.url` — same signed-capability leak, different pipeline.
     beforeSendTransaction: (event) => scrubEvent(event),
     // NEO-415: the eBay return's one-time `code` and `state` are off the address
-    // before Sentry starts (NEO-434). This pass is the second layer, for any
-    // other way they reach an event, such as Replay's navigation-timing span.
+    // before Sentry starts (NEO-434), but this pass is still required. The
+    // navigation-timing entry keeps the address as it arrived, and it reaches
+    // Sentry through Replay's `navigation.navigate` frame and the transaction's
+    // `browser.unloadEvent` span.
     beforeSend: (event) => scrubEvent(event),
   });
 }

@@ -268,6 +268,40 @@ it.each(Object.entries(ESCAPE_CASES))("%s: the error still sends, redacted", asy
   expect(selfReports()).toEqual([]);
 });
 
+// The navigation-timing entry keeps the address as it arrived, so these carry
+// eBay's code even though the address step has run. Shapes as a real bundle
+// produced them: happy-dom has no navigation entry to feed the real collectors.
+const ARRIVED = "https://app.example/profile/ebay?code=TIMINGCODESECRET&state=TIMINGSTATESECRET";
+
+it("Replay's navigation.navigate frame loses the code that navigation timing kept", async () => {
+  const replay = replayInternals();
+  const buffered = vi.spyOn(replay.eventBuffer, "addEvent");
+
+  await replay.throttledAddEvent({
+    type: 5,
+    timestamp: Date.now(),
+    data: { tag: "performanceSpan", payload: { op: "navigation.navigate", description: ARRIVED, startTimestamp: 1, endTimestamp: 2, data: {} } },
+  });
+
+  const wire = JSON.stringify(buffered.mock.calls.map(([e]) => e));
+  expect(wire).toContain("navigation.navigate");
+  for (const secret of ["TIMINGCODESECRET", "TIMINGSTATESECRET"]) expect(wire).not.toContain(secret);
+  buffered.mockRestore();
+});
+
+it("the browser.unloadEvent span loses the code that navigation timing kept", async () => {
+  Sentry.startSpan({ name: "neo-434-timing", forceTransaction: true }, () => {
+    Sentry.startSpan({ name: ARRIVED, op: "browser.unloadEvent" }, () => {});
+  });
+  await Sentry.flush(2000);
+
+  const [item] = sentOfType("transaction").filter(([, event]) => event.transaction === "neo-434-timing");
+  expect(item).toBeDefined();
+  const wire = JSON.stringify(item[1]);
+  expect(wire).toContain("browser.unloadEvent");
+  for (const secret of ["TIMINGCODESECRET", "TIMINGSTATESECRET"]) expect(wire).not.toContain(secret);
+});
+
 it("the hook is not applied to a non-custom frame (pins the comment in src/sentry.ts)", async () => {
   const replay = replayInternals();
   const buffered = vi.spyOn(replay.eventBuffer, "addEvent");

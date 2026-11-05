@@ -4,9 +4,9 @@
  *
  * eBay sends the collector back to `/profile/ebay?code=…&state=…`. Since
  * NEO-434 `src/ebay-return-address.ts` takes those off the address before any
- * SDK starts, so this is the second layer, for wherever else they surface. A
- * navigation-timing entry keeps the address as it arrived, and Replay and
- * PostHog's recorder both copy those. The code is single use and short lived,
+ * SDK starts, but this pass is still required. A navigation-timing entry keeps
+ * the address as it arrived, and Sentry's Replay frames and transaction spans and
+ * PostHog's recorder all copy from it. The code is single use and short lived,
  * and the state is a one-time nonce, but neither belongs in a third party's
  * store.
  *

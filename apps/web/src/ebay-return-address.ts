@@ -6,8 +6,10 @@ import { readEbayReturn, type EbayReturnState } from "@/app/profile/credentials/
  * Sentry and PostHog read `location.href` in places no scrub hook reaches:
  * Replay's Meta frame and the `replay_event`'s `urls` and `request.url`. So on
  * `/profile/ebay` this drops what eBay sent from the URL as the app starts,
- * while nothing but this module has run. `src/sentry.ts` imports it first, and
- * `src/main.tsx` imports `src/sentry.ts` first; a test holds both orders.
+ * before any SDK is set up. `src/sentry.ts` imports it first, and `src/main.tsx`
+ * imports `src/sentry.ts` first; a test holds both orders in source and
+ * `scripts/check-entry-order.mjs` holds them in the built entry chunk, whose
+ * static imports (posthog-js among them) evaluate before it.
  *
  * The return goes into this history entry's state under our own key, for the
  * landing page to hand on. Not module memory, because a reload before the

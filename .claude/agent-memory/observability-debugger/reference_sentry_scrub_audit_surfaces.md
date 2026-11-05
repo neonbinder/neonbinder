@@ -22,6 +22,9 @@ passed a review that only looked at `http.url` (NEO-434).
   address in `urls[0]` and `request.url`.
 - So a value on the address must be gone before `Sentry.init`, and a bearer in the
   DOM must be blocked.
+- Taking a value off the address does not retire its scrub. The navigation-timing
+  entry keeps the address as it arrived, and it reaches Sentry through Replay's
+  `navigation.navigate` frame and the transaction's `browser.unloadEvent` span.
 - rrweb returns early for `href`, so `maskAttributes` does nothing to a link. Only
   a `block` selector works. Images are covered by Replay's default media blocking.
 
