@@ -1,9 +1,5 @@
 import * as Sentry from "@sentry/react";
-import { scrubSignedStorageUrls } from "../lib/observability/scrub-signed-urls";
-import { scrubOAuthParams } from "../lib/observability/scrub-oauth-params";
-
-/** Every URL scrub, in one pass per payload (signed storage URLs, then the eBay return's code and state). */
-const scrub = <T>(value: T): T => scrubOAuthParams(scrubSignedStorageUrls(value));
+import { scrubUrlSecrets as scrub } from "../lib/observability/scrub-url-secrets";
 
 /**
  * The scrub for a whole event. `sdkProcessingMetadata` holds the SDK's live
@@ -44,9 +40,10 @@ if (import.meta.env.VITE_CLERK_TESTING_ENABLED !== "true") {
     integrations: [
       Sentry.browserTracingIntegration(),
       Sentry.replayIntegration({
-        // Scrub the raw rrweb recording frame before it's buffered — this is
-        // the Session Replay "network entry" capture path, separate from the
-        // breadcrumb/span pipeline below.
+        // Replay calls this for rrweb custom events only: its breadcrumb and
+        // performance-span frames, which is where request URLs appear. Page
+        // snapshots, mutations and the Meta frame never reach it, and neither
+        // does the replay_event envelope item.
         beforeAddRecordingEvent: (event) => scrub(event),
         // Explicit, not inherited: these are the library defaults, but they
         // are load-bearing for /profile/api-keys — the reveal-once API-key

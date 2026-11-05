@@ -34,6 +34,24 @@ describe("PostHog init scrubs the eBay return's code and state (NEO-415)", () =>
     expect(out).toContain("code=<redacted>");
   });
 
+  it("before_send also redacts a clicked photo's bearer token off autocapture (NEO-434)", () => {
+    vi.stubEnv("VITE_CLERK_TESTING_ENABLED", "");
+    render(<PostHogProvider>x</PostHogProvider>);
+    const token = "0123456789abcdef0123456789abcdef";
+    const event = {
+      event: "$autocapture",
+      properties: {
+        $elements: [{ tag_name: "img", attr__src: `https://x.convex.site/copy-photo/${token}/thumb` }],
+        $elements_chain: `img:attr__src="https://x.convex.site/copy-photo/${token}/thumb"`,
+        token: "project-key-stays",
+      },
+    };
+    const out = JSON.stringify(runAll(hooks(ph.init.mock.calls[0][1]), event));
+    expect(out).not.toContain(token);
+    expect(out).toContain("copy-photo/<redacted>/thumb");
+    expect(out).toContain("project-key-stays");
+  });
+
   it("under E2E, the diagnostic filter is kept AND the scrub runs on events it lets through", () => {
     vi.stubEnv("VITE_CLERK_TESTING_ENABLED", "true");
     render(<PostHogProvider>x</PostHogProvider>);

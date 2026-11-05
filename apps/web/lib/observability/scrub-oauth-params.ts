@@ -13,8 +13,10 @@
  *
  * Same shape as `scrubSignedStorageUrls`: a stringify → replace → parse pass
  * over the whole payload, because the URL turns up under different keys in
- * every pipeline (`$current_url`, `request.url`, breadcrumb `to`/`from`,
- * replay frames). It is global, not keyed to the eBay route: any `code=` or
+ * every pipeline (`$current_url`, `request.url`, breadcrumb `to`/`from`). This
+ * covers only what a hook is handed. Sentry Replay gives `beforeAddRecordingEvent`
+ * rrweb custom events alone, so its Meta frame's `href` and the `replay_event`'s
+ * `urls` still carry the landing address. It is global, not keyed to the eBay route: any `code=` or
  * `state=` query value anywhere is redacted, plain or percent-encoded (as in
  * a nested return URL). The parameter name stays so the shape of the URL is
  * still readable.

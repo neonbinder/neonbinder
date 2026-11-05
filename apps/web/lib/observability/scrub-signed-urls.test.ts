@@ -38,12 +38,17 @@ describe("scrubSignedStorageUrls", () => {
     }
   });
 
-  test("leaves non-storage URLs untouched", () => {
-    const value = { url: "https://example.com/api/thing?token=super-secret" };
-    expect(scrubSignedStorageUrls(value)).toEqual(value);
+  test("leaves other URLs and look-alike parameters untouched, returning the same object", () => {
+    const value = { url: "https://example.com/api/thing?page=2&csrf_token=keep&tokens=keep", note: "copy-photos/short/" };
+    expect(scrubSignedStorageUrls(value)).toBe(value);
   });
 
-  test("is a no-op on values with no storage.googleapis.com substring at all", () => {
+  test("does not touch a JSON key named token", () => {
+    const value = { properties: { token: "phc_project_key" } };
+    expect(scrubSignedStorageUrls(value)).toBe(value);
+  });
+
+  test("is a no-op on values with nothing to redact", () => {
     const value = { message: "hello world", count: 3, nested: { ok: true } };
     expect(scrubSignedStorageUrls(value)).toEqual(value);
   });
@@ -51,6 +56,65 @@ describe("scrubSignedStorageUrls", () => {
   test("handles a bare storage.googleapis.com URL with no query string", () => {
     const value = { url: "https://storage.googleapis.com/bucket/object.zip" };
     expect(scrubSignedStorageUrls(value)).toEqual(value);
+  });
+
+  describe("NEO-434: any host, any encoding", () => {
+    const TOKEN = "0123456789abcdef0123456789abcdef";
+
+    test.each([
+      [
+        "an R2 signed PUT: account, token and every X-Amz parameter",
+        `https://acct123.r2.cloudflarestorage.com/photos/copy-photos/${TOKEN}/image.jpg?X-Amz-Credential=c1&X-Amz-Signature=s1`,
+        "https://<redacted>.r2.cloudflarestorage.com/photos/copy-photos/<redacted>/image.jpg?X-Amz-Credential=<redacted>&X-Amz-Signature=<redacted>",
+      ],
+      [
+        "an R2 host with a bucket and a jurisdiction",
+        "https://bucket.acct123.eu.r2.cloudflarestorage.com/o",
+        "https://<redacted>.eu.r2.cloudflarestorage.com/o",
+      ],
+      ["a bare R2 host", "acct123.r2.cloudflarestorage.com", "<redacted>.r2.cloudflarestorage.com"],
+      [
+        "a Convex one-time upload URL",
+        "https://x.convex.cloud/api/storage/upload?token=t1",
+        "https://x.convex.cloud/api/storage/upload?token=<redacted>",
+      ],
+      ["a bare http.query", "?X-Goog-Credential=c1&X-Goog-Signature=s1", "?X-Goog-Credential=<redacted>&X-Goog-Signature=<redacted>"],
+      ["a query with no leading ?", "token=t1&a=1", "token=<redacted>&a=1"],
+      ["a bucket-host Google URL", "https://b.storage.googleapis.com/o?GoogleAccessId=g&Signature=s1", "https://b.storage.googleapis.com/o?<redacted>"],
+      [
+        "an encoded signed URL inside another URL",
+        "https://a.test/?next=https%3A%2F%2Fb.storage.googleapis.com%2Fo%3FX-Goog-Signature%3Ds1%26X-Goog-Date%3Dd1%26x%3D1",
+        "https://a.test/?next=https%3A%2F%2Fb.storage.googleapis.com%2Fo%3FX-Goog-Signature%3D<redacted>%26X-Goog-Date%3D<redacted>%26x%3D1",
+      ],
+      [
+        "an encoded R2 URL",
+        `https://a.test/?next=https%3A%2F%2Facct123.r2.cloudflarestorage.com%2Fcopy-photos%2F${TOKEN}%2Fimage.jpg%3Ftoken%3Dt1`,
+        "https://a.test/?next=https%3A%2F%2F<redacted>.r2.cloudflarestorage.com%2Fcopy-photos%2F<redacted>%2Fimage.jpg%3Ftoken%3D<redacted>",
+      ],
+      [
+        "a copy-photo read URL",
+        `https://x.convex.site/copy-photo/${TOKEN}/thumb`,
+        "https://x.convex.site/copy-photo/<redacted>/thumb",
+      ],
+      ["an object key", `copy-photos/${TOKEN}/image.jpg`, "copy-photos/<redacted>/image.jpg"],
+    ])("%s", (_name, input, expected) => {
+      expect(scrubSignedStorageUrls({ data: { url: input } })).toEqual({ data: { url: expected } });
+    });
+
+    test("a path that only looks like a copy-photo token is left alone", () => {
+      const value = { a: `copy-photos/${TOKEN}0/x`, b: `copy-photo/${TOKEN.toUpperCase()}/x` };
+      expect(scrubSignedStorageUrls(value)).toBe(value);
+    });
+
+    test.each([
+      ["a Google URL", 'failed "https://storage.googleapis.com/b/o?X-Goog-Signature=s1" twice'],
+      ["an R2 URL", 'failed "https://acct123.r2.cloudflarestorage.com/o?X-Amz-Signature=s1" twice'],
+      ["a token URL", 'failed "https://x.convex.cloud/u?token=s1" twice'],
+    ])("a double-quoted %s in a message keeps the JSON valid", (_name, message) => {
+      const out = scrubSignedStorageUrls({ message });
+      expect(out.message).toMatch(/^failed ".*<redacted>" twice$/);
+      expect(out.message).not.toContain("s1");
+    });
   });
 
   test("scrubs multiple signed URLs in the same payload independently", () => {
