@@ -393,6 +393,16 @@ describe("retryPlaceholderImage (Try again)", () => {
     expect(enqueueCalls).toHaveLength(0);
   });
 
+  test("won't send back a photo set aside since the button was drawn", async () => {
+    const t = convexTest(schema, modules);
+    await seedJob(t, { failedImages: 1 });
+    const id = await seedImage(t, 0, { status: "failed", errorCode: "PHOTO_TIMED_OUT", setAside: true });
+    expect(await retry(t)).toEqual({ retried: false, reason: "set aside" });
+    expect((await getImage(t, id))!).toMatchObject({ status: "failed", setAside: true });
+    expect(enqueueCalls).toHaveLength(0);
+    expect((await getJob(t))!.failedImages).toBe(1);
+  });
+
   test("refuses a signed-out caller and an out-of-range photo", async () => {
     const t = convexTest(schema, modules);
     await seedJob(t, { failedImages: 1 });

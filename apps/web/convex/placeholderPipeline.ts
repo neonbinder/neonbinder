@@ -1309,6 +1309,10 @@ export const registerExtractedImages = internalMutation({
           escalatedAt: undefined,
           settledAt: undefined,
           heavyStartedAt: undefined,
+          // NEO-446: this photo is being read again, so it comes back to the
+          // collector as a new answer. A kept done row above keeps its set-aside:
+          // same bytes, same decision, like its `sideByUser` and `unpairedFrom`.
+          setAside: undefined,
         });
       }
     }
@@ -2273,6 +2277,8 @@ export const listDoneImagesForPairing = internalQuery({
       dhash: v.optional(v.string()),
       pairStatus: v.optional(v.union(v.literal("paired"), v.literal("unmatched"))),
       unpairedFrom: v.optional(v.array(v.number())),
+      // NEO-446: `computePairingDiff` leaves these out of the pairing.
+      setAside: v.optional(v.boolean()),
     }),
   ),
   handler: async (ctx, args) => {
@@ -2295,6 +2301,7 @@ export const listDoneImagesForPairing = internalQuery({
         dhash: r.dhash,
         pairStatus: r.pairStatus,
         unpairedFrom: r.unpairedFrom,
+        setAside: r.setAside,
       }));
   },
 });
@@ -2576,6 +2583,8 @@ export const listPlaceholderImages = query({
       settledAt: v.optional(v.number()),
       // NEO-411: Try again presses so far, so the screen hides the button at the cap.
       retries: v.optional(v.number()),
+      // NEO-446: the collector set this loose photo aside.
+      setAside: v.optional(v.boolean()),
     }),
   ),
   handler: async (ctx, args) => {
@@ -2609,6 +2618,7 @@ export const listPlaceholderImages = query({
       escalatedAt: r.escalatedAt,
       settledAt: r.settledAt,
       retries: r.retries,
+      setAside: r.setAside,
       // `workId` is intentionally omitted — it is a handle into the workpool
       // component, not something a client has any use for.
     }));

@@ -7,6 +7,7 @@ import {
   failedText,
   inNaturalOrder,
   MAX_PHOTO_RETRIES,
+  photoLabels,
   photoLine,
   photoNews,
   photoStates,
@@ -169,6 +170,47 @@ describe("NEO-370: leaving after Done waits for the columns", () => {
     for (const lane of ["reading", "loose", "matching", "review"] as const) {
       expect(columnsClear({ ...lanes, [lane]: [1] } as never)).toBe(false);
     }
+  });
+});
+
+describe("NEO-446: a loose photo set aside", () => {
+  const lanes = (...images: IntakeImage[]) => laneOf(images, [], []);
+
+  test("leaves the Pairing lane, done or failed, and sits apart", () => {
+    const l = lanes(image(0, "done"), image(1, "done", { setAside: true }), image(2, "failed", { setAside: true }));
+    expect(l.loose.map((i) => i.entryIndex)).toEqual([0]);
+    expect(l.looseAside.map((i) => i.entryIndex)).toEqual([1, 2]);
+  });
+
+  test("clears the columns, as a pair set aside does; brought back, it holds them again", () => {
+    expect(columnsClear(lanes(image(0, "failed", { setAside: true })))).toBe(true);
+    expect(columnsClear(lanes(image(0, "failed")))).toBe(false);
+  });
+
+  test("a photo stored in a pair is the pair's, not the aside list's", () => {
+    const pair = { frontIndex: 0, backIndex: 1 } as IntakePair;
+    const l = laneOf([image(0, "done", { setAside: true }), image(1, "done")], [pair], []);
+    expect(l.looseAside).toEqual([]);
+    expect(l.matching).toEqual([pair]);
+  });
+
+  test("the empty lanes carry the list too, so the screen can read it before the data lands", () => {
+    expect(columnsClear(laneOf([], [], []))).toBe(true);
+    expect(laneOf([], [], []).looseAside).toEqual([]);
+  });
+});
+
+describe("NEO-446: photoLabels", () => {
+  test("a unique file name is the label", () => {
+    expect(photoLabels([{ entryIndex: 0, originalName: "a.jpg" }]).get(0)).toBe("a.jpg");
+  });
+  test("photos of one name say which photo they are, and every label differs", () => {
+    const labels = photoLabels([
+      { entryIndex: 0, originalName: "image.jpg" },
+      { entryIndex: 1, originalName: "image.jpg" },
+      { entryIndex: 2, originalName: "other.jpg" },
+    ]);
+    expect([...labels.values()]).toEqual(["image.jpg, photo 1", "image.jpg, photo 2", "other.jpg"]);
   });
 });
 

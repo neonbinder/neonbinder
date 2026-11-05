@@ -3682,6 +3682,14 @@ export default defineSchema({
     // (`retryPlaceholderImage`). Capped at PLACEHOLDER_MAX_IMAGE_RETRIES so one
     // photo cannot be sent to the paid services without end.
     retries: v.optional(v.number()),
+    // NEO-446: the collector set this loose photo aside on an intake run
+    // (`setIntakePhotoAside`), usually a side whose partner the zip turned away.
+    // Pairing never picks it up (`computePairingDiff`, and a re-check inside
+    // `applyPairDiffImpl`) and it leaves the Pairing lane. Status and the job's
+    // counters stay as they were, so it never changes how a job is judged. Only
+    // ever on a done or failed row: a restart that re-reads the photo clears it
+    // and one that keeps a done row keeps it, like the row's other user decisions.
+    setAside: v.optional(v.boolean()),
   })
     // The ONLY index this table needs. It answers both "every image of this
     // job" (prefix `jobId` alone) and "this job's images in filename order", so a

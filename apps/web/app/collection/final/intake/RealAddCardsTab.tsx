@@ -39,6 +39,7 @@ import {
   inNaturalOrder,
   LEAVE_INTAKE_LINE,
   laneOf,
+  photoLabels,
   PHOTO_NEWS_QUIET_MS,
   PHOTO_OUT_OF_TRIES_LINE,
   PHOTO_RUN_CLOSED_LINE,
@@ -140,11 +141,12 @@ function parkAfterStay(): boolean {
  * NEO-411: a Try again moves the photo out of the pile, so its button unmounts
  * and focus would fall to the page. On the next frame, if it did, land on the
  * next photo left in the pile, or else on the pile's heading (WCAG 2.4.3).
+ * NEO-446: Set aside and Bring back move a photo the same way.
  */
-function refocusAfterRetry(entryIndex: number): void {
-  // Always move: the retried photo's own tile and Try again leave the pile
-  // once its row goes back to processing, which can land after this frame, so
-  // focus left on them would drop to the page when they unmount.
+function refocusInPile(entryIndex: number): void {
+  // Always move: the photo's own tile and button leave where they are once its
+  // row changes, which can land after this frame, so focus left on them would
+  // drop to the page when they unmount.
   requestAnimationFrame(() => {
     const next = Array.from(document.querySelectorAll<HTMLElement>("[data-loose-photo]")).find(
       (el) => el.dataset.loosePhoto !== String(entryIndex),
@@ -809,11 +811,13 @@ function RunWorkspace({ run, jobOpen }: { run: RunSummary; jobOpen: boolean }) {
     [images, pairs, matches],
   );
   const byIndex = useMemo(() => new Map((images ?? []).map((i) => [i.entryIndex, i])), [images]);
+  const labels = useMemo(() => photoLabels(images ?? []), [images]);
 
   const save = useMutation(api.intakeRuns.saveIntakeMatch);
   const pick = useMutation(api.intakeRuns.pickIntakeCard);
   const answerRepeat = useMutation(api.intakeRuns.answerIntakeRepeat);
   const aside = useMutation(api.intakeRuns.setIntakeMatchAside);
+  const photoAside = useMutation(api.intakeRuns.setIntakePhotoAside);
   const swap = useMutation(api.placeholderPairing.swapPairSides);
   const unpair = useMutation(api.placeholderPairing.unpairPlaceholderImages);
   const pairUp = useMutation(api.placeholderPairing.manuallyPairPlaceholderImages);
@@ -835,6 +839,15 @@ function RunWorkspace({ run, jobOpen }: { run: RunSummary; jobOpen: boolean }) {
   const saving = useRef(new Set<string>());
 
   const fail = (e: unknown) => notify(writeErrorMessage(e));
+  const setPhotoAside = (image: IntakeImage, setAside: boolean) => {
+    const label = labels.get(image.entryIndex) ?? image.originalName;
+    void photoAside({ runId: run._id, entryIndex: image.entryIndex, setAside })
+      .then(() => {
+        inform(setAside ? `Set aside ${label}.` : `Brought back ${label}.`);
+        refocusInPile(image.entryIndex);
+      })
+      .catch(fail);
+  };
   const photoLiveLine = usePhotoNews(matches);
   const canSave = (row: IntakeMatchRow) => !!row.cardId && !(row.repeatOfPairId && !row.repeatIsSecondCopy);
   const actions: RowActions = {
@@ -1041,6 +1054,8 @@ function RunWorkspace({ run, jobOpen }: { run: RunSummary; jobOpen: boolean }) {
           <LoosePile
             jobId={run.jobId}
             loose={lanes.loose}
+            labels={labels}
+            onSetAside={(image) => setPhotoAside(image, true)}
             onPair={(front, back) =>
               void pairUp({ jobId: run.jobId, frontIndex: front, backIndex: back }).catch(fail)
             }
@@ -1051,7 +1066,7 @@ function RunWorkspace({ run, jobOpen }: { run: RunSummary; jobOpen: boolean }) {
                       .then((r) => {
                         if (r.retried) {
                           inform(`Trying ${image.originalName} again.`);
-                          refocusAfterRetry(image.entryIndex);
+                          refocusInPile(image.entryIndex);
                         } else if (r.reason === "too many tries") {
                           notify(PHOTO_OUT_OF_TRIES_LINE);
                         } else if (r.reason === "closed") {
@@ -1138,7 +1153,7 @@ function RunWorkspace({ run, jobOpen }: { run: RunSummary; jobOpen: boolean }) {
               </div>
             </li>
           ))}
-          {lanes.setAside.length > 0 && (
+          {lanes.setAside.length + lanes.looseAside.length > 0 && (
             <li className="list-none border-t border-rule pt-2">
               <h3 className="m-0 mb-1 text-xs font-semibold text-ink-2">Set aside</h3>
               <ul className="m-0 list-none space-y-1 p-0">
@@ -1153,6 +1168,21 @@ function RunWorkspace({ run, jobOpen }: { run: RunSummary; jobOpen: boolean }) {
                         focusTile(null, false);
                       }}
                       aria-label={`Bring back ${tileLabel(row, readFor(row))}`}
+                    >
+                      Bring back
+                    </button>
+                  </li>
+                ))}
+                {lanes.looseAside.map((image) => (
+                  <li key={image.entryIndex} className="flex items-center justify-between gap-2 text-xs text-ink-3">
+                    <span className="truncate" title={image.originalName}>
+                      {labels.get(image.entryIndex) ?? image.originalName}
+                    </span>
+                    <button
+                      type="button"
+                      className={`-my-1.5 shrink-0 py-1.5 text-neon-blue-text underline ${RING}`}
+                      onClick={() => setPhotoAside(image, false)}
+                      aria-label={`Bring back ${labels.get(image.entryIndex) ?? image.originalName}`}
                     >
                       Bring back
                     </button>
@@ -1413,11 +1443,17 @@ function PhotoTile({ image }: { image: IntakeImage }) {
 function LoosePile({
   jobId,
   loose,
+  labels,
+  onSetAside,
   onPair,
   onRetry,
 }: {
   jobId: string;
   loose: IntakeImage[];
+  /** Each photo's name for its controls (`photoLabels`). */
+  labels: ReadonlyMap<number, string>;
+  /** NEO-446: take a photo out of the pile. Brought back from the Set aside list. */
+  onSetAside: (image: IntakeImage) => void;
   onPair: (front: number, back: number) => void;
   /** NEO-411: send a failed photo through again; absent once the run is closed. */
   onRetry?: (image: IntakeImage) => void;
@@ -1451,19 +1487,31 @@ function LoosePile({
               </span>
             </span>
           </button>
-          {onRetry && canRetryPhoto(i) && (
+          <div className="mt-1 flex flex-wrap gap-2">
+            {onRetry && canRetryPhoto(i) && (
+              <NeonButton
+                size="1"
+                variant="secondary"
+                outline
+                className="min-h-11 sm:min-h-8"
+                aria-label={`Try again: ${i.originalName}`}
+                aria-describedby={`loose-why-${i.entryIndex}`}
+                onClick={() => onRetry(i)}
+              >
+                Try again
+              </NeonButton>
+            )}
             <NeonButton
               size="1"
-              variant="secondary"
+              variant="negative"
               outline
-              className="mt-1 min-h-11 sm:min-h-8"
-              aria-label={`Try again: ${i.originalName}`}
-              aria-describedby={`loose-why-${i.entryIndex}`}
-              onClick={() => onRetry(i)}
+              className="min-h-11 sm:min-h-8"
+              aria-label={`Set aside ${labels.get(i.entryIndex) ?? i.originalName}`}
+              onClick={() => onSetAside(i)}
             >
-              Try again
+              Set aside
             </NeonButton>
-          )}
+          </div>
         </li>
       ))}
       {loose.length > 1 && (

@@ -14,7 +14,7 @@ import { ENTRY_TOO_MANY_PIXELS, type RejectedSummary, type RejectionKind } from 
  *   Pairing:  read (or failed) and not in a pair: the loose pile;
  *   Matching: in a pair the matcher has not answered yet;
  *   Needs you: matched (or not), waiting for the collector;
- *   Saved:    saved by the collector. A pair set aside sits apart.
+ *   Saved:    saved by the collector. A pair or loose photo set aside sits apart.
  */
 
 export type IntakeImage = FunctionReturnType<typeof api.placeholderPipeline.listPlaceholderImages>[number];
@@ -35,9 +35,11 @@ export interface Lanes {
   review: IntakeMatchRow[];
   saved: IntakeMatchRow[];
   setAside: IntakeMatchRow[];
+  /** NEO-446: loose photos the collector set aside. They sit with `setAside` and hold nothing open. */
+  looseAside: IntakeImage[];
 }
 
-export const EMPTY_LANES: Lanes = { reading: [], loose: [], matching: [], review: [], saved: [], setAside: [] };
+export const EMPTY_LANES: Lanes = { reading: [], loose: [], matching: [], review: [], saved: [], setAside: [], looseAside: [] };
 
 const pairKey = (frontIndex: number, backIndex: number) => `${frontIndex}-${backIndex}`;
 
@@ -49,11 +51,11 @@ export function laneOf(images: IntakeImage[], pairs: IntakePair[], matches: Inta
   }
   const answered = new Set(matches.map((m) => pairKey(m.frontIndex, m.backIndex)));
   const byIndex = (a: IntakeImage, b: IntakeImage) => a.entryIndex - b.entryIndex;
+  const unpaired = images.filter((i) => (i.status === "done" || i.status === "failed") && !paired.has(i.entryIndex));
   return {
     reading: images.filter((i) => i.status !== "done" && i.status !== "failed").sort(byIndex),
-    loose: images
-      .filter((i) => (i.status === "done" || i.status === "failed") && !paired.has(i.entryIndex))
-      .sort(byIndex),
+    loose: unpaired.filter((i) => !i.setAside).sort(byIndex),
+    looseAside: unpaired.filter((i) => i.setAside).sort(byIndex),
     matching: pairs
       .filter((p) => !answered.has(pairKey(p.frontIndex, p.backIndex)))
       .sort((a, b) => a.frontIndex - b.frontIndex),
@@ -65,12 +67,28 @@ export function laneOf(images: IntakeImage[], pairs: IntakePair[], matches: Inta
 
 /**
  * NEO-370 Rev 4 — every column but Saved is clear: nothing reading, pairing,
- * matching or waiting on the collector (a pair set aside sits apart and
- * does not hold the run open). Once it is, after "Done adding photos", the
+ * matching or waiting on the collector (a pair or loose photo set aside sits
+ * apart and does not hold the run open). Once it is, after "Done adding photos", the
  * run's cards sync to the collector's marketplaces.
  */
 export function columnsClear(lanes: Pick<Lanes, "reading" | "loose" | "matching" | "review">): boolean {
   return lanes.reading.length + lanes.loose.length + lanes.matching.length + lanes.review.length === 0;
+}
+
+/**
+ * How a control names each loose photo: its file name, or with several photos of
+ * one name (a phone can send every photo as image.jpg) the file name and which
+ * photo of the run it is, so no two controls read the same.
+ */
+export function photoLabels(images: readonly Pick<IntakeImage, "entryIndex" | "originalName">[]): Map<number, string> {
+  const uses = new Map<string, number>();
+  for (const image of images) uses.set(image.originalName, (uses.get(image.originalName) ?? 0) + 1);
+  return new Map(
+    images.map((image) => [
+      image.entryIndex,
+      (uses.get(image.originalName) ?? 0) > 1 ? `${image.originalName}, photo ${image.entryIndex + 1}` : image.originalName,
+    ]),
+  );
 }
 
 /** What leaving asks after "Done adding photos", until the columns clear. */

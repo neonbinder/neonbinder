@@ -970,6 +970,102 @@ describe("RealAddCardsTab while the shelf or the open run loads (NEO-416)", () =
   });
 });
 
+describe("NEO-446: setting a loose photo aside", () => {
+  const asideMutation = () => mocks.mutation("intakeRuns.setIntakePhotoAside");
+  const tooBig = (entryIndex: number) => ({
+    entryIndex,
+    originalName: `scan-${entryIndex}.jpg`,
+    status: "failed",
+    errorCode: "ENTRY_TOO_MANY_PIXELS",
+    retries: 0,
+  });
+  const stat = (label: string) => screen.getByText(label, { selector: "dt" }).parentElement?.querySelector("dd")?.textContent;
+  const openWith = (images: unknown[]) => {
+    const runId = freshRunId();
+    setRun(runId, { images });
+    const view = render(<Tab runId={runId} />);
+    return { runId, ...view };
+  };
+
+  beforeEach(() => {
+    asideMutation().mockClear();
+    (pageApi.inform as ReturnType<typeof vi.fn>).mockClear();
+  });
+
+  it("every loose tile has its own Set aside, failed and too-big ones too, and it sends that photo", async () => {
+    const { runId } = openWith([photo(0), tooBig(1)]);
+    expect(screen.getByRole("button", { name: "Set aside scan-0.jpg" }).textContent).toBe("Set aside");
+    const failed = screen.getByRole("button", { name: "Set aside scan-1.jpg" });
+    fireEvent.click(failed);
+    await waitFor(() =>
+      expect(asideMutation()).toHaveBeenCalledWith({ runId, entryIndex: 1, setAside: true }),
+    );
+    await waitFor(() => expect(pageApi.inform).toHaveBeenCalledWith("Set aside scan-1.jpg."));
+  });
+
+  it("is a real button, so the keyboard reaches and presses it", () => {
+    openWith([photo(0)]);
+    const control = screen.getByRole("button", { name: "Set aside scan-0.jpg" });
+    expect(control.tagName).toBe("BUTTON");
+    control.focus();
+    expect(document.activeElement).toBe(control);
+  });
+
+  it("photos of one file name get controls that read differently", () => {
+    openWith([
+      { entryIndex: 0, originalName: "image.jpg", status: "done" },
+      { entryIndex: 1, originalName: "image.jpg", status: "done" },
+    ]);
+    expect(screen.getByRole("button", { name: "Set aside image.jpg, photo 1" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Set aside image.jpg, photo 2" })).toBeTruthy();
+  });
+
+  it("a photo set aside leaves Pairing, can't be picked to pair, and is listed with Bring back", async () => {
+    const { runId } = openWith([photo(0), { ...tooBig(1), setAside: true }]);
+    expect(stat("Pairing")).toBe("1");
+    expect(screen.queryByRole("button", { name: "Set aside scan-1.jpg" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Try again: scan-1.jpg" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^scan-1\.jpg/ })).toBeNull();
+    expect(screen.getByRole("heading", { name: "Set aside" })).toBeTruthy();
+    const back = screen.getByRole("button", { name: "Bring back scan-1.jpg" });
+    expect(back.textContent).toBe("Bring back");
+    fireEvent.click(back);
+    await waitFor(() =>
+      expect(asideMutation()).toHaveBeenCalledWith({ runId, entryIndex: 1, setAside: false }),
+    );
+    await waitFor(() => expect(pageApi.inform).toHaveBeenCalledWith("Brought back scan-1.jpg."));
+  });
+
+  it("a failed photo set aside isn't counted as one that couldn't be read", () => {
+    openWith([{ ...tooBig(0), setAside: true }, tooBig(1)]);
+    expect(screen.getByText(/1 photo couldn't be read/, { selector: "p[aria-hidden]" })).toBeTruthy();
+  });
+
+  it("after Done, the leave guard stops warning once the last loose photo is set aside", async () => {
+    const runId = freshRunId();
+    setRun(runId, { images: [photo(0)] });
+    const { rerender } = render(<Tab runId={runId} />);
+    await pressDone();
+    clickLink();
+    expect(confirm).toHaveBeenCalledTimes(1);
+    confirm.mockClear();
+
+    setRun(runId, { images: [{ ...photo(0), setAside: true }] });
+    rerender(<Tab runId={runId} />);
+    await waitFor(() => expect(stat("Pairing")).toBe("0"));
+    clickLink();
+    expect(confirm).not.toHaveBeenCalled();
+  });
+
+  it("a refused press says why", async () => {
+    openWith([photo(0)]);
+    asideMutation().mockRejectedValueOnce(new Error("That photo is in a pair. Unpair it first."));
+    fireEvent.click(screen.getByRole("button", { name: "Set aside scan-0.jpg" }));
+    await waitFor(() => expect(notify).toHaveBeenCalled());
+    expect(pageApi.inform).not.toHaveBeenCalled();
+  });
+});
+
 describe("NEO-446: the run's line, the zip wording and Start a new run", () => {
   function Url() {
     const navigate = useNavigate();

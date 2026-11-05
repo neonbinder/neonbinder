@@ -783,6 +783,71 @@ export const setIntakeMatchAside = mutation({
 });
 
 /**
+ * NEO-446: set a loose photo aside, or bring it back with `setAside: false`. For
+ * a side whose partner never made it in, or a photo that failed and won't read:
+ * neither can leave the Pairing column any other way, and either would hold the
+ * run open for good.
+ *
+ * Only a photo the pipeline has finished with, in no pair. The pairs are read
+ * here as well as `pairStatus` because a run stores a pair and stamps its images
+ * in separate transactions (see `manuallyPairPlaceholderImages`).
+ *
+ * Touches no counter on the job, so it cannot change how the job is judged. And
+ * no listing kick: `kickListingIfRunSettled` reads match rows, so a loose photo
+ * was never what it was waiting on.
+ *
+ * Setting aside schedules no re-pair: nothing was waiting on this photo, and the
+ * next run leaves it out anyway. Bringing back does, forced so it works on a
+ * finished job, as a corrected identity does: the photo is eligible again now.
+ */
+export const setIntakePhotoAside = mutation({
+  args: {
+    runId: v.id("intakeRuns"),
+    entryIndex: v.number(),
+    setAside: v.boolean(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const run = await requireOwnedRun(ctx, args.runId);
+    const image = await ctx.db
+      .query("placeholderImages")
+      .withIndex("by_job_and_index", (q) =>
+        q.eq("jobId", run.jobId).eq("entryIndex", args.entryIndex),
+      )
+      .unique();
+    if (!image || image.userId !== run.userId) throw new Error("Photo not found in this run");
+    if (args.setAside) {
+      if (image.status !== "done" && image.status !== "failed") {
+        throw new Error("That photo is still being read");
+      }
+      const pairs = await ctx.db
+        .query("placeholderPairs")
+        .withIndex("by_job", (q) => q.eq("jobId", run.jobId))
+        .collect();
+      const inAPair = pairs.some(
+        (pair) => pair.frontIndex === args.entryIndex || pair.backIndex === args.entryIndex,
+      );
+      if (inAPair || image.pairStatus === "paired") {
+        throw new Error("That photo is in a pair. Unpair it first.");
+      }
+    }
+    // A double press: nothing to write, and no second re-pair.
+    if ((image.setAside === true) === args.setAside) return null;
+    await ctx.db.patch(image._id, { setAside: args.setAside ? true : undefined });
+    await ctx.db.patch(run._id, { lastActivityAt: Date.now() });
+    if (!args.setAside && image.status === "done") {
+      await ctx.scheduler.runAfter(0, internal.placeholderPairing.runPairing, {
+        jobId: run.jobId,
+        userId: run.userId,
+        final: false,
+        force: true,
+      });
+    }
+    return null;
+  },
+});
+
+/**
  * "Wrong card? Find it": the run's variant's cards whose number is `q`, or
  * whose name holds it, number hits first. Empty when the run has no variant.
  */

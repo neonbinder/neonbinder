@@ -635,6 +635,30 @@ describe("registerExtractedImages", () => {
     expect(job?.failedImages).toBe(0);
   });
 
+  test("NEO-446: a restart keeps a kept done photo set aside, and brings back one it reads again", async () => {
+    const t = harness();
+    await seedJob(t, { status: "extracting" });
+    const doneId = await seedImage(t, JOB_A, 0, USER_A.subject, "done", { setAside: true, pairStatus: "unmatched" });
+    const failedId = await seedImage(t, JOB_A, 1, USER_A.subject, "failed", {
+      setAside: true,
+      errorCode: "ENTRY_TOO_MANY_PIXELS",
+    });
+
+    await registerAll(t, {
+      entries: [
+        { index: 0, name: "front.jpg", accepted: true },
+        { index: 1, name: "back.jpg", accepted: true },
+      ],
+    });
+
+    const [kept, read] = await t.run(async (ctx) => [await ctx.db.get(doneId), await ctx.db.get(failedId)]);
+    // Same bytes, same decision: the collector's call on it stands.
+    expect(kept).toMatchObject({ status: "done", setAside: true });
+    // A fresh attempt: it comes back to the collector as a new answer.
+    expect(read?.status).toBe("queued");
+    expect(read?.setAside).toBeUndefined();
+  });
+
   test("a restart keeps a done row's user-set side: the label it vouches for is kept too", async () => {
     // The mirror of the reset case below. `sideByUser` travels with `side`, so
     // a done row that keeps its side keeps the flag — otherwise a person's

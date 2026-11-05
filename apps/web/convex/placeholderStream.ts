@@ -416,6 +416,9 @@ export const retryPlaceholderImage = mutation({
     if (!image) throw new Error("Image not found");
     // A double click, or a photo that already came back: nothing to do.
     if (image.status !== "failed") return { retried: false, reason: "not failed" };
+    // NEO-446: set aside in another tab since the button was drawn. Bringing it
+    // back is the collector's call, not a side effect of this press.
+    if (image.setAside) return { retried: false, reason: "set aside" };
     // NEO-446: over the pixel ceiling. The stored bytes can only fail the same
     // way, before any model runs, so a retry would only spend a request and a GCS
     // read to get the same answer. Checked ahead of the cap so the answer is the
