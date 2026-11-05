@@ -5,7 +5,7 @@
  */
 
 import { useEffect } from "react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { Theme } from "@radix-ui/themes";
 import { MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-router";
@@ -60,8 +60,9 @@ function RouterProbe() {
   return null;
 }
 
+/** Returns a redraw: a live update from the server, after changing `queries`. */
 function renderAt(path: string) {
-  render(
+  const ui = () => (
     <Theme>
       <MemoryRouter initialEntries={[path]}>
         <RouterProbe />
@@ -71,8 +72,10 @@ function renderAt(path: string) {
           <Route path="/u/:username/up-for-trade" element={<PublicTradePage />} />
         </Routes>
       </MemoryRouter>
-    </Theme>,
+    </Theme>
   );
+  const { rerender } = render(ui());
+  return () => rerender(ui());
 }
 
 /** The wide desk or the phone; reduced motion always, so a card opens at once. */
@@ -357,6 +360,63 @@ describe("a shared binder is the real binder (NEO-444)", () => {
   });
 });
 
+describe("turning a shared binder's pages keeps focus (NEO-444)", () => {
+  const NEAR = { key: "a", quantity: 1, slot: 0, card: CARD };
+  const SECOND = { key: "b", quantity: 1, slot: 10, card: { ...CARD, _id: "card2", cardNumber: "2", players: [{ _id: "p2", name: "Second Page" }] } };
+
+  it("PageDown from a pocket with nothing below it lands on the new page's first card", () => {
+    shareBinder([NEAR, SECOND]);
+    renderAt(BINDER_URL);
+    const opener = pocket(/pocket 1 on page 1/);
+    opener.focus();
+    fireEvent.keyDown(opener, { key: "PageDown" });
+    expect(screen.getByRole("group", { name: "Page 2" })).toBeTruthy();
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: /Second Page/ }));
+  });
+
+  it("a new page with no card at all lands on the turn button that still goes somewhere", () => {
+    shareBinder([NEAR, { ...SECOND, slot: 18 }]);
+    renderAt(BINDER_URL);
+    const opener = pocket(/pocket 1 on page 1/);
+    opener.focus();
+    fireEvent.keyDown(opener, { key: "PageDown" });
+    expect(screen.getByRole("group", { name: "Page 2" })).toBeTruthy();
+    expect(document.activeElement?.getAttribute("aria-label") ?? document.activeElement?.textContent).toMatch(/page/i);
+    expect(document.activeElement?.tagName).toBe("BUTTON");
+    expect(document.activeElement?.getAttribute("aria-disabled")).toBeNull();
+  });
+
+  it("PageDown from the page's body moves no focus", () => {
+    shareBinder([NEAR, SECOND]);
+    renderAt(BINDER_URL);
+    fireEvent.keyDown(document.body, { key: "PageDown" });
+    expect(screen.getByRole("group", { name: "Page 2" })).toBeTruthy();
+    expect(document.activeElement).toBe(document.body);
+  });
+
+  it.each([
+    ["a phone", false, "Next page", "Previous page"],
+    ["a wide screen", true, "Next pages", "Previous pages"],
+  ])("on %s the press that reaches the end keeps focus on the turn button, which then does nothing", (_screen, wide, nextName, previousName) => {
+    setScreen({ wide });
+    shareBinder([NEAR, SECOND]);
+    renderAt(BINDER_URL);
+    const previous = screen.getByRole("button", { name: previousName });
+    expect(previous.getAttribute("aria-disabled")).toBe("true");
+    const next = screen.getByRole("button", { name: nextName });
+    expect(next.getAttribute("aria-disabled")).toBeNull();
+    next.focus();
+    fireEvent.click(next);
+    expect(router.search).toBe("?page=2");
+    expect(next.getAttribute("aria-disabled")).toBe("true");
+    expect((next as HTMLButtonElement).disabled).toBe(false);
+    expect(document.activeElement).toBe(next);
+    fireEvent.click(next);
+    expect(router.search).toBe("?page=2");
+    expect(previous.getAttribute("aria-disabled")).toBeNull();
+  });
+});
+
 describe("the top loader (NEO-444)", () => {
   const COPY = {
     key: "a",
@@ -365,7 +425,6 @@ describe("the top loader (NEO-444)", () => {
     grading: { grader: "PSA", grade: "10" },
     slot: 0,
     upForTrade: true,
-    forSale: true,
     card: { ...CARD, notes: "Short print, about 1:120 packs" },
     photos: { front: FRONT, back: BACK },
   };
@@ -380,7 +439,6 @@ describe("the top loader (NEO-444)", () => {
     expect(within(dialog).getByText("PSA 10")).toBeTruthy();
     expect(within(dialog).getByText("×3")).toBeTruthy();
     expect(within(dialog).getByText("Trade")).toBeTruthy();
-    expect(within(dialog).getByText("Also for sale")).toBeTruthy();
     expect(within(dialog).getByText("Short print, about 1:120 packs")).toBeTruthy();
     expect(within(dialog).getByRole("img", { name: new RegExp(`^${LABEL}`) }).getAttribute("src")).toBe(FRONT.imageUrl);
     expect(within(dialog).getByRole("link", { name: /See it full size/ }).getAttribute("href")).toBe(FRONT.imageUrl);
@@ -467,6 +525,150 @@ describe("the top loader (NEO-444)", () => {
     renderAt(`${BINDER_URL}?card=nope`);
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(pocket()).toBeTruthy();
+  });
+
+  const FAR = { key: "far", quantity: 1, slot: 9, card: { ...CARD, _id: "card3", cardNumber: "3", players: [{ _id: "p3", name: "Far Page" }] } };
+  const NEAR = { key: "a", quantity: 1, slot: 0, card: CARD };
+
+  it("a link whose page doesn't hold its card opens on the card's page, and puts down there", () => {
+    shareBinder([NEAR, FAR]);
+    renderAt(`${BINDER_URL}?card=far&page=1`);
+    expect(screen.getByRole("dialog", { name: /Far Page/ })).toBeTruthy();
+    expect(screen.getByRole("group", { name: "Page 2" })).toBeTruthy();
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+    expect(router.search).toBe("?page=2");
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: /Far Page/ }));
+  });
+
+  it("the same the other way: a card on page 1 with a link asking for page 2", () => {
+    shareBinder([NEAR, FAR]);
+    renderAt(`${BINDER_URL}?card=a&page=2`);
+    expect(screen.getByRole("group", { name: "Page 1" })).toBeTruthy();
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+    expect(router.search).toBe("");
+    expect(document.activeElement).toBe(pocket(/pocket 1 on page 1/));
+  });
+
+  it("a card that isn't here leaves the URL, and the page it asked for stays", () => {
+    shareBinder([NEAR, FAR]);
+    renderAt(`${BINDER_URL}?card=nope&page=2`);
+    expect(router.search).toBe("?page=2");
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("the owner takes the open card out: it closes, and focus lands on the first card there", () => {
+    const second = { ...NEAR, key: "b", slot: 1 };
+    shareBinder([NEAR, second]);
+    const redraw = renderAt(`${BINDER_URL}?card=a`);
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    queries.copies = [second];
+    redraw();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(router.search).toBe("");
+    expect(document.activeElement).toBe(pocket(/pocket 2 on page 1/));
+  });
+
+  it("the owner takes out the last card: focus lands on the binder's heading", () => {
+    shareBinder([NEAR]);
+    const redraw = renderAt(`${BINDER_URL}?card=a`);
+    queries.copies = [];
+    redraw();
+    expect(screen.getByText("This binder is empty for now.")).toBeTruthy();
+    expect(document.activeElement).toBe(screen.getByRole("heading", { level: 1, name: "Ohtani rainbow" }));
+  });
+
+  it.each(["LoadingMore", "CanLoadMore", "LoadingFirstPage"])(
+    "a live update that moves the reader to %s keeps the binder and the open card",
+    (status) => {
+      shareBinder([NEAR]);
+      const redraw = renderAt(BINDER_URL);
+      fireEvent.click(pocket());
+      const dialog = screen.getByRole("dialog");
+      queries.status = status;
+      if (status === "LoadingFirstPage") queries.copies = [];
+      redraw();
+      expect(screen.getByRole("dialog")).toBe(dialog);
+      expect(screen.getByRole("region", { name: /open$/ })).toBeTruthy();
+      expect(screen.queryByText("Loading…")).toBeNull();
+    },
+  );
+
+  it("says which side is showing only after a flip, never on opening", () => {
+    shareBinder([COPY]);
+    renderAt(BINDER_URL);
+    fireEvent.click(pocket());
+    const dialog = screen.getByRole("dialog");
+    const status = within(dialog).getByRole("status");
+    expect(status.textContent).toBe("");
+    fireEvent.click(within(dialog).getByRole("button", { name: "See the back" }));
+    expect(status.textContent).toBe("Showing the back");
+    fireEvent.click(within(dialog).getByRole("button", { name: "See the front" }));
+    expect(status.textContent).toBe("Showing the front");
+  });
+
+  it("reads how many in words, and a photo of the back alone says it is the back", () => {
+    shareBinder([{ ...COPY, photos: { back: BACK } }]);
+    renderAt(BINDER_URL);
+    fireEvent.click(pocket());
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).getByText("×3").getAttribute("aria-hidden")).toBe("true");
+    expect(within(dialog).getByText("3 copies")).toBeTruthy();
+    expect(within(dialog).getByRole("img", { name: /the back$/ }).getAttribute("src")).toBe(BACK.imageUrl);
+  });
+
+  it("the space around the card closes it; the card and its words don't", () => {
+    shareBinder([COPY]);
+    renderAt(BINDER_URL);
+    fireEvent.click(pocket());
+    const dialog = screen.getByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("heading", { level: 2 }));
+    fireEvent.click(within(dialog).getByRole("group", { name: "About this card" }));
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    fireEvent.click(dialog.querySelector(".nb-toploader-stage")!);
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  describe("a scroller is a tab stop only when it has something to scroll", () => {
+    const overflow = (taller: boolean) =>
+      vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockImplementation(function (this: HTMLElement) {
+        return taller ? this.clientHeight + 1 : this.clientHeight;
+      });
+    afterEach(() => vi.restoreAllMocks());
+
+    it.each([
+      [true, "0", "This card and its details"],
+      [false, null, null],
+    ])("the top loader's stage, content taller: %s", (taller, tabIndex, name) => {
+      overflow(taller);
+      shareBinder([COPY]);
+      renderAt(BINDER_URL);
+      fireEvent.click(pocket());
+      const stage = screen.getByRole("dialog").querySelector(".nb-toploader-stage")!;
+      expect(stage.getAttribute("tabindex")).toBe(tabIndex);
+      expect(stage.getAttribute("aria-label")).toBe(name);
+    });
+
+    it.each([
+      [true, "0", "About this binder"],
+      [false, null, null],
+    ])("the inside cover, content taller: %s", (taller, tabIndex, name) => {
+      overflow(taller);
+      setScreen({ wide: true });
+      shareBinder([COPY], { description: "Every Ohtani" });
+      renderAt(BINDER_URL);
+      const cover = screen.getByText("Every Ohtani").parentElement!;
+      expect(cover.getAttribute("tabindex")).toBe(tabIndex);
+      expect(cover.getAttribute("aria-label")).toBe(name);
+    });
+  });
+
+  it("holds the page behind it still while open", () => {
+    shareBinder([COPY]);
+    renderAt(BINDER_URL);
+    fireEvent.click(pocket());
+    expect(document.documentElement.style.overflow).toBe("hidden");
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+    expect(document.documentElement.style.overflow).toBe("");
   });
 
   it("PageDown does not turn the binder behind an open card", () => {

@@ -360,11 +360,6 @@ export function ReadOnlyPocket({
           ×{qty}
         </span>
       )}
-      {copies.some(isForSale) && (
-        <span aria-hidden="true" className="p2-tag nb-sale-tag">
-          For sale
-        </span>
-      )}
       {copies.some((c) => c.upForTrade) && (
         <span aria-hidden="true" className="p2-tag nb-trade-tag">
           Trade

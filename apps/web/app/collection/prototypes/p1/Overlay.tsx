@@ -16,7 +16,8 @@ import { inertBackground } from "@/lib/dom/inert-background";
  * says so (`pointer-events-auto`).
  *
  * On open, focus lands on the element marked `data-autofocus`, else the
- * labelling heading.
+ * labelling heading. The panel takes focus itself (never a tab stop), so a click
+ * on something that can't hold focus leaves it in here, where Escape still works.
  */
 export default function Overlay({
   labelledBy,
@@ -67,12 +68,15 @@ export default function Overlay({
     if (focusables.length === 0) return;
     const first = focusables[0];
     const last = focusables[focusables.length - 1];
-    if (e.shiftKey && (document.activeElement === first || !panel.contains(document.activeElement))) {
+    const active = document.activeElement;
+    const inside = !!active && panel.contains(active);
+    // Focus can sit on something that is no tab stop (the heading, the panel):
+    // the browser would then walk out of the dialog if no stop lies that way.
+    const lies = (position: number) =>
+      inside && focusables.some((el) => active.compareDocumentPosition(el) & position);
+    if (e.shiftKey ? active === first || !lies(Node.DOCUMENT_POSITION_PRECEDING) : active === last || !lies(Node.DOCUMENT_POSITION_FOLLOWING)) {
       e.preventDefault();
-      last.focus();
-    } else if (!e.shiftKey && document.activeElement === last) {
-      e.preventDefault();
-      first.focus();
+      (e.shiftKey ? last : first).focus();
     }
   };
 
@@ -94,13 +98,14 @@ export default function Overlay({
         role="dialog"
         aria-modal="true"
         aria-labelledby={labelledBy}
-        className={
+        tabIndex={-1}
+        className={`outline-none ${
           variant === "stage"
             ? "pointer-events-none absolute inset-0 text-ink"
             : variant === "drawer"
             ? "absolute top-0 right-0 h-full w-full sm:w-[40rem] max-w-[95vw] bg-raised text-ink border-l border-rule-strong shadow-xl flex flex-col animate-slide-in-right"
             : "absolute left-1/2 top-1/2 w-[min(28rem,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 rounded-lg border border-rule bg-raised p-6 text-ink shadow-xl"
-        }
+        }`}
       >
         {children}
       </div>

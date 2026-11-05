@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { usePaginatedQuery, useQuery } from "convex/react";
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router";
 import type { FunctionReturnType } from "convex/server";
@@ -17,6 +17,7 @@ import NeonButton from "@/components/modules/NeonButton";
 import { ForceDark } from "@/components/primitives/ForceDark";
 import { USERNAME_RE } from "@/lib/collection/share-links";
 import { useDocumentTitle } from "@/src/hooks/useDocumentTitle";
+import { useOverflows } from "@/src/hooks/useOverflows";
 import PublicCardOverlay, { grade, type PublicCopy } from "./PublicCardOverlay";
 
 /**
@@ -265,7 +266,7 @@ function asCopy(item: PublicCopy, card: Card): Copy {
     slot: item.slot,
     graded: item.grading,
     upForTrade: item.upForTrade === true,
-    homeKind: item.forSale ? "box" : "binder",
+    homeKind: "binder",
   } as Copy;
 }
 
@@ -350,6 +351,12 @@ function firstPageOfStep(step: number, wide: boolean): number {
   return wide && step > 0 ? step * 2 - 1 : step;
 }
 
+/** Focus without a jump, then just enough scroll to see it. A scroll-behavior from CSS can't make it glide. */
+function focusInView(target: HTMLElement) {
+  target.focus({ preventScroll: true });
+  target.scrollIntoView({ block: "nearest", behavior: "instant" });
+}
+
 /**
  * `/u/:username/binders/:path`: the binder itself, read-only. Its place is in
  * the URL: `page` is the page you're on (replaced as you turn, so Back leaves
@@ -406,13 +413,20 @@ function OpenBinder({ username, path, header }: { username: string; path: string
   const sharesSlots = !!sort && !!layout?.emptySlots;
   const needs = useQuery(api.publicCollection.binderNeeds, sharesSlots ? { username, path } : "skip");
   const ready = status === "Exhausted" && (!sharesSlots || needs !== undefined);
+  // A live update can move the reader off Exhausted (the owner adds a card, a
+  // page splits). The last full read stays on screen until the next one is in,
+  // so a page the visitor is on, and a card they have open, never drop to Loading.
+  const latest = useMemo(() => (ready ? { copies: results, needs: needs?.needs ?? [] } : null), [ready, results, needs]);
+  const [lastRead, setLastRead] = useState(latest);
+  if (latest && latest !== lastRead) setLastRead(latest);
+  const read = latest ?? lastRead;
 
   const pages = useMemo(() => {
-    if (!ready) return [];
-    if (!sort) return storedPages(results);
-    const needCards = (needs?.needs ?? []).map((n) => hydrateCatalogCard(n.card)).filter((c): c is Card => c !== null);
-    return sortedPublicPages(results, sort, sharesSlots, needCards);
-  }, [ready, sort, sharesSlots, results, needs]);
+    if (!read) return [];
+    if (!sort) return storedPages(read.copies);
+    const needCards = read.needs.map((n) => hydrateCatalogCard(n.card)).filter((c): c is Card => c !== null);
+    return sortedPublicPages(read.copies, sort, sharesSlots, needCards);
+  }, [read, sort, sharesSlots]);
   // Each copy and the page it sits on, for the card in the URL.
   const copyPlaces = useMemo(() => {
     const places = new Map<string, number>();
@@ -432,14 +446,15 @@ function OpenBinder({ username, path, header }: { username: string; path: string
   const openKey = params.get(CARD_PARAM);
   const opened = useMemo(() => {
     if (!openKey || !copyPlaces.has(openKey)) return null;
-    const copy = results.find((c) => c.key === openKey);
+    const copy = read?.copies.find((c) => c.key === openKey);
     const card = copy ? publicCard(copy) : null;
     return copy && card ? { copy, card } : null;
-  }, [openKey, copyPlaces, results]);
+  }, [openKey, copyPlaces, read]);
 
-  // The page in the URL, else the page of the card in the URL, else the first.
+  // The open card's own page, whatever else the link asks for: its pocket has
+  // to be there to take focus back. Else the page in the URL, else the first.
   const asked = Number(params.get(PAGE_PARAM));
-  const onPage = Number.isInteger(asked) && asked >= 1 ? asked - 1 : openKey ? (copyPlaces.get(openKey) ?? 0) : 0;
+  const onPage = (openKey ? copyPlaces.get(openKey) : undefined) ?? (Number.isInteger(asked) && asked >= 1 ? asked - 1 : 0);
   const steps = stepCount(pages.length, wide);
   const at = Math.min(stepOfPage(onPage, wide), steps - 1);
   const turnTo = (step: number) => {
@@ -455,7 +470,25 @@ function OpenBinder({ username, path, header }: { username: string; path: string
     );
   };
   const rootRef = useRef<HTMLDivElement>(null);
-  usePageTurnKeys(ready && !opened, rootRef, (delta) => turnTo(at + delta));
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  // PageUp / PageDown from a pocket: the new page may have no pocket there, and
+  // the button holding focus goes with the old one.
+  const turnedFromInside = useRef(false);
+  usePageTurnKeys(!!read && !opened, rootRef, (delta) => {
+    const to = at + delta;
+    turnedFromInside.current = to >= 0 && to < steps && !!rootRef.current?.contains(document.activeElement);
+    turnTo(to);
+  });
+  useEffect(() => {
+    if (!turnedFromInside.current) return;
+    turnedFromInside.current = false;
+    if (document.activeElement && document.activeElement !== document.body) return;
+    const root = rootRef.current;
+    const target =
+      root?.querySelector<HTMLElement>("button.p2-sleeve") ??
+      root?.querySelector<HTMLElement>('button[aria-keyshortcuts]:not([aria-disabled="true"])');
+    if (target) focusInView(target);
+  }, [at]);
 
   const openCard = (copies: Copy[]) => {
     const next = new URLSearchParams(params);
@@ -473,29 +506,52 @@ function OpenBinder({ username, path, header }: { username: string; path: string
       (prev) => {
         const next = new URLSearchParams(prev);
         next.delete(CARD_PARAM);
-        if (!next.has(PAGE_PARAM) && onPage > 0) next.set(PAGE_PARAM, String(firstPageOfStep(at, wide) + 1));
+        const first = firstPageOfStep(at, wide);
+        if (first === 0) next.delete(PAGE_PARAM);
+        else next.set(PAGE_PARAM, String(first + 1));
         return next;
       },
       { replace: true },
     );
   };
+  // A card that isn't here (a stale link, or the owner just took it out): the
+  // URL stops asking for it.
+  useEffect(() => {
+    if (!latest || !openKey || opened) return;
+    setParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        next.delete(CARD_PARAM);
+        return next;
+      },
+      { replace: true },
+    );
+  }, [latest, openKey, opened, setParams]);
   // However the card was put down (Escape, Back), focus returns to its pocket.
-  // `Overlay` does this when it was opened by a press; a shared link has no opener.
+  // `Overlay` does this when it was opened by a press; a shared link has no
+  // opener. With the pocket gone, the first card on the page, else the heading.
   const lastOpen = useRef<string | null>(null);
   useEffect(() => {
     const key = opened?.copy.key ?? null;
     const closed = lastOpen.current;
     lastOpen.current = key;
     if (key || !closed) return;
-    rootRef.current?.querySelector<HTMLElement>(`[data-copy-key="${CSS.escape(closed)}"]`)?.focus({ preventScroll: true });
+    const root = rootRef.current;
+    const target =
+      root?.querySelector<HTMLElement>(`[data-copy-key="${CSS.escape(closed)}"]`) ??
+      root?.querySelector<HTMLElement>("button.p2-sleeve") ??
+      headingRef.current;
+    if (target) focusInView(target);
   }, [opened]);
 
   const count = countLine(header.count, "card");
-  const hasBinder = ready && pages.length > 0;
+  const hasBinder = !!read && pages.length > 0;
   return (
     <>
       <div className="mb-4 flex flex-wrap items-baseline gap-x-4 gap-y-1">
-        <h1 className="text-2xl font-bold">{header.name}</h1>
+        <h1 ref={headingRef} tabIndex={-1} className="text-2xl font-bold focus:outline-none">
+          {header.name}
+        </h1>
         {hasBinder && (
           <p aria-live="polite" className="text-sm tabular-nums text-ink-2">
             {whereLabel(pages.length, wide, at)}
@@ -503,14 +559,14 @@ function OpenBinder({ username, path, header }: { username: string; path: string
         )}
       </div>
       {/* On a wide screen the inside cover says these; there's no cover on a phone, or without a binder. */}
-      {(!wide || (ready && !hasBinder)) && (
+      {(!wide || (read && !hasBinder)) && (
         <div className="mb-4 space-y-1">
           {header.description && <p className="text-ink-2">{header.description}</p>}
           {count && <p className="text-sm text-ink-3">{count}</p>}
           {hasBinder && <p className="text-sm text-ink-3">Tap a card to pop it out.</p>}
         </div>
       )}
-      {!ready ? (
+      {!read ? (
         <Loading />
       ) : !hasBinder ? (
         <p className="mt-6 text-ink-2">This binder is empty for now.</p>
@@ -538,8 +594,17 @@ function OpenBinder({ username, path, header }: { username: string; path: string
 
 /** The inside front cover, for a visitor: what the binder is, and how to use it. No owner's controls. */
 function PublicCover({ header, count }: { header: PublicBinder; count: string | null }) {
+  // No height of its own (`h-0 min-h-full`), so a long description scrolls here
+  // instead of stretching the binder past its pages. A tab stop only when it does.
+  const [coverRef, scrolls] = useOverflows<HTMLDivElement>();
   return (
-    <div className="flex h-full flex-col gap-3 text-sm text-ink-2">
+    <div
+      ref={coverRef}
+      role="group"
+      aria-label={scrolls ? "About this binder" : undefined}
+      tabIndex={scrolls ? 0 : undefined}
+      className="flex h-0 min-h-full flex-col gap-3 overflow-y-auto text-sm text-ink-2 focus-outline"
+    >
       {/* The page's h1 already says it, for a screen reader. */}
       <p aria-hidden="true" className="neon-header nb-glow-blue !text-[26px] leading-tight text-ink [overflow-wrap:anywhere]">
         {header.name}

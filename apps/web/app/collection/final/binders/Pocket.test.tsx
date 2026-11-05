@@ -84,13 +84,13 @@ describe("ReadOnlyPocket", () => {
     expect(screen.getByRole("button").getAttribute("aria-label")).not.toContain("outside");
   });
 
-  test("wears the Trade and For sale stickers, and the count", () => {
+  test("wears the Trade sticker and the count, and never a For sale one", () => {
     renderReadOnly({
       content: { kind: "have", card: CARD, copies: [{ ...COPY, quantity: 2, upForTrade: true, homeKind: "box" }] },
     });
     expect(screen.getByText("Trade")).toBeTruthy();
-    expect(screen.getByText("For sale")).toBeTruthy();
     expect(screen.getByText("×2")).toBeTruthy();
+    expect(screen.queryByText("For sale")).toBeNull();
   });
 
   test("a pocket's own photo wins, and without one the card is drawn", () => {

@@ -6,22 +6,40 @@
  *
  * Proportions are a real one's: 3" x 4", for a 2.5" x 3.5" card, which sits on
  * the sealed bottom edge with the gap at the top where it went in. Sized by
- * height first, so a phone keeps the whole card and its title in view.
+ * height first, so a phone opens on the whole card and its title.
  */
 
+/* Deepens the page's scrim, so the words below the loader read over a busy page of cards. */
+.nb-toploader-dim {
+  position: absolute;
+  inset: 0;
+  background: rgb(0 0 0 / 0.42);
+  -webkit-backdrop-filter: blur(3px);
+  backdrop-filter: blur(3px);
+}
+
+/*
+ * The one scroller. Whatever doesn't fit (a short screen, zoom, long Notes)
+ * scrolls here with the card, and `safe` keeps the top reachable when it does.
+ * The close button is its sibling, so it stays put: a backdrop-filter up here
+ * would make this box its containing block and scroll it away.
+ */
 .nb-toploader-stage {
+  position: absolute;
+  inset: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
+  justify-content: safe center;
   gap: 12px;
-  height: 100%;
-  overflow: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 12px 16px;
-  /* Deepens the page's scrim, so the words below the loader read over a busy page of cards. */
-  background: rgb(0 0 0 / 0.42);
-  -webkit-backdrop-filter: blur(3px);
-  backdrop-filter: blur(3px);
+  pointer-events: auto;
+}
+.nb-toploader-stage:focus-visible {
+  outline-offset: -4px;
 }
 
 .nb-toploader {
@@ -141,22 +159,26 @@
   text-align: center;
 }
 
-/* Everything under the title scrolls here: it never pushes the card out of view. */
 .nb-toploader-details {
   position: relative;
   display: flex;
+  flex: none;
   flex-direction: column;
   align-items: center;
   gap: 8px;
-  flex: 0 1 auto;
-  min-height: 0;
   width: min(100%, 34rem);
-  overflow-y: auto;
-  overscroll-behavior: contain;
   text-align: center;
 }
-.nb-toploader-details > * {
-  flex: none;
+
+/* A short screen (a landscape phone, 400% zoom): less loader, so the title shows with it. */
+@media (max-height: 480px) {
+  .nb-toploader-stage {
+    gap: 8px;
+    padding-block: 8px;
+  }
+  .nb-toploader {
+    height: min(48dvh, calc((100vw - 48px) * 4 / 3));
+  }
 }
 
 /* The sleeve arrives... */

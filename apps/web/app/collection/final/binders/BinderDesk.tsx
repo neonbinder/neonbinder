@@ -315,16 +315,20 @@ function TurnButton({
   const back = dir === "back";
   const label = back ? (wide ? "Previous pages" : "Previous page") : wide ? "Next pages" : "Next page";
   const Icon = back ? ChevronLeftIcon : ChevronRightIcon;
+  // Off at the first or last page, but never `disabled`: the press that reached
+  // the end would otherwise throw focus out to the page.
+  const press = disabled ? undefined : onClick;
+  const off = disabled || undefined;
   if (wide) {
     return (
       <button
         type="button"
-        onClick={onClick}
-        disabled={disabled}
+        onClick={press}
+        aria-disabled={off}
         aria-label={label}
         title={`${label} (${back ? "PageUp" : "PageDown"})`}
         aria-keyshortcuts={back ? "PageUp" : "PageDown"}
-        className="flex w-11 flex-none items-center justify-center rounded-xl border border-rule-strong bg-sheet text-ink-2 hover:border-neon-blue hover:text-ink focus-outline disabled:cursor-not-allowed disabled:opacity-30"
+        className="flex w-11 flex-none items-center justify-center rounded-xl border border-rule-strong bg-sheet text-ink-2 hover:border-neon-blue hover:text-ink focus-outline aria-disabled:cursor-not-allowed aria-disabled:opacity-30"
       >
         <Icon aria-hidden="true" className="h-6 w-6" />
       </button>
@@ -335,8 +339,8 @@ function TurnButton({
       type="button"
       variant="secondary"
       outline
-      onClick={onClick}
-      disabled={disabled}
+      onClick={press}
+      aria-disabled={off}
       aria-keyshortcuts={back ? "PageUp" : "PageDown"}
       className="min-h-11 flex-1"
     >
