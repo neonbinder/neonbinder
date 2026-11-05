@@ -558,8 +558,9 @@ const MAX_REST_PASSES = 45;
 
 /**
  * Walks the set to rest after a press: every wait covers exactly ONE step
- * landing (the standard budget, or `slow[label]` for a step with a signed-off
- * longer ceiling, recorded at the call site, GUIDE hard rule 3), until the
+ * landing (the standard budget, or what `slow` gives a step with a signed-off
+ * longer ceiling, recorded at the call site, GUIDE hard rule 3: a label map, or
+ * a function for labels that vary, such as a read's condition), until the
  * press's queued rows are gone (`settled`, from `queueSettled`) and the
  * platform is idle. Unlike `followRunToEnd` it never ends on an idle platform
  * alone: a stale row left by the sales poll shows "Nothing syncing right now."
@@ -575,7 +576,7 @@ export async function followRunToRest(
   platform: Locator,
   run: ReturnType<typeof syncRun>,
   settled: Locator,
-  slow: Readonly<Record<string, number>> = {},
+  slow: Readonly<Record<string, number>> | ((label: string) => number | undefined) = {},
 ): Promise<void> {
   const idle = platform.getByText(/^Nothing syncing right now\./);
   const open = run.running.getByRole("listitem", { name: /, (working|waiting)$/ });
@@ -589,7 +590,7 @@ export async function followRunToRest(
     const [text] = await open.allTextContents();
     if (text === undefined) continue;
     const label = text.trim().replace(/, (working|waiting)$/, "");
-    const budget = slow[label];
+    const budget = typeof slow === "function" ? slow(label) : slow[label];
     await expect(run.step(label).or(run.step(label, "failed")).or(settled).first()).toBeVisible(
       budget === undefined ? undefined : { timeout: budget },
     );

@@ -52,8 +52,9 @@
 // steps: "Read Excellent, done"). So the spec walks the run (`followRunToRest`):
 // every wait is the standard 7 s for exactly ONE step to land, never for the
 // whole trip or for several steps at once (GUIDE hard rule 3; Jason,
-// 2026-11-02), then for the set's result line. The only wait above 7 s is the
-// seed hop's sign-in when the sign-in is saved again (`saveBscSignIn`).
+// 2026-11-02), then for the set's result line. The only waits above 7 s are the
+// signed-off ceiling on a BSC read (`bscReadCeiling`) and the seed hop's sign-in
+// when the sign-in is saved again (`saveBscSignIn`).
 //
 // Two triggers (NEO-433). A set's sync is set going by the press of the
 // checklist's Sync and by the 15-minute sales poll, and the poll can list a
@@ -156,6 +157,18 @@ const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /** A committed intake scan (about 1000 px wide), attached through the copy drawer's Photos box. It is never listed: its copy lives in a binder. */
 const BINDER_PHOTO = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "fixtures", "intake", "05-bell-front.jpg");
+
+
+/**
+ * A BSC read step's longer budget, a ceiling Jason signed off on 2026-11-05
+ * (GUIDE hard rule 3). "Read" and "Double-check" are each one call to BSC's
+ * seller sheet, so the step lasts as long as that call. Measured: usually 4-5 s,
+ * 6.98 s in the CI run that went red with the step landing just past 7 s, up to
+ * 9.6 s elsewhere; our own work in the step is well under a second. Every other
+ * step keeps 7 s, "Send changes" included. Void it if a read step gains any work
+ * of ours, or holds more than one call.
+ */
+const bscReadCeiling = (label: string): number | undefined => (/^(Read|Double-check) /.test(label) ? 15_000 : undefined);
 
 /**
  * NEO-432. On the Collection Checklists tab with the Main binder picked: click
@@ -317,7 +330,7 @@ test.afterEach(async ({ context, isMobile }, testInfo) => {
         const zeroing = syncStatus(clean);
         const zeroingRun = syncRun(zeroing.platform, SET_LABEL, BSC);
         cleanupFailure = await walkForCleanup(async () => {
-          await followRunToRest(zeroing.platform, zeroingRun, queueSettled(zeroing.platform, SET_LABEL));
+          await followRunToRest(zeroing.platform, zeroingRun, queueSettled(zeroing.platform, SET_LABEL), bscReadCeiling);
           await expect(zeroing.row.getByText(/^0 listed/)).toBeVisible();
         });
       }
@@ -666,7 +679,7 @@ test(
     await tabs.getByRole("link", { name: "Sync status", exact: true }).click();
     await expect(page).toHaveURL(/[?&]tab=sync/);
     // The live BSC round trip, one step per wait (see "Waits" above): the walk
-    // waits 7 s for the step the run is on to land, again and again, until the
+    // waits for the step the run is on to land, again and again, until the
     // press's queued cards are gone and the platform is idle (header: a press
     // proven to have run; the sheet reads are serial and how many there are is
     // not fixed, see "The ledger's steps" above). Only then is the set's row
@@ -676,7 +689,7 @@ test(
     // would be a held-back card.
     const listedLine = row.getByText(/^2 listed(, 2 updated)?$/);
     const listedNoSend = row.getByText("2 listed", { exact: true });
-    await followRunToRest(platform, run, queueSettled(platform, SET_LABEL));
+    await followRunToRest(platform, run, queueSettled(platform, SET_LABEL), bscReadCeiling);
     // The ledger is asserted BEFORE the branch (R2), so a row with none is red in either order.
     await expect(run.last).toBeVisible();
     await expect(run.gathered()).toBeVisible();
@@ -763,7 +776,7 @@ test(
     // ledger's steps" above), so one data-gathering step is the assertion.
     const takeDown = syncRun(platform, SET_LABEL, BSC);
     const takenLine = row.getByText(/^0 listed(, \d+ updated)?, 2 taken to 0$/);
-    await followRunToRest(platform, takeDown, queueSettled(platform, SET_LABEL));
+    await followRunToRest(platform, takeDown, queueSettled(platform, SET_LABEL), bscReadCeiling);
     // The ledger is asserted BEFORE the branch (R2), so a row with none is red in either order.
     await expect(takeDown.last).toBeVisible();
     await expect(takeDown.gathered()).toBeVisible();
