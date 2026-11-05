@@ -26,3 +26,4 @@
 - [Kept-counter semantics change is a write-path audit](kept-counter-semantics-change-is-a-write-path-audit.md) — tally/count meaning changes touch every mutation + recount + derived counts + backfill; never a read filter
 - [Scheduled marketplace work has no caller identity](scheduled-marketplace-work-has-no-caller-identity.md) — getSiteToken needs a signed-in user: internal userId token path + per-user fan-out; new browser routes ship with a per-feature contract minimum
 - [Turn-count waits are load-dependent under Web Crypto](turn-count-waits-are-load-dependent-under-web-crypto.md) — positives by the clock, negatives by precondition + bounded settle; a ~4 s unit test is the smell (NEO-427)
+- [Spare worker indexes share one account on dev](spare-worker-indexes-share-one-account-on-dev.md) — no TEST_EMAIL_<n> locally = fallback to TEST_EMAIL; a bootstrap on any spare worker wipes the others mid-run
