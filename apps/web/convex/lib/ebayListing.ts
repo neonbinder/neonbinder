@@ -160,9 +160,8 @@ export interface EbayTarget {
   quantity: number;
   /** Highest floor among the folded copies, raised to eBay's minimum; null = no floor at all. */
   priceCents: number | null;
-  /** The oldest copy folded in: the one a sale lowers first, so its photo is the listing's. */
-  oldestCopyId: Id<"collectionCopies">;
-  oldestHasPhotos: boolean;
+  /** The oldest copy folded in that has photos: they are the listing's. Null when none has any. */
+  photoCopyId: Id<"collectionCopies"> | null;
 }
 
 export type EbayHoldReason = "graded" | "noCondition" | "noPrice" | "noPhoto" | "missingAspect" | "rejected";
@@ -182,8 +181,8 @@ export interface EbayHold {
  * bucket). Quantity is the sum; price is the highest floor
  * (`listingFloorCents`, the add gate's rule) raised to `EBAY_MIN_PRICE_CENTS`.
  * A group with no floor is held back `noPrice`, a copy with no condition
- * `noCondition`, a group whose oldest copy has no photo `noPhoto` (eBay
- * needs a picture). Targets come back for held groups too (`held`), so the
+ * `noCondition`, a group where no copy has a photo `noPhoto` (eBay needs a
+ * picture; NEO-427: any copy in the group can supply it). Targets come back for held groups too (`held`), so the
  * drain can leave a live listing alone rather than read the hold as zero.
  */
 export function foldEbayTargets(input: {
@@ -219,7 +218,6 @@ export function foldEbayTargets(input: {
   const targets: EbayTarget[] = [];
   for (const { cardId, code, copies } of groups.values()) {
     const sorted = [...copies].sort((a, b) => compareCopiesOldestFirst(a, b));
-    const oldest = sorted[0];
     let quantity = 0;
     let floor: number | null = null;
     for (const c of sorted) {
@@ -233,8 +231,7 @@ export function foldEbayTargets(input: {
       sku: buildEbaySku(cardId, code),
       quantity,
       priceCents: floor === null ? null : Math.max(floor, EBAY_MIN_PRICE_CENTS),
-      oldestCopyId: oldest.copyId,
-      oldestHasPhotos: oldest.hasPhotos,
+      photoCopyId: sorted.find((c) => c.hasPhotos)?.copyId ?? null,
     });
   }
   return { targets, holds };

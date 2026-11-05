@@ -990,7 +990,7 @@ async function syncEbayVariant(
   const priced: EbayTarget[] = [];
   for (const t of fold.targets) {
     if (t.priceCents === null) addHold({ cardId: t.cardId, reason: "noPrice", conditionCode: t.conditionCode });
-    else if (!t.oldestHasPhotos) addHold({ cardId: t.cardId, reason: "noPhoto", conditionCode: t.conditionCode });
+    else if (t.photoCopyId === null) addHold({ cardId: t.cardId, reason: "noPhoto", conditionCode: t.conditionCode });
     else priced.push(t);
   }
   const targetSkus = new Set(fold.targets.map((t) => t.sku));
@@ -1074,9 +1074,9 @@ async function syncEbayVariant(
     for (const f of page) facts.set(f.cardId, f);
   }
   const photosByCopy = new Map<string, Plan["photos"]>();
-  const oldest = [...new Set(priced.map((t) => t.oldestCopyId))];
-  for (let i = 0; i < oldest.length; i += READ_CHUNK) {
-    const page = await ctx.runQuery(internal.listingDrainEbay.ebayCopyPhotos, { ownerId, copyIds: oldest.slice(i, i + READ_CHUNK) });
+  const photoCopies = [...new Set(priced.map((t) => t.photoCopyId as Id<"collectionCopies">))];
+  for (let i = 0; i < photoCopies.length; i += READ_CHUNK) {
+    const page = await ctx.runQuery(internal.listingDrainEbay.ebayCopyPhotos, { ownerId, copyIds: photoCopies.slice(i, i + READ_CHUNK) });
     for (const p of page) {
       const list = photosByCopy.get(p.copyId) ?? [];
       list.push({ side: p.side, key: p.key, contentType: p.contentType, imageBytes: p.imageBytes });
@@ -1089,7 +1089,7 @@ async function syncEbayVariant(
   for (const t of priced) {
     const f = facts.get(t.cardId);
     if (!f) continue; // the card left the catalog under the run
-    const photos = (photosByCopy.get(t.oldestCopyId) ?? [])
+    const photos = (photosByCopy.get(t.photoCopyId as Id<"collectionCopies">) ?? [])
       .filter((p) => p.imageBytes <= MAX_COPY_PHOTO_BYTES)
       .sort((a, b) => (a.side === b.side ? 0 : a.side === "front" ? -1 : 1));
     if (photos.length === 0) {

@@ -15,6 +15,7 @@ import { api, internal } from "./_generated/api";
 import { MAX_COPY_PHOTO_BYTES, MAX_COPY_PHOTO_UPLOADS_PER_HOUR, PHOTO_HOLD_MS, copyPhotoObjectKey } from "./copyPhotos";
 import schema from "./schema";
 import { seedCollectionCatalog } from "../lib/testing/collection-fixture";
+import { cancelScheduled } from "../lib/testing/drain-scheduled";
 import type { Id } from "./_generated/dataModel";
 
 const modules = (import.meta as unknown as {
@@ -129,6 +130,136 @@ describe("upload", () => {
       }
     });
     await expect(photograph(s, copyId, "back")).rejects.toThrow(/a lot of photos/);
+  });
+
+  test("NEO-427: a scanned pair's photos are outside the hourly cap, and don't eat into it", async () => {
+    const s = await setup();
+    const copyId = await addCopy(s);
+    const seed = (source: "intake" | undefined, count: number, prefix: string) =>
+      s.t.run(async (ctx) => {
+        for (let i = 0; i < count; i++) {
+          await ctx.db.insert("collectionCopyPhotos", {
+            ownerId: ME.subject,
+            copyId,
+            side: "front",
+            token: `${prefix}${i}`,
+            contentType: "image/jpeg",
+            imageBytes: 1,
+            thumbBytes: 1,
+            status: "pending",
+            since: Date.now(),
+            ...(source ? { source } : {}),
+          });
+        }
+      });
+    const reserve = (source?: "intake") =>
+      s.t.mutation(internal.copyPhotos.reserveUpload, {
+        ownerId: ME.subject,
+        copyId,
+        side: "front",
+        contentType: "image/jpeg",
+        imageBytes: 10,
+        thumbBytes: 10,
+        ...(source ? { source } : {}),
+      });
+    // A full hour of scanned photos: a hand upload still goes through...
+    await seed("intake", MAX_COPY_PHOTO_UPLOADS_PER_HOUR, "scan");
+    await expect(reserve()).resolves.toBeTruthy();
+    // ...up to the cap, which then stops hands and never stops the scans.
+    await seed(undefined, MAX_COPY_PHOTO_UPLOADS_PER_HOUR, "hand");
+    await expect(reserve()).rejects.toThrow(/a lot of photos/);
+    const { photoId } = await reserve("intake");
+    expect((await s.t.run((ctx) => ctx.db.get(photoId)))?.source).toBe("intake");
+  });
+
+  test("NEO-427: a hand photo going live between a scanner's reserve and commit stays; the scanner's row goes", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout"] });
+    try {
+      const s = await setup();
+      const copyId = await addCopy(s);
+      const { photoId: scanned, token } = await s.t.mutation(internal.copyPhotos.reserveUpload, {
+        ownerId: ME.subject,
+        copyId,
+        side: "front",
+        contentType: "image/jpeg",
+        imageBytes: 300_000,
+        thumbBytes: 20_000,
+        source: "intake",
+      });
+      const hand = await photograph(s, copyId, "front");
+      await expect(
+        s.t.mutation(internal.copyPhotos.commitUpload, { ownerId: ME.subject, photoId: scanned }),
+      ).resolves.toBeNull();
+      const { kept, gone, queued } = await s.t.run(async (ctx) => ({
+        kept: await ctx.db.get(hand),
+        gone: await ctx.db.get(scanned),
+        queued: await ctx.db.system.query("_scheduled_functions").collect(),
+      }));
+      expect(kept?.status).toBe("live");
+      expect(gone).toBeNull();
+      // Its files go with it.
+      const deletes = queued.filter((f) => f.name.includes("deleteObjects"));
+      expect(deletes.flatMap((f) => (f.args[0] as { keys: string[] }).keys)).toEqual([
+        copyPhotoObjectKey(token, "image", "image/jpeg"),
+        copyPhotoObjectKey(token, "thumb", "image/jpeg"),
+      ]);
+      await cancelScheduled(s.t as never);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("NEO-427: a collector cannot mark their own upload as a scanner's to dodge the cap", async () => {
+    const s = await setup();
+    const copyId = await addCopy(s);
+    await expect(
+      s.me.action(api.copyPhotos.startUpload, {
+        copyId,
+        side: "front",
+        contentType: "image/jpeg",
+        imageBytes: 10,
+        thumbBytes: 10,
+        source: "intake",
+      } as never),
+    ).rejects.toThrow();
+    expect(await photoRows(s)).toEqual([]);
+  });
+
+  test("NEO-427: hand uploads made before the field existed (no source) still count toward the cap", async () => {
+    const s = await setup();
+    const copyId = await addCopy(s);
+    await s.t.run(async (ctx) => {
+      for (let i = 0; i < MAX_COPY_PHOTO_UPLOADS_PER_HOUR; i++) {
+        await ctx.db.insert("collectionCopyPhotos", {
+          ownerId: ME.subject,
+          copyId,
+          side: "back",
+          token: `old${i}`,
+          contentType: "image/jpeg",
+          imageBytes: 1,
+          thumbBytes: 1,
+          status: "replaced",
+          since: Date.now(),
+        });
+      }
+    });
+    await expect(photograph(s, copyId, "front")).rejects.toThrow(/a lot of photos/);
+  });
+
+  test("NEO-427: with the side free, a scanner's photo goes live", async () => {
+    const s = await setup();
+    const copyId = await addCopy(s);
+    const { photoId } = await s.t.mutation(internal.copyPhotos.reserveUpload, {
+      ownerId: ME.subject,
+      copyId,
+      side: "front",
+      contentType: "image/jpeg",
+      imageBytes: 300_000,
+      thumbBytes: 20_000,
+      source: "intake",
+    });
+    await s.t.mutation(internal.copyPhotos.commitUpload, { ownerId: ME.subject, photoId });
+    expect((await s.t.run((ctx) => ctx.db.get(photoId)))?.status).toBe("live");
   });
 
   test("replacing one side over and over still meets the hourly cap", async () => {
