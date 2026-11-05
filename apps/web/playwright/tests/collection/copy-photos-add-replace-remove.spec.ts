@@ -16,6 +16,7 @@
 // teams. Self-cleaning: the copy is removed through the UI, which detaches its
 // photos for the hourly sweep; the bootstrap reset clears any left behind.
 // The R2 objects land in the dev bucket, which expires them after 14 days.
+import { escapeRe } from "../../support/cards";
 import { drillToCollectorBase, ordinaryBaseRows, photoFile, shortNameOf } from "../../support/collection";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 
@@ -113,7 +114,13 @@ test(
     // --- Remove the copy, Undo: its photo comes back --------------------------
     await yourCopies.getByRole("button", { name: `Remove ${short}, Raw, Excellent`, exact: true }).click();
     await expect(yourCopies.getByText("None yet. Fill in what you know below and add it.")).toBeVisible();
+    // The Remove's notice (and its Undo) arrives only after the write resolves: wait for
+    // it, or Undo would undo the earlier Have instead. Then wait for Undo to land.
+    await expect(
+      drawer.getByRole("status").filter({ hasText: new RegExp(`^Removed ${escapeRe(short)}, Raw, Excellent`) }),
+    ).toBeVisible();
     await page.getByRole("button", { name: "Undo", exact: true }).click();
+    await expect(page.getByRole("status").filter({ hasText: "Undone." })).toBeVisible();
     await expect(yourCopies.getByRole("img", { name: "Front of Raw, Excellent", exact: true })).toBeVisible();
 
     // --- Saving the line's other details keeps its photo ----------------------

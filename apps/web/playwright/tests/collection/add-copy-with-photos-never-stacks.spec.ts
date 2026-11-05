@@ -11,9 +11,12 @@
 //
 // The box itself (preview, Remove, Swap, status) is the one photo widget the
 // edit form and Request a card share; copy-photos-add-replace-remove proves the
-// saved side of it and card-request-approve-moves-copy the send. A photo that
-// fails to save with the add is unit-tested (CardDetail / CopyPhotosField), not
-// live.
+// saved side of it and card-request-approve-moves-copy the send. The box's
+// refusal of a file that is not a photo is live here. The server turning an
+// upload away after the add (CardDetail's "didn't save, try again under Edit")
+// is unit-tested (CardDetail / CopyPhotosField), not live: a collector cannot
+// make the server refuse a photo the browser resized and checked, so a live
+// spec could only fake that failure.
 //
 // R7/R7a: writes ONLY the signed-in user's `collectionCopies` and
 // `collectionCopyPhotos` on one Base card (the row choice every collection spec
@@ -67,12 +70,25 @@ test(
     // Fully on screen before axe reads it (the drawer slides in).
     await expect(drawer).toBeInViewport({ ratio: 0.99 });
 
+    // --- A file that is not a photo is refused in the box's own words, and none is held ----
+    const refusal = panel.getByRole("alert");
+    await panel
+      .getByLabel("Front photo file", { exact: true })
+      .setInputFiles({ name: "notes.txt", mimeType: "text/plain", buffer: Buffer.from("not a photo") });
+    await expect(refusal).toHaveText("Only photos can be added here.");
+    await expect(panel.getByText("No front photo yet")).toBeAttached();
+    await expect(panel.getByRole("img", { name: "Front of your new copy", exact: true })).toHaveCount(0);
+    await expect(panel.getByRole("button", { name: "Remove front", exact: true })).toHaveCount(0);
+    await expectAccessible(page, { within: drawer, label: "Card drawer, Add form refusing a file that is not a photo" });
+
     // --- Hold a front and a back: they preview, and nothing is saved ----------------------
     const hold = async () => {
       await panel.getByLabel("Front photo file", { exact: true }).setInputFiles(photoFile("front.jpg"));
       await panel.getByLabel("Back photo file", { exact: true }).setInputFiles(photoFile("back.jpg"));
     };
     await hold();
+    // A good pick clears the refusal.
+    await expect(refusal).toHaveText("");
     // A held tile is a picture only: no link to a full-size view until the copy is saved.
     const heldFront = panel.getByRole("img", { name: "Front of your new copy", exact: true });
     const heldBack = panel.getByRole("img", { name: "Back of your new copy", exact: true });

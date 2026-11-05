@@ -95,6 +95,7 @@ test(
     // The send cleared the box for the next request.
     await expect(photos.getByText("No front photo yet")).toBeAttached();
     await expect(photos.getByText("No back photo yet")).toBeAttached();
+    await expectAccessible(page, { label: "Request a card, sent" });
     // Theirs to own at once: "I have it" files a copy and closes the dialog.
     await sent.getByRole("button", { name: "I have it" }).click();
     await expect(dialog).toBeHidden();

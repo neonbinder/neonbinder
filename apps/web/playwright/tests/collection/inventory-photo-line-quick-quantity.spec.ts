@@ -12,8 +12,8 @@
 // add-copy-with-photos-never-stacks.
 //
 // R7/R7a: writes ONLY the signed-in user's `collectionCopies` and
-// `collectionCopyPhotos` in Unsorted, on the FOURTH row of the seed's 2024 Topps
-// Chrome Base (SET-REGISTRY.md; the other collection specs use the first three),
+// `collectionCopyPhotos` in Unsorted, on the FOURTH ordinary Base row (#4; the other
+// collection specs use the first three) of the seed's 2024 Topps Chrome Base (SET-REGISTRY.md),
 // never the set, its cards, players or teams. Self-cleaning: the count is typed
 // back to 0, which detaches the photos for the hourly sweep. The R2 objects land
 // in the dev bucket, which expires them after 14 days.
@@ -21,7 +21,7 @@
 // A phone's number pad has no Tab: its Next key sends Enter (GUIDE "Desktop and
 // mobile"), so the spec presses Enter there and Tab on a desktop.
 import { escapeRe } from "../../support/cards";
-import { drillToCollectorBase, expectPhotoServed, nameOf, photoFile, quantityField } from "../../support/collection";
+import { drillToCollectorBase, expectPhotoServed, ordinaryBaseRows, photoFile, quantityField, shortNameOf } from "../../support/collection";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 
 test(
@@ -38,11 +38,9 @@ test(
     await expect(adding.getByRole("option", { selected: true })).toHaveText("Unsorted");
     const checklist = await drillToCollectorBase(page);
     const unsortedList = checklist.getByRole("list", { name: "Quantities in Unsorted" });
-    await expect(unsortedList.getByRole("textbox").nth(3)).toBeVisible();
-    const fieldName = await nameOf(unsortedList.getByRole("textbox").nth(3));
-    const parsed = /^Quantity of (.+) in Unsorted$/.exec(fieldName);
-    expect(parsed, `a quantity field named "Quantity of <card> in Unsorted" (read: ${fieldName})`).not.toBeNull();
-    const short = parsed![1];
+    const row = ordinaryBaseRows(checklist).nth(3);
+    await expect(row).toBeVisible();
+    const { short } = await shortNameOf(row);
     const field = quantityField(unsortedList, short, "Unsorted");
     await expect(field).toHaveValue("0");
     const rowOfCard = unsortedList
@@ -67,7 +65,7 @@ test(
     const addForm = drawer.getByRole("form", { name: "Add a copy" });
     await expect(addForm).toBeVisible();
     // It lands in the box the field counts.
-    await expect(addForm.getByRole("combobox", { name: "Where it lives" }).getByRole("option", { selected: true })).toHaveText("Unsorted");
+    await expect(addForm.getByRole("combobox", { name: "Where it lives" }).getByRole("option", { selected: true })).toHaveText("Unsorted (box, for sale)");
     const panel = addForm.getByRole("region", { name: /^Photos of / });
     await panel.getByLabel("Front photo file", { exact: true }).setInputFiles(photoFile("front.jpg"));
     await panel.getByLabel("Back photo file", { exact: true }).setInputFiles(photoFile("back.jpg"));
@@ -75,6 +73,9 @@ test(
     await expect(panel.getByRole("img", { name: "Front of your new copy", exact: true })).toBeVisible();
     await expect(panel.getByRole("img", { name: "Back of your new copy", exact: true })).toBeVisible();
     await expect(panel.getByRole("link", { name: /full size/ })).toHaveCount(0);
+    // Fully on screen before axe reads it (the drawer slides in).
+    await expect(drawer).toBeInViewport({ ratio: 0.99 });
+    await expectAccessible(page, { within: drawer, label: "Card drawer, Add form on the Inventory holding a front and a back photo" });
     await addForm.getByRole("button", { name: "Add to inventory" }).click();
     await expect(addForm).toBeHidden();
     await expect(
@@ -95,6 +96,7 @@ test(
     await expect(said(`Boxed 1 more of ${short}. 2 in Unsorted.`)).toBeVisible();
     await expect(field).toHaveValue("2");
     await expect(field).not.toHaveAccessibleDescription(/also here/);
+    await expectAccessible(page, { label: "Inventory Checklists, the photo line counted 2" });
     const stacked = await openLine("Raw, Excellent ×2");
     await expect(stacked.getByRole("link", { name: "Front of Raw, Excellent ×2, full size (opens a new tab)", exact: true })).toBeVisible();
     await expect(stacked.getByRole("link", { name: "Back of Raw, Excellent ×2, full size (opens a new tab)", exact: true })).toBeVisible();
