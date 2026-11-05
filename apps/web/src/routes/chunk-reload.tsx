@@ -82,16 +82,31 @@ function markChunkReload(scope: Scope, error: unknown) {
 function AppCrashFallback({ error }: { error: unknown }) {
   const reloading = chunkRecovery(error) === "reload";
   const reloaded = useRef(false);
+  const message = useRef<HTMLDivElement>(null);
   // An effect, not componentDidCatch: by now the crashed page's cleanups have
   // run, so a form's leave guard cannot ask the visitor to confirm this reload.
   // The ref is for StrictMode, which runs the effect twice.
   useEffect(() => {
-    if (reloading && !reloaded.current) {
+    if (!reloading) {
+      // Whatever held focus went with the app, so the message takes it.
+      message.current?.focus();
+    } else if (!reloaded.current) {
       reloaded.current = true;
       window.location.reload();
     }
   }, [reloading]);
-  return reloading ? <LoadingLine /> : <div>An error occurred. Please refresh the page.</div>;
+  // The router, header and page landmark are gone, so this brings its own.
+  return (
+    <main className="p-4">
+      {reloading ? (
+        <LoadingLine />
+      ) : (
+        <div ref={message} role="alert" tabIndex={-1} className="rounded-sm focus-outline">
+          An error occurred. Please refresh the page.
+        </div>
+      )}
+    </main>
+  );
 }
 
 /** The top-level boundary's options, for Sentry.withErrorBoundary in main.tsx. */

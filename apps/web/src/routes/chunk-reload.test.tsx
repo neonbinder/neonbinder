@@ -137,6 +137,34 @@ describe("the top-level boundary", () => {
     expect(guard()).toBe(String(T0));
   });
 
+  test.each([
+    ["a chunk failure past the guard", new TypeError(CHROME), false],
+    ["any other error", new TypeError("Cannot read properties of undefined (reading 'map')"), false],
+    ["StrictMode", new TypeError(CHROME), true],
+  ])("the message is an alert that takes focus, inside a main landmark: %s", async (_label, error, strict) => {
+    window.sessionStorage.setItem(CHUNK_RELOAD_GUARD_KEY, String(T0));
+
+    crashOnce(error, { strict });
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe(MESSAGE);
+    await waitFor(() => expect(document.activeElement).toBe(alert));
+    expect(alert.getAttribute("tabindex")).toBe("-1");
+    expect(screen.getByRole("main").contains(alert)).toBe(true);
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+
+  test("the loading line stays a status, not an alert, and does not take focus", async () => {
+    crashOnce();
+
+    const status = await screen.findByRole("status");
+    expect(status.textContent).toBe(LOADING);
+    expect(screen.getByRole("main").contains(status)).toBe(true);
+    expect(screen.queryByRole("alert")).toBeNull();
+    await waitFor(() => expect(reload).toHaveBeenCalledTimes(1));
+    expect(document.activeElement).not.toBe(status);
+  });
+
   test("a failure after the window reloads again and restarts the guard", async () => {
     window.sessionStorage.setItem(CHUNK_RELOAD_GUARD_KEY, String(T0));
     const later = T0 + CHUNK_RELOAD_WINDOW_MS;
