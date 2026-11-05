@@ -159,8 +159,11 @@ describe("the eBay seller account", () => {
 });
 
 describe("photo changes queue the card", () => {
+  // NEO-432: in a listed box. A photo on any other copy queues nothing
+  // (`copyPhotos.test.ts`).
   async function copyOf(s: S) {
-    const { copyId } = await s.me.mutation(api.collection.addLineItem, { cardId: s.fx.gooden1, details: { quantity: 1 } });
+    const { containerId: homeId } = await s.me.mutation(api.collectionContainers.create, { kind: "box", name: "Show box" });
+    const { copyId } = await s.me.mutation(api.collection.addLineItem, { cardId: s.fx.gooden1, details: { quantity: 1, homeId } });
     return copyId;
   }
   const attach = async (s: S, copyId: Id<"collectionCopies">, side: "front" | "back" = "front") => {
