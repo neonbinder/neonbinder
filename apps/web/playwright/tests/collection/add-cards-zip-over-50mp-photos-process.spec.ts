@@ -36,14 +36,14 @@
 // because a local run cannot reach a 65 MP service (the dev preprocess service still
 // refuses 50 MP). The first CI run measures it: the preprocess legs are wrapped in
 // `test.step`, so the report carries each leg's own duration, and a red here comes
-// back to the owner with that number, never a longer timeout. The set-building block
-// keeps the waits add-cards-from-photos-real-scans carries (see the calls).
+// back to the owner with that number, never a longer timeout. The set-building waits
+// are the normal 7 s too (each under 1 s on warm dev).
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { collectorCascade } from "../../support/collection";
 import { addCardViaForm } from "../../support/cards";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
-import { VARIANT_TYPES_SYNC, columnHeading, drillToCustom, selectOrCreate, setBuilderReady } from "../../support/set-builder";
+import { columnHeading, drillToCustom, selectOrCreate, setBuilderReady } from "../../support/set-builder";
 
 const ZIP = path.join(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -66,11 +66,11 @@ test(
     await expect(setBuilderReady(page)).toBeVisible({ timeout: LAUNCH_GATE });
     await drillToCustom(page, { sport: "Baseball", year: "2024", manufacturer: "Topps", set: setName });
     await selectOrCreate(page, "Variant Types", "Insert", { via: "list" });
-    // Copied from add-cards-from-photos-real-scans (the 15 s and VARIANT_TYPES_SYNC below);
-    // neither is a GUIDE hard-rule-3 exception, so both are flagged to the owner (NEO-446).
-    await expect(columnHeading(page, "Inserts")).toBeVisible({ timeout: 15_000 });
+    // Normal 7 s (NEO-446): on a hand-made set, measured on warm dev, the column heading
+    // and the first-visit sync that gates "+ Custom" each took under 1 s.
+    await expect(columnHeading(page, "Inserts")).toBeVisible();
     // A new type's column pays its first-visit sync before "+ Custom" shows.
-    await expect(page.getByRole("button", { name: "Add custom Inserts" })).toBeVisible({ timeout: VARIANT_TYPES_SYNC });
+    await expect(page.getByRole("button", { name: "Add custom Inserts" })).toBeVisible();
     await selectOrCreate(page, "Inserts", "Base", { via: "list" });
     await expect(page.getByRole("button", { name: "Open add card form" })).toBeVisible();
     await addCardViaForm(page, { cardNumber: "315", playerName: "Dwayne Bowe" });

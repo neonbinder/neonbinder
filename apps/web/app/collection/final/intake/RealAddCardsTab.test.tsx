@@ -1020,6 +1020,16 @@ describe("NEO-446: setting a loose photo aside", () => {
     expect(screen.getByRole("button", { name: "Set aside image.jpg, photo 2" })).toBeTruthy();
   });
 
+  it("a photo set aside shows its whole name, wrapping, above its own Bring back", () => {
+    openWith([{ ...photo(0), originalName: "01-bowe-front.jpg", setAside: true }]);
+    const name = screen.getByText("01-bowe-front.jpg");
+    expect(name.className).toContain("wrap-anywhere");
+    expect(name.className).not.toContain("truncate");
+    const back = screen.getByRole("button", { name: "Bring back 01-bowe-front.jpg" });
+    expect(name.compareDocumentPosition(back) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(back.parentElement?.className).toContain("flex-col");
+  });
+
   it("a photo set aside leaves Pairing, can't be picked to pair, and is listed with Bring back", async () => {
     const { runId } = openWith([photo(0), { ...tooBig(1), setAside: true }]);
     expect(stat("Pairing")).toBe("1");

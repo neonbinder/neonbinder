@@ -1213,11 +1213,11 @@ function RunWorkspace({ run, jobOpen }: { run: RunSummary; jobOpen: boolean }) {
               <h3 className="m-0 mb-1 text-xs font-semibold text-ink-2">Set aside</h3>
               <ul className="m-0 list-none space-y-1 p-0">
                 {lanes.setAside.map((row) => (
-                  <li key={row.pairId} className="flex items-center justify-between gap-2 text-xs text-ink-3">
-                    <span className="truncate">{tileLabel(row, readFor(row))}</span>
+                  <li key={row.pairId} className="flex flex-col items-start text-xs text-ink-3">
+                    <span className="max-w-full wrap-anywhere">{tileLabel(row, readFor(row))}</span>
                     <button
                       type="button"
-                      className={`-my-1.5 shrink-0 py-1.5 text-neon-blue-text underline ${RING}`}
+                      className={`py-1.5 text-neon-blue-text underline ${RING}`}
                       onClick={() => {
                         actions.aside(row, false);
                         focusTile(null, false);
@@ -1229,13 +1229,13 @@ function RunWorkspace({ run, jobOpen }: { run: RunSummary; jobOpen: boolean }) {
                   </li>
                 ))}
                 {lanes.looseAside.map((image) => (
-                  <li key={image.entryIndex} className="flex items-center justify-between gap-2 text-xs text-ink-3">
-                    <span className="truncate" title={image.originalName}>
+                  <li key={image.entryIndex} className="flex flex-col items-start text-xs text-ink-3">
+                    <span className="max-w-full wrap-anywhere" title={image.originalName}>
                       {labels.get(image.entryIndex) ?? image.originalName}
                     </span>
                     <button
                       type="button"
-                      className={`-my-1.5 shrink-0 py-1.5 text-neon-blue-text underline ${RING}`}
+                      className={`py-1.5 text-neon-blue-text underline ${RING}`}
                       onClick={() => setPhotoAside(image, false)}
                       aria-label={`Bring back ${labels.get(image.entryIndex) ?? image.originalName}`}
                     >
