@@ -12,7 +12,9 @@ import * as Sentry from "@sentry/react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 
-const LANDING = "https://app.example/profile/ebay?code=OAUTHSECRET&state=NONCESECRET";
+// Not eBay's return path: that comes off the address before Sentry starts
+// (`ebay-return-no-leak.test.tsx`). These hold the second layer to account.
+const LANDING = "https://app.example/elsewhere?code=OAUTHSECRET&state=NONCESECRET";
 const SIGNED = "https://storage.googleapis.com/bucket/obj.jpg?X-Goog-Signature=SIGSECRET";
 
 const WRITE_TOKEN = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -195,9 +197,10 @@ it("no upload capability survives a real fetch, on the transaction or on the err
   expect(selfReports()).toEqual([]);
 });
 
-// Session Replay's real recorder (rrweb) emits no snapshots or mutations under
-// happy-dom, so there is no rrweb-produced frame to follow. What does run for
-// real is Replay's own event path: its fetch capture builds a performanceSpan
+// Session Replay's real recorder (rrweb) does not start in this file: it needs
+// polyfills that `replay-blocks-bearer-links.test.tsx` supplies and this leaves
+// out, so there is no rrweb-produced frame to follow. What does run for real is
+// Replay's own event path: its fetch capture builds a performanceSpan
 // frame, and `throttledAddEvent` is the entry every frame goes through before
 // `beforeAddRecordingEvent`. These tests read what that path hands the event
 // buffer, which is what would be compressed and uploaded.
@@ -244,6 +247,27 @@ it("a custom frame handed to Replay is redacted before it is buffered", async ()
   buffered.mockRestore();
 });
 
+// The re-audit's three: an escape right before a host or a parameter, and a
+// storage read URL. A pattern that broke the JSON would lose the whole event.
+const ESCAPE_CASES = {
+  "bare R2 host after a newline": ["upload refused\nACCTSECRET.r2.cloudflarestorage.com", "ACCTSECRET"],
+  "token after a newline": ["bad query\ntoken=TOKSECRET", "TOKSECRET"],
+  "AWS signature after a newline": ["bad query\nX-Amz-Signature=AMZSECRET", "AMZSECRET"],
+  "Google signature after a literal \\u0026": ["https://x.example/o?a=1\\u0026X-Goog-Signature=GOOGSECRET", "GOOGSECRET"],
+  "Convex storage read URL": ["img failed https://dep.convex.cloud/api/storage/STORAGESECRET", "STORAGESECRET"],
+} as const;
+
+it.each(Object.entries(ESCAPE_CASES))("%s: the error still sends, redacted", async (name, [message, secret]) => {
+  const marker = `neo-434-escape-${name.replace(/\W/g, "-")}`;
+  Sentry.captureException(new Error(`${marker} ${message}`));
+  await Sentry.flush(2000);
+
+  const items = sentOfType("event").filter(([, event]) => JSON.stringify(event).includes(marker));
+  expect(items).toHaveLength(1);
+  expect(JSON.stringify(items[0][1])).not.toContain(secret);
+  expect(selfReports()).toEqual([]);
+});
+
 it("the hook is not applied to a non-custom frame (pins the comment in src/sentry.ts)", async () => {
   const replay = replayInternals();
   const buffered = vi.spyOn(replay.eventBuffer, "addEvent");
@@ -265,7 +289,7 @@ it.each([
   flushSync(() => root.render(tag === "a" ? <a href="#x">Go</a> : <button type="button">Go</button>));
 
   // Replay's detector ignores a click unless its breadcrumb has an rrweb node
-  // id, and rrweb assigns none under happy-dom. So hand the detector the click
+  // id, and rrweb is not recording in this file. So hand the detector the click
   // Replay would: the node it keeps, whose React fiber loops back to it.
   const { clickDetector } = (Sentry.getClient()!.getIntegrationByName("Replay") as unknown as {
     _replay: {

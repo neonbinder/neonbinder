@@ -175,8 +175,10 @@ function clerkTestingApiPlugin(): Plugin {
 }
 
 // NEO-422: eBay's OAuth return pages are standalone static HTML in
-// public/oauth/ebay/, served OUTSIDE the app shell so eBay's code and state
-// never reach PostHog, Sentry or Clerk. Their extensionless paths are rewritten
+// public/oauth/ebay/, served OUTSIDE the app shell so nothing third party runs
+// while eBay's code and state are on that page's address. The app they forward
+// to takes them off its own address first (src/ebay-return-address.ts).
+// Their extensionless paths are rewritten
 // to the files here for `vite dev` and `vite preview`, as vercel.json's
 // rewrites do on Vercel; without it Vite's SPA fallback serves index.html and
 // boots the whole app on that URL. Keep this map and vercel.json in step.

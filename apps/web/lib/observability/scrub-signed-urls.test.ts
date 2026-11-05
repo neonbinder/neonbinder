@@ -132,4 +132,93 @@ describe("scrubSignedStorageUrls", () => {
     );
     expect(result.second).toBe("https://storage.googleapis.com/other-bucket/other/path.zip?<redacted>");
   });
+
+  describe("JSON escapes (NEO-434 re-audit)", () => {
+    test("a bare R2 host right after an escape is redacted and the JSON still parses", () => {
+      expect(scrubSignedStorageUrls({ m: "upload refused\nacct123.r2.cloudflarestorage.com" })).toEqual({
+        m: "upload refused\n<redacted>.r2.cloudflarestorage.com",
+      });
+      expect(scrubSignedStorageUrls({ m: "\u0001acct123.r2.cloudflarestorage.com" })).toEqual({
+        m: "\u0001<redacted>.r2.cloudflarestorage.com",
+      });
+    });
+
+    test.each(["\n", "\t", "\r", "\b", "\f", "\u0001", "\\u0026", "\\n", "%26", "%3F"])(
+      "a parameter right after %j is redacted, plain and percent-encoded",
+      (before) => {
+        const plain = JSON.stringify(
+          scrubSignedStorageUrls({ m: `bad${before}token=SECRET1${before}X-Amz-Signature=SECRET2${before}x-goog-signature=SECRET3` }),
+        );
+        for (const secret of ["SECRET1", "SECRET2", "SECRET3"]) expect(plain).not.toContain(secret);
+        const encoded = JSON.stringify(scrubSignedStorageUrls({ m: `bad${before}token%3DSECRET4` }));
+        expect(encoded).not.toContain("SECRET4");
+      },
+    );
+
+    test("look-alike names are still left alone", () => {
+      const value = { m: "csrf_token=keep my-token=keep xtoken=keep" };
+      expect(scrubSignedStorageUrls(value)).toBe(value);
+    });
+
+    test("no mix of escapes and shapes breaks the JSON or changes the shape", () => {
+      const pieces = [
+        "\n", "\t", "\r", "\b", "\f", "\u0001", "\u001f", "\ud83d", '"', "\\", "\\u0026", "'", " ", "&", "?", "#", "%", "%2F", "%26", "%3F", "%3D",
+        "a", "n", "u", "0", "acct.", "token=", "token%3D", "X-Goog-Signature=", "x-amz-signature%3D", "VAL",
+        "r2.cloudflarestorage.com", ".eu.r2.cloudflarestorage.com", "https://storage.googleapis.com/b/o?", "copy-photo/", "0123456789abcdef0123456789abcdef",
+        "/api/storage/", "%2Fapi%2Fstorage%2F", "upload",
+      ];
+      // Every ordered triple, so a failure names the string that reproduces it.
+      for (const first of pieces) {
+        for (const second of pieces) {
+          for (const third of pieces) {
+            const m = first + second + third;
+            let scrubbed: { m: unknown; n: number } | undefined;
+            try {
+              scrubbed = scrubSignedStorageUrls({ m, n: 1 });
+            } catch {
+              expect.unreachable(`broke the JSON: ${JSON.stringify(m)}`);
+            }
+            if (typeof scrubbed?.m !== "string" || scrubbed.n !== 1) expect.unreachable(`changed the shape: ${JSON.stringify(m)}`);
+          }
+        }
+      }
+    });
+  });
+
+  describe("Convex storage read URLs (NEO-434 re-audit)", () => {
+    const ID = "kg2abc00storageid99";
+
+    test("the id goes, plain and percent-encoded, wherever it sits", () => {
+      expect(scrubSignedStorageUrls({ u: `https://dep.convex.cloud/api/storage/${ID}` })).toEqual({
+        u: "https://dep.convex.cloud/api/storage/<redacted>",
+      });
+      for (const text of [
+        `<img src="https://dep.convex.cloud/api/storage/${ID}">`,
+        `GET /api/storage/${ID}?x=1 failed`,
+        `next=https%3A%2F%2Fdep.convex.cloud%2Fapi%2Fstorage%2F${ID}`,
+        `line\n/api/storage/${ID}`,
+      ]) {
+        expect(JSON.stringify(scrubSignedStorageUrls({ text }))).not.toContain(ID);
+      }
+    });
+
+    test("the upload endpoint keeps its name and loses its token", () => {
+      expect(scrubSignedStorageUrls({ u: "https://dep.convex.site/api/storage/upload?token=T1" })).toEqual({
+        u: "https://dep.convex.site/api/storage/upload?token=<redacted>",
+      });
+      const value = { m: "POST /api/storage/upload failed" };
+      expect(scrubSignedStorageUrls(value)).toBe(value);
+    });
+
+    test("an id that starts with the word upload still goes", () => {
+      expect(scrubSignedStorageUrls({ u: "/api/storage/upload9a" })).toEqual({ u: "/api/storage/<redacted>" });
+    });
+  });
+
+  test("a large payload with no secret stays cheap, including a run of host-like labels", () => {
+    const value = { m: "abc.".repeat(250_000), o: "https://x/".repeat(50_000) };
+    const start = performance.now();
+    expect(scrubSignedStorageUrls(value)).toBe(value);
+    expect(performance.now() - start).toBeLessThan(2000);
+  });
 });

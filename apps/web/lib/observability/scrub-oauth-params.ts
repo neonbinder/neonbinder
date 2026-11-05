@@ -2,24 +2,23 @@
  * NEO-415 — redacts the OAuth return's `code` and `state` query parameters
  * from anything headed to Sentry or PostHog.
  *
- * eBay sends the collector back to `/profile/ebay?code=…&state=…`. That
- * landing swaps itself at once for Profile → Credentials with eBay picked
- * (`/profile/credentials?platform=ebay`), handing the code over in location
- * state, never a URL, and the panel spends it and clears it. But the first
- * pageview, the pageload transaction, the forward's navigation breadcrumb, an
- * error in between and a session recording all see the landing address as
- * it arrived. The code is single use and short lived, and the
- * state is a one-time nonce, but neither belongs in a third party's store.
+ * eBay sends the collector back to `/profile/ebay?code=…&state=…`. Since
+ * NEO-434 `src/ebay-return-address.ts` takes those off the address before any
+ * SDK starts, so this is the second layer, for wherever else they surface. A
+ * navigation-timing entry keeps the address as it arrived, and Replay and
+ * PostHog's recorder both copy those. The code is single use and short lived,
+ * and the state is a one-time nonce, but neither belongs in a third party's
+ * store.
  *
  * Same shape as `scrubSignedStorageUrls`: a stringify → replace → parse pass
  * over the whole payload, because the URL turns up under different keys in
  * every pipeline (`$current_url`, `request.url`, breadcrumb `to`/`from`). This
- * covers only what a hook is handed. Sentry Replay gives `beforeAddRecordingEvent`
- * rrweb custom events alone, so its Meta frame's `href` and the `replay_event`'s
- * `urls` still carry the landing address. It is global, not keyed to the eBay route: any `code=` or
- * `state=` query value anywhere is redacted, plain or percent-encoded (as in
- * a nested return URL). The parameter name stays so the shape of the URL is
- * still readable.
+ * covers only what a hook is handed: Sentry Replay gives `beforeAddRecordingEvent`
+ * rrweb custom events alone, and its Meta frame and `replay_event` get no hook,
+ * which is why the address step exists. It is global, not keyed to the eBay
+ * route: any `code=` or `state=` query value anywhere is redacted, plain or
+ * percent-encoded (as in a nested return URL). The parameter name stays so the
+ * shape of the URL is still readable.
  *
  * Like that scrub it throws on a payload JSON cannot represent, so whole Sentry
  * events go through `scrubEvent` in `src/sentry.ts` (NEO-434).

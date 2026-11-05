@@ -1,3 +1,5 @@
+// First, so no SDK ever sees eBay's code on the address (NEO-434).
+import "./ebay-return-address";
 import * as Sentry from "@sentry/react";
 import { scrubUrlSecrets as scrub } from "../lib/observability/scrub-url-secrets";
 
@@ -43,7 +45,8 @@ if (import.meta.env.VITE_CLERK_TESTING_ENABLED !== "true") {
         // Replay calls this for rrweb custom events only: its breadcrumb and
         // performance-span frames, which is where request URLs appear. Page
         // snapshots, mutations and the Meta frame never reach it, and neither
-        // does the replay_event envelope item.
+        // does the replay_event envelope item: eBay's return stays out of those
+        // because it is off the address before this runs (ebay-return-address).
         beforeAddRecordingEvent: (event) => scrub(event),
         // Explicit, not inherited: these are the library defaults, but they
         // are load-bearing for /profile/api-keys — the reveal-once API-key
@@ -53,6 +56,10 @@ if (import.meta.env.VITE_CLERK_TESTING_ENABLED !== "true") {
         // block-selector covering the API-keys surface (NEO-172 audit).
         maskAllText: true,
         maskAllInputs: true,
+        // These links' hrefs are bearers for private photos, and rrweb records an
+        // href even under masking, as raw DOM no hook here sees. `maskAttributes`
+        // skips href, so only a block works. Images are blocked by default.
+        block: ['a[href*="/copy-photo/"]', 'a[href*="/api/storage/"]'],
       }),
     ],
 
@@ -67,9 +74,9 @@ if (import.meta.env.VITE_CLERK_TESTING_ENABLED !== "true") {
     // browserTracingIntegration's auto-instrumented spans record the request
     // URL on `http.url` — same signed-capability leak, different pipeline.
     beforeSendTransaction: (event) => scrubEvent(event),
-    // NEO-415: an error's `request.url` (and its breadcrumbs) can carry the
-    // eBay return's one-time `code` and `state`; the pageload transaction
-    // above can too.
+    // NEO-415: the eBay return's one-time `code` and `state` are off the address
+    // before Sentry starts (NEO-434). This pass is the second layer, for any
+    // other way they reach an event, such as Replay's navigation-timing span.
     beforeSend: (event) => scrubEvent(event),
   });
 }
