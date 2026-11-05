@@ -107,6 +107,7 @@ import type * as lib_easypostWebhookSignature from "../lib/easypostWebhookSignat
 import type * as lib_ebayEnv from "../lib/ebayEnv.js";
 import type * as lib_ebayListing from "../lib/ebayListing.js";
 import type * as lib_entityNearMatch from "../lib/entityNearMatch.js";
+import type * as lib_extractRejections from "../lib/extractRejections.js";
 import type * as lib_googleIdTokenVerify from "../lib/googleIdTokenVerify.js";
 import type * as lib_intakeMatch from "../lib/intakeMatch.js";
 import type * as lib_listingCopyOrder from "../lib/listingCopyOrder.js";
@@ -296,6 +297,7 @@ declare const fullApi: ApiFromModules<{
   "lib/ebayEnv": typeof lib_ebayEnv;
   "lib/ebayListing": typeof lib_ebayListing;
   "lib/entityNearMatch": typeof lib_entityNearMatch;
+  "lib/extractRejections": typeof lib_extractRejections;
   "lib/googleIdTokenVerify": typeof lib_googleIdTokenVerify;
   "lib/intakeMatch": typeof lib_intakeMatch;
   "lib/listingCopyOrder": typeof lib_listingCopyOrder;
