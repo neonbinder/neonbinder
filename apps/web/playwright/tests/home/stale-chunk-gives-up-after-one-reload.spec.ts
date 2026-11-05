@@ -23,7 +23,11 @@ test(
     const gone = (await injected).url();
 
     // The give-up state, reached only by the reloaded page failing again.
-    await expect(page.getByText(CRASH_MESSAGE)).toBeVisible();
+    // The message is announced as an alert inside the page's own main landmark,
+    // and it holds focus, because whatever had focus went with the crashed app.
+    const alert = page.getByRole("main").getByRole("alert").filter({ hasText: CRASH_MESSAGE });
+    await expect(alert).toBeVisible();
+    await expect(alert).toBeFocused();
     await expect(page.getByRole("heading", { name: "About Neon Binder" })).toHaveCount(0);
     await expect(page).toHaveURL(/\/about$/);
     await expectAccessible(page, { label: "Error message after a chunk that stays gone" });
