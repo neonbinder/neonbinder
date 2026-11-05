@@ -44,6 +44,14 @@ const expectNoCapability = (wire: string) => {
   for (const secret of CAPABILITY_SECRETS) expect(wire).not.toContain(secret);
 };
 
+/** NEO-434: capabilities requested through the SDK's own fetch instrumentation. */
+const FETCH_TOKEN = "cccccccccccccccccccccccccccccccc";
+const FETCHED = {
+  r2Put: `https://fetchacctsecret.r2.cloudflarestorage.com/photos/copy-photos/${FETCH_TOKEN}/image.jpg?X-Amz-Credential=FETCHCREDSECRET&X-Amz-Signature=FETCHSIGSECRET`,
+  convexUpload: "https://fetch.convex.cloud/api/storage/upload?token=FETCHTOKENSECRET",
+};
+const FETCH_SECRETS = ["fetchacctsecret", FETCH_TOKEN, "FETCHCREDSECRET", "FETCHSIGSECRET", "FETCHTOKENSECRET"];
+
 type EnvelopeItem = [{ type: string }, Record<string, unknown>];
 const send = vi.fn(async (_envelope: [unknown, EnvelopeItem[]]) => ({}));
 
@@ -70,6 +78,10 @@ beforeAll(async () => {
   // The SDK probes a blank iframe for a native fetch; happy-dom logs a refusal otherwise.
   happyDOM.settings.enableIframePageLoading = true;
 
+  // Before init: the SDK wraps whatever `fetch` it finds, so its own
+  // instrumentation (breadcrumbs and http.client spans) sees these requests.
+  vi.stubGlobal("fetch", vi.fn(async () => new Response("", { status: 200 })));
+
   await import("./sentry");
 
   vi.spyOn(Sentry.getClient()!.getTransport()!, "send").mockImplementation(send as never);
@@ -81,6 +93,7 @@ afterAll(async () => {
   await Sentry.close();
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
+  vi.unstubAllGlobals();
   if (processTag) Object.assign(process, { [Symbol.toStringTag]: processTag.value });
 });
 
@@ -156,6 +169,91 @@ it("no upload capability survives on an error or its breadcrumbs, and the quoted
   expect(wire).toContain('"category":"fetch"');
   expect(wire).toContain("r2.cloudflarestorage.com");
   expect(selfReports()).toEqual([]);
+});
+
+it("no upload capability survives a real fetch, on the transaction or on the error's breadcrumbs", async () => {
+  await Sentry.startSpan({ name: "neo-434-real-fetch", forceTransaction: true }, async () => {
+    for (const url of Object.values(FETCHED)) await fetch(url, { method: "PUT" });
+  });
+  Sentry.captureException(new Error("neo-434-real-fetch-error"));
+  await Sentry.flush(2000);
+
+  const [transaction] = sentOfType("transaction").filter(([, event]) => event.transaction === "neo-434-real-fetch");
+  expect(transaction).toBeDefined();
+  const txWire = JSON.stringify(transaction[1]);
+  // The instrumentation recorded the requests (so the assertions below are not vacuous)...
+  expect(txWire).toContain("r2.cloudflarestorage.com");
+  expect(txWire).toContain("fetch.convex.cloud");
+  for (const secret of FETCH_SECRETS) expect(txWire).not.toContain(secret);
+
+  const errors = sentOfType("event").filter(([, event]) => JSON.stringify(event).includes("neo-434-real-fetch-error"));
+  expect(errors).toHaveLength(1);
+  const errWire = JSON.stringify(errors[0][1]);
+  expect(errWire).toContain('"category":"fetch"');
+  expect(errWire).toContain("r2.cloudflarestorage.com");
+  for (const secret of FETCH_SECRETS) expect(errWire).not.toContain(secret);
+  expect(selfReports()).toEqual([]);
+});
+
+// Session Replay's real recorder (rrweb) emits no snapshots or mutations under
+// happy-dom, so there is no rrweb-produced frame to follow. What does run for
+// real is Replay's own event path: its fetch capture builds a performanceSpan
+// frame, and `throttledAddEvent` is the entry every frame goes through before
+// `beforeAddRecordingEvent`. These tests read what that path hands the event
+// buffer, which is what would be compressed and uploaded.
+const replayInternals = () =>
+  (Sentry.getClient()!.getIntegrationByName("Replay") as unknown as {
+    _replay: {
+      eventBuffer: { addEvent(event: unknown): Promise<unknown> };
+      throttledAddEvent(event: unknown): Promise<unknown>;
+    };
+  })._replay;
+
+it("Replay's own fetch capture reaches the event buffer redacted (end to end; the breadcrumb scrub already covers it, the hook is the backstop)", async () => {
+  const replay = replayInternals();
+  const buffered = vi.spyOn(replay.eventBuffer, "addEvent");
+
+  await fetch(FETCHED.convexUpload, { method: "PUT" });
+  await fetch(FETCHED.r2Put, { method: "PUT" });
+  await vi.waitFor(() => {
+    const spans = buffered.mock.calls.filter(([e]) => JSON.stringify(e).includes('"tag":"performanceSpan"'));
+    expect(spans.length).toBeGreaterThanOrEqual(2);
+  });
+
+  const wire = JSON.stringify(buffered.mock.calls.map(([e]) => e));
+  expect(wire).toContain("fetch.convex.cloud/api/storage/upload?token=<redacted>");
+  expect(wire).toContain("r2.cloudflarestorage.com");
+  for (const secret of FETCH_SECRETS) expect(wire).not.toContain(secret);
+  buffered.mockRestore();
+});
+
+it("a custom frame handed to Replay is redacted before it is buffered", async () => {
+  const replay = replayInternals();
+  const buffered = vi.spyOn(replay.eventBuffer, "addEvent");
+
+  await replay.throttledAddEvent({
+    type: 5, // rrweb Custom
+    timestamp: Date.now(),
+    data: { tag: "breadcrumb", payload: { category: "navigation", data: { to: LANDING, signed: SIGNED } } },
+  });
+
+  const wire = JSON.stringify(buffered.mock.calls.map(([e]) => e));
+  expect(wire).toContain("navigation");
+  for (const secret of ["OAUTHSECRET", "NONCESECRET", "SIGSECRET"]) expect(wire).not.toContain(secret);
+  expect(wire).toContain("code=<redacted>");
+  buffered.mockRestore();
+});
+
+it("the hook is not applied to a non-custom frame (pins the comment in src/sentry.ts)", async () => {
+  const replay = replayInternals();
+  const buffered = vi.spyOn(replay.eventBuffer, "addEvent");
+  const meta = { type: 4, timestamp: Date.now(), data: { href: "https://app.example/page?token=NEO434METAMARKER", width: 1, height: 1 } };
+
+  await replay.throttledAddEvent(meta);
+
+  // Reaches the buffer as handed in: Replay never calls the hook for it.
+  expect(buffered.mock.calls.map(([e]) => e)).toEqual([meta]);
+  buffered.mockRestore();
 });
 
 it.each([

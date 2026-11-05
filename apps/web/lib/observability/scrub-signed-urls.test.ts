@@ -43,6 +43,11 @@ describe("scrubSignedStorageUrls", () => {
     expect(scrubSignedStorageUrls(value)).toBe(value);
   });
 
+  test("redacts a token query parameter on any host (NEO-434: the old pass left this one alone)", () => {
+    const result = scrubSignedStorageUrls({ url: "https://example.com/api/thing?token=x" });
+    expect(result).toEqual({ url: "https://example.com/api/thing?token=<redacted>" });
+  });
+
   test("does not touch a JSON key named token", () => {
     const value = { properties: { token: "phc_project_key" } };
     expect(scrubSignedStorageUrls(value)).toBe(value);
