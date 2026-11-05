@@ -34,6 +34,7 @@ import {
   loadPrintHub,
   loadProfilePublic,
 } from "@/src/routes/lazy-routes";
+import { APP_BOUNDARY_OPTIONS } from "@/src/routes/chunk-reload";
 
 // Pages. Only Home (the landing page, and the first paint for most visitors)
 // ships in the entry bundle; every other page is its own chunk, fetched when
@@ -322,7 +323,7 @@ const SentryErrorBoundary = Sentry.withErrorBoundary(
       </BrowserRouter>
     );
   },
-  { fallback: <div>An error occurred. Please refresh the page.</div> },
+  APP_BOUNDARY_OPTIONS,
 );
 
 /**

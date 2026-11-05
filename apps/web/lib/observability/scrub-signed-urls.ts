@@ -19,6 +19,10 @@
  * shape that changes across SDK versions — so matching on the URL text
  * itself, wherever it appears in the payload, is the only approach that
  * doesn't silently stop working on the next `@sentry/react` bump.
+ *
+ * The pass throws on anything JSON cannot represent, such as a circular object.
+ * A Sentry event's `sdkProcessingMetadata` is one, so whole events go through
+ * `scrubEvent` in `src/sentry.ts`, which keeps it out (NEO-434).
  */
 
 const SIGNED_STORAGE_URL_RE = /(https:\/\/storage\.googleapis\.com\/[^\s"'?]*)\?[^\s"'&]*(?:&[^\s"'&]*)*/g;

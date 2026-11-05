@@ -18,6 +18,9 @@
  * `state=` query value anywhere is redacted, plain or percent-encoded (as in
  * a nested return URL). The parameter name stays so the shape of the URL is
  * still readable.
+ *
+ * Like that scrub it throws on a payload JSON cannot represent, so whole Sentry
+ * events go through `scrubEvent` in `src/sentry.ts` (NEO-434).
  */
 
 // `?code=…` / `&state=…`, the value running to the next `&`, `#`, quote,

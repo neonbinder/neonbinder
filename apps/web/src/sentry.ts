@@ -5,6 +5,26 @@ import { scrubOAuthParams } from "../lib/observability/scrub-oauth-params";
 /** Every URL scrub, in one pass per payload (signed storage URLs, then the eBay return's code and state). */
 const scrub = <T>(value: T): T => scrubOAuthParams(scrubSignedStorageUrls(value));
 
+/**
+ * The scrub for a whole event. `sdkProcessingMetadata` holds the SDK's live
+ * scopes, which reach Session Replay's circular objects, so stringifying it
+ * throws; Sentry then drops the event and reports the crash as a new error
+ * that skips these hooks (NEO-434). It stays out of the stringify and goes back
+ * by reference: the SDK reads it after this hook and deletes it before sending.
+ *
+ * Returning null drops an event that still cannot be stringified. It is never
+ * sent unscrubbed, and the drop shows up as a `before_send` client outcome
+ * rather than a new error.
+ */
+function scrubEvent<T extends { sdkProcessingMetadata?: unknown }>(event: T): T | null {
+  const { sdkProcessingMetadata, ...payload } = event;
+  try {
+    return { ...scrub(payload), sdkProcessingMetadata } as T;
+  } catch {
+    return null;
+  }
+}
+
 // Skip Sentry entirely when running under E2E tests, so test sessions never
 // reach Sentry as errors, traces or replays. (It began as a Maestro
 // workaround: Replay's Web Workers and same-origin iframes made Maestro's
@@ -49,10 +69,10 @@ if (import.meta.env.VITE_CLERK_TESTING_ENABLED !== "true") {
     beforeBreadcrumb: (breadcrumb) => scrub(breadcrumb),
     // browserTracingIntegration's auto-instrumented spans record the request
     // URL on `http.url` — same signed-capability leak, different pipeline.
-    beforeSendTransaction: (event) => scrub(event),
+    beforeSendTransaction: (event) => scrubEvent(event),
     // NEO-415: an error's `request.url` (and its breadcrumbs) can carry the
     // eBay return's one-time `code` and `state`; the pageload transaction
     // above can too.
-    beforeSend: (event) => scrub(event),
+    beforeSend: (event) => scrubEvent(event),
   });
 }

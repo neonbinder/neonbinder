@@ -175,3 +175,4 @@
 - [Tap target inside a scrolling list](reference_tap_target_inside_a_scrolling_list.md) — 44px target past the tile makes an overflow-auto lane scroll; extend upward, add `relative`
 - [Playwright click checks first mouse event only](reference_playwright_click_checks_first_mouse_event_only.md) — mid-press reflow: click() succeeds, onClick never runs; line up convex-logs with the click
 - [Click before the passive flush](reference_click_before_passive_flush_via_layout_effect.md) — click from a child useLayoutEffect to test a press beating a pending effect; functional updater fixes only stale closures
+- [Failed dynamic import is cached per document](reference_failed_dynamic_import_is_cached_per_document.md) — Chromium: re-import or lazy retry cannot recover, only a reload; prefetch failures poison the route
