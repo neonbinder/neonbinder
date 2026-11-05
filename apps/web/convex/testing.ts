@@ -22,7 +22,7 @@
 // - Deletes are strictly scoped to the three per-user tables via the by_user
 //   index. No bulk-wipe paths, no cross-user reach.
 
-import { mutation, action, internalMutation } from "./_generated/server";
+import { mutation, action, internalAction, internalMutation } from "./_generated/server";
 import { api, internal } from "./_generated/api";
 import { v } from "convex/values";
 import { getCurrentUserId } from "./auth";
@@ -35,7 +35,9 @@ import type { Id } from "./_generated/dataModel";
 import { dropOwnerPhotos } from "./copyPhotos";
 import { addOne, applyCopyChanges, defaultConditionOf, getOrCreateMain } from "./collection";
 import { ListingGate } from "./listingGate";
-import { intakePhotoFailureValidator } from "./schema";
+import { intakePhotoFailureValidator, listingPlatformValidator } from "./schema";
+import { DRAIN_LEASE_MS } from "./listingDrain";
+import { newToken } from "./listingOutbox";
 
 /**
  * What {@link seedMyTestLabelScans} hands back.
@@ -297,6 +299,82 @@ export const markSiteNeedsReauth = mutation({
       ),
     });
     return { updated: true };
+  },
+});
+
+/** NEO-433: stands in for a drain run the platform killed: a real scheduled function that really fails. */
+export const failLikeAKilledDrain = internalAction({
+  args: {},
+  returns: v.null(),
+  handler: async () => {
+    throw new Error("E2E fixture: a drain run the platform killed");
+  },
+});
+
+/** NEO-433: how long the killed run below reads as running, so an open status page sees it flip. */
+const KILLED_DRAIN_TICK_MS = 3000;
+
+/**
+ * NEO-433 — the state a drain run the platform killed leaves behind, on the
+ * CALLER's own row: the lease held and their newest sync record running, both
+ * under one token and linked to a function that fails, with the real watcher
+ * on it. A kill can't be produced on demand, and the real 100 s grace is far
+ * past any spec's budget, so the watcher runs with no grace.
+ *
+ * Why this is safe as a public mutation: it throws where TESTING_RESET_SECRET
+ * is unset (production), it takes no owner (only the caller's rows), and it
+ * refuses while a real run holds the lease, so it never takes one from a run.
+ * It touches no outbox row and sends nothing itself. A kick landing on the held
+ * lease is honoured when the lease clears: a real drain, on the caller's row only.
+ */
+export const seedMyTestKilledDrain = mutation({
+  args: { platform: listingPlatformValidator },
+  returns: v.null(),
+  handler: async (ctx, args): Promise<null> => {
+    if (!process.env.TESTING_RESET_SECRET) {
+      throw new Error("The killed-drain fixture is not enabled on this deployment");
+    }
+    const ownerId = await getCurrentUserId(ctx);
+    if (!ownerId) throw new Error("Not authenticated");
+    const state = await ctx.db
+      .query("marketplaceListingStates")
+      .withIndex("by_owner_platform", (q) => q.eq("ownerId", ownerId).eq("platform", args.platform))
+      .unique();
+    if (!state) throw new Error("The killed-drain fixture needs a listing platform");
+    const now = Date.now();
+    if (state.drainLeaseToken !== undefined && (state.drainLeaseExpiresAt ?? 0) > now) {
+      throw new Error("A drain is running; the killed-drain fixture never takes its lease");
+    }
+    const record = await ctx.db
+      .query("marketplaceListingSyncs")
+      .withIndex("by_owner_platform_run", (q) => q.eq("ownerId", ownerId).eq("platform", args.platform))
+      .order("desc")
+      .first();
+    if (!record) throw new Error("The killed-drain fixture needs a set that has synced");
+    const leaseToken = newToken();
+    const fnId = await ctx.scheduler.runAfter(0, internal.testing.failLikeAKilledDrain, {});
+    await ctx.db.patch(state._id, {
+      drainLeaseToken: leaseToken,
+      drainLeaseExpiresAt: now + DRAIN_LEASE_MS,
+      lastUpdated: now,
+    });
+    await ctx.db.patch(record._id, {
+      status: "running",
+      leaseToken,
+      leaseExpiresAt: now + DRAIN_LEASE_MS,
+      lastRunAt: now,
+      progress: { runStartedAt: now, steps: [{ kind: args.platform === "ebay" ? "items" : "send", status: "working" }] },
+      lastUpdated: now,
+    });
+    await ctx.scheduler.runAfter(KILLED_DRAIN_TICK_MS, internal.listingDrain.watchDrainRun, {
+      ownerId,
+      platform: args.platform,
+      leaseToken,
+      fnId,
+      graceMs: 0,
+      tickMs: KILLED_DRAIN_TICK_MS,
+    });
+    return null;
   },
 });
 

@@ -72,7 +72,11 @@
 //      section's set with 2 listed and 1 skipped: the third card is held back,
 //      named, with eBay's no-photo reason. This is the proof the scanner's
 //      photos reach eBay: the first card lists on the photos the save put on it.
-//   6. They turn the box's "Listed on marketplaces" off, Sync again, and the
+//   6. They turn the box's "Listed on marketplaces" off. NEO-433: Sync status,
+//      left open, shows a run the platform killed read as running, then flip by
+//      itself to the set's last result with the step it was on failed (a seed
+//      hop in a second tab makes the kill; no spec can make the platform do it).
+//      They Sync again, and the
 //      set reads 0 listed, with the two cards taken to 0 and nothing held back.
 //      The Sales tab names eBay (its orders link and its empty state; Back
 //      returns).
@@ -314,7 +318,7 @@ test.afterEach(async ({ context }, testInfo) => {
 test(
   "Inventory: connecting eBay and finishing its setup lists a box's 1988 Topps Base cards on the eBay sandbox, and an in-person box takes them down",
   { tag: ["@collection", "@marketplace-seller"] },
-  async ({ page, signIn, env, isMobile }) => {
+  async ({ page, context, signIn, env, isMobile }) => {
     // The hook's record of how far this run got starts empty.
     written.connected = false;
     written.disconnected = false;
@@ -891,6 +895,25 @@ test(
     await listed.uncheck();
     await expect(said(`${boxName} is in-person only now.`)).toBeVisible();
     await expect(listed).not.toBeChecked();
+
+    // --- 5b. NEO-433: a run the platform killed lets go by itself ---------------------------
+    // No spec can make the platform kill a run, so a second tab's seed hop makes
+    // the state one leaves (/testing/killed-drain: a held lease and a running
+    // record, linked to a scheduled function that really fails, with the real
+    // watcher on it and no grace). This tab sits on Sync status the whole time:
+    // no reload, the row reads as running, then flips by itself with the step
+    // the run was on failed. The press below is the proof the run let go: it
+    // takes the two cards down for real.
+    await tabs.getByRole("link", { name: "Sync status", exact: true }).click();
+    await expect(page).toHaveURL(/[?&]tab=sync/);
+    const killed = syncRun(platform, SET_LABEL, EBAY);
+    const seedTab = await context.newPage();
+    await seedTab.goto(`/testing/killed-drain?platform=ebay&redirect=${encodeURIComponent("/inventory?tab=sync")}`);
+    await expect(killed.running).toBeVisible({ timeout: LAUNCH_GATE });
+    await expect(killed.last.getByRole("listitem", { name: "List the cards, failed", exact: true })).toBeVisible();
+    await expect(killed.running).toHaveCount(0);
+    await expectAccessible(page, { label: "Inventory Sync status, a run the platform killed, its step failed" });
+    await seedTab.close();
 
     await tabs.getByRole("link", { name: "Checklists", exact: true }).click();
     await expect(page).toHaveURL(/[?&]tab=checklists/);

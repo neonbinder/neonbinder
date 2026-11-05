@@ -317,7 +317,7 @@ describe("the drain kick (kickOwnerDrains: Sync, the end of a saved sign-in's wa
     await queueOne(s, THEM.subject);
     await kick(s);
     const scheduled = await drains(s);
-    expect(scheduled.map((d) => d.args[0])).toEqual([{ ownerId: ME.subject, platform: "bsc" }]);
+    expect(scheduled.map((d) => d.args[0])).toEqual([{ ownerId: ME.subject, platform: "bsc", kickToken: expect.any(String) }]);
     const mine = (await states(s)).find((r) => r.ownerId === ME.subject);
     expect(mine?.drainScheduledAt).toBeTypeOf("number");
     await kick(s);
@@ -525,7 +525,7 @@ describe("a saved sign-in is listing (Revision 5)", () => {
     expect(queued.map((r) => r.cardId).sort()).toEqual([s.fx.gooden1, s.fx.gold1, s.fx.strawberry2].sort());
     expect(queued.find((r) => r.cardId === s.fx.gold1)?.variantId).toBe(s.fx.goldId);
     // The end of the walk ran one drain: the owner's first sync.
-    expect((await drains(s)).map((d) => d.args[0])).toEqual([{ ownerId: ME.subject, platform: "bsc" }]);
+    expect((await drains(s)).map((d) => d.args[0])).toEqual([{ ownerId: ME.subject, platform: "bsc", kickToken: expect.any(String) }]);
     expect((await s.me.query(api.listingSync.listingSettings, {})).bsc).toMatchObject({
       connected: true,
       listing: true,
@@ -1202,7 +1202,7 @@ describe("syncVariant", () => {
     expect(after?.resyncRequestedAt).toBeGreaterThanOrEqual(before);
     expect(after?.lastSuccessAt).toBe(500);
     expect(after?.conditionsPushed).toEqual(["near_mint"]);
-    expect((await drains(s)).map((d) => d.args[0])).toEqual([{ ownerId: ME.subject, platform: "bsc" }]);
+    expect((await drains(s)).map((d) => d.args[0])).toEqual([{ ownerId: ME.subject, platform: "bsc", kickToken: expect.any(String) }]);
   });
 
   test("a card in an in-person box is queued too: its run sets the marketplace to 0 for it", async () => {

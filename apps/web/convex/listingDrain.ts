@@ -47,7 +47,15 @@ import type { ActionCtx, MutationCtx, QueryCtx } from "./_generated/server";
 import { internalAction, internalMutation, internalQuery } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { listingPlatformValidator, listingProblemReasonValidator, listingSyncStepValidator } from "./schema";
-import { listingCredentialOf, listsOnMarketplaces, pushesCounts, sellerAccountHolder } from "./listingOutbox";
+import {
+  kickListingDrain,
+  listingCredentialOf,
+  listsOnMarketplaces,
+  newToken,
+  pushesCounts,
+  scheduleLinkedDrain,
+  sellerAccountHolder,
+} from "./listingOutbox";
 import { ebayConfigured } from "./lib/ebayEnv";
 import { ebaySetupMissing } from "./lib/ebayListing";
 import { drainEbayOwnerImpl } from "./listingDrainEbay";
@@ -99,6 +107,17 @@ export const DRAIN_BUDGET_MS = 4 * 60 * 1000;
 export const DRAIN_LEASE_MS = 12 * 60 * 1000;
 /** A variant's lease on its sync record (the same reasoning). */
 export const VARIANT_LEASE_MS = 12 * 60 * 1000;
+/** NEO-433: how often `watchDrainRun` reads the platform's record of a held run. */
+export const DRAIN_WATCH_TICK_MS = 30 * 1000;
+/**
+ * NEO-433: how long a dead run's lease stands. A call the run had in flight can
+ * still land after the run is gone, and a second writer beside it can create
+ * duplicate seller rows, so the next run waits out the longest single call: 90 s
+ * (`BSC_SELLER_TIMEOUTS_MS.sheet`/`.put`, `EBAY_TIMEOUTS_MS.bulk`) plus 10 s.
+ */
+export const DRAIN_DEATH_GRACE_MS = 100 * 1000;
+/** Newest sync records searched for a dead run's running one (it holds the owner's latest `lastRunAt`). */
+const DEAD_RUN_RECORD_SCAN = 20;
 /** Next run when this one ran out of budget, or a kick landed while it ran. */
 export const DRAIN_CONTINUE_MS = 1000;
 /** Outbox rows one variant pass snapshots; more wait for the next run. */
@@ -119,11 +138,7 @@ type StoredReason = typeof listingProblemReasonValidator.type;
 
 // ── Owner lease ────────────────────────────────────────────────────────────
 
-export function newToken(): string {
-  const bytes = new Uint8Array(16);
-  crypto.getRandomValues(bytes);
-  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
-}
+export { newToken };
 
 const fullVariantIdsValidator = v.optional(v.array(v.id("selectorOptions")));
 
@@ -186,7 +201,10 @@ async function markSetupIncomplete(ctx: MutationCtx, ownerId: string, now: numbe
  *     written (the hourly order poll retries the sign-in; a drain never does);
  *   - another run's live lease: `busy`, and that run is asked to run once
  *     more on release (`drainRequested`).
- * A claim clears `drainScheduledAt` and `drainRequested`.
+ * A claim clears `drainScheduledAt` and `drainRequested`. NEO-433: it also
+ * spends the kick's link. The run holding the kick's token is the run the
+ * function id names, so the watcher starts on that id; any other run (a stale
+ * kick, a retry) has no signal and simply gets the 12-minute lease.
  */
 export const claimDrain = internalMutation({
   args: {
@@ -194,6 +212,7 @@ export const claimDrain = internalMutation({
     platform: listingPlatformValidator,
     leaseToken: v.string(),
     fullVariantIds: fullVariantIdsValidator,
+    kickToken: v.optional(v.string()),
   },
   returns: v.union(
     v.object({ claimed: v.literal(true) }),
@@ -282,8 +301,19 @@ export const claimDrain = internalMutation({
       drainRequested: undefined,
       drainLeaseToken: args.leaseToken,
       drainLeaseExpiresAt: now + DRAIN_LEASE_MS,
+      drainRunDeadAt: undefined,
+      drainKickToken: undefined,
+      drainKickFnId: undefined,
       lastUpdated: now,
     });
+    if (args.kickToken !== undefined && args.kickToken === state.drainKickToken && state.drainKickFnId !== undefined) {
+      await ctx.scheduler.runAfter(DRAIN_WATCH_TICK_MS, internal.listingDrain.watchDrainRun, {
+        ownerId: args.ownerId,
+        platform: args.platform,
+        leaseToken: args.leaseToken,
+        fnId: state.drainKickFnId,
+      });
+    }
     return { claimed: true as const };
   },
 });
@@ -325,6 +355,7 @@ export const releaseDrain = internalMutation({
       drainLeaseToken: undefined,
       drainLeaseExpiresAt: undefined,
       drainRequested: undefined,
+      drainRunDeadAt: undefined,
       lastDrainAt: now,
       lastUpdated: now,
     };
@@ -337,17 +368,119 @@ export const releaseDrain = internalMutation({
       state.drainScheduledAt === undefined
     ) {
       scheduledInMs = DRAIN_CONTINUE_MS;
-      await ctx.scheduler.runAfter(scheduledInMs, internal.listingDrain.drainOwner, {
+      const link = await scheduleLinkedDrain(ctx, {
         ownerId: args.ownerId,
         platform: args.platform,
-        ...(leftover.length > 0 ? { fullVariantIds: leftover } : {}),
+        delayMs: scheduledInMs,
+        fullVariantIds: leftover,
       });
+      Object.assign(patch, link);
       patch.drainScheduledAt = now;
     }
     await ctx.db.patch(state._id, patch);
     return { released: true, scheduledInMs };
   },
 });
+
+/**
+ * NEO-433 — a run the platform killed releases nothing. `watchDrainRun` reads
+ * the platform's own record of the function that claimed the lease, every
+ * `DRAIN_WATCH_TICK_MS` while that lease is held:
+ *   - released, reclaimed or the lease run out: the watch ends. At 12 minutes a
+ *     held run is left to today's rule (the next claim takes the lease);
+ *   - `failed`, or `success` with the lease still held: the run is over and
+ *     never released. The lease shortens to the death plus the grace, and its
+ *     running sync record settles now, so an open status page flips by itself
+ *     (a query does not re-run as time passes; this write is what moves it);
+ *   - anything else, a missing record and `canceled` included, is NOT death: a
+ *     live slow run must never be reclaimed, since two runs writing to BSC at
+ *     once can create duplicate seller rows.
+ * When the grace is up the lease clears, and a drain runs only if a kick asked
+ * for one meanwhile (`drainRequested`): no retry on its own, or a run that keeps
+ * getting killed would loop. Outbox rows are never touched; the next run takes them.
+ *
+ * `graceMs` and `tickMs` are for `testing.seedMyTestKilledDrain` alone.
+ */
+export const watchDrainRun = internalMutation({
+  args: {
+    ownerId: v.string(),
+    platform: listingPlatformValidator,
+    leaseToken: v.string(),
+    fnId: v.id("_scheduled_functions"),
+    graceMs: v.optional(v.number()),
+    tickMs: v.optional(v.number()),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const now = Date.now();
+    const state = await ctx.db
+      .query("marketplaceListingStates")
+      .withIndex("by_owner_platform", (q) => q.eq("ownerId", args.ownerId).eq("platform", args.platform))
+      .unique();
+    if (!state || state.drainLeaseToken !== args.leaseToken) return null;
+    const expiresAt = state.drainLeaseExpiresAt ?? 0;
+    if (state.drainRunDeadAt !== undefined) {
+      if (expiresAt > now) {
+        await ctx.scheduler.runAt(expiresAt, internal.listingDrain.watchDrainRun, args);
+        return null;
+      }
+      await ctx.db.patch(state._id, {
+        drainLeaseToken: undefined,
+        drainLeaseExpiresAt: undefined,
+        drainRunDeadAt: undefined,
+        drainRequested: undefined,
+        lastUpdated: now,
+      });
+      if (state.drainRequested === true) await kickListingDrain(ctx, args.ownerId, args.platform);
+      return null;
+    }
+    if (expiresAt <= now) return null;
+    const run = await ctx.db.system.get(args.fnId);
+    if (!run || (run.state.kind !== "failed" && run.state.kind !== "success")) {
+      await ctx.scheduler.runAfter(args.tickMs ?? DRAIN_WATCH_TICK_MS, internal.listingDrain.watchDrainRun, args);
+      return null;
+    }
+    const deadAt = run.completedTime ?? now;
+    const graceEnd = Math.min(expiresAt, deadAt + (args.graceMs ?? DRAIN_DEATH_GRACE_MS));
+    await ctx.db.patch(state._id, { drainRunDeadAt: deadAt, drainLeaseExpiresAt: graceEnd, lastUpdated: now });
+    await settleDeadRunRecord(ctx, args, now);
+    await ctx.scheduler.runAt(graceEnd, internal.listingDrain.watchDrainRun, args);
+    console.warn(
+      JSON.stringify({ msg: "listing_drain_run_died", platform: args.platform, operation: "watchDrainRun", outcome: run.state.kind }),
+    );
+    return null;
+  },
+});
+
+/**
+ * The dead run's running sync record reads as its last result: the step it was
+ * on failed, what it never reached dropped, no new `lastError`. The token comes
+ * off, so a late write from that run records nothing. `lastRunAt` stays, so a
+ * Sync pressed since still earns its full read.
+ */
+async function settleDeadRunRecord(
+  ctx: MutationCtx,
+  args: { ownerId: string; platform: Platform; leaseToken: string },
+  now: number,
+): Promise<void> {
+  const records = await ctx.db
+    .query("marketplaceListingSyncs")
+    .withIndex("by_owner_platform_run", (q) => q.eq("ownerId", args.ownerId).eq("platform", args.platform))
+    .order("desc")
+    .take(DEAD_RUN_RECORD_SCAN);
+  for (const record of records) {
+    if (record.status !== "running" || record.leaseToken !== args.leaseToken) continue;
+    await ctx.db.patch(record._id, {
+      status: record.lastError !== undefined ? "error" : "idle",
+      leaseToken: undefined,
+      leaseExpiresAt: undefined,
+      ...(record.progress
+        ? { progress: { ...record.progress, steps: settleSteps(record.progress.steps, "error", now) } }
+        : {}),
+      lastUpdated: now,
+    });
+  }
+}
 
 // ── The outbox snapshot ────────────────────────────────────────────────────
 
@@ -417,7 +550,8 @@ export const outboxSnapshot = internalQuery({
 /**
  * True while the owner's state row pushes counts and carries this run's
  * lease. Listing stopped (the sign-in removed: start cleared, row dormant)
- * makes a run between variants, or between PUT chunks, stand down.
+ * makes a run between variants, or between PUT chunks, stand down. A run the
+ * watcher recorded as dead holds nothing, whatever its token says (NEO-433).
  */
 async function holdsDrain(
   ctx: QueryCtx,
@@ -427,7 +561,12 @@ async function holdsDrain(
     .query("marketplaceListingStates")
     .withIndex("by_owner_platform", (q) => q.eq("ownerId", args.ownerId).eq("platform", args.platform))
     .unique();
-  return state !== null && pushesCounts(state) && state.drainLeaseToken === args.leaseToken;
+  return (
+    state !== null &&
+    pushesCounts(state) &&
+    state.drainLeaseToken === args.leaseToken &&
+    state.drainRunDeadAt === undefined
+  );
 }
 
 export const drainHeld = internalQuery({
@@ -835,7 +974,9 @@ export const bindSellerAccount = internalMutation({
       .query("marketplaceListingStates")
       .withIndex("by_owner_platform", (q) => q.eq("ownerId", args.ownerId).eq("platform", args.platform))
       .unique();
-    if (!state || !pushesCounts(state) || state.drainLeaseToken !== args.leaseToken) return "off";
+    if (!state || !pushesCounts(state) || state.drainLeaseToken !== args.leaseToken || state.drainRunDeadAt !== undefined) {
+      return "off";
+    }
     const now = Date.now();
     if (await sellerAccountHolder(ctx, args.platform, args.accountId, args.ownerId)) {
       await ctx.db.patch(state._id, { dormant: "sellerConflict", lastUpdated: now });
@@ -1191,7 +1332,7 @@ export async function defaultFetchPhoto(key: string, maxBytes: number): Promise<
  */
 export async function drainOwnerImpl(
   ctx: DrainCtx,
-  args: { ownerId: string; platform: Platform; fullVariantIds?: Array<Id<"selectorOptions">> },
+  args: { ownerId: string; platform: Platform; fullVariantIds?: Array<Id<"selectorOptions">>; kickToken?: string },
   opts: DrainOptions = {},
 ): Promise<DrainReport> {
   // NEO-415: eBay is card-level and has its own walk (`listingDrainEbay`);
@@ -1208,6 +1349,7 @@ export async function drainOwnerImpl(
     platform: args.platform,
     leaseToken,
     ...(args.fullVariantIds ? { fullVariantIds: args.fullVariantIds } : {}),
+    ...(args.kickToken !== undefined ? { kickToken: args.kickToken } : {}),
   });
   if (!claim.claimed) {
     report.stoppedFor =
@@ -1815,6 +1957,8 @@ export const drainOwner = internalAction({
     ownerId: v.string(),
     platform: listingPlatformValidator,
     fullVariantIds: fullVariantIdsValidator,
+    /** NEO-433: what links this run to the scheduled function id its kick stamped. */
+    kickToken: v.optional(v.string()),
   },
   returns: v.null(),
   handler: async (ctx, args) => {

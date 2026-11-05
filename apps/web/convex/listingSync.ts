@@ -960,7 +960,11 @@ async function platformStatus(
   // Running: the owner's drain lease, and the set its run holds now (a
   // running record with a live lease; most recent first).
   const runningRecord = records.find(live) ?? null;
-  const drainLive = state?.drainLeaseToken !== undefined && (state.drainLeaseExpiresAt ?? 0) > now;
+  // A dead run's lease stands through its grace, but nothing is running (NEO-433).
+  const drainLive =
+    state?.drainLeaseToken !== undefined &&
+    (state.drainLeaseExpiresAt ?? 0) > now &&
+    state.drainRunDeadAt === undefined;
   let running: PlatformStatus["running"] = null;
   if (drainLive || runningRecord) {
     const startedAt = drainLive

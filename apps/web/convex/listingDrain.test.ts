@@ -28,6 +28,9 @@ import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
 import {
+  DRAIN_DEATH_GRACE_MS,
+  DRAIN_LEASE_MS,
+  DRAIN_WATCH_TICK_MS,
   drainOwnerImpl,
   MAX_PROGRESS_STEPS,
   ProgressLedger,
@@ -36,6 +39,8 @@ import {
   type DrainCtx,
 } from "./listingDrain";
 import { kickOwnerDrains } from "./listingOutbox";
+import { BSC_SELLER_TIMEOUTS_MS } from "./adapters/bscSeller";
+import { EBAY_TIMEOUTS_MS } from "./adapters/ebaySeller";
 import { cancelScheduled } from "../lib/testing/drain-scheduled";
 
 const modules = (import.meta as unknown as {
@@ -593,7 +598,7 @@ describe("drainOwner: the outbox rows", () => {
     expect(st?.drainScheduledAt).toBeTypeOf("number");
     const next = await pendingDrains(s);
     expect(next).toHaveLength(1);
-    expect(next[0].args[0]).toEqual({ ownerId: OWNER, platform: "bsc" });
+    expect(next[0].args[0]).toEqual({ ownerId: OWNER, platform: "bsc", kickToken: expect.any(String) });
     // The rescheduled run fires 1 s later on the real clock, after this test
     // unstubs fetch: cancel it so it never reaches the network guard (NEO-188).
     await cancelScheduled(s.t);
@@ -1706,5 +1711,392 @@ describe("finishVariant: progress", () => {
     expect(out.recorded).toBe(true);
     const stored = (await record(s, v.variantId))?.progress?.steps;
     expect(stored?.map((x) => `${x.kind}:${x.status}`)).toEqual(["read:done", "send:failed"]);
+  });
+});
+
+describe("NEO-433: a run the platform killed", () => {
+  const TOKEN = "the-run";
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    // convex-test logs every scheduled function that throws; the fixture is meant to.
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+  });
+
+  /** Moves the clock and lets whatever fell due run to the end. */
+  const advance = async (s: S, ms: number) => {
+    vi.advanceTimersByTime(ms);
+    await s.t.finishInProgressScheduledFunctions();
+  };
+  /** Moves the clock while a run is held open (finishing it would wait forever). */
+  const advanceHeld = async (ms: number) => {
+    vi.advanceTimersByTime(ms);
+    for (let i = 0; i < 20; i += 1) await new Promise((resolve) => setImmediate(resolve));
+  };
+  const scheduled = (s: S, name: string, kind?: string) =>
+    s.t.run(async (ctx) =>
+      (await ctx.db.system.query("_scheduled_functions").collect()).filter(
+        (f) => f.name.includes(name) && (kind === undefined || f.state.kind === kind),
+      ),
+    );
+  const pendingWatch = (s: S) => scheduled(s, "watchDrainRun", "pending");
+  const claimAs = (s: S, leaseToken: string, kickToken?: string) =>
+    s.t.mutation(internal.listingDrain.claimDrain, {
+      ownerId: OWNER,
+      platform: "bsc",
+      leaseToken,
+      ...(kickToken !== undefined ? { kickToken } : {}),
+    });
+  /** A real scheduled function that really fails, as a kick would have stamped it. */
+  const failingFn = (s: S) =>
+    s.t.run(async (ctx) => await ctx.scheduler.runAfter(0, internal.testing.failLikeAKilledDrain, {}));
+
+  /**
+   * A run that claimed through its kick and is mid-step on one variant, with one
+   * queued row, and whose function has really failed. The watcher has not looked yet.
+   */
+  async function deadRunMidStep(s: S) {
+    const v = await seedVariant(s.t, { cards: [{ number: "1", ref: "bsc-1" }] });
+    await add(s, v.cardIds[0], { homeId: s.box, condition: "Near Mint", minPriceCents: 40 });
+    const fnId = await failingFn(s);
+    await listOnBsc(s, { drainKickToken: "kick", drainKickFnId: fnId });
+    await queue(s, [{ cardId: v.cardIds[0], variantId: v.variantId }]);
+    expect(await claimAs(s, TOKEN, "kick")).toEqual({ claimed: true });
+    const ids = { ownerId: OWNER, platform: "bsc" as const, variantId: v.variantId, leaseToken: TOKEN };
+    await s.t.mutation(internal.listingDrain.claimVariant, ids);
+    await s.t.mutation(internal.listingDrain.writeProgress, {
+      ...ids,
+      steps: [
+        { kind: "read", status: "done", finishedAt: Date.now() },
+        { kind: "send", status: "working" },
+        { kind: "confirm", status: "waiting" },
+      ],
+    });
+    await advance(s, 0);
+    const fn = await s.t.run(async (ctx) => await ctx.db.system.get(fnId));
+    expect(fn?.state.kind).toBe("failed");
+    return { v, ids, fnId };
+  }
+
+  test("a slow run the platform says is in progress is never reclaimed, however old its ledger", async () => {
+    const s = await setup();
+    const v = await seedVariant(s.t, { cards: [{ number: "1", ref: "bsc-1" }] });
+    const bsc = new FakeBsc([{ bscCardId: "bsc-1", cardNo: "1" }], MODERN);
+    let letGo = () => undefined as void;
+    bsc.onSheetRead = () => new Promise<void>((resolve) => (letGo = resolve));
+    vi.stubGlobal("fetch", bsc.fetch);
+    await add(s, v.cardIds[0], { homeId: s.box, condition: "Near Mint", minPriceCents: 40 });
+    await listOnBsc(s);
+    await queue(s, [{ cardId: v.cardIds[0], variantId: v.variantId }]);
+    await s.t.run(async (ctx) => {
+      await kickOwnerDrains(ctx as never, OWNER);
+    });
+    await advanceHeld(0);
+    expect(bsc.sheetReads).toHaveLength(1);
+    const [fn] = await scheduled(s, "drainOwner");
+    expect(fn.state.kind).toBe("inProgress");
+    const held = await state(s);
+    const ledgerBefore = (await record(s, v.variantId))?.progress?.steps;
+
+    // Eleven and a half minutes with nothing landing: the ledger goes stale, the watcher keeps looking.
+    for (let i = 0; i < 23; i += 1) await advanceHeld(30_000);
+    const during = await state(s);
+    expect(during?.drainLeaseToken).toBe(held?.drainLeaseToken);
+    expect(during?.drainLeaseExpiresAt).toBe(held?.drainLeaseExpiresAt);
+    expect(during?.drainRunDeadAt).toBeUndefined();
+    expect((await record(s, v.variantId))?.status).toBe("running");
+    expect((await record(s, v.variantId))?.progress?.steps).toEqual(ledgerBefore);
+    expect(await claimAs(s, "a-second-run")).toEqual({ claimed: false, reason: "busy" });
+    expect(await s.t.query(internal.listingDrain.drainHeld, { ownerId: OWNER, platform: "bsc", leaseToken: held!.drainLeaseToken! })).toBe(true);
+    expect(await pendingWatch(s)).toHaveLength(1);
+
+    // It finishes after all: released as ever, and the watcher ends on its next look.
+    bsc.onSheetRead = undefined;
+    letGo();
+    await s.t.finishInProgressScheduledFunctions();
+    expect((await record(s, v.variantId))?.status).toBe("idle");
+    expect((await state(s))?.drainLeaseToken).toBeUndefined();
+    await advance(s, 30_000);
+    expect(await pendingWatch(s)).toHaveLength(0);
+    expect((await state(s))?.drainRunDeadAt).toBeUndefined();
+  });
+
+  test("a failed run: running stops at the watcher's next look, the claim waits out the grace, then takes it", async () => {
+    const s = await setup();
+    const { v } = await deadRunMidStep(s);
+    const before = await record(s, v.variantId);
+
+    await advance(s, DRAIN_WATCH_TICK_MS);
+    const dead = await state(s);
+    expect(dead?.drainRunDeadAt).toBeTypeOf("number");
+    expect(dead?.drainLeaseExpiresAt).toBe(dead!.drainRunDeadAt! + DRAIN_DEATH_GRACE_MS);
+    expect(dead?.drainLeaseToken).toBe(TOKEN);
+
+    // The open status page flips on this write alone: not running, last result, the failed step.
+    const settled = await record(s, v.variantId);
+    expect(settled?.status).toBe("idle");
+    expect(settled?.lastError).toBeUndefined();
+    expect(settled?.lastRunAt).toBe(before?.lastRunAt);
+    expect(settled?.progress?.steps.map((x) => `${x.kind}:${x.status}`)).toEqual(["read:done", "send:failed"]);
+    const status = await s.me.query(api.listingSync.syncStatus, {});
+    const bsc = status.platforms.find((p) => p.platform === "bsc");
+    expect(bsc?.running).toBeNull();
+    expect(bsc?.sets[0].status).toBe("idle");
+    expect(bsc?.sets[0].steps.map((x) => `${x.kind}:${x.status}`)).toEqual(["read:done", "send:failed"]);
+
+    // In flight calls can still land: nobody else may write until the grace is up.
+    expect(await claimAs(s, "too-soon")).toEqual({ claimed: false, reason: "busy" });
+    await s.t.run(async (ctx) => {
+      const st = await ctx.db.query("marketplaceListingStates").first();
+      await ctx.db.patch(st!._id, { drainRequested: undefined });
+    });
+    await advance(s, DRAIN_DEATH_GRACE_MS);
+    expect((await state(s))?.drainLeaseToken).toBeUndefined();
+    expect((await state(s))?.drainRunDeadAt).toBeUndefined();
+    expect(await claimAs(s, "after-grace")).toEqual({ claimed: true });
+    expect((await state(s))?.drainRunDeadAt).toBeUndefined();
+  });
+
+  test("the grace is the longest single call plus ten seconds", () => {
+    expect(DRAIN_DEATH_GRACE_MS).toBe(
+      Math.max(BSC_SELLER_TIMEOUTS_MS.sheet, BSC_SELLER_TIMEOUTS_MS.put, EBAY_TIMEOUTS_MS.bulk) + 10_000,
+    );
+    expect(DRAIN_DEATH_GRACE_MS).toBeGreaterThan(Math.max(...Object.values(EBAY_TIMEOUTS_MS), ...Object.values(BSC_SELLER_TIMEOUTS_MS)));
+  });
+
+  test("a function that ended in success with the lease still held is dead too", async () => {
+    const s = await setup();
+    // A real function that really succeeds: a release naming some other token changes nothing.
+    const fnId = await s.t.run(
+      async (ctx) =>
+        await ctx.scheduler.runAfter(0, internal.listingDrain.releaseDrain, {
+          ownerId: OWNER,
+          platform: "bsc",
+          leaseToken: "not-this-run",
+          next: "done",
+        }),
+    );
+    await listOnBsc(s, { drainKickToken: "kick", drainKickFnId: fnId });
+    await claimAs(s, TOKEN, "kick");
+    await advance(s, 0);
+    expect((await s.t.run(async (ctx) => await ctx.db.system.get(fnId)))?.state.kind).toBe("success");
+    await advance(s, DRAIN_WATCH_TICK_MS);
+    expect((await state(s))?.drainRunDeadAt).toBeTypeOf("number");
+  });
+
+  test("canceled is not death: the lease stands to its 12 minutes and the watch ends there", async () => {
+    const s = await setup();
+    const fnId = await s.t.run(async (ctx) => await ctx.scheduler.runAfter(60_000, internal.testing.failLikeAKilledDrain, {}));
+    await listOnBsc(s, { drainKickToken: "kick", drainKickFnId: fnId });
+    await claimAs(s, TOKEN, "kick");
+    await s.t.run(async (ctx) => await ctx.scheduler.cancel(fnId));
+    const expiresAt = (await state(s))?.drainLeaseExpiresAt;
+    for (let i = 0; i < 23; i += 1) await advance(s, 30_000);
+    expect((await state(s))?.drainRunDeadAt).toBeUndefined();
+    expect((await state(s))?.drainLeaseExpiresAt).toBe(expiresAt);
+    expect(await pendingWatch(s)).toHaveLength(1);
+    // The outer bound: no more looking, and the claim's own rule takes over.
+    for (let i = 0; i < 2; i += 1) await advance(s, 30_000);
+    expect(await pendingWatch(s)).toHaveLength(0);
+    expect((await state(s))?.drainLeaseToken).toBe(TOKEN);
+    expect(await claimAs(s, "next")).toEqual({ claimed: true });
+  });
+
+  test("a press during the grace gets a run, and that run reads every condition", async () => {
+    const s = await setup();
+    const { v } = await deadRunMidStep(s);
+    await s.t.run(async (ctx) => {
+      const rec = await ctx.db.query("marketplaceListingSyncs").first();
+      await ctx.db.patch(rec!._id, { lastSuccessAt: Date.now() - 3_600_000, conditionsPushed: ["near_mint"] });
+    });
+    const bsc = new FakeBsc([{ bscCardId: "bsc-1", cardNo: "1" }], MODERN);
+    vi.stubGlobal("fetch", bsc.fetch);
+    await advance(s, DRAIN_WATCH_TICK_MS);
+    expect((await state(s))?.drainRunDeadAt).toBeTypeOf("number");
+
+    expect(await s.me.mutation(api.listingSync.syncVariant, { variantId: v.variantId })).toEqual({ queued: true });
+    expect((await state(s))?.drainRequested).toBe(true);
+    expect(await scheduled(s, "drainOwner")).toHaveLength(0);
+    expect(bsc.sheetReads).toHaveLength(0);
+
+    await advance(s, DRAIN_DEATH_GRACE_MS);
+    await advance(s, 0);
+    expect(await scheduled(s, "drainOwner", "success")).toHaveLength(1);
+    expect([...new Set(bsc.sheetReads.map((r) => r.condition))].sort()).toEqual([...MODERN].sort());
+    expect(bsc.qty("bsc-1", "near_mint")).toBe(1);
+    expect(await outbox(s)).toHaveLength(0);
+    expect((await state(s))?.drainLeaseToken).toBeUndefined();
+    await advance(s, DRAIN_WATCH_TICK_MS);
+    expect(await pendingWatch(s)).toHaveLength(0);
+  });
+
+  test("no press: the lease clears, nothing is scheduled, and the rows wait for the next kick", async () => {
+    const s = await setup();
+    await deadRunMidStep(s);
+    await advance(s, DRAIN_WATCH_TICK_MS);
+    await advance(s, DRAIN_DEATH_GRACE_MS);
+    expect((await state(s))?.drainLeaseToken).toBeUndefined();
+    expect((await state(s))?.lastDrainAt).toBeUndefined();
+    expect(await scheduled(s, "drainOwner")).toHaveLength(0);
+    expect(await pendingWatch(s)).toHaveLength(0);
+    expect(await outbox(s)).toHaveLength(1);
+  });
+
+  test("a late write from the dead run records nothing, in the grace or after it", async () => {
+    const s = await setup();
+    const { v, ids } = await deadRunMidStep(s);
+    await advance(s, DRAIN_WATCH_TICK_MS);
+    const settled = await record(s, v.variantId);
+    const late = async () => {
+      expect(
+        await s.t.mutation(internal.listingDrain.writeProgress, { ...ids, steps: [{ kind: "send", status: "done" }] }),
+      ).toBe(false);
+      const out = await s.t.mutation(internal.listingDrain.finishVariant, {
+        ...ids,
+        outcome: { kind: "ok", counts: { listed: 9, pushed: 9, zeroed: 0, skipped: 0 }, problems: [], problemsTotal: 0, conditionsPushed: ["near_mint"] },
+        clear: [],
+        repoint: [],
+        progress: [{ kind: "send", status: "done" }],
+      });
+      expect(out.recorded).toBe(false);
+      expect(await record(s, v.variantId)).toEqual(settled);
+      expect(await s.t.mutation(internal.listingDrain.claimVariant, ids)).toEqual({ claimed: false, reason: "listingOff" });
+    };
+    await late();
+    await advance(s, DRAIN_DEATH_GRACE_MS);
+    await late();
+  });
+
+  test("drainHeld is false once dead (each PUT chunk stands down), and the watcher deletes no row", async () => {
+    const s = await setup();
+    const { ids } = await deadRunMidStep(s);
+    const held = { ownerId: OWNER, platform: "bsc" as const, leaseToken: ids.leaseToken };
+    expect(await s.t.query(internal.listingDrain.drainHeld, held)).toBe(true);
+    await advance(s, DRAIN_WATCH_TICK_MS);
+    expect(await s.t.query(internal.listingDrain.drainHeld, held)).toBe(false);
+    expect(await outbox(s)).toHaveLength(1);
+    await advance(s, DRAIN_DEATH_GRACE_MS);
+    expect(await s.t.query(internal.listingDrain.drainHeld, held)).toBe(false);
+    expect(await outbox(s)).toHaveLength(1);
+  });
+
+  test("an unlinked run has no signal: no watcher, and today's 12 minutes", async () => {
+    const s = await setup();
+    await listOnBsc(s);
+    expect(await claimAs(s, TOKEN)).toEqual({ claimed: true });
+    expect(await scheduled(s, "watchDrainRun")).toHaveLength(0);
+    vi.advanceTimersByTime(DRAIN_LEASE_MS - 1);
+    expect(await claimAs(s, "too-soon")).toEqual({ claimed: false, reason: "busy" });
+    vi.advanceTimersByTime(1);
+    expect(await claimAs(s, "next")).toEqual({ claimed: true });
+  });
+
+  test("a run holding some other kick's token leaves no fn id and gets no watcher", async () => {
+    const s = await setup();
+    const fnId = await failingFn(s);
+    await listOnBsc(s, { drainKickToken: "their-kick", drainKickFnId: fnId });
+    expect(await claimAs(s, TOKEN, "my-kick")).toEqual({ claimed: true });
+    const st = await state(s);
+    expect(st?.drainKickFnId).toBeUndefined();
+    expect(st?.drainKickToken).toBeUndefined();
+    expect(await scheduled(s, "watchDrainRun")).toHaveLength(0);
+    // Their function failing says nothing about this run.
+    await advance(s, 30_000);
+    expect((await state(s))?.drainRunDeadAt).toBeUndefined();
+  });
+
+  test("a normal release ends the watch, even though the function has failed by then", async () => {
+    const s = await setup();
+    const fnId = await failingFn(s);
+    await listOnBsc(s, { drainKickToken: "kick", drainKickFnId: fnId });
+    await claimAs(s, TOKEN, "kick");
+    await advance(s, 0);
+    await s.t.mutation(internal.listingDrain.releaseDrain, { ownerId: OWNER, platform: "bsc", leaseToken: TOKEN, next: "done" });
+    expect(await pendingWatch(s)).toHaveLength(1);
+    await advance(s, DRAIN_WATCH_TICK_MS);
+    expect(await pendingWatch(s)).toHaveLength(0);
+    expect((await state(s))?.drainRunDeadAt).toBeUndefined();
+  });
+
+  test("a kick stamps the run it schedules, and a continuing release stamps its own", async () => {
+    const s = await setup();
+    const v = await seedVariant(s.t, { cards: [{ number: "1", ref: "bsc-1" }] });
+    await listOnBsc(s);
+    await queue(s, [{ cardId: v.cardIds[0], variantId: v.variantId }]);
+    await s.t.run(async (ctx) => {
+      await kickOwnerDrains(ctx as never, OWNER);
+    });
+    const kicked = await state(s);
+    const [run] = await scheduled(s, "drainOwner");
+    expect(kicked?.drainKickFnId).toBe(run._id);
+    expect((run.args[0] as { kickToken: string }).kickToken).toBe(kicked?.drainKickToken);
+
+    await claimAs(s, TOKEN, kicked?.drainKickToken);
+    expect((await state(s))?.drainKickFnId).toBeUndefined();
+    expect((await pendingWatch(s))[0].args[0]).toMatchObject({ leaseToken: TOKEN, fnId: run._id });
+    await s.t.mutation(internal.listingDrain.releaseDrain, { ownerId: OWNER, platform: "bsc", leaseToken: TOKEN, next: "continue" });
+    const released = await state(s);
+    expect(released?.drainKickFnId).toBeDefined();
+    expect(released?.drainKickFnId).not.toBe(run._id);
+    await cancelScheduled(s.t);
+  });
+
+  describe("the live-proof fixture", () => {
+    const seed = (s: S) => s.me.mutation(api.testing.seedMyTestKilledDrain, { platform: "bsc" });
+
+    test("is refused off an armed deployment", async () => {
+      vi.stubEnv("TESTING_RESET_SECRET", "");
+      const s = await setup();
+      await listOnBsc(s);
+      await expect(seed(s)).rejects.toThrow(/not enabled/);
+    });
+
+    test("is refused signed out, and while a run holds the lease", async () => {
+      vi.stubEnv("TESTING_RESET_SECRET", "armed");
+      const s = await setup();
+      await listOnBsc(s, { drainLeaseToken: "a-real-run", drainLeaseExpiresAt: Date.now() + 60_000 });
+      await expect(s.t.mutation(api.testing.seedMyTestKilledDrain, { platform: "bsc" })).rejects.toThrow(/Not authenticated/);
+      await expect(seed(s)).rejects.toThrow(/never takes its lease/);
+      expect((await state(s))?.drainLeaseToken).toBe("a-real-run");
+    });
+
+    test("reads as running, then flips through the real watcher with no grace, on the caller's rows alone", async () => {
+      vi.stubEnv("TESTING_RESET_SECRET", "armed");
+      const s = await setup();
+      const v = await seedVariant(s.t, { cards: [{ number: "1", ref: "bsc-1" }] });
+      await listOnBsc(s);
+      const someoneElse = await s.t.run(async (ctx) => {
+        await ctx.db.insert("marketplaceListingSyncs", {
+          ownerId: OWNER,
+          variantId: v.variantId,
+          platform: "bsc",
+          status: "idle",
+          lastRunAt: Date.now() - 60_000,
+          lastSuccessAt: Date.now() - 60_000,
+          problems: [],
+          conditionsPushed: [],
+          lastUpdated: Date.now(),
+        });
+        return await ctx.db.insert("marketplaceListingStates", { ownerId: "another-collector", platform: "bsc", listingStartedAt: NOW, lastUpdated: NOW });
+      });
+      await seed(s);
+      expect((await s.me.query(api.listingSync.syncStatus, {})).platforms.find((p) => p.platform === "bsc")?.running).not.toBeNull();
+      await advance(s, 0);
+      await advance(s, 3000);
+      const status = (await s.me.query(api.listingSync.syncStatus, {})).platforms.find((p) => p.platform === "bsc");
+      expect(status?.running).toBeNull();
+      expect(status?.sets[0].steps.map((x) => `${x.kind}:${x.status}`)).toEqual(["send:failed"]);
+      await advance(s, 0);
+      expect((await state(s))?.drainLeaseToken).toBeUndefined();
+      expect(await scheduled(s, "drainOwner")).toHaveLength(0);
+      const other = await s.t.run(async (ctx) => await ctx.db.get(someoneElse));
+      expect(other?.drainLeaseToken).toBeUndefined();
+    });
   });
 });

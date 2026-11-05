@@ -1317,6 +1317,30 @@ describe("eBay drain: eBay's answers", () => {
     expect(await stepsOf(s, v.variantId)).toEqual(["check: done", "photos: done", "items: done", "offers: done", "publish: failed"]);
   });
 
+  test("NEO-433: a run no longer holding the drain starts no publish", async () => {
+    const s = await setup();
+    const { v } = await oneCard(s, 500);
+    const real = ebay.fetch;
+    vi.stubGlobal("fetch", (async (url: string | URL | Request, init?: RequestInit) => {
+      const res = await real(url, init);
+      if (new URL(String(url)).pathname.endsWith("/bulk_create_offer")) {
+        await s.t.run(async (ctx) => {
+          const st = await ctx.db.query("marketplaceListingStates").first();
+          await ctx.db.patch(st!._id, { drainRunDeadAt: Date.now() });
+        });
+      }
+      return res;
+    }) as typeof fetch);
+
+    const report = await drain(s);
+
+    expect(report.stoppedFor).toBe("listingOff");
+    expect(ebay.publishes()).toHaveLength(0);
+    expect(ebay.offers.size).toBe(1);
+    expect(await outbox(s)).toHaveLength(1);
+    expect((await record(s, v.variantId))?.status).toBe("error");
+  });
+
   test("a publish that fails outright still records every listing that went live before the run stopped", async () => {
     const s = await setup();
     const v = await seedVariant(s.t, { cards: [{ number: "1" }, { number: "2" }, { number: "3" }] });

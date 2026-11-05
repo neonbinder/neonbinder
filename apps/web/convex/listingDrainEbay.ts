@@ -656,7 +656,7 @@ const STOPPED_ERROR = "Listing on eBay stopped part-way through (eBay was discon
  */
 export async function drainEbayOwnerImpl(
   ctx: DrainCtx,
-  args: { ownerId: string; platform: "bsc" | "ebay"; fullVariantIds?: Array<Id<"selectorOptions">> },
+  args: { ownerId: string; platform: "bsc" | "ebay"; fullVariantIds?: Array<Id<"selectorOptions">>; kickToken?: string },
   opts: DrainOptions = {},
 ): Promise<DrainReport> {
   const platform: Platform = "ebay";
@@ -671,6 +671,7 @@ export async function drainEbayOwnerImpl(
     platform,
     leaseToken,
     ...(args.fullVariantIds ? { fullVariantIds: args.fullVariantIds } : {}),
+    ...(args.kickToken !== undefined ? { kickToken: args.kickToken } : {}),
   });
   if (!claim.claimed) {
     report.stoppedFor =
@@ -1484,6 +1485,11 @@ async function syncEbayVariant(
   //    link.
   const publishes = plans.filter((p) => p.needsPublish && !p.failed && p.offerId);
   await step("publish", publishes.length > 0);
+  if (publishes.length > 0 && !(await drainHeld())) {
+    await flushLinks();
+    await finish({ kind: "error", error: STOPPED_ERROR }, false);
+    return { kind: "off" };
+  }
   const publishedNow: Plan[] = [];
   const publishHalt: { failure: EbayFailure | null } = { failure: null };
   await inPool(

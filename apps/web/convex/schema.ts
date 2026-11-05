@@ -4745,6 +4745,19 @@ export default defineSchema({
     /** A kick landed while a drain ran: its release runs the next one at once. */
     drainRequested: v.optional(v.boolean()),
     /**
+     * NEO-433: the drain run a kick just scheduled, until a run claims. Only
+     * the run handed `drainKickToken` is the one `drainKickFnId` names, and its
+     * claim starts `listingDrain.watchDrainRun` on that function's own record.
+     */
+    drainKickToken: v.optional(v.string()),
+    drainKickFnId: v.optional(v.id("_scheduled_functions")),
+    /**
+     * NEO-433: when the platform recorded the lease holder's function as over
+     * without a release. The lease stands only through the grace after it
+     * (`DRAIN_DEATH_GRACE_MS`); nothing reads the run as running meanwhile.
+     */
+    drainRunDeadAt: v.optional(v.number()),
+    /**
      * When the last claimed drain released, whether it succeeded or failed. A
      * refused claim never stamps it. `listingSync.syncVariant` reads it: a row
      * no newer than this was already tried, so it waits out the minute.
