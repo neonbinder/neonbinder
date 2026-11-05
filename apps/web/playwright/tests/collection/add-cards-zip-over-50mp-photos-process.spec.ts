@@ -40,6 +40,7 @@ import { fileURLToPath } from "node:url";
 import { collectorCascade } from "../../support/collection";
 import { addCardViaForm } from "../../support/cards";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
+import { PIPELINE, measuredWait } from "../../support/pipeline-wait";
 import { VARIANT_TYPES_SYNC, columnHeading, drillToCustom, selectOrCreate, setBuilderReady } from "../../support/set-builder";
 
 const ZIP = path.join(
@@ -51,17 +52,6 @@ const ZIP = path.join(
   "high-res",
   "bowe-50mp.zip",
 );
-/** The preprocess pipeline's fast-path ceiling (see the header). */
-const PIPELINE = 180_000;
-
-/**
- * The measured length of a PIPELINE wait, kept as a report annotation (and in the
- * run's output) so the ceiling can be argued from real numbers, not guessed.
- */
-function waitMeasured(wait: string, ms: number): void {
-  test.info().annotations.push({ type: "pipeline wait", description: `${wait}: ${ms} ms` });
-  console.log(`pipeline wait [${test.info().project.name}] ${wait}: ${ms} ms`);
-}
 
 test(
   "Add cards: a zip of 50 MP photos is unpacked, read and paired into the lanes",
@@ -105,7 +95,7 @@ test(
     // Sending the archive is the pipeline's upload leg: its exception.
     await expect(page).toHaveURL(/[?&]run=/, { timeout: PIPELINE });
     const uploaded = Date.now();
-    waitMeasured("upload: zip dropped to ?run= in the URL", uploaded - dropped);
+    measuredWait("upload: zip dropped to ?run= in the URL", dropped);
 
     // --- Unpacked, read, paired: the card is in the lanes ---------------------------------
     // "Unpacking your zip…" shows only while the service extracts, which a warm
@@ -116,7 +106,7 @@ test(
     // The pair reaches Needs you as the card in the photos (pipeline exception: two
     // 50 MP reads, then pairing and matching).
     await expect(waiting).toHaveAccessibleName("Needs you, 1", { timeout: PIPELINE });
-    waitMeasured("read: ?run= to the pair in Needs you (extract, 2 reads, pairing)", Date.now() - uploaded);
+    measuredWait("read: ?run= to the pair in Needs you (extract, 2 reads, pairing)", uploaded);
     const tile = waiting.getByRole("article", { name: "#315 Dwayne Bowe", exact: true });
     await expect(tile).toBeVisible();
     // What the 50 MP photo said, as read, so any case: its number and name.

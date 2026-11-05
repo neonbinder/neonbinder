@@ -28,3 +28,20 @@ zip -0 -X over-64mp-and-a-note.zip huge-1.jpg huge-2.jpg notes.txt
 
 A flat photo is the smallest way to reach 67 MP; macOS `sips` alone cannot
 make one under 1 MiB (about one byte per 8x8 block).
+
+## one-photo-one-too-big.zip (about 720 KB)
+
+One ordinary card photo and one photo over the limit, stored with `zip -0 -X`:
+`01-bowe-front.jpg` (the 2014 Score Bowe front from the folder above, JFIF
+density stamped 398 dpi so its 996x1388 px measures one card and the service
+reads it without the heavy model) and `02-flat-67mp.jpg` (the flat 67 MP photo
+from `../over-limit/`). Used by
+`tests/collection/add-cards-zip-partly-accepted-explains.spec.ts`; its
+assertions do not depend on the photo being read.
+
+```sh
+sips -s dpiWidth 398 -s dpiHeight 398 ../03-bowe-front.jpg --out 01-bowe-front.jpg
+cp ../over-limit/flat-67mp.jpg 02-flat-67mp.jpg
+zip -0 -X one-photo-one-too-big.zip 01-bowe-front.jpg 02-flat-67mp.jpg
+rm 01-bowe-front.jpg 02-flat-67mp.jpg
+```

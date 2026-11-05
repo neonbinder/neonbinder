@@ -18,6 +18,9 @@
 // the new 65 MP one alike, so this spec does not depend on which preprocess
 // build the deployment points at.
 //
+// Mobile: the "Start a new run" button is at least 44 px tall (a touch target), the
+// one branch, on `isMobile`; desktop has no such minimum.
+//
 // R7: writes only the account's own failed run (nothing is saved, no set or card
 // is touched). A failed run holds no active-batch slot.
 //
@@ -29,6 +32,7 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
+import { PIPELINE, measuredWait } from "../../support/pipeline-wait";
 
 const ZIP = path.join(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -39,17 +43,6 @@ const ZIP = path.join(
   "zip",
   "over-64mp-and-a-note.zip",
 );
-/** The preprocess pipeline's fast-path ceiling (see the header). */
-const PIPELINE = 180_000;
-
-/**
- * The measured length of a PIPELINE wait, kept as a report annotation (and in the
- * run's output) so the ceiling can be argued from real numbers, not guessed.
- */
-function waitMeasured(wait: string, ms: number): void {
-  test.info().annotations.push({ type: "pipeline wait", description: `${wait}: ${ms} ms` });
-  console.log(`pipeline wait [${test.info().project.name}] ${wait}: ${ms} ms`);
-}
 
 /** `runNotice` for a failed zip with 2 photos over 64 megapixels (the zip wording adds "or 32 MB") and 1 non-photo, nothing in. */
 const FAILURE =
@@ -58,7 +51,7 @@ const FAILURE =
 test(
   "Add cards: a zip with nothing usable in it ends the run with a line saying why, and Start a new run leaves it",
   { tag: ["@collection"] },
-  async ({ page, signIn }) => {
+  async ({ page, signIn, isMobile }) => {
     await signIn("/collection?tab=add");
     await expect(page.getByRole("heading", { level: 1, name: "Collection" })).toBeVisible({ timeout: LAUNCH_GATE });
     await page.getByRole("combobox", { name: "Put them in this binder" }).selectOption({ label: "Main" });
@@ -70,7 +63,7 @@ test(
     // Sending the archive is the pipeline's upload leg: its exception.
     await expect(page).toHaveURL(/[?&]run=/, { timeout: PIPELINE });
     const uploaded = Date.now();
-    waitMeasured("upload: zip dropped to ?run= in the URL", uploaded - dropped);
+    measuredWait("upload: zip dropped to ?run= in the URL", dropped);
     const runUrl = page.url();
 
     // --- The run fails, and the screen says why ---------------------------------
@@ -78,8 +71,16 @@ test(
     // Extract turns every entry away, then the closing pairing run fails the
     // job: the pipeline's exception again.
     await expect(failure).toHaveText(FAILURE, { timeout: PIPELINE });
-    waitMeasured("extract: ?run= to the failure line (extract, closing pairing run)", Date.now() - uploaded);
-    await expect(page.getByRole("button", { name: "Start a new run", exact: true })).toBeVisible();
+    measuredWait("extract: ?run= to the failure line (extract, closing pairing run)", uploaded);
+    const startNewRun = page.getByRole("button", { name: "Start a new run", exact: true });
+    await expect(startNewRun).toBeVisible();
+    // Mobile only, where the layout differs (the button is `max-sm:min-h-11`): a
+    // thumb target of at least 44 px. The button is on screen (above), so one read
+    // of its box is the user's size, not a poll.
+    if (isMobile) {
+      const box = await startNewRun.boundingBox();
+      expect(box?.height ?? 0).toBeGreaterThanOrEqual(44);
+    }
     // Not the success line, not the loose-photo "Sent" line, and no lanes: nothing
     // reached them. (Positive assertions above: the failure line is on screen.)
     await expect(page.getByText("This run's photos are all in")).toHaveCount(0);
