@@ -35,6 +35,8 @@ export type UploadOutcome =
   | {
       ok: true;
       jobId: string;
+      /** Which path the selection took. For a zip, the counts below are the archive's. */
+      kind: "zip" | "images";
       /** Files whose bytes landed AND were confirmed. */
       uploaded: number;
       failed: number;
@@ -163,6 +165,7 @@ export function usePlaceholderUpload(): PlaceholderUpload {
           return {
             ok: true,
             jobId: ticket.jobId,
+            kind: "zip",
             uploaded: 1,
             failed: 0,
             total: 1,
@@ -205,6 +208,7 @@ export function usePlaceholderUpload(): PlaceholderUpload {
         return {
           ok: true,
           jobId,
+          kind: "images",
           uploaded: result.uploaded,
           failed: result.failed,
           total: files.length,

@@ -62,6 +62,12 @@ import { fastPreprocessPool } from "./placeholderPool";
 import { heavyPreprocessPool } from "./placeholderHeavyPool";
 import { readEscalationHints } from "./lib/preprocessBaseline";
 import { PLACEHOLDER_MAX_ENTRY_INDEX } from "./lib/placeholderObjects";
+import {
+  ENTRY_TOO_MANY_PIXELS,
+  isRasterTooLargeError,
+  rejectedSummaryValidator,
+  summarizeRejections,
+} from "./lib/extractRejections";
 import { noteIntakeJobFinished, noteIntakePairsChanged } from "./intakeRuns";
 
 /**
@@ -563,6 +569,8 @@ export const startPlaceholderBatch = mutation({
       processedImages: 0,
       failedImages: 0,
       rejectedEntries: 0,
+      // Goes with `rejectedEntries`: the last registration chunk writes both.
+      rejected: undefined,
       // The previous attempt's heavy warm-gate says nothing about this one — a
       // restart that escalates should fire its own warm-up. Cleared so the
       // first escalation of the new run is detected as first.
@@ -1163,7 +1171,9 @@ export const cancelRemainingWork = internalMutation({
  * so the rejected count is derived here rather than trusted as a separate
  * number. Only accepted entries become rows: a rejected entry has no work to
  * do and would otherwise sit in the counters forever, since nothing will ever
- * call onComplete for it.
+ * call onComplete for it. Why each was rejected (NEO-446) is summarised on the
+ * job, from the same whole list and written once by the last chunk, so chunking
+ * can neither lose nor double count it.
  */
 export const registerExtractedImages = internalMutation({
   args: {
@@ -1176,6 +1186,8 @@ export const registerExtractedImages = internalMutation({
         index: v.number(),
         name: v.string(),
         accepted: v.boolean(),
+        /** `/extract`'s machine reason for a rejected entry. */
+        reason: v.optional(v.string()),
       }),
     ),
     /** Chunk cursor into the deduped accepted list. Absent means "start". */
@@ -1324,6 +1336,7 @@ export const registerExtractedImages = internalMutation({
       processedImages: keptDone,
       failedImages: 0,
       rejectedEntries,
+      rejected: summarizeRejections(args.entries),
       // Refresh the heartbeat as the batch enters processing, so the window
       // before the first image completes (enqueue + first `/process-entry`) is
       // measured from here rather than from when extraction started. Settle
@@ -1839,7 +1852,12 @@ async function settleImageOutcome(
       status: "failed",
       settledAt,
       errorCode:
-        result.kind === "canceled" ? "CANCELED" : (failureCode ?? "PROCESS_ENTRY_FAILED"),
+        result.kind === "canceled"
+          ? "CANCELED"
+          : (failureCode ??
+            // NEO-446: a raster over the pixel ceiling is terminal, and the photo
+            // can say so rather than offering a Try again that cannot work.
+            (isRasterTooLargeError(result.error) ? ENTRY_TOO_MANY_PIXELS : "PROCESS_ENTRY_FAILED")),
       errorDetail:
         result.kind === "failed"
           ? result.error.slice(0, 1000)
@@ -2451,6 +2469,9 @@ export const getPlaceholderJob = query({
       processedImages: v.number(),
       failedImages: v.number(),
       rejectedEntries: v.number(),
+      // Why they were rejected (NEO-446). Example names never include one that
+      // failed name validation; a client still renders them as plain text.
+      rejected: v.optional(rejectedSummaryValidator),
       pairCount: v.number(),
       // Identity-resolver calls as measured by the FINAL pairing run — see the
       // schema comment. Diagnostics, not spend: since NEO-170 the identity is
@@ -2499,6 +2520,7 @@ export const getPlaceholderJob = query({
       processedImages: job.processedImages ?? 0,
       failedImages: job.failedImages ?? 0,
       rejectedEntries: job.rejectedEntries ?? 0,
+      rejected: job.rejected,
       pairCount: pairs.length,
       resolverCalls: job.resolverCalls ?? 0,
       heavyWarming: deriveHeavyWarming(images),

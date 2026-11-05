@@ -28,9 +28,14 @@ from app.imaging import (
 # nothing, and 169 MP so it decodes to ~484 MB.
 BOMB_EDGE_PX = 13_000
 
-# 8064x6048 is an iPhone in 48 MP mode — the largest raster a phone in a user's
-# pocket produces today, and therefore the thing the cap must NOT reject.
+# Real phone rasters the cap must NOT reject. Sensor marketing rounds down, so
+# each of these is a little over its nominal megapixels.
 IPHONE_48MP = (8064, 6048)
+PIXEL_50MP = (6144, 8160)
+PHONE_64MP = (9248, 6936)
+
+# Just over the cap: 65,610,000 px, and well under Pillow's raise threshold.
+JUST_OVER_EDGE_PX = 8_100
 
 
 def png_of(size: tuple[int, int]) -> bytes:
@@ -70,18 +75,20 @@ class TestProcessWideCeiling:
 
 
 class TestTheBoundary:
-    def test_admits_the_largest_consumer_camera_raster(self):
-        # Rejecting a 48 MP phone photo would be a product bug: a zip of phone
-        # photos is exactly the input this feature exists for.
-        width, height = IPHONE_48MP
-        assert width * height <= MAX_IMAGE_PIXELS
+    @pytest.mark.parametrize("size", [IPHONE_48MP, PIXEL_50MP, PHONE_64MP])
+    def test_admits_real_phone_rasters(self, size):
+        # Rejecting a phone photo would be a product bug: a zip of phone photos
+        # is exactly the input this feature exists for. Real bytes, real check.
+        assert check_raster_size(jpeg_of(size)) == size
 
-    def test_refuses_the_bomb_by_a_wide_margin(self):
-        assert BOMB_EDGE_PX * BOMB_EDGE_PX > 3 * MAX_IMAGE_PIXELS
+    def test_refuses_the_bomb_past_pillows_hard_limit(self):
+        # Pillow raises above twice the ceiling, so the bomb is refused twice
+        # over: by Pillow's own check and by check_raster_size.
+        assert BOMB_EDGE_PX * BOMB_EDGE_PX > 2 * MAX_IMAGE_PIXELS
 
     def test_a_decoded_raster_at_the_cap_fits_the_instance(self):
-        # 3 bytes per pixel, and the cascade holds several copies at once on a
-        # 4 GiB instance that is also holding SAM.
+        # 3 bytes per pixel, and the FAST service can hold one of these per
+        # concurrent request, each with several copies live.
         assert MAX_IMAGE_PIXELS * 3 < 200 * 1024 * 1024
 
 
@@ -116,7 +123,7 @@ class TestCheckRasterSize:
     def test_rejects_a_bomb_that_sits_under_pillows_own_warning(self):
         # Between MAX_IMAGE_PIXELS and 2x it, Pillow only warns — so this is
         # the band that exists solely because of the explicit check.
-        edge = 8_000  # 64 MP: over our cap, under Pillow's raise threshold
+        edge = JUST_OVER_EDGE_PX  # over our cap, under Pillow's raise threshold
         assert MAX_IMAGE_PIXELS < edge * edge <= 2 * MAX_IMAGE_PIXELS
         with pytest.raises(RasterTooLargeError):
             check_raster_size(png_of((edge, edge)))
@@ -125,5 +132,18 @@ class TestCheckRasterSize:
         assert check_raster_size(b"definitely not an image") is None
 
     def test_error_names_the_actual_dimensions(self):
-        with pytest.raises(RasterTooLargeError, match="8000x8000"):
-            check_raster_size(png_of((8_000, 8_000)))
+        with pytest.raises(RasterTooLargeError, match="8100x8100"):
+            check_raster_size(png_of((JUST_OVER_EDGE_PX, JUST_OVER_EDGE_PX)))
+
+    def test_one_pixel_row_over_the_cap_is_rejected(self):
+        # 8125 x 8001 = 65,008,125 px: the closest realistic miss above the cap.
+        size = (8_125, 8_001)
+        assert size[0] * size[1] > MAX_IMAGE_PIXELS
+        with pytest.raises(RasterTooLargeError):
+            check_raster_size(png_of(size))
+
+    def test_exactly_the_cap_is_accepted(self):
+        # 8125 x 8000 = 65,000,000 px: the limit itself is inclusive.
+        size = (8_125, 8_000)
+        assert size[0] * size[1] == MAX_IMAGE_PIXELS
+        assert check_raster_size(png_of(size)) == size

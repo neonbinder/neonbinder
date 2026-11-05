@@ -631,13 +631,13 @@ class ExtractRequest(BaseModel):
 
 
 class ExtractEntry(BaseModel):
-    """One archive member's outcome, in zip order.
+    """One archive member's outcome, in natural filename order.
 
-    `index` is the member's ordinal among non-ignored zip members and
-    preserves zip order — downstream pairing in Convex reads it as scan
-    order, so it is load-bearing, not cosmetic. Callers only ever hold
-    `{job_id, user_id, index}`; there is deliberately no object key or path
-    here (the service derives keys — see `ExtractRequest`).
+    `index` is the member's ordinal among non-ignored zip members, after the
+    natural filename sort in `zipsafe.iter_zip_members` — downstream pairing
+    in Convex reads it as scan order, so it is load-bearing, not cosmetic.
+    Callers only ever hold `{job_id, user_id, index}`; there is deliberately no
+    object key or path here (the service derives keys — see `ExtractRequest`).
 
     Accepted entries carry the sniffed `content_type` and `size_bytes` of the
     bytes actually stored (post EXIF normalisation); rejected ones carry a
@@ -655,7 +655,7 @@ class ExtractEntry(BaseModel):
 class ExtractResponse(BaseModel):
     """Response body for POST /extract.
 
-    `entries` has one row per non-ignored zip member, in zip order.
+    `entries` has one row per non-ignored zip member, in natural filename order.
     `accepted_count + rejected_count == len(entries)`.
     """
 
@@ -912,6 +912,13 @@ def _prepare_member(
     except Exception:  # noqa: BLE001 - one undecodable member must not 502 the batch
         logger.warning("extract: entry %d undecodable during EXIF normalisation", member.index)
         return _rejected("entry_undecodable")
+
+    # The EXIF re-encode runs at high quality and can grow an image past the
+    # ceiling it came in under. The object written here is read back through
+    # that same ceiling by /process-entry, so an oversized one could only fail
+    # later and less clearly.
+    if len(upright) > zipsafe.MAX_ENTRY_UNCOMPRESSED_BYTES:
+        return _rejected("entry_too_large")
 
     # Re-sniff rather than reusing the member's type: EXIF normalisation can
     # re-encode into a different format (see app.exif), and the stored object

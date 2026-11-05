@@ -13,8 +13,8 @@ Covers the three attack classes the module is built against:
   anything that merely *claims* to be an image via its extension.
 
 Plus the archive furniture (`__MACOSX/`, `.DS_Store`, AppleDouble, directory
-entries) that is dropped silently, the zip-order indexing the Convex pairing consumer depends
-on, and the boundary the module shares with `app.main.MAX_IMAGE_BYTES`.
+entries) that is dropped silently, the natural-order indexing the Convex pairing consumer
+depends on, and the boundary the module shares with `app.main.MAX_IMAGE_BYTES`.
 
 Archives are built in-test with `zipfile`; the hostile headers are produced by
 rewriting the bytes of a real archive.
@@ -514,6 +514,70 @@ class TestMemberIteration:
         )
         assert [m.index for m in found] == [0, 1, 2]
         assert [m.accepted for m in found] == [True, False, True]
+
+    def test_shuffled_archive_comes_out_in_natural_order(self):
+        # Zip order is not capture order, and pairing reads the index as scan
+        # order. A plain string sort would put img10 before img2.
+        names = ["img10.jpg", "img2.jpg", "IMG1.jpg", "img100.jpg", "img3.jpg"]
+        found = members(build_zip([(name, jpeg_bytes()) for name in names]))
+        assert [m.name for m in found] == [
+            "IMG1.jpg",
+            "img2.jpg",
+            "img3.jpg",
+            "img10.jpg",
+            "img100.jpg",
+        ]
+        assert [m.index for m in found] == [0, 1, 2, 3, 4]
+
+    def test_each_entry_keeps_its_own_bytes_when_read_out_of_order(self):
+        # Reading backwards through the directory must hand back each entry's
+        # own payload, not whatever the stream was last positioned over.
+        payloads = {f"{i}.jpg": jpeg_bytes((40 + i, 56)) for i in range(5)}
+        found = members(build_zip(list(reversed(payloads.items()))))
+        assert [m.name for m in found] == list(payloads)
+        assert {m.name: m.data for m in found} == payloads
+
+    def test_names_equal_by_case_or_leading_zeros_keep_zip_order(self):
+        names = ["img02.jpg", "IMG2.jpg", "img2.jpg", "img1.jpg"]
+        found = members(build_zip([(name, jpeg_bytes()) for name in names]))
+        assert [m.name for m in found] == ["img1.jpg", "img02.jpg", "IMG2.jpg", "img2.jpg"]
+
+    def test_rejected_entries_take_their_sorted_ordinal(self):
+        found = members(
+            build_zip(
+                [
+                    ("3.jpg", jpeg_bytes()),
+                    ("2.pdf", b"%PDF-1.7"),
+                    ("1.jpg", jpeg_bytes()),
+                ]
+            )
+        )
+        assert [(m.index, m.name, m.accepted) for m in found] == [
+            (0, "1.jpg", True),
+            (1, "2.pdf", False),
+            (2, "3.jpg", True),
+        ]
+
+    def test_ignored_entries_take_no_ordinal_after_sorting(self):
+        found = members(
+            build_zip(
+                [
+                    ("b2.jpg", jpeg_bytes()),
+                    ("__MACOSX/._a1.jpg", b"junk"),
+                    ("a1.jpg", jpeg_bytes()),
+                    (".DS_Store", b"junk"),
+                ]
+            )
+        )
+        assert [(m.index, m.name) for m in found] == [(0, "a1.jpg"), (1, "b2.jpg")]
+
+    def test_a_hostile_digit_run_cannot_break_the_sort(self):
+        # The sort sees names before they are validated, and int() raises past
+        # 4300 digits. The long name loses on length and is rejected as usual.
+        long_digits = "1" * 5000
+        found = members(build_zip([(long_digits, jpeg_bytes()), ("2.jpg", jpeg_bytes())]))
+        assert [m.name for m in found] == ["2.jpg", long_digits]
+        assert found[1].reason == "entry_name_too_long"
 
     @pytest.mark.parametrize("name", FURNITURE_NAMES)
     def test_archive_furniture_is_dropped_silently(self, name):

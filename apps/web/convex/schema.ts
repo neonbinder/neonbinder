@@ -1,5 +1,6 @@
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
+import { rejectedSummaryValidator } from "./lib/extractRejections";
 
 /**
  * NEO-356 — the collector's saved theme preference, shared by the schema and
@@ -3447,6 +3448,12 @@ export default defineSchema({
     processedImages: v.optional(v.number()),
     failedImages: v.optional(v.number()),
     rejectedEntries: v.optional(v.number()), // zip members extract declined (not images, too big, etc.)
+    // NEO-446 — why, as a collector can act on it: counts that add up to
+    // `rejectedEntries` and the first few file names (never one that failed
+    // name validation). On the job, not in rows of their own, because a rejected
+    // entry has no work to do and a row would join the counters, the prune and
+    // the lanes. See convex/lib/extractRejections.ts.
+    rejected: v.optional(rejectedSummaryValidator),
     startedAt: v.optional(v.number()), // when the batch was started, not when the job was created
     finishedAt: v.optional(v.number()),
     // Terminal failure detail. `errorCode` is the low-cardinality tag to group

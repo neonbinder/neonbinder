@@ -36,9 +36,11 @@ import {
   cardLabel,
   columnsClear,
   failedText,
+  inNaturalOrder,
   LEAVE_INTAKE_LINE,
   laneOf,
   PHOTO_NEWS_QUIET_MS,
+  PHOTO_TOO_BIG_LINE,
   photoChanges,
   photoLine,
   photoNewsOf,
@@ -48,6 +50,7 @@ import {
   proposedCount,
   readOf,
   reasonText,
+  runNotice,
   runSummary,
   type IntakeImage,
   type IntakeMatchRow,
@@ -100,6 +103,10 @@ const LocalPhotos = createContext<ReadonlyMap<string, string>>(new Map());
  * A saved card takes its scans with it (NEO-427): the server puts the pair on
  * the saved line after the save, and the tile says how that went (`PhotoLine`),
  * with one polite line for what landed (`usePhotoNews`).
+ *
+ * Past collecting, one line says where the run stands (NEO-446, `runNotice`),
+ * from the job row alone so a refresh on `?run=` says the same. A run that went
+ * wrong offers "Start a new run"; one where nothing reached the lanes hides them.
  *
  * Not yet: the common price prompt (NEO-378), rotate/re-crop/reject one side,
  * and finding the set from the photos when none is picked.
@@ -221,6 +228,7 @@ export default function RealAddCardsTab() {
   // Still loading the run's job reads as collecting, so the drop zone and the
   // scanner code don't blink out while a just-started run catches up.
   const collecting = !run || job === undefined || job?.status === "collecting";
+  const notice = collecting ? null : runNotice(job);
 
   // NEO-370 — the listing gate, on what the run (or the setup) will give its cards.
   const shownDefaults: RunDefaults = run?.defaults ?? defaults;
@@ -250,6 +258,21 @@ export default function RealAddCardsTab() {
       return next;
     });
 
+  // Leaving a run takes the button that asked for it off the screen, so focus
+  // lands on the drop zone, which is the next thing to do, once it is drawn.
+  const dropArea = useRef<HTMLDivElement>(null);
+  const focusDropzone = useRef(false);
+  const startNewRun = () => {
+    setStatus("");
+    focusDropzone.current = true;
+    openRun(null);
+  };
+  useEffect(() => {
+    if (runParam || !focusDropzone.current) return;
+    focusDropzone.current = false;
+    dropArea.current?.querySelector<HTMLElement>('input[type="file"]')?.focus();
+  }, [runParam]);
+
   // A drop while `loading` waits here, then takes the normal path below once
   // the shelf and the run are in. The latest drop wins, as a new pick does.
   const queued = useRef<File[] | null>(null);
@@ -260,7 +283,9 @@ export default function RealAddCardsTab() {
       queued.current = chosen;
       return;
     }
-    if (classifyIntake(chosen).kind === "invalid") return;
+    const intake = classifyIntake(chosen);
+    if (intake.kind === "invalid") return;
+    const isZip = intake.kind === "zip";
     // Held by the listing gate: the reason is beside the zone (it never opens a picker then).
     if (lock.locked) return;
     if (!run && !pickedHome) {
@@ -276,11 +301,14 @@ export default function RealAddCardsTab() {
       added.set(file.name, url);
     }
     setLocalPhotos(added);
-    setStatus("Sending your photos…");
+    setStatus(isZip ? "Sending your zip…" : "Sending your photos…");
     try {
-      const out = await upload(chosen, { source: "web", jobId: run?.jobId });
+      // Scan order is upload order, and a zip is unpacked in natural filename
+      // order, so loose photos go up the same way. Here and not in the hook: the
+      // seed page uploads in the exact order it is handed, backs first on purpose.
+      const out = await upload(isZip ? chosen : inNaturalOrder(chosen), { source: "web", jobId: run?.jobId });
       if (!out.ok) {
-        setStatus(`Couldn't send these photos: ${out.reason}.`);
+        setStatus(`${isZip ? "Couldn't send that zip" : "Couldn't send these photos"}: ${out.reason}.`);
         return;
       }
       setFiles([]);
@@ -293,10 +321,13 @@ export default function RealAddCardsTab() {
         });
         openRun(id);
       }
+      // A zip's counts are the archive's, not its photos: the job row speaks for it now.
       setStatus(
-        out.failed === 0
-          ? `Sent ${out.uploaded} photo${out.uploaded === 1 ? "" : "s"}.`
-          : `Sent ${out.uploaded} of ${out.total} photos. ${out.failed} failed.`,
+        out.kind === "zip"
+          ? ""
+          : out.failed === 0
+            ? `Sent ${out.uploaded} photo${out.uploaded === 1 ? "" : "s"}.`
+            : `Sent ${out.uploaded} of ${out.total} photos. ${out.failed} failed.`,
       );
     } catch (error) {
       setStatus(writeErrorMessage(error));
@@ -363,7 +394,7 @@ export default function RealAddCardsTab() {
         {(run?.defaults ?? defaults).grading ? `, ${(run?.defaults ?? defaults).grading?.grader}` : ""}
       </NeonButton>
       {run && (
-        <NeonButton variant="secondary" outline className="ml-auto" onClick={() => openRun(null)}>
+        <NeonButton variant="secondary" outline className="ml-auto" onClick={startNewRun}>
           New run
         </NeonButton>
       )}
@@ -391,7 +422,7 @@ export default function RealAddCardsTab() {
       {runParam && (!runId || run === null) && (
         <p className="m-0 rounded-md border border-rule p-3 text-sm text-ink-2">
           That run isn&apos;t yours or is gone.{" "}
-          <button type="button" className={`text-neon-blue-text underline ${RING}`} onClick={() => openRun(null)}>
+          <button type="button" className={`text-neon-blue-text underline ${RING}`} onClick={startNewRun}>
             Start a new one
           </button>
         </p>
@@ -409,8 +440,8 @@ export default function RealAddCardsTab() {
           </NeonButton>
         </ListingGateNote>
       )}
-      {collecting ? (
-        <>
+      {collecting && (
+        <div ref={dropArea} className="space-y-4">
           <Dropzone
             quiet
             files={files}
@@ -433,19 +464,39 @@ export default function RealAddCardsTab() {
               onRunStarted={openRun}
             />
           )}
-        </>
-      ) : (
-        <p className="m-0 rounded-md border border-rule p-3 text-sm text-ink-2">
-          This run&apos;s photos are all in. To add more, start a new run.
-        </p>
+        </div>
       )}
-      <p role="status" aria-live="polite" className="m-0 min-h-5 text-sm text-ink-2">
-        {status}
-      </p>
+      <div>
+        {/* The run's line. The live region is always mounted, so a line landing in it
+            is announced; the button stays outside it, so it isn't read out as part of the line. */}
+        <div
+          className={
+            notice
+              ? `mb-2 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-md border p-3 text-sm ${
+                  notice.problem ? "border-notice-warn-rule bg-notice-warn-bg text-notice-warn-ink" : "border-rule text-ink-2"
+                }`
+              : undefined
+          }
+        >
+          <p role="status" aria-live="polite" className="m-0 min-w-0 flex-1 basis-64 [overflow-wrap:anywhere]">
+            {notice?.line}
+          </p>
+          {notice?.problem && (
+            <NeonButton size="1" variant="primary" className="max-sm:min-h-11" onClick={startNewRun}>
+              Start a new run
+            </NeonButton>
+          )}
+        </div>
+        <p role="status" aria-live="polite" className="m-0 min-h-5 text-sm text-ink-2">
+          {status}
+        </p>
+      </div>
       {run ? (
-        <LocalPhotos.Provider value={localPhotos}>
-          <RunWorkspace run={run} jobOpen={job?.status === "collecting"} />
-        </LocalPhotos.Provider>
+        !notice?.hideWorkspace && (
+          <LocalPhotos.Provider value={localPhotos}>
+            <RunWorkspace run={run} jobOpen={job?.status === "collecting"} />
+          </LocalPhotos.Provider>
+        )
       ) : (
         !runParam && <RecentRuns runs={(recent ?? []).filter((r) => r.homeKind === kind)} onOpen={openRun} />
       )}
@@ -987,6 +1038,8 @@ function RunWorkspace({ run, jobOpen }: { run: RunSummary; jobOpen: boolean }) {
                           notify("This photo has been tried too many times. Scan it again instead.");
                         } else if (r.reason === "closed") {
                           notify("This run is closed. Scan the photo again to add it.");
+                        } else if (r.reason === "too big") {
+                          notify(PHOTO_TOO_BIG_LINE);
                         }
                       })
                       .catch(fail)

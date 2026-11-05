@@ -218,6 +218,7 @@ _FORBIDDEN_NAME_CHARS = frozenset(
 )
 
 _DRIVE_LETTER_RE = re.compile(r"^[A-Za-z]:")
+_DIGIT_RUN_RE = re.compile(r"([0-9]+)")
 _UNIX_MODE_FORMAT_MASK = 0xF000
 _UNIX_MODE_SYMLINK = 0xA000
 _ZIP_FLAG_ENCRYPTED = 0x1
@@ -245,8 +246,9 @@ class ZipMember:
 
     Accepted members carry `data` and `content_type`; rejected ones carry
     `reason` and no bytes. `index` is the member's ordinal among non-ignored
-    entries, i.e. **zip order**, which the Convex pairing consumer (NEO-170)
-    reads as scan order and `app.jobs.layout` uses to name the output object.
+    entries in **natural filename order** (`_natural_sort_key`), which the
+    Convex pairing consumer (NEO-170) reads as scan order and `app.jobs.layout`
+    uses to name the output object.
     """
 
     index: int
@@ -371,6 +373,33 @@ def _is_ignorable(info: zipfile.ZipInfo) -> bool:
     if basename in IGNORED_BASENAMES:
         return True
     return any(basename.startswith(prefix) for prefix in IGNORED_BASENAME_PREFIXES)
+
+
+def _natural_sort_key(name: str) -> list[str | tuple[int, str]]:
+    """Sort key that puts `img2` before `img10`, ignoring case.
+
+    Zip order is not capture order: Google Photos, for one, lists a download's
+    entries out of sequence, and pairing reads the ordinal as scan order, so a
+    shuffled archive would pair a card's front with some other card's back.
+    Filenames from a camera or scanner do sort in capture order.
+
+    Names that differ only by case or leading zeros compare equal, and the
+    stable sort leaves those in zip order.
+
+    This runs on unvalidated names, rejected ones included, so a digit run is
+    compared by length and then text rather than through `int()`, which raises
+    past 4300 digits. Text and digit runs alternate in the split, so two keys
+    only ever compare like with like.
+    """
+    parts = _DIGIT_RUN_RE.split(name.casefold())
+    key: list[str | tuple[int, str]] = []
+    for position, part in enumerate(parts):
+        if position % 2:
+            digits = part.lstrip("0")
+            key.append((len(digits), digits))
+        else:
+            key.append(part)
+    return key
 
 
 def _name_rejection(name: str) -> str | None:
@@ -507,7 +536,13 @@ def count_candidate_entries(stream: BinaryIO, *, object_size: int) -> int:
 
 
 def iter_zip_members(stream: BinaryIO, *, object_size: int) -> Iterator[ZipMember]:
-    """Yield every candidate image in the archive, in zip order.
+    """Yield every candidate image in the archive, in natural filename order.
+
+    Ordinals are assigned after the sort. A rejected entry still takes one, so
+    its neighbours keep theirs; an ignored entry is dropped first and takes
+    none. `ZipFile.open` seeks to each entry's own local header, so reading out
+    of directory order needs nothing from the stream beyond the seeks `zipfile`
+    already makes, and memory stays bounded by one entry at a time.
 
     Args:
         stream: a seekable read stream over the zip object.
@@ -526,10 +561,10 @@ def iter_zip_members(stream: BinaryIO, *, object_size: int) -> Iterator[ZipMembe
         index = 0
         total_bytes = 0
 
-        for info in archive.infolist():
-            if _is_ignorable(info):
-                continue
+        candidates = [info for info in archive.infolist() if not _is_ignorable(info)]
+        candidates.sort(key=lambda info: _natural_sort_key(info.filename))
 
+        for info in candidates:
             reason = _metadata_rejection(info)
             if reason is not None:
                 yield ZipMember(index=index, name=info.filename, reason=reason)

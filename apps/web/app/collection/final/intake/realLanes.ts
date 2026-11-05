@@ -1,6 +1,7 @@
 import type { FunctionReturnType } from "convex/server";
 import type { api } from "@/convex/_generated/api";
 import type { IntakeReason } from "@/convex/lib/intakeMatch";
+import { ENTRY_TOO_MANY_PIXELS, type RejectedSummary, type RejectionKind } from "@/convex/lib/extractRejections";
 
 /**
  * NEO-382 — the signed-in intake screen's lanes, worked out from the three
@@ -240,18 +241,216 @@ export function proposedCount(row: Pick<IntakeMatchRow, "haveHere">): number {
  */
 export const MAX_PHOTO_RETRIES = 3;
 
-/** Whether a failed photo can still be sent again (the run must also be open). */
-export function canRetryPhoto(image: Pick<IntakeImage, "status" | "retries">): boolean {
-  return image.status === "failed" && (image.retries ?? 0) < MAX_PHOTO_RETRIES;
+/**
+ * Whether a failed photo can still be sent again (the run must also be open).
+ * Never one over the pixel ceiling: the same bytes can only fail the same way.
+ */
+export function canRetryPhoto(image: Pick<IntakeImage, "status" | "retries" | "errorCode">): boolean {
+  return (
+    image.status === "failed" &&
+    image.errorCode !== ENTRY_TOO_MANY_PIXELS &&
+    (image.retries ?? 0) < MAX_PHOTO_RETRIES
+  );
 }
+
+/**
+ * The photo size limit as a collector reads it. Mirrors MAX_IMAGE_PIXELS in
+ * services/preprocess/app/imaging.py (65,000,000, so that real 64 MP phones at
+ * 64,144,128 px pass). Change both together.
+ */
+const PHOTO_LIMIT = "64 MP";
+
+/** A photo over the limit: on its tile, and if a stale Try again is refused for it. */
+export const PHOTO_TOO_BIG_LINE = `Too big (over ${PHOTO_LIMIT}). Shrink it and send it again.`;
 
 /**
  * Why a photo in the pile failed, in a collector's words. With no Try again on
  * offer (the run is closed, or the photo has had its tries), it says what to do.
  */
 export function failedText(image: Pick<IntakeImage, "errorCode">, retryOffered: boolean): string {
+  if (image.errorCode === ENTRY_TOO_MANY_PIXELS) return PHOTO_TOO_BIG_LINE;
   const why = image.errorCode === "PHOTO_TIMED_OUT" ? "Took too long to read" : "Couldn't read it";
   return retryOffered ? why : `${why}. Scan it again.`;
+}
+
+/**
+ * NEO-446 — the order a zip's entries are unpacked in, for loose photos too, so
+ * the same pile pairs the same way however it arrives: digit runs by value, the
+ * rest ignoring case. Mirrors `_natural_sort_key` in
+ * services/preprocess/app/jobs/zipsafe.py, down to comparing a digit run by
+ * length then text, so a very long run never leaves the safe integer range.
+ */
+export function compareNaturalNames(a: string, b: string): number {
+  const left = a.toLowerCase().split(/([0-9]+)/);
+  const right = b.toLowerCase().split(/([0-9]+)/);
+  const compareText = (x: string, y: string) => (x < y ? -1 : x > y ? 1 : 0);
+  for (let i = 0; i < Math.min(left.length, right.length); i++) {
+    const isDigits = i % 2 === 1;
+    const x = isDigits ? left[i].replace(/^0+/, "") : left[i];
+    const y = isDigits ? right[i].replace(/^0+/, "") : right[i];
+    const order = (isDigits ? x.length - y.length : 0) || compareText(x, y);
+    if (order !== 0) return order;
+  }
+  return left.length - right.length;
+}
+
+/** The files in that order, as a new array; names that compare equal keep their order. */
+export function inNaturalOrder(files: readonly File[]): File[] {
+  return [...files].sort((a, b) => compareNaturalNames(a.name, b.name));
+}
+
+/** The job fields the screen's run line is worked out from. */
+export type NoticeJob = Pick<
+  NonNullable<FunctionReturnType<typeof api.placeholderPipeline.getPlaceholderJob>>,
+  "status" | "mode" | "totalImages" | "failedImages" | "rejectedEntries" | "errorCode" | "rejected"
+>;
+
+export interface RunNotice {
+  line: string;
+  /** Something went wrong, and the way forward is a new run: draws the warning look and "Start a new run". */
+  problem: boolean;
+  /** Nothing ever reached the lanes, so a row of zeros would only say something false. */
+  hideWorkspace: boolean;
+}
+
+const notice = (line: string, problem = true, hideWorkspace = false): RunNotice => ({ line, problem, hideWorkspace });
+
+const ALL_IN_LINE = "This run's photos are all in. To add more, start a new run.";
+const UNPACKING_LINE = "Unpacking your zip…";
+const SNAG_LINE = "Our photo reader hit a snag. That's on us. Start a new run and send them again.";
+const WOULD_NOT_OPEN_LINE = "That zip wouldn't open. Zip your photos again (up to 1,000 photos, 500 MB) and start a new run.";
+const WOULD_NOT_OPEN_CODES = new Set(["ZIP_REJECTED", "EXTRACT_REJECTED", "INPUT_TOO_LARGE", "INVALID_IDENTIFIER"]);
+
+/** "IMG_1.jpg, IMG_2.jpg and 3 more", or the bare count when no name can be shown. */
+function rejectedSubject(rejected: RejectedSummary, kind: RejectionKind): string {
+  const count = rejected[kind];
+  const names = rejected.examples
+    .filter((example) => example.kind === kind)
+    .map((example) => example.name)
+    .slice(0, count);
+  if (names.length === 0) return String(count);
+  const more = count - names.length;
+  return more > 0 ? `${names.join(", ")} and ${more} more` : names.join(", ");
+}
+
+/** What is wrong with `count` of a kind, after their subject: "is too big (over 64 MP)". */
+function rejectedProblem(kind: RejectionKind, count: number): string {
+  const one = count === 1;
+  switch (kind) {
+    case "tooBig":
+      return `${one ? "is" : "are"} too big (over ${PHOTO_LIMIT})`;
+    case "wrongFormat":
+      return one ? "isn't a JPEG, PNG or WebP" : "aren't JPEGs, PNGs or WebPs";
+    case "unreadable":
+      return "couldn't be read";
+  }
+}
+
+const REJECTION_KINDS: RejectionKind[] = ["tooBig", "wrongFormat", "unreadable"];
+
+function kindsIn(rejected: RejectedSummary): RejectionKind[] {
+  return REJECTION_KINDS.filter((kind) => rejected[kind] > 0);
+}
+
+/** One clause per kind of problem, naming what it can. */
+function rejectedClauses(rejected: RejectedSummary): string {
+  return kindsIn(rejected)
+    .map((kind) => `${rejectedSubject(rejected, kind)} ${rejectedProblem(kind, rejected[kind])}`)
+    .join("; ");
+}
+
+/** What to do about entries rejected from a run that still has photos in it. */
+function rejectedFix(rejected: RejectedSummary, count: number): string {
+  const them = count === 1 ? "it" : "them";
+  const kinds = kindsIn(rejected);
+  if (kinds.length !== 1) return `Fix ${them} and drop ${them} in a new run.`;
+  switch (kinds[0]) {
+    case "tooBig":
+      return `Shrink ${them} and drop ${them} in a new run.`;
+    case "wrongFormat":
+      return `Convert ${them} and drop ${them} in a new run.`;
+    case "unreadable":
+      return `Check ${count === 1 ? "it opens" : "they open"} on your end, then drop ${them} in a new run.`;
+  }
+}
+
+/** Some of the zip made it in, some didn't. */
+function someRejectedLine(job: NoticeJob): string {
+  const count = job.rejectedEntries;
+  const them = count === 1 ? "it" : "them";
+  const made = `${job.totalImages} photo${job.totalImages === 1 ? "" : "s"} made it in.`;
+  if (!job.rejected) return `${made} ${count} didn't. Check ${them} and drop ${them} in a new run.`;
+  return `${made} ${count} didn't: ${rejectedClauses(job.rejected)}. ${rejectedFix(job.rejected, count)}`;
+}
+
+/** Nothing in the zip made it in, and each entry said why. */
+function allRejectedLine(job: NoticeJob): string {
+  const { rejected, rejectedEntries: count } = job;
+  const one = count === 1;
+  const them = one ? "it" : "them";
+  const unreadable = `We couldn't read the ${one ? "photo" : "photos"} in that zip. Check ${one ? "it opens" : "they open"} on your end, then start a new run.`;
+  if (!rejected) return unreadable;
+  const kinds = kindsIn(rejected);
+  if (kinds.length > 1) {
+    const counts = kinds.map((kind) => `${rejected[kind]} ${rejectedProblem(kind, rejected[kind])}`);
+    return `Nothing in that zip made it in: ${counts.join("; ")}. Fix ${them}, zip ${them} up again, and start a new run.`;
+  }
+  if (kinds[0] === "tooBig") {
+    return one
+      ? `Whoa, that photo is too big! It's over ${PHOTO_LIMIT}. Shrink it, zip it up again, and start a new run.`
+      : `Whoa, those photos are too big! All ${count} are over ${PHOTO_LIMIT}. Shrink them, zip them up again, and start a new run.`;
+  }
+  if (kinds[0] === "wrongFormat") {
+    return `No JPEGs, PNGs or WebPs in that zip. Convert ${them}, zip ${them} up again, and start a new run.`;
+  }
+  return unreadable;
+}
+
+function failedNotice(job: NoticeJob): RunNotice {
+  const nothingIn = !job.totalImages;
+  const failed = (line: string) => notice(line, true, nothingIn);
+  switch (job.errorCode) {
+    case "CANCELED":
+      return failed("This run was stopped.");
+    case "INPUT_NOT_FOUND":
+      return failed("Your zip never landed. Send it again in a new run.");
+    case "TOO_MANY_IMAGE_FAILURES": {
+      if (!nothingIn) {
+        const most = "Most of these photos wouldn't read. Anything below is still yours to save. Re-shoot the rest, sharp and well lit, in a new run.";
+        return failed(
+          job.rejectedEntries > 0 && job.rejected
+            ? `${most} ${job.rejectedEntries} more didn't make it in: ${rejectedClauses(job.rejected)}.`
+            : most,
+        );
+      }
+      if (job.mode === "stream") return failed("No photos came in before this run closed. Start a new run and drop some in.");
+      return failed(job.rejectedEntries > 0 ? allRejectedLine(job) : "No photos in that zip.");
+    }
+    default:
+      return failed(job.errorCode && WOULD_NOT_OPEN_CODES.has(job.errorCode) ? WOULD_NOT_OPEN_LINE : SNAG_LINE);
+  }
+}
+
+/**
+ * NEO-446 — what the screen says about a run past collecting, from its job row
+ * alone, so a refresh on `?run=` says the same thing. Null while the run is
+ * still collecting (the drop zone is the message then). A null job is a row
+ * that is gone: the line says so, and the lanes stay in case they hold saved
+ * cards.
+ */
+export function runNotice(job: NoticeJob | null): RunNotice | null {
+  if (!job) return notice(SNAG_LINE);
+  if (job.status === "collecting") return null;
+  if (job.status === "failed") return failedNotice(job);
+  if (job.status === "pending" || job.status === "uploaded" || job.status === "extracting") {
+    return notice(UNPACKING_LINE, false);
+  }
+  const isZip = (job.mode ?? "zip") === "zip";
+  // Between registration and the terminal decision, a zip with nothing in it is
+  // still on its way to saying so; "0 photos made it in" would only flash by.
+  if (isZip && job.status !== "succeeded" && job.totalImages === 0) return notice(UNPACKING_LINE, false);
+  if (job.rejectedEntries > 0) return notice(someRejectedLine(job));
+  return notice(ALL_IN_LINE, false);
 }
 
 /** The run's one-line status. A failed photo is not "read", so it never says everything is. */

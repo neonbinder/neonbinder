@@ -18,6 +18,7 @@ import pytest
 from PIL import Image
 
 from app.classify import (
+    ANTHROPIC_MAX_EDGE_PX,
     ANTHROPIC_MAX_RAW_BYTES,
     DEFAULT_MODEL,
     EFFORT,
@@ -115,6 +116,38 @@ class TestPrepareForAnthropic:
         with Image.open(io.BytesIO(payload)) as result:
             # Longest edge must be at or below the downscale cap.
             assert max(result.size) <= 1600
+
+    @pytest.mark.parametrize("size", [(6144, 8160), (9248, 6936), (8001, 100)])
+    def test_small_file_over_the_edge_limit_is_downscaled(self, size):
+        # Under the byte budget but over Anthropic's dimension limit: the bytes
+        # alone would pass, and the API would refuse the request.
+        buf = io.BytesIO()
+        Image.new("RGB", size, color="white").save(buf, format="JPEG", quality=30)
+        original = buf.getvalue()
+        assert len(original) <= ANTHROPIC_MAX_RAW_BYTES
+
+        payload, media_type = _prepare_for_anthropic(original)
+
+        assert media_type == "image/jpeg"
+        with Image.open(io.BytesIO(payload)) as result:
+            assert max(result.size) <= 1600
+
+    def test_exactly_the_edge_limit_passes_through_unchanged(self):
+        buf = io.BytesIO()
+        Image.new("RGB", (ANTHROPIC_MAX_EDGE_PX, 100), color="white").save(buf, format="PNG")
+        original = buf.getvalue()
+
+        payload, media_type = _prepare_for_anthropic(original)
+
+        assert payload == original
+        assert media_type == "image/png"
+
+    def test_unreadable_small_bytes_still_pass_through(self):
+        # haiku_bbox and classify both rely on this rather than on an exception.
+        payload, media_type = _prepare_for_anthropic(b"not an image")
+
+        assert payload == b"not an image"
+        assert media_type == "image/jpeg"
 
 
 class TestClassifyCard:

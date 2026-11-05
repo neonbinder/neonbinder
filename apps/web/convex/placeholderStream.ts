@@ -45,6 +45,7 @@ import { internal } from "./_generated/api";
 import type { Doc } from "./_generated/dataModel";
 import { fastPreprocessPool } from "./placeholderPool";
 import { finalizePairingInline } from "./placeholderPairing";
+import { ENTRY_TOO_MANY_PIXELS } from "./lib/extractRejections";
 import {
   ACTIVE_STATUSES,
   ENQUEUE_CHUNK_SIZE,
@@ -415,6 +416,10 @@ export const retryPlaceholderImage = mutation({
     if (!image) throw new Error("Image not found");
     // A double click, or a photo that already came back: nothing to do.
     if (image.status !== "failed") return { retried: false, reason: "not failed" };
+    // NEO-446: over the pixel ceiling. The stored bytes can only fail the same
+    // way, and each retry is paid work, so it never goes back through. Checked
+    // ahead of the cap so the answer is the real reason whatever its try count.
+    if (image.errorCode === ENTRY_TOO_MANY_PIXELS) return { retried: false, reason: "too big" };
     const retries = (image.retries ?? 0) + 1;
     if (retries > PLACEHOLDER_MAX_IMAGE_RETRIES) {
       return { retried: false, reason: "too many tries" };

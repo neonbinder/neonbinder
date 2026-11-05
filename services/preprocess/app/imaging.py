@@ -42,15 +42,22 @@ logger = logging.getLogger(__name__)
 # Most pixels we will decode in one image.
 #
 # The number is set by the largest thing a real camera produces, not by card
-# geometry: an iPhone in 48 MP mode emits 8064x6048 = 48,771,072 px, and
-# full-frame bodies reach 61 MP. Rejecting those would be a product bug, since
-# a zip of phone photos is exactly the input this feature exists for. 50 MP
-# clears the iPhone case with a little room and still bounds one decoded RGB
-# raster at ~150 MB, against a 4 GiB instance that is also holding SAM.
+# geometry. Sensor marketing rounds down, so the limit sits above the nominal
+# megapixels: a "50 MP" Pixel writes 6144x8160 = 50,135,040 px and a "64 MP"
+# phone writes 9248x6936 = 64,144,128 px. Rejecting those would be a product
+# bug, since a zip of phone photos is exactly the input this feature exists for.
+#
+# 65 MP bounds one decoded RGB raster at ~195 MB. The FAST service (8 GiB,
+# concurrency 8) can hold eight of those at once, so roughly 1.6 GiB per live
+# full-size copy; the HEAVY service (16 GiB, concurrency 1) holds one beside its
+# models.
 #
 # For scale, the bomb this defends against is 169 MP / 484 MB, and Pillow's own
 # default does not raise until 178,956,970 px.
-MAX_IMAGE_PIXELS = 50_000_000
+#
+# The user-facing copy promises "64 MP" and lives in
+# apps/web/app/collection/final/intake/realLanes.ts. Change both together.
+MAX_IMAGE_PIXELS = 65_000_000
 
 # Lower Pillow's process-wide bomb ceiling to match. This is a module-level
 # side effect on purpose: it is the only way to protect decode paths that do
