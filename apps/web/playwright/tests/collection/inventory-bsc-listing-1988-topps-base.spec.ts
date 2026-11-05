@@ -269,6 +269,12 @@ test.afterEach(async ({ context, isMobile }, testInfo) => {
         await clean.goto("/inventory?tab=checklists");
         const checklist = await emptyBox(clean, written.box, written.cards, isMobile, "fresh");
         await checklist.getByRole("button", { name: `Sync ${TITLE}`, exact: true }).click();
+        // The press was taken before we leave the page: a missing toast means the
+        // zeroing press was answered "just synced", so no run is coming.
+        await expect(
+          clean.getByRole("status").filter({ hasText: `Syncing ${TITLE} now. Watch it on Sync status.` }),
+          'no "Syncing ... now" toast: the zeroing press was answered "just synced", so no run is coming',
+        ).toBeVisible();
         await clean.goto("/inventory?tab=sync");
         // The zeroing run, followed step by step as above, then its result line.
         const zeroing = syncStatus(clean);
