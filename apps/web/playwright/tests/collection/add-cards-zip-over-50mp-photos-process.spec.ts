@@ -54,6 +54,15 @@ const ZIP = path.join(
 /** The preprocess pipeline's fast-path ceiling (see the header). */
 const PIPELINE = 180_000;
 
+/**
+ * The measured length of a PIPELINE wait, kept as a report annotation (and in the
+ * run's output) so the ceiling can be argued from real numbers, not guessed.
+ */
+function waitMeasured(wait: string, ms: number): void {
+  test.info().annotations.push({ type: "pipeline wait", description: `${wait}: ${ms} ms` });
+  console.log(`pipeline wait [${test.info().project.name}] ${wait}: ${ms} ms`);
+}
+
 test(
   "Add cards: a zip of 50 MP photos is unpacked, read and paired into the lanes",
   { tag: ["@collection"] },
@@ -91,9 +100,12 @@ test(
     await expect(page.getByRole("button", { name: `Set: 2024 ${setName} Base` })).toBeVisible();
 
     // --- Drop the zip: the run starts and lands on the URL -----------------------------
+    const dropped = Date.now();
     await page.getByLabel("Drag your card photos here, or browse your files").setInputFiles(ZIP);
     // Sending the archive is the pipeline's upload leg: its exception.
     await expect(page).toHaveURL(/[?&]run=/, { timeout: PIPELINE });
+    const uploaded = Date.now();
+    waitMeasured("upload: zip dropped to ?run= in the URL", uploaded - dropped);
 
     // --- Unpacked, read, paired: the card is in the lanes ---------------------------------
     // "Unpacking your zip…" shows only while the service extracts, which a warm
@@ -104,6 +116,7 @@ test(
     // The pair reaches Needs you as the card in the photos (pipeline exception: two
     // 50 MP reads, then pairing and matching).
     await expect(waiting).toHaveAccessibleName("Needs you, 1", { timeout: PIPELINE });
+    waitMeasured("read: ?run= to the pair in Needs you (extract, 2 reads, pairing)", Date.now() - uploaded);
     const tile = waiting.getByRole("article", { name: "#315 Dwayne Bowe", exact: true });
     await expect(tile).toBeVisible();
     // What the 50 MP photo said, as read, so any case: its number and name.
@@ -112,7 +125,9 @@ test(
     // The zip took no failure line and no reject copy: nothing was turned away.
     await expect(page.getByText("This run's photos are all in. To add more, start a new run.")).toBeVisible();
     await expect(page.getByRole("button", { name: "Start a new run", exact: true })).toHaveCount(0);
-    await expect(page.getByText(/too big \(over 64 MP\)/)).toHaveCount(0);
+    // The positive proof that the photos got through is the tile above (read from
+    // the photos, in the lanes); this only rules out the rejection copy beside it.
+    await expect(page.getByText(/too big \(over 64 megapixels/)).toHaveCount(0);
     await expect(page.getByRole("region", { name: "Saved, 0" })).toBeVisible();
     // Settled (nothing arriving): the whole screen with a 50 MP pair waiting.
     await expectAccessible(page, { label: "Add cards, a zip of 50 MP photos read into the lanes" });

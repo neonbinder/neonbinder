@@ -1,5 +1,5 @@
 // NEO-446 (R1): Add cards explains a failed run. A zip in which nothing can be
-// used (two 67 MP photos, over the 64 MP limit, and a notes.txt that is no
+// used (two 67 MP photos, over the 64 megapixel limit, and a notes.txt that is no
 // photo) ends the run as failed, and the screen says why in the collector's
 // words instead of "This run's photos are all in": one line naming what was
 // turned away, no lanes (nothing reached them, a row of zeros would be false),
@@ -42,9 +42,18 @@ const ZIP = path.join(
 /** The preprocess pipeline's fast-path ceiling (see the header). */
 const PIPELINE = 180_000;
 
-/** `runNotice` for a failed zip with 2 photos over 64 MP and 1 non-photo, nothing in. */
+/**
+ * The measured length of a PIPELINE wait, kept as a report annotation (and in the
+ * run's output) so the ceiling can be argued from real numbers, not guessed.
+ */
+function waitMeasured(wait: string, ms: number): void {
+  test.info().annotations.push({ type: "pipeline wait", description: `${wait}: ${ms} ms` });
+  console.log(`pipeline wait [${test.info().project.name}] ${wait}: ${ms} ms`);
+}
+
+/** `runNotice` for a failed zip with 2 photos over 64 megapixels (the zip wording adds "or 32 MB") and 1 non-photo, nothing in. */
 const FAILURE =
-  "Nothing in that zip made it in: 2 are too big (over 64 MP); 1 isn't a JPEG, PNG or WebP. Fix them, zip them up again, and start a new run.";
+  "Nothing in that zip made it in: 2 are too big (over 64 megapixels or 32 MB); 1 isn't a JPEG or PNG. Fix them, zip them up again, and start a new run.";
 
 test(
   "Add cards: a zip with nothing usable in it ends the run with a line saying why, and Start a new run leaves it",
@@ -56,9 +65,12 @@ test(
 
     // --- Drop the zip: the run starts and lands on the URL ----------------------
     const dropzone = page.getByLabel("Drag your card photos here, or browse your files");
+    const dropped = Date.now();
     await dropzone.setInputFiles(ZIP);
     // Sending the archive is the pipeline's upload leg: its exception.
     await expect(page).toHaveURL(/[?&]run=/, { timeout: PIPELINE });
+    const uploaded = Date.now();
+    waitMeasured("upload: zip dropped to ?run= in the URL", uploaded - dropped);
     const runUrl = page.url();
 
     // --- The run fails, and the screen says why ---------------------------------
@@ -66,6 +78,7 @@ test(
     // Extract turns every entry away, then the closing pairing run fails the
     // job: the pipeline's exception again.
     await expect(failure).toHaveText(FAILURE, { timeout: PIPELINE });
+    waitMeasured("extract: ?run= to the failure line (extract, closing pairing run)", Date.now() - uploaded);
     await expect(page.getByRole("button", { name: "Start a new run", exact: true })).toBeVisible();
     // Not the success line, not the loose-photo "Sent" line, and no lanes: nothing
     // reached them. (Positive assertions above: the failure line is on screen.)

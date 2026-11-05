@@ -22,7 +22,7 @@ for _ in range(h): sys.stdout.buffer.write(row)
 " > flat.ppm
 cjpeg -quality 50 -optimize -sample 2x2 flat.ppm > huge-1.jpg
 cp huge-1.jpg huge-2.jpg
-printf 'Two 67 MP photos and a note. Add cards turns the photos away: over 64 MP.\n' > notes.txt
+printf 'Two photos over 64 megapixels and a note. Add cards turns the photos away.\n' > notes.txt
 zip -0 -X over-64mp-and-a-note.zip huge-1.jpg huge-2.jpg notes.txt
 ```
 
