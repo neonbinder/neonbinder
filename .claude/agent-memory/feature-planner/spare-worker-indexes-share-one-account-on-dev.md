@@ -8,15 +8,13 @@ metadata:
 The sign-in hop resolves `TEST_EMAIL_${worker}` and FALLS BACK to the unindexed
 `TEST_EMAIL` when the indexed var is unset (`api/auth/testing.ts`
 `resolveTestEmail`, and its dev-middleware twin `resolveDevTestEmail` in
-`apps/web/vite.config.ts`). A laptop whose `.env.local` defines only
-`TEST_EMAIL_0..2` therefore signs every "spare" worker (3-31) in as the SAME
-Clerk user: two sessions on worker 8 and worker 9 are one account.
+`apps/web/vite.config.ts`). A worker index with no indexed var therefore signs
+in as the SAME Clerk user as every other such index: two "spare" workers can be
+one account.
 
-**Why:** 2026-11-04, NEO-432: a seller spec green with bootstrap went red on a
-`--no-deps` rerun because another session's bootstrap on "worker 9" ran
-`testing.resetMyTestState` on the shared account and deleted its containers
-under the live page (the box picker fell to "Unsorted" only; the same
-mechanism produces the "That binder or box isn't in your collection." toast).
+**Why:** a bootstrap on another spare worker runs `testing.resetMyTestState` on
+the shared account and deletes its containers under a live page, which looks
+like a product bug (the box picker falls to "Unsorted" only).
 The only container delete paths are `collectionContainers.remove` (own, empty,
 non-system), `testing.resetMyTestState` (caller-scoped; the bootstrap project)
 and the armed global `selectorOptions.resetCollectionContainersBatch`.
