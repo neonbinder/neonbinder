@@ -25,8 +25,29 @@ describe("request photos (NEO-361)", () => {
     });
   });
 
-  it("says so when the upload fails", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => new Response("", { status: 500 })));
+  it("says so at once when storage refuses the upload", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const fetchMock = vi.fn(async () => new Response("", { status: 400 }));
+    vi.stubGlobal("fetch", fetchMock);
     await expect(uploadPhoto(async () => "u", file("image/png"))).rejects.toThrow(/didn't upload/);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
+  });
+
+  it("rides out a one-off storage error (NEO-431)", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(new Response("", { status: 503 }))
+        .mockResolvedValueOnce(new Response(JSON.stringify({ storageId: "st2" }), { status: 200 }));
+      vi.stubGlobal("fetch", fetchMock);
+      const uploaded = uploadPhoto(async () => "u", file("image/png"));
+      await vi.runAllTimersAsync();
+      expect(await uploaded).toBe("st2");
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

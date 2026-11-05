@@ -73,6 +73,7 @@ import type {
 import { isOptimisticId, OPTIMISTIC_ID_PREFIX } from "../lineKeys";
 import { finishForVariant } from "./finish";
 import { resizeCopyPhoto } from "@/lib/collection/copy-photo-resize";
+import { uploadWithRetry, type PhotoFileKind } from "@/lib/collection/upload-with-retry";
 import { CardImagesProvider } from "./cardImages";
 
 import {
@@ -2713,12 +2714,17 @@ function useConvexCopyPhotos(): CopyPhotosExtension {
           imageBytes: resized.image.size,
           thumbBytes: resized.thumb.size,
         });
-        const put = async (url: string, blob: Blob) => {
-          const res = await fetch(url, { method: "PUT", headers: { "content-type": resized.contentType }, body: blob });
-          if (!res.ok) throw new Error("That photo didn't upload. Check your connection and try again.");
-        };
-        await put(started.imageUploadUrl, resized.image);
-        await put(started.thumbUploadUrl, resized.thumb);
+        const put = (url: string, body: Blob, file: PhotoFileKind) =>
+          uploadWithRetry({
+            url,
+            method: "PUT",
+            headers: { "content-type": resized.contentType },
+            body,
+            file,
+            failureMessage: "That photo didn't upload. Check your connection and try again.",
+          });
+        await put(started.imageUploadUrl, resized.image, "image");
+        await put(started.thumbUploadUrl, resized.thumb, "thumb");
         await finishUpload({ photoId: started.photoId });
       },
       async removePhoto(copy, side) {
