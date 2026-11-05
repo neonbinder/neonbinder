@@ -131,7 +131,6 @@ import {
   drillToCollectorBase,
   emptyBoxCards,
   expectNothingSent,
-  followRunToEnd,
   followRunToRest,
   goViaShell,
   inventoryTabs,
@@ -142,6 +141,7 @@ import {
   queueSettled,
   shortNameOf,
   syncRun,
+  walkForCleanup,
 } from "../../support/collection";
 import { removeBscSignIn, saveBscSignIn } from "../../support/credentials";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
@@ -291,21 +291,17 @@ const emptyBox = (page: Page, box: string, cards: readonly string[], isMobile: b
 test.afterEach(async ({ context, isMobile }, testInfo) => {
   const failed = testInfo.status !== testInfo.expectedStatus;
   const clean = await context.newPage();
+  let cleanupFailure: unknown;
   try {
     try {
       // The cards are NB's zero from here on: quantities 0 in the box, then a
       // full Sync of the set, and the result waited for. A pass already proved it.
       if (failed && written.started && written.box && written.cards) {
-        // A run already under way reads the set as it was: let it finish first,
-        // so the Sync below is the one that sees the zeros.
-        await clean.goto("/inventory?tab=sync");
-        await expect(clean.getByRole("heading", { level: 1, name: "Inventory" })).toBeVisible({ timeout: LAUNCH_GATE });
-        // Followed step by step, each within the standard budget (the run's
-        // ledger). Scoped to the BuySportsCards section: Sync status has an
-        // eBay section too (NEO-415), and it says the same.
-        const before = syncStatus(clean);
-        await followRunToEnd(before.platform, syncRun(before.platform, SET_LABEL, BSC));
+        // No waiting on a run already under way: it can stall on a live read, and
+        // the box must still empty. A press during a run is taken, and its queued
+        // cards outlive that run, so the run that sees the zeros still comes.
         await clean.goto("/inventory?tab=checklists");
+        await expect(clean.getByRole("heading", { level: 1, name: "Inventory" })).toBeVisible({ timeout: LAUNCH_GATE });
         const checklist = await emptyBox(clean, written.box, written.cards, isMobile, "fresh");
         await checklist.getByRole("button", { name: `Sync ${TITLE}`, exact: true }).click();
         // The press was taken before we leave the page: a missing toast means the
@@ -315,13 +311,15 @@ test.afterEach(async ({ context, isMobile }, testInfo) => {
           'no "Syncing ... now" toast: the zeroing press was answered "just synced", so no run is coming',
         ).toBeVisible();
         await clean.goto("/inventory?tab=sync");
-        // The zeroing run, followed step by step as above, then its result line.
+        // The zeroing run walked to rest, then its result line. This order matters:
+        // removing the sign-in below drops the queue without withdrawing anything,
+        // so a zero not sent by then stays unsent, and the hook says so at its end.
         const zeroing = syncStatus(clean);
         const zeroingRun = syncRun(zeroing.platform, SET_LABEL, BSC);
-        const zeroed = zeroing.row.getByText(/^0 listed/);
-        await expect(zeroingRun.underWay(zeroed)).toBeVisible();
-        await followRunToEnd(zeroing.platform, zeroingRun);
-        await expect(zeroed).toBeVisible();
+        cleanupFailure = await walkForCleanup(async () => {
+          await followRunToRest(zeroing.platform, zeroingRun, queueSettled(zeroing.platform, SET_LABEL));
+          await expect(zeroing.row.getByText(/^0 listed/)).toBeVisible();
+        });
       }
     } finally {
       try {
@@ -349,6 +347,9 @@ test.afterEach(async ({ context, isMobile }, testInfo) => {
         } finally {
           // The body already stopped listing on a pass; otherwise it stops here.
           if (!written.stopped) await stopListing(clean, written.removed);
+          if (cleanupFailure) {
+            throw new Error(`The hook's zeros may not have reached ${BSC}: ${String(cleanupFailure)}`);
+          }
         }
       }
     }

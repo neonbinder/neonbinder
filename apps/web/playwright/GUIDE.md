@@ -321,6 +321,10 @@ Idioms:
 
 ## Gotchas (read before your first spec)
 
+- **A failure hook finishes its tidy-up.** A live read can stall past a step's
+  budget, so a hook walks a run through `walkForCleanup` (`support/collection.ts`),
+  finishes every other undo, then rethrows anything left undone. One stalled read
+  must not leave a box behind for the next spec. A test body never uses it.
 - **A `has`/`hasNot` locator is relative to the element it filters.** One rooted
   at the page or a region looks for that root inside the element, never matches,
   and the `hasNot` filter then passes everything. Build the inner locator from

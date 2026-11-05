@@ -190,6 +190,7 @@ import {
   drillToCollectorBase,
   emptyBoxCards,
   expectNothingSent,
+  followRunToEnd,
   followRunToRest,
   inventoryTabs,
   nameOf,
@@ -197,6 +198,7 @@ import {
   quantityField,
   queueSettled,
   syncRun,
+  walkForCleanup,
 } from "../../support/collection";
 import { expectEbayHookedUp, removeEbayConnection, saveEbayConnection } from "../../support/credentials";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
@@ -294,6 +296,13 @@ test.afterEach(async ({ context }, testInfo) => {
       }
     } finally {
       if (written.connected && !written.disconnected) {
+        // Disconnect waits out a run under way, longer than its button's budget, so
+        // the run ends first. A walk that gives up still disconnects: if the run
+        // really won't end, Disconnect refuses, and that red is the honest one.
+        await clean.goto("/inventory?tab=sync");
+        await expect(clean.getByRole("heading", { level: 1, name: "Inventory" })).toBeVisible({ timeout: LAUNCH_GATE });
+        const { platform } = syncStatus(clean);
+        await walkForCleanup(() => followRunToEnd(platform, syncRun(platform, SET_LABEL, EBAY)));
         await removeEbayConnection(clean, { gate: LAUNCH_GATE });
       }
     }

@@ -533,6 +533,26 @@ export function queueSettled(platform: Locator, setLabel: string): Locator {
     );
 }
 
+/**
+ * NEO-433: a failure hook's walk of a run. A live read can stall past one step's
+ * budget (the body's red says so), and that must not stop the rest of the tidy-up.
+ * Walks again up to `tries` times, then returns the last error for the hook to
+ * rethrow once it has finished; `undefined` when the walk got through. Never for
+ * a test body: there a stalled step is the failure.
+ */
+export async function walkForCleanup(walk: () => Promise<void>, tries = 3): Promise<unknown> {
+  let last: unknown;
+  for (let attempt = 0; attempt < tries; attempt++) {
+    try {
+      await walk();
+      return undefined;
+    } catch (error) {
+      last = error;
+    }
+  }
+  return last;
+}
+
 /** The most steps `followRunToRest` walks: two runs at the ledger's cap (`MAX_PROGRESS_STEPS` 40) is the ceiling, in practice a set's run is under 25. */
 const MAX_REST_PASSES = 45;
 
