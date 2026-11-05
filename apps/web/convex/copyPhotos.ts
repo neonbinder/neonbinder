@@ -61,7 +61,7 @@ import { action, httpAction, internalAction, internalMutation, internalQuery, mu
 import { internal } from "./_generated/api";
 import { getCurrentUserId, requireSignedIn } from "./auth";
 import { COLLECTION_ERRORS, refuse } from "./collection";
-import { enqueueListingCards } from "./listingOutbox";
+import { enqueueListingCards, listsOnMarketplaces } from "./listingOutbox";
 import { deleteObject, headObject, r2Config, signedGetUrl, signedPutUrl } from "./lib/r2";
 
 type PhotoRow = Doc<"collectionCopyPhotos">;
@@ -154,6 +154,22 @@ export async function photoUrlsOf(
   const out: { front?: PhotoUrls; back?: PhotoUrls } = {};
   for (const photo of await livePhotosOf(ctx, row._id)) out[photo.side] = urlsOf(photo);
   return out;
+}
+
+/**
+ * NEO-432: a photo change queues the card only when the copy's home lists on
+ * marketplaces, the test `listingDrain.variantCopiesPage` uses. Both listing
+ * plans skip every other copy, so a photo on a binder or in-person box copy
+ * can't reach a listing and must not show as queued on the Sync status tab.
+ */
+async function queueIfHomeLists(
+  ctx: MutationCtx,
+  ownerId: string,
+  copy: Pick<CopyRow, "cardId" | "homeId">,
+): Promise<void> {
+  const home = await ctx.db.get(copy.homeId);
+  if (!home || home.ownerId !== ownerId || !listsOnMarketplaces(home)) return;
+  await enqueueListingCards(ctx, { ownerId, cardIds: [copy.cardId] });
 }
 
 /** Delete photo rows now, and their objects in the background. */
@@ -388,9 +404,10 @@ export const commitUpload = internalMutation({
     await ctx.db.patch(photo._id, { status: "live", since: now });
     if (!copy.hasPhotos) await ctx.db.patch(copy._id, { hasPhotos: true });
     // NEO-415: a card-level listing shows the copy's photos, so a photo
-    // change queues the card on every listing platform (intake's "Done
-    // adding photos" lands here too).
-    await enqueueListingCards(ctx, { ownerId: args.ownerId, cardIds: [copy.cardId] });
+    // change queues the card on every listing platform, but only for a copy
+    // in a listed box (NEO-432, `queueIfHomeLists`). Intake's "Done adding
+    // photos" lands here too.
+    await queueIfHomeLists(ctx, args.ownerId, copy);
     return null;
   },
 });
@@ -442,7 +459,7 @@ export const remove = mutation({
     if (photos.length === gone.length && row.hasPhotos) {
       await ctx.db.patch(row._id, { hasPhotos: undefined });
     }
-    if (gone.length > 0) await enqueueListingCards(ctx, { ownerId, cardIds: [row.cardId] });
+    if (gone.length > 0) await queueIfHomeLists(ctx, ownerId, row);
     return null;
   },
 });
@@ -461,7 +478,7 @@ export const swap = mutation({
     for (const photo of photos) {
       await ctx.db.patch(photo._id, { side: photo.side === "front" ? "back" : "front" });
     }
-    if (photos.length > 0) await enqueueListingCards(ctx, { ownerId, cardIds: [row.cardId] });
+    if (photos.length > 0) await queueIfHomeLists(ctx, ownerId, row);
     return null;
   },
 });

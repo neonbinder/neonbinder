@@ -30,3 +30,4 @@
 - [Dev red that matches main = dev was re-pushed](dev-red-that-matches-main-means-dev-was-repushed.md) — compare the server answer to origin/main before calling a bug; trace wall-clock vs the push; bootstrap reset cleans the worker
 - [Heavy preprocess specs share the dev service](heavy-preprocess-specs-share-the-dev-service.md) — heavy-escalation red outside the diff: trace the call against the 400 s budget and cold-start logs; Cloud Run latency excludes its queue
 - [Browser→R2 PUT failures leave no server trace](browser-to-r2-put-failures-leave-no-server-trace.md) — orphan startUpload + the alert text = a failed PUT, not a widget race; the status is in the browser console line copy_photo_put_failed
+- [Spare worker indexes share one account on dev](spare-worker-indexes-share-one-account-on-dev.md) — no TEST_EMAIL_<n> locally = fallback to TEST_EMAIL; a bootstrap on any spare worker wipes the others mid-run

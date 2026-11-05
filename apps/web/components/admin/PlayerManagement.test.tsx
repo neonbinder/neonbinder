@@ -2749,6 +2749,25 @@ describe("NEO-313: the Sports field", () => {
     });
   });
 
+  it("renders the SPORT_HAS_CARDS refusal for one card in the singular", async () => {
+    mockSetAdditionalSports.mockRejectedValue(
+      new ConvexError({
+        code: "SPORT_HAS_CARDS",
+        sportId: "sport-football",
+        count: 1,
+      }),
+    );
+    renderWithBo();
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove sport Football" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("alert").textContent).toBe(
+        "1 card in Football sets still link to Bo Jackson. Unlink those first; they're listed under Cards.",
+      );
+    });
+  });
+
   it("renders the SPORT_HAS_STINTS refusal's message verbatim", async () => {
     mockSetAdditionalSports.mockRejectedValue(
       new ConvexError({

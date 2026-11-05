@@ -65,7 +65,11 @@ import {
 export const QUEUE_PAGE_LINES = 200;
 /** Orders one Sales page returns at most. */
 export const MAX_SALES_PAGE = 50;
-/** A Sync pressed within this long of the last one (or during a run) is ignored. */
+/**
+ * A Sync pressed within this long of the last one queues nothing and asks for
+ * no new full read. It runs the drain only for a change no drain finished in
+ * this long has tried yet; otherwise it is ignored (see `syncVariant`).
+ */
 export const RESYNC_THROTTLE_MS = 60_000;
 
 /** The Sync status tab's caps, per platform (NEO-392: a subscribed read stays small). */
@@ -620,14 +624,22 @@ async function recordOf(
  * the drain now.
  *
  * Answers `ignored: "notListing"` (and writes nothing) when the collector
- * has no saved sign-in on a platform NB has not paused. A press while the variant's run is under way, or within
- * `RESYNC_THROTTLE_MS` of the last press, is dropped on that platform: the run
- * under way, or about to start, reads the set in full. `queued` is true when
- * at least one platform took the press (queued work, or kicked a drain for a
- * change already queued); `ignored: "throttled"` only when every listing
- * platform dropped it. `queued: false` with no reason: nothing to sync here
- * (the set has no card any listing platform can list, or the collector holds
- * no copy of it and never synced it).
+ * has no saved sign-in on a platform NB has not paused. A press while the
+ * variant's run is under way is dropped on that platform: a change landing
+ * mid-run keeps its outbox row for a later press or the cron. A press within
+ * `RESYNC_THROTTLE_MS` of the last press queues nothing and is not stamped, so
+ * it asks for no new full read. It kicks the drain and counts as taken only
+ * when the variant has an outbox row waiting and either no drain finished in
+ * the last `RESYNC_THROTTLE_MS` or a row on the platform changed after that
+ * drain, because such a change (a box flipped to in-person) would otherwise
+ * wait for the cron. Otherwise it is dropped: every waiting row was already
+ * tried, and a failed run's rows wait out the minute so presses can't re-run
+ * them back to back. `queued` is true when at least one platform took the press
+ * (queued work, or kicked a drain for a change already queued);
+ * `ignored: "throttled"` only when every listing platform dropped it.
+ * `queued: false` with no reason: nothing to sync here (the set has no card any
+ * listing platform can list, or the collector holds no copy of it and never
+ * synced it).
  */
 export const syncVariant = mutation({
   args: { variantId: v.id("selectorOptions") },
@@ -652,6 +664,21 @@ export const syncVariant = mutation({
   },
 });
 
+/** The variant's first waiting outbox row on this platform, if it has one. */
+async function firstQueuedRow(
+  ctx: QueryCtx,
+  ownerId: string,
+  platform: ListingPlatform,
+  variantId: Id<"selectorOptions">,
+): Promise<Doc<"listingOutbox"> | null> {
+  return await ctx.db
+    .query("listingOutbox")
+    .withIndex("by_owner_platform_variant", (q) =>
+      q.eq("ownerId", ownerId).eq("platform", platform).eq("variantId", variantId),
+    )
+    .first();
+}
+
 async function syncOnePlatform(
   ctx: MutationCtx,
   ownerId: string,
@@ -662,19 +689,40 @@ async function syncOnePlatform(
   const record = await recordOf(ctx, ownerId, variantId, platform);
   if (record) {
     const running = record.status === "running" && (record.leaseExpiresAt ?? 0) > now;
+    if (running) return "throttled";
     const recent = record.resyncRequestedAt !== undefined && now - record.resyncRequestedAt < RESYNC_THROTTLE_MS;
-    if (running || recent) return "throttled";
+    if (recent) {
+      // A change queued since the last run (a box flipped to in-person) has no
+      // run coming until the cron, so the press runs the drain that syncs it:
+      // taken, not dropped. Not stamped and nothing re-queued, so this asks for
+      // no new full read.
+      if (!(await firstQueuedRow(ctx, ownerId, platform, variantId))) return "throttled";
+      // A row no newer than a drain that finished in the last minute was
+      // already tried (a failed run leaves its rows): it waits out the minute,
+      // or a client hammering Sync re-runs the whole queue back to back. The
+      // check reads the platform's newest-changed row, not the variant's rows:
+      // one read however large the set, and a newer row in this variant behind
+      // an old one can't hide. A newer row in another variant takes the press
+      // too: a drain is owed for it, and that drain tries this variant as well.
+      const lastDrainAt = (await listingStateOf(ctx, ownerId, platform))?.lastDrainAt;
+      if (lastDrainAt !== undefined && now - lastDrainAt < RESYNC_THROTTLE_MS) {
+        const untried = await ctx.db
+          .query("listingOutbox")
+          .withIndex("by_owner_platform_changed", (q) =>
+            q.eq("ownerId", ownerId).eq("platform", platform).gt("changedAt", lastDrainAt),
+          )
+          .first();
+        if (!untried) return "throttled";
+      }
+      await kickListingDrain(ctx, ownerId, platform);
+      return "queued";
+    }
   } else {
     // Never run yet (its first run reads every condition anyway): no record
     // to stamp. A change queued for the variant in the last minute (a box
     // write, or a press) is not queued again, but the press still runs the
     // drain that syncs it: taken, not dropped.
-    const queuedRow = await ctx.db
-      .query("listingOutbox")
-      .withIndex("by_owner_platform_variant", (q) =>
-        q.eq("ownerId", ownerId).eq("platform", platform).eq("variantId", variantId),
-      )
-      .first();
+    const queuedRow = await firstQueuedRow(ctx, ownerId, platform, variantId);
     if (queuedRow && now - queuedRow.changedAt < RESYNC_THROTTLE_MS) {
       await kickListingDrain(ctx, ownerId, platform);
       return "queued";
