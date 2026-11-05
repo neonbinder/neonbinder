@@ -214,7 +214,7 @@ first and a fixture turns out drained, restore the previous object version
 (bucket versioning) so other PRs stay green while you re-fixture.
 
 **2. Probe each fixture set, read-only.** Point a spare-port Vite at the
-preview (root `CLAUDE.md`, "Debugging a red flow against the PR's own
+preview (root `CLAUDE.md`, "Debugging a red spec against the PR's own
 services") and run a throwaway probe flow per set, never committed: drill to the set, cancel the base picker, fetch, read
 the wizard, then **Cancel → Discard** so nothing is saved. Read four lines:
 the fetch's `Kept all N cards from BSC … P new players + T new teams need
@@ -290,11 +290,11 @@ preview on every run.
 
 ## 7. Loading your dev deployment
 
-The dev deployment is personal, but every Claude session on your laptop
-shares it. Before you load it, make sure no other session is running flows
-against dev, or point that session at a PR preview instead. A load replaces
-all seven reference tables. To anyone else on dev, that looks exactly like a
-product bug.
+Load a worktree's own deployment freely. The long-lived dev deployment is
+shared by every session on your laptop: before you load it, make sure no other
+session is running flows against it, or point that session at a PR preview
+instead. A load replaces all seven reference tables. To anyone else on that
+deployment, that looks exactly like a product bug.
 
 ```bash
 cd apps/web
