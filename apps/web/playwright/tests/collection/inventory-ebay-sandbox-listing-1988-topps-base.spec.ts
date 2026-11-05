@@ -964,11 +964,13 @@ test(
     // in-person, and any box write queues its card).
     await tabs.getByRole("link", { name: "Sync status", exact: true }).click();
     await expect(page).toHaveURL(/[?&]tab=sync/);
-    const queuedCards = platform.getByRole("list", { name: /^Queued for the next sync/ }).getByRole("listitem");
+    const queuedList = platform.getByRole("list", { name: /^Queued for the next sync/ });
+    const queuedCards = queuedList.getByRole("listitem");
     for (const short of [a, c]) {
       const number = escapeRegExp(short.split(" ")[0]);
       await expect(queuedCards.filter({ hasText: new RegExp(`^${number} .* in ${escapeRegExp(SET_LABEL)}`) })).toHaveCount(1);
     }
+    await expectAccessible(page, { within: queuedList, label: "Inventory Sync status, eBay two cards queued" });
     // The press: taken, not told to wait (the old code said "Give it a minute"
     // whenever the set's record held a press from the last minute).
     await tabs.getByRole("link", { name: "Checklists", exact: true }).click();
