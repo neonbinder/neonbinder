@@ -19,9 +19,8 @@ test(
 
     // Focusing the link warms the demo's chunk; answer that request 404.
     const checkItOut = page.getByRole("region", { name: "Check it Out" }).getByRole("link", { name: "Check it Out", exact: true });
-    await chunks.arm("fail-always");
     const injected = chunks.firstBlocked();
-    await checkItOut.focus();
+    await chunks.injectDuring("fail-always", () => checkItOut.focus());
     await injected;
 
     // The warm-up failed and the page is untouched: still the landing page,

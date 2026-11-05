@@ -36,11 +36,15 @@ const CODE_FILE = /\.(js|mjs|ts|tsx|jsx)(\?|$)/;
 
 export interface StaleChunks {
   /**
-   * Starts answering 404 for same-origin code the page has not requested yet.
-   * Call it immediately before the one action that should ask for the chunk,
-   * so nothing else is judged in between.
+   * Runs `action` (the one click or focus that should ask for the chunk) with
+   * 404s on: same-origin code the page has not requested by the moment the
+   * action starts is answered 404. The route is registered first and judges
+   * nothing until the action begins, and the "already seen" snapshot is taken
+   * at that same moment, so a late request from anything else (an idle
+   * prefetch, a dev-server module) can neither take a `fail-once` 404 nor be
+   * mistaken for the chunk: only what the action itself asks for is judged.
    */
-  arm(mode: StaleMode): Promise<void>;
+  injectDuring(mode: StaleMode, action: () => Promise<unknown>): Promise<void>;
   /** Stops answering 404 (requests go through again). */
   disarm(): void;
   /**
@@ -66,6 +70,7 @@ export function watchStaleChunks(page: Page): StaleChunks {
 
   let armed = false;
   let blocking = false;
+  let started = false;
   let mode: StaleMode = "fail-once";
   let known = new Set<string>();
   const blocked: string[] = [];
@@ -80,25 +85,29 @@ export function watchStaleChunks(page: Page): StaleChunks {
   });
 
   return {
-    async arm(next) {
+    async injectDuring(next, action) {
       mode = next;
-      known = new Set(seen);
       const origin = new URL(page.url()).origin;
       const isStale = (url: URL) =>
         url.origin === origin && CODE_FILE.test(url.pathname + url.search) && !known.has(url.href);
-      blocking = true;
-      armed = true;
       await page.route(isStale, async (route) => {
         // `route.fulfill` and `route.continue` may each run once, and the route
         // cannot be removed first ("Route is already handled!"), so the switch
-        // is a flag the handler reads.
-        if (!blocking || (mode === "fail-once" && blocked.length > 0)) {
+        // is a flag the handler reads. Before the action starts it only passes
+        // requests through.
+        if (!started || !blocking || (mode === "fail-once" && blocked.length > 0)) {
           await route.continue();
           return;
         }
         blocked.push(route.request().url());
         await route.fulfill({ status: 404, contentType: "text/plain", body: "gone" });
       });
+      // From here the snapshot, the counters and the 404s all start together.
+      known = new Set(seen);
+      blocking = true;
+      armed = true;
+      started = true;
+      await action();
     },
     disarm() {
       blocking = false;

@@ -17,9 +17,8 @@ test(
     await expect(page.getByRole("button", { name: "Get Started" })).toBeVisible();
 
     const about = page.getByRole("navigation", { name: "Site" }).getByRole("link", { name: "About", exact: true });
-    await chunks.arm("fail-always");
     const injected = chunks.firstBlocked();
-    await about.click();
+    await chunks.injectDuring("fail-always", () => about.click());
     const gone = (await injected).url();
 
     // The give-up state, reached only by the reloaded page failing again.

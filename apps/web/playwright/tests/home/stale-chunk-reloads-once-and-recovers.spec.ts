@@ -20,11 +20,11 @@ test(
     // page loads from here on is a lazy route's chunk.
     await expect(page.getByRole("button", { name: "Get Started" })).toBeVisible();
 
-    // /about has a chunk of its own. Arm right before the click that asks for it.
+    // /about has a chunk of its own. The injection judges only what this click
+    // asks for, so nothing that loads on its own can take the 404 instead.
     const about = page.getByRole("navigation", { name: "Site" }).getByRole("link", { name: "About", exact: true });
-    await chunks.arm("fail-once");
     const injected = chunks.firstBlocked();
-    await about.click();
+    await chunks.injectDuring("fail-once", () => about.click());
 
     // The failure was really injected: a code file was answered 404.
     const gone = (await injected).url();
@@ -33,6 +33,9 @@ test(
     await expect(page.getByRole("heading", { level: 1, name: "About Neon Binder" })).toBeVisible();
     await expect(page.getByText(CRASH_MESSAGE)).toHaveCount(0);
     await expect(page).toHaveURL(/\/about$/);
+    // Axe checks the settled About page. The "Sleeving the cards…" line shown
+    // while the page reloads is a transient state, not one a visitor rests in,
+    // so it is not axe-checked here; the unit tests cover its markup.
     await expectAccessible(page, { label: "About page after a stale-chunk reload" });
 
     // The same file was asked for again, by the reloaded page, and came back;
