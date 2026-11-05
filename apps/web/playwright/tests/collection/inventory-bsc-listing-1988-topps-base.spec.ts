@@ -20,6 +20,14 @@
 //      the checklist's hold. ("Done adding photos" also shows "See what's
 //      syncing", but that path needs a real upload through preprocess and
 //      Vision, so it is covered by unit tests only.)
+//   2c. NEO-432: a photo on a BINDER copy never queues a card. With listing on,
+//      they give a third card a copy in their Main binder (Collection), attach a
+//      front photo through the copy drawer, swap it to the back and remove it,
+//      then remove the copy. Those three photo changes would each queue the
+//      card on a listing account if the copy's home were a listed box; a binder
+//      is never listed, so step 3's queue holds exactly the box's two cards and
+//      NOT this one (asserted by name). The unit tests prove the gate
+//      (`copyPhotos.test.ts`); this proves it live, in the queue a collector reads.
 //   3. They put one copy each of the first two 1988 Topps Base cards in their
 //      box; Sync status queues the two cards; they press the checklist's Sync,
 //      follow "See what's syncing" to Sync status (Back returns), and Sync
@@ -73,13 +81,16 @@
 // R7/R7a. 1988 Topps Baseball is a registered real set (SET-REGISTRY.md): this
 // spec is the SOLE writer of its BSC quantities and writes no card, player,
 // team or variant of the set. Its NB writes are the signed-in user's own rows
-// (the sign-in removed and saved again, a minted box, two box copies, the common price, and every
+// (the sign-in removed and saved again, a minted box, two box copies, one
+// binder copy with a photo that is removed again, the common price, and every
 // other box set to in-person, which is left that way). The
 // quantities end at 0 on BSC and the sign-in is saved again, on a pass by the
 // steps and the hook, on a failure by the hook on a second page (so the
 // failure screenshot keeps the page that failed).
 //
 // Minted box name: a single token from `env.ATTEMPT_TOKEN`.
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import type { Locator, Page } from "@playwright/test";
 import {
   TOPPS_1988,
@@ -95,8 +106,10 @@ import {
   goViaShell,
   inventoryTabs,
   nameOf,
+  ordinaryBaseRows,
   putOtherBoxesInPerson,
   quantityField,
+  shortNameOf,
   syncRun,
 } from "../../support/collection";
 import { removeBscSignIn, saveBscSignIn } from "../../support/credentials";
@@ -109,6 +122,37 @@ const TITLE = baseChecklistTitle(TOPPS_1988);
 /** The set as Sync status names it: a Base checklist reads as the set alone. */
 const SET_LABEL = `${TOPPS_1988.year} ${TOPPS_1988.set}`;
 const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/** A committed intake scan (about 1000 px wide), attached through the copy drawer's Photos box. It is never listed: its copy lives in a binder. */
+const BINDER_PHOTO = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "fixtures", "intake", "05-bell-front.jpg");
+
+/**
+ * NEO-432. On the Collection Checklists tab with the Main binder picked: click
+ * the card's row, which opens the drawer already editing its one line, and
+ * return the drawer's pieces (the form's Photos box included). `short` is the
+ * row's `#N First Last`.
+ */
+async function openBinderLine(checklist: Locator, short: string) {
+  const page = checklist.page();
+  await checklist.getByText(`#${/^#(\S+)/.exec(short)![1]}`, { exact: true }).click();
+  const drawer = page.getByRole("dialog", { name: new RegExp(`^${escapeRegExp(SET_LABEL)} ${escapeRegExp(short)}`) });
+  const yourCopies = drawer.getByRole("region", { name: `Your copies of ${short}`, exact: true });
+  const form = yourCopies.getByRole("form", { name: "Edit Raw, Excellent", exact: true });
+  await expect(form).toBeVisible();
+  return { drawer, yourCopies, form, panel: form.getByRole("region", { name: "Photos", exact: true }) };
+}
+
+/** NEO-432: remove the card's one binder copy through its open drawer (Escape closes the form first, as a collector does), then close the drawer. */
+async function removeBinderLine(checklist: Locator, short: string, line: Awaited<ReturnType<typeof openBinderLine>>): Promise<void> {
+  const { drawer, yourCopies, form } = line;
+  await form.getByRole("textbox", { name: "Notes" }).focus();
+  await checklist.page().keyboard.press("Escape");
+  await expect(form).toBeHidden();
+  await yourCopies.getByRole("button", { name: `Remove ${short}, Raw, Excellent`, exact: true }).click();
+  await expect(yourCopies.getByText("None yet. Fill in what you know below and add it.")).toBeVisible();
+  await drawer.getByRole("button", { name: "Close card detail" }).click();
+  await expect(drawer).toBeHidden();
+}
 
 /**
  * The finished set row's "Last sync steps" list, folded: "Gathering data" (all
@@ -125,7 +169,16 @@ async function expectFoldedLastRun(run: ReturnType<typeof syncRun>): Promise<voi
 }
 
 /** What the failing run needs undone, filled as the flow goes. */
-const written: { box?: string; cards?: [string, string]; started?: boolean; removed?: boolean; stopped?: boolean; priced?: boolean } = {};
+const written: {
+  box?: string;
+  cards?: [string, string];
+  /** NEO-432: the card whose Main-binder copy still stands (cleared when the body removed it). */
+  binderCard?: string;
+  started?: boolean;
+  removed?: boolean;
+  stopped?: boolean;
+  priced?: boolean;
+} = {};
 
 /** The key that leaves a quantity field: Tab on a desktop, Enter on a phone. */
 const leaveKey = (isMobile: boolean) => (isMobile ? "Enter" : "Tab");
@@ -216,6 +269,12 @@ test.afterEach(async ({ context, isMobile }, testInfo) => {
         await clean.goto("/inventory?tab=checklists");
         const checklist = await emptyBox(clean, written.box, written.cards, isMobile, "fresh");
         await checklist.getByRole("button", { name: `Sync ${TITLE}`, exact: true }).click();
+        // The press was taken before we leave the page: a missing toast means the
+        // zeroing press was answered "just synced", so no run is coming.
+        await expect(
+          clean.getByRole("status").filter({ hasText: `Syncing ${TITLE} now. Watch it on Sync status.` }),
+          'no "Syncing ... now" toast: the zeroing press was answered "just synced", so no run is coming',
+        ).toBeVisible();
         await clean.goto("/inventory?tab=sync");
         // The zeroing run, followed step by step as above, then its result line.
         const zeroing = syncStatus(clean);
@@ -227,19 +286,31 @@ test.afterEach(async ({ context, isMobile }, testInfo) => {
       }
     } finally {
       try {
-        // A common price the run set and did not clear would hide the gate's
-        // hold from the next run: clear it (after the zeroing above, which
-        // needs it still set).
-        if (failed && written.priced) {
-          await clean.goto("/inventory?tab=checklists");
-          await expect(clean.getByRole("heading", { level: 1, name: "Inventory" })).toBeVisible({ timeout: LAUNCH_GATE });
-          const checklist = await drillToCollectorBase(clean, TOPPS_1988);
-          await clearCommonPrice(clean, checklist, "0.25");
-          written.priced = false;
+        // NEO-432: the Main-binder copy the body made and did not get to remove.
+        if (failed && written.binderCard) {
+          await clean.goto("/collection?tab=checklists");
+          await expect(clean.getByRole("heading", { level: 1, name: "Collection" })).toBeVisible({ timeout: LAUNCH_GATE });
+          const binderList = await drillToCollectorBase(clean, TOPPS_1988);
+          await binderList.getByRole("combobox", { name: "Binder" }).selectOption({ label: "Main" });
+          await removeBinderLine(binderList, written.binderCard, await openBinderLine(binderList, written.binderCard));
+          written.binderCard = undefined;
         }
       } finally {
-        // The body already stopped listing on a pass; otherwise it stops here.
-        if (!written.stopped) await stopListing(clean, written.removed);
+        try {
+          // A common price the run set and did not clear would hide the gate's
+          // hold from the next run: clear it (after the zeroing above, which
+          // needs it still set).
+          if (failed && written.priced) {
+            await clean.goto("/inventory?tab=checklists");
+            await expect(clean.getByRole("heading", { level: 1, name: "Inventory" })).toBeVisible({ timeout: LAUNCH_GATE });
+            const checklist = await drillToCollectorBase(clean, TOPPS_1988);
+            await clearCommonPrice(clean, checklist, "0.25");
+            written.priced = false;
+          }
+        } finally {
+          // The body already stopped listing on a pass; otherwise it stops here.
+          if (!written.stopped) await stopListing(clean, written.removed);
+        }
       }
     }
   } finally {
@@ -254,6 +325,7 @@ test(
     // The hook's record of how far this run got starts empty.
     written.box = undefined;
     written.cards = undefined;
+    written.binderCard = undefined;
     written.started = false;
     written.removed = false;
     written.stopped = false;
@@ -349,6 +421,42 @@ test(
     await expect(listing.getByText(/Removing your BuySportsCards sign-in stops listing and sales\./)).toBeVisible();
     await expectAccessible(page, { label: "Profile, BuySportsCards credentials, listing since" });
 
+    // --- 2c. NEO-432: a photo on a BINDER copy never queues a card ---------------
+    // Listing is on now, so a photo change on a copy in a LISTED box would queue
+    // its card. A third card gets a copy in the Main binder (a binder never
+    // lists) and takes a front photo, a swap and a removal: the three photo
+    // changes. Step 3 then reads the queue and finds only the box's two cards.
+    // (The row choice is the LAST ordinary row of the Collection checklist, so
+    // it cannot be one of the box's cards, which are the first two rows of the
+    // Inventory checklist; the guard below re-checks once those are read.)
+    await goViaShell(page, isMobile, "Collection");
+    await expect(page.getByRole("heading", { level: 1, name: "Collection" })).toBeVisible();
+    await page.getByRole("navigation", { name: "Collection sections" }).getByRole("link", { name: "Checklists", exact: true }).click();
+    await expect(page).toHaveURL(/[?&]tab=checklists/);
+    const binderList = await drillToCollectorBase(page, TOPPS_1988);
+    const { short: binderCard } = await shortNameOf(ordinaryBaseRows(binderList).last());
+    await binderList.getByRole("combobox", { name: "Binder" }).selectOption({ label: "Main" });
+    const haveBinderOff = binderList.getByRole("button", { name: `Have ${binderCard}`, exact: true, pressed: false });
+    await expect(haveBinderOff).not.toHaveAttribute("aria-disabled", "true");
+    await haveBinderOff.click();
+    await expect(binderList.getByRole("button", { name: `Have ${binderCard}, Raw, Excellent`, exact: true, pressed: true })).toBeVisible();
+    written.binderCard = binderCard;
+    const binderLine = await openBinderLine(binderList, binderCard);
+    const binderPhotos = binderLine.panel;
+    await expect(binderPhotos.getByText("No front photo yet")).toBeAttached();
+    await binderPhotos.getByLabel("Front photo file", { exact: true }).setInputFiles(BINDER_PHOTO);
+    await expect(binderPhotos.getByRole("status")).toHaveText("Front photo saved.");
+    await expectAccessible(page, { within: binderLine.drawer, label: "Card drawer, binder copy with a photo" });
+    await binderPhotos.getByRole("button", { name: "Swap front and back", exact: true }).click();
+    await expect(binderPhotos.getByRole("status")).toHaveText("Front and back swapped.");
+    await expect(binderPhotos.getByText("No front photo yet")).toBeAttached();
+    await binderPhotos.getByRole("button", { name: "Remove back", exact: true }).click();
+    await expect(binderPhotos.getByRole("status")).toHaveText("Back photo removed.");
+    await expect(binderPhotos.getByText("No back photo yet")).toBeAttached();
+    await removeBinderLine(binderList, binderCard, binderLine);
+    written.binderCard = undefined;
+    await expect(binderList.getByRole("button", { name: `Have ${binderCard}`, exact: true, pressed: false })).toBeVisible();
+
     // --- Inventory: Sales has no switch ----------------------------------------
     await goViaShell(page, isMobile, "Inventory");
     await expect(page.getByRole("heading", { level: 1, name: "Inventory" })).toBeVisible();
@@ -381,6 +489,7 @@ test(
     const a = await shortOf(0);
     const b = await shortOf(1);
     expect(a, "two different cards").not.toBe(b);
+    expect([a, b], "the binder card (2c) is a third card, not one of the box's two").not.toContain(binderCard);
 
     // --- The listing gate: no price yet, so the listed box is held -------------
     // A collector who syncs stocks a listed box only with a price on its cards.
@@ -463,6 +572,11 @@ test(
       const number = escapeRegExp(short.split(" ")[0]);
       await expect(queued.filter({ hasText: new RegExp(`^${number} .* in ${escapeRegExp(SET_LABEL)}`) })).toHaveCount(1);
     }
+    // NEO-432: the binder card took three photo changes (2c) and is NOT queued:
+    // a photo only queues a card whose copy sits in a listed box. The count of 2
+    // above and this absence by name are the proof (the two rows above keep it
+    // from passing on a dead list).
+    await expect(queued.filter({ hasText: new RegExp(`^${escapeRegExp(binderCard.split(" ")[0])} `) })).toHaveCount(0);
     await expectAccessible(page, { label: "Inventory Sync status, two cards queued" });
 
     // --- 2. Sync: BSC takes both, Sync status says 2 listed --------------------
