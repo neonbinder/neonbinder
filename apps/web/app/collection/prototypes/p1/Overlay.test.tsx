@@ -92,6 +92,20 @@ describe("Overlay", () => {
     expect(document.activeElement).toBe(screen.getByRole("button", { name: "Close" }));
   });
 
+  it("with focus outside the panel, Tab wraps to the first stop", () => {
+    const { panel } = open(
+      <>
+        <button type="button">Close</button>
+        {heading}
+        <button type="button">Back</button>
+      </>,
+    );
+    (document.activeElement as HTMLElement).blur();
+    expect(document.activeElement).toBe(document.body);
+    expect(tab(panel)).toBe(true);
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Close" }));
+  });
+
   it("wraps at both ends, and a lone stop stays put", () => {
     open(
       <>

@@ -24,6 +24,7 @@ import ProfileLayout from "@/src/layouts/profile-layout";
 import EbayReturnLanding from "@/app/profile/ebay/page";
 import PrintLayout from "@/src/layouts/print-layout";
 
+import { ForceDark } from "@/components/primitives/ForceDark";
 import {
   Deferred,
   PrefetchBinderTabs,
@@ -163,7 +164,8 @@ const SentryErrorBoundary = Sentry.withErrorBoundary(
           <Route path="/signin/*" element={<Deferred><SignInPage /></Deferred>} />
           <Route path="/sign-up/*" element={<Deferred><SignUpPage /></Deferred>} />
           <Route path="/u/:username/sale" element={<Deferred><SalePage /></Deferred>} />
-          <Route path="/u/:username/binders/:path" element={<Deferred><PublicBinder /></Deferred>} />
+          {/* Dark from the first paint, the wait for its chunk included. */}
+          <Route path="/u/:username/binders/:path" element={<ForceDark><Deferred fullPage><PublicBinder /></Deferred></ForceDark>} />
           <Route path="/u/:username/want-list" element={<Deferred><PublicWantList /></Deferred>} />
           <Route path="/u/:username/up-for-trade" element={<Deferred><PublicTrade /></Deferred>} />
           <Route path="/u/:username/for-sale" element={<Deferred><PublicForSale /></Deferred>} />

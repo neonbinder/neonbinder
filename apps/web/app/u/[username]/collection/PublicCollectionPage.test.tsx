@@ -6,7 +6,7 @@
 
 import { useEffect } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { Theme } from "@radix-ui/themes";
 import { MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-router";
 
@@ -14,6 +14,7 @@ const queries = vi.hoisted(() => ({
   binder: undefined as unknown,
   needs: undefined as unknown,
   shelf: undefined as unknown,
+  profile: null as unknown,
   copies: [] as unknown[],
   status: "Exhausted",
   loadMore: (() => undefined) as (n: number) => void,
@@ -23,6 +24,7 @@ vi.mock("convex/react", () => ({
   useQuery: (ref: unknown, args: unknown) => {
     if (args === "skip") return undefined;
     const name = String((ref as { _name?: string })?._name ?? ref);
+    if (name.includes("getPublicProfile")) return queries.profile;
     if (name.includes("binderNeeds")) return queries.needs;
     if (name.includes("binder")) return queries.binder;
     if (name.includes("shelf")) return queries.shelf;
@@ -78,10 +80,11 @@ function renderAt(path: string) {
   return () => rerender(ui());
 }
 
-/** The wide desk or the phone; reduced motion always, so a card opens at once. */
-function setScreen({ wide }: { wide: boolean }) {
+/** The wide desk or the phone, touch or not; reduced motion always, so a card opens at once. */
+function setScreen({ wide, touch = false }: { wide: boolean; touch?: boolean }) {
   window.matchMedia = ((query: string) => ({
-    matches: query.includes("reduced-motion") || (wide && query.includes("min-width")),
+    matches:
+      query.includes("reduced-motion") || (wide && query.includes("min-width")) || (touch && query.includes("hover: none")),
     media: query,
     addEventListener: () => undefined,
     removeEventListener: () => undefined,
@@ -116,6 +119,7 @@ beforeEach(() => {
   queries.binder = undefined;
   queries.needs = undefined;
   queries.shelf = undefined;
+  queries.profile = null;
   queries.copies = [];
   queries.status = "Exhausted";
   queries.loadMore = () => undefined;
@@ -272,6 +276,224 @@ describe("a shared binder is the real binder (NEO-444)", () => {
     expect(screen.getByRole("status")).toBeTruthy();
     expect(screen.queryByRole("region", { name: /open$/ })).toBeNull();
     expect(screen.queryByRole("button", { name: "Show more" })).toBeNull();
+  });
+
+  describe("while it reads", () => {
+    const reading = (done: number, count: unknown) => {
+      queries.status = "LoadingMore";
+      shareBinder(
+        Array.from({ length: done }, (_, i) => ({ key: `k${i}`, quantity: 1, slot: i, card: CARD })),
+        { description: "Every Ohtani", count },
+      );
+    };
+
+    it.each([false, true])("shows the count, the description and how far it has got (wide: %s)", (wide) => {
+      setScreen({ wide });
+      reading(120, { copies: 950, lines: 900 });
+      renderAt(BINDER_URL);
+      expect(screen.getByText("Every Ohtani")).toBeTruthy();
+      expect(screen.getByText("950 cards")).toBeTruthy();
+      expect(screen.getByText("Sleeving 120 of 900 cards…")).toBeTruthy();
+      expect(screen.queryByRole("region", { name: /open$/ })).toBeNull();
+    });
+
+    it("the progress line is for the eye: only the spinner's status is announced", () => {
+      reading(120, { copies: 900, lines: 900 });
+      renderAt(BINDER_URL);
+      expect(screen.getByRole("status").textContent).toBe("Loading…");
+    });
+
+    it("says something true with no count, and before the first page", () => {
+      reading(60, null);
+      renderAt(BINDER_URL);
+      expect(screen.getByText("Sleeving 60 cards…")).toBeTruthy();
+      cleanup();
+      reading(0, { copies: 900, lines: 900 });
+      renderAt(BINDER_URL);
+      expect(screen.getByText("Sleeving the cards…")).toBeTruthy();
+    });
+
+    it("keeps saying so before the binder's own header has arrived", () => {
+      queries.binder = undefined;
+      renderAt(BINDER_URL);
+      expect(screen.getByText("Sleeving the cards…")).toBeTruthy();
+    });
+
+    it("never counts past the total when the stored count is behind", () => {
+      reading(70, { copies: 60, lines: 60 });
+      renderAt(BINDER_URL);
+      expect(screen.getByText("Sleeving 70 of 70 cards…")).toBeTruthy();
+    });
+
+    it("the name slot holds while the profile loads, then the collector's name, never ours in between", () => {
+      queries.profile = undefined;
+      reading(1, null);
+      const redraw = renderAt(BINDER_URL);
+      expect(document.querySelector("[data-name-slot]")).not.toBeNull();
+      expect(screen.queryByRole("link", { name: "NeonBinder" })).toBeNull();
+      queries.profile = { username: "ace", displayName: "Ace Collector" };
+      redraw();
+      expect(document.querySelector("[data-name-slot]")).toBeNull();
+      expect(screen.getByRole("link", { name: /Ace Collector/ })).toBeTruthy();
+    });
+
+    it("an unknown collector, or a bad link, still falls back to NeonBinder", () => {
+      queries.profile = null;
+      reading(1, null);
+      renderAt(BINDER_URL);
+      expect(screen.getByRole("link", { name: "NeonBinder" })).toBeTruthy();
+      cleanup();
+      queries.profile = undefined;
+      renderAt("/u/NOT%20OK/binders/ohtani-rainbow-k7f3q2");
+      expect(screen.getByRole("link", { name: "NeonBinder" })).toBeTruthy();
+    });
+  });
+
+  describe("says how to turn the pages on the screen in hand", () => {
+    const FAR = { key: "far", quantity: 1, slot: 9, card: CARD };
+    const NEAR = { key: "a", quantity: 1, slot: 0, card: CARD };
+
+    it("a phone says swipe", () => {
+      setScreen({ wide: false, touch: true });
+      shareBinder([NEAR, FAR]);
+      renderAt(BINDER_URL);
+      expect(screen.getByText("Tap a card to pop it out. Swipe to turn.")).toBeTruthy();
+    });
+
+    it("a narrow window with a mouse doesn't", () => {
+      shareBinder([NEAR, FAR]);
+      renderAt(BINDER_URL);
+      expect(screen.getByText("Tap a card to pop it out.")).toBeTruthy();
+      expect(document.body.textContent).not.toContain("Swipe");
+    });
+
+    it("the cover on a touch tablet says swipe, and names no key it doesn't have", () => {
+      setScreen({ wide: true, touch: true });
+      shareBinder([NEAR, FAR]);
+      renderAt(BINDER_URL);
+      expect(screen.getByText("Swipe to turn the pages. Tap a card to pop it out.")).toBeTruthy();
+      expect(document.body.textContent).not.toContain("PageUp");
+    });
+
+    it("the cover with a keyboard names the keys", () => {
+      setScreen({ wide: true });
+      shareBinder([NEAR, FAR]);
+      renderAt(BINDER_URL);
+      expect(screen.getByText(/PageUp and PageDown turn the pages/)).toBeTruthy();
+      expect(document.body.textContent).not.toContain("Swipe");
+    });
+  });
+
+  describe("photos", () => {
+    const shot = (name: string) => ({ imageUrl: `https://img.test/${name}.jpg`, thumbUrl: `https://img.test/${name}-t.jpg` });
+    const atSlot = (name: string, slot: number, photos: unknown = { front: shot(name) }) => ({
+      key: name,
+      quantity: 1,
+      slot,
+      card: { ...CARD, _id: `card-${name}`, players: [{ _id: name, name }] },
+      photos,
+    });
+    const fetched: string[] = [];
+    beforeEach(() => {
+      fetched.length = 0;
+      vi.stubGlobal(
+        "Image",
+        class {
+          set src(url: string) {
+            fetched.push(url);
+          }
+        },
+      );
+    });
+    afterEach(() => vi.unstubAllGlobals());
+
+    it("a phone fetches the pages either side, and not the one it is showing", () => {
+      shareBinder([atSlot("one", 0), atSlot("two", 9), atSlot("three", 18), atSlot("four", 27)]);
+      renderAt(`${BINDER_URL}?page=2`);
+      expect(fetched.sort()).toEqual([shot("one").thumbUrl, shot("three").thumbUrl].sort());
+      fetched.length = 0;
+      fireEvent.click(screen.getByRole("button", { name: "Next page" }));
+      expect(fetched.sort()).toEqual([shot("two").thumbUrl, shot("four").thumbUrl].sort());
+    });
+
+    it("a wide screen fetches both pages of the next spread", () => {
+      setScreen({ wide: true });
+      shareBinder([atSlot("one", 0), atSlot("two", 9), atSlot("three", 18), atSlot("four", 27)]);
+      renderAt(BINDER_URL);
+      expect(fetched.sort()).toEqual([shot("two").thumbUrl, shot("three").thumbUrl].sort());
+    });
+
+    it("takes the back when a pocket has only that", () => {
+      shareBinder([atSlot("one", 0), atSlot("two", 9, { back: shot("two-back") })]);
+      renderAt(BINDER_URL);
+      expect(fetched).toEqual([shot("two-back").thumbUrl]);
+    });
+
+    it("a page turn paints no old card: the pocket and its focus stay, the picture is new", () => {
+      shareBinder([atSlot("one", 0), atSlot("two", 9)]);
+      renderAt(BINDER_URL);
+      const button = pocket(/pocket 1 on page 1/);
+      const picture = button.querySelector("img")!;
+      expect(picture.getAttribute("src")).toBe(shot("one").thumbUrl);
+      button.focus();
+      fireEvent.keyDown(button, { key: "PageDown" });
+      const after = pocket(/pocket 1 on page 2/);
+      expect(after).toBe(button);
+      expect(document.activeElement).toBe(button);
+      const next = after.querySelector("img")!;
+      expect(next).not.toBe(picture);
+      expect(next.getAttribute("src")).toBe(shot("two").thumbUrl);
+    });
+
+    it("a photo on its way wears a tone, and sheds it once it arrives or fails", () => {
+      shareBinder([atSlot("one", 0), atSlot("two", 1)]);
+      renderAt(BINDER_URL);
+      const first = pocket(/pocket 1 on page 1/);
+      const second = pocket(/pocket 2 on page 1/);
+      expect(first.querySelector(".nb-card-loading")).not.toBeNull();
+      fireEvent.load(first.querySelector("img")!);
+      expect(first.querySelector(".nb-card-loading")).toBeNull();
+      fireEvent.error(second.querySelector("img")!);
+      expect(second.querySelector(".nb-card-loading")).toBeNull();
+    });
+
+    it("an empty pocket and a drawn card never wear it", () => {
+      shareBinder([{ key: "a", quantity: 1, slot: 0, card: CARD }]);
+      renderAt(BINDER_URL);
+      expect(document.querySelector(".nb-card-loading")).toBeNull();
+    });
+
+    it("opening a card with two sides fetches its back; a card with one side fetches nothing more", () => {
+      shareBinder([atSlot("one", 0, { front: shot("f"), back: shot("b") }), atSlot("two", 1, { front: shot("only") })]);
+      renderAt(BINDER_URL);
+      fireEvent.click(pocket(/pocket 1 on page 1/));
+      expect(fetched).toEqual(expect.arrayContaining([shot("b").thumbUrl, shot("b").imageUrl]));
+      fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+      fetched.length = 0;
+      fireEvent.click(pocket(/pocket 2 on page 1/));
+      expect(fetched).toEqual([]);
+    });
+
+    it("a sorted binder with two copies of one card: only the copy with the photo shows it", () => {
+      const withPhoto = { key: "shot", quantity: 1, card: CARD, photos: { front: shot("mine"), back: shot("mine-back") } };
+      const plain = { key: "plain", quantity: 1, card: CARD };
+      shareBinder([plain, withPhoto], { layout: { sort: "checklist", emptySlots: false, smart: false } });
+      renderAt(BINDER_URL);
+      const ofKey = (key: string) => document.querySelector<HTMLElement>(`[data-copy-key="${key}"]`)!;
+      expect(ofKey("shot").querySelector("img")?.getAttribute("src")).toBe(shot("mine").thumbUrl);
+      expect(ofKey("plain").querySelector("img")).toBeNull();
+
+      fireEvent.click(ofKey("plain"));
+      const plainDialog = screen.getByRole("dialog");
+      expect(plainDialog.querySelector("img")).toBeNull();
+      expect(within(plainDialog).queryByRole("link", { name: /full size/ })).toBeNull();
+      fireEvent.keyDown(plainDialog, { key: "Escape" });
+
+      fireEvent.click(ofKey("shot"));
+      const shotDialog = screen.getByRole("dialog");
+      expect(within(shotDialog).getByRole("img", { name: new RegExp(`^${LABEL}`) }).getAttribute("src")).toBe(shot("mine").imageUrl);
+      expect(within(shotDialog).getByRole("button", { name: "See the back" })).toBeTruthy();
+    });
   });
 
   it("an empty binder says so, and draws no binder", () => {

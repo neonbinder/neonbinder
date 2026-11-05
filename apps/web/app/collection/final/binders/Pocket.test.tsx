@@ -171,6 +171,59 @@ describe("BinderDesk, read-only", () => {
     expect(onTurn).toHaveBeenCalledExactlyOnceWith(1);
   });
 
+  const swipeLeft = (region: HTMLElement) => {
+    fireEvent.touchStart(region, { touches: [{ clientX: 200, clientY: 100 }] });
+    fireEvent.touchEnd(region, { changedTouches: [{ clientX: 100, clientY: 100 }] });
+  };
+
+  test("a visitor's wide desk turns on a swipe too", () => {
+    const onTurn = vi.fn();
+    render(
+      <Theme>
+        <BinderDesk
+          readOnly
+          pages={[page, page, page]}
+          wide
+          at={0}
+          onTurn={onTurn}
+          vinyl="#123456"
+          cover={null}
+          reducedMotion
+          name="Shared"
+          onOpenCopies={vi.fn()}
+        />
+      </Theme>,
+    );
+    swipeLeft(screen.getByRole("region", { name: "Shared, open" }));
+    expect(onTurn).toHaveBeenCalledExactlyOnceWith(1);
+  });
+
+  test("the owner's wide desk leaves the gesture to its drag", () => {
+    const onTurn = vi.fn();
+    render(
+      <Theme>
+        <BinderDesk
+          pages={[page, page, page]}
+          wide
+          at={0}
+          onTurn={onTurn}
+          vinyl="#123456"
+          cover={null}
+          reducedMotion
+          name="Mine"
+          variant="binder"
+          aimed={null}
+          wholeBinderDrop={false}
+          onOpen={vi.fn()}
+          onAdd={vi.fn()}
+          onAim={vi.fn()}
+        />
+      </Theme>,
+    );
+    swipeLeft(screen.getByRole("region", { name: "Mine, open" }));
+    expect(onTurn).not.toHaveBeenCalled();
+  });
+
   test("the owner's desk still shows the move hint when it rearranges", () => {
     render(
       <Theme>

@@ -100,6 +100,8 @@ const BLANK: PageModel = {
 export default function BinderDesk(props: BinderDeskProps) {
   const { pages, wide, at, onTurn, vinyl, cover, reducedMotion, name } = props;
   const wholeBinderDrop = !props.readOnly && props.wholeBinderDrop;
+  // The owner's wide desk keeps the gesture for its drag; a visitor has no drag.
+  const swipes = !wide || props.readOnly === true;
   const rearrange = !props.readOnly && props.rearrange;
   const steps = stepCount(pages.length, wide);
   const step = Math.min(at, steps - 1);
@@ -185,9 +187,9 @@ export default function BinderDesk(props: BinderDeskProps) {
       ref={setNodeRef}
       role="region"
       aria-label={`${name}, open`}
-      onTouchStart={wide ? undefined : onTouchStart}
-      onTouchEnd={wide ? undefined : onTouchEnd}
-      onTouchCancel={wide ? undefined : onTouchCancel}
+      onTouchStart={swipes ? onTouchStart : undefined}
+      onTouchEnd={swipes ? onTouchEnd : undefined}
+      onTouchCancel={swipes ? onTouchCancel : undefined}
       className={`p2-binder ${wide ? "" : "p2-binder--single"}`}
       style={
         {
@@ -245,7 +247,7 @@ export default function BinderDesk(props: BinderDeskProps) {
   return (
     <div className="p2-desk">
       {binderEl}
-      <div className="mt-3 flex items-center justify-between gap-3">
+      <div className="nb-desk-turns mt-3 flex items-center justify-between gap-3">
         <TurnButton dir="back" wide={false} disabled={step === 0} onClick={back} />
         <TurnButton dir="next" wide={false} disabled={step >= steps - 1} onClick={next} />
       </div>
@@ -328,7 +330,7 @@ function TurnButton({
         aria-label={label}
         title={`${label} (${back ? "PageUp" : "PageDown"})`}
         aria-keyshortcuts={back ? "PageUp" : "PageDown"}
-        className="flex w-11 flex-none items-center justify-center rounded-xl border border-rule-strong bg-sheet text-ink-2 hover:border-neon-blue hover:text-ink focus-outline aria-disabled:cursor-not-allowed aria-disabled:opacity-30"
+        className="flex w-11 flex-none items-center justify-center rounded-xl border border-rule-strong bg-sheet text-ink-2 not-aria-disabled:hover:border-neon-blue not-aria-disabled:hover:text-ink focus-outline aria-disabled:cursor-not-allowed aria-disabled:opacity-30"
       >
         <Icon aria-hidden="true" className="h-6 w-6" />
       </button>

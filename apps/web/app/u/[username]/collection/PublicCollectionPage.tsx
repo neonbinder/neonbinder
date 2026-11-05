@@ -4,7 +4,7 @@ import { Link, useLocation, useNavigate, useParams, useSearchParams } from "reac
 import type { FunctionReturnType } from "convex/server";
 import { api } from "@/convex/_generated/api";
 import CardFace from "@/app/collection/prototypes/_shared/CardFace";
-import { useReducedMotion, useWideDesk } from "@/app/collection/prototypes/p2/hooks";
+import { useMediaQuery, useReducedMotion } from "@/app/collection/prototypes/p2/hooks";
 import "@/app/collection/prototypes/p2/p2.css";
 import { hydrateCatalogCard, hydratePublicOwnCard } from "@/app/collection/final/data/convexStore";
 import { cardLabel } from "@/app/collection/final/data/labels";
@@ -14,7 +14,6 @@ import "@/app/collection/final/binders/binders.css";
 import { PLAIN_LABEL } from "@/app/collection/final/binders/label";
 import { sortedPages, type PageModel, type PocketModel } from "@/app/collection/final/binders/model";
 import NeonButton from "@/components/modules/NeonButton";
-import { ForceDark } from "@/components/primitives/ForceDark";
 import { USERNAME_RE } from "@/lib/collection/share-links";
 import { useDocumentTitle } from "@/src/hooks/useDocumentTitle";
 import { useOverflows } from "@/src/hooks/useOverflows";
@@ -39,6 +38,14 @@ const PAGE_SIZE = 60;
 const CARD_PARAM = "card";
 /** The binder page the visitor is on, from 1. */
 const PAGE_PARAM = "page";
+
+/**
+ * A visitor's spread: the owner's breakpoint, except a touch tablet held
+ * upright, where a spread's pockets come out small and one page reads better.
+ */
+const VISITOR_SPREAD = "(min-width: 1024px), (min-width: 768px) and (orientation: landscape), (min-width: 768px) and (hover: hover)";
+/** A touch screen, where a swipe turns the page and there are no PageUp keys to name. */
+const SWIPES = "(hover: none)";
 
 /** On the history entry a press pushed, so closing steps Back off it instead of leaving a second entry. */
 interface CardHistoryState {
@@ -95,7 +102,13 @@ function Shell({
     <div data-theme="dark" className="min-h-screen bg-surface text-ink">
       <header className="border-b border-rule bg-surface px-4 py-3">
         <div className={`mx-auto flex ${column} items-center justify-between gap-3`}>
-          {profile ? (
+          {username && profile === undefined ? (
+            // Holds the slot, so the collector's name doesn't arrive by replacing ours.
+            <span aria-hidden="true" data-name-slot className="flex min-h-10 items-center gap-2">
+              <span className="h-8 w-8 rounded-full bg-raised" />
+              <span className="h-4 w-24 rounded bg-raised" />
+            </span>
+          ) : profile ? (
             <Link to={`/u/${profile.username}`} className="flex min-h-10 items-center gap-2 font-semibold focus-outline">
               {profile.photoUrl ? (
                 <img src={profile.photoUrl} alt="" className="h-8 w-8 rounded-full object-cover" />
@@ -127,13 +140,24 @@ function Shell({
   );
 }
 
-function Loading() {
+/** `progress` is for the eye: announcing every page of a long read would drown a screen reader. */
+function Loading({ progress }: { progress?: string }) {
   return (
-    <div role="status" className="flex justify-center py-16">
-      <span className="sr-only">Loading…</span>
-      <div aria-hidden="true" className="h-8 w-8 animate-spin rounded-full border-2 border-ink border-t-transparent" />
+    <div className="flex flex-col items-center gap-3 py-16">
+      <div role="status">
+        <span className="sr-only">Loading…</span>
+        <div aria-hidden="true" className="h-8 w-8 animate-spin rounded-full border-2 border-ink border-t-transparent" />
+      </div>
+      {progress && <p className="text-sm tabular-nums text-ink-2">{progress}</p>}
     </div>
   );
+}
+
+/** How far the read has got. `lines` is what the reader counts: a line can hold several copies. */
+function sleevingLine(done: number, count: { lines: number } | null): string {
+  if (done === 0) return "Sleeving the cards…";
+  const total = count ? ` of ${Math.max(count.lines, done).toLocaleString("en-US")}` : "";
+  return `Sleeving ${done.toLocaleString("en-US")}${total} cards…`;
 }
 
 /** The one not-found screen: worded the same whether the page is private, mistyped or missing. */
@@ -351,6 +375,19 @@ function firstPageOfStep(step: number, wide: boolean): number {
   return wide && step > 0 ? step * 2 - 1 : step;
 }
 
+/** The photos a step of the binder shows, front first, as the pocket picks them. */
+function thumbsOfStep(pages: readonly PageModel[], step: number, wide: boolean): string[] {
+  if (step < 0) return [];
+  const first = firstPageOfStep(step, wide);
+  const onStep = wide && step > 0 ? pages.slice(first, first + 2) : pages.slice(first, first + 1);
+  return onStep.flatMap((page) =>
+    page.pockets.flatMap(({ photos }) => {
+      const url = (photos?.front ?? photos?.back)?.thumbUrl;
+      return url ? [url] : [];
+    }),
+  );
+}
+
 /** Focus without a jump, then just enough scroll to see it. A scroll-behavior from CSS can't make it glide. */
 function focusInView(target: HTMLElement) {
   target.focus({ preventScroll: true });
@@ -378,7 +415,7 @@ export function PublicBinderPage() {
   if (header === undefined) {
     return (
       <Shell username={username}>
-        <Loading />
+        <Loading progress={sleevingLine(0, null)} />
       </Shell>
     );
   }
@@ -390,9 +427,9 @@ export function PublicBinderPage() {
     );
   }
   return (
+    // Dark everywhere, portals included (`ForceDark` on the route, src/main.tsx):
+    // the binder's light-mode rules read `<html data-theme>`.
     <Shell username={username} title={header.name} wide>
-      {/* Dark everywhere, portals included: the binder's light-mode rules read `<html data-theme>`. */}
-      <ForceDark />
       <OpenBinder username={username} path={path} header={header} />
     </Shell>
   );
@@ -438,7 +475,8 @@ function OpenBinder({ username, path, header }: { username: string; path: string
     return places;
   }, [pages]);
 
-  const wide = useWideDesk();
+  const wide = useMediaQuery(VISITOR_SPREAD);
+  const swipes = useMediaQuery(SWIPES);
   const reducedMotion = useReducedMotion();
   const location = useLocation();
   const navigate = useNavigate();
@@ -469,6 +507,10 @@ function OpenBinder({ username, path, header }: { username: string; path: string
       { replace: true },
     );
   };
+  // The steps either side, so a page turn lands on cards already in hand.
+  useEffect(() => {
+    for (const url of [...thumbsOfStep(pages, at - 1, wide), ...thumbsOfStep(pages, at + 1, wide)]) new Image().src = url;
+  }, [pages, at, wide]);
   const rootRef = useRef<HTMLDivElement>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
   // PageUp / PageDown from a pocket: the new page may have no pocket there, and
@@ -558,20 +600,27 @@ function OpenBinder({ username, path, header }: { username: string; path: string
           </p>
         )}
       </div>
-      {/* On a wide screen the inside cover says these; there's no cover on a phone, or without a binder. */}
-      {(!wide || (read && !hasBinder)) && (
+      {/* On a wide screen the inside cover says these, once it's there; a phone has no cover. */}
+      {(!wide || !hasBinder) && (
         <div className="mb-4 space-y-1">
           {header.description && <p className="text-ink-2">{header.description}</p>}
-          {count && <p className="text-sm text-ink-3">{count}</p>}
-          {hasBinder && <p className="text-sm text-ink-3">Tap a card to pop it out.</p>}
+          {/* One line on a short screen: every line here pushes the binder down. */}
+          <p className="text-sm text-ink-3">
+            {count && <span className="block [@media(max-height:480px)]:mr-3 [@media(max-height:480px)]:inline">{count}</span>}
+            {hasBinder && (
+              <span className="mt-1 block [@media(max-height:480px)]:mt-0 [@media(max-height:480px)]:inline">
+                Tap a card to pop it out.{swipes && " Swipe to turn."}
+              </span>
+            )}
+          </p>
         </div>
       )}
       {!read ? (
-        <Loading />
+        <Loading progress={sleevingLine(results.length, header.count)} />
       ) : !hasBinder ? (
         <p className="mt-6 text-ink-2">This binder is empty for now.</p>
       ) : (
-        <div ref={rootRef}>
+        <div ref={rootRef} className="nb-visitor-desk">
           <BinderDesk
             readOnly
             pages={pages}
@@ -579,7 +628,7 @@ function OpenBinder({ username, path, header }: { username: string; path: string
             at={at}
             onTurn={turnTo}
             vinyl={header.label?.background ?? PLAIN_LABEL.background}
-            cover={<PublicCover header={header} count={count} />}
+            cover={<PublicCover header={header} count={count} swipes={swipes} />}
             reducedMotion={reducedMotion}
             name={header.name}
             onOpenCopies={openCard}
@@ -593,7 +642,7 @@ function OpenBinder({ username, path, header }: { username: string; path: string
 }
 
 /** The inside front cover, for a visitor: what the binder is, and how to use it. No owner's controls. */
-function PublicCover({ header, count }: { header: PublicBinder; count: string | null }) {
+function PublicCover({ header, count, swipes }: { header: PublicBinder; count: string | null; swipes: boolean }) {
   // No height of its own (`h-0 min-h-full`), so a long description scrolls here
   // instead of stretching the binder past its pages. A tab stop only when it does.
   const [coverRef, scrolls] = useOverflows<HTMLDivElement>();
@@ -611,7 +660,9 @@ function PublicCover({ header, count }: { header: PublicBinder; count: string | 
       </p>
       {count && <p className="text-ink-3">{count}</p>}
       {header.description && <p className="whitespace-pre-line [overflow-wrap:anywhere]">{header.description}</p>}
-      <p className="mt-auto text-xs text-ink-3">PageUp and PageDown turn the pages. Pick a card to pop it out.</p>
+      <p className="mt-auto text-xs text-ink-3">
+        {swipes ? "Swipe to turn the pages. Tap a card to pop it out." : "PageUp and PageDown turn the pages. Pick a card to pop it out."}
+      </p>
     </div>
   );
 }

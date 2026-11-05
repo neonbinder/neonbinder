@@ -1,4 +1,4 @@
-import { useId, useLayoutEffect, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useState, type CSSProperties } from "react";
 import { XMarkIcon } from "@heroicons/react/24/outline";
 import type { FunctionReturnType } from "convex/server";
 import type { api } from "@/convex/_generated/api";
@@ -61,6 +61,13 @@ export default function PublicCardOverlay({
   const { photos } = copy;
   const canFlip = !!photos?.front && !!photos.back;
   const flipped = canFlip && showBack === true;
+  // Fetched on opening, so See the back never shows an empty top loader.
+  const back = canFlip ? photos.back : undefined;
+  useEffect(() => {
+    if (!back) return;
+    new Image().src = back.thumbUrl;
+    new Image().src = back.imageUrl;
+  }, [back]);
   const photo = flipped ? photos.back : (photos?.front ?? photos?.back);
   const label = cardLabel(card);
   const side = flipped || (photos?.back && !photos.front) ? `${label}, the back` : label;
@@ -76,6 +83,8 @@ export default function PublicCardOverlay({
         outline
         aria-label="Close the top loader"
         onClick={onClose}
+        // Solid: it can sit over the card on a phone. The fill is the button's own paint variable.
+        style={{ "--nb-fill": "var(--surface)" } as CSSProperties}
         className="pointer-events-auto !absolute right-3 top-3 z-10 min-h-11 min-w-11"
       >
         <XMarkIcon aria-hidden="true" className="h-5 w-5" />
