@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { getFunctionName } from "convex/server";
 import type { Id } from "@/convex/_generated/dataModel";
 import { ScannerJoin, startRefusal } from "./ScannerJoin";
@@ -36,7 +36,7 @@ afterEach(cleanup);
 function renderJoin(props: Partial<Parameters<typeof ScannerJoin>[0]> = {}) {
   const onRunStarted = vi.fn();
   const view = render(
-    <ScannerJoin runId={null} newRun={{ homeId: HOME }} kind="binder" onRunStarted={onRunStarted} {...props} />,
+    <ScannerJoin runId={null} newRun={{ homeId: HOME }} kind="binder" loading={false} onRunStarted={onRunStarted} {...props} />,
   );
   return { onRunStarted, view };
 }
@@ -49,7 +49,9 @@ describe("ScannerJoin", () => {
     expect(calls.start).toHaveBeenCalledWith({ source: "scanner" });
     expect(calls.create).toHaveBeenCalledWith({ homeId: HOME, jobId: "job-1" });
     // The parent opens the run; the code shows for it.
-    view.rerender(<ScannerJoin runId={RUN} newRun={{ homeId: HOME }} kind="binder" onRunStarted={onRunStarted} />);
+    view.rerender(
+      <ScannerJoin runId={RUN} newRun={{ homeId: HOME }} kind="binder" loading={false} onRunStarted={onRunStarted} />,
+    );
     const panel = await screen.findByRole("group", { name: "Scanner code" });
     expect(panel.textContent).toContain("Type or paste this code in NeonBinder Scanner");
     // The code and the how-to are read out with the group, not just its name.
@@ -95,9 +97,34 @@ describe("ScannerJoin", () => {
 
   it("with nowhere to file, says to make one", async () => {
     renderJoin({ newRun: null, kind: "box" });
-    fireEvent.click(screen.getByRole("button", { name: "Use a scanner" }));
+    const button = screen.getByRole("button", { name: "Use a scanner" });
+    expect(button.getAttribute("aria-disabled")).not.toBe("true");
+    fireEvent.click(button);
     expect((await screen.findByRole("alert")).textContent).toBe("Make a box first: the cards need somewhere to go.");
     expect(calls.start).not.toHaveBeenCalled();
+  });
+
+  // NEO-416 — while the homes or the open run are still loading, "no run" and
+  // "no home" are not yet true: a click then would start a second run, or say
+  // to make a binder the collector already has.
+  it("while loading, holds the button (still focusable) and a click starts nothing", async () => {
+    renderJoin({ loading: true });
+    const button = screen.getByRole("button", { name: "Use a scanner" });
+    expect(button.getAttribute("aria-disabled")).toBe("true");
+    expect(button.hasAttribute("disabled")).toBe(false);
+    fireEvent.click(button);
+    await act(async () => {});
+    expect(calls.start).not.toHaveBeenCalled();
+    expect(calls.create).not.toHaveBeenCalled();
+    expect(calls.mint).not.toHaveBeenCalled();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("while the homes load, does not say to make one", async () => {
+    renderJoin({ loading: true, newRun: null });
+    fireEvent.click(screen.getByRole("button", { name: "Use a scanner" }));
+    await act(async () => {});
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 
   it("says so in the screen's words when the server won't start a run", async () => {

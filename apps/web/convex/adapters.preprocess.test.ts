@@ -35,6 +35,7 @@ import { isNonRetryableError } from "@convex-dev/workpool";
 import { getFunctionName } from "convex/server";
 import type { ActionCtx } from "./_generated/server";
 import {
+  callDeriveCopyPhotos,
   callExtract,
   callProcessEntryFast,
   callProcessEntryHeavy,
@@ -1025,5 +1026,74 @@ describe("escalation hints — FAST decline baseline + dhash (NEO-315 D4)", () =
     });
     expect(bodies[1]).not.toHaveProperty("dhash");
     expect(bodies[2]).toEqual({ job_id: "j", user_id: "u", entry_index: 0 });
+  });
+});
+
+describe("callDeriveCopyPhotos (NEO-427)", () => {
+  const ARGS = { jobId: "job-1", userId: "user_a", entryIndex: 4 };
+  const OK = {
+    image: Buffer.from("the image").toString("base64"),
+    thumb: Buffer.from("the thumb").toString("base64"),
+    content_type: "image/jpeg",
+  };
+  const okResponse = (body: unknown = OK) =>
+    new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+
+  beforeEach(() => {
+    vi.stubEnv("NEONBINDER_PREPROCESS_URL", "http://localhost:8081");
+    vi.stubEnv("NEONBINDER_PREPROCESS_FAST_URL", "http://localhost:8082");
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+  });
+
+  test("goes to the fast service with ids, never a path, and decodes both sizes", async () => {
+    const calls: Array<{ url: string; body: unknown }> = [];
+    stubFetch(async (url, init) => {
+      calls.push({ url: String(url), body: JSON.parse(String(init?.body)) });
+      return okResponse();
+    });
+    const out = await callDeriveCopyPhotos(stubCtx(), ARGS);
+    expect(calls).toEqual([
+      {
+        url: "http://localhost:8082/derive-copy-photos",
+        body: { job_id: "job-1", user_id: "user_a", entry_index: 4 },
+      },
+    ]);
+    expect(Buffer.from(out.image).toString()).toBe("the image");
+    expect(Buffer.from(out.thumb).toString()).toBe("the thumb");
+    expect(out.contentType).toBe("image/jpeg");
+  });
+
+  test("a gone scan is terminal and carries its code", async () => {
+    stubFetch(async () => errorResponse(404, { error_code: "OUTPUT_NOT_FOUND" }));
+    const err: unknown = await callDeriveCopyPhotos(stubCtx(), ARGS).catch((e: unknown) => e);
+    expect(isNonRetryableError(err)).toBe(true);
+    expect(parsePreprocessErrorCode((err as Error).message)).toBe("OUTPUT_NOT_FOUND");
+  });
+
+  test("a 404 with no code carries no code", async () => {
+    stubFetch(async () => new Response("Not Found", { status: 404 }));
+    const err = (await callDeriveCopyPhotos(stubCtx(), ARGS).catch((e: unknown) => e)) as Error;
+    expect(parsePreprocessErrorCode(err.message)).toBeUndefined();
+  });
+
+  test("a busy service is retryable", async () => {
+    stubFetch(async () => errorResponse(429, {}));
+    const err: unknown = await callDeriveCopyPhotos(stubCtx(), ARGS).catch((e: unknown) => e);
+    expect(isNonRetryableError(err)).toBe(false);
+  });
+
+  test.each([
+    ["an unknown content type", { ...OK, content_type: "image/svg+xml" }],
+    ["a missing content type", { image: OK.image, thumb: OK.thumb }],
+    ["a missing image", { thumb: OK.thumb, content_type: "image/jpeg" }],
+    ["an empty thumb", { ...OK, thumb: "" }],
+    ["a non-base64 image", { ...OK, image: "not base64!" }],
+    ["a non-string image", { ...OK, image: 12 }],
+  ])("refuses %s", async (_label, body) => {
+    stubFetch(async () => okResponse(body));
+    await expect(callDeriveCopyPhotos(stubCtx(), ARGS)).rejects.toThrow(/derive-copy-photos/);
   });
 });

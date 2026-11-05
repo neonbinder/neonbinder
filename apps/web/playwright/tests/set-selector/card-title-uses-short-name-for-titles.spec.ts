@@ -114,8 +114,9 @@ test(
     // Enter commits a single-line feature field in place (NEO-216).
     await shortName.press("Enter");
     await expect(page.getByText(/Saved Short name for titles/)).toBeVisible();
-    // The stored value, read back off the field: the confirmation is
-    // optimistic, the field re-hydrates from the row.
+    // "Saved" waits for the write (NEO-412), so Regenerate below reads the new
+    // name. The stored value, read back off the field: it re-hydrates from the
+    // row.
     await expect(shortName).toHaveValue(short);
 
     // ── STEP 3: Regenerate uses the short name ──

@@ -37,17 +37,24 @@ export function startRefusal(reason: string | undefined): string {
  *
  * Focus moves to the code once it shows, so a keyboard or screen-reader user
  * hears it; the button stays focusable while busy (`aria-disabled`).
+ *
+ * NEO-416 — held the same way while `loading`: until the homes and the open
+ * run have loaded, "no run" and "no home" are not known yet, and a click
+ * would start a second run or say to make a home the collector already has.
  */
 export function ScannerJoin({
   runId,
   newRun,
   kind,
+  loading,
   onRunStarted,
 }: {
   runId: Id<"intakeRuns"> | null;
   /** What a run started from here files into; null when there is no home yet. */
   newRun: NewRun | null;
   kind: "binder" | "box";
+  /** The homes or the open run are still loading; the button holds. */
+  loading: boolean;
   onRunStarted: (runId: Id<"intakeRuns">) => void;
 }) {
   const startStream = useMutation(api.placeholderStream.startPlaceholderStream);
@@ -66,7 +73,7 @@ export function ScannerJoin({
   }, [shown]);
 
   const onUse = async () => {
-    if (busy) return;
+    if (busy || loading) return;
     setBusy(true);
     setProblem("");
     try {
@@ -155,7 +162,7 @@ export function ScannerJoin({
       <NeonButton
         variant="secondary"
         outline
-        aria-disabled={busy}
+        aria-disabled={busy || loading}
         aria-describedby={problem ? problemId : undefined}
         onClick={() => void onUse()}
       >

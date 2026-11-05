@@ -488,15 +488,60 @@ describe("price to shipping slot and floor (NEO-415)", () => {
     expect(holds.map((h) => h.reason)).toEqual(["graded", "noCondition"]);
   });
 
-  test("the oldest copy supplies the photo flag and id", () => {
+  test("the oldest copy with photos supplies them, not the oldest copy", () => {
     const { targets } = foldEbayTargets({
       copies: [
-        copy({ copyId: "new" as never, creationTime: 9_000_000_000, hasPhotos: true }),
+        copy({ copyId: "newest" as never, creationTime: 9_000_000_000, hasPhotos: true }),
+        copy({ copyId: "middle" as never, creationTime: 5_000_000_000, hasPhotos: true }),
         copy({ copyId: "old" as never, creationTime: 0, hasPhotos: false }),
       ],
       commonPriceCents: null,
     });
-    expect(targets[0]).toMatchObject({ oldestCopyId: "old", oldestHasPhotos: false });
+    expect(targets[0].photoCopyId).toBe("middle");
+    expect(targets[0].quantity).toBe(3);
+  });
+
+  test("a group with no photo on any copy has no photo copy", () => {
+    const { targets } = foldEbayTargets({
+      copies: [copy({ copyId: "a" as never, hasPhotos: false }), copy({ copyId: "b" as never, hasPhotos: false })],
+      commonPriceCents: null,
+    });
+    expect(targets[0].photoCopyId).toBeNull();
+  });
+
+  test("a photo on a copy in another condition doesn't count for this group", () => {
+    const { targets } = foldEbayTargets({
+      copies: [
+        copy({ copyId: "nm" as never, condition: "Near Mint", hasPhotos: false }),
+        copy({ copyId: "good" as never, condition: "Good", hasPhotos: true }),
+      ],
+      commonPriceCents: null,
+    });
+    expect(targets.map((t) => t.photoCopyId).sort()).toEqual(["good", null].sort());
+  });
+
+  test("a zero-quantity or binder copy with photos never supplies them", () => {
+    const { targets } = foldEbayTargets({
+      copies: [
+        copy({ copyId: "empty" as never, creationTime: 0, quantity: 0, hasPhotos: true }),
+        copy({ copyId: "binder" as never, creationTime: 1, homeIsBox: false, hasPhotos: true }),
+        copy({ copyId: "live" as never, creationTime: 9_000_000_000, hasPhotos: true }),
+      ],
+      commonPriceCents: null,
+    });
+    expect(targets[0].photoCopyId).toBe("live");
+  });
+
+  test("two photo copies of one age day: the earlier created, then the lower id, supplies them", () => {
+    const day = 5 * 86_400_000;
+    const pick = (copies: Array<[string, number]>) =>
+      foldEbayTargets({
+        copies: copies.map(([id, creationTime]) => copy({ copyId: id as never, creationTime, hasPhotos: true })),
+        commonPriceCents: null,
+      }).targets[0].photoCopyId;
+    expect(pick([["b", day + 10], ["a", day + 20]])).toBe("b");
+    expect(pick([["b", day + 10], ["a", day + 10]])).toBe("a");
+    expect(pick([["a", day + 10], ["b", day + 10]])).toBe("a");
   });
 
   test("zero or fractional quantities are skipped", () => {

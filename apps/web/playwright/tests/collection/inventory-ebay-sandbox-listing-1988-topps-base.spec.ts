@@ -57,21 +57,30 @@
 // eBay prices is unit-only (convex/listingDrainEbay.test.ts, the item's
 // packageWeightAndSize): the sandbox does not show the item body back, so
 // the spec proves the weight is saved and kept (step 4), not what eBay got.
-//   5. They set a common price, put one copy each of the first three 1988 Topps
-//      Base cards in the box and attach a photo to the first two only (eBay
-//      listings need one; each field then reads 0 and names its copy "Raw
-//      with photo", as a quick count no longer counts it), press Sync,
-//      follow "See what's syncing" (Back returns), and Sync status reads the eBay section's set with 2 listed and
-//      1 skipped: the third card is held back, named, with eBay's no-photo
-//      reason.
+//   5. They set a common price, then put one copy each of the first three 1988
+//      Topps Base cards in the box, with a photo on two of them only (eBay
+//      listings need one): the FIRST has a plain quick-count copy and then a
+//      second line from a scanned pair (NEO-427: the oldest copy WITH photos
+//      feeds the listing, so the older photoless line does not hold it; Add
+//      cards, a real scan pair read and matched, the card picked by hand, Save;
+//      the tile says "Photos are in!", the scans ride on the saved copy with no
+//      further action), the SECOND gets a photo by hand in its drawer, the third
+//      none. A photo copy is named "Raw with photo" beside its card's field and
+//      no longer counted by it (the second card reads 0; the first still reads its
+//      plain copy's 1). They press Sync, follow
+//      "See what's syncing" (Back returns), and Sync status reads the eBay
+//      section's set with 2 listed and 1 skipped: the third card is held back,
+//      named, with eBay's no-photo reason. This is the proof the scanner's
+//      photos reach eBay: the first card lists on the photos the save put on it.
 //   6. They turn the box's "Listed on marketplaces" off, Sync again, and the
 //      set reads 0 listed, with the two cards taken to 0 and nothing held back.
 //      The Sales tab names eBay (its orders link and its empty state; Back
 //      returns).
 //   7. They tidy up (cards out of the box: the photoless one by its quantity,
 //      the two with a photo through the card drawer's Remove, since a quick
-//      count never changes a copy with a photo (NEO-377); the common price
-//      cleared, the box deleted) and Disconnect eBay (the confirm dialog),
+//      count never changes a copy with a photo (NEO-377); the scan run closed
+//      with "Done adding photos" (the box is in-person by now, so closing it
+//      lists nothing); the common price cleared, the box deleted) and Disconnect eBay (the confirm dialog),
 //      which takes down anything NeonBinder put up on eBay and leaves the
 //      account not connected. The afterEach does the same on a failure.
 //
@@ -92,20 +101,33 @@
 // Waits. Every step gets the standard 7 s budget (GUIDE hard rule 3), the
 // eBay calls included: reading the seller's policies, "Set me up", saving a
 // pick or the ships-from address, the Sync results and the disconnect's
-// takedown. A step that needs longer is a finding to report, never a number to
-// raise. The only longer wait is the seed hop's one full page load
-// (`LAUNCH_GATE`). No timer and no cron path: the 15-minute poll is
-// deliberately not exercised.
+// takedown, and (NEO-427) "Photos are in!" on the scanned save's tile, where
+// the server derives both sizes of each side from the scan and files them on
+// the copy. A step that needs longer is a finding to report, never a number to
+// raise. The longer waits are the seed hop's one full page load (`LAUNCH_GATE`),
+// the scan pair's crop and read (`PAIR_PROCESSING`, the placeholder pipeline's own
+// exception) and the signed-off "Go live" ceiling at its call. No timer and no
+// cron path: the 15-minute poll is deliberately not exercised.
 //
 // Sync's toast. A press that sets a run going toasts "Syncing <title> now.
 // Watch it on Sync status."; both presses assert it before reading the result.
+//
+// The scanned pair (NEO-427). The two scans are the placeholder pipeline's own
+// scanner-bed cards (`public/placeholder-fixtures/01-vorkle-*.jpg`), which the fast
+// crop stage takes without waking the heavy model: every intake scan's back
+// escalates, so those would queue behind any other spec's heavy call. They name a
+// player that means nothing in 1988 Topps Baseball, so the card is picked by hand
+// ("Wrong card? Find it"), exactly as the real-scans spec fixes a misread: the pair is
+// the INPUT, the card is the first row of the checklist. The scanner app itself
+// needs a real scanner, so the run is the Add cards photo drop; the save and the
+// photo attach behind it are the same path a scanner run takes.
 //
 // R7/R7a. 1988 Topps Baseball is a registered real set (SET-REGISTRY.md): this
 // spec is the SOLE writer of the sandbox seller account's listings and writes
 // no card, player, team or variant of the set. Its NB writes are the signed-in
 // user's own rows (the eBay connection and setup, a minted box, three box copies
-// (a photo on two), the common price, and every other box set to in-person,
-// which is left that way). It makes NeonBinder's standard payment and returns
+// (a photo on two, one of them from a scan run), an intake run, the common price,
+// and every other box set to in-person, which is left that way). It makes NeonBinder's standard payment and returns
 // policies on the sandbox seller's eBay account where it has none ("Set me
 // up"); those stay on eBay and are found again by the next run. It makes no
 // shipping policy. The listings end taken down and the
@@ -122,6 +144,7 @@ import {
   baseChecklistTitle,
   cardsWord,
   clearChecklistCommonPrice,
+  collectorCascade,
   createBox,
   deleteOpenBox,
   drillToCollectorBase,
@@ -143,7 +166,20 @@ const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /** Real card scans the intake specs already commit (about 1000 px wide; eBay wants at least 500). */
 const FIXTURES = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "fixtures", "intake");
-const PHOTOS = ["01-mcfadden-front.jpg", "03-bowe-front.jpg"] as const;
+/** The second card's hand-added front photo. */
+const HAND_PHOTO = "03-bowe-front.jpg";
+/** The first card's scanned pair (front, then back), dropped into an Add cards run. */
+const SCAN_PAIR_FIXTURES = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "public", "placeholder-fixtures");
+const SCAN_PAIR = ["01-vorkle-front.jpg", "02-vorkle-back.jpg"] as const;
+/**
+ * The scan pair's crop, read, pairing and match on the preprocess service's
+ * FAST path (frame-filling scans; no heavy escalation). The same ceiling
+ * pipeline-fast-crops-inset-scans gives six photos on that path; a real model
+ * read cannot fit the 7 s budget, so this is the placeholder pipeline's own
+ * exception, as the real-scans spec's PIPELINE is. Every collector action
+ * around it runs at 7 s. Signed off by Jason, 2026-11-03.
+ */
+const PAIR_PROCESSING = 60_000;
 
 /**
  * The sandbox seller's own shipping policies the spec picks (made by hand or
@@ -174,7 +210,7 @@ const NOT_CONNECTED_MISSING_SETUP =
   "PAUSED_PLATFORMS does not name ebay. This spec never skips for missing setup.";
 
 /** What the failing run needs undone, filled as the flow goes. */
-const written: { connected?: boolean; disconnected?: boolean; priced?: boolean } = {};
+const written: { connected?: boolean; disconnected?: boolean; priced?: boolean; runUrl?: string } = {};
 
 /** The key that leaves a quantity field: Tab on a desktop, Enter on a phone. */
 const leaveKey = (isMobile: boolean) => (isMobile ? "Enter" : "Tab");
@@ -198,6 +234,14 @@ test.afterEach(async ({ context }, testInfo) => {
   const clean = await context.newPage();
   try {
     try {
+      // The scan run, closed so it never holds one of the account's active-run slots.
+      if (failed && written.runUrl) {
+        await clean.goto(written.runUrl);
+        await expect(clean.getByRole("heading", { level: 1, name: "Inventory" })).toBeVisible({ timeout: LAUNCH_GATE });
+        const done = clean.getByRole("button", { name: "Done adding photos" });
+        if (await done.isVisible()) await done.click();
+        written.runUrl = undefined;
+      }
       if (failed && written.priced) {
         await clean.goto("/inventory?tab=checklists");
         await expect(clean.getByRole("heading", { level: 1, name: "Inventory" })).toBeVisible({ timeout: LAUNCH_GATE });
@@ -223,6 +267,7 @@ test(
     written.connected = false;
     written.disconnected = false;
     written.priced = false;
+    written.runUrl = undefined;
     const boxName = `Ebay${env.ATTEMPT_TOKEN}`;
     const said = (text: string | RegExp) => page.getByRole("status").filter({ hasText: text });
     const tabs = inventoryTabs(page);
@@ -503,7 +548,7 @@ test(
     ).toBeVisible();
     await expectAccessible(page, { label: "Profile, eBay connected and set up" });
 
-    // --- 5. Stock the box: a price, one copy each of two cards, a photo each ------------
+    // --- 5. Stock the box: a price, a scanned pair, one copy each of two more cards, a photo on two ---
     // A full page load, so the launch gate applies.
     await page.goto("/inventory?tab=checklists");
     await expect(page.getByRole("heading", { level: 1, name: "Inventory" })).toBeVisible({ timeout: LAUNCH_GATE });
@@ -549,38 +594,121 @@ test(
     await expect(fieldB).toHaveValue("0");
     const fieldC = quantityField(boxList, c, boxName);
     await expect(fieldC).toHaveValue("0");
+
+    // --- The first card gets a plain copy first (NEO-427: oldest copy WITH photos) ---
+    // One quick-count copy of the first card, no photo, before the scan run. The
+    // scan then saves as a SECOND line of the same card (a scanned save never
+    // folds), and the listing has to take its photos from the scanned line, not
+    // hold the card for the older line that has none. eBay lists one offer per
+    // card and condition at the group's quantity (both copies, 2); no screen
+    // shows that number, so the proof is that the card still lists, and the
+    // box's count below (copies, not cards).
+    const rowOf = (short: string) =>
+      boxList
+        .getByRole("listitem")
+        .filter({ has: page.getByRole("textbox", { name: `Quantity of ${short} in ${boxName}`, exact: true }) });
+    await fieldA.fill("1");
+    await page.keyboard.press(leaveKey(isMobile));
+    await expect(fieldB).toBeFocused();
+    await expect(rowOf(a).getByText("Saved")).toBeVisible();
+    await expect(said(new RegExp(`^Boxed 1 more of ${escapeRegExp(a)}\\.`))).toBeVisible();
+
+    // --- The first card then comes from a scanned pair (NEO-427) --------------------
+    // Add cards, into this box, in this set: the pair is read and matched, the
+    // card is picked by hand (the scan names a number and a player that mean
+    // nothing in 1988 Topps), and Save puts the scans on the copy it makes.
+    // Nothing else is done for the photos; the Sync below lists the card on them.
+    // "Done adding photos" waits for the tidy-up: closing a run into a listed box
+    // lists its cards at once, and this card is meant to list on the Sync press.
+    await tabs.getByRole("link", { name: "Add cards", exact: true }).click();
+    await expect(page).toHaveURL(/[?&]tab=add/);
+    await page.getByRole("combobox", { name: "Put them in this box" }).selectOption({ label: boxName });
+    await page.getByRole("button", { name: "Set: pick one" }).click();
+    const { cascade, drill } = collectorCascade(page, "Sport, year, brand, set and variant");
+    await drill("Sports", TOPPS_1988.sport, "Years");
+    await drill("Years", TOPPS_1988.year, "Brands");
+    await drill("Brands", TOPPS_1988.manufacturer, "Sets");
+    await drill("Sets", TOPPS_1988.set, "Variant Types");
+    // The Base type is the variant: picking it folds the panel back into its button.
+    await cascade
+      .getByRole("listbox", { name: "Variant Types" })
+      .getByRole("option")
+      .filter({ has: page.getByText("Base", { exact: true }) })
+      .click();
+    await expect(page.getByRole("button", { name: `Set: ${TITLE}`, exact: true })).toBeVisible();
+    // The price is set, so the listed box is not held: the zone takes the photos.
+    const dropzone = page.getByLabel("Drag your card photos here, or browse your files");
+    await expect(dropzone).not.toHaveAttribute("aria-disabled", "true");
+    await dropzone.setInputFiles(SCAN_PAIR.map((n) => path.join(SCAN_PAIR_FIXTURES, n)));
+    await expect(said("Sent 2 photos.")).toBeVisible();
+    await expect(page).toHaveURL(/[?&]run=/);
+    written.runUrl = page.url();
+    const waiting = page.getByRole("region", { name: /^Needs you, \d+$/ });
+    const savedLane = page.getByRole("region", { name: /^Saved, \d+$/ });
+    // Read, paired and matched on the fast path (PAIR_PROCESSING, above).
+    await expect(waiting).toHaveAccessibleName("Needs you, 1", { timeout: PAIR_PROCESSING });
+    await waiting.getByRole("button", { name: /^Review / }).click();
+    const review = page.getByRole("dialog");
+    await review.getByRole("button", { name: "Wrong card? Find it" }).click();
+    const numberOfA = a.split(" ")[0];
+    await review.getByRole("combobox", { name: /^Find the card in / }).fill(numberOfA.replace(/^#/, ""));
+    await review.getByRole("option", { name: new RegExp(`^${escapeRegExp(numberOfA)} `) }).click();
+    await expect(review.getByText("You picked", { exact: true })).toBeVisible();
+    await review.getByRole("button", { name: "Save this card" }).click();
+    await expect(review).toBeHidden();
+    await expect(savedLane).toHaveAccessibleName("Saved, 1");
+    // The scans come along: the tile goes from slipping them in to "Photos are in!".
+    const scanTile = savedLane.getByRole("listitem").filter({ hasText: "Saved +1" });
+    await expect(scanTile).toHaveCount(1);
+    await expect(scanTile.getByText("Photos are in!", { exact: true })).toBeVisible();
+    // Positive first (above): none of the other four photo lines is on it.
+    for (const other of ["Slipping in the photos…", "Photos didn't stick.", "The scans aged out.", "These scans won't cut it."]) {
+      await expect(scanTile.getByText(other, { exact: true })).toHaveCount(0);
+    }
+    await expectAccessible(page, { label: "Add cards, a box run's saved card with its photos in" });
+    // To the checklist and Back: the run is on the URL, so Back is the run again.
+    await tabs.getByRole("link", { name: "Checklists", exact: true }).click();
+    await expect(page).toHaveURL(/[?&]tab=checklists/);
+    await expect(checklist.getByRole("heading", { level: 3, name: TITLE })).toBeVisible();
+    await page.goBack();
+    await expect(page).toHaveURL(/[?&]tab=add/);
+    await expect(savedLane).toHaveAccessibleName("Saved, 1");
+    // The tab reopens the checklist where it was left, adding to the box.
+    await tabs.getByRole("link", { name: "Checklists", exact: true }).click();
+    await expect(page).toHaveURL(/[?&]tab=checklists/);
+    await expect(checklist.getByRole("heading", { level: 3, name: TITLE })).toBeVisible();
+    await adding.selectOption({ label: boxName });
+    // The scanned copy is a second line in the box, with its photos: the quick count
+    // still reads the plain copy's 1, and the photo copy is named beside it.
+    await expect(fieldA).toHaveValue("1");
+    await expect(fieldA).toHaveAccessibleDescription(/also here: Raw with photo/);
+
+    // --- The other two: one copy each by quick count --------------------------------
     // A copy with a photo is the collector's own record, not a quick count
     // (NEO-377: the server's quick count never changes it). So once a card's
     // copy has its photo, the field counts it no more and names it after the
     // number instead ("also here: Raw with photo", the field's description);
     // the card without one still reads 1.
     const expectPhotoCopiesAside = async () => {
-      for (const field of [fieldA, fieldB]) {
-        await expect(field).toHaveValue("0");
-        await expect(field).toHaveAccessibleDescription(/also here: Raw with photo/);
-      }
+      // The first card: its plain copy counts 1, its scanned copy is named beside it.
+      await expect(fieldA).toHaveValue("1");
+      await expect(fieldA).toHaveAccessibleDescription(/also here: Raw with photo/);
+      await expect(fieldB).toHaveValue("0");
+      await expect(fieldB).toHaveAccessibleDescription(/also here: Raw with photo/);
       await expect(fieldC).toHaveValue("1");
     };
-    await fieldA.fill("1");
-    await page.keyboard.press(leaveKey(isMobile));
-    await expect(fieldB).toBeFocused();
     await fieldB.fill("1");
     await page.keyboard.press(leaveKey(isMobile));
     await expect(fieldC).toBeFocused();
     await fieldC.fill("1");
     await page.keyboard.press(leaveKey(isMobile));
-    const rowOf = (short: string) =>
-      boxList
-        .getByRole("listitem")
-        .filter({ has: page.getByRole("textbox", { name: `Quantity of ${short} in ${boxName}`, exact: true }) });
-    await expect(rowOf(a).getByText("Saved")).toBeVisible();
     await expect(rowOf(b).getByText("Saved")).toBeVisible();
     await expect(rowOf(c).getByText("Saved")).toBeVisible();
     await expect(said(new RegExp(`^Boxed 1 more of ${escapeRegExp(c)}\\.`))).toBeVisible();
 
-    // A photo on the first two copies: NB lists on eBay only with one (on the
-    // sandbox the photo stays in NB; eBay gets none, see the header). The third copy
-    // gets none, on purpose: a card without a photo must be held back, with
+    // A photo on the second copy by hand (the first has the scan's): NB lists on eBay
+    // only with one (on the sandbox the photo stays in NB; eBay gets none, see the
+    // header). The third copy gets none, on purpose: a card without a photo must be held back, with
     // its reason, on the very Sync that lists the other two. (Why a third card,
     // not a photo added to the held one for a second Sync: a press within a
     // minute of the last stamped press is throttled, and the second press would
@@ -628,8 +756,7 @@ test(
       await expect(field).toHaveValue("0");
       await expect(field).not.toHaveAccessibleDescription(/also here/);
     };
-    await attachPhoto(a, PHOTOS[0], "Card drawer, a boxed copy with its front photo");
-    await attachPhoto(b, PHOTOS[1]);
+    await attachPhoto(b, HAND_PHOTO, "Card drawer, a boxed copy with its front photo");
     await expectPhotoCopiesAside();
     // The box's quantities with the photo copies named beside their fields.
     await expectAccessible(page, { within: boxList, label: "Inventory checklist, boxed copies with a photo named beside the field" });
@@ -691,8 +818,9 @@ test(
     // --- 6. The box goes in-person: Sync takes both down ----------------------------------
     await page.goto("/inventory?tab=boxes");
     await expect(page.getByRole("heading", { level: 1, name: "Inventory" })).toBeVisible({ timeout: LAUNCH_GATE });
-    await expect(boxSpine(3)).toBeVisible();
-    await boxSpine(3).click();
+    // Four copies for sale: the first card's plain and scanned copies, the second's and the third's.
+    await expect(boxSpine(4)).toBeVisible();
+    await boxSpine(4).click();
     await expect(page.getByRole("heading", { level: 2, name: boxName, exact: true })).toBeVisible();
     const listed = page.getByRole("checkbox", { name: "Listed on marketplaces", exact: true });
     // On by default.
@@ -745,15 +873,23 @@ test(
     // since the drill above: the tab link reopens 1988 Topps Base.
     await tabs.getByRole("link", { name: "Checklists", exact: true }).click();
     await expect(page).toHaveURL(/[?&]tab=checklists/);
-    // The card with no photo: a quick count to 0.
-    await emptyBoxCards(page, TOPPS_1988, boxName, [c], isMobile, "reopened");
-    // The two with a photo: a quick count can't take them out (see step 5), so
+    // The copies with no photo: a quick count to 0 (the first card's plain copy, the third card).
+    await emptyBoxCards(page, TOPPS_1988, boxName, [a, c], isMobile, "reopened");
+    // The two cards' photo copies: a quick count can't take them out (see step 5), so
     // each goes the way a collector removes a copy, from the card's drawer,
     // the same drawer that added its photo.
     await removeOnlyCopy(a, true);
     await removeOnlyCopy(b);
     await clearChecklistCommonPrice(page, checklist, TITLE, COMMON_PRICE);
     written.priced = false;
+
+    // The scan run is closed ("Done adding photos"); its box is in-person now and
+    // its copy is gone, so closing it lists nothing. A full page load, so the launch gate applies.
+    await page.goto(written.runUrl!);
+    await expect(page.getByRole("button", { name: "Done adding photos" })).toBeVisible({ timeout: LAUNCH_GATE });
+    await page.getByRole("button", { name: "Done adding photos" }).click();
+    await expect(page.getByText("This run's photos are all in. To add more, start a new run.")).toBeVisible();
+    written.runUrl = undefined;
 
     await tabs.getByRole("link", { name: "My Boxes", exact: true }).click();
     await expect(boxSpine(0)).toBeVisible();

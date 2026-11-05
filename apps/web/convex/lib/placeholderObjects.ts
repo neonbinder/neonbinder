@@ -39,6 +39,13 @@
 export const CLERK_USER_ID_RE = /^user_[A-Za-z0-9]+$/;
 
 /**
+ * Job ids are `crypto.randomUUID()` from whichever action opened the job: the
+ * shape `JOB_ID_PATTERN` in layout.py requires, and a path segment like the user
+ * id above.
+ */
+export const PLACEHOLDER_JOB_ID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+
+/**
  * Zero-padding width for per-entry object names — `IMAGE_INDEX_DIGITS` in
  * app/jobs/layout.py (currently 4).
  *
@@ -95,6 +102,22 @@ export function placeholderOutputImageObject(
 ): string {
   const padded = String(index).padStart(PLACEHOLDER_IMAGE_INDEX_DIGITS, "0");
   return `${placeholderJobPrefix(userId, jobId)}output/images/${padded}.${extension}`;
+}
+
+/**
+ * One processed image's stored size for a saved copy (NEO-427):
+ * `output/copy-photos/{image|thumb}/{index:04d}.jpg`, written by `/process-entry`
+ * beside the output (`layout.copy_photo_image_object` and
+ * `layout.copy_photo_thumb_object`). Always JPEG: the service makes nothing else.
+ */
+export function placeholderCopyPhotoObject(
+  userId: string,
+  jobId: string,
+  index: number,
+  size: "image" | "thumb",
+): string {
+  const padded = String(index).padStart(PLACEHOLDER_IMAGE_INDEX_DIGITS, "0");
+  return `${placeholderJobPrefix(userId, jobId)}output/copy-photos/${size}/${padded}.jpg`;
 }
 
 /**

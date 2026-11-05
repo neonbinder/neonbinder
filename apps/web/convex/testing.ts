@@ -33,7 +33,9 @@ import { isPlatformPaused } from "./marketplacePause";
 import { ebayConfig, ebayConfigured } from "./lib/ebayEnv";
 import type { Id } from "./_generated/dataModel";
 import { dropOwnerPhotos } from "./copyPhotos";
-import { getOrCreateMain } from "./collection";
+import { addOne, applyCopyChanges, defaultConditionOf, getOrCreateMain } from "./collection";
+import { ListingGate } from "./listingGate";
+import { intakePhotoFailureValidator } from "./schema";
 
 /**
  * What {@link seedMyTestLabelScans} hands back.
@@ -439,6 +441,142 @@ export const seedMyTestFailedPhotoRun = mutation({
       lastActivityAt: now,
     });
     return { runId, originalName };
+  },
+});
+
+/**
+ * NEO-427 — a run with one saved card whose scans failed to reach its copy, for
+ * the spec that drives a Saved tile's failed states. A real attach can't be made
+ * to fail on cue, so this writes the end state over a real copy.
+ *
+ * The card sits in its own `PhotoFixture-<id>` set under the real Baseball >
+ * 2024 > Topps, and the copy in its own unlisted box, so nothing else on the
+ * account sees it and nothing lists. No file was uploaded under the job, so Try
+ * again on "error" runs the real path and comes back with the scans gone.
+ *
+ * Same safety as the seeds above: fails closed in production, writes only rows
+ * owned by the CALLER (the set is per seed), and leaves an open run the idle
+ * sweep closes. Callers cancel their active runs first (the page does).
+ */
+export const seedMyTestSavedPhotoFailureRun = mutation({
+  args: { photoFailure: intakePhotoFailureValidator },
+  returns: v.object({ runId: v.id("intakeRuns"), copyId: v.id("collectionCopies") }),
+  handler: async (ctx, args): Promise<{ runId: Id<"intakeRuns">; copyId: Id<"collectionCopies"> }> => {
+    if (!process.env.TESTING_RESET_SECRET) {
+      throw new Error("Test placeholder seeding is not enabled on this deployment");
+    }
+    const userId = await getCurrentUserId(ctx);
+    if (!userId) throw new Error("Not authenticated");
+    if (!CLERK_USER_ID_RE.test(userId)) throw new Error("Unexpected user id shape");
+
+    const childNamed = async (level: "sport" | "year" | "manufacturer", value: string, parentId?: Id<"selectorOptions">) => {
+      const rows = await ctx.db
+        .query("selectorOptions")
+        .withIndex("by_level_and_parent", (q) => q.eq("level", level).eq("parentId", parentId))
+        .take(200);
+      const row = rows.find((r) => r.value === value);
+      if (!row) throw new Error(`This seed needs Baseball > 2024 > Topps on the deployment: no ${value}`);
+      return row._id;
+    };
+    const sportId = await childNamed("sport", "Baseball");
+    const yearId = await childNamed("year", "2024", sportId);
+    const brandId = await childNamed("manufacturer", "Topps", yearId);
+
+    const jobId = crypto.randomUUID();
+    const now = Date.now();
+    const minted = `PhotoFixture-${jobId.slice(0, 8)}`;
+    // The Set Builder's own writers, so the set and card are born as the app
+    // makes them. They are admin-gated, as every E2E account is.
+    const setId = await ctx.runMutation(api.selectorOptions.addCustomSelectorOption, {
+      level: "setName",
+      value: minted,
+      parentId: brandId,
+    });
+    const baseId = await ctx.runMutation(api.selectorOptions.addCustomSelectorOption, {
+      level: "variantType",
+      value: "Base",
+      parentId: setId,
+    });
+    const cardId = await ctx.runMutation(api.selectorOptions.addCustomCard, {
+      selectorOptionId: baseId,
+      cardNumber: "1",
+      cardName: "Testcard",
+    });
+    const homeId = await ctx.db.insert("collectionContainers", {
+      ownerId: userId,
+      kind: "box",
+      name: minted,
+      listedOnMarketplaces: false,
+      lastUpdated: now,
+    });
+    const { result, change } = await addOne(
+      ctx,
+      userId,
+      cardId,
+      { quantity: 1, homeId },
+      await defaultConditionOf(ctx, userId),
+      new ListingGate(ctx, userId),
+      { keepsOwnLine: true },
+    );
+    await applyCopyChanges(ctx, userId, [change]);
+
+    await ctx.db.insert("placeholderJobs", {
+      jobId,
+      userId,
+      objectPath: placeholderJobPrefix(userId, jobId),
+      createdAt: now,
+      mode: "stream",
+      status: "collecting",
+      startedAt: now,
+      totalImages: 2,
+      processedImages: 2,
+      failedImages: 0,
+      rejectedEntries: 0,
+      nextEntryIndex: 2,
+      lastActivityAt: now,
+    });
+    for (const entryIndex of [0, 1]) {
+      await ctx.db.insert("placeholderImages", {
+        jobId,
+        userId,
+        entryIndex,
+        originalName: `${minted}-${entryIndex}.jpg`,
+        status: "done",
+        queuedAt: now,
+        settledAt: now,
+      });
+    }
+    const pairId = await ctx.db.insert("placeholderPairs", {
+      jobId,
+      userId,
+      frontIndex: 0,
+      backIndex: 1,
+      confidence: "side-only",
+      mechanism: "manual",
+      score: 0,
+    });
+    const runId = await ctx.db.insert("intakeRuns", { userId, jobId, homeId, createdAt: now, lastActivityAt: now });
+    await ctx.db.insert("intakeMatches", {
+      runId,
+      userId,
+      pairId,
+      frontIndex: 0,
+      backIndex: 1,
+      readKey: "1",
+      cardId,
+      confidence: 97,
+      band: "matched",
+      reason: "numberAndPlayer",
+      candidates: [cardId],
+      variations: [],
+      savedCopyId: result.copyId,
+      savedQuantity: 1,
+      savedAt: now,
+      photos: "failed",
+      photoFailure: args.photoFailure,
+      photoAttempt: 1,
+    });
+    return { runId, copyId: result.copyId };
   },
 });
 

@@ -262,7 +262,21 @@ export default function SetAttributesPanel({
   );
 
   const [expanded, setExpanded] = useState(!defaultCollapsed);
+  // NEO-412 — the panel's two toasts, at most one showing: a confirmation or
+  // progress line (`toast`, the polite status region) and a failure
+  // (`failure`, the alert region). Raising either clears the other.
   const [toast, setToast] = useState<string | null>(null);
+  const [failure, setFailure] = useState<string | null>(null);
+  // The one pending dismissal. Every toast replaces the one before it, so it
+  // also cancels that toast's timer: otherwise "Saving…"'s timer (or an older
+  // save's) wipes the "Saved" that followed it.
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (toastTimer.current) clearTimeout(toastTimer.current);
+    },
+    [],
+  );
 
   // Re-evaluate the default whenever the source intent flips (cards
   // appear/disappear or the selected node changes). Without this, drilling
@@ -374,16 +388,53 @@ export default function SetAttributesPanel({
   const headerTitle = `Attributes for ${row.value} (${LEVEL_LABEL[leafLevel]})`;
 
   /**
+   * Put `message` in the `kind` toast, replacing whatever either toast shows
+   * and cancelling its dismissal. `dismissAfterMs` schedules this one's;
+   * without it the toast stays until the next one replaces it.
+   */
+  const raiseToast = (
+    kind: "status" | "failure",
+    message: string,
+    dismissAfterMs?: number,
+  ) => {
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    toastTimer.current = null;
+    setToast(kind === "status" ? message : null);
+    setFailure(kind === "failure" ? message : null);
+    if (dismissAfterMs !== undefined) {
+      toastTimer.current = setTimeout(() => {
+        toastTimer.current = null;
+        setToast(null);
+        setFailure(null);
+      }, dismissAfterMs);
+    }
+  };
+
+  /**
    * Raise a transient confirmation.
    *
    * Shared by every row below that saves, which is why it is a helper rather
    * than an inline setToast: each caller raising a 6s toast has to agree on
    * the 6s.
    */
-  const showToast = (message: string) => {
-    setToast(message);
-    setTimeout(() => setToast(null), 6000);
-  };
+  const showToast = (message: string) => raiseToast("status", message, 6000);
+
+  /**
+   * NEO-412 — "Saving {label}…" while a write is in flight. It never dismisses
+   * itself: the save's own "Saved"/"Cleared"/"Failed" replaces it, so the
+   * panel never says Saved before the server has the value.
+   */
+  const showSavingToast = (label: string) =>
+    raiseToast("status", `Saving ${label}…`);
+
+  /**
+   * A failure stays up until the next toast replaces it, as it always has.
+   * It goes to the alert region, not the status one: it is news the operator
+   * must act on, not a confirmation. Routed through `raiseToast` so an
+   * earlier toast's timer cannot wipe it.
+   */
+  const showFailedToast = (message: string) =>
+    raiseToast("failure", `Failed: ${message}`);
 
   /**
    * NEO-217 — an empty value CLEARS the attribute; it is not a no-op.
@@ -408,13 +459,17 @@ export default function SetAttributesPanel({
     if (clearing ? features[key] === undefined : features[key] === trimmed) {
       return;
     }
-    // Optimistic confirmation — the mutation is a single-row patch
-    // (NEO-71-74), no propagation counts to report. "Saved {label}" is
-    // unchanged (Maestro asserts it); "Cleared {label}" is the new string,
-    // deliberately distinct so the toast never claims a value was stored.
-    showToast(clearing ? `Cleared ${label}` : `Saved ${label}`);
+    // NEO-412 — "Saving {label}…" while the write is in flight, and the
+    // confirmation only once it has landed: an optimistic "Saved" let a fast
+    // operator (and an E2E spec) act on a value the server did not have yet.
+    // The mutation is a single-row patch (NEO-71-74), no propagation counts
+    // to report. "Saved {label}" is unchanged (E2E asserts it); "Cleared
+    // {label}" is deliberately distinct so the toast never claims a value was
+    // stored.
+    showSavingToast(label);
     try {
       await setSelectorOptionFeature({ selectorOptionId, key, value: trimmed });
+      showToast(clearing ? `Cleared ${label}` : `Saved ${label}`);
     } catch (e) {
       // NEVER a raw `.message`. Production redacts a plain Error to "Server
       // Error", and even a surviving message reaches the client wrapped in
@@ -423,15 +478,15 @@ export default function SetAttributesPanel({
       // nothing useful or a request id. Only a ConvexError's `data` is text a
       // backend deliberately chose for a person, and `userFacingMessage` is
       // the one place that rule lives.
-      setToast(`Failed: ${userFacingMessage(e, `Could not save ${label}`)}`);
+      showFailedToast(userFacingMessage(e, `Could not save ${label}`));
     }
   };
 
   /**
    * NEO-291 — the Card prefix row's save. Same shape as `handleSaveFeature`
-   * (no-op on an unchanged value, optimistic toast, `userFacingMessage` on
-   * failure) with its own mutation, because the prefix is
-   * `metadata.cardNumberPrefix` rather than a `features` key. The server
+   * (no-op on an unchanged value, "Saving…" until the write lands,
+   * `userFacingMessage` on failure) with its own mutation, because the prefix
+   * is `metadata.cardNumberPrefix` rather than a `features` key. The server
    * trims and treats `""` as "remove the key", so the clear/save split here
    * is only for the toast's sake.
    */
@@ -444,23 +499,26 @@ export default function SetAttributesPanel({
     ) {
       return;
     }
-    showToast(clearing ? `Cleared ${label}` : `Saved ${label}`);
+    showSavingToast(label);
     try {
       await setSelectorOptionCardNumberPrefix({
         id: selectorOptionId,
         cardNumberPrefix: trimmed,
       });
+      showToast(clearing ? `Cleared ${label}` : `Saved ${label}`);
     } catch (e) {
-      setToast(`Failed: ${userFacingMessage(e, `Could not save ${label}`)}`);
+      showFailedToast(userFacingMessage(e, `Could not save ${label}`));
     }
   };
 
   /**
    * NEO-335 — the "Short name for titles" row's save. The card prefix's
-   * shape: no-op on an unchanged value, optimistic toast, the server's own
-   * sentence on a refusal. The server trims, refuses control/invisible
-   * characters and anything past 60, and treats `""` as "remove the key".
-   * Existing titles are not rewritten; Regenerate reads the new name.
+   * shape: no-op on an unchanged value, "Saving…" until the write lands, the
+   * server's own sentence on a refusal. The server trims, refuses
+   * control/invisible characters and anything past 60, and treats `""` as
+   * "remove the key". Existing titles are not rewritten; Regenerate reads the
+   * new name, which is why "Saved" waits for the server (NEO-412): a
+   * Regenerate pressed on an early "Saved" read the old name.
    */
   const handleSaveListingShortName = async (value: string) => {
     const label = SHORT_NAME_FEATURE.label;
@@ -469,23 +527,24 @@ export default function SetAttributesPanel({
     if (clearing ? listingShortName === undefined : listingShortName === trimmed) {
       return;
     }
-    showToast(clearing ? `Cleared ${label}` : `Saved ${label}`);
+    showSavingToast(label);
     try {
       await setSelectorOptionListingShortName({
         id: selectorOptionId,
         listingShortName: trimmed,
       });
+      showToast(clearing ? `Cleared ${label}` : `Saved ${label}`);
     } catch (e) {
-      setToast(`Failed: ${userFacingMessage(e, `Could not save ${label}`)}`);
+      showFailedToast(userFacingMessage(e, `Could not save ${label}`));
     }
   };
 
   /**
    * NEO-345 — the "Autograph format" row's save. `handleSaveFeature`'s shape
-   * (no-op on an unchanged value, optimistic toast, the server's own sentence
-   * on a refusal) through `setAutographFormat`, which also carries the format
-   * onto the leaf's AU cards. `""` clears the leaf's format and touches no
-   * card.
+   * (no-op on an unchanged value, "Saving…" until the write lands, the
+   * server's own sentence on a refusal) through `setAutographFormat`, which
+   * also carries the format onto the leaf's AU cards. `""` clears the leaf's
+   * format and touches no card.
    */
   const handleSaveAutographFormat = async (value: string) => {
     const label = AUTOGRAPH_FORMAT_FEATURE.label;
@@ -494,23 +553,25 @@ export default function SetAttributesPanel({
     const current = features[AUTOGRAPH_FORMAT_FEATURE.key];
     if (clearing ? current === undefined : current === trimmed) return;
     if (!clearing && !(AUTOGRAPH_FORMATS as readonly string[]).includes(trimmed)) return;
-    showToast(clearing ? `Cleared ${label}` : `Saved ${label}`);
+    showSavingToast(label);
     try {
       await setAutographFormat({
         selectorOptionId,
         value: trimmed as (typeof AUTOGRAPH_FORMATS)[number] | "",
       });
+      showToast(clearing ? `Cleared ${label}` : `Saved ${label}`);
     } catch (e) {
-      setToast(`Failed: ${userFacingMessage(e, `Could not save ${label}`)}`);
+      showFailedToast(userFacingMessage(e, `Could not save ${label}`));
     }
   };
 
   /**
-   * NEO-237 — the Brand row's save. Unlike the other rows the toast waits for
-   * the server: a non-empty save can MOVE prefix-matching sets out of the
-   * year's Unknown row, and the count is the one thing worth saying about
-   * it ("Saved Brand · 3 sets moved out of Unknown"). A save that moved
-   * nothing, and a clear, read like every other row's.
+   * NEO-237 — the Brand row's save. The toast waits for the server, as every
+   * row's does since NEO-412, and here the answer carries news: a non-empty
+   * save can MOVE prefix-matching sets out of the year's Unknown row, and the
+   * count is the one thing worth saying about it ("Saved Brand · 3 sets
+   * moved out of Unknown"). A save that moved nothing, and a clear, read like
+   * every other row's.
    */
   const handleSaveSetNamePrefix = async (value: string) => {
     const label = "Brand";
@@ -534,11 +595,9 @@ export default function SetAttributesPanel({
             : `Saved ${label}`,
       );
     } catch (e) {
-      setToast(
-        `Failed: ${
-          prefixTakenRefusal(e, trimmed) ??
-          userFacingMessage(e, `Could not save ${label}`)
-        }`,
+      showFailedToast(
+        prefixTakenRefusal(e, trimmed) ??
+          userFacingMessage(e, `Could not save ${label}`),
       );
     }
   };
@@ -557,11 +616,9 @@ export default function SetAttributesPanel({
           : "Unlinked — SportLots sets no longer match this brand by name",
       );
     } catch (e) {
-      setToast(
-        `Failed: ${
-          slViaAllBrandsRefusal(e) ??
-          userFacingMessage(e, "Could not change the SportLots link")
-        }`,
+      showFailedToast(
+        slViaAllBrandsRefusal(e) ??
+          userFacingMessage(e, "Could not change the SportLots link"),
       );
     }
   };
@@ -771,23 +828,36 @@ export default function SetAttributesPanel({
         </div>
       )}
 
-      {toast && (
-        // NEO-47: position the save confirmation FIXED in the viewport, not
-        // in-flow above the grid. A save made while scrolled down to the
-        // feature rows would otherwise render the toast off-screen above
-        // the fold — invisible to the user (and the e2e assertion).
-        //
-        // NEO-239: outside the `expanded` branch, so a confirmation raised
-        // while the panel is collapsed is still seen. (The header control that
-        // first needed this, "Mark as base set", went with NEO-334.)
-        <div
-          className="pointer-events-none fixed top-20 left-1/2 -translate-x-1/2 z-50 px-4 py-2 bg-raised-deep border border-neon-green-text/60 rounded text-xs text-neon-green-text shadow-lg"
-          role="status"
-          aria-live="polite"
-        >
-          {toast}
+      {/* NEO-47: position the save confirmation FIXED in the viewport, not
+          in-flow above the grid. A save made while scrolled down to the
+          feature rows would otherwise render the toast off-screen above the
+          fold — invisible to the user (and the e2e assertion).
+
+          NEO-239: outside the `expanded` branch, so a confirmation raised
+          while the panel is collapsed is still seen. (The header control that
+          first needed this, "Mark as base set", went with NEO-334.)
+
+          NEO-412: both regions are always mounted (empty when idle): a live
+          region inserted with its text is not reliably announced; a text
+          change on a mounted node is. The box is drawn only while there is a
+          message. The status region is the panel's one `status`; a failure
+          is the separate `alert`, in the negative colour. */}
+      <div className="pointer-events-none fixed top-20 left-1/2 -translate-x-1/2 z-50">
+        <div role="status" aria-live="polite" aria-atomic="true">
+          {toast && (
+            <div className="px-4 py-2 bg-raised-deep border border-neon-green-text/60 rounded text-xs text-neon-green-text shadow-lg">
+              {toast}
+            </div>
+          )}
         </div>
-      )}
+        <div role="alert" aria-atomic="true">
+          {failure && (
+            <div className="px-4 py-2 bg-raised-deep border border-neon-pink-text/60 rounded text-xs text-neon-pink-text shadow-lg">
+              {failure}
+            </div>
+          )}
+        </div>
+      </div>
 
       {expanded && (
         <>
@@ -812,7 +882,7 @@ export default function SetAttributesPanel({
               teamCascadeStartedAt={row.teamCascadeStartedAt}
               sportId={ancestorSportId}
               onSaved={showToast}
-              onFailed={(message) => setToast(`Failed: ${message}`)}
+              onFailed={showFailedToast}
             />
           )}
 

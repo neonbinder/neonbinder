@@ -61,8 +61,11 @@ import {
   countContainer,
   detailsOf,
   arrivingPocket,
+  firstOpenPocket,
+  foldTargetOf,
   foldsInto,
   getOrCreateMain,
+  lineAwaitingScans,
   refuse,
   slotLimit,
   type CountChange,
@@ -499,21 +502,29 @@ export const empty = mutation({
         .query("collectionCopies")
         .withIndex("by_owner_and_card", (q) => q.eq("ownerId", ownerId).eq("cardId", line.cardId))
         .take(MAX_LINES_PER_CARD + 1);
-      readsLeft -= siblings.length;
+      readsLeft -= siblings.length + 1;
       const next: FoldShape = { ...foldShape(line), homeId: targetId };
       delete next.slot;
+      // NEO-427: a line whose photos are due stays a line, for them to land on.
+      const keepsLine = await lineAwaitingScans(ctx, line._id);
       // Main is a binder too: the card stacks on a twin there or takes Main's
       // first open pocket. Unsorted is a box: its rows are optional.
       if (row.kind !== "box") {
         const roomy = siblings.filter((other) => other.quantity + line.quantity <= MAX_COPY_QUANTITY);
-        next.slot = await arrivingPocket(ctx, ownerId, { _id: targetId }, roomy, next, [line._id]);
+        next.slot = keepsLine
+          ? await firstOpenPocket(ctx, ownerId, targetId)
+          : await arrivingPocket(ctx, ownerId, { _id: targetId }, roomy, next, [line._id]);
       }
-      const into = siblings.find(
-        (other) =>
-          other._id !== line._id &&
-          other.quantity + line.quantity <= MAX_COPY_QUANTITY &&
-          foldsInto(foldShape(other), next),
-      );
+      const into = keepsLine
+        ? undefined
+        : await foldTargetOf(
+            ctx,
+            siblings,
+            (other) =>
+              other._id !== line._id &&
+              other.quantity + line.quantity <= MAX_COPY_QUANTITY &&
+              foldsInto(foldShape(other), next),
+          );
       const before = counted(line);
       if (into) {
         const quantity = into.quantity + line.quantity;
