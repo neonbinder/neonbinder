@@ -54,9 +54,11 @@
 // same-name pick-step spec records). Every lookup the flow reaches is in the
 // enrichment recording (convex/adapters/__fixtures__/enrichment-lookups.json,
 // docs/operations/neo289-enrichment-fixtures.md section 4a): STAR and Weeks in
-// Baseball and Football, Brantley in Football, the Browns and the Senators, so
-// nothing goes to Wikidata and no refusal is logged. Weeks's 2010 row is
-// inserted ready with no lookup (a suggested player needs none).
+// Baseball and Football, Brantley in Football, the Browns, the Athletics and the
+// Senators, so nothing goes to Wikidata and no refusal is logged. Weeks's 2010
+// row is inserted ready with no lookup (a suggested player needs none). Peak
+// Performance Relics brings one New Team step (the Philadelphia Athletics), which
+// the walk answers before Weeks.
 import type { Page } from "@playwright/test";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import {
@@ -150,12 +152,17 @@ async function skipUntilRow(page: Page, name: string): Promise<void> {
   // only when the lookups landed, so a stuck pool fails inside the helper).
   for (let attempt = 0; attempt < 160 && skipped < 80; attempt++) {
     await expect(anySkip.first().or(looking).first(), `the wizard never presented ${name}`).toBeVisible();
-    if (!(await anySkip.first().isVisible())) {
-      // Only the waiting line answered. It can clear before the next look; the
-      // re-check at the top then needs a skip within 7 s, or fails by name.
+    if (await looking.isVisible()) {
+      // A pending row is not presented, and a TEAM row settling pre-empts the
+      // player on screen (the teams-first walk, entity-review-nav resolveNav),
+      // so a step read while this line is up can be gone before it is pressed.
+      // Settle the batch's lookups first, then look again.
       await awaitLookupsSettled(page);
       continue;
     }
+    // The line answered above and cleared before the look just now, with no skip
+    // up yet: look again. The re-check at the top needs one within 7 s, or fails by name.
+    if (!(await anySkip.first().isVisible())) continue;
     if (await target.isVisible()) return;
     // The step's own skip names it, so its going away means the step moved on.
     const label = (await anySkip.first().getAttribute("aria-label")) ?? "";
@@ -351,7 +358,10 @@ test(
     // The one undecided name is Brantley, and he is a SUGGESTION: exactly one
     // Michael Brantley is on file (the Football player made above), so the
     // primary reads "Link to ..." and creating is demoted. Nothing is linked: he is skipped.
-    const brantleyStep = wizard.getByRole("group", { name: `Decision for ${BRANTLEY}` });
+    // His step is read straight off the open wizard: settle the batch's lookups
+    // first, or a team row landing after it pre-empts the step (teams-first walk).
+    await awaitLookupsSettled(page);
+    const brantleyStep =wizard.getByRole("group", { name: `Decision for ${BRANTLEY}` });
     await expect(brantleyStep.getByRole("button", { name: `Link to ${BRANTLEY} (Football)`, exact: true })).toBeVisible();
     await expect(brantleyStep.getByRole("button", { name: "Add as New Player anyway", exact: true })).toBeVisible();
     await expect(
