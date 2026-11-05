@@ -110,9 +110,13 @@ vi.mock("@/app/print/placeholders/dropzone", () => ({
   Dropzone: (p: { heldBy?: string; heldLabel?: string; onFiles: (files: File[]) => void }) => {
     mocks.dropzone.push(p);
     return (
-      <button type="button" aria-disabled={p.heldBy ? "true" : undefined} aria-describedby={p.heldBy}>
-        {p.heldBy ? p.heldLabel : "Drag your card photos here"}
-      </button>
+      <>
+        <button type="button" aria-disabled={p.heldBy ? "true" : undefined} aria-describedby={p.heldBy}>
+          {p.heldBy ? p.heldLabel : "Drag your card photos here"}
+        </button>
+        {/* The real zone holds the file input; NEO-446 moves focus onto it. */}
+        <input type="file" aria-label="Photo files" />
+      </>
     );
   },
 }));
@@ -920,7 +924,7 @@ describe("RealAddCardsTab while the shelf or the open run loads (NEO-416)", () =
     mocks.data.homes = [];
     const { rerender } = render(<Loading initial="/collection/final/intake" />);
     await drop([photoFile("first.jpg")]);
-    const second = [photoFile("second.jpg"), photoFile("second-back.jpg")];
+    const second = [photoFile("second-1.jpg"), photoFile("second-2.jpg")];
     await drop(second);
     expect(mocks.upload).not.toHaveBeenCalled();
     expect(screen.queryAllByText(MAKE_ONE)).toEqual([]);
@@ -962,5 +966,276 @@ describe("RealAddCardsTab while the shelf or the open run loads (NEO-416)", () =
     expect(screen.getByText(MAKE_ONE, { selector: '[role="status"]' })).toBeTruthy();
     expect(start()).not.toHaveBeenCalled();
     expect(mocks.upload).not.toHaveBeenCalled();
+  });
+});
+
+describe("NEO-446: the run's line, the zip wording and Start a new run", () => {
+  function Url() {
+    return <output aria-label="Page address">{useLocation().search}</output>;
+  }
+  function Screen({ initial }: { initial: string }) {
+    return (
+      <MemoryRouter initialEntries={[initial]}>
+        <PageApiContext.Provider value={pageApi}>
+          <RealAddCardsTab />
+          <Url />
+        </PageApiContext.Provider>
+      </MemoryRouter>
+    );
+  }
+  const file = (name: string, type = "image/jpeg") => new File(["x"], name, { type });
+  const zip = () => file("cards.zip", "application/zip");
+  const drop = async (files: File[]) => {
+    await act(async () => mocks.dropzone.at(-1)!.onFiles(files));
+  };
+  /** Every live-region line on screen, without the page-address readout. */
+  const lines = () =>
+    screen
+      .getAllByRole("status")
+      .filter((el) => el.getAttribute("aria-label") !== "Page address")
+      // The workspace's own tally ("0 saved.") is not the run's line.
+      .filter((el) => !/^\d+ saved\.$/.test(el.textContent ?? ""))
+      .map((el) => el.textContent ?? "");
+  const url = () => screen.getByRole("status", { name: "Page address" }).textContent;
+
+  /** A run whose job is in `job`; the images stay as setRun leaves them. */
+  function runWithJob(job: Record<string, unknown>) {
+    const runId = freshRunId();
+    setRun(runId);
+    mocks.data.job = {
+      status: "succeeded",
+      mode: "zip",
+      totalImages: 0,
+      failedImages: 0,
+      rejectedEntries: 0,
+      ...job,
+    };
+    return runId;
+  }
+  const open = (runId: string) => render(<Screen initial={`/collection/final/intake?run=${runId}`} />);
+
+  beforeEach(() => {
+    mocks.data.homes = [{ id: "home1", name: "Binder", kind: "binder" }];
+    mocks.upload.mockImplementation((files: File[], { jobId }: { jobId?: string }) =>
+      Promise.resolve({ ok: true, jobId: jobId ?? "job-fresh", kind: "images", uploaded: files.length, failed: 0, total: files.length }),
+    );
+  });
+
+  describe("sending", () => {
+    it("a zip says 'Sending your zip…' while it goes up, then no 'Sent' line at all", async () => {
+      const runId = freshRunId();
+      setRun(runId);
+      let finish: (v: unknown) => void = () => {};
+      mocks.upload.mockImplementation(() => new Promise((resolve) => (finish = resolve)));
+      open(runId);
+      const sent = [zip()];
+      let pending: Promise<void> = Promise.resolve();
+      await act(async () => {
+        pending = Promise.resolve(mocks.dropzone.at(-1)!.onFiles(sent));
+      });
+      expect(lines()).toContain("Sending your zip…");
+      expect(lines().some((l) => l.includes("Sending your photos"))).toBe(false);
+      await act(async () => {
+        finish({ ok: true, jobId: `job-${runId}`, kind: "zip", uploaded: 1, failed: 0, total: 1 });
+        await pending;
+      });
+      expect(lines().some((l) => /^Sent /.test(l))).toBe(false);
+      expect(lines().some((l) => l.includes("Sending your"))).toBe(false);
+      // A zip goes up as handed: it is one file.
+      expect(mocks.upload).toHaveBeenCalledWith(sent, { source: "web", jobId: `job-${runId}` });
+    });
+
+    it("loose photos say 'Sending your photos…' then count what landed", async () => {
+      const runId = freshRunId();
+      setRun(runId);
+      open(runId);
+      await drop([file("a.jpg"), file("b.jpg")]);
+      expect(lines()).toContain("Sent 2 photos.");
+      mocks.upload.mockResolvedValueOnce({ ok: true, jobId: `job-${runId}`, kind: "images", uploaded: 1, failed: 0, total: 1 });
+      await drop([file("c.jpg")]);
+      expect(lines()).toContain("Sent 1 photo.");
+    });
+
+    it("loose photos with failures count both numbers", async () => {
+      const runId = freshRunId();
+      setRun(runId);
+      mocks.upload.mockResolvedValueOnce({ ok: true, jobId: `job-${runId}`, kind: "images", uploaded: 2, failed: 1, total: 3 });
+      open(runId);
+      await drop([file("a.jpg"), file("b.jpg"), file("c.jpg")]);
+      expect(lines()).toContain("Sent 2 of 3 photos. 1 failed.");
+    });
+
+    it("loose photos are handed to upload in natural filename order, and the picker's array is left alone", async () => {
+      const runId = freshRunId();
+      setRun(runId);
+      open(runId);
+      const picked = [file("IMG_10.jpg"), file("IMG_2.jpg"), file("img_1.jpg"), file("IMG_02b.jpg")];
+      await drop(picked);
+      const sent = mocks.upload.mock.calls[0][0] as File[];
+      expect(sent.map((f) => f.name)).toEqual(["img_1.jpg", "IMG_2.jpg", "IMG_02b.jpg", "IMG_10.jpg"]);
+      expect(picked.map((f) => f.name)).toEqual(["IMG_10.jpg", "IMG_2.jpg", "img_1.jpg", "IMG_02b.jpg"]);
+    });
+
+    it("a refused zip says 'that zip', refused photos say 'these photos'", async () => {
+      const runId = freshRunId();
+      setRun(runId);
+      open(runId);
+      mocks.upload.mockResolvedValueOnce({ ok: false, reason: "you are over the limit" });
+      await drop([zip()]);
+      expect(lines()).toContain("Couldn't send that zip: you are over the limit.");
+      mocks.upload.mockResolvedValueOnce({ ok: false, reason: "you are over the limit" });
+      await drop([file("a.jpg")]);
+      expect(lines()).toContain("Couldn't send these photos: you are over the limit.");
+    });
+
+    it("an invalid selection (two zips) sends nothing and says nothing new", async () => {
+      const runId = freshRunId();
+      setRun(runId);
+      open(runId);
+      await drop([zip(), file("two.zip", "application/zip")]);
+      expect(mocks.upload).not.toHaveBeenCalled();
+      expect(lines().filter(Boolean)).toEqual([]);
+    });
+  });
+
+  describe("the run's line", () => {
+    it("says nothing while the run is collecting", () => {
+      const runId = runWithJob({ status: "collecting", mode: "stream" });
+      open(runId);
+      expect(lines().filter(Boolean)).toEqual([]);
+      expect(screen.queryByRole("button", { name: "Start a new run" })).toBeNull();
+      expect(screen.getByRole("button", { name: "Drag your card photos here" })).toBeTruthy();
+    });
+
+    it("a zip that was all rejected explains why, offers Start a new run, and hides the lanes", () => {
+      const runId = runWithJob({
+        status: "failed",
+        errorCode: "TOO_MANY_IMAGE_FAILURES",
+        totalImages: 0,
+        rejectedEntries: 2,
+        rejected: { tooBig: 2, wrongFormat: 0, unreadable: 0, examples: [{ name: "a.jpg", kind: "tooBig" }] },
+      });
+      open(runId);
+      expect(lines()).toContain(
+        "Whoa, those photos are too big! All 2 are over 64 MP. Shrink them, zip them up again, and start a new run.",
+      );
+      expect(lines().some((l) => l.includes("all in"))).toBe(false);
+      expect(screen.getByRole("button", { name: "Start a new run" })).toBeTruthy();
+      expect(screen.queryByRole("heading", { name: "Pairing" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Done adding photos" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Drag your card photos here" })).toBeNull();
+    });
+
+    it("a partial failure keeps the lanes, with the line and the button", async () => {
+      const runId = runWithJob({
+        status: "failed",
+        errorCode: "TOO_MANY_IMAGE_FAILURES",
+        totalImages: 5,
+        failedImages: 3,
+      });
+      open(runId);
+      expect(lines().some((l) => l.startsWith("Most of these photos wouldn't read."))).toBe(true);
+      expect(screen.getByRole("button", { name: "Start a new run" })).toBeTruthy();
+      expect(await screen.findByRole("heading", { name: "Pairing" })).toBeTruthy();
+    });
+
+    it("a healthy finished run says all in, with no Start a new run and the lanes shown", async () => {
+      const runId = runWithJob({ status: "succeeded", totalImages: 4 });
+      open(runId);
+      expect(lines()).toContain("This run's photos are all in. To add more, start a new run.");
+      expect(screen.queryByRole("button", { name: "Start a new run" })).toBeNull();
+      expect(await screen.findByRole("heading", { name: "Pairing" })).toBeTruthy();
+    });
+
+    it("a zip still unpacking says so, calmly", () => {
+      const runId = runWithJob({ status: "extracting" });
+      open(runId);
+      expect(lines()).toContain("Unpacking your zip…");
+      expect(screen.queryByRole("button", { name: "Start a new run" })).toBeNull();
+    });
+
+    it("some of a zip rejected, rest in: the line names the files and offers the button", () => {
+      const runId = runWithJob({
+        status: "succeeded",
+        totalImages: 3,
+        rejectedEntries: 1,
+        rejected: { tooBig: 0, wrongFormat: 1, unreadable: 0, examples: [{ name: "IMG.heic", kind: "wrongFormat" }] },
+      });
+      open(runId);
+      expect(lines()).toContain(
+        "3 photos made it in. 1 didn't: IMG.heic isn't a JPEG, PNG or WebP. Convert it and drop it in a new run.",
+      );
+      expect(screen.getByRole("button", { name: "Start a new run" })).toBeTruthy();
+    });
+
+    it("a file name from a zip renders as text, never as markup", () => {
+      const name = "<img src=x onerror=alert(1)>.heic";
+      const runId = runWithJob({
+        status: "succeeded",
+        totalImages: 3,
+        rejectedEntries: 1,
+        rejected: { tooBig: 0, wrongFormat: 1, unreadable: 0, examples: [{ name, kind: "wrongFormat" }] },
+      });
+      const { container } = open(runId);
+      expect(container.querySelector("img[src='x']")).toBeNull();
+      expect(lines().some((l) => l.includes(name))).toBe(true);
+    });
+
+    it("a gone job row (null) says the reader hit a snag and still offers the way forward", () => {
+      const runId = freshRunId();
+      setRun(runId);
+      mocks.data.job = null;
+      open(runId);
+      expect(lines()).toContain("Our photo reader hit a snag. That's on us. Start a new run and send them again.");
+      expect(screen.getByRole("button", { name: "Start a new run" })).toBeTruthy();
+      // The lanes stay: they may hold saved cards.
+      expect(screen.queryByRole("heading", { name: "Pairing" })).not.toBeNull();
+    });
+
+    it("the line passes axe in both modes, with and without the button", async () => {
+      const runId = runWithJob({ status: "failed", errorCode: "CANCELED", totalImages: 0 });
+      const { container, rerender } = open(runId);
+      await expectAccessibleInBothModes(container, {
+        label: "Intake, a stopped run",
+        rerender: () => rerender(<Screen initial={`/collection/final/intake?run=${runId}`} />),
+      });
+    });
+  });
+
+  describe("starting a new run", () => {
+    it("Start a new run leaves the run, clears the status and moves focus to the drop zone's input", async () => {
+      const runId = runWithJob({ status: "collecting", mode: "stream" });
+      const { rerender } = open(runId);
+      await drop([file("a.jpg")]);
+      expect(lines()).toContain("Sent 1 photo.");
+      // The run closes under the collector with a problem.
+      mocks.data.job = { status: "failed", mode: "zip", errorCode: "CANCELED", totalImages: 0, failedImages: 0, rejectedEntries: 0 };
+      rerender(<Screen initial={`/collection/final/intake?run=${runId}`} />);
+      fireEvent.click(await screen.findByRole("button", { name: "Start a new run" }));
+      await act(async () => {});
+      expect(url()).toBe("");
+      expect(screen.queryByRole("button", { name: "Start a new run" })).toBeNull();
+      expect(lines().filter(Boolean)).toEqual([]);
+      await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText("Photo files")));
+    });
+
+    it("New run on an open run also clears the status and focuses the input", async () => {
+      const runId = runWithJob({ status: "collecting", mode: "stream" });
+      open(runId);
+      await drop([file("a.jpg")]);
+      expect(lines()).toContain("Sent 1 photo.");
+      fireEvent.click(screen.getByRole("button", { name: "New run" }));
+      await act(async () => {});
+      expect(url()).toBe("");
+      expect(lines()).not.toContain("Sent 1 photo.");
+      await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText("Photo files")));
+    });
+
+    it("focus is only taken when the user asked to leave a run, not on a plain visit", () => {
+      mocks.data.run = null;
+      mocks.data.job = null;
+      render(<Screen initial="/collection/final/intake" />);
+      expect(document.activeElement).not.toBe(screen.getByLabelText("Photo files"));
+    });
   });
 });

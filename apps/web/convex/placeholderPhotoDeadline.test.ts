@@ -344,6 +344,20 @@ describe("retryPlaceholderImage (Try again)", () => {
     expect(enqueueCalls[0].args).toEqual({ jobId: JOB, userId: USER.subject, entryIndex: 0 });
   });
 
+  test("NEO-446: a photo over the pixel ceiling is never sent again, whatever its try count", async () => {
+    const t = convexTest(schema, modules);
+    await seedJob(t, { failedImages: 1 });
+    const id = await seedImage(t, 0, { status: "failed", errorCode: "ENTRY_TOO_MANY_PIXELS", retries: 0 });
+    expect(await retry(t)).toEqual({ retried: false, reason: "too big" });
+    await t.run(async (ctx) => ctx.db.patch(id, { retries: PLACEHOLDER_MAX_IMAGE_RETRIES }));
+    expect(await retry(t)).toEqual({ retried: false, reason: "too big" });
+    expect(enqueueCalls).toHaveLength(0);
+    const image = (await getImage(t, id))!;
+    expect(image.status).toBe("failed");
+    expect(image.retries).toBe(PLACEHOLDER_MAX_IMAGE_RETRIES);
+    expect((await getJob(t))!.failedImages).toBe(1);
+  });
+
   test("a photo that is not failed is not sent again", async () => {
     const t = convexTest(schema, modules);
     await seedJob(t);
