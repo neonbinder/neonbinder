@@ -28,3 +28,4 @@
 - [Quick-count undo restore tolerates a changed count](quick-count-undo-restore-tolerates-a-changed-count.md) — never an expected-count guard on the inverse; replay/forgery protection lives on photo-row status (NEO-431)
 - [Turn-count waits are load-dependent under Web Crypto](turn-count-waits-are-load-dependent-under-web-crypto.md) — positives by the clock, negatives by precondition + bounded settle; a ~4 s unit test is the smell (NEO-427)
 - [Dev red that matches main = dev was re-pushed](dev-red-that-matches-main-means-dev-was-repushed.md) — compare the server answer to origin/main before calling a bug; trace wall-clock vs the push; bootstrap reset cleans the worker
+- [Heavy preprocess specs share the dev service](heavy-preprocess-specs-share-the-dev-service.md) — heavy-escalation red outside the diff: trace the call against the 400 s budget and cold-start logs; Cloud Run latency excludes its queue
