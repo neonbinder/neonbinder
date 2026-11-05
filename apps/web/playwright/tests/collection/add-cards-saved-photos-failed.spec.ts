@@ -53,7 +53,7 @@ test(
     await addPhoto.click();
     // The card's own form, on the copy the save made, with its Photos box.
     const drawer = page.getByRole("dialog");
-    await expect(drawer.getByRole("form", { name: /^Edit / }).getByRole("region", { name: "Photos", exact: true })).toBeVisible();
+    await expect(drawer.getByRole("form", { name: /^Edit / }).getByRole("region", { name: /^Photos of / })).toBeVisible();
     // Back closes the card and returns to the run, tile and all.
     await page.goBack();
     await expect(drawer).toBeHidden();
@@ -68,7 +68,7 @@ test(
     await expect(tryAgain).toHaveCount(0);
     await expectAccessible(page, { label: "Add cards, a saved card whose scans won't cut it" });
     await addPhoto.click();
-    await expect(drawer.getByRole("region", { name: "Photos", exact: true })).toBeVisible();
+    await expect(drawer.getByRole("form", { name: /^Edit / }).getByRole("region", { name: /^Photos of / })).toBeVisible();
     await drawer.getByRole("button", { name: "Close card detail" }).click();
     await expect(drawer).toBeHidden();
 
