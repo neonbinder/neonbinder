@@ -766,7 +766,6 @@ test(
     // The ledger is asserted BEFORE the branch (R2), so a row with none is red in either order.
     await expect(takeDown.last).toBeVisible();
     await expect(takeDown.gathered()).toBeVisible();
-    await expect(takenLine).toBeVisible();
     await expect(row.getByText(/held back/)).toHaveCount(0);
     // Press first: the run sent the two zeros (the send step is in the finished
     // ledger). Poll first (the header's two orders): the poll already took the
@@ -777,14 +776,17 @@ test(
     // tell the poll taking the cards down first from anything else having zeroed
     // them on the seller account. CI's seller queue runs these specs one at a
     // time, so the poll is the only other writer there; locally, do not run this
-    // spec while another session uses the shared seller. The line's "2 taken to 0"
-    // still has to be NB's.
+    // spec while another session uses the shared seller. The line is this run's
+    // count, so it says "2 taken to 0" only when this run sent them; a full read
+    // that found nothing to zero reads "0 listed".
     const tookDown = await takeDown.last.getByRole("listitem", { name: `${SEND}, done`, exact: true }).isVisible();
     if (tookDown) {
+      await expect(takenLine).toBeVisible();
       await expect(takeDown.readLanded()).toBeVisible();
       await expect(takeDown.confirmLanded()).toBeVisible();
       await expectFoldedLastRun(takeDown);
     } else {
+      await expect(row.getByText(/^0 listed$/)).toBeVisible();
       await expectFoldedLastRun(takeDown, false);
     }
 

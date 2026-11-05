@@ -899,7 +899,6 @@ test(
     const takeDown = syncRun(platform, SET_LABEL, EBAY);
     const takenLine = row.getByText(/^0 listed(, \d+ updated)?, 2 taken to 0$/);
     await followRunToRest(platform, takeDown, queueSettled(platform, SET_LABEL));
-    await expect(takenLine).toBeVisible();
     await expect(row.getByText(/^Synced /)).toBeVisible();
     await expect(row.getByText(/held back/)).toHaveCount(0);
     // The ledger is asserted BEFORE the branch (R2), so a row with none is red in either order.
@@ -908,11 +907,14 @@ test(
     const takeDownStep = takeDown.last.getByRole("listitem", { name: "Take down cards at 0, done", exact: true });
     if (await takeDownStep.isVisible()) {
       // Press first: the press withdrew the cards.
+      await expect(takenLine).toBeVisible();
       await expect(takeDown.last.getByRole("listitem")).toContainText([/^Gathering data, done$/, /^Take down cards at 0, done$/]);
       await expect(takeDown.nothingNew()).toHaveCount(0);
     } else {
-      // Poll first: the poll already took them down (the line's "2 taken to 0" is the
-      // proof); the press read and sent nothing, so the ledger is "Gathering data" then "Nothing new to send".
+      // Poll first: the poll already took them down. The line is this run's count, so it
+      // reads "0 listed" with nothing taken: its 0 is the live listings it read, and it
+      // found nothing to withdraw, so the ledger is "Gathering data" then "Nothing new to send".
+      await expect(row.getByText(/^0 listed$/)).toBeVisible();
       await expectNothingSent(takeDown);
     }
 
@@ -936,7 +938,7 @@ test(
     await expectAccessible(page, { label: "Inventory Sales, eBay named" });
     await page.goBack();
     await expect(page).toHaveURL(/[?&]tab=sync/);
-    await expect(row.getByText(/^0 listed(, \d+ updated)?, 2 taken to 0$/)).toBeVisible();
+    await expect(row.getByText(/^0 listed(, \d+ updated)?(, 2 taken to 0)?$/)).toBeVisible();
 
     // --- 7. Tidy up through the product: the box's cards, the price, the box, eBay --------
     // Zero before deleting, so no copy falls into the Unsorted box. Same page
