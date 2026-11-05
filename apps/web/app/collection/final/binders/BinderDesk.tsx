@@ -1,20 +1,26 @@
-import { useLayoutEffect, useRef, type CSSProperties, type ReactNode, type TouchEvent } from "react";
+import { useEffect, useLayoutEffect, useRef, type CSSProperties, type ReactNode, type RefObject, type TouchEvent } from "react";
 import { useDroppable } from "@dnd-kit/core";
 import { ChevronLeftIcon, ChevronRightIcon } from "@heroicons/react/24/outline";
-import Pocket, { POCKET_MOVE_HINT_ID, type PocketHandlers, type PocketVariant } from "./Pocket";
+import Pocket, { POCKET_MOVE_HINT_ID, ReadOnlyPocket, type PocketHandlers, type PocketVariant } from "./Pocket";
 import { sameSlot, type PageModel, type SlotRef } from "./model";
+import type { Copy } from "../data/types";
 import NeonButton from "@/components/modules/NeonButton";
+import { isEditableTarget } from "@/lib/dom/is-editable-target";
 
 /**
  * The open binder (p2's BinderDesk, copied to use this folder's Pocket):
  * two nine-pocket pages either side of the rings on a wide screen (the
  * inside front cover faces page 1), one page at a time on a phone. Pages turn with the buttons, PageUp / PageDown (wired by the page),
  * or a swipe on a phone; the turn animates unless reduced motion is on.
+ *
+ * NEO-444: `readOnly` is the same binder for a visitor on a share link. It
+ * takes none of the owner's handlers, so nothing a visitor presses can reach
+ * one: pockets are `ReadOnlyPocket`, no drag, no aim, no add, no move hint.
  */
 
 export const SPREAD_DROP_ID = "spread";
 
-interface BinderDeskProps extends PocketHandlers {
+interface DeskBase {
   pages: PageModel[];
   wide: boolean;
   /** Spread index on a wide screen, page index on a phone. */
@@ -22,6 +28,20 @@ interface BinderDeskProps extends PocketHandlers {
   onTurn: (to: number) => void;
   vinyl: string;
   cover: ReactNode;
+  reducedMotion: boolean;
+  /** Label for the binder region, e.g. the binder's name. */
+  name: string;
+}
+
+/** A visitor's binder: look, turn the pages, pick a card up. */
+interface VisitorDesk extends DeskBase {
+  readOnly: true;
+  onOpenCopies: (copies: Copy[]) => void;
+}
+
+/** The owner's binder, and the demo's. */
+interface OwnerDesk extends DeskBase, PocketHandlers {
+  readOnly?: false;
   variant: PocketVariant;
   /** Tag a box copy's pocket "For sale" (the Up for Trade pile only). */
   saleTags?: boolean;
@@ -30,11 +50,36 @@ interface BinderDeskProps extends PocketHandlers {
   found?: SlotRef | null;
   /** Accept a drop anywhere on the binder (no real pockets to aim at). */
   wholeBinderDrop: boolean;
-  reducedMotion: boolean;
-  /** Label for the binder region, e.g. the binder's name. */
-  name: string;
   /** Its cards can be dragged or Alt+arrowed to other pockets. */
   rearrange?: boolean;
+}
+
+type BinderDeskProps = VisitorDesk | OwnerDesk;
+
+/**
+ * PageUp / PageDown turn the pages while `active`, unless focus is in a field
+ * or somewhere else entirely (a drawer, a dialog): the key counts only from
+ * the page's body or inside `root`.
+ */
+export function usePageTurnKeys(
+  active: boolean,
+  root: RefObject<HTMLElement | null>,
+  onTurn: (delta: -1 | 1) => void,
+) {
+  useEffect(() => {
+    if (!active) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (isEditableTarget(e.target)) return;
+      const t = e.target as Node | null;
+      if (t !== document.body && !(t && root.current?.contains(t))) return;
+      const delta = e.key === "PageDown" ? 1 : e.key === "PageUp" ? -1 : 0;
+      if (!delta) return;
+      e.preventDefault();
+      onTurn(delta);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
 }
 
 export function stepCount(pageCount: number, wide: boolean): number {
@@ -53,7 +98,9 @@ const BLANK: PageModel = {
 };
 
 export default function BinderDesk(props: BinderDeskProps) {
-  const { pages, wide, at, onTurn, vinyl, cover, wholeBinderDrop, reducedMotion, name } = props;
+  const { pages, wide, at, onTurn, vinyl, cover, reducedMotion, name } = props;
+  const wholeBinderDrop = !props.readOnly && props.wholeBinderDrop;
+  const rearrange = !props.readOnly && props.rearrange;
   const steps = stepCount(pages.length, wide);
   const step = Math.min(at, steps - 1);
 
@@ -151,7 +198,7 @@ export default function BinderDesk(props: BinderDeskProps) {
         } as CSSProperties
       }
     >
-      {props.rearrange && (
+      {rearrange && (
         <span id={POCKET_MOVE_HINT_ID} hidden>
           Alt plus the arrow keys move it to the open pocket before or after. Or drag it to an empty pocket.
         </span>
@@ -216,19 +263,8 @@ export function whereLabel(pageCount: number, wide: boolean, at: number): string
   return step * 2 + 1 <= pageCount ? `Pages ${step * 2} and ${step * 2 + 1} of ${n}` : `Page ${step * 2} of ${n}`;
 }
 
-function Page({
-  page,
-  number,
-  variant,
-  saleTags,
-  aimed,
-  found,
-  onOpen,
-  onAdd,
-  onAim,
-  onShift,
-  rearrange,
-}: BinderDeskProps & { page: PageModel; number: number }) {
+function Page(props: BinderDeskProps & { page: PageModel; number: number }) {
+  const { page, number } = props;
   const head = [page.section, page.note].filter(Boolean).join(", ");
   return (
     <div role="group" aria-label={`Page ${number}${head ? `, ${head}` : ""}`} className="p2-page">
@@ -237,23 +273,27 @@ function Page({
           {head}
         </p>
       )}
-      {page.pockets.map((pocket, i) => (
-        <Pocket
-          key={i}
-          pocket={pocket}
-          variant={variant}
-          saleTag={saleTags}
-          index={i}
-          pageNumber={number}
-          aimed={sameSlot(aimed, pocket.slot)}
-          found={sameSlot(found, pocket.slot)}
-          onOpen={onOpen}
-          onAdd={onAdd}
-          onAim={onAim}
-          onShift={onShift}
-          rearrange={rearrange}
-        />
-      ))}
+      {page.pockets.map((pocket, i) =>
+        props.readOnly ? (
+          <ReadOnlyPocket key={i} pocket={pocket} index={i} pageNumber={number} onOpen={props.onOpenCopies} />
+        ) : (
+          <Pocket
+            key={i}
+            pocket={pocket}
+            variant={props.variant}
+            saleTag={props.saleTags}
+            index={i}
+            pageNumber={number}
+            aimed={sameSlot(props.aimed, pocket.slot)}
+            found={sameSlot(props.found, pocket.slot)}
+            onOpen={props.onOpen}
+            onAdd={props.onAdd}
+            onAim={props.onAim}
+            onShift={props.onShift}
+            rearrange={props.rearrange}
+          />
+        ),
+      )}
       <p aria-hidden="true" className="p2-page-foot">
         {number}
       </p>

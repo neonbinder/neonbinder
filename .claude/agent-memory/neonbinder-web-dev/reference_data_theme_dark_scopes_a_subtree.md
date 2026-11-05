@@ -16,7 +16,12 @@ night shelf and the seller storefronts `/u/:username` and `/u/:username/sale`
 Caveats:
 - Signatures written as `[data-theme="light"] &` (shadow-offset, `.binder-tab`
   light rules) still match inside the scope, because `<html>` is the light
-  ancestor. Do not use them inside a dark scope.
+  ancestor. Do not use them inside a dark scope. That includes every
+  `[data-theme="light"] .p2-*` rule in binders.css: reusing the binder under a
+  dark scope draws faint sleeves on a light-mode visitor's screen. Portals to
+  `<body>` also skip the scope. A page reusing themed furniture or a portal
+  mounts `ForceDark` (it sets `<html>` while mounted, a no-op without a
+  ThemeProvider) as well as the scope (NEO-444).
 - `useTheme().mode` stays "light" inside the scope, so `BrandMark`/`PullingLogo`
   pick the light Mark there; use the PNG directly in a dark scope.
 - Radix colour scales are also keyed on `[data-theme="dark"]`, so they re-scope too.

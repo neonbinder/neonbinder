@@ -1,0 +1,188 @@
+/*
+ * NEO-444 — a top loader: the rigid clear sleeve a collector keeps a card in,
+ * drawn. Three layers, back to front: the back sheet, the card, the front
+ * sheet (its glare, its thumb notch cut out of the open top edge). A physical
+ * object, so like the vinyl and the card faces it keeps its own colours.
+ *
+ * Proportions are a real one's: 3" x 4", for a 2.5" x 3.5" card, which sits on
+ * the sealed bottom edge with the gap at the top where it went in. Sized by
+ * height first, so a phone keeps the whole card and its title in view.
+ */
+
+.nb-toploader-stage {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  height: 100%;
+  overflow: hidden;
+  padding: 12px 16px;
+  /* Deepens the page's scrim, so the words below the loader read over a busy page of cards. */
+  background: rgb(0 0 0 / 0.42);
+  -webkit-backdrop-filter: blur(3px);
+  backdrop-filter: blur(3px);
+}
+
+.nb-toploader {
+  position: relative;
+  flex: none;
+  height: min(56dvh, calc((100vw - 48px) * 4 / 3), 640px);
+  aspect-ratio: 3 / 4;
+  animation: nb-toploader-pop 260ms cubic-bezier(0.2, 0.75, 0.25, 1) both;
+}
+
+/* The back sheet: faintly blue, as thick PVC is, with a soft halo behind it. */
+.nb-toploader-back {
+  position: absolute;
+  inset: 0;
+  border-radius: 1.6% / 1.2%;
+  background: linear-gradient(170deg, rgba(214, 236, 255, 0.16), rgba(148, 190, 230, 0.07) 60%, rgba(214, 236, 255, 0.12));
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.28),
+    0 0 44px rgba(0, 194, 255, 0.22),
+    0 26px 60px rgba(0, 0, 0, 0.65);
+}
+
+.nb-toploader-card {
+  position: absolute;
+  left: 8%;
+  bottom: 2.6%;
+  width: 84%;
+  aspect-ratio: 5 / 7;
+  animation: nb-toploader-seat 340ms 40ms cubic-bezier(0.2, 0.75, 0.25, 1) both;
+}
+
+/* A collector's photo of a card: thumbnail first, the larger image over it. */
+.nb-toploader-photo {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border-radius: 2.5%;
+  object-fit: contain;
+}
+
+.nb-toploader-flip {
+  position: absolute;
+  inset: 0;
+  animation: nb-toploader-flip 280ms ease-out both;
+}
+
+/*
+ * The front sheet: the sealed rim on three sides (thick, catching the light),
+ * no rim along the open top, and the glare. The mask cuts the thumb notch out
+ * of the top edge; its outline is `.nb-toploader::after`, outside the mask.
+ */
+.nb-toploader-front {
+  position: absolute;
+  inset: 0;
+  border-radius: 1.6% / 1.2%;
+  pointer-events: none;
+  background:
+    linear-gradient(
+      114deg,
+      transparent 20%,
+      rgba(255, 255, 255, 0.24) 27%,
+      rgba(255, 255, 255, 0.07) 35%,
+      transparent 43%,
+      transparent 66%,
+      rgba(255, 255, 255, 0.1) 71%,
+      transparent 76%
+    ),
+    linear-gradient(rgba(255, 255, 255, 0.14), rgba(255, 255, 255, 0.02) 9%, transparent 22%);
+  box-shadow:
+    inset 5px 0 0 -1px rgba(255, 255, 255, 0.22),
+    inset -5px 0 0 -1px rgba(255, 255, 255, 0.16),
+    inset 0 -6px 0 -1px rgba(255, 255, 255, 0.22),
+    inset 7px 0 6px -4px rgba(255, 255, 255, 0.28),
+    inset -7px 0 6px -4px rgba(255, 255, 255, 0.2),
+    inset 0 -8px 6px -5px rgba(255, 255, 255, 0.28);
+  -webkit-mask-image: radial-gradient(ellipse 14% 7.4% at 50% 0, transparent 97%, #000 100%);
+  mask-image: radial-gradient(ellipse 14% 7.4% at 50% 0, transparent 97%, #000 100%);
+}
+
+/* The open top edge: the two sheets' lip, a bright hairline, broken by the notch. */
+.nb-toploader::before {
+  content: "";
+  position: absolute;
+  z-index: 1;
+  inset: 0 0 auto 0;
+  height: 2px;
+  pointer-events: none;
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0.75) 0 36%,
+    transparent 36% 64%,
+    rgba(255, 255, 255, 0.75) 64% 100%
+  );
+}
+
+/* The thumb notch's edge. */
+.nb-toploader::after {
+  content: "";
+  position: absolute;
+  z-index: 1;
+  top: 0;
+  left: 36%;
+  width: 28%;
+  height: 7.4%;
+  pointer-events: none;
+  border: 1.5px solid rgba(255, 255, 255, 0.6);
+  border-top: 0;
+  border-radius: 0 0 50% 50% / 0 0 100% 100%;
+}
+
+/* Over the loader's drop shadow, which would otherwise dim it. */
+.nb-toploader-title {
+  position: relative;
+  flex: none;
+  max-width: 34rem;
+  text-align: center;
+}
+
+/* Everything under the title scrolls here: it never pushes the card out of view. */
+.nb-toploader-details {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  flex: 0 1 auto;
+  min-height: 0;
+  width: min(100%, 34rem);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  text-align: center;
+}
+.nb-toploader-details > * {
+  flex: none;
+}
+
+/* The sleeve arrives... */
+@keyframes nb-toploader-pop {
+  from {
+    opacity: 0;
+    transform: translateY(5%) scale(0.92);
+  }
+}
+/* ...and the card drops into it through the open top. */
+@keyframes nb-toploader-seat {
+  from {
+    transform: translateY(-16%);
+  }
+}
+@keyframes nb-toploader-flip {
+  from {
+    opacity: 0.2;
+    transform: rotateY(70deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nb-toploader,
+  .nb-toploader-card,
+  .nb-toploader-flip {
+    animation: none;
+  }
+}

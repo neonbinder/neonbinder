@@ -9,7 +9,11 @@ import { inertBackground } from "@/lib/dom/inert-background";
  * made `inert` (so Tab cannot leave and a screen reader cannot wander), Tab
  * wrapped at both ends, Escape closes, and focus goes back to whatever opened
  * it. `drawer` slides in from the right like the admin CardDetailPanel;
- * `modal` is a centred box for small forms.
+ * `modal` is a centred box for small forms; `stage` is no box at all, a
+ * full-screen column for one object on the dimmed page (the public binder's
+ * top loader). The stage lets clicks through to the scrim, so whatever its
+ * children leave empty still closes it; a child that should catch a click
+ * says so (`pointer-events-auto`).
  *
  * On open, focus lands on the element marked `data-autofocus`, else the
  * labelling heading.
@@ -22,7 +26,7 @@ export default function Overlay({
 }: {
   labelledBy: string;
   onClose: () => void;
-  variant?: "drawer" | "modal";
+  variant?: "drawer" | "modal" | "stage";
   children: ReactNode;
 }) {
   const rootRef = useRef<HTMLDivElement>(null);
@@ -91,7 +95,9 @@ export default function Overlay({
         aria-modal="true"
         aria-labelledby={labelledBy}
         className={
-          variant === "drawer"
+          variant === "stage"
+            ? "pointer-events-none absolute inset-0 text-ink"
+            : variant === "drawer"
             ? "absolute top-0 right-0 h-full w-full sm:w-[40rem] max-w-[95vw] bg-raised text-ink border-l border-rule-strong shadow-xl flex flex-col animate-slide-in-right"
             : "absolute left-1/2 top-1/2 w-[min(28rem,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 rounded-lg border border-rule bg-raised p-6 text-ink shadow-xl"
         }

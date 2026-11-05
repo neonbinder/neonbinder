@@ -530,3 +530,12 @@
 .p2-overlay {
   cursor: grabbing;
 }
+
+/* ---------------------------------------- the Trade sticker on a public pocket */
+
+/* NEO-444: a visitor's pocket marks a copy up for trade, low on the sleeve, clear of the sale sticker. */
+.p2-tag.nb-trade-tag {
+  top: 62%;
+  background: var(--neon-blue);
+  color: var(--on-neon-blue);
+}
