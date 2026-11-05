@@ -7,7 +7,10 @@
 // after three tries with the collector copy in the alert and a log line that
 // carries the status and no address; a 403 is not retried; a network failure
 // gives up after three tries and never shows the browser's own "Failed to
-// fetch"; then storage recovers and the same field saves.
+// fetch"; then storage recovers and the same field saves; a try the store never
+// answers is cut off by the page's own attempt timeout: with the page clock moved past
+// each try's window, three held tries give up with the collector copy (the log line
+// says it timed out), and one held try followed by a live store saves.
 //
 // Why this mocks: a live third party cannot be made to fail on demand, so the
 // test answers ONLY the browser's PUTs to the photo store (the signed upload
@@ -19,7 +22,7 @@
 // spec shares, as `copy-photos-add-replace-remove`; see SET-REGISTRY.md), never
 // the set, its cards, players or teams. Self-cleaning: the copy is removed
 // through the UI, which detaches its photos for the hourly sweep; the
-// bootstrap reset clears any left behind. Only the two successful saves reach
+// bootstrap reset clears any left behind. Only the successful saves reach
 // the photo store. Same drawer on both projects (phone and desktop): no branch.
 import { drillToCollectorBase, ordinaryBaseRows, photoFile, shortNameOf } from "../../support/collection";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
@@ -41,6 +44,10 @@ test(
     const gaveUp = async () =>
       (await page.waitForEvent("console", { predicate: (message) => message.text().includes(GAVE_UP) })).text();
 
+    // The page clock runs at the real pace from here (install only swaps the page's timers
+    // for ones the test can also push forward); it is installed BEFORE the first page loads so
+    // every timer the app and the upload code set is one the test can move.
+    await page.clock.install();
     await signIn("/collection");
     await expect(page.getByRole("heading", { level: 1, name: "Collection" })).toBeVisible({ timeout: LAUNCH_GATE });
     await page.getByRole("navigation", { name: "Collection sections" }).getByRole("link", { name: "Checklists", exact: true }).click();
@@ -62,16 +69,22 @@ test(
     const front = panel.getByLabel("Front photo file", { exact: true });
     const back = panel.getByLabel("Back photo file", { exact: true });
 
-    // What the store is made to answer for each PUT, by its number since the last reset:
-    // a status, "abort" (the network never answers), or null (let the real store answer).
+    // What the store is made to answer for each PUT, by its number since the last reset: a
+    // status, "abort" (the connection fails), "hold" (the request is never answered), or null
+    // (let the real store answer).
     let puts = 0;
-    let answer: (n: number) => number | "abort" | null = () => null;
+    let heldBytes = 0;
+    let answer: (n: number) => number | "abort" | "hold" | null = () => null;
     await page.route(PHOTO_STORE, async (route) => {
       if (route.request().method() !== "PUT") return route.fallback();
       puts += 1;
       const forced = answer(puts);
       if (forced === null) return route.fallback();
       if (forced === "abort") return route.abort("failed");
+      if (forced === "hold") {
+        heldBytes = route.request().postDataBuffer()?.length ?? 0;
+        return new Promise<never>(() => {});
+      }
       // The CORS header keeps the status readable to the page, as a real store's answer is.
       return route.fulfill({ status: forced, headers: { "access-control-allow-origin": "*" }, body: "" });
     });
@@ -109,7 +122,7 @@ test(
     expect(puts).toBe(1);
     await expect(panel.getByRole("alert")).toContainText(COLLECTOR_COPY);
 
-    // --- The network never answers: three tries, the collector copy, never the browser's words ----
+    // --- The connection fails: three tries, the collector copy, never the browser's words ----
     forceStore(() => "abort");
     line = gaveUp();
     await back.setInputFiles(photoFile("back.jpg"));
@@ -122,6 +135,48 @@ test(
     forceStore(() => null);
     await back.setInputFiles(photoFile("back.jpg"));
     await expect(panel.getByRole("status")).toHaveText("Back photo saved.");
+    await expect(panel.getByRole("alert")).toBeEmpty();
+
+    // --- The store never answers: each try is cut off at its own window, ---------------------
+    // --- three held tries give up, and the collector is not left on "Saving" --------------
+    // The next PUT to the store, awaited by event (the page's default 7 s bounds it): start it
+    // BEFORE the thing that sends it.
+    const nextPut = () => page.waitForRequest((request) => request.method() === "PUT" && PHOTO_STORE.test(request.url()));
+    // A try's window is 20 s plus a second per 32 KB of the file, so a photo under 64 KB is
+    // given up on after 22 s at the most; moving the page clock 22 s puts every try past it.
+    const STALL = 22_000;
+    forceStore(() => "hold");
+    line = gaveUp();
+    let arrived = nextPut();
+    await back.setInputFiles(photoFile("back.jpg"));
+    await arrived;
+    await expect(panel.getByRole("status")).toHaveText("Saving the back photo…");
+    expect(heldBytes, "a small photo, so one STALL clears its window").toBeLessThan(64_000);
+    await expectAccessible(page, { within: drawer, label: "Card drawer, photo upload not answering" });
+    for (let retry = 0; retry < 2; retry++) {
+      arrived = nextPut();
+      await page.clock.fastForward(STALL);
+      await arrived;
+    }
+    await page.clock.fastForward(STALL);
+    const stalled = await line;
+    expect(stalled).toContain('"timedOut":true');
+    expect(stalled).toContain('"status":null');
+    expect(stalled).toContain('"attempts":3');
+    expect(stalled, "the signed address is never logged").not.toContain("http");
+    expect(puts).toBe(3);
+    await expect(panel.getByRole("alert")).toContainText(COLLECTOR_COPY);
+    await expect(panel.getByRole("status")).toBeEmpty();
+
+    // --- One try is never answered, the next one is: saved, and the collector never hears of it ----
+    forceStore((n) => (n === 1 ? "hold" : null));
+    arrived = nextPut();
+    await back.setInputFiles(photoFile("back.jpg"));
+    await arrived;
+    await page.clock.fastForward(STALL);
+    await expect(panel.getByRole("status")).toHaveText("Back photo saved.");
+    expect(puts, "image held, image ok, thumbnail ok").toBe(3);
+    expect(logged, "a recovered stall is not logged").toEqual([]);
     await expect(panel.getByRole("alert")).toBeEmpty();
 
     // --- Remove the copy (self-cleaning) -------------------------------------------------

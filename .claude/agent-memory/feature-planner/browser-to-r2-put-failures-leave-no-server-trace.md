@@ -29,3 +29,14 @@ log's halves ("Saving..." polls, then empty polls) date the catch. Since this wa
 `copy_photo_put_failed` with the status and attempts, so look for that line in the
 browser console. A network failure now shows the same alert text with `status: null`; a
 storage error sent without CORS headers also reads as null.
+
+**A different red: the status stuck on "Saving…" for the whole 7 s, with an orphan
+`startUpload`.** There the promise chain never settled, so no answer or network error
+reached the catch. It isn't the alert case above, and it can't tell you which leg stalled:
+DNS, connect, TLS, preflight, either PUT, or a Convex reply that never arrived. Each try
+now has its own timeout (`attemptTimeoutMs`, at least 20 s), so the 7 s assert still goes
+red before it fires. That timeout protects collectors and won't rescue the spec. Telling
+the legs apart would need a Playwright listener on the storage host's requests, not a
+trace.
+
+A rerun hides the earlier attempt's artifacts from the API, so download them first.

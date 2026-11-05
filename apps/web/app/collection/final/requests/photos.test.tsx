@@ -22,6 +22,7 @@ describe("request photos (NEO-361)", () => {
       method: "POST",
       headers: { "Content-Type": "image/png" },
       body: photo,
+      signal: expect.any(AbortSignal),
     });
   });
 

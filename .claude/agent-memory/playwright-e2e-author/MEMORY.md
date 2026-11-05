@@ -83,3 +83,4 @@
 - [eBay listing spec shape](patterns_ebay_listing_spec_shape.md) — NEO-415: seed-hop connect, loud fail when unwired, Set me up branch, two Sync status regions, Switch is a checkbox
 - [Sync status step ledger waits](patterns_sync_status_step_ledger_waits.md) — NEO-415: wait per ledger step (7 s), gate on the new run (stale ledger), throttled press, optional eBay photo step
 - [Copy photo spec handles](patterns_copy_photo_specs.md) — NEO-431: held vs saved photo box, expectPhotoServed instead of evaluate, inventory Details opens editing
+- [page.clock for client timeouts](patterns_page_clock_for_client_timeouts.md) — NEO-431: install before signIn, fastForward, hold by never-resolving route, bound waits by event
