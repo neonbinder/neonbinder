@@ -31,3 +31,5 @@
 - [Seller spec red with no step ledger = sales poll](seller-spec-red-with-no-step-ledger-is-the-sales-poll.md) — pollAll→drainOwner before syncVariant; press wipes the ledger; NEO-433 PR 425 fixes it; delete once merged
 - [Heavy-escalation red: request log per instance](heavy-escalation-red-read-the-request-log-per-instance.md) — "All N photos read" counts failed rows; a burst can queue serially behind ONE cold instance; budget + backoff vs photo deadline arithmetic
 - [Spare worker indexes share one account on dev](spare-worker-indexes-share-one-account-on-dev.md) — no TEST_EMAIL_<n> locally = fallback to TEST_EMAIL; a bootstrap on any spare worker wipes the others mid-run
+- [Review gate cost is the sequential name loop](review-gate-cost-is-the-sequential-name-loop.md) — ~5 s at 200 names before any feature adds to it; 7 s after "Kept all" has under 2 s headroom
+- [Open-if-visible races the selection change](open-if-visible-races-the-selection-change.md) — panel returns null mid-selection, click skipped; gate on the new heading; blob steps prove it
