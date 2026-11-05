@@ -47,9 +47,12 @@ logger = logging.getLogger(__name__)
 # phone writes 9248x6936 = 64,144,128 px. Rejecting those would be a product
 # bug, since a zip of phone photos is exactly the input this feature exists for.
 #
-# 65 MP bounds one decoded RGB raster at ~195 MB. The FAST service (8 GiB,
-# concurrency 8) can hold eight of those at once, so roughly 1.6 GiB per live
-# full-size copy; the HEAVY service (16 GiB, concurrency 1) holds one beside its
+# 65 MP bounds one decoded raster at ~260 MB in Pillow, which stores RGB in four
+# bytes per pixel, and ~195 MB as a NumPy BGR array. This sizing assumes at most
+# three live full-size copies per request (a decode, a transpose or rotate, and
+# one for the next stage to work on), so ~780 MB at Pillow's size. On the FAST
+# service (8 GiB, concurrency 8) that is ~6.2 GB if every request peaks together;
+# the HEAVY service (16 GiB, concurrency 1) holds one request's worth beside its
 # models.
 #
 # For scale, the bomb this defends against is 169 MP / 484 MB, and Pillow's own

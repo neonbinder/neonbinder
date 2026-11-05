@@ -180,8 +180,19 @@ def _load(image_bytes: bytes) -> tuple[np.ndarray, np.ndarray, float]:
     Dividing work-space coordinates by `scale` maps back to `full` — final
     crop pixels are always taken from `full`.
     """
-    im = ImageOps.exif_transpose(Image.open(BytesIO(image_bytes))).convert("RGB")
-    full = cv2.cvtColor(np.array(im), cv2.COLOR_RGB2BGR)
+    # A 65 MP frame is ~260 MB as a Pillow image and ~195 MB as an array, so
+    # each stage is let go as soon as the next exists: transpose in place, and
+    # wrap Pillow's bytes rather than copy them (`cvtColor` reads a read-only
+    # array). The peak is `asarray` itself, where Pillow's `tobytes` holds its
+    # encoded chunks and their join beside the image.
+    im = Image.open(BytesIO(image_bytes))
+    ImageOps.exif_transpose(im, in_place=True)
+    if im.mode != "RGB":
+        im = im.convert("RGB")
+    rgb = np.asarray(im)
+    del im
+    full = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+    del rgb
     h, w = full.shape[:2]
     scale = WORK_LONG / max(h, w)
     if scale < 1:

@@ -141,6 +141,20 @@ class TestInputGuards:
         assert body["reason"] == "compression_ratio_exceeded"
         assert body["retryable"] is False
 
+    def test_forged_entry_name_returns_422_terminal(self, fake_gcs):
+        # Not a 502: the caller would retry an archive that can never parse.
+        data = bytearray(_zip_bytes([("abcde", _jpeg())]))
+        at = data.find(b"PK\x01\x02")
+        data[at + 9] |= 0x08  # the general-purpose flag's UTF-8 bit
+        data[at + 46 : at + 51] = b"\xff\xfe\xfd\xfc\xfb"
+        fake_gcs.seed(BUCKET, INPUT_KEY, bytes(data))
+        response = _post_extract()
+        assert response.status_code == 422
+        body = response.json()
+        assert body["error_code"] == "ZIP_REJECTED"
+        assert body["reason"] == "not_a_zip"
+        assert body["retryable"] is False
+
     def test_not_a_zip_returns_422(self, fake_gcs):
         fake_gcs.seed(BUCKET, INPUT_KEY, b"this is not an archive, sorry")
         response = _post_extract()

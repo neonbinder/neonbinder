@@ -164,12 +164,23 @@ def _prepare_for_anthropic(image_bytes: bytes) -> tuple[bytes, str]:
     if _fits_anthropic_as_is(image_bytes):
         return image_bytes, _detect_media_type(image_bytes)
 
+    # Shrink before anything else is held, so a 65 MP photo costs one raster at
+    # most, and a JPEG less than that (`thumbnail` asks its decoder to scale).
+    # Only RGB and L resize the same before and after the conversion: a palette
+    # image would resize by nearest neighbour, and alpha would be premultiplied.
+    first_box = (DOWNSCALE_MAX_EDGE_PX, DOWNSCALE_MAX_EDGE_PX)
     with Image.open(BytesIO(image_bytes)) as img:
-        rgb = img.convert("RGB")
+        if img.mode in ("RGB", "L"):
+            img.thumbnail(first_box, Image.Resampling.LANCZOS)
+            base = img.convert("RGB")
+        else:
+            base = img.convert("RGB")
+            base.thumbnail(first_box, Image.Resampling.LANCZOS)
+    del img
 
     max_edge = DOWNSCALE_MAX_EDGE_PX
     while True:
-        working = rgb.copy()
+        working = base.copy()
         working.thumbnail((max_edge, max_edge), Image.Resampling.LANCZOS)
         out = BytesIO()
         working.save(out, format="JPEG", quality=DOWNSCALE_JPEG_QUALITY)

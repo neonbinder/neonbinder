@@ -14,6 +14,7 @@ import io
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import numpy as np
 import pytest
 from PIL import Image
 
@@ -21,6 +22,7 @@ from app.classify import (
     ANTHROPIC_MAX_EDGE_PX,
     ANTHROPIC_MAX_RAW_BYTES,
     DEFAULT_MODEL,
+    DOWNSCALE_JPEG_QUALITY,
     EFFORT,
     MAX_TOKENS,
     PROMPT,
@@ -131,6 +133,24 @@ class TestPrepareForAnthropic:
         assert media_type == "image/jpeg"
         with Image.open(io.BytesIO(payload)) as result:
             assert max(result.size) <= 1600
+
+    @pytest.mark.parametrize("mode", ["P", "RGBA", "L", "RGB"])
+    def test_downscaling_a_non_jpeg_matches_converting_first(self, mode):
+        # Palette and alpha images must not take the resize-then-convert route:
+        # that would change which pixels the model sees.
+        pixels = np.random.default_rng(446).integers(0, 256, (10, 8100, 3), dtype=np.uint8)
+        src = Image.fromarray(pixels).convert(mode)
+        buf = io.BytesIO()
+        src.save(buf, format="PNG")
+        expected = src.convert("RGB")
+        expected.thumbnail((1600, 1600), Image.Resampling.LANCZOS)
+        reference = io.BytesIO()
+        expected.save(reference, format="JPEG", quality=DOWNSCALE_JPEG_QUALITY)
+
+        payload, media_type = _prepare_for_anthropic(buf.getvalue())
+
+        assert media_type == "image/jpeg"
+        assert payload == reference.getvalue()
 
     def test_exactly_the_edge_limit_passes_through_unchanged(self):
         buf = io.BytesIO()

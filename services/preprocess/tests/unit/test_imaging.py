@@ -87,8 +87,9 @@ class TestTheBoundary:
         assert BOMB_EDGE_PX * BOMB_EDGE_PX > 2 * MAX_IMAGE_PIXELS
 
     def test_a_decoded_raster_at_the_cap_fits_the_instance(self):
-        # 3 bytes per pixel, and the FAST service can hold one of these per
-        # concurrent request, each with several copies live.
+        # A NumPy BGR array at 3 bytes per pixel (Pillow's own RGB is 4), and the
+        # FAST service can hold one of these per concurrent request, each with
+        # several copies live.
         assert MAX_IMAGE_PIXELS * 3 < 200 * 1024 * 1024
 
 

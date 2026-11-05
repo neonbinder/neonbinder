@@ -78,9 +78,11 @@ carries on, because one unprocessable image must not cost a user their other
 from __future__ import annotations
 
 import logging
+import lzma
 import re
 import struct
 import zipfile
+import zlib
 from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import BinaryIO
@@ -219,6 +221,21 @@ _FORBIDDEN_NAME_CHARS = frozenset(
 
 _DRIVE_LETTER_RE = re.compile(r"^[A-Za-z]:")
 _DIGIT_RUN_RE = re.compile(r"([0-9]+)")
+
+# What reading one forged or damaged entry can raise, beyond `BadZipFile`: a
+# local-header name that will not decode (ValueError), a stream that ends early
+# (EOFError), and the decompressors' own error types. All describe that entry,
+# so all are per-entry rejections and never a 502 to retry.
+_ENTRY_READ_ERRORS = (
+    zipfile.BadZipFile,
+    RuntimeError,
+    OSError,
+    NotImplementedError,
+    ValueError,
+    EOFError,
+    zlib.error,
+    lzma.LZMAError,
+)
 _UNIX_MODE_FORMAT_MASK = 0xF000
 _UNIX_MODE_SYMLINK = 0xA000
 _ZIP_FLAG_ENCRYPTED = 0x1
@@ -509,7 +526,10 @@ def _open_archive(stream: BinaryIO, object_size: int) -> zipfile.ZipFile:
     capped = _ReadCappedStream(stream, max_read_bytes=MAX_CENTRAL_DIRECTORY_BYTES)
     try:
         archive = zipfile.ZipFile(capped)
-    except (zipfile.BadZipFile, OSError) as exc:
+    except (zipfile.BadZipFile, OSError, ValueError) as exc:
+        # ValueError covers UnicodeDecodeError: `zipfile` decodes every name in
+        # the directory while parsing, and a forged name is hostile, not a
+        # storage failure to retry.
         raise ZipRejectedError("not_a_zip") from exc
     finally:
         capped.uncap()
@@ -574,7 +594,7 @@ def iter_zip_members(stream: BinaryIO, *, object_size: int) -> Iterator[ZipMembe
             try:
                 with archive.open(info) as handle:
                     data = handle.read(MAX_ENTRY_UNCOMPRESSED_BYTES + 1)
-            except (zipfile.BadZipFile, RuntimeError, OSError, NotImplementedError) as exc:
+            except _ENTRY_READ_ERRORS as exc:
                 logger.warning("zip: entry unreadable (%s): %s", info.filename, exc)
                 yield ZipMember(index=index, name=info.filename, reason="entry_unreadable")
                 index += 1

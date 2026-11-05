@@ -149,8 +149,9 @@ EXTRACT_UPLOAD_WORKERS = 8
 # future retains its entry's decompressed bytes, so without a bound a producer
 # that outruns GCS (a crafted low-compression archive, or an ordinary one on a
 # slow storage day) re-materializes up to MAX_TOTAL_UNCOMPRESSED_BYTES (2 GiB)
-# of image data in RAM on a 4 GiB instance — exactly the OOM class the
-# streaming zip read exists to prevent. The bound has to be a BYTE budget, not
+# of image data in RAM for one request, on an instance that may be serving
+# others — exactly the OOM class the streaming zip read exists to prevent. The
+# bound has to be a BYTE budget, not
 # a future count: entry sizes span three orders of magnitude (a tens-of-KB
 # thumbnail up to the 32 MiB per-entry cap), so any count small enough to be
 # safe for the largest entries would needlessly serialize the small ones.
@@ -947,6 +948,11 @@ def _upload_extracted(store: ObjectStore, ref: ObjectRef, data: bytes, content_t
     `ObjectAlreadyExistsError` (GCS 412) is idempotent success: the only way
     the key is occupied is a re-run of a timed-out extract, which derived the
     same key from the same ordinal. First write wins.
+
+    That holds while the entry ordering stays the same. A job extracted before
+    a change in ordering and restarted after it could disagree: its rows would
+    follow the new order and its stored objects the old one. This is accepted,
+    since it takes one job in flight across that one deploy.
     """
     try:
         store.create(ref, data, content_type=content_type)
@@ -959,9 +965,10 @@ def _extract_entries(
 ) -> list[ExtractEntry]:
     """Stream the archive through zipsafe's guards and upload accepted entries.
 
-    The zip is read sequentially (one seekable stream); only the GCS uploads
-    are overlapped, on a small pool, and the producer is throttled so the bytes
-    retained by not-yet-finished uploads never exceed
+    The zip is read one entry at a time through one seekable stream, in natural
+    filename order rather than file order, so it seeks between entries. Only
+    the GCS uploads are overlapped, on a small pool, and the producer is
+    throttled so the bytes retained by not-yet-finished uploads never exceed
     `EXTRACT_PENDING_BYTES_BUDGET` (see the constant for the OOM class this
     prevents). Raises `ZipRejectedError` for archive-level violations —
     uploads already submitted are drained first (they are write-once and

@@ -290,6 +290,20 @@ class TestCentralDirectoryGuards:
         with pytest.raises(ZipRejectedError, match="object_too_large"):
             members(data, object_size=zipsafe.MAX_INPUT_OBJECT_BYTES + 1)
 
+    def test_forged_directory_name_bytes_reject_the_archive(self):
+        # Flagged UTF-8 but not decodable. `zipfile` raises UnicodeDecodeError
+        # while parsing, which has to be a terminal rejection and not a 502.
+        data = bytearray(build_zip([("abcde", jpeg_bytes())]))
+        at = data.find(b"PK\x01\x02")
+        flags = struct.unpack_from("<H", data, at + 8)[0]
+        struct.pack_into("<H", data, at + 8, flags | 0x800)
+        data[at + 46 : at + 51] = b"\xff\xfe\xfd\xfc\xfb"
+        forged = bytes(data)
+        with pytest.raises(ZipRejectedError, match="not_a_zip"):
+            members(forged)
+        with pytest.raises(ZipRejectedError, match="not_a_zip"):
+            count_candidate_entries(io.BytesIO(forged), object_size=len(forged))
+
     def test_not_a_zip_at_all(self):
         # A well-formed EOCD claiming one entry and a 46-byte directory at
         # offset 0 — which is zeros. Gets past the pre-parse ceilings and has
@@ -467,6 +481,35 @@ class TestZipSlipGuards:
         [member] = members(bytes(data))
         assert member.reason == "encrypted_entry"
 
+    def test_forged_local_header_name_is_per_entry(self):
+        # The directory is fine, so the archive parses; the local header's name
+        # only fails to decode when the entry is opened.
+        data = bytearray(build_zip([("abcde", jpeg_bytes())], compression=zipfile.ZIP_STORED))
+        at = data.find(b"PK\x03\x04")
+        data[at + 7] |= 0x08  # the general-purpose flag's UTF-8 bit
+        data[at + 30 : at + 35] = b"\xff\xfe\xfd\xfc\xfb"
+        [member] = members(bytes(data))
+        assert member.reason == "entry_unreadable"
+
+    def test_corrupt_deflate_stream_is_per_entry(self):
+        data = bytearray(build_zip([("a.png", png_bytes())], compression=zipfile.ZIP_DEFLATED))
+        start = data.find(b"PK\x03\x04") + 30 + len("a.png")
+        data[start : start + 20] = b"\xff" * 20
+        [member] = members(bytes(data))
+        assert member.reason == "entry_unreadable"
+
+    def test_deflate_stream_cut_short_is_per_entry(self):
+        # A directory that claims more output than the stream can produce.
+        out = io.BytesIO()
+        with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("a.png", png_bytes())
+        data = bytearray(out.getvalue())
+        at = data.find(b"PK\x01\x02")
+        compressed = struct.unpack_from("<I", data, at + 20)[0]
+        struct.pack_into("<I", data, at + 20, compressed // 2)
+        [member] = members(bytes(data))
+        assert member.reason == "entry_unreadable"
+
     def test_unreadable_entry_is_per_entry(self):
         # An entry whose compression method zipfile cannot handle. The archive
         # is otherwise fine, so the batch carries on.
@@ -499,7 +542,7 @@ class TestMemberIteration:
         [member] = members(build_zip([("card.bin", payload)]))
         assert member.content_type == expected
 
-    def test_index_is_zip_order_and_counts_rejections(self):
+    def test_index_is_sorted_position_and_counts_rejections(self):
         # The Convex pairing consumer reads the index as scan order, so a rejected member still
         # consumes its ordinal — dropping it would silently re-pair the
         # neighbours around it.
