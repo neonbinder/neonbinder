@@ -84,10 +84,11 @@ const BSC_UA =
 // cache entry that 401s, costing a wasted round trip on every call.
 const TOKEN_TTL_MS = 60 * 60 * 1000;
 
-// NEO-445: BSC's profile call either answers in a couple of seconds or fails,
-// so one attempt gets 3s, headers and body together, and a failed attempt is
-// retried once at once. Worst case about 6s on any path.
-const BSC_PROFILE_ATTEMPT_TIMEOUT_MS = 3_000;
+// NEO-445: BSC's profile call usually answers in a couple of seconds and can
+// stall for 30s before a 503. One attempt gets 5s, headers and body together, and
+// a failed attempt is retried once at once. Worst case about 10s on any path. On
+// dev about 1.5% of valid answers take longer than one attempt allows (NEO-443).
+const BSC_PROFILE_ATTEMPT_TIMEOUT_MS = 5_000;
 const BSC_PROFILE_MAX_ATTEMPTS = 2;
 
 /**
@@ -266,7 +267,7 @@ interface B2CSettings {
 }
 
 export interface BSCAdapterOptions {
-  /** Limit on one profile attempt, headers and body. Default 3s. */
+  /** Limit on one profile attempt, headers and body. Default 5s. */
   profileAttemptTimeoutMs?: number;
 }
 

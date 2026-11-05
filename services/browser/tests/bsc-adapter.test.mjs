@@ -2423,7 +2423,7 @@ describe("BSCAdapter.login — NEO-278 silent SSO re-authorize", () => {
 });
 
 // ---------------------------------------------------------------------------
-// NEO-443 / NEO-445 — /marketplace/user/profile: 3s an attempt, one retry
+// NEO-443 / NEO-445 — /marketplace/user/profile: 5s an attempt, one retry
 // ---------------------------------------------------------------------------
 //
 // BSC's profile call either answers in a couple of seconds or fails. Each
@@ -2916,13 +2916,13 @@ describe("BSCAdapter — NEO-445 profile attempts, retry and status logging", ()
       }
     }
 
-    it("is 3s on the cached-token check", async () => {
-      assert.deepEqual(await limitsFor(async () => healthyProfile()), [3_000]);
+    it("is 5s on the cached-token check", async () => {
+      assert.deepEqual(await limitsFor(async () => healthyProfile()), [5_000]);
     });
 
-    it("is 3s on every attempt, on a cached token and on the one that replaces it", async () => {
+    it("is 5s on every attempt, on a cached token and on the one that replaces it", async () => {
       const limits = await limitsFor(withProfile(makeRefreshRouter(), () => serverError()));
-      assert.deepEqual(limits, [3_000, 3_000, 3_000, 3_000]);
+      assert.deepEqual(limits, [5_000, 5_000, 5_000, 5_000]);
     });
   });
 });
