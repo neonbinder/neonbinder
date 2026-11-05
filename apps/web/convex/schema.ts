@@ -3684,7 +3684,7 @@ export default defineSchema({
     retries: v.optional(v.number()),
   })
     // The ONLY index this table needs. It answers both "every image of this
-    // job" (prefix `jobId` alone) and "this job's images in zip order", so a
+    // job" (prefix `jobId` alone) and "this job's images in filename order", so a
     // separate `by_job` on `["jobId"]` would be a strict prefix of this one —
     // a second copy of the same index, paid for on every write, that Convex
     // would never choose over this one for anything. Ordered iteration is a

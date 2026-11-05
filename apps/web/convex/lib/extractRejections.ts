@@ -80,8 +80,14 @@ export function rejectionKind(reason: string | null | undefined): RejectionKind 
  * The file name to show for a rejected entry: its last path segment, clipped,
  * or null when there is nothing to show. Clipped by code point so a long name
  * never ends on half a surrogate pair.
+ *
+ * Any Unicode "other" character (`\p{C}`: controls, format characters, the rest)
+ * means no name at all, wherever it sits. The service's own forbidden list stops
+ * well short of that: U+200E, U+200F, U+061C, U+200B, C1 controls, U+FEFF and tag
+ * characters all pass it, and any of them can make one name read as another.
  */
 export function rejectionExampleName(name: string): string | null {
+  if (/\p{C}/u.test(name)) return null;
   const base = name.split(/[/\\]/).pop() ?? "";
   if (!base) return null;
   return Array.from(base).slice(0, MAX_REJECTION_EXAMPLE_CHARS).join("");

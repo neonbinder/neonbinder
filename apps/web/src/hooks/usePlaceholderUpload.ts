@@ -46,6 +46,8 @@ export type UploadOutcome =
       ok: false;
       /** Server-supplied where there is one (e.g. the active-batch cap). */
       reason: string;
+      /** Set when a zip is over the upload limit, so a page can word that itself. */
+      overLimitMb?: number;
     };
 
 /** How a run was started, recorded on the job so admins can tell scans from web
@@ -141,6 +143,7 @@ export function usePlaceholderUpload(): PlaceholderUpload {
             return {
               ok: false,
               reason: `that zip is larger than the ${limitMb}MB limit`,
+              overLimitMb: limitMb,
             };
           }
 

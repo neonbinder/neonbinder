@@ -16,6 +16,7 @@ import {
   readOf,
   reasonText,
   runNotice,
+  zipOverLimitLine,
   type NoticeJob,
   tileLabel,
   whyNotSave,
@@ -139,8 +140,8 @@ describe("NEO-411: failed photos end, and can be sent again", () => {
   test("the failure reads as the collector's words, and says what to do when no retry is left", () => {
     expect(failedText({ errorCode: "PHOTO_TIMED_OUT" }, true)).toBe("Took too long to read");
     expect(failedText({ errorCode: "PROCESS_ENTRY_FAILED" }, true)).toBe("Couldn't read it");
-    expect(failedText({ errorCode: "PHOTO_TIMED_OUT" }, false)).toBe("Took too long to read. Scan it again.");
-    expect(failedText({}, false)).toBe("Couldn't read it. Scan it again.");
+    expect(failedText({ errorCode: "PHOTO_TIMED_OUT" }, false)).toBe("Took too long to read. Send a fresh one.");
+    expect(failedText({}, false)).toBe("Couldn't read it. Send a fresh one.");
   });
 
   test("the run summary never calls a run with failed photos fully read", () => {
@@ -267,7 +268,7 @@ describe("NEO-446: a photo over the pixel ceiling", () => {
   });
 
   test("says it is too big and what to do, retry offered or not", () => {
-    const line = "Too big (over 64 MP). Shrink it and send it again.";
+    const line = "Too big (over 64 megapixels). Shrink it and send it again.";
     expect(failedText({ errorCode: "ENTRY_TOO_MANY_PIXELS" }, false)).toBe(line);
     expect(failedText({ errorCode: "ENTRY_TOO_MANY_PIXELS" }, true)).toBe(line);
   });
@@ -348,7 +349,7 @@ describe("NEO-446: runNotice", () => {
 
   test("is silent while collecting, and says the row is gone for a null job", () => {
     expect(runNotice(job({ status: "collecting", mode: "stream", totalImages: 0 }))).toBeNull();
-    expect(runNotice(null)).toEqual({
+    expect(runNotice(null)).toMatchObject({
       line: "Our photo reader hit a snag. That's on us. Start a new run and send them again.",
       problem: true,
       hideWorkspace: false,
@@ -356,11 +357,11 @@ describe("NEO-446: runNotice", () => {
   });
 
   test.each(["pending", "uploaded", "extracting"] as const)("%s says the zip is unpacking, not a problem", (status) => {
-    expect(runNotice(job({ status, totalImages: 0 }))).toEqual({ line: "Unpacking your zip…", problem: false, hideWorkspace: false });
+    expect(runNotice(job({ status, totalImages: 0 }))).toMatchObject({ line: "Unpacking your zip…", problem: false, hideWorkspace: false });
   });
 
   test("a healthy finished run says the photos are all in", () => {
-    expect(runNotice(job())).toEqual({
+    expect(runNotice(job())).toMatchObject({
       line: "This run's photos are all in. To add more, start a new run.",
       problem: false,
       hideWorkspace: false,
@@ -389,7 +390,7 @@ describe("NEO-446: runNotice", () => {
 
   describe("failed codes", () => {
     test("CANCELED", () => {
-      expect(runNotice(job({ status: "failed", errorCode: "CANCELED", totalImages: 0 }))).toEqual({
+      expect(runNotice(job({ status: "failed", errorCode: "CANCELED", totalImages: 0 }))).toMatchObject({
         line: "This run was stopped.",
         problem: true,
         hideWorkspace: true,
@@ -402,7 +403,7 @@ describe("NEO-446: runNotice", () => {
     });
     test.each(["ZIP_REJECTED", "EXTRACT_REJECTED", "INPUT_TOO_LARGE", "INVALID_IDENTIFIER"])("%s says the zip wouldn't open", (errorCode) => {
       const notice = runNotice(job({ status: "failed", errorCode, totalImages: 0 }));
-      expect(notice).toEqual({
+      expect(notice).toMatchObject({
         line: "That zip wouldn't open. Zip your photos again (up to 1,000 photos, 500 MB) and start a new run.",
         problem: true,
         hideWorkspace: true,
@@ -412,7 +413,7 @@ describe("NEO-446: runNotice", () => {
       expect(runNotice(job({ status: "failed", errorCode, totalImages: 0 }))?.line).toMatch(/hit a snag/);
     });
     test("a failure that kept some photos keeps the lanes", () => {
-      expect(runNotice(job({ status: "failed", errorCode: "CANCELED", totalImages: 4 }))).toEqual({
+      expect(runNotice(job({ status: "failed", errorCode: "CANCELED", totalImages: 4 }))).toMatchObject({
         line: "This run was stopped.",
         problem: true,
         hideWorkspace: false,
@@ -427,20 +428,20 @@ describe("NEO-446: runNotice", () => {
 
     test("all too big, singular", () => {
       const n = failed({ rejectedEntries: 1, rejected: summary(1, 0, 0, [{ name: "a.jpg", kind: "tooBig" }]) });
-      expect(n.line).toBe("Whoa, that photo is too big! It's over 64 MP. Shrink it, zip it up again, and start a new run.");
+      expect(n.line).toBe("Whoa, that photo is too big! It's over 64 megapixels or 32 MB. Shrink it, zip it up again, and start a new run.");
       expect(n.problem).toBe(true);
       expect(n.hideWorkspace).toBe(true);
     });
     test("all too big, plural", () => {
       expect(failed({ rejectedEntries: 3, rejected: summary(3, 0, 0) }).line).toBe(
-        "Whoa, those photos are too big! All 3 are over 64 MP. Shrink them, zip them up again, and start a new run.",
+        "Whoa, those photos are too big! All 3 are over 64 megapixels or 32 MB. Use your camera's normal setting or shrink them, zip them up again, and start a new run.",
       );
     });
     test("wrong format", () => {
       expect(failed({ rejectedEntries: 2, rejected: summary(0, 2, 0) }).line).toBe(
-        "No JPEGs, PNGs or WebPs in that zip. Convert them, zip them up again, and start a new run.",
+        "No JPEGs or PNGs in that zip, and we can't read iPhone HEICs. Convert them to JPEG, zip them up again, and start a new run.",
       );
-      expect(failed({ rejectedEntries: 1, rejected: summary(0, 1, 0) }).line).toContain("Convert it, zip it up again");
+      expect(failed({ rejectedEntries: 1, rejected: summary(0, 1, 0) }).line).toContain("Convert it to JPEG, zip it up again");
     });
     test("unreadable, singular and plural", () => {
       expect(failed({ rejectedEntries: 1, rejected: summary(0, 0, 1) }).line).toBe(
@@ -452,7 +453,7 @@ describe("NEO-446: runNotice", () => {
     });
     test("mixed reasons give a count for each kind", () => {
       expect(failed({ rejectedEntries: 4, rejected: summary(1, 2, 1) }).line).toBe(
-        "Nothing in that zip made it in: 1 is too big (over 64 MP); 2 aren't JPEGs, PNGs or WebPs; 1 couldn't be read. Fix them, zip them up again, and start a new run.",
+        "Nothing in that zip made it in: 1 is too big (over 64 megapixels or 32 MB); 2 aren't JPEGs or PNGs; 1 couldn't be read. Fix them, zip them up again, and start a new run.",
       );
     });
     test("an older row with rejections but no summary reads as unreadable", () => {
@@ -474,17 +475,17 @@ describe("NEO-446: runNotice", () => {
   });
 
   describe("TOO_MANY_IMAGE_FAILURES with photos in", () => {
-    const most = "Most of these photos wouldn't read. Anything below is still yours to save. Re-shoot the rest, sharp and well lit, in a new run.";
+    const most = "Most of these photos wouldn't read. Anything below is still yours to save. Re-shoot the rest, sharp and well lit, in a new run, with their other sides.";
     const failed = (extra: Partial<NoticeJob>) =>
       runNotice(job({ status: "failed", errorCode: "TOO_MANY_IMAGE_FAILURES", totalImages: 10, failedImages: 6, ...extra }))!;
 
     test("keeps the lanes and says most would not read", () => {
       const n = failed({});
-      expect(n).toEqual({ line: most, problem: true, hideWorkspace: false });
+      expect(n).toMatchObject({ line: most, problem: true, hideWorkspace: false });
     });
     test("tails the rejections, with names", () => {
       const n = failed({ rejectedEntries: 3, rejected: summary(0, 3, 0, [{ name: "a.heic", kind: "wrongFormat" }, { name: "b.heic", kind: "wrongFormat" }]) });
-      expect(n.line).toBe(`${most} 3 more didn't make it in: a.heic, b.heic and 1 more aren't JPEGs, PNGs or WebPs.`);
+      expect(n.line).toBe(`${most} 3 more didn't make it in: \"a.heic\", \"b.heic\" and 1 more aren't JPEGs or PNGs.`);
     });
     test("no tail when the rejection summary is missing or nothing was rejected", () => {
       expect(failed({ rejectedEntries: 3, rejected: undefined }).line).toBe(most);
@@ -492,15 +493,67 @@ describe("NEO-446: runNotice", () => {
     });
   });
 
+  describe("a snag with photos already in", () => {
+    const snagged = "Our photo reader hit a snag. That's on us. Anything below is still yours to save. Send the rest in a new run.";
+    test("says the cards below are safe, and to send only the rest", () => {
+      expect(runNotice(job({ status: "failed", errorCode: "EXTRACT_UNAVAILABLE", totalImages: 4 }))).toMatchObject({
+        line: snagged,
+        problem: true,
+        hideWorkspace: false,
+      });
+    });
+    test("keeps asking for them all when nothing got in", () => {
+      expect(runNotice(job({ status: "failed", errorCode: "EXTRACT_UNAVAILABLE", totalImages: 0 }))?.line).toBe(
+        "Our photo reader hit a snag. That's on us. Start a new run and send them again.",
+      );
+    });
+  });
+
+  describe("file names in the line", () => {
+    const named = (examples: { name: string; kind: "tooBig" | "wrongFormat" | "unreadable" }[]) =>
+      runNotice(job({ rejectedEntries: examples.length, rejected: summary(examples.length, 0, 0, examples) }))!;
+
+    test("parts join back to the line, with each name at an odd index", () => {
+      const n = named([
+        { name: "a.jpg", kind: "tooBig" },
+        { name: "תמונה.jpg", kind: "tooBig" },
+      ]);
+      expect(n.parts.join("")).toBe(n.line);
+      expect(n.parts.filter((_, i) => i % 2 === 1)).toEqual(['"a.jpg"', '"תמונה.jpg"']);
+    });
+    test("a line with no name is a single part", () => {
+      const n = runNotice(job({ rejectedEntries: 2, rejected: summary(0, 0, 2) }))!;
+      expect(n.parts).toEqual([n.line]);
+    });
+    test("no invisible character reaches the text", () => {
+      expect(named([{ name: "a.jpg", kind: "tooBig" }]).line).not.toMatch(/\p{C}/u);
+    });
+    test("a stored name holding one is stripped, so it can't split the line or reorder it", () => {
+      const n = named([{ name: "a\u2069b\u202Ec\u2068.jpg", kind: "tooBig" }]);
+      expect(n.line).not.toMatch(/\p{C}/u);
+      expect(n.parts.filter((_, i) => i % 2 === 1)).toEqual(['"abc.jpg"']);
+    });
+    test("a name spelled like the markup stays one plain name", () => {
+      const n = named([{ name: "<b>x</b>.jpg", kind: "tooBig" }]);
+      expect(n.parts[1]).toBe('"<b>x</b>.jpg"');
+    });
+  });
+
+  test("a zip over the upload limit says how to split it", () => {
+    expect(zipOverLimitLine(500)).toBe(
+      "Couldn't send that zip: it's over 500 MB. Split it into smaller zips, each card's front and back together, one per run.",
+    );
+  });
+
   describe("a finished run where some of the zip was rejected", () => {
     test("older row with no summary asks to check them", () => {
-      expect(runNotice(job({ rejectedEntries: 2 }))).toEqual({
-        line: "10 photos made it in. 2 didn't. Check them and drop them in a new run.",
+      expect(runNotice(job({ rejectedEntries: 2 }))).toMatchObject({
+        line: "10 photos made it in. 2 didn't. Check them and drop them in a new run, with their other sides.",
         problem: true,
         hideWorkspace: false,
       });
       expect(runNotice(job({ totalImages: 1, rejectedEntries: 1 }))?.line).toBe(
-        "1 photo made it in. 1 didn't. Check it and drop it in a new run.",
+        "1 photo made it in. 1 didn't. Check it and drop it in a new run, with its other side.",
       );
     });
     test("names what it can and how many more", () => {
@@ -509,39 +562,51 @@ describe("NEO-446: runNotice", () => {
         { name: "b.jpg", kind: "tooBig" },
       ]);
       expect(runNotice(job({ rejectedEntries: 5, rejected }))?.line).toBe(
-        "10 photos made it in. 5 didn't: a.jpg, b.jpg and 3 more are too big (over 64 MP). Shrink them and drop them in a new run.",
+        "10 photos made it in. 5 didn't: \"a.jpg\", \"b.jpg\" and 3 more are too big (over 64 megapixels or 32 MB). Shrink them and drop them in a new run, with their other sides.",
       );
     });
     test("a count alone when no name can be shown", () => {
       expect(runNotice(job({ rejectedEntries: 2, rejected: summary(0, 0, 2) }))?.line).toBe(
-        "10 photos made it in. 2 didn't: 2 couldn't be read. Check they open on your end, then drop them in a new run.",
+        "10 photos made it in. 2 didn't: 2 couldn't be read. Check they open on your end, then drop them in a new run, with their other sides.",
+      );
+    });
+    test("every fix says to bring the other side, singular and plural", () => {
+      const tooBig = [{ name: "a.jpg", kind: "tooBig" as const }];
+      expect(runNotice(job({ totalImages: 1, rejectedEntries: 1, rejected: summary(1, 0, 0, tooBig) }))?.line).toBe(
+        '1 photo made it in. 1 didn\'t: "a.jpg" is too big (over 64 megapixels or 32 MB). Shrink it and drop it in a new run, with its other side.',
+      );
+      expect(runNotice(job({ rejectedEntries: 2, rejected: summary(0, 2, 0) }))?.line).toBe(
+        "10 photos made it in. 2 didn't: 2 aren't JPEGs or PNGs. Convert them to JPEGs and drop them in a new run, with their other sides.",
+      );
+      expect(runNotice(job({ rejectedEntries: 1, rejected: summary(0, 0, 1) }))?.line).toBe(
+        "10 photos made it in. 1 didn't: 1 couldn't be read. Check it opens on your end, then drop it in a new run, with its other side.",
       );
     });
     test("singular", () => {
       expect(
         runNotice(job({ totalImages: 3, rejectedEntries: 1, rejected: summary(0, 1, 0, [{ name: "x.heic", kind: "wrongFormat" }]) }))?.line,
-      ).toBe("3 photos made it in. 1 didn't: x.heic isn't a JPEG, PNG or WebP. Convert it and drop it in a new run.");
+      ).toBe("3 photos made it in. 1 didn't: \"x.heic\" isn't a JPEG or PNG. Convert it to JPEG and drop it in a new run, with its other side.");
     });
     test("mixed kinds get one clause each and a generic fix", () => {
       const line = runNotice(
         job({ rejectedEntries: 3, rejected: summary(1, 1, 1, [{ name: "a.jpg", kind: "tooBig" }, { name: "b.heic", kind: "wrongFormat" }]) }),
       )!.line;
       expect(line).toBe(
-        "10 photos made it in. 3 didn't: a.jpg is too big (over 64 MP); b.heic isn't a JPEG, PNG or WebP; 1 couldn't be read. Fix them and drop them in a new run.",
+        "10 photos made it in. 3 didn't: \"a.jpg\" is too big (over 64 megapixels or 32 MB); \"b.heic\" isn't a JPEG or PNG; 1 couldn't be read. Fix them and drop them in a new run, with their other sides.",
       );
     });
     test("an example of one kind is never named under another", () => {
       const line = runNotice(
         job({ rejectedEntries: 2, rejected: summary(1, 1, 0, [{ name: "a.jpg", kind: "tooBig" }]) }),
       )!.line;
-      expect(line).toContain("a.jpg is too big");
-      expect(line).toContain("1 isn't a JPEG, PNG or WebP");
+      expect(line).toContain('"a.jpg" is too big');
+      expect(line).toContain("1 isn't a JPEG or PNG");
     });
     test("never names more examples than the kind's count", () => {
       const line = runNotice(
         job({ rejectedEntries: 1, rejected: summary(1, 0, 0, [{ name: "a.jpg", kind: "tooBig" }, { name: "b.jpg", kind: "tooBig" }]) }),
       )!.line;
-      expect(line).toContain("a.jpg is too big");
+      expect(line).toContain('"a.jpg" is too big');
       expect(line).not.toContain("b.jpg");
     });
     test("a stream run is judged the same way once it has images", () => {

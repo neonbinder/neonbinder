@@ -14,7 +14,7 @@
 
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
-import { MemoryRouter, useLocation, useSearchParams } from "react-router";
+import { MemoryRouter, useLocation, useNavigate, useSearchParams } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PageApiContext, type PageApi } from "../pageApi";
 import { DRAWER_PARAM } from "../drawerParams";
@@ -28,6 +28,7 @@ const mocks = vi.hoisted(() => {
   const mutations = new Map<string, ReturnType<typeof vi.fn>>();
   return {
     mutations,
+    uploading: false,
     mutation(name: string) {
       let fn = mutations.get(name);
       if (!fn) {
@@ -92,7 +93,7 @@ vi.mock("../data/store", () => ({
 }));
 vi.mock("@/src/hooks/useWarmPreprocess", () => ({ useWarmPreprocess: () => undefined }));
 vi.mock("@/src/hooks/usePlaceholderUpload", () => ({
-  usePlaceholderUpload: () => ({ uploading: false, upload: mocks.upload }),
+  usePlaceholderUpload: () => ({ uploading: mocks.uploading, upload: mocks.upload }),
 }));
 vi.mock("@/src/hooks/useLeaveGuard", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/src/hooks/useLeaveGuard")>();
@@ -107,7 +108,7 @@ vi.mock("@/src/hooks/useLeaveGuard", async (importOriginal) => {
 // The real zone's held state has its own test (dropzone.test.tsx); this one
 // records what the tab hands it and stands in a control that carries it.
 vi.mock("@/app/print/placeholders/dropzone", () => ({
-  Dropzone: (p: { heldBy?: string; heldLabel?: string; onFiles: (files: File[]) => void }) => {
+  Dropzone: (p: { disabled?: boolean; heldBy?: string; heldLabel?: string; onFiles: (files: File[]) => void }) => {
     mocks.dropzone.push(p);
     return (
       <>
@@ -115,7 +116,7 @@ vi.mock("@/app/print/placeholders/dropzone", () => ({
           {p.heldBy ? p.heldLabel : "Drag your card photos here"}
         </button>
         {/* The real zone holds the file input; NEO-446 moves focus onto it. */}
-        <input type="file" aria-label="Photo files" />
+        <input type="file" aria-label="Photo files" disabled={p.disabled} />
       </>
     );
   },
@@ -971,7 +972,14 @@ describe("RealAddCardsTab while the shelf or the open run loads (NEO-416)", () =
 
 describe("NEO-446: the run's line, the zip wording and Start a new run", () => {
   function Url() {
-    return <output aria-label="Page address">{useLocation().search}</output>;
+    const navigate = useNavigate();
+    return (
+      <>
+        <output aria-label="Page address">{useLocation().search}</output>
+        <button type="button" onClick={() => navigate(-1)}>Browser back</button>
+        <button type="button" onClick={() => navigate(1)}>Browser forward</button>
+      </>
+    );
   }
   function Screen({ initial }: { initial: string }) {
     return (
@@ -1088,6 +1096,17 @@ describe("NEO-446: the run's line, the zip wording and Start a new run", () => {
       expect(lines()).toContain("Couldn't send these photos: you are over the limit.");
     });
 
+    it("a zip over the upload limit says how to split it", async () => {
+      const runId = freshRunId();
+      setRun(runId);
+      open(runId);
+      mocks.upload.mockResolvedValueOnce({ ok: false, reason: "that zip is larger than the 500MB limit", overLimitMb: 500 });
+      await drop([zip()]);
+      expect(lines()).toContain(
+        "Couldn't send that zip: it's over 500 MB. Split it into smaller zips, each card's front and back together, one per run.",
+      );
+    });
+
     it("an invalid selection (two zips) sends nothing and says nothing new", async () => {
       const runId = freshRunId();
       setRun(runId);
@@ -1117,7 +1136,7 @@ describe("NEO-446: the run's line, the zip wording and Start a new run", () => {
       });
       open(runId);
       expect(lines()).toContain(
-        "Whoa, those photos are too big! All 2 are over 64 MP. Shrink them, zip them up again, and start a new run.",
+        "Whoa, those photos are too big! All 2 are over 64 megapixels or 32 MB. Use your camera's normal setting or shrink them, zip them up again, and start a new run.",
       );
       expect(lines().some((l) => l.includes("all in"))).toBe(false);
       expect(screen.getByRole("button", { name: "Start a new run" })).toBeTruthy();
@@ -1163,9 +1182,40 @@ describe("NEO-446: the run's line, the zip wording and Start a new run", () => {
       });
       open(runId);
       expect(lines()).toContain(
-        "3 photos made it in. 1 didn't: IMG.heic isn't a JPEG, PNG or WebP. Convert it and drop it in a new run.",
+        "3 photos made it in. 1 didn't: \"IMG.heic\" isn't a JPEG or PNG. Convert it to JPEG and drop it in a new run, with its other side.",
       );
       expect(screen.getByRole("button", { name: "Start a new run" })).toBeTruthy();
+    });
+
+    it("each file name is isolated, so a right-to-left name can't reorder the line", () => {
+      const runId = runWithJob({
+        status: "succeeded",
+        totalImages: 3,
+        rejectedEntries: 2,
+        rejected: {
+          tooBig: 2,
+          wrongFormat: 0,
+          unreadable: 0,
+          examples: [
+            { name: "תמונה.jpg", kind: "tooBig" },
+            { name: "b.jpg", kind: "tooBig" },
+          ],
+        },
+      });
+      const { container } = open(runId);
+      expect(Array.from(container.querySelectorAll("bdi")).map((el) => el.textContent)).toEqual(['"תמונה.jpg"', '"b.jpg"']);
+      expect(lines()).toContain(
+        '3 photos made it in. 2 didn\'t: "תמונה.jpg", "b.jpg" are too big (over 64 megapixels or 32 MB). Shrink them and drop them in a new run, with their other sides.',
+      );
+    });
+
+    it("Start a new run is filled with nothing below it, outlined when the run has photos", () => {
+      const fill = () => screen.getByRole("button", { name: "Start a new run" }).style.getPropertyValue("--nb-fill");
+      const empty = open(runWithJob({ status: "failed", errorCode: "CANCELED", totalImages: 0 }));
+      expect(fill()).not.toBe("transparent");
+      empty.unmount();
+      open(runWithJob({ status: "failed", errorCode: "EXTRACT_UNAVAILABLE", totalImages: 4 }));
+      expect(fill()).toBe("transparent");
     });
 
     it("a file name from a zip renders as text, never as markup", () => {
@@ -1229,6 +1279,34 @@ describe("NEO-446: the run's line, the zip wording and Start a new run", () => {
       expect(url()).toBe("");
       expect(lines()).not.toContain("Sent 1 photo.");
       await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText("Photo files")));
+    });
+
+    it("with a send still going the input can't take focus, so the drop zone does", async () => {
+      const runId = runWithJob({ status: "collecting", mode: "stream" });
+      mocks.uploading = true;
+      open(runId);
+      fireEvent.click(screen.getByRole("button", { name: "New run" }));
+      await act(async () => {});
+      expect(url()).toBe("");
+      const input = screen.getByLabelText<HTMLInputElement>("Photo files");
+      expect(input.disabled).toBe(true);
+      expect(document.activeElement).toBe(input.parentElement);
+      mocks.uploading = false;
+    });
+
+    it("Back to the closed run and Forward again doesn't take focus a second time", async () => {
+      const runId = runWithJob({ status: "failed", errorCode: "CANCELED", totalImages: 0 });
+      open(runId);
+      fireEvent.click(screen.getByRole("button", { name: "Start a new run" }));
+      await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText("Photo files")));
+      fireEvent.click(screen.getByRole("button", { name: "Browser back" }));
+      await waitFor(() => expect(url()).toBe(`?run=${runId}`));
+      const forward = screen.getByRole("button", { name: "Browser forward" });
+      forward.focus();
+      fireEvent.click(forward);
+      await waitFor(() => expect(url()).toBe(""));
+      await act(async () => {});
+      expect(document.activeElement).toBe(forward);
     });
 
     it("focus is only taken when the user asked to leave a run, not on a plain visit", () => {

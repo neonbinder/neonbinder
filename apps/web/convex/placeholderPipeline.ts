@@ -2235,7 +2235,7 @@ export const getJobInternal = internalQuery({
 });
 
 /**
- * The successfully-processed images of a job, in zip order.
+ * The successfully-processed images of a job, in filename order.
  *
  * Order is not cosmetic: the scan-order fallback (`guardedAdjacencyFallback`)
  * pairs identity leftovers that sit next to each other in entry order, so

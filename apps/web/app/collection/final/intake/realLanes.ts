@@ -255,10 +255,27 @@ export function canRetryPhoto(image: Pick<IntakeImage, "status" | "retries" | "e
 
 /**
  * The photo size limit as a collector reads it. Mirrors MAX_IMAGE_PIXELS in
- * services/preprocess/app/imaging.py (65,000,000, so that real 64 MP phones at
- * 64,144,128 px pass). Change both together.
+ * services/preprocess/app/imaging.py (65,000,000, so that real 64 megapixel
+ * phones at 64,144,128 px pass). Change both together. Spelled out because a card
+ * dealer reads "MP" as Moderately Played.
  */
-const PHOTO_LIMIT = "64 MP";
+const PHOTO_LIMIT = "64 megapixels";
+
+/**
+ * What "too big" means for a zip entry, which also has a size cap: mirrors
+ * MAX_ENTRY_UNCOMPRESSED_BYTES in services/preprocess/app/jobs/zipsafe.py. Only a
+ * loose photo's failure is known to be the pixels alone.
+ */
+const ZIP_PHOTO_LIMIT = `${PHOTO_LIMIT} or 32 MB`;
+
+/** What to do with a photo that has had its tries. */
+const SEND_FRESH_LINE = "Send a fresh one.";
+
+/** Try again refused because the photo has had its tries (the tile usually says this first). */
+export const PHOTO_OUT_OF_TRIES_LINE = `Couldn't read it. ${SEND_FRESH_LINE}`;
+
+/** Try again refused because the run closed since the button was drawn. */
+export const PHOTO_RUN_CLOSED_LINE = "This run is closed. Send a fresh one in a new run.";
 
 /** A photo over the limit: on its tile, and if a stale Try again is refused for it. */
 export const PHOTO_TOO_BIG_LINE = `Too big (over ${PHOTO_LIMIT}). Shrink it and send it again.`;
@@ -270,7 +287,7 @@ export const PHOTO_TOO_BIG_LINE = `Too big (over ${PHOTO_LIMIT}). Shrink it and 
 export function failedText(image: Pick<IntakeImage, "errorCode">, retryOffered: boolean): string {
   if (image.errorCode === ENTRY_TOO_MANY_PIXELS) return PHOTO_TOO_BIG_LINE;
   const why = image.errorCode === "PHOTO_TIMED_OUT" ? "Took too long to read" : "Couldn't read it";
-  return retryOffered ? why : `${why}. Scan it again.`;
+  return retryOffered ? why : `${why}. ${SEND_FRESH_LINE}`;
 }
 
 /**
@@ -307,40 +324,58 @@ export type NoticeJob = Pick<
 
 export interface RunNotice {
   line: string;
+  /**
+   * `line` in pieces, for drawing: odd indexes are quoted file names, which go in
+   * a `<bdi>` so a right-to-left name can't reorder the sentence around it. Joined,
+   * they are exactly `line`, so no invisible character reaches the page.
+   */
+  parts: string[];
   /** Something went wrong, and the way forward is a new run: draws the warning look and "Start a new run". */
   problem: boolean;
   /** Nothing ever reached the lanes, so a row of zeros would only say something false. */
   hideWorkspace: boolean;
 }
 
-const notice = (line: string, problem = true, hideWorkspace = false): RunNotice => ({ line, problem, hideWorkspace });
+/** Marks a file name while a line is built; `notice` takes the marks back out. */
+const fileName = (name: string) => `\u2068"${name.replace(/\p{C}/gu, "")}"\u2069`;
+
+function notice(marked: string, problem = true, hideWorkspace = false): RunNotice {
+  const parts = marked.split(/\u2068([^\u2069]*)\u2069/);
+  return { line: parts.join(""), parts, problem, hideWorkspace };
+}
 
 const ALL_IN_LINE = "This run's photos are all in. To add more, start a new run.";
 const UNPACKING_LINE = "Unpacking your zip…";
 const SNAG_LINE = "Our photo reader hit a snag. That's on us. Start a new run and send them again.";
+const SNAG_WITH_PHOTOS_LINE = "Our photo reader hit a snag. That's on us. Anything below is still yours to save. Send the rest in a new run.";
 const WOULD_NOT_OPEN_LINE = "That zip wouldn't open. Zip your photos again (up to 1,000 photos, 500 MB) and start a new run.";
 const WOULD_NOT_OPEN_CODES = new Set(["ZIP_REJECTED", "EXTRACT_REJECTED", "INPUT_TOO_LARGE", "INVALID_IDENTIFIER"]);
 
-/** "IMG_1.jpg, IMG_2.jpg and 3 more", or the bare count when no name can be shown. */
+/** A zip over the upload limit, as the intake screen words it. */
+export function zipOverLimitLine(limitMb: number): string {
+  return `Couldn't send that zip: it's over ${limitMb} MB. Split it into smaller zips, each card's front and back together, one per run.`;
+}
+
+/** `"IMG_1.jpg", "IMG_2.jpg" and 3 more`, or the bare count when no name can be shown. */
 function rejectedSubject(rejected: RejectedSummary, kind: RejectionKind): string {
   const count = rejected[kind];
   const names = rejected.examples
     .filter((example) => example.kind === kind)
-    .map((example) => example.name)
+    .map((example) => fileName(example.name))
     .slice(0, count);
   if (names.length === 0) return String(count);
   const more = count - names.length;
   return more > 0 ? `${names.join(", ")} and ${more} more` : names.join(", ");
 }
 
-/** What is wrong with `count` of a kind, after their subject: "is too big (over 64 MP)". */
+/** What is wrong with `count` of a kind, after their subject: "is too big (over 64 megapixels or 32 MB)". */
 function rejectedProblem(kind: RejectionKind, count: number): string {
   const one = count === 1;
   switch (kind) {
     case "tooBig":
-      return `${one ? "is" : "are"} too big (over ${PHOTO_LIMIT})`;
+      return `${one ? "is" : "are"} too big (over ${ZIP_PHOTO_LIMIT})`;
     case "wrongFormat":
-      return one ? "isn't a JPEG, PNG or WebP" : "aren't JPEGs, PNGs or WebPs";
+      return one ? "isn't a JPEG or PNG" : "aren't JPEGs or PNGs";
     case "unreadable":
       return "couldn't be read";
   }
@@ -359,27 +394,36 @@ function rejectedClauses(rejected: RejectedSummary): string {
     .join("; ");
 }
 
+/**
+ * Where a rejected photo goes. It is one side of a card, and its partner may
+ * already be in this run, so the new run needs the other side too.
+ */
+function dropInNewRun(count: number): string {
+  return count === 1 ? "drop it in a new run, with its other side." : "drop them in a new run, with their other sides.";
+}
+
 /** What to do about entries rejected from a run that still has photos in it. */
 function rejectedFix(rejected: RejectedSummary, count: number): string {
-  const them = count === 1 ? "it" : "them";
+  const one = count === 1;
+  const them = one ? "it" : "them";
+  const drop = dropInNewRun(count);
   const kinds = kindsIn(rejected);
-  if (kinds.length !== 1) return `Fix ${them} and drop ${them} in a new run.`;
+  if (kinds.length !== 1) return `Fix ${them} and ${drop}`;
   switch (kinds[0]) {
     case "tooBig":
-      return `Shrink ${them} and drop ${them} in a new run.`;
+      return `Shrink ${them} and ${drop}`;
     case "wrongFormat":
-      return `Convert ${them} and drop ${them} in a new run.`;
+      return `Convert ${them} to ${one ? "JPEG" : "JPEGs"} and ${drop}`;
     case "unreadable":
-      return `Check ${count === 1 ? "it opens" : "they open"} on your end, then drop ${them} in a new run.`;
+      return `Check ${one ? "it opens" : "they open"} on your end, then ${drop}`;
   }
 }
 
 /** Some of the zip made it in, some didn't. */
 function someRejectedLine(job: NoticeJob): string {
   const count = job.rejectedEntries;
-  const them = count === 1 ? "it" : "them";
   const made = `${job.totalImages} photo${job.totalImages === 1 ? "" : "s"} made it in.`;
-  if (!job.rejected) return `${made} ${count} didn't. Check ${them} and drop ${them} in a new run.`;
+  if (!job.rejected) return `${made} ${count} didn't. Check ${count === 1 ? "it" : "them"} and ${dropInNewRun(count)}`;
   return `${made} ${count} didn't: ${rejectedClauses(job.rejected)}. ${rejectedFix(job.rejected, count)}`;
 }
 
@@ -397,11 +441,11 @@ function allRejectedLine(job: NoticeJob): string {
   }
   if (kinds[0] === "tooBig") {
     return one
-      ? `Whoa, that photo is too big! It's over ${PHOTO_LIMIT}. Shrink it, zip it up again, and start a new run.`
-      : `Whoa, those photos are too big! All ${count} are over ${PHOTO_LIMIT}. Shrink them, zip them up again, and start a new run.`;
+      ? `Whoa, that photo is too big! It's over ${ZIP_PHOTO_LIMIT}. Shrink it, zip it up again, and start a new run.`
+      : `Whoa, those photos are too big! All ${count} are over ${ZIP_PHOTO_LIMIT}. Use your camera's normal setting or shrink them, zip them up again, and start a new run.`;
   }
   if (kinds[0] === "wrongFormat") {
-    return `No JPEGs, PNGs or WebPs in that zip. Convert ${them}, zip ${them} up again, and start a new run.`;
+    return `No JPEGs or PNGs in that zip, and we can't read iPhone HEICs. Convert ${them} to JPEG, zip ${them} up again, and start a new run.`;
   }
   return unreadable;
 }
@@ -416,7 +460,7 @@ function failedNotice(job: NoticeJob): RunNotice {
       return failed("Your zip never landed. Send it again in a new run.");
     case "TOO_MANY_IMAGE_FAILURES": {
       if (!nothingIn) {
-        const most = "Most of these photos wouldn't read. Anything below is still yours to save. Re-shoot the rest, sharp and well lit, in a new run.";
+        const most = "Most of these photos wouldn't read. Anything below is still yours to save. Re-shoot the rest, sharp and well lit, in a new run, with their other sides.";
         return failed(
           job.rejectedEntries > 0 && job.rejected
             ? `${most} ${job.rejectedEntries} more didn't make it in: ${rejectedClauses(job.rejected)}.`
@@ -427,7 +471,9 @@ function failedNotice(job: NoticeJob): RunNotice {
       return failed(job.rejectedEntries > 0 ? allRejectedLine(job) : "No photos in that zip.");
     }
     default:
-      return failed(job.errorCode && WOULD_NOT_OPEN_CODES.has(job.errorCode) ? WOULD_NOT_OPEN_LINE : SNAG_LINE);
+      if (job.errorCode && WOULD_NOT_OPEN_CODES.has(job.errorCode)) return failed(WOULD_NOT_OPEN_LINE);
+      // Cards from this run may already be saved, and sending them all again could count them twice.
+      return failed(nothingIn ? SNAG_LINE : SNAG_WITH_PHOTOS_LINE);
   }
 }
 

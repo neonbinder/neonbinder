@@ -2281,7 +2281,7 @@ describe("public queries are scoped to the caller's own jobs", () => {
 // ---------------------------------------------------------------------------
 
 describe("listDoneImagesForPairing", () => {
-  test("returns only done rows, in zip order, with the id pairing writes back on", async () => {
+  test("returns only done rows, in filename order, with the id pairing writes back on", async () => {
     // Order is part of the algorithm's input, not a display preference: the
     // adjacency pre-pass assumes a sheet's front and back are neighbours. The
     // `_id` is what lets pairing patch the exact row it read, minutes later,

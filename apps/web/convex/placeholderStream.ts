@@ -417,8 +417,9 @@ export const retryPlaceholderImage = mutation({
     // A double click, or a photo that already came back: nothing to do.
     if (image.status !== "failed") return { retried: false, reason: "not failed" };
     // NEO-446: over the pixel ceiling. The stored bytes can only fail the same
-    // way, and each retry is paid work, so it never goes back through. Checked
-    // ahead of the cap so the answer is the real reason whatever its try count.
+    // way, before any model runs, so a retry would only spend a request and a GCS
+    // read to get the same answer. Checked ahead of the cap so the answer is the
+    // real reason whatever its try count.
     if (image.errorCode === ENTRY_TOO_MANY_PIXELS) return { retried: false, reason: "too big" };
     const retries = (image.retries ?? 0) + 1;
     if (retries > PLACEHOLDER_MAX_IMAGE_RETRIES) {

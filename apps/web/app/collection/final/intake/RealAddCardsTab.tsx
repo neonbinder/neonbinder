@@ -40,6 +40,8 @@ import {
   LEAVE_INTAKE_LINE,
   laneOf,
   PHOTO_NEWS_QUIET_MS,
+  PHOTO_OUT_OF_TRIES_LINE,
+  PHOTO_RUN_CLOSED_LINE,
   PHOTO_TOO_BIG_LINE,
   photoChanges,
   photoLine,
@@ -57,6 +59,7 @@ import {
   type PairRead,
   tileLabel,
   whyNotSave,
+  zipOverLimitLine,
 } from "./realLanes";
 import { HomeSelect, QTY_ATTR, RING, StageBadge } from "./ui";
 import { DRAWER_PARAM } from "../drawerParams";
@@ -259,19 +262,29 @@ export default function RealAddCardsTab() {
     });
 
   // Leaving a run takes the button that asked for it off the screen, so focus
-  // lands on the drop zone, which is the next thing to do, once it is drawn.
+  // lands on the drop zone, which is the next thing to do, once it is drawn. The
+  // ask waits while the URL is still on the old run ("leaving") and for the zone
+  // to draw ("arrived"). A run in the URL after arriving is a Back: the ask is over.
   const dropArea = useRef<HTMLDivElement>(null);
-  const focusDropzone = useRef(false);
+  const focusDropzone = useRef<null | "leaving" | "arrived">(null);
   const startNewRun = () => {
     setStatus("");
-    focusDropzone.current = true;
+    focusDropzone.current = "leaving";
     openRun(null);
   };
   useEffect(() => {
-    if (runParam || !focusDropzone.current) return;
-    focusDropzone.current = false;
-    dropArea.current?.querySelector<HTMLElement>('input[type="file"]')?.focus();
-  }, [runParam]);
+    if (!focusDropzone.current) return;
+    if (runParam) {
+      if (focusDropzone.current === "arrived") focusDropzone.current = null;
+      return;
+    }
+    focusDropzone.current = "arrived";
+    const area = dropArea.current;
+    if (!area) return;
+    // A disabled input (a send still going) can't take focus, so the zone itself does.
+    (area.querySelector<HTMLElement>('input[type="file"]:not(:disabled)') ?? area).focus();
+    focusDropzone.current = null;
+  }, [runParam, collecting]);
 
   // A drop while `loading` waits here, then takes the normal path below once
   // the shelf and the run are in. The latest drop wins, as a new pick does.
@@ -308,7 +321,11 @@ export default function RealAddCardsTab() {
       // seed page uploads in the exact order it is handed, backs first on purpose.
       const out = await upload(isZip ? chosen : inNaturalOrder(chosen), { source: "web", jobId: run?.jobId });
       if (!out.ok) {
-        setStatus(`${isZip ? "Couldn't send that zip" : "Couldn't send these photos"}: ${out.reason}.`);
+        setStatus(
+          out.overLimitMb !== undefined
+            ? zipOverLimitLine(out.overLimitMb)
+            : `${isZip ? "Couldn't send that zip" : "Couldn't send these photos"}: ${out.reason}.`,
+        );
         return;
       }
       setFiles([]);
@@ -441,7 +458,7 @@ export default function RealAddCardsTab() {
         </ListingGateNote>
       )}
       {collecting && (
-        <div ref={dropArea} className="space-y-4">
+        <div ref={dropArea} tabIndex={-1} className="space-y-4 outline-none">
           <Dropzone
             quiet
             files={files}
@@ -479,10 +496,11 @@ export default function RealAddCardsTab() {
           }
         >
           <p role="status" aria-live="polite" className="m-0 min-w-0 flex-1 basis-64 [overflow-wrap:anywhere]">
-            {notice?.line}
+            {notice?.parts.map((part, i) => (i % 2 === 1 ? <bdi key={i}>{part}</bdi> : part))}
           </p>
           {notice?.problem && (
-            <NeonButton size="1" variant="primary" className="max-sm:min-h-11" onClick={startNewRun}>
+            // Outlined when the run has photos: cards may be waiting on the collector here.
+            <NeonButton size="1" variant="primary" outline={!!job?.totalImages} className="max-sm:min-h-11" onClick={startNewRun}>
               Start a new run
             </NeonButton>
           )}
@@ -1035,9 +1053,9 @@ function RunWorkspace({ run, jobOpen }: { run: RunSummary; jobOpen: boolean }) {
                           inform(`Trying ${image.originalName} again.`);
                           refocusAfterRetry(image.entryIndex);
                         } else if (r.reason === "too many tries") {
-                          notify("This photo has been tried too many times. Scan it again instead.");
+                          notify(PHOTO_OUT_OF_TRIES_LINE);
                         } else if (r.reason === "closed") {
-                          notify("This run is closed. Scan the photo again to add it.");
+                          notify(PHOTO_RUN_CLOSED_LINE);
                         } else if (r.reason === "too big") {
                           notify(PHOTO_TOO_BIG_LINE);
                         }

@@ -65,6 +65,27 @@ describe("rejectionExampleName", () => {
     expect(rejectionExampleName("/")).toBeNull();
   });
 
+  test.each([
+    ["left-to-right mark", "\u200E"],
+    ["right-to-left mark", "\u200F"],
+    ["Arabic letter mark", "\u061C"],
+    ["zero width space", "\u200B"],
+    ["C1 control", "\u0085"],
+    ["byte order mark", "\uFEFF"],
+    ["tag character", "\u{E0041}"],
+    ["bidi override", "\u202E"],
+    ["first strong isolate", "\u2068"],
+    ["pop directional isolate", "\u2069"],
+  ])("is null for a name holding a %s", (_label, char) => {
+    expect(rejectionExampleName(`IMG${char}_1.jpg`)).toBeNull();
+    // In a folder too: the whole name is judged, not just what would be shown.
+    expect(rejectionExampleName(`dir${char}/IMG_1.jpg`)).toBeNull();
+  });
+
+  test("keeps a right-to-left name, which is no reason to hide it", () => {
+    expect(rejectionExampleName("תמונה.jpg")).toBe("תמונה.jpg");
+  });
+
   test("clips to 80 code points and never splits a surrogate pair", () => {
     const long = "a".repeat(200);
     expect(rejectionExampleName(long)).toHaveLength(MAX_REJECTION_EXAMPLE_CHARS);
