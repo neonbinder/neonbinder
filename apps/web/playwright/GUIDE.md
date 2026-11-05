@@ -234,7 +234,7 @@ test("<title states the feature>", { tag: ["@set-selector"] }, async ({ page, si
   summary and the attachment. Specs never import it directly.
 - `support/env.ts`: how `env` is built (`makeEnv`, `isSlPaused`); import types
   from here, do not re-derive.
-- `support/credentials.ts`: `loginToBsc(page)`, `loginToSportLots(page, env)`,
+- `support/credentials.ts`: `openBscCredentials(page)` (opens the page, no Test press; the seed uses it), `loginToBsc(page)`, `loginToSportLots(page, env)`,
   `LIVE_LOGIN`, the BSC sign-in seed pair (`removeBscSignIn`,
   `saveBscSignIn`) and eBay's (`saveEbayConnection`, `removeEbayConnection`,
   `expectEbayHookedUp`, which FAILS a spec loudly, naming the missing setup,
