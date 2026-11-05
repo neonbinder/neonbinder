@@ -5,7 +5,7 @@
  */
 
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { r2Config, signedGetUrl, signedPutUrl } from "./r2";
+import { putObject, r2Config, signedGetUrl, signedPutUrl } from "./r2";
 
 const ENV = {
   R2_ENDPOINT: "https://acct.r2.cloudflarestorage.com/",
@@ -14,7 +14,10 @@ const ENV = {
   R2_SECRET_ACCESS_KEY: "secret",
 };
 
-afterEach(() => vi.unstubAllEnvs());
+afterEach(() => {
+  vi.unstubAllEnvs();
+  vi.unstubAllGlobals();
+});
 
 describe("r2", () => {
   test("is not configured unless every variable is set", () => {
@@ -35,6 +38,30 @@ describe("r2", () => {
     );
     expect(url.searchParams.get("X-Amz-Signature")).toMatch(/^[0-9a-f]{64}$/);
     expect(url.toString()).not.toContain("secret");
+  });
+
+  test("a server-side write sends the bytes and type, signed, to the object's key", async () => {
+    for (const [k, val] of Object.entries(ENV)) vi.stubEnv(k, val);
+    const seen: Request[] = [];
+    vi.stubGlobal("fetch", (async (request: Request) => {
+      seen.push(request);
+      return new Response(null, { status: 200 });
+    }) as unknown as typeof fetch);
+    await putObject(r2Config()!, "copy-photos/abc/image.jpg", new Uint8Array([1, 2, 3]), "image/jpeg", 5_000);
+    expect(seen).toHaveLength(1);
+    expect(seen[0].method).toBe("PUT");
+    expect(seen[0].url).toBe("https://acct.r2.cloudflarestorage.com/photos/copy-photos/abc/image.jpg");
+    expect(seen[0].headers.get("content-type")).toBe("image/jpeg");
+    expect(seen[0].headers.get("authorization")).toMatch(/^AWS4-HMAC-SHA256 /);
+    expect(new Uint8Array(await seen[0].arrayBuffer())).toEqual(new Uint8Array([1, 2, 3]));
+  });
+
+  test("a refused write throws, and says only the status", async () => {
+    for (const [k, val] of Object.entries(ENV)) vi.stubEnv(k, val);
+    vi.stubGlobal("fetch", (async () => new Response("<Error>secret detail</Error>", { status: 403 })) as unknown as typeof fetch);
+    await expect(
+      putObject(r2Config()!, "copy-photos/abc/image.jpg", new Uint8Array([1]), "image/jpeg", 5_000),
+    ).rejects.toThrow(/^R2 PUT failed: 403$/);
   });
 
   test("a read URL is a signed GET", async () => {

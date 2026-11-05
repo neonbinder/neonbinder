@@ -14,10 +14,11 @@
 
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
-import { MemoryRouter, useLocation } from "react-router";
+import { MemoryRouter, useLocation, useSearchParams } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PageApiContext, type PageApi } from "../pageApi";
-import { LEAVE_INTAKE_LINE } from "./realLanes";
+import { DRAWER_PARAM } from "../drawerParams";
+import { LEAVE_INTAKE_LINE, PHOTO_NEWS_QUIET_MS } from "./realLanes";
 import RealAddCardsTab from "./RealAddCardsTab";
 import { intakeGateLine, SYNC_STATUS_LINK } from "../inventory/listing/ListingGate";
 import type { ListingGateView } from "../data/types";
@@ -79,6 +80,7 @@ vi.mock("convex/react", () => ({
     }
   },
   useMutation: (ref: string) => mocks.mutation(ref),
+  useAction: (ref: string) => mocks.mutation(ref),
 }));
 vi.mock("../data/store", () => ({
   useSide: () => mocks.data.side,
@@ -130,7 +132,8 @@ vi.mock("../../prototypes/p1/Overlay", () => ({ default: ({ children }: { childr
 
 let confirm: ReturnType<typeof vi.fn>;
 const notify = vi.fn();
-const pageApi = { notify, inform: vi.fn() } as unknown as PageApi;
+const openCard = vi.fn();
+const pageApi = { notify, openCard, inform: vi.fn() } as unknown as PageApi;
 
 let seq = 0;
 /** A fresh run per test: `doneRuns` is module state and would leak between them. */
@@ -521,6 +524,305 @@ describe("RealAddCardsTab \"See what's syncing\" after Done (NEO-370)", () => {
     await pressDone();
     expect(link()).not.toBeNull();
     await expectAccessibleInBothModes(container, { label: "Intake, after Done", rerender: () => rerender(<Tab runId={runId} />) });
+  });
+});
+
+describe("NEO-427: a Saved tile says where its photos are", () => {
+  const CARD = "#47 Le'Veon Bell";
+  const CAN_RETRY = { photos: "failed", photoFailure: "error", photoCanRetry: true };
+  const saved = (extra: Record<string, unknown>) => ({
+    _id: "match1",
+    pairId: "pair1",
+    frontIndex: 0,
+    backIndex: 1,
+    cardId: "card1",
+    card: { _id: "card1", cardNumber: "47", cardName: "Le'Veon Bell" },
+    candidates: [],
+    variations: [],
+    band: "matched",
+    reason: "numberAndPlayer",
+    confidence: 97,
+    haveHere: 1,
+    savedCopyId: "copy1",
+    savedQuantity: 1,
+    savedAt: 5,
+    ...extra,
+  });
+  const show = (extra: Record<string, unknown>) => {
+    const runId = freshRunId();
+    setRun(runId, { images: [] });
+    mocks.data.matches = [saved(extra)];
+    return { runId, ...render(<Tab runId={runId} />) };
+  };
+  const retryPhotos = () => mocks.mutation("intakePhotos.retryIntakePhotos");
+  beforeEach(() => {
+    openCard.mockClear();
+    retryPhotos().mockClear();
+  });
+
+  it("says nothing extra for a pair saved before photos came along", async () => {
+    show({});
+    await screen.findByText("Saved +1");
+    expect(screen.queryByText("Photos are in!")).toBeNull();
+    expect(screen.queryByRole("button", { name: /photos for|Add a photo/ })).toBeNull();
+  });
+
+  it("while they're on their way, then once they're in, with no control to press", async () => {
+    show({ photos: "pending" });
+    await screen.findByText("Slipping in the photos…");
+    expect(screen.queryByRole("button", { name: /Try again/ })).toBeNull();
+    cleanup();
+    show({ photos: "attached" });
+    await screen.findByText("Photos are in!");
+    expect(screen.queryByRole("button", { name: /Try again/ })).toBeNull();
+  });
+
+  it("didn't stick: Try again sends the row back, once, and focus stays on the tile", async () => {
+    const { rerender, runId } = show(CAN_RETRY);
+    await screen.findByText("Photos didn't stick.");
+    const again = screen.getByRole("button", { name: `Try again: photos for ${CARD}` });
+    again.focus();
+    fireEvent.click(again);
+    fireEvent.click(again);
+    expect(retryPhotos()).toHaveBeenCalledTimes(1);
+    expect(retryPhotos()).toHaveBeenCalledWith({ matchId: "match1" });
+    mocks.data.matches = [saved({ photos: "pending" })];
+    rerender(<Tab runId={runId} />);
+    const line = await screen.findByText("Slipping in the photos…");
+    await waitFor(() => expect(document.activeElement).toBe(line));
+  });
+
+  it("didn't stick: a refused Try again says why, and can be pressed again", async () => {
+    retryPhotos().mockImplementationOnce(() => Promise.reject(new Error("That card left your collection.")));
+    show(CAN_RETRY);
+    const again = await screen.findByRole("button", { name: `Try again: photos for ${CARD}` });
+    fireEvent.click(again);
+    await waitFor(() => expect(notify).toHaveBeenCalledWith("That card left your collection."));
+    fireEvent.click(again);
+    expect(retryPhotos()).toHaveBeenCalledTimes(2);
+  });
+
+  it("the scans aged out: no Try again, Add a photo opens that copy's form on the card", async () => {
+    show({ photos: "failed", photoFailure: "scanGone" });
+    await screen.findByText("The scans aged out.");
+    expect(screen.queryByRole("button", { name: /Try again/ })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: `Add a photo to ${CARD}` }));
+    expect(openCard).toHaveBeenCalledWith("card1", { copyId: "copy1", edit: true });
+  });
+
+  it("unusable scans, or none of the tries left: no Try again, a photo instead", async () => {
+    const { rerender, runId } = show({ photos: "failed", photoFailure: "unusable" });
+    await screen.findByText("These scans won't cut it.");
+    expect(screen.queryByRole("button", { name: /Try again/ })).toBeNull();
+    screen.getByRole("button", { name: `Add a photo to ${CARD}` });
+    mocks.data.matches = [saved({ photos: "failed", photoFailure: "error", photoCanRetry: false })];
+    rerender(<Tab runId={runId} />);
+    await screen.findByText("Photos didn't stick.");
+    expect(screen.queryByRole("button", { name: /Try again/ })).toBeNull();
+    screen.getByRole("button", { name: `Add a photo to ${CARD}` });
+  });
+
+  it("Try again reads as busy while it's in flight, without leaving the tab order", async () => {
+    let answer = () => {};
+    retryPhotos().mockImplementationOnce(() => new Promise<void>((resolve) => (answer = resolve)));
+    show(CAN_RETRY);
+    const again = await screen.findByRole("button", { name: `Try again: photos for ${CARD}` });
+    expect(again.getAttribute("aria-disabled")).toBeNull();
+    fireEvent.click(again);
+    expect(again.getAttribute("aria-disabled")).toBe("true");
+    expect((again as HTMLButtonElement).disabled).toBe(false);
+    answer();
+    await waitFor(() => expect(again.getAttribute("aria-disabled")).toBeNull());
+  });
+
+  it("Try again leaves focus alone once the collector has moved on", async () => {
+    const { rerender, runId } = show(CAN_RETRY);
+    const again = await screen.findByRole("button", { name: `Try again: photos for ${CARD}` });
+    fireEvent.click(again);
+    const elsewhere = document.createElement("button");
+    document.body.append(elsewhere);
+    elsewhere.focus();
+    mocks.data.matches = [saved({ photos: "pending" })];
+    rerender(<Tab runId={runId} />);
+    await screen.findByText("Slipping in the photos…");
+    expect(document.activeElement).toBe(elsewhere);
+    elsewhere.remove();
+  });
+
+  it("Add a photo: when the drawer's photo took the button away, closing lands on the line", async () => {
+    // A stand-in for the drawer: the URL carries it, as it does in the app.
+    function Drawer() {
+      const [, setParams] = useSearchParams();
+      const set = (open: boolean) =>
+        setParams((prev) => {
+          const next = new URLSearchParams(prev);
+          if (open) next.set(DRAWER_PARAM, "card1");
+          else next.delete(DRAWER_PARAM);
+          return next;
+        });
+      return (
+        <>
+          <button type="button" onClick={() => set(true)}>
+            Open the drawer
+          </button>
+          <button type="button" onClick={() => set(false)}>
+            Close the drawer
+          </button>
+        </>
+      );
+    }
+    const runId = freshRunId();
+    setRun(runId, { images: [] });
+    mocks.data.matches = [saved({ photos: "failed", photoFailure: "scanGone" })];
+    const tree = () => (
+      <MemoryRouter initialEntries={[`/collection/final/intake?run=${runId}`]}>
+        <PageApiContext.Provider value={pageApi}>
+          <Drawer />
+          <RealAddCardsTab />
+        </PageApiContext.Provider>
+      </MemoryRouter>
+    );
+    const { rerender } = render(tree());
+    const add = await screen.findByRole("button", { name: `Add a photo to ${CARD}` });
+    add.focus();
+    fireEvent.click(add);
+    fireEvent.click(screen.getByRole("button", { name: "Open the drawer" }));
+    mocks.data.matches = [saved({ photos: "attached" })];
+    rerender(tree());
+    await screen.findByText("Photos are in!");
+    expect(document.activeElement).toBe(document.body);
+    fireEvent.click(screen.getByRole("button", { name: "Close the drawer" }));
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByText("Photos are in!")));
+  });
+
+  describe("what the run's live line says", () => {
+    const row = (i: number, extra: Record<string, unknown>) =>
+      saved({
+        _id: `match${i}`,
+        pairId: `pair${i}`,
+        card: { _id: `card${i}`, cardNumber: String(i), cardName: "Le'Veon Bell" },
+        ...extra,
+      });
+    const news = (container: HTMLElement) =>
+      Array.from(container.querySelectorAll('[role="status"]'))
+        .map((n) => n.textContent ?? "")
+        .filter((text) => /Photos|scans/.test(text));
+    afterEach(() => vi.useRealTimers());
+    const flush = async () => {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+    };
+    const opened = async (rows: unknown[]) => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      const shown = show({});
+      mocks.data.matches = rows;
+      shown.rerender(<Tab runId={shown.runId} />);
+      await flush();
+      const heard: string[] = [];
+      return {
+        ...shown,
+        heard,
+        to: async (next: unknown[], waitMs = 0) => {
+          mocks.data.matches = next;
+          shown.rerender(<Tab runId={shown.runId} />);
+          await flush();
+          await act(async () => {
+            await vi.advanceTimersByTimeAsync(waitMs);
+          });
+          const said = news(shown.container)[0];
+          if (said !== undefined && said !== heard[heard.length - 1]) heard.push(said);
+        },
+      };
+    };
+
+    it("ten cards landing one by one come out as one line", async () => {
+      const rows = Array.from({ length: 10 }, (_, i) => row(i, { photos: "pending" }));
+      const run = await opened(rows);
+      for (let i = 0; i < 10; i++) {
+        rows[i] = row(i, { photos: "attached" });
+        await run.to([...rows], 100);
+      }
+      expect(run.heard.map((line) => line.trim())).toEqual(["Photos are in for 10 cards."]);
+    });
+
+    it("stragglers past a quiet spell get a second line, never one each", async () => {
+      const rows = Array.from({ length: 10 }, (_, i) => row(i, { photos: "pending" }));
+      const run = await opened(rows);
+      for (let i = 0; i < 10; i++) {
+        rows[i] = row(i, { photos: "attached" });
+        await run.to([...rows], i === 4 ? PHOTO_NEWS_QUIET_MS : 100);
+      }
+      expect(run.heard.map((line) => line.trim())).toEqual(["Photos are in for 5 cards.", "Photos are in for 5 cards."]);
+    });
+
+    it("a steady stream of good news can't hold back a failure", async () => {
+      const rows = Array.from({ length: 30 }, (_, i) => row(i, { photos: "pending" }));
+      const run = await opened(rows);
+      rows[0] = row(0, CAN_RETRY);
+      await run.to([...rows], 100);
+      for (let i = 1; i <= 20 && run.heard.length === 0; i++) {
+        rows[i] = row(i, { photos: "attached" });
+        await run.to([...rows], 100);
+      }
+      expect(run.heard).toHaveLength(1);
+      expect(run.heard[0]).toContain("Photos didn't stick on #0 Le'Veon Bell.");
+    });
+
+    it("fail, Try again, fail again is said both times", async () => {
+      const run = await opened([row(0, CAN_RETRY)]);
+      expect(run.heard).toEqual([]);
+      await run.to([row(0, { photos: "pending" })]);
+      await run.to([row(0, CAN_RETRY)]);
+      await run.to([row(0, { photos: "pending" })]);
+      await run.to([row(0, CAN_RETRY)]);
+      const line = "Photos didn't stick on #0 Le'Veon Bell. Try again from its tile in Saved.";
+      expect(run.heard).toHaveLength(2);
+      expect(run.heard.map((said) => said.trim())).toEqual([line, line]);
+      expect(run.heard[0]).not.toBe(run.heard[1]);
+    });
+
+    it("two identical batches are each said", async () => {
+      const pending = [row(0, { photos: "pending" }), row(1, { photos: "pending" })];
+      const run = await opened(pending);
+      const landed = [row(0, { photos: "attached" }), row(1, { photos: "attached" })];
+      await run.to(landed);
+      await run.to(pending);
+      await run.to(landed);
+      expect(run.heard.map((said) => said.trim())).toEqual(["Photos are in for 2 cards.", "Photos are in for 2 cards."]);
+    });
+  });
+
+  it("speaks a change once, and not what was already so when the run opened", async () => {
+    const { rerender, runId, container } = show({ photos: "attached" });
+    await screen.findByText("Photos are in!");
+    const said = () => Array.from(container.querySelectorAll('[role="status"]')).map((n) => n.textContent);
+    expect(said().join(" ")).not.toContain("Photos are in for");
+    mocks.data.matches = [saved(CAN_RETRY)];
+    rerender(<Tab runId={runId} />);
+    await waitFor(() =>
+      expect(said()).toContain(`Photos didn't stick on ${CARD}. Try again from its tile in Saved.`),
+    );
+  });
+
+  it("every state passes axe, light and dark", async () => {
+    const states: Array<{ photos: string; photoFailure?: string; photoCanRetry?: boolean }> = [
+      { photos: "pending" },
+      { photos: "attached" },
+      CAN_RETRY,
+      { photos: "failed", photoFailure: "error", photoCanRetry: false },
+      { photos: "failed", photoFailure: "scanGone" },
+      { photos: "failed", photoFailure: "unusable" },
+    ];
+    for (const state of states) {
+      const { container, rerender, runId } = show(state);
+      await screen.findByText("Saved +1");
+      await expectAccessibleInBothModes(container, {
+        label: `Saved tile, ${state.photos} ${state.photoFailure ?? ""} ${state.photoCanRetry ?? ""}`,
+        rerender: () => rerender(<Tab runId={runId} />),
+      });
+      cleanup();
+    }
   });
 });
 

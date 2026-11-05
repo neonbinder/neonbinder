@@ -78,6 +78,7 @@ describe("the drain reads the same rule", () => {
     quantity: 1,
     condition: "Excellent",
     creationTime: 1,
+    hasPhotos: false,
     ...extra,
   });
 

@@ -11,8 +11,9 @@ import {
   type Ref,
 } from "react";
 import { useSearchParams } from "react-router";
-import { useMutation, useQuery } from "convex/react";
+import { useAction, useMutation, useQuery } from "convex/react";
 import NeonButton from "@/components/modules/NeonButton";
+import { LiveLine, RunGlyph, type RunLineKind } from "@/components/modules/RunLedger";
 import { Input } from "@/components/primitives/Input";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
@@ -37,6 +38,13 @@ import {
   failedText,
   LEAVE_INTAKE_LINE,
   laneOf,
+  PHOTO_NEWS_QUIET_MS,
+  photoChanges,
+  photoLine,
+  photoNewsOf,
+  photoStates,
+  type PhotoChanges,
+  type PhotoStates,
   proposedCount,
   readOf,
   reasonText,
@@ -48,6 +56,7 @@ import {
   whyNotSave,
 } from "./realLanes";
 import { HomeSelect, QTY_ATTR, RING, StageBadge } from "./ui";
+import { DRAWER_PARAM } from "../drawerParams";
 import { ScannerJoin } from "./ScannerJoin";
 import "./intake.css";
 
@@ -88,9 +97,12 @@ const LocalPhotos = createContext<ReadonlyMap<string, string>>(new Map());
  * save) the same way. After "Done adding photos" on such a run, "See what's
  * syncing" links to Inventory → Sync status.
  *
- * Not yet: photos onto the saved line (NEO-377), the common price prompt
- * (NEO-378), rotate/re-crop/reject one side, and finding the set from the
- * photos when none is picked.
+ * A saved card takes its scans with it (NEO-427): the server puts the pair on
+ * the saved line after the save, and the tile says how that went (`PhotoLine`),
+ * with one polite line for what landed (`usePhotoNews`).
+ *
+ * Not yet: the common price prompt (NEO-378), rotate/re-crop/reject one side,
+ * and finding the set from the photos when none is picked.
  */
 
 export const RUN_PARAM = "run";
@@ -754,6 +766,7 @@ function RunWorkspace({ run, jobOpen }: { run: RunSummary; jobOpen: boolean }) {
   const saving = useRef(new Set<string>());
 
   const fail = (e: unknown) => notify(writeErrorMessage(e));
+  const photoLiveLine = usePhotoNews(matches);
   const canSave = (row: IntakeMatchRow) => !!row.cardId && !(row.repeatOfPairId && !row.repeatIsSecondCopy);
   const actions: RowActions = {
     save: (row, total) => {
@@ -907,6 +920,7 @@ function RunWorkspace({ run, jobOpen }: { run: RunSummary; jobOpen: boolean }) {
         <p role="status" aria-live="polite" className="sr-only">
           {loading ? "" : working > 0 ? "Working on your photos." : summary}
         </p>
+        <LiveLine text={photoLiveLine} />
         <div className="ml-auto flex flex-wrap items-center gap-3">
           {/* A scanner run (NEO-386) opens before any photo, so it closes with none. */}
           {jobOpen && (
@@ -1048,6 +1062,7 @@ function RunWorkspace({ run, jobOpen }: { run: RunSummary; jobOpen: boolean }) {
                 <span className="min-w-0">
                   <span className="block truncate font-medium text-ink-2">{cardLabel(row.card)}</span>
                   <span className="block text-neon-green-text">Saved +{row.savedQuantity ?? 1}</span>
+                  <PhotoLine row={row} />
                 </span>
               </div>
             </li>
@@ -1092,6 +1107,160 @@ function RunWorkspace({ run, jobOpen }: { run: RunSummary; jobOpen: boolean }) {
         </Overlay>
       )}
     </div>
+  );
+}
+
+/**
+ * NEO-427 — what to say out loud about the run's photos. The first read only
+ * learns where things stand, so opening a run says nothing. Rows land one by one
+ * during a "Save all", so they gather into one line: said after a quiet spell,
+ * or as soon as nothing is on its way. A failure starts a window that later
+ * rows don't push back. A live region speaks only a change, so the same words
+ * twice differ by a trailing space the ear can't hear.
+ */
+function usePhotoNews(matches: IntakeMatchRow[] | undefined): string {
+  const [news, setNews] = useState("");
+  const seen = useRef<PhotoStates | null>(null);
+  const gathered = useRef<PhotoChanges>(new Map());
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const said = useRef(0);
+  useEffect(() => {
+    if (!matches) return;
+    const before = seen.current;
+    seen.current = photoStates(matches);
+    if (!before) return;
+    gathered.current = new Map([...gathered.current, ...photoChanges(before, matches)]);
+    if (gathered.current.size === 0) return;
+    const say = () => {
+      timer.current = null;
+      const line = photoNewsOf(gathered.current);
+      gathered.current = new Map();
+      if (!line) return;
+      said.current += 1;
+      setNews(said.current % 2 === 0 ? `${line}\u00A0` : line);
+    };
+    const failing = [...gathered.current.values()].some((change) => change.kind !== "attached");
+    if (timer.current !== null && failing && matches.some((row) => row.photos === "pending")) return;
+    if (timer.current !== null) clearTimeout(timer.current);
+    if (matches.some((row) => row.photos === "pending")) timer.current = setTimeout(say, PHOTO_NEWS_QUIET_MS);
+    else say();
+  }, [matches]);
+  useEffect(
+    () => () => {
+      if (timer.current !== null) clearTimeout(timer.current);
+    },
+    [],
+  );
+  return news;
+}
+
+/** The glyph's colour: the shape says the state (`RunGlyph`), and these clear 4.5:1 on a tile in both modes. */
+const PHOTO_TONES: Record<RunLineKind, string> = {
+  waiting: "text-ink-3",
+  building: "text-neon-blue-text motion-safe:animate-spin",
+  built: "text-neon-green-text",
+  skipped: "text-ink-3",
+  blocked: "text-notice-warn-ink",
+  stopped: "text-ink-3",
+  failed: "text-notice-warn-ink",
+  unfinished: "text-notice-warn-ink",
+};
+/**
+ * A tile's only action, so a thumb gets 44px on a phone. The text still takes
+ * one line of the stack. The extra reaches up over the words above, and down
+ * only as far as the tile's own padding and border: past them it would give the
+ * lane's scrolling list something to scroll. `relative` keeps it above those words.
+ */
+const PHOTO_ACTION = `-my-1.5 block py-1.5 max-sm:relative max-sm:-mb-2 max-sm:-mt-5 max-sm:min-w-11 max-sm:pb-2 max-sm:pt-5 text-neon-blue-text underline aria-disabled:cursor-not-allowed aria-disabled:opacity-60 ${RING}`;
+
+/** Focus has nowhere to be: it fell to the page with something that unmounted. */
+const focusFell = () => !document.activeElement || document.activeElement === document.body;
+
+/**
+ * NEO-427 — a Saved tile's second word: its photos on their way, on the line,
+ * or what to do about them. Failing never touches the save above it. A press
+ * takes its own button away: Try again as the row goes back to pending, Add a
+ * photo once the drawer's photo answers it (the drawer returns focus to the
+ * button, if the button is still there). Whichever, focus that fell to the page
+ * lands on this line's own words (WCAG 2.4.3); focus that is somewhere else
+ * stays there.
+ */
+function PhotoLine({ row }: { row: IntakeMatchRow }) {
+  const { notify, openCard } = usePageApi();
+  const retryPhotos = useAction(api.intakePhotos.retryIntakePhotos);
+  const [params] = useSearchParams();
+  const words = useRef<HTMLSpanElement>(null);
+  const [retrying, setRetrying] = useState(false);
+  const pressing = useRef(false);
+  const refocus = useRef(false);
+  const addedFrom = useRef(false);
+  const failed = row.photos === "failed";
+  const drawerOpen = params.has(DRAWER_PARAM);
+  const land = () => {
+    if (focusFell()) words.current?.focus({ preventScroll: true });
+  };
+  useEffect(() => {
+    if (failed || !refocus.current) return;
+    refocus.current = false;
+    land();
+  }, [failed]);
+  useEffect(() => {
+    if (drawerOpen || !addedFrom.current) return;
+    addedFrom.current = false;
+    land();
+  }, [drawerOpen]);
+  const line = photoLine(row);
+  if (!line) return null;
+  const label = cardLabel(row.card);
+  const kind: RunLineKind = failed ? "failed" : row.photos === "pending" ? "building" : "built";
+  return (
+    <>
+      <span className={`mt-0.5 flex items-start gap-1 ${failed ? "text-notice-warn-ink" : "text-ink-2"}`}>
+        <RunGlyph kind={kind} tones={PHOTO_TONES} />
+        <span ref={words} tabIndex={-1} className={`rounded-sm ${RING}`}>
+          {line}
+        </span>
+      </span>
+      {failed && row.photoCanRetry && (
+        <button
+          type="button"
+          className={PHOTO_ACTION}
+          aria-label={`Try again: photos for ${label}`}
+          aria-disabled={retrying || undefined}
+          onClick={() => {
+            if (pressing.current) return;
+            pressing.current = true;
+            refocus.current = true;
+            setRetrying(true);
+            retryPhotos({ matchId: row._id })
+              .catch((e: unknown) => {
+                refocus.current = false;
+                notify(writeErrorMessage(e));
+              })
+              .finally(() => {
+                pressing.current = false;
+                setRetrying(false);
+              });
+          }}
+        >
+          Try again
+        </button>
+      )}
+      {failed && !row.photoCanRetry && row.cardId && (
+        <button
+          type="button"
+          className={PHOTO_ACTION}
+          aria-label={`Add a photo to ${label}`}
+          onClick={() => {
+            if (!row.cardId) return;
+            addedFrom.current = true;
+            openCard(row.cardId, { copyId: row.savedCopyId, edit: true });
+          }}
+        >
+          Add a photo
+        </button>
+      )}
+    </>
   );
 }
 

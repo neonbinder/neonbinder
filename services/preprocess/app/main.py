@@ -11,6 +11,9 @@ NEO-170:  `/extract` + `/process-entry` — stateless batch routes behind the
           routes read and write GCS at keys derived from `{user_id, job_id,
           index}` (`app.jobs.layout`) and return metadata only. Same thin-layer
           rule: this file does auth, request shape and error-code mapping.
+NEO-427:  `/process-entry` also stores the listing and thumbnail sizes of the
+          output it writes, for Convex to read when the card is saved.
+          `/derive-copy-photos` makes them on request for an entry without them.
 """
 
 from __future__ import annotations
@@ -31,6 +34,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from app import cropper
 from app.classify import ClassifyError
+from app.copy_photos import CopyPhotoTooLargeError, derive_copy_photos
 from app.cropper import (
     CROP_QUALITIES,
     CROP_QUALITY_FAST,
@@ -165,7 +169,8 @@ NOT_CONFIGURED_RETRY_AFTER_SECONDS = 30
 
 # Extensions /process-entry probes for an extracted object, most common first.
 # Exactly the set /extract can write — the values of
-# `zipsafe.EXTENSION_BY_CONTENT_TYPE`.
+# `zipsafe.EXTENSION_BY_CONTENT_TYPE`. /derive-copy-photos probes an output
+# object the same way, because /process-entry names it from the same map.
 _EXTRACTED_EXTENSIONS = ("jpg", "png", "webp")
 
 # Storage client for the batch routes. Construction is credential-free (the
@@ -826,6 +831,30 @@ class ProcessEntryResponse(BaseModel):
     baseline: BaselineOrientation | None = None
 
 
+class DeriveCopyPhotosRequest(BaseModel):
+    """Body for POST /derive-copy-photos. Same no-path rule as `ExtractRequest`."""
+
+    job_id: str = Field(description="The jobId minted by createPlaceholderUploadUrl (a UUID).")
+    user_id: str = Field(description="The Clerk subject id that owns the job.")
+    entry_index: int = Field(
+        ge=0,
+        le=zipsafe.MAX_ZIP_ENTRIES,
+        description="The entry's zip ordinal, from /extract.",
+    )
+
+
+class DeriveCopyPhotosResponse(BaseModel):
+    """Response body for POST /derive-copy-photos: both sizes, base64-encoded.
+
+    Unlike the other batch routes this one returns image bytes, because the
+    objects they become live in R2, which this service holds no key for.
+    """
+
+    image: str
+    thumb: str
+    content_type: str
+
+
 def _invalid_identifier_response(exc: InvalidJobIdentifierError) -> JSONResponse:
     return JSONResponse(
         status_code=status.HTTP_400_BAD_REQUEST,
@@ -1084,6 +1113,10 @@ def process_entry(
     cropping. The rotated winning crop is written once to its derived output
     key; on retry the first write wins and `output_written` comes back False.
 
+    The sizes a saved copy keeps are stored beside that output, made from
+    whichever bytes won. Failing to make or store them never fails the entry:
+    a save without them asks `/derive-copy-photos` instead.
+
     Failure codes: `INVALID_IDENTIFIER` (400), `ENTRY_NOT_FOUND` (404,
     terminal — /extract never wrote this ordinal), `EXTRACT_NOT_CONFIGURED`
     (503, retryable); Vision/Anthropic and unexpected storage failures surface
@@ -1100,6 +1133,60 @@ def process_entry(
         return _process_entry(request, timings)
     finally:
         timings.emit()
+
+
+def _store_copy_photo_sizes(
+    request: ProcessEntryRequest,
+    bucket: str,
+    output_ref: ObjectRef,
+    fresh_output: bytes | None,
+    timings: Timings,
+) -> None:
+    """Store the two sizes a saved copy keeps beside an entry's output. Never raises.
+
+    `fresh_output` is the output this attempt just wrote. None means an earlier
+    attempt's object stands (first write wins), so the sizes are made from that
+    object rather than this attempt's crop, which may not be the same pixels.
+    That earlier attempt can have died before its sizes landed, or stored only
+    one, so a retry fills in whatever is missing.
+
+    Outputs are write-once and nothing replaces one, so sizes made here match the
+    output they were made from. The one exception: a retry whose crop comes out in
+    another format writes a second output under another extension and leaves the
+    sizes as they were, so they show the first attempt's crop of the same scan.
+    """
+    image_ref = ObjectRef(
+        bucket=bucket,
+        name=layout.copy_photo_image_object(request.user_id, request.job_id, request.entry_index),
+    )
+    thumb_ref = ObjectRef(
+        bucket=bucket,
+        name=layout.copy_photo_thumb_object(request.user_id, request.job_id, request.entry_index),
+    )
+    try:
+        with timings.measure("copy_photos_ms"):
+            source = fresh_output
+            if source is None:
+                if (
+                    _object_store.stat(image_ref) is not None
+                    and _object_store.stat(thumb_ref) is not None
+                ):
+                    return
+                source = _object_store.download(
+                    output_ref, max_bytes=zipsafe.MAX_ENTRY_UNCOMPRESSED_BYTES
+                )
+            check_raster_size(source)
+            derived = derive_copy_photos(source)
+            for ref, data in ((image_ref, derived.image), (thumb_ref, derived.thumb)):
+                try:
+                    _object_store.create(ref, data, content_type=derived.content_type)
+                except ObjectAlreadyExistsError:
+                    pass
+    except Exception:
+        logger.exception(
+            "process_entry: no copy photo sizes for index %d, a save will derive them",
+            request.entry_index,
+        )
 
 
 def _process_entry(
@@ -1306,6 +1393,10 @@ def _process_entry(
             detail="placeholder storage unavailable",
         ) from None
 
+    _store_copy_photo_sizes(
+        request, bucket, output_ref, rotated if output_written else None, timings
+    )
+
     logger.info(
         "process_entry: index=%d source=%s rotation=%d written=%s",
         request.entry_index,
@@ -1328,4 +1419,101 @@ def _process_entry(
         cropped_source=result.source,
         dhash=dhash_hex,
         output_written=output_written,
+    )
+
+
+@app.post("/derive-copy-photos", response_model=DeriveCopyPhotosResponse)
+def derive_copy_photos_route(
+    request: DeriveCopyPhotosRequest,
+    x_internal_key: Annotated[str | None, Header()] = None,
+) -> DeriveCopyPhotosResponse | JSONResponse:
+    """Make the sizes a saved copy keeps from one entry's processed output.
+
+    The fallback for an entry without stored sizes: one processed before
+    /process-entry stored them, or whose sizes could not be made then. Reads the
+    object /process-entry wrote for this ordinal and writes nothing, so it is
+    safe to repeat. Runs on either role: there is no model involved.
+
+    Failure codes: `INVALID_IDENTIFIER` (400), `OUTPUT_NOT_FOUND` (404,
+    terminal: the bucket's lifecycle rule removed the scan, or it was never
+    processed), `OUTPUT_TOO_MANY_PIXELS` (413, terminal), `OUTPUT_UNDECODABLE`
+    and `PHOTO_TOO_LARGE` (422, terminal: the same bytes fail the same way),
+    `EXTRACT_NOT_CONFIGURED` (503, retryable); storage failures surface as 502.
+    """
+    _verify_internal_key(x_internal_key)
+
+    try:
+        layout.validate_identifiers(request.user_id, request.job_id)
+    except InvalidJobIdentifierError as exc:
+        return _invalid_identifier_response(exc)
+
+    bucket = os.environ.get(layout.BUCKET_ENV)
+    if not bucket:
+        return _not_configured_response()
+
+    try:
+        output_bytes: bytes | None = None
+        for extension in _EXTRACTED_EXTENSIONS:
+            candidate = ObjectRef(
+                bucket=bucket,
+                name=layout.output_image_object(
+                    request.user_id, request.job_id, request.entry_index, extension
+                ),
+            )
+            output_stat = _object_store.stat(candidate)
+            if output_stat is not None:
+                output_bytes = _object_store.download(
+                    candidate, max_bytes=zipsafe.MAX_ENTRY_UNCOMPRESSED_BYTES, stat=output_stat
+                )
+                break
+    except Exception:
+        logger.exception("derive_copy_photos: output read failed")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="placeholder storage unavailable",
+        ) from None
+
+    if output_bytes is None:
+        return JSONResponse(
+            status_code=status.HTTP_404_NOT_FOUND,
+            content={
+                "error_code": "OUTPUT_NOT_FOUND",
+                "detail": "no processed image at this index",
+            },
+        )
+
+    # Written by this service, but from pixels a signed POST policy never
+    # bounded; the same guard as every other first full-size decode here.
+    try:
+        check_raster_size(output_bytes)
+    except RasterTooLargeError as exc:
+        return JSONResponse(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            content={"error_code": "OUTPUT_TOO_MANY_PIXELS", "detail": str(exc)},
+        )
+
+    try:
+        derived = derive_copy_photos(output_bytes)
+    except CopyPhotoTooLargeError as exc:
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            content={"error_code": "PHOTO_TOO_LARGE", "detail": str(exc)},
+        )
+    except Exception:
+        logger.exception("derive_copy_photos: output undecodable")
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            content={"error_code": "OUTPUT_UNDECODABLE", "detail": "processed image undecodable"},
+        )
+
+    logger.info(
+        "derive_copy_photos: index=%d image_bytes=%d thumb_bytes=%d",
+        request.entry_index,
+        len(derived.image),
+        len(derived.thumb),
+    )
+    return DeriveCopyPhotosResponse(
+        image=base64.b64encode(derived.image).decode("ascii"),
+        thumb=base64.b64encode(derived.thumb).decode("ascii"),
+        content_type=derived.content_type,
     )

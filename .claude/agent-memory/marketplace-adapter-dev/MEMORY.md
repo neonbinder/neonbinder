@@ -54,3 +54,6 @@
 - [Ledger error finish settles working as failed](reference_progress_ledger_error_finish_settles_working_failed.md) — ledger.fail the earlier step, endWorking before an error finish
 - [eBay Media 500 190000 is ambiguous](reference_ebay_media_500_is_ambiguous.md) — malformed-request answer too; no upload on sandbox, items need imageUrls (25717): fixed test picture; JS doc pages
 - [Adapter retry pause is injected](reference_adapter_retry_pause_is_injected.md) — optional `pause` param threaded via DrainOptions; instant counting pause in drain tests; fake only setTimeout for the default
+- [Preprocess pytest runs without torch](reference_preprocess_pytest_runs_without_torch.md) — tests/unit and the OpenAPI snapshot run on a Mac in a plain venv minus torch/transformers/accelerate
+- [Unstub globals before real timers](reference_unstub_globals_before_real_timers.md) — stubGlobal(setTimeout) after useFakeTimers: undo it first or the fake stays and the network guard's afterAll times out
+- [New pool enqueue breaks convex-test](reference_new_pool_enqueue_breaks_convex_test.md) — every test through that mutation throws Component not registered; spy on the instance in beforeEach

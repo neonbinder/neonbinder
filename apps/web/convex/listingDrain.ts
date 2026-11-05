@@ -1029,7 +1029,7 @@ export const variantCopiesPage = internalQuery({
   },
 });
 
-/** The live photos of some copies (the oldest copy of each row that needs one). */
+/** The live photos of some copies (each row's photo copy, when the row needs one). */
 export const copyPhotosForListing = internalQuery({
   args: { ownerId: v.string(), copyIds: v.array(v.id("collectionCopies")) },
   returns: v.array(
@@ -1443,6 +1443,7 @@ async function syncVariant(
         ...(c.minPriceCents !== undefined ? { minPriceCents: c.minPriceCents } : {}),
         ...(c.acquiredOn !== undefined ? { acquiredOn: c.acquiredOn } : {}),
         creationTime: c.creationTime,
+        hasPhotos: c.hasPhotos,
       }),
     ),
     era,
@@ -1516,14 +1517,13 @@ async function syncVariant(
 
   const plan1 = planBscSheet({ sheetRows: sheet.sheet, conditionsRead: conditions, targets: fold.targets, cards });
 
-  // Seller photos for rows that still show BSC's image and whose oldest copy has one.
+  // Seller photos for rows that still show BSC's image and whose group has a copy with one.
   const photoKeys = await uploadPhotos(ctx, session, {
     ownerId,
     plan: plan1,
     targets: fold.targets,
     cards,
     sheetRows: sheet.sheet.rows,
-    copies,
     fetchPhoto: opts.fetchPhoto ?? defaultFetchPhoto,
     onStart: async () => {
       ledger.add([{ key: "photos", kind: "photos" }], "send");
@@ -1720,7 +1720,8 @@ async function readSheets(
 }
 
 /**
- * Uploads the oldest copy's photos for rows that still show BSC's own image.
+ * Uploads the photo copy's photos (the oldest copy in the row's group with
+ * any, NEO-427) for rows that still show BSC's own image.
  * Only for targets the planner did not refuse. Capped per variant; the rest
  * go on a later run. A photo NB cannot fetch is skipped silently (the row
  * lists without it).
@@ -1734,7 +1735,6 @@ async function uploadPhotos(
     targets: readonly BscTarget[];
     cards: readonly NbVariantCard[];
     sheetRows: readonly BscSheetRow[];
-    copies: readonly CopyOut[];
     fetchPhoto: (key: string, maxBytes: number) => Promise<ArrayBuffer | null>;
     /** NEO-415: awaited once, before the first upload, when any row wants a photo. */
     onStart?: () => Promise<void>;
@@ -1743,12 +1743,11 @@ async function uploadPhotos(
   const keys = new Map<string, BscPhotoKeys>();
   const refused = new Set(args.plan.problems.map((p) => p.cardId).filter((id): id is string => id !== undefined));
   const refOf = new Map(args.cards.map((c) => [c.cardId as string, c.bscRef]));
-  const withPhotos = new Set(args.copies.filter((c) => c.hasPhotos).map((c) => c.copyId as string));
   const rowsByKey = new Map<string, BscSheetRow>();
   for (const row of args.sheetRows) rowsByKey.set(photoKeyFor(row.bscCardId, row.condition), row);
   const wanted: Array<{ key: string; copyId: Id<"collectionCopies">; front: boolean; back: boolean }> = [];
   for (const t of args.targets) {
-    if (refused.has(t.cardId) || !withPhotos.has(t.oldestCopyId)) continue;
+    if (refused.has(t.cardId) || t.photoCopyId === null) continue;
     const ref = refOf.get(t.cardId);
     if (!ref) continue;
     const key = photoKeyFor(ref, t.bscCondition);
@@ -1756,7 +1755,7 @@ async function uploadPhotos(
     if (!row) continue;
     const front = rowNeedsSellerPhoto(row, "front");
     const back = rowNeedsSellerPhoto(row, "back");
-    if (front || back) wanted.push({ key, copyId: t.oldestCopyId, front, back });
+    if (front || back) wanted.push({ key, copyId: t.photoCopyId, front, back });
   }
   if (wanted.length === 0) return { ok: true, value: keys };
   await args.onStart?.();

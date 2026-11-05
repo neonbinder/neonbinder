@@ -97,6 +97,7 @@ export interface ListingCopy extends AgedCopy {
   condition?: NbCondition;
   /** The copy's own floor, integer cents. */
   minPriceCents?: number;
+  hasPhotos: boolean;
 }
 
 /** One BSC row's worth of NB stock: (NB card, BSC condition). */
@@ -108,8 +109,10 @@ export interface BscTarget {
   /** Highest floor among the folded copies; null when none has a floor. */
   priceCents: number | null;
   sku: string;
-  /** The oldest copy folded in: its box is the SKU's, its photos list. */
+  /** The oldest copy folded in: its box is the SKU's. */
   oldestCopyId: Id<"collectionCopies">;
+  /** The oldest copy folded in that has photos: they list. Null when none has any. */
+  photoCopyId: Id<"collectionCopies"> | null;
 }
 
 export interface FoldBscTargetsInput {
@@ -173,6 +176,7 @@ export function foldBscTargets(input: FoldBscTargetsInput): {
       priceCents,
       sku: buildListingSku({ cardId, bscCondition, boxId: oldest.homeId }),
       oldestCopyId: oldest.copyId,
+      photoCopyId: sorted.find((c) => c.hasPhotos)?.copyId ?? null,
     });
   }
   return { targets, problems: problems.list() };

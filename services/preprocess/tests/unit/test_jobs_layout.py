@@ -85,8 +85,25 @@ class TestKeys:
             layout.output_prefix(USER, JOB),
             layout.extracted_image_object(USER, JOB, 0, "jpg"),
             layout.output_image_object(USER, JOB, 0, "jpg"),
+            layout.copy_photo_image_object(USER, JOB, 0),
+            layout.copy_photo_thumb_object(USER, JOB, 0),
         ):
             assert key.startswith(prefix)
+
+    def test_copy_photo_keys_match_what_convex_builds(self):
+        # `placeholderCopyPhotoObject` in convex/lib/placeholderObjects.ts builds
+        # these same keys to read them back. If the two ever disagree, every save
+        # silently pays for a derive.
+        output = f"placeholders/{USER}/{JOB}/output/"
+        assert layout.copy_photo_image_object(USER, JOB, 7) == f"{output}copy-photos/image/0007.jpg"
+        assert layout.copy_photo_thumb_object(USER, JOB, 7) == f"{output}copy-photos/thumb/0007.jpg"
+
+    @pytest.mark.parametrize("payload", TRAVERSAL_PAYLOADS)
+    def test_copy_photo_keys_refuse_a_bad_user_id(self, payload):
+        with pytest.raises(InvalidJobIdentifierError):
+            layout.copy_photo_image_object(payload, JOB, 0)
+        with pytest.raises(InvalidJobIdentifierError):
+            layout.copy_photo_thumb_object(payload, JOB, 0)
 
     def test_input_object_matches_the_upload_policy_path(self):
         # convex/adapters/placeholderUploads.ts builds exactly this path when

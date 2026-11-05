@@ -50,6 +50,7 @@ import {
   cleanText,
   counted,
   detailsOf,
+  foldTargetOf,
   foldsInto,
   placeOf,
   refuse,
@@ -344,7 +345,9 @@ export async function moveOntoCatalogCard(
     const mine = foldShape(row);
     // Same rule as an add (`arrivingPocket`): a twin in the same pocketed
     // binder takes the copy into its own pocket, freeing the copy's pocket.
-    const twin = target.find(
+    const twin = await foldTargetOf(
+      ctx,
+      target,
       (t) =>
         foldsInto(foldShape(t), samePocketAs(t, row, mine)) &&
         t.quantity + row.quantity <= MAX_COPY_QUANTITY,

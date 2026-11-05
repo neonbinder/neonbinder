@@ -35,8 +35,17 @@ import { api } from "@/convex/_generated/api";
 // run's Add cards screen. `redirect` is ignored in that mode: the run id is
 // only known once the seed returns.
 //
+// NEO-427: `?savedPhotoFailure=scanGone|unusable|error` seeds a run with one
+// saved card whose scans failed to reach its copy
+// (`seedMyTestSavedPhotoFailureRun`), and lands on that run the same way.
+//
 // Only functional when VITE_CLERK_TESTING_ENABLED=true; the mutations also fail
 // closed on production Convex (no TESTING_RESET_SECRET there).
+const SAVED_PHOTO_FAILURES = ["scanGone", "unusable", "error"] as const;
+type SavedPhotoFailure = (typeof SAVED_PHOTO_FAILURES)[number];
+const isSavedPhotoFailure = (value: string): value is SavedPhotoFailure =>
+  (SAVED_PHOTO_FAILURES as readonly string[]).includes(value);
+
 function TestingSeedPlaceholderRunContent() {
   const { isAuthenticated, isLoading } = useConvexAuth();
   const resetSessions = useMutation(
@@ -44,10 +53,12 @@ function TestingSeedPlaceholderRunContent() {
   );
   const seedRun = useMutation(api.testing.seedMyTestPlaceholderStream);
   const seedFailedPhoto = useMutation(api.testing.seedMyTestFailedPhotoRun);
+  const seedSavedPhotoFailure = useMutation(api.testing.seedMyTestSavedPhotoFailureRun);
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const redirect = searchParams.get("redirect") || "/pipeline-runs";
   const failedPhoto = searchParams.get("failedPhoto") === "1";
+  const savedPhotoFailure = searchParams.get("savedPhotoFailure");
   const [status, setStatus] = useState("Initializing...");
   const ranRef = useRef(false);
 
@@ -70,6 +81,9 @@ function TestingSeedPlaceholderRunContent() {
 
     (async () => {
       try {
+        if (savedPhotoFailure !== null && !isSavedPhotoFailure(savedPhotoFailure)) {
+          throw new Error(`savedPhotoFailure must be one of ${SAVED_PHOTO_FAILURES.join(", ")}`);
+        }
         // FIRST: free any active slot this worker account is still holding, so
         // the seed below cannot hit the 2-active cap. Unconditional — see the
         // "RESET FIRST" note above.
@@ -84,6 +98,12 @@ function TestingSeedPlaceholderRunContent() {
           navigate(`/collection?tab=add&run=${encodeURIComponent(seeded.runId)}`);
           return;
         }
+        if (savedPhotoFailure !== null) {
+          const seeded = await seedSavedPhotoFailure({ photoFailure: savedPhotoFailure });
+          setStatus(`Seeded ${savedPhotoFailure} — redirecting...`);
+          navigate(`/collection?tab=add&run=${encodeURIComponent(seeded.runId)}`);
+          return;
+        }
         const result = await seedRun();
         setStatus(`Seeded ${result.jobId.slice(0, 8)} — redirecting...`);
         navigate(redirect);
@@ -92,7 +112,18 @@ function TestingSeedPlaceholderRunContent() {
         setStatus(`Error: ${msg}`);
       }
     })();
-  }, [failedPhoto, isAuthenticated, isLoading, navigate, redirect, resetSessions, seedFailedPhoto, seedRun]);
+  }, [
+    failedPhoto,
+    isAuthenticated,
+    isLoading,
+    navigate,
+    redirect,
+    resetSessions,
+    savedPhotoFailure,
+    seedFailedPhoto,
+    seedRun,
+    seedSavedPhotoFailure,
+  ]);
 
   return (
     <div className="flex items-center justify-center min-h-screen bg-surface">
