@@ -76,6 +76,7 @@ import { addPlayerByHand, expectPlayersLoaded, PLAYERS_MATCHES, playersCounter }
 import {
   answerPlayerAsNew,
   advanceToSave,
+  awaitLookupsSettled,
   confirmSaveButton,
   expectStepLeft,
   openDecidedList,
@@ -140,13 +141,27 @@ async function skipUntilRow(page: Page, name: string): Promise<void> {
     name: /^Skip .* — (not a person|not a team|this team has no league)$/,
     disabled: false,
   });
-  for (let i = 0; i < 80; i++) {
-    await expect(anySkip.first(), `the wizard never presented ${name}`).toBeVisible();
+  // A name whose lookup is pending is not presented, so while "N still looking
+  // up" is up the wizard can have no usable skip at all (a step's skip also
+  // stays aria-disabled while its own lookup runs). That is a wait, not a step.
+  const looking = wizard.getByText(/still looking up/);
+  let skipped = 0;
+  // Runaway guard: 80 skips, and at most as many lookup waits (each wait ends
+  // only when the lookups landed, so a stuck pool fails inside the helper).
+  for (let attempt = 0; attempt < 160 && skipped < 80; attempt++) {
+    await expect(anySkip.first().or(looking).first(), `the wizard never presented ${name}`).toBeVisible();
+    if (!(await anySkip.first().isVisible())) {
+      // Only the waiting line answered. It can clear before the next look; the
+      // re-check at the top then needs a skip within 7 s, or fails by name.
+      await awaitLookupsSettled(page);
+      continue;
+    }
     if (await target.isVisible()) return;
     // The step's own skip names it, so its going away means the step moved on.
     const label = (await anySkip.first().getAttribute("aria-label")) ?? "";
     await anySkip.first().click();
     await expect(wizard.getByRole("button", { name: label, exact: true })).toBeHidden();
+    skipped++;
   }
   await expect(target, `${name} was not within 80 steps of the wizard's start`).toBeVisible();
 }
@@ -380,6 +395,11 @@ test(
     // ── PHASE 3: THIRD. The Hall of Fame tie-break, and a team LINKED from its step ──
     await drillToSet(page, env, TARGET);
     await fetchInsertToWizard(page, env, THIRD, { reconcile: false });
+    // A name whose lookup is pending is not presented (a pending team is never a
+    // step), and the footer holding Back mounts only for a presented step. So the
+    // step after Morgan's re-link, and its Back, exist only once the batch's
+    // lookups have landed: under load they queue behind other shards' batches.
+    await awaitLookupsSettled(page);
     const hofDecided = await openDecidedList(page);
     const decidedRow = (who: string) => hofDecided.getByRole("listitem").filter({ has: page.getByText(who, { exact: true }) });
     for (const who of [GIBSON, MORGAN]) {

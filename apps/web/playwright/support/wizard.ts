@@ -472,6 +472,22 @@ export async function answerStepAsNew(
 }
 
 /**
+ * Wait for the batch's name lookups to land: the footer's "N still looking up —
+ * wait or skip" is gone. A row whose lookup is pending is not presented (a
+ * pending team is never a step), so until this returns the walk can have no
+ * step, no Back and no skip to offer. The lookups run in a deployment-wide
+ * pool shared with every other shard, so under load the wait is real: the
+ * batch-lookups ceiling (`LOOKUPS`), the same one `walkToPlayerRow` waits at.
+ *
+ * Contract: ENTRY the wizard is open. EXIT no "still looking up" line is on
+ * screen. A negative alone passes on a dead page (GUIDE R2), so the caller
+ * follows it with the positive assert for where it expects to be.
+ */
+export async function awaitLookupsSettled(page: Page): Promise<void> {
+  await expect(reviewWizard(page).getByText(/still looking up/)).toBeHidden({ timeout: LOOKUPS });
+}
+
+/**
  * util-wizard-walk-to-player-row(-creating-teams).yaml: move the wizard past
  * every team/league step to the first player row. `creatingTeams: false`
  * skips each team/league step (a skip creates nothing); `true` adds each as
@@ -506,7 +522,7 @@ export async function walkToPlayerRow(
   // A pass over the team/league steps; run twice because the lookups of the
   // rows behind them settle only once the earlier steps are decided.
   for (let pass = 0; pass < 2; pass++) {
-    await expect(wizard.getByText(/still looking up/)).toBeHidden({ timeout: LOOKUPS });
+    await awaitLookupsSettled(page);
     for (let i = 0; i < 200; i++) {
       await expect(person.or(stepSkip)).toBeVisible({ timeout: LOOKUPS });
       if (await person.isVisible()) break;
