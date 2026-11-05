@@ -76,6 +76,19 @@
 //      set reads 0 listed, with the two cards taken to 0 and nothing held back.
 //      The Sales tab names eBay (its orders link and its empty state; Back
 //      returns).
+//   6b. NEO-432: a Sync pressed soon after another still runs the changes
+//      queued since (the cron is 15 minutes away). They put the two photoless
+//      copies to 0 in the in-person box (Sync status queues both cards), press
+//      Sync, and the press answers "Syncing ... now" and the queue empties.
+//      Whether this press, or step 6's, meets a recent press depends on whether
+//      the cron had already made the set's sync record before step 5's press
+//      (a press stamps only an existing record), so ONE of the two always
+//      does: step 6 when step 5's press stamped and the flip came within the
+//      minute, this one (the take-down's press stamped, and the writes came
+//      within the minute) when it did not. The old code answered "just
+//      synced. Give it a minute" to that press and ran nothing, so either
+//      toast goes red on it. The unit tests pin the branch itself
+//      (`listingSync.test.ts`); this proves it live, in what a collector reads.
 //   7. They tidy up (cards out of the box: the photoless one by its quantity,
 //      the two with a photo through the card drawer's Remove, since a quick
 //      count never changes a copy with a photo (NEO-377); the scan run closed
@@ -875,6 +888,37 @@ test(
     await expect(page).toHaveURL(/[?&]tab=checklists/);
     // The copies with no photo: a quick count to 0 (the first card's plain copy, the third card).
     await emptyBoxCards(page, TOPPS_1988, boxName, [a, c], isMobile, "reopened");
+
+    // --- 6b. NEO-432: a Sync soon after the last one still runs the queued changes ----------------
+    // The two writes above landed after step 6's drain finished (its result
+    // line was read), so they are changes newer than the last finished drain:
+    // Sync status queues both cards (the proof a row waits; the box is
+    // in-person, and any box write queues its card).
+    await tabs.getByRole("link", { name: "Sync status", exact: true }).click();
+    await expect(page).toHaveURL(/[?&]tab=sync/);
+    const queuedCards = platform.getByRole("list", { name: /^Queued for the next sync/ }).getByRole("listitem");
+    for (const short of [a, c]) {
+      const number = escapeRegExp(short.split(" ")[0]);
+      await expect(queuedCards.filter({ hasText: new RegExp(`^${number} .* in ${escapeRegExp(SET_LABEL)}`) })).toHaveCount(1);
+    }
+    // The press: taken, not told to wait (the old code said "Give it a minute"
+    // whenever the set's record held a press from the last minute).
+    await tabs.getByRole("link", { name: "Checklists", exact: true }).click();
+    await expect(page).toHaveURL(/[?&]tab=checklists/);
+    await expect(checklist.getByRole("heading", { level: 3, name: TITLE })).toBeVisible();
+    await sync.click();
+    await expect(said(`Syncing ${TITLE} now. Watch it on Sync status.`)).toBeVisible();
+    await expect(seeSyncing).toBeVisible();
+    await seeSyncing.click();
+    await expect(page).toHaveURL(/[?&]tab=sync/);
+    // The queue empties, and only then is nothing under way: the run that took
+    // the rows is over before step 7 goes on (its writes and the disconnect
+    // would otherwise land in the middle of it).
+    await expect(platform.getByText(/^Nothing waiting\./)).toBeVisible();
+    await expect(platform.getByText(/^Nothing syncing right now\./)).toBeVisible();
+    await tabs.getByRole("link", { name: "Checklists", exact: true }).click();
+    await expect(page).toHaveURL(/[?&]tab=checklists/);
+    await expect(checklist.getByRole("heading", { level: 3, name: TITLE })).toBeVisible();
     // The two cards' photo copies: a quick count can't take them out (see step 5), so
     // each goes the way a collector removes a copy, from the card's drawer,
     // the same drawer that added its photo.

@@ -174,13 +174,27 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-async function world(opts: { saved?: boolean; photos?: "pending" | "failed" } = {}) {
+async function world(
+  opts: { saved?: boolean; photos?: "pending" | "failed"; box?: "listed" | "inPerson" } = {},
+) {
   const t = convexTest(schema, modules);
   const fx = await seedCollectionCatalog(t);
   const me = t.withIdentity({ subject: OWNER });
+  // Default: the account's default home (a binder). `box` puts the copy in a box instead.
+  const boxId = opts.box
+    ? await t.run((ctx) =>
+        ctx.db.insert("collectionContainers", {
+          ownerId: OWNER,
+          kind: "box",
+          name: "For sale",
+          ...(opts.box === "inPerson" ? { listedOnMarketplaces: false } : {}),
+          lastUpdated: 0,
+        }),
+      )
+    : undefined;
   const { copyId } = await me.mutation(api.collection.addLineItem, {
     cardId: fx.gooden1,
-    details: { quantity: 1 },
+    details: { quantity: 1, ...(boxId ? { homeId: boxId } : {}) },
   });
   const matchId = await t.run(async (ctx) => {
     const copy = await ctx.db.get(copyId);
@@ -956,17 +970,44 @@ describe("attachIntakePhotos runs its sides together", () => {
     expect((await w.row())?.photos).toBe("attached");
   });
 
+  const startListing = (w: Awaited<ReturnType<typeof world>>) =>
+    w.t.run((ctx) =>
+      ctx.db.insert("marketplaceListingStates", { ownerId: OWNER, platform: "bsc", listingStartedAt: 1, lastUpdated: 0 }),
+    );
+
   test("both sides landing together queue the card's listing once, on one outbox row", async () => {
     storeSizes(FRONT);
     storeSizes(BACK);
-    const w = await world({ photos: "pending" });
-    await w.t.run((ctx) =>
-      ctx.db.insert("marketplaceListingStates", { ownerId: OWNER, platform: "bsc", listingStartedAt: 1, lastUpdated: 0 }),
-    );
+    const w = await world({ photos: "pending", box: "listed" });
+    await startListing(w);
     await w.attach();
     const outbox = await w.t.run((ctx) => ctx.db.query("listingOutbox").collect());
     expect(outbox).toHaveLength(1);
     expect(outbox[0]).toMatchObject({ ownerId: OWNER, platform: "bsc", cardId: (await w.copy())?.cardId, seq: 2 });
+  });
+
+  test("both sides landing on a copy in a binder attach the photos and queue nothing", async () => {
+    storeSizes(FRONT);
+    storeSizes(BACK);
+    const w = await world({ photos: "pending" });
+    await startListing(w);
+    await w.attach();
+    expect((await w.row())?.photos).toBe("attached");
+    expect((await w.photos()).map((r) => [r.side, r.status])).toEqual([
+      ["back", "live"],
+      ["front", "live"],
+    ]);
+    expect(await w.t.run((ctx) => ctx.db.query("listingOutbox").collect())).toEqual([]);
+  });
+
+  test("both sides landing on a copy in an in-person box attach the photos and queue nothing", async () => {
+    storeSizes(FRONT);
+    storeSizes(BACK);
+    const w = await world({ photos: "pending", box: "inPerson" });
+    await startListing(w);
+    await w.attach();
+    expect((await w.row())?.photos).toBe("attached");
+    expect(await w.t.run((ctx) => ctx.db.query("listingOutbox").collect())).toEqual([]);
   });
 
   test.each(["front", "back"] as const)("the %s's PUT failing still attaches the other side", async (failing) => {
