@@ -1,5 +1,6 @@
 import {
   memo,
+  useContext,
   useEffect,
   useId,
   useLayoutEffect,
@@ -16,6 +17,7 @@ import { activateOnEnter } from "@/lib/dom/activate-on-enter";
 import { useComboboxHighlight } from "@/src/hooks/useComboboxHighlight";
 import { scrollRowIntoList } from "./list-scroll";
 import { siblingTwinSuffixes } from "./marketplace-item-label";
+import { ColumnSyncFailedContext } from "./column-sync-failed";
 
 export type SelectorItem = { _id: string; [key: string]: unknown };
 
@@ -264,6 +266,7 @@ function EntitySelector({
   emptyText: emptyTextProp,
 }: EntitySelectorProps) {
   const items = useQuery(query, queryArgs);
+  const syncFailed = useContext(ColumnSyncFailedContext);
   const [searchFilter, setSearchFilter] = useState("");
 
   // NEO-224 — the column is a COMBOBOX: one search box that keeps DOM focus,
@@ -657,12 +660,20 @@ function EntitySelector({
   // The empty-state line. With pinned entries the listbox still renders (the
   // view is always a choice), and this line sits UNDER it — outside the
   // listbox, so the listbox's children stay options and nothing else — where
-  // a column with no data rows still says so. Same two strings as before:
-  // the cold-drill utils wait on the second one.
+  // a column with no data rows still says so. Same two strings as before; the
+  // E2E drill helpers read both (playwright/support/set-builder.ts).
+  //
+  // NEO-445: no line at all when the column's sync failed. "No years available"
+  // reads as an answer from the marketplaces when nobody got one, and it sat
+  // above the error, pushing it off a short screen. `EntityColumn` draws the
+  // error and its Sync button under this card. "No matches found" stays: it
+  // answers what was typed, which is still true, and the search box still works.
   const emptyText = searchFilter
     ? "No matches found"
-    : (emptyTextProp ??
-      `No ${title.toLowerCase()} available. Sync from marketplaces to populate.`);
+    : syncFailed
+      ? null
+      : (emptyTextProp ??
+        `No ${title.toLowerCase()} available. Sync from marketplaces to populate.`);
 
   // ONE return for the loading and the loaded column, so the search box is the
   // SAME element across the moment `items` lands. Focus the cascade put in it
@@ -792,11 +803,13 @@ function EntitySelector({
         // (see there), so the combobox's `aria-controls` names the popup.
         <>
           {rows.length === 0 ? (
-            <div className="space-y-2 max-h-[400px] overflow-y-auto">
-              <div className="text-sm text-ink-3 py-2">
-                {emptyText}
+            emptyText && (
+              <div className="space-y-2 max-h-[400px] overflow-y-auto">
+                <div className="text-sm text-ink-3 py-2">
+                  {emptyText}
+                </div>
               </div>
-            </div>
+            )
           ) : (
             <div
               ref={listRef}
@@ -905,7 +918,7 @@ function EntitySelector({
           )}
         </>
       )}
-      {!loading && rows.length > 0 && filteredItems.length === 0 && (
+      {!loading && emptyText && rows.length > 0 && filteredItems.length === 0 && (
         // Pinned entries only: the view is listed, the data rows are not.
         <div className="text-sm text-ink-3 py-2">
           {emptyText}

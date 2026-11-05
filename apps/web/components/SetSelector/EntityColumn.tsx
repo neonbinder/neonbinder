@@ -37,6 +37,7 @@ import {
   VARIANT_TYPE_RENAME_REFUSED,
 } from "../../convex/variantRole";
 import { siblingTwinSuffixes } from "./marketplace-item-label";
+import { ColumnSyncFailedContext } from "./column-sync-failed";
 
 type Level =
   | "sport"
@@ -1700,6 +1701,10 @@ export default function EntityColumn({
     };
     return (
       <>
+        {/* NEO-445: the retry is the "Sync <X>" button in the row below, which
+            forces the same sync. The selector drops its empty line meanwhile
+            (`ColumnSyncFailedContext`), so this is the only thing the column
+            says about a failed sync. */}
         {syncStatus?.status === "error" && (
           <div className="p-3 mb-1 bg-notice-danger-bg border border-notice-danger-rule rounded-md text-notice-danger-ink text-sm">
             {syncStatus.message || "Couldn't sync options."}
@@ -1748,7 +1753,9 @@ export default function EntityColumn({
       tabIndex={-1}
       className="min-w-[260px] max-w-[min(340px,calc(100vw-80px))] flex-shrink-0 flex flex-col gap-4 focus:outline-none"
     >
-      {selector}
+      <ColumnSyncFailedContext.Provider value={syncStatus?.status === "error"}>
+        {selector}
+      </ColumnSyncFailedContext.Provider>
       {useEnsureSync
         ? newPathContent()
         : mode === "sync"
