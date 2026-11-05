@@ -225,6 +225,38 @@ export async function noteIntakePairsChanged(
   await queueSync(ctx, run);
 }
 
+/** A row the collector has answered: a copy stands on it, or a decision does. */
+const answeredByCollector = (row: Doc<"intakeMatches">) => row.savedAt !== undefined || row.setAside === true;
+
+/** NEO-446: the job's pairs a run has saved or set aside, which pairing must leave as they are. */
+export async function pairIdsHeldByIntake(
+  ctx: QueryCtx,
+  jobId: string,
+): Promise<Set<Id<"placeholderPairs">>> {
+  const run = await ctx.db
+    .query("intakeRuns")
+    .withIndex("by_job", (q) => q.eq("jobId", jobId))
+    .first();
+  if (!run) return new Set();
+  const rows = await ctx.db
+    .query("intakeMatches")
+    .withIndex("by_run", (q) => q.eq("runId", run._id))
+    .collect();
+  return new Set(rows.filter(answeredByCollector).map((row) => row.pairId));
+}
+
+/** The same question for one pair, asked inside a pairing write. */
+export async function pairIsHeldByIntake(
+  ctx: QueryCtx,
+  pairId: Id<"placeholderPairs">,
+): Promise<boolean> {
+  const row = await ctx.db
+    .query("intakeMatches")
+    .withIndex("by_pair", (q) => q.eq("pairId", pairId))
+    .first();
+  return row !== null && answeredByCollector(row);
+}
+
 /**
  * NEO-370 — a placeholder job reached a terminal status (succeeded, failed
  * or cancelled). A run whose pairs were all answered before the job finished
@@ -1078,7 +1110,7 @@ async function imagePlayers(
 }
 
 /**
- * Bring the run's match rows in line with the job's pairs: drop rows whose
+ * Bring the run's match rows in line with the job's pairs: drop unsaved rows whose
  * pair is gone, match new pairs and pairs that read differently (never one
  * the collector picked), then flag repeats. At most `INTAKE_MATCH_CHUNK`
  * pairs are matched per call; the rest re-queue.
@@ -1103,7 +1135,10 @@ export const syncIntakeMatches = internalMutation({
     const pairIds = new Set(pairs.map((p) => p._id));
     let removed = 0;
     for (const row of rows) {
-      if (!pairIds.has(row.pairId)) {
+      // NEO-446: never a saved row. It is the run's only record of the copy it
+      // made, and pairing no longer takes such a pair away, so its pair being gone
+      // means someone split it on purpose (`unpairPlaceholderImages` doesn't refuse).
+      if (!pairIds.has(row.pairId) && row.savedAt === undefined) {
         await ctx.db.delete(row._id);
         removed += 1;
       }

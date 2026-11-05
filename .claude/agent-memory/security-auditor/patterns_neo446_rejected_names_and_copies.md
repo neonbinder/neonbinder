@@ -33,3 +33,15 @@ from an owner-scoped public query. Reusable checks:
 
 Related: [[patterns-neo149-zip-ingest]], [[patterns-neo170-workpool-pipeline]],
 [[patterns-preprocess-service]].
+
+## Loose photo set-aside (re-audit)
+
+- **Check-then-write across two transactions holds only if each side reads what
+  the other writes.** `setIntakePhotoAside` reads the job's pairs and patches the
+  image. `applyPairDiffImpl` reads the image and inserts a pair. Convex OCC then
+  serialises them. Stale `pairStatus` stamps are safe because the stamp re-reads
+  the pairs table.
+- **A saved answer is not a pair lock.** `isLockedPair` covers only `manual` and
+  `exact`, and the match sync deletes a row whose pair is gone, saved or not. Any
+  new `force` re-pair door can therefore undo a saved fuzzy or side-only pair, so
+  check what a forced run can delete, not only what it can insert.

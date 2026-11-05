@@ -69,7 +69,7 @@ import { v } from "convex/values";
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { pairBatch } from "./lib/pairing/pairBatch";
-import { noteIntakePairsChanged } from "./intakeRuns";
+import { noteIntakePairsChanged, pairIdsHeldByIntake, pairIsHeldByIntake } from "./intakeRuns";
 import { playerNamesMatch, teamNamesMatch } from "./lib/pairing/names";
 import { orientPair } from "./lib/pairing/pool";
 import type {
@@ -503,6 +503,8 @@ export type StoredPairRow = {
   score: number;
   /** Absent on pairs stored before NEO-327. */
   orientedBy?: OrientRule;
+  /** NEO-446: an intake run has this pair saved or set aside (`isLockedPair`). */
+  heldByMatch?: boolean;
 };
 
 /** One new pair in the shape `applyPairDiff` inserts — carries NO image ids. */
@@ -599,6 +601,13 @@ export type PairingDiff = {
  *  - `exact`   the identities agreed outright — a certainty, not a guess —
  *              AND both halves are still done rows (see below).
  *
+ *  - `heldByMatch`  NEO-446: the collector saved this pair on an intake run, or
+ *              set it aside. A copy now stands on it, or an answer does, so no
+ *              later pass may take it apart whatever its confidence. Saving used
+ *              to leave a side-only pair fluid: a pass that liked another partner
+ *              deleted it, the sync dropped the saved row with it, and the same
+ *              card could be saved twice.
+ *
  * Everything else (`fuzzy`, `side-only`) stays fluid and is surfaced to the
  * user as a POTENTIAL match, because those are exactly the ones a later image
  * can legitimately improve.
@@ -609,11 +618,12 @@ export function isLockedPair(
     confidence: string;
     frontIndex: number;
     backIndex: number;
+    heldByMatch?: boolean;
   },
   doneIndexes: ReadonlySet<number>,
 ): boolean {
   // A user's decision outranks the matcher unconditionally, at any point.
-  if (pair.mechanism === "manual") return true;
+  if (pair.mechanism === "manual" || pair.heldByMatch) return true;
   if (pair.confidence !== "exact") return false;
 
   // MATCH ONCE AND MOVE ON — immediately, not once the batch is finished.
@@ -1475,6 +1485,7 @@ export const listPairsForDiff = internalQuery({
       // The diff compares it, so a pair whose front was chosen by a different
       // rule is revised (NEO-327).
       orientedBy: v.optional(orientedByValidator),
+      heldByMatch: v.optional(v.boolean()),
     }),
   ),
   handler: async (ctx, args) => {
@@ -1482,6 +1493,7 @@ export const listPairsForDiff = internalQuery({
       .query("placeholderPairs")
       .withIndex("by_job", (q) => q.eq("jobId", args.jobId))
       .collect();
+    const held = await pairIdsHeldByIntake(ctx, args.jobId);
     return pairs.map((p) => ({
       _id: p._id,
       frontIndex: p.frontIndex,
@@ -1493,6 +1505,7 @@ export const listPairsForDiff = internalQuery({
       mechanism: p.mechanism,
       score: p.score,
       orientedBy: p.orientedBy,
+      heldByMatch: held.has(p._id) || undefined,
     }));
   },
 });
@@ -1686,10 +1699,13 @@ export async function applyPairDiffImpl(
   inserted: number;
   skipped: PairKey[];
 }> {
+  // NEO-446: `isLockedPair` decided on what the run read earlier. A save or a
+  // set-aside since then is caught here, inside the write, where the two conflict.
   let deleted = 0;
   for (const pairId of args.deleteIds) {
     const pair = await ctx.db.get(pairId);
     if (!pair || pair.jobId !== jobId) continue;
+    if (await pairIsHeldByIntake(ctx, pair._id)) continue;
     await ctx.db.delete(pair._id);
     deleted += 1;
   }
@@ -1698,6 +1714,7 @@ export async function applyPairDiffImpl(
   for (const patch of args.patches) {
     const pair = await ctx.db.get(patch.pairId);
     if (!pair || pair.jobId !== jobId) continue;
+    if (await pairIsHeldByIntake(ctx, pair._id)) continue;
     await ctx.db.patch(pair._id, {
       player: patch.player,
       team: patch.team,
@@ -1909,7 +1926,9 @@ export async function finalizePairingInline(
     .query("placeholderPairs")
     .withIndex("by_job", (q) => q.eq("jobId", job.jobId))
     .collect();
+  const held = await pairIdsHeldByIntake(ctx, job.jobId);
   const stored: StoredPairRow[] = storedPairs.map((p) => ({
+    heldByMatch: held.has(p._id) || undefined,
     _id: p._id,
     frontIndex: p.frontIndex,
     backIndex: p.backIndex,

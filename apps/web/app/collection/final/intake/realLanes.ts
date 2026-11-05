@@ -295,6 +295,9 @@ export const PHOTO_OUT_OF_TRIES_LINE = `Couldn't read it. ${SEND_FRESH_LINE}`;
 /** Try again refused because the run closed since the button was drawn. */
 export const PHOTO_RUN_CLOSED_LINE = "This run is closed. Send a fresh one in a new run.";
 
+/** Try again refused because the photo was set aside since the button was drawn. */
+export const PHOTO_SET_ASIDE_LINE = "That photo was set aside. Bring it back to pair it.";
+
 /** A photo over the limit: on its tile, and if a stale Try again is refused for it. */
 export const PHOTO_TOO_BIG_LINE = `Too big (over ${PHOTO_LIMIT}). Shrink it and send it again.`;
 

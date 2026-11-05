@@ -1057,6 +1057,118 @@ describe("NEO-446: setting a loose photo aside", () => {
     expect(confirm).not.toHaveBeenCalled();
   });
 
+  it("Set aside on a failed tile reads the failure reason; on a read photo there's none to read", () => {
+    openWith([photo(0), tooBig(1)]);
+    const failed = screen.getByRole("button", { name: "Set aside scan-1.jpg" });
+    expect(failed.getAttribute("aria-describedby")).toBe("loose-why-1");
+    expect(document.getElementById("loose-why-1")?.textContent).toMatch(/Too big/);
+    expect(screen.getByRole("button", { name: "Set aside scan-0.jpg" }).getAttribute("aria-describedby")).toBeNull();
+  });
+
+  describe("Try again's name", () => {
+    const unread = (entryIndex: number, originalName: string) => ({
+      entryIndex,
+      originalName,
+      status: "failed",
+      errorCode: "PHOTO_TIMED_OUT",
+      retries: 0,
+    });
+    const retryMutation = () => mocks.mutation("placeholderStream.retryPlaceholderImage");
+
+    it("keeps the plain file name when only one photo has it", async () => {
+      retryMutation().mockResolvedValueOnce({ retried: true });
+      openWith([unread(0, "a.jpg"), unread(1, "b.jpg")]);
+      fireEvent.click(screen.getByRole("button", { name: "Try again: b.jpg" }));
+      await waitFor(() => expect(pageApi.inform).toHaveBeenCalledWith("Trying b.jpg again."));
+    });
+
+    it("a press from a stale tab on a photo set aside since says so", async () => {
+      retryMutation().mockResolvedValueOnce({ retried: false, reason: "set aside" });
+      openWith([unread(0, "a.jpg")]);
+      fireEvent.click(screen.getByRole("button", { name: "Try again: a.jpg" }));
+      await waitFor(() => expect(notify).toHaveBeenCalledWith("That photo was set aside. Bring it back to pair it."));
+    });
+
+    it("tells photos of one file name apart, on the button and in the line", async () => {
+      retryMutation().mockResolvedValueOnce({ retried: true });
+      openWith([unread(0, "image.jpg"), unread(1, "image.jpg")]);
+      expect(screen.getByRole("button", { name: "Try again: image.jpg, photo 1" })).toBeTruthy();
+      fireEvent.click(screen.getByRole("button", { name: "Try again: image.jpg, photo 2" }));
+      await waitFor(() => expect(pageApi.inform).toHaveBeenCalledWith("Trying image.jpg, photo 2 again."));
+    });
+  });
+
+  describe("focus after Bring back", () => {
+    const heading = () => document.getElementById("intake-pairing");
+    const tile = (n: number) => document.querySelector(`[data-loose-photo="${n}"]`);
+    /** A run with photo 1 set aside and its Bring back pressed, the write not repainted yet. */
+    const pressBack = async () => {
+      const runId = freshRunId();
+      setRun(runId, { images: [photo(0), { ...photo(1), setAside: true }] });
+      const view = render(<Tab runId={runId} />);
+      const back = screen.getByRole("button", { name: "Bring back scan-1.jpg" });
+      back.focus();
+      fireEvent.click(back);
+      await act(async () => {});
+      const repaint = (images: unknown[], pairs?: unknown[]) => {
+        setRun(runId, { images });
+        if (pairs) mocks.data.pairs = pairs;
+        view.rerender(<Tab runId={runId} />);
+      };
+      return { back, repaint };
+    };
+
+    it("stays on the button until the photo repaints, then lands on its tile", async () => {
+      const { back, repaint } = await pressBack();
+      expect(document.activeElement).toBe(back);
+      repaint([photo(0), photo(1)]);
+      await waitFor(() => expect(document.activeElement).toBe(tile(1)));
+    });
+
+    it("keeps waiting through a repaint that hasn't brought the photo back yet", async () => {
+      const { back, repaint } = await pressBack();
+      back.blur();
+      repaint([photo(0), { ...photo(1), setAside: true }, photo(2)]);
+      await act(async () => {});
+      expect(document.activeElement).not.toBe(heading());
+      repaint([photo(0), photo(1), photo(2)]);
+      await waitFor(() => expect(document.activeElement).toBe(tile(1)));
+    });
+
+    it("falls to the Pairing heading when the photo comes back in a pair", async () => {
+      const { repaint } = await pressBack();
+      repaint([photo(0), photo(1)], [{ frontIndex: 0, backIndex: 1 }]);
+      await waitFor(() => expect(document.activeElement).toBe(heading()));
+    });
+
+    it("falls to the heading when a re-pair takes the tile away after focus landed", async () => {
+      const { repaint } = await pressBack();
+      repaint([photo(0), photo(1)]);
+      await waitFor(() => expect(document.activeElement).toBe(tile(1)));
+      repaint([photo(0), photo(1)], [{ frontIndex: 0, backIndex: 1 }]);
+      await waitFor(() => expect(document.activeElement).toBe(heading()));
+    });
+
+    it("leaves focus alone once the collector has moved on", async () => {
+      const { repaint } = await pressBack();
+      const elsewhere = screen.getByRole("button", { name: "Set aside scan-0.jpg" });
+      elsewhere.focus();
+      repaint([photo(0), photo(1)]);
+      await act(async () => {});
+      expect(document.activeElement).toBe(elsewhere);
+    });
+
+    it("takes nothing after a refused press, and says why", async () => {
+      asideMutation().mockRejectedValueOnce(new Error("nope"));
+      const { back, repaint } = await pressBack();
+      await waitFor(() => expect(notify).toHaveBeenCalled());
+      back.blur();
+      repaint([photo(0), photo(1)]);
+      await act(async () => {});
+      expect(document.activeElement).not.toBe(tile(1));
+    });
+  });
+
   it("a refused press says why", async () => {
     openWith([photo(0)]);
     asideMutation().mockRejectedValueOnce(new Error("That photo is in a pair. Unpair it first."));

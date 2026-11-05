@@ -43,6 +43,7 @@ import {
   PHOTO_NEWS_QUIET_MS,
   PHOTO_OUT_OF_TRIES_LINE,
   PHOTO_RUN_CLOSED_LINE,
+  PHOTO_SET_ASIDE_LINE,
   PHOTO_TOO_BIG_LINE,
   photoChanges,
   photoLine,
@@ -61,6 +62,7 @@ import {
   tileLabel,
   whyNotSave,
   zipOverLimitLine,
+  type Lanes,
 } from "./realLanes";
 import { HomeSelect, QTY_ATTR, RING, StageBadge } from "./ui";
 import { DRAWER_PARAM } from "../drawerParams";
@@ -141,7 +143,8 @@ function parkAfterStay(): boolean {
  * NEO-411: a Try again moves the photo out of the pile, so its button unmounts
  * and focus would fall to the page. On the next frame, if it did, land on the
  * next photo left in the pile, or else on the pile's heading (WCAG 2.4.3).
- * NEO-446: Set aside and Bring back move a photo the same way.
+ * NEO-446: Set aside moves a photo the same way. Bring back has its own path
+ * (`settleReturningPhoto`), because it knows which tile to land on.
  */
 function refocusInPile(entryIndex: number): void {
   // Always move: the photo's own tile and button leave where they are once its
@@ -153,6 +156,45 @@ function refocusInPile(entryIndex: number): void {
     );
     (next ?? document.getElementById(PAIRING_HEADING_ID))?.focus();
   });
+}
+
+/** How long a brought-back photo's tile keeps its fallback, in case a re-pair takes the tile away. */
+const RETURNED_TILE_WATCH_MS = 10_000;
+
+/** A photo brought back, until focus has landed for it. `landedUntil` is set once it is on the tile. */
+interface ReturningPhoto {
+  entryIndex: number;
+  landedUntil?: number;
+}
+
+/**
+ * NEO-446: where focus goes after Bring back, called each time the lanes change.
+ * Its button stays mounted until the photo repaints, so this waits on the lanes
+ * rather than a timer. Then the photo's tile takes focus, or the Pairing heading
+ * if it came back as something else. A done photo can re-pair a moment after
+ * that and take the tile with it, which also falls to the heading. Focus the
+ * collector has moved elsewhere is left alone. Answers what to keep watching.
+ */
+function settleReturningPhoto(wanted: ReturningPhoto, lanes: Lanes): ReturningPhoto | null {
+  const { entryIndex, landedUntil } = wanted;
+  if (lanes.looseAside.some((i) => i.entryIndex === entryIndex)) return wanted;
+  const active = document.activeElement;
+  const focusIsFree = !active || active === document.body || !active.isConnected;
+  const watching = landedUntil !== undefined && Date.now() <= landedUntil;
+  const tile = lanes.loose.some((i) => i.entryIndex === entryIndex)
+    ? document.querySelector<HTMLElement>(`[data-loose-photo="${entryIndex}"]`)
+    : null;
+  if (tile) {
+    if (landedUntil === undefined && focusIsFree) {
+      tile.focus();
+      return { entryIndex, landedUntil: Date.now() + RETURNED_TILE_WATCH_MS };
+    }
+    return watching && active === tile ? wanted : null;
+  }
+  if (focusIsFree && (landedUntil === undefined || watching)) {
+    document.getElementById(PAIRING_HEADING_ID)?.focus();
+  }
+  return null;
 }
 
 type Condition = "Mint" | "Near Mint" | "Excellent" | "Very Good" | "Good" | "Poor";
@@ -812,6 +854,12 @@ function RunWorkspace({ run, jobOpen }: { run: RunSummary; jobOpen: boolean }) {
   );
   const byIndex = useMemo(() => new Map((images ?? []).map((i) => [i.entryIndex, i])), [images]);
   const labels = useMemo(() => photoLabels(images ?? []), [images]);
+  const returning = useRef<ReturningPhoto | null>(null);
+  useEffect(() => {
+    if (returning.current && images && pairs && matches) {
+      returning.current = settleReturningPhoto(returning.current, lanes);
+    }
+  }, [lanes, images, pairs, matches]);
 
   const save = useMutation(api.intakeRuns.saveIntakeMatch);
   const pick = useMutation(api.intakeRuns.pickIntakeCard);
@@ -841,12 +889,17 @@ function RunWorkspace({ run, jobOpen }: { run: RunSummary; jobOpen: boolean }) {
   const fail = (e: unknown) => notify(writeErrorMessage(e));
   const setPhotoAside = (image: IntakeImage, setAside: boolean) => {
     const label = labels.get(image.entryIndex) ?? image.originalName;
+    // Before the write: the lanes can repaint ahead of the promise resolving.
+    if (!setAside) returning.current = { entryIndex: image.entryIndex };
     void photoAside({ runId: run._id, entryIndex: image.entryIndex, setAside })
       .then(() => {
         inform(setAside ? `Set aside ${label}.` : `Brought back ${label}.`);
-        refocusInPile(image.entryIndex);
+        if (setAside) refocusInPile(image.entryIndex);
       })
-      .catch(fail);
+      .catch((e: unknown) => {
+        if (!setAside) returning.current = null;
+        fail(e);
+      });
   };
   const photoLiveLine = usePhotoNews(matches);
   const canSave = (row: IntakeMatchRow) => !!row.cardId && !(row.repeatOfPairId && !row.repeatIsSecondCopy);
@@ -1065,7 +1118,7 @@ function RunWorkspace({ run, jobOpen }: { run: RunSummary; jobOpen: boolean }) {
                     void retry({ jobId: run.jobId, entryIndex: image.entryIndex })
                       .then((r) => {
                         if (r.retried) {
-                          inform(`Trying ${image.originalName} again.`);
+                          inform(`Trying ${labels.get(image.entryIndex) ?? image.originalName} again.`);
                           refocusInPile(image.entryIndex);
                         } else if (r.reason === "too many tries") {
                           notify(PHOTO_OUT_OF_TRIES_LINE);
@@ -1073,6 +1126,8 @@ function RunWorkspace({ run, jobOpen }: { run: RunSummary; jobOpen: boolean }) {
                           notify(PHOTO_RUN_CLOSED_LINE);
                         } else if (r.reason === "too big") {
                           notify(PHOTO_TOO_BIG_LINE);
+                        } else if (r.reason === "set aside") {
+                          notify(PHOTO_SET_ASIDE_LINE);
                         }
                       })
                       .catch(fail)
@@ -1494,7 +1549,7 @@ function LoosePile({
                 variant="secondary"
                 outline
                 className="min-h-11 sm:min-h-8"
-                aria-label={`Try again: ${i.originalName}`}
+                aria-label={`Try again: ${labels.get(i.entryIndex) ?? i.originalName}`}
                 aria-describedby={`loose-why-${i.entryIndex}`}
                 onClick={() => onRetry(i)}
               >
@@ -1507,6 +1562,7 @@ function LoosePile({
               outline
               className="min-h-11 sm:min-h-8"
               aria-label={`Set aside ${labels.get(i.entryIndex) ?? i.originalName}`}
+              aria-describedby={i.status === "failed" ? `loose-why-${i.entryIndex}` : undefined}
               onClick={() => onSetAside(i)}
             >
               Set aside

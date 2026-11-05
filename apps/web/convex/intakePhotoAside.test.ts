@@ -5,11 +5,13 @@
  */
 
 import { convexTest } from "convex-test";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import schema from "./schema";
 import { api, internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { drainScheduled } from "../lib/testing/drain-scheduled";
+import { seedCollectionCatalog } from "../lib/testing/collection-fixture";
+import { intakePhotoPool } from "./intakePhotoPool";
 import { computePairingDiff, type PairingImageRow } from "./placeholderPairing";
 
 const modules = (import.meta as unknown as {
@@ -324,5 +326,226 @@ describe("a set-aside photo doesn't change how the job is judged", () => {
     expect(await w.pairs()).toEqual([]);
     expect((await w.jobRow())?.status).toBe("succeeded");
     expect((await w.images())[1].setAside).toBe(true);
+  });
+});
+
+/**
+ * A saved card outlives the pairing that found it. A side-only pair stays fluid
+ * for pairing, so a later pass that likes another partner would otherwise take
+ * the pair away, and the sync would then drop the saved row with it.
+ */
+describe("a pair the collector has answered is settled", () => {
+  // Front of a Strawberry, an unread back saved with it, and a second back that
+  // names the same player: a better partner for the front, on identity.
+  const NAMED_FRONT: ImageFields = { status: "done", side: "front", players: ["Darryl Strawberry"], textCount: 5, cardNumber: "2", pairStatus: "paired" };
+  const UNREAD_BACK: ImageFields = { status: "done", side: "back", textCount: 80, pairStatus: "paired" };
+  const NAMED_BACK: ImageFields = { status: "done", side: "back", players: ["Darryl Strawberry"], textCount: 80, cardNumber: "2", pairStatus: "unmatched" };
+
+  /** The run's first pair (0, 1) side-only and matched to a card, photo 2 loose beside it. */
+  async function answered(extraImages: ImageFields[] = [NAMED_BACK]) {
+    vi.spyOn(intakePhotoPool, "enqueueAction").mockResolvedValue("work" as never);
+    const t = convexTest(schema, modules);
+    harnesses.push(t);
+    const fx = await seedCollectionCatalog(t);
+    const { homeId, pairId } = await t.run(async (ctx) => {
+      await ctx.db.insert("placeholderJobs", {
+        jobId: JOB,
+        userId: ME.subject,
+        objectPath: `placeholders/${ME.subject}/${JOB}/`,
+        createdAt: 0,
+        mode: "stream",
+        status: "succeeded",
+      });
+      for (const [entryIndex, image] of [NAMED_FRONT, UNREAD_BACK, ...extraImages].entries()) {
+        await ctx.db.insert("placeholderImages", {
+          jobId: JOB,
+          userId: ME.subject,
+          entryIndex,
+          originalName: `scan-${entryIndex}.jpg`,
+          status: "done",
+          ...image,
+        });
+      }
+      const pairId = await ctx.db.insert("placeholderPairs", {
+        jobId: JOB,
+        userId: ME.subject,
+        frontIndex: 0,
+        backIndex: 1,
+        confidence: "side-only",
+        mechanism: "adjacency",
+        score: 0,
+      });
+      const homeId = await ctx.db.insert("collectionContainers", {
+        ownerId: ME.subject,
+        kind: "box",
+        name: "For sale",
+        lastUpdated: 0,
+      });
+      return { homeId, pairId };
+    });
+    const me = t.withIdentity(ME);
+    const runId = await me.mutation(api.intakeRuns.createIntakeRun, { jobId: JOB, homeId, variantId: fx.baseId });
+    await drainScheduled(t);
+    const pairs = () =>
+      t.run(async (ctx) =>
+        (await ctx.db.query("placeholderPairs").withIndex("by_job", (q) => q.eq("jobId", JOB)).collect()).map((p) => [
+          p.frontIndex,
+          p.backIndex,
+        ]),
+      );
+    const match = () => t.run((ctx) => ctx.db.query("intakeMatches").withIndex("by_pair", (q) => q.eq("pairId", pairId)).first());
+    const copies = () => t.run(async (ctx) => (await ctx.db.query("collectionCopies").collect()).length);
+    const repair = async () => {
+      await t.action(internal.placeholderPairing.runPairing, { jobId: JOB, userId: ME.subject, final: false, force: true });
+      await drainScheduled(t);
+    };
+    return { t, me, runId, pairId, pairs, match, copies, repair };
+  }
+
+  test("Bring back can't take a saved pair's front for the photo brought back", async () => {
+    const w = await answered();
+    await w.me.mutation(api.intakeRuns.setIntakePhotoAside, { runId: w.runId, entryIndex: 2, setAside: true });
+    await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId: w.runId, pairId: w.pairId, quantity: 1 });
+    await drainScheduled(w.t);
+    expect((await w.match())?.savedAt).toBeDefined();
+    expect(await w.copies()).toBe(1);
+
+    await w.me.mutation(api.intakeRuns.setIntakePhotoAside, { runId: w.runId, entryIndex: 2, setAside: false });
+    await drainScheduled(w.t);
+
+    expect(await w.pairs()).toEqual([[0, 1]]);
+    expect((await w.match())?.savedAt).toBeDefined();
+    expect(await w.copies()).toBe(1);
+    expect(await w.me.query(api.intakeRuns.listIntakeMatches, { runId: w.runId })).toHaveLength(1);
+  });
+
+  test("no other pass can either: a later run, and an identity edit", async () => {
+    const w = await answered();
+    await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId: w.runId, pairId: w.pairId, quantity: 1 });
+    await drainScheduled(w.t);
+
+    await w.repair();
+    expect(await w.pairs()).toEqual([[0, 1]]);
+
+    await w.me.mutation(api.placeholderPairing.updatePlaceholderImageIdentity, { jobId: JOB, entryIndex: 2, cardNumber: "3" });
+    await drainScheduled(w.t);
+    expect(await w.pairs()).toEqual([[0, 1]]);
+    expect((await w.match())?.savedAt).toBeDefined();
+  });
+
+  // A pass that still wanted the saved front would have its write refused and pair
+  // nothing, so what proves a pass read the hold is the second-best pair it makes.
+  const SECOND_FRONT: ImageFields = { status: "done", side: "front", players: ["Darryl Strawberry"], textCount: 5, pairStatus: "unmatched" };
+
+  test("a later run pairs around a saved pair, instead of wanting its front", async () => {
+    const w = await answered([NAMED_BACK, SECOND_FRONT]);
+    await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId: w.runId, pairId: w.pairId, quantity: 1 });
+    await drainScheduled(w.t);
+    await w.repair();
+    expect(await w.pairs()).toEqual([[0, 1], [3, 2]]);
+  });
+
+  test("closing the stream pairs around it too", async () => {
+    const w = await answered([NAMED_BACK, SECOND_FRONT]);
+    await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId: w.runId, pairId: w.pairId, quantity: 1 });
+    await drainScheduled(w.t);
+    await w.t.run(async (ctx) => {
+      const job = await ctx.db.query("placeholderJobs").withIndex("by_job", (q) => q.eq("jobId", JOB)).first();
+      await ctx.db.patch(job!._id, { status: "collecting", totalImages: 4, processedImages: 4 });
+    });
+    await w.me.mutation(api.placeholderStream.closePlaceholderStream, { jobId: JOB });
+    await drainScheduled(w.t);
+    expect(await w.pairs()).toEqual([[0, 1], [3, 2]]);
+    expect((await w.match())?.savedAt).toBeDefined();
+  });
+
+  test("a pair set aside holds the same way, and goes back to fluid when it's brought back", async () => {
+    const w = await answered();
+    await w.me.mutation(api.intakeRuns.setIntakeMatchAside, { runId: w.runId, pairId: w.pairId, setAside: true });
+    await drainScheduled(w.t);
+    await w.repair();
+    expect(await w.pairs()).toEqual([[0, 1]]);
+    expect((await w.match())?.setAside).toBe(true);
+
+    await w.me.mutation(api.intakeRuns.setIntakeMatchAside, { runId: w.runId, pairId: w.pairId, setAside: false });
+    await w.repair();
+    expect(await w.pairs()).toEqual([[0, 2]]);
+  });
+
+  test("a pair nobody has answered stays fluid, as it always was", async () => {
+    const w = await answered();
+    await w.repair();
+    expect(await w.pairs()).toEqual([[0, 2]]);
+    expect(await w.match()).toBeNull();
+  });
+
+  test("a pass that read the pair before the save can't delete or rewrite it", async () => {
+    const w = await answered();
+    await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId: w.runId, pairId: w.pairId, quantity: 1 });
+    await drainScheduled(w.t);
+    const result = await w.t.mutation(internal.placeholderPairing.applyPairDiff, {
+      jobId: JOB,
+      userId: ME.subject,
+      final: false,
+      force: true,
+      deleteIds: [w.pairId],
+      patches: [{ pairId: w.pairId, confidence: "fuzzy", mechanism: "pool", score: 1 }],
+      inserts: [],
+    });
+    expect(result).toMatchObject({ deleted: 0, revised: 0 });
+    expect(await w.t.run((ctx) => ctx.db.get(w.pairId))).toMatchObject({ confidence: "side-only", mechanism: "adjacency" });
+  });
+
+  test("the sync never drops a saved row, even with its pair gone; an unsaved one still goes", async () => {
+    const w = await answered();
+    await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId: w.runId, pairId: w.pairId, quantity: 1 });
+    await drainScheduled(w.t);
+    await w.t.run((ctx) => ctx.db.delete(w.pairId));
+    const result = await w.t.mutation(internal.intakeRuns.syncIntakeMatches, { runId: w.runId });
+    expect(result.removed).toBe(0);
+    expect((await w.match())?.savedAt).toBeDefined();
+    expect(await w.me.query(api.intakeRuns.listIntakeMatches, { runId: w.runId })).toHaveLength(1);
+  });
+
+  test("the sync still drops an unsaved row whose pair is gone", async () => {
+    const w = await answered();
+    await w.t.run((ctx) => ctx.db.delete(w.pairId));
+    const result = await w.t.mutation(internal.intakeRuns.syncIntakeMatches, { runId: w.runId });
+    expect(result.removed).toBe(1);
+    expect(await w.match()).toBeNull();
+  });
+
+  test("a person can still split an unsaved pair on purpose", async () => {
+    const w = await answered();
+    await w.me.mutation(api.placeholderPairing.unpairPlaceholderImages, { jobId: JOB, frontIndex: 0, backIndex: 1 });
+    await drainScheduled(w.t);
+    expect(await w.pairs()).not.toContainEqual([0, 1]);
+    expect(await w.match()).toBeNull();
+  });
+
+  test("computePairingDiff leaves a held stored pair and its photos out", () => {
+    const row = (entryIndex: number, side: "front" | "back", players?: string[]): PairingImageRow => ({
+      _id: `img-${entryIndex}` as unknown as Id<"placeholderImages">,
+      entryIndex,
+      originalName: `scan-${entryIndex}.jpg`,
+      side,
+      textCount: side === "back" ? 80 : 5,
+      players,
+    });
+    const rows = [row(0, "front", ["Doc Gooden"]), row(1, "back"), row(2, "back", ["Doc Gooden"])];
+    const stored = {
+      _id: "pair-1" as unknown as Id<"placeholderPairs">,
+      frontIndex: 0,
+      backIndex: 1,
+      confidence: "side-only" as const,
+      mechanism: "adjacency" as const,
+      score: 0,
+    };
+    const fluid = computePairingDiff(rows, [stored]);
+    expect(fluid.deleteIds).toEqual([stored._id]);
+    const held = computePairingDiff(rows, [{ ...stored, heldByMatch: true }]);
+    expect(held.deleteIds).toEqual([]);
+    expect(held.patches).toEqual([]);
+    expect(held.insertRows).toEqual([]);
   });
 });
