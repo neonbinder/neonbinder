@@ -505,3 +505,111 @@ describe("folds, removes and undo", () => {
     expect(await photoRows(s)).toEqual([]);
   });
 });
+
+describe("NEO-432: a photo change queues the card only when the copy's home lists", () => {
+  const outboxRows = (s: S) => s.t.run(async (ctx) => await ctx.db.query("listingOutbox").collect());
+
+  /** The owner pushes counts to both platforms (`listingOutbox.pushesCounts`). */
+  const listEverywhere = (s: S) =>
+    s.t.run(async (ctx) => {
+      for (const platform of ["bsc", "ebay"] as const) {
+        await ctx.db.insert("marketplaceListingStates", {
+          ownerId: ME.subject,
+          platform,
+          listingStartedAt: 1,
+          lastUpdated: 0,
+        });
+      }
+    });
+
+  async function makeHome(s: S, home: "binder" | "listed box" | "in-person box"): Promise<Id<"collectionContainers">> {
+    const { containerId } = await s.me.mutation(api.collectionContainers.create, {
+      kind: home === "binder" ? "binder" : "box",
+      name: home,
+    });
+    if (home === "in-person box") {
+      await s.me.mutation(api.collectionContainers.setContainerListed, { containerId, listed: false });
+    }
+    return containerId;
+  }
+
+  /** One photo change, and proof it really happened: a no-op would queue nothing either. */
+  const CHANGES = [
+    {
+      name: "commitUpload",
+      photographedFirst: false,
+      change: async (s: S, copyId: Id<"collectionCopies">) => {
+        await photograph(s, copyId, "front");
+        expect((await copyRow(s, copyId))?.hasPhotos).toBe(true);
+      },
+    },
+    {
+      name: "remove",
+      photographedFirst: true,
+      change: async (s: S, copyId: Id<"collectionCopies">) => {
+        await s.me.mutation(api.copyPhotos.remove, { copyId, side: "front" });
+        expect((await copyRow(s, copyId))?.hasPhotos).toBeUndefined();
+      },
+    },
+    {
+      name: "swap",
+      photographedFirst: true,
+      change: async (s: S, copyId: Id<"collectionCopies">) => {
+        await s.me.mutation(api.copyPhotos.swap, { copyId });
+        expect((await photoRows(s))[0].side).toBe("back");
+      },
+    },
+  ];
+
+  /**
+   * A copy in `homeId`, with its photo when the change needs one. Both are
+   * written before the owner lists, so the outbox holds only what the change
+   * under test writes.
+   */
+  async function listedOwnerCopy(
+    s: S,
+    homeId: Id<"collectionContainers">,
+    photographedFirst: boolean,
+  ): Promise<Id<"collectionCopies">> {
+    const copyId = await addCopy(s, { homeId });
+    if (photographedFirst) await photograph(s, copyId, "front");
+    await listEverywhere(s);
+    expect(await outboxRows(s)).toEqual([]);
+    return copyId;
+  }
+
+  test.each(CHANGES)("$name on a binder copy queues nothing", async ({ photographedFirst, change }) => {
+    const s = await setup();
+    const copyId = await listedOwnerCopy(s, await makeHome(s, "binder"), photographedFirst);
+    await change(s, copyId);
+    expect(await outboxRows(s)).toEqual([]);
+  });
+
+  test.each(CHANGES)("$name on an in-person box copy queues nothing", async ({ photographedFirst, change }) => {
+    const s = await setup();
+    const copyId = await listedOwnerCopy(s, await makeHome(s, "in-person box"), photographedFirst);
+    await change(s, copyId);
+    expect(await outboxRows(s)).toEqual([]);
+  });
+
+  test.each(CHANGES)("$name on a listed box copy queues the card on every platform", async ({ photographedFirst, change }) => {
+    const s = await setup();
+    const copyId = await listedOwnerCopy(s, await makeHome(s, "listed box"), photographedFirst);
+    await change(s, copyId);
+    const rows = await outboxRows(s);
+    expect(rows.map((r) => r.platform).sort()).toEqual(["bsc", "ebay"]);
+    expect(rows.every((r) => r.cardId === s.fx.gooden1 && r.ownerId === ME.subject)).toBe(true);
+  });
+
+  test("a copy pointing at another collector's listed box queues nothing", async () => {
+    const s = await setup();
+    const copyId = await listedOwnerCopy(s, await makeHome(s, "binder"), false);
+    const { containerId: theirBox } = await s.them.mutation(api.collectionContainers.create, {
+      kind: "box",
+      name: "Their box",
+    });
+    await s.t.run(async (ctx) => await ctx.db.patch(copyId, { homeId: theirBox }));
+    await photograph(s, copyId, "front");
+    expect(await outboxRows(s)).toEqual([]);
+  });
+});

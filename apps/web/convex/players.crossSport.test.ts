@@ -424,6 +424,78 @@ describe("setAdditionalSports", () => {
     expect(message).toMatch(/SPORT_HAS_CARDS/);
   });
 
+  describe("SPORT_HAS_CARDS carries the count of linked cards", () => {
+    /** A player with Baseball as an added sport and `cards` custom cards in a Baseball set. */
+    async function seedLinked(cards: number) {
+      const t = convexTest(schema, modules);
+      const football = await seedSport(t, "Football");
+      const baseball = await seedSport(t, "Baseball");
+      const bo = await insertPlayer(t, { name: "Bo Jackson", sportId: football });
+      const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+      await asAdmin.mutation(api.players.setAdditionalSports, { playerId: bo, sportIds: [baseball] });
+      const variantType = await t.run(async (ctx) => {
+        const setName = await ctx.db.insert("selectorOptions", {
+          level: "setName",
+          value: "Set",
+          parentId: baseball,
+          platformData: {},
+          children: [],
+          lastUpdated: Date.now(),
+        });
+        return ctx.db.insert("selectorOptions", {
+          level: "variantType",
+          value: "Base",
+          parentId: setName,
+          platformData: {},
+          children: [],
+          lastUpdated: Date.now(),
+        });
+      });
+      for (let i = 1; i <= cards; i += 1) {
+        await asAdmin.mutation(api.selectorOptions.addCustomCard, {
+          selectorOptionId: variantType,
+          cardNumber: String(i),
+          cardName: `Bo ${i}`,
+          playerIds: [bo],
+        });
+      }
+      return { t, asAdmin, bo, baseball };
+    }
+    /** The refusal's payload, as the client reads it from `ConvexError.data`. */
+    async function refusal(s: Awaited<ReturnType<typeof seedLinked>>) {
+      const err = await s.asAdmin
+        .mutation(api.players.setAdditionalSports, { playerId: s.bo, sportIds: [] })
+        .then(() => null, (e: unknown) => e);
+      return (err as { data?: unknown } | null)?.data;
+    }
+
+    test("one linked card: count 1", async () => {
+      const s = await seedLinked(1);
+      expect(await refusal(s)).toEqual({ code: "SPORT_HAS_CARDS", sportId: s.baseball, count: 1 });
+    });
+
+    test("two linked cards: count 2", async () => {
+      const s = await seedLinked(2);
+      expect(await refusal(s)).toEqual({ code: "SPORT_HAS_CARDS", sportId: s.baseball, count: 2 });
+    });
+
+    test("more links than the read cap: the count stops at the cap", async () => {
+      const s = await seedLinked(1);
+      // players.ts keeps SPORT_REMOVAL_COUNT_CAP private; its value is 1000.
+      await s.t.run(async (ctx) => {
+        const link = (await ctx.db.query("cardPlayerLinks").collect())[0];
+        for (let i = 0; i < 1000; i += 1) {
+          await ctx.db.insert("cardPlayerLinks", {
+            cardChecklistId: link.cardChecklistId,
+            playerId: s.bo,
+            sportId: s.baseball,
+          });
+        }
+      });
+      expect(await refusal(s)).toEqual({ code: "SPORT_HAS_CARDS", sportId: s.baseball, count: 1000 });
+    });
+  });
+
   test("SPORT_HAS_STINTS refuses removing a sport a career stint uses", async () => {
     const t = convexTest(schema, modules);
     const football = await seedSport(t, "Football");

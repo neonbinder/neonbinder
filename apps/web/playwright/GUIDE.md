@@ -321,6 +321,10 @@ Idioms:
 
 ## Gotchas (read before your first spec)
 
+- **A `has`/`hasNot` locator is relative to the element it filters.** One rooted
+  at the page or a region looks for that root inside the element, never matches,
+  and the `hasNot` filter then passes everything. Build the inner locator from
+  `page.locator(...)` only when it is meant relative, or use `hasText`/`hasNotText`.
 - **`aria-disabled` buttons.** Much of the app disables with `aria-disabled`
   (the wizard's "Add as New Team" while a lookup is in flight, between rows).
   Playwright treats that as disabled, so `click()` waits and times out at 7 s.

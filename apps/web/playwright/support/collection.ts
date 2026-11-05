@@ -519,13 +519,15 @@ export async function followRunToEnd(
  */
 export function queueSettled(platform: Locator, setLabel: string): Locator {
   const escaped = setLabel.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const ofSet = new RegExp(` in ${escaped}(?:\\b|$)`);
+  // The row reads "<card> in <set> queued <when>", so a sibling set whose name
+  // starts with this one ("1988 Topps Traded") never counts as this set's.
+  const ofSet = new RegExp(` in ${escaped} queued `);
   return platform
     .getByText(/^Nothing waiting\./)
     .or(
       platform
         .getByRole("list", { name: /^Queued for the next sync/ })
-        .filter({ hasNot: platform.getByRole("listitem").filter({ hasText: ofSet }) }),
+        .filter({ hasNotText: ofSet }),
     );
 }
 

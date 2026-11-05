@@ -1356,7 +1356,7 @@ describe("syncVariant", () => {
     expect(claim).toMatchObject({ claimed: true, fullReadRequested: true });
   });
 
-  test("a press inside a minute of the last is still throttled while the set's run is under way", async () => {
+  test("a press inside a minute of the last with nothing waiting is still throttled while the set's run is under way", async () => {
     const s = await fresh();
     holdDrains();
     await addTo(s, s.fx.gooden1, s.box);
@@ -1410,6 +1410,267 @@ describe("syncVariant", () => {
     expect(result.queued).toBe(true);
     expect(result.ignored).toBeUndefined();
     expect(await outbox(s)).toHaveLength(1);
+  });
+
+  test("a recent press with a change still pending: taken (queued), drain kicked once, nothing re-queued or re-stamped", async () => {
+    const s = await fresh();
+    holdDrains();
+    await addTo(s, s.fx.gooden1, s.box);
+    await listOn(s);
+    const stamped = Date.now() - 10_000;
+    const id = await record(s, { resyncRequestedAt: stamped });
+    await queueOne(s);
+    expect(await s.me.mutation(api.listingSync.syncVariant, { variantId: s.fx.baseId })).toEqual({ queued: true });
+    expect((await outbox(s)).map((r) => r.seq)).toEqual([1]);
+    expect(await drains(s)).toHaveLength(1);
+    expect((await s.t.run((ctx) => ctx.db.get(id)))?.resyncRequestedAt).toBe(stamped);
+  });
+
+  test("a press while the set's run is under way, with a change pending and no recent press: taken, its rows re-queued and the press stamped", async () => {
+    const s = await fresh();
+    holdDrains();
+    await addTo(s, s.fx.gooden1, s.box);
+    await listOn(s, ME.subject, { drainLeaseToken: "owner-lease", drainLeaseExpiresAt: Date.now() + 60_000 });
+    const id = await record(s, { status: "running", leaseToken: "lease", leaseExpiresAt: Date.now() + 60_000 });
+    await queueOne(s);
+    expect(await s.me.mutation(api.listingSync.syncVariant, { variantId: s.fx.baseId })).toEqual({ queued: true });
+    const [row] = await outbox(s);
+    expect(row.seq).toBeGreaterThan(1);
+    expect((await s.t.run((ctx) => ctx.db.get(id)))?.resyncRequestedAt).toBeDefined();
+    expect((await states(s))[0].drainRequested).toBe(true);
+  });
+
+  describe("a press inside the minute while the set's run is under way (the last drain's time is the drain before this run)", () => {
+    const pressedAgo = 10_000;
+    /** A run under way, claimed after a press `pressedAgo` ago, with the owner's last finished drain `drainAgo` ago. */
+    async function midRun(s: S, drainAgo: number) {
+      holdDrains();
+      await connect(s);
+      await addTo(s, s.fx.gooden1, s.box);
+      await listOn(s, ME.subject, {
+        drainLeaseToken: "owner-lease",
+        drainLeaseExpiresAt: Date.now() + 60_000,
+        lastDrainAt: Date.now() - drainAgo,
+      });
+      const stamped = Date.now() - pressedAgo;
+      const id = await record(s, {
+        status: "running",
+        leaseToken: "lease",
+        leaseExpiresAt: Date.now() + 60_000,
+        lastRunAt: stamped - 10_000,
+        resyncRequestedAt: stamped,
+      });
+      return { id, stamped };
+    }
+    const queueChangedAt = (s: S, changedAt: number) =>
+      s.t.run((ctx) =>
+        ctx.db.insert("listingOutbox", { ownerId: ME.subject, platform: "bsc", cardId: s.fx.gooden1, variantId: s.fx.baseId, seq: 1, changedAt }),
+      );
+
+    test("a row changed after that drain is untried: taken, the run goes round again, and the earlier press's full read still holds", async () => {
+      const s = await fresh();
+      const { id, stamped } = await midRun(s, 30_000);
+      await queueChangedAt(s, Date.now() - 1_000);
+      expect(await s.me.mutation(api.listingSync.syncVariant, { variantId: s.fx.baseId })).toEqual({ queued: true });
+      // Nothing re-queued, nothing re-stamped: this press asks for no new full read.
+      expect((await outbox(s)).map((r) => r.seq)).toEqual([1]);
+      expect((await s.t.run((ctx) => ctx.db.get(id)))?.resyncRequestedAt).toBe(stamped);
+      expect((await states(s))[0].drainRequested).toBe(true);
+      // The run ends with its lease released; the run the kick asked for reads in full.
+      await s.t.run((ctx) => ctx.db.patch(id, { status: "idle", leaseToken: undefined, leaseExpiresAt: undefined }));
+      const released = await s.t.mutation(internal.listingDrain.releaseDrain, {
+        ownerId: ME.subject,
+        platform: "bsc",
+        leaseToken: "owner-lease",
+        next: "done",
+      });
+      expect(released.scheduledInMs).not.toBeNull();
+      expect(await s.t.mutation(internal.listingDrain.claimDrain, { ownerId: ME.subject, platform: "bsc", leaseToken: "lease-2" })).toEqual({ claimed: true });
+      expect(
+        await s.t.mutation(internal.listingDrain.claimVariant, {
+          ownerId: ME.subject,
+          platform: "bsc",
+          variantId: s.fx.baseId,
+          leaseToken: "lease-2",
+        }),
+      ).toMatchObject({ claimed: true, fullReadRequested: true });
+    });
+
+    test("a row no newer than a drain inside the minute was already tried: throttled, nothing asked of the run", async () => {
+      const s = await fresh();
+      const { id, stamped } = await midRun(s, 5_000);
+      await queueChangedAt(s, Date.now() - 20_000);
+      expect(await s.me.mutation(api.listingSync.syncVariant, { variantId: s.fx.baseId })).toEqual({
+        queued: false,
+        ignored: "throttled",
+      });
+      expect((await outbox(s)).map((r) => r.seq)).toEqual([1]);
+      expect((await s.t.run((ctx) => ctx.db.get(id)))?.resyncRequestedAt).toBe(stamped);
+      expect((await states(s))[0].drainRequested).toBeUndefined();
+    });
+  });
+
+  test("a press, then the box goes in person and its walk queues it: a second press inside a minute is taken", async () => {
+    const s = await fresh();
+    holdDrains();
+    await addTo(s, s.fx.gooden1, s.box);
+    await listOn(s);
+    const id = await record(s);
+    expect(await s.me.mutation(api.listingSync.syncVariant, { variantId: s.fx.baseId })).toEqual({ queued: true });
+    const stamped = (await s.t.run((ctx) => ctx.db.get(id)))?.resyncRequestedAt;
+    expect(stamped).toBeDefined();
+    // The first press's drain ran (simulated as a real one leaves things): its
+    // scheduled copy is gone, its claim cleared `drainScheduledAt`, its release
+    // stamped `lastDrainAt` before the flip below, and the outbox rows it
+    // pushed were deleted.
+    expect(await drains(s)).toHaveLength(1);
+    await s.t.run(async (ctx) => {
+      for (const d of await ctx.db.system.query("_scheduled_functions").collect()) {
+        if (d.name.includes("drainOwner") && d.state.kind === "pending") await ctx.scheduler.cancel(d._id);
+      }
+      for (const st of await ctx.db.query("marketplaceListingStates").collect()) {
+        await ctx.db.patch(st._id, {
+          drainScheduledAt: undefined,
+          drainRequested: undefined,
+          lastDrainAt: Date.now() - 1_000,
+        });
+      }
+      for (const row of await ctx.db.query("listingOutbox").collect()) await ctx.db.delete(row._id);
+    });
+    expect(await drains(s)).toHaveLength(0);
+    await s.me.mutation(api.collectionContainers.setContainerListed, { containerId: s.box, listed: false });
+    await runWalks(s);
+    const pending = await outbox(s);
+    expect(pending.map((r) => r.cardId)).toEqual([s.fx.gooden1]);
+    const seqs = pending.map((r) => r.seq);
+    expect(await s.me.mutation(api.listingSync.syncVariant, { variantId: s.fx.baseId })).toEqual({ queued: true });
+    expect((await outbox(s)).map((r) => r.seq)).toEqual(seqs);
+    expect(await drains(s)).toHaveLength(1);
+    expect((await s.t.run((ctx) => ctx.db.get(id)))?.resyncRequestedAt).toBe(stamped);
+  });
+
+  describe("a row a recent drain already tried", () => {
+    const press = (s: S) => s.me.mutation(api.listingSync.syncVariant, { variantId: s.fx.baseId });
+    const THROTTLED = { queued: false, ignored: "throttled" };
+    /** One queued row for `owner` with its own change time. */
+    const queueAt = (
+      s: S,
+      cardId: Id<"cardChecklist">,
+      variantId: Id<"selectorOptions">,
+      changedAt: number,
+      owner = ME.subject,
+    ) =>
+      s.t.run((ctx) =>
+        ctx.db.insert("listingOutbox", { ownerId: owner, platform: "bsc", cardId, variantId, seq: 1, changedAt }),
+      );
+    /** The set after a failed run: its record errored, its row kept, the drain released `drainAgo` ms ago. */
+    async function afterFailedRun(s: S, drainAgo = 5_000) {
+      holdDrains();
+      await addTo(s, s.fx.gooden1, s.box);
+      const lastDrainAt = Date.now() - drainAgo;
+      await listOn(s, ME.subject, { lastDrainAt });
+      const stamped = Date.now() - 10_000;
+      const id = await record(s, { status: "error", lastError: "boom", resyncRequestedAt: stamped });
+      return { id, stamped, lastDrainAt };
+    }
+
+    test("left behind by a failed run, pressed again inside a minute: throttled, no drain, nothing re-queued or re-stamped", async () => {
+      const s = await fresh();
+      const { id, stamped, lastDrainAt } = await afterFailedRun(s);
+      // Changed exactly when the drain released: "no newer than" counts as tried.
+      await queueAt(s, s.fx.gooden1, s.fx.baseId, lastDrainAt);
+      expect(await press(s)).toEqual(THROTTLED);
+      expect(await drainsEver(s)).toEqual([]);
+      expect((await outbox(s)).map((r) => r.seq)).toEqual([1]);
+      expect((await s.t.run((ctx) => ctx.db.get(id)))?.resyncRequestedAt).toBe(stamped);
+    });
+
+    test("hammering Sync: press, the run fails and releases, every press inside the minute is throttled, then past it the press is taken", async () => {
+      const s = await fresh();
+      holdDrains();
+      await connect(s);
+      await addTo(s, s.fx.gooden1, s.box);
+      await listOn(s);
+      const id = await record(s);
+      expect(await press(s)).toEqual({ queued: true });
+      expect(await drains(s)).toHaveLength(1);
+      // The run, through the real claim and release: the sign-in fails and its row stays.
+      const kicked = await drains(s);
+      await s.t.run(async (ctx) => {
+        for (const d of kicked) await ctx.scheduler.cancel(d._id);
+      });
+      const run ={ ownerId: ME.subject, platform: "bsc" as const, leaseToken: "failed-run" };
+      expect(await s.t.mutation(internal.listingDrain.claimDrain, run)).toEqual({ claimed: true });
+      const released = await s.t.mutation(internal.listingDrain.releaseDrain, { ...run, next: "stop" });
+      expect(released).toEqual({ released: true, scheduledInMs: null });
+      const [state] = await states(s);
+      expect(state.lastDrainAt).toBeDefined();
+      expect((await outbox(s)).map((r) => r.cardId)).toEqual([s.fx.gooden1]);
+      for (let i = 0; i < 5; i += 1) expect(await press(s)).toEqual(THROTTLED);
+      expect(await drains(s)).toEqual([]);
+      // A minute on, for the press stamp and the release alike.
+      const ago = Date.now() - 61_000;
+      await s.t.run(async (ctx) => {
+        await ctx.db.patch(id, { resyncRequestedAt: ago });
+        await ctx.db.patch(state._id, { lastDrainAt: ago });
+      });
+      expect(await press(s)).toEqual({ queued: true });
+      expect(await drains(s)).toHaveLength(1);
+    });
+
+    test("the drain finished over a minute ago: a press inside a minute of the last press is taken", async () => {
+      const s = await fresh();
+      const { lastDrainAt } = await afterFailedRun(s, 61_000);
+      await queueAt(s, s.fx.gooden1, s.fx.baseId, lastDrainAt - 1_000);
+      expect(await press(s)).toEqual({ queued: true });
+      expect(await drains(s)).toHaveLength(1);
+    });
+
+    test("a new change after the failed run: taken, and the drain is kicked", async () => {
+      const s = await fresh();
+      const { id, stamped } = await afterFailedRun(s);
+      await queueOne(s);
+      expect(await press(s)).toEqual({ queued: true });
+      expect(await drains(s)).toHaveLength(1);
+      expect((await s.t.run((ctx) => ctx.db.get(id)))?.resyncRequestedAt).toBe(stamped);
+    });
+
+    test("an old failed row in front of a newer one in the same set: taken, the new change isn't hidden", async () => {
+      const s = await fresh();
+      const { lastDrainAt } = await afterFailedRun(s);
+      await queueAt(s, s.fx.gooden1, s.fx.baseId, lastDrainAt - 1_000);
+      await queueAt(s, s.fx.strawberry2, s.fx.baseId, Date.now());
+      // The set's index order puts the old row first.
+      const first = await s.t.run((ctx) =>
+        ctx.db
+          .query("listingOutbox")
+          .withIndex("by_owner_platform_variant", (q) =>
+            q.eq("ownerId", ME.subject).eq("platform", "bsc").eq("variantId", s.fx.baseId),
+          )
+          .first(),
+      );
+      expect(first?.cardId).toBe(s.fx.gooden1);
+      expect(await press(s)).toEqual({ queued: true });
+      expect(await drains(s)).toHaveLength(1);
+    });
+
+    test("an old failed row here and a newer change in another set: taken, a drain is owed and it tries this set too", async () => {
+      const s = await fresh();
+      const { lastDrainAt } = await afterFailedRun(s);
+      await queueAt(s, s.fx.gooden1, s.fx.baseId, lastDrainAt - 1_000);
+      await queueAt(s, s.fx.gold1, s.fx.goldId, Date.now());
+      expect(await press(s)).toEqual({ queued: true });
+      expect(await drains(s)).toHaveLength(1);
+    });
+
+    test("another collector's newer change doesn't take my press", async () => {
+      const s = await fresh();
+      const { lastDrainAt } = await afterFailedRun(s);
+      await queueAt(s, s.fx.gooden1, s.fx.baseId, lastDrainAt - 1_000);
+      await queueAt(s, s.fx.gooden1, s.fx.baseId, Date.now(), THEM.subject);
+      expect(await press(s)).toEqual(THROTTLED);
+      expect(await drainsEver(s)).toEqual([]);
+    });
   });
 
   test("a set I hold no copy of and never synced: nothing to sync here, nothing written or kicked", async () => {

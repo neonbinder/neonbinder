@@ -28,3 +28,4 @@
 - [Turn-count waits are load-dependent under Web Crypto](turn-count-waits-are-load-dependent-under-web-crypto.md) — positives by the clock, negatives by precondition + bounded settle; a ~4 s unit test is the smell (NEO-427)
 - [Convex log tracing by requestId](convex-log-tracing-by-request-id.md) — timestamp is epoch seconds; cached hits keep the original executionTimestamp; follow requestId + parentExecutionId; a scheduler hop starts a new tree
 - [Listing specs race the sales poll](listing-specs-race-the-sales-poll.md) — the timed drain can list before the press; product behaviour, so a truthful record under either order and a spec asserting it, never a cron-off hook (NEO-433)
+- [Spare worker indexes share one account on dev](spare-worker-indexes-share-one-account-on-dev.md) — no TEST_EMAIL_<n> locally = fallback to TEST_EMAIL; a bootstrap on any spare worker wipes the others mid-run

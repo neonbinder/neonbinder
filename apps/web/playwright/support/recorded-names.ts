@@ -35,7 +35,11 @@
  *     may meet one of these rows: a fetch after the add resolves that card's
  *     name to it instead of staging it. That spec skips every player row and
  *     asserts no player count, and a commit never writes to an existing
- *     player's stints, so neither side observes the other.
+ *     player's stints. The other side DOES observe it: once a pool player
+ *     holds Baseball (`player-sports-multi-sport-membership` gives him it), the
+ *     Venezuelan commit can link a card of that set to him, so a count of the
+ *     cards that link him is not the spec's own to assert. That spec asserts
+ *     the refusal ("N cards in Baseball sets still link to ..."), not N.
  */
 import type { FlowEnv } from "./env";
 

@@ -4625,9 +4625,11 @@ export default defineSchema({
     problemsTotal: v.optional(v.number()),
     conditionsPushed: v.array(v.string()),
     /**
-     * The last Sync press (`listingSync.syncVariant` ignores one within a
-     * minute). The variant's next run reads every condition while this is
-     * later than `lastRunAt` (the claim stamps `lastRunAt`, so one run).
+     * The last Sync press that asked for a full read (`listingSync.syncVariant`
+     * does not stamp a press within a minute of this one: that press only runs
+     * the drain for a change no recent drain has tried, or is ignored). The
+     * variant's next run reads every condition while this is later than
+     * `lastRunAt` (the claim stamps `lastRunAt`, so one run).
      */
     resyncRequestedAt: v.optional(v.number()),
     /**
@@ -4742,6 +4744,11 @@ export default defineSchema({
     drainLeaseExpiresAt: v.optional(v.number()),
     /** A kick landed while a drain ran: its release runs the next one at once. */
     drainRequested: v.optional(v.boolean()),
+    /**
+     * When the last claimed drain released, whether it succeeded or failed. A
+     * refused claim never stamps it. `listingSync.syncVariant` reads it: a row
+     * no newer than this was already tried, so it waits out the minute.
+     */
     lastDrainAt: v.optional(v.number()),
     /** RETIRED (Revision 3's switch): never read or written; see the table comment. */
     enabled: v.optional(v.boolean()),

@@ -13,7 +13,8 @@
  *
  * Called from `collection.applyCopyChanges` (every copy write, a sale applied
  * by the order poll included) for the cards whose copy lived in a box before
- * or after the write, and from `listingSync` when a collector starts listing,
+ * or after the write, from `copyPhotos` when a copy in a LISTED box changes
+ * its photos, and from `listingSync` when a collector starts listing,
  * presses Sync, or flips a box's listed setting. Two copy writers skip
  * `applyCopyChanges` and call in here themselves: an operator's card move
  * (`setShapeMove`, through `enqueueMovedListingCards`) and the condition
