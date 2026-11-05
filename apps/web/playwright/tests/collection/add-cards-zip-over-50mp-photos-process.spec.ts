@@ -31,16 +31,18 @@
 // through `support/collection.ts`. add-cards-from-photos-real-scans owns matching
 // and the save; this spec owns "a photo over 50 MP is processed".
 //
-// R5: the one wait past 7 s is the pipeline's own exception, the ceiling
-// pipeline-pairs-uploaded-scans uses for fast-path work (180 s: upload, extract of
-// two 50 MP photos, two fast-path reads and the pairing run, cold fast instance
-// included). Everything a collector does runs at 7 s.
+// R5: the zip's waits are the normal 7 s (NEO-446). Measured on a warm dev service:
+// upload 0.8-1.3 s, extract 0.3-0.8 s; the READ of two 50 MP photos is NOT measured,
+// because a local run cannot reach a 65 MP service (the dev preprocess service still
+// refuses 50 MP). The first CI run measures it: the preprocess legs are wrapped in
+// `test.step`, so the report carries each leg's own duration, and a red here comes
+// back to the owner with that number, never a longer timeout. The set-building block
+// keeps the waits add-cards-from-photos-real-scans carries (see the calls).
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { collectorCascade } from "../../support/collection";
 import { addCardViaForm } from "../../support/cards";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
-import { PIPELINE, measuredWait } from "../../support/pipeline-wait";
 import { VARIANT_TYPES_SYNC, columnHeading, drillToCustom, selectOrCreate, setBuilderReady } from "../../support/set-builder";
 
 const ZIP = path.join(
@@ -64,6 +66,8 @@ test(
     await expect(setBuilderReady(page)).toBeVisible({ timeout: LAUNCH_GATE });
     await drillToCustom(page, { sport: "Baseball", year: "2024", manufacturer: "Topps", set: setName });
     await selectOrCreate(page, "Variant Types", "Insert", { via: "list" });
+    // Copied from add-cards-from-photos-real-scans (the 15 s and VARIANT_TYPES_SYNC below);
+    // neither is a GUIDE hard-rule-3 exception, so both are flagged to the owner (NEO-446).
     await expect(columnHeading(page, "Inserts")).toBeVisible({ timeout: 15_000 });
     // A new type's column pays its first-visit sync before "+ Custom" shows.
     await expect(page.getByRole("button", { name: "Add custom Inserts" })).toBeVisible({ timeout: VARIANT_TYPES_SYNC });
@@ -90,12 +94,10 @@ test(
     await expect(page.getByRole("button", { name: `Set: 2024 ${setName} Base` })).toBeVisible();
 
     // --- Drop the zip: the run starts and lands on the URL -----------------------------
-    const dropped = Date.now();
-    await page.getByLabel("Drag your card photos here, or browse your files").setInputFiles(ZIP);
-    // Sending the archive is the pipeline's upload leg: its exception.
-    await expect(page).toHaveURL(/[?&]run=/, { timeout: PIPELINE });
-    const uploaded = Date.now();
-    measuredWait("upload: zip dropped to ?run= in the URL", dropped);
+    await test.step("upload: zip dropped to ?run= in the URL", async () => {
+      await page.getByLabel("Drag your card photos here, or browse your files").setInputFiles(ZIP);
+      await expect(page).toHaveURL(/[?&]run=/);
+    });
 
     // --- Unpacked, read, paired: the card is in the lanes ---------------------------------
     // "Unpacking your zip…" shows only while the service extracts, which a warm
@@ -103,10 +105,13 @@ test(
     // moment the run exists, so neither can synchronise with the pipeline. The
     // proof is the end state: the 50 MP pair READ and in the lanes.
     const waiting = page.getByRole("region", { name: /^Needs you, \d+$/ });
-    // The pair reaches Needs you as the card in the photos (pipeline exception: two
-    // 50 MP reads, then pairing and matching).
-    await expect(waiting).toHaveAccessibleName("Needs you, 1", { timeout: PIPELINE });
-    measuredWait("read: ?run= to the pair in Needs you (extract, 2 reads, pairing)", uploaded);
+
+    // The pair reaches Needs you as the card in the photos: extract, two 50 MP
+    // reads, pairing and matching, at the normal 7 s (unmeasured; see R5 above).
+    await test.step("read: ?run= to the pair in Needs you (extract, 2 reads, pairing)", async () => {
+      await expect(waiting).toHaveAccessibleName("Needs you, 1");
+    });
+
     const tile = waiting.getByRole("article", { name: "#315 Dwayne Bowe", exact: true });
     await expect(tile).toBeVisible();
     // What the 50 MP photo said, as read, so any case: its number and name.

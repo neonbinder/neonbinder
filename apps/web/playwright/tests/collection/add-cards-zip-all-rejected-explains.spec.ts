@@ -24,15 +24,13 @@
 // R7: writes only the account's own failed run (nothing is saved, no set or card
 // is touched). A failed run holds no active-batch slot.
 //
-// R5: the one wait past 7 s is the pipeline's own exception, the ceiling
-// pipeline-pairs-uploaded-scans uses for fast-path work on the preprocess service
-// (180 s: the zip's upload, the service's extract and the pairing run that
-// closes the job; a cold fast instance included). Everything a collector does
-// runs at 7 s.
+// R5: every wait is the normal 7 s (NEO-446: measured on a warm dev service, upload
+// 0.8-1.3 s, extract 0.3-0.8 s, refusal 0.8 s, read 2.8 s). The preprocess legs are
+// wrapped in `test.step`, so the report carries each leg's own duration; a red on a
+// cold CI instance comes back to the owner with that number, never a longer timeout.
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
-import { PIPELINE, measuredWait } from "../../support/pipeline-wait";
 
 const ZIP = path.join(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -58,20 +56,22 @@ test(
 
     // --- Drop the zip: the run starts and lands on the URL ----------------------
     const dropzone = page.getByLabel("Drag your card photos here, or browse your files");
-    const dropped = Date.now();
-    await dropzone.setInputFiles(ZIP);
-    // Sending the archive is the pipeline's upload leg: its exception.
-    await expect(page).toHaveURL(/[?&]run=/, { timeout: PIPELINE });
-    const uploaded = Date.now();
-    measuredWait("upload: zip dropped to ?run= in the URL", dropped);
+
+    await test.step("upload: zip dropped to ?run= in the URL", async () => {
+      await dropzone.setInputFiles(ZIP);
+      await expect(page).toHaveURL(/[?&]run=/);
+    });
+
     const runUrl = page.url();
 
     // --- The run fails, and the screen says why ---------------------------------
     const failure = page.getByRole("status").filter({ hasText: FAILURE });
-    // Extract turns every entry away, then the closing pairing run fails the
-    // job: the pipeline's exception again.
-    await expect(failure).toHaveText(FAILURE, { timeout: PIPELINE });
-    measuredWait("extract: ?run= to the failure line (extract, closing pairing run)", uploaded);
+
+    // Extract turns every entry away, then the closing pairing run fails the job.
+    await test.step("extract: ?run= to the failure line (extract, closing pairing run)", async () => {
+      await expect(failure).toHaveText(FAILURE);
+    });
+
     const startNewRun = page.getByRole("button", { name: "Start a new run", exact: true });
     await expect(startNewRun).toBeVisible();
     // Mobile only, where the layout differs (the button is `max-sm:min-h-11`): a
