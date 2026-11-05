@@ -1,9 +1,9 @@
 // NEO-360, NEO-444 (R1): public share links. A signed-in collector picks a
 // public name, builds a binder holding one graded copy with a cost, a location,
-// notes and a cert, flagged Up for trade, plus a raw copy aimed at the first
-// pocket of page 2, and opens Share: Private is picked. They rename the link,
-// pick Public and read the plain link (`/u/<username>/binders/<link name>`) off
-// the panel.
+// notes and a cert, flagged Up for trade, plus a raw copy with a front and back
+// photo aimed at the first pocket of page 2. PageDown and PageUp turn their own
+// binder. They open Share: Private is picked. They rename the link, pick Public
+// and read the plain link (`/u/<username>/binders/<link name>`) off the panel.
 //
 // A visitor (a fresh, signed-out context on the same device) opens it and sees
 // the real binder, read-only: its name, the card in its pocket on page 1 with
@@ -12,33 +12,44 @@
 // button. A pocket pops its card into a top loader: a dialog named by the card's
 // title, with the title showing and the details below it. Escape, the close
 // button, the backdrop and browser Back all put it down, and focus goes back to
-// the pocket. Pages turn with the buttons and PageUp / PageDown, on a phone one
-// page at a time. The URL holds the place: a reload or a pasted link opens the
-// same `?page=` and the same `?card=`, and a link that asks for more than there
-// is never breaks the page.
+// the pocket. The raw copy's photos really load for a visitor, See the back and
+// See the front flip them, and Tab walks every stop and wraps. Pages turn with
+// the buttons and PageUp / PageDown, on a phone one page at a time (a phone on
+// its side gets the spread, a tablet held upright the single page). The URL
+// holds the place: a reload or a pasted link opens the same `?page=` and the
+// same `?card=`, and a link that asks for more than there is never breaks the
+// page.
 //
 // Then the rest of the sharing: a wrong link name reads as not found; the
 // profile's shelf lists the binder and Up for Trade, and from there Back leaves
 // the binder in one step however many pages were turned and cards were opened;
 // the Want List (never switched public) reads as not found; Up for Trade, public
-// by default, lists the card. The collector picks Private again and the
-// visitor's link, card link included, reads as not found. Up for Trade switched
-// private reads as not found and leaves the profile's shelf; the Want List
-// switched public opens. A second binder can't take the first one's link name.
-// Both shelves are put back as they were.
+// by default, lists the card. The collector keeps the binder sorted by checklist
+// with its empty slots shared: the visitor sees Need sleeves that are no buttons,
+// and the graded pocket still opens; the settings go back. Up for Trade switched
+// private, with the binder still public, reads as not found and leaves the
+// profile's shelf, and the Trade flag drops off the binder's pocket and top
+// loader while the card stays; switched back, the flag returns. The collector
+// picks Private and the visitor's link, card link included, reads as not found.
+// The Want List switched public opens. A second binder can't take the first
+// one's link name. Both shelves are put back as they were.
 //
 // Not covered here: the for-sale page. Boxes are made only in the demo until
 // Inventory reaches the real collection (NEO-364); unit tests in
-// convex/publicCollection.test.ts cover it. Also left to unit tests, in
-// Pocket.test.tsx: a shared Need sleeve (it takes a sorted binder with shared
-// empty slots) and a card with a collector's photos (the top loader's flip).
+// convex/publicCollection.test.ts cover it. A swipe's page turn: Playwright's
+// touchscreen only taps, so it stays with BinderDesk.test.tsx.
 //
 // R7/R7a: writes only the signed-in user's own rows (`publicProfiles`,
-// `collectionContainers`, `collectionCopies`; the bootstrap reset clears the
-// account) on two cards of the seed's 2024 Topps Chrome Base, registered in
-// SET-REGISTRY.md. Never writes the set, its cards, players or teams.
-// Self-cleaning: the copies are removed and the binder deleted through the UI.
-// The username is `env.TEST_USERNAME`, fresh per test.
+// `collectionContainers`, `collectionCopies`, `collectionCopyPhotos`; the
+// bootstrap reset clears the account) on the first two ordinary rows of the
+// seed's 2024 Topps Chrome Base, registered in SET-REGISTRY.md. Never writes the
+// set, its cards, players or teams. Self-cleaning: the copies are removed through
+// the UI, which detaches the photos for the hourly sweep (their R2 objects land
+// in the dev bucket, which expires them), and the binder is deleted. The username
+// is `env.TEST_USERNAME`, fresh per test.
+//
+// The sorted step's empty slots fit: one checklist (at most MAX_NEED_CHECKLISTS)
+// of 335 cards, well under MAX_NEEDS, so `binderNeeds` never truncates here.
 //
 // R3: the collector's cascade is drilled through `support/collection.ts`.
 import type { Locator, Page } from "@playwright/test";
@@ -46,6 +57,13 @@ import { drillToCollectorBase, ordinaryBaseRows, shortNameOf } from "../../suppo
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 
 const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+// A 50x70 JPEG, inline: no fixture file to keep.
+const CARD_JPEG = Buffer.from(
+  "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAoHBwgHBgoICAgLCgoLDhgQDg0NDh0VFhEYIx8lJCIfIiEmKzcvJik0KSEiMEExNDk7Pj4+JS5ESUM8SDc9Pjv/2wBDAQoLCw4NDhwQEBw7KCIoOzs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozv/wAARCABGADIDASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwCcDccCl8s+1Ef3vwptYxjQp0IznBttvrba3k+5+YjvLPtR5Z9qbRU+1wv/AD6f/gX/AAA1HeWfakKlRk0lOP8Aqx9a0gsPVhPlg00r736ry8w1G0UUV5ox0f3vwptOj+9+FNruq/7rS9ZfoLqFFFFcIwpx/wBWPrTacf8AVj613YT4av8Ahf5oTG0UUVwjHR/e/Cm06P734U2u6r/utL1l+guoUUUVwjCnH/Vj602nH/Vj613YT4av+F/mhMbRRRXCMdH978KbTo/vfhSbG9K9KVGpUwtPki3rLZX7C6iUUuxvSjY3pXN9UxH/AD7l9zHdCU4/6sfWk2N6UrDEYB9a68PQq04VXOLS5XumuqExtFFFeWMM46Ubj6miirjUnFWTYBuPqaNx9TRRVe2qfzP7wDcfU0ZJ6miik6s2rOTAKKKKzA//2Q==",
+  "base64",
+);
+const photoFile = (name: string) => ({ name, mimeType: "image/jpeg", buffer: CARD_JPEG });
 
 test(
   "Collection: share a binder publicly, a visitor sees it without the private details, a wrong link name and a private binder are not found",
@@ -120,6 +138,18 @@ test(
     // The owner's binder always keeps a fresh page at the back: aim its first pocket.
     const nextName = isMobile ? "Next page" : "Next pages";
     const previousName = isMobile ? "Previous page" : "Previous pages";
+    // The owner's call to the page-turn keys: PageDown and back, then the button.
+    // (The owner's back page is named "Page 2, A fresh page" until a card lands on it.)
+    const ownerPage = (n: number) => page.getByRole("group", { name: new RegExp(`^Page ${n}(,|$)`) });
+    await expect(ownerPage(1)).toBeVisible();
+    // Page 1 draws before the binder's cards are in; until they are, there is no next page to turn to.
+    await expect(page.getByRole("button", { name: nextName, exact: true })).toBeEnabled();
+    await page.keyboard.press("PageDown");
+    await expect(ownerPage(2)).toBeVisible();
+    await expect(ownerPage(1)).toHaveCount(0);
+    await page.keyboard.press("PageUp");
+    await expect(ownerPage(1)).toBeVisible();
+    await expect(ownerPage(2)).toHaveCount(0);
     await page.getByRole("button", { name: nextName, exact: true }).click();
     await page.getByRole("button", { name: "Empty pocket 1 on page 2. Fill it from the pack", exact: true }).click();
     await page.getByRole("searchbox", { name: "Hunt for one of your cards" }).fill(`${raw.player} ${raw.number}`);
@@ -133,6 +163,23 @@ test(
       page.getByRole("status").filter({ hasText: `Added ${raw.short} to ${binderName}, page 2, pocket 1` }),
     ).toBeVisible();
     await page.getByRole("button", { name: "Clear", exact: true }).click();
+
+    // --- Its front and back photos, from its pocket ---------------------------
+    await ownerPage(2).getByRole("button", { name: new RegExp(`^2024 Topps Chrome #${escapeRegExp(raw.number)} ${escapeRegExp(raw.player)}`) }).click();
+    const rawDrawer = page.getByRole("dialog", {
+      name: new RegExp(`^2024 Topps Chrome #${escapeRegExp(raw.number)} ${escapeRegExp(raw.player)}`),
+    });
+    const rawCopies = rawDrawer.getByRole("region", { name: `Your copies of ${raw.short}`, exact: true });
+    await rawCopies.getByRole("button", { name: `Edit ${raw.short}, Raw, Excellent`, exact: true }).click();
+    const photoPanel = rawCopies
+      .getByRole("form", { name: "Edit Raw, Excellent", exact: true })
+      .getByRole("region", { name: "Photos", exact: true });
+    await photoPanel.getByLabel("Front photo file", { exact: true }).setInputFiles(photoFile("front.jpg"));
+    await expect(photoPanel.getByRole("status")).toHaveText("Front photo saved.");
+    await photoPanel.getByLabel("Back photo file", { exact: true }).setInputFiles(photoFile("back.jpg"));
+    await expect(photoPanel.getByRole("status")).toHaveText("Back photo saved.");
+    await rawDrawer.getByRole("button", { name: "Close card detail" }).click();
+    await expect(rawDrawer).toBeHidden();
 
     await page.getByRole("button", { name: `Share ${binderName}`, exact: true }).click();
     const visibility = page.getByRole("group", { name: "Who can see this binder" });
@@ -172,7 +219,7 @@ test(
         pageOne,
         pageTwo,
         graded: pageOne.getByRole("button", {
-          name: new RegExp(`^2024 Topps Chrome #${escapeRegExp(card.number)} ${escapeRegExp(card.player)}, .*, PSA 10, up for trade, pocket 1 on page 1$`),
+          name: new RegExp(`^2024 Topps Chrome #${escapeRegExp(card.number)} ${escapeRegExp(card.player)}, .*, PSA 10, up for trade, pocket \\d+ on page 1$`),
         }),
         rawCopy: pageTwo.getByRole("button", {
           name: new RegExp(`^2024 Topps Chrome #${escapeRegExp(raw.number)} ${escapeRegExp(raw.player)}, [^,]+, pocket 1 on page 2$`),
@@ -217,7 +264,7 @@ test(
 
     // --- The real binder, read-only ------------------------------------------
     await onFirstPage(visitor);
-    await expect(visitor.getByText(isMobile ? "Tap a card to pop it out." : /PageUp and PageDown turn the pages/)).toBeVisible();
+    await expect(visitor.getByText(isMobile ? "Tap a card to pop it out. Swipe to turn." : "PageUp and PageDown turn the pages. Pick a card to pop it out.")).toBeVisible();
     // Added from its details, the copy still went into a pocket: the first open one.
     await expect(graded).toBeVisible();
     await expect(graded.getByText("PSA 10", { exact: true })).toBeVisible();
@@ -233,7 +280,7 @@ test(
 
     // --- The top loader: its dialog, its title, its details ------------------
     // The title is whatever the pocket's name starts with, up to what the pocket adds.
-    const gradedName = /button "(.+), PSA 10, up for trade, pocket 1 on page 1"/.exec(await graded.ariaSnapshot())?.[1];
+    const gradedName = /button "(.+), PSA 10, up for trade, pocket \d+ on page 1"/.exec(await graded.ariaSnapshot())?.[1];
     expect(gradedName, "the pocket's name starts with the card's title").toBeTruthy();
     const dialog = visitor.getByRole("dialog", { name: gradedName, exact: true });
     const title = dialog.getByRole("heading", { level: 2, name: gradedName, exact: true });
@@ -311,6 +358,7 @@ test(
     // A phone shows one page; a wide screen shows the last page beside the back cover.
     await expect(visitor.getByText("The back cover. That's the whole binder.")).toHaveCount(isMobile ? 0 : 1);
     await expectNoOwnerAction(visitor);
+    await expectAccessible(visitor, { label: "Public binder page, the last page" });
     await previous.click();
     await onFirstPage(visitor);
     await expect(graded).toBeVisible();
@@ -342,6 +390,62 @@ test(
     const rawKey = new URL(visitor.url()).searchParams.get("card");
     expect(rawKey, "the open card is in the URL").toBeTruthy();
     await expectNoSecrets(visitor, rawDialog(visitor));
+
+    // --- The collector's photos: they load for a visitor, and flip -------------
+    const rawFront = rawDialog(visitor).getByRole("img", { name: rawName, exact: true });
+    const rawBack = rawDialog(visitor).getByRole("img", { name: `${rawName}, the back`, exact: true });
+    const seeBack = rawAbout.getByRole("button", { name: "See the back", exact: true });
+    const seeFront = rawAbout.getByRole("button", { name: "See the front", exact: true });
+    const fullSize = rawAbout.getByRole("link", { name: "See it full size (opens a new tab)", exact: true });
+    await expect(rawFront).toBeVisible();
+    // A broken image reads 0. Retries until it has loaded, on the 7 s budget.
+    await expect(rawFront).not.toHaveJSProperty("naturalWidth", 0);
+    await expect(rawBack).toHaveCount(0);
+    await expectAccessible(visitor, { label: "Public binder page, a card's photos in the top loader" });
+
+    // Every tab stop, in order, and round again. Where the stage overflows (a short
+    // screen) it is a stop of its own, after the close button.
+    const rawTitle = rawDialog(visitor).getByRole("heading", { level: 2, name: rawName, exact: true });
+    const rawClose = rawDialog(visitor).getByRole("button", { name: "Close the top loader", exact: true });
+    const scrollingStage = rawDialog(visitor).getByRole("group", { name: "This card and its details", exact: true });
+    await expect(rawTitle).toBeFocused();
+    await visitor.keyboard.press("Tab");
+    await expect(seeBack).toBeFocused();
+    await visitor.keyboard.press("Tab");
+    await expect(fullSize).toBeFocused();
+    await visitor.keyboard.press("Tab"); // wraps
+    await expect(rawClose).toBeFocused();
+    if (await scrollingStage.count()) {
+      await visitor.keyboard.press("Tab");
+      await expect(scrollingStage).toBeFocused();
+    }
+    await visitor.keyboard.press("Tab");
+    await expect(seeBack).toBeFocused();
+    if (await scrollingStage.count()) {
+      await visitor.keyboard.press("Shift+Tab");
+      await expect(scrollingStage).toBeFocused();
+    }
+    await visitor.keyboard.press("Shift+Tab");
+    await expect(rawClose).toBeFocused();
+    await visitor.keyboard.press("Shift+Tab"); // wraps the other way
+    await expect(fullSize).toBeFocused();
+
+    // See the back: the image's name changes, and the full-size link follows it.
+    const frontHref = await fullSize.getAttribute("href");
+    await seeBack.press("Enter");
+    await expect(rawBack).toBeVisible();
+    await expect(rawBack).not.toHaveJSProperty("naturalWidth", 0);
+    await expect(rawFront).toHaveCount(0);
+    await expect(seeFront).toBeFocused();
+    await expect(rawAbout.getByRole("status")).toHaveText("Showing the back");
+    await expect(fullSize).not.toHaveAttribute("href", frontHref ?? "");
+    await seeFront.press("Enter");
+    await expect(rawFront).toBeVisible();
+    await expect(rawFront).not.toHaveJSProperty("naturalWidth", 0);
+    await expect(rawBack).toHaveCount(0);
+    await expect(seeBack).toBeFocused();
+    await expect(rawAbout.getByRole("status")).toHaveText("Showing the front");
+    await expect(fullSize).toHaveAttribute("href", frontHref ?? "");
 
     // A reload keeps the card open, and it still puts down onto its page.
     await visitor.reload();
@@ -384,6 +488,26 @@ test(
     await pasted.goto(`${link.pathname}?card=nope`);
     await expect(binder(pasted).graded).toBeVisible();
     await expect(pasted.getByRole("dialog")).toHaveCount(0);
+    await expectNoCardInUrl(pasted); // the URL stops asking for it
+    // The open card's own page wins over the page in the link: its pocket has to be there to take focus back.
+    await pasted.goto(`${link.pathname}?page=1&card=${rawKey}`);
+    await expect(rawDialog(pasted)).toBeVisible();
+    await pasted.keyboard.press("Escape");
+    await expect(rawDialog(pasted)).toBeHidden();
+    await onSecondPage(pasted);
+    await expect(binder(pasted).rawCopy).toBeFocused();
+    if (isMobile) {
+      // A phone on its side has room for the spread, and still no keys to name. A
+      // tablet held upright has the width for one but reads better as a single page.
+      await pasted.goto(link.pathname);
+      await pasted.setViewportSize({ width: 839, height: 412 });
+      await expect(pasted.getByText("Inside cover and page 1 of 2", { exact: true })).toBeVisible();
+      await expect(pasted.getByText("Swipe to turn the pages. Tap a card to pop it out.", { exact: true })).toBeVisible();
+      await pasted.setViewportSize({ width: 768, height: 1024 });
+      await expect(pasted.getByText("Page 1 of 2", { exact: true })).toBeVisible();
+      await expect(pasted.getByText("Tap a card to pop it out. Swipe to turn.", { exact: true })).toBeVisible();
+      await expect(pasted.getByRole("button", { name: "Next page", exact: true })).toBeVisible();
+    }
     await pasted.close();
 
     // A wrong link name: not found, the same screen as private.
@@ -427,18 +551,64 @@ test(
     await expect(visitor.getByText("PSA 10")).toBeVisible();
     await expectAccessible(visitor, { label: "Public Up for Trade page" });
 
-    // --- Back to private: the link reads as not found ----------------------
-    await privateChoice.check();
-    await expect(privateChoice).toBeChecked();
-    await visitor.goto(link.pathname);
-    await expectNotFound(visitor);
-    // The card link goes with it: no dialog over the not-found screen.
-    await visitor.goto(`${link.pathname}?card=${rawKey}`);
-    await expectNotFound(visitor);
-    await expect(visitor.getByRole("dialog")).toHaveCount(0);
+    // --- Sorted by checklist, its empty slots shared: Need sleeves ------------
     await page.getByRole("button", { name: "Done", exact: true }).click();
+    await page.getByRole("button", { name: "Binder settings", exact: true }).click();
+    const settings = page.getByRole("dialog", { name: `${binderName} settings`, exact: true });
+    const wherePut = settings.getByRole("radio", { name: /^Where I put them/ });
+    const keepSorted = settings.getByRole("radio", { name: /^Keep sorted by checklist/ });
+    const includeEmpty = settings.getByRole("checkbox", { name: /^Include empty slots/ });
+    const showEmpty = settings.getByRole("checkbox", { name: /^Show empty slots on my public page/ });
+    await expect(wherePut).toBeChecked();
+    await expect(includeEmpty).not.toBeChecked();
+    await expect(showEmpty).not.toBeChecked();
+    await keepSorted.check();
+    await expect(keepSorted).toBeChecked();
+    await includeEmpty.check();
+    await expect(includeEmpty).toBeChecked();
+    await showEmpty.check();
+    await expect(showEmpty).toBeChecked();
+    await settings.getByRole("button", { name: "Done" }).click();
+    await expect(settings).toBeHidden();
 
-    // --- Up for Trade switched private, then public again -------------------
+    await visitor.goto(link.pathname);
+    // A sorted page says what it holds: "Page 1, 2024 Topps Chrome Base".
+    const sortedPageOne = visitor.getByRole("group", { name: /^Page 1(,|$)/ });
+    await expect(sortedPageOne.getByText("Need", { exact: true }).first()).toBeVisible();
+    await expect(sortedPageOne.getByText(/, this binder still needs it$/).first()).toBeVisible();
+    // A sleeve it still needs is no button: only the cards it holds are.
+    await expect(sortedPageOne.getByRole("button", { name: /needs|need\. Add it|Move it here/ })).toHaveCount(0);
+    await expect(sortedPageOne.getByRole("button", { name: / on page 1$/ })).toHaveCount(await sortedPageOne.getByRole("button").count());
+    await expectNoOwnerAction(visitor);
+    await expectNoSecrets(visitor, visitor.getByRole("main"));
+    await expectAccessible(visitor, { label: "Public binder page, sorted with its empty slots" });
+    const sortedGraded = sortedPageOne.getByRole("button", {
+      name: new RegExp(`^${escapeRegExp(gradedName!)}, PSA 10, up for trade, pocket \\d+ on page 1$`),
+    });
+    await sortedGraded.click();
+    await expect(title).toBeVisible();
+    await expect(about.getByText("PSA 10", { exact: true })).toBeVisible();
+    await visitor.keyboard.press("Escape");
+    await putDown();
+    await expect(sortedGraded).toBeFocused();
+
+    // The settings go back; the visitor's sleeves go with them. Sorting off leaves each card where it is.
+    await page.getByRole("button", { name: "Binder settings", exact: true }).click();
+    await showEmpty.uncheck();
+    await expect(showEmpty).not.toBeChecked();
+    await includeEmpty.uncheck();
+    await expect(includeEmpty).not.toBeChecked();
+    // Not check(): this radio only moves once the sorted order has been written down, a save or two later.
+    await wherePut.click();
+    await expect(wherePut).toBeChecked();
+    await settings.getByRole("button", { name: "Done" }).click();
+    await expect(settings).toBeHidden();
+    await visitor.goto(link.pathname);
+    await expect(graded).toBeVisible();
+    await expect(visitor.getByText("Need", { exact: true })).toHaveCount(0);
+    await expect(visitor.getByText(/, this binder still needs it$/)).toHaveCount(0);
+
+    // --- Up for Trade switched private, with the binder still public ---------
     // An open binder replaces the shelf; go back to it.
     await page.getByRole("button", { name: "Back to the shelf" }).click();
     const special = page.getByRole("list", { name: "Special places" });
@@ -451,10 +621,53 @@ test(
     await visitor.goto(`/u/${username}/up-for-trade`);
     await expectNotFound(visitor);
     await visitor.goto(`/u/${username}`);
-    await expect(visitor.getByRole("heading", { level: 1 })).toBeVisible();
+    await expect(binderLink).toBeVisible();
     await expect(visitor.getByRole("link", { name: "Up for Trade" })).toHaveCount(0);
+
+    // The binder says nothing of a private shelf: no flag in the pocket's name, on
+    // its sleeve or in the top loader, and the card and its grade still show.
+    await visitor.goto(link.pathname);
+    const gradedNoFlag = pageOne.getByRole("button", {
+      name: new RegExp(`^${escapeRegExp(gradedName!)}, PSA 10, pocket \\d+ on page 1$`),
+    });
+    await expect(gradedNoFlag).toBeVisible();
+    await expect(graded).toHaveCount(0);
+    await expect(gradedNoFlag.getByText("PSA 10", { exact: true })).toBeVisible();
+    await expect(gradedNoFlag.getByText(card.player).first()).toBeVisible();
+    await expect(gradedNoFlag.getByText("Trade", { exact: true })).toHaveCount(0);
+    await gradedNoFlag.click();
+    await expect(title).toBeVisible();
+    await expect(about.getByText("PSA 10", { exact: true })).toBeVisible();
+    await expect(about.getByText("Trade", { exact: true })).toHaveCount(0);
+    await visitor.keyboard.press("Escape");
+    await putDown();
+
+    // Switched back, the flag returns on the page the visitor already has open.
     await tradeVisibility.getByRole("radio", { name: /^Public/ }).check();
     await expect(tradeVisibility.getByRole("radio", { name: /^Public/ })).toBeChecked();
+    await expect(graded).toBeVisible();
+    await expect(gradedNoFlag).toHaveCount(0);
+    await expect(graded.getByText("Trade", { exact: true })).toBeVisible();
+    await graded.click();
+    await expect(about.getByText("Trade", { exact: true })).toBeVisible();
+    await visitor.keyboard.press("Escape");
+    await putDown();
+    await page.getByRole("button", { name: "Done", exact: true }).click();
+
+    // --- Back to private: the link reads as not found ----------------------
+    await page.getByRole("button", { name: "Back to the shelf" }).click();
+    await shelf.getByRole("button", { name: new RegExp(`^${escapeRegExp(binderName)}, `) }).click();
+    await expect(heading).toBeVisible();
+    await page.getByRole("button", { name: `Share ${binderName}`, exact: true }).click();
+    await expect(publicChoice).toBeChecked();
+    await privateChoice.check();
+    await expect(privateChoice).toBeChecked();
+    await visitor.goto(link.pathname);
+    await expectNotFound(visitor);
+    // The card link goes with it: no dialog over the not-found screen.
+    await visitor.goto(`${link.pathname}?card=${rawKey}`);
+    await expectNotFound(visitor);
+    await expect(visitor.getByRole("dialog")).toHaveCount(0);
     await page.getByRole("button", { name: "Done", exact: true }).click();
 
     // --- The Want List switched public, then private again ------------------
