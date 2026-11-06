@@ -5,10 +5,16 @@
 # the step named STEP_NAME below ("held" means a job has passed that step). Every PR's CI shares one BuySportsCards and one eBay
 # sandbox seller, so only one seller job may run repo-wide. GitHub's
 # `concurrency` cannot queue (it cancels an older pending job when a third
-# joins), so this polls the repo's own in-progress runs and goes when
+# joins), so this polls the repo's own runs and goes when
 #   1. no seller job has passed this step and is still running, and
 #   2. no seller job that has not passed it started earlier (start time, then
 #      job id).
+# Both `in_progress` and `queued` runs are read: GitHub can call a run `queued`
+# while one of its jobs runs (seen on a rerun, NEO-445). From a run it calls
+# `queued` only a RUNNING seller job counts. One that has not started does not:
+# that run may be queued behind its own PR's run, which may be waiting on this
+# very queue, so counting it could deadlock until the cap (a run in progress
+# keeps the original rule, by start time).
 # First come, first served, never a cancel. A cancelled or dead holder shows as
 # completed and stops counting at once; a job older than 3 h is ignored as
 # stuck. The wait is bounded (SELLER_QUEUE_MAX_MIN, default 60).
@@ -70,14 +76,14 @@ seller_jobs() {
     else .jobs[]
       | select(.name | test($re))
       | select(.status != "completed")
-      | {id, run: .run_id, runner: .runner_name, at: (.started_at // .created_at),
+      | {id, run: .run_id, status, runner: .runner_name, at: (.started_at // .created_at),
          held: ([.steps[]? | select(.name == $step and .status == "completed" and .conclusion == "success")] | length > 0)}
     end' <<<"$1"
 }
 
 # poll: sets DECISION to "go", "wait: ..." or "unreadable: ...".
 poll() {
-  local rows runs rid wf all="" now
+  local rows runs rid wf status all="" now in_progress="" queued=""
   now=$(date +%s)
   # 1. Our own place in line, read once (it never changes).
   if [ -z "$me_id" ]; then
@@ -91,20 +97,35 @@ poll() {
   fi
   # 2. Everyone else, this repository's runs only.
   for wf in "${WORKFLOWS[@]}"; do
-    api "repos/$GITHUB_REPOSITORY/actions/workflows/$wf/runs?status=in_progress&per_page=$PER_PAGE" \
-      || { DECISION="unreadable: could not list $wf runs ($err)"; return; }
-    runs=$(jq -r --arg repo "$GITHUB_REPOSITORY" --arg me "$GITHUB_RUN_ID" '
-      if (.total_count // 0) > '"$PER_PAGE"' or (.workflow_runs | type) != "array" then error("truncated")
-      else .workflow_runs[]
-        | select((.head_repository.full_name // .repository.full_name) == $repo)
-        | select((.id | tostring) != $me) | .id end' <<<"$body") \
-      || { DECISION="unreadable: $wf run list truncated or malformed"; return; }
-    for rid in $runs; do
-      api "repos/$GITHUB_REPOSITORY/actions/runs/$rid/jobs?per_page=$PER_PAGE" \
-        || { DECISION="unreadable: could not read the jobs of run $rid ($err)"; return; }
-      rows=$(seller_jobs "$body") || { DECISION="unreadable: run $rid job list truncated or malformed"; return; }
-      all+="$rows"$'\n'
+    for status in in_progress queued; do
+      api "repos/$GITHUB_REPOSITORY/actions/workflows/$wf/runs?status=$status&per_page=$PER_PAGE" \
+        || { DECISION="unreadable: could not list $wf runs ($err)"; return; }
+      runs=$(jq -r --arg repo "$GITHUB_REPOSITORY" --arg me "$GITHUB_RUN_ID" '
+        if (.total_count // 0) > '"$PER_PAGE"' or (.workflow_runs | type) != "array" then error("truncated")
+        else .workflow_runs[]
+          | select((.head_repository.full_name // .repository.full_name) == $repo)
+          | select((.id | tostring) != $me) | .id end' <<<"$body") \
+        || { DECISION="unreadable: $wf run list truncated or malformed"; return; }
+      if [ "$status" = queued ]; then queued+="$runs"$'\n'; else in_progress+="$runs"$'\n'; fi
     done
+  done
+  # One read per run id, however often it was listed; in progress wins, as a run
+  # can change status between the two calls.
+  in_progress=$(printf '%s' "$in_progress" | sort -u)
+  queued=$(printf '%s' "$queued" | sort -u | comm -13 <(printf '%s\n' "$in_progress") -)
+  for rid in $in_progress; do
+    api "repos/$GITHUB_REPOSITORY/actions/runs/$rid/jobs?per_page=$PER_PAGE" \
+      || { DECISION="unreadable: could not read the jobs of run $rid ($err)"; return; }
+    rows=$(seller_jobs "$body") || { DECISION="unreadable: run $rid job list truncated or malformed"; return; }
+    all+="$rows"$'\n'
+  done
+  for rid in $queued; do
+    api "repos/$GITHUB_REPOSITORY/actions/runs/$rid/jobs?per_page=$PER_PAGE" \
+      || { DECISION="unreadable: could not read the jobs of run $rid ($err)"; return; }
+    rows=$(seller_jobs "$body") || { DECISION="unreadable: run $rid job list truncated or malformed"; return; }
+    rows=$(jq -c 'select(.status == "in_progress")' <<<"$rows") \
+      || { DECISION="unreadable: run $rid job list truncated or malformed"; return; }
+    all+="$rows"$'\n'
   done
   DECISION=$(jq -rs --arg me_id "$me_id" --arg me_at "$me_at" --argjson now "$now" '
     [ .[] | select((.id | tostring) != $me_id)
