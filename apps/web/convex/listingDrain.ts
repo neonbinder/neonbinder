@@ -1689,7 +1689,7 @@ export function distinctCards(problems: readonly StoredProblem[]): number {
  * showed it. Keep this loop serial unless BSC is shown to answer overlapping
  * sheet reads for one seller correctly.
  */
-async function readSheets(
+export async function readSheets(
   ctx: DrainCtx,
   session: BscSellerSession,
   requests: ReadonlyArray<Record<string, string[]>>,

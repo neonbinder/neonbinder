@@ -234,7 +234,7 @@ test("<title states the feature>", { tag: ["@set-selector"] }, async ({ page, si
   summary and the attachment. Specs never import it directly.
 - `support/env.ts`: how `env` is built (`makeEnv`, `isSlPaused`); import types
   from here, do not re-derive.
-- `support/credentials.ts`: `loginToBsc(page)`, `loginToSportLots(page, env)`,
+- `support/credentials.ts`: `openBscCredentials(page)` (opens the page, no Test press; the seed uses it), `loginToBsc(page)`, `loginToSportLots(page, env)`,
   `LIVE_LOGIN`, the BSC sign-in seed pair (`removeBscSignIn`,
   `saveBscSignIn`) and eBay's (`saveEbayConnection`, `removeEbayConnection`,
   `expectEbayHookedUp`, which FAILS a spec loudly, naming the missing setup,
@@ -892,7 +892,9 @@ plan + seller list). The `seller-desktop` job (starts beside the desktop shards;
 `seller-mobile` job (beside the mobile shards) run them as worker 8, after the
 `bootstrap` project. Each waits its turn in a repo-wide queue
 (`.github/scripts/seller-queue.sh`, one script for both jobs): it polls this
-repo's in-progress runs about every 100 s and goes when no seller job is running
+repo's in-progress and queued runs about every 100 s (GitHub can call a run
+`queued` while a job of it runs; from such a run only a running seller job counts)
+and goes when no seller job is running
 and none that started earlier is waiting. First come first served; it never
 cancels a waiting PR (GitHub's `concurrency` group would drop all but one pending
 job). Only runs whose head repository is this repository are read (a fork's
@@ -901,10 +903,18 @@ or truncated listing waits rather than goes. A cancelled or dead holder stops
 counting at once; the wait is capped at 60 min, then the job fails with a message
 (re-run the workflow; the message says whether the cause was a busy queue or
 API errors). Artifacts: `pw-report-seller-<pass>`, `convex-logs-seller-<pass>`.
-**Limit:** the queue serializes the job window only. A run cancelled mid-spec
-(`cancel-in-progress` on a new push) can leave its preview connected to the
-shared sellers, or its listings up, until the next reset or the PR closes; the
-next holder's spec starts from whatever the seller shows. A new spec that writes to
+**Starting clean (NEO-445).** The queue serializes the job window only: a run
+cancelled mid-spec (`cancel-in-progress` on a new push) can leave its preview
+connected to the shared sellers, or its listings up. So right after its turn comes
+each job runs `testingSellerCleanup:clearSellerAccounts` (internal, reachable only
+with the deploy key). On eBay's sandbox seller it withdraws every published offer,
+whatever the listing. On the BuySportsCards test seller it sets every row of the
+sets the specs list (`SELLER_SPEC_SETS`) to 0, copies of a twin row included. It
+signs in with the bootstrap's seller credentials as its own owner, not a worker,
+and removes that sign-in after. A cleanup that cannot finish fails the job, naming
+why; a paused marketplace is skipped. A twin row at 0 is not removed (BSC offers no
+delete): if BSC still shows both copies, the listing planner refuses a card listed
+in that condition (`duplicate_sheet_row`), so the step warns. A new spec that writes to
 a shared marketplace seller account joins the list AND takes the tag. **Locally,
 do not run these two specs while any PR's E2E is in its seller job** (check
 `gh run list --status in_progress`), and not against the shared seller from two
