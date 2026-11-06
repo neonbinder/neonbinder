@@ -502,9 +502,16 @@ export async function awaitLookupsSettled(page: Page): Promise<void> {
  * nothing; never by unticking the chip) until it stands on a player whose
  * create is live. Link/skip callers leave it off.
  *
+ * It passes a preselected player the same way (NEO-424): a name with one
+ * namesake on file, even in another sport, is inserted READY with no lookup,
+ * its primary reads "Link to <name> (<sport>)" and it offers no career editor,
+ * so there is nothing to create on it. A real-name fixture can gain such a row
+ * from seeded data at any time. A skip can land on a team step or a pool wait,
+ * so each one re-runs the pass over the team/league steps.
+ *
  * Contract: ENTRY the wizard is open on a name step. EXIT a player row is
  * presented (its "Skip ... - not a person" is up), lookups drained, and with
- * `readyToCreate` its create is not held.
+ * `readyToCreate` its create is not held and it is not a preselect.
  */
 export async function walkToPlayerRow(
   page: Page,
@@ -519,9 +526,8 @@ export async function walkToPlayerRow(
     disabled: false,
   });
 
-  // A pass over the team/league steps; run twice because the lookups of the
-  // rows behind them settle only once the earlier steps are decided.
-  for (let pass = 0; pass < 2; pass++) {
+  // A pass over the team/league steps, ending on a player row.
+  const passTeamSteps = async (): Promise<void> => {
     await awaitLookupsSettled(page);
     for (let i = 0; i < 200; i++) {
       await expect(person.or(stepSkip)).toBeVisible({ timeout: LOOKUPS });
@@ -536,26 +542,37 @@ export async function walkToPlayerRow(
       await expect(wizard.getByRole("button", { name, exact: true })).toBeHidden();
     }
     await expect(person).toBeVisible({ timeout: 30_000 });
+  };
+
+  // Twice, because the lookups of the rows behind the team/league steps settle
+  // only once the earlier steps are decided.
+  for (let pass = 0; pass < 2; pass++) {
+    await passTeamSteps();
   }
 
   if (readyToCreate) {
     // The footer line that explains a held create (one node; the chip's own
     // "needs a team decision" lives in the body and is not matched).
     const held = wizard.getByText(/team decisions?, or untick (it|them)\./);
+    // Anchored on the trailing "(<sport>)": a plain exact match reads "Link to
+    // <name>" and a pick-step row "Link to <name>, ...".
+    const preselected = wizard.getByRole("button", { name: /^Link to .+ \([^)]+\)$/ });
     // `times` is a runaway guard: a batch whose every remaining player is held
-    // runs out of players and fails the visibility assert below.
+    // or preselected runs out of players and fails the visibility assert below.
     for (let i = 0; i < 20; i++) {
       await expect(person).toBeVisible();
-      if (!(await held.isVisible())) break;
+      if (!(await held.isVisible()) && !(await preselected.isVisible())) break;
       // Wait for THIS skip to land before looking again: until the decision
-      // round-trips the held row is still up, and a second pass would skip the
+      // round-trips the row is still up, and a second pass would skip the
       // player after it too. On a name step x moving is the decision landing.
       const { x } = await readStep(page);
       await person.click();
       await expectStepLeft(page, x);
+      await passTeamSteps();
     }
     await expect(person).toBeVisible();
     await expect(held, "the player the walk stopped on still holds its create").toBeHidden();
+    await expect(preselected, "the player the walk stopped on is a preselect, with nothing to create").toBeHidden();
   }
 }
 
