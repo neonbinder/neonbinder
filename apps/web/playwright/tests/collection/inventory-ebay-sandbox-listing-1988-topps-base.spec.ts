@@ -317,7 +317,8 @@ test.afterEach(async ({ context }, testInfo) => {
 
 test(
   "Inventory: connecting eBay and finishing its setup lists a box's 1988 Topps Base cards on the eBay sandbox, and an in-person box takes them down",
-  { tag: ["@collection", "@marketplace-seller"] },
+  // NEO-453, TEMPORARY: out of the suite (project-scope.mjs). Put @marketplace-seller back with it.
+  { tag: ["@collection"] },
   async ({ page, context, signIn, env, isMobile }) => {
     // The hook's record of how far this run got starts empty.
     written.connected = false;

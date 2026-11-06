@@ -916,7 +916,7 @@ cancelled mid-spec (`cancel-in-progress` on a new push) can leave its preview
 connected to the shared sellers, or its listings up. So right after its turn comes
 each job runs `testingSellerCleanup:clearSellerAccounts` (internal, reachable only
 with the deploy key). On eBay's sandbox seller it withdraws every published offer,
-whatever the listing. On the BuySportsCards test seller it sets every row of the
+whatever the listing, then deletes every inventory item (NEO-453). On the BuySportsCards test seller it sets every row of the
 sets the specs list (`SELLER_SPEC_SETS`) to 0, copies of a twin row included. It
 signs in with the bootstrap's seller credentials as its own owner, not a worker,
 and removes that sign-in after. A cleanup that cannot finish fails the job, naming

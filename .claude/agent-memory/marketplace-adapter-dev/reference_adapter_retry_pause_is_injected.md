@@ -32,4 +32,11 @@ clock stalls them).
   the 5xx for every call to that offer once a retry exists, or it goes green
   for the wrong reason (the retry succeeds through the fake).
 
+- No seam to inject through (a pause inside an `internalAction` tested with
+  `t.action`, args fixed by its validator): in `beforeEach`,
+  `vi.spyOn(globalThis, "setTimeout")`, shorten only calls whose delay equals
+  the exported pause constant, and pass every other delay to the real timer.
+  convex-test keeps running, the pause is still asserted, and recording a
+  counter inside the spy proves where it fell between calls.
+
 Related: [[action-impl-stub-ctx-for-write-failures]], [[hold-runafter0-in-convex-test]].
