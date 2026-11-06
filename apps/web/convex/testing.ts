@@ -469,7 +469,7 @@ export const seedMyTestPlaceholderStream = mutation({
  */
 export const seedMyTestFailedPhotoRun = mutation({
   args: {},
-  returns: v.object({ runId: v.id("intakeRuns"), originalName: v.string() }),
+  returns: v.object({ runId: v.id("intakeRuns"), jobId: v.string(), originalName: v.string() }),
   handler: async (ctx) => {
     if (!process.env.TESTING_RESET_SECRET) {
       throw new Error("Test placeholder seeding is not enabled on this deployment");
@@ -518,7 +518,7 @@ export const seedMyTestFailedPhotoRun = mutation({
       createdAt: now,
       lastActivityAt: now,
     });
-    return { runId, originalName };
+    return { runId, jobId, originalName };
   },
 });
 
