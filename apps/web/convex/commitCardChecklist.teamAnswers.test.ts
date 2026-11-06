@@ -1540,3 +1540,376 @@ describe("commitTeamHint (NEO-330 × NEO-335)", () => {
     expect(commitTeamHint(`${CLE}, ${WSH}`, [CLE, WSH], keys(CLE, WSH))).toBeUndefined();
   });
 });
+
+// ───────────────────────────────────────────────────────────────────────────
+// NEO-426 — a card whose every player's HOME sport is flagged "no teams"
+// saves as "No team" by default. A default, never a block: any team wins.
+// The wizard's half of the rule is teams-on-cards.teamlessSport.test.tsx.
+// ───────────────────────────────────────────────────────────────────────────
+
+describe("commitCardChecklist — the teamless-sport default (NEO-426)", () => {
+  /** A tree whose SPORT is flagged, plus a second (baseball) sport for mixed cases. */
+  async function flaggedTree(t: T, flagged = true) {
+    const { sportId, leafId } = await seedTree(t);
+    if (flagged) await t.run(async (ctx) => ctx.db.patch(sportId, { hasNoTeams: true }));
+    const baseballId = await seedSport(t, "Baseball");
+    return { sportId, leafId, baseballId };
+  }
+
+  async function seedPlayer(
+    t: T,
+    sportId: Id<"selectorOptions">,
+    name: string,
+  ): Promise<Id<"players">> {
+    return t.run(async (ctx) =>
+      ctx.db.insert("players", {
+        name,
+        nameNormalized: normalizeEntityName(name),
+        sportId,
+        lastUpdated: Date.now(),
+      }),
+    );
+  }
+
+  /** `card()` with printed players. */
+  const withPlayers = (players: string[], opts: Parameters<typeof card>[0]) => ({
+    // A card with a BSC ref is auto only once the lookup ANSWERED, so the
+    // default here is the answered case; `plain` below leaves it unset.
+    ...card({ teamLookup: "answered", ...opts }),
+    players,
+  });
+  const plain = (players: string[], opts: Parameters<typeof card>[0]) => ({
+    ...card(opts),
+    players,
+  });
+
+  const commit = (
+    t: T,
+    sportId: Id<"selectorOptions">,
+    leafId: Id<"selectorOptions">,
+    cards: Array<ReturnType<typeof card>>,
+  ) =>
+    t
+      .withIdentity(ADMIN_IDENTITY)
+      .action(api.selectorOptions.commitCardChecklist, { selectorOptionId: leafId, sportId, cards });
+
+  const stamped = (row: Doc<"cardChecklist">) => row.teamNoneConfirmedAt !== undefined;
+
+  test("stamps a card whose only player is in a flagged sport, with no teamNone from the client", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, leafId } = await flaggedTree(t);
+    await seedPlayer(t, sportId, "Pika Chu");
+
+    await commit(t, sportId, leafId, [withPlayers(["Pika Chu"], { cardNumber: "1", bscRef: "B1" })]);
+
+    const row = (await rowsByNumber(t, leafId)).get("1")!;
+    expect(row.teamNoneConfirmedAt).toEqual(expect.any(Number));
+    expect(row.teamNoneConfirmedByUserId).toBe(ADMIN_IDENTITY.subject);
+    expect(row.teamCheckDoneAt).toEqual(expect.any(Number));
+    expect(row.teamCheckOutcome).toBeUndefined();
+    expect(row.teamOnCardIds).toBeUndefined();
+    // Settled by the default: the background BSC lookup is not asked.
+    expect((await settle(t)).has(row._id)).toBe(false);
+  });
+
+  test("the stamp has the same fields as the operator's own 'No team on this card'", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, leafId } = await flaggedTree(t);
+    await seedPlayer(t, sportId, "Pika Chu");
+
+    await commit(t, sportId, leafId, [
+      withPlayers(["Pika Chu"], { cardNumber: "1", bscRef: "B1" }),
+      card({ cardNumber: "2", bscRef: "B2", teamNone: true }),
+    ]);
+
+    const rows = await rowsByNumber(t, leafId);
+    const shape = (r: Doc<"cardChecklist">) =>
+      Object.fromEntries(
+        (
+          [
+            "teamNoneConfirmedAt",
+            "teamNoneConfirmedByUserId",
+            "teamCheckDoneAt",
+            "teamCheckOutcome",
+            "teamOnCardIds",
+            "pendingTeamNames",
+          ] as const
+        ).map((k) => [k, r[k] === undefined ? "absent" : typeof r[k]]),
+      );
+    expect(shape(rows.get("1")!)).toEqual(shape(rows.get("2")!));
+    expect(rows.get("1")!.teamNoneConfirmedByUserId).toBe(rows.get("2")!.teamNoneConfirmedByUserId);
+    await settle(t);
+  });
+
+  test("every player flagged on a multi-player card still stamps", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, leafId } = await flaggedTree(t);
+    await seedPlayer(t, sportId, "Pika Chu");
+    await seedPlayer(t, sportId, "Char Zard");
+
+    await commit(t, sportId, leafId, [
+      withPlayers(["Pika Chu", "Char Zard"], { cardNumber: "1", bscRef: "B1" }),
+    ]);
+
+    expect(stamped((await rowsByNumber(t, leafId)).get("1")!)).toBe(true);
+    await settle(t);
+  });
+
+  test("a name an earlier save ruled 'not a person' is nobody: the flagged player decides", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, leafId } = await flaggedTree(t);
+    await seedPlayer(t, sportId, "Pika Chu");
+    await t.run(async (ctx) =>
+      ctx.db.insert("entityReviewQueue", {
+        selectorOptionId: leafId,
+        batchId: "batch-skip",
+        createdByUserId: ADMIN_IDENTITY.subject,
+        kind: "player",
+        name: "Checklist",
+        sportId,
+        status: "ready",
+        decision: { action: "skip" },
+      }),
+    );
+
+    await t.withIdentity(ADMIN_IDENTITY).action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: leafId,
+      sportId,
+      batchId: "batch-skip",
+      cards: [withPlayers(["Pika Chu", "Checklist"], { cardNumber: "1", bscRef: "B1" })],
+    });
+
+    expect(stamped((await rowsByNumber(t, leafId)).get("1")!)).toBe(true);
+    await settle(t);
+  });
+
+  describe("is not stamped when", () => {
+    test("no sport is flagged", async () => {
+      const t = convexTest(schema, modules);
+      const { sportId, leafId } = await flaggedTree(t, false);
+      await seedPlayer(t, sportId, "Pika Chu");
+      await commit(t, sportId, leafId, [withPlayers(["Pika Chu"], { cardNumber: "1", bscRef: "B1" })]);
+      const row = (await rowsByNumber(t, leafId)).get("1")!;
+      expect(stamped(row)).toBe(false);
+      expect(row.teamNoneConfirmedByUserId).toBeUndefined();
+      await settle(t);
+    });
+
+    test("the card has no players", async () => {
+      const t = convexTest(schema, modules);
+      const { sportId, leafId } = await flaggedTree(t);
+      await commit(t, sportId, leafId, [card({ cardNumber: "1", bscRef: "B1" })]);
+      expect(stamped((await rowsByNumber(t, leafId)).get("1")!)).toBe(false);
+      await settle(t);
+    });
+
+    test("one player's home sport has teams (a mixed card)", async () => {
+      const t = convexTest(schema, modules);
+      const { sportId, leafId, baseballId } = await flaggedTree(t);
+      await seedPlayer(t, sportId, "Pika Chu");
+      // Same set, so the commit finds him by name; his home sport is baseball.
+      const bench = await seedPlayer(t, baseballId, "Johnny Bench");
+      await t.run(async (ctx) =>
+        ctx.db.insert("playerSports", {
+          playerId: bench,
+          sportId,
+          nameNormalized: normalizeEntityName("Johnny Bench"),
+        }),
+      );
+      await commit(t, sportId, leafId, [
+        withPlayers(["Pika Chu", "Johnny Bench"], { cardNumber: "1", bscRef: "B1" }),
+      ]);
+      expect(stamped((await rowsByNumber(t, leafId)).get("1")!)).toBe(false);
+      await settle(t);
+    });
+
+    test("the flag is only on a player's EXTRA sport, never his home sport", async () => {
+      const t = convexTest(schema, modules);
+      const { sportId, leafId, baseballId } = await flaggedTree(t);
+      const bench = await seedPlayer(t, baseballId, "Johnny Bench");
+      await t.run(async (ctx) =>
+        ctx.db.insert("playerSports", {
+          playerId: bench,
+          sportId,
+          nameNormalized: normalizeEntityName("Johnny Bench"),
+        }),
+      );
+      await commit(t, sportId, leafId, [
+        withPlayers(["Johnny Bench"], { cardNumber: "1", bscRef: "B1" }),
+      ]);
+      expect(stamped((await rowsByNumber(t, leafId)).get("1")!)).toBe(false);
+      await settle(t);
+    });
+
+    test("a printed player name did not resolve to anyone", async () => {
+      const t = convexTest(schema, modules);
+      const { sportId, leafId } = await flaggedTree(t);
+      await seedPlayer(t, sportId, "Pika Chu");
+      await commit(t, sportId, leafId, [
+        withPlayers(["Pika Chu", "Nobody Known"], { cardNumber: "1", bscRef: "B1" }),
+      ]);
+      expect(stamped((await rowsByNumber(t, leafId)).get("1")!)).toBe(false);
+      await settle(t);
+    });
+
+    test("a printed team name resolves to a team: the team wins", async () => {
+      const t = convexTest(schema, modules);
+      const { sportId, leafId } = await flaggedTree(t);
+      await seedPlayer(t, sportId, "Pika Chu");
+      const reds = await seedTeam(t, sportId, "Cincinnati Reds");
+      await commit(t, sportId, leafId, [
+        withPlayers(["Pika Chu"], { cardNumber: "1", bscRef: "B1", teams: ["Cincinnati Reds"] }),
+      ]);
+      const row = (await rowsByNumber(t, leafId)).get("1")!;
+      expect(row.teamOnCardIds).toEqual([reds]);
+      expect(stamped(row)).toBe(false);
+      await settle(t);
+    });
+
+    test("an operator-picked team is on the card: the team wins", async () => {
+      const t = convexTest(schema, modules);
+      const { sportId, leafId } = await flaggedTree(t);
+      await seedPlayer(t, sportId, "Pika Chu");
+      const reds = await seedTeam(t, sportId, "Cincinnati Reds");
+      await commit(t, sportId, leafId, [
+        withPlayers(["Pika Chu"], { cardNumber: "1", bscRef: "B1", teamIds: [reds] }),
+      ]);
+      const row = (await rowsByNumber(t, leafId)).get("1")!;
+      expect(row.teamOnCardIds).toEqual([reds]);
+      expect(stamped(row)).toBe(false);
+      await settle(t);
+    });
+
+    test("a printed team name is still pending review", async () => {
+      const t = convexTest(schema, modules);
+      const { sportId, leafId } = await flaggedTree(t);
+      await seedPlayer(t, sportId, "Pika Chu");
+      await commit(t, sportId, leafId, [
+        withPlayers(["Pika Chu"], { cardNumber: "1", bscRef: "B1", teams: ["Gotham Knights"] }),
+      ]);
+      const row = (await rowsByNumber(t, leafId)).get("1")!;
+      expect(row.pendingTeamNames).toEqual(["Gotham Knights"]);
+      expect(stamped(row)).toBe(false);
+      await settle(t);
+    });
+
+    test("the set's own team fills the card on insert: the team wins, nothing is stamped", async () => {
+      const t = convexTest(schema, modules);
+      const { sportId, leafId } = await flaggedTree(t);
+      await seedPlayer(t, sportId, "Pika Chu");
+      const reds = await seedTeam(t, sportId, "Cincinnati Reds");
+      await t.run(async (ctx) => ctx.db.patch(leafId, { teamIds: [reds] }));
+      await commit(t, sportId, leafId, [withPlayers(["Pika Chu"], { cardNumber: "1", bscRef: "B1" })]);
+      const row = (await rowsByNumber(t, leafId)).get("1")!;
+      expect(row.teamOnCardIds).toEqual([reds]);
+      expect(stamped(row)).toBe(false);
+      expect(row.teamNoneConfirmedByUserId).toBeUndefined();
+      await settle(t);
+    });
+
+    test("BSC's raw team value is a listed claim, even with no team string on the card", async () => {
+      const t = convexTest(schema, modules);
+      const { sportId, leafId } = await flaggedTree(t);
+      await seedPlayer(t, sportId, "Pika Chu");
+      await commit(t, sportId, leafId, [
+        withPlayers(["Pika Chu"], { cardNumber: "1", bscRef: "B1", rawTeamName: "Pallet Town Pikas" }),
+      ]);
+      expect(stamped((await rowsByNumber(t, leafId)).get("1")!)).toBe(false);
+      await settle(t);
+    });
+
+    test("a BSC-linked card's lookup has no answer yet (undefined): the queue may still find a team", async () => {
+      const t = convexTest(schema, modules);
+      const { sportId, leafId } = await flaggedTree(t);
+      await seedPlayer(t, sportId, "Pika Chu");
+      await commit(t, sportId, leafId, [plain(["Pika Chu"], { cardNumber: "1", bscRef: "B1" })]);
+      const row = (await rowsByNumber(t, leafId)).get("1")!;
+      expect(stamped(row)).toBe(false);
+      expect((await settle(t)).has(row._id)).toBe(true);
+    });
+
+    test("a card with no BSC ref has no lookup to wait for: undefined still stamps", async () => {
+      const t = convexTest(schema, modules);
+      const { sportId, leafId } = await flaggedTree(t);
+      await seedPlayer(t, sportId, "Pika Chu");
+      await commit(t, sportId, leafId, [plain(["Pika Chu"], { cardNumber: "1", slRef: "S1" })]);
+      expect(stamped((await rowsByNumber(t, leafId)).get("1")!)).toBe(true);
+      await settle(t);
+    });
+
+    test("the team lookup failed: a missing answer is not read as 'no team'", async () => {
+      const t = convexTest(schema, modules);
+      const { sportId, leafId } = await flaggedTree(t);
+      await seedPlayer(t, sportId, "Pika Chu");
+      await commit(t, sportId, leafId, [
+        withPlayers(["Pika Chu"], { cardNumber: "1", bscRef: "B1", teamLookup: "failed" }),
+      ]);
+      const row = (await rowsByNumber(t, leafId)).get("1")!;
+      expect(stamped(row)).toBe(false);
+      expect((await settle(t)).has(row._id)).toBe(true);
+    });
+  });
+
+  describe("on re-sync", () => {
+    test("an existing teamless row is stamped once the sport is flagged", async () => {
+      const t = convexTest(schema, modules);
+      const { sportId, leafId } = await flaggedTree(t, false);
+      await seedPlayer(t, sportId, "Pika Chu");
+      const first = [withPlayers(["Pika Chu"], { cardNumber: "1", bscRef: "B1" })];
+      await commit(t, sportId, leafId, first);
+      await settle(t);
+      const before = (await rowsByNumber(t, leafId)).get("1")!;
+      expect(stamped(before)).toBe(false);
+
+      await t.run(async (ctx) => ctx.db.patch(sportId, { hasNoTeams: true }));
+      await commit(t, sportId, leafId, first);
+
+      const row = (await rowsByNumber(t, leafId)).get("1")!;
+      expect(row._id).toBe(before._id);
+      expect(row.teamNoneConfirmedAt).toEqual(expect.any(Number));
+      expect(row.teamNoneConfirmedByUserId).toBe(ADMIN_IDENTITY.subject);
+      expect(row.teamCheckDoneAt).toEqual(expect.any(Number));
+      await settle(t);
+    });
+
+    test("an existing row that already has a team is never touched by the default", async () => {
+      const t = convexTest(schema, modules);
+      const { sportId, leafId } = await flaggedTree(t);
+      await seedPlayer(t, sportId, "Pika Chu");
+      const reds = await seedTeam(t, sportId, "Cincinnati Reds");
+      await commit(t, sportId, leafId, [
+        withPlayers(["Pika Chu"], { cardNumber: "1", bscRef: "B1", teams: ["Cincinnati Reds"] }),
+      ]);
+      await settle(t);
+
+      await commit(t, sportId, leafId, [withPlayers(["Pika Chu"], { cardNumber: "1", bscRef: "B1" })]);
+
+      const row = (await rowsByNumber(t, leafId)).get("1")!;
+      expect(row.teamOnCardIds).toEqual([reds]);
+      expect(stamped(row)).toBe(false);
+      expect(row.teamNoneConfirmedByUserId).toBeUndefined();
+      await settle(t);
+    });
+  });
+
+  test("a team added to a stamped card later clears the stamp: the default is never a block", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, leafId } = await flaggedTree(t);
+    await seedPlayer(t, sportId, "Pika Chu");
+    const reds = await seedTeam(t, sportId, "Cincinnati Reds");
+    await commit(t, sportId, leafId, [withPlayers(["Pika Chu"], { cardNumber: "1", bscRef: "B1" })]);
+    const row = (await rowsByNumber(t, leafId)).get("1")!;
+    expect(stamped(row)).toBe(true);
+
+    await t.withIdentity(ADMIN_IDENTITY).mutation(api.selectorOptions.updateCard, {
+      id: row._id,
+      teamOnCardIds: [reds],
+    });
+
+    const after = (await rowsByNumber(t, leafId)).get("1")!;
+    expect(after.teamOnCardIds).toEqual([reds]);
+    expect(after.teamNoneConfirmedAt).toBeUndefined();
+    expect(after.teamNoneConfirmedByUserId).toBeUndefined();
+    await settle(t);
+  });
+});

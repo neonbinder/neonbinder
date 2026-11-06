@@ -98,7 +98,7 @@ BuySportsCards alone for the whole run:
 | Baseball → 2024 → Topps → Topps Heritage | `Base` — SportLots base mapping CONFIRMED in-flow (NOT pre-synced) | `tests/set-selector/sets-base.spec.ts` — **sole writer** of that mapping. ✅ **RATIFIED 2026-09-09** (NEO-260) — it was already in use and had never been listed |
 | Baseball → 1996 → Score → Score | `Insert` (reconciled in-flow, NOT pre-synced) | `tests/set-selector/inserts-1996-score-one-nb-set-two-bsc-sources.spec.ts` — **sole writer** |
 | Hockey → 2024 → Topps → Topps NHL Sticker Collection | none — the flow never goes below `Variant Types` (NOT pre-synced) | `tests/set-selector/set-rename-survives-resync-and-suggests-bsc-name.spec.ts` — **sole writer** |
-| Hockey → 1995 → Unknown (reached through the All Brands view) → Roanoke Express ECHL | `Base` — 25 cards, fetched and COMMITTED in-flow, BSC only (NOT pre-synced); NEO-335: one player CREATED in the review with one career team (a real recorded one-word club, NEO-413, pre-filled onto his card), one card answered "No team on this card", one given a team CREATED with "Other team…" (`RXO<token>T`), 22 left for later; then RE-SYNCED once (teams-only review) | `tests/set-selector/checklist-one-marketplace-skips-match-dialog.spec.ts` — **sole writer**. ✅ **APPROVED 2026-09-09** (NEO-260); manufacturer row renamed by NEO-237 (the marketplace's "All Brands" option is routed onto the year's `Unknown` row, never stored under its label) |
+| Hockey → 1995 → Unknown (reached through the All Brands view) → Roanoke Express ECHL | `Base` — 25 cards, fetched and COMMITTED in-flow, BSC only (NOT pre-synced); NEO-335: one player CREATED in the review with one career team (a real recorded one-word club, NEO-413, pre-filled onto his card), one card answered "No team on this card", one given a team CREATED with "Other team…" (`RXO<token>T`); NEO-426: a SECOND player created with "Sport for this name" moved to `Non Sport` (his card saves "No team" by his sport's flag, no teams-step line), then given `RXO<token>T` in the card editor after the save; 21 left for later; then RE-SYNCED once (teams-only review) | `tests/set-selector/checklist-one-marketplace-skips-match-dialog.spec.ts` — **sole writer**, and **sole writer of the `Non Sport` sport row's "No teams in this sport" flag** (NEO-426, see below). ✅ **APPROVED 2026-09-09** (NEO-260); manufacturer row renamed by NEO-237 (the marketplace's "All Brands" option is routed onto the year's `Unknown` row, never stored under its label) |
 | Hockey → 1997 (the whole year) | a manufacturer row `SPx` linked through SportLots' All Brands option; the per-brand SportLots reviews the year-wide Sync Sets leaves behind (NEO-306: SportLots-only names are no longer saved as sets; the reviews stay unsaved, labels never read or asserted); the year's BSC sets filed under the brands / `Unknown` and the prefix-matching ones re-homed to `SPx`. No checklist is fetched. | `tests/set-selector/brand-via-all-brands-narrows-sportlots.spec.ts` — **sole writer** of the year. ✅ Claimed by Jason 2026-09-21 (NEO-237 §0.1); the prefix `SPx` **measured** on PR #272's preview 2026-09-21 — see the Hockey 1997 section |
 | Baseball → 2024 → Topps → Topps MLB at Rickwood Field Negro Leagues Collection | none since NEO-330 — RETIRED as a fixture: the reference catalogue holds its Negro League clubs and players, so it no longer raises the team steps the alias flow needs | was `tests/set-selector/checklist-wizard-link-team-saves-alias.spec.ts` (NEO-284, approved 2026-09-16); no flow touches it now |
 | Baseball → 1996 → All Brands (the view; the set is filed under the year's `Unknown` row) → Line Up Venezuelan Winter League | `Base` — 300 cards, BSC only (the SportLots picker is CANCELLED in-flow), fetched and COMMITTED in-flow (NOT pre-synced): one club LINKED to the minted `Loc<token> Ali<token>` with its alias, every other name SKIPPED | `tests/set-selector/checklist-wizard-link-team-saves-alias.spec.ts` — **sole writer**. ✅ **Approved by Jason 2026-10-10** (NEO-330). Measured: **200 unknown players + 8 unknown teams** (211 rows once lookups settle) — see "The TEAM-link alias fixture" |
@@ -1287,6 +1287,35 @@ every card, and a second commit of the same 25 cards. The set stays single-use p
 deployment and the flow remains its sole writer. Every card is `NNO`, so
 cards are told apart by POSITION in the section, by the team they carry, or
 by the drawer's own order — never by number or marketplace name.
+
+#### NEO-426 — the `Non Sport` flag and the second player
+
+The sport row is **`Non Sport`** (no hyphen; SportLots code `NS`, no BuySportsCards
+slot), one of the catalogue's sport rows the reference seed loads and the
+Sports column lists. No other spec reads or writes it, and no other spec
+creates a player whose home sport is `Non Sport`, so the flag decides nothing
+outside this spec. The spec:
+
+- turns **"No teams in this sport"** ON in the Sports column's attributes panel
+  before the fetch (a leftover ON from a run that died is cleared first, so a
+  re-run on dev starts clean), and turns it OFF again as its last step. Picking
+  the sport starts its Years column (a SportLots round trip when SportLots is
+  live); nothing waits on it and no year row is relied on;
+- creates a SECOND player, the next name the wizard presents, moves it to
+  `Non Sport` ("Sport for this name"; no Wikidata for that sport, so no
+  lookup and no career team), and adds it as new. His one card then has **no
+  line** on the teams step, the Save step says `1 card saves with No team: its
+  player's sport has none. Add a team later in the card editor.`, "N need you"
+  is **FETCHED − 4**, the card shows no team in the drawer, the teams-only
+  re-sync does not ask about it, and `RXO<token>T` can be picked for it in the
+  card editor afterwards.
+
+The flow therefore writes ONE more player (a real Roanoke name, home sport
+`Non Sport`) and links the existing `RXO<token>T` to his card; the player is
+global like the first one and the run-start reset clears it. The figures in
+the step list above predate it: with two created players the shared line
+reads `Cards with no players (23)`, 21 are left for later, and the pill reads
+`21 need you`.
 
 #### What STEP 8 writes, and why it has to write anything (NEO-272)
 

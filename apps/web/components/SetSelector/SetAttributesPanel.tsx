@@ -35,6 +35,7 @@ import { AUTOGRAPH_CHOICE_LABEL, AUTOGRAPH_FORMATS } from "./entity-review-steps
 import CardPrefixRow from "./CardPrefixRow";
 import RenameEntityControl from "./RenameEntityControl";
 import { variantTypeKind } from "../../convex/variantRole";
+import { isTeamlessSport } from "../../convex/lib/teamlessSport";
 import MoveSetToBrandControl from "./MoveSetToBrandControl";
 import MakeParallelControl, { type ReshapeStep } from "./MakeParallelControl";
 import MakeInsertControl from "./MakeInsertControl";
@@ -260,6 +261,8 @@ export default function SetAttributesPanel({
   const setManufacturerSlViaAllBrands = useMutation(
     api.brandView.setManufacturerSlViaAllBrands,
   );
+  // NEO-426 — the sport row's "No teams in this sport" flag.
+  const setSportHasNoTeams = useMutation(api.sportTeamless.setHasNoTeams);
 
   const [expanded, setExpanded] = useState(!defaultCollapsed);
   // NEO-412 — the panel's two toasts, at most one showing: a confirmation or
@@ -624,6 +627,24 @@ export default function SetAttributesPanel({
   };
 
   /**
+   * NEO-426 — the sport row's "No teams in this sport" toggle. The toast
+   * waits for the server, like the SportLots link's: the flag changes how
+   * every later save of this sport's cards defaults, so the toast should mean
+   * it happened. Its own words rather than the panel's Saved/Cleared pair,
+   * because "Saved Teams" reads as the opposite of switching teams off; and
+   * the failure line is whole as it stands, so no `Failed:` prefix (a
+   * server's own operator-facing reason still wins, as everywhere here).
+   */
+  const handleToggleHasNoTeams = async (hasNoTeams: boolean) => {
+    try {
+      await setSportHasNoTeams({ sportId: selectorOptionId, hasNoTeams });
+      showToast(hasNoTeams ? SPORT_TEAMS_OFF_TOAST : SPORT_TEAMS_ON_TOAST);
+    } catch (e) {
+      showFailedToast(userFacingMessage(e, SPORT_TEAMS_FLIP_FAILED_TOAST));
+    }
+  };
+
+  /**
    * NEO-306 — the levels whose rows can carry a set action (Move, Make
    * parallel of…, Make insert of…, Promote to set). Whether one actually
    * renders is each control's own call; see the "Set actions" row.
@@ -904,6 +925,17 @@ export default function SetAttributesPanel({
           )}
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            {/* NEO-426: the one attribute a SPORT row carries here — whether
+                its cards have teams at all. Off by default; on, a card whose
+                every player calls this sport home saves as "No team" unless
+                something names one. Never a block: a picked team still wins. */}
+            {leafLevel === "sport" && (
+              <SportHasNoTeamsToggle
+                key={`sport-has-no-teams-${selectorOptionId}`}
+                on={isTeamlessSport(row)}
+                onToggle={handleToggleHasNoTeams}
+              />
+            )}
             {/* NEO-237: first cell on a brand row, for the same reason the
                 card prefix is first on a variant row — it is the one fact
                 here that decides which SETS are this brand's. */}
@@ -1301,6 +1333,86 @@ function SlViaAllBrandsToggle({
           {disabledReason}
         </span>
       )}
+    </div>
+  );
+}
+
+/** NEO-426 — the cell's eyebrow, and its label `Set feature Teams`. */
+const SPORT_TEAMS_LABEL = "Teams";
+/** NEO-426 — the toggle's visible words, which are also its accessible name. */
+export const SPORT_HAS_NO_TEAMS_TOGGLE_TEXT = "No teams in this sport";
+/** NEO-426 — what the toggle does, under it and read as its description. */
+const SPORT_HAS_NO_TEAMS_HINT = "Players from this sport save with No team unless the card has one.";
+/** NEO-426 — the toasts: switched on, switched off, and a flip that failed. */
+const SPORT_TEAMS_OFF_TOAST = "Teams off for this sport. Cards save as No team.";
+const SPORT_TEAMS_ON_TOAST = "Teams are back on for this sport.";
+const SPORT_TEAMS_FLIP_FAILED_TOAST = "Couldn't flip that. Try again.";
+
+/**
+ * NEO-426 — "No teams in this sport", as a pressed toggle in a sport row's
+ * Attributes grid. `SlViaAllBrandsToggle`'s build: the cell chrome with an
+ * eyebrow like its neighbours, a box that fills when on, the whole sentence
+ * as the target, `aria-pressed`, and a busy state that keeps the control in
+ * the tab order (`aria-disabled`, never native `disabled`).
+ *
+ * The flag is NB's own fact about the sport row (read through
+ * `isTeamlessSport`, never the sport's name). It moves a default and nothing
+ * else: the teams step stops asking about cards whose every player calls
+ * this sport home, and the save files them as "No team". A team the operator
+ * picks, now or later, is kept.
+ */
+function SportHasNoTeamsToggle({
+  on,
+  onToggle,
+}: {
+  on: boolean;
+  onToggle: (hasNoTeams: boolean) => Promise<unknown>;
+}) {
+  const hintId = useId();
+  const [busy, setBusy] = useState(false);
+
+  const toggle = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await onToggle(!on);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div
+      className="flex flex-col gap-1 p-2 rounded border text-xs border-rule-strong bg-raised-deep/30"
+      aria-label={`Set feature ${SPORT_TEAMS_LABEL}`}
+    >
+      <span className="text-[10px] uppercase tracking-wide text-ink-3">
+        {SPORT_TEAMS_LABEL}
+      </span>
+      <button
+        type="button"
+        className={`w-full text-left flex items-start gap-2 p-2 rounded-md border text-xs transition-colors focus-outline ${
+          on
+            ? "border-neon-green-text bg-neon-green/10 text-ink"
+            : "border-control text-ink-2 hover:border-neon-green-text"
+        } ${busy ? "opacity-60 cursor-not-allowed hover:border-control" : ""}`}
+        aria-pressed={on}
+        aria-disabled={busy || undefined}
+        aria-describedby={hintId}
+        onClick={() => void toggle()}
+        onKeyDown={(e) => activateOnEnter(e, () => void toggle(), busy)}
+      >
+        <span
+          aria-hidden="true"
+          className={`mt-0.5 h-3.5 w-3.5 shrink-0 rounded-sm border ${
+            on ? "border-neon-green-text bg-neon-green" : "border-control"
+          }`}
+        />
+        <span>{SPORT_HAS_NO_TEAMS_TOGGLE_TEXT}</span>
+      </button>
+      <span id={hintId} className="text-[11px] text-ink-3">
+        {SPORT_HAS_NO_TEAMS_HINT}
+      </span>
     </div>
   );
 }

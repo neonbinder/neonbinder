@@ -1286,3 +1286,18 @@ describe("NEO-370 — listing reads ship no lease, SKU, order id or marketplace 
     expect(scheduled).toEqual([]);
   });
 });
+
+describe("NEO-426: a refused teamless-sport write persisted nothing", () => {
+  test("setHasNoTeams from an anonymous or non-admin caller leaves the sport and the scheduler untouched", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const before = await t.run((ctx) => ctx.db.get(sportId));
+    const args = { sportId, hasNoTeams: true };
+    await expect(t.mutation(api.sportTeamless.setHasNoTeams, args)).rejects.toThrow();
+    await expect(
+      t.withIdentity({ subject: "user" }).mutation(api.sportTeamless.setHasNoTeams, args),
+    ).rejects.toThrow();
+    expect(await t.run((ctx) => ctx.db.get(sportId))).toEqual(before);
+    expect(await t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect())).toEqual([]);
+  });
+});

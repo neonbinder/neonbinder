@@ -248,6 +248,14 @@ type FetchPreview = {
    */
   playerlessIndexes?: number[];
   /**
+   * NEO-426 — `resolveChecklistEntities`' `teamlessPlayerNames`: printed
+   * player names that resolved to a known player whose HOME sport has no
+   * teams. A card every one of whose people is such a player (or a player the
+   * wizard creates or links in a teamless sport) is not asked about in the
+   * teams step: the commit saves it as "No team". Absent on an older server.
+   */
+  teamlessPlayerNames?: string[];
+  /**
    * NEO-335 Phase 2 — the titles step's answers, POSITIONALLY ALIGNED with
    * `cards`, as `titleAnswersForCommit` decided them. Absent unless the step
    * was part of the sitting (the wizard reports nothing otherwise). Client
@@ -1890,7 +1898,7 @@ export default function CardChecklist({
     // NEO-332's `ambiguousPlayers` is not read here any more: the banner
     // counts every name as one (`entityConfirmationMessage`), and the wizard
     // finds a same-name row's pick step from the row itself.
-    const { unknownPlayers, unknownTeams, batchId, titleContext } =
+    const { unknownPlayers, unknownTeams, batchId, titleContext, teamlessPlayerNames } =
       await resolveEntities({
         selectorOptionId: variantId,
         sportId,
@@ -1939,6 +1947,7 @@ export default function CardChecklist({
       existingIndexes,
       playerlessIndexes,
       ...(titleContext ? { titleContext } : {}),
+      ...(teamlessPlayerNames && teamlessPlayerNames.length > 0 ? { teamlessPlayerNames } : {}),
       cards: kept.map(({ card }) => card),
       decisions: kept.map(({ index }) => ({
         applyFields: review.applyFieldsByIndex[index],
@@ -1959,6 +1968,12 @@ export default function CardChecklist({
     // the section itself makes. "Resolved" includes a team name an earlier
     // save skipped (the gate drops it): it is not a team, so a card printing
     // only that is teamless and asked about.
+    // NEO-426 — and a card every one of whose people plays a sport with no
+    // teams is not asked about either: the commit saves it as "No team" (the
+    // server reads the same facts). Every name resolved on this path, so the
+    // fetch's `teamlessPlayerNames` is the whole fact; a sitting left with
+    // nothing to ask commits without the wizard. The skipped player names
+    // ride along so "nobody" is judged as the wizard would judge it.
     const noNames = unknownPlayers.length === 0 && unknownTeams.length === 0;
     const askTeams =
       noNames &&
@@ -1966,7 +1981,9 @@ export default function CardChecklist({
         preview.cards,
         [],
         new Set(settledTeamIndexes),
-        storedPeople(undefined, undefined, skippedTeamNames),
+        storedPeople(undefined, skippedPlayerNames, skippedTeamNames, {
+          teamlessPlayerNames: preview.teamlessPlayerNames,
+        }),
       ).length > 0;
     // NEO-335 Phase 2 (D7) — and the same for titles: a NEW card that would be
     // born with a title the walker flags gets the wizard's "Card titles" step
@@ -3794,6 +3811,8 @@ export default function CardChecklist({
           // NEO-335: the teams step, for cards that would save with no team.
           previewCards={pendingPreview.cards}
           onTeamAnswersChange={handleTeamAnswers}
+          // NEO-426: names the fetch found playing a sport with no teams.
+          teamlessPlayerNames={pendingPreview.teamlessPlayerNames}
           // NEO-335 Phase 2: the "Card titles" step, after Teams.
           titleContext={pendingPreview.titleContext}
           existingCardIndexes={pendingPreview.existingIndexes}

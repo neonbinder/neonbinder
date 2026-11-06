@@ -497,16 +497,38 @@ export interface StepTracker {
 export interface TrackStepsInput {
   rows: readonly StepRow[];
   teamsStep: boolean;
+  /**
+   * NEO-426 — false while a fact the teams step's membership reads is still
+   * loading (the flagged sports, a newly linked player's home sport). The
+   * counted teams step is then HELD as it was: neither added nor dropped on
+   * a half-loaded answer. Absent reads as true. A host should not start the
+   * tracker (`prev === null`) until it is true, so the first count is exact.
+   */
+  teamsStepKnown?: boolean;
+  /**
+   * NEO-426 — the teams step is gone ONLY because the teamless-sport default
+   * now answers every card it would have listed, and the walker has not
+   * reached it. The one case the counter shrinks: a counted step the
+   * operator will never see would otherwise leave a hole in "Step x of y".
+   * Said through the growth line (`TEAMS_STEP_DROPPED_LINE`). Any other
+   * reason the step goes away keeps its place, as before.
+   */
+  teamsStepDefaulted?: boolean;
   /** NEO-345 — absent reads as false. */
   autographStep?: boolean;
   titlesStep: boolean;
   onSave: boolean;
 }
 
+/** NEO-426 — the growth line's words when the teams step is dropped. */
+export const TEAMS_STEP_DROPPED_LINE = "1 fewer step: no cards need a team";
+
 export function trackSteps(prev: StepTracker | null, input: TrackStepsInput): StepTracker {
+  const known = input.teamsStepKnown !== false;
   const plan: StepPlanInput = {
     reviewRows: input.rows.length,
-    teamsStep: input.teamsStep,
+    // Unknown: hold what was counted (nothing yet, on a first count).
+    teamsStep: known ? input.teamsStep : (prev?.count.teamsStep ?? false),
     autographStep: input.autographStep === true,
     titlesStep: input.titlesStep,
   };
@@ -517,9 +539,21 @@ export function trackSteps(prev: StepTracker | null, input: TrackStepsInput): St
       growth: null,
     };
   }
-  const { count, added } = advanceStepCount(prev.count, plan, input.onSave);
+  // NEO-426 — the one shrink (see `teamsStepDefaulted`). Never on Save or
+  // the move onto it: Save is counted from the end and stays "y of y".
+  const dropTeams =
+    known &&
+    input.teamsStepDefaulted === true &&
+    !input.teamsStep &&
+    prev.count.teamsStep &&
+    !prev.count.frozen &&
+    !input.onSave;
+  const base: StepCount = dropTeams
+    ? { ...prev.count, teamsStep: false, total: prev.count.total - 1 }
+    : prev.count;
+  const { count, added } = advanceStepCount(base, plan, input.onSave);
   if (count === prev.count) return prev;
-  if (added === 0) {
+  if (added === 0 && !dropTeams) {
     // Frozen/unfrozen only; nothing new to remember or announce.
     return { ...prev, count };
   }
@@ -529,15 +563,19 @@ export function trackSteps(prev: StepTracker | null, input: TrackStepsInput): St
   const reasons = growthReasons({
     addedRows,
     allRows: input.rows,
-    teamsStepAdded: count.teamsStep && !prev.count.teamsStep,
+    teamsStepAdded: count.teamsStep && !base.teamsStep,
     autographStepAdded: count.autographStep && !prev.count.autographStep,
     titlesStepAdded: count.titlesStep && !prev.count.titlesStep,
   });
   const knownRowIds = new Set(prev.knownRowIds);
   for (const row of input.rows) knownRowIds.add(row._id);
+  const text = [
+    ...(added > 0 ? [growthLine(added, reasons)] : []),
+    ...(dropTeams ? [TEAMS_STEP_DROPPED_LINE] : []),
+  ].join(". ");
   return {
     count,
     knownRowIds,
-    growth: { seq: (prev.growth?.seq ?? 0) + 1, text: growthLine(added, reasons) },
+    growth: { seq: (prev.growth?.seq ?? 0) + 1, text },
   };
 }

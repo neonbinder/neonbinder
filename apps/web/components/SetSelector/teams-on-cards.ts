@@ -83,6 +83,36 @@ export { MAX_CARD_TEAMS };
  * a card is identified by its POSITION in the preview, which is the only
  * identity it has until it is saved (product invariant 7).
  *
+ * ## A teamless sport is a default, never a block (NEO-426)
+ *
+ * A sport row an operator flagged "No teams in this sport" (a sport whose
+ * people never play for a team: Non-Sport, Golf, Tennis, Boxing;
+ * `isTeamlessSport`, never the sport's name) changes the
+ * DEFAULT for one kind of card: one that would save with no team, has at
+ * least one person on it, and every one of those people has that sport as
+ * their HOME sport (`players.sportId`; extra sports never count). Such a card
+ * is not asked about — the commit stamps it "No team", exactly as if the
+ * operator had picked "No team on this card" (`autoNoTeamIndexes`), and the
+ * Save step says how many there are.
+ *
+ * Only the default moves. Nothing here refuses, hides or strips a team: a
+ * card that names one (printed, resolved, set-level, picked) keeps it, and a
+ * team added later in the card editor sticks. Anything that is not plainly
+ * the default goes to the operator as before, per invariant 8:
+ *  - a card with nobody on it (nothing says what sport it is);
+ *  - a mixed card (any person whose home sport has teams, or is unknown);
+ *  - a card whose listing names a team the operator has not ruled on, whose
+ *    team lookup failed, or that carries a BSC ref without an ANSWERED
+ *    lookup (one is owed, so a missing answer is not "no team") — a data
+ *    claim, or the want of one, holds the default back too.
+ *
+ * Membership stays synchronous: it reads only facts the host already holds
+ * (`StoredPeople.teamlessSportIds`, `linkedPlayerSportIds`,
+ * `teamlessPlayerNames`), never the server's per-player evidence, so a line
+ * never vanishes under the operator's cursor when a query lands. A fact not
+ * loaded yet reads as "has teams": the card is asked about, which is what
+ * happened before this rule existed.
+ *
  * ## Choices
  *
  * One line per player set. A line whose card has several people on it (or
@@ -118,6 +148,20 @@ export interface PreviewCardForTeams {
    * (invariant 8): the operator picks.
    */
   teamLookup?: "answered" | "failed";
+  /**
+   * BSC's unsplit team value as its lookup returned it. NEO-426: a listing's
+   * team claim even when the card carries no team strings (a split refused
+   * over the cap), so it holds the teamless-sport default back — the
+   * commit's `commitTeamHint` reads it the same way.
+   */
+  rawTeamName?: string;
+  /**
+   * NEO-426 — read for one fact only: does the card carry a BSC ref? Such a
+   * card was owed a team lookup, so the teamless-sport default needs an
+   * ANSWERED one (`teamLookup`), exactly as the commit's
+   * `defaultsToNoTeamOnCommit` does with `hasBscRef`. Never a key.
+   */
+  platformData?: { bsc?: { ref: string } };
 }
 
 /** The operator's answer for one card, as the commit reads it. */
@@ -135,6 +179,13 @@ export interface TeamsReviewRow {
   _id: string;
   kind: "player" | "team" | "league";
   name: string;
+  /**
+   * NEO-426 — the sport the row files under: a player CREATED from it is born
+   * with this as his home sport (the operator may have switched it from the
+   * set's). Read only for the teamless-sport default. Optional so a host that
+   * never feeds that rule need not send it; absent = not teamless.
+   */
+  sportId?: string;
   enrichment?: { careerTeams?: CareerStint[]; colors?: TeamColors } | null;
   decision?:
     | {
@@ -308,6 +359,34 @@ export interface StoredPeople {
    * A review row in this sitting still wins over the record.
    */
   skippedTeamNames?: ReadonlySet<string>;
+  /**
+   * NEO-426 — the sport rows flagged "No teams in this sport"
+   * (`listTeamlessSportIds`). Read for a player CREATED in this sitting (his
+   * review row's `sportId`) and a LINKED one (`linkedPlayerSportIds`).
+   */
+  teamlessSportIds?: ReadonlySet<string>;
+  /**
+   * NEO-426 — a linked player's id → his home sport id, from the player rows
+   * the wizard already reads for their names. A player not in the map (not
+   * loaded yet) is not teamless.
+   */
+  linkedPlayerSportIds?: ReadonlyMap<string, string>;
+  /**
+   * NEO-426 — printed player names that resolved to a known player BEFORE the
+   * sitting (no review row) whose home sport is flagged; the fetch says so
+   * (`resolveChecklistEntities`' `teamlessPlayerNames`). Normalized like the
+   * skip records.
+   */
+  teamlessPlayerNames?: ReadonlySet<string>;
+}
+
+/** NEO-426 — the host's wire shapes for the teamless-sport default (see `StoredPeople`). */
+export interface TeamlessFacts {
+  teamlessSportIds?: readonly string[];
+  /** Linked player id → home sport id. */
+  linkedPlayerSportIds?: ReadonlyMap<string, string>;
+  /** RAW printed names, as `resolveChecklistEntities` returns them. */
+  teamlessPlayerNames?: readonly string[];
 }
 
 /**
@@ -319,16 +398,36 @@ export function storedPeople(
   playerlessIndexes?: readonly number[],
   skippedPlayerNames?: readonly string[],
   skippedTeamNames?: readonly string[],
+  teamless?: TeamlessFacts,
 ): StoredPeople | undefined {
   const playerless =
     playerlessIndexes && playerlessIndexes.length > 0 ? new Set(playerlessIndexes) : undefined;
   const skipped = new Set((skippedPlayerNames ?? []).map(norm).filter(Boolean));
   const skippedTeams = new Set((skippedTeamNames ?? []).map(norm).filter(Boolean));
-  if (!playerless && skipped.size === 0 && skippedTeams.size === 0) return undefined;
+  const teamlessSports = new Set(teamless?.teamlessSportIds ?? []);
+  const linkedSports =
+    teamless?.linkedPlayerSportIds && teamless.linkedPlayerSportIds.size > 0
+      ? teamless.linkedPlayerSportIds
+      : undefined;
+  const teamlessNames = new Set((teamless?.teamlessPlayerNames ?? []).map(norm).filter(Boolean));
+  if (
+    !playerless &&
+    skipped.size === 0 &&
+    skippedTeams.size === 0 &&
+    teamlessSports.size === 0 &&
+    teamlessNames.size === 0
+  ) {
+    return undefined;
+  }
   return {
     ...(playerless ? { playerless } : {}),
     ...(skipped.size > 0 ? { skippedPlayerNames: skipped } : {}),
     ...(skippedTeams.size > 0 ? { skippedTeamNames: skippedTeams } : {}),
+    ...(teamlessSports.size > 0 ? { teamlessSportIds: teamlessSports } : {}),
+    // Meaningful only beside a flagged sport: with none, no linked player can
+    // be teamless, so the map is dropped rather than carried for nothing.
+    ...(linkedSports && teamlessSports.size > 0 ? { linkedPlayerSportIds: linkedSports } : {}),
+    ...(teamlessNames.size > 0 ? { teamlessPlayerNames: teamlessNames } : {}),
   };
 }
 
@@ -338,9 +437,13 @@ interface NamesView {
   playerless: ReadonlySet<number>;
   skippedPlayerNames: ReadonlySet<string>;
   skippedTeamNames: ReadonlySet<string>;
+  teamlessSportIds: ReadonlySet<string>;
+  linkedPlayerSportIds: ReadonlyMap<string, string>;
+  teamlessPlayerNames: ReadonlySet<string>;
 }
 
 const NOBODY: ReadonlySet<never> = new Set<never>();
+const NO_SPORTS: ReadonlyMap<never, never> = new Map<never, never>();
 
 function namesView(rows: readonly TeamsReviewRow[], people?: StoredPeople): NamesView {
   const teamRowByKey = new Map<string, TeamsReviewRow>();
@@ -358,6 +461,9 @@ function namesView(rows: readonly TeamsReviewRow[], people?: StoredPeople): Name
     playerless: people?.playerless ?? NOBODY,
     skippedPlayerNames: people?.skippedPlayerNames ?? NOBODY,
     skippedTeamNames: people?.skippedTeamNames ?? NOBODY,
+    teamlessSportIds: people?.teamlessSportIds ?? NOBODY,
+    linkedPlayerSportIds: people?.linkedPlayerSportIds ?? NO_SPORTS,
+    teamlessPlayerNames: people?.teamlessPlayerNames ?? NOBODY,
   };
 }
 
@@ -394,9 +500,22 @@ function teamStringResolves(raw: string, view: NamesView): boolean {
   return row.decision?.action === "create" || row.decision?.action === "link";
 }
 
-type CardPlayer =
+type CardPlayer = (
   | { kind: "created"; key: string; display: string; row: TeamsReviewRow }
-  | { kind: "server"; key: string; display: string; request: EvidenceRequest };
+  | { kind: "server"; key: string; display: string; request: EvidenceRequest }
+) & {
+  /**
+   * NEO-426 — this person's HOME sport is flagged teamless, as far as the
+   * host's facts say: a created player by his row's sport, a linked one by
+   * his stored sport, one resolved before the sitting by the fetch's
+   * `teamlessPlayerNames`. Unknown = false.
+   */
+  teamless: boolean;
+};
+
+function sportIsTeamless(sportId: string | undefined, view: NamesView): boolean {
+  return sportId !== undefined && view.teamlessSportIds.has(sportId);
+}
 
 /**
  * The people on a card (at preview position `index`), deduped. A name skipped
@@ -418,7 +537,13 @@ function cardPlayers(card: PreviewCardForTeams, index: number, view: NamesView):
     if (row && action === "skip") continue;
     if (!row && view.skippedPlayerNames.has(key)) continue;
     if (row && action === "create") {
-      out.push({ kind: "created", key, display, row });
+      out.push({
+        kind: "created",
+        key,
+        display,
+        row,
+        teamless: sportIsTeamless(row.sportId, view),
+      });
     } else if (row && row.decision?.action === "link" && row.decision.linkedPlayerId) {
       const playerId = row.decision.linkedPlayerId as Id<"players">;
       out.push({
@@ -426,9 +551,16 @@ function cardPlayers(card: PreviewCardForTeams, index: number, view: NamesView):
         key,
         display,
         request: { key: `id:${playerId}`, playerId },
+        teamless: sportIsTeamless(view.linkedPlayerSportIds.get(playerId), view),
       });
     } else if (!row) {
-      out.push({ kind: "server", key, display, request: { key: `name:${key}`, name: display } });
+      out.push({
+        kind: "server",
+        key,
+        display,
+        request: { key: `name:${key}`, name: display },
+        teamless: view.teamlessPlayerNames.has(key),
+      });
     }
     // A row with no decision cannot reach the Teams step (every row is
     // decided there); a link with no id is malformed. Both are nobody.
@@ -452,12 +584,106 @@ export function teamlessCardIndexes(
   people?: StoredPeople,
 ): number[] {
   const view = namesView(rows, people);
+  return wouldSaveTeamless(cards, view, settled).filter(
+    (index) => !takesNoTeamByDefault(cards[index], index, view),
+  );
+}
+
+/**
+ * NEO-426 — the preview positions that will save with no team AND that the
+ * teamless-sport default answers "No team" without asking (see the header's
+ * "A teamless sport is a default, never a block"). Disjoint from
+ * `teamlessCardIndexes`; the two together are every card that would save
+ * with no team.
+ *
+ * The commit stamps these itself (the server reads the same facts), so the
+ * host sends nothing for them; the Save step only counts them.
+ */
+export function autoNoTeamIndexes(
+  cards: readonly PreviewCardForTeams[],
+  rows: readonly TeamsReviewRow[],
+  settled?: ReadonlySet<number>,
+  people?: StoredPeople,
+): number[] {
+  const view = namesView(rows, people);
+  if (!hasTeamlessFacts(view)) return [];
+  return wouldSaveTeamless(cards, view, settled).filter((index) =>
+    takesNoTeamByDefault(cards[index], index, view),
+  );
+}
+
+/** Every unsettled position none of whose printed team strings will resolve. */
+function wouldSaveTeamless(
+  cards: readonly PreviewCardForTeams[],
+  view: NamesView,
+  settled: ReadonlySet<number> | undefined,
+): number[] {
   const out: number[] = [];
   cards.forEach((card, index) => {
     if (settled?.has(index)) return;
     if (!cardTeamStrings(card).some((t) => teamStringResolves(t, view))) out.push(index);
   });
   return out;
+}
+
+function hasTeamlessFacts(view: NamesView): boolean {
+  return view.teamlessSportIds.size > 0 || view.teamlessPlayerNames.size > 0;
+}
+
+/**
+ * NEO-426 — does the teamless-sport default answer this would-be-teamless
+ * card? At least one person, every one of them teamless, and no data claim
+ * standing: no listed team the operator has not ruled on, and a lookup that
+ * did not fail — and, on a card with a BSC ref, one that ANSWERED (a missing
+ * answer is not "no team"). Invariant 8: a claim holds the default back as
+ * it holds any guess back. Mirrors the commit's `defaultsToNoTeamOnCommit`.
+ */
+function takesNoTeamByDefault(card: PreviewCardForTeams, index: number, view: NamesView): boolean {
+  if (!hasTeamlessFacts(view)) return false;
+  if (card.teamLookup === "failed") return false;
+  if (card.platformData?.bsc?.ref && card.teamLookup !== "answered") return false;
+  if (hasListedTeamClaim(card, view)) return false;
+  if (hasUnaccountedPlayer(card, index, view)) return false;
+  const players = cardPlayers(card, index, view);
+  return players.length > 0 && players.every((p) => p.teamless);
+}
+
+/**
+ * NEO-426 — does the listing still claim a team for this card? Mirrors the
+ * commit's `commitTeamHint(rawTeamName, teamStrings, skipped) !== undefined`
+ * exactly, so the client never leaves out a card the server will not stamp:
+ * BSC's raw value counts unless the operator ruled it "not a team"; when some
+ * printed strings were ruled out, only the remaining ones count.
+ */
+function hasListedTeamClaim(card: PreviewCardForTeams, view: NamesView): boolean {
+  const raw = card.rawTeamName?.trim() ?? "";
+  if (raw && teamStringSkipped(raw, view)) return false;
+  const parts = cardTeamStrings(card);
+  const live = parts.filter((p) => !teamStringSkipped(p, view));
+  if (live.length < parts.length) return live.length > 0;
+  return raw.length > 0 || live.length > 0;
+}
+
+/**
+ * NEO-426 — a printed name on the card that is neither a known person nor
+ * ruled "not a person": a review row still undecided, or a link with no
+ * player. The commit counts such a name against the default, so the client
+ * does too (`cardPlayers` drops it as nobody, which here would overclaim).
+ * A name with no row resolved before the sitting; whether he is teamless is
+ * `teamlessPlayerNames`' answer.
+ */
+function hasUnaccountedPlayer(card: PreviewCardForTeams, index: number, view: NamesView): boolean {
+  if (view.playerless.has(index)) return false;
+  for (const raw of card.players ?? []) {
+    const key = norm(raw);
+    if (!key) continue;
+    const row = view.playerRowByKey.get(key);
+    if (!row) continue;
+    const decision = row.decision;
+    if (!decision) return true;
+    if (decision.action === "link" && !decision.linkedPlayerId) return true;
+  }
+  return false;
 }
 
 /**

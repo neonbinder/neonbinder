@@ -12,8 +12,17 @@
 // nobody offered, the "N need you" count being FINAL at "Saved", the answers
 // read back off the cards in the drawer, and a teams-only re-sync review.
 //
-// WRITES BEYOND THE CARDS, deliberately: ONE player (whichever Roanoke name the
-// wizard presents first) and TWO teams: the career team, a real one-word club
+// NEO-426 rides it too, for the same reason (a real BSC-linked fetch + commit is
+// the only way to put a card through the commit-time stamp): the Set Builder's
+// "No teams in this sport" switch on the `Non Sport` sport row, a second created
+// player whose "Sport for this name" is Non Sport, whose card then gets NO line on
+// the teams step, is counted on the Save step ("1 card saves with No team: ..."),
+// saves as "No team" (not counted in "N need you"), and can still take a team in
+// the card editor. The switch is turned on before the fetch and OFF again at the
+// end (a leftover is cleared first), so the flag never outlives the spec.
+//
+// WRITES BEYOND THE CARDS, deliberately: TWO players (whichever Roanoke names the
+// wizard presents first; the second one is moved to Non Sport) and TWO teams: the career team, a real one-word club
 // from support/recorded-names.ts (NEO-413: it is looked up when it stages, and the
 // recording holds it as a Hockey no-match the catalogue does not hold, so the
 // lookup sends nothing to Wikidata and its step still reads "New Team"), and
@@ -21,10 +30,11 @@
 // token per attempt. RXO ends in a LETTER so it cannot be a prefix of another
 // attempt's longer token (Convex search treats the last term as a prefix,
 // which would turn the picker's "No matches." into a match and Enter into a
-// pick). All three are global; the same trade
+// pick). All of these are global; the same trade
 // checklist-wizard-career-team-commits makes.
 //
-// Sole writer of the Roanoke Express ECHL set; fresh-only (it commits the
+// Sole writer of the Roanoke Express ECHL set AND of the `Non Sport` sport row's
+// "No teams in this sport" flag (SET-REGISTRY.md); fresh-only (it commits the
 // checklist). Re-seed before re-running.
 import type { Page } from "@playwright/test";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
@@ -34,14 +44,16 @@ import {
   columnSearch,
   columnSelection,
   drillToColdManufacturer,
+  pick,
   setBuilderReady,
   syncChecklistButton,
 } from "../../support/set-builder";
-import { editCardButton } from "../../support/cards";
+import { editCardButton, escapeRe } from "../../support/cards";
 import { recordedNoMatchName } from "../../support/recorded-names";
 import {
   advanceToSave,
   confirmSaveButton,
+  personSkip,
   readStep,
   reviewWizard,
   stepCounter,
@@ -50,6 +62,58 @@ import {
 
 const SET = "Roanoke Express ECHL";
 const YEAR = "1995";
+
+// NEO-426: the sport whose switch this spec owns, and the words the switch and
+// the Save step use.
+const TEAMLESS_SPORT = "Non Sport";
+const TEAMS_OFF_TOAST = "Teams off for this sport. Cards save as No team.";
+const TEAMS_BACK_TOAST = "Teams are back on for this sport.";
+const SWITCH_HELP = "Players from this sport save with No team unless the card has one.";
+
+/**
+ * Open the Set Builder on the Non Sport sport row with its attributes panel
+ * showing, and return the "No teams in this sport" switch (a pressed toggle
+ * inside the cell labelled "Set feature Teams") and the panel. Picking the
+ * sport also starts its Years column; nothing here waits on that.
+ */
+async function openTeamlessSwitch(page: Page) {
+  await pick(page, "Sports", TEAMLESS_SPORT, { search: false });
+  const panel = page.getByRole("region", { name: "Set attributes panel" });
+  await expect(panel.getByRole("heading", { name: new RegExp(`Attributes for ${TEAMLESS_SPORT}.*Sport`) })).toBeVisible();
+  // Collapsed at the sport level by default; open it if needed.
+  const edit = panel.getByRole("button", { name: "Edit attributes" });
+  const hide = panel.getByRole("button", { name: "Hide attributes" });
+  await expect(edit.or(hide)).toBeVisible();
+  if (await edit.isVisible()) await edit.click();
+  await expect(hide).toBeVisible();
+  const cell = panel.getByLabel("Set feature Teams");
+  const toggle = cell.getByRole("button", { name: "No teams in this sport" });
+  await expect(toggle).toBeVisible();
+  await expect(cell.getByText(SWITCH_HELP)).toBeVisible();
+  return { panel, toggle };
+}
+
+/**
+ * Walk the open card drawer to the card whose Card name field holds `name`
+ * (case-insensitive): forward to the last card, then back to the first. Each
+ * press is proved to have MOVED the drawer before the name is read again.
+ * `maxCards` is a runaway guard.
+ */
+async function walkToCardNamed(page: Page, name: string, maxCards = 40): Promise<void> {
+  const cardName = page.getByRole("textbox", { name: "Card name" });
+  const wanted = name.toLowerCase();
+  for (const direction of ["Next card", "Previous card"]) {
+    const press = page.getByRole("button", { name: direction });
+    for (let i = 0; i < maxCards; i++) {
+      if ((await cardName.inputValue()).toLowerCase().includes(wanted)) return;
+      if (await press.isDisabled()) break;
+      const before = await cardName.inputValue();
+      await press.click();
+      await expect(cardName).not.toHaveValue(before);
+    }
+  }
+  await expect(cardName, `no card in the drawer is named ${name}`).toHaveValue(new RegExp(escapeRe(name), "i"));
+}
 
 /**
  * Press the drawer's "Next card" until a card with a team chip is on screen.
@@ -70,12 +134,59 @@ async function nextCardUntilTeamChip(page: Page, maxCards = 30): Promise<void> {
   await expect(chip.first(), "no further card carries a team chip").toBeVisible();
 }
 
+// NEO-426: the "No teams in this sport" flag is global to the deployment, so it
+// must never outlive this spec, pass or fail. The body turns it ON in STEP 0 and
+// OFF again in STEP 12; when the run dies in between, this hook does the OFF on a
+// SECOND page (the failing page stays as the screenshot saw it), the pattern
+// inventory-bsc-listing-1988-topps-base uses for its own global state. Idempotent:
+// it does only what the run got far enough to need, and reads the switch back.
+const teamlessFlag = { touched: false, cleared: false };
+
+test.afterEach(async ({ context }) => {
+  if (!teamlessFlag.touched || teamlessFlag.cleared) return;
+  const clean = await context.newPage();
+  try {
+    await clean.goto("/set-selector");
+    await expect(setBuilderReady(clean)).toBeVisible({ timeout: LAUNCH_GATE });
+    const { toggle } = await openTeamlessSwitch(clean);
+    await expect(toggle).toHaveAttribute("aria-pressed", /^(true|false)$/);
+    if ((await toggle.getAttribute("aria-pressed")) === "true") {
+      await toggle.click();
+      await expect(clean.getByText(TEAMS_BACK_TOAST)).toBeVisible();
+    }
+    await expect(toggle).toHaveAttribute("aria-pressed", "false");
+    teamlessFlag.cleared = true;
+  } finally {
+    await clean.close();
+  }
+});
+
 test(
   "Checklist — a set with exactly ONE marketplace attached skips the Match Cards dialog and keeps every fetched card",
   { tag: ["@set-selector"] },
   async ({ page, signIn, env }) => {
     await signIn("/set-selector");
     await expect(setBuilderReady(page)).toBeVisible({ timeout: LAUNCH_GATE });
+
+    // ── STEP 0 (NEO-426): turn "No teams in this sport" ON for Non Sport ──
+    // Before the fetch, so the commit stamps by the flag. A leftover ON (an
+    // earlier run that died before its cleanup) is cleared first, so the press
+    // below always turns it on and both directions are exercised.
+    const { panel: sportPanel, toggle: noTeamsSwitch } = await openTeamlessSwitch(page);
+    // From here the flag may be changed by this run: the afterEach owns putting it back.
+    teamlessFlag.touched = true;
+    await expect(noTeamsSwitch).toHaveAttribute("aria-pressed", /^(true|false)$/);
+    if ((await noTeamsSwitch.getAttribute("aria-pressed")) === "true") {
+      await noTeamsSwitch.click();
+      await expect(page.getByText(TEAMS_BACK_TOAST)).toBeVisible();
+      await expect(noTeamsSwitch).toHaveAttribute("aria-pressed", "false");
+    }
+    await expect(noTeamsSwitch).toHaveAttribute("aria-pressed", "false");
+    await noTeamsSwitch.click();
+    await expect(page.getByText(TEAMS_OFF_TOAST)).toBeVisible();
+    await expect(noTeamsSwitch).toHaveAttribute("aria-pressed", "true");
+    await expect(noTeamsSwitch).toHaveAccessibleDescription(SWITCH_HELP);
+    await expectAccessible(page, { within: sportPanel, label: "Sport attributes, No teams in this sport on" });
 
     // All Brands, so the set is reachable under Unknown.
     await drillToColdManufacturer(page, env, { sport: "Hockey", year: YEAR, manufacturer: "All Brands" });
@@ -149,6 +260,11 @@ test(
     const team = recordedNoMatchName(env, "checklist-one-marketplace-skips-match-dialog");
     const other = `RXO${env.ATTEMPT_TOKEN}T`;
     await walkToPlayerRow(page, { readyToCreate: true });
+    // The presented name, read off its skip control ("Skip <name> — not a person").
+    const personName = async () =>
+      (((await personSkip(page).getAttribute("aria-label")) ?? "").match(/^Skip (.*) — not a person$/)?.[1] ?? "");
+    const careerName = await personName();
+    expect(careerName, "the first player row names a person").not.toBe("");
     const careerTeam = wizard.getByRole("combobox", { name: "Career team name" });
     await expect(careerTeam).toBeVisible();
     await expect(wizard.getByText("New player", { exact: true })).toBeVisible();
@@ -176,6 +292,30 @@ test(
     const { x: stepBefore } = await readStep(page);
     await wizard.getByRole("button", { name: "Add as New Player" }).click();
     await expect(stepCounter(page)).toHaveText(new RegExp(`^Step ${stepBefore + 1} of [0-9]+$`));
+
+    // ── STEP 6a (NEO-426): a SECOND player, whose home sport is Non Sport ──
+    // Moved with "Sport for this name" (the checklist-wizard-link-commits
+    // pattern) and created. A non-Wikidata sport stages no lookup and no career
+    // team, so his create is not held. His card is the one the teams step must
+    // leave out. The pick re-queues the row, so the walk brings it back; the
+    // name must be the same one.
+    await walkToPlayerRow(page, { readyToCreate: true });
+    const nonSportName = await personName();
+    expect(nonSportName, "the second player row names a person").not.toBe("");
+    expect(nonSportName, "a different person from the first").not.toBe(careerName);
+    await wizard.getByRole("button", { name: /^Sport for this name: / }).click();
+    const sportChooser = wizard.getByRole("listbox", { name: "Choose a sport" });
+    await expect(sportChooser).toBeVisible();
+    await expect(sportChooser.getByRole("option", { name: TEAMLESS_SPORT, exact: true })).toBeVisible();
+    await expectAccessible(page, { within: wizard, label: "Entity review wizard, Sport for this name chooser open" });
+    await sportChooser.getByRole("option", { name: TEAMLESS_SPORT, exact: true }).click();
+    await expect(sportChooser).toBeHidden();
+    await walkToPlayerRow(page, { readyToCreate: true });
+    await expect(wizard.getByRole("button", { name: `Sport for this name: ${TEAMLESS_SPORT}` })).toBeVisible();
+    expect(await personName(), "the row that came back is the one that was moved").toBe(nonSportName);
+    const { x: nonSportStep } = await readStep(page);
+    await wizard.getByRole("button", { name: "Add as New Player" }).click();
+    await expect(stepCounter(page)).toHaveText(new RegExp(`^Step ${nonSportStep + 1} of [0-9]+$`));
 
     // Every other name is SKIPPED, the cheapest way to a commit: it decides every
     // remaining row, lookups included, creates no players and raises none of
@@ -209,12 +349,20 @@ test(
     await expect(noPlayers).toBeVisible();
     const noPlayersCount = ((await noPlayers.textContent()) ?? "").match(/[0-9]+/)![0];
     expect(Number(noPlayersCount)).toBeGreaterThanOrEqual(2);
-    expect(Number(noPlayersCount)).toBeLessThanOrEqual(FETCHED - 1);
+    // Two created players (one card each) are not on it.
+    expect(Number(noPlayersCount)).toBeLessThanOrEqual(FETCHED - 2);
     const line = `Cards with no players (${noPlayersCount})`;
     // "Leave for later" is its default: nothing is known about a card nobody is
     // on, so nothing is pre-filled.
     const lineLater = wizard.getByRole("radio", { name: `Leave for later — ${line}`, exact: true });
     await expect(lineLater).toBeChecked();
+
+    // NEO-426: the Non Sport player's card has NO line on this step (its default
+    // is "No team", decided by his sport), while the first player's line is
+    // here. The positive under the negatives, so a dead page cannot satisfy them.
+    await expect(wizard.getByRole("radiogroup", { name: `Team for ${careerName}`, exact: true })).toBeVisible();
+    await expect(wizard.getByRole("radiogroup", { name: `Team for ${nonSportName}`, exact: true })).toHaveCount(0);
+    await expect(wizard.getByText(nonSportName, { exact: true })).toHaveCount(0);
 
     // Open its cards (the button reads the line's card numbers and count).
     await wizard.getByRole("button", { name: new RegExp(`^#.* · ${noPlayersCount} cards`) }).click();
@@ -266,11 +414,13 @@ test(
 
     // What the checklist must say once this saves: every card left for later is
     // flagged; the one answered "no team" is not, nor the pre-filled one, nor the
-    // one given RXO: K - 3 (one Roanoke card per player, SET-REGISTRY
-    // measurement 5). The catalogue-known players' cards are left for later too.
+    // one given RXO, nor the Non Sport one: K - 4 (one Roanoke card per player,
+    // SET-REGISTRY measurement 5). The catalogue-known players' cards are left for later too.
     // LEFT is the bare number the re-sync in STEP 10 finds on its no-players
     // line: that line less the two cards answered above.
-    const needYouCount = String(FETCHED - 3);
+    // NEO-426: and the Non Sport player's card (saved "No team" by his sport, no
+    // walker badge), so FETCHED - 4.
+    const needYouCount = String(FETCHED - 4);
     const needYou = needYouCount === "1" ? "1 needs you" : `${needYouCount} need you`;
     const left = String(Number(noPlayersCount) - 2);
 
@@ -283,6 +433,11 @@ test(
     await advanceToSave(page);
     await expect(stepCounter(page)).toHaveText(`Step ${teamsStep.y} of ${teamsStep.y}`);
     await expect(wizard.getByText(new RegExp(`Save ${FETCHED} cards?\\?`))).toBeVisible();
+    // NEO-426: the one card left off the teams step is said here, singular, and
+    // Confirm & Save is described by it.
+    const autoNoTeamNote = /1 card saves with No team: its player.s sport has none\. Add a team later in the card editor\./;
+    await expect(wizard.getByText(autoNoTeamNote)).toBeVisible();
+    await expect(confirmSaveButton(page)).toHaveAccessibleDescription(autoNoTeamNote);
     await expectAccessible(page, { within: wizard, label: "Entity review wizard, Save step" });
     // Never gated by the teams step's answers: Confirm & Save is the Save step's footer button.
     await confirmSaveButton(page).click();
@@ -292,7 +447,7 @@ test(
 
     // ── STEP 7: the count is FINAL at "Saved" (NEO-335) ──
     // The header's amber pill counts the cards that need a person and must read
-    // K - 3 now. Before NEO-335 a BSC card was not flagged until the background
+    // K - 4 now (NEO-426: the Non Sport card is not flagged). Before NEO-335 a BSC card was not flagged until the background
     // queue re-asked BSC (a measured ~15 s tail), so the count started near 0
     // and climbed; now the commit stamps every card whose fetch-time lookup
     // answered. 7 s is the R5 bar and the discriminator: the old climb could not
@@ -350,6 +505,16 @@ test(
     await expect(chipOf(firstName)).toBeHidden();
     await nextCardUntilTeamChip(page);
     await expect(dialog.getByRole("button", { name: new RegExp(`^Remove team ${secondName}( · .*)?$`) })).toBeVisible();
+
+    // ── STEP 9b (NEO-426): the Non Sport player's card saved with NO team, and takes one ──
+    // Found in the drawer by the name the wizard showed. It shows no team chip,
+    // and the picker is there to use: "No team" is a default, not a lock. The
+    // positive (the picker's "Add team" is enabled) is read first, so the empty
+    // chip list means a loaded drawer. A team is added to it at the very end.
+    await walkToCardNamed(page, nonSportName);
+    const addTeam = dialog.getByRole("button", { name: "Add team", exact: true });
+    await expect(addTeam).toBeEnabled();
+    await expect(dialog.getByRole("button", { name: /^Remove team / })).toHaveCount(0);
     await page.getByRole("button", { name: "Done editing card" }).click();
     await expect(title).toBeHidden();
 
@@ -394,6 +559,10 @@ test(
     // created player's, offering (and pre-filling) the RXT team from his stored
     // card and career. Paired with the positive above.
     await expect(wizard.getByRole("radio", { name: new RegExp(`^${team} — `) })).toHaveCount(0);
+    // NEO-426: nor is the Non Sport player's card, which is stored with its "No
+    // team" and still has no line (the first player's, answered, has none
+    // either); paired with the LEFT line above.
+    await expect(wizard.getByRole("radiogroup", { name: `Team for ${nonSportName}`, exact: true })).toHaveCount(0);
 
     // Next leaves every line on its default and lands on Save, "Step 2 of 2", for
     // every fetched card again.
@@ -411,5 +580,33 @@ test(
     // skips as unanswered and stamping them back as pending names).
     await confirmSaveButton(page).click();
     await expect(page.getByText(new RegExp(`^Saved ${FETCHED} cards\\.$`))).toBeVisible();
+
+    // ── STEP 11 (NEO-426): a team added to the "No team" card AFTER the save sticks ──
+    // The hand-added card opens the drawer (it sorts first), the walk goes to the
+    // Non Sport player's card, and the team created in STEP 6b is picked for it.
+    // The re-sync above did not take it back to a team-less default: the card
+    // still shows no team until this pick.
+    await editCardButton(page, card).click();
+    await expect(title).toBeVisible();
+    await walkToCardNamed(page, nonSportName);
+    await expect(dialog.getByRole("button", { name: /^Remove team / })).toHaveCount(0);
+    await dialog.getByRole("button", { name: "Add team", exact: true }).click();
+    await page.getByRole("textbox", { name: "Search teams" }).fill(other);
+    await page.getByRole("option", { name: new RegExp(`^Add ${other}`) }).click();
+    await expect(dialog.getByRole("button", { name: new RegExp(`^Remove team ${other}( · .*)?$`) })).toBeVisible();
+    await page.getByRole("button", { name: "Done editing card" }).click();
+    await expect(title).toBeHidden();
+
+    // ── STEP 12 (NEO-426): turn "No teams in this sport" back OFF ──
+    // The flag is global, so it never outlives this spec. A fresh page (the
+    // drill's own goto), the switch pressed, then cleared.
+    await page.goto("/set-selector");
+    await expect(setBuilderReady(page)).toBeVisible();
+    const { toggle: cleanupSwitch } = await openTeamlessSwitch(page);
+    await expect(cleanupSwitch).toHaveAttribute("aria-pressed", "true");
+    await cleanupSwitch.click();
+    await expect(page.getByText(TEAMS_BACK_TOAST)).toBeVisible();
+    await expect(cleanupSwitch).toHaveAttribute("aria-pressed", "false");
+    teamlessFlag.cleared = true;
   },
 );

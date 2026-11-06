@@ -38,6 +38,8 @@ let suggestionCalls: SuggestionArgs[];
 let suggestionsPending: boolean;
 /** Every getBatch subscription the wizard asked for (not skipped). */
 let batchReads: number;
+/** NEO-426: what `sportTeamless.listTeamlessSportIds` answers (undefined = still loading). */
+let teamlessSportIds: string[] | undefined;
 const mockCancelBatch = vi.fn(() => Promise.resolve(null));
 
 vi.mock("convex/react", () => ({
@@ -47,6 +49,7 @@ vi.mock("convex/react", () => ({
       batchReads += 1;
       return currentRows;
     }
+    if (ref === "sportTeamless.listTeamlessSportIds") return teamlessSportIds;
     return undefined;
   },
   useQueries: (queries: Record<string, { query: string; args: SuggestionArgs }>) => {
@@ -103,7 +106,9 @@ function row(overrides: Record<string, unknown>) {
   };
 }
 
-type Card = { cardNumber: string; cardName: string; players?: string[]; teams?: string[] };
+type Card = { cardNumber: string; cardName: string; players?: string[]; teams?: string[];
+  rawTeamName?: string;
+};
 
 function renderWizard(previewCards: Card[], extra: Record<string, unknown> = {}) {
   const onConfirm = vi.fn();
@@ -131,6 +136,8 @@ beforeEach(() => {
   suggestionCalls = [];
   suggestionsPending = false;
   batchReads = 0;
+  // Loaded, none flagged: the step counter waits for this answer.
+  teamlessSportIds = [];
   mockCancelBatch.mockClear();
   serverAnswer = () => ({ playerId: null, answer: null, candidates: [] });
   // One created player whose only career team is a team staged in this batch.
@@ -616,3 +623,102 @@ describe("EntityReviewWizard teams-only", () => {
 
 // Keep React in scope for the JSX transform this project's tests use.
 void React;
+
+describe("the teamless-sport default on the wizard (NEO-426)", () => {
+  const SAVES_NO_TEAM = /saves? with No team/;
+
+  it("an auto card has no line on the teams step; the other card keeps its own", () => {
+    teamlessSportIds = ["sport-1"];
+    const { onTeamAnswersChange } = renderWizard([
+      { cardNumber: "1", cardName: "Pika", players: ["Rookie Guy"] },
+      { cardNumber: "2", cardName: "Base", players: ["Johnny Bench"] },
+    ]);
+    // Rookie Guy is created in sport-1, which is flagged.
+    expect(screen.queryByRole("radiogroup", { name: "Team for Rookie Guy" })).toBeNull();
+    expect(screen.getByRole("radiogroup", { name: "Team for Johnny Bench" })).toBeTruthy();
+    // Nothing is sent for the auto card: the commit stamps it itself.
+    expect(lastAnswers(onTeamAnswersChange)).toEqual([undefined, undefined]);
+  });
+
+  it("the Save step says how many cards save with no team (singular)", () => {
+    teamlessSportIds = ["sport-1"];
+    renderWizard([
+      { cardNumber: "1", cardName: "Pika", players: ["Rookie Guy"] },
+      { cardNumber: "2", cardName: "Base", players: ["Johnny Bench"] },
+    ]);
+    fireEvent.click(screen.getByRole("button", { name: NEXT_NAME }));
+    expect(screen.getByText("Save 2 cards?")).toBeTruthy();
+    expect(
+      screen.getByText("1 card saves with No team: its player's sport has none. Add a team later in the card editor."),
+    ).toBeTruthy();
+  });
+
+  it("says the count in the plural, and drops the teams step when auto cards are all there is", () => {
+    renderWizard(
+      [
+        { cardNumber: "1", cardName: "A", players: ["Pete Rose"] },
+        { cardNumber: "2", cardName: "B", players: ["Johnny Bench"] },
+      ],
+      { teamlessPlayerNames: ["Pete Rose", "Johnny Bench"] },
+    );
+    expect(screen.queryByText("Cards with no team")).toBeNull();
+    expect(counter()).toBe("Step 3 of 3");
+    expect(screen.getByText("Save 2 cards?")).toBeTruthy();
+    expect(
+      screen.getByText("2 cards save with No team: their players' sports have none. Add a team later in the card editor."),
+    ).toBeTruthy();
+  });
+
+  it("Confirm & Save is described by the sentence when there are auto cards, and by nothing otherwise", () => {
+    teamlessSportIds = ["sport-1"];
+    const first = renderWizard([{ cardNumber: "1", cardName: "Pika", players: ["Rookie Guy"] }]);
+    const confirm = screen.getByRole("button", { name: CONFIRM_SAVE_NAME });
+    const describedBy = confirm.getAttribute("aria-describedby");
+    expect(describedBy).toBeTruthy();
+    expect(document.getElementById(describedBy!.split(" ").at(-1)!)?.textContent).toMatch(
+      SAVES_NO_TEAM,
+    );
+    first.unmount();
+
+    teamlessSportIds = [];
+    renderWizard([{ cardNumber: "1", cardName: "Base", players: ["Johnny Bench"] }], {
+      cardsWithSettledTeam: [0],
+    });
+    const plain = screen.getByRole("button", { name: CONFIRM_SAVE_NAME });
+    const ids = (plain.getAttribute("aria-describedby") ?? "").split(" ").filter(Boolean);
+    for (const id of ids) {
+      expect(document.getElementById(id)?.textContent ?? "").not.toMatch(SAVES_NO_TEAM);
+    }
+  });
+
+  it("shows no step counter until the flagged sports have loaded", () => {
+    teamlessSportIds = undefined;
+    renderWizard([{ cardNumber: "1", cardName: "Base", players: ["Johnny Bench"] }]);
+    expect(counter()).toBeUndefined();
+  });
+
+  it("says nothing when no card is auto", () => {
+    teamlessSportIds = ["sport-other"];
+    renderWizard([{ cardNumber: "1", cardName: "Base", players: ["Johnny Bench"] }], {
+      cardsWithSettledTeam: [0],
+    });
+    expect(screen.getByText("Save 1 card?")).toBeTruthy();
+    expect(screen.queryByText(SAVES_NO_TEAM)).toBeNull();
+  });
+
+  it("does not count a card the parent settled (a set-level team covers it)", () => {
+    teamlessSportIds = ["sport-1"];
+    renderWizard([{ cardNumber: "1", cardName: "Pika", players: ["Rookie Guy"] }], {
+      cardsWithSettledTeam: [0],
+    });
+    expect(screen.queryByText(SAVES_NO_TEAM)).toBeNull();
+  });
+
+  it("a listed team name keeps the card on the teams step even in a flagged sport", () => {
+    teamlessSportIds = ["sport-1"];
+    renderWizard([
+      { cardNumber: "1", cardName: "Pika", players: ["Rookie Guy"], rawTeamName: "Pallet Town" },
+    ]);
+    expect(screen.getByRole("radiogroup", { name: "Team for Rookie Guy" })).toBeTruthy();
+  });
+});

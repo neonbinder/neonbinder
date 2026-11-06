@@ -46,6 +46,7 @@ import {
   type ServerPlayerEvidence,
   type ServerTeam,
   type TeamAnswer,
+  type TeamlessFacts,
   type TeamRef,
   type TeamsGroup,
   type TeamsReviewRow,
@@ -227,6 +228,7 @@ export default function TeamsOnCardsSection({
   playerlessIndexes,
   skippedPlayerNames,
   skippedTeamNames,
+  teamless,
   disabled = false,
   showSetTeamHint = false,
 }: {
@@ -274,6 +276,13 @@ export default function TeamsOnCardsSection({
    * step: a card printing only such names is asked about here.
    */
   skippedTeamNames?: readonly string[];
+  /**
+   * NEO-426 — the facts the teamless-sport default reads (flagged sports, a
+   * linked player's home sport, names the fetch found teamless). A card that
+   * default answers is not listed here; the host counts it on the Save step.
+   * Pass a stable (memoised) object: it is a memo dependency.
+   */
+  teamless?: TeamlessFacts;
   /** A commit is in flight; the choices hold still. */
   disabled?: boolean;
   /**
@@ -288,8 +297,8 @@ export default function TeamsOnCardsSection({
     [settledIndexes],
   );
   const people = useMemo(
-    () => storedPeople(playerlessIndexes, skippedPlayerNames, skippedTeamNames),
-    [playerlessIndexes, skippedPlayerNames, skippedTeamNames],
+    () => storedPeople(playerlessIndexes, skippedPlayerNames, skippedTeamNames, teamless),
+    [playerlessIndexes, skippedPlayerNames, skippedTeamNames, teamless],
   );
 
   const requests = useMemo(
