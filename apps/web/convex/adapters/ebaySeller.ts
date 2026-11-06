@@ -62,6 +62,8 @@ export const EBAY_MAX_BYTES = {
   bulk: 2 * 1024 * 1024,
   policies: 2 * 1024 * 1024,
   orders: 4 * 1024 * 1024,
+  /** A page of inventory items, each with its description and aspects. */
+  inventory: 8 * 1024 * 1024,
   /** A category's aspect metadata carries every suggested value: large. */
   aspects: 16 * 1024 * 1024,
   shipping: 4 * 1024 * 1024,
@@ -937,7 +939,7 @@ const realPause: EbayPause = (ms) => new Promise<void>((resolve) => setTimeout(r
  * sign-out (401, handled inside `send`), a timeout, a network failure or an
  * answer NB couldn't read.
  */
-function isBusyAnswer(f: EbayFailure): boolean {
+export function isBusyAnswer(f: EbayFailure): boolean {
   if (f.kind !== "http" || f.httpStatus === undefined) return false;
   return f.httpStatus >= 500 || f.httpStatus === 429;
 }
@@ -1067,6 +1069,51 @@ export async function withdrawOffer(ctx: SessionCtx, session: EbaySellerSession,
     maxBytes: EBAY_MAX_BYTES.small,
   });
   return r.ok ? { ok: true, value: null } : r;
+}
+
+/** Items one inventory page asks for (eBay's contract: 1 to 200, default 25). */
+export const EBAY_INVENTORY_PAGE = 100;
+
+/**
+ * `GET /sell/inventory/v1/inventory_item?limit=&offset=` → one page of the
+ * seller's SKUs; nothing else of the items is held. Testing cleanup only.
+ *
+ * `offset` is a PAGE NUMBER on this route, not a record offset (Sell Inventory
+ * contract: the first page is 0, the second 1), unlike `getOrdersPage`. So the
+ * caller never does the arithmetic: `nextOffset` is the `offset` in eBay's own
+ * `next` link, null when there is no `next`. A `next` NB can't read fails, so a
+ * caller can never take a partial listing for the whole one.
+ */
+export async function getInventorySkusPage(
+  ctx: SessionCtx,
+  session: EbaySellerSession,
+  offset: string,
+): Promise<EbayResult<{ skus: string[]; unreadable: number; nextOffset: string | null }>> {
+  const r = await send(ctx, session, {
+    operation: "getInventoryItems",
+    method: "GET",
+    path: "/sell/inventory/v1/inventory_item",
+    query: { limit: String(EBAY_INVENTORY_PAGE), offset },
+    timeoutMs: EBAY_TIMEOUTS_MS.read,
+    maxBytes: EBAY_MAX_BYTES.inventory,
+  });
+  if (!r.ok) return r;
+  const body = r.value.body;
+  if (!isRecord(body)) return { ok: false, failure: failure("bad_response", EBAY_SAYS.unreadable, { httpStatus: r.value.status }) };
+  const skus: string[] = [];
+  let unreadable = 0;
+  // An account with no items answers with no `inventoryItems` at all.
+  for (const raw of Array.isArray(body.inventoryItems) ? body.inventoryItems : []) {
+    // eBay's SKU limit is 50: a longer one is not an answer to act on.
+    if (isRecord(raw) && typeof raw.sku === "string" && raw.sku.length > 0 && raw.sku.length <= 100) skus.push(raw.sku);
+    else unreadable += 1;
+  }
+  let nextOffset: string | null = null;
+  if (typeof body.next === "string" && body.next.length > 0) {
+    nextOffset = /[?&]offset=(\d{1,9})(?:&|$)/.exec(body.next)?.[1] ?? null;
+    if (nextOffset === null) return { ok: false, failure: failure("bad_response", EBAY_SAYS.unreadable, { httpStatus: r.value.status }) };
+  }
+  return { ok: true, value: { skus, unreadable, nextOffset } };
 }
 
 // ── Fulfillment: orders ─────────────────────────────────────────────────────

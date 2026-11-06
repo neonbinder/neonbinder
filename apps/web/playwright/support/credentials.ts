@@ -31,11 +31,16 @@ async function testStoredSession(page: Page, success: RegExp): Promise<void> {
   await expect(page.getByText(success)).toBeVisible({ timeout: LIVE_LOGIN });
 }
 
-/** util-login-to-bsc.yaml */
-export async function loginToBsc(page: Page): Promise<void> {
+/** Open the BSC credentials page and check the worker is connected (no Test press). */
+export async function openBscCredentials(page: Page): Promise<void> {
   await openCredentials(page);
   // BuySportsCards is the default tab.
   await expect(page.getByText("Connected to BuySportsCards")).toBeVisible();
+}
+
+/** util-login-to-bsc.yaml */
+export async function loginToBsc(page: Page): Promise<void> {
+  await openBscCredentials(page);
   await testStoredSession(page, /BSC account authenticated successfully/i);
 }
 
