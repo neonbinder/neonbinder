@@ -18,13 +18,24 @@
 // active-batch slots, so it is closed ("Done adding photos") mid-test and again on
 // the way out if a step failed before that.
 //
-// R5: every wait is the normal 7 s (NEO-446: measured on a warm dev service, upload
-// 0.8-1.3 s, refusal 0.8 s). The preprocess legs are wrapped in `test.step`, so the
-// report carries each leg's own duration; a red on a cold CI instance comes back to
-// the owner with that number, never a longer timeout.
+// R5 (hard rule 3): every wait is the normal 7 s except ONE, the "Too big" line
+// appearing on the photo's tile (`COLD_REFUSAL`, below), which carries a signed-off
+// ceiling. Measured on a warm dev service: upload 0.8-1.3 s, refusal 0.8 s. The
+// preprocess legs are wrapped in `test.step`, so the report carries each leg's own
+// duration.
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
+
+/**
+ * The one signed-off ceiling in this spec (GUIDE hard rule 3): 45 s, Jason, 2026-11-06.
+ * It covers ONLY the wait for the "Too big" line on the photo's tile. Measured on CI's
+ * desktop pass: about 27 s from the upload confirmed to the refusal, of which the
+ * service's own answer took 409 ms; the rest was queueing behind other photos on a
+ * cold fast service. It is void if a cold start is measured over 45 s, and never a
+ * licence for any other wait in this spec.
+ */
+const COLD_REFUSAL = 45_000;
 
 const PHOTO = path.join(
   path.dirname(fileURLToPath(import.meta.url)),

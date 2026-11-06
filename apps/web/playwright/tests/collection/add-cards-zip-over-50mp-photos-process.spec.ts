@@ -34,19 +34,27 @@
 // through `support/collection.ts`. add-cards-from-photos-real-scans owns matching
 // and the save; this spec owns "a photo over 50 MP is processed".
 //
-// R5: the waits are the normal 7 s (NEO-446). Measured on a warm dev service for a
-// zip: upload 0.8-1.3 s, extract 0.3-0.8 s. The READ of two 50 MP photos is not
-// measured here, because the dev preprocess service still refuses 50 MP and a local
-// run stops at the read. The preprocess legs are wrapped in `test.step`, so the report
-// carries each leg's own duration; a red on the preview or CI comes back to the owner
-// with that number, never a longer timeout. The set-building waits are the normal 7 s
-// too (each under 1 s on warm dev).
+// R5 (hard rule 3): every wait is the normal 7 s except ONE, the pair reaching "Needs you"
+// (`COLD_READ`, below), which carries a signed-off ceiling. Measured upload and extract
+// on a warm dev service: upload 0.8-1.3 s, extract 0.3-0.8 s; the set-building waits
+// are 7 s too (each under 1 s on warm dev). The preprocess legs are wrapped in
+// `test.step`, so the report carries each leg's own duration.
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { collectorCascade } from "../../support/collection";
 import { addCardViaForm } from "../../support/cards";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { columnHeading, drillToCustom, selectOrCreate, setBuilderReady } from "../../support/set-builder";
+
+/**
+ * The one signed-off ceiling in this spec (GUIDE hard rule 3): 45 s, Jason, 2026-11-06.
+ * It covers ONLY the wait for the pair to reach "Needs you, 1": extract, two 50 MP
+ * reads, pairing and matching. Measured on the PR's own preprocess service, from the
+ * upload to the pair in Needs you: 29.6 s on a cold instance, then 7.3 s and 6.8 s
+ * warm (extract alone took 8.8 s cold on CI). It is void if a cold start is measured
+ * over 45 s, and never a licence for any other wait in this spec.
+ */
+const COLD_READ = 45_000;
 
 const ZIP = path.join(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -110,9 +118,9 @@ test(
     const waiting = page.getByRole("region", { name: /^Needs you, \d+$/ });
 
     // The pair reaches Needs you as the card in the photos: extract, two 50 MP
-    // reads, pairing and matching, at the normal 7 s (unmeasured; see R5 above).
+    // reads, pairing and matching, under the signed-off COLD_READ ceiling.
     await test.step("read: ?run= to the pair in Needs you (extract, 2 reads, pairing)", async () => {
-      await expect(waiting).toHaveAccessibleName("Needs you, 1");
+      await expect(waiting).toHaveAccessibleName("Needs you, 1", { timeout: COLD_READ });
     });
 
     const tile = waiting.getByRole("article", { name: "#315 Dwayne Bowe", exact: true });
