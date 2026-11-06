@@ -1,8 +1,8 @@
 /*
  * NEO-444 — a top loader: the rigid clear sleeve a collector keeps a card in,
- * drawn. Three layers, back to front: the back sheet, the card, the front
- * sheet (its glare, its thumb notch cut out of the open top edge). A physical
- * object, so like the vinyl and the card faces it keeps its own colours.
+ * drawn. Back to front: the back sheet, the penny sleeve's back, the card, the
+ * penny sleeve's front, the front sheet with its glare. A physical object, so
+ * like the vinyl and the card faces it keeps its own colours.
  *
  * Proportions are a real one's: 3" x 4", for a 2.5" x 3.5" card, which sits on
  * the sealed bottom edge with the gap at the top where it went in. Sized by
@@ -72,6 +72,41 @@
   animation: nb-toploader-seat 340ms 40ms cubic-bezier(0.2, 0.75, 0.25, 1) both;
 }
 
+/*
+ * The penny sleeve: the thin, soft sleeve a card goes into before the loader,
+ * a little wider than the card and open at the top, just above it. It travels
+ * with the card as it drops in, and the card never shrinks for it. Where the
+ * loader is a hard rim and a sharp glare, this is a hairline and a slow sheen,
+ * faint enough that a card back's small print stays clean.
+ */
+.nb-toploader-card::before,
+.nb-toploader-card::after {
+  content: "";
+  position: absolute;
+  inset: -2.2% -1.8% -0.7%;
+  border-radius: 0 0 1.4% 1.4% / 0 0 1% 1%;
+  pointer-events: none;
+}
+/* Its back: more a film than a line. No edge across the open top. */
+.nb-toploader-card::before {
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(255, 255, 255, 0.13);
+  border-top: 0;
+}
+/* Its front: the lip, the light it catches just under, and the sheen over the card. */
+.nb-toploader-card::after {
+  background:
+    linear-gradient(rgba(255, 255, 255, 0.3), rgba(255, 255, 255, 0.3)) top / 100% 1px no-repeat,
+    linear-gradient(rgba(255, 255, 255, 0.1), transparent 2%),
+    linear-gradient(
+      98deg,
+      transparent 52%,
+      rgba(255, 255, 255, 0.05) 60%,
+      rgba(255, 255, 255, 0.07) 64%,
+      transparent 76%
+    );
+}
+
 /* A collector's photo of a card: thumbnail first, the larger image over it. */
 .nb-toploader-photo {
   position: absolute;
@@ -88,11 +123,7 @@
   animation: nb-toploader-flip 280ms ease-out both;
 }
 
-/*
- * The front sheet: the sealed rim on three sides (thick, catching the light),
- * no rim along the open top, and the glare. The mask cuts the thumb notch out
- * of the top edge; its outline is `.nb-toploader::after`, outside the mask.
- */
+/* The front sheet: the sealed rim on three sides (thick, catching the light), no rim along the open top, and the glare. */
 .nb-toploader-front {
   position: absolute;
   inset: 0;
@@ -117,39 +148,17 @@
     inset 7px 0 6px -4px rgba(255, 255, 255, 0.28),
     inset -7px 0 6px -4px rgba(255, 255, 255, 0.2),
     inset 0 -8px 6px -5px rgba(255, 255, 255, 0.28);
-  -webkit-mask-image: radial-gradient(ellipse 14% 7.4% at 50% 0, transparent 97%, #000 100%);
-  mask-image: radial-gradient(ellipse 14% 7.4% at 50% 0, transparent 97%, #000 100%);
 }
 
-/* The open top edge: the two sheets' lip, a bright hairline, broken by the notch. */
+/* The open top edge: the two sheets' lip, one straight hairline. */
 .nb-toploader::before {
   content: "";
   position: absolute;
   z-index: 1;
   inset: 0 0 auto 0;
-  height: 2px;
+  height: 1px;
   pointer-events: none;
-  background: linear-gradient(
-    90deg,
-    rgba(255, 255, 255, 0.75) 0 36%,
-    transparent 36% 64%,
-    rgba(255, 255, 255, 0.75) 64% 100%
-  );
-}
-
-/* The thumb notch's edge. */
-.nb-toploader::after {
-  content: "";
-  position: absolute;
-  z-index: 1;
-  top: 0;
-  left: 36%;
-  width: 28%;
-  height: 7.4%;
-  pointer-events: none;
-  border: 1.5px solid rgba(255, 255, 255, 0.6);
-  border-top: 0;
-  border-radius: 0 0 50% 50% / 0 0 100% 100%;
+  background: rgba(255, 255, 255, 0.6);
 }
 
 /* Over the loader's drop shadow, which would otherwise dim it. */
