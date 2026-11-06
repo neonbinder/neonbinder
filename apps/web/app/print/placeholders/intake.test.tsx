@@ -232,6 +232,36 @@ describe("CardIntake", () => {
     expect(mocks.fns[REFS.uploadUrl]).not.toHaveBeenCalled();
   });
 
+  it("NEO-440: says how many photos were read when some failed, never 'All'", async () => {
+    mocks.queries = {
+      [REFS.job]: {
+        jobId: "job-1234abcd",
+        status: "collecting",
+        mode: "stream",
+        createdAt: Date.now(),
+        totalImages: 3,
+        processedImages: 2,
+        failedImages: 1,
+        rejectedEntries: 0,
+        pairCount: 0,
+      },
+      [REFS.images]: [
+        { entryIndex: 0, originalName: "a.jpg", status: "done", side: "front", pairStatus: "unmatched" },
+        { entryIndex: 1, originalName: "b.jpg", status: "done", side: "front", pairStatus: "unmatched" },
+        { entryIndex: 2, originalName: "blurry.jpg", status: "failed" },
+      ],
+      [REFS.pairs]: [],
+    };
+
+    renderPage();
+    selectFiles(["front.jpg"]);
+
+    expect(await screen.findByText("2 of 3 photos read. 1 couldn't be.")).not.toBeNull();
+    expect(screen.queryByText(/^All \d+ photos? read\.$/)).toBeNull();
+    // The list that names the failed photo is still there to act on.
+    expect(screen.getByText("blurry.jpg")).not.toBeNull();
+  });
+
   it("renders the session's images, pairs and cropped sides", async () => {
     mocks.queries = {
       [REFS.job]: {

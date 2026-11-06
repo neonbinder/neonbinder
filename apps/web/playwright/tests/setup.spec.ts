@@ -24,7 +24,7 @@
 // "A SYNC THAT HALF-WORKED IS A FAILED SEED": after every sync the partial-
 // failure banners must be absent (expectNoSyncFailure).
 import { test, expect } from "../support/fixtures";
-import { loginToBsc, loginToSportLots } from "../support/credentials";
+import { loginToSportLots, openBscCredentials } from "../support/credentials";
 import {
   addCustomManufacturer,
   columnHeading,
@@ -181,7 +181,8 @@ test(
     await expect(page.getByText(/Build set parameters from marketplace data/)).toBeVisible({
       timeout: 120_000,
     });
-    await loginToBsc(page);
+    // NEO-445: the seed hop above already signed in live; the Test press is proven by test-credentials and credentials-lifecycle, and a BSC stall must not fail the seed.
+    await openBscCredentials(page);
     await loginToSportLots(page, env);
 
     // ── Sports → Baseball ──────────────────────────────────────────────────

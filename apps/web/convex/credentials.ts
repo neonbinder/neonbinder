@@ -648,6 +648,43 @@ export const storeTestCredentials = internalAction({
 });
 
 /**
+ * NEO-445 — the other half of the testing seed's store, for a sign-in that
+ * belongs to no collector (`testingSellerCleanup`): deletes the stored session
+ * (`DELETE /credentials/<key>`; a 404 is already gone) and clears the saved
+ * sign-in, under the credential lock. Internal, and fails closed where the
+ * testing flag is unset (production).
+ */
+export const removeTestCredentials = internalAction({
+  args: { userId: v.string(), site: v.union(v.literal("buysportscards"), v.literal("ebay")) },
+  returns: v.object({ ok: v.boolean() }),
+  handler: async (ctx, args): Promise<{ ok: boolean }> => {
+    if (!process.env.TESTING_RESET_SECRET) {
+      throw new Error("Test credential seeding is not enabled on this deployment");
+    }
+    return await withCredentialLock<{ ok: boolean }>(
+      ctx,
+      args.userId,
+      args.site,
+      "delete",
+      async () => {
+        try {
+          const response = await browserFetch(`/credentials/${credKey(args.site, args.userId)}`, {
+            method: "DELETE",
+            headers: await browserAuthHeaders(),
+          });
+          if (!response.ok && response.status !== 404) return { ok: false };
+        } catch {
+          return { ok: false };
+        }
+        await ctx.runMutation(internal.userProfile.removeSiteCredentialStatus, { userId: args.userId, site: args.site });
+        return { ok: true };
+      },
+      { ok: false },
+    );
+  },
+});
+
+/**
  * Get credential metadata for a site (no secrets — safe for frontend use).
  */
 export const getSiteCredentials = action({
