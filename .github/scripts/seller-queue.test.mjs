@@ -36,6 +36,8 @@ function run(files) {
     [`repos/${REPO}/actions/runs/${ME_RUN}/jobs?per_page=100`]: jobsBody([me]),
     [`repos/${REPO}/actions/workflows/pr-pipeline.yml/runs?status=in_progress&per_page=100`]: runsBody([]),
     [`repos/${REPO}/actions/workflows/e2e.yml/runs?status=in_progress&per_page=100`]: runsBody([]),
+    [`repos/${REPO}/actions/workflows/pr-pipeline.yml/runs?status=queued&per_page=100`]: runsBody([]),
+    [`repos/${REPO}/actions/workflows/e2e.yml/runs?status=queued&per_page=100`]: runsBody([]),
     ...files,
   };
   for (const [p, body] of Object.entries(base)) {
@@ -66,6 +68,8 @@ cat "$f"
 
 const PR_RUNS = `repos/${REPO}/actions/workflows/pr-pipeline.yml/runs?status=in_progress&per_page=100`;
 const E2E_RUNS = `repos/${REPO}/actions/workflows/e2e.yml/runs?status=in_progress&per_page=100`;
+const PR_QUEUED = `repos/${REPO}/actions/workflows/pr-pipeline.yml/runs?status=queued&per_page=100`;
+const E2E_QUEUED = `repos/${REPO}/actions/workflows/e2e.yml/runs?status=queued&per_page=100`;
 const jobsOf = (id) => `repos/${REPO}/actions/runs/${id}/jobs?per_page=100`;
 const go = (r) => assert.ok(r.status === 0 && /our turn/.test(r.out), r.out);
 const blocked = (r, re) => assert.ok(r.status === 1 && re.test(r.out), r.out);
@@ -91,6 +95,55 @@ test("an earlier queued job blocks; a later one does not", () => {
   blocked(run({ [PR_RUNS]: runsBody([ownRun(200)]), [jobsOf(200)]: jobsBody([job({ started_at: at(10) })]) }), /run 200 \(queued\)/);
   go(run({ [PR_RUNS]: runsBody([ownRun(200)]), [jobsOf(200)]: jobsBody([job({ started_at: at(0) })]) }));
 });
+
+// NEO-445: GitHub can call a run `queued` while one of its jobs runs (seen on a
+// rerun). The job, not the run's word for itself, says who counts.
+test("a run reported as queued with its seller job running holds the queue", () =>
+  blocked(run({
+    [PR_QUEUED]: runsBody([ownRun(200)]),
+    [jobsOf(200)]: jobsBody([job({ steps: passed })]),
+  }), /1 ahead: run 200 \(running\)/));
+
+test("a run reported as queued with an earlier seller job still waiting its turn blocks", () =>
+  blocked(run({
+    [E2E_QUEUED]: runsBody([ownRun(200)]),
+    [jobsOf(200)]: jobsBody([job({ started_at: at(10) })]),
+  }), /run 200 \(queued\)/));
+
+test("a run reported as queued whose seller job has not started blocks no one", () => {
+  // Older than us, so it would count by age: this is the deadlock to avoid (a
+  // run queued behind its own PR's run, which is itself waiting on this queue).
+  go(run({
+    [PR_QUEUED]: runsBody([ownRun(200)]),
+    [jobsOf(200)]: jobsBody([job({ status: "queued", started_at: at(10) })]),
+  }));
+  go(run({ [PR_QUEUED]: runsBody([ownRun(200)]), [jobsOf(200)]: jobsBody([]) }));
+  go(run({
+    [PR_QUEUED]: runsBody([ownRun(200)]),
+    [jobsOf(200)]: jobsBody([job({ status: "completed", conclusion: "success", steps: passed })]),
+  }));
+});
+
+test("a run listed both ways is read once, as in progress", () => {
+  const r = run({
+    [PR_RUNS]: runsBody([ownRun(200)]),
+    [PR_QUEUED]: runsBody([ownRun(200)]),
+    [jobsOf(200)]: jobsBody([job({ status: "queued", started_at: at(10) })]),
+  });
+  blocked(r, /1 ahead: run 200 \(queued\)/);
+});
+
+test("a fork's run reported as queued is ignored", () =>
+  go(run({
+    [PR_QUEUED]: runsBody([{ id: 200, head_repository: { full_name: "evil/r" } }]),
+    [jobsOf(200)]: jobsBody([job({ steps: passed })]),
+  })));
+
+test("a failing queued-runs call is unreadable, never go", () =>
+  blocked(run({ [E2E_QUEUED]: "FAIL" }), /unreadable: could not list e2e\.yml runs/));
+
+test("a queued-runs listing with total_count 101 is unreadable", () =>
+  blocked(run({ [PR_QUEUED]: runsBody([], { total_count: 101 }) }), /unreadable: pr-pipeline\.yml run list truncated/));
 
 test("a failing jobs call is unreadable, never go", () =>
   blocked(run({ [PR_RUNS]: runsBody([ownRun(200)]), [jobsOf(200)]: "FAIL" }), /unreadable: could not read the jobs of run 200/));
@@ -141,4 +194,16 @@ test("e2e.yml names exactly two queue steps and two seller jobs as the script ex
   assert.equal(jobNames.length, 2);
   for (const n of jobNames) assert.match(n, JOB_RE);
   assert.deepEqual(jobNames.map((n) => /\((\w+)\)$/.exec(n)[1]).sort(), ["desktop", "mobile"]);
+});
+
+// NEO-445: the accounts are cleared inside the queue's turn, before any spec.
+test("in both seller jobs the seller cleanup is the step right after the queue", () => {
+  const yml = readFileSync(join(REPO_ROOT, ".github", "workflows", "e2e.yml"), "utf8");
+  const names = yml.split("\n").filter((l) => /^      - (name|uses|run): /.test(l)).map((l) => l.trim());
+  const queueAt = names.flatMap((n, i) => (n === `- name: ${STEP}` ? [i] : []));
+  assert.equal(queueAt.length, 2);
+  for (const i of queueAt) {
+    assert.equal(names[i + 1], "- name: Clear the seller accounts for the specs");
+  }
+  assert.equal(yml.match(/testingSellerCleanup:clearSellerAccounts/g)?.length, 2, "exactly the two seller jobs run it");
 });
