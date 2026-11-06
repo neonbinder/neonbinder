@@ -21,6 +21,9 @@ Quirks worth remembering when building on them:
   (207 when some did). Read the body on 400 before treating the call as failed.
 - `createOffer` for a SKU that already has one fails per entry with error
   25002; adopt the existing offer via `getOffers?sku=` rather than failing.
+- `deleteInventoryItem` also deletes the SKU's unpublished offers and
+  single-variation listings. The contract lists a missing SKU under 400/25702
+  as well as a bare 404, so a 404 check alone may not catch "already gone".
 - The fulfillment-policy create path carries a trailing slash in the spec.
 - Enums the contract only links to (Inventory `PackageTypeEnum`) are absent
   from the JSON and the doc page is a JS app; a generated SDK on GitHub

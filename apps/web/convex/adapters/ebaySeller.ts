@@ -1071,6 +1071,27 @@ export async function withdrawOffer(ctx: SessionCtx, session: EbaySellerSession,
   return r.ok ? { ok: true, value: null } : r;
 }
 
+/**
+ * `DELETE /sell/inventory/v1/inventory_item/{sku}`: removes the item. Sell
+ * Inventory contract: this also deletes the SKU's unpublished offers and its
+ * single-variation listings. 204 is success; 404 is already gone, so success.
+ * A missing SKU may also answer 400/25702 ("could not be found or is not
+ * available"): that stays a failure, because "not available" doesn't promise
+ * gone, and a false failure costs a re-run where a false success hides a live
+ * item. Testing cleanup only.
+ */
+export async function deleteInventoryItem(ctx: SessionCtx, session: EbaySellerSession, sku: string): Promise<EbayResult<null>> {
+  const r = await send(ctx, session, {
+    operation: "deleteInventoryItem",
+    method: "DELETE",
+    path: `/sell/inventory/v1/inventory_item/${encodeURIComponent(sku)}`,
+    timeoutMs: EBAY_TIMEOUTS_MS.write,
+    maxBytes: EBAY_MAX_BYTES.small,
+  });
+  if (r.ok || r.failure.httpStatus === 404) return { ok: true, value: null };
+  return r;
+}
+
 /** Items one inventory page asks for (eBay's contract: 1 to 200, default 25). */
 export const EBAY_INVENTORY_PAGE = 100;
 

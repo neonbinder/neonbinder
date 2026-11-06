@@ -50,6 +50,16 @@ let offers: Map<string, Offer>;
 let withdrawals: string[];
 let withdrawAnswers: Array<Response>;
 let offerReads: string[];
+let offersRefused: Set<string>;
+let deletes: string[];
+let deleteAnswers: Map<string, Array<Response>>;
+let gone: Set<string>;
+/** Each eBay write in the order it reached eBay, to prove the withdraw comes before the delete. */
+let ebayWrites: string[];
+/** Added to `Date.now()`, so a test can run out the cleanup's budget at a chosen call. */
+let clockSkewMs: number;
+let onOfferRead: (() => void) | null;
+let onDelete: (() => void) | null;
 let inventoryOffsets: string[];
 let sheet: Row[];
 let sheetReads: Array<{ condition: string; filters: Record<string, string[]> }>;
@@ -68,6 +78,16 @@ beforeEach(() => {
   withdrawals = [];
   withdrawAnswers = [];
   offerReads = [];
+  offersRefused = new Set();
+  deletes = [];
+  deleteAnswers = new Map();
+  gone = new Set();
+  ebayWrites = [];
+  clockSkewMs = 0;
+  onOfferRead = null;
+  onDelete = null;
+  const realNow = Date.now.bind(Date);
+  vi.spyOn(Date, "now").mockImplementation(() => realNow() + clockSkewMs);
   inventoryOffsets = [];
   sheet = [];
   sheetReads = [];
@@ -114,11 +134,28 @@ beforeEach(() => {
       if (u.pathname === "/sell/inventory/v1/inventory_item") {
         const offset = u.searchParams.get("offset") ?? "?";
         inventoryOffsets.push(offset);
-        return Response.json(pages[Number(offset)] ?? {});
+        // As eBay: a deleted item is no longer listed.
+        const page = pages[Number(offset)] ?? {};
+        const left = page.inventoryItems?.filter((i) => i.sku === undefined || !gone.has(i.sku));
+        return Response.json({ ...page, ...(left ? { inventoryItems: left } : {}) });
+      }
+      const deleted = /^\/sell\/inventory\/v1\/inventory_item\/([^/]+)$/.exec(u.pathname);
+      if (deleted && method === "DELETE") {
+        const s = decodeURIComponent(deleted[1]);
+        deletes.push(s);
+        ebayWrites.push(`delete ${s}`);
+        onDelete?.();
+        const answer = deleteAnswers.get(s)?.shift();
+        if (answer) return answer;
+        gone.add(s);
+        offers.delete(s);
+        return new Response(null, { status: 204 });
       }
       if (u.pathname === "/sell/inventory/v1/offer") {
         const s = u.searchParams.get("sku") ?? "";
         offerReads.push(s);
+        onOfferRead?.();
+        if (offersRefused.has(s)) return Response.json({ errors: [{ errorId: 25709 }] }, { status: 400 });
         const offer = offers.get(s);
         if (!offer) return Response.json({ errors: [{ errorId: 25713 }] }, { status: 404 });
         return Response.json({ offers: [{ ...offer, sku: s, listing: { listingId: "L1" } }] });
@@ -126,6 +163,7 @@ beforeEach(() => {
       const withdraw = /^\/sell\/inventory\/v1\/offer\/([^/]+)\/withdraw$/.exec(u.pathname);
       if (withdraw && method === "POST") {
         withdrawals.push(withdraw[1]);
+        ebayWrites.push(`withdraw ${withdraw[1]}`);
         return withdrawAnswers.shift() ?? Response.json({ listingId: "L1" });
       }
       throw new Error(`unexpected eBay path ${u.pathname}`);
@@ -299,6 +337,7 @@ describe("a paused marketplace", () => {
     const t = convexTest(schema, modules);
     const r = await clear(t);
     expect([r.ebay.outcome, r.bsc.outcome]).toEqual(["paused", "paused"]);
+    expect(r.ebay).toEqual({ outcome: "paused", items: 0, withdrawn: 0, deleted: 0 });
     expect([browserCalls.length, ebayCalls, bscCalls]).toEqual([0, 0, 0]);
     await drainScheduled(t);
   });
@@ -314,7 +353,140 @@ describe("eBay", () => {
     offers.set(sku("c"), { offerId: "O-c", status: "PUBLISHED" });
     const r = await clear(t);
     expect([...withdrawals].sort()).toEqual(["O-a", "O-c", "O-other"]);
-    expect(r.ebay).toEqual({ outcome: "clean", items: 5, withdrawn: 3 });
+    expect(r.ebay).toEqual({ outcome: "clean", items: 5, withdrawn: 3, deleted: 5 });
+    await drainScheduled(t);
+  });
+
+  test("deletes every item, whatever its offer: published, unpublished, none, or not one of NB's", async () => {
+    const t = await ready();
+    const skus = [sku("live"), sku("draft"), sku("nooffer"), "NOT-AN-NB-SKU"];
+    pages = [{ inventoryItems: skus.map(item) }];
+    offers.set(sku("live"), { offerId: "O-live", status: "PUBLISHED" });
+    offers.set(sku("draft"), { offerId: "O-draft", status: "UNPUBLISHED" });
+    const r = await clear(t);
+    expect([...deletes].sort()).toEqual([...skus].sort());
+    expect(r.ebay).toEqual({ outcome: "clean", items: 4, withdrawn: 1, deleted: 4 });
+    // The seller is empty: a second look finds nothing to do.
+    const again = await clear(t);
+    expect(again.ebay).toEqual({ outcome: "clean", items: 0, withdrawn: 0, deleted: 0 });
+    await drainScheduled(t);
+  });
+
+  test("a live offer is withdrawn before its item is deleted", async () => {
+    const t = await ready();
+    pages = [{ inventoryItems: [item(sku("a"))] }];
+    offers.set(sku("a"), { offerId: "O-a", status: "PUBLISHED" });
+    await clear(t);
+    expect(ebayWrites).toEqual(["withdraw O-a", `delete ${sku("a")}`]);
+    await drainScheduled(t);
+  });
+
+  test("deletes across every page", async () => {
+    const t = await ready();
+    pages = [
+      { inventoryItems: [item(sku("p0"))], next: "/sell/inventory/v1/inventory_item?limit=100&offset=1" },
+      { inventoryItems: [item(sku("p1"))] },
+    ];
+    const r = await clear(t);
+    expect([...deletes].sort()).toEqual([sku("p0"), sku("p1")]);
+    expect(r.ebay.deleted).toBe(2);
+    await drainScheduled(t);
+  });
+
+  test("an item eBay says is already gone counts as deleted", async () => {
+    const t = await ready();
+    pages = [{ inventoryItems: [item(sku("gone"))] }];
+    deleteAnswers.set(sku("gone"), [Response.json({ errors: [{ errorId: 25710 }] }, { status: 404 })]);
+    const r = await clear(t);
+    expect(r.ebay).toEqual({ outcome: "clean", items: 1, withdrawn: 0, deleted: 1 });
+    await drainScheduled(t);
+  });
+
+  test("a delete eBay refuses fails the job, naming it; the other items are still deleted", async () => {
+    const t = await ready();
+    pages = [{ inventoryItems: [item(sku("a")), item(sku("b"))] }];
+    deleteAnswers.set(sku("a"), [Response.json({ errors: [{ errorId: 25709 }] }, { status: 400 })]);
+    await expect(clear(t)).rejects.toThrow(/eBay: 1 of 2 items could not be deleted.*400.*25709/);
+    expect([...gone]).toEqual([sku("b")]);
+    await drainScheduled(t);
+  });
+
+  test("eBay busy on a delete gets one more try", async () => {
+    const t = await ready();
+    pages = [{ inventoryItems: [item(sku("a"))] }];
+    deleteAnswers.set(sku("a"), [Response.json({ errors: [{ errorId: 25001 }] }, { status: 500 })]);
+    const r = await clear(t);
+    expect(deletes).toEqual([sku("a"), sku("a")]);
+    expect(r.ebay.deleted).toBe(1);
+    await drainScheduled(t);
+  });
+
+  test("an item whose live offer would not end is kept, so a re-run can still find the listing", async () => {
+    const t = await ready();
+    pages = [{ inventoryItems: [item(sku("a"))] }];
+    offers.set(sku("a"), { offerId: "O1", status: "PUBLISHED" });
+    withdrawAnswers = [Response.json({ errors: [{ errorId: 25002 }] }, { status: 400 })];
+    await expect(clear(t)).rejects.toThrow(/eBay: 1 of 1 items could not be checked or withdrawn, so they were kept.*25002/);
+    expect(deletes).toEqual([]);
+    const r = await clear(t);
+    expect(r.ebay).toEqual({ outcome: "clean", items: 1, withdrawn: 1, deleted: 1 });
+    await drainScheduled(t);
+  });
+
+  test("an item whose offer can't be read is kept: it may hold a live listing", async () => {
+    const t = await ready();
+    pages = [{ inventoryItems: [item(sku("a")), item(sku("b"))] }];
+    offersRefused.add(sku("a"));
+    await expect(clear(t)).rejects.toThrow(/eBay: 1 of 2 items could not be checked or withdrawn, so they were kept.*400/);
+    expect(deletes).toEqual([sku("b")]);
+    await drainScheduled(t);
+  });
+
+  test("refused withdraws and refused deletes are both named", async () => {
+    const t = await ready();
+    pages = [{ inventoryItems: [item(sku("a")), item(sku("b"))] }];
+    offersRefused.add(sku("a"));
+    deleteAnswers.set(sku("b"), [Response.json({ errors: [{ errorId: 25709 }] }, { status: 400 })]);
+    await expect(clear(t)).rejects.toThrow(/could not be checked or withdrawn.*; 1 of 2 items could not be deleted/);
+    await drainScheduled(t);
+  });
+
+  test("out of time part-way fails asking for a re-run, and the re-run finishes the rest", async () => {
+    const t = await ready();
+    const skus = Array.from({ length: 30 }, (_, i) => sku(`n${i}`));
+    pages = [{ inventoryItems: skus.map(item) }];
+    onDelete = () => {
+      if (deletes.length === 3) clockSkewMs += 6 * 60 * 1000;
+    };
+    await expect(clear(t)).rejects.toThrow(/eBay: ran out of time with 30 items to clear.*\d+ deleted; re-run the workflow/);
+    const first = gone.size;
+    expect(first).toBeGreaterThanOrEqual(3);
+    expect(first).toBeLessThan(30);
+
+    onDelete = null;
+    const r = await clear(t);
+    expect(r.ebay).toEqual({ outcome: "clean", items: 30 - first, withdrawn: 0, deleted: 30 - first });
+    expect([...gone].sort()).toEqual([...skus].sort());
+    await drainScheduled(t);
+  });
+
+  test("the budget running out during an offer read starts no delete", async () => {
+    const t = await ready();
+    pages = [{ inventoryItems: [item(sku("a"))] }];
+    onOfferRead = () => {
+      clockSkewMs += 6 * 60 * 1000;
+    };
+    await expect(clear(t)).rejects.toThrow(/eBay: ran out of time/);
+    expect(deletes).toEqual([]);
+    await drainScheduled(t);
+  });
+
+  test("the seller_cleanup log line carries the count", async () => {
+    const t = await ready();
+    pages = [{ inventoryItems: [item(sku("a")), item(sku("b"))] }];
+    await clear(t);
+    const line = logged.map((l) => /\{"msg":"seller_cleanup","platform":"ebay".*\}/.exec(l)?.[0]).find(Boolean);
+    expect(JSON.parse(line as string)).toMatchObject({ outcome: "clean", items: 2, withdrawn: 0, deleted: 2 });
     await drainScheduled(t);
   });
 
@@ -360,8 +532,9 @@ describe("eBay", () => {
     const t = await ready();
     pages = [{}];
     const r = await clear(t);
-    expect(r.ebay).toEqual({ outcome: "clean", items: 0, withdrawn: 0 });
+    expect(r.ebay).toEqual({ outcome: "clean", items: 0, withdrawn: 0, deleted: 0 });
     expect(withdrawals).toEqual([]);
+    expect(deletes).toEqual([]);
     await drainScheduled(t);
   });
 
@@ -382,6 +555,7 @@ describe("eBay", () => {
     offers.set(sku("b"), { offerId: "O2", status: "PUBLISHED" });
     withdrawAnswers = [Response.json({ errors: [{ errorId: 25002 }] }, { status: 400 })];
     await expect(clear(t)).rejects.toThrow(/eBay: 1 of 2 items could not be checked or withdrawn.*400.*25002/);
+    expect(deletes).toHaveLength(1);
     await drainScheduled(t);
   });
 
