@@ -1,0 +1,429 @@
+/**
+ * NEO-445 — clears the shared test sellers before the marketplace-seller specs,
+ * so those specs always start clean.
+ *
+ * Every PR's CI lists on one BuySportsCards seller and one eBay sandbox seller.
+ * A run that dies mid-spec leaves listings up, and no later run can end them
+ * through the product: an eBay SKU carries a per-deployment card id, and a BSC
+ * row a run never knew about is only zeroed by that set's own Sync. So
+ * `e2e.yml`'s two seller jobs call this action, inside their turn in the seller
+ * queue, before any spec. It never runs in the seed: seeds run outside the queue.
+ *
+ * Scope (Jason, NEO-445). Only the accounts the specs use: the bootstrap's own
+ * `DEV_BSC_USERNAME` / `DEV_BSC_PASSWORD` and `DEV_EBAY_REFRESH_TOKEN`
+ * (`testing.seedMyTestCredentials`).
+ *
+ * - eBay: ends ALL listings on the sandbox seller. Pages the inventory and
+ *   withdraws every PUBLISHED offer. Inventory items and policies stay.
+ * - BSC: sets quantity to 0 on ALL of the seller's rows for each set the specs
+ *   list (`SELLER_SPEC_SETS`), the rest of the account untouched. Reads those
+ *   sheets one at a time (`listingDrain.readSheets`, the drain's own scope and
+ *   rule), PUTs every row above 0 to 0, then reads back. A direct write, so the
+ *   planner's `duplicate_sheet_row` never blocks it: both copies of a twin go to
+ *   0 like any other row. Rows are never removed. If BSC goes on showing both
+ *   copies at 0, `planBscSheet` still refuses a card listed in that condition
+ *   (it keys on the pair, whatever the quantity), so that is reported, not
+ *   failed: a spec listing another card or condition is unaffected.
+ *
+ * The sign-ins belong to `CLEANUP_OWNER`, not a worker: no spec's session is
+ * touched and the worker's bootstrap runs later, in the spec step. The owner
+ * marks itself not listing (`testOff`), so it never holds a seller account, and
+ * its session and rows are removed at the end. A fixed id on purpose: a session
+ * a crash leaves behind is overwritten by the next run rather than piling up.
+ *
+ * Failing: a side that cannot finish fails the action, after the other side has
+ * run, so the job stops on a clear message rather than running specs on a dirty
+ * account. A paused marketplace (`NEONBINDER_PAUSED_PLATFORMS`) is skipped and
+ * never contacted. Logs carry counts and outcomes, never a token.
+ *
+ * Internal: reachable only with the deploy key (`npx convex run`), and fails
+ * closed without `TESTING_RESET_SECRET` and off the eBay sandbox.
+ */
+import { v } from "convex/values";
+import { internalAction, internalMutation, internalQuery } from "./_generated/server";
+import type { ActionCtx } from "./_generated/server";
+import { internal } from "./_generated/api";
+import type { Id } from "./_generated/dataModel";
+import {
+  getInventorySkusPage,
+  getOfferBySku,
+  isBusyAnswer,
+  openEbaySellerSession,
+  withdrawOffer,
+  EBAY_PUBLISH_RETRY_PAUSE_MS,
+  type EbayFailure,
+  type EbayResult,
+  type EbaySellerSession,
+} from "./adapters/ebaySeller";
+import { fetchBscSellerId, openBscSellerSession, putBscListings, type BscSellerSession } from "./adapters/bscSeller";
+import { ebayConfig } from "./lib/ebayEnv";
+import { bscConditionsForEra } from "./lib/bscConditions";
+import { chunkRows, photoKeyFor, type BscSheetRow } from "./lib/bscSheetPlan";
+import { isPlatformPaused } from "./marketplacePause";
+import { readSheets, type VariantInput } from "./listingDrain";
+import { variantTypeKindFromTitle } from "./variantRole";
+
+/** Every real set the seller specs list on (`playwright/SET-REGISTRY.md`). Both specs share this one. */
+export const SELLER_SPEC_SETS = [{ sport: "Baseball", year: "1988", manufacturer: "Topps", setName: "Topps" }] as const;
+
+/** Whose sign-ins this holds while it works. Clerk's id shape; no Clerk user has it. */
+const CLEANUP_OWNER = "user_e2esellercleanup";
+
+/** eBay's pages hold `EBAY_INVENTORY_PAGE` items: 20,000 is far above this seller. */
+const MAX_INVENTORY_PAGES = 200;
+/** SKU lookups side by side: every run's items stay on the seller, so the inventory only grows. */
+const EBAY_CONCURRENCY = 8;
+/** Under Convex's 10 minute action limit, leaving room for the BSC side and tidying up. */
+const EBAY_BUDGET_MS = 5 * 60 * 1000;
+
+/** The Base variant of one set the specs list, or null when the chain isn't there exactly once. */
+export const baseVariantOf = internalQuery({
+  args: { sport: v.string(), year: v.string(), manufacturer: v.string(), setName: v.string() },
+  returns: v.union(v.id("selectorOptions"), v.null()),
+  handler: async (ctx, args): Promise<Id<"selectorOptions"> | null> => {
+    const childNamed = async (
+      level: "sport" | "year" | "manufacturer" | "setName" | "variantType",
+      parentId: Id<"selectorOptions"> | undefined,
+      matches: (value: string) => boolean,
+    ): Promise<Id<"selectorOptions"> | null> => {
+      const rows = await ctx.db
+        .query("selectorOptions")
+        .withIndex("by_level_and_parent", (q) => q.eq("level", level).eq("parentId", parentId))
+        .take(1000);
+      const hits = rows.filter((row) => matches(row.value));
+      // Two rows of one name: not this fixture's shape. Never pick one.
+      return hits.length === 1 ? hits[0]._id : null;
+    };
+    const sportId = await childNamed("sport", undefined, (value) => value === args.sport);
+    if (!sportId) return null;
+    const yearId = await childNamed("year", sportId, (value) => value === args.year);
+    if (!yearId) return null;
+    const brandId = await childNamed("manufacturer", yearId, (value) => value === args.manufacturer);
+    if (!brandId) return null;
+    const setId = await childNamed("setName", brandId, (value) => value === args.setName);
+    if (!setId) return null;
+    return await childNamed("variantType", setId, (value) => variantTypeKindFromTitle(value) === "base");
+  },
+});
+
+/** Removes every row `CLEANUP_OWNER` picked up on the way. Takes no owner: it can name no one else. */
+export const forgetCleanupOwner = internalMutation({
+  args: {},
+  returns: v.null(),
+  handler: async (ctx) => {
+    const states = await ctx.db
+      .query("marketplaceListingStates")
+      .withIndex("by_owner_platform", (q) => q.eq("ownerId", CLEANUP_OWNER))
+      .collect();
+    for (const row of states) await ctx.db.delete(row._id);
+    const settings = await ctx.db
+      .query("ebaySellerSettings")
+      .withIndex("by_owner", (q) => q.eq("ownerId", CLEANUP_OWNER))
+      .collect();
+    for (const row of settings) await ctx.db.delete(row._id);
+    const profiles = await ctx.db
+      .query("userProfiles")
+      .withIndex("by_user", (q) => q.eq("userId", CLEANUP_OWNER))
+      .collect();
+    for (const row of profiles) await ctx.db.delete(row._id);
+    return null;
+  },
+});
+
+const ebayReportValidator = v.object({
+  outcome: v.union(v.literal("clean"), v.literal("paused")),
+  /** Items read from the seller's inventory, each checked for a live offer. */
+  items: v.number(),
+  withdrawn: v.number(),
+});
+type EbayReport = typeof ebayReportValidator.type;
+
+const bscReportValidator = v.object({
+  outcome: v.union(v.literal("clean"), v.literal("paused")),
+  rows: v.number(),
+  unreadableRows: v.number(),
+  /** Rows above 0 when this started, and what the PUTs took to 0. */
+  listed: v.number(),
+  zeroed: v.number(),
+  twinKeys: v.number(),
+  /** Two rows still on the sheet for one (card, condition), at 0: `planBscSheet` refuses that pair. */
+  twinKeysRemaining: v.number(),
+});
+type BscReport = typeof bscReportValidator.type;
+
+function isOurRow(row: BscSheetRow): boolean {
+  // As the planner: a slab row is never ours.
+  return row.productType === null || row.productType === "raw";
+}
+
+function countTwinKeys(rows: readonly BscSheetRow[]): number {
+  const seen = new Set<string>();
+  const twins = new Set<string>();
+  for (const row of rows) {
+    const key = photoKeyFor(row.bscCardId, row.condition);
+    if (seen.has(key)) twins.add(key);
+    seen.add(key);
+  }
+  return twins.size;
+}
+
+/** Runs `work` over `items`, at most `limit` at once, and stops starting more once `stop` is true. */
+async function eachSideBySide<T>(
+  items: readonly T[],
+  limit: number,
+  stop: () => boolean,
+  work: (item: T) => Promise<void>,
+): Promise<void> {
+  let next = 0;
+  const lane = async (): Promise<void> => {
+    while (next < items.length && !stop()) {
+      const item = items[next];
+      next += 1;
+      await work(item);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, () => lane()));
+}
+
+/** One more try when eBay says it is busy: the sandbox has answered single calls 500. */
+async function onceMoreIfBusy<T>(call: () => Promise<EbayResult<T>>): Promise<EbayResult<T>> {
+  const first = await call();
+  if (first.ok || !isBusyAnswer(first.failure)) return first;
+  await new Promise<void>((resolve) => setTimeout(resolve, EBAY_PUBLISH_RETRY_PAUSE_MS));
+  return await call();
+}
+
+function saysEbay(f: EbayFailure): string {
+  const ids = f.errorIds && f.errorIds.length > 0 ? `, eBay errors ${f.errorIds.join(" ")}` : "";
+  return `${f.message} (${f.kind}${f.httpStatus !== undefined ? ` ${f.httpStatus}` : ""}${ids})`;
+}
+
+async function clearEbay(ctx: ActionCtx): Promise<EbayReport> {
+  const refreshToken = process.env.DEV_EBAY_REFRESH_TOKEN;
+  if (!refreshToken) throw new Error("DEV_EBAY_REFRESH_TOKEN is not set on this deployment");
+  const startedAt = Date.now();
+  // The same refresh exchange the spec's seed hop makes (`connectEbay`).
+  const connected = await ctx.runAction(internal.credentials.connectEbay, {
+    userId: CLEANUP_OWNER,
+    refreshToken,
+    listing: "testOff",
+  });
+  if (!connected.ok) throw new Error(`could not connect the sandbox seller (${connected.error})`);
+
+  const opened = await openEbaySellerSession(ctx, CLEANUP_OWNER);
+  if (!opened.ok) throw new Error(`could not open a session: ${saysEbay(opened.failure)}`);
+  const session: EbaySellerSession = opened.value;
+
+  const skus: string[] = [];
+  const offsets = new Set<string>();
+  for (let offset: string | null = "0"; offset !== null; ) {
+    if (offsets.has(offset) || offsets.size >= MAX_INVENTORY_PAGES) {
+      throw new Error(`stopped paging the seller's inventory at page ${offsets.size}: the listing is not complete`);
+    }
+    offsets.add(offset);
+    const asked: string = offset;
+    const page = await onceMoreIfBusy(() => getInventorySkusPage(ctx, session, asked));
+    if (!page.ok) throw new Error(`could not read the seller's inventory: ${saysEbay(page.failure)}`);
+    // An item NB can't name may hold a live listing, so "all ended" can't be said.
+    if (page.value.unreadable > 0) throw new Error(`${page.value.unreadable} inventory items came back with no readable SKU`);
+    skus.push(...page.value.skus);
+    offset = page.value.nextOffset;
+  }
+
+  let withdrawn = 0;
+  let notEnded = 0;
+  let firstFailure: string | null = null;
+  const note = (f: EbayFailure) => {
+    notEnded += 1;
+    firstFailure ??= saysEbay(f);
+  };
+  await eachSideBySide(
+    skus,
+    EBAY_CONCURRENCY,
+    () => session.dead || Date.now() - startedAt > EBAY_BUDGET_MS,
+    async (sku) => {
+      const offer = await onceMoreIfBusy(() => getOfferBySku(ctx, session, sku));
+      if (!offer.ok) return note(offer.failure);
+      if (offer.value === null || !offer.value.published) return;
+      const { offerId } = offer.value;
+      const r = await onceMoreIfBusy(() => withdrawOffer(ctx, session, offerId));
+      // 404: eBay no longer has it live.
+      if (r.ok || r.failure.httpStatus === 404) withdrawn += 1;
+      else note(r.failure);
+    },
+  );
+  if (session.dead) throw new Error("eBay refused the session part-way through");
+  if (Date.now() - startedAt > EBAY_BUDGET_MS) {
+    throw new Error(`ran out of time with ${skus.length} items to check and ${withdrawn} withdrawn; re-run the workflow`);
+  }
+  if (notEnded > 0) throw new Error(`${notEnded} of ${skus.length} items could not be checked or withdrawn: ${firstFailure}`);
+  return { outcome: "clean", items: skus.length, withdrawn };
+}
+
+/** Sets every row of one set's sheets to 0 and proves it by reading back. */
+async function zeroSet(
+  ctx: ActionCtx,
+  session: BscSellerSession,
+  sellerIdOf: () => Promise<string>,
+  input: Extract<VariantInput, { kind: "ok" }>,
+): Promise<Omit<BscReport, "outcome">> {
+  // Serial, never side by side: overlapping sheet reads are what mint twin rows.
+  const conditions: string[] = [...bscConditionsForEra(input.era)];
+  const first = await readSheets(ctx, session, input.requests, conditions);
+  if (!first.ok) throw new Error(`could not read the sheets: ${first.failure.message}`);
+  const rows = first.sheet.rows.filter(isOurRow);
+  const twinKeys = countTwinKeys(rows);
+  const listed = rows.filter((row) => row.quantity > 0);
+  const report = { rows: rows.length, unreadableRows: first.sheet.unreadable, listed: listed.length, twinKeys };
+  if (listed.length === 0) return { ...report, zeroed: 0, twinKeysRemaining: twinKeys };
+
+  const sellerId = await sellerIdOf();
+  let putFailure: string | null = null;
+  const puts = listed.map((row) => ({ ...row.raw, condition: row.condition, availableQuantity: 0 }));
+  for (const chunk of chunkRows(puts)) {
+    const put = await putBscListings(ctx, session, { sellerId, listings: chunk });
+    if (!put.ok) putFailure ??= put.failure.message;
+  }
+
+  // BSC's PUT answer is not proof: read back every sheet the PUTs touched.
+  const touched = new Set(listed.map((row) => row.condition));
+  const back = await readSheets(ctx, session, input.requests, conditions.filter((c) => touched.has(c)));
+  if (!back.ok) throw new Error(`could not read the sheets back: ${back.failure.message}`);
+  const backRows = back.sheet.rows.filter(isOurRow);
+  const stillListed = backRows.filter((row) => row.quantity > 0).length;
+  if (stillListed > 0) {
+    throw new Error(`${stillListed} rows are still above 0 after the PUT${putFailure ? ` (${putFailure})` : ""}`);
+  }
+  const final = [...rows.filter((row) => !touched.has(row.condition)), ...backRows];
+  return { ...report, zeroed: listed.length, twinKeysRemaining: countTwinKeys(final) };
+}
+
+async function clearBsc(ctx: ActionCtx): Promise<BscReport> {
+  const username = process.env.DEV_BSC_USERNAME;
+  const password = process.env.DEV_BSC_PASSWORD;
+  if (!username || !password) throw new Error("DEV_BSC_USERNAME or DEV_BSC_PASSWORD is not set on this deployment");
+
+  // Every set's scope first: a set that can't be found signs in to nothing.
+  const inputs: Array<Extract<VariantInput, { kind: "ok" }>> = [];
+  for (const set of SELLER_SPEC_SETS) {
+    const name = `${set.year} ${set.manufacturer} ${set.setName}`;
+    const variantId: Id<"selectorOptions"> | null = await ctx.runQuery(internal.testingSellerCleanup.baseVariantOf, { ...set });
+    if (!variantId) throw new Error(`no ${name} Base on this deployment: did the seed run?`);
+    const input: VariantInput = await ctx.runQuery(internal.listingDrain.variantSyncInput, {
+      ownerId: CLEANUP_OWNER,
+      variantId,
+    });
+    if (input.kind !== "ok") throw new Error(`${name} Base has no BuySportsCards scope (${input.kind})`);
+    inputs.push(input);
+  }
+
+  const stored = await ctx.runAction(internal.credentials.storeTestCredentials, {
+    userId: CLEANUP_OWNER,
+    site: "buysportscards",
+    username,
+    password,
+    listing: false,
+  });
+  if (!stored.success) throw new Error(`could not sign in: ${stored.message}`);
+
+  const opened = await openBscSellerSession(ctx, CLEANUP_OWNER);
+  if (!opened.ok) throw new Error(`could not open a session: ${opened.failure.message}`);
+  const session = opened.value;
+
+  // The seller this session is signed in as: the only one a PUT here names.
+  let known: string | null = null;
+  const sellerIdOf = async (): Promise<string> => {
+    if (known !== null) return known;
+    const sellerId = await fetchBscSellerId(ctx, session);
+    if (!sellerId.ok) throw new Error(`could not read the seller id: ${sellerId.failure.message}`);
+    if (sellerId.value === null) throw new Error("BuySportsCards didn't say which seller account this is");
+    known = sellerId.value;
+    return known;
+  };
+
+  const total: BscReport = { outcome: "clean", rows: 0, unreadableRows: 0, listed: 0, zeroed: 0, twinKeys: 0, twinKeysRemaining: 0 };
+  for (const input of inputs) {
+    const one = await zeroSet(ctx, session, sellerIdOf, input);
+    total.rows += one.rows;
+    total.unreadableRows += one.unreadableRows;
+    total.listed += one.listed;
+    total.zeroed += one.zeroed;
+    total.twinKeys += one.twinKeys;
+    total.twinKeysRemaining += one.twinKeysRemaining;
+  }
+  return total;
+}
+
+/** One side's work, its sign-in removed whatever happened. Null report: failed, with `error`. */
+async function runSide<R extends { outcome: string }>(
+  ctx: ActionCtx,
+  platform: "ebay" | "bsc",
+  site: "ebay" | "buysportscards",
+  work: () => Promise<R>,
+): Promise<{ report: R; error: null } | { report: null; error: string }> {
+  const startedAt = Date.now();
+  let result: { report: R; error: null } | { report: null; error: string };
+  try {
+    result = { report: await work(), error: null };
+  } catch (err) {
+    result = { report: null, error: err instanceof Error ? err.message : String(err) };
+  }
+  try {
+    const removed = await ctx.runAction(internal.credentials.removeTestCredentials, { userId: CLEANUP_OWNER, site });
+    // The next run overwrites it: worth a line, not a failed job.
+    if (!removed.ok) {
+      console.warn(JSON.stringify({ msg: "seller_cleanup_session_left", platform, operation: "removeSession" }));
+    }
+  } catch {
+    console.warn(JSON.stringify({ msg: "seller_cleanup_session_left", platform, operation: "removeSession" }));
+  }
+  console.log(
+    JSON.stringify({
+      msg: "seller_cleanup",
+      platform,
+      operation: "clearSellerAccounts",
+      durationMs: Date.now() - startedAt,
+      ...(result.report ?? { outcome: "failed", error: result.error }),
+    }),
+  );
+  return result;
+}
+
+/**
+ * Clears both test sellers (top of file). Throws when a side could not finish,
+ * naming it, which fails the workflow step.
+ */
+export const clearSellerAccounts = internalAction({
+  args: {},
+  returns: v.object({ ebay: ebayReportValidator, bsc: bscReportValidator }),
+  handler: async (ctx): Promise<{ ebay: EbayReport; bsc: BscReport }> => {
+    if (!process.env.TESTING_RESET_SECRET) {
+      throw new Error("Seller cleanup is not enabled on this deployment");
+    }
+    const ebayPaused = isPlatformPaused("ebay");
+    const bscPaused = isPlatformPaused("buysportscards");
+    // Before either side touches anything: nothing here may ever reach real eBay.
+    if (!ebayPaused && ebayConfig()?.environment !== "sandbox") {
+      throw new Error("Seller cleanup refused: this deployment's eBay is not the sandbox (EBAY_ENVIRONMENT)");
+    }
+    const ebay = ebayPaused
+      ? { report: { outcome: "paused", items: 0, withdrawn: 0 } satisfies EbayReport, error: null }
+      : await runSide<EbayReport>(ctx, "ebay", "ebay", () => clearEbay(ctx));
+    const bsc = bscPaused
+      ? {
+          report: { outcome: "paused", rows: 0, unreadableRows: 0, listed: 0, zeroed: 0, twinKeys: 0, twinKeysRemaining: 0 } satisfies BscReport,
+          error: null,
+        }
+      : await runSide<BscReport>(ctx, "bsc", "buysportscards", () => clearBsc(ctx));
+    await ctx.runMutation(internal.testingSellerCleanup.forgetCleanupOwner, {});
+
+    if (ebay.report === null || bsc.report === null) {
+      const failures = [
+        ...(ebay.error !== null ? [`eBay: ${ebay.error}`] : []),
+        ...(bsc.error !== null ? [`BuySportsCards: ${bsc.error}`] : []),
+      ];
+      throw new Error(`Seller cleanup failed, so the accounts may not be clean. ${failures.join(". ")}`);
+    }
+    return { ebay: ebay.report, bsc: bsc.report };
+  },
+});
