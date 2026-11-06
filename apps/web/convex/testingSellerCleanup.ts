@@ -86,6 +86,8 @@ const EBAY_CONCURRENCY = 8;
  * less for the re-run its failure asks for.
  */
 const EBAY_BUDGET_MS = 5 * 60 * 1000;
+/** Before the one retry of a 503'd first sheet read: a guess at long enough that the retry won't overlap anything that 503 left running at BSC. */
+export const BSC_FIRST_READ_RETRY_PAUSE_MS = 10_000;
 
 /** The Base variant of one set the specs list, or null when the chain isn't there exactly once. */
 export const baseVariantOf = internalQuery({
@@ -301,7 +303,12 @@ async function zeroSet(
 ): Promise<Omit<BscReport, "outcome">> {
   // Serial, never side by side: overlapping sheet reads are what mint twin rows.
   const conditions: string[] = [...bscConditionsForEra(input.era)];
-  const first = await readSheets(ctx, session, input.requests, conditions);
+  let first = await readSheets(ctx, session, input.requests, conditions);
+  // Only a 503 and only this read, and still one read at a time: the first has answered before the pause starts.
+  if (!first.ok && first.failure.httpStatus === 503) {
+    await new Promise<void>((resolve) => setTimeout(resolve, BSC_FIRST_READ_RETRY_PAUSE_MS));
+    first = await readSheets(ctx, session, input.requests, conditions);
+  }
   if (!first.ok) throw new Error(`could not read the sheets: ${first.failure.message}`);
   const rows = first.sheet.rows.filter(isOurRow);
   const twinKeys = countTwinKeys(rows);

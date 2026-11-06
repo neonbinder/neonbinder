@@ -12,6 +12,7 @@ import schema from "./schema";
 import { __resetContractCache } from "./credentials";
 import { bscConditionsForEra, bscEraForYear } from "./lib/bscConditions";
 import { planBscSheet } from "./lib/bscSheetPlan";
+import { BSC_FIRST_READ_RETRY_PAUSE_MS } from "./testingSellerCleanup";
 import { drainScheduled } from "../lib/testing/drain-scheduled";
 
 const modules = (import.meta as unknown as {
@@ -67,6 +68,10 @@ let maxReadsInFlight: number;
 let puts: Array<{ sellerId: string; listings: Row[] }>;
 let putTakes: boolean;
 let sheetAnswer: Response | null;
+/** One entry per sheet read, in order, used up as they arrive: a status, a failure with no status, or null for the real sheet. */
+let sheetScript: Array<number | "network" | "timeout" | null>;
+/** How many sheet reads had reached BSC at each retry pause. */
+let firstReadPauses: number[];
 let browserCalls: Array<{ method: string; path: string }>;
 let ebayCalls: number;
 let bscCalls: number;
@@ -95,6 +100,16 @@ beforeEach(() => {
   puts = [];
   putTakes = true;
   sheetAnswer = null;
+  sheetScript = [];
+  firstReadPauses = [];
+  // The retry pause, and only that: 10 real seconds per test would outlast the
+  // test's own timeout. Faking the clock instead would stall convex-test.
+  const realSetTimeout = globalThis.setTimeout;
+  vi.spyOn(globalThis, "setTimeout").mockImplementation(((handler: (...args: unknown[]) => void, ms?: number, ...rest: unknown[]) => {
+    if (ms !== BSC_FIRST_READ_RETRY_PAUSE_MS) return realSetTimeout(handler, ms, ...rest);
+    firstReadPauses.push(sheetReads.length);
+    return realSetTimeout(handler, 0, ...rest);
+  }) as typeof setTimeout);
   browserCalls = [];
   ebayCalls = 0;
   bscCalls = 0;
@@ -175,9 +190,13 @@ beforeEach(() => {
         maxReadsInFlight = Math.max(maxReadsInFlight, readsInFlight);
         await new Promise((resolve) => setTimeout(resolve, 0));
         readsInFlight -= 1;
-        if (sheetAnswer) return sheetAnswer.clone();
         const body = JSON.parse(String(init?.body)) as { condition: string; filters: Record<string, string[]> };
         sheetReads.push(body);
+        const scripted = sheetScript.shift() ?? null;
+        if (scripted === "network") throw new TypeError("fetch failed");
+        if (scripted === "timeout") throw Object.assign(new Error("timed out"), { name: "TimeoutError" });
+        if (scripted !== null) return new Response("nope", { status: scripted });
+        if (sheetAnswer) return sheetAnswer.clone();
         return Response.json(sheet.filter((r) => r.condition === body.condition));
       }
       if (u.pathname === "/seller/bulk-upload" && method === "PUT") {
@@ -669,6 +688,76 @@ describe("BuySportsCards", () => {
     sheetAnswer = new Response("nope", { status: 500 });
     await expect(clear(t)).rejects.toThrow(/BuySportsCards: could not read the sheets/);
     expect(withdrawals).toEqual(["O1"]);
+    await drainScheduled(t);
+  });
+
+  test("a 503 on the first read gets one more try after the pause, and the job comes out clean", async () => {
+    const t = await ready();
+    sheet = [row("p1", "bsc-1", COND, 1)];
+    sheetScript = [503];
+    const r = await clear(t);
+    // One extra read, of the sheet that answered 503, then the usual reads and the read-back.
+    expect(sheetReads.map((c) => c.condition)).toEqual([COND, ...ERA, COND]);
+    expect(firstReadPauses).toEqual([1]);
+    expect(maxReadsInFlight).toBe(1);
+    expect(r.bsc).toEqual({ outcome: "clean", rows: 1, unreadableRows: 0, listed: 1, zeroed: 1, twinKeys: 0, twinKeysRemaining: 0 });
+    expect(sheet[0].availableQuantity).toBe(0);
+    await drainScheduled(t);
+  });
+
+  test("a 503 part-way through the first read starts it again, and counts each row once", async () => {
+    const t = await ready();
+    sheet = [row("p1", "bsc-1", COND, 1), row("p2", "bsc-2", OTHER_COND, 1)];
+    sheetScript = [null, 503];
+    const r = await clear(t);
+    expect(sheetReads.map((c) => c.condition)).toEqual([COND, OTHER_COND, ...ERA, COND, OTHER_COND]);
+    expect(firstReadPauses).toEqual([2]);
+    expect(maxReadsInFlight).toBe(1);
+    expect(r.bsc).toMatchObject({ outcome: "clean", rows: 2, listed: 2, zeroed: 2, twinKeys: 0 });
+    await drainScheduled(t);
+  });
+
+  test("503 twice fails the job with the same words after exactly two reads, and eBay's result is not lost", async () => {
+    const t = await ready();
+    pages = [{ inventoryItems: [item(sku("a"))] }];
+    offers.set(sku("a"), { offerId: "O1", status: "PUBLISHED" });
+    sheet = [row("p1", "bsc-1", COND, 1)];
+    // A third read would find the real sheet and the job would pass.
+    sheetScript = [503, 503];
+    await expect(clear(t)).rejects.toThrow(/BuySportsCards: could not read the sheets: BuySportsCards answered 503 to sheetRead\./);
+    expect(sheetReads.map((c) => c.condition)).toEqual([COND, COND]);
+    expect(firstReadPauses).toEqual([1]);
+    expect(puts).toEqual([]);
+    expect(withdrawals).toEqual(["O1"]);
+    expect(deletes).toEqual([sku("a")]);
+    const line = logged.map((l) => /\{"msg":"seller_cleanup","platform":"ebay".*\}/.exec(l)?.[0]).find(Boolean);
+    expect(JSON.parse(line as string)).toMatchObject({ outcome: "clean", items: 1, withdrawn: 1, deleted: 1 });
+    await drainScheduled(t);
+  });
+
+  test.each([
+    [500, /answered 500 to sheetRead/],
+    [502, /answered 502 to sheetRead/],
+    [504, /answered 504 to sheetRead/],
+    ["network", /couldn't reach BuySportsCards/],
+    ["timeout", /took too long to answer/],
+  ] as const)("%s on the first read fails at once, with no pause and no second read", async (answer, words) => {
+    const t = await ready();
+    sheet = [row("p1", "bsc-1", COND, 1)];
+    sheetScript = [answer];
+    await expect(clear(t)).rejects.toThrow(words);
+    expect(sheetReads).toHaveLength(1);
+    expect(firstReadPauses).toEqual([]);
+    await drainScheduled(t);
+  });
+
+  test("a 503 on the read-back gets no retry: only the first read has one", async () => {
+    const t = await ready();
+    sheet = [row("p1", "bsc-1", COND, 1)];
+    sheetScript = [...ERA.map(() => null), 503];
+    await expect(clear(t)).rejects.toThrow(/BuySportsCards: could not read the sheets back: BuySportsCards answered 503 to sheetRead\./);
+    expect(sheetReads.map((c) => c.condition)).toEqual([...ERA, COND]);
+    expect(firstReadPauses).toEqual([]);
     await drainScheduled(t);
   });
 });
