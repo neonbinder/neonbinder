@@ -74,3 +74,18 @@ export function deriveStage(args: {
 
   return "working";
 }
+
+/**
+ * The headline for the `waiting` stage (NEO-440). That stage means every photo
+ * has settled, and a failed photo has settled too, so "all read" is only true
+ * when none failed.
+ */
+export function waitingHeadline(total: number, failed: number): string {
+  if (failed === 0) return `All ${total} photo${total === 1 ? "" : "s"} read.`;
+  if (failed >= total) {
+    return total === 1
+      ? "Couldn't read your photo."
+      : `Couldn't read any of your ${total} photos.`;
+  }
+  return `${total - failed} of ${total} photos read. ${failed} couldn't be.`;
+}
