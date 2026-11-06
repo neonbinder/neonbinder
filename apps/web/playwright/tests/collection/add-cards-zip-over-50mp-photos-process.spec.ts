@@ -10,13 +10,16 @@
 // stored with `zip -0`. Each entry is far under the 32 MiB entry cap, and a
 // stored entry has a 1:1 expansion, so the 100:1 guard never applies.
 //
-// Why this stays on the fast path (no heavy escalation, so the minutes-long cold
-// start of the heavy model never applies): `scan_meta.is_card_sized_scan`
-// (services/preprocess/app/cropper/scan_meta.py) reads the JFIF density, 2400 dpi
-// is over its 200 dpi floor and square, and 6000 x 8400 px at 2400 dpi is 2.5 x 3.5 in,
-// inside its 3% tolerance of a card. The frame IS the card, so the crop cascade
-// returns it without a pixel pass or the heavy tier, the same route
-// pipeline-pairs-uploaded-scans proves for scanner frames.
+// Why the fixture is built to take the fast path (no heavy escalation, whose 43-60 s
+// the first fixture paid): `scan_meta.is_card_sized_scan`
+// (services/preprocess/app/cropper/scan_meta.py) trusts a frame's resolution only when
+// the JFIF density UNIT byte is 1 (dots per inch); unit 0 is "aspect ratio only" and
+// `_trustworthy_dpi` rejects it ("no trustworthy resolution"), so the photo goes down
+// the pixel cascade and the back can decline and escalate. `sips` stamps unit 0, so
+// the README's generation commands set the unit byte to 1 afterwards. With it, 2400
+// dpi is over the 200 dpi floor and square, and 6000 x 8400 px is 2.5 x 3.5 in, inside
+// the 3% tolerance, so the frame is taken as the card. The result still passes the
+// same stage gates as any crop, so this is the intended route, not a guarantee.
 //
 // This can only pass where the preprocess service's pixel limit is the new one
 // (65 MP). A deployment still on the old 50 MP service turns both photos away.
@@ -31,13 +34,13 @@
 // through `support/collection.ts`. add-cards-from-photos-real-scans owns matching
 // and the save; this spec owns "a photo over 50 MP is processed".
 //
-// R5: the zip's waits are the normal 7 s (NEO-446). Measured on a warm dev service:
-// upload 0.8-1.3 s, extract 0.3-0.8 s; the READ of two 50 MP photos is NOT measured,
-// because a local run cannot reach a 65 MP service (the dev preprocess service still
-// refuses 50 MP). The first CI run measures it: the preprocess legs are wrapped in
-// `test.step`, so the report carries each leg's own duration, and a red here comes
-// back to the owner with that number, never a longer timeout. The set-building waits
-// are the normal 7 s too (each under 1 s on warm dev).
+// R5: the waits are the normal 7 s (NEO-446). Measured on a warm dev service for a
+// zip: upload 0.8-1.3 s, extract 0.3-0.8 s. The READ of two 50 MP photos is not
+// measured here, because the dev preprocess service still refuses 50 MP and a local
+// run stops at the read. The preprocess legs are wrapped in `test.step`, so the report
+// carries each leg's own duration; a red on the preview or CI comes back to the owner
+// with that number, never a longer timeout. The set-building waits are the normal 7 s
+// too (each under 1 s on warm dev).
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { collectorCascade } from "../../support/collection";

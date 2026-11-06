@@ -13,7 +13,12 @@ metadata:
 - A big photo that must stay on the fast path (no heavy-model cold start): stamp it
   so `scan_meta.is_card_sized_scan` accepts the frame: JFIF density square and
   >= 200 dpi, pixels / dpi within 3% of 2.5 x 3.5 in (6000x8400 at 2400 dpi).
-  `sips -z H W -s dpiWidth N -s dpiHeight N` writes that density.
+  `sips -z H W -s dpiWidth N -s dpiHeight N` writes that density, BUT it leaves the
+  JFIF density UNIT byte (file offset 13) at 0, which `_trustworthy_dpi` rejects
+  ("no trustworthy resolution"), so the photo escalates to the heavy service anyway.
+  Patch byte 13 to 1 (python3 -I, no re-encode) and verify with `xxd -s 13 -l 5`
+  (`01 09 60 09 60` for 2400 dpi), never with `sips -g dpiWidth`, which reports 2400
+  either way.
 - Pixel limit rejection happens at /extract (header only), so a zip of oversize
   photos fails the whole run without any model call; the failure line comes from
   `runNotice` in realLanes.ts, so compute the expected string from there.

@@ -41,6 +41,14 @@ assertions do not depend on the photo being read.
 
 ```sh
 sips -s dpiWidth 398 -s dpiHeight 398 ../03-bowe-front.jpg --out 01-bowe-front.jpg
+# sips leaves the JFIF density unit byte (offset 13) at 0, which the service
+# ignores; set it to 1 (dots per inch). Check: xxd -s 13 -l 5 01-bowe-front.jpg -> 01 01 8e 01 8e
+python3 -I -c "
+b = bytearray(open('01-bowe-front.jpg', 'rb').read())
+assert b[6:11] == b'JFIF\\x00'
+b[13] = 1
+open('01-bowe-front.jpg', 'wb').write(b)
+"
 cp ../over-limit/flat-67mp.jpg 02-flat-67mp.jpg
 zip -0 -X one-photo-one-too-big.zip 01-bowe-front.jpg 02-flat-67mp.jpg
 rm 01-bowe-front.jpg 02-flat-67mp.jpg
