@@ -525,7 +525,7 @@ export interface ListingExtension {
   /**
    * Sync: read this checklist's sheet on every platform the collector lists
    * on and set every card to NB's counts. Resolves with whether it was
-   * queued, or why the server let it pass (just synced, or nothing lists).
+   * queued, or why the server let it pass (already in the works, or nothing lists).
    */
   syncVariant(variantId: VariantId): Promise<SyncVariantResult>;
   /** A box's "Listed on marketplaces". Rejects with the server's words (a binder, say). */
