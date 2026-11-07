@@ -83,3 +83,5 @@
 - [eBay listing spec shape](patterns_ebay_listing_spec_shape.md) — NEO-415: seed-hop connect, loud fail when unwired, Set me up branch, two Sync status regions, Switch is a checkbox
 - [Sync status step ledger waits](patterns_sync_status_step_ledger_waits.md) — NEO-415: wait per ledger step (7 s), gate on the new run (stale ledger), throttled press, optional eBay photo step
 - [Add cards run-start caps](patterns_add_cards_run_start_caps.md) — NEO-452: 2 active batches (closed run still counts while read) and 12 starts/hour give an alert, not a bug; workers 3+ share one user
+- [Local re-seed keeps the catalogue](patterns_local_reseed_keeps_the_reference_catalogue.md) — plain baseline reset wipes it; use e2e-seed-reset.sh + bundle; who needs a re-seed between projects; --output keeps artifacts
+- [Binder page names and async radio](patterns_binder_page_names_and_async_radio.md) — `Page 2, A fresh page`; gate a key on Next enabled; check() vs a save-moved radio; image load without evaluate; bootstrap after a red
