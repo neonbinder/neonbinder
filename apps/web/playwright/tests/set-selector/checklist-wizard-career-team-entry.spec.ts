@@ -11,7 +11,7 @@
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { setBuilderReady } from "../../support/set-builder";
 import { recordedNoMatchName } from "../../support/recorded-names";
-import { cancelAndDiscard, discardResumedReviewBatch, fetchChecklistToWizard, readBackDecision, readStep, reviewWizard, stepCounter, walkToPlayerRow } from "../../support/wizard";
+import { answerPlayerAsNew, cancelAndDiscard, discardResumedReviewBatch, fetchChecklistToWizard, readBackDecision, readStep, reviewWizard, stepCounter, walkToPlayerRow } from "../../support/wizard";
 
 test(
   "Entity review — a player row takes hand-entered career teams, refuses an entry with no from-year, and carries the staged history into the Add as New decision",
@@ -114,7 +114,7 @@ test(
 
     // Add as New Player carries the staged history into the decision.
     const playerName = ((await wizard.getByRole("heading", { level: 3 }).textContent()) ?? "").trim();
-    await wizard.getByRole("button", { name: "Add as New Player" }).click();
+    await answerPlayerAsNew(page);
     // The chip is gone: the wizard advanced past the player row. (A negative
     // passes on a dead page too; the read-back below is its positive.)
     await expect(wizard.getByText(new RegExp(`${probe} \\(2001.2005\\)`))).toBeHidden();

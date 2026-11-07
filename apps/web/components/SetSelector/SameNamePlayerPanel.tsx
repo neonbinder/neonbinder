@@ -72,6 +72,31 @@ export interface SameNameCandidate {
    * like the card's and the operator has to guess why it is here.
    */
   matchedAlias?: string;
+  /**
+   * NEO-424 — the candidate's home sport, as the server stored it. A pick
+   * step built from this set's own history can list players filed under
+   * another sport (the Mike Shinoda on a Non Sport card who turns up in a
+   * baseball set), and the sport is then the fact that tells the rows apart.
+   * Shown only when it differs from the set's sport; see `candidateDetail`.
+   */
+  sportValue?: string;
+}
+
+/**
+ * NEO-424 — the candidate's sport, when it is not the set's. Null when the two
+ * agree, when either is unknown, or when the candidate carries none: the
+ * set's own sport on every row would be noise, and a guess would be worse.
+ * Compared case- and space-insensitively, so a stray capital never puts
+ * "Baseball" on a baseball set's row. Display only: nothing is decided on it.
+ */
+export function candidateOtherSport(
+  candidate: SameNameCandidate,
+  setSportValue?: string | null,
+): string | null {
+  const own = candidate.sportValue?.trim();
+  const set = setSportValue?.trim();
+  if (!own || !set) return null;
+  return own.toLowerCase() === set.toLowerCase() ? null : own;
 }
 
 /**
@@ -95,11 +120,21 @@ export const ACTIVE_IN_SET_YEAR_LABEL = "On a roster that year";
  * than a placeholder string, because the caller renders the two cases
  * differently: a real line is data, and "nothing on file yet" is an admission.
  */
-export function candidateDetail(candidate: SameNameCandidate): string | null {
+export function candidateDetail(
+  candidate: SameNameCandidate,
+  /**
+   * NEO-424 — the set's sport, so a candidate filed under another one says
+   * which ("Non Sport · b. 1977"). Omitted, no sport is ever shown.
+   */
+  setSportValue?: string | null,
+): string | null {
   const parts = [
     // Leads: it is the answer to "why is this row on my list at all", and a
     // birth year means nothing until that is settled.
     candidate.matchedAlias ? `also known as ${candidate.matchedAlias}` : null,
+    // NEO-424 — next, ahead of the biography: a player from another sport is
+    // a different KIND of candidate, and that is read before a birth year.
+    candidateOtherSport(candidate, setSportValue),
     candidate.birthYear !== undefined ? `b. ${candidate.birthYear}` : null,
     candidate.careerSummary || null,
   ].filter(Boolean);
@@ -128,8 +163,10 @@ export function candidateLinkLabel(
   candidate: SameNameCandidate,
   index: number,
   total: number,
+  /** NEO-424 — see `candidateDetail`. */
+  setSportValue?: string | null,
 ): string {
-  const detail = candidateDetail(candidate);
+  const detail = candidateDetail(candidate, setSportValue);
   // NEO-254: the year marker rides INTO the accessible name — it is the single
   // most decisive thing on the row, and a screen-reader user must not have to
   // infer it from a colour. It is not a substitute for the ordinal fallback,
@@ -163,6 +200,7 @@ export function pickStepIntro(count: number, scanCapped: boolean): string {
 export default function SameNamePlayerPanel({
   candidates,
   scanCapped,
+  setSportValue,
   disabled,
   onPick,
 }: {
@@ -173,6 +211,12 @@ export default function SameNamePlayerPanel({
    * this many" rather than "this many". See `pickStepIntro`.
    */
   scanCapped?: boolean;
+  /**
+   * NEO-424 — the set's sport. A candidate filed under a different one names
+   * its sport in its detail line and its accessible name. See
+   * `candidateDetail`.
+   */
+  setSportValue?: string | null;
   /** True while another decision is in flight. See the wizard's `busy`. */
   disabled?: boolean;
   onPick: (playerId: string) => void;
@@ -189,7 +233,7 @@ export default function SameNamePlayerPanel({
       </p>
       <ul className="space-y-1" aria-label="Players already filed under this name">
         {candidates.map((candidate, index) => {
-          const detail = candidateDetail(candidate);
+          const detail = candidateDetail(candidate, setSportValue);
           return (
             <li key={candidate.playerId}>
               <button
@@ -199,7 +243,12 @@ export default function SameNamePlayerPanel({
                 // so a keyboard operator who had tabbed here would be thrown
                 // out of the list for the length of a round-trip.
                 aria-disabled={disabled}
-                aria-label={candidateLinkLabel(candidate, index, candidates.length)}
+                aria-label={candidateLinkLabel(
+                  candidate,
+                  index,
+                  candidates.length,
+                  setSportValue,
+                )}
                 onClick={() => {
                   if (disabled) return;
                   onPick(candidate.playerId);
