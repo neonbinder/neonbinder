@@ -33,7 +33,9 @@ import { classifyIntake } from "@/lib/placeholders/intake-kind";
  * thing that stops a drop is `disabled`, while a send is running. Its headline
  * and accessible name never change for a caller's state; `hint` carries what to
  * expect and `describedBy` the reason, so a keyboard or screen-reader user hears
- * why on arrival. `tray` is the caller's row for what it is holding, inside the
+ * why on arrival. `disabled` is `aria-disabled`, never the native attribute: a send
+ * starting would otherwise drop the focus of whoever is on the input to the page's
+ * top, on every send. `tray` is the caller's row for what it is holding, inside the
  * zone's frame and its drag target, so a drop on it counts instead of sending
  * the browser off to open the file.
  */
@@ -41,6 +43,7 @@ export function Dropzone({
   files,
   onFiles,
   disabled,
+  onFilesWhileDisabled,
   quiet = false,
   describedBy,
   hint,
@@ -51,6 +54,8 @@ export function Dropzone({
   files: File[];
   onFiles: (files: File[]) => void;
   disabled: boolean;
+  /** Files arrived anyway while `disabled`. They are not taken; the caller can say so. */
+  onFilesWhileDisabled?: () => void;
   /** The caller announces progress itself; only a refused selection is said here. */
   quiet?: boolean;
   /** The ids of the text that explains what happens to a drop right now. */
@@ -64,6 +69,7 @@ export function Dropzone({
   trayFilled?: boolean;
 }) {
   const inputId = useId();
+  const headlineId = useId();
   const [dragging, setDragging] = useState(false);
   // Drag events fire for every child element, so a boolean flips off the moment
   // the pointer crosses an inner node. Counting enter/leave is what keeps the
@@ -99,6 +105,7 @@ export function Dropzone({
           depth.current = 0;
           setDragging(false);
           if (!disabled) setDropped(e.dataTransfer.files);
+          else if (e.dataTransfer.files.length > 0) onFilesWhileDisabled?.();
         }}
       >
         <label
@@ -114,7 +121,7 @@ export function Dropzone({
             disabled ? "cursor-not-allowed opacity-60" : "",
           ].join(" ")}
         >
-          <span className="text-base font-medium text-ink-2">
+          <span id={headlineId} className="text-base font-medium text-ink-2">
             {dragging
               ? "Drop them here"
               : disabled
@@ -134,8 +141,8 @@ export function Dropzone({
             type="file"
             accept=".zip,image/jpeg,image/png"
             multiple
-            disabled={disabled}
-            aria-describedby={describedBy}
+            aria-disabled={disabled || undefined}
+            aria-describedby={[disabled ? headlineId : null, describedBy].filter(Boolean).join(" ") || undefined}
             // The visible label's full text (title + hint + the instructional
             // paragraph) would otherwise BE the accessible name — every word in
             // the <label> counts, so without this a screen reader announces all
@@ -145,8 +152,13 @@ export function Dropzone({
             // the accessible name (WCAG 2.5.3, Label in Name).
             aria-label="Drag your card photos here, or browse your files"
             className="sr-only"
+            onClick={(e) => {
+              if (disabled) e.preventDefault();
+            }}
             onChange={(e) => {
-              setDropped(e.target.files);
+              // A file picker opened before the send began can still answer during it.
+              if (!disabled) setDropped(e.target.files);
+              else if (e.target.files?.length) onFilesWhileDisabled?.();
               // Or picking the same files again (after the caller removed them) fires no change.
               e.target.value = "";
             }}

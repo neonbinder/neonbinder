@@ -21,7 +21,8 @@ import { classifyIntake } from "@/lib/placeholders/intake-kind";
  * because it has to hold while the tab is unmounted too.
  *
  * Keyed by signed-in user and side. The setup (home, set, defaults) is kept only
- * while files are held, so an old Min price can't leak into a later run.
+ * while files are held, so an old Min price can't leak into a later run. A sign-out
+ * or a change of user drops everything held for anyone else (`keepHeldFor`).
  */
 
 export type Condition = "Mint" | "Near Mint" | "Excellent" | "Very Good" | "Good" | "Poor";
@@ -61,7 +62,10 @@ export interface HeldIntake {
    * new drop lands or Try again is pressed, so a failure can't loop.
    */
   failedConfig: string | null;
-  /** What the screen's status line says. Here so a send finishing after a remount can still say it. */
+  /**
+   * What the screen's status line says. Here so a send finishing after a remount
+   * can still say it. The screen clears it on leaving, and when the run changes.
+   */
   note: string;
 }
 
@@ -69,6 +73,8 @@ const NOTHING: HeldIntake = { files: [], setup: null, sending: false, failedConf
 
 const store = new Map<string, HeldIntake>();
 const listeners = new Set<() => void>();
+/** The key prefix of whoever is signed in, once `keepHeldFor` has said. */
+let ownerPrefix: string | null = null;
 
 const askBeforeUnload = (event: BeforeUnloadEvent) => {
   event.preventDefault();
@@ -86,6 +92,8 @@ function syncUnloadGuard(): void {
 }
 
 function write(key: string, change: (current: HeldIntake) => HeldIntake): void {
+  // A send that outlived its collector's session finishing up: it has nowhere to say so.
+  if (ownerPrefix !== null && !key.startsWith(ownerPrefix)) return;
   const next = change(store.get(key) ?? NOTHING);
   if (next.files.length === 0 && !next.sending && next.note === "") store.delete(key);
   else store.set(key, next);
@@ -100,9 +108,27 @@ const subscribe = (listener: () => void) => {
   };
 };
 
+const keyPrefix = (userId: string | null | undefined) => `${userId ?? "signed-out"}:`;
+
 /** The store's key: a collector's photos, on one side of the app. */
 export function heldIntakeKey(userId: string | null | undefined, side: string): string {
-  return `${userId ?? "signed-out"}:${side}`;
+  return `${keyPrefix(userId)}${side}`;
+}
+
+/**
+ * The signed-in user changed: forget what was held for anyone else. Run from above
+ * the signed-in layout (`HeldIntakeOwner`), because the tab is unmounted by then.
+ * Without it, one collector's photos and setup would wait in memory for the next
+ * person on this browser, and keep the unload prompt armed for them.
+ */
+export function keepHeldFor(userId: string | null | undefined): void {
+  ownerPrefix = keyPrefix(userId);
+  const prefix = ownerPrefix;
+  const others = [...store.keys()].filter((key) => !key.startsWith(prefix));
+  if (others.length === 0) return;
+  others.forEach((key) => store.delete(key));
+  syncUnloadGuard();
+  listeners.forEach((listener) => listener());
 }
 
 export function readHeld(key: string): HeldIntake {
@@ -164,12 +190,14 @@ export function retryHeld(key: string): void {
 }
 
 export function sayHeld(key: string, note: string): void {
+  if (readHeld(key).note === note) return;
   write(key, (current) => ({ ...current, note }));
 }
 
 /** Empty the store. For tests: it is module state and would leak between them. */
 export function clearAllHeld(): void {
   store.clear();
+  ownerPrefix = null;
   syncUnloadGuard();
   listeners.forEach((listener) => listener());
 }

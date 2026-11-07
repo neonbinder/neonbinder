@@ -64,6 +64,8 @@ export interface IntakeRunLock extends IntakeRunReadiness {
   syncing: boolean;
   /** The gate has answered for this home and set. */
   loaded: boolean;
+  /** The picked set holds no card to match against. The server refuses a run on it. */
+  setHasNoCards: boolean;
 }
 
 /**
@@ -71,6 +73,9 @@ export interface IntakeRunLock extends IntakeRunReadiness {
  * `useListingLock`, which reads as open while the gate loads, this says `loaded`
  * and is never `ready` until then: Add cards sends photos by itself the moment it
  * is ready, so "not known yet" must not look like "nothing is missing".
+ *
+ * A set with no cards is never ready, and asks for nothing else: a price wouldn't
+ * get those photos anywhere, so the next move is another set.
  */
 export function useIntakeRunLock(input: {
   homeId: ContainerId | null;
@@ -90,6 +95,19 @@ export function useIntakeRunLock(input: {
       locked: false,
       syncing: false,
       loaded: false,
+      setHasNoCards: false,
+    };
+  }
+  if (gate.variantHasCards === false) {
+    return {
+      ready: false,
+      needsSet: false,
+      needsPrice: false,
+      needsCondition: false,
+      locked: false,
+      syncing: gate.syncing,
+      loaded: true,
+      setHasNoCards: true,
     };
   }
   const readiness = intakeRunReadiness({
@@ -100,7 +118,13 @@ export function useIntakeRunLock(input: {
     commonPriceCents: gate.commonPriceCents,
     hasVariant,
   });
-  return { ...readiness, locked: readiness.needsPrice || readiness.needsCondition, syncing: gate.syncing, loaded: true };
+  return {
+    ...readiness,
+    locked: readiness.needsPrice || readiness.needsCondition,
+    syncing: gate.syncing,
+    loaded: true,
+    setHasNoCards: false,
+  };
 }
 
 /** The note's lead: what is missing, as a shout. */

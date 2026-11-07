@@ -162,10 +162,17 @@ export class ListingGate {
  * reads that through `intakeRunReadiness`: with no variant yet it asks for the
  * set first, so a null price here isn't a missing price until a set is picked.
  *
+ * NEO-452: `variantHasCards` says whether the picked set holds a card, for every
+ * caller and every home, so the screen can stop at an empty set before spending
+ * a job start (the hourly budget is shared by every intake door) on a run
+ * `createIntakeRun` would refuse. True with no variant: there is nothing to
+ * refuse yet. False for a string that is not a variant's id.
+ *
  * Small and subscribable (CLAUDE.md, "A subscribed query stays small"): the
- * home, the caller's listing state rows (a handful) and one common-price row.
- * The caller's own rows only; an id that is not theirs, not an id, or absent
- * reads as "does not apply". Never a marketplace value.
+ * home, the caller's listing state rows (a handful), one common-price row and
+ * one card. The caller's own rows only, bar that one catalog card; an id that is
+ * not theirs, not an id, or absent reads as "does not apply". Never a
+ * marketplace value.
  */
 export const forHome = query({
   args: { homeId: v.optional(v.string()), variantId: v.optional(v.string()) },
@@ -175,18 +182,27 @@ export const forHome = query({
     /** The gate applies to adds into the home: it lists, and the caller syncs. */
     applies: v.boolean(),
     commonPriceCents: v.union(v.number(), v.null()),
+    /** The variant holds at least one card; true when no variant is passed. Answered for every caller and home. */
+    variantHasCards: v.boolean(),
   }),
   handler: async (ctx, args) => {
     const ownerId = await requireSignedIn(ctx);
     const gate = new ListingGate(ctx, ownerId);
+    const variantId = args.variantId === undefined ? null : ctx.db.normalizeId("selectorOptions", args.variantId);
+    const variantHasCards =
+      args.variantId === undefined ||
+      (variantId !== null &&
+        (await ctx.db
+          .query("cardChecklist")
+          .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", variantId))
+          .first()) !== null);
     const syncing = await gate.syncs();
-    const none = { syncing, applies: false, commonPriceCents: null };
+    const none = { syncing, applies: false, commonPriceCents: null, variantHasCards };
     if (!syncing) return none;
     const homeId = args.homeId === undefined ? null : ctx.db.normalizeId("collectionContainers", args.homeId);
     if (!homeId) return none;
     const home = await ctx.db.get(homeId);
     if (!home || home.ownerId !== ownerId || !(await gate.applies(home))) return none;
-    const variantId = args.variantId === undefined ? null : ctx.db.normalizeId("selectorOptions", args.variantId);
-    return { syncing, applies: true, commonPriceCents: variantId ? await gate.commonPrice(variantId) : null };
+    return { syncing, applies: true, commonPriceCents: variantId ? await gate.commonPrice(variantId) : null, variantHasCards };
   },
 });

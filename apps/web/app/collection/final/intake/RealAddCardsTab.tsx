@@ -1,5 +1,6 @@
 import {
   createContext,
+  useCallback,
   useContext,
   useEffect,
   useEffectEvent,
@@ -187,7 +188,7 @@ const GRADERS: Grader[] = ["PSA", "BGS", "SGC", "CGC", "TAG"];
 
 /** The zone's line while a drop would wait rather than go. */
 const WAITING_HINT =
-  "Drop them whenever. They wait here until the run is set up, then go up on their own. Keep them in scan order (front, back, front, back): that's how they pair.";
+  "JPEG, PNG or one zip. Drop them whenever. They wait here until the run is set up, then go up on their own. Keep them in scan order (front, back, front, back): that's how they pair.";
 
 const today = () => new Date().toISOString().slice(0, 10);
 
@@ -245,9 +246,18 @@ function AddCardsScreen({ heldKey }: { heldKey: string }) {
   const [defaults, setDefaults] = useState<RunDefaults>(() => readHeld(heldKey).setup?.defaults ?? { acquiredOn: today() });
   const [panel, setPanel] = useState<null | "set" | "defaults">(null);
   const pickedHome = homes.some((h) => h.id === homeId) ? homeId : (homes[0]?.id ?? "");
+  // Leaving a run (New run, Back) leaves its Min price behind: carried over, it
+  // would lift the hold and send the next drop into a listing box with no press.
+  // During render, so no commit ever pairs the bare URL with the old Min.
+  const [shownParam, setShownParam] = useState(runParam);
+  if (shownParam !== runParam) {
+    setShownParam(runParam);
+    if (!runParam) setDefaults((setup) => ({ ...setup, minPriceCents: undefined }));
+  }
 
   const startStream = useMutation(api.placeholderStream.startPlaceholderStream);
   const closeStream = useMutation(api.placeholderStream.closePlaceholderStream);
+  const cancelBatch = useMutation(api.placeholderPipeline.cancelPlaceholderBatch);
   const createRun = useMutation(api.intakeRuns.createIntakeRun);
   const setRunVariant = useMutation(api.intakeRuns.setIntakeRunVariant);
   const setRunDefaults = useMutation(api.intakeRuns.setIntakeRunDefaults);
@@ -296,8 +306,18 @@ function AddCardsScreen({ heldKey }: { heldKey: string }) {
    */
   const ready =
     !loading && lock.loaded && lock.ready && targetHome !== null && (run ? job?.status === "collecting" : true);
-  /** The setup a send depends on; a failure isn't retried until this moves. */
-  const config = JSON.stringify([targetHome, targetVariantId, shownDefaults]);
+  /**
+   * What can change the server's answer to a send; a failure isn't retried until
+   * this moves. Only those fields: every refused start spends the shared hourly job
+   * budget, so typing a Cost, Location, Notes or Acquired must never fire another.
+   */
+  const config = JSON.stringify([
+    targetHome,
+    targetVariantId,
+    shownDefaults.minPriceCents,
+    shownDefaults.condition ?? usualCondition,
+    shownDefaults.grading !== undefined,
+  ]);
   const gateNoteId = useId();
   const trayId = useId();
   const dropInput = useRef<HTMLInputElement>(null);
@@ -323,8 +343,11 @@ function AddCardsScreen({ heldKey }: { heldKey: string }) {
   // may be several renders old by then. Declared first, so the effects below
   // read this render's values.
   const latest = useRef({ run, shownDefaults, homeId: pickedHome, variant, defaults, config, gateLine });
+  /** Each run's defaults as last seen, for an Undo that lands after the screen moved off it. */
+  const seenRunDefaults = useRef(new Map<Id<"intakeRuns">, RunDefaults>());
   useEffect(() => {
     latest.current = { run, shownDefaults, homeId: pickedHome, variant, defaults, config, gateLine };
+    if (run) seenRunDefaults.current.set(run._id, run.defaults ?? {});
   });
   const mounted = useRef(false);
   useEffect(() => {
@@ -345,11 +368,29 @@ function AddCardsScreen({ heldKey }: { heldKey: string }) {
       return;
     }
     await setRunDefaults({ runId: open._id, defaults: next });
-    // The setup still has the Min this run started with: "New run" would bring it back.
-    if (next.minPriceCents === undefined) setDefaults((setup) => ({ ...setup, minPriceCents: undefined }));
   };
   const [defaultsEpoch, setDefaultsEpoch] = useState(0);
   const handover = useRef<Handover | null>(null);
+  /** The last run this setup became. */
+  const lastStarted = useRef<Id<"intakeRuns"> | null>(null);
+
+  /**
+   * Undo's first step for a common price save, taken at the press: it puts the Min
+   * back where that save took it from, never on whatever is open by the time Undo
+   * is pressed. A save made before the run existed follows the setup into the run
+   * it became (the mouse race below), and only that one.
+   */
+  const minRestorer = () => {
+    const savedOn = latest.current.run?._id ?? handover.current?.runId ?? null;
+    const startedBefore = lastStarted.current;
+    return async (cents: number) => {
+      const runId = savedOn ?? (lastStarted.current !== startedBefore ? lastStarted.current : null);
+      const seen = runId ? seenRunDefaults.current.get(runId) : undefined;
+      if (runId && seen) await setRunDefaults({ runId, defaults: { ...seen, minPriceCents: cents } });
+      // No run, or one that hasn't loaded yet, and its handover carries the setup across.
+      else setDefaults((setup) => ({ ...setup, minPriceCents: cents }));
+    };
+  };
 
   /* ---------------------------------------------------------------- */
   /* A drop, and when it goes up                                       */
@@ -385,6 +426,7 @@ function AddCardsScreen({ heldKey }: { heldKey: string }) {
       defaults: sent.defaults,
     });
     handover.current = { runId: id, ...sent };
+    lastStarted.current = id;
     // Gone from this tab already: `openRun` would pull the collector back to it.
     if (mounted.current) openRun(id);
   };
@@ -402,11 +444,17 @@ function AddCardsScreen({ heldKey }: { heldKey: string }) {
       return out.ok ? { sent: true, note: sentWords(out) } : refused(out.reason);
     }
     if (classifyIntake(pile).kind === "zip") {
-      // A zip starts its own job, so it can't go after the run. Not a stream
-      // session, so nothing to close if the run is refused.
+      // A zip starts its own job, so it can't go after the run.
       const out = await upload(pile, { source: "web" });
       if (!out.ok) return refused(out.reason);
-      await startRun(out.jobId);
+      try {
+        await startRun(out.jobId);
+      } catch (error) {
+        // That batch is already running, and paid for. Left alone it reads cards for
+        // a run that doesn't exist, and a retry would start a second one beside it.
+        await cancelBatch({ jobId: out.jobId }).catch(() => {});
+        throw error;
+      }
       return { sent: true, note: sentWords(out) };
     }
     const session = await startStream({ source: "web" });
@@ -451,6 +499,20 @@ function AddCardsScreen({ heldKey }: { heldKey: string }) {
     void sendHeld();
   }, [held.files.length, held.sending, held.failedConfig, ready, config]);
 
+  // A late gate answer can take the tray away with focus on one of its buttons (the
+  // tray steps aside in the same commit that makes the screen ready, before any
+  // effect can look). `HeldTray` flags it while the button is still there.
+  const trayFocusGone = useRef(false);
+  const flagTrayFocus = useCallback(() => {
+    trayFocusGone.current = true;
+  }, []);
+  useEffect(() => {
+    if (!trayFocusGone.current) return;
+    trayFocusGone.current = false;
+    const focused = document.activeElement;
+    if (!focused || focused === document.body) statusLine.current?.focus({ preventScroll: true });
+  });
+
   /* ---------------------------------------------------------------- */
   /* The handover: from the setup to the run                           */
   /* ---------------------------------------------------------------- */
@@ -486,6 +548,20 @@ function AddCardsScreen({ heldKey }: { heldKey: string }) {
     if (loadedRunId) reconcileHandover(loadedRunId);
   }, [loadedRunId]);
 
+  // The URL moved off the run this screen just started (or was never on it): that
+  // handover must not write onto the run if it's reopened later, and what the status
+  // line said belonged to where we were. Unless a send is still going to say more.
+  const noteParam = useRef(runParam);
+  useEffect(() => {
+    if (noteParam.current === runParam) return;
+    noteParam.current = runParam;
+    if (handover.current?.runId === runParam) return;
+    handover.current = null;
+    if (!readHeld(heldKey).sending) sayHeld(heldKey, "");
+  }, [heldKey, runParam]);
+  // A send that finishes after this still says so, once, on the way back.
+  useEffect(() => () => sayHeld(heldKey, ""), [heldKey]);
+
   /* ---------------------------------------------------------------- */
   /* Opening Defaults once, on a new set or home with no price         */
   /* ---------------------------------------------------------------- */
@@ -501,6 +577,15 @@ function AddCardsScreen({ heldKey }: { heldKey: string }) {
   const [opened, setOpened] = useState<{ via: "pick" | "home" } | null>(null);
   /** The warning, for a screen reader, when focus doesn't carry it (the note itself isn't a live region). */
   const [gateNews, setGateNews] = useState("");
+  // Said once. Left standing, the hold coming back would read it out a second time.
+  if (gateNews && (!lock.locked || panel === null)) setGateNews("");
+  // Clearing the Min can bring the hold back, and nothing else would say so.
+  const minSet = shownDefaults.minPriceCents !== undefined;
+  const [hadMin, setHadMin] = useState(minSet);
+  if (hadMin !== minSet) {
+    setHadMin(minSet);
+    if (hadMin && lock.needsPrice) setGateNews(gateLine);
+  }
   const expectOpen = (next: NonNullable<typeof pendingOpen.current>) => {
     pendingOpen.current = next;
     setGateNews("");
@@ -628,7 +713,7 @@ function AddCardsScreen({ heldKey }: { heldKey: string }) {
                     variantId: targetVariantId as Id<"selectorOptions">,
                     title: targetTitle ?? "this set",
                     syncing: lock.syncing,
-                    restoreMin: (cents) => writeDefaults({ ...latest.current.shownDefaults, minPriceCents: cents }),
+                    minRestorer,
                     reseed: () => setDefaultsEpoch((n) => n + 1),
                   }
                 : null
@@ -641,10 +726,11 @@ function AddCardsScreen({ heldKey }: { heldKey: string }) {
     </div>
   );
 
-  // The tray steps aside while they're going up: the status line has it then.
-  const waiting = held.sending ? [] : held.files;
-  const jobClosed = !!run && !collecting;
   const failed = held.failedConfig === config;
+  // The tray steps aside while they're going up, or about to: the status line has it then.
+  const goingUp = ready && !failed;
+  const waiting = held.sending || goingUp ? [] : held.files;
+  const jobClosed = !!run && !collecting;
   const trayLine =
     waiting.length === 0
       ? ""
@@ -652,25 +738,31 @@ function AddCardsScreen({ heldKey }: { heldKey: string }) {
         ? `${pileWords(waiting)} waiting. This run's all in, so start a new run.`
         : !loading && lock.needsSet
           ? `${pileWords(waiting)} waiting. Pick a set and they're off.`
-          : lock.needsPrice
-            ? `${pileWords(waiting)} waiting on a price.`
-            : lock.needsCondition
-              ? `${pileWords(waiting)} waiting on a condition.`
-              : `${pileWords(waiting)} waiting.`;
+          : lock.setHasNoCards
+            ? "That set has no cards to match against yet. Pick another one."
+            : lock.needsPrice
+              ? `${pileWords(waiting)} waiting on a price.`
+              : lock.needsCondition
+                ? `${pileWords(waiting)} waiting on a condition.`
+                : `${pileWords(waiting)} waiting.`;
   const tray = (
     <HeldTray
       id={trayId}
       line={trayLine}
       alone={jobClosed}
+      onFocusGoing={flagTrayFocus}
       onRemove={() => {
         removeHeld(heldKey);
         setRefusedPile([]);
         (dropInput.current ?? statusLine.current)?.focus();
+        say("Photos removed.");
       }}
       onRetry={
         failed && ready
           ? () => {
               retryHeld(heldKey);
+              // The old failure is still there, and focus would read it out again.
+              say("Trying again…");
               // The button is about to go with the tray; the status line says how it goes.
               statusLine.current?.focus({ preventScroll: true });
             }
@@ -684,11 +776,13 @@ function AddCardsScreen({ heldKey }: { heldKey: string }) {
       ? undefined
       : lock.needsSet
         ? "Pick a set first, then get a code."
-        : lock.needsPrice
-          ? "Set a price first, then get a code."
-          : lock.needsCondition
-            ? "Pick a condition first, then get a code."
-            : undefined;
+        : lock.setHasNoCards
+          ? "That set has no cards to match against yet. Pick another one, then get a code."
+          : lock.needsPrice
+            ? "Set a price first, then get a code."
+            : lock.needsCondition
+              ? "Pick a condition first, then get a code."
+              : undefined;
 
   return (
     <div data-motion="high" className="space-y-4">
@@ -707,6 +801,7 @@ function AddCardsScreen({ heldKey }: { heldKey: string }) {
             quiet
             files={refusedPile}
             disabled={held.sending}
+            onFilesWhileDisabled={() => say("Still sending. Drop the rest in a moment.")}
             inputRef={dropInput}
             hint={ready || noHome ? undefined : WAITING_HINT}
             describedBy={[lock.locked ? gateNoteId : null, trayLine ? trayId : null].filter(Boolean).join(" ") || undefined}
@@ -735,7 +830,14 @@ function AddCardsScreen({ heldKey }: { heldKey: string }) {
           {trayLine && tray}
         </>
       )}
-      <p ref={statusLine} tabIndex={-1} role="status" aria-live="polite" className={`m-0 min-h-5 rounded-sm text-sm text-ink-2 ${RING}`}>
+      <p
+        ref={statusLine}
+        tabIndex={-1}
+        role="status"
+        aria-live="polite"
+        aria-label="Add cards status"
+        className={`m-0 min-h-5 rounded-sm text-sm text-ink-2 ${RING}`}
+      >
         {held.note}
         {lock.locked && gateNews && <span className="sr-only"> {gateNews}</span>}
       </p>
@@ -785,6 +887,7 @@ function HeldTray({
   id,
   line,
   alone = false,
+  onFocusGoing,
   onRemove,
   onRetry,
 }: {
@@ -792,10 +895,23 @@ function HeldTray({
   line: string;
   /** No drop zone above it: the run's job has closed. */
   alone?: boolean;
+  /** A button is leaving with focus on it. Called while it is still in the page. */
+  onFocusGoing: () => void;
   onRemove: () => void;
   onRetry?: () => void;
 }) {
   const filled = line !== "";
+  // A ref's cleanup runs before the button leaves the page; by a parent's effect,
+  // focus is already gone and there is no telling it was ever here.
+  const watchFocus = useCallback(
+    (button: HTMLButtonElement | null) => {
+      if (!button) return;
+      return () => {
+        if (document.activeElement === button) onFocusGoing();
+      };
+    },
+    [onFocusGoing],
+  );
   return (
     <div
       className={
@@ -804,16 +920,24 @@ function HeldTray({
           : ""
       }
     >
-      <p id={id} role="status" aria-live="polite" className="m-0 min-w-0 flex-1">
+      <p id={id} role="status" aria-live="polite" aria-label="Waiting photos" className="m-0 min-w-0 flex-1">
         {line}
       </p>
       {filled && onRetry && (
-        <NeonButton size="1" variant="secondary" outline className="max-sm:min-h-11" aria-label="Try again: send the waiting photos" onClick={onRetry}>
+        <NeonButton
+          ref={watchFocus}
+          size="1"
+          variant="secondary"
+          outline
+          className="max-sm:min-h-11"
+          aria-label="Try again: send the waiting photos"
+          onClick={onRetry}
+        >
           Try again
         </NeonButton>
       )}
       {filled && (
-        <NeonButton size="1" variant="negative" outline className="max-sm:min-h-11" onClick={onRemove}>
+        <NeonButton ref={watchFocus} size="1" variant="negative" outline className="max-sm:min-h-11" onClick={onRemove}>
           Remove photos
         </NeonButton>
       )}
@@ -1060,8 +1184,8 @@ interface CommonPriceTarget {
   title: string;
   /** The collector syncs, so a new common price can reach cards already listed. */
   syncing: boolean;
-  /** Undo's first step: put the Min price back on the run or the setup. */
-  restoreMin: (cents: number) => Promise<void>;
+  /** Called at the press. Answers Undo's first step: put the Min price back where this save took it from. */
+  minRestorer: () => (cents: number) => Promise<void>;
   /** Undo's last step: `DefaultsFields` seeds its draft once, so draw it afresh. */
   reseed: () => void;
 }
@@ -1087,23 +1211,34 @@ function SaveAsCommonPrice({
   /** Clears the Min price. */
   onSaved: () => Promise<void>;
 }) {
-  const { variantId, title, syncing, restoreMin, reseed } = target;
+  const { variantId, title, syncing, minRestorer, reseed } = target;
   const page = usePageApi();
   const writes = useCollectionActions();
   const prices = useCommonPrices([variantId]);
   const common = prices === undefined ? undefined : (prices[variantId] ?? null);
   const helpId = useId();
+  const whyNotId = useId();
   const saving = useRef(false);
   const parsed = parseMinPrice(text);
   const cents = typeof parsed === "number" ? parsed : null;
-  const replaces = typeof common === "number" && Math.round(common * 100) !== cents;
+  // Nothing typed replaces nothing, including just after a save has cleared the field.
+  const replaces = typeof common === "number" && cents !== null && Math.round(common * 100) !== cents;
   const label = replaces ? `Replace $${common.toFixed(2)} common price` : "Save as common price";
   // Blank, not a price, or still loading what it would replace: a Tab stop that does nothing.
   const usable = cents !== null && common !== undefined;
+  const whyNot =
+    parsed === undefined
+      ? "Type a Min price first."
+      : parsed === "invalid"
+        ? "Fix the Min price first."
+        : common === undefined
+          ? "Checking your common price…"
+          : null;
   const save = () => {
     if (cents === null || !usable || saving.current) return;
     saving.current = true;
     const dollars = cents / 100;
+    const restoreMin = minRestorer();
     void page
       .run(
         async () => {
@@ -1132,11 +1267,16 @@ function SaveAsCommonPrice({
         className="mt-1 self-start max-sm:min-h-11"
         aria-label={`${label} for ${title}`}
         aria-disabled={!usable}
-        aria-describedby={helpId}
+        aria-describedby={whyNot ? `${whyNotId} ${helpId}` : helpId}
         onClick={save}
       >
         {label}
       </NeonButton>
+      {whyNot && (
+        <span id={whyNotId} className="sr-only">
+          {whyNot}
+        </span>
+      )}
       <span id={helpId}>
         Cards from {title} with no price of their own sell at it.
         {syncing && " That includes any you've already listed, so those change too."}
@@ -1202,6 +1342,7 @@ function RunWorkspace({
   sendingPhotos: boolean;
 }) {
   const { notify, inform } = usePageApi();
+  const doneWhyId = useId();
   const images = useQuery(api.placeholderPipeline.listPlaceholderImages, { jobId: run.jobId });
   const pairs = useQuery(api.placeholderPipeline.listPlaceholderPairs, { jobId: run.jobId });
   const matches = useQuery(api.intakeRuns.listIntakeMatches, { runId: run._id });
@@ -1399,6 +1540,7 @@ function RunWorkspace({
               variant="secondary"
               outline
               aria-disabled={sendingPhotos || undefined}
+              aria-describedby={sendingPhotos ? doneWhyId : undefined}
               {...{ [DONE_ATTR]: "" }}
               onClick={() => {
                 if (sendingPhotos) return;
@@ -1411,6 +1553,11 @@ function RunWorkspace({
             >
               Done adding photos
             </NeonButton>
+          )}
+          {jobOpen && sendingPhotos && (
+            <span id={doneWhyId} className="sr-only">
+              Photos are still going up.
+            </span>
           )}
           {/* Always mounted (a live region announces what lands in it), empty until Done. */}
           <span role="status">{done && syncsHere && <SyncStatusLink className="inline-block max-sm:py-2" />}</span>

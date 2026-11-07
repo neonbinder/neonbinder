@@ -168,15 +168,16 @@ async function requireOwnedRun(
 
 /**
  * A variant to match in must exist and hold cards directly. A collector can
- * pick one with no cards, so that refusal is a `ConvexError`: production Convex
- * hides a plain `Error`'s words from the client.
+ * pick one with no cards, or one that left the catalog while the tab sat open,
+ * so both refusals are `ConvexError`s: production Convex hides a plain `Error`'s
+ * words from the client.
  */
 async function requireVariant(
   ctx: QueryCtx,
   variantId: Id<"selectorOptions">,
 ): Promise<void> {
   const row = await ctx.db.get(variantId);
-  if (!row) throw new Error("Variant not found");
+  if (!row) refuse(COLLECTION_ERRORS.notFound, "That set isn't in the catalog any more. Pick another one.");
   const card = await ctx.db
     .query("cardChecklist")
     .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", variantId))
@@ -266,8 +267,8 @@ async function queueSync(ctx: MutationCtx, run: Doc<"intakeRuns">): Promise<void
  *
  * NEO-452: a new run needs a set, wherever it files. `variantId` stays optional
  * on the wire so a tab left open from before gets these words, not an argument
- * validator error, and the refusal comes after the `existing` check so a retry
- * still gets its run back.
+ * validator error, and both set refusals come after the `existing` check so a
+ * retry still gets its run back, whatever became of the set since.
  */
 export const createIntakeRun = mutation({
   args: {
@@ -286,7 +287,6 @@ export const createIntakeRun = mutation({
     if (!job || job.userId !== userId) throw new Error("Job not found");
     const home = await ctx.db.get(args.homeId);
     if (!home || home.ownerId !== userId) throw new Error("Binder or box not found");
-    if (args.variantId) await requireVariant(ctx, args.variantId);
 
     const existing = await ctx.db
       .query("intakeRuns")
@@ -296,6 +296,7 @@ export const createIntakeRun = mutation({
 
     const variantId = args.variantId;
     if (!variantId) refuse(COLLECTION_ERRORS.invalid, "Pick a set first: cards are matched in it.");
+    await requireVariant(ctx, variantId);
 
     // NEO-370: a run into a listed box, by a collector set up for syncing,
     // starts with a price (the run's own, else the picked variant's common
