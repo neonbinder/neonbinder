@@ -1,6 +1,6 @@
 ---
 name: heavy-escalation-red-read-the-request-log-per-instance
-description: Placeholder heavy-escalation E2E red: "All N photos read." counts failed photos; the decisive artifact is the heavy service's Cloud Run request log grouped by instance, where a burst can queue serially behind ONE cold instance while warm ones idle; compare cold start + (N-1) x inference to the per-call budget
+description: Placeholder photo E2E red (heavy AND fast lane): "All N photos read." counts failed photos; the decisive artifact is the heavy service's Cloud Run request log grouped by instance, where a burst can queue serially behind ONE cold instance while warm ones idle; compare cold start + (N-1) x inference to the per-call budget
 metadata:
   type: feedback
 ---
@@ -38,3 +38,14 @@ failed PHOTO_TIMED_OUT. The Convex side looked healthy throughout.
   told "All 6 photos read."), not a spec or timing problem; the 7 s assert on
   the pairs count is correct and was not what failed. Related:
   [[turn-count-waits-are-load-dependent-under-web-crypto]].
+
+**Fast lane too (NEO-446, 2026-11-07).** A fast-lane photo red can be a spec whose
+own reads never left Convex: the fast pool is deployment-wide and only as wide as
+the instance ceiling (3 on a preview), so another shard's burst whose calls Cloud
+Run holds for a booting instance (one start took ~2 min while two siblings were
+ready and idle) occupies every slot for ~60 s (fast per-call timeout) and the next
+three for ~55 s. The red spec's calls then dispatch a minute late and take 2-8 s.
+Tell-tale: the red job's `preprocessProcessEntryFast` lines end long after its
+extract, with short `duration_ms`, while another jobId shows `error_class: timeout`
+at ~60 s. Cloud Run's request-log `latency` there excludes the pending time, so
+compare the request `timestamp` with the app's own lines for the same index.
