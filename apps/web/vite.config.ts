@@ -5,6 +5,7 @@ import { sentryVitePlugin } from "@sentry/vite-plugin";
 import fs from "fs";
 import path from "path";
 import { issueClerkTestingTokens } from "./lib/testing/issue-clerk-tokens";
+import { shouldUploadSentrySourcemaps } from "./lib/observability/sentry-upload-gate";
 
 // `vite-plugin-mkcert@2` pulls in `undici@8.x` whose CacheStorage init
 // calls `webidl.util.markAsUncloneable`. That API landed in Node 22.13+;
@@ -225,6 +226,10 @@ function staticPageRewritesPlugin(): Plugin {
   };
 }
 
+// NEO-439: snapshot the real process environment before the .env merge below,
+// so nothing in a .env file can switch Sentry uploading on.
+const uploadToSentry = shouldUploadSentrySourcemaps(process.env);
+
 export default defineConfig(async ({ mode }) => {
   // Load .env* into process.env for server-side code (Vite only populates
   // import.meta.env.VITE_* by default; the dev-only Clerk testing middleware
@@ -239,6 +244,8 @@ export default defineConfig(async ({ mode }) => {
     clerkTestingApiPlugin(),
     staticPageRewritesPlugin(),
     sentryVitePlugin({
+      // Release + source-map upload only on a Vercel hosted build (NEO-439).
+      disable: !uploadToSentry,
       org: "neon-binder",
       project: "javascript-nextjs",
       sourcemaps: {
@@ -253,7 +260,9 @@ export default defineConfig(async ({ mode }) => {
     },
   },
   build: {
-    sourcemap: true,
+    // Tied to the gate: `disable` also drops the plugin's delete-after-upload,
+    // so maps built where nothing uploads or deletes them would ship public.
+    sourcemap: uploadToSentry,
   },
   server: {
     port: 3000,
