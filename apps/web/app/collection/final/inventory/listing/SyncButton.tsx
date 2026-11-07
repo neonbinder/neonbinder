@@ -48,7 +48,7 @@ export const NOT_LISTING_LINE = "Nothing to sync to yet. Connect a marketplace o
 /** What the toast says after a press. */
 export function syncToast(title: string, result: SyncVariantResult): string {
   if (result.queued) return `Syncing ${title} now. Watch it on Sync status.`;
-  if (result.ignored === "throttled") return `${title} just synced. Give it a minute, then Sync again.`;
+  if (result.ignored === "throttled") return `${title} is already in the works. Give it a minute, then Sync again.`;
   if (result.ignored === "notListing") return NOT_LISTING_LINE;
   // Taken by no platform: no card in the set links to anywhere the collector lists.
   return `Nothing in ${title} links to a marketplace you list on, so there's nothing to sync.`;
