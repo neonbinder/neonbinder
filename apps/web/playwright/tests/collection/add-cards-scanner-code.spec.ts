@@ -3,8 +3,11 @@
 // to the six-character code the scanner app joins it with, copies it on
 // Copy code, and links the app's Mac downloads. The run lives on the URL, so
 // after a reload asking again gives the same code. "Done adding photos" closes
-// the empty session. Both sides: the Collection files into a binder, the
-// Inventory into a box (its own Main, which every account has).
+// the empty session, and the run says so (NEO-446): a run that closed with no
+// photo in it failed, so the screen says "No photos came in before this run
+// closed" and offers "Start a new run" rather than claiming the photos are all
+// in. Both sides: the Collection files into a binder, the Inventory into a box
+// (its own Main, which every account has).
 //
 // NEO-416: a photo dropped while the shelf and the ?run= run are still loading
 // is queued and sent into that same run once they load (never "Make a binder
@@ -20,6 +23,9 @@
 // one of the account's two active-batch slots for its 30-minute idle window.
 import type { Page } from "@playwright/test";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
+
+/** What a run that closed with no photo in it says (`runNotice`, realLanes.ts). */
+const NO_PHOTOS = "No photos came in before this run closed. Start a new run and drop some in.";
 
 /** Start a scanner run from the open Add cards tab; returns the code shown. */
 async function useScanner(page: Page): Promise<string> {
@@ -78,9 +84,12 @@ test(
       await page.getByRole("button", { name: "Use a scanner" }).click();
       await expect(page.getByRole("group", { name: "Scanner code" }).getByText(code.split("").join(" "))).toHaveCount(1);
 
-      // Done with no photos: the empty session closes, quietly.
+      // Done with no photos: the empty session closes as a failed run (nothing came
+      // in), and says so with the way forward (NEO-446).
       await page.getByRole("button", { name: "Done adding photos" }).click();
-      await expect(page.getByText("This run's photos are all in. To add more, start a new run.")).toBeVisible();
+      await expect(page.getByText(NO_PHOTOS)).toBeVisible();
+      await expect(page.getByRole("button", { name: "Start a new run", exact: true })).toBeVisible();
+      await expect(page.getByText("This run's photos are all in")).toHaveCount(0);
       await expect(page.getByRole("button", { name: "Use a scanner" })).toHaveCount(0);
       await expect(page.getByRole("alert")).toHaveCount(0);
       await expectAccessible(page, { label: "Scanner run closed" });
@@ -91,7 +100,7 @@ test(
       const boxCode = await useScanner(page);
       expect(boxCode).not.toBe(code);
       await page.getByRole("button", { name: "Done adding photos" }).click();
-      await expect(page.getByText("This run's photos are all in. To add more, start a new run.")).toBeVisible();
+      await expect(page.getByText(NO_PHOTOS)).toBeVisible();
     } finally {
       await closeRun(page);
     }

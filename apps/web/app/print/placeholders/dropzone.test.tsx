@@ -78,3 +78,38 @@ describe("Dropzone held (NEO-370)", () => {
     await expectAccessibleInBothModes(open.view.container, { label: "Dropzone, open" });
   });
 });
+
+describe("Dropzone wording and accepted types (NEO-446)", () => {
+  const zipFile = new File(["x"], "cards.zip", { type: "application/zip" });
+  const jpg = new File(["x"], "front.jpg", { type: "image/jpeg" });
+  const sending = (files: File[]) =>
+    render(<Dropzone quiet files={files} disabled onFiles={vi.fn()} />);
+
+  it("says it is sending a zip when the chosen file is a zip", () => {
+    sending([zipFile]);
+    expect(screen.getByText("Sending your zip…")).toBeTruthy();
+    expect(screen.queryByText("Sending your photos…")).toBeNull();
+  });
+
+  it("says photos for loose photos, and for a selection it refused", () => {
+    sending([jpg, jpg]);
+    expect(screen.getByText("Sending your photos…")).toBeTruthy();
+    cleanup();
+    sending([zipFile, new File(["x"], "two.zip")]);
+    expect(screen.getByText("Sending your photos…")).toBeTruthy();
+    cleanup();
+    sending([]);
+    expect(screen.getByText("Sending your photos…")).toBeTruthy();
+  });
+
+  it("takes WebP as well as JPEG, PNG and a zip, and the hint says so", () => {
+    render(<Dropzone quiet files={[]} disabled={false} onFiles={vi.fn()} />);
+    expect(input().accept.split(",").sort()).toEqual([".zip", "image/jpeg", "image/png", "image/webp"]);
+    expect(screen.getByText(/JPEG, PNG or WebP, or a single zip of them/)).toBeTruthy();
+  });
+
+  it("keeps the open headline when not sending", () => {
+    render(<Dropzone quiet files={[zipFile]} disabled={false} onFiles={vi.fn()} />);
+    expect(screen.getByText("Drag your card photos here")).toBeTruthy();
+  });
+});

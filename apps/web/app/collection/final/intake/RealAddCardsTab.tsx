@@ -36,9 +36,15 @@ import {
   cardLabel,
   columnsClear,
   failedText,
+  inNaturalOrder,
   LEAVE_INTAKE_LINE,
   laneOf,
+  photoLabels,
   PHOTO_NEWS_QUIET_MS,
+  PHOTO_OUT_OF_TRIES_LINE,
+  PHOTO_RUN_CLOSED_LINE,
+  PHOTO_SET_ASIDE_LINE,
+  PHOTO_TOO_BIG_LINE,
   photoChanges,
   photoLine,
   photoNewsOf,
@@ -48,12 +54,15 @@ import {
   proposedCount,
   readOf,
   reasonText,
+  runNotice,
   runSummary,
   type IntakeImage,
   type IntakeMatchRow,
   type PairRead,
   tileLabel,
   whyNotSave,
+  zipOverLimitLine,
+  type Lanes,
 } from "./realLanes";
 import { HomeSelect, QTY_ATTR, RING, StageBadge } from "./ui";
 import { DRAWER_PARAM } from "../drawerParams";
@@ -101,6 +110,10 @@ const LocalPhotos = createContext<ReadonlyMap<string, string>>(new Map());
  * the saved line after the save, and the tile says how that went (`PhotoLine`),
  * with one polite line for what landed (`usePhotoNews`).
  *
+ * Past collecting, one line says where the run stands (NEO-446, `runNotice`),
+ * from the job row alone so a refresh on `?run=` says the same. A run that went
+ * wrong offers "Start a new run"; one where nothing reached the lanes hides them.
+ *
  * Not yet: the common price prompt (NEO-378), rotate/re-crop/reject one side,
  * and finding the set from the photos when none is picked.
  */
@@ -130,17 +143,58 @@ function parkAfterStay(): boolean {
  * NEO-411: a Try again moves the photo out of the pile, so its button unmounts
  * and focus would fall to the page. On the next frame, if it did, land on the
  * next photo left in the pile, or else on the pile's heading (WCAG 2.4.3).
+ * NEO-446: Set aside moves a photo the same way. Bring back has its own path
+ * (`settleReturningPhoto`), because it knows which tile to land on.
  */
-function refocusAfterRetry(entryIndex: number): void {
-  // Always move: the retried photo's own tile and Try again leave the pile
-  // once its row goes back to processing, which can land after this frame, so
-  // focus left on them would drop to the page when they unmount.
+function refocusInPile(entryIndex: number): void {
+  // Always move: the photo's own tile and button leave where they are once its
+  // row changes, which can land after this frame, so focus left on them would
+  // drop to the page when they unmount.
   requestAnimationFrame(() => {
     const next = Array.from(document.querySelectorAll<HTMLElement>("[data-loose-photo]")).find(
       (el) => el.dataset.loosePhoto !== String(entryIndex),
     );
     (next ?? document.getElementById(PAIRING_HEADING_ID))?.focus();
   });
+}
+
+/** How long a brought-back photo's tile keeps its fallback, in case a re-pair takes the tile away. */
+const RETURNED_TILE_WATCH_MS = 10_000;
+
+/** A photo brought back, until focus has landed for it. `landedUntil` is set once it is on the tile. */
+interface ReturningPhoto {
+  entryIndex: number;
+  landedUntil?: number;
+}
+
+/**
+ * NEO-446: where focus goes after Bring back, called each time the lanes change.
+ * Its button stays mounted until the photo repaints, so this waits on the lanes
+ * rather than a timer. Then the photo's tile takes focus, or the Pairing heading
+ * if it came back as something else. A done photo can re-pair a moment after
+ * that and take the tile with it, which also falls to the heading. Focus the
+ * collector has moved elsewhere is left alone. Answers what to keep watching.
+ */
+function settleReturningPhoto(wanted: ReturningPhoto, lanes: Lanes): ReturningPhoto | null {
+  const { entryIndex, landedUntil } = wanted;
+  if (lanes.looseAside.some((i) => i.entryIndex === entryIndex)) return wanted;
+  const active = document.activeElement;
+  const focusIsFree = !active || active === document.body || !active.isConnected;
+  const watching = landedUntil !== undefined && Date.now() <= landedUntil;
+  const tile = lanes.loose.some((i) => i.entryIndex === entryIndex)
+    ? document.querySelector<HTMLElement>(`[data-loose-photo="${entryIndex}"]`)
+    : null;
+  if (tile) {
+    if (landedUntil === undefined && focusIsFree) {
+      tile.focus();
+      return { entryIndex, landedUntil: Date.now() + RETURNED_TILE_WATCH_MS };
+    }
+    return watching && active === tile ? wanted : null;
+  }
+  if (focusIsFree && (landedUntil === undefined || watching)) {
+    document.getElementById(PAIRING_HEADING_ID)?.focus();
+  }
+  return null;
 }
 
 type Condition = "Mint" | "Near Mint" | "Excellent" | "Very Good" | "Good" | "Poor";
@@ -221,6 +275,7 @@ export default function RealAddCardsTab() {
   // Still loading the run's job reads as collecting, so the drop zone and the
   // scanner code don't blink out while a just-started run catches up.
   const collecting = !run || job === undefined || job?.status === "collecting";
+  const notice = collecting ? null : runNotice(job);
 
   // NEO-370 — the listing gate, on what the run (or the setup) will give its cards.
   const shownDefaults: RunDefaults = run?.defaults ?? defaults;
@@ -250,6 +305,31 @@ export default function RealAddCardsTab() {
       return next;
     });
 
+  // Leaving a run takes the button that asked for it off the screen, so focus
+  // lands on the drop zone, which is the next thing to do, once it is drawn. The
+  // ask waits while the URL is still on the old run ("leaving") and for the zone
+  // to draw ("arrived"). A run in the URL after arriving is a Back: the ask is over.
+  const dropArea = useRef<HTMLDivElement>(null);
+  const focusDropzone = useRef<null | "leaving" | "arrived">(null);
+  const startNewRun = () => {
+    setStatus("");
+    focusDropzone.current = "leaving";
+    openRun(null);
+  };
+  useEffect(() => {
+    if (!focusDropzone.current) return;
+    if (runParam) {
+      if (focusDropzone.current === "arrived") focusDropzone.current = null;
+      return;
+    }
+    focusDropzone.current = "arrived";
+    const area = dropArea.current;
+    if (!area) return;
+    // A disabled input (a send still going) can't take focus, so the zone itself does.
+    (area.querySelector<HTMLElement>('input[type="file"]:not(:disabled)') ?? area).focus();
+    focusDropzone.current = null;
+  }, [runParam, collecting]);
+
   // A drop while `loading` waits here, then takes the normal path below once
   // the shelf and the run are in. The latest drop wins, as a new pick does.
   const queued = useRef<File[] | null>(null);
@@ -260,7 +340,9 @@ export default function RealAddCardsTab() {
       queued.current = chosen;
       return;
     }
-    if (classifyIntake(chosen).kind === "invalid") return;
+    const intake = classifyIntake(chosen);
+    if (intake.kind === "invalid") return;
+    const isZip = intake.kind === "zip";
     // Held by the listing gate: the reason is beside the zone (it never opens a picker then).
     if (lock.locked) return;
     if (!run && !pickedHome) {
@@ -276,11 +358,18 @@ export default function RealAddCardsTab() {
       added.set(file.name, url);
     }
     setLocalPhotos(added);
-    setStatus("Sending your photos…");
+    setStatus(isZip ? "Sending your zip…" : "Sending your photos…");
     try {
-      const out = await upload(chosen, { source: "web", jobId: run?.jobId });
+      // Scan order is upload order, and a zip is unpacked in natural filename
+      // order, so loose photos go up the same way. Here and not in the hook: the
+      // seed page uploads in the exact order it is handed, backs first on purpose.
+      const out = await upload(isZip ? chosen : inNaturalOrder(chosen), { source: "web", jobId: run?.jobId });
       if (!out.ok) {
-        setStatus(`Couldn't send these photos: ${out.reason}.`);
+        setStatus(
+          out.overLimitMb !== undefined
+            ? zipOverLimitLine(out.overLimitMb)
+            : `${isZip ? "Couldn't send that zip" : "Couldn't send these photos"}: ${out.reason}.`,
+        );
         return;
       }
       setFiles([]);
@@ -293,10 +382,13 @@ export default function RealAddCardsTab() {
         });
         openRun(id);
       }
+      // A zip's counts are the archive's, not its photos: the job row speaks for it now.
       setStatus(
-        out.failed === 0
-          ? `Sent ${out.uploaded} photo${out.uploaded === 1 ? "" : "s"}.`
-          : `Sent ${out.uploaded} of ${out.total} photos. ${out.failed} failed.`,
+        out.kind === "zip"
+          ? ""
+          : out.failed === 0
+            ? `Sent ${out.uploaded} photo${out.uploaded === 1 ? "" : "s"}.`
+            : `Sent ${out.uploaded} of ${out.total} photos. ${out.failed} failed.`,
       );
     } catch (error) {
       setStatus(writeErrorMessage(error));
@@ -363,7 +455,7 @@ export default function RealAddCardsTab() {
         {(run?.defaults ?? defaults).grading ? `, ${(run?.defaults ?? defaults).grading?.grader}` : ""}
       </NeonButton>
       {run && (
-        <NeonButton variant="secondary" outline className="ml-auto" onClick={() => openRun(null)}>
+        <NeonButton variant="secondary" outline className="ml-auto" onClick={startNewRun}>
           New run
         </NeonButton>
       )}
@@ -391,7 +483,7 @@ export default function RealAddCardsTab() {
       {runParam && (!runId || run === null) && (
         <p className="m-0 rounded-md border border-rule p-3 text-sm text-ink-2">
           That run isn&apos;t yours or is gone.{" "}
-          <button type="button" className={`text-neon-blue-text underline ${RING}`} onClick={() => openRun(null)}>
+          <button type="button" className={`text-neon-blue-text underline ${RING}`} onClick={startNewRun}>
             Start a new one
           </button>
         </p>
@@ -409,8 +501,8 @@ export default function RealAddCardsTab() {
           </NeonButton>
         </ListingGateNote>
       )}
-      {collecting ? (
-        <>
+      {collecting && (
+        <div ref={dropArea} tabIndex={-1} className="space-y-4 outline-none">
           <Dropzone
             quiet
             files={files}
@@ -433,19 +525,40 @@ export default function RealAddCardsTab() {
               onRunStarted={openRun}
             />
           )}
-        </>
-      ) : (
-        <p className="m-0 rounded-md border border-rule p-3 text-sm text-ink-2">
-          This run&apos;s photos are all in. To add more, start a new run.
-        </p>
+        </div>
       )}
-      <p role="status" aria-live="polite" className="m-0 min-h-5 text-sm text-ink-2">
-        {status}
-      </p>
+      <div>
+        {/* The run's line. The live region is always mounted, so a line landing in it
+            is announced; the button stays outside it, so it isn't read out as part of the line. */}
+        <div
+          className={
+            notice
+              ? `mb-2 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-md border p-3 text-sm ${
+                  notice.problem ? "border-notice-warn-rule bg-notice-warn-bg text-notice-warn-ink" : "border-rule text-ink-2"
+                }`
+              : undefined
+          }
+        >
+          <p role="status" aria-live="polite" className="m-0 min-w-0 flex-1 basis-64 [overflow-wrap:anywhere]">
+            {notice?.parts.map((part, i) => (i % 2 === 1 ? <bdi key={i}>{part}</bdi> : part))}
+          </p>
+          {notice?.problem && (
+            // Outlined when the run has photos: cards may be waiting on the collector here.
+            <NeonButton size="1" variant="primary" outline={!!job?.totalImages} className="max-sm:min-h-11" onClick={startNewRun}>
+              Start a new run
+            </NeonButton>
+          )}
+        </div>
+        <p role="status" aria-live="polite" className="m-0 min-h-5 text-sm text-ink-2">
+          {status}
+        </p>
+      </div>
       {run ? (
-        <LocalPhotos.Provider value={localPhotos}>
-          <RunWorkspace run={run} jobOpen={job?.status === "collecting"} />
-        </LocalPhotos.Provider>
+        !notice?.hideWorkspace && (
+          <LocalPhotos.Provider value={localPhotos}>
+            <RunWorkspace run={run} jobOpen={job?.status === "collecting"} />
+          </LocalPhotos.Provider>
+        )
       ) : (
         !runParam && <RecentRuns runs={(recent ?? []).filter((r) => r.homeKind === kind)} onOpen={openRun} />
       )}
@@ -740,11 +853,19 @@ function RunWorkspace({ run, jobOpen }: { run: RunSummary; jobOpen: boolean }) {
     [images, pairs, matches],
   );
   const byIndex = useMemo(() => new Map((images ?? []).map((i) => [i.entryIndex, i])), [images]);
+  const labels = useMemo(() => photoLabels(images ?? []), [images]);
+  const returning = useRef<ReturningPhoto | null>(null);
+  useEffect(() => {
+    if (returning.current && images && pairs && matches) {
+      returning.current = settleReturningPhoto(returning.current, lanes);
+    }
+  }, [lanes, images, pairs, matches]);
 
   const save = useMutation(api.intakeRuns.saveIntakeMatch);
   const pick = useMutation(api.intakeRuns.pickIntakeCard);
   const answerRepeat = useMutation(api.intakeRuns.answerIntakeRepeat);
   const aside = useMutation(api.intakeRuns.setIntakeMatchAside);
+  const photoAside = useMutation(api.intakeRuns.setIntakePhotoAside);
   const swap = useMutation(api.placeholderPairing.swapPairSides);
   const unpair = useMutation(api.placeholderPairing.unpairPlaceholderImages);
   const pairUp = useMutation(api.placeholderPairing.manuallyPairPlaceholderImages);
@@ -766,6 +887,20 @@ function RunWorkspace({ run, jobOpen }: { run: RunSummary; jobOpen: boolean }) {
   const saving = useRef(new Set<string>());
 
   const fail = (e: unknown) => notify(writeErrorMessage(e));
+  const setPhotoAside = (image: IntakeImage, setAside: boolean) => {
+    const label = labels.get(image.entryIndex) ?? image.originalName;
+    // Before the write: the lanes can repaint ahead of the promise resolving.
+    if (!setAside) returning.current = { entryIndex: image.entryIndex };
+    void photoAside({ runId: run._id, entryIndex: image.entryIndex, setAside })
+      .then(() => {
+        inform(setAside ? `Set aside ${label}.` : `Brought back ${label}.`);
+        if (setAside) refocusInPile(image.entryIndex);
+      })
+      .catch((e: unknown) => {
+        if (!setAside) returning.current = null;
+        fail(e);
+      });
+  };
   const photoLiveLine = usePhotoNews(matches);
   const canSave = (row: IntakeMatchRow) => !!row.cardId && !(row.repeatOfPairId && !row.repeatIsSecondCopy);
   const actions: RowActions = {
@@ -972,6 +1107,8 @@ function RunWorkspace({ run, jobOpen }: { run: RunSummary; jobOpen: boolean }) {
           <LoosePile
             jobId={run.jobId}
             loose={lanes.loose}
+            labels={labels}
+            onSetAside={(image) => setPhotoAside(image, true)}
             onPair={(front, back) =>
               void pairUp({ jobId: run.jobId, frontIndex: front, backIndex: back }).catch(fail)
             }
@@ -981,12 +1118,16 @@ function RunWorkspace({ run, jobOpen }: { run: RunSummary; jobOpen: boolean }) {
                     void retry({ jobId: run.jobId, entryIndex: image.entryIndex })
                       .then((r) => {
                         if (r.retried) {
-                          inform(`Trying ${image.originalName} again.`);
-                          refocusAfterRetry(image.entryIndex);
+                          inform(`Trying ${labels.get(image.entryIndex) ?? image.originalName} again.`);
+                          refocusInPile(image.entryIndex);
                         } else if (r.reason === "too many tries") {
-                          notify("This photo has been tried too many times. Scan it again instead.");
+                          notify(PHOTO_OUT_OF_TRIES_LINE);
                         } else if (r.reason === "closed") {
-                          notify("This run is closed. Scan the photo again to add it.");
+                          notify(PHOTO_RUN_CLOSED_LINE);
+                        } else if (r.reason === "too big") {
+                          notify(PHOTO_TOO_BIG_LINE);
+                        } else if (r.reason === "set aside") {
+                          notify(PHOTO_SET_ASIDE_LINE);
                         }
                       })
                       .catch(fail)
@@ -1067,21 +1208,36 @@ function RunWorkspace({ run, jobOpen }: { run: RunSummary; jobOpen: boolean }) {
               </div>
             </li>
           ))}
-          {lanes.setAside.length > 0 && (
+          {lanes.setAside.length + lanes.looseAside.length > 0 && (
             <li className="list-none border-t border-rule pt-2">
               <h3 className="m-0 mb-1 text-xs font-semibold text-ink-2">Set aside</h3>
               <ul className="m-0 list-none space-y-1 p-0">
                 {lanes.setAside.map((row) => (
-                  <li key={row.pairId} className="flex items-center justify-between gap-2 text-xs text-ink-3">
-                    <span className="truncate">{tileLabel(row, readFor(row))}</span>
+                  <li key={row.pairId} className="flex flex-col items-start text-xs text-ink-3">
+                    <span className="max-w-full wrap-anywhere">{tileLabel(row, readFor(row))}</span>
                     <button
                       type="button"
-                      className={`-my-1.5 shrink-0 py-1.5 text-neon-blue-text underline ${RING}`}
+                      className={`py-1.5 text-neon-blue-text underline ${RING}`}
                       onClick={() => {
                         actions.aside(row, false);
                         focusTile(null, false);
                       }}
                       aria-label={`Bring back ${tileLabel(row, readFor(row))}`}
+                    >
+                      Bring back
+                    </button>
+                  </li>
+                ))}
+                {lanes.looseAside.map((image) => (
+                  <li key={image.entryIndex} className="flex flex-col items-start text-xs text-ink-3">
+                    <span className="max-w-full wrap-anywhere" title={image.originalName}>
+                      {labels.get(image.entryIndex) ?? image.originalName}
+                    </span>
+                    <button
+                      type="button"
+                      className={`py-1.5 text-neon-blue-text underline ${RING}`}
+                      onClick={() => setPhotoAside(image, false)}
+                      aria-label={`Bring back ${labels.get(image.entryIndex) ?? image.originalName}`}
                     >
                       Bring back
                     </button>
@@ -1342,11 +1498,17 @@ function PhotoTile({ image }: { image: IntakeImage }) {
 function LoosePile({
   jobId,
   loose,
+  labels,
+  onSetAside,
   onPair,
   onRetry,
 }: {
   jobId: string;
   loose: IntakeImage[];
+  /** Each photo's name for its controls (`photoLabels`). */
+  labels: ReadonlyMap<number, string>;
+  /** NEO-446: take a photo out of the pile. Brought back from the Set aside list. */
+  onSetAside: (image: IntakeImage) => void;
   onPair: (front: number, back: number) => void;
   /** NEO-411: send a failed photo through again; absent once the run is closed. */
   onRetry?: (image: IntakeImage) => void;
@@ -1380,19 +1542,32 @@ function LoosePile({
               </span>
             </span>
           </button>
-          {onRetry && canRetryPhoto(i) && (
+          <div className="mt-1 flex flex-wrap gap-2">
+            {onRetry && canRetryPhoto(i) && (
+              <NeonButton
+                size="1"
+                variant="secondary"
+                outline
+                className="min-h-11 sm:min-h-8"
+                aria-label={`Try again: ${labels.get(i.entryIndex) ?? i.originalName}`}
+                aria-describedby={`loose-why-${i.entryIndex}`}
+                onClick={() => onRetry(i)}
+              >
+                Try again
+              </NeonButton>
+            )}
             <NeonButton
               size="1"
-              variant="secondary"
+              variant="negative"
               outline
-              className="mt-1 min-h-11 sm:min-h-8"
-              aria-label={`Try again: ${i.originalName}`}
-              aria-describedby={`loose-why-${i.entryIndex}`}
-              onClick={() => onRetry(i)}
+              className="min-h-11 sm:min-h-8"
+              aria-label={`Set aside ${labels.get(i.entryIndex) ?? i.originalName}`}
+              aria-describedby={i.status === "failed" ? `loose-why-${i.entryIndex}` : undefined}
+              onClick={() => onSetAside(i)}
             >
-              Try again
+              Set aside
             </NeonButton>
-          )}
+          </div>
         </li>
       ))}
       {loose.length > 1 && (

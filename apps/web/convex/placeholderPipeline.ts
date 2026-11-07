@@ -62,6 +62,12 @@ import { fastPreprocessPool } from "./placeholderPool";
 import { heavyPreprocessPool } from "./placeholderHeavyPool";
 import { readEscalationHints } from "./lib/preprocessBaseline";
 import { PLACEHOLDER_MAX_ENTRY_INDEX } from "./lib/placeholderObjects";
+import {
+  ENTRY_TOO_MANY_PIXELS,
+  isRasterTooLargeError,
+  rejectedSummaryValidator,
+  summarizeRejections,
+} from "./lib/extractRejections";
 import { noteIntakeJobFinished, noteIntakePairsChanged } from "./intakeRuns";
 
 /**
@@ -563,6 +569,8 @@ export const startPlaceholderBatch = mutation({
       processedImages: 0,
       failedImages: 0,
       rejectedEntries: 0,
+      // Goes with `rejectedEntries`: the last registration chunk writes both.
+      rejected: undefined,
       // The previous attempt's heavy warm-gate says nothing about this one — a
       // restart that escalates should fire its own warm-up. Cleared so the
       // first escalation of the new run is detected as first.
@@ -1163,7 +1171,9 @@ export const cancelRemainingWork = internalMutation({
  * so the rejected count is derived here rather than trusted as a separate
  * number. Only accepted entries become rows: a rejected entry has no work to
  * do and would otherwise sit in the counters forever, since nothing will ever
- * call onComplete for it.
+ * call onComplete for it. Why each was rejected (NEO-446) is summarised on the
+ * job, from the same whole list and written once by the last chunk, so chunking
+ * can neither lose nor double count it.
  */
 export const registerExtractedImages = internalMutation({
   args: {
@@ -1176,6 +1186,8 @@ export const registerExtractedImages = internalMutation({
         index: v.number(),
         name: v.string(),
         accepted: v.boolean(),
+        /** `/extract`'s machine reason for a rejected entry. */
+        reason: v.optional(v.string()),
       }),
     ),
     /** Chunk cursor into the deduped accepted list. Absent means "start". */
@@ -1297,6 +1309,10 @@ export const registerExtractedImages = internalMutation({
           escalatedAt: undefined,
           settledAt: undefined,
           heavyStartedAt: undefined,
+          // NEO-446: this photo is being read again, so it comes back to the
+          // collector as a new answer. A kept done row above keeps its set-aside:
+          // same bytes, same decision, like its `sideByUser` and `unpairedFrom`.
+          setAside: undefined,
         });
       }
     }
@@ -1324,6 +1340,7 @@ export const registerExtractedImages = internalMutation({
       processedImages: keptDone,
       failedImages: 0,
       rejectedEntries,
+      rejected: summarizeRejections(args.entries),
       // Refresh the heartbeat as the batch enters processing, so the window
       // before the first image completes (enqueue + first `/process-entry`) is
       // measured from here rather than from when extraction started. Settle
@@ -1839,7 +1856,12 @@ async function settleImageOutcome(
       status: "failed",
       settledAt,
       errorCode:
-        result.kind === "canceled" ? "CANCELED" : (failureCode ?? "PROCESS_ENTRY_FAILED"),
+        result.kind === "canceled"
+          ? "CANCELED"
+          : (failureCode ??
+            // NEO-446: a raster over the pixel ceiling is terminal, and the photo
+            // can say so rather than offering a Try again that cannot work.
+            (isRasterTooLargeError(result.error) ? ENTRY_TOO_MANY_PIXELS : "PROCESS_ENTRY_FAILED")),
       errorDetail:
         result.kind === "failed"
           ? result.error.slice(0, 1000)
@@ -2217,7 +2239,7 @@ export const getJobInternal = internalQuery({
 });
 
 /**
- * The successfully-processed images of a job, in zip order.
+ * The successfully-processed images of a job, in filename order.
  *
  * Order is not cosmetic: the scan-order fallback (`guardedAdjacencyFallback`)
  * pairs identity leftovers that sit next to each other in entry order, so
@@ -2255,6 +2277,8 @@ export const listDoneImagesForPairing = internalQuery({
       dhash: v.optional(v.string()),
       pairStatus: v.optional(v.union(v.literal("paired"), v.literal("unmatched"))),
       unpairedFrom: v.optional(v.array(v.number())),
+      // NEO-446: `computePairingDiff` leaves these out of the pairing.
+      setAside: v.optional(v.boolean()),
     }),
   ),
   handler: async (ctx, args) => {
@@ -2277,6 +2301,7 @@ export const listDoneImagesForPairing = internalQuery({
         dhash: r.dhash,
         pairStatus: r.pairStatus,
         unpairedFrom: r.unpairedFrom,
+        setAside: r.setAside,
       }));
   },
 });
@@ -2451,6 +2476,9 @@ export const getPlaceholderJob = query({
       processedImages: v.number(),
       failedImages: v.number(),
       rejectedEntries: v.number(),
+      // Why they were rejected (NEO-446). Example names never include one that
+      // failed name validation; a client still renders them as plain text.
+      rejected: v.optional(rejectedSummaryValidator),
       pairCount: v.number(),
       // Identity-resolver calls as measured by the FINAL pairing run — see the
       // schema comment. Diagnostics, not spend: since NEO-170 the identity is
@@ -2499,6 +2527,7 @@ export const getPlaceholderJob = query({
       processedImages: job.processedImages ?? 0,
       failedImages: job.failedImages ?? 0,
       rejectedEntries: job.rejectedEntries ?? 0,
+      rejected: job.rejected,
       pairCount: pairs.length,
       resolverCalls: job.resolverCalls ?? 0,
       heavyWarming: deriveHeavyWarming(images),
@@ -2554,6 +2583,8 @@ export const listPlaceholderImages = query({
       settledAt: v.optional(v.number()),
       // NEO-411: Try again presses so far, so the screen hides the button at the cap.
       retries: v.optional(v.number()),
+      // NEO-446: the collector set this loose photo aside.
+      setAside: v.optional(v.boolean()),
     }),
   ),
   handler: async (ctx, args) => {
@@ -2587,6 +2618,7 @@ export const listPlaceholderImages = query({
       escalatedAt: r.escalatedAt,
       settledAt: r.settledAt,
       retries: r.retries,
+      setAside: r.setAside,
       // `workId` is intentionally omitted — it is a handle into the workpool
       // component, not something a client has any use for.
     }));
