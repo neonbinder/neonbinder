@@ -111,6 +111,7 @@ BuySportsCards alone for the whole run:
 | Football → 2014 (the whole year) → Topps → Topps (the flagship) | `Base` — the year's Years, Manufacturers and year-wide Sets synced cold in-flow; `Topps`' Variant Types synced; the Base picker CONFIRMED on both sides; the checklist fetched and COMMITTED in-flow through the Match Cards dialog, with BSC's #442 unlinked and then deliberately linked to a SportLots-only card and saved under the SportLots name; any review-wizard names SKIPPED (NOT pre-synced) | `tests/set-selector/checklist-team-leader-cards-pair-and-picked-name-saves.spec.ts` — **sole writer** of the year, not self-cleaning (the run-start reset is its cleanup). ✅ **Approved by Jason 2026-10-13** (NEO-343/NEO-344) — see "Football → 2014 — the NEO-343 team-leader fixture" |
 | Baseball → 1988 → Topps → Topps (BSC's "1988 Topps") | `Base` — the year's Manufacturers and Sets synced cold, Base MAPPED on both sides, the full checklist (BSC's 1988 Topps base, about 792 cards) fetched and SAVED by the SEED, wizard walked (NEO-370; the live count is recorded below after the first seed) | `tests/setup.spec.ts` provisions it; `tests/collection/inventory-bsc-listing-1988-topps-base.spec.ts` is the **sole writer of its BuySportsCards quantities** (it writes no card, player, team or variant of the set). ✅ **Approved by Jason 2026-11-01** (NEO-370) — see "1988 Topps Baseball — the BuySportsCards listing fixture" |
 | Baseball → 1988 → Topps → Topps (the same set, for eBay) | `Base` as above (no new set, no new row) | `tests/collection/inventory-ebay-sandbox-listing-1988-topps-base.spec.ts` is the **sole writer of the eBay SANDBOX seller account's listings** (it writes no card, player, team or variant of the set, and no BuySportsCards quantity). Like the BuySportsCards spec it runs only in the `seller-*` jobs (tag `@marketplace-seller`), one PR at a time repo-wide (NEO-415). **Needs Jason's approval (NEO-415)** — see "1988 Topps Baseball — the eBay sandbox listing fixture" |
+| Football → 2026 → Bowman → Bowman (BSC's "2026 Bowman"; the brand row is hand-made under a SportLots pause) | `Base` — BSC's 200-card base checklist fetched and SAVED in-flow (not by the seed), wizard walked; then `Parallel` › `Chrome` with its Card prefix set to `BCV-` FIRST and its cards BUILT FROM BASE (198 cards, each linked to Chrome's own BSC card by number with the prefix off BSC's). NB's numbers on Chrome stay bare (`#26`, never `#BCV-26`). Built by the spec, NOT pre-synced; the tree stays after a run and a rerun on the same seed adopts it | `tests/collection/inventory-bsc-listing-2026-bowman-chrome-prefix.spec.ts` is the **sole writer** of the set's rows and of the **BuySportsCards quantities** of its `Chrome` cards (it writes no other Football row). Like the 1988 BuySportsCards spec it runs only in the `seller-*` jobs (tag `@marketplace-seller`), one PR at a time repo-wide. ✅ **Offered and approved by Jason (the owner), 2026-11-06** (NEO-458) — see "Football → 2026 → Bowman › Chrome — the BuySportsCards card-prefix listing fixture" |
 
 ### 2024 Topps NHL Sticker Collection — NEO-211, sole-writer ⚠️ SUBSTITUTED, NEEDS SIGN-OFF
 
@@ -1055,6 +1056,39 @@ that set's cards.
 | re-runs | **safe to re-run on the same seed** (the box is minted per attempt; the connection is made and removed each run). The first steps need eBay not connected, which the previous run's hook (or the bootstrap's reseed) guarantees |
 | cron | the 15-minute order poll and re-sync are deliberately NOT exercised; the account is disconnected before the spec ends, so a poll never meets it |
 | measured | **Nothing yet.** Every step runs on the standard 7 s budget (GUIDE hard rule 3), the eBay calls included; there is no raised ceiling, so a sandbox call slower than 7 s is a product finding to report, never a number to raise. **To record after the first run:** the time of each live eBay step (policies read, Set me up, a pick saved, the address saved, Sync to "2 listed", the in-person Sync, the disconnect); whether the sandbox seller already had payment and returns policies (Set me up offered or not); whether the two cards were listed or held back (a missing item detail or a photo rule would show as "held back" with its reason) |
+
+### Football → 2026 → Bowman › Chrome — the BuySportsCards card-prefix listing fixture (NEO-458) ✅ APPROVED by Jason 2026-11-06
+
+`tests/collection/inventory-bsc-listing-2026-bowman-chrome-prefix.spec.ts`
+proves that a card of a parallel whose BuySportsCards numbers carry a prefix
+lists on Sync and is not held back as "numbers this card differently". It is the
+production case the owner reported on 2026 Bowman Chrome: BSC files the cards as
+`2026 Bowman`, parallel `Chrome`, numbered `BCV-<n>` (BCV-26 Dak Prescott,
+BCV-54 Patrick Mahomes II), while NeonBinder holds the same cards bare (`#26`,
+`#54`), because a parallel's cards are a copy of Base's and the prefix is only
+what links them to BSC's. The owner, 2026-11-06: "you just need to set the prefix
+to load the set. This should be easily recreatable in dev/test." He offered this
+set as the fixture, which is the approval this file asks for.
+
+**Why this set.** It is the case, not a stand-in: no hand-made parallel has a BSC
+card id to list, and no other real set whose BSC numbers carry a prefix is
+already in the suite. It is small: the Base checklist is 200 cards and Chrome is
+built from it, so the whole tree is built in-flow inside the standard budgets (no
+raised timeout; the cold drill, the Base fetch and the Chrome build are the
+GUIDE's live-BSC exception, each under its helper's ceiling).
+
+| | |
+| -- | -- |
+| ancestors | `Football → 2026 → Bowman → Bowman` (BSC calls it "2026 Bowman"; NB strips the year). Under a SportLots pause the brand `Bowman` is hand-made by `drillToColdManufacturer` and BSC's year-wide sets are filed under it by name, as for 1988 Topps. With SportLots live the brand is SportLots' own |
+| built by | **the spec**, through the Set Builder: `drillToColdManufacturer` + `drillToBaseVariant`, the Base fetched and saved (the wizard's four unknown players added as new), `Parallel` › `Chrome` selected, **Card prefix `BCV-` saved first**, then "Build from Base". Not the seed: the seed gains nothing, and the spec asserts the numbers it produces are bare |
+| what the SPEC writes | in NB: the set's rows above (additive, left in place), the 200 Base cards and Chrome's 198, and the signed-in user's own rows (the listing state, one minted box `Bsc<token>` emptied and deleted, two box copies, the common price, set and cleared). On BuySportsCards: the quantity (and the price and SKU the drain sends) of **#26 Dak Prescott** and **#54 Patrick Mahomes II** of Chrome, 0 to 1 to 0 |
+| writer | **sole writer among specs** of every row of this tree and of its BSC quantities. It shares the **BuySportsCards seller account** with `inventory-bsc-listing-1988-topps-base` and, like it, starts syncing (`listing=on`) and ends not syncing; both run as worker 8 in the `seller-*` jobs, one after the other, never side by side. No other spec writes Football 2026, Bowman or Chrome (checked 2026-11-06: the Football specs use 2014 or add players by hand). Football's Years column is synced by this spec and by the 2014 team-leader spec: additive and id-keyed, so concurrent syncs add nothing twice |
+| start-clean | `convex/testingSellerCleanup.ts` lists the set (`SELLER_SPEC_SETS`, `parallel: "Chrome"`, `builtBySpec`). The tree is built by the spec, so on a freshly seeded deployment the seller job's start-clean pass finds it absent and **skips it** (logged `seller_cleanup_set_absent`); it zeroes Chrome's sheets when the tree is there (a rerun on the same seed, dev). The spec's own takedown Sync and failure hook are what zero its two rows. A run killed mid-spec can leave #26 and #54 at 1 on BSC until the next run lists them again or its takedown zeroes them |
+| end state | **connected to BSC and NOT syncing, the box deleted, the common price cleared, every other box in-person**, as the 1988 spec |
+| re-runs | **safe to re-run on the same seed**: the build steps adopt a tree already there and assert the same end state (prefix `BCV-`, cards present, numbers bare); the box is minted per attempt |
+| cron | not exercised, as the 1988 spec |
+| measured | **Local, own Convex deployment, 2026-11-06, SportLots paused (the set-building and collector half only: the seller steps were NOT run, see the PR):** the cold drill to the Sets column under a hand-made `Bowman` about 8 s; Base fetched (`Kept all 200 cards from BSC`) 13 s after the press, wizard with four unknown players ("Add remaining players as new", no team or league step), `Saved 200 cards.` 15 s; the Parallel column listed 62 BSC parallels with no dialog; `Build from Base` on `Chrome` with the prefix already saved: `Chrome — Built 198 cards, 2 left off — not on either marketplace's list, 2 on BSC that Base doesn't have`, 4 s. Every step inside the 7 s budget after its helper's own live-sync ceiling. Spec half before the seller steps: 21-32 s on desktop and 23 s on mobile. **To record after the first seller run:** the Sync's steps and the takedown's |
+| live SportLots | **not run**: SportLots is paused. The spec's live branches (the Match Cards dialog on the Base fetch, the Reconcile Parallels dialog on the Parallel column's first visit) follow the seed's pattern and are unrun; the first live run must check them |
 
 ### Topps 206 — the unmapped-Base fixture for `base-mapping-cancel-recovers` (NEO-248) ✅ APPROVED
 

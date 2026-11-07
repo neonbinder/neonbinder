@@ -673,6 +673,59 @@ describe("BuySportsCards", () => {
     await drainScheduled(t);
   });
 
+  // NEO-458: 2026 Bowman Chrome is built by its own spec, in-flow, so the seller
+  // jobs' start-clean pass meets a deployment that does not have it yet.
+  test("a set its spec builds itself is skipped when this deployment has not built it, and the seed's set is still cleared", async () => {
+    const t = await ready();
+    sheet = [row("p1", "bsc-1", COND, 1)];
+    const r = await clear(t);
+    expect(r.bsc).toMatchObject({ outcome: "clean", listed: 1, zeroed: 1 });
+    expect(sheetReads.map((c) => c.condition)).toEqual([...ERA, COND]);
+    expect(logged.filter((l) => l.includes("seller_cleanup_set_absent"))).toHaveLength(1);
+    await drainScheduled(t);
+  });
+
+  test("a built parallel's own row is read and zeroed, after the seed's Base, and never its sibling parallel", async () => {
+    const t = await ready();
+    const slugs = await t.run(async (ctx) => {
+      const add = async (
+        level: "sport" | "year" | "manufacturer" | "setName" | "variantType" | "insert",
+        value: string,
+        parentId?: Id<"selectorOptions">,
+        facets?: Record<string, string>,
+      ) =>
+        await ctx.db.insert("selectorOptions", {
+          level,
+          value,
+          platformData: { bsc: { b0: `slug-${value}-${parentId ?? "root"}` } },
+          ...(facets ? { platformFacets: { bsc: facets } } : {}),
+          isCustom: false,
+          children: [],
+          ...(parentId ? { parentId } : {}),
+          lastUpdated: 0,
+        } as never);
+      const sport = await add("sport", "Football");
+      const year = await add("year", "2026", sport);
+      const brand = await add("manufacturer", "Bowman", year);
+      const set = await add("setName", "Bowman", brand);
+      await add("variantType", "Base", set, { b0: "variant" });
+      const parallels = await add("variantType", "Parallel", set, { b0: "variant" });
+      const chrome = await add("insert", "Chrome", parallels, { b0: "variantName" });
+      await add("insert", "Chrome Aqua Refractor", parallels, { b0: "variantName" });
+      return { chrome: `slug-Chrome-${parallels}`, other: `slug-Chrome Aqua Refractor-${parallels}`, chromeId: chrome };
+    });
+    sheet = [row("p1", "bsc-1", COND, 2)];
+    const r = await clear(t);
+    // Two sets read, each its own sheets one at a time; both zeroed (the stub's sheet answers every read).
+    expect(maxReadsInFlight).toBe(1);
+    expect(r.bsc).toMatchObject({ outcome: "clean", zeroed: 1 });
+    const chromeReads = sheetReads.filter((c) => c.filters.variantName?.[0] === slugs.chrome);
+    expect(chromeReads.length).toBeGreaterThan(0);
+    expect(sheetReads.filter((c) => c.filters.variantName?.[0] === slugs.other)).toEqual([]);
+    expect(sheetReads.filter((c) => c.filters.variant !== undefined && c.filters.variantName === undefined).length).toBeGreaterThan(0);
+    await drainScheduled(t);
+  });
+
   test("a row BSC still shows above 0 after the PUT fails the job", async () => {
     const t = await ready();
     putTakes = false;

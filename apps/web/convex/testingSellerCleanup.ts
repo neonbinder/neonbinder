@@ -70,8 +70,31 @@ import { isPlatformPaused } from "./marketplacePause";
 import { readSheets, type VariantInput } from "./listingDrain";
 import { variantTypeKindFromTitle } from "./variantRole";
 
-/** Every real set the seller specs list on (`playwright/SET-REGISTRY.md`). Both specs share this one. */
-export const SELLER_SPEC_SETS = [{ sport: "Baseball", year: "1988", manufacturer: "Topps", setName: "Topps" }] as const;
+/**
+ * A real set a seller spec lists on. Its cards are in the set's Base, or, with
+ * `parallel`, in that parallel of the set's Parallel type.
+ */
+export type SellerSpecSet = {
+  sport: string;
+  year: string;
+  manufacturer: string;
+  setName: string;
+  /** The parallel (a row of the set's Parallel type) that holds the cards, instead of Base. */
+  parallel?: string;
+  /**
+   * The spec builds this set itself, in-flow, so a deployment the seed just reset
+   * does not have it yet: absent is skipped, never a failure. (A set the seed
+   * provisions stays fail-closed: its absence means the seed did not run.)
+   */
+  builtBySpec?: boolean;
+};
+
+/** Every real set the seller specs list on (`playwright/SET-REGISTRY.md`). Both 1988 Topps specs share the first. */
+export const SELLER_SPEC_SETS: readonly SellerSpecSet[] = [
+  { sport: "Baseball", year: "1988", manufacturer: "Topps", setName: "Topps" },
+  // NEO-458: 2026 Bowman Chrome, whose BSC numbers carry a `BCV-` prefix NB's do not.
+  { sport: "Football", year: "2026", manufacturer: "Bowman", setName: "Bowman", parallel: "Chrome", builtBySpec: true },
+];
 
 /** Whose sign-ins this holds while it works. Clerk's id shape; no Clerk user has it. */
 const CLEANUP_OWNER = "user_e2esellercleanup";
@@ -89,13 +112,23 @@ const EBAY_BUDGET_MS = 5 * 60 * 1000;
 /** Before the one retry of a 503'd first sheet read: a guess at long enough that the retry won't overlap anything that 503 left running at BSC. */
 export const BSC_FIRST_READ_RETRY_PAUSE_MS = 10_000;
 
-/** The Base variant of one set the specs list, or null when the chain isn't there exactly once. */
-export const baseVariantOf = internalQuery({
-  args: { sport: v.string(), year: v.string(), manufacturer: v.string(), setName: v.string() },
+/**
+ * The row of one set the specs list that holds its cards: the set's Base, or
+ * with `parallel` that parallel of its Parallel type. Null when the chain isn't
+ * there exactly once.
+ */
+export const variantOf = internalQuery({
+  args: {
+    sport: v.string(),
+    year: v.string(),
+    manufacturer: v.string(),
+    setName: v.string(),
+    parallel: v.optional(v.string()),
+  },
   returns: v.union(v.id("selectorOptions"), v.null()),
   handler: async (ctx, args): Promise<Id<"selectorOptions"> | null> => {
     const childNamed = async (
-      level: "sport" | "year" | "manufacturer" | "setName" | "variantType",
+      level: "sport" | "year" | "manufacturer" | "setName" | "variantType" | "insert",
       parentId: Id<"selectorOptions"> | undefined,
       matches: (value: string) => boolean,
     ): Promise<Id<"selectorOptions"> | null> => {
@@ -115,7 +148,13 @@ export const baseVariantOf = internalQuery({
     if (!brandId) return null;
     const setId = await childNamed("setName", brandId, (value) => value === args.setName);
     if (!setId) return null;
-    return await childNamed("variantType", setId, (value) => variantTypeKindFromTitle(value) === "base");
+    const { parallel } = args;
+    if (parallel === undefined) {
+      return await childNamed("variantType", setId, (value) => variantTypeKindFromTitle(value) === "base");
+    }
+    const typeId = await childNamed("variantType", setId, (value) => variantTypeKindFromTitle(value) === "parallel");
+    if (!typeId) return null;
+    return await childNamed("insert", typeId, (value) => value === parallel);
   },
 });
 
@@ -344,15 +383,23 @@ async function clearBsc(ctx: ActionCtx): Promise<BscReport> {
 
   // Every set's scope first: a set that can't be found signs in to nothing.
   const inputs: Array<Extract<VariantInput, { kind: "ok" }>> = [];
-  for (const set of SELLER_SPEC_SETS) {
-    const name = `${set.year} ${set.manufacturer} ${set.setName}`;
-    const variantId: Id<"selectorOptions"> | null = await ctx.runQuery(internal.testingSellerCleanup.baseVariantOf, { ...set });
-    if (!variantId) throw new Error(`no ${name} Base on this deployment: did the seed run?`);
+  for (const { builtBySpec, ...scope } of SELLER_SPEC_SETS) {
+    const where = scope.parallel === undefined ? "Base" : scope.parallel;
+    const name = `${scope.year} ${scope.manufacturer} ${scope.setName}`;
+    const variantId: Id<"selectorOptions"> | null = await ctx.runQuery(internal.testingSellerCleanup.variantOf, scope);
+    if (!variantId) {
+      // Built by its spec and not built yet on this deployment: nothing of it to clear here.
+      if (builtBySpec) {
+        console.log(JSON.stringify({ msg: "seller_cleanup_set_absent", platform: "bsc", operation: "clearSellerAccounts" }));
+        continue;
+      }
+      throw new Error(`no ${name} ${where} on this deployment: did the seed run?`);
+    }
     const input: VariantInput = await ctx.runQuery(internal.listingDrain.variantSyncInput, {
       ownerId: CLEANUP_OWNER,
       variantId,
     });
-    if (input.kind !== "ok") throw new Error(`${name} Base has no BuySportsCards scope (${input.kind})`);
+    if (input.kind !== "ok") throw new Error(`${name} ${where} has no BuySportsCards scope (${input.kind})`);
     inputs.push(input);
   }
 
