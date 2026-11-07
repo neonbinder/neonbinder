@@ -4842,3 +4842,242 @@ describe("commitCardChecklist prelude: the fetch's stored name answers (NEO-402)
     expect(await records(t)).toHaveLength(0);
   });
 });
+
+// ===========================================================================
+// NEO-424 — the commit honours what the gate decided from set history
+// ===========================================================================
+
+describe("NEO-424: commitCardChecklist honours a set-history auto-link (D5)", () => {
+  /** Baseball set, a Football sport, a football Bo Jackson and a baseball one. */
+  async function world(t: ReturnType<typeof convexTest>) {
+    const base = await seedVariantTypeUnderChromeSet(t);
+    const football = await t.run(async (ctx) =>
+      ctx.db.insert("selectorOptions", {
+        level: "sport",
+        value: "Football",
+        platformData: {},
+        children: [],
+        lastUpdated: Date.now(),
+      }),
+    );
+    const boFootball = await insertBarePlayer(t, football, "Bo Jackson", normalizePlayerName("Bo Jackson"));
+    const boBaseball = await insertBarePlayer(t, base.sportId, "Bo Jackson", normalizePlayerName("Bo Jackson"));
+    return { ...base, football, boFootball, boBaseball };
+  }
+
+  const commit = (
+    t: ReturnType<typeof convexTest>,
+    w: { variantTypeId: Id<"selectorOptions">; sportId: Id<"selectorOptions"> },
+    cards: ReturnType<typeof makeCard>[],
+    batchId = "batch-424",
+  ) =>
+    t.withIdentity(ADMIN_IDENTITY).action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: w.variantTypeId,
+      sportId: w.sportId,
+      cards,
+      batchId,
+    });
+
+  test("a cross-sport auto-link beats the exactly-one in-sport match and writes nothing to playerSports", async () => {
+    const t = convexTest(schema, modules);
+    const w = await world(t);
+    await insertReviewRow(t, {
+      selectorOptionId: w.variantTypeId,
+      sportId: w.football,
+      batchId: "batch-424",
+      kind: "player",
+      name: "Bo Jackson",
+      decision: { action: "link", linkedPlayerId: w.boFootball, autoLinked: "setHistory" } as never,
+    });
+
+    const result = await commit(t, w, [makeCard({ players: ["Bo Jackson"] })]);
+
+    expect(result.unreviewedNameCount ?? 0).toBe(0);
+    const [card] = await readCards(t, w.variantTypeId);
+    expect(card.playerIds).toEqual([w.boFootball]);
+    expect(card.playerLinks).toEqual([{ playerId: w.boFootball, nameOnCard: "Bo Jackson" }]);
+    expect(await t.run((ctx) => ctx.db.query("playerSports").collect())).toEqual([]);
+    expect(await t.run((ctx) => ctx.db.query("players").collect())).toHaveLength(2);
+  });
+
+  test("without a decision the one in-sport match is still adopted silently (the fast path is intact)", async () => {
+    const t = convexTest(schema, modules);
+    const w = await world(t);
+
+    await t.withIdentity(ADMIN_IDENTITY).action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: w.variantTypeId,
+      sportId: w.sportId,
+      cards: [makeCard({ players: ["Bo Jackson"] })],
+    });
+
+    expect((await readCards(t, w.variantTypeId))[0].playerIds).toEqual([w.boBaseball]);
+  });
+
+  test("a skip decision beats the exactly-one match: the card keeps the raw name", async () => {
+    const t = convexTest(schema, modules);
+    const w = await world(t);
+    await insertReviewRow(t, {
+      selectorOptionId: w.variantTypeId,
+      sportId: w.sportId,
+      batchId: "batch-424",
+      kind: "player",
+      name: "Bo Jackson",
+      decision: { action: "skip" },
+    });
+
+    await commit(t, w, [makeCard({ players: ["Bo Jackson"] })]);
+
+    const [card] = await readCards(t, w.variantTypeId);
+    expect(card.playerIds ?? []).toEqual([]);
+  });
+
+  test("a link decision to the OTHER sport's player beats the one match, with the operator's own pick too", async () => {
+    const t = convexTest(schema, modules);
+    const w = await world(t);
+    await insertReviewRow(t, {
+      selectorOptionId: w.variantTypeId,
+      sportId: w.football,
+      batchId: "batch-424",
+      kind: "player",
+      name: "Bo Jackson",
+      decision: { action: "link", linkedPlayerId: w.boFootball },
+    });
+
+    await commit(t, w, [makeCard({ players: ["Bo Jackson"] })]);
+
+    expect((await readCards(t, w.variantTypeId))[0].playerIds).toEqual([w.boFootball]);
+  });
+
+  test("a create after Change is honoured when the single match was a candidate the operator saw", async () => {
+    const t = convexTest(schema, modules);
+    const w = await world(t);
+    await t.run((ctx) => ctx.db.delete(w.boFootball));
+    await insertReviewRow(t, {
+      selectorOptionId: w.variantTypeId,
+      sportId: w.sportId,
+      batchId: "batch-424",
+      kind: "player",
+      name: "Bo Jackson",
+      decision: { action: "create" },
+      enrichment: {
+        wikidataId: "Q999",
+        existingCandidates: [
+          { playerId: w.boBaseball, name: "Bo Jackson", careerSummary: "" },
+        ],
+      },
+    });
+
+    await commit(t, w, [makeCard({ players: ["Bo Jackson"] })]);
+
+    const players = await t.run((ctx) => ctx.db.query("players").collect());
+    expect(players).toHaveLength(2);
+    const created = players.find((p) => p.externalIds?.wikidataId === "Q999")!;
+    expect((await readCards(t, w.variantTypeId))[0].playerIds).toEqual([created._id]);
+  });
+
+  test("a create is NOT honoured when the single match was never shown: it is adopted, no duplicate", async () => {
+    const t = convexTest(schema, modules);
+    const w = await world(t);
+    await t.run((ctx) => ctx.db.delete(w.boFootball));
+    await insertReviewRow(t, {
+      selectorOptionId: w.variantTypeId,
+      sportId: w.sportId,
+      batchId: "batch-424",
+      kind: "player",
+      name: "Bo Jackson",
+      decision: { action: "create" },
+      enrichment: { wikidataId: "Q999" },
+    });
+
+    await commit(t, w, [makeCard({ players: ["Bo Jackson"] })]);
+
+    expect(await t.run((ctx) => ctx.db.query("players").collect())).toHaveLength(1);
+    expect((await readCards(t, w.variantTypeId))[0].playerIds).toEqual([w.boBaseball]);
+  });
+
+  test("a player deleted between the gate and the commit leaves the name unreviewed, never the baseball namesake", async () => {
+    const t = convexTest(schema, modules);
+    const w = await world(t);
+    await insertReviewRow(t, {
+      selectorOptionId: w.variantTypeId,
+      sportId: w.football,
+      batchId: "batch-424",
+      kind: "player",
+      name: "Bo Jackson",
+      decision: { action: "link", linkedPlayerId: w.boFootball, autoLinked: "setHistory" } as never,
+    });
+    await t.run((ctx) => ctx.db.delete(w.boFootball));
+
+    const result = await commit(t, w, [makeCard({ players: ["Bo Jackson"] })]);
+
+    expect(result.success).toBe(true);
+    expect(result.unreviewedNameCount).toBe(1);
+    const [card] = await readCards(t, w.variantTypeId);
+    expect(card.playerIds ?? []).toEqual([]);
+    expect(card.pendingPlayerNames).toContain("Bo Jackson");
+  });
+
+  test("a card with two players commits the auto-linked one cross-sport and the other normally", async () => {
+    const t = convexTest(schema, modules);
+    const w = await world(t);
+    const trout = await insertBarePlayer(t, w.sportId, "Mike Trout", normalizePlayerName("Mike Trout"));
+    await insertReviewRow(t, {
+      selectorOptionId: w.variantTypeId,
+      sportId: w.football,
+      batchId: "batch-424",
+      kind: "player",
+      name: "Bo Jackson",
+      decision: { action: "link", linkedPlayerId: w.boFootball, autoLinked: "setHistory" } as never,
+    });
+
+    await commit(t, w, [makeCard({ players: ["Bo Jackson", "Mike Trout"] })]);
+
+    expect((await readCards(t, w.variantTypeId))[0].playerIds).toEqual([w.boFootball, trout]);
+  });
+
+  test("the decision is found under any spelling that normalises the same ('Jackson, Bo', diacritics)", async () => {
+    const t = convexTest(schema, modules);
+    const w = await world(t);
+    const jose = await insertBarePlayer(t, w.football, "José Ramírez", normalizePlayerName("José Ramírez"));
+    await insertBarePlayer(t, w.sportId, "Jose Ramirez", normalizePlayerName("Jose Ramirez"));
+    await insertReviewRow(t, {
+      selectorOptionId: w.variantTypeId,
+      sportId: w.football,
+      batchId: "batch-424",
+      kind: "player",
+      name: "José Ramírez",
+      decision: { action: "link", linkedPlayerId: jose, autoLinked: "setHistory" } as never,
+    });
+
+    await commit(t, w, [makeCard({ players: ["Jose Ramirez"] })]);
+
+    expect((await readCards(t, w.variantTypeId))[0].playerIds).toEqual([jose]);
+  });
+
+  test("a team history link commits to that team and mints none", async () => {
+    const t = convexTest(schema, modules);
+    const w = await world(t);
+    const raiders = await t.run((ctx) =>
+      ctx.db.insert("teams", {
+        location: "Oakland",
+        name: "Raiders",
+        nameNormalized: normalizeTeamName("Oakland Raiders"),
+        sportId: w.football,
+        lastUpdated: Date.now(),
+      }),
+    );
+    await insertReviewRow(t, {
+      selectorOptionId: w.variantTypeId,
+      sportId: w.football,
+      batchId: "batch-424",
+      kind: "team",
+      name: "Oakland Raiders",
+      decision: { action: "link", linkedTeamId: raiders, autoLinked: "setHistory" } as never,
+    });
+
+    await commit(t, w, [makeCard({ teams: ["Oakland Raiders"] })]);
+
+    expect((await readCards(t, w.variantTypeId))[0].teamOnCardIds).toEqual([raiders]);
+    expect(await t.run((ctx) => ctx.db.query("teams").collect())).toHaveLength(1);
+  });
+});
