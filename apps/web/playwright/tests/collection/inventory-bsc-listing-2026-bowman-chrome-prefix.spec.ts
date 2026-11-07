@@ -9,9 +9,11 @@
 //      off BSC's). NB's own numbers stay bare: `#26`, never `#BCV-26`. That is the
 //      shape the fix is about (a bare NB number against a prefixed BSC one), so the
 //      spec asserts it and cannot silently stop testing it.
-//   2. A collector makes a box, stocks one copy each of #26 Dak Prescott and #54
-//      Patrick Mahomes II (BSC's BCV-26 and BCV-54, the cards the owner named),
-//      puts a common price on the checklist, starts syncing and presses Sync.
+//   2. A collector makes a box, puts a common price on the checklist, starts
+//      syncing, stocks one copy each of #26 Dak Prescott and #54 Patrick Mahomes
+//      II (BSC's BCV-26 and BCV-54, the cards the owner named) and presses Sync.
+//      The price comes before listing starts: a price set while listing queues
+//      the variant's first card as a wake row, a third entry on Sync status.
 //      Sync status reads the set listed, 2 listed, with nothing held back and no
 //      "numbers this card differently" line.
 //   3. They take both back to 0 and Sync again: both are taken off BSC.
@@ -409,7 +411,22 @@ test(
     await expect(boxSpine(0)).toBeVisible();
     await putOtherBoxesInPerson(page, boxName);
 
-    // --- 3. Start syncing, as a real save does: the sign-in goes and comes back with listing on ---
+    // --- 3. The common price, BEFORE syncing starts ---
+    // A price set while listing queues the variant's first card as a wake row on
+    // Sync status (NEO-415), a third queued card. Listing is off here, so none is.
+    // The listing gate also wants it: a listed box is stocked only with a price on its cards.
+    await page.goto("/inventory?tab=checklists");
+    await expect(page.getByRole("heading", { level: 1, name: "Inventory" })).toBeVisible({ timeout: LAUNCH_GATE });
+    const priceChecklist = await drillToChrome(page);
+    await priceChecklist.getByRole("button", { name: `Set a common price for ${TITLE}`, exact: true }).click();
+    const priceField = priceChecklist.getByRole("textbox", { name: "Common price", exact: true });
+    await expect(priceField).toBeFocused();
+    await priceField.fill(PRICE);
+    await page.keyboard.press("Enter");
+    await expect(said(`Common price for ${TITLE} is ${PRICE_SHOWN}`)).toBeVisible();
+    written.priced = true;
+
+    // --- 4. Start syncing, as a real save does: the sign-in goes and comes back with listing on ---
     await page.goto("/profile/credentials");
     await expect(page.getByRole("heading", { name: "Profile Settings" })).toBeVisible({ timeout: LAUNCH_GATE });
     await expect(page.getByText(`Connected to ${BSC}`)).toBeVisible();
@@ -423,7 +440,7 @@ test(
     await expect(listing.getByRole("status")).toHaveText(new RegExp(`^Listing your boxes on ${BSC} since .+\\.$`));
     await expectAccessible(page, { label: "Profile, BuySportsCards credentials, listing since" });
 
-    // --- 4. The Chrome checklist: bare numbers, a common price, one copy each of the two cards ---
+    // --- 5. The Chrome checklist: bare numbers, one copy each of the two cards ---
     await page.goto("/inventory?tab=checklists");
     await expect(page.getByRole("heading", { level: 1, name: "Inventory" })).toBeVisible({ timeout: LAUNCH_GATE });
     const checklist = await drillToChrome(page);
@@ -448,15 +465,6 @@ test(
     await expect(boxList.getByRole("textbox").first()).toBeVisible();
     await expectAccessible(page, { label: "Checklist, Chrome with the quantity list for the box" });
 
-    // The listing gate: a listed box is stocked only with a price on its cards.
-    await checklist.getByRole("button", { name: `Set a common price for ${TITLE}`, exact: true }).click();
-    const priceField = checklist.getByRole("textbox", { name: "Common price", exact: true });
-    await expect(priceField).toBeFocused();
-    await priceField.fill(PRICE);
-    await page.keyboard.press("Enter");
-    await expect(said(`Common price for ${TITLE} is ${PRICE_SHOWN}`)).toBeVisible();
-    written.priced = true;
-
     // One copy of each into the box.
     for (const [short, word] of [
       [CARD_A, "Dak Prescott"],
@@ -476,7 +484,7 @@ test(
     }
     await search.fill("");
 
-    // --- 5. Before Sync: Sync status queues the two cards ----------------------------
+    // --- 6. Before Sync: Sync status queues the two cards ----------------------------
     await tabs.getByRole("link", { name: "Sync status", exact: true }).click();
     await expect(page).toHaveURL(/[?&]tab=sync/);
     const { platform, row } = syncStatus(page);
@@ -499,7 +507,7 @@ test(
     await expect(quantityField(boxList, CARD_A, boxName)).toHaveValue("1");
     await search.fill("");
 
-    // --- 6. Sync: BSC takes both, nothing is held back -------------------------------
+    // --- 7. Sync: BSC takes both, nothing is held back -------------------------------
     await sync.click();
     await expect(said(`Syncing ${TITLE} now. Watch it on Sync status.`)).toBeVisible();
     await tabs.getByRole("link", { name: "Sync status", exact: true }).click();
@@ -529,7 +537,7 @@ test(
     await expect(row.getByText(/skipped/)).toHaveCount(0);
     await expectAccessible(page, { label: "Inventory Sync status, 2 Chrome cards listed, none held back" });
 
-    // --- 7. Take both back to 0 and Sync: BSC loses them (the rows are NB's zero again) ---
+    // --- 8. Take both back to 0 and Sync: BSC loses them (the rows are NB's zero again) ---
     await page.goBack();
     await expect(page).toHaveURL(/[?&]tab=checklists/);
     await expect(checklist.getByRole("heading", { level: 3, name: TITLE })).toBeVisible();
@@ -565,7 +573,7 @@ test(
     await expect(boxes.getByRole("button", { name: new RegExp(`^${escapeRegExp(boxName)},`) })).toHaveCount(0);
     written.box = undefined;
 
-    // --- 8. Stop listing: the sign-in goes and comes back not syncing ----------------
+    // --- 9. Stop listing: the sign-in goes and comes back not syncing ----------------
     await stopListing(page);
     written.stopped = true;
   },
