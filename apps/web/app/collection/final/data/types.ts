@@ -1200,6 +1200,8 @@ export interface MoveResult {
 export interface QuantityResult {
   before: number;
   after: number;
+  /** A line with photos went with the count; the Undo brings them back. */
+  tookPhotos?: boolean;
   /** Puts exactly the lines the write touched back as they were. */
   undo: Undo;
 }

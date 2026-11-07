@@ -1,29 +1,42 @@
 /**
- * NEO-377 — a copy line's photos, inside the line's Edit form: the front and
- * the back side by side, each with Add (or Replace) and Remove. A photo
- * opens full size in a new tab. Photos save as soon as they are picked; the
- * form's Save and Cancel are for the rest of the line.
+ * NEO-377, NEO-431 — the one photo box: the front and the back side by side,
+ * each with Add (or Replace) and Remove. A saved photo opens full size in a new
+ * tab; a held one is only on this page, so it has no link. Three places show it: a line's Edit form, the drawer's Add form and Request
+ * a card. It looks and behaves the same in all three; what differs is when a
+ * photo saves.
+ *
+ * - `CopyPhotosField` (live): there is a copy to save against, so a photo saves
+ *   as soon as it is picked. The form's Save and Cancel are for the rest of the
+ *   line. The file is resized in the browser (`resizeCopyPhoto`); only the
+ *   listing-sized copy and a thumbnail are saved.
+ * - `HeldPhotosField` (held): nothing to save against yet, so the picked files
+ *   wait in the parent's state, shown from object URLs, and nothing uploads
+ *   until the parent's form is submitted.
  *
  * Drag and drop: drop photo files on the box (the first is the front, the
  * second the back) or on one side to put it there; drag one photo onto the
  * other to swap them. Swap front and back does the same from the keyboard.
- *
- * The file the collector picks is resized in the browser
- * (`resizeCopyPhoto`); only the listing-sized copy and a thumbnail are saved.
  */
 
-import { useId, useRef, useState, type DragEvent } from "react";
+import { useEffect, useId, useRef, useState, type DragEvent } from "react";
 import { PhotoIcon } from "@heroicons/react/24/outline";
 import { COPY_PHOTO_ACCEPT } from "@/lib/collection/copy-photo-resize";
 import { QUIET_BUTTON } from "../prototypes/p1/ui";
 import { writeErrorMessage, type CopyPhotosExtension } from "./data/store";
 import type { Copy, CopyPhotos, PhotoSide } from "./data/types";
 
-const SIDES: readonly PhotoSide[] = ["front", "back"];
+export const PHOTO_SIDES: readonly PhotoSide[] = ["front", "back"];
 const SIDE_WORD: Record<PhotoSide, string> = { front: "Front", back: "Back" };
 const DIMMED = "aria-disabled:cursor-not-allowed aria-disabled:opacity-60";
+const TILE_IMAGE = "aspect-[5/7] w-full rounded-sm border border-rule object-contain text-xs text-ink-3";
 /** The drag payload of one photo tile, so a drop can tell a swap from a file. */
 const SIDE_DRAG = "application/x-neonbinder-photo-side";
+const NOT_A_PHOTO = "Only photos can be added here.";
+/** What a drop lets through. An empty type is a file the browser can't name: a later step decides. */
+const looksLikePhoto = (file: File) => file.type.startsWith("image/") || file.type === "";
+const HOLDABLE_TYPES = new Set(COPY_PHOTO_ACCEPT.split(","));
+/** What the box holds by default: the types a photo can be saved from, or a type the browser can't name. */
+const notHoldable = (file: File) => (file.type === "" || HOLDABLE_TYPES.has(file.type) ? null : NOT_A_PHOTO);
 
 /** A line's front thumbnail beside its words, when it has one. */
 export function LineThumb({ photos, line }: { photos: CopyPhotos | undefined; line: string }) {
@@ -50,63 +63,78 @@ export function sidesForDrop(count: number, onto: PhotoSide | null, photos: Copy
   return ["front", "back"];
 }
 
-export default function CopyPhotosField({
-  copy,
+interface PickedPhoto {
+  side: PhotoSide;
+  file: File;
+}
+
+/**
+ * The box itself: what it shows and what the collector can do, with no opinion
+ * on when a photo saves. The two wrappers below supply that.
+ */
+function PhotosBox({
+  boxId,
   line,
   photos,
-  ext,
+  accept,
+  help,
+  busy,
+  status,
+  error,
+  ownAlert = true,
+  openFullSize,
+  className = "mt-4",
+  onPut,
+  onRemove,
+  onSwap,
+  onRefuse,
 }: {
-  copy: Copy;
-  /** The line's name ("Raw, Mint ×3"), for the photos' names. */
+  /** This box, in a drag's payload: a photo dragged from any other box does nothing here. */
+  boxId: string;
+  /** What the photos are of ("Raw, Mint ×3"), for their names. */
   line: string;
   photos: CopyPhotos | undefined;
-  ext: CopyPhotosExtension;
+  /** The file picker's types. Each caller keeps its own. */
+  accept: string;
+  /** The help line's first sentence: when these photos save. */
+  help: string;
+  busy: boolean;
+  status: string;
+  error: string | null;
+  /** False when the form has its own alert and `onRefuse` goes there: nothing would ever be said in this one. */
+  ownAlert?: boolean;
+  /** A photo's tile links to the full size. Only a saved photo has an address worth opening. */
+  openFullSize: boolean;
+  className?: string;
+  onPut: (picked: readonly PickedPhoto[]) => void;
+  /** `done` parks the keyboard: Remove unmounts itself. */
+  onRemove: (side: PhotoSide, done: () => void) => void;
+  onSwap: () => void;
+  /** Says why a file or a move was turned away. */
+  onRefuse: (message: string) => void;
 }) {
   const headingId = useId();
   const helpId = useId();
-  const [busy, setBusy] = useState(false);
-  const [status, setStatus] = useState("");
-  const [error, setError] = useState<string | null>(null);
   const [over, setOver] = useState<PhotoSide | "box" | null>(null);
   const inputs = useRef<Record<PhotoSide, HTMLInputElement | null>>({ front: null, back: null });
   const addRefs = useRef<Record<PhotoSide, HTMLButtonElement | null>>({ front: null, back: null });
   const hasAny = !!(photos?.front || photos?.back);
 
-  const run = async (doing: string, done: string, work: () => Promise<void>, after?: () => void) => {
-    setBusy(true);
-    setError(null);
-    setStatus(doing);
-    try {
-      await work();
-      setStatus(done);
-    } catch (e) {
-      setStatus("");
-      setError(writeErrorMessage(e));
-    } finally {
-      setBusy(false);
-      after?.();
-    }
-  };
-
-  /** Save these files to these sides, one after the other. */
+  /** These files on these sides. */
   const put = (files: readonly File[], sides: readonly PhotoSide[]) => {
-    const pairs = sides.slice(0, files.length).map((side, i) => ({ side, file: files[i] }));
-    if (pairs.length === 0) return;
+    const picked = sides.slice(0, files.length).map((side, i) => ({ side, file: files[i] }));
+    if (picked.length === 0) return;
     if (busy) {
       // Never drop a photo silently.
-      setError("Still saving the last photo. Add this one again in a moment.");
+      onRefuse("Still saving the last photo. Add this one again in a moment.");
       return;
     }
-    const words = pairs.map((p) => p.side).join(" and ");
-    const saved = pairs.length > 1 ? "Front and back photos saved." : `${SIDE_WORD[pairs[0].side]} photo saved.`;
-    void run(`Saving the ${words} photo${pairs.length > 1 ? "s" : ""}…`, saved, async () => {
-      for (const p of pairs) await ext.addPhoto(copy, p.side, p.file);
-    });
+    onPut(picked);
   };
 
   const swap = () => {
     if (busy || !hasAny) return;
-    void run("Swapping the photos…", "Front and back swapped.", () => ext.swapPhotos(copy));
+    onSwap();
   };
 
   const dragOver = (e: DragEvent, target: PhotoSide | "box") => {
@@ -127,18 +155,18 @@ export default function CopyPhotosField({
     setOver(null);
     const dragged = e.dataTransfer.getData(SIDE_DRAG);
     if (dragged) {
-      // Only a photo of THIS line swaps; one dragged from another line does nothing.
-      const [fromCopy, from] = dragged.split("|");
-      if (fromCopy === copy.id && target !== "box" && from !== target) {
-        if (busy) setError("Still saving the last photo. Swap them again in a moment.");
+      // Only a photo of THIS box swaps; one dragged from another line does nothing.
+      const [fromBox, from] = dragged.split("|");
+      if (fromBox === boxId && target !== "box" && from !== target) {
+        if (busy) onRefuse("Still saving the last photo. Swap them again in a moment.");
         else swap();
       }
       return;
     }
     const dropped = Array.from(e.dataTransfer.files);
-    const files = dropped.filter((f) => f.type.startsWith("image/") || f.type === "");
+    const files = dropped.filter(looksLikePhoto);
     if (files.length === 0) {
-      if (dropped.length > 0) setError("Only photos can be added here.");
+      if (dropped.length > 0) onRefuse(NOT_A_PHOTO);
       return;
     }
     // Never drop a file silently: say what was left out, then save the rest.
@@ -149,8 +177,20 @@ export default function CopyPhotosField({
           ? "Two photos at most, the front and the back; the others were left out."
           : null;
     put(files, sidesForDrop(files.length, target === "box" ? null : target, photos));
-    if (skipped && !busy) setError(skipped);
+    if (skipped && !busy) onRefuse(skipped);
   };
+
+  /** A photo's tile, dragged onto the other side to swap them. */
+  const dragTile = (side: PhotoSide) => ({
+    draggable: true,
+    onDragStart: (e: DragEvent) => {
+      // Not the photo's own address: its URL never leaves the page in a drag.
+      e.dataTransfer.clearData();
+      e.dataTransfer.setData(SIDE_DRAG, `${boxId}|${side}`);
+      e.dataTransfer.effectAllowed = "move";
+    },
+    onDragEnd: () => setOver(null),
+  });
 
   return (
     <section
@@ -161,16 +201,16 @@ export default function CopyPhotosField({
         if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setOver(null);
       }}
       onDrop={(e) => drop(e, "box")}
-      className={`mt-4 rounded-md p-3 ${
+      className={`${className} rounded-md p-3 ${
         over !== null ? "border-2 border-solid border-selection bg-pick-blue/20" : "border border-dashed border-control"
       }`}
-      data-copy-photos-field={copy.id}
+      data-copy-photos-field={boxId}
     >
       <h3 id={headingId} className="text-sm font-semibold text-ink">
-        Photos
+        Photos<span className="sr-only"> of {line}</span>
       </h3>
       <p id={helpId} className="mt-0.5 text-xs text-ink-3">
-        Saved as soon as you add them.
+        {help}
         {/* Dragging is a pointer's: on a touch screen, Add and Swap do it. */}
         <span className="[@media(pointer:coarse)]:hidden">
           {" "}
@@ -178,7 +218,7 @@ export default function CopyPhotosField({
         </span>
       </p>
       <div className="mt-2 grid max-w-xs grid-cols-2 gap-3">
-        {SIDES.map((side) => {
+        {PHOTO_SIDES.map((side) => {
           const shown = photos?.[side];
           const word = SIDE_WORD[side];
           return (
@@ -190,19 +230,12 @@ export default function CopyPhotosField({
               data-copy-photo-side={side}
             >
               <p className="text-xs text-ink-3">{word}</p>
-              {shown ? (
+              {shown && openFullSize ? (
                 <a
                   href={shown.imageUrl}
                   target="_blank"
                   rel="noopener noreferrer"
-                  draggable
-                  onDragStart={(e) => {
-                    // Not the link's own address: the photo URL never leaves the page in a drag.
-                    e.dataTransfer.clearData();
-                    e.dataTransfer.setData(SIDE_DRAG, `${copy.id}|${side}`);
-                    e.dataTransfer.effectAllowed = "move";
-                  }}
-                  onDragEnd={() => setOver(null)}
+                  {...dragTile(side)}
                   className={`mt-1 block cursor-grab rounded-sm focus-outline ${
                     over === side ? "ring-4 ring-selection" : ""
                   }`}
@@ -210,12 +243,26 @@ export default function CopyPhotosField({
                 >
                   <img
                     src={shown.thumbUrl}
-                    alt=""
+                    // The link names it. This is for a picture the browser can't draw (a HEIC off Safari).
+                    alt={`${word} side`}
                     draggable={false}
-                    className="aspect-[5/7] w-full rounded-sm border border-rule object-contain"
+                    className={TILE_IMAGE}
                     decoding="async"
                   />
                 </a>
+              ) : shown ? (
+                <div
+                  {...dragTile(side)}
+                  className={`mt-1 cursor-grab rounded-sm ${over === side ? "ring-4 ring-selection" : ""}`}
+                >
+                  <img
+                    src={shown.thumbUrl}
+                    alt={`${word} of ${line}`}
+                    draggable={false}
+                    className={TILE_IMAGE}
+                    decoding="async"
+                  />
+                </div>
               ) : (
                 <div
                   className={`mt-1 flex aspect-[5/7] w-full items-center justify-center rounded-sm border border-dashed text-ink-3 ${
@@ -231,7 +278,7 @@ export default function CopyPhotosField({
                   inputs.current[side] = el;
                 }}
                 type="file"
-                accept={COPY_PHOTO_ACCEPT}
+                accept={accept}
                 className="sr-only"
                 // The Add / Replace button opens it; it stays out of the Tab order.
                 tabIndex={-1}
@@ -251,6 +298,7 @@ export default function CopyPhotosField({
                   type="button"
                   className={`${QUIET_BUTTON} ${DIMMED} max-sm:min-h-11`}
                   aria-disabled={busy || undefined}
+                  data-copy-photo-add={side}
                   onClick={() => {
                     if (!busy) inputs.current[side]?.click();
                   }}
@@ -264,13 +312,7 @@ export default function CopyPhotosField({
                     aria-disabled={busy || undefined}
                     onClick={() => {
                       if (busy) return;
-                      void run(
-                        `Removing the ${side} photo…`,
-                        `${word} photo removed.`,
-                        () => ext.removePhoto(copy, side),
-                        // Remove unmounts itself; park the keyboard on Add.
-                        () => addRefs.current[side]?.focus(),
-                      );
+                      onRemove(side, () => addRefs.current[side]?.focus());
                     }}
                   >
                     Remove {side}
@@ -294,11 +336,176 @@ export default function CopyPhotosField({
       <p className="mt-2 text-xs text-ink-3" role="status">
         {status}
       </p>
-      {error && (
-        <p className="mt-1 text-xs text-neon-pink-text" role="alert">
-          {error}
+      {/* Mounted from the start, so a screen reader announces what lands in it. */}
+      {ownAlert && (
+        <p className="mt-1 min-h-4 text-xs text-neon-pink-text" role="alert">
+          {error ?? ""}
         </p>
       )}
     </section>
+  );
+}
+
+/** Live: an existing copy's photos, each saved as soon as it is picked. */
+export default function CopyPhotosField({
+  copy,
+  line,
+  photos,
+  ext,
+  initialError,
+}: {
+  copy: Copy;
+  /** The line's name ("Raw, Mint ×3"), for the photos' names. */
+  line: string;
+  photos: CopyPhotos | undefined;
+  ext: CopyPhotosExtension;
+  /** Shown when the field opens: a photo that failed on the way in with the copy. */
+  initialError?: string;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState("");
+  const [error, setError] = useState<string | null>(initialError ?? null);
+
+  const run = async (doing: string, done: string, work: () => Promise<void>, after?: () => void) => {
+    setBusy(true);
+    setError(null);
+    setStatus(doing);
+    try {
+      await work();
+      setStatus(done);
+    } catch (e) {
+      setStatus("");
+      setError(writeErrorMessage(e));
+    } finally {
+      setBusy(false);
+      after?.();
+    }
+  };
+
+  return (
+    <PhotosBox
+      boxId={copy.id}
+      line={line}
+      photos={photos}
+      accept={COPY_PHOTO_ACCEPT}
+      help="Saved as soon as you add them."
+      busy={busy}
+      status={status}
+      error={error}
+      openFullSize
+      onPut={(picked) => {
+        const words = picked.map((p) => p.side).join(" and ");
+        const saved = picked.length > 1 ? "Front and back photos saved." : `${SIDE_WORD[picked[0].side]} photo saved.`;
+        void run(`Saving the ${words} photo${picked.length > 1 ? "s" : ""}…`, saved, async () => {
+          for (const p of picked) await ext.addPhoto(copy, p.side, p.file);
+        });
+      }}
+      onRemove={(side, done) => {
+        void run(`Removing the ${side} photo…`, `${SIDE_WORD[side]} photo removed.`, () => ext.removePhoto(copy, side), done);
+      }}
+      onSwap={() => {
+        void run("Swapping the photos…", "Front and back swapped.", () => ext.swapPhotos(copy));
+      }}
+      onRefuse={setError}
+    />
+  );
+}
+
+/** A file's address for this page, for as long as it is picked. */
+function useObjectUrl(file: File | undefined): string | undefined {
+  const [url, setUrl] = useState<string | undefined>(undefined);
+  // In an effect, not a memo: StrictMode's second run would revoke a memo's URL and keep it.
+  useEffect(() => {
+    if (!file) return;
+    const made = URL.createObjectURL(file);
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- the URL is an outside resource, made and revoked with this effect
+    setUrl(made);
+    return () => URL.revokeObjectURL(made);
+  }, [file]);
+  return file ? url : undefined;
+}
+
+/** The files `HeldPhotosField` holds for its parent: what the form uploads when it is submitted. */
+export type HeldPhotos = Partial<Record<PhotoSide, File>>;
+
+/** Held: photos with nothing to save against yet. The parent keeps the files and uploads them on submit. */
+export function HeldPhotosField({
+  files,
+  onChange,
+  line,
+  accept,
+  help,
+  saving,
+  check = notHoldable,
+  onProblem,
+  className,
+}: {
+  files: HeldPhotos;
+  onChange: (files: HeldPhotos) => void;
+  /** What the photos are of ("your new copy"), for their names. */
+  line: string;
+  accept: string;
+  /** The help line's first sentence: when these photos go up. */
+  help: string;
+  /** Said while the form uploads them; the box takes no changes meanwhile. */
+  saving?: string;
+  /** Why a file can't be held, or null when it can. */
+  check?: (file: File) => string | null;
+  /** Where refusals go when the form has its own alert (null clears it); else the box says them. */
+  onProblem?: (problem: string | null) => void;
+  className?: string;
+}) {
+  const boxId = useId();
+  const [status, setStatus] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const say = onProblem ?? setError;
+  const frontUrl = useObjectUrl(files.front);
+  const backUrl = useObjectUrl(files.back);
+  const photos: CopyPhotos = {
+    ...(files.front && frontUrl ? { front: { imageUrl: frontUrl, thumbUrl: frontUrl } } : {}),
+    ...(files.back && backUrl ? { back: { imageUrl: backUrl, thumbUrl: backUrl } } : {}),
+  };
+
+  return (
+    <PhotosBox
+      boxId={boxId}
+      line={line}
+      photos={photos}
+      accept={accept}
+      help={help}
+      busy={saving !== undefined}
+      status={saving ?? status}
+      error={error}
+      ownAlert={!onProblem}
+      openFullSize={false}
+      className={className}
+      onPut={(picked) => {
+        const good = picked.filter((p) => check(p.file) === null);
+        const refused = picked.find((p) => check(p.file) !== null);
+        say(refused ? check(refused.file) : null);
+        if (good.length === 0) {
+          setStatus("");
+          return;
+        }
+        const next = { ...files };
+        for (const p of good) next[p.side] = p.file;
+        onChange(next);
+        setStatus(good.length > 1 ? "Front and back photos picked." : `${SIDE_WORD[good[0].side]} photo picked.`);
+      }}
+      onRemove={(side, done) => {
+        const next = { ...files };
+        delete next[side];
+        onChange(next);
+        say(null);
+        setStatus(`${SIDE_WORD[side]} photo removed.`);
+        done();
+      }}
+      onSwap={() => {
+        onChange({ ...(files.back ? { front: files.back } : {}), ...(files.front ? { back: files.front } : {}) });
+        say(null);
+        setStatus("Front and back swapped.");
+      }}
+      onRefuse={say}
+    />
   );
 }
