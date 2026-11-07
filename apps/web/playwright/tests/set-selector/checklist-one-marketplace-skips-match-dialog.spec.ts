@@ -40,6 +40,7 @@ import {
 import { editCardButton } from "../../support/cards";
 import { recordedNoMatchName } from "../../support/recorded-names";
 import {
+  answerPlayerAsNew,
   advanceToSave,
   confirmSaveButton,
   readStep,
@@ -174,7 +175,7 @@ test(
     await expect(wizard.getByText(new RegExp(`${team} \\(1994.1996\\)`))).toBeVisible();
     // "Add as New Player" records exactly ONE decision (x moves by one).
     const { x: stepBefore } = await readStep(page);
-    await wizard.getByRole("button", { name: "Add as New Player" }).click();
+    await answerPlayerAsNew(page);
     await expect(stepCounter(page)).toHaveText(new RegExp(`^Step ${stepBefore + 1} of [0-9]+$`));
 
     // Every other name is SKIPPED, the cheapest way to a commit: it decides every

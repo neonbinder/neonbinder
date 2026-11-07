@@ -183,11 +183,12 @@ typed into "+ Custom" (the form refuses the name) and never searched for.
   `@regression` tag (it drifted into a set disjoint from smoke and was
   deleted) and never a `wip` tag: fix the bug instead. Run a subset with
   `--grep @smoke`.
-- **Run only what you changed, against dev before the first push.** Bring
-  dev up to date first if it is behind the branch; use the PR's Convex preview
-  only when dev cannot reproduce it (see Running). Never the full suite
-  locally unless the change is to the harness itself, and never the seed's
-  reset on dev without saying so first (it wipes dev under every session).
+- **Run only what you changed, on this worktree's own Convex deployment before
+  the first push.** Use the PR's Convex preview only when that deployment cannot
+  reproduce it (see Running). Never the full suite locally unless the change is
+  to the harness itself, and never the seed's reset on shared dev without saying
+  so first (it wipes shared dev under every session). Your own deployment is
+  yours to reset.
 - **Timing is never the first diagnosis.** "Looks like timing or a flake"
   means look harder, not raise a number. Get the failure screenshot and
   `error-context.md` (an ARIA snapshot of the page at failure) before
@@ -393,10 +394,9 @@ Idioms:
 - **Fresh-only specs** (wikidata live proof, the committing wizard flows, the
   specs that persist a name from `support/recorded-names.ts`) pass
   once per seed. A second local run fails at its "nothing exists yet"
-  precondition; that is correct, not flaky. Re-seed. Dev is never re-seeded
-  for you, so on dev each of these specs runs ONCE per worker index (8-11
-  are dev's): after that, run it against the PR's preview instead, or
-  announce a dev reset first.
+  precondition; that is correct, not flaky. Re-seed: your own deployment is
+  yours to reset. On shared dev, nothing re-seeds for you, so run the spec
+  against the PR's preview instead, or announce a dev reset first.
 
 ## Desktop and mobile
 
@@ -810,25 +810,30 @@ All commands run from `apps/web`.
 | `npm run test:e2e:seed` | `./e2e-baseline.sh reset` then the `setup` project: seeds the target deployment |
 | `npx eslint playwright` | lint the suite |
 
-**Locally: only the specs covering your change, against dev before the
-first push** (NEO-390). Bring dev up to date first if it is behind the branch:
-merge `origin/main` into the branch, check `npx convex function-spec`, and
-push with `npx convex dev --once` when dev lacks what the specs reach. The
-order and the rules for sharing dev with other sessions are in the root
-`CLAUDE.md` → **Run your specs against dev before the first push**.
+**Locally: only the specs covering your change, on this worktree's own Convex
+deployment before the first push** (NEO-438). Creating and seeding it are in the
+root `CLAUDE.md` → **Run your specs on your own Convex deployment before the first push**.
 
 ```bash
-# shell 1: local Vite on a spare port, on dev (.env.local / the env points at it)
+# both shells; the unset keeps a later CLI command from trusting a stale value
+set -a; . ./.env.local; set +a; unset CONVEX_DEPLOYMENT CONVEX_DEPLOY_KEY CONVEX_DEPLOYMENT_TOKEN
+# shell 1: local Vite on a spare port (.env.local names your deployment)
 VITE_DEV_DISABLE_HTTPS=1 npx vite --port 3001 --strictPort
-# shell 2: one spec at a time, on a test account no other session is using
-APP_URL=http://localhost:3001 WORKER_INDEX=8 \
-  npx playwright test --project=e2e --no-deps <path-substring>
+# shell 2: setup and bootstrap once per seed, then one spec at a time
+export APP_URL=http://localhost:3001 WORKER_INDEX=8 PAUSED_PLATFORMS=<the repo variable's value>
+npx playwright test --project=setup --retries=0
+npx playwright test --project=bootstrap --retries=0
+npx playwright test --project=e2e --no-deps <path-substring>
 ```
 
-Dev is not reseeded per run, and its reset wipes it under every other
-session. A spec that needs a fresh seed, a change to `services/browser` or
-`services/preprocess`, or a schema dev refuses runs against **the PR
-preview** after the first push instead:
+A worker with no `TEST_EMAIL_<n>` falls back to `TEST_EMAIL`, so a different
+worker number does not give you a different user. `@marketplace-seller` specs
+need the one shared seller of each marketplace: run them on shared dev or a PR
+preview, one session at a time, never on your own deployment (root `CLAUDE.md` →
+**Cloud threads and seller specs: shared dev**, which cloud threads also follow).
+
+A change to `services/browser` or `services/preprocess`, or a red your deployment
+cannot reproduce, runs against **the PR preview** after the first push instead:
 
 ```bash
 # shell 1: local Vite on a spare port, wired to the PR's Convex preview

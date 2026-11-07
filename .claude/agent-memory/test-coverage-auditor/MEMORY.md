@@ -8,3 +8,4 @@
 - [Seeded terminal-state spec](seeded-terminal-state-spec.md) — a spec that seeds a failed row then drives the real path: trace it to a terminal 4xx, check close keeps the screen, prove the cap variant; gate sign-in on LAUNCH_GATE
 - [Consent-flow return leg unproven](third-party-consent-flow-return-leg-unproven.md) — seed-hop connect leaves begin/return/error legs without live proof; instant isVisible branches on server-read controls
 - [Progress ledger live-spec gaps](progress-ledger-live-spec-gaps.md) — lease guard, call-order claim, rerun-dependent step list, axe only on finished state
+- [Read-only reuse of an owner component](read-only-reuse-of-owner-component.md) — extracted hook owner wiring, privacy switch order in the spec, layout branches, "fixture too hard" claims

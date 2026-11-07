@@ -14,12 +14,11 @@ import {
 } from "@dnd-kit/core";
 import NeonButton from "@/components/modules/NeonButton";
 import { keyboardAwareCollision } from "@/lib/dnd/keyboard-aware-collision";
-import { isEditableTarget } from "@/lib/dom/is-editable-target";
 import CardFace from "../prototypes/_shared/CardFace";
 import NoticeLine, { type Notice } from "../prototypes/p1/notice";
 import { useReducedMotion, useWideDesk } from "../prototypes/p2/hooks";
 import "../prototypes/p2/p2.css";
-import { SPREAD_DROP_ID, stepCount, stepOfPage } from "./binders/BinderDesk";
+import { SPREAD_DROP_ID, stepCount, stepOfPage, usePageTurnKeys } from "./binders/BinderDesk";
 import BinderSettingsDialog from "./binders/BinderSettingsDialog";
 import BinderView from "./binders/BinderView";
 import "./binders/binders.css";
@@ -649,25 +648,12 @@ export default function MyBindersTab({
 
   // PageUp / PageDown turn pages while something is open, unless focus is in
   // a field or somewhere else entirely (the card drawer, a dialog).
-  const isOpen = view !== null;
-  const dialogOpen = dialog !== null;
-  useEffect(() => {
-    if (!isOpen || dialogOpen) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (isEditableTarget(e.target)) return;
-      const t = e.target as Node | null;
-      if (t !== document.body && !(t && rootRef.current?.contains(t))) return;
-      const delta = e.key === "PageDown" ? 1 : e.key === "PageUp" ? -1 : 0;
-      if (!delta) return;
-      e.preventDefault();
-      setStepState({
-        view: viewId,
-        at: Math.max(0, Math.min(at + delta, steps - 1)),
-      });
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [isOpen, dialogOpen, viewId, at, steps]);
+  usePageTurnKeys(view !== null && dialog === null, rootRef, (delta) =>
+    setStepState({
+      view: viewId,
+      at: Math.max(0, Math.min(at + delta, steps - 1)),
+    }),
+  );
 
   // -- the hunt -----------------------------------------------------------------
   const settled = useSearchText(query);

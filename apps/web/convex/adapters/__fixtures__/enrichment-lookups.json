@@ -545,6 +545,12 @@
       "sportQid": "Q41323",
       "result": null
     },
+    "player|Q41323|kendry morales": {
+      "kind": "player",
+      "name": "Kendry Morales",
+      "sportQid": "Q41323",
+      "result": null
+    },
     "player|Q41323|luis rafael salazar": {
       "kind": "player",
       "name": "Luis Rafael Salazar",
@@ -581,6 +587,12 @@
       "sportQid": "Q41323",
       "result": null
     },
+    "player|Q41323|michael brantley": {
+      "kind": "player",
+      "name": "Michael Brantley",
+      "sportQid": "Q41323",
+      "result": null
+    },
     "player|Q41323|miguel campos": {
       "kind": "player",
       "name": "Miguel Campos",
@@ -602,6 +614,12 @@
     "player|Q41323|richard romero": {
       "kind": "player",
       "name": "Richard Romero",
+      "sportQid": "Q41323",
+      "result": null
+    },
+    "player|Q41323|rickie weeks": {
+      "kind": "player",
+      "name": "Rickie Weeks",
       "sportQid": "Q41323",
       "result": null
     },
@@ -10160,6 +10178,23 @@
         "enwikiTitle": "Ken Griffey Jr."
       }
     },
+    "player|Q5369|kendry morales": {
+      "kind": "player",
+      "name": "Kendry Morales",
+      "result": {
+        "wikidataId": "Q1185217",
+        "careerTeams": [],
+        "undatedCareerTeams": [
+          "Minnesota Twins",
+          "Seattle Mariners",
+          "Toronto Blue Jays"
+        ],
+        "isHallOfFame": false,
+        "description": "Cuban baseball player",
+        "birthYear": 1983,
+        "enwikiTitle": "Kendrys Morales"
+      }
+    },
     "player|Q5369|kenley jansen": {
       "kind": "player",
       "name": "Kenley Jansen",
@@ -13780,6 +13815,48 @@
         "description": "American Hall of Fame baseball player (1958\u20132024)",
         "birthYear": 1958,
         "enwikiTitle": "Rickey Henderson"
+      }
+    },
+    "player|Q5369|rickie weeks": {
+      "kind": "player",
+      "name": "Rickie Weeks",
+      "result": {
+        "wikidataId": "Q3431635",
+        "careerTeams": [
+          {
+            "name": "Milwaukee Brewers",
+            "fromYear": 2003,
+            "toYear": 2014,
+            "wikidataId": "Q848103"
+          },
+          {
+            "name": "Seattle Mariners",
+            "fromYear": 2015,
+            "toYear": 2015,
+            "wikidataId": "Q466586"
+          },
+          {
+            "name": "Arizona Diamondbacks",
+            "fromYear": 2016,
+            "toYear": 2016,
+            "wikidataId": "Q670376"
+          },
+          {
+            "name": "Tampa Bay Rays",
+            "fromYear": 2017,
+            "toYear": 2017,
+            "wikidataId": "Q650865"
+          }
+        ],
+        "undatedCareerTeams": [
+          "Huntsville Stars",
+          "Nashville Sounds",
+          "Southern Jaguars baseball"
+        ],
+        "isHallOfFame": false,
+        "description": "American baseball player",
+        "birthYear": 1982,
+        "enwikiTitle": "Rickie Weeks Jr."
       }
     },
     "player|Q5369|rico brogna": {
@@ -18456,6 +18533,18 @@
         }
       }
     },
+    "team|Q5369|st. louis browns": {
+      "kind": "team",
+      "name": "St. Louis Browns",
+      "result": {
+        "wikidataId": "Q504309",
+        "league": "Major League Baseball",
+        "leagueWikidataId": "Q1163715",
+        "yearsActive": {
+          "from": 1882
+        }
+      }
+    },
     "team|Q5369|st. louis cardinals": {
       "kind": "team",
       "name": "St. Louis Cardinals",
@@ -18669,6 +18758,18 @@
           "secondary": "#11225b"
         },
         "espnId": "20"
+      }
+    },
+    "team|Q5369|washington senators": {
+      "kind": "team",
+      "name": "Washington Senators",
+      "result": {
+        "wikidataId": "Q329816",
+        "league": "American League",
+        "leagueWikidataId": "Q465469",
+        "yearsActive": {
+          "from": 1961
+        }
       }
     },
     "team|Q5369|wei chuan dragons": {
