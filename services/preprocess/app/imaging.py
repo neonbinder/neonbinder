@@ -53,7 +53,8 @@ logger = logging.getLogger(__name__)
 # one for the next stage to work on), so ~780 MB at Pillow's size. On the FAST
 # service (8 GiB, concurrency 8) that is ~6.2 GB if every request peaks together;
 # the HEAVY service (16 GiB, concurrency 1) holds one request's worth beside its
-# models.
+# models. Measured on FAST with waves of eight 64.9 MP requests: the highest
+# reading was ~3.3 GiB, with up to six requests on one instance.
 #
 # For scale, the bomb this defends against is 169 MP / 484 MB, and Pillow's own
 # default does not raise until 178,956,970 px.
