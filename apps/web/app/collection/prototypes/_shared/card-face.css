@@ -85,3 +85,20 @@
   background-color: rgb(0 0 0 / 0.85);
   color: #f1f5f9;
 }
+
+/* NEO-444 — a card's photo on its way: a card-shaped tone, so it can't be taken for an empty pocket. */
+.nb-card-loading {
+  position: absolute;
+  inset: 0;
+  background: rgb(148 163 184 / 0.18);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .nb-card-loading {
+    animation: nb-card-loading 1.4s ease-in-out infinite;
+  }
+}
+@keyframes nb-card-loading {
+  50% {
+    opacity: 0.4;
+  }
+}

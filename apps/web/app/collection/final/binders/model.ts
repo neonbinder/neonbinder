@@ -27,6 +27,7 @@ import {
   type ContainerId,
   type ContainerRule,
   type Copy,
+  type CopyPhotos,
   type PocketPlacement,
   type SetRef,
   type TeamId,
@@ -85,6 +86,11 @@ export interface PocketModel {
   wantFor?: ContainerId | null;
   /** NEO-362 — a card in a smart binder that its rule no longer takes in. */
   outside?: true;
+  /**
+   * NEO-444: the public binder only, this very copy's photos. Two copies of a
+   * card can differ, so a visitor's pocket never falls back to another copy's.
+   */
+  photos?: CopyPhotos;
 }
 
 export interface PageModel {
