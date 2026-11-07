@@ -426,7 +426,7 @@ test(
     const INSERT_ROW = "All-America Game Autos";
     const SOURCE_ROW = "All-America Game Autos Red Ink";
 
-    await drillToColdManufacturer(page, env, { sport: "Baseball", year: "2026", manufacturer: BRAND });
+    await drillToColdManufacturer(page, env, { sport: "Baseball", year: "2026", manufacturer: BRAND, expectSets: true });
     const sets = page.getByRole("listbox", { name: "Sets" });
     await expect(page.getByRole("button", { name: "Sync Sets" })).toBeVisible({ timeout: 150_000 });
     await expect(columnOption(page, "Sets", "Bowman Chrome")).toBeVisible();

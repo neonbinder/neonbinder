@@ -13,8 +13,14 @@
  * `DEV_BSC_USERNAME` / `DEV_BSC_PASSWORD` and `DEV_EBAY_REFRESH_TOKEN`
  * (`testing.seedMyTestCredentials`).
  *
- * - eBay: ends ALL listings on the sandbox seller. Pages the inventory and
- *   withdraws every PUBLISHED offer. Inventory items and policies stay.
+ * - eBay: empties the sandbox seller's inventory (NEO-453). Pages the inventory,
+ *   withdraws every PUBLISHED offer, then deletes every item, which takes its
+ *   unpublished offers with it (Sell Inventory contract). Withdrawing first is
+ *   what makes "ended" provable: the delete is documented to end a listing too,
+ *   but only the withdraw answers for it, and the sandbox has strayed from the
+ *   contract before. An item whose offer could not be read or ended is NOT
+ *   deleted: the item is the only way a later run can find that listing.
+ *   Policies stay: the listing spec needs the seller's own shipping policies.
  * - BSC: sets quantity to 0 on ALL of the seller's rows for each set the specs
  *   list (`SELLER_SPEC_SETS`), the rest of the account untouched. Reads those
  *   sheets one at a time (`listingDrain.readSheets`, the drain's own scope and
@@ -45,6 +51,7 @@ import type { ActionCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import {
+  deleteInventoryItem,
   getInventorySkusPage,
   getOfferBySku,
   isBusyAnswer,
@@ -71,10 +78,16 @@ const CLEANUP_OWNER = "user_e2esellercleanup";
 
 /** eBay's pages hold `EBAY_INVENTORY_PAGE` items: 20,000 is far above this seller. */
 const MAX_INVENTORY_PAGES = 200;
-/** SKU lookups side by side: every run's items stay on the seller, so the inventory only grows. */
+/** SKUs worked side by side: each run clears what the last left, but a first run meets hundreds. */
 const EBAY_CONCURRENCY = 8;
-/** Under Convex's 10 minute action limit, leaving room for the BSC side and tidying up. */
+/**
+ * Under Convex's 10 minute action limit, leaving room for the BSC side and
+ * tidying up. Deleted items never come back, so a run out of time still leaves
+ * less for the re-run its failure asks for.
+ */
 const EBAY_BUDGET_MS = 5 * 60 * 1000;
+/** Before the one retry of a 503'd first sheet read: a guess at long enough that the retry won't overlap anything that 503 left running at BSC. */
+export const BSC_FIRST_READ_RETRY_PAUSE_MS = 10_000;
 
 /** The Base variant of one set the specs list, or null when the chain isn't there exactly once. */
 export const baseVariantOf = internalQuery({
@@ -135,6 +148,8 @@ const ebayReportValidator = v.object({
   /** Items read from the seller's inventory, each checked for a live offer. */
   items: v.number(),
   withdrawn: v.number(),
+  /** Items removed from the seller; one eBay no longer has counts. */
+  deleted: v.number(),
 });
 type EbayReport = typeof ebayReportValidator.type;
 
@@ -231,33 +246,52 @@ async function clearEbay(ctx: ActionCtx): Promise<EbayReport> {
   }
 
   let withdrawn = 0;
+  let deleted = 0;
   let notEnded = 0;
+  let notDeleted = 0;
   let firstFailure: string | null = null;
+  let firstDeleteFailure: string | null = null;
   const note = (f: EbayFailure) => {
     notEnded += 1;
     firstFailure ??= saysEbay(f);
   };
+  const outOfTime = () => Date.now() - startedAt > EBAY_BUDGET_MS;
   await eachSideBySide(
     skus,
     EBAY_CONCURRENCY,
-    () => session.dead || Date.now() - startedAt > EBAY_BUDGET_MS,
+    () => session.dead || outOfTime(),
     async (sku) => {
+      // Not ended, or not known to be: keep the item, a re-run finds the listing through it.
       const offer = await onceMoreIfBusy(() => getOfferBySku(ctx, session, sku));
       if (!offer.ok) return note(offer.failure);
-      if (offer.value === null || !offer.value.published) return;
-      const { offerId } = offer.value;
-      const r = await onceMoreIfBusy(() => withdrawOffer(ctx, session, offerId));
-      // 404: eBay no longer has it live.
-      if (r.ok || r.failure.httpStatus === 404) withdrawn += 1;
-      else note(r.failure);
+      if (offer.value?.published) {
+        const { offerId } = offer.value;
+        const r = await onceMoreIfBusy(() => withdrawOffer(ctx, session, offerId));
+        // 404: eBay no longer has it live.
+        if (!r.ok && r.failure.httpStatus !== 404) return note(r.failure);
+        withdrawn += 1;
+      }
+      // Calls under way run on past the budget: don't add a slow one to them.
+      if (outOfTime()) return;
+      const gone = await onceMoreIfBusy(() => deleteInventoryItem(ctx, session, sku));
+      if (gone.ok) {
+        deleted += 1;
+      } else {
+        notDeleted += 1;
+        firstDeleteFailure ??= saysEbay(gone.failure);
+      }
     },
   );
   if (session.dead) throw new Error("eBay refused the session part-way through");
-  if (Date.now() - startedAt > EBAY_BUDGET_MS) {
-    throw new Error(`ran out of time with ${skus.length} items to check and ${withdrawn} withdrawn; re-run the workflow`);
+  if (outOfTime()) {
+    throw new Error(`ran out of time with ${skus.length} items to clear, ${withdrawn} withdrawn and ${deleted} deleted; re-run the workflow to finish the rest`);
   }
-  if (notEnded > 0) throw new Error(`${notEnded} of ${skus.length} items could not be checked or withdrawn: ${firstFailure}`);
-  return { outcome: "clean", items: skus.length, withdrawn };
+  const refused = [
+    ...(notEnded > 0 ? [`${notEnded} of ${skus.length} items could not be checked or withdrawn, so they were kept: ${firstFailure}`] : []),
+    ...(notDeleted > 0 ? [`${notDeleted} of ${skus.length} items could not be deleted: ${firstDeleteFailure}`] : []),
+  ];
+  if (refused.length > 0) throw new Error(refused.join("; "));
+  return { outcome: "clean", items: skus.length, withdrawn, deleted };
 }
 
 /** Sets every row of one set's sheets to 0 and proves it by reading back. */
@@ -269,7 +303,12 @@ async function zeroSet(
 ): Promise<Omit<BscReport, "outcome">> {
   // Serial, never side by side: overlapping sheet reads are what mint twin rows.
   const conditions: string[] = [...bscConditionsForEra(input.era)];
-  const first = await readSheets(ctx, session, input.requests, conditions);
+  let first = await readSheets(ctx, session, input.requests, conditions);
+  // Only a 503 and only this read, and still one read at a time: the first has answered before the pause starts.
+  if (!first.ok && first.failure.httpStatus === 503) {
+    await new Promise<void>((resolve) => setTimeout(resolve, BSC_FIRST_READ_RETRY_PAUSE_MS));
+    first = await readSheets(ctx, session, input.requests, conditions);
+  }
   if (!first.ok) throw new Error(`could not read the sheets: ${first.failure.message}`);
   const rows = first.sheet.rows.filter(isOurRow);
   const twinKeys = countTwinKeys(rows);
@@ -407,7 +446,7 @@ export const clearSellerAccounts = internalAction({
       throw new Error("Seller cleanup refused: this deployment's eBay is not the sandbox (EBAY_ENVIRONMENT)");
     }
     const ebay = ebayPaused
-      ? { report: { outcome: "paused", items: 0, withdrawn: 0 } satisfies EbayReport, error: null }
+      ? { report: { outcome: "paused", items: 0, withdrawn: 0, deleted: 0 } satisfies EbayReport, error: null }
       : await runSide<EbayReport>(ctx, "ebay", "ebay", () => clearEbay(ctx));
     const bsc = bscPaused
       ? {

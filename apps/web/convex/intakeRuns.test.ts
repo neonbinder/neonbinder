@@ -804,7 +804,7 @@ describe("NEO-370 — a settled box run kicks the collector's listing drain", ()
       expect(await drainsOf(w)).toEqual([]);
       await w.me.mutation(api.intakeRuns.setIntakeMatchAside, { runId, pairId: w.pairIds[1], setAside: true });
       const drains = await drainsOf(w);
-      expect(drains.map((d) => d.args[0])).toEqual([{ ownerId: ME.subject, platform: "bsc" }]);
+      expect(drains.map((d) => d.args[0])).toEqual([{ ownerId: ME.subject, platform: "bsc", kickToken: expect.any(String) }]);
     });
   });
 
@@ -853,7 +853,7 @@ describe("NEO-370 — a settled box run kicks the collector's listing drain", ()
         } else {
           await w.t.mutation(internal.placeholderPipeline.markJobFailed, { jobId: JOB, errorCode: "TEST" });
         }
-        expect((await drainsOf(w)).map((d) => d.args[0])).toEqual([{ ownerId: ME.subject, platform: "bsc" }]);
+        expect((await drainsOf(w)).map((d) => d.args[0])).toEqual([{ ownerId: ME.subject, platform: "bsc", kickToken: expect.any(String) }]);
       });
     }
   });
@@ -1056,7 +1056,7 @@ describe("NEO-370 — a settled box run kicks the collector's listing drain", ()
       expect(closed).toMatchObject({ closed: true, status: "succeeded" });
       const job = await w.t.run(async (ctx) => (await ctx.db.query("placeholderJobs").collect())[0]);
       expect(job.streamClosedBy).toBe("user");
-      expect((await drainsOf(w)).map((d) => d.args[0])).toEqual([{ ownerId: ME.subject, platform: "bsc" }]);
+      expect((await drainsOf(w)).map((d) => d.args[0])).toEqual([{ ownerId: ME.subject, platform: "bsc", kickToken: expect.any(String) }]);
     });
   });
 
