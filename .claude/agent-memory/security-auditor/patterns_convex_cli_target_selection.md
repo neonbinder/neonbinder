@@ -50,6 +50,13 @@ convex 1.45.0 — re-verify if the pin moves):
    commonly exported in local shells. Use `${GITHUB_ACTIONS:-}` for a
    GH-Actions-only bypass.
 
+5. `--deployment` also takes selector words (`prod`, `dev`,
+   `team:project:prod`, references), so a slug-substring guard misses them.
+   Validate the name is a plain slug before the first destructive step, not at
+   the second (NEO-438). `CONVEX_DEPLOYMENT_TOKEN` is read alongside the key, and
+   an exported `CONVEX_DEPLOYMENT` beats `.env.local`, so a check of the file can
+   name a different target from the one the CLI uses.
+
 Related: [[patterns_testing_endpoint_gate]] (env-gated runner endpoints),
 [[patterns_convex_auth_boundary]] (the in-Convex half of the boundary; a
 `requireAdmin` batch mutation is defence-in-depth, the deploy credential is
