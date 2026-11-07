@@ -9,8 +9,10 @@ import {
   useState,
   type ReactNode,
   type Ref,
+  type RefObject,
 } from "react";
 import { useSearchParams } from "react-router";
+import { useAuth } from "@clerk/clerk-react";
 import { useAction, useMutation, useQuery } from "convex/react";
 import NeonButton from "@/components/modules/NeonButton";
 import { LiveLine, RunGlyph, type RunLineKind } from "@/components/modules/RunLedger";
@@ -27,8 +29,17 @@ import Overlay from "../../prototypes/p1/Overlay";
 import Cascade from "../catalog/Cascade";
 import { EMPTY_DRILL, type Drill } from "../catalog/drill";
 import { useDrillState } from "../catalog/useDrillState";
-import { homesOnSide, useContainers, useDefaultCondition, useListingGate, useSide, writeErrorMessage } from "../data/store";
-import { intakeGateLine, ListingGateNote, SyncStatusLink, useListingLock } from "../inventory/listing/ListingGate";
+import {
+  homesOnSide,
+  useCollectionActions,
+  useCommonPrices,
+  useContainers,
+  useDefaultCondition,
+  useListingGate,
+  useSide,
+  writeErrorMessage,
+} from "../data/store";
+import { intakeGateLine, ListingGateNote, SyncStatusLink, useIntakeRunLock } from "../inventory/listing/ListingGate";
 import { usePageApi } from "../pageApi";
 import {
   EMPTY_LANES,
@@ -57,7 +68,23 @@ import {
 } from "./realLanes";
 import { HomeSelect, QTY_ATTR, RING, StageBadge } from "./ui";
 import { DRAWER_PARAM } from "../drawerParams";
-import { ScannerJoin } from "./ScannerJoin";
+import { ScannerJoin, startRefusal } from "./ScannerJoin";
+import {
+  beginSend,
+  finishSend,
+  heldIntakeKey,
+  holdFiles,
+  readHeld,
+  removeHeld,
+  retryHeld,
+  sayHeld,
+  updateHeldSetup,
+  useHeldIntake,
+  type Condition,
+  type Grader,
+  type RunDefaults,
+  type VariantPick,
+} from "./heldIntake";
 import "./intake.css";
 
 /**
@@ -89,20 +116,32 @@ const LocalPhotos = createContext<ReadonlyMap<string, string>>(new Map());
  * s swaps sides, u unpairs, d sets it aside, v steps through its other
  * pictures. In the count field only digits type; Enter saves and moves on.
  *
- * The listing gate (NEO-370): a run into a box that lists on marketplaces,
- * for a collector set up for syncing, needs a price on its cards before any
- * photo goes up: the run's Min price (Defaults), else the common price for
- * the picked set. Until then the drop zone is held with the reason beside it
- * and a button that opens the field; the server refuses the run (and each
- * save) the same way. After "Done adding photos" on such a run, "See what's
- * syncing" links to Inventory → Sync status.
+ * Photos can be dropped at any time (NEO-452). Nothing leaves the browser until
+ * the run has a home, a set and, for a box that lists on marketplaces for a
+ * collector set up for syncing (NEO-370), a price and a condition: the run's Min
+ * price (Defaults), else the collector's common price for the set. Until then
+ * the photos wait in the zone's tray (`./heldIntake`), then go up by themselves.
+ * The server refuses a run with no set, and an unready run and each save the
+ * same way. After "Done adding photos" on a run into a box that lists, "See
+ * what's syncing" links to Inventory → Sync status.
+ *
+ * With no set picked there is no price to ask about. Picking a set with no price
+ * shows the note and opens Defaults once; "Save as common price" there turns the
+ * Min price into the collector's own price for that set. No Start button, and
+ * nothing here goes in the URL but `?tab=add` and `?run=`: the tray and the
+ * panels are in-view state.
+ *
+ * Photos go up in this order: open a session, start the run, open it, then
+ * upload into it. A refusal then comes before any bytes move, and the run is
+ * there to take edits while a big drop uploads. A zip has to upload first (it
+ * starts its own job), so it reads the setup as it stands afterwards.
  *
  * A saved card takes its scans with it (NEO-427): the server puts the pair on
  * the saved line after the save, and the tile says how that went (`PhotoLine`),
  * with one polite line for what landed (`usePhotoNews`).
  *
- * Not yet: the common price prompt (NEO-378), rotate/re-crop/reject one side,
- * and finding the set from the photos when none is picked.
+ * Not yet: rotate/re-crop/reject one side, and finding the set from the photos
+ * (the public demo's "Set: from the photos" stays a demo).
  */
 
 export const RUN_PARAM = "run";
@@ -143,27 +182,12 @@ function refocusAfterRetry(entryIndex: number): void {
   });
 }
 
-type Condition = "Mint" | "Near Mint" | "Excellent" | "Very Good" | "Good" | "Poor";
-type Grader = "PSA" | "BGS" | "SGC" | "CGC" | "TAG";
 const CONDITIONS: Condition[] = ["Mint", "Near Mint", "Excellent", "Very Good", "Good", "Poor"];
 const GRADERS: Grader[] = ["PSA", "BGS", "SGC", "CGC", "TAG"];
 
-/** The run's batch defaults, as the server keeps them. */
-interface RunDefaults {
-  condition?: Condition;
-  grading?: { grader: Grader; grade: string; cert?: string };
-  costCents?: number;
-  acquiredOn?: string;
-  location?: string;
-  notes?: string;
-  /** NEO-378's floor for every card in the run; blank sells at the common price. */
-  minPriceCents?: number;
-}
-
-interface VariantPick {
-  variantId: Id<"selectorOptions">;
-  title: string;
-}
+/** The zone's line while a drop would wait rather than go. */
+const WAITING_HINT =
+  "Drop them whenever. They wait here until the run is set up, then go up on their own. Keep them in scan order (front, back, front, back): that's how they pair.";
 
 const today = () => new Date().toISOString().slice(0, 10);
 
@@ -179,6 +203,22 @@ const KEY_HELP: { keys: string; does: string }[] = [
 ];
 
 export default function RealAddCardsTab() {
+  const side = useSide();
+  const { userId } = useAuth();
+  const heldKey = heldIntakeKey(userId, side);
+  // Keyed: the setup below is seeded once from the photos held for this key.
+  return <AddCardsScreen key={heldKey} heldKey={heldKey} />;
+}
+
+/** What `createIntakeRun` was sent, to compare with the setup once the run has loaded. */
+interface Handover {
+  runId: Id<"intakeRuns">;
+  homeId: string;
+  variantId: Id<"selectorOptions">;
+  defaults: RunDefaults;
+}
+
+function AddCardsScreen({ heldKey }: { heldKey: string }) {
   useWarmPreprocess();
   const side = useSide();
   const kind = side === "inventory" ? "box" : "binder";
@@ -199,41 +239,70 @@ export default function RealAddCardsTab() {
   const loading = containers === undefined || (runId !== null && run === undefined);
 
   // Setup before the run exists. Once it does, the run's own fields rule.
-  const [homeId, setHomeId] = useState<string>("");
-  const [variant, setVariant] = useState<VariantPick | null>(null);
-  const [defaults, setDefaults] = useState<RunDefaults>({ acquiredOn: today() });
+  // Photos already held bring back the setup they were waiting on.
+  const [homeId, setHomeId] = useState<string>(() => readHeld(heldKey).setup?.homeId ?? "");
+  const [variant, setVariant] = useState<VariantPick | null>(() => readHeld(heldKey).setup?.variant ?? null);
+  const [defaults, setDefaults] = useState<RunDefaults>(() => readHeld(heldKey).setup?.defaults ?? { acquiredOn: today() });
   const [panel, setPanel] = useState<null | "set" | "defaults">(null);
   const pickedHome = homes.some((h) => h.id === homeId) ? homeId : (homes[0]?.id ?? "");
 
+  const startStream = useMutation(api.placeholderStream.startPlaceholderStream);
+  const closeStream = useMutation(api.placeholderStream.closePlaceholderStream);
   const createRun = useMutation(api.intakeRuns.createIntakeRun);
   const setRunVariant = useMutation(api.intakeRuns.setIntakeRunVariant);
   const setRunDefaults = useMutation(api.intakeRuns.setIntakeRunDefaults);
   const setRunHome = useMutation(api.intakeRuns.setIntakeRunHome);
   const usualCondition = useDefaultCondition();
-  const { uploading, upload } = usePlaceholderUpload();
-  const [files, setFiles] = useState<File[]>([]);
-  const [status, setStatus] = useState("");
+  const { upload } = usePlaceholderUpload();
+  const held = useHeldIntake(heldKey);
+  /** A pile `classifyIntake` refused, for the zone to explain. */
+  const [refusedPile, setRefusedPile] = useState<File[]>([]);
   const [localPhotos, setLocalPhotos] = useState<ReadonlyMap<string, string>>(new Map());
   const localUrls = useRef<string[]>([]);
   useEffect(() => () => localUrls.current.forEach((u) => URL.revokeObjectURL(u)), []);
+  const say = (text: string) => sayHeld(heldKey, text);
 
   const job = useQuery(api.placeholderPipeline.getPlaceholderJob, run ? { jobId: run.jobId } : "skip");
   // Still loading the run's job reads as collecting, so the drop zone and the
   // scanner code don't blink out while a just-started run catches up.
   const collecting = !run || job === undefined || job?.status === "collecting";
 
-  // NEO-370 — the listing gate, on what the run (or the setup) will give its cards.
+  // NEO-370, NEO-452 — the gate, on what the run (or the setup) will give its cards.
   const shownDefaults: RunDefaults = run?.defaults ?? defaults;
   const homeKind = run ? run.homeKind : kind;
   const homeName = run ? run.homeName : (homes.find((h) => h.id === pickedHome)?.name ?? `the ${kind}`);
-  const lock = useListingLock({
-    homeId: run ? run.homeId : pickedHome || null,
-    variantId: run ? (run.variantId ?? null) : (variant?.variantId ?? null),
+  const targetHome: string | null = run ? run.homeId : pickedHome || null;
+  const targetVariantId: string | null = run ? (run.variantId ?? null) : (variant?.variantId ?? null);
+  const targetTitle = run
+    ? variant && variant.variantId === run.variantId
+      ? variant.title
+      : (run.variantName ?? null)
+    : (variant?.title ?? null);
+  const lock = useIntakeRunLock({
+    homeId: targetHome,
+    variantId: targetVariantId,
     condition: shownDefaults.condition ?? usualCondition,
     ownPriceCents: shownDefaults.minPriceCents,
     graded: shownDefaults.grading !== undefined,
   });
+  const gateLine = lock.locked ? intakeGateLine(homeName, targetTitle, lock, { collecting }) : "";
+  const noHome = !loading && !run && !pickedHome;
+  /**
+   * May the photos go up by themselves? `lock.loaded` is not redundant with
+   * `lock.ready`: this is the guard that keeps a set pick from auto-sending with
+   * the price still unknown. Elsewhere a loading gate reads as open, because a
+   * person is about to press something and the server still refuses. Here nobody
+   * presses anything, so "don't know yet" has to mean "wait".
+   */
+  const ready =
+    !loading && lock.loaded && lock.ready && targetHome !== null && (run ? job?.status === "collecting" : true);
+  /** The setup a send depends on; a failure isn't retried until this moves. */
+  const config = JSON.stringify([targetHome, targetVariantId, shownDefaults]);
   const gateNoteId = useId();
+  const trayId = useId();
+  const dropInput = useRef<HTMLInputElement>(null);
+  const setButton = useRef<HTMLButtonElement>(null);
+  const statusLine = useRef<HTMLParagraphElement>(null);
   const priceRef = useRef<HTMLInputElement>(null);
   const conditionRef = useRef<HTMLSelectElement>(null);
   /** The note's button: open Defaults with the missing field focused (once the panel is drawn). */
@@ -250,25 +319,115 @@ export default function RealAddCardsTab() {
       return next;
     });
 
-  // A drop while `loading` waits here, then takes the normal path below once
-  // the shelf and the run are in. The latest drop wins, as a new pick does.
-  const queued = useRef<File[] | null>(null);
-  const onFiles = async (chosen: File[]) => {
-    setFiles(chosen);
-    if (chosen.length === 0 || uploading) return;
-    if (loading) {
-      queued.current = chosen;
+  // Read by what lands after an await or a frame: the closure that started it
+  // may be several renders old by then. Declared first, so the effects below
+  // read this render's values.
+  const latest = useRef({ run, shownDefaults, homeId: pickedHome, variant, defaults, config, gateLine });
+  useEffect(() => {
+    latest.current = { run, shownDefaults, homeId: pickedHome, variant, defaults, config, gateLine };
+  });
+  const mounted = useRef(false);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+  useEffect(() => {
+    updateHeldSetup(heldKey, { homeId, variant, defaults });
+  }, [heldKey, homeId, variant, defaults]);
+
+  /** Into the run if there is one, else into the setup. */
+  const writeDefaults = async (next: RunDefaults) => {
+    const open = latest.current.run;
+    if (!open) {
+      setDefaults(next);
       return;
     }
-    if (classifyIntake(chosen).kind === "invalid") return;
-    // Held by the listing gate: the reason is beside the zone (it never opens a picker then).
-    if (lock.locked) return;
-    if (!run && !pickedHome) {
-      setStatus(`Make a ${kind} first: the cards need somewhere to go.`);
+    await setRunDefaults({ runId: open._id, defaults: next });
+    // The setup still has the Min this run started with: "New run" would bring it back.
+    if (next.minPriceCents === undefined) setDefaults((setup) => ({ ...setup, minPriceCents: undefined }));
+  };
+  const [defaultsEpoch, setDefaultsEpoch] = useState(0);
+  const handover = useRef<Handover | null>(null);
+
+  /* ---------------------------------------------------------------- */
+  /* A drop, and when it goes up                                       */
+  /* ---------------------------------------------------------------- */
+
+  const onFiles = (chosen: File[]) => {
+    if (chosen.length === 0 || held.sending) return;
+    setRefusedPile([]);
+    if (noHome) {
+      say(`Make a ${kind} first: the cards need somewhere to go.`);
       return;
     }
+    const refused = holdFiles(heldKey, chosen, { homeId, variant, defaults });
+    if (refused) setRefusedPile(refused);
+  };
+
+  // A drop while the shelf loaded, onto a shelf that loaded empty.
+  useEffect(() => {
+    if (!noHome || held.files.length === 0 || held.sending) return;
+    removeHeld(heldKey);
+    sayHeld(heldKey, `Make a ${kind} first: the cards need somewhere to go.`);
+  }, [noHome, held.files.length, held.sending, heldKey, kind]);
+
+  /** Start the run over this job, from the setup as it stands now. */
+  const startRun = async (jobId: string) => {
+    const setup = latest.current;
+    if (!setup.variant) throw new Error("Pick a set first: cards are matched in it.");
+    const sent = { homeId: setup.homeId, variantId: setup.variant.variantId, defaults: setup.defaults };
+    const id = await createRun({
+      jobId,
+      homeId: sent.homeId as Id<"collectionContainers">,
+      variantId: sent.variantId,
+      defaults: sent.defaults,
+    });
+    handover.current = { runId: id, ...sent };
+    // Gone from this tab already: `openRun` would pull the collector back to it.
+    if (mounted.current) openRun(id);
+  };
+
+  /** Answers what the status line should say, and whether the files are up. */
+  const sendPile = async (pile: File[]): Promise<{ sent: boolean; note: string }> => {
+    const sentWords = (out: { uploaded: number; failed: number; total: number }) =>
+      out.failed === 0
+        ? `Sent ${out.uploaded} photo${out.uploaded === 1 ? "" : "s"}.`
+        : `Sent ${out.uploaded} of ${out.total} photos. ${out.failed} failed.`;
+    const refused = (reason: string) => ({ sent: false, note: `Couldn't send these photos: ${reason}.` });
+    const open = latest.current.run;
+    if (open) {
+      const out = await upload(pile, { source: "web", jobId: open.jobId });
+      return out.ok ? { sent: true, note: sentWords(out) } : refused(out.reason);
+    }
+    if (classifyIntake(pile).kind === "zip") {
+      // A zip starts its own job, so it can't go after the run. Not a stream
+      // session, so nothing to close if the run is refused.
+      const out = await upload(pile, { source: "web" });
+      if (!out.ok) return refused(out.reason);
+      await startRun(out.jobId);
+      return { sent: true, note: sentWords(out) };
+    }
+    const session = await startStream({ source: "web" });
+    if (!session.started || !session.jobId) return { sent: false, note: startRefusal(session.reason) };
+    try {
+      await startRun(session.jobId);
+    } catch (error) {
+      // A session with no run would hold an active-batch slot until the idle sweep.
+      void closeStream({ jobId: session.jobId }).catch(() => {});
+      throw error;
+    }
+    const out = await upload(pile, { source: "web", jobId: session.jobId });
+    return out.ok ? { sent: true, note: sentWords(out) } : refused(out.reason);
+  };
+
+  const sendHeld = useEffectEvent(async () => {
+    const claimed = beginSend(heldKey);
+    if (!claimed) return;
+    const pile = [...claimed];
     const added = new Map(localPhotos);
-    for (const file of chosen) {
+    for (const file of pile) {
       // Only types every browser draws; a HEIC photo keeps its name alone.
       if (!/^image\/(jpeg|png|webp|gif)$/.test(file.type) || added.has(file.name)) continue;
       const url = URL.createObjectURL(file);
@@ -276,41 +435,107 @@ export default function RealAddCardsTab() {
       added.set(file.name, url);
     }
     setLocalPhotos(added);
-    setStatus("Sending your photos…");
+    say("Sending your photos…");
+    let outcome: { sent: boolean; note: string };
     try {
-      const out = await upload(chosen, { source: "web", jobId: run?.jobId });
-      if (!out.ok) {
-        setStatus(`Couldn't send these photos: ${out.reason}.`);
-        return;
-      }
-      setFiles([]);
-      if (!run) {
-        const id = await createRun({
-          jobId: out.jobId,
-          homeId: pickedHome as Id<"collectionContainers">,
-          variantId: variant?.variantId,
-          defaults,
-        });
-        openRun(id);
-      }
-      setStatus(
-        out.failed === 0
-          ? `Sent ${out.uploaded} photo${out.uploaded === 1 ? "" : "s"}.`
-          : `Sent ${out.uploaded} of ${out.total} photos. ${out.failed} failed.`,
-      );
+      outcome = await sendPile(pile);
     } catch (error) {
-      setStatus(writeErrorMessage(error));
+      outcome = { sent: false, note: writeErrorMessage(error) };
     }
-  };
-
-  const sendQueued = useEffectEvent(() => {
-    const chosen = queued.current;
-    queued.current = null;
-    if (chosen) void onFiles(chosen);
+    finishSend(heldKey, pile, outcome.sent ? null : latest.current.config);
+    say(outcome.note);
   });
   useEffect(() => {
-    if (!loading) sendQueued();
-  }, [loading]);
+    if (held.files.length === 0 || held.sending || !ready || held.failedConfig === config) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- starts the async send; its one synchronous write is the thumbnails, made from the files as the send claims them
+    void sendHeld();
+  }, [held.files.length, held.sending, held.failedConfig, ready, config]);
+
+  /* ---------------------------------------------------------------- */
+  /* The handover: from the setup to the run                           */
+  /* ---------------------------------------------------------------- */
+
+  /**
+   * Between `createRun` and the run's first load, a change lands in the setup,
+   * where the run never reads it. Once it loads, write across whatever moved, once.
+   *
+   * This looks like a nicety and is the one thing standing between a mouse and a
+   * wrong price. On "Save as common price", mousedown blurs the Min price field:
+   * the price commits, the hold lifts and the send starts, all before the click
+   * lands. So `createRun` goes out carrying the Min, and the click's clear lands
+   * in the setup. Without this the run keeps the Min, and every copy it saves
+   * carries that floor forever, never following the common price just set.
+   */
+  const reconcileHandover = useEffectEvent((id: Id<"intakeRuns">) => {
+    const sent = handover.current;
+    if (!sent || sent.runId !== id) return;
+    handover.current = null;
+    const refused = (e: unknown) => notify(writeErrorMessage(e));
+    if (pickedHome && pickedHome !== sent.homeId) {
+      setRunHome({ runId: id, homeId: pickedHome as Id<"collectionContainers"> }).catch(refused);
+    }
+    if (variant && variant.variantId !== sent.variantId) {
+      setRunVariant({ runId: id, variantId: variant.variantId }).catch(refused);
+    }
+    if (JSON.stringify(defaults) !== JSON.stringify(sent.defaults)) {
+      setRunDefaults({ runId: id, defaults }).catch(refused);
+    }
+  });
+  const loadedRunId = run?._id;
+  useEffect(() => {
+    if (loadedRunId) reconcileHandover(loadedRunId);
+  }, [loadedRunId]);
+
+  /* ---------------------------------------------------------------- */
+  /* Opening Defaults once, on a new set or home with no price         */
+  /* ---------------------------------------------------------------- */
+
+  /**
+   * A pick or home change waiting on its answer. Consumed once, so closing the
+   * panel, clearing the Min price or an Undo never opens it again. An effect, not
+   * a `setPanel` in the pick: `onPick` runs before the Set panel's `close()`, whose
+   * `setPanel(null)` would overwrite it.
+   */
+  const pendingOpen = useRef<{ via: "pick" | "home"; variantId?: string; homeId?: string } | null>(null);
+  const [pickNonce, setPickNonce] = useState(0);
+  const [opened, setOpened] = useState<{ via: "pick" | "home" } | null>(null);
+  /** The warning, for a screen reader, when focus doesn't carry it (the note itself isn't a live region). */
+  const [gateNews, setGateNews] = useState("");
+  const expectOpen = (next: NonNullable<typeof pendingOpen.current>) => {
+    pendingOpen.current = next;
+    setGateNews("");
+    setPickNonce((n) => n + 1);
+  };
+  const settlePendingOpen = useEffectEvent(() => {
+    const pending = pendingOpen.current;
+    if (!pending || loading) return;
+    // An open run answers through the server: wait for its fields to get there.
+    if (pending.variantId !== undefined && pending.variantId !== targetVariantId) return;
+    if (pending.homeId !== undefined && pending.homeId !== targetHome) return;
+    if (!lock.loaded) return;
+    pendingOpen.current = null;
+    if (!lock.needsPrice) return;
+    setPanel((current) => current ?? "defaults");
+    setOpened({ via: pending.via });
+  });
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- one edge, consumed once, on the server's answer for a pick; a value derived in render would reopen the panel after every close
+    settlePendingOpen();
+  }, [loading, targetHome, targetVariantId, pickNonce, lock.loaded, lock.needsPrice]);
+  useEffect(() => {
+    if (!opened) return;
+    // A frame on, and after `close()`'s own frame that returns focus to Set.
+    const frame = requestAnimationFrame(() => {
+      const focused = document.activeElement;
+      const free = !focused || focused === document.body || focused === setButton.current;
+      // A home change opens the panel but never moves focus (WCAG 3.2.2).
+      if (opened.via === "pick" && free && priceRef.current) priceRef.current.focus();
+      else setGateNews(latest.current.gateLine);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [opened]);
+
+  /* ---------------------------------------------------------------- */
 
   const setupBar = (
     <div className="flex flex-wrap items-end gap-4 rounded-lg border border-panel-rule bg-panel p-4 shadow-offset">
@@ -327,28 +552,32 @@ export default function RealAddCardsTab() {
           homes={homes}
           label={kind === "box" ? "Put them in this box" : "Put them in this binder"}
           onChange={(id) => {
+            expectOpen({ via: "home", homeId: id });
             if (!run) return setHomeId(id);
             const name = homes.find((h) => h.id === id)?.name ?? `the ${kind}`;
             setRunHome({ runId: run._id, homeId: id as Id<"collectionContainers"> })
-              .then(() => setStatus(`The next cards you save go into ${name}.`))
-              .catch((e: unknown) => notify(writeErrorMessage(e)));
+              .then(() => say(`The next cards you save go into ${name}.`))
+              .catch((e: unknown) => {
+                if (pendingOpen.current?.homeId === id) pendingOpen.current = null;
+                notify(writeErrorMessage(e));
+              });
           }}
         />
       )}
       <RealSetButton
         open={panel === "set"}
         onOpenChange={(o) => setPanel(o ? "set" : null)}
-        current={
-          run
-            ? variant && variant.variantId === run.variantId
-              ? variant.title
-              : (run.variantName ?? null)
-            : (variant?.title ?? null)
-        }
+        current={targetTitle}
+        buttonRef={setButton}
         onPick={(pick) => {
           setVariant(pick);
-          if (run && pick) {
-            setRunVariant({ runId: run._id, variantId: pick.variantId }).catch((e: unknown) => notify(writeErrorMessage(e)));
+          if (!pick) return;
+          expectOpen({ via: "pick", variantId: pick.variantId });
+          if (run) {
+            setRunVariant({ runId: run._id, variantId: pick.variantId }).catch((e: unknown) => {
+              if (pendingOpen.current?.variantId === pick.variantId) pendingOpen.current = null;
+              notify(writeErrorMessage(e));
+            });
           }
         }}
       />
@@ -359,31 +588,107 @@ export default function RealAddCardsTab() {
         aria-controls="intake-defaults-panel"
         onClick={() => setPanel(panel === "defaults" ? null : "defaults")}
       >
-        Defaults: {(run?.defaults ?? defaults).condition ?? usualCondition}
-        {(run?.defaults ?? defaults).grading ? `, ${(run?.defaults ?? defaults).grading?.grader}` : ""}
+        Defaults: {shownDefaults.condition ?? usualCondition}
+        {shownDefaults.grading ? `, ${shownDefaults.grading.grader}` : ""}
+        {homeKind === "box" && shownDefaults.minPriceCents !== undefined ? `, $${centsText(shownDefaults.minPriceCents)}` : ""}
       </NeonButton>
       {run && (
         <NeonButton variant="secondary" outline className="ml-auto" onClick={() => openRun(null)}>
           New run
         </NeonButton>
       )}
+      {/* In the bar, right above the panel: on a phone it would fall below a tall panel otherwise. */}
+      {lock.locked && (
+        <div className="w-full">
+          <ListingGateNote id={gateNoteId} line={gateLine}>
+            <NeonButton
+              size="1"
+              variant="secondary"
+              outline
+              className="max-sm:min-h-11"
+              onClick={() => openMissingField(lock.needsPrice ? "price" : "condition")}
+            >
+              {lock.needsPrice ? "Set a Min price" : "Pick a condition"}
+            </NeonButton>
+          </ListingGateNote>
+        </div>
+      )}
       {panel === "defaults" && (
         <div id="intake-defaults-panel" className="w-full border-t border-rule pt-3">
           <DefaultsFields
+            key={defaultsEpoch}
             value={shownDefaults}
             showPrice={homeKind === "box"}
             priceRef={priceRef}
             conditionRef={conditionRef}
-            onChange={(next) => {
-              if (run) {
-                setRunDefaults({ runId: run._id, defaults: next }).catch((e: unknown) => notify(writeErrorMessage(e)));
-              } else setDefaults(next);
-            }}
+            priceDescribedBy={lock.locked ? gateNoteId : undefined}
+            commonPrice={
+              targetVariantId
+                ? {
+                    variantId: targetVariantId as Id<"selectorOptions">,
+                    title: targetTitle ?? "this set",
+                    syncing: lock.syncing,
+                    restoreMin: (cents) => writeDefaults({ ...latest.current.shownDefaults, minPriceCents: cents }),
+                    reseed: () => setDefaultsEpoch((n) => n + 1),
+                  }
+                : null
+            }
+            onChange={writeDefaults}
+            onRefused={(e) => notify(writeErrorMessage(e))}
           />
         </div>
       )}
     </div>
   );
+
+  // The tray steps aside while they're going up: the status line has it then.
+  const waiting = held.sending ? [] : held.files;
+  const jobClosed = !!run && !collecting;
+  const failed = held.failedConfig === config;
+  const trayLine =
+    waiting.length === 0
+      ? ""
+      : jobClosed
+        ? `${pileWords(waiting)} waiting. This run's all in, so start a new run.`
+        : !loading && lock.needsSet
+          ? `${pileWords(waiting)} waiting. Pick a set and they're off.`
+          : lock.needsPrice
+            ? `${pileWords(waiting)} waiting on a price.`
+            : lock.needsCondition
+              ? `${pileWords(waiting)} waiting on a condition.`
+              : `${pileWords(waiting)} waiting.`;
+  const tray = (
+    <HeldTray
+      id={trayId}
+      line={trayLine}
+      alone={jobClosed}
+      onRemove={() => {
+        removeHeld(heldKey);
+        setRefusedPile([]);
+        (dropInput.current ?? statusLine.current)?.focus();
+      }}
+      onRetry={
+        failed && ready
+          ? () => {
+              retryHeld(heldKey);
+              // The button is about to go with the tray; the status line says how it goes.
+              statusLine.current?.focus({ preventScroll: true });
+            }
+          : undefined
+      }
+    />
+  );
+  // An open run can still mint its code, set or no set.
+  const scannerHold =
+    run || !pickedHome
+      ? undefined
+      : lock.needsSet
+        ? "Pick a set first, then get a code."
+        : lock.needsPrice
+          ? "Set a price first, then get a code."
+          : lock.needsCondition
+            ? "Pick a condition first, then get a code."
+            : undefined;
 
   return (
     <div data-motion="high" className="space-y-4">
@@ -396,55 +701,47 @@ export default function RealAddCardsTab() {
           </button>
         </p>
       )}
-      {collecting && lock.locked && (
-        <ListingGateNote id={gateNoteId} line={intakeGateLine(homeName, lock)}>
-          <NeonButton
-            size="1"
-            variant="secondary"
-            outline
-            className="max-sm:min-h-11"
-            onClick={() => openMissingField(lock.needsPrice ? "price" : "condition")}
-          >
-            {lock.needsPrice ? "Set a Min price" : "Pick a condition"}
-          </NeonButton>
-        </ListingGateNote>
-      )}
       {collecting ? (
         <>
           <Dropzone
             quiet
-            files={files}
-            disabled={uploading}
-            heldBy={lock.locked ? gateNoteId : undefined}
-            heldLabel={heldHeadline(lock)}
-            onFiles={(chosen) => void onFiles(chosen)}
+            files={refusedPile}
+            disabled={held.sending}
+            inputRef={dropInput}
+            hint={ready || noHome ? undefined : WAITING_HINT}
+            describedBy={[lock.locked ? gateNoteId : null, trayLine ? trayId : null].filter(Boolean).join(" ") || undefined}
+            tray={tray}
+            trayFilled={trayLine !== ""}
+            onFiles={onFiles}
           />
-          {/* A scanner starts the run too, so it waits behind the same price-and-condition hold. */}
-          {(!lock.locked || run) && (
-            <ScannerJoin
-              runId={run?._id ?? null}
-              newRun={
-                pickedHome
-                  ? { homeId: pickedHome as Id<"collectionContainers">, variantId: variant?.variantId, defaults }
-                  : null
-              }
-              kind={kind}
-              loading={loading}
-              onRunStarted={openRun}
-            />
-          )}
+          <ScannerJoin
+            runId={run?._id ?? null}
+            newRun={
+              pickedHome && variant
+                ? { homeId: pickedHome as Id<"collectionContainers">, variantId: variant.variantId, defaults }
+                : null
+            }
+            kind={kind}
+            loading={loading || (!run && !lock.loaded)}
+            heldReason={scannerHold}
+            onRunStarted={openRun}
+          />
         </>
       ) : (
-        <p className="m-0 rounded-md border border-rule p-3 text-sm text-ink-2">
-          This run&apos;s photos are all in. To add more, start a new run.
-        </p>
+        <>
+          <p className="m-0 rounded-md border border-rule p-3 text-sm text-ink-2">
+            This run&apos;s photos are all in. To add more, start a new run.
+          </p>
+          {trayLine && tray}
+        </>
       )}
-      <p role="status" aria-live="polite" className="m-0 min-h-5 text-sm text-ink-2">
-        {status}
+      <p ref={statusLine} tabIndex={-1} role="status" aria-live="polite" className={`m-0 min-h-5 rounded-sm text-sm text-ink-2 ${RING}`}>
+        {held.note}
+        {lock.locked && gateNews && <span className="sr-only"> {gateNews}</span>}
       </p>
       {run ? (
         <LocalPhotos.Provider value={localPhotos}>
-          <RunWorkspace run={run} jobOpen={job?.status === "collecting"} />
+          <RunWorkspace run={run} jobOpen={job?.status === "collecting"} sendingPhotos={held.sending} />
         </LocalPhotos.Provider>
       ) : (
         !runParam && <RecentRuns runs={(recent ?? []).filter((r) => r.homeKind === kind)} onOpen={openRun} />
@@ -473,10 +770,55 @@ export function parseMinPrice(text: string): number | undefined | "invalid" {
   return Math.round(Number(t) * 100);
 }
 
-/** The held drop zone's headline (NEO-370): what to do before the photos. */
-function heldHeadline(missing: { needsPrice: boolean; needsCondition: boolean }): string {
-  if (missing.needsPrice && missing.needsCondition) return "Set a price and a condition, then drop your photos";
-  return missing.needsPrice ? "Set a price, then drop your photos" : "Pick a condition, then drop your photos";
+/** "2 photos" or, for the one zip a pile can hold, "1 zip". */
+function pileWords(files: readonly File[]): string {
+  if (classifyIntake([...files]).kind === "zip") return "1 zip";
+  return files.length === 1 ? "1 photo" : `${files.length} photos`;
+}
+
+/**
+ * The photos waiting for the run to be ready, as a row inside the drop zone's
+ * frame. Always mounted (the words are a live region, and speak only a change);
+ * it draws nothing until there is something in it.
+ */
+function HeldTray({
+  id,
+  line,
+  alone = false,
+  onRemove,
+  onRetry,
+}: {
+  id: string;
+  line: string;
+  /** No drop zone above it: the run's job has closed. */
+  alone?: boolean;
+  onRemove: () => void;
+  onRetry?: () => void;
+}) {
+  const filled = line !== "";
+  return (
+    <div
+      className={
+        filled
+          ? `flex flex-wrap items-center gap-x-3 gap-y-2 border-2 border-dashed border-rule-strong px-4 py-2 text-sm text-ink-2 ${alone ? "rounded-xl" : "rounded-b-xl border-t-0"}`
+          : ""
+      }
+    >
+      <p id={id} role="status" aria-live="polite" className="m-0 min-w-0 flex-1">
+        {line}
+      </p>
+      {filled && onRetry && (
+        <NeonButton size="1" variant="secondary" outline className="max-sm:min-h-11" aria-label="Try again: send the waiting photos" onClick={onRetry}>
+          Try again
+        </NeonButton>
+      )}
+      {filled && (
+        <NeonButton size="1" variant="negative" outline className="max-sm:min-h-11" onClick={onRemove}>
+          Remove photos
+        </NeonButton>
+      )}
+    </div>
+  );
 }
 
 /**
@@ -489,23 +831,24 @@ function RealSetButton({
   onOpenChange,
   current,
   onPick,
+  buttonRef,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   current: string | null;
   onPick: (pick: VariantPick | null) => void;
+  buttonRef: RefObject<HTMLButtonElement | null>;
 }) {
   const [drill, setDrill] = useState<Drill>(EMPTY_DRILL);
   const state = useDrillState(drill, open);
-  const button = useRef<HTMLButtonElement>(null);
   const close = () => {
     onOpenChange(false);
-    requestAnimationFrame(() => button.current?.focus());
+    requestAnimationFrame(() => buttonRef.current?.focus());
   };
   return (
     <>
       <NeonButton
-        ref={button}
+        ref={buttonRef}
         variant="secondary"
         outline
         aria-expanded={open}
@@ -546,16 +889,25 @@ const FIELD = `rounded-md border border-field-rule bg-field px-2 py-1 text-sm te
 function DefaultsFields({
   value,
   onChange,
+  onRefused,
   showPrice,
   priceRef,
   conditionRef,
+  priceDescribedBy,
+  commonPrice,
 }: {
   value: RunDefaults;
-  onChange: (next: RunDefaults) => void;
+  /** Writes the whole defaults; rejects when the server refuses. */
+  onChange: (next: RunDefaults) => Promise<void>;
+  onRefused: (error: unknown) => void;
   /** A box run: the cards can carry a Min price (NEO-378). */
   showPrice: boolean;
   priceRef?: Ref<HTMLInputElement>;
   conditionRef?: Ref<HTMLSelectElement>;
+  /** The listing note, when it shows: the field is what it's asking for. */
+  priceDescribedBy?: string;
+  /** The set the Min price could become the common price of; null with no set known. */
+  commonPrice: CommonPriceTarget | null;
 }) {
   const priceHelpId = useId();
   const priceErrorId = useId();
@@ -564,10 +916,17 @@ function DefaultsFields({
   const usualCondition = useDefaultCondition();
   // Seeded once, when the panel opens; every change is written straight back.
   const [draft, setDraft] = useState(value);
-  const commit = (patch: Partial<RunDefaults>) => {
-    const next = { ...draft, ...patch };
+  // The freshest draft for a write that lands after an await (the common price
+  // button clears the Min once its own save is back).
+  const latestDraft = useRef(value);
+  const write = (patch: Partial<RunDefaults>) => {
+    const next = { ...latestDraft.current, ...patch };
+    latestDraft.current = next;
     setDraft(next);
-    onChange(next);
+    return onChange(next);
+  };
+  const commit = (patch: Partial<RunDefaults>) => {
+    write(patch).catch(onRefused);
   };
   const g = draft.grading;
   const cost = draft.costCents === undefined ? "" : (draft.costCents / 100).toFixed(2);
@@ -649,7 +1008,7 @@ function DefaultsFields({
               placeholder="Common price"
               value={priceText}
               aria-invalid={priceBad || undefined}
-              aria-describedby={priceBad ? `${priceErrorId} ${priceHelpId}` : priceHelpId}
+              aria-describedby={[priceBad ? priceErrorId : null, priceHelpId, priceDescribedBy].filter(Boolean).join(" ")}
               onChange={(e) => setPriceText(e.target.value)}
               onBlur={commitPrice}
               onKeyDown={(e) => {
@@ -666,6 +1025,17 @@ function DefaultsFields({
             </span>
           )}
           <span id={priceHelpId}>Leave it blank to sell at your common price.</span>
+          {commonPrice && (
+            <SaveAsCommonPrice
+              target={commonPrice}
+              text={priceText}
+              onSaved={async () => {
+                await write({ minPriceCents: undefined });
+                setPriceText("");
+                setPriceBad(false);
+              }}
+            />
+          )}
         </div>
       )}
       <label className="flex flex-col gap-1 text-xs text-ink-3">
@@ -681,6 +1051,97 @@ function DefaultsFields({
         <Input bare className={FIELD} defaultValue={draft.notes ?? ""} onBlur={(e) => commit({ notes: e.target.value || undefined })} />
       </label>
     </div>
+  );
+}
+
+/** What "Save as common price" needs from the screen. */
+interface CommonPriceTarget {
+  variantId: Id<"selectorOptions">;
+  title: string;
+  /** The collector syncs, so a new common price can reach cards already listed. */
+  syncing: boolean;
+  /** Undo's first step: put the Min price back on the run or the setup. */
+  restoreMin: (cents: number) => Promise<void>;
+  /** Undo's last step: `DefaultsFields` seeds its draft once, so draw it afresh. */
+  reseed: () => void;
+}
+
+/**
+ * NEO-452 — the Min price as the collector's own common price for this set. The
+ * value is the field's text at the press, not what was last committed. No dialog
+ * even when it replaces a different price: the label says it, the line beneath
+ * says what moves, and the status line has Undo, as `CommonPrice` does.
+ *
+ * The Min is cleared once the price is saved (Jason, 2026-11-06). A kept Min
+ * would become each copy's own floor, and those copies would never follow a later
+ * common price. Copies this run already saved keep the floor they have. Common
+ * price first, then the clear, so the hold never flashes back.
+ */
+function SaveAsCommonPrice({
+  target,
+  text,
+  onSaved,
+}: {
+  target: CommonPriceTarget;
+  text: string;
+  /** Clears the Min price. */
+  onSaved: () => Promise<void>;
+}) {
+  const { variantId, title, syncing, restoreMin, reseed } = target;
+  const page = usePageApi();
+  const writes = useCollectionActions();
+  const prices = useCommonPrices([variantId]);
+  const common = prices === undefined ? undefined : (prices[variantId] ?? null);
+  const helpId = useId();
+  const saving = useRef(false);
+  const parsed = parseMinPrice(text);
+  const cents = typeof parsed === "number" ? parsed : null;
+  const replaces = typeof common === "number" && Math.round(common * 100) !== cents;
+  const label = replaces ? `Replace $${common.toFixed(2)} common price` : "Save as common price";
+  // Blank, not a price, or still loading what it would replace: a Tab stop that does nothing.
+  const usable = cents !== null && common !== undefined;
+  const save = () => {
+    if (cents === null || !usable || saving.current) return;
+    saving.current = true;
+    const dollars = cents / 100;
+    void page
+      .run(
+        async () => {
+          const saved = await writes.setCommonPrice(variantId, dollars);
+          await onSaved();
+          return {
+            undo: async () => {
+              await restoreMin(cents);
+              await saved.undo();
+              reseed();
+            },
+          };
+        },
+        () => `Common price for ${title} is $${dollars.toFixed(2)}`,
+      )
+      .finally(() => {
+        saving.current = false;
+      });
+  };
+  return (
+    <>
+      <NeonButton
+        size="1"
+        variant="secondary"
+        outline
+        className="mt-1 self-start max-sm:min-h-11"
+        aria-label={`${label} for ${title}`}
+        aria-disabled={!usable}
+        aria-describedby={helpId}
+        onClick={save}
+      >
+        {label}
+      </NeonButton>
+      <span id={helpId}>
+        Cards from {title} with no price of their own sell at it.
+        {syncing && " That includes any you've already listed, so those change too."}
+      </span>
+    </>
   );
 }
 
@@ -730,7 +1191,16 @@ const LANE_LABEL = {
   saved: "Saved",
 } as const;
 
-function RunWorkspace({ run, jobOpen }: { run: RunSummary; jobOpen: boolean }) {
+function RunWorkspace({
+  run,
+  jobOpen,
+  sendingPhotos,
+}: {
+  run: RunSummary;
+  jobOpen: boolean;
+  /** Photos are on their way up; closing the job now would refuse the rest. */
+  sendingPhotos: boolean;
+}) {
   const { notify, inform } = usePageApi();
   const images = useQuery(api.placeholderPipeline.listPlaceholderImages, { jobId: run.jobId });
   const pairs = useQuery(api.placeholderPipeline.listPlaceholderPairs, { jobId: run.jobId });
@@ -928,8 +1398,10 @@ function RunWorkspace({ run, jobOpen }: { run: RunSummary; jobOpen: boolean }) {
               size="1"
               variant="secondary"
               outline
+              aria-disabled={sendingPhotos || undefined}
               {...{ [DONE_ATTR]: "" }}
               onClick={() => {
+                if (sendingPhotos) return;
                 markDone(true);
                 void closeStream({ jobId: run.jobId }).catch((e: unknown) => {
                   markDone(false);

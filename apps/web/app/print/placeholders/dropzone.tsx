@@ -1,4 +1,4 @@
-import { useCallback, useId, useRef, useState } from "react";
+import { useCallback, useId, useRef, useState, type ReactNode, type Ref } from "react";
 import { classifyIntake } from "@/lib/placeholders/intake-kind";
 
 /**
@@ -27,31 +27,41 @@ import { classifyIntake } from "@/lib/placeholders/intake-kind";
  * zip mixed with photos, must be REFUSED here and reported beside the selection,
  * because there is no button press left to intercept it.
  *
- * ## Held, not disabled (NEO-370)
- * `heldBy` holds the zone back for a reason the caller shows beside it (the
- * id of that text): the input stays a Tab stop, `aria-disabled` and described
- * by the reason, so a keyboard or screen-reader user hears why on arrival,
- * where a native `disabled` would drop it from the tab order unexplained. A
- * click, Space/Enter or a drop does nothing while held. `heldLabel` replaces
- * the headline; the accessible name never changes.
+ * ## Always open (NEO-452)
+ * A caller that isn't ready to send takes the files anyway and holds them
+ * itself (the intake screen's tray), so this zone is never held back: the only
+ * thing that stops a drop is `disabled`, while a send is running. Its headline
+ * and accessible name never change for a caller's state; `hint` carries what to
+ * expect and `describedBy` the reason, so a keyboard or screen-reader user hears
+ * why on arrival. `tray` is the caller's row for what it is holding, inside the
+ * zone's frame and its drag target, so a drop on it counts instead of sending
+ * the browser off to open the file.
  */
 export function Dropzone({
   files,
   onFiles,
   disabled,
   quiet = false,
-  heldBy,
-  heldLabel,
+  describedBy,
+  hint,
+  inputRef,
+  tray,
+  trayFilled = false,
 }: {
   files: File[];
   onFiles: (files: File[]) => void;
   disabled: boolean;
   /** The caller announces progress itself; only a refused selection is said here. */
   quiet?: boolean;
-  /** The id of the text saying why the zone is held (see above); absent when it is open. */
-  heldBy?: string;
-  /** The headline while held. */
-  heldLabel?: string;
+  /** The ids of the text that explains what happens to a drop right now. */
+  describedBy?: string;
+  /** Replaces the usual line under the headline. */
+  hint?: string;
+  inputRef?: Ref<HTMLInputElement>;
+  /** Drawn inside the zone's frame, under the label. */
+  tray?: ReactNode;
+  /** The tray has something in it, so the zone's bottom edge belongs to the tray. */
+  trayFilled?: boolean;
 }) {
   const inputId = useId();
   const [dragging, setDragging] = useState(false);
@@ -59,8 +69,6 @@ export function Dropzone({
   // the pointer crosses an inner node. Counting enter/leave is what keeps the
   // highlight steady while moving across the zone.
   const depth = useRef(0);
-  const held = heldBy !== undefined;
-  const inert = disabled || held;
 
   const setDropped = useCallback(
     (list: FileList | null) => {
@@ -75,12 +83,11 @@ export function Dropzone({
 
   return (
     <div className="space-y-2">
-      <label
-        htmlFor={inputId}
+      <div
         onDragEnter={(e) => {
           e.preventDefault();
           depth.current += 1;
-          if (!inert) setDragging(true);
+          if (!disabled) setDragging(true);
         }}
         onDragOver={(e) => e.preventDefault()}
         onDragLeave={() => {
@@ -91,58 +98,62 @@ export function Dropzone({
           e.preventDefault();
           depth.current = 0;
           setDragging(false);
-          if (!inert) setDropped(e.dataTransfer.files);
+          if (!disabled) setDropped(e.dataTransfer.files);
         }}
-        className={[
-          "flex cursor-pointer flex-col items-center justify-center gap-2",
-          "rounded-xl border-2 border-dashed px-6 py-10 text-center transition-colors",
-          "focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-focus",
-          dragging
-            ? "border-neon-purple bg-neon-purple/10"
-            : "border-rule-strong hover:border-control hover:bg-field/40",
-          // Held, the headline is the instruction, so only sending dims the zone.
-          disabled ? "cursor-not-allowed opacity-60" : held ? "cursor-not-allowed" : "",
-        ].join(" ")}
       >
-        <span className="text-base font-medium text-ink-2">
-          {dragging
-            ? "Drop them here"
-            : disabled
-              ? "Sending your photos…"
-              : held && heldLabel
-                ? heldLabel
+        <label
+          htmlFor={inputId}
+          className={[
+            "flex cursor-pointer flex-col items-center justify-center gap-2",
+            trayFilled ? "rounded-t-xl" : "rounded-xl",
+            "border-2 border-dashed px-6 py-10 text-center transition-colors",
+            "focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-focus",
+            dragging
+              ? "border-neon-purple bg-neon-purple/10"
+              : "border-rule-strong hover:border-control hover:bg-field/40",
+            disabled ? "cursor-not-allowed opacity-60" : "",
+          ].join(" ")}
+        >
+          <span className="text-base font-medium text-ink-2">
+            {dragging
+              ? "Drop them here"
+              : disabled
+                ? "Sending your photos…"
                 : "Drag your card photos here"}
-        </span>
-        <span className="text-sm text-ink-3">
-          or <span className="text-neon-blue-text underline">browse your files</span>
-        </span>
-        <span className="text-xs text-ink-3">
-          JPEG or PNG, or a single zip. Uploading starts as soon as you choose —
-          keep them in scan order (front, back, front, back), because that order
-          is what pairs them.
-        </span>
-        <input
-          id={inputId}
-          type="file"
-          accept=".zip,image/jpeg,image/png"
-          multiple
-          disabled={disabled}
-          aria-disabled={held || undefined}
-          aria-describedby={heldBy}
-          // Held: no picker (a label click, Space and Enter all arrive as this click).
-          onClick={held ? (e) => e.preventDefault() : undefined}
-          // The visible label's full text (title + hint + the instructional
-          // paragraph) would otherwise BE the accessible name — every word in
-          // the <label> counts, so without this a screen reader announces all
-          // three sentences every time focus lands here. Kept short but still
-          // built from the literal visible phrase ("Drag your card photos
-          // here" / "browse your files") so the visible label stays part of
-          // the accessible name (WCAG 2.5.3, Label in Name).
-          aria-label="Drag your card photos here, or browse your files"
-          className="sr-only"
-          onChange={(e) => setDropped(e.target.files)}
-        />
-      </label>
+          </span>
+          <span className="text-sm text-ink-3">
+            or <span className="text-neon-blue-text underline">browse your files</span>
+          </span>
+          <span className="text-xs text-ink-3">
+            {hint ??
+              "JPEG or PNG, or a single zip. Uploading starts as soon as you choose — keep them in scan order (front, back, front, back), because that order is what pairs them."}
+          </span>
+          <input
+            ref={inputRef}
+            id={inputId}
+            type="file"
+            accept=".zip,image/jpeg,image/png"
+            multiple
+            disabled={disabled}
+            aria-describedby={describedBy}
+            // The visible label's full text (title + hint + the instructional
+            // paragraph) would otherwise BE the accessible name — every word in
+            // the <label> counts, so without this a screen reader announces all
+            // three sentences every time focus lands here. Kept short but still
+            // built from the literal visible phrase ("Drag your card photos
+            // here" / "browse your files") so the visible label stays part of
+            // the accessible name (WCAG 2.5.3, Label in Name).
+            aria-label="Drag your card photos here, or browse your files"
+            className="sr-only"
+            onChange={(e) => {
+              setDropped(e.target.files);
+              // Or picking the same files again (after the caller removed them) fires no change.
+              e.target.value = "";
+            }}
+          />
+        </label>
+        {tray}
+      </div>
 
       {/* Always mounted so the message is announced when it appears, and keyed
           so the element remounts when the role itself flips between "status"

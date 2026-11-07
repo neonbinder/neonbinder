@@ -3764,9 +3764,11 @@ export default defineSchema({
   // defaults. Its `_id` is the `?run=` handle; every function checks
   // `userId === identity.subject` on it.
   //
-  // `variantId` is absent when the collector skipped the set pick; every pair
-  // is then "noVariant" until a variant is picked or pinned. `variantPinned`
-  // marks one chosen mid-run ("these are all from <set>") rather than up front.
+  // NEO-452: every new run starts with a `variantId` (`createIntakeRun` refuses
+  // without one). It stays optional for runs from before that, whose collector
+  // skipped the set pick; every pair of such a run is "noVariant" until a variant
+  // is picked or pinned. `variantPinned` marks one chosen mid-run ("these are all
+  // from <set>") rather than up front.
   intakeRuns: defineTable({
     userId: v.string(),
     jobId: v.string(),

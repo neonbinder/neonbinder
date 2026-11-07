@@ -34,7 +34,8 @@
  *     restores or raises a line (`undoBoxQuantity`; its inverse comes from
  *     the client, so it is checked, not trusted);
  *   - starting a photo intake run into a listed box
- *     (`intakeRuns.createIntakeRun`).
+ *     (`intakeRuns.createIntakeRun`, which first refuses any run with no set,
+ *     listed or not: NEO-452).
  * Lowering, removing and moving out are never held.
  *
  * It is not the only line. State that changes AFTER cards are in can still
@@ -79,7 +80,7 @@ export async function commonPriceCentsOf(
 export interface GatedCopy {
   /** A copy of the collector's own private card: it never lists, so it is never held. */
   privateCard?: boolean;
-  /** The card's variant, for its common price; absent while it is not known (an intake run with no set yet). */
+  /** The card's variant, for its common price; absent only on a private card, which the gate skips. */
   variantId?: Id<"selectorOptions">;
   graded: boolean;
   /** The condition the copy will carry (its own, else the owner's default). */
@@ -157,7 +158,9 @@ export class ListingGate {
  * all (the "See what's syncing" link after Sync and Done adding photos),
  * whether the gate applies to adds into `homeId`, and the caller's common
  * price for `variantId` (cents) when it does. The screen combines it with what the copy will carry through
- * `lib/listingReadiness.ts`, the rule the writers above enforce.
+ * `lib/listingReadiness.ts`, the rule the writers above enforce. Photo intake
+ * reads that through `intakeRunReadiness`: with no variant yet it asks for the
+ * set first, so a null price here isn't a missing price until a set is picked.
  *
  * Small and subscribable (CLAUDE.md, "A subscribed query stays small"): the
  * home, the caller's listing state rows (a handful) and one common-price row.

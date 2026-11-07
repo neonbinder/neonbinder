@@ -37,8 +37,13 @@
  * photos. An attach that never reports is called failed after
  * `INTAKE_PHOTO_ATTACH_TIMEOUT_MS` (`expireIntakePhotoAttach`).
  *
- * Not here yet: the common-price prompt (NEO-378) and the catalog-wide set
- * finder for a run with no variant.
+ * NEO-452: every new run starts with a set, listed or not (`createIntakeRun`
+ * refuses without one), and the screen holds photos in the browser until the
+ * run is ready (`lib/listingReadiness.ts`, `intakeRunReadiness`). A run from
+ * before that with no variant still opens: `noVariant`, `searchIntakeCards`'
+ * empty answer and `setIntakeRunVariant` stay for it.
+ *
+ * Not here yet: the common-price prompt (NEO-378).
  */
 
 import { internalMutation, internalQuery, mutation, query } from "./_generated/server";
@@ -161,7 +166,11 @@ async function requireOwnedRun(
   return run;
 }
 
-/** A variant to match in must exist and hold cards directly. */
+/**
+ * A variant to match in must exist and hold cards directly. A collector can
+ * pick one with no cards, so that refusal is a `ConvexError`: production Convex
+ * hides a plain `Error`'s words from the client.
+ */
 async function requireVariant(
   ctx: QueryCtx,
   variantId: Id<"selectorOptions">,
@@ -172,7 +181,7 @@ async function requireVariant(
     .query("cardChecklist")
     .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", variantId))
     .first();
-  if (!card) throw new Error("That variant has no cards to match against");
+  if (!card) refuse(COLLECTION_ERRORS.invalid, "That set has no cards to match against yet. Pick another one.");
 }
 
 /** A run's Min price: whole cents, zero to the cap, by the copies' rule; else refused. */
@@ -254,6 +263,11 @@ async function queueSync(ctx: MutationCtx, run: Doc<"intakeRuns">): Promise<void
 /**
  * Start a run over a placeholder job the caller owns, filing into a home the
  * caller owns. One run per job: asking again returns the existing run.
+ *
+ * NEO-452: a new run needs a set, wherever it files. `variantId` stays optional
+ * on the wire so a tab left open from before gets these words, not an argument
+ * validator error, and the refusal comes after the `existing` check so a retry
+ * still gets its run back.
  */
 export const createIntakeRun = mutation({
   args: {
@@ -280,15 +294,18 @@ export const createIntakeRun = mutation({
       .first();
     if (existing) return existing._id;
 
+    const variantId = args.variantId;
+    if (!variantId) refuse(COLLECTION_ERRORS.invalid, "Pick a set first: cards are matched in it.");
+
     // NEO-370: a run into a listed box, by a collector set up for syncing,
     // starts with a price (the run's own, else the picked variant's common
     // price) and a condition, as every save from it will need
-    // (`listingGate.ts`). A run with no variant yet prices by its own default.
+    // (`listingGate.ts`).
     const defaults = cleanDefaults(args.defaults);
     const gate = new ListingGate(ctx, userId);
     if (await gate.applies(home)) {
       await gate.require(home, {
-        ...(args.variantId ? { variantId: args.variantId } : {}),
+        variantId,
         graded: defaults?.grading !== undefined,
         condition: defaults?.condition ?? (await defaultConditionOf(ctx, userId)),
         ...(defaults?.minPriceCents !== undefined ? { ownPriceCents: defaults.minPriceCents } : {}),
@@ -300,7 +317,7 @@ export const createIntakeRun = mutation({
       userId,
       jobId: args.jobId,
       homeId: args.homeId,
-      variantId: args.variantId,
+      variantId,
       defaults,
       createdAt: now,
       lastActivityAt: now,
