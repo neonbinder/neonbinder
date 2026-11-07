@@ -70,8 +70,19 @@ export function siteUrlFor(convexUrl: string, override?: string): string {
 /** Statuses worth another try: a rate limit or an upstream blip. */
 const TRANSIENT = new Set([429, 502, 503]);
 
-/** How soon to sign back in after the client gave up on its session. */
+/** How long one key exchange may take before it counts as a network failure. */
+const EXCHANGE_TIMEOUT_MS = 15_000;
+
+/** How soon to sign back in after the client gave up on its session, the first time. */
 const REAUTH_RETRY_MS = 30_000;
+/** However long sign-in stays broken, it's tried at least this often. */
+const REAUTH_RETRY_MAX_MS = 5 * 60_000;
+
+/** Doubles with each failed try, spread by a quarter either way so many apps don't retry together. */
+function reauthDelayMs(failures: number): number {
+  const doubled = REAUTH_RETRY_MS * 2 ** Math.min(failures, 8);
+  return Math.min(REAUTH_RETRY_MAX_MS, doubled * (0.75 + Math.random() * 0.5));
+}
 
 /** Trades the API key for short-lived session tokens, reusing one session. */
 class KeyExchange {
@@ -79,6 +90,7 @@ class KeyExchange {
   private primed: string | null = null;
   /** The key itself was refused, so asking again can't help. */
   rejected = false;
+  onRejected = () => {};
 
   constructor(
     private readonly siteUrl: string,
@@ -92,6 +104,7 @@ class KeyExchange {
       redirect: "error",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ key: this.key, ...(this.sessionId ? { sessionId: this.sessionId } : {}) }),
+      signal: AbortSignal.timeout(EXCHANGE_TIMEOUT_MS),
     });
   }
 
@@ -105,17 +118,21 @@ class KeyExchange {
   async verify(): Promise<void> {
     for (let attempt = 1; ; attempt++) {
       let res: Response | null = null;
+      let token: string | null = null;
       try {
         res = await this.exchange();
+        // The time limit covers the body too, so it's read in here.
+        if (res.ok) token = await this.read(res);
       } catch {
-        // Network blip: retried below like a transient status.
+        // Network blip or time limit: retried below like a transient status.
+        res = null;
       }
       if (res?.status === 401) {
         throw new KeyRejectedError();
       }
       if (res?.ok) {
-        this.primed = await this.read(res);
-        if (!this.primed) throw new Error("NeonBinder sign-in returned no session.");
+        if (!token) throw new Error("NeonBinder sign-in returned no session.");
+        this.primed = token;
         return;
       }
       if (res && !TRANSIENT.has(res.status)) throw new Error(`NeonBinder sign-in failed (HTTP ${res.status}).`);
@@ -138,7 +155,10 @@ class KeyExchange {
     this.primed = null;
     try {
       const res = await this.exchange();
-      if (res.status === 401) this.rejected = true;
+      if (res.status === 401 && !this.rejected) {
+        this.rejected = true;
+        this.onRejected();
+      }
       return res.ok ? await this.read(res) : null;
     } catch {
       return null;
@@ -156,14 +176,23 @@ export class KeyRejectedError extends Error {
 
 export class NeonBinder {
   private reauth: ReturnType<typeof setTimeout> | undefined;
+  private reauthFailures = 0;
   private closed = false;
+  private readonly rejectionListeners = new Set<() => void>();
 
-  private constructor(private readonly convex: ConvexClient) {}
+  private constructor(
+    private readonly convex: ConvexClient,
+    private readonly keys: KeyExchange,
+  ) {
+    keys.onRejected = () => {
+      for (const listener of [...this.rejectionListeners]) listener();
+    };
+  }
 
   static async signIn(convexUrl: string, apiKey: string, siteOverride?: string): Promise<NeonBinder> {
     const keys = new KeyExchange(siteUrlFor(convexUrl, siteOverride), apiKey);
     await keys.verify();
-    const nb = new NeonBinder(new ConvexClient(convexUrl));
+    const nb = new NeonBinder(new ConvexClient(convexUrl), keys);
     nb.stayAuthenticated(keys);
     return nb;
   }
@@ -178,11 +207,31 @@ export class NeonBinder {
     this.convex.setAuth(
       (args) => keys.fetchToken(args),
       (authenticated) => {
-        if (authenticated || keys.rejected || this.closed) return;
+        if (authenticated) {
+          this.reauthFailures = 0;
+          return;
+        }
+        if (keys.rejected || this.closed) return;
         clearTimeout(this.reauth);
-        this.reauth = setTimeout(() => this.stayAuthenticated(keys), REAUTH_RETRY_MS);
+        this.reauth = setTimeout(() => {
+          this.reauthFailures++;
+          this.stayAuthenticated(keys);
+        }, reauthDelayMs(this.reauthFailures));
       },
     );
+  }
+
+  /**
+   * Hears once that NeonBinder refused the key after sign-in (revoked, most
+   * likely), straight away if it already has. Returns how to stop listening.
+   */
+  onKeyRejected(listener: () => void): () => void {
+    if (this.keys.rejected) {
+      listener();
+      return () => {};
+    }
+    this.rejectionListeners.add(listener);
+    return () => this.rejectionListeners.delete(listener);
   }
 
   async join(code: string): Promise<JoinedRun | null> {
@@ -247,7 +296,11 @@ export class NeonBinder {
   }
 }
 
-/** The run stopped taking cards (done pressed, or it sat idle and closed). */
+/**
+ * The run stopped taking cards (done pressed, or it sat idle and closed). Only
+ * a fast path: a deployment can hide an error's words, so no match proves
+ * nothing, and the caller asks the run itself.
+ */
 export function isRunClosedError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return RUN_CLOSED_ERROR.test(message);

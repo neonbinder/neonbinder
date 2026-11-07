@@ -1,3 +1,4 @@
+import type { ChildProcess } from "node:child_process";
 import { mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -30,7 +31,40 @@ vi.mock("convex/browser", () => ({
   }),
 }));
 
-import { NeonBinder } from "./neonbinder.js";
+/**
+ * A seam into the real feedCards: `beforeScanStart` runs just before the session
+ * hears a scan has started, which is the moment a stop can land with no scan to
+ * stop. Everything else is the real thing, and stopScan stays real too: it's
+ * only recorded.
+ */
+const seam = vi.hoisted(() => ({
+  beforeScanStart: undefined as undefined | (() => void),
+  stopped: [] as ChildProcess[],
+  onStopped: undefined as undefined | (() => void),
+}));
+vi.mock("./scanimage.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./scanimage.js")>();
+  return {
+    ...actual,
+    stopScan: async (proc: ChildProcess, log: (line: string) => void) => {
+      await actual.stopScan(proc, log);
+      seam.stopped.push(proc);
+      seam.onStopped?.();
+    },
+    feedCards: (opts: Parameters<typeof actual.feedCards>[0]) =>
+      actual.feedCards({
+        ...opts,
+        onScanStart: (proc) => {
+          const hook = seam.beforeScanStart;
+          seam.beforeScanStart = undefined;
+          hook?.();
+          opts.onScanStart(proc);
+        },
+      }),
+  };
+});
+
+import { KeyRejectedError, NeonBinder } from "./neonbinder.js";
 
 const FAKE = path.join(path.dirname(fileURLToPath(import.meta.url)), "testing", "fake-scanimage.sh");
 const FAST: Timing = { stallMs: 2000, firstPageMs: 2000, settleMs: 0, idleMs: 20, pollMs: 10 };
@@ -58,6 +92,9 @@ beforeEach(async () => {
 });
 afterEach(() => {
   vi.unstubAllGlobals();
+  seam.beforeScanStart = undefined;
+  seam.onStopped = undefined;
+  seam.stopped.length = 0;
 });
 
 async function until(condition: () => boolean, what = "condition") {
@@ -80,6 +117,8 @@ function rig(answers: Array<Answer | (() => Answer | Promise<Answer>)> = ["ABC12
   const lines: string[] = [];
   const watchers: Array<(run: JoinedRun | null) => void> = [];
   let unwatched = 0;
+  let keyRejected = false;
+  const rejectionListeners = new Set<() => void>();
   const nb = {
     join: vi.fn<RunClient["join"]>(async () => RUN),
     watchRun: vi.fn<RunClient["watchRun"]>((_code, onChange) => {
@@ -94,6 +133,14 @@ function rig(answers: Array<Answer | (() => Answer | Promise<Answer>)> = ["ABC12
       order.push("close");
       return { closed: true, status: "processing" };
     }),
+    onKeyRejected: (listener: () => void) => {
+      if (keyRejected) {
+        listener();
+        return () => {};
+      }
+      rejectionListeners.add(listener);
+      return () => void rejectionListeners.delete(listener);
+    },
   };
   const stdin = new PassThrough();
   const ask = vi.fn<SessionDeps["ask"]>(async () => {
@@ -126,6 +173,11 @@ function rig(answers: Array<Answer | (() => Answer | Promise<Answer>)> = ["ABC12
     watchers,
     unwatched: () => unwatched,
     closeWebsite: (latest: JoinedRun | null = { ...RUN, collecting: false }) => watchers.at(-1)!(latest),
+    rejectKey: () => {
+      keyRejected = true;
+      for (const listener of [...rejectionListeners]) listener();
+    },
+    rejectionListeners,
     logged: (text: string | RegExp) => lines.some((l) => (typeof text === "string" ? l.includes(text) : text.test(l))),
     start: (first?: string) => scanLoop(deps, first),
   };
@@ -188,6 +240,228 @@ describe("Done on the website", () => {
     expect(r.logged("Card 1 wasn't sent: the run stopped taking cards. Put it back in the stack.")).toBe(true);
     expect(r.logged(/^This run closed on NeonBinder\. 0 cards sent, 1 to feed again\.$/)).toBe(true);
     expect(r.nb.closeRun).not.toHaveBeenCalled();
+  });
+});
+
+describe("a closed run when the error's words are hidden", () => {
+  const REDACTED = new Error("[Request ID: abc123] Server Error");
+  const CLOSED = { ...RUN, collecting: false };
+  /** The prompt's own join finds the open run; the next ones are the check after a failure. */
+  const joinThenCheck = (r: ReturnType<typeof rig>, check: () => Promise<JoinedRun | null>) =>
+    r.nb.join.mockResolvedValueOnce(RUN).mockImplementation(check);
+
+  test.each([
+    ["stopped collecting", CLOSED],
+    ["is gone", null],
+  ])("a failed upload whose run %s is exactly a closed run", async (_name, latest) => {
+    const r = rig();
+    r.nb.sendImage.mockRejectedValue(REDACTED);
+    joinThenCheck(r, async () => latest);
+    await expect(r.start()).resolves.toBe(0);
+    expect(r.logged("Card 1 wasn't sent: the run stopped taking cards. Put it back in the stack.")).toBe(true);
+    expect(r.logged(/^This run closed on NeonBinder\. 0 cards sent, 1 to feed again\.$/)).toBe(true);
+    expect(r.logged("didn't reach NeonBinder")).toBe(false);
+    expect(r.ask).toHaveBeenCalledTimes(2);
+    expect(r.nb.closeRun).not.toHaveBeenCalled();
+  });
+
+  test("a failed upload whose run is still open keeps the connection message and keeps scanning", async () => {
+    await loadPaper("pairs:4");
+    const r = rig();
+    r.nb.sendImage.mockRejectedValueOnce(REDACTED);
+    joinThenCheck(r, async () => RUN);
+    const exit = r.start();
+    await until(() => r.logged("Card 1 didn't reach NeonBinder. Check the internet connection and feed it again."), "the failed card");
+    expect(r.logged("Stopping the scanner…")).toBe(false);
+    await until(() => r.logged("Card 2 sent."), "the next card");
+    r.closeWebsite();
+    await exit;
+    expect(r.logged("the run stopped taking cards")).toBe(false);
+  });
+
+  test.each([
+    ["fails", () => Promise.reject(new Error("offline"))],
+    ["never answers", () => new Promise<never>(() => {})],
+  ])("a check that %s proves nothing: the connection message, within its limit", async (_name, check) => {
+    await loadPaper("pairs:4");
+    const r = rig(["ABC123"], { runCheckTimeoutMs: 30 });
+    r.nb.sendImage.mockRejectedValueOnce(REDACTED);
+    joinThenCheck(r, check);
+    const exit = r.start();
+    await until(() => r.logged("Card 1 didn't reach NeonBinder."), "the failed card");
+    expect(r.logged("the run stopped taking cards")).toBe(false);
+    await until(() => r.logged("Card 2 sent."), "the next card");
+    r.closeWebsite();
+    await exit;
+  });
+
+  test("the words still decide on their own, with no check", async () => {
+    const r = rig();
+    r.nb.sendImage.mockRejectedValue(new Error("job is not collecting"));
+    await r.start();
+    expect(r.nb.join).toHaveBeenCalledTimes(1);
+  });
+
+  test("the watcher already saw the close: a card failing in flight needs no check", async () => {
+    const hold = gate();
+    const r = rig();
+    r.nb.sendImage.mockImplementationOnce(async () => {
+      await hold.opened;
+      throw REDACTED;
+    });
+    const exit = r.start();
+    await until(() => r.nb.sendImage.mock.calls.length === 1, "the upload to start");
+    r.closeWebsite();
+    hold.open();
+    await expect(exit).resolves.toBe(0);
+    expect(r.nb.join).toHaveBeenCalledTimes(1);
+    expect(r.logged("Card 1 wasn't sent: the run stopped taking cards. Put it back in the stack.")).toBe(true);
+    expect(r.logged("didn't reach NeonBinder")).toBe(false);
+  });
+
+  test("a close that throws, on a run confirmed closed, needs no fallback", async () => {
+    const r = rig();
+    r.nb.closeRun.mockRejectedValue(REDACTED);
+    joinThenCheck(r, async () => CLOSED);
+    const exit = r.start();
+    await until(() => r.logged("Card 1 sent."), "the first card");
+    r.stdin.write("d");
+    await expect(exit).resolves.toBe(0);
+    expect(r.logged("Couldn't reach NeonBinder")).toBe(false);
+  });
+
+  test.each([
+    ["still open", () => Promise.resolve(RUN)],
+    ["unknown", () => Promise.reject(new Error("offline"))],
+    ["not answering", () => new Promise<never>(() => {})],
+  ])("a close that throws, on a run %s, shows the fallback", async (_name, check) => {
+    const r = rig(["ABC123"], { runCheckTimeoutMs: 30 });
+    r.nb.closeRun.mockRejectedValue(REDACTED);
+    joinThenCheck(r, check);
+    const exit = r.start();
+    await until(() => r.logged("Card 1 sent."), "the first card");
+    r.stdin.write("d");
+    await expect(exit).resolves.toBe(0);
+    expect(r.logged("Couldn't reach NeonBinder. Press Done adding photos on the screen.")).toBe(true);
+  });
+});
+
+describe("a key refused partway through", () => {
+  const CLOSED_LINE = "This run closed on NeonBinder";
+
+  test("the scan stops, it reports, and the loop ends with the rejection; never a closed run, never a close", async () => {
+    const r = rig();
+    const exit = r.start();
+    await until(() => r.logged("Card 1 sent."), "the first card");
+    r.rejectKey();
+    await expect(exit).rejects.toBeInstanceOf(KeyRejectedError);
+    expect(r.logged("Stopping the scanner…")).toBe(true);
+    expect(r.logged(/^1 card sent\.$/)).toBe(true);
+    expect(r.logged(CLOSED_LINE)).toBe(false);
+    expect(r.nb.closeRun).not.toHaveBeenCalled();
+    expect(r.ask).toHaveBeenCalledTimes(1);
+    expect(r.unwatched()).toBe(1);
+    expect(r.rejectionListeners.size).toBe(0);
+  });
+
+  test.each([
+    ["hidden words", new Error("Server Error")],
+    ["a closed run's words", new Error("job is not collecting")],
+  ])("a card failing in flight, with %s, is reported as signed out", async (_name, failure) => {
+    const hold = gate();
+    const r = rig();
+    r.nb.sendImage.mockImplementationOnce(async () => {
+      await hold.opened;
+      throw failure;
+    });
+    const exit = r.start();
+    await until(() => r.nb.sendImage.mock.calls.length === 1, "the upload to start");
+    r.rejectKey();
+    hold.open();
+    await expect(exit).rejects.toBeInstanceOf(KeyRejectedError);
+    expect(r.logged("Card 1 wasn't sent: NeonBinder signed this app out. Put it back in the stack.")).toBe(true);
+    expect(r.logged(/^0 cards sent, 1 to feed again\.$/)).toBe(true);
+    expect(r.logged("Check the internet connection")).toBe(false);
+    expect(r.logged("the run stopped taking cards")).toBe(false);
+    expect(r.logged(CLOSED_LINE)).toBe(false);
+    expect(r.nb.join).toHaveBeenCalledTimes(1);
+  });
+
+  test("a card already staged isn't tried: it's put back", async () => {
+    await loadPaper("pairs:4");
+    const hold = gate();
+    const r = rig();
+    r.nb.sendImage.mockImplementationOnce(async () => {
+      await hold.opened;
+      return 0;
+    });
+    const exit = r.start();
+    await until(() => r.nb.sendImage.mock.calls.length === 1, "the first upload");
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    r.rejectKey();
+    hold.open();
+    await expect(exit).rejects.toBeInstanceOf(KeyRejectedError);
+    expect(r.logged("Card 2 wasn't sent: NeonBinder signed this app out. Put it back in the stack.")).toBe(true);
+    expect(r.nb.sendImage.mock.calls.map(([, , name]) => name)).toEqual(["scan-1-front.jpg", "scan-1-back.jpg"]);
+  });
+
+  test("after D, during the drain: no close goes out, and the screen is the way to finish", async () => {
+    const hold = gate();
+    const r = rig();
+    r.nb.sendImage.mockImplementationOnce(async () => {
+      await hold.opened;
+      return 0;
+    });
+    const exit = r.start();
+    await until(() => r.nb.sendImage.mock.calls.length === 1, "the upload to start");
+    r.stdin.write("d");
+    await until(() => r.logged("Stopping the scanner…"), "the stop");
+    r.rejectKey();
+    hold.open();
+    await expect(exit).rejects.toBeInstanceOf(KeyRejectedError);
+    expect(r.nb.closeRun).not.toHaveBeenCalled();
+    expect(r.logged("Couldn't reach NeonBinder. Press Done adding photos on the screen.")).toBe(true);
+  });
+
+  test("at the code prompt, it ends the question and the loop", async () => {
+    const r = rig();
+    const before = signalListeners();
+    r.ask.mockImplementation(
+      (_question, quit) => new Promise((resolve) => quit?.addEventListener("abort", () => resolve(QUIT))),
+    );
+    const exit = r.start();
+    await until(() => r.ask.mock.calls.length === 1, "the prompt");
+    r.rejectKey();
+    await expect(exit).rejects.toBeInstanceOf(KeyRejectedError);
+    expect(signalListeners()).toEqual(before);
+    expect(r.rejectionListeners.size).toBe(0);
+  });
+
+  test("refused while a code is being looked up: the failure is shown, then the loop ends", async () => {
+    const r = rig(["ABC123", "DEF456"]);
+    r.nb.join.mockImplementationOnce(async () => {
+      r.rejectKey();
+      throw new Error("Server Error");
+    });
+    await expect(r.start()).rejects.toBeInstanceOf(KeyRejectedError);
+    expect(r.ask).toHaveBeenCalledTimes(1);
+    expect(r.prepare).not.toHaveBeenCalled();
+  });
+
+  test("Ctrl-C during the stop still means quit", async () => {
+    const hold = gate();
+    const r = rig();
+    r.nb.sendImage.mockImplementationOnce(async () => {
+      await hold.opened;
+      return 0;
+    });
+    const exit = r.start();
+    await until(() => r.nb.sendImage.mock.calls.length === 1, "the upload to start");
+    r.rejectKey();
+    r.stdin.write("\u0003");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    hold.open();
+    await expect(exit).resolves.toBe(0);
   });
 });
 
@@ -301,6 +575,73 @@ describe("the D key", () => {
     expect(r.nb.closeRun).toHaveBeenCalledTimes(1);
   });
 
+  test("an upload that begins after the stop already landed still hits the limit: counted to feed again", async () => {
+    await loadPaper("pairs:4");
+    const hold = gate();
+    const r = rig(["ABC123"], { drainCardTimeoutMs: 100 });
+    r.nb.sendImage
+      .mockImplementationOnce(async () => {
+        await hold.opened;
+        return 0;
+      })
+      .mockImplementationOnce(async () => 0)
+      .mockImplementation(() => new Promise(() => {}));
+    const exit = r.start();
+    await until(() => r.nb.sendImage.mock.calls.length === 1, "the first upload");
+    // Let the fake write all four sides, so card 2 is staged behind card 1.
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    r.stdin.write("d");
+    await until(() => r.logged("Stopping the scanner…"), "the stop");
+    hold.open();
+    await expect(exit).resolves.toBe(0);
+    expect(r.nb.sendImage.mock.calls.map(([, , name]) => name)).toEqual(["scan-1-front.jpg", "scan-1-back.jpg", "scan-2-front.jpg"]);
+    expect(r.logged("Card 1 sent.")).toBe(true);
+    expect(r.logged("Card 2 didn't reach NeonBinder. Check the internet connection and feed it again.")).toBe(true);
+    expect(r.logged(/^Done\. 1 card sent, 1 to feed again\.$/)).toBe(true);
+    expect(r.nb.closeRun).toHaveBeenCalledTimes(1);
+  });
+
+  test("an upload that finished before the stop arms no timer and rejects nothing later", async () => {
+    const LIMIT = 12_345;
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", onUnhandled);
+    const timers = vi.spyOn(globalThis, "setTimeout");
+    try {
+      const r = rig(["ABC123"], { drainCardTimeoutMs: LIMIT });
+      const exit = r.start();
+      await until(() => r.logged("Card 1 sent."), "the first card");
+      r.stdin.write("d");
+      await expect(exit).resolves.toBe(0);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(timers.mock.calls.filter(([, ms]) => ms === LIMIT)).toEqual([]);
+      expect(r.logged("didn't reach NeonBinder")).toBe(false);
+      expect(r.logged(/^Done\. 1 card sent\.$/)).toBe(true);
+      expect(unhandled).toEqual([]);
+    } finally {
+      timers.mockRestore();
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
+
+  test("the front goes up, the back never answers, D is pressed: the card counts as unsent", async () => {
+    const r = rig(["ABC123"], { drainCardTimeoutMs: 30 });
+    r.nb.sendImage.mockImplementation(async (_job, _bytes, name) => {
+      if (name.endsWith("-back.jpg")) return await new Promise<number>(() => {});
+      r.order.push(name);
+      return 0;
+    });
+    const exit = r.start();
+    await until(() => r.nb.sendImage.mock.calls.length === 2, "the back to start");
+    r.stdin.write("d");
+    await expect(exit).resolves.toBe(0);
+    expect(r.order).toEqual(["scan-1-front.jpg", "close"]);
+    expect(r.logged("Card 1 sent.")).toBe(false);
+    expect(r.logged("Card 1 didn't reach NeonBinder. Check the internet connection and feed it again.")).toBe(true);
+    expect(r.logged(/^Done\. 0 cards sent, 1 to feed again\.$/)).toBe(true);
+    expect(r.nb.closeRun).toHaveBeenCalledTimes(1);
+  });
+
   test.each([
     ["fails", () => Promise.reject(new Error("Connection lost"))],
     ["never answers", () => new Promise<never>(() => {})],
@@ -323,6 +664,51 @@ describe("the D key", () => {
     r.stdin.write("D");
     await exit;
     expect(r.logged("Couldn't reach NeonBinder")).toBe(false);
+  });
+});
+
+describe("a stop that lands just before a scan starts", () => {
+  /** Ends the first session at the moment its scan is spawned, then runs a second to the end. */
+  async function stoppedBeforeScan(stop: (r: ReturnType<typeof rig>) => void) {
+    let secondStarted = 0;
+    const r = rig([
+      "ABC123",
+      async () => {
+        secondStarted = r.lines.length;
+        await loadPaper("pairs:2");
+        return "DEF456";
+      },
+    ]);
+    seam.onStopped = () => r.order.push("stopped");
+    seam.beforeScanStart = () => stop(r);
+    const exit = r.start();
+    await until(() => r.ask.mock.calls.length === 2, "the prompt after the stopped session");
+    await until(() => r.watchers.length === 2, "the second session");
+    await until(() => r.lines.slice(secondStarted).includes("Card 1 sent."), "the second session's card");
+    r.closeWebsite();
+    await expect(exit).resolves.toBe(0);
+    return r;
+  }
+
+  test("D: the scan that starts is stopped, then the run closes, once", async () => {
+    const r = await stoppedBeforeScan((rr) => rr.stdin.emit("data", Buffer.from("d")));
+    expect(seam.stopped).toHaveLength(1);
+    const proc = seam.stopped[0];
+    expect(proc.exitCode !== null || proc.signalCode !== null).toBe(true);
+    expect(r.order.filter((x) => x === "stopped" || x === "close").slice(0, 2)).toEqual(["stopped", "close"]);
+    expect(r.nb.closeRun).toHaveBeenCalledTimes(1);
+    expect(r.nb.closeRun).toHaveBeenCalledWith("job-1");
+    expect(r.logged("Stopping the scanner…")).toBe(true);
+    expect(r.logged(/^Done\. \d+ cards? sent\.$/)).toBe(true);
+  });
+
+  test("Done on the website: the scan that starts is stopped, and the run is never closed from here", async () => {
+    const r = await stoppedBeforeScan((rr) => rr.closeWebsite());
+    expect(seam.stopped).toHaveLength(1);
+    const proc = seam.stopped[0];
+    expect(proc.exitCode !== null || proc.signalCode !== null).toBe(true);
+    expect(r.nb.closeRun).not.toHaveBeenCalled();
+    expect(r.logged(/^This run closed on NeonBinder\. \d+ cards? sent\.$/)).toBe(true);
   });
 });
 
@@ -463,6 +849,18 @@ describe("the prompt loop", () => {
     expect(r.prepare).toHaveBeenCalledTimes(2);
   });
 
+  test.each([
+    ["with the key's prefix", "ak_2xQ9mZpLw"],
+    ["long, with no prefix", "x7Hq2Lm9Vt4Rw8Kp3Ns6Yb1"],
+  ])("an API key pasted at the prompt, %s, isn't repeated or sent, and asks for the code", async (_name, key) => {
+    const r = rig([key, QUIT]);
+    await expect(r.start()).resolves.toBe(0);
+    expect(r.logged("That looks like your API key, not a scanner code, so it wasn't used. Go back to NeonBinder, copy the scanner code, and paste that here.")).toBe(true);
+    expect(r.logged("six letters and numbers")).toBe(false);
+    expect(r.lines.join("\n")).not.toContain(key);
+    expect(r.nb.join).not.toHaveBeenCalled();
+  });
+
   test("the code on the command line is for the first run only", async () => {
     const r = rig([QUIT]);
     const exit = r.start("ABC123");
@@ -536,6 +934,21 @@ describe("with the real client", () => {
     expect(r.logged(/^This run closed on NeonBinder\. 2 cards sent\.$/)).toBe(true);
     const closes = convex.mutation.mock.calls.filter(([ref]) => getFunctionName(ref) === "placeholderStream:closePlaceholderStream");
     expect(closes).toEqual([]);
+  });
+
+  test("a 401 on a token refresh ends the scan as a refused key, with no close sent", async () => {
+    const nb = await NeonBinder.signIn("https://happy-otter-123.convex.cloud", "ak_secret");
+    const r = rig(["ABC123"], { nb });
+    const exit = r.start();
+    await until(() => r.logged("Card 1 sent."), "the first card");
+    const fetchToken = convex.setAuth.mock.calls[0][0] as (a: { forceRefreshToken: boolean }) => Promise<string | null>;
+    vi.mocked(fetch).mockResolvedValueOnce(new Response(null, { status: 401 }));
+    await expect(fetchToken({ forceRefreshToken: true })).resolves.toBeNull();
+    await expect(exit).rejects.toBeInstanceOf(KeyRejectedError);
+    const closes = convex.mutation.mock.calls.filter(([ref]) => getFunctionName(ref) === "placeholderStream:closePlaceholderStream");
+    expect(closes).toEqual([]);
+    expect(r.logged("This run closed on NeonBinder")).toBe(false);
+    await nb.close();
   });
 
   test("D's close goes out after the last confirm, as the real mutation", async () => {

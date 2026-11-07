@@ -61,7 +61,11 @@ describe("the scanner CLI's backend contract", () => {
     );
     expect(joined).toMatchObject({ runId, jobId, collecting: true });
 
-    await me.mutation(api.placeholderStream.closePlaceholderStream, { jobId });
+    const closed = await me.mutation(api.placeholderStream.closePlaceholderStream, { jobId });
+    expect(closed.closed).toBe(true);
+    // A second Done finds it already closed: a result, not an error.
+    const again = await me.mutation(api.placeholderStream.closePlaceholderStream, { jobId });
+    expect(again.closed).toBe(false);
     let refusal: unknown;
     try {
       await me.mutation(api.placeholderStream.confirmPlaceholderImageUpload, { jobId, entryIndex: 0 });
@@ -70,5 +74,10 @@ describe("the scanner CLI's backend contract", () => {
     }
     expect(String(refusal)).toMatch(RUN_CLOSED_ERROR);
     expect((await me.query(api.intakeScanner.joinIntakeRunByScannerCode, { code }))?.collecting).toBe(false);
+
+    // Closing a job that doesn't exist throws words the CLI recognises as "already gone".
+    const missing = await me.mutation(api.placeholderStream.closePlaceholderStream, { jobId: "no-such-job" }).catch((e: unknown) => e);
+    expect(missing).toBeInstanceOf(Error);
+    expect(String(missing)).toMatch(RUN_CLOSED_ERROR);
   });
 });

@@ -1,10 +1,10 @@
 import { parseArgs } from "node:util";
-import { configPath, resolveConvexUrl, savedKey, saveKey } from "./config.js";
-import { KeyRejectedError, NeonBinder } from "./neonbinder.js";
+import { configPath, resolveConvexUrl, saveKey } from "./config.js";
 import { ask, askSecret } from "./prompt.js";
 import { saneRuntime, SYSTEM_SANE } from "./sane.js";
 import { BRAND, DEFAULT_SETTINGS, findScanner, listScanners, planScan, TESTED_BACKENDS } from "./scanimage.js";
 import { scanLoop } from "./session.js";
+import { scanSignedIn } from "./sign-in.js";
 
 /**
  * NEO-386 — the NeonBinder scanner app: feed cards from a sheet-fed scanner
@@ -47,33 +47,6 @@ const log = (line: string) => process.stdout.write(`${line}\n`);
 function env(name: string): string | undefined {
   const value = process.env[name]?.trim();
   return value ? value : undefined;
-}
-
-/** Sign in with the env key, the saved key, or one asked for (then saved). */
-async function signIn(convexUrl: string, keyFile: string): Promise<NeonBinder | undefined> {
-  const fromEnv = env("NEONBINDER_API_KEY") ?? env("NEONBINDER_MACHINE_KEY");
-  if (fromEnv) return NeonBinder.signIn(convexUrl, fromEnv, env("NEONBINDER_CONVEX_SITE_URL"));
-  let key = await savedKey(keyFile, convexUrl);
-  let asked = false;
-  for (let attempt = 0; attempt < 3; attempt++) {
-    if (!key) {
-      log("Paste your NeonBinder API key (NeonBinder → Profile → API Keys). It's saved on this computer.");
-      key = await askSecret("API key: ");
-      if (!key) return undefined;
-      asked = true;
-    }
-    try {
-      const nb = await NeonBinder.signIn(convexUrl, key, env("NEONBINDER_CONVEX_SITE_URL"));
-      if (asked) await saveKey(keyFile, convexUrl, key);
-      return nb;
-    } catch (error) {
-      if (!(error instanceof KeyRejectedError)) throw error;
-      log(error.message);
-      await saveKey(keyFile, convexUrl, undefined);
-      key = undefined;
-    }
-  }
-  return undefined;
 }
 
 /** `--check`: is the driver working, and does it see a scanner? Signs in to nothing. */
@@ -125,30 +98,33 @@ async function main(): Promise<number> {
   const keyFile = configPath();
   if (values["forget-key"]) await saveKey(keyFile, convexUrl, undefined);
 
-  const nb = await signIn(convexUrl, keyFile);
-  if (!nb) {
-    log("No API key, so nothing to do. Make one under Profile → API Keys and run this again.");
-    return 1;
-  }
   const settings = { ...DEFAULT_SETTINGS, raw: values.raw, device: env("SCANNER_DEVICE") };
-  try {
-    return await scanLoop(
-      {
-        nb,
-        log,
-        ask,
-        stdin: process.stdin,
-        prepare: async () => {
-          const sane = await saneRuntime();
-          const scanner = await findScanner(settings, sane);
-          return { scannerName: scanner.name, plan: await planScan(scanner, settings, sane), sane, raw: settings.raw };
+  return await scanSignedIn(
+    {
+      convexUrl,
+      keyFile,
+      envKey: env("NEONBINDER_API_KEY") ?? env("NEONBINDER_MACHINE_KEY"),
+      siteOverride: env("NEONBINDER_CONVEX_SITE_URL"),
+      log,
+      askKey: askSecret,
+    },
+    (nb, firstCode) =>
+      scanLoop(
+        {
+          nb,
+          log,
+          ask,
+          stdin: process.stdin,
+          prepare: async () => {
+            const sane = await saneRuntime();
+            const scanner = await findScanner(settings, sane);
+            return { scannerName: scanner.name, plan: await planScan(scanner, settings, sane), sane, raw: settings.raw };
+          },
         },
-      },
-      positionals[0],
-    );
-  } finally {
-    await nb.close();
-  }
+        firstCode,
+      ),
+    positionals[0],
+  );
 }
 
 main().then(

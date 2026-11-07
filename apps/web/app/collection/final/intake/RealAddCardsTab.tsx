@@ -5,11 +5,13 @@ import {
   useEffect,
   useEffectEvent,
   useId,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
   type ReactNode,
   type Ref,
+  type RefObject,
 } from "react";
 import { useSearchParams } from "react-router";
 import { useAction, useMutation, useQuery } from "convex/react";
@@ -59,7 +61,7 @@ import {
 } from "./realLanes";
 import { HomeSelect, QTY_ATTR, RING, StageBadge } from "./ui";
 import { DRAWER_PARAM } from "../drawerParams";
-import { ScannerJoin } from "./ScannerJoin";
+import { ScannerJoin, SPEECH_AFTER_FOCUS_MS } from "./ScannerJoin";
 import "./intake.css";
 
 /**
@@ -229,23 +231,32 @@ export default function RealAddCardsTab() {
   // scanner app's `d`). The idle sweep's close is not this: nobody said "done".
   const closedByUser = job?.streamClosedBy === "user";
 
-  // NEO-459 — that close takes the drop zone, the scanner code and "Done adding
-  // photos" with it. Focus inside them would fall to the page, so it is parked.
-  // Focus anywhere else is left alone, which is why this asks the leaving
-  // controls whether they held it (a ref cleanup runs while they are still in
-  // the document) rather than only checking where focus ended up.
+  // NEO-459 — any close, the idle sweep's too, takes the drop zone, the scanner
+  // code and "Done adding photos" with it. Focus inside them would fall to the
+  // page, so it is parked. Focus anywhere else is left alone, which is why this
+  // asks the leaving controls whether they held it (a ref cleanup runs while they
+  // are still in the document) rather than only checking where focus ended up.
+  //
+  // Every commit, so "Done adding photos" leaving without a close (its job is
+  // reloading) can't leave the flag set for a later one. A layout effect, so
+  // `focusParked` is answered before RunWorkspace's landing effect reads it:
+  // passive effects run children first.
   const focusWentWithClose = useRef(false);
+  const focusParked = useRef(false);
+  const wasCollecting = useRef(collecting);
   const watchFocus = useCallback((el: HTMLElement | null) => {
     if (!el) return;
     return () => {
       if (el.contains(document.activeElement)) focusWentWithClose.current = true;
     };
   }, []);
-  useEffect(() => {
+  useLayoutEffect(() => {
     const went = focusWentWithClose.current;
+    const closed = wasCollecting.current && !collecting;
     focusWentWithClose.current = false;
-    if (went && closedByUser && focusFell()) parkFocus();
-  }, [collecting, closedByUser]);
+    wasCollecting.current = collecting;
+    focusParked.current = went && closed && focusFell() && parkFocus();
+  });
 
   // NEO-370 — the listing gate, on what the run (or the setup) will give its cards.
   const shownDefaults: RunDefaults = run?.defaults ?? defaults;
@@ -469,7 +480,15 @@ export default function RealAddCardsTab() {
       </p>
       {run ? (
         <LocalPhotos.Provider value={localPhotos}>
-          <RunWorkspace run={run} jobOpen={job?.status === "collecting"} closedByUser={closedByUser} doneRef={watchFocus} />
+          {/* Keyed so one run's Done, close line and open/closed memory can't carry to another on Back or Forward. */}
+          <RunWorkspace
+            key={run._id}
+            run={run}
+            jobOpen={job?.status === "collecting"}
+            closedByUser={closedByUser}
+            doneRef={watchFocus}
+            focusParked={focusParked}
+          />
         </LocalPhotos.Provider>
       ) : (
         !runParam && <RecentRuns runs={(recent ?? []).filter((r) => r.homeKind === kind)} onOpen={openRun} />
@@ -761,12 +780,15 @@ function RunWorkspace({
   jobOpen,
   closedByUser,
   doneRef,
+  focusParked,
 }: {
   run: RunSummary;
   jobOpen: boolean;
   /** The job says the collector closed it, on this screen or anywhere else (NEO-459). */
   closedByUser: boolean;
   doneRef: Ref<HTMLButtonElement>;
+  /** This commit's close just moved focus to the Pairing heading (NEO-459). */
+  focusParked: RefObject<boolean>;
 }) {
   const { notify, inform } = usePageApi();
   const images = useQuery(api.placeholderPipeline.listPlaceholderImages, { jobId: run.jobId });
@@ -796,10 +818,17 @@ function RunWorkspace({
   // event: it does what the button does, once, and is said out loud. Opening a
   // closed run is not that event, nor is a close first seen while the job loads
   // (`jobOpen` is false then), nor is the idle sweep's. Only if not done already:
-  // a press on a run whose columns were clear has already been forgotten.
+  // a press on a run whose columns were clear has already been forgotten. The
+  // line waits for a focus move to be read first; with none, it has no reason to.
   const [closeLanded, setCloseLanded] = useState(false);
+  const closeLineTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(() => () => clearTimeout(closeLineTimer.current), []);
   const onCloseLanded = useEffectEvent(() => {
-    setCloseLanded(true);
+    if (focusParked.current) {
+      closeLineTimer.current = setTimeout(() => setCloseLanded(true), SPEECH_AFTER_FOCUS_MS);
+    } else {
+      setCloseLanded(true);
+    }
     if (!done) markDone(true);
   });
   const wasOpen = useRef(jobOpen);

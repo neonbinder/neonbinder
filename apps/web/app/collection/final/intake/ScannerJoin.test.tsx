@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { getFunctionName } from "convex/server";
 import type { Id } from "@/convex/_generated/dataModel";
-import { ScannerJoin, startRefusal } from "./ScannerJoin";
+import { ScannerJoin, SPEECH_AFTER_FOCUS_MS, startRefusal } from "./ScannerJoin";
 
 /**
  * NEO-386 — "Use a scanner": which writes each path makes, what it says when
@@ -31,7 +31,9 @@ const RUN = "run1" as Id<"intakeRuns">;
 const HOME = "home1" as Id<"collectionContainers">;
 
 const COPIED = "Scanner code copied. Paste it into NeonBinder Scanner.";
-const REFUSED = "No auto-copy this time. Press the copy icon or type the code in by hand.";
+const REFUSED = "No auto-copy this time. Press Copy scanner code or type the code in by hand.";
+/** The line waits a beat after focus moves, so finding it allows for a loaded machine. */
+const SAID = { timeout: 5000 };
 
 /** Stands in for the browser's: holds what it was made with. */
 class FakeClipboardItem {
@@ -111,7 +113,7 @@ describe("ScannerJoin", () => {
       return screen.findByRole("group", { name: "Scanner code" });
     };
     /** The panel's own line, not the icon's status beside it. */
-    const line = (text: string) => screen.findByText(text, { selector: "p" });
+    const line = (text: string) => screen.findByText(text, { selector: "p" }, SAID);
 
     it("starts the write inside the click, before the code exists, then fills in the bare code", async () => {
       let mint = (_code: string) => {};
@@ -257,25 +259,70 @@ describe("ScannerJoin", () => {
       expect(document.activeElement).toBe(panel);
     });
 
-    it("keeps the words back until the focus move has happened", async () => {
-      let frame: FrameRequestCallback = () => {};
-      const raf = vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb) => {
-        frame = cb;
-        return 1;
+    describe("the wait after the focus move", () => {
+      const NOW = { toFake: ["setTimeout", "clearTimeout"] as ("setTimeout" | "clearTimeout")[] };
+      /** Holds the frame back, so the test says when the focus move happens. */
+      const holdFrame = () => {
+        const held = { frame: (() => {}) as FrameRequestCallback };
+        const raf = vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb) => {
+          held.frame = cb;
+          return 7;
+        });
+        return { held, raf };
+      };
+
+      afterEach(() => {
+        vi.useRealTimers();
+        vi.restoreAllMocks();
       });
-      try {
+
+      it("keeps the words back until the panel has had focus for the wait", async () => {
+        const { held } = holdFrame();
         renderJoin({ runId: RUN });
         const panel = await openPanel();
         await waitFor(() => expect(onClipboard.text).toBe("AB3X7K"));
         await act(async () => {});
         expect(document.activeElement).not.toBe(panel);
         expect(screen.queryByText(COPIED)).toBeNull();
-        await act(async () => frame(0));
+
+        vi.useFakeTimers(NOW);
+        act(() => held.frame(0));
         expect(document.activeElement).toBe(panel);
+        expect(screen.queryByText(COPIED)).toBeNull();
+        act(() => {
+          vi.advanceTimersByTime(SPEECH_AFTER_FOCUS_MS - 1);
+        });
+        expect(screen.queryByText(COPIED)).toBeNull();
+        act(() => {
+          vi.advanceTimersByTime(1);
+        });
         expect(screen.getByText(COPIED).getAttribute("role")).toBe("status");
-      } finally {
-        raf.mockRestore();
-      }
+      });
+
+      it("waits about 400ms", () => {
+        expect(SPEECH_AFTER_FOCUS_MS).toBe(400);
+      });
+
+      it("drops the timer when the panel goes away during the wait", async () => {
+        const { held } = holdFrame();
+        const { view } = renderJoin({ runId: RUN });
+        await openPanel();
+        vi.useFakeTimers(NOW);
+        act(() => held.frame(0));
+        expect(vi.getTimerCount()).toBe(1);
+        view.unmount();
+        expect(vi.getTimerCount()).toBe(0);
+      });
+
+      it("cancels the frame when the panel goes away before the focus move", async () => {
+        const cancel = vi.spyOn(window, "cancelAnimationFrame");
+        holdFrame();
+        const { view } = renderJoin({ runId: RUN });
+        await openPanel();
+        expect(cancel).not.toHaveBeenCalled();
+        view.unmount();
+        expect(cancel).toHaveBeenCalledWith(7);
+      });
     });
   });
 
@@ -284,7 +331,7 @@ describe("ScannerJoin", () => {
       renderJoin({ runId: RUN });
       fireEvent.click(screen.getByRole("button", { name: "Use a scanner" }));
       const panel = await screen.findByRole("group", { name: "Scanner code" });
-      await screen.findByText(COPIED);
+      await screen.findByText(COPIED, undefined, SAID);
       return panel;
     };
 
@@ -293,7 +340,8 @@ describe("ScannerJoin", () => {
       const icon = within(panel).getByRole("button", { name: "Copy scanner code" });
       expect(icon.closest("p")).toBe(within(panel).getByText("Scanner code").closest("p"));
       expect(icon.className).toContain("text-neon-blue-text");
-      expect(icon.className).toContain("h-8 w-8");
+      // 44px on a phone, 32px from `sm` up, and the row as tall either way.
+      expect(icon.className).toContain("h-11 w-11 -my-1.5 sm:my-0 sm:h-8 sm:w-8");
       expect(within(panel).getAllByRole("button")).toEqual([icon]);
       // Still named and described by the code alone, with a button in that row.
       expect(panel.getAttribute("aria-describedby")?.split(" ").map((id) => document.getElementById(id)?.textContent)).toEqual([
@@ -310,6 +358,36 @@ describe("ScannerJoin", () => {
       // Said once, by the icon's own status, not twice.
       await waitFor(() => expect(screen.getAllByText(COPIED)).toHaveLength(1));
       expect(screen.getByText(COPIED).className).toContain("sr-only");
+    });
+
+    it("a late auto-copy can't put its line back after a press on the icon", async () => {
+      let settle = () => {};
+      write.mockImplementation(() => new Promise<void>((resolve) => (settle = resolve)));
+      renderJoin({ runId: RUN });
+      fireEvent.click(screen.getByRole("button", { name: "Use a scanner" }));
+      const panel = await screen.findByRole("group", { name: "Scanner code" });
+      fireEvent.click(within(panel).getByRole("button", { name: "Copy scanner code" }));
+      await waitFor(() => expect(writeText).toHaveBeenCalledWith("AB3X7K"));
+      await act(async () => {
+        settle();
+      });
+      // Past the panel's wait, so its line would be showing by now if the late result had landed.
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, SPEECH_AFTER_FOCUS_MS + 50));
+      });
+      expect(screen.queryByText(COPIED, { selector: "p" })).toBeNull();
+    });
+
+    it("a press leaves a later code's own answer alone", async () => {
+      const { view } = renderJoin({ runId: RUN });
+      fireEvent.click(screen.getByRole("button", { name: "Use a scanner" }));
+      fireEvent.click(await within(await screen.findByRole("group", { name: "Scanner code" })).findByRole("button", { name: "Copy scanner code" }));
+      // A different run: the button is back, and its press starts over.
+      const other = "run2" as Id<"intakeRuns">;
+      calls.mint.mockResolvedValue("ZZ9Y8W");
+      view.rerender(<ScannerJoin runId={other} newRun={{ homeId: HOME }} kind="binder" loading={false} onRunStarted={vi.fn()} />);
+      fireEvent.click(await screen.findByRole("button", { name: "Use a scanner" }));
+      expect(await screen.findByText(COPIED, { selector: "p" }, SAID)).toBeTruthy();
     });
 
     it("says how to recover when the clipboard refuses a press", async () => {

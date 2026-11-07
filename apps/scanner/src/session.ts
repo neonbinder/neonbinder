@@ -1,6 +1,6 @@
 import type { ChildProcess } from "node:child_process";
-import { looksLikeCode } from "./config.js";
-import { isRunClosedError, type CloseResult, type JoinedRun } from "./neonbinder.js";
+import { looksLikeCode, looksLikeKey } from "./config.js";
+import { isRunClosedError, KeyRejectedError, type CloseResult, type JoinedRun } from "./neonbinder.js";
 import { QUIT, type Answer } from "./prompt.js";
 import type { SaneRuntime } from "./sane.js";
 import { DEFAULT_TIMING, feedCards, stopScan, TESTED_BACKENDS, type ScanEvent, type ScanPlan, type Timing } from "./scanimage.js";
@@ -17,6 +17,8 @@ import { toneScan } from "./tone.js";
 const CLOSE_TIMEOUT_MS = 10_000;
 /** Once stopping, how long one card's upload may hold up the end of the session. */
 const DRAIN_CARD_TIMEOUT_MS = 30_000;
+/** How long asking after a failure whether the run is still open may wait. */
+const RUN_CHECK_TIMEOUT_MS = 10_000;
 
 const QUIT_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
 
@@ -29,6 +31,8 @@ export interface RunClient {
   watchRun(code: string, onChange: (run: JoinedRun | null) => void): () => void;
   sendImage(jobId: string, bytes: Buffer, name: string): Promise<number>;
   closeRun(jobId: string): Promise<CloseResult>;
+  /** Hears that NeonBinder refused the key, straight away if it already has. Returns how to stop listening. */
+  onKeyRejected(listener: () => void): () => void;
 }
 
 /** The part of stdin the app uses, so a test can drive the keys through a pipe. */
@@ -58,6 +62,7 @@ export interface SessionDeps {
   timing?: Timing;
   closeTimeoutMs?: number;
   drainCardTimeoutMs?: number;
+  runCheckTimeoutMs?: number;
 }
 
 export interface SessionResult {
@@ -67,7 +72,7 @@ export interface SessionResult {
   failed: boolean;
 }
 
-type Ending = "website" | "key" | "quit";
+type Ending = "website" | "key" | "quit" | "rejected";
 
 const plural = (n: number) => `${n} card${n === 1 ? "" : "s"}`;
 
@@ -96,6 +101,7 @@ export async function runSession(deps: SessionDeps, run: JoinedRun, code: string
   let ending: Ending | undefined;
   let quit = false;
   let runClosed = false;
+  let keyRejected = false;
   let activeScan: ChildProcess | undefined;
   let scanStopped: Promise<void> = Promise.resolve();
   let requestStop = () => {};
@@ -137,6 +143,24 @@ export async function runSession(deps: SessionDeps, run: JoinedRun, code: string
     runClosed = true;
     stop("website");
   });
+  const stopListeningForRejection = nb.onKeyRejected(() => {
+    keyRejected = true;
+    stop("rejected");
+  });
+
+  /**
+   * A failure's words may be hidden from us, so when they don't say the run
+   * closed, ask the run. No answer proves nothing, so it stays a failure.
+   */
+  const runHasClosed = async (error: unknown): Promise<boolean> => {
+    if (runClosed || isRunClosedError(error)) return true;
+    try {
+      const latest = await bounded(nb.join(code), deps.runCheckTimeoutMs ?? RUN_CHECK_TIMEOUT_MS);
+      return !latest?.collecting;
+    } catch {
+      return false;
+    }
+  };
 
   const tone = { whiteClipPercent: 1, gamma: 2.2, jpegQuality: 95, dpi: plan.resolution };
   const send = async (raw: Buffer, name: string) => nb.sendImage(jobId, (await toneScan(raw, tone)) ?? raw, name);
@@ -163,11 +187,19 @@ export async function runSession(deps: SessionDeps, run: JoinedRun, code: string
     toFeedAgain++;
     log(`Card ${n} wasn't sent: the run stopped taking cards. Put it back in the stack.`);
   };
+  const notSentSignedOut = (n: number) => {
+    toFeedAgain++;
+    log(`Card ${n} wasn't sent: NeonBinder signed this app out. Put it back in the stack.`);
+  };
 
   const onEvent = async (event: ScanEvent) => {
     switch (event.kind) {
       case "card": {
         const n = cards + toFeedAgain + 1;
+        if (keyRejected) {
+          notSentSignedOut(n);
+          return;
+        }
         if (runClosed) {
           notSent(n);
           return;
@@ -182,7 +214,13 @@ export async function runSession(deps: SessionDeps, run: JoinedRun, code: string
           cards++;
           log(`Card ${n} sent.`);
         } catch (error) {
-          if (isRunClosedError(error)) {
+          const closed = !keyRejected && (await runHasClosed(error));
+          // Checked after the wait too: without a key nothing here is about the run.
+          if (keyRejected) {
+            notSentSignedOut(n);
+            return;
+          }
+          if (closed) {
             runClosed = true;
             notSent(n);
             stop("website");
@@ -236,18 +274,21 @@ export async function runSession(deps: SessionDeps, run: JoinedRun, code: string
     await scanStopped;
 
     // Only now: closing any earlier would refuse the last card's upload.
-    if (ending === "key") {
+    if (ending === "key" && keyRejected) {
+      closeFailed = true;
+    } else if (ending === "key") {
       try {
         await bounded(nb.closeRun(jobId), deps.closeTimeoutMs ?? CLOSE_TIMEOUT_MS);
       } catch (error) {
         // Refused because it's already gone: there's nothing left to press.
-        closeFailed = !isRunClosedError(error);
+        closeFailed = !(await runHasClosed(error));
       }
     }
     const summary = `${plural(cards)} sent${toFeedAgain ? `, ${toFeedAgain} to feed again` : ""}.`;
     log(ending === "website" ? `This run closed on NeonBinder. ${summary}` : ending === "key" ? `Done. ${summary}` : summary);
     if (closeFailed) log("Couldn't reach NeonBinder. Press Done adding photos on the screen.");
   } finally {
+    stopListeningForRejection();
     unwatch();
     for (const signal of QUIT_SIGNALS) process.off(signal, onQuitSignal);
     stdin.off("data", onKey);
@@ -263,18 +304,32 @@ async function askForCode(deps: SessionDeps): Promise<Answer> {
   const quit = new AbortController();
   const onSignal = () => quit.abort();
   for (const signal of QUIT_SIGNALS) process.on(signal, onSignal);
+  // A refused key ends the prompt too: no code would work without one.
+  const stopListeningForRejection = deps.nb.onKeyRejected(onSignal);
   try {
     return await deps.ask("Scanner code: ", quit.signal);
   } finally {
+    stopListeningForRejection();
     for (const signal of QUIT_SIGNALS) process.off(signal, onSignal);
   }
 }
 
 /**
  * Ask for a code, scan that run, and ask again. `firstCode` (from the command
- * line) stands in for the first answer only. Returns the exit code.
+ * line) stands in for the first answer only. Returns the exit code, or throws
+ * KeyRejectedError once NeonBinder refuses the key.
  */
 export async function scanLoop(deps: SessionDeps, firstCode?: string): Promise<number> {
+  let rejected = false;
+  const stopListeningForRejection = deps.nb.onKeyRejected(() => (rejected = true));
+  try {
+    return await promptLoop(deps, firstCode, () => rejected);
+  } finally {
+    stopListeningForRejection();
+  }
+}
+
+async function promptLoop(deps: SessionDeps, firstCode: string | undefined, keyRejected: () => boolean): Promise<number> {
   const { nb, log } = deps;
   let given = firstCode;
   /** Decides the exit once there's no keyboard to ask; undefined when nothing was tried. */
@@ -282,12 +337,14 @@ export async function scanLoop(deps: SessionDeps, firstCode?: string): Promise<n
   let hint = 'On NeonBinder, open Add cards, pick the binder or box, and press "Use a scanner". Ctrl-C quits.';
 
   for (;;) {
+    if (keyRejected()) throw new KeyRejectedError();
     let code: Answer = given;
     given = undefined;
     if (code === undefined) {
       if (hint) log(hint);
       hint = "";
       code = await askForCode(deps);
+      if (keyRejected()) throw new KeyRejectedError();
     }
     if (code === QUIT) return 0;
     if (code === undefined) {
@@ -298,7 +355,11 @@ export async function scanLoop(deps: SessionDeps, firstCode?: string): Promise<n
     if (code === "") continue;
     exitCode = 1;
     if (!looksLikeCode(code)) {
-      log("A scanner code is six letters and numbers, like ABC 123.");
+      log(
+        looksLikeKey(code)
+          ? "That looks like your API key, not a scanner code, so it wasn't used. Go back to NeonBinder, copy the scanner code, and paste that here."
+          : "A scanner code is six letters and numbers, like ABC 123.",
+      );
       continue;
     }
 

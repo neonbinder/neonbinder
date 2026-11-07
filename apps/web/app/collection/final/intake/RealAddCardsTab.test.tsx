@@ -13,13 +13,14 @@
  */
 
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import type { ReactNode } from "react";
-import { MemoryRouter, useLocation, useSearchParams } from "react-router";
+import { useEffect, type ReactNode } from "react";
+import { MemoryRouter, useLocation, useNavigate, useSearchParams } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PageApiContext, type PageApi } from "../pageApi";
 import { DRAWER_PARAM } from "../drawerParams";
 import { LEAVE_INTAKE_LINE, PHOTO_NEWS_QUIET_MS, RUN_CLOSED_LINE } from "./realLanes";
 import RealAddCardsTab from "./RealAddCardsTab";
+import { SPEECH_AFTER_FOCUS_MS } from "./ScannerJoin";
 import { intakeGateLine, SYNC_STATUS_LINK } from "../inventory/listing/ListingGate";
 import type { ListingGateView } from "../data/types";
 import { expectAccessibleInBothModes } from "@/lib/testing/axe";
@@ -578,11 +579,211 @@ describe("RealAddCardsTab, a run the collector closed from elsewhere (NEO-459)",
       expect(document.activeElement).toBe(document.body);
     });
 
-    it("an idle sweep's close moves nothing, as today", async () => {
+    it("an idle sweep's close parks focus the same, because it takes the same controls", async () => {
       const { land } = await closedWhileWatching("idle");
       act(() => screen.getByRole("button", { name: "Done adding photos" }).focus());
       await land();
+      expect(document.activeElement).toBe(screen.getByRole("heading", { name: "Pairing" }));
+    });
+
+    it("an idle sweep's close parks focus from the drop zone too, and still arms nothing and says nothing", async () => {
+      mocks.data.gate = SYNCS;
+      const { land } = await closedWhileWatching("idle", { homeKind: "box" });
+      act(() => screen.getByRole("button", { name: "Drag your card photos here" }).focus());
+      await land();
+      expect(document.activeElement).toBe(screen.getByRole("heading", { name: "Pairing" }));
+      expect(closedLine()).toBeNull();
+      expect(syncLink()).toBeNull();
+      clickLink();
+      expect(confirm).not.toHaveBeenCalled();
+    });
+
+    it("an idle sweep's close leaves focus alone when it is elsewhere on the screen", async () => {
+      const { land } = await closedWhileWatching("idle");
+      const defaults = screen.getByRole("button", { name: /^Defaults:/ });
+      act(() => defaults.focus());
+      await land();
+      expect(document.activeElement).toBe(defaults);
+    });
+
+    it("parks when a run turns out closed as its job loads, with focus in the drop zone", async () => {
+      const runId = freshRunId();
+      setRun(runId);
+      mocks.data.job = undefined;
+      const view = render(<Tab runId={runId} />);
+      act(() => screen.getByRole("button", { name: "Drag your card photos here" }).focus());
+      setRun(runId, { open: false });
+      view.rerender(<Tab runId={runId} />);
+      await act(async () => {});
+      expect(document.activeElement).toBe(screen.getByRole("heading", { name: "Pairing" }));
+    });
+
+    it("Done leaving without a close (its job reloading) doesn't leave a later close grabbing focus", async () => {
+      const { land, rerender, runId } = await closedWhileWatching("user");
+      act(() => screen.getByRole("button", { name: "Done adding photos" }).focus());
+      mocks.data.job = undefined;
+      rerender(<Tab runId={runId} />);
+      await act(async () => {});
       expect(document.activeElement).toBe(document.body);
+      setRun(runId);
+      rerender(<Tab runId={runId} />);
+      await act(async () => {});
+      await land();
+      expect(document.activeElement).toBe(document.body);
+    });
+  });
+
+  describe("the close line and the focus move", () => {
+    const NOW = { toFake: ["setTimeout", "clearTimeout"] as ("setTimeout" | "clearTimeout")[] };
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("waits after focus parks, so the heading is read first", async () => {
+      const { land } = await closedWhileWatching("user");
+      act(() => screen.getByRole("button", { name: "Done adding photos" }).focus());
+      vi.useFakeTimers(NOW);
+      await land();
+      expect(document.activeElement).toBe(screen.getByRole("heading", { name: "Pairing" }));
+      expect(closedLine()).toBeNull();
+      act(() => {
+        vi.advanceTimersByTime(SPEECH_AFTER_FOCUS_MS - 1);
+      });
+      expect(closedLine()).toBeNull();
+      act(() => {
+        vi.advanceTimersByTime(1);
+      });
+      expect(closedLine()?.getAttribute("role")).toBe("status");
+    });
+
+    it("the Done memory doesn't wait with it", async () => {
+      const { land } = await closedWhileWatching("user");
+      act(() => screen.getByRole("button", { name: "Done adding photos" }).focus());
+      vi.useFakeTimers(NOW);
+      await land();
+      clickLink();
+      expect(confirm).toHaveBeenCalledWith(LEAVE_INTAKE_LINE);
+    });
+
+    it("says it right away when focus didn't move", async () => {
+      const { land } = await closedWhileWatching("user");
+      const defaults = screen.getByRole("button", { name: /^Defaults:/ });
+      act(() => defaults.focus());
+      vi.useFakeTimers(NOW);
+      await land();
+      expect(document.activeElement).toBe(defaults);
+      expect(closedLine()).not.toBeNull();
+    });
+
+    it("drops the wait when the screen goes away during it", async () => {
+      const { land, unmount } = await closedWhileWatching("user");
+      act(() => screen.getByRole("button", { name: "Done adding photos" }).focus());
+      vi.useFakeTimers(NOW);
+      await land();
+      expect(vi.getTimerCount()).toBe(1);
+      unmount();
+      expect(vi.getTimerCount()).toBe(0);
+    });
+  });
+
+  describe("what the close says, in all", () => {
+    const heard = (container: HTMLElement) =>
+      [...container.querySelectorAll('[role="status"]')].map((el) => el.textContent ?? "").filter(Boolean);
+
+    it("a landing adds the one line: the summary's words stay as they were", async () => {
+      const { land, container } = await closedWhileWatching("user");
+      const before = heard(container);
+      expect(before).toEqual(["0 saved."]);
+      await land();
+      expect(heard(container)).toEqual(["0 saved.", RUN_CLOSED_LINE]);
+    });
+
+    it("a press changes none of them until the close lands", async () => {
+      const runId = freshRunId();
+      setRun(runId);
+      const { container } = render(<Tab runId={runId} />);
+      const before = heard(container);
+      await pressDone();
+      expect(heard(container)).toEqual(before);
+    });
+  });
+
+  describe("moving between runs on Back and Forward", () => {
+    const history = { go: (_delta: number) => {} };
+    function Moves() {
+      const navigate = useNavigate();
+      useEffect(() => {
+        history.go = (delta) => void navigate(delta);
+      }, [navigate]);
+      return null;
+    }
+    /** Run A on screen with run B one Back away. */
+    const onA = async (a: string, b: string, options: { homeKind?: "binder" | "box" } = {}) => {
+      setRun(a, options);
+      const screenNow = () => (
+        <MemoryRouter initialEntries={[`/collection/final/intake?run=${b}`, `/collection/final/intake?run=${a}`]} initialIndex={1}>
+          <PageApiContext.Provider value={pageApi}>
+            <Moves />
+            <a href="/inventory" onClick={preventNav}>
+              Inventory
+            </a>
+            <RealAddCardsTab />
+          </PageApiContext.Provider>
+        </MemoryRouter>
+      );
+      const view = render(screenNow());
+      await screen.findByRole("button", { name: "Done adding photos" });
+      const to = async (run: string, delta: number, runOptions: Parameters<typeof setRun>[1] = options) => {
+        setRun(run, runOptions);
+        await act(async () => history.go(delta));
+      };
+      const refresh = async () => {
+        view.rerender(screenNow());
+        await act(async () => {});
+      };
+      return { to, refresh };
+    };
+
+    it("a Done on one run doesn't arm the next, and comes back with its own run", async () => {
+      mocks.data.gate = SYNCS;
+      const [a, b] = [freshRunId(), freshRunId()];
+      const { to } = await onA(a, b, { homeKind: "box" });
+      await pressDone();
+      expect(syncLink()).not.toBeNull();
+
+      confirm.mockReturnValue(true);
+      await to(b, -1);
+      expect(syncLink()).toBeNull();
+      confirm.mockClear();
+      clickLink();
+      expect(confirm).not.toHaveBeenCalled();
+
+      await to(a, 1);
+      expect(syncLink()).not.toBeNull();
+      clickLink();
+      expect(confirm).toHaveBeenCalledWith(LEAVE_INTAKE_LINE);
+    });
+
+    it("one run's close line doesn't stand on the next", async () => {
+      const [a, b] = [freshRunId(), freshRunId()];
+      const { refresh, to } = await onA(a, b);
+      setRun(a, { open: false, closedBy: "user" });
+      await refresh();
+      expect(closedLine()).not.toBeNull();
+      await to(b, -1);
+      expect(closedLine()).toBeNull();
+    });
+
+    it("an open run followed by one already closed isn't a close landing", async () => {
+      mocks.data.gate = SYNCS;
+      const [a, b] = [freshRunId(), freshRunId()];
+      const { to } = await onA(a, b, { homeKind: "box" });
+      await to(b, -1, { open: false, closedBy: "user", homeKind: "box" });
+      await act(async () => {});
+      expect(closedLine()).toBeNull();
+      expect(syncLink()).toBeNull();
+      clickLink();
+      expect(confirm).not.toHaveBeenCalled();
     });
   });
 

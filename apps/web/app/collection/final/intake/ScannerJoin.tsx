@@ -30,7 +30,14 @@ export function startRefusal(reason: string | undefined): string {
 
 /** What the panel says about the copy nobody pressed a control for (NEO-459). */
 const AUTO_COPIED = "Scanner code copied. Paste it into NeonBinder Scanner.";
-const AUTO_COPY_REFUSED = "No auto-copy this time. Press the copy icon or type the code in by hand.";
+const AUTO_COPY_REFUSED = "No auto-copy this time. Press Copy scanner code or type the code in by hand.";
+
+/**
+ * How long a live region's words wait after focus moves. A screen reader reads
+ * the newly focused element first, and VoiceOver can lose words committed in the
+ * same tick as the move.
+ */
+export const SPEECH_AFTER_FOCUS_MS = 400;
 
 /**
  * NEO-459 — puts text that isn't known yet on the clipboard. Answers whether it
@@ -79,8 +86,9 @@ function copyWhenReady(text: Promise<string>): Promise<boolean> {
  * NEO-459 — the click also copies the code, and the panel says how that went.
  * The line is one always-mounted live region on the root, which is the same
  * node before and after the panel: a region inserted as its text appears is
- * announced unreliably (see `CopyButton`). Its words wait until the panel has
- * taken focus, because the focus move would cut off anything said before it.
+ * announced unreliably (see `CopyButton`). Its words wait until a moment after
+ * the panel has taken focus, because the focus move would cut off anything said
+ * before it or with it (`SPEECH_AFTER_FOCUS_MS`).
  *
  * NEO-416 — held the same way while `loading`: until the homes and the open
  * run have loaded, "no run" and "no home" are not known yet, and a click
@@ -107,9 +115,11 @@ export function ScannerJoin({
   const [code, setCode] = useState<{ runId: Id<"intakeRuns">; code: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState("");
-  /** The clipboard's answer for a code, and the code the panel has taken focus for. */
+  /** The clipboard's answer for a code, and the code whose line may now be said. */
   const [clip, setClip] = useState<{ code: string; copied: boolean } | null>(null);
-  const [focusedFor, setFocusedFor] = useState<string | null>(null);
+  const [speakFor, setSpeakFor] = useState<string | null>(null);
+  /** A press on the icon has the last word: a slower auto-copy must not answer after it. */
+  const iconPressed = useRef(false);
   const panel = useRef<HTMLDivElement>(null);
   const labelId = useId();
   const problemId = useId();
@@ -117,13 +127,18 @@ export function ScannerJoin({
   const shown = code && code.runId === runId ? code.code : null;
   useEffect(() => {
     if (!shown) return;
-    requestAnimationFrame(() => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const frame = requestAnimationFrame(() => {
       panel.current?.focus();
-      setFocusedFor(shown);
+      timer = setTimeout(() => setSpeakFor(shown), SPEECH_AFTER_FOCUS_MS);
     });
+    return () => {
+      cancelAnimationFrame(frame);
+      clearTimeout(timer);
+    };
   }, [shown]);
   const clipLine =
-    shown && focusedFor === shown && clip?.code === shown ? (clip.copied ? AUTO_COPIED : AUTO_COPY_REFUSED) : "";
+    shown && speakFor === shown && clip?.code === shown ? (clip.copied ? AUTO_COPIED : AUTO_COPY_REFUSED) : "";
 
   const requestCode = async () => {
     let id = runId;
@@ -142,13 +157,16 @@ export function ScannerJoin({
     setBusy(true);
     setProblem("");
     setClip(null);
+    iconPressed.current = false;
     // No await before the copy starts: it has to be inside the click (`copyWhenReady`).
     const minted = requestCode();
     const copied = copyWhenReady(minted.then((m) => m.code));
     try {
       const got = await minted;
       setCode(got);
-      void copied.then((ok) => setClip({ code: got.code, copied: ok }));
+      void copied.then((ok) => {
+        if (!iconPressed.current) setClip({ code: got.code, copied: ok });
+      });
     } catch (error) {
       setProblem(writeErrorMessage(error));
     } finally {
@@ -180,10 +198,15 @@ export function ScannerJoin({
           </span>
           {/* Copies the bare code (the app ignores the space). A press takes over
               from the line below, which would otherwise stand there out of date. */}
-          <span onClickCapture={() => setClip(null)}>
+          <span
+            onClickCapture={() => {
+              iconPressed.current = true;
+              setClip(null);
+            }}
+          >
             <CopyButton
               variant="icon"
-              size="md"
+              size="touch"
               tone="blue"
               value={shown}
               copyLabel="Copy scanner code"
