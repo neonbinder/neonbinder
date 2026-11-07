@@ -22,8 +22,11 @@
  *   deleted: the item is the only way a later run can find that listing.
  *   Policies stay: the listing spec needs the seller's own shipping policies.
  * - BSC: sets quantity to 0 on ALL of the seller's rows for each set the specs
- *   list (`SELLER_SPEC_SETS`), the rest of the account untouched. Reads those
- *   sheets one at a time (`listingDrain.readSheets`, the drain's own scope and
+ *   list (`SELLER_SPEC_SETS`) that this deployment has, the rest of the account
+ *   untouched. A set its spec builds, not built here yet, is skipped and counted
+ *   (`skippedSets`): its rows on BSC are left as they are, even when the report
+ *   says "clean". A chain with two rows of one name fails. Reads those sheets
+ *   one at a time (`listingDrain.readSheets`, the drain's own scope and
  *   rule), PUTs every row above 0 to 0, then reads back. A direct write, so the
  *   planner's `duplicate_sheet_row` never blocks it: both copies of a twin go to
  *   0 like any other row. Rows are never removed. If BSC goes on showing both
@@ -84,7 +87,8 @@ export type SellerSpecSet = {
   /**
    * The spec builds this set itself, in-flow, so a deployment the seed just reset
    * does not have it yet: absent is skipped, never a failure. (A set the seed
-   * provisions stays fail-closed: its absence means the seed did not run.)
+   * provisions stays fail-closed: its absence means the seed did not run.) Two
+   * rows of one name fail either way.
    */
   builtBySpec?: boolean;
 };
@@ -111,11 +115,30 @@ const EBAY_CONCURRENCY = 8;
 const EBAY_BUDGET_MS = 5 * 60 * 1000;
 /** Before the one retry of a 503'd first sheet read: a guess at long enough that the retry won't overlap anything that 503 left running at BSC. */
 export const BSC_FIRST_READ_RETRY_PAUSE_MS = 10_000;
+/** Rows read under one parent when walking a chain. A full read can't say a name is absent or single. */
+export const MAX_CHAIN_SIBLINGS = 1000;
+
+const chainLevelValidator = v.union(
+  v.literal("sport"),
+  v.literal("year"),
+  v.literal("manufacturer"),
+  v.literal("setName"),
+  v.literal("variantType"),
+  v.literal("insert"),
+);
+
+const variantLookupValidator = v.union(
+  v.object({ kind: v.literal("found"), id: v.id("selectorOptions") }),
+  v.object({ kind: v.literal("absent") }),
+  v.object({ kind: v.literal("ambiguous"), level: chainLevelValidator }),
+);
+type VariantLookup = typeof variantLookupValidator.type;
+type ChainLevel = typeof chainLevelValidator.type;
 
 /**
  * The row of one set the specs list that holds its cards: the set's Base, or
- * with `parallel` that parallel of its Parallel type. Null when the chain isn't
- * there exactly once.
+ * with `parallel` that parallel of its Parallel type. "absent" when a row of the
+ * chain isn't there, "ambiguous" when one can't be told apart: never picks one.
  */
 export const variantOf = internalQuery({
   args: {
@@ -125,36 +148,36 @@ export const variantOf = internalQuery({
     setName: v.string(),
     parallel: v.optional(v.string()),
   },
-  returns: v.union(v.id("selectorOptions"), v.null()),
-  handler: async (ctx, args): Promise<Id<"selectorOptions"> | null> => {
+  returns: variantLookupValidator,
+  handler: async (ctx, args): Promise<VariantLookup> => {
     const childNamed = async (
-      level: "sport" | "year" | "manufacturer" | "setName" | "variantType" | "insert",
+      level: ChainLevel,
       parentId: Id<"selectorOptions"> | undefined,
       matches: (value: string) => boolean,
-    ): Promise<Id<"selectorOptions"> | null> => {
+    ): Promise<VariantLookup> => {
       const rows = await ctx.db
         .query("selectorOptions")
         .withIndex("by_level_and_parent", (q) => q.eq("level", level).eq("parentId", parentId))
-        .take(1000);
+        .take(MAX_CHAIN_SIBLINGS);
       const hits = rows.filter((row) => matches(row.value));
-      // Two rows of one name: not this fixture's shape. Never pick one.
-      return hits.length === 1 ? hits[0]._id : null;
+      if (hits.length > 1 || rows.length >= MAX_CHAIN_SIBLINGS) return { kind: "ambiguous", level };
+      return hits.length === 1 ? { kind: "found", id: hits[0]._id } : { kind: "absent" };
     };
-    const sportId = await childNamed("sport", undefined, (value) => value === args.sport);
-    if (!sportId) return null;
-    const yearId = await childNamed("year", sportId, (value) => value === args.year);
-    if (!yearId) return null;
-    const brandId = await childNamed("manufacturer", yearId, (value) => value === args.manufacturer);
-    if (!brandId) return null;
-    const setId = await childNamed("setName", brandId, (value) => value === args.setName);
-    if (!setId) return null;
+    const sport = await childNamed("sport", undefined, (value) => value === args.sport);
+    if (sport.kind !== "found") return sport;
+    const year = await childNamed("year", sport.id, (value) => value === args.year);
+    if (year.kind !== "found") return year;
+    const brand = await childNamed("manufacturer", year.id, (value) => value === args.manufacturer);
+    if (brand.kind !== "found") return brand;
+    const set = await childNamed("setName", brand.id, (value) => value === args.setName);
+    if (set.kind !== "found") return set;
     const { parallel } = args;
     if (parallel === undefined) {
-      return await childNamed("variantType", setId, (value) => variantTypeKindFromTitle(value) === "base");
+      return await childNamed("variantType", set.id, (value) => variantTypeKindFromTitle(value) === "base");
     }
-    const typeId = await childNamed("variantType", setId, (value) => variantTypeKindFromTitle(value) === "parallel");
-    if (!typeId) return null;
-    return await childNamed("insert", typeId, (value) => value === parallel);
+    const type = await childNamed("variantType", set.id, (value) => variantTypeKindFromTitle(value) === "parallel");
+    if (type.kind !== "found") return type;
+    return await childNamed("insert", type.id, (value) => value === parallel);
   },
 });
 
@@ -202,6 +225,8 @@ const bscReportValidator = v.object({
   twinKeys: v.number(),
   /** Two rows still on the sheet for one (card, condition), at 0: `planBscSheet` refuses that pair. */
   twinKeysRemaining: v.number(),
+  /** Sets its spec builds that this deployment doesn't have yet: not read, so not cleared. */
+  skippedSets: v.number(),
 });
 type BscReport = typeof bscReportValidator.type;
 
@@ -339,7 +364,7 @@ async function zeroSet(
   session: BscSellerSession,
   sellerIdOf: () => Promise<string>,
   input: Extract<VariantInput, { kind: "ok" }>,
-): Promise<Omit<BscReport, "outcome">> {
+): Promise<Omit<BscReport, "outcome" | "skippedSets">> {
   // Serial, never side by side: overlapping sheet reads are what mint twin rows.
   const conditions: string[] = [...bscConditionsForEra(input.era)];
   let first = await readSheets(ctx, session, input.requests, conditions);
@@ -383,21 +408,33 @@ async function clearBsc(ctx: ActionCtx): Promise<BscReport> {
 
   // Every set's scope first: a set that can't be found signs in to nothing.
   const inputs: Array<Extract<VariantInput, { kind: "ok" }>> = [];
+  let skippedSets = 0;
   for (const { builtBySpec, ...scope } of SELLER_SPEC_SETS) {
     const where = scope.parallel === undefined ? "Base" : scope.parallel;
     const name = `${scope.year} ${scope.manufacturer} ${scope.setName}`;
-    const variantId: Id<"selectorOptions"> | null = await ctx.runQuery(internal.testingSellerCleanup.variantOf, scope);
-    if (!variantId) {
+    const found: VariantLookup = await ctx.runQuery(internal.testingSellerCleanup.variantOf, scope);
+    if (found.kind === "ambiguous") {
+      throw new Error(`${name} ${where} can't be told apart: its ${found.level} row isn't there exactly once`);
+    }
+    if (found.kind === "absent") {
       // Built by its spec and not built yet on this deployment: nothing of it to clear here.
       if (builtBySpec) {
-        console.log(JSON.stringify({ msg: "seller_cleanup_set_absent", platform: "bsc", operation: "clearSellerAccounts" }));
+        skippedSets += 1;
+        console.log(
+          JSON.stringify({
+            msg: "seller_cleanup_set_absent",
+            platform: "bsc",
+            operation: "clearSellerAccounts",
+            set: `${scope.sport} ${name} ${where}`,
+          }),
+        );
         continue;
       }
       throw new Error(`no ${name} ${where} on this deployment: did the seed run?`);
     }
     const input: VariantInput = await ctx.runQuery(internal.listingDrain.variantSyncInput, {
       ownerId: CLEANUP_OWNER,
-      variantId,
+      variantId: found.id,
     });
     if (input.kind !== "ok") throw new Error(`${name} ${where} has no BuySportsCards scope (${input.kind})`);
     inputs.push(input);
@@ -427,7 +464,7 @@ async function clearBsc(ctx: ActionCtx): Promise<BscReport> {
     return known;
   };
 
-  const total: BscReport = { outcome: "clean", rows: 0, unreadableRows: 0, listed: 0, zeroed: 0, twinKeys: 0, twinKeysRemaining: 0 };
+  const total: BscReport = { outcome: "clean", rows: 0, unreadableRows: 0, listed: 0, zeroed: 0, twinKeys: 0, twinKeysRemaining: 0, skippedSets };
   for (const input of inputs) {
     const one = await zeroSet(ctx, session, sellerIdOf, input);
     total.rows += one.rows;
@@ -497,7 +534,7 @@ export const clearSellerAccounts = internalAction({
       : await runSide<EbayReport>(ctx, "ebay", "ebay", () => clearEbay(ctx));
     const bsc = bscPaused
       ? {
-          report: { outcome: "paused", rows: 0, unreadableRows: 0, listed: 0, zeroed: 0, twinKeys: 0, twinKeysRemaining: 0 } satisfies BscReport,
+          report: { outcome: "paused", rows: 0, unreadableRows: 0, listed: 0, zeroed: 0, twinKeys: 0, twinKeysRemaining: 0, skippedSets: 0 } satisfies BscReport,
           error: null,
         }
       : await runSide<BscReport>(ctx, "bsc", "buysportscards", () => clearBsc(ctx));

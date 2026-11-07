@@ -394,11 +394,17 @@ export function photoKeyFor(bscCardId: string, condition: string): string {
   return `${bscCardId}|${condition}`;
 }
 
-/** A number as written, and with each prefix in force taken off the front. */
+/**
+ * A number as written, and with each prefix in force taken off the front. A
+ * prefix never splits a run of digits: prefix "1" leaves "12" as 12, never 2,
+ * and "T2" leaves "T21" as T21, never 1.
+ */
 function cardNumberSpellings(cardNumber: string, prefixes: readonly string[]): Set<string> {
   const spellings = new Set([cardNumber.trim().toUpperCase()]);
   for (const prefix of prefixes) {
-    spellings.add(stripNbCardNumberPrefix(cardNumber, prefix).toUpperCase());
+    const stripped = stripNbCardNumberPrefix(cardNumber, prefix);
+    if (/\d$/.test(prefix.trim()) && /^\d/.test(stripped)) continue;
+    spellings.add(stripped.toUpperCase());
   }
   return spellings;
 }

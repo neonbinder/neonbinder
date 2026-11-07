@@ -542,16 +542,34 @@ describe("planBscSheet (NEO-370)", () => {
     });
 
     test.each([
-      ["a leading zero", "BC-098", "98"],
-      ["a variation suffix on the sheet", "BC-98a", "98"],
-      ["a variation suffix on NB", "BC-98", "98a"],
-      ["a number stem", "BC-9", "98"],
-      ["the prefix twice", "BC-BC-98", "98"],
-      ["the prefix behind another word", "X-BC-98", "98"],
-      ["the prefix at the end", "98BC-", "98"],
-      ["a space left after the prefix", "BC- 98", "98"],
-    ])("nothing looser: %s is held", (_label, sheetCardNo, nbNumber) => {
-      holds(planOne(sheetCardNo, nbNumber, ["BC-"]), nbNumber);
+      ["a leading zero", "BC-098", "98", ["BC-"]],
+      ["a variation suffix on the sheet", "BC-98a", "98", ["BC-"]],
+      ["a variation suffix on NB", "BC-98", "98a", ["BC-"]],
+      ["a number stem", "BC-9", "98", ["BC-"]],
+      ["the prefix twice", "BC-BC-98", "98", ["BC-"]],
+      ["the prefix behind another word", "X-BC-98", "98", ["BC-"]],
+      ["the prefix at the end", "98BC-", "98", ["BC-"]],
+      ["a space left after the prefix", "BC- 98", "98", ["BC-"]],
+      ["a digit prefix splitting the sheet's number", "12", "2", ["1"]],
+      ["a digit prefix splitting a repeated digit", "11", "1", ["1"]],
+      ["a prefix ending in a digit splitting the sheet's number", "T21", "1", ["T2"]],
+      ["a digit prefix splitting NB's number", "2", "12", ["1"]],
+      ["a prefix ending in a digit splitting NB's number", "1", "T21", ["T2"]],
+      ["a digit prefix with a space after it", "12", "2", ["1 "]],
+      ["the split prefix beside one that fits nothing", "T21", "1", ["T", "T2"]],
+    ])("nothing looser: %s is held", (_label, sheetCardNo, nbNumber, prefixes) => {
+      holds(planOne(sheetCardNo, nbNumber, prefixes), nbNumber);
+    });
+
+    test.each([
+      ["a prefix ending in a letter", "BCV-26", "26", ["BCV-"]],
+      ["a letter prefix with no separator", "T21", "21", ["T"]],
+      ["a prefix ending in a digit, with a separator next", "T2-1", "1", ["T2-"]],
+      ["a prefix ending in a digit, with a letter next", "T2A", "A", ["T2"]],
+      ["a letter prefix beside a digit one", "T21", "21", ["T", "T2"]],
+      ["the same number as written, under a digit prefix", "12", "12", ["1"]],
+    ])("a prefix that splits no digits still lists: %s", (_label, sheetCardNo, nbNumber, prefixes) => {
+      lists(planOne(sheetCardNo, nbNumber, prefixes));
     });
 
     test("nested prefixes come off one at a time, never stacked", () => {
