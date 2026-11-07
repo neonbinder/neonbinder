@@ -445,6 +445,71 @@ export const seedMyTestFailedPhotoRun = mutation({
 });
 
 /**
+ * NEO-441 — a run holding four read photos that no pair claims, for the spec
+ * that drives the Pairing column's pair-by-hand button. Real photos pair
+ * themselves, so a spec cannot keep two of them loose; this writes the state
+ * after reading directly: an open scanner run, four photos `done` with nothing
+ * read off them (no side, no number, no player) and no pair row. Nothing here
+ * schedules `runPairing`, so nothing pairs them before the collector does.
+ *
+ * Same safety as the seeds above: fails closed in production, writes only rows
+ * owned by the CALLER, spends no model budget, and leaves an open run the idle
+ * sweep closes. Callers cancel their active runs first (the page does).
+ */
+const LOOSE_PHOTO_NAMES = ["loose-1.jpg", "loose-2.jpg", "loose-3.jpg", "loose-4.jpg"] as const;
+
+export const seedMyTestLoosePhotosRun = mutation({
+  args: {},
+  returns: v.object({ runId: v.id("intakeRuns") }),
+  handler: async (ctx) => {
+    if (!process.env.TESTING_RESET_SECRET) {
+      throw new Error("Test placeholder seeding is not enabled on this deployment");
+    }
+    const userId = await getCurrentUserId(ctx);
+    if (!userId) throw new Error("Not authenticated");
+    if (!CLERK_USER_ID_RE.test(userId)) throw new Error("Unexpected user id shape");
+
+    const jobId = crypto.randomUUID();
+    const now = Date.now();
+    await ctx.db.insert("placeholderJobs", {
+      jobId,
+      userId,
+      objectPath: placeholderJobPrefix(userId, jobId),
+      createdAt: now,
+      mode: "stream",
+      status: "collecting",
+      startedAt: now,
+      totalImages: LOOSE_PHOTO_NAMES.length,
+      processedImages: LOOSE_PHOTO_NAMES.length,
+      failedImages: 0,
+      rejectedEntries: 0,
+      nextEntryIndex: LOOSE_PHOTO_NAMES.length,
+      lastActivityAt: now,
+    });
+    for (const [entryIndex, originalName] of LOOSE_PHOTO_NAMES.entries()) {
+      await ctx.db.insert("placeholderImages", {
+        jobId,
+        userId,
+        entryIndex,
+        originalName,
+        status: "done",
+        queuedAt: now,
+        settledAt: now,
+      });
+    }
+    const homeId = await getOrCreateMain(ctx, userId);
+    const runId = await ctx.db.insert("intakeRuns", {
+      userId,
+      jobId,
+      homeId,
+      createdAt: now,
+      lastActivityAt: now,
+    });
+    return { runId };
+  },
+});
+
+/**
  * NEO-427 — a run with one saved card whose scans failed to reach its copy, for
  * the spec that drives a Saved tile's failed states. A real attach can't be made
  * to fail on cue, so this writes the end state over a real copy.

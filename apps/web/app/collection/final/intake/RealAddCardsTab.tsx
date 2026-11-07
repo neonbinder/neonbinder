@@ -1401,13 +1401,15 @@ function LoosePile({
             size="1"
             variant="secondary"
             outline
-            disabled={live.length !== 2}
+            className="h-auto min-h-11 py-1 sm:min-h-8"
+            aria-disabled={live.length !== 2 || undefined}
             onClick={() => {
+              if (live.length !== 2) return;
               onPair(live[0], live[1]);
               setChosen([]);
             }}
           >
-            Pair these two (first is the front)
+            {live.length === 2 ? "Pair Images" : live.length === 1 ? "Select Partner" : "Select 2 to Pair"}
           </NeonButton>
         </li>
       )}
