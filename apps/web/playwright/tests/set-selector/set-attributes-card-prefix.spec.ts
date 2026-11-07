@@ -28,6 +28,9 @@ test(
 
     await drillToCustomSet(page, env, { set: `cpx-${env.WORKER_INDEX}`, variantType: "Insert" });
     await selectOrCreate(page, "Inserts", "CPXROW", { confirm: "required" });
+    // The new row's panel, not the previous selection's: that one can answer
+    // openAttributes and then unmount before the click.
+    await expect(page.getByRole("heading", { name: "Attributes for CPXROW (Insert)" })).toBeVisible();
 
     await openAttributes(page);
     const prefix = page.getByRole("textbox", { name: "Value for Card prefix" });

@@ -2728,7 +2728,58 @@ export default defineSchema({
          * primary name matched, which is the norm.
          */
         matchedAlias: v.optional(v.string()),
+        /**
+         * NEO-424 — the candidate's HOME sport label, present on candidates the
+         * batch took from the SET'S OWN HISTORY (a name already linked on a
+         * committed card of this set) rather than from the in-sport name index.
+         *
+         * Set history is not sport-scoped: Bo Jackson linked on the base set's
+         * card is the answer for his parallel too, whatever sport his row is
+         * filed under. So a history candidate can be in another sport, and the
+         * wizard labels it when this differs from the set's sport. Absent on a
+         * candidate `buildExistingPlayerCandidates` found, which is always in
+         * the row's own sport. A label resolved once at insert, never a key.
+         */
+        sportValue: v.optional(v.string()),
       }))),
+      /**
+       * NEO-424, player-only — the ONE existing player the batch suggests for
+       * this name, which the operator still confirms.
+       *
+       * Rule E: a name with no answer in the set's sport and no set history
+       * may still have an obvious candidate — the same name in the prior year
+       * of the same product (`priorYearProduct`), or exactly one player of
+       * that name in ANY sport (`onlyNamesake`). The wizard puts "Link to
+       * <name> (<sportValue>)" first and demotes "Add as New Player anyway".
+       *
+       * `setHistory` / `hallOfFame` are the same suggestion after the operator
+       * pressed Change on a row the batch had AUTO-LINKED (`decision.
+       * autoLinked`): the link is undone, but the player it named is still the
+       * best guess, so it comes back as the primary rather than vanishing.
+       *
+       * Never a decision: nothing is linked until the operator says so. But
+       * like a same-name choice (NEO-332) it holds the Wikidata lookup back —
+       * the row is born `ready` and looked up only when the operator presses
+       * "Add as New Player anyway" (`entityReviewQueue.requestPlayerLookup`),
+       * so no New Team steps are staged ahead of "Link to <name>".
+       * `recordDecision`
+       * accepts a cross-sport link to exactly this `playerId` (and to any
+       * `existingCandidates` entry), re-pointing the row's sport to the
+       * player's home sport — the operator-typed Link to Existing stays
+       * sport-checked.
+       */
+      preselect: v.optional(v.object({
+        playerId: v.id("players"),
+        name: v.string(),
+        sportId: v.id("selectorOptions"),
+        sportValue: v.string(),
+        reason: v.union(
+          v.literal("priorYearProduct"),
+          v.literal("onlyNamesake"),
+          v.literal("setHistory"),
+          v.literal("hallOfFame"),
+        ),
+      })),
       // team-only
       league: v.optional(v.string()),
       // NEO-254, team-only — the league's OWN QID, off the same P118 statement
@@ -3000,6 +3051,32 @@ export default defineSchema({
          * See the create variant for the full contract.
          */
         addSetSport: v.optional(v.boolean()),
+        /**
+         * ── NEO-424: a link the BATCH made, not the operator ────────────────
+         *
+         * Rule A: a name already linked on a committed card anywhere in this
+         * set (base, inserts, parallels) to exactly one player is that player
+         * — any sport, no wizard step. Rule D: when no same-name candidate was
+         * active in the set's year and exactly one is a Hall of Famer, that
+         * one. Rule F gives teams rule A.
+         *
+         * Stored as an ordinary link decision on an ordinary review row, NOT
+         * as a `checklistNameResolutions` answer: that fast path runs before
+         * decisions in the commit prelude and would override the operator's
+         * Change. Here the wizard lists it under Decided ("Matched from this
+         * set", "Hall of Famer") with Change, and `clearDecision` turns it back
+         * into a question whose primary is the same player
+         * (`enrichment.preselect`).
+         *
+         * Present only on rows `startBatch` inserted already decided. Any
+         * decision the operator records replaces the whole object, so the flag
+         * cannot outlive the batch's own answer. Never carries `addSetSport`:
+         * an auto-link is a guest link and writes nothing to the player.
+         */
+        autoLinked: v.optional(v.union(
+          v.literal("setHistory"),
+          v.literal("hallOfFame"),
+        )),
       }),
       // NEO-212: "this name is not a person / not a team". Carries no payload —
       // nothing is created, nothing is linked, and the card keeps the raw name

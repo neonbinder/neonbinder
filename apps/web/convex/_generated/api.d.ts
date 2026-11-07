@@ -170,6 +170,7 @@ import type * as selectorOptions from "../selectorOptions.js";
 import type * as selectorSyncMatch from "../selectorSyncMatch.js";
 import type * as selectorSyncStore from "../selectorSyncStore.js";
 import type * as setFromMarketplace from "../setFromMarketplace.js";
+import type * as setHistory from "../setHistory.js";
 import type * as setInsertConversion from "../setInsertConversion.js";
 import type * as setParallelConversion from "../setParallelConversion.js";
 import type * as setReconciliation from "../setReconciliation.js";
@@ -361,6 +362,7 @@ declare const fullApi: ApiFromModules<{
   selectorSyncMatch: typeof selectorSyncMatch;
   selectorSyncStore: typeof selectorSyncStore;
   setFromMarketplace: typeof setFromMarketplace;
+  setHistory: typeof setHistory;
   setInsertConversion: typeof setInsertConversion;
   setParallelConversion: typeof setParallelConversion;
   setReconciliation: typeof setReconciliation;
