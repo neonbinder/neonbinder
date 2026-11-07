@@ -34,6 +34,21 @@ describe("entityConfirmationMessage", () => {
     expect(line).not.toMatch(/roster|new players|new teams|confirmation/);
   });
 
+  it("NEO-424 — names only linked for you say so, singular and plural", () => {
+    expect(entityConfirmationMessage([], [], 1)).toBe(
+      "1 name was linked for you. Give it a look before this saves.",
+    );
+    expect(entityConfirmationMessage([], [], 4)).toBe(
+      "4 names were linked for you. Give them a look before this saves.",
+    );
+  });
+
+  it("NEO-424 — beside names that need a look, the links add nothing to the line", () => {
+    expect(entityConfirmationMessage(["A"], ["T"], 3)).toBe(
+      "2 names need a look before this saves.",
+    );
+  });
+
   it("says zero plainly rather than in per-type zeros", () => {
     expect(entityConfirmationMessage([], [])).toBe("0 names need a look before this saves.");
   });
