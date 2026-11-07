@@ -920,8 +920,10 @@ function HeldTray({
           : ""
       }
     >
-      <p id={id} role="status" aria-live="polite" aria-label="Waiting photos" className="m-0 min-w-0 flex-1">
-        {line}
+      {/* The id is on the words, not the region: `aria-describedby` reads a node's own
+          name first, so the zone would be described as "Waiting photos". */}
+      <p role="status" aria-live="polite" aria-label="Waiting photos" className="m-0 min-w-0 flex-1">
+        <span id={id}>{line}</span>
       </p>
       {filled && onRetry && (
         <NeonButton
@@ -1895,6 +1897,12 @@ interface RowActions {
   nextVariation: (row: IntakeMatchRow) => void;
 }
 
+/**
+ * Past this many tiles a lane stops growing and scrolls. About what fills its
+ * 34rem; below it the list is plain flow content, with no scroller and no Tab stop.
+ */
+const LANE_SCROLL_AFTER = 6;
+
 function Lane({
   label,
   count,
@@ -1911,6 +1919,12 @@ function Lane({
   action?: ReactNode;
   children: ReactNode;
 }) {
+  const [focused, setFocused] = useState(false);
+  // Never the review lane: it grows, and its tiles take the keyboard themselves.
+  // `focused`: a lane draining past the threshold must not pull the Tab stop from
+  // under whoever is scrolling it, which would drop them to the top of the page.
+  const scrolls = !review && (count > LANE_SCROLL_AFTER || focused);
+  const list = <ul className="m-0 list-none space-y-2 p-0">{children}</ul>;
   return (
     <section
       aria-label={`${label}, ${count}`}
@@ -1927,7 +1941,22 @@ function Lane({
         <span className="text-sm font-bold tabular-nums text-ink-2">{count}</span>
       </header>
       {action}
-      <ul className={`m-0 list-none space-y-2 overflow-auto p-0 ${review ? "" : "max-h-[34rem]"}`}>{children}</ul>
+      {/* A scroller a keyboard can't focus can't be scrolled from the keyboard. Both
+          branches are one div to React, so crossing the threshold never remounts a tile. */}
+      {scrolls ? (
+        <div
+          role="group"
+          aria-label={`${label} list`}
+          tabIndex={0}
+          onFocus={() => setFocused(true)}
+          onBlur={() => setFocused(false)}
+          className="max-h-[34rem] overflow-auto rounded-sm focus-outline"
+        >
+          {list}
+        </div>
+      ) : (
+        <div className="overflow-auto">{list}</div>
+      )}
     </section>
   );
 }

@@ -746,6 +746,9 @@ describe("RealAddCardsTab holds dropped photos until the run is ready (NEO-452)"
     const line = screen.getByText("2 photos waiting. Pick a set and they're off.");
     expect(screen.getByText(/^JPEG, PNG or one zip\. Drop them whenever\. They wait here until the run is set up/)).toBeTruthy();
     expect(describedByIds(zone())).toContain(line.id);
+    // The description reads the node's own name first: the region's label must stay off it.
+    expect(line.getAttribute("aria-label")).toBeNull();
+    expect(screen.getByRole("status", { name: "Waiting photos" }).textContent).toBe(line.textContent);
     expect(screen.getByRole("button", { name: "Remove photos" })).toBeTruthy();
     expect(startStream()).not.toHaveBeenCalled();
     expect(createRun()).not.toHaveBeenCalled();
@@ -2010,6 +2013,41 @@ describe("NEO-427: a Saved tile says where its photos are", () => {
 /* ------------------------------------------------------------------ */
 /* NEO-416 — loading is not "nothing there"                            */
 /* ------------------------------------------------------------------ */
+
+describe("a lane that scrolls takes the keyboard (NEO-452)", () => {
+  const reading = (count: number) =>
+    Array.from({ length: count }, (_, i) => ({ ...photo(i), status: "processing" }));
+  const list = () => screen.queryByRole("group", { name: "Cropping & reading list" });
+
+  it("has no Tab stop until it can scroll, then a named one around the same list", () => {
+    const runId = freshRunId();
+    setRun(runId, { images: reading(6) });
+    const view = render(<Tab runId={runId} />);
+    expect(list()).toBeNull();
+    const tile = screen.getByText("scan-0.jpg");
+
+    setRun(runId, { images: reading(7) });
+    view.rerender(<Tab runId={runId} />);
+    expect(list()!.getAttribute("tabindex")).toBe("0");
+    expect(list()!.querySelector("ul")).toBeTruthy();
+    // Crossing the threshold doesn't remount what is in the lane.
+    expect(screen.getByText("scan-0.jpg")).toBe(tile);
+  });
+
+  it("keeps the Tab stop under whoever is on it while the lane drains, and lets go after", () => {
+    const runId = freshRunId();
+    setRun(runId, { images: reading(7) });
+    const view = render(<Tab runId={runId} />);
+    act(() => list()!.focus());
+
+    setRun(runId, { images: reading(2) });
+    view.rerender(<Tab runId={runId} />);
+    expect(document.activeElement).toBe(list());
+
+    act(() => list()!.blur());
+    expect(list()).toBeNull();
+  });
+});
 
 describe("RealAddCardsTab while the shelf or the open run loads (NEO-416)", () => {
   /** The page's search, shown so a test can see whether `?run=` moved. */
