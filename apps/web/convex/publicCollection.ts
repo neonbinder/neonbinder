@@ -37,6 +37,10 @@
  * as `unlisted` (its number, player and where it belongs), never its notes,
  * photos or request.
  *
+ * NEO-444: `upForTrade` follows the collector's Up for Trade switch on every
+ * list that carries it. With the shelf private, no answer says which copies are
+ * on it.
+ *
  * Never public: cost, acquired date, location, notes, grading cert, serial
  * number, a copy's home or its id, a box's name, any other binder's link, and
  * timestamps, a private binder's name or link. Counts are the stored ones only (null when absent): a visitor
@@ -183,7 +187,7 @@ async function publicBinder(
   ctx: QueryCtx,
   username: string,
   path: string,
-): Promise<{ ownerId: string; row: ContainerRow } | null> {
+): Promise<{ ownerId: string; row: ContainerRow; tradePublic: boolean } | null> {
   if (!isSlug(path)) return null;
   const profile = await profileOf(ctx, username);
   if (!profile) return null;
@@ -195,7 +199,7 @@ async function publicBinder(
   if (!row || row.ownerId !== ownerId) return null;
   if (row.system !== undefined || row.kind !== "binder") return null;
   if (row.visibility !== "public") return null;
-  return { ownerId, row };
+  return { ownerId, row, tradePublic: !profile.tradePrivate };
 }
 
 async function systemRow(
@@ -295,15 +299,19 @@ async function publicCardOf(
   return card ? { card: await reader.cardWithPath(card) } : null;
 }
 
+type CopyExtras = { slot?: boolean; forSale?: boolean; tradePublic: boolean };
+
 /**
  * One copy as a visitor sees it, or null when its card left the catalog.
  * Built field by field; add a field here only after deciding it is public.
+ * `tradePublic` has no default: each list says whether its answer may carry
+ * the Trade flag.
  */
 async function publicCopyOut(
   reader: CatalogReader,
   ctx: QueryCtx,
   row: CopyRow,
-  extra: { slot?: boolean; forSale?: boolean },
+  extra: CopyExtras,
 ): Promise<PublicCopy | null> {
   const shown = await publicCardOf(reader, ctx, row);
   if (!shown) return null;
@@ -314,7 +322,7 @@ async function publicCopyOut(
     ...(row.condition ? { condition: row.condition } : {}),
     ...(row.grading ? { grading: { grader: row.grading.grader, grade: row.grading.grade } } : {}),
     ...(extra.slot && row.slot !== undefined ? { slot: row.slot } : {}),
-    ...(row.upForTrade === true ? { upForTrade: true as const } : {}),
+    ...(extra.tradePublic && row.upForTrade === true ? { upForTrade: true as const } : {}),
     ...(extra.forSale ? { forSale: true as const } : {}),
     ...(photos.front || photos.back ? { photos } : {}),
     ...shown,
@@ -324,7 +332,7 @@ async function publicCopyOut(
 async function mapCopies(
   ctx: QueryCtx,
   rows: CopyRow[],
-  extra: (row: CopyRow) => Promise<{ slot?: boolean; forSale?: boolean }>,
+  extra: (row: CopyRow) => Promise<CopyExtras>,
 ): Promise<PublicCopy[]> {
   const reader = new CatalogReader(ctx);
   const out: PublicCopy[] = [];
@@ -405,12 +413,12 @@ export const binderCopies = query({
   handler: async (ctx, args) => {
     const found = await publicBinder(ctx, args.username, args.path);
     if (!found) return EMPTY_PAGE;
-    const { ownerId, row } = found;
+    const { ownerId, row, tradePublic } = found;
     const result = await ctx.db
       .query("collectionCopies")
       .withIndex("by_owner_home_slot", (q) => q.eq("ownerId", ownerId).eq("homeId", row._id))
       .paginate(capped(args.paginationOpts));
-    return { ...result, page: await mapCopies(ctx, result.page, async () => ({ slot: true })) };
+    return { ...result, page: await mapCopies(ctx, result.page, async () => ({ slot: true, tradePublic })) };
   },
 });
 
@@ -522,7 +530,11 @@ export const trade = query({
       const key = row.homeId as string;
       if (!homes.has(key)) homes.set(key, await ctx.db.get(row.homeId));
       const home = homes.get(key);
-      return { forSale: forSalePublic && !!home && home.ownerId === ownerId && !home.system && home.kind === "box" };
+      return {
+        // Only a public Up for Trade reaches here (`shelfOwner`).
+        tradePublic: true,
+        forSale: forSalePublic && !!home && home.ownerId === ownerId && !home.system && home.kind === "box",
+      };
     });
     return { ...result, page };
   },
@@ -569,7 +581,8 @@ export const forSale = query({
         cursor: start?.inner ?? null,
         ...(innerEnd !== undefined && innerEnd !== null ? { endCursor: innerEnd } : {}),
       });
-    const page = await mapCopies(ctx, result.page, async () => ({}));
+    const tradePublic = !(await profileOf(ctx, args.username))?.tradePrivate;
+    const page = await mapCopies(ctx, result.page, async () => ({ tradePublic }));
     const next = boxes[index + 1];
     if (result.isDone && next && innerEnd === undefined) {
       return { page, isDone: false, continueCursor: `${index + 1}|` };

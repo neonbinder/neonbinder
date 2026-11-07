@@ -42,6 +42,20 @@ async function unhandledDuring(fn: () => void | Promise<void>): Promise<unknown[
 
 const loaders = () => Array.from({ length: 6 }, () => vi.fn(() => Promise.resolve({})));
 
+describe("Deferred's fallback", () => {
+  const Never = lazy(() => new Promise<{ default: () => null }>(() => undefined));
+
+  test("is a bare line by default, so a route inside a layout keeps its frame", () => {
+    render(<Deferred><Never /></Deferred>);
+    expect(screen.getByRole("status").parentElement?.className ?? "").not.toContain("min-h-screen");
+  });
+
+  test("covers the page when asked, so nothing light shows behind it", () => {
+    render(<Deferred fullPage><Never /></Deferred>);
+    expect(screen.getByRole("status").parentElement?.className).toContain("min-h-screen bg-surface");
+  });
+});
+
 describe("PrefetchBinderTabs — with requestIdleCallback", () => {
   let idle: Map<number, IdleCb>;
   let requestIdleCallback: ReturnType<typeof vi.fn>;
