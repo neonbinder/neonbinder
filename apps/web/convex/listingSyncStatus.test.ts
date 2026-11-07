@@ -281,6 +281,18 @@ describe("syncStatus", () => {
     ]);
   });
 
+  test("NEO-433: a run that only compared reads as one check step, done, on the set's row and no step is dropped", async () => {
+    const s = await setup();
+    await listOn(s);
+    await record(s, s.fx.baseId, {
+      status: "idle",
+      lastRunAt: 10,
+      progress: { runStartedAt: 10, steps: [{ kind: "check", status: "done", finishedAt: 11 }] },
+    });
+    const p = await bsc(s);
+    expect(p.sets[0].steps).toEqual([{ kind: "check", status: "done" }]);
+  });
+
   test("a set gone from NB reads as such; a queued card gone from the catalog keeps its id only", async () => {
     const s = await setup();
     await listOn(s);

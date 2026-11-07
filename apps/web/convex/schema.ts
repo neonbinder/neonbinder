@@ -930,6 +930,9 @@ export const listingProblemReasonValidator = v.union(
  * it (`marketplaceListingSyncs.progress`). NB vocabulary only: the web writes
  * each label from `kind` and NB's condition names; no marketplace value is
  * stored here.
+ *   check    compare the collector's boxes with what is listed: the first step
+ *            of an eBay run, and all of a run that finds nothing to do, so a
+ *            run that sent nothing still says what it did
  *   read     (BSC) read one condition's sheet
  *   send     (BSC) the PUT carrying the changes
  *   confirm  (BSC) read one condition back after the PUT
@@ -945,6 +948,7 @@ export const listingProblemReasonValidator = v.union(
  * NB may still have to zero).
  */
 export const listingSyncStepKindValidator = v.union(
+  v.literal("check"),
   v.literal("read"),
   v.literal("send"),
   v.literal("confirm"),
@@ -4649,8 +4653,10 @@ export default defineSchema({
      * writes the plan and flips one step per small write (`working` → `done`),
      * appending steps it learns later and dropping ones the run turns out not
      * to need. The finish drops every step still `waiting`; a failed run ends
-     * with the step it died on `failed`. Kept as the last run's ledger until
-     * the next claim replaces it. Small (a vintage BSC run is ~22 steps).
+     * with the step it died on `failed`; a clean run with nothing to do ends
+     * on its one `check` step (`listingDrain.finishVariant`). Kept as the last
+     * run's ledger until the next claim replaces it. Small (a vintage BSC run
+     * is ~22 steps).
      */
     progress: v.optional(listingSyncProgressValidator),
     lastUpdated: v.number(),
@@ -4753,6 +4759,19 @@ export default defineSchema({
     drainLeaseExpiresAt: v.optional(v.number()),
     /** A kick landed while a drain ran: its release runs the next one at once. */
     drainRequested: v.optional(v.boolean()),
+    /**
+     * NEO-433: the drain run a kick just scheduled, until a run claims. Only
+     * the run handed `drainKickToken` is the one `drainKickFnId` names, and its
+     * claim starts `listingDrain.watchDrainRun` on that function's own record.
+     */
+    drainKickToken: v.optional(v.string()),
+    drainKickFnId: v.optional(v.id("_scheduled_functions")),
+    /**
+     * NEO-433: when the platform recorded the lease holder's function as over
+     * without a release. The lease stands only through the grace after it
+     * (`DRAIN_DEATH_GRACE_MS`); nothing reads the run as running meanwhile.
+     */
+    drainRunDeadAt: v.optional(v.number()),
     /**
      * When the last claimed drain released, whether it succeeded or failed. A
      * refused claim never stamps it. `listingSync.syncVariant` reads it: a row

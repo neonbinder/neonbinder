@@ -9,6 +9,7 @@ import {
   bulkCreateOrReplaceInventoryItems,
   bulkUpdatePriceQuantity,
   createPolicy,
+  deleteInventoryItem,
   ebayErrorDetailsOf,
   errorIdsOf,
   getCardCategoryAspects,
@@ -620,6 +621,44 @@ describe("request shapes and headers", () => {
     expect(seen[0].json).toEqual({ a: 1 });
     expect(seen[1].url.pathname).toBe("/sell/inventory/v1/offer/O1/withdraw");
     expect(seen[1].init.method).toBe("POST");
+  });
+
+  test("deleteInventoryItem DELETEs the URL-encoded SKU with no body; 204 is success", async () => {
+    answers.push(new Response(null, { status: 204 }));
+    expect(await deleteInventoryItem(noCredentialCalls, session(), "NB2/a b-NM")).toEqual({ ok: true, value: null });
+    expect(seen).toHaveLength(1);
+    expect(seen[0].init.method).toBe("DELETE");
+    expect(seen[0].url.pathname).toBe("/sell/inventory/v1/inventory_item/NB2%2Fa%20b-NM");
+    expect(seen[0].init.body).toBeUndefined();
+  });
+
+  test("deleteInventoryItem: a 404 means already gone, so success", async () => {
+    answers.push(json({ errors: [{ errorId: 25710 }] }, 404));
+    expect(await deleteInventoryItem(noCredentialCalls, session(), "S")).toEqual({ ok: true, value: null });
+  });
+
+  test.each([
+    [400, 25702],
+    [400, 25709],
+    [500, 25001],
+  ])("deleteInventoryItem: a %i with error %i is a failure", async (status, errorId) => {
+    answers.push(json({ errors: [{ errorId }] }, status));
+    expect(await deleteInventoryItem(noCredentialCalls, session(), "S")).toMatchObject({
+      ok: false,
+      failure: { kind: "http", httpStatus: status, errorIds: [errorId] },
+    });
+  });
+
+  test("deleteInventoryItem logs its operation and outcome, never the token", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    answers.push(new Response(null, { status: 204 }));
+    await deleteInventoryItem(noCredentialCalls, session(), "S");
+    const lines = linesFor(log, "deleteInventoryItem");
+    const text = JSON.stringify(log.mock.calls);
+    log.mockRestore();
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatchObject({ msg: "ebay_seller_call", outcome: "ok", httpStatus: 204 });
+    expect(text).not.toContain("tok-1");
   });
 
   test("getOrdersPage passes the filter, page size and offset and reports whether more follow", async () => {

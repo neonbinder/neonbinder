@@ -183,11 +183,12 @@ typed into "+ Custom" (the form refuses the name) and never searched for.
   `@regression` tag (it drifted into a set disjoint from smoke and was
   deleted) and never a `wip` tag: fix the bug instead. Run a subset with
   `--grep @smoke`.
-- **Run only what you changed, against dev before the first push.** Bring
-  dev up to date first if it is behind the branch; use the PR's Convex preview
-  only when dev cannot reproduce it (see Running). Never the full suite
-  locally unless the change is to the harness itself, and never the seed's
-  reset on dev without saying so first (it wipes dev under every session).
+- **Run only what you changed, on this worktree's own Convex deployment before
+  the first push.** Use the PR's Convex preview only when that deployment cannot
+  reproduce it (see Running). Never the full suite locally unless the change is
+  to the harness itself, and never the seed's reset on shared dev without saying
+  so first (it wipes shared dev under every session). Your own deployment is
+  yours to reset.
 - **Timing is never the first diagnosis.** "Looks like timing or a flake"
   means look harder, not raise a number. Get the failure screenshot and
   `error-context.md` (an ARIA snapshot of the page at failure) before
@@ -249,7 +250,7 @@ test("<title states the feature>", { tag: ["@set-selector"] }, async ({ page, si
 - `support/cards.ts`: hand-made card helpers for a worker's own subtree
   (`addCustomCard`, `addCardViaForm`, `openVariant`, `ensureAndSelect`,
   edit/delete button locators).
-- `support/collection.ts`: the collector's `/collection` and Inventory helpers (`drillToCollectorBase`, boxes, quantity fields), and `syncRun` / `followRunToEnd` for Sync status's per-step ledger (NEO-415): a live marketplace round trip is waited on one step at a time ("Read Excellent, done"), each within the standard 7 s, gated by `underWay` so the last run's finished ledger never stands in for the new one. A finished BuySportsCards row folds (reads become "Gathering data", double-checks drop), so a BSC read or confirm is waited on with `readLanded` / `confirmLanded`, never a bare `step`.
+- `support/collection.ts`: the collector's `/collection` and Inventory helpers (`drillToCollectorBase`, boxes, quantity fields), and `syncRun` / `followRunToEnd` for Sync status's per-step ledger (NEO-415): a live marketplace round trip is waited on one step at a time ("Read Excellent, done"), each within the standard 7 s, gated by `underWay` so the last run's finished ledger never stands in for the new one. A finished BuySportsCards row folds (reads become "Gathering data", double-checks drop), so a BSC read or confirm is waited on with `readLanded` / `confirmLanded`, never a bare `step`. The 15-minute sales poll runs the same drain as a press, so a stocked box can be listed before the spec presses Sync (NEO-433), and neither the set's row nor the "Nothing syncing right now." line proves THIS press ran: the poll leaves a row that looks like a press's own, and the page is idle between two runs. A seller spec therefore presses, then walks the set to rest with `followRunToRest(platform, run, queueSettled(platform, setLabel))` (one step per wait; `slow` gives a named step a signed-off longer ceiling), and only then reads the row and picks its branch. `queueSettled` is the evidence: the press queues the set's cards before its toast, and a run's finish clears them in the write that records its result, only if the run claimed them, so "no card of this set queued" plus idle means a run that started after the press has finished. A press that never claims leaves them queued and fails the walk. A run that sent nothing ends on "Gathering data, done" then "Nothing new to send" (`expectNothingSent`); a sending branch asserts `run.nothingNew()` absent.
 - `support/cross-list.ts`: cross-release import (`openCrossListForm`,
   `pickCrossListSource`, `crossListCards`).
 - `support/players.ts`: `/admin/players` (`expectPlayersLoaded`,
@@ -321,6 +322,14 @@ Idioms:
 
 ## Gotchas (read before your first spec)
 
+- **A failure hook finishes its tidy-up.** A live read can stall past a step's
+  budget, so a hook walks a run through `walkForCleanup` (`support/collection.ts`),
+  finishes every other undo, then rethrows anything left undone. One stalled read
+  must not leave a box behind for the next spec. A test body never uses it.
+- **A `has`/`hasNot` locator is relative to the element it filters.** One rooted
+  at the page or a region looks for that root inside the element, never matches,
+  and the `hasNot` filter then passes everything. Build the inner locator from
+  `page.locator(...)` only when it is meant relative, or use `hasText`/`hasNotText`.
 - **`aria-disabled` buttons.** Much of the app disables with `aria-disabled`
   (the wizard's "Add as New Team" while a lookup is in flight, between rows).
   Playwright treats that as disabled, so `click()` waits and times out at 7 s.
@@ -385,10 +394,9 @@ Idioms:
 - **Fresh-only specs** (wikidata live proof, the committing wizard flows, the
   specs that persist a name from `support/recorded-names.ts`) pass
   once per seed. A second local run fails at its "nothing exists yet"
-  precondition; that is correct, not flaky. Re-seed. Dev is never re-seeded
-  for you, so on dev each of these specs runs ONCE per worker index (8-11
-  are dev's): after that, run it against the PR's preview instead, or
-  announce a dev reset first.
+  precondition; that is correct, not flaky. Re-seed: your own deployment is
+  yours to reset. On shared dev, nothing re-seeds for you, so run the spec
+  against the PR's preview instead, or announce a dev reset first.
 
 ## Desktop and mobile
 
@@ -802,25 +810,30 @@ All commands run from `apps/web`.
 | `npm run test:e2e:seed` | `./e2e-baseline.sh reset` then the `setup` project: seeds the target deployment |
 | `npx eslint playwright` | lint the suite |
 
-**Locally: only the specs covering your change, against dev before the
-first push** (NEO-390). Bring dev up to date first if it is behind the branch:
-merge `origin/main` into the branch, check `npx convex function-spec`, and
-push with `npx convex dev --once` when dev lacks what the specs reach. The
-order and the rules for sharing dev with other sessions are in the root
-`CLAUDE.md` → **Run your specs against dev before the first push**.
+**Locally: only the specs covering your change, on this worktree's own Convex
+deployment before the first push** (NEO-438). Creating and seeding it are in the
+root `CLAUDE.md` → **Run your specs on your own Convex deployment before the first push**.
 
 ```bash
-# shell 1: local Vite on a spare port, on dev (.env.local / the env points at it)
+# both shells; the unset keeps a later CLI command from trusting a stale value
+set -a; . ./.env.local; set +a; unset CONVEX_DEPLOYMENT CONVEX_DEPLOY_KEY CONVEX_DEPLOYMENT_TOKEN
+# shell 1: local Vite on a spare port (.env.local names your deployment)
 VITE_DEV_DISABLE_HTTPS=1 npx vite --port 3001 --strictPort
-# shell 2: one spec at a time, on a test account no other session is using
-APP_URL=http://localhost:3001 WORKER_INDEX=8 \
-  npx playwright test --project=e2e --no-deps <path-substring>
+# shell 2: setup and bootstrap once per seed, then one spec at a time
+export APP_URL=http://localhost:3001 WORKER_INDEX=8 PAUSED_PLATFORMS=<the repo variable's value>
+npx playwright test --project=setup --retries=0
+npx playwright test --project=bootstrap --retries=0
+npx playwright test --project=e2e --no-deps <path-substring>
 ```
 
-Dev is not reseeded per run, and its reset wipes it under every other
-session. A spec that needs a fresh seed, a change to `services/browser` or
-`services/preprocess`, or a schema dev refuses runs against **the PR
-preview** after the first push instead:
+A worker with no `TEST_EMAIL_<n>` falls back to `TEST_EMAIL`, so a different
+worker number does not give you a different user. `@marketplace-seller` specs
+need the one shared seller of each marketplace: run them on shared dev or a PR
+preview, one session at a time, never on your own deployment (root `CLAUDE.md` →
+**Cloud threads and seller specs: shared dev**, which cloud threads also follow).
+
+A change to `services/browser` or `services/preprocess`, or a red your deployment
+cannot reproduce, runs against **the PR preview** after the first push instead:
 
 ```bash
 # shell 1: local Vite on a spare port, wired to the PR's Convex preview
@@ -908,7 +921,7 @@ cancelled mid-spec (`cancel-in-progress` on a new push) can leave its preview
 connected to the shared sellers, or its listings up. So right after its turn comes
 each job runs `testingSellerCleanup:clearSellerAccounts` (internal, reachable only
 with the deploy key). On eBay's sandbox seller it withdraws every published offer,
-whatever the listing. On the BuySportsCards test seller it sets every row of the
+whatever the listing, then deletes every inventory item (NEO-453). On the BuySportsCards test seller it sets every row of the
 sets the specs list (`SELLER_SPEC_SETS`) to 0, copies of a twin row included. It
 signs in with the bootstrap's seller credentials as its own owner, not a worker,
 and removes that sign-in after. A cleanup that cannot finish fails the job, naming

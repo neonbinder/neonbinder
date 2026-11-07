@@ -18,15 +18,14 @@ export const BINDER_TAB_LOADERS: ReadonlyArray<() => Promise<unknown>> = [
 ];
 
 /** A lazy route's element: a quiet line while its chunk loads. */
-export function Deferred({ children }: { children: ReactNode }) {
+export function Deferred({ children, fullPage = false }: { children: ReactNode; fullPage?: boolean }) {
+  const line = (
+    <p role="status" className="text-sm text-ink-3">
+      Sleeving the cards…
+    </p>
+  );
   return (
-    <Suspense
-      fallback={
-        <p role="status" className="text-sm text-ink-3">
-          Sleeving the cards…
-        </p>
-      }
-    >
+    <Suspense fallback={fullPage ? <div className="min-h-screen bg-surface px-4 py-6">{line}</div> : line}>
       {children}
     </Suspense>
   );

@@ -1314,7 +1314,31 @@ describe("eBay drain: eBay's answers", () => {
     expect(publishCalls).toBe(EBAY_PUBLISH_CONCURRENCY + 1);
     expect(pauses).toHaveLength(1);
     expect((await record(s, v.variantId))?.lastError).toBe(EBAY_STEP_SAYS.publish.busy);
-    expect(await stepsOf(s, v.variantId)).toEqual(["photos: done", "items: done", "offers: done", "publish: failed"]);
+    expect(await stepsOf(s, v.variantId)).toEqual(["check: done", "photos: done", "items: done", "offers: done", "publish: failed"]);
+  });
+
+  test("NEO-433: a run no longer holding the drain starts no publish", async () => {
+    const s = await setup();
+    const { v } = await oneCard(s, 500);
+    const real = ebay.fetch;
+    vi.stubGlobal("fetch", (async (url: string | URL | Request, init?: RequestInit) => {
+      const res = await real(url, init);
+      if (new URL(String(url)).pathname.endsWith("/bulk_create_offer")) {
+        await s.t.run(async (ctx) => {
+          const st = await ctx.db.query("marketplaceListingStates").first();
+          await ctx.db.patch(st!._id, { drainRunDeadAt: Date.now() });
+        });
+      }
+      return res;
+    }) as typeof fetch);
+
+    const report = await drain(s);
+
+    expect(report.stoppedFor).toBe("listingOff");
+    expect(ebay.publishes()).toHaveLength(0);
+    expect(ebay.offers.size).toBe(1);
+    expect(await outbox(s)).toHaveLength(1);
+    expect((await record(s, v.variantId))?.status).toBe("error");
   });
 
   test("a publish that fails outright still records every listing that went live before the run stopped", async () => {
@@ -1435,7 +1459,7 @@ describe("eBay drain: a busy publish is tried once more", () => {
     const rec = await record(s, v.variantId);
     expect(rec?.lastError).toBeUndefined();
     expect(rec?.counts).toMatchObject({ listed: 1, pushed: 1 });
-    expect(await stepsOf(s, v.variantId)).toEqual(["photos: done", "items: done", "offers: done", "publish: done"]);
+    expect(await stepsOf(s, v.variantId)).toEqual(["check: done", "photos: done", "items: done", "offers: done", "publish: done"]);
     // Each try has its own call line; the retry's says so. eBay's text stays out of the call lines.
     const calls = lines.filter((l) => l.msg === "ebay_seller_call");
     expect(calls).toEqual([
@@ -1463,7 +1487,7 @@ describe("eBay drain: a busy publish is tried once more", () => {
       expect.objectContaining({ httpStatus: 500, attempt: 2 }),
     ]);
     expect((await record(s, v.variantId))?.lastError).toBe(EBAY_STEP_SAYS.publish.busy);
-    expect(await stepsOf(s, v.variantId)).toEqual(["photos: done", "items: done", "offers: done", "publish: failed"]);
+    expect(await stepsOf(s, v.variantId)).toEqual(["check: done", "photos: done", "items: done", "offers: done", "publish: failed"]);
     expect(await linkOf(s, card, "NM")).toMatchObject({ status: "draft" });
   });
 
@@ -1486,7 +1510,7 @@ describe("eBay drain: a busy publish is tried once more", () => {
     expect(order).toHaveLength(1);
     expect(pauses).toEqual([]);
     expect((await record(s, v.variantId))?.lastError).toBe(EBAY_STEP_SAYS.publish.refused);
-    expect(await stepsOf(s, v.variantId)).toEqual(["photos: done", "items: done", "offers: done", "publish: failed"]);
+    expect(await stepsOf(s, v.variantId)).toEqual(["check: done", "photos: done", "items: done", "offers: done", "publish: failed"]);
   });
 
   test("a retry waiting out its pause counts as in flight: another publish stopping the run still records the retry's listing", async () => {
@@ -1730,10 +1754,11 @@ describe("eBay drain: the run's steps (NEO-415)", () => {
 
     await drain(s);
 
-    // While the items went up: photos done, items working, the rest waiting.
-    expect(seen).toEqual([["photos: done", "items: working", "offers: waiting", "publish: waiting"]]);
+    // While the items went up: the compare and photos done, items working, the rest waiting.
+    expect(seen).toEqual([["check: done", "photos: done", "items: working", "offers: waiting", "publish: waiting"]]);
     const rec = await record(s, v.variantId);
     expect(rec?.progress?.steps.map((x) => `${x.kind}: ${x.status}`)).toEqual([
+      "check: done",
       "photos: done",
       "items: done",
       "offers: done",
@@ -1770,7 +1795,7 @@ describe("eBay drain: the run's steps (NEO-415)", () => {
     expect(ebay.offerFor(`NB2-${live}-NM`)?.body.availableQuantity).toBe(3);
     expect(ebay.offerFor(`NB2-${fresh}-NM`)?.status).toBe("PUBLISHED");
     const steps = await stepsOf(s, v.variantId);
-    expect(steps).toEqual(["photos: done", "items: done", "offers: done", "publish: done"]);
+    expect(steps).toEqual(["check: done", "photos: done", "items: done", "offers: done", "publish: done"]);
   });
 
   test("only the steps the run takes: a count change is one offers step; a count at 0 is one withdraw step", async () => {
@@ -1780,7 +1805,7 @@ describe("eBay drain: the run's steps (NEO-415)", () => {
     await addWithPhoto(s, card, { homeId: s.box, condition: "Near Mint", minPriceCents: 500, quantity: 2 }, "tokX");
     await queue(s, [{ cardId: card, variantId: v.variantId, seq: 2 }]);
     await drain(s);
-    expect(await stepsOf(s, v.variantId)).toEqual(["offers: done"]);
+    expect(await stepsOf(s, v.variantId)).toEqual(["check: done", "offers: done"]);
 
     await s.t.run(async (ctx) => {
       const copies = await ctx.db.query("collectionCopies").collect();
@@ -1788,16 +1813,41 @@ describe("eBay drain: the run's steps (NEO-415)", () => {
     });
     await queue(s, [{ cardId: card, variantId: v.variantId, seq: 3 }]);
     await drain(s);
-    expect(await stepsOf(s, v.variantId)).toEqual(["withdraw: done"]);
+    expect(await stepsOf(s, v.variantId)).toEqual(["check: done", "withdraw: done"]);
   });
 
-  test("nothing to send leaves no steps behind", async () => {
+  test("nothing to send ends on the compare step alone and replaces the last run's steps", async () => {
     const s = await setup();
     const { v, card } = await oneCard(s);
     await drain(s);
+    expect(await stepsOf(s, v.variantId)).toHaveLength(5);
     await queue(s, [{ cardId: card, variantId: v.variantId, seq: 2 }]);
     await drain(s);
-    expect(await stepsOf(s, v.variantId)).toEqual([]);
+    expect(await stepsOf(s, v.variantId)).toEqual(["check: done"]);
+    const rec = await record(s, v.variantId);
+    expect(rec?.status).toBe("idle");
+    expect(rec?.lastError).toBeUndefined();
+    expect(rec?.progress?.steps.every((x) => typeof x.finishedAt === "number")).toBe(true);
+    expect(rec?.counts?.pushed).toBe(0);
+  });
+
+  test("a first run where no card is priced and none is live ends on the compare step alone", async () => {
+    const s = await setup();
+    const { v, card } = await oneCard(s);
+    await s.t.run(async (ctx) => {
+      const copies = await ctx.db.query("collectionCopies").collect();
+      for (const c of copies) await ctx.db.patch(c._id, { minPriceCents: undefined });
+    });
+
+    await drain(s);
+
+    expect(await stepsOf(s, v.variantId)).toEqual(["check: done"]);
+    expect((await record(s, v.variantId))?.problems).toEqual([expect.objectContaining({ cardId: card, reason: "noPrice" })]);
+    const rec = await record(s, v.variantId);
+    expect(rec?.status).toBe("idle");
+    expect(rec?.lastError).toBeUndefined();
+    expect(rec?.counts?.pushed).toBe(0);
+    expect(ebay.writes()).toHaveLength(0);
   });
 
   test("eBay refusing the items marks that step failed, drops the later steps, and says so in NB words", async () => {
@@ -1810,7 +1860,7 @@ describe("eBay drain: the run's steps (NEO-415)", () => {
     const rec = await record(s, v.variantId);
     expect(rec?.status).toBe("error");
     expect(rec?.lastError).toBe(EBAY_STEP_SAYS.items.refused);
-    expect(await stepsOf(s, v.variantId)).toEqual(["photos: done", "items: failed"]);
+    expect(await stepsOf(s, v.variantId)).toEqual(["check: done", "photos: done", "items: failed"]);
     const json = JSON.stringify(rec);
     expect(json).not.toContain("25709");
     expect(json).not.toContain("RAW-EBAY-TEXT");
@@ -1825,7 +1875,7 @@ describe("eBay drain: the run's steps (NEO-415)", () => {
     await drain(s);
 
     expect((await record(s, v.variantId))?.lastError).toBe(EBAY_STEP_SAYS.publish.busy);
-    expect(await stepsOf(s, v.variantId)).toEqual(["photos: done", "items: done", "offers: done", "publish: failed"]);
+    expect(await stepsOf(s, v.variantId)).toEqual(["check: done", "photos: done", "items: done", "offers: done", "publish: failed"]);
   });
 
   test("eBay refusing the offers says which step and what to check", async () => {
@@ -1834,16 +1884,16 @@ describe("eBay drain: the run's steps (NEO-415)", () => {
     failPath("/bulk_create_offer", 400);
     await drain(s);
     expect((await record(s, v.variantId))?.lastError).toBe(EBAY_STEP_SAYS.offers.refused);
-    expect(await stepsOf(s, v.variantId)).toEqual(["photos: done", "items: done", "offers: failed"]);
+    expect(await stepsOf(s, v.variantId)).toEqual(["check: done", "photos: done", "items: done", "offers: failed"]);
   });
 
-  test("eBay refusing the category read (before any step) says so in NB words, with no steps", async () => {
+  test("eBay refusing the category read (before any listing step) says so in NB words and fails the compare step", async () => {
     const s = await setup();
     const { v } = await oneCard(s);
     failPath("/get_item_aspects_for_category", 400);
     await drain(s);
     expect((await record(s, v.variantId))?.lastError).toBe(EBAY_STEP_SAYS.aspects.refused);
-    expect(await stepsOf(s, v.variantId)).toEqual([]);
+    expect(await stepsOf(s, v.variantId)).toEqual(["check: failed"]);
   });
 
   test("a withdraw eBay refuses: the step finishes (the run goes on), the card says so in NB words", async () => {
@@ -1859,14 +1909,14 @@ describe("eBay drain: the run's steps (NEO-415)", () => {
     const rec = await record(s, v.variantId);
     expect(rec?.problems).toEqual([expect.objectContaining({ reason: "rejected", detail: EBAY_CARD_REJECTED.withdraw })]);
     expect(JSON.stringify(rec)).not.toContain("25013");
-    expect(await stepsOf(s, v.variantId)).toEqual(["withdraw: done"]);
+    expect(await stepsOf(s, v.variantId)).toEqual(["check: done", "withdraw: done"]);
   });
 
   test("an unfinished-setup mark clears the last run's steps (no run happened)", async () => {
     const s = await setup();
     const { v, card } = await oneCard(s);
     await drain(s);
-    expect(await stepsOf(s, v.variantId)).toHaveLength(4);
+    expect(await stepsOf(s, v.variantId)).toHaveLength(5);
     await s.t.run(async (ctx) => {
       const row = await ctx.db.query("ebaySellerSettings").first();
       await ctx.db.patch(row!._id, { paymentPolicyId: undefined });
@@ -1933,7 +1983,7 @@ describe("eBay drain: photo uploads eBay will not take", () => {
     const rec = await record(s, v.variantId);
     expect(rec?.status).toBe("error");
     expect(rec?.lastError).toBe(EBAY_STEP_SAYS.photos.busy);
-    expect(await stepsOf(s, v.variantId)).toEqual(["photos: failed"]);
+    expect(await stepsOf(s, v.variantId)).toEqual(["check: done", "photos: failed"]);
     const json = JSON.stringify(rec);
     expect(json).not.toContain("190000");
     expect(json).not.toContain("RAW-EBAY-TEXT");
@@ -1956,7 +2006,7 @@ describe("eBay drain: photo uploads eBay will not take", () => {
     const rec = await record(s, v.variantId);
     expect(rec).toMatchObject({ status: "idle", counts: { listed: 2, pushed: 2, zeroed: 0, skipped: 0 } });
     expect(rec?.lastError).toBeUndefined();
-    expect(await stepsOf(s, v.variantId)).toEqual(["photos: done", "items: done", "offers: done", "publish: done"]);
+    expect(await stepsOf(s, v.variantId)).toEqual(["check: done", "photos: done", "items: done", "offers: done", "publish: done"]);
     expect(await outbox(s)).toHaveLength(0);
   });
 
@@ -1977,7 +2027,7 @@ describe("eBay drain: photo uploads eBay will not take", () => {
     expect(rec?.status).toBe("error");
     expect(rec?.lastError).toBe(EBAY_STEP_SAYS.photos.busy);
     expect(rec?.conditionsPushed).toEqual(["NM"]);
-    expect(await stepsOf(s, v.variantId)).toEqual(["photos: failed", "items: done", "offers: done", "publish: done"]);
+    expect(await stepsOf(s, v.variantId)).toEqual(["check: done", "photos: failed", "items: done", "offers: done", "publish: done"]);
   });
 
   test("a picture eBay refuses (400) is that card's problem in NB words; the other card lists and the run is ok", async () => {
@@ -1996,7 +2046,7 @@ describe("eBay drain: photo uploads eBay will not take", () => {
     expect(ebay.offerFor(`NB2-${other}-NM`)?.status).toBe("PUBLISHED");
     expect(ebay.offerFor(`NB2-${refusedCard}-NM`)).toBeUndefined();
     expect(JSON.stringify(rec)).not.toContain("190203");
-    expect(await stepsOf(s, v.variantId)).toEqual(["photos: done", "items: done", "offers: done", "publish: done"]);
+    expect(await stepsOf(s, v.variantId)).toEqual(["check: done", "photos: done", "items: done", "offers: done", "publish: done"]);
     // A refused picture is not retried every run: its row clears with the rest.
     expect(await outbox(s)).toHaveLength(0);
   });
@@ -2026,7 +2076,7 @@ describe("eBay drain: the sandbox has no picture upload", () => {
     const link = await linkOf(s, card, "NM");
     expect(link).toMatchObject({ sku, status: "live" });
     expect(link?.images ?? []).toEqual([]);
-    expect(await stepsOf(s, v.variantId)).toEqual(["items: done", "offers: done", "publish: done"]);
+    expect(await stepsOf(s, v.variantId)).toEqual(["check: done", "items: done", "offers: done", "publish: done"]);
     expect(await record(s, v.variantId)).toMatchObject({ status: "idle", counts: { listed: 1, pushed: 1, zeroed: 0, skipped: 0 } });
     expect(await outbox(s)).toHaveLength(0);
   });
@@ -2097,7 +2147,7 @@ describe("eBay drain: the sandbox has no picture upload", () => {
     expect((await linkOf(s, card, "NM"))?.images).toEqual([
       expect.objectContaining({ url: "https://i.ebayimg.com/m1.jpg" }),
     ]);
-    expect(await stepsOf(s, v.variantId)).toEqual(["photos: done", "items: done", "offers: done", "publish: done"]);
+    expect(await stepsOf(s, v.variantId)).toEqual(["check: done", "photos: done", "items: done", "offers: done", "publish: done"]);
   });
 });
 

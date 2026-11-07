@@ -24,6 +24,7 @@ import ProfileLayout from "@/src/layouts/profile-layout";
 import EbayReturnLanding from "@/app/profile/ebay/page";
 import PrintLayout from "@/src/layouts/print-layout";
 
+import { ForceDark } from "@/components/primitives/ForceDark";
 import {
   Deferred,
   PrefetchBinderTabs,
@@ -63,6 +64,7 @@ const TestSignIn = lazy(() => import("@/app/testing/sign-in/page"));
 const TestReset = lazy(() => import("@/app/testing/reset/page"));
 const TestSeedCredentials = lazy(() => import("@/app/testing/seed-credentials/page"));
 const TestNeedsReauth = lazy(() => import("@/app/testing/needs-reauth/page"));
+const TestKilledDrain = lazy(() => import("@/app/testing/killed-drain/page"));
 const TestSeedPlaceholderRun = lazy(() => import("@/app/testing/seed-placeholder-run/page"));
 const TestSeedPlaceholderUpload = lazy(() => import("@/app/testing/seed-placeholder-upload/page"));
 const Dashboard = lazy(loadDashboard);
@@ -163,7 +165,8 @@ const SentryErrorBoundary = Sentry.withErrorBoundary(
           <Route path="/signin/*" element={<Deferred><SignInPage /></Deferred>} />
           <Route path="/sign-up/*" element={<Deferred><SignUpPage /></Deferred>} />
           <Route path="/u/:username/sale" element={<Deferred><SalePage /></Deferred>} />
-          <Route path="/u/:username/binders/:path" element={<Deferred><PublicBinder /></Deferred>} />
+          {/* Dark from the first paint, the wait for its chunk included. */}
+          <Route path="/u/:username/binders/:path" element={<ForceDark><Deferred fullPage><PublicBinder /></Deferred></ForceDark>} />
           <Route path="/u/:username/want-list" element={<Deferred><PublicWantList /></Deferred>} />
           <Route path="/u/:username/up-for-trade" element={<Deferred><PublicTrade /></Deferred>} />
           <Route path="/u/:username/for-sale" element={<Deferred><PublicForSale /></Deferred>} />
@@ -175,6 +178,7 @@ const SentryErrorBoundary = Sentry.withErrorBoundary(
             element={<Deferred><TestSeedCredentials /></Deferred>}
           />
           <Route path="/testing/needs-reauth" element={<Deferred><TestNeedsReauth /></Deferred>} />
+          <Route path="/testing/killed-drain" element={<Deferred><TestKilledDrain /></Deferred>} />
           <Route
             path="/testing/seed-placeholder-run"
             element={<Deferred><TestSeedPlaceholderRun /></Deferred>}

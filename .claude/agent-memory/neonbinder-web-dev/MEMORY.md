@@ -176,3 +176,5 @@
 - [Playwright click checks first mouse event only](reference_playwright_click_checks_first_mouse_event_only.md) — mid-press reflow: click() succeeds, onClick never runs; line up convex-logs with the click
 - [Click before the passive flush](reference_click_before_passive_flush_via_layout_effect.md) — click from a child useLayoutEffect to test a press beating a pending effect; functional updater fixes only stale closures
 - [Always-mounted live region in space-y](reference_always_mounted_live_region_in_space_y.md) — empty region still takes the gap; nest beside a min-h line; no sr-only copy of a getByText line
+- [Paginated query leaves Exhausted live](reference_paginated_query_leaves_exhausted_live.md) — a live update drops an Exhausted gate to Loading and unmounts dialogs; hold the last full read
+- [backdrop-filter makes a containing block](reference_backdrop_filter_makes_a_containing_block.md) — a "fixed" button in a blurred scroller scrolls away; blur a sibling. Also h-0 min-h-full

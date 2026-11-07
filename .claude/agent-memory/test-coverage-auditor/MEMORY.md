@@ -9,3 +9,4 @@
 - [Consent-flow return leg unproven](third-party-consent-flow-return-leg-unproven.md) — seed-hop connect leaves begin/return/error legs without live proof; instant isVisible branches on server-read controls
 - [Progress ledger live-spec gaps](progress-ledger-live-spec-gaps.md) — lease guard, call-order claim, rerun-dependent step list, axe only on finished state
 - [Cross-service error string contract](cross-service-error-string-contract.md) — matcher on another service's error text tested with typed literals; join them; mock-only hook fields need a real-hook test; sibling notice branches need live specs
+- [Read-only reuse of an owner component](read-only-reuse-of-owner-component.md) — extracted hook owner wiring, privacy switch order in the spec, layout branches, "fixture too hard" claims

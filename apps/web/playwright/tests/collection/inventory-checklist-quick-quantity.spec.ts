@@ -38,6 +38,12 @@ import {
   quantityField,
 } from "../../support/collection";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
+import type { Page } from "@playwright/test";
+
+/** Instant, so axe never reads the page mid-scroll, whatever the page's scroll behaviour. */
+async function scrollToTop(page: Page): Promise<void> {
+  await page.evaluate(() => window.scrollTo({ top: 0, behavior: "instant" }));
+}
 
 test(
   "Inventory Checklists: type a quantity, Tab on, and the box takes it; lower, Undo, pick another box",
@@ -188,6 +194,11 @@ test(
     await expect(boxList.getByRole("listitem")).toHaveCount(1);
     await show.getByRole("radio", { name: "All", exact: true }).click();
     await expect(boxList.getByRole("listitem").nth(2)).toBeVisible();
+    // Axe reads from the top of the page (Jason, 2026-11-06). Focusing a row's field
+    // scrolls it to where the sticky "Adding to" bar can partly cover "Set common
+    // price", and small layout shifts decide whether axe sees that. No rule or
+    // region is excluded; the overlap itself is product work of its own.
+    await scrollToTop(page);
     await expectAccessible(page, { label: "Inventory Checklists, adding to a box" });
 
     // --- The pick sticks: a reload keeps it (URL box=), and so do other tabs --------
@@ -225,6 +236,7 @@ test(
     await expect(said(`${b} didn't change. Quantity is a whole number from 0 to 999.`)).toBeVisible();
     await expect(fieldB).toHaveValue("0");
     await expect(fieldB).toHaveAttribute("aria-invalid", "true");
+    await scrollToTop(page); // Axe reads from the top of the page (see above).
     await expectAccessible(page, { label: "Inventory Checklists, a count refused over 999" });
 
     await tabs.getByRole("link", { name: "My Boxes", exact: true }).click();
