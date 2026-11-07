@@ -21,7 +21,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
-import { stripNbCardNumberPrefix } from "./baseMatchProbe";
+import { stripNbCardNumberPrefix } from "./cardNumberPrefix";
 import { SL_PROBE_ID_PATTERN, checkProbeIds, isProbeId } from "./lib/baseMatchProbe";
 import { insertTestCard } from "../lib/testing/card-row";
 

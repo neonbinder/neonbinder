@@ -211,7 +211,15 @@ type T = ReturnType<typeof convexTest>;
 
 async function seedVariant(
   t: T,
-  opts: { year?: string; name?: string; bsc?: boolean; cards: Array<{ number: string; ref: string | null }> },
+  opts: {
+    year?: string;
+    name?: string;
+    bsc?: boolean;
+    /** `metadata.cardNumberPrefix` on the set and on the variant. */
+    setPrefix?: string;
+    variantPrefix?: string;
+    cards: Array<{ number: string; ref: string | null }>;
+  },
 ) {
   return t.run(async (ctx) => {
     const withBsc = opts.bsc !== false;
@@ -220,12 +228,14 @@ async function seedVariant(
       value: string,
       parentId?: Id<"selectorOptions">,
       facets?: Record<string, string>,
+      cardNumberPrefix?: string,
     ) =>
       ctx.db.insert("selectorOptions", {
         level,
         value,
         platformData: withBsc ? { bsc: { b0: `slug-${level}-${value}` } } : {},
         ...(withBsc && facets ? { platformFacets: { bsc: facets } } : {}),
+        ...(cardNumberPrefix ? { metadata: { cardNumberPrefix } } : {}),
         isCustom: false,
         children: [],
         ...(parentId ? { parentId } : {}),
@@ -233,8 +243,8 @@ async function seedVariant(
       } as never);
     const sport = await row("sport", "Baseball");
     const year = await row("year", opts.year ?? "2021", sport);
-    const set = await row("setName", opts.name ?? "Topps", year);
-    const variant = await row("variantType", "Base", set, { b0: "variant" });
+    const set = await row("setName", opts.name ?? "Topps", year, undefined, opts.setPrefix);
+    const variant = await row("variantType", "Base", set, { b0: "variant" }, opts.variantPrefix);
     const cardIds: Array<Id<"cardChecklist">> = [];
     let i = 0;
     for (const c of opts.cards) {
@@ -768,6 +778,117 @@ describe("drainOwner: per-variant failures", () => {
       { cardId: v.cardIds[0], platformCardId: "bsc-1", reason: "numberMismatch", detail: "NB #1" },
     ]);
     expect(rec?.counts?.skipped).toBe(1);
+  });
+});
+
+// NEO-458: the chain's prefix has to reach the planner, or a set with a card
+// prefix holds every card back. These go through the real read of the chain.
+describe("drainOwner: a card-number prefix on the variant's chain", () => {
+  const listOneCard = async (
+    s: S,
+    seed: { setPrefix?: string; variantPrefix?: string; number: string },
+    sheetCardNo: string,
+  ) => {
+    const v = await seedVariant(s.t, {
+      ...(seed.setPrefix ? { setPrefix: seed.setPrefix } : {}),
+      ...(seed.variantPrefix ? { variantPrefix: seed.variantPrefix } : {}),
+      cards: [{ number: seed.number, ref: "bsc-1" }],
+    });
+    const bsc = new FakeBsc([{ bscCardId: "bsc-1", cardNo: sheetCardNo }], MODERN);
+    vi.stubGlobal("fetch", bsc.fetch);
+    await add(s, v.cardIds[0], { homeId: s.box, condition: "Near Mint", quantity: 2, minPriceCents: 50 });
+    await listOnBsc(s);
+    await queue(s, [{ cardId: v.cardIds[0], variantId: v.variantId }]);
+    return { v, bsc };
+  };
+
+  test("a prefix on the set lists a bare NB number against BSC's prefixed one", async () => {
+    const s = await setup();
+    const { v, bsc } = await listOneCard(s, { setPrefix: "BC-", number: "98" }, "BC-98");
+    await drain(s);
+    expect(bsc.qty("bsc-1", "near_mint")).toBe(2);
+    const rec = await record(s, v.variantId);
+    expect(rec?.problems ?? []).toEqual([]);
+    expect(rec).toMatchObject({ status: "idle", counts: { listed: 1, skipped: 0 } });
+  });
+
+  test("a prefix on the variant itself reaches the planner too", async () => {
+    const s = await setup();
+    const { v, bsc } = await listOneCard(s, { variantPrefix: "BC-", number: "98" }, "BC-98");
+    await drain(s);
+    expect(bsc.qty("bsc-1", "near_mint")).toBe(2);
+    expect((await record(s, v.variantId))?.problems ?? []).toEqual([]);
+  });
+
+  test("a prefix high on the chain and another below both count", async () => {
+    const s = await setup();
+    const { v, bsc } = await listOneCard(s, { setPrefix: "DK-", variantPrefix: "DKS-", number: "DK-98" }, "DKS-98");
+    await drain(s);
+    expect(bsc.qty("bsc-1", "near_mint")).toBe(2);
+    expect((await record(s, v.variantId))?.problems ?? []).toEqual([]);
+  });
+
+  test("the same numbers with no prefix on the chain are held", async () => {
+    const s = await setup();
+    const { v, bsc } = await listOneCard(s, { number: "98" }, "BC-98");
+    await drain(s);
+    expect(bsc.puts).toHaveLength(0);
+    expect((await record(s, v.variantId))?.problems).toEqual([
+      { cardId: v.cardIds[0], platformCardId: "bsc-1", reason: "numberMismatch", detail: "NB #98" },
+    ]);
+  });
+
+  test("a number that still differs is held, and the stored detail is NB's own", async () => {
+    const s = await setup();
+    const { v, bsc } = await listOneCard(s, { setPrefix: "BC-", number: "99" }, "BC-98");
+    await drain(s);
+    expect(bsc.puts).toHaveLength(0);
+    expect((await record(s, v.variantId))?.problems).toEqual([
+      { cardId: v.cardIds[0], platformCardId: "bsc-1", reason: "numberMismatch", detail: "NB #99" },
+    ]);
+  });
+
+  test("the second plan, the one that carries seller photos, reads the prefix too", async () => {
+    const s = await setup();
+    const { v, bsc } = await listOneCard(s, { setPrefix: "BC-", number: "98" }, "BC-98");
+    await s.t.run(async (ctx) => {
+      const row = (await ctx.db.query("collectionCopies").collect()).find((c) => c.cardId === v.cardIds[0]);
+      if (!row) throw new Error("no copy");
+      await ctx.db.patch(row._id, { hasPhotos: true });
+      await ctx.db.insert("collectionCopyPhotos", {
+        ownerId: OWNER,
+        copyId: row._id,
+        side: "front",
+        token: "tokfront",
+        contentType: "image/jpeg",
+        imageBytes: 1000,
+        thumbBytes: 100,
+        status: "live",
+        since: NOW,
+      });
+    });
+    vi.stubGlobal("fetch", (async (url: string | URL | Request, init?: RequestInit) => {
+      if (String(url).includes("/attachment")) return Response.json({ objectKey: "seller/photo-1.jpg" });
+      return bsc.fetch(url, init);
+    }) as typeof fetch);
+
+    await drainOwnerImpl(stubCtx(s.t), { ownerId: OWNER, platform: "bsc" }, { fetchPhoto: async () => new ArrayBuffer(8) });
+
+    expect(bsc.puts.flatMap((p) => p.listings)).toMatchObject([
+      { card: { id: "bsc-1" }, availableQuantity: 2, sellerImgFront: "seller/photo-1.jpg" },
+    ]);
+    expect((await record(s, v.variantId))?.problems ?? []).toEqual([]);
+  });
+
+  test("variantSyncInput hands over every prefix on the chain, or none", async () => {
+    const s = await setup();
+    const prefixed = await seedVariant(s.t, { setPrefix: "DK-", variantPrefix: "DKS-", cards: [] });
+    const bare = await seedVariant(s.t, { name: "Bare", cards: [] });
+    const read = (variantId: Id<"selectorOptions">) =>
+      s.t.query(internal.listingDrain.variantSyncInput, { ownerId: OWNER, variantId });
+    const withPrefixes = await read(prefixed.variantId);
+    expect(withPrefixes.kind === "ok" && [...withPrefixes.cardNumberPrefixes].sort()).toEqual(["DK-", "DKS-"]);
+    expect(await read(bare.variantId)).toMatchObject({ kind: "ok", cardNumberPrefixes: [] });
   });
 });
 
