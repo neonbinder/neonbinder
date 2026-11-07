@@ -530,3 +530,27 @@
 .p2-overlay {
   cursor: grabbing;
 }
+
+/* ---------------------------------------- the Trade sticker on a public pocket */
+
+/* NEO-444: a visitor's pocket marks a copy up for trade, low on the sleeve, clear of the sale sticker. */
+.p2-tag.nb-trade-tag {
+  top: 62%;
+  background: var(--neon-blue);
+  color: var(--on-neon-blue);
+}
+
+/* NEO-444 — a visitor on a landscape phone: a page is taller than the screen, so
+   the turn row rides along at the bottom, and a focused pocket clears it. */
+@media (max-height: 480px) {
+  .nb-visitor-desk .nb-desk-turns {
+    position: sticky;
+    bottom: 0;
+    z-index: 5;
+    padding-block: 6px;
+    background: var(--surface);
+  }
+  .nb-visitor-desk .p2-sleeve {
+    scroll-margin-bottom: 64px;
+  }
+}

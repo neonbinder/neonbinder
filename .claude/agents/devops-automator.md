@@ -84,8 +84,8 @@ Management API second, the dashboard read-only last. Never run `npx convex
 deploy` against production by hand: production Convex is pushed inside
 `release.yml`'s web job, and pushing it out of order re-creates the
 new-Convex-against-old-browser race NEO-143 removed. Never run `npx convex
-dev` from a worktree; the dev deployment is shared across sessions on this
-machine. Preview deployments are created by `web-preview` (the Vercel build
+dev` from a worktree until `.env.local` names that worktree's own deployment
+(root CLAUDE.md, NEO-438); shared dev is shared across sessions. Preview deployments are created by `web-preview` (the Vercel build
 runs `npx convex deploy`) and reclaimed by `preview-cleanup.yml` through the
 GitHub Deployment record. Listing env values prints secrets to the terminal;
 use `--names-only` unless a value is what you need.

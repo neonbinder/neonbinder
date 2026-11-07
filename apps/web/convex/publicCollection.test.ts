@@ -406,6 +406,39 @@ describe("what the shelves say", () => {
     const hidden = await s.anon.query(api.publicCollection.trade, { username: "ace", paginationOpts: PAGE });
     expect(hidden.page[0].forSale).toBeUndefined();
   });
+
+  test("Up for Trade switched private: no public list says which copies are on it (NEO-444)", async () => {
+    const s = await setup();
+    const b = await binder(s);
+    await s.me.mutation(api.collectionContainers.setVisibility, { containerId: b.id, visibility: "public" });
+    const { containerId: box } = await s.me.mutation(api.collectionContainers.create, { kind: "box", name: "Show box" });
+    await s.me.mutation(api.collection.addLineItem, {
+      cardId: s.fx.gooden1,
+      details: { quantity: 1, homeId: b.id, upForTrade: true },
+    });
+    await s.me.mutation(api.collection.addLineItem, {
+      cardId: s.fx.strawberry2,
+      details: { quantity: 1, homeId: box, upForTrade: true },
+    });
+    const lists = async () => ({
+      binder: (await s.anon.query(api.publicCollection.binderCopies, { username: "ace", path: b.path, paginationOpts: PAGE })).page,
+      forSale: (await s.anon.query(api.publicCollection.forSale, { username: "ace", paginationOpts: PAGE })).page,
+    });
+
+    const open = await lists();
+    expect(open.binder.map((c) => c.upForTrade)).toEqual([true]);
+    expect(open.forSale.map((c) => c.upForTrade)).toEqual([true]);
+
+    await s.me.mutation(api.publicProfile.setShelfVisibility, { shelf: "trade", private: true });
+    const closed = await lists();
+    // The copies stay on their own public pages; only the flag goes, and it goes as a key.
+    expect(closed.binder).toHaveLength(1);
+    expect(closed.forSale).toHaveLength(1);
+    for (const copy of [...closed.binder, ...closed.forSale]) expect(Object.keys(copy)).not.toContain("upForTrade");
+
+    await s.me.mutation(api.publicProfile.setShelfVisibility, { shelf: "trade", private: false });
+    expect((await lists()).binder.map((c) => c.upForTrade)).toEqual([true]);
+  });
 });
 
 describe("unlisted cards (NEO-361)", () => {

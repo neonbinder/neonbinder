@@ -39,6 +39,10 @@ import NeonButton from "@/components/modules/NeonButton";
  * (`IdTooltip`): season, set, insert or parallel, then number and player.
  * In browse the slip hangs on the whole sleeve, so focusing its Add chip
  * shows it too.
+ *
+ * `ReadOnlyPocket` (NEO-444) is a visitor's sleeve on a share link: no drop,
+ * no drag, nothing to fill or add. A filled pocket only opens the card; every
+ * other pocket is inert.
  */
 
 export type PocketVariant = "binder" | "browse";
@@ -278,6 +282,92 @@ export default function Pocket({
     );
   }
   return <div ref={setNodeRef} aria-hidden="true" className="p2-sleeve" />;
+}
+
+/**
+ * A sleeve on a binder someone shared. Holds no drag-and-drop at all, and has
+ * no way to call an owner's action: it takes one handler, to open what's in it.
+ */
+export function ReadOnlyPocket({
+  pocket,
+  index,
+  pageNumber,
+  onOpen,
+}: {
+  pocket: PocketModel;
+  index: number;
+  pageNumber: number;
+  onOpen: (copies: Copy[]) => void;
+}) {
+  const { content, photos } = pocket;
+  const faceRef = useRef<HTMLSpanElement>(null);
+  const rising = useRef(false);
+  if (content.kind === "empty") {
+    return (
+      <div className="p2-sleeve">
+        <span className="sr-only">Empty pocket</span>
+      </div>
+    );
+  }
+  if (content.kind === "need") {
+    const { card } = content;
+    return (
+      <IdTooltip content={<IdLines title={cardCaption(card)} lines={[cardNumberLine(card)]} />}>
+        <div className="p2-sleeve">
+          <span className="sr-only">{cardLabel(card)}, this binder still needs it</span>
+          <span aria-hidden="true" className="p2-ghost">
+            <span className="p2-ghost-number">#{card.cardNumber}</span>
+            <span className="p2-ghost-need">Need</span>
+            <span className="p2-ghost-who">{(card.players[0]?.name ?? "").split(" ").slice(-1)[0]}</span>
+          </span>
+        </div>
+      </IdTooltip>
+    );
+  }
+  const { card, copies } = content;
+  const qty = copies.reduce((n, c) => n + c.quantity, 0);
+  const slab = copies.length === 1 ? slabLabel(copies[0]) : null;
+  // Two presses inside the lead-in still open one card.
+  const open = () => {
+    if (rising.current) return;
+    rising.current = true;
+    slideOut(faceRef.current, () => {
+      rising.current = false;
+      onOpen(copies);
+    });
+  };
+  return (
+    <IdTooltip content={<IdLines title={cardCaption(card)} lines={[cardNumberLine(card)]} />}>
+    <button
+      type="button"
+      aria-haspopup="dialog"
+      // The pocket's place is in the name so two copies of one card read apart.
+      aria-label={`${havePocketLabel(card, copies)}, pocket ${index + 1} on page ${pageNumber}`}
+      data-copy-key={copies[0]?.id}
+      onClick={open}
+      className="p2-sleeve"
+    >
+      <span ref={faceRef} className="block">
+        <CardFace model={card} size="fill" photo={photos} />
+      </span>
+      {slab && (
+        <span aria-hidden="true" className="p2-slab">
+          {slab}
+        </span>
+      )}
+      {qty > 1 && (
+        <span aria-hidden="true" className="p2-qty">
+          ×{qty}
+        </span>
+      )}
+      {copies.some((c) => c.upForTrade) && (
+        <span aria-hidden="true" className="p2-tag nb-trade-tag">
+          Trade
+        </span>
+      )}
+    </button>
+    </IdTooltip>
+  );
 }
 
 function AddChip({ label, text, onClick }: { label: string; text: string; onClick: () => void }) {

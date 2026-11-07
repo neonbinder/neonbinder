@@ -84,3 +84,5 @@
 - [Sync status step ledger waits](patterns_sync_status_step_ledger_waits.md) — NEO-415: wait per ledger step (7 s), gate on the new run (stale ledger), throttled press, optional eBay photo step
 - [NEO-458 prefixed parallel stays bare](reference_neo458_prefixed_parallel_numbers_stay_bare.md) — Bowman Chrome (BCV-) built from Base, prefix first; drill, traps, no number field so no mismatch control
 - [Seller spec set built by the spec](patterns_seller_spec_built_by_spec_and_the_window.md) — builtBySpec in SELLER_SPEC_SETS; a seller job not started yet is not "clear"
+- [Local re-seed keeps the catalogue](patterns_local_reseed_keeps_the_reference_catalogue.md) — plain baseline reset wipes it; use e2e-seed-reset.sh + bundle; who needs a re-seed between projects; --output keeps artifacts
+- [Binder page names and async radio](patterns_binder_page_names_and_async_radio.md) — `Page 2, A fresh page`; gate a key on Next enabled; check() vs a save-moved radio; image load without evaluate; bootstrap after a red
