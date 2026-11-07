@@ -27,8 +27,13 @@ export function LoadingLine() {
 }
 
 /** A lazy route's element: a quiet line while its chunk loads. */
-export function Deferred({ children }: { children: ReactNode }) {
-  return <Suspense fallback={<LoadingLine />}>{children}</Suspense>;
+export function Deferred({ children, fullPage = false }: { children: ReactNode; fullPage?: boolean }) {
+  const line = <LoadingLine />;
+  return (
+    <Suspense fallback={fullPage ? <div className="min-h-screen bg-surface px-4 py-6">{line}</div> : line}>
+      {children}
+    </Suspense>
+  );
 }
 
 /**
