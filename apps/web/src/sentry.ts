@@ -1,9 +1,27 @@
+// First, so no SDK ever sees eBay's code on the address (NEO-434).
+import "./ebay-return-address";
 import * as Sentry from "@sentry/react";
-import { scrubSignedStorageUrls } from "../lib/observability/scrub-signed-urls";
-import { scrubOAuthParams } from "../lib/observability/scrub-oauth-params";
+import { scrubUrlSecrets as scrub } from "../lib/observability/scrub-url-secrets";
 
-/** Every URL scrub, in one pass per payload (signed storage URLs, then the eBay return's code and state). */
-const scrub = <T>(value: T): T => scrubOAuthParams(scrubSignedStorageUrls(value));
+/**
+ * The scrub for a whole event. `sdkProcessingMetadata` holds the SDK's live
+ * scopes, which reach Session Replay's circular objects, so stringifying it
+ * throws; Sentry then drops the event and reports the crash as a new error
+ * that skips these hooks (NEO-434). It stays out of the stringify and goes back
+ * by reference: the SDK reads it after this hook and deletes it before sending.
+ *
+ * Returning null drops an event that still cannot be stringified. It is never
+ * sent unscrubbed, and the drop shows up as a `before_send` client outcome
+ * rather than a new error.
+ */
+function scrubEvent<T extends { sdkProcessingMetadata?: unknown }>(event: T): T | null {
+  const { sdkProcessingMetadata, ...payload } = event;
+  try {
+    return { ...scrub(payload), sdkProcessingMetadata } as T;
+  } catch {
+    return null;
+  }
+}
 
 // Skip Sentry entirely when running under E2E tests, so test sessions never
 // reach Sentry as errors, traces or replays. (It began as a Maestro
@@ -24,9 +42,11 @@ if (import.meta.env.VITE_CLERK_TESTING_ENABLED !== "true") {
     integrations: [
       Sentry.browserTracingIntegration(),
       Sentry.replayIntegration({
-        // Scrub the raw rrweb recording frame before it's buffered — this is
-        // the Session Replay "network entry" capture path, separate from the
-        // breadcrumb/span pipeline below.
+        // Replay calls this for rrweb custom events only: its breadcrumb and
+        // performance-span frames, which is where request URLs appear. Page
+        // snapshots, mutations and the Meta frame never reach it, and neither
+        // does the replay_event envelope item: eBay's return stays out of those
+        // because it is off the address before this runs (ebay-return-address).
         beforeAddRecordingEvent: (event) => scrub(event),
         // Explicit, not inherited: these are the library defaults, but they
         // are load-bearing for /profile/api-keys — the reveal-once API-key
@@ -36,6 +56,10 @@ if (import.meta.env.VITE_CLERK_TESTING_ENABLED !== "true") {
         // block-selector covering the API-keys surface (NEO-172 audit).
         maskAllText: true,
         maskAllInputs: true,
+        // These links' hrefs are bearers for private photos, and rrweb records an
+        // href even under masking, as raw DOM no hook here sees. `maskAttributes`
+        // skips href, so only a block works. Images are blocked by default.
+        block: ['a[href*="/copy-photo/"]', 'a[href*="/api/storage/"]'],
       }),
     ],
 
@@ -49,10 +73,12 @@ if (import.meta.env.VITE_CLERK_TESTING_ENABLED !== "true") {
     beforeBreadcrumb: (breadcrumb) => scrub(breadcrumb),
     // browserTracingIntegration's auto-instrumented spans record the request
     // URL on `http.url` — same signed-capability leak, different pipeline.
-    beforeSendTransaction: (event) => scrub(event),
-    // NEO-415: an error's `request.url` (and its breadcrumbs) can carry the
-    // eBay return's one-time `code` and `state`; the pageload transaction
-    // above can too.
-    beforeSend: (event) => scrub(event),
+    beforeSendTransaction: (event) => scrubEvent(event),
+    // NEO-415: the eBay return's one-time `code` and `state` are off the address
+    // before Sentry starts (NEO-434), but this pass is still required. The
+    // navigation-timing entry keeps the address as it arrived, and it reaches
+    // Sentry through Replay's `navigation.navigate` frame and the transaction's
+    // `browser.unloadEvent` span.
+    beforeSend: (event) => scrubEvent(event),
   });
 }
