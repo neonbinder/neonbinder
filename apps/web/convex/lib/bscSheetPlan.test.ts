@@ -521,6 +521,18 @@ describe("planBscSheet (NEO-370)", () => {
       lists(planOne("DK-98", "98", ["DK-", "DKS-"]));
     });
 
+    test("deliberate: a parallel's card copied from its insert may carry a different chain prefix on each side, so DK-98 against DKS-98 lists", () => {
+      // Same idea as lib/parallelCardLink.ts: the parallel's cards are copied
+      // from the insert, so NB can hold the insert's prefix while BSC shows
+      // the parallel's. Each side is stripped with every prefix on the chain.
+      lists(planOne("DK-98", "DKS-98", ["DK-", "DKS-"]));
+      lists(planOne("DK-98", "DKS-98", ["DKS-", "DK-"]));
+    });
+
+    test("DK-98 against DKS-99 under the same chain prefixes is held", () => {
+      holds(planOne("DK-98", "DKS-99", ["DK-", "DKS-"]), "DKS-99");
+    });
+
     test("the deepest prefix alone would not pass the insert-and-parallel case", () => {
       holds(planOne("DKS-98", "DK-98", ["DKS-"]), "DK-98");
     });

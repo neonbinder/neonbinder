@@ -848,6 +848,73 @@ describe("drainOwner: a card-number prefix on the variant's chain", () => {
     ]);
   });
 
+  test("the guard is per card: under one prefix the matching card lists and the one that differs is held", async () => {
+    const s = await setup();
+    const v = await seedVariant(s.t, {
+      setPrefix: "BC-",
+      cards: [
+        { number: "98", ref: "bsc-1" },
+        { number: "99", ref: "bsc-2" },
+      ],
+    });
+    const bsc = new FakeBsc(
+      [
+        { bscCardId: "bsc-1", cardNo: "BC-98" },
+        { bscCardId: "bsc-2", cardNo: "BC-100" },
+      ],
+      MODERN,
+    );
+    vi.stubGlobal("fetch", bsc.fetch);
+    for (const cardId of v.cardIds) {
+      await add(s, cardId, { homeId: s.box, condition: "Near Mint", quantity: 2, minPriceCents: 50 });
+    }
+    await listOnBsc(s);
+    await queue(s, v.cardIds.map((cardId) => ({ cardId, variantId: v.variantId })));
+    await drain(s);
+    expect(bsc.qty("bsc-1", "near_mint")).toBe(2);
+    expect(bsc.qty("bsc-2", "near_mint")).not.toBe(2);
+    expect((await record(s, v.variantId))?.problems).toEqual([
+      { cardId: v.cardIds[1], platformCardId: "bsc-2", reason: "numberMismatch", detail: "NB #99" },
+    ]);
+  });
+
+  test("a card held on the first plan is held on the photo re-plan too, and no photo is sent for it", async () => {
+    const s = await setup();
+    const { v, bsc } = await listOneCard(s, { setPrefix: "BC-", number: "99" }, "BC-98");
+    await s.t.run(async (ctx) => {
+      const row = (await ctx.db.query("collectionCopies").collect()).find((c) => c.cardId === v.cardIds[0]);
+      if (!row) throw new Error("no copy");
+      await ctx.db.patch(row._id, { hasPhotos: true });
+      await ctx.db.insert("collectionCopyPhotos", {
+        ownerId: OWNER,
+        copyId: row._id,
+        side: "front",
+        token: "tokfront",
+        contentType: "image/jpeg",
+        imageBytes: 1000,
+        thumbBytes: 100,
+        status: "live",
+        since: NOW,
+      });
+    });
+    let uploads = 0;
+    vi.stubGlobal("fetch", (async (url: string | URL | Request, init?: RequestInit) => {
+      if (String(url).includes("/attachment")) {
+        uploads++;
+        return Response.json({ objectKey: "seller/photo-1.jpg" });
+      }
+      return bsc.fetch(url, init);
+    }) as typeof fetch);
+
+    await drainOwnerImpl(stubCtx(s.t), { ownerId: OWNER, platform: "bsc" }, { fetchPhoto: async () => new ArrayBuffer(8) });
+
+    expect(bsc.puts).toHaveLength(0);
+    expect(uploads).toBe(0);
+    expect((await record(s, v.variantId))?.problems).toEqual([
+      { cardId: v.cardIds[0], platformCardId: "bsc-1", reason: "numberMismatch", detail: "NB #99" },
+    ]);
+  });
+
   test("the second plan, the one that carries seller photos, reads the prefix too", async () => {
     const s = await setup();
     const { v, bsc } = await listOneCard(s, { setPrefix: "BC-", number: "98" }, "BC-98");

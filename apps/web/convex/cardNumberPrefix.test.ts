@@ -10,6 +10,7 @@ import { describe, expect, test } from "vitest";
 import {
   MAX_CARD_NUMBER_PREFIX_LENGTH,
   normalizeCardNumberPrefix,
+  stripNbCardNumberPrefix,
 } from "./cardNumberPrefix";
 
 describe("normalizeCardNumberPrefix", () => {
@@ -70,5 +71,20 @@ describe("normalizeCardNumberPrefix", () => {
       expect(e).toBeInstanceOf(ConvexError);
       expect(typeof (e as ConvexError<string>).data).toBe("string");
     }
+  });
+});
+
+describe("stripNbCardNumberPrefix", () => {
+  test.each([
+    ["TC-1", "TC-", "1"],
+    ["tc-1", "TC-", "1"],
+    ["TC-", "TC-", "TC-"],
+    ["  TC-9 ", " TC- ", "9"],
+    ["12", "TC-", "12"],
+    ["TC-1", undefined, "TC-1"],
+    ["TC-1", "", "TC-1"],
+    ["TC-1", "   ", "TC-1"],
+  ])("%s with prefix %j gives %s", (num, prefix, expected) => {
+    expect(stripNbCardNumberPrefix(num, prefix)).toBe(expected);
   });
 });
