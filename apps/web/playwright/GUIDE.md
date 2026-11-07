@@ -249,7 +249,7 @@ test("<title states the feature>", { tag: ["@set-selector"] }, async ({ page, si
 - `support/cards.ts`: hand-made card helpers for a worker's own subtree
   (`addCustomCard`, `addCardViaForm`, `openVariant`, `ensureAndSelect`,
   edit/delete button locators).
-- `support/collection.ts`: the collector's `/collection` and Inventory helpers (`drillToCollectorBase`, boxes, quantity fields), and `syncRun` / `followRunToEnd` for Sync status's per-step ledger (NEO-415): a live marketplace round trip is waited on one step at a time ("Read Excellent, done"), each within the standard 7 s, gated by `underWay` so the last run's finished ledger never stands in for the new one. A finished BuySportsCards row folds (reads become "Gathering data", double-checks drop), so a BSC read or confirm is waited on with `readLanded` / `confirmLanded`, never a bare `step`.
+- `support/collection.ts`: the collector's `/collection` and Inventory helpers (`drillToCollectorBase`, boxes, quantity fields), and `syncRun` / `followRunToEnd` for Sync status's per-step ledger (NEO-415): a live marketplace round trip is waited on one step at a time ("Read Excellent, done"), each within the standard 7 s, gated by `underWay` so the last run's finished ledger never stands in for the new one. A finished BuySportsCards row folds (reads become "Gathering data", double-checks drop), so a BSC read or confirm is waited on with `readLanded` / `confirmLanded`, never a bare `step`. The 15-minute sales poll runs the same drain as a press, so a stocked box can be listed before the spec presses Sync (NEO-433), and neither the set's row nor the "Nothing syncing right now." line proves THIS press ran: the poll leaves a row that looks like a press's own, and the page is idle between two runs. A seller spec therefore presses, then walks the set to rest with `followRunToRest(platform, run, queueSettled(platform, setLabel))` (one step per wait; `slow` gives a named step a signed-off longer ceiling), and only then reads the row and picks its branch. `queueSettled` is the evidence: the press queues the set's cards before its toast, and a run's finish clears them in the write that records its result, only if the run claimed them, so "no card of this set queued" plus idle means a run that started after the press has finished. A press that never claims leaves them queued and fails the walk. A run that sent nothing ends on "Gathering data, done" then "Nothing new to send" (`expectNothingSent`); a sending branch asserts `run.nothingNew()` absent.
 - `support/cross-list.ts`: cross-release import (`openCrossListForm`,
   `pickCrossListSource`, `crossListCards`).
 - `support/players.ts`: `/admin/players` (`expectPlayersLoaded`,
@@ -321,6 +321,14 @@ Idioms:
 
 ## Gotchas (read before your first spec)
 
+- **A failure hook finishes its tidy-up.** A live read can stall past a step's
+  budget, so a hook walks a run through `walkForCleanup` (`support/collection.ts`),
+  finishes every other undo, then rethrows anything left undone. One stalled read
+  must not leave a box behind for the next spec. A test body never uses it.
+- **A `has`/`hasNot` locator is relative to the element it filters.** One rooted
+  at the page or a region looks for that root inside the element, never matches,
+  and the `hasNot` filter then passes everything. Build the inner locator from
+  `page.locator(...)` only when it is meant relative, or use `hasText`/`hasNotText`.
 - **`aria-disabled` buttons.** Much of the app disables with `aria-disabled`
   (the wizard's "Add as New Team" while a lookup is in flight, between rows).
   Playwright treats that as disabled, so `click()` waits and times out at 7 s.
@@ -908,7 +916,7 @@ cancelled mid-spec (`cancel-in-progress` on a new push) can leave its preview
 connected to the shared sellers, or its listings up. So right after its turn comes
 each job runs `testingSellerCleanup:clearSellerAccounts` (internal, reachable only
 with the deploy key). On eBay's sandbox seller it withdraws every published offer,
-whatever the listing. On the BuySportsCards test seller it sets every row of the
+whatever the listing, then deletes every inventory item (NEO-453). On the BuySportsCards test seller it sets every row of the
 sets the specs list (`SELLER_SPEC_SETS`) to 0, copies of a twin row included. It
 signs in with the bootstrap's seller credentials as its own owner, not a worker,
 and removes that sign-in after. A cleanup that cannot finish fails the job, naming
