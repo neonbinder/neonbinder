@@ -3,11 +3,11 @@
 # NEO-249: this wraps `npx convex dev`, which targets a Convex *dev*
 # deployment. A dev deployment is a DEVELOPER'S PERSONAL deployment, not a
 # shared dev server, and nobody deploys to dev from CI — no workflow pushes
-# it. Run this against your own dev deployment when you want to test locally,
-# or at the same time you push to a PR. When you need to exercise the PR's own
-# backend code, point local Vite at that PR's Convex preview instead (see the
-# root CLAUDE.md, "Debugging a red flow against the PR's own services"). Now
-# that every PR gets its own preview, the dev deployment is mostly unused.
+# it. Run this from a worktree only once it has its own deployment (NEO-438;
+# see the root CLAUDE.md, "Run your specs on your own Convex deployment before
+# the first push"). When you need to exercise the PR's own services, point
+# local Vite at that PR's Convex preview instead (see the root CLAUDE.md,
+# "Debugging a red spec against the PR's own services").
 # This comment does not change the script's behavior below.
 
 # Check if a URL was provided as the first argument

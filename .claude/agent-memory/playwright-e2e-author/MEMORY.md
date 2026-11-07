@@ -86,3 +86,5 @@
 - [READY preselect has no career editor](patterns_ready_at_insert_preselect_has_no_career_editor.md) — a helper needing a creatable player skips it; real names can gain a namesake from seeded data in another sport
 - [Backend restart stalls a workpool](patterns_backend_restart_stalls_workpool_for_recovery_scan.md) — 180 s lookup red with a zero-lookup gap of exactly 5:00 after a transient action error; not a spec bug, rerun
 - [Pick a wizard name from BSC facets + the gate resolver](patterns_pick_a_wizard_name_from_bsc_facets_and_the_gate_resolver.md) — no-login card lists, players:resolveNameForReview verdicts, selection recipe, what to record
+- [Local re-seed keeps the catalogue](patterns_local_reseed_keeps_the_reference_catalogue.md) — plain baseline reset wipes it; use e2e-seed-reset.sh + bundle; who needs a re-seed between projects; --output keeps artifacts
+- [Binder page names and async radio](patterns_binder_page_names_and_async_radio.md) — `Page 2, A fresh page`; gate a key on Next enabled; check() vs a save-moved radio; image load without evaluate; bootstrap after a red
