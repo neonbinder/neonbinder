@@ -1112,6 +1112,41 @@ jobs:
         run: |
           "$GITHUB_WORKSPACE/.github/scripts/seller-queue.sh"
 
+      # NEO-445: a run that died mid-spec leaves listings on the shared sellers,
+      # and no later run can end them through the product (an eBay SKU names a
+      # per-deployment card). So the accounts are cleared here, inside this job's
+      # turn and before any spec: every published eBay offer ended, and every
+      # BuySportsCards row of the sets the specs list set to 0. A cleanup that
+      # cannot finish fails the job instead of running specs on a dirty account.
+      # Never in the seed: seeds run outside the queue. The action
+      # (convex/testingSellerCleanup.ts) is internal, so only this deploy key
+      # reaches it; it refuses off the eBay sandbox and skips a paused
+      # marketplace. `convex run` prints the function's logs (counts and
+      # outcomes, no tokens) to stderr, so they read in this step.
+      - name: Clear the seller accounts for the specs
+        # It holds the queue; a hang must not hold every other PR's.
+        timeout-minutes: 12
+        env:
+          CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_PREVIEW_DEPLOY_KEY }}
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
+        run: |
+          set -uo pipefail
+          if [ -z "${CONVEX_NAME:-}" ] || [ -z "${CONVEX_DEPLOY_KEY:-}" ]; then
+            echo "::error::No Convex preview name or deploy key, so the seller accounts cannot be cleared."
+            exit 1
+          fi
+          "$GITHUB_WORKSPACE/.github/scripts/convex-env-retry.sh" --version
+          out="${RUNNER_TEMP}/seller-cleanup.json"
+          if ! npx --yes convex@1.39.1 run testingSellerCleanup:clearSellerAccounts '{}' --deployment "$CONVEX_NAME" | tee "$out"; then
+            echo "::error::Clearing the seller accounts failed (the reason is above), so the seller specs did not run. Re-run the workflow."
+            exit 1
+          fi
+          twins=$(jq -r '.bsc.twinKeysRemaining // 0' "$out")
+          if [ "$twins" != "0" ]; then
+            # Both copies are at 0, but the listing planner refuses any pair shown twice.
+            echo "::warning::BuySportsCards still shows $twins card/condition pairs twice, at 0. A spec listing one of them reads it as held back."
+          fi
+
       - name: Start Convex log capture (seller desktop)
         env:
           CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_PREVIEW_DEPLOY_KEY }}
@@ -1934,6 +1969,41 @@ jobs:
           SELLER_QUEUE_MAX_MIN: "60"
         run: |
           "$GITHUB_WORKSPACE/.github/scripts/seller-queue.sh"
+
+      # NEO-445: a run that died mid-spec leaves listings on the shared sellers,
+      # and no later run can end them through the product (an eBay SKU names a
+      # per-deployment card). So the accounts are cleared here, inside this job's
+      # turn and before any spec: every published eBay offer ended, and every
+      # BuySportsCards row of the sets the specs list set to 0. A cleanup that
+      # cannot finish fails the job instead of running specs on a dirty account.
+      # Never in the seed: seeds run outside the queue. The action
+      # (convex/testingSellerCleanup.ts) is internal, so only this deploy key
+      # reaches it; it refuses off the eBay sandbox and skips a paused
+      # marketplace. `convex run` prints the function's logs (counts and
+      # outcomes, no tokens) to stderr, so they read in this step.
+      - name: Clear the seller accounts for the specs
+        # It holds the queue; a hang must not hold every other PR's.
+        timeout-minutes: 12
+        env:
+          CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_PREVIEW_DEPLOY_KEY }}
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
+        run: |
+          set -uo pipefail
+          if [ -z "${CONVEX_NAME:-}" ] || [ -z "${CONVEX_DEPLOY_KEY:-}" ]; then
+            echo "::error::No Convex preview name or deploy key, so the seller accounts cannot be cleared."
+            exit 1
+          fi
+          "$GITHUB_WORKSPACE/.github/scripts/convex-env-retry.sh" --version
+          out="${RUNNER_TEMP}/seller-cleanup.json"
+          if ! npx --yes convex@1.39.1 run testingSellerCleanup:clearSellerAccounts '{}' --deployment "$CONVEX_NAME" | tee "$out"; then
+            echo "::error::Clearing the seller accounts failed (the reason is above), so the seller specs did not run. Re-run the workflow."
+            exit 1
+          fi
+          twins=$(jq -r '.bsc.twinKeysRemaining // 0' "$out")
+          if [ "$twins" != "0" ]; then
+            # Both copies are at 0, but the listing planner refuses any pair shown twice.
+            echo "::warning::BuySportsCards still shows $twins card/condition pairs twice, at 0. A spec listing one of them reads it as held back."
+          fi
 
       - name: Start Convex log capture (seller mobile)
         env:

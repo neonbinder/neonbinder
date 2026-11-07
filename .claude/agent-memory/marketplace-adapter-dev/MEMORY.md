@@ -57,3 +57,4 @@
 - [Preprocess pytest runs without torch](reference_preprocess_pytest_runs_without_torch.md) — tests/unit and the OpenAPI snapshot run on a Mac in a plain venv minus torch/transformers/accelerate
 - [Unstub globals before real timers](reference_unstub_globals_before_real_timers.md) — stubGlobal(setTimeout) after useFakeTimers: undo it first or the fake stays and the network guard's afterAll times out
 - [New pool enqueue breaks convex-test](reference_new_pool_enqueue_breaks_convex_test.md) — every test through that mutation throws Component not registered; spy on the instance in beforeEach
+- [eBay inventory offset is a page number](reference_ebay_inventory_offset_is_a_page_number.md) — unlike getOrders; follow the next link, fail on an unreadable one

@@ -443,6 +443,33 @@ export async function kickOwnerDrains(ctx: MutationCtx, ownerId: string): Promis
   return out;
 }
 
+/** A random token: a lease's, or the one a kick hands the run it schedules. */
+export function newToken(): string {
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/**
+ * Schedules a drain run and returns the fields that link it to the owner's
+ * state row. NEO-433: the run carries the token, so its claim can tell it is
+ * the run the function id names; that id is how the watcher reads the
+ * platform's own record of the run (`listingDrain.watchDrainRun`).
+ */
+export async function scheduleLinkedDrain(
+  ctx: MutationCtx,
+  args: { ownerId: string; platform: ListingPlatform; delayMs: number; fullVariantIds?: Array<Id<"selectorOptions">> },
+): Promise<Pick<StateRow, "drainKickToken" | "drainKickFnId">> {
+  const kickToken = newToken();
+  const fnId = await ctx.scheduler.runAfter(args.delayMs, internal.listingDrain.drainOwner, {
+    ownerId: args.ownerId,
+    platform: args.platform,
+    kickToken,
+    ...(args.fullVariantIds && args.fullVariantIds.length > 0 ? { fullVariantIds: args.fullVariantIds } : {}),
+  });
+  return { drainKickToken: kickToken, drainKickFnId: fnId };
+}
+
 async function kickWithState(ctx: MutationCtx, state: StateRow, now: number): Promise<DrainKick> {
   if (!pushesCounts(state)) return "notListing";
   // NEO-415: a deployment not wired to eBay keeps the queue and runs nothing.
@@ -459,11 +486,8 @@ async function kickWithState(ctx: MutationCtx, state: StateRow, now: number): Pr
   if (state.drainScheduledAt !== undefined && now - state.drainScheduledAt < DRAIN_SCHEDULE_STALE_MS) {
     return "alreadyScheduled";
   }
-  await ctx.db.patch(state._id, { drainScheduledAt: now });
-  await ctx.scheduler.runAfter(0, internal.listingDrain.drainOwner, {
-    ownerId: state.ownerId,
-    platform: state.platform,
-  });
+  const link = await scheduleLinkedDrain(ctx, { ownerId: state.ownerId, platform: state.platform, delayMs: 0 });
+  await ctx.db.patch(state._id, { drainScheduledAt: now, ...link });
   return "scheduled";
 }
 
