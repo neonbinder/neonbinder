@@ -12,6 +12,7 @@ const convex = vi.hoisted(() => ({
   action: vi.fn(),
   mutation: vi.fn(),
   close: vi.fn(),
+  onUpdate: vi.fn(),
 }));
 vi.mock("convex/browser", () => ({
   ConvexClient: vi.fn(function () {
@@ -27,7 +28,7 @@ const json = (status: number, body: unknown = {}) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
 beforeEach(() => {
-  vi.useFakeTimers({ toFake: ["setTimeout"] });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   vi.stubGlobal("fetch", fetchMock);
   fetchMock.mockReset();
   for (const f of Object.values(convex)) f.mockReset();
@@ -131,5 +132,88 @@ describe("sendImage", () => {
     const error = await nb.sendImage("job-1", Buffer.from("x"), "a.jpg").catch((e: Error) => e);
     expect(String(error)).toBe("Error: Upload failed (HTTP 403).");
     expect(convex.mutation).not.toHaveBeenCalled();
+  });
+});
+
+describe("watchRun", () => {
+  const joined = { runId: "r", jobId: "j", homeName: "Dimes", homeKind: "box", collecting: true };
+
+  async function watching() {
+    const nb = await signedIn();
+    const unsubscribe = vi.fn();
+    convex.onUpdate.mockReturnValue(unsubscribe);
+    const onChange = vi.fn();
+    const stop = nb.watchRun("ABC123", onChange);
+    const [ref, args, onResult, onError] = convex.onUpdate.mock.calls[0];
+    return { ref, args, onResult, onError, onChange, stop, unsubscribe };
+  }
+
+  test("subscribes to the join query by code, and unsubscribes when told", async () => {
+    const { ref, args, stop, unsubscribe } = await watching();
+    expect(getFunctionName(ref)).toBe("intakeScanner:joinIntakeRunByScannerCode");
+    expect(args).toEqual({ code: "ABC123" });
+    stop();
+    expect(unsubscribe).toHaveBeenCalledTimes(1);
+  });
+
+  test("passes on a run and a null, but an error or no result isn't news", async () => {
+    const { onResult, onError, onChange } = await watching();
+    onResult(joined);
+    expect(onChange).toHaveBeenLastCalledWith(joined);
+    onChange.mockClear();
+    onResult(undefined);
+    // The handler must exist: without one the client raises an unhandled rejection.
+    expect(onError).toBeTypeOf("function");
+    onError(new Error("Not authenticated"));
+    expect(onChange).not.toHaveBeenCalled();
+    onResult(null);
+    expect(onChange).toHaveBeenLastCalledWith(null);
+  });
+});
+
+describe("closeRun", () => {
+  test("is the mutation behind Done adding photos", async () => {
+    const nb = await signedIn();
+    convex.mutation.mockResolvedValue({ closed: false, reason: "job is already processing" });
+    expect(await nb.closeRun("job-1")).toEqual({ closed: false, reason: "job is already processing" });
+    expect(getFunctionName(convex.mutation.mock.calls[0][0])).toBe("placeholderStream:closePlaceholderStream");
+    expect(convex.mutation.mock.calls[0][1]).toEqual({ jobId: "job-1" });
+  });
+});
+
+describe("staying signed in", () => {
+  const authChange = () => convex.setAuth.mock.calls[0][1] as (authenticated: boolean) => void;
+
+  test("signs back in after the client gives up on a failed refresh, until it works", async () => {
+    await signedIn();
+    expect(convex.setAuth).toHaveBeenCalledTimes(1);
+    authChange()(true);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(convex.setAuth).toHaveBeenCalledTimes(1);
+    authChange()(false);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(convex.setAuth).toHaveBeenCalledTimes(2);
+    (convex.setAuth.mock.calls[1][1] as (authenticated: boolean) => void)(false);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(convex.setAuth).toHaveBeenCalledTimes(3);
+  });
+
+  test("gives up once the key itself is refused, or the app has closed", async () => {
+    const nb = await signedIn();
+    const fetchToken = convex.setAuth.mock.calls[0][0] as (a: { forceRefreshToken: boolean }) => Promise<string | null>;
+    await fetchToken({ forceRefreshToken: false });
+    fetchMock.mockResolvedValueOnce(json(401));
+    await fetchToken({ forceRefreshToken: true });
+    authChange()(false);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(convex.setAuth).toHaveBeenCalledTimes(1);
+
+    const other = await signedIn();
+    const pendingRetry = convex.setAuth.mock.calls[1][1] as (authenticated: boolean) => void;
+    pendingRetry(false);
+    await other.close();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(convex.setAuth).toHaveBeenCalledTimes(2);
+    await nb.close();
   });
 });

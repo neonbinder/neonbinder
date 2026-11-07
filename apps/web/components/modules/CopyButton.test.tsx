@@ -132,6 +132,33 @@ describe("CopyButton, variant=icon", () => {
     expect(screen.getByRole("status").className).toContain("sr-only");
   });
 
+  it("takes the section's hue, teal by default, and a failure stays pink in either", async () => {
+    writeText.mockRejectedValue(new Error("denied"));
+    const icon = (tone?: "teal" | "blue") =>
+      render(
+        <CopyButton
+          value="x"
+          variant="icon"
+          tone={tone}
+          copyLabel={`Copy ${tone ?? "default"}`}
+          copiedMessage="Copied"
+          failedMessage="Copy failed"
+        />,
+      );
+    icon();
+    icon("blue");
+    const teal = screen.getByRole("button", { name: "Copy default" });
+    const blue = screen.getByRole("button", { name: "Copy blue" });
+    expect(teal.className).toContain("text-neon-teal-text");
+    expect(teal.className).not.toContain("text-neon-blue-text");
+    expect(blue.className).toContain("text-neon-blue-text");
+    expect(blue.className).not.toContain("text-neon-teal-text");
+    fireEvent.click(blue);
+    await screen.findByText("Copy failed");
+    expect(blue.className).toContain("text-neon-pink-text");
+    expect(blue.className).not.toContain("text-neon-blue-text");
+  });
+
   it("shows the failure, because it is the instruction the user must follow", async () => {
     writeText.mockRejectedValue(new Error("denied"));
     renderIcon();

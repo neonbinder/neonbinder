@@ -1,5 +1,6 @@
 import {
   createContext,
+  useCallback,
   useContext,
   useEffect,
   useEffectEvent,
@@ -48,6 +49,7 @@ import {
   proposedCount,
   readOf,
   reasonText,
+  RUN_CLOSED_LINE,
   runSummary,
   type IntakeImage,
   type IntakeMatchRow,
@@ -113,11 +115,13 @@ const PAIRING_HEADING_ID = "intake-pairing";
 const DONE_ATTR = "data-intake-done";
 
 /**
- * After a Back the user answered "Stay" (`useLeaveGuard`): focus on "Done
- * adding photos" when it is drawn, else the Pairing column's heading. False
- * while neither is drawn yet (the page is still loading), so it is tried again.
+ * A stable place for focus that lost its own: "Done adding photos" when it is
+ * drawn, else the Pairing column's heading. Used after a Back the user answered
+ * "Stay" (`useLeaveGuard`), and when a close takes away the control that held
+ * focus (NEO-459). False while neither is drawn yet (the page is still loading),
+ * so the leave guard tries again.
  */
-function parkAfterStay(): boolean {
+function parkFocus(): boolean {
   const target =
     document.querySelector<HTMLElement>(`[${DONE_ATTR}]`) ?? document.getElementById(PAIRING_HEADING_ID);
   if (!target) return false;
@@ -221,6 +225,27 @@ export default function RealAddCardsTab() {
   // Still loading the run's job reads as collecting, so the drop zone and the
   // scanner code don't blink out while a just-started run catches up.
   const collecting = !run || job === undefined || job?.status === "collecting";
+  // NEO-459 — the collector closed this run, here or from anywhere else (the
+  // scanner app's `d`). The idle sweep's close is not this: nobody said "done".
+  const closedByUser = job?.streamClosedBy === "user";
+
+  // NEO-459 — that close takes the drop zone, the scanner code and "Done adding
+  // photos" with it. Focus inside them would fall to the page, so it is parked.
+  // Focus anywhere else is left alone, which is why this asks the leaving
+  // controls whether they held it (a ref cleanup runs while they are still in
+  // the document) rather than only checking where focus ended up.
+  const focusWentWithClose = useRef(false);
+  const watchFocus = useCallback((el: HTMLElement | null) => {
+    if (!el) return;
+    return () => {
+      if (el.contains(document.activeElement)) focusWentWithClose.current = true;
+    };
+  }, []);
+  useEffect(() => {
+    const went = focusWentWithClose.current;
+    focusWentWithClose.current = false;
+    if (went && closedByUser && focusFell()) parkFocus();
+  }, [collecting, closedByUser]);
 
   // NEO-370 — the listing gate, on what the run (or the setup) will give its cards.
   const shownDefaults: RunDefaults = run?.defaults ?? defaults;
@@ -410,7 +435,7 @@ export default function RealAddCardsTab() {
         </ListingGateNote>
       )}
       {collecting ? (
-        <>
+        <div ref={watchFocus} className="space-y-4">
           <Dropzone
             quiet
             files={files}
@@ -433,7 +458,7 @@ export default function RealAddCardsTab() {
               onRunStarted={openRun}
             />
           )}
-        </>
+        </div>
       ) : (
         <p className="m-0 rounded-md border border-rule p-3 text-sm text-ink-2">
           This run&apos;s photos are all in. To add more, start a new run.
@@ -444,7 +469,7 @@ export default function RealAddCardsTab() {
       </p>
       {run ? (
         <LocalPhotos.Provider value={localPhotos}>
-          <RunWorkspace run={run} jobOpen={job?.status === "collecting"} />
+          <RunWorkspace run={run} jobOpen={job?.status === "collecting"} closedByUser={closedByUser} doneRef={watchFocus} />
         </LocalPhotos.Provider>
       ) : (
         !runParam && <RecentRuns runs={(recent ?? []).filter((r) => r.homeKind === kind)} onOpen={openRun} />
@@ -718,7 +743,8 @@ function RecentRuns({ runs, onOpen }: { runs: RunSummary[]; onOpen: (id: Id<"int
 /**
  * NEO-370 Rev 4 — the runs this tab saw "Done adding photos" pressed on.
  * Outside component state so a Back that the leave guard sends straight back
- * (a remount) still knows the run is waiting on its columns.
+ * (a remount) still knows the run is waiting on its columns. NEO-459: a close
+ * from elsewhere that lands while the screen is watching counts as that press.
  */
 const doneRuns = new Set<string>();
 
@@ -730,7 +756,18 @@ const LANE_LABEL = {
   saved: "Saved",
 } as const;
 
-function RunWorkspace({ run, jobOpen }: { run: RunSummary; jobOpen: boolean }) {
+function RunWorkspace({
+  run,
+  jobOpen,
+  closedByUser,
+  doneRef,
+}: {
+  run: RunSummary;
+  jobOpen: boolean;
+  /** The job says the collector closed it, on this screen or anywhere else (NEO-459). */
+  closedByUser: boolean;
+  doneRef: Ref<HTMLButtonElement>;
+}) {
   const { notify, inform } = usePageApi();
   const images = useQuery(api.placeholderPipeline.listPlaceholderImages, { jobId: run.jobId });
   const pairs = useQuery(api.placeholderPipeline.listPlaceholderPairs, { jobId: run.jobId });
@@ -755,6 +792,22 @@ function RunWorkspace({ run, jobOpen }: { run: RunSummary; jobOpen: boolean }) {
     else doneRuns.delete(run._id);
     setDone(on);
   };
+  // NEO-459 — the collector's close landing while this screen watches is an
+  // event: it does what the button does, once, and is said out loud. Opening a
+  // closed run is not that event, nor is a close first seen while the job loads
+  // (`jobOpen` is false then), nor is the idle sweep's. Only if not done already:
+  // a press on a run whose columns were clear has already been forgotten.
+  const [closeLanded, setCloseLanded] = useState(false);
+  const onCloseLanded = useEffectEvent(() => {
+    setCloseLanded(true);
+    if (!done) markDone(true);
+  });
+  const wasOpen = useRef(jobOpen);
+  useEffect(() => {
+    const landed = wasOpen.current && !jobOpen && closedByUser;
+    wasOpen.current = jobOpen;
+    if (landed) onCloseLanded();
+  }, [jobOpen, closedByUser]);
   const retry = useMutation(api.placeholderStream.retryPlaceholderImage);
   // NEO-370: after Done, a run into a box that syncs links to Sync status.
   const syncsHere = useListingGate(run.homeId, null)?.applies === true;
@@ -892,7 +945,7 @@ function RunWorkspace({ run, jobOpen }: { run: RunSummary; jobOpen: boolean }) {
   }, [done, clear, run._id]);
   // A Back answered "Stay" leaves focus nowhere (the page may have remounted):
   // park it on "Done adding photos" when it is drawn, else the first column's heading.
-  useLeaveGuard(done && !loading && !clear, LEAVE_INTAKE_LINE, { onStay: parkAfterStay });
+  useLeaveGuard(done && !loading && !clear, LEAVE_INTAKE_LINE, { onStay: parkFocus });
 
   return (
     <div className="space-y-3">
@@ -921,10 +974,12 @@ function RunWorkspace({ run, jobOpen }: { run: RunSummary; jobOpen: boolean }) {
           {loading ? "" : working > 0 ? "Working on your photos." : summary}
         </p>
         <LiveLine text={photoLiveLine} />
+        <LiveLine text={closeLanded ? RUN_CLOSED_LINE : ""} />
         <div className="ml-auto flex flex-wrap items-center gap-3">
           {/* A scanner run (NEO-386) opens before any photo, so it closes with none. */}
           {jobOpen && (
             <NeonButton
+              ref={doneRef}
               size="1"
               variant="secondary"
               outline

@@ -76,8 +76,9 @@ const FAILED_RESET_MS = 8000;
  * @param children the text variant's visible label; ignored by the icon variant.
  * @param size icon variant only: `sm` (default) 24x24, `md` 32x32.
  * @param className icon variant only: extra classes on the wrapper span.
- * @param tone text variant only: the section's hue (DESIGN.md, one hue per
- * section). Teal, Print Shop's, unless the caller's section is Collection.
+ * @param tone the section's hue (DESIGN.md, one hue per section). Teal, Print
+ * Shop's, unless the caller's section is Collection. The icon variant's failure
+ * stays pink in either.
  */
 export default function CopyButton({
   value,
@@ -158,10 +159,10 @@ export default function CopyButton({
   if (variant === "icon") {
     const box = size === "md" ? "h-8 w-8" : "h-6 w-6";
     const glyph = size === "md" ? "h-5 w-5" : "h-4 w-4";
-    const tone =
+    const iconTone =
       copyState === "failed"
         ? "text-neon-pink-text hover:underline"
-        : "text-neon-teal-text hover:underline";
+        : `${tone === "blue" ? "text-neon-blue-text" : "text-neon-teal-text"} hover:underline`;
     const Icon =
       copyState === "copied"
         ? ClipboardDocumentCheckIcon
@@ -175,7 +176,7 @@ export default function CopyButton({
           type="button"
           onClick={() => void copy()}
           aria-label={copyLabel}
-          className={`${box} ${tone} inline-flex shrink-0 items-center justify-center rounded-sm transition-colors focus-outline`}
+          className={`${box} ${iconTone} inline-flex shrink-0 items-center justify-center rounded-sm transition-colors focus-outline`}
         >
           {/* Both glyphs share heroicons' 24x24 box and render at one size, so
               the swap cannot change the button's width. */}

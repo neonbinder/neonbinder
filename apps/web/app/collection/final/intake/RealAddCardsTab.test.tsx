@@ -18,7 +18,7 @@ import { MemoryRouter, useLocation, useSearchParams } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PageApiContext, type PageApi } from "../pageApi";
 import { DRAWER_PARAM } from "../drawerParams";
-import { LEAVE_INTAKE_LINE, PHOTO_NEWS_QUIET_MS } from "./realLanes";
+import { LEAVE_INTAKE_LINE, PHOTO_NEWS_QUIET_MS, RUN_CLOSED_LINE } from "./realLanes";
 import RealAddCardsTab from "./RealAddCardsTab";
 import { intakeGateLine, SYNC_STATUS_LINK } from "../inventory/listing/ListingGate";
 import type { ListingGateView } from "../data/types";
@@ -147,7 +147,8 @@ function setRun(
     open = true,
     images = [photo(0)],
     homeKind = "binder",
-  }: { open?: boolean; images?: unknown[]; homeKind?: "binder" | "box" } = {},
+    closedBy,
+  }: { open?: boolean; images?: unknown[]; homeKind?: "binder" | "box"; closedBy?: "user" | "idle" } = {},
 ) {
   mocks.data.run = {
     _id: runId,
@@ -157,7 +158,7 @@ function setRun(
     homeKind,
     lastActivityAt: 0,
   };
-  mocks.data.job = { status: open ? "collecting" : "closed" };
+  mocks.data.job = { status: open ? "collecting" : "closed", streamClosedBy: closedBy };
   // One read photo that is in no pair sits in the Pairing column: not clear.
   mocks.data.images = images;
   mocks.data.pairs = [];
@@ -315,7 +316,288 @@ describe("RealAddCardsTab leave guard", () => {
   });
 });
 
-describe("RealAddCardsTab parkAfterStay", () => {
+/* ------------------------------------------------------------------ */
+/* NEO-459 — closed from anywhere is Done                              */
+/* ------------------------------------------------------------------ */
+
+describe("RealAddCardsTab, a run the collector closed from elsewhere (NEO-459)", () => {
+  const syncLink = () => screen.queryByRole("link", { name: SYNC_STATUS_LINK });
+  const SYNCS: ListingGateView = { syncing: true, applies: true, commonPriceCents: 25 };
+  const closedLine = () => screen.queryByText(RUN_CLOSED_LINE);
+
+  /** Open and on screen, then the close lands by query, as it does from the scanner app. */
+  const closedWhileWatching = async (closedBy: "user" | "idle", options: { homeKind?: "binder" | "box" } = {}) => {
+    const runId = freshRunId();
+    setRun(runId, options);
+    const view = render(<Tab runId={runId} />);
+    await screen.findByRole("button", { name: "Done adding photos" });
+    const land = async () => {
+      setRun(runId, { ...options, open: false, closedBy });
+      view.rerender(<Tab runId={runId} />);
+      await act(async () => {});
+    };
+    return { runId, land, ...view };
+  };
+
+  it("asks before leaving while the columns work, with Done never pressed here", async () => {
+    const { land } = await closedWhileWatching("user");
+    clickLink();
+    expect(confirm).not.toHaveBeenCalled();
+    await land();
+    expect(closeStream()).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: "Done adding photos" })).toBeNull();
+    screen.getByText("This run's photos are all in. To add more, start a new run.");
+    clickLink();
+    expect(confirm).toHaveBeenCalledWith(LEAVE_INTAKE_LINE);
+  });
+
+  it("an idle sweep's close stays as it was: no guard, no link, no line", async () => {
+    mocks.data.gate = SYNCS;
+    const { land } = await closedWhileWatching("idle", { homeKind: "box" });
+    await land();
+    screen.getByText("This run's photos are all in. To add more, start a new run.");
+    clickLink();
+    expect(confirm).not.toHaveBeenCalled();
+    expect(syncLink()).toBeNull();
+    expect(closedLine()).toBeNull();
+  });
+
+  it("links to Sync status on a box that syncs, in its live region", async () => {
+    mocks.data.gate = SYNCS;
+    const { land } = await closedWhileWatching("user", { homeKind: "box" });
+    expect(syncLink()).toBeNull();
+    await land();
+    expect(syncLink()?.closest('[role="status"]')).not.toBeNull();
+  });
+
+  it("disarms once the columns clear, and keeps the link for the sync that just went", async () => {
+    mocks.data.gate = SYNCS;
+    const { land, rerender, runId } = await closedWhileWatching("user", { homeKind: "box" });
+    await land();
+    setRun(runId, { open: false, closedBy: "user", homeKind: "box", images: [] });
+    rerender(<Tab runId={runId} />);
+    await act(async () => {});
+    clickLink();
+    expect(confirm).not.toHaveBeenCalled();
+    expect(syncLink()).not.toBeNull();
+  });
+
+  it("mounting on a run already closed by the collector arms nothing and shows no link: a reload stays as it was", async () => {
+    // A first mount with nothing in `doneRuns` is what a reload looks like, and
+    // the job reads the same whether the button or the scanner app closed it.
+    mocks.data.gate = SYNCS;
+    const runId = freshRunId();
+    setRun(runId, { open: false, closedBy: "user", homeKind: "box" });
+    render(<Tab runId={runId} />);
+    await screen.findByRole("heading", { name: "Pairing" });
+    await act(async () => {});
+    clickLink();
+    expect(confirm).not.toHaveBeenCalled();
+    expect(syncLink()).toBeNull();
+  });
+
+  it("a later visit to a closed and settled run asks nothing and shows no link", async () => {
+    mocks.data.gate = SYNCS;
+    const runId = freshRunId();
+    setRun(runId, { open: false, closedBy: "user", homeKind: "box", images: [] });
+    render(<Tab runId={runId} />);
+    await screen.findByRole("heading", { name: "Pairing" });
+    await act(async () => {});
+    clickLink();
+    expect(confirm).not.toHaveBeenCalled();
+    expect(syncLink()).toBeNull();
+  });
+
+  it("a close first seen while the job loads is not a landing", async () => {
+    mocks.data.gate = SYNCS;
+    const runId = freshRunId();
+    setRun(runId, { homeKind: "box" });
+    mocks.data.job = undefined;
+    const view = render(<Tab runId={runId} />);
+    await screen.findByRole("heading", { name: "Pairing" });
+    setRun(runId, { open: false, closedBy: "user", homeKind: "box" });
+    view.rerender(<Tab runId={runId} />);
+    await act(async () => {});
+    clickLink();
+    expect(confirm).not.toHaveBeenCalled();
+    expect(syncLink()).toBeNull();
+    expect(closedLine()).toBeNull();
+  });
+
+  it("open, then loading, then closed is not a landing either", async () => {
+    const { rerender, runId } = await closedWhileWatching("user");
+    mocks.data.job = undefined;
+    rerender(<Tab runId={runId} />);
+    await act(async () => {});
+    setRun(runId, { open: false, closedBy: "user" });
+    rerender(<Tab runId={runId} />);
+    await act(async () => {});
+    clickLink();
+    expect(confirm).not.toHaveBeenCalled();
+    expect(closedLine()).toBeNull();
+  });
+
+  it("still asks after a remount, because a live close goes into the Done memory", async () => {
+    const { land, unmount, runId } = await closedWhileWatching("user");
+    await land();
+    unmount();
+    setRun(runId, { open: false, closedBy: "user" });
+    render(<Tab runId={runId} />);
+    await screen.findByRole("heading", { name: "Pairing" });
+    clickLink();
+    expect(confirm).toHaveBeenCalledWith(LEAVE_INTAKE_LINE);
+  });
+
+  it("forgets a live close once the columns clear, so a remount does not ask", async () => {
+    const { land, rerender, unmount, runId } = await closedWhileWatching("user");
+    await land();
+    setRun(runId, { open: false, closedBy: "user", images: [] });
+    rerender(<Tab runId={runId} />);
+    await act(async () => {});
+    unmount();
+
+    setRun(runId, { open: false, closedBy: "user" }); // a card brought back from Set aside
+    render(<Tab runId={runId} />);
+    await screen.findByRole("heading", { name: "Pairing" });
+    clickLink();
+    expect(confirm).not.toHaveBeenCalled();
+  });
+
+  it("a live close on columns already clear keeps the link here, and a remount forgets it", async () => {
+    mocks.data.gate = SYNCS;
+    const runId = freshRunId();
+    setRun(runId, { homeKind: "box", images: [] });
+    const view = render(<Tab runId={runId} />);
+    await screen.findByRole("button", { name: "Done adding photos" });
+    setRun(runId, { open: false, closedBy: "user", homeKind: "box", images: [] });
+    view.rerender(<Tab runId={runId} />);
+    await act(async () => {});
+    expect(syncLink()).not.toBeNull();
+    view.unmount();
+
+    render(<Tab runId={runId} />);
+    await screen.findByRole("heading", { name: "Pairing" });
+    await act(async () => {});
+    expect(syncLink()).toBeNull();
+  });
+
+  it("a press on clear columns isn't put back in the Done memory when its own close lands", async () => {
+    mocks.data.gate = SYNCS;
+    const runId = freshRunId();
+    setRun(runId, { homeKind: "box", images: [] });
+    const view = render(<Tab runId={runId} />);
+    await pressDone(); // the columns are clear, so `doneRuns` has already let go
+    setRun(runId, { open: false, closedBy: "user", homeKind: "box", images: [] });
+    view.rerender(<Tab runId={runId} />);
+    await act(async () => {});
+    expect(syncLink()).not.toBeNull();
+    view.unmount();
+
+    render(<Tab runId={runId} />);
+    await screen.findByRole("heading", { name: "Pairing" });
+    await act(async () => {});
+    expect(syncLink()).toBeNull();
+  });
+
+  it("a press still behaves as today, and the close it causes doesn't stack a second ask", async () => {
+    const runId = freshRunId();
+    setRun(runId);
+    const view = render(<Tab runId={runId} />);
+    await pressDone();
+    expect(closeStream()).toHaveBeenCalledTimes(1);
+    clickLink();
+    expect(confirm).toHaveBeenCalledTimes(1);
+    setRun(runId, { open: false, closedBy: "user" });
+    view.rerender(<Tab runId={runId} />);
+    await act(async () => {});
+    clickLink();
+    expect(confirm).toHaveBeenCalledTimes(2);
+  });
+
+  describe("the close said out loud", () => {
+    it("says it once when the close lands on screen", async () => {
+      const { land } = await closedWhileWatching("user");
+      expect(closedLine()).toBeNull();
+      await land();
+      expect(closedLine()?.getAttribute("role")).toBe("status");
+    });
+
+    it("says it for a press too, when the close that press caused lands", async () => {
+      const runId = freshRunId();
+      setRun(runId);
+      const view = render(<Tab runId={runId} />);
+      await pressDone();
+      expect(closedLine()).toBeNull();
+      setRun(runId, { open: false, closedBy: "user" });
+      view.rerender(<Tab runId={runId} />);
+      await act(async () => {});
+      expect(closedLine()).not.toBeNull();
+    });
+
+    it("says nothing on opening a run that was already closed", async () => {
+      const runId = freshRunId();
+      setRun(runId, { open: false, closedBy: "user" });
+      render(<Tab runId={runId} />);
+      await screen.findByRole("heading", { name: "Pairing" });
+      await act(async () => {});
+      expect(closedLine()).toBeNull();
+    });
+  });
+
+  describe("focus when the close takes the control that held it", () => {
+    it("from Done adding photos, lands on the Pairing heading", async () => {
+      const { land } = await closedWhileWatching("user");
+      act(() => screen.getByRole("button", { name: "Done adding photos" }).focus());
+      await land();
+      expect(document.activeElement).toBe(screen.getByRole("heading", { name: "Pairing" }));
+    });
+
+    it("from inside the Scanner code panel, lands on the Pairing heading", async () => {
+      mocks.mutation("intakeScanner.scannerCodeForIntakeRun").mockResolvedValue("AB3X7K");
+      const { land } = await closedWhileWatching("user");
+      fireEvent.click(screen.getByRole("button", { name: "Use a scanner" }));
+      const icon = await screen.findByRole("button", { name: "Copy scanner code" });
+      act(() => icon.focus());
+      await land();
+      expect(screen.queryByRole("group", { name: "Scanner code" })).toBeNull();
+      expect(document.activeElement).toBe(screen.getByRole("heading", { name: "Pairing" }));
+    });
+
+    it("leaves focus alone when the collector is working elsewhere on the screen", async () => {
+      const { land } = await closedWhileWatching("user");
+      const defaults = screen.getByRole("button", { name: /^Defaults:/ });
+      act(() => defaults.focus());
+      await land();
+      expect(document.activeElement).toBe(defaults);
+    });
+
+    it("doesn't grab focus for someone who had none in the screen's controls", async () => {
+      const { land } = await closedWhileWatching("user");
+      expect(document.activeElement).toBe(document.body);
+      await land();
+      expect(document.activeElement).toBe(document.body);
+    });
+
+    it("an idle sweep's close moves nothing, as today", async () => {
+      const { land } = await closedWhileWatching("idle");
+      act(() => screen.getByRole("button", { name: "Done adding photos" }).focus());
+      await land();
+      expect(document.activeElement).toBe(document.body);
+    });
+  });
+
+  it("passes axe in light and dark, closed from elsewhere with the link showing", async () => {
+    mocks.data.gate = SYNCS;
+    const { land, container, rerender, runId } = await closedWhileWatching("user", { homeKind: "box" });
+    await land();
+    await expectAccessibleInBothModes(container, {
+      label: "Intake, closed from elsewhere",
+      rerender: () => rerender(<Tab runId={runId} />),
+    });
+  });
+});
+
+describe("RealAddCardsTab parkFocus", () => {
   const onStay = () => mocks.guardOptions.at(-1)?.onStay;
 
   it("hands the guard a Stay handler that focuses Done adding photos when it is drawn", async () => {

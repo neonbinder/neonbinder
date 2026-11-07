@@ -17,6 +17,7 @@ import { BACKEND_FUNCTIONS, RUN_CLOSED_ERROR } from "./backend-contract.js";
 const joinRun = makeFunctionReference<"query">(BACKEND_FUNCTIONS.joinRun);
 const createUploadUrl = makeFunctionReference<"action">(BACKEND_FUNCTIONS.createUploadUrl);
 const confirmUpload = makeFunctionReference<"mutation">(BACKEND_FUNCTIONS.confirmUpload);
+const closeRun = makeFunctionReference<"mutation">(BACKEND_FUNCTIONS.closeRun);
 
 export interface JoinedRun {
   runId: string;
@@ -25,6 +26,13 @@ export interface JoinedRun {
   homeKind: "binder" | "box";
   variantName?: string;
   collecting: boolean;
+}
+
+/** `closed: false` means the job had already closed, which is not an error. */
+export interface CloseResult {
+  closed: boolean;
+  status?: string;
+  reason?: string;
 }
 
 interface UploadTicket {
@@ -62,10 +70,15 @@ export function siteUrlFor(convexUrl: string, override?: string): string {
 /** Statuses worth another try: a rate limit or an upstream blip. */
 const TRANSIENT = new Set([429, 502, 503]);
 
+/** How soon to sign back in after the client gave up on its session. */
+const REAUTH_RETRY_MS = 30_000;
+
 /** Trades the API key for short-lived session tokens, reusing one session. */
 class KeyExchange {
   private sessionId: string | null = null;
   private primed: string | null = null;
+  /** The key itself was refused, so asking again can't help. */
+  rejected = false;
 
   constructor(
     private readonly siteUrl: string,
@@ -125,6 +138,7 @@ class KeyExchange {
     this.primed = null;
     try {
       const res = await this.exchange();
+      if (res.status === 401) this.rejected = true;
       return res.ok ? await this.read(res) : null;
     } catch {
       return null;
@@ -141,18 +155,63 @@ export class KeyRejectedError extends Error {
 }
 
 export class NeonBinder {
+  private reauth: ReturnType<typeof setTimeout> | undefined;
+  private closed = false;
+
   private constructor(private readonly convex: ConvexClient) {}
 
   static async signIn(convexUrl: string, apiKey: string, siteOverride?: string): Promise<NeonBinder> {
     const keys = new KeyExchange(siteUrlFor(convexUrl, siteOverride), apiKey);
     await keys.verify();
-    const convex = new ConvexClient(convexUrl);
-    convex.setAuth((args) => keys.fetchToken(args));
-    return new NeonBinder(convex);
+    const nb = new NeonBinder(new ConvexClient(convexUrl));
+    nb.stayAuthenticated(keys);
+    return nb;
+  }
+
+  /**
+   * One failed token refresh makes the Convex client drop its session for good,
+   * and a refresh during a network blip or a sleeping laptop is such a failure.
+   * This app stays open between runs, so sign back in until it works, unless
+   * the key itself was refused.
+   */
+  private stayAuthenticated(keys: KeyExchange): void {
+    this.convex.setAuth(
+      (args) => keys.fetchToken(args),
+      (authenticated) => {
+        if (authenticated || keys.rejected || this.closed) return;
+        clearTimeout(this.reauth);
+        this.reauth = setTimeout(() => this.stayAuthenticated(keys), REAUTH_RETRY_MS);
+      },
+    );
   }
 
   async join(code: string): Promise<JoinedRun | null> {
     return (await this.convex.query(joinRun, { code })) as JoinedRun | null;
+  }
+
+  /**
+   * Follow a joined run: `onChange` gets its latest state, null once the code
+   * finds nothing. A query error reaches no one on purpose: an auth refresh or
+   * a network blip says nothing about the run, and the subscription carries on
+   * by itself after one. The handler has to be passed all the same, because
+   * without it the client raises an unhandled rejection, which ends the process.
+   */
+  watchRun(code: string, onChange: (run: JoinedRun | null) => void): () => void {
+    const unsubscribe = this.convex.onUpdate(
+      joinRun,
+      { code },
+      (run: unknown) => {
+        // Undefined is "no result right now", which is not an answer about the run.
+        if (run !== undefined) onChange(run as JoinedRun | null);
+      },
+      () => {},
+    );
+    return () => unsubscribe();
+  }
+
+  /** The same as Done adding photos on the screen. Queues while offline, so callers bound the wait. */
+  async closeRun(jobId: string): Promise<CloseResult> {
+    return (await this.convex.mutation(closeRun, { jobId })) as CloseResult;
   }
 
   /**
@@ -182,6 +241,8 @@ export class NeonBinder {
   }
 
   async close(): Promise<void> {
+    this.closed = true;
+    clearTimeout(this.reauth);
     await this.convex.close();
   }
 }

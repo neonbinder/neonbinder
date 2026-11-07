@@ -2447,6 +2447,11 @@ export const getPlaceholderJob = query({
       // (lastActivityAt + PLACEHOLDER_STREAM_IDLE_MS), which is the difference
       // between a batch that "vanished" and one the user was warned about.
       lastActivityAt: v.optional(v.number()),
+      // NEO-459: who closed a stream job, passed through as stored; absent until
+      // one is closed. "user" means "no more photos are coming", from whichever
+      // screen or app said it. The intake screen treats that close landing while
+      // it watches as Done pressed.
+      streamClosedBy: v.optional(v.union(v.literal("user"), v.literal("idle"))),
       totalImages: v.number(),
       processedImages: v.number(),
       failedImages: v.number(),
@@ -2495,6 +2500,7 @@ export const getPlaceholderJob = query({
       startedAt: job.startedAt,
       finishedAt: job.finishedAt,
       lastActivityAt: job.lastActivityAt,
+      streamClosedBy: job.streamClosedBy,
       totalImages: job.totalImages ?? 0,
       processedImages: job.processedImages ?? 0,
       failedImages: job.failedImages ?? 0,
