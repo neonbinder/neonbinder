@@ -1031,12 +1031,13 @@ export interface QueuedSyncCard {
 /**
  * NEO-415 — one step of a sync run, in run order: BuySportsCards reads each
  * condition, sends the changes once, then checks each condition back; eBay
- * uploads photos, writes the items, sets the offers, publishes, and takes
- * down what went to 0. The server stores kind and NB condition only; the
+ * compares with the boxes, uploads photos, writes the items, sets the offers,
+ * publishes, and takes down what went to 0. A run with nothing to read or
+ * send is the compare step alone. The server stores kind and NB condition only; the
  * words are the web's (`stepLabels` in the listing copy), never a
  * marketplace value. Mirrors `marketplaceListingSyncs.progress.steps`.
  */
-export type SyncStepKind = "read" | "send" | "confirm" | "photos" | "items" | "offers" | "publish" | "withdraw";
+export type SyncStepKind = "check" | "read" | "send" | "confirm" | "photos" | "items" | "offers" | "publish" | "withdraw";
 export type SyncStepStatus = "waiting" | "working" | "done" | "failed";
 export interface SyncStep {
   kind: SyncStepKind;

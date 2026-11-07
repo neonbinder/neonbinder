@@ -10,7 +10,7 @@
  */
 
 import { render, screen, waitFor } from "@testing-library/react";
-import { MemoryRouter, Route, Routes } from "react-router";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -56,6 +56,10 @@ vi.mock("convex/react", () => ({
 
 import TestingSeedPlaceholderRunPage from "./page";
 
+function ShowSearch() {
+  return <div>placeholder intake {useLocation().search}</div>;
+}
+
 function renderPage(entry = "/testing/seed-placeholder-run") {
   return render(
     <MemoryRouter initialEntries={[entry]}>
@@ -66,6 +70,7 @@ function renderPage(entry = "/testing/seed-placeholder-run") {
         />
         <Route path="/pipeline-runs" element={<div>operator view</div>} />
         <Route path="/collection" element={<div>add cards screen</div>} />
+        <Route path="/print/placeholders" element={<ShowSearch />} />
       </Routes>
     </MemoryRouter>,
   );
@@ -85,7 +90,7 @@ describe("TestingSeedPlaceholderRunPage", () => {
     });
     mocks.seedFailed = vi.fn(async () => {
       mocks.calls.push("seedFailed");
-      return { runId: "run123", originalName: "never-read-3f2a1b8c.jpg" };
+      return { runId: "run123", jobId: "job123", originalName: "never-read-3f2a1b8c.jpg" };
     });
     mocks.seedSavedFailure = vi.fn(async () => {
       mocks.calls.push("seedSavedFailure");
@@ -126,6 +131,12 @@ describe("TestingSeedPlaceholderRunPage", () => {
     await waitFor(() => expect(screen.getByText("add cards screen")).not.toBeNull());
     expect(mocks.calls).toEqual(["reset", "seedFailed"]);
     expect(mocks.seed).not.toHaveBeenCalled();
+  });
+
+  it("NEO-440: with view=placeholders, opens the seeded batch on the placeholder intake page", async () => {
+    renderPage("/testing/seed-placeholder-run?failedPhoto=1&view=placeholders");
+    await waitFor(() => expect(screen.getByText("placeholder intake ?jobId=job123")).not.toBeNull());
+    expect(mocks.calls).toEqual(["reset", "seedFailed"]);
   });
 
   it("resets the caller's active jobs before seeding the fixture run", async () => {

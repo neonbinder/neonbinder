@@ -428,7 +428,8 @@ describe("seedMyTestFailedPhotoRun (the E2E fixture)", () => {
     process.env.TESTING_RESET_SECRET = "test-only";
     const t = convexTest(schema, modules);
 
-    const { runId, originalName } = await t.withIdentity(USER).mutation(api.testing.seedMyTestFailedPhotoRun, {});
+    const { runId, jobId, originalName } = await t.withIdentity(USER).mutation(api.testing.seedMyTestFailedPhotoRun, {});
+    expect(jobId).toEqual(expect.any(String));
 
     const { run, job, images, home } = await t.run(async (ctx) => {
       const run = (await ctx.db.get(runId))!;
