@@ -23,10 +23,11 @@ import {
 } from "@/components/entities/NearMatchPanel";
 import { userFacingMessage } from "@/lib/errors/user-facing-message";
 import { teamFullName, teamShortName } from "@/lib/teams/team-name";
-// NEO-235: `tenureYears` owns the open-ended-stint rule ("still there" counts
-// through the current year). `primaryTeamId` below sums it per team rather than
-// re-deriving it — see that function for why it is not `pickDefaultTeamYear`.
-import { isDatedTeamYear, tenureYears } from "@/lib/players/team-tenure";
+// NEO-462: the master row's team nod is the team a player spent longest with,
+// ranked by the same helper `players.nearMatches` uses for the Possible matches
+// career line, so the list row and the match row can never name different
+// teams for one man.
+import { rankCareerTeams } from "@/lib/players/player-description";
 // NEO-254: the birth-year bounds, shared with `players.assertBirthYear` so
 // the field cannot offer a year the round-trip then refuses.
 import { MIN_BIRTH_YEAR, maxBirthYear } from "@/lib/players/career-years";
@@ -190,58 +191,6 @@ function stintRange(stint: Stint): string {
   // school, with years only when the source has them.
   if (stint.fromYear === undefined) return "years unknown";
   return `${stint.fromYear}–${stint.toYear ?? "present"}`;
-}
-
-/**
- * NEO-235 — the franchise a player is most associated with, for the master row.
- *
- * Deliberately NOT `pickDefaultTeamYear` from lib/players/team-tenure.ts, and
- * the difference is the reason there are two. That one names a single STINT,
- * because the spine label it feeds has to print that stint's years ("Angels
- * 2011–2019"), so a summed total would leave it with nothing to print. This
- * one names a TEAM and prints no years at all, so the honest reading of "played
- * with the longest" is the SUM of the stints there: a player with two four-year
- * runs in Seattle and one six-year run in Cincinnati is a Mariner to anyone who
- * collects him, and per-stint ranking would file him under the Reds. That
- * module anticipated this exact split ("a separate function over the same rows,
- * not a change to these two"), so only `tenureYears` is borrowed.
- *
- * Ties go to the earliest `fromYear` — with nothing to separate two franchises
- * by time served, the one he came up with is the one the hobby names him after.
- *
- * Returns null for a player with no stints; the row then shows the sport alone.
- */
-function primaryTeamId(
-  stints: Stint[] | undefined,
-  currentYear: number,
-): Id<"teams"> | null {
-  if (!stints || stints.length === 0) return null;
-
-  const totals = new Map<string, { years: number; firstYear: number }>();
-  // NEO-285 — an undated stint has no tenure to count, and a college is not
-  // the franchise a collector files a pro under.
-  for (const stint of stints.filter(isDatedTeamYear)) {
-    const key = stint.teamId as string;
-    const running = totals.get(key);
-    totals.set(key, {
-      years: (running?.years ?? 0) + tenureYears(stint, currentYear),
-      firstYear: Math.min(running?.firstYear ?? stint.fromYear, stint.fromYear),
-    });
-  }
-
-  let bestId: string | null = null;
-  let best: { years: number; firstYear: number } | null = null;
-  for (const [id, totalled] of totals) {
-    if (
-      best === null ||
-      totalled.years > best.years ||
-      (totalled.years === best.years && totalled.firstYear < best.firstYear)
-    ) {
-      bestId = id;
-      best = totalled;
-    }
-  }
-  return bestId as Id<"teams"> | null;
 }
 
 /**
@@ -608,6 +557,10 @@ function AddPlayerForm({
    * `Open Bob Allen` while the row beside it said `Open Bob Allen, b. 1975` —
    * unique, but the primary would not say which man it opens. One computation
    * over the whole list gives both halves the same treatment.
+   *
+   * NEO-462 — now read by the promoted primary ONLY. The panel's rows carry
+   * their own facts (birth year and teams, from `NearMatchPanel`), so they get
+   * the bare `Open {name}` and the panel adds the rest.
    */
   const openLabels = openLabelsFor(matches ?? []);
   const openLabel = (m: NearMatch) => openLabels.get(m._id) ?? `Open ${m.name}`;
@@ -758,8 +711,10 @@ function AddPlayerForm({
         kind="player"
         matches={panelMatches}
         // Not "Link to": this button opens the row for editing, it does not
-        // link anything to anything.
-        pickLabel={(_n, match) => openLabel(match)}
+        // link anything to anything. NEO-462 — the bare verb and name only:
+        // the panel adds each player's birth year and teams itself, and
+        // numbers any two that would still read the same.
+        pickLabel={(name) => `Open ${name}`}
         onPick={(id) => open(id as Id<"players">, "panel")}
         // NEO-319 — `busy` marks every row `aria-disabled` and swallows the
         // press; the class dims them and turns the pointer away. Not `inert`:
@@ -2394,7 +2349,10 @@ export default function PlayerManagement() {
   const rowTeamIdByPlayer = useMemo(() => {
     const map = new Map<string, Id<"teams">>();
     for (const player of visible) {
-      const teamId = primaryTeamId(player.teamYears, currentYear);
+      // NEO-462 — longest summed tenure first. A college-only player now
+      // shows his college: it is the only team on file, and showing nothing
+      // would hide the one fact we have.
+      const teamId = rankCareerTeams(player.teamYears, currentYear)[0]?.teamId;
       if (teamId) map.set(player._id as string, teamId);
     }
     return map;

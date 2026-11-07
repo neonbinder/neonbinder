@@ -49,6 +49,11 @@
  * means "this is a lead".
  */
 
+import {
+  NOTHING_ON_FILE,
+  formatPlayerDescription,
+} from "@/lib/players/player-description";
+
 /** One NB row already filed under this name — the server shape, verbatim. */
 export interface SameNameCandidate {
   playerId: string;
@@ -135,8 +140,14 @@ export function candidateDetail(
     // NEO-424 — next, ahead of the biography: a player from another sport is
     // a different KIND of candidate, and that is read before a birth year.
     candidateOtherSport(candidate, setSportValue),
-    candidate.birthYear !== undefined ? `b. ${candidate.birthYear}` : null,
-    candidate.careerSummary || null,
+    // NEO-462 — birth year and career through the one formatter
+    // `NearMatchPanel` also prints with, so a player reads the same on the
+    // pick step as in a Possible matches list. It returns "" when both are
+    // missing, which drops out here like any other absent part.
+    formatPlayerDescription({
+      birthYear: candidate.birthYear,
+      career: candidate.careerSummary,
+    }) || null,
   ].filter(Boolean);
   return parts.length > 0 ? parts.join(" · ") : null;
 }
@@ -289,7 +300,7 @@ export default function SameNamePlayerPanel({
                   // dialog's gray-900, under SC 1.4.3's 4.5:1 floor. The
                   // italic carries the demotion instead of the colour.
                   <span className="w-full truncate text-xs italic text-ink-3">
-                    Nothing on file yet
+                    {NOTHING_ON_FILE}
                   </span>
                 )}
               </button>

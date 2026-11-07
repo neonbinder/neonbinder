@@ -10,6 +10,7 @@ import type { Id } from "../../convex/_generated/dataModel";
 import { normalizeEntityName } from "../../convex/lib/entityNearMatch";
 // NEO-254: the server's scan cap, so the panel can say when it was hit.
 import { PLAYER_AMBIGUITY_SCAN_LIMIT } from "../../lib/players/name-limits";
+import { formatCareerLine } from "../../lib/players/player-description";
 // NEO-212 security review: an enrichment `wikidataId` arrives from
 // query.wikidata.org, so it is external input on its way into an `href`.
 // `wikidataUrl` returns null unless it is really a `Q<digits>` id — see
@@ -1305,12 +1306,13 @@ export default function EntityReviewWizard({
             name: m.name,
             // NEO-332 — `nearMatches` returns the birth year and the alias
             // that answered, so both ride through: on the pick step they are
-            // what tells the rows apart. No career line: that is only on the
-            // stored list. With nothing at all the panel says "Nothing on
-            // file yet", which is honest about what we can see from here.
+            // what tells the rows apart. NEO-462 — and now the career line
+            // too, formatted exactly as the stored list's is. With nothing at
+            // all the panel says "Nothing on file yet", which is honest about
+            // what we can see from here.
             ...(m.birthYear !== undefined ? { birthYear: m.birthYear } : {}),
             ...(m.matchedAlias !== undefined ? { matchedAlias: m.matchedAlias } : {}),
-            careerSummary: "",
+            careerSummary: formatCareerLine(m.career),
           }))
         : [];
   /**

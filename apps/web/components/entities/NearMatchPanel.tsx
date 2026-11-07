@@ -27,6 +27,12 @@
  */
 
 import { useId } from "react";
+import {
+  NOTHING_ON_FILE,
+  formatPlayerDescription,
+  speakPlayerDescription,
+  type CareerLine,
+} from "@/lib/players/player-description";
 
 /** One candidate row. Deliberately structural, not `Doc<"players">`: the panel
  *  is shared by the player and team wizards and must not import either shape. */
@@ -37,12 +43,24 @@ export interface NearMatch {
   /**
    * NEO-254, player rows only — the fact that separates two of them.
    *
-   * The panel itself never renders this; it exists so a CALLER can build a
-   * unique label for rows that share a name (see `pickLabel`). Optional and
-   * unused by the team and league screens, which keeps this interface
-   * structural rather than becoming `Doc<"players">` by the back door.
+   * NEO-462: a player row prints it on its second line ("b. 1990 · …") and
+   * speaks it in its accessible name, so three Walkers stop reading as one
+   * name three times. A caller may still build its own label from it via
+   * `pickLabel`. Optional and unused by the team and league screens, which
+   * keeps this interface structural rather than becoming `Doc<"players">` by
+   * the back door.
    */
   birthYear?: number;
+  /**
+   * NEO-462, player rows only — the teams he played for longest, already
+   * ranked and resolved to names by `players.nearMatches`.
+   *
+   * The twin of `birthYear` above: printed on the row's second line and spoken
+   * in its accessible name, absent on team and league rows. Typed from the
+   * shared pure formatter's shape rather than any table's, so this interface
+   * stays structural.
+   */
+  career?: CareerLine;
   /**
    * NEO-254, team rows only — the fact that separates two of THEM.
    *
@@ -140,6 +158,46 @@ export function NearMatchPanel({
   // count cannot vary with the list.
   const aliasNoteIdBase = useId();
 
+  // NEO-462 — every row's facts and accessible name, built over the WHOLE list
+  // before any row renders, because uniqueness is a property of the list, not
+  // of one row.
+  const rows = ordered.map((match) => {
+    // NEO-284 — an alias hit is exact by confidence but not by name, so it
+    // gets the alias note and NOT the same-name badge.
+    const viaAlias = Boolean(match.matchedAlias);
+    const sameName = match.confidence === "exact" && !viaAlias;
+    // Player rows only: a team or league row carries neither fact and keeps
+    // the single line and bare label it has always had.
+    const facts =
+      kind === "player"
+        ? { birthYear: match.birthYear, career: match.career }
+        : null;
+    const description = facts ? formatPlayerDescription(facts) : "";
+    const spoken = facts ? speakPlayerDescription(facts) : "";
+    // A row with nothing on file keeps the bare `{pickLabel}`: "Nothing on
+    // file yet" is the screen admitting a gap, not a fact about the player,
+    // and it would make every bare row's name longer without making any of
+    // them more distinct.
+    const base = `${pickLabel(match.name, match)}${spoken ? `, ${spoken}` : ""}`;
+    return { match, viaAlias, sameName, description, base };
+  });
+  // Two rows whose labels still collide — two bare Walkers, or two born the
+  // same year with no teams on file — are two controls with one accessible
+  // name. The position stands in, in the wording `SameNamePlayerPanel` uses:
+  // weak, but unique. A label nothing collides with is left alone.
+  const labelKey = (r: (typeof rows)[number]) => `${r.base}\u0000${r.sameName}`;
+  const labelCounts = new Map<string, number>();
+  for (const r of rows) {
+    labelCounts.set(labelKey(r), (labelCounts.get(labelKey(r)) ?? 0) + 1);
+  }
+  const ariaLabelFor = (r: (typeof rows)[number], index: number) => {
+    const ordinal =
+      (labelCounts.get(labelKey(r)) ?? 0) > 1
+        ? `, option ${index + 1} of ${count}`
+        : "";
+    return `${r.base}${ordinal}${r.sameName ? " — same name" : ""}`;
+  };
+
   return (
     // The live region is mounted from the FIRST render, empty, and stays
     // mounted when there is nothing to show. A live region inserted at the
@@ -160,14 +218,41 @@ export function NearMatchPanel({
         >
           <p className="text-sm font-medium text-neon-blue-text">Possible matches</p>
           <ul className="space-y-1" aria-label={`Possible ${kind} matches`}>
-            {ordered.map((match) => {
-              // NEO-284 — an alias hit is exact by confidence but not by
-              // name, so it gets the alias note and NOT the same-name badge.
-              const viaAlias = Boolean(match.matchedAlias);
-              const sameName = match.confidence === "exact" && !viaAlias;
+            {rows.map((row, index) => {
+              const { match, viaAlias, sameName, description } = row;
               const aliasNoteId = viaAlias
                 ? `${aliasNoteIdBase}-${match._id}`
                 : undefined;
+              // Line 1: the name and, beside it, why this row is here. The
+              // same nodes on every kind; only a player row adds line 2.
+              const nameLine = (
+                <>
+                  <span className="flex-1 truncate">{match.name}</span>
+                  {sameName && (
+                    <span
+                      aria-hidden="true"
+                      className="shrink-0 rounded bg-neon-blue/20 px-1.5 py-0.5 text-xs text-neon-blue-text"
+                    >
+                      same name
+                    </span>
+                  )}
+                  {viaAlias && (
+                    /* Secondary text, not a badge: it is the reason this row
+                       is here, stated in the row's own words. slate-400 on
+                       the panel ground clears 4.5:1; the alias is quoted so
+                       a name that happens to be a word ("Beach") still reads
+                       as a name. Capped at half the row and truncated — an
+                       alias can be as long as a team name — so the NAME,
+                       which is what the button is, always keeps the floor. */
+                    <span
+                      id={aliasNoteId}
+                      className="min-w-0 max-w-[50%] truncate text-xs text-ink-3"
+                    >
+                      also known as “{match.matchedAlias}”
+                    </span>
+                  )}
+                </>
+              );
               return (
                 <li key={match._id}>
                   <button
@@ -190,40 +275,54 @@ export function NearMatchPanel({
                     // visible to sighted operators and invisible to everyone
                     // else (WCAG 2.2 SC 1.3.1). The badge itself is aria-hidden
                     // so it is not announced twice.
-                    aria-label={`${pickLabel(match.name, match)}${
-                      sameName ? " — same name" : ""
-                    }`}
+                    //
+                    // NEO-462: a player row's facts ride in too ("Link to
+                    // Walker, b. 1990, Dodgers 2014–19, …"), spoken with
+                    // commas where the screen shows middots, and an ordinal
+                    // only when two rows would still read the same.
+                    aria-label={ariaLabelFor(row, index)}
                     // NEO-284: the alias note reaches assistive tech as the
-                    // button's DESCRIPTION (announced after the name), which
-                    // keeps the name itself at exactly `Link to {name}`.
+                    // button's DESCRIPTION (announced after the name), so the
+                    // name never has to carry it.
                     aria-describedby={aliasNoteId}
                     // min-h-6 keeps the row on the WCAG 2.2 SC 2.5.8 24px floor
                     // even when the name wraps to a single short line.
-                    className="flex min-h-6 w-full items-center gap-2 rounded px-2 py-1 text-left text-sm text-ink-2 transition-colors hover:bg-neon-blue/10 focus-outline"
+                    className={
+                      kind === "player"
+                        ? "flex min-h-6 w-full flex-col items-stretch gap-0.5 rounded px-2 py-1 text-left text-sm text-ink-2 transition-colors hover:bg-neon-blue/10 focus-outline"
+                        : "flex min-h-6 w-full items-center gap-2 rounded px-2 py-1 text-left text-sm text-ink-2 transition-colors hover:bg-neon-blue/10 focus-outline"
+                    }
                   >
-                    <span className="flex-1 truncate">{match.name}</span>
-                    {sameName && (
-                      <span
-                        aria-hidden="true"
-                        className="shrink-0 rounded bg-neon-blue/20 px-1.5 py-0.5 text-xs text-neon-blue-text"
-                      >
-                        same name
-                      </span>
-                    )}
-                    {viaAlias && (
-                      /* Secondary text, not a badge: it is the reason this row
-                         is here, stated in the row's own words. slate-400 on
-                         the panel ground clears 4.5:1; the alias is quoted so
-                         a name that happens to be a word ("Beach") still reads
-                         as a name. Capped at half the row and truncated — an
-                         alias can be as long as a team name — so the NAME,
-                         which is what the button is, always keeps the floor. */
-                      <span
-                        id={aliasNoteId}
-                        className="min-w-0 max-w-[50%] truncate text-xs text-ink-3"
-                      >
-                        also known as “{match.matchedAlias}”
-                      </span>
+                    {kind === "player" ? (
+                      <>
+                        <span className="flex w-full items-center gap-2">
+                          {nameLine}
+                        </span>
+                        {/*
+                          NEO-462 — line 2, who he is: birth year, then the
+                          teams he spent longest with. Quieter than the name
+                          (ink-3, xs) because it answers the follow-up
+                          question, not the first one. One line from `sm` up
+                          so a long list of Walkers stays scannable; below it
+                          the line wraps, because on a phone the truncated
+                          tail is the fact that tells two of them apart.
+                        */}
+                        {description ? (
+                          <span className="break-words text-xs text-ink-3 sm:truncate">
+                            {description}
+                          </span>
+                        ) : (
+                          // The italic carries the demotion, not a dimmer
+                          // colour: ink-3 is already the quietest tone that
+                          // clears 4.5:1 on the panel. The same wording and
+                          // treatment as the pick step's empty row.
+                          <span className="text-xs italic text-ink-3">
+                            {NOTHING_ON_FILE}
+                          </span>
+                        )}
+                      </>
+                    ) : (
+                      nameLine
                     )}
                   </button>
                 </li>
