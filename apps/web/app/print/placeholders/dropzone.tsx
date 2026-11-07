@@ -65,11 +65,12 @@ export function Dropzone({
   inputRef?: Ref<HTMLInputElement>;
   /** Drawn inside the zone's frame, under the label. */
   tray?: ReactNode;
-  /** The tray has something in it, so the zone's bottom edge belongs to the tray. */
+  /** The tray has something in it: the zone's frame runs on round it, and its bottom edge is the tray's. */
   trayFilled?: boolean;
 }) {
   const inputId = useId();
   const headlineId = useId();
+  const hintId = useId();
   const [dragging, setDragging] = useState(false);
   // Drag events fire for every child element, so a boolean flips off the moment
   // the pointer crosses an inner node. Counting enter/leave is what keeps the
@@ -131,7 +132,7 @@ export function Dropzone({
           <span className="text-sm text-ink-3">
             or <span className="text-neon-blue-text underline">browse your files</span>
           </span>
-          <span className="text-xs text-ink-3">
+          <span id={hint ? hintId : undefined} className="text-xs text-ink-3">
             {hint ??
               "JPEG or PNG, or a single zip. Uploading starts as soon as you choose — keep them in scan order (front, back, front, back), because that order is what pairs them."}
           </span>
@@ -142,7 +143,7 @@ export function Dropzone({
             accept=".zip,image/jpeg,image/png"
             multiple
             aria-disabled={disabled || undefined}
-            aria-describedby={[disabled ? headlineId : null, describedBy].filter(Boolean).join(" ") || undefined}
+            aria-describedby={[disabled ? headlineId : null, hint ? hintId : null, describedBy].filter(Boolean).join(" ") || undefined}
             // The visible label's full text (title + hint + the instructional
             // paragraph) would otherwise BE the accessible name — every word in
             // the <label> counts, so without this a screen reader announces all
@@ -164,7 +165,20 @@ export function Dropzone({
             }}
           />
         </label>
-        {tray}
+        {/* One frame with the label above it, lit with it during a drag. Always this
+            div: a caller's tray keeps a live region that must not remount. */}
+        <div
+          className={
+            trayFilled
+              ? [
+                  "rounded-b-xl border-2 border-t-0 border-dashed transition-colors",
+                  dragging ? "border-neon-purple bg-neon-purple/10" : "border-rule-strong",
+                ].join(" ")
+              : ""
+          }
+        >
+          {tray}
+        </div>
       </div>
 
       {/* Always mounted so the message is announced when it appears, and keyed

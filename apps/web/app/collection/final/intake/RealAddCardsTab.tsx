@@ -586,6 +586,18 @@ function AddCardsScreen({ heldKey }: { heldKey: string }) {
     setHadMin(minSet);
     if (hadMin && lock.needsPrice) setGateNews(gateLine);
   }
+  /**
+   * A set pick that leaves the photos waiting on a price moves focus to Min price,
+   * whose note says so. The tray's region is muted from the pick until then, or it
+   * talks over the field ("2 photos waiting on a price"). A pick that opens nothing
+   * has the tray say it again instead, remounting its words so the region speaks.
+   */
+  const [trayQuiet, setTrayQuiet] = useState(false);
+  const [trayEpoch, setTrayEpoch] = useState(0);
+  const sayTrayAgain = () => {
+    setTrayQuiet(false);
+    setTrayEpoch((n) => n + 1);
+  };
   const expectOpen = (next: NonNullable<typeof pendingOpen.current>) => {
     pendingOpen.current = next;
     setGateNews("");
@@ -599,7 +611,11 @@ function AddCardsScreen({ heldKey }: { heldKey: string }) {
     if (pending.homeId !== undefined && pending.homeId !== targetHome) return;
     if (!lock.loaded) return;
     pendingOpen.current = null;
-    if (!lock.needsPrice) return;
+    if (!lock.needsPrice) {
+      // Nothing opens, so nothing else says what the pick did to the waiting photos.
+      if (trayQuiet) sayTrayAgain();
+      return;
+    }
     setPanel((current) => current ?? "defaults");
     setOpened({ via: pending.via });
   });
@@ -616,6 +632,8 @@ function AddCardsScreen({ heldKey }: { heldKey: string }) {
       // A home change opens the panel but never moves focus (WCAG 3.2.2).
       if (opened.via === "pick" && free && priceRef.current) priceRef.current.focus();
       else setGateNews(latest.current.gateLine);
+      // Either way something has said it: the field and its note, or the status line.
+      setTrayQuiet(false);
     });
     return () => cancelAnimationFrame(frame);
   }, [opened]);
@@ -658,9 +676,11 @@ function AddCardsScreen({ heldKey }: { heldKey: string }) {
           setVariant(pick);
           if (!pick) return;
           expectOpen({ via: "pick", variantId: pick.variantId });
+          setTrayQuiet(true);
           if (run) {
             setRunVariant({ runId: run._id, variantId: pick.variantId }).catch((e: unknown) => {
               if (pendingOpen.current?.variantId === pick.variantId) pendingOpen.current = null;
+              sayTrayAgain();
               notify(writeErrorMessage(e));
             });
           }
@@ -707,6 +727,7 @@ function AddCardsScreen({ heldKey }: { heldKey: string }) {
             priceRef={priceRef}
             conditionRef={conditionRef}
             priceDescribedBy={lock.locked ? gateNoteId : undefined}
+            priceMissing={lock.needsPrice}
             commonPrice={
               targetVariantId
                 ? {
@@ -749,6 +770,8 @@ function AddCardsScreen({ heldKey }: { heldKey: string }) {
     <HeldTray
       id={trayId}
       line={trayLine}
+      quiet={trayQuiet}
+      epoch={trayEpoch}
       alone={jobClosed}
       onFocusGoing={flagTrayFocus}
       onRemove={() => {
@@ -886,6 +909,8 @@ function pileWords(files: readonly File[]): string {
 function HeldTray({
   id,
   line,
+  quiet = false,
+  epoch = 0,
   alone = false,
   onFocusGoing,
   onRemove,
@@ -893,6 +918,10 @@ function HeldTray({
 }: {
   id: string;
   line: string;
+  /** Change the words without saying them: focus is on its way to what explains them. */
+  quiet?: boolean;
+  /** A change remounts the words, so the region says them again. */
+  epoch?: number;
   /** No drop zone above it: the run's job has closed. */
   alone?: boolean;
   /** A button is leaving with focus on it. Called while it is still in the page. */
@@ -914,16 +943,19 @@ function HeldTray({
   );
   return (
     <div
+      // Under a drop zone, the zone draws the frame, so a drag lights the tray with it.
       className={
         filled
-          ? `flex flex-wrap items-center gap-x-3 gap-y-2 border-2 border-dashed border-rule-strong px-4 py-2 text-sm text-ink-2 ${alone ? "rounded-xl" : "rounded-b-xl border-t-0"}`
+          ? `flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-2 text-sm text-ink-2 ${alone ? "rounded-xl border-2 border-dashed border-rule-strong" : ""}`
           : ""
       }
     >
       {/* The id is on the words, not the region: `aria-describedby` reads a node's own
           name first, so the zone would be described as "Waiting photos". */}
-      <p role="status" aria-live="polite" aria-label="Waiting photos" className="m-0 min-w-0 flex-1">
-        <span id={id}>{line}</span>
+      <p role="status" aria-live={quiet ? "off" : "polite"} aria-label="Waiting photos" className="m-0 min-w-0 flex-1">
+        <span key={epoch} id={id}>
+          {line}
+        </span>
       </p>
       {filled && onRetry && (
         <NeonButton
@@ -1020,6 +1052,7 @@ function DefaultsFields({
   priceRef,
   conditionRef,
   priceDescribedBy,
+  priceMissing = false,
   commonPrice,
 }: {
   value: RunDefaults;
@@ -1032,6 +1065,8 @@ function DefaultsFields({
   conditionRef?: Ref<HTMLSelectElement>;
   /** The listing note, when it shows: the field is what it's asking for. */
   priceDescribedBy?: string;
+  /** No Min price and no common price: blank would not sell at all. */
+  priceMissing?: boolean;
   /** The set the Min price could become the common price of; null with no set known. */
   commonPrice: CommonPriceTarget | null;
 }) {
@@ -1150,18 +1185,26 @@ function DefaultsFields({
               Type a price like 1.50
             </span>
           )}
-          <span id={priceHelpId}>Leave it blank to sell at your common price.</span>
-          {commonPrice && (
-            <SaveAsCommonPrice
-              target={commonPrice}
-              text={priceText}
-              onSaved={async () => {
-                await write({ minPriceCents: undefined });
-                setPriceText("");
-                setPriceBad(false);
-              }}
-            />
-          )}
+          <span id={priceHelpId}>
+            {priceMissing && commonPrice
+              ? `Or save it as your common price for ${commonPrice.title}.`
+              : "Leave it blank to sell at your common price."}
+          </span>
+        </div>
+      )}
+      {/* Its own full row, right under the price: "Replace $12.50 common price" doesn't
+          fit a third of the panel. Next in the DOM, so Tab goes Min price, then this. */}
+      {showPrice && commonPrice && (
+        <div className="flex flex-col gap-1 text-xs text-ink-3 sm:col-span-3">
+          <SaveAsCommonPrice
+            target={commonPrice}
+            text={priceText}
+            onSaved={async () => {
+              await write({ minPriceCents: undefined });
+              setPriceText("");
+              setPriceBad(false);
+            }}
+          />
         </div>
       )}
       <label className="flex flex-col gap-1 text-xs text-ink-3">
@@ -1949,7 +1992,10 @@ function Lane({
           aria-label={`${label} list`}
           tabIndex={0}
           onFocus={() => setFocused(true)}
-          onBlur={() => setFocused(false)}
+          onBlur={(e) => {
+            // Blur bubbles from every tile; only leaving the lane counts.
+            if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setFocused(false);
+          }}
           className="max-h-[34rem] overflow-auto rounded-sm focus-outline"
         >
           {list}

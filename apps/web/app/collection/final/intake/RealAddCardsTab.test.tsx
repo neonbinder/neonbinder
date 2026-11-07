@@ -639,11 +639,14 @@ describe("RealAddCardsTab listing gate (NEO-370, NEO-452)", () => {
   it("a Min price lifts the note and the Defaults button says it", async () => {
     newRunIntoBox(HELD);
     await pickSet();
-    expect(document.getElementById(describedByIds(minPrice())[0])?.textContent).toBe("Leave it blank to sell at your common price.");
+    const help = () => document.getElementById(describedByIds(minPrice())[0])?.textContent;
+    // Blank sells at no price while there is none: the help says the other way out.
+    expect(help()).toBe(`Or save it as your common price for ${TITLE}.`);
     fireEvent.change(minPrice(), { target: { value: "0.50" } });
     fireEvent.blur(minPrice());
     expect(screen.queryByText(gateLine)).toBeNull();
     expect(defaultsButton().textContent).toBe("Defaults: Near Mint, $0.50");
+    expect(help()).toBe("Leave it blank to sell at your common price.");
   });
 
   it("Min price reads $ and commas, commits on Enter, and shows the cents back", async () => {
@@ -739,6 +742,25 @@ describe("RealAddCardsTab holds dropped photos until the run is ready (NEO-452)"
     window.dispatchEvent(event);
     return event.defaultPrevented;
   };
+
+  it("a pick that leaves them waiting on a price mutes the tray while focus goes to Min price, then unmutes it", async () => {
+    newRunIntoBox(HELD);
+    await dropOnZone([photoOf("a.jpg")]);
+    const region = screen.getByRole("status", { name: "Waiting photos" });
+    expect(region.getAttribute("aria-live")).toBe("polite");
+    // What the region was set to each time its words changed.
+    const heard: string[] = [];
+    const watch = new MutationObserver(() => heard.push(`${region.getAttribute("aria-live")}: ${region.textContent}`));
+    watch.observe(region, { childList: true, subtree: true, characterData: true });
+    await pickNow();
+    await frames();
+    watch.disconnect();
+    expect(heard.length).toBeGreaterThan(0);
+    expect(heard.every((h) => h.startsWith("off: "))).toBe(true);
+    expect(document.activeElement).toBe(minPrice());
+    expect(region.getAttribute("aria-live")).toBe("polite");
+    expect(region.textContent).toBe("1 photo waiting on a price.");
+  });
 
   it("with no set, photos wait in the tray: the words, the hint, the description, the unload prompt, nothing sent", async () => {
     newRunIntoBox(HELD);
@@ -2032,6 +2054,18 @@ describe("a lane that scrolls takes the keyboard (NEO-452)", () => {
     expect(list()!.querySelector("ul")).toBeTruthy();
     // Crossing the threshold doesn't remount what is in the lane.
     expect(screen.getByText("scan-0.jpg")).toBe(tile);
+  });
+
+  it("focus moving between things inside the lane doesn't count as leaving it", () => {
+    const runId = freshRunId();
+    setRun(runId, { images: reading(7) });
+    const view = render(<Tab runId={runId} />);
+    act(() => list()!.focus());
+    const inside = list()!.querySelector("li")!;
+    fireEvent.blur(list()!, { relatedTarget: inside });
+    setRun(runId, { images: reading(2) });
+    view.rerender(<Tab runId={runId} />);
+    expect(list()).toBeTruthy();
   });
 
   it("keeps the Tab stop under whoever is on it while the lane drains, and lets go after", () => {

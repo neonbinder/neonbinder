@@ -53,7 +53,10 @@ describe("Dropzone, always open (NEO-452)", () => {
     setup({ hint: "Drop them whenever. They wait here.", describedBy: "why tray" });
     expect(screen.getByText("Drop them whenever. They wait here.")).toBeTruthy();
     expect(screen.queryByText(DEFAULT_HINT)).toBeNull();
-    expect(input().getAttribute("aria-describedby")).toBe("why tray");
+    // The hint first (the input is named by its own label, so it would never hear it), then the caller's ids.
+    const [hintId, ...rest] = (input().getAttribute("aria-describedby") ?? "").split(" ");
+    expect(document.getElementById(hintId)?.textContent).toBe("Drop them whenever. They wait here.");
+    expect(rest).toEqual(["why", "tray"]);
     // The name and the headline are the same with a hint as without.
     expect(screen.getByText("Drag your card photos here")).toBeTruthy();
     expect(input().getAttribute("aria-disabled")).toBeNull();
