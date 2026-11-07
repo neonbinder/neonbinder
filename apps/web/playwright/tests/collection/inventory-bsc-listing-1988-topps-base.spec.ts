@@ -20,6 +20,14 @@
 //      the checklist's hold. ("Done adding photos" also shows "See what's
 //      syncing", but that path needs a real upload through preprocess and
 //      Vision, so it is covered by unit tests only.)
+//   2c. NEO-432: a photo on a BINDER copy never queues a card. With listing on,
+//      they give a third card a copy in their Main binder (Collection), attach a
+//      front photo through the copy drawer, swap it to the back and remove it,
+//      then remove the copy. Those three photo changes would each queue the
+//      card on a listing account if the copy's home were a listed box; a binder
+//      is never listed, so step 3's queue holds exactly the box's two cards and
+//      NOT this one (asserted by name). The unit tests prove the gate
+//      (`copyPhotos.test.ts`); this proves it live, in the queue a collector reads.
 //   3. They put one copy each of the first two 1988 Topps Base cards in their
 //      box; Sync status queues the two cards; they press the checklist's Sync,
 //      follow "See what's syncing" to Sync status (Back returns), and Sync
@@ -41,12 +49,41 @@
 //
 // Waits. A Sync is a live BSC round trip of serial sheet reads, a PUT and a
 // read-back, and Sync status ticks each of those off as it lands (a ledger of
-// steps: "Read Excellent, done"). So the spec walks the run (`followRunToEnd`):
+// steps: "Read Excellent, done"). So the spec walks the run (`followRunToRest`):
 // every wait is the standard 7 s for exactly ONE step to land, never for the
 // whole trip or for several steps at once (GUIDE hard rule 3; Jason,
-// 2026-11-02), then for the set's result line. The only wait above 7 s is the
-// seed hop's sign-in when the sign-in is saved again (`saveBscSignIn`). No
-// timer and no cron path: the 15-minute cron is deliberately not exercised.
+// 2026-11-02), then for the set's result line. The only waits above 7 s are the
+// signed-off ceiling on a BSC read (`bscReadCeiling`) and the seed hop's sign-in
+// when the sign-in is saved again (`saveBscSignIn`).
+//
+// Two triggers (NEO-433). A set's sync is set going by the press of the
+// checklist's Sync and by the 15-minute sales poll, and the poll can list a
+// stocked box before the press lands. Both orders are real product behaviour,
+// so the spec neither forces the press to win nor turns the poll off; it keeps
+// the slow axe checks out of the window between its last write and the press,
+// and holds either order to a hard end state:
+//   - press first: the cards are queued until the press, the press sends them
+//     (the ledger holds a read, the send, a double-check), the row reads
+//     "2 listed, 2 updated" (or "2 listed" when BSC already showed them);
+//   - poll first: the Sync status row already reads "2 listed" with its folded
+//     "Gathering data" item, and the press is a full read that sends nothing:
+//     the row reads "2 listed" and the ledger is exactly "Gathering data" then
+//     "Nothing new to send" (a run that sends nothing still holds a check step,
+//     "Compare with your boxes", which the finished row folds into the first).
+// A run that sent nothing is told apart by the absence of the send step, and
+// asserted as such; a missing ledger is red in either order. The in-person
+// press has the same two orders (a poll that takes the cards off first).
+//
+// A press is proven to have RUN before either order is read. The row a poll
+// leaves behind looks like a press's own, and the page says "Nothing syncing
+// right now." between two runs, so neither the row nor the idle line is evidence.
+// The press's queued cards are: the press writes them (its toast comes after),
+// and a run's finish clears them in the same write that records its result, but
+// only if the run claimed them (a run under way when the press landed leaves
+// them, and the set goes round again). So the spec walks step by step until the
+// queue holds no card of the set and the platform is idle (`followRunToRest`),
+// and only then reads the row and picks the order: a press whose run never
+// claims leaves its cards queued and goes red in both orders.
 //
 // The ledger's steps (convex/listingDrain.ts `bscSheetSteps`; labels in
 // inventory/listing/copy.ts): one "Read <conditions>" per BSC sheet, "Send
@@ -73,13 +110,16 @@
 // R7/R7a. 1988 Topps Baseball is a registered real set (SET-REGISTRY.md): this
 // spec is the SOLE writer of its BSC quantities and writes no card, player,
 // team or variant of the set. Its NB writes are the signed-in user's own rows
-// (the sign-in removed and saved again, a minted box, two box copies, the common price, and every
+// (the sign-in removed and saved again, a minted box, two box copies, one
+// binder copy with a photo that is removed again, the common price, and every
 // other box set to in-person, which is left that way). The
 // quantities end at 0 on BSC and the sign-in is saved again, on a pass by the
 // steps and the hook, on a failure by the hook on a second page (so the
 // failure screenshot keeps the page that failed).
 //
 // Minted box name: a single token from `env.ATTEMPT_TOKEN`.
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import type { Locator, Page } from "@playwright/test";
 import {
   TOPPS_1988,
@@ -91,13 +131,18 @@ import {
   clearChecklistCommonPrice,
   drillToCollectorBase,
   emptyBoxCards,
-  followRunToEnd,
+  expectNothingSent,
+  followRunToRest,
   goViaShell,
   inventoryTabs,
   nameOf,
+  ordinaryBaseRows,
   putOtherBoxesInPerson,
   quantityField,
+  queueSettled,
+  shortNameOf,
   syncRun,
+  walkForCleanup,
 } from "../../support/collection";
 import { removeBscSignIn, saveBscSignIn } from "../../support/credentials";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
@@ -110,22 +155,82 @@ const TITLE = baseChecklistTitle(TOPPS_1988);
 const SET_LABEL = `${TOPPS_1988.year} ${TOPPS_1988.set}`;
 const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
+/** A committed intake scan (about 1000 px wide), attached through the copy drawer's Photos box. It is never listed: its copy lives in a binder. */
+const BINDER_PHOTO = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "fixtures", "intake", "05-bell-front.jpg");
+
+
+/**
+ * A BSC read step's longer budget, a ceiling Jason signed off on 2026-11-05
+ * (GUIDE hard rule 3). "Read" and "Double-check" are each one call to BSC's
+ * seller sheet, so the step lasts as long as that call. Measured: usually 4-5 s,
+ * 6.98 s in the CI run that went red with the step landing just past 7 s, up to
+ * 9.6 s elsewhere; our own work in the step is well under a second. Every other
+ * step keeps 7 s, "Send changes" included. Void it if a read step gains any work
+ * of ours, or holds more than one call.
+ */
+const bscReadCeiling = (label: string): number | undefined => (/^(Read|Double-check) /.test(label) ? 15_000 : undefined);
+
+/**
+ * NEO-432. On the Collection Checklists tab with the Main binder picked: click
+ * the card's row, which opens the drawer already editing its one line, and
+ * return the drawer's pieces (the form's Photos box included). `short` is the
+ * row's `#N First Last`.
+ */
+async function openBinderLine(checklist: Locator, short: string) {
+  const page = checklist.page();
+  await checklist.getByText(`#${/^#(\S+)/.exec(short)![1]}`, { exact: true }).click();
+  const drawer = page.getByRole("dialog", { name: new RegExp(`^${escapeRegExp(SET_LABEL)} ${escapeRegExp(short)}`) });
+  const yourCopies = drawer.getByRole("region", { name: `Your copies of ${short}`, exact: true });
+  const form = yourCopies.getByRole("form", { name: "Edit Raw, Excellent", exact: true });
+  await expect(form).toBeVisible();
+  return { drawer, yourCopies, form, panel: form.getByRole("region", { name: "Photos", exact: true }) };
+}
+
+/** NEO-432: remove the card's one binder copy through its open drawer (Escape closes the form first, as a collector does), then close the drawer. */
+async function removeBinderLine(checklist: Locator, short: string, line: Awaited<ReturnType<typeof openBinderLine>>): Promise<void> {
+  const { drawer, yourCopies, form } = line;
+  await form.getByRole("textbox", { name: "Notes" }).focus();
+  await checklist.page().keyboard.press("Escape");
+  await expect(form).toBeHidden();
+  await yourCopies.getByRole("button", { name: `Remove ${short}, Raw, Excellent`, exact: true }).click();
+  await expect(yourCopies.getByText("None yet. Fill in what you know below and add it.")).toBeVisible();
+  await drawer.getByRole("button", { name: "Close card detail" }).click();
+  await expect(drawer).toBeHidden();
+}
+
 /**
  * The finished set row's "Last sync steps" list, folded: "Gathering data" (all
- * the sheet reads), then the update steps in run order. The positive asserts
- * come first, so the negative ones below cannot pass on a missing list.
+ * the sheet reads, or the check of a run that sent nothing), then the update
+ * steps in run order. The positive asserts come first, so the negative ones
+ * below cannot pass on a missing list. `sent` false is a run that sent nothing
+ * (NEO-433, the poll listed first): its ledger is exactly "Gathering data" then
+ * "Nothing new to send" and has no send; a sending run has no such line.
  */
-async function expectFoldedLastRun(run: ReturnType<typeof syncRun>): Promise<void> {
+async function expectFoldedLastRun(run: ReturnType<typeof syncRun>, sent = true): Promise<void> {
   await expect(run.last).toBeVisible();
-  await expect(run.last.getByRole("listitem")).toContainText([
-    /^Gathering data, done$/,
-    new RegExp(`^${escapeRegExp(SEND)}, done$`),
-  ]);
+  if (sent) {
+    await expect(run.last.getByRole("listitem")).toContainText([
+      /^Gathering data, done$/,
+      new RegExp(`^${escapeRegExp(SEND)}, done$`),
+    ]);
+    await expect(run.nothingNew()).toHaveCount(0);
+  } else {
+    await expectNothingSent(run);
+  }
   await expect(run.last.getByRole("listitem", { name: /^(Read|Double-check) / })).toHaveCount(0);
 }
 
 /** What the failing run needs undone, filled as the flow goes. */
-const written: { box?: string; cards?: [string, string]; started?: boolean; removed?: boolean; stopped?: boolean; priced?: boolean } = {};
+const written: {
+  box?: string;
+  cards?: [string, string];
+  /** NEO-432: the card whose Main-binder copy still stands (cleared when the body removed it). */
+  binderCard?: string;
+  started?: boolean;
+  removed?: boolean;
+  stopped?: boolean;
+  priced?: boolean;
+} = {};
 
 /** The key that leaves a quantity field: Tab on a desktop, Enter on a phone. */
 const leaveKey = (isMobile: boolean) => (isMobile ? "Enter" : "Tab");
@@ -199,47 +304,66 @@ const emptyBox = (page: Page, box: string, cards: readonly string[], isMobile: b
 test.afterEach(async ({ context, isMobile }, testInfo) => {
   const failed = testInfo.status !== testInfo.expectedStatus;
   const clean = await context.newPage();
+  let cleanupFailure: unknown;
   try {
     try {
       // The cards are NB's zero from here on: quantities 0 in the box, then a
       // full Sync of the set, and the result waited for. A pass already proved it.
       if (failed && written.started && written.box && written.cards) {
-        // A run already under way reads the set as it was: let it finish first,
-        // so the Sync below is the one that sees the zeros.
-        await clean.goto("/inventory?tab=sync");
-        await expect(clean.getByRole("heading", { level: 1, name: "Inventory" })).toBeVisible({ timeout: LAUNCH_GATE });
-        // Followed step by step, each within the standard budget (the run's
-        // ledger). Scoped to the BuySportsCards section: Sync status has an
-        // eBay section too (NEO-415), and it says the same.
-        const before = syncStatus(clean);
-        await followRunToEnd(before.platform, syncRun(before.platform, SET_LABEL, BSC));
+        // No waiting on a run already under way: it can stall on a live read, and
+        // the box must still empty. A press during a run is taken, and its queued
+        // cards outlive that run, so the run that sees the zeros still comes.
         await clean.goto("/inventory?tab=checklists");
+        await expect(clean.getByRole("heading", { level: 1, name: "Inventory" })).toBeVisible({ timeout: LAUNCH_GATE });
         const checklist = await emptyBox(clean, written.box, written.cards, isMobile, "fresh");
         await checklist.getByRole("button", { name: `Sync ${TITLE}`, exact: true }).click();
+        // The press was taken before we leave the page: a missing toast means the
+        // zeroing press was answered "just synced", so no run is coming.
+        await expect(
+          clean.getByRole("status").filter({ hasText: `Syncing ${TITLE} now. Watch it on Sync status.` }),
+          'no "Syncing ... now" toast: the zeroing press was answered "just synced", so no run is coming',
+        ).toBeVisible();
         await clean.goto("/inventory?tab=sync");
-        // The zeroing run, followed step by step as above, then its result line.
+        // The zeroing run walked to rest, then its result line. This order matters:
+        // removing the sign-in below drops the queue without withdrawing anything,
+        // so a zero not sent by then stays unsent, and the hook says so at its end.
         const zeroing = syncStatus(clean);
         const zeroingRun = syncRun(zeroing.platform, SET_LABEL, BSC);
-        const zeroed = zeroing.row.getByText(/^0 listed/);
-        await expect(zeroingRun.underWay(zeroed)).toBeVisible();
-        await followRunToEnd(zeroing.platform, zeroingRun);
-        await expect(zeroed).toBeVisible();
+        cleanupFailure = await walkForCleanup(async () => {
+          await followRunToRest(zeroing.platform, zeroingRun, queueSettled(zeroing.platform, SET_LABEL), bscReadCeiling);
+          await expect(zeroing.row.getByText(/^0 listed/)).toBeVisible();
+        });
       }
     } finally {
       try {
-        // A common price the run set and did not clear would hide the gate's
-        // hold from the next run: clear it (after the zeroing above, which
-        // needs it still set).
-        if (failed && written.priced) {
-          await clean.goto("/inventory?tab=checklists");
-          await expect(clean.getByRole("heading", { level: 1, name: "Inventory" })).toBeVisible({ timeout: LAUNCH_GATE });
-          const checklist = await drillToCollectorBase(clean, TOPPS_1988);
-          await clearCommonPrice(clean, checklist, "0.25");
-          written.priced = false;
+        // NEO-432: the Main-binder copy the body made and did not get to remove.
+        if (failed && written.binderCard) {
+          await clean.goto("/collection?tab=checklists");
+          await expect(clean.getByRole("heading", { level: 1, name: "Collection" })).toBeVisible({ timeout: LAUNCH_GATE });
+          const binderList = await drillToCollectorBase(clean, TOPPS_1988);
+          await binderList.getByRole("combobox", { name: "Binder" }).selectOption({ label: "Main" });
+          await removeBinderLine(binderList, written.binderCard, await openBinderLine(binderList, written.binderCard));
+          written.binderCard = undefined;
         }
       } finally {
-        // The body already stopped listing on a pass; otherwise it stops here.
-        if (!written.stopped) await stopListing(clean, written.removed);
+        try {
+          // A common price the run set and did not clear would hide the gate's
+          // hold from the next run: clear it (after the zeroing above, which
+          // needs it still set).
+          if (failed && written.priced) {
+            await clean.goto("/inventory?tab=checklists");
+            await expect(clean.getByRole("heading", { level: 1, name: "Inventory" })).toBeVisible({ timeout: LAUNCH_GATE });
+            const checklist = await drillToCollectorBase(clean, TOPPS_1988);
+            await clearCommonPrice(clean, checklist, "0.25");
+            written.priced = false;
+          }
+        } finally {
+          // The body already stopped listing on a pass; otherwise it stops here.
+          if (!written.stopped) await stopListing(clean, written.removed);
+          if (cleanupFailure) {
+            throw new Error(`The hook's zeros may not have reached ${BSC}: ${String(cleanupFailure)}`);
+          }
+        }
       }
     }
   } finally {
@@ -254,6 +378,7 @@ test(
     // The hook's record of how far this run got starts empty.
     written.box = undefined;
     written.cards = undefined;
+    written.binderCard = undefined;
     written.started = false;
     written.removed = false;
     written.stopped = false;
@@ -349,6 +474,42 @@ test(
     await expect(listing.getByText(/Removing your BuySportsCards sign-in stops listing and sales\./)).toBeVisible();
     await expectAccessible(page, { label: "Profile, BuySportsCards credentials, listing since" });
 
+    // --- 2c. NEO-432: a photo on a BINDER copy never queues a card ---------------
+    // Listing is on now, so a photo change on a copy in a LISTED box would queue
+    // its card. A third card gets a copy in the Main binder (a binder never
+    // lists) and takes a front photo, a swap and a removal: the three photo
+    // changes. Step 3 then reads the queue and finds only the box's two cards.
+    // (The row choice is the LAST ordinary row of the Collection checklist, so
+    // it cannot be one of the box's cards, which are the first two rows of the
+    // Inventory checklist; the guard below re-checks once those are read.)
+    await goViaShell(page, isMobile, "Collection");
+    await expect(page.getByRole("heading", { level: 1, name: "Collection" })).toBeVisible();
+    await page.getByRole("navigation", { name: "Collection sections" }).getByRole("link", { name: "Checklists", exact: true }).click();
+    await expect(page).toHaveURL(/[?&]tab=checklists/);
+    const binderList = await drillToCollectorBase(page, TOPPS_1988);
+    const { short: binderCard } = await shortNameOf(ordinaryBaseRows(binderList).last());
+    await binderList.getByRole("combobox", { name: "Binder" }).selectOption({ label: "Main" });
+    const haveBinderOff = binderList.getByRole("button", { name: `Have ${binderCard}`, exact: true, pressed: false });
+    await expect(haveBinderOff).not.toHaveAttribute("aria-disabled", "true");
+    await haveBinderOff.click();
+    await expect(binderList.getByRole("button", { name: `Have ${binderCard}, Raw, Excellent`, exact: true, pressed: true })).toBeVisible();
+    written.binderCard = binderCard;
+    const binderLine = await openBinderLine(binderList, binderCard);
+    const binderPhotos = binderLine.panel;
+    await expect(binderPhotos.getByText("No front photo yet")).toBeAttached();
+    await binderPhotos.getByLabel("Front photo file", { exact: true }).setInputFiles(BINDER_PHOTO);
+    await expect(binderPhotos.getByRole("status")).toHaveText("Front photo saved.");
+    await expectAccessible(page, { within: binderLine.drawer, label: "Card drawer, binder copy with a photo" });
+    await binderPhotos.getByRole("button", { name: "Swap front and back", exact: true }).click();
+    await expect(binderPhotos.getByRole("status")).toHaveText("Front and back swapped.");
+    await expect(binderPhotos.getByText("No front photo yet")).toBeAttached();
+    await binderPhotos.getByRole("button", { name: "Remove back", exact: true }).click();
+    await expect(binderPhotos.getByRole("status")).toHaveText("Back photo removed.");
+    await expect(binderPhotos.getByText("No back photo yet")).toBeAttached();
+    await removeBinderLine(binderList, binderCard, binderLine);
+    written.binderCard = undefined;
+    await expect(binderList.getByRole("button", { name: `Have ${binderCard}`, exact: true, pressed: false })).toBeVisible();
+
     // --- Inventory: Sales has no switch ----------------------------------------
     await goViaShell(page, isMobile, "Inventory");
     await expect(page.getByRole("heading", { level: 1, name: "Inventory" })).toBeVisible();
@@ -381,6 +542,7 @@ test(
     const a = await shortOf(0);
     const b = await shortOf(1);
     expect(a, "two different cards").not.toBe(b);
+    expect([a, b], "the binder card (2c) is a third card, not one of the box's two").not.toContain(binderCard);
 
     // --- The listing gate: no price yet, so the listed box is held -------------
     // A collector who syncs stocks a listed box only with a price on its cards.
@@ -454,16 +616,38 @@ test(
     await expect(page).toHaveURL(/[?&]tab=sync/);
     await expect(tabs.getByRole("link", { name: "Sync status", exact: true })).toHaveAttribute("aria-current", "page");
     const { platform, row } = syncStatus(page);
+    const run = syncRun(platform, SET_LABEL, BSC);
     await expect(platform.getByRole("heading", { level: 2, name: BSC, exact: true })).toBeVisible();
     await expect(platform.getByText("Listing", { exact: true })).toBeVisible();
-    await expect(platform.getByRole("heading", { level: 3, name: "Queued for the next sync (2)", exact: true })).toBeVisible();
-    const queued = platform.getByRole("list", { name: "Queued for the next sync (2)" }).getByRole("listitem");
-    await expect(queued).toHaveCount(2);
-    for (const short of [a, b]) {
-      const number = escapeRegExp(short.split(" ")[0]);
-      await expect(queued.filter({ hasText: new RegExp(`^${number} .* in ${escapeRegExp(SET_LABEL)}`) })).toHaveCount(1);
+    // Either the two cards wait for the next sync, or the 15-minute poll has
+    // already listed them (the header's two orders). The poll's own result is
+    // the row reading 2 listed with its folded "Gathering data" item.
+    const queuedHeading = platform.getByRole("heading", { level: 3, name: "Queued for the next sync (2)", exact: true });
+    const polledLine = row.getByText(/^2 listed(, 2 updated)?$/);
+    await expect(queuedHeading.or(polledLine).first()).toBeVisible();
+    if (await queuedHeading.isVisible()) {
+      const queuedList = platform.getByRole("list", { name: "Queued for the next sync (2)" });
+      const queued = queuedList.getByRole("listitem");
+      await expect(queued).toHaveCount(2);
+      for (const short of [a, b]) {
+        const number = escapeRegExp(short.split(" ")[0]);
+        await expect(queued.filter({ hasText: new RegExp(`^${number} .* in ${escapeRegExp(SET_LABEL)}`) })).toHaveCount(1);
+      }
+      // NEO-432: the binder card took three photo changes (2c) and is NOT queued:
+      // a photo only queues a card whose copy sits in a listed box. The count of 2
+      // above and this absence by name are the proof (the two rows above keep it
+      // from passing on a dead list).
+      await expect(queued.filter({ hasText: new RegExp(`^${escapeRegExp(binderCard.split(" ")[0])} `) })).toHaveCount(0);
+      // Only the queued list: the whole-page check on this screen runs after the press (below),
+      // so the poll has no slow check to win its window against.
+      await expectAccessible(page, { within: queuedList, label: "Inventory Sync status, two cards queued" });
+    } else {
+      // The poll listed them first: its finished row, with its folded ledger.
+      await expect(polledLine).toBeVisible();
+      await expect(row.getByText(/^Synced /)).toBeVisible();
+      await expect(run.gathered()).toBeVisible();
+      await expectAccessible(page, { within: row, label: "Inventory Sync status, the poll already listed the two cards" });
     }
-    await expectAccessible(page, { label: "Inventory Sync status, two cards queued" });
 
     // --- 2. Sync: BSC takes both, Sync status says 2 listed --------------------
     // Back steps to the checklist the cards were boxed on, quantities as left.
@@ -494,28 +678,41 @@ test(
     await expect(fieldA).toHaveValue("1");
     await tabs.getByRole("link", { name: "Sync status", exact: true }).click();
     await expect(page).toHaveURL(/[?&]tab=sync/);
-    // The live BSC round trip, one step per wait (see "Waits" above): the new
-    // run is in view (its ledger under Running now, or its own result line if it
-    // already finished); the walk then waits 7 s for the step the run is on to
-    // land, again and again, until the send is done (the sheet reads are serial
-    // and how many there are is not fixed, see "The ledger's steps" above); the
-    // confirm is one more step; then the result line. The line is the drain's
-    // own count: 2 rows on BSC show NB's stock after the read-back (2 updated,
-    // or none when BSC already showed them); "skipped" would be a held-back card.
-    const run = syncRun(platform, SET_LABEL, BSC);
+    // The live BSC round trip, one step per wait (see "Waits" above): the walk
+    // waits for the step the run is on to land, again and again, until the
+    // press's queued cards are gone and the platform is idle (header: a press
+    // proven to have run; the sheet reads are serial and how many there are is
+    // not fixed, see "The ledger's steps" above). Only then is the set's row
+    // read, and it is a run that started after the press, finished.
+    // The line is the drain's own count: 2 rows on BSC show NB's stock after the
+    // read-back (2 updated, or none when BSC already showed them); "skipped"
+    // would be a held-back card.
     const listedLine = row.getByText(/^2 listed(, 2 updated)?$/);
-    await expect(run.underWay(listedLine)).toBeVisible();
-    await followRunToEnd(platform, run, run.step(SEND));
-    await expect(run.readLanded()).toBeVisible();
-    await expect(run.step(SEND)).toBeVisible();
-    await expect(run.confirmLanded()).toBeVisible();
+    const listedNoSend = row.getByText("2 listed", { exact: true });
+    await followRunToRest(platform, run, queueSettled(platform, SET_LABEL), bscReadCeiling);
+    // The ledger is asserted BEFORE the branch (R2), so a row with none is red in either order.
+    await expect(run.last).toBeVisible();
+    await expect(run.gathered()).toBeVisible();
     await expect(listedLine).toBeVisible();
     await expect(row.getByText(/^Synced /)).toBeVisible();
     await expect(row.getByText(/held back/)).toHaveCount(0);
-    // Finished, the set's row folds the run (see "The ledger's steps"): the
-    // reads are one "Gathering data", then the update steps in run order (an
-    // "Upload photos" may sit before the send); no read or confirm item is left.
-    await expectFoldedLastRun(run);
+    // Press first: the send step is in the finished ledger. Poll first: the poll
+    // listed the two cards and the press, a full read, sent nothing.
+    const sent = await run.last.getByRole("listitem", { name: `${SEND}, done`, exact: true }).isVisible();
+    if (sent) {
+      // The double-check and the folded ledger (reads, then the send).
+      await expect(run.readLanded()).toBeVisible();
+      await expect(run.confirmLanded()).toBeVisible();
+      // Finished, the set's row folds the run (see "The ledger's steps"): the
+      // reads are one "Gathering data", then the update steps in run order (an
+      // "Upload photos" may sit before the send); no read or confirm item is left.
+      await expectFoldedLastRun(run);
+    } else {
+      // The row says "2 listed" with no "updated", and its ledger is the one
+      // "Gathering data" item, with no send step.
+      await expect(listedNoSend).toBeVisible();
+      await expectFoldedLastRun(run, false);
+    }
     await expectAccessible(page, { label: "Inventory Sync status, 2 listed, the run's steps done" });
 
     // --- Admin: the same result, read-only, for this collector --------------------
@@ -573,28 +770,39 @@ test(
     await expect(page).toHaveURL(/[?&]tab=sync/);
     // The live BSC round trip, step by step. The set was 2 listed a minute ago,
     // so the row still shows the LAST run's finished steps until this one
-    // claims the set: gate on the new run (its ledger, or its own result line).
-    // Walked one step per wait, like the listing run, until the send (it carries
-    // the two zeros) is done; then a confirm, then the result line. How many
-    // sheets it reads is not fixed (see "The ledger's steps" above), so one
-    // read is the assertion.
+    // claims the set: the walk ends only when the press's queued cards are gone
+    // and the platform is idle, so the row read next is a run that started after
+    // the press, finished. How many sheets it reads is not fixed (see "The
+    // ledger's steps" above), so one data-gathering step is the assertion.
     const takeDown = syncRun(platform, SET_LABEL, BSC);
     const takenLine = row.getByText(/^0 listed(, \d+ updated)?, 2 taken to 0$/);
-    await expect(takeDown.underWay(takenLine)).toBeVisible();
-    await followRunToEnd(platform, takeDown, takeDown.step(SEND));
-    await expect(takeDown.readLanded()).toBeVisible();
-    // A run that read the sheets and sent nothing means BSC showed no stock of
-    // these two cards to take to 0 (the run's "Send" step is dropped when the
-    // plan has no PUT): the cards were already at 0 there, which is not this
-    // spec's takedown, so it is a red and says so.
-    await expect(
-      takeDown.step(SEND),
-      "the takedown run read BSC's sheets and found no stock of the two cards to take to 0, so it sent nothing (the seller account is shared: something else zeroed them first?)",
-    ).toBeVisible();
-    await expect(takeDown.confirmLanded()).toBeVisible();
-    await expect(takenLine).toBeVisible();
+    await followRunToRest(platform, takeDown, queueSettled(platform, SET_LABEL), bscReadCeiling);
+    // The ledger is asserted BEFORE the branch (R2), so a row with none is red in either order.
+    await expect(takeDown.last).toBeVisible();
+    await expect(takeDown.gathered()).toBeVisible();
     await expect(row.getByText(/held back/)).toHaveCount(0);
-    await expectFoldedLastRun(takeDown);
+    // Press first: the run sent the two zeros (the send step is in the finished
+    // ledger). Poll first (the header's two orders): the poll already took the
+    // cards off, and the press, a full read, sent nothing. Each side is asserted
+    // hard: a send needs its double-check and folded ledger (and no "Nothing new
+    // to send"), a run that sent nothing is "Gathering data" then "Nothing new to
+    // send". Accepted limit (Jason, NEO-433): a takedown that sent nothing cannot
+    // tell the poll taking the cards down first from anything else having zeroed
+    // them on the seller account. CI's seller queue runs these specs one at a
+    // time, so the poll is the only other writer there; locally, do not run this
+    // spec while another session uses the shared seller. The line is this run's
+    // count, so it says "2 taken to 0" only when this run sent them; a full read
+    // that found nothing to zero reads "0 listed".
+    const tookDown = await takeDown.last.getByRole("listitem", { name: `${SEND}, done`, exact: true }).isVisible();
+    if (tookDown) {
+      await expect(takenLine).toBeVisible();
+      await expect(takeDown.readLanded()).toBeVisible();
+      await expect(takeDown.confirmLanded()).toBeVisible();
+      await expectFoldedLastRun(takeDown);
+    } else {
+      await expect(row.getByText(/^0 listed$/)).toBeVisible();
+      await expectFoldedLastRun(takeDown, false);
+    }
 
     // --- Tidy up through the product: the box's cards, the common price, the box
     // Zero before deleting, so no copy falls into the Unsorted box (a listed one).

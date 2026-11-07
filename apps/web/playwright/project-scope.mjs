@@ -8,7 +8,12 @@
 // test.skip(); it is left out of that project's plan instead.
 /** @type {Record<string, string[]>} */
 export const PROJECT_IGNORE = {
+  // NEO-453, TEMPORARY, Jason 2026-11-06: eBay's sandbox refuses every publish
+  // (400 / 25002) for any seller on our keyset, so this spec cannot pass. Restore
+  // it, its entry in SELLER_SPECS and its seller tag as soon as publish works.
+  e2e: ["collection/inventory-ebay-sandbox-listing-1988-topps-base.spec.ts"],
   "e2e-mobile": [
+    "collection/inventory-ebay-sandbox-listing-1988-topps-base.spec.ts",
     // NEO-389: waits 1.6-4.7 min on the heavy preprocess model's cold start,
     // the longest spec in the suite. The notice and pairing it then checks
     // render the same on a phone, and preprocess-crop-matrix covers the
@@ -43,5 +48,4 @@ export const SELLER_TAG = "@marketplace-seller";
 /** @type {string[]} */
 export const SELLER_SPECS = [
   "collection/inventory-bsc-listing-1988-topps-base.spec.ts",
-  "collection/inventory-ebay-sandbox-listing-1988-topps-base.spec.ts",
 ];

@@ -64,6 +64,7 @@ const TestSignIn = lazy(() => import("@/app/testing/sign-in/page"));
 const TestReset = lazy(() => import("@/app/testing/reset/page"));
 const TestSeedCredentials = lazy(() => import("@/app/testing/seed-credentials/page"));
 const TestNeedsReauth = lazy(() => import("@/app/testing/needs-reauth/page"));
+const TestKilledDrain = lazy(() => import("@/app/testing/killed-drain/page"));
 const TestSeedPlaceholderRun = lazy(() => import("@/app/testing/seed-placeholder-run/page"));
 const TestSeedPlaceholderUpload = lazy(() => import("@/app/testing/seed-placeholder-upload/page"));
 const Dashboard = lazy(loadDashboard);
@@ -176,6 +177,7 @@ const SentryErrorBoundary = Sentry.withErrorBoundary(
             element={<Deferred><TestSeedCredentials /></Deferred>}
           />
           <Route path="/testing/needs-reauth" element={<Deferred><TestNeedsReauth /></Deferred>} />
+          <Route path="/testing/killed-drain" element={<Deferred><TestKilledDrain /></Deferred>} />
           <Route
             path="/testing/seed-placeholder-run"
             element={<Deferred><TestSeedPlaceholderRun /></Deferred>}
