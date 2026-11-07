@@ -1661,9 +1661,9 @@ function RunWorkspace({
         <Lane label={LANE_LABEL.matching} count={lanes.matching.length}>
           {lanes.matching.map((p) => (
             <li key={`${p.frontIndex}-${p.backIndex}`} className="intake-arrive">
-              <div className="flex items-center gap-2 rounded-md border-2 border-rule bg-surface p-1.5 text-xs">
-                <ScanImage jobId={run.jobId} entryIndex={p.frontIndex} alt={`Front, ${byIndex.get(p.frontIndex)?.originalName ?? "scan"}`} className="h-14 w-auto rounded" />
-                <span className="min-w-0">
+              <div className={`${TILE_ROW} border-rule`}>
+                <ScanImage jobId={run.jobId} entryIndex={p.frontIndex} alt={`Front, ${byIndex.get(p.frontIndex)?.originalName ?? "scan"}`} className="h-14 w-auto shrink-0 rounded" />
+                <span className={TILE_WORDS}>
                   <span className="block truncate font-medium text-ink-2">{p.player ?? "Matching…"}</span>
                   <span className="block text-ink-3">{p.cardNumber ? `#${p.cardNumber}` : "Matching…"}</span>
                 </span>
@@ -1721,9 +1721,9 @@ function RunWorkspace({
         <Lane label={LANE_LABEL.saved} count={lanes.saved.length}>
           {lanes.saved.map((row) => (
             <li key={row.pairId} className="intake-arrive intake-saved rounded-md">
-              <div className="flex items-center gap-2 rounded-md border-2 border-rule bg-surface p-1.5 text-xs">
-                <ScanImage jobId={run.jobId} entryIndex={row.frontIndex} alt={`Front, ${cardLabel(row.card)}`} className="h-14 w-auto rounded" />
-                <span className="min-w-0">
+              <div className={`${TILE_ROW} border-rule`}>
+                <ScanImage jobId={run.jobId} entryIndex={row.frontIndex} alt={`Front, ${cardLabel(row.card)}`} className="h-14 w-auto shrink-0 rounded" />
+                <span className={TILE_WORDS}>
                   <span className="block truncate font-medium text-ink-2">{cardLabel(row.card)}</span>
                   <span className="block text-neon-green-text">Saved +{row.savedQuantity ?? 1}</span>
                   <PhotoLine row={row} />
@@ -1836,6 +1836,14 @@ const PHOTO_TONES: Record<RunLineKind, string> = {
  * lane's scrolling list something to scroll. `relative` keeps it above those words.
  */
 const PHOTO_ACTION = `-my-1.5 block py-1.5 max-sm:relative max-sm:-mb-2 max-sm:-mt-5 max-sm:min-w-11 max-sm:pb-2 max-sm:pt-5 text-neon-blue-text underline aria-disabled:cursor-not-allowed aria-disabled:opacity-60 ${RING}`;
+
+/**
+ * A lane tile: picture, then words. A lane can be ~120px wide at 1024px, so the
+ * words drop under the picture rather than push the tile past its column (a
+ * column that overflows is a scroll container a keyboard can't reach).
+ */
+const TILE_ROW = "flex flex-wrap items-center gap-2 rounded-md border-2 bg-surface p-1.5 text-xs";
+const TILE_WORDS = "min-w-0 flex-1 basis-[5.5rem]";
 
 /** Focus has nowhere to be: it fell to the page with something that unmounted. */
 const focusFell = () => !document.activeElement || document.activeElement === document.body;
@@ -1996,12 +2004,13 @@ function Lane({
             // Blur bubbles from every tile; only leaving the lane counts.
             if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setFocused(false);
           }}
-          className="max-h-[34rem] overflow-auto rounded-sm focus-outline"
+          className="max-h-[34rem] overflow-y-auto rounded-sm focus-outline"
         >
           {list}
         </div>
       ) : (
-        <div className="overflow-auto">{list}</div>
+        // No overflow of any kind: a scroll container here would need a Tab stop.
+        <div>{list}</div>
       )}
     </section>
   );
@@ -2011,9 +2020,9 @@ function PhotoTile({ image }: { image: IntakeImage }) {
   const failed = image.status === "failed";
   const local = useContext(LocalPhotos).get(image.originalName);
   return (
-    <div className="flex items-center gap-2 rounded-md border-2 border-rule bg-surface p-1.5 text-xs">
+    <div className={`${TILE_ROW} border-rule`}>
       {local && <img src={local} alt="" className="h-14 w-10 shrink-0 rounded object-cover" />}
-      <span className="min-w-0">
+      <span className={TILE_WORDS}>
         <span className="block truncate font-medium text-ink-2" title={image.originalName}>
           {image.originalName}
         </span>
@@ -2059,12 +2068,12 @@ function LoosePile({
             aria-pressed={live.includes(i.entryIndex)}
             aria-describedby={i.status === "failed" ? `loose-why-${i.entryIndex}` : undefined}
             onClick={() => toggle(i.entryIndex)}
-            className={`flex w-full items-center gap-2 rounded-md border-2 bg-surface p-1.5 text-left text-xs ${live.includes(i.entryIndex) ? "border-neon-green-text" : "border-rule"} ${RING}`}
+            className={`${TILE_ROW} w-full text-left ${live.includes(i.entryIndex) ? "border-neon-green-text" : "border-rule"} ${RING}`}
           >
             {i.status !== "failed" && (
               <ScanImage jobId={jobId} entryIndex={i.entryIndex} alt="" className="h-14 w-auto shrink-0 rounded" />
             )}
-            <span className="min-w-0">
+            <span className={TILE_WORDS}>
               <span className="block truncate font-medium text-ink-2">{i.originalName}</span>
               <span className="block text-ink-3" id={i.status === "failed" ? `loose-why-${i.entryIndex}` : undefined}>
                 {i.status === "failed"
@@ -2096,6 +2105,8 @@ function LoosePile({
             variant="secondary"
             outline
             disabled={live.length !== 2}
+            // Wraps: the lane is narrower than this line at 1024px.
+            className="h-auto min-h-8 max-w-full whitespace-normal py-1 text-left"
             onClick={() => {
               onPair(live[0], live[1]);
               setChosen([]);
@@ -2113,15 +2124,15 @@ function LoosePile({
 function Band({ row }: { row: IntakeMatchRow }) {
   const pct = `${row.confidence}%`;
   if (row.byUser) {
-    return <span className="rounded-full bg-wash-green px-2 py-0.5 text-xs font-semibold text-neon-green-text">You picked</span>;
+    return <span className="inline-block max-w-full rounded-xl bg-wash-green px-2 py-0.5 text-xs font-semibold text-neon-green-text">You picked</span>;
   }
   if (row.band === "matched") {
-    return <span className="rounded-full bg-wash-green px-2 py-0.5 text-xs font-semibold text-neon-green-text">Matched {pct}</span>;
+    return <span className="inline-block max-w-full rounded-xl bg-wash-green px-2 py-0.5 text-xs font-semibold text-neon-green-text">Matched {pct}</span>;
   }
   if (row.band === "check") {
-    return <span className="rounded-full bg-notice-warn-bg px-2 py-0.5 text-xs font-semibold text-notice-warn-ink">Check this {pct}</span>;
+    return <span className="inline-block max-w-full rounded-xl bg-notice-warn-bg px-2 py-0.5 text-xs font-semibold text-notice-warn-ink">Check this {pct}</span>;
   }
-  return <span className="rounded-full border border-neon-pink-text bg-wash-pink px-2 py-0.5 text-xs font-semibold text-ink">No match</span>;
+  return <span className="inline-block max-w-full rounded-xl border border-neon-pink-text bg-wash-pink px-2 py-0.5 text-xs font-semibold text-ink">No match</span>;
 }
 
 function edge(row: IntakeMatchRow, selected: boolean): string {
@@ -2165,12 +2176,13 @@ function ReviewTile({
   const reasonId = useId();
   return (
     <article aria-label={label} className={`rounded-md border-2 bg-surface p-2 ${edge(row, selected)}`}>
-      <div className="flex gap-2">
+      <div className="flex flex-wrap gap-2">
         <div className="flex shrink-0 gap-1">
           <ScanImage jobId={jobId} entryIndex={row.frontIndex} alt="Front scan" className="h-24 w-auto rounded" />
           <ScanImage jobId={jobId} entryIndex={row.backIndex} alt="Back scan" className="h-24 w-auto rounded" />
         </div>
-        <div className="min-w-0 flex-1 space-y-1">
+        {/* Under the scans when the lane is too narrow for both (768 to about 900px). */}
+        <div className="min-w-0 flex-1 basis-[7rem] space-y-1">
           <p className="m-0 truncate text-sm font-semibold text-ink">{cardLabel(row.card)}</p>
           <Band row={row} />
           <p className="m-0 text-xs text-ink-3">{readLine(read)}</p>

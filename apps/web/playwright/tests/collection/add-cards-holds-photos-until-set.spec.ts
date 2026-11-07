@@ -64,7 +64,8 @@ test(
     const priceTagWarning = page.getByText(/^Price tag first!/);
     let commonPriceSaved = false;
     let tidyBox = false;
-    let runClosed = false;
+    let doneClicked = false;
+    let bodyPassed = false;
     const doneButton = page.getByRole("button", { name: "Done adding photos" });
     const runClosedNote = page.getByText("This run's photos are all in. To add more, start a new run.");
     try {
@@ -180,33 +181,52 @@ test(
 
       // Done adding photos closes the run, so its batch slot frees for the next spec.
       await doneButton.click();
+      doneClicked = true;
       await expect(runClosedNote).toBeVisible();
       await expect(doneButton).toHaveCount(0);
-      runClosed = true;
+      bodyPassed = true;
     } finally {
       // Self-cleaning on any path (R7): close the run so it frees its batch slot,
       // clear a common price the failure left, delete a box left on the shelf.
-      // A run exists once its id is on the URL; it may still be mounting when a
-      // step failed, so wait (7 s) for either its Done button or the closed note.
-      if (!runClosed && /[?&]run=/.test(page.url())) {
-        await expect(doneButton.or(runClosedNote)).toBeVisible();
-        if (await doneButton.isVisible()) {
+      // Each step is bounded at 7 s, and one that fails never skips the rest. A
+      // cleanup failure is thrown when the body passed, and noted on the report
+      // when the body failed (the body's own failure is the one to read).
+      const left: unknown[] = [];
+      const tidy = async (step: () => Promise<void>) => {
+        try {
+          await step();
+        } catch (e) {
+          left.push(e);
+        }
+      };
+      // A run is on the URL once it exists, and until the body pressed Done it is
+      // open, so its Done button is the one thing to wait for and press.
+      if (!doneClicked && /[?&]run=/.test(page.url())) {
+        await tidy(async () => {
           await doneButton.click();
           await expect(runClosedNote).toBeVisible();
-        }
+        });
       }
       if (commonPriceSaved) {
-        await page.goto("/inventory?tab=checklists");
-        const checklist = await drillToCollectorBase(page, TOPPS_CHROME_2024);
-        await clearChecklistCommonPrice(page, checklist, "2024 Topps Chrome Base", "0.75");
+        await tidy(async () => {
+          await page.goto("/inventory?tab=checklists");
+          const checklist = await drillToCollectorBase(page, TOPPS_CHROME_2024);
+          await clearChecklistCommonPrice(page, checklist, "2024 Topps Chrome Base", "0.75");
+        });
       }
       if (tidyBox) {
-        await page.goto("/inventory?tab=boxes");
-        await page
-          .getByRole("list", { name: "Your boxes" })
-          .getByRole("button", { name: new RegExp(`^${boxName}, box,`) })
-          .click();
-        await deleteOpenBox(page, boxName);
+        await tidy(async () => {
+          await page.goto("/inventory?tab=boxes");
+          await page
+            .getByRole("list", { name: "Your boxes" })
+            .getByRole("button", { name: new RegExp(`^${boxName}, box,`) })
+            .click();
+          await deleteOpenBox(page, boxName);
+        });
+      }
+      if (left.length > 0) {
+        if (bodyPassed) throw left[0];
+        test.info().annotations.push({ type: "cleanup-failed", description: String(left[0]) });
       }
     }
   },

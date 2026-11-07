@@ -324,15 +324,14 @@ test.afterEach(async ({ context, isMobile }, testInfo) => {
   try {
     try {
       // NEO-452: the Add cards run the held photos started, closed so it never holds
-      // one of the account's two active-batch slots. The run may still be mounting
-      // when a step failed, so wait for its Done button or the closed note.
+      // one of the account's two active-batch slots. The body clears `runUrl` the
+      // moment it has pressed Done, so a run still named here is open: its Done
+      // button is the one thing to wait for (7 s) and press.
       if (failed && written.runUrl) {
         await clean.goto(written.runUrl);
         await expect(clean.getByRole("heading", { level: 1, name: "Inventory" })).toBeVisible({ timeout: LAUNCH_GATE });
-        const done = clean.getByRole("button", { name: "Done adding photos" });
-        const closed = clean.getByText("This run's photos are all in. To add more, start a new run.");
-        await expect(done.or(closed)).toBeVisible();
-        if (await done.isVisible()) await done.click();
+        await clean.getByRole("button", { name: "Done adding photos" }).click();
+        await expect(clean.getByText("This run's photos are all in. To add more, start a new run.")).toBeVisible();
         written.runUrl = undefined;
       }
       // The cards are NB's zero from here on: quantities 0 in the box, then a
@@ -626,15 +625,14 @@ test(
     await expect(waitingTray).toHaveCount(0);
     // Close the run so its batch slot frees (its photos keep being read; nothing is saved).
     await page.getByRole("button", { name: "Done adding photos" }).click();
-    await expect(page.getByText("This run's photos are all in. To add more, start a new run.")).toBeVisible();
     written.runUrl = undefined;
+    await expect(page.getByText("This run's photos are all in. To add more, start a new run.")).toBeVisible();
     // New run: the Min price is blank again, and a drop waits on the price again.
     await page.getByRole("button", { name: "New run", exact: true }).click();
     await expect(page).not.toHaveURL(/[?&]run=/);
     const defaultsButton = page.getByRole("button", { name: /^Defaults: / });
+    // The button's name carries the Min price when there is one: none is left.
     await expect(defaultsButton).toHaveAccessibleName(/^Defaults: [^,]+$/);
-    if ((await defaultsButton.getAttribute("aria-expanded")) !== "true") await defaultsButton.click();
-    await expect(minPrice).toHaveValue("");
     await dropzone.setInputFiles(HELD_PHOTOS);
     await expect(waitingTray).toBeVisible();
     await expect(page).not.toHaveURL(/[?&]run=/);

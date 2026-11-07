@@ -2046,6 +2046,9 @@ describe("a lane that scrolls takes the keyboard (NEO-452)", () => {
     setRun(runId, { images: reading(6) });
     const view = render(<Tab runId={runId} />);
     expect(list()).toBeNull();
+    // No scroll container at all below the threshold: axe would ask for a Tab stop on one.
+    const lane = screen.getByRole("region", { name: "Cropping & reading, 6" });
+    expect(lane.querySelector('[class*="overflow-"]')).toBeNull();
     const tile = screen.getByText("scan-0.jpg");
 
     setRun(runId, { images: reading(7) });
