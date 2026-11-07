@@ -35,3 +35,4 @@
 - [Spare worker indexes share one account on dev](spare-worker-indexes-share-one-account-on-dev.md) — no TEST_EMAIL_<n> locally = fallback to TEST_EMAIL; a bootstrap on any spare worker wipes the others mid-run
 - [Review gate cost is the sequential name loop](review-gate-cost-is-the-sequential-name-loop.md) — ~5 s at 200 names before any feature adds to it; 7 s after "Kept all" has under 2 s headroom
 - [Open-if-visible races the selection change](open-if-visible-races-the-selection-change.md) — panel returns null mid-selection, click skipped; gate on the new heading; blob steps prove it
+- [Teamless-rows checklist red = BSC lookup stall](checklist-team-spec-red-with-teamless-rows-is-a-bsc-lookup-stall.md) — every row teamless after Saved N = `bsc_card_team_lookup_failures` failed==requested; rerun, not the PR
