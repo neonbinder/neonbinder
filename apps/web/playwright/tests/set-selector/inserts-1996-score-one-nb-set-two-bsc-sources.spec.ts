@@ -4,6 +4,7 @@ import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtu
 import { columnOption, columnSearch, drillToSet, pick, setBuilderReady, syncChecklistButton } from "../../support/set-builder";
 import {
   advanceToSave,
+  answerPlayerAsNew,
   answerStepAsNew,
   confirmSaveButton,
   readStep,
@@ -127,15 +128,21 @@ test(
     // NEO-331: a New League step's primary is held until a Level is pressed
     // (none is pre-pressed), so read which kind settled first. "Other" claims
     // nothing (the batch is discarded or bulk-added anyway).
-    const anyAddAsNew = wizard.getByRole("button", { name: /^Add as New (Player|Team|League)$/ });
+    const anyAddAsNew = wizard.getByRole("button", { name: /^Add as New (Player|Team|League)( anyway)?$/ });
     await expect(anyAddAsNew.first()).toBeVisible({ timeout: 30_000 });
-    if (/League/.test((await anyAddAsNew.first().textContent()) ?? "")) {
+    const firstKind = (await anyAddAsNew.first().textContent()) ?? "";
+    if (/League/.test(firstKind)) {
       await wizard.getByRole("radio", { name: "Other", exact: true }).click();
     }
-    await wizard
-      .getByRole("button", { name: /^Add as New (Player|Team|League)$/, disabled: false })
-      .first()
-      .click({ timeout: 30_000 });
+    if (/Player/.test(firstKind)) {
+      // NEO-424: a player step may lead with a suggested link; creating is the intent.
+      await answerPlayerAsNew(page);
+    } else {
+      await wizard
+        .getByRole("button", { name: /^Add as New (Team|League)( anyway)?$/, disabled: false })
+        .first()
+        .click({ timeout: 30_000 });
+    }
     // NEO-335: ONE decision reads "Step 2 of …" (on a name step x is the decided
     // count plus one): the same claim, as strict, as the old "1 of N reviewed".
     await expect(stepCounter(page)).toHaveText(/^Step 2 of [0-9]+$/);

@@ -282,6 +282,55 @@ those (§3).
 The preview answers from the new entries only after its bundle is rebuilt,
 because the JSON is imported at build time: the next push to the PR.
 
+**NEO-424 entry (2026-11-03): `Kendry Morales` as a Football no-match.** The
+set-history spec (`checklist-wizard-set-history-links-across-variants`) moves
+this real checklist name from Baseball to Football in the wizard and adds him
+there, which re-queues his lookup in Football. He is a baseball player, so the
+Football answer is a no-match, and without a recorded entry the deployment
+would refuse the miss with an error-level log line (NEO-413). Captured by this
+section's method: `lookupPlayerEnrichmentLive("Kendry Morales", <football
+sportConfig>, trace)` from a laptop (`sportQid` `Q41323`, hall of fame
+`Q778412`), which searched twice (`wikidata_search_empty`, then
+`wikidata_search_empty_confirmed`), logged `wikidata_player_no_match`, and
+left `trace.transportFailed` false, so the `null` is a completed search and not
+an outage. One entry, merged per step 5 (only the new key, keys re-sorted).
+
+His FIRST lookup, in Baseball when the wizard opens on his row, is recorded too:
+that live answer is a **hit** (`wikidataId` `Q1185217`, born 1983, three
+undated clubs Minnesota Twins / Seattle Mariners / Toronto Blue Jays, enwiki
+"Kendrys Morales"), captured the same way, and merged as the file's default
+sport (no `sportQid`). Without it the unrecorded Baseball miss is refused at
+error level on every run of the spec. A genuine capture, not a `null`.
+
+The same spec reaches four more lookups, each captured the same way (every
+`transportFailed` false) and merged under step 5: `Michael Brantley` as a
+Football no-match (the FOOTBALL player the spec adds from `/admin/players`; his
+Baseball row is inserted READY and is never looked up), and two historic clubs
+the Peak Performance wizard stages as team steps, as Baseball hits:
+`St. Louis Browns` (`Q504309`, MLB, from 1882) and `Washington Senators`
+(`Q329816`, American League, from 1961). The recorded Wikidata answers are
+Wikidata's own; the wizard still links the Browns to the catalogue's 1902-1953
+row by name.
+
+**NEO-424 entry (2026-11-04): `Rickie Weeks`, Baseball hit and Football
+no-match.** The same spec's prior-year phase (rule E1) adds `Rickie Weeks`, the
+one unknown name on the 2009 insert Career Best Jumbo Jerseys, as a Football
+player, exactly as it does `Kendry Morales`. His FIRST lookup, in Baseball when
+the wizard opens on his row, is a live **hit** (`wikidataId` `Q3431635`, born
+1982, four dated stints with Wikidata ids at clubs the catalogue already holds
+(Milwaukee Brewers, Seattle Mariners, Arizona Diamondbacks, Tampa Bay Rays) and
+three undated clubs, so no career team is staged; enwiki "Rickie Weeks Jr."),
+merged as the file's default sport (no `sportQid`). Moving the row to Football
+re-queues the lookup there, and his Football answer is a **no-match** (`sportQid`
+`Q41323`). Both captured by the method above with `lookupPlayerEnrichmentLive`
+from a laptop; each trace left `transportFailed` false, and the Football search
+ran twice (`wikidata_search_empty`, then `wikidata_search_empty_confirmed`)
+before `wikidata_player_no_match`, so the `null` is a completed search and not
+an outage. Two entries merged per step 5 (only the new keys, keys re-sorted);
+the coverage proof of step 4 reads both as hits. His row on the 2010 insert
+(Peak Performance Relics) is inserted ready as a suggestion and is never looked
+up.
+
 ## 4b. Other sports, explicit names, and no Wikidata from your machine (2026-10-30)
 
 **Entries for another sport.** The file's `sportQid` is the default sport of

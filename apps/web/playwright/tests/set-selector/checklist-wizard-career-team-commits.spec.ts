@@ -4,6 +4,7 @@ import { setBuilderReady } from "../../support/set-builder";
 import { expectTeamsLoaded, teamsCounter } from "../../support/players";
 import { recordedNoMatchName } from "../../support/recorded-names";
 import {
+  answerPlayerAsNew,
   advanceToSave,
   fetchOneMarketplaceSetChecklistToWizard,
   readStep,
@@ -72,7 +73,7 @@ test(
     // not y (y grows as staged steps arrive); the pattern is anchored at both
     // ends, so "Step 5" cannot answer for "Step 15".
     const { x: stepBefore } = await readStep(page);
-    await wizard.getByRole("button", { name: "Add as New Player" }).click();
+    await answerPlayerAsNew(page);
     await expect(stepCounter(page)).toHaveText(new RegExp(`^Step ${stepBefore + 1} of [0-9]+$`));
 
     await wizard.getByRole("button", { name: /Skip remaining names \([0-9]+\)/ }).click();

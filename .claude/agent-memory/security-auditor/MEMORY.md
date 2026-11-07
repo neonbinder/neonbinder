@@ -90,3 +90,4 @@
 - [CI cross-run queue](patterns_ci_cross_run_queue.md) — gh-api run/job polling mutex: fork runs forge holders (filter head_repository), partial reads fail open, per-repo token budget
 - [Per-owner progress field](patterns_per_owner_progress_field.md) — internal, patch-only, run-id guarded writer; sibling writes in the run must be patch-only too or a mid-run disconnect resurrects the row
 - [Held client store auto-send](patterns_held_client_store_autosend.md) — client readiness vs server refusals; retry key scope; job-start budget not refunded; purge module store on identity change
+- [Neo424 offered-on-stored-row](patterns_neo424_offered_on_stored_row.md) — id relaxation keyed on stored row fields is as narrow as that field's writers; enumerate them (applyLookupResult spread, switchRowSport)

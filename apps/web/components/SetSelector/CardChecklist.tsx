@@ -290,8 +290,21 @@ type PendingReview = {
 export const entityConfirmationMessage = (
   unknownPlayers: readonly string[],
   unknownTeams: readonly string[],
+  /**
+   * NEO-424 — names the batch linked on its own (set history, the Hall of
+   * Fame tie-break). They hold the save too: every one is shown in the
+   * wizard's Decided list for the operator to keep or Change. Only worded
+   * when nothing else is owed; beside names that need a look, the wizard
+   * says the rest.
+   */
+  autoLinked = 0,
 ): string => {
   const names = unknownPlayers.length + unknownTeams.length;
+  if (names === 0 && autoLinked > 0) {
+    return autoLinked === 1
+      ? "1 name was linked for you. Give it a look before this saves."
+      : `${autoLinked} names were linked for you. Give them a look before this saves.`;
+  }
   return names === 1
     ? "1 name needs a look before this saves."
     : `${names} names need a look before this saves.`;
@@ -1890,12 +1903,18 @@ export default function CardChecklist({
     // NEO-332's `ambiguousPlayers` is not read here any more: the banner
     // counts every name as one (`entityConfirmationMessage`), and the wizard
     // finds a same-name row's pick step from the row itself.
-    const { unknownPlayers, unknownTeams, batchId, titleContext } =
+    const { unknownPlayers, unknownTeams, batchId, titleContext, autoLinkedCount: autoLinkedWire } =
       await resolveEntities({
         selectorOptionId: variantId,
         sportId,
         cards: kept.map(({ card }) => card),
       });
+    // NEO-424 — names the batch linked on its own (set history, the Hall of
+    // Fame tie-break). They are left out of `unknownPlayers`/`unknownTeams`
+    // because nobody has to answer them, but every one must still be SEEN
+    // (and be reversible with Change) in the wizard's Decided list before the
+    // save. Optional on the wire, so an older server reads as none.
+    const autoLinkedCount = autoLinkedWire ?? 0;
     // NEO-335 — kept positions whose team is already settled, so the wizard
     // never asks about them:
     //  - a card that re-syncs a stored row which already carries a team (or
@@ -1959,7 +1978,15 @@ export default function CardChecklist({
     // the section itself makes. "Resolved" includes a team name an earlier
     // save skipped (the gate drops it): it is not a team, so a card printing
     // only that is teamless and asked about.
-    const noNames = unknownPlayers.length === 0 && unknownTeams.length === 0;
+    //
+    // NEO-424 — and a batch the server linked names in is NOT "no names",
+    // even with nothing left to answer: it opens the full wizard (the else
+    // branch below), whose Save step lists every link with its Change. Keyed
+    // on the count, never on `batchId` alone — NEO-221's "Back to matching"
+    // return trip hands back a batch of the operator's OWN decisions with no
+    // unknowns, and that one must keep committing without a dialog.
+    const noNames =
+      unknownPlayers.length === 0 && unknownTeams.length === 0 && autoLinkedCount === 0;
     const askTeams =
       noNames &&
       teamlessCardIndexes(
@@ -2012,7 +2039,7 @@ export default function CardChecklist({
         [
           soloKeptRef.current,
           teamsLateRef.current ? TEAMS_LATE_NOTICE : null,
-          entityConfirmationMessage(unknownPlayers, unknownTeams),
+          entityConfirmationMessage(unknownPlayers, unknownTeams, autoLinkedCount),
         ]
           .filter(Boolean)
           .join(" "),
