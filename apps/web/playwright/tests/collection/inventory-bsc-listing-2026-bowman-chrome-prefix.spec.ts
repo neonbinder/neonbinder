@@ -1,7 +1,7 @@
 // NEO-458 (R1): a collector's card of a parallel whose BuySportsCards numbers
 // carry a prefix (2026 Bowman Chrome, BSC's `BCV-26`) lists on Sync, and is NOT
 // held back as "numbers this card differently". The flow, as the user lives it:
-//   1. The admin builds the set the way production did, through the Set Builder:
+//   1. The admin builds the set through the Set Builder:
 //      Football -> 2026 -> Bowman -> Bowman -> Base (BSC's base checklist fetched
 //      and saved), then Parallel -> Chrome with its Card prefix set to `BCV-`
 //      FIRST, and only then "Build from Base" (Chrome's cards are a copy of Base's
@@ -49,7 +49,7 @@
 // Live branch (SportLots unpaused): the Base fetch settles the Match Cards
 // dialog and the Parallel column's first visit settles the Reconcile dialog, as
 // the seed does for 2024 Topps Chrome. Those branches are written to the seed's
-// pattern and were not run against a live SportLots, because it is paused today.
+// pattern and were not run against a live SportLots when this was written.
 //
 // Minted box name: a single token from `env.ATTEMPT_TOKEN`.
 import type { Locator, Page } from "@playwright/test";
@@ -90,16 +90,28 @@ const PREFIX = "BCV-";
 const VARIANT_TYPE = "Parallel";
 const TITLE = `${YEAR} ${SET} ${PARALLEL}`;
 const SET_LABEL = TITLE;
+/**
+ * The common price the cards list at, as typed and as the toast reads it. These
+ * are real 2026 cards on a real seller account, and a killed run can leave them
+ * for sale until a later run takes them down, so the price is far above what any
+ * buyer pays and under BSC's $999 ceiling (`checkBscPrice`, `BSC_MAX_PRICE_CENTS`).
+ */
+const PRICE = "900";
+const PRICE_SHOWN = "$900.00";
+/** What the price field reads once the price is saved. */
+const PRICE_IN_FIELD = "900.00";
 /** The two cards the owner named: BSC's BCV-26 and BCV-54. NB holds them as #26 and #54. */
 const CARD_A = "#26 Dak Prescott";
 const CARD_B = "#54 Patrick Mahomes II";
 const SEND = "Send changes to BuySportsCards";
 const BSC = "BuySportsCards";
 /**
- * GUIDE hard rule 3, first exception: a step that directly drives a live BSC
- * round trip on data nothing synced yet (the Base fetch and its review, the
- * Chrome build). The GUIDE's one number for it. Measured 13 s for the fetch, 15 s
- * to saved, 4 s for the build (SET-REGISTRY.md), so it is room, not a need.
+ * GUIDE hard rule 3, first exception, and only on a step that waits on BSC
+ * itself: the Base fetch landing (and, with SportLots live, its pairing
+ * dialog) and the Chrome build's BSC read, on data nothing synced yet. The
+ * wizard's steps and our own save are NeonBinder answering a user and get the
+ * 7 s default. Measured 13 s for the fetch and 4 s for the build
+ * (SET-REGISTRY.md), so the ceiling is room, not a need.
  */
 const LIVE_BSC = 60_000;
 const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -237,7 +249,7 @@ async function buildFixture(page: Page, env: FlowEnv): Promise<void> {
       await confirm.click();
       await expect(pairing).toBeHidden();
     }
-    await expect(wizard).toBeVisible({ timeout: LIVE_BSC });
+    await expect(wizard).toBeVisible();
     // The names the catalogue does not know: added as new, in bulk, then any
     // team, league or pick step one at a time (the seed's walk).
     await wizard.getByRole("button", { name: /^Add remaining players as new/ }).click();
@@ -248,7 +260,7 @@ async function buildFixture(page: Page, env: FlowEnv): Promise<void> {
       .getByRole("button", { name: /^Link to / })
       .first();
     for (let i = 0; i < 40; i++) {
-      await expect(addAsNewStep(page).or(pickStep).or(namesDone).first()).toBeVisible({ timeout: LIVE_BSC });
+      await expect(addAsNewStep(page).or(pickStep).or(namesDone).first()).toBeVisible();
       if (await namesDone.isVisible()) break;
       if (await pickStep.isVisible()) {
         const step = ((await pickStep.textContent()) ?? "").trim();
@@ -260,7 +272,7 @@ async function buildFixture(page: Page, env: FlowEnv): Promise<void> {
     }
     await advanceToSave(page);
     await confirmSaveButton(page).click();
-    await expect(page.getByText(/Saved [0-9]+ cards/)).toBeVisible({ timeout: LIVE_BSC });
+    await expect(page.getByText(/Saved [0-9]+ cards/)).toBeVisible();
   }
   await expect(someCard).toBeVisible();
 
@@ -352,7 +364,7 @@ test.afterEach(async ({ context, isMobile }, testInfo) => {
           await clean.goto("/inventory?tab=checklists");
           await expect(clean.getByRole("heading", { level: 1, name: "Inventory" })).toBeVisible({ timeout: LAUNCH_GATE });
           const checklist = await drillToChrome(clean);
-          await clearCommonPrice(clean, checklist, "0.25");
+          await clearCommonPrice(clean, checklist, PRICE_IN_FIELD);
           written.priced = false;
         }
       } finally {
@@ -409,6 +421,7 @@ test(
     await saveBscSignIn(page, { listing: true });
     written.removed = false;
     await expect(listing.getByRole("status")).toHaveText(new RegExp(`^Listing your boxes on ${BSC} since .+\\.$`));
+    await expectAccessible(page, { label: "Profile, BuySportsCards credentials, listing since" });
 
     // --- 4. The Chrome checklist: bare numbers, a common price, one copy each of the two cards ---
     await page.goto("/inventory?tab=checklists");
@@ -432,14 +445,16 @@ test(
     await search.fill(PREFIX);
     await expect(checklist.getByText("No cards match.", { exact: true })).toBeVisible();
     await search.fill("");
+    await expect(boxList.getByRole("textbox").first()).toBeVisible();
+    await expectAccessible(page, { label: "Checklist, Chrome with the quantity list for the box" });
 
     // The listing gate: a listed box is stocked only with a price on its cards.
     await checklist.getByRole("button", { name: `Set a common price for ${TITLE}`, exact: true }).click();
     const priceField = checklist.getByRole("textbox", { name: "Common price", exact: true });
     await expect(priceField).toBeFocused();
-    await priceField.fill("0.25");
+    await priceField.fill(PRICE);
     await page.keyboard.press("Enter");
-    await expect(said(`Common price for ${TITLE} is $0.25`)).toBeVisible();
+    await expect(said(`Common price for ${TITLE} is ${PRICE_SHOWN}`)).toBeVisible();
     written.priced = true;
 
     // One copy of each into the box.
@@ -540,7 +555,7 @@ test(
     // --- Tidy up through the product: the common price, then the box ----------------
     await page.goBack();
     await expect(page).toHaveURL(/[?&]tab=checklists/);
-    await clearCommonPrice(page, checklist, "0.25");
+    await clearCommonPrice(page, checklist, PRICE_IN_FIELD);
     written.priced = false;
     await tabs.getByRole("link", { name: "My Boxes", exact: true }).click();
     await expect(boxSpine(0)).toBeVisible();

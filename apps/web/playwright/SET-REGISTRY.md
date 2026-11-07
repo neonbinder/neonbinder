@@ -17,11 +17,10 @@ These are provisioned once by `tests/setup.spec.ts` at the head of every run and
 
 ### When SportLots is paused (NEO-287) every real set is BSC-ONLY
 
-**Today it is not paused.** SportLots was unpaused on 2026-09-21 (NEO-288's
-automated-access handshake removed the reason; the repository variable was
-deleted), so every CI run passes `PAUSED_PLATFORMS` empty and every set below
-is provisioned LIVE, from both marketplaces. This section describes the
-paused mode the flows still branch on; check which one a run used with
+**Whether a run is paused or live is that run's `PAUSED_PLATFORMS`.** Live,
+every set below is provisioned from both marketplaces; paused, from BSC alone.
+This section describes the paused mode the flows branch on. Never read it as
+today's state: check which one a run used with
 `gh run view <run-id> --log | grep -m1 "PAUSED_PLATFORMS: "` (empty = live)
 before reading a failure against it.
 
@@ -1061,8 +1060,8 @@ that set's cards.
 
 `tests/collection/inventory-bsc-listing-2026-bowman-chrome-prefix.spec.ts`
 proves that a card of a parallel whose BuySportsCards numbers carry a prefix
-lists on Sync and is not held back as "numbers this card differently". It is the
-production case the owner reported on 2026 Bowman Chrome: BSC files the cards as
+lists on Sync and is not held back as "numbers this card differently". The case
+is 2026 Bowman Chrome: BSC files the cards as
 `2026 Bowman`, parallel `Chrome`, numbered `BCV-<n>` (BCV-26 Dak Prescott,
 BCV-54 Patrick Mahomes II), while NeonBinder holds the same cards bare (`#26`,
 `#54`), because a parallel's cards are a copy of Base's and the prefix is only
@@ -1081,14 +1080,14 @@ GUIDE's live-BSC exception, each under its helper's ceiling).
 | -- | -- |
 | ancestors | `Football → 2026 → Bowman → Bowman` (BSC calls it "2026 Bowman"; NB strips the year). Under a SportLots pause the brand `Bowman` is hand-made by `drillToColdManufacturer` and BSC's year-wide sets are filed under it by name, as for 1988 Topps. With SportLots live the brand is SportLots' own |
 | built by | **the spec**, through the Set Builder: `drillToColdManufacturer` + `drillToBaseVariant`, the Base fetched and saved (the wizard's four unknown players added as new), `Parallel` › `Chrome` selected, **Card prefix `BCV-` saved first**, then "Build from Base". Not the seed: the seed gains nothing, and the spec asserts the numbers it produces are bare |
-| what the SPEC writes | in NB: the set's rows above (additive, left in place), the 200 Base cards and Chrome's 198, and the signed-in user's own rows (the listing state, one minted box `Bsc<token>` emptied and deleted, two box copies, the common price, set and cleared). On BuySportsCards: the quantity (and the price and SKU the drain sends) of **#26 Dak Prescott** and **#54 Patrick Mahomes II** of Chrome, 0 to 1 to 0 |
+| what the SPEC writes | in NB: the set's rows above (additive, left in place), the 200 Base cards and Chrome's 198, and the signed-in user's own rows (the listing state, one minted box `Bsc<token>` emptied and deleted, two box copies, the common price, set to $900 so a copy a killed run leaves for sale is priced out of any sale, and cleared). On BuySportsCards: the quantity (and the $900 price and SKU the drain sends) of **#26 Dak Prescott** and **#54 Patrick Mahomes II** of Chrome, 0 to 1 to 0 |
 | writer | **sole writer among specs** of every row of this tree and of its BSC quantities. It shares the **BuySportsCards seller account** with `inventory-bsc-listing-1988-topps-base` and, like it, starts syncing (`listing=on`) and ends not syncing; both run as worker 8 in the `seller-*` jobs, one after the other, never side by side. No other spec writes Football 2026, Bowman or Chrome (checked 2026-11-06: the Football specs use 2014 or add players by hand). Football's Years column is synced by this spec and by the 2014 team-leader spec: additive and id-keyed, so concurrent syncs add nothing twice |
 | start-clean | `convex/testingSellerCleanup.ts` lists the set (`SELLER_SPEC_SETS`, `parallel: "Chrome"`, `builtBySpec`). The tree is built by the spec, so on a freshly seeded deployment the seller job's start-clean pass finds it absent and **skips it** (logged `seller_cleanup_set_absent`); it zeroes Chrome's sheets when the tree is there (a rerun on the same seed, dev). The spec's own takedown Sync and failure hook are what zero its two rows. A run killed mid-spec can leave #26 and #54 at 1 on BSC until the next run lists them again or its takedown zeroes them |
 | end state | **connected to BSC and NOT syncing, the box deleted, the common price cleared, every other box in-person**, as the 1988 spec |
 | re-runs | **safe to re-run on the same seed**: the build steps adopt a tree already there and assert the same end state (prefix `BCV-`, cards present, numbers bare); the box is minted per attempt |
 | cron | not exercised, as the 1988 spec |
-| measured | **Local, own Convex deployment, 2026-11-06, SportLots paused (the set-building and collector half only: the seller steps were NOT run, see the PR):** the cold drill to the Sets column under a hand-made `Bowman` about 8 s; Base fetched (`Kept all 200 cards from BSC`) 13 s after the press, wizard with four unknown players ("Add remaining players as new", no team or league step), `Saved 200 cards.` 15 s; the Parallel column listed 62 BSC parallels with no dialog; `Build from Base` on `Chrome` with the prefix already saved: `Chrome — Built 198 cards, 2 left off — not on either marketplace's list, 2 on BSC that Base doesn't have`, 4 s. Every step inside the 7 s budget after its helper's own live-sync ceiling. Spec half before the seller steps: 21-32 s on desktop and 23 s on mobile. **To record after the first seller run:** the Sync's steps and the takedown's |
-| live SportLots | **not run**: SportLots is paused. The spec's live branches (the Match Cards dialog on the Base fetch, the Reconcile Parallels dialog on the Parallel column's first visit) follow the seed's pattern and are unrun; the first live run must check them |
+| measured | **Local, own Convex deployment, 2026-11-06, run with SportLots paused (the set-building and collector half only: the seller steps were NOT run, see the PR):** the cold drill to the Sets column under a hand-made `Bowman` about 8 s; Base fetched (`Kept all 200 cards from BSC`) 13 s after the press, wizard with four unknown players ("Add remaining players as new", no team or league step), `Saved 200 cards.` 15 s; the Parallel column listed 62 BSC parallels with no dialog; `Build from Base` on `Chrome` with the prefix already saved: `Chrome — Built 198 cards, 2 left off — not on either marketplace's list, 2 on BSC that Base doesn't have`, 4 s. Every step inside the 7 s budget after its helper's own live-sync ceiling. Spec half before the seller steps: 21-32 s on desktop and 23 s on mobile. **To record after the first seller run:** the Sync's steps and the takedown's |
+| live SportLots | **not run when written**: the spec was exercised with SportLots paused only. Its live branches (the Match Cards dialog on the Base fetch, the Reconcile Parallels dialog on the Parallel column's first visit) follow the seed's pattern and were never run; the first live run must check them |
 
 ### Topps 206 — the unmapped-Base fixture for `base-mapping-cancel-recovers` (NEO-248) ✅ APPROVED
 

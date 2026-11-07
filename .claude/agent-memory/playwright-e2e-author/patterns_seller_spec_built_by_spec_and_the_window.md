@@ -2,7 +2,7 @@
 name: seller-spec-built-by-spec-and-the-window
 description: A seller spec whose set the SPEC builds needs builtBySpec in SELLER_SPEC_SETS (else the start-clean pass throws on a fresh preview); and the in-progress-run check misses a seller job that has not started yet
 metadata:
-  type: pattern
+  type: reference
 ---
 
 1. `testingSellerCleanup.clearBsc` resolves every `SELLER_SPEC_SETS` entry to a

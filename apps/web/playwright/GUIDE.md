@@ -922,7 +922,7 @@ signs in with the bootstrap's seller credentials as its own owner, not a worker,
 and removes that sign-in after. A cleanup that cannot finish fails the job, naming
 why; a paused marketplace is skipped. A twin row at 0 is not removed (BSC offers no
 delete): if BSC still shows both copies, the listing planner refuses a card listed
-in that condition (`duplicate_sheet_row`), so the step warns. A new spec that writes to
+in that condition (`duplicate_sheet_row`), so the step warns. A set the spec builds itself is listed with `builtBySpec: true` and is skipped when this deployment does not have it yet, so in CI (a freshly reset preview) its only cleanup is the spec's own takedown Sync and failure hook. A duplicate row anywhere in that set's chain fails the cleanup rather than skipping it, and the report counts the skips as `skippedSets`. A new spec that writes to
 a shared marketplace seller account joins the list AND takes the tag. **Locally,
 do not run these two specs while any PR's E2E is in its seller job** (check
 `gh run list --status in_progress`), and not against the shared seller from two
