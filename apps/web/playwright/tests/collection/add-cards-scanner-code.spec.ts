@@ -11,6 +11,11 @@
 // first", never a new run). That half is proven by unit tests: the loading
 // window cannot be targeted live, and the photo specs drive real preprocess.
 //
+// NEO-452: a run needs a set before anything starts, so "Use a scanner" is held
+// ("Pick a set first, then get a code.") until one is picked, on both sides.
+// Each section picks 2024 Topps Chrome Base first (`pickIntakeSet`); the held
+// button is asserted once, on the Collection side.
+//
 // The app itself (apps/scanner) needs a real scanner and a real API key,
 // so its side of the join is pinned in convex/intakeScanner.test.ts,
 // convex/scannerContract.test.ts and apps/scanner's unit tests, not here.
@@ -19,6 +24,7 @@
 // and again on the way out if a step failed, so an empty session never holds
 // one of the account's two active-batch slots for its 30-minute idle window.
 import type { Page } from "@playwright/test";
+import { pickIntakeSet } from "../../support/collection";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 
 /** Start a scanner run from the open Add cards tab; returns the code shown. */
@@ -62,6 +68,13 @@ test(
       await signIn("/collection?tab=add");
       await expect(page.getByRole("heading", { level: 1, name: "Collection" })).toBeVisible({ timeout: LAUNCH_GATE });
       await page.getByRole("combobox", { name: "Put them in this binder" }).selectOption({ label: "Main" });
+      // No set yet: the scanner button stays on screen, held, and says why.
+      const scannerButton = page.getByRole("button", { name: "Use a scanner" });
+      await expect(page.getByRole("button", { name: "Set: pick one" })).toBeVisible();
+      await expect(scannerButton).toBeDisabled();
+      await expect(scannerButton).toHaveAccessibleDescription(/Pick a set first, then get a code\./);
+      await expectAccessible(page, { label: "Add cards, Use a scanner held until a set is picked" });
+      await pickIntakeSet(page);
       const code = await useScanner(page);
       await expectAccessible(page, { label: "Scanner code shown" });
 
@@ -88,6 +101,7 @@ test(
       // --- Inventory: into a box ---------------------------------------------------
       await page.goto("/inventory?tab=add");
       await expect(page.getByRole("combobox", { name: "Put them in this box" })).toBeVisible();
+      await pickIntakeSet(page);
       const boxCode = await useScanner(page);
       expect(boxCode).not.toBe(code);
       await page.getByRole("button", { name: "Done adding photos" }).click();

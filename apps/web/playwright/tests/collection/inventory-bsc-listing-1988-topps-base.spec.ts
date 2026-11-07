@@ -14,12 +14,20 @@
 //      start syncing the way a save does (the seed hop with listing=on) and
 //      Profile reads "Listing your boxes on BuySportsCards since ...".
 //   2b. The listing gate (price before stocking): with no common price the
-//      listed box is held. The checklist says why and the + for a card is off,
-//      and photo intake holds its drop zone with the same reason and a "Set a
-//      Min price" button (nothing is uploaded). Setting the common price lifts
-//      the checklist's hold. ("Done adding photos" also shows "See what's
-//      syncing", but that path needs a real upload through preprocess and
-//      Vision, so it is covered by unit tests only.)
+//      listed box is held. The checklist says why and the + for a card is off.
+//      Photo intake (NEO-452) says nothing until a set is picked (the zone is
+//      open and not aria-disabled); picking the set shows the same warning once
+//      with its "Set a Min price" button, opens Defaults and puts the keyboard
+//      on the Min price. Photos dropped then wait in the browser, "waiting on a
+//      price", and nothing is uploaded (no run on the URL). Setting the Min
+//      price with them still waiting sends them on their own ("Sent 2
+//      photos.", a run on the URL; Done closes it), and New run blanks the Min
+//      price so a drop waits on the price again; Remove photos empties the tray. This is the only live proof of the warning, because it
+//      needs a real listing state (a box that lists, a syncing sign-in, no common
+//      price). Setting the common price lifts the checklist's hold. ("Done
+//      adding photos" also shows "See what's syncing", but that path needs a
+//      real upload through preprocess and Vision, so it is covered by unit tests
+//      only.)
 //   2c. NEO-432: a photo on a BINDER copy never queues a card. With listing on,
 //      they give a third card a copy in their Main binder (Collection), attach a
 //      front photo through the copy drawer, swap it to the back and remove it,
@@ -134,9 +142,11 @@ import {
   expectNothingSent,
   followRunToRest,
   goViaShell,
+  intakeDropzone,
   inventoryTabs,
   nameOf,
   ordinaryBaseRows,
+  pickIntakeSet,
   putOtherBoxesInPerson,
   quantityField,
   queueSettled,
@@ -158,6 +168,10 @@ const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 /** A committed intake scan (about 1000 px wide), attached through the copy drawer's Photos box. It is never listed: its copy lives in a binder. */
 const BINDER_PHOTO = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "fixtures", "intake", "05-bell-front.jpg");
 
+/** Two committed intake scans (a front and its back): dropped on Add cards to wait for a price. They are removed from the tray, never sent. */
+const HELD_PHOTOS = ["01-mcfadden-front.jpg", "02-mcfadden-back.jpg"].map((n) =>
+  path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "fixtures", "intake", n),
+);
 
 /**
  * A BSC read step's longer budget, a ceiling Jason signed off on 2026-11-05
@@ -230,6 +244,8 @@ const written: {
   removed?: boolean;
   stopped?: boolean;
   priced?: boolean;
+  /** NEO-452: the Add cards run the held photos started, until the body closes it. */
+  runUrl?: string;
 } = {};
 
 /** The key that leaves a quantity field: Tab on a desktop, Enter on a phone. */
@@ -307,6 +323,18 @@ test.afterEach(async ({ context, isMobile }, testInfo) => {
   let cleanupFailure: unknown;
   try {
     try {
+      // NEO-452: the Add cards run the held photos started, closed so it never holds
+      // one of the account's two active-batch slots. The run may still be mounting
+      // when a step failed, so wait for its Done button or the closed note.
+      if (failed && written.runUrl) {
+        await clean.goto(written.runUrl);
+        await expect(clean.getByRole("heading", { level: 1, name: "Inventory" })).toBeVisible({ timeout: LAUNCH_GATE });
+        const done = clean.getByRole("button", { name: "Done adding photos" });
+        const closed = clean.getByText("This run's photos are all in. To add more, start a new run.");
+        await expect(done.or(closed)).toBeVisible();
+        if (await done.isVisible()) await done.click();
+        written.runUrl = undefined;
+      }
       // The cards are NB's zero from here on: quantities 0 in the box, then a
       // full Sync of the set, and the result waited for. A pass already proved it.
       if (failed && written.started && written.box && written.cards) {
@@ -383,6 +411,7 @@ test(
     written.removed = false;
     written.stopped = false;
     written.priced = false;
+    written.runUrl = undefined;
     const boxName = `Bsc${env.ATTEMPT_TOKEN}`;
     const said = (text: string | RegExp) => page.getByRole("status").filter({ hasText: text });
     const tabs = inventoryTabs(page);
@@ -555,26 +584,69 @@ test(
     await expect(addOneOfA).toBeDisabled();
     await expectAccessible(page, { label: "Checklist, listed box held until a common price is set" });
 
-    // Photo intake holds the same box: the drop zone is held with its reason
-    // and a button to the missing field. Nothing is uploaded.
+    // Photo intake (NEO-452): with no set picked there is no price to ask for,
+    // so the box says nothing yet and the zone is open.
     await tabs.getByRole("link", { name: "Add cards", exact: true }).click();
     await expect(page).toHaveURL(/[?&]tab=add/);
     await page.getByRole("combobox", { name: "Put them in this box" }).selectOption({ label: boxName });
-    const intakeLine = `Price tag first! ${boxName} sells on your marketplaces, so give these cards a price in Defaults (or pick a set with a common price) before you send photos.`;
-    await expect(page.getByText(intakeLine, { exact: true })).toBeVisible();
-    await expect(page.getByText("Set a price, then drop your photos", { exact: true })).toBeVisible();
-    const dropzone = page.getByLabel("Drag your card photos here, or browse your files");
-    await expect(dropzone).toHaveAttribute("aria-disabled", "true");
-    await expect(dropzone).toHaveAccessibleDescription(intakeLine);
-    await expectAccessible(page, { label: "Add cards, listed box held until a price is set" });
-    // The button opens Defaults with the Min price field focused.
-    await page.getByRole("button", { name: "Set a Min price", exact: true }).click();
-    await expect(page.getByRole("textbox", { name: "Min price", exact: true })).toBeFocused();
-    await expectAccessible(page, { label: "Add cards, Defaults open on Min price while held" });
-    // Back steps to the held checklist, still adding to the box.
-    await page.goBack();
+    await expect(page.getByRole("button", { name: "Set: pick one", exact: true })).toBeVisible();
+    const dropzone = intakeDropzone(page);
+    await expect(dropzone).toBeVisible();
+    await expect(dropzone).not.toHaveAttribute("aria-disabled", "true");
+    await expect(page.getByText(/^Price tag first!/)).toHaveCount(0);
+    // Picking the set shows the warning once, opens Defaults and focuses the Min price.
+    await pickIntakeSet(page, TOPPS_1988);
+    const intakeLine = `Price tag first! ${boxName} sells on your marketplaces and ${TITLE} has no price yet. Set one in Defaults and your photos go up.`;
+    // The note is the zone's description (the sr-only copy in the status line is
+    // a second match for the text, so the note is read through what points at it).
+    await expect(dropzone).toHaveAccessibleDescription(new RegExp(escapeRegExp(intakeLine)));
+    await expect(page.getByRole("button", { name: "Set a Min price", exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: /^Defaults: / })).toHaveAttribute("aria-expanded", "true");
+    const minPrice = page.getByRole("textbox", { name: "Min price", exact: true });
+    await expect(minPrice).toBeFocused();
+    await expect(minPrice).toHaveAccessibleDescription(new RegExp(escapeRegExp(intakeLine)));
+    await expectAccessible(page, { label: "Add cards, listed box with no price, Defaults open on Min price" });
+    // Photos dropped now wait for the price: a tray says so, and nothing goes up.
+    await dropzone.setInputFiles(HELD_PHOTOS);
+    const waitingTray = said("2 photos waiting on a price.");
+    await expect(waitingTray).toBeVisible();
+    // The zone's description holds the hint too, so the words are read inside it.
+    await expect(dropzone).toHaveAccessibleDescription(new RegExp(escapeRegExp(`${intakeLine} 2 photos waiting on a price.`)));
+    await expect(page.getByText("Sending your photos…")).toHaveCount(0);
+    await expect(page).not.toHaveURL(/[?&]run=/);
+    await expectAccessible(page, { label: "Add cards, photos waiting on a price" });
+    // The central promise: the price is set with the photos still waiting, and
+    // they go up on their own (no Start button): the tray empties, the status line
+    // says "Sent 2 photos." and the run is on the URL.
+    await minPrice.fill("0.25");
+    await page.keyboard.press("Enter");
+    await expect(said("Sent 2 photos.")).toBeVisible();
+    await expect(page).toHaveURL(/[?&]run=/);
+    written.runUrl = page.url();
+    await expect(waitingTray).toHaveCount(0);
+    // Close the run so its batch slot frees (its photos keep being read; nothing is saved).
+    await page.getByRole("button", { name: "Done adding photos" }).click();
+    await expect(page.getByText("This run's photos are all in. To add more, start a new run.")).toBeVisible();
+    written.runUrl = undefined;
+    // New run: the Min price is blank again, and a drop waits on the price again.
+    await page.getByRole("button", { name: "New run", exact: true }).click();
+    await expect(page).not.toHaveURL(/[?&]run=/);
+    const defaultsButton = page.getByRole("button", { name: /^Defaults: / });
+    await expect(defaultsButton).toHaveAccessibleName(/^Defaults: [^,]+$/);
+    if ((await defaultsButton.getAttribute("aria-expanded")) !== "true") await defaultsButton.click();
+    await expect(minPrice).toHaveValue("");
+    await dropzone.setInputFiles(HELD_PHOTOS);
+    await expect(waitingTray).toBeVisible();
+    await expect(page).not.toHaveURL(/[?&]run=/);
+    // Remove photos empties the tray, and the keyboard lands on the drop zone.
+    await page.getByRole("button", { name: "Remove photos", exact: true }).click();
+    await expect(waitingTray).toHaveCount(0);
+    await expect(dropzone).toBeFocused();
+    // Back to the checklist through the tab, which reopens it where it was left.
+    await tabs.getByRole("link", { name: "Checklists", exact: true }).click();
     await expect(page).toHaveURL(/[?&]tab=checklists/);
     await expect(checklist.getByRole("heading", { level: 3, name: TITLE })).toBeVisible();
+    await adding.selectOption({ label: boxName });
     await expect(adding.getByRole("option", { selected: true })).toHaveText(boxName);
     await expect(gateNote).toBeVisible();
 
