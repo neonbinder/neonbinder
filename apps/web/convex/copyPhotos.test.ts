@@ -12,6 +12,7 @@
 import { convexTest } from "convex-test";
 import { describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
+import { MAX_LINES_PER_CARD } from "./collection";
 import { MAX_COPY_PHOTO_BYTES, MAX_COPY_PHOTO_UPLOADS_PER_HOUR, PHOTO_HOLD_MS, copyPhotoObjectKey } from "./copyPhotos";
 import schema from "./schema";
 import { seedCollectionCatalog } from "../lib/testing/collection-fixture";
@@ -395,6 +396,60 @@ describe("folds, removes and undo", () => {
     expect(second).not.toBe(copyId);
   });
 
+  test("NEO-431: an add whose photos follow it keeps its own line and pocket; a plain add still stacks", async () => {
+    const s = await setup();
+    const details = { quantity: 1, acquiredOn: "2026-11-01" };
+    const plain = await addCopy(s, details);
+    const own = await s.me.mutation(api.collection.addLineItem, {
+      cardId: s.fx.gooden1,
+      details,
+      keepsOwnLine: true,
+    });
+    expect(own.merged).toBe(false);
+    expect(own.copyId).not.toBe(plain);
+    const [first, second] = [await copyRow(s, plain), await copyRow(s, own.copyId)];
+    expect(first?.quantity).toBe(1);
+    // Not the twin's pocket, which would be refused as taken.
+    expect(second?.slot).not.toBe(first?.slot);
+    expect(second?.hasPhotos).toBeUndefined();
+
+    const again = await s.me.mutation(api.collection.addLineItem, { cardId: s.fx.gooden1, details });
+    expect(again).toMatchObject({ copyId: plain, merged: true });
+  });
+
+  test("NEO-431: a box has no pockets, and keepsOwnLine still starts a line there", async () => {
+    const s = await setup();
+    const { containerId: box } = await s.me.mutation(api.collectionContainers.create, { kind: "box", name: "Show" });
+    const details = { quantity: 1, homeId: box, acquiredOn: "2026-11-01" };
+    const plain = await addCopy(s, details);
+    const own = await s.me.mutation(api.collection.addLineItem, {
+      cardId: s.fx.gooden1,
+      details,
+      keepsOwnLine: true,
+    });
+    expect(own.merged).toBe(false);
+    expect(own.copyId).not.toBe(plain);
+  });
+
+  test("NEO-431: keepsOwnLine on a card at the line limit is refused and writes nothing", async () => {
+    const s = await setup();
+    const copyId = await addCopy(s, { acquiredOn: "2026-11-01" });
+    const row = await copyRow(s, copyId);
+    await s.t.run(async (ctx) => {
+      const { _id, _creationTime, ...rest } = row!;
+      for (let i = 1; i < MAX_LINES_PER_CARD; i++) await ctx.db.insert("collectionCopies", { ...rest, slot: 1000 + i });
+    });
+    await expect(
+      s.me.mutation(api.collection.addLineItem, {
+        cardId: s.fx.gooden1,
+        details: { quantity: 1, acquiredOn: "2026-11-01" },
+        keepsOwnLine: true,
+      }),
+    ).rejects.toThrow(/lines of this card/);
+    const lines = await s.t.run((ctx) => ctx.db.query("collectionCopies").collect());
+    expect(lines).toHaveLength(MAX_LINES_PER_CARD);
+  });
+
   test("moving a whole photographed line keeps its photos and never stacks on a twin", async () => {
     const s = await setup();
     const { containerId: binder } = await s.me.mutation(api.collectionContainers.create, { kind: "binder", name: "B" });
@@ -450,6 +505,61 @@ describe("folds, removes and undo", () => {
     expect((await photoRows(s))[0].status).toBe("detached");
   });
 
+  test("NEO-431: a replayed Undo refuses on a photo that is already live, and writes nothing", async () => {
+    const s = await setup();
+    const copyId = await addCopy(s);
+    await photograph(s, copyId, "front");
+    const { removed } = await s.me.mutation(api.collection.removeCopy, { copyId });
+    const { copyId: back } = await s.me.mutation(api.collection.restoreCopy, removed);
+    await expect(s.me.mutation(api.collection.restoreCopy, removed)).rejects.toThrow(/already back on a line/);
+    const lines = await s.t.run(async (ctx) => await ctx.db.query("collectionCopies").collect());
+    expect(lines.map((line) => line._id)).toEqual([back]);
+    expect((await photoRows(s)).map((photo) => photo.copyId)).toEqual([back]);
+  });
+
+  test("NEO-431: an Undo naming the caller's pending or replaced photo skips it and the line comes back bare", async () => {
+    const s = await setup();
+    const copyId = await addCopy(s);
+    const replaced = await photograph(s, copyId, "front");
+    await photograph(s, copyId, "front");
+    const { photoId: pending } = await s.t.mutation(internal.copyPhotos.reserveUpload, {
+      ownerId: ME.subject,
+      copyId,
+      side: "back",
+      contentType: "image/jpeg",
+      imageBytes: 300_000,
+      thumbBytes: 20_000,
+    });
+    const other = await addCopy(s, { grading: { grader: "PSA", grade: "9" } });
+    const { removed } = await s.me.mutation(api.collection.removeCopy, { copyId: other });
+    const { copyId: back } = await s.me.mutation(api.collection.restoreCopy, {
+      ...removed,
+      photoIds: [replaced, pending],
+    });
+    expect((await copyRow(s, back))?.hasPhotos).toBeUndefined();
+    const rows = await photoRows(s);
+    expect(rows.find((photo) => photo._id === replaced)?.status).toBe("replaced");
+    expect(rows.find((photo) => photo._id === pending)?.status).toBe("pending");
+    expect(rows.some((photo) => photo.copyId === back)).toBe(false);
+  });
+
+  test("NEO-431: an Undo naming a photo the sweep already took still brings the line back, bare", async () => {
+    const s = await setup();
+    vi.useFakeTimers();
+    try {
+      const copyId = await addCopy(s);
+      await photograph(s, copyId, "front");
+      const { removed } = await s.me.mutation(api.collection.removeCopy, { copyId });
+      vi.advanceTimersByTime(PHOTO_HOLD_MS + 1);
+      await s.t.mutation(internal.copyPhotos.sweepCopyPhotos, {});
+      expect(await photoRows(s)).toEqual([]);
+      const { copyId: back } = await s.me.mutation(api.collection.restoreCopy, removed);
+      expect((await copyRow(s, back))?.hasPhotos).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   test("the sweep clears stale pending and detached photos, not live ones", async () => {
     const s = await setup();
     vi.useFakeTimers();
@@ -471,6 +581,35 @@ describe("folds, removes and undo", () => {
     expect(swept).toEqual({ pending: 1, detached: 1, replaced: 0 });
     const rows = await photoRows(s);
     expect(rows.map((r) => r.status)).toEqual(["live"]);
+    vi.useRealTimers();
+  });
+
+  test("NEO-431: a quick count's photos wait the same hour: inside it the Undo puts them back, past the sweep the line comes back bare", async () => {
+    const s = await setup();
+    vi.useFakeTimers();
+    const box = (await s.me.mutation(api.collectionContainers.create, { kind: "box", name: "Box" })).containerId;
+    const copyId = await addCopy(s, { homeId: box });
+    const photoId = await photograph(s, copyId, "front");
+    const count = (quantity: number) =>
+      s.me.mutation(api.collectionInventory.setBoxQuantity, { cardId: s.fx.gooden1, boxId: box, quantity });
+
+    const zero = await count(0);
+    vi.advanceTimersByTime(PHOTO_HOLD_MS - 1000);
+    expect(await s.t.mutation(internal.copyPhotos.sweepCopyPhotos, {})).toEqual({ pending: 0, detached: 0, replaced: 0 });
+    await s.me.mutation(api.collectionInventory.undoBoxQuantity, { inverse: zero.inverse });
+    const [back] = (await s.t.run((ctx) => ctx.db.query("collectionCopies").collect())).filter((r) => r.homeId === box);
+    expect(back.hasPhotos).toBe(true);
+    expect((await photoRows(s))[0]).toMatchObject({ _id: photoId, copyId: back._id, status: "live" });
+
+    // A line brought back gets a fresh hour the next time it is counted away.
+    const again = await count(0);
+    vi.advanceTimersByTime(PHOTO_HOLD_MS + 1);
+    expect(await s.t.mutation(internal.copyPhotos.sweepCopyPhotos, {})).toEqual({ pending: 0, detached: 1, replaced: 0 });
+    await s.me.mutation(api.collectionInventory.undoBoxQuantity, { inverse: again.inverse });
+    const [bare] = (await s.t.run((ctx) => ctx.db.query("collectionCopies").collect())).filter((r) => r.homeId === box);
+    expect(bare.quantity).toBe(1);
+    expect(bare.hasPhotos).toBeUndefined();
+    expect(await photoRows(s)).toEqual([]);
     vi.useRealTimers();
   });
 

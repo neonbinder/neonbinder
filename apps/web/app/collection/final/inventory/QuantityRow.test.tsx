@@ -178,11 +178,17 @@ describe("the field's number", () => {
     expect(screen.getByText("also here: PSA 9, Raw Near Mint ×2")).toBeTruthy();
   });
 
-  it("NEO-377: a copy with a photo is never counted (the server's quick count can't change it), and is named after the field", () => {
+  it("NEO-431: a copy added with a photo is the line the field edits: counted, with nothing named after it", () => {
     setup([{ card: ELLY, copies: [line({ id: "photo", quantity: 1, hasPhotos: true })] }]);
-    // Counted, it would read 1 and a 0 typed over it could never land.
+    expect(field().value).toBe("1");
+    expect(screen.queryByText(/also here/)).toBeNull();
+    expect(field().getAttribute("aria-describedby")).toBeNull();
+  });
+
+  it("NEO-431: a copy with a photo and another detail stays aside, named by that detail", () => {
+    setup([{ card: ELLY, copies: [line({ id: "noted", quantity: 1, hasPhotos: true, notes: "ding" })] }]);
     expect(field().value).toBe("0");
-    const others = screen.getByText("also here: Raw with photo");
+    const others = screen.getByText("also here: Raw with notes");
     expect(field().getAttribute("aria-describedby")?.split(" ")).toContain(others.id);
   });
 
@@ -641,6 +647,13 @@ describe("the status line's words", () => {
     expect(quantityMessage("#1 A", unsorted, { before: 0, after: 3 })).toBe("Boxed 3 more of #1 A. 3 in Unsorted.");
     expect(quantityMessage("#1 A", unsorted, { before: 5, after: 2 })).toBe("Pulled 3 of #1 A from Unsorted. 2 left.");
     expect(quantityMessage("#1 A", unsorted, { before: 2, after: 2 })).toBe("#1 A stays at 2 in Unsorted.");
+  });
+
+  it("says when a line's photos went with the count", () => {
+    expect(quantityMessage("#1 A", unsorted, { before: 2, after: 0, tookPhotos: true })).toBe(
+      "Pulled 2 of #1 A from Unsorted, with its photos. 0 left.",
+    );
+    expect(quantityMessage("#1 A", unsorted, { before: 2, after: 0, tookPhotos: false })).toBe("Pulled 2 of #1 A from Unsorted. 0 left.");
   });
 });
 

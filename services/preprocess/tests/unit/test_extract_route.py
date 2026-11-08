@@ -4,7 +4,7 @@ Covers: auth, identifier validation, the missing-input 404, the oversize 413,
 archive-level rejection (422 ZIP_REJECTED, terminal), per-entry reject rows
 that do NOT fail the archive, EXIF normalisation on the way into storage (a
 rotated entry comes out upright, an already-upright entry is stored
-byte-identical), zip-order indexing, the no-paths-in-responses rule, and
+byte-identical), natural-order indexing, the no-paths-in-responses rule, and
 idempotent re-extraction (the GCS 412 path).
 
 Storage is the shared in-memory fake from `_fake_gcs`, driven through the real
@@ -26,6 +26,7 @@ from PIL import Image
 
 from app import main as app_main
 from app.exif import EXIF_ORIENTATION_TAG, read_exif_orientation
+from app.jobs import zipsafe
 from app.jobs.gcs import ObjectRef, ObjectStore
 from app.main import app
 from tests.unit._fake_gcs import FakeStorageClient
@@ -140,6 +141,20 @@ class TestInputGuards:
         assert body["reason"] == "compression_ratio_exceeded"
         assert body["retryable"] is False
 
+    def test_forged_entry_name_returns_422_terminal(self, fake_gcs):
+        # Not a 502: the caller would retry an archive that can never parse.
+        data = bytearray(_zip_bytes([("abcde", _jpeg())]))
+        at = data.find(b"PK\x01\x02")
+        data[at + 9] |= 0x08  # the general-purpose flag's UTF-8 bit
+        data[at + 46 : at + 51] = b"\xff\xfe\xfd\xfc\xfb"
+        fake_gcs.seed(BUCKET, INPUT_KEY, bytes(data))
+        response = _post_extract()
+        assert response.status_code == 422
+        body = response.json()
+        assert body["error_code"] == "ZIP_REJECTED"
+        assert body["reason"] == "not_a_zip"
+        assert body["retryable"] is False
+
     def test_not_a_zip_returns_422(self, fake_gcs):
         fake_gcs.seed(BUCKET, INPUT_KEY, b"this is not an archive, sorry")
         response = _post_extract()
@@ -156,14 +171,14 @@ class TestExtraction:
                 [
                     ("card0.jpg", _jpeg()),
                     ("__MACOSX/._card0.jpg", b"applejunk"),  # ignored, consumes no ordinal
-                    ("notes.txt", b"not an image at all"),
-                    ("card1.png", _png()),
+                    ("card1.txt", b"not an image at all"),
+                    ("card2.png", _png()),
                     (".DS_Store", b"finderjunk"),  # ignored
                 ]
             ),
         )
 
-    def test_mixed_archive_reports_rows_in_zip_order(self, fake_gcs):
+    def test_mixed_archive_reports_rows_in_natural_order(self, fake_gcs):
         self._seed_mixed_archive(fake_gcs)
         response = _post_extract()
         assert response.status_code == 200, response.text
@@ -176,15 +191,57 @@ class TestExtraction:
         assert by_name["card0.jpg"]["content_type"] == "image/jpeg"
         assert by_name["card0.jpg"]["size_bytes"] > 0
         assert by_name["card0.jpg"]["reason"] is None
-        assert by_name["card1.png"]["content_type"] == "image/png"
+        assert by_name["card2.png"]["content_type"] == "image/png"
         # The .txt is a per-entry reject row — it must NOT fail the archive,
-        # and it still consumes its ordinal so zip order is preserved.
-        rejected = by_name["notes.txt"]
+        # and it still consumes its ordinal so its neighbours keep theirs.
+        rejected = by_name["card1.txt"]
         assert rejected["accepted"] is False
         assert rejected["reason"] == "unsupported_image_type"
         assert rejected["content_type"] is None
         assert rejected["size_bytes"] is None
         assert rejected["index"] == 1
+
+    def test_shuffled_archive_stores_each_image_at_its_sorted_ordinal(self, fake_gcs):
+        # The ordinal names the object, so the name in the response row and the
+        # bytes at that key must agree after the sort.
+        second = _jpeg((62, 40))
+        tenth = _jpeg((64, 40))
+        fake_gcs.seed(BUCKET, INPUT_KEY, _zip_bytes([("img10.jpg", tenth), ("img2.jpg", second)]))
+        response = _post_extract()
+        assert response.status_code == 200, response.text
+        assert [(e["index"], e["name"]) for e in response.json()["entries"]] == [
+            (0, "img2.jpg"),
+            (1, "img10.jpg"),
+        ]
+        assert fake_gcs.read(BUCKET, f"{EXTRACTED_PREFIX}0000.jpg") == second
+        assert fake_gcs.read(BUCKET, f"{EXTRACTED_PREFIX}0001.jpg") == tenth
+
+    def test_exif_reencode_over_the_entry_cap_is_a_reject_row(self, fake_gcs, monkeypatch):
+        # A member under the cap whose re-encode lands over it. Stored anyway,
+        # /process-entry could never read it back through the same ceiling.
+        limit = zipsafe.MAX_ENTRY_UNCOMPRESSED_BYTES
+        monkeypatch.setattr(
+            "app.main.apply_exif_orientation",
+            lambda data: (b"\xff\xd8\xff" + b"\x00" * (limit - 2), 6),
+        )
+        fake_gcs.seed(BUCKET, INPUT_KEY, _zip_bytes([("card.jpg", _jpeg())]))
+        response = _post_extract()
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["rejected_count"] == 1
+        assert body["entries"][0]["reason"] == "entry_too_large"
+        assert not any(name.startswith(EXTRACTED_PREFIX) for name in fake_gcs.names(BUCKET))
+
+    def test_exif_reencode_exactly_at_the_entry_cap_is_accepted(self, fake_gcs, monkeypatch):
+        limit = zipsafe.MAX_ENTRY_UNCOMPRESSED_BYTES
+        monkeypatch.setattr(
+            "app.main.apply_exif_orientation",
+            lambda data: (b"\xff\xd8\xff" + b"\x00" * (limit - 3), 6),
+        )
+        fake_gcs.seed(BUCKET, INPUT_KEY, _zip_bytes([("card.jpg", _jpeg())]))
+        response = _post_extract()
+        assert response.status_code == 200, response.text
+        assert response.json()["entries"][0]["size_bytes"] == limit
 
     def test_accepted_entries_are_written_to_derived_keys(self, fake_gcs):
         self._seed_mixed_archive(fake_gcs)

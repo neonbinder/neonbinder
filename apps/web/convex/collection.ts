@@ -447,7 +447,9 @@ export function checkSlot(home: Pick<ContainerRow, "kind" | "system">, slot: num
 
 /**
  * One of a kind: a cert, a serial number, or (NEO-377) a photo of that very
- * copy. Never folds, either way.
+ * copy. Never folds, either way. (A quick count's raise may still stack onto a
+ * line with photos, on purpose and outside this rule: `photoLineToRaise` in
+ * collectionInventory.ts.)
  */
 export function isOneOfAKind(d: { grading?: { cert?: string }; serialNumber?: string; hasPhotos?: true }): boolean {
   return Boolean(d.grading?.cert || d.serialNumber || d.hasPhotos);
@@ -1469,10 +1471,11 @@ async function moveCounts(
  * anything is written. A caller adding many cards passes one `gate`, so the
  * owner's listing state and each common price are read once.
  *
- * NEO-427: `keepsOwnLine` starts a new line even when an identical one is
- * there, and in a binder takes the first open pocket rather than that line's.
- * A scanned save is a photo of this very copy, and its photos arrive after the
- * save, so the fold rule's photo check (`isOneOfAKind`) can't see them yet.
+ * `keepsOwnLine` starts a new line even when an identical one is there, and in
+ * a binder takes the first open pocket rather than that line's. An add whose
+ * photos follow it is one of a kind (NEO-431), as is a scanned save (NEO-427),
+ * but those photos arrive after the add, so the fold rule's photo check
+ * (`isOneOfAKind`) can't see them yet.
  */
 export async function addOne(
   ctx: MutationCtx,
@@ -2417,7 +2420,12 @@ export const addHaves = mutation({
 
 /** Add a line item with full details. Folds into an identical row (see the header). */
 export const addLineItem = mutation({
-  args: { cardId: copyCardIdValidator, details: copyDetailsValidator },
+  args: {
+    cardId: copyCardIdValidator,
+    details: copyDetailsValidator,
+    /** NEO-431: never fold; this add's photos follow it (`addOne`). */
+    keepsOwnLine: v.optional(v.boolean()),
+  },
   returns: addResultValidator,
   handler: async (ctx, args) => {
     const ownerId = await requireSignedIn(ctx);
@@ -2427,6 +2435,8 @@ export const addLineItem = mutation({
       args.cardId,
       args.details,
       await defaultConditionOf(ctx, ownerId),
+      undefined,
+      { keepsOwnLine: args.keepsOwnLine },
     );
     await applyCopyChanges(ctx, ownerId, [change]);
     return result;
