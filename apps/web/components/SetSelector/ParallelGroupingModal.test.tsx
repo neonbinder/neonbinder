@@ -1816,3 +1816,206 @@ describe("ParallelGroupingModal — two panes, filter and jump", () => {
     }
   });
 });
+
+/**
+ * NEO-472 fix round — the a11y findings from the audit, each pinned.
+ */
+describe("ParallelGroupingModal — two panes, keyboard and screen reader", () => {
+  const BOWMAN = "Bowman Chrome";
+  const STADIUM = "Stadium Club";
+  const FOIL = "Gold Foil";
+  const TRADED = "1991 Topps Traded";
+
+  beforeEach(() => {
+    tree = [
+      { insert: { _id: "traded", value: TRADED }, parallels: [] },
+      { insert: { _id: "bowman", value: BOWMAN }, parallels: [] },
+      {
+        insert: { _id: "stadium", value: STADIUM },
+        parallels: [
+          { _id: "foil", value: FOIL },
+          { _id: "rainbow", value: "Rainbow" },
+        ],
+      },
+    ];
+  });
+
+  const box = (name: string) =>
+    screen.getByRole("group", { name: `Parallels of "${name}"` });
+  const jump = (name: string) =>
+    screen.getByRole("button", { name: `${name} has parallels. Jump to them` });
+  const filterBox = () => screen.getByRole("textbox", { name: "Filter inserts" });
+  const describedBy = (el: HTMLElement) =>
+    (el.getAttribute("aria-describedby") ?? "")
+      .split(" ")
+      .filter(Boolean)
+      .map((id) => document.getElementById(id)!.textContent)
+      .join(" | ");
+
+  test("a row holding parallels is not aria-disabled, so its jump is pressable", () => {
+    renderModal();
+    const row = screen.getByRole("group", { name: STADIUM });
+    expect(row.hasAttribute("aria-disabled")).toBe(false);
+    expect(jump(STADIUM).closest("[aria-disabled='true']")).toBeNull();
+    // The row's own controls still say it cannot move.
+    expect(
+      (screen.getByRole("checkbox", { name: `Select ${STADIUM}` }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
+    // A movable row is not aria-disabled either.
+    expect(
+      screen.getByRole("group", { name: BOWMAN }).hasAttribute("aria-disabled"),
+    ).toBe(false);
+  });
+
+  describe("a scroller is a Tab stop exactly while it scrolls", () => {
+    type Entry = { cb: (entries: unknown[]) => void };
+    let observers: Entry[] = [];
+    let original: typeof ResizeObserver | undefined;
+    beforeEach(() => {
+      observers = [];
+      original = globalThis.ResizeObserver;
+      globalThis.ResizeObserver = class {
+        private entry: Entry;
+        constructor(cb: (entries: unknown[]) => void) {
+          this.entry = { cb };
+          observers.push(this.entry);
+        }
+        observe() {}
+        disconnect() {}
+        unobserve() {}
+      } as unknown as typeof ResizeObserver;
+    });
+    afterEach(() => {
+      if (original) globalThis.ResizeObserver = original;
+    });
+    const fire = () =>
+      act(() => {
+        for (const o of observers) o.cb([]);
+      });
+    const setHeights = (el: HTMLElement, scroll: number, client: number) => {
+      Object.defineProperty(el, "scrollHeight", { configurable: true, value: scroll });
+      Object.defineProperty(el, "clientHeight", { configurable: true, value: client });
+    };
+
+    test("the right pane overflowing (all boxes empty) takes a tabIndex, the others don't", () => {
+      renderModal();
+      const right = screen.getByRole("region", { name: "Parallels by insert" });
+      const left = screen.getByRole("region", { name: "Inserts" });
+      const body = document.querySelector("[data-grouping-body]") as HTMLElement;
+      setHeights(right, 900, 400);
+      setHeights(left, 300, 400);
+      setHeights(body, 400, 400);
+      fire();
+      expect(right.getAttribute("tabindex")).toBe("0");
+      expect(left.hasAttribute("tabindex")).toBe(false);
+      expect(body.hasAttribute("tabindex")).toBe(false);
+
+      // Phone: the body scrolls, the stacked panes don't; it is named then.
+      setHeights(right, 400, 400);
+      setHeights(body, 1400, 600);
+      fire();
+      expect(right.hasAttribute("tabindex")).toBe(false);
+      expect(body.getAttribute("tabindex")).toBe("0");
+      expect(body.getAttribute("aria-label")).toBe("Inserts and their parallels");
+    });
+  });
+
+  test("Shift+Tab from a jumped-to box is left to the browser, not sent to the footer", () => {
+    renderModal();
+    fireEvent.click(jump(STADIUM));
+    expect(document.activeElement).toBe(box(STADIUM));
+    const notCancelled = fireEvent.keyDown(box(STADIUM), { key: "Tab", shiftKey: true });
+    expect(notCancelled).toBe(true);
+    expect(document.activeElement).toBe(box(STADIUM));
+
+    // The parked heading still wraps to the last control, as before.
+    act(() => heading().focus());
+    const cancelled = !fireEvent.keyDown(heading(), { key: "Tab", shiftKey: true });
+    expect(cancelled).toBe(true);
+    expect(document.activeElement).not.toBe(heading());
+  });
+
+  test("the match count shows at once but is announced once typing pauses", () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      renderModal();
+      const announce = () =>
+        document.querySelector('[role="status"][data-filter-announce]')!.textContent;
+      fireEvent.change(filterBox(), { target: { value: "s" } });
+      fireEvent.change(filterBox(), { target: { value: "st" } });
+      fireEvent.change(filterBox(), { target: { value: "stadium" } });
+      expect(document.querySelector("[data-filter-count]")!.textContent).toBe(
+        "1 of 3 inserts",
+      );
+      // The visible count is no live region of its own.
+      expect(document.querySelector("[data-filter-count]")!.getAttribute("role")).toBeNull();
+      expect(announce()).toBe("");
+      act(() => {
+        vi.advanceTimersByTime(499);
+      });
+      expect(announce()).toBe("");
+      act(() => {
+        vi.advanceTimersByTime(1);
+      });
+      expect(announce()).toBe("1 of 3 inserts");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("a box says its count, and with a selection up it takes Tab and Enter", () => {
+    renderModal();
+    expect(describedBy(box(STADIUM))).toBe("2 parallels");
+    expect(describedBy(box(BOWMAN))).toBe("drop here");
+    // No selection: not a Tab stop (focusable from script only).
+    expect(box(BOWMAN).getAttribute("tabindex")).toBe("-1");
+
+    fireEvent.click(screen.getByText(FOIL));
+    expect(box(BOWMAN).getAttribute("tabindex")).toBe("0");
+    expect(describedBy(box(BOWMAN))).toBe(
+      "Click here to make the selected row a parallel | Press Enter to move the selection here.",
+    );
+    // The top-level box too.
+    const topLevel = screen.getByRole("group", { name: "Top-level inserts" });
+    expect(topLevel.getAttribute("tabindex")).toBe("0");
+
+    // A key on a row's own control inside a box is that control's.
+    fireEvent.keyDown(screen.getByRole("checkbox", { name: "Select Rainbow" }), {
+      key: "Enter",
+    });
+    expect(screen.getByText("No changes yet")).toBeTruthy();
+
+    // Enter on the far-away empty box itself places the selection there.
+    act(() => box(BOWMAN).focus());
+    fireEvent.keyDown(box(BOWMAN), { key: "Enter" });
+    expect(screen.getByText("0 promotions, 0 demotions, 1 re-parented")).toBeTruthy();
+    expect(within(box(BOWMAN)).getByText(FOIL)).toBeTruthy();
+    // Selection spent: the box leaves the Tab order again.
+    expect(box(BOWMAN).getAttribute("tabindex")).toBe("-1");
+  });
+
+  test("Space on a box places too, and a box refusing the selection takes no key", () => {
+    renderModal();
+    fireEvent.click(screen.getByRole("checkbox", { name: `Select ${BOWMAN}` }));
+    // Bowman's own box refuses its own row: not a target, not a stop.
+    expect(box(BOWMAN).getAttribute("tabindex")).toBe("-1");
+    fireEvent.keyDown(box(BOWMAN), { key: "Enter" });
+    expect(screen.getByText("No changes yet")).toBeTruthy();
+
+    fireEvent.keyDown(box(TRADED), { key: " " });
+    expect(screen.getByText("1 promotion, 0 demotions")).toBeTruthy();
+  });
+
+  test("the jump's light is its own mark, and it goes out when a drag starts", () => {
+    renderModal();
+    fireEvent.click(jump(STADIUM));
+    expect(box(STADIUM).getAttribute("data-jumped")).toBe("true");
+    expect(box(STADIUM).className).toContain("ring-selection");
+    act(() => {
+      dnd.onDragStart!({ active: { id: "traded" } });
+    });
+    expect(box(STADIUM).hasAttribute("data-jumped")).toBe(false);
+    expect(box(STADIUM).className).not.toContain("ring-selection");
+  });
+});

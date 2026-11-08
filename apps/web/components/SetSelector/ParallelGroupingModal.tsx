@@ -1,7 +1,10 @@
 import {
+  memo,
   useCallback,
+  useDeferredValue,
   useEffect,
   useId,
+  useLayoutEffect,
   useMemo,
   useReducer,
   useRef,
@@ -31,6 +34,7 @@ import NeonButton from "../modules/NeonButton";
 import { Input } from "../primitives/Input";
 import { ConfirmDialog } from "../modules/confirm-dialog";
 import { isEditableTarget } from "../../lib/dom/is-editable-target";
+import { useDebouncedValue } from "../../src/hooks/useDebouncedValue";
 import { keyboardAwareCollision } from "../../lib/dnd/keyboard-aware-collision";
 import { userFacingMessage } from "../../lib/errors/user-facing-message";
 import { chunkGroupingPlan } from "../../convex/parallelGroupingPlan";
@@ -374,7 +378,13 @@ function rowControlKey(rowId: RowId, control: RowControl): string {
   return `${control}-${rowId}`;
 }
 
-function DraggableRow({
+/**
+ * NEO-472 (perf) — memoised, and every handler takes the row's id, so the
+ * dialog hands each row the SAME function on every render: a selection or a
+ * filter keystroke re-renders only the rows whose own props changed, not all
+ * 300 of a big variant type.
+ */
+const DraggableRow = memo(function DraggableRow({
   info,
   isSuggested,
   isSelected,
@@ -392,12 +402,12 @@ function DraggableRow({
   isMovable: boolean;
   /** Another selected row is being dragged, and this one goes with it. */
   isRidingAlong: boolean;
-  onNameClick: (e: React.MouseEvent) => void;
-  onTickClick: (e: React.MouseEvent) => void;
-  onNavKey: (e: React.KeyboardEvent, control: RowControl) => void;
-  onReject?: () => void;
+  onNameClick: (rowId: RowId, e: React.MouseEvent) => void;
+  onTickClick: (rowId: RowId, e: React.MouseEvent) => void;
+  onNavKey: (rowId: RowId, e: React.KeyboardEvent, control: RowControl) => void;
+  onReject?: (rowId: RowId) => void;
   /** NEO-472 — the "has parallels" tag: bring this row's box into view. */
-  onJump?: () => void;
+  onJump?: (rowId: RowId) => void;
 }) {
   const nameId = useId();
   const {
@@ -444,6 +454,12 @@ function DraggableRow({
       }}
       {...listeners}
       {...attributes}
+      // NEO-472 — never aria-disabled. dnd-kit sets it on a row that cannot
+      // be dragged, and on a group aria-disabled disables everything inside:
+      // the "has parallels" jump read as disabled and could not be pressed.
+      // The row's own controls carry their state (the tick box and name are
+      // natively disabled on a row that holds parallels).
+      aria-disabled={undefined}
       aria-labelledby={nameId}
       style={{ opacity: isDragging || isRidingAlong ? 0.4 : 1 }}
       className={`rounded-lg border text-sm font-medium transition-all select-none flex items-stretch focus-outline ${baseClass} ${
@@ -462,8 +478,8 @@ function DraggableRow({
         aria-checked={isSelected}
         aria-label={`Select ${info.value}`}
         disabled={!isMovable}
-        onClick={onTickClick}
-        onKeyDown={(e) => onNavKey(e, "tick")}
+        onClick={(e) => onTickClick(info._id, e)}
+        onKeyDown={(e) => onNavKey(info._id, e, "tick")}
         className={`group/tick shrink-0 w-8 flex items-center justify-center rounded-l-lg focus-outline focus-visible:-outline-offset-2 ${
           isMovable ? "cursor-pointer" : "cursor-default"
         }`}
@@ -494,8 +510,8 @@ function DraggableRow({
       <button
         type="button"
         data-grouping-control={rowControlKey(info._id, "name")}
-        onClick={onNameClick}
-        onKeyDown={(e) => onNavKey(e, "name")}
+        onClick={(e) => onNameClick(info._id, e)}
+        onKeyDown={(e) => onNavKey(info._id, e, "name")}
         disabled={!isMovable}
         aria-pressed={isSelected}
         className={`flex-1 text-left pl-1 pr-3 py-2 flex items-center gap-2 ${
@@ -529,7 +545,7 @@ function DraggableRow({
           type="button"
           onClick={(e) => {
             e.stopPropagation();
-            onJump();
+            onJump(info._id);
           }}
           aria-label={`${info.value} has parallels. Jump to them`}
           title="Jump to its parallels"
@@ -548,7 +564,7 @@ function DraggableRow({
           type="button"
           onClick={(e) => {
             e.stopPropagation();
-            onReject();
+            onReject(info._id);
           }}
           className="text-xs text-neon-pink-text px-3 rounded-r-lg hover:bg-neon-pink/10"
           aria-label={`Remove ${info.value} from parallels`}
@@ -558,7 +574,7 @@ function DraggableRow({
       )}
     </div>
   );
-}
+});
 
 // ===== DROP ZONE =====
 
@@ -607,6 +623,13 @@ function DropZone({
 }) {
   const { setNodeRef, isOver } = useDroppable({ id, disabled: refusesDrop });
   const titleId = useId();
+  const subtitleId = useId();
+  const keyHintId = useId();
+  // NEO-472 — while a selection is up the box is a place-it-here target, and
+  // a keyboard user can reach it too: it joins the Tab order and Enter or
+  // Space on the box itself does what a click does. Only on the box itself:
+  // a key pressed on a row's button inside it is that button's.
+  const keyboardTarget = Boolean(isClickTarget && onClick);
   const showEmpty =
     Array.isArray(children) ? children.length === 0 : !children;
   const compact = compactWhenEmpty && showEmpty;
@@ -617,15 +640,36 @@ function DropZone({
       // reader announces "Parallels of …" rather than an anonymous div.
       role="group"
       aria-labelledby={titleId}
-      tabIndex={boxFor ? -1 : undefined}
+      // NEO-472 — landing on a box reads its subtitle (the count, or what a
+      // click or Enter will do with the selection).
+      aria-describedby={
+        [subtitle ? subtitleId : null, keyboardTarget ? keyHintId : null]
+          .filter(Boolean)
+          .join(" ") || undefined
+      }
+      tabIndex={keyboardTarget ? 0 : boxFor ? -1 : undefined}
       data-box-for={boxFor}
       data-jumped={flash ? "true" : undefined}
       onClick={isClickTarget ? onClick : undefined}
-      className={`rounded-lg border-2 transition-colors focus-outline motion-reduce:transition-none ${
+      onKeyDown={
+        keyboardTarget
+          ? (e) => {
+              if (e.target !== e.currentTarget) return;
+              if (e.key !== "Enter" && e.key !== " ") return;
+              e.preventDefault();
+              onClick?.();
+            }
+          : undefined
+      }
+      // NEO-472 — the jump's light is a different SHAPE from a drag-over, not
+      // a deeper tint of it: a ring standing 2px off the box (a line, so it
+      // reads in light, which has no glows) plus a neon halo in dark, scaled
+      // by --glow. Drag-over stays a border and a faint fill.
+      className={`rounded-lg border-2 transition motion-reduce:transition-none focus-outline ${
         isOver
           ? "border-selection bg-neon-blue/5"
           : flash
-            ? "border-selection bg-neon-blue/10"
+            ? "border-selection bg-raised-deep/30 ring-2 ring-selection ring-offset-2 ring-offset-raised-deep shadow-[0_0_14px_3px_rgb(0_194_255/calc(0.45*var(--glow)))]"
             : highlight
               ? "border-notice-warn-rule/50 bg-notice-warn-bg/25"
               : "border-rule-strong bg-raised-deep/30"
@@ -640,11 +684,18 @@ function DropZone({
           </div>
           {subtitle && (
             <div className="text-xs text-ink-3">
-              <span aria-hidden="true" className="mr-2">
+              {/* Below `sm` the line wraps and a dot would start the second
+                  line on its own; the gap alone separates them there. */}
+              <span aria-hidden="true" className="mr-2 hidden sm:inline">
                 ·
               </span>
-              <span>{subtitle}</span>
+              <span id={subtitleId}>{subtitle}</span>
             </div>
+          )}
+          {keyboardTarget && (
+            <span id={keyHintId} className="sr-only">
+              Press Enter to move the selection here.
+            </span>
           )}
         </div>
       ) : (
@@ -654,12 +705,19 @@ function DropZone({
           {title}
         </div>
         {subtitle && (
-          <div className="text-xs text-ink-3 mt-0.5">{subtitle}</div>
+          <div id={subtitleId} className="text-xs text-ink-3 mt-0.5">
+            {subtitle}
+          </div>
+        )}
+        {keyboardTarget && (
+          <span id={keyHintId} className="sr-only">
+            Press Enter to move the selection here.
+          </span>
         )}
       </div>
       <div className="p-3 space-y-1.5 min-h-[48px]">
         {showEmpty ? (
-          <p className="text-xs text-ink-3 italic py-1">
+          <p className="text-xs text-ink-3 italic py-1 break-words">
             {emptyText ?? "Drop rows here"}
           </p>
         ) : (
@@ -697,6 +755,45 @@ function scrollerOf(el: HTMLElement, body: HTMLElement | null): HTMLElement | nu
     if (overflowY === "auto" || overflowY === "scroll") return n;
   }
   return body;
+}
+
+/**
+ * NEO-472 — whether a scroller's content is taller than it, kept current as
+ * it resizes and as its content changes. A keyboard user can only scroll a
+ * scroller they can reach, and one with nothing to scroll is a stop that does
+ * nothing, so `tabIndex` follows this (the NEO-444 rule in `useOverflows`).
+ * Unlike `useOverflows` the content here changes while the dialog is open
+ * (a filter, a move, a box growing from one line), and the scrollers mount
+ * after the loading skeleton, so it takes a callback ref and watches each
+ * direct child as well as the scroller. Which element scrolls depends on the
+ * breakpoint, and this needs no breakpoint: a pane that does not scroll (the
+ * stacked phone layout) never overflows itself, nor does the body from `md`
+ * up.
+ */
+function useOverflowing(): [(el: HTMLElement | null) => void, boolean] {
+  const [el, setEl] = useState<HTMLElement | null>(null);
+  const [overflows, setOverflows] = useState(false);
+  useEffect(() => {
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const measure = () => setOverflows(el.scrollHeight > el.clientHeight + 1);
+    // A ResizeObserver reports each element once as observation starts, so
+    // this measures on mount with no synchronous setState here.
+    const sizes = new ResizeObserver(measure);
+    const watch = () => {
+      sizes.disconnect();
+      sizes.observe(el);
+      for (const child of Array.from(el.children)) sizes.observe(child);
+    };
+    watch();
+    const kids =
+      typeof MutationObserver === "undefined" ? null : new MutationObserver(watch);
+    kids?.observe(el, { childList: true });
+    return () => {
+      sizes.disconnect();
+      kids?.disconnect();
+    };
+  }, [el]);
+  return [setEl, el !== null && overflows];
 }
 
 /** How long a box stays lit after a jump. */
@@ -783,6 +880,21 @@ export default function ParallelGroupingModal({
   /** NEO-472 — the box the last "has parallels" jump landed on, lit briefly. */
   const [jumpedTo, setJumpedTo] = useState<RowId | null>(null);
   const jumpTimerRef = useRef<number | null>(null);
+  /**
+   * NEO-472 (a11y) — each scroller is a Tab stop while it has something to
+   * scroll (axe scrollable-region-focusable): a pane of empty boxes holds no
+   * control to scroll it by.
+   */
+  const [setBodyScroller, bodyOverflows] = useOverflowing();
+  const [setLeftScroller, leftOverflows] = useOverflowing();
+  const [setRightScroller, rightOverflows] = useOverflowing();
+  const bodyRefCallback = useCallback(
+    (el: HTMLDivElement | null) => {
+      bodyRef.current = el;
+      setBodyScroller(el);
+    },
+    [setBodyScroller],
+  );
 
   // Initialize once when the tree first resolves. Subsequent updates from
   // other tabs are intentionally ignored — re-initializing would discard the
@@ -908,7 +1020,10 @@ export default function ParallelGroupingModal({
    * always list the same inserts in the same order, and a shown box shows
    * ALL its parallels: the filter picks groups, it does not split one.
    */
-  const tokens = useMemo(() => filterTokens(filter), [filter]);
+  // NEO-472 (perf) — the panes follow the filter at a lower priority than
+  // the typing, so the field stays responsive on a 300-row variant type.
+  const deferredFilter = useDeferredValue(filter);
+  const tokens = useMemo(() => filterTokens(deferredFilter), [deferredFilter]);
   const isFiltering = tokens.length > 0;
   const visibleTopRows = useMemo(() => {
     if (!isFiltering) return ungroupedRows;
@@ -974,6 +1089,16 @@ export default function ParallelGroupingModal({
     return map;
   }, [visibleTopRows, childrenByParent, parentsWithChildren]);
 
+  /**
+   * NEO-472 (perf) — the row handlers read the lists through this ref so
+   * they keep one identity for the dialog's life (see DraggableRow's memo).
+   * Updated after each commit, so a click reads the lists on screen.
+   */
+  const listOfRowRef = useRef(listOfRow);
+  useLayoutEffect(() => {
+    listOfRowRef.current = listOfRow;
+  }, [listOfRow]);
+
   /** The rows a drag of `rowId` carries: the whole selection if it is in it. */
   const rowsCarriedBy = useCallback(
     (rowId: RowId): { rowIds: RowId[]; fromSelection: boolean } =>
@@ -985,6 +1110,13 @@ export default function ParallelGroupingModal({
 
   const handleDragStart = useCallback((e: DragStartEvent) => {
     setActiveDragId(e.active.id as string);
+    // NEO-472 — a drag's own highlight takes over: the jump's light goes
+    // out so the two never show at once.
+    if (jumpTimerRef.current !== null) {
+      window.clearTimeout(jumpTimerRef.current);
+      jumpTimerRef.current = null;
+    }
+    setJumpedTo(null);
   }, []);
 
   // A drag cancelled by Escape or a pointercancel (a touch scroll, a tab
@@ -1040,7 +1172,7 @@ export default function ParallelGroupingModal({
         dispatch({
           type: "SELECT_RANGE",
           rowId,
-          list: listOfRow.get(rowId) ?? [rowId],
+          list: listOfRowRef.current.get(rowId) ?? [rowId],
         });
       } else if (e.metaKey || e.ctrlKey) {
         dispatch({ type: "TOGGLE", rowId });
@@ -1048,7 +1180,7 @@ export default function ParallelGroupingModal({
         dispatch({ type: "SELECT_ONLY", rowId });
       }
     },
-    [listOfRow],
+    [],
   );
 
   /** The tick box: toggles; Shift extends the run, as the name does. */
@@ -1059,14 +1191,24 @@ export default function ParallelGroupingModal({
         dispatch({
           type: "SELECT_RANGE",
           rowId,
-          list: listOfRow.get(rowId) ?? [rowId],
+          list: listOfRowRef.current.get(rowId) ?? [rowId],
         });
       } else {
         dispatch({ type: "TOGGLE", rowId });
       }
     },
-    [listOfRow],
+    [],
   );
+
+  /** ✕ on a parallel: back to the top level, alone; the selection stays. */
+  const handleReject = useCallback((rowId: RowId) => {
+    dispatch({
+      type: "MOVE",
+      rowIds: [rowId],
+      placement: { kind: "ungrouped" },
+      fromSelection: false,
+    });
+  }, []);
 
   /**
    * NEO-300 — keyboard parity, on a row's tick box or name button.
@@ -1081,7 +1223,7 @@ export default function ParallelGroupingModal({
     (rowId: RowId, e: React.KeyboardEvent, control: RowControl) => {
       if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
       if (e.altKey || e.metaKey || e.ctrlKey) return;
-      const list = listOfRow.get(rowId);
+      const list = listOfRowRef.current.get(rowId);
       if (!list) return;
       const at = list.indexOf(rowId);
       if (at < 0) return;
@@ -1098,7 +1240,7 @@ export default function ParallelGroupingModal({
         )
         ?.focus();
     },
-    [listOfRow],
+    [],
   );
 
   const handleZoneClick = useCallback(
@@ -1279,6 +1421,19 @@ export default function ParallelGroupingModal({
     };
   }, [isOpen]);
 
+  /**
+   * NEO-472 (a11y) — the filter's match count. Shown at once, but announced
+   * only once typing pauses: a status that spoke on every keystroke would
+   * talk over the typing. The debounce restarts on each change, so the timer
+   * is cleared as the text changes and as the dialog closes (the text goes
+   * empty) or unmounts.
+   */
+  const filterCountText =
+    isOpen && isFiltering && tree !== undefined && state.hasInitialized
+      ? `${visibleTopRows.length} of ${ungroupedRows.length} inserts`
+      : "";
+  const announcedFilterCount = useDebouncedValue(filterCountText, 500);
+
   if (!isOpen) return null;
 
   // NEO-308 — also loading while the state is not built from the tree: a
@@ -1338,9 +1493,10 @@ export default function ParallelGroupingModal({
   const renderRow = (
     info: RowInfo,
     isMovable: boolean,
-    onReject?: () => void,
+    /** A parallel in a box: it has a ✕. */
+    rejectable: boolean,
     /** NEO-472 — the row's "has parallels" tag jumps to its box. */
-    jumpable?: boolean,
+    jumpable: boolean,
   ) => (
     <DraggableRow
       key={info._id}
@@ -1353,11 +1509,11 @@ export default function ParallelGroupingModal({
         activeDragId !== info._id &&
         selectedSet.has(info._id)
       }
-      onNameClick={(e) => handleNameClick(info._id, e)}
-      onTickClick={(e) => handleTickClick(info._id, e)}
-      onNavKey={(e, control) => handleNavKey(info._id, e, control)}
-      onReject={onReject}
-      onJump={jumpable ? () => handleJump(info._id) : undefined}
+      onNameClick={handleNameClick}
+      onTickClick={handleTickClick}
+      onNavKey={handleNavKey}
+      onReject={rejectable ? handleReject : undefined}
+      onJump={jumpable ? handleJump : undefined}
     />
   );
 
@@ -1414,10 +1570,13 @@ export default function ParallelGroupingModal({
         // NEO-308 — the heading (and the overlay) are parked-focus targets
         // outside that list: Shift+Tab from one of them would otherwise walk
         // out of the dialog, since nothing focusable precedes the heading.
-        const offList = !Array.from(focusable).includes(
-          document.activeElement as HTMLElement,
-        );
-        if (e.shiftKey && (document.activeElement === first || offList)) {
+        // NEO-472 — named, not "anything off the list": a box the jump
+        // focused (tabIndex -1) is off the list too, and Shift+Tab from it
+        // belongs to the browser (the control just above it), not the footer.
+        const parked =
+          document.activeElement === root ||
+          document.activeElement === headingRef.current;
+        if (e.shiftKey && (document.activeElement === first || parked)) {
           e.preventDefault();
           last.focus();
         } else if (!e.shiftKey && document.activeElement === last) {
@@ -1492,21 +1651,26 @@ export default function ParallelGroupingModal({
                   filterRef.current?.focus();
                 }}
                 aria-label="Clear the insert filter"
-                className="absolute right-0.5 top-1/2 -translate-y-1/2 flex h-7 w-7 items-center justify-center rounded text-ink-3 hover:text-ink hover:bg-hover-raised focus-outline"
+                // 28px to see; below `sm` an invisible 8px skirt makes the
+                // hit area 44px for a thumb.
+                className="absolute right-0.5 top-1/2 -translate-y-1/2 flex h-7 w-7 items-center justify-center rounded text-ink-3 hover:text-ink hover:bg-hover-raised focus-outline after:absolute after:-inset-2 after:content-[''] sm:after:hidden"
               >
                 <span aria-hidden="true">×</span>
               </button>
             )}
           </div>
-          {/* Always mounted, so each change of count is announced. */}
+          {/* The count on screen follows each keystroke; it is not a live
+              region. The status beside it is always mounted and carries
+              the same words once typing pauses (see filterCountText). */}
           <span
-            role="status"
             data-filter-count
-            className={isFiltering ? "text-xs text-ink-3 tabular-nums" : "sr-only"}
+            aria-hidden={filterCountText ? undefined : true}
+            className="text-xs text-ink-3 tabular-nums"
           >
-            {isFiltering && !isLoading
-              ? `${visibleTopRows.length} of ${ungroupedRows.length} inserts`
-              : ""}
+            {filterCountText}
+          </span>
+          <span role="status" data-filter-announce className="sr-only">
+            {announcedFilterCount}
           </span>
         </div>
 
@@ -1514,8 +1678,14 @@ export default function ParallelGroupingModal({
             stack, as before; from `md` up it holds still and each pane
             scrolls on its own. It still carries `data-grouping-body`. */}
         <div
-          ref={bodyRef}
-          className="flex-1 min-h-0 overflow-y-auto px-6 py-4 md:overflow-hidden md:flex md:flex-col"
+          ref={bodyRefCallback}
+          // A Tab stop only while it scrolls (a phone): see useOverflowing.
+          // The house scroller pattern (PublicCover): a group, named while
+          // it is a stop, so a screen reader says what the stop is.
+          role="group"
+          aria-label={bodyOverflows ? "Inserts and their parallels" : undefined}
+          tabIndex={bodyOverflows ? 0 : undefined}
+          className="flex-1 min-h-0 overflow-y-auto px-6 py-4 md:overflow-hidden md:flex md:flex-col focus-outline focus-visible:-outline-offset-2"
           data-grouping-body
         >
           {isLoading ? (
@@ -1543,8 +1713,14 @@ export default function ParallelGroupingModal({
                 {/* Left pane: Top-level / Ungrouped pool. The padding keeps
                     focus outlines clear of the pane's clipping edge. */}
                 <section
+                  ref={setLeftScroller}
                   aria-label="Inserts"
-                  className="md:min-h-0 md:overflow-y-auto md:p-1.5"
+                  // A named region is the scroller axe asks to be focusable
+                  // (scrollable-region-focusable); it stays a region because
+                  // that is what it is, and only while it scrolls.
+                  // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- a scrolling region must be reachable by keyboard
+                  tabIndex={leftOverflows ? 0 : undefined}
+                  className="md:min-h-0 md:overflow-y-auto md:p-1.5 rounded-lg focus-outline focus-visible:-outline-offset-2"
                 >
                 <DropZone
                   id="drop-ungrouped"
@@ -1558,7 +1734,7 @@ export default function ParallelGroupingModal({
                   onClick={() => handleZoneClick({ kind: "ungrouped" })}
                   emptyText={
                     isFiltering
-                      ? `No inserts match "${filter.trim()}"`
+                      ? `No inserts match "${deferredFilter.trim()}"`
                       : "(no top-level inserts)"
                   }
                 >
@@ -1570,7 +1746,7 @@ export default function ParallelGroupingModal({
                     // parent too, for as long as it holds them — see MOVE.
                     const isParentNow = parentsWithChildren.has(info._id);
                     const isMovable = !isFixedParent && !isParentNow;
-                    return renderRow(info, isMovable, undefined, !isMovable);
+                    return renderRow(info, isMovable, false, !isMovable);
                   })}
                 </DropZone>
                 </section>
@@ -1578,12 +1754,18 @@ export default function ParallelGroupingModal({
                 {/* Right pane: per-insert "Parallels of X" boxes, in the
                     same order as the rows on the left. */}
                 <section
+                  ref={setRightScroller}
                   aria-label="Parallels by insert"
-                  className="space-y-4 md:min-h-0 md:overflow-y-auto md:p-1.5"
+                  // A named region is the scroller axe asks to be focusable
+                  // (scrollable-region-focusable); it stays a region because
+                  // that is what it is, and only while it scrolls.
+                  // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- a scrolling region must be reachable by keyboard
+                  tabIndex={rightOverflows ? 0 : undefined}
+                  className="space-y-4 md:min-h-0 md:overflow-y-auto md:p-1.5 rounded-lg focus-outline focus-visible:-outline-offset-2"
                 >
                 {isFiltering && visibleParentRows.length === 0 && (
-                  <p className="text-xs text-ink-3 italic py-1">
-                    No parallels to show for "{filter.trim()}"
+                  <p className="text-xs text-ink-3 italic py-1 break-words">
+                    No parallels to show for "{deferredFilter.trim()}"
                   </p>
                 )}
                 {visibleParentRows.map((parent) => {
@@ -1622,14 +1804,7 @@ export default function ParallelGroupingModal({
                       highlight={hasYellow}
                     >
                       {children.map((info) =>
-                        renderRow(info, true, () =>
-                          dispatch({
-                            type: "MOVE",
-                            rowIds: [info._id],
-                            placement: { kind: "ungrouped" },
-                            fromSelection: false,
-                          }),
-                        ),
+                        renderRow(info, true, true, false),
                       )}
                     </DropZone>
                   );
