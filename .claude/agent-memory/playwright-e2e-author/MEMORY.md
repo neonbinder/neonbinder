@@ -84,6 +84,8 @@
 - [Sync status step ledger waits](patterns_sync_status_step_ledger_waits.md) — NEO-415: wait per ledger step (7 s), gate on the new run (stale ledger), throttled press, optional eBay photo step
 - [Add cards run-start caps](patterns_add_cards_run_start_caps.md) — NEO-452: 2 active batches (closed run still counts while read) and 12 starts/hour give an alert, not a bug; workers 3+ share one user
 - [Add cards drop needs a set first](patterns_add_cards_drop_needs_a_set_first.md) — NEO-452 tray: pickIntakeSet before any drop; read-only Topps Chrome Base unless the pair must match
+- [NEO-458 prefixed parallel stays bare](reference_neo458_prefixed_parallel_numbers_stay_bare.md) — Bowman Chrome (BCV-) built from Base, prefix first; drill, traps, no number field so no mismatch control
+- [Seller spec set built by the spec](patterns_seller_spec_built_by_spec_and_the_window.md) — builtBySpec in SELLER_SPEC_SETS; a seller job not started yet is not "clear"
 - [Intake zip fixtures](patterns_intake_zip_fixtures.md) — flat oversize JPEG via cjpeg, zip -0, dpi stamp keeps big photos on the fast path
 - [Stale-chunk injection](patterns_stale_chunk_injection.md) — NEO-434: stale-chunks.ts arm-time snapshot, no-reload anchor via document-request count, two RED breaks
 - [Analytics leak check in a spec](patterns_analytics_leak_check_in_a_spec.md) — NEO-434: PostHog filter, gzip decode, anchor, count-not-bodies, which marker field reds a no-op
