@@ -57,21 +57,22 @@
 // eBay prices is unit-only (convex/listingDrainEbay.test.ts, the item's
 // packageWeightAndSize): the sandbox does not show the item body back, so
 // the spec proves the weight is saved and kept (step 4), not what eBay got.
-//   5. They set a common price, then put one copy each of the first three 1988
-//      Topps Base cards in the box, with a photo on two of them only (eBay
-//      listings need one): the FIRST has a plain quick-count copy and then a
-//      second line from a scanned pair (NEO-427: the oldest copy WITH photos
-//      feeds the listing, so the older photoless line does not hold it; Add
-//      cards, a real scan pair read and matched, the card picked by hand, Save;
-//      the tile says "Photos are in!", the scans ride on the saved copy with no
-//      further action), the SECOND gets a photo by hand in its drawer, the third
-//      none. A photo copy is named "Raw with photo" beside its card's field and
-//      no longer counted by it (the second card reads 0; the first still reads its
-//      plain copy's 1). They press Sync, follow
-//      "See what's syncing" (Back returns), and Sync status reads the eBay
-//      section's set with 2 listed and 1 skipped: the third card is held back,
-//      named, with eBay's no-photo reason. This is the proof the scanner's
-//      photos reach eBay: the first card lists on the photos the save put on it.
+//   5. They set a common price, then put copies of the first three 1988 Topps
+//      Base cards in the box, with a photo on two of them only (eBay listings
+//      need one): the FIRST has a plain quick-count copy and then a second line
+//      from a scanned pair (NEO-427: the oldest copy WITH photos feeds the
+//      listing, so the older photoless line does not hold it; Add cards, a real
+//      scan pair read and matched, the card picked by hand, Save; the tile says
+//      "Photos are in!", the scans ride on the saved copy with no further
+//      action), the SECOND gets a photo by hand in its drawer, the third none.
+//      A photo alone sets no line apart (NEO-431): the quick count counts photo
+//      lines and no field names another line beside its number, so the first
+//      card reads 2 (plain + scanned), the second 1 and the third 1. They press
+//      Sync, follow "See what's syncing" (Back returns), and Sync status reads
+//      the eBay section's set with 2 listed and 1 skipped: the third card is
+//      held back, named, with eBay's no-photo reason. This is the proof the
+//      scanner's photos reach eBay: the first card lists on the photos the save
+//      put on it.
 //   6. They turn the box's "Listed on marketplaces" off. NEO-433: Sync status,
 //      left open, shows a run the platform killed read as running, then flip by
 //      itself to the set's last result with the step it was on failed (a seed
@@ -81,8 +82,9 @@
 //      The Sales tab names eBay (its orders link and its empty state; Back
 //      returns).
 //   6b. NEO-432: a Sync pressed soon after another still runs the changes
-//      queued since (the cron is 15 minutes away). They put the two photoless
-//      copies to 0 in the in-person box (Sync status queues both cards), press
+//      queued since (the cron is 15 minutes away). They take the third card to 0
+//      and the first card's plain copy out by a lower from 2 to 1 in the in-person
+//      box (Sync status queues both cards), press
 //      Sync, and the press answers "Syncing ... now" and the queue empties.
 //      Whether this press, or step 6's, meets a recent press depends on whether
 //      the cron had already made the set's sync record before step 5's press
@@ -93,11 +95,14 @@
 //      synced. Give it a minute" to that press and ran nothing, so either
 //      toast goes red on it. The unit tests pin the branch itself
 //      (`listingSync.test.ts`); this proves it live, in what a collector reads.
-//   7. They tidy up (cards out of the box: the photoless one by its quantity,
-//      the two with a photo through the card drawer's Remove, since a quick
-//      count never changes a copy with a photo (NEO-377); the scan run closed
-//      with "Done adding photos" (the box is in-person by now, so closing it
-//      lists nothing); the common price cleared, the box deleted) and Disconnect eBay (the confirm dialog),
+//   7. They tidy up (cards out of the box: 6b's writes already took the third
+//      by its quantity and the first card's plain copy by a lower, since a lower
+//      takes the photoless line before one with photos and the scanned line
+//      stays; the two lines with a photo then go through
+//      the card drawer's Remove, which also carries the drawer's axe states;
+//      the scan run closed with "Done adding photos" (the box is in-person by
+//      now, so closing it lists nothing); the common price cleared, the box
+//      deleted) and Disconnect eBay (the confirm dialog),
 //      which takes down anything NeonBinder put up on eBay and leaves the
 //      account not connected. The afterEach does the same on a failure.
 //
@@ -169,8 +174,8 @@
 // R7/R7a. 1988 Topps Baseball is a registered real set (SET-REGISTRY.md): this
 // spec is the SOLE writer of the sandbox seller account's listings and writes
 // no card, player, team or variant of the set. Its NB writes are the signed-in
-// user's own rows (the eBay connection and setup, a minted box, three box copies
-// (a photo on two, one of them from a scan run), an intake run, the common price,
+// user's own rows (the eBay connection and setup, a minted box, copies of three cards
+// in a box (a photo on two, one of them from a scan run), an intake run, the common price,
 // and every other box set to in-person, which is left that way). It makes NeonBinder's standard payment and returns
 // policies on the sandbox seller's eBay account where it has none ("Set me
 // up"); those stay on eBay and are found again by the next run. It makes no
@@ -723,24 +728,22 @@ test(
     await expect(page).toHaveURL(/[?&]tab=checklists/);
     await expect(checklist.getByRole("heading", { level: 3, name: TITLE })).toBeVisible();
     await adding.selectOption({ label: boxName });
-    // The scanned copy is a second line in the box, with its photos: the quick count
-    // still reads the plain copy's 1, and the photo copy is named beside it.
-    await expect(fieldA).toHaveValue("1");
-    await expect(fieldA).toHaveAccessibleDescription(/also here: Raw with photo/);
+    // The scanned copy is a second line in the box, with its photos. A photo
+    // alone sets no line apart (NEO-431), so the quick count counts it with the
+    // plain copy (1 + 1) and no other line is named beside the number.
+    await expect(fieldA).toHaveValue("2");
+    await expect(fieldA).not.toHaveAccessibleDescription(/also here/);
 
     // --- The other two: one copy each by quick count --------------------------------
-    // A copy with a photo is the collector's own record, not a quick count
-    // (NEO-377: the server's quick count never changes it). So once a card's
-    // copy has its photo, the field counts it no more and names it after the
-    // number instead ("also here: Raw with photo", the field's description);
-    // the card without one still reads 1.
-    const expectPhotoCopiesAside = async () => {
-      // The first card: its plain copy counts 1, its scanned copy is named beside it.
-      await expect(fieldA).toHaveValue("1");
-      await expect(fieldA).toHaveAccessibleDescription(/also here: Raw with photo/);
-      await expect(fieldB).toHaveValue("0");
-      await expect(fieldB).toHaveAccessibleDescription(/also here: Raw with photo/);
-      await expect(fieldC).toHaveValue("1");
+    // Once a card's copy has its photo the field still counts it, and names no
+    // other line ("also here: ...", the field's description, no longer exists):
+    // the first card reads 2 (plain + scanned), the second 1 once its hand-added
+    // photo is on, the third 1 without one.
+    const expectPhotoCopiesCounted = async () => {
+      for (const [field, count] of [[fieldA, "2"], [fieldB, "1"], [fieldC, "1"]] as const) {
+        await expect(field).toHaveValue(count);
+        await expect(field).not.toHaveAccessibleDescription(/also here/);
+      }
     };
     await fieldB.fill("1");
     await page.keyboard.press(leaveKey(isMobile));
@@ -770,7 +773,7 @@ test(
       await expect(yourCopies.getByRole("heading", { name: "Your copies (1 line)", exact: true })).toBeVisible();
       const editForm = yourCopies.getByRole("form", { name: /^Edit Raw, / });
       await expect(editForm).toBeVisible();
-      const panel = editForm.getByRole("region", { name: "Photos", exact: true });
+      const panel = editForm.getByRole("region", { name: /^Photos of / });
       await expect(panel.getByText("No front photo yet")).toBeAttached();
       await panel.getByLabel("Front photo file", { exact: true }).setInputFiles(path.join(FIXTURES, photo));
       await expect(panel.getByRole("status")).toHaveText("Front photo saved.");
@@ -866,10 +869,10 @@ test(
     await page.goBack();
     await expect(page).toHaveURL(/[?&]tab=checklists/);
     await expect(checklist.getByRole("heading", { level: 3, name: TITLE })).toBeVisible();
-    await expectPhotoCopiesAside();
-    // The box's quantities with the photo copies named beside their fields: the same
+    await expectPhotoCopiesCounted();
+    // The box's quantities with the copies that have photos counted like any other: the same
     // field state as before the Sync (the slow whole-page check waits for the press to be done).
-    await expectAccessible(page, { within: boxList, label: "Inventory checklist, boxed copies with a photo named beside the field" });
+    await expectAccessible(page, { within: boxList, label: "Inventory checklist, boxed copies with their photos counted" });
 
     // --- 6. The box goes in-person: Sync takes both down ----------------------------------
     await page.goto("/inventory?tab=boxes");
@@ -966,8 +969,17 @@ test(
     // since the drill above: the tab link reopens 1988 Topps Base.
     await tabs.getByRole("link", { name: "Checklists", exact: true }).click();
     await expect(page).toHaveURL(/[?&]tab=checklists/);
-    // The copies with no photo: a quick count to 0 (the first card's plain copy, the third card).
-    await emptyBoxCards(page, TOPPS_1988, boxName, [a, c], isMobile, "reopened");
+    // The card with no photo: a quick count to 0.
+    await emptyBoxCards(page, TOPPS_1988, boxName, [c], isMobile, "reopened");
+    // The first card holds two lines, its plain copy and the scanned one. A
+    // lower takes the photoless line first (NEO-431), so a quick count from 2 to
+    // 1 pulls the plain copy and leaves the scanned line, with its photos, as the
+    // card's only one. The status line says no photos went with it.
+    await fieldA.fill("1");
+    await page.keyboard.press(leaveKey(isMobile));
+    await expect(fieldA).toHaveValue("1");
+    await expect(said(new RegExp(`^Pulled 1 of ${escapeRegExp(a)} from ${escapeRegExp(boxName)}\\. 1 left\\.`))).toBeVisible();
+    await expect(fieldA).not.toHaveAccessibleDescription(/also here/);
 
     // --- 6b. NEO-432: a Sync soon after the last one still runs the queued changes ----------------
     // The two writes above landed after step 6's drain finished (its result
@@ -1000,9 +1012,9 @@ test(
     await tabs.getByRole("link", { name: "Checklists", exact: true }).click();
     await expect(page).toHaveURL(/[?&]tab=checklists/);
     await expect(checklist.getByRole("heading", { level: 3, name: TITLE })).toBeVisible();
-    // The two cards' photo copies: a quick count can't take them out (see step 5), so
-    // each goes the way a collector removes a copy, from the card's drawer,
-    // the same drawer that added its photo.
+    // The two cards' photo lines: each goes the way a collector removes a copy
+    // they photographed, from the card's drawer (the same drawer that added the
+    // second's photo), which keeps the drawer's editing and removed states under axe.
     await removeOnlyCopy(a, true);
     await removeOnlyCopy(b);
     await clearChecklistCommonPrice(page, checklist, TITLE, COMMON_PRICE);

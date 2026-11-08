@@ -9,8 +9,8 @@ import { LABEL, SELECT_PANEL } from "../../prototypes/p1/ui";
 import type { Drill } from "../catalog/drill";
 import { useCard, useDrill, writeErrorMessage } from "../data/store";
 import type { Card, DrillItem } from "../data/types";
-import PhotoField from "./PhotoField";
-import { uploadPhoto } from "./photos";
+import { HeldPhotosField, type HeldPhotos } from "../CopyPhotosField";
+import { PHOTO_TYPES, photoProblem, uploadPhoto } from "./photos";
 
 /** The checklist select's "it isn't listed" choice: the collector types its name. */
 const TYPED = "__typed";
@@ -54,15 +54,14 @@ export default function RequestCardForm({
   const [cardNumber, setCardNumber] = useState("");
   const [player, setPlayer] = useState("");
   const [notes, setNotes] = useState("");
-  const [front, setFront] = useState<File | null>(null);
-  const [back, setBack] = useState<File | null>(null);
+  const [held, setHeld] = useState<HeldPhotos>({});
   const [problem, setProblem] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [sent, setSent] = useState<{ id: string; label: string } | null>(null);
   const [invalid, setInvalid] = useState<string | null>(null);
   const formRef = useRef<HTMLFormElement>(null);
   const alertId = useId();
-  // Bumped on each send, to clear the file pickers.
+  // Bumped on each send, to clear the photo box's status line with its photos.
   const [round, setRound] = useState(0);
 
   const sports = useDrill("sport", {});
@@ -90,8 +89,7 @@ export default function RequestCardForm({
     setCardNumber("");
     setPlayer("");
     setNotes("");
-    setFront(null);
-    setBack(null);
+    setHeld({});
     setRound((n) => n + 1);
   };
 
@@ -129,8 +127,8 @@ export default function RequestCardForm({
     setSending(true);
     try {
       const photos = {
-        ...(front ? { frontImageId: await uploadPhoto(generateUploadUrl, front) } : {}),
-        ...(back ? { backImageId: await uploadPhoto(generateUploadUrl, back) } : {}),
+        ...(held.front ? { frontImageId: await uploadPhoto(generateUploadUrl, held.front) } : {}),
+        ...(held.back ? { backImageId: await uploadPhoto(generateUploadUrl, held.back) } : {}),
       };
       const common = {
         cardNumber: cardNumber.trim(),
@@ -315,10 +313,18 @@ export default function RequestCardForm({
         value={notes}
         onChange={(e) => setNotes(e.target.value)}
       />
-      <div className="grid gap-3 sm:grid-cols-2">
-        <PhotoField key={`front${round}`} label="Front photo (optional)" file={front} onFile={setFront} onProblem={setProblem} />
-        <PhotoField key={`back${round}`} label="Back photo (optional)" file={back} onFile={setBack} onProblem={setProblem} />
-      </div>
+      <HeldPhotosField
+        key={round}
+        className=""
+        files={held}
+        onChange={setHeld}
+        line="this card"
+        accept={PHOTO_TYPES.join(",")}
+        help="Optional. Stashed here until you send the request."
+        saving={sending ? (held.front || held.back ? "Sending your photos…" : "Sending…") : undefined}
+        check={photoProblem}
+        onProblem={setProblem}
+      />
 
       <p id={alertId} role="alert" className="min-h-[1.25rem] text-sm text-neon-pink-text">
         {problem ?? ""}

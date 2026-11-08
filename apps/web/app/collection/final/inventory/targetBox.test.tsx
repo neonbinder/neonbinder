@@ -66,9 +66,14 @@ describe("a plain line (D9)", () => {
     ["a location", { location: "Shelf 2" }],
     ["a note", { notes: "corner ding" }],
     ["up for trade", { upForTrade: true }],
-    ["a photo (NEO-377, as the server's isPlainLine)", { hasPhotos: true }],
+    ["a photo and a note", { hasPhotos: true, notes: "corner ding" }],
+    ["a photo and a condition", { hasPhotos: true, condition: "Mint" as const }],
   ] as const)("is not plain with %s", (_why, over) => {
     expect(isPlainLine(copy(over))).toBe(false);
+  });
+
+  it("NEO-431: is still plain with a photo and nothing else, as the server's isPlainLine", () => {
+    expect(isPlainLine(copy({ hasPhotos: true }))).toBe(true);
   });
 
   it("NEO-380: is plain in the default condition (Excellent until picked), or with none (stored before)", () => {
@@ -95,11 +100,17 @@ describe("the quantity (D9)", () => {
     expect(plainQuantity([copy({ graded: { grader: "PSA", grade: "9" } })])).toBe(0);
   });
 
-  it("never counts a copy with a photo: the server's quick count can't change it, so the field would never reach 0", () => {
+  it("NEO-431: counts a line with photos like any other plain line, and names nothing beside it", () => {
     const lines = [copy({ id: "photo", hasPhotos: true }), copy({ id: "plain", quantity: 2 })];
-    expect(plainQuantity(lines)).toBe(2);
-    expect(plainQuantity([copy({ hasPhotos: true })])).toBe(0);
-    expect(otherLines(lines)).toEqual({ count: 1, text: "also here: Raw with photo" });
+    expect(plainQuantity(lines)).toBe(3);
+    expect(plainQuantity([copy({ hasPhotos: true })])).toBe(1);
+    expect(otherLines(lines)).toBeNull();
+  });
+
+  it("NEO-431: a line with photos and another detail stays out of the count", () => {
+    const lines = [copy({ id: "noted", hasPhotos: true, notes: "ding" }), copy({ id: "slab", hasPhotos: true, graded: { grader: "PSA", grade: "9" } })];
+    expect(plainQuantity(lines)).toBe(0);
+    expect(otherLines(lines)).toEqual({ count: 2, text: "also here: Raw with notes, PSA 9" });
   });
 
   it("linesInBox keeps this box's live lines only, and nothing while either is unknown", () => {
@@ -133,9 +144,9 @@ describe("the other lines, read-only after the field", () => {
     expect(otherLines([copy({ graded: { grader: "BGS", grade: "" } })])!.text).toBe("also here: BGS ?");
   });
 
-  it("says a photo where nothing else sets the line apart, and leaves it to the grade or serial when one does", () => {
-    expect(otherLines([copy({ hasPhotos: true, quantity: 2 })])!.text).toBe("also here: Raw with photo ×2");
-    expect(otherLines([copy({ hasPhotos: true, notes: "ding" })])!.text).toBe("also here: Raw with photo");
+  it("NEO-431: never names a photo: the detail that sets the line apart is what it says", () => {
+    expect(otherLines([copy({ hasPhotos: true, notes: "ding", quantity: 2 })])!.text).toBe("also here: Raw with notes ×2");
+    expect(otherLines([copy({ hasPhotos: true, costBasis: 1 })])!.text).toBe("also here: Raw with notes");
     expect(otherLines([copy({ hasPhotos: true, serialNumber: "23/50" })])!.text).toBe("also here: Raw 23/50");
     expect(otherLines([copy({ hasPhotos: true, upForTrade: true })])!.text).toBe("also here: Raw for trade");
   });

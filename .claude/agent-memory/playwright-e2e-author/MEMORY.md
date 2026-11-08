@@ -82,6 +82,8 @@
 - [Listing spec Rev 4 shape](patterns_marketplace_listing_rev4_shape.md) — NEO-370 Rev 4: Start on Profile, Sync status row, stop = remove sign-in, first-Sync throttle toast
 - [eBay listing spec shape](patterns_ebay_listing_spec_shape.md) — NEO-415: seed-hop connect, loud fail when unwired, Set me up branch, two Sync status regions, Switch is a checkbox
 - [Sync status step ledger waits](patterns_sync_status_step_ledger_waits.md) — NEO-415: wait per ledger step (7 s), gate on the new run (stale ledger), throttled press, optional eBay photo step
+- [Copy photo spec handles](patterns_copy_photo_specs.md) — NEO-431: held vs saved photo box, expectPhotoServed instead of evaluate, inventory Details opens editing
+- [page.clock for client timeouts](patterns_page_clock_for_client_timeouts.md) — NEO-431: install before signIn, fastForward, hold by never-resolving route, bound waits by event
 - [Add cards run-start caps](patterns_add_cards_run_start_caps.md) — NEO-452: 2 active batches (closed run still counts while read) and 12 starts/hour give an alert, not a bug; workers 3+ share one user
 - [Add cards drop needs a set first](patterns_add_cards_drop_needs_a_set_first.md) — NEO-452 tray: pickIntakeSet before any drop; read-only Topps Chrome Base unless the pair must match
 - [NEO-458 prefixed parallel stays bare](reference_neo458_prefixed_parallel_numbers_stay_bare.md) — Bowman Chrome (BCV-) built from Base, prefix first; drill, traps, no number field so no mismatch control

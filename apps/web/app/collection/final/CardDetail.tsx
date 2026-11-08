@@ -1,6 +1,7 @@
 import {
   useEffect,
   useId,
+  useMemo,
   useRef,
   useState,
   type ComponentProps,
@@ -13,6 +14,7 @@ import { ArchiveBoxIcon, BookOpenIcon, PlusIcon, StarIcon as StarSolid } from "@
 import { StarIcon as StarOutline } from "@heroicons/react/24/outline";
 import NeonButton from "@/components/modules/NeonButton";
 import { Input } from "@/components/primitives/Input";
+import { COPY_PHOTO_ACCEPT } from "@/lib/collection/copy-photo-resize";
 import CardFace from "../prototypes/_shared/CardFace";
 import CopyDetailsForm, { type FormHome } from "../prototypes/_shared/CopyDetailsForm";
 import { FOCUS, LABEL, QUIET_BUTTON, SELECT, shortDate, useLiverySurface } from "../prototypes/p1/ui";
@@ -40,12 +42,13 @@ import {
   useWants,
   wantOf,
   wantToggle,
+  writeErrorMessage,
 } from "./data/store";
-import type { Card, Container, ContainerId, Copy, CopyDetails, CopyId, MoveResult } from "./data/types";
+import type { Card, Container, ContainerId, Copy, CopyDetails, CopyId, MoveResult, PhotoSide } from "./data/types";
 import { binderText, lineNames, lineSummary, lineWhat, type NamedBinder } from "./lineItems";
 import { useLineKeys } from "./lineKeys";
 import OwnCardNote from "./OwnCardNote";
-import CopyPhotosField, { LineThumb } from "./CopyPhotosField";
+import CopyPhotosField, { HeldPhotosField, LineThumb, PHOTO_SIDES, type HeldPhotos } from "./CopyPhotosField";
 import { usePageApi } from "./pageApi";
 
 /** What the shared copy form edits (the prototypes' copy shape). */
@@ -120,6 +123,18 @@ export function priceText(copy: Copy, commonPrice: number | null | undefined): s
   return typeof commonPrice === "number" ? `$${commonPrice.toFixed(2)}, common` : null;
 }
 
+/** The sides that failed, in words: "front", or "front and back". */
+const sidesSaid = (sides: readonly PhotoSide[]) => sides.join(" and ");
+const photosWord = (sides: readonly PhotoSide[]) => `photo${sides.length > 1 ? "s" : ""}`;
+
+/** What a new line's photo field says when a photo that came with the add didn't save. */
+function failedPhotoMessage(failed: readonly { side: PhotoSide; message: string }[]): string {
+  const sides = failed.map((f) => f.side);
+  const reasons = [...new Set(failed.map((f) => f.message))].join(" ");
+  const again = sides.length > 1 ? "Add them again here." : "Add it again here.";
+  return `Your copy is in, but the ${sidesSaid(sides)} ${photosWord(sides)} didn't save. ${reasons} ${again}`;
+}
+
 /** The homes as "Where it lives" and "Move to" offer them. */
 function formHomes(homes: readonly Container[]): FormHome[] {
   return homes.map((h) => ({ id: h.id, name: h.name, kind: h.kind }));
@@ -148,6 +163,11 @@ function formHomes(homes: readonly Container[]): FormHome[] {
  * a copy: it opens on that button (or on an "add" open), and Cancel or a
  * successful add folds it away again, the keyboard back on Add. With no copy yet there is nothing to
  * list, so the form shows, and Cancel there closes the drawer as before.
+ *
+ * NEO-431: the add form holds photos too (capability `copyPhotos`), with nothing
+ * uploaded until Add. An add with photos starts its own line and never stacks.
+ * If the copy saves and a photo doesn't, the copy stays: its Edit form opens with
+ * the failure in its photo field, for another try there.
  *
  * The keyboard is never dropped: Edit puts it in the copy's form, and Save
  * copy or Cancel brings it back to that copy's Edit button (Remove's and
@@ -227,8 +247,33 @@ export default function CardDetail({
   const [draftHome, setDraftHome] = useState<ContainerId | undefined>(undefined);
   const [draftTrade, setDraftTrade] = useState(false);
   const addHome = draftHome ?? defaultHome;
+  /** NEO-431 — the add form's photos, waiting for Add. */
+  const photosExt = useCopyPhotos();
+  const [heldPhotos, setHeldPhotos] = useState<HeldPhotos>({});
+  /** Bumped when the draft resets, to clear the photo box's status line with its photos. */
+  const [draftRound, setDraftRound] = useState(0);
+  /** An add's photos are uploading: Add says so and takes no second press. */
+  const [addingPhotos, setAddingPhotos] = useState(false);
+  /**
+   * The new line a photo failed on. `autoOpen`: `CopyList` opens its Edit form as
+   * soon as the line is in the list; false when another line's form was in use as
+   * the add finished, since opening this one would throw that draft away. `opened`
+   * once its form has been opened, by either route: the failure shows in it once.
+   */
+  const [failedAdd, setFailedAdd] = useState<{
+    copyId: CopyId;
+    side: PhotoSide;
+    message: string;
+    autoOpen: boolean;
+    opened: boolean;
+  } | null>(null);
   /** The line whose form is open, by its line key (`CopyList`), so it lives through the store's id swap. */
   const [editing, setEditing] = useState<{ key: string; value: FormValue; trade: boolean } | null>(null);
+  /** `editing` as of now, for an upload that finishes long after the Add press that started it. */
+  const editingNow = useRef(editing);
+  useEffect(() => {
+    editingNow.current = editing;
+  }, [editing]);
 
   /** The add form, open by the Add button or an "add" open; always shown while there is no copy to list. */
   const [adding, setAdding] = useState(mode === "add");
@@ -256,7 +301,7 @@ export default function CardDetail({
    * Edit button, or into the form's first field. By line key, like `editing`:
    * a save that waited for the line's real id still finds it.
    */
-  const [refocus, setRefocus] = useState<{ key: string; into: "edit" | "form" } | null>(null);
+  const [refocus, setRefocus] = useState<{ key: string; into: "edit" | "form" | PhotoSide } | null>(null);
   useEffect(() => {
     if (!refocus) return;
     const frame = requestAnimationFrame(() => {
@@ -265,7 +310,9 @@ export default function CardDetail({
       const target =
         refocus.into === "edit"
           ? root?.querySelector<HTMLElement>(`${line} [data-copy-edit]`)
-          : root?.querySelector<HTMLElement>(`${line} input, ${line} select`);
+          : refocus.into === "form"
+            ? root?.querySelector<HTMLElement>(`${line} input, ${line} select`)
+            : root?.querySelector<HTMLElement>(`${line} [data-copy-photo-add="${refocus.into}"]`);
       target?.focus();
       // Only this move: a newer one asked for meanwhile still runs.
       setRefocus((current) => (current === refocus ? null : current));
@@ -304,9 +351,12 @@ export default function CardDetail({
     setDraft(blankForm());
     setDraftHome(undefined);
     setDraftTrade(false);
+    setHeldPhotos({});
+    setDraftRound((n) => n + 1);
   };
 
   const add = (value: FormValue) => {
+    if (addingPhotos) return;
     const home = homeById(addHome);
     const details: CopyDetails = {
       ...fromForm(value, home?.kind === "box"),
@@ -314,6 +364,71 @@ export default function CardDetail({
       ...(capabilities.trade && draftTrade ? { upForTrade: true } : {}),
     };
     const shown = { ...details, ...(home ? { homeName: home.name } : {}) };
+    const held = PHOTO_SIDES.flatMap((side) => {
+      const file = heldPhotos[side];
+      return file ? [{ side, file }] : [];
+    });
+    if (photosExt && held.length > 0) {
+      setAddingPhotos(true);
+      void api
+        .run(
+          async () => {
+            // Refused here (a full card, a box that needs a price), the photos stay in the form.
+            const added = await writes.addLineItem(card, details, { keepsOwnLine: true });
+            // The write has answered, so this is the server's id, which `addPhoto` needs.
+            const copy: Copy = {
+              ...details,
+              id: added.copyId,
+              cardId: card.id,
+              homeId: addHome ?? "",
+              homeKind: home?.kind ?? "binder",
+              upForTrade: details.upForTrade ?? false,
+            };
+            const failed: { side: PhotoSide; message: string }[] = [];
+            for (const { side, file } of held) {
+              try {
+                await photosExt.addPhoto(copy, side, file);
+              } catch (e) {
+                // The copy stays, and so does a photo that made it.
+                failed.push({ side, message: writeErrorMessage(e) });
+              }
+            }
+            return { ...added, failed };
+          },
+          (r) => {
+            const lost = r.failed.map((f) => f.side);
+            const kept = held.map((h) => h.side).filter((side) => !lost.includes(side));
+            const said = `Added ${name}, ${lineSummary(shown, containers)}`;
+            const forSale = home?.kind === "box" ? " It's for sale." : "";
+            return lost.length > 0
+              ? `${said}. Its ${sidesSaid(lost)} ${photosWord(lost)} didn't save. Try again under Edit.${forSale}`
+              : `${said}, with its ${sidesSaid(kept)} ${photosWord(kept)}.${forSale}`;
+          },
+        )
+        .then((r) => {
+          setAddingPhotos(false);
+          if (!r) return;
+          // Read before the form folds. A keyboard already at work elsewhere stays there.
+          const active = document.activeElement;
+          const inAddForm = !active || active === document.body || !!addRef.current?.contains(active);
+          const otherFormOpen = editingNow.current !== null;
+          const failed = r.failed.length > 0;
+          resetDraft();
+          setAdding(false);
+          if (failed) {
+            setFailedAdd({
+              copyId: r.copyId,
+              side: r.failed[0].side,
+              message: failedPhotoMessage(r.failed),
+              autoOpen: !otherFormOpen,
+              opened: false,
+            });
+          }
+          // An Edit form opening on the failure takes the keyboard itself.
+          if (otherFormOpen ? inAddForm : !failed) setAddFocus("button");
+        });
+      return;
+    }
     void api
       .run(
         () => writes.addLineItem(card, details),
@@ -331,6 +446,9 @@ export default function CardDetail({
       });
   };
 
+  /** This line's form is closing, and its failure with it. Another line's waits for its own form. */
+  const clearFailedAddOn = (copy: Copy) => setFailedAdd((now) => (now?.copyId === copy.id ? null : now));
+
   const save = (copy: Copy, value: FormValue, trade: boolean, key: string) => {
     const patch: Partial<CopyDetails> = {
       ...fromForm(value, copy.homeKind === "box" || copy.minPrice !== undefined),
@@ -344,6 +462,7 @@ export default function CardDetail({
       .then((r) => {
         if (r) {
           setEditing(null);
+          clearFailedAddOn(copy);
           setRefocus({ key, into: "edit" });
         }
       });
@@ -488,6 +607,7 @@ export default function CardDetail({
               onSave={(value) => save(copy, value, editing.trade, editing.key)}
               onCancel={() => {
                 setEditing(null);
+                clearFailedAddOn(copy);
                 setRefocus({ key: editing.key, into: "edit" });
               }}
               hideSaleFields
@@ -503,9 +623,16 @@ export default function CardDetail({
           )
         }
         onEdit={(copy, key) => {
+          const waiting = failedAdd && !failedAdd.opened ? failedAdd : null;
+          const here = waiting?.copyId === copy.id;
           setEditing({ key, value: toForm(copy), trade: copy.upForTrade });
-          setRefocus({ key, into: "form" });
+          // A photo to try again: the keyboard goes to that side's Add.
+          setRefocus({ key, into: here ? waiting.side : "form" });
+          // Another line's form: the failure still waits for its own, but won't take this one's place.
+          setFailedAdd(waiting && (here ? { ...waiting, opened: true } : { ...waiting, autoOpen: false }));
         }}
+        openEditId={failedAdd && failedAdd.autoOpen && !failedAdd.opened ? failedAdd.copyId : null}
+        photoError={failedAdd}
         onRemove={remove}
         showTrade={capabilities.trade}
         showSale={capabilities.binders && capabilities.inventory}
@@ -541,6 +668,21 @@ export default function CardDetail({
             onUpForTradeChange={capabilities.trade ? setDraftTrade : undefined}
             heading={lines.length > 0 ? "Add another copy" : "Add a copy"}
             saveLabel={onInventory ? "Add to inventory" : "Add to collection"}
+            saving={addingPhotos}
+            savingLabel="Adding…"
+            extra={
+              photosExt ? (
+                <HeldPhotosField
+                  key={draftRound}
+                  files={heldPhotos}
+                  onChange={setHeldPhotos}
+                  line="your new copy"
+                  accept={COPY_PHOTO_ACCEPT}
+                  help="Stashed here until you add the copy."
+                  saving={addingPhotos ? "Saving your photos…" : undefined}
+                />
+              ) : null
+            }
           />
         </div>
       ) : copies !== undefined ? (
@@ -687,6 +829,8 @@ export function CopyList({
   commonPrice,
   homes,
   onMove,
+  openEditId,
+  photoError,
 }: {
   name: string;
   copies: Copy[] | undefined;
@@ -712,8 +856,12 @@ export function CopyList({
   /** Opens a line's form; `key` is the line's key, which `editing` names it by. */
   onEdit?: (copy: Copy, key: string) => void;
   onRemove: (copy: Copy) => void;
+  /** NEO-431 — open this line's form as soon as the line is in the list (`onEdit`, which should clear this). */
+  openEditId?: CopyId | null;
+  /** NEO-431 — what this line's photo field says when it opens. */
+  photoError?: { copyId: CopyId; message: string } | null;
 }) {
-  const lines = copies ?? [];
+  const lines = useMemo(() => copies ?? [], [copies]);
   const sectionRef = useRef<HTMLElement>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
   /** A removal in flight from this list: the copy going, and whose button takes the keyboard. */
@@ -748,6 +896,13 @@ export function CopyList({
    * say), so neither the row nor a panel open on it closes under the pointer.
    */
   const keyOf = useLineKeys(lines);
+  // Here, not in the caller: a new line's key can be the id it was drawn with, which only this list knows.
+  useEffect(() => {
+    if (!openEditId) return;
+    const copy = lines.find((c) => c.id === openEditId);
+    if (copy) onEdit?.(copy, keyOf(copy));
+    // `onEdit` opens it and clears `openEditId`, so this fires once however often a parent redraws.
+  }, [openEditId, lines, onEdit, keyOf]);
   /** NEO-377 — copy photos (capability `copyPhotos`): edited in the line's form. */
   const photosExt = useCopyPhotos();
   const photoMap = usePhotosOf(lines);
@@ -823,7 +978,13 @@ export function CopyList({
                   copy,
                   i,
                   photosExt ? (
-                    <CopyPhotosField copy={copy} line={names[i]} photos={photoMap?.get(copy.id)} ext={photosExt} />
+                    <CopyPhotosField
+                      copy={copy}
+                      line={names[i]}
+                      photos={photoMap?.get(copy.id)}
+                      ext={photosExt}
+                      initialError={photoError?.copyId === copy.id ? photoError.message : undefined}
+                    />
                   ) : null,
                 )}
               </li>
