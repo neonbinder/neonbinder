@@ -108,7 +108,9 @@ export function Dropzone({
           {dragging
             ? "Drop them here"
             : disabled
-              ? "Sending your photos…"
+              ? intake?.kind === "zip"
+                ? "Sending your zip…"
+                : "Sending your photos…"
               : held && heldLabel
                 ? heldLabel
                 : "Drag your card photos here"}
@@ -117,14 +119,16 @@ export function Dropzone({
           or <span className="text-neon-blue-text underline">browse your files</span>
         </span>
         <span className="text-xs text-ink-3">
-          JPEG or PNG, or a single zip. Uploading starts as soon as you choose —
+          JPEG, PNG or WebP, or a single zip of them. Uploading starts as soon as you choose —
           keep them in scan order (front, back, front, back), because that order
           is what pairs them.
         </span>
         <input
           id={inputId}
           type="file"
-          accept=".zip,image/jpeg,image/png"
+          // What the service takes, loose or zipped: PLACEHOLDER_IMAGE_EXTENSION_BY_CONTENT_TYPE
+          // (convex/lib/placeholderObjects.ts) and `sniff_image_type` (preprocess zipsafe.py).
+          accept=".zip,image/jpeg,image/png,image/webp"
           multiple
           disabled={disabled}
           aria-disabled={held || undefined}

@@ -373,7 +373,8 @@ export default function CardIntake() {
               This is the whole answer to "how would a new user know to wait?" */}
           <div className="rounded-lg border border-panel-rule bg-panel p-4 space-y-2 shadow-offset">
             <p role="status" aria-live="polite" className="text-ink-2">
-              {stage === "uploading" && "Sending your photos…"}
+              {stage === "uploading" &&
+                (classifyIntake(files).kind === "zip" ? "Sending your zip…" : "Sending your photos…")}
               {stage === "working" &&
                 (totalCount === 0
                   ? "Getting your photos ready…"

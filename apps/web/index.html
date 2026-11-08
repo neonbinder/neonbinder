@@ -3,6 +3,10 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- NEO-434: eBay returns to /profile/ebay?code=…, and the font requests below
+         leave before the app takes that off the address. Older browsers default
+         to sending the whole address as the referrer, so this is stated. -->
+    <meta name="referrer" content="strict-origin-when-cross-origin" />
     <!-- NEO-356: resolve light/dark before the first paint, so a light page
          never flashes dark (or the reverse). Mirrors resolveMode() in
          src/theme/theme-mode.ts (THEME_STORAGE_KEY "nb-theme"); keep the two

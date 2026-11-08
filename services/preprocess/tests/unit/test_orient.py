@@ -7,6 +7,7 @@ orientations plus ambiguous and empty-text cases called out in the plan.
 
 from __future__ import annotations
 
+import io
 import logging
 import threading
 from types import SimpleNamespace
@@ -20,8 +21,10 @@ from google.api_core.exceptions import (
     ResourceExhausted,
     ServiceUnavailable,
 )
+from PIL import Image
 
 from app import orient
+from app.exif import EXIF_ORIENTATION_TAG, read_exif_orientation
 from app.orient import detect_orientation
 from app.timing import Timings, bound
 
@@ -53,6 +56,91 @@ def _mock_client(response: SimpleNamespace) -> MagicMock:
     client = MagicMock()
     client.text_detection.return_value = response
     return client
+
+
+def _jpeg_of_at_least(size: tuple[int, int], min_bytes: int, orientation: int | None = None):
+    """A real JPEG padded past its end marker, so a decode stays cheap.
+
+    Trailing bytes make it as large as a test needs without encoding noise.
+    """
+    img = Image.new("RGB", size, (200, 30, 30))
+    out = io.BytesIO()
+    if orientation is None:
+        img.save(out, format="JPEG")
+    else:
+        exif = img.getexif()
+        exif[EXIF_ORIENTATION_TAG] = orientation
+        img.save(out, format="JPEG", exif=exif)
+    return out.getvalue().ljust(min_bytes, b"\x00")
+
+
+def _sent_to_vision(image_bytes: bytes) -> bytes:
+    """The bytes `detect_orientation` hands the Vision client for this input."""
+    client = _mock_client(_make_response([]))
+    detect_orientation(image_bytes, client=client)
+    return client.text_detection.call_args.kwargs["image"].content
+
+
+class TestShrinkForVision:
+    def test_at_the_threshold_is_byte_identical(self):
+        original = _jpeg_of_at_least((6144, 8160), orient.VISION_SHRINK_ABOVE_BYTES)
+        assert len(original) == orient.VISION_SHRINK_ABOVE_BYTES
+        assert _sent_to_vision(original) == original
+
+    def test_small_image_is_byte_identical(self):
+        original = _jpeg_of_at_least((64, 48), 0)
+        assert _sent_to_vision(original) == original
+
+    def test_above_the_threshold_sends_a_smaller_jpeg(self):
+        original = _jpeg_of_at_least((6144, 8160), orient.VISION_SHRINK_ABOVE_BYTES + 1)
+
+        sent = _sent_to_vision(original)
+
+        assert len(sent) < len(original)
+        with Image.open(io.BytesIO(sent)) as img:
+            assert img.format == "JPEG"
+            assert max(img.size) == orient.VISION_SHRINK_MAX_EDGE_PX
+            # 6144:8160 at a long edge of 4096, so scale cannot skew an angle.
+            assert img.size == (3084, 4096)
+
+    def test_above_the_threshold_does_not_upscale(self):
+        original = _jpeg_of_at_least((1000, 1400), orient.VISION_SHRINK_ABOVE_BYTES + 1)
+
+        with Image.open(io.BytesIO(_sent_to_vision(original))) as img:
+            assert img.size == (1000, 1400)
+
+    def test_orientation_tag_survives_the_shrink(self):
+        original = _jpeg_of_at_least((5000, 4000), orient.VISION_SHRINK_ABOVE_BYTES + 1, 6)
+        assert read_exif_orientation(_sent_to_vision(original)) == 6
+
+    def test_unreadable_oversize_bytes_go_to_vision_as_they_are(self):
+        # Vision's own error is the better diagnosis than a Pillow one.
+        original = b"not an image".ljust(orient.VISION_SHRINK_ABOVE_BYTES + 1, b"\x00")
+        assert _sent_to_vision(original) == original
+
+    def test_rgba_above_the_threshold_still_encodes(self):
+        out = io.BytesIO()
+        Image.new("RGBA", (64, 48), (1, 2, 3, 4)).save(out, format="PNG")
+        original = out.getvalue().ljust(orient.VISION_SHRINK_ABOVE_BYTES + 1, b"\x00")
+
+        with Image.open(io.BytesIO(_sent_to_vision(original))) as img:
+            assert img.format == "JPEG"
+
+    def test_the_shrink_is_on_the_reconnect_path_too(self, monkeypatch):
+        # A retry after a dropped stream must send the same shrunk bytes.
+        original = _jpeg_of_at_least((5000, 4000), orient.VISION_SHRINK_ABOVE_BYTES + 1)
+        stale = MagicMock()
+        stale.text_detection.side_effect = ServiceUnavailable("stream removed")
+        fresh = _mock_client(_make_response([]))
+        monkeypatch.setattr(orient, "_client", stale)
+        monkeypatch.setattr(orient.vision, "ImageAnnotatorClient", lambda: fresh)
+
+        detect_orientation(original)
+
+        first = stale.text_detection.call_args.kwargs["image"].content
+        second = fresh.text_detection.call_args.kwargs["image"].content
+        assert first == second
+        assert len(second) < len(original)
 
 
 class TestDetectOrientation:

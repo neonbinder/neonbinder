@@ -32,6 +32,7 @@
 
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { isNonRetryableError } from "@convex-dev/workpool";
+import { ENTRY_TOO_MANY_PIXELS, isRasterTooLargeError } from "./lib/extractRejections";
 import { getFunctionName } from "convex/server";
 import type { ActionCtx } from "./_generated/server";
 import {
@@ -322,6 +323,44 @@ describe("error taxonomy — terminal statuses stop the pool immediately", () =>
       callProcessEntryHeavy(stubCtx(), { jobId: "j", userId: "u", entryIndex: 0 }),
     );
     expect(isNonRetryableError(err)).toBe(true);
+  });
+});
+
+describe("NEO-446: the pixel-ceiling 413 round-trips through the real adapter", () => {
+  // The service's body (services/preprocess/app/main.py) is { error_code, detail }.
+  const body = { error_code: "ENTRY_TOO_MANY_PIXELS", detail: "image has 70000000 pixels, over the 65000000 limit" };
+
+  test("the constant is the code the service sends", () => {
+    expect(ENTRY_TOO_MANY_PIXELS).toBe(body.error_code);
+  });
+
+  test.each([
+    ["fast", callProcessEntryFast],
+    ["heavy", callProcessEntryHeavy],
+  ] as const)("the %s /process-entry error is one isRasterTooLargeError accepts", async (_tier, call) => {
+    stubFetch(async () => errorResponse(413, body));
+    const err = await captureThrow(() => call(stubCtx(), { jobId: "j", userId: "u", entryIndex: 0 }));
+    expect(isNonRetryableError(err)).toBe(true);
+    const message = String((err as Error).message);
+    expect(parsePreprocessErrorCode(message)).toBe(ENTRY_TOO_MANY_PIXELS);
+    expect(isRasterTooLargeError(message)).toBe(true);
+    // As the workpool hands it to the hook: prefixed by the runtime, or enveloped.
+    expect(isRasterTooLargeError(`Uncaught Error: ${message}`)).toBe(true);
+    expect(isRasterTooLargeError(JSON.stringify({ __convexWorkpoolNonRetryable: true, message }))).toBe(true);
+  });
+
+  test("a different 413 from the same adapter is not read as a too-big photo", async () => {
+    stubFetch(async () => errorResponse(413, { error_code: "INPUT_TOO_LARGE" }));
+    const err = await captureThrow(() => callExtract(stubCtx(), { jobId: "j", userId: "u" }));
+    expect(isRasterTooLargeError(String((err as Error).message))).toBe(false);
+  });
+
+  test("a 413 with no machine code is not read as a too-big photo", async () => {
+    stubFetch(async () => new Response("<html>too large</html>", { status: 413 }));
+    const err = await captureThrow(() =>
+      callProcessEntryFast(stubCtx(), { jobId: "j", userId: "u", entryIndex: 0 }),
+    );
+    expect(isRasterTooLargeError(String((err as Error).message))).toBe(false);
   });
 });
 

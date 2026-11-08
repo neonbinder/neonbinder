@@ -27,6 +27,7 @@ const REFS = {
   confirm: "placeholderStream:confirmPlaceholderImageUpload",
   close: "placeholderStream:closePlaceholderStream",
   uploadUrl: "placeholderUploads:createPlaceholderImageUploadUrl",
+  zipUploadUrl: "placeholderUploads:createPlaceholderUploadUrl",
   downloadUrl: "placeholderUploads:createPlaceholderImageDownloadUrl",
   unpair: "placeholderPairing:unpairPlaceholderImages",
   manualPair: "placeholderPairing:manuallyPairPlaceholderImages",
@@ -52,6 +53,7 @@ vi.mock("@/convex/_generated/api", () => ({
       listPlaceholderImages: "placeholderPipeline:listPlaceholderImages",
       listPlaceholderPairs: "placeholderPipeline:listPlaceholderPairs",
       cancelPlaceholderBatch: "placeholderPipeline:cancelPlaceholderBatch",
+      startPlaceholderBatch: "placeholderPipeline:startPlaceholderBatch",
     },
     placeholderStream: {
       startPlaceholderStream: "placeholderStream:startPlaceholderStream",
@@ -70,6 +72,7 @@ vi.mock("@/convex/_generated/api", () => ({
       placeholderUploads: {
         createPlaceholderImageUploadUrl:
           "placeholderUploads:createPlaceholderImageUploadUrl",
+        createPlaceholderUploadUrl: "placeholderUploads:createPlaceholderUploadUrl",
         createPlaceholderImageDownloadUrl:
           "placeholderUploads:createPlaceholderImageDownloadUrl",
       },
@@ -165,6 +168,39 @@ describe("CardIntake", () => {
     // worth pinning is that nothing has been sent before a choice is made.
     expect(screen.queryByRole("button", { name: /Start Upload/ })).toBeNull();
     expect(mocks.fns[REFS.start]).not.toHaveBeenCalled();
+  });
+
+  describe("NEO-446: the progress line while uploading", () => {
+    /** Selects real files by name, with the zip's MIME type where it is a zip. */
+    function pick(names: string[]) {
+      const input = screen.getByLabelText(/Drag your card photos here/) as HTMLInputElement;
+      const files = names.map((n) => new File(["bytes"], n, { type: n.endsWith(".zip") ? "application/zip" : "image/jpeg" }));
+      Object.defineProperty(input, "files", { value: files, configurable: true });
+      fireEvent.change(input);
+    }
+    const statusLines = () => screen.getAllByRole("status").map((el) => el.textContent);
+
+    it("a zip pick says 'Sending your zip…' in the status line", async () => {
+      // The mint never answers, so the page stays at the uploading stage.
+      mocks.fns[REFS.zipUploadUrl] = vi.fn(() => new Promise(() => {}));
+      mocks.fns["placeholderPipeline:startPlaceholderBatch"] = vi.fn();
+      // The progress section is drawn once a run is open (`?jobId=`).
+      renderPage("/print/placeholders?jobId=job-1234abcd");
+      pick(["cards.zip"]);
+      await waitFor(() => expect(statusLines()).toContain("Sending your zip…"));
+      expect(statusLines()).not.toContain("Sending your photos…");
+      expect(mocks.fns[REFS.start]).not.toHaveBeenCalled();
+    });
+
+    it("an image pick says 'Sending your photos…' in the status line", async () => {
+      // Neither the session start nor the first upload URL ever answers, so it stays uploading.
+      mocks.fns[REFS.start] = vi.fn(() => new Promise(() => {}));
+      mocks.fns[REFS.uploadUrl] = vi.fn(() => new Promise(() => {}));
+      renderPage("/print/placeholders?jobId=job-1234abcd");
+      pick(["front.jpg", "back.jpg"]);
+      await waitFor(() => expect(statusLines()).toContain("Sending your photos…"));
+      expect(statusLines()).not.toContain("Sending your zip…");
+    });
   });
 
   it("sends the files the moment they are chosen, with no Start step", async () => {
