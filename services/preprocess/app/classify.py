@@ -40,6 +40,9 @@ EFFORT = "low"
 ANTHROPIC_MAX_RAW_BYTES = 3_500_000
 DOWNSCALE_MAX_EDGE_PX = 1600
 DOWNSCALE_JPEG_QUALITY = 85
+# Anthropic also refuses an image over 8000 px on either edge, whatever its byte
+# size, and a phone photo of a plain subject can be that long and still small.
+ANTHROPIC_MAX_EDGE_PX = 8000
 
 PROMPT = """You are analyzing one side of a trading card. Return a SINGLE JSON
 OBJECT (not an array) with these keys:
@@ -135,22 +138,49 @@ def _detect_media_type(image_bytes: bytes) -> str:
         return "image/jpeg"
 
 
-def _prepare_for_anthropic(image_bytes: bytes) -> tuple[bytes, str]:
-    """Return (bytes, media_type) fitting Anthropic's 5 MB base64 ceiling.
+def _fits_anthropic_as_is(image_bytes: bytes) -> bool:
+    """True when the bytes are under budget and neither edge is too long.
 
-    Images already under the raw-byte budget pass through unchanged. Oversized
-    images are re-encoded as JPEG with the longest edge capped; if that still
-    overshoots, the edge cap is halved progressively until the result fits.
+    An unreadable header counts as fitting: there is nothing to downscale, and
+    passing it through leaves the failure where it has always surfaced.
     """
-    if len(image_bytes) <= ANTHROPIC_MAX_RAW_BYTES:
+    if len(image_bytes) > ANTHROPIC_MAX_RAW_BYTES:
+        return False
+    try:
+        with Image.open(BytesIO(image_bytes)) as img:
+            return max(img.size) <= ANTHROPIC_MAX_EDGE_PX
+    except Exception:  # noqa: BLE001 - see docstring
+        return True
+
+
+def _prepare_for_anthropic(image_bytes: bytes) -> tuple[bytes, str]:
+    """Return (bytes, media_type) fitting Anthropic's byte and dimension limits.
+
+    Images under the raw-byte budget with neither edge over
+    `ANTHROPIC_MAX_EDGE_PX` pass through unchanged. Anything else is re-encoded
+    as JPEG with the longest edge capped; if that still overshoots the byte
+    budget, the edge cap is halved progressively until the result fits.
+    """
+    if _fits_anthropic_as_is(image_bytes):
         return image_bytes, _detect_media_type(image_bytes)
 
+    # Shrink before anything else is held, so a 65 MP photo costs one raster at
+    # most, and a JPEG less than that (`thumbnail` asks its decoder to scale).
+    # Only RGB and L resize the same before and after the conversion: a palette
+    # image would resize by nearest neighbour, and alpha would be premultiplied.
+    first_box = (DOWNSCALE_MAX_EDGE_PX, DOWNSCALE_MAX_EDGE_PX)
     with Image.open(BytesIO(image_bytes)) as img:
-        rgb = img.convert("RGB")
+        if img.mode in ("RGB", "L"):
+            img.thumbnail(first_box, Image.Resampling.LANCZOS)
+            base = img.convert("RGB")
+        else:
+            base = img.convert("RGB")
+            base.thumbnail(first_box, Image.Resampling.LANCZOS)
+    del img
 
     max_edge = DOWNSCALE_MAX_EDGE_PX
     while True:
-        working = rgb.copy()
+        working = base.copy()
         working.thumbnail((max_edge, max_edge), Image.Resampling.LANCZOS)
         out = BytesIO()
         working.save(out, format="JPEG", quality=DOWNSCALE_JPEG_QUALITY)

@@ -1009,6 +1009,8 @@ const variantInputValidator = v.union(
     setId: v.union(v.id("selectorOptions"), v.null()),
     commonPriceCents: v.union(v.number(), v.null()),
     sellerId: v.union(v.string(), v.null()),
+    /** Every `cardNumberPrefix` on the variant's chain (`planBscSheet`). */
+    cardNumberPrefixes: v.array(v.string()),
   }),
 );
 export type VariantInput = typeof variantInputValidator.type;
@@ -1016,7 +1018,8 @@ export type VariantInput = typeof variantInputValidator.type;
 /**
  * The variant's BSC scope (from its slot ids, the checklist gate's own rule:
  * `resolvableSides` with `leafGate`, then `resolveBscFacetFilters`), its era
- * (from NB's year row), its set, the owner's common price and BSC seller id.
+ * (from NB's year row), its set, the owner's common price and BSC seller id,
+ * and the card-number prefixes its chain carries.
  */
 export const variantSyncInput = internalQuery({
   args: { ownerId: v.string(), variantId: v.id("selectorOptions") },
@@ -1025,6 +1028,7 @@ export const variantSyncInput = internalQuery({
     const leaf = await ctx.db.get(args.variantId);
     if (!leaf) return { kind: "gone" };
     const chain: Array<ResolvableRow & { id: Id<"selectorOptions"> }> = [];
+    const cardNumberPrefixes: string[] = [];
     let cursor: Doc<"selectorOptions"> | null = leaf;
     for (let depth = 0; cursor && depth < 16; depth += 1) {
       chain.unshift({
@@ -1034,6 +1038,7 @@ export const variantSyncInput = internalQuery({
         platformData: cursor.platformData ?? {},
         platformFacets: cursor.platformFacets,
       });
+      if (cursor.metadata?.cardNumberPrefix) cardNumberPrefixes.push(cursor.metadata.cardNumberPrefix);
       cursor = cursor.parentId ? await ctx.db.get(cursor.parentId) : null;
     }
     const resolution = resolvableSides(chain, { bscScope: "checklist", leafGate: true });
@@ -1068,6 +1073,7 @@ export const variantSyncInput = internalQuery({
       setId,
       commonPriceCents,
       sellerId: sellerId !== null && isBscSellerId(sellerId) ? sellerId : null,
+      cardNumberPrefixes,
     };
   },
 });
@@ -1665,7 +1671,14 @@ async function syncVariant(
   // Seller id for the PUT.
   let sellerId = input.sellerId;
 
-  const plan1 = planBscSheet({ sheetRows: sheet.sheet, conditionsRead: conditions, targets: fold.targets, cards });
+  const planInput = {
+    sheetRows: sheet.sheet,
+    conditionsRead: conditions,
+    targets: fold.targets,
+    cards,
+    cardNumberPrefixes: input.cardNumberPrefixes,
+  };
+  const plan1 = planBscSheet(planInput);
 
   // Seller photos for rows that still show BSC's image and whose group has a copy with one.
   const photoKeys = await uploadPhotos(ctx, session, {
@@ -1682,15 +1695,7 @@ async function syncVariant(
   });
   if (!photoKeys.ok) return await fail(photoKeys.failure);
 
-  const plan = photoKeys.value.size > 0
-    ? planBscSheet({
-        sheetRows: sheet.sheet,
-        conditionsRead: conditions,
-        targets: fold.targets,
-        cards,
-        photoKeys: photoKeys.value,
-      })
-    : plan1;
+  const plan = photoKeys.value.size > 0 ? planBscSheet({ ...planInput, photoKeys: photoKeys.value }) : plan1;
 
   const problems: StoredProblem[] = [...foldProblems, ...plan.problems]
     .map((p) => toStoredProblem(p, cardIds))

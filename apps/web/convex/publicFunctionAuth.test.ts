@@ -2674,6 +2674,8 @@ describe("NEO-379: the intake run functions are signed-in, and the reads answer 
       () => t.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId, quantity: 1 }),
       () => t.mutation(api.intakeRuns.answerIntakeRepeat, { runId, pairId, secondCopy: true }),
       () => t.mutation(api.intakeRuns.setIntakeMatchAside, { runId, pairId, setAside: true }),
+      // NEO-446: a loose photo set aside.
+      () => t.mutation(api.intakeRuns.setIntakePhotoAside, { runId, entryIndex: 0, setAside: true }),
       // NEO-427: the Saved tile's Try again.
       () => t.action(api.intakePhotos.retryIntakePhotos, { matchId }),
     ];

@@ -1247,7 +1247,7 @@ describe("NEO-370 — listing reads ship no lease, SKU, order id or marketplace 
       ctx.db.insert("collectionContainers", { ownerId: OWNER.subject, kind: "box", name: "Box", lastUpdated: 0 }),
     );
     const gate = await me.query(api.listingGate.forHome, { homeId: boxId, variantId: sportId });
-    expect(Object.keys(gate).sort()).toEqual(["applies", "commonPriceCents", "syncing"]);
+    expect(Object.keys(gate).sort()).toEqual(["applies", "commonPriceCents", "syncing", "variantHasCards"]);
     expect(status.platforms[0].sets).toHaveLength(1);
     expect(status.platforms[0].queued.cards).toHaveLength(1);
     expect(status.platforms[0].running).not.toBeNull();

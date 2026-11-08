@@ -2,12 +2,13 @@
  * NEO-291 — the ONE rule for `selectorOptions.metadata.cardNumberPrefix`.
  *
  * The prefix is the few characters a marketplace puts in front of a card
- * number ("DK-" for Diamond Kings, "SP-", "T-"); the checklist sync strips it
- * with `startsWith` so NB's card number is the bare number. Two doors write
- * it — the attributes panel's `setSelectorOptionCardNumberPrefix` and the
- * reconciliation modal via `storeReconciledOptions` — and the security audit
- * on this ticket found them applying two rules (one validated, one merely
- * trimmed). This module is the rule; both doors call it.
+ * number ("DK-" for Diamond Kings, "SP-", "T-"); NB's card number may carry it
+ * or be bare, and the sync strips it only to look a number up on SportLots.
+ * Two doors write it — the attributes panel's
+ * `setSelectorOptionCardNumberPrefix` and the reconciliation modal via
+ * `storeReconciledOptions` — and the security audit on this ticket found them
+ * applying two rules (one validated, one merely trimmed). This module is the
+ * rule; both doors call it.
  *
  * Pure and dependency-light on purpose (a `ConvexError` import only) so the
  * unit tests can hit it directly and neither Convex file grows a copy.
@@ -52,4 +53,22 @@ export function normalizeCardNumberPrefix(raw: string): string | undefined {
     );
   }
   return trimmed;
+}
+
+/**
+ * A card number with an NB chain's `cardNumberPrefix` taken off the front:
+ * the predicate `parallelCardLink`'s `stripPrefix` uses (trimmed,
+ * case-insensitive, never down to nothing), but the case of what remains is
+ * kept, since the client also shows it.
+ */
+export function stripNbCardNumberPrefix(
+  cardNumber: string,
+  prefix: string | undefined,
+): string {
+  const n = cardNumber.trim();
+  const p = prefix?.trim();
+  if (!p) return n;
+  return n.toUpperCase().startsWith(p.toUpperCase()) && n.length > p.length
+    ? n.slice(p.length)
+    : n;
 }

@@ -48,4 +48,5 @@ export const SELLER_TAG = "@marketplace-seller";
 /** @type {string[]} */
 export const SELLER_SPECS = [
   "collection/inventory-bsc-listing-1988-topps-base.spec.ts",
+  "collection/inventory-bsc-listing-2026-bowman-chrome-prefix.spec.ts",
 ];

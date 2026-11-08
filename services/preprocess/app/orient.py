@@ -20,13 +20,25 @@ import math
 import threading
 from collections import Counter
 from dataclasses import dataclass
+from io import BytesIO
 
 from google.api_core.exceptions import ServiceUnavailable
 from google.cloud import vision
+from PIL import Image
 
+from app.exif import EXIF_ORIENTATION_TAG
 from app.timing import increment_current
 
 logger = logging.getLogger(__name__)
+
+# Vision documents a 20 MB image limit and a 10 MB JSON request limit, while an
+# entry here can reach 32 MiB, so a large photo is shrunk before it is sent.
+# Only word-box angles and the word count are read from the answer, so the
+# change of scale cannot move a coordinate anything uses. At or under the
+# threshold the bytes go to Vision untouched.
+VISION_SHRINK_ABOVE_BYTES = 9 * 1024 * 1024
+VISION_SHRINK_MAX_EDGE_PX = 4096
+VISION_SHRINK_JPEG_QUALITY = 90
 
 # One Vision client per process (NEO-315). Building an ImageAnnotatorClient
 # per call re-resolved ADC and opened a fresh gRPC channel on every orient —
@@ -113,6 +125,44 @@ def _snap_to_quadrant(degrees: float) -> int:
     return int(round(degrees / 90) * 90) % 360
 
 
+def _shrink_for_vision(image_bytes: bytes) -> bytes:
+    """The bytes to send Vision: the input, or a smaller JPEG of it when too big.
+
+    Lives under `detect_orientation` so every call follows one rule, whether it
+    is a baseline over the whole image or a candidate crop.
+
+    The EXIF orientation tag is carried across, because `/process` can hand
+    this a photo that has not been uprighted and the re-encode must describe
+    the same image as the original. An image Pillow cannot read goes to Vision
+    as it is, so Vision's own error stays the diagnosis.
+    """
+    if len(image_bytes) <= VISION_SHRINK_ABOVE_BYTES:
+        return image_bytes
+
+    try:
+        with Image.open(BytesIO(image_bytes)) as img:
+            orientation = img.getexif().get(EXIF_ORIENTATION_TAG)
+            img.thumbnail(
+                (VISION_SHRINK_MAX_EDGE_PX, VISION_SHRINK_MAX_EDGE_PX),
+                Image.Resampling.LANCZOS,
+            )
+            rgb = img.convert("RGB")
+        save_kwargs: dict[str, object] = {}
+        if orientation is not None:
+            exif = Image.Exif()
+            exif[EXIF_ORIENTATION_TAG] = orientation
+            save_kwargs["exif"] = exif
+        out = BytesIO()
+        rgb.save(out, format="JPEG", quality=VISION_SHRINK_JPEG_QUALITY, **save_kwargs)
+    except Exception:  # noqa: BLE001 - an unreadable image is Vision's to report
+        logger.warning("vision: could not shrink a %d byte image", len(image_bytes), exc_info=True)
+        return image_bytes
+
+    shrunk = out.getvalue()
+    logger.info("vision: shrank image from %d to %d bytes", len(image_bytes), len(shrunk))
+    return shrunk
+
+
 def _text_detection(image_bytes: bytes, client: vision.ImageAnnotatorClient | None):
     """The one Vision RPC, with the shared-client reconnect (module note)."""
     image = vision.Image(content=image_bytes)
@@ -149,7 +199,7 @@ def detect_orientation(
     called exactly once and never rebuilt or retried, so a test that injects
     one sees every exception as raised.
     """
-    response = _text_detection(image_bytes, client)
+    response = _text_detection(_shrink_for_vision(image_bytes), client)
 
     if response.error.message:
         raise RuntimeError(f"vision api error: {response.error.message}")

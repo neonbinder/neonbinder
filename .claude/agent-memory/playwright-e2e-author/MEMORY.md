@@ -82,6 +82,11 @@
 - [Listing spec Rev 4 shape](patterns_marketplace_listing_rev4_shape.md) — NEO-370 Rev 4: Start on Profile, Sync status row, stop = remove sign-in, first-Sync throttle toast
 - [eBay listing spec shape](patterns_ebay_listing_spec_shape.md) — NEO-415: seed-hop connect, loud fail when unwired, Set me up branch, two Sync status regions, Switch is a checkbox
 - [Sync status step ledger waits](patterns_sync_status_step_ledger_waits.md) — NEO-415: wait per ledger step (7 s), gate on the new run (stale ledger), throttled press, optional eBay photo step
+- [Add cards run-start caps](patterns_add_cards_run_start_caps.md) — NEO-452: 2 active batches (closed run still counts while read) and 12 starts/hour give an alert, not a bug; workers 3+ share one user
+- [Add cards drop needs a set first](patterns_add_cards_drop_needs_a_set_first.md) — NEO-452 tray: pickIntakeSet before any drop; read-only Topps Chrome Base unless the pair must match
+- [NEO-458 prefixed parallel stays bare](reference_neo458_prefixed_parallel_numbers_stay_bare.md) — Bowman Chrome (BCV-) built from Base, prefix first; drill, traps, no number field so no mismatch control
+- [Seller spec set built by the spec](patterns_seller_spec_built_by_spec_and_the_window.md) — builtBySpec in SELLER_SPEC_SETS; a seller job not started yet is not "clear"
+- [Intake zip fixtures](patterns_intake_zip_fixtures.md) — flat oversize JPEG via cjpeg, zip -0, dpi stamp keeps big photos on the fast path
 - [Stale-chunk injection](patterns_stale_chunk_injection.md) — NEO-434: stale-chunks.ts arm-time snapshot, no-reload anchor via document-request count, two RED breaks
 - [Analytics leak check in a spec](patterns_analytics_leak_check_in_a_spec.md) — NEO-434: PostHog filter, gzip decode, anchor, count-not-bodies, which marker field reds a no-op
 - [Button name substring hides demoted variants](patterns_button_name_substring_hides_demoted_variants.md) — "Add as New Player" substring-matches the demoted "... anyway"; creating specs use answerPlayerAsNew (two-press aware), never the bare name
@@ -91,3 +96,4 @@
 - [Local re-seed keeps the catalogue](patterns_local_reseed_keeps_the_reference_catalogue.md) — plain baseline reset wipes it; use e2e-seed-reset.sh + bundle; who needs a re-seed between projects; --output keeps artifacts
 - [Binder page names and async radio](patterns_binder_page_names_and_async_radio.md) — `Page 2, A fresh page`; gate a key on Next enabled; check() vs a save-moved radio; image load without evaluate; bootstrap after a red
 - [Custom sport hosts minted players](patterns_custom_sport_player_specs_skip_lookups.md) — minted player names in customSport(env): no lookup, no clashes; count rows by exact name; goBack restores the drill
+- [Finally cleanup without an isVisible branch](patterns_finally_cleanup_without_an_isvisible_branch.md) — flag after the Done click, tidy() collects errors, body failure not masked; lane overflow axe signature

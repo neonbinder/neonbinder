@@ -83,6 +83,7 @@
     "convex-test": "^0.0.62",
     "dotenv": "^18.0.6",
     "dotenv-cli": "^11.0.0",
+    "esbuild": "0.27.2",
     "eslint": "^10.13.0",
     "eslint-plugin-jsx-a11y": "^6.10.2",
     "eslint-plugin-playwright": "2.12.1",
