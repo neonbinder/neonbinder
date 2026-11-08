@@ -86,12 +86,17 @@ heartbeat. If this session is on a bigger model, say so once and carry on.
    `PR-QUEUE STATUS` asking where the turn stands. Any waiting PR whose
    session no longer appears in `ListAgents` stays in line; tell Jason.
 4. **Arm the heartbeat.** Load Monitor (`ToolSearch select:Monitor`) and arm
-   one persistent Monitor, description `PR queue heartbeat`, command
-   `bash <abs path>/tick.sh`. It checks once a minute and stays silent unless
-   the in-flight PR merged or closed without a message, a `HOLD` passed 10
-   minutes, no CI run has started 20 minutes after a call, or PRs wait with
-   nothing in flight. Cross-session messages wake the
-   session too, so the heartbeat is the safety net, not the doorbell.
+   one Monitor, description `PR queue heartbeat`, command
+   `bash <abs path>/tick.sh`, `timeout_ms` at the maximum (30 minutes). It
+   checks once a minute and stays silent unless the in-flight PR merged or
+   closed without a message, a `HOLD` passed 10 minutes, no CI run has
+   started 20 minutes after a call, or PRs wait with nothing in flight.
+   Cross-session messages wake the session too, so the heartbeat is the
+   safety net, not the doorbell.
+   **A Monitor expires after 30 minutes. Re-arm it on every expiry notice**,
+   for as long as the queue runs; a queue without its heartbeat cannot enforce
+   the hold cap. After a re-arm, a condition that is still true is reported
+   again; act on it as if new.
 5. **Report and yield.** One line: who is in flight, who is waiting. Then end the
    turn (`cc-state busy` where installed). The session stays open; messages and
    heartbeat lines arrive as new turns.
