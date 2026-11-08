@@ -1,13 +1,17 @@
 // NEO-386 (R1): "Use a scanner" on Add cards. With no run open it starts one
 // (an empty scanner session filing into the binder or box picked), moves focus
-// to the six-character code the scanner app joins it with, copies it on
-// Copy code, and links the app's Mac downloads. The run lives on the URL, so
-// after a reload asking again gives the same code. "Done adding photos" closes
-// the empty session, and the run says so (NEO-446): a run that closed with no
-// photo in it failed, so the screen says "No photos came in before this run
-// closed" and offers "Start a new run" rather than claiming the photos are all
-// in. Both sides: the Collection files into a binder, the Inventory into a box
-// (its own Main, which every account has).
+// to the six-character code the scanner app joins it with, and links the app's
+// Mac downloads. The run lives on the URL, so after a reload asking again gives
+// the same code. "Done adding photos" closes the empty session, and the run says
+// so (NEO-446): a run that closed with no photo in it failed, so the screen says
+// "No photos came in before this run closed" and offers "Start a new run" rather
+// than claiming the photos are all in. Both sides: the Collection files into a
+// binder, the Inventory into a box (its own Main, which every account has).
+//
+// NEO-459: the click itself copies the code and the panel says so ("Scanner
+// code copied. Paste it into NeonBinder Scanner."); the copy icon ("Copy scanner
+// code") copies it again. A browser that refuses the clipboard gets a plain
+// line saying to press the copy icon or type the code, and no alert.
 //
 // NEO-416: a photo dropped while the shelf and the ?run= run are still loading
 // is queued and sent into that same run once they load (never "Make a binder
@@ -19,43 +23,76 @@
 // Each section picks 2024 Topps Chrome Base first (`pickIntakeSet`); the held
 // button is asserted once, on the Collection side.
 //
-// The app itself (apps/scanner) needs a real scanner and a real API key,
-// so its side of the join is pinned in convex/intakeScanner.test.ts,
-// convex/scannerContract.test.ts and apps/scanner's unit tests, not here.
+// The app's side of the join, and of Done, is driven live by
+// scanner-app-done-both-ways.spec.ts. Its wire contract is also pinned in
+// convex/intakeScanner.test.ts and convex/scannerContract.test.ts.
 //
 // R7: writes only the account's own runs. Each is closed before the leg ends,
 // and again on the way out if a step failed, so an empty session never holds
 // one of the account's two active-batch slots for its 30-minute idle window.
-import type { Page } from "@playwright/test";
+import type { Locator, Page } from "@playwright/test";
 import { pickIntakeSet } from "../../support/collection";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
+import { startScannerRun } from "../../support/scanner-run";
+
+/**
+ * Stand in for the browser's clipboard, so the write is captured rather than
+ * read back (permission differs per engine). "capture" keeps what either API
+ * is given, reading a ClipboardItem's text the way a paste would; "refuse"
+ * rejects both, the way a browser that denies the page does.
+ */
+async function stubClipboard(page: Page, mode: "capture" | "refuse") {
+  await page.evaluate((m) => {
+    const w = window as unknown as { copied?: string };
+    w.copied = undefined;
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value:
+        m === "refuse"
+          ? {
+              write: async () => Promise.reject(new DOMException("denied", "NotAllowedError")),
+              writeText: async () => Promise.reject(new DOMException("denied", "NotAllowedError")),
+            }
+          : {
+              write: async (items: ClipboardItem[]) => {
+                const blob = await items[0].getType("text/plain");
+                w.copied = await blob.text();
+              },
+              writeText: async (text: string) => void (w.copied = text),
+            },
+    });
+  }, mode);
+}
+
+const captured = (page: Page) => page.evaluate(() => (window as unknown as { copied?: string }).copied);
+
+/** The panel's one visible line about the clipboard (the panel holds two status regions). */
+const clipLine = (panel: Locator, text: string | RegExp) => panel.getByRole("status").filter({ hasText: text });
+
+const COPIED = "Scanner code copied. Paste it into NeonBinder Scanner.";
 
 /** What a run that closed with no photo in it says (`runNotice`, realLanes.ts). */
 const NO_PHOTOS = "No photos came in before this run closed. Start a new run and drop some in.";
 
 /** Start a scanner run from the open Add cards tab; returns the code shown. */
 async function useScanner(page: Page): Promise<string> {
-  await page.getByRole("button", { name: "Use a scanner" }).click();
-  await expect(page).toHaveURL(/[?&]run=/);
+  // The clipboard is stubbed BEFORE the click: Use a scanner copies the code itself.
+  await stubClipboard(page, "capture");
+  const code = await startScannerRun(page);
   const panel = page.getByRole("group", { name: "Scanner code" });
-  await expect(panel).toBeFocused();
   await expect(panel.getByRole("link", { name: "Apple chip" })).toHaveAttribute("href", /scanner-mac-arm64\.zip$/);
   await expect(panel.getByRole("link", { name: "Intel chip" })).toHaveAttribute("href", /scanner-mac-x64\.zip$/);
-  // The code as a screen reader hears it, one character at a time.
-  const spoken = panel.getByText(/^([A-HJ-NP-Z2-9] ){5}[A-HJ-NP-Z2-9]$/);
-  const code = ((await spoken.textContent()) ?? "").replaceAll(" ", "");
-  // Copy code puts the bare code on the clipboard. Clipboard permission
-  // differs per browser engine, so the write is captured rather than read back.
-  await page.evaluate(() => {
-    const w = window as unknown as { copied?: string };
-    Object.defineProperty(navigator, "clipboard", {
-      configurable: true,
-      value: { writeText: async (text: string) => void (w.copied = text) },
-    });
-  });
-  await panel.getByRole("button", { name: "Copy code" }).click();
-  await expect(panel.getByRole("status")).toHaveText("Scanner code copied. Paste it into NeonBinder Scanner.");
-  expect(await page.evaluate(() => (window as unknown as { copied?: string }).copied)).toBe(code);
+
+  // The click copied the bare code and the panel says so once it has focus.
+  await expect(clipLine(panel, COPIED)).toBeVisible();
+  expect(await captured(page)).toBe(code);
+
+  // The copy icon copies it again: clear the capture, press, and see both.
+  await stubClipboard(page, "capture");
+  expect(await captured(page)).toBeUndefined();
+  await panel.getByRole("button", { name: "Copy scanner code" }).click();
+  await expect.poll(() => captured(page)).toBe(code);
+  await expect(clipLine(panel, COPIED)).toBeVisible();
   return code;
 }
 
@@ -94,8 +131,14 @@ test(
       await page.reload();
       await expect(page.getByRole("heading", { level: 1, name: "Collection" })).toBeVisible({ timeout: LAUNCH_GATE });
       await expect(page.getByRole("button", { name: "Use a scanner", disabled: false })).toBeVisible({ timeout: LAUNCH_GATE });
+      // This browser refuses the clipboard: the panel says to press the copy
+      // icon or type the code, as plain words and not an alert.
+      await stubClipboard(page, "refuse");
       await page.getByRole("button", { name: "Use a scanner" }).click();
-      await expect(page.getByRole("group", { name: "Scanner code" }).getByText(code.split("").join(" "))).toHaveCount(1);
+      const again = page.getByRole("group", { name: "Scanner code" });
+      await expect(again.getByText(code.split("").join(" "))).toHaveCount(1);
+      await expect(clipLine(again, /^No auto-copy this time\..*type the code/)).toBeVisible();
+      await expect(page.getByRole("alert")).toHaveCount(0);
 
       // Done with no photos: the empty session closes as a failed run (nothing came
       // in), and says so with the way forward (NEO-446).

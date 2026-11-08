@@ -95,6 +95,9 @@ export function photoLabels(images: readonly Pick<IntakeImage, "entryIndex" | "o
 export const LEAVE_INTAKE_LINE =
   "This run isn't finished: some cards are still working or need you. Leave anyway? Anything headed to your marketplaces goes up on the next 15-minute round instead.";
 
+/** Said out loud when the collector's close lands (the panel's own line is not a live region). */
+export const RUN_CLOSED_LINE = "That's a wrap on this run's photos!";
+
 /** What preprocess read off a pair's two photos, front first. */
 export function readOf(images: Map<number, IntakeImage>, frontIndex: number, backIndex: number): PairRead {
   const front = images.get(frontIndex);

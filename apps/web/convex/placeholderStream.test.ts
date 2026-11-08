@@ -1055,6 +1055,28 @@ describe("getPlaceholderJob exposes the streaming fields", () => {
     ).resolves.toBeNull();
   });
 
+  test("returns who closed it: nobody yet, the collector, or the idle sweep (NEO-459)", async () => {
+    const t = convexTest(schema, modules);
+    const jobId = await openStream(t);
+    const closedBy = async (id: string) =>
+      (await t.withIdentity(USER_A).query(api.placeholderPipeline.getPlaceholderJob, { jobId: id }))?.streamClosedBy;
+
+    expect(await closedBy(jobId)).toBeUndefined();
+    await t.withIdentity(USER_A).mutation(api.placeholderStream.closePlaceholderStream, { jobId });
+    expect(await closedBy(jobId)).toBe("user");
+
+    await seedJob(t, "job-idle-closed", {
+      mode: "stream",
+      status: "collecting",
+      totalImages: 1,
+      processedImages: 1,
+      lastActivityAt: Date.now() - PLACEHOLDER_STREAM_IDLE_MS - 1_000,
+    });
+    await seedImage(t, "job-idle-closed", 0, "done", { side: "front", textCount: 1 });
+    await t.mutation(internal.placeholderStream.sweepIdleStreams, {});
+    expect(await closedBy("job-idle-closed")).toBe("idle");
+  });
+
   test("listPlaceholderImages surfaces awaiting_upload rows to the owner", async () => {
     const t = convexTest(schema, modules);
     const jobId = await openStream(t);
