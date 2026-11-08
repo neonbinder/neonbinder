@@ -14,6 +14,8 @@
 #                                      clear the in-flight PR (or drop a waiting one)
 #                                      and log the outcome (merged|out|withdrawn|skipped)
 #   state.sh move <pr> <position>      reorder the waiting line (1 = next)
+#   state.sh hold <pr> <reason...>     the in-flight PR waits on Jason (starts the hold clock)
+#   state.sh resume <pr>               Jason answered; stop the hold clock
 #
 # Every write takes a mkdir lock, so concurrent sessions cannot lose an update.
 set -euo pipefail
@@ -87,5 +89,15 @@ case "$cmd" in
         else .waiting = ([.waiting[] | select(.pr != $pr)] | .[:($p - 1)] + $m + .[($p - 1):]) end' \
       --argjson pr "$pr" --argjson p "$pos"
     jq -c '[.waiting[].pr]' "$file" ;;
+  hold)
+    pr="${1:?pr}"; shift
+    with_lock update 'if .inFlight.pr == $pr then .inFlight += {holdSince: $t, holdReason: $r} else . end' \
+      --argjson pr "$pr" --arg t "$(now)" --arg r "$*"
+    jq -c '.inFlight' "$file" ;;
+  resume)
+    pr="${1:?pr}"
+    with_lock update 'if .inFlight.pr == $pr then .inFlight |= del(.holdSince, .holdReason) else . end' \
+      --argjson pr "$pr"
+    jq -c '.inFlight' "$file" ;;
   *) echo "pr-queue: unknown command '$cmd'" >&2; exit 2 ;;
 esac

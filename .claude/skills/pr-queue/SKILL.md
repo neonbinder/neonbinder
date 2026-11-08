@@ -60,7 +60,9 @@ copying its `from` attribute as `to`.
 | queue → PR | `PR-QUEUE YOUR TURN #499` | Go: the turn steps below. |
 | PR → queue | `PR-QUEUE MERGED #499 <sha>` | Merge commit exists on main. |
 | PR → queue | `PR-QUEUE OUT #499 <reason>` | Giving up the turn (red needing a fix, Jason's call, withdrawn). |
-| PR → queue | `PR-QUEUE HOLD #499 <reason>` | Green and current, but the merge needs Jason. Keep the turn. |
+| PR → queue | `PR-QUEUE HOLD #499 <reason>` | Green and current, but the merge needs Jason. Keeps the turn for at most 10 minutes. |
+| PR → queue | `PR-QUEUE RESUME #499` | Jason answered within the hold; the merge is going ahead. |
+| queue → PR | `PR-QUEUE RELEASED #499` | The hold ran out; the turn passed on. Join again once Jason answers. |
 | PR → queue | `PR-QUEUE LEAVE #499` | Take me out of the waiting line. |
 | any → queue | `PR-QUEUE STATUS` | Reply with the line and the PR in flight. |
 
@@ -77,9 +79,10 @@ copying its `from` attribute as `to`.
    session no longer appears in `ListAgents` stays in line; tell Jason.
 4. **Arm the heartbeat.** Load Monitor (`ToolSearch select:Monitor`) and arm
    one persistent Monitor, description `PR queue heartbeat`, command
-   `bash <abs path>/tick.sh`. It stays silent unless the in-flight PR merged
-   or closed without a message, no CI run has started 20 minutes after a
-   call, or PRs wait with nothing in flight. Cross-session messages wake the
+   `bash <abs path>/tick.sh`. It checks once a minute and stays silent unless
+   the in-flight PR merged or closed without a message, a `HOLD` passed 10
+   minutes, no CI run has started 20 minutes after a call, or PRs wait with
+   nothing in flight. Cross-session messages wake the
    session too, so the heartbeat is the safety net, not the doorbell.
 5. **Report and yield.** One line: who is in flight, who is waiting. Then end the
    turn (`cc-state busy` where installed). The session stays open; messages and
@@ -94,10 +97,17 @@ copying its `from` attribute as `to`.
      PR's session still verifies production through `pr-close`.
    - `OUT` or `TICK CLOSED`: `"$Q" done <pr> out <reason>`, call the next.
      When the session fixes its PR it joins again and goes to the back.
-   - `HOLD`: keep the turn (releasing it would make that green run stale on
-     the next merge). Tell Jason in one line which PR waits on him and why,
-     then end the turn
-     (`cc-state answer` where installed).
+   - `HOLD`: `"$Q" hold <pr> <reason>`. Keep the turn for now, since
+     releasing it makes that green run stale on the next merge. Tell Jason in
+     one line which PR waits on him, why, and that the turn passes on in 10
+     minutes. Then end the turn (`cc-state answer` where installed).
+   - `RESUME`: `"$Q" resume <pr>`; the turn carries on with no clock.
+   - `TICK HOLD-EXPIRED <pr> <min>`: **the hold cap.** The queue is meant to
+     keep merging overnight and through Jason's working day, so one PR waiting
+     on him never stops the others. `"$Q" done <pr> out hold expired`, send
+     its session `PR-QUEUE RELEASED #<pr>` with the hold reason, call the next
+     PR, and leave Jason one line saying which PR was released and why. It
+     joins again at the back once he answers.
    - `LEAVE`: `"$Q" done <pr> withdrawn`, reply with nothing further.
    - `STATUS`: reply with `"$Q" show` boiled down to one line per PR.
    - `TICK IDLE <pr> <min>`: ask the PR's session once where the turn
@@ -156,7 +166,11 @@ describes.
       production check, Linear and cleanup.
    6. If the merge needs Jason (his authorisation is missing or the permission
       check denies it), send `PR-QUEUE HOLD #<pr> <reason>` and ask Jason. Do
-      not ask another session to merge for you.
+      not ask another session to merge for you. If he answers and the merge
+      goes ahead within 10 minutes, send `PR-QUEUE RESUME #<pr>` first. On
+      `PR-QUEUE RELEASED`, do not merge: the next PR is merging. Tell Jason,
+      and once he answers, join again (the run is stale by then, so the next
+      turn starts with a main merge and a new run).
 5. `status`: send `PR-QUEUE STATUS` to the owner. `leave <pr>`: send
    `PR-QUEUE LEAVE #<pr>`.
 
@@ -168,6 +182,9 @@ describes.
 - **The queue never merges, pushes or diagnoses.** It calls the order.
 - **One queue at a time.** Check `owner` against `ListAgents` before
   claiming.
+- **A HOLD lasts 10 minutes, then the turn passes on.** The queue runs
+  unattended overnight and while Jason is at work; it never waits on him
+  longer than that.
 - **Never route around a permission denial** by asking another session to do
   the blocked step. It goes to Jason.
 - **Testing pushes are free.** Never tell a session to stop pushing for
