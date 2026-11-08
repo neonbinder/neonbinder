@@ -5,6 +5,10 @@
 // ("This run's photos are all in..."), takes the Done button away and, because
 // the card it sent is still being read, leaving the page asks first.
 //
+// NEO-452: a run needs a set before anything starts, so each leg picks 2024
+// Topps Chrome Base (`pickIntakeSet`) before "Use a scanner". NEO-446: a run that
+// closes with no photo in it says so ("No photos came in...") rather than "all in".
+//
 // The app (apps/scanner) really runs here, as a child process of the spec, over
 // a real Convex websocket (support/scanner-app.ts says how and what is stood in):
 // a fake scanner on its PATH (apps/scanner/src/testing/fake-scanimage.sh), a Clerk
@@ -31,10 +35,20 @@ import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtu
 import { createApiKey, revokeApiKey } from "../../support/api-keys";
 import { convexUrlOf, startScannerApp, type ScannerApp } from "../../support/scanner-app";
 import { startScannerRun } from "../../support/scanner-run";
+import { pickIntakeSet } from "../../support/collection";
 
 test.use({ screenshot: "off" });
 
-const ALL_IN = "This run's photos are all in. To add more, start a new run.";
+/** What a run that closed with no photo in it says (`runNotice`, realLanes.ts). */
+const NO_PHOTOS = "No photos came in before this run closed. Start a new run and drop some in.";
+
+/**
+ * The run's line once D has closed it with the card in (`runNotice`, realLanes.ts).
+ * Two pages that are not images: "all in" while they are being read, and the
+ * failed batch's line if both reads gave up before the close landed. The spec
+ * waits on neither read (see the top), so either is the closed run.
+ */
+const CLOSED_WITH_CARD = /^(This run's photos are all in\. To add more, start a new run\.|Most of these photos wouldn't read\.)/;
 
 test(
   "Scanner app: Done on the screen ends the app, and D in the app closes the run on the screen",
@@ -55,6 +69,7 @@ test(
         await page.goto("/collection?tab=add");
         await expect(page.getByRole("heading", { level: 1, name: "Collection" })).toBeVisible();
         await page.getByRole("combobox", { name: "Put them in this binder" }).selectOption({ label: "Main" });
+        await pickIntakeSet(page);
       };
 
       // --- Done on the screen -> the app ----------------------------------------
@@ -66,7 +81,7 @@ test(
       await first.said("Ready. Load cards in the feeder");
 
       await page.getByRole("button", { name: "Done adding photos" }).click();
-      await expect(page.getByText(ALL_IN)).toBeVisible();
+      await expect(page.getByText(NO_PHOTOS)).toBeVisible();
       await first.said("This run closed on NeonBinder. 0 cards sent.");
       // No keyboard to ask for another code: it leaves, cleanly.
       expect(await first.exited()).toBe(0);
@@ -89,7 +104,7 @@ test(
       withCard.press("d");
       await withCard.said("Done. 1 card sent.");
       // The screen follows with nobody touching it: the run is closed, Done is gone.
-      await expect(page.getByText(ALL_IN)).toBeVisible();
+      await expect(page.getByText(CLOSED_WITH_CARD)).toBeVisible();
       await expect(page.getByRole("button", { name: "Done adding photos" })).toHaveCount(0);
       await expect(page.getByRole("status").filter({ hasText: "That's a wrap on this run's photos!" })).toBeVisible();
       expect(await withCard.exited()).toBe(0);
@@ -108,7 +123,7 @@ test(
       expect(asked).toHaveLength(1);
       expect(asked[0]).toMatch(/^confirm: This run isn't finished: some cards are still working or need you\. Leave anyway\?/);
       await expect(page).toHaveURL(runUrl);
-      await expect(page.getByText(ALL_IN)).toBeVisible();
+      await expect(page.getByText(CLOSED_WITH_CARD)).toBeVisible();
       // ...and Leave moves on (which also frees the page for the cleanup below).
       page.once("dialog", (dialog) => void dialog.accept());
       await myCards.click();
@@ -124,7 +139,8 @@ test(
         if (page.url().includes("run=") && (await done.isVisible())) {
           await done.click();
           // Leave only once the close has landed, or the page goes with it in flight.
-          await expect(page.getByText(ALL_IN)).toBeVisible();
+          // Either leg can get here, with no photo in or with the card.
+          await expect(page.getByText(CLOSED_WITH_CARD).or(page.getByText(NO_PHOTOS))).toBeVisible();
         }
       } catch (e) {
         undone.push(`closing the open run: ${e instanceof Error ? e.message.split("\n").filter(Boolean).slice(0, 3).join(" ") : String(e)}`);

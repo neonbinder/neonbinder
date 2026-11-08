@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { foldBscTargets, type ListingCopy } from "./bscSheetPlan";
-import { hasListingCondition, listingFloorCents, listingReadiness } from "./listingReadiness";
+import { hasListingCondition, intakeRunReadiness, listingFloorCents, listingReadiness } from "./listingReadiness";
 import type { Id } from "../_generated/dataModel";
 import { encodeId } from "./convexIdCodec";
 
@@ -96,5 +96,59 @@ describe("the drain reads the same rule", () => {
     const fold = foldBscTargets({ copies: [copy({ condition: undefined })], era: "modern", commonPriceCents: 25 });
     expect(fold.problems.map((p) => p.reason)).toEqual(["no_condition"]);
     expect(listingReadiness({ applies: true, condition: undefined, commonPriceCents: 25 }).needsCondition).toBe(true);
+  });
+});
+
+describe("intakeRunReadiness (NEO-452)", () => {
+  const base = { applies: true, condition: "Excellent", commonPriceCents: null, hasVariant: true } as const;
+
+  test("no set needs the set, and never says a price is missing: there is no common price to look up yet", () => {
+    expect(intakeRunReadiness({ ...base, hasVariant: false })).toEqual({
+      ready: false,
+      needsSet: true,
+      needsPrice: false,
+      needsCondition: false,
+    });
+  });
+
+  test("no set stays unready whether or not the gate applies or a price of its own is given", () => {
+    for (const applies of [true, false]) {
+      for (const ownPriceCents of [undefined, 0, 50]) {
+        const out = intakeRunReadiness({ ...base, applies, ownPriceCents, hasVariant: false });
+        expect(out).toMatchObject({ ready: false, needsSet: true, needsPrice: false });
+      }
+    }
+  });
+
+  test("no set still reports a missing condition", () => {
+    expect(intakeRunReadiness({ ...base, hasVariant: false, condition: undefined })).toMatchObject({
+      needsSet: true,
+      needsPrice: false,
+      needsCondition: true,
+    });
+  });
+
+  test("with a set it answers as listingReadiness does, plus needsSet false", () => {
+    const cases = [
+      { ...base },
+      { ...base, applies: false, condition: undefined },
+      { ...base, ownPriceCents: 0 },
+      { ...base, commonPriceCents: 25 },
+      { ...base, condition: undefined },
+      { ...base, condition: undefined, commonPriceCents: 25 },
+      { ...base, graded: true, condition: undefined },
+    ];
+    for (const input of cases) {
+      const { hasVariant: _hasVariant, ...listing } = input;
+      expect(intakeRunReadiness(input)).toEqual({ ...listingReadiness(listing), needsSet: false });
+    }
+  });
+
+  test("a set with no price on a listed box needs a price, so the screen can warn once a set is picked", () => {
+    expect(intakeRunReadiness(base)).toEqual({ ready: false, needsSet: false, needsPrice: true, needsCondition: false });
+  });
+
+  test("a zero price of its own is a price", () => {
+    expect(intakeRunReadiness({ ...base, ownPriceCents: 0 })).toMatchObject({ ready: true, needsPrice: false });
   });
 });

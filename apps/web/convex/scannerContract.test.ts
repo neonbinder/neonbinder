@@ -9,6 +9,7 @@ import { convexTest } from "convex-test";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import schema from "./schema";
 import { api } from "./_generated/api";
+import { seedCollectionCatalog } from "../lib/testing/collection-fixture";
 import {
   BACKEND_FUNCTIONS,
   JOINED_RUN_FIELDS,
@@ -46,20 +47,24 @@ describe("the scanner CLI's backend contract", () => {
   test("a joined run carries the fields the CLI reads, and a closed run refuses uploads in words it recognises", async () => {
     const t = convexTest(schema, modules);
     const me = t.withIdentity(ME);
+    // NEO-452: every new run has a set, and a set to match in holds cards.
+    const fx = await seedCollectionCatalog(t);
     const homeId = await t.run(async (ctx) =>
       ctx.db.insert("collectionContainers", { ownerId: ME.subject, kind: "box", name: "Dimes", lastUpdated: 0 }),
     );
     const session = await me.mutation(api.placeholderStream.startPlaceholderStream, { source: "scanner" });
     expect(session.started).toBe(true);
     const jobId = session.jobId!;
-    const runId = await me.mutation(api.intakeRuns.createIntakeRun, { jobId, homeId });
+    const runId = await me.mutation(api.intakeRuns.createIntakeRun, {
+      jobId,
+      homeId,
+      variantId: fx.baseId,
+    });
     const code = await me.mutation(api.intakeScanner.scannerCodeForIntakeRun, { runId });
 
     const joined = await me.query(api.intakeScanner.joinIntakeRunByScannerCode, { code });
-    expect(Object.keys(joined!).sort()).toEqual(
-      [...JOINED_RUN_FIELDS].filter((f) => f !== "variantName").sort(),
-    );
-    expect(joined).toMatchObject({ runId, jobId, collecting: true });
+    expect(Object.keys(joined!).sort()).toEqual([...JOINED_RUN_FIELDS].sort());
+    expect(joined).toMatchObject({ runId, jobId, collecting: true, variantName: expect.any(String) });
 
     const closed = await me.mutation(api.placeholderStream.closePlaceholderStream, { jobId });
     expect(closed.closed).toBe(true);

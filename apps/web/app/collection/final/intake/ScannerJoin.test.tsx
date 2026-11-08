@@ -15,6 +15,7 @@ import { ScannerJoin, SPEECH_AFTER_FOCUS_MS, startRefusal } from "./ScannerJoin"
 const calls = vi.hoisted(() => ({
   start: vi.fn(),
   create: vi.fn(),
+  close: vi.fn(),
   mint: vi.fn(),
 }));
 vi.mock("convex/react", () => ({
@@ -22,6 +23,7 @@ vi.mock("convex/react", () => ({
     const name = getFunctionName(ref);
     if (name === "placeholderStream:startPlaceholderStream") return calls.start;
     if (name === "intakeRuns:createIntakeRun") return calls.create;
+    if (name === "placeholderStream:closePlaceholderStream") return calls.close;
     if (name === "intakeScanner:scannerCodeForIntakeRun") return calls.mint;
     throw new Error(`unexpected mutation ${name}`);
   },
@@ -29,6 +31,8 @@ vi.mock("convex/react", () => ({
 
 const RUN = "run1" as Id<"intakeRuns">;
 const HOME = "home1" as Id<"collectionContainers">;
+const VARIANT = "variant1" as Id<"selectorOptions">;
+const NEW_RUN = { homeId: HOME, variantId: VARIANT };
 
 const COPIED = "Scanner code copied. Paste it into NeonBinder Scanner.";
 const REFUSED = "No auto-copy this time. Press Copy scanner code or type the code in by hand.";
@@ -50,6 +54,7 @@ const fillsIn = async ([item]: FakeClipboardItem[]) => {
 beforeEach(() => {
   calls.start.mockReset().mockResolvedValue({ started: true, jobId: "job-1" });
   calls.create.mockReset().mockResolvedValue(RUN);
+  calls.close.mockReset().mockResolvedValue(null);
   calls.mint.mockReset().mockResolvedValue("AB3X7K");
   onClipboard.text = null;
   write.mockReset().mockImplementation(fillsIn);
@@ -67,7 +72,7 @@ afterEach(() => {
 function renderJoin(props: Partial<Parameters<typeof ScannerJoin>[0]> = {}) {
   const onRunStarted = vi.fn();
   const view = render(
-    <ScannerJoin runId={null} newRun={{ homeId: HOME }} kind="binder" loading={false} onRunStarted={onRunStarted} {...props} />,
+    <ScannerJoin runId={null} newRun={NEW_RUN} kind="binder" loading={false} onRunStarted={onRunStarted} {...props} />,
   );
   return { onRunStarted, view };
 }
@@ -78,10 +83,10 @@ describe("ScannerJoin", () => {
     fireEvent.click(screen.getByRole("button", { name: "Use a scanner" }));
     await waitFor(() => expect(onRunStarted).toHaveBeenCalledWith(RUN));
     expect(calls.start).toHaveBeenCalledWith({ source: "scanner" });
-    expect(calls.create).toHaveBeenCalledWith({ homeId: HOME, jobId: "job-1" });
+    expect(calls.create).toHaveBeenCalledWith({ homeId: HOME, variantId: VARIANT, jobId: "job-1" });
     // The parent opens the run; the code shows for it.
     view.rerender(
-      <ScannerJoin runId={RUN} newRun={{ homeId: HOME }} kind="binder" loading={false} onRunStarted={onRunStarted} />,
+      <ScannerJoin runId={RUN} newRun={NEW_RUN} kind="binder" loading={false} onRunStarted={onRunStarted} />,
     );
     const panel = await screen.findByRole("group", { name: "Scanner code" });
     expect(panel.textContent).toContain("Type or paste this code in NeonBinder Scanner");
@@ -140,7 +145,7 @@ describe("ScannerJoin", () => {
       await act(async () => started({ started: true, jobId: "job-1" }));
       await waitFor(() => expect(onRunStarted).toHaveBeenCalledWith(RUN));
       view.rerender(
-        <ScannerJoin runId={RUN} newRun={{ homeId: HOME }} kind="binder" loading={false} onRunStarted={onRunStarted} />,
+        <ScannerJoin runId={RUN} newRun={NEW_RUN} kind="binder" loading={false} onRunStarted={onRunStarted} />,
       );
       expect(await line(COPIED)).toBeTruthy();
       expect(onClipboard.text).toBe("AB3X7K");
@@ -385,7 +390,7 @@ describe("ScannerJoin", () => {
       // A different run: the button is back, and its press starts over.
       const other = "run2" as Id<"intakeRuns">;
       calls.mint.mockResolvedValue("ZZ9Y8W");
-      view.rerender(<ScannerJoin runId={other} newRun={{ homeId: HOME }} kind="binder" loading={false} onRunStarted={vi.fn()} />);
+      view.rerender(<ScannerJoin runId={other} newRun={NEW_RUN} kind="binder" loading={false} onRunStarted={vi.fn()} />);
       fireEvent.click(await screen.findByRole("button", { name: "Use a scanner" }));
       expect(await screen.findByText(COPIED, { selector: "p" }, SAID)).toBeTruthy();
     });
@@ -424,6 +429,27 @@ describe("ScannerJoin", () => {
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
+  it("held for a reason: stays on screen, aria-disabled and described by it, and a click starts nothing", async () => {
+    renderJoin({ heldReason: "Pick a set first, then get a code." });
+    const button = screen.getByRole("button", { name: "Use a scanner" });
+    expect(button.getAttribute("aria-disabled")).toBe("true");
+    expect(button.hasAttribute("disabled")).toBe(false);
+    const reason = screen.getByText("Pick a set first, then get a code.");
+    expect(button.getAttribute("aria-describedby")?.split(" ")).toContain(reason.id);
+    fireEvent.click(button);
+    await act(async () => {});
+    expect(calls.start).not.toHaveBeenCalled();
+    expect(calls.create).not.toHaveBeenCalled();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("no reason held: nothing is described, and the button works", () => {
+    renderJoin();
+    const button = screen.getByRole("button", { name: "Use a scanner" });
+    expect(button.getAttribute("aria-describedby")).toBeNull();
+    expect(button.getAttribute("aria-disabled")).not.toBe("true");
+  });
+
   it("while the homes load, does not say to make one", async () => {
     renderJoin({ loading: true, newRun: null });
     fireEvent.click(screen.getByRole("button", { name: "Use a scanner" }));
@@ -440,6 +466,31 @@ describe("ScannerJoin", () => {
     fireEvent.click(screen.getByRole("button", { name: "Use a scanner" }));
     expect((await screen.findByRole("alert")).textContent).toBe("You've got too many runs going. Finish one first.");
     expect(calls.create).not.toHaveBeenCalled();
+  });
+
+  it("a refused run closes the session it just opened, so it holds no active-batch slot", async () => {
+    calls.create.mockRejectedValue(new Error("Pick a set first: cards are matched in it."));
+    renderJoin();
+    fireEvent.click(screen.getByRole("button", { name: "Use a scanner" }));
+    expect((await screen.findByRole("alert")).textContent).toContain("Pick a set first");
+    expect(calls.close).toHaveBeenCalledWith({ jobId: "job-1" });
+    expect(calls.mint).not.toHaveBeenCalled();
+  });
+
+  it("a refused run still says why when closing the session fails too", async () => {
+    calls.create.mockRejectedValue(new Error("Pick a set first: cards are matched in it."));
+    calls.close.mockRejectedValue(new Error("gone"));
+    renderJoin();
+    fireEvent.click(screen.getByRole("button", { name: "Use a scanner" }));
+    expect((await screen.findByRole("alert")).textContent).toContain("Pick a set first");
+    expect(screen.getByRole("button", { name: "Use a scanner" }).getAttribute("aria-disabled")).not.toBe("true");
+  });
+
+  it("an open run's code never closes anything", async () => {
+    renderJoin({ runId: RUN });
+    fireEvent.click(screen.getByRole("button", { name: "Use a scanner" }));
+    await screen.findByRole("group", { name: "Scanner code" });
+    expect(calls.close).not.toHaveBeenCalled();
   });
 
   it("shows a failed code request and keeps the button", async () => {

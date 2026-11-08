@@ -19,7 +19,10 @@ export const SCANNER_DOWNLOADS = {
 } as const;
 const DOWNLOAD_LINK = "text-neon-blue-text underline underline-offset-2 hover:decoration-2 focus-outline rounded-sm";
 
-type NewRun = Omit<FunctionArgs<typeof api.intakeRuns.createIntakeRun>, "jobId">;
+/** NEO-452: `variantId` is optional on the wire only for a stale tab's sake; every new run has one. */
+type NewRun = Omit<FunctionArgs<typeof api.intakeRuns.createIntakeRun>, "jobId" | "variantId"> & {
+  variantId: Id<"selectorOptions">;
+};
 
 /** The server's refusal at the active-batch cap, in this screen's words. */
 export function startRefusal(reason: string | undefined): string {
@@ -93,24 +96,32 @@ function copyWhenReady(text: Promise<string>): Promise<boolean> {
  * NEO-416 — held the same way while `loading`: until the homes and the open
  * run have loaded, "no run" and "no home" are not known yet, and a click
  * would start a second run or say to make a home the collector already has.
+ *
+ * NEO-452 — a scanner starts the run as dropped photos do, so it waits on the
+ * same setup (`heldReason`): it stays on screen, `aria-disabled` and described by
+ * the reason, rather than vanishing. An open run needs no setup to mint its code.
  */
 export function ScannerJoin({
   runId,
   newRun,
   kind,
   loading,
+  heldReason,
   onRunStarted,
 }: {
   runId: Id<"intakeRuns"> | null;
   /** What a run started from here files into; null when there is no home yet. */
   newRun: NewRun | null;
   kind: "binder" | "box";
-  /** The homes or the open run are still loading; the button holds. */
+  /** The homes, the open run or the listing gate are still loading; the button holds. */
   loading: boolean;
+  /** What the run needs before it can start; the button holds and says so. */
+  heldReason?: string;
   onRunStarted: (runId: Id<"intakeRuns">) => void;
 }) {
   const startStream = useMutation(api.placeholderStream.startPlaceholderStream);
   const createRun = useMutation(api.intakeRuns.createIntakeRun);
+  const closeStream = useMutation(api.placeholderStream.closePlaceholderStream);
   const mintCode = useMutation(api.intakeScanner.scannerCodeForIntakeRun);
   const [code, setCode] = useState<{ runId: Id<"intakeRuns">; code: string } | null>(null);
   const [busy, setBusy] = useState(false);
@@ -123,6 +134,7 @@ export function ScannerJoin({
   const panel = useRef<HTMLDivElement>(null);
   const labelId = useId();
   const problemId = useId();
+  const reasonId = useId();
 
   const shown = code && code.runId === runId ? code.code : null;
   useEffect(() => {
@@ -146,14 +158,20 @@ export function ScannerJoin({
       if (!newRun) throw new Error(`Make a ${kind} first: the cards need somewhere to go.`);
       const session = await startStream({ source: "scanner" });
       if (!session.started || !session.jobId) throw new Error(startRefusal(session.reason));
-      id = await createRun({ ...newRun, jobId: session.jobId });
+      try {
+        id = await createRun({ ...newRun, jobId: session.jobId });
+      } catch (error) {
+        // A session with no run would hold an active-batch slot until the idle sweep.
+        void closeStream({ jobId: session.jobId }).catch(() => {});
+        throw error;
+      }
       onRunStarted(id);
     }
     return { runId: id, code: await mintCode({ runId: id }) };
   };
 
   const onUse = async () => {
-    if (busy || loading) return;
+    if (busy || loading || heldReason) return;
     setBusy(true);
     setProblem("");
     setClip(null);
@@ -220,13 +238,14 @@ export function ScannerJoin({
           <NeonButton
             variant="secondary"
             outline
-            aria-disabled={busy || loading}
-            aria-describedby={problem ? problemId : undefined}
+            aria-disabled={busy || loading || !!heldReason}
+            aria-describedby={[heldReason ? reasonId : null, problem ? problemId : null].filter(Boolean).join(" ") || undefined}
             onClick={() => void onUse()}
           >
             {busy ? "Getting a code…" : "Use a scanner"}
           </NeonButton>
           <span>Got a scanner with a feeder? Get a code and its cards land right here.</span>
+          {heldReason && <span id={reasonId}>{heldReason}</span>}
           {problem && (
             <span id={problemId} role="alert" className="text-neon-pink-text">
               {problem}

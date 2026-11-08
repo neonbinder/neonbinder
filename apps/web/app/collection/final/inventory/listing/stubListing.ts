@@ -46,7 +46,7 @@ export function stubListing(over: Partial<ListingExtension> = {}): ListingExtens
     loadSetProblems: async () => ({ problems: [], problemsTotal: 0 }),
     useSales: () => ({ sales: [], canLoadMore: false, loadingMore: false, loadMore: () => {} }),
     // Syncing, and no box held: a test that wants the gate passes its own.
-    useGate: () => ({ syncing: true, applies: false, commonPriceCents: null }),
+    useGate: () => ({ syncing: true, applies: false, commonPriceCents: null, variantHasCards: true }),
     ...over,
   };
 }

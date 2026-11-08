@@ -146,9 +146,11 @@ export function BandBadge({ item }: { item: Item }) {
 
 export function StageBadge({ stage }: { stage: Stage }) {
   return (
-    <span className="inline-flex items-center gap-1.5 rounded-full bg-chip px-2 py-0.5 text-xs text-ink-2">
-      <span aria-hidden="true" className="intake-dot size-1.5 rounded-full bg-neon-blue" />
-      {STAGE_LABEL[stage]}
+    // Wraps in a narrow lane (a capsule on one line, a soft box on two) rather than
+    // pushing the tile wider than its column. The words stay whole in the DOM.
+    <span className="inline-flex max-w-full items-start gap-1.5 rounded-xl bg-chip px-2 py-0.5 text-xs text-ink-2">
+      <span aria-hidden="true" className="intake-dot mt-[0.3125rem] size-1.5 shrink-0 rounded-full bg-neon-blue" />
+      <span className="min-w-0 wrap-anywhere">{STAGE_LABEL[stage]}</span>
     </span>
   );
 }

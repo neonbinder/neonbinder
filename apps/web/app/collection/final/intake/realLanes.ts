@@ -1,6 +1,7 @@
 import type { FunctionReturnType } from "convex/server";
 import type { api } from "@/convex/_generated/api";
 import type { IntakeReason } from "@/convex/lib/intakeMatch";
+import { ENTRY_TOO_MANY_PIXELS, type RejectedSummary, type RejectionKind } from "@/convex/lib/extractRejections";
 
 /**
  * NEO-382 — the signed-in intake screen's lanes, worked out from the three
@@ -13,7 +14,7 @@ import type { IntakeReason } from "@/convex/lib/intakeMatch";
  *   Pairing:  read (or failed) and not in a pair: the loose pile;
  *   Matching: in a pair the matcher has not answered yet;
  *   Needs you: matched (or not), waiting for the collector;
- *   Saved:    saved by the collector. A pair set aside sits apart.
+ *   Saved:    saved by the collector. A pair or loose photo set aside sits apart.
  */
 
 export type IntakeImage = FunctionReturnType<typeof api.placeholderPipeline.listPlaceholderImages>[number];
@@ -34,9 +35,11 @@ export interface Lanes {
   review: IntakeMatchRow[];
   saved: IntakeMatchRow[];
   setAside: IntakeMatchRow[];
+  /** NEO-446: loose photos the collector set aside. They sit with `setAside` and hold nothing open. */
+  looseAside: IntakeImage[];
 }
 
-export const EMPTY_LANES: Lanes = { reading: [], loose: [], matching: [], review: [], saved: [], setAside: [] };
+export const EMPTY_LANES: Lanes = { reading: [], loose: [], matching: [], review: [], saved: [], setAside: [], looseAside: [] };
 
 const pairKey = (frontIndex: number, backIndex: number) => `${frontIndex}-${backIndex}`;
 
@@ -48,11 +51,11 @@ export function laneOf(images: IntakeImage[], pairs: IntakePair[], matches: Inta
   }
   const answered = new Set(matches.map((m) => pairKey(m.frontIndex, m.backIndex)));
   const byIndex = (a: IntakeImage, b: IntakeImage) => a.entryIndex - b.entryIndex;
+  const unpaired = images.filter((i) => (i.status === "done" || i.status === "failed") && !paired.has(i.entryIndex));
   return {
     reading: images.filter((i) => i.status !== "done" && i.status !== "failed").sort(byIndex),
-    loose: images
-      .filter((i) => (i.status === "done" || i.status === "failed") && !paired.has(i.entryIndex))
-      .sort(byIndex),
+    loose: unpaired.filter((i) => !i.setAside).sort(byIndex),
+    looseAside: unpaired.filter((i) => i.setAside).sort(byIndex),
     matching: pairs
       .filter((p) => !answered.has(pairKey(p.frontIndex, p.backIndex)))
       .sort((a, b) => a.frontIndex - b.frontIndex),
@@ -64,12 +67,28 @@ export function laneOf(images: IntakeImage[], pairs: IntakePair[], matches: Inta
 
 /**
  * NEO-370 Rev 4 — every column but Saved is clear: nothing reading, pairing,
- * matching or waiting on the collector (a pair set aside sits apart and
- * does not hold the run open). Once it is, after "Done adding photos", the
+ * matching or waiting on the collector (a pair or loose photo set aside sits
+ * apart and does not hold the run open). Once it is, after "Done adding photos", the
  * run's cards sync to the collector's marketplaces.
  */
 export function columnsClear(lanes: Pick<Lanes, "reading" | "loose" | "matching" | "review">): boolean {
   return lanes.reading.length + lanes.loose.length + lanes.matching.length + lanes.review.length === 0;
+}
+
+/**
+ * How a control names each loose photo: its file name, or with several photos of
+ * one name (a phone can send every photo as image.jpg) the file name and which
+ * photo of the run it is, so no two controls read the same.
+ */
+export function photoLabels(images: readonly Pick<IntakeImage, "entryIndex" | "originalName">[]): Map<number, string> {
+  const uses = new Map<string, number>();
+  for (const image of images) uses.set(image.originalName, (uses.get(image.originalName) ?? 0) + 1);
+  return new Map(
+    images.map((image) => [
+      image.entryIndex,
+      (uses.get(image.originalName) ?? 0) > 1 ? `${image.originalName}, photo ${image.entryIndex + 1}` : image.originalName,
+    ]),
+  );
 }
 
 /** What leaving asks after "Done adding photos", until the columns clear. */
@@ -243,18 +262,265 @@ export function proposedCount(row: Pick<IntakeMatchRow, "haveHere">): number {
  */
 export const MAX_PHOTO_RETRIES = 3;
 
-/** Whether a failed photo can still be sent again (the run must also be open). */
-export function canRetryPhoto(image: Pick<IntakeImage, "status" | "retries">): boolean {
-  return image.status === "failed" && (image.retries ?? 0) < MAX_PHOTO_RETRIES;
+/**
+ * Whether a failed photo can still be sent again (the run must also be open).
+ * Never one over the pixel ceiling: the same bytes can only fail the same way.
+ */
+export function canRetryPhoto(image: Pick<IntakeImage, "status" | "retries" | "errorCode">): boolean {
+  return (
+    image.status === "failed" &&
+    image.errorCode !== ENTRY_TOO_MANY_PIXELS &&
+    (image.retries ?? 0) < MAX_PHOTO_RETRIES
+  );
 }
+
+/**
+ * The photo size limit as a collector reads it. Mirrors MAX_IMAGE_PIXELS in
+ * services/preprocess/app/imaging.py (65,000,000, so that real 64 megapixel
+ * phones at 64,144,128 px pass). Change both together. Spelled out because a card
+ * dealer reads "MP" as Moderately Played.
+ */
+const PHOTO_LIMIT = "64 megapixels";
+
+/**
+ * What "too big" means for a zip entry, which also has a size cap: mirrors
+ * MAX_ENTRY_UNCOMPRESSED_BYTES in services/preprocess/app/jobs/zipsafe.py. Only a
+ * loose photo's failure is known to be the pixels alone.
+ */
+const ZIP_PHOTO_LIMIT = `${PHOTO_LIMIT} or 32 MB`;
+
+/** What to do with a photo that has had its tries. */
+const SEND_FRESH_LINE = "Send a fresh one.";
+
+/** Try again refused because the photo has had its tries (the tile usually says this first). */
+export const PHOTO_OUT_OF_TRIES_LINE = `Couldn't read it. ${SEND_FRESH_LINE}`;
+
+/** Try again refused because the run closed since the button was drawn. */
+export const PHOTO_RUN_CLOSED_LINE = "This run is closed. Send a fresh one in a new run.";
+
+/** Try again refused because the photo was set aside since the button was drawn. */
+export const PHOTO_SET_ASIDE_LINE = "That photo was set aside. Bring it back to pair it.";
+
+/** A photo over the limit: on its tile, and if a stale Try again is refused for it. */
+export const PHOTO_TOO_BIG_LINE = `Too big (over ${PHOTO_LIMIT}). Shrink it and send it again.`;
 
 /**
  * Why a photo in the pile failed, in a collector's words. With no Try again on
  * offer (the run is closed, or the photo has had its tries), it says what to do.
  */
 export function failedText(image: Pick<IntakeImage, "errorCode">, retryOffered: boolean): string {
+  if (image.errorCode === ENTRY_TOO_MANY_PIXELS) return PHOTO_TOO_BIG_LINE;
   const why = image.errorCode === "PHOTO_TIMED_OUT" ? "Took too long to read" : "Couldn't read it";
-  return retryOffered ? why : `${why}. Scan it again.`;
+  return retryOffered ? why : `${why}. ${SEND_FRESH_LINE}`;
+}
+
+/**
+ * NEO-446 — the order a zip's entries are unpacked in, for loose photos too, so
+ * the same pile pairs the same way however it arrives: digit runs by value, the
+ * rest ignoring case. Mirrors `_natural_sort_key` in
+ * services/preprocess/app/jobs/zipsafe.py, down to comparing a digit run by
+ * length then text, so a very long run never leaves the safe integer range.
+ */
+export function compareNaturalNames(a: string, b: string): number {
+  const left = a.toLowerCase().split(/([0-9]+)/);
+  const right = b.toLowerCase().split(/([0-9]+)/);
+  const compareText = (x: string, y: string) => (x < y ? -1 : x > y ? 1 : 0);
+  for (let i = 0; i < Math.min(left.length, right.length); i++) {
+    const isDigits = i % 2 === 1;
+    const x = isDigits ? left[i].replace(/^0+/, "") : left[i];
+    const y = isDigits ? right[i].replace(/^0+/, "") : right[i];
+    const order = (isDigits ? x.length - y.length : 0) || compareText(x, y);
+    if (order !== 0) return order;
+  }
+  return left.length - right.length;
+}
+
+/** The files in that order, as a new array; names that compare equal keep their order. */
+export function inNaturalOrder(files: readonly File[]): File[] {
+  return [...files].sort((a, b) => compareNaturalNames(a.name, b.name));
+}
+
+/** The job fields the screen's run line is worked out from. */
+export type NoticeJob = Pick<
+  NonNullable<FunctionReturnType<typeof api.placeholderPipeline.getPlaceholderJob>>,
+  "status" | "mode" | "totalImages" | "failedImages" | "rejectedEntries" | "errorCode" | "rejected"
+>;
+
+export interface RunNotice {
+  line: string;
+  /**
+   * `line` in pieces, for drawing: odd indexes are quoted file names, which go in
+   * a `<bdi>` so a right-to-left name can't reorder the sentence around it. Joined,
+   * they are exactly `line`, so no invisible character reaches the page.
+   */
+  parts: string[];
+  /** Something went wrong, and the way forward is a new run: draws the warning look and "Start a new run". */
+  problem: boolean;
+  /** Nothing ever reached the lanes, so a row of zeros would only say something false. */
+  hideWorkspace: boolean;
+}
+
+/** Marks a file name while a line is built; `notice` takes the marks back out. */
+const fileName = (name: string) => `\u2068"${name.replace(/\p{C}/gu, "")}"\u2069`;
+
+function notice(marked: string, problem = true, hideWorkspace = false): RunNotice {
+  const parts = marked.split(/\u2068([^\u2069]*)\u2069/);
+  return { line: parts.join(""), parts, problem, hideWorkspace };
+}
+
+const ALL_IN_LINE = "This run's photos are all in. To add more, start a new run.";
+const UNPACKING_LINE = "Unpacking your zip…";
+const SNAG_LINE = "Our photo reader hit a snag. That's on us. Start a new run and send them again.";
+const SNAG_WITH_PHOTOS_LINE = "Our photo reader hit a snag. That's on us. Anything below is still yours to save. Send the rest in a new run.";
+const WOULD_NOT_OPEN_LINE = "That zip wouldn't open. Zip your photos again (up to 1,000 photos, 500 MB) and start a new run.";
+const WOULD_NOT_OPEN_CODES = new Set(["ZIP_REJECTED", "EXTRACT_REJECTED", "INPUT_TOO_LARGE", "INVALID_IDENTIFIER"]);
+
+/** A zip over the upload limit, as the intake screen words it. */
+export function zipOverLimitLine(limitMb: number): string {
+  return `Couldn't send that zip: it's over ${limitMb} MB. Split it into smaller zips, each card's front and back together, one per run.`;
+}
+
+/** `"IMG_1.jpg", "IMG_2.jpg" and 3 more`, or the bare count when no name can be shown. */
+function rejectedSubject(rejected: RejectedSummary, kind: RejectionKind): string {
+  const count = rejected[kind];
+  const names = rejected.examples
+    .filter((example) => example.kind === kind)
+    .map((example) => fileName(example.name))
+    .slice(0, count);
+  if (names.length === 0) return String(count);
+  const more = count - names.length;
+  return more > 0 ? `${names.join(", ")} and ${more} more` : names.join(", ");
+}
+
+/** What is wrong with `count` of a kind, after their subject: "is too big (over 64 megapixels or 32 MB)". */
+function rejectedProblem(kind: RejectionKind, count: number): string {
+  const one = count === 1;
+  switch (kind) {
+    case "tooBig":
+      return `${one ? "is" : "are"} too big (over ${ZIP_PHOTO_LIMIT})`;
+    case "wrongFormat":
+      return one ? "isn't a JPEG or PNG" : "aren't JPEGs or PNGs";
+    case "unreadable":
+      return "couldn't be read";
+  }
+}
+
+const REJECTION_KINDS: RejectionKind[] = ["tooBig", "wrongFormat", "unreadable"];
+
+function kindsIn(rejected: RejectedSummary): RejectionKind[] {
+  return REJECTION_KINDS.filter((kind) => rejected[kind] > 0);
+}
+
+/** One clause per kind of problem, naming what it can. */
+function rejectedClauses(rejected: RejectedSummary): string {
+  return kindsIn(rejected)
+    .map((kind) => `${rejectedSubject(rejected, kind)} ${rejectedProblem(kind, rejected[kind])}`)
+    .join("; ");
+}
+
+/**
+ * Where a rejected photo goes. It is one side of a card, and its partner may
+ * already be in this run, so the new run needs the other side too.
+ */
+function dropInNewRun(count: number): string {
+  return count === 1 ? "drop it in a new run, with its other side." : "drop them in a new run, with their other sides.";
+}
+
+/** What to do about entries rejected from a run that still has photos in it. */
+function rejectedFix(rejected: RejectedSummary, count: number): string {
+  const one = count === 1;
+  const them = one ? "it" : "them";
+  const drop = dropInNewRun(count);
+  const kinds = kindsIn(rejected);
+  if (kinds.length !== 1) return `Fix ${them} and ${drop}`;
+  switch (kinds[0]) {
+    case "tooBig":
+      return `Shrink ${them} and ${drop}`;
+    case "wrongFormat":
+      return `Convert ${them} to ${one ? "JPEG" : "JPEGs"} and ${drop}`;
+    case "unreadable":
+      return `Check ${one ? "it opens" : "they open"} on your end, then ${drop}`;
+  }
+}
+
+/** Some of the zip made it in, some didn't. */
+function someRejectedLine(job: NoticeJob): string {
+  const count = job.rejectedEntries;
+  const made = `${job.totalImages} photo${job.totalImages === 1 ? "" : "s"} made it in.`;
+  if (!job.rejected) return `${made} ${count} didn't. Check ${count === 1 ? "it" : "them"} and ${dropInNewRun(count)}`;
+  return `${made} ${count} didn't: ${rejectedClauses(job.rejected)}. ${rejectedFix(job.rejected, count)}`;
+}
+
+/** Nothing in the zip made it in, and each entry said why. */
+function allRejectedLine(job: NoticeJob): string {
+  const { rejected, rejectedEntries: count } = job;
+  const one = count === 1;
+  const them = one ? "it" : "them";
+  const unreadable = `We couldn't read the ${one ? "photo" : "photos"} in that zip. Check ${one ? "it opens" : "they open"} on your end, then start a new run.`;
+  if (!rejected) return unreadable;
+  const kinds = kindsIn(rejected);
+  if (kinds.length > 1) {
+    const counts = kinds.map((kind) => `${rejected[kind]} ${rejectedProblem(kind, rejected[kind])}`);
+    return `Nothing in that zip made it in: ${counts.join("; ")}. Fix ${them}, zip ${them} up again, and start a new run.`;
+  }
+  if (kinds[0] === "tooBig") {
+    return one
+      ? `Whoa, that photo is too big! It's over ${ZIP_PHOTO_LIMIT}. Shrink it, zip it up again, and start a new run.`
+      : `Whoa, those photos are too big! All ${count} are over ${ZIP_PHOTO_LIMIT}. Use your camera's normal setting or shrink them, zip them up again, and start a new run.`;
+  }
+  if (kinds[0] === "wrongFormat") {
+    return `No JPEGs or PNGs in that zip, and we can't read iPhone HEICs. Convert ${them} to JPEG, zip ${them} up again, and start a new run.`;
+  }
+  return unreadable;
+}
+
+function failedNotice(job: NoticeJob): RunNotice {
+  const nothingIn = !job.totalImages;
+  const failed = (line: string) => notice(line, true, nothingIn);
+  switch (job.errorCode) {
+    case "CANCELED":
+      return failed("This run was stopped.");
+    case "INPUT_NOT_FOUND":
+      return failed("Your zip never landed. Send it again in a new run.");
+    case "TOO_MANY_IMAGE_FAILURES": {
+      if (!nothingIn) {
+        const most = "Most of these photos wouldn't read. Anything below is still yours to save. Re-shoot the rest, sharp and well lit, in a new run, with their other sides.";
+        return failed(
+          job.rejectedEntries > 0 && job.rejected
+            ? `${most} ${job.rejectedEntries} more didn't make it in: ${rejectedClauses(job.rejected)}.`
+            : most,
+        );
+      }
+      if (job.mode === "stream") return failed("No photos came in before this run closed. Start a new run and drop some in.");
+      return failed(job.rejectedEntries > 0 ? allRejectedLine(job) : "No photos in that zip.");
+    }
+    default:
+      if (job.errorCode && WOULD_NOT_OPEN_CODES.has(job.errorCode)) return failed(WOULD_NOT_OPEN_LINE);
+      // Cards from this run may already be saved, and sending them all again could count them twice.
+      return failed(nothingIn ? SNAG_LINE : SNAG_WITH_PHOTOS_LINE);
+  }
+}
+
+/**
+ * NEO-446 — what the screen says about a run past collecting, from its job row
+ * alone, so a refresh on `?run=` says the same thing. Null while the run is
+ * still collecting (the drop zone is the message then). A null job is a row
+ * that is gone: the line says so, and the lanes stay in case they hold saved
+ * cards.
+ */
+export function runNotice(job: NoticeJob | null): RunNotice | null {
+  if (!job) return notice(SNAG_LINE);
+  if (job.status === "collecting") return null;
+  if (job.status === "failed") return failedNotice(job);
+  if (job.status === "pending" || job.status === "uploaded" || job.status === "extracting") {
+    return notice(UNPACKING_LINE, false);
+  }
+  const isZip = (job.mode ?? "zip") === "zip";
+  // Between registration and the terminal decision, a zip with nothing in it is
+  // still on its way to saying so; "0 photos made it in" would only flash by.
+  if (isZip && job.status !== "succeeded" && job.totalImages === 0) return notice(UNPACKING_LINE, false);
+  if (job.rejectedEntries > 0) return notice(someRejectedLine(job));
+  return notice(ALL_IN_LINE, false);
 }
 
 /** The run's one-line status. A failed photo is not "read", so it never says everything is. */

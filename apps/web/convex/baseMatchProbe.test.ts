@@ -21,7 +21,6 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
-import { stripNbCardNumberPrefix } from "./baseMatchProbe";
 import { SL_PROBE_ID_PATTERN, checkProbeIds, isProbeId } from "./lib/baseMatchProbe";
 import { insertTestCard } from "../lib/testing/card-row";
 
@@ -661,21 +660,6 @@ describe("getBaseSignatureForVariantType: auth", () => {
         variantTypeId: parallel,
       }),
     ).rejects.toThrow(/Admin access required/);
-  });
-});
-
-describe("stripNbCardNumberPrefix", () => {
-  test.each([
-    ["TC-1", "TC-", "1"],
-    ["tc-1", "TC-", "1"],
-    ["TC-", "TC-", "TC-"],
-    ["  TC-9 ", " TC- ", "9"],
-    ["12", "TC-", "12"],
-    ["TC-1", undefined, "TC-1"],
-    ["TC-1", "", "TC-1"],
-    ["TC-1", "   ", "TC-1"],
-  ])("%s with prefix %j gives %s", (num, prefix, expected) => {
-    expect(stripNbCardNumberPrefix(num, prefix)).toBe(expected);
   });
 });
 

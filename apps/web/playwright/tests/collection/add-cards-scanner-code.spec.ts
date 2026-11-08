@@ -2,9 +2,11 @@
 // (an empty scanner session filing into the binder or box picked), moves focus
 // to the six-character code the scanner app joins it with, and links the app's
 // Mac downloads. The run lives on the URL, so after a reload asking again gives
-// the same code. "Done adding photos" closes the empty session. Both sides: the
-// Collection files into a binder, the Inventory into a box (its own Main, which
-// every account has).
+// the same code. "Done adding photos" closes the empty session, and the run says
+// so (NEO-446): a run that closed with no photo in it failed, so the screen says
+// "No photos came in before this run closed" and offers "Start a new run" rather
+// than claiming the photos are all in. Both sides: the Collection files into a
+// binder, the Inventory into a box (its own Main, which every account has).
 //
 // NEO-459: the click itself copies the code and the panel says so ("Scanner
 // code copied. Paste it into NeonBinder Scanner."); the copy icon ("Copy scanner
@@ -16,6 +18,11 @@
 // first", never a new run). That half is proven by unit tests: the loading
 // window cannot be targeted live, and the photo specs drive real preprocess.
 //
+// NEO-452: a run needs a set before anything starts, so "Use a scanner" is held
+// ("Pick a set first, then get a code.") until one is picked, on both sides.
+// Each section picks 2024 Topps Chrome Base first (`pickIntakeSet`); the held
+// button is asserted once, on the Collection side.
+//
 // The app's side of the join, and of Done, is driven live by
 // scanner-app-done-both-ways.spec.ts. Its wire contract is also pinned in
 // convex/intakeScanner.test.ts and convex/scannerContract.test.ts.
@@ -24,6 +31,7 @@
 // and again on the way out if a step failed, so an empty session never holds
 // one of the account's two active-batch slots for its 30-minute idle window.
 import type { Locator, Page } from "@playwright/test";
+import { pickIntakeSet } from "../../support/collection";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { startScannerRun } from "../../support/scanner-run";
 
@@ -63,6 +71,9 @@ const clipLine = (panel: Locator, text: string | RegExp) => panel.getByRole("sta
 
 const COPIED = "Scanner code copied. Paste it into NeonBinder Scanner.";
 
+/** What a run that closed with no photo in it says (`runNotice`, realLanes.ts). */
+const NO_PHOTOS = "No photos came in before this run closed. Start a new run and drop some in.";
+
 /** Start a scanner run from the open Add cards tab; returns the code shown. */
 async function useScanner(page: Page): Promise<string> {
   // The clipboard is stubbed BEFORE the click: Use a scanner copies the code itself.
@@ -100,6 +111,13 @@ test(
       await signIn("/collection?tab=add");
       await expect(page.getByRole("heading", { level: 1, name: "Collection" })).toBeVisible({ timeout: LAUNCH_GATE });
       await page.getByRole("combobox", { name: "Put them in this binder" }).selectOption({ label: "Main" });
+      // No set yet: the scanner button stays on screen, held, and says why.
+      const scannerButton = page.getByRole("button", { name: "Use a scanner" });
+      await expect(page.getByRole("button", { name: "Set: pick one" })).toBeVisible();
+      await expect(scannerButton).toBeDisabled();
+      await expect(scannerButton).toHaveAccessibleDescription(/Pick a set first, then get a code\./);
+      await expectAccessible(page, { label: "Add cards, Use a scanner held until a set is picked" });
+      await pickIntakeSet(page);
       const code = await useScanner(page);
       await expectAccessible(page, { label: "Scanner code shown" });
 
@@ -122,9 +140,12 @@ test(
       await expect(clipLine(again, /^No auto-copy this time\..*type the code/)).toBeVisible();
       await expect(page.getByRole("alert")).toHaveCount(0);
 
-      // Done with no photos: the empty session closes, quietly.
+      // Done with no photos: the empty session closes as a failed run (nothing came
+      // in), and says so with the way forward (NEO-446).
       await page.getByRole("button", { name: "Done adding photos" }).click();
-      await expect(page.getByText("This run's photos are all in. To add more, start a new run.")).toBeVisible();
+      await expect(page.getByText(NO_PHOTOS)).toBeVisible();
+      await expect(page.getByRole("button", { name: "Start a new run", exact: true })).toBeVisible();
+      await expect(page.getByText("This run's photos are all in")).toHaveCount(0);
       await expect(page.getByRole("button", { name: "Use a scanner" })).toHaveCount(0);
       await expect(page.getByRole("alert")).toHaveCount(0);
       await expectAccessible(page, { label: "Scanner run closed" });
@@ -132,10 +153,11 @@ test(
       // --- Inventory: into a box ---------------------------------------------------
       await page.goto("/inventory?tab=add");
       await expect(page.getByRole("combobox", { name: "Put them in this box" })).toBeVisible();
+      await pickIntakeSet(page);
       const boxCode = await useScanner(page);
       expect(boxCode).not.toBe(code);
       await page.getByRole("button", { name: "Done adding photos" }).click();
-      await expect(page.getByText("This run's photos are all in. To add more, start a new run.")).toBeVisible();
+      await expect(page.getByText(NO_PHOTOS)).toBeVisible();
     } finally {
       await closeRun(page);
     }
