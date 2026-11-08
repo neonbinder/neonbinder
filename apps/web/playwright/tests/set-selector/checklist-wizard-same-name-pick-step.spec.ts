@@ -90,11 +90,11 @@ test(
     // (phone) opened on "New Team: Kanagawa Future Dreams", which is why the old
     // "opens on the pick step while the others are still looked up" check went.
     const question = wizard.getByText(`Which ${NAME} is this?`);
-    const link1851 = wizard.getByRole("button", { name: `Link to ${NAME}, b. 1851` });
+    const link1851 = wizard.getByRole("button", { name: `Link to ${NAME}, born 1851` });
     // The catalogue's man: his label carries what is on file about him but no
     // birth year, so "any Shuya Yamada link that is not a dated one" cannot be
     // the b. 1851 row and pins no catalogue data this spec does not own.
-    const linkCatalogue = wizard.getByRole("button", { name: new RegExp(`^Link to ${NAME}, (?!b\\. ).+`) });
+    const linkCatalogue = wizard.getByRole("button", { name: new RegExp(`^Link to ${NAME}, (?!born ).+`) });
     await walkToPlayerRow(page);
     await expect(question).toBeVisible();
     // x is the decided count plus one on a name step; only x is ever pinned.
@@ -104,6 +104,12 @@ test(
     await expect(wizard.getByText("We've got 2 on file under that name. Pick the one on this card.")).toBeVisible();
     await expect(link1851).toBeVisible();
     await expect(linkCatalogue).toBeVisible();
+    // NEO-462: his row carries what is on file about him (no birth year, one open
+    // stint) as a written line and, in the accessible name, the same facts spoken
+    // after the roster note: "2026–present" reads "2026 to present". The catalogue
+    // names the club "Tigers"; a refresh that moves his stint fails here by name.
+    await expect(linkCatalogue.getByText("Tigers 2026–present", { exact: true })).toBeVisible();
+    await expect(linkCatalogue).toHaveAccessibleName(`Link to ${NAME}, On a roster that year, Tigers 2026 to present`);
     await expect(wizard.getByRole("button", { name: "Create new" })).toBeVisible();
     await expect(wizard.getByRole("button", { name: `Skip ${NAME} — not a person` })).toBeVisible();
     await expectAccessible(page, { within: wizard, label: "Entity review wizard, same-name pick step" });
