@@ -1,0 +1,82 @@
+/* NEO-464 prototype 3 ("Feed"). Colours are theme roles only, so both modes
+ * follow `<html data-theme>`. Glows multiply by `--glow` (1 in dark, 0 in
+ * light): on paper a glow is a smudge. */
+
+/* A stop on the spine: a lit bulb in the entry's hue (`color`), with a ring
+ * of page colour so the spine appears to pass behind it. */
+.feed-node {
+  background-color: currentColor;
+  box-shadow:
+    0 0 0 4px var(--surface),
+    0 0 calc(12px * var(--glow)) calc(1px * var(--glow)) color-mix(in oklab, currentColor 75%, transparent);
+}
+
+/* The day's own marker on a phone, where the label sits on the spine. */
+.feed-day-node {
+  background-color: var(--surface);
+  box-shadow: 0 0 0 4px var(--surface);
+}
+
+/* The finished checklist: green edge, a green glow in dark. Light gets the
+ * green offset from `shadow-offset` + data-complete. */
+.feed-win {
+  box-shadow: 0 0 calc(28px * var(--glow)) color-mix(in oklab, var(--neon-green) calc(28% * var(--glow)), transparent);
+}
+
+/* Celebrate once: rays behind the card that did it, one burst on arrival. */
+.feed-burst {
+  background: repeating-conic-gradient(
+    from 0deg,
+    color-mix(in oklab, var(--neon-green) 55%, transparent) 0deg 8deg,
+    transparent 8deg 22deg
+  );
+  mask-image: radial-gradient(circle, #000 30%, transparent 70%);
+  opacity: 0;
+}
+.feed-burst[data-play="true"] {
+  animation: feed-burst 1.6s cubic-bezier(0.2, 0.7, 0.2, 1) 0.25s 1 both;
+}
+@keyframes feed-burst {
+  0% {
+    opacity: 0;
+    transform: scale(0.4) rotate(0deg);
+  }
+  35% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0.35;
+    transform: scale(1.15) rotate(40deg);
+  }
+}
+
+.feed-pop[data-play="true"] {
+  animation: feed-pop 0.7s cubic-bezier(0.3, 1.5, 0.5, 1) 0.15s 1 both;
+}
+@keyframes feed-pop {
+  0% {
+    transform: translateY(10px) scale(0.85) rotate(-6deg);
+  }
+  100% {
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .feed-burst[data-play="true"] {
+    animation: none;
+    opacity: 0.35;
+  }
+  .feed-pop[data-play="true"] {
+    animation: none;
+  }
+}
+
+/* The checklist meter on the On the Bubble list. */
+.feed-meter {
+  background-color: var(--chip);
+}
+.feed-meter > span {
+  background-color: var(--neon-blue);
+  box-shadow: 0 0 calc(8px * var(--glow)) color-mix(in oklab, var(--neon-blue) 70%, transparent);
+}

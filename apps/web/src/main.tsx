@@ -104,6 +104,10 @@ const CollectionPrototype2 = lazy(() => import("@/app/collection/prototypes/p2/p
 const CollectionPrototype3 = lazy(() => import("@/app/collection/prototypes/p3/page"));
 const CollectionPrototype4 = lazy(() => import("@/app/collection/prototypes/p4/page"));
 const CollectionPrototype5 = lazy(() => import("@/app/collection/prototypes/p5/page"));
+// NEO-464 — five dashboard prototypes, public and hard-coded (never Convex).
+const DashboardPrototypes = lazy(() => import("@/app/dashboard/prototypes/page"));
+// NEO-464 — the five folded into one: the default at /dashboard-demo.
+const DashboardCombined = lazy(() => import("@/app/dashboard/prototypes/combined/page"));
 
 const clerkPubKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
 
@@ -161,6 +165,10 @@ const SentryErrorBoundary = Sentry.withErrorBoundary(
             element={<Deferred><ShippingLabelsMarketing /></Deferred>}
           />
           <Route path="/print-shop" element={<Deferred><PrintShopMarketing /></Deferred>} />
+          {/* NEO-464 — the dashboard prototypes, logged out on fake data: the
+              combined page by default, the five still at /:n to compare. */}
+          <Route path="/dashboard-demo/:n" element={<Deferred fullPage><DashboardPrototypes /></Deferred>} />
+          <Route path="/dashboard-demo" element={<Deferred fullPage><DashboardCombined /></Deferred>} />
           <Route path="/easypost-setup" element={<Deferred><EasypostSetup /></Deferred>} />
           <Route path="/signin/*" element={<Deferred><SignInPage /></Deferred>} />
           <Route path="/sign-up/*" element={<Deferred><SignUpPage /></Deferred>} />

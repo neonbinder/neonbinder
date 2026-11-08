@@ -1,0 +1,166 @@
+/*
+ * NEO-464 prototype 5, "Split desk": the line between the binder and the box.
+ *
+ * The divide is the one loud thing on the page. Its left half is the edge of
+ * a binder page (punched ring holes, in the binder side's blue); its right
+ * half is the cut edge of a cardboard box (the corrugated flute, in the box
+ * side's purple); a seam runs between them. Upright between the two columns
+ * on a wide screen, lying flat between the two stacked sides on a phone.
+ * Purely decorative: aria-hidden where it is used.
+ */
+
+.p5-divide {
+  --p5-hole: var(--pip-owned);
+  --p5-flute: color-mix(in oklab, var(--neon-purple-text) 75%, transparent);
+  --p5-seam: var(--rule-strong);
+  position: relative;
+}
+
+/* Upright: the gutter between the two columns. */
+.p5-divide-v {
+  width: 3rem;
+  background-image: linear-gradient(
+    to right,
+    transparent calc(50% - 1px),
+    var(--p5-seam) calc(50% - 1px) calc(50% + 1px),
+    transparent calc(50% + 1px)
+  );
+}
+.p5-divide-v::before,
+.p5-divide-v::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+}
+/* Binder page edge: one punched hole every 4.5rem, ringed in the hue. */
+.p5-divide-v::before {
+  left: 0;
+  right: 50%;
+  background-image: radial-gradient(
+    circle at 50% 50%,
+    var(--surface) 0 5px,
+    var(--p5-hole) 5px 7px,
+    transparent 7.5px
+  );
+  background-size: 100% 4.5rem;
+  background-repeat: repeat-y;
+  background-position: center 1.5rem;
+}
+/* Box edge: the corrugated flute, rows of half-rings. */
+.p5-divide-v::after {
+  left: calc(50% + 4px);
+  right: 2px;
+  background-image: radial-gradient(
+    circle at 0 50%,
+    transparent 0 4px,
+    var(--p5-flute) 4px 5.5px,
+    transparent 6px
+  );
+  background-size: 100% 12px;
+}
+
+/* Flat: the same line between the two stacked sides. */
+.p5-divide-h {
+  height: 3rem;
+  background-image: linear-gradient(
+    to bottom,
+    transparent calc(50% - 1px),
+    var(--p5-seam) calc(50% - 1px) calc(50% + 1px),
+    transparent calc(50% + 1px)
+  );
+}
+.p5-divide-h::before,
+.p5-divide-h::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+}
+.p5-divide-h::before {
+  top: 0;
+  bottom: 50%;
+  background-image: radial-gradient(
+    circle at 50% 50%,
+    var(--surface) 0 5px,
+    var(--p5-hole) 5px 7px,
+    transparent 7.5px
+  );
+  background-size: 4.5rem 100%;
+  background-repeat: repeat-x;
+  background-position: 1.5rem center;
+}
+.p5-divide-h::after {
+  top: calc(50% + 4px);
+  bottom: 2px;
+  background-image: radial-gradient(
+    circle at 50% 0,
+    transparent 0 4px,
+    var(--p5-flute) 4px 5.5px,
+    transparent 6px
+  );
+  background-size: 12px 100%;
+}
+
+/* Lit holes in the dark; flat ink on paper (glow is 0 there). */
+.p5-divide::before {
+  filter: drop-shadow(0 0 3px rgb(0 194 255 / calc(0.7 * var(--glow))));
+}
+
+/* The two neon signs over the sides. */
+.p5-sign {
+  font-family: "Neon", "Lexend", sans-serif;
+  line-height: 1;
+  letter-spacing: 0.02em;
+}
+.p5-sign-binder {
+  color: var(--neon-blue-text);
+  text-shadow: 0 0 14px rgb(0 194 255 / calc(0.55 * var(--glow))), 0 0 2px rgb(0 194 255 / calc(0.9 * var(--glow)));
+}
+.p5-sign-box {
+  color: var(--neon-purple-text);
+  text-shadow: 0 0 14px rgb(164 74 255 / calc(0.6 * var(--glow))), 0 0 2px rgb(164 74 255 / calc(0.9 * var(--glow)));
+}
+
+/* Big counts ("3 to go") in the sign face. */
+.p5-count {
+  font-family: "Neon", "Lexend", sans-serif;
+  line-height: 0.9;
+  letter-spacing: 0.02em;
+}
+
+/* An LED board, after the collection's Scoreboard: dot grid on near-black in
+ * the dark, a white sheet with a faint grid on paper. */
+.p5-led {
+  background-color: #020617;
+  background-image: radial-gradient(rgba(0, 194, 255, 0.09) 1px, transparent 1.6px);
+  background-size: 7px 7px;
+}
+[data-theme="light"] .p5-led {
+  background-color: var(--raised);
+  background-image: radial-gradient(color-mix(in oklab, var(--neon-blue-text) 9%, transparent) 1px, transparent 1.6px);
+}
+
+/* The one celebration: a single sweep of light across the finished set's
+ * banner when it first shows. Nothing for reduced motion. */
+@media (prefers-reduced-motion: no-preference) {
+  .p5-cheer::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background: linear-gradient(
+      100deg,
+      transparent 30%,
+      color-mix(in oklab, var(--neon-green) 28%, transparent) 50%,
+      transparent 70%
+    );
+    transform: translateX(-100%);
+    animation: p5-sweep 1.4s ease-out 0.3s 1 forwards;
+  }
+}
+@keyframes p5-sweep {
+  to {
+    transform: translateX(100%);
+  }
+}
