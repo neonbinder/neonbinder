@@ -45,3 +45,49 @@ describe("Sentry init scrubs the eBay return's code and state (NEO-415)", () => 
     expect(sentry.init).not.toHaveBeenCalled();
   });
 });
+
+describe("Sentry event hooks survive the SDK's live objects (NEO-434)", () => {
+  const SIGNED = "https://storage.googleapis.com/bucket/obj.jpg?X-Goog-Signature=SIGSECRET";
+
+  function circularMetadata() {
+    const scope: Record<string, unknown> = {};
+    scope.self = scope;
+    return { capturedSpanScope: scope, spanCountBeforeProcessing: 1 };
+  }
+
+  it.each(["beforeSend", "beforeSendTransaction"])(
+    "%s redacts the event and hands back the same sdkProcessingMetadata",
+    async (hook) => {
+      await load("");
+      const options = sentry.init.mock.calls[0][0] as Record<string, (v: unknown) => Record<string, unknown>>;
+      const sdkProcessingMetadata = circularMetadata();
+      const event = {
+        type: "transaction",
+        request: { url: RETURN },
+        spans: [{ data: { "http.url": SIGNED } }],
+        sdkProcessingMetadata,
+      };
+
+      const out = options[hook](event);
+
+      expect(out.sdkProcessingMetadata).toBe(sdkProcessingMetadata);
+      const { sdkProcessingMetadata: _kept, ...rest } = out;
+      const wire = JSON.stringify(rest);
+      for (const secret of ["SECRET", "NONCE123", "SIGSECRET"]) expect(wire).not.toContain(secret);
+      expect(wire).toContain("code=<redacted>");
+      expect(wire).toContain("obj.jpg?<redacted>");
+    },
+  );
+
+  it.each(["beforeSend", "beforeSendTransaction"])(
+    "%s drops an event it cannot stringify instead of throwing or sending it unscrubbed",
+    async (hook) => {
+      await load("");
+      const options = sentry.init.mock.calls[0][0] as Record<string, (v: unknown) => unknown>;
+      const loop: Record<string, unknown> = { url: RETURN };
+      loop.self = loop;
+
+      expect(options[hook]({ request: { url: RETURN }, extra: loop })).toBeNull();
+    },
+  );
+});
