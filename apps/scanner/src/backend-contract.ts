@@ -8,6 +8,7 @@ export const BACKEND_FUNCTIONS = {
   joinRun: "intakeScanner:joinIntakeRunByScannerCode",
   createUploadUrl: "adapters/placeholderUploads:createPlaceholderImageUploadUrl",
   confirmUpload: "placeholderStream:confirmPlaceholderImageUpload",
+  closeRun: "placeholderStream:closePlaceholderStream",
 } as const;
 
 /** The stream refusing more images: done was pressed, or it went idle and closed. */

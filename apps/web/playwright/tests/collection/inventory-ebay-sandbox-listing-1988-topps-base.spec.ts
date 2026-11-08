@@ -193,7 +193,6 @@ import {
   baseChecklistTitle,
   cardsWord,
   clearChecklistCommonPrice,
-  collectorCascade,
   createBox,
   deleteOpenBox,
   drillToCollectorBase,
@@ -203,6 +202,7 @@ import {
   followRunToRest,
   inventoryTabs,
   nameOf,
+  pickIntakeSet,
   putOtherBoxesInPerson,
   quantityField,
   queueSettled,
@@ -685,22 +685,10 @@ test(
     await tabs.getByRole("link", { name: "Add cards", exact: true }).click();
     await expect(page).toHaveURL(/[?&]tab=add/);
     await page.getByRole("combobox", { name: "Put them in this box" }).selectOption({ label: boxName });
-    await page.getByRole("button", { name: "Set: pick one" }).click();
-    const { cascade, drill } = collectorCascade(page, "Sport, year, brand, set and variant");
-    await drill("Sports", TOPPS_1988.sport, "Years");
-    await drill("Years", TOPPS_1988.year, "Brands");
-    await drill("Brands", TOPPS_1988.manufacturer, "Sets");
-    await drill("Sets", TOPPS_1988.set, "Variant Types");
-    // The Base type is the variant: picking it folds the panel back into its button.
-    await cascade
-      .getByRole("listbox", { name: "Variant Types" })
-      .getByRole("option")
-      .filter({ has: page.getByText("Base", { exact: true }) })
-      .click();
-    await expect(page.getByRole("button", { name: `Set: ${TITLE}`, exact: true })).toBeVisible();
-    // The price is set, so the listed box is not held: the zone takes the photos.
+    await pickIntakeSet(page, TOPPS_1988);
+    // The price is set, so the photos go up on their own (NEO-452: a drop is
+    // held in the browser until the run is ready, and this one already is).
     const dropzone = page.getByLabel("Drag your card photos here, or browse your files");
-    await expect(dropzone).not.toHaveAttribute("aria-disabled", "true");
     await dropzone.setInputFiles(SCAN_PAIR.map((n) => path.join(SCAN_PAIR_FIXTURES, n)));
     await expect(said("Sent 2 photos.")).toBeVisible();
     await expect(page).toHaveURL(/[?&]run=/);

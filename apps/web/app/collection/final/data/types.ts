@@ -976,6 +976,8 @@ export interface ListingGateView {
   syncing: boolean;
   applies: boolean;
   commonPriceCents: number | null;
+  /** NEO-452: the picked set holds a card to match against; true with no set picked. */
+  variantHasCards: boolean;
 }
 
 /**

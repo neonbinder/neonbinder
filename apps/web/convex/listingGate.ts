@@ -34,7 +34,8 @@
  *     restores or raises a line (`undoBoxQuantity`; its inverse comes from
  *     the client, so it is checked, not trusted);
  *   - starting a photo intake run into a listed box
- *     (`intakeRuns.createIntakeRun`).
+ *     (`intakeRuns.createIntakeRun`, which first refuses any run with no set,
+ *     listed or not: NEO-452).
  * Lowering, removing and moving out are never held.
  *
  * It is not the only line. State that changes AFTER cards are in can still
@@ -79,7 +80,7 @@ export async function commonPriceCentsOf(
 export interface GatedCopy {
   /** A copy of the collector's own private card: it never lists, so it is never held. */
   privateCard?: boolean;
-  /** The card's variant, for its common price; absent while it is not known (an intake run with no set yet). */
+  /** The card's variant, for its common price; absent only on a private card, which the gate skips. */
   variantId?: Id<"selectorOptions">;
   graded: boolean;
   /** The condition the copy will carry (its own, else the owner's default). */
@@ -157,12 +158,21 @@ export class ListingGate {
  * all (the "See what's syncing" link after Sync and Done adding photos),
  * whether the gate applies to adds into `homeId`, and the caller's common
  * price for `variantId` (cents) when it does. The screen combines it with what the copy will carry through
- * `lib/listingReadiness.ts`, the rule the writers above enforce.
+ * `lib/listingReadiness.ts`, the rule the writers above enforce. Photo intake
+ * reads that through `intakeRunReadiness`: with no variant yet it asks for the
+ * set first, so a null price here isn't a missing price until a set is picked.
+ *
+ * NEO-452: `variantHasCards` says whether the picked set holds a card, for every
+ * caller and every home, so the screen can stop at an empty set before spending
+ * a job start (the hourly budget is shared by every intake door) on a run
+ * `createIntakeRun` would refuse. True with no variant: there is nothing to
+ * refuse yet. False for a string that is not a variant's id.
  *
  * Small and subscribable (CLAUDE.md, "A subscribed query stays small"): the
- * home, the caller's listing state rows (a handful) and one common-price row.
- * The caller's own rows only; an id that is not theirs, not an id, or absent
- * reads as "does not apply". Never a marketplace value.
+ * home, the caller's listing state rows (a handful), one common-price row and
+ * one card. The caller's own rows only, bar that one catalog card; an id that is
+ * not theirs, not an id, or absent reads as "does not apply". Never a
+ * marketplace value.
  */
 export const forHome = query({
   args: { homeId: v.optional(v.string()), variantId: v.optional(v.string()) },
@@ -172,18 +182,27 @@ export const forHome = query({
     /** The gate applies to adds into the home: it lists, and the caller syncs. */
     applies: v.boolean(),
     commonPriceCents: v.union(v.number(), v.null()),
+    /** The variant holds at least one card; true when no variant is passed. Answered for every caller and home. */
+    variantHasCards: v.boolean(),
   }),
   handler: async (ctx, args) => {
     const ownerId = await requireSignedIn(ctx);
     const gate = new ListingGate(ctx, ownerId);
+    const variantId = args.variantId === undefined ? null : ctx.db.normalizeId("selectorOptions", args.variantId);
+    const variantHasCards =
+      args.variantId === undefined ||
+      (variantId !== null &&
+        (await ctx.db
+          .query("cardChecklist")
+          .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", variantId))
+          .first()) !== null);
     const syncing = await gate.syncs();
-    const none = { syncing, applies: false, commonPriceCents: null };
+    const none = { syncing, applies: false, commonPriceCents: null, variantHasCards };
     if (!syncing) return none;
     const homeId = args.homeId === undefined ? null : ctx.db.normalizeId("collectionContainers", args.homeId);
     if (!homeId) return none;
     const home = await ctx.db.get(homeId);
     if (!home || home.ownerId !== ownerId || !(await gate.applies(home))) return none;
-    const variantId = args.variantId === undefined ? null : ctx.db.normalizeId("selectorOptions", args.variantId);
-    return { syncing, applies: true, commonPriceCents: variantId ? await gate.commonPrice(variantId) : null };
+    return { syncing, applies: true, commonPriceCents: variantId ? await gate.commonPrice(variantId) : null, variantHasCards };
   },
 });

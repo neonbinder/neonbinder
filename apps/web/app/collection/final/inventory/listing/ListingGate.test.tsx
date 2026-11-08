@@ -10,6 +10,7 @@ import {
   checklistGateLine,
   intakeGateLine,
   takeSyncStatusArrival,
+  useIntakeRunLock,
   useListingLock,
 } from "./ListingGate";
 import SyncStatusTab from "./SyncStatusTab";
@@ -38,7 +39,7 @@ function lockWith(gate: ListingGateView | undefined, input: Partial<Parameters<t
     .result.current;
 }
 
-const HELD: ListingGateView = { syncing: true, applies: true, commonPriceCents: null };
+const HELD: ListingGateView = { syncing: true, applies: true, commonPriceCents: null, variantHasCards: true };
 
 afterEach(cleanup);
 
@@ -49,11 +50,11 @@ describe("useListingLock", () => {
 
   it("a price of the copy's own, even $0, or a common price lifts it", () => {
     expect(lockWith(HELD, { ownPriceCents: 0 }).locked).toBe(false);
-    expect(lockWith({ ...HELD, commonPriceCents: 25 }).locked).toBe(false);
+    expect(lockWith({ ...HELD, commonPriceCents: 25, variantHasCards: true }).locked).toBe(false);
   });
 
   it("a missing condition holds it too; a graded copy is never held", () => {
-    expect(lockWith({ ...HELD, commonPriceCents: 25 }, { condition: undefined })).toMatchObject({
+    expect(lockWith({ ...HELD, commonPriceCents: 25, variantHasCards: true }, { condition: undefined })).toMatchObject({
       locked: true,
       needsCondition: true,
     });
@@ -62,7 +63,7 @@ describe("useListingLock", () => {
 
   it("nothing is held while the gate loads, where it does not apply, or in a store with no listing", () => {
     expect(lockWith(undefined)).toMatchObject({ locked: false, syncing: false });
-    expect(lockWith({ syncing: true, applies: false, commonPriceCents: null }).locked).toBe(false);
+    expect(lockWith({ syncing: true, applies: false, commonPriceCents: null, variantHasCards: true }).locked).toBe(false);
     const bare = renderHook(() => useListingLock({ homeId: "box1", variantId: "v1", condition: "Excellent" }), {
       wrapper: ({ children }: { children: ReactNode }) => (
         <CollectionStoreContext.Provider
@@ -84,9 +85,124 @@ describe("the gate's lines", () => {
     expect(checklistGateLine("Show box", { needsPrice: false, needsCondition: true })).toBe(
       "Condition first! Show box sells on your marketplaces, so pick a default condition in Profile → Settings before you stock it.",
     );
-    expect(intakeGateLine("Show box", { needsPrice: false, needsCondition: true })).toBe(
-      "Condition first! Show box sells on your marketplaces, so pick a condition in Defaults before you send photos.",
+  });
+
+  it("intake: a price is asked for in the set's name, a condition alone is not", () => {
+    expect(intakeGateLine("Show box", "1988 Topps Base", { needsPrice: true, needsCondition: false })).toBe(
+      "Price tag first! Show box sells on your marketplaces and 1988 Topps Base has no price yet. Set one in Defaults and your photos go up.",
     );
+    expect(intakeGateLine("Show box", "1988 Topps Base", { needsPrice: false, needsCondition: true })).toBe(
+      "Condition first! Show box sells on your marketplaces. Pick one in Defaults and your photos go up.",
+    );
+    expect(intakeGateLine("Show box", "1988 Topps Base", { needsPrice: true, needsCondition: true })).toBe(
+      "Price and condition first! Show box sells on your marketplaces and 1988 Topps Base has no price yet. Set both in Defaults and your photos go up.",
+    );
+  });
+
+  it("intake: a set with no known title is still named, and a run that stopped taking photos talks about saving", () => {
+    expect(intakeGateLine("Show box", null, { needsPrice: true, needsCondition: false })).toBe(
+      "Price tag first! Show box sells on your marketplaces and this set has no price yet. Set one in Defaults and your photos go up.",
+    );
+    expect(intakeGateLine("Show box", "1988 Topps Base", { needsPrice: true, needsCondition: false }, { collecting: false })).toBe(
+      "Price tag first! Show box sells on your marketplaces and 1988 Topps Base has no price yet. Set one in Defaults before you save these cards.",
+    );
+    expect(intakeGateLine("Show box", null, { needsPrice: false, needsCondition: true }, { collecting: false })).toBe(
+      "Condition first! Show box sells on your marketplaces. Pick one in Defaults before you save these cards.",
+    );
+  });
+});
+
+describe("useIntakeRunLock (NEO-452)", () => {
+  function intakeLock(gate: ListingGateView | undefined, input: Partial<Parameters<typeof useIntakeRunLock>[0]> = {}) {
+    const value = {
+      kind: "convex",
+      capabilities: REAL_CAPABILITIES,
+      data: {} as CollectionData,
+      actions: {},
+      listing: stubListing({ useGate: () => gate }),
+    } as CollectionStoreValue;
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <CollectionStoreContext.Provider value={value}>{children}</CollectionStoreContext.Provider>
+    );
+    return renderHook(
+      () => useIntakeRunLock({ homeId: "box1", variantId: "v1", condition: "Excellent", ...input }),
+      { wrapper },
+    ).result.current;
+  }
+
+  it("while the gate loads it is never ready and says it has not loaded, where useListingLock reads open", () => {
+    expect(intakeLock(undefined)).toEqual({
+      ready: false,
+      needsSet: false,
+      needsPrice: false,
+      needsCondition: false,
+      locked: false,
+      syncing: false,
+      loaded: false,
+      setHasNoCards: false,
+    });
+    expect(lockWith(undefined).locked).toBe(false);
+  });
+
+  it("while the gate loads with no set it still says the set is missing", () => {
+    expect(intakeLock(undefined, { variantId: null })).toMatchObject({ needsSet: true, ready: false, loaded: false });
+  });
+
+  it("a set with no cards is never ready and asks for nothing else, whatever the price or condition", () => {
+    for (const gate of [HELD, { ...HELD, commonPriceCents: 25, variantHasCards: true }, { syncing: true, applies: false, commonPriceCents: null, variantHasCards: true }]) {
+      expect(intakeLock({ ...gate, variantHasCards: false }, { condition: undefined })).toEqual({
+        ready: false,
+        needsSet: false,
+        needsPrice: false,
+        needsCondition: false,
+        locked: false,
+        syncing: true,
+        loaded: true,
+        setHasNoCards: true,
+      });
+    }
+  });
+
+  it("a gate that says nothing of cards, or says the set has them, doesn't flag an empty set", () => {
+    expect(intakeLock(HELD).setHasNoCards).toBe(false);
+    expect(intakeLock({ ...HELD, variantHasCards: true }).setHasNoCards).toBe(false);
+  });
+
+  it("with no set there is no empty set to flag", () => {
+    expect(intakeLock({ ...HELD, variantHasCards: true }, { variantId: null }).setHasNoCards).toBe(false);
+  });
+
+  it("a listed box with no price asks for the price once it has a set, and is locked", () => {
+    expect(intakeLock(HELD)).toMatchObject({ loaded: true, ready: false, needsSet: false, needsPrice: true, locked: true, syncing: true });
+  });
+
+  it("with no set it asks for the set, never the price, and is not locked on a price it can't look up", () => {
+    expect(intakeLock(HELD, { variantId: null })).toMatchObject({
+      loaded: true,
+      ready: false,
+      needsSet: true,
+      needsPrice: false,
+      locked: false,
+    });
+  });
+
+  it("a price of its own (even $0) or the set's common price makes it ready", () => {
+    expect(intakeLock(HELD, { ownPriceCents: 0 })).toMatchObject({ ready: true, locked: false });
+    expect(intakeLock({ ...HELD, commonPriceCents: 25, variantHasCards: true })).toMatchObject({ ready: true, locked: false });
+  });
+
+  it("a missing condition locks it; a graded run needs neither", () => {
+    expect(intakeLock({ ...HELD, commonPriceCents: 25, variantHasCards: true }, { condition: undefined })).toMatchObject({
+      ready: false,
+      needsCondition: true,
+      locked: true,
+    });
+    expect(intakeLock(HELD, { graded: true, condition: undefined })).toMatchObject({ ready: true, locked: false });
+  });
+
+  it("a box that does not list, or a collector who does not sync, is ready with a set", () => {
+    expect(intakeLock({ syncing: true, applies: false, commonPriceCents: null, variantHasCards: true })).toMatchObject({ ready: true, locked: false, loaded: true });
+    expect(intakeLock({ syncing: false, applies: false, commonPriceCents: null, variantHasCards: true })).toMatchObject({ ready: true, syncing: false });
   });
 });
 

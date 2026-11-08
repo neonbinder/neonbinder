@@ -12,7 +12,7 @@ import schema from "./schema";
 import { __resetContractCache } from "./credentials";
 import { bscConditionsForEra, bscEraForYear } from "./lib/bscConditions";
 import { planBscSheet } from "./lib/bscSheetPlan";
-import { BSC_FIRST_READ_RETRY_PAUSE_MS } from "./testingSellerCleanup";
+import { BSC_FIRST_READ_RETRY_PAUSE_MS, MAX_CHAIN_SIBLINGS } from "./testingSellerCleanup";
 import { drainScheduled } from "../lib/testing/drain-scheduled";
 
 const modules = (import.meta as unknown as {
@@ -301,7 +301,7 @@ describe("what it refuses", () => {
     await t.run(async (ctx) => {
       await ctx.db.insert("selectorOptions", { level: "sport", value: "Baseball", platformData: {}, isCustom: false, children: [], lastUpdated: 0 } as never);
     });
-    await expect(clear(t)).rejects.toThrow(/BuySportsCards: no 1988 Topps Topps Base/);
+    await expect(clear(t)).rejects.toThrow(/BuySportsCards: 1988 Topps Topps Base can't be told apart: its sport row/);
     expect(bscCalls).toBe(0);
     await drainScheduled(t);
   });
@@ -603,7 +603,7 @@ describe("BuySportsCards", () => {
     expect(puts).toHaveLength(1);
     expect(puts[0].sellerId).toBe("seller-1");
     expect(puts[0].listings.map((l) => [l.productId, l.availableQuantity]).sort()).toEqual([["p1", 0], ["p3", 0]]);
-    expect(r.bsc).toEqual({ outcome: "clean", rows: 3, unreadableRows: 0, listed: 2, zeroed: 2, twinKeys: 0, twinKeysRemaining: 0 });
+    expect(r.bsc).toEqual({ outcome: "clean", rows: 3, unreadableRows: 0, listed: 2, zeroed: 2, twinKeys: 0, twinKeysRemaining: 0, skippedSets: 1 });
     expect(sheet.find((s) => s.productId === "slab")?.availableQuantity).toBe(3);
     await drainScheduled(t);
   });
@@ -660,7 +660,7 @@ describe("BuySportsCards", () => {
     sheet = [row("twin-a", "bsc-1", OTHER_COND, 0), row("twin-b", "bsc-1", OTHER_COND, 0)];
     const r = await clear(t);
     expect(puts).toEqual([]);
-    expect(r.bsc).toEqual({ outcome: "clean", rows: 2, unreadableRows: 0, listed: 0, zeroed: 0, twinKeys: 1, twinKeysRemaining: 1 });
+    expect(r.bsc).toEqual({ outcome: "clean", rows: 2, unreadableRows: 0, listed: 0, zeroed: 0, twinKeys: 1, twinKeysRemaining: 1, skippedSets: 1 });
     await drainScheduled(t);
   });
 
@@ -670,6 +670,183 @@ describe("BuySportsCards", () => {
     const r = await clear(t);
     expect(puts).toEqual([]);
     expect(r.bsc).toMatchObject({ outcome: "clean", listed: 0, zeroed: 0 });
+    await drainScheduled(t);
+  });
+
+  // NEO-458: 2026 Bowman Chrome is built by its own spec, in-flow, so the seller
+  // jobs' start-clean pass meets a deployment that does not have it yet.
+  test("a set its spec builds itself is skipped when this deployment has not built it, and the seed's set is still cleared", async () => {
+    const t = await ready();
+    sheet = [row("p1", "bsc-1", COND, 1)];
+    const r = await clear(t);
+    expect(r.bsc).toMatchObject({ outcome: "clean", listed: 1, zeroed: 1, skippedSets: 1 });
+    expect(sheetReads.map((c) => c.condition)).toEqual([...ERA, COND]);
+    const absent = logged.filter((l) => l.includes("seller_cleanup_set_absent"));
+    expect(absent).toHaveLength(1);
+    expect(JSON.parse(absent[0])).toMatchObject({ set: "Football 2026 Bowman Bowman Chrome" });
+    await drainScheduled(t);
+  });
+
+  describe("how far the spec's own set got", () => {
+    /** As much of 2026 Bowman's chain as a test asks for, BSC slots on every row unless told. */
+    const seedBowman = async (
+      t: T,
+      shape: { parallelType?: boolean; chromes?: number; chromeHasScope?: boolean; footballs?: number; otherParallels?: number },
+    ) =>
+      await t.run(async (ctx) => {
+        const add = async (
+          level: "sport" | "year" | "manufacturer" | "setName" | "variantType" | "insert",
+          value: string,
+          parentId?: Id<"selectorOptions">,
+          facets?: Record<string, string>,
+          noScope?: boolean,
+        ) =>
+          await ctx.db.insert("selectorOptions", {
+            level,
+            value,
+            platformData: noScope ? {} : { bsc: { b0: `slug-${value}-${parentId ?? "root"}` } },
+            ...(facets && !noScope ? { platformFacets: { bsc: facets } } : {}),
+            isCustom: false,
+            children: [],
+            ...(parentId ? { parentId } : {}),
+            lastUpdated: 0,
+          } as never);
+        const sport = await add("sport", "Football");
+        for (let i = 1; i < (shape.footballs ?? 1); i++) await add("sport", "Football");
+        const year = await add("year", "2026", sport);
+        const brand = await add("manufacturer", "Bowman", year);
+        const set = await add("setName", "Bowman", brand);
+        await add("variantType", "Base", set, { b0: "variant" });
+        if (!shape.parallelType) return;
+        const parallels = await add("variantType", "Parallel", set, { b0: "variant" });
+        for (let i = 0; i < (shape.otherParallels ?? 0); i++) await add("insert", `Other ${i}`, parallels, { b0: "variantName" });
+        for (let i = 0; i < (shape.chromes ?? 0); i++) {
+          await add("insert", "Chrome", parallels, { b0: "variantName" }, shape.chromeHasScope === false);
+        }
+      });
+    const signedIn = () => browserCalls.some((c) => c.path === "/login/bsc");
+
+    test("two Chrome rows fail the job before any sign-in: never skipped as absent, never one picked", async () => {
+      const t = await ready();
+      await seedBowman(t, { parallelType: true, chromes: 2 });
+      pages = [{ inventoryItems: [item(sku("a"))] }];
+      offers.set(sku("a"), { offerId: "O1", status: "PUBLISHED" });
+      await expect(clear(t)).rejects.toThrow(/BuySportsCards: 2026 Bowman Bowman Chrome can't be told apart: its insert row/);
+      expect(withdrawals).toEqual(["O1"]);
+      expect(bscCalls).toBe(0);
+      expect(signedIn()).toBe(false);
+      expect(logged.filter((l) => l.includes("seller_cleanup_set_absent"))).toEqual([]);
+      await drainScheduled(t);
+    });
+
+    test("two rows higher up the chain fail it too", async () => {
+      const t = await ready();
+      await seedBowman(t, { footballs: 2 });
+      await expect(clear(t)).rejects.toThrow(/BuySportsCards: 2026 Bowman Bowman Chrome can't be told apart: its sport row/);
+      expect(bscCalls).toBe(0);
+      await drainScheduled(t);
+    });
+
+    test("a level read to the limit fails: a row past it could be Chrome, or a second one", async () => {
+      const t = await ready();
+      await seedBowman(t, { parallelType: true, otherParallels: MAX_CHAIN_SIBLINGS });
+      await expect(clear(t)).rejects.toThrow(/BuySportsCards: 2026 Bowman Bowman Chrome can't be told apart: its insert row/);
+      expect(bscCalls).toBe(0);
+      await drainScheduled(t);
+    });
+
+    test("an absent Chrome is skipped and counted", async () => {
+      const t = await ready();
+      await seedBowman(t, { parallelType: true, chromes: 0 });
+      sheet = [row("p1", "bsc-1", COND, 1)];
+      const r = await clear(t);
+      expect(r.bsc).toMatchObject({ outcome: "clean", zeroed: 1, skippedSets: 1 });
+      await drainScheduled(t);
+    });
+
+    test("a partial chain, the set there and its Parallel type not yet, is skipped and counted", async () => {
+      const t = await ready();
+      await seedBowman(t, {});
+      sheet = [row("p1", "bsc-1", COND, 1)];
+      const r = await clear(t);
+      expect(r.bsc).toMatchObject({ outcome: "clean", zeroed: 1, skippedSets: 1 });
+      expect(logged.filter((l) => l.includes("seller_cleanup_set_absent"))).toHaveLength(1);
+      await drainScheduled(t);
+    });
+
+    test("a Chrome row with no BSC scope fails the job, naming it", async () => {
+      const t = await ready();
+      await seedBowman(t, { parallelType: true, chromes: 1, chromeHasScope: false });
+      await expect(clear(t)).rejects.toThrow(/BuySportsCards: 2026 Bowman Bowman Chrome has no BuySportsCards scope \(noScope\)/);
+      expect(bscCalls).toBe(0);
+      expect(signedIn()).toBe(false);
+      await drainScheduled(t);
+    });
+
+    test("Chrome there: read, and nothing counted as skipped", async () => {
+      const t = await ready();
+      await seedBowman(t, { parallelType: true, chromes: 1 });
+      const r = await clear(t);
+      expect(r.bsc).toMatchObject({ outcome: "clean", skippedSets: 0 });
+      expect(logged.filter((l) => l.includes("seller_cleanup_set_absent"))).toEqual([]);
+      await drainScheduled(t);
+    });
+
+    test("paused BuySportsCards reads no set, so it counts none as skipped", async () => {
+      vi.stubEnv("NEONBINDER_PAUSED_PLATFORMS", "buysportscards");
+      const t = await ready();
+      const r = await clear(t);
+      expect(r.bsc).toMatchObject({ outcome: "paused", skippedSets: 0 });
+      await drainScheduled(t);
+    });
+
+    test("the seller_cleanup log line carries the skipped count", async () => {
+      const t = await ready();
+      await clear(t);
+      const line = logged.find((l) => l.includes('"seller_cleanup"') && l.includes('"bsc"'));
+      expect(JSON.parse(line as string)).toMatchObject({ outcome: "clean", skippedSets: 1 });
+      await drainScheduled(t);
+    });
+  });
+
+  test("a built parallel's own row is read and zeroed, after the seed's Base, and never its sibling parallel", async () => {
+    const t = await ready();
+    const slugs = await t.run(async (ctx) => {
+      const add = async (
+        level: "sport" | "year" | "manufacturer" | "setName" | "variantType" | "insert",
+        value: string,
+        parentId?: Id<"selectorOptions">,
+        facets?: Record<string, string>,
+      ) =>
+        await ctx.db.insert("selectorOptions", {
+          level,
+          value,
+          platformData: { bsc: { b0: `slug-${value}-${parentId ?? "root"}` } },
+          ...(facets ? { platformFacets: { bsc: facets } } : {}),
+          isCustom: false,
+          children: [],
+          ...(parentId ? { parentId } : {}),
+          lastUpdated: 0,
+        } as never);
+      const sport = await add("sport", "Football");
+      const year = await add("year", "2026", sport);
+      const brand = await add("manufacturer", "Bowman", year);
+      const set = await add("setName", "Bowman", brand);
+      await add("variantType", "Base", set, { b0: "variant" });
+      const parallels = await add("variantType", "Parallel", set, { b0: "variant" });
+      const chrome = await add("insert", "Chrome", parallels, { b0: "variantName" });
+      await add("insert", "Chrome Aqua Refractor", parallels, { b0: "variantName" });
+      return { chrome: `slug-Chrome-${parallels}`, other: `slug-Chrome Aqua Refractor-${parallels}`, chromeId: chrome };
+    });
+    sheet = [row("p1", "bsc-1", COND, 2)];
+    const r = await clear(t);
+    // Two sets read, each its own sheets one at a time; both zeroed (the stub's sheet answers every read).
+    expect(maxReadsInFlight).toBe(1);
+    expect(r.bsc).toMatchObject({ outcome: "clean", zeroed: 1, skippedSets: 0 });
+    const chromeReads = sheetReads.filter((c) => c.filters.variantName?.[0] === slugs.chrome);
+    expect(chromeReads.length).toBeGreaterThan(0);
+    expect(sheetReads.filter((c) => c.filters.variantName?.[0] === slugs.other)).toEqual([]);
+    expect(sheetReads.filter((c) => c.filters.variant !== undefined && c.filters.variantName === undefined).length).toBeGreaterThan(0);
     await drainScheduled(t);
   });
 
@@ -700,7 +877,7 @@ describe("BuySportsCards", () => {
     expect(sheetReads.map((c) => c.condition)).toEqual([COND, ...ERA, COND]);
     expect(firstReadPauses).toEqual([1]);
     expect(maxReadsInFlight).toBe(1);
-    expect(r.bsc).toEqual({ outcome: "clean", rows: 1, unreadableRows: 0, listed: 1, zeroed: 1, twinKeys: 0, twinKeysRemaining: 0 });
+    expect(r.bsc).toEqual({ outcome: "clean", rows: 1, unreadableRows: 0, listed: 1, zeroed: 1, twinKeys: 0, twinKeysRemaining: 0, skippedSets: 1 });
     expect(sheet[0].availableQuantity).toBe(0);
     await drainScheduled(t);
   });

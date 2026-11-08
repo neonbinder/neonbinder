@@ -344,6 +344,20 @@ describe("retryPlaceholderImage (Try again)", () => {
     expect(enqueueCalls[0].args).toEqual({ jobId: JOB, userId: USER.subject, entryIndex: 0 });
   });
 
+  test("NEO-446: a photo over the pixel ceiling is never sent again, whatever its try count", async () => {
+    const t = convexTest(schema, modules);
+    await seedJob(t, { failedImages: 1 });
+    const id = await seedImage(t, 0, { status: "failed", errorCode: "ENTRY_TOO_MANY_PIXELS", retries: 0 });
+    expect(await retry(t)).toEqual({ retried: false, reason: "too big" });
+    await t.run(async (ctx) => ctx.db.patch(id, { retries: PLACEHOLDER_MAX_IMAGE_RETRIES }));
+    expect(await retry(t)).toEqual({ retried: false, reason: "too big" });
+    expect(enqueueCalls).toHaveLength(0);
+    const image = (await getImage(t, id))!;
+    expect(image.status).toBe("failed");
+    expect(image.retries).toBe(PLACEHOLDER_MAX_IMAGE_RETRIES);
+    expect((await getJob(t))!.failedImages).toBe(1);
+  });
+
   test("a photo that is not failed is not sent again", async () => {
     const t = convexTest(schema, modules);
     await seedJob(t);
@@ -377,6 +391,16 @@ describe("retryPlaceholderImage (Try again)", () => {
     await seedImage(t2, 0, { status: "failed" });
     await expect(retry(t2, 0, OTHER)).rejects.toThrow();
     expect(enqueueCalls).toHaveLength(0);
+  });
+
+  test("won't send back a photo set aside since the button was drawn", async () => {
+    const t = convexTest(schema, modules);
+    await seedJob(t, { failedImages: 1 });
+    const id = await seedImage(t, 0, { status: "failed", errorCode: "PHOTO_TIMED_OUT", setAside: true });
+    expect(await retry(t)).toEqual({ retried: false, reason: "set aside" });
+    expect((await getImage(t, id))!).toMatchObject({ status: "failed", setAside: true });
+    expect(enqueueCalls).toHaveLength(0);
+    expect((await getJob(t))!.failedImages).toBe(1);
   });
 
   test("refuses a signed-out caller and an out-of-range photo", async () => {
@@ -453,6 +477,50 @@ describe("seedMyTestFailedPhotoRun (the E2E fixture)", () => {
     );
     process.env.TESTING_RESET_SECRET = "test-only";
     await expect(t.mutation(api.testing.seedMyTestFailedPhotoRun, {})).rejects.toThrow(/not authenticated/i);
+    expect(await t.run(async (ctx) => ctx.db.query("placeholderJobs").collect())).toHaveLength(0);
+  });
+});
+
+describe("seedMyTestLoosePhotosRun (the NEO-441 E2E fixture)", () => {
+  const saved = process.env.TESTING_RESET_SECRET;
+  afterEach(() => {
+    if (saved === undefined) delete process.env.TESTING_RESET_SECRET;
+    else process.env.TESTING_RESET_SECRET = saved;
+  });
+
+  test("writes four read photos in no pair, owned by the caller, and schedules no pairing", async () => {
+    process.env.TESTING_RESET_SECRET = "test-only";
+    const t = convexTest(schema, modules);
+
+    const { runId } = await t.withIdentity(USER).mutation(api.testing.seedMyTestLoosePhotosRun, {});
+
+    const { run, images, pairs, scheduled } = await t.run(async (ctx) => {
+      const run = (await ctx.db.get(runId))!;
+      return {
+        run,
+        images: (await ctx.db.query("placeholderImages").collect()).filter((i) => i.jobId === run.jobId),
+        pairs: await ctx.db.query("placeholderPairs").collect(),
+        scheduled: await ctx.db.system.query("_scheduled_functions").collect(),
+      };
+    });
+    expect(run.userId).toBe(USER.subject);
+    expect(images.map((i) => i.originalName).sort()).toEqual(["loose-1.jpg", "loose-2.jpg", "loose-3.jpg", "loose-4.jpg"]);
+    for (const image of images) {
+      expect(image).toMatchObject({ status: "done", userId: USER.subject });
+      expect(image.pairStatus).toBeUndefined();
+    }
+    expect(pairs).toHaveLength(0);
+    expect(scheduled).toHaveLength(0);
+  });
+
+  test("fails closed without the testing flag, and refuses a signed-out caller", async () => {
+    delete process.env.TESTING_RESET_SECRET;
+    const t = convexTest(schema, modules);
+    await expect(t.withIdentity(USER).mutation(api.testing.seedMyTestLoosePhotosRun, {})).rejects.toThrow(
+      /not enabled on this deployment/i,
+    );
+    process.env.TESTING_RESET_SECRET = "test-only";
+    await expect(t.mutation(api.testing.seedMyTestLoosePhotosRun, {})).rejects.toThrow(/not authenticated/i);
     expect(await t.run(async (ctx) => ctx.db.query("placeholderJobs").collect())).toHaveLength(0);
   });
 });

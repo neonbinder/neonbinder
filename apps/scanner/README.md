@@ -28,13 +28,18 @@ Mac only for now, macOS 15 (Sequoia) or later.
    Scanner. You only do this once.
 4. A Terminal window opens. The first time, it asks for your API key: on
    NeonBinder go to **Profile → API Keys**, make one, and paste it in. The
-   app remembers it.
+   app remembers it. Your clipboard still has the key after that, so go back
+   and copy the code again before the next step.
 5. Type or paste the code from step 1 (the **Copy code** button copies it)
    and press Return. Load cards whenever; it waits
    for paper, and each card shows up on the screen as it feeds.
-6. To stop, press **Ctrl-C** or close the window. A card it was partway
-   through is reported, so feed it again. Press **Done adding photos** on
-   the screen when the run is finished.
+6. When the run is finished, press **D** here or **Done adding photos** on the
+   screen; either one stops the scanner and finishes the run. Cards already
+   scanned still go up first when you press D. Any card that couldn't be sent
+   is reported, so put it back in the stack.
+7. The app then waits for the next run's code, so you can leave it open and
+   go back to step 1 on the screen. To quit, press **Ctrl-C** or close the
+   window. That leaves the run open.
 
 Nothing else to install: the app carries its own scanner driver.
 

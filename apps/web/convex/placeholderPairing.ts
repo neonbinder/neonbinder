@@ -69,7 +69,7 @@ import { v } from "convex/values";
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { pairBatch } from "./lib/pairing/pairBatch";
-import { noteIntakePairsChanged } from "./intakeRuns";
+import { noteIntakePairsChanged, pairIdsHeldByIntake, pairIsHeldByIntake } from "./intakeRuns";
 import { playerNamesMatch, teamNamesMatch } from "./lib/pairing/names";
 import { orientPair } from "./lib/pairing/pool";
 import type {
@@ -483,6 +483,8 @@ export type PairingImageRow = {
   textCount?: number;
   dhash?: string;
   pairStatus?: "paired" | "unmatched";
+  /** NEO-446: set aside by the collector, so `computePairingDiff` leaves it out. */
+  setAside?: boolean;
   unpairedFrom?: number[];
 };
 
@@ -501,6 +503,8 @@ export type StoredPairRow = {
   score: number;
   /** Absent on pairs stored before NEO-327. */
   orientedBy?: OrientRule;
+  /** NEO-446: an intake run has this pair saved or set aside (`isLockedPair`). */
+  heldByMatch?: boolean;
 };
 
 /** One new pair in the shape `applyPairDiff` inserts — carries NO image ids. */
@@ -597,6 +601,13 @@ export type PairingDiff = {
  *  - `exact`   the identities agreed outright — a certainty, not a guess —
  *              AND both halves are still done rows (see below).
  *
+ *  - `heldByMatch`  NEO-446: the collector saved this pair on an intake run, or
+ *              set it aside. A copy now stands on it, or an answer does, so no
+ *              later pass may take it apart whatever its confidence. Saving used
+ *              to leave a side-only pair fluid: a pass that liked another partner
+ *              deleted it, the sync dropped the saved row with it, and the same
+ *              card could be saved twice.
+ *
  * Everything else (`fuzzy`, `side-only`) stays fluid and is surfaced to the
  * user as a POTENTIAL match, because those are exactly the ones a later image
  * can legitimately improve.
@@ -607,11 +618,12 @@ export function isLockedPair(
     confidence: string;
     frontIndex: number;
     backIndex: number;
+    heldByMatch?: boolean;
   },
   doneIndexes: ReadonlySet<number>,
 ): boolean {
   // A user's decision outranks the matcher unconditionally, at any point.
-  if (pair.mechanism === "manual") return true;
+  if (pair.mechanism === "manual" || pair.heldByMatch) return true;
   if (pair.confidence !== "exact") return false;
 
   // MATCH ONCE AND MOVE ON — immediately, not once the batch is finished.
@@ -644,9 +656,15 @@ export function isLockedPair(
 }
 
 export function computePairingDiff(
-  rows: PairingImageRow[],
+  doneRows: PairingImageRow[],
   stored: StoredPairRow[],
 ): PairingDiff {
+  // NEO-446: a photo the collector set aside is not in this pairing at all, so
+  // neither the identity pass nor the adjacency fallback below can see it. Both
+  // callers come through here, which is why this is not a filter at their reads.
+  const rows = doneRows.filter((r) => !r.setAside);
+  const setAsideRows = doneRows.filter((r) => r.setAside);
+
   // ---- Settled pairs are STICKY (NEO-152) ---------------------------
   //
   // A pair is SETTLED when it is either manually forced by the user, or matched
@@ -942,7 +960,9 @@ export function computePairingDiff(
   // Over `autoRows`, not `rows`: a manually-paired image is excluded, so its
   // "paired" status set by `manuallyPairPlaceholderImages` is left untouched
   // rather than being reset to "unmatched" (it is not in `pairedIds`).
-  for (const row of autoRows) {
+  // A set-aside photo is in no pair, and says so, so every done row still carries
+  // a verdict.
+  for (const row of [...autoRows, ...setAsideRows]) {
     const want = pairedIds.has(row._id) ? "paired" : "unmatched";
     if (row.pairStatus === want) continue;
     (want === "paired" ? becomingPaired : becomingUnmatched).push(row._id);
@@ -1465,6 +1485,7 @@ export const listPairsForDiff = internalQuery({
       // The diff compares it, so a pair whose front was chosen by a different
       // rule is revised (NEO-327).
       orientedBy: v.optional(orientedByValidator),
+      heldByMatch: v.optional(v.boolean()),
     }),
   ),
   handler: async (ctx, args) => {
@@ -1472,6 +1493,7 @@ export const listPairsForDiff = internalQuery({
       .query("placeholderPairs")
       .withIndex("by_job", (q) => q.eq("jobId", args.jobId))
       .collect();
+    const held = await pairIdsHeldByIntake(ctx, args.jobId);
     return pairs.map((p) => ({
       _id: p._id,
       frontIndex: p.frontIndex,
@@ -1483,6 +1505,7 @@ export const listPairsForDiff = internalQuery({
       mechanism: p.mechanism,
       score: p.score,
       orientedBy: p.orientedBy,
+      heldByMatch: held.has(p._id) || undefined,
     }));
   },
 });
@@ -1650,6 +1673,17 @@ export const applyPairDiff = internalMutation({
  * the transaction already sees, so a diff that replaces {0,2} with {0,1} in one
  * call is not refused by the row it is removing.
  */
+async function eitherIsSetAside(
+  ctx: MutationCtx,
+  jobId: string,
+  pair: { frontIndex: number; backIndex: number },
+): Promise<boolean> {
+  const front = await imageByIndex(ctx, jobId, pair.frontIndex);
+  if (front?.setAside) return true;
+  const back = await imageByIndex(ctx, jobId, pair.backIndex);
+  return back?.setAside === true;
+}
+
 export async function applyPairDiffImpl(
   ctx: MutationCtx,
   jobId: string,
@@ -1665,10 +1699,13 @@ export async function applyPairDiffImpl(
   inserted: number;
   skipped: PairKey[];
 }> {
+  // NEO-446: `isLockedPair` decided on what the run read earlier. A save or a
+  // set-aside since then is caught here, inside the write, where the two conflict.
   let deleted = 0;
   for (const pairId of args.deleteIds) {
     const pair = await ctx.db.get(pairId);
     if (!pair || pair.jobId !== jobId) continue;
+    if (await pairIsHeldByIntake(ctx, pair._id)) continue;
     await ctx.db.delete(pair._id);
     deleted += 1;
   }
@@ -1677,6 +1714,7 @@ export async function applyPairDiffImpl(
   for (const patch of args.patches) {
     const pair = await ctx.db.get(patch.pairId);
     if (!pair || pair.jobId !== jobId) continue;
+    if (await pairIsHeldByIntake(ctx, pair._id)) continue;
     await ctx.db.patch(pair._id, {
       player: patch.player,
       team: patch.team,
@@ -1698,7 +1736,13 @@ export async function applyPairDiffImpl(
   const skipped: PairKey[] = [];
   let inserted = 0;
   for (const insert of args.inserts) {
-    if (taken.has(insert.frontIndex) || taken.has(insert.backIndex)) {
+    if (
+      taken.has(insert.frontIndex) ||
+      taken.has(insert.backIndex) ||
+      // NEO-446: set aside after this run read its rows. Read here, inside the
+      // write, so the two transactions conflict rather than pass each other.
+      (await eitherIsSetAside(ctx, jobId, insert))
+    ) {
       skipped.push({ frontIndex: insert.frontIndex, backIndex: insert.backIndex });
       continue;
     }
@@ -1874,6 +1918,7 @@ export async function finalizePairingInline(
       // the inline finalize on close — the one run whose answer is final. The
       // shape must stay field-for-field identical to `listDoneImagesForPairing`.
       unpairedFrom: r.unpairedFrom,
+      setAside: r.setAside,
     }));
 
   // Stored pairs, read directly, mapped to the `listPairsForDiff` shape.
@@ -1881,7 +1926,9 @@ export async function finalizePairingInline(
     .query("placeholderPairs")
     .withIndex("by_job", (q) => q.eq("jobId", job.jobId))
     .collect();
+  const held = await pairIdsHeldByIntake(ctx, job.jobId);
   const stored: StoredPairRow[] = storedPairs.map((p) => ({
+    heldByMatch: held.has(p._id) || undefined,
     _id: p._id,
     frontIndex: p.frontIndex,
     backIndex: p.backIndex,
@@ -2108,7 +2155,7 @@ export const updatePlaceholderImageIdentity = mutation({
  *
  * Guards: both images must exist and be `done`; refuses if EITHER is already
  * paired (the caller unpairs first — a pairing decision is never silently
- * overwritten). No re-pair is scheduled: nothing changed for any OTHER image
+ * overwritten) or set aside (NEO-446: brought back first). No re-pair is scheduled: nothing changed for any OTHER image
  * (both of these were unpaired and are now excluded), so there is nothing for
  * the automatic pass to reconsider.
  */
@@ -2132,6 +2179,9 @@ export const manuallyPairPlaceholderImages = mutation({
     if (!front || !back) throw new Error("Image not found");
     if (front.status !== "done" || back.status !== "done") {
       throw new Error("both images must be processed before pairing");
+    }
+    if (front.setAside || back.setAside) {
+      throw new Error("That photo was set aside. Bring it back to pair it.");
     }
     // Checked against the pairs table as well as `pairStatus`. The automatic
     // run stores a pair and stamps its images in separate transactions, so in
