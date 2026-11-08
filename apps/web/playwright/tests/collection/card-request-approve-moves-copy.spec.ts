@@ -1,7 +1,10 @@
 // NEO-361 (R1): a collector asks for a card the catalog doesn't have, owns it
 // straight away, and when our crew adds it (the admin's Card Requests review,
 // "Add and approve") their copy lands on the new catalog card by itself: the
-// checklist shows it held, and My requests says Added.
+// checklist shows it held, and My requests says Added. (NEO-431: the request
+// carries a front and a back photo through the photo box the card drawer's Add
+// form shares; they preview and wait in the form until Send, and the admin's
+// review shows them.)
 //
 // One account plays both parts: the worker's account is the collector who asks
 // (through /collection > Checklists > "Request a card") and the admin who
@@ -24,7 +27,7 @@
 // MINTED NAMES are single tokens: the set `crqa-<worker>-<attempt>`, the card
 // numbers `1<token>` (the seed card) and `9<token>` (the requested one), the
 // player `Asked<token>`.
-import { collectorCascade } from "../../support/collection";
+import { collectorCascade, photoFile } from "../../support/collection";
 import { addCardViaForm, escapeRe } from "../../support/cards";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { drillToCustom, setBuilderReady } from "../../support/set-builder";
@@ -75,11 +78,24 @@ test(
     await form.getByRole("combobox", { name: "Insert", exact: true }).selectOption({ label: "Base" });
     await form.getByLabel("Card number", { exact: true }).fill(number);
     await form.getByLabel("Player", { exact: true }).fill(player);
-    await expectAccessible(page, { label: "Request a card, filled" });
+    // Photos are optional and wait in the form (the shared photo box) until Send.
+    const photos = form.getByRole("region", { name: /^Photos of / });
+    await expect(photos.getByText("Optional. Stashed here until you send the request.")).toBeVisible();
+    await photos.getByLabel("Front photo file", { exact: true }).setInputFiles(photoFile("front.jpg"));
+    await photos.getByLabel("Back photo file", { exact: true }).setInputFiles(photoFile("back.jpg"));
+    await expect(photos.getByRole("img", { name: "Front of this card", exact: true })).toBeVisible();
+    await expect(photos.getByRole("img", { name: "Back of this card", exact: true })).toBeVisible();
+    // Held until Send, so there is nothing to open full size yet.
+    await expect(photos.getByRole("link", { name: /full size/ })).toHaveCount(0);
+    await expectAccessible(page, { label: "Request a card, filled with photos" });
     await form.getByRole("button", { name: "Send request" }).click();
 
     const sent = form.getByRole("status").filter({ hasText: `Sent #${number} ${player}.` });
     await expect(sent).toBeVisible();
+    // The send cleared the box for the next request.
+    await expect(photos.getByText("No front photo yet")).toBeAttached();
+    await expect(photos.getByText("No back photo yet")).toBeAttached();
+    await expectAccessible(page, { label: "Request a card, sent" });
     // Theirs to own at once: "I have it" files a copy and closes the dialog.
     await sent.getByRole("button", { name: "I have it" }).click();
     await expect(dialog).toBeHidden();
@@ -89,12 +105,18 @@ test(
     await page.goto("/admin/card-requests");
     await expect(page.getByRole("heading", { level: 2, name: "Card Requests" })).toBeVisible();
     const label = `2024 ${setName} Base #${number} ${player}`;
-    await page
+    const queued = page
       .getByRole("region", { name: "Requests" })
-      .getByRole("button", { name: new RegExp(`^Card: ${escapeRe(label)}`) })
-      .click();
+      .getByRole("button", { name: new RegExp(`^Card: ${escapeRe(label)}`) });
+    // The queue says the request came with photos.
+    await expect(queued.getByText(/· photos$/)).toBeVisible();
+    await queued.click();
     const review = page.getByRole("region", { name: "Review" });
     await expect(review.getByRole("heading", { level: 3, name: `Card: ${label}` })).toBeFocused();
+    // Both photos arrived and show in the review.
+    const theirPhotos = review.getByRole("list", { name: "Their photos" });
+    await expect(theirPhotos.getByRole("img", { name: "Front of the card", exact: true })).toBeVisible();
+    await expect(theirPhotos.getByRole("img", { name: "Back of the card", exact: true })).toBeVisible();
     await expect(review.getByText("they hold 1 copy", { exact: false })).toBeVisible();
     const add = review.getByRole("group", { name: "Add it to Base" });
     await expect(add.getByLabel("Card number", { exact: true })).toHaveValue(number);

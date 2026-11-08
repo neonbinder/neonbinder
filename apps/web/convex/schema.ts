@@ -4549,7 +4549,7 @@ export default defineSchema({
    *     hourly cap; swept with its objects after an hour.
    *   - `live`: on its copy. Never more than one per (copy, side).
    *   - `detached`: its copy was removed; kept an hour so the Undo can put it
-   *     back (`restoreCopy`), then swept with its objects.
+   *     back (`restoreCopy`, `undoBoxQuantity`), then swept with its objects.
    * All reads and writes go through `convex/copyPhotos.ts`.
    */
   collectionCopyPhotos: defineTable({
