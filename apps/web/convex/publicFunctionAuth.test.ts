@@ -252,6 +252,10 @@ describe("NEO-212: the entity review + player management surface is admin-gated"
     // twins: its insert branch schedules a pooled Wikidata enrichment, and
     // `wikidataPool` caps concurrency rather than total queued work.
     ["players.findOrCreate", (t, sportId) => t.mutation(api.players.findOrCreate, { name: "Nobody", sportId })],
+    // NEO-463. The picker's and add form's pre-check for a one-word name: it
+    // reads which fuller-named players the word belongs to, behind the same
+    // admin-only editors that write players.
+    ["players.nameFragmentCheck", (t, sportId) => t.query(api.players.nameFragmentCheck, { name: "Walker", sportId })],
     ["teams.resolveNames", (t, sportId) => t.query(api.teams.resolveNames, { names: [], sportId })],
     ["teams.nearMatches", (t, sportId) => t.query(api.teams.nearMatches, { name: "Yankees", sportId })],
     // NEO-284. Advisory as it is, it still reads which OTHER team a proposed

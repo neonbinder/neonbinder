@@ -22,6 +22,9 @@ import {
   buildExistingPlayerCandidatesForIds,
   isAmbiguousPlayerName,
   MAX_CANDIDATES_FOR_IDS,
+  // NEO-463 — a one-word name clashing with a fuller-named player.
+  assertNotNameFragment,
+  nameFragmentMatches,
   normalizePlayerName,
   playerBelongsToSport,
 } from "./players";
@@ -338,6 +341,9 @@ const decisionValidator = v.union(
     // NEO-313: player-kind only — at COMMIT, also add the set's sport to the
     // created player's `playerSports`. Absent is a guest link. See schema.ts.
     addSetSport: v.optional(v.boolean()),
+    // NEO-463: player-kind only — the operator confirmed a one-word name that
+    // clashes with a fuller-named player is a one-name player. See schema.ts.
+    oneNamePlayer: v.optional(v.literal(true)),
   }),
   v.object({
     action: v.literal("link"),
@@ -3225,6 +3231,10 @@ export const recordDecision = mutation({
     // SET's sport to the player's `playerSports` ("he plays baseball too").
     // Meaningful only on a row switched to another sport; see schema.ts.
     addSetSport: v.optional(v.boolean()),
+    // NEO-463, "create"-only and player-kind-only: the operator confirmed a
+    // one-word name that clashes with a fuller-named player is a one-name
+    // player. Without it such a create is refused with PLAYER_NAME_FRAGMENT.
+    oneNamePlayer: v.optional(v.literal(true)),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -3280,6 +3290,20 @@ export const recordDecision = mutation({
     }
 
     if (args.action === "create") {
+      /*
+       * NEO-463 — a one-word player name that is a fuller-named player's first
+       * or last name ("Walker" beside "Larry Walker") is refused unless the
+       * operator confirmed a one-name player. Structured (`data.code ===
+       * "PLAYER_NAME_FRAGMENT"`, with the matches) so the wizard offers the
+       * match or the confirmation. Player rows only; the flag on another kind
+       * is refused like `addSetSport`, as a client bug.
+       */
+      if (args.oneNamePlayer === true && row.kind !== "player") {
+        throw new ConvexError("Only a player can be a one-name player.");
+      }
+      if (row.kind === "player") {
+        await assertNotNameFragment(ctx, row.name, row.sportId, args.oneNamePlayer);
+      }
       // Defense in depth: this is admin-gated, but still validate the shape
       // so a malformed year can never reach the players.teamYears write in
       // commitCardChecklist. Loose bounds — reject nonsense, not history.
@@ -3452,6 +3476,8 @@ export const recordDecision = mutation({
           ...(createLeague ? { createLeague } : {}),
           // NEO-313: stored only when true, like `saveAsAlias`.
           ...(keepAddSetSport ? { addSetSport: true } : {}),
+          // NEO-463: stored only when true; the commit reads it.
+          ...(args.oneNamePlayer === true ? { oneNamePlayer: true as const } : {}),
         },
         lastTouchedAt: Date.now(),
       });
@@ -4584,7 +4610,12 @@ async function isBulkCandidate(
   // sit in other sports. Read off the row: set history is a fact about this
   // set's committed cards, not a snapshot of the name index going stale.
   if (historyCandidatesOf(row.enrichment).length > 0) return false;
-  return !(await isAmbiguousPlayerName(ctx, row.name, row.sportId));
+  if (await isAmbiguousPlayerName(ctx, row.name, row.sportId)) return false;
+  // NEO-463 — a one-word name that is a fuller-named player's first or last
+  // name ("Walker" beside "Larry Walker") is a question, not a new player:
+  // "Add All Remaining as New" leaves it for the operator. A one-word name
+  // with no clash returns no matches without a read beyond the search.
+  return (await nameFragmentMatches(ctx, row.name, row.sportId)).length === 0;
 }
 
 /**

@@ -17,6 +17,11 @@ import { CopyButton } from "@/components/primitives/CopyButton";
 import NeonButton from "@/components/modules/NeonButton";
 import TeamPicker from "@/components/SetSelector/TeamPicker";
 import { SportTag } from "@/components/SetSelector/PlayerPicker";
+import NameFragmentPanel, {
+  fragmentRefusalMatches,
+  isNameFragmentRefusal,
+  type NameFragmentMatch,
+} from "@/components/SetSelector/NameFragmentPanel";
 import {
   NearMatchPanel,
   type NearMatch,
@@ -495,7 +500,7 @@ function AddPlayerForm({
    * anyway`, or a near-match row in the panel. Cleared by a refusal.
    */
   const [pressed, setPressed] = useState<
-    "primary" | "anyway" | "panel" | null
+    "primary" | "anyway" | "panel" | "oneName" | null
   >(null);
   /**
    * NEO-319 — the near matches as they stood when Create was pressed.
@@ -567,6 +572,29 @@ function AddPlayerForm({
       ? { name: probe, sportId: sportId as Id<"selectorOptions"> }
       : "skip",
   );
+  /**
+   * NEO-463 — is the name only a piece of a fuller one on file ("Walker" when
+   * "Devin Walker" exists)? Read on the debounced name, like `nearMatches`, and
+   * trusted at the press only when it describes the name in the box. Missing
+   * or stale, Create goes through and the server's own `PLAYER_NAME_FRAGMENT`
+   * refusal opens the same panel.
+   */
+  const fragmentCheck = useQuery(
+    api.players.nameFragmentCheck,
+    probe.length > 0 && sportId
+      ? { name: probe, sportId: sportId as Id<"selectorOptions"> }
+      : "skip",
+  );
+  /** The name the fragment panel is about; null when it is shut. */
+  const [fragmentFor, setFragmentFor] = useState<string | null>(null);
+  /** Matches a refusal carried, for when the check had not answered. */
+  const [refusalMatches, setRefusalMatches] = useState<NameFragmentMatch[]>([]);
+  /** Where Escape in the panel hands focus back: the button that opened it. */
+  const createButtonRef = useRef<HTMLButtonElement>(null);
+  const closeFragment = () => {
+    setFragmentFor(null);
+    setRefusalMatches([]);
+  };
   const matches = frozen ? frozen.matches : liveMatches;
   /** A create was pressed and has not been refused. */
   const creating = frozen !== null;
@@ -597,9 +625,24 @@ function AddPlayerForm({
    * in the list. If nothing else remains this is `[]`, which the panel already
    * renders as no panel at all.
    */
-  const panelMatches = exact
+  const fragmentShown = fragmentFor !== null && fragmentFor === trimmed;
+  const fragmentMatches: NameFragmentMatch[] =
+    probe === trimmed &&
+    fragmentCheck?.isFragment &&
+    fragmentCheck.matches.length > 0
+      ? fragmentCheck.matches
+      : refusalMatches;
+  /** NEO-463 — the fuller names the fragment panel lists, so no row repeats. */
+  const fragmentOwnedIds = new Set<string>(
+    fragmentShown ? fragmentMatches.map((m) => m._id as string) : [],
+  );
+  const unpromoted = exact
     ? (matches ?? []).filter((m) => m._id !== exact._id)
     : matches;
+  const panelMatches =
+    fragmentOwnedIds.size > 0 && unpromoted
+      ? unpromoted.filter((m) => !fragmentOwnedIds.has(m._id))
+      : unpromoted;
   /**
    * NEO-254 — computed over EVERY match, not just the panel's share.
    *
@@ -636,8 +679,15 @@ function AddPlayerForm({
     onCreated(id);
   };
 
-  const create = async (via: "primary" | "anyway") => {
+  const create = async (via: "primary" | "anyway" | "oneName") => {
     if (!canCreate) return;
+    const oneNamePlayer = via === "oneName";
+    // NEO-463 — a fragment stops here and asks, before any write.
+    if (!oneNamePlayer && probe === trimmed && fragmentCheck?.isFragment) {
+      setError(null);
+      setFragmentFor(trimmed);
+      return;
+    }
     setBusy(true);
     setPressed(via);
     setFrozen({ matches: liveMatches });
@@ -652,6 +702,7 @@ function AddPlayerForm({
         sportId: sportId as Id<"selectorOptions">,
         ...(birthYearNum !== undefined ? { birthYear: birthYearNum } : {}),
         ...(parsedNewAliases.length ? { aliases: parsedNewAliases } : {}),
+        ...(oneNamePlayer ? { oneNamePlayer: true as const } : {}),
       });
       // Both strings are unchanged; only where they land moved (NEO-260).
       onCreated(
@@ -676,6 +727,13 @@ function AddPlayerForm({
       // NEO-319 — a refusal hands the form back: live matches, live fields.
       setFrozen(null);
       setPressed(null);
+      // NEO-463 — the server's fragment refusal (the check had not answered)
+      // opens the panel, which says more than an error line could.
+      if (isNameFragmentRefusal(e)) {
+        setRefusalMatches(fragmentRefusalMatches(e));
+        setFragmentFor(trimmed);
+        return;
+      }
       setError(userFacingMessage(e, "Could not add that player."));
     } finally {
       setBusy(false);
@@ -694,7 +752,11 @@ function AddPlayerForm({
         value={name}
         placeholder="Ken Griffey Jr."
         disabled={formBusy}
-        onChange={(e) => setName(e.target.value)}
+        onChange={(e) => {
+          // NEO-463: the fragment question was about the old name.
+          closeFragment();
+          setName(e.target.value);
+        }}
       />
 
       <div>
@@ -708,7 +770,10 @@ function AddPlayerForm({
           id="new-player-sport"
           value={sportId}
           disabled={formBusy}
-          onChange={(e) => setSportId(e.target.value)}
+          onChange={(e) => {
+            closeFragment();
+            setSportId(e.target.value);
+          }}
           className="w-full rounded-md border border-field-rule bg-field px-3 py-2 text-base text-ink focus-outline disabled:cursor-not-allowed disabled:opacity-50"
         >
           <option value="">— pick a sport —</option>
@@ -770,6 +835,26 @@ function AddPlayerForm({
         className={formBusy ? "pointer-events-none opacity-50" : ""}
       />
 
+      {/* NEO-463 — "Just Walker? We've got Devin Walker." Shown by a Create
+          press that stopped, so it takes focus and is heard. A pick opens
+          that player, as a near-match row does. */}
+      {fragmentShown && (
+        <NameFragmentPanel
+          autoFocus
+          name={trimmed}
+          matches={fragmentMatches}
+          pickLabel={(n) => `Open ${n}`}
+          disabled={formBusy}
+          confirmBusy={busyOn === "oneName"}
+          onPick={(id) => open(id as Id<"players">, "panel")}
+          onConfirm={() => void create("oneName")}
+          onDismiss={() => {
+            closeFragment();
+            createButtonRef.current?.focus();
+          }}
+        />
+      )}
+
       {/* The primary action swaps rather than the create button merely warning.
           An operator who has just been shown the row they were about to
           duplicate is, nine times in ten, looking for THAT row; making "open
@@ -802,6 +887,7 @@ function AddPlayerForm({
           is busy.
         */}
         <NeonButton
+          ref={createButtonRef}
           type="button"
           onClick={(e) => {
             if (formBusy) return;

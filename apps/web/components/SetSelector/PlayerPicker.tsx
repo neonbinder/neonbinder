@@ -19,6 +19,11 @@ import type { ThemeMode } from "../../src/theme/theme-mode";
 import { TOKENS, tokenHex } from "../../src/theme/tokens";
 import PickerPopover, { popoverFocusables } from "./PickerPopover";
 import SportSwitch from "./SportSwitch";
+import NameFragmentPanel, {
+  fragmentRefusalMatches,
+  isNameFragmentRefusal,
+  type NameFragmentMatch,
+} from "./NameFragmentPanel";
 
 /**
  * NEO-313 — a player row as the cross-sport search returns it. `players.search`
@@ -360,6 +365,13 @@ export default function PlayerPicker({
    * `userFacingMessage`).
    */
   const [createError, setCreateError] = useState<string | null>(null);
+  /**
+   * NEO-463 — the typed name the fragment panel is about, or null when it is
+   * shut. See `fragmentCheck` below.
+   */
+  const [fragmentFor, setFragmentFor] = useState<string | null>(null);
+  /** Matches a refusal carried, for when the check had not answered yet. */
+  const [refusalMatches, setRefusalMatches] = useState<NameFragmentMatch[]>([]);
   const inputRef = useRef<HTMLInputElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -375,6 +387,8 @@ export default function PlayerPicker({
    * `Node.contains()` is a DOM question, and both dismissal paths ask it.
    */
   const popoverRef = useRef<HTMLDivElement | null>(null);
+  /** NEO-463 — the fragment panel, for Enter in the search box to return to. */
+  const fragmentPanelRef = useRef<HTMLDivElement | null>(null);
 
   /** Inside the picker as the OPERATOR sees it: the chip row or the popover. */
   const insidePicker = (node: Node | null) =>
@@ -415,6 +429,7 @@ export default function PlayerPicker({
       setPopoverOpen(false);
       setQuery("");
       setCreateError(null);
+      setFragmentFor(null);
     };
     document.addEventListener("pointerdown", onPointerDown);
     return () => document.removeEventListener("pointerdown", onPointerDown);
@@ -496,6 +511,30 @@ export default function PlayerPicker({
   const showCreateOption =
     query.trim().length > 0 && !hasExactMatch && !!activeSportId;
 
+  /**
+   * NEO-463 — is the name "+ Create" would add only a piece of a fuller one
+   * on file ("Walker" when "Devin Walker" exists)? Asked only while Create is
+   * on offer, so a picker that is just searching never subscribes. The server
+   * owns the rule; an unanswered check lets Create go through, and the
+   * mutation's own `PLAYER_NAME_FRAGMENT` refusal opens the panel instead.
+   */
+  const fragmentCheck = useQuery(
+    api.players.nameFragmentCheck,
+    showCreateOption && activeSportId
+      ? { name: typed, sportId: activeSportId }
+      : "skip",
+  );
+  const fragmentShown =
+    popoverOpen && fragmentFor !== null && fragmentFor === typed;
+  const fragmentMatches: NameFragmentMatch[] =
+    fragmentCheck?.isFragment && fragmentCheck.matches.length > 0
+      ? fragmentCheck.matches
+      : refusalMatches;
+  const closeFragment = () => {
+    setFragmentFor(null);
+    setRefusalMatches([]);
+  };
+
   const removeChip = (idToRemove: Id<"players">) => {
     if (disabled) return;
     onChange(value.filter((id) => id !== idToRemove));
@@ -510,11 +549,17 @@ export default function PlayerPicker({
     setTimeout(() => inputRef.current?.focus(), 0);
   };
 
-  const createAndAdd = async () => {
+  const createAndAdd = async (oneNamePlayer = false) => {
     const name = query.trim();
     // `creating` guard: re-entry protection now that the button stays mounted
     // (and clickable — `aria-disabled`, not `disabled`) for the request.
     if (!name || disabled || creating) return;
+    // NEO-463 — a fragment stops here and asks, before any write.
+    if (!oneNamePlayer && fragmentCheck?.isFragment) {
+      setCreateError(null);
+      setFragmentFor(name);
+      return;
+    }
     setCreating(true);
     setCreateError(null);
     try {
@@ -522,9 +567,21 @@ export default function PlayerPicker({
       // NEO-313: created in the sport being SEARCHED. After a switch that is
       // the operator's explicit choice, and the new player is filed under it —
       // never under the set's sport by default.
-      const id = await findOrCreate({ name, sportId: activeSportId });
+      const id = await findOrCreate({
+        name,
+        sportId: activeSportId,
+        ...(oneNamePlayer ? { oneNamePlayer: true as const } : {}),
+      });
+      closeFragment();
       addChip(id);
     } catch (err) {
+      // NEO-463 — the server's own fragment refusal (the check had not
+      // answered yet) opens the panel rather than an error line.
+      if (isNameFragmentRefusal(err)) {
+        setRefusalMatches(fragmentRefusalMatches(err));
+        setFragmentFor(name);
+        return;
+      }
       // The ConvexError's `data`, never `.message`: production redacts a plain
       // Error, and a surviving message arrives wrapped in "[CONVEX M(...)]
       // [Request ID: ...]" noise. The query is left alone so "+ Create" stays
@@ -542,6 +599,7 @@ export default function PlayerPicker({
     setPopoverOpen(false);
     setQuery("");
     setCreateError(null);
+    closeFragment();
     setTimeout(() => triggerRef.current?.focus(), 0);
   };
 
@@ -574,11 +632,15 @@ export default function PlayerPicker({
       setPopoverOpen(false);
       setQuery("");
       setCreateError(null);
+      closeFragment();
     }, 0);
   };
 
   // Highlight index spans matches PLUS the trailing "create" row when shown.
-  const rowCount = matches.length + (showCreateOption ? 1 : 0);
+  // NEO-463: none while the fragment panel stands in for the rows.
+  const rowCount = fragmentShown
+    ? 0
+    : matches.length + (showCreateOption ? 1 : 0);
 
   return (
     <div
@@ -680,6 +742,9 @@ export default function PlayerPicker({
                 // The refusal described the name that was in this box; the
                 // next keystroke makes it stale, so it goes with the query.
                 setCreateError(null);
+                // NEO-463: the fragment panel is about the name that was in
+                // this box, so it goes with the query too.
+                closeFragment();
                 setQuery(e.target.value);
               }}
               onKeyDown={(e) => {
@@ -694,7 +759,11 @@ export default function PlayerPicker({
                   setHighlightIdx((i) => Math.max(i - 1, 0));
                 } else if (e.key === "Enter") {
                   e.preventDefault();
-                  if (highlightIdx < matches.length) {
+                  // NEO-463: the rows are hidden behind the fragment panel, so
+                  // Enter here hands focus back to it rather than picking one.
+                  if (fragmentShown) {
+                    fragmentPanelRef.current?.focus();
+                  } else if (highlightIdx < matches.length) {
                     const pick = matches[highlightIdx];
                     if (pick) addChip(pick._id);
                   } else if (showCreateOption) {
@@ -739,7 +808,10 @@ export default function PlayerPicker({
               aria-label={labels.results}
               className="space-y-1"
             >
-              {matches.map((m, idx) => (
+              {/* NEO-463: while the fragment panel is up it IS the answer, so
+                  the rows step aside rather than list the same names twice.
+                  The listbox itself stays, as it does for every open state. */}
+              {!fragmentShown && matches.map((m, idx) => (
                 <button
                   key={m._id}
                   type="button"
@@ -808,7 +880,7 @@ export default function PlayerPicker({
                   )}
                 </button>
               ))}
-              {showCreateOption && (
+              {showCreateOption && !fragmentShown && (
                 <button
                   type="button"
                   // NEO-220: `aria-disabled`, not `disabled` — the row stays
@@ -837,6 +909,37 @@ export default function PlayerPicker({
                 </button>
               )}
             </div>
+
+            {fragmentShown && (
+              <NameFragmentPanel
+                compact
+                autoFocus
+                panelRef={fragmentPanelRef}
+                name={typed}
+                matches={fragmentMatches}
+                // The picker's own verb: a press adds the player to the card,
+                // as a typeahead row would. The rows are hidden while this is
+                // up, so the names cannot collide.
+                pickLabel={(n) => `Add ${n}`}
+                disabled={disabled}
+                confirmBusy={creating}
+                onPick={(id) => {
+                  closeFragment();
+                  const pick = id as Id<"players">;
+                  if (value.includes(pick)) {
+                    setQuery("");
+                    setTimeout(() => inputRef.current?.focus(), 0);
+                    return;
+                  }
+                  addChip(pick);
+                }}
+                onConfirm={() => void createAndAdd(true)}
+                onDismiss={() => {
+                  closeFragment();
+                  setTimeout(() => inputRef.current?.focus(), 0);
+                }}
+              />
+            )}
 
             {/* NEO-313 — the cross-sport override, last in the popover and
                 quiet on purpose: it is used rarely, it must never be the
