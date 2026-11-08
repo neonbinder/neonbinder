@@ -1,6 +1,7 @@
+import { useState } from "react";
 import { Navigate, useLocation } from "react-router";
 import { EBAY_PATH } from "@/lib/marketplace/listing-copy";
-import { readEbayReturn, type EbayReturnState } from "@/app/profile/credentials/ebay/oauth-return";
+import { ebayReturnFrom, readEbayReturn, type EbayReturnState } from "@/app/profile/credentials/ebay/oauth-return";
 
 /**
  * `/profile/ebay` — NEO-415. eBay is set up under Profile → Credentials, and
@@ -8,15 +9,22 @@ import { readEbayReturn, type EbayReturnState } from "@/app/profile/credentials/
  * pages forward to it (`EBAY_RETURN_DESTINATION`), and they are live in
  * production, so it stays.
  *
- * It swaps itself for Credentials with eBay picked (`replace`: Back never
- * lands here, and the code-carrying address leaves history at once). What
- * eBay sent rides along in location state, never the URL, and the eBay
- * panel spends it and clears it. A plain visit (an old link, a bookmark) just
- * opens the panel.
+ * `src/ebay-return-address.ts` has already moved what eBay sent off the address
+ * into this history entry's state. This swaps itself for Credentials with eBay
+ * picked (`replace`: Back never lands here), handing that on in location state,
+ * and the eBay panel spends it and clears it. A plain visit (an old link, a
+ * bookmark) just opens the panel.
+ *
+ * The query is still read for an arrival by client-side navigation, which that
+ * module, running once at startup, cannot see.
  */
 export default function EbayReturnLanding() {
   const { search } = useLocation();
-  const handed = readEbayReturn(new URLSearchParams(search));
-  const state: EbayReturnState | null = handed ? { ebayReturn: handed } : null;
+  // Read once: the forward below replaces the history entry straight away, and a
+  // re-render before this unmounts must not forward again with nothing.
+  const [state] = useState<EbayReturnState | null>(() => {
+    const handed = ebayReturnFrom(window.history.state) ?? readEbayReturn(new URLSearchParams(search));
+    return handed ? { ebayReturn: handed } : null;
+  });
   return <Navigate to={EBAY_PATH} replace state={state} />;
 }

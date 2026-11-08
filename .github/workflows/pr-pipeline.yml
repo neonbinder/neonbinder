@@ -1037,6 +1037,10 @@ jobs:
       # convex/*.test.ts files whose convex-test generics do not typecheck
       # under tsc (they are typechecked and run by vitest in web-unit).
       - run: npm run typecheck
+      # NEO-434: builds with Sentry on and no token, and reads the entry chunk.
+      # Not a `postbuild`: a preview build compiles Sentry out, so it has nothing
+      # to compare, and E2E runs against that build.
+      - run: npm run check:entry-order
 
   web-unit:
     name: Unit & component tests (vitest, apps/web)

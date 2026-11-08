@@ -126,7 +126,9 @@ export function Dropzone({
             {dragging
               ? "Drop them here"
               : disabled
-                ? "Sending your photos…"
+                ? intake?.kind === "zip"
+                  ? "Sending your zip…"
+                  : "Sending your photos…"
                 : "Drag your card photos here"}
           </span>
           <span className="text-sm text-ink-3">
@@ -134,13 +136,15 @@ export function Dropzone({
           </span>
           <span id={hint ? hintId : undefined} className="text-xs text-ink-3">
             {hint ??
-              "JPEG or PNG, or a single zip. Uploading starts as soon as you choose — keep them in scan order (front, back, front, back), because that order is what pairs them."}
+              "JPEG, PNG or WebP, or a single zip of them. Uploading starts as soon as you choose — keep them in scan order (front, back, front, back), because that order is what pairs them."}
           </span>
           <input
             ref={inputRef}
             id={inputId}
             type="file"
-            accept=".zip,image/jpeg,image/png"
+            // What the service takes, loose or zipped: PLACEHOLDER_IMAGE_EXTENSION_BY_CONTENT_TYPE
+            // (convex/lib/placeholderObjects.ts) and `sniff_image_type` (preprocess zipsafe.py).
+            accept=".zip,image/jpeg,image/png,image/webp"
             multiple
             aria-disabled={disabled || undefined}
             aria-describedby={[disabled ? headlineId : null, hint ? hintId : null, describedBy].filter(Boolean).join(" ") || undefined}

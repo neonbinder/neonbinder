@@ -13,7 +13,7 @@ import { expectAccessibleInBothModes } from "@/lib/testing/axe";
  * by that name); `hint` and `describedBy` say what a drop will do.
  */
 const NAME = "Drag your card photos here, or browse your files";
-const DEFAULT_HINT = /JPEG or PNG, or a single zip\. Uploading starts as soon as you choose/;
+const DEFAULT_HINT = /JPEG, PNG or WebP, or a single zip of them\. Uploading starts as soon as you choose/;
 
 function setup(props: Partial<Parameters<typeof Dropzone>[0]> = {}) {
   const onFiles = vi.fn();
@@ -218,5 +218,40 @@ describe("Dropzone accessibility", () => {
     cleanup();
     const sending = setup({ disabled: true });
     await expectAccessibleInBothModes(sending.view.container, { label: "Dropzone, sending" });
+  });
+});
+
+describe("Dropzone wording and accepted types (NEO-446)", () => {
+  const zipFile = new File(["x"], "cards.zip", { type: "application/zip" });
+  const jpg = new File(["x"], "front.jpg", { type: "image/jpeg" });
+  const sending = (files: File[]) =>
+    render(<Dropzone quiet files={files} disabled onFiles={vi.fn()} />);
+
+  it("says it is sending a zip when the chosen file is a zip", () => {
+    sending([zipFile]);
+    expect(screen.getByText("Sending your zip…")).toBeTruthy();
+    expect(screen.queryByText("Sending your photos…")).toBeNull();
+  });
+
+  it("says photos for loose photos, and for a selection it refused", () => {
+    sending([jpg, jpg]);
+    expect(screen.getByText("Sending your photos…")).toBeTruthy();
+    cleanup();
+    sending([zipFile, new File(["x"], "two.zip")]);
+    expect(screen.getByText("Sending your photos…")).toBeTruthy();
+    cleanup();
+    sending([]);
+    expect(screen.getByText("Sending your photos…")).toBeTruthy();
+  });
+
+  it("takes WebP as well as JPEG, PNG and a zip, and the hint says so", () => {
+    render(<Dropzone quiet files={[]} disabled={false} onFiles={vi.fn()} />);
+    expect(input().accept.split(",").sort()).toEqual([".zip", "image/jpeg", "image/png", "image/webp"]);
+    expect(screen.getByText(/JPEG, PNG or WebP, or a single zip of them/)).toBeTruthy();
+  });
+
+  it("keeps the open headline when not sending", () => {
+    render(<Dropzone quiet files={[zipFile]} disabled={false} onFiles={vi.fn()} />);
+    expect(screen.getByText("Drag your card photos here")).toBeTruthy();
   });
 });
