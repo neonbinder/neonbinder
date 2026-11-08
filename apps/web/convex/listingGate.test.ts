@@ -126,7 +126,7 @@ async function refusal(p: Promise<unknown>): Promise<{ code: string; message: st
 describe("when the gate applies", () => {
   test("no listing state: nothing applies, and a box takes cards with no price", async () => {
     const s = await setup();
-    expect(await gateOf(s, s.box, s.fx.baseId)).toEqual({ syncing: false, applies: false, commonPriceCents: null });
+    expect(await gateOf(s, s.box, s.fx.baseId)).toEqual({ syncing: false, applies: false, commonPriceCents: null, variantHasCards: true });
     await raise(s, s.box, 2);
     await s.me.mutation(api.collection.addHave, { cardId: s.fx.strawberry2, homeId: s.box });
     expect((await copies(s)).reduce((n, c) => n + c.quantity, 0)).toBe(3);
@@ -135,9 +135,9 @@ describe("when the gate applies", () => {
   test("syncing into a listed box: applies, and the common price is read for the variant", async () => {
     const s = await setup();
     await syncOn(s);
-    expect(await gateOf(s, s.box, s.fx.baseId)).toEqual({ syncing: true, applies: true, commonPriceCents: null });
+    expect(await gateOf(s, s.box, s.fx.baseId)).toEqual({ syncing: true, applies: true, commonPriceCents: null, variantHasCards: true });
     await priceBase(s, 40);
-    expect(await gateOf(s, s.box, s.fx.baseId)).toEqual({ syncing: true, applies: true, commonPriceCents: 40 });
+    expect(await gateOf(s, s.box, s.fx.baseId)).toEqual({ syncing: true, applies: true, commonPriceCents: 40, variantHasCards: true });
   });
 
   test("the E2E test marker holds the owner off: nothing applies", async () => {
@@ -166,8 +166,8 @@ describe("when the gate applies", () => {
   test("a binder and an in-person box never list: syncing, but no gate", async () => {
     const s = await setup();
     await syncOn(s);
-    expect(await gateOf(s, s.binder, s.fx.baseId)).toEqual({ syncing: true, applies: false, commonPriceCents: null });
-    expect(await gateOf(s, s.inPerson, s.fx.baseId)).toEqual({ syncing: true, applies: false, commonPriceCents: null });
+    expect(await gateOf(s, s.binder, s.fx.baseId)).toEqual({ syncing: true, applies: false, commonPriceCents: null, variantHasCards: true });
+    expect(await gateOf(s, s.inPerson, s.fx.baseId)).toEqual({ syncing: true, applies: false, commonPriceCents: null, variantHasCards: true });
     await s.me.mutation(api.collection.addHave, { cardId: s.fx.gooden1, homeId: s.binder });
     await raise(s, s.inPerson, 3);
     expect((await copies(s)).reduce((n, c) => n + c.quantity, 0)).toBe(4);
@@ -180,8 +180,30 @@ describe("when the gate applies", () => {
       ctx.db.insert("collectionContainers", { ownerId: THEM.subject, kind: "box", name: "Theirs", lastUpdated: 0 }),
     );
     for (const homeId of [undefined, "not-an-id", theirs]) {
-      expect(await gateOf(s, homeId, s.fx.baseId)).toEqual({ syncing: true, applies: false, commonPriceCents: null });
+      expect(await gateOf(s, homeId, s.fx.baseId)).toEqual({ syncing: true, applies: false, commonPriceCents: null, variantHasCards: true });
     }
+  });
+
+  test("variantHasCards (NEO-452): true with no variant, true for a set with cards, false for one without or for a junk id", async () => {
+    const s = await setup();
+    await syncOn(s);
+    expect(await gateOf(s, s.box)).toMatchObject({ variantHasCards: true });
+    expect(await gateOf(s, s.box, s.fx.baseId)).toMatchObject({ variantHasCards: true });
+    expect(await gateOf(s, s.box, s.fx.setId)).toMatchObject({ variantHasCards: false });
+    expect(await gateOf(s, s.box, "not-a-variant-id")).toMatchObject({ variantHasCards: false });
+    // A real id of another table is not a variant either.
+    expect(await gateOf(s, s.box, s.box)).toMatchObject({ variantHasCards: false });
+  });
+
+  test("variantHasCards is answered for a binder, an unknown home, and a collector who doesn't sync", async () => {
+    const s = await setup();
+    expect(await gateOf(s, s.box, s.fx.setId)).toEqual({ syncing: false, applies: false, commonPriceCents: null, variantHasCards: false });
+    expect(await gateOf(s, undefined, s.fx.baseId)).toMatchObject({ variantHasCards: true });
+    await syncOn(s);
+    expect(await gateOf(s, s.binder, s.fx.setId)).toEqual({ syncing: true, applies: false, commonPriceCents: null, variantHasCards: false });
+    expect(await gateOf(s, "not-an-id", s.fx.setId)).toMatchObject({ applies: false, variantHasCards: false });
+    // And on a listed box it rides along with the price.
+    expect(await gateOf(s, s.box, s.fx.setId)).toEqual({ syncing: true, applies: true, commonPriceCents: null, variantHasCards: false });
   });
 
   test("forHome is signed-in only", async () => {
@@ -267,13 +289,16 @@ describe("the writers it holds", () => {
     await expect(
       s.me.mutation(api.intakeRuns.createIntakeRun, { jobId: JOB, homeId: s.box, variantId: s.fx.baseId }),
     ).rejects.toThrow(/need a price/);
-    // No set picked yet: only the run's own price can answer.
-    await expect(s.me.mutation(api.intakeRuns.createIntakeRun, { jobId: JOB, homeId: s.box })).rejects.toThrow(
-      /need a price/,
-    );
+    // NEO-452: no set picked is refused on the set first, even with a price of its own.
+    for (const defaults of [undefined, { minPriceCents: 50 }]) {
+      await expect(
+        s.me.mutation(api.intakeRuns.createIntakeRun, { jobId: JOB, homeId: s.box, defaults }),
+      ).rejects.toThrow(/Pick a set first: cards are matched in it\./);
+    }
     const runId = await s.me.mutation(api.intakeRuns.createIntakeRun, {
       jobId: JOB,
       homeId: s.box,
+      variantId: s.fx.baseId,
       defaults: { minPriceCents: 50 },
     });
     const run = await s.me.query(api.intakeRuns.getIntakeRun, { runId });
@@ -341,6 +366,7 @@ describe("a condition is never what a priced add lacks (NEO-380)", () => {
     const runId = await s.me.mutation(api.intakeRuns.createIntakeRun, {
       jobId: JOB,
       homeId: s.box,
+      variantId: s.fx.baseId,
       defaults: { minPriceCents: 50 },
     });
     expect(await s.me.query(api.intakeRuns.getIntakeRun, { runId })).not.toBeNull();
@@ -428,7 +454,12 @@ describe("the other add doors (security review)", () => {
     const s = await setup();
     for (const minPriceCents of [1.5, -1, Number.MAX_SAFE_INTEGER]) {
       const refused = await refusal(
-        s.me.mutation(api.intakeRuns.createIntakeRun, { jobId: JOB, homeId: s.binder, defaults: { minPriceCents } }),
+        s.me.mutation(api.intakeRuns.createIntakeRun, {
+          jobId: JOB,
+          homeId: s.binder,
+          variantId: s.fx.baseId,
+          defaults: { minPriceCents },
+        }),
       );
       expect(refused.message).toBe("Minimum price needs to be a dollar amount of zero or more.");
     }

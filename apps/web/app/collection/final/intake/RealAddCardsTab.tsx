@@ -1,5 +1,6 @@
 import {
   createContext,
+  useCallback,
   useContext,
   useEffect,
   useEffectEvent,
@@ -9,8 +10,10 @@ import {
   useState,
   type ReactNode,
   type Ref,
+  type RefObject,
 } from "react";
 import { useSearchParams } from "react-router";
+import { useAuth } from "@clerk/clerk-react";
 import { useAction, useMutation, useQuery } from "convex/react";
 import NeonButton from "@/components/modules/NeonButton";
 import { LiveLine, RunGlyph, type RunLineKind } from "@/components/modules/RunLedger";
@@ -27,8 +30,17 @@ import Overlay from "../../prototypes/p1/Overlay";
 import Cascade from "../catalog/Cascade";
 import { EMPTY_DRILL, type Drill } from "../catalog/drill";
 import { useDrillState } from "../catalog/useDrillState";
-import { homesOnSide, useContainers, useDefaultCondition, useListingGate, useSide, writeErrorMessage } from "../data/store";
-import { intakeGateLine, ListingGateNote, SyncStatusLink, useListingLock } from "../inventory/listing/ListingGate";
+import {
+  homesOnSide,
+  useCollectionActions,
+  useCommonPrices,
+  useContainers,
+  useDefaultCondition,
+  useListingGate,
+  useSide,
+  writeErrorMessage,
+} from "../data/store";
+import { intakeGateLine, ListingGateNote, SyncStatusLink, useIntakeRunLock } from "../inventory/listing/ListingGate";
 import { usePageApi } from "../pageApi";
 import {
   EMPTY_LANES,
@@ -66,7 +78,23 @@ import {
 } from "./realLanes";
 import { HomeSelect, QTY_ATTR, RING, StageBadge } from "./ui";
 import { DRAWER_PARAM } from "../drawerParams";
-import { ScannerJoin } from "./ScannerJoin";
+import { ScannerJoin, startRefusal } from "./ScannerJoin";
+import {
+  beginSend,
+  finishSend,
+  heldIntakeKey,
+  holdFiles,
+  readHeld,
+  removeHeld,
+  retryHeld,
+  sayHeld,
+  updateHeldSetup,
+  useHeldIntake,
+  type Condition,
+  type Grader,
+  type RunDefaults,
+  type VariantPick,
+} from "./heldIntake";
 import "./intake.css";
 
 /**
@@ -98,13 +126,25 @@ const LocalPhotos = createContext<ReadonlyMap<string, string>>(new Map());
  * s swaps sides, u unpairs, d sets it aside, v steps through its other
  * pictures. In the count field only digits type; Enter saves and moves on.
  *
- * The listing gate (NEO-370): a run into a box that lists on marketplaces,
- * for a collector set up for syncing, needs a price on its cards before any
- * photo goes up: the run's Min price (Defaults), else the common price for
- * the picked set. Until then the drop zone is held with the reason beside it
- * and a button that opens the field; the server refuses the run (and each
- * save) the same way. After "Done adding photos" on such a run, "See what's
- * syncing" links to Inventory → Sync status.
+ * Photos can be dropped at any time (NEO-452). Nothing leaves the browser until
+ * the run has a home, a set and, for a box that lists on marketplaces for a
+ * collector set up for syncing (NEO-370), a price and a condition: the run's Min
+ * price (Defaults), else the collector's common price for the set. Until then
+ * the photos wait in the zone's tray (`./heldIntake`), then go up by themselves.
+ * The server refuses a run with no set, and an unready run and each save the
+ * same way. After "Done adding photos" on a run into a box that lists, "See
+ * what's syncing" links to Inventory → Sync status.
+ *
+ * With no set picked there is no price to ask about. Picking a set with no price
+ * shows the note and opens Defaults once; "Save as common price" there turns the
+ * Min price into the collector's own price for that set. No Start button, and
+ * nothing here goes in the URL but `?tab=add` and `?run=`: the tray and the
+ * panels are in-view state.
+ *
+ * Photos go up in this order: open a session, start the run, open it, then
+ * upload into it. A refusal then comes before any bytes move, and the run is
+ * there to take edits while a big drop uploads. A zip has to upload first (it
+ * starts its own job), so it reads the setup as it stands afterwards.
  *
  * A saved card takes its scans with it (NEO-427): the server puts the pair on
  * the saved line after the save, and the tile says how that went (`PhotoLine`),
@@ -114,8 +154,8 @@ const LocalPhotos = createContext<ReadonlyMap<string, string>>(new Map());
  * from the job row alone so a refresh on `?run=` says the same. A run that went
  * wrong offers "Start a new run"; one where nothing reached the lanes hides them.
  *
- * Not yet: the common price prompt (NEO-378), rotate/re-crop/reject one side,
- * and finding the set from the photos when none is picked.
+ * Not yet: rotate/re-crop/reject one side, and finding the set from the photos
+ * (the public demo's "Set: from the photos" stays a demo).
  */
 
 export const RUN_PARAM = "run";
@@ -197,27 +237,12 @@ function settleReturningPhoto(wanted: ReturningPhoto, lanes: Lanes): ReturningPh
   return null;
 }
 
-type Condition = "Mint" | "Near Mint" | "Excellent" | "Very Good" | "Good" | "Poor";
-type Grader = "PSA" | "BGS" | "SGC" | "CGC" | "TAG";
 const CONDITIONS: Condition[] = ["Mint", "Near Mint", "Excellent", "Very Good", "Good", "Poor"];
 const GRADERS: Grader[] = ["PSA", "BGS", "SGC", "CGC", "TAG"];
 
-/** The run's batch defaults, as the server keeps them. */
-interface RunDefaults {
-  condition?: Condition;
-  grading?: { grader: Grader; grade: string; cert?: string };
-  costCents?: number;
-  acquiredOn?: string;
-  location?: string;
-  notes?: string;
-  /** NEO-378's floor for every card in the run; blank sells at the common price. */
-  minPriceCents?: number;
-}
-
-interface VariantPick {
-  variantId: Id<"selectorOptions">;
-  title: string;
-}
+/** The zone's line while a drop would wait rather than go. */
+const WAITING_HINT =
+  "JPEG, PNG, WebP or one zip. Drop them whenever. They wait here until the run is set up, then go up on their own. Keep them in scan order (front, back, front, back): that's how they pair.";
 
 const today = () => new Date().toISOString().slice(0, 10);
 
@@ -233,6 +258,22 @@ const KEY_HELP: { keys: string; does: string }[] = [
 ];
 
 export default function RealAddCardsTab() {
+  const side = useSide();
+  const { userId } = useAuth();
+  const heldKey = heldIntakeKey(userId, side);
+  // Keyed: the setup below is seeded once from the photos held for this key.
+  return <AddCardsScreen key={heldKey} heldKey={heldKey} />;
+}
+
+/** What `createIntakeRun` was sent, to compare with the setup once the run has loaded. */
+interface Handover {
+  runId: Id<"intakeRuns">;
+  homeId: string;
+  variantId: Id<"selectorOptions">;
+  defaults: RunDefaults;
+}
+
+function AddCardsScreen({ heldKey }: { heldKey: string }) {
   useWarmPreprocess();
   const side = useSide();
   const kind = side === "inventory" ? "box" : "binder";
@@ -253,23 +294,37 @@ export default function RealAddCardsTab() {
   const loading = containers === undefined || (runId !== null && run === undefined);
 
   // Setup before the run exists. Once it does, the run's own fields rule.
-  const [homeId, setHomeId] = useState<string>("");
-  const [variant, setVariant] = useState<VariantPick | null>(null);
-  const [defaults, setDefaults] = useState<RunDefaults>({ acquiredOn: today() });
+  // Photos already held bring back the setup they were waiting on.
+  const [homeId, setHomeId] = useState<string>(() => readHeld(heldKey).setup?.homeId ?? "");
+  const [variant, setVariant] = useState<VariantPick | null>(() => readHeld(heldKey).setup?.variant ?? null);
+  const [defaults, setDefaults] = useState<RunDefaults>(() => readHeld(heldKey).setup?.defaults ?? { acquiredOn: today() });
   const [panel, setPanel] = useState<null | "set" | "defaults">(null);
   const pickedHome = homes.some((h) => h.id === homeId) ? homeId : (homes[0]?.id ?? "");
+  // Leaving a run (New run, Back) leaves its Min price behind: carried over, it
+  // would lift the hold and send the next drop into a listing box with no press.
+  // During render, so no commit ever pairs the bare URL with the old Min.
+  const [shownParam, setShownParam] = useState(runParam);
+  if (shownParam !== runParam) {
+    setShownParam(runParam);
+    if (!runParam) setDefaults((setup) => ({ ...setup, minPriceCents: undefined }));
+  }
 
+  const startStream = useMutation(api.placeholderStream.startPlaceholderStream);
+  const closeStream = useMutation(api.placeholderStream.closePlaceholderStream);
+  const cancelBatch = useMutation(api.placeholderPipeline.cancelPlaceholderBatch);
   const createRun = useMutation(api.intakeRuns.createIntakeRun);
   const setRunVariant = useMutation(api.intakeRuns.setIntakeRunVariant);
   const setRunDefaults = useMutation(api.intakeRuns.setIntakeRunDefaults);
   const setRunHome = useMutation(api.intakeRuns.setIntakeRunHome);
   const usualCondition = useDefaultCondition();
-  const { uploading, upload } = usePlaceholderUpload();
-  const [files, setFiles] = useState<File[]>([]);
-  const [status, setStatus] = useState("");
+  const { upload } = usePlaceholderUpload();
+  const held = useHeldIntake(heldKey);
+  /** A pile `classifyIntake` refused, for the zone to explain. */
+  const [refusedPile, setRefusedPile] = useState<File[]>([]);
   const [localPhotos, setLocalPhotos] = useState<ReadonlyMap<string, string>>(new Map());
   const localUrls = useRef<string[]>([]);
   useEffect(() => () => localUrls.current.forEach((u) => URL.revokeObjectURL(u)), []);
+  const say = (text: string) => sayHeld(heldKey, text);
 
   const job = useQuery(api.placeholderPipeline.getPlaceholderJob, run ? { jobId: run.jobId } : "skip");
   // Still loading the run's job reads as collecting, so the drop zone and the
@@ -277,18 +332,52 @@ export default function RealAddCardsTab() {
   const collecting = !run || job === undefined || job?.status === "collecting";
   const notice = collecting ? null : runNotice(job);
 
-  // NEO-370 — the listing gate, on what the run (or the setup) will give its cards.
+  // NEO-370, NEO-452 — the gate, on what the run (or the setup) will give its cards.
   const shownDefaults: RunDefaults = run?.defaults ?? defaults;
   const homeKind = run ? run.homeKind : kind;
   const homeName = run ? run.homeName : (homes.find((h) => h.id === pickedHome)?.name ?? `the ${kind}`);
-  const lock = useListingLock({
-    homeId: run ? run.homeId : pickedHome || null,
-    variantId: run ? (run.variantId ?? null) : (variant?.variantId ?? null),
+  const targetHome: string | null = run ? run.homeId : pickedHome || null;
+  const targetVariantId: string | null = run ? (run.variantId ?? null) : (variant?.variantId ?? null);
+  const targetTitle = run
+    ? variant && variant.variantId === run.variantId
+      ? variant.title
+      : (run.variantName ?? null)
+    : (variant?.title ?? null);
+  const lock = useIntakeRunLock({
+    homeId: targetHome,
+    variantId: targetVariantId,
     condition: shownDefaults.condition ?? usualCondition,
     ownPriceCents: shownDefaults.minPriceCents,
     graded: shownDefaults.grading !== undefined,
   });
+  const gateLine = lock.locked ? intakeGateLine(homeName, targetTitle, lock, { collecting }) : "";
+  const noHome = !loading && !run && !pickedHome;
+  /**
+   * May the photos go up by themselves? `lock.loaded` is not redundant with
+   * `lock.ready`: this is the guard that keeps a set pick from auto-sending with
+   * the price still unknown. Elsewhere a loading gate reads as open, because a
+   * person is about to press something and the server still refuses. Here nobody
+   * presses anything, so "don't know yet" has to mean "wait".
+   */
+  const ready =
+    !loading && lock.loaded && lock.ready && targetHome !== null && (run ? job?.status === "collecting" : true);
+  /**
+   * What can change the server's answer to a send; a failure isn't retried until
+   * this moves. Only those fields: every refused start spends the shared hourly job
+   * budget, so typing a Cost, Location, Notes or Acquired must never fire another.
+   */
+  const config = JSON.stringify([
+    targetHome,
+    targetVariantId,
+    shownDefaults.minPriceCents,
+    shownDefaults.condition ?? usualCondition,
+    shownDefaults.grading !== undefined,
+  ]);
   const gateNoteId = useId();
+  const trayId = useId();
+  const dropInput = useRef<HTMLInputElement>(null);
+  const setButton = useRef<HTMLButtonElement>(null);
+  const statusLine = useRef<HTMLParagraphElement>(null);
   const priceRef = useRef<HTMLInputElement>(null);
   const conditionRef = useRef<HTMLSelectElement>(null);
   /** The note's button: open Defaults with the missing field focused (once the panel is drawn). */
@@ -305,6 +394,59 @@ export default function RealAddCardsTab() {
       return next;
     });
 
+  // Read by what lands after an await or a frame: the closure that started it
+  // may be several renders old by then. Declared first, so the effects below
+  // read this render's values.
+  const latest = useRef({ run, shownDefaults, homeId: pickedHome, variant, defaults, config, gateLine });
+  /** Each run's defaults as last seen, for an Undo that lands after the screen moved off it. */
+  const seenRunDefaults = useRef(new Map<Id<"intakeRuns">, RunDefaults>());
+  useEffect(() => {
+    latest.current = { run, shownDefaults, homeId: pickedHome, variant, defaults, config, gateLine };
+    if (run) seenRunDefaults.current.set(run._id, run.defaults ?? {});
+  });
+  const mounted = useRef(false);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+  useEffect(() => {
+    updateHeldSetup(heldKey, { homeId, variant, defaults });
+  }, [heldKey, homeId, variant, defaults]);
+
+  /** Into the run if there is one, else into the setup. */
+  const writeDefaults = async (next: RunDefaults) => {
+    const open = latest.current.run;
+    if (!open) {
+      setDefaults(next);
+      return;
+    }
+    await setRunDefaults({ runId: open._id, defaults: next });
+  };
+  const [defaultsEpoch, setDefaultsEpoch] = useState(0);
+  const handover = useRef<Handover | null>(null);
+  /** The last run this setup became. */
+  const lastStarted = useRef<Id<"intakeRuns"> | null>(null);
+
+  /**
+   * Undo's first step for a common price save, taken at the press: it puts the Min
+   * back where that save took it from, never on whatever is open by the time Undo
+   * is pressed. A save made before the run existed follows the setup into the run
+   * it became (the mouse race below), and only that one.
+   */
+  const minRestorer = () => {
+    const savedOn = latest.current.run?._id ?? handover.current?.runId ?? null;
+    const startedBefore = lastStarted.current;
+    return async (cents: number) => {
+      const runId = savedOn ?? (lastStarted.current !== startedBefore ? lastStarted.current : null);
+      const seen = runId ? seenRunDefaults.current.get(runId) : undefined;
+      if (runId && seen) await setRunDefaults({ runId, defaults: { ...seen, minPriceCents: cents } });
+      // No run, or one that hasn't loaded yet, and its handover carries the setup across.
+      else setDefaults((setup) => ({ ...setup, minPriceCents: cents }));
+    };
+  };
+
   // Leaving a run takes the button that asked for it off the screen, so focus
   // lands on the drop zone, which is the next thing to do, once it is drawn. The
   // ask waits while the URL is still on the old run ("leaving") and for the zone
@@ -312,7 +454,7 @@ export default function RealAddCardsTab() {
   const dropArea = useRef<HTMLDivElement>(null);
   const focusDropzone = useRef<null | "leaving" | "arrived">(null);
   const startNewRun = () => {
-    setStatus("");
+    say("");
     focusDropzone.current = "leaving";
     openRun(null);
   };
@@ -330,27 +472,104 @@ export default function RealAddCardsTab() {
     focusDropzone.current = null;
   }, [runParam, collecting]);
 
-  // A drop while `loading` waits here, then takes the normal path below once
-  // the shelf and the run are in. The latest drop wins, as a new pick does.
-  const queued = useRef<File[] | null>(null);
-  const onFiles = async (chosen: File[]) => {
-    setFiles(chosen);
-    if (chosen.length === 0 || uploading) return;
-    if (loading) {
-      queued.current = chosen;
+  /* ---------------------------------------------------------------- */
+  /* A drop, and when it goes up                                       */
+  /* ---------------------------------------------------------------- */
+
+  const onFiles = (chosen: File[]) => {
+    if (chosen.length === 0 || held.sending) return;
+    setRefusedPile([]);
+    if (noHome) {
+      say(`Make a ${kind} first: the cards need somewhere to go.`);
       return;
     }
-    const intake = classifyIntake(chosen);
-    if (intake.kind === "invalid") return;
-    const isZip = intake.kind === "zip";
-    // Held by the listing gate: the reason is beside the zone (it never opens a picker then).
-    if (lock.locked) return;
-    if (!run && !pickedHome) {
-      setStatus(`Make a ${kind} first: the cards need somewhere to go.`);
-      return;
+    const refused = holdFiles(heldKey, chosen, { homeId, variant, defaults });
+    if (refused) setRefusedPile(refused);
+  };
+
+  // A drop while the shelf loaded, onto a shelf that loaded empty.
+  useEffect(() => {
+    if (!noHome || held.files.length === 0 || held.sending) return;
+    removeHeld(heldKey);
+    sayHeld(heldKey, `Make a ${kind} first: the cards need somewhere to go.`);
+  }, [noHome, held.files.length, held.sending, heldKey, kind]);
+
+  /** Start the run over this job, from the setup as it stands now. */
+  const startRun = async (jobId: string) => {
+    const setup = latest.current;
+    if (!setup.variant) throw new Error("Pick a set first: cards are matched in it.");
+    const sent = { homeId: setup.homeId, variantId: setup.variant.variantId, defaults: setup.defaults };
+    const id = await createRun({
+      jobId,
+      homeId: sent.homeId as Id<"collectionContainers">,
+      variantId: sent.variantId,
+      defaults: sent.defaults,
+    });
+    handover.current = { runId: id, ...sent };
+    lastStarted.current = id;
+    // Gone from this tab already: `openRun` would pull the collector back to it.
+    if (mounted.current) openRun(id);
+  };
+
+  /** Answers what the status line should say, and whether the files are up. */
+  const sendPile = async (pile: File[]): Promise<{ sent: boolean; note: string }> => {
+    const isZip = classifyIntake(pile).kind === "zip";
+    // A zip's counts are the archive's, not its photos: the job row speaks for it now.
+    const sentWords = (out: { kind: "zip" | "images"; uploaded: number; failed: number; total: number }) =>
+      out.kind === "zip"
+        ? ""
+        : out.failed === 0
+          ? `Sent ${out.uploaded} photo${out.uploaded === 1 ? "" : "s"}.`
+          : `Sent ${out.uploaded} of ${out.total} photos. ${out.failed} failed.`;
+    const refused = (out: { reason: string; overLimitMb?: number }) => ({
+      sent: false,
+      note:
+        out.overLimitMb !== undefined
+          ? zipOverLimitLine(out.overLimitMb)
+          : `${isZip ? "Couldn't send that zip" : "Couldn't send these photos"}: ${out.reason}.`,
+    });
+    // Scan order is upload order, and a zip is unpacked in natural filename
+    // order, so loose photos go up the same way. Here and not in the hook: the
+    // seed page uploads in the exact order it is handed, backs first on purpose.
+    const ordered = isZip ? pile : inNaturalOrder(pile);
+    const open = latest.current.run;
+    if (open) {
+      const out = await upload(ordered, { source: "web", jobId: open.jobId });
+      return out.ok ? { sent: true, note: sentWords(out) } : refused(out);
     }
+    if (isZip) {
+      // A zip starts its own job, so it can't go after the run.
+      const out = await upload(pile, { source: "web" });
+      if (!out.ok) return refused(out);
+      try {
+        await startRun(out.jobId);
+      } catch (error) {
+        // That batch is already running, and paid for. Left alone it reads cards for
+        // a run that doesn't exist, and a retry would start a second one beside it.
+        await cancelBatch({ jobId: out.jobId }).catch(() => {});
+        throw error;
+      }
+      return { sent: true, note: sentWords(out) };
+    }
+    const session = await startStream({ source: "web" });
+    if (!session.started || !session.jobId) return { sent: false, note: startRefusal(session.reason) };
+    try {
+      await startRun(session.jobId);
+    } catch (error) {
+      // A session with no run would hold an active-batch slot until the idle sweep.
+      void closeStream({ jobId: session.jobId }).catch(() => {});
+      throw error;
+    }
+    const out = await upload(ordered, { source: "web", jobId: session.jobId });
+    return out.ok ? { sent: true, note: sentWords(out) } : refused(out);
+  };
+
+  const sendHeld = useEffectEvent(async () => {
+    const claimed = beginSend(heldKey);
+    if (!claimed) return;
+    const pile = [...claimed];
     const added = new Map(localPhotos);
-    for (const file of chosen) {
+    for (const file of pile) {
       // Only types every browser draws; a HEIC photo keeps its name alone.
       if (!/^image\/(jpeg|png|webp|gif)$/.test(file.type) || added.has(file.name)) continue;
       const url = URL.createObjectURL(file);
@@ -358,51 +577,162 @@ export default function RealAddCardsTab() {
       added.set(file.name, url);
     }
     setLocalPhotos(added);
-    setStatus(isZip ? "Sending your zip…" : "Sending your photos…");
+    say(classifyIntake(pile).kind === "zip" ? "Sending your zip…" : "Sending your photos…");
+    let outcome: { sent: boolean; note: string };
     try {
-      // Scan order is upload order, and a zip is unpacked in natural filename
-      // order, so loose photos go up the same way. Here and not in the hook: the
-      // seed page uploads in the exact order it is handed, backs first on purpose.
-      const out = await upload(isZip ? chosen : inNaturalOrder(chosen), { source: "web", jobId: run?.jobId });
-      if (!out.ok) {
-        setStatus(
-          out.overLimitMb !== undefined
-            ? zipOverLimitLine(out.overLimitMb)
-            : `${isZip ? "Couldn't send that zip" : "Couldn't send these photos"}: ${out.reason}.`,
-        );
-        return;
-      }
-      setFiles([]);
-      if (!run) {
-        const id = await createRun({
-          jobId: out.jobId,
-          homeId: pickedHome as Id<"collectionContainers">,
-          variantId: variant?.variantId,
-          defaults,
-        });
-        openRun(id);
-      }
-      // A zip's counts are the archive's, not its photos: the job row speaks for it now.
-      setStatus(
-        out.kind === "zip"
-          ? ""
-          : out.failed === 0
-            ? `Sent ${out.uploaded} photo${out.uploaded === 1 ? "" : "s"}.`
-            : `Sent ${out.uploaded} of ${out.total} photos. ${out.failed} failed.`,
-      );
+      outcome = await sendPile(pile);
     } catch (error) {
-      setStatus(writeErrorMessage(error));
+      outcome = { sent: false, note: writeErrorMessage(error) };
     }
-  };
-
-  const sendQueued = useEffectEvent(() => {
-    const chosen = queued.current;
-    queued.current = null;
-    if (chosen) void onFiles(chosen);
+    finishSend(heldKey, pile, outcome.sent ? null : latest.current.config);
+    say(outcome.note);
   });
   useEffect(() => {
-    if (!loading) sendQueued();
-  }, [loading]);
+    if (held.files.length === 0 || held.sending || !ready || held.failedConfig === config) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- starts the async send; its one synchronous write is the thumbnails, made from the files as the send claims them
+    void sendHeld();
+  }, [held.files.length, held.sending, held.failedConfig, ready, config]);
+
+  // A late gate answer can take the tray away with focus on one of its buttons (the
+  // tray steps aside in the same commit that makes the screen ready, before any
+  // effect can look). `HeldTray` flags it while the button is still there.
+  const trayFocusGone = useRef(false);
+  const flagTrayFocus = useCallback(() => {
+    trayFocusGone.current = true;
+  }, []);
+  useEffect(() => {
+    if (!trayFocusGone.current) return;
+    trayFocusGone.current = false;
+    const focused = document.activeElement;
+    if (!focused || focused === document.body) statusLine.current?.focus({ preventScroll: true });
+  });
+
+  /* ---------------------------------------------------------------- */
+  /* The handover: from the setup to the run                           */
+  /* ---------------------------------------------------------------- */
+
+  /**
+   * Between `createRun` and the run's first load, a change lands in the setup,
+   * where the run never reads it. Once it loads, write across whatever moved, once.
+   *
+   * This looks like a nicety and is the one thing standing between a mouse and a
+   * wrong price. On "Save as common price", mousedown blurs the Min price field:
+   * the price commits, the hold lifts and the send starts, all before the click
+   * lands. So `createRun` goes out carrying the Min, and the click's clear lands
+   * in the setup. Without this the run keeps the Min, and every copy it saves
+   * carries that floor forever, never following the common price just set.
+   */
+  const reconcileHandover = useEffectEvent((id: Id<"intakeRuns">) => {
+    const sent = handover.current;
+    if (!sent || sent.runId !== id) return;
+    handover.current = null;
+    const refused = (e: unknown) => notify(writeErrorMessage(e));
+    if (pickedHome && pickedHome !== sent.homeId) {
+      setRunHome({ runId: id, homeId: pickedHome as Id<"collectionContainers"> }).catch(refused);
+    }
+    if (variant && variant.variantId !== sent.variantId) {
+      setRunVariant({ runId: id, variantId: variant.variantId }).catch(refused);
+    }
+    if (JSON.stringify(defaults) !== JSON.stringify(sent.defaults)) {
+      setRunDefaults({ runId: id, defaults }).catch(refused);
+    }
+  });
+  const loadedRunId = run?._id;
+  useEffect(() => {
+    if (loadedRunId) reconcileHandover(loadedRunId);
+  }, [loadedRunId]);
+
+  // The URL moved off the run this screen just started (or was never on it): that
+  // handover must not write onto the run if it's reopened later, and what the status
+  // line said belonged to where we were. Unless a send is still going to say more.
+  const noteParam = useRef(runParam);
+  useEffect(() => {
+    if (noteParam.current === runParam) return;
+    noteParam.current = runParam;
+    if (handover.current?.runId === runParam) return;
+    handover.current = null;
+    if (!readHeld(heldKey).sending) sayHeld(heldKey, "");
+  }, [heldKey, runParam]);
+  // A send that finishes after this still says so, once, on the way back.
+  useEffect(() => () => sayHeld(heldKey, ""), [heldKey]);
+
+  /* ---------------------------------------------------------------- */
+  /* Opening Defaults once, on a new set or home with no price         */
+  /* ---------------------------------------------------------------- */
+
+  /**
+   * A pick or home change waiting on its answer. Consumed once, so closing the
+   * panel, clearing the Min price or an Undo never opens it again. An effect, not
+   * a `setPanel` in the pick: `onPick` runs before the Set panel's `close()`, whose
+   * `setPanel(null)` would overwrite it.
+   */
+  const pendingOpen = useRef<{ via: "pick" | "home"; variantId?: string; homeId?: string } | null>(null);
+  const [pickNonce, setPickNonce] = useState(0);
+  const [opened, setOpened] = useState<{ via: "pick" | "home" } | null>(null);
+  /** The warning, for a screen reader, when focus doesn't carry it (the note itself isn't a live region). */
+  const [gateNews, setGateNews] = useState("");
+  // Said once. Left standing, the hold coming back would read it out a second time.
+  if (gateNews && (!lock.locked || panel === null)) setGateNews("");
+  // Clearing the Min can bring the hold back, and nothing else would say so.
+  const minSet = shownDefaults.minPriceCents !== undefined;
+  const [hadMin, setHadMin] = useState(minSet);
+  if (hadMin !== minSet) {
+    setHadMin(minSet);
+    if (hadMin && lock.needsPrice) setGateNews(gateLine);
+  }
+  /**
+   * A set pick that leaves the photos waiting on a price moves focus to Min price,
+   * whose note says so. The tray's region is muted from the pick until then, or it
+   * talks over the field ("2 photos waiting on a price"). A pick that opens nothing
+   * has the tray say it again instead, remounting its words so the region speaks.
+   */
+  const [trayQuiet, setTrayQuiet] = useState(false);
+  const [trayEpoch, setTrayEpoch] = useState(0);
+  const sayTrayAgain = () => {
+    setTrayQuiet(false);
+    setTrayEpoch((n) => n + 1);
+  };
+  const expectOpen = (next: NonNullable<typeof pendingOpen.current>) => {
+    pendingOpen.current = next;
+    setGateNews("");
+    setPickNonce((n) => n + 1);
+  };
+  const settlePendingOpen = useEffectEvent(() => {
+    const pending = pendingOpen.current;
+    if (!pending || loading) return;
+    // An open run answers through the server: wait for its fields to get there.
+    if (pending.variantId !== undefined && pending.variantId !== targetVariantId) return;
+    if (pending.homeId !== undefined && pending.homeId !== targetHome) return;
+    if (!lock.loaded) return;
+    pendingOpen.current = null;
+    if (!lock.needsPrice) {
+      // Nothing opens, so nothing else says what the pick did to the waiting photos.
+      if (trayQuiet) sayTrayAgain();
+      return;
+    }
+    setPanel((current) => current ?? "defaults");
+    setOpened({ via: pending.via });
+  });
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- one edge, consumed once, on the server's answer for a pick; a value derived in render would reopen the panel after every close
+    settlePendingOpen();
+  }, [loading, targetHome, targetVariantId, pickNonce, lock.loaded, lock.needsPrice]);
+  useEffect(() => {
+    if (!opened) return;
+    // A frame on, and after `close()`'s own frame that returns focus to Set.
+    const frame = requestAnimationFrame(() => {
+      const focused = document.activeElement;
+      const free = !focused || focused === document.body || focused === setButton.current;
+      // A home change opens the panel but never moves focus (WCAG 3.2.2).
+      if (opened.via === "pick" && free && priceRef.current) priceRef.current.focus();
+      else setGateNews(latest.current.gateLine);
+      // Either way something has said it: the field and its note, or the status line.
+      setTrayQuiet(false);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [opened]);
+
+  /* ---------------------------------------------------------------- */
 
   const setupBar = (
     <div className="flex flex-wrap items-end gap-4 rounded-lg border border-panel-rule bg-panel p-4 shadow-offset">
@@ -419,28 +749,34 @@ export default function RealAddCardsTab() {
           homes={homes}
           label={kind === "box" ? "Put them in this box" : "Put them in this binder"}
           onChange={(id) => {
+            expectOpen({ via: "home", homeId: id });
             if (!run) return setHomeId(id);
             const name = homes.find((h) => h.id === id)?.name ?? `the ${kind}`;
             setRunHome({ runId: run._id, homeId: id as Id<"collectionContainers"> })
-              .then(() => setStatus(`The next cards you save go into ${name}.`))
-              .catch((e: unknown) => notify(writeErrorMessage(e)));
+              .then(() => say(`The next cards you save go into ${name}.`))
+              .catch((e: unknown) => {
+                if (pendingOpen.current?.homeId === id) pendingOpen.current = null;
+                notify(writeErrorMessage(e));
+              });
           }}
         />
       )}
       <RealSetButton
         open={panel === "set"}
         onOpenChange={(o) => setPanel(o ? "set" : null)}
-        current={
-          run
-            ? variant && variant.variantId === run.variantId
-              ? variant.title
-              : (run.variantName ?? null)
-            : (variant?.title ?? null)
-        }
+        current={targetTitle}
+        buttonRef={setButton}
         onPick={(pick) => {
           setVariant(pick);
-          if (run && pick) {
-            setRunVariant({ runId: run._id, variantId: pick.variantId }).catch((e: unknown) => notify(writeErrorMessage(e)));
+          if (!pick) return;
+          expectOpen({ via: "pick", variantId: pick.variantId });
+          setTrayQuiet(true);
+          if (run) {
+            setRunVariant({ runId: run._id, variantId: pick.variantId }).catch((e: unknown) => {
+              if (pendingOpen.current?.variantId === pick.variantId) pendingOpen.current = null;
+              sayTrayAgain();
+              notify(writeErrorMessage(e));
+            });
           }
         }}
       />
@@ -451,31 +787,119 @@ export default function RealAddCardsTab() {
         aria-controls="intake-defaults-panel"
         onClick={() => setPanel(panel === "defaults" ? null : "defaults")}
       >
-        Defaults: {(run?.defaults ?? defaults).condition ?? usualCondition}
-        {(run?.defaults ?? defaults).grading ? `, ${(run?.defaults ?? defaults).grading?.grader}` : ""}
+        Defaults: {shownDefaults.condition ?? usualCondition}
+        {shownDefaults.grading ? `, ${shownDefaults.grading.grader}` : ""}
+        {homeKind === "box" && shownDefaults.minPriceCents !== undefined ? `, $${centsText(shownDefaults.minPriceCents)}` : ""}
       </NeonButton>
       {run && (
         <NeonButton variant="secondary" outline className="ml-auto" onClick={startNewRun}>
           New run
         </NeonButton>
       )}
+      {/* In the bar, right above the panel: on a phone it would fall below a tall panel otherwise. */}
+      {lock.locked && (
+        <div className="w-full">
+          <ListingGateNote id={gateNoteId} line={gateLine}>
+            <NeonButton
+              size="1"
+              variant="secondary"
+              outline
+              className="max-sm:min-h-11"
+              onClick={() => openMissingField(lock.needsPrice ? "price" : "condition")}
+            >
+              {lock.needsPrice ? "Set a Min price" : "Pick a condition"}
+            </NeonButton>
+          </ListingGateNote>
+        </div>
+      )}
       {panel === "defaults" && (
         <div id="intake-defaults-panel" className="w-full border-t border-rule pt-3">
           <DefaultsFields
+            key={defaultsEpoch}
             value={shownDefaults}
             showPrice={homeKind === "box"}
             priceRef={priceRef}
             conditionRef={conditionRef}
-            onChange={(next) => {
-              if (run) {
-                setRunDefaults({ runId: run._id, defaults: next }).catch((e: unknown) => notify(writeErrorMessage(e)));
-              } else setDefaults(next);
-            }}
+            priceDescribedBy={lock.locked ? gateNoteId : undefined}
+            priceMissing={lock.needsPrice}
+            commonPrice={
+              targetVariantId
+                ? {
+                    variantId: targetVariantId as Id<"selectorOptions">,
+                    title: targetTitle ?? "this set",
+                    syncing: lock.syncing,
+                    minRestorer,
+                    reseed: () => setDefaultsEpoch((n) => n + 1),
+                  }
+                : null
+            }
+            onChange={writeDefaults}
+            onRefused={(e) => notify(writeErrorMessage(e))}
           />
         </div>
       )}
     </div>
   );
+
+  const failed = held.failedConfig === config;
+  // The tray steps aside while they're going up, or about to: the status line has it then.
+  const goingUp = ready && !failed;
+  const waiting = held.sending || goingUp ? [] : held.files;
+  const jobClosed = !!run && !collecting;
+  const trayLine =
+    waiting.length === 0
+      ? ""
+      : jobClosed
+        ? `${pileWords(waiting)} waiting. This run's all in, so start a new run.`
+        : !loading && lock.needsSet
+          ? `${pileWords(waiting)} waiting. Pick a set and they're off.`
+          : lock.setHasNoCards
+            ? "That set has no cards to match against yet. Pick another one."
+            : lock.needsPrice
+              ? `${pileWords(waiting)} waiting on a price.`
+              : lock.needsCondition
+                ? `${pileWords(waiting)} waiting on a condition.`
+                : `${pileWords(waiting)} waiting.`;
+  const tray = (
+    <HeldTray
+      id={trayId}
+      line={trayLine}
+      quiet={trayQuiet}
+      epoch={trayEpoch}
+      alone={jobClosed}
+      onFocusGoing={flagTrayFocus}
+      onRemove={() => {
+        removeHeld(heldKey);
+        setRefusedPile([]);
+        (dropInput.current ?? statusLine.current)?.focus();
+        say("Photos removed.");
+      }}
+      onRetry={
+        failed && ready
+          ? () => {
+              retryHeld(heldKey);
+              // The old failure is still there, and focus would read it out again.
+              say("Trying again…");
+              // The button is about to go with the tray; the status line says how it goes.
+              statusLine.current?.focus({ preventScroll: true });
+            }
+          : undefined
+      }
+    />
+  );
+  // An open run can still mint its code, set or no set.
+  const scannerHold =
+    run || !pickedHome
+      ? undefined
+      : lock.needsSet
+        ? "Pick a set first, then get a code."
+        : lock.setHasNoCards
+          ? "That set has no cards to match against yet. Pick another one, then get a code."
+          : lock.needsPrice
+            ? "Set a price first, then get a code."
+            : lock.needsCondition
+              ? "Pick a condition first, then get a code."
+              : undefined;
 
   return (
     <div data-motion="high" className="space-y-4">
@@ -488,47 +912,36 @@ export default function RealAddCardsTab() {
           </button>
         </p>
       )}
-      {collecting && lock.locked && (
-        <ListingGateNote id={gateNoteId} line={intakeGateLine(homeName, lock)}>
-          <NeonButton
-            size="1"
-            variant="secondary"
-            outline
-            className="max-sm:min-h-11"
-            onClick={() => openMissingField(lock.needsPrice ? "price" : "condition")}
-          >
-            {lock.needsPrice ? "Set a Min price" : "Pick a condition"}
-          </NeonButton>
-        </ListingGateNote>
-      )}
       {collecting && (
         <div ref={dropArea} tabIndex={-1} className="space-y-4 outline-none">
           <Dropzone
             quiet
-            files={files}
-            disabled={uploading}
-            heldBy={lock.locked ? gateNoteId : undefined}
-            heldLabel={heldHeadline(lock)}
-            onFiles={(chosen) => void onFiles(chosen)}
+            files={refusedPile}
+            disabled={held.sending}
+            onFilesWhileDisabled={() => say("Still sending. Drop the rest in a moment.")}
+            inputRef={dropInput}
+            hint={ready || noHome ? undefined : WAITING_HINT}
+            describedBy={[lock.locked ? gateNoteId : null, trayLine ? trayId : null].filter(Boolean).join(" ") || undefined}
+            tray={tray}
+            trayFilled={trayLine !== ""}
+            onFiles={onFiles}
           />
-          {/* A scanner starts the run too, so it waits behind the same price-and-condition hold. */}
-          {(!lock.locked || run) && (
-            <ScannerJoin
-              runId={run?._id ?? null}
-              newRun={
-                pickedHome
-                  ? { homeId: pickedHome as Id<"collectionContainers">, variantId: variant?.variantId, defaults }
-                  : null
-              }
-              kind={kind}
-              loading={loading}
-              onRunStarted={openRun}
-            />
-          )}
+          <ScannerJoin
+            runId={run?._id ?? null}
+            newRun={
+              pickedHome && variant
+                ? { homeId: pickedHome as Id<"collectionContainers">, variantId: variant.variantId, defaults }
+                : null
+            }
+            kind={kind}
+            loading={loading || (!run && !lock.loaded)}
+            heldReason={scannerHold}
+            onRunStarted={openRun}
+          />
         </div>
       )}
       <div>
-        {/* The run's line. The live region is always mounted, so a line landing in it
+        {/* The run's line (NEO-446). The live region is always mounted, so a line landing in it
             is announced; the button stays outside it, so it isn't read out as part of the line. */}
         <div
           className={
@@ -549,14 +962,24 @@ export default function RealAddCardsTab() {
             </NeonButton>
           )}
         </div>
-        <p role="status" aria-live="polite" className="m-0 min-h-5 text-sm text-ink-2">
-          {status}
+        {/* Photos still held when the run closed: no zone to sit in, so the tray stands alone. */}
+        {!collecting && trayLine && <div className="mb-2">{tray}</div>}
+        <p
+          ref={statusLine}
+          tabIndex={-1}
+          role="status"
+          aria-live="polite"
+          aria-label="Add cards status"
+          className={`m-0 min-h-5 rounded-sm text-sm text-ink-2 ${RING}`}
+        >
+          {held.note}
+          {lock.locked && gateNews && <span className="sr-only"> {gateNews}</span>}
         </p>
       </div>
       {run ? (
         !notice?.hideWorkspace && (
           <LocalPhotos.Provider value={localPhotos}>
-            <RunWorkspace run={run} jobOpen={job?.status === "collecting"} />
+            <RunWorkspace run={run} jobOpen={job?.status === "collecting"} sendingPhotos={held.sending} />
           </LocalPhotos.Provider>
         )
       ) : (
@@ -586,10 +1009,88 @@ export function parseMinPrice(text: string): number | undefined | "invalid" {
   return Math.round(Number(t) * 100);
 }
 
-/** The held drop zone's headline (NEO-370): what to do before the photos. */
-function heldHeadline(missing: { needsPrice: boolean; needsCondition: boolean }): string {
-  if (missing.needsPrice && missing.needsCondition) return "Set a price and a condition, then drop your photos";
-  return missing.needsPrice ? "Set a price, then drop your photos" : "Pick a condition, then drop your photos";
+/** "2 photos" or, for the one zip a pile can hold, "1 zip". */
+function pileWords(files: readonly File[]): string {
+  if (classifyIntake([...files]).kind === "zip") return "1 zip";
+  return files.length === 1 ? "1 photo" : `${files.length} photos`;
+}
+
+/**
+ * The photos waiting for the run to be ready, as a row inside the drop zone's
+ * frame. Always mounted (the words are a live region, and speak only a change);
+ * it draws nothing until there is something in it.
+ */
+function HeldTray({
+  id,
+  line,
+  quiet = false,
+  epoch = 0,
+  alone = false,
+  onFocusGoing,
+  onRemove,
+  onRetry,
+}: {
+  id: string;
+  line: string;
+  /** Change the words without saying them: focus is on its way to what explains them. */
+  quiet?: boolean;
+  /** A change remounts the words, so the region says them again. */
+  epoch?: number;
+  /** No drop zone above it: the run's job has closed. */
+  alone?: boolean;
+  /** A button is leaving with focus on it. Called while it is still in the page. */
+  onFocusGoing: () => void;
+  onRemove: () => void;
+  onRetry?: () => void;
+}) {
+  const filled = line !== "";
+  // A ref's cleanup runs before the button leaves the page; by a parent's effect,
+  // focus is already gone and there is no telling it was ever here.
+  const watchFocus = useCallback(
+    (button: HTMLButtonElement | null) => {
+      if (!button) return;
+      return () => {
+        if (document.activeElement === button) onFocusGoing();
+      };
+    },
+    [onFocusGoing],
+  );
+  return (
+    <div
+      // Under a drop zone, the zone draws the frame, so a drag lights the tray with it.
+      className={
+        filled
+          ? `flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-2 text-sm text-ink-2 ${alone ? "rounded-xl border-2 border-dashed border-rule-strong" : ""}`
+          : ""
+      }
+    >
+      {/* The id is on the words, not the region: `aria-describedby` reads a node's own
+          name first, so the zone would be described as "Waiting photos". */}
+      <p role="status" aria-live={quiet ? "off" : "polite"} aria-label="Waiting photos" className="m-0 min-w-0 flex-1">
+        <span key={epoch} id={id}>
+          {line}
+        </span>
+      </p>
+      {filled && onRetry && (
+        <NeonButton
+          ref={watchFocus}
+          size="1"
+          variant="secondary"
+          outline
+          className="max-sm:min-h-11"
+          aria-label="Try again: send the waiting photos"
+          onClick={onRetry}
+        >
+          Try again
+        </NeonButton>
+      )}
+      {filled && (
+        <NeonButton ref={watchFocus} size="1" variant="negative" outline className="max-sm:min-h-11" onClick={onRemove}>
+          Remove photos
+        </NeonButton>
+      )}
+    </div>
+  );
 }
 
 /**
@@ -602,23 +1103,24 @@ function RealSetButton({
   onOpenChange,
   current,
   onPick,
+  buttonRef,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   current: string | null;
   onPick: (pick: VariantPick | null) => void;
+  buttonRef: RefObject<HTMLButtonElement | null>;
 }) {
   const [drill, setDrill] = useState<Drill>(EMPTY_DRILL);
   const state = useDrillState(drill, open);
-  const button = useRef<HTMLButtonElement>(null);
   const close = () => {
     onOpenChange(false);
-    requestAnimationFrame(() => button.current?.focus());
+    requestAnimationFrame(() => buttonRef.current?.focus());
   };
   return (
     <>
       <NeonButton
-        ref={button}
+        ref={buttonRef}
         variant="secondary"
         outline
         aria-expanded={open}
@@ -659,16 +1161,28 @@ const FIELD = `rounded-md border border-field-rule bg-field px-2 py-1 text-sm te
 function DefaultsFields({
   value,
   onChange,
+  onRefused,
   showPrice,
   priceRef,
   conditionRef,
+  priceDescribedBy,
+  priceMissing = false,
+  commonPrice,
 }: {
   value: RunDefaults;
-  onChange: (next: RunDefaults) => void;
+  /** Writes the whole defaults; rejects when the server refuses. */
+  onChange: (next: RunDefaults) => Promise<void>;
+  onRefused: (error: unknown) => void;
   /** A box run: the cards can carry a Min price (NEO-378). */
   showPrice: boolean;
   priceRef?: Ref<HTMLInputElement>;
   conditionRef?: Ref<HTMLSelectElement>;
+  /** The listing note, when it shows: the field is what it's asking for. */
+  priceDescribedBy?: string;
+  /** No Min price and no common price: blank would not sell at all. */
+  priceMissing?: boolean;
+  /** The set the Min price could become the common price of; null with no set known. */
+  commonPrice: CommonPriceTarget | null;
 }) {
   const priceHelpId = useId();
   const priceErrorId = useId();
@@ -677,10 +1191,17 @@ function DefaultsFields({
   const usualCondition = useDefaultCondition();
   // Seeded once, when the panel opens; every change is written straight back.
   const [draft, setDraft] = useState(value);
-  const commit = (patch: Partial<RunDefaults>) => {
-    const next = { ...draft, ...patch };
+  // The freshest draft for a write that lands after an await (the common price
+  // button clears the Min once its own save is back).
+  const latestDraft = useRef(value);
+  const write = (patch: Partial<RunDefaults>) => {
+    const next = { ...latestDraft.current, ...patch };
+    latestDraft.current = next;
     setDraft(next);
-    onChange(next);
+    return onChange(next);
+  };
+  const commit = (patch: Partial<RunDefaults>) => {
+    write(patch).catch(onRefused);
   };
   const g = draft.grading;
   const cost = draft.costCents === undefined ? "" : (draft.costCents / 100).toFixed(2);
@@ -762,7 +1283,7 @@ function DefaultsFields({
               placeholder="Common price"
               value={priceText}
               aria-invalid={priceBad || undefined}
-              aria-describedby={priceBad ? `${priceErrorId} ${priceHelpId}` : priceHelpId}
+              aria-describedby={[priceBad ? priceErrorId : null, priceHelpId, priceDescribedBy].filter(Boolean).join(" ")}
               onChange={(e) => setPriceText(e.target.value)}
               onBlur={commitPrice}
               onKeyDown={(e) => {
@@ -778,7 +1299,26 @@ function DefaultsFields({
               Type a price like 1.50
             </span>
           )}
-          <span id={priceHelpId}>Leave it blank to sell at your common price.</span>
+          <span id={priceHelpId}>
+            {priceMissing && commonPrice
+              ? `Or save it as your common price for ${commonPrice.title}.`
+              : "Leave it blank to sell at your common price."}
+          </span>
+        </div>
+      )}
+      {/* Its own full row, right under the price: "Replace $12.50 common price" doesn't
+          fit a third of the panel. Next in the DOM, so Tab goes Min price, then this. */}
+      {showPrice && commonPrice && (
+        <div className="flex flex-col gap-1 text-xs text-ink-3 sm:col-span-3">
+          <SaveAsCommonPrice
+            target={commonPrice}
+            text={priceText}
+            onSaved={async () => {
+              await write({ minPriceCents: undefined });
+              setPriceText("");
+              setPriceBad(false);
+            }}
+          />
         </div>
       )}
       <label className="flex flex-col gap-1 text-xs text-ink-3">
@@ -794,6 +1334,113 @@ function DefaultsFields({
         <Input bare className={FIELD} defaultValue={draft.notes ?? ""} onBlur={(e) => commit({ notes: e.target.value || undefined })} />
       </label>
     </div>
+  );
+}
+
+/** What "Save as common price" needs from the screen. */
+interface CommonPriceTarget {
+  variantId: Id<"selectorOptions">;
+  title: string;
+  /** The collector syncs, so a new common price can reach cards already listed. */
+  syncing: boolean;
+  /** Called at the press. Answers Undo's first step: put the Min price back where this save took it from. */
+  minRestorer: () => (cents: number) => Promise<void>;
+  /** Undo's last step: `DefaultsFields` seeds its draft once, so draw it afresh. */
+  reseed: () => void;
+}
+
+/**
+ * NEO-452 — the Min price as the collector's own common price for this set. The
+ * value is the field's text at the press, not what was last committed. No dialog
+ * even when it replaces a different price: the label says it, the line beneath
+ * says what moves, and the status line has Undo, as `CommonPrice` does.
+ *
+ * The Min is cleared once the price is saved (Jason, 2026-11-06). A kept Min
+ * would become each copy's own floor, and those copies would never follow a later
+ * common price. Copies this run already saved keep the floor they have. Common
+ * price first, then the clear, so the hold never flashes back.
+ */
+function SaveAsCommonPrice({
+  target,
+  text,
+  onSaved,
+}: {
+  target: CommonPriceTarget;
+  text: string;
+  /** Clears the Min price. */
+  onSaved: () => Promise<void>;
+}) {
+  const { variantId, title, syncing, minRestorer, reseed } = target;
+  const page = usePageApi();
+  const writes = useCollectionActions();
+  const prices = useCommonPrices([variantId]);
+  const common = prices === undefined ? undefined : (prices[variantId] ?? null);
+  const helpId = useId();
+  const whyNotId = useId();
+  const saving = useRef(false);
+  const parsed = parseMinPrice(text);
+  const cents = typeof parsed === "number" ? parsed : null;
+  // Nothing typed replaces nothing, including just after a save has cleared the field.
+  const replaces = typeof common === "number" && cents !== null && Math.round(common * 100) !== cents;
+  const label = replaces ? `Replace $${common.toFixed(2)} common price` : "Save as common price";
+  // Blank, not a price, or still loading what it would replace: a Tab stop that does nothing.
+  const usable = cents !== null && common !== undefined;
+  const whyNot =
+    parsed === undefined
+      ? "Type a Min price first."
+      : parsed === "invalid"
+        ? "Fix the Min price first."
+        : common === undefined
+          ? "Checking your common price…"
+          : null;
+  const save = () => {
+    if (cents === null || !usable || saving.current) return;
+    saving.current = true;
+    const dollars = cents / 100;
+    const restoreMin = minRestorer();
+    void page
+      .run(
+        async () => {
+          const saved = await writes.setCommonPrice(variantId, dollars);
+          await onSaved();
+          return {
+            undo: async () => {
+              await restoreMin(cents);
+              await saved.undo();
+              reseed();
+            },
+          };
+        },
+        () => `Common price for ${title} is $${dollars.toFixed(2)}`,
+      )
+      .finally(() => {
+        saving.current = false;
+      });
+  };
+  return (
+    <>
+      <NeonButton
+        size="1"
+        variant="secondary"
+        outline
+        className="mt-1 self-start max-sm:min-h-11"
+        aria-label={`${label} for ${title}`}
+        aria-disabled={!usable}
+        aria-describedby={whyNot ? `${whyNotId} ${helpId}` : helpId}
+        onClick={save}
+      >
+        {label}
+      </NeonButton>
+      {whyNot && (
+        <span id={whyNotId} className="sr-only">
+          {whyNot}
+        </span>
+      )}
+      <span id={helpId}>
+        Cards from {title} with no price of their own sell at it.
+        {syncing && " That includes any you've already listed, so those change too."}
+      </span>
+    </>
   );
 }
 
@@ -843,8 +1490,18 @@ const LANE_LABEL = {
   saved: "Saved",
 } as const;
 
-function RunWorkspace({ run, jobOpen }: { run: RunSummary; jobOpen: boolean }) {
+function RunWorkspace({
+  run,
+  jobOpen,
+  sendingPhotos,
+}: {
+  run: RunSummary;
+  jobOpen: boolean;
+  /** Photos are on their way up; closing the job now would refuse the rest. */
+  sendingPhotos: boolean;
+}) {
   const { notify, inform } = usePageApi();
+  const doneWhyId = useId();
   const images = useQuery(api.placeholderPipeline.listPlaceholderImages, { jobId: run.jobId });
   const pairs = useQuery(api.placeholderPipeline.listPlaceholderPairs, { jobId: run.jobId });
   const matches = useQuery(api.intakeRuns.listIntakeMatches, { runId: run._id });
@@ -1063,8 +1720,11 @@ function RunWorkspace({ run, jobOpen }: { run: RunSummary; jobOpen: boolean }) {
               size="1"
               variant="secondary"
               outline
+              aria-disabled={sendingPhotos || undefined}
+              aria-describedby={sendingPhotos ? doneWhyId : undefined}
               {...{ [DONE_ATTR]: "" }}
               onClick={() => {
+                if (sendingPhotos) return;
                 markDone(true);
                 void closeStream({ jobId: run.jobId }).catch((e: unknown) => {
                   markDone(false);
@@ -1074,6 +1734,11 @@ function RunWorkspace({ run, jobOpen }: { run: RunSummary; jobOpen: boolean }) {
             >
               Done adding photos
             </NeonButton>
+          )}
+          {jobOpen && sendingPhotos && (
+            <span id={doneWhyId} className="sr-only">
+              Photos are still going up.
+            </span>
           )}
           {/* Always mounted (a live region announces what lands in it), empty until Done. */}
           <span role="status">{done && syncsHere && <SyncStatusLink className="inline-block max-sm:py-2" />}</span>
@@ -1138,9 +1803,9 @@ function RunWorkspace({ run, jobOpen }: { run: RunSummary; jobOpen: boolean }) {
         <Lane label={LANE_LABEL.matching} count={lanes.matching.length}>
           {lanes.matching.map((p) => (
             <li key={`${p.frontIndex}-${p.backIndex}`} className="intake-arrive">
-              <div className="flex items-center gap-2 rounded-md border-2 border-rule bg-surface p-1.5 text-xs">
-                <ScanImage jobId={run.jobId} entryIndex={p.frontIndex} alt={`Front, ${byIndex.get(p.frontIndex)?.originalName ?? "scan"}`} className="h-14 w-auto rounded" />
-                <span className="min-w-0">
+              <div className={`${TILE_ROW} border-rule`}>
+                <ScanImage jobId={run.jobId} entryIndex={p.frontIndex} alt={`Front, ${byIndex.get(p.frontIndex)?.originalName ?? "scan"}`} className="h-14 w-auto shrink-0 rounded" />
+                <span className={TILE_WORDS}>
                   <span className="block truncate font-medium text-ink-2">{p.player ?? "Matching…"}</span>
                   <span className="block text-ink-3">{p.cardNumber ? `#${p.cardNumber}` : "Matching…"}</span>
                 </span>
@@ -1198,9 +1863,9 @@ function RunWorkspace({ run, jobOpen }: { run: RunSummary; jobOpen: boolean }) {
         <Lane label={LANE_LABEL.saved} count={lanes.saved.length}>
           {lanes.saved.map((row) => (
             <li key={row.pairId} className="intake-arrive intake-saved rounded-md">
-              <div className="flex items-center gap-2 rounded-md border-2 border-rule bg-surface p-1.5 text-xs">
-                <ScanImage jobId={run.jobId} entryIndex={row.frontIndex} alt={`Front, ${cardLabel(row.card)}`} className="h-14 w-auto rounded" />
-                <span className="min-w-0">
+              <div className={`${TILE_ROW} border-rule`}>
+                <ScanImage jobId={run.jobId} entryIndex={row.frontIndex} alt={`Front, ${cardLabel(row.card)}`} className="h-14 w-auto shrink-0 rounded" />
+                <span className={TILE_WORDS}>
                   <span className="block truncate font-medium text-ink-2">{cardLabel(row.card)}</span>
                   <span className="block text-neon-green-text">Saved +{row.savedQuantity ?? 1}</span>
                   <PhotoLine row={row} />
@@ -1329,6 +1994,14 @@ const PHOTO_TONES: Record<RunLineKind, string> = {
  */
 const PHOTO_ACTION = `-my-1.5 block py-1.5 max-sm:relative max-sm:-mb-2 max-sm:-mt-5 max-sm:min-w-11 max-sm:pb-2 max-sm:pt-5 text-neon-blue-text underline aria-disabled:cursor-not-allowed aria-disabled:opacity-60 ${RING}`;
 
+/**
+ * A lane tile: picture, then words. A lane can be ~120px wide at 1024px, so the
+ * words drop under the picture rather than push the tile past its column (a
+ * column that overflows is a scroll container a keyboard can't reach).
+ */
+const TILE_ROW = "flex flex-wrap items-center gap-2 rounded-md border-2 bg-surface p-1.5 text-xs";
+const TILE_WORDS = "min-w-0 flex-1 basis-[5.5rem]";
+
 /** Focus has nowhere to be: it fell to the page with something that unmounted. */
 const focusFell = () => !document.activeElement || document.activeElement === document.body;
 
@@ -1432,6 +2105,12 @@ interface RowActions {
   nextVariation: (row: IntakeMatchRow) => void;
 }
 
+/**
+ * Past this many tiles a lane stops growing and scrolls. About what fills its
+ * 34rem; below it the list is plain flow content, with no scroller and no Tab stop.
+ */
+const LANE_SCROLL_AFTER = 6;
+
 function Lane({
   label,
   count,
@@ -1448,6 +2127,12 @@ function Lane({
   action?: ReactNode;
   children: ReactNode;
 }) {
+  const [focused, setFocused] = useState(false);
+  // Never the review lane: it grows, and its tiles take the keyboard themselves.
+  // `focused`: a lane draining past the threshold must not pull the Tab stop from
+  // under whoever is scrolling it, which would drop them to the top of the page.
+  const scrolls = !review && (count > LANE_SCROLL_AFTER || focused);
+  const list = <ul className="m-0 list-none space-y-2 p-0">{children}</ul>;
   return (
     <section
       aria-label={`${label}, ${count}`}
@@ -1464,7 +2149,26 @@ function Lane({
         <span className="text-sm font-bold tabular-nums text-ink-2">{count}</span>
       </header>
       {action}
-      <ul className={`m-0 list-none space-y-2 overflow-auto p-0 ${review ? "" : "max-h-[34rem]"}`}>{children}</ul>
+      {/* A scroller a keyboard can't focus can't be scrolled from the keyboard. Both
+          branches are one div to React, so crossing the threshold never remounts a tile. */}
+      {scrolls ? (
+        <div
+          role="group"
+          aria-label={`${label} list`}
+          tabIndex={0}
+          onFocus={() => setFocused(true)}
+          onBlur={(e) => {
+            // Blur bubbles from every tile; only leaving the lane counts.
+            if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setFocused(false);
+          }}
+          className="max-h-[34rem] overflow-y-auto rounded-sm focus-outline"
+        >
+          {list}
+        </div>
+      ) : (
+        // No overflow of any kind: a scroll container here would need a Tab stop.
+        <div>{list}</div>
+      )}
     </section>
   );
 }
@@ -1473,9 +2177,9 @@ function PhotoTile({ image }: { image: IntakeImage }) {
   const failed = image.status === "failed";
   const local = useContext(LocalPhotos).get(image.originalName);
   return (
-    <div className="flex items-center gap-2 rounded-md border-2 border-rule bg-surface p-1.5 text-xs">
+    <div className={`${TILE_ROW} border-rule`}>
       {local && <img src={local} alt="" className="h-14 w-10 shrink-0 rounded object-cover" />}
-      <span className="min-w-0">
+      <span className={TILE_WORDS}>
         <span className="block truncate font-medium text-ink-2" title={image.originalName}>
           {image.originalName}
         </span>
@@ -1527,12 +2231,12 @@ function LoosePile({
             aria-pressed={live.includes(i.entryIndex)}
             aria-describedby={i.status === "failed" ? `loose-why-${i.entryIndex}` : undefined}
             onClick={() => toggle(i.entryIndex)}
-            className={`flex w-full items-center gap-2 rounded-md border-2 bg-surface p-1.5 text-left text-xs ${live.includes(i.entryIndex) ? "border-neon-green-text" : "border-rule"} ${RING}`}
+            className={`${TILE_ROW} w-full text-left ${live.includes(i.entryIndex) ? "border-neon-green-text" : "border-rule"} ${RING}`}
           >
             {i.status !== "failed" && (
               <ScanImage jobId={jobId} entryIndex={i.entryIndex} alt="" className="h-14 w-auto shrink-0 rounded" />
             )}
-            <span className="min-w-0">
+            <span className={TILE_WORDS}>
               <span className="block truncate font-medium text-ink-2">{i.originalName}</span>
               <span className="block text-ink-3" id={i.status === "failed" ? `loose-why-${i.entryIndex}` : undefined}>
                 {i.status === "failed"
@@ -1577,6 +2281,8 @@ function LoosePile({
             variant="secondary"
             outline
             disabled={live.length !== 2}
+            // Wraps: the lane is narrower than this line at 1024px.
+            className="h-auto min-h-8 max-w-full whitespace-normal py-1 text-left"
             onClick={() => {
               onPair(live[0], live[1]);
               setChosen([]);
@@ -1594,15 +2300,15 @@ function LoosePile({
 function Band({ row }: { row: IntakeMatchRow }) {
   const pct = `${row.confidence}%`;
   if (row.byUser) {
-    return <span className="rounded-full bg-wash-green px-2 py-0.5 text-xs font-semibold text-neon-green-text">You picked</span>;
+    return <span className="inline-block max-w-full rounded-xl bg-wash-green px-2 py-0.5 text-xs font-semibold text-neon-green-text">You picked</span>;
   }
   if (row.band === "matched") {
-    return <span className="rounded-full bg-wash-green px-2 py-0.5 text-xs font-semibold text-neon-green-text">Matched {pct}</span>;
+    return <span className="inline-block max-w-full rounded-xl bg-wash-green px-2 py-0.5 text-xs font-semibold text-neon-green-text">Matched {pct}</span>;
   }
   if (row.band === "check") {
-    return <span className="rounded-full bg-notice-warn-bg px-2 py-0.5 text-xs font-semibold text-notice-warn-ink">Check this {pct}</span>;
+    return <span className="inline-block max-w-full rounded-xl bg-notice-warn-bg px-2 py-0.5 text-xs font-semibold text-notice-warn-ink">Check this {pct}</span>;
   }
-  return <span className="rounded-full border border-neon-pink-text bg-wash-pink px-2 py-0.5 text-xs font-semibold text-ink">No match</span>;
+  return <span className="inline-block max-w-full rounded-xl border border-neon-pink-text bg-wash-pink px-2 py-0.5 text-xs font-semibold text-ink">No match</span>;
 }
 
 function edge(row: IntakeMatchRow, selected: boolean): string {
@@ -1646,12 +2352,13 @@ function ReviewTile({
   const reasonId = useId();
   return (
     <article aria-label={label} className={`rounded-md border-2 bg-surface p-2 ${edge(row, selected)}`}>
-      <div className="flex gap-2">
+      <div className="flex flex-wrap gap-2">
         <div className="flex shrink-0 gap-1">
           <ScanImage jobId={jobId} entryIndex={row.frontIndex} alt="Front scan" className="h-24 w-auto rounded" />
           <ScanImage jobId={jobId} entryIndex={row.backIndex} alt="Back scan" className="h-24 w-auto rounded" />
         </div>
-        <div className="min-w-0 flex-1 space-y-1">
+        {/* Under the scans when the lane is too narrow for both (768 to about 900px). */}
+        <div className="min-w-0 flex-1 basis-[7rem] space-y-1">
           <p className="m-0 truncate text-sm font-semibold text-ink">{cardLabel(row.card)}</p>
           <Band row={row} />
           <p className="m-0 text-xs text-ink-3">{readLine(read)}</p>

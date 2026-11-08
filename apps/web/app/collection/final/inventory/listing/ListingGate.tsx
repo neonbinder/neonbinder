@@ -1,7 +1,12 @@
 import type { ReactNode } from "react";
 import { Link } from "react-router";
 import { TagIcon } from "@heroicons/react/24/outline";
-import { listingReadiness, type ListingReadiness } from "@/convex/lib/listingReadiness";
+import {
+  intakeRunReadiness,
+  listingReadiness,
+  type IntakeRunReadiness,
+  type ListingReadiness,
+} from "@/convex/lib/listingReadiness";
 import { useListingGate } from "../../data/store";
 import type { ContainerId, VariantId } from "../../data/types";
 import { ParamLink } from "../../mode";
@@ -52,6 +57,76 @@ export function useListingLock(input: {
   return { ...readiness, locked: !readiness.ready, syncing: gate.syncing };
 }
 
+export interface IntakeRunLock extends IntakeRunReadiness {
+  /** The listing hold: a price or a condition is missing. A missing set is `needsSet`. */
+  locked: boolean;
+  /** The collector is set up for syncing at all; false while loading. */
+  syncing: boolean;
+  /** The gate has answered for this home and set. */
+  loaded: boolean;
+  /** The picked set holds no card to match against. The server refuses a run on it. */
+  setHasNoCards: boolean;
+}
+
+/**
+ * NEO-452 — the same answer for an Add cards run, by `intakeRunReadiness`. Unlike
+ * `useListingLock`, which reads as open while the gate loads, this says `loaded`
+ * and is never `ready` until then: Add cards sends photos by itself the moment it
+ * is ready, so "not known yet" must not look like "nothing is missing".
+ *
+ * A set with no cards is never ready, and asks for nothing else: a price wouldn't
+ * get those photos anywhere, so the next move is another set.
+ */
+export function useIntakeRunLock(input: {
+  homeId: ContainerId | null;
+  variantId: VariantId | null;
+  condition: string | undefined;
+  ownPriceCents?: number;
+  graded?: boolean;
+}): IntakeRunLock {
+  const gate = useListingGate(input.homeId, input.variantId);
+  const hasVariant = input.variantId !== null;
+  if (!gate) {
+    return {
+      ready: false,
+      needsSet: !hasVariant,
+      needsPrice: false,
+      needsCondition: false,
+      locked: false,
+      syncing: false,
+      loaded: false,
+      setHasNoCards: false,
+    };
+  }
+  if (gate.variantHasCards === false) {
+    return {
+      ready: false,
+      needsSet: false,
+      needsPrice: false,
+      needsCondition: false,
+      locked: false,
+      syncing: gate.syncing,
+      loaded: true,
+      setHasNoCards: true,
+    };
+  }
+  const readiness = intakeRunReadiness({
+    applies: gate.applies,
+    graded: input.graded,
+    condition: input.condition,
+    ownPriceCents: input.ownPriceCents,
+    commonPriceCents: gate.commonPriceCents,
+    hasVariant,
+  });
+  return {
+    ...readiness,
+    locked: readiness.needsPrice || readiness.needsCondition,
+    syncing: gate.syncing,
+    loaded: true,
+    setHasNoCards: false,
+  };
+}
+
 /** The note's lead: what is missing, as a shout. */
 function lead(missing: Pick<ListingReadiness, "needsPrice" | "needsCondition">): string {
   if (missing.needsPrice && missing.needsCondition) return "Price and condition first!";
@@ -99,17 +174,27 @@ export function ChecklistGateText({
   );
 }
 
-/** Why photo intake's upload is held, and where to fix it. */
-export function intakeGateLine(homeName: string, missing: Pick<ListingReadiness, "needsPrice" | "needsCondition">): string {
-  const fixes = [
-    missing.needsPrice ? "give these cards a price in Defaults (or pick a set with a common price)" : null,
-    missing.needsCondition ? "pick a condition in Defaults" : null,
-  ].filter(Boolean);
-  return `${lead(missing)} ${homeName} sells on your marketplaces, so ${fixes.join(" and ")} before you send photos.`;
+/**
+ * Why photo intake is held, and where to fix it. While the run still takes
+ * photos they go up once it's fixed; once it doesn't, the same price is still
+ * what its saves need.
+ */
+export function intakeGateLine(
+  homeName: string,
+  setName: string | null,
+  missing: Pick<ListingReadiness, "needsPrice" | "needsCondition">,
+  { collecting = true }: { collecting?: boolean } = {},
+): string {
+  const sells = missing.needsPrice
+    ? `${homeName} sells on your marketplaces and ${setName ?? "this set"} has no price yet.`
+    : `${homeName} sells on your marketplaces.`;
+  const what = missing.needsPrice && missing.needsCondition ? "Set both" : missing.needsPrice ? "Set one" : "Pick one";
+  const then = collecting ? "and your photos go up." : "before you save these cards.";
+  return `${lead(missing)} ${sells} ${what} in Defaults ${then}`;
 }
 
 /**
- * The held add's reason, beside the control it holds (that control points
+ * The held add's reason, near the control it concerns (that control points
  * here with `aria-describedby`). Text, with a tag icon for the eye only;
  * `children` is the fix when it sits right here (a button that opens the field).
  */

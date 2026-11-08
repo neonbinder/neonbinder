@@ -25,9 +25,17 @@
 // matches an element whose whole text is the quoted name, which the sentence's
 // paragraph is not.
 //
-// R7: writes only the account's own run (nothing is saved, no set or card is
-// touched). The run is a finished one (the zip's job is not an open upload
-// session), so it holds no active-batch slot.
+// NEO-452: a drop waits in the browser until the run has a set, so the run is set
+// up first (Main, then the seed's 2024 Topps Chrome Base through `pickIntakeSet`)
+// and the zip then goes up at once. The one photo that gets in is a lone side and
+// never reaches Matching, so the set is only the run's home, never read against.
+//
+// R7/R7a: reads the seed's 2024 Topps Chrome Base only to pick it as the run's set
+// (SET-REGISTRY.md, read-only consumers) and writes only the account's own run
+// (nothing is saved, no set or card is touched). The run is a finished one (the
+// zip's job is not an open upload session), so it holds no active-batch slot.
+//
+// R3: the set pick and the drop zone through `support/collection.ts`.
 //
 // R5: every wait is the normal 7 s (NEO-446: measured on a warm dev service, upload
 // 0.8-1.3 s, extract 0.3-0.8 s, read 2.8 s). The preprocess legs are wrapped in
@@ -35,6 +43,7 @@
 // instance comes back to the owner with that number, never a longer timeout.
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { intakeDropzone, pickIntakeSet } from "../../support/collection";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 
 const ZIP = path.join(
@@ -61,10 +70,12 @@ test(
     await signIn("/collection?tab=add");
     await expect(page.getByRole("heading", { level: 1, name: "Collection" })).toBeVisible({ timeout: LAUNCH_GATE });
     await page.getByRole("combobox", { name: "Put them in this binder" }).selectOption({ label: "Main" });
+    // NEO-452: the run needs its set before a drop goes up.
+    await pickIntakeSet(page);
 
     // --- Drop the zip: the run starts and lands on the URL ----------------------
     await test.step("upload: zip dropped to ?run= in the URL", async () => {
-      await page.getByLabel("Drag your card photos here, or browse your files").setInputFiles(ZIP);
+      await intakeDropzone(page).setInputFiles(ZIP);
       await expect(page).toHaveURL(/[?&]run=/);
     });
 

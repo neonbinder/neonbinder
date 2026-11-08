@@ -137,6 +137,27 @@ async function startRun(
   return runId;
 }
 
+/**
+ * A run from before NEO-452: no set, inserted directly because `createIntakeRun`
+ * no longer takes one. The sync is queued as the create would have.
+ */
+async function startLegacyRun(w: Awaited<ReturnType<typeof world>>) {
+  const runId = await w.t.run(async (ctx) => {
+    const id = await ctx.db.insert("intakeRuns", {
+      userId: ME.subject,
+      jobId: JOB,
+      homeId: w.boxId,
+      defaults: { condition: "Near Mint", costCents: 10, location: "Shelf 2" },
+      createdAt: 0,
+      lastActivityAt: 0,
+    });
+    await noteIntakePairsChanged(ctx, JOB);
+    return id;
+  });
+  await drainScheduled(w.t);
+  return runId;
+}
+
 const byPair = async (
   w: Awaited<ReturnType<typeof world>>,
   runId: Id<"intakeRuns">,
@@ -199,9 +220,10 @@ describe("matching a run's pairs", () => {
     expect(rows.get(w.pairIds[0])!.haveHere).toBe(4);
   });
 
-  test("with no variant nothing is matched until one is pinned", async () => {
+  test("an old run with no variant still opens: nothing is matched until one is pinned", async () => {
     const w = await world([{ number: "1", players: ["Doc Gooden"] }]);
-    const runId = await startRun(w);
+    const runId = await startLegacyRun(w);
+    expect(await w.me.query(api.intakeRuns.getIntakeRun, { runId })).toMatchObject({ homeKind: "box" });
     let row = (await byPair(w, runId)).get(w.pairIds[0])!;
     expect(row).toMatchObject({ band: "none", reason: "noVariant" });
 
@@ -215,7 +237,13 @@ describe("matching a run's pairs", () => {
     expect(row).toMatchObject({ cardId: w.fx.gooden1, band: "matched" });
     const run = await w.me.query(api.intakeRuns.getIntakeRun, { runId });
     expect(run).toMatchObject({ variantName: "Base", variantPinned: true, homeKind: "box" });
-    // Free text defaults are trimmed.
+    expect(run?.defaults).toMatchObject({ condition: "Near Mint", costCents: 10, location: "Shelf 2" });
+  });
+
+  test("free text defaults are trimmed when a run starts", async () => {
+    const w = await world([{ number: "1", players: ["Doc Gooden"] }]);
+    const runId = await startRun(w, w.fx.baseId);
+    const run = await w.me.query(api.intakeRuns.getIntakeRun, { runId });
     expect(run?.defaults).toMatchObject({ condition: "Near Mint", costCents: 10, location: "Shelf 2" });
   });
 
@@ -341,7 +369,11 @@ describe("ownership", () => {
       await ctx.db.insert("collectionContainers", { ownerId: ME.subject, kind: "binder", name: "Rookies", lastUpdated: 0 }),
       await ctx.db.insert("collectionContainers", { ownerId: ME.subject, kind: "binder", name: "Stars", lastUpdated: 0 }),
     ]);
-    const runId = await w.me.mutation(api.intakeRuns.createIntakeRun, { jobId: JOB, homeId: binder });
+    const runId = await w.me.mutation(api.intakeRuns.createIntakeRun, {
+      jobId: JOB,
+      homeId: binder,
+      variantId: w.fx.baseId,
+    });
     await expect(
       w.me.mutation(api.intakeRuns.setIntakeRunHome, { runId, homeId: w.boxId }),
     ).rejects.toThrow(/Pick a binder/);
@@ -364,6 +396,7 @@ describe("ownership", () => {
       w.me.mutation(api.intakeRuns.createIntakeRun, {
         jobId: JOB,
         homeId: w.boxId,
+        variantId: w.fx.baseId,
         defaults: { minPriceCents: -5 },
       }),
     ).rejects.toThrow(/Minimum price/);
@@ -582,9 +615,9 @@ describe("the collector's answers (NEO-382)", () => {
     expect(row.card).toMatchObject({ _id: w.fx.gooden1, cardNumber: "1" });
   });
 
-  test("the search: no variant finds nothing, an empty search lists the variant, at most 8", async () => {
+  test("the search: an old run with no variant finds nothing, an empty search lists the variant, at most 8", async () => {
     const w = await world([{ number: "1" }, { number: "77", players: ["Nobody Known"] }]);
-    const bare = await startRun(w);
+    const bare = await startLegacyRun(w);
     expect(await w.me.query(api.intakeRuns.searchIntakeCards, { runId: bare, q: "1" })).toEqual([]);
     expect((await byPair(w, bare)).get(w.pairIds[1])!.card).toBeNull();
 
@@ -1637,6 +1670,130 @@ describe("the set builder reset", () => {
       ...(await ctx.db.query("intakeRuns").collect()),
     ]);
     expect(left).toEqual([]);
+  });
+});
+
+describe("NEO-452 — every new run starts with a set", () => {
+  const runs = (w: Awaited<ReturnType<typeof world>>) =>
+    w.t.run((ctx) => ctx.db.query("intakeRuns").collect());
+  const refusal = (promise: Promise<unknown>) =>
+    promise.then(
+      () => {
+        throw new Error("expected a refusal");
+      },
+      (error: { data?: unknown }) => error.data,
+    );
+
+  test("a new run with no variant is refused in words the screen can show, writing nothing", async () => {
+    const w = await world([{ number: "1" }]);
+    expect(
+      await refusal(w.me.mutation(api.intakeRuns.createIntakeRun, { jobId: JOB, homeId: w.boxId })),
+    ).toEqual({ code: "COLLECTION_INVALID", message: "Pick a set first: cards are matched in it." });
+    expect(await runs(w)).toEqual([]);
+  });
+
+  test("a binder run is refused with no variant just the same", async () => {
+    const w = await world([{ number: "1" }]);
+    const binder = await w.t.run((ctx) =>
+      ctx.db.insert("collectionContainers", { ownerId: ME.subject, kind: "binder", name: "Rookies", lastUpdated: 0 }),
+    );
+    expect(await refusal(w.me.mutation(api.intakeRuns.createIntakeRun, { jobId: JOB, homeId: binder }))).toMatchObject({
+      message: "Pick a set first: cards are matched in it.",
+    });
+  });
+
+  test("a Min-priced run with no set is refused on the set, not on a price it can't look up", async () => {
+    const w = await world([{ number: "1" }]);
+    await w.t.run((ctx) =>
+      ctx.db.insert("marketplaceListingStates", {
+        ownerId: ME.subject,
+        platform: "bsc",
+        listingStartedAt: 1,
+        lastUpdated: 0,
+      }),
+    );
+    expect(
+      await refusal(
+        w.me.mutation(api.intakeRuns.createIntakeRun, {
+          jobId: JOB,
+          homeId: w.boxId,
+          defaults: { condition: "Near Mint", minPriceCents: 75 },
+        }),
+      ),
+    ).toMatchObject({ message: "Pick a set first: cards are matched in it." });
+    expect(await runs(w)).toEqual([]);
+  });
+
+  test("a retry on a job that already has its run returns that run, even from a tab that sends no set", async () => {
+    const w = await world([{ number: "1" }]);
+    const first = await startRun(w, w.fx.baseId);
+    const retry = await w.me.mutation(api.intakeRuns.createIntakeRun, { jobId: JOB, homeId: w.boxId });
+    expect(retry).toBe(first);
+    expect(await runs(w)).toHaveLength(1);
+  });
+
+  test("an old run with no set returns to a retry too, and stays without one", async () => {
+    const w = await world([{ number: "1" }]);
+    const old = await startLegacyRun(w);
+    expect(await w.me.mutation(api.intakeRuns.createIntakeRun, { jobId: JOB, homeId: w.boxId })).toBe(old);
+    expect((await runs(w))[0].variantId).toBeUndefined();
+  });
+
+  test("a retry naming a set that has since lost its cards still gets its run back", async () => {
+    const w = await world([{ number: "1" }]);
+    const first = await startRun(w, w.fx.baseId);
+    await w.t.run(async (ctx) => {
+      for (const card of await ctx.db.query("cardChecklist").collect()) await ctx.db.delete(card._id);
+    });
+    const retry = await w.me.mutation(api.intakeRuns.createIntakeRun, {
+      jobId: JOB,
+      homeId: w.boxId,
+      variantId: w.fx.baseId,
+    });
+    expect(retry).toBe(first);
+    expect(await runs(w)).toHaveLength(1);
+    // A retry naming a set that left the catalog altogether gets it too.
+    await w.t.run((ctx) => ctx.db.delete(w.fx.baseId));
+    expect(
+      await w.me.mutation(api.intakeRuns.createIntakeRun, { jobId: JOB, homeId: w.boxId, variantId: w.fx.baseId }),
+    ).toBe(first);
+  });
+
+  test("a set with no cards is refused in readable words", async () => {
+    const w = await world([{ number: "1" }]);
+    expect(
+      await refusal(
+        w.me.mutation(api.intakeRuns.createIntakeRun, { jobId: JOB, homeId: w.boxId, variantId: w.fx.setId }),
+      ),
+    ).toEqual({
+      code: "COLLECTION_INVALID",
+      message: "That set has no cards to match against yet. Pick another one.",
+    });
+    expect(await runs(w)).toEqual([]);
+  });
+
+  test("a set that left the catalog while the tab sat open is refused in readable words", async () => {
+    const w = await world([{ number: "1" }]);
+    await w.t.run((ctx) => ctx.db.delete(w.fx.baseId));
+    expect(
+      await refusal(
+        w.me.mutation(api.intakeRuns.createIntakeRun, { jobId: JOB, homeId: w.boxId, variantId: w.fx.baseId }),
+      ),
+    ).toEqual({
+      code: "COLLECTION_NOT_FOUND",
+      message: "That set isn't in the catalog any more. Pick another one.",
+    });
+    expect(await runs(w)).toEqual([]);
+  });
+
+  test("pinning a set on an old run with no cards is refused in the same words", async () => {
+    const w = await world([{ number: "1" }]);
+    const old = await startLegacyRun(w);
+    expect(
+      await refusal(
+        w.me.mutation(api.intakeRuns.setIntakeRunVariant, { runId: old, variantId: w.fx.setId, pinned: true }),
+      ),
+    ).toMatchObject({ message: "That set has no cards to match against yet. Pick another one." });
   });
 });
 

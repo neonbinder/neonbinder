@@ -37,6 +37,8 @@ const BACK: ImageFields = { status: "done", side: "back", players: ["Doc Gooden"
 async function world(images: ImageFields[], job: Partial<Doc<"placeholderJobs">> = {}) {
   const t = convexTest(schema, modules);
   harnesses.push(t);
+  // A run starts with its set picked (NEO-452).
+  const fx = await seedCollectionCatalog(t);
   const homeId = await t.run(async (ctx) => {
     await ctx.db.insert("placeholderJobs", {
       jobId: JOB,
@@ -68,7 +70,7 @@ async function world(images: ImageFields[], job: Partial<Doc<"placeholderJobs">>
     });
   });
   const me = t.withIdentity(ME);
-  const runId = await me.mutation(api.intakeRuns.createIntakeRun, { jobId: JOB, homeId });
+  const runId = await me.mutation(api.intakeRuns.createIntakeRun, { jobId: JOB, homeId, variantId: fx.baseId });
   await drainScheduled(t);
   const aside = (entryIndex: number, setAside = true) =>
     me.mutation(api.intakeRuns.setIntakePhotoAside, { runId, entryIndex, setAside });
