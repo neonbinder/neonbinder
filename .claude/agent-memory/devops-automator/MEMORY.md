@@ -8,4 +8,5 @@
 - [Reference convex management api](reference_convex_management_api.md) — Convex Management REST API — delete deployments, required token type, endpoint, and limitations of existing deploy keys
 - [Reference terraform gcs backend prefix required](reference_terraform_gcs_backend_prefix_required.md) — terraform init needs -backend-config="prefix=terraform/state/<env>" — a bare init reads an empty root prefix and the plan shows dozens of phantom "to add" resources
 - [Stale selectorSyncStatus breaks seed on reused deployments](seed-dev-stale-sync-status.md) — reset never drains it; clear via empty convex import
+- [Deps-batch gotchas](patterns_deps_batch_gotchas.md) — truncated Dependabot changelogs, preprocess gate on macOS via uv + torch swap, convex-test Date pinning breaks fake timers
 - [Patterns convex run long action budget](patterns_convex_run_long_action_budget.md) — `npx convex run` waits ~5 min then exits 1 with a bare Error while the action continues; page-everything actions need a time budget + resume and a looping caller; reading a deployment through internal functions instead of `convex export`
