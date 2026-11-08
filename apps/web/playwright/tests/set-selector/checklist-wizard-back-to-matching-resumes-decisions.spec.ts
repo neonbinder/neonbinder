@@ -3,6 +3,7 @@ import type { Locator } from "@playwright/test";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { setBuilderReady } from "../../support/set-builder";
 import {
+  answerPlayerAsNew,
   advanceToSave,
   cancelAndDiscard,
   discardResumedReviewBatch,
@@ -33,7 +34,7 @@ test(
       // by a career team the walk skipped.
       await walkToPlayerRow(page, { readyToCreate: true });
       const playerName = ((await wizard.getByRole("heading", { level: 3 }).textContent()) ?? "").trim();
-      await wizard.getByRole("button", { name: "Add as New Player" }).click();
+      await answerPlayerAsNew(page);
       // Read the create back off its own row ("Already decided: Added as new"),
       // never off the "Decided (N)" history: with the reference catalogue loaded
       // this create can be the batch's last name, the wizard has then walked on

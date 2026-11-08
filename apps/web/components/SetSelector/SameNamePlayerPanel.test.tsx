@@ -16,6 +16,7 @@ import SameNamePlayerPanel, {
   ACTIVE_IN_SET_YEAR_LABEL,
   candidateDetail,
   candidateLinkLabel,
+  candidateOtherSport,
   pickStepIntro,
   type SameNameCandidate,
 } from "./SameNamePlayerPanel";
@@ -254,5 +255,45 @@ describe("pickStepIntro", () => {
     expect(pickStepIntro(8, true)).toBe(
       "More than 8 answer to that name — here are the first 8. Can't see them? Link to Existing searches them all.",
     );
+  });
+});
+
+describe("NEO-424 — a candidate from another sport says which", () => {
+  const shinoda: SameNameCandidate = {
+    playerId: "p-shinoda",
+    name: "Mike Shinoda",
+    birthYear: 1977,
+    careerSummary: "",
+    sportValue: "Non Sport",
+  };
+
+  it("names the sport only when it is not the set's", () => {
+    expect(candidateOtherSport(shinoda, "Baseball")).toBe("Non Sport");
+    expect(candidateOtherSport(shinoda, " non sport ")).toBeNull();
+    expect(candidateOtherSport(shinoda, undefined)).toBeNull();
+    expect(candidateOtherSport({ ...shinoda, sportValue: undefined }, "Baseball")).toBeNull();
+  });
+
+  it("puts it in the detail line and the accessible name, ahead of the biography", () => {
+    expect(candidateDetail(shinoda, "Baseball")).toBe("Non Sport · b. 1977");
+    expect(candidateDetail(shinoda)).toBe("b. 1977");
+    expect(candidateLinkLabel(shinoda, 0, 2, "Baseball")).toBe(
+      "Link to Mike Shinoda, Non Sport · b. 1977",
+    );
+  });
+
+  it("renders the sport on the row's secondary line", () => {
+    render(
+      <SameNamePlayerPanel
+        candidates={[shinoda, { ...shinoda, playerId: "p-other", sportValue: "Baseball", birthYear: 1990 }]}
+        setSportValue="Baseball"
+        onPick={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("Non Sport · b. 1977")).toBeTruthy();
+    expect(screen.getByText("b. 1990")).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Link to Mike Shinoda, Non Sport · b. 1977" }),
+    ).toBeTruthy();
   });
 });
