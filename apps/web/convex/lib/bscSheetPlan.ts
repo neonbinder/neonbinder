@@ -19,8 +19,9 @@
  * drops to 0 comes back as a blank template with a NEW productId). A row is
  * matched to an NB card ONLY through the card's own `platformData.bsc.ref`
  * (product invariant: never by name or number). The card number is a check,
- * not a key: a ref whose sheet `cardNo` disagrees with NB's number is a
- * conflict for the operator. Every guard is a problem and leaves that BSC row
+ * not a key: a ref whose sheet `cardNo` disagrees with NB's number, even once
+ * a prefix on the variant's chain is off the front (NEO-458), is a conflict
+ * for the operator. Every guard is a problem and leaves that BSC row
  * untouched; the worst outcome is a card that does not list, never the wrong
  * card listed.
  *
@@ -28,6 +29,7 @@
  * that with a 500 that was half applied (NEO-370 spike).
  */
 import type { Id } from "../_generated/dataModel";
+import { stripNbCardNumberPrefix } from "../cardNumberPrefix";
 import {
   bscConditionFor,
   type BscEra,
@@ -358,6 +360,12 @@ export interface PlanBscSheetInput {
    * Applied only to a "set" row that still shows BSC's image on that side.
    */
   photoKeys?: ReadonlyMap<string, BscPhotoKeys>;
+  /**
+   * Every `cardNumberPrefix` on the variant's chain (`variantSyncInput`), not
+   * only the deepest: a parallel's cards are copied from its insert, so NB's
+   * number can carry the insert's prefix while BSC's carries the parallel's.
+   */
+  cardNumberPrefixes?: readonly string[];
 }
 
 export interface BscSheetPlanCounts {
@@ -386,13 +394,38 @@ export function photoKeyFor(bscCardId: string, condition: string): string {
   return `${bscCardId}|${condition}`;
 }
 
-function sameCardNumber(sheetCardNo: string, nbCardNumber: string): boolean {
-  return sheetCardNo.trim().toUpperCase() === nbCardNumber.trim().toUpperCase();
+/**
+ * A number as written, and with each prefix in force taken off the front. A
+ * prefix never splits a run of digits: prefix "1" leaves "12" as 12, never 2,
+ * and "T2" leaves "T21" as T21, never 1.
+ */
+function cardNumberSpellings(cardNumber: string, prefixes: readonly string[]): Set<string> {
+  const spellings = new Set([cardNumber.trim().toUpperCase()]);
+  for (const prefix of prefixes) {
+    const stripped = stripNbCardNumberPrefix(cardNumber, prefix);
+    if (/\d$/.test(prefix.trim()) && /^\d/.test(stripped)) continue;
+    spellings.add(stripped.toUpperCase());
+  }
+  return spellings;
+}
+
+/**
+ * The number check: trimmed and case-folded, and equal once a prefix on the
+ * variant's chain is off the front of either side. Nothing looser: this is
+ * what stops a wrong card listing.
+ */
+function sameCardNumber(sheetCardNo: string, nbCardNumber: string, prefixes: readonly string[]): boolean {
+  const nb = cardNumberSpellings(nbCardNumber, prefixes);
+  for (const spelling of cardNumberSpellings(sheetCardNo, prefixes)) {
+    if (nb.has(spelling)) return true;
+  }
+  return false;
 }
 
 export function planBscSheet(input: PlanBscSheetInput): BscSheetPlan {
   const problems = new ProblemList();
   const conditionsRead = new Set(input.conditionsRead);
+  const cardNumberPrefixes = input.cardNumberPrefixes ?? [];
 
   // Sheet rows by (card.id, condition); a key seen twice is blocked whole.
   const narrowed = isNarrowedSheet(input.sheetRows) ? input.sheetRows : narrowBscSheet(input.sheetRows);
@@ -461,7 +494,7 @@ export function planBscSheet(input: PlanBscSheetInput): BscSheetPlan {
       continue;
     }
     const anyRow = firstRowByRef.get(ref);
-    if (anyRow && !sameCardNumber(anyRow.cardNo, card.cardNumber)) {
+    if (anyRow && !sameCardNumber(anyRow.cardNo, card.cardNumber, cardNumberPrefixes)) {
       blockedRefs.add(ref);
       problems.add({
         reason: "card_number_conflict",

@@ -608,7 +608,7 @@ export function useListing(): ListingExtension | undefined {
 }
 
 /** A store that lists nowhere (the demo, a test's): never syncing, never gated. */
-export const NO_LISTING_GATE: ListingGateView = { syncing: false, applies: false, commonPriceCents: null };
+export const NO_LISTING_GATE: ListingGateView = { syncing: false, applies: false, commonPriceCents: null, variantHasCards: true };
 const noGate = (): ListingGateView => NO_LISTING_GATE;
 
 /**

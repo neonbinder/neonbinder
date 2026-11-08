@@ -79,7 +79,7 @@ test(
     // button or a press that did nothing cannot produce. The status line's
     // "Trying ... again." is not asserted here: it stays up for 10 s, so the
     // previous round's would satisfy it. Three presses against a cap of three
-    // reach "Scan it again" only if each one was taken.
+    // reach "Send a fresh one" only if each one was taken.
     for (let n = 2; n <= 3; n++) {
       const again = pairing.getByRole("button", { name: `Try again: ${name}` });
       await again.focus();
@@ -87,7 +87,7 @@ test(
       await expect(pairingHeading).toBeFocused();
       // The photo is out of the pile by now, so the last round's "Couldn't read it"
       // is gone and this wait is for this round's.
-      await expect(pairing.getByText(n < 3 ? "Couldn't read it" : "Couldn't read it. Scan it again.", { exact: true })).toBeVisible({
+      await expect(pairing.getByText(n < 3 ? "Couldn't read it" : "Couldn't read it. Send a fresh one.", { exact: true })).toBeVisible({
         timeout: FAST_READ,
       });
     }
@@ -96,7 +96,7 @@ test(
 
     // Close the run; a closed run offers no Try again and says what to do instead.
     await page.getByRole("button", { name: "Done adding photos" }).click();
-    await expect(pairing.getByText("Couldn't read it. Scan it again.", { exact: true })).toBeVisible();
+    await expect(pairing.getByText("Couldn't read it. Send a fresh one.", { exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: "Done adding photos" })).toHaveCount(0);
     await expectAccessible(page, { label: "Add cards, a closed run with a photo that was never read" });
 
@@ -117,7 +117,7 @@ test(
     await expect(page).toHaveURL(runUrl);
     await expect(tabs.getByRole("link", { name: "Add cards", exact: true })).toHaveAttribute("aria-current", "page");
     await expect(myCards).not.toHaveAttribute("aria-current", "page");
-    await expect(pairing.getByText("Couldn't read it. Scan it again.", { exact: true })).toBeVisible();
+    await expect(pairing.getByText("Couldn't read it. Send a fresh one.", { exact: true })).toBeVisible();
 
     // Leave: the same link, answered yes, moves to My Cards.
     page.once("dialog", (dialog) => {
@@ -133,6 +133,6 @@ test(
     // the guard belongs to the run's screen).
     await page.goBack();
     await expect(page).toHaveURL(runUrl);
-    await expect(pairing.getByText("Couldn't read it. Scan it again.", { exact: true })).toBeVisible();
+    await expect(pairing.getByText("Couldn't read it. Send a fresh one.", { exact: true })).toBeVisible();
   },
 );

@@ -28,7 +28,7 @@ const PublicCollectionDemo = lazy(loadDemo);
 /** Fetch the demo early when a visitor is about to open it. */
 function warmDemo() {
   void loadDemo().catch(() => {
-    // A failed warm-up is retried by lazy() when the demo actually opens.
+    // A failed warm-up is harmless here: if the demo then fails to open, the app boundary reloads the page (NEO-434).
   });
 }
 

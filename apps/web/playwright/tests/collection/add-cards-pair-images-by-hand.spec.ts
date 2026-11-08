@@ -16,7 +16,7 @@
 // The run has no set picked, so a pair, once matched, lands in Needs you as "No
 // match": this spec proves the button and the move, not the match. The seed
 // uploads no scan, so each tile shows the image's fallback text ahead of the file
-// name, which is why a tile's name match is not anchored to its start.
+// name, which is why a tile's name match is not anchored to the file name.
 //
 // What is not asserted: that the FIRST photo picked is the front. A pair's
 // sides are only named while it sits in Matching (its front scan's alt text),
@@ -38,8 +38,10 @@ test(
     const pairing = page.getByRole("region", { name: /^Pairing, \d+$/ });
     // The pile's button, whichever of its three labels it wears.
     const pairButton = pairing.getByRole("button", { name: /^(Select 2 to Pair|Select Partner|Pair Images)$/ });
+    // The photo's tile, not its "Set aside loose-N.jpg" (NEO-446) or "Try again:" button,
+    // which name the photo too and count as not pressed.
     const photo = (n: number, pressed?: boolean) =>
-      pairing.getByRole("button", { name: new RegExp(`loose-${n}\\.jpg`), pressed });
+      pairing.getByRole("button", { name: new RegExp(`^(?!Set aside |Try again: ).*loose-${n}\\.jpg`), pressed });
     const matching = (n: number) => page.getByRole("region", { name: `Matching, ${n}`, exact: true });
     const needsYou = (n: number) => page.getByRole("region", { name: `Needs you, ${n}`, exact: true });
 

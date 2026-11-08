@@ -82,6 +82,45 @@ export async function drillToCollectorBase(page: Page, target: CollectorSet = TO
   return checklist;
 }
 
+/** Add cards' drop zone, by the name a screen reader hears. */
+export function intakeDropzone(page: Page): Locator {
+  return page.getByLabel("Drag your card photos here, or browse your files");
+}
+
+/**
+ * On Add cards (NEO-452): pick a set's variant as the run's set through the
+ * "Set: ..." button and its cascade; the panel folds back into the button
+ * once the variant is picked. A run needs a set before anything starts (photos
+ * wait, "Use a scanner" is held), so every spec that starts a run calls this
+ * first. By default the variant is the seeded set's Base type itself; pass
+ * `under` for a set whose Base sits inside another type (a hand-made set's
+ * `Insert` > `Base`). Returns the title the button now reads
+ * ("2024 Topps Chrome Base"). Works whether or not a set is already picked (a
+ * pick replaces it).
+ */
+export async function pickIntakeSet(
+  page: Page,
+  target: CollectorSet = TOPPS_CHROME_2024,
+  { under }: { under?: string } = {},
+): Promise<string> {
+  await page.getByRole("button", { name: /^Set: / }).click();
+  const { cascade, drill } = collectorCascade(page, "Sport, year, brand, set and variant");
+  await drill("Sports", target.sport, "Years");
+  await drill("Years", target.year, "Brands");
+  await drill("Brands", target.manufacturer, "Sets");
+  await drill("Sets", target.set, "Variant Types");
+  // Picking a variant folds the panel back into its button.
+  if (under) await drill("Variant Types", under);
+  await cascade
+    .getByRole("listbox", { name: under ?? "Variant Types" })
+    .getByRole("option")
+    .filter({ has: page.getByText("Base", { exact: true }) })
+    .click();
+  const title = baseChecklistTitle(target);
+  await expect(page.getByRole("button", { name: `Set: ${title}`, exact: true })).toBeVisible();
+  return title;
+}
+
 /**
  * The Base rows that read `#N First Last` (two or more words, one player, no
  * variation), never #300 (the signed-by spec's card). The `Details` button of

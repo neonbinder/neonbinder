@@ -428,6 +428,191 @@ describe("planBscSheet (NEO-370)", () => {
     expect(leadingZero.problems.map((p) => p.reason)).toEqual(["card_number_conflict"]);
   });
 
+  describe("the check with a prefix on the variant's chain (NEO-458)", () => {
+    const planOne = (sheetCardNo: string, nbNumber: string, cardNumberPrefixes?: readonly string[]) =>
+      planBscSheet({
+        sheetRows: [sheetRow("bsc-1", sheetCardNo, "near_mint", { availableQuantity: 4 })],
+        conditionsRead: MODERN,
+        targets: [target()],
+        cards: [nbCard(1, nbNumber, "bsc-1")],
+        cardNumberPrefixes,
+      });
+    const lists = (plan: ReturnType<typeof planOne>) => {
+      expect(plan.problems).toEqual([]);
+      expect(plan.puts.map((p) => [p.kind, p.bscCardId, p.row.availableQuantity])).toEqual([["set", "bsc-1", 2]]);
+    };
+    const holds = (plan: ReturnType<typeof planOne>, nbNumber: string) => {
+      expect(plan.puts).toEqual([]);
+      expect(plan.problems).toEqual([
+        { reason: "card_number_conflict", cardId: card(1), bscCardId: "bsc-1", detail: `NB #${nbNumber}` },
+      ]);
+    };
+
+    test("a prefix on the sheet's number and a bare NB number lists", () => {
+      lists(planOne("BC-98", "98", ["BC-"]));
+    });
+
+    test("a prefix on NB's number and a bare sheet number lists", () => {
+      lists(planOne("98", "BC-98", ["BC-"]));
+    });
+
+    test("the same prefixed number on both sides lists, as it always did", () => {
+      lists(planOne("BC-98", "BC-98", ["BC-"]));
+    });
+
+    test("no prefix in force: a prefixed sheet number against a bare NB number is held", () => {
+      holds(planOne("BC-98", "98"), "98");
+      holds(planOne("BC-98", "98", []), "98");
+    });
+
+    test("no prefix in force: a differing number is held", () => {
+      holds(planOne("12", "21", []), "21");
+    });
+
+    test("a prefix that is not this number's is held", () => {
+      holds(planOne("XY-98", "98", ["BC-"]), "98");
+    });
+
+    test("a number that differs once stripped is held, and the detail stays NB's own", () => {
+      const plan = planOne("BC-98", "99", ["BC-"]);
+      holds(plan, "99");
+      expect(JSON.stringify(plan.problems)).not.toContain("BC-");
+    });
+
+    test("a held card's other rows are not zeroed", () => {
+      const plan = planBscSheet({
+        sheetRows: [
+          sheetRow("bsc-1", "BC-98", "near_mint", { availableQuantity: 1 }),
+          sheetRow("bsc-1", "BC-98", "poor", { availableQuantity: 4 }),
+        ],
+        conditionsRead: MODERN,
+        targets: [target()],
+        cards: [nbCard(1, "99", "bsc-1")],
+        cardNumberPrefixes: ["BC-"],
+      });
+      expect(plan.puts).toEqual([]);
+    });
+
+    test("a number equal to the prefix alone is not stripped down to nothing", () => {
+      // NB's blank number never matches a sheet number that is only the prefix.
+      holds(planOne("BC-", "", ["BC-"]), "");
+      holds(planOne("", "BC-", ["BC-"]), "BC-");
+      holds(planOne("BC-", "98", ["BC-"]), "98");
+      holds(planOne("98", "BC-", ["BC-"]), "BC-");
+      // Equal as written is still equal.
+      lists(planOne("BC-", "BC-", ["BC-"]));
+    });
+
+    test("case differences anywhere are one number", () => {
+      lists(planOne("bc-98", "98", ["BC-"]));
+      lists(planOne("BC-98", "98", ["bc-"]));
+      lists(planOne("BC-98A", "98a", ["BC-"]));
+      lists(planOne("98a", "bc-98A", ["BC-"]));
+    });
+
+    test("surrounding spaces on the number or the prefix don't matter", () => {
+      lists(planOne("  BC-98 ", " 98", [" BC- "]));
+    });
+
+    test("an insert's prefix on NB's number and the parallel's on the sheet's lists", () => {
+      lists(planOne("DKS-98", "DK-98", ["DK-", "DKS-"]));
+      lists(planOne("DKS-98", "DK-98", ["DKS-", "DK-"]));
+      lists(planOne("DKS-98", "98", ["DK-", "DKS-"]));
+      lists(planOne("DK-98", "98", ["DK-", "DKS-"]));
+    });
+
+    test("deliberate: a parallel's card copied from its insert may carry a different chain prefix on each side, so DK-98 against DKS-98 lists", () => {
+      // Same idea as lib/parallelCardLink.ts: the parallel's cards are copied
+      // from the insert, so NB can hold the insert's prefix while BSC shows
+      // the parallel's. Each side is stripped with every prefix on the chain.
+      lists(planOne("DK-98", "DKS-98", ["DK-", "DKS-"]));
+      lists(planOne("DK-98", "DKS-98", ["DKS-", "DK-"]));
+    });
+
+    test("DK-98 against DKS-99 under the same chain prefixes is held", () => {
+      holds(planOne("DK-98", "DKS-99", ["DK-", "DKS-"]), "DKS-99");
+    });
+
+    test("the deepest prefix alone would not pass the insert-and-parallel case", () => {
+      holds(planOne("DKS-98", "DK-98", ["DKS-"]), "DK-98");
+    });
+
+    test("two prefixes still need the same number left over", () => {
+      holds(planOne("DKS-98", "DK-99", ["DK-", "DKS-"]), "DK-99");
+    });
+
+    test.each([
+      ["a leading zero", "BC-098", "98", ["BC-"]],
+      ["a variation suffix on the sheet", "BC-98a", "98", ["BC-"]],
+      ["a variation suffix on NB", "BC-98", "98a", ["BC-"]],
+      ["a number stem", "BC-9", "98", ["BC-"]],
+      ["the prefix twice", "BC-BC-98", "98", ["BC-"]],
+      ["the prefix behind another word", "X-BC-98", "98", ["BC-"]],
+      ["the prefix at the end", "98BC-", "98", ["BC-"]],
+      ["a space left after the prefix", "BC- 98", "98", ["BC-"]],
+      ["a digit prefix splitting the sheet's number", "12", "2", ["1"]],
+      ["a digit prefix splitting a repeated digit", "11", "1", ["1"]],
+      ["a prefix ending in a digit splitting the sheet's number", "T21", "1", ["T2"]],
+      ["a digit prefix splitting NB's number", "2", "12", ["1"]],
+      ["a prefix ending in a digit splitting NB's number", "1", "T21", ["T2"]],
+      ["a digit prefix with a space after it", "12", "2", ["1 "]],
+      ["the split prefix beside one that fits nothing", "T21", "1", ["T", "T2"]],
+    ])("nothing looser: %s is held", (_label, sheetCardNo, nbNumber, prefixes) => {
+      holds(planOne(sheetCardNo, nbNumber, prefixes), nbNumber);
+    });
+
+    test.each([
+      ["a prefix ending in a letter", "BCV-26", "26", ["BCV-"]],
+      ["a letter prefix with no separator", "T21", "21", ["T"]],
+      ["a prefix ending in a digit, with a separator next", "T2-1", "1", ["T2-"]],
+      ["a prefix ending in a digit, with a letter next", "T2A", "A", ["T2"]],
+      ["a letter prefix beside a digit one", "T21", "21", ["T", "T2"]],
+      ["the same number as written, under a digit prefix", "12", "12", ["1"]],
+    ])("a prefix that splits no digits still lists: %s", (_label, sheetCardNo, nbNumber, prefixes) => {
+      lists(planOne(sheetCardNo, nbNumber, prefixes));
+    });
+
+    test("nested prefixes come off one at a time, never stacked", () => {
+      holds(planOne("BC-P-98", "98", ["BC-", "P-"]), "98");
+    });
+
+    test("an empty or blank prefix changes nothing", () => {
+      holds(planOne("BC-98", "98", ["", "   "]), "98");
+      lists(planOne("98", "98", ["", "   "]));
+    });
+
+    test("the BSC ref stays the key: a prefix never moves stock onto another card's row", () => {
+      const plan = planBscSheet({
+        sheetRows: [
+          sheetRow("bsc-1", "BC-1", "near_mint"),
+          sheetRow("bsc-2", "BC-2", "near_mint", { availableQuantity: 3 }),
+        ],
+        conditionsRead: MODERN,
+        targets: [target()],
+        cards: [nbCard(1, "1", "bsc-1"), nbCard(2, "2", "bsc-2")],
+        cardNumberPrefixes: ["BC-"],
+      });
+      expect(plan.problems).toEqual([]);
+      expect(plan.puts.map((p) => [p.kind, p.bscCardId])).toEqual([
+        ["set", "bsc-1"],
+        ["zero", "bsc-2"],
+      ]);
+    });
+
+    test("photo keys re-plan the same way", () => {
+      const plan = planBscSheet({
+        sheetRows: [sheetRow("bsc-1", "BC-98", "near_mint")],
+        conditionsRead: MODERN,
+        targets: [target()],
+        cards: [nbCard(1, "98", "bsc-1")],
+        cardNumberPrefixes: ["BC-"],
+        photoKeys: new Map([[photoKeyFor("bsc-1", "near_mint"), { front: "seller/front.jpg" }]]),
+      });
+      expect(plan.problems).toEqual([]);
+      expect(plan.puts[0].row.sellerImgFront).toBe("seller/front.jpg");
+    });
+  });
+
   test("price problems: none and over $999 are refused; under 25¢ is raised", () => {
     const rows = [
       sheetRow("bsc-1", "1", "near_mint", { availableQuantity: 3 }),

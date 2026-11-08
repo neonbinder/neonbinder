@@ -1,5 +1,6 @@
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
+import { rejectedSummaryValidator } from "./lib/extractRejections";
 
 /**
  * NEO-356 — the collector's saved theme preference, shared by the schema and
@@ -3528,6 +3529,12 @@ export default defineSchema({
     processedImages: v.optional(v.number()),
     failedImages: v.optional(v.number()),
     rejectedEntries: v.optional(v.number()), // zip members extract declined (not images, too big, etc.)
+    // NEO-446 — why, as a collector can act on it: counts that add up to
+    // `rejectedEntries` and the first few file names (never one that failed
+    // name validation). On the job, not in rows of their own, because a rejected
+    // entry has no work to do and a row would join the counters, the prune and
+    // the lanes. See convex/lib/extractRejections.ts.
+    rejected: v.optional(rejectedSummaryValidator),
     startedAt: v.optional(v.number()), // when the batch was started, not when the job was created
     finishedAt: v.optional(v.number()),
     // Terminal failure detail. `errorCode` is the low-cardinality tag to group
@@ -3756,9 +3763,17 @@ export default defineSchema({
     // (`retryPlaceholderImage`). Capped at PLACEHOLDER_MAX_IMAGE_RETRIES so one
     // photo cannot be sent to the paid services without end.
     retries: v.optional(v.number()),
+    // NEO-446: the collector set this loose photo aside on an intake run
+    // (`setIntakePhotoAside`), usually a side whose partner the zip turned away.
+    // Pairing never picks it up (`computePairingDiff`, and a re-check inside
+    // `applyPairDiffImpl`) and it leaves the Pairing lane. Status and the job's
+    // counters stay as they were, so it never changes how a job is judged. Only
+    // ever on a done or failed row: a restart that re-reads the photo clears it
+    // and one that keeps a done row keeps it, like the row's other user decisions.
+    setAside: v.optional(v.boolean()),
   })
     // The ONLY index this table needs. It answers both "every image of this
-    // job" (prefix `jobId` alone) and "this job's images in zip order", so a
+    // job" (prefix `jobId` alone) and "this job's images in filename order", so a
     // separate `by_job` on `["jobId"]` would be a strict prefix of this one —
     // a second copy of the same index, paid for on every write, that Convex
     // would never choose over this one for anything. Ordered iteration is a
@@ -3841,9 +3856,11 @@ export default defineSchema({
   // defaults. Its `_id` is the `?run=` handle; every function checks
   // `userId === identity.subject` on it.
   //
-  // `variantId` is absent when the collector skipped the set pick; every pair
-  // is then "noVariant" until a variant is picked or pinned. `variantPinned`
-  // marks one chosen mid-run ("these are all from <set>") rather than up front.
+  // NEO-452: every new run starts with a `variantId` (`createIntakeRun` refuses
+  // without one). It stays optional for runs from before that, whose collector
+  // skipped the set pick; every pair of such a run is "noVariant" until a variant
+  // is picked or pinned. `variantPinned` marks one chosen mid-run ("these are all
+  // from <set>") rather than up front.
   intakeRuns: defineTable({
     userId: v.string(),
     jobId: v.string(),

@@ -14,6 +14,7 @@ import { clerkAppearance } from "@/components/modules/clerk-appearance";
 import { ThemeProvider, useTheme } from "@/src/theme/ThemeProvider";
 import ConvexClientProvider from "@/components/modules/ConvexClientProvider";
 import { ProfileThemeSync } from "@/src/theme/ProfileThemeSync";
+import { HeldIntakeOwner } from "@/app/collection/final/intake/HeldIntakeOwner";
 import * as Sentry from "@sentry/react";
 
 import ProtectedLayout from "@/src/layouts/ProtectedLayout";
@@ -35,6 +36,7 @@ import {
   loadPrintHub,
   loadProfilePublic,
 } from "@/src/routes/lazy-routes";
+import { APP_BOUNDARY_OPTIONS } from "@/src/routes/chunk-reload";
 
 // Pages. Only Home (the landing page, and the first paint for most visitors)
 // ships in the entry bundle; every other page is its own chunk, fetched when
@@ -326,7 +328,7 @@ const SentryErrorBoundary = Sentry.withErrorBoundary(
       </BrowserRouter>
     );
   },
-  { fallback: <div>An error occurred. Please refresh the page.</div> },
+  APP_BOUNDARY_OPTIONS,
 );
 
 /**
@@ -347,6 +349,7 @@ function ThemedApp() {
       >
         <PostHogProvider>
           <ConvexClientProvider>
+            <HeldIntakeOwner />
             <ProfileThemeSync />
             <SentryErrorBoundary />
           </ConvexClientProvider>
