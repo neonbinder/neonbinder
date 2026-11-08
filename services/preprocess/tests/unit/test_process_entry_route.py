@@ -463,7 +463,7 @@ class TestCopyPhotoSizes:
 
     def test_written_on_the_fast_path(self, fake_gcs, monkeypatch, timing_lines):
         monkeypatch.setenv("PREPROCESS_ROLE", "fast")
-        monkeypatch.setattr("app.cropper.tiered.fast_tiered_crop", lambda b: b)
+        monkeypatch.setattr("app.cropper.tiered.fast_tiered_verdict", lambda b: (b, "frame"))
         _spy_model_session(monkeypatch)
         _tracking_orient(monkeypatch, text_count=12)
         _tracking_classify(monkeypatch)
@@ -480,7 +480,7 @@ class TestCopyPhotoSizes:
 
     def test_written_on_the_heavy_path(self, fake_gcs, monkeypatch):
         monkeypatch.delenv("PREPROCESS_ROLE", raising=False)
-        monkeypatch.setattr("app.cropper.tiered.fast_tiered_crop", lambda _b: None)
+        monkeypatch.setattr("app.cropper.tiered.fast_tiered_verdict", lambda _b: (None, "crop"))
         _stub_orient(monkeypatch, text_count=12)
         _stub_classify(monkeypatch)
         good_crop = _card_bytes()
@@ -496,7 +496,7 @@ class TestCopyPhotoSizes:
     def test_made_from_the_rotated_output(self, fake_gcs, monkeypatch):
         _stub_orient(monkeypatch, rotation=90)
         _stub_classify(monkeypatch)
-        monkeypatch.setattr("app.cropper.tiered.fast_tiered_crop", lambda b: b)
+        monkeypatch.setattr("app.cropper.tiered.fast_tiered_verdict", lambda b: (b, "frame"))
         fake_gcs.seed(BUCKET, f"{EXTRACTED_PREFIX}0000.jpg", _card_bytes((500, 700)), "image/jpeg")
 
         assert _post_entry(entry_index=0).status_code == 200
@@ -519,7 +519,7 @@ class TestCopyPhotoSizes:
     def test_sizes_carry_none_of_the_crops_metadata(self, fake_gcs, monkeypatch):
         crop = _card_with_metadata()
         _assert_carries_metadata(crop)
-        monkeypatch.setattr("app.cropper.tiered.fast_tiered_crop", lambda _b: crop)
+        monkeypatch.setattr("app.cropper.tiered.fast_tiered_verdict", lambda _b: (crop, "frame"))
         _stub_orient(monkeypatch)
         _stub_classify(monkeypatch)
         fake_gcs.seed(BUCKET, f"{EXTRACTED_PREFIX}0000.jpg", _card_bytes(), "image/jpeg")
@@ -535,7 +535,7 @@ class TestCopyPhotoSizes:
     def test_retry_sizes_carry_none_of_the_stored_outputs_metadata(self, fake_gcs, monkeypatch):
         stored = _card_with_metadata()
         _assert_carries_metadata(stored)
-        monkeypatch.setattr("app.cropper.tiered.fast_tiered_crop", lambda b: b)
+        monkeypatch.setattr("app.cropper.tiered.fast_tiered_verdict", lambda b: (b, "frame"))
         _stub_orient(monkeypatch)
         _stub_classify(monkeypatch)
         fake_gcs.seed(BUCKET, f"{EXTRACTED_PREFIX}0000.jpg", _card_bytes(), "image/jpeg")
@@ -549,7 +549,7 @@ class TestCopyPhotoSizes:
 
     def test_a_declined_entry_writes_no_sizes(self, fake_gcs, monkeypatch):
         monkeypatch.setenv("PREPROCESS_ROLE", "fast")
-        monkeypatch.setattr("app.cropper.tiered.fast_tiered_crop", lambda _b: None)
+        monkeypatch.setattr("app.cropper.tiered.fast_tiered_verdict", lambda _b: (None, "crop"))
         _spy_model_session(monkeypatch)
         _tracking_orient(monkeypatch)
         fake_gcs.seed(BUCKET, f"{EXTRACTED_PREFIX}0000.jpg", _card_bytes(), "image/jpeg")
@@ -603,7 +603,7 @@ class TestCopyPhotoSizes:
         # not what stands, so it is not what the sizes may be made from.
         _stub_orient(monkeypatch)
         _stub_classify(monkeypatch)
-        monkeypatch.setattr("app.cropper.tiered.fast_tiered_crop", lambda b: b)
+        monkeypatch.setattr("app.cropper.tiered.fast_tiered_verdict", lambda b: (b, "frame"))
         fake_gcs.seed(BUCKET, f"{EXTRACTED_PREFIX}0000.jpg", _card_bytes((500, 700)), "image/jpeg")
         fake_gcs.seed(BUCKET, f"{OUTPUT_PREFIX}0000.jpg", _card_bytes((300, 400)), "image/jpeg")
 
@@ -821,9 +821,9 @@ class TestFastRole:
     ):
         # An inset-on-noise card (like the E2E fixtures) is exactly what the
         # classical fast path declines — BiRefNet is needed to recover the
-        # inset. `fast_tiered_crop -> None` is that decline signal.
+        # inset. `fast_tiered_verdict -> (None, ...)` is that decline signal.
         monkeypatch.setenv("PREPROCESS_ROLE", "fast")
-        monkeypatch.setattr("app.cropper.tiered.fast_tiered_crop", lambda _b: None)
+        monkeypatch.setattr("app.cropper.tiered.fast_tiered_verdict", lambda _b: (None, "crop"))
         spy = _spy_model_session(monkeypatch)
         orient_calls = _tracking_orient(monkeypatch, rotation=90, confidence=0.75, text_count=33)
         classify_calls = _tracking_classify(monkeypatch)
@@ -859,7 +859,7 @@ class TestFastRole:
         # The pre-cropped-scanner majority: the classical fast path accepts the
         # frame as identity (returns the input untouched) with no BiRefNet pass.
         monkeypatch.setenv("PREPROCESS_ROLE", "fast")
-        monkeypatch.setattr("app.cropper.tiered.fast_tiered_crop", lambda b: b)
+        monkeypatch.setattr("app.cropper.tiered.fast_tiered_verdict", lambda b: (b, "frame"))
         spy = _spy_model_session(monkeypatch)
         orient_calls = _tracking_orient(monkeypatch, text_count=12)
         classify_calls = _tracking_classify(monkeypatch, player="Jeter", team="Yankees")
@@ -889,7 +889,7 @@ class TestFastRole:
         # (here pil_trim wins) and returns a completed result — the pre-NEO-175
         # behaviour, unchanged.
         monkeypatch.delenv("PREPROCESS_ROLE", raising=False)
-        monkeypatch.setattr("app.cropper.tiered.fast_tiered_crop", lambda _b: None)
+        monkeypatch.setattr("app.cropper.tiered.fast_tiered_verdict", lambda _b: (None, "crop"))
         _stub_orient(monkeypatch, text_count=12)
         _stub_classify(monkeypatch)
         good_crop = _card_bytes()
@@ -962,7 +962,7 @@ def _forbid_fast_path(monkeypatch) -> None:
         raise AssertionError("fast-path stage ran although FAST already declined it")
 
     monkeypatch.setattr("app.cropper.scan_meta.is_card_sized_scan", _boom)
-    monkeypatch.setattr("app.cropper.tiered.fast_tiered_crop", _boom)
+    monkeypatch.setattr("app.cropper.tiered.fast_tiered_verdict", _boom)
 
 
 def _counting_fast_path(monkeypatch) -> dict[str, int]:
@@ -977,14 +977,14 @@ def _counting_fast_path(monkeypatch) -> dict[str, int]:
 
     def _fast(_b):
         calls["fast_tiered"] += 1
-        return None
+        return None, "crop"
 
     def _quad(_b):
         calls["quad"] += 1
         return QuadResult(None, "no_quad")
 
     monkeypatch.setattr("app.cropper.scan_meta.is_card_sized_scan", _scan)
-    monkeypatch.setattr("app.cropper.tiered.fast_tiered_crop", _fast)
+    monkeypatch.setattr("app.cropper.tiered.fast_tiered_verdict", _fast)
     monkeypatch.setattr("app.cropper.quad.quad_crop", _quad)
     return calls
 
@@ -1080,7 +1080,7 @@ class TestSuppliedBaselineAndDhash:
         # HEAVY's completed result always describes ITS winner; the supplied
         # baseline only seeds the threshold and is never echoed as the result
         # when a real crop wins.
-        monkeypatch.setattr("app.cropper.tiered.fast_tiered_crop", lambda _b: None)
+        monkeypatch.setattr("app.cropper.tiered.fast_tiered_verdict", lambda _b: (None, "crop"))
         good_crop = _card_bytes((400, 560))
         monkeypatch.setattr("app.cropper.pil_trim.trim_dark", lambda _b: good_crop)
         orient_calls = _tracking_orient(monkeypatch, rotation=0, confidence=0.9, text_count=38)
@@ -1097,7 +1097,7 @@ class TestSuppliedBaselineAndDhash:
         assert body["text_count"] == 38
 
     def test_absent_hints_compute_both(self, fake_gcs, monkeypatch):
-        monkeypatch.setattr("app.cropper.tiered.fast_tiered_crop", lambda b: b)
+        monkeypatch.setattr("app.cropper.tiered.fast_tiered_verdict", lambda b: (b, "frame"))
         orient_calls = _tracking_orient(monkeypatch)
         _tracking_classify(monkeypatch)
         entry = _card_bytes()
@@ -1161,7 +1161,7 @@ class TestOutputIsRotatedOnce:
     def test_route_does_not_rotate_the_winner_again(self, fake_gcs, monkeypatch):
         from app.cropper._utils import rotate_image_bytes
 
-        monkeypatch.setattr("app.cropper.tiered.fast_tiered_crop", lambda b: b)
+        monkeypatch.setattr("app.cropper.tiered.fast_tiered_verdict", lambda b: (b, "frame"))
         _tracking_orient(monkeypatch, rotation=90, text_count=12)
         classify_calls = _tracking_classify(monkeypatch)
 
@@ -1266,7 +1266,7 @@ class TestTimingLine:
     """NEO-315: exactly one `process_entry_timing` JSON line per request."""
 
     def test_completed_request_emits_one_line(self, fake_gcs, monkeypatch, timing_lines):
-        monkeypatch.setattr("app.cropper.tiered.fast_tiered_crop", lambda b: b)
+        monkeypatch.setattr("app.cropper.tiered.fast_tiered_verdict", lambda b: (b, "frame"))
         _tracking_orient(monkeypatch)
         _tracking_classify(monkeypatch)
         fake_gcs.seed(BUCKET, f"{EXTRACTED_PREFIX}0007.jpg", _card_bytes(), "image/jpeg")
@@ -1318,7 +1318,7 @@ class TestTimingLine:
 
         monkeypatch.setattr(orient, "_client", None)
         monkeypatch.setattr(orient.vision, "ImageAnnotatorClient", _factory)
-        monkeypatch.setattr("app.cropper.tiered.fast_tiered_crop", lambda b: b)
+        monkeypatch.setattr("app.cropper.tiered.fast_tiered_verdict", lambda b: (b, "frame"))
         _tracking_classify(monkeypatch)
         fake_gcs.seed(BUCKET, f"{EXTRACTED_PREFIX}0000.jpg", _card_bytes(), "image/jpeg")
 
@@ -1331,7 +1331,7 @@ class TestTimingLine:
 
     def test_fast_decline_line(self, fake_gcs, monkeypatch, timing_lines):
         monkeypatch.setenv("PREPROCESS_ROLE", "fast")
-        monkeypatch.setattr("app.cropper.tiered.fast_tiered_crop", lambda _b: None)
+        monkeypatch.setattr("app.cropper.tiered.fast_tiered_verdict", lambda _b: (None, "crop"))
         _spy_model_session(monkeypatch)
         _tracking_orient(monkeypatch)
         fake_gcs.seed(BUCKET, f"{EXTRACTED_PREFIX}0000.jpg", _card_bytes(), "image/jpeg")
@@ -1376,7 +1376,7 @@ class TestTimingLine:
         assert timing_lines.lines == []
 
     def test_line_never_carries_identifiers_or_paths(self, fake_gcs, monkeypatch, timing_lines):
-        monkeypatch.setattr("app.cropper.tiered.fast_tiered_crop", lambda b: b)
+        monkeypatch.setattr("app.cropper.tiered.fast_tiered_verdict", lambda b: (b, "frame"))
         _tracking_orient(monkeypatch)
         _tracking_classify(monkeypatch)
         fake_gcs.seed(BUCKET, f"{EXTRACTED_PREFIX}0000.jpg", _card_bytes(), "image/jpeg")
