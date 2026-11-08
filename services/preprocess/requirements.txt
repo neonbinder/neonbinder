@@ -1,7 +1,7 @@
-fastapi==0.143.3
+fastapi==0.162.0
 uvicorn[standard]==0.54.0
-python-multipart==0.0.32
-pydantic==2.14.1
+python-multipart==0.0.33
+pydantic==2.14.2
 google-cloud-vision==3.16.0
 # GCS access for the NEO-170 batch routes (/extract, /process-entry): reads the
 # input archive as a seekable stream (so a 500MB zip never lands in memory
@@ -17,7 +17,7 @@ Pillow==12.3.0
 --extra-index-url https://download.pytorch.org/whl/cpu
 torch==2.5.1+cpu
 transformers==4.47.1
-accelerate==1.2.1
+accelerate==1.15.0
 opencv-python-headless==4.10.0.84
 numpy==2.5.4
 # Tiered crop's BiRefNet model (NEO-161) — hot path, not a rare fallback:
@@ -27,5 +27,5 @@ numpy==2.5.4
 # deliberately omits it — that's what the rembg[cpu] extra would pin, but we
 # pin it explicitly to match this file's style). Weights are baked into the
 # image at build time via U2NET_HOME, same rationale as SAM above.
-rembg==2.0.78
-onnxruntime==1.31.0
+rembg==2.0.86
+onnxruntime==1.31.1
