@@ -182,3 +182,5 @@
 - [Failed dynamic import is cached per document](reference_failed_dynamic_import_is_cached_per_document.md) — Chromium: re-import or lazy retry cannot recover, only a reload; prefetch failures poison the route
 - [Paginated query leaves Exhausted live](reference_paginated_query_leaves_exhausted_live.md) — a live update drops an Exhausted gate to Loading and unmounts dialogs; hold the last full read
 - [backdrop-filter makes a containing block](reference_backdrop_filter_makes_a_containing_block.md) — a "fixed" button in a blurred scroller scrolls away; blur a sibling. Also h-0 min-h-full
+- [dnd-kit droppables in their own scroll pane](reference_dndkit_droppables_in_their_own_scroll_pane.md) — two-pane drags need no measuring config (Rect tracks its pane's scroll); what autoscroll scrolls; grid-rows-1 + min-h-0
+- [react-hooks/refs flags helper arguments](reference_react_hooks_refs_flags_helper_arguments.md) — a ref-reading closure passed INTO renderRow() trips the lint; build it in the JSX prop instead
