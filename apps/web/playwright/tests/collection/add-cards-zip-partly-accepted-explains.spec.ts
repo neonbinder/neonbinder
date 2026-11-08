@@ -37,14 +37,27 @@
 //
 // R3: the set pick and the drop zone through `support/collection.ts`.
 //
-// R5: every wait is the normal 7 s (NEO-446: measured on a warm dev service, upload
-// 0.8-1.3 s, extract 0.3-0.8 s, read 2.8 s). The preprocess legs are wrapped in
-// `test.step`, so the report carries each leg's own duration; a red on a cold CI
-// instance comes back to the owner with that number, never a longer timeout.
+// R5 (hard rule 3): every wait is the normal 7 s except ONE, the partly-accepted line
+// after the extract (`COLD_EXTRACT`, below), which carries a signed-off ceiling. The
+// read step stays on 7 s. NEO-446 measured on a warm dev service: upload 0.8-1.3 s,
+// extract 0.3-0.8 s, read 2.8 s. The preprocess legs are wrapped in `test.step`, so the
+// report carries each leg's own duration.
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { intakeDropzone, pickIntakeSet } from "../../support/collection";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
+
+/**
+ * The one signed-off ceiling in this spec (GUIDE hard rule 3): 45 s, Jason, 2026-11-08, NEO-475.
+ * It covers ONLY the wait for the partly-accepted line after the extract.
+ * Measured: the FAST preprocess service's cold start took 8.5-24.2 s in CI (runs
+ * 42524934716 and 42493262194) and 26.6 s locally against dev, against 0.33-0.97 s for
+ * a warm extract. The Add cards
+ * mount already warms FAST, but this spec drops the zip about 5-6 s after the mount,
+ * so the service is still cold. It is void if a cold start is ever measured over 45 s,
+ * and never a licence for any other wait in this spec.
+ */
+const COLD_EXTRACT = 45_000;
 
 const ZIP = path.join(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -84,7 +97,7 @@ test(
 
     // Extract turns the big photo away and registers the other.
     await test.step("extract: ?run= to the partly-accepted line", async () => {
-      await expect(line).toHaveText(PARTLY);
+      await expect(line).toHaveText(PARTLY, { timeout: COLD_EXTRACT });
     });
 
     // The file name stands as a piece of text of its own (the `<bdi>`, see the header).
