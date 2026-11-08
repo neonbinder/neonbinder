@@ -14,7 +14,7 @@
 
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
-import { MemoryRouter, useLocation, useSearchParams } from "react-router";
+import { MemoryRouter, useLocation, useNavigate, useSearchParams } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PageApiContext, type PageApi } from "../pageApi";
 import { DRAWER_PARAM } from "../drawerParams";
@@ -28,6 +28,7 @@ const mocks = vi.hoisted(() => {
   const mutations = new Map<string, ReturnType<typeof vi.fn>>();
   return {
     mutations,
+    uploading: false,
     mutation(name: string) {
       let fn = mutations.get(name);
       if (!fn) {
@@ -92,7 +93,7 @@ vi.mock("../data/store", () => ({
 }));
 vi.mock("@/src/hooks/useWarmPreprocess", () => ({ useWarmPreprocess: () => undefined }));
 vi.mock("@/src/hooks/usePlaceholderUpload", () => ({
-  usePlaceholderUpload: () => ({ uploading: false, upload: mocks.upload }),
+  usePlaceholderUpload: () => ({ uploading: mocks.uploading, upload: mocks.upload }),
 }));
 vi.mock("@/src/hooks/useLeaveGuard", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/src/hooks/useLeaveGuard")>();
@@ -107,12 +108,16 @@ vi.mock("@/src/hooks/useLeaveGuard", async (importOriginal) => {
 // The real zone's held state has its own test (dropzone.test.tsx); this one
 // records what the tab hands it and stands in a control that carries it.
 vi.mock("@/app/print/placeholders/dropzone", () => ({
-  Dropzone: (p: { heldBy?: string; heldLabel?: string; onFiles: (files: File[]) => void }) => {
+  Dropzone: (p: { disabled?: boolean; heldBy?: string; heldLabel?: string; onFiles: (files: File[]) => void }) => {
     mocks.dropzone.push(p);
     return (
-      <button type="button" aria-disabled={p.heldBy ? "true" : undefined} aria-describedby={p.heldBy}>
-        {p.heldBy ? p.heldLabel : "Drag your card photos here"}
-      </button>
+      <>
+        <button type="button" aria-disabled={p.heldBy ? "true" : undefined} aria-describedby={p.heldBy}>
+          {p.heldBy ? p.heldLabel : "Drag your card photos here"}
+        </button>
+        {/* The real zone holds the file input; NEO-446 moves focus onto it. */}
+        <input type="file" aria-label="Photo files" disabled={p.disabled} />
+      </>
     );
   },
 }));
@@ -920,7 +925,7 @@ describe("RealAddCardsTab while the shelf or the open run loads (NEO-416)", () =
     mocks.data.homes = [];
     const { rerender } = render(<Loading initial="/collection/final/intake" />);
     await drop([photoFile("first.jpg")]);
-    const second = [photoFile("second.jpg"), photoFile("second-back.jpg")];
+    const second = [photoFile("second-1.jpg"), photoFile("second-2.jpg")];
     await drop(second);
     expect(mocks.upload).not.toHaveBeenCalled();
     expect(screen.queryAllByText(MAKE_ONE)).toEqual([]);
@@ -962,5 +967,571 @@ describe("RealAddCardsTab while the shelf or the open run loads (NEO-416)", () =
     expect(screen.getByText(MAKE_ONE, { selector: '[role="status"]' })).toBeTruthy();
     expect(start()).not.toHaveBeenCalled();
     expect(mocks.upload).not.toHaveBeenCalled();
+  });
+});
+
+describe("NEO-446: setting a loose photo aside", () => {
+  const asideMutation = () => mocks.mutation("intakeRuns.setIntakePhotoAside");
+  const tooBig = (entryIndex: number) => ({
+    entryIndex,
+    originalName: `scan-${entryIndex}.jpg`,
+    status: "failed",
+    errorCode: "ENTRY_TOO_MANY_PIXELS",
+    retries: 0,
+  });
+  const stat = (label: string) => screen.getByText(label, { selector: "dt" }).parentElement?.querySelector("dd")?.textContent;
+  const openWith = (images: unknown[]) => {
+    const runId = freshRunId();
+    setRun(runId, { images });
+    const view = render(<Tab runId={runId} />);
+    return { runId, ...view };
+  };
+
+  beforeEach(() => {
+    asideMutation().mockClear();
+    (pageApi.inform as ReturnType<typeof vi.fn>).mockClear();
+  });
+
+  it("every loose tile has its own Set aside, failed and too-big ones too, and it sends that photo", async () => {
+    const { runId } = openWith([photo(0), tooBig(1)]);
+    expect(screen.getByRole("button", { name: "Set aside scan-0.jpg" }).textContent).toBe("Set aside");
+    const failed = screen.getByRole("button", { name: "Set aside scan-1.jpg" });
+    fireEvent.click(failed);
+    await waitFor(() =>
+      expect(asideMutation()).toHaveBeenCalledWith({ runId, entryIndex: 1, setAside: true }),
+    );
+    await waitFor(() => expect(pageApi.inform).toHaveBeenCalledWith("Set aside scan-1.jpg."));
+  });
+
+  it("is a real button, so the keyboard reaches and presses it", () => {
+    openWith([photo(0)]);
+    const control = screen.getByRole("button", { name: "Set aside scan-0.jpg" });
+    expect(control.tagName).toBe("BUTTON");
+    control.focus();
+    expect(document.activeElement).toBe(control);
+  });
+
+  it("photos of one file name get controls that read differently", () => {
+    openWith([
+      { entryIndex: 0, originalName: "image.jpg", status: "done" },
+      { entryIndex: 1, originalName: "image.jpg", status: "done" },
+    ]);
+    expect(screen.getByRole("button", { name: "Set aside image.jpg, photo 1" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Set aside image.jpg, photo 2" })).toBeTruthy();
+  });
+
+  it("a photo set aside shows its whole name, wrapping, above its own Bring back", () => {
+    openWith([{ ...photo(0), originalName: "01-bowe-front.jpg", setAside: true }]);
+    const name = screen.getByText("01-bowe-front.jpg");
+    expect(name.className).toContain("wrap-anywhere");
+    expect(name.className).not.toContain("truncate");
+    const back = screen.getByRole("button", { name: "Bring back 01-bowe-front.jpg" });
+    expect(name.compareDocumentPosition(back) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(back.parentElement?.className).toContain("flex-col");
+  });
+
+  it("a photo set aside leaves Pairing, can't be picked to pair, and is listed with Bring back", async () => {
+    const { runId } = openWith([photo(0), { ...tooBig(1), setAside: true }]);
+    expect(stat("Pairing")).toBe("1");
+    expect(screen.queryByRole("button", { name: "Set aside scan-1.jpg" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Try again: scan-1.jpg" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^scan-1\.jpg/ })).toBeNull();
+    expect(screen.getByRole("heading", { name: "Set aside" })).toBeTruthy();
+    const back = screen.getByRole("button", { name: "Bring back scan-1.jpg" });
+    expect(back.textContent).toBe("Bring back");
+    fireEvent.click(back);
+    await waitFor(() =>
+      expect(asideMutation()).toHaveBeenCalledWith({ runId, entryIndex: 1, setAside: false }),
+    );
+    await waitFor(() => expect(pageApi.inform).toHaveBeenCalledWith("Brought back scan-1.jpg."));
+  });
+
+  it("a failed photo set aside isn't counted as one that couldn't be read", () => {
+    openWith([{ ...tooBig(0), setAside: true }, tooBig(1)]);
+    expect(screen.getByText(/1 photo couldn't be read/, { selector: "p[aria-hidden]" })).toBeTruthy();
+  });
+
+  it("after Done, the leave guard stops warning once the last loose photo is set aside", async () => {
+    const runId = freshRunId();
+    setRun(runId, { images: [photo(0)] });
+    const { rerender } = render(<Tab runId={runId} />);
+    await pressDone();
+    clickLink();
+    expect(confirm).toHaveBeenCalledTimes(1);
+    confirm.mockClear();
+
+    setRun(runId, { images: [{ ...photo(0), setAside: true }] });
+    rerender(<Tab runId={runId} />);
+    await waitFor(() => expect(stat("Pairing")).toBe("0"));
+    clickLink();
+    expect(confirm).not.toHaveBeenCalled();
+  });
+
+  it("Set aside on a failed tile reads the failure reason; on a read photo there's none to read", () => {
+    openWith([photo(0), tooBig(1)]);
+    const failed = screen.getByRole("button", { name: "Set aside scan-1.jpg" });
+    expect(failed.getAttribute("aria-describedby")).toBe("loose-why-1");
+    expect(document.getElementById("loose-why-1")?.textContent).toMatch(/Too big/);
+    expect(screen.getByRole("button", { name: "Set aside scan-0.jpg" }).getAttribute("aria-describedby")).toBeNull();
+  });
+
+  describe("Try again's name", () => {
+    const unread = (entryIndex: number, originalName: string) => ({
+      entryIndex,
+      originalName,
+      status: "failed",
+      errorCode: "PHOTO_TIMED_OUT",
+      retries: 0,
+    });
+    const retryMutation = () => mocks.mutation("placeholderStream.retryPlaceholderImage");
+
+    it("keeps the plain file name when only one photo has it", async () => {
+      retryMutation().mockResolvedValueOnce({ retried: true });
+      openWith([unread(0, "a.jpg"), unread(1, "b.jpg")]);
+      fireEvent.click(screen.getByRole("button", { name: "Try again: b.jpg" }));
+      await waitFor(() => expect(pageApi.inform).toHaveBeenCalledWith("Trying b.jpg again."));
+    });
+
+    it("a press from a stale tab on a photo set aside since says so", async () => {
+      retryMutation().mockResolvedValueOnce({ retried: false, reason: "set aside" });
+      openWith([unread(0, "a.jpg")]);
+      fireEvent.click(screen.getByRole("button", { name: "Try again: a.jpg" }));
+      await waitFor(() => expect(notify).toHaveBeenCalledWith("That photo was set aside. Bring it back to pair it."));
+    });
+
+    it("tells photos of one file name apart, on the button and in the line", async () => {
+      retryMutation().mockResolvedValueOnce({ retried: true });
+      openWith([unread(0, "image.jpg"), unread(1, "image.jpg")]);
+      expect(screen.getByRole("button", { name: "Try again: image.jpg, photo 1" })).toBeTruthy();
+      fireEvent.click(screen.getByRole("button", { name: "Try again: image.jpg, photo 2" }));
+      await waitFor(() => expect(pageApi.inform).toHaveBeenCalledWith("Trying image.jpg, photo 2 again."));
+    });
+  });
+
+  describe("focus after Bring back", () => {
+    const heading = () => document.getElementById("intake-pairing");
+    const tile = (n: number) => document.querySelector(`[data-loose-photo="${n}"]`);
+    /** A run with photo 1 set aside and its Bring back pressed, the write not repainted yet. */
+    const pressBack = async () => {
+      const runId = freshRunId();
+      setRun(runId, { images: [photo(0), { ...photo(1), setAside: true }] });
+      const view = render(<Tab runId={runId} />);
+      const back = screen.getByRole("button", { name: "Bring back scan-1.jpg" });
+      back.focus();
+      fireEvent.click(back);
+      await act(async () => {});
+      const repaint = (images: unknown[], pairs?: unknown[]) => {
+        setRun(runId, { images });
+        if (pairs) mocks.data.pairs = pairs;
+        view.rerender(<Tab runId={runId} />);
+      };
+      return { back, repaint };
+    };
+
+    it("stays on the button until the photo repaints, then lands on its tile", async () => {
+      const { back, repaint } = await pressBack();
+      expect(document.activeElement).toBe(back);
+      repaint([photo(0), photo(1)]);
+      await waitFor(() => expect(document.activeElement).toBe(tile(1)));
+    });
+
+    it("keeps waiting through a repaint that hasn't brought the photo back yet", async () => {
+      const { back, repaint } = await pressBack();
+      back.blur();
+      repaint([photo(0), { ...photo(1), setAside: true }, photo(2)]);
+      await act(async () => {});
+      expect(document.activeElement).not.toBe(heading());
+      repaint([photo(0), photo(1), photo(2)]);
+      await waitFor(() => expect(document.activeElement).toBe(tile(1)));
+    });
+
+    it("falls to the Pairing heading when the photo comes back in a pair", async () => {
+      const { repaint } = await pressBack();
+      repaint([photo(0), photo(1)], [{ frontIndex: 0, backIndex: 1 }]);
+      await waitFor(() => expect(document.activeElement).toBe(heading()));
+    });
+
+    it("falls to the heading when a re-pair takes the tile away after focus landed", async () => {
+      const { repaint } = await pressBack();
+      repaint([photo(0), photo(1)]);
+      await waitFor(() => expect(document.activeElement).toBe(tile(1)));
+      repaint([photo(0), photo(1)], [{ frontIndex: 0, backIndex: 1 }]);
+      await waitFor(() => expect(document.activeElement).toBe(heading()));
+    });
+
+    it("leaves focus alone once the collector has moved on", async () => {
+      const { repaint } = await pressBack();
+      const elsewhere = screen.getByRole("button", { name: "Set aside scan-0.jpg" });
+      elsewhere.focus();
+      repaint([photo(0), photo(1)]);
+      await act(async () => {});
+      expect(document.activeElement).toBe(elsewhere);
+    });
+
+    it("takes nothing after a refused press, and says why", async () => {
+      asideMutation().mockRejectedValueOnce(new Error("nope"));
+      const { back, repaint } = await pressBack();
+      await waitFor(() => expect(notify).toHaveBeenCalled());
+      back.blur();
+      repaint([photo(0), photo(1)]);
+      await act(async () => {});
+      expect(document.activeElement).not.toBe(tile(1));
+    });
+  });
+
+  it("a refused press says why", async () => {
+    openWith([photo(0)]);
+    asideMutation().mockRejectedValueOnce(new Error("That photo is in a pair. Unpair it first."));
+    fireEvent.click(screen.getByRole("button", { name: "Set aside scan-0.jpg" }));
+    await waitFor(() => expect(notify).toHaveBeenCalled());
+    expect(pageApi.inform).not.toHaveBeenCalled();
+  });
+});
+
+describe("NEO-446: the run's line, the zip wording and Start a new run", () => {
+  function Url() {
+    const navigate = useNavigate();
+    return (
+      <>
+        <output aria-label="Page address">{useLocation().search}</output>
+        <button type="button" onClick={() => navigate(-1)}>Browser back</button>
+        <button type="button" onClick={() => navigate(1)}>Browser forward</button>
+      </>
+    );
+  }
+  function Screen({ initial }: { initial: string }) {
+    return (
+      <MemoryRouter initialEntries={[initial]}>
+        <PageApiContext.Provider value={pageApi}>
+          <RealAddCardsTab />
+          <Url />
+        </PageApiContext.Provider>
+      </MemoryRouter>
+    );
+  }
+  const file = (name: string, type = "image/jpeg") => new File(["x"], name, { type });
+  const zip = () => file("cards.zip", "application/zip");
+  const drop = async (files: File[]) => {
+    await act(async () => mocks.dropzone.at(-1)!.onFiles(files));
+  };
+  /** Every live-region line on screen, without the page-address readout. */
+  const lines = () =>
+    screen
+      .getAllByRole("status")
+      .filter((el) => el.getAttribute("aria-label") !== "Page address")
+      // The workspace's own tally ("0 saved.") is not the run's line.
+      .filter((el) => !/^\d+ saved\.$/.test(el.textContent ?? ""))
+      .map((el) => el.textContent ?? "");
+  const url = () => screen.getByRole("status", { name: "Page address" }).textContent;
+
+  /** A run whose job is in `job`; the images stay as setRun leaves them. */
+  function runWithJob(job: Record<string, unknown>) {
+    const runId = freshRunId();
+    setRun(runId);
+    mocks.data.job = {
+      status: "succeeded",
+      mode: "zip",
+      totalImages: 0,
+      failedImages: 0,
+      rejectedEntries: 0,
+      ...job,
+    };
+    return runId;
+  }
+  const open = (runId: string) => render(<Screen initial={`/collection/final/intake?run=${runId}`} />);
+
+  beforeEach(() => {
+    mocks.data.homes = [{ id: "home1", name: "Binder", kind: "binder" }];
+    mocks.upload.mockImplementation((files: File[], { jobId }: { jobId?: string }) =>
+      Promise.resolve({ ok: true, jobId: jobId ?? "job-fresh", kind: "images", uploaded: files.length, failed: 0, total: files.length }),
+    );
+  });
+
+  describe("sending", () => {
+    it("a zip says 'Sending your zip…' while it goes up, then no 'Sent' line at all", async () => {
+      const runId = freshRunId();
+      setRun(runId);
+      let finish: (v: unknown) => void = () => {};
+      mocks.upload.mockImplementation(() => new Promise((resolve) => (finish = resolve)));
+      open(runId);
+      const sent = [zip()];
+      let pending: Promise<void> = Promise.resolve();
+      await act(async () => {
+        pending = Promise.resolve(mocks.dropzone.at(-1)!.onFiles(sent));
+      });
+      expect(lines()).toContain("Sending your zip…");
+      expect(lines().some((l) => l.includes("Sending your photos"))).toBe(false);
+      await act(async () => {
+        finish({ ok: true, jobId: `job-${runId}`, kind: "zip", uploaded: 1, failed: 0, total: 1 });
+        await pending;
+      });
+      expect(lines().some((l) => /^Sent /.test(l))).toBe(false);
+      expect(lines().some((l) => l.includes("Sending your"))).toBe(false);
+      // A zip goes up as handed: it is one file.
+      expect(mocks.upload).toHaveBeenCalledWith(sent, { source: "web", jobId: `job-${runId}` });
+    });
+
+    it("loose photos say 'Sending your photos…' then count what landed", async () => {
+      const runId = freshRunId();
+      setRun(runId);
+      open(runId);
+      await drop([file("a.jpg"), file("b.jpg")]);
+      expect(lines()).toContain("Sent 2 photos.");
+      mocks.upload.mockResolvedValueOnce({ ok: true, jobId: `job-${runId}`, kind: "images", uploaded: 1, failed: 0, total: 1 });
+      await drop([file("c.jpg")]);
+      expect(lines()).toContain("Sent 1 photo.");
+    });
+
+    it("loose photos with failures count both numbers", async () => {
+      const runId = freshRunId();
+      setRun(runId);
+      mocks.upload.mockResolvedValueOnce({ ok: true, jobId: `job-${runId}`, kind: "images", uploaded: 2, failed: 1, total: 3 });
+      open(runId);
+      await drop([file("a.jpg"), file("b.jpg"), file("c.jpg")]);
+      expect(lines()).toContain("Sent 2 of 3 photos. 1 failed.");
+    });
+
+    it("loose photos are handed to upload in natural filename order, and the picker's array is left alone", async () => {
+      const runId = freshRunId();
+      setRun(runId);
+      open(runId);
+      const picked = [file("IMG_10.jpg"), file("IMG_2.jpg"), file("img_1.jpg"), file("IMG_02b.jpg")];
+      await drop(picked);
+      const sent = mocks.upload.mock.calls[0][0] as File[];
+      expect(sent.map((f) => f.name)).toEqual(["img_1.jpg", "IMG_2.jpg", "IMG_02b.jpg", "IMG_10.jpg"]);
+      expect(picked.map((f) => f.name)).toEqual(["IMG_10.jpg", "IMG_2.jpg", "img_1.jpg", "IMG_02b.jpg"]);
+    });
+
+    it("a refused zip says 'that zip', refused photos say 'these photos'", async () => {
+      const runId = freshRunId();
+      setRun(runId);
+      open(runId);
+      mocks.upload.mockResolvedValueOnce({ ok: false, reason: "you are over the limit" });
+      await drop([zip()]);
+      expect(lines()).toContain("Couldn't send that zip: you are over the limit.");
+      mocks.upload.mockResolvedValueOnce({ ok: false, reason: "you are over the limit" });
+      await drop([file("a.jpg")]);
+      expect(lines()).toContain("Couldn't send these photos: you are over the limit.");
+    });
+
+    it("a zip over the upload limit says how to split it", async () => {
+      const runId = freshRunId();
+      setRun(runId);
+      open(runId);
+      mocks.upload.mockResolvedValueOnce({ ok: false, reason: "that zip is larger than the 500MB limit", overLimitMb: 500 });
+      await drop([zip()]);
+      expect(lines()).toContain(
+        "Couldn't send that zip: it's over 500 MB. Split it into smaller zips, each card's front and back together, one per run.",
+      );
+    });
+
+    it("an invalid selection (two zips) sends nothing and says nothing new", async () => {
+      const runId = freshRunId();
+      setRun(runId);
+      open(runId);
+      await drop([zip(), file("two.zip", "application/zip")]);
+      expect(mocks.upload).not.toHaveBeenCalled();
+      expect(lines().filter(Boolean)).toEqual([]);
+    });
+  });
+
+  describe("the run's line", () => {
+    it("says nothing while the run is collecting", () => {
+      const runId = runWithJob({ status: "collecting", mode: "stream" });
+      open(runId);
+      expect(lines().filter(Boolean)).toEqual([]);
+      expect(screen.queryByRole("button", { name: "Start a new run" })).toBeNull();
+      expect(screen.getByRole("button", { name: "Drag your card photos here" })).toBeTruthy();
+    });
+
+    it("a zip that was all rejected explains why, offers Start a new run, and hides the lanes", () => {
+      const runId = runWithJob({
+        status: "failed",
+        errorCode: "TOO_MANY_IMAGE_FAILURES",
+        totalImages: 0,
+        rejectedEntries: 2,
+        rejected: { tooBig: 2, wrongFormat: 0, unreadable: 0, examples: [{ name: "a.jpg", kind: "tooBig" }] },
+      });
+      open(runId);
+      expect(lines()).toContain(
+        "Whoa, those photos are too big! All 2 are over 64 megapixels or 32 MB. Use your camera's normal setting or shrink them, zip them up again, and start a new run.",
+      );
+      expect(lines().some((l) => l.includes("all in"))).toBe(false);
+      expect(screen.getByRole("button", { name: "Start a new run" })).toBeTruthy();
+      expect(screen.queryByRole("heading", { name: "Pairing" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Done adding photos" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Drag your card photos here" })).toBeNull();
+    });
+
+    it("a partial failure keeps the lanes, with the line and the button", async () => {
+      const runId = runWithJob({
+        status: "failed",
+        errorCode: "TOO_MANY_IMAGE_FAILURES",
+        totalImages: 5,
+        failedImages: 3,
+      });
+      open(runId);
+      expect(lines().some((l) => l.startsWith("Most of these photos wouldn't read."))).toBe(true);
+      expect(screen.getByRole("button", { name: "Start a new run" })).toBeTruthy();
+      expect(await screen.findByRole("heading", { name: "Pairing" })).toBeTruthy();
+    });
+
+    it("a healthy finished run says all in, with no Start a new run and the lanes shown", async () => {
+      const runId = runWithJob({ status: "succeeded", totalImages: 4 });
+      open(runId);
+      expect(lines()).toContain("This run's photos are all in. To add more, start a new run.");
+      expect(screen.queryByRole("button", { name: "Start a new run" })).toBeNull();
+      expect(await screen.findByRole("heading", { name: "Pairing" })).toBeTruthy();
+    });
+
+    it("a zip still unpacking says so, calmly", () => {
+      const runId = runWithJob({ status: "extracting" });
+      open(runId);
+      expect(lines()).toContain("Unpacking your zip…");
+      expect(screen.queryByRole("button", { name: "Start a new run" })).toBeNull();
+    });
+
+    it("some of a zip rejected, rest in: the line names the files and offers the button", () => {
+      const runId = runWithJob({
+        status: "succeeded",
+        totalImages: 3,
+        rejectedEntries: 1,
+        rejected: { tooBig: 0, wrongFormat: 1, unreadable: 0, examples: [{ name: "IMG.heic", kind: "wrongFormat" }] },
+      });
+      open(runId);
+      expect(lines()).toContain(
+        "3 photos made it in. 1 didn't: \"IMG.heic\" isn't a JPEG or PNG. Convert it to JPEG and drop it in a new run, with its other side.",
+      );
+      expect(screen.getByRole("button", { name: "Start a new run" })).toBeTruthy();
+    });
+
+    it("each file name is isolated, so a right-to-left name can't reorder the line", () => {
+      const runId = runWithJob({
+        status: "succeeded",
+        totalImages: 3,
+        rejectedEntries: 2,
+        rejected: {
+          tooBig: 2,
+          wrongFormat: 0,
+          unreadable: 0,
+          examples: [
+            { name: "תמונה.jpg", kind: "tooBig" },
+            { name: "b.jpg", kind: "tooBig" },
+          ],
+        },
+      });
+      const { container } = open(runId);
+      expect(Array.from(container.querySelectorAll("bdi")).map((el) => el.textContent)).toEqual(['"תמונה.jpg"', '"b.jpg"']);
+      expect(lines()).toContain(
+        '3 photos made it in. 2 didn\'t: "תמונה.jpg", "b.jpg" are too big (over 64 megapixels or 32 MB). Shrink them and drop them in a new run, with their other sides.',
+      );
+    });
+
+    it("Start a new run is filled with nothing below it, outlined when the run has photos", () => {
+      const fill = () => screen.getByRole("button", { name: "Start a new run" }).style.getPropertyValue("--nb-fill");
+      const empty = open(runWithJob({ status: "failed", errorCode: "CANCELED", totalImages: 0 }));
+      expect(fill()).not.toBe("transparent");
+      empty.unmount();
+      open(runWithJob({ status: "failed", errorCode: "EXTRACT_UNAVAILABLE", totalImages: 4 }));
+      expect(fill()).toBe("transparent");
+    });
+
+    it("a file name from a zip renders as text, never as markup", () => {
+      const name = "<img src=x onerror=alert(1)>.heic";
+      const runId = runWithJob({
+        status: "succeeded",
+        totalImages: 3,
+        rejectedEntries: 1,
+        rejected: { tooBig: 0, wrongFormat: 1, unreadable: 0, examples: [{ name, kind: "wrongFormat" }] },
+      });
+      const { container } = open(runId);
+      expect(container.querySelector("img[src='x']")).toBeNull();
+      expect(lines().some((l) => l.includes(name))).toBe(true);
+    });
+
+    it("a gone job row (null) says the reader hit a snag and still offers the way forward", () => {
+      const runId = freshRunId();
+      setRun(runId);
+      mocks.data.job = null;
+      open(runId);
+      expect(lines()).toContain("Our photo reader hit a snag. That's on us. Start a new run and send them again.");
+      expect(screen.getByRole("button", { name: "Start a new run" })).toBeTruthy();
+      // The lanes stay: they may hold saved cards.
+      expect(screen.queryByRole("heading", { name: "Pairing" })).not.toBeNull();
+    });
+
+    it("the line passes axe in both modes, with and without the button", async () => {
+      const runId = runWithJob({ status: "failed", errorCode: "CANCELED", totalImages: 0 });
+      const { container, rerender } = open(runId);
+      await expectAccessibleInBothModes(container, {
+        label: "Intake, a stopped run",
+        rerender: () => rerender(<Screen initial={`/collection/final/intake?run=${runId}`} />),
+      });
+    });
+  });
+
+  describe("starting a new run", () => {
+    it("Start a new run leaves the run, clears the status and moves focus to the drop zone's input", async () => {
+      const runId = runWithJob({ status: "collecting", mode: "stream" });
+      const { rerender } = open(runId);
+      await drop([file("a.jpg")]);
+      expect(lines()).toContain("Sent 1 photo.");
+      // The run closes under the collector with a problem.
+      mocks.data.job = { status: "failed", mode: "zip", errorCode: "CANCELED", totalImages: 0, failedImages: 0, rejectedEntries: 0 };
+      rerender(<Screen initial={`/collection/final/intake?run=${runId}`} />);
+      fireEvent.click(await screen.findByRole("button", { name: "Start a new run" }));
+      await act(async () => {});
+      expect(url()).toBe("");
+      expect(screen.queryByRole("button", { name: "Start a new run" })).toBeNull();
+      expect(lines().filter(Boolean)).toEqual([]);
+      await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText("Photo files")));
+    });
+
+    it("New run on an open run also clears the status and focuses the input", async () => {
+      const runId = runWithJob({ status: "collecting", mode: "stream" });
+      open(runId);
+      await drop([file("a.jpg")]);
+      expect(lines()).toContain("Sent 1 photo.");
+      fireEvent.click(screen.getByRole("button", { name: "New run" }));
+      await act(async () => {});
+      expect(url()).toBe("");
+      expect(lines()).not.toContain("Sent 1 photo.");
+      await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText("Photo files")));
+    });
+
+    it("with a send still going the input can't take focus, so the drop zone does", async () => {
+      const runId = runWithJob({ status: "collecting", mode: "stream" });
+      mocks.uploading = true;
+      open(runId);
+      fireEvent.click(screen.getByRole("button", { name: "New run" }));
+      await act(async () => {});
+      expect(url()).toBe("");
+      const input = screen.getByLabelText<HTMLInputElement>("Photo files");
+      expect(input.disabled).toBe(true);
+      expect(document.activeElement).toBe(input.parentElement);
+      mocks.uploading = false;
+    });
+
+    it("Back to the closed run and Forward again doesn't take focus a second time", async () => {
+      const runId = runWithJob({ status: "failed", errorCode: "CANCELED", totalImages: 0 });
+      open(runId);
+      fireEvent.click(screen.getByRole("button", { name: "Start a new run" }));
+      await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText("Photo files")));
+      fireEvent.click(screen.getByRole("button", { name: "Browser back" }));
+      await waitFor(() => expect(url()).toBe(`?run=${runId}`));
+      const forward = screen.getByRole("button", { name: "Browser forward" });
+      forward.focus();
+      fireEvent.click(forward);
+      await waitFor(() => expect(url()).toBe(""));
+      await act(async () => {});
+      expect(document.activeElement).toBe(forward);
+    });
+
+    it("focus is only taken when the user asked to leave a run, not on a plain visit", () => {
+      mocks.data.run = null;
+      mocks.data.job = null;
+      render(<Screen initial="/collection/final/intake" />);
+      expect(document.activeElement).not.toBe(screen.getByLabelText("Photo files"));
+    });
   });
 });

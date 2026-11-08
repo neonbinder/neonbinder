@@ -20,7 +20,7 @@ import io
 import cv2
 import numpy as np
 import pytest
-from PIL import Image
+from PIL import Image, ImageOps
 
 from app.cropper import tiered
 from app.cropper.tiered import (
@@ -102,6 +102,58 @@ def stub_birefnet(monkeypatch):
 
 
 # ── Classical happy path ────────────────────────────────────────────────────
+
+
+class TestLoad:
+    """`_load` is written for memory; its pixels must not depend on that."""
+
+    @staticmethod
+    def _expected_bgr(image_bytes: bytes) -> np.ndarray:
+        # The plain form: transpose to a new image, convert, then swap channels.
+        im = ImageOps.exif_transpose(Image.open(io.BytesIO(image_bytes))).convert("RGB")
+        return cv2.cvtColor(np.array(im), cv2.COLOR_RGB2BGR)
+
+    @pytest.mark.parametrize("orientation", [None, 1, 2, 3, 4, 5, 6, 7, 8])
+    def test_every_exif_orientation_decodes_the_same(self, orientation):
+        pixels = np.random.default_rng(446).integers(0, 256, (40, 60, 3), dtype=np.uint8)
+        out = io.BytesIO()
+        img = Image.fromarray(pixels)
+        if orientation is None:
+            img.save(out, format="JPEG")
+        else:
+            exif = img.getexif()
+            exif[0x0112] = orientation
+            img.save(out, format="JPEG", exif=exif)
+
+        full, work, scale = tiered._load(out.getvalue())
+
+        assert np.array_equal(full, self._expected_bgr(out.getvalue()))
+        assert np.array_equal(work, full)
+        assert work is not full
+        assert work.flags.writeable and full.flags.writeable
+        assert scale == 1.0
+
+    @pytest.mark.parametrize("mode", ["L", "P", "RGBA", "LA", "CMYK", "1"])
+    def test_every_source_mode_decodes_the_same(self, mode):
+        pixels = np.random.default_rng(446).integers(0, 256, (40, 60, 3), dtype=np.uint8)
+        out = io.BytesIO()
+        file_format = "TIFF" if mode == "CMYK" else "PNG"
+        Image.fromarray(pixels).convert(mode).save(out, format=file_format)
+
+        full, _work, _scale = tiered._load(out.getvalue())
+
+        assert np.array_equal(full, self._expected_bgr(out.getvalue()))
+
+    def test_a_frame_over_the_work_size_is_scaled_from_the_same_pixels(self):
+        out = io.BytesIO()
+        Image.new("RGB", (tiered.WORK_LONG * 2, 100), (10, 20, 30)).save(out, format="PNG")
+
+        full, work, scale = tiered._load(out.getvalue())
+
+        assert full.shape[1] == tiered.WORK_LONG * 2
+        assert max(work.shape[:2]) == tiered.WORK_LONG
+        assert scale == 0.5
+        assert np.array_equal(full, self._expected_bgr(out.getvalue()))
 
 
 class TestClassicalPath:
