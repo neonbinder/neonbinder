@@ -4596,26 +4596,38 @@ export type BulkCandidatePage = {
  * path costs nothing beyond the row itself — the same result the old walk
  * reached, since its ambiguity check only ever applied to players.
  */
+async function bulkCandidateVerdict(
+  ctx: QueryCtx | MutationCtx,
+  row: Doc<"entityReviewQueue">,
+  action: BulkAction,
+): Promise<"candidate" | "fragment" | "no"> {
+  if (row.decision) return "no";
+  if (action === "skip") return "candidate";
+  if (row.status === "pending") return "no";
+  if (row.kind !== "player") return "no";
+  // NEO-424 — two or more players this SET already linked the name to is the
+  // NEO-254 choice by other means, and the live index cannot see it when they
+  // sit in other sports. Read off the row: set history is a fact about this
+  // set's committed cards, not a snapshot of the name index going stale.
+  if (historyCandidatesOf(row.enrichment).length > 0) return "no";
+  if (await isAmbiguousPlayerName(ctx, row.name, row.sportId)) return "no";
+  // NEO-463 — a one-word name that is a fuller-named player's first or last
+  // name ("Walker" beside "Larry Walker") is a question, not a new player:
+  // "Add All Remaining as New" leaves it for the operator. A one-word name
+  // with no clash returns no matches without a read beyond the search.
+  // Reported apart from "no" because the search behind it is the expensive
+  // read: the page walk charges a held fragment against its budget.
+  return (await nameFragmentMatches(ctx, row.name, row.sportId)).length === 0
+    ? "candidate"
+    : "fragment";
+}
+
 async function isBulkCandidate(
   ctx: QueryCtx | MutationCtx,
   row: Doc<"entityReviewQueue">,
   action: BulkAction,
 ): Promise<boolean> {
-  if (row.decision) return false;
-  if (action === "skip") return true;
-  if (row.status === "pending") return false;
-  if (row.kind !== "player") return false;
-  // NEO-424 — two or more players this SET already linked the name to is the
-  // NEO-254 choice by other means, and the live index cannot see it when they
-  // sit in other sports. Read off the row: set history is a fact about this
-  // set's committed cards, not a snapshot of the name index going stale.
-  if (historyCandidatesOf(row.enrichment).length > 0) return false;
-  if (await isAmbiguousPlayerName(ctx, row.name, row.sportId)) return false;
-  // NEO-463 — a one-word name that is a fuller-named player's first or last
-  // name ("Walker" beside "Larry Walker") is a question, not a new player:
-  // "Add All Remaining as New" leaves it for the operator. A one-word name
-  // with no clash returns no matches without a read beyond the search.
-  return (await nameFragmentMatches(ctx, row.name, row.sportId)).length === 0;
+  return (await bulkCandidateVerdict(ctx, row, action)) === "candidate";
 }
 
 /**
@@ -4671,13 +4683,24 @@ async function listBulkCandidatesImpl(
    */
   let lastExamined: Doc<"entityReviewQueue"> | undefined;
   let budgetSpent = false;
+  /**
+   * NEO-463 — rows held back as name fragments. Each one cost a bounded
+   * search read (up to `NAME_FRAGMENT_SCAN_LIMIT` rows per term) and decided
+   * nothing, so without a charge a page of fragments would run that search on
+   * every one of its `scan` rows. A held fragment spends the decide budget
+   * like a decided row, so the walk stops after `decide` searches whatever the
+   * holds, and the cursor hands the rest to the next call.
+   */
+  let heldFragments = 0;
   for (const row of rows) {
-    if (ids.length >= page.decide) {
+    if (ids.length + heldFragments >= page.decide) {
       budgetSpent = true;
       break;
     }
     lastExamined = row;
-    if (await isBulkCandidate(ctx, row, args.action)) ids.push(row._id);
+    const verdict = await bulkCandidateVerdict(ctx, row, args.action);
+    if (verdict === "candidate") ids.push(row._id);
+    else if (verdict === "fragment") heldFragments += 1;
   }
   return {
     ids,

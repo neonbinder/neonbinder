@@ -15,10 +15,11 @@
 
 import { convexTest } from "convex-test";
 import { describe, expect, test } from "vitest";
-import { api } from "./_generated/api";
+import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
-import { normalizePlayerName } from "./players";
+import { NAME_FRAGMENT_SCAN_LIMIT, normalizePlayerName } from "./players";
+import { ENTITY_REVIEW_BULK_PAGE } from "./entityReviewQueue";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -95,7 +96,25 @@ describe("NEO-463: players.nameFragmentCheck", () => {
       sportId,
     });
     expect(result.isFragment).toBe(true);
+    expect(result.truncated).toBe(false);
     expect(result.matches.map((m) => m._id).sort()).toEqual([larry, buehler].sort());
+  });
+
+  test("a read that fills the scan limit is truncated and withholds the list", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const sportId = await seedSport(t);
+    // More Smiths than one search reads: the one the operator means may be
+    // past the bound, so a partial list must not be offered as the answer.
+    for (let i = 0; i < NAME_FRAGMENT_SCAN_LIMIT + 4; i++) {
+      await insertPlayer(t, sportId, `Player${String.fromCharCode(97 + (i % 26))}${i} Smith`);
+    }
+
+    const result = await asAdmin.query(api.players.nameFragmentCheck, {
+      name: "Smith",
+      sportId,
+    });
+    expect(result).toEqual({ isFragment: true, matches: [], truncated: true });
   });
 
   test("'Walker Jr.' is one token once the suffix drops", async () => {
@@ -120,7 +139,7 @@ describe("NEO-463: players.nameFragmentCheck", () => {
 
     expect(
       await asAdmin.query(api.players.nameFragmentCheck, { name: "Mr. Met", sportId }),
-    ).toEqual({ isFragment: false, matches: [] });
+    ).toEqual({ isFragment: false, matches: [], truncated: false });
   });
 
   test("a mononym with no clash is not a fragment", async () => {
@@ -131,7 +150,7 @@ describe("NEO-463: players.nameFragmentCheck", () => {
 
     expect(
       await asAdmin.query(api.players.nameFragmentCheck, { name: "Takuya", sportId }),
-    ).toEqual({ isFragment: false, matches: [] });
+    ).toEqual({ isFragment: false, matches: [], truncated: false });
   });
 
   test("a clash in another sport does not count", async () => {
@@ -143,7 +162,7 @@ describe("NEO-463: players.nameFragmentCheck", () => {
 
     expect(
       await asAdmin.query(api.players.nameFragmentCheck, { name: "Walker", sportId: baseball }),
-    ).toEqual({ isFragment: false, matches: [] });
+    ).toEqual({ isFragment: false, matches: [], truncated: false });
   });
 
   test("is admin-gated", async () => {
@@ -172,8 +191,26 @@ describe("NEO-463: findOrCreate and createByAdmin refuse a fragment without the 
     expect(data).toMatchObject({
       code: "PLAYER_NAME_FRAGMENT",
       matches: [{ _id: larry, name: "Larry Walker" }],
+      truncated: false,
     });
+    // The message reaches Sentry and the console: fixed text, never the name.
+    expect((data as { message: string }).message).not.toMatch(/walker/i);
     expect(await playersNamed(t, "Walker")).toHaveLength(0);
+  });
+
+  test("a truncated read still refuses, withholding the list", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const sportId = await seedSport(t);
+    for (let i = 0; i < NAME_FRAGMENT_SCAN_LIMIT + 4; i++) {
+      await insertPlayer(t, sportId, `Player${String.fromCharCode(97 + (i % 26))}${i} Smith`);
+    }
+
+    const data = await refusalData(
+      asAdmin.mutation(api.players.findOrCreate, { name: "Smith", sportId }),
+    );
+    expect(data).toMatchObject({ code: "PLAYER_NAME_FRAGMENT", matches: [], truncated: true });
+    expect(await playersNamed(t, "Smith")).toHaveLength(0);
   });
 
   test("findOrCreate creates it with oneNamePlayer: true", async () => {
@@ -363,6 +400,46 @@ describe("NEO-463: entity review refuses a plain create on a fragment", () => {
     expect((await t.run(async (ctx) => ctx.db.get(fine)))!.decision).toEqual({
       action: "create",
     });
+  });
+
+  test("a page of held fragments stops on its budget and the next page resumes", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    await insertPlayer(t, sportId, "Larry Walker");
+    const { decide } = ENTITY_REVIEW_BULK_PAGE.create;
+    const fragments: Array<Id<"entityReviewQueue">> = [];
+    for (let i = 0; i < decide + 5; i++) {
+      fragments.push(
+        await insertReviewRow(t, { selectorOptionId: sportId, sportId, batchId: "held", name: "Walker" }),
+      );
+    }
+    const fine = await insertReviewRow(t, {
+      selectorOptionId: sportId,
+      sportId,
+      batchId: "held",
+      name: "Daulton Varsho",
+    });
+    const rowTime = async (id: Id<"entityReviewQueue">) =>
+      (await t.run(async (ctx) => ctx.db.get(id)))!._creationTime;
+    const list = (cursor?: number) =>
+      t.query(internal.entityReviewQueue.listBulkCandidates, {
+        selectorOptionId: sportId,
+        batchId: "held",
+        ...(cursor !== undefined ? { cursor } : {}),
+        action: "create",
+        callerId: ADMIN_IDENTITY.subject,
+      });
+
+    // Every held fragment cost a search: the walk stops after `decide` of
+    // them, though it scanned far fewer than `scan` rows and decided none.
+    const first = await list();
+    expect(first.ids).toEqual([]);
+    expect(first.hasMore).toBe(true);
+    expect(first.cursor).toBe(await rowTime(fragments[decide - 1]));
+
+    const second = await list(first.cursor!);
+    expect(second.ids).toEqual([fine]);
+    expect(second.hasMore).toBe(false);
   });
 
   test("ten one-word names with no clash still bulk-create", async () => {

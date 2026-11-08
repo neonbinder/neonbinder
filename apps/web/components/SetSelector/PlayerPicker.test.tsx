@@ -1101,5 +1101,81 @@ describe("PlayerPicker — the popover escapes its clip box (NEO-272)", () => {
       });
       expect(screen.queryByRole("group", { name: /^Just Walker\?/ })).toBeNull();
     });
+
+    it("a truncated read asks for the whole name, lists no choices, and keeps the one-name button", () => {
+      currentFragmentCheck = { isFragment: true, truncated: true, matches: [] };
+      renderPicker();
+      typeAndCreate("Walker");
+
+      const panel = screen.getByRole("group", {
+        name: "Just Walker? That's part of a fuller name we've got. Type the whole name to find them, or add Walker as a one-name player.",
+      });
+      expect(panel).toBeTruthy();
+      expect(screen.queryByRole("list", { name: "Fuller names for Walker" })).toBeNull();
+      expect(screen.getByRole("button", { name: "Add as a one-name player" })).toBeTruthy();
+      expect(mockFindOrCreate).not.toHaveBeenCalled();
+    });
+
+    it("tells two players with one name apart by birth year, beside each choice", () => {
+      currentFragmentCheck = {
+        isFragment: true,
+        truncated: false,
+        matches: [
+          { _id: "p-devin-1", name: "Devin Walker", birthYear: 1975 },
+          { _id: "p-devin-2", name: "Devin Walker", birthYear: 1991 },
+          { _id: "p-larry", name: "Larry Walker", birthYear: 1966 },
+        ],
+      };
+      const { onChange } = renderPicker();
+      typeAndCreate("Walker");
+
+      const older = screen.getByRole("button", { name: "Add Devin Walker, b. 1975" });
+      expect(older.textContent).toContain("b. 1975");
+      expect(screen.getByRole("button", { name: "Add Devin Walker, b. 1991" })).toBeTruthy();
+      // A name that appears once keeps the bare contract label and no detail.
+      const larry = screen.getByRole("button", { name: "Add Larry Walker" });
+      expect(larry.textContent).toBe("Larry Walker");
+
+      fireEvent.click(screen.getByRole("button", { name: "Add Devin Walker, b. 1991" }));
+      expect(onChange).toHaveBeenCalledWith([pid("p-devin-2")]);
+    });
+
+    it("falls back to the choice's position when a repeated name has no birth year", () => {
+      currentFragmentCheck = {
+        isFragment: true,
+        truncated: false,
+        matches: [
+          { _id: "p-devin-1", name: "Devin Walker" },
+          { _id: "p-devin-2", name: "Devin Walker" },
+        ],
+      };
+      renderPicker();
+      typeAndCreate("Walker");
+
+      expect(
+        screen.getByRole("button", { name: "Add Devin Walker, option 1 of 2" }),
+      ).toBeTruthy();
+      expect(
+        screen.getByRole("button", { name: "Add Devin Walker, option 2 of 2" }),
+      ).toBeTruthy();
+    });
+
+    it("an undated twin beside a dated one says it has no birth year", () => {
+      currentFragmentCheck = {
+        isFragment: true,
+        truncated: false,
+        matches: [
+          { _id: "p-devin-1", name: "Devin Walker", birthYear: 1975 },
+          { _id: "p-devin-2", name: "Devin Walker" },
+        ],
+      };
+      renderPicker();
+      typeAndCreate("Walker");
+
+      expect(screen.getByRole("button", { name: "Add Devin Walker, b. 1975" })).toBeTruthy();
+      expect(
+        screen.getByRole("button", { name: "Add Devin Walker, no birth year" }),
+      ).toBeTruthy();
+    });
   });
 });

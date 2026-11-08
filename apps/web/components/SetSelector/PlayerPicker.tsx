@@ -20,6 +20,7 @@ import { TOKENS, tokenHex } from "../../src/theme/tokens";
 import PickerPopover, { popoverFocusables } from "./PickerPopover";
 import SportSwitch from "./SportSwitch";
 import NameFragmentPanel, {
+  fragmentCheckChoices,
   fragmentRefusalMatches,
   isNameFragmentRefusal,
   type NameFragmentMatch,
@@ -526,9 +527,12 @@ export default function PlayerPicker({
   );
   const fragmentShown =
     popoverOpen && fragmentFor !== null && fragmentFor === typed;
-  const fragmentMatches: NameFragmentMatch[] =
-    fragmentCheck?.isFragment && fragmentCheck.matches.length > 0
-      ? fragmentCheck.matches
+  // A truncated check withholds its list (`[]`), and the panel falls back to
+  // "Type the whole name"; with no check in hand, a refusal's own list.
+  const checkChoices = fragmentCheckChoices(fragmentCheck);
+  const fragmentMatches: ReadonlyArray<NameFragmentMatch> =
+    checkChoices !== null && (fragmentCheck?.truncated || checkChoices.length > 0)
+      ? checkChoices
       : refusalMatches;
   const closeFragment = () => {
     setFragmentFor(null);

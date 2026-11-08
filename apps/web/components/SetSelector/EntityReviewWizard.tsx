@@ -54,7 +54,9 @@ import SameNamePlayerPanel, {
 } from "./SameNamePlayerPanel";
 // NEO-463: a one-word name that is a piece of a fuller one on file.
 import NameFragmentPanel, {
+  NameFragmentLiveRegion,
   ONE_NAME_PLAYER_LABEL,
+  nameFragmentMessage,
   type NameFragmentMatch,
 } from "./NameFragmentPanel";
 import UndatedCareerTeams from "./UndatedCareerTeams";
@@ -1225,11 +1227,20 @@ export default function EntityReviewWizard({
       ? { name: current.name, sportId: current.sportId }
       : "skip",
   );
+  /*
+   * A truncated read (a common surname filled the search bound) keeps the
+   * step but withholds the list: the panel asks for the whole name and offers
+   * no choices, and the footer's primary is still the one-name create.
+   */
+  const fragmentWithheld =
+    fragmentCheck?.isFragment === true && fragmentCheck.truncated;
   const fragmentLiveMatches: NameFragmentMatch[] =
-    fragmentCheck?.isFragment ? fragmentCheck.matches : NO_FRAGMENT_MATCHES;
+    fragmentCheck?.isFragment && !fragmentCheck.truncated
+      ? fragmentCheck.matches
+      : NO_FRAGMENT_MATCHES;
   /** The fragment panel, for the focus move below. */
   const fragmentPanelRef = useRef<HTMLDivElement | null>(null);
-  const fragmentAnswered = fragmentLiveMatches.length > 0;
+  const fragmentAnswered = fragmentLiveMatches.length > 0 || fragmentWithheld;
   /*
    * NEO-463 (SC 2.4.3 / 3.2.2) — the answer can land while a keyboard
    * operator already sits on the footer's primary, which it relabels from
@@ -4445,6 +4456,23 @@ export default function EntityReviewWizard({
               </div>
             ) : current ? (
               <>
+                {/*
+                  NEO-463 — the fragment question can land after the step is
+                  on screen (the check answers late), relabelling the footer's
+                  primary with nothing pressed. Announced here, politely, from
+                  a region that is mounted for every step so it exists before
+                  its text does. When focus sat on that primary, focus moves
+                  to the panel instead and the panel's name says it, so this
+                  stays quiet.
+                */}
+                <NameFragmentLiveRegion
+                  message={
+                    fragmentStep
+                      ? nameFragmentMessage(current.name, fragmentLiveMatches)
+                      : null
+                  }
+                  skipWhileFocusedOn={primaryDecisionRef}
+                />
                 <div>
                   {/* NEO-212 (a11y): the CopyButton and the kind/sport tag sit
                       BESIDE the heading, not inside it. Inside, they became

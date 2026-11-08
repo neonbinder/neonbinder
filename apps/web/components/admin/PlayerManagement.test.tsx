@@ -42,6 +42,7 @@
  */
 
 import {
+  act,
   fireEvent,
   render as renderBare,
   screen,
@@ -3008,5 +3009,40 @@ describe("NEO-463: a one-word name that is a piece of a fuller one", () => {
 
     expect(screen.queryByRole("group", { name: QUESTION })).toBeNull();
     expect(document.activeElement).toBe(create);
+  });
+
+  it("a repeat Create with the question already up moves focus back to it", async () => {
+    fragmentCheck = GRIFFEY_FRAGMENT;
+    const { container } = render(<PlayerManagement />);
+    await typeChecked(container, "Griffey");
+    const create = screen.getByRole("button", { name: "Create player Griffey" });
+    fireEvent.click(create);
+    const panel = screen.getByRole("group", { name: QUESTION });
+
+    // The operator tabs away and presses Create again: the panel is already
+    // mounted, so its own autoFocus cannot answer the press.
+    act(() => create.focus());
+    expect(document.activeElement).toBe(create);
+    fireEvent.click(create);
+
+    expect(document.activeElement).toBe(panel);
+    expect(screen.getAllByRole("group", { name: QUESTION })).toHaveLength(1);
+    expect(mockCreateByAdmin).not.toHaveBeenCalled();
+  });
+
+  it("a truncated read asks for the whole name, lists no choices, and keeps the one-name button", async () => {
+    fragmentCheck = { isFragment: true, truncated: true, matches: [] };
+    const { container } = render(<PlayerManagement />);
+    await typeChecked(container, "Griffey");
+    fireEvent.click(screen.getByRole("button", { name: "Create player Griffey" }));
+
+    expect(
+      screen.getByRole("group", {
+        name: "Just Griffey? That's part of a fuller name we've got. Type the whole name to find them, or add Griffey as a one-name player.",
+      }),
+    ).toBeTruthy();
+    expect(screen.queryByRole("list", { name: "Fuller names for Griffey" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Add as a one-name player" })).toBeTruthy();
+    expect(mockCreateByAdmin).not.toHaveBeenCalled();
   });
 });

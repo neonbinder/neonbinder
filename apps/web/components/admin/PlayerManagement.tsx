@@ -18,6 +18,7 @@ import NeonButton from "@/components/modules/NeonButton";
 import TeamPicker from "@/components/SetSelector/TeamPicker";
 import { SportTag } from "@/components/SetSelector/PlayerPicker";
 import NameFragmentPanel, {
+  fragmentCheckChoices,
   fragmentRefusalMatches,
   isNameFragmentRefusal,
   type NameFragmentMatch,
@@ -591,6 +592,8 @@ function AddPlayerForm({
   const [refusalMatches, setRefusalMatches] = useState<NameFragmentMatch[]>([]);
   /** Where Escape in the panel hands focus back: the button that opened it. */
   const createButtonRef = useRef<HTMLButtonElement>(null);
+  /** The fragment panel, for a repeat Create press to return focus to. */
+  const fragmentPanelRef = useRef<HTMLDivElement | null>(null);
   const closeFragment = () => {
     setFragmentFor(null);
     setRefusalMatches([]);
@@ -626,11 +629,12 @@ function AddPlayerForm({
    * renders as no panel at all.
    */
   const fragmentShown = fragmentFor !== null && fragmentFor === trimmed;
-  const fragmentMatches: NameFragmentMatch[] =
-    probe === trimmed &&
-    fragmentCheck?.isFragment &&
-    fragmentCheck.matches.length > 0
-      ? fragmentCheck.matches
+  // A truncated check withholds its list (`[]`), and the panel falls back to
+  // "Type the whole name"; a stale or missing check, a refusal's own list.
+  const checkChoices = probe === trimmed ? fragmentCheckChoices(fragmentCheck) : null;
+  const fragmentMatches: ReadonlyArray<NameFragmentMatch> =
+    checkChoices !== null && (fragmentCheck?.truncated || checkChoices.length > 0)
+      ? checkChoices
       : refusalMatches;
   /** NEO-463 — the fuller names the fragment panel lists, so no row repeats. */
   const fragmentOwnedIds = new Set<string>(
@@ -685,7 +689,11 @@ function AddPlayerForm({
     // NEO-463 — a fragment stops here and asks, before any write.
     if (!oneNamePlayer && probe === trimmed && fragmentCheck?.isFragment) {
       setError(null);
-      setFragmentFor(trimmed);
+      // A repeat press with the panel already up mounts nothing, so its
+      // autoFocus cannot fire: move focus there by hand, as the picker's
+      // Enter does, so the press is answered rather than swallowed.
+      if (fragmentShown) fragmentPanelRef.current?.focus({ preventScroll: true });
+      else setFragmentFor(trimmed);
       return;
     }
     setBusy(true);
@@ -731,7 +739,8 @@ function AddPlayerForm({
       // opens the panel, which says more than an error line could.
       if (isNameFragmentRefusal(e)) {
         setRefusalMatches(fragmentRefusalMatches(e));
-        setFragmentFor(trimmed);
+        if (fragmentShown) fragmentPanelRef.current?.focus({ preventScroll: true });
+        else setFragmentFor(trimmed);
         return;
       }
       setError(userFacingMessage(e, "Could not add that player."));
@@ -841,6 +850,7 @@ function AddPlayerForm({
       {fragmentShown && (
         <NameFragmentPanel
           autoFocus
+          panelRef={fragmentPanelRef}
           name={trimmed}
           matches={fragmentMatches}
           pickLabel={(n) => `Open ${n}`}

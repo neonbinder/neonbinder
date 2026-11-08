@@ -961,48 +961,85 @@ export const PLAYER_NAME_FRAGMENT = "PLAYER_NAME_FRAGMENT";
 
 /**
  * NEO-463 — the fuller-named players in this sport that a single-token `name`
- * is the first or last token of. Empty for a name of two or more tokens.
+ * is the first or last token of, and whether that list is complete. Empty and
+ * untruncated for a name of two or more tokens.
  *
  * Reads the existing `search_name` index (filtered by sport, bounded) and
  * checks tokens in memory with `fragmentMatches`; the index finds rows that
  * CONTAIN the word, the helper keeps the ones where it is the first or last
  * name. Two search texts at most: the word as typed and, when folding changes
  * it ("José" → "jose"), the folded word, because the search index does not
- * fold accents the way `entityNameTokens` does.
+ * fold accents the way `entityNameTokens` does. Terms that differ only in
+ * case are one search ("Walker" / "walker"): the index is case-insensitive,
+ * so the second read would return the same rows and double the cost.
+ *
+ * `truncated` is true when any search filled `NAME_FRAGMENT_SCAN_LIMIT`: the
+ * index had more rows than were read, so a common surname ("Smith") may hide
+ * the very player the operator means. The matches found are still a real
+ * clash, so callers refuse on them; they just must not present the list as
+ * the whole answer.
  *
  * Home sport only, like `search`'s index leg. A multi-sport member (NEO-313)
  * is not consulted; the clash this guards is the common one, a surname typed
  * for a player of the same sport.
  */
-export async function nameFragmentMatches(
+export async function nameFragmentScan(
   ctx: QueryCtx | MutationCtx,
   name: string,
   sportId: Id<"selectorOptions">,
-): Promise<Array<{ _id: Id<"players">; name: string }>> {
+): Promise<{
+  matches: Array<{ _id: Id<"players">; name: string; birthYear?: number }>;
+  truncated: boolean;
+}> {
   const tokens = nameFragmentTokens(name);
-  if (tokens.length !== 1) return [];
+  if (tokens.length !== 1) return { matches: [], truncated: false };
 
   // The typed word itself, minus a trailing suffix word ("Walker Jr." → "Walker").
   const words = name.trim().split(/\s+/);
   const kept =
     words.length > 1 && isGenerationalSuffix(words[words.length - 1]) ? words.slice(0, -1) : words;
   const typed = kept.join(" ").replace(/[.,]+$/, "");
-  const terms = Array.from(new Set([typed, tokens[0]].filter((t) => t.length > 0)));
+  const terms: string[] = [];
+  const termKeys = new Set<string>();
+  for (const term of [typed, tokens[0]]) {
+    const key = term.toLowerCase();
+    if (term.length === 0 || termKeys.has(key)) continue;
+    termKeys.add(key);
+    terms.push(term);
+  }
 
   const seen = new Set<string>();
   const rows: Array<Doc<"players">> = [];
+  let truncated = false;
   for (const term of terms) {
     const hits = await ctx.db
       .query("players")
       .withSearchIndex("search_name", (q) => q.search("name", term).eq("sportId", sportId))
       .take(NAME_FRAGMENT_SCAN_LIMIT);
+    if (hits.length >= NAME_FRAGMENT_SCAN_LIMIT) truncated = true;
     for (const hit of hits) {
       if (seen.has(hit._id)) continue;
       seen.add(hit._id);
       rows.push(hit);
     }
   }
-  return fragmentMatches(name, rows).map((p) => ({ _id: p._id, name: p.name }));
+  return {
+    matches: fragmentMatches(name, rows).map((p) => ({
+      _id: p._id,
+      name: p.name,
+      ...(p.birthYear !== undefined ? { birthYear: p.birthYear } : {}),
+    })),
+    truncated,
+  };
+}
+
+/** NEO-463 — `nameFragmentScan`'s matches alone, for callers that only ask "any clash?". */
+export async function nameFragmentMatches(
+  ctx: QueryCtx | MutationCtx,
+  name: string,
+  sportId: Id<"selectorOptions">,
+): Promise<Array<{ _id: Id<"players">; name: string }>> {
+  return (await nameFragmentScan(ctx, name, sportId)).matches;
 }
 
 /**
@@ -1012,7 +1049,12 @@ export async function nameFragmentMatches(
  *
  * The refusal is structured (`data.code`), so callers branch on the code and
  * never on message text. The matches are names and ids of rows the admin
- * caller can already search, so returning them leaks nothing.
+ * caller can already search, so returning them leaks nothing. When the read
+ * was truncated the list is withheld (`matches: []`, `truncated: true`) and
+ * the caller falls back to asking for the whole name; the refusal stands.
+ *
+ * The message is fixed text, never the name: it reaches Sentry and the
+ * browser console through Convex's error path, like the length refusals.
  */
 export async function assertNotNameFragment(
   ctx: MutationCtx,
@@ -1021,19 +1063,22 @@ export async function assertNotNameFragment(
   oneNamePlayer: true | undefined,
 ): Promise<void> {
   if (oneNamePlayer === true) return;
-  const matches = await nameFragmentMatches(ctx, name, sportId);
+  const { matches, truncated } = await nameFragmentScan(ctx, name, sportId);
   if (matches.length === 0) return;
   throw new ConvexError({
     code: PLAYER_NAME_FRAGMENT,
-    message: `${name} is part of a player NeonBinder already has. Pick that player, or confirm this is a one-name player.`,
-    matches,
+    message:
+      "This name matches a fuller player on file. Pick that player, or confirm this is a one-name player.",
+    matches: truncated ? [] : matches,
+    truncated,
   });
 }
 
 /**
  * NEO-463 — the picker's and add form's pre-check for a one-word name.
  * `isFragment` is true only when the name is one token AND clashes; a
- * mononym with no clash reads `{ isFragment: false, matches: [] }`.
+ * mononym with no clash reads `{ isFragment: false, matches: [], truncated: false }`.
+ * A truncated read keeps `isFragment` but withholds the list (`matches: []`).
  */
 export const nameFragmentCheck = query({
   args: {
@@ -1042,15 +1087,22 @@ export const nameFragmentCheck = query({
   },
   returns: v.object({
     isFragment: v.boolean(),
-    matches: v.array(v.object({ _id: v.id("players"), name: v.string() })),
+    matches: v.array(
+      v.object({ _id: v.id("players"), name: v.string(), birthYear: v.optional(v.number()) }),
+    ),
+    /**
+     * A search read filled its bound, so the list is not the whole answer and
+     * is withheld (`matches: []`): the UI asks for the whole name instead.
+     */
+    truncated: v.boolean(),
   }),
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
     // Same bounds the writes apply, so a pasted essay never reaches the index.
     const name = clampSearchQuery(args.name).trim();
-    if (!name || !isSingleToken(name)) return { isFragment: false, matches: [] };
-    const matches = await nameFragmentMatches(ctx, name, args.sportId);
-    return { isFragment: matches.length > 0, matches };
+    if (!name || !isSingleToken(name)) return { isFragment: false, matches: [], truncated: false };
+    const { matches, truncated } = await nameFragmentScan(ctx, name, args.sportId);
+    return { isFragment: matches.length > 0, matches: truncated ? [] : matches, truncated };
   },
 });
 

@@ -249,5 +249,69 @@ describe("EntityReviewWizard — NEO-463 fragment step", () => {
     );
 
     expect(document.activeElement).toBe(screen.getByRole("group", { name: QUESTION }));
+    // The focused panel's name says it; the live region stays quiet so the
+    // sentence is not read twice.
+    expect(
+      screen.getAllByRole("status").some((el) => el.textContent === QUESTION),
+    ).toBe(false);
+  });
+
+  it("announces the question in an already-mounted live region when focus is elsewhere", () => {
+    currentRows = [makeRow()];
+    currentFragmentCheck = undefined;
+    const { rerender } = renderWizard();
+
+    // The region is on screen, empty, before the answer lands.
+    const before = screen.getAllByRole("status");
+    expect(before.some((el) => el.textContent === QUESTION)).toBe(false);
+
+    currentFragmentCheck = WALKER;
+    rerender(
+      <EntityReviewWizard
+        isOpen
+        selectorOptionId={"selopt-1" as unknown as Id<"selectorOptions">}
+        batchId="batch-1"
+        summary={{ cardCount: 3, deleteCount: 0, reviewDecisionCount: 0 }}
+        onConfirm={vi.fn()}
+        onCancel={vi.fn()}
+      />,
+    );
+
+    const region = screen
+      .getAllByRole("status")
+      .find((el) => el.textContent === QUESTION);
+    expect(region).toBeTruthy();
+    expect(region!.getAttribute("aria-live")).toBe("polite");
+    // The same node that was mounted empty, not one inserted with its text.
+    expect(before).toContain(region);
+    // Focus stayed where the operator had it.
+    expect(document.activeElement).not.toBe(
+      screen.getByRole("group", { name: QUESTION }),
+    );
+  });
+
+  it("a truncated read asks for the whole name, with no choices, and keeps the one-name primary", () => {
+    currentRows = [makeRow()];
+    currentFragmentCheck = { isFragment: true, truncated: true, matches: [] };
+    currentNearMatches = [];
+    renderWizard();
+
+    expect(
+      screen.getByRole("group", {
+        name: "Just Walker? That's part of a fuller name we've got. Type the whole name to find them, or add Walker as a one-name player.",
+      }),
+    ).toBeTruthy();
+    expect(screen.queryByRole("list", { name: "Fuller names for Walker" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Link to .*Walker/ })).toBeNull();
+    expect(screen.getByRole("button", { name: "Add as a one-name player" })).toBeTruthy();
+  });
+
+  it("a truncated read that found no clash is the ordinary New Player step", () => {
+    currentRows = [makeRow({ name: "Smith" })];
+    currentFragmentCheck = { isFragment: false, truncated: true, matches: [] };
+    renderWizard();
+
+    expect(screen.queryByRole("group", { name: /^Just Smith\?/ })).toBeNull();
+    expect(screen.getByRole("button", { name: "Add as New Player" })).toBeTruthy();
   });
 });
