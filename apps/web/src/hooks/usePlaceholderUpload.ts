@@ -35,6 +35,8 @@ export type UploadOutcome =
   | {
       ok: true;
       jobId: string;
+      /** Which path the selection took. For a zip, the counts below are the archive's. */
+      kind: "zip" | "images";
       /** Files whose bytes landed AND were confirmed. */
       uploaded: number;
       failed: number;
@@ -44,6 +46,8 @@ export type UploadOutcome =
       ok: false;
       /** Server-supplied where there is one (e.g. the active-batch cap). */
       reason: string;
+      /** Set when a zip is over the upload limit, so a page can word that itself. */
+      overLimitMb?: number;
     };
 
 /** How a run was started, recorded on the job so admins can tell scans from web
@@ -139,6 +143,7 @@ export function usePlaceholderUpload(): PlaceholderUpload {
             return {
               ok: false,
               reason: `that zip is larger than the ${limitMb}MB limit`,
+              overLimitMb: limitMb,
             };
           }
 
@@ -163,6 +168,7 @@ export function usePlaceholderUpload(): PlaceholderUpload {
           return {
             ok: true,
             jobId: ticket.jobId,
+            kind: "zip",
             uploaded: 1,
             failed: 0,
             total: 1,
@@ -205,6 +211,7 @@ export function usePlaceholderUpload(): PlaceholderUpload {
         return {
           ok: true,
           jobId,
+          kind: "images",
           uploaded: result.uploaded,
           failed: result.failed,
           total: files.length,

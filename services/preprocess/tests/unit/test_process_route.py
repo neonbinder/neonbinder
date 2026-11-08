@@ -161,20 +161,20 @@ class TestRequestValidation:
         assert "1200x1600" in response.json()["detail"]
 
     def test_image_between_service_cap_and_pillow_hard_limit_returns_413(self, monkeypatch):
-        """53MP sits in the band the old hand-rolled 60MP check silently
-        accepted: over imaging.MAX_IMAGE_PIXELS (50MP), under Pillow's own
-        raise threshold (100MP). One ceiling now — the upload is a 413."""
+        """65.6MP sits in the band where only the explicit check can refuse:
+        over imaging.MAX_IMAGE_PIXELS (65MP), under Pillow's own raise
+        threshold (130MP). One ceiling now — the upload is a 413."""
         _stub_orient(monkeypatch)
         _stub_classify(monkeypatch)
         payload = io.BytesIO()
-        Image.new("RGB", (7300, 7300), color="white").save(payload, format="JPEG")
+        Image.new("RGB", (8100, 8100), color="white").save(payload, format="JPEG")
         response = client.post(
             "/process",
             headers={"x-internal-key": "test-key"},
             files={"image": ("card.jpg", payload.getvalue(), "image/jpeg")},
         )
         assert response.status_code == 413
-        assert "7300x7300" in response.json()["detail"]
+        assert "8100x8100" in response.json()["detail"]
 
     def test_bomb_past_pillow_hard_limit_returns_413_not_502(self, monkeypatch):
         """Above 2x the process-wide ceiling Pillow refuses to even size the
@@ -184,8 +184,8 @@ class TestRequestValidation:
         _stub_orient(monkeypatch)
         _stub_classify(monkeypatch)
         payload = io.BytesIO()
-        # 10500^2 = 110.25MP > 2 * 50MP. Flat colour keeps the file tiny.
-        Image.new("RGB", (10500, 10500), color="white").save(
+        # 11500^2 = 132.25MP > 2 * 65MP. Flat colour keeps the file tiny.
+        Image.new("RGB", (11500, 11500), color="white").save(
             payload, format="PNG", compress_level=1
         )
         assert len(payload.getvalue()) < MAX_IMAGE_BYTES  # clears the byte cap

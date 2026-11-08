@@ -52,8 +52,11 @@ const FAILED_RESET_MS = 8000;
  * `inline-flex` span, so it can sit beside a name without the row reflowing
  * when the state changes: the glyph swaps, the box does not. `size="sm"` is
  * 24x24 CSS px, the WCAG 2.2 SC 2.5.8 floor; `size="md"` is 32x32 for
- * standalone use in a toolbar or card header. Being icon-only, its accessible
- * name is the only name it has, so `copyLabel` is effectively required there.
+ * standalone use in a toolbar or card header; `size="touch"` is `md` that grows
+ * to 44x44 on a phone, for a control with nothing else on its line. Its extra
+ * height spills over the row as negative margin, so the row is as tall as with
+ * `md` at every width. Being icon-only, its accessible name is the only name it
+ * has, so `copyLabel` is effectively required there.
  *
  * The status span is per-control ON PURPOSE. Label History gives each row one
  * shared `role="status"` for its reprint/refresh results; routing copy results
@@ -74,10 +77,12 @@ const FAILED_RESET_MS = 8000;
  * the manual fallback (select the text, open the link), because the user has
  * no other way to learn the press did nothing.
  * @param children the text variant's visible label; ignored by the icon variant.
- * @param size icon variant only: `sm` (default) 24x24, `md` 32x32.
+ * @param size icon variant only: `sm` (default) 24x24, `md` 32x32, `touch` 32x32
+ * from the `sm` breakpoint up and 44x44 below it.
  * @param className icon variant only: extra classes on the wrapper span.
- * @param tone text variant only: the section's hue (DESIGN.md, one hue per
- * section). Teal, Print Shop's, unless the caller's section is Collection.
+ * @param tone the section's hue (DESIGN.md, one hue per section). Teal, Print
+ * Shop's, unless the caller's section is Collection. The icon variant's failure
+ * stays pink in either.
  */
 export default function CopyButton({
   value,
@@ -96,7 +101,7 @@ export default function CopyButton({
   failedMessage: string;
   children?: ReactNode;
   variant?: "text" | "icon";
-  size?: "sm" | "md";
+  size?: "sm" | "md" | "touch";
   className?: string;
   tone?: "teal" | "blue";
 }) {
@@ -156,12 +161,16 @@ export default function CopyButton({
         : "";
 
   if (variant === "icon") {
-    const box = size === "md" ? "h-8 w-8" : "h-6 w-6";
-    const glyph = size === "md" ? "h-5 w-5" : "h-4 w-4";
-    const tone =
+    const box = {
+      sm: "h-6 w-6",
+      md: "h-8 w-8",
+      touch: "h-11 w-11 -my-1.5 sm:my-0 sm:h-8 sm:w-8",
+    }[size];
+    const glyph = size === "sm" ? "h-4 w-4" : "h-5 w-5";
+    const iconTone =
       copyState === "failed"
         ? "text-neon-pink-text hover:underline"
-        : "text-neon-teal-text hover:underline";
+        : `${tone === "blue" ? "text-neon-blue-text" : "text-neon-teal-text"} hover:underline`;
     const Icon =
       copyState === "copied"
         ? ClipboardDocumentCheckIcon
@@ -175,7 +184,7 @@ export default function CopyButton({
           type="button"
           onClick={() => void copy()}
           aria-label={copyLabel}
-          className={`${box} ${tone} inline-flex shrink-0 items-center justify-center rounded-sm transition-colors focus-outline`}
+          className={`${box} ${iconTone} inline-flex shrink-0 items-center justify-center rounded-sm transition-colors focus-outline`}
         >
           {/* Both glyphs share heroicons' 24x24 box and render at one size, so
               the swap cannot change the button's width. */}

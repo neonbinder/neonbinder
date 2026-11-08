@@ -4,10 +4,11 @@
  */
 
 import { convexTest } from "convex-test";
-import { describe, expect, test } from "vitest";
-import { api } from "./_generated/api";
+import { afterEach, describe, expect, test, vi } from "vitest";
+import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import { seedCollectionCatalog } from "../lib/testing/collection-fixture";
+import { cancelScheduled, drainScheduled } from "../lib/testing/drain-scheduled";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -129,5 +130,141 @@ describe("a copy's own minimum price", () => {
       [1, undefined],
       [2, 50],
     ]);
+  });
+});
+
+/**
+ * NEO-415 — a change to the common price wakes the owner's listings of the
+ * variant (`listingOutbox.wakeVariantEverywhere`): one outbox row, for the
+ * variant's first card that carries the platform's id, on each platform the
+ * owner pushes counts to.
+ */
+describe("a common price change wakes the owner's listings of the variant", () => {
+  let held: Awaited<ReturnType<typeof setup>> | null = null;
+  afterEach(async () => {
+    if (!held) {
+      vi.useRealTimers();
+      return;
+    }
+    // Cancel first: a held drain never fires, so draining would wait on it.
+    await cancelScheduled(held.t as never);
+    vi.useRealTimers();
+    await drainScheduled(held.t);
+    held = null;
+  });
+
+  async function wakeSetup() {
+    // Hold the scheduler's timer so a kicked drain stays pending and never runs.
+    vi.useFakeTimers({ toFake: ["setTimeout"] });
+    const s = await setup();
+    held = s;
+    const box = (await s.me.mutation(api.collectionContainers.create, { kind: "box", name: "Show box" })).containerId;
+    return { ...s, box };
+  }
+  type W = Awaited<ReturnType<typeof wakeSetup>>;
+
+  const listOnBsc = (w: W, owner = ME.subject) =>
+    w.t.run((ctx) =>
+      ctx.db.insert("marketplaceListingStates", {
+        ownerId: owner,
+        platform: "bsc",
+        listingStartedAt: 1,
+        lastUpdated: 0,
+      }),
+    );
+  const outboxCards = async (w: W) =>
+    (await w.t.run((ctx) => ctx.db.query("listingOutbox").collect())).map((r) => r.cardId).sort();
+  const setPrice = (w: W, variantId: string, priceCents: number | null) =>
+    w.me.mutation(api.commonPrices.set, { variantId, priceCents });
+  const count = (w: W, cardId: W["fx"]["gooden1"], boxId: W["box"]) =>
+    w.me.mutation(api.collectionInventory.setBoxQuantity, { cardId, boxId, quantity: 1 });
+
+  test("an owner who lists nowhere: setting a price writes no outbox row", async () => {
+    const w = await wakeSetup();
+    await setPrice(w, w.fx.baseId, 25);
+    expect(await outboxCards(w)).toEqual([]);
+  });
+
+  test("an owner listing on BSC: setting a price writes one row, for the variant's first card that carries a BSC ref", async () => {
+    const w = await wakeSetup();
+    // The variant's first-created card has no BSC id; the next one does.
+    await w.t.run((ctx) => ctx.db.patch(w.fx.gooden1, { platformData: {} }));
+    await listOnBsc(w);
+    await setPrice(w, w.fx.baseId, 25);
+    const rows = await w.t.run((ctx) => ctx.db.query("listingOutbox").collect());
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      ownerId: ME.subject,
+      platform: "bsc",
+      cardId: w.fx.strawberry2,
+      variantId: w.fx.baseId,
+    });
+  });
+
+  test("a variant none of whose cards carries a BSC ref: setting a price writes no row", async () => {
+    const w = await wakeSetup();
+    await w.t.run(async (ctx) => {
+      for (const id of [w.fx.gooden1, w.fx.strawberry2, w.fx.gooden1Sliding]) {
+        await ctx.db.patch(id, { platformData: {} });
+      }
+    });
+    await listOnBsc(w);
+    await setPrice(w, w.fx.baseId, 25);
+    expect(await outboxCards(w)).toEqual([]);
+  });
+
+  test("another owner's listing is not woken by my price", async () => {
+    const w = await wakeSetup();
+    await listOnBsc(w, THEM.subject);
+    await setPrice(w, w.fx.baseId, 25);
+    expect(await outboxCards(w)).toEqual([]);
+  });
+
+  test("listing on, then the price, then two copy writes to other cards: the wake and both writes are three rows", async () => {
+    const w = await wakeSetup();
+    await listOnBsc(w);
+    await setPrice(w, w.fx.baseId, 25);
+    expect(await outboxCards(w)).toEqual([w.fx.gooden1]);
+    await count(w, w.fx.strawberry2, w.box);
+    await count(w, w.fx.gooden1Sliding, w.box);
+    expect(await outboxCards(w)).toEqual([w.fx.gooden1, w.fx.strawberry2, w.fx.gooden1Sliding].sort());
+  });
+
+  test("price first, then listing starts (box empty at the walk), then the same two writes: two rows, no wake row", async () => {
+    const w = await wakeSetup();
+    await setPrice(w, w.fx.baseId, 25);
+    expect(await outboxCards(w)).toEqual([]);
+    // Listing starts the way a saved sign-in starts it: the state row, then the walk.
+    await listOnBsc(w);
+    await w.t.mutation(internal.listingSync.startListingWalk, { ownerId: ME.subject, platform: "bsc", startedAt: 1 });
+    expect(await outboxCards(w)).toEqual([]);
+    await count(w, w.fx.strawberry2, w.box);
+    await count(w, w.fx.gooden1Sliding, w.box);
+    expect(await outboxCards(w)).toEqual([w.fx.strawberry2, w.fx.gooden1Sliding].sort());
+  });
+
+  test("changing the price wakes once more (the same row, bumped), and clearing it wakes too", async () => {
+    const w = await wakeSetup();
+    await listOnBsc(w);
+    await setPrice(w, w.fx.baseId, 25);
+    const seqOf = async () => (await w.t.run((ctx) => ctx.db.query("listingOutbox").collect())).map((r) => r.seq);
+    const [first] = await seqOf();
+    await setPrice(w, w.fx.baseId, 30);
+    expect(await outboxCards(w)).toEqual([w.fx.gooden1]);
+    const [second] = await seqOf();
+    expect(second).toBeGreaterThan(first);
+    await setPrice(w, w.fx.baseId, null);
+    expect(await outboxCards(w)).toEqual([w.fx.gooden1]);
+    const [third] = await seqOf();
+    expect(third).toBeGreaterThan(second);
+  });
+
+  test("setting the same price again, and clearing a price that was never set, wake nothing", async () => {
+    const w = await wakeSetup();
+    await setPrice(w, w.fx.baseId, 25);
+    await listOnBsc(w);
+    await setPrice(w, w.fx.baseId, 25);
+    await setPrice(w, w.fx.goldId, null);
+    expect(await outboxCards(w)).toEqual([]);
   });
 });
