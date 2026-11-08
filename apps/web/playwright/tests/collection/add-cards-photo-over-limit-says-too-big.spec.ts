@@ -13,10 +13,18 @@
 // new 65 MP one alike, so this spec does not depend on which preprocess build the
 // deployment points at.
 //
-// R7: writes only the account's own open run (nothing is saved, no set or card is
-// touched). The run is an open upload session, which holds one of the account's
-// active-batch slots, so it is closed ("Done adding photos") mid-test and again on
-// the way out if a step failed before that.
+// NEO-452: a drop waits in the browser until the run has a set, so the run is set
+// up first (Main, then the seed's 2024 Topps Chrome Base through `pickIntakeSet`)
+// and the photo then goes up at once. The photo is turned away before it is read,
+// so the set is only the run's home, never read against.
+//
+// R7/R7a: reads the seed's 2024 Topps Chrome Base only to pick it as the run's set
+// (SET-REGISTRY.md, read-only consumers) and writes only the account's own open run
+// (nothing is saved, no set or card is touched). The run is an open upload session,
+// which holds one of the account's active-batch slots, so it is closed ("Done
+// adding photos") mid-test and again on the way out if a step failed before that.
+//
+// R3: the set pick and the drop zone through `support/collection.ts`.
 //
 // R5 (hard rule 3): every wait is the normal 7 s except ONE, the "Too big" line
 // appearing on the photo's tile (`COLD_REFUSAL`, below), which carries a signed-off
@@ -25,6 +33,7 @@
 // duration.
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { intakeDropzone, pickIntakeSet } from "../../support/collection";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 
 /**
@@ -60,10 +69,12 @@ test(
       await signIn("/collection?tab=add");
       await expect(page.getByRole("heading", { level: 1, name: "Collection" })).toBeVisible({ timeout: LAUNCH_GATE });
       await page.getByRole("combobox", { name: "Put them in this binder" }).selectOption({ label: "Main" });
+      // NEO-452: the run needs its set before a drop goes up.
+      await pickIntakeSet(page);
 
       // --- Drop the photo: it is sent, and the run starts on the URL ---------------
       await test.step("upload: photo dropped to the Sent 1 photo line", async () => {
-        await page.getByLabel("Drag your card photos here, or browse your files").setInputFiles(PHOTO);
+        await intakeDropzone(page).setInputFiles(PHOTO);
         await expect(page.getByRole("status").filter({ hasText: "Sent 1 photo." })).toBeVisible();
       });
 
