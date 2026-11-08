@@ -2369,15 +2369,16 @@ function LoosePile({
             size="1"
             variant="secondary"
             outline
-            disabled={live.length !== 2}
-            // Wraps: the lane is narrower than this line at 1024px.
-            className="h-auto min-h-8 max-w-full whitespace-normal py-1 text-left"
+            aria-disabled={live.length !== 2 || undefined}
+            // Wraps inside its border where the lane is narrowest (about 768-800px).
+            className="h-auto min-h-11 max-w-full whitespace-normal py-1 sm:min-h-8"
             onClick={() => {
+              if (live.length !== 2) return;
               onPair(live[0], live[1]);
               setChosen([]);
             }}
           >
-            Pair these two (first is the front)
+            {live.length === 2 ? "Pair Images" : live.length === 1 ? "Select Partner" : "Select 2 to Pair"}
           </NeonButton>
         </li>
       )}

@@ -85,7 +85,7 @@ test(
       const pairing = (n: number) => page.getByRole("region", { name: `Pairing, ${n}`, exact: true });
 
       await test.step("refusal: Sent line to the Too big line on the photo's tile", async () => {
-        await expect(pairing(1).getByText(TOO_BIG, { exact: true })).toBeVisible();
+        await expect(pairing(1).getByText(TOO_BIG, { exact: true })).toBeVisible({ timeout: COLD_REFUSAL });
       });
 
       // No Try again: the same bytes can only fail the same way. Set aside is there.

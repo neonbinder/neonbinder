@@ -2729,6 +2729,127 @@ describe("RealAddCardsTab while the shelf or the open run loads (NEO-416)", () =
   });
 });
 
+describe("NEO-441: the Pairing column's button says what it needs next", () => {
+  const SELECT_TWO = "Select 2 to Pair";
+  const SELECT_PARTNER = "Select Partner";
+  const PAIR = "Pair Images";
+
+  const pairUp = () => mocks.mutation("placeholderPairing.manuallyPairPlaceholderImages");
+  const pile = (count: number, runId = freshRunId()) => {
+    setRun(runId, { images: Array.from({ length: count }, (_, i) => photo(i)) });
+    return { runId, ...render(<Tab runId={runId} />) };
+  };
+  // The tile, not its Set aside (NEO-446) or Try again button, which name the photo too.
+  const tile = (entryIndex: number) =>
+    screen.getByRole("button", { name: new RegExp(`^(?!Set aside |Try again: ).*scan-${entryIndex}\\.jpg`) });
+  const pick = (entryIndex: number) => fireEvent.click(tile(entryIndex));
+  const button = (name: string) => screen.getByRole<HTMLButtonElement>("button", { name });
+  const anyPairButton = () => screen.queryByRole("button", { name: new RegExp(`^(${SELECT_TWO}|${SELECT_PARTNER}|${PAIR})$`) });
+  /** The label reads as asked, and only a pair can press it. */
+  const expectStep = (name: string) => {
+    expect(button(name).getAttribute("aria-disabled")).toBe(name === PAIR ? null : "true");
+    expect(anyPairButton()).toBe(button(name));
+  };
+
+  it("stays reachable by keyboard before two are picked, and pressing it then pairs nothing", async () => {
+    pairUp().mockClear();
+    pile(3);
+    const ask = await screen.findByRole<HTMLButtonElement>("button", { name: SELECT_TWO });
+    expect(ask.disabled).toBe(false);
+    ask.focus();
+    expect(document.activeElement).toBe(ask);
+    fireEvent.click(ask);
+    pick(0);
+    fireEvent.click(button(SELECT_PARTNER));
+    expect(pairUp()).not.toHaveBeenCalled();
+  });
+
+  it("walks 0, 1, 2 picks: two asks, disabled, then an action", async () => {
+    pile(3);
+    await screen.findByRole("button", { name: SELECT_TWO });
+    expectStep(SELECT_TWO);
+    pick(0);
+    expectStep(SELECT_PARTNER);
+    pick(1);
+    expectStep(PAIR);
+  });
+
+  it("stays an outline at every step", async () => {
+    pile(2);
+    const fill = (name: string) => button(name).style.getPropertyValue("--nb-fill");
+    await screen.findByRole("button", { name: SELECT_TWO });
+    expect(fill(SELECT_TWO)).toBe("transparent");
+    pick(0);
+    expect(fill(SELECT_PARTNER)).toBe("transparent");
+    pick(1);
+    expect(fill(PAIR)).toBe("transparent");
+  });
+
+  it("steps back down as photos are deselected", async () => {
+    pile(2);
+    await screen.findByRole("button", { name: SELECT_TWO });
+    pick(0);
+    pick(1);
+    expectStep(PAIR);
+    pick(1);
+    expectStep(SELECT_PARTNER);
+    pick(0);
+    expectStep(SELECT_TWO);
+  });
+
+  it("a third pick stays at Pair Images, the oldest pick letting go", async () => {
+    pile(3);
+    await screen.findByRole("button", { name: SELECT_TWO });
+    pick(0);
+    pick(1);
+    pick(2);
+    expectStep(PAIR);
+    expect(tile(0).getAttribute("aria-pressed")).toBe("false");
+    fireEvent.click(button(PAIR));
+    expect(pairUp()).toHaveBeenCalledWith({ jobId: expect.any(String), frontIndex: 1, backIndex: 2 });
+  });
+
+  it("Pair Images pairs with the first picked as the front, then the label starts over", async () => {
+    const { runId } = pile(3);
+    await screen.findByRole("button", { name: SELECT_TWO });
+    pick(2);
+    pick(0);
+    fireEvent.click(button(PAIR));
+    expect(pairUp()).toHaveBeenCalledTimes(1);
+    expect(pairUp()).toHaveBeenCalledWith({ jobId: `job-${runId}`, frontIndex: 2, backIndex: 0 });
+    expectStep(SELECT_TWO);
+    expect(tile(2).getAttribute("aria-pressed")).toBe("false");
+  });
+
+  it("a picked photo that leaves the pile takes its step with it", async () => {
+    const { runId, rerender } = pile(3);
+    await screen.findByRole("button", { name: SELECT_TWO });
+    pick(0);
+    pick(1);
+    expectStep(PAIR);
+    mocks.data.images = [photo(1), photo(2)];
+    rerender(<Tab runId={runId} />);
+    expectStep(SELECT_PARTNER);
+  });
+
+  it("does not show with one photo in the pile", async () => {
+    pile(1);
+    await screen.findByRole("button", { name: /^(?!Set aside |Try again: ).*scan-0\.jpg/ });
+    expect(anyPairButton()).toBeNull();
+  });
+
+  it("passes axe in light and dark at every step", async () => {
+    const { container, rerender, runId } = pile(2);
+    const again = () => rerender(<Tab runId={runId} />);
+    await screen.findByRole("button", { name: SELECT_TWO });
+    await expectAccessibleInBothModes(container, { label: "Pairing, none picked", rerender: again });
+    pick(0);
+    await expectAccessibleInBothModes(container, { label: "Pairing, one picked", rerender: again });
+    pick(1);
+    await expectAccessibleInBothModes(container, { label: "Pairing, two picked", rerender: again });
+  });
+});
+
 describe("NEO-446: setting a loose photo aside", () => {
   const asideMutation = () => mocks.mutation("intakeRuns.setIntakePhotoAside");
   const tooBig = (entryIndex: number) => ({
