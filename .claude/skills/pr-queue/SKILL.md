@@ -68,6 +68,14 @@ copying its `from` attribute as `to`.
 
 ## `run`: be the queue
 
+**Run the queue session on Haiku.** The work is mechanical: read a
+`PR-QUEUE` line, run one `state.sh` command, send one message. The scripts
+hold the ordering, locking and timers. Start the session with
+`claude --model haiku`, or pick Haiku for this session only in the `/model`
+picker. Do not rely on a `model:` field in this file: that override lasts
+one turn, and the queue lives on later turns started by messages and the
+heartbeat. If this session is on a bigger model, say so once and carry on.
+
 1. **Claim the queue.** Read `"$Q" owner`. If it names a session that still
    appears in `ListAgents`, another queue is running: say so and stop. Two
    queues defeat the point. Otherwise `"$Q" set-owner <this session's name>`.
