@@ -229,25 +229,100 @@ export function formatPlayerDescription(input: {
 }
 
 /**
- * The same description for a screen reader: commas instead of middle dots,
- * `plus N more` instead of `+N more`, and `and` between repeat stints at one
- * team so the team boundaries stay audible
- * (`b. 1990, Mariners 2009–12 and 2016–19, Brewers 2020–21, plus 1 more`).
+ * A stint's years as a screen reader should say them: `2014 to 2019`,
+ * `2024 to present`, `2019` for a single season.
+ *
+ * Never the screen's two-digit short form. `2014–19` is read aloud as "two
+ * thousand fourteen dash nineteen" (or "twenty fourteen to nineteen", by
+ * voice), and the en dash is skipped outright by some voices, which turns two
+ * years into one number. Both ends are always full years here.
+ */
+export function speakYearSpan(span: YearSpan): string {
+  const { fromYear, toYear } = span;
+  if (toYear === undefined) return `${fromYear} to present`;
+  if (toYear === fromYear) return `${fromYear}`;
+  return `${fromYear} to ${toYear}`;
+}
+
+/** `Dodgers 2014 to 2019`, `Mariners 2009 to 2012 and 2016 to 2019`, `Wisconsin`. */
+function speakCareerTeam(team: CareerTeam): string {
+  if (team.spans.length === 0) return team.name;
+  return `${team.name} ${team.spans.map(speakYearSpan).join(" and ")}`;
+}
+
+/**
+ * The same description for a screen reader: `born` for `b.`, commas instead
+ * of middle dots, full years joined by `to` (see `speakYearSpan`), `plus N
+ * more` instead of `+N more`, and `and` between repeat stints at one team so
+ * the team boundaries stay audible
+ * (`born 1990, Mariners 2009 to 2012 and 2016 to 2019, Brewers 2020 to 2021,
+ * plus 1 more`).
+ *
+ * `spokenFromWritten(formatPlayerDescription(x))` gives the same string, for
+ * a surface that holds only the written line.
  */
 export function speakPlayerDescription(input: {
   birthYear?: number;
   career?: CareerLine;
 }): string {
   const parts: string[] = [];
-  if (input.birthYear !== undefined) parts.push(`b. ${input.birthYear}`);
-  for (const team of input.career?.teams ?? []) {
-    parts.push(
-      team.spans.length === 0
-        ? team.name
-        : `${team.name} ${team.spans.map(formatYearSpan).join(" and ")}`,
-    );
-  }
+  if (input.birthYear !== undefined) parts.push(`born ${input.birthYear}`);
+  for (const team of input.career?.teams ?? []) parts.push(speakCareerTeam(team));
   const more = input.career?.moreTeams ?? 0;
+  if (more > 0 && parts.length > 0) parts.push(`plus ${more} more`);
+  return parts.join(", ");
+}
+
+/** `2014–19`, `1998–2004`, `2024–present`: a written span inside a segment. */
+const WRITTEN_SPAN = /\b(\d{4})–(present|\d{4}|\d{2})\b/g;
+/** The `, ` between two spans of one team (`Mariners 2009–12, 2016–19`). */
+const SPAN_SEPARATOR = /, (?=\d{4}(?:–|\b))/g;
+/** A segment that is the birth year. */
+const WRITTEN_BIRTH_YEAR = /^b\. (\d+)$/;
+/** The trailing count of teams not shown. */
+const WRITTEN_MORE = /\s*\+(\d+) more$/;
+
+/**
+ * A WRITTEN description (`b. 1990 · Dodgers 2014–19 +1 more`) turned into the
+ * spoken one (`born 1990, Dodgers 2014 to 2019, plus 1 more`).
+ *
+ * For the one surface that never sees the structured line: the review
+ * wizard's pick step, whose candidates carry `careerSummary` as the string the
+ * server stored (`entityReviewQueue.enrichment.existingCandidates`). Storing
+ * the structured form instead would be a schema change for a label; reading
+ * the string back is cheap because this module wrote it, and its grammar is
+ * small. Also reads the pre-NEO-462 stored form (`Phillies 1890–1894`, full
+ * years, chronological), which rows queued before this change still hold.
+ *
+ * Anything it does not recognise passes through unchanged, so a team name is
+ * never rewritten: only a four-digit year followed by an en dash is a span.
+ */
+export function spokenFromWritten(written: string): string {
+  let text = written.trim();
+  if (!text) return "";
+  let more = 0;
+  const moreMatch = WRITTEN_MORE.exec(text);
+  if (moreMatch) {
+    more = Number(moreMatch[1]);
+    text = text.slice(0, moreMatch.index);
+  }
+  const parts = text
+    .split(" · ")
+    .map((segment) => segment.trim())
+    .filter(Boolean)
+    .map((segment) => {
+      const born = WRITTEN_BIRTH_YEAR.exec(segment);
+      if (born) return `born ${born[1]}`;
+      return segment
+        .replace(SPAN_SEPARATOR, " and ")
+        .replace(WRITTEN_SPAN, (_all, from: string, to: string) => {
+          const fromYear = Number(from);
+          if (to === "present") return speakYearSpan({ fromYear });
+          const toYear =
+            to.length === 2 ? Math.floor(fromYear / 100) * 100 + Number(to) : Number(to);
+          return speakYearSpan({ fromYear, toYear });
+        });
+    });
   if (more > 0 && parts.length > 0) parts.push(`plus ${more} more`);
   return parts.join(", ");
 }

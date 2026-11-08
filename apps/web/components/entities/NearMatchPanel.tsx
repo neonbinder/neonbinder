@@ -229,9 +229,15 @@ export function NearMatchPanel({
                 <>
                   <span className="flex-1 truncate">{match.name}</span>
                   {sameName && (
+                    /* An outline, not a fill: the blue/20 fill under
+                       neon-blue-text measured 4.34:1 on the row hover and
+                       4.40:1 on the /admin/players surface in the light
+                       theme, under SC 1.4.3. Without it the text sits on the
+                       panel ground (5.09:1 at rest, 4.73:1 on hover). py-px
+                       plus the 1px border keeps the old height. */
                     <span
                       aria-hidden="true"
-                      className="shrink-0 rounded bg-neon-blue/20 px-1.5 py-0.5 text-xs text-neon-blue-text"
+                      className="shrink-0 rounded border border-neon-blue-text/60 px-1.5 py-px text-xs text-neon-blue-text"
                     >
                       same name
                     </span>
@@ -277,9 +283,10 @@ export function NearMatchPanel({
                     // so it is not announced twice.
                     //
                     // NEO-462: a player row's facts ride in too ("Link to
-                    // Walker, b. 1990, Dodgers 2014–19, …"), spoken with
-                    // commas where the screen shows middots, and an ordinal
-                    // only when two rows would still read the same.
+                    // Walker, born 1990, Dodgers 2014 to 2019, …"), in the
+                    // spoken form (`speakPlayerDescription`): words where the
+                    // screen shows "b.", middots and short year ranges, and an
+                    // ordinal only when two rows would still read the same.
                     aria-label={ariaLabelFor(row, index)}
                     // NEO-284: the alias note reaches assistive tech as the
                     // button's DESCRIPTION (announced after the name), so the
@@ -302,13 +309,14 @@ export function NearMatchPanel({
                           NEO-462 — line 2, who he is: birth year, then the
                           teams he spent longest with. Quieter than the name
                           (ink-3, xs) because it answers the follow-up
-                          question, not the first one. One line from `sm` up
-                          so a long list of Walkers stays scannable; below it
-                          the line wraps, because on a phone the truncated
-                          tail is the fact that tells two of them apart.
+                          question, not the first one. It wraps at every
+                          width, never truncates: the tail is the career, and
+                          the career is the fact that tells two Walkers apart.
+                          A clipped tail at 200% zoom or in a narrow dialog
+                          (SC 1.4.4, 1.4.10) hid exactly that.
                         */}
                         {description ? (
-                          <span className="break-words text-xs text-ink-3 sm:truncate">
+                          <span className="break-words text-xs text-ink-3">
                             {description}
                           </span>
                         ) : (

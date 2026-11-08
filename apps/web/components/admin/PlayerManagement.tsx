@@ -27,7 +27,10 @@ import { teamFullName, teamShortName } from "@/lib/teams/team-name";
 // ranked by the same helper `players.nearMatches` uses for the Possible matches
 // career line, so the list row and the match row can never name different
 // teams for one man.
-import { rankCareerTeams } from "@/lib/players/player-description";
+import {
+  rankCareerTeams,
+  speakPlayerDescription,
+} from "@/lib/players/player-description";
 // NEO-254: the birth-year bounds, shared with `players.assertBirthYear` so
 // the field cannot offer a year the round-trip then refuses.
 import { MIN_BIRTH_YEAR, maxBirthYear } from "@/lib/players/career-years";
@@ -558,12 +561,23 @@ function AddPlayerForm({
    * unique, but the primary would not say which man it opens. One computation
    * over the whole list gives both halves the same treatment.
    *
-   * NEO-462 — now read by the promoted primary ONLY. The panel's rows carry
-   * their own facts (birth year and teams, from `NearMatchPanel`), so they get
-   * the bare `Open {name}` and the panel adds the rest.
+   * NEO-462 — a panel row WITH facts (a birth year or a team) gets the bare
+   * `Open {name}` instead, because `NearMatchPanel` speaks those facts itself
+   * and a label from here would say the birth year twice. A row with none
+   * keeps this map's label, so two fact-less Bob Allens still read
+   * `…, no birth year (1 of 2)` (the primary) and `…, no birth year (2 of 2)`
+   * (the row) rather than one being a prefix of the other. See
+   * `panelPickLabel`.
    */
   const openLabels = openLabelsFor(matches ?? []);
   const openLabel = (m: NearMatch) => openLabels.get(m._id) ?? `Open ${m.name}`;
+  // The panel's pick label: bare when the panel has facts to append (the
+  // same test it applies, `speakPlayerDescription` being non-empty), else the
+  // disambiguated label above.
+  const panelPickLabel = (name: string, m: NearMatch) =>
+    speakPlayerDescription({ birthYear: m.birthYear, career: m.career })
+      ? `Open ${name}`
+      : openLabel(m);
   // Client-side mirror of `assertBirthYear`, so a typo is caught while the
   // field is still in front of the operator. The server re-validates; this is
   // the fast half of defense in depth, not the guarantee.
@@ -711,10 +725,10 @@ function AddPlayerForm({
         kind="player"
         matches={panelMatches}
         // Not "Link to": this button opens the row for editing, it does not
-        // link anything to anything. NEO-462 — the bare verb and name only:
-        // the panel adds each player's birth year and teams itself, and
-        // numbers any two that would still read the same.
-        pickLabel={(name) => `Open ${name}`}
+        // link anything to anything. NEO-462 — the bare verb and name when
+        // the panel has a birth year or teams to add itself; the ordinal
+        // label otherwise. See `panelPickLabel`.
+        pickLabel={panelPickLabel}
         onPick={(id) => open(id as Id<"players">, "panel")}
         // NEO-319 — `busy` marks every row `aria-disabled` and swallows the
         // press; the class dims them and turns the pointer away. Not `inert`:

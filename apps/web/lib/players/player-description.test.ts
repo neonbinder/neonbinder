@@ -28,6 +28,8 @@ import {
   formatYearSpan,
   rankCareerTeams,
   speakPlayerDescription,
+  speakYearSpan,
+  spokenFromWritten,
   type CareerLine,
 } from "./player-description";
 
@@ -499,21 +501,54 @@ describe("formatPlayerDescription", () => {
   });
 });
 
+describe("speakYearSpan", () => {
+  it("says both ends in full, joined by 'to' — never the two-digit short form", () => {
+    expect(speakYearSpan({ fromYear: 2014, toYear: 2019 })).toBe("2014 to 2019");
+    expect(speakYearSpan({ fromYear: 1998, toYear: 2004 })).toBe("1998 to 2004");
+  });
+
+  it("says an open stint runs 'to present'", () => {
+    expect(speakYearSpan({ fromYear: 2024 })).toBe("2024 to present");
+  });
+
+  it("says a single season as one year", () => {
+    expect(speakYearSpan({ fromYear: 2019, toYear: 2019 })).toBe("2019");
+  });
+
+  it("says bad data (an end before the start) as written, both years in full", () => {
+    expect(speakYearSpan({ fromYear: 2019, toYear: 2014 })).toBe("2019 to 2014");
+  });
+});
+
 describe("speakPlayerDescription", () => {
-  it("uses commas for dots and 'plus N more' for '+N more'", () => {
+  it("says 'born', commas for dots, full year ranges and 'plus N more'", () => {
     expect(speakPlayerDescription({ birthYear: 1990, career: WALKER })).toBe(
-      "b. 1990, Dodgers 2014–19, Brewers 2020–21, plus 1 more",
+      "born 1990, Dodgers 2014 to 2019, Brewers 2020 to 2021, plus 1 more",
     );
   });
 
   it("joins repeat stints at one team with 'and', so team boundaries stay audible", () => {
     expect(speakPlayerDescription({ career: REPEAT })).toBe(
-      "Mariners 2009–12 and 2016–19, Wisconsin",
+      "Mariners 2009 to 2012 and 2016 to 2019, Wisconsin",
     );
   });
 
+  it("says an open stint 'to present' and a single season as one year", () => {
+    expect(
+      speakPlayerDescription({
+        career: {
+          teams: [
+            { name: "Padres", spans: [{ fromYear: 2024 }] },
+            { name: "Cubs", spans: [{ fromYear: 2019, toYear: 2019 }] },
+          ],
+          moreTeams: 0,
+        },
+      }),
+    ).toBe("Padres 2024 to present, Cubs 2019");
+  });
+
   it("speaks the birth year alone", () => {
-    expect(speakPlayerDescription({ birthYear: 1990 })).toBe("b. 1990");
+    expect(speakPlayerDescription({ birthYear: 1990 })).toBe("born 1990");
   });
 
   it("is empty when there is nothing to say", () => {
@@ -523,5 +558,73 @@ describe("speakPlayerDescription", () => {
 
   it("never says 'plus N more' with nothing before it", () => {
     expect(speakPlayerDescription({ career: { teams: [], moreTeams: 3 } })).toBe("");
+  });
+
+  it("carries no screen-only glyph: no middle dot, en dash, 'b.' or '+'", () => {
+    const spoken = speakPlayerDescription({ birthYear: 1990, career: WALKER });
+    expect(spoken).not.toMatch(/[·–+]|\bb\./);
+  });
+});
+
+describe("spokenFromWritten", () => {
+  // The pick step holds only the stored written line, so its spoken label is
+  // read back from that string. Whatever the structured line, the two routes
+  // must say the same thing, or one player reads two ways by surface.
+  const LINES: Array<{ birthYear?: number; career?: CareerLine }> = [
+    { birthYear: 1990, career: WALKER },
+    { career: REPEAT },
+    { birthYear: 1990 },
+    {
+      birthYear: 1937,
+      career: {
+        teams: [
+          { name: "Padres", spans: [{ fromYear: 2024 }] },
+          { name: "Cubs", spans: [{ fromYear: 2019, toYear: 2019 }] },
+        ],
+        moreTeams: 4,
+      },
+    },
+    {
+      career: {
+        teams: [{ name: "Expos", spans: [{ fromYear: 1998, toYear: 2004 }] }],
+        moreTeams: 0,
+      },
+    },
+    {},
+  ];
+
+  it.each(LINES)("matches speakPlayerDescription for %o", (input) => {
+    expect(spokenFromWritten(formatPlayerDescription(input))).toBe(
+      speakPlayerDescription(input),
+    );
+  });
+
+  it("reads the target line from the Possible matches example", () => {
+    expect(
+      spokenFromWritten("b. 1990 · Dodgers 2014–19 · Brewers 2020–21 +1 more"),
+    ).toBe("born 1990, Dodgers 2014 to 2019, Brewers 2020 to 2021, plus 1 more");
+  });
+
+  it("reads the pre-NEO-462 stored form (full years, '–present')", () => {
+    expect(spokenFromWritten("b. 1867 · Phillies 1890–1894")).toBe(
+      "born 1867, Phillies 1890 to 1894",
+    );
+    expect(spokenFromWritten("Padres 1961–present")).toBe("Padres 1961 to present");
+  });
+
+  it("joins repeat stints at one team with 'and'", () => {
+    expect(spokenFromWritten("Mariners 2009–12, 2016–19 · Wisconsin")).toBe(
+      "Mariners 2009 to 2012 and 2016 to 2019, Wisconsin",
+    );
+  });
+
+  it("leaves a team name with digits in it alone", () => {
+    expect(spokenFromWritten("Team 7 1920–1925")).toBe("Team 7 1920 to 1925");
+  });
+
+  it("is empty for an empty line, and never says 'plus N more' alone", () => {
+    expect(spokenFromWritten("")).toBe("");
+    expect(spokenFromWritten("   ")).toBe("");
+    expect(spokenFromWritten("+3 more")).toBe("");
   });
 });

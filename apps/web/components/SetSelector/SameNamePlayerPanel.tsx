@@ -52,6 +52,7 @@
 import {
   NOTHING_ON_FILE,
   formatPlayerDescription,
+  spokenFromWritten,
 } from "@/lib/players/player-description";
 
 /** One NB row already filed under this name — the server shape, verbatim. */
@@ -153,6 +154,38 @@ export function candidateDetail(
 }
 
 /**
+ * NEO-462 — `candidateDetail`, as a screen reader should say it: the same
+ * facts in the same order, joined by commas, with "born" for "b.", full year
+ * ranges joined by "to", and "plus N more" for "+N more". The same spoken form
+ * `NearMatchPanel` gives a Possible matches row, so one player sounds the
+ * same on both surfaces.
+ *
+ * Built from the parts rather than by rewriting `candidateDetail`'s output, so
+ * an alias or a sport name is never put through the career grammar. The
+ * career half comes from the stored written line (`careerSummary` is the only
+ * form the queue holds) through `spokenFromWritten`, which the shared module
+ * pins against its structured `speakPlayerDescription`.
+ *
+ * Null exactly when `candidateDetail` is null.
+ */
+export function candidateSpokenDetail(
+  candidate: SameNameCandidate,
+  setSportValue?: string | null,
+): string | null {
+  const parts = [
+    candidate.matchedAlias ? `also known as ${candidate.matchedAlias}` : null,
+    candidateOtherSport(candidate, setSportValue),
+    spokenFromWritten(
+      formatPlayerDescription({
+        birthYear: candidate.birthYear,
+        career: candidate.careerSummary,
+      }),
+    ) || null,
+  ].filter(Boolean);
+  return parts.length > 0 ? parts.join(", ") : null;
+}
+
+/**
  * The accessible name for one candidate's button.
  *
  * ## Why it is not just `Link to {name}`
@@ -177,7 +210,9 @@ export function candidateLinkLabel(
   /** NEO-424 — see `candidateDetail`. */
   setSportValue?: string | null,
 ): string {
-  const detail = candidateDetail(candidate, setSportValue);
+  // NEO-462 — the spoken form, never `candidateDetail` verbatim: that line's
+  // middots, "b." and "+1 more" are read aloud as glyphs.
+  const detail = candidateSpokenDetail(candidate, setSportValue);
   // NEO-254: the year marker rides INTO the accessible name — it is the single
   // most decisive thing on the row, and a screen-reader user must not have to
   // infer it from a colour. It is not a substitute for the ordinal fallback,
@@ -291,15 +326,18 @@ export default function SameNamePlayerPanel({
                     </span>
                   )}
                 </span>
+                {/* NEO-462 — wraps, never truncates: the tail of this line
+                    is the career, which is what tells two same-named rows
+                    apart, and a truncated tail hid it at every width. */}
                 {detail ? (
-                  <span className="w-full truncate text-xs text-ink-3">
+                  <span className="w-full break-words text-xs text-ink-3">
                     {detail}
                   </span>
                 ) : (
                   // gray-400, not gray-500: gray-500 is 3.67:1 on the
                   // dialog's gray-900, under SC 1.4.3's 4.5:1 floor. The
                   // italic carries the demotion instead of the colour.
-                  <span className="w-full truncate text-xs italic text-ink-3">
+                  <span className="w-full break-words text-xs italic text-ink-3">
                     {NOTHING_ON_FILE}
                   </span>
                 )}

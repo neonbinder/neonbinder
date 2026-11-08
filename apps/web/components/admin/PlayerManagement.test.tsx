@@ -2471,7 +2471,7 @@ describe("NEO-254: birth year", () => {
     // accessible name (NEO-212: a warning only sighted operators receive is
     // not a warning). Uniqueness holds with or without it.
     expect(
-      screen.getByRole("button", { name: "Open Bob Allen, b. 1975 — same name" }),
+      screen.getByRole("button", { name: "Open Bob Allen, born 1975 — same name" }),
     ).toBeTruthy();
     // The ambiguous label is gone entirely — including from the promoted
     // primary, which would otherwise not say which man it opens.
@@ -2512,6 +2512,46 @@ describe("NEO-254: birth year", () => {
     expect(
       screen.getByRole("button", {
         name: "Open Bob Allen, no birth year (2 of 2) — same name",
+      }),
+    ).toBeTruthy();
+  });
+
+  it("NEO-462: a fact-less panel row keeps its label; a row with only teams speaks them", async () => {
+    // The panel speaks a row's facts itself, so a row WITH facts gets the
+    // bare `Open {name}` (no birth year said twice); a row with none keeps
+    // the "no birth year" label so it never reads as a prefix of the primary.
+    nearMatches = [
+      { _id: "p-old", name: "Bob Allen", confidence: "exact", birthYear: 1960 },
+      { _id: "p-bare", name: "Bob Allen", confidence: "exact" },
+      {
+        _id: "p-teams",
+        name: "Bob Allen",
+        confidence: "exact",
+        career: {
+          teams: [{ name: "Padres", spans: [{ fromYear: 1961 }] }],
+          moreTeams: 0,
+        },
+      },
+    ];
+    const { container } = render(<PlayerManagement />);
+    openAddForm(container);
+    fireEvent.change(screen.getByLabelText("New player name"), {
+      target: { value: "Bob Allen" },
+    });
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "Open Bob Allen, b. 1960" }),
+      ).toBeTruthy(),
+    );
+    expect(
+      screen.getByRole("button", {
+        name: "Open Bob Allen, no birth year (2 of 3) — same name",
+      }),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("button", {
+        name: "Open Bob Allen, Padres 1961 to present — same name",
       }),
     ).toBeTruthy();
   });

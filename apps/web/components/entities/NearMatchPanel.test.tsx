@@ -294,6 +294,57 @@ describe("NearMatchPanel — matchedAlias", () => {
   });
 });
 
+describe("NEO-462 — a player row's facts", () => {
+  const walker: NearMatch = {
+    _id: "p-walker",
+    name: "Walker",
+    confidence: "close",
+    birthYear: 1990,
+    career: {
+      teams: [
+        { name: "Dodgers", spans: [{ fromYear: 2014, toYear: 2019 }] },
+        { name: "Brewers", spans: [{ fromYear: 2020, toYear: 2021 }] },
+      ],
+      moreTeams: 1,
+    },
+  };
+
+  it("prints the written line and speaks it in words in the accessible name", () => {
+    render(<NearMatchPanel kind="player" matches={[walker]} onPick={vi.fn()} />);
+    expect(
+      screen.getByText("b. 1990 · Dodgers 2014–19 · Brewers 2020–21 +1 more"),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("button", {
+        name: "Link to Walker, born 1990, Dodgers 2014 to 2019, Brewers 2020 to 2021, plus 1 more",
+      }),
+    ).toBeTruthy();
+  });
+
+  it("keeps the same-name suffix after the spoken facts", () => {
+    render(
+      <NearMatchPanel
+        kind="player"
+        matches={[{ ...walker, confidence: "exact" }]}
+        onPick={vi.fn()}
+      />,
+    );
+    expect(
+      screen.getByRole("button", {
+        name: "Link to Walker, born 1990, Dodgers 2014 to 2019, Brewers 2020 to 2021, plus 1 more — same name",
+      }),
+    ).toBeTruthy();
+  });
+
+  it("lets the description wrap rather than clip its career tail", () => {
+    // At 200% zoom or in a narrow dialog a truncated line hid the career,
+    // which is the part that tells two Walkers apart (SC 1.4.4 / 1.4.10).
+    render(<NearMatchPanel kind="player" matches={[walker]} onPick={vi.fn()} />);
+    const line = screen.getByText("b. 1990 · Dodgers 2014–19 · Brewers 2020–21 +1 more");
+    expect(line.className).not.toMatch(/(^|\s|:)truncate(\s|$)/);
+  });
+});
+
 describe("hasExact", () => {
   it("is false for nothing, for an empty list, and for close-only", () => {
     expect(hasExact(undefined)).toBe(false);
