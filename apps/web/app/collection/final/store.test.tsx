@@ -641,6 +641,93 @@ describe("setBoxQuantity and restoreLines (NEO-364)", () => {
     }
   });
 
+  describe("a line with photos (NEO-431)", () => {
+    const photoLine = (s: CollectionState, over: Partial<CopyDetails> = {}) => {
+      const made = put(s, over);
+      return { state: demoOps.setHasPhotos(made.state, made.result.copyId, true).state, id: made.result.copyId };
+    };
+    const lines = (s: CollectionState) => inBox(s).map((c) => [c.id, c.quantity]);
+
+    it("counts it, and a plain add never stacks onto it", () => {
+      const { state, id } = photoLine(base(), { acquiredAt: TODAY });
+      expect(plainCount(state)).toBe(1);
+      const added = demoOps.addLine(state, CARD, details({ homeId: UNSORTED_BOX_ID, acquiredAt: TODAY }));
+      expect(added.result.merged).toBe(false);
+      expect(copyIn(added.state, id)).toMatchObject({ quantity: 1, hasPhotos: true });
+      expect(inBox(added.state)).toHaveLength(2);
+    });
+
+    it("with only photo lines, a raise stacks onto the newest and keeps its photos", () => {
+      const older = photoLine(base());
+      const newer = photoLine(older.state);
+      const up = demoOps.setBoxQuantity(newer.state, CARD, UNSORTED_BOX_ID, 4, TODAY);
+      expect(up.result).toMatchObject({ before: 2, after: 4 });
+      expect(up.result.undo.made).toEqual([]);
+      expect(copyIn(up.state, newer.id)).toMatchObject({ quantity: 3, hasPhotos: true });
+      expect(copyIn(up.state, older.id).quantity).toBe(1);
+      expect(demoOps.restoreLines(up.state, up.result.undo).state.copies).toEqual(newer.state.copies);
+    });
+
+    it("with a line without photos, a raise folds there or starts today's line, never onto the photo line", () => {
+      const { state, id } = photoLine(put(base(), { acquiredAt: TODAY }).state, { acquiredAt: TODAY });
+      const folded = demoOps.setBoxQuantity(state, CARD, UNSORTED_BOX_ID, 3, TODAY).state;
+      expect(copyIn(folded, id).quantity).toBe(1);
+      expect(plainCount(folded)).toBe(3);
+      expect(inBox(folded)).toHaveLength(2);
+
+      const old = photoLine(put(base(), { acquiredAt: "2026-01-01" }).state, { acquiredAt: TODAY });
+      const fresh = demoOps.setBoxQuantity(old.state, CARD, UNSORTED_BOX_ID, 3, TODAY).state;
+      expect(copyIn(fresh, old.id).quantity).toBe(1);
+      expect(inBox(fresh)).toHaveLength(3);
+    });
+
+    it("a lowering takes the lines without photos first, even when the photo line is newer", () => {
+      const bare = put(base(), { quantity: 2 });
+      const { state, id } = photoLine(bare.state, { quantity: 2 });
+      const once = demoOps.setBoxQuantity(state, CARD, UNSORTED_BOX_ID, 3, TODAY).state;
+      expect(lines(once)).toEqual([[bare.result.copyId, 1], [id, 2]]);
+      const twice = demoOps.setBoxQuantity(once, CARD, UNSORTED_BOX_ID, 1, TODAY).state;
+      expect(lines(twice)).toEqual([[id, 1]]);
+      expect(copyIn(twice, id).hasPhotos).toBe(true);
+    });
+
+    it("a line with photos and another detail is never counted or touched", () => {
+      const { state, id } = photoLine(base(), { notes: "ding" });
+      expect(plainCount(state)).toBe(0);
+      const up = demoOps.setBoxQuantity(state, CARD, UNSORTED_BOX_ID, 1, TODAY).state;
+      expect(copyIn(up, id).quantity).toBe(1);
+      expect(inBox(up)).toHaveLength(2);
+    });
+
+    it("restoreLines brings back a line counted away, same id, marked", () => {
+      const bare = put(base(), {});
+      const { state, id } = photoLine(bare.state);
+      const zero = demoOps.setBoxQuantity(state, CARD, UNSORTED_BOX_ID, 0, TODAY);
+      expect(inBox(zero.state)).toEqual([]);
+      const back = demoOps.restoreLines(zero.state, zero.result.undo).state;
+      expect(back.copies).toEqual(state.copies);
+      expect(copyIn(back, id).hasPhotos).toBe(true);
+    });
+
+    it("a whole line moved keeps its marker; a part split off is a plain stack that may fold", () => {
+      const { state, id } = photoLine(base(), { quantity: 3 });
+      const part = demoOps.moveCopy(state, id, SHOW_BOX_ID, 1);
+      expect(part.result.split).toBe(true);
+      expect(copyIn(part.state, part.result.copyId).hasPhotos).toBeUndefined();
+      expect(copyIn(part.state, id)).toMatchObject({ quantity: 2, hasPhotos: true });
+      const whole = demoOps.moveCopy(part.state, id, SHOW_BOX_ID);
+      expect(whole.result).toMatchObject({ copyId: id, folded: false });
+      expect(copyIn(whole.state, id).hasPhotos).toBe(true);
+    });
+
+    it("setHasPhotos clears the marker, and leaves a line already gone alone", () => {
+      const { state, id } = photoLine(base());
+      expect("hasPhotos" in copyIn(demoOps.setHasPhotos(state, id, false).state, id)).toBe(false);
+      expect(demoOps.setHasPhotos(state, "copy-gone", true).state).toBe(state);
+      expect(demoOps.setHasPhotos(state, id, true).state).toBe(state);
+    });
+  });
+
   it("restoreLines of a no-op write returns the same state", () => {
     const s = base();
     const same = demoOps.setBoxQuantity(s, CARD, UNSORTED_BOX_ID, 0, TODAY);

@@ -197,7 +197,7 @@ async function openBinderLine(checklist: Locator, short: string) {
   const yourCopies = drawer.getByRole("region", { name: `Your copies of ${short}`, exact: true });
   const form = yourCopies.getByRole("form", { name: "Edit Raw, Excellent", exact: true });
   await expect(form).toBeVisible();
-  return { drawer, yourCopies, form, panel: form.getByRole("region", { name: "Photos", exact: true }) };
+  return { drawer, yourCopies, form, panel: form.getByRole("region", { name: /^Photos of / }) };
 }
 
 /** NEO-432: remove the card's one binder copy through its open drawer (Escape closes the form first, as a collector does), then close the drawer. */
