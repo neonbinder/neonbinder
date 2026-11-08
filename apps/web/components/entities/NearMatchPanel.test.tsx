@@ -97,6 +97,42 @@ describe("NearMatchPanel", () => {
     expect(badges[0].getAttribute("aria-hidden")).toBe("true");
   });
 
+  it("NEO-462: orders same-name rows, then alias hits, then close ones, each group in server order", () => {
+    // Supplied in the worst order: close, alias, same-name, interleaved, so
+    // only the three-tier sort (stable within each tier) can produce this.
+    const matches: NearMatch[] = [
+      { _id: "c1", name: "Tony Gwinn", confidence: "close" },
+      {
+        _id: "a1",
+        name: "Tony Gwynn Jr.",
+        confidence: "exact",
+        matchedAlias: "Tony Gwynn",
+      },
+      { _id: "s1", name: "Tony Gwynn", confidence: "exact", birthYear: 1960 },
+      { _id: "c2", name: "Anthony Gwynn", confidence: "close" },
+      { _id: "s2", name: "Tony Gwynn", confidence: "exact", birthYear: 1990 },
+    ];
+    const onPick = vi.fn();
+    render(
+      <NearMatchPanel
+        kind="player"
+        matches={matches}
+        onPick={onPick}
+        pickLabel={(name) => `Open ${name}`}
+      />,
+    );
+    const buttons = screen.getAllByRole("button");
+    expect(buttons.map((b) => b.getAttribute("aria-label"))).toEqual([
+      "Open Tony Gwynn, born 1960 — same name",
+      "Open Tony Gwynn, born 1990 — same name",
+      "Open Tony Gwynn Jr.",
+      "Open Tony Gwinn",
+      "Open Anthony Gwynn",
+    ]);
+    fireEvent.click(buttons[0]);
+    expect(onPick).toHaveBeenCalledWith("s1", "Tony Gwynn");
+  });
+
   it("names the list by kind", () => {
     const { rerender } = render(
       <NearMatchPanel kind="player" matches={[exact]} onPick={vi.fn()} />,

@@ -28,6 +28,7 @@ import { teamFullName, teamShortName } from "@/lib/teams/team-name";
 // career line, so the list row and the match row can never name different
 // teams for one man.
 import {
+  NOTHING_ON_FILE,
   rankCareerTeams,
   speakPlayerDescription,
 } from "@/lib/players/player-description";
@@ -311,7 +312,8 @@ function rowSignature(row: Player): string {
  * `players.nearMatches` stopped reading the exact key with `.first()`, so a
  * forked name — the very thing the birth-year field on this form now produces
  * — comes back as TWO rows both `confidence: "exact"`. The add form renders
- * one control per row (one promoted to the primary, the rest in the panel),
+ * one control per row in the panel, plus the primary for the first exact row
+ * (NEO-462: that row stays in the panel too, described like the others),
  * and a label built from the name alone made both of them `Open Bob Allen`:
  * two controls with one accessible name, on the screen whose entire purpose is
  * telling those two people apart. A screen-reader user hears the same option
@@ -332,7 +334,16 @@ function rowSignature(row: Player): string {
  * and "no birth year" twice is the same collision in different words — so the
  * position stands in, exactly as `candidateLinkLabel` does in the review
  * wizard. Weak information, but unique, and the operator can act on "the
- * second one" after reading the list.
+ * second one" after reading the list. The position is the server's order
+ * within the name, which is also the panel's: rows sharing a display name
+ * always land in the same tier of the panel's sort, which is stable.
+ *
+ * ## Where these labels are used (NEO-462)
+ *
+ * The primary button says this label as its visible text. A panel row says
+ * it only when it has no facts to speak (see `panelPickLabel`), and the panel
+ * then adds `— same name` to a same-name row, so a row never reads exactly
+ * like the primary even though the primary's row is now in the list too.
  */
 function openLabelsFor(matches: ReadonlyArray<NearMatch>): Map<string, string> {
   const byName = new Map<string, NearMatch[]>();
@@ -485,8 +496,8 @@ function AddPlayerForm({
    * name we already have.
    *
    * This form is where plan decision 3's identity rule — a distinct birth year
-   * means a distinct person — becomes reachable by a human. The near-match
-   * panel promotes "Open {name}" the moment an exact match appears, so
+   * means a distinct person — becomes reachable by a human. The form promotes
+   * "Open {name}" to the primary the moment an exact match appears, so
    * creation is already behind a deliberate "Create anyway"; the year is what
    * makes that button able to do what it says. `createByAdmin` reads it as the
    * operator asserting a different man: one existing row whose year differs
@@ -533,51 +544,78 @@ function AddPlayerForm({
   const busyOn = formBusy ? pressed : null;
 
   const trimmed = name.trim();
-  // The panel exports `hasExact` for callers that only need the boolean; this
-  // one needs the ROW as well, to name the button, and the find narrows the
-  // type where the predicate could not.
-  const exact = (matches ?? []).find((m) => m.confidence === "exact");
   /**
-   * What the panel still has to show once the primary action has been promoted.
+   * The row the primary "Open {name}" button opens.
    *
-   * Mirrors EntityReviewWizard's `panelMatches` deliberately: when an exact
-   * match exists the primary button IS that row — same id, same `Open {name}`
-   * accessible name — so listing it again below puts two controls with one
-   * accessible name on screen, which is ambiguous to a screen reader reading
-   * the list and to a Maestro `tapOn` matching by it. Filtered by `_id`, not by
-   * confidence: any OTHER row is a genuinely different player and still belongs
-   * in the list. If nothing else remains this is `[]`, which the panel already
-   * renders as no panel at all.
+   * The panel exports `hasExact` for callers that only need the boolean; this
+   * one needs the ROW as well, to name the button, and the find narrows the
+   * type where the predicate could not.
+   *
+   * NEO-462 — a SAME-NAME row first, an alias hit only when there is none.
+   * Both arrive `confidence: "exact"`, and the server already ranks same-name
+   * rows ahead of alias rows (first-created first), so in practice this is the
+   * first exact row in server order. Saying it here keeps the primary on the
+   * same man the panel lists first, whatever the server's order becomes: the
+   * panel sorts same-name rows above alias rows.
    */
-  const panelMatches = exact
-    ? (matches ?? []).filter((m) => m._id !== exact._id)
-    : matches;
-  /**
-   * NEO-254 — computed over EVERY match, not just the panel's share.
+  const exact =
+    (matches ?? []).find((m) => m.confidence === "exact" && !m.matchedAlias) ??
+    (matches ?? []).find((m) => m.confidence === "exact");
+  /*
+   * NEO-462 (Jason, 2026-11-08) — the panel lists EVERY match, the exact one
+   * included.
    *
-   * The promoted primary is one of these rows and the panel holds the rest, so
-   * a label set built from the panel alone would leave the primary saying
-   * `Open Bob Allen` while the row beside it said `Open Bob Allen, b. 1975` —
-   * unique, but the primary would not say which man it opens. One computation
-   * over the whole list gives both halves the same treatment.
+   * Until then the exact row was taken out of the panel and shown only as the
+   * green primary, mirroring EntityReviewWizard's `panelMatches`. On the
+   * preview, typing "Tony Gwynn" listed only "Tony Gwynn Jr." (alias "Tony
+   * Gwynn"): the real Tony Gwynn was on the primary, which carries no birth
+   * year or teams, so it did not read as an option at all. Now he is the first
+   * row, tagged "same name" and described like the others (b. 1960 · Padres
+   * 1982–2001), and the primary stays as the keyboard shortcut (Enter) to the
+   * same row. The two controls keep distinct accessible names: the row adds
+   * its facts and `— same name`, the primary does not. The wizard still filters
+   * its promoted row out; this screen no longer mirrors it.
+   */
+  /**
+   * NEO-254 — computed over EVERY match.
+   *
+   * The primary opens one of these rows, so a label set that skipped it would
+   * leave the primary saying `Open Bob Allen` while a second Bob Allen's row
+   * said `Open Bob Allen, b. 1975`: unique, but the primary would not say
+   * which man it opens. One computation over the whole list gives both
+   * controls the same treatment.
    *
    * NEO-462 — a panel row WITH facts (a birth year or a team) gets the bare
    * `Open {name}` instead, because `NearMatchPanel` speaks those facts itself
    * and a label from here would say the birth year twice. A row with none
-   * keeps this map's label, so two fact-less Bob Allens still read
-   * `…, no birth year (1 of 2)` (the primary) and `…, no birth year (2 of 2)`
-   * (the row) rather than one being a prefix of the other. See
-   * `panelPickLabel`.
+   * keeps this map's label, so two fact-less Bob Allens read
+   * `…, no birth year (1 of 2)` on the primary and
+   * `…, no birth year (1 of 2) — same name` / `(2 of 2) — same name` in the
+   * list. See `panelPickLabel`.
    */
   const openLabels = openLabelsFor(matches ?? []);
   const openLabel = (m: NearMatch) => openLabels.get(m._id) ?? `Open ${m.name}`;
-  // The panel's pick label: bare when the panel has facts to append (the
-  // same test it applies, `speakPlayerDescription` being non-empty), else the
-  // disambiguated label above.
-  const panelPickLabel = (name: string, m: NearMatch) =>
-    speakPlayerDescription({ birthYear: m.birthYear, career: m.career })
-      ? `Open ${name}`
-      : openLabel(m);
+  /**
+   * The panel's pick label: bare when the panel has facts to append (the same
+   * test it applies, `speakPlayerDescription` being non-empty), else the
+   * disambiguated label above.
+   *
+   * NEO-462 — one row could still read exactly like the primary: the
+   * primary's own row when the panel adds nothing to it, which is an alias
+   * hit (no "same name" tag) with nothing on file. That row says the words its
+   * second line shows, "nothing on file yet", so the two controls never share
+   * a name. A same-name row needs no such help: the panel always ends its name
+   * with `— same name`, and the primary never does.
+   */
+  const panelPickLabel = (name: string, m: NearMatch) => {
+    if (speakPlayerDescription({ birthYear: m.birthYear, career: m.career })) {
+      return `Open ${name}`;
+    }
+    const label = openLabel(m);
+    return exact && m._id === exact._id && m.matchedAlias
+      ? `${label}, ${NOTHING_ON_FILE.toLowerCase()}`
+      : label;
+  };
   // Client-side mirror of `assertBirthYear`, so a typo is caught while the
   // field is still in front of the operator. The server re-validates; this is
   // the fast half of defense in depth, not the guarantee.
@@ -723,7 +761,9 @@ function AddPlayerForm({
 
       <NearMatchPanel
         kind="player"
-        matches={panelMatches}
+        // NEO-462 — every match, the primary's own row included (first, as
+        // the panel sorts same-name rows to the top). See above.
+        matches={matches}
         // Not "Link to": this button opens the row for editing, it does not
         // link anything to anything. NEO-462 — the bare verb and name when
         // the panel has a birth year or teams to add itself; the ordinal

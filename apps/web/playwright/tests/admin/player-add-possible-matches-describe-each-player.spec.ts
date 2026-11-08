@@ -9,13 +9,13 @@
 // custom sport has no sportConfig.wikidata, so no player or team create here
 // reaches a Wikidata lookup (GUIDE "Enrichment fixtures"), and the minted single
 // tokens never collide with another run's rows.
-//   - 1975: nothing else on file. First created, so the add form promotes him to
-//           the primary "Open ..." button (server order is creation order).
+//   - 1975: nothing else on file. First created, so the green primary
+//           button opens him (server order is creation order).
 //   - 1962: three teams, so only the two he spent longest with are named and the
 //           third is counted as "+1 more".
 //   - 1988: one team, two stints, so a repeat stint prints on one line.
-// The two rows left in the panel are the feature. Nothing a spec creates is
-// removed, so every name carries this attempt's token. Desktop and mobile each
+// The three rows in the panel (the 1975 man included) are the feature. Nothing a
+// spec creates is removed, so every name carries this attempt's token. Desktop and mobile each
 // mint their own (ATTEMPT_TOKEN carries the project).
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { emptyListAndPickSport, expectPlayersLoaded } from "../../support/players";
@@ -86,7 +86,7 @@ test(
       await expect(page.getByText(new RegExp(`Saved ${surname}`))).toBeVisible();
     };
 
-    // 1975 first: he becomes the promoted primary and stays out of the panel.
+    // 1975 first: he is the first-created match, so the primary button opens him.
     await addPlayer("1975", false);
 
     // 1962: three teams, longest first by total seasons (A 12, C 5, B 2).
@@ -106,12 +106,19 @@ test(
     await addButton.click();
     await expect(page.getByRole("heading", { name: "Add a player" })).toBeVisible();
     await newName.fill(surname);
-    // The first-created exact row is the primary; the other two are the panel.
-    await expect(
-      page.getByRole("button", { name: `Open ${surname}, b. 1975`, exact: true }),
-    ).toBeVisible();
+    // The panel lists EVERY match, the first-created exact one included; the green
+    // primary stays beside it as the shortcut to that first-created row (1975).
+    const primary = page.getByRole("button", { name: `Open ${surname}, b. 1975`, exact: true });
+    await expect(primary).toBeVisible();
     const panel = page.getByRole("list", { name: "Possible player matches" });
-    await expect(panel.getByRole("listitem")).toHaveCount(2);
+    await expect(panel.getByRole("listitem")).toHaveCount(3);
+
+    // The 1975 man is in the panel too, described by what little is on file.
+    const rowOf1975 = panel.getByRole("listitem").filter({ hasText: "b. 1975" });
+    await expect(rowOf1975).toContainText("b. 1975");
+    await expect(
+      rowOf1975.getByRole("button", { name: `Open ${surname}, born 1975 — same name`, exact: true }),
+    ).toBeVisible();
 
     // Visible text: birth year, then the two longest teams with short ranges and a
     // count of the rest.
@@ -144,5 +151,15 @@ test(
     const stints = page.getByRole("list", { name: "Career history" }).getByRole("listitem");
     await expect(stints).toHaveCount(3);
     await expect(stints.filter({ hasText: `${teamA} · 2001–2012` })).toHaveCount(1);
+
+    // The primary is still the shortcut to the first-created match: the 1975 man.
+    await page.getByRole("button", { name: "Add player" }).click();
+    await expect(page.getByRole("heading", { name: "Add a player" })).toBeVisible();
+    await newName.fill(surname);
+    await expect(panel.getByRole("listitem")).toHaveCount(3);
+    await primary.click();
+    await expect(page.getByRole("heading", { name: surname, exact: true })).toBeVisible();
+    await expect(page.getByRole("spinbutton", { name: /^Birth year/ })).toHaveValue("1975");
+    await expect(page.getByText("No stints recorded yet.")).toBeVisible();
   },
 );

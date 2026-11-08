@@ -23,7 +23,13 @@
  * it to the top and labelling it "same name" is the difference between the
  * panel being a warning and it being a list. That tag is part of the row's
  * ACCESSIBLE NAME (`{pickLabel} — same name`), not decoration beside it: a
- * warning only a sighted operator receives is not a warning.
+ * warning only a sighted operator receives is not a warning. An alias hit is
+ * `exact` too but is not the same name, so it follows the same-name rows and
+ * precedes the close ones (NEO-462).
+ *
+ * The admin add form lists its exact row here AND promotes it to its primary
+ * button (NEO-462); the wizard still takes its promoted row out. Either way the
+ * caller decides what to pass, and this panel lists whatever it is given.
  */
 
 import { useId } from "react";
@@ -145,12 +151,14 @@ export function NearMatchPanel({
   className = "",
   busy = false,
 }: NearMatchPanelProps) {
-  // Exact first, otherwise stable in the order the server ranked them.
-  const ordered = [...(matches ?? [])].sort((a, b) => {
-    const aExact = a.confidence === "exact" ? 0 : 1;
-    const bExact = b.confidence === "exact" ? 0 : 1;
-    return aExact - bExact;
-  });
+  // Same-name rows first, then alias hits (exact by confidence, not by name),
+  // then close matches; within each group, the order the server ranked them
+  // (`sort` is stable). NEO-462: an alias hit no longer sits above the man
+  // whose name was actually typed — "Tony Gwynn" lists Tony Gwynn before
+  // Tony Gwynn Jr. (also known as "Tony Gwynn").
+  const tier = (m: NearMatch) =>
+    m.confidence !== "exact" ? 2 : m.matchedAlias ? 1 : 0;
+  const ordered = [...(matches ?? [])].sort((a, b) => tier(a) - tier(b));
 
   const count = ordered.length;
   // Prefix for the per-row alias-note ids (`aria-describedby` targets). One
