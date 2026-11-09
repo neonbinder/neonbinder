@@ -28,3 +28,18 @@ rather than pulling it out from under another agent's gate run.
 `yarn install` is wrong: yarn ignores the lockfile and writes a stray
 `yarn.lock`. If no `node_modules` exists and no other agent is using one,
 `npm ci --no-audit --no-fund` in `apps/web` took about a minute (2026-11-01).
+
+**A new Convex module needs `_generated/api.d.ts` regenerated** (it is
+committed). `dataModel.d.ts` follows the schema on its own, but
+`internal.<newModule>.*` exists only once api.d.ts imports the module. The
+gates hide the gap from the module's own builder: the convex typecheck
+excludes `*.test.ts` and vitest resolves `internal` through a runtime proxy,
+so the new file and its test both pass while the first non-test caller (an
+adapter scheduling it) fails typecheck. Tell the coordinator to regenerate
+api.d.ts once every parallel builder is done, rather than hand-editing a
+shared generated file mid-build.
+
+`npm run test:unit`'s completeness check (`verify-test-completeness.mjs`)
+fails when another builder creates a `.test.ts` while the suite is running
+("exist but reported no result"). With parallel builders, check whether the
+listed file is yours before re-running.

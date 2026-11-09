@@ -71,6 +71,7 @@ beforeEach(() => {
   // PostHog client short-circuits when no key is set. Force a value so the
   // mocked client actually gets invoked.
   process.env.POSTHOG_API_KEY = "test-posthog-key";
+  delete process.env.TESTING_RESET_SECRET; // NEO-475: testing deployments send no adapter_* events
   // NEO-188: the BSC token path pings the browser service (localhost:8080).
   // Unstubbed, "no token is available" was really "nothing is listening on
   // 8080" — so the test passed for an environmental reason and would have

@@ -1025,6 +1025,77 @@ export const saleItemProblemValidator = v.union(
   v.literal("oversold"),
 );
 
+/**
+ * NEO-475 — why a BuySportsCards call failed, as the telemetry classifies it.
+ *   http         BSC answered with a non-2xx status
+ *   timeout      no response headers before the call's deadline
+ *   body_timeout headers arrived, the body did not before the deadline
+ *   network      the fetch threw (connection reset, DNS, TLS); `errCode` says which
+ *   parse        a 2xx body that would not parse
+ */
+export const bscCallKindValidator = v.union(
+  v.literal("http"),
+  v.literal("timeout"),
+  v.literal("body_timeout"),
+  v.literal("network"),
+  v.literal("parse"),
+);
+
+/**
+ * NEO-475 — one failed BSC call, the `bsc_call_failed` detail line minus its
+ * `msg`. Every string is already scrubbed by the emitter
+ * (`convex/lib/bscCallTelemetry.ts`) and capped again by
+ * `bscCallStats.record`. `headers` is an allowlist of response headers only;
+ * no request header, token, credential or seller id is ever stored.
+ */
+export const bscCallSampleValidator = v.object({
+  op: v.optional(v.string()),
+  pathTemplate: v.optional(v.string()),
+  bscCardId: v.optional(v.string()),
+  kind: bscCallKindValidator,
+  status: v.optional(v.number()),
+  durationMs: v.optional(v.number()),
+  timeoutMs: v.optional(v.number()),
+  attempt: v.optional(v.number()),
+  inflight: v.optional(v.number()),
+  errCode: v.optional(v.string()),
+  headers: v.optional(v.record(v.string(), v.string())),
+  body: v.optional(v.string()),
+  deployment: v.optional(v.string()),
+  at: v.optional(v.number()),
+});
+
+/**
+ * NEO-475 — one action invocation's (or one seller session's) BSC calls,
+ * mergeable with any other: counts add, `maxInflight` and `lat.max` take the
+ * max, `lat.min` the min, and `lat.buckets` add element-wise. The buckets have
+ * FIXED edges (`BSC_LATENCY_BUCKET_EDGES_MS` in `bscCallStats.ts`: ten edges
+ * plus the overflow bucket, so always eleven), which is what lets p50/p95 be
+ * computed across invocations. `deployment` is optional because
+ * `observability.deploymentName()` is undefined off-cloud (tests, local).
+ */
+export const bscCallSummaryFields = {
+  op: v.string(),
+  deployment: v.optional(v.string()),
+  startedAt: v.number(),
+  endedAt: v.number(),
+  calls: v.number(),
+  ok: v.number(),
+  byKind: v.record(v.string(), v.number()),
+  byStatus: v.record(v.string(), v.number()),
+  maxInflight: v.number(),
+  suppressed: v.number(),
+  lat: v.object({
+    min: v.number(),
+    max: v.number(),
+    sum: v.number(),
+    buckets: v.array(v.number()),
+  }),
+  /** At most five failure samples (`bscCallStats.record` caps it). */
+  samples: v.array(bscCallSampleValidator),
+};
+export const bscCallSummaryValidator = v.object(bscCallSummaryFields);
+
 // Using Clerk for authentication - users are identified by Clerk user IDs
 export default defineSchema({
   /**
@@ -3975,6 +4046,22 @@ export default defineSchema({
   }),
 
   /**
+   * NEO-475 — BuySportsCards call telemetry, one row per action invocation
+   * (or seller session) that called BSC: the `bsc_call_summary` log line plus
+   * up to five failure samples. Written only through
+   * `ctx.scheduler.runAfter(0, internal.bscCallStats.record, …)`, never on the
+   * call's hot path. Insert-only; rows are kept forever (Jason, 2026-11-09,
+   * decision D3: no prune cron). Deployment-wide operational data, no user
+   * data and no NB catalog data: nothing user-facing reads it, nothing
+   * subscribes to it, and the only reader is the paginated internal
+   * `bscCallStats.exportRange`. Holds no marketplace linkage, so it sits
+   * outside the product invariant entirely.
+   */
+  bscCallSummaries: defineTable(bscCallSummaryFields)
+    // exportRange's `startedAt` window, oldest first, paged.
+    .index("by_startedAt", ["startedAt"]),
+
+  /**
    * ── NEO-358: a collector's places to keep cards ───────────────────────────
    *
    * A HOME for copies: a binder, or a box (for-sale cards live in boxes). Every
@@ -4665,13 +4752,18 @@ export default defineSchema({
    * reader strips it.
    *
    * `conditionsPushed` is every platform condition string NB has ever posted
-   * for this variant (BSC: one sheet per condition). A later run reads the
-   * conditions NB maps to plus these, so a row NB once listed under a
-   * condition it no longer uses is still found and corrected. Only ever grows;
-   * small (BSC has 4 modern and 10 vintage conditions). ABSENT
-   * `lastSuccessAt` means the variant has never synced cleanly, and that run
-   * reads every condition; so does the first run after a Sync press
-   * (`resyncRequestedAt` later than `lastRunAt`, see `listingSync.syncVariant`).
+   * for this variant (BSC: one sheet per condition). Every BSC run reads the
+   * conditions NB's copies map to now plus these, and nothing else, so a row
+   * NB once listed under a condition it no longer uses is still found and
+   * corrected (NEO-475: no run reads the whole era any more, a first sync or
+   * a Sync press included, so stock NB never listed under is left alone). A
+   * run adds the conditions it is about to list under BEFORE its first PUT
+   * (`listingDrain.recordConditionsPushed`), so a run that dies mid-push still
+   * leaves the record; `finishVariant` adds the rest. Only ever grows; small
+   * (BSC has 4 modern and 10 vintage conditions). ABSENT `lastSuccessAt` means
+   * the variant has never synced cleanly. eBay's first run, and its first run
+   * after a Sync press (`resyncRequestedAt` later than `lastRunAt`, see
+   * `listingSync.syncVariant`), reads every card of the variant.
    *
    * `lastError` is an NB-written sentence, truncated by the writer; never a
    * raw platform response body (it can echo the request, and this row is
@@ -4722,8 +4814,9 @@ export default defineSchema({
      * The last Sync press that asked for a full read (`listingSync.syncVariant`
      * does not stamp a press within a minute of this one: that press only runs
      * the drain for a change no recent drain has tried, or is ignored). The
-     * variant's next run reads every condition while this is later than
-     * `lastRunAt` (the claim stamps `lastRunAt`, so one run).
+     * variant's next eBay run reads every card while this is later than
+     * `lastRunAt` (the claim stamps `lastRunAt`, so one run); a BSC run reads
+     * what any run reads (NEO-475).
      */
     resyncRequestedAt: v.optional(v.number()),
     /**

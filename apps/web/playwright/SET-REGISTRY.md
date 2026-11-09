@@ -88,7 +88,10 @@ BuySportsCards alone for the whole run:
 | Set | Variant types provisioned | Provisioned by |
 |---|---|---|
 | Baseball → 2024 → Topps → Topps Chrome | `Base` (full checklist), `Insert` → "Future Stars" (~20 cards), `Parallel` → "Gold Wave Refractors" (300 cards, BUILT FROM BASE since NEO-321 — copies of Base's cards linked to Gold Wave's own BSC + SportLots cards) | `tests/setup.spec.ts`; **sole writer** of the cards of the base parallel its run builds before Stop (the first buildable row under `Parallel`, in the type's child order — measured: `Sepia Refractors`): `tests/set-selector/base-parallels-build-from-section.spec.ts` (NEO-321) — see "2024 Topps Chrome › Parallel — the base-parallel build". Approved: Jason, 2026-10-04 |
-| Baseball → 2024 → Topps → Topps Big League | `Base` — variant types synced and Base MAPPED, checklist deliberately EMPTY (NEO-248 wizard fixture) | `tests/setup.spec.ts` |
+| Baseball → 2024 → Topps → Topps Stars of MLB Network | `Base` (10 cards on BSC) — variant types synced and Base MAPPED (BSC-only under a SportLots pause, so it reads unmapped), checklist deliberately EMPTY (the read-only wizard fixture) | `tests/setup.spec.ts`; read by `checklist-wizard-back-to-matching-resumes-decisions`, `checklist-wizard-career-team-entry` and `checklist-wizard-link-to-existing-player` through `fetchChecklistToWizard`'s default, each exiting Cancel → Discard. ✅ **Approved by Jason 2026-11-09** (NEO-475, replacing Topps Big League) — see "Topps Stars of MLB Network" |
+| Baseball → 2024 → Topps → Topps Big League | none since NEO-475 — RETIRED as a fixture (310 cards; every wizard fetch read them all from BSC) | was `tests/setup.spec.ts` and the read-only wizard flows; no flow touches it now |
+| Baseball → 2024 → BBM → BBM Rookie Edition Premium | `Base` — 36 cards (RP01-RP36), variant types synced and fetched in-flow, never committed (NOT pre-synced). The `BBM` brand row is a known brand (`convex/knownBrands.ts`) the seed's year-wide 2024 Sets sync mints, and the set is filed under it by name | `tests/set-selector/checklist-wizard-same-name-pick-step.spec.ts` — **sole reader** (Cancel → Discard); writes one global `players` row, `Shuya Yamada` b. 1851. ✅ **Approved by Jason 2026-11-09** (NEO-475, replacing Topps Chrome NPB) — see "BBM Rookie Edition Premium" |
+| Baseball → 2024 → Topps → Topps Chrome NPB | none since NEO-475 — RETIRED as a fixture (216 cards) | was `tests/set-selector/checklist-wizard-same-name-pick-step.spec.ts`; no flow touches it now |
 | Baseball → 2024 → Topps → Topps 206 | none — variant types sync on first use; Base stays **UNMAPPED** (NOT pre-synced) | `tests/set-selector/base-mapping-cancel-recovers.spec.ts` — **sole writer**, and it writes nothing |
 | Hockey → 1995 → Unknown (via the All Brands view) → Tulsa Oilers CHL | `Base` — 18 cards, fetched and COMMITTED in-flow, BSC only, every name SKIPPED (NOT pre-synced) | `tests/set-selector/checklist-wizard-skip-commits-and-unskip.spec.ts` — **sole writer**. ✅ **Approved by Jason 2026-10-10** (NEO-330). Measured: **16 unknown players, 0 teams** (19 review rows once three players' Wikidata career clubs are staged) — see "The 1995 minor-league hockey wizard fixtures" |
 | Hockey → 1995 → Unknown (via the All Brands view) → Memphis RiverKings CHL | `Base` — 18 cards, fetched and COMMITTED in-flow, BSC only; ONE player created with ONE hand-staged career team, the rest SKIPPED (NOT pre-synced) | `tests/set-selector/checklist-wizard-career-team-commits.spec.ts` — **sole writer**. ✅ **Approved by Jason 2026-10-10** (NEO-330). Measured: **15 unknown players, 0 teams** (15 rows settled) |
@@ -100,7 +103,8 @@ BuySportsCards alone for the whole run:
 | Hockey → 1995 → Unknown (reached through the All Brands view) → Roanoke Express ECHL | `Base` — 25 cards, fetched and COMMITTED in-flow, BSC only (NOT pre-synced); NEO-335: one player CREATED in the review with one career team (a real recorded one-word club, NEO-413, pre-filled onto his card), one card answered "No team on this card", one given a team CREATED with "Other team…" (`RXO<token>T`), 22 left for later; then RE-SYNCED once (teams-only review) | `tests/set-selector/checklist-one-marketplace-skips-match-dialog.spec.ts` — **sole writer**. ✅ **APPROVED 2026-09-09** (NEO-260); manufacturer row renamed by NEO-237 (the marketplace's "All Brands" option is routed onto the year's `Unknown` row, never stored under its label) |
 | Hockey → 1997 (the whole year) | a manufacturer row `SPx` linked through SportLots' All Brands option; the per-brand SportLots reviews the year-wide Sync Sets leaves behind (NEO-306: SportLots-only names are no longer saved as sets; the reviews stay unsaved, labels never read or asserted); the year's BSC sets filed under the brands / `Unknown` and the prefix-matching ones re-homed to `SPx`. No checklist is fetched. | `tests/set-selector/brand-via-all-brands-narrows-sportlots.spec.ts` — **sole writer** of the year. ✅ Claimed by Jason 2026-09-21 (NEO-237 §0.1); the prefix `SPx` **measured** on PR #272's preview 2026-09-21 — see the Hockey 1997 section |
 | Baseball → 2024 → Topps → Topps MLB at Rickwood Field Negro Leagues Collection | none since NEO-330 — RETIRED as a fixture: the reference catalogue holds its Negro League clubs and players, so it no longer raises the team steps the alias flow needs | was `tests/set-selector/checklist-wizard-link-team-saves-alias.spec.ts` (NEO-284, approved 2026-09-16); no flow touches it now |
-| Baseball → 1996 → All Brands (the view; the set is filed under the year's `Unknown` row) → Line Up Venezuelan Winter League | `Base` — 300 cards, BSC only (the SportLots picker is CANCELLED in-flow), fetched and COMMITTED in-flow (NOT pre-synced): one club LINKED to the minted `Loc<token> Ali<token>` with its alias, every other name SKIPPED | `tests/set-selector/checklist-wizard-link-team-saves-alias.spec.ts` — **sole writer**. ✅ **Approved by Jason 2026-10-10** (NEO-330). Measured: **200 unknown players + 8 unknown teams** (211 rows once lookups settle) — see "The TEAM-link alias fixture" |
+| Baseball → 1996 → All Brands (the view lists every set of the year; the set is expected under the year's `Unknown` row, as no brand's name prefixes it) → New Haven Ravens Rally Raffle | `Base` — 9 cards (one an NNO raffle entry card), BSC only (the SportLots picker is CANCELLED in-flow), fetched and COMMITTED in-flow (NOT pre-synced): the club `New Haven Ravens` LINKED to the minted `Loc<token> Ali<token>` with its alias, every other name SKIPPED | `tests/set-selector/checklist-wizard-link-team-saves-alias.spec.ts` — **sole writer**. ✅ **Approved by Jason 2026-11-09** (NEO-475, replacing Line Up Venezuelan Winter League). Probed: **1 unknown club + 2 unknown players** — see "The TEAM-link alias fixture" |
+| Baseball → 1996 → All Brands → Line Up Venezuelan Winter League | none since NEO-475 — RETIRED as a fixture (300 cards, 200 unknown players + 8 clubs) | was `tests/set-selector/checklist-wizard-link-team-saves-alias.spec.ts` (NEO-330); no flow touches it now. Its players' recorded no-matches still back `support/recorded-names.ts` |
 | Baseball → 2025 (the whole year) → Topps → Topps Welcome to the Club: 3X MVP | `Base` — 36 cards, BSC only (the SportLots picker is CANCELLED in-flow), fetched and COMMITTED in-flow (NOT pre-synced): the one team step, `Philadelphia Athletics`, LINKED by the operator to the catalogue's 1901–1954 row (remember-box unticked, no alias written); Brooklyn Dodgers linked automatically at the fetch. The year's Manufacturers and Topps Sets syncs are this flow's too: no other flow drills Baseball → 2025 | `tests/set-selector/checklist-wizard-past-era-team-link-commits.spec.ts` — **sole writer** of the year. ✅ **Approved by Jason 2026-10-11** (NEO-330). Measured: **0 unknown players + 1 unknown team** (1 row once its lookup settles) — see "The PAST-ERA team fixture" |
 | Baseball → 2026 → Bowman (the whole brand-year) | **setup:** Bowman's Sets synced and its SportLots review SAVED (NEO-306): the set `Bowman Sterling` (+ Base), `All-America Game Autos` under Bowman › `Insert`, every other SportLots-only name under Bowman › `Parallel`; Bowman's Variant Types synced. **inserts flow:** Bowman › `Insert` reconciled and grouped — `Anime Kanji` promoted to a parallel of `Anime`, re-synced; `Anime`'s checklist COMMITTED, which BUILDS all of `Anime`'s parallels (NEO-312). **links flow:** Bowman › `Parallel` re-synced and saved (BSC's `Blue` paired with the filed row); `Blue`'s SportLots link promoted to `Bowman Blue` and folded back; the Parallel row `All-America Game Autos Red Ink` moved under Bowman › Insert › `All-America Game Autos` as the parallel `Red Ink` | `tests/setup.spec.ts` (Sets + review + Variant Types; the paused-mode `Bowman` manufacturer row), `tests/set-selector/bowman-insert-grouping-builds-parallels.spec.ts` (Bowman › Insert's BSC inserts and their grouping), `tests/set-selector/bowman-sportlots-links-move-between-set-parallel-insert.spec.ts` (Bowman › Parallel, `Blue`, `Bowman Blue`, `Red Ink`) — **one sole writer per row**, split from one flow at 570 s of the 600 s kill (NEO-312, owner-approved shape). Requested by the owner 2026-09-21 (NEO-293) |
 | Baseball → 1990 (the whole year) | Every brand row NB's known-brands list mints for the year, the year's `Unknown` row, and every BSC set of the year filed under one of them; one set (expected `CMC…`) is MOVED to `Unknown` by the operator control and left there. No checklist is fetched, no Base is mapped, nothing is renamed or deleted, and NO row is added to Baseball's shared Years column (1990 is synced, and the drill selects it). | `tests/set-selector/known-brand-files-set-and-operator-move-sticks.spec.ts` — **sole writer** of the year. ✅ Claimed by Jason 2026-09-22 (NEO-294); see the Baseball 1990 section |
@@ -108,9 +112,8 @@ BuySportsCards alone for the whole run:
 | Baseball → 2025 → Bowman › Bowman Draft › Insert › Bowman Draft Nights Autographs | `Insert` set `Bowman Draft Nights Autographs` — made its own set from the Reconcile Inserts dialog by its exact "Make its own set" button (its four refractor siblings are NOT made sets); its 5 cards (BDNA-SH, -EW, -GF, -KA, -XN, each AU + SN99 in BSC's attribute field) fetched and COMMITTED in-flow (NOT pre-synced); every name the wizard stages is SKIPPED, no player, team or league minted; the part's autograph format answered in the wizard, changed in Set details, cleared and answered again from the header, and card BDNA-KA's `autographed` toggled once by hand | `tests/set-selector/checklist-autograph-format-asked-applied-and-changeable.spec.ts` — **sole writer** of those five cards, not self-cleaning (the run-start reset is its cleanup). ✅ **Approved by Jason 2026-10-14** (NEO-345); shares the YEAR and the Bowman Draft Insert reconcile with the dual-team spec above (a different insert, different rows) — see "Baseball → 2025 — the NEO-345 autograph fixture" |
 | Baseball → 2024 → Topps → Topps (the flagship: BSC's Series 1 + 2 set) | `Insert` — Variant Types synced on first entry; the `Insert` reconcile SAVED twice (once built, once re-synced): every Ready set it holds, including `City Connect Swatch Collection Relics (Series One)` linked to SportLots **299607** and `… (Series Two)` linked to **307437**. No checklist is fetched (NOT pre-synced; the `Topps` row itself is the seed's 2024 Topps Sets sync) | `tests/set-selector/reconcile-sportlots-twins-save-each-to-its-own-set.spec.ts` — **sole writer**, not self-cleaning (the run-start reset is its cleanup). ✅ Approved by Jason 2026-10-08 (NEO-325); see "SportLots twin names" |
 | Football → 2014 (the whole year) → Topps → Topps (the flagship) | `Base` — the year's Years, Manufacturers and year-wide Sets synced cold in-flow; `Topps`' Variant Types synced; the Base picker CONFIRMED on both sides; the checklist fetched and COMMITTED in-flow through the Match Cards dialog, with BSC's #442 unlinked and then deliberately linked to a SportLots-only card and saved under the SportLots name; any review-wizard names SKIPPED (NOT pre-synced) | `tests/set-selector/checklist-team-leader-cards-pair-and-picked-name-saves.spec.ts` — **sole writer** of the year, not self-cleaning (the run-start reset is its cleanup). ✅ **Approved by Jason 2026-10-13** (NEO-343/NEO-344) — see "Football → 2014 — the NEO-343 team-leader fixture" |
-| Baseball → 1988 → Topps → Topps (BSC's "1988 Topps") | `Base` — the year's Manufacturers and Sets synced cold, Base MAPPED on both sides, the full checklist (BSC's 1988 Topps base, about 792 cards) fetched and SAVED by the SEED, wizard walked (NEO-370; the live count is recorded below after the first seed) | `tests/setup.spec.ts` provisions it; `tests/collection/inventory-bsc-listing-1988-topps-base.spec.ts` is the **sole writer of its BuySportsCards quantities** (it writes no card, player, team or variant of the set). ✅ **Approved by Jason 2026-11-01** (NEO-370) — see "1988 Topps Baseball — the BuySportsCards listing fixture" |
-| Baseball → 1988 → Topps → Topps (the same set, for eBay) | `Base` as above (no new set, no new row) | `tests/collection/inventory-ebay-sandbox-listing-1988-topps-base.spec.ts` is the **sole writer of the eBay SANDBOX seller account's listings** (it writes no card, player, team or variant of the set, and no BuySportsCards quantity). Like the BuySportsCards spec it runs only in the `seller-*` jobs (tag `@marketplace-seller`), one PR at a time repo-wide (NEO-415). **Needs Jason's approval (NEO-415)** — see "1988 Topps Baseball — the eBay sandbox listing fixture" |
-| Football → 2026 → Bowman → Bowman (BSC's "2026 Bowman"; the brand row is hand-made under a SportLots pause) | `Base` — BSC's 200-card base checklist fetched and SAVED in-flow (not by the seed), wizard walked; then `Parallel` › `Chrome` with its Card prefix set to `BCV-` FIRST and its cards BUILT FROM BASE (198 cards, each linked to Chrome's own BSC card by number with the prefix off BSC's). NB's numbers on Chrome stay bare (`#26`, never `#BCV-26`). Built by the spec, NOT pre-synced; the tree stays after a run and a rerun on the same seed adopts it | `tests/collection/inventory-bsc-listing-2026-bowman-chrome-prefix.spec.ts` is the **sole writer** of the set's rows and of the **BuySportsCards quantities** of its `Chrome` cards (it writes no other Football row). Like the 1988 BuySportsCards spec it runs only in the `seller-*` jobs (tag `@marketplace-seller`), one PR at a time repo-wide. ✅ **Offered and approved by Jason (the owner), 2026-11-06** (NEO-458) — see "Football → 2026 → Bowman › Chrome — the BuySportsCards card-prefix listing fixture" |
+| Baseball → 2024 → Topps → Topps Chrome › `Insert` › Future Stars (the seed's anchor, for the seller specs) | none of its own: the seed's Future Stars checklist above (20 cards; no new set, no new row) | `tests/collection/inventory-bsc-listing-2024-topps-chrome-future-stars.spec.ts` is the **sole writer of its BuySportsCards quantities** and `tests/collection/inventory-ebay-sandbox-listing-2024-topps-chrome-future-stars.spec.ts` of the **eBay SANDBOX seller account's listings**; neither writes a card, player, team or variant of the set. Both run only in the `seller-*` jobs (tag `@marketplace-seller`), one PR at a time repo-wide (NEO-415). ✅ **Approved by Jason 2026-11-09** (NEO-475, replacing 1988 Topps Base, now retired) — see "2024 Topps Chrome › Insert › Future Stars — the marketplace-seller listing fixture" |
+| Football → 2026 → Bowman → Bowman (BSC's "2026 Bowman"; the brand row is hand-made under a SportLots pause) | `Base` — BSC's 200-card base checklist fetched and SAVED in-flow (not by the seed), wizard walked; then `Parallel` › `Chrome` with its Card prefix set to `BCV-` FIRST and its cards BUILT FROM BASE (198 cards, each linked to Chrome's own BSC card by number with the prefix off BSC's). NB's numbers on Chrome stay bare (`#26`, never `#BCV-26`). Built by the spec, NOT pre-synced; the tree stays after a run and a rerun on the same seed adopts it | `tests/collection/inventory-bsc-listing-2026-bowman-chrome-prefix.spec.ts` is the **sole writer** of the set's rows and of the **BuySportsCards quantities** of its `Chrome` cards (it writes no other Football row). Like the Future Stars BuySportsCards spec it runs only in the `seller-*` jobs (tag `@marketplace-seller`), one PR at a time repo-wide. ✅ **Offered and approved by Jason (the owner), 2026-11-06** (NEO-458) — see "Football → 2026 → Bowman › Chrome — the BuySportsCards card-prefix listing fixture" |
 | Baseball → 2010 → Topps → Topps (the flagship) | `Insert` → `Team Bonus` (20 cards), `Silk Collection` (201 cards), `Peak Performance` (100 cards) and `Turkey Red` (100 cards) and, from the prior-year phase, `Peak Performance Relics` (158 cards) — the year's Years, Manufacturers and Sets synced cold in-flow, Variant Types synced on first entry, both fetched BSC only and COMMITTED in-flow (NOT pre-synced). `Team Bonus`: its one unknown name, `Kendry Morales`, moved to Football and added as a new player (Baseball not added to his sports). `Silk Collection`: Morales arrives auto-linked from the set's history, is changed and re-linked from the wizard, the one other unknown name (`Michael Brantley`, a Football player of that name made from `/admin/players` first) shows the one-namesake suggestion and is SKIPPED. `Peak Performance`: Bob Gibson and Joe Morgan arrive linked as Hall of Famers, Joe Morgan changed and re-linked, the St. Louis Browns LINKED to the catalogue's 1902–1953 row, the other names SKIPPED. `Turkey Red`: the St. Louis Browns arrive linked from the set's history and the wizard opens on its Save step for that one link, which is confirmed. `Peak Performance Relics`: Rickie Weeks, who is on no 2010 card of the set and has no Baseball namesake, arrives as a SUGGESTION from the 2009 edition ("Last year's edition of this set had Rickie Weeks (Football). Same one?"), linked and saved; its other unknown name is already answered by what `Peak Performance` committed. The Base is never fetched | `tests/set-selector/checklist-wizard-set-history-links-across-variants.spec.ts` — **sole writer** of those four inserts and of the year, and of the Football players `Michael Brantley` and `Rickie Weeks`. ✅ **Set approved by Jason 2026-11-03** (NEO-424; Team Bonus/Silk Collection chosen by the probe) — see "Baseball → 2010 — the NEO-424 set-history fixture" |
 | Baseball → 2009 → Topps → Topps (the prior-year edition of the flagship) | `Insert` → `Career Best Jumbo Jerseys` (54 cards) — the year's Years, Manufacturers and Sets synced cold in-flow, Variant Types synced on first entry, fetched BSC only and COMMITTED in-flow (NOT pre-synced). Its one unknown name, `Rickie Weeks`, is moved to Football and added as a new player (Baseball not added to his sports); every other name is a catalogue row. The Base and every other 2009 variant are never fetched | `tests/set-selector/checklist-wizard-set-history-links-across-variants.spec.ts` — **sole writer** of that insert and of the year. ✅ Set approved by Jason 2026-11-04 (NEO-424, rule E1: the prior year's edition suggests a name's player) — see "Baseball → 2010 — the NEO-424 set-history fixture" |
 
@@ -761,8 +764,9 @@ cannot produce an unknown name any more.
 names a marketplace fetch returned that NeonBinder does not already hold, and
 only **BSC** returns names at all — so the fixture has to be a real,
 BSC-listed set, synced through the real hierarchy. It is
-`Baseball → 2024 → Topps → Topps Big League → Base`; read its section below
-before touching any of these three.
+`Baseball → 2024 → Topps → Topps Stars of MLB Network → Base` since NEO-475
+(Topps Big League before); read its section below before touching any of
+these three.
 
 | flow | what it owns |
 |---|---|
@@ -787,7 +791,7 @@ anything:
 | `checklist-wizard-skip-commits-and-unskip` | Hockey 1995 Tulsa Oilers CHL (NEO-330; Topps Chicago Cubs before) |
 | `checklist-wizard-career-team-commits` | Hockey 1995 Memphis RiverKings CHL (NEO-330; Topps Baltimore Orioles before) |
 | `checklist-wizard-link-commits` | Hockey 1995 San Antonio Iguanas CHL (NEO-330; Topps Brooklyn Collection before) |
-| `checklist-wizard-link-team-saves-alias` | Baseball 1996 Line Up Venezuelan Winter League (NEO-330; Topps MLB at Rickwood Field before) — one-sided, see its own section |
+| `checklist-wizard-link-team-saves-alias` | Baseball 1996 New Haven Ravens Rally Raffle (NEO-475; Line Up Venezuelan Winter League from NEO-330, Topps MLB at Rickwood Field before) — one-sided, see its own section |
 
 See "The 1995 minor-league hockey wizard fixtures" below (and, for the history,
 "The three COMMITTING entity-review fixtures"), and "The TEAM-link alias
@@ -995,68 +999,79 @@ committed on the deployment — which CI guarantees by reseeding every run, and
 which a LOCAL re-run does not: re-running one of these against an
 already-committed preview fails at the wizard wait, correctly.
 
-### 1988 Topps Baseball — the BuySportsCards listing fixture (NEO-370) ✅ APPROVED by Jason 2026-11-01
+### 2024 Topps Chrome › Insert › Future Stars — the marketplace-seller listing fixture (NEO-475) ✅ APPROVED by Jason 2026-11-09
 
-`tests/collection/inventory-bsc-listing-1988-topps-base.spec.ts` proves that a
-collector's box counts reach BuySportsCards (NEO-370 Revisions 4 and 5): the
-BSC sign-in removed on Profile (the form's consent warning shown before
-Connect) and saved again, which starts syncing (Rev 5: a saved sign-in
-syncs); a box with the first two cards; the checklist's Sync and the Sync
-status tab's "2 listed"; then the box's "Listed on marketplaces" turned off, Sync, and "0 listed ... 2
-taken to 0". That cannot be proved on a hand-made set (no BSC card id, nothing
-to list), so it uses a real, synced one.
+Two seller specs list a collector's box counts on a real marketplace through
+this insert:
 
-**Why this set.** Jason: there is so much of 1988 Topps on BSC that nothing
-sells from the two cards during a run, and the spec sets both back to 0 before
-it ends, even on failure. The seller account the spec lists on is the one the
-bootstrap saves for E2E; the spec never calls BSC itself, it lists through the
-product (a saved sign-in, Sync).
+- `tests/collection/inventory-bsc-listing-2024-topps-chrome-future-stars.spec.ts`
+  proves that a collector's box counts reach BuySportsCards (NEO-370 Revisions 4
+  and 5): the BSC sign-in removed on Profile (the form's consent warning shown
+  before Connect) and saved again, which starts syncing (Rev 5: a saved sign-in
+  syncs); the listing gate (no common price holds the box; Add cards' Min price
+  warning, 2b); a binder copy's photo changes queue nothing (2c); a box with the
+  first two cards; the checklist's Sync and the Sync status tab's "2 listed";
+  Admin's read-only view; then the box's "Listed on marketplaces" turned off,
+  Sync, and "0 listed ... 2 taken to 0".
+- `tests/collection/inventory-ebay-sandbox-listing-2024-topps-chrome-future-stars.spec.ts`
+  proves the same against eBay's SANDBOX (NEO-415): Profile -> Credentials ->
+  eBay (the consent warning, the sandbox line), the connection (the seed hop,
+  `sites=ebay`, `listing=on`), the setup (Ships from first; then Set me up where
+  the seller's account has no payment or returns policy, and a pick in each of
+  Cards under $20 / $20 and up (from the seller's own shipping policies, see
+  "what Jason must provide") / Payment / Returns, ending on "You're all set"), a
+  box with the first three cards (a photo on two, one of them from a scanned
+  pair), the checklist's Sync and the eBay section reading "2 listed, 1
+  skipped" with the photoless card held back by name and reason; then the box's
+  "Listed on marketplaces" turned off, Sync, "0 listed ... 2 taken to 0"; the
+  Sales tab naming eBay; and Disconnect eBay. **Out of the suite for now**
+  (`PROJECT_IGNORE`, NEO-453: the sandbox refuses every publish on our keyset);
+  it returns to `SELLER_SPECS` and its `@marketplace-seller` tag when publish
+  works.
 
-| | |
-| -- | -- |
-| ancestors | `Baseball → 1988 → Topps → Topps` (BSC calls it "1988 Topps"; NB strips the year, as for "2024 Topps Chrome"). Reached with `drillToColdManufacturer` + `drillToBaseVariant` in the seed; the collector's `drillToCollectorBase(page, TOPPS_1988)` in the spec |
-| provisioned | `tests/setup.spec.ts`, before the Bowman block (that block returns early under a SportLots pause). Brand row hand-made under the pause, SportLots-linked when live, like 2024's |
-| what the SPEC writes | on BuySportsCards: the quantity (and the price and SKU the drain sends) of the **first two cards** of the Base checklist, 0 to 1 to 0. In NB: the signed-in user's own rows: the **listing state** (`marketplaceListingStates`, set by saving the sign-in with `listing=on`), one minted box `Bsc<token>` (set in-person mid-run, then emptied and deleted), two box `collectionCopies`, `variantCommonPrices` (set, then cleared) and `marketplaceListing*` records (outbox, per-set last result). It sets the worker's **public profile** (username `env.TEST_USERNAME` and a minted display name, so Admin can name the collector; the next per-user reset clears it), and it **removes the worker's BuySportsCards sign-in and saves it again** (the `/testing/seed-credentials` hop; no password typed) with `listing=on` to start syncing, and again without it at the end of the body (and in the afterEach on a failure) to stop. It never writes the set's cards, players, teams or variants |
-| the cards | the first two rows in checklist order, read off the quantity fields' names, so the choice follows the seed. Their BSC rows are the only rows the spec's pushes change; a Sync (the failure hook only) sets every row of the checklist to what NB holds, which is 0 beyond these two |
-| writer | **sole writer among specs** of every BSC quantity for this set (the seller jobs also set every row to 0 before their specs, `convex/testingSellerCleanup.ts`, NEO-445), and the only spec that **starts syncing** (`listing=on`; no other spec passes it) or touches a worker's BSC sign-in outside `credentials-lifecycle` (its own `new-profile` account) and the bootstrap. No other spec, and no other session pointed at the same seller, may list or edit 1988 Topps there: a second writer turns a "2 listed" into a read-back mismatch. The seller account is shared by every worker, but only the worker running this spec writes (one NB account may list from a seller account at a time, so a second worker's save with `listing=on` would read "seller account in use"). Desktop and mobile each run it once, in separate passes on separate seeds. CI runs it only in the `seller-desktop` / `seller-mobile` jobs (tag `@marketplace-seller`), one PR at a time repo-wide, because the seller account is shared by every PR's CI (NEO-415) |
-| reads | no other spec reads the set. A spec added later must not save a BSC sign-in through the Profile form or pass `listing=on` to the seed hop, and must not leave cards in a box, or a worker still syncing would put them on real BSC. (Checked 2026-11-01: no other spec saves a BSC sign-in through the form; `credentials-lifecycle` only submits fake credentials, which are refused and stored nowhere.) |
-| end state | **connected to BSC and NOT syncing (Profile reads "Not syncing."), and every OTHER box the worker had (Unsorted included) left in-person.** Before syncing starts the spec opens each box except its own minted one and unchecks "Listed on marketplaces" (asserting each), because saving a syncing sign-in walks every card in a listed box and a worker's leftover stock would go up on real BSC; it does not turn them back on (that would re-queue their cards). The Up for Trade pile is not a box that lists and is left alone. The afterEach runs on a pass too: on a failure it first zeroes the touched rows (waits for a running sync, empties the box, Sync, waits for "0 listed"), then removes the sign-in (the only way to stop syncing: it drops the queue and stops the sales poll) and saves it again WITHOUT `listing=on`, and asserts Profile reads "Not syncing." |
-| re-runs | **safe to re-run on the same seed**: the minted box differs per attempt, every count ends at 0 and syncing is stopped. A re-run's first steps need the account "Not syncing." (the seed hop's default), which the previous run's hook (or the bootstrap's reseed) guarantees |
-| cron | the 15-minute order poll and re-sync are deliberately NOT exercised (Jason, 2026-11-01); the account is not syncing again before the spec ends, so a poll never meets this account |
-| measured | **Round trip, 2026-11-01 CI (desktop):** Sync → "2 listed" 9.9 s, the in-person Sync → "0 listed ... 2 taken to 0" 9.4 s (so one BSC row per card, item 4 below). Since NEO-415 the spec no longer waits on the whole trip: Sync status ticks off each sheet read, the send and the confirm, and the spec waits for each step with the standard 7 s (`syncRun` in `support/collection.ts`). **Still to record:** (1) the seed block's wall time and the saved card count (`Saved N cards`) and the wizard steps it walked (it uses the live enrichment lookups: the committed recording holds none of this set's names, and extending it needs the set's staged names from a committed run, see `docs/operations/neo289-enrichment-fixtures.md` §4a); (2) the time each step of a "Sync → N listed" BSC round trip takes (the ledger's steps, each held to 7 s), and the hook's sign-in remove + save-again time (`SEED_SIGN_IN` is the bootstrap's 90 s); (3) whether the first two cards carry both a BSC card id and a SportLots one; (4) whether the zeroing Sync reads "2 taken to 0" (one BSC row per card) |
+Neither can be proved on a hand-made set (no marketplace card id, nothing to
+list), so they use a real, synced one. Neither calls a marketplace itself: each
+lists through the product (a saved sign-in or connection, Sync).
 
-### 1988 Topps Baseball — the eBay sandbox listing fixture (NEO-415)
-
-`tests/collection/inventory-ebay-sandbox-listing-1988-topps-base.spec.ts` proves
-that a collector's box counts reach eBay (NEO-415, eBay as a card-level
-listing platform) against eBay's SANDBOX: Profile -> Credentials -> eBay (the consent warning,
-the sandbox line), the connection (the seed hop, `sites=ebay`, `listing=on`),
-the setup (Ships from first; then Set me up where the seller's account has no
-payment or returns policy, and a pick in each of Cards under $20 / $20 and up (from the seller's
-own shipping policies, see "what Jason must provide") / Payment / Returns,
-ending on "You're all set"), a box
-with the first three cards (one copy each, a photo on two), the checklist's Sync
-and the Sync status tab's eBay section reading "2 listed, 1 skipped" with the
-photoless card held back by name and reason; then the box's "Listed on marketplaces" turned off, Sync, "0 listed ... 2
-taken to 0"; the Sales tab naming eBay; and Disconnect eBay. It reuses the
-1988 Topps Base set the BuySportsCards listing spec uses (the set already
-holds the cards and their checklist; an eBay listing needs no marketplace link
-on the card, and the eBay spec writes NB's own box rows only), so the set needs
-no provisioning of its own. It is a second spec on an approved real set, not a
-new set; it is flagged because it adds a second sole-writer relationship to
-that set's cards.
+**Why this set** (NEO-475, Jason 2026-11-09). It replaced 1988 Topps Base (NEO-370,
+retired below), whose 792-card BSC sheet reads took 6-8 s and drifted past
+BSC's 30 s gateway (503), and whose seed build cost about 1,544 BSC calls a run.
+Future Stars is 20 cards, already built by the seed for the shared 2024 Topps
+Chrome anchor, so it costs no provisioning. 1988 was MODERN on BSC too (the
+vintage cutoff is 1980, `convex/lib/bscConditions.ts`), so no condition or era
+coverage is lost: every copy still sits at Excellent and a run reads the one
+Excellent sheet. **The BuySportsCards spec lists at a $900 common price**, far
+above anything a buyer pays and under BSC's $999 ceiling (`BSC_MAX_PRICE_CENTS`),
+so a card a killed run leaves up does not sell (the 2026 Bowman Chrome prefix
+spec's pattern). The eBay spec keeps $1.00: the sandbox has no buyers, and $20
+and up is the calculated NB Tracked slot, which the sandbox cannot rate (publish
+fails 25007).
 
 | | |
 | -- | -- |
-| ancestors | `Baseball → 1988 → Topps → Topps`, as the BuySportsCards row above; the collector's `drillToCollectorBase(page, TOPPS_1988)` in the spec |
-| what the SPEC writes | **on eBay's sandbox:** for the **first two cards** of the Base checklist (the same two the BSC spec lists on BSC, on a different worker), one inventory item and one offer each (SKU `NB2-<card>-<condition>`), published then withdrawn, and the uploaded photo; and, where the sandbox seller has none, NeonBinder's standard payment and returns policies ("Set me up"; it makes no shipping policy, NEO-423), plus the seller's inventory location. **In NB:** the signed-in user's own rows: the eBay connection and setup (`ebaySellerSettings`, the stored session, the listing state), one minted box `Ebay<token>` (set in-person mid-run, then emptied and deleted), four box `collectionCopies` (the first card has a plain copy and a scanned one; a `collectionCopyPhotos` front on the second card's, and the first card's scanned copy has front and back from a scanned pair saved out of an Add cards run (NEO-427: one `intakeRuns` row, its placeholder job and photos, one `intakeMatches` row, closed by the tidy-up); the photoless ones leave by their quantity, the two with a photo through the card drawer's Remove, which keeps the drawer's axe states; a photo alone sets no line apart for a quick count, NEO-431), `variantCommonPrices` (set, then cleared), the `marketplaceListingLinks` rows and `marketplaceListing*` records. It sets every OTHER box the worker has to in-person and leaves them so. It never writes the set's cards, players, teams or variants |
-| the cards | the first three rows in checklist order, read off the quantity fields' names; the first two are listed on eBay's sandbox, the third is boxed without a photo to prove the held-back reason (it is never listed). The first card's photos are a scanned pair (`fixtures/intake/01-mcfadden-front.jpg` and `02-mcfadden-back.jpg`, about 1000 px wide: eBay wants at least 500) dropped into an Add cards run into the box and saved onto that card (picked by hand: the scan's number and player mean nothing in 1988 Topps); the second card's is `fixtures/intake/03-bowe-front.jpg`, attached through the card drawer's Photos box |
-| writer | **sole writer among specs** of the sandbox seller account (the seller jobs also withdraw every published offer on it and delete every inventory item before their specs, `convex/testingSellerCleanup.ts`, NEO-445, NEO-453): the only spec that connects eBay (`sites=ebay`), passes `listing=on` for it, or touches Profile -> Credentials -> eBay's connection (`tests/profile/ebay-setup-lives-in-credentials.spec.ts` only reads the page). On a sandbox deployment the seller conflict check is off (`ebaySellerConflictsEnforced`), so two workers CAN connect the same seller: the registry, not the product, is what keeps a second writer away. Desktop and mobile each run it once, in separate passes on separate seeds, so the sandbox seller is touched by one worker at a time |
-| what Jason must provide | the Convex deployment (dev and every PR preview) needs `EBAY_CLIENT_ID`, `EBAY_RU_NAME`, `EBAY_ENVIRONMENT=sandbox` and `DEV_EBAY_REFRESH_TOKEN` (a refresh token for a sandbox seller, scopes `sell.inventory`, `sell.account`, `sell.fulfillment` and `commerce.identity.readonly`); the browser service those previews call needs the eBay client secret and the same three eBay settings. Without them the spec FAILS, naming what is missing (it never skips). **The sandbox seller account must already hold two shipping (fulfillment) policies, by these exact names: `NB Free Shipping` (picked for Cards under $20, the price the spec lists at, and once for $20 and up to prove a changed pick saves) and `NB Tracked (USPS Ground Advantage)` (the final $20-and-up pick; no card in the spec lists at $20 or more, so it is never published).** The under-$20 pick is the flat free policy because eBay's sandbox cannot rate CALCULATED shipping: a publish against the calculated NB Tracked policy fails 25007 every time (production sellers use calculated shipping). Earlier runs left both there, when Set me up still made shipping policies; NeonBinder makes none now (eBay's sandbox refuses every create holding Standard Envelope; NEO-423 tracks NB making them later). If either is gone the spec fails naming it: add it on the sandbox seller by hand in eBay's business policies. Because of that precondition (and because the seller already holds payment and returns policies), two things are proven by component and unit tests only, never by this spec: the page's no-shipping-policies state (the "Make a shipping policy on eBay" link and "Check eBay again") and that Set me up never makes a shipping policy (`app/profile/credentials/ebay/*.test.tsx`, `convex/ebayConnect.test.ts`); on CI Set me up is not offered, and the spec asserts that arm by name. The 3 oz card weight reaching the package eBay prices is unit-only too (`convex/listingDrainEbay.test.ts`, the item's `packageWeightAndSize`): the sandbox does not show the item body back, so the spec proves only that the weight is saved and kept. CI's `NEONBINDER_PAUSED_PLATFORMS` may name `ebay`: the spec then takes its paused branch (Profile and Sync status say eBay is on a break) |
-| end state | **eBay NOT connected** (Profile -> Credentials -> eBay offers Connect), the box deleted, the common price cleared, every other box in-person. The takedown is the product's Disconnect, which withdraws every live listing NeonBinder put up. Payment and returns policies, the seller's shipping policies and inventory items stay on eBay (no product action removes them); the next seller job's cleanup deletes the items, and the next run finds the policies and picks them. The afterEach runs on a pass too: on a failure it clears the common price, then disconnects |
-| re-runs | **safe to re-run on the same seed** (the box is minted per attempt; the connection is made and removed each run). The first steps need eBay not connected, which the previous run's hook (or the bootstrap's reseed) guarantees |
-| cron | the 15-minute order poll and re-sync are deliberately NOT exercised; the account is disconnected before the spec ends, so a poll never meets it |
-| measured | **Nothing yet.** Every step runs on the standard 7 s budget (GUIDE hard rule 3), the eBay calls included; there is no raised ceiling, so a sandbox call slower than 7 s is a product finding to report, never a number to raise. **To record after the first run:** the time of each live eBay step (policies read, Set me up, a pick saved, the address saved, Sync to "2 listed", the in-person Sync, the disconnect); whether the sandbox seller already had payment and returns policies (Set me up offered or not); whether the two cards were listed or held back (a missing item detail or a photo rule would show as "held back" with its reason) |
+| ancestors | `Baseball → 2024 → Topps → Topps Chrome`, variant type `Insert`, row `Future Stars` (the seed's anchor). The collector's `drillToCollectorChecklist(page, TOPPS_CHROME_2024_FUTURE_STARS)` and `pickIntakeSet(page, TOPPS_CHROME_2024_FUTURE_STARS)` in the specs. The checklist, the card drawer and Sync status all name it `2024 Topps Chrome Future Stars` (an insert reads as part of the set's name) |
+| provisioned | `tests/setup.spec.ts`, the "Insert: reconcile, Future Stars checklist" block (already there for the shared anchor). The seller specs add nothing to the seed |
+| what the BSC SPEC writes | on BuySportsCards: the quantity (and the $900 price and SKU the drain sends) of the **first two cards** of the Future Stars checklist, 0 to 1 to 0. In NB: the signed-in user's own rows: the **listing state** (`marketplaceListingStates`, set by saving the sign-in with `listing=on`), one minted box `Bsc<token>` (set in-person mid-run, then emptied and deleted), two box `collectionCopies`, one Main-binder copy of a third card with a photo added, swapped and removed and the copy removed again (2c), one closed Add cards run (2b: two photos sent at the $900 Min price, nothing saved), `variantCommonPrices` (set to $900, then cleared) and `marketplaceListing*` records (outbox, per-set last result). It sets the worker's **public profile** (username `env.TEST_USERNAME` and a minted display name, so Admin can name the collector; the next per-user reset clears it), and it **removes the worker's BuySportsCards sign-in and saves it again** (the `/testing/seed-credentials` hop; no password typed) with `listing=on` to start syncing, and again without it at the end of the body (and in the afterEach on a failure) to stop |
+| what the eBay SPEC writes | **on eBay's sandbox:** for the **first two cards** of the Future Stars checklist, one inventory item and one offer each (SKU `NB2-<card>-<condition>`), published then withdrawn; and, where the sandbox seller has none, NeonBinder's standard payment and returns policies ("Set me up"; it makes no shipping policy, NEO-423), plus the seller's inventory location. **In NB:** the signed-in user's own rows: the eBay connection and setup (`ebaySellerSettings`, the stored session, the listing state), one minted box `Ebay<token>` (set in-person mid-run, then emptied and deleted), four box `collectionCopies` (the first card has a plain copy and a scanned one; a `collectionCopyPhotos` front on the second card's, and the first card's scanned copy has front and back from a scanned pair saved out of an Add cards run (NEO-427: one `intakeRuns` row, its placeholder job and photos, one `intakeMatches` row, closed by the tidy-up); the photoless ones leave by their quantity, the two with a photo through the card drawer's Remove; a photo alone sets no line apart for a quick count, NEO-431), `variantCommonPrices` (set to $1.00, then cleared), the `marketplaceListingLinks` rows and `marketplaceListing*` records |
+| neither writes | the set's cards, players, teams or variants. Both are **sole writers of a marketplace seller account's rows for this insert**, never of NB's catalogue: R7a holds the set read-only for them as for every other consumer |
+| the cards | the first rows in checklist order (two for BSC, three for eBay), read off the quantity fields' names, so the choice follows the seed. The BSC spec's binder card (2c) is the LAST ordinary row of the Collection checklist, asserted to be neither box card. eBay's third card is boxed without a photo to prove the held-back reason and is never listed. eBay's first card's photos are a scanned pair (`public/placeholder-fixtures/01-vorkle-front.jpg` and `02-vorkle-back.jpg`) dropped into an Add cards run into the box and saved onto that card (picked by hand with "Wrong card? Find it": the scan's number and player mean nothing in Future Stars); the second card's is `fixtures/intake/03-bowe-front.jpg`, attached through the card drawer's Photos box |
+| writer | the BSC spec is the **sole writer among specs** of every BSC quantity for this insert, and the eBay spec of the **eBay sandbox seller account**. The seller jobs also start clean before their specs (`convex/testingSellerCleanup.ts`, `SELLER_SPEC_SETS`, NEO-445, NEO-453): every BSC row of this insert set to 0 (the Excellent sheet), every published eBay offer withdrawn and every inventory item deleted. The BSC spec is the only spec that **starts syncing on BSC** (`listing=on`) or touches a worker's BSC sign-in outside `credentials-lifecycle` (its own `new-profile` account) and the bootstrap, besides `inventory-bsc-listing-2026-bowman-chrome-prefix`, which shares the BSC seller account and runs after it in the same job, never beside it. The eBay spec is the only spec that connects eBay (`sites=ebay`) or passes `listing=on` for it (`tests/profile/ebay-setup-lives-in-credentials.spec.ts` only reads the page); on a sandbox deployment the seller conflict check is off (`ebaySellerConflictsEnforced`), so the registry, not the product, keeps a second writer away. No other spec, and no other session pointed at the same seller, may list or edit Future Stars there: a second writer turns a "2 listed" into a read-back mismatch. Both run as worker 8 only in the `seller-desktop` / `seller-mobile` jobs (tag `@marketplace-seller`), one PR at a time repo-wide (NEO-415); desktop and mobile each run them once, in separate passes on separate seeds |
+| reads | the set's other consumers read it and write nothing: `checklist-search-narrows-and-clears` (types into its search) and `checklist-pairing-dialog-cancel` (syncs it and Cancels, "The one sanctioned read-only visitor"). A seller job runs beside the shards on the same preview, so those two can run while a seller spec lists: neither writes a card, and a BSC quantity is per seller account, not per set. A spec added later must not save a BSC sign-in through the Profile form or pass `listing=on` to the seed hop, and must not leave cards in a box, or a worker still syncing would put them on real BSC |
+| end state | BSC: **connected and NOT syncing (Profile reads "Not syncing.")**; eBay: **NOT connected** (Profile -> Credentials -> eBay offers Connect, the product's Disconnect having withdrawn every live listing). For both: the box deleted, the common price cleared, and **every OTHER box the worker had (Unsorted included) left in-person** (opened and unchecked before listing starts, asserted, never turned back on, since that would re-queue their cards; the Up for Trade pile is not a box that lists). The afterEach runs on a pass too: on a failure BSC's first zeroes the touched rows (empties the box, Sync, walks it to rest, "0 listed"), removes a binder copy left behind, clears the price, then removes the sign-in and saves it again WITHOUT `listing=on`; eBay's closes the scan run, clears the price, then disconnects. eBay's payment and returns policies, the seller's shipping policies and inventory items stay on eBay; the next seller job's cleanup deletes the items |
+| re-runs | **safe to re-run on the same seed**: the minted box differs per attempt, every count ends at 0, syncing is stopped or eBay disconnected. A re-run's first steps need the account "Not syncing." / eBay not connected, which the previous run's hook (or the bootstrap's reseed) guarantees |
+| cron | the 15-minute order poll can run a set's sync before a press (NEO-433); both specs hold either order to a hard end state (see their headers). The poll is never waited for, and the account stops listing before each spec ends |
+| what Jason must provide (eBay) | the Convex deployment (dev and every PR preview) needs `EBAY_CLIENT_ID`, `EBAY_RU_NAME`, `EBAY_ENVIRONMENT=sandbox` and `DEV_EBAY_REFRESH_TOKEN` (a refresh token for a sandbox seller, scopes `sell.inventory`, `sell.account`, `sell.fulfillment` and `commerce.identity.readonly`); the browser service those previews call needs the eBay client secret and the same three eBay settings. Without them the spec FAILS, naming what is missing (it never skips). **The sandbox seller account must already hold two shipping (fulfillment) policies, by these exact names: `NB Free Shipping` (picked for Cards under $20, the price the spec lists at, and once for $20 and up to prove a changed pick saves) and `NB Tracked (USPS Ground Advantage)` (the final $20-and-up pick; no card in the spec lists at $20 or more, so it is never published).** The under-$20 pick is the flat free policy because eBay's sandbox cannot rate CALCULATED shipping: a publish against the calculated NB Tracked policy fails 25007 every time. If either is gone the spec fails naming it: add it on the sandbox seller by hand in eBay's business policies. Proven by component and unit tests only, never by this spec: the no-shipping-policies state ("Make a shipping policy on eBay", "Check eBay again"), that Set me up never makes a shipping policy (`app/profile/credentials/ebay/*.test.tsx`, `convex/ebayConnect.test.ts`), and the 3 oz card weight reaching the package eBay prices (`convex/listingDrainEbay.test.ts`). CI's `NEONBINDER_PAUSED_PLATFORMS` may name `ebay`: the spec then takes its paused branch |
+| measured | **Nothing yet on this insert.** Every BSC read or double-check step keeps the signed-off 15 s `bscReadCeiling` (Jason, 2026-11-05, measured on 1988's 792-card sheet; a 20-card sheet is expected to read faster, and a step that still needs the ceiling here is worth reporting); eBay's "Go live" keeps its signed-off 15 s; every other step is 7 s. **To record after the first seller run:** each BSC step's time (Read Excellent, the send, the double-check) and the takedown's; whether the first two cards carry both a BSC card id and a SportLots one; whether the zeroing Sync reads "2 taken to 0" (one BSC row per card) |
+
+### 1988 Topps Baseball — RETIRED as a fixture by NEO-475 (2026-11-09)
+
+1988 Topps Base (`Baseball → 1988 → Topps → Topps`, BSC's "1988 Topps"; NEO-370,
+approved 2026-11-01) was the BuySportsCards and eBay sandbox listing fixture.
+Its 792-card sheet reads took 6-8 s and drifted past BSC's 30 s gateway, and
+the seed paid about 1,544 BSC calls a run to build it. Both seller specs moved
+to Future Stars (above), and the seed no longer provisions the year. Nothing in
+the suite reads 1988 now; adding it back is a new real set and needs the
+owner's approval.
 
 ### Football → 2026 → Bowman › Chrome — the BuySportsCards card-prefix listing fixture (NEO-458) ✅ APPROVED by Jason 2026-11-06
 
@@ -1080,14 +1095,14 @@ GUIDE's live-BSC exception, each under its helper's ceiling).
 
 | | |
 | -- | -- |
-| ancestors | `Football → 2026 → Bowman → Bowman` (BSC calls it "2026 Bowman"; NB strips the year). Under a SportLots pause the brand `Bowman` is hand-made by `drillToColdManufacturer` and BSC's year-wide sets are filed under it by name, as for 1988 Topps. With SportLots live the brand is SportLots' own |
+| ancestors | `Football → 2026 → Bowman → Bowman` (BSC calls it "2026 Bowman"; NB strips the year). Under a SportLots pause the brand `Bowman` is hand-made by `drillToColdManufacturer` and BSC's year-wide sets are filed under it by name. With SportLots live the brand is SportLots' own |
 | built by | **the spec**, through the Set Builder: `drillToColdManufacturer` + `drillToBaseVariant`, the Base fetched and saved (the wizard's four unknown players added as new), `Parallel` › `Chrome` selected, **Card prefix `BCV-` saved first**, then "Build from Base". Not the seed: the seed gains nothing, and the spec asserts the numbers it produces are bare |
 | what the SPEC writes | in NB: the set's rows above (additive, left in place), the 200 Base cards and Chrome's 198, and the signed-in user's own rows (the listing state, one minted box `Bsc<token>` emptied and deleted, two box copies, the common price, set to $900 so a copy a killed run leaves for sale is priced out of any sale, and cleared). On BuySportsCards: the quantity (and the $900 price and SKU the drain sends) of **#26 Dak Prescott** and **#54 Patrick Mahomes II** of Chrome, 0 to 1 to 0 |
-| writer | **sole writer among specs** of every row of this tree and of its BSC quantities. It shares the **BuySportsCards seller account** with `inventory-bsc-listing-1988-topps-base` and, like it, starts syncing (`listing=on`) and ends not syncing; both run as worker 8 in the `seller-*` jobs, one after the other, never side by side. No other spec writes Football 2026, Bowman or Chrome (checked 2026-11-06: the Football specs use 2014 or add players by hand). Football's Years column is synced by this spec and by the 2014 team-leader spec: additive and id-keyed, so concurrent syncs add nothing twice |
+| writer | **sole writer among specs** of every row of this tree and of its BSC quantities. It shares the **BuySportsCards seller account** with `inventory-bsc-listing-2024-topps-chrome-future-stars` and, like it, starts syncing (`listing=on`) and ends not syncing; both run as worker 8 in the `seller-*` jobs, one after the other, never side by side. No other spec writes Football 2026, Bowman or Chrome (checked 2026-11-06: the Football specs use 2014 or add players by hand). Football's Years column is synced by this spec and by the 2014 team-leader spec: additive and id-keyed, so concurrent syncs add nothing twice |
 | start-clean | `convex/testingSellerCleanup.ts` lists the set (`SELLER_SPEC_SETS`, `parallel: "Chrome"`, `builtBySpec`). The tree is built by the spec, so on a freshly seeded deployment the seller job's start-clean pass finds it absent and **skips it** (logged `seller_cleanup_set_absent`); it zeroes Chrome's sheets when the tree is there (a rerun on the same seed, dev). The spec's own takedown Sync and failure hook are what zero its two rows. A run killed mid-spec can leave #26 and #54 at 1 on BSC until the next run lists them again or its takedown zeroes them |
-| end state | **connected to BSC and NOT syncing, the box deleted, the common price cleared, every other box in-person**, as the 1988 spec |
+| end state | **connected to BSC and NOT syncing, the box deleted, the common price cleared, every other box in-person**, as the Future Stars BSC spec |
 | re-runs | **safe to re-run on the same seed**: the build steps adopt a tree already there and assert the same end state (prefix `BCV-`, cards present, numbers bare); the box is minted per attempt |
-| cron | not exercised, as the 1988 spec |
+| cron | not waited for, as the Future Stars BSC spec |
 | measured | **Local, own Convex deployment, 2026-11-06, run with SportLots paused (the set-building and collector half only: the seller steps were NOT run, see the PR):** the cold drill to the Sets column under a hand-made `Bowman` about 8 s; Base fetched (`Kept all 200 cards from BSC`) 13 s after the press, wizard with four unknown players ("Add remaining players as new", no team or league step), `Saved 200 cards.` 15 s; the Parallel column listed 62 BSC parallels with no dialog; `Build from Base` on `Chrome` with the prefix already saved: `Chrome — Built 198 cards, 2 left off — not on either marketplace's list, 2 on BSC that Base doesn't have`, 4 s. Every step inside the 7 s budget after its helper's own live-sync ceiling. Spec half before the seller steps: 21-32 s on desktop and 23 s on mobile. **To record after the first seller run:** the Sync's steps and the takedown's |
 | live SportLots | **not run when written**: the spec was exercised with SportLots paused only. Its live branches (the Match Cards dialog on the Base fetch, the Reconcile Parallels dialog on the Parallel column's first visit) follow the seed's pattern and were never run; the first live run must check them |
 
@@ -1096,8 +1111,9 @@ GUIDE's live-BSC exception, each under its helper's ceiling).
 `base-mapping-cancel-recovers` needs a real set whose **Base is UNMAPPED**, so
 that selecting Base auto-opens `BaseSetPicker` and the Cancel → message → Retry
 recovery can be exercised. It used to use `Topps Big League`; it cannot any
-more, because Big League is now the wizard fixture and `tests/setup.spec.ts` maps its
-Base in the seed job. A mapped Base renders `Re-map Base` instead of opening the
+more, because Big League became the wizard fixture and `tests/setup.spec.ts` mapped its
+Base in the seed job (the wizard fixture is Topps Stars of MLB Network since
+NEO-475, and the seed maps that one's Base instead). A mapped Base renders `Re-map Base` instead of opening the
 picker, and the flow fails on its first assertion — CI run 34006917636.
 
 **The two needs are irreconcilable on one set** (one requires Base unmapped, the
@@ -1432,8 +1448,9 @@ it taps. (See item 4 above for what is NOT true of the row.)
 
 #### Sole writer — and why this one cannot be read-only
 
-The four `checklist-wizard-*` flows share Topps Big League because they all exit
-through Cancel → Discard. **This flow cannot.** The defining outcome of NEO-255
+The read-only `checklist-wizard-*` flows share one set (Topps Big League then,
+Topps Stars of MLB Network since NEO-475) because they all exit through
+Cancel → Discard. **This flow cannot.** The defining outcome of NEO-255
 is that the cards are *kept*, and that is only observable after a commit: a
 build that skipped the dialog and then committed nothing would pass a read-only
 version of this flow. So it commits, on the 1996-Score / `*-commits` model —
@@ -1746,7 +1763,37 @@ stamp to survive either. The move CONTROL itself needs no marketplace, and
 that half lives marketplace-free in `tests/set-selector/move-set-to-another-brand.spec.ts`
 (`msb-` prefix below); only the two claims above need a real year.
 
-### The TEAM-link alias fixture — Baseball / 1996 / All Brands / Line Up Venezuelan Winter League (NEO-330) — approved by Jason 2026-10-10
+### The TEAM-link alias fixture — Baseball / 1996 / All Brands / New Haven Ravens Rally Raffle (NEO-475) — approved by Jason 2026-11-09
+
+One real set, touched by exactly one flow,
+`tests/set-selector/checklist-wizard-link-team-saves-alias.spec.ts`, which
+fetches and COMMITS its checklist. It replaced the 300-card Line Up Venezuelan
+Winter League (section below, now history) to cut the suite's BuySportsCards
+traffic; the flow's feature and every assertion are unchanged (what it proves:
+the section below).
+
+| | |
+| -- | -- |
+| BSC cards | **9**, one an NNO raffle entry card (read-only probe, BSC only, SportLots paused, 2026-11-09) |
+| unknown names | **1 club + 2 players** by the probe: the club `New Haven Ravens` (the row under test; the catalogue holds no team of the name) and `Edgard Velazquez`, `Rodney Pedraza`. The other cards resolve to catalogue players. Whether the wizard also stages the NNO card's name is **not yet measured** |
+| recording | `New Haven Ravens`, Velazquez and Pedraza are recorded no-matches, so the club's New Team step opens with the whole name in `New team name` (no location, years or league to prefill), which the flow's NEO-307 check reads |
+| path | Baseball → 1996 → the All Brands view (it lists every set of the year) → the set by its exact name. Its brand row is expected to be the year's `Unknown` (no known brand's name prefixes it; **inferred**, 1996 was not synced in the probe) |
+| measured on the UI | **nothing yet**: the counts at open, the settled row count and the settle time are to be recorded from the first run. The flow keeps its 180 s lookup ceiling (set on the Venezuelan set's ~144 s live settle) until a run measures this one |
+| live SportLots | **unmeasured**: chosen while SportLots was paused. The flow cancels the base picker either way, so the set stays one-sided; the live picker's SportLots candidates for 1996 are offered and declined, never checked here |
+
+**Sole writer, self-cleaning on the TEAM side**, exactly as below: the club is
+linked to the minted `Loc<token> Ali<token>` with its alias, the alias is read
+back in Team Management, then removed. The set drains within a run (a
+committed set's names are known); CI reseeds every run; a LOCAL re-run needs a
+fresh seed. The Baseball → 1996 columns are shared with
+`inserts-1996-score-one-nb-set-two-bsc-sources` (Score), as before.
+
+### The TEAM-link alias fixture — Baseball / 1996 / All Brands / Line Up Venezuelan Winter League (NEO-330) — RETIRED by NEO-475
+
+> **History.** No flow reads this set since NEO-475 (2026-11-09): the alias
+> flow moved to New Haven Ravens Rally Raffle (above). Kept for what the flow
+> proves and for the measurements; its players' recorded no-matches still back
+> `support/recorded-names.ts`. Approved by Jason 2026-10-10.
 
 One real set, touched by exactly one flow,
 `tests/set-selector/checklist-wizard-link-team-saves-alias.spec.ts`, which fetches and COMMITS its
@@ -1879,7 +1926,38 @@ the only writes are the set's structure and its 36 cards. A committed set's
 names are known and a re-sync raises no review, so the fixture is spent once
 per run; CI reseeds every run. A LOCAL re-run needs a fresh seed.
 
-### Topps Big League — the entity-review wizard fixture (NEO-248) ✅ APPROVED
+### Topps Stars of MLB Network — the read-only entity-review wizard fixture (NEO-475) ✅ APPROVED by Jason 2026-11-09
+
+`Baseball → 2024 → Topps → Topps Stars of MLB Network → Base` is
+`fetchChecklistToWizard`'s default, read by three flows:
+`checklist-wizard-back-to-matching-resumes-decisions`,
+`checklist-wizard-career-team-entry` and
+`checklist-wizard-link-to-existing-player`. It replaced Topps Big League
+(section below, now history): 10 BSC cards per fetch instead of 310. The flows'
+assertions are unchanged; nothing in them was Big League-specific.
+
+| | |
+| -- | -- |
+| BSC cards | **10** (read-only probe, BSC only, SportLots paused, 2026-11-09). The cards carry **no team** |
+| unknown names | six names no sport holds: Lauren Shehadi #1, Robert Flores #2, Brian Kenny #4, Greg Amsinger #6, Lauren Gardner #9 and `Intentional Talk` #10 (a show, not a person). #7 Chris Young has two catalogue namesakes (b. 1979 and b. 1983), so his row is a same-name PICK step. The other cards resolve to catalogue players. MEASURED (own deployment, SportLots paused, 2026-11-09): the wizard opens `Step 1 of 9`, `Add remaining players as new (6)`, `Skip remaining names (7)` |
+| recording | the six are recorded no-matches; Chris Young's lookup is a recorded hit (dated MLB stints) |
+| first player row | **#7 Chris Young's pick step, not #1.** The presented row is pinned state (`EntityReviewWizard.tsx`, NEO-220 rule 1), and a pick step is inserted READY, so it is the first settled player and is pinned before #1's lookup lands, whatever the card order (the probe's "after the first player row" was wrong). So `career-team-entry` and `link-to-existing-player` walk with `walkToPlayerRow({ readyToCreate: true })`, which skips a pick step (and a preselect or a held create) and stops on the first truly unknown name (expected #1 Lauren Shehadi, the first in card order; the name it lands on is not asserted). The cards stage no team step |
+| provisioned | `tests/setup.spec.ts`: variant types synced and the Base mapped (both sides live; BSC-only under a SportLots pause, where it reads unmapped and every drill cancels the picker), checklist asserted EMPTY. Filed under 2024 `Topps` by its name |
+| measured on the UI | **nothing yet**: record the wizard's counts and the fetch time from the first run |
+| live SportLots | **unmeasured**: the seed maps the picker's FIRST SportLots candidate and `back-to-matching` needs the Match Cards pairing; neither has run on this set. The first live run must check both |
+
+The rules of the Big League section below carry over unchanged:
+**NOTHING MAY EVER COMMIT THIS SET'S CHECKLIST** (a commit makes its names
+known and the wizard would open on nothing), and the set has **three
+readers and ZERO writers**, each exiting Cancel → Discard. No other flow may
+commit a checklist carrying the six names above either.
+
+### Topps Big League — the entity-review wizard fixture (NEO-248) — RETIRED by NEO-475
+
+> **History.** No flow reads this set since NEO-475 (2026-11-09): the three
+> read-only flows moved to Topps Stars of MLB Network (above), and the seed no
+> longer maps it. Kept for the reasoning (why a REAL set, why it must never be
+> committed, why readers only), which still holds for its replacement.
 
 `Baseball → 2024 → Topps → Topps Big League → Base` is the fixture for the four
 `checklist-wizard-*` flows. It is a REAL, marketplace-listed set: it appears in
@@ -1959,7 +2037,35 @@ sanctioned writer — the 1996 Score shape. That is an owner decision; do not
 reach for it by letting one of these four flows write to a set the other three
 read.
 
-### Topps Chrome NPB — the same-name PICK STEP fixture (NEO-332) ✅ APPROVED by Jason 2026-10-10
+### BBM Rookie Edition Premium — the same-name PICK STEP fixture (NEO-475) ✅ APPROVED by Jason 2026-11-09
+
+`Baseball → 2024 → BBM → BBM Rookie Edition Premium → Base` belongs to exactly
+one flow, `checklist-wizard-same-name-pick-step`, which reaches it through
+`fetchChecklistToWizard(page, env, { manufacturer: "BBM", set })`. It replaced
+Topps Chrome NPB (section below, now history): 36 BSC cards per fetch instead
+of 216. The flow, its b. 1851 `Shuya Yamada` and its assertions are unchanged.
+
+| | |
+| -- | -- |
+| BSC cards | **36**, RP01-RP36 (read-only probe, BSC only, SportLots paused, 2026-11-09) |
+| the name | **RP03 Shuya Yamada** (Hanshin). The catalogue's own undated Shuya Yamada plus the flow's b. 1851 row make two on file, so his row is the pick step |
+| before him | RP01 Kaito Shimomura and RP02 Tsuyoshi Shiiba each resolve to ONE catalogue player and are linked at the fetch, so Yamada is the batch's first player row |
+| other unknowns | Kota Nishidate RP13, Gouki Oda RP18, Kosuke Kawachi RP20, Ryotaro Sawayanagi RP27, Koichi Okumura RP33, all recorded hits. Sawayanagi's recorded career includes `Roki Techno Toyama` (2022-23), expected to stage a `New Team:` step (and its league) that the walk skips; Oda and Okumura carry undated clubs only |
+| the brand | `BBM` is on NB's known-brands list (`convex/knownBrands.ts`), so the year-wide 2024 Sets sync (the seed's, through `Topps`) mints the row under 2024 and files this set under it. Under a SportLots pause that is the only way the row exists; nothing makes it by hand |
+| measured on the UI | **nothing yet**: record the batch's rows and K (the walk's skips) from the first run |
+| live SportLots | **unmeasured**: whether SportLots' 2024 brand list has BBM, the Base picker's first SportLots candidate and the Match Cards pairing; the first live run must check them |
+
+The rules of the NPB section below carry over unchanged: the flow is
+**read-only** on the set (Cancel → Discard); ⚠️ **no other flow may fetch a
+checklist carrying `Shuya Yamada`**, and ⚠️ **no flow may commit this set**;
+re-runs are idempotent (the b. 1851 row is adopted).
+
+### Topps Chrome NPB — the same-name PICK STEP fixture (NEO-332) — RETIRED by NEO-475
+
+> **History.** No flow reads this set since NEO-475 (2026-11-09): the pick-step
+> flow moved to BBM Rookie Edition Premium (above). Kept for the reasoning (why
+> a non-MLB set, why one row of our own), which still holds. Approved by Jason
+> 2026-10-10.
 
 `Baseball → 2024 → Topps → Topps Chrome NPB → Base` belongs to exactly one flow,
 `checklist-wizard-same-name-pick-step`. `tests/setup.spec.ts` provisions nothing for it:
@@ -2716,6 +2822,7 @@ teams or variants**. They are the reason the set must stay pristine.
 - `tests/set-selector/checklist-bsc-team-enrichment.spec.ts`
 - `tests/set-selector/checklist-renders-rich-fields.spec.ts`
 - `tests/set-selector/checklist-search-narrows-and-clears.spec.ts` (NEO-343 — Insert › Future Stars; types into the checklist search and clears it; writes nothing)
+- `tests/collection/inventory-bsc-listing-2024-topps-chrome-future-stars.spec.ts` and `tests/collection/inventory-ebay-sandbox-listing-2024-topps-chrome-future-stars.spec.ts` (NEO-475 — Insert › Future Stars; write only the signed-in user's own rows in NB and the seller account's rows on BuySportsCards / eBay's sandbox; see "2024 Topps Chrome › Insert › Future Stars — the marketplace-seller listing fixture")
 - `tests/set-selector/drill-restores-from-url.spec.ts` (NEO-224 — picks rows and goes Back; writes nothing)
 - `tests/set-selector/keyboard-only-drill.spec.ts` (NEO-224 — picks rows by keyboard; writes nothing)
 - `tests/set-selector/multi-source-panel-opens-dialog.spec.ts` (NEO-325: also reads the Attach dialog's SportLots pane; ticks nothing)
