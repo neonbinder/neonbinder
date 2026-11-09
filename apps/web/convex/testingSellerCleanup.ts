@@ -84,7 +84,8 @@ import { variantTypeKindFromTitle } from "./variantRole";
 
 /**
  * A real set a seller spec lists on. Its cards are in the set's Base, or, with
- * `parallel`, in that parallel of the set's Parallel type.
+ * `parallel`, in that parallel of the set's Parallel type, or, with `insert`, in
+ * that insert of the set's Insert type. Never both a parallel and an insert.
  */
 export type SellerSpecSet = {
   sport: string;
@@ -93,6 +94,8 @@ export type SellerSpecSet = {
   setName: string;
   /** The parallel (a row of the set's Parallel type) that holds the cards, instead of Base. */
   parallel?: string;
+  /** The insert (a row of the set's Insert type) that holds the cards, instead of Base. */
+  insert?: string;
   /**
    * The BSC raw conditions the specs list this set in: the only sheets cleared.
    * A spec's copy has NB's default condition (Excellent), so this is that
@@ -109,9 +112,20 @@ export type SellerSpecSet = {
   builtBySpec?: boolean;
 };
 
-/** Every real set the seller specs list on (`playwright/SET-REGISTRY.md`). Both 1988 Topps specs share the first. */
+/**
+ * Every real set the seller specs list on (`playwright/SET-REGISTRY.md`). The
+ * BuySportsCards and eBay sandbox specs share the first (NEO-475): the seed
+ * builds it, and they list at a common price no buyer pays, so nothing sells.
+ */
 export const SELLER_SPEC_SETS: readonly SellerSpecSet[] = [
-  { sport: "Baseball", year: "1988", manufacturer: "Topps", setName: "Topps", conditions: ["excellent"] },
+  {
+    sport: "Baseball",
+    year: "2024",
+    manufacturer: "Topps",
+    setName: "Topps Chrome",
+    insert: "Future Stars",
+    conditions: ["excellent"],
+  },
   // NEO-458: 2026 Bowman Chrome, whose BSC numbers carry a `BCV-` prefix NB's do not.
   {
     sport: "Football",
@@ -165,9 +179,10 @@ type VariantLookup = typeof variantLookupValidator.type;
 type ChainLevel = typeof chainLevelValidator.type;
 
 /**
- * The row of one set the specs list that holds its cards: the set's Base, or
- * with `parallel` that parallel of its Parallel type. "absent" when a row of the
- * chain isn't there, "ambiguous" when one can't be told apart: never picks one.
+ * The row of one set the specs list that holds its cards: the set's Base, with
+ * `parallel` that parallel of its Parallel type, or with `insert` that insert of
+ * its Insert type. "absent" when a row of the chain isn't there, "ambiguous" when
+ * one can't be told apart: never picks one. Both a parallel and an insert throws.
  */
 export const variantOf = internalQuery({
   args: {
@@ -176,6 +191,7 @@ export const variantOf = internalQuery({
     manufacturer: v.string(),
     setName: v.string(),
     parallel: v.optional(v.string()),
+    insert: v.optional(v.string()),
   },
   returns: variantLookupValidator,
   handler: async (ctx, args): Promise<VariantLookup> => {
@@ -200,13 +216,18 @@ export const variantOf = internalQuery({
     if (brand.kind !== "found") return brand;
     const set = await childNamed("setName", brand.id, (value) => value === args.setName);
     if (set.kind !== "found") return set;
-    const { parallel } = args;
-    if (parallel === undefined) {
+    const { parallel, insert } = args;
+    if (parallel !== undefined && insert !== undefined) {
+      throw new Error(`${args.year} ${args.manufacturer} ${args.setName} names a parallel and an insert: a spec's cards are in one row`);
+    }
+    const child = parallel ?? insert;
+    if (child === undefined) {
       return await childNamed("variantType", set.id, (value) => variantTypeKindFromTitle(value) === "base");
     }
-    const type = await childNamed("variantType", set.id, (value) => variantTypeKindFromTitle(value) === "parallel");
+    const kind = parallel !== undefined ? "parallel" : "insert";
+    const type = await childNamed("variantType", set.id, (value) => variantTypeKindFromTitle(value) === kind);
     if (type.kind !== "found") return type;
-    return await childNamed("insert", type.id, (value) => value === parallel);
+    return await childNamed("insert", type.id, (value) => value === child);
   },
 });
 
@@ -445,7 +466,7 @@ async function clearBsc(ctx: ActionCtx): Promise<BscReport> {
   const inputs: SetToClear[] = [];
   let skippedSets = 0;
   for (const { builtBySpec, conditions, ...scope } of SELLER_SPEC_SETS) {
-    const where = scope.parallel === undefined ? "Base" : scope.parallel;
+    const where = scope.parallel ?? scope.insert ?? "Base";
     const name = `${scope.year} ${scope.manufacturer} ${scope.setName}`;
     const found: VariantLookup = await ctx.runQuery(internal.testingSellerCleanup.variantOf, scope);
     if (found.kind === "ambiguous") {

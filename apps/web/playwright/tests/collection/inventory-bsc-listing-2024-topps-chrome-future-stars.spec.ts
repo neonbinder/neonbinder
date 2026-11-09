@@ -36,9 +36,10 @@
 //      is never listed, so step 3's queue holds exactly the box's two cards and
 //      NOT this one (asserted by name). The unit tests prove the gate
 //      (`copyPhotos.test.ts`); this proves it live, in the queue a collector reads.
-//   3. They put one copy each of the first two 1988 Topps Base cards in their
-//      box; Sync status queues the two cards; they press the checklist's Sync,
-//      follow "See what's syncing" to Sync status (Back returns), and Sync
+//   3. They put one copy each of the first two 2024 Topps Chrome Future Stars
+//      cards (Insert › Future Stars) in their box; Sync status queues the two
+//      cards; they press the checklist's Sync, follow "See what's syncing" to
+//      Sync status (Back returns), and Sync
 //      status reads the set synced with 2 listed, nothing held back.
 //      Admin -> Sync Status shows the same set for this collector, read-only.
 //   4. They turn the box's "Listed on marketplaces" off, Sync again, and the
@@ -116,9 +117,15 @@
 // Sync's toast. A press that sets a run going toasts "Syncing <title> now.
 // Watch it on Sync status."; both presses assert it before reading the result.
 //
-// R7/R7a. 1988 Topps Baseball is a registered real set (SET-REGISTRY.md): this
-// spec is the SOLE writer of its BSC quantities and writes no card, player,
-// team or variant of the set. Its NB writes are the signed-in user's own rows
+// R7/R7a. 2024 Topps Chrome › Insert › Future Stars is a registered real set
+// (SET-REGISTRY.md, provisioned by the seed): this spec is the SOLE writer of
+// its BSC quantities and writes no card, player, team or variant of the set.
+// NEO-475: it moved here from 1988 Topps Base, whose 792-card BSC sheet reads
+// ran 6-8 s and drifted past BSC's 30 s gateway; this insert has 20 cards.
+// Both are modern on BSC (vintage ends at 1980, convex/lib/bscConditions.ts),
+// so the copies still sit at Excellent and a run reads the one Excellent
+// sheet. The cards list at a $900 common price (`PRICE`) so no real buyer takes
+// one. Its NB writes are the signed-in user's own rows
 // (the sign-in removed and saved again, a minted box, two box copies, one
 // binder copy with a photo that is removed again, the common price, and every
 // other box set to in-person, which is left that way). The
@@ -131,14 +138,14 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Locator, Page } from "@playwright/test";
 import {
-  TOPPS_1988,
+  TOPPS_CHROME_2024_FUTURE_STARS,
   backToBoxes,
-  baseChecklistTitle,
   cardsWord,
+  checklistTitle,
   createBox,
   deleteOpenBox,
   clearChecklistCommonPrice,
-  drillToCollectorBase,
+  drillToCollectorChecklist,
   emptyBoxCards,
   expectNothingSent,
   followRunToRest,
@@ -161,9 +168,27 @@ import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtu
 /** The Send step's label. */
 const SEND = "Send changes to BuySportsCards";
 const BSC = "BuySportsCards";
-const TITLE = baseChecklistTitle(TOPPS_1988);
-/** The set as Sync status names it: a Base checklist reads as the set alone. */
-const SET_LABEL = `${TOPPS_1988.year} ${TOPPS_1988.set}`;
+const FUTURE_STARS = TOPPS_CHROME_2024_FUTURE_STARS;
+const TITLE = checklistTitle(FUTURE_STARS);
+/**
+ * The set as Sync status and the card drawer name it. An insert reads as part of
+ * the set's name (`setAndVariantLabel` in convex/lib/listingLabels.ts,
+ * `cardLabel` in app/collection/final/data/labels.ts), so it is the checklist's
+ * own title: "2024 Topps Chrome Future Stars".
+ */
+const SET_LABEL = TITLE;
+/**
+ * The common price the cards list at, as typed, as the toast and the line read it,
+ * and as the field reads it once saved. These are real cards on a real seller
+ * account, and a killed run can leave them for sale until a later run takes them
+ * down, so the price is far above what any buyer pays and under BSC's $999
+ * ceiling (`checkBscPrice`, `BSC_MAX_PRICE_CENTS`); Jason, 2026-11-09, as the
+ * 2026 Bowman Chrome prefix spec does. The Add cards Min price (2b) uses it too:
+ * that run saves nothing, but a copy it did save would list at it.
+ */
+const PRICE = "900";
+const PRICE_SHOWN = "$900.00";
+const PRICE_IN_FIELD = "900.00";
 const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /** A committed intake scan (about 1000 px wide), attached through the copy drawer's Photos box. It is never listed: its copy lives in a binder. */
@@ -310,7 +335,7 @@ const clearCommonPrice = (page: Page, checklist: Locator, was: string) =>
 
 /** On the Inventory Checklists tab: set both cards' quantities in `box` to 0 (see `emptyBoxCards`). */
 const emptyBox = (page: Page, box: string, cards: readonly string[], isMobile: boolean, arrival: "fresh" | "reopened") =>
-  emptyBoxCards(page, TOPPS_1988, box, cards, isMobile, arrival);
+  emptyBoxCards(page, FUTURE_STARS, box, cards, isMobile, arrival);
 
 // Pass or fail, the worker ends connected to BSC and NOT listing. On a failure
 // the touched BSC rows are first brought to 0 on a SECOND page (the failing page
@@ -368,7 +393,7 @@ test.afterEach(async ({ context, isMobile }, testInfo) => {
         if (failed && written.binderCard) {
           await clean.goto("/collection?tab=checklists");
           await expect(clean.getByRole("heading", { level: 1, name: "Collection" })).toBeVisible({ timeout: LAUNCH_GATE });
-          const binderList = await drillToCollectorBase(clean, TOPPS_1988);
+          const binderList = await drillToCollectorChecklist(clean, FUTURE_STARS);
           await binderList.getByRole("combobox", { name: "Binder" }).selectOption({ label: "Main" });
           await removeBinderLine(binderList, written.binderCard, await openBinderLine(binderList, written.binderCard));
           written.binderCard = undefined;
@@ -381,8 +406,8 @@ test.afterEach(async ({ context, isMobile }, testInfo) => {
           if (failed && written.priced) {
             await clean.goto("/inventory?tab=checklists");
             await expect(clean.getByRole("heading", { level: 1, name: "Inventory" })).toBeVisible({ timeout: LAUNCH_GATE });
-            const checklist = await drillToCollectorBase(clean, TOPPS_1988);
-            await clearCommonPrice(clean, checklist, "0.25");
+            const checklist = await drillToCollectorChecklist(clean, FUTURE_STARS);
+            await clearCommonPrice(clean, checklist, PRICE_IN_FIELD);
             written.priced = false;
           }
         } finally {
@@ -400,7 +425,7 @@ test.afterEach(async ({ context, isMobile }, testInfo) => {
 });
 
 test(
-  "Inventory: Sync lists a box's 1988 Topps Base cards on BuySportsCards and an in-person box takes them off",
+  "Inventory: Sync lists a box's 2024 Topps Chrome Future Stars cards on BuySportsCards and an in-person box takes them off",
   { tag: ["@collection", "@marketplace-seller"] },
   async ({ page, signIn, env, isMobile }) => {
     // The hook's record of how far this run got starts empty.
@@ -448,7 +473,7 @@ test(
     // the Profile's BuySportsCards panel says so too.
     await tabs.getByRole("link", { name: "Checklists", exact: true }).click();
     await expect(page).toHaveURL(/[?&]tab=checklists/);
-    const checklist = await drillToCollectorBase(page, TOPPS_1988);
+    const checklist = await drillToCollectorChecklist(page, FUTURE_STARS);
     const sync = checklist.getByRole("button", { name: `Sync ${TITLE}`, exact: true });
     // Shown, but inert (aria-disabled keeps it in the tab order): its reason is its description.
     await expect(sync).toBeVisible();
@@ -515,7 +540,7 @@ test(
     await expect(page.getByRole("heading", { level: 1, name: "Collection" })).toBeVisible();
     await page.getByRole("navigation", { name: "Collection sections" }).getByRole("link", { name: "Checklists", exact: true }).click();
     await expect(page).toHaveURL(/[?&]tab=checklists/);
-    const binderList = await drillToCollectorBase(page, TOPPS_1988);
+    const binderList = await drillToCollectorChecklist(page, FUTURE_STARS);
     const { short: binderCard } = await shortNameOf(ordinaryBaseRows(binderList).last());
     await binderList.getByRole("combobox", { name: "Binder" }).selectOption({ label: "Main" });
     const haveBinderOff = binderList.getByRole("button", { name: `Have ${binderCard}`, exact: true, pressed: false });
@@ -548,12 +573,12 @@ test(
     // Listing is not a switch any more: it is the saved sign-in and the boxes.
     await expect(page.getByRole("switch", { name: /^List on / })).toHaveCount(0);
 
-    // --- The 1988 Topps Base checklist, adding to the box ----------------------
+    // --- The 2024 Topps Chrome Future Stars checklist, adding to the box -------
     await tabs.getByRole("link", { name: "Checklists", exact: true }).click();
     await expect(page).toHaveURL(/[?&]tab=checklists/);
     const adding = page.getByRole("combobox", { name: "Adding to" });
     await expect(adding).toBeVisible();
-    await drillToCollectorBase(page, TOPPS_1988);
+    await drillToCollectorChecklist(page, FUTURE_STARS);
     await adding.selectOption({ label: boxName });
     await expect(adding.getByRole("option", { selected: true })).toHaveText(boxName);
     const boxList = checklist.getByRole("list", { name: `Quantities in ${boxName}` });
@@ -595,7 +620,7 @@ test(
     await expect(dropzone).not.toHaveAttribute("aria-disabled", "true");
     await expect(page.getByText(/^Price tag first!/)).toHaveCount(0);
     // Picking the set shows the warning once, opens Defaults and focuses the Min price.
-    await pickIntakeSet(page, TOPPS_1988);
+    await pickIntakeSet(page, FUTURE_STARS);
     const intakeLine = `Price tag first! ${boxName} sells on your marketplaces and ${TITLE} has no price yet. Set one in Defaults and your photos go up.`;
     // The note is the zone's description (the sr-only copy in the status line is
     // a second match for the text, so the note is read through what points at it).
@@ -612,13 +637,13 @@ test(
     await expect(waitingTray).toBeVisible();
     // The zone's description holds the hint too, so the words are read inside it.
     await expect(dropzone).toHaveAccessibleDescription(new RegExp(escapeRegExp(`${intakeLine} 2 photos waiting on a price.`)));
-    await expect(page.getByText("Sending your photos…")).toHaveCount(0);
+    await expect(page.getByText("Sending your photosâ¦")).toHaveCount(0);
     await expect(page).not.toHaveURL(/[?&]run=/);
     await expectAccessible(page, { label: "Add cards, photos waiting on a price" });
     // The central promise: the price is set with the photos still waiting, and
     // they go up on their own (no Start button): the tray empties, the status line
     // says "Sent 2 photos." and the run is on the URL.
-    await minPrice.fill("0.25");
+    await minPrice.fill(PRICE);
     await page.keyboard.press("Enter");
     await expect(said("Sent 2 photos.")).toBeVisible();
     await expect(page).toHaveURL(/[?&]run=/);
@@ -654,10 +679,10 @@ test(
     await checklist.getByRole("button", { name: `Set a common price for ${TITLE}`, exact: true }).click();
     const priceField = checklist.getByRole("textbox", { name: "Common price", exact: true });
     await expect(priceField).toBeFocused();
-    await priceField.fill("0.25");
+    await priceField.fill(PRICE);
     await page.keyboard.press("Enter");
-    await expect(said(`Common price for ${TITLE} is $0.25`)).toBeVisible();
-    await expect(checklist.getByText("$0.25", { exact: true })).toBeVisible();
+    await expect(said(`Common price for ${TITLE} is ${PRICE_SHOWN}`)).toBeVisible();
+    await expect(checklist.getByText(PRICE_SHOWN, { exact: true })).toBeVisible();
     written.priced = true;
     await expect(gateNote).toBeHidden();
     await expect(addOneOfA).toBeEnabled();
@@ -833,7 +858,7 @@ test(
 
     await tabs.getByRole("link", { name: "Checklists", exact: true }).click();
     await expect(page).toHaveURL(/[?&]tab=checklists/);
-    await drillToCollectorBase(page, TOPPS_1988);
+    await drillToCollectorChecklist(page, FUTURE_STARS);
     await sync.click();
     await expect(said(`Syncing ${TITLE} now. Watch it on Sync status.`)).toBeVisible();
     await tabs.getByRole("link", { name: "Sync status", exact: true }).click();
@@ -878,9 +903,9 @@ test(
     // Zero before deleting, so no copy falls into the Unsorted box (a listed one).
     await tabs.getByRole("link", { name: "Checklists", exact: true }).click();
     await expect(page).toHaveURL(/[?&]tab=checklists/);
-    // Same page since the drill above: the tab link reopens 1988 Topps Base.
+    // Same page since the drill above: the tab link reopens Future Stars.
     await emptyBox(page, boxName, [a, b], isMobile, "reopened");
-    await clearCommonPrice(page, checklist, "0.25");
+    await clearCommonPrice(page, checklist, PRICE_IN_FIELD);
     written.priced = false;
 
     await tabs.getByRole("link", { name: "My Boxes", exact: true }).click();

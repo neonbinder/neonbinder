@@ -24,7 +24,7 @@
 // The price warning itself ("Price tag first! ...", Defaults opening on the Min
 // price) needs a real listing state (a box that lists, a syncing sign-in, no
 // common price), which only the seller spec has: it is proven live in
-// `inventory-bsc-listing-1988-topps-base` step 2b, never here.
+// `inventory-bsc-listing-2024-topps-chrome-future-stars` step 2b, never here.
 //
 // R7/R7a: writes only the signed-in user's own rows against the seed's 2024
 // Topps Chrome Base (read-only, SET-REGISTRY.md): a minted box (deleted at the

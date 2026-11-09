@@ -57,9 +57,9 @@
 // eBay prices is unit-only (convex/listingDrainEbay.test.ts, the item's
 // packageWeightAndSize): the sandbox does not show the item body back, so
 // the spec proves the weight is saved and kept (step 4), not what eBay got.
-//   5. They set a common price, then put copies of the first three 1988 Topps
-//      Base cards in the box, with a photo on two of them only (eBay listings
-//      need one): the FIRST has a plain quick-count copy and then a second line
+//   5. They set a common price, then put copies of the first three 2024 Topps
+//      Chrome Future Stars cards (Insert › Future Stars) in the box, with a
+//      photo on two of them only (eBay listings need one): the FIRST has a plain quick-count copy and then a second line
 //      from a scanned pair (NEO-427: the oldest copy WITH photos feeds the
 //      listing, so the older photoless line does not hold it; Add cards, a real
 //      scan pair read and matched, the card picked by hand, Save; the tile says
@@ -165,15 +165,17 @@
 // scanner-bed cards (`public/placeholder-fixtures/01-vorkle-*.jpg`), which the fast
 // crop stage takes without waking the heavy model: every intake scan's back
 // escalates, so those would queue behind any other spec's heavy call. They name a
-// player that means nothing in 1988 Topps Baseball, so the card is picked by hand
+// player that means nothing in 2024 Topps Chrome Future Stars, so the card is picked by hand
 // ("Wrong card? Find it"), exactly as the real-scans spec fixes a misread: the pair is
 // the INPUT, the card is the first row of the checklist. The scanner app itself
 // needs a real scanner, so the run is the Add cards photo drop; the save and the
 // photo attach behind it are the same path a scanner run takes.
 //
-// R7/R7a. 1988 Topps Baseball is a registered real set (SET-REGISTRY.md): this
-// spec is the SOLE writer of the sandbox seller account's listings and writes
-// no card, player, team or variant of the set. Its NB writes are the signed-in
+// R7/R7a. 2024 Topps Chrome › Insert › Future Stars is a registered real set
+// (SET-REGISTRY.md, provisioned by the seed): this spec is the SOLE writer of
+// the sandbox seller account's listings and writes no card, player, team or
+// variant of the set (NEO-475: moved here from 1988 Topps Base with the
+// BuySportsCards spec). Its NB writes are the signed-in
 // user's own rows (the eBay connection and setup, a minted box, copies of three cards
 // in a box (a photo on two, one of them from a scan run), an intake run, the common price,
 // and every other box set to in-person, which is left that way). It makes NeonBinder's standard payment and returns
@@ -188,14 +190,14 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Page } from "@playwright/test";
 import {
-  TOPPS_1988,
+  TOPPS_CHROME_2024_FUTURE_STARS,
   backToBoxes,
-  baseChecklistTitle,
   cardsWord,
+  checklistTitle,
   clearChecklistCommonPrice,
   createBox,
   deleteOpenBox,
-  drillToCollectorBase,
+  drillToCollectorChecklist,
   emptyBoxCards,
   expectNothingSent,
   followRunToEnd,
@@ -213,9 +215,15 @@ import { expectEbayHookedUp, removeEbayConnection, saveEbayConnection } from "..
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 
 const EBAY = "eBay";
-const TITLE = baseChecklistTitle(TOPPS_1988);
-/** The set as Sync status and the card drawer name it: a Base checklist reads as the set alone. */
-const SET_LABEL = `${TOPPS_1988.year} ${TOPPS_1988.set}`;
+const FUTURE_STARS = TOPPS_CHROME_2024_FUTURE_STARS;
+const TITLE = checklistTitle(FUTURE_STARS);
+/**
+ * The set as Sync status and the card drawer name it. An insert reads as part of
+ * the set's name (`setAndVariantLabel` in convex/lib/listingLabels.ts,
+ * `cardLabel` in app/collection/final/data/labels.ts), so it is the checklist's
+ * own title: "2024 Topps Chrome Future Stars".
+ */
+const SET_LABEL = TITLE;
 const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /** Real card scans the intake specs already commit (about 1000 px wide; eBay wants at least 500). */
@@ -247,7 +255,13 @@ const mustHoldPolicy = (name: string, slot: string) =>
   "NeonBinder no longer makes shipping policies (NEO-423), so add it on the sandbox seller's eBay account by hand " +
   "(see the spec header and SET-REGISTRY.md)";
 
-/** At or above eBay's $0.99 floor, and under $20 (the Cards under $20 slot). */
+/**
+ * At or above eBay's $0.99 floor, and under $20 (the Cards under $20 slot).
+ * NEO-475: NOT the $900 the BuySportsCards spec lists at. eBay's sandbox has no
+ * buyers, and $20 and up is the calculated NB Tracked slot, which the sandbox
+ * cannot rate (publish fails 25007; see the header): the cards must take the
+ * flat NB Free Shipping slot to go up at all.
+ */
 const COMMON_PRICE = "1.00";
 /** A US address, the page's own example ZIP. */
 const SHIPS_FROM = { zip: "53703", city: "Madison", state: "WI" };
@@ -299,7 +313,7 @@ test.afterEach(async ({ context }, testInfo) => {
       if (failed && written.priced) {
         await clean.goto("/inventory?tab=checklists");
         await expect(clean.getByRole("heading", { level: 1, name: "Inventory" })).toBeVisible({ timeout: LAUNCH_GATE });
-        const checklist = await drillToCollectorBase(clean, TOPPS_1988);
+        const checklist = await drillToCollectorChecklist(clean, FUTURE_STARS);
         await clearChecklistCommonPrice(clean, checklist, TITLE, COMMON_PRICE);
         written.priced = false;
       }
@@ -321,7 +335,7 @@ test.afterEach(async ({ context }, testInfo) => {
 });
 
 test(
-  "Inventory: connecting eBay and finishing its setup lists a box's 1988 Topps Base cards on the eBay sandbox, and an in-person box takes them down",
+  "Inventory: connecting eBay and finishing its setup lists a box's 2024 Topps Chrome Future Stars cards on the eBay sandbox, and an in-person box takes them down",
   // NEO-453, TEMPORARY: out of the suite (project-scope.mjs). Put @marketplace-seller back with it.
   { tag: ["@collection"] },
   async ({ page, context, signIn, env, isMobile }) => {
@@ -403,7 +417,7 @@ test(
     await expect(before.getByText("Listing", { exact: true })).toBeHidden();
     await expectAccessible(page, { label: "Inventory Sync status, eBay not connected" });
     // The way there is a link; Back steps to Sync status.
-    await before.getByRole("link", { name: "Connect eBay in Profile → Credentials", exact: true }).click();
+    await before.getByRole("link", { name: "Connect eBay in Profile â Credentials", exact: true }).click();
     await expect(page).toHaveURL(/\/profile\/credentials\?platform=ebay$/);
     await expect(connectButton).toBeVisible();
     await page.goBack();
@@ -526,7 +540,7 @@ test(
       const ledger = page.getByRole("list", { name: "Set me up, step by step", exact: true });
       await expect(ledger).toBeVisible();
       const steps = ledger.getByRole("listitem");
-      // The answer: "Made N on your eBay account …", or "You already had
+      // The answer: "Made N on your eBay account â¦", or "You already had
       // everything" on a re-run. Both are the success status line, never the error.
       const answer = said(/^(Made \d+ on your eBay account|You already had everything)/);
       // Walked in run order (`nth` is the step's place in the run, which never
@@ -616,7 +630,7 @@ test(
     await expect(page.getByRole("heading", { level: 1, name: "Inventory" })).toBeVisible({ timeout: LAUNCH_GATE });
     const adding = page.getByRole("combobox", { name: "Adding to" });
     await expect(adding).toBeVisible();
-    const checklist = await drillToCollectorBase(page, TOPPS_1988);
+    const checklist = await drillToCollectorChecklist(page, FUTURE_STARS);
     const sync = checklist.getByRole("button", { name: `Sync ${TITLE}`, exact: true });
     await adding.selectOption({ label: boxName });
     await expect(adding.getByRole("option", { selected: true })).toHaveText(boxName);
@@ -678,14 +692,14 @@ test(
     // --- The first card then comes from a scanned pair (NEO-427) --------------------
     // Add cards, into this box, in this set: the pair is read and matched, the
     // card is picked by hand (the scan names a number and a player that mean
-    // nothing in 1988 Topps), and Save puts the scans on the copy it makes.
+    // nothing in Future Stars), and Save puts the scans on the copy it makes.
     // Nothing else is done for the photos; the Sync below lists the card on them.
     // "Done adding photos" waits for the tidy-up: closing a run into a listed box
     // lists its cards at once, and this card is meant to list on the Sync press.
     await tabs.getByRole("link", { name: "Add cards", exact: true }).click();
     await expect(page).toHaveURL(/[?&]tab=add/);
     await page.getByRole("combobox", { name: "Put them in this box" }).selectOption({ label: boxName });
-    await pickIntakeSet(page, TOPPS_1988);
+    await pickIntakeSet(page, FUTURE_STARS);
     // The price is set, so the photos go up on their own (NEO-452: a drop is
     // held in the browser until the run is ready, and this one already is).
     const dropzone = page.getByLabel("Drag your card photos here, or browse your files");
@@ -712,7 +726,7 @@ test(
     await expect(scanTile).toHaveCount(1);
     await expect(scanTile.getByText("Photos are in!", { exact: true })).toBeVisible();
     // Positive first (above): none of the other four photo lines is on it.
-    for (const other of ["Slipping in the photos…", "Photos didn't stick.", "The scans aged out.", "These scans won't cut it."]) {
+    for (const other of ["Slipping in the photosâ¦", "Photos didn't stick.", "The scans aged out.", "These scans won't cut it."]) {
       await expect(scanTile.getByText(other, { exact: true })).toHaveCount(0);
     }
     await expectAccessible(page, { label: "Add cards, a box run's saved card with its photos in" });
@@ -909,7 +923,7 @@ test(
 
     await tabs.getByRole("link", { name: "Checklists", exact: true }).click();
     await expect(page).toHaveURL(/[?&]tab=checklists/);
-    await drillToCollectorBase(page, TOPPS_1988);
+    await drillToCollectorChecklist(page, FUTURE_STARS);
     await sync.click();
     await expect(said(`Syncing ${TITLE} now. Watch it on Sync status.`)).toBeVisible();
     await tabs.getByRole("link", { name: "Sync status", exact: true }).click();
@@ -966,11 +980,11 @@ test(
 
     // --- 7. Tidy up through the product: the box's cards, the price, the box, eBay --------
     // Zero before deleting, so no copy falls into the Unsorted box. Same page
-    // since the drill above: the tab link reopens 1988 Topps Base.
+    // since the drill above: the tab link reopens Future Stars.
     await tabs.getByRole("link", { name: "Checklists", exact: true }).click();
     await expect(page).toHaveURL(/[?&]tab=checklists/);
     // The card with no photo: a quick count to 0.
-    await emptyBoxCards(page, TOPPS_1988, boxName, [c], isMobile, "reopened");
+    await emptyBoxCards(page, FUTURE_STARS, boxName, [c], isMobile, "reopened");
     // The first card holds two lines, its plain copy and the scanned one. A
     // lower takes the photoless line first (NEO-431), so a quick count from 2 to
     // 1 pulls the plain copy and leaves the scanned line, with its photos, as the
