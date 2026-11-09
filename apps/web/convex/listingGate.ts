@@ -28,7 +28,10 @@
  *     item, an intake save);
  *   - a line put back (`collection.restoreCopy`, the undo of a removal);
  *   - a move into a listed box from a home that does not list
- *     (`collection.moveCopyCore`, so `moveCopy`);
+ *     (`collection.moveCopyCore`, so `moveCopy`). Sell can name the moving
+ *     cards' own price (`moveCopy`'s `minPriceCents`, NEO-479), and the
+ *     gate reads that price, so a priced sale passes with no common price;
+ *     the condition is still required;
  *   - a quick count that raises a box's number
  *     (`collectionInventory.setBoxQuantity`), and an undo/redo of one that
  *     restores or raises a line (`undoBoxQuantity`; its inverse comes from
