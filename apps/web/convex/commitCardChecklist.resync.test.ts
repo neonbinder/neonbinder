@@ -281,6 +281,9 @@ describe("commitCardChecklist — tier 2 (slot + number) survives an upstream re
     expect(after[0].platformData?.sportlots?.ref).toBe("#5 New Corrected Description");
     expect(after[0].platformData?.sportlots?.src).toBe("s0");
     await drainScheduled(t);
+    // NEO-475: the BSC team queue reschedules its tail behind a real 300 ms
+    // delay, which drain cannot reach; cancel it so it cannot outlive the test.
+    await cancelScheduled(t);
   });
 });
 
@@ -343,6 +346,9 @@ describe("commitCardChecklist — ambiguity is surfaced, never guessed", () => {
 
     spy.mockRestore();
     await drainScheduled(t);
+    // NEO-475: the BSC team queue reschedules its tail behind a real 300 ms
+    // delay, which drain cannot reach; cancel it so it cannot outlive the test.
+    await cancelScheduled(t);
   });
 
   test("4b: two existing rows sharing (slot, cardNumber) with distinct refs — no tier-2 match", async () => {
@@ -387,6 +393,9 @@ describe("commitCardChecklist — ambiguity is surfaced, never guessed", () => {
     expect(rows.find((r) => r._id === rowXId)!.cardName).toBe("Row X");
     expect(rows.find((r) => r._id === rowYId)!.cardName).toBe("Row Y");
     await drainScheduled(t);
+    // NEO-475: the BSC team queue reschedules its tail behind a real 300 ms
+    // delay, which drain cannot reach; cancel it so it cannot outlive the test.
+    await cancelScheduled(t);
   });
 
   test("4c: an incoming setId shaped like a slot key ('b0') is never compared against a stored src", async () => {
@@ -420,6 +429,9 @@ describe("commitCardChecklist — ambiguity is surfaced, never guessed", () => {
     expect(existing.cardName).toBe("Existing Card");
     expect(existing.platformData?.bsc?.ref).toBe("old-ref");
     await drainScheduled(t);
+    // NEO-475: the BSC team queue reschedules its tail behind a real 300 ms
+    // delay, which drain cannot reach; cancel it so it cannot outlive the test.
+    await cancelScheduled(t);
   });
 });
 
@@ -505,6 +517,9 @@ describe("commitCardChecklist — re-sync with no applyFields", () => {
     expect(after.platformData?.bsc?.ref).toBe("stable-ref");
     expect(after.platformData?.bsc?.src).toBe("b1");
     await drainScheduled(t);
+    // NEO-475: the BSC team queue reschedules its tail behind a real 300 ms
+    // delay, which drain cannot reach; cancel it so it cannot outlive the test.
+    await cancelScheduled(t);
   });
 });
 
@@ -541,6 +556,9 @@ describe("commitCardChecklist — upstream removal", () => {
     expect(after).toHaveLength(2);
     expect(after.some((r) => r._id === droppedId)).toBe(true);
     await drainScheduled(t);
+    // NEO-475: the BSC team queue reschedules its tail behind a real 300 ms
+    // delay, which drain cannot reach; cancel it so it cannot outlive the test.
+    await cancelScheduled(t);
   });
 });
 
@@ -577,6 +595,9 @@ describe("commitCardChecklist — tier 3 (bare number, no-ref rows)", () => {
     expect(rows[0]._id).toBe(legacyId);
     expect(rows[0].isCustom).toBe(true); // untouched by the match itself
     await drainScheduled(t);
+    // NEO-475: the BSC team queue reschedules its tail behind a real 300 ms
+    // delay, which drain cannot reach; cancel it so it cannot outlive the test.
+    await cancelScheduled(t);
   });
 });
 
