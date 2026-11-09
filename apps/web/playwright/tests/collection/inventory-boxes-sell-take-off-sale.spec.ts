@@ -182,16 +182,36 @@ test(
     await expect(into.getByRole("option", { name: "Main", exact: true })).toHaveCount(0);
     await into.selectOption({ label: boxName });
     await sellForm.getByRole("spinbutton", { name: "Quantity to sell" }).fill("2");
-    await expectAccessible(page, { within: sellForm, label: "Card drawer, the Sell panel with a box picked" });
-    await sellForm.getByRole("button", { name: "Put 2 up for sale", exact: true }).click();
+    // NEO-479: going up for sale takes a price. This account has no common price for Base
+    // and the copies have none of their own, so the field is blank and the submit waits.
+    const sellPrice = sellForm.getByRole("textbox", { name: "Price", exact: true });
+    await expect(sellPrice).toHaveValue("");
+    await expect(
+      sellForm.getByText("No common price on this one yet. Name your price to put it up for sale."),
+    ).toBeVisible();
+    const putUp = sellForm.getByRole("button", { name: "Put 2 up for sale", exact: true });
+    await expect(putUp).toBeDisabled();
+    // Enter on the blank field is refused too, and says why: the keyboard stays on Price.
+    await sellPrice.press("Enter");
+    await expect(sellForm.getByRole("alert").getByText("Give it a price, like 1.50.")).toBeVisible();
+    await expect(sellPrice).toHaveAttribute("aria-invalid", "true");
+    await expect(sellPrice).toBeFocused();
+    await expect(sellForm).toBeVisible();
+    await expectAccessible(page, { within: sellForm, label: "Card drawer, the Sell panel refusing a blank price" });
+    await expectAccessible(page, { within: sellForm, label: "Card drawer, the Sell panel waiting for a price" });
+    await sellPrice.fill("1.50");
+    await expect(putUp).toBeEnabled();
+    await expectAccessible(page, { within: sellForm, label: "Card drawer, the Sell panel with a box and a price" });
+    await putUp.click();
     await expect(sellForm).toBeHidden();
     await expect(
-      drawer.getByRole("status").filter({ hasText: `2 of ${one.short} are up for sale in ${boxName}` }),
+      drawer.getByRole("status").filter({ hasText: `2 of ${one.short} are up for sale in ${boxName} at $1.50.` }),
     ).toBeVisible();
     await expect(lines(2)).toBeVisible();
     await expect(drawer.getByText(/^1 in binders · 2 for sale\.?$/)).toBeVisible();
     await expect(line("Raw, Excellent").getByText("Main")).toBeVisible();
     await expect(line("Raw, Excellent ×2").getByText(new RegExp(`For sale · ${escapeRegExp(boxName)}`))).toBeVisible();
+    await expect(line("Raw, Excellent ×2").getByText(/\$1\.50/)).toBeVisible();
     await expectAccessible(page, { within: drawer, label: "Card drawer, a stack split between Main and a box" });
     await drawer.getByRole("button", { name: "Close card detail" }).click();
     await expect(drawer).toBeHidden();
@@ -256,6 +276,9 @@ test(
     await expect(drawer.getByText(/^2 in binders · 1 for sale\.?$/)).toBeVisible();
     await expect(line("Raw, Excellent ×2").getByText("Main")).toBeVisible();
     await expect(line("Raw, Excellent").getByText(new RegExp(`For sale · ${escapeRegExp(boxName)}`))).toBeVisible();
+    // NEO-479: the copy still for sale keeps its own price; the one taken off lost it and stacked with Main's.
+    await expect(line("Raw, Excellent").getByText(/\$1\.50/)).toBeVisible();
+    await expect(line("Raw, Excellent ×2").getByText(/\$1\.50/)).toHaveCount(0);
     await expectAccessible(page, { within: drawer, label: "Card drawer, one copy back in Main and one still for sale" });
     // The drawer rode on the URL: closing it is a Back step onto the open box.
     await drawer.getByRole("button", { name: "Close card detail" }).click();

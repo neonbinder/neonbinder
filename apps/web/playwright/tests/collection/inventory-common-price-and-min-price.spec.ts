@@ -10,6 +10,12 @@
 // The common price line opens in place: Set common price, type, Enter saves
 // (the status line says it, with Undo); a blank field clears it.
 //
+// NEO-479: the drawer's Sell panel carries a Price field. It opens on the copy's
+// own price, else the common price (which a one-card panel never writes): selling
+// at the prefill stores no price of its own, so the copy keeps reading the common
+// price ("$0.25, common"); a typed price becomes THIS copy's own. Taking a copy
+// off sale clears that price, and Undo puts it back.
+//
 // R7/R7a: writes only the signed-in user's own rows (`variantCommonPrices`,
 // `collectionContainers`, `collectionCopies`; the bootstrap reset clears the
 // account) against one card of the seed's 2024 Topps Chrome Base, registered in
@@ -86,11 +92,80 @@ test(
     await expect(line.getByText(/\$0\.50/)).toBeVisible();
     await expect(line.getByText(/, common/)).toHaveCount(0);
 
-    // --- Cleanup (R7): remove the copy, then clear the common price ---------------
+    // --- NEO-479: take it off sale; its own price goes with it ---------------------
+    await yourCopies.getByRole("button", { name: `Take off sale, ${one.short}, Raw, Excellent`, exact: true }).click();
+    const offForm = yourCopies.getByRole("form", { name: /off sale/i });
+    await expect(offForm.getByRole("combobox", { name: "Back into" }).getByRole("option", { name: "Main", exact: true })).toBeAttached();
+    await offForm.getByRole("button", { name: "Take it off sale", exact: true }).click();
+    await expect(offForm).toBeHidden();
+    await expect(drawer.getByRole("status").filter({ hasText: `Took ${one.short} off sale.` })).toBeVisible();
+    const binderLine = yourCopies.getByRole("listitem").filter({ has: page.getByText("Raw, Excellent", { exact: true }) });
+    await expect(binderLine.getByText("Main")).toBeVisible();
+
+    // --- Sell it again: Price opens on the common price, not the old own price ----
+    const sellButton = yourCopies.getByRole("button", { name: `Sell ${one.short}, Raw, Excellent`, exact: true });
+    await sellButton.click();
+    const sellForm = yourCopies.getByRole("form", { name: "Sell Raw, Excellent", exact: true });
+    const sellInto = sellForm.getByRole("combobox", { name: "Into which box" });
+    await expect(sellInto.getByRole("option", { selected: true })).toHaveText("Unsorted");
+    const sellPrice = sellForm.getByRole("textbox", { name: "Price", exact: true });
+    await expect(sellPrice).toHaveValue("0.25");
+    await expect(
+      sellForm.getByText("Your common price, $0.25. Change it to price just this card; your common price stays put."),
+    ).toBeVisible();
+    await expectAccessible(page, { within: sellForm, label: "Card drawer, the Sell panel on the common price" });
+
+    // Left as it is: no price of its own is stored, so the line reads the common price again.
+    await sellForm.getByRole("button", { name: "Put it up for sale", exact: true }).click();
+    await expect(sellForm).toBeHidden();
+    await expect(
+      drawer.getByRole("status").filter({ hasText: `${one.short} is up for sale in Unsorted at your common price, $0.25.` }),
+    ).toBeVisible();
+    await expect(line.getByText(/\$0\.25, common/)).toBeVisible();
+
+    // --- Take it off again and sell it at a price of its own -----------------------
+    await yourCopies.getByRole("button", { name: `Take off sale, ${one.short}, Raw, Excellent`, exact: true }).click();
+    await offForm.getByRole("button", { name: "Take it off sale", exact: true }).click();
+    await expect(offForm).toBeHidden();
+    await expect(binderLine.getByText("Main")).toBeVisible();
+    await sellButton.click();
+    await expect(sellPrice).toHaveValue("0.25");
+    await sellPrice.fill("0.40");
+    await sellForm.getByRole("button", { name: "Put it up for sale", exact: true }).click();
+    await expect(sellForm).toBeHidden();
+    await expect(
+      drawer.getByRole("status").filter({ hasText: `${one.short} is up for sale in Unsorted at $0.40.` }),
+    ).toBeVisible();
+    await expect(line.getByText(/\$0\.40/)).toBeVisible();
+    await expect(line.getByText(/, common/)).toHaveCount(0);
+
+    // Undo puts the copy back in Main, without the $0.40 ...
+    await drawer.getByRole("button", { name: "Undo", exact: true }).click();
+    await expect(drawer.getByRole("status").filter({ hasText: "Undone." })).toBeVisible();
+    await expect(binderLine.getByText("Main")).toBeVisible();
+
+    // ... so the Sell panel opens on the common price again: $0.40 was only ever this
+    // copy's own price, and the panel never wrote it to the common price.
+    await sellButton.click();
+    await expect(sellPrice).toHaveValue("0.25");
+    await expectAccessible(page, { within: sellForm, label: "Card drawer, the Sell panel after an Undo" });
+    // A blank price will not sell, and the common price is the way back.
+    await sellPrice.fill("");
+    await expect(sellForm.getByRole("alert").getByText("Blank won't sell. Put back $0.25 or name your own price.")).toBeVisible();
+    await expect(sellPrice).toHaveAttribute("aria-invalid", "true");
+    await expect(sellForm.getByRole("button", { name: "Put it up for sale", exact: true })).toBeDisabled();
+    await expectAccessible(page, { within: sellForm, label: "Card drawer, the Sell panel with a blank price" });
+    await page.keyboard.press("Escape");
+    await expect(sellForm).toBeHidden();
+    await expect(sellButton).toBeFocused();
+
+    // --- Cleanup (R7): remove the copy (it is back in Main), then clear the common price
     await yourCopies.getByRole("button", { name: `Remove ${one.short}, Raw, Excellent`, exact: true }).click();
     await expect(yourCopies.getByText("None yet. Fill in what you know below and add it.")).toBeVisible();
     await drawer.getByRole("button", { name: "Close card detail" }).click();
     await expect(drawer).toBeHidden();
+    // The common price is still what the collector set: no Sell panel wrote it.
+    await expect(checklist.getByText("$0.25", { exact: true })).toBeVisible();
     await change.click();
     await expect(priceField).toHaveValue("0.25");
     await priceField.fill("");
