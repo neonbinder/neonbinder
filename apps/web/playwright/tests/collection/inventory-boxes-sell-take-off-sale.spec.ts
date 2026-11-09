@@ -198,7 +198,6 @@ test(
     await expect(sellPrice).toBeFocused();
     await expect(sellForm).toBeVisible();
     await expectAccessible(page, { within: sellForm, label: "Card drawer, the Sell panel refusing a blank price" });
-    await expectAccessible(page, { within: sellForm, label: "Card drawer, the Sell panel waiting for a price" });
     await sellPrice.fill("1.50");
     await expect(putUp).toBeEnabled();
     await expectAccessible(page, { within: sellForm, label: "Card drawer, the Sell panel with a box and a price" });

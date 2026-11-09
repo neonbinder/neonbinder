@@ -102,6 +102,17 @@ test(
     const binderLine = yourCopies.getByRole("listitem").filter({ has: page.getByText("Raw, Excellent", { exact: true }) });
     await expect(binderLine.getByText("Main")).toBeVisible();
 
+    // Undo puts it back in the box WITH the $0.50 it had (the price left with the exit and returns with the Undo) ...
+    await drawer.getByRole("button", { name: "Undo", exact: true }).click();
+    await expect(drawer.getByRole("status").filter({ hasText: "Undone." })).toBeVisible();
+    await expect(line.getByText(/\$0\.50/)).toBeVisible();
+    await expect(line.getByText(/, common/)).toHaveCount(0);
+    // ... and taking it off sale again clears it for good.
+    await yourCopies.getByRole("button", { name: `Take off sale, ${one.short}, Raw, Excellent`, exact: true }).click();
+    await offForm.getByRole("button", { name: "Take it off sale", exact: true }).click();
+    await expect(offForm).toBeHidden();
+    await expect(binderLine.getByText("Main")).toBeVisible();
+
     // --- Sell it again: Price opens on the common price, not the old own price ----
     const sellButton = yourCopies.getByRole("button", { name: `Sell ${one.short}, Raw, Excellent`, exact: true });
     await sellButton.click();
@@ -155,6 +166,15 @@ test(
     await expect(sellPrice).toHaveAttribute("aria-invalid", "true");
     await expect(sellForm.getByRole("button", { name: "Put it up for sale", exact: true })).toBeDisabled();
     await expectAccessible(page, { within: sellForm, label: "Card drawer, the Sell panel with a blank price" });
+    // Past the cap is refused too, and typing the common price back clears the error.
+    await sellPrice.fill("100000001");
+    await expect(sellForm.getByRole("alert").getByText("Whoa, that's past the $100,000,000.00 cap.")).toBeVisible();
+    await expect(sellPrice).toHaveAttribute("aria-invalid", "true");
+    await expect(sellForm.getByRole("button", { name: "Put it up for sale", exact: true })).toBeDisabled();
+    await expectAccessible(page, { within: sellForm, label: "Card drawer, the Sell panel with a price past the cap" });
+    await sellPrice.fill("0.25");
+    await expect(sellPrice).not.toHaveAttribute("aria-invalid", "true");
+    await expect(sellForm.getByRole("button", { name: "Put it up for sale", exact: true })).toBeEnabled();
     await page.keyboard.press("Escape");
     await expect(sellForm).toBeHidden();
     await expect(sellButton).toBeFocused();
