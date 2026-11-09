@@ -1,6 +1,6 @@
 ---
 name: action-impl-stub-ctx-for-write-failures
-description: Testing a Convex action's error and write-failure branches — extract a plain *Impl(ctx, args) and script a Pick<ActionCtx,"runQuery"|"runMutation"> stub (convex-test cannot produce an OCC conflict), and never inject the failure at fetch: adapters here are no-throw, so a throwing fetch stub reaches no catch
+description: Testing a Convex action's error and write-failure branches — extract a plain *Impl(ctx, args) and script a Pick<ActionCtx,"runQuery"|"runMutation"> stub (convex-test cannot produce an OCC conflict), and never inject the failure at fetch: adapters here are no-throw, so a throwing fetch stub reaches no catch; add a recording scheduler to the stub to assert scheduled work
 metadata:
   type: reference
 ---
@@ -57,6 +57,17 @@ chunks commit for real, the test asserts the partial state, then re-runs the
 public action to prove the resume finishes with no duplicate (NEO-306
 `slSetReview.test.ts`). Type the stub as `Parameters<typeof fooImpl>[0]` with
 `FunctionReference<"query"|"mutation">` params to stay out of `never`.
+
+**Asserting scheduled work from a stub ctx:** the forwarding stub has no
+`scheduler`, so a helper that duck-types `ctx.scheduler.runAfter` (the BSC
+`flushBscRecorder`) silently degrades to log-only and a "one row scheduled"
+assertion passes vacuously or fails for the wrong reason. Add
+`scheduler: { runAfter: async (delay, ref, args) => { pushed.push({ name:
+getFunctionName(ref), delay, args }); return "id"; } }` to the literal (build
+it untyped, then pass it, to dodge the excess-property check on a
+`Pick<ActionCtx,...>` param). Throwing on a `finishPoll`-style closing write
+is the cheapest "body throws after the network call" plant for proving a
+`finally` flush (NEO-475 `listingSales.test.ts`).
 
 Mutation-test the result: move the write back inside the lookup's `try` and
 confirm the red lands on the *payload* assertion, not on a stub running out of
