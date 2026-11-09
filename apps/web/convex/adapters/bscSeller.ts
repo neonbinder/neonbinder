@@ -29,6 +29,13 @@ import {
   type BscOrderSummary,
 } from "../lib/bscOrders";
 import { narrowBscSheet, type NarrowedBscSheet } from "../lib/bscSheetPlan";
+import {
+  createBscRecorder,
+  type BscCallToken,
+  type BscFlushResult,
+  type BscRecorder,
+} from "../lib/bscCallTelemetry";
+import { deploymentName } from "../observability";
 
 /** The `credentials` site key for BuySportsCards. */
 const SITE = "buysportscards" as const;
@@ -131,10 +138,91 @@ function isAbort(err: unknown): boolean {
   return err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError");
 }
 
-/** Opens a session for `ownerId`, or says why it cannot. Reads the token once. */
+// ── NEO-475: call telemetry ────────────────────────────────────────────────
+
+/**
+ * One BSC call recorder (`lib/bscCallTelemetry.ts`) per seller session, kept
+ * beside the session rather than on it so the session's shape, and every
+ * caller or test that builds one, is unchanged. `openBscSellerSession` names
+ * the recorder after its owner (the drain, the order poll, the test cleanup);
+ * a session built some other way gets one on its first call.
+ */
+const sessionRecorders = new WeakMap<BscSellerSession, BscRecorder>();
+
+/** The op a session's summary carries when its opener named none. */
+const DEFAULT_SESSION_OP = "bscSellerSession";
+
+function recorderFor(session: BscSellerSession): BscRecorder {
+  let rec = sessionRecorders.get(session);
+  if (!rec) {
+    rec = createBscRecorder(DEFAULT_SESSION_OP, { deployment: deploymentName() });
+    sessionRecorders.set(session, rec);
+  }
+  return rec;
+}
+
+/**
+ * NEO-475 — emits a recorder's summary line and, when `ctx` can schedule,
+ * hands the row to `bscCallStats.record` off the hot path. Awaited once, when
+ * the invocation (or session) ends. Never throws: a failed flush or a refused
+ * `runAfter` is logged and swallowed, so telemetry cannot change a result.
+ *
+ * A ctx without `scheduler` (a stub, or a caller typed without one) gets the
+ * `bsc_call_summary` log line only.
+ */
+export async function flushBscRecorder(ctx: unknown, recorder: BscRecorder): Promise<void> {
+  let out: BscFlushResult | null = null;
+  try {
+    out = await recorder.flush();
+  } catch {
+    return;
+  }
+  if (!out) return;
+  const scheduler =
+    ctx !== null && typeof ctx === "object"
+      ? (ctx as { scheduler?: Partial<ActionCtx["scheduler"]> }).scheduler
+      : undefined;
+  if (!scheduler || typeof scheduler.runAfter !== "function") return;
+  try {
+    await scheduler.runAfter(0, internal.bscCallStats.record, out.row);
+  } catch (err) {
+    try {
+      console.warn(
+        JSON.stringify({
+          msg: "bsc_call_summary_not_recorded",
+          platform: "bsc",
+          operation: out.summary.op,
+          error: err instanceof Error ? err.name : "unknown",
+        }),
+      );
+    } catch {
+      // telemetry never throws into a caller
+    }
+  }
+}
+
+/**
+ * NEO-475 — ends a session's telemetry: its one `bsc_call_summary` line and
+ * its `bscCallSummaries` row. Call once, in the `finally` of whatever opened
+ * the session; a second call (or a session that sent nothing) does nothing.
+ */
+export async function closeBscSellerSession(ctx: unknown, session: BscSellerSession): Promise<void> {
+  const rec = sessionRecorders.get(session);
+  if (!rec) return;
+  sessionRecorders.delete(session);
+  await flushBscRecorder(ctx, rec);
+}
+
+/**
+ * Opens a session for `ownerId`, or says why it cannot. Reads the token once.
+ *
+ * `opts.op` names the session's call summary (NEO-475); the opener closes it
+ * with `closeBscSellerSession`.
+ */
 export async function openBscSellerSession(
   ctx: SessionCtx,
   ownerId: string,
+  opts: { op?: string } = {},
 ): Promise<BscSellerResult<BscSellerSession>> {
   if (isPlatformPaused(SITE)) {
     return { ok: false, failure: failure("paused", "BuySportsCards is paused on NeonBinder right now.") };
@@ -153,13 +241,17 @@ export async function openBscSellerSession(
       failure: failure("no_token", "NeonBinder couldn't sign in to BuySportsCards for you. Connect it again under Profile."),
     };
   }
-  return { ok: true, value: { ownerId, token: token.token, reauthAttempted: false, dead: false } };
+  const session: BscSellerSession = { ownerId, token: token.token, reauthAttempted: false, dead: false };
+  sessionRecorders.set(session, createBscRecorder(opts.op ?? DEFAULT_SESSION_OP, { deployment: deploymentName() }));
+  return { ok: true, value: session };
 }
 
 interface SendOptions {
   operation: string;
   method: "GET" | "POST" | "PUT";
   path: string;
+  /** `path` with its ids replaced (`seller/order/:id`), for call telemetry. Defaults to `path`. */
+  pathTemplate?: string;
   json?: unknown;
   form?: () => FormData;
   timeoutMs: number;
@@ -209,8 +301,16 @@ async function send(
   if (session.dead) {
     return { ok: false, failure: failure("signed_out", "BuySportsCards signed NeonBinder out. Sign in again under Profile.", 401) };
   }
+  // NEO-475: every request is recorded; `last.call` is the request whose
+  // answer is read below, so a body that fails after a 2xx lands on it.
+  const rec = recorderFor(session);
+  let attempts = 0;
+  const last: { call?: BscCallToken } = {};
   const attempt = async (): Promise<Response | BscSellerFailure> => {
     const startedAt = Date.now();
+    attempts += 1;
+    const call = rec.start({ pathTemplate: opts.pathTemplate ?? opts.path, timeoutMs: opts.timeoutMs, attempt: attempts });
+    last.call = call;
     try {
       const res = await fetch(`${BSC_API_BASE}/${opts.path}`, {
         method: opts.method,
@@ -222,9 +322,11 @@ async function send(
         redirect: "error",
         signal: AbortSignal.timeout(opts.timeoutMs),
       });
+      rec.respond(call, res);
       logCall(opts.operation, startedAt, res.ok ? "ok" : "http_error", res.status);
       return res;
     } catch (err) {
+      rec.fail(call, { error: err });
       const kind = isAbort(err) ? "timeout" : "network";
       logCall(opts.operation, startedAt, kind);
       return failure(
@@ -291,12 +393,14 @@ async function send(
   try {
     text = await readCappedText(res, opts.maxBytes);
   } catch (err) {
+    if (last.call) rec.fail(last.call, { kind: isAbort(err) ? "body_timeout" : "parse", error: err, response: res });
     return {
       ok: false,
       failure: failure(isAbort(err) ? "timeout" : "bad_response", `BuySportsCards' answer to ${opts.operation} could not be read.`, res.status),
     };
   }
   if (text === null) {
+    if (last.call) rec.fail(last.call, { kind: "parse", response: res });
     return {
       ok: false,
       failure: failure("bad_response", `BuySportsCards' answer to ${opts.operation} was too large to read.`, res.status),
@@ -305,7 +409,8 @@ async function send(
   if (text.trim() === "") return { ok: true, value: null };
   try {
     return { ok: true, value: JSON.parse(text) as unknown };
-  } catch {
+  } catch (err) {
+    if (last.call) rec.fail(last.call, { kind: "parse", error: err, response: res });
     return {
       ok: false,
       failure: failure("bad_response", `BuySportsCards' answer to ${opts.operation} was not JSON.`, res.status),
@@ -483,6 +588,7 @@ export async function readBscOrder(
     operation: "orderDetail",
     method: "GET",
     path: `seller/order/${encodeURIComponent(orderId)}`,
+    pathTemplate: "seller/order/:id",
     timeoutMs: BSC_SELLER_TIMEOUTS_MS.order,
     maxBytes: BSC_SELLER_MAX_BYTES.order,
   });

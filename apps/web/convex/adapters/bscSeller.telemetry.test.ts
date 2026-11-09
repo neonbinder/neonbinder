@@ -1,0 +1,245 @@
+/**
+ * NEO-475 — the seller client's BSC call telemetry (`send` in `bscSeller.ts`):
+ *
+ *   - every request is recorded on its session's recorder: ok, http (the
+ *     401 a refresh answers included), timeout, network, and a 2xx whose body
+ *     will not parse;
+ *   - the caller still reads the WHOLE body of a non-2xx, although the
+ *     recorder samples it from a clone;
+ *   - `closeBscSellerSession` flushes once: one `bsc_call_summary` line and
+ *     one `bscCallStats.record` scheduled, a second close does nothing;
+ *   - a refused `runAfter` is swallowed and logged, and a ctx with no
+ *     scheduler gets the log line only;
+ *   - the results the callers see are the ones they saw before.
+ *
+ * `fetch` is stubbed; nothing reaches the network.
+ */
+
+import { getFunctionName } from "convex/server";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import {
+  closeBscSellerSession,
+  flushBscRecorder,
+  openBscSellerSession,
+  readBscOrder,
+  readBscOrderHistory,
+  type BscSellerSession,
+} from "./bscSeller";
+import { createBscRecorder, resetBscInflightForTests } from "../lib/bscCallTelemetry";
+
+type Scheduled = { name: string; delay: number; args: Record<string, unknown> };
+
+/** A ctx whose credential actions answer a token, and whose scheduler records. */
+function makeCtx(opts: { runAfter?: (delay: number, ref: unknown, args: unknown) => Promise<unknown> } = {}) {
+  const scheduled: Scheduled[] = [];
+  const runAction = vi.fn(async (_ref: unknown, _args: unknown) => ({ token: "tok-2", refreshed: true }));
+  const runAfter = vi.fn(
+    opts.runAfter ??
+      (async (delay: number, ref: unknown, args: unknown) => {
+        scheduled.push({ name: getFunctionName(ref as never), delay, args: args as Record<string, unknown> });
+        return "scheduled-id";
+      }),
+  );
+  return { ctx: { runAction, scheduler: { runAfter } }, scheduled, runAction, runAfter };
+}
+
+const session = (): BscSellerSession => ({ ownerId: "owner", token: "tok", reauthAttempted: false, dead: false });
+
+let logs: string[];
+let warns: string[];
+
+beforeEach(() => {
+  resetBscInflightForTests();
+  logs = [];
+  warns = [];
+  vi.spyOn(console, "log").mockImplementation((line: unknown) => {
+    logs.push(String(line));
+  });
+  vi.spyOn(console, "warn").mockImplementation((line: unknown) => {
+    warns.push(String(line));
+  });
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+  delete process.env.NEONBINDER_PAUSED_PLATFORMS;
+});
+
+function jsonLines(lines: string[], msg: string): Array<Record<string, unknown>> {
+  return lines
+    .filter((l) => l.startsWith("{") && l.includes(`"${msg}"`))
+    .map((l) => JSON.parse(l) as Record<string, unknown>)
+    .filter((o) => o.msg === msg);
+}
+
+const summaries = () => jsonLines(logs, "bsc_call_summary");
+const failures = () => jsonLines(warns, "bsc_call_failed");
+
+function timeoutError(): Error {
+  return Object.assign(new Error("The operation was aborted due to timeout"), { name: "TimeoutError" });
+}
+
+describe("send records every request on the session", () => {
+  test("ok: one call, ok, scheduled once on close; a second close does nothing", async () => {
+    vi.stubGlobal("fetch", (async () => Response.json({ results: [], totalElements: 0 })) as typeof fetch);
+    const { ctx, scheduled } = makeCtx();
+    const s = session();
+    const r = await readBscOrderHistory(ctx as never, s, 0);
+    expect(r).toEqual({ ok: true, value: { orders: [], unreadable: 0 } });
+
+    await closeBscSellerSession(ctx, s);
+    await closeBscSellerSession(ctx, s);
+    expect(summaries()).toHaveLength(1);
+    expect(summaries()[0]).toMatchObject({ op: "bscSellerSession", calls: 1, ok: 1, byKind: {}, byStatus: { "200": 1 } });
+    expect(scheduled).toHaveLength(1);
+    expect(scheduled[0]).toMatchObject({ name: "bscCallStats:record", delay: 0 });
+    expect(scheduled[0].args).toMatchObject({ op: "bscSellerSession", calls: 1, ok: 1, samples: [] });
+  });
+
+  test("http: the caller still reads the whole body; the result is unchanged; the sample carries a scrubbed body", async () => {
+    // A body far past the 4 KB the recorder samples, so only the CALLER can
+    // have drained the source to its end.
+    let drained = false;
+    const chunk = new TextEncoder().encode("<html><title>Service Unavailable</title>" + "x".repeat(2000) + "</html>");
+    vi.stubGlobal("fetch", (async () => {
+      let sent = 0;
+      const body = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          if (sent < 6) {
+            controller.enqueue(chunk);
+            sent += 1;
+          } else {
+            drained = true;
+            controller.close();
+          }
+        },
+      });
+      return new Response(body, { status: 503, headers: { "content-type": "text/html", server: "awselb/2.0" } });
+    }) as typeof fetch);
+    const { ctx, scheduled } = makeCtx();
+    const s = session();
+    const r = await readBscOrder(ctx as never, s, "order-123");
+    expect(r).toEqual({
+      ok: false,
+      failure: { kind: "http", httpStatus: 503, message: "BuySportsCards answered 503 to orderDetail." },
+    });
+    expect(drained).toBe(true);
+
+    await closeBscSellerSession(ctx, s);
+    expect(summaries()[0]).toMatchObject({ calls: 1, ok: 0, byKind: { http: 1 }, byStatus: { "503": 1 } });
+    expect(failures()).toHaveLength(1);
+    expect(failures()[0]).toMatchObject({
+      kind: "http",
+      status: 503,
+      pathTemplate: "seller/order/:id",
+      headers: { server: "awselb/2.0", "content-type": "text/html" },
+    });
+    expect(String(failures()[0].body)).toContain('title="Service Unavailable"');
+    expect(JSON.stringify(failures()[0])).not.toContain("order-123");
+    expect(scheduled).toHaveLength(1);
+  });
+
+  test("timeout and network: classified from the thrown error, results unchanged", async () => {
+    const errors = [timeoutError(), new TypeError("fetch failed")];
+    vi.stubGlobal("fetch", (async () => {
+      throw errors.shift();
+    }) as typeof fetch);
+    const { ctx, scheduled } = makeCtx();
+    const s = session();
+    expect(await readBscOrder(ctx as never, s, "o-1")).toEqual({
+      ok: false,
+      failure: { kind: "timeout", message: "BuySportsCards took too long to answer." },
+    });
+    expect(await readBscOrder(ctx as never, s, "o-2")).toEqual({
+      ok: false,
+      failure: { kind: "network", message: "NeonBinder couldn't reach BuySportsCards." },
+    });
+    await closeBscSellerSession(ctx, s);
+    expect(summaries()[0]).toMatchObject({ calls: 2, ok: 0, byKind: { timeout: 1, network: 1 } });
+    expect(failures().map((f) => [f.kind, f.timeoutMs])).toEqual([
+      ["timeout", 30_000],
+      ["network", 30_000],
+    ]);
+    expect(scheduled).toHaveLength(1);
+  });
+
+  test("a 2xx body that is not JSON is a parse failure on that call, not an ok", async () => {
+    vi.stubGlobal("fetch", (async () => new Response("<html>not json</html>", { status: 200 })) as typeof fetch);
+    const { ctx } = makeCtx();
+    const s = session();
+    expect(await readBscOrder(ctx as never, s, "o-1")).toEqual({
+      ok: false,
+      failure: { kind: "bad_response", httpStatus: 200, message: "BuySportsCards' answer to orderDetail was not JSON." },
+    });
+    await closeBscSellerSession(ctx, s);
+    expect(summaries()[0]).toMatchObject({ calls: 1, ok: 0, byKind: { parse: 1 }, byStatus: { "200": 1 } });
+  });
+
+  test("a 401 refreshed once and retried: two calls on one summary, the retry ok", async () => {
+    const statuses = [401, 200];
+    vi.stubGlobal("fetch", (async () => {
+      const status = statuses.shift() ?? 500;
+      return status === 200 ? Response.json({ results: [], totalElements: 0 }) : new Response("expired", { status });
+    }) as typeof fetch);
+    const { ctx, scheduled } = makeCtx();
+    const s = session();
+    const r = await readBscOrderHistory(ctx as never, s, 0);
+    expect(r.ok).toBe(true);
+    expect(s.token).toBe("tok-2");
+    await closeBscSellerSession(ctx, s);
+    expect(summaries()[0]).toMatchObject({ calls: 2, ok: 1, byKind: { http: 1 }, byStatus: { "401": 1, "200": 1 } });
+    expect(failures()[0]).toMatchObject({ attempt: 1, status: 401 });
+    expect(scheduled).toHaveLength(1);
+  });
+});
+
+describe("openBscSellerSession names the session's summary", () => {
+  test("the opener's op is the summary's op", async () => {
+    vi.stubGlobal("fetch", (async () => Response.json({ results: [], totalElements: 0 })) as typeof fetch);
+    const { ctx, scheduled } = makeCtx();
+    const opened = await openBscSellerSession(ctx as never, "owner", { op: "pollOwner" });
+    expect(opened.ok).toBe(true);
+    if (!opened.ok) return;
+    expect(opened.value).toEqual({ ownerId: "owner", token: "tok-2", reauthAttempted: false, dead: false });
+    await readBscOrderHistory(ctx as never, opened.value, 0);
+    await closeBscSellerSession(ctx, opened.value);
+    expect(summaries()[0]).toMatchObject({ op: "pollOwner", calls: 1 });
+    expect(scheduled[0].args).toMatchObject({ op: "pollOwner" });
+  });
+
+  test("a session that sent nothing writes nothing", async () => {
+    const { ctx, scheduled } = makeCtx();
+    const opened = await openBscSellerSession(ctx as never, "owner", { op: "drainOwner" });
+    if (!opened.ok) throw new Error("expected a session");
+    await closeBscSellerSession(ctx, opened.value);
+    expect(summaries()).toHaveLength(0);
+    expect(scheduled).toHaveLength(0);
+  });
+});
+
+describe("flushBscRecorder never throws into its caller", () => {
+  test("a refused runAfter is logged and swallowed", async () => {
+    const { ctx, runAfter } = makeCtx({
+      runAfter: async () => {
+        throw new Error("scheduler unavailable");
+      },
+    });
+    const rec = createBscRecorder("fetchBscCardTeamNames");
+    rec.ok(rec.start({ pathTemplate: "marketplace/card/:id/card-listing" }), new Response("{}", { status: 200 }));
+    await expect(flushBscRecorder(ctx, rec)).resolves.toBeUndefined();
+    expect(runAfter).toHaveBeenCalledTimes(1);
+    expect(summaries()).toHaveLength(1);
+    expect(jsonLines(warns, "bsc_call_summary_not_recorded")).toEqual([
+      { msg: "bsc_call_summary_not_recorded", platform: "bsc", operation: "fetchBscCardTeamNames", error: "Error" },
+    ]);
+  });
+
+  test("no scheduler: the log line only", async () => {
+    const rec = createBscRecorder("resolveBscCardTeam");
+    rec.ok(rec.start({ pathTemplate: "marketplace/card/:id/card-listing" }), new Response("{}", { status: 200 }));
+    await expect(flushBscRecorder(undefined, rec)).resolves.toBeUndefined();
+    await expect(flushBscRecorder({ runAction: vi.fn() }, createBscRecorder("x"))).resolves.toBeUndefined();
+    expect(summaries()).toEqual([expect.objectContaining({ op: "resolveBscCardTeam", calls: 1, ok: 1 })]);
+  });
+});

@@ -986,3 +986,20 @@ describe("what it leaves behind", () => {
     await drainScheduled(t);
   });
 });
+
+describe("NEO-475: one BSC call summary per cleanup", () => {
+  test("the BuySportsCards session is flushed once, named clearSellerAccounts, counting every BSC call", async () => {
+    const t = await ready();
+    sheet = [row("p1", "bsc-1", COND, 2)];
+    await clear(t);
+    expect(bscCalls).toBeGreaterThan(1);
+    const summaries = logged
+      .filter((l) => l.startsWith('{"msg":"bsc_call_summary"'))
+      .map((l) => JSON.parse(l) as Record<string, unknown>);
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0]).toMatchObject({ op: "clearSellerAccounts", calls: bscCalls, ok: bscCalls });
+    const scheduled = await t.run(async (ctx) => ctx.db.system.query("_scheduled_functions").collect());
+    expect(scheduled.filter((f) => f.name.includes("bscCallStats"))).toHaveLength(1);
+    await drainScheduled(t);
+  });
+});

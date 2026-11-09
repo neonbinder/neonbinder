@@ -2288,3 +2288,34 @@ describe("NEO-433: a run the platform killed", () => {
     });
   });
 });
+
+describe("NEO-475: one BSC call summary per drain run", () => {
+  test("the run's session is flushed once: one bscCallStats.record scheduled, named drainOwner, counting every call", async () => {
+    const s = await setup();
+    const v = await seedVariant(s.t, { cards: [{ number: "1", ref: "bsc-1" }] });
+    const bsc = new FakeBsc([{ bscCardId: "bsc-1", cardNo: "1" }], MODERN);
+    let calls = 0;
+    vi.stubGlobal("fetch", (async (...a: Parameters<typeof fetch>) => {
+      calls += 1;
+      return await bsc.fetch(...a);
+    }) as typeof fetch);
+    await add(s, v.cardIds[0], { homeId: s.box, condition: "Near Mint", minPriceCents: 50 });
+    await listOnBsc(s);
+    await queue(s, [{ cardId: v.cardIds[0], variantId: v.variantId }]);
+    const lines: string[] = [];
+    const spy = vi.spyOn(console, "log").mockImplementation((line: unknown) => void lines.push(String(line)));
+
+    await drain(s);
+    spy.mockRestore();
+
+    expect(calls).toBeGreaterThan(1);
+    const summaries = lines
+      .filter((l) => l.startsWith('{"msg":"bsc_call_summary"'))
+      .map((l) => JSON.parse(l) as Record<string, unknown>);
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0]).toMatchObject({ op: "drainOwner", calls, ok: calls });
+    const scheduled = await s.t.run(async (ctx) => ctx.db.system.query("_scheduled_functions").collect());
+    expect(scheduled.filter((f) => f.name.includes("bscCallStats"))).toHaveLength(1);
+    await cancelScheduled(s.t);
+  });
+});

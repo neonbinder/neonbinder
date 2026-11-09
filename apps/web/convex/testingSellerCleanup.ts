@@ -65,7 +65,13 @@ import {
   type EbayResult,
   type EbaySellerSession,
 } from "./adapters/ebaySeller";
-import { fetchBscSellerId, openBscSellerSession, putBscListings, type BscSellerSession } from "./adapters/bscSeller";
+import {
+  closeBscSellerSession,
+  fetchBscSellerId,
+  openBscSellerSession,
+  putBscListings,
+  type BscSellerSession,
+} from "./adapters/bscSeller";
 import { ebayConfig } from "./lib/ebayEnv";
 import { bscConditionsForEra } from "./lib/bscConditions";
 import { chunkRows, photoKeyFor, type BscSheetRow } from "./lib/bscSheetPlan";
@@ -449,32 +455,36 @@ async function clearBsc(ctx: ActionCtx): Promise<BscReport> {
   });
   if (!stored.success) throw new Error(`could not sign in: ${stored.message}`);
 
-  const opened = await openBscSellerSession(ctx, CLEANUP_OWNER);
+  const opened = await openBscSellerSession(ctx, CLEANUP_OWNER, { op: "clearSellerAccounts" });
   if (!opened.ok) throw new Error(`could not open a session: ${opened.failure.message}`);
   const session = opened.value;
+  try {
+    // The seller this session is signed in as: the only one a PUT here names.
+    let known: string | null = null;
+    const sellerIdOf = async (): Promise<string> => {
+      if (known !== null) return known;
+      const sellerId = await fetchBscSellerId(ctx, session);
+      if (!sellerId.ok) throw new Error(`could not read the seller id: ${sellerId.failure.message}`);
+      if (sellerId.value === null) throw new Error("BuySportsCards didn't say which seller account this is");
+      known = sellerId.value;
+      return known;
+    };
 
-  // The seller this session is signed in as: the only one a PUT here names.
-  let known: string | null = null;
-  const sellerIdOf = async (): Promise<string> => {
-    if (known !== null) return known;
-    const sellerId = await fetchBscSellerId(ctx, session);
-    if (!sellerId.ok) throw new Error(`could not read the seller id: ${sellerId.failure.message}`);
-    if (sellerId.value === null) throw new Error("BuySportsCards didn't say which seller account this is");
-    known = sellerId.value;
-    return known;
-  };
-
-  const total: BscReport = { outcome: "clean", rows: 0, unreadableRows: 0, listed: 0, zeroed: 0, twinKeys: 0, twinKeysRemaining: 0, skippedSets };
-  for (const input of inputs) {
-    const one = await zeroSet(ctx, session, sellerIdOf, input);
-    total.rows += one.rows;
-    total.unreadableRows += one.unreadableRows;
-    total.listed += one.listed;
-    total.zeroed += one.zeroed;
-    total.twinKeys += one.twinKeys;
-    total.twinKeysRemaining += one.twinKeysRemaining;
+    const total: BscReport = { outcome: "clean", rows: 0, unreadableRows: 0, listed: 0, zeroed: 0, twinKeys: 0, twinKeysRemaining: 0, skippedSets };
+    for (const input of inputs) {
+      const one = await zeroSet(ctx, session, sellerIdOf, input);
+      total.rows += one.rows;
+      total.unreadableRows += one.unreadableRows;
+      total.listed += one.listed;
+      total.zeroed += one.zeroed;
+      total.twinKeys += one.twinKeys;
+      total.twinKeysRemaining += one.twinKeysRemaining;
+    }
+    return total;
+  } finally {
+    // NEO-475: the session's BSC call summary, once per cleanup. Never throws.
+    await closeBscSellerSession(ctx, session);
   }
-  return total;
 }
 
 /** One side's work, its sign-in removed whatever happened. Null report: failed, with `error`. */

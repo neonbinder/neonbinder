@@ -1,7 +1,7 @@
 /**
- * NEO-417 — what EntityColumn adds to the E2E timeline: a `branch` entry for
- * every swap of what the column shows, including the idle <-> syncing swap that
- * `mode` never records, and one hold on the press listeners per mounted column.
+ * NEO-475 (D1) — EntityColumn used to add a timeline of `e2e_column` entries and
+ * a hold on the press listeners (NEO-392, NEO-417). Both are gone: the mock
+ * below still offers them, and these tests fail if the column calls either.
  */
 
 import { act, render } from "@testing-library/react";
@@ -36,7 +36,6 @@ vi.mock("convex/react", () => ({
 
 const diagnostics = vi.hoisted(() => ({
   e2eDiagnostic: vi.fn(),
-  release: vi.fn(),
   holdE2EPressListeners: vi.fn(),
 }));
 
@@ -58,27 +57,14 @@ const props: EntityColumnProps = {
 
 const column = () => <EntityColumn {...props} />;
 
-function branchEntries() {
-  return diagnostics.e2eDiagnostic.mock.calls
-    .filter(([, properties]) => properties.action === "branch")
-    .map(([event, properties]) => ({ event, ...properties }));
-}
-
-describe("EntityColumn E2E diagnostics (NEO-417)", () => {
+describe("EntityColumn E2E diagnostics (NEO-475: none are sent)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    diagnostics.holdE2EPressListeners.mockReturnValue(diagnostics.release);
     state.items = [{ _id: "vt1", value: "Base", level: "variantType" }];
     state.status = null;
   });
 
-  it("records nothing for the branch a column mounts on", async () => {
-    render(column());
-    await act(async () => {});
-    expect(branchEntries()).toEqual([]);
-  });
-
-  it("records the idle <-> syncing swap, which mode never shows", async () => {
+  it("emits no diagnostic on mount, on the idle <-> syncing swap, or on unmount", async () => {
     const view = render(column());
     await act(async () => {});
 
@@ -90,47 +76,15 @@ describe("EntityColumn E2E diagnostics (NEO-417)", () => {
     await act(async () => {
       view.rerender(column());
     });
-
-    expect(branchEntries()).toEqual([
-      {
-        event: "e2e_column",
-        action: "branch",
-        level: "variantType",
-        from: "idle",
-        to: "syncing",
-        has_interacted: false,
-      },
-      {
-        event: "e2e_column",
-        action: "branch",
-        level: "variantType",
-        from: "syncing",
-        to: "idle",
-        has_interacted: false,
-      },
-    ]);
-    const modeChanges = diagnostics.e2eDiagnostic.mock.calls.filter(
-      ([, properties]) => properties.action === "mode",
-    );
-    expect(modeChanges).toEqual([]);
-  });
-
-  it("holds the press listeners once per column and releases them on unmount", async () => {
-    const view = render(column());
-    await act(async () => {});
-    view.rerender(column());
-    await act(async () => {});
-
-    expect(diagnostics.holdE2EPressListeners).toHaveBeenCalledTimes(1);
-    expect(diagnostics.release).not.toHaveBeenCalled();
-
     view.unmount();
-    expect(diagnostics.release).toHaveBeenCalledTimes(1);
+
+    expect(diagnostics.e2eDiagnostic).not.toHaveBeenCalled();
   });
 
-  it("holds them from a mounted column that is not visible yet", async () => {
+  it("does not hold the press listeners, visible or not", async () => {
+    render(column());
     render(<EntityColumn {...props} isVisible={false} />);
     await act(async () => {});
-    expect(diagnostics.holdE2EPressListeners).toHaveBeenCalledTimes(1);
+    expect(diagnostics.holdE2EPressListeners).not.toHaveBeenCalled();
   });
 });

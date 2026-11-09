@@ -88,6 +88,7 @@ import {
   type NbVariantCard,
 } from "./lib/bscSheetPlan";
 import {
+  closeBscSellerSession,
   fetchBscSellerId,
   isBscSellerId,
   openBscSellerSession,
@@ -1373,8 +1374,11 @@ export async function drainOwnerImpl(
   let next: "continue" | "done" | "stop" = "done";
   const fullQueue = [...new Set(args.fullVariantIds ?? [])];
   let opened: SessionResult | null = null;
+  // NEO-475: the open session, closed (its call summary flushed) in `finally`.
+  const held: { session?: BscSellerSession } = {};
   const getSession = async (): Promise<SessionResult> => {
-    opened ??= await openBscSellerSession(ctx, args.ownerId);
+    opened ??= await openBscSellerSession(ctx, args.ownerId, { op: "drainOwner" });
+    if (opened.ok) held.session = opened.value;
     return opened;
   };
   // The seller account this run's PUTs name, checked once per run.
@@ -1440,13 +1444,18 @@ export async function drainOwnerImpl(
       }
     }
   } finally {
-    await ctx.runMutation(internal.listingDrain.releaseDrain, {
-      ownerId: args.ownerId,
-      platform: args.platform,
-      leaseToken,
-      next,
-      ...(fullQueue.length > 0 ? { leftoverFullVariantIds: fullQueue } : {}),
-    });
+    try {
+      await ctx.runMutation(internal.listingDrain.releaseDrain, {
+        ownerId: args.ownerId,
+        platform: args.platform,
+        leaseToken,
+        next,
+        ...(fullQueue.length > 0 ? { leftoverFullVariantIds: fullQueue } : {}),
+      });
+    } finally {
+      // NEO-475: the session's BSC call summary, once per run. Never throws.
+      if (held.session) await closeBscSellerSession(ctx, held.session);
+    }
   }
   console.log(
     JSON.stringify({

@@ -805,3 +805,30 @@ describe("projectBscOrder", () => {
     });
   });
 });
+
+describe("NEO-475: one BSC call summary per poll", () => {
+  test("the poll's session is flushed once, on a failed poll too", async () => {
+    const { t } = await setup();
+    let calls = 0;
+    vi.stubGlobal("fetch", (async () => {
+      calls += 1;
+      return new Response("upstream", { status: 503 });
+    }) as typeof fetch);
+    const lines: string[] = [];
+    const spy = vi.spyOn(console, "log").mockImplementation((line: unknown) => void lines.push(String(line)));
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await t.action(internal.listingSales.pollOwner, { ownerId: OWNER, platform: "bsc" });
+    spy.mockRestore();
+
+    const summaries = lines
+      .filter((l) => l.startsWith('{"msg":"bsc_call_summary"'))
+      .map((l) => JSON.parse(l) as Record<string, unknown>);
+    expect(calls).toBe(1);
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0]).toMatchObject({ op: "pollOwner", calls: 1, ok: 0, byKind: { http: 1 }, byStatus: { "503": 1 } });
+    const scheduled = await t.run(async (ctx) => ctx.db.system.query("_scheduled_functions").collect());
+    expect(scheduled.filter((f) => f.name.includes("bscCallStats"))).toHaveLength(1);
+    vi.restoreAllMocks();
+  });
+});
