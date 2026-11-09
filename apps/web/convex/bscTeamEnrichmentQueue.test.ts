@@ -40,6 +40,7 @@ import { teamFullName } from "../lib/teams/team-name";
 import {
   BSC_TEAM_CHECK_MAX_PASSES,
   BSC_TEAM_CHECK_RETRY_DELAYS_MS,
+  BSC_TEAM_LOOKUP_MAX_ATTEMPTS,
 } from "./adapters/buysportscards";
 import { deriveCardAttention } from "./features/cardAttention";
 import { insertTestCard } from "../lib/testing/card-row";
@@ -338,6 +339,67 @@ describe("resolveBscCardTeam", () => {
 });
 
 // ===========================================================================
+// resolveBscCardTeam — call telemetry (NEO-475)
+// ===========================================================================
+
+describe("resolveBscCardTeam — one bsc_call_summary per invocation (NEO-475)", () => {
+  /** Runs the action once with console captured; returns its summary lines. */
+  async function runOnce(response: string | number): Promise<{
+    result: string;
+    fetchCount: number;
+    summaries: Array<Record<string, unknown>>;
+    t: ReturnType<typeof convexTest>;
+  }> {
+    const t = convexTest(schema, modules);
+    const variantTypeId = await seedTree(t);
+    const cardId = await insertCard(t, variantTypeId, "1", "bsc-1");
+    const calls: RecordedCall[] = [];
+    vi.stubGlobal("fetch", makeCardListingFetch({ responses: { "bsc-1": response }, calls }));
+    const lines: string[] = [];
+    const log = vi.spyOn(console, "log").mockImplementation((...a: unknown[]) => void lines.push(a.map(String).join(" ")));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    let result: string;
+    try {
+      result = await t.action(internal.adapters.buysportscards.resolveBscCardTeam, { cardChecklistId: cardId });
+    } finally {
+      log.mockRestore();
+      warn.mockRestore();
+    }
+    const summaries = lines
+      .filter((l) => l.startsWith("{") && l.includes('"bsc_call_summary"'))
+      .map((l) => JSON.parse(l) as Record<string, unknown>)
+      .filter((o) => o.msg === "bsc_call_summary");
+    return { result, fetchCount: calls.length, summaries, t };
+  }
+
+  test("an answered lookup: exactly one summary, its calls equal to the fetch count", async () => {
+    const { result, fetchCount, summaries, t } = await runOnce("New York Yankees");
+    expect(result).toBe("answered");
+    expect(fetchCount).toBe(1);
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0]).toMatchObject({ op: "resolveBscCardTeam", calls: fetchCount, ok: 1 });
+    // Log only, by design: one row per card would swamp the per-invocation
+    // rows `bscCallSummaries` is for.
+    const scheduled = await t.run(async (ctx) => ctx.db.system.query("_scheduled_functions").collect());
+    expect(scheduled.filter((f) => f.name.includes("bscCallStats"))).toHaveLength(0);
+  });
+
+  test("a failed lookup is summarised too: one summary, calls equal to the fetch count", async () => {
+    const { result, fetchCount, summaries } = await runOnce(503);
+    expect(result).toBe("failed");
+    // NEO-475: a 5xx is retried once, and both attempts are on the one summary.
+    expect(fetchCount).toBe(BSC_TEAM_LOOKUP_MAX_ATTEMPTS);
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0]).toMatchObject({
+      op: "resolveBscCardTeam",
+      calls: fetchCount,
+      ok: 0,
+      byStatus: { "503": BSC_TEAM_LOOKUP_MAX_ATTEMPTS },
+    });
+  });
+});
+
+// ===========================================================================
 // processBscTeamEnrichmentQueue
 // ===========================================================================
 
@@ -431,7 +493,10 @@ describe("processBscTeamEnrichmentQueue — bounded retry, then the operator (NE
   // nothing crosses the vitest worker RPC at teardown (see the tolerance file).
   const warnLines: string[] = [];
   beforeEach(() => {
-    vi.useFakeTimers();
+    // NEO-475: a failed lookup pauses 250-500 ms inside the action before its
+    // one retry. `shouldAdvanceTime` lets that pause elapse in real time while
+    // the queue's own 60 s / 5 min passes still wait for `runAllTimers`.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
     warnLines.length = 0;
     vi.spyOn(console, "warn").mockImplementation((...args: unknown[]) => {
       warnLines.push(args.map(String).join(" "));
@@ -479,7 +544,8 @@ describe("processBscTeamEnrichmentQueue — bounded retry, then the operator (NE
     await t.finishAllScheduledFunctions(vi.runAllTimers);
 
     const asked = calls.filter((c) => c.url.includes("/card/bsc-1/"));
-    expect(asked).toHaveLength(BSC_TEAM_CHECK_MAX_PASSES);
+    // NEO-475: every pass is one lookup of up to two attempts.
+    expect(asked).toHaveLength(BSC_TEAM_CHECK_MAX_PASSES * BSC_TEAM_LOOKUP_MAX_ATTEMPTS);
     // The answered card is never asked again.
     expect(calls.filter((c) => c.url.includes("/card/bsc-2/"))).toHaveLength(1);
 
@@ -539,7 +605,9 @@ describe("processBscTeamEnrichmentQueue — bounded retry, then the operator (NE
       "fetch",
       (async () => {
         attempt++;
-        if (attempt === 1) return new Response("busy", { status: 503 });
+        // NEO-475: the whole first pass fails (both of its attempts), so the
+        // answer can only come from a later pass.
+        if (attempt <= BSC_TEAM_LOOKUP_MAX_ATTEMPTS) return new Response("busy", { status: 503 });
         return new Response(JSON.stringify({ teamName: "Yankees" }), {
           status: 200,
           headers: { "Content-Type": "application/json" },
@@ -552,7 +620,7 @@ describe("processBscTeamEnrichmentQueue — bounded retry, then the operator (NE
     });
     await t.finishAllScheduledFunctions(vi.runAllTimers);
 
-    expect(attempt).toBe(2);
+    expect(attempt).toBe(BSC_TEAM_LOOKUP_MAX_ATTEMPTS + 1);
     const card = (await getCard(t, cardId))!;
     expect(card.teamOnCardIds).toEqual([yankeesId]);
     expect(warnLines.some((l) => l.includes("bsc_team_check_gave_up"))).toBe(false);
@@ -578,7 +646,8 @@ describe("processBscTeamEnrichmentQueue — bounded retry, then the operator (NE
     );
     await t.finishAllScheduledFunctions(vi.runAllTimers);
 
-    expect(calls).toHaveLength(1);
+    // NEO-475: the first pass's two attempts, and no later pass.
+    expect(calls).toHaveLength(BSC_TEAM_LOOKUP_MAX_ATTEMPTS);
     const card = (await getCard(t, cardId))!;
     expect(card.teamNoneConfirmedAt).toBe(confirmedAt);
     expect(card.teamOnCardIds).toBeUndefined();

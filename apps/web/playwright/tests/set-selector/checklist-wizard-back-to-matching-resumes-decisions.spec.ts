@@ -29,6 +29,10 @@ test(
     await expect(stepCounter(page)).toHaveText(/^Step 1 of [0-9]+$/);
 
     if (!env.SL_PAUSED) {
+      // UNMEASURED on the fixture (NEO-475 moved fetchChecklistToWizard's
+      // default from Topps Big League to Topps Stars of MLB Network while
+      // SportLots was paused): this branch needs that set's SportLots side to
+      // pair in Match Cards; the first live run must check it.
       // Decide one player, then go back to the pairing step.
       // READY_TO_CREATE: the create below needs a player whose create is not held
       // by a career team the walk skipped.

@@ -99,3 +99,4 @@
 - [Binder page names and async radio](patterns_binder_page_names_and_async_radio.md) — `Page 2, A fresh page`; gate a key on Next enabled; check() vs a save-moved radio; image load without evaluate; bootstrap after a red
 - [Finally cleanup without an isVisible branch](patterns_finally_cleanup_without_an_isvisible_branch.md) — flag after the Done click, tidy() collects errors, body failure not masked; lane overflow axe signature
 - [Route only one of two concurrent PUTs](patterns_route_only_one_of_two_concurrent_puts.md) — match by pathname, host compare as booleans, event-based console waits, clock jumps
+- [Collector insert checklist names](patterns_collector_insert_checklist_names.md) — CollectorSet.checklist drill; checklist vs Sync status vs drawer naming for Base/insert/parallel; BSC $900 vs eBay sandbox under $20

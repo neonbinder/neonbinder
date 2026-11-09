@@ -123,10 +123,11 @@ permissions:
 # values in plaintext) and the screenshots, plus the sanitised axe JSON.
 # Accepted as the main red-run diagnostic: real marketplace passwords never
 # reach the browser. Artifact names:
-# pw-report-seed, pw-report-desktop-<i>, pw-report-seed-mobile,
-# pw-report-mobile-<i>, pw-report-seller-desktop, pw-report-seller-mobile,
-# pw-merged (+ convex-logs-* on the first shard of each
-# pass and each seed).
+# pw-report-seed-a<attempt>, pw-report-desktop-<i>-a<attempt>,
+# pw-report-seed-mobile-a<attempt>, pw-report-mobile-<i>-a<attempt>,
+# pw-report-seller-desktop-a<attempt>, pw-report-seller-mobile-a<attempt>,
+# pw-merged (unsuffixed; the report job keeps each name's latest attempt)
+# (+ convex-logs-*-a<attempt> on the first shard of each pass and each seed).
 
 jobs:
   setup:
