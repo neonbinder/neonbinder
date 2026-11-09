@@ -191,6 +191,17 @@
       "name": "Irani Cup",
       "result": null
     },
+    "league|Q5369|japan amateur baseball association": {
+      "kind": "league",
+      "name": "Japan Amateur Baseball Association",
+      "result": {
+        "wikidataId": "Q11509291",
+        "abbreviation": "JABA",
+        "yearsActive": {
+          "from": 1949
+        }
+      }
+    },
     "league|Q5369|joe mcdonagh cup": {
       "kind": "league",
       "name": "Joe McDonagh Cup",
@@ -3461,6 +3472,11 @@
         "enwikiTitle": "Brian Jordan"
       }
     },
+    "player|Q5369|brian kenny": {
+      "kind": "player",
+      "name": "Brian Kenny",
+      "result": null
+    },
     "player|Q5369|brice turang": {
       "kind": "player",
       "name": "Brice Turang",
@@ -4187,6 +4203,59 @@
         "description": "American baseball player (born 1997)",
         "birthYear": 1997,
         "enwikiTitle": "Chris Vallimont"
+      }
+    },
+    "player|Q5369|chris young": {
+      "kind": "player",
+      "name": "Chris Young",
+      "result": {
+        "wikidataId": "Q2964905",
+        "careerTeams": [
+          {
+            "name": "Pittsburgh Pirates",
+            "fromYear": 2000,
+            "toYear": 2002,
+            "wikidataId": "Q653772"
+          },
+          {
+            "name": "Montreal Expos",
+            "fromYear": 2002,
+            "toYear": 2004,
+            "wikidataId": "Q1148233"
+          },
+          {
+            "name": "Texas Rangers",
+            "fromYear": 2004,
+            "toYear": 2006,
+            "wikidataId": "Q329816"
+          },
+          {
+            "name": "San Diego Padres",
+            "fromYear": 2006,
+            "toYear": 2010,
+            "wikidataId": "Q721134"
+          },
+          {
+            "name": "New York Mets",
+            "fromYear": 2011,
+            "toYear": 2012,
+            "wikidataId": "Q692417"
+          },
+          {
+            "name": "Washington Nationals",
+            "fromYear": 2013,
+            "wikidataId": "Q825838"
+          }
+        ],
+        "undatedCareerTeams": [
+          "Kansas City Royals",
+          "Princeton Tigers baseball",
+          "Seattle Mariners"
+        ],
+        "isHallOfFame": false,
+        "description": "American baseball player (born 1979)",
+        "birthYear": 1979,
+        "enwikiTitle": "Chris Young (pitcher)"
       }
     },
     "player|Q5369|christian encarnacion-strand": {
@@ -5597,6 +5666,11 @@
       "name": "Edgar Tovar",
       "result": null
     },
+    "player|Q5369|edgard velazquez": {
+      "kind": "player",
+      "name": "Edgard Velazquez",
+      "result": null
+    },
     "player|Q5369|edgardo alfonzo": {
       "kind": "player",
       "name": "Edgardo Alfonzo",
@@ -6707,6 +6781,20 @@
         "enwikiTitle": "Gleyber Torres"
       }
     },
+    "player|Q5369|gouki oda": {
+      "kind": "player",
+      "name": "Gouki Oda",
+      "result": {
+        "wikidataId": "Q124097444",
+        "careerTeams": [],
+        "undatedCareerTeams": [
+          "Chunichi Dragons"
+        ],
+        "isHallOfFame": false,
+        "description": "Japanese baseball player",
+        "birthYear": 2000
+      }
+    },
     "player|Q5369|grae kessinger": {
       "kind": "player",
       "name": "Grae Kessinger",
@@ -6761,6 +6849,11 @@
         "birthYear": 1999,
         "enwikiTitle": "Grayson Rodriguez"
       }
+    },
+    "player|Q5369|greg amsinger": {
+      "kind": "player",
+      "name": "Greg Amsinger",
+      "result": null
     },
     "player|Q5369|greg colbrunn": {
       "kind": "player",
@@ -7167,6 +7260,11 @@
     "player|Q5369|importados": {
       "kind": "player",
       "name": "Importados",
+      "result": null
+    },
+    "player|Q5369|intentional talk": {
+      "kind": "player",
+      "name": "Intentional Talk",
       "result": null
     },
     "player|Q5369|irving lopez": {
@@ -10505,6 +10603,19 @@
         "enwikiTitle": "Kody Funderburk"
       }
     },
+    "player|Q5369|koichi okumura": {
+      "kind": "player",
+      "name": "Koichi Okumura",
+      "result": {
+        "wikidataId": "Q115529958",
+        "careerTeams": [],
+        "undatedCareerTeams": [
+          "Saitama Seibu Lions"
+        ],
+        "isHallOfFame": false,
+        "birthYear": 1999
+      }
+    },
     "player|Q5369|kosuke kawachi": {
       "kind": "player",
       "name": "Kosuke Kawachi",
@@ -10872,6 +10983,16 @@
         "birthYear": 1972,
         "enwikiTitle": "LaTroy Hawkins"
       }
+    },
+    "player|Q5369|lauren gardner": {
+      "kind": "player",
+      "name": "Lauren Gardner",
+      "result": null
+    },
+    "player|Q5369|lauren shehadi": {
+      "kind": "player",
+      "name": "Lauren Shehadi",
+      "result": null
     },
     "player|Q5369|lawrence butler": {
       "kind": "player",
@@ -13384,6 +13505,11 @@
         "enwikiTitle": "Rafael Palmeiro"
       }
     },
+    "player|Q5369|raffle entry card": {
+      "kind": "player",
+      "name": "raffle entry card",
+      "result": null
+    },
     "player|Q5369|ramon hernandez": {
       "kind": "player",
       "name": "Ramon Hernandez",
@@ -13960,6 +14086,11 @@
         "enwikiTitle": "Robby Thompson"
       }
     },
+    "player|Q5369|robert flores": {
+      "kind": "player",
+      "name": "Robert Flores",
+      "result": null
+    },
     "player|Q5369|roberto alomar": {
       "kind": "player",
       "name": "Roberto Alomar",
@@ -14080,6 +14211,11 @@
     "player|Q5369|robinson garces": {
       "kind": "player",
       "name": "Robinson Garces",
+      "result": null
+    },
+    "player|Q5369|rodney pedraza": {
+      "kind": "player",
+      "name": "Rodney Pedraza",
       "result": null
     },
     "player|Q5369|roger clemens": {
@@ -14552,6 +14688,29 @@
         "description": "American baseball player and manager (1959\u20132025)",
         "birthYear": 1959,
         "enwikiTitle": "Ryne Sandberg"
+      }
+    },
+    "player|Q5369|ryotaro sawayanagi": {
+      "kind": "player",
+      "name": "Ryotaro Sawayanagi",
+      "result": {
+        "wikidataId": "Q124096978",
+        "careerTeams": [
+          {
+            "name": "Roki Techno Toyama",
+            "fromYear": 2022,
+            "toYear": 2023,
+            "wikidataId": "Q24859605"
+          },
+          {
+            "name": "Fukuoka SoftBank Hawks",
+            "fromYear": 2024,
+            "wikidataId": "Q129164"
+          }
+        ],
+        "isHallOfFame": false,
+        "description": "Japanese baseball player",
+        "birthYear": 2000
       }
     },
     "player|Q5369|ryusei satoh": {
@@ -18157,6 +18316,11 @@
         "wikidataId": "Q6953249"
       }
     },
+    "team|Q5369|new haven ravens": {
+      "kind": "team",
+      "name": "New Haven Ravens",
+      "result": null
+    },
     "team|Q5369|new york mets": {
       "kind": "team",
       "name": "New York Mets",
@@ -18406,6 +18570,15 @@
         "yearsActive": {
           "from": 1913
         }
+      }
+    },
+    "team|Q5369|roki techno toyama": {
+      "kind": "team",
+      "name": "Roki Techno Toyama",
+      "result": {
+        "wikidataId": "Q24859605",
+        "league": "Japan Amateur Baseball Association",
+        "leagueWikidataId": "Q11509291"
       }
     },
     "team|Q5369|sacramento state hornets baseball": {

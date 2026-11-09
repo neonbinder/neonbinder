@@ -331,6 +331,37 @@ the coverage proof of step 4 reads both as hits. His row on the 2010 insert
 (Peak Performance Relics) is inserted ready as a suggestion and is never looked
 up.
 
+**NEO-475 entry (2026-11-09): three small Baseball sets.** E2E moved to three
+small sets, and each name they stage was captured by the method above with the
+`*Live` bodies from a laptop (Baseball `sportConfig`, five at a time). Every
+kept trace left `transportFailed` false. Each `null` came after two empty
+searches (`wikidata_search_empty`, then `wikidata_search_empty_confirmed`), so
+it is a completed search and not an outage. Sixteen new keys were merged per
+step 5, and the step 4 proof read all 20 lookups below (the 16 plus four
+already recorded) with no miss.
+
+- 2024 Topps Stars of MLB Network: `Lauren Shehadi`, `Robert Flores`,
+  `Brian Kenny`, `Greg Amsinger`, `Lauren Gardner` and `Intentional Talk` (a
+  show, not a person) are all **no-matches**. `Chris Young` is a **hit**
+  (`Q2964905`, the pitcher, born 1979) with six dated MLB stints and no new
+  club.
+- 1996 New Haven Ravens Rally Raffle: `Edgard Velazquez`, `Rodney Pedraza` and
+  the team `New Haven Ravens` are all **no-matches**. ESPN had nothing for the
+  team either. The set's NNO raffle card stages the player name
+  `raffle entry card` (lower case, exactly as the wizard stages it). It is
+  recorded as a **no-match**: a deployment refused it as `not_recorded` until
+  it was.
+- 2024 BBM Rookie Edition Premium: `Gouki Oda` (`Q124097444`) and
+  `Koichi Okumura` (`Q115529958`) are **hits** with undated clubs only, so they
+  stage no career team. `Ryotaro Sawayanagi` (`Q124096978`) is a **hit** with
+  two dated stints: Fukuoka SoftBank Hawks (`Q129164`, already recorded with
+  that id) and `Roki Techno Toyama` (`Q24859605`). The Roki team was recorded
+  with that id as `knownQid`, because a recorded `null` cannot answer a staged
+  team (§1). Its league, `Japan Amateur Baseball Association` (`Q11509291`),
+  was recorded the same way. His first two live searches timed out at 30 s and
+  were dropped. The third answered. `Kota Nishidate`, `Kosuke Kawachi` and
+  `Shuya Yamada` were already recorded.
+
 ## 4b. Other sports, explicit names, and no Wikidata from your machine (2026-10-30)
 
 **Entries for another sport.** The file's `sportQid` is the default sport of

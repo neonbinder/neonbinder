@@ -7,7 +7,8 @@
 //   * 2024 Topps Chrome Baseball: Base (335 cards, both marketplaces paired),
 //     the Future Stars insert (20 cards), the Gold Wave Refractors parallel
 //     (300 cards built from Base);
-//   * 2024 Topps Big League: Base mapped, checklist left empty;
+//   * 2024 Topps Stars of MLB Network: Base mapped, checklist left empty
+//     (the read-only wizard specs' fixture; NEO-475, it was Topps Big League);
 //   * 2026 Bowman: SportLots sets sorted (NEO-312 fixture).
 //
 // NOT provisioned here, deliberately: the entity-review fixtures each wizard
@@ -37,7 +38,6 @@ import {
   setBuilderReady,
   syncChecklistButton,
 } from "../support/set-builder";
-import { TOPPS_1988 } from "../support/collection";
 import { addAsNewStep, advanceToSave, answerStepAsNew, confirmSaveButton, reviewWizard } from "../support/wizard";
 import type { Page } from "@playwright/test";
 
@@ -173,7 +173,7 @@ async function reconcileAndFind(page: Page, column: "Inserts" | "Parallels", nam
 }
 
 test(
-  "Setup — global reset + warm + sync 2024 Topps Chrome Baseball (Base + Insert + Parallel) + 1988 Topps Baseball (Base) + 2026 Bowman's SportLots review",
+  "Setup — global reset + warm + sync 2024 Topps Chrome Baseball (Base + Insert + Parallel) + 2024 Topps Stars of MLB Network (Base mapped) + 2026 Bowman's SportLots review",
   { tag: ["@setup"] },
   async ({ page, signIn, env }) => {
     // ── sign in, per-user reset, seed creds, land on /admin ────────────────
@@ -379,8 +379,16 @@ test(
       await expect(page.getByText("SL", { exact: true })).toHaveCount(0);
     }
 
-    // ── 2024 Topps Big League: base mapped, checklist left empty ───────────
-    await drillToBaseVariant(page, env, { set: "Topps Big League" });
+    // ── 2024 Topps Stars of MLB Network: base mapped, checklist left empty ──
+    // The read-only wizard specs' fixture (fetchChecklistToWizard's default;
+    // SET-REGISTRY.md "Topps Stars of MLB Network"). NEO-475: it replaced Topps
+    // Big League (310 cards) with a 10-card set, so every wizard fetch reads 10
+    // BSC cards instead of 310. Filed under 2024 Topps by its name, so the
+    // year-wide Sets sync above already listed it. The live branch is
+    // UNMEASURED on this set (retargeted while SportLots was paused): the
+    // drill maps the picker's first SportLots candidate, as it did on Big
+    // League; the first live run must check that candidate is this set.
+    await drillToBaseVariant(page, env, { set: "Topps Stars of MLB Network" });
     if (!env.SL_PAUSED) {
       await expect(page.getByRole("button", { name: /Re-map Base/ })).toBeVisible({
         timeout: 60_000,
@@ -391,32 +399,6 @@ test(
       });
     }
     await expect(page.getByText("No cards in this checklist yet.")).toBeVisible({ timeout: 15_000 });
-
-    // ── 1988 Topps Baseball: Base fetched and saved (NEO-370 fixture) ──────
-    // The one real set the BuySportsCards LISTING spec writes quantities to
-    // (SET-REGISTRY.md, "1988 Topps Baseball"). Provisioned like any synced
-    // set: the year's cold manufacturer sync, the Base mapped in the picker,
-    // the checklist fetched, the wizard walked, the cards saved. Nothing about
-    // BuySportsCards' seller side is touched here: this only gives the set its
-    // NB rows, each carrying BSC's card id. Placed before the Bowman block
-    // because that one returns early under a SportLots pause.
-    // PROVISIONAL ceilings (no seed has run this block yet): the first seed
-    // measures them; the registry row records the figures.
-    await drillToColdManufacturer(page, env, {
-      sport: TOPPS_1988.sport,
-      year: TOPPS_1988.year,
-      manufacturer: TOPPS_1988.manufacturer,
-      // Under a SportLots pause the brand is hand-made and BSC's sets are
-      // filed under it by name; wait for them either way.
-      expectSets: true,
-    });
-    await drillToBaseVariant(page, env, { year: TOPPS_1988.year, set: TOPPS_1988.set });
-    await fetchChecklist(page, env.SL_PAUSED, { open: 120_000, settle: 120_000 });
-    if (await wizard.isVisible()) {
-      await walkWizardToSave(page, 500);
-    }
-    await expect(page.getByText(/Saved [0-9]+ cards/)).toBeVisible({ timeout: 120_000 });
-    await expect(page.getByText(/^#[0-9]/).first()).toBeVisible();
 
     // ── 2026 Bowman: sort SportLots sets (NEO-312 fixture) ─────────────────
     const BRAND = "Bowman";

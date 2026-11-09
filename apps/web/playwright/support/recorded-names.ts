@@ -10,9 +10,11 @@
  * to Wikidata live, so every such spec held a pool slot behind the wizard specs
  * on its shard.
  *
- * Each name here is a 1996 Venezuelan Winter League player whose Baseball
- * lookup the recording holds as a genuine no-match (`result: null`, captured
- * live in NEO-330). So on a preview with the recording on:
+ * Each name here is a 1996 Line Up Venezuelan Winter League player whose
+ * Baseball lookup the recording holds as a genuine no-match (`result: null`,
+ * captured live in NEO-330, when that set was the alias spec's fixture; NEO-475
+ * retired it as a fixture, and the recorded names stay). So on a preview with
+ * the recording on:
  *   - the enrichment is a fixture HIT that makes no request, and
  *   - it returns null, so the new row stays exactly as bare as a minted name's
  *     did (no Wikidata id, no stints): the specs' "No stints recorded yet."
@@ -31,15 +33,15 @@
  *     the spec fails on `Added <name>` by name. Re-seed before re-running.
  *     CI runs each spec once per seed (desktop and mobile each get a reset),
  *     which is why the pool is keyed on WORKER_INDEX, not WORKER_KEY.
- *   - the Venezuelan set's own spec (`checklist-wizard-link-team-saves-alias`)
- *     may meet one of these rows: a fetch after the add resolves that card's
- *     name to it instead of staging it. That spec skips every player row and
- *     asserts no player count, and a commit never writes to an existing
- *     player's stints. The other side DOES observe it: once a pool player
- *     holds Baseball (`player-sports-multi-sport-membership` gives him it), the
- *     Venezuelan commit can link a card of that set to him, so a count of the
- *     cards that link him is not the spec's own to assert. That spec asserts
- *     the refusal ("N cards in Baseball sets still link to ..."), not N.
+ *   - no spec fetches a checklist that carries these names any more. Until
+ *     NEO-475 the alias spec (`checklist-wizard-link-team-saves-alias`)
+ *     committed the Venezuelan set itself, so its fetch could resolve a card to
+ *     a pool row and link it. It now commits 1996 New Haven Ravens Rally
+ *     Raffle, which carries none of them. A checklist that does carry one
+ *     can link its card to the row when it commits, so
+ *     `player-sports-multi-sport-membership` still asserts the refusal ("N
+ *     cards in Baseball sets still link to ..."), not N: the count belongs to
+ *     the server and the unit tests.
  */
 import type { FlowEnv } from "./env";
 
@@ -114,8 +116,8 @@ const HOCKEY = "Q41466";
  *     against the catalogue on dev the same day (leagues have no by-name
  *     lookup to check with; the specs' exact-count filters would show a
  *     clash). So a create is a create, and a filter finds this row only.
- * The players are 1996 Venezuelan Winter League and 1990s minor-league
- * hockey names (real people Wikidata does not know); the leagues are cricket,
+ * The players are 1996 Line Up Venezuelan Winter League (a retired fixture,
+ * NEO-475) and 1990s minor-league hockey names (real people Wikidata does not know); the leagues are cricket,
  * hurling, netball, handball, volleyball, floorball and bandy competitions;
  * the clubs are hurling and Gaelic football clubs, each ONE word: a team
  * name is typed into a team picker, and `teams.search` matches any shared
