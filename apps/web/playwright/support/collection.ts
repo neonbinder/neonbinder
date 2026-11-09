@@ -71,19 +71,6 @@ export const TOPPS_CHROME_2024_FUTURE_STARS: CollectorSet = {
 };
 
 /**
- * 1988 Topps Baseball (BSC's "1988 Topps", year stripped to the set "Topps"
- * under the brand "Topps"). NEO-475: no spec reads it any more (the seller
- * specs moved to `TOPPS_CHROME_2024_FUTURE_STARS`); only the seed's 1988 block
- * in `setup.spec.ts` still does, and this goes with that block.
- */
-export const TOPPS_1988: CollectorSet = {
-  sport: "Baseball",
-  year: "1988",
-  manufacturer: "Topps",
-  set: "Topps",
-};
-
-/**
  * The checklist's own name, as its heading, region and the Add cards "Set:"
  * button read it: "2024 Topps Chrome Base", "2024 Topps Chrome Future Stars".
  */

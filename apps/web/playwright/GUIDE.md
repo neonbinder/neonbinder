@@ -246,7 +246,7 @@ test("<title states the feature>", { tag: ["@set-selector"] }, async ({ page, si
   `syncChecklistButton`, and the drills `drillToSet` (2024 Topps Chrome),
   `drillToBaseVariant`, `drillToColdManufacturer`, `drillToCustom`,
   `drillToCustomSet`, `customSport`, `readAttachedTwinId`. Overrides are an
-  options object: `drillToSet(page, env, { set: "Topps Big League" })`.
+  options object: `drillToSet(page, env, { set: "Topps Stars of MLB Network" })`.
 - `support/cards.ts`: hand-made card helpers for a worker's own subtree
   (`addCustomCard`, `addCardViaForm`, `openVariant`, `ensureAndSelect`,
   edit/delete button locators).

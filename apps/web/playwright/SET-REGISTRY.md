@@ -88,7 +88,10 @@ BuySportsCards alone for the whole run:
 | Set | Variant types provisioned | Provisioned by |
 |---|---|---|
 | Baseball → 2024 → Topps → Topps Chrome | `Base` (full checklist), `Insert` → "Future Stars" (~20 cards), `Parallel` → "Gold Wave Refractors" (300 cards, BUILT FROM BASE since NEO-321 — copies of Base's cards linked to Gold Wave's own BSC + SportLots cards) | `tests/setup.spec.ts`; **sole writer** of the cards of the base parallel its run builds before Stop (the first buildable row under `Parallel`, in the type's child order — measured: `Sepia Refractors`): `tests/set-selector/base-parallels-build-from-section.spec.ts` (NEO-321) — see "2024 Topps Chrome › Parallel — the base-parallel build". Approved: Jason, 2026-10-04 |
-| Baseball → 2024 → Topps → Topps Big League | `Base` — variant types synced and Base MAPPED, checklist deliberately EMPTY (NEO-248 wizard fixture) | `tests/setup.spec.ts` |
+| Baseball → 2024 → Topps → Topps Stars of MLB Network | `Base` (10 cards on BSC) — variant types synced and Base MAPPED (BSC-only under a SportLots pause, so it reads unmapped), checklist deliberately EMPTY (the read-only wizard fixture) | `tests/setup.spec.ts`; read by `checklist-wizard-back-to-matching-resumes-decisions`, `checklist-wizard-career-team-entry` and `checklist-wizard-link-to-existing-player` through `fetchChecklistToWizard`'s default, each exiting Cancel → Discard. ✅ **Approved by Jason 2026-11-09** (NEO-475, replacing Topps Big League) — see "Topps Stars of MLB Network" |
+| Baseball → 2024 → Topps → Topps Big League | none since NEO-475 — RETIRED as a fixture (310 cards; every wizard fetch read them all from BSC) | was `tests/setup.spec.ts` and the read-only wizard flows; no flow touches it now |
+| Baseball → 2024 → BBM → BBM Rookie Edition Premium | `Base` — 36 cards (RP01-RP36), variant types synced and fetched in-flow, never committed (NOT pre-synced). The `BBM` brand row is a known brand (`convex/knownBrands.ts`) the seed's year-wide 2024 Sets sync mints, and the set is filed under it by name | `tests/set-selector/checklist-wizard-same-name-pick-step.spec.ts` — **sole reader** (Cancel → Discard); writes one global `players` row, `Shuya Yamada` b. 1851. ✅ **Approved by Jason 2026-11-09** (NEO-475, replacing Topps Chrome NPB) — see "BBM Rookie Edition Premium" |
+| Baseball → 2024 → Topps → Topps Chrome NPB | none since NEO-475 — RETIRED as a fixture (216 cards) | was `tests/set-selector/checklist-wizard-same-name-pick-step.spec.ts`; no flow touches it now |
 | Baseball → 2024 → Topps → Topps 206 | none — variant types sync on first use; Base stays **UNMAPPED** (NOT pre-synced) | `tests/set-selector/base-mapping-cancel-recovers.spec.ts` — **sole writer**, and it writes nothing |
 | Hockey → 1995 → Unknown (via the All Brands view) → Tulsa Oilers CHL | `Base` — 18 cards, fetched and COMMITTED in-flow, BSC only, every name SKIPPED (NOT pre-synced) | `tests/set-selector/checklist-wizard-skip-commits-and-unskip.spec.ts` — **sole writer**. ✅ **Approved by Jason 2026-10-10** (NEO-330). Measured: **16 unknown players, 0 teams** (19 review rows once three players' Wikidata career clubs are staged) — see "The 1995 minor-league hockey wizard fixtures" |
 | Hockey → 1995 → Unknown (via the All Brands view) → Memphis RiverKings CHL | `Base` — 18 cards, fetched and COMMITTED in-flow, BSC only; ONE player created with ONE hand-staged career team, the rest SKIPPED (NOT pre-synced) | `tests/set-selector/checklist-wizard-career-team-commits.spec.ts` — **sole writer**. ✅ **Approved by Jason 2026-10-10** (NEO-330). Measured: **15 unknown players, 0 teams** (15 rows settled) |
@@ -100,7 +103,8 @@ BuySportsCards alone for the whole run:
 | Hockey → 1995 → Unknown (reached through the All Brands view) → Roanoke Express ECHL | `Base` — 25 cards, fetched and COMMITTED in-flow, BSC only (NOT pre-synced); NEO-335: one player CREATED in the review with one career team (a real recorded one-word club, NEO-413, pre-filled onto his card), one card answered "No team on this card", one given a team CREATED with "Other team…" (`RXO<token>T`), 22 left for later; then RE-SYNCED once (teams-only review) | `tests/set-selector/checklist-one-marketplace-skips-match-dialog.spec.ts` — **sole writer**. ✅ **APPROVED 2026-09-09** (NEO-260); manufacturer row renamed by NEO-237 (the marketplace's "All Brands" option is routed onto the year's `Unknown` row, never stored under its label) |
 | Hockey → 1997 (the whole year) | a manufacturer row `SPx` linked through SportLots' All Brands option; the per-brand SportLots reviews the year-wide Sync Sets leaves behind (NEO-306: SportLots-only names are no longer saved as sets; the reviews stay unsaved, labels never read or asserted); the year's BSC sets filed under the brands / `Unknown` and the prefix-matching ones re-homed to `SPx`. No checklist is fetched. | `tests/set-selector/brand-via-all-brands-narrows-sportlots.spec.ts` — **sole writer** of the year. ✅ Claimed by Jason 2026-09-21 (NEO-237 §0.1); the prefix `SPx` **measured** on PR #272's preview 2026-09-21 — see the Hockey 1997 section |
 | Baseball → 2024 → Topps → Topps MLB at Rickwood Field Negro Leagues Collection | none since NEO-330 — RETIRED as a fixture: the reference catalogue holds its Negro League clubs and players, so it no longer raises the team steps the alias flow needs | was `tests/set-selector/checklist-wizard-link-team-saves-alias.spec.ts` (NEO-284, approved 2026-09-16); no flow touches it now |
-| Baseball → 1996 → All Brands (the view; the set is filed under the year's `Unknown` row) → Line Up Venezuelan Winter League | `Base` — 300 cards, BSC only (the SportLots picker is CANCELLED in-flow), fetched and COMMITTED in-flow (NOT pre-synced): one club LINKED to the minted `Loc<token> Ali<token>` with its alias, every other name SKIPPED | `tests/set-selector/checklist-wizard-link-team-saves-alias.spec.ts` — **sole writer**. ✅ **Approved by Jason 2026-10-10** (NEO-330). Measured: **200 unknown players + 8 unknown teams** (211 rows once lookups settle) — see "The TEAM-link alias fixture" |
+| Baseball → 1996 → All Brands (the view lists every set of the year; the set is expected under the year's `Unknown` row, as no brand's name prefixes it) → New Haven Ravens Rally Raffle | `Base` — 9 cards (one an NNO raffle entry card), BSC only (the SportLots picker is CANCELLED in-flow), fetched and COMMITTED in-flow (NOT pre-synced): the club `New Haven Ravens` LINKED to the minted `Loc<token> Ali<token>` with its alias, every other name SKIPPED | `tests/set-selector/checklist-wizard-link-team-saves-alias.spec.ts` — **sole writer**. ✅ **Approved by Jason 2026-11-09** (NEO-475, replacing Line Up Venezuelan Winter League). Probed: **1 unknown club + 2 unknown players** — see "The TEAM-link alias fixture" |
+| Baseball → 1996 → All Brands → Line Up Venezuelan Winter League | none since NEO-475 — RETIRED as a fixture (300 cards, 200 unknown players + 8 clubs) | was `tests/set-selector/checklist-wizard-link-team-saves-alias.spec.ts` (NEO-330); no flow touches it now. Its players' recorded no-matches still back `support/recorded-names.ts` |
 | Baseball → 2025 (the whole year) → Topps → Topps Welcome to the Club: 3X MVP | `Base` — 36 cards, BSC only (the SportLots picker is CANCELLED in-flow), fetched and COMMITTED in-flow (NOT pre-synced): the one team step, `Philadelphia Athletics`, LINKED by the operator to the catalogue's 1901–1954 row (remember-box unticked, no alias written); Brooklyn Dodgers linked automatically at the fetch. The year's Manufacturers and Topps Sets syncs are this flow's too: no other flow drills Baseball → 2025 | `tests/set-selector/checklist-wizard-past-era-team-link-commits.spec.ts` — **sole writer** of the year. ✅ **Approved by Jason 2026-10-11** (NEO-330). Measured: **0 unknown players + 1 unknown team** (1 row once its lookup settles) — see "The PAST-ERA team fixture" |
 | Baseball → 2026 → Bowman (the whole brand-year) | **setup:** Bowman's Sets synced and its SportLots review SAVED (NEO-306): the set `Bowman Sterling` (+ Base), `All-America Game Autos` under Bowman › `Insert`, every other SportLots-only name under Bowman › `Parallel`; Bowman's Variant Types synced. **inserts flow:** Bowman › `Insert` reconciled and grouped — `Anime Kanji` promoted to a parallel of `Anime`, re-synced; `Anime`'s checklist COMMITTED, which BUILDS all of `Anime`'s parallels (NEO-312). **links flow:** Bowman › `Parallel` re-synced and saved (BSC's `Blue` paired with the filed row); `Blue`'s SportLots link promoted to `Bowman Blue` and folded back; the Parallel row `All-America Game Autos Red Ink` moved under Bowman › Insert › `All-America Game Autos` as the parallel `Red Ink` | `tests/setup.spec.ts` (Sets + review + Variant Types; the paused-mode `Bowman` manufacturer row), `tests/set-selector/bowman-insert-grouping-builds-parallels.spec.ts` (Bowman › Insert's BSC inserts and their grouping), `tests/set-selector/bowman-sportlots-links-move-between-set-parallel-insert.spec.ts` (Bowman › Parallel, `Blue`, `Bowman Blue`, `Red Ink`) — **one sole writer per row**, split from one flow at 570 s of the 600 s kill (NEO-312, owner-approved shape). Requested by the owner 2026-09-21 (NEO-293) |
 | Baseball → 1990 (the whole year) | Every brand row NB's known-brands list mints for the year, the year's `Unknown` row, and every BSC set of the year filed under one of them; one set (expected `CMC…`) is MOVED to `Unknown` by the operator control and left there. No checklist is fetched, no Base is mapped, nothing is renamed or deleted, and NO row is added to Baseball's shared Years column (1990 is synced, and the drill selects it). | `tests/set-selector/known-brand-files-set-and-operator-move-sticks.spec.ts` — **sole writer** of the year. ✅ Claimed by Jason 2026-09-22 (NEO-294); see the Baseball 1990 section |
@@ -760,8 +764,9 @@ cannot produce an unknown name any more.
 names a marketplace fetch returned that NeonBinder does not already hold, and
 only **BSC** returns names at all — so the fixture has to be a real,
 BSC-listed set, synced through the real hierarchy. It is
-`Baseball → 2024 → Topps → Topps Big League → Base`; read its section below
-before touching any of these three.
+`Baseball → 2024 → Topps → Topps Stars of MLB Network → Base` since NEO-475
+(Topps Big League before); read its section below before touching any of
+these three.
 
 | flow | what it owns |
 |---|---|
@@ -786,7 +791,7 @@ anything:
 | `checklist-wizard-skip-commits-and-unskip` | Hockey 1995 Tulsa Oilers CHL (NEO-330; Topps Chicago Cubs before) |
 | `checklist-wizard-career-team-commits` | Hockey 1995 Memphis RiverKings CHL (NEO-330; Topps Baltimore Orioles before) |
 | `checklist-wizard-link-commits` | Hockey 1995 San Antonio Iguanas CHL (NEO-330; Topps Brooklyn Collection before) |
-| `checklist-wizard-link-team-saves-alias` | Baseball 1996 Line Up Venezuelan Winter League (NEO-330; Topps MLB at Rickwood Field before) — one-sided, see its own section |
+| `checklist-wizard-link-team-saves-alias` | Baseball 1996 New Haven Ravens Rally Raffle (NEO-475; Line Up Venezuelan Winter League from NEO-330, Topps MLB at Rickwood Field before) — one-sided, see its own section |
 
 See "The 1995 minor-league hockey wizard fixtures" below (and, for the history,
 "The three COMMITTING entity-review fixtures"), and "The TEAM-link alias
@@ -1106,8 +1111,9 @@ GUIDE's live-BSC exception, each under its helper's ceiling).
 `base-mapping-cancel-recovers` needs a real set whose **Base is UNMAPPED**, so
 that selecting Base auto-opens `BaseSetPicker` and the Cancel → message → Retry
 recovery can be exercised. It used to use `Topps Big League`; it cannot any
-more, because Big League is now the wizard fixture and `tests/setup.spec.ts` maps its
-Base in the seed job. A mapped Base renders `Re-map Base` instead of opening the
+more, because Big League became the wizard fixture and `tests/setup.spec.ts` mapped its
+Base in the seed job (the wizard fixture is Topps Stars of MLB Network since
+NEO-475, and the seed maps that one's Base instead). A mapped Base renders `Re-map Base` instead of opening the
 picker, and the flow fails on its first assertion — CI run 34006917636.
 
 **The two needs are irreconcilable on one set** (one requires Base unmapped, the
@@ -1442,8 +1448,9 @@ it taps. (See item 4 above for what is NOT true of the row.)
 
 #### Sole writer — and why this one cannot be read-only
 
-The four `checklist-wizard-*` flows share Topps Big League because they all exit
-through Cancel → Discard. **This flow cannot.** The defining outcome of NEO-255
+The read-only `checklist-wizard-*` flows share one set (Topps Big League then,
+Topps Stars of MLB Network since NEO-475) because they all exit through
+Cancel → Discard. **This flow cannot.** The defining outcome of NEO-255
 is that the cards are *kept*, and that is only observable after a commit: a
 build that skipped the dialog and then committed nothing would pass a read-only
 version of this flow. So it commits, on the 1996-Score / `*-commits` model —
@@ -1756,7 +1763,37 @@ stamp to survive either. The move CONTROL itself needs no marketplace, and
 that half lives marketplace-free in `tests/set-selector/move-set-to-another-brand.spec.ts`
 (`msb-` prefix below); only the two claims above need a real year.
 
-### The TEAM-link alias fixture — Baseball / 1996 / All Brands / Line Up Venezuelan Winter League (NEO-330) — approved by Jason 2026-10-10
+### The TEAM-link alias fixture — Baseball / 1996 / All Brands / New Haven Ravens Rally Raffle (NEO-475) — approved by Jason 2026-11-09
+
+One real set, touched by exactly one flow,
+`tests/set-selector/checklist-wizard-link-team-saves-alias.spec.ts`, which
+fetches and COMMITS its checklist. It replaced the 300-card Line Up Venezuelan
+Winter League (section below, now history) to cut the suite's BuySportsCards
+traffic; the flow's feature and every assertion are unchanged (what it proves:
+the section below).
+
+| | |
+| -- | -- |
+| BSC cards | **9**, one an NNO raffle entry card (read-only probe, BSC only, SportLots paused, 2026-11-09) |
+| unknown names | **1 club + 2 players** by the probe: the club `New Haven Ravens` (the row under test; the catalogue holds no team of the name) and `Edgard Velazquez`, `Rodney Pedraza`. The other cards resolve to catalogue players. Whether the wizard also stages the NNO card's name is **not yet measured** |
+| recording | `New Haven Ravens`, Velazquez and Pedraza are recorded no-matches, so the club's New Team step opens with the whole name in `New team name` (no location, years or league to prefill), which the flow's NEO-307 check reads |
+| path | Baseball → 1996 → the All Brands view (it lists every set of the year) → the set by its exact name. Its brand row is expected to be the year's `Unknown` (no known brand's name prefixes it; **inferred**, 1996 was not synced in the probe) |
+| measured on the UI | **nothing yet**: the counts at open, the settled row count and the settle time are to be recorded from the first run. The flow keeps its 180 s lookup ceiling (set on the Venezuelan set's ~144 s live settle) until a run measures this one |
+| live SportLots | **unmeasured**: chosen while SportLots was paused. The flow cancels the base picker either way, so the set stays one-sided; the live picker's SportLots candidates for 1996 are offered and declined, never checked here |
+
+**Sole writer, self-cleaning on the TEAM side**, exactly as below: the club is
+linked to the minted `Loc<token> Ali<token>` with its alias, the alias is read
+back in Team Management, then removed. The set drains within a run (a
+committed set's names are known); CI reseeds every run; a LOCAL re-run needs a
+fresh seed. The Baseball → 1996 columns are shared with
+`inserts-1996-score-one-nb-set-two-bsc-sources` (Score), as before.
+
+### The TEAM-link alias fixture — Baseball / 1996 / All Brands / Line Up Venezuelan Winter League (NEO-330) — RETIRED by NEO-475
+
+> **History.** No flow reads this set since NEO-475 (2026-11-09): the alias
+> flow moved to New Haven Ravens Rally Raffle (above). Kept for what the flow
+> proves and for the measurements; its players' recorded no-matches still back
+> `support/recorded-names.ts`. Approved by Jason 2026-10-10.
 
 One real set, touched by exactly one flow,
 `tests/set-selector/checklist-wizard-link-team-saves-alias.spec.ts`, which fetches and COMMITS its
@@ -1889,7 +1926,38 @@ the only writes are the set's structure and its 36 cards. A committed set's
 names are known and a re-sync raises no review, so the fixture is spent once
 per run; CI reseeds every run. A LOCAL re-run needs a fresh seed.
 
-### Topps Big League — the entity-review wizard fixture (NEO-248) ✅ APPROVED
+### Topps Stars of MLB Network — the read-only entity-review wizard fixture (NEO-475) ✅ APPROVED by Jason 2026-11-09
+
+`Baseball → 2024 → Topps → Topps Stars of MLB Network → Base` is
+`fetchChecklistToWizard`'s default, read by three flows:
+`checklist-wizard-back-to-matching-resumes-decisions`,
+`checklist-wizard-career-team-entry` and
+`checklist-wizard-link-to-existing-player`. It replaced Topps Big League
+(section below, now history): 10 BSC cards per fetch instead of 310. The flows'
+assertions are unchanged; nothing in them was Big League-specific.
+
+| | |
+| -- | -- |
+| BSC cards | **10** (read-only probe, BSC only, SportLots paused, 2026-11-09). The cards carry **no team** |
+| unknown names | six names no sport holds: Lauren Shehadi #1, Robert Flores #2, Brian Kenny #4, Greg Amsinger #6, Lauren Gardner #9 and `Intentional Talk` #10 (a show, not a person). #7 Chris Young has two catalogue namesakes (b. 1979 and b. 1983), so his row is a same-name PICK step. The other cards resolve to catalogue players. MEASURED (own deployment, SportLots paused, 2026-11-09): the wizard opens `Step 1 of 9`, `Add remaining players as new (6)`, `Skip remaining names (7)` |
+| recording | the six are recorded no-matches; Chris Young's lookup is a recorded hit (dated MLB stints) |
+| first player row | **#7 Chris Young's pick step, not #1.** The presented row is pinned state (`EntityReviewWizard.tsx`, NEO-220 rule 1), and a pick step is inserted READY, so it is the first settled player and is pinned before #1's lookup lands, whatever the card order (the probe's "after the first player row" was wrong). So `career-team-entry` and `link-to-existing-player` walk with `walkToPlayerRow({ readyToCreate: true })`, which skips a pick step (and a preselect or a held create) and stops on the first truly unknown name (expected #1 Lauren Shehadi, the first in card order; the name it lands on is not asserted). The cards stage no team step |
+| provisioned | `tests/setup.spec.ts`: variant types synced and the Base mapped (both sides live; BSC-only under a SportLots pause, where it reads unmapped and every drill cancels the picker), checklist asserted EMPTY. Filed under 2024 `Topps` by its name |
+| measured on the UI | **nothing yet**: record the wizard's counts and the fetch time from the first run |
+| live SportLots | **unmeasured**: the seed maps the picker's FIRST SportLots candidate and `back-to-matching` needs the Match Cards pairing; neither has run on this set. The first live run must check both |
+
+The rules of the Big League section below carry over unchanged:
+**NOTHING MAY EVER COMMIT THIS SET'S CHECKLIST** (a commit makes its names
+known and the wizard would open on nothing), and the set has **three
+readers and ZERO writers**, each exiting Cancel → Discard. No other flow may
+commit a checklist carrying the six names above either.
+
+### Topps Big League — the entity-review wizard fixture (NEO-248) — RETIRED by NEO-475
+
+> **History.** No flow reads this set since NEO-475 (2026-11-09): the three
+> read-only flows moved to Topps Stars of MLB Network (above), and the seed no
+> longer maps it. Kept for the reasoning (why a REAL set, why it must never be
+> committed, why readers only), which still holds for its replacement.
 
 `Baseball → 2024 → Topps → Topps Big League → Base` is the fixture for the four
 `checklist-wizard-*` flows. It is a REAL, marketplace-listed set: it appears in
@@ -1969,7 +2037,35 @@ sanctioned writer — the 1996 Score shape. That is an owner decision; do not
 reach for it by letting one of these four flows write to a set the other three
 read.
 
-### Topps Chrome NPB — the same-name PICK STEP fixture (NEO-332) ✅ APPROVED by Jason 2026-10-10
+### BBM Rookie Edition Premium — the same-name PICK STEP fixture (NEO-475) ✅ APPROVED by Jason 2026-11-09
+
+`Baseball → 2024 → BBM → BBM Rookie Edition Premium → Base` belongs to exactly
+one flow, `checklist-wizard-same-name-pick-step`, which reaches it through
+`fetchChecklistToWizard(page, env, { manufacturer: "BBM", set })`. It replaced
+Topps Chrome NPB (section below, now history): 36 BSC cards per fetch instead
+of 216. The flow, its b. 1851 `Shuya Yamada` and its assertions are unchanged.
+
+| | |
+| -- | -- |
+| BSC cards | **36**, RP01-RP36 (read-only probe, BSC only, SportLots paused, 2026-11-09) |
+| the name | **RP03 Shuya Yamada** (Hanshin). The catalogue's own undated Shuya Yamada plus the flow's b. 1851 row make two on file, so his row is the pick step |
+| before him | RP01 Kaito Shimomura and RP02 Tsuyoshi Shiiba each resolve to ONE catalogue player and are linked at the fetch, so Yamada is the batch's first player row |
+| other unknowns | Kota Nishidate RP13, Gouki Oda RP18, Kosuke Kawachi RP20, Ryotaro Sawayanagi RP27, Koichi Okumura RP33, all recorded hits. Sawayanagi's recorded career includes `Roki Techno Toyama` (2022-23), expected to stage a `New Team:` step (and its league) that the walk skips; Oda and Okumura carry undated clubs only |
+| the brand | `BBM` is on NB's known-brands list (`convex/knownBrands.ts`), so the year-wide 2024 Sets sync (the seed's, through `Topps`) mints the row under 2024 and files this set under it. Under a SportLots pause that is the only way the row exists; nothing makes it by hand |
+| measured on the UI | **nothing yet**: record the batch's rows and K (the walk's skips) from the first run |
+| live SportLots | **unmeasured**: whether SportLots' 2024 brand list has BBM, the Base picker's first SportLots candidate and the Match Cards pairing; the first live run must check them |
+
+The rules of the NPB section below carry over unchanged: the flow is
+**read-only** on the set (Cancel → Discard); ⚠️ **no other flow may fetch a
+checklist carrying `Shuya Yamada`**, and ⚠️ **no flow may commit this set**;
+re-runs are idempotent (the b. 1851 row is adopted).
+
+### Topps Chrome NPB — the same-name PICK STEP fixture (NEO-332) — RETIRED by NEO-475
+
+> **History.** No flow reads this set since NEO-475 (2026-11-09): the pick-step
+> flow moved to BBM Rookie Edition Premium (above). Kept for the reasoning (why
+> a non-MLB set, why one row of our own), which still holds. Approved by Jason
+> 2026-10-10.
 
 `Baseball → 2024 → Topps → Topps Chrome NPB → Base` belongs to exactly one flow,
 `checklist-wizard-same-name-pick-step`. `tests/setup.spec.ts` provisions nothing for it:

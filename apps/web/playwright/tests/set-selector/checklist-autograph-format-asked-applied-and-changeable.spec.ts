@@ -35,9 +35,10 @@
 //    ANSWERED with no hint (or gave up after three live failures), and no
 //    registered fixture yields a card the walker can be pinned to. The walker
 //    opens on the lowest-numbered flagged card, and BSC names a team (so a hint)
-//    for every card of every set the suite commits, bar a handful on the Line
-//    Up Venezuelan set (#279, #292, #296 ...) that the sole-writer alias spec
-//    leaves among hundreds of hinted flagged cards. Covered by
+//    for every card of every set the suite commits (bar, until NEO-475, a
+//    handful on the Line Up Venezuelan set, #279, #292, #296 ..., that the
+//    sole-writer alias spec left among hundreds of hinted flagged cards; it
+//    now commits a 9-card set, not measured for this). Covered by
 //    components/SetSelector/MissingTeamFixer.test.tsx (outcomeHeading and the
 //    rendered line), convex/cardChecklist.bscTeamEnrichment.test.ts,
 //    convex/bscTeamEnrichmentQueue.test.ts and convex/fetchBscCardTeamNames.test.ts
