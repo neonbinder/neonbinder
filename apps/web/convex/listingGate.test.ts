@@ -501,9 +501,8 @@ describe("the other add doors (security review)", () => {
     await s.me.mutation(api.collection.moveCopy, { copyId: boxed._id, toHomeId: other });
     const moved = (await copies(s)).find((c) => c.cardId === boxed.cardId && c.homeId === other)!;
     await s.me.mutation(api.collection.moveCopy, { copyId: moved._id, toHomeId: s.binder });
-    // With a price of its own, the raw card moves in.
-    await s.t.run((ctx) => ctx.db.patch(raw._id, { minPriceCents: 10 }));
-    await s.me.mutation(api.collection.moveCopy, { copyId: raw._id, toHomeId: s.box });
+    // With a price given on the move (NEO-479), the raw card moves in.
+    await s.me.mutation(api.collection.moveCopy, { copyId: raw._id, toHomeId: s.box, minPriceCents: 10 });
     expect((await copies(s)).some((c) => c.cardId === raw.cardId && c.homeId === s.box && c.minPriceCents === 10)).toBe(true);
   });
 
@@ -521,5 +520,53 @@ describe("the other add doors (security review)", () => {
       expect(refused.message).toBe("Minimum price needs to be a dollar amount of zero or more.");
     }
     expect(await s.t.run((ctx) => ctx.db.query("intakeRuns").collect())).toEqual([]);
+  });
+});
+
+describe("a sale into a listed box carries its own price (NEO-479)", () => {
+  const commonRows = (s: S) => s.t.run((ctx) => ctx.db.query("variantCommonPrices").collect());
+
+  test("a syncing collector with no common price is refused without a price and passes with one", async () => {
+    const s = await setup();
+    await s.me.mutation(api.collection.addHave, { cardId: s.fx.gooden1, homeId: s.binder });
+    await syncOn(s);
+    const [row] = await copies(s);
+    const refused = await refusal(s.me.mutation(api.collection.moveCopy, { copyId: row._id, toHomeId: s.box }));
+    expect(refused).toEqual({
+      code: LISTING_GATE_ERROR,
+      message: listingGateMessage("Show box", { needsPrice: true, needsCondition: false }),
+    });
+    expect((await copies(s))[0]).toMatchObject({ homeId: s.binder });
+    await s.me.mutation(api.collection.moveCopy, { copyId: row._id, toHomeId: s.box, minPriceCents: 40 });
+    expect((await copies(s))[0]).toMatchObject({ homeId: s.box, minPriceCents: 40 });
+    expect(await commonRows(s)).toEqual([]);
+  });
+
+  test("a missing condition is still refused when the move brings a price", async () => {
+    const s = await setup();
+    await s.me.mutation(api.collection.addHave, { cardId: s.fx.gooden1, homeId: s.binder });
+    await syncOn(s);
+    const [row] = await copies(s);
+    await s.t.run((ctx) => ctx.db.patch(row._id, { condition: undefined }));
+    const refused = await refusal(
+      s.me.mutation(api.collection.moveCopy, { copyId: row._id, toHomeId: s.box, minPriceCents: 40 }),
+    );
+    expect(refused).toEqual({
+      code: LISTING_GATE_ERROR,
+      message: listingGateMessage("Show box", { needsPrice: false, needsCondition: true }),
+    });
+    expect((await copies(s))[0]).toMatchObject({ homeId: s.binder });
+  });
+
+  test("the undo of a sale into the listed box is not held, and a sold-at-a-price card needs no common price", async () => {
+    const s = await setup();
+    await s.me.mutation(api.collection.addHave, { cardId: s.fx.gooden1, homeId: s.binder });
+    await syncOn(s);
+    const [row] = await copies(s);
+    const fwd = await s.me.mutation(api.collection.moveCopy, { copyId: row._id, toHomeId: s.box, minPriceCents: 40 });
+    await s.me.mutation(api.collection.moveCopy, {
+      copyId: fwd.copyId, toHomeId: fwd.from.homeId, quantity: fwd.from.quantity, minPriceCents: fwd.from.minPriceCents,
+    });
+    expect((await copies(s))[0]).toMatchObject({ homeId: s.binder });
   });
 });
