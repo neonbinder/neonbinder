@@ -18,8 +18,16 @@
 // (no pick step): re-measure, do not hedge.
 //
 // The name is a REAL two-token checklist name, not a minted one (the exception
-// to single-token names; SET-REGISTRY.md "Topps Chrome NPB"). Sole owner of that
-// set; READ-ONLY on it: the spec leaves through Cancel and Discard. Re-runs are
+// to single-token names; SET-REGISTRY.md "BBM Rookie Edition Premium"). Sole
+// owner of that set; READ-ONLY on it: the spec leaves through Cancel and Discard.
+// NEO-475: the fixture moved from 2024 Topps Chrome NPB (216 cards) to 2024 BBM
+// Rookie Edition Premium (36 cards, RP01-RP36), where Shuya Yamada is RP03
+// (Hanshin). The drill is BBM's own brand row: a known brand (convex/
+// knownBrands.ts), minted under 2024 by the seed's year-wide Sets sync, which
+// files this set under it by name. Chosen by a read-only probe with SportLots
+// PAUSED (BSC only, 2026-11-09): the live branches (BBM in SportLots' 2024 brand list,
+// the Base picker's first SportLots candidate, the Match Cards pairing) are
+// UNMEASURED until SportLots returns, and the first live run must check them. Re-runs are
 // idempotent (an existing b. 1851 row is adopted). The decided count is read
 // relative to K, the walk's skips, and only the counter's x is asserted (on a
 // name step x is the decided count plus one; y grows while lookups land).
@@ -28,7 +36,8 @@ import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtu
 import { expectPlayersLoaded, emptyListAndPickSport, PLAYERS_MATCHES, playersCounter } from "../../support/players";
 import { fetchChecklistToWizard, readStep, reviewWizard, stepCounter, walkToPlayerRow } from "../../support/wizard";
 
-const SET = "Topps Chrome NPB";
+const SET = "BBM Rookie Edition Premium";
+const TARGET = { manufacturer: "BBM", set: SET };
 const NAME = "Shuya Yamada";
 
 test(
@@ -66,7 +75,7 @@ test(
     await expect(page.getByText(/b\. 1851/).first()).toBeVisible();
 
     // ── SETUP: this set's live fetch, the wizard open at "Step 1" (nothing decided) ──
-    await fetchChecklistToWizard(page, env, { set: SET });
+    await fetchChecklistToWizard(page, env, TARGET);
     const wizard = reviewWizard(page);
     await expect(stepCounter(page)).toBeVisible();
     if (!/^Step 1 of /.test((await stepCounter(page).textContent()) ?? "")) {
@@ -76,19 +85,23 @@ test(
       await expect(page.getByText(/Discard [0-9]+ decisions?/)).toBeVisible();
       await page.getByRole("button", { name: "Discard", exact: true }).click();
       await expect(page.getByText("Fetch cancelled — no cards saved.")).toBeVisible({ timeout: 30_000 });
-      await fetchChecklistToWizard(page, env, { set: SET });
+      await fetchChecklistToWizard(page, env, TARGET);
     }
     await expect(stepCounter(page)).toHaveText(/^Step 1 of [0-9]+$/);
 
     // ── STEP 1: the pick step. The same-name row arrives READY (no lookup of its
     // own), so the wizard never offers "Add as New Player" for it. Every other
-    // name on this set is in the enrichment recording (NEO-394), so their
-    // lookups settle at once and the career teams they stage come first: the
-    // walk SKIPS every team/league step and stops on the first player row, this
-    // pick step (rows are inserted in card order and he is card #1). Its skips
-    // are K decisions, so every count below is read against K. Run 41212224696
-    // (phone) opened on "New Team: Kanagawa Future Dreams", which is why the old
-    // "opens on the pick step while the others are still looked up" check went.
+    // unknown name on this set is in the enrichment recording (NEO-394), so
+    // their lookups settle at once and any career teams they stage come first:
+    // the walk SKIPS every team/league step and stops on the first player row,
+    // this pick step. Rows are inserted in card order and he is RP03; RP01
+    // (Kaito Shimomura) and RP02 (Tsuyoshi Shiiba) each resolve to one catalogue
+    // player and are linked at the fetch, so his is the batch's first row (the
+    // other unknowns, RP13 Kota Nishidate, RP18 Gouki Oda, RP20 Kosuke Kawachi,
+    // RP27 Ryotaro Sawayanagi and RP33 Koichi Okumura, come after him). The
+    // walk's skips are K decisions, so every count below is read against K. A
+    // staged career team can open the batch (it did on the old NPB fixture),
+    // which is why there is no "opens on the pick step" check.
     const question = wizard.getByText(`Which ${NAME} is this?`);
     const link1851 = wizard.getByRole("button", { name: `Link to ${NAME}, born 1851` });
     // The catalogue's man: his label carries what is on file about him but no
