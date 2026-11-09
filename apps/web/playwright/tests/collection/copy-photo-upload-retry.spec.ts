@@ -1,35 +1,47 @@
 // NEO-431 (R1): a copy line's photo upload rides out a storage hiccup and, when
 // storage really is down, tells the collector so in plain words. A signed-in
 // collector marks the FIRST ordinary Base row Have, opens its one line in the
-// drawer and picks photos while the test answers the browser's PUTs to the
-// photo store: one 503 then success is saved with no word to the collector
-// (three PUTs: the image twice, the thumbnail once); a 503 every time gives up
-// after three tries with the collector copy in the alert and a log line that
-// carries the status and no address; a 403 is not retried; a network failure
-// gives up after three tries and never shows the browser's own "Failed to
-// fetch"; then storage recovers and the same field saves; a try the store never
-// answers is cut off by the page's own attempt timeout: with the page clock moved past
-// each try's window, three held tries give up with the collector copy (the log line
-// says it timed out), and one held try followed by a live store saves.
+// drawer and picks photos while the test answers the browser's PUTs of the IMAGE
+// file to the photo store (the thumbnail's PUT goes up beside it and is let
+// through): one 503 then success is saved with no word to the collector (the
+// image goes twice); a 503 every time gives up after three tries with the
+// collector copy in the alert and a log line that carries the status and no
+// address; a 403 is not retried; a network failure gives up after three tries
+// and never shows the browser's own "Failed to fetch"; then storage recovers and
+// the same field saves. NEO-466: a try the store never answers is cut off by the
+// page's own stall timer, not a long clock. With the page clock moved past each
+// try's window (2.5 s, 5 s, then the attempt timeout) three held tries give up
+// with the collector copy (the log line says it timed out). In real time, with no
+// clock move, one held try is aborted after 2.5 s and the retry, on the bucket's
+// own host (a different one from the held try), saves: the collector reads
+// "saved", the save logs one timing line (saved, image tried twice, no address)
+// and no give-up line.
 //
 // Why this mocks: a live third party cannot be made to fail on demand, so the
-// test answers ONLY the browser's PUTs to the photo store (the signed upload
-// addresses) and lets everything else, Convex included, go through. Nothing
-// is sent to the store while a failure is being forced.
+// test answers ONLY the browser's PUTs of the image file to the photo store (the
+// signed upload addresses) and lets everything else, Convex and the thumbnail
+// included, go through. The thumbnail does reach the store while a failure is
+// being forced on the image (R2 keeps it a short while for the hourly sweep).
+// The PUT count is therefore of the image file alone: the two files go up side
+// by side, so the total is not fixed.
 //
 // R7/R7a: writes ONLY the signed-in user's `collectionCopies` and
 // `collectionCopyPhotos` on one Base card (the row choice every collection
 // spec shares, as `copy-photos-add-replace-remove`; see SET-REGISTRY.md), never
 // the set, its cards, players or teams. Self-cleaning: the copy is removed
 // through the UI, which detaches its photos for the hourly sweep; the
-// bootstrap reset clears any left behind. Only the successful saves reach
-// the photo store. Same drawer on both projects (phone and desktop): no branch.
+// bootstrap reset clears any left behind. Same drawer on both projects (phone
+// and desktop): no branch.
 import { drillToCollectorBase, ordinaryBaseRows, photoFile, shortNameOf } from "../../support/collection";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 
 /** The photo store's signed upload addresses (a different host from the app and Convex). */
 const PHOTO_STORE = /^https:\/\/[^/]+\.r2\.cloudflarestorage\.com\//;
+/** The image file's object and the thumbnail's, told apart by the path of the signed address (never logged). */
+const IMAGE_OBJECT = /\/copy-photos\/[0-9a-f]{32}\/image\.(jpg|webp)$/;
+const THUMB_OBJECT = /\/copy-photos\/[0-9a-f]{32}\/thumb\.(jpg|webp)$/;
 const GAVE_UP = "copy_photo_put_failed";
+const SAVE_TIMING = "copy_photo_save_timing";
 const COLLECTOR_COPY = "That photo didn't upload.";
 
 test(
@@ -37,8 +49,10 @@ test(
   { tag: ["@collection"] },
   async ({ page, signIn }) => {
     const logged: string[] = [];
+    const timings: string[] = [];
     page.on("console", (message) => {
       if (message.text().includes(GAVE_UP)) logged.push(message.text());
+      if (message.text().includes(SAVE_TIMING)) timings.push(message.text());
     });
     // The give-up line, awaited by event: start it BEFORE the photo is picked.
     const gaveUp = async () =>
@@ -69,20 +83,23 @@ test(
     const front = panel.getByLabel("Front photo file", { exact: true });
     const back = panel.getByLabel("Back photo file", { exact: true });
 
-    // What the store is made to answer for each PUT, by its number since the last reset: a
-    // status, "abort" (the connection fails), "hold" (the request is never answered), or null
-    // (let the real store answer).
+    // What the store is made to answer for each PUT of the IMAGE file, by its number since the
+    // last reset: a status, "abort" (the connection fails), "hold" (the request is never
+    // answered), or null (let the real store answer). The thumbnail's PUT is never forced.
     let puts = 0;
     let heldBytes = 0;
+    const hosts: string[] = []; // the host of each image PUT, for comparing only: never logged
     let answer: (n: number) => number | "abort" | "hold" | null = () => null;
     await page.route(PHOTO_STORE, async (route) => {
-      if (route.request().method() !== "PUT") return route.fallback();
+      const request = route.request();
+      if (request.method() !== "PUT" || !IMAGE_OBJECT.test(new URL(request.url()).pathname)) return route.fallback();
       puts += 1;
+      hosts.push(new URL(request.url()).host);
       const forced = answer(puts);
       if (forced === null) return route.fallback();
       if (forced === "abort") return route.abort("failed");
       if (forced === "hold") {
-        heldBytes = route.request().postDataBuffer()?.length ?? 0;
+        heldBytes = request.postDataBuffer()?.length ?? 0;
         return new Promise<never>(() => {});
       }
       // The CORS header keeps the status readable to the page, as a real store's answer is.
@@ -90,7 +107,9 @@ test(
     });
     const forceStore = (next: typeof answer) => {
       puts = 0;
+      hosts.length = 0;
       logged.length = 0;
+      timings.length = 0;
       answer = next;
     };
 
@@ -98,7 +117,7 @@ test(
     forceStore((n) => (n === 1 ? 503 : null));
     await front.setInputFiles(photoFile("front.jpg"));
     await expect(panel.getByRole("status")).toHaveText("Front photo saved.");
-    expect(puts, "image 503, image ok, thumbnail ok").toBe(3);
+    expect(puts, "image 503, image ok").toBe(2);
     expect(logged, "a recovered hiccup is not logged").toEqual([]);
     await expect(panel.getByRole("alert")).toBeEmpty();
 
@@ -139,26 +158,38 @@ test(
 
     // --- The store never answers: each try is cut off at its own window, ---------------------
     // --- three held tries give up, and the collector is not left on "Saving" --------------
-    // The next PUT to the store, awaited by event (the page's default 7 s bounds it): start it
-    // BEFORE the thing that sends it.
-    const nextPut = () => page.waitForRequest((request) => request.method() === "PUT" && PHOTO_STORE.test(request.url()));
-    // A try's window is 20 s plus a second per 32 KB of the file, so a photo under 64 KB is
-    // given up on after 22 s at the most; moving the page clock 22 s puts every try past it.
-    const STALL = 22_000;
+    // The next PUT of the image file, awaited by event (the page's default 7 s bounds it):
+    // start it BEFORE the thing that sends it.
+    const nextImagePut = () =>
+      page.waitForRequest((request) => request.method() === "PUT" && IMAGE_OBJECT.test(new URL(request.url()).pathname));
+    // The thumbnail finishing, so moving the page clock cannot cut a thumbnail still in flight short.
+    const thumbSent = () =>
+      page.waitForEvent("requestfinished", {
+        predicate: (request) => request.method() === "PUT" && THUMB_OBJECT.test(new URL(request.url()).pathname),
+      });
+    // A try's silence window is 2.5 s, then 5 s, then 20 s plus a second per 32 KB of the file,
+    // so a photo under 64 KB is given up on after 22 s at the most; the page clock is moved
+    // past each window in turn.
+    const FIRST_WINDOW = 2_500;
+    const SECOND_WINDOW = 5_000;
+    const LAST_WINDOW = 22_000;
     forceStore(() => "hold");
     line = gaveUp();
-    let arrived = nextPut();
+    let arrived = nextImagePut();
+    const thumb = thumbSent();
     await back.setInputFiles(photoFile("back.jpg"));
     await arrived;
+    await thumb;
     await expect(panel.getByRole("status")).toHaveText("Saving the back photo…");
-    expect(heldBytes, "a small photo, so one STALL clears its window").toBeLessThan(64_000);
+    expect(heldBytes, "a small photo, so one last window clears it").toBeLessThan(64_000);
     await expectAccessible(page, { within: drawer, label: "Card drawer, photo upload not answering" });
-    for (let retry = 0; retry < 2; retry++) {
-      arrived = nextPut();
-      await page.clock.fastForward(STALL);
-      await arrived;
-    }
-    await page.clock.fastForward(STALL);
+    arrived = nextImagePut();
+    await page.clock.fastForward(FIRST_WINDOW);
+    await arrived;
+    arrived = nextImagePut();
+    await page.clock.fastForward(SECOND_WINDOW);
+    await arrived;
+    await page.clock.fastForward(LAST_WINDOW);
     const stalled = await line;
     expect(stalled).toContain('"timedOut":true');
     expect(stalled).toContain('"status":null');
@@ -168,16 +199,35 @@ test(
     await expect(panel.getByRole("alert")).toContainText(COLLECTOR_COPY);
     await expect(panel.getByRole("status")).toBeEmpty();
 
-    // --- One try is never answered, the next one is: saved, and the collector never hears of it ----
+    // --- Real time: one try is never answered, the retry on the bucket's own host saves it ----
+    // No clock move: the page's stall timer cuts the held try off after 2.5 s by itself, and the
+    // collector reads "saved" inside the standard budget with no word of the hiccup.
     forceStore((n) => (n === 1 ? "hold" : null));
-    arrived = nextPut();
-    await back.setInputFiles(photoFile("back.jpg"));
-    await arrived;
-    await page.clock.fastForward(STALL);
-    await expect(panel.getByRole("status")).toHaveText("Back photo saved.");
-    expect(puts, "image held, image ok, thumbnail ok").toBe(3);
-    expect(logged, "a recovered stall is not logged").toEqual([]);
+    const timingLine = page.waitForEvent("console", { predicate: (message) => message.text().includes(SAVE_TIMING) });
+    await front.setInputFiles(photoFile("front.jpg"));
+    await expect(panel.getByRole("status")).toHaveText("Front photo saved.");
+    expect(puts, "image held, image retried").toBe(2);
+    // The retry opened a fresh connection: the bucket's own host, not the one the held try used.
+    // Compared in-test; a host is never printed.
+    const sameHost = hosts[1] === hosts[0];
+    const bucketHost = hosts[1].endsWith(`.${hosts[0]}`);
+    expect(sameHost, "the retry went to a different host").toBe(false);
+    expect(bucketHost, "the retry went to the bucket's own host").toBe(true);
+    expect(logged, "a recovered stall is not logged as a give-up").toEqual([]);
     await expect(panel.getByRole("alert")).toBeEmpty();
+    // The slow, retried save is reported once, with its numbers and no address.
+    const timing = (await timingLine).text();
+    expect(timings, "one timing line for the retried save").toHaveLength(1);
+    expect(timing, "the signed address is never logged").not.toContain("http");
+    const report = JSON.parse(timing.slice(timing.indexOf("{"))) as {
+      outcome: string;
+      puts: { file: string; tries: { outcome: string }[] }[];
+    };
+    expect(report.outcome).toBe("saved");
+    const imageTries = report.puts.find((put) => put.file === "image")?.tries ?? [];
+    expect(imageTries, "the held try and the retry").toHaveLength(2);
+    expect(imageTries[0].outcome).toBe("stall");
+    expect(imageTries[1].outcome).toBe("ok");
 
     // --- Remove the copy (self-cleaning) -------------------------------------------------
     await page.unroute(PHOTO_STORE);
