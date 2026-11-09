@@ -194,6 +194,63 @@ describe("send records every request on the session", () => {
   });
 });
 
+describe("a seller session samples failed bodies keysOnly", () => {
+  test("a 4xx naming an order, an address and a phone keeps only the code and status values", async () => {
+    const sellerBody = {
+      code: "ORDER_NOT_SHIPPABLE",
+      status: "BAD_REQUEST",
+      message: "Order ORD-88123 for Jane Doe at 12 Elm Street, Springfield cannot ship; call 555-867-5309",
+      error: "Jane Doe, 12 Elm Street, Springfield",
+      title: "Order ORD-88123",
+      // A code that is not safe-shaped is free text too, and is dropped.
+      detail: { code: "Jane Doe 555 867 5309", phone: "555-867-5309" },
+    };
+    vi.stubGlobal("fetch", (async () =>
+      Response.json(sellerBody, { status: 400, headers: { server: "awselb/2.0" } })) as typeof fetch);
+    const { ctx, scheduled } = makeCtx();
+    const s = session();
+    const r = await readBscOrder(ctx as never, s, "ord-77");
+    expect(r).toEqual({
+      ok: false,
+      failure: { kind: "http", httpStatus: 400, message: "BuySportsCards answered 400 to orderDetail." },
+    });
+    await closeBscSellerSession(ctx, s);
+
+    expect(failures()).toHaveLength(1);
+    const body = String(failures()[0].body);
+    // Key names survive (they are field names, not values); of the values,
+    // only the safe-shaped code and status do.
+    const values = body.replace(/^keys=\[[^\]]*\]\s*/, "");
+    expect(values).toBe('code="ORDER_NOT_SHIPPABLE" status="BAD_REQUEST"');
+    expect(body).toContain("keys=[");
+    // The row the table keeps carries the same sample, and nothing of the
+    // order, the buyer, the address or the phone reaches either.
+    expect(scheduled).toHaveLength(1);
+    const samples = scheduled[0].args.samples as Array<Record<string, unknown>>;
+    expect(samples).toHaveLength(1);
+    expect(samples[0].body).toBe(body);
+    for (const out of [JSON.stringify(failures()[0]), JSON.stringify(scheduled[0].args)]) {
+      for (const leak of ["ORD-88123", "ord-77", "Jane", "Doe", "Elm", "Springfield", "555", "867", "5309"]) {
+        expect(out).not.toContain(leak);
+      }
+    }
+  });
+
+  test("a session opened by its owner samples keysOnly too", async () => {
+    vi.stubGlobal("fetch", (async () =>
+      Response.json({ code: "E42", message: "Jane Doe, 12 Elm Street" }, { status: 422 })) as typeof fetch);
+    const { ctx } = makeCtx();
+    const opened = await openBscSellerSession(ctx as never, "owner", { op: "drainOwner" });
+    if (!opened.ok) throw new Error("expected a session");
+    await readBscOrderHistory(ctx as never, opened.value, 0);
+    await closeBscSellerSession(ctx, opened.value);
+    const body = String(failures()[0].body);
+    expect(body).toContain('code="E42"');
+    expect(body).not.toContain("Jane");
+    expect(body).not.toContain("Elm");
+  });
+});
+
 describe("openBscSellerSession names the session's summary", () => {
   test("the opener's op is the summary's op", async () => {
     vi.stubGlobal("fetch", (async () => Response.json({ results: [], totalElements: 0 })) as typeof fetch);

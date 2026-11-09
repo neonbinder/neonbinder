@@ -46,11 +46,67 @@ export function collectLogFiles(inputs) {
   return out.sort();
 }
 
-async function* linesOf(file) {
+/** Decompressed bytes read per file; the rest is ignored (a gzip bomb cannot exhaust memory or time). */
+export const MAX_FILE_BYTES = 512 * 1024 * 1024;
+/** A line longer than this is skipped, not parsed. */
+export const MAX_LINE_BYTES = 1024 * 1024;
+
+/**
+ * Lines of a file as strings, with both caps applied. `stats.oversizeLines`
+ * and `stats.truncatedFiles` count what was skipped.
+ */
+export async function* linesOf(file, caps = {}, stats = {}) {
+  const maxFile = caps.maxFileBytes ?? MAX_FILE_BYTES;
+  const maxLine = caps.maxLineBytes ?? MAX_LINE_BYTES;
   const raw = fs.createReadStream(file);
-  const stream = file.endsWith(".gz") ? raw.pipe(zlib.createGunzip()) : raw;
-  for await (const line of readline.createInterface({ input: stream, crlfDelay: Infinity })) {
-    if (line) yield line;
+  const source = file.endsWith(".gz") ? raw.pipe(zlib.createGunzip()) : raw;
+  let total = 0;
+  let pending = Buffer.alloc(0); // partial line carried between chunks
+  let skipping = false; // inside an oversize line
+  const flushLine = function* (buf) {
+    if (buf.length > 0) yield buf.toString("utf8");
+  };
+  try {
+    for await (const chunk of source) {
+      let buf = chunk;
+      if (total + buf.length > maxFile) {
+        buf = buf.subarray(0, Math.max(0, maxFile - total));
+        stats.truncatedFiles = (stats.truncatedFiles ?? 0) + 1;
+        total = maxFile;
+        // process what fits, then stop
+        yield* splitChunk(buf);
+        return;
+      }
+      total += buf.length;
+      yield* splitChunk(buf);
+    }
+    if (!skipping) yield* flushLine(pending);
+  } finally {
+    source.destroy?.();
+    raw.destroy();
+  }
+
+  function* splitChunk(buf) {
+    let start = 0;
+    for (;;) {
+      const nl = buf.indexOf(0x0a, start);
+      const end = nl === -1 ? buf.length : nl;
+      const piece = buf.subarray(start, end);
+      if (!skipping) {
+        if (pending.length + piece.length > maxLine) {
+          skipping = true;
+          pending = Buffer.alloc(0);
+          stats.oversizeLines = (stats.oversizeLines ?? 0) + 1;
+        } else {
+          pending = pending.length ? Buffer.concat([pending, piece]) : piece;
+        }
+      }
+      if (nl === -1) return;
+      if (!skipping) yield* flushLine(pending.at(-1) === 0x0d ? pending.subarray(0, -1) : pending);
+      pending = Buffer.alloc(0);
+      skipping = false;
+      start = nl + 1;
+    }
   }
 }
 
@@ -143,20 +199,22 @@ export function recordsFromText(text, ts) {
 /**
  * Parse log files into deduped records.
  * @param {string[]} inputs files and directories
- * @param {{meta?: object, seen?: Set<string>}} [opts] `meta` is attached to every record
+ * @param {{meta?: object, seen?: Set<string>, caps?: {maxFileBytes?: number, maxLineBytes?: number}}} [opts]
+ *   `meta` is attached to every record; `caps` overrides the per-file (512 MB decompressed)
+ *   and per-line (1 MB) limits, for tests.
  */
 export async function parseLogs(inputs, opts = {}) {
   const meta = opts.meta ?? {};
   const seen = opts.seen ?? new Set();
   const records = [];
-  const stats = { files: 0, lines: 0, badLines: 0, duplicates: 0, byType: {} };
+  const stats = { files: 0, lines: 0, badLines: 0, duplicates: 0, oversizeLines: 0, truncatedFiles: 0, byType: {} };
   const push = (rec) => {
     records.push({ ...rec, meta });
     stats.byType[rec.type] = (stats.byType[rec.type] ?? 0) + 1;
   };
   for (const file of collectLogFiles(inputs)) {
     stats.files += 1;
-    for await (const line of linesOf(file)) {
+    for await (const line of linesOf(file, opts.caps, stats)) {
       stats.lines += 1;
       let entry;
       try {

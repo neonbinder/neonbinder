@@ -78,7 +78,7 @@ describe("scrubBscBody", () => {
       "text/html",
     );
     expect(out).toContain('title="503 Service Unavailable"');
-    expect(out).toContain("Oops try later");
+    expect(out).toContain("Oopstry later"); // tags are joined, never replaced by a space
     expect(out).not.toContain("secret");
     expect(out).not.toContain("<");
   });
@@ -127,12 +127,8 @@ describe("pickBscHeaders", () => {
     );
   });
 
-  test("caps each value at 200 characters, and x-amzn-* at eight", () => {
-    const rec: Record<string, string> = { server: "s".repeat(500) };
-    for (let i = 0; i < 20; i++) rec[`x-amzn-h${i}`] = "v";
-    const out = pickBscHeaders(rec);
-    expect(out.server).toHaveLength(200);
-    expect(Object.keys(out).filter((k) => k.startsWith("x-amzn-"))).toHaveLength(8);
+  test("caps each value at 200 characters", () => {
+    expect(pickBscHeaders({ server: "s ".repeat(250) }).server).toHaveLength(200);
   });
 
   test("tolerates nothing", () => {
@@ -432,5 +428,163 @@ describe("createBscRecorder", () => {
     expect(Object.keys(out!.row).sort()).toEqual(
       ["byKind", "byStatus", "calls", "endedAt", "lat", "maxInflight", "ok", "op", "samples", "startedAt", "suppressed"].sort(),
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-475 security audit vectors (adversarial harness, committed)
+// ---------------------------------------------------------------------------
+
+const JWT =
+  "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4ifQ.c2lnbmF0dXJlc2lnbmF0dXJl";
+
+describe("pickBscHeaders: exact names, redaction before the cut", () => {
+  test("x-amzn-remapped-* (the origin's headers) are never kept; unknown x-amzn-* neither", () => {
+    const out = pickBscHeaders({
+      "x-amzn-remapped-authorization": `Bearer ${JWT}`,
+      "x-amzn-remapped-set-cookie": "s=abc",
+      "X-Amzn-Remapped-Date": "x",
+      "x-amzn-foo": "bar",
+      "x-amzn-requestid": "r1",
+      "x-amzn-trace-id": "Root=1-abc",
+      "x-amzn-errortype": "ThrottlingException",
+    });
+    expect(Object.keys(out).sort()).toEqual(["x-amzn-errortype", "x-amzn-requestid", "x-amzn-trace-id"]);
+  });
+
+  test("an email or JWT in x-request-id is redacted", () => {
+    const out = pickBscHeaders({ "x-request-id": `u@x.com ${JWT}` });
+    expect(out["x-request-id"]).not.toContain("u@x.com");
+    expect(out["x-request-id"]).not.toContain("eyJ");
+  });
+
+  test("redaction happens before the 200 cut, so a cut JWT cannot leave a readable head", () => {
+    const out = pickBscHeaders({ server: `${"x".repeat(185)} ${JWT}` });
+    expect(out.server).not.toContain("eyJ");
+    expect(out.server).toContain("[jwt]");
+  });
+
+  test("edge-minted UUID request ids stay correlatable", () => {
+    const id = "123e4567-e89b-12d3-a456-426614174000";
+    expect(pickBscHeaders({ "x-amzn-requestid": id })["x-amzn-requestid"]).toBe(id);
+  });
+});
+
+describe("scrubBscBody: redact before every slice, key names are data", () => {
+  test("a 180-character title followed by a JWT keeps no JWT head", () => {
+    const out = scrubBscBody(JSON.stringify({ title: `${"x".repeat(180)} ${JWT}` }), "application/json");
+    expect(out).not.toContain("eyJ");
+  });
+
+  test("a JWT used as a JSON key is not echoed", () => {
+    const out = scrubBscBody(JSON.stringify({ [JWT]: 1, "eyJabcdef.ghijklm.nopqrs": 2 }), "application/json");
+    expect(out).not.toContain("eyJ");
+    expect(out).toContain("[k]");
+  });
+
+  test("keys that are identifiers, names or addresses become [k]", () => {
+    const out = scrubBscBody(
+      JSON.stringify({ orders: { "ORD-55512": {}, "Jane Smith": {}, "742 Evergreen Terrace": {} } }),
+      "application/json",
+    );
+    expect(out).toBe("keys=[orders,[k]]");
+    expect(out).not.toMatch(/ORD|Jane|Evergreen|55512/);
+  });
+
+  test("truncated JSON gets the same key rule", () => {
+    const out = scrubBscBody('{"ORD-55512":1,"Jane Smith":2,"status":"x","note":"unterminated', "application/json");
+    expect(out).not.toMatch(/ORD|Jane|55512/);
+    expect(out).toContain("status");
+  });
+
+  test.each([
+    ["a numeric entity", "<p>user&#64;example.com</p>", "user"],
+    ["a hex entity", "<p>john&#x40;example.com</p>", "john"],
+    ["an encoded dot in a JWT", `<p>eyJabcde&#46;eyJdefgh&#46;sigsig</p>`, "eyJ"],
+    ["a double-encoded entity", "<p>user&amp;#64;example.com</p>", "user"],
+    ["a tag inside a token", "<p>eyJhbGciOi<b></b>JIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwi.sigsigsig</p>", "eyJ"],
+    ["a tag inside an email", "<p>jo<b>hn</b>@exam<i>ple</i>.com</p>", "@"],
+  ])("HTML: %s is decoded or joined, then redacted", (_n, html, leak) => {
+    const out = scrubBscBody(html, "text/html");
+    expect(out).not.toContain(leak);
+    expect(out.length).toBeGreaterThan(0);
+  });
+
+  test("JSON values are entity-decoded before redaction", () => {
+    const out = scrubBscBody(JSON.stringify({ message: "user&#64;example.com" }), "application/json");
+    expect(out).not.toContain("example.com");
+  });
+});
+
+describe("scrubBscBody keysOnly", () => {
+  const keysOnly = (body: unknown, ct = "application/json") =>
+    scrubBscBody(typeof body === "string" ? body : JSON.stringify(body), ct, "keysOnly");
+
+  test.each([
+    ["an order message", { message: "Order 1234 for Jane Smith not found" }, "Jane"],
+    ["an address", { error: "Bad address 742 Evergreen Terrace", title: "742 Evergreen" }, "Evergreen"],
+    ["a phone", { message: "call (608) 555-1234" }, "555"],
+    ["a password hint", { message: "pwd hunter2", error: "Password Is hunter2" }, "hunter2"],
+  ])("%s does not survive", (_n, body, leak) => {
+    const out = keysOnly(body);
+    expect(out).not.toContain(leak);
+    expect(out).toContain("keys=");
+  });
+
+  test("code and status values survive only when token-shaped", () => {
+    expect(keysOnly({ code: "RATE_LIMITED", status: 429, message: "x" })).toBe(
+      'keys=[code,status,message] code="RATE_LIMITED" status="429"',
+    );
+    const odd = keysOnly({ code: "has spaces", status: "Jane Smith", error: { code: "x".repeat(65) } });
+    expect(odd).not.toMatch(/Jane|spaces|xxxx/);
+  });
+
+  test("truncated JSON in keysOnly keeps the same limits", () => {
+    const out = keysOnly('{"code":"E_42","message":"Jane Smith at 12 Oak","pwd":"hunter2');
+    expect(out).toContain('code="E_42"');
+    expect(out).not.toMatch(/Jane|Oak|hunter2/);
+  });
+
+  test("HTML keeps only the redacted title; no title means nothing", () => {
+    expect(keysOnly("<html><title>503 Service Unavailable</title><body>Hi Jane Smith 12 Oak Rd</body></html>", "text/html")).toBe(
+      'title="503 Service Unavailable"',
+    );
+    expect(keysOnly("<p>Hello Jane</p>", "text/html")).toBe("");
+    expect(keysOnly("plain text for Jane Smith", "text/plain")).toBe("");
+    expect(keysOnly("<title>u&#64;x.com</title>", "text/html")).not.toContain("x.com");
+  });
+
+  test("the default mode is unchanged", () => {
+    expect(scrubBscBody('{"message":"Rate exceeded"}', "application/json")).toContain('message="Rate exceeded"');
+  });
+});
+
+describe("recorder: bodyMode and the read cap", () => {
+  async function failedBody(body: string, contentType: string, bodyMode?: "message" | "keysOnly") {
+    const warns: string[] = [];
+    const rec = createBscRecorder("op", { log: { log: () => {}, warn: (l) => warns.push(l) }, bodyMode });
+    rec.respond(rec.start({ pathTemplate: "p" }), new Response(body, { status: 500, headers: { "content-type": contentType } }));
+    await rec.flush();
+    return (JSON.parse(warns[0]) as { body?: string }).body ?? "";
+  }
+
+  test("keysOnly flows through the recorder; the default keeps the message", async () => {
+    const body = JSON.stringify({ message: "pwd hunter2 for Jane Smith", code: "E1" });
+    expect(await failedBody(body, "application/json")).toContain("hunter2");
+    const safe = await failedBody(body, "application/json", "keysOnly");
+    expect(safe).not.toMatch(/hunter2|Jane/);
+    expect(safe).toContain('code="E1"');
+  });
+
+  test("a read that hits the 4 KB cap drops the last 64 bytes before scrubbing", async () => {
+    // 4080 bytes of whitespace (collapsed away), then a JWT the cap cuts after 16 characters:
+    // too short for any pattern, and at the front of the 500-byte output.
+    const body = " ".repeat(4080) + JWT + " tail";
+    const out = await failedBody(body, "text/plain");
+    expect(out).not.toContain("eyJ");
+  });
+
+  test("a body under the cap is not trimmed", async () => {
+    expect(await failedBody("short and sweet", "text/plain")).toBe("short and sweet");
   });
 });

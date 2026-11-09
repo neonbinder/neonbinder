@@ -9,9 +9,9 @@ import path from "node:path";
 import zlib from "node:zlib";
 import { afterEach, expect, test } from "vitest";
 import { createBscRecorder } from "../../convex/lib/bscCallTelemetry";
-import { assertOutsideRepo, parseRunLines } from "./backfill.mjs";
+import { assertOutsideRepo, listRuns, parseRunLines } from "./backfill.mjs";
 import { collectLogFiles, parseLogs, recordsFromText, unwrapMessage } from "./parse.mjs";
-import { buildReport, hourOf, peakOverlap, renderCsv, renderMarkdown } from "./report.mjs";
+import { buildReport, hourOf, peakOverlap, renderCsv, renderMarkdown, writeReport } from "./report.mjs";
 
 const made = [];
 const tmp = () => {
@@ -180,4 +180,69 @@ test("backfill reads gh's run lines", () => {
     { id: 5, attempt: 2, conclusion: "failure", createdAt: "2026-01-01T00:00:00Z", pr: 448 },
     { id: 6, attempt: 1, conclusion: "in_progress", createdAt: "x", pr: null },
   ]);
+});
+
+test("assertOutsideRepo: sibling '..x' dirs are outside; '..' escapes and symlinks into the repo are not", () => {
+  const base = tmp();
+  const repo = path.join(base, "repo");
+  fs.mkdirSync(repo);
+  // A directory literally named "..cache" is OUTSIDE, and was wrongly refused by startsWith("..").
+  expect(assertOutsideRepo(path.join(base, "..cache", "out"), repo)).toBeTruthy();
+  // A path that climbs back in.
+  expect(() => assertOutsideRepo(path.join(base, "elsewhere", "..", "repo", "x"), repo)).toThrow(/inside/);
+  // A symlink outside that points into the repo, with a non-existing leaf.
+  const link = path.join(base, "link");
+  fs.symlinkSync(repo, link);
+  expect(() => assertOutsideRepo(path.join(link, "new", "deep"), repo)).toThrow(/inside/);
+  expect(() => assertOutsideRepo(link, repo)).toThrow(/inside/);
+});
+
+test("listRuns drops runs whose head repository is not --repo (fork PRs)", () => {
+  const lines = [
+    { id: 1, run_attempt: 1, conclusion: "success", created_at: "a", pr: 1, head_repo: "neonbinder/neonbinder" },
+    { id: 2, run_attempt: 1, conclusion: "success", created_at: "a", pr: 2, head_repo: "evil/neonbinder" },
+    { id: 3, run_attempt: 1, conclusion: "success", created_at: "a", pr: 3, head_repo: null },
+  ]
+    .map((l) => JSON.stringify(l))
+    .join("\n");
+  const runs = listRuns({ repo: "neonbinder/neonbinder", days: 1, run: () => lines });
+  expect(runs.map((r) => r.id)).toEqual([1]);
+  expect(runs[0]).not.toHaveProperty("headRepo");
+});
+
+test("report output never carries a deployment name", () => {
+  const meta = { env: "ci" };
+  const records = [
+    { type: "call_summary", ts: T0, op: "x", deployment: "secret-dep-123", startedAt: T0, endedAt: T0 + 1, calls: 1, ok: 1, byKind: {}, byStatus: { 200: 1 }, maxInflight: 1, suppressed: 0, lat: { min: 5, max: 5, sum: 5, buckets: [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] }, meta },
+    { type: "call_failed", ts: T0, kind: "http", status: 500, pathTemplate: "p", deployment: "secret-dep-123", meta },
+  ];
+  const dir = tmp();
+  const md = writeReport(buildReport(records), dir, {});
+  for (const f of ["hourly.json", "hourly.csv", "summary.md"]) {
+    expect(fs.readFileSync(path.join(dir, f), "utf8")).not.toContain("secret-dep-123");
+  }
+  expect(md).not.toContain("secret-dep-123");
+  expect(JSON.parse(fs.readFileSync(path.join(dir, "hourly.json"), "utf8")).rows[0].env).toBe("ci");
+});
+
+test("parse caps the decompressed bytes per file and skips oversize lines", async () => {
+  const dir = tmp();
+  const good = (id) => JSON.stringify(completion(id, T0 / 1000, 1));
+  const huge = JSON.stringify({ kind: "Progress", pad: "x".repeat(5000) });
+  fs.writeFileSync(path.join(dir, "a.jsonl"), [good("c1"), huge, good("c2")].join("\n") + "\n");
+  const r = await parseLogs([dir], { caps: { maxLineBytes: 1000 } });
+  expect(r.records.filter((x) => x.type === "completion")).toHaveLength(2);
+  expect(r.stats.oversizeLines).toBe(1);
+  expect(r.stats.badLines).toBe(0);
+
+  // A gzip bomb: the stream ends at the file cap, only the lines before it are read.
+  const lines = Array.from({ length: 200 }, (_, i) => good(`b${i}`)).join("\n") + "\n";
+  const dir2 = tmp();
+  fs.writeFileSync(path.join(dir2, "bomb.jsonl.gz"), zlib.gzipSync(lines));
+  const cap = Math.floor(lines.length / 2);
+  const r2 = await parseLogs([dir2], { caps: { maxFileBytes: cap } });
+  expect(r2.stats.truncatedFiles).toBe(1);
+  const n = r2.records.filter((x) => x.type === "completion").length;
+  expect(n).toBeGreaterThan(0);
+  expect(n).toBeLessThan(200);
 });

@@ -338,6 +338,61 @@ describe("resolveBscCardTeam", () => {
 });
 
 // ===========================================================================
+// resolveBscCardTeam — call telemetry (NEO-475)
+// ===========================================================================
+
+describe("resolveBscCardTeam — one bsc_call_summary per invocation (NEO-475)", () => {
+  /** Runs the action once with console captured; returns its summary lines. */
+  async function runOnce(response: string | number): Promise<{
+    result: string;
+    fetchCount: number;
+    summaries: Array<Record<string, unknown>>;
+    t: ReturnType<typeof convexTest>;
+  }> {
+    const t = convexTest(schema, modules);
+    const variantTypeId = await seedTree(t);
+    const cardId = await insertCard(t, variantTypeId, "1", "bsc-1");
+    const calls: RecordedCall[] = [];
+    vi.stubGlobal("fetch", makeCardListingFetch({ responses: { "bsc-1": response }, calls }));
+    const lines: string[] = [];
+    const log = vi.spyOn(console, "log").mockImplementation((...a: unknown[]) => void lines.push(a.map(String).join(" ")));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    let result: string;
+    try {
+      result = await t.action(internal.adapters.buysportscards.resolveBscCardTeam, { cardChecklistId: cardId });
+    } finally {
+      log.mockRestore();
+      warn.mockRestore();
+    }
+    const summaries = lines
+      .filter((l) => l.startsWith("{") && l.includes('"bsc_call_summary"'))
+      .map((l) => JSON.parse(l) as Record<string, unknown>)
+      .filter((o) => o.msg === "bsc_call_summary");
+    return { result, fetchCount: calls.length, summaries, t };
+  }
+
+  test("an answered lookup: exactly one summary, its calls equal to the fetch count", async () => {
+    const { result, fetchCount, summaries, t } = await runOnce("New York Yankees");
+    expect(result).toBe("answered");
+    expect(fetchCount).toBe(1);
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0]).toMatchObject({ op: "resolveBscCardTeam", calls: fetchCount, ok: 1 });
+    // Log only, by design: one row per card would swamp the per-invocation
+    // rows `bscCallSummaries` is for.
+    const scheduled = await t.run(async (ctx) => ctx.db.system.query("_scheduled_functions").collect());
+    expect(scheduled.filter((f) => f.name.includes("bscCallStats"))).toHaveLength(0);
+  });
+
+  test("a failed lookup is summarised too: one summary, calls equal to the fetch count", async () => {
+    const { result, fetchCount, summaries } = await runOnce(503);
+    expect(result).toBe("failed");
+    expect(fetchCount).toBe(1);
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0]).toMatchObject({ op: "resolveBscCardTeam", calls: fetchCount, ok: 0, byStatus: { "503": 1 } });
+  });
+});
+
+// ===========================================================================
 // processBscTeamEnrichmentQueue
 // ===========================================================================
 

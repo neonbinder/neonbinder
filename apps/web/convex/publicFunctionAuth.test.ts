@@ -3014,3 +3014,37 @@ describe("NEO-415: eBay connection surface", () => {
     expect(body.indexOf("ctx.scheduler")).toBe(schedule);
   });
 });
+
+describe("NEO-475: the BSC call telemetry store is internal, never public", () => {
+  /**
+   * `record` is scheduled by the BSC adapters off the hot path and writes a
+   * `bscCallSummaries` row that is kept forever; `exportRange` reads every row
+   * and is reached only by `npx convex run` from the bsc-health scripts. A
+   * public twin of `record` would be an unauthenticated write into a table
+   * nothing prunes; a public twin of `exportRange` would be an unauthenticated
+   * read of every BSC call's failure samples. Same reading-the-source approach
+   * as the NEO-289 and NEO-322 blocks, for the same reason (convex-test does
+   * not enforce the public/internal boundary).
+   */
+  test.each([
+    ["bscCallStats.ts", "record", "internalMutation"],
+    ["bscCallStats.ts", "exportRange", "internalQuery"],
+  ])("%s :: %s is declared %s", (file, fn, keyword) => {
+    const src = readFileSync(join(__dirname, file), "utf8");
+    expect(src).toContain(`export const ${fn} = ${keyword}({`);
+    expect(src).not.toContain(`export const ${fn} = action(`);
+    expect(src).not.toContain(`export const ${fn} = query(`);
+    expect(src).not.toContain(`export const ${fn} = mutation(`);
+  });
+
+  test("the module imports no public function builder", () => {
+    // A third export added later inherits the module's imports; with only the
+    // internal builders imported, a public one cannot be declared by copying
+    // a neighbour.
+    const src = readFileSync(join(__dirname, "bscCallStats.ts"), "utf8");
+    const serverImport = src.match(/import \{([^}]*)\} from "\.\/_generated\/server";/);
+    expect(serverImport).not.toBeNull();
+    const names = serverImport![1].split(",").map((s) => s.trim()).filter(Boolean);
+    expect(names.sort()).toEqual(["internalMutation", "internalQuery"]);
+  });
+});

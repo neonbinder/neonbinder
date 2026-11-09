@@ -20,6 +20,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { assertOutsideRepo } from "./paths.mjs";
 import { parseLogs } from "./parse.mjs";
 import { addObservation, emptySummary, mergeSummaries, percentile } from "./histogram.mjs";
 
@@ -254,11 +255,26 @@ export function renderMarkdown(report, { title = "BSC health", stats, hourlyAvai
   return out.join("\n") + "\n";
 }
 
+/**
+ * A deployment name identifies a live deployment and never leaves the log
+ * files: the `env` label replaces it. Drops the key at any depth.
+ */
+export function stripDeployment(value) {
+  if (Array.isArray(value)) return value.map(stripDeployment);
+  if (value && typeof value === "object") {
+    const out = {};
+    for (const [k, v] of Object.entries(value)) if (k !== "deployment") out[k] = stripDeployment(v);
+    return out;
+  }
+  return value;
+}
+
 export function writeReport(report, outDir, mdOptions) {
   fs.mkdirSync(outDir, { recursive: true });
-  fs.writeFileSync(path.join(outDir, "hourly.csv"), renderCsv(report));
-  fs.writeFileSync(path.join(outDir, "hourly.json"), JSON.stringify({ window: report.window, rows: report.rows, failures: report.failures, concurrency: report.concurrency }, null, 2) + "\n");
-  const markdown = renderMarkdown(report, mdOptions);
+  const clean = stripDeployment({ ...report });
+  fs.writeFileSync(path.join(outDir, "hourly.csv"), renderCsv(clean));
+  fs.writeFileSync(path.join(outDir, "hourly.json"), JSON.stringify({ window: clean.window, rows: clean.rows, failures: clean.failures, concurrency: clean.concurrency }, null, 2) + "\n");
+  const markdown = renderMarkdown(clean, mdOptions);
   fs.writeFileSync(path.join(outDir, "summary.md"), markdown);
   return markdown;
 }
@@ -290,6 +306,7 @@ async function main(argv) {
     console.error("usage: node report.mjs (--in <logs>... | --records records.jsonl) --out <dir> [--env label]");
     process.exit(2);
   }
+  out = assertOutsideRepo(out);
   let records = [];
   let stats;
   if (recordsFile) records = readRecords(recordsFile);

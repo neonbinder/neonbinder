@@ -42,6 +42,19 @@
  *  - nothing here throws into the caller: telemetry must not be able to change
  *    a result, a timeout, a retry or an error message.
  *
+ * Body modes (`createBscRecorder(op, { deployment, bodyMode })`):
+ *  - `"message"` (default): JSON `message`/`error`/`title`/`code`/`status` values
+ *    are kept after redaction. Fine for public catalog endpoints.
+ *  - `"keysOnly"`: for any call that can carry seller data (every `bscSeller`
+ *    session). Only the safe-shaped KEY NAMES of a JSON body survive, plus the
+ *    values of `code` and `status` and only when they match
+ *    `/^[A-Za-z0-9_.-]{1,64}$/`. Free text (`message`, `error`, `title`) is
+ *    dropped whole, because redaction is pattern-based and cannot recognise a
+ *    name, an address or `pwd hunter2`. A non-JSON body keeps only its HTML
+ *    `<title>` (redacted), or nothing.
+ *  Either way JSON key names are data too: a key is emitted only when it matches
+ *  `^[A-Za-z_][A-Za-z0-9_.-]{0,40}$` and holds no run of 3+ digits, else `[k]`.
+ *
  * The in-flight counter ({@link bscInflight}) is module-level, so it sees only
  * the calls of the one isolate it runs in: a LOWER BOUND on deployment-wide
  * concurrency.
@@ -66,6 +79,8 @@ export const MAX_BODY_READ_BYTES = 4096;
 export const MAX_BODY_LOG_BYTES = 500;
 /** Longest a header value may be. */
 export const MAX_HEADER_VALUE_CHARS = 200;
+/** Bytes dropped from the end of a read that hit the cap (a cut can split a secret). */
+export const BODY_CAP_TAIL_DROP_BYTES = 64;
 /** How long the background clone read may take before it is abandoned. */
 export const BODY_READ_DEADLINE_MS = 2000;
 
@@ -98,6 +113,65 @@ function redact(text: string): string {
   return out;
 }
 
+/** Patterns that would flatten a genuine request id (UUID, long hex/digit runs). */
+const ID_SHAPE_SOURCES = new Set([
+  String.raw`\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b`,
+  String.raw`[A-Za-z0-9_\-+/=]{32,}`,
+  String.raw`\d{7,}`,
+]);
+
+/** Like {@link redact} but keeps UUID/opaque/digit-shaped values: for ids the edge itself mints. */
+function redactKeepingIds(text: string): string {
+  let out = text;
+  for (const [pattern, replacement] of REDACTIONS) {
+    if (!ID_SHAPE_SOURCES.has(pattern.source)) out = out.replace(pattern, replacement);
+  }
+  return out;
+}
+
+const NAMED_ENTITIES: Record<string, string> = {
+  amp: "&",
+  lt: "<",
+  gt: ">",
+  quot: '"',
+  apos: "'",
+  nbsp: " ",
+};
+
+function decodeEntitiesOnce(text: string): string {
+  return text.replace(/&(?:#(\d{1,7})|#[xX]([0-9a-fA-F]{1,6})|([A-Za-z]{2,6}));?/g, (whole, dec, hex, name) => {
+    if (name !== undefined) return NAMED_ENTITIES[name.toLowerCase()] ?? whole;
+    const code = dec !== undefined ? Number(dec) : parseInt(hex, 16);
+    if (!Number.isFinite(code) || code <= 0 || code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff)) return " ";
+    return String.fromCodePoint(code);
+  });
+}
+
+/** Decode numeric and named entities (up to 3 layers, so `&amp;#64;` cannot hide an `@`). */
+function decodeEntities(text: string): string {
+  let out = text;
+  for (let i = 0; i < 3; i++) {
+    const next = decodeEntitiesOnce(out);
+    if (next === out) break;
+    out = next;
+  }
+  return out;
+}
+
+/** A JSON key is data: emit it only when it looks like a field name. */
+const SAFE_KEY = /^[A-Za-z_][A-Za-z0-9_.-]{0,40}$/;
+function safeKey(key: string): string {
+  if (!SAFE_KEY.test(key) || /\d{3}/.test(key)) return "[k]";
+  return redact(key).slice(0, 40);
+}
+
+/** `code` / `status` values kept in keysOnly mode. */
+const KEYS_ONLY_VALUE = /^[A-Za-z0-9_.-]{1,64}$/;
+const KEYS_ONLY_VALUE_KEYS = new Set(["code", "status"]);
+
+/** What a recorder keeps of a non-2xx body. See the file header. */
+export type BscBodyMode = "message" | "keysOnly";
+
 // eslint-disable-next-line no-control-regex
 const CONTROL_CHARS = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g;
 
@@ -115,6 +189,12 @@ export function truncateUtf8(text: string, maxBytes: number): string {
 
 type Walked = { keys: string[]; kept: Array<[string, string]> };
 
+function addKey(acc: Walked, key: string): void {
+  if (acc.keys.length >= MAX_JSON_KEYS) return;
+  const shown = safeKey(key);
+  if (!acc.keys.includes(shown)) acc.keys.push(shown);
+}
+
 function walkJson(value: unknown, depth: number, acc: Walked): void {
   if (depth > MAX_JSON_DEPTH || value === null || typeof value !== "object") return;
   if (Array.isArray(value)) {
@@ -122,7 +202,7 @@ function walkJson(value: unknown, depth: number, acc: Walked): void {
     return;
   }
   for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
-    if (acc.keys.length < MAX_JSON_KEYS && !acc.keys.includes(key)) acc.keys.push(key);
+    addKey(acc, key);
     const lower = key.toLowerCase();
     if (
       JSON_KEPT_KEYS.has(lower) &&
@@ -137,9 +217,7 @@ function walkJson(value: unknown, depth: number, acc: Walked): void {
 /** Truncated JSON cannot be parsed; pull the same things out with patterns. */
 function lenientJson(raw: string): Walked {
   const acc: Walked = { keys: [], kept: [] };
-  for (const m of raw.matchAll(/"([A-Za-z_][\w-]{0,40})"\s*:/g)) {
-    if (acc.keys.length < MAX_JSON_KEYS && !acc.keys.includes(m[1])) acc.keys.push(m[1]);
-  }
+  for (const m of raw.matchAll(/"((?:[^"\\\n]|\\.){0,120})"\s*:/g)) addKey(acc, m[1]);
   const kept = /"(message|error|title|code|status)"\s*:\s*("(?:[^"\\]|\\.)*"|-?\d+(?:\.\d+)?|true|false)/gi;
   for (const m of raw.matchAll(kept)) {
     let value = m[2];
@@ -155,24 +233,33 @@ function lenientJson(raw: string): Walked {
   return acc;
 }
 
-function renderJson(acc: Walked): string {
+function renderJson(acc: Walked, mode: BscBodyMode): string {
   const parts: string[] = [];
-  if (acc.keys.length > 0) parts.push(`keys=[${acc.keys.map((k) => redact(k.slice(0, 40))).join(",")}]`);
-  for (const [key, value] of acc.kept.slice(0, 8)) parts.push(`${key}=${JSON.stringify(collapse(value).slice(0, 200))}`);
+  if (acc.keys.length > 0) parts.push(`keys=[${acc.keys.join(",")}]`);
+  for (const [key, value] of acc.kept) {
+    if (parts.length >= 9) break;
+    if (mode === "keysOnly") {
+      if (!KEYS_ONLY_VALUE_KEYS.has(key) || !KEYS_ONLY_VALUE.test(value)) continue;
+      parts.push(`${key}=${JSON.stringify(redact(value))}`);
+    } else {
+      // Redact BEFORE the cut: a slice can leave half a secret that no pattern matches.
+      parts.push(`${key}=${JSON.stringify(redact(collapse(decodeEntities(value))).slice(0, 200))}`);
+    }
+  }
   return parts.join(" ");
 }
 
-function renderMarkup(raw: string): string {
+/** Text of markup: tags removed with NO inserted space (a tag inside a token must not split it), entities decoded. */
+function markupText(markup: string): string {
+  return collapse(decodeEntities(markup.replace(/<[^>]*>?/g, "")));
+}
+
+function renderMarkup(raw: string, mode: BscBodyMode): string {
   const title = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(raw)?.[1];
-  const body = raw
-    .replace(/<(script|style|head)[\s\S]*?<\/\1>/gi, " ")
-    .replace(/<!--[\s\S]*?-->/g, " ")
-    .replace(/<[^>]*>?/g, " ")
-    .replace(/&nbsp;/gi, " ")
-    .replace(/&amp;/gi, "&");
-  const text = collapse(body);
-  const head = title ? `title=${JSON.stringify(collapse(title).slice(0, 120))}` : "";
-  return [head, text].filter(Boolean).join(" ");
+  const head = title ? `title=${JSON.stringify(redact(markupText(title)).slice(0, 120))}` : "";
+  if (mode === "keysOnly") return head;
+  const body = raw.replace(/<(script|style|head)[\s\S]*?<\/\1>/gi, " ").replace(/<!--[\s\S]*?-->/g, " ");
+  return [head, redact(markupText(body))].filter(Boolean).join(" ");
 }
 
 /**
@@ -182,13 +269,20 @@ function renderMarkup(raw: string): string {
  *  - JSON: only the NAMES of keys, plus the values of `message`, `error`,
  *    `title`, `code` and `status`. Every other value is dropped, which covers
  *    seller bodies.
- *  - HTML/text: tags stripped, `<title>` kept.
+ *    Key names are data: only field-shaped names are shown, others are `[k]`.
+ *  - HTML/text: tags stripped (joined, no space), entities decoded, `<title>` kept.
+ *  - `mode: "keysOnly"` drops every free-text value (see the file header).
+ *  - Redaction runs BEFORE any length cut, so a cut cannot leave half a secret.
  *  - Then JWTs, bearer tokens, `token=…`-style pairs, emails, UUIDs, opaque
  *    runs of 32+ characters and digit runs of 7+ are replaced.
  *  - Truncated to {@link MAX_BODY_LOG_BYTES} bytes AFTER scrubbing, so a cut
  *    can never split a secret in two and leave half of it.
  */
-export function scrubBscBody(raw: string, contentType?: string | null): string {
+export function scrubBscBody(
+  raw: string,
+  contentType?: string | null,
+  mode: BscBodyMode = "message",
+): string {
   try {
     const text = raw.trim();
     if (!text) return "";
@@ -202,9 +296,9 @@ export function scrubBscBody(raw: string, contentType?: string | null): string {
       } catch {
         walked = lenientJson(text);
       }
-      rendered = renderJson(walked);
+      rendered = renderJson(walked, mode);
     } else {
-      rendered = renderMarkup(text);
+      rendered = renderMarkup(text, mode);
     }
     return truncateUtf8(redact(rendered), MAX_BODY_LOG_BYTES);
   } catch {
@@ -223,30 +317,36 @@ const HEADER_ALLOWLIST = new Set([
   "x-request-id",
   "content-type",
   "content-length",
+  // Exact names only. `x-amzn-remapped-*` carries the ORIGIN's headers
+  // (authorization, set-cookie, ...) and must never match.
+  "x-amzn-requestid",
+  "x-amzn-trace-id",
+  "x-amzn-errortype",
 ]);
-const MAX_AMZN_HEADERS = 8;
+const HEADER_DENY = /^x-amzn-remapped-/;
+/** Ids minted by AWS/Cloudflare themselves: UUID/hex-shaped by design, not echoed input. */
+const EDGE_MINTED_ID_HEADERS = new Set(["x-amz-cf-id", "x-amzn-requestid", "x-amzn-trace-id", "cf-ray"]);
 
 type HeadersLike = { forEach(cb: (value: string, key: string) => void): void } | Record<string, string>;
 
 /**
- * Response headers worth keeping, by allowlist only. Anything else (set-cookie,
- * authorization, x-user-*, …) is never copied. Each value is capped at
- * {@link MAX_HEADER_VALUE_CHARS}.
+ * Response headers worth keeping, by exact-name allowlist only. Anything else
+ * (set-cookie, authorization, x-user-*, x-amzn-remapped-*, …) is never copied.
+ * Each value is redacted, then capped at {@link MAX_HEADER_VALUE_CHARS}.
  */
 export function pickBscHeaders(headers: HeadersLike | null | undefined): Record<string, string> {
   const out: Record<string, string> = {};
   if (!headers) return out;
-  let amzn = 0;
   const take = (rawKey: string, rawValue: unknown): void => {
     if (typeof rawValue !== "string") return;
     const key = rawKey.toLowerCase();
-    const isAmzn = key.startsWith("x-amzn-");
-    if (!HEADER_ALLOWLIST.has(key) && !isAmzn) return;
-    if (isAmzn) {
-      if (amzn >= MAX_AMZN_HEADERS) return;
-      amzn += 1;
-    }
-    out[key] = collapse(rawValue).slice(0, MAX_HEADER_VALUE_CHARS);
+    if (HEADER_DENY.test(key) || !HEADER_ALLOWLIST.has(key)) return;
+    // Redact BEFORE the cut (see scrubBscBody).
+    const clean = collapse(rawValue);
+    out[key] = (EDGE_MINTED_ID_HEADERS.has(key) ? redactKeepingIds(clean) : redact(clean)).slice(
+      0,
+      MAX_HEADER_VALUE_CHARS,
+    );
   };
   if (typeof (headers as { forEach?: unknown }).forEach === "function") {
     (headers as { forEach(cb: (value: string, key: string) => void): void }).forEach((value, key) => take(key, value));
@@ -384,6 +484,12 @@ export type BscRecorderOptions = {
   log?: BscLogSink;
   /** Epoch ms clock; defaults to `Date.now`. */
   now?: () => number;
+  /**
+   * What is kept of a failed call's body. Default `"message"`. Use `"keysOnly"`
+   * for anything that can carry seller data (every `bscSeller` session): see
+   * the file header.
+   */
+  bodyMode?: BscBodyMode;
   /** Test hook: how long a background body read may take. */
   bodyReadDeadlineMs?: number;
 };
@@ -492,6 +598,7 @@ async function readCloneBody(clone: Response, deadlineMs: number): Promise<strin
       chunks.push(value);
       total += value.byteLength;
     }
+    const hitCap = total >= MAX_BODY_READ_BYTES;
     const all = new Uint8Array(Math.min(total, MAX_BODY_READ_BYTES));
     let offset = 0;
     for (const chunk of chunks) {
@@ -500,7 +607,8 @@ async function readCloneBody(clone: Response, deadlineMs: number): Promise<strin
       all.set(chunk.subarray(0, room), offset);
       offset += Math.min(chunk.byteLength, room);
     }
-    return all;
+    // A read that hit the cap ends mid-token; drop the tail so no half-secret is scrubbed.
+    return hitCap ? all.subarray(0, Math.max(0, all.length - BODY_CAP_TAIL_DROP_BYTES)) : all;
   })();
   try {
     const winner = await Promise.race([read, deadline]);
@@ -520,6 +628,7 @@ export function createBscRecorder(op: string, opts: BscRecorderOptions = {}): Bs
   const log: BscLogSink = opts.log ?? console;
   const now = opts.now ?? Date.now;
   const deadlineMs = opts.bodyReadDeadlineMs ?? BODY_READ_DEADLINE_MS;
+  const bodyMode: BscBodyMode = opts.bodyMode ?? "message";
   const startedAt = now();
   const calls = new Map<number, CallState>();
   const lat = emptyLatency();
@@ -650,7 +759,7 @@ export function createBscRecorder(op: string, opts: BscRecorderOptions = {}): Bs
         const contentType = response.headers.get("content-type");
         let body: Promise<string> | undefined;
         try {
-          body = readCloneBody(response.clone(), deadlineMs).then((raw) => scrubBscBody(raw, contentType));
+          body = readCloneBody(response.clone(), deadlineMs).then((raw) => scrubBscBody(raw, contentType, bodyMode));
         } catch {
           body = undefined; // a body already used cannot be cloned
         }

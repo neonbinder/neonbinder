@@ -25,20 +25,10 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseLogs } from "./parse.mjs";
+import { assertOutsideRepo } from "./paths.mjs";
 import { buildReport, writeReport } from "./report.mjs";
 
-const HERE = path.dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = path.resolve(HERE, "../../../..");
-
-/** Throws when `target` is the repository or inside it. */
-export function assertOutsideRepo(target, repoRoot = REPO_ROOT) {
-  const resolved = path.resolve(target);
-  const rel = path.relative(repoRoot, resolved);
-  if (rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel))) {
-    throw new Error(`${resolved} is inside the repository; give a directory outside it`);
-  }
-  return resolved;
-}
+export { assertOutsideRepo };
 
 /** Lines of `gh api` JSON (one run per line) to run descriptors. */
 export function parseRunLines(text) {
@@ -53,6 +43,7 @@ export function parseRunLines(text) {
       conclusion: r.conclusion ?? "in_progress",
       createdAt: r.created_at,
       pr: r.pr ?? null,
+      headRepo: typeof r.head_repo === "string" ? r.head_repo : undefined,
     }));
 }
 
@@ -60,6 +51,7 @@ function gh(args) {
   return execFileSync("gh", args, { encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
 }
 
+/** Runs from forks run attacker-controlled code in their own artifacts: only the repo's own runs are read. */
 export function listRuns({ repo, days, run = gh }) {
   const since = new Date(Date.now() - days * 86_400_000).toISOString().slice(0, 10);
   const text = run([
@@ -67,9 +59,12 @@ export function listRuns({ repo, days, run = gh }) {
     "--paginate",
     `repos/${repo}/actions/workflows/pr-pipeline.yml/runs?created=>=${since}&per_page=100`,
     "--jq",
-    ".workflow_runs[] | {id, run_attempt, conclusion, created_at, pr: (.pull_requests[0].number)}",
+    ".workflow_runs[] | {id, run_attempt, conclusion, created_at, pr: (.pull_requests[0].number), head_repo: .head_repository.full_name}",
   ]);
-  return parseRunLines(text);
+  const want = repo.toLowerCase();
+  return parseRunLines(text)
+    .filter((r) => typeof r.headRepo === "string" && r.headRepo.toLowerCase() === want)
+    .map(({ headRepo: _headRepo, ...rest }) => rest);
 }
 
 async function main(argv) {

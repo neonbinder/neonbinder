@@ -20,6 +20,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { convexTest } from "convex-test";
+import { getFunctionName } from "convex/server";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
@@ -830,5 +831,52 @@ describe("NEO-475: one BSC call summary per poll", () => {
     const scheduled = await t.run(async (ctx) => ctx.db.system.query("_scheduled_functions").collect());
     expect(scheduled.filter((f) => f.name.includes("bscCallStats"))).toHaveLength(1);
     vi.restoreAllMocks();
+  });
+
+  test("a body that throws after a BSC call still flushes once: one summary, one bscCallStats.record scheduled", async () => {
+    // The poll's `finally` is the only thing that closes the session on a
+    // throw. The ctx forwards to convex-test, plus a scheduler that records
+    // what is scheduled (the real one is what `pollOwner` passes); the write
+    // that ends the poll throws, after the history read has gone out.
+    const { t } = await setup();
+    let calls = 0;
+    vi.stubGlobal("fetch", (async () => {
+      calls += 1;
+      return Response.json({ results: [], totalElements: 0 });
+    }) as typeof fetch);
+    const lines: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((line: unknown) => void lines.push(String(line)));
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const scheduled: Array<{ name: string; delay: number; args: unknown }> = [];
+    const ctx = {
+      runQuery: ((ref: never, args: never) => (t.query as (r: unknown, a: unknown) => Promise<unknown>)(ref, args)) as PollCtx["runQuery"],
+      runMutation: (async (ref: never, args: never) => {
+        if (getFunctionName(ref) === getFunctionName(internal.listingSales.finishPoll)) {
+          throw new Error("planted: finishPoll refused");
+        }
+        return (t.mutation as (r: unknown, a: unknown) => Promise<unknown>)(ref, args);
+      }) as PollCtx["runMutation"],
+      runAction: ((ref: never, args: never) => (t.action as (r: unknown, a: unknown) => Promise<unknown>)(ref, args)) as PollCtx["runAction"],
+      scheduler: {
+        runAfter: async (delay: number, ref: never, args: unknown) => {
+          scheduled.push({ name: getFunctionName(ref), delay, args });
+          return "scheduled-id";
+        },
+      },
+    };
+
+    await expect(pollOwnerImpl(ctx, { ownerId: OWNER, platform: "bsc" })).rejects.toThrow("planted: finishPoll refused");
+    vi.restoreAllMocks();
+
+    expect(calls).toBe(1);
+    const summaries = lines
+      .filter((l) => l.startsWith('{"msg":"bsc_call_summary"'))
+      .map((l) => JSON.parse(l) as Record<string, unknown>);
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0]).toMatchObject({ op: "pollOwner", calls: 1, ok: 1 });
+    expect(scheduled).toHaveLength(1);
+    expect(scheduled[0]).toMatchObject({ name: "bscCallStats:record", delay: 0 });
+    expect(scheduled[0].args).toMatchObject({ op: "pollOwner", calls: 1 });
   });
 });

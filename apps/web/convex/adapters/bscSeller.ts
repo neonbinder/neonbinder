@@ -152,10 +152,19 @@ const sessionRecorders = new WeakMap<BscSellerSession, BscRecorder>();
 /** The op a session's summary carries when its opener named none. */
 const DEFAULT_SESSION_OP = "bscSellerSession";
 
+/**
+ * A seller session's recorder. `keysOnly`: a seller call's failed body can
+ * name an order, a buyer, an address or a phone, and redaction is pattern
+ * based, so only key names and safe-shaped `code` / `status` values are kept.
+ */
+function newSessionRecorder(op: string): BscRecorder {
+  return createBscRecorder(op, { deployment: deploymentName(), bodyMode: "keysOnly" });
+}
+
 function recorderFor(session: BscSellerSession): BscRecorder {
   let rec = sessionRecorders.get(session);
   if (!rec) {
-    rec = createBscRecorder(DEFAULT_SESSION_OP, { deployment: deploymentName() });
+    rec = newSessionRecorder(DEFAULT_SESSION_OP);
     sessionRecorders.set(session, rec);
   }
   return rec;
@@ -242,7 +251,7 @@ export async function openBscSellerSession(
     };
   }
   const session: BscSellerSession = { ownerId, token: token.token, reauthAttempted: false, dead: false };
-  sessionRecorders.set(session, createBscRecorder(opts.op ?? DEFAULT_SESSION_OP, { deployment: deploymentName() }));
+  sessionRecorders.set(session, newSessionRecorder(opts.op ?? DEFAULT_SESSION_OP));
   return { ok: true, value: session };
 }
 
@@ -250,8 +259,12 @@ interface SendOptions {
   operation: string;
   method: "GET" | "POST" | "PUT";
   path: string;
-  /** `path` with its ids replaced (`seller/order/:id`), for call telemetry. Defaults to `path`. */
-  pathTemplate?: string;
+  /**
+   * `path` with its ids replaced (`seller/order/:id`), for call telemetry.
+   * Required, and a literal at every call site: a raw path can carry an id
+   * into the telemetry row, so there is no fallback to `path` (NEO-475).
+   */
+  pathTemplate: string;
   json?: unknown;
   form?: () => FormData;
   timeoutMs: number;
@@ -309,7 +322,7 @@ async function send(
   const attempt = async (): Promise<Response | BscSellerFailure> => {
     const startedAt = Date.now();
     attempts += 1;
-    const call = rec.start({ pathTemplate: opts.pathTemplate ?? opts.path, timeoutMs: opts.timeoutMs, attempt: attempts });
+    const call = rec.start({ pathTemplate: opts.pathTemplate, timeoutMs: opts.timeoutMs, attempt: attempts });
     last.call = call;
     try {
       const res = await fetch(`${BSC_API_BASE}/${opts.path}`, {
@@ -438,6 +451,7 @@ export async function fetchBscSellerId(
     operation: "sellerProfile",
     method: "GET",
     path: "marketplace/user/profile",
+    pathTemplate: "marketplace/user/profile",
     timeoutMs: BSC_SELLER_TIMEOUTS_MS.profile,
     maxBytes: BSC_SELLER_MAX_BYTES.profile,
   });
@@ -474,6 +488,7 @@ export async function readBscSellerSheet(
     operation: "sheetRead",
     method: "POST",
     path: "seller/bulk-upload/results",
+    pathTemplate: "seller/bulk-upload/results",
     json: {
       condition: args.condition,
       currentListings: true,
@@ -514,6 +529,7 @@ export async function putBscListings(
     operation: "listingsPut",
     method: "PUT",
     path: "seller/bulk-upload",
+    pathTemplate: "seller/bulk-upload",
     json: { sellerId: args.sellerId, listings: args.listings },
     timeoutMs: BSC_SELLER_TIMEOUTS_MS.put,
     maxBytes: BSC_SELLER_MAX_BYTES.put,
@@ -535,6 +551,7 @@ export async function uploadBscSellerPhoto(
     operation: "photoUpload",
     method: "POST",
     path: "common/card/undefined/product/undefined/attachment",
+    pathTemplate: "common/card/undefined/product/undefined/attachment",
     form: () => {
       const form = new FormData();
       form.append("attachment", new Blob([args.bytes], { type: args.contentType }), args.fileName);
@@ -566,6 +583,7 @@ export async function readBscOrderHistory(
     operation: "orderHistory",
     method: "POST",
     path: "seller/order/history",
+    pathTemplate: "seller/order/history",
     json: { name: "", orderNo: "", fromDate: "", toDate: "", page, size: BSC_ORDER_PAGE_SIZE, status: [] },
     timeoutMs: BSC_SELLER_TIMEOUTS_MS.order,
     maxBytes: BSC_SELLER_MAX_BYTES.order,
