@@ -45,14 +45,29 @@ const SITE = "buysportscards" as const;
  * (a 798-row sheet was measured during the NEO-370 spike) and a PUT of 100
  * rows is slow on BSC's side, so the listing calls get far more than the
  * 15s the browser service's fetches use.
+ *
+ * `profile` is per ATTEMPT (`BSC_PROFILE_MAX_ATTEMPTS`): the same bound the
+ * browser service's login path puts on this call (NEO-445).
  */
 export const BSC_SELLER_TIMEOUTS_MS = {
   sheet: 90_000,
   put: 90_000,
   photo: 45_000,
   order: 30_000,
-  profile: 20_000,
+  profile: 5_000,
 } as const;
+
+/**
+ * NEO-475 — `marketplace/user/profile` usually answers in a couple of seconds
+ * and, in BSC's stall spells, sits for 30 s before a 503. Every path bounds
+ * it the same way: 5 s per attempt (headers and body), and a failed attempt
+ * is retried once, at once, with no pause. Worst case about 10 s. On dev
+ * about 1.5% of valid answers take longer than one attempt allows, which the
+ * retry covers. The browser service's login path keeps its own copy of this
+ * rule (`BSC_PROFILE_*` in `services/browser/src/adapters/bsc-adapter.ts`):
+ * the two adapters are a deliberate duplication across the service boundary.
+ */
+export const BSC_PROFILE_MAX_ATTEMPTS = 2;
 
 /** BSC answers the sheet read in one body; `size` is a guard, not a page. */
 const SHEET_MAX_ROWS = 5000;
@@ -140,7 +155,8 @@ export const BSC_SELLER_COPY = {
 
 /**
  * Fixed-vocabulary detail a call's log line may carry (NEO-475: a sheet read's
- * BSC condition key and its retry attempt). Never an id, a token or a body.
+ * BSC condition key and its retry attempt, a profile read's attempt). Never an
+ * id, a token or a body.
  */
 type LogFields = { condition?: string; attempt?: number };
 
@@ -349,7 +365,13 @@ async function send(
   const attempt = async (): Promise<Response | BscSellerFailure> => {
     const startedAt = Date.now();
     attempts += 1;
-    const call = rec.start({ pathTemplate: opts.pathTemplate, timeoutMs: opts.timeoutMs, attempt: attempts });
+    // A caller's own retry loop (a sheet read, the profile) numbers its
+    // attempts in `logFields.attempt`; the 401 retry here counts on from it.
+    const call = rec.start({
+      pathTemplate: opts.pathTemplate,
+      timeoutMs: opts.timeoutMs,
+      attempt: (opts.logFields?.attempt ?? 1) - 1 + attempts,
+    });
     last.call = call;
     try {
       const res = await fetch(`${BSC_API_BASE}/${opts.path}`, {
@@ -466,23 +488,45 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 // ── The seller profile ─────────────────────────────────────────────────────
 
 /**
+ * True when a failed profile attempt is worth one more (NEO-475, the NEO-445
+ * rule): a timeout, a network error, an unreadable body or a 5xx. A 4xx is
+ * BSC refusing the request, and a signed-out, paused or tokenless session
+ * would fail the same way again.
+ */
+function isRetryableProfileFailure(f: BscSellerFailure): boolean {
+  if (f.kind === "timeout" || f.kind === "network" || f.kind === "bad_response") return true;
+  return f.kind === "http" && f.httpStatus !== undefined && f.httpStatus >= 500;
+}
+
+/**
  * The collector's BSC seller id, the `sellerId` a PUT names. Read from
  * `marketplace/user/profile` → `sellerProfile.sellerId` (the field the browser
  * service's login captures, `services/browser/src/adapters/bsc-adapter.ts`).
  * Null when BSC sends none or one outside the stored shape.
+ *
+ * Bounded like every profile read (NEO-475): `BSC_SELLER_TIMEOUTS_MS.profile`
+ * per attempt, and a retryable failure is tried again at once, up to
+ * `BSC_PROFILE_MAX_ATTEMPTS`. A 401 inside an attempt still takes the
+ * session's one refresh in `send`. The last attempt's failure is returned.
  */
 export async function fetchBscSellerId(
   ctx: SessionCtx,
   session: BscSellerSession,
 ): Promise<BscSellerResult<string | null>> {
-  const r = await send(ctx, session, {
-    operation: "sellerProfile",
-    method: "GET",
-    path: "marketplace/user/profile",
-    pathTemplate: "marketplace/user/profile",
-    timeoutMs: BSC_SELLER_TIMEOUTS_MS.profile,
-    maxBytes: BSC_SELLER_MAX_BYTES.profile,
-  });
+  const read = (attempt: number) =>
+    send(ctx, session, {
+      operation: "sellerProfile",
+      method: "GET",
+      path: "marketplace/user/profile",
+      pathTemplate: "marketplace/user/profile",
+      timeoutMs: BSC_SELLER_TIMEOUTS_MS.profile,
+      maxBytes: BSC_SELLER_MAX_BYTES.profile,
+      logFields: { attempt },
+    });
+  let r = await read(1);
+  for (let attempt = 2; attempt <= BSC_PROFILE_MAX_ATTEMPTS && !r.ok && isRetryableProfileFailure(r.failure); attempt++) {
+    r = await read(attempt);
+  }
   if (!r.ok) return r;
   const profile = isRecord(r.value) && isRecord(r.value.sellerProfile) ? r.value.sellerProfile : null;
   const sellerId = profile && typeof profile.sellerId === "string" ? profile.sellerId : null;

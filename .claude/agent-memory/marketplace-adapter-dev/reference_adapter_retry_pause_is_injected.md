@@ -60,4 +60,14 @@ clock stalls them).
   x attempts); a "succeeds on a later pass" test must fail every attempt of
   the first pass or it goes green through the in-action retry.
 
+- An IMMEDIATE retry (no pause, e.g. the BSC profile read's 5 s x 2 rule)
+  needs no seam: prove "no pause" with `vi.useFakeTimers({ toFake:
+  ["setTimeout","setInterval","setImmediate"] })`, await the call without
+  advancing, and assert `vi.getTimerCount() === 0` (a planted pause hangs it
+  red). Prove the per-attempt bound by spying `AbortSignal.timeout` (record
+  `ms`, call the real one): fetch's signal is opaque otherwise.
+- A retry loop ABOVE `send` numbers its attempts through `logFields.attempt`;
+  `send` feeds the recorder `logFields.attempt - 1 + its own 401 count`, so
+  `bsc_seller_call` and `bsc_call_failed` agree per attempt.
+
 Related: [[action-impl-stub-ctx-for-write-failures]], [[hold-runafter0-in-convex-test]].

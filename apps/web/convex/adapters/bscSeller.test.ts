@@ -8,15 +8,22 @@
  *     past the cap is a `bad_response`, never parsed;
  *   - a sheet comes back narrowed, its unreadable rows counted;
  *   - NEO-475: a failure's sentence is NB's (no operation name), and a sheet
- *     read's log line names its condition and attempt.
+ *     read's log line names its condition and attempt;
+ *   - NEO-475: the seller profile read is bounded like the login path's
+ *     (NEO-445): 5 s per attempt, and a timeout, network error, unreadable
+ *     body or 5xx is retried once, at once; a 4xx or a signed-out session is
+ *     not.
  *
  * `fetch` is stubbed; nothing reaches the network.
  */
 
 import { afterEach, describe, expect, test, vi } from "vitest";
 import {
+  BSC_PROFILE_MAX_ATTEMPTS,
   BSC_SELLER_COPY,
   BSC_SELLER_MAX_BYTES,
+  BSC_SELLER_TIMEOUTS_MS,
+  fetchBscSellerId,
   putBscListings,
   readBscOrder,
   readBscSellerSheet,
@@ -221,5 +228,136 @@ describe("NEO-475: what a failure says, and what a sheet read logs", () => {
     }) as typeof fetch);
     const lines = await sellerLines(() => readBscSellerSheet(ctx, session(), { filters: {}, condition: "excellent", attempt: 2 }));
     expect(lines).toEqual([expect.objectContaining({ operation: "sheetRead", condition: "excellent", attempt: 2, outcome: "network" })]);
+  });
+});
+
+describe("NEO-475: the seller profile read (5 s per attempt, one immediate retry)", () => {
+  type Answer = "timeout" | "network" | "garbled" | number | "ok";
+  const PROFILE = Response.json({ sellerProfile: { sellerId: "seller-9" } });
+
+  /** Answers each profile request from `script` in turn; records each request's timeout. */
+  function scriptProfile(script: Answer[]) {
+    const asked: string[] = [];
+    const timeouts: number[] = [];
+    const realTimeout = AbortSignal.timeout.bind(AbortSignal);
+    vi.spyOn(AbortSignal, "timeout").mockImplementation((ms: number) => {
+      timeouts.push(ms);
+      return realTimeout(ms);
+    });
+    vi.stubGlobal("fetch", (async (url: string | URL | Request) => {
+      asked.push(String(url));
+      const answer = script.shift() ?? "ok";
+      if (answer === "timeout") throw Object.assign(new Error("The operation was aborted due to timeout"), { name: "TimeoutError" });
+      if (answer === "network") throw new TypeError("fetch failed");
+      if (answer === "garbled") return new Response("<html>not json</html>", { status: 200 });
+      if (typeof answer === "number") return new Response("<html>nope</html>", { status: answer });
+      return PROFILE.clone();
+    }) as typeof fetch);
+    return { asked, timeouts };
+  }
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+
+  /** Every `bsc_seller_call` line for the profile while `work` runs. */
+  async function profileLines(work: () => Promise<unknown>): Promise<Array<Record<string, unknown>>> {
+    const lines: Array<Record<string, unknown>> = [];
+    const spy = vi.spyOn(console, "log").mockImplementation((line: unknown) => {
+      if (typeof line === "string" && line.startsWith('{"msg":"bsc_seller_call"')) lines.push(JSON.parse(line) as Record<string, unknown>);
+    });
+    try {
+      await work();
+    } finally {
+      spy.mockRestore();
+    }
+    return lines;
+  }
+
+  test("the bound is the login path's: 5 s per attempt, two attempts", () => {
+    expect(BSC_SELLER_TIMEOUTS_MS.profile).toBe(5_000);
+    expect(BSC_PROFILE_MAX_ATTEMPTS).toBe(2);
+  });
+
+  test("a timeout, then an answer: the retry reads the seller id, each attempt under 5 s, each logged with its attempt", async () => {
+    const { asked, timeouts } = scriptProfile(["timeout", "ok"]);
+    let r: Awaited<ReturnType<typeof fetchBscSellerId>> | undefined;
+    const lines = await profileLines(async () => {
+      r = await fetchBscSellerId(ctx, session());
+    });
+    expect(r).toEqual({ ok: true, value: "seller-9" });
+    expect(asked).toHaveLength(2);
+    expect(asked.every((u) => u.endsWith("/marketplace/user/profile"))).toBe(true);
+    expect(timeouts).toEqual([5_000, 5_000]);
+    expect(lines).toEqual([
+      expect.objectContaining({ operation: "sellerProfile", attempt: 1, outcome: "timeout" }),
+      expect.objectContaining({ operation: "sellerProfile", attempt: 2, outcome: "ok", httpStatus: 200 }),
+    ]);
+    expect(lines[0]).not.toHaveProperty("condition");
+  });
+
+  test("an answer first time is one request", async () => {
+    const { asked } = scriptProfile(["ok"]);
+    expect(await fetchBscSellerId(ctx, session())).toEqual({ ok: true, value: "seller-9" });
+    expect(asked).toHaveLength(1);
+  });
+
+  test("two timeouts: no third request, and the caller gets the timeout in NB's words", async () => {
+    const { asked } = scriptProfile(["timeout", "timeout", "ok"]);
+    expect(await fetchBscSellerId(ctx, session())).toEqual({
+      ok: false,
+      failure: { kind: "timeout", message: BSC_SELLER_COPY.timeout },
+    });
+    expect(asked).toHaveLength(2);
+  });
+
+  test.each<[string, Answer]>([
+    ["a network error", "network"],
+    ["an unreadable body", "garbled"],
+    ["a 503", 503],
+    ["a 500", 500],
+  ])("%s is retried at once", async (_label, first) => {
+    const { asked } = scriptProfile([first, "ok"]);
+    expect(await fetchBscSellerId(ctx, session())).toEqual({ ok: true, value: "seller-9" });
+    expect(asked).toHaveLength(2);
+  });
+
+  test("a 503 on both attempts fails as busy after two requests", async () => {
+    const { asked } = scriptProfile([503, 503, "ok"]);
+    expect(await fetchBscSellerId(ctx, session())).toEqual({
+      ok: false,
+      failure: { kind: "http", httpStatus: 503, message: BSC_SELLER_COPY.busy },
+    });
+    expect(asked).toHaveLength(2);
+  });
+
+  test.each([400, 403, 404])("a %i is BSC refusing the request: not retried", async (status) => {
+    const { asked } = scriptProfile([status, "ok"]);
+    expect(await fetchBscSellerId(ctx, session())).toMatchObject({ ok: false, failure: { kind: "http", httpStatus: status } });
+    expect(asked).toHaveLength(1);
+  });
+
+  test("a 401 takes the session's one refresh inside the attempt; refused again, the session is dead and no profile retry follows", async () => {
+    const runAction = vi.fn(async () => ({ token: "tok-2", refreshed: true }));
+    const { asked } = scriptProfile([401, 401, "ok"]);
+    const s = session();
+    expect(await fetchBscSellerId({ runAction } as never, s)).toMatchObject({ ok: false, failure: { kind: "signed_out" } });
+    expect(asked).toHaveLength(2);
+    expect(s.dead).toBe(true);
+  });
+
+  test("the retry is immediate: it lands with the fake clock never advanced and no timer left behind", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "setInterval", "setImmediate"] });
+    const { asked } = scriptProfile(["timeout", "ok"]);
+    expect(await fetchBscSellerId(ctx, session())).toEqual({ ok: true, value: "seller-9" });
+    expect(asked).toHaveLength(2);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  test("a sellerProfile with no usable id is an answer, not a failure: not retried", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ sellerProfile: { sellerId: "has spaces" } })) as unknown as typeof fetch);
+    expect(await fetchBscSellerId(ctx, session())).toEqual({ ok: true, value: null });
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 });

@@ -21,8 +21,10 @@ import {
   closeBscSellerSession,
   flushBscRecorder,
   openBscSellerSession,
+  fetchBscSellerId,
   readBscOrder,
   readBscOrderHistory,
+  readBscSellerSheet,
   type BscSellerSession,
 } from "./bscSeller";
 import { createBscRecorder, resetBscInflightForTests } from "../lib/bscCallTelemetry";
@@ -191,6 +193,48 @@ describe("send records every request on the session", () => {
     expect(summaries()[0]).toMatchObject({ calls: 2, ok: 1, byKind: { http: 1 }, byStatus: { "401": 1, "200": 1 } });
     expect(failures()[0]).toMatchObject({ attempt: 1, status: 401 });
     expect(scheduled).toHaveLength(1);
+  });
+});
+
+describe("NEO-475: the profile read's retry is recorded per attempt", () => {
+  test("two timeouts: two calls on the summary, each failure line naming its attempt and the 5 s bound", async () => {
+    vi.stubGlobal("fetch", (async () => {
+      throw timeoutError();
+    }) as typeof fetch);
+    const { ctx, scheduled } = makeCtx();
+    const s = session();
+    expect(await fetchBscSellerId(ctx as never, s)).toMatchObject({ ok: false, failure: { kind: "timeout" } });
+    await closeBscSellerSession(ctx, s);
+    expect(summaries()[0]).toMatchObject({ calls: 2, ok: 0, byKind: { timeout: 2 } });
+    expect(failures().map((f) => [f.pathTemplate, f.kind, f.attempt, f.timeoutMs])).toEqual([
+      ["marketplace/user/profile", "timeout", 1, 5_000],
+      ["marketplace/user/profile", "timeout", 2, 5_000],
+    ]);
+    expect(scheduled).toHaveLength(1);
+  });
+
+  test("a timeout then an answer: one failure line (attempt 1), the second call ok", async () => {
+    const answers: Array<"timeout" | "ok"> = ["timeout", "ok"];
+    vi.stubGlobal("fetch", (async () => {
+      if (answers.shift() === "timeout") throw timeoutError();
+      return Response.json({ sellerProfile: { sellerId: "seller-9" } });
+    }) as typeof fetch);
+    const { ctx } = makeCtx();
+    const s = session();
+    expect(await fetchBscSellerId(ctx as never, s)).toEqual({ ok: true, value: "seller-9" });
+    await closeBscSellerSession(ctx, s);
+    expect(summaries()[0]).toMatchObject({ calls: 2, ok: 1, byKind: { timeout: 1 } });
+    expect(failures()).toHaveLength(1);
+    expect(failures()[0]).toMatchObject({ kind: "timeout", attempt: 1, timeoutMs: 5_000 });
+  });
+
+  test("a sheet read the caller retries is recorded under the caller's attempt, as its log line is", async () => {
+    vi.stubGlobal("fetch", (async () => new Response("<html>Service Unavailable</html>", { status: 503 })) as typeof fetch);
+    const { ctx } = makeCtx();
+    const s = session();
+    await readBscSellerSheet(ctx as never, s, { filters: {}, condition: "near_mint", attempt: 3 });
+    await closeBscSellerSession(ctx, s);
+    expect(failures()[0]).toMatchObject({ kind: "http", status: 503, attempt: 3 });
   });
 });
 
