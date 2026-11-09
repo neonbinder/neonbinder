@@ -2170,11 +2170,13 @@ jobs:
           path: apps/web/pw-all
 
       - name: Merge reports
+        env:
+          RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
           set -euo pipefail
           # After "Re-run failed jobs" pw-all holds several attempts of a
           # report; keep the newest <= this attempt per name (NEO-466).
-          node scripts/pick-report-attempts.mjs pw-all "${{ github.run_attempt }}"
+          node scripts/pick-report-attempts.mjs pw-all "$RUN_ATTEMPT"
           mkdir -p pw-blobs pw-merged
           # Prefix each blob with its artifact (pass) name so two passes can
           # never overwrite one another's report-*.zip.
