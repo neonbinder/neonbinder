@@ -175,8 +175,10 @@ describe("the drawer's Move, Sell and Take off sale", () => {
     expect(optionsOf(within(sellPanel).getByRole("combobox", { name: "Into which box" }))).toEqual(["Unsorted", "Show box"]);
     expect(within(sellPanel).getByText("Everything in a box is for sale. Boxes live on Inventory.")).toBeTruthy();
     fireEvent.change(within(sellPanel).getByRole("combobox", { name: "Into which box" }), { target: { value: "box-show" } });
+    // NEO-479: the demo card has no common price, so Sell asks one.
+    fireEvent.change(within(sellPanel).getByRole("textbox", { name: "Price" }), { target: { value: "1.50" } });
     fireEvent.click(within(sellPanel).getByRole("button", { name: "Put 3 up for sale" }));
-    await waitFor(() => expect(status(/^#.+ are up for sale in Show box\.$/)).toBe(true));
+    await waitFor(() => expect(status(/^#.+ are up for sale in Show box at \$1\.50\.$/)).toBe(true));
     await frames();
     expect(within(drawer).getAllByText(/^For sale · Show box$/).length).toBeGreaterThan(0);
   });
@@ -213,8 +215,9 @@ describe("the drawer's Move, Sell and Take off sale", () => {
     const panel = within(drawer).getByRole("form", { name: /^Sell / });
     expect(within(panel).queryByText(/No boxes yet/)).toBeNull();
     expect(optionsOf(within(panel).getByRole("combobox", { name: "Into which box" }))).toEqual(["Unsorted"]);
+    fireEvent.change(within(panel).getByRole("textbox", { name: "Price" }), { target: { value: "1.50" } });
     fireEvent.click(within(panel).getByRole("button", { name: "Put 3 up for sale" }));
-    await waitFor(() => expect(status(/^#.+ are up for sale in Unsorted\.$/)).toBe(true));
+    await waitFor(() => expect(status(/^#.+ are up for sale in Unsorted at \$1\.50\.$/)).toBe(true));
   });
 
   // NEO-364 F3: copies never record the binder they left, so Take off sale

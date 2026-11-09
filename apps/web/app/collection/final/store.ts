@@ -553,7 +553,27 @@ export interface MoveOpResult {
   copyId: CopyId;
   folded: boolean;
   split: boolean;
-  from: { homeId: ContainerId; slot?: number; quantity: number };
+  /**
+   * Where the cards came from, for the undo. NEO-479: `minPrice` holds the
+   * cards' own price before the move (`null`: none), there when the move
+   * changed it or took a priced card into a box; the undo sends it back.
+   */
+  from: { homeId: ContainerId; slot?: number; quantity: number; minPrice?: number | null };
+}
+
+/** NEO-479 — the server's price cap (`convex/collection.ts` `MAX_COST_CENTS`, $100,000,000.00); keep in step. */
+const MAX_PRICE_CENTS = 10_000_000_000;
+
+/** NEO-479 — a price the copies can carry: dollars in whole cents, zero to the server's cap. */
+function isWholeCentPrice(price: number): boolean {
+  const cents = price * 100;
+  return Number.isFinite(price) && price >= 0 && Math.abs(Math.round(cents) - cents) < 1e-6 && Math.round(cents) <= MAX_PRICE_CENTS;
+}
+
+/** Two prices (dollars, or none) are the same when they are the same number of cents. */
+function samePrice(a: number | undefined, b: number | undefined): boolean {
+  if (a === undefined || b === undefined) return a === b;
+  return Math.round(a * 100) === Math.round(b * 100);
 }
 
 /** What `demoOps.restoreLines` needs to undo a `setBoxQuantity`. */
@@ -687,6 +707,18 @@ export const demoOps = {
    * Moves `quantity` (default all) of a copy into `to`, at `slot` when
    * given (else a binder's first open pocket, or its own when it stays in the
    * same binder). Folds into an identical line there; part of a stack splits off.
+   *
+   * NEO-479 (as the server's `moveCopy`): `minPrice` (dollars) is the moving
+   * cards' own price, `null` clears it; left out, they keep the one they
+   * have, except out of a box into a binder, where they lose it. Refuses a
+   * price that isn't whole cents and any price on a move that stays home. A
+   * number into a binder is allowed: it is how an undo hands a card its own
+   * price back. Never touches a common price.
+   *
+   * `from.minPrice` (the price before, `null`: none) is there when the move
+   * changed the price, or when it went into a box from elsewhere carrying a
+   * price of its own: the undo, out of the box with no price, would
+   * otherwise take that price off.
    */
   moveCopy(
     state: CollectionState,
@@ -694,6 +726,7 @@ export const demoOps = {
     to: ContainerId,
     quantity?: number,
     slot?: number,
+    minPrice?: number | null,
   ): OpResult<MoveOpResult> {
     const i = indexOfCopy(state, id);
     const source = state.copies[i];
@@ -702,20 +735,46 @@ export const demoOps = {
     if (dest.system === "want") throw new DemoRefusal("The Want List holds wants, not cards. Want the card instead.");
     if (dest.system === "trade") throw new DemoRefusal("Flag the card Up for Trade instead: it stays where it lives.");
     if (dest.rule) throw new DemoRefusal(`${dest.name} fills itself. Move the card somewhere else.`);
+    if (minPrice !== undefined && to === source.homeId) {
+      throw new DemoRefusal("A price goes with a move into a box. Edit the card to change its price.");
+    }
+    if (typeof minPrice === "number" && !isWholeCentPrice(minPrice)) {
+      throw new DemoRefusal("Price needs to be dollars and cents, like 1.50.");
+    }
     checkSlot(state, to, slot);
     const moving = Math.min(source.quantity, Math.max(1, Math.floor(quantity ?? source.quantity)));
     const split = moving < source.quantity;
+    // The moving cards' own price: the one given, else the one they have,
+    // except that coming out of a box into a binder takes it off (Branch B).
+    const fromBox = containerIn(state, source.homeId)?.kind === "box";
+    const leavingSale = fromBox && dest.kind !== "box";
+    const goingOnSale = !fromBox && dest.kind === "box";
+    const price =
+      minPrice === undefined ? (leavingSale ? undefined : source.minPrice) : (minPrice ?? undefined);
+    const priced = samePrice(price, source.minPrice)
+      ? source
+      : (() => {
+          const { minPrice: _was, ...rest } = source;
+          return price === undefined ? rest : { ...rest, minPrice: price };
+        })();
     // A line's photos travel only with the whole line; a part split off is a
     // plain stack that may fold (as the server's `moveOne`).
-    const { hasPhotos: _photos, ...withoutPhotos } = source;
-    const carried = split ? withoutPhotos : source;
+    const { hasPhotos: _photos, ...withoutPhotos } = priced;
+    const carried = split ? withoutPhotos : priced;
     if (slot === undefined && keepsPockets(dest)) {
       slot =
         to === source.homeId && source.slot !== undefined
           ? source.slot
           : arrivingPocket(state.copies, source.cardId, clean({ ...carried, homeId: to, slot: undefined }), id);
     }
-    const from = { homeId: source.homeId, ...(source.slot === undefined ? {} : { slot: source.slot }), quantity: moving };
+    const from = {
+      homeId: source.homeId,
+      ...(source.slot === undefined ? {} : { slot: source.slot }),
+      quantity: moving,
+      ...(!samePrice(price, source.minPrice) || (goingOnSale && source.minPrice !== undefined)
+        ? { minPrice: source.minPrice ?? null }
+        : {}),
+    };
     const landed = clean({ ...carried, homeId: to, slot, quantity: moving });
     const twin = state.copies.find((c) => c.id !== id && c.cardId === source.cardId && sameLineItem(c, landed));
     if (!twin && slot !== undefined && pocketHolder(state, to, slot, new Set([id]))) {

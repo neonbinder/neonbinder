@@ -50,6 +50,7 @@ import { useLineKeys } from "./lineKeys";
 import OwnCardNote from "./OwnCardNote";
 import CopyPhotosField, { HeldPhotosField, LineThumb, PHOTO_SIDES, type HeldPhotos } from "./CopyPhotosField";
 import { usePageApi } from "./pageApi";
+import { parsePrice } from "./inventory/CommonPrice";
 
 /** What the shared copy form edits (the prototypes' copy shape). */
 type FormValue = ComponentProps<typeof CopyDetailsForm>["value"];
@@ -475,18 +476,34 @@ export default function CardDetail({
     );
   };
 
-  const move = (copy: Copy, toHomeId: ContainerId, quantity: number) => {
+  /**
+   * NEO-479: `minPrice` (dollars) is the moving cards' own price, typed on
+   * Sell; left out, they keep theirs, or sell at the common price. This
+   * never writes the common price: a one-card panel prices only that card.
+   */
+  const move = (copy: Copy, toHomeId: ContainerId, quantity: number, minPrice?: number) => {
     const to = homeById(toHomeId);
     const whole = quantity >= copy.quantity;
     const many = quantity > 1;
+    const options = {
+      ...(whole ? {} : { quantity }),
+      ...(minPrice !== undefined ? { minPrice } : {}),
+    };
     return api.run(
-      () => writes.moveCopy(copy, toHomeId, whole ? undefined : { quantity }),
+      () => writes.moveCopy(copy, toHomeId, Object.keys(options).length > 0 ? options : undefined),
       (r) => {
         const what = whole ? name : `${quantity} of ${name}`;
         const stacked = r.folded ? ", stacked with the ones already there" : "";
         const where = to?.name ?? "its new home";
         if (to?.kind === "box" && copy.homeKind !== "box") {
-          return `${what} ${many ? "are" : "is"} up for sale in ${where}${stacked}.`;
+          const own = minPrice ?? copy.minPrice;
+          const at =
+            own !== undefined
+              ? ` at $${own.toFixed(2)}`
+              : typeof commonPrice === "number"
+                ? ` at your common price, $${commonPrice.toFixed(2)}`
+                : "";
+          return `${what} ${many ? "are" : "is"} up for sale in ${where}${at}${stacked}.`;
         }
         if (to?.kind !== "box" && copy.homeKind === "box") {
           return `Took ${what} off sale. ${many ? "They're" : "It's"} back in ${where}${stacked}.`;
@@ -847,12 +864,19 @@ export function CopyList({
   showTrade?: boolean;
   /** Sell / Take off sale, and a box line's "For sale · <box>" tag (capabilities `binders` and `inventory`). */
   showSale?: boolean;
-  /** NEO-378 — the variant's common price (dollars): a box line with no floor of its own sells at it. */
+  /**
+   * NEO-378 — the variant's common price (dollars): a box line with no floor
+   * of its own sells at it. `null`: none set; `undefined`: still loading
+   * (Sell's Price field waits for it, NEO-479).
+   */
   commonPrice?: number | null;
   /** Every home a line can go to (capability `binders`): Move, Sell and Take off sale pick from it. */
   homes?: readonly Container[];
-  /** Moves `quantity` of the line; resolves `null` when the server refused. */
-  onMove?: (copy: Copy, toHomeId: ContainerId, quantity: number) => Promise<MoveResult | null>;
+  /**
+   * Moves `quantity` of the line, at `minPrice` (dollars) when Sell set the
+   * cards' own price (NEO-479); resolves `null` when the server refused.
+   */
+  onMove?: (copy: Copy, toHomeId: ContainerId, quantity: number, minPrice?: number) => Promise<MoveResult | null>;
   /** Opens a line's form; `key` is the line's key, which `editing` names it by. */
   onEdit?: (copy: Copy, key: string) => void;
   onRemove: (copy: Copy) => void;
@@ -947,10 +971,10 @@ export function CopyList({
   };
   const toggle = (copy: Copy, shift: Shift) =>
     setMoving(movingOn(copy) === shift ? null : { key: keyOf(copy), shift });
-  const submitMove = (copy: Copy, shift: Shift, toHomeId: ContainerId, quantity: number) => {
+  const submitMove = (copy: Copy, shift: Shift, toHomeId: ContainerId, quantity: number, minPrice?: number) => {
     if (!onMove) return;
     closeMove(copy.id, shift);
-    void onMove(copy, toHomeId, quantity).then((r) => {
+    void onMove(copy, toHomeId, quantity, minPrice).then((r) => {
       if (r) setLanded(r.copyId);
     });
   };
@@ -1082,7 +1106,8 @@ export function CopyList({
                     defaultTo={
                       moving.shift === "unsell" ? unsellDefault(lines, shiftHomes(copy, shelf, "unsell")) : undefined
                     }
-                    onMove={(to, quantity) => submitMove(copy, moving.shift, to, quantity)}
+                    price={{ common: commonPrice }}
+                    onMove={(to, quantity, minPrice) => submitMove(copy, moving.shift, to, quantity, minPrice)}
                     onCancel={() => closeMove(copy.id, moving.shift)}
                   />
                 )}
@@ -1093,6 +1118,38 @@ export function CopyList({
       )}
     </section>
   );
+}
+
+/** NEO-479 — the server's price cap in cents (`convex/collection.ts` `MAX_COST_CENTS`, $100,000,000.00); keep in step. */
+const MAX_PRICE_CENTS = 10_000_000_000;
+
+/** What Sell's Price field hands the store, or why it can't yet. */
+export type SellPrice =
+  | {
+      ok: true;
+      /** The cards' own price (dollars); `undefined`: the prefill untouched, so nothing is sent. */
+      minPrice: number | undefined;
+    }
+  | { ok: false; reason: "blank" | "invalid" | "tooHigh" };
+
+/**
+ * NEO-479 — Sell's Price field as the store takes it. A price is required.
+ * One the same number of cents as the prefill (0.5 and 0.50 alike) sends
+ * nothing: a copy at the common price keeps reading it live, and a copy with
+ * its own keeps that. Anything else becomes the cards' own price. Nothing
+ * here, or anywhere on the panel, writes the common price.
+ *
+ * `prefill`: the copy's own price, else the variant's common price, in
+ * dollars (`null`: neither; `undefined`: still loading, treated as none).
+ */
+export function sellPriceToStore(text: string, prefill: number | null | undefined): SellPrice {
+  const parsed = parsePrice(text);
+  if (parsed === null) return { ok: false, reason: "blank" };
+  if (parsed === "invalid") return { ok: false, reason: "invalid" };
+  const cents = Math.round(parsed * 100);
+  if (cents > MAX_PRICE_CENTS) return { ok: false, reason: "tooHigh" };
+  if (typeof prefill === "number" && cents === Math.round(prefill * 100)) return { ok: true, minPrice: undefined };
+  return { ok: true, minPrice: cents / 100 };
 }
 
 /** What each panel says. */
@@ -1135,6 +1192,7 @@ export function MovePanel({
   shift,
   homes,
   defaultTo,
+  price,
   onMove,
   onCancel,
 }: {
@@ -1145,11 +1203,20 @@ export function MovePanel({
   homes: readonly Container[];
   /** The home picked to start (Take off sale's `unsellDefault`); else the first offered. */
   defaultTo?: ContainerId;
-  onMove: (toHomeId: ContainerId, quantity: number) => void;
+  /**
+   * NEO-479 — asks a price when cards go from a binder into a box. `common`
+   * is the variant's common price in dollars (`null`: none; `undefined`:
+   * still loading, and the submit waits). Without it the panel asks none.
+   */
+  price?: { common: number | null | undefined };
+  /** `minPrice` (dollars): the cards' own price, only when the collector typed a new one. */
+  onMove: (toHomeId: ContainerId, quantity: number, minPrice?: number) => void;
   onCancel: () => void;
 }) {
   const selectId = useId();
   const helpId = useId();
+  const priceHelpId = useId();
+  const priceErrorId = useId();
   const words = SHIFT_WORDS[shift];
   // State holds only an explicit pick. Until there is one the select shows
   // the default (or the first home), derived on every render, so homes that
@@ -1164,6 +1231,39 @@ export function MovePanel({
   const [quantity, setQuantity] = useState<number>(copy.quantity);
   const stack = copy.quantity > 1;
   const valid = Number.isInteger(quantity) && quantity >= 1 && quantity <= copy.quantity;
+
+  // NEO-479 — Price, when cards go up for sale (out of a binder, into a box).
+  // Like `to`, state holds only what the collector typed; the shown value
+  // falls back to the prefill on every render, so a common price that loads
+  // after the panel opens still fills the field.
+  const picked = homes.find((h) => h.id === to);
+  const pricing = !!price && copy.homeKind !== "box" && picked?.kind === "box";
+  const prefill: number | null | undefined = copy.minPrice ?? price?.common;
+  const [typed, setTyped] = useState<string | null>(null);
+  const priceShown = typed ?? (typeof prefill === "number" ? prefill.toFixed(2) : "");
+  const priceLoading = pricing && prefill === undefined;
+  const sale = pricing ? sellPriceToStore(priceShown, prefill) : null;
+  const priceError =
+    !sale || sale.ok
+      ? null
+      : sale.reason === "invalid"
+        ? "Dollars and cents, like 1.50."
+        : sale.reason === "tooHigh"
+          ? "That's past the $100,000,000.00 limit."
+          : // A blank field with nothing to fall back on is what the help already asks for.
+            typed !== null && typeof prefill === "number"
+            ? "Give it a price, like 1.50."
+            : null;
+  const priceHelp =
+    copy.minPrice !== undefined
+      ? "This card's own price."
+      : typeof price?.common === "number"
+        ? `Your common price, $${price.common.toFixed(2)}. Change it to price just this card; your common price stays put.`
+        : price?.common === null
+          ? "No common price for this card yet. Give it a price to put it up for sale."
+          : "Looking up your common price…";
+  const ready = valid && !!to && !priceLoading && (!sale || sale.ok);
+
   const note =
     shift === "sell"
       ? "Everything in a box is for sale. Boxes live on Inventory."
@@ -1173,8 +1273,10 @@ export function MovePanel({
 
   const submit = (e: FormEvent) => {
     e.preventDefault();
-    if (!valid || !to) return;
-    onMove(to, quantity);
+    if (!ready) return;
+    const minPrice = sale?.ok ? sale.minPrice : undefined;
+    if (minPrice === undefined) onMove(to, quantity);
+    else onMove(to, quantity, minPrice);
   };
   const onKeyDown = (e: KeyboardEvent<HTMLElement>) => {
     if (e.key === "Escape") {
@@ -1234,6 +1336,41 @@ export function MovePanel({
           />
         )}
       </div>
+      {pricing && (
+        // Its own row: the field beside its help on a wide drawer, the help
+        // under it on a phone. The help says where the shown price came from.
+        <div className="mt-3 grid gap-x-3 gap-y-1 sm:grid-cols-[9rem_minmax(0,1fr)]">
+          <label className="block">
+            <span className={LABEL}>Price</span>
+            <span className="relative block">
+              <span aria-hidden="true" className="pointer-events-none absolute inset-y-0 left-3 flex items-center text-ink-3">
+                $
+              </span>
+              <Input
+                bare
+                type="text"
+                inputMode="decimal"
+                autoComplete="off"
+                placeholder="0.00"
+                value={priceShown}
+                onChange={(e) => setTyped(e.target.value)}
+                aria-invalid={priceError ? true : undefined}
+                aria-describedby={priceError ? `${priceErrorId} ${priceHelpId}` : priceHelpId}
+                className="w-full py-2 pr-3 pl-7 text-base tabular-nums"
+              />
+            </span>
+          </label>
+          <div className="text-xs sm:pt-7">
+            {/* Always there, so a screen reader hears the error the moment it shows. */}
+            <p id={priceErrorId} aria-live="polite" className="mb-1 text-neon-yellow-text empty:hidden">
+              {priceError}
+            </p>
+            <p id={priceHelpId} className="text-ink-3">
+              {priceHelp}
+            </p>
+          </div>
+        </div>
+      )}
       {note && (
         <p id={helpId} className="mt-2 text-xs text-ink-3">
           {note}
@@ -1248,7 +1385,8 @@ export function MovePanel({
           type="submit"
           variant="secondary"
           size="1"
-          aria-disabled={!valid || !to || undefined}
+          aria-disabled={!ready || undefined}
+          aria-busy={priceLoading || undefined}
           className="max-sm:min-h-11"
         >
           {words.go(stack && valid ? quantity : null)}
