@@ -851,23 +851,23 @@ describe("two retry URLs and parallel checks (NEO-466)", () => {
     await cancelScheduled(s.t as never);
   });
 
-  test("finishUpload refuses when a file's size doesn't match, and the photo stays pending", async () => {
-    const { s, photoId, started, release } = await pending(() => ({ bytes: 1, type: "image/jpeg" }));
-    const finishing = s.me.action(api.copyPhotos.finishUpload, { photoId }).catch((e: unknown) => e);
-    await vi.waitFor(() => expect(started).toHaveLength(2));
-    release.forEach((go) => go());
-    expect(String(await finishing)).toMatch(/didn't finish uploading/);
-    expect((await s.t.run((ctx) => ctx.db.get(photoId)))?.status).toBe("pending");
-    await cancelScheduled(s.t as never);
-  });
+  describe.each([["image"], ["thumb"]])("when only the %s is wrong", (bad) => {
+    const good = (path: string) => ({ bytes: path.includes("thumb") ? 20_000 : 300_000, type: "image/jpeg" });
+    const isBad = (path: string) => path.includes(bad);
 
-  test("finishUpload refuses when a file is missing", async () => {
-    const { s, photoId, started, release } = await pending(() => null);
-    const finishing = s.me.action(api.copyPhotos.finishUpload, { photoId }).catch((e: unknown) => e);
-    await vi.waitFor(() => expect(started).toHaveLength(2));
-    release.forEach((go) => go());
-    expect(String(await finishing)).toMatch(/didn't finish uploading/);
-    await cancelScheduled(s.t as never);
+    test.each([
+      ["has the wrong size", (path: string) => ({ ...good(path), bytes: 1 })],
+      ["has the wrong type", (path: string) => ({ ...good(path), type: "image/png" })],
+      ["is missing", () => null],
+    ])("finishUpload refuses when it %s, and the photo stays pending", async (_name, wrong) => {
+      const { s, photoId, started, release } = await pending((path) => (isBad(path) ? wrong(path) : good(path)));
+      const finishing = s.me.action(api.copyPhotos.finishUpload, { photoId }).catch((e: unknown) => e);
+      await vi.waitFor(() => expect(started).toHaveLength(2));
+      release.forEach((go) => go());
+      expect(String(await finishing)).toMatch(/didn't finish uploading/);
+      expect((await s.t.run((ctx) => ctx.db.get(photoId)))?.status).toBe("pending");
+      await cancelScheduled(s.t as never);
+    });
   });
 });
 

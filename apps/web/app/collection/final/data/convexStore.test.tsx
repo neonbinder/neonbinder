@@ -2106,5 +2106,92 @@ describe("addPhoto uploads both files side by side (NEO-466)", () => {
       warn.mockRestore();
     }
   });
+
+  describe("failures and timing", () => {
+    let warn: ReturnType<typeof vi.spyOn>;
+    beforeEach(() => {
+      warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    });
+    afterEach(() => {
+      warn.mockRestore();
+      vi.useRealTimers();
+    });
+    const timingLines = () =>
+      warn.mock.calls.map((c) => String(c[0])).filter((l) => l.includes("copy_photo_save_timing")).map((l) => JSON.parse(l));
+
+    it("when the thumb is refused first, aborts the image and shows the thumb's error", async () => {
+      const { xhrs, saving, finishCalls } = begin();
+      const failing = saving.catch((e: unknown) => e);
+      await vi.waitFor(() => expect(xhrs.all).toHaveLength(2));
+      const image = byUrl(xhrs, "/image");
+      byUrl(xhrs, "/thumb").respond(403);
+      const error = await failing;
+      expect(image.aborted).toBe(true);
+      expect(error).toMatchObject({ name: "PhotoUploadError", status: 403 });
+      expect(finishCalls).toEqual([]);
+      expect(timingLines()).toEqual([expect.objectContaining({ outcome: "failed", failedAt: "put", errorStatus: 403 })]);
+    });
+
+    it("when both files give up, the first one's error is the one shown", async () => {
+      const { xhrs, saving } = begin();
+      const failing = saving.catch((e: unknown) => e);
+      await vi.waitFor(() => expect(xhrs.all).toHaveLength(2));
+      byUrl(xhrs, "/image").respond(403);
+      byUrl(xhrs, "/thumb").respond(400);
+      expect(await failing).toMatchObject({ name: "PhotoUploadError", status: 403 });
+    });
+
+    it("when finishUpload rejects, the save fails at finishUpload and logs one timing line", async () => {
+      const { xhrs, saving } = begin();
+      actionAnswers.set("copyPhotos:finishUpload", () => {
+        throw new Error("finish refused");
+      });
+      const failing = saving.catch((e: unknown) => e);
+      await vi.waitFor(() => expect(xhrs.all).toHaveLength(2));
+      xhrs.all.forEach((x) => x.respond(200));
+      expect(await failing).toMatchObject({ message: "finish refused" });
+      expect(timingLines()).toEqual([expect.objectContaining({ outcome: "failed", failedAt: "finishUpload", errorName: "Error" })]);
+    });
+
+    it("when startUpload rejects, nothing is uploaded and the save fails at startUpload", async () => {
+      const { xhrs, saving } = begin();
+      actionAnswers.set("copyPhotos:startUpload", () => {
+        throw new Error("start refused");
+      });
+      await expect(saving).rejects.toThrow("start refused");
+      expect(xhrs.all).toHaveLength(0);
+      expect(timingLines()).toEqual([expect.objectContaining({ outcome: "failed", failedAt: "startUpload" })]);
+    });
+
+    it("when the resize fails, nothing is asked of the server and the save fails at resize", async () => {
+      const { resizeCopyPhoto } = await import("@/lib/collection/copy-photo-resize");
+      vi.mocked(resizeCopyPhoto).mockRejectedValueOnce(new Error("bad image"));
+      const startCalls: unknown[] = [];
+      const { xhrs, saving } = begin();
+      actionAnswers.set("copyPhotos:startUpload", (a: unknown) => startCalls.push(a));
+      await expect(saving).rejects.toThrow("bad image");
+      expect(startCalls).toEqual([]);
+      expect(xhrs.all).toHaveLength(0);
+      expect(timingLines()).toEqual([expect.objectContaining({ outcome: "failed", failedAt: "resize" })]);
+    });
+
+    it("a save that needed a retry and then succeeded logs exactly one timing line, outcome saved", async () => {
+      vi.useFakeTimers();
+      const { xhrs, saving } = begin();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(xhrs.all).toHaveLength(2);
+      byUrl(xhrs, "/image").respond(503);
+      byUrl(xhrs, "/thumb").respond(200);
+      await vi.advanceTimersByTimeAsync(500);
+      expect(xhrs.all).toHaveLength(3);
+      xhrs.last.respond(200);
+      await saving;
+      const lines = timingLines();
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toMatchObject({ outcome: "saved" });
+      expect(lines[0].puts.find((p: { file: string }) => p.file === "image").tries).toHaveLength(2);
+      expect(JSON.stringify(lines)).not.toContain("r2.example");
+    });
+  });
 });
 
