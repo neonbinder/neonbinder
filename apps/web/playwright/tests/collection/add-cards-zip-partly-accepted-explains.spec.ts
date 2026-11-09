@@ -37,9 +37,9 @@
 //
 // R3: the set pick and the drop zone through `support/collection.ts`.
 //
-// R5 (hard rule 3): every wait is the normal 7 s except ONE, the partly-accepted line
-// after the extract (`COLD_EXTRACT`, below), which carries a signed-off ceiling. The
-// read step stays on 7 s. NEO-446 measured on a warm dev service: upload 0.8-1.3 s,
+// R5 (hard rule 3): every wait is the normal 7 s except TWO, the partly-accepted line
+// after the extract (`COLD_EXTRACT`) and the read into Pairing (`COLD_READ`), which
+// carry signed-off ceilings (below). NEO-446 measured on a warm dev service: upload 0.8-1.3 s,
 // extract 0.3-0.8 s, read 2.8 s. The preprocess legs are wrapped in `test.step`, so the
 // report carries each leg's own duration.
 import path from "node:path";
@@ -48,7 +48,7 @@ import { intakeDropzone, pickIntakeSet } from "../../support/collection";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 
 /**
- * The one signed-off ceiling in this spec (GUIDE hard rule 3): 45 s, Jason, 2026-11-08, NEO-475.
+ * Signed-off ceiling 1 of 2 in this spec (GUIDE hard rule 3): 45 s, Jason, 2026-11-08, NEO-475.
  * It covers ONLY the wait for the partly-accepted line after the extract.
  * Measured: the FAST preprocess service's cold start took 8.5-24.2 s in CI (runs
  * 42524934716 and 42493262194) and 26.6 s locally against dev, against 0.33-0.97 s for
@@ -58,6 +58,17 @@ import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtu
  * and never a licence for any other wait in this spec.
  */
 const COLD_EXTRACT = 45_000;
+
+/**
+ * Signed-off ceiling 2 of 2 (GUIDE hard rule 3): 45 s, Jason, 2026-11-09, NEO-475.
+ * It covers ONLY the wait for the accepted photo's read to land in Pairing.
+ * Measured: the extract answered warm in 0.45 s, then the read took 33.9 s on FAST
+ * while another shard's photo batch was loading it, i.e. Cloud Run cold-started a
+ * second FAST instance under concurrent load (PR 448 run 42619379295 attempt 3).
+ * A warm read is about 2.8 s. Void if a cold read is ever measured over 45 s, and
+ * never a licence for any other wait in this spec.
+ */
+const COLD_READ = 45_000;
 
 const ZIP = path.join(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -109,7 +120,7 @@ test(
     const pairing = (n: number) => page.getByRole("region", { name: `Pairing, ${n}`, exact: true });
 
     await test.step("read: the one photo read and waiting in Pairing", async () => {
-      await expect(pairing(1)).toBeVisible();
+      await expect(pairing(1)).toBeVisible({ timeout: COLD_READ });
     });
 
     await expect(page.getByRole("region", { name: "Cropping & reading, 0", exact: true })).toBeVisible();
