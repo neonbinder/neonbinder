@@ -174,21 +174,25 @@ test(
     const SECOND_WINDOW = 5_000;
     const LAST_WINDOW = 22_000;
     forceStore(() => "hold");
-    line = gaveUp();
     let arrived = nextImagePut();
     const thumb = thumbSent();
     await back.setInputFiles(photoFile("back.jpg"));
     await arrived;
     await thumb;
-    await expect(panel.getByRole("status")).toHaveText("Saving the back photo…");
-    expect(heldBytes, "a small photo, so one last window clears it").toBeLessThan(64_000);
-    await expectAccessible(page, { within: drawer, label: "Card drawer, photo upload not answering" });
+    // The page clock runs at the real pace, so the page's own timer cuts a try off on its own
+    // when the test is slow to move it: nothing slow (the axe check takes a few seconds) may
+    // sit before the first two moves. The last try's window is 20 s, so the checks go after them.
     arrived = nextImagePut();
     await page.clock.fastForward(FIRST_WINDOW);
     await arrived;
     arrived = nextImagePut();
     await page.clock.fastForward(SECOND_WINDOW);
     await arrived;
+    await expect(panel.getByRole("status")).toHaveText("Saving the back photo…");
+    expect(heldBytes, "a small photo, so one last window clears it").toBeLessThan(64_000);
+    await expectAccessible(page, { within: drawer, label: "Card drawer, photo upload not answering" });
+    // The give-up line, awaited from the move that causes it so the 7 s budget starts there.
+    line = gaveUp();
     await page.clock.fastForward(LAST_WINDOW);
     const stalled = await line;
     expect(stalled).toContain('"timedOut":true');
