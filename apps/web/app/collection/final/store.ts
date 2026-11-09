@@ -51,6 +51,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useReducer, useRef } from "react";
+import { MAX_PRICE_CENTS } from "@/lib/collection/price-cap";
 import {
   binders as seedBinders,
   buildingSetIds as seedBuilding,
@@ -560,9 +561,6 @@ export interface MoveOpResult {
    */
   from: { homeId: ContainerId; slot?: number; quantity: number; minPrice?: number | null };
 }
-
-/** NEO-479 — the server's price cap (`convex/collection.ts` `MAX_COST_CENTS`, $100,000,000.00); keep in step. */
-const MAX_PRICE_CENTS = 10_000_000_000;
 
 /** NEO-479 — a price the copies can carry: dollars in whole cents, zero to the server's cap. */
 function isWholeCentPrice(price: number): boolean {

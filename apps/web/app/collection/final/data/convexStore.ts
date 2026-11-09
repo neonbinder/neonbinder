@@ -2122,8 +2122,7 @@ function useConvexActions(): CollectionActions {
           args.quantity,
           args.slot,
           () => optimisticIdFor(args),
-          // NEO-479 — read loosely so this compiles before and after the server's arg lands.
-          (args as { minPriceCents?: number | null }).minPriceCents,
+          args.minPriceCents,
         ),
       ),
       placeCopy: placeCopyBase.withOptimisticUpdate((local, args) =>
@@ -2325,7 +2324,7 @@ function useConvexActions(): CollectionActions {
           quantity: r.from.quantity,
           slot,
         });
-        const restore = (r.from as { minPriceCents?: number | null }).minPriceCents;
+        const restore = r.from.minPriceCents;
         await m.moveCopy({
           copyId: r.copyId,
           toHomeId: r.from.homeId,
@@ -2472,7 +2471,7 @@ function useConvexActions(): CollectionActions {
         // theirs, unless the move took it off. Only a move out of a box can
         // (Branch B), and then `from` records it; into a box, `from` records
         // an own price that stayed on, for the undo.
-        const recorded = (r.from as { minPriceCents?: number | null }).minPriceCents !== undefined;
+        const recorded = r.from.minPriceCents !== undefined;
         const landedPrice =
           options?.minPrice !== undefined
             ? options.minPrice

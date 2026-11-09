@@ -15,6 +15,7 @@ import { StarIcon as StarOutline } from "@heroicons/react/24/outline";
 import NeonButton from "@/components/modules/NeonButton";
 import { Input } from "@/components/primitives/Input";
 import { COPY_PHOTO_ACCEPT } from "@/lib/collection/copy-photo-resize";
+import { MAX_PRICE_CENTS } from "@/lib/collection/price-cap";
 import CardFace from "../prototypes/_shared/CardFace";
 import CopyDetailsForm, { type FormHome } from "../prototypes/_shared/CopyDetailsForm";
 import { FOCUS, LABEL, QUIET_BUTTON, SELECT, shortDate, useLiverySurface } from "../prototypes/p1/ui";
@@ -1120,9 +1121,6 @@ export function CopyList({
   );
 }
 
-/** NEO-479 — the server's price cap in cents (`convex/collection.ts` `MAX_COST_CENTS`, $100,000,000.00); keep in step. */
-const MAX_PRICE_CENTS = 10_000_000_000;
-
 /** What Sell's Price field hands the store, or why it can't yet. */
 export type SellPrice =
   | {
@@ -1351,7 +1349,6 @@ export function MovePanel({
                 type="text"
                 inputMode="decimal"
                 autoComplete="off"
-                placeholder="0.00"
                 value={priceShown}
                 onChange={(e) => setTyped(e.target.value)}
                 aria-invalid={priceError ? true : undefined}
