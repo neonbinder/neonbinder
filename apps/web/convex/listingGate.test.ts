@@ -558,6 +558,24 @@ describe("a sale into a listed box carries its own price (NEO-479)", () => {
     expect((await copies(s))[0]).toMatchObject({ homeId: s.binder });
   });
 
+  test("an explicit null price clears the card's own price before the gate reads it, so it is held", async () => {
+    const s = await setup();
+    await s.me.mutation(api.collection.addHave, { cardId: s.fx.gooden1, homeId: s.binder });
+    await syncOn(s);
+    const [row] = await copies(s);
+    // A binder card with its own price (left by a Take off sale before NEO-479).
+    await s.t.run((ctx) => ctx.db.patch(row._id, { minPriceCents: 40 }));
+    const refused = await refusal(
+      s.me.mutation(api.collection.moveCopy, { copyId: row._id, toHomeId: s.box, minPriceCents: null }),
+    );
+    expect(refused).toEqual({
+      code: LISTING_GATE_ERROR,
+      message: listingGateMessage("Show box", { needsPrice: true, needsCondition: false }),
+    });
+    expect((await copies(s))[0]).toMatchObject({ homeId: s.binder, minPriceCents: 40 });
+    expect(await commonRows(s)).toEqual([]);
+  });
+
   test("the undo of a sale into the listed box is not held, and a sold-at-a-price card needs no common price", async () => {
     const s = await setup();
     await s.me.mutation(api.collection.addHave, { cardId: s.fx.gooden1, homeId: s.binder });

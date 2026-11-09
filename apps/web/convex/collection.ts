@@ -174,8 +174,12 @@ const MAX_CERT_CHARS = 40;
 const MAX_SERIAL_CHARS = 20;
 const MAX_LOCATION_CHARS = 120;
 const MAX_NOTES_CHARS = 2000;
-/** $100,000,000.00 in cents: far above any card, below float trouble. */
-const MAX_COST_CENTS = 10_000_000_000;
+/**
+ * $100,000,000.00 in cents: far above any card, below float trouble. The
+ * client keeps its own copy (`lib/collection/price-cap.ts`); a unit test
+ * holds the two equal.
+ */
+export const MAX_COST_CENTS = 10_000_000_000;
 
 /** NEO-378 — a price (a copy's floor, a common price) in whole cents, zero to the cost cap. */
 export function isPriceCents(raw: number): boolean {

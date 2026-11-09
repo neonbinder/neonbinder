@@ -45,7 +45,9 @@
  * leave a listed copy with no price or condition: a box emptied into
  * Unsorted, a box's "Listed on marketplaces" turned back on
  * (`setContainerListed` off → on), a copy's own price cleared, a common
- * price removed. Those are not refused here; the drain's `noPrice` /
+ * price removed, a move between listed boxes that clears the copy's own
+ * price (the undo of a box-to-box sale: a move between listed homes is not
+ * gated, NEO-479). Those are not refused here; the drain's `noPrice` /
  * `noCondition` hold (`lib/bscSheetPlan.ts`) is the backstop: such a copy is
  * held back from the marketplace and shown on Sync status, never listed
  * without a price.
