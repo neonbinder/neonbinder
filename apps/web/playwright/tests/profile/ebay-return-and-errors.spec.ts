@@ -11,7 +11,7 @@
 // to eBay's authorize host is answered by the test with an empty page, so the
 // browser "arrives" there and nothing real is asked of eBay. The connection
 // itself, with a real seller, is proved by
-// `collection/inventory-ebay-sandbox-listing-1988-topps-base`.
+// `collection/inventory-ebay-sandbox-listing-2024-topps-chrome-future-stars`.
 //
 // Under an eBay pause (`env.EBAY_PAUSED`) the page offers no Connect, so the
 // paused branch asserts that and stops (R2: both branches end in hard asserts).

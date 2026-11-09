@@ -27,7 +27,7 @@
 // build. The guard's "a number that still differs stays held" is pinned by the
 // unit tests (`lib/bscSheetPlan.test.ts`, `listingDrain.test.ts`).
 //
-// What "2 listed" proves about BSC: see the 1988 Topps listing spec. The drain
+// What "2 listed" proves about BSC: see the Future Stars listing spec. The drain
 // reads BSC's seller sheet, plans against it, PUTs the rows that differ and
 // reads them back; a card the planner refuses is "held back" with a reason. The
 // old planner compared BSC's `BCV-26` with NB's `26` exactly, refused every card
@@ -228,7 +228,7 @@ async function buildFixture(page: Page, env: FlowEnv): Promise<void> {
 
   // --- Football -> 2026 -> Bowman -> Bowman: BSC's year-wide sets, filed under the brand ---
   // A cold drill pays its live BSC round trips (the helper's ceilings). Under a
-  // SportLots pause the brand is hand-made, like 1988 Topps' and Bowman's.
+  // SportLots pause the brand is hand-made, like the seed's Baseball 2026 Bowman.
   await drillToColdManufacturer(page, env, { sport: SPORT, year: YEAR, manufacturer: BRAND, expectSets: true });
   await drillToBaseVariant(page, env, { sport: SPORT, year: YEAR, manufacturer: BRAND, set: SET });
 
