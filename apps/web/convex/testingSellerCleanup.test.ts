@@ -926,6 +926,27 @@ describe("BuySportsCards", () => {
       await drainScheduled(t);
     });
 
+    test("a Future Stars row with no BSC id of its own fails the job though its Insert type and set carry BSC ids: nothing is borrowed from above", async () => {
+      const t = await ready();
+      await t.run(async (ctx) => {
+        const rows = (await ctx.db.query("selectorOptions").collect()).filter((r) => r.level === "insert" && r.value === "Future Stars");
+        expect(rows).toHaveLength(1);
+        const parent = await ctx.db.get(rows[0].parentId as Id<"selectorOptions">);
+        expect(parent?.platformFacets).toMatchObject({ bsc: { b0: "variant" } });
+        await ctx.db.patch(rows[0]._id, { platformData: {}, platformFacets: undefined } as never);
+      });
+      pages = [{ inventoryItems: [item(sku("a"))] }];
+      offers.set(sku("a"), { offerId: "O1", status: "PUBLISHED" });
+      await expect(clear(t)).rejects.toThrow(new RegExp(`BuySportsCards: ${FS} has no BuySportsCards scope \\(noScope\\)`));
+      expect(withdrawals).toEqual(["O1"]);
+      expect(bscCalls).toBe(0);
+      expect(sheetReads).toEqual([]);
+      expect(puts).toEqual([]);
+      expect(signedIn()).toBe(false);
+      expect(browserCalls.some((c) => c.path.includes("bsc"))).toBe(false);
+      await drainScheduled(t);
+    });
+
     test("Chrome there: read, and nothing counted as skipped", async () => {
       const t = await ready();
       await seedBowman(t, { parallelType: true, chromes: 1 });

@@ -417,7 +417,7 @@ test(
     await expect(before.getByText("Listing", { exact: true })).toBeHidden();
     await expectAccessible(page, { label: "Inventory Sync status, eBay not connected" });
     // The way there is a link; Back steps to Sync status.
-    await before.getByRole("link", { name: "Connect eBay in Profile â Credentials", exact: true }).click();
+    await before.getByRole("link", { name: "Connect eBay in Profile → Credentials", exact: true }).click();
     await expect(page).toHaveURL(/\/profile\/credentials\?platform=ebay$/);
     await expect(connectButton).toBeVisible();
     await page.goBack();
@@ -540,7 +540,7 @@ test(
       const ledger = page.getByRole("list", { name: "Set me up, step by step", exact: true });
       await expect(ledger).toBeVisible();
       const steps = ledger.getByRole("listitem");
-      // The answer: "Made N on your eBay account â¦", or "You already had
+      // The answer: "Made N on your eBay account …", or "You already had
       // everything" on a re-run. Both are the success status line, never the error.
       const answer = said(/^(Made \d+ on your eBay account|You already had everything)/);
       // Walked in run order (`nth` is the step's place in the run, which never
@@ -726,7 +726,7 @@ test(
     await expect(scanTile).toHaveCount(1);
     await expect(scanTile.getByText("Photos are in!", { exact: true })).toBeVisible();
     // Positive first (above): none of the other four photo lines is on it.
-    for (const other of ["Slipping in the photosâ¦", "Photos didn't stick.", "The scans aged out.", "These scans won't cut it."]) {
+    for (const other of ["Slipping in the photos…", "Photos didn't stick.", "The scans aged out.", "These scans won't cut it."]) {
       await expect(scanTile.getByText(other, { exact: true })).toHaveCount(0);
     }
     await expectAccessible(page, { label: "Add cards, a box run's saved card with its photos in" });

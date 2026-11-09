@@ -637,7 +637,7 @@ test(
     await expect(waitingTray).toBeVisible();
     // The zone's description holds the hint too, so the words are read inside it.
     await expect(dropzone).toHaveAccessibleDescription(new RegExp(escapeRegExp(`${intakeLine} 2 photos waiting on a price.`)));
-    await expect(page.getByText("Sending your photosâ¦")).toHaveCount(0);
+    await expect(page.getByText("Sending your photos…")).toHaveCount(0);
     await expect(page).not.toHaveURL(/[?&]run=/);
     await expectAccessible(page, { label: "Add cards, photos waiting on a price" });
     // The central promise: the price is set with the photos still waiting, and
