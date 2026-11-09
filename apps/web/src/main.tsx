@@ -44,7 +44,6 @@ import {
 import Home from "@/app/page";
 const About = lazy(() => import("@/app/about/page"));
 const Privacy = lazy(() => import("@/app/privacy/page"));
-const BinderTracking = lazy(() => import("@/app/binder-tracking/page"));
 const AiCardIdentification = lazy(() => import("@/app/ai-card-identification/page"));
 const ManagingInventory = lazy(() => import("@/app/managing-inventory/page"));
 const ShippingLabelsMarketing = lazy(() => import("@/app/shipping-labels/page"));
@@ -96,18 +95,17 @@ const Inventory = lazy(loadInventory);
 
 // NEO-350 — the collection demo and its five reference prototypes are
 // lazy-loaded: ~300 fake cards, their art and their CSS stay out of the main
-// bundle until someone opens one. /binder-tracking lazy-loads the public copy
-// of the demo the same way (app/binder-tracking/page.tsx).
+// bundle until someone opens one. The demo lazy-loads its collection pages the same way
 const Collection = lazy(loadCollection);
 const CollectionPrototype1 = lazy(() => import("@/app/collection/prototypes/p1/page"));
 const CollectionPrototype2 = lazy(() => import("@/app/collection/prototypes/p2/page"));
 const CollectionPrototype3 = lazy(() => import("@/app/collection/prototypes/p3/page"));
 const CollectionPrototype4 = lazy(() => import("@/app/collection/prototypes/p4/page"));
 const CollectionPrototype5 = lazy(() => import("@/app/collection/prototypes/p5/page"));
-// NEO-464 — five dashboard prototypes, public and hard-coded (never Convex).
-const DashboardPrototypes = lazy(() => import("@/app/dashboard/prototypes/page"));
-// NEO-464 — the five folded into one: the default at /dashboard-demo.
-const DashboardCombined = lazy(() => import("@/app/dashboard/prototypes/combined/page"));
+// NEO-464 — the dashboard demo: the signed-in shell on fake data, logged out.
+const DashboardDemo = lazy(() => import("@/app/dashboard/demo/DashboardDemoLayout"));
+const DashboardDemoPage = lazy(() => import("@/app/dashboard/demo/DashboardDemoPage"));
+const DashboardDemoCollection = lazy(() => import("@/app/dashboard/demo/CollectionDemoRoute"));
 
 const clerkPubKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
 
@@ -154,7 +152,6 @@ const SentryErrorBoundary = Sentry.withErrorBoundary(
           <Route path="/" element={<Home />} />
           <Route path="/about" element={<Deferred><About /></Deferred>} />
           <Route path="/privacy" element={<Deferred><Privacy /></Deferred>} />
-          <Route path="/binder-tracking" element={<Deferred><BinderTracking /></Deferred>} />
           <Route
             path="/ai-card-identification"
             element={<Deferred><AiCardIdentification /></Deferred>}
@@ -165,10 +162,14 @@ const SentryErrorBoundary = Sentry.withErrorBoundary(
             element={<Deferred><ShippingLabelsMarketing /></Deferred>}
           />
           <Route path="/print-shop" element={<Deferred><PrintShopMarketing /></Deferred>} />
-          {/* NEO-464 — the dashboard prototypes, logged out on fake data: the
-              combined page by default, the five still at /:n to compare. */}
-          <Route path="/dashboard-demo/:n" element={<Deferred fullPage><DashboardPrototypes /></Deferred>} />
-          <Route path="/dashboard-demo" element={<Deferred fullPage><DashboardCombined /></Deferred>} />
+          {/* NEO-464 — the dashboard demo, logged out on fake data, as one app:
+              the signed-in shell with its own tabs (Dashboard, Collection,
+              Inventory, Sign up, Back to home). */}
+          <Route path="/demo" element={<Deferred fullPage><DashboardDemo /></Deferred>}>
+            <Route index element={<Deferred><DashboardDemoPage /></Deferred>} />
+            <Route path="collection" element={<Deferred><DashboardDemoCollection side="collection" /></Deferred>} />
+            <Route path="inventory" element={<Deferred><DashboardDemoCollection side="inventory" /></Deferred>} />
+          </Route>
           <Route path="/easypost-setup" element={<Deferred><EasypostSetup /></Deferred>} />
           <Route path="/signin/*" element={<Deferred><SignInPage /></Deferred>} />
           <Route path="/sign-up/*" element={<Deferred><SignUpPage /></Deferred>} />
@@ -212,8 +213,8 @@ const SentryErrorBoundary = Sentry.withErrorBoundary(
             >
               <Route path="/dashboard" element={<Deferred><Dashboard /></Deferred>} />
               {/* NEO-350 — the collection demo: a permanent, hard-coded
-                  marketing demo (never Convex), the same page the public
-                  plays with on /binder-tracking. Not the future real
+                  marketing demo (never Convex), the same page the Collection tab
+                  shows at /demo/collection. Not the future real
                   collection. */}
               <Route path="/collection" element={<Deferred><Collection /></Deferred>} />
               {/* NEO-350 — the five collection prototypes the demo was built

@@ -41,7 +41,7 @@ const EXIT = "Back to the tour";
  * its start; signed in, `/collection` is an ordinary page of the app and
  * focus stays where the shell puts it.
  */
-export function DemoBar({ onReset, onExit }: { onReset: () => void; onExit?: () => void }) {
+export function DemoBar({ onReset, onExit, shell = false }: { onReset: () => void; onExit?: () => void; shell?: boolean }) {
   const isPublic = useCollectionMode().mode === "public";
   const ref = useRef<HTMLElement>(null);
   useEffect(() => {
@@ -77,7 +77,8 @@ export function DemoBar({ onReset, onExit }: { onReset: () => void; onExit?: () 
               </p>
             </>
           )}
-          <SideSwitch />
+          {/* Inside the shell the tabs are the two sides, so the switch would repeat them. */}
+          {!shell && <SideSwitch />}
           <DemoThemeToggle className="max-w-80 pt-2" />
         </div>
       </div>
@@ -89,12 +90,12 @@ export function DemoBar({ onReset, onExit }: { onReset: () => void; onExit?: () 
         >
           Reset demo data
         </button>
-        {isPublic && (
+        {isPublic && !shell && (
           <NeonButton asChild className="min-h-10 max-sm:min-h-11 lg:hidden">
             <Link to={PUBLIC_DESTINATIONS.signUp}>{SIGN_UP}</Link>
           </NeonButton>
         )}
-        {isPublic && onExit && (
+        {isPublic && onExit && !shell && (
           <NeonButton type="button" variant="secondary" outline onClick={onExit} className="min-h-10 max-sm:min-h-11 lg:hidden">
             {EXIT}
           </NeonButton>

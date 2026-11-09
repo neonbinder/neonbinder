@@ -273,6 +273,12 @@ export interface FinalCollectionPageProps {
   keepParams?: Record<string, string>;
   /** Public mode: leave the demo ("Back to the tour"). */
   onExit?: () => void;
+  /**
+   * Public mode inside the dashboard demo's shell (NEO-464): the shell already
+   * has the tabs (both sides, Sign up, Back to the tour), so the demo drops
+   * its own right-edge rail, mobile exits and side switch.
+   */
+  shell?: boolean;
 }
 
 export default function FinalCollectionPage({
@@ -280,11 +286,12 @@ export default function FinalCollectionPage({
   surface = "collection",
   keepParams,
   onExit,
+  shell = false,
 }: FinalCollectionPageProps) {
   const mounted = useContext(CollectionStoreContext);
   const page = (
     <CollectionModeProvider mode={mode} keepParams={keepParams} surface={surface}>
-      <SidePage onExit={onExit} />
+      <SidePage onExit={onExit} shell={shell} />
     </CollectionModeProvider>
   );
   if (mounted) return page;
@@ -298,16 +305,16 @@ export default function FinalCollectionPage({
 }
 
 /** The page on its side: every view below reads the side from `SideProvider`. */
-function SidePage({ onExit }: { onExit?: () => void }) {
+function SidePage({ onExit, shell }: { onExit?: () => void; shell: boolean }) {
   const side = useCollectionSide();
   return (
     <SideProvider value={side}>
-      <CollectionPage side={side} onExit={onExit} />
+      <CollectionPage side={side} onExit={onExit} shell={shell} />
     </SideProvider>
   );
 }
 
-function CollectionPage({ side, onExit }: { side: Side; onExit?: () => void }) {
+function CollectionPage({ side, onExit, shell }: { side: Side; onExit?: () => void; shell: boolean }) {
   const { mode, keepParams } = useCollectionMode();
   const isPublic = mode === "public";
   const { capabilities: storeCapabilities, demo, binderMemory, listing, kind: storeKind } = useCollectionStore();
@@ -813,7 +820,7 @@ function CollectionPage({ side, onExit }: { side: Side; onExit?: () => void }) {
             <div className="text-ink">
               <div className="space-y-4">
                 {capabilities.demoChrome && demo && (
-                  <DemoBar onReset={resetDemo} onExit={onExit} />
+                  <DemoBar onReset={resetDemo} onExit={onExit} shell={shell} />
                 )}
                 <h1 ref={heading} tabIndex={-1} className="text-2xl font-bold focus:outline-none">
                   {SIDE_TITLE[side]}
@@ -910,7 +917,7 @@ function CollectionPage({ side, onExit }: { side: Side; onExit?: () => void }) {
                 )}
               </div>
 
-              {isPublic && capabilities.demoChrome && (
+              {isPublic && capabilities.demoChrome && !shell && (
                 <DemoRail onExit={onExit} />
               )}
 

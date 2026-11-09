@@ -3,13 +3,15 @@ import { createPortal } from "react-dom";
 import { NavLink, useLocation } from "react-router";
 import { XMarkIcon } from "@heroicons/react/24/outline";
 import { inertBackground } from "@/lib/dom/inert-background";
-import { useVisibleNavItems } from "./binder-tabs";
+import { useVisibleNavItems, type NavItem } from "./binder-tabs";
 
 /** Shared with the header toggle's `aria-controls`. */
 export const MOBILE_NAV_ID = "mobile-nav";
 
 interface MobileNavProps {
   onClose: () => void;
+  /** The tabs to list; left out, the signed-in shell's (see `BinderTabs`). */
+  items?: NavItem[];
 }
 
 /**
@@ -33,10 +35,11 @@ interface MobileNavProps {
  * Portalled to `<body>` so `inertBackground` can make the app root inert
  * without taking the dialog with it.
  */
-export default function MobileNav({ onClose }: MobileNavProps) {
+export default function MobileNav({ onClose, items: given }: MobileNavProps) {
   const location = useLocation();
   const initialPathname = useRef(location.pathname);
-  const items = useVisibleNavItems();
+  const visible = useVisibleNavItems();
+  const items = given ?? visible;
   const panelRef = useRef<HTMLDivElement | null>(null);
   const triggerRef = useRef<HTMLElement | null>(null);
 
@@ -124,6 +127,7 @@ export default function MobileNav({ onClose }: MobileNavProps) {
             <NavLink
               key={item.path}
               to={item.path}
+              end={item.end}
               // `binder-row` (app/theme.css) colours the row and lights the
               // current one (aria-current) in its tab's hue.
               className={`binder-row ${item.hueClass} flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200 focus-outline`}
