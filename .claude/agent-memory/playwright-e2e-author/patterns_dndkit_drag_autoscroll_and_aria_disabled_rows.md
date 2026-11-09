@@ -35,3 +35,13 @@ error-context.md.
 overflows AND holds nothing tabbable (a long list of empty drop boxes with
 tabIndex −1). Short fixtures never see it; a long-set fixture does. Product fix,
 never a spec change. See [[negative-asserts-pass-on-a-dead-page]].
+
+**Debounced count beside a field (NEO-472 round 2).** A visible "N of M" plus a
+separate sr-only `role=status` that copies it after a 500 ms debounce: a bare
+`getByText("1 of 3 inserts", {exact:true})` passes only while it races ahead of
+the debounce, then becomes a strict-mode violation. Wait on
+`getByRole("status").filter({ hasText: /^…$/ })`, then `toHaveCount(2)` on the
+text; the gone-state is `toHaveCount(0)`. A keyboard drop target (box with
+`tabIndex=0` while a selection is up) is proven with `focus()` +
+`toHaveAccessibleDescription(...)` + `press("Enter"|" ")`; planting "no key
+handler" turns the promotions assert red.

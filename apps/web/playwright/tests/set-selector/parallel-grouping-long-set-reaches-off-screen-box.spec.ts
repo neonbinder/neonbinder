@@ -81,6 +81,20 @@ test(
     await expect(inserts.getByRole("button", { name: /has parallels\. Jump to them$/ })).toHaveCount(0);
     await expectAccessible(page, { within: dialog, label: "Group Parallels dialog on a long set" });
 
+    // The layout is the claim here, so geometry (not a locator) is asserted:
+    // desktop puts the boxes in a pane to the right of the rows, tops level;
+    // a phone stacks them, the boxes below the whole list of rows.
+    const insertsRect = await rectOf(inserts);
+    const boxesRect = await rectOf(boxes);
+    if (isMobile) {
+      expect(boxesRect.y).toBeGreaterThanOrEqual(insertsRect.y + insertsRect.height - 1);
+    } else {
+      expect(boxesRect.x).toBeGreaterThanOrEqual(insertsRect.x + insertsRect.width - 1);
+      expect(Math.abs(boxesRect.y - insertsRect.y)).toBeLessThanOrEqual(4);
+      // The top of the left-hand list, checked again after the drag.
+      await expect(row(second)).toBeInViewport();
+    }
+
     // ── CLAIM 1: A DRAG SCROLLS TO THE OFF-SCREEN BOX AND DROPS THERE ──
     // Precondition: the last box is below the fold (R2: the drag must be what
     // brings it into view).
@@ -89,7 +103,9 @@ test(
 
     // dnd-kit's MouseSensor starts a drag after 5 px of movement from a press
     // on the row; the drag then scrolls whichever scroller holds the pointer
-    // near its edge, for as long as the pointer stays there.
+    // near its edge, for as long as the pointer stays there. On the phone
+    // project the mouse stands in for a finger (TouchSensor's 180 ms hold has
+    // no Playwright gesture); the scroller and the drop are the same.
     await row(first).scrollIntoViewIfNeeded();
     const from = await rectOf(row(first));
     const fromX = from.x + from.width / 2;
@@ -123,6 +139,10 @@ test(
     await expect(boxOf(last).getByRole("button", { name: `Remove ${first} from parallels` })).toBeVisible();
     await expect(row(second)).toBeAttached();
     await expect(row(first)).toHaveCount(0);
+    // Desktop: only the right-hand pane scrolled; the rows on the left held
+    // still, so the row that sat at the top of the list is still in view. (A
+    // phone's one scroller carried the whole list away, by design.)
+    if (!isMobile) await expect(row(second)).toBeInViewport();
 
     // ── CLAIM 2: "HAS PARALLELS" JUMPS TO THE BOX AND FOCUSES IT ──
     // The last insert holds a parallel now, so its row offers the jump.
