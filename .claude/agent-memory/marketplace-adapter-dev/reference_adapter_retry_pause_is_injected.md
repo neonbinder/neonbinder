@@ -39,4 +39,17 @@ clock stalls them).
   convex-test keeps running, the pause is still asserted, and recording a
   counter inside the spy proves where it fell between calls.
 
+- An in-action pause in a suite that already runs `vi.useFakeTimers()` and
+  calls `t.action(...)` directly (not via `finishAllScheduledFunctions`) hangs
+  the action at the 5 s test timeout: nothing advances the fake clock while
+  `t.action` is awaited. `vi.useFakeTimers({ shouldAdvanceTime: true })` lets
+  a sub-second pause elapse in real time while minute-scale `runAfter` passes
+  still wait for `runAllTimers` (NEO-475 card-listing retry,
+  bscTeamEnrichmentQueue NEO-330 block). A jittered pause has no exact delay
+  to match, so a setTimeout spy keyed on the pause RANGE must not overlap
+  another delay in the path (BSC_TEAM_ENRICH_DELAY_MS is 300, inside 250-500).
+- Adding a retry changes every "asked N times" count downstream (queue passes
+  x attempts); a "succeeds on a later pass" test must fail every attempt of
+  the first pass or it goes green through the in-action retry.
+
 Related: [[action-impl-stub-ctx-for-write-failures]], [[hold-runafter0-in-convex-test]].

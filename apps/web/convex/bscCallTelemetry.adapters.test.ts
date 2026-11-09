@@ -327,11 +327,14 @@ describe("fetchBscCardTeamNames — card-listing, one recorder across chunks", (
 
     const stored = await rows(t);
     expect(stored).toHaveLength(1);
+    // NEO-475: each of the five failures is retried once (a 5xx, a timeout, a
+    // network error, and a 2xx body that would not parse or timed out), so
+    // the one row holds 7 answered calls plus 5 x 2 failed attempts.
     expect(stored[0]).toMatchObject({
       op: "fetchBscCardTeamNames",
-      calls: 12,
+      calls: 17,
       ok: 7,
-      byKind: { http: 1, timeout: 1, network: 1, parse: 1, body_timeout: 1 },
+      byKind: { http: 2, timeout: 2, network: 2, parse: 2, body_timeout: 2 },
     });
     expect(summaries()).toHaveLength(1);
     const byCard = Object.fromEntries(failures().map((f) => [f.bscCardId, f.kind]));

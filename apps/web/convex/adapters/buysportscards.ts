@@ -111,7 +111,17 @@ const BSC_CHECKLIST_FETCH_TIMEOUT_MS = 30_000;
 // seller-scoped call), so resolveBscCardTeam deliberately skips the
 // bearer-token machinery above rather than depending on the fragile
 // Puppeteer-backed BSC auth flow for a call that doesn't need it.
-const BSC_TEAM_LOOKUP_TIMEOUT_MS = 10_000;
+//
+// NEO-475 — the house rule for BSC calls: 5 s per attempt, one retry. The
+// timeout covers the headers AND the body (one `AbortSignal` per attempt). A
+// timeout, a network error, a 5xx, or a 2xx whose body times out or will not
+// parse is retried once after a short jittered pause; a 4xx is an answer about
+// this card and is not. Worst case 5 s + 0.5 s + 5 s, the same as the single
+// 10 s attempt it replaces (CI saw a whole chunk of 10 time out at once).
+export const BSC_TEAM_LOOKUP_TIMEOUT_MS = 5_000;
+export const BSC_TEAM_LOOKUP_MAX_ATTEMPTS = 2;
+export const BSC_TEAM_LOOKUP_RETRY_PAUSE_MIN_MS = 250;
+export const BSC_TEAM_LOOKUP_RETRY_PAUSE_MAX_MS = 500;
 // Delay between cards in processBscTeamEnrichmentQueue. BSC has no
 // confirmed rate limit, but this stays conservative against the same
 // CDN/bot-detection this file already works around for the bulk
@@ -2059,21 +2069,59 @@ type BscCardListingPayload = {
   playerAttribute?: unknown;
 };
 
+/**
+ * NEO-475 — one card's team lookup: up to {@link BSC_TEAM_LOOKUP_MAX_ATTEMPTS}
+ * attempts of {@link BSC_TEAM_LOOKUP_TIMEOUT_MS} each (see the constants).
+ * `success: false` only when every attempt failed: the card then goes to the
+ * operator teamless (rule 8), never with a guessed team.
+ */
 async function fetchBscCardTeamNameRaw(
   bscCardId: string,
   /** NEO-475 — the invocation's call recorder; the caller flushes it. */
   rec?: BscRecorder,
 ): Promise<BscCardTeamValue> {
-  const failed: BscCardTeamValue = {
+  for (let attempt = 1; attempt <= BSC_TEAM_LOOKUP_MAX_ATTEMPTS; attempt += 1) {
+    const outcome = await fetchBscCardTeamNameAttempt(bscCardId, attempt, rec);
+    if (outcome.ok) return outcome.value;
+    if (!outcome.retryable) break;
+    if (attempt < BSC_TEAM_LOOKUP_MAX_ATTEMPTS) {
+      await sleep(bscTeamLookupRetryPauseMs());
+    }
+  }
+  return {
     teamNames: [],
     rawTeamName: "",
     success: false,
     attributeTokens: [],
   };
+}
+
+/** NEO-475 — the pause before the retry: 250-500 ms, jittered. */
+export function bscTeamLookupRetryPauseMs(random: () => number = Math.random): number {
+  const span = BSC_TEAM_LOOKUP_RETRY_PAUSE_MAX_MS - BSC_TEAM_LOOKUP_RETRY_PAUSE_MIN_MS;
+  const r = Math.min(Math.max(random(), 0), 1);
+  return BSC_TEAM_LOOKUP_RETRY_PAUSE_MIN_MS + Math.round(r * span);
+}
+
+/**
+ * NEO-475 — one attempt. A 4xx is BSC's answer about this card and is not
+ * retried; a 5xx, a timeout or network error before the headers, and a 2xx
+ * whose body times out or will not parse are.
+ */
+type BscCardTeamAttempt =
+  | { ok: true; value: BscCardTeamValue }
+  | { ok: false; retryable: boolean };
+
+async function fetchBscCardTeamNameAttempt(
+  bscCardId: string,
+  attempt: number,
+  rec?: BscRecorder,
+): Promise<BscCardTeamAttempt> {
   const call = rec?.start({
     pathTemplate: BSC_CARD_LISTING_PATH_TEMPLATE,
     bscCardId,
     timeoutMs: BSC_TEAM_LOOKUP_TIMEOUT_MS,
+    attempt,
   });
   // NEO-475 — the headers arrived: a later throw is the body (timeout or parse).
   let answered = false;
@@ -2089,9 +2137,9 @@ async function fetchBscCardTeamNameRaw(
     if (call) rec?.respond(call, response);
     if (!response.ok) {
       console.warn(
-        `[fetchBscCardTeamNameRaw] card-listing fetch failed status=${response.status} bscCardId=${bscCardId}`,
+        `[fetchBscCardTeamNameRaw] card-listing fetch failed status=${response.status} bscCardId=${bscCardId} attempt=${attempt}/${BSC_TEAM_LOOKUP_MAX_ATTEMPTS}`,
       );
-      return failed;
+      return { ok: false, retryable: response.status >= 500 };
     }
     const data: unknown = await response.json();
     const payload: BscCardListingPayload =
@@ -2157,11 +2205,14 @@ async function fetchBscCardTeamNameRaw(
       );
     }
     return {
-      teamNames,
-      rawTeamName,
-      success: true,
-      attributeTokens,
-      ...(printRun !== undefined ? { printRun } : {}),
+      ok: true,
+      value: {
+        teamNames,
+        rawTeamName,
+        success: true,
+        attributeTokens,
+        ...(printRun !== undefined ? { printRun } : {}),
+      },
     };
   } catch (error) {
     if (call) {
@@ -2177,9 +2228,9 @@ async function fetchBscCardTeamNameRaw(
     console.warn(
       `[fetchBscCardTeamNameRaw] card-listing fetch error bscCardId=${bscCardId} error=${
         error instanceof Error ? error.name : "unknown"
-      }`,
+      } attempt=${attempt}/${BSC_TEAM_LOOKUP_MAX_ATTEMPTS}`,
     );
-    return failed;
+    return { ok: false, retryable: true };
   }
 }
 
