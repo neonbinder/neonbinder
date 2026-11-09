@@ -17,7 +17,37 @@
 
 import { AwsClient } from "aws4fetch";
 
-export type R2Config = { client: AwsClient; base: string };
+/**
+ * `base` is the path-style bucket URL (`<endpoint>/<bucket>`), which every
+ * server-side call and every read URL uses. `virtualBase` is the same bucket on
+ * its virtual-hosted host (`https://<bucket>.<account>.r2.cloudflarestorage.com`),
+ * absent when the endpoint or bucket name can't form one.
+ *
+ * NEO-466: a browser's retry of a stalled photo PUT goes to `virtualBase`. R2
+ * serves HTTP/1.1 only, so the browser pools keep-alive sockets per host; a
+ * stale one (the thumbnails' signed GETs ride the path-style host too) can
+ * swallow a PUT whole. A different host can't reuse that socket.
+ */
+export type R2Config = { client: AwsClient; base: string; virtualBase?: string };
+
+/** Which host a signed URL names: the endpoint's (path style) or the bucket's own (virtual-hosted). */
+export type R2HostStyle = "path" | "virtual";
+
+/** A bucket name that is one DNS label, so it can lead a hostname. */
+const DNS_LABEL = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+
+/** `https://<bucket>.<endpoint host>`, or undefined when the endpoint has a path or the bucket isn't a DNS label. */
+function virtualHostedBase(endpoint: string, bucket: string): string | undefined {
+  if (!DNS_LABEL.test(bucket)) return undefined;
+  let url: URL;
+  try {
+    url = new URL(endpoint);
+  } catch {
+    return undefined;
+  }
+  if (url.protocol !== "https:" || url.pathname.replace(/\/+$/, "") !== "" || url.search || url.username) return undefined;
+  return `https://${bucket}.${url.host}`;
+}
 
 /** The deployment's R2 client and bucket URL, or null when not set up. */
 export function r2Config(): R2Config | null {
@@ -27,11 +57,18 @@ export function r2Config(): R2Config | null {
   const secretAccessKey = process.env.R2_SECRET_ACCESS_KEY;
   if (!endpoint || !bucket || !accessKeyId || !secretAccessKey) return null;
   const client = new AwsClient({ accessKeyId, secretAccessKey, service: "s3", region: "auto" });
-  return { client, base: `${endpoint.replace(/\/+$/, "")}/${encodeURIComponent(bucket)}` };
+  const virtualBase = virtualHostedBase(endpoint, bucket);
+  return {
+    client,
+    base: `${endpoint.replace(/\/+$/, "")}/${encodeURIComponent(bucket)}`,
+    ...(virtualBase ? { virtualBase } : {}),
+  };
 }
 
-function objectUrl(config: R2Config, key: string, expiresSeconds: number): string {
-  const url = new URL(`${config.base}/${key.split("/").map(encodeURIComponent).join("/")}`);
+function objectUrl(config: R2Config, key: string, expiresSeconds: number, hostStyle: R2HostStyle = "path"): string {
+  const base = hostStyle === "virtual" ? config.virtualBase : config.base;
+  if (!base) throw new Error("R2 has no virtual-hosted address for this bucket");
+  const url = new URL(`${base}/${key.split("/").map(encodeURIComponent).join("/")}`);
   url.searchParams.set("X-Amz-Expires", String(expiresSeconds));
   return url.toString();
 }
@@ -40,6 +77,9 @@ function objectUrl(config: R2Config, key: string, expiresSeconds: number): strin
  * A presigned PUT for one object. The content type and length are SIGNED,
  * so the browser can upload exactly that many bytes of that type and
  * nothing else; R2 refuses any other.
+ *
+ * `hostStyle: "virtual"` signs it on the bucket's own host (the same object);
+ * it throws when the config has no `virtualBase`.
  */
 export async function signedPutUrl(
   config: R2Config,
@@ -47,8 +87,9 @@ export async function signedPutUrl(
   contentType: string,
   bytes: number,
   expiresSeconds: number,
+  hostStyle: R2HostStyle = "path",
 ): Promise<string> {
-  const signed = await config.client.sign(objectUrl(config, key, expiresSeconds), {
+  const signed = await config.client.sign(objectUrl(config, key, expiresSeconds, hostStyle), {
     method: "PUT",
     headers: { "content-type": contentType, "content-length": String(bytes) },
     aws: { signQuery: true, allHeaders: true },

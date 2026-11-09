@@ -182,3 +182,4 @@
 - [Failed dynamic import is cached per document](reference_failed_dynamic_import_is_cached_per_document.md) — Chromium: re-import or lazy retry cannot recover, only a reload; prefetch failures poison the route
 - [Paginated query leaves Exhausted live](reference_paginated_query_leaves_exhausted_live.md) — a live update drops an Exhausted gate to Loading and unmounts dialogs; hold the last full read
 - [backdrop-filter makes a containing block](reference_backdrop_filter_makes_a_containing_block.md) — a "fixed" button in a blurred scroller scrolls away; blur a sibling. Also h-0 min-h-full
+- [Happy-dom XHR bypasses the fetch guard](reference_happy_dom_xhr_bypasses_fetch_guard.md) — photo uploads use XHR since NEO-466; stubbing fetch no longer covers them, inject `transport`; attach xhr.upload listeners before send()
