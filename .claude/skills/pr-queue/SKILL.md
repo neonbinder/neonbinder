@@ -155,7 +155,9 @@ describes.
 1. Read `"$Q" owner`. Empty, or not in `ListAgents`: no queue is running. Tell
    Jason ("PR #N is ready to merge; no PR queue is running") and do not merge.
 2. Send `PR-QUEUE JOIN #<pr> <NEO-id> <short title>` to the owner. Keep the
-   session title as `NEO-123(499) Description`.
+   session title as `NEO-123(499) Description`, and mark the tab as waiting
+   in line (`cc-state queue`, where installed). Switch it to `cc-state ci` on
+   `YOUR TURN`, and `cc-state clear` on `LEAVE` or `RELEASED`.
 3. Wait for `QUEUED` or `YOUR TURN`. Until your turn, keep working on the PR
    if you like and push for testing as often as you need: only the merge
    waits. If you push a fix that changes the PR's behaviour after joining,
