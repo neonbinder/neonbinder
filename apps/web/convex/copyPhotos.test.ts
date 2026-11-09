@@ -10,7 +10,7 @@
  */
 
 import { convexTest } from "convex-test";
-import { describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import { MAX_LINES_PER_CARD } from "./collection";
 import { MAX_COPY_PHOTO_BYTES, MAX_COPY_PHOTO_UPLOADS_PER_HOUR, PHOTO_HOLD_MS, copyPhotoObjectKey } from "./copyPhotos";
@@ -752,3 +752,122 @@ describe("NEO-432: a photo change queues the card only when the copy's home list
     expect(await outboxRows(s)).toEqual([]);
   });
 });
+
+describe("two retry URLs and parallel checks (NEO-466)", () => {
+  const R2_ENV = {
+    R2_ENDPOINT: "https://acct.r2.cloudflarestorage.com",
+    R2_BUCKET: "photos",
+    R2_ACCESS_KEY_ID: "AKIDEXAMPLE",
+    R2_SECRET_ACCESS_KEY: "secret",
+  };
+  const configure = (over: Record<string, string> = {}) => {
+    for (const [k, val] of Object.entries({ ...R2_ENV, ...over })) vi.stubEnv(k, val);
+  };
+  // reserveUpload schedules the hold's cleanup; fake timers keep it from firing
+  // (and reaching R2), and every test cancels it before it ends.
+  // Earlier tests in this file leave cleanup scheduled; with R2 configured here
+  // it would reach for the network, so every call is answered by default.
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.stubGlobal("fetch", (async () => new Response(null, { status: 204 })) as unknown as typeof fetch);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+  });
+
+  const start = async (s: S) => {
+    const copyId = await addCopy(s);
+    const started = await s.me.action(api.copyPhotos.startUpload, {
+      copyId,
+      side: "front",
+      contentType: "image/jpeg",
+      imageBytes: 300_000,
+      thumbBytes: 20_000,
+    });
+    await cancelScheduled(s.t as never);
+    return started;
+  };
+
+  test("startUpload returns a path-style pair and a virtual-hosted retry pair for the same objects", async () => {
+    configure();
+    const s = await setup();
+    const started = await start(s);
+    const hosts = [started.imageUploadUrl, started.thumbUploadUrl].map((u) => new URL(u).host);
+    expect(hosts).toEqual(["acct.r2.cloudflarestorage.com", "acct.r2.cloudflarestorage.com"]);
+    const retry = [started.imageRetryUploadUrl!, started.thumbRetryUploadUrl!].map((u) => new URL(u));
+    expect(retry.map((u) => u.host)).toEqual(["photos.acct.r2.cloudflarestorage.com", "photos.acct.r2.cloudflarestorage.com"]);
+    // The same objects: the retry path is the primary's path minus the bucket segment.
+    expect(retry[0].pathname).toBe(new URL(started.imageUploadUrl).pathname.replace("/photos", ""));
+    expect(retry[1].pathname).toBe(new URL(started.thumbUploadUrl).pathname.replace("/photos", ""));
+    expect(retry[0].pathname).not.toBe(retry[1].pathname);
+  });
+
+  test("startUpload returns no retry URLs when the endpoint can't form a virtual host", async () => {
+    configure({ R2_ENDPOINT: "https://acct.r2.cloudflarestorage.com/prefix" });
+    const s = await setup();
+    const started = await start(s);
+    expect(started.imageUploadUrl).toContain("/prefix/photos/");
+    expect(started).not.toHaveProperty("imageRetryUploadUrl");
+    expect(started).not.toHaveProperty("thumbRetryUploadUrl");
+  });
+
+  /** A pending upload, and a fetch whose HEAD answers wait until the test lets them go. */
+  async function pending(headFor: (key: string) => { bytes: number; type: string } | null) {
+    configure();
+    const s = await setup();
+    const copyId = await addCopy(s);
+    const { photoId } = await s.t.mutation(internal.copyPhotos.reserveUpload, {
+      ownerId: ME.subject,
+      copyId,
+      side: "front",
+      contentType: "image/jpeg",
+      imageBytes: 300_000,
+      thumbBytes: 20_000,
+    });
+    const started: string[] = [];
+    const release: (() => void)[] = [];
+    vi.stubGlobal("fetch", (async (request: Request) => {
+      started.push(request.method);
+      await new Promise<void>((resolve) => release.push(resolve));
+      const head = headFor(new URL(request.url).pathname);
+      return head
+        ? new Response(null, { status: 200, headers: { "content-length": String(head.bytes), "content-type": head.type } })
+        : new Response(null, { status: 404 });
+    }) as unknown as typeof fetch);
+    return { s, photoId, started, release };
+  }
+
+  test("finishUpload sends both HEADs before either answers", async () => {
+    const sizeOf = (path: string) => (path.endsWith("thumb.webp") || path.includes("thumb") ? 20_000 : 300_000);
+    const { s, photoId, started, release } = await pending((path) => ({ bytes: sizeOf(path), type: "image/jpeg" }));
+    const finishing = s.me.action(api.copyPhotos.finishUpload, { photoId });
+    await vi.waitFor(() => expect(started).toEqual(["HEAD", "HEAD"]));
+    expect(release).toHaveLength(2);
+    release.forEach((go) => go());
+    await finishing;
+    expect((await s.t.run((ctx) => ctx.db.get(photoId)))?.status).toBe("live");
+    await cancelScheduled(s.t as never);
+  });
+
+  test("finishUpload refuses when a file's size doesn't match, and the photo stays pending", async () => {
+    const { s, photoId, started, release } = await pending(() => ({ bytes: 1, type: "image/jpeg" }));
+    const finishing = s.me.action(api.copyPhotos.finishUpload, { photoId }).catch((e: unknown) => e);
+    await vi.waitFor(() => expect(started).toHaveLength(2));
+    release.forEach((go) => go());
+    expect(String(await finishing)).toMatch(/didn't finish uploading/);
+    expect((await s.t.run((ctx) => ctx.db.get(photoId)))?.status).toBe("pending");
+    await cancelScheduled(s.t as never);
+  });
+
+  test("finishUpload refuses when a file is missing", async () => {
+    const { s, photoId, started, release } = await pending(() => null);
+    const finishing = s.me.action(api.copyPhotos.finishUpload, { photoId }).catch((e: unknown) => e);
+    await vi.waitFor(() => expect(started).toHaveLength(2));
+    release.forEach((go) => go());
+    expect(String(await finishing)).toMatch(/didn't finish uploading/);
+    await cancelScheduled(s.t as never);
+  });
+});
+

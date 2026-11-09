@@ -8,6 +8,7 @@ import {
   collectionCopiesOfCards,
   ScopeProvider,
   useCapabilities,
+  useCopyPhotos,
   useCollectionActions,
   useContainerCopies,
   useContainers,
@@ -27,6 +28,7 @@ import {
   useWants,
   writeErrorMessage,
 } from "./store";
+import { installFakeXhr } from "@/lib/testing/fake-xhr";
 import { REAL_CAPABILITIES, type Card, type Copy } from "./types";
 
 /**
@@ -36,6 +38,8 @@ import { REAL_CAPABILITIES, type Card, type Copy } from "./types";
  * No test here reaches a server.
  */
 const calls = vi.hoisted(() => ({ list: [] as { name: string; args: unknown }[], answers: new Map<string, unknown>() }));
+/** What a public action answers, by function name: a value, or a function of the args. */
+const actionAnswers = vi.hoisted(() => new Map<string, unknown>());
 const queried = vi.hoisted(() => [] as { name: string; args: unknown }[]);
 /** What a query answers once loaded, by function name: a value, or a function of the args. */
 const loaded = vi.hoisted(() => new Map<string, unknown>());
@@ -119,8 +123,11 @@ vi.mock("convex/react", async () => {
       },
     }),
     // NEO-377: the copy-photo actions; no test here reaches them.
-    useAction: (ref: Parameters<typeof nameOf>[0]) => async () => {
-      throw new Error(`unexpected action ${nameOf(ref)}`);
+    useAction: (ref: Parameters<typeof nameOf>[0]) => async (args: unknown) => {
+      const name = nameOf(ref);
+      if (!actionAnswers.has(name)) throw new Error(`unexpected action ${name}`);
+      const answer = actionAnswers.get(name);
+      return typeof answer === "function" ? answer(args) : answer;
     },
     useMutation: (ref: Parameters<typeof nameOf>[0]) => {
       const name = nameOf(ref);
@@ -201,7 +208,17 @@ const GATE = {
     "Show box sells on your marketplaces, so cards going in need a price first. Set a common price for the checklist, or give the card a price of its own.",
 };
 
+vi.mock("@/lib/collection/copy-photo-resize", async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  resizeCopyPhoto: vi.fn(async () => ({
+    contentType: "image/jpeg",
+    image: new Blob(["image"], { type: "image/jpeg" }),
+    thumb: new Blob(["thumb"], { type: "image/jpeg" }),
+  })),
+}));
+
 beforeEach(() => {
+  actionAnswers.clear();
   calls.list.length = 0;
   calls.answers.clear();
   queried.length = 0;
@@ -210,7 +227,10 @@ beforeEach(() => {
   paged.loadMore.length = 0;
   local.clear();
 });
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
 
 describe("the server's variant rows, in the view's terms", () => {
   it("reads Base from its variant type", () => {
@@ -2018,3 +2038,73 @@ describe("the Inventory list and quick counts (NEO-364)", () => {
     });
   });
 });
+
+describe("addPhoto uploads both files side by side (NEO-466)", () => {
+  const PRIMARY = { image: "https://r2.example/image?sig=a", thumb: "https://r2.example/thumb?sig=b" };
+  const RETRY = { image: "https://bucket.r2.example/image?sig=c", thumb: "https://bucket.r2.example/thumb?sig=d" };
+
+  const begin = (withRetry = true) => {
+    actionAnswers.set("copyPhotos:startUpload", {
+      photoId: "photo1",
+      imageUploadUrl: PRIMARY.image,
+      thumbUploadUrl: PRIMARY.thumb,
+      ...(withRetry ? { imageRetryUploadUrl: RETRY.image, thumbRetryUploadUrl: RETRY.thumb } : {}),
+    });
+    const finishCalls: unknown[] = [];
+    actionAnswers.set("copyPhotos:finishUpload", (args: unknown) => {
+      finishCalls.push(args);
+      return null;
+    });
+    const xhrs = installFakeXhr();
+    const { result } = renderHook(() => useCopyPhotos(), { wrapper });
+    const saving = result.current!.addPhoto(COPY, "front", new File(["x"], "card.jpg", { type: "image/jpeg" }));
+    return { xhrs, saving, finishCalls };
+  };
+  const byUrl = (xhrs: ReturnType<typeof installFakeXhr>, part: string) => xhrs.all.find((x) => x.url?.includes(part))!;
+
+  it("starts the image and the thumb before either has answered, then finishes once both have", async () => {
+    const { xhrs, saving, finishCalls } = begin();
+    await vi.waitFor(() => expect(xhrs.all).toHaveLength(2));
+    expect(xhrs.all.map((x) => x.url).sort()).toEqual([PRIMARY.image, PRIMARY.thumb].sort());
+    expect(finishCalls).toEqual([]);
+    byUrl(xhrs, "/image").respond(200);
+    await Promise.resolve();
+    expect(finishCalls).toEqual([]);
+    byUrl(xhrs, "/thumb").respond(200);
+    await saving;
+    expect(finishCalls).toEqual([{ photoId: "photo1" }]);
+  });
+
+  it("works without retry URLs when the server sent none", async () => {
+    const { xhrs, saving } = begin(false);
+    await vi.waitFor(() => expect(xhrs.all).toHaveLength(2));
+    xhrs.all.forEach((x) => x.respond(200));
+    await expect(saving).resolves.toBeUndefined();
+  });
+
+  it("when the image is refused, aborts the thumb, never finishes, and shows the image's error", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const { xhrs, saving, finishCalls } = begin();
+      const failing = saving.catch((e: unknown) => e);
+      await vi.waitFor(() => expect(xhrs.all).toHaveLength(2));
+      const thumb = byUrl(xhrs, "/thumb");
+      byUrl(xhrs, "/image").respond(403);
+      const error = await failing;
+      expect(thumb.aborted).toBe(true);
+      expect(finishCalls).toEqual([]);
+      expect(error).toMatchObject({ name: "PhotoUploadError", status: 403 });
+      // Only the file that gave up logs; the aborted one is not a failure.
+      const lines = warn.mock.calls.map((c) => String(c[0]));
+      expect(lines.filter((l) => l.includes("copy_photo_put_failed"))).toHaveLength(1);
+      expect(lines.join("\n")).not.toContain("r2.example");
+      const timing = lines.find((l) => l.includes("copy_photo_save_timing"))!;
+      expect(JSON.parse(timing)).toMatchObject({ outcome: "failed", failedAt: "put", errorName: "PhotoUploadError", errorStatus: 403 });
+      expect(JSON.parse(timing).puts).toHaveLength(2);
+      expect(timing).not.toContain("r2.example");
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
+
