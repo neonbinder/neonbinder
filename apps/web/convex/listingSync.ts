@@ -718,7 +718,8 @@ async function syncOnePlatform(
       return "queued";
     }
   } else {
-    // Never run yet (its first run reads every condition anyway): no record
+    // Never run yet (its first eBay run reads every card anyway; a BSC run reads
+    // the conditions in use plus `conditionsPushed`, NEO-475): no record
     // to stamp. A change queued for the variant in the last minute (a box
     // write, or a press) is not queued again, but the press still runs the
     // drain that syncs it: taken, not dropped.
@@ -745,7 +746,8 @@ async function syncOnePlatform(
   // A run under way claimed before this press, so it keeps what it reads. The
   // re-queued rows outlive its finish (their `seq` moved), the kick asks it to
   // run again on release, and the stamp is later than its `lastRunAt`, so that
-  // next run reads the set in full.
+  // next run reads the set in full on eBay (every card). On BSC every run reads
+  // the conditions in use plus `conditionsPushed`, press or not (NEO-475).
   await kickListingDrain(ctx, ownerId, platform);
   return "queued";
 }

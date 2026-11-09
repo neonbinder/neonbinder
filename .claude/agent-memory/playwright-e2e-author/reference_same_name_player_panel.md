@@ -50,4 +50,10 @@ unpins. So a flow that must hold the pick step for several steps needs the
 batch's other lookups to be slow or already drained — on a catalogue-loaded
 preview a set with a handful of unknowns stages and settles career teams in
 seconds. Any drain loop must wake on the heading too, or it parks.
+Card order does NOT put an earlier player ahead of it: the presented row is
+pinned state, so the READY pick step (settled at insert) is pinned before
+lower-numbered rows whose lookups land a moment later (a #7 pick step opened
+ahead of #1 on a 10-card set). `walkToPlayerRow({ readyToCreate: true })` does
+not pass a pick step, so a spec that needs a career editor stops on it unless
+the walk learns to.
 Related: [[catalogue-seeded-wizard-staging]].

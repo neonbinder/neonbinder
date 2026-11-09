@@ -32,12 +32,23 @@ export function collectorCascade(page: Page, name = "Sport, year, brand and set"
   return { cascade, drill };
 }
 
-/** A real set the collector's cascade can be driven to: sport, year, brand, set, and its Base. */
+/**
+ * A real set the collector's cascade can be driven to (sport, year, brand,
+ * set) and the checklist under it: the set's Base, unless `checklist` names a
+ * variant type and the row under it that is the checklist (an insert, a
+ * parallel).
+ */
 export interface CollectorSet {
   sport: string;
   year: string;
   manufacturer: string;
   set: string;
+  /**
+   * The checklist below the set when it is not the Base: the variant type's
+   * title as the Variant Types column lists it ("Insert"), which is also the
+   * next column's name, and the row picked there ("Future Stars").
+   */
+  checklist?: { type: string; name: string };
 }
 
 /** The seed's 2024 Topps Chrome (the default of `drillToCollectorBase`). */
@@ -49,20 +60,51 @@ export const TOPPS_CHROME_2024: CollectorSet = {
 };
 
 /**
- * 1988 Topps Baseball (BSC's "1988 Topps", year stripped to the set "Topps"
- * under the brand "Topps"): the BuySportsCards listing spec's fixture
- * (NEO-370), provisioned by `setup.spec.ts`.
+ * The seed's 2024 Topps Chrome › Insert › Future Stars (20 cards), the
+ * marketplace-seller listing specs' fixture (NEO-475; SET-REGISTRY.md). Its
+ * checklist and Sync status both name it "2024 Topps Chrome Future Stars": an
+ * insert reads as part of the set's name.
  */
-export const TOPPS_1988: CollectorSet = {
-  sport: "Baseball",
-  year: "1988",
-  manufacturer: "Topps",
-  set: "Topps",
+export const TOPPS_CHROME_2024_FUTURE_STARS: CollectorSet = {
+  ...TOPPS_CHROME_2024,
+  checklist: { type: "Insert", name: "Future Stars" },
 };
 
-/** The checklist's own name: "2024 Topps Chrome Base", "1988 Topps Base". */
+/**
+ * The checklist's own name, as its heading, region and the Add cards "Set:"
+ * button read it: "2024 Topps Chrome Base", "2024 Topps Chrome Future Stars".
+ */
+export function checklistTitle(target: CollectorSet): string {
+  return `${target.year} ${target.set} ${target.checklist?.name ?? "Base"}`;
+}
+
+/** The set's Base checklist's name ("2024 Topps Chrome Base"), whatever `target.checklist` says. */
 export function baseChecklistTitle(target: CollectorSet): string {
-  return `${target.year} ${target.set} Base`;
+  return checklistTitle({ ...target, checklist: undefined });
+}
+
+/**
+ * From the Checklists tab (Collection or Inventory) down to `target`'s
+ * checklist: the set's Base, or the variant type and row its `checklist`
+ * names. Returns the checklist's region.
+ */
+export async function drillToCollectorChecklist(page: Page, target: CollectorSet): Promise<Locator> {
+  const { drill } = collectorCascade(page);
+  await drill("Sports", target.sport, "Years");
+  await drill("Years", target.year, "Brands");
+  await drill("Brands", target.manufacturer, "Sets");
+  await drill("Sets", target.set, "Variant Types");
+  if (target.checklist) {
+    // The picked type's rows are the next column, named for the type.
+    await drill("Variant Types", target.checklist.type, target.checklist.type);
+    await drill(target.checklist.type, target.checklist.name);
+  } else {
+    await drill("Variant Types", "Base");
+  }
+  const title = checklistTitle(target);
+  const checklist = page.getByRole("region", { name: title });
+  await expect(checklist.getByRole("heading", { level: 3, name: title })).toBeVisible();
+  return checklist;
 }
 
 /**
@@ -70,16 +112,7 @@ export function baseChecklistTitle(target: CollectorSet): string {
  * Topps Chrome unless `target` says otherwise); returns its region.
  */
 export async function drillToCollectorBase(page: Page, target: CollectorSet = TOPPS_CHROME_2024): Promise<Locator> {
-  const { drill } = collectorCascade(page);
-  await drill("Sports", target.sport, "Years");
-  await drill("Years", target.year, "Brands");
-  await drill("Brands", target.manufacturer, "Sets");
-  await drill("Sets", target.set, "Variant Types");
-  await drill("Variant Types", "Base");
-  const title = baseChecklistTitle(target);
-  const checklist = page.getByRole("region", { name: title });
-  await expect(checklist.getByRole("heading", { level: 3, name: title })).toBeVisible();
-  return checklist;
+  return drillToCollectorChecklist(page, { ...target, checklist: undefined });
 }
 
 /** Add cards' drop zone, by the name a screen reader hears. */
@@ -92,17 +125,20 @@ export function intakeDropzone(page: Page): Locator {
  * "Set: ..." button and its cascade; the panel folds back into the button
  * once the variant is picked. A run needs a set before anything starts (photos
  * wait, "Use a scanner" is held), so every spec that starts a run calls this
- * first. By default the variant is the seeded set's Base type itself; pass
- * `under` for a set whose Base sits inside another type (a hand-made set's
- * `Insert` > `Base`). Returns the title the button now reads
- * ("2024 Topps Chrome Base"). Works whether or not a set is already picked (a
- * pick replaces it).
+ * first. By default the variant is the seeded set's Base type itself; a
+ * `target` with a `checklist` picks that type's row instead (an insert such as
+ * Future Stars); pass `under` for a set whose Base sits inside another type (a
+ * hand-made set's `Insert` > `Base`). Returns the title the button now reads
+ * ("2024 Topps Chrome Base", "2024 Topps Chrome Future Stars"). Works whether
+ * or not a set is already picked (a pick replaces it).
  */
 export async function pickIntakeSet(
   page: Page,
   target: CollectorSet = TOPPS_CHROME_2024,
   { under }: { under?: string } = {},
 ): Promise<string> {
+  // `under` is a Base inside a type; a target's own checklist is a row inside one. Never both.
+  expect(under && target.checklist, "pickIntakeSet takes `under` or a target checklist, not both").toBeFalsy();
   await page.getByRole("button", { name: /^Set: / }).click();
   const { cascade, drill } = collectorCascade(page, "Sport, year, brand, set and variant");
   await drill("Sports", target.sport, "Years");
@@ -110,20 +146,22 @@ export async function pickIntakeSet(
   await drill("Brands", target.manufacturer, "Sets");
   await drill("Sets", target.set, "Variant Types");
   // Picking a variant folds the panel back into its button.
-  if (under) await drill("Variant Types", under);
+  const type = target.checklist?.type ?? under;
+  if (type) await drill("Variant Types", type);
   await cascade
-    .getByRole("listbox", { name: under ?? "Variant Types" })
+    .getByRole("listbox", { name: type ?? "Variant Types" })
     .getByRole("option")
-    .filter({ has: page.getByText("Base", { exact: true }) })
+    .filter({ has: page.getByText(target.checklist?.name ?? "Base", { exact: true }) })
     .click();
-  const title = baseChecklistTitle(target);
+  const title = checklistTitle(target);
   await expect(page.getByRole("button", { name: `Set: ${title}`, exact: true })).toBeVisible();
   return title;
 }
 
 /**
- * The Base rows that read `#N First Last` (two or more words, one player, no
- * variation), never #300 (the signed-by spec's card). The `Details` button of
+ * The checklist rows that read `#N First Last` (two or more words, one player,
+ * no variation; `#FS-5 ...` on an insert too), never #300 (the signed-by spec's
+ * Base card). The `Details` button of
  * a card with two or more lines carries the line in its name (a comma), so
  * read the names you need BEFORE writing to any of them.
  */
@@ -357,9 +395,9 @@ export async function clearChecklistCommonPrice(page: Page, checklist: Locator, 
 
 /**
  * On the Inventory Checklists tab with the Adding-to box picked: set the
- * `cards`' quantities in `box` to 0 (only those not already 0) on the Base
- * checklist of `target`. Returns the checklist. Idempotent, for the listing
- * specs' tidy-up and failure hooks.
+ * `cards`' quantities in `box` to 0 (only those not already 0) on `target`'s
+ * checklist (its Base, or the row its `checklist` names). Returns the
+ * checklist. Idempotent, for the listing specs' tidy-up and failure hooks.
  *
  * `arrival` says how the tab was reached. The Checklists tab link reopens the
  * checklist last open on the same page ("Checklists opens where you left it"),
@@ -374,13 +412,13 @@ export async function emptyBoxCards(
   isMobile: boolean,
   arrival: "fresh" | "reopened",
 ): Promise<Locator> {
-  const title = baseChecklistTitle(target);
+  const title = checklistTitle(target);
   const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const adding = page.getByRole("combobox", { name: "Adding to" });
   await expect(adding).toBeVisible();
   let checklist: Locator;
   if (arrival === "fresh") {
-    checklist = await drillToCollectorBase(page, target);
+    checklist = await drillToCollectorChecklist(page, target);
   } else {
     checklist = page.getByRole("region", { name: title });
     await expect(checklist.getByRole("heading", { level: 3, name: title })).toBeVisible();
@@ -560,7 +598,8 @@ export function queueSettled(platform: Locator, setLabel: string): Locator {
   const escaped = setLabel.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   // The row's text is "<card> in <set>queued <when>" (two spans, no space in the
   // DOM; hasNotText reads textContent, not the aria snapshot's spacing), so a
-  // sibling set whose name starts with this one ("1988 Topps Traded") never
+  // sibling whose name starts with this one ("2024 Topps Chrome Future Stars
+  // Autographs" beside "2024 Topps Chrome Future Stars") never
   // counts as this set's.
   const ofSet = new RegExp(` in ${escaped}\\s*queued\\s`);
   return platform
