@@ -1231,6 +1231,23 @@ export default defineSchema({
     // unauthenticated at /u/:username. Optional so existing rows need no
     // migration; /labels treats absent as "not set up yet".
     returnAddress: v.optional(postalAddressValidator),
+    /**
+     * NEO-464 — the dashboard's "since your last visit". `seenAt`: the last
+     * time the dashboard opened. `sinceAt`: where the current visit's "new"
+     * starts (the `seenAt` of the visit before; absent on the first visit).
+     * A visit runs while the dashboard reopens within `VISIT_GAP_MS` of the
+     * last open, so Back to the dashboard keeps its news. Written only by
+     * `dashboard.markVisit` (`nextVisit` is the rule). Top level, not under
+     * `preferences`: `getUserProfile` returns `preferences` through a fixed
+     * validator, and `updateUserProfile` replaces it whole. Optional, no
+     * backfill: absent reads as a first visit.
+     */
+    dashboardVisit: v.optional(
+      v.object({
+        seenAt: v.number(),
+        sinceAt: v.optional(v.number()),
+      }),
+    ),
   })
     .index("by_user", ["userId"])
     // NEO-415: eBay's Marketplace Account Deletion notice names the seller by

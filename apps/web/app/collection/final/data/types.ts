@@ -564,6 +564,12 @@ export function isHome(container: Pick<Container, "system" | "rule"> | undefined
 export interface Want {
   cardId: CardId;
   binderId: ContainerId | null;
+  /**
+   * NEO-464 — when the want was last set (ms since epoch), as the server
+   * stamps it: the dashboard's chase takes the newest. Absent from the demo
+   * store and on a want just set and not yet confirmed (read it as newest).
+   */
+  lastUpdated?: number;
 }
 
 /**

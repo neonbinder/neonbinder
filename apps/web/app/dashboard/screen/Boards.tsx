@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { Link } from "react-router";
+import { Link, useLocation } from "react-router";
 import CardFace from "@/app/collection/prototypes/_shared/CardFace";
 import NeonButton from "@/components/modules/NeonButton";
 import type { BuildingSet, CompletedSet, DashCard } from "../fake-data";
@@ -39,7 +39,7 @@ export interface BoardItem {
   total: number;
   need: number;
   percent: number;
-  /** The cards still needed, in checklist order. */
+  /** The cards still needed, in checklist order: every one, or (a set on the signed-in page) the few the Need line names. */
   needed: DashCard[];
   /** One bulb per card of the checklist, in order. `cardId` only where it is known for sure. */
   bulbs: { key: string; cardNumber: string; owned: boolean; cardId: string | null }[];
@@ -66,7 +66,7 @@ function setItem(set: BuildingSet): BoardItem {
       key: `${b.cardNumber}-${i}`,
       cardNumber: b.cardNumber,
       owned: b.owned,
-      cardId: b.owned ? null : (byNumber.get(b.cardNumber) ?? null),
+      cardId: b.owned ? null : (b.cardId ?? byNumber.get(b.cardNumber) ?? null),
     })),
     bulbName: "Base",
     to: { setId: set.setId },
@@ -163,17 +163,25 @@ export default function Boards({
   );
 }
 
-/** The set's wall in the collection demo: a real page, so a click pushes. */
-function wallLink(setId: string): string {
-  return `/demo/collection?${new URLSearchParams({ tab: "cards", set: setId })}`;
+/**
+ * The set's wall: in the collection demo from the demo (`/demo`), in the
+ * collector's own collection from the signed-in page. A real page, so a
+ * click pushes.
+ */
+function wallLink(setId: string, pathname: string): string {
+  const collection = pathname.startsWith("/demo") ? "/demo/collection" : "/collection";
+  return `${collection}?${new URLSearchParams({ tab: "cards", set: setId })}`;
 }
 
 /** The board's title: the whole board is its hit area (the `after:` inset). */
 const TITLE_HIT =
   "text-left after:absolute after:inset-0 after:rounded-xl hover:text-neon-blue-text focus-visible:outline-none";
 
-/** How many needed cards the Need line names (on one line, clamped) before "+N more". */
-const NEED_NAMED = 5;
+/**
+ * How many needed cards the Need line names (on one line, clamped) before
+ * "+N more". The signed-in page reads only these few of a set's needs.
+ */
+export const NEED_NAMED = 5;
 
 /**
  * One compact board: rank, name, percent; Have and Need; one bar of
@@ -194,11 +202,15 @@ function Board({
   wanted: Set<string>;
   onOpenBinder: (id: string) => void;
 }) {
+  const { pathname } = useLocation();
   const to = item.to;
   const ordered = [...item.needed.filter((c) => wanted.has(c.id)), ...item.needed.filter((c) => !wanted.has(c.id))];
   const named = ordered.slice(0, NEED_NAMED);
-  const more = item.needed.length - named.length;
-  const wantedCount = item.needed.filter((c) => wanted.has(c.id)).length;
+  // `need`, not `needed`: a set's board may name only its first few needs.
+  const more = item.need - named.length;
+  const wantedIds = new Set(item.needed.filter((c) => wanted.has(c.id)).map((c) => c.id));
+  for (const b of item.bulbs) if (!b.owned && b.cardId && wanted.has(b.cardId)) wantedIds.add(b.cardId);
+  const wantedCount = wantedIds.size;
   const needText = named.map((c) => `${wanted.has(c.id) ? "★ " : ""}${c.title}`).join("; ");
 
   return (
@@ -217,7 +229,7 @@ function Board({
         <div className="min-w-0 flex-1">
           <h3 className={`font-bold leading-tight text-ink ${leader ? "text-lg" : "text-base"}`}>
             {"setId" in to ? (
-              <Link to={wallLink(to.setId)} className={TITLE_HIT}>
+              <Link to={wallLink(to.setId, pathname)} className={TITLE_HIT}>
                 {item.label}
               </Link>
             ) : (

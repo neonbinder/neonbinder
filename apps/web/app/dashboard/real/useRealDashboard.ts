@@ -1,0 +1,704 @@
+/**
+ * NEO-464 — the signed-in dashboard's data, from the collector's real
+ * collection through the collection store's hooks (mounted by
+ * `ConvexCollectionProvider` in `../page.tsx`).
+ *
+ * Filled from the store: the shelf and the open binder's pocket pages
+ * (slice 1); the chase off the Want List, the trade pile, and the boxes held
+ * off the marketplaces (slice 2). Slice 3, from `convex/dashboard.ts`
+ * (`./useDashboardServer`):
+ * - the set boards: the sets the collector is building (`useBuildingSets`,
+ *   most recently picked first, at most `BOARD_SETS`), each one's base
+ *   checklist read ONCE (never subscribed), only the few needs the board
+ *   names hydrated;
+ * - "just completed": a set's base checklist held whole, finished in the
+ *   last `JUST_COMPLETED_DAYS` days (read once; see `dashboard.justCompleted`);
+ * - smart binders: the rule in words, and a checklist percent read once from
+ *   the binder's stored fits when the rule names a checklist;
+ * - "new since your last visit": the visit is stamped on mount
+ *   (`dashboard.markVisit`), and the collection lines touched since the
+ *   last one fill each binder's `newCards` (subscribed, at most 100 lines).
+ * Slice 4, also from `convex/dashboard.ts`, each read once on mount:
+ * - could fit: each smart binder's cards held in another binder that its
+ *   rule takes in, from its stored fits (at most 20 a binder, for the first
+ *   `SMART_CHECKLISTS` smart binders; only the strip's preview is hydrated);
+ * - the hopper: what is still in intake across the recent runs
+ *   (`dashboard.intake`; photos still being processed are not counted);
+ * - the dealer layout: the account sells (a listing platform connected, or
+ *   any order), and its newest orders still to ship (`dashboard.sales`, at
+ *   most 10), shown oldest first. "Shipped" is the platform's own status:
+ *   NB keeps no shipped state.
+ * Still empty, never faked: Fresh Pulls.
+ *
+ * Shelf rows are the collector's binders: Main and their own, never a box,
+ * the Want List or the trade pile (`bindersOf` in the store). Spines wear
+ * the binder's own label colours, else the house vinyl. Only the open
+ * binder (`?binder=<id>`, pushed by the screen) reads its copies.
+ */
+
+import { useMemo, useState } from "react";
+import { useSearchParams } from "react-router";
+import { useCardMap } from "@/app/collection/final/binders/hooks";
+import { binderPages, type CardsById, type PageModel } from "@/app/collection/final/binders/model";
+import { describeSmartRule } from "@/app/collection/final/binders/RuleBuilder";
+import { setLabel } from "@/app/collection/final/data/labels";
+import {
+  bindersOf,
+  boxesOf,
+  systemContainer,
+  useBuildingSets,
+  useContainerCopies,
+  useContainers,
+  useSummary,
+  useTradeCopies,
+  useWants,
+} from "@/app/collection/final/data/store";
+import type { Card, CardId, CollectionSummary, Container, ContainerCopies, SetRef, Want } from "@/app/collection/final/data/types";
+import { toDash, type DashCard } from "../dash-card";
+import {
+  daysAgoLabel,
+  type BuildingSet,
+  type CompletedSet,
+  type DashboardData,
+  type IntakeInProgress,
+  type IntakeScan,
+  type SaleLine,
+  type SalesData,
+  type SmartBinderSummary,
+  type TradePile,
+  type UnlistedBox,
+  type UnshippedSale,
+  type WantCard,
+} from "../fake-data";
+import { NEED_NAMED } from "../screen/Boards";
+import { COULD_FIT_PREVIEW } from "../screen/CouldFit";
+import { HOUSE_VINYL, type Pocket, type ShelfBinder } from "../screen/shelf-model";
+import {
+  useCouldFit,
+  useIntakeRaw,
+  useJustCompletedRaw,
+  useNewSince,
+  useSalesRaw,
+  useSetBoards,
+  useSmartChecklists,
+  useVisitSince,
+  type CompletionRaw,
+  type CouldFitRaw,
+  type IntakeRaw,
+  type NewSinceRaw,
+  type SalesRaw,
+  type SetBoardRaw,
+} from "./useDashboardServer";
+
+/** The screen's URL parameter for the open binder (`DashboardScreen`). */
+export const BINDER_PARAM = "binder";
+
+const NO_INTAKE: IntakeInProgress = { total: 0, waiting: 0, needsYou: 0, uploads: [], preview: [] };
+
+/** The chase: the Want List's newest wants, at most this many (and only their cards are read). */
+export const CHASE_CAP = 12;
+/** Trade pile copies read for its thumbnails; the count is the pile's own. */
+export const TRADE_PREVIEW = 6;
+/** A checklist finished within this many days reads as "just completed". */
+export const JUST_COMPLETED_DAYS = 10;
+/** The most recent completions kept. */
+export const JUST_COMPLETED_CAP = 3;
+/** Sets on the board: the most recently picked of the sets being built. */
+export const BOARD_SETS = 6;
+/** Smart binders whose checklist is counted (each is one read on mount). */
+export const SMART_CHECKLISTS = 8;
+
+const NO_TRADE: TradePile = { count: 0, cards: [] };
+
+/** The rule in words, when the binder is smart and its rule can be said. */
+function ruleTextOf(container: Container): string | null {
+  if (!container.smartRule) return null;
+  const text = describeSmartRule(container.smartRule, container.ruleNames ?? {});
+  return text.length > 0 ? text : null;
+}
+
+/** Whole percent, floored, so 99.6% never reads as done. */
+function percentOf(have: number, total: number): number {
+  return total === 0 ? 0 : Math.floor((have / total) * 100);
+}
+
+/** What a spine carries beyond its container: the news since the last visit, a smart binder's checklist count and its could-fit cards. */
+export interface SpineExtras {
+  newCards?: DashCard[];
+  checklist?: { have: number; total: number } | null;
+  couldFit?: CouldFitCards;
+}
+
+/** A smart binder's could-fit cards: the strip's preview hydrated, and how many there are. */
+export interface CouldFitCards {
+  cards: DashCard[];
+  count: number;
+  more: boolean;
+}
+
+/**
+ * One container as a spine. `pockets` are the open binder's pages (empty for
+ * every other spine). A count of null means not counted yet: it stands at 0
+ * until the store has counted it. A checklist count and could-fit cards
+ * show only on a smart binder.
+ */
+export function shelfBinderOf(container: Container, pockets: Pocket[] = [], extras: SpineExtras = {}): ShelfBinder {
+  const smart = !!container.smartRule;
+  const list = smart && extras.checklist && extras.checklist.total > 0 ? extras.checklist : null;
+  return {
+    id: container.id,
+    name: container.name,
+    kind: smart ? "smart" : "manual",
+    ruleText: ruleTextOf(container),
+    cardCount: container.count?.copies ?? 0,
+    newCards: extras.newCards ?? [],
+    couldFit: smart ? (extras.couldFit?.cards ?? []) : [],
+    ...(smart && extras.couldFit ? { couldFitTotal: { count: extras.couldFit.count, more: extras.couldFit.more } } : {}),
+    checklist: list ? { have: list.have, total: list.total, percent: percentOf(list.have, list.total) } : null,
+    vinyl: container.label?.background ?? HOUSE_VINYL.vinyl,
+    stripe: container.label?.text ?? HOUSE_VINYL.stripe,
+    pockets,
+    checklistCards: null,
+  };
+}
+
+/**
+ * A binder's pages (`binderPages`), flattened to the screen's pockets: nine
+ * a page, so its page count is `pages.length`. A card in `fresh` (new since
+ * the last visit) is marked new.
+ */
+export function pocketsOfPages(pages: readonly PageModel[], fresh?: ReadonlySet<CardId>): Pocket[] {
+  return pages.flatMap((page, p) =>
+    page.pockets.map((pocket, s): Pocket => {
+      const key = `p${p}-s${s}`;
+      const { content } = pocket;
+      if (content.kind === "have") {
+        return { kind: "card", card: toDash(content.card), isNew: fresh?.has(content.card.id) ?? false, key };
+      }
+      if (content.kind === "need") return { kind: "empty", key, card: toDash(content.card) };
+      return { kind: "empty", key, card: null };
+    }),
+  );
+}
+
+/** Each card once, in the order given, as DashCards; a card not in `cards` (gone from the catalog) is skipped. */
+function dashCardsOf(cardIds: readonly CardId[], cards: CardsById): DashCard[] {
+  const seen = new Set<CardId>();
+  const out: DashCard[] = [];
+  for (const id of cardIds) {
+    const card = cards.get(id);
+    if (!card || seen.has(id)) continue;
+    seen.add(id);
+    out.push(toDash(card));
+  }
+  return out;
+}
+
+/**
+ * The trade pile: its count is the Up for Trade shelf's own (physical cards,
+ * kept by every write, a box's copies too); its cards are the first copies
+ * listed, each card once. Not counted yet: 0.
+ */
+export function tradePileOf(trade: Container | undefined, listed: ContainerCopies | undefined, cards: CardsById | undefined): TradePile {
+  const count = trade?.count?.copies ?? 0;
+  if (count === 0) return NO_TRADE;
+  const ids = listed ? listed.copies.slice(0, TRADE_PREVIEW).map((c) => c.cardId) : [];
+  return { count, cards: cards ? dashCardsOf(ids, cards) : [] };
+}
+
+/**
+ * The boxes the collector marked in-person only (NEO-370 "Listed on
+ * marketplaces" off), Unsorted first: every card in one is held off the
+ * marketplaces. The count is the box's own, as My Boxes shows it. A box not
+ * counted yet, or empty, is left out.
+ */
+export function unlistedBoxesOf(containers: readonly Container[]): UnlistedBox[] {
+  return boxesOf(containers)
+    .filter((box) => box.listedOnMarketplaces === false)
+    .map((box) => ({ id: box.id, name: box.name, unlisted: box.count?.copies ?? 0 }))
+    .filter((box) => box.unlisted > 0);
+}
+
+/** The newest wants, at most `cap`. A want with no stamp was just set: it is the newest. */
+export function chaseOf(wants: readonly Want[], cap = CHASE_CAP): Want[] {
+  const stamp = (w: Want) => w.lastUpdated ?? Number.POSITIVE_INFINITY;
+  return [...wants].sort((a, b) => stamp(b) - stamp(a)).slice(0, cap);
+}
+
+/**
+ * The chase as cards, in the order given. `forBinder` is the name of the
+ * binder or box the want is for, or null (just wanted, or that home is gone).
+ */
+export function wantCardsOf(chase: readonly Want[], containers: readonly Container[], cards: CardsById): WantCard[] {
+  const names = new Map(containers.map((c) => [c.id, c.name]));
+  return chase.flatMap((want) => {
+    const card = cards.get(want.cardId);
+    if (!card) return [];
+    return [{ ...toDash(card), forBinder: (want.binderId && names.get(want.binderId)) ?? null }];
+  });
+}
+
+/**
+ * A checklist whose every card the collector holds, with the day its last
+ * card came in: the newest `acquiredAt` among the copies that complete it.
+ */
+export interface CompletedChecklist {
+  id: string;
+  /** "2024 Topps Chrome Refractor". */
+  label: string;
+  setLabel: string;
+  /** null for the base checklist. */
+  checklistName: string | null;
+  /** Cards in the checklist; absent, `cards` is all of them. */
+  total?: number;
+  /** Cards of the checklist to draw: every one, or (a big checklist) the last few in. */
+  cards: DashCard[];
+  /** The card whose copy came in last. */
+  lastCard: DashCard;
+  /** `YYYY-MM-DD`: when that copy came in. */
+  completedOn: string;
+}
+
+/** Whole days from `from` to `to`, both `YYYY-MM-DD` (calendar days, no time of day). */
+function daysBetween(from: string, to: string): number {
+  const day = (iso: string) => {
+    const [y, m, d] = iso.split("-").map(Number);
+    return Date.UTC(y, m - 1, d) / 86_400_000;
+  };
+  return Math.round(day(to) - day(from));
+}
+
+/**
+ * The checklists completed in the last `JUST_COMPLETED_DAYS` days (today
+ * counts as day 0, so day 10 is the last one in), newest first, at most
+ * `JUST_COMPLETED_CAP`. A date after `today` (a clock or a typo) is left out.
+ */
+export function recentCompletions(done: readonly CompletedChecklist[], today: string): CompletedChecklist[] {
+  return done
+    .map((c) => ({ c, days: daysBetween(c.completedOn, today) }))
+    .filter(({ days }) => days >= 0 && days <= JUST_COMPLETED_DAYS)
+    .sort((a, b) => a.days - b.days)
+    .slice(0, JUST_COMPLETED_CAP)
+    .map(({ c }) => c);
+}
+
+/** The newest of `recentCompletions` as the screen's cheer, or null. */
+export function justCompletedOf(done: readonly CompletedChecklist[], today: string): CompletedSet | null {
+  const [newest] = recentCompletions(done, today);
+  if (!newest) return null;
+  return {
+    id: newest.id,
+    label: newest.label,
+    setLabel: newest.setLabel,
+    checklistName: newest.checklistName,
+    total: newest.total ?? newest.cards.length,
+    lastCard: newest.lastCard,
+    cards: newest.cards,
+    whenLabel: daysAgoLabel(daysBetween(newest.completedOn, today)),
+  };
+}
+
+/** `YYYY-MM-DD` of an instant, on this device's calendar. */
+export function localDay(ms: number): string {
+  const d = new Date(ms);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+/**
+ * Where `justCompleted` starts looking: the start of the oldest day the
+ * window keeps, a day early so no time zone loses its last day (the window
+ * itself is `recentCompletions`'s, by calendar day).
+ */
+export function completionWindowStart(nowMs: number): number {
+  const d = new Date(nowMs);
+  d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() - JUST_COMPLETED_DAYS - 1);
+  return d.getTime();
+}
+
+/** A finished checklist from the server, its cards hydrated; null until its last card is. */
+export function completedChecklistOf(raw: CompletionRaw, cards: CardsById): CompletedChecklist | null {
+  const last = cards.get(raw.lastCardId);
+  if (!last) return null;
+  return {
+    id: `done-${raw.setId}-base`,
+    label: raw.setLabel,
+    setLabel: raw.setLabel,
+    checklistName: raw.checklistName,
+    total: raw.total,
+    cards: dashCardsOf(raw.cardIds, cards),
+    lastCard: toDash(last),
+    completedOn: raw.whenDay ?? localDay(raw.whenMs),
+  };
+}
+
+/** The needed cards a set's board names: Want List cards first, then checklist order, at most `NEED_NAMED`. */
+export function namedNeedsOf(board: SetBoardRaw, wanted: ReadonlySet<CardId>): CardId[] {
+  const needed = board.cards.filter((c) => !c.owned).map((c) => c.cardId as CardId);
+  return [...needed.filter((id) => wanted.has(id)), ...needed.filter((id) => !wanted.has(id))].slice(0, NEED_NAMED);
+}
+
+/**
+ * A set on the board, from its base checklist (`dashboard.setBoard`). Null
+ * when it has no base cards to light. Only the needs the board names are
+ * drawn (`namedNeedsOf`, hydrated in `cards`); every bulb knows its card.
+ */
+export function buildingSetOf(
+  set: SetRef,
+  board: SetBoardRaw | null,
+  cards: CardsById | undefined,
+  wanted: ReadonlySet<CardId>,
+): BuildingSet | null {
+  if (!board || board.cards.length === 0) return null;
+  const total = board.cards.length;
+  const have = board.cards.filter((c) => c.owned).length;
+  const named = namedNeedsOf(board, wanted);
+  return {
+    setId: set.id,
+    setLabel: setLabel(set),
+    have,
+    total,
+    need: total - have,
+    percent: percentOf(have, total),
+    neededNumbers: board.cards.filter((c) => !c.owned).map((c) => c.cardNumber),
+    neededCards: cards ? dashCardsOf(named, cards) : [],
+    baseBulbs: board.cards.map((c) => ({ cardNumber: c.cardNumber, owned: c.owned, cardId: c.cardId })),
+    checklists: [{ name: "Base", kind: "base", have, total }],
+  };
+}
+
+/**
+ * Each binder's cards new since the last visit, newest first, each card
+ * once (a card filed twice is one new card). A card not hydrated yet is
+ * left out until it is.
+ */
+export function newCardsByHome(lines: NewSinceRaw["lines"], cards: CardsById | undefined): Map<string, DashCard[]> {
+  const ids = new Map<string, CardId[]>();
+  for (const line of lines) {
+    const list = ids.get(line.homeId) ?? [];
+    list.push(line.cardId);
+    ids.set(line.homeId, list);
+  }
+  const out = new Map<string, DashCard[]>();
+  if (!cards) return out;
+  for (const [homeId, list] of ids) out.set(homeId, dashCardsOf(list, cards));
+  return out;
+}
+
+/** The smart binders on the shelf, as the screen's summaries. A percent only where the rule names a checklist. */
+export function smartBindersOf(binders: readonly ShelfBinder[]): SmartBinderSummary[] {
+  return binders
+    .filter((b) => b.kind === "smart")
+    .map((b) => ({
+      id: b.id,
+      name: b.name,
+      ruleText: b.ruleText ?? "",
+      cardCount: b.cardCount,
+      newCount: b.newCards.length,
+      newCards: b.newCards,
+      ...(b.checklist ? { checklist: b.checklist } : {}),
+    }));
+}
+
+/** The could-fit ids worth hydrating: each binder's first `COULD_FIT_PREVIEW`, the ones its strip names. */
+export function couldFitPreviewIds(raw: ReadonlyMap<string, CouldFitRaw | null> | undefined): CardId[] {
+  const ids: CardId[] = [];
+  if (raw) for (const answer of raw.values()) if (answer) ids.push(...answer.cardIds.slice(0, COULD_FIT_PREVIEW));
+  return ids;
+}
+
+/**
+ * Each smart binder's could-fit cards: the preview, in the server's order
+ * (its fits'), hydrated (a card not hydrated yet waits; one gone from the
+ * catalog is left out of the count too), and how many there are. A binder
+ * with none, or no honest answer, has no entry.
+ */
+export function couldFitByBinder(
+  raw: ReadonlyMap<string, CouldFitRaw | null> | undefined,
+  cards: CardsById | undefined,
+): Map<string, CouldFitCards> {
+  const out = new Map<string, CouldFitCards>();
+  if (!raw || !cards) return out;
+  for (const [id, answer] of raw) {
+    if (!answer || answer.cardIds.length === 0) continue;
+    const preview = answer.cardIds.slice(0, COULD_FIT_PREVIEW) as CardId[];
+    const shown = dashCardsOf(preview, cards);
+    const gone = preview.filter((c) => !cards.has(c)).length;
+    out.set(id, { cards: shown, count: answer.cardIds.length - gone, more: answer.more });
+  }
+  return out;
+}
+
+/**
+ * The hopper from `dashboard.intake`: every open scan is in intake (a best
+ * guess waiting on a yes, or one not identified yet). The preview leads with
+ * the guesses whose card is hydrated, then the ones with none. Nothing open:
+ * empty, so the hopper stays hidden.
+ */
+export function intakeOf(raw: IntakeRaw | undefined, cards: CardsById | undefined): IntakeInProgress {
+  if (!raw) return NO_INTAKE;
+  const total = raw.needsYou + raw.unidentified;
+  if (total === 0) return NO_INTAKE;
+  const guesses: IntakeScan[] = raw.guesses.flatMap((g) => {
+    const card = cards?.get(g.cardId);
+    return card ? [{ id: g.id, guess: toDash(card) }] : [];
+  });
+  return {
+    total,
+    waiting: raw.unidentified,
+    needsYou: raw.needsYou,
+    uploads: raw.runs.map((r) => ({ id: r.runId, name: r.homeName, scans: r.scans, done: r.done })),
+    preview: [...guesses, ...raw.unknown.map((id): IntakeScan => ({ id, guess: null }))],
+  };
+}
+
+/** A platform's status word in plain case: "READY_TO_SHIP" reads "Ready to ship". The word itself is never changed. */
+export function statusWordsOf(status: string): string {
+  const words = status.trim().toLowerCase().replace(/[_\s]+/g, " ");
+  return words ? words[0].toUpperCase() + words.slice(1) : status;
+}
+
+/** Whole calendar days since the order date, on this device's calendar; never below 0. */
+export function daysSinceSold(orderDate: number, now: number): number {
+  return Math.max(0, daysBetween(localDay(orderDate), localDay(now)));
+}
+
+type SaleRaw = SalesRaw["orders"][number];
+
+/**
+ * One order line. A line with no card, or a card that is not in the catalog
+ * any more, is unmatched: never a guess at which card it was. An oversold
+ * line names how many sold and how many the boxes held.
+ */
+export function saleLineOf(line: SaleRaw["lines"][number], cards: CardsById): SaleLine {
+  const card: Card | undefined = line.cardId ? cards.get(line.cardId) : undefined;
+  if (!card) return { card: null, quantity: line.quantity, problem: { kind: "unmatched" } };
+  if (line.problem === "oversold") {
+    const short = line.shortBy ?? line.quantity;
+    return {
+      card: toDash(card),
+      quantity: line.quantity,
+      problem: { kind: "oversold", sold: line.quantity, inBoxes: Math.max(0, line.quantity - short) },
+    };
+  }
+  return { card: toDash(card), quantity: line.quantity };
+}
+
+/** One order still to ship, as Out the Door draws it. */
+export function unshippedSaleOf(order: SaleRaw, cards: CardsById, now: number): UnshippedSale {
+  const lines = order.lines.map((l) => saleLineOf(l, cards));
+  return {
+    id: order.id,
+    marketplace: order.platform,
+    orderNumber: order.orderNo,
+    daysSinceSold: daysSinceSold(order.orderDate, now),
+    statusText: statusWordsOf(order.status),
+    lines,
+    cardCount: order.cardCount,
+    firstCard: lines.find((l) => l.card)?.card ?? null,
+    hasProblem: order.problemPastCut || lines.some((l) => l.problem),
+  };
+}
+
+/** The sales panel: null for an account that does not sell (the collector layout); else its orders to ship, oldest first. */
+export function salesDataOf(raw: SalesRaw, cards: CardsById | undefined, now: number): SalesData | null {
+  if (!raw.dealer) return null;
+  const orders = [...raw.orders].sort((a, b) => a.orderDate - b.orderDate);
+  return { unshipped: orders.map((o) => unshippedSaleOf(o, cards ?? new Map(), now)) };
+}
+
+/** The card ids the orders to ship name, or null when there are none. */
+export function saleCardIdsOf(raw: SalesRaw | undefined): CardId[] | null {
+  const ids = raw ? raw.orders.flatMap((o) => o.lines.flatMap((l) => (l.cardId ? [l.cardId as CardId] : []))) : [];
+  return ids.length > 0 ? ids : null;
+}
+
+/** What the page draws beyond the shelf. Each part absent reads as empty. */
+export interface DashboardExtras {
+  wantList?: WantCard[];
+  tradePile?: TradePile;
+  unlistedBoxes?: UnlistedBox[];
+  justCompleted?: CompletedSet | null;
+  building?: BuildingSet[];
+  smartBinders?: SmartBinderSummary[];
+  /** Null or absent: the collector layout. */
+  sales?: SalesData | null;
+  intake?: IntakeInProgress;
+}
+
+/** The whole page from the shelf, the summary and the extras. Pure: the hook below only gathers its inputs. */
+export function realDashboardData(input: { binders: ShelfBinder[]; summary: CollectionSummary } & DashboardExtras): DashboardData {
+  const { binders, summary } = input;
+  return {
+    persona: input.sales ? "dealer" : "collector",
+    sales: input.sales ?? null,
+    additions: [],
+    building: input.building ?? [],
+    justCompleted: input.justCompleted ?? null,
+    smartBinders: input.smartBinders ?? [],
+    wantList: input.wantList ?? [],
+    intake: input.intake ?? NO_INTAKE,
+    unlistedBoxes: input.unlistedBoxes ?? [],
+    tradePile: input.tradePile ?? NO_TRADE,
+    totals: { cards: summary.cards, binders: binders.length, exact: summary.exact },
+    binders,
+  };
+}
+
+/**
+ * The signed-in dashboard. `undefined` while the shelf, the summary or the
+ * chase (the newest wants and their cards) loads, so the Want List never
+ * reads as empty while it is only loading; and until the sales read answers
+ * (with the cards its orders name), so the page never jumps from the
+ * collector layout to the dealer's, nor says "All shipped" while loading. The open binder's pockets fill in
+ * when its copies and cards arrive; until then its page stands empty. The
+ * trade pile's count is on the shelf; its few cards fill in when they arrive.
+ * The boards, the cheer, the smart binders' percents and the news since the
+ * last visit fill in as their reads answer.
+ *
+ * Every read here is bounded. Subscribed: the shelf, the summary, the wants
+ * (the Want List's own cap), the building sets, at most `CHASE_CAP` want
+ * cards, the first `TRADE_PREVIEW` trade copies and their cards, the open
+ * binder's copies, the lines new since the last visit (at most 100), and
+ * the cards the boards, the cheer and the news draw (a few each). Read once
+ * on mount: the completions, at most `BOARD_SETS` base checklists,
+ * `SMART_CHECKLISTS` binder fits counted and as many could-fit reads, the
+ * intake summary and the sales. Subscribed for them: the cards the orders
+ * to ship name (at most 10 orders of 12 lines), each could-fit strip's
+ * first `COULD_FIT_PREVIEW` cards and the hopper's few guesses (with the
+ * extras' hydration).
+ */
+export function useRealDashboard(): DashboardData | undefined {
+  const containers = useContainers();
+  const summary = useSummary();
+  const wants = useWants();
+  const building = useBuildingSets();
+  const [params] = useSearchParams();
+  const [now] = useState(() => Date.now());
+
+  const shelf = useMemo(() => (containers ? bindersOf(containers) : undefined), [containers]);
+
+  // Only a binder on this shelf is read: a stale or foreign id in the URL opens nothing.
+  const asked = params.get(BINDER_PARAM);
+  const openId = asked && shelf?.some((c) => c.id === asked) ? asked : null;
+
+  const listed = useContainerCopies(openId);
+  const cardIds = useMemo(() => (openId && listed ? listed.copies.map((c) => c.cardId) : null), [openId, listed]);
+  const cards = useCardMap(cardIds);
+
+  const chase = useMemo(() => (wants ? chaseOf(wants) : undefined), [wants]);
+  const chaseCards = useCardMap(useMemo(() => chase?.map((w) => w.cardId) ?? null, [chase]));
+  // The board stars and leads with the chase's cards (the screen's `wanted`), so its named needs do too.
+  const wanted = useMemo(() => new Set<CardId>(chase?.map((w) => w.cardId) ?? []), [chase]);
+
+  // The pile's first page is a small indexed read; its cards are hydrated only when the shelf counts any.
+  const trade = systemContainer(containers, "trade");
+  const tradeCount = trade?.count?.copies ?? 0;
+  const tradeListed = useTradeCopies({ limit: TRADE_PREVIEW });
+  const tradeIds = useMemo(
+    () => (tradeCount > 0 && tradeListed ? tradeListed.copies.slice(0, TRADE_PREVIEW).map((c) => c.cardId) : null),
+    [tradeCount, tradeListed],
+  );
+  const tradeCards = useCardMap(tradeIds);
+
+  // Since the last visit: stamped on mount, then the lines touched since.
+  const since = useVisitSince();
+  const fresh = useNewSince(since);
+
+  // The board's sets, the completions and the smart binders' checklists: each read once.
+  const boardSets = useMemo(() => building?.slice(0, BOARD_SETS), [building]);
+  const boards = useSetBoards(useMemo(() => boardSets?.map((s) => s.id) ?? null, [boardSets]));
+  const completions = useJustCompletedRaw(useMemo(() => completionWindowStart(now), [now]));
+  const smartIds = useMemo(
+    () => shelf?.filter((c) => c.smartRule).slice(0, SMART_CHECKLISTS).map((c) => c.id) ?? null,
+    [shelf],
+  );
+  const smartCounts = useSmartChecklists(smartIds);
+  const couldFitRaw = useCouldFit(smartIds);
+  const intakeRaw = useIntakeRaw();
+
+  // The layout's gate, and the cards its orders name (their own hydration, so it settles once).
+  const salesRaw = useSalesRaw();
+  const saleIds = useMemo(() => saleCardIdsOf(salesRaw), [salesRaw]);
+  const saleCards = useCardMap(saleIds);
+
+  // One hydration for what the extras draw: each board's named needs, the cheers' cards, the news.
+  const extraIds = useMemo(() => {
+    const ids: CardId[] = [];
+    if (boards) for (const board of boards.values()) if (board) ids.push(...namedNeedsOf(board, wanted));
+    for (const done of completions ?? []) ids.push(done.lastCardId, ...done.cardIds);
+    for (const line of fresh?.lines ?? []) ids.push(line.cardId);
+    ids.push(...couldFitPreviewIds(couldFitRaw));
+    for (const g of intakeRaw?.guesses ?? []) ids.push(g.cardId);
+    return ids.length > 0 ? ids : null;
+  }, [boards, wanted, completions, fresh, couldFitRaw, intakeRaw]);
+  const extraCards = useCardMap(extraIds);
+
+  const newByHome = useMemo(() => newCardsByHome(fresh?.lines ?? [], extraCards), [fresh, extraCards]);
+  const fitByBinder = useMemo(() => couldFitByBinder(couldFitRaw, extraCards), [couldFitRaw, extraCards]);
+
+  const openPockets = useMemo(() => {
+    if (!openId || !listed || !cards) return null;
+    const freshIds = new Set((newByHome.get(openId) ?? []).map((c) => c.id));
+    return pocketsOfPages(binderPages({ binderId: openId, copies: listed.copies, cards, followed: null }), freshIds);
+  }, [openId, listed, cards, newByHome]);
+
+  return useMemo(() => {
+    if (!containers || !shelf || !summary || !chase || !chaseCards) return undefined;
+    if (!salesRaw || (saleIds && !saleCards)) return undefined;
+    const binders = shelf.map((c) =>
+      shelfBinderOf(c, c.id === openId && openPockets ? openPockets : [], {
+        newCards: newByHome.get(c.id),
+        checklist: smartCounts?.get(c.id) ?? null,
+        couldFit: fitByBinder.get(c.id),
+      }),
+    );
+    const sets = (boardSets ?? []).flatMap((set) => {
+      const made = buildingSetOf(set, boards?.get(set.id) ?? null, extraCards, wanted);
+      return made ? [made] : [];
+    });
+    const done = extraCards
+      ? (completions ?? []).flatMap((raw) => {
+          const made = completedChecklistOf(raw, extraCards);
+          return made ? [made] : [];
+        })
+      : [];
+    return realDashboardData({
+      binders,
+      summary,
+      wantList: wantCardsOf(chase, containers, chaseCards),
+      tradePile: tradePileOf(trade, tradeListed, tradeCards),
+      unlistedBoxes: unlistedBoxesOf(containers),
+      justCompleted: justCompletedOf(done, localDay(now)),
+      building: sets,
+      smartBinders: smartBindersOf(binders),
+      sales: salesDataOf(salesRaw, saleCards, now),
+      intake: intakeOf(intakeRaw, extraCards),
+    });
+  }, [
+    containers,
+    shelf,
+    summary,
+    chase,
+    chaseCards,
+    openId,
+    openPockets,
+    trade,
+    tradeListed,
+    tradeCards,
+    newByHome,
+    smartCounts,
+    boardSets,
+    boards,
+    extraCards,
+    wanted,
+    completions,
+    now,
+    salesRaw,
+    saleIds,
+    saleCards,
+    fitByBinder,
+    intakeRaw,
+  ]);
+}

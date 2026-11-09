@@ -12,7 +12,8 @@ import type { ShelfBinder } from "./shelf-model";
  * The heading is a placeholder for Jason to pick.
  */
 
-const PREVIEW = 3;
+/** Cards a strip names; the signed-in page hydrates only these. */
+export const COULD_FIT_PREVIEW = 3;
 
 export default function CouldFit({ binders, wanted }: { binders: ShelfBinder[]; wanted: Set<string> }) {
   const withCandidates = binders.filter((b) => b.kind === "smart" && b.couldFit.length > 0);
@@ -36,8 +37,10 @@ export default function CouldFit({ binders, wanted }: { binders: ShelfBinder[]; 
 }
 
 function Strip({ binder, wanted }: { binder: ShelfBinder; wanted: Set<string> }) {
-  const shown = binder.couldFit.slice(0, PREVIEW);
-  const rest = binder.couldFit.length - shown.length;
+  const shown = binder.couldFit.slice(0, COULD_FIT_PREVIEW);
+  const total = binder.couldFitTotal?.count ?? binder.couldFit.length;
+  const more = binder.couldFitTotal?.more ?? false;
+  const rest = total - shown.length;
   const style = { "--vinyl": binder.vinyl } as CSSProperties;
   const headingId = `cb-fit-${binder.id}`;
 
@@ -52,7 +55,9 @@ function Strip({ binder, wanted }: { binder: ShelfBinder; wanted: Set<string> })
             {binder.name}
           </h3>
           {binder.ruleText && <p className="text-xs text-ink-3">{binder.ruleText}</p>}
-          <p className="mt-1 text-sm font-semibold text-neon-blue-text">{binder.couldFit.length} could fit</p>
+          <p className="mt-1 text-sm font-semibold text-neon-blue-text">{total}
+            {more ? "+" : ""} could fit
+          </p>
         </div>
         <ul aria-label={`Cards that could fit ${binder.name}`} className="flex flex-col gap-2">
           {shown.map((c) => (

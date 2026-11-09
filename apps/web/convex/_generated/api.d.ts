@@ -71,6 +71,7 @@ import type * as commonPrices from "../commonPrices.js";
 import type * as copyPhotos from "../copyPhotos.js";
 import type * as credentials from "../credentials.js";
 import type * as crons from "../crons.js";
+import type * as dashboard from "../dashboard.js";
 import type * as drillPath from "../drillPath.js";
 import type * as ebayConnect from "../ebayConnect.js";
 import type * as enrichmentFixtures from "../enrichmentFixtures.js";
@@ -262,6 +263,7 @@ declare const fullApi: ApiFromModules<{
   copyPhotos: typeof copyPhotos;
   credentials: typeof credentials;
   crons: typeof crons;
+  dashboard: typeof dashboard;
   drillPath: typeof drillPath;
   ebayConnect: typeof ebayConnect;
   enrichmentFixtures: typeof enrichmentFixtures;

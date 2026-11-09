@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef } from "react";
-import { useSearchParams } from "react-router";
-import type { DashboardData } from "../fake-data";
+import { Link, useSearchParams } from "react-router";
+import { bindersOf, type DashboardData } from "../fake-data";
 import { BlockHeading, count } from "./bits";
 import Hopper from "./Hopper";
 import Boards, { boardItems } from "./Boards";
@@ -9,7 +9,7 @@ import PocketPage, { PocketTitle, WaitingPage, WaitingTitle } from "./PocketPage
 import { Chase, FreshPulls } from "./Pulls";
 import { FillingUp, OddsAndEnds } from "./Rail";
 import Shelf from "./Shelf";
-import { bindersOf, pageCount, shelfOrder } from "./shelf-model";
+import { pageCount, shelfOrder } from "./shelf-model";
 import ToDo from "./ToDo";
 import "./combined.css";
 
@@ -66,14 +66,16 @@ function wantIds(data: DashboardData): Set<string> {
 }
 
 /**
- * The dashboard screen. Pure of its source: the caller passes the data (fake
- * today, from `demo/`; the real account's once it exists), and the screen
- * takes the dealer or collector layout from `data.sales`.
+ * The dashboard screen. Pure of its source: the caller passes the data (fake,
+ * from `demo/`; or the signed-in account's, from `real/`), and the screen
+ * takes the dealer or collector layout from `data.sales`. The shelf is
+ * `data.binders` when the caller lays it out; the demo leaves it to
+ * `bindersOf`.
  */
 export default function DashboardScreen({ data }: { data: DashboardData }) {
   const [params, setParams] = useSearchParams();
   const wanted = useMemo(() => wantIds(data), [data]);
-  const binders = useMemo(() => shelfOrder(bindersOf(data)), [data]);
+  const binders = useMemo(() => shelfOrder(data.binders ?? bindersOf(data)), [data]);
   const boards = useMemo(() => boardItems(data.building, binders), [data.building, binders]);
 
   const open = binders.find((b) => b.id === params.get(BINDER_PARAM)) ?? null;
@@ -201,6 +203,14 @@ export default function DashboardScreen({ data }: { data: DashboardData }) {
           <div className="grid gap-x-8 gap-y-4 xl:grid-cols-[minmax(0,1fr)_29rem] xl:items-stretch">
             <div className="min-w-0 xl:col-start-1 xl:row-start-1">
               <BlockHeading id="cb-binders-heading">Your binders</BlockHeading>
+              {data.totals.cards === 0 && (
+                <p className="mt-1 text-sm text-ink-2">
+                  <Link to="/collection" className="rounded-sm font-semibold text-neon-blue-text underline underline-offset-2 focus-outline">
+                    Add a card on Collection
+                  </Link>{" "}
+                  to fill the shelf.
+                </p>
+              )}
             </div>
             <div className="dash-shelves min-w-0 xl:col-start-1 xl:row-start-2">
               <Shelf binders={binders} openId={openId} pocketId={POCKET_ID} onOpen={openBinder} onClose={closeBinder} />

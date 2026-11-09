@@ -2218,6 +2218,15 @@ describe("NEO-358: the collection and its catalog reads require a signed-in call
     ["commonPrices.forVariants", (t) => t.query(api.commonPrices.forVariants, { variantIds: [] })],
     // NEO-370 — the listing gate's read: the caller's own state rows, home and common price only.
     ["listingGate.forHome", (t) => t.query(api.listingGate.forHome, {})],
+    // NEO-464 — the signed-in dashboard's own reads and its visit stamp.
+    ["dashboard.justCompleted", (t) => t.query(api.dashboard.justCompleted, { sinceMs: 0 })],
+    ["dashboard.setBoard", (t) => t.query(api.dashboard.setBoard, { setId: NOT_AN_ID })],
+    ["dashboard.smartChecklist", (t) => t.query(api.dashboard.smartChecklist, { containerId: NOT_AN_ID })],
+    ["dashboard.newSince", (t) => t.query(api.dashboard.newSince, { sinceMs: 0 })],
+    ["dashboard.markVisit", (t) => t.mutation(api.dashboard.markVisit, {})],
+    ["dashboard.couldFit", (t) => t.query(api.dashboard.couldFit, { containerId: NOT_AN_ID })],
+    ["dashboard.intake", (t) => t.query(api.dashboard.intake, {})],
+    ["dashboard.sales", (t) => t.query(api.dashboard.sales, {})],
   ];
 
   test.each(SIGNED_IN_GATED)("%s rejects an anonymous caller", async (_name, call) => {

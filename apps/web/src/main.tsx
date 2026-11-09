@@ -164,12 +164,14 @@ const SentryErrorBoundary = Sentry.withErrorBoundary(
           <Route path="/print-shop" element={<Deferred><PrintShopMarketing /></Deferred>} />
           {/* NEO-464 — the dashboard demo, logged out on fake data, as one app:
               the signed-in shell with its own tabs (Dashboard, Collection,
-              Inventory, Sign up, Back to home). */}
+              Inventory, Sign up, Back to the tour). */}
           <Route path="/demo" element={<Deferred fullPage><DashboardDemo /></Deferred>}>
             <Route index element={<Deferred><DashboardDemoPage /></Deferred>} />
             <Route path="collection" element={<Deferred><DashboardDemoCollection side="collection" /></Deferred>} />
             <Route path="inventory" element={<Deferred><DashboardDemoCollection side="inventory" /></Deferred>} />
           </Route>
+          {/* NEO-464 — the old demo URL: bookmarks and links still land on /demo. */}
+          <Route path="/binder-tracking" element={<Navigate to="/demo" replace />} />
           <Route path="/easypost-setup" element={<Deferred><EasypostSetup /></Deferred>} />
           <Route path="/signin/*" element={<Deferred><SignInPage /></Deferred>} />
           <Route path="/sign-up/*" element={<Deferred><SignUpPage /></Deferred>} />

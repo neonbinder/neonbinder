@@ -138,7 +138,7 @@ function OrderRow({ order }: { order: UnshippedSale }) {
       </div>
 
       <div className="flex min-w-0 flex-1 gap-3 py-3 pr-3 pl-1 sm:gap-4 sm:pr-5">
-        <Thumb card={order.firstCard} className="w-11 sm:w-14" />
+        {order.firstCard ? <Thumb card={order.firstCard} className="w-11 sm:w-14" /> : <NoCardThumb className="w-11 sm:w-14" />}
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
             <MarketBadge marketplace={order.marketplace} />
@@ -151,7 +151,7 @@ function OrderRow({ order }: { order: UnshippedSale }) {
             </span>
           </div>
           <div className="mt-1 text-sm font-semibold leading-snug text-ink">
-            <CardTitle card={order.firstCard} />
+            {order.firstCard ? <CardTitle card={order.firstCard} /> : <span className="block">Not matched to a card yet</span>}
             {more > 0 && <span className="block font-normal text-ink-2">and {count(more, "more card")}</span>}
           </div>
           <p className="text-xs text-ink-3">
@@ -207,16 +207,23 @@ function OrderRow({ order }: { order: UnshippedSale }) {
   );
 }
 
+/** The sleeve a line with no card wears: a dashed outline and a question mark, hidden from a reader (the words say it). */
+function NoCardThumb({ className }: { className: string }) {
+  return (
+    <div
+      aria-hidden="true"
+      className={`flex aspect-[5/7] shrink-0 items-center justify-center rounded border-2 border-dashed border-control text-sm font-bold text-ink-3 ${className}`}
+    >
+      ?
+    </div>
+  );
+}
+
 function LineRow({ line }: { line: SaleLine }) {
   if (!line.card) {
     return (
       <>
-        <div
-          aria-hidden="true"
-          className="flex aspect-[5/7] w-8 shrink-0 items-center justify-center rounded border-2 border-dashed border-control text-sm font-bold text-ink-3"
-        >
-          ?
-        </div>
+        <NoCardThumb className="w-8" />
         <span className="text-sm text-ink-2">
           Not matched to a card yet
           {line.quantity > 1 && <span className="tabular-nums text-ink-3"> ×{line.quantity}</span>}
@@ -246,6 +253,7 @@ function problemText(line: SaleLine & { problem: SaleProblem }): string {
     const who = line.card ? line.card.title : "A card";
     return `Oversold: ${who} sold ${p.sold}, your boxes hold ${p.inBoxes}.`;
   }
+  if (!p.listingTitle) return "A line isn't matched to a card of yours yet.";
   return `Not matched to a card of yours: “${p.listingTitle}”.`;
 }
 

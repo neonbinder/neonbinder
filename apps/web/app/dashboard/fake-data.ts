@@ -30,11 +30,14 @@
  * `./persona`, which reads the persona from the URL).
  */
 
-import { generateListingTitle, type ListingCardInputs } from "@/convex/features/generateListing";
 import { demoCard } from "@/app/collection/final/data/demoStore";
-import { compareCardNumbers, printRunLabel, setLabel, variantLabel } from "@/app/collection/final/data/labels";
-import type { Card, CardId, SetId, VariantKind } from "@/app/collection/final/data/types";
+import { compareCardNumbers } from "@/app/collection/final/data/labels";
+import type { CardId, SetId, VariantKind } from "@/app/collection/final/data/types";
+import { toDash, type DashCard } from "./dash-card";
+import { HOUSE_VINYL, type Pocket, type ShelfBinder } from "./screen/shelf-model";
 import {
+  binderCards,
+  binderCopies,
   binders as seedBinders,
   buildingSetIds as seedBuildingSetIds,
   cards as fixtureCards,
@@ -43,9 +46,12 @@ import {
   getCard as getFixtureCard,
   getSet as getFixtureSet,
   myCopies,
+  type Binder,
   type BinderRule,
   type Card as FixtureCard,
 } from "@/app/collection/prototypes/_shared/data";
+
+export type { DashCard } from "./dash-card";
 
 // ---------------------------------------------------------------------------
 // Persona
@@ -74,82 +80,6 @@ export function parsePersona(value: string | null | undefined): Persona {
 // ---------------------------------------------------------------------------
 // Cards
 // ---------------------------------------------------------------------------
-
-/**
- * One card, ready to draw and to caption. `card` goes to CardFace's `model`;
- * the rest is the caption a tile needs, already worded.
- */
-export interface DashCard {
-  /** The demo's card id (`<setId>:<variant>:<number>`). Stable: use it as a React key. */
-  id: CardId;
-  /** The demo card itself: pass it as `<CardFace model={...} />`. */
-  card: Card;
-  /** Lead player as printed: "Reggie White". */
-  player: string;
-  /** Team on the card: "Packers". Empty when the card names none. */
-  team: string;
-  /** Year and set: "1996 Playoff Contenders", "1996-97 Upper Deck". */
-  setLabel: string;
-  setId: SetId;
-  /** The card number as printed ("13", "13b", "GJ1"). A string, never unique on its own. */
-  cardNumber: string;
-  /** base | insert | parallel. */
-  variantKind: VariantKind;
-  /** The insert or parallel's name ("Gold Refractor", "Pennant Flyers"); null on a base card. */
-  variantName: string | null;
-  /** "/50", "1/1"; null when unnumbered. */
-  printRun: string | null;
-  /** Image variation ("Sliding"); null for the regular card. */
-  variation: string | null;
-  /**
-   * The card's full listing title, at most 80 characters, built by NB's own
-   * listing-title generator (`generateListingTitle`) from the card's fields:
-   * "2024 Topps Chrome Gold Refractor Parallel #1 Shohei Ohtani /50 Dodgers".
-   * Added for the combined dashboard (NEO-464); additive, nothing else reads it.
-   */
-  title: string;
-}
-
-/** The generator's inputs, from a demo card's own fields. Nothing here is marketplace data. */
-function titleInputs(card: Card): ListingCardInputs {
-  const { variant } = card;
-  const insertName = variant.kind === "insert" ? (variant.insertName ?? variant.name ?? undefined) : (variant.insertName ?? undefined);
-  return {
-    cardNumber: card.cardNumber,
-    playerNames: card.players.map((p) => p.nameOnCard ?? p.name),
-    year: card.set.season,
-    manufacturer: card.set.brand.name,
-    setName: card.set.name,
-    insertName,
-    parallelName: variant.kind === "parallel" && variant.name ? variant.name : "Base",
-    parallelIsRole: variant.kind === "parallel",
-    isRookie: card.features.includes("RC"),
-    isRelic: card.features.includes("Relic"),
-    autographed: card.features.includes("AU") ? "On Card" : "None",
-    shortPrint: card.features.includes("SP") ? "SP" : "None",
-    printRun: card.printRun ?? undefined,
-    cardVariation: card.cardVariation ?? undefined,
-    teamNames: card.teams.map((t) => (t.location ? `${t.location} ${t.name}` : t.name)),
-    sport: card.set.sport.name,
-  };
-}
-
-function toDash(card: Card): DashCard {
-  return {
-    title: generateListingTitle(titleInputs(card)),
-    id: card.id,
-    card,
-    player: card.players[0]?.name ?? "",
-    team: card.teams[0]?.name ?? "",
-    setLabel: setLabel(card.set),
-    setId: card.set.id,
-    cardNumber: card.cardNumber,
-    variantKind: card.variant.kind,
-    variantName: card.variant.kind === "base" ? null : variantLabel(card.variant),
-    printRun: printRunLabel(card),
-    variation: card.cardVariation,
-  };
-}
 
 /** A demo card by id, as a DashCard. Throws on an id the demo does not hold. */
 export function dashCard(id: CardId): DashCard {
@@ -202,11 +132,12 @@ export const MARKETPLACES: Record<Marketplace, { name: string; short: string }> 
  * What is wrong with one line of an order.
  * - unmatched: the marketplace sold a listing NB cannot tie to a card of
  *   yours. `listingTitle` is the marketplace's own listing text, shown only
- *   to say which line it is; it is never NB data.
+ *   to say which line it is; it is never NB data. Absent when NB has none
+ *   (the signed-in page: NB stores no listing title on an order).
  * - oversold: it sold more than your boxes hold.
  */
 export type SaleProblem =
-  | { kind: "unmatched"; listingTitle: string }
+  | { kind: "unmatched"; listingTitle?: string }
   | { kind: "oversold"; sold: number; inBoxes: number };
 
 export interface SaleLine {
@@ -227,12 +158,12 @@ export interface UnshippedSale {
   daysSinceSold: number;
   /** The marketplace's own status word, verbatim. */
   statusText: string;
-  /** In the order's own order. The first line always has a card (thumbnail + player). */
+  /** In the order's own order. The demo's first line always has a card; a signed-in order's may not. */
   lines: SaleLine[];
-  /** Sum of the lines' quantities. */
+  /** Sum of the lines' quantities (every line of the order, also any not listed in `lines`). */
   cardCount: number;
-  /** The order's first card: its thumbnail and player lead the row. */
-  firstCard: DashCard;
+  /** The order's first card: its thumbnail and player lead the row. Null when no line is tied to a card. */
+  firstCard: DashCard | null;
   /** True when any line has a problem. */
   hasProblem: boolean;
 }
@@ -407,11 +338,23 @@ export interface BuildingSet {
   percent: number;
   /** Every base card number still needed, in number order. Show a few ("Need: #3, #6, #9") and "+N more". */
   neededNumbers: string[];
-  /** The needed base cards themselves, same order, for drawing them (EmptySleeve or `state="need"`). */
+  /**
+   * The needed base cards themselves, for drawing and naming them. The demo
+   * lists every one, in order. The signed-in page lists only the few the
+   * board names (Want List cards first, then checklist order), since a big
+   * set's needs are never all read: count with `need`, never with this.
+   */
   neededCards: DashCard[];
-  /** One bulb per base card, in number order: the Scoreboard's base strip. */
-  baseBulbs: { cardNumber: string; owned: boolean }[];
-  /** Base first, then inserts, then parallels: the Scoreboard's other strips. */
+  /**
+   * One bulb per base card, in number order: the Scoreboard's base strip.
+   * `cardId` when it is known for sure (the signed-in page knows every one);
+   * absent, the board looks it up among `neededCards` by number.
+   */
+  baseBulbs: { cardNumber: string; owned: boolean; cardId?: string }[];
+  /**
+   * Base first, then inserts, then parallels: the Scoreboard's other strips.
+   * The signed-in page lists only the Base strip (the board draws none).
+   */
   checklists: ChecklistStrip[];
 }
 
@@ -660,14 +603,27 @@ export interface DashboardData {
   /** The checklist just finished, or null. */
   justCompleted: CompletedSet | null;
   smartBinders: SmartBinderSummary[];
-  /** 5 chase cards, top chase first. */
+  /**
+   * The chase, top chase first. The demo holds five; the signed-in page
+   * takes the Want List's newest, at most `CHASE_CAP` (12, `real/useRealDashboard`).
+   */
   wantList: WantCard[];
   intake: IntakeInProgress;
   /** Empty for "collector". */
   unlistedBoxes: UnlistedBox[];
   tradePile: TradePile;
-  /** For a greeting line: how big the collection is. No values. */
-  totals: { cards: number; binders: number };
+  /**
+   * For a greeting line: how big the collection is. No values. `exact`
+   * false: the store could count only part of it, so `cards` is a floor
+   * (absent reads as exact).
+   */
+  totals: { cards: number; binders: number; exact?: boolean };
+  /**
+   * The binders on the shelf, each with its pockets already laid out. The
+   * signed-in page supplies them from the collection store; absent (the
+   * demo), the screen derives the demo's shelf from the rest (`bindersOf`).
+   */
+  binders?: ShelfBinder[];
 }
 
 const BINDER_COUNT = seedBinders.filter((b) => b.id !== "binder-trade-bait").length + 1; // + Main
@@ -691,4 +647,229 @@ export function getDashboard(persona: Persona): DashboardData {
     tradePile: TRADE_PILE,
     totals: { cards: CARD_COUNT, binders: BINDER_COUNT },
   };
+}
+
+// ---------------------------------------------------------------------------
+// The demo's shelf
+// ---------------------------------------------------------------------------
+//
+// One shelf, no split: Main, the seed's manual binders (minus Trade bait,
+// whose single copies are the trade pile) and the smart binders stand
+// together, ordered by the shelf (`shelfOrder`).
+//
+// Smart binders here do NOT fill themselves. A smart binder holds the cards
+// you filed in it; its rule only says which of your cards could fit. The
+// fixture has no "filed" flag, so the demo draws the line at the last visit:
+// matching cards you owned before it are filed; matching cards that came in
+// since (`SmartBinderSummary.newCards`) are not filed yet, so they are the
+// "could fit" candidates, and a smart spine wears no "new" sticker this
+// visit. A percent shows only where the rule names a checklist.
+//
+// Spine colours are the vinyl of a physical binder: the livery of the team
+// most of its cards wear, never a theme colour.
+
+const MAIN_ID = "main";
+const TRADE_BAIT_ID = "binder-trade-bait";
+
+/**
+ * The fixture's one smart binder that is not in the demo seed ('93 Finest,
+ * every card) does not export its rule; it is restated here so its pocket
+ * page can draw the checklist. Keep in step with `FINEST_BINDER` above.
+ */
+const EXTRA_RULES: Record<string, BinderRule> = {
+  [FINEST_BINDER.id]: FINEST_BINDER.rule,
+};
+
+function liveryOf(cards: DashCard[]): { vinyl: string; stripe: string } {
+  const tally = new Map<string, { n: number; primary: string; secondary: string }>();
+  for (const c of cards) {
+    const team = c.card.teams[0];
+    if (!team?.primary) continue;
+    const prev = tally.get(team.name);
+    if (prev) prev.n += 1;
+    else tally.set(team.name, { n: 1, primary: team.primary, secondary: team.secondary ?? team.primary });
+  }
+  let best: { n: number; primary: string; secondary: string } | null = null;
+  for (const t of tally.values()) if (!best || t.n > best.n) best = t;
+  return best ? { vinyl: best.primary, stripe: best.secondary } : HOUSE_VINYL;
+}
+
+/** Distinct cards of a list of copies, in the order given. */
+function distinctCards(copies: { cardId: string }[]): DashCard[] {
+  const seen = new Set<string>();
+  const out: DashCard[] = [];
+  for (const c of copies) {
+    if (seen.has(c.cardId)) continue;
+    seen.add(c.cardId);
+    out.push(dashCard(c.cardId));
+  }
+  return out;
+}
+
+function mainCopies() {
+  return myCopies.filter((c) => c.binderIds.length === 0);
+}
+
+function quantityOf(copies: { quantity: number }[]): number {
+  return copies.reduce((n, c) => n + c.quantity, 0);
+}
+
+/** New cards since the last visit, by the binder they were filed in. */
+function newByBinderName(data: DashboardData): Map<string, DashCard[]> {
+  const out = new Map<string, DashCard[]>();
+  for (const batch of data.additions) {
+    if (!batch.sinceLastVisit) continue;
+    for (const c of batch.cards) {
+      const list = out.get(c.binderName) ?? [];
+      if (!list.some((x) => x.id === c.id)) list.push(c);
+      out.set(c.binderName, list);
+    }
+  }
+  return out;
+}
+
+function binderById(id: string): Binder | null {
+  const seed = seedBinders.find((b) => b.id === id);
+  if (seed) return seed;
+  const rule = EXTRA_RULES[id];
+  return rule ? { id, kind: "smart", name: id, description: "", rule } : null;
+}
+
+/**
+ * What a binder holds, in its own order: a binder with pages keeps them
+ * (empty pockets included); a checklist binder shows every card of the
+ * checklist, with an empty pocket where one is not filed; anything else is
+ * the cards filed in it. `unfiled` leaves a smart binder's could-fit cards out.
+ */
+function contentsOf(
+  id: string,
+  unfiled: Set<string> = new Set(),
+): { cards: DashCard[]; pages: (string | null)[][] | null; checklist: boolean } {
+  if (id === MAIN_ID) return { cards: distinctCards(mainCopies()), pages: null, checklist: false };
+  const binder = binderById(id);
+  if (!binder) return { cards: [], pages: null, checklist: false };
+  if (binder.kind === "manual" && binder.layout) {
+    const cardOfCopy = new Map(myCopies.map((c) => [c.id, c.cardId]));
+    const pages = binder.layout.map((p) => p.slots.map((slot) => (slot ? (cardOfCopy.get(slot) ?? null) : null)));
+    return { cards: distinctCards(binderCopies(binder)), pages, checklist: false };
+  }
+  if (binder.kind === "smart" && binder.rule.kind === "set") {
+    return { cards: binderCards(binder).map((c) => dashCard(c.id)), pages: null, checklist: true };
+  }
+  return {
+    cards: distinctCards(binderCopies(binder).filter((c) => !unfiled.has(c.cardId))),
+    pages: null,
+    checklist: false,
+  };
+}
+
+/** A shelf binder before its pockets are laid out. */
+type BareBinder = Omit<ShelfBinder, "pockets" | "checklistCards">;
+
+/**
+ * The binder's pockets, nine to a page. A plain binder leads with what came
+ * in since the last visit (so the first page is the news), then the rest in
+ * checklist order. A binder with pages, or a checklist, keeps its own order
+ * and marks the new ones where they sit.
+ */
+function demoPockets(binder: BareBinder): Pocket[] {
+  const unfiled = new Set(binder.couldFit.map((c) => c.id));
+  const { cards, pages, checklist } = contentsOf(binder.id, unfiled);
+  const fresh = new Set(binder.newCards.map((c) => c.id));
+
+  if (pages) {
+    return pages.flatMap((slots, p) =>
+      slots.map((cardId, s): Pocket => {
+        const key = `p${p}-s${s}`;
+        if (!cardId) return { kind: "empty", key, card: null };
+        return { kind: "card", card: dashCard(cardId), isNew: fresh.has(cardId), key };
+      }),
+    );
+  }
+
+  if (checklist) {
+    return cards.map(
+      (c): Pocket =>
+        owned.has(c.id) && !unfiled.has(c.id)
+          ? { kind: "card", card: c, isNew: fresh.has(c.id), key: c.id }
+          : { kind: "empty", key: c.id, card: c },
+    );
+  }
+
+  const rest = cards.filter((c) => !fresh.has(c.id));
+  return [
+    ...binder.newCards.map((c): Pocket => ({ kind: "card", card: c, isNew: true, key: c.id })),
+    ...rest.map((c): Pocket => ({ kind: "card", card: c, isNew: false, key: c.id })),
+  ];
+}
+
+/**
+ * A smart binder's checklist, card by card, when its rule names one (else
+ * null): every card the rule names, in checklist order, and whether it is
+ * filed in the binder.
+ */
+function demoChecklist(binder: BareBinder): { card: DashCard; filed: boolean }[] | null {
+  if (binder.kind !== "smart" || !binder.checklist) return null;
+  const unfiled = new Set(binder.couldFit.map((c) => c.id));
+  const { cards, checklist } = contentsOf(binder.id, unfiled);
+  if (!checklist) return null;
+  return cards.map((card) => ({ card, filed: owned.has(card.id) && !unfiled.has(card.id) }));
+}
+
+function laidOut(binder: BareBinder): ShelfBinder {
+  return { ...binder, pockets: demoPockets(binder), checklistCards: demoChecklist(binder) };
+}
+
+/** Every binder on the demo's shelf, in the fixture's order (Main first), pockets laid out. `shelfOrder` sorts them. */
+export function bindersOf(data: DashboardData): ShelfBinder[] {
+  const fresh = newByBinderName(data);
+
+  const main: BareBinder = {
+    id: MAIN_ID,
+    name: "Main",
+    kind: "manual",
+    ruleText: null,
+    cardCount: quantityOf(mainCopies()),
+    newCards: fresh.get("Main") ?? [],
+    couldFit: [],
+    checklist: null,
+    ...HOUSE_VINYL,
+  };
+
+  const manual: BareBinder[] = seedBinders
+    .filter((b) => b.kind === "manual" && b.id !== TRADE_BAIT_ID)
+    .map((b) => {
+      const copies = binderCopies(b);
+      return {
+        id: b.id,
+        name: b.name,
+        kind: "manual",
+        ruleText: null,
+        cardCount: quantityOf(copies),
+        newCards: fresh.get(b.name) ?? [],
+        couldFit: [],
+        checklist: null,
+        ...liveryOf(distinctCards(copies)),
+      };
+    });
+
+  const smart: BareBinder[] = data.smartBinders.map((s) => {
+    // Cards that came in since the last visit match the rule but are not filed in it (see above).
+    const couldFit = s.newCards;
+    const unfiled = new Set(couldFit.map((c) => c.id));
+    const unfiledCopies = myCopies.filter((c) => unfiled.has(c.cardId));
+    return {
+      id: s.id,
+      name: s.name,
+      kind: "smart",
+      ruleText: s.ruleText,
+      cardCount: s.cardCount - quantityOf(unfiledCopies),
+      newCards: [],
+      couldFit,
+      checklist: s.checklist ?? null,
+      ...liveryOf(contentsOf(s.id, unfiled).cards),
+    };
+  });
+
+  return [main, ...manual, ...smart].map(laidOut);
 }

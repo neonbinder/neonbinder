@@ -11,7 +11,7 @@ import { PERSONA_PARAM } from "./persona";
  * staircase, mobile menu, content column, scroll headroom) on fake data, for
  * anyone logged out. Its tabs are the shell's own Dashboard, Collection and
  * Inventory, pointed at the demo's pages, plus the two ways out of the demo:
- * Sign up free, and Back to home.
+ * Sign up free, and Back to the tour.
  *
  * The header keeps "Sign up free" where the account controls are signed out.
  */
@@ -36,7 +36,7 @@ export function useDemoNavItems(): NavItem[] {
       shellTab("Collection", `${BASE}/collection`),
       shellTab("Inventory", `${BASE}/inventory?side=inventory`),
       { label: "Sign up free", path: "/sign-up", icon: UserPlusIcon, hueClass: "tab-hue-green" },
-      { label: "Back to home", path: "/", icon: ArrowUturnLeftIcon, hueClass: "tab-hue-purple" },
+      { label: "Back to the tour", path: "/", icon: ArrowUturnLeftIcon, hueClass: "tab-hue-purple" },
     ];
   }, [as]);
 }
