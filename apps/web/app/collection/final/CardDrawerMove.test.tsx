@@ -3,6 +3,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { MemoryRouter, Route, Routes } from "react-router";
 import { Theme } from "@radix-ui/themes";
 import PublicCollectionDemo from "./PublicCollectionDemo";
+import { demoCard } from "./data/demoStore";
 import { initialCollectionState, MAIN_BINDER_ID, PUBLIC_STORAGE_KEY, SHOW_BOX_ID } from "./store";
 
 /**
@@ -181,6 +182,64 @@ describe("the drawer's Move, Sell and Take off sale", () => {
     await waitFor(() => expect(status(/^#.+ are up for sale in Show box at \$1\.50\.$/)).toBe(true));
     await frames();
     expect(within(drawer).getAllByText(/^For sale · Show box$/).length).toBeGreaterThan(0);
+  });
+
+  // NEO-479: Sell asks the card's own price.
+  it("a split sale at a typed price prices only the part in the box, and Undo leaves one line", async () => {
+    const drawer = renderDrawer();
+    await takeOff(drawer, 3);
+    await waitFor(() => expect(stackSell(drawer).textContent).toBe("Sell"));
+    await frames();
+    const before = lines(drawer).length;
+
+    fireEvent.click(stackSell(drawer));
+    const panel = within(drawer).getByRole("form", { name: /^Sell / });
+    fireEvent.change(within(panel).getByRole("combobox", { name: "Into which box" }), { target: { value: "box-show" } });
+    const go = () => within(panel).getByRole("button", { name: /^Put \d+ up for sale$/ });
+    fireEvent.change(within(panel).getByRole("spinbutton", { name: "Quantity to sell" }), { target: { value: "2" } });
+    // No common price for this card: the field is blank and the sale waits for one.
+    expect((within(panel).getByRole("textbox", { name: "Price" }) as HTMLInputElement).value).toBe("");
+    expect(go().getAttribute("aria-disabled")).toBe("true");
+    fireEvent.change(within(panel).getByRole("textbox", { name: "Price" }), { target: { value: "1.5" } });
+    fireEvent.click(go());
+    await waitFor(() => expect(status(/^2 of #.+ are up for sale in Show box at \$1\.50\.$/)).toBe(true));
+    await frames();
+
+    expect(lines(drawer)).toHaveLength(before + 1);
+    const priced = lines(drawer).filter((li) => /\$1\.50/.test(li.textContent ?? ""));
+    expect(priced).toHaveLength(1);
+    expect(priced[0].textContent).toMatch(/×2/);
+    expect(priced[0].textContent).not.toMatch(/common/);
+    // The one left in the binder carries no price.
+    expect(stackSell(drawer).textContent).toBe("Sell");
+    expect(stackSell(drawer).closest("li")!.textContent).not.toMatch(/\$/);
+
+    fireEvent.click(within(drawer).getByRole("button", { name: "Undo" }));
+    await waitFor(() => expect(lines(drawer)).toHaveLength(before));
+    expect(lines(drawer).some((li) => /\$1\.50/.test(li.textContent ?? ""))).toBe(false);
+  });
+
+  it("with a common price set, Sell prefills it and an untouched sale leaves the line reading ', common'", async () => {
+    const variantId = demoCard(STACK.cardId)!.variant.id;
+    window.sessionStorage.setItem(
+      PUBLIC_STORAGE_KEY,
+      JSON.stringify({ ...initialCollectionState(), commonPrices: { [variantId]: 0.25 } }),
+    );
+    const drawer = renderDrawer();
+    await takeOff(drawer, 3);
+    await waitFor(() => expect(stackSell(drawer).textContent).toBe("Sell"));
+    await frames();
+
+    fireEvent.click(stackSell(drawer));
+    const panel = within(drawer).getByRole("form", { name: /^Sell / });
+    fireEvent.change(within(panel).getByRole("combobox", { name: "Into which box" }), { target: { value: "box-show" } });
+    expect((within(panel).getByRole("textbox", { name: "Price" }) as HTMLInputElement).value).toBe("0.25");
+    fireEvent.click(within(panel).getByRole("button", { name: "Put 3 up for sale" }));
+    await waitFor(() => expect(status(/^#.+ are up for sale in Show box at your common price, \$0\.25\.$/)).toBe(true));
+    await frames();
+    const forSale = lines(drawer).filter((li) => /\$0\.25, common/.test(li.textContent ?? ""));
+    expect(forSale).toHaveLength(1);
+    expect(forSale[0].textContent).toMatch(/×3/);
   });
 
   it("Escape and Leave it for sale close the panel and leave the card where it is, the keyboard on the button", async () => {
