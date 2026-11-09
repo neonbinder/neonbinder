@@ -16,6 +16,11 @@
  *   seller_call        the seller client, one call per line
  *   completion         BSC action Completions (executionTime, whole action)
  *   legacy             failure lines older code wrote (count only)
+ *
+ * Plus, per env, the seller sheet reads grouped by job (one action execution:
+ * a drain run or a seller cleanup), `sheetJobs`: sheets read per job, jobs
+ * whose first read answered 503, the 503 retries and how many came back ok,
+ * and how long a job whose first read failed took to read a sheet.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -46,6 +51,92 @@ export function peakOverlap(intervals) {
     }
   }
   return { peak, at };
+}
+
+/** Nearest-rank quantile of a list of numbers; null when empty. */
+export function quantile(values, q) {
+  if (values.length === 0) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  return sorted[Math.min(sorted.length - 1, Math.max(0, Math.ceil(q * sorted.length) - 1))];
+}
+
+/**
+ * NEO-475 — seller sheet reads per job (records carrying an `executionId`),
+ * one row per env. A read's start is its line's `ts` less its `durationMs`.
+ * `sheets` counts first attempts (a retry re-reads the same sheet); `reads`
+ * counts every call. Time to success: from a job's first read starting to its
+ * first ok read ending, for jobs whose first read failed and that got one.
+ */
+export function sheetJobStats(records, { env = "ci" } = {}) {
+  const jobs = new Map();
+  const jobOf = (r) => {
+    const e = r.meta?.env ?? env;
+    const key = `${e}|${r.executionId}`;
+    let job = jobs.get(key);
+    if (!job) {
+      job = { env: e, reads: [], retries: [] };
+      jobs.set(key, job);
+    }
+    return job;
+  };
+  for (const r of records) {
+    if (typeof r.executionId !== "string" || r.executionId === "") continue;
+    if (r.type === "seller_call" && r.operation === "sheetRead") {
+      const end = r.ts || 0;
+      jobOf(r).reads.push({
+        start: end - (r.durationMs ?? 0),
+        end,
+        ok: r.outcome === "ok",
+        status: r.httpStatus,
+        retry: (r.attempt ?? 1) > 1,
+      });
+    } else if (r.type === "sheet_retry") {
+      jobOf(r).retries.push({ ok: r.outcome === "ok" });
+    }
+  }
+  const byEnv = new Map();
+  for (const job of jobs.values()) {
+    if (job.reads.length === 0) continue;
+    let row = byEnv.get(job.env);
+    if (!row) {
+      row = { env: job.env, jobs: 0, sheetsPerJob: [], reads: 0, firstRead503: 0, firstReadOtherFailure: 0, retries: 0, retriesOk: 0, recovered: 0, timeToSuccess: [] };
+      byEnv.set(job.env, row);
+    }
+    job.reads.sort((a, b) => a.start - b.start || a.end - b.end);
+    row.jobs += 1;
+    row.reads += job.reads.length;
+    row.sheetsPerJob.push(job.reads.filter((x) => !x.retry).length);
+    row.retries += job.retries.length;
+    row.retriesOk += job.retries.filter((x) => x.ok).length;
+    const first = job.reads[0];
+    if (!first.ok) {
+      if (first.status === 503) row.firstRead503 += 1;
+      else row.firstReadOtherFailure += 1;
+      const ok = job.reads.find((x) => x.ok);
+      if (ok) {
+        row.recovered += 1;
+        row.timeToSuccess.push(ok.end - first.start);
+      }
+    }
+  }
+  return [...byEnv.values()]
+    .map((row) => ({
+      env: row.env,
+      jobs: row.jobs,
+      sheetsPerJob: {
+        min: quantile(row.sheetsPerJob, 0),
+        p50: quantile(row.sheetsPerJob, 0.5),
+        max: quantile(row.sheetsPerJob, 1),
+      },
+      reads: row.reads,
+      firstRead503: row.firstRead503,
+      firstReadOtherFailure: row.firstReadOtherFailure,
+      retries: row.retries,
+      retriesOk: row.retriesOk,
+      recovered: row.recovered,
+      timeToSuccessMs: { p50: quantile(row.timeToSuccess, 0.5), max: quantile(row.timeToSuccess, 1) },
+    }))
+    .sort((a, b) => a.env.localeCompare(b.env));
 }
 
 /** Records to rows, failures, legacy counts and concurrency. */
@@ -178,6 +269,7 @@ export function buildReport(records, { env = "ci" } = {}) {
     summaries: [...rows.values()].map((r) => ({ source: r.source, op: r.op, summary: r.summary })),
     failures: [...failures.values()].sort((a, b) => b.count - a.count),
     concurrency,
+    sheetJobs: sheetJobStats(records, { env }),
   };
 }
 
@@ -251,6 +343,23 @@ export function renderMarkdown(report, { title = "BSC health", stats, hourlyAvai
     for (const c of report.concurrency) out.push(`| ${md(c.env)} | ${c.peak} | ${md(c.hour)} | ${c.calls} |`);
     out.push("");
   }
+  const sheetJobs = report.sheetJobs ?? [];
+  if (sheetJobs.length > 0) {
+    out.push(
+      "### Seller sheet reads per job",
+      "",
+      "One job is one action run (a drain or a seller cleanup). Sheets count first attempts; a retry re-reads the same sheet.",
+      "",
+      "| env | jobs | sheets/job min | p50 | max | reads | first read 503 | first read other failure | retries | retries ok | recovered | time to success p50 ms | max ms |",
+      "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+    );
+    for (const j of sheetJobs) {
+      out.push(
+        `| ${md(j.env)} | ${j.jobs} | ${j.sheetsPerJob.min ?? ""} | ${j.sheetsPerJob.p50 ?? ""} | ${j.sheetsPerJob.max ?? ""} | ${j.reads} | ${j.firstRead503} | ${j.firstReadOtherFailure} | ${j.retries} | ${j.retriesOk} | ${j.recovered} | ${j.timeToSuccessMs.p50 ?? ""} | ${j.timeToSuccessMs.max ?? ""} |`,
+      );
+    }
+    out.push("");
+  }
   if (hourlyAvailable) out.push("Hourly detail: hourly.csv / hourly.json.");
   return out.join("\n") + "\n";
 }
@@ -273,7 +382,7 @@ export function writeReport(report, outDir, mdOptions) {
   fs.mkdirSync(outDir, { recursive: true });
   const clean = stripDeployment({ ...report });
   fs.writeFileSync(path.join(outDir, "hourly.csv"), renderCsv(clean));
-  fs.writeFileSync(path.join(outDir, "hourly.json"), JSON.stringify({ window: clean.window, rows: clean.rows, failures: clean.failures, concurrency: clean.concurrency }, null, 2) + "\n");
+  fs.writeFileSync(path.join(outDir, "hourly.json"), JSON.stringify({ window: clean.window, rows: clean.rows, failures: clean.failures, concurrency: clean.concurrency, sheetJobs: clean.sheetJobs }, null, 2) + "\n");
   const markdown = renderMarkdown(clean, mdOptions);
   fs.writeFileSync(path.join(outDir, "summary.md"), markdown);
   return markdown;

@@ -122,7 +122,7 @@ describe("send records every request on the session", () => {
     const r = await readBscOrder(ctx as never, s, "order-123");
     expect(r).toEqual({
       ok: false,
-      failure: { kind: "http", httpStatus: 503, message: "BuySportsCards answered 503 to orderDetail." },
+      failure: { kind: "http", httpStatus: 503, message: "BuySportsCards was snoozing and didn't wake up in time." },
     });
     expect(drained).toBe(true);
 
@@ -149,7 +149,7 @@ describe("send records every request on the session", () => {
     const s = session();
     expect(await readBscOrder(ctx as never, s, "o-1")).toEqual({
       ok: false,
-      failure: { kind: "timeout", message: "BuySportsCards took too long to answer." },
+      failure: { kind: "timeout", message: "BuySportsCards left NeonBinder hanging with no answer." },
     });
     expect(await readBscOrder(ctx as never, s, "o-2")).toEqual({
       ok: false,
@@ -170,7 +170,7 @@ describe("send records every request on the session", () => {
     const s = session();
     expect(await readBscOrder(ctx as never, s, "o-1")).toEqual({
       ok: false,
-      failure: { kind: "bad_response", httpStatus: 200, message: "BuySportsCards' answer to orderDetail was not JSON." },
+      failure: { kind: "bad_response", httpStatus: 200, message: "BuySportsCards sent back a garbled answer." },
     });
     await closeBscSellerSession(ctx, s);
     expect(summaries()[0]).toMatchObject({ calls: 1, ok: 0, byKind: { parse: 1 }, byStatus: { "200": 1 } });
@@ -212,7 +212,7 @@ describe("a seller session samples failed bodies keysOnly", () => {
     const r = await readBscOrder(ctx as never, s, "ord-77");
     expect(r).toEqual({
       ok: false,
-      failure: { kind: "http", httpStatus: 400, message: "BuySportsCards answered 400 to orderDetail." },
+      failure: { kind: "http", httpStatus: 400, message: "BuySportsCards fumbled that one (error 400)." },
     });
     await closeBscSellerSession(ctx, s);
 

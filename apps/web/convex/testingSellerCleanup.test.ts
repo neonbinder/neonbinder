@@ -10,9 +10,14 @@ import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
 import { __resetContractCache } from "./credentials";
-import { bscConditionsForEra, bscEraForYear } from "./lib/bscConditions";
+import { bscConditionFor, bscConditionsForEra, bscEraForYear, type BscEra } from "./lib/bscConditions";
 import { planBscSheet } from "./lib/bscSheetPlan";
-import { BSC_FIRST_READ_RETRY_PAUSE_MS, MAX_CHAIN_SIBLINGS } from "./testingSellerCleanup";
+import { DEFAULT_CONDITION } from "./collection";
+import {
+  BSC_CLEANUP_SHEET_RETRY_PAUSES_MS,
+  MAX_CHAIN_SIBLINGS,
+  SELLER_SPEC_SETS,
+} from "./testingSellerCleanup";
 import { drainScheduled } from "../lib/testing/drain-scheduled";
 
 const modules = (import.meta as unknown as {
@@ -23,9 +28,11 @@ const BROWSER = "http://localhost:9999";
 const EBAY_HOST = "api.sandbox.ebay.com";
 const BSC_HOST = "api-prod.buysportscards.com";
 const OWNER = "user_e2esellercleanup";
-const ERA = bscConditionsForEra(bscEraForYear("1988") as "modern" | "vintage") as readonly string[];
-const COND = ERA[0];
-const OTHER_COND = ERA[1];
+const ERA = bscConditionsForEra(bscEraForYear("1988") as BscEra) as readonly string[];
+/** The condition a spec's copy lists in (NB's default), the only sheet the cleanup clears (NEO-475). */
+const COND: string = bscConditionFor(DEFAULT_CONDITION, bscEraForYear("1988") as BscEra);
+/** A condition of the same era no spec lists in: never read. */
+const OTHER_COND = ERA.find((c) => c !== COND) as string;
 
 type T = ReturnType<typeof convexTest>;
 
@@ -70,8 +77,8 @@ let putTakes: boolean;
 let sheetAnswer: Response | null;
 /** One entry per sheet read, in order, used up as they arrive: a status, a failure with no status, or null for the real sheet. */
 let sheetScript: Array<number | "network" | "timeout" | null>;
-/** How many sheet reads had reached BSC at each retry pause. */
-let firstReadPauses: number[];
+/** Each retry pause: its length, and how many sheet reads had reached BSC when it started. */
+let retryPauses: Array<[number, number]>;
 let browserCalls: Array<{ method: string; path: string }>;
 let ebayCalls: number;
 let bscCalls: number;
@@ -101,13 +108,13 @@ beforeEach(() => {
   putTakes = true;
   sheetAnswer = null;
   sheetScript = [];
-  firstReadPauses = [];
-  // The retry pause, and only that: 10 real seconds per test would outlast the
-  // test's own timeout. Faking the clock instead would stall convex-test.
+  retryPauses = [];
+  // The retry pauses, and only those: 10-60 real seconds per test would outlast
+  // the test's own timeout. Faking the clock instead would stall convex-test.
   const realSetTimeout = globalThis.setTimeout;
   vi.spyOn(globalThis, "setTimeout").mockImplementation(((handler: (...args: unknown[]) => void, ms?: number, ...rest: unknown[]) => {
-    if (ms !== BSC_FIRST_READ_RETRY_PAUSE_MS) return realSetTimeout(handler, ms, ...rest);
-    firstReadPauses.push(sheetReads.length);
+    if (ms === undefined || !BSC_CLEANUP_SHEET_RETRY_PAUSES_MS.includes(ms)) return realSetTimeout(handler, ms, ...rest);
+    retryPauses.push([ms, sheetReads.length]);
     return realSetTimeout(handler, 0, ...rest);
   }) as typeof setTimeout);
   browserCalls = [];
@@ -591,7 +598,7 @@ describe("eBay", () => {
 });
 
 describe("BuySportsCards", () => {
-  test("takes every row above 0 to 0, across conditions, and leaves rows at 0 out of the PUT", async () => {
+  test("takes every row above 0 in the spec's condition to 0, leaves rows at 0 out of the PUT, and never reads another condition", async () => {
     const t = await ready();
     sheet = [
       row("p1", "bsc-1", COND, 2),
@@ -602,18 +609,43 @@ describe("BuySportsCards", () => {
     const r = await clear(t);
     expect(puts).toHaveLength(1);
     expect(puts[0].sellerId).toBe("seller-1");
-    expect(puts[0].listings.map((l) => [l.productId, l.availableQuantity]).sort()).toEqual([["p1", 0], ["p3", 0]]);
-    expect(r.bsc).toEqual({ outcome: "clean", rows: 3, unreadableRows: 0, listed: 2, zeroed: 2, twinKeys: 0, twinKeysRemaining: 0, skippedSets: 1 });
+    expect(puts[0].listings.map((l) => [l.productId, l.availableQuantity])).toEqual([["p1", 0]]);
+    expect(r.bsc).toEqual({ outcome: "clean", rows: 2, unreadableRows: 0, listed: 1, zeroed: 1, twinKeys: 0, twinKeysRemaining: 0, skippedSets: 1 });
     expect(sheet.find((s) => s.productId === "slab")?.availableQuantity).toBe(3);
+    // NEO-475: a condition no spec lists in is not read, so it is left as it is.
+    expect(sheet.find((s) => s.productId === "p3")?.availableQuantity).toBe(1);
+    expect(sheetReads.map((c) => c.condition)).not.toContain(OTHER_COND);
     await drainScheduled(t);
   });
 
-  test("reads only the Base of the tested set, every condition of its era, one at a time, and reads back only what it touched", async () => {
+  test("every spec set clears NB's default condition in its era, and nothing else", () => {
+    expect(COND).toBe("excellent");
+    for (const set of SELLER_SPEC_SETS) {
+      expect(set.conditions).toEqual([bscConditionFor(DEFAULT_CONDITION, bscEraForYear(set.year) as BscEra)]);
+    }
+  });
+
+  test("a spec condition of the other era fails the job before any sign-in, naming it", async () => {
+    const t = await ready();
+    const spec = SELLER_SPEC_SETS[0] as { conditions: readonly string[] };
+    const kept = spec.conditions;
+    spec.conditions = ["ex"];
+    try {
+      await expect(clear(t)).rejects.toThrow(/BuySportsCards: 1988 Topps Topps Base is modern on BuySportsCards, but its spec conditions include ex/);
+    } finally {
+      spec.conditions = kept;
+    }
+    expect(bscCalls).toBe(0);
+    expect(browserCalls.some((c) => c.path === "/login/bsc")).toBe(false);
+    await drainScheduled(t);
+  });
+
+  test("reads only the Base of the tested set, only the spec's condition, one at a time, and reads back only what it touched", async () => {
     const t = await ready();
     sheet = [row("p1", "bsc-1", COND, 1)];
     await clear(t);
     expect(maxReadsInFlight).toBe(1);
-    expect(sheetReads.map((c) => c.condition)).toEqual([...ERA, COND]);
+    expect(sheetReads.map((c) => c.condition)).toEqual([COND, COND]);
     const baseSlug = await t.run(async (ctx) => {
       const base = (await ctx.db.query("selectorOptions").collect()).filter((o) => o.level === "variantType" && o.value === "Base");
       const set = await Promise.all(base.map(async (o) => ({ o, parent: await ctx.db.get(o.parentId as Id<"selectorOptions">) })));
@@ -657,7 +689,7 @@ describe("BuySportsCards", () => {
 
   test("a twin already at 0 sends no PUT and is still reported", async () => {
     const t = await ready();
-    sheet = [row("twin-a", "bsc-1", OTHER_COND, 0), row("twin-b", "bsc-1", OTHER_COND, 0)];
+    sheet = [row("twin-a", "bsc-1", COND, 0), row("twin-b", "bsc-1", COND, 0)];
     const r = await clear(t);
     expect(puts).toEqual([]);
     expect(r.bsc).toEqual({ outcome: "clean", rows: 2, unreadableRows: 0, listed: 0, zeroed: 0, twinKeys: 1, twinKeysRemaining: 1, skippedSets: 1 });
@@ -680,7 +712,7 @@ describe("BuySportsCards", () => {
     sheet = [row("p1", "bsc-1", COND, 1)];
     const r = await clear(t);
     expect(r.bsc).toMatchObject({ outcome: "clean", listed: 1, zeroed: 1, skippedSets: 1 });
-    expect(sheetReads.map((c) => c.condition)).toEqual([...ERA, COND]);
+    expect(sheetReads.map((c) => c.condition)).toEqual([COND, COND]);
     const absent = logged.filter((l) => l.includes("seller_cleanup_set_absent"));
     expect(absent).toHaveLength(1);
     expect(JSON.parse(absent[0])).toMatchObject({ set: "Football 2026 Bowman Bowman Chrome" });
@@ -868,42 +900,51 @@ describe("BuySportsCards", () => {
     await drainScheduled(t);
   });
 
-  test("a 503 on the first read gets one more try after the pause, and the job comes out clean", async () => {
+  test("a 503 on the first read is read again after the first pause, and the job comes out clean", async () => {
     const t = await ready();
     sheet = [row("p1", "bsc-1", COND, 1)];
     sheetScript = [503];
     const r = await clear(t);
-    // One extra read, of the sheet that answered 503, then the usual reads and the read-back.
-    expect(sheetReads.map((c) => c.condition)).toEqual([COND, ...ERA, COND]);
-    expect(firstReadPauses).toEqual([1]);
+    // The sheet that answered 503 again, then the read-back.
+    expect(sheetReads.map((c) => c.condition)).toEqual([COND, COND, COND]);
+    expect(retryPauses).toEqual([[10_000, 1]]);
     expect(maxReadsInFlight).toBe(1);
     expect(r.bsc).toEqual({ outcome: "clean", rows: 1, unreadableRows: 0, listed: 1, zeroed: 1, twinKeys: 0, twinKeysRemaining: 0, skippedSets: 1 });
     expect(sheet[0].availableQuantity).toBe(0);
+    const retries = logged.filter((l) => l.startsWith('{"msg":"bsc_sheet_retry"')).map((l) => JSON.parse(l) as Record<string, unknown>);
+    expect(retries).toEqual([expect.objectContaining({ pauseMs: 10_000, attempt: 2, outcome: "ok" })]);
     await drainScheduled(t);
   });
 
-  test("a 503 part-way through the first read starts it again, and counts each row once", async () => {
+  test("BSC cold for three tries: 10 s, 30 s and 60 s apart, one read at a time, then clean", async () => {
     const t = await ready();
-    sheet = [row("p1", "bsc-1", COND, 1), row("p2", "bsc-2", OTHER_COND, 1)];
-    sheetScript = [null, 503];
+    sheet = [row("p1", "bsc-1", COND, 1)];
+    sheetScript = [503, 503, 503];
     const r = await clear(t);
-    expect(sheetReads.map((c) => c.condition)).toEqual([COND, OTHER_COND, ...ERA, COND, OTHER_COND]);
-    expect(firstReadPauses).toEqual([2]);
+    expect(BSC_CLEANUP_SHEET_RETRY_PAUSES_MS).toEqual([10_000, 30_000, 60_000]);
+    expect(retryPauses).toEqual([
+      [10_000, 1],
+      [30_000, 2],
+      [60_000, 3],
+    ]);
+    expect(sheetReads.map((c) => c.condition)).toEqual([COND, COND, COND, COND, COND]);
     expect(maxReadsInFlight).toBe(1);
-    expect(r.bsc).toMatchObject({ outcome: "clean", rows: 2, listed: 2, zeroed: 2, twinKeys: 0 });
+    expect(r.bsc).toMatchObject({ outcome: "clean", listed: 1, zeroed: 1 });
     await drainScheduled(t);
   });
 
-  test("503 twice fails the job with the same words after exactly two reads, and eBay's result is not lost", async () => {
+  test("503 on every try fails the job in NB's words after the last pause, and eBay's result is not lost", async () => {
     const t = await ready();
     pages = [{ inventoryItems: [item(sku("a"))] }];
     offers.set(sku("a"), { offerId: "O1", status: "PUBLISHED" });
     sheet = [row("p1", "bsc-1", COND, 1)];
-    // A third read would find the real sheet and the job would pass.
-    sheetScript = [503, 503];
-    await expect(clear(t)).rejects.toThrow(/BuySportsCards: could not read the sheets: BuySportsCards answered 503 to sheetRead\./);
-    expect(sheetReads.map((c) => c.condition)).toEqual([COND, COND]);
-    expect(firstReadPauses).toEqual([1]);
+    // A fifth read would find the real sheet and the job would pass.
+    sheetScript = [503, 503, 503, 503];
+    await expect(clear(t)).rejects.toThrow(
+      /BuySportsCards: could not read the sheets: BuySportsCards was snoozing and didn't wake up in time\./,
+    );
+    expect(sheetReads.map((c) => c.condition)).toEqual([COND, COND, COND, COND]);
+    expect(retryPauses.map(([ms]) => ms)).toEqual([10_000, 30_000, 60_000]);
     expect(puts).toEqual([]);
     expect(withdrawals).toEqual(["O1"]);
     expect(deletes).toEqual([sku("a")]);
@@ -913,28 +954,29 @@ describe("BuySportsCards", () => {
   });
 
   test.each([
-    [500, /answered 500 to sheetRead/],
-    [502, /answered 502 to sheetRead/],
-    [504, /answered 504 to sheetRead/],
+    [500, /fumbled that one \(error 500\)/],
+    [502, /fumbled that one \(error 502\)/],
+    [504, /fumbled that one \(error 504\)/],
     ["network", /couldn't reach BuySportsCards/],
-    ["timeout", /took too long to answer/],
+    ["timeout", /left NeonBinder hanging with no answer/],
   ] as const)("%s on the first read fails at once, with no pause and no second read", async (answer, words) => {
     const t = await ready();
     sheet = [row("p1", "bsc-1", COND, 1)];
     sheetScript = [answer];
     await expect(clear(t)).rejects.toThrow(words);
     expect(sheetReads).toHaveLength(1);
-    expect(firstReadPauses).toEqual([]);
+    expect(retryPauses).toEqual([]);
     await drainScheduled(t);
   });
 
-  test("a 503 on the read-back gets no retry: only the first read has one", async () => {
+  test("the read-back has its own schedule: a 503 there is read again after the first pause", async () => {
     const t = await ready();
     sheet = [row("p1", "bsc-1", COND, 1)];
-    sheetScript = [...ERA.map(() => null), 503];
-    await expect(clear(t)).rejects.toThrow(/BuySportsCards: could not read the sheets back: BuySportsCards answered 503 to sheetRead\./);
-    expect(sheetReads.map((c) => c.condition)).toEqual([...ERA, COND]);
-    expect(firstReadPauses).toEqual([]);
+    sheetScript = [null, 503];
+    const r = await clear(t);
+    expect(sheetReads.map((c) => c.condition)).toEqual([COND, COND, COND]);
+    expect(retryPauses).toEqual([[10_000, 2]]);
+    expect(r.bsc).toMatchObject({ outcome: "clean", zeroed: 1 });
     await drainScheduled(t);
   });
 });

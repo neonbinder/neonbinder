@@ -11,7 +11,7 @@ import { afterEach, expect, test } from "vitest";
 import { createBscRecorder } from "../../convex/lib/bscCallTelemetry";
 import { assertOutsideRepo, listRuns, parseRunLines } from "./backfill.mjs";
 import { collectLogFiles, parseLogs, recordsFromText, unwrapMessage } from "./parse.mjs";
-import { buildReport, hourOf, peakOverlap, renderCsv, renderMarkdown, writeReport } from "./report.mjs";
+import { buildReport, hourOf, peakOverlap, quantile, renderCsv, renderMarkdown, sheetJobStats, writeReport } from "./report.mjs";
 
 const made = [];
 const tmp = () => {
@@ -245,4 +245,111 @@ test("parse caps the decompressed bytes per file and skips oversize lines", asyn
   const n = r2.records.filter((x) => x.type === "completion").length;
   expect(n).toBeGreaterThan(0);
   expect(n).toBeLessThan(200);
+});
+
+// ── NEO-475: sheet reads per job ────────────────────────────────────────────
+
+const sellerLine = (o) => JSON.stringify({ msg: "bsc_seller_call", platform: "bsc", operation: "sheetRead", ...o });
+const retryLine = (o) => JSON.stringify({ msg: "bsc_sheet_retry", platform: "bsc", operation: "sheetRead", ...o });
+
+test("a sheet read's condition and attempt, and a retry line, are read; a junk condition is dropped", () => {
+  expect(recordsFromText(sellerLine({ condition: "excellent", attempt: 2, outcome: "ok", httpStatus: 200, durationMs: 4500 }), 7)).toEqual([
+    { type: "seller_call", ts: 7, operation: "sheetRead", outcome: "ok", httpStatus: 200, durationMs: 4500, condition: "excellent", attempt: 2 },
+  ]);
+  expect(recordsFromText(sellerLine({ condition: "Jane Doe <x>", outcome: "ok" }), 7)[0].condition).toBeUndefined();
+  expect(recordsFromText(retryLine({ pauseMs: 10000, attempt: 2, outcome: "http_503", durationMs: 30000 }), 9)).toEqual([
+    { type: "sheet_retry", ts: 9, pauseMs: 10000, attempt: 2, outcome: "http_503", durationMs: 30000 },
+  ]);
+});
+
+test("parsed line records carry their executionId; the report prints none", async () => {
+  const dir = tmp();
+  writeShard(dir, "convex-logs-a", [
+    progress("exec-job-1", T0 + 30_000, sellerLine({ condition: "excellent", attempt: 1, outcome: "http_error", httpStatus: 503, durationMs: 30_000 })),
+    progress("exec-job-1", T0 + 44_500, sellerLine({ condition: "excellent", attempt: 2, outcome: "ok", httpStatus: 200, durationMs: 4_500 })),
+    progress("exec-job-1", T0 + 44_501, retryLine({ pauseMs: 10_000, attempt: 2, outcome: "ok", durationMs: 4_500 })),
+  ]);
+  const { records } = await parseLogs([dir], { meta: { env: "ci" } });
+  expect(records.map((r) => [r.type, r.executionId])).toEqual([
+    ["seller_call", "exec-job-1"],
+    ["seller_call", "exec-job-1"],
+    ["sheet_retry", "exec-job-1"],
+  ]);
+  const report = buildReport(records);
+  expect(report.sheetJobs).toEqual([
+    {
+      env: "ci",
+      jobs: 1,
+      sheetsPerJob: { min: 1, p50: 1, max: 1 },
+      reads: 2,
+      firstRead503: 1,
+      firstReadOtherFailure: 0,
+      retries: 1,
+      retriesOk: 1,
+      recovered: 1,
+      timeToSuccessMs: { p50: 44_500, max: 44_500 },
+    },
+  ]);
+  const out = tmp();
+  const md = writeReport(report, out, {});
+  expect(md).toContain("### Seller sheet reads per job");
+  expect(md).toContain("| ci | 1 | 1 | 1 | 1 | 2 | 1 | 0 | 1 | 1 | 1 | 44500 | 44500 |");
+  for (const f of ["hourly.json", "hourly.csv", "summary.md"]) {
+    expect(fs.readFileSync(path.join(out, f), "utf8")).not.toContain("exec-job-1");
+  }
+  expect(JSON.parse(fs.readFileSync(path.join(out, "hourly.json"), "utf8")).sheetJobs).toHaveLength(1);
+});
+
+test("sheetJobStats: sheets per job, first-read 503s, retries, recovery and time to success", () => {
+  const meta = { env: "ci" };
+  const read = (executionId, end, durationMs, outcome, httpStatus, attempt = 1) => ({
+    type: "seller_call", ts: end, operation: "sheetRead", outcome, httpStatus, durationMs, attempt, executionId, meta,
+  });
+  const retry = (executionId, outcome) => ({ type: "sheet_retry", ts: 0, outcome, executionId, meta });
+  const records = [
+    // Job A: cold first read, warm on the retry, then two more sheets.
+    read("A", 30_000, 30_000, "http_error", 503),
+    read("A", 44_000, 4_000, "ok", 200, 2),
+    retry("A", "ok"),
+    read("A", 49_000, 5_000, "ok", 200),
+    read("A", 54_000, 5_000, "ok", 200),
+    // Job B: warm from the start, one sheet.
+    read("B", 4_000, 4_000, "ok", 200),
+    // Job C: cold on every try, never recovers.
+    read("C", 30_000, 30_000, "http_error", 503),
+    read("C", 70_000, 30_000, "http_error", 503, 2),
+    retry("C", "http_503"),
+    read("C", 130_000, 30_000, "http_error", 503, 3),
+    retry("C", "http_503"),
+    // Job D: a 500 first; logged out of order, sorted by start.
+    read("D", 9_000, 1_000, "ok", 200),
+    read("D", 2_000, 2_000, "http_error", 500),
+    // Not a sheet read, and a record with no job: both ignored.
+    { type: "seller_call", ts: 1, operation: "listingsPut", outcome: "ok", executionId: "A", meta },
+    read(undefined, 1, 1, "ok", 200),
+  ];
+  expect(sheetJobStats(records)).toEqual([
+    {
+      env: "ci",
+      jobs: 4,
+      sheetsPerJob: { min: 1, p50: 1, max: 3 },
+      reads: 10,
+      firstRead503: 2,
+      firstReadOtherFailure: 1,
+      retries: 3,
+      retriesOk: 1,
+      recovered: 2,
+      timeToSuccessMs: { p50: 9_000, max: 44_000 },
+    },
+  ]);
+  expect(sheetJobStats([])).toEqual([]);
+  expect(renderMarkdown(buildReport([]))).not.toContain("Seller sheet reads per job");
+});
+
+test("quantile is nearest-rank and null on nothing", () => {
+  expect(quantile([], 0.5)).toBeNull();
+  expect(quantile([5, 1, 3], 0)).toBe(1);
+  expect(quantile([5, 1, 3], 0.5)).toBe(3);
+  expect(quantile([5, 1, 3], 1)).toBe(5);
+  expect(quantile([1, 2, 3, 4], 0.5)).toBe(2);
 });

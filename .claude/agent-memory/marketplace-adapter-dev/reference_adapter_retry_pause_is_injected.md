@@ -48,6 +48,14 @@ clock stalls them).
   bscTeamEnrichmentQueue NEO-330 block). A jittered pause has no exact delay
   to match, so a setTimeout spy keyed on the pause RANGE must not overlap
   another delay in the path (BSC_TEAM_ENRICH_DELAY_MS is 300, inside 250-500).
+- A retry SCHEDULE (several pauses, e.g. `readSheets`' 503 list, NEO-475):
+  export the list, key the setTimeout spy on `list.includes(ms)`, and record
+  `[ms, readsSoFar]` so one assertion pins both the lengths and where each
+  fell. Test the shared-schedule bound (a 503 on two sheets spends it) and
+  that a second call (the read-back) starts its own.
+- The seller adapter's failure sentences are asserted outside the adapter
+  tests too (order poll `lastPollError` in listingSales.test.ts, cleanup
+  error text): grep the whole convex/ tree before changing the copy.
 - Adding a retry changes every "asked N times" count downstream (queue passes
   x attempts); a "succeeds on a later pass" test must fail every attempt of
   the first pass or it goes green through the in-action retry.

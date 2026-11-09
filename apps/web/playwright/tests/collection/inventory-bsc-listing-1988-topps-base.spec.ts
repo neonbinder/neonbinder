@@ -101,16 +101,17 @@
 // "Gathering data" item, the double-checks are dropped, the send stays. A wait
 // for a read or a confirm therefore goes through `readLanded` / `confirmLanded`
 // (the running item, or the folded row if the run ended first), never a bare
-// `step`. How many sheets a run reads is NOT fixed by this fixture: a
-// run reads every sheet only on a set's first run, when the press asks for a
-// full read (stamped unless it falls within a minute of the last press or lands
-// on a run already under way) or when the caller says so (`full`); otherwise
-// it reads only the sheets NB has cards in or pushed to before
-// (`syncVariant`'s `fullRead`). The spec reruns on the same seed and its
-// cleanup Sync runs on a failure, so a run here can be either. Both Syncs
-// therefore assert what every run holds, in order: a read, the send, a
-// confirm. Which condition the confirm names is the account's default
-// condition, not this spec's feature.
+// `step`. NEO-475: a run reads only the sheets NB needs: the conditions its
+// copies sit in now, plus any it has listed in before (so a row NB once pushed
+// is still found and zeroed). Every copy this spec makes sits at the default
+// condition, Excellent, so a run reads the one Excellent sheet. This spec does
+// NOT assert the read count: the finished row folds the reads into "Gathering
+// data", which names no condition, and the running ledger can end inside any
+// one wait. The count is proven by the unit tests (`listingDrain.test.ts`) and
+// the drain's `conditionsRead` telemetry. The live proof here is the flow: the
+// copies are listed, then the takedown Sync still finds the Excellent row it
+// pushed and zeroes it. Both Syncs assert what every run holds, in order: a
+// read, the send, a confirm.
 //
 // Sync's toast. A press that sets a run going toasts "Syncing <title> now.
 // Watch it on Sync status."; both presses assert it before reading the result.
@@ -751,9 +752,8 @@ test(
     // The live BSC round trip, one step per wait (see "Waits" above): the walk
     // waits for the step the run is on to land, again and again, until the
     // press's queued cards are gone and the platform is idle (header: a press
-    // proven to have run; the sheet reads are serial and how many there are is
-    // not fixed, see "The ledger's steps" above). Only then is the set's row
-    // read, and it is a run that started after the press, finished.
+    // proven to have run). Only then is the set's row read, and it is a run
+    // that started after the press, finished.
     // The line is the drain's own count: 2 rows on BSC show NB's stock after the
     // read-back (2 updated, or none when BSC already showed them); "skipped"
     // would be a held-back card.
@@ -842,8 +842,8 @@ test(
     // so the row still shows the LAST run's finished steps until this one
     // claims the set: the walk ends only when the press's queued cards are gone
     // and the platform is idle, so the row read next is a run that started after
-    // the press, finished. How many sheets it reads is not fixed (see "The
-    // ledger's steps" above), so one data-gathering step is the assertion.
+    // the press, finished. The reads fold into one data-gathering step on the
+    // finished row (see "The ledger's steps" above), so that is the assertion.
     const takeDown = syncRun(platform, SET_LABEL, BSC);
     const takenLine = row.getByText(/^0 listed(, \d+ updated)?, 2 taken to 0$/);
     await followRunToRest(platform, takeDown, queueSettled(platform, SET_LABEL), bscReadCeiling);

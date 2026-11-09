@@ -121,12 +121,37 @@ function failure(kind: BscSellerFailureKind, message: string, httpStatus?: numbe
   return { kind, message, ...(httpStatus !== undefined ? { httpStatus } : {}) };
 }
 
-function logCall(operation: string, startedAt: number, outcome: string, httpStatus?: number): void {
+/**
+ * NEO-475 — the failure sentences a collector can read on a set's sync line
+ * (`SyncStatusView` adds "The next round tries again."). NB's voice, and no
+ * operation name or other internal word: `lastError` is shown as written.
+ */
+export const BSC_SELLER_COPY = {
+  /** BSC's gateway answered 503: its seller API was asleep (cold) and did not wake in time. */
+  busy: "BuySportsCards was snoozing and didn't wake up in time.",
+  timeout: "BuySportsCards left NeonBinder hanging with no answer.",
+  /** Any other non-2xx but 401. */
+  http: (status: number) => `BuySportsCards fumbled that one (error ${status}).`,
+  /** A 2xx whose body NB could not read or parse. */
+  garbled: "BuySportsCards sent back a garbled answer.",
+  /** A body past `BSC_SELLER_MAX_BYTES`. */
+  tooBig: "BuySportsCards sent back way more than NeonBinder can carry.",
+} as const;
+
+/**
+ * Fixed-vocabulary detail a call's log line may carry (NEO-475: a sheet read's
+ * BSC condition key and its retry attempt). Never an id, a token or a body.
+ */
+type LogFields = { condition?: string; attempt?: number };
+
+function logCall(operation: string, startedAt: number, outcome: string, httpStatus?: number, fields?: LogFields): void {
   console.log(
     JSON.stringify({
       msg: "bsc_seller_call",
       platform: "bsc",
       operation,
+      ...(fields?.condition !== undefined ? { condition: fields.condition } : {}),
+      ...(fields?.attempt !== undefined ? { attempt: fields.attempt } : {}),
       outcome,
       ...(httpStatus !== undefined ? { httpStatus } : {}),
       durationMs: Date.now() - startedAt,
@@ -270,6 +295,8 @@ interface SendOptions {
   timeoutMs: number;
   /** The most bytes of the answer NB reads (`BSC_SELLER_MAX_BYTES`). */
   maxBytes: number;
+  /** Extra fields for this call's `bsc_seller_call` line (NEO-475). */
+  logFields?: LogFields;
 }
 
 /**
@@ -336,18 +363,13 @@ async function send(
         signal: AbortSignal.timeout(opts.timeoutMs),
       });
       rec.respond(call, res);
-      logCall(opts.operation, startedAt, res.ok ? "ok" : "http_error", res.status);
+      logCall(opts.operation, startedAt, res.ok ? "ok" : "http_error", res.status, opts.logFields);
       return res;
     } catch (err) {
       rec.fail(call, { error: err });
       const kind = isAbort(err) ? "timeout" : "network";
-      logCall(opts.operation, startedAt, kind);
-      return failure(
-        kind,
-        kind === "timeout"
-          ? "BuySportsCards took too long to answer."
-          : "NeonBinder couldn't reach BuySportsCards.",
-      );
+      logCall(opts.operation, startedAt, kind, undefined, opts.logFields);
+      return failure(kind, kind === "timeout" ? BSC_SELLER_COPY.timeout : "NeonBinder couldn't reach BuySportsCards.");
     }
   };
 
@@ -399,7 +421,11 @@ async function send(
     await res.text().catch(() => "");
     return {
       ok: false,
-      failure: failure("http", `BuySportsCards answered ${res.status} to ${opts.operation}.`, res.status),
+      failure: failure(
+        "http",
+        res.status === 503 ? BSC_SELLER_COPY.busy : BSC_SELLER_COPY.http(res.status),
+        res.status,
+      ),
     };
   }
   let text: string | null;
@@ -409,14 +435,16 @@ async function send(
     if (last.call) rec.fail(last.call, { kind: isAbort(err) ? "body_timeout" : "parse", error: err, response: res });
     return {
       ok: false,
-      failure: failure(isAbort(err) ? "timeout" : "bad_response", `BuySportsCards' answer to ${opts.operation} could not be read.`, res.status),
+      failure: isAbort(err)
+        ? failure("timeout", BSC_SELLER_COPY.timeout, res.status)
+        : failure("bad_response", BSC_SELLER_COPY.garbled, res.status),
     };
   }
   if (text === null) {
     if (last.call) rec.fail(last.call, { kind: "parse", response: res });
     return {
       ok: false,
-      failure: failure("bad_response", `BuySportsCards' answer to ${opts.operation} was too large to read.`, res.status),
+      failure: failure("bad_response", BSC_SELLER_COPY.tooBig, res.status),
     };
   }
   if (text.trim() === "") return { ok: true, value: null };
@@ -426,7 +454,7 @@ async function send(
     if (last.call) rec.fail(last.call, { kind: "parse", error: err, response: res });
     return {
       ok: false,
-      failure: failure("bad_response", `BuySportsCards' answer to ${opts.operation} was not JSON.`, res.status),
+      failure: failure("bad_response", BSC_SELLER_COPY.garbled, res.status),
     };
   }
 }
@@ -478,11 +506,14 @@ export function isBscSellerId(value: string): boolean {
  * `planBscFanOut`: BSC answers a multi-value facet with 200 and no rows).
  * Each row is narrowed as it is read (`narrowBscSheet`): an unreadable or
  * oversized row is counted and dropped, never held.
+ *
+ * `attempt` (1 when absent) is the caller's retry count for this condition and
+ * filter (`listingDrain.readSheets`), logged with the condition (NEO-475).
  */
 export async function readBscSellerSheet(
   ctx: SessionCtx,
   session: BscSellerSession,
-  args: { filters: Record<string, string[]>; condition: string },
+  args: { filters: Record<string, string[]>; condition: string; attempt?: number },
 ): Promise<BscSellerResult<NarrowedBscSheet>> {
   const r = await send(ctx, session, {
     operation: "sheetRead",
@@ -500,6 +531,7 @@ export async function readBscSellerSheet(
     },
     timeoutMs: BSC_SELLER_TIMEOUTS_MS.sheet,
     maxBytes: BSC_SELLER_MAX_BYTES.sheet,
+    logFields: { condition: args.condition, attempt: args.attempt ?? 1 },
   });
   if (!r.ok) return r;
   // A bare array, as `search/bulk-upload/results` answers; `{results}` is

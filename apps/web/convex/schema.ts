@@ -4752,13 +4752,18 @@ export default defineSchema({
    * reader strips it.
    *
    * `conditionsPushed` is every platform condition string NB has ever posted
-   * for this variant (BSC: one sheet per condition). A later run reads the
-   * conditions NB maps to plus these, so a row NB once listed under a
-   * condition it no longer uses is still found and corrected. Only ever grows;
-   * small (BSC has 4 modern and 10 vintage conditions). ABSENT
-   * `lastSuccessAt` means the variant has never synced cleanly, and that run
-   * reads every condition; so does the first run after a Sync press
-   * (`resyncRequestedAt` later than `lastRunAt`, see `listingSync.syncVariant`).
+   * for this variant (BSC: one sheet per condition). Every BSC run reads the
+   * conditions NB's copies map to now plus these, and nothing else, so a row
+   * NB once listed under a condition it no longer uses is still found and
+   * corrected (NEO-475: no run reads the whole era any more, a first sync or
+   * a Sync press included, so stock NB never listed under is left alone). A
+   * run adds the conditions it is about to list under BEFORE its first PUT
+   * (`listingDrain.recordConditionsPushed`), so a run that dies mid-push still
+   * leaves the record; `finishVariant` adds the rest. Only ever grows; small
+   * (BSC has 4 modern and 10 vintage conditions). ABSENT `lastSuccessAt` means
+   * the variant has never synced cleanly. eBay's first run, and its first run
+   * after a Sync press (`resyncRequestedAt` later than `lastRunAt`, see
+   * `listingSync.syncVariant`), reads every card of the variant.
    *
    * `lastError` is an NB-written sentence, truncated by the writer; never a
    * raw platform response body (it can echo the request, and this row is
@@ -4809,8 +4814,9 @@ export default defineSchema({
      * The last Sync press that asked for a full read (`listingSync.syncVariant`
      * does not stamp a press within a minute of this one: that press only runs
      * the drain for a change no recent drain has tried, or is ignored). The
-     * variant's next run reads every condition while this is later than
-     * `lastRunAt` (the claim stamps `lastRunAt`, so one run).
+     * variant's next eBay run reads every card while this is later than
+     * `lastRunAt` (the claim stamps `lastRunAt`, so one run); a BSC run reads
+     * what any run reads (NEO-475).
      */
     resyncRequestedAt: v.optional(v.number()),
     /**

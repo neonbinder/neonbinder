@@ -37,6 +37,7 @@ import {
   type ProjectedOrder,
 } from "./listingSales";
 import { parseBscOrder } from "./lib/bscOrders";
+import { BSC_SELLER_COPY } from "./adapters/bscSeller";
 import { priceEveryVariant } from "../lib/testing/common-prices";
 import { SAVED_SIGN_INS_PASS_KEY } from "./listingSync";
 
@@ -612,10 +613,11 @@ describe("pollOwner", () => {
       return new Response("busy", { status: 503 });
     }) as typeof fetch);
     const report = await pollOwnerImpl(stubCtx(s.t), { ownerId: OWNER, platform: "bsc" });
-    expect(report.error).toMatch(/503/);
+    // NEO-475: a 503 is said in NB's words, never the operation's name.
+    expect(report.error).toBe(BSC_SELLER_COPY.busy);
     const st = await s.t.run(async (ctx) => await ctx.db.query("marketplaceListingStates").first());
     expect(st?.orderCursorAt).toBeUndefined();
-    expect(st?.lastPollError).toMatch(/503/);
+    expect(st?.lastPollError).toBe(BSC_SELLER_COPY.busy);
   });
 
   test("pollAll schedules one poll per LISTING owner and one saved-sign-in pass; the test marker's row is stamped to the back, never polled", async () => {

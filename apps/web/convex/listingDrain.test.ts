@@ -7,9 +7,9 @@
  * credentials layer is mocked at the two identity-less entry points the
  * seller client calls. No test reaches a live server.
  *
- * Covered: the first sync reads every condition of the era and corrects the
- * whole variant (old-platform rows NB does not hold go to 0); a later sync
- * reads only the targets' conditions plus the ones NB pushed before; an
+ * Covered: every run, the first sync and a Sync press included, reads only
+ * the targets' conditions plus the ones NB pushed before (NEO-475), and
+ * corrects those sheets (old-platform rows NB does not hold go to 0); an
  * outbox row whose `seq` moved mid-push survives; a moved card's row is
  * re-pointed and a deleted card's row cleared; the owner lease; a variant
  * with no BSC scope; a sign-in BSC refuses after a refresh stops the drain;
@@ -19,27 +19,33 @@
  * that needs a fresh sign-in is not logged into), one NB owner per seller
  * account, listing stopped under a run (the sign-in removed) stops the push
  * but keeps the state row, and every BSC call refuses redirects. Revision 4:
- * a copy in an in-person box (`listedOnMarketplaces: false`) counts 0, and
- * the first run after a Sync press reads every condition.
+ * a copy in an in-person box (`listedOnMarketplaces: false`) counts 0.
+ * NEO-475: the conditions a run sends under are on the record before its
+ * first PUT, and a sheet read BSC answers 503 is retried after a short,
+ * bounded schedule of pauses.
  */
 import { convexTest } from "convex-test";
+import { getFunctionName } from "convex/server";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
 import {
+  bscSheetSteps,
+  BSC_SHEET_RETRY_PAUSES_MS,
   DRAIN_DEATH_GRACE_MS,
   DRAIN_LEASE_MS,
   DRAIN_WATCH_TICK_MS,
   drainOwnerImpl,
   MAX_PROGRESS_STEPS,
   ProgressLedger,
+  readSheets,
   rejectedPushDetail,
   settleSteps,
   type DrainCtx,
 } from "./listingDrain";
 import { kickOwnerDrains } from "./listingOutbox";
-import { BSC_SELLER_TIMEOUTS_MS } from "./adapters/bscSeller";
+import { BSC_SELLER_COPY, BSC_SELLER_TIMEOUTS_MS, type BscSellerSession } from "./adapters/bscSeller";
 import { EBAY_TIMEOUTS_MS } from "./adapters/ebaySeller";
 import { cancelScheduled } from "../lib/testing/drain-scheduled";
 
@@ -382,7 +388,7 @@ afterEach(() => {
 // ── Tests ───────────────────────────────────────────────────────────────────
 
 describe("drainOwner: the first sync of a variant", () => {
-  test("reads every modern condition, lists NB's box counts and zeroes what NB does not hold", async () => {
+  test("reads only the conditions NB's copies are in, lists NB's box counts and zeroes what NB does not hold there", async () => {
     const s = await setup();
     const v = await seedVariant(s.t, {
       cards: [
@@ -417,8 +423,9 @@ describe("drainOwner: the first sync of a variant", () => {
 
     await drain(s);
 
-    // Every modern condition read once (first sync), with the slot-id filters.
-    expect(bsc.sheetReads.slice(0, 4).map((r) => r.condition).sort()).toEqual([...MODERN].sort());
+    // NEO-475: only the targets' conditions (era order), never the whole era, with the slot-id filters.
+    expect(bsc.sheetReads.slice(0, 2).map((r) => r.condition)).toEqual(["near_mint", "excellent"]);
+    expect([...new Set(bsc.sheetReads.map((r) => r.condition))].sort()).toEqual(["excellent", "near_mint"]);
     expect(bsc.sheetReads[0].filters).toEqual({
       sport: ["slug-sport-Baseball"],
       year: ["slug-year-2021"],
@@ -493,8 +500,8 @@ describe("drainOwner: the first sync of a variant", () => {
 
     await drain(s);
 
-    // The full read (every modern condition) plus the read-back, one by one.
-    expect(bsc.sheetReads.length).toBeGreaterThan(MODERN.length);
+    // The read and the read-back, one by one.
+    expect(bsc.sheetReads.map((r) => r.condition)).toEqual(["near_mint", "near_mint"]);
     expect(maxInFlight).toBe(1);
     expect(await record(s, v.variantId)).toMatchObject({ status: "idle", counts: { listed: 2, skipped: 0 } });
   });
@@ -1089,7 +1096,7 @@ describe("drainOwner: a variant NB no longer holds anything in", () => {
     expect(await outbox(s)).toHaveLength(0);
   });
 
-  test("a Sync of an empty variant (pressed after its last run) reads every condition and zeroes all of them", async () => {
+  test("a Sync of an empty variant (pressed after its last run) reads and zeroes what NB pushed, and leaves the rest", async () => {
     const s = await setup();
     const v = await seedVariant(s.t, { cards: [{ number: "1", ref: "bsc-1" }] });
     const bsc = new FakeBsc([{ bscCardId: "bsc-1", cardNo: "1" }], MODERN);
@@ -1116,10 +1123,12 @@ describe("drainOwner: a variant NB no longer holds anything in", () => {
     await queue(s, [{ cardId: v.cardIds[0], variantId: v.variantId, seq: 2 }]);
     await drain(s);
 
-    expect([...new Set(bsc.sheetReads.map((r) => r.condition))].sort()).toEqual([...MODERN].sort());
+    // NEO-475 (Jason's accepted trade-off): a condition NB never listed in for
+    // this variant is not read, so stock there is left as it is.
+    expect([...new Set(bsc.sheetReads.map((r) => r.condition))]).toEqual(["near_mint"]);
     expect(bsc.qty("bsc-1", "near_mint")).toBe(0);
-    expect(bsc.qty("bsc-1", "very_good")).toBe(0);
-    expect((await record(s, v.variantId))?.counts).toMatchObject({ listed: 0, zeroed: 2 });
+    expect(bsc.qty("bsc-1", "very_good")).toBe(3);
+    expect((await record(s, v.variantId))?.counts).toMatchObject({ listed: 0, zeroed: 1 });
   });
 });
 
@@ -1164,8 +1173,8 @@ describe("drainOwner: an in-person box (Revision 4)", () => {
   });
 });
 
-describe("drainOwner: a Sync press reads every condition once", () => {
-  test("the run after the press reads them all; the run after that reads only what it needs", async () => {
+describe("drainOwner: a Sync press reads what any run reads (NEO-475)", () => {
+  test("the run after the press reads the conditions in use plus the ones pushed, and so does the run after it", async () => {
     const s = await setup();
     const v = await seedVariant(s.t, { cards: [{ number: "1", ref: "bsc-1" }] });
     const bsc = new FakeBsc([{ bscCardId: "bsc-1", cardNo: "1" }], MODERN);
@@ -1173,16 +1182,27 @@ describe("drainOwner: a Sync press reads every condition once", () => {
     await add(s, v.cardIds[0], { homeId: s.box, condition: "Near Mint", minPriceCents: 40 });
     await listOnBsc(s);
     await queue(s, [{ cardId: v.cardIds[0], variantId: v.variantId }]);
-    await drain(s); // the first sync: every condition
+    await drain(s); // the first sync: near_mint only
+    expect([...new Set(bsc.sheetReads.map((r) => r.condition))]).toEqual(["near_mint"]);
     const first = await record(s, v.variantId);
 
+    // NB once pushed under very_good (a copy since regraded); something it never
+    // pushed sits under poor.
+    bsc.set("bsc-1", "very_good", { availableQuantity: 1, price: "1.00" });
+    bsc.set("bsc-1", "poor", { availableQuantity: 4, price: "1.00" });
     await s.t.run(async (ctx) => {
-      await ctx.db.patch(first!._id, { resyncRequestedAt: (first!.lastRunAt ?? 0) + 1 });
+      await ctx.db.patch(first!._id, {
+        resyncRequestedAt: (first!.lastRunAt ?? 0) + 1,
+        conditionsPushed: ["near_mint", "very_good"],
+      });
     });
     bsc.sheetReads = [];
     await queue(s, [{ cardId: v.cardIds[0], variantId: v.variantId, seq: 2 }]);
-    await drain(s);
-    expect([...new Set(bsc.sheetReads.map((r) => r.condition))].sort()).toEqual([...MODERN].sort());
+    // The press's own ask (`fullVariantIds`) too: it runs the variant, it reads no more.
+    await drain(s, { fullVariantIds: [v.variantId] });
+    expect([...new Set(bsc.sheetReads.map((r) => r.condition))]).toEqual(["near_mint", "very_good"]);
+    expect(bsc.qty("bsc-1", "very_good")).toBe(0);
+    expect(bsc.qty("bsc-1", "poor")).toBe(4);
     // The press is spent: the last clean run is kept, the stamp is behind it.
     const after = await record(s, v.variantId);
     expect(after?.lastSuccessAt).toBeTypeOf("number");
@@ -1193,7 +1213,7 @@ describe("drainOwner: a Sync press reads every condition once", () => {
     bsc.sheetReads = [];
     await queue(s, [{ cardId: v.cardIds[0], variantId: v.variantId, seq: 3 }]);
     await drain(s);
-    expect([...new Set(bsc.sheetReads.map((r) => r.condition))]).toEqual(["near_mint"]);
+    expect([...new Set(bsc.sheetReads.map((r) => r.condition))]).toEqual(["near_mint", "very_good"]);
   });
 });
 
@@ -1478,21 +1498,20 @@ describe("drainOwner: the run's steps (NEO-415)", () => {
 
     await drain(s);
 
-    const plan = ["read Mint/Near Mint", "read Excellent", "read Very Good/Good", "read Poor", "send"];
+    // NEO-475: one read per condition in use, never the whole era.
+    const plan = ["read Mint/Near Mint", "read Excellent", "send"];
     const at = (working: number, labels: string[]) =>
       labels.map((l, i) => `${l}: ${i < working ? "done" : i === working ? "working" : "waiting"}`);
     const confirms = ["confirm Mint/Near Mint", "confirm Excellent"];
     expect(seen).toEqual([
-      // The four reads, one at a time.
+      // The two reads, one at a time.
       at(0, plan),
       at(1, plan),
-      at(2, plan),
-      at(3, plan),
       // The PUT: every read done, the confirms known now and waiting.
-      at(4, [...plan, ...confirms]),
+      at(2, [...plan, ...confirms]),
       // The read-back, condition by condition.
-      at(5, [...plan, ...confirms]),
-      at(6, [...plan, ...confirms]),
+      at(3, [...plan, ...confirms]),
+      at(4, [...plan, ...confirms]),
     ]);
     const rec = await record(s, v.variantId);
     expect(rec?.status).toBe("idle");
@@ -1547,15 +1566,13 @@ describe("drainOwner: the run's steps (NEO-415)", () => {
     expect(await stepsOf(s, v.variantId)).toEqual([
       "read Mint/Near Mint: done",
       "read Excellent: done",
-      "read Very Good/Good: done",
-      "read Poor: done",
       "send: failed",
       "confirm Mint/Near Mint: done",
       "confirm Excellent: done",
     ]);
   });
 
-  test("vintage: one read per NB condition, the sheets NB lists nothing under read last as one step", async () => {
+  test("vintage: one read per vintage condition in use, named for NB's condition", async () => {
     const s = await setup();
     const VINTAGE = ["mint", "nm-mt", "nm", "ex-mt", "ex", "vg-ex", "vg", "good", "fair", "poor-v"];
     const { v, bsc } = await twoCards(s, { year: "1975", conditions: VINTAGE });
@@ -1563,31 +1580,15 @@ describe("drainOwner: the run's steps (NEO-415)", () => {
     await drain(s);
 
     expect(await stepsOf(s, v.variantId)).toEqual([
-      "read Mint: done",
       "read Near Mint: done",
       "read Excellent: done",
-      "read Very Good: done",
-      "read Good: done",
-      "read Poor: done",
-      "read: done",
       "send: done",
       "confirm Near Mint: done",
       "confirm Excellent: done",
     ]);
-    // Still every sheet, still one at a time; NB's named sheets first.
-    expect(bsc.sheetReads.slice(0, VINTAGE.length).map((r) => r.condition)).toEqual([
-      "mint",
-      "nm",
-      "ex",
-      "vg",
-      "good",
-      "poor-v",
-      "nm-mt",
-      "ex-mt",
-      "vg-ex",
-      "fair",
-    ]);
-    expect(JSON.stringify((await record(s, v.variantId))?.progress)).not.toMatch(/nm-mt|ex-mt|vg-ex|fair|poor-v/);
+    // The era's keys for NB's Near Mint and Excellent, nothing else, one at a time.
+    expect(bsc.sheetReads.map((r) => r.condition)).toEqual(["nm", "ex", "nm", "ex"]);
+    expect(JSON.stringify((await record(s, v.variantId))?.progress)).not.toMatch(/"nm"|"ex"/);
   });
 
   test("seller photos are a step of their own, between the reads and the send", async () => {
@@ -1621,16 +1622,12 @@ describe("drainOwner: the run's steps (NEO-415)", () => {
     expect(seen[0]).toEqual([
       "read Mint/Near Mint: done",
       "read Excellent: done",
-      "read Very Good/Good: done",
-      "read Poor: done",
       "photos: working",
       "send: waiting",
     ]);
     expect(await stepsOf(s, v.variantId)).toEqual([
       "read Mint/Near Mint: done",
       "read Excellent: done",
-      "read Very Good/Good: done",
-      "read Poor: done",
       "photos: done",
       "send: done",
       "confirm Mint/Near Mint: done",
@@ -2096,7 +2093,7 @@ describe("NEO-433: a run the platform killed", () => {
     expect(await claimAs(s, "next")).toEqual({ claimed: true });
   });
 
-  test("a press during the grace gets a run, and that run reads every condition", async () => {
+  test("a press during the grace gets a run, and that run reads the conditions in use and pushed", async () => {
     const s = await setup();
     const { v } = await deadRunMidStep(s);
     await s.t.run(async (ctx) => {
@@ -2116,7 +2113,7 @@ describe("NEO-433: a run the platform killed", () => {
     await advance(s, DRAIN_DEATH_GRACE_MS);
     await advance(s, 0);
     expect(await scheduled(s, "drainOwner", "success")).toHaveLength(1);
-    expect([...new Set(bsc.sheetReads.map((r) => r.condition))].sort()).toEqual([...MODERN].sort());
+    expect([...new Set(bsc.sheetReads.map((r) => r.condition))]).toEqual(["near_mint"]);
     expect(bsc.qty("bsc-1", "near_mint")).toBe(1);
     expect(await outbox(s)).toHaveLength(0);
     expect((await state(s))?.drainLeaseToken).toBeUndefined();
@@ -2317,5 +2314,440 @@ describe("NEO-475: one BSC call summary per drain run", () => {
     const scheduled = await s.t.run(async (ctx) => ctx.db.system.query("_scheduled_functions").collect());
     expect(scheduled.filter((f) => f.name.includes("bscCallStats"))).toHaveLength(1);
     await cancelScheduled(s.t);
+  });
+});
+
+// ── NEO-475: which sheets a run reads, the pre-PUT record, the 503 retry ────
+
+const VINTAGE_KEYS = ["mint", "nm-mt", "nm", "ex-mt", "ex", "vg-ex", "vg", "good", "fair", "poor-v"];
+
+/** Every console.log line while `work` runs, parsed when it is a JSON object with a `msg`. */
+async function logLines(work: () => Promise<unknown>): Promise<Array<Record<string, unknown>>> {
+  const lines: Array<Record<string, unknown>> = [];
+  const spy = vi.spyOn(console, "log").mockImplementation((line: unknown) => {
+    if (typeof line !== "string" || !line.startsWith("{")) return;
+    try {
+      const o = JSON.parse(line) as Record<string, unknown>;
+      if (typeof o.msg === "string") lines.push(o);
+    } catch {
+      // not ours
+    }
+  });
+  try {
+    await work();
+  } finally {
+    spy.mockRestore();
+  }
+  return lines;
+}
+
+/** One Excellent copy of one card, in a listed box, queued. */
+async function oneExcellent(s: S, opts: { year?: string; conditions?: readonly string[] } = {}) {
+  const v = await seedVariant(s.t, { ...(opts.year ? { year: opts.year } : {}), cards: [{ number: "1", ref: "bsc-1" }] });
+  const bsc = new FakeBsc([{ bscCardId: "bsc-1", cardNo: "1" }], opts.conditions ?? MODERN);
+  vi.stubGlobal("fetch", bsc.fetch);
+  const copy = await add(s, v.cardIds[0], { homeId: s.box, condition: "Excellent", minPriceCents: 40 });
+  await listOnBsc(s);
+  await queue(s, [{ cardId: v.cardIds[0], variantId: v.variantId }]);
+  return { v, bsc, copy };
+}
+
+/** The stub ctx, with a hook run before every mutation (by function name). */
+function stubCtxWith(t: T, before: (name: string) => Promise<void>): DrainCtx {
+  const base = stubCtx(t);
+  return {
+    ...base,
+    runMutation: (async (ref: never, args: never) => {
+      await before(getFunctionName(ref));
+      return await (base.runMutation as (r: unknown, a: unknown) => Promise<unknown>)(ref, args);
+    }) as DrainCtx["runMutation"],
+  };
+}
+
+describe("NEO-475: a run reads only the condition sheets NB needs", () => {
+  test("the first sync of a modern set with an Excellent copy reads only excellent; the seller's other stock is left alone", async () => {
+    const s = await setup();
+    const { v, bsc } = await oneExcellent(s);
+    // The collector's own stock under a condition NB never listed in.
+    bsc.set("bsc-1", "near_mint", { availableQuantity: 2, price: "3.00", sellerSku: "303|1" });
+
+    await drain(s);
+
+    // The read and the read-back.
+    expect(bsc.sheetReads.map((r) => r.condition)).toEqual(["excellent", "excellent"]);
+    expect(bsc.qty("bsc-1", "excellent")).toBe(1);
+    expect(bsc.qty("bsc-1", "near_mint")).toBe(2);
+    expect(await record(s, v.variantId)).toMatchObject({ status: "idle", conditionsPushed: ["excellent"] });
+  });
+
+  test("the first sync of a vintage set with an Excellent copy reads only ex", async () => {
+    const s = await setup();
+    const { v, bsc } = await oneExcellent(s, { year: "1975", conditions: VINTAGE_KEYS });
+
+    await drain(s);
+
+    expect(bsc.sheetReads.map((r) => r.condition)).toEqual(["ex", "ex"]);
+    expect(bsc.qty("bsc-1", "ex")).toBe(1);
+    expect(await record(s, v.variantId)).toMatchObject({ status: "idle", conditionsPushed: ["ex"] });
+  });
+
+  test("nothing for sale and nothing pushed before: no session is opened and BSC is never called", async () => {
+    const s = await setup();
+    const v = await seedVariant(s.t, { cards: [{ number: "1", ref: "bsc-1" }] });
+    let calls = 0;
+    vi.stubGlobal("fetch", (async () => {
+      calls += 1;
+      throw new Error("BSC must not be called");
+    }) as typeof fetch);
+    // A binder copy is never for sale.
+    await add(s, v.cardIds[0], { homeId: s.binder, condition: "Excellent", minPriceCents: 40 });
+    await listOnBsc(s);
+    await queue(s, [{ cardId: v.cardIds[0], variantId: v.variantId }]);
+
+    await drain(s);
+
+    expect(calls).toBe(0);
+    expect(creds.tokenCalls).toBe(0);
+    expect(await stepsOf(s, v.variantId)).toEqual(["check: done"]);
+    expect(await record(s, v.variantId)).toMatchObject({ status: "idle", conditionsPushed: [] });
+  });
+
+  test("the run log counts the condition sheets the run read (the read-backs are not counted)", async () => {
+    const s = await setup();
+    await twoCards(s);
+    const lines = await logLines(() => drain(s));
+    const run = lines.filter((l) => l.msg === "listing_drain");
+    expect(run).toHaveLength(1);
+    expect(run[0]).toMatchObject({ platform: "bsc", operation: "drainOwner", conditionsRead: 2 });
+  });
+});
+
+describe("NEO-475: the conditions a run sends under are recorded before the PUT", () => {
+  test("at the first PUT the record already names them", async () => {
+    const s = await setup();
+    const { v, bsc } = await oneExcellent(s);
+    const atPut: Array<string[] | undefined> = [];
+    bsc.onPut = async () => {
+      atPut.push((await record(s, v.variantId))?.conditionsPushed);
+    };
+
+    await drain(s);
+
+    expect(atPut).toEqual([["excellent"]]);
+  });
+
+  test("a run that dies after its PUT leaves them, so the next run still reads and zeroes that sheet", async () => {
+    const s = await setup();
+    const { v, bsc, copy } = await oneExcellent(s);
+    const ctx = stubCtxWith(s.t, async (name) => {
+      // The action dies after the PUT landed, before its finish is written.
+      if (name === "listingDrain:finishVariant") throw new Error("the action died");
+    });
+
+    await expect(drainOwnerImpl(ctx, { ownerId: OWNER, platform: "bsc" })).rejects.toThrow("the action died");
+
+    expect(bsc.puts).toHaveLength(1);
+    expect(bsc.qty("bsc-1", "excellent")).toBe(1);
+    const dead = await record(s, v.variantId);
+    expect(dead).toMatchObject({ status: "running", conditionsPushed: ["excellent"] });
+    expect(dead?.lastSuccessAt).toBeUndefined();
+
+    // Its lease runs out; the copy leaves the box: no targets now.
+    await s.t.run(async (ctx2) => {
+      await ctx2.db.patch(dead!._id, { leaseExpiresAt: Date.now() - 1 });
+      await ctx2.db.delete(copy.copyId as Id<"collectionCopies">);
+    });
+    bsc.sheetReads = [];
+    await queue(s, [{ cardId: v.cardIds[0], variantId: v.variantId, seq: 2 }]);
+    await drain(s);
+
+    expect([...new Set(bsc.sheetReads.map((r) => r.condition))]).toEqual(["excellent"]);
+    expect(bsc.qty("bsc-1", "excellent")).toBe(0);
+    expect(await record(s, v.variantId)).toMatchObject({ status: "idle", counts: { zeroed: 1 } });
+  });
+
+  test("a run that lost the variant's lease before the PUT sends nothing", async () => {
+    const s = await setup();
+    const { v, bsc } = await oneExcellent(s);
+    const ctx = stubCtxWith(s.t, async (name) => {
+      if (name !== "listingDrain:recordConditionsPushed") return;
+      // Another run took the variant between the reads and the send.
+      await s.t.run(async (ctx2) => {
+        const rec = await ctx2.db.query("marketplaceListingSyncs").first();
+        await ctx2.db.patch(rec!._id, { leaseToken: "another-run" });
+      });
+    });
+
+    await drainOwnerImpl(ctx, { ownerId: OWNER, platform: "bsc" });
+
+    expect(bsc.puts).toEqual([]);
+    expect(bsc.qty("bsc-1", "excellent")).toBe(0);
+    // The other run's record is not written over.
+    expect(await record(s, v.variantId)).toMatchObject({ status: "running", leaseToken: "another-run", conditionsPushed: [] });
+  });
+
+  test("recordConditionsPushed adds only under the run's own lease, and never drops what is there", async () => {
+    const s = await setup();
+    const v = await seedVariant(s.t, { cards: [{ number: "1", ref: "bsc-1" }] });
+    await listOnBsc(s, { drainLeaseToken: "run-1", drainLeaseExpiresAt: Date.now() + 60_000 });
+    const claim = await s.t.mutation(internal.listingDrain.claimVariant, {
+      ownerId: OWNER,
+      platform: "bsc",
+      variantId: v.variantId,
+      leaseToken: "run-1",
+    });
+    expect(claim).toMatchObject({ claimed: true });
+    const write = (leaseToken: string, conditions: string[]) =>
+      s.t.mutation(internal.listingDrain.recordConditionsPushed, {
+        ownerId: OWNER,
+        platform: "bsc",
+        variantId: v.variantId,
+        leaseToken,
+        conditions,
+      });
+
+    expect(await write("run-1", ["excellent"])).toBe(true);
+    expect(await write("run-1", ["near_mint", "excellent"])).toBe(true);
+    expect(await write("run-2", ["poor"])).toBe(false);
+    expect((await record(s, v.variantId))?.conditionsPushed).toEqual(["excellent", "near_mint"]);
+  });
+});
+
+describe("NEO-475: a sheet read BSC answers 503", () => {
+  type Answer = number | "timeout" | "ok";
+
+  /**
+   * Answers each sheet read from `script` in turn (then the fake sheet), and
+   * records every read's condition, failed ones too, and the most in flight.
+   */
+  function scriptSheets(bsc: FakeBsc, script: Answer[]) {
+    const asked: string[] = [];
+    const flight = { now: 0, max: 0 };
+    vi.stubGlobal("fetch", (async (url: string | URL | Request, init?: RequestInit) => {
+      if (String(url).endsWith("seller/bulk-upload/results")) {
+        flight.now += 1;
+        flight.max = Math.max(flight.max, flight.now);
+        try {
+          asked.push((JSON.parse(String(init?.body)) as { condition: string }).condition);
+          await new Promise((r) => setTimeout(r, 1));
+          const answer = script.shift() ?? "ok";
+          if (answer === "timeout") throw Object.assign(new Error("timed out"), { name: "TimeoutError" });
+          if (typeof answer === "number") return new Response("<html>Service Unavailable</html>", { status: answer });
+        } finally {
+          flight.now -= 1;
+        }
+      }
+      return await bsc.fetch(url, init);
+    }) as typeof fetch);
+    return { asked, flight };
+  }
+
+  /** An instant pause that records each wait. */
+  function pauses() {
+    const waited: number[] = [];
+    return { waited, pause: async (ms: number) => void waited.push(ms) };
+  }
+
+  const run = (s: S, pause: (ms: number) => Promise<void>) =>
+    drainOwnerImpl(stubCtx(s.t), { ownerId: OWNER, platform: "bsc" }, { pause });
+
+  test("503 then ok: the same sheet is read again after the first pause, one read at a time, and the run lists", async () => {
+    const s = await setup();
+    const { v, bsc } = await twoCards(s);
+    const { asked, flight } = scriptSheets(bsc, [503]);
+    const p = pauses();
+
+    const lines = await logLines(() => run(s, p.pause));
+
+    expect(p.waited).toEqual([BSC_SHEET_RETRY_PAUSES_MS[0]]);
+    expect(BSC_SHEET_RETRY_PAUSES_MS).toEqual([10_000, 30_000]);
+    // The 503'd near_mint again, then on to excellent; then the read-back.
+    expect(asked).toEqual(["near_mint", "near_mint", "excellent", "near_mint", "excellent"]);
+    expect(flight.max).toBe(1);
+    expect(await record(s, v.variantId)).toMatchObject({ status: "idle", counts: { listed: 2 } });
+    expect(bsc.qty("bsc-1", "near_mint")).toBe(1);
+
+    const retries = lines.filter((l) => l.msg === "bsc_sheet_retry");
+    expect(retries).toHaveLength(1);
+    expect(retries[0]).toMatchObject({ platform: "bsc", operation: "sheetRead", pauseMs: 10_000, attempt: 2, outcome: "ok" });
+    expect(Object.keys(retries[0]).sort()).toEqual(
+      ["attempt", "durationMs", "msg", "operation", "outcome", "pauseMs", "platform"].sort(),
+    );
+    const sheetCalls = lines.filter((l) => l.msg === "bsc_seller_call" && l.operation === "sheetRead");
+    expect(sheetCalls.slice(0, 3)).toEqual([
+      expect.objectContaining({ condition: "near_mint", attempt: 1, outcome: "http_error", httpStatus: 503 }),
+      expect.objectContaining({ condition: "near_mint", attempt: 2, outcome: "ok" }),
+      expect.objectContaining({ condition: "excellent", attempt: 1, outcome: "ok" }),
+    ]);
+  });
+
+  test("503 on every attempt: two retries, then the run fails in NB's words and sends nothing", async () => {
+    const s = await setup();
+    const { v, bsc } = await twoCards(s);
+    const { asked } = scriptSheets(bsc, [503, 503, 503, 503, 503]);
+    const p = pauses();
+
+    const lines = await logLines(() => run(s, p.pause));
+
+    expect(p.waited).toEqual([10_000, 30_000]);
+    expect(asked).toEqual(["near_mint", "near_mint", "near_mint"]);
+    expect(bsc.puts).toEqual([]);
+    const rec = await record(s, v.variantId);
+    expect(rec).toMatchObject({ status: "error", lastError: BSC_SELLER_COPY.busy });
+    expect(rec?.lastError).not.toMatch(/sheetRead|503/);
+    expect(await stepsOf(s, v.variantId)).toEqual(["read Mint/Near Mint: failed"]);
+    expect(lines.filter((l) => l.msg === "bsc_sheet_retry").map((l) => [l.pauseMs, l.attempt, l.outcome])).toEqual([
+      [10_000, 2, "http_503"],
+      [30_000, 3, "http_503"],
+    ]);
+  });
+
+  test("the pauses are shared by the whole read: a 503 on each of two sheets spends them, and the reads resume at the failed sheet", async () => {
+    const s = await setup();
+    const { v, bsc } = await twoCards(s);
+    // near_mint 503 then ok; excellent 503, 503: the second has no pause left.
+    const { asked } = scriptSheets(bsc, [503, "ok", 503, 503]);
+    const p = pauses();
+
+    await run(s, p.pause);
+
+    expect(p.waited).toEqual([10_000, 30_000]);
+    expect(asked).toEqual(["near_mint", "near_mint", "excellent", "excellent"]);
+    expect((await record(s, v.variantId))?.status).toBe("error");
+    expect(bsc.puts).toEqual([]);
+  });
+
+  test("the read-back has its own schedule: a 503 there is retried too", async () => {
+    const s = await setup();
+    const { v, bsc } = await twoCards(s);
+    // The two reads ok, then the first confirm 503.
+    const { asked } = scriptSheets(bsc, ["ok", "ok", 503]);
+    const p = pauses();
+
+    await run(s, p.pause);
+
+    expect(p.waited).toEqual([10_000]);
+    expect(asked).toEqual(["near_mint", "excellent", "near_mint", "near_mint", "excellent"]);
+    expect(await record(s, v.variantId)).toMatchObject({ status: "idle", counts: { listed: 2 } });
+  });
+
+  test.each([
+    [500, "BuySportsCards fumbled that one (error 500)."],
+    [502, "BuySportsCards fumbled that one (error 502)."],
+    ["timeout", BSC_SELLER_COPY.timeout],
+  ] as const)("%s is not retried: one read, no pause, the run fails", async (answer, message) => {
+    const s = await setup();
+    const { v, bsc } = await twoCards(s);
+    const { asked } = scriptSheets(bsc, [answer]);
+    const p = pauses();
+
+    const lines = await logLines(() => run(s, p.pause));
+
+    expect(p.waited).toEqual([]);
+    expect(asked).toEqual(["near_mint"]);
+    expect(await record(s, v.variantId)).toMatchObject({ status: "error", lastError: message });
+    expect(lines.filter((l) => l.msg === "bsc_sheet_retry")).toEqual([]);
+  });
+
+  test("a 401 takes the session's one refresh, never a pause; a refused refresh stops the drain with no pause", async () => {
+    const s = await setup();
+    const { v, bsc } = await twoCards(s);
+    bsc.unauthorized = 1;
+    const p = pauses();
+
+    await run(s, p.pause);
+
+    expect(p.waited).toEqual([]);
+    expect(creds.refreshCalls).toBe(1);
+    expect((await record(s, v.variantId))?.status).toBe("idle");
+
+    const s2 = await setup();
+    const two = await twoCards(s2);
+    two.bsc.unauthorized = 99;
+    creds.refreshed = false;
+    const p2 = pauses();
+    const report = await drainOwnerImpl(stubCtx(s2.t), { ownerId: OWNER, platform: "bsc" }, { pause: p2.pause });
+    expect(p2.waited).toEqual([]);
+    expect(report.stoppedFor).toBe("signedOut");
+    expect((await record(s2, two.v.variantId))?.status).toBe("error");
+  });
+
+  test("with no pause given, the retry waits the real first pause (and no retry list means no retry)", async () => {
+    const statuses = [503, 200];
+    let calls = 0;
+    vi.stubGlobal("fetch", (async () => {
+      calls += 1;
+      const status = statuses.shift() ?? 200;
+      return status === 200 ? Response.json([]) : new Response("", { status });
+    }) as typeof fetch);
+    const ctx = { runQuery: vi.fn(), runMutation: vi.fn(), runAction: vi.fn() } as unknown as DrainCtx;
+    const session: BscSellerSession = { ownerId: OWNER, token: "tok", reauthAttempted: false, dead: false };
+
+    vi.useFakeTimers({ toFake: ["setTimeout"] });
+    try {
+      const pending = readSheets(ctx, session, [{}], ["near_mint"], undefined, { pausesMs: BSC_SHEET_RETRY_PAUSES_MS });
+      let settled = false;
+      void pending.then(() => {
+        settled = true;
+      });
+      await vi.advanceTimersByTimeAsync(BSC_SHEET_RETRY_PAUSES_MS[0] - 1);
+      expect(calls).toBe(1);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(await pending).toMatchObject({ ok: true });
+      expect(calls).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+
+    statuses.push(503);
+    calls = 0;
+    expect(await readSheets(ctx, session, [{}], ["near_mint"])).toMatchObject({
+      ok: false,
+      failure: { kind: "http", httpStatus: 503 },
+    });
+    expect(calls).toBe(1);
+  });
+});
+
+describe("bscSheetSteps: sheets NB has no name for (defensive since NEO-475)", () => {
+  test("named sheets first in the order given, one per sheet; the unnamed ones last as one step", () => {
+    const r = bscSheetSteps("read", ["nm-mt", "ex", "fair", "nm", "ex"], "vintage");
+    expect(r.order).toEqual(["ex", "nm", "nm-mt", "fair"]);
+    expect(r.steps).toEqual([
+      { key: "read:ex", kind: "read", conditions: ["Excellent"] },
+      { key: "read:nm", kind: "read", conditions: ["Near Mint"] },
+      { key: "read:other", kind: "read" },
+    ]);
+    expect(r.keyOf("nm-mt")).toBe("read:other");
+    expect(r.keyOf("fair")).toBe("read:other");
+    expect(r.keyOf("ex")).toBe("read:ex");
+    // A key of the other era has no NB name in this one.
+    expect(bscSheetSteps("confirm", ["near_mint"], "vintage").steps).toEqual([{ key: "confirm:other", kind: "confirm" }]);
+    // No unnamed sheet, no unnamed step.
+    expect(bscSheetSteps("read", ["excellent"], "modern").steps).toEqual([
+      { key: "read:excellent", kind: "read", conditions: ["Excellent"] },
+    ]);
+  });
+
+  test("a stored pushed key NB has no name for is read last, as one unnamed step, and zeroed", async () => {
+    const s = await setup();
+    const { v, bsc } = await oneExcellent(s, { year: "1975", conditions: VINTAGE_KEYS });
+    await drain(s);
+    // A record holding a key no NB condition maps to in the era (not written by today's drain).
+    const rec = await record(s, v.variantId);
+    await s.t.run(async (ctx) => {
+      await ctx.db.patch(rec!._id, { conditionsPushed: ["ex", "nm-mt"] });
+    });
+    bsc.set("bsc-1", "nm-mt", { availableQuantity: 2, price: "1.00" });
+    bsc.sheetReads = [];
+    await queue(s, [{ cardId: v.cardIds[0], variantId: v.variantId, seq: 2 }]);
+
+    await drain(s);
+
+    expect(bsc.sheetReads.slice(0, 2).map((r) => r.condition)).toEqual(["ex", "nm-mt"]);
+    expect(bsc.qty("bsc-1", "nm-mt")).toBe(0);
+    expect((await stepsOf(s, v.variantId))?.slice(0, 2)).toEqual(["read Excellent: done", "read: done"]);
+    expect(JSON.stringify((await record(s, v.variantId))?.progress)).not.toMatch(/nm-mt/);
   });
 });

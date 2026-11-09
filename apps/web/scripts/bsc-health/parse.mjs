@@ -16,12 +16,17 @@
  * Emits records of these types (all carry `ts`, epoch ms, and `meta`):
  *   call_failed / call_summary        the NEO-475 structured lines
  *   adapter_sync_call                 platform "bsc" only
- *   seller_call                       `bsc_seller_call`
+ *   seller_call                       `bsc_seller_call` (a sheet read's `condition` and `attempt` too)
+ *   sheet_retry                       `bsc_sheet_retry`: a 503'd sheet read tried again
  *   limiter                           `marketplace_limiter` for BSC
  *   legacy_card_listing_failed        `card-listing fetch failed status=N`
  *   legacy_api_status / legacy_timeout  `BSC API 503 (attempt a/b)`, `... timed out`
  *   legacy_timeout_error              a bare `error=TimeoutError`
  *   completion                        a BSC action's Completion (executionMs)
+ *
+ * A log line's records also carry its `executionId` (one action run: a drain or
+ * a seller cleanup), so report.mjs can group sheet reads per job. Ids stay in
+ * the records; the report prints only counts.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -121,6 +126,8 @@ export function unwrapMessage(s) {
 }
 
 const num = (v) => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
+/** A BSC condition key or an outcome word: short, lower case, nothing else kept. */
+const word = (v) => (typeof v === "string" && /^[a-z0-9_-]{1,24}$/.test(v) ? v : undefined);
 
 /** One log line's text to zero or more records. */
 export function recordsFromText(text, ts) {
@@ -165,6 +172,18 @@ export function recordsFromText(text, ts) {
             operation: o.operation,
             outcome: o.outcome,
             httpStatus: num(o.httpStatus),
+            durationMs: num(o.durationMs),
+            condition: word(o.condition),
+            attempt: num(o.attempt),
+          });
+          break;
+        case "bsc_sheet_retry":
+          out.push({
+            type: "sheet_retry",
+            ts,
+            pauseMs: num(o.pauseMs),
+            attempt: num(o.attempt),
+            outcome: word(o.outcome),
             durationMs: num(o.durationMs),
           });
           break;
@@ -256,7 +275,7 @@ export async function parseLogs(inputs, opts = {}) {
           continue;
         }
         seen.add(key);
-        for (const rec of recs) push(rec);
+        for (const rec of recs) push(executionId ? { ...rec, executionId } : rec);
       }
     }
   }
