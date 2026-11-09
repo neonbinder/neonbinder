@@ -82,7 +82,7 @@ type SellOver = {
   shift?: "sell" | "move";
   homes?: readonly Container[];
   price?: { common: number | null | undefined } | "none";
-  onMove?: ReturnType<typeof vi.fn>;
+  onMove?: (toHomeId: string, quantity: number, minPrice?: number) => void;
 };
 function sellPanel({ copy: over = {}, shift = "sell", homes = [BOX], price = { common: null }, onMove = vi.fn() }: SellOver = {}) {
   return (
@@ -169,7 +169,7 @@ describe("MovePanel's Price field", () => {
   it("prefills the copy's own price over the common price", () => {
     render(sellPanel({ copy: { minPrice: 0.5 }, price: { common: 0.25 } }));
     expect(priceField().value).toBe("0.50");
-    expect(screen.getByText("This card's own price.")).toBeTruthy();
+    expect(screen.getByText("This card's own price. Your common price is $0.25.")).toBeTruthy();
   });
 
   it("a common price that arrives after the panel opened fills the field without remounting it", () => {
@@ -196,11 +196,31 @@ describe("MovePanel's Price field", () => {
     const onMove = vi.fn();
     render(sellPanel({ onMove }));
     expect(priceField().value).toBe("");
-    expect(screen.getByText("No common price for this card yet. Give it a price to put it up for sale.")).toBeTruthy();
+    expect(screen.getByText("No common price on this one yet. Name your price to put it up for sale.")).toBeTruthy();
     expect(sell().getAttribute("aria-disabled")).toBe("true");
+    // Before a try, the submit points at the help; no error yet.
+    expect(document.getElementById(sell().getAttribute("aria-describedby") ?? "")?.textContent).toMatch(/^No common price/);
+    expect(priceField().hasAttribute("aria-invalid")).toBe(false);
     fireEvent.submit(form());
     fireEvent.click(sell());
     expect(onMove).not.toHaveBeenCalled();
+    // The refused submit says why, marks the field and puts the keyboard there.
+    expect(screen.getByRole("alert").textContent).toBe("Give it a price, like 1.50.");
+    expect(priceField().getAttribute("aria-invalid")).toBe("true");
+    expect(document.activeElement).toBe(priceField());
+    expect(document.getElementById(sell().getAttribute("aria-describedby") ?? "")?.textContent).toBe(
+      "Give it a price, like 1.50.",
+    );
+  });
+
+  it("a stack's help says these N, and its own price is these cards'", () => {
+    const { unmount } = render(sellPanel({ copy: { quantity: 3 }, price: { common: 0.25 } }));
+    expect(
+      screen.getByText("Your common price, $0.25. Change it to price just these 3; your common price stays put."),
+    ).toBeTruthy();
+    unmount();
+    render(sellPanel({ copy: { quantity: 3, minPrice: 0.5 }, price: { common: null } }));
+    expect(screen.getByText("These cards' own price.")).toBeTruthy();
   });
 
   it.each([["abc"], ["1.234"]])("%s shows the dollars-and-cents error and blocks the submit", (text) => {
@@ -218,7 +238,7 @@ describe("MovePanel's Price field", () => {
     const onMove = vi.fn();
     render(sellPanel({ onMove }));
     typePrice("100000000.01");
-    expect(screen.getByText(/past the \$100,000,000\.00 limit/)).toBeTruthy();
+    expect(screen.getByText("Whoa, that's past the $100,000,000.00 cap.")).toBeTruthy();
     fireEvent.submit(form());
     expect(onMove).not.toHaveBeenCalled();
   });
@@ -227,7 +247,7 @@ describe("MovePanel's Price field", () => {
     const onMove = vi.fn();
     render(sellPanel({ price: { common: 0.25 }, onMove }));
     typePrice("");
-    expect(screen.getByText("Give it a price, like 1.50.")).toBeTruthy();
+    expect(screen.getByText("Blank won't sell. Put back $0.25 or name your own price.")).toBeTruthy();
     fireEvent.submit(form());
     expect(onMove).not.toHaveBeenCalled();
   });

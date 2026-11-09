@@ -1241,24 +1241,32 @@ export function MovePanel({
   const priceShown = typed ?? (typeof prefill === "number" ? prefill.toFixed(2) : "");
   const priceLoading = pricing && prefill === undefined;
   const sale = pricing ? sellPriceToStore(priceShown, prefill) : null;
+  const common = typeof price?.common === "number" ? `$${price.common.toFixed(2)}` : null;
+  // How many go, for the help's "this card" / "these 3".
+  const going = valid ? quantity : copy.quantity;
+  // A submit the price refused: from then on a blank field says so too.
+  const [refused, setRefused] = useState(false);
+  const priceRef = useRef<HTMLInputElement>(null);
   const priceError =
     !sale || sale.ok
       ? null
       : sale.reason === "invalid"
         ? "Dollars and cents, like 1.50."
         : sale.reason === "tooHigh"
-          ? "That's past the $100,000,000.00 limit."
-          : // A blank field with nothing to fall back on is what the help already asks for.
-            typed !== null && typeof prefill === "number"
-            ? "Give it a price, like 1.50."
-            : null;
+          ? "Whoa, that's past the $100,000,000.00 cap."
+          : // Blank: untouched with nothing to fall back on, the help already asks for a price.
+            typed === null && !refused
+            ? null
+            : common
+              ? `Blank won't sell. Put back ${common} or name your own price.`
+              : "Give it a price, like 1.50.";
   const priceHelp =
     copy.minPrice !== undefined
-      ? "This card's own price."
-      : typeof price?.common === "number"
-        ? `Your common price, $${price.common.toFixed(2)}. Change it to price just this card; your common price stays put.`
+      ? `${going > 1 ? "These cards' own price." : "This card's own price."}${common ? ` Your common price is ${common}.` : ""}`
+      : common
+        ? `Your common price, ${common}. Change it to price just ${going > 1 ? `these ${going}` : "this card"}; your common price stays put.`
         : price?.common === null
-          ? "No common price for this card yet. Give it a price to put it up for sale."
+          ? "No common price on this one yet. Name your price to put it up for sale."
           : "Looking up your common price…";
   const ready = valid && !!to && !priceLoading && (!sale || sale.ok);
 
@@ -1271,6 +1279,13 @@ export function MovePanel({
 
   const submit = (e: FormEvent) => {
     e.preventDefault();
+    if (sale && !sale.ok && !priceLoading) {
+      // Refused for the price: say why and put the keyboard where the fix is.
+      // (While the common price loads the submit just waits; it may fill the field.)
+      setRefused(true);
+      priceRef.current?.focus();
+      return;
+    }
     if (!ready) return;
     const minPrice = sale?.ok ? sale.minPrice : undefined;
     if (minPrice === undefined) onMove(to, quantity);
@@ -1345,6 +1360,7 @@ export function MovePanel({
                 $
               </span>
               <Input
+                ref={priceRef}
                 bare
                 type="text"
                 inputMode="decimal"
@@ -1353,13 +1369,14 @@ export function MovePanel({
                 onChange={(e) => setTyped(e.target.value)}
                 aria-invalid={priceError ? true : undefined}
                 aria-describedby={priceError ? `${priceErrorId} ${priceHelpId}` : priceHelpId}
-                className="w-full py-2 pr-3 pl-7 text-base tabular-nums"
+                // `aria-invalid:` (class + attribute) outranks the primitive's own edge colour.
+                className="w-full py-2 pr-3 pl-7 text-base tabular-nums aria-invalid:border-neon-yellow-text"
               />
             </span>
           </label>
           <div className="text-xs sm:pt-7">
-            {/* Always there, so a screen reader hears the error the moment it shows. */}
-            <p id={priceErrorId} aria-live="polite" className="mb-1 text-neon-yellow-text empty:hidden">
+            {/* Always rendered (an alert added already full may go unheard); empty, it takes no room. */}
+            <p id={priceErrorId} role="alert" className={`text-neon-yellow-text ${priceError ? "mb-1" : ""}`}>
               {priceError}
             </p>
             <p id={priceHelpId} className="text-ink-3">
@@ -1384,6 +1401,8 @@ export function MovePanel({
           size="1"
           aria-disabled={!ready || undefined}
           aria-busy={priceLoading || undefined}
+          // Why it waits on the price: the error, else what the help says (loading, or none set).
+          aria-describedby={pricing ? (priceError ? priceErrorId : priceHelpId) : undefined}
           className="max-sm:min-h-11"
         >
           {words.go(stack && valid ? quantity : null)}
