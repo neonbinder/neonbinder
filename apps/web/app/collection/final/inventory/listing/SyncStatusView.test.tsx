@@ -336,6 +336,14 @@ describe("the Sync status screen", () => {
     expect(setLine(set({ status: "error", lastError: "eBay took too long to answer. Try again in a bit.", lastRunAt: undefined }), "ebay")).toBe(
       "Hit a snag: eBay took too long to answer. Try again in a bit. The next round tries again.",
     );
+    expect(setLine(set({ status: "error", lastError: "x.. ", lastRunAt: undefined }), "bsc")).toBe(
+      "Hit a snag: x. The next round tries again.",
+    );
+    for (const lastError of ["", "  ", ". ."]) {
+      expect(setLine(set({ status: "error", lastError, lastRunAt: undefined }), "bsc")).toBe(
+        "Hit a snag: BuySportsCards didn't answer. The next round tries again.",
+      );
+    }
     expect(countsLine({ listed: 0, pushed: 0, zeroed: 0, skipped: 2 })).toBe("0 listed, 2 skipped");
     expect(countsLine(undefined)).toBeNull();
     expect(platformState(bsc()).word).toBe("Listing");

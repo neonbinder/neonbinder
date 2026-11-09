@@ -612,8 +612,9 @@ export function setLine(set: SyncSetResult, platform: ListingPlatform): string {
   if (set.status === "running") return "Syncing now…";
   if (set.status === "error") {
     const when = set.lastRunAt ? ` ${whenSynced(set.lastRunAt)}` : "";
-    // NB's error sentences end in their own full stop; drop it before ours.
-    const why = (set.lastError ?? `${name} didn't answer`).replace(/[.\s]+$/, "");
+    // NB's error sentences end in their own full stop; drop it before ours. An
+    // empty (or dots-only) error falls back like a missing one.
+    const why = (set.lastError ?? "").replace(/[.\s]+$/, "") || `${name} didn't answer`;
     return `Hit a snag${when}: ${why}. The next round tries again.`;
   }
   if (set.lastSuccessAt) return `Synced ${whenSynced(set.lastSuccessAt)}.`;

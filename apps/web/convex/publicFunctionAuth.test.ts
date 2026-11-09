@@ -2986,6 +2986,7 @@ describe("NEO-415: eBay connection surface", () => {
     ["credentials.ts", "disconnectEbayAndWithdraw", "internalAction"],
     ["credentials.ts", "verifyEbayNotification", "internalAction"],
     ["listingDrainEbay.ts", "recordEbayLinks", "internalMutation"],
+    ["listingDrain.ts", "recordConditionsPushed", "internalMutation"],
   ])("%s :: %s is declared %s", (file, fn, kind) => {
     const src = readFileSync(join(__dirname, file), "utf8");
     expect(src).toContain(`export const ${fn} = ${kind}({`);
