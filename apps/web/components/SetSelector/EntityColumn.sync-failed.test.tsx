@@ -13,7 +13,7 @@
 
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import React from "react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../convex/_generated/api", () => ({
   api: {
@@ -630,6 +630,109 @@ describe("EntityColumn — focus after a sync ends (NEO-450 a11y)", () => {
     expect(document.activeElement).toBe(
       screen.getByRole("button", { name: "Sync Years" }),
     );
+  });
+
+  // Chromium fires `focusout` (relatedTarget null) on a focused node as React
+  // removes it; happy-dom fires nothing. This emulates the browser so the
+  // unmount-while-focused path is exercised the way it runs for real.
+  let focusoutOnRemove = 0;
+  const realRemoveChild = Node.prototype.removeChild;
+  function emulateChromiumFocusoutOnRemove() {
+    focusoutOnRemove = 0;
+    Node.prototype.removeChild = function patched<T extends Node>(
+      this: Node,
+      child: T,
+    ): T {
+      const active = document.activeElement;
+      if (active && active !== document.body && child.contains(active)) {
+        focusoutOnRemove += 1;
+        active.dispatchEvent(
+          new FocusEvent("focusout", { bubbles: true, relatedTarget: null }),
+        );
+      }
+      return realRemoveChild.call(this, child) as T;
+    };
+  }
+  afterEach(() => {
+    Node.prototype.removeChild = realRemoveChild;
+  });
+
+  it("emulation: the Sync button's removal fires a null-relatedTarget focusout", async () => {
+    emulateChromiumFocusoutOnRemove();
+    const view = renderYears();
+    await syncFromTheButton(view);
+    expect(focusoutOnRemove).toBeGreaterThan(0);
+  });
+
+  it("parks focus on the column container, not <body>, when the focused Sync button unmounts", async () => {
+    emulateChromiumFocusoutOnRemove();
+    const view = renderYears();
+    const sync = screen.getByRole("button", { name: "Sync Years" });
+    const container = sync.closest('[tabindex="-1"]');
+    expect(container).not.toBeNull();
+    await syncFromTheButton(view);
+
+    expect(focusoutOnRemove).toBeGreaterThan(0);
+    expect(document.activeElement).toBe(container);
+  });
+
+  it("returns focus to the Sync button when a retry fails, even as Chromium fires focusout on unmount", async () => {
+    emulateChromiumFocusoutOnRemove();
+    const view = renderYears();
+    await syncFromTheButton(view);
+    expect(focusoutOnRemove).toBeGreaterThan(0);
+
+    state.status = FAILED;
+    view.rerender(yearsColumn());
+
+    const sync = screen.getByRole("button", { name: "Sync Years" });
+    expect(document.activeElement).toBe(sync);
+    expect(sync.getAttribute("aria-describedby")).toBe(expectFreshFailure().id);
+  });
+
+  it("returns focus to the Sync button when a retry succeeds, even as Chromium fires focusout on unmount", async () => {
+    emulateChromiumFocusoutOnRemove();
+    mockEnsure.mockResolvedValue({
+      ran: true,
+      reason: "synced",
+      skippedSides: [],
+      pausedSides: [],
+    });
+    const view = renderYears();
+    await syncFromTheButton(view);
+    expect(focusoutOnRemove).toBeGreaterThan(0);
+
+    state.status = { status: "done" };
+    view.rerender(yearsColumn());
+
+    expect(document.activeElement).toBe(
+      screen.getByRole("button", { name: "Sync Years" }),
+    );
+  });
+
+  it("never pulls focus back after the operator blurred the button while the node was still connected", async () => {
+    emulateChromiumFocusoutOnRemove();
+    const view = renderYears();
+    const sync = screen.getByRole("button", { name: "Sync Years" });
+    sync.focus();
+    expect(document.activeElement).toBe(sync);
+    await act(async () => {
+      fireEvent.click(sync);
+    });
+    // Focus leaves to <body> while the button is still in the document.
+    sync.blur();
+    expect(sync.isConnected).toBe(true);
+    expect(document.activeElement).toBe(document.body);
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    state.status = { status: "syncing" };
+    view.rerender(yearsColumn());
+    state.status = FAILED;
+    view.rerender(yearsColumn());
+
+    expect(document.activeElement).toBe(document.body);
   });
 
   it("never steals focus the operator moved elsewhere in the column meanwhile", async () => {

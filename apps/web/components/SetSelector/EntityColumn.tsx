@@ -852,13 +852,22 @@ export default function EntityColumn({
     const onFocusIn = () => {
       hadFocusInsideRef.current = true;
     };
+    // Chromium dispatches focusout (relatedTarget null) on a focused node that
+    // is being removed, while it is still attached; happy-dom fires nothing.
+    // That removal is exactly the branch swap this ref exists to remember, so
+    // a null relatedTarget is decided after the removal settles: a node that
+    // left the DOM under focus still counts as ours.
     const onFocusOut = (event: FocusEvent) => {
-      // A node UNMOUNTING while focused does not reliably fire focusout, which
-      // is exactly the case this ref exists to remember — so absence of the
-      // event has to mean "still ours". Only a focusout that names a new home
-      // outside the column clears it.
       const next = event.relatedTarget;
-      hadFocusInsideRef.current = !!next && next instanceof Node && el.contains(next);
+      if (next instanceof Node) {
+        hadFocusInsideRef.current = el.contains(next);
+        return;
+      }
+      const left = event.target;
+      queueMicrotask(() => {
+        if (left instanceof Node && !left.isConnected) return; // unmounted under focus: still ours
+        hadFocusInsideRef.current = el.contains(document.activeElement);
+      });
     };
     el.addEventListener("focusin", onFocusIn);
     el.addEventListener("focusout", onFocusOut);
