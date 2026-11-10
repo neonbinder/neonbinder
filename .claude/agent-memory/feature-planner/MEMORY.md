@@ -43,4 +43,5 @@
 - [Open-if-visible races the selection change](open-if-visible-races-the-selection-change.md) — panel returns null mid-selection, click skipped; gate on the new heading; blob steps prove it
 - [Player match panels: fixture + stored text](player-match-panels-fixture-and-stored-text.md) — prove NearMatchPanel on /admin/players, not the wizard; careerSummary is stored text
 - [Teamless-rows checklist red = BSC lookup stall](checklist-team-spec-red-with-teamless-rows-is-a-bsc-lookup-stall.md) — every row teamless after Saved N = `bsc_card_team_lookup_failures` failed==requested; rerun, not the PR
+- [BSC cold sheet read is per job](bsc-cold-sheet-read-is-per-job-not-per-condition.md) — first read 503s at 30 s whatever the condition; fewer sheets needs a 503-only serial retry beside it
 - [Photo changes reach eBay, not BSC](photo-changes-reach-ebay-not-bsc.md) — eBay re-uploads on a new photoToken; BSC never replaces a set seller photo; scan outputs write-once; no originals kept, 1600 max
