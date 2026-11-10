@@ -35,9 +35,16 @@ import { api } from "@/convex/_generated/api";
 // run's Add cards screen. `redirect` is ignored in that mode: the run id is
 // only known once the seed returns.
 //
+// NEO-440: `&view=placeholders` opens the same seeded batch on the placeholder
+// intake page instead, where one failed photo is the `waiting` stage.
+//
 // NEO-427: `?savedPhotoFailure=scanGone|unusable|error` seeds a run with one
 // saved card whose scans failed to reach its copy
 // (`seedMyTestSavedPhotoFailureRun`), and lands on that run the same way.
+//
+// NEO-441: `?loosePhotos=1` seeds a run holding four read photos that no pair
+// claims (`seedMyTestLoosePhotosRun`: loose-1.jpg to loose-4.jpg), so the
+// Pairing column's pair-by-hand button can be driven, and lands on that run.
 //
 // Only functional when VITE_CLERK_TESTING_ENABLED=true; the mutations also fail
 // closed on production Convex (no TESTING_RESET_SECRET there).
@@ -54,10 +61,13 @@ function TestingSeedPlaceholderRunContent() {
   const seedRun = useMutation(api.testing.seedMyTestPlaceholderStream);
   const seedFailedPhoto = useMutation(api.testing.seedMyTestFailedPhotoRun);
   const seedSavedPhotoFailure = useMutation(api.testing.seedMyTestSavedPhotoFailureRun);
+  const seedLoosePhotos = useMutation(api.testing.seedMyTestLoosePhotosRun);
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const redirect = searchParams.get("redirect") || "/pipeline-runs";
   const failedPhoto = searchParams.get("failedPhoto") === "1";
+  const loosePhotos = searchParams.get("loosePhotos") === "1";
+  const placeholdersView = searchParams.get("view") === "placeholders";
   const savedPhotoFailure = searchParams.get("savedPhotoFailure");
   const [status, setStatus] = useState("Initializing...");
   const ranRef = useRef(false);
@@ -95,6 +105,16 @@ function TestingSeedPlaceholderRunContent() {
         if (failedPhoto) {
           const seeded = await seedFailedPhoto();
           setStatus(`Seeded ${seeded.originalName} — redirecting...`);
+          navigate(
+            placeholdersView
+              ? `/print/placeholders?jobId=${encodeURIComponent(seeded.jobId)}`
+              : `/collection?tab=add&run=${encodeURIComponent(seeded.runId)}`,
+          );
+          return;
+        }
+        if (loosePhotos) {
+          const seeded = await seedLoosePhotos();
+          setStatus("Seeded loose photos — redirecting...");
           navigate(`/collection?tab=add&run=${encodeURIComponent(seeded.runId)}`);
           return;
         }
@@ -116,11 +136,14 @@ function TestingSeedPlaceholderRunContent() {
     failedPhoto,
     isAuthenticated,
     isLoading,
+    loosePhotos,
     navigate,
+    placeholdersView,
     redirect,
     resetSessions,
     savedPhotoFailure,
     seedFailedPhoto,
+    seedLoosePhotos,
     seedRun,
     seedSavedPhotoFailure,
   ]);

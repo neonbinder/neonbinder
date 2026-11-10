@@ -239,11 +239,24 @@ import {
   normalizePlayerName,
   playerBelongsToSport,
   sameNamePlayers,
+  // NEO-463 — the commit's backstop for a one-word name.
+  nameFragmentMatches,
 } from "./players";
 import {
   loadPlayerAnswers,
   MAX_STORED_NAME_ANSWERS,
 } from "./checklistNameResolutions";
+// NEO-424 — what the set (and the same product a year earlier) already
+// decided about a name. See convex/setHistory.ts.
+import {
+  NAMESAKE_NAMES_PER_CALL,
+  SET_HISTORY_IDS_PER_CALL,
+  onlyId,
+  scanSetHistory,
+  setHistoryTeamKeys,
+  setHistoryVerdict,
+  type SetHistory,
+} from "./setHistory";
 // NEO-313 — the derived player → cards index. Every `cardChecklist.playerIds`
 // writer and every card delete in this file goes through these two; see
 // convex/cardPlayerLinks.ts and `cardPlayerLinks.pin.test.ts`.
@@ -1323,6 +1336,14 @@ async function resolveUnknownsAndStartBatch(
   unknownTeams: string[];
   ambiguousPlayers: string[];
   batchId?: string;
+  /**
+   * NEO-424 (D4) — how many decided auto-link rows (players and teams
+   * together) the batch was started with. Those names are in neither unknown
+   * list, so a batch holding only auto-links would otherwise look like
+   * "nothing to review" to the client and be committed unseen. 0 when no
+   * batch was started.
+   */
+  autoLinkedCount: number;
 }> {
   const unknownPlayers: string[] = [];
   const unknownTeams: string[] = [];
@@ -1333,6 +1354,12 @@ async function resolveUnknownsAndStartBatch(
    * every one of them to the batch exactly as before; this list only lets the
    * sync banner stop counting them as "new players", because the operator's
    * job for these is to pick one from the roster, not to create anyone.
+   *
+   * NEO-424 — also the names this set has already linked to two or more
+   * players (a set-history pick). Those are in `unknownPlayers` for the
+   * banner but reach the batch through `historyCandidates`, not `playerNames`.
+   * Names set history or the Hall of Fame tie-break auto-linked are in
+   * neither list: the banner counts them as known.
    */
   const ambiguousPlayers: string[] = [];
   /**
@@ -1470,6 +1497,72 @@ async function resolveUnknownsAndStartBatch(
     playerId: Id<"players">;
   }> = [];
 
+  /**
+   * NEO-424 — what this set's committed cards already say about these names
+   * (rule A) and teams (rule F). See convex/setHistory.ts.
+   *
+   * Scanned once per gate, before any name is looked up, because set history
+   * OUTRANKS the in-sport lookup and so has to be in hand when each name is
+   * decided. An incomplete scan (a cap was reached) is not used at all —
+   * `historyPlayers` is then empty and every name takes today's path.
+   * Skipped entirely when there are no names to ask about.
+   */
+  const historyStartedAt = Date.now();
+  const history: SetHistory | null =
+    playerByNorm.size > 0 || teamByNorm.size > 0
+      ? await scanSetHistory(ctx, {
+          selectorOptionId: args.selectorOptionId,
+        })
+      : null;
+  if (history) {
+    // Ids and counts only, never a name.
+    console.log(
+      JSON.stringify({
+        msg: "set_history_scan",
+        selectorOptionId: args.selectorOptionId,
+        complete: history.complete,
+        nodes: history.stats.nodes,
+        calls: history.stats.calls,
+        names: history.playersByName.size,
+        teams: history.teamIds.size,
+        durationMs: Date.now() - historyStartedAt,
+      }),
+    );
+  }
+  const historyPlayers: Map<string, Set<string>> = history?.complete
+    ? history.playersByName
+    : new Map();
+
+  /**
+   * NEO-424 — player names decided WITHOUT a wizard step but shown in the
+   * wizard's Decided list, where the operator can Change them: a set-history
+   * link (rule A) or a Hall of Fame tie-break (rule D). Their row's sport is
+   * filled in below, once every linked player's home sport has been read in
+   * one bounded pass (plan decision D2).
+   */
+  const pendingPlayerLinks: Array<{
+    name: string;
+    playerId: Id<"players">;
+    origin: "setHistory" | "hallOfFame";
+    candidatePlayerIds: Array<Id<"players">>;
+  }> = [];
+  /**
+   * NEO-424 — names this set has linked to two or more players: a pick step
+   * between exactly those (rule A). They count as unknown (and ambiguous) for
+   * the banner, but they are NOT ordinary rows: `startBatch` inserts them from
+   * this list, ready, with no lookup.
+   */
+  // One line, so the NEO-254 `playerIds`-write pin does not read this type as
+  // a card write (cardChecklist.playerLinksPin.test.ts).
+  const historyCandidates: Array<{ name: string; playerIds: Array<Id<"players">> }> = [];
+  /**
+   * NEO-424 — the player names `startBatch` inserts as ordinary rows: every
+   * unknown name except the history picks above, which have rows of their own.
+   */
+  const queuedPlayerNames: string[] = [];
+  /** NEO-424 — `matchCount` per queued name, for the rule-E2 preselect. */
+  const matchCountByName = new Map<string, number>();
+
   for (const [normalized, name] of playerByNorm) {
     if (skippedKeys.has(`player:${normalized}`)) continue;
     const cardTeamNames = cardTeamNamesFor(normalized);
@@ -1492,6 +1585,12 @@ async function resolveUnknownsAndStartBatch(
      *                to the wizard, where `enrichment.existingCandidates`
      *                puts the matching rows in front of them for a one-click
      *                link.
+     *
+     * NEO-424 — and set history decides FIRST (`setHistoryVerdict`). The
+     * lookup is still asked, because its answer decides whether history needs
+     * a row at all: when both name the same single player the name takes
+     * today's path silently (D3), and only a history answer the lookup did not
+     * reach becomes a visible decided row.
      */
     const resolved = await ctx.runQuery(internal.players.resolveNameForReview, {
       name,
@@ -1505,6 +1604,26 @@ async function resolveUnknownsAndStartBatch(
       ...(setYear !== undefined ? { cardYear: setYear } : {}),
       ...(cardTeamNames.length > 0 ? { cardTeamNames } : {}),
     });
+    const verdict = setHistoryVerdict(resolved, historyPlayers.get(normalized));
+    if (verdict.kind === "autoLink") {
+      pendingPlayerLinks.push({
+        name,
+        playerId: verdict.playerId,
+        origin: "setHistory",
+        candidatePlayerIds: verdict.candidatePlayerIds,
+      });
+      // NEO-335 — the title context speaks for the gate's answer, which is
+      // now the history player.
+      args.resolvedNames?.playerIdByNorm.set(normalized, verdict.playerId);
+      continue;
+    }
+    if (verdict.kind === "pick") {
+      historyCandidates.push({ name, playerIds: verdict.playerIds });
+      unknownPlayers.push(name);
+      ambiguousPlayers.push(name);
+      continue;
+    }
+    // `none` or `agrees`: today's path, exactly as before NEO-424.
     // NEO-335 — recorded for the title context. A no-op when not asked for.
     if (resolved.playerId) {
       args.resolvedNames?.playerIdByNorm.set(normalized, resolved.playerId);
@@ -1520,6 +1639,8 @@ async function resolveUnknownsAndStartBatch(
     // person once the year is taken into account.
     if (!resolved.playerId) {
       unknownPlayers.push(name);
+      queuedPlayerNames.push(name);
+      matchCountByName.set(name, resolved.matchCount);
       // NEO-296 — and whether it matched nothing at all, which is the common
       // case on a first sync and is what lets `startBatch` skip its own
       // lookup. `matchCount` is the count BEFORE any year narrowing, so zero
@@ -1529,6 +1650,30 @@ async function resolveUnknownsAndStartBatch(
       // two or more rows of that name, and no single one survived the card's
       // year and team. Reported, never acted on — matching is unchanged.
       if (resolved.matchCount >= 2) ambiguousPlayers.push(name);
+    } else if (resolved.narrowedBy === "hallOfFame" && verdict.kind === "none") {
+      /*
+       * NEO-424 — rule D, the Hall of Fame tie-break, as a VISIBLE link.
+       *
+       * Nobody of this name was active in the set's year, exactly one of them
+       * is a Hall of Famer, and no rival played for a team the card names.
+       * That is usually the right answer (a legend's insert in a modern set),
+       * but it is a weaker kind of evidence than a year or a printed team, so
+       * unlike the card-year narrowing below it is never silent: it becomes a
+       * decided row the operator sees and can Change. When set history named
+       * the same player (`agrees`) the history is the reason, and the name is
+       * silent like any other agreement.
+       */
+      pendingPlayerLinks.push({
+        name,
+        playerId: resolved.playerId,
+        origin: "hallOfFame",
+        candidatePlayerIds: [
+          resolved.playerId,
+          ...(resolved.candidatePlayerIds ?? []).filter(
+            (id) => id !== resolved.playerId,
+          ),
+        ],
+      });
     } else if (resolved.narrowedByCardYear) {
       /*
        * NEO-254 — an auto-link the OPERATOR never saw.
@@ -1539,11 +1684,14 @@ async function resolveUnknownsAndStartBatch(
        * the right call far more often than it is not, but it is still an
        * inference, and the day it goes wrong the only question that matters is
        * "which cards did this happen to". So it leaves a trace naming the row
-       * chosen, the set it happened in, and the name — enough to find every
-       * affected card and to re-run the decision by hand.
+       * chosen and the set it happened in — enough to find every affected
+       * card and to re-run the decision by hand.
        *
-       * The NAME is safe to log: it is a checklist string off a marketplace
-       * payload, not anything a user typed about themselves.
+       * NEO-424 (security audit) — ids only: `playerId` and the set identify
+       * the name, so the checklist string itself is no longer logged.
+       *
+       * NEO-424 — `narrowedBy` says which narrowing it was; a Hall of Fame
+       * answer reaches this line only when set history named the same player.
        */
       console.log(
         JSON.stringify({
@@ -1551,14 +1699,31 @@ async function resolveUnknownsAndStartBatch(
           selectorOptionId: args.selectorOptionId,
           sportId: args.sportId,
           setYear,
-          name,
           playerId: resolved.playerId,
           matchCount: resolved.matchCount,
           usedCardTeamNames: cardTeamNames.length > 0,
+          narrowedBy: resolved.narrowedBy ?? "cardYear",
+          setHistoryAgreed: verdict.kind === "agrees",
         }),
       );
     }
   }
+
+  /**
+   * NEO-424 — team names the set's history resolved (rule F): a printed team
+   * name `findByNameAndSport` could not resolve, which exactly one team on the
+   * set's committed cards answers to (full name, nickname or alias). Never a
+   * team derived from a player's career, and two history teams under one name
+   * leave it unknown.
+   */
+  const teamAutoLinks: Array<{
+    kind: "team";
+    name: string;
+    teamId: Id<"teams">;
+    rowSportId: Id<"selectorOptions">;
+    origin: "setHistory";
+  }> = [];
+  const unresolvedTeams: Array<{ normalized: string; name: string }> = [];
   for (const [normalized, name] of teamByNorm) {
     if (skippedKeys.has(`team:${normalized}`)) continue;
     const existing = await ctx.runQuery(api.teams.findByNameAndSport, {
@@ -1575,9 +1740,211 @@ async function resolveUnknownsAndStartBatch(
        */
       ...(setYear !== undefined ? { setYear } : {}),
     });
-    if (!existing) unknownTeams.push(name);
+    if (!existing) unresolvedTeams.push({ normalized, name });
     // NEO-335 — recorded for the title context, under the gate's own key.
     else args.resolvedNames?.teamNameByNorm.set(normalized, teamFullName(existing));
+  }
+  const historyTeams =
+    unresolvedTeams.length > 0 && history?.complete && history.teamIds.size > 0
+      ? await setHistoryTeamKeys(ctx, history.teamIds)
+      : null;
+  for (const { normalized, name } of unresolvedTeams) {
+    const teamId = historyTeams ? onlyId(historyTeams.teamsByKey.get(normalized)) : undefined;
+    const team = teamId ? historyTeams!.teamById.get(teamId) : undefined;
+    if (teamId && team) {
+      teamAutoLinks.push({
+        kind: "team",
+        name,
+        teamId: teamId as Id<"teams">,
+        rowSportId: team.sportId,
+        origin: "setHistory",
+      });
+      args.resolvedNames?.teamNameByNorm.set(normalized, team.fullName);
+      continue;
+    }
+    unknownTeams.push(name);
+  }
+
+  /**
+   * NEO-424 — rule E, PRESELECTS for names still unknown: a default the
+   * operator confirms, never a link. E1 (the same product one year earlier
+   * linked the name to exactly one player) outranks E2 (exactly one player in
+   * any sport answers to a name nobody in the set's sport does).
+   */
+  const preselects: Array<{
+    name: string;
+    playerId: Id<"players">;
+    sportId: Id<"selectorOptions">;
+    sportValue: string;
+    reason: "priorYearProduct" | "onlyNamesake";
+  }> = [];
+  const priorYearPick = new Map<string, Id<"players">>();
+  if (queuedPlayerNames.length > 0) {
+    const priorProductId = await ctx.runQuery(
+      internal.setHistory.findPriorYearProduct,
+      { selectorOptionId: args.selectorOptionId },
+    );
+    if (priorProductId) {
+      const prior = await scanSetHistory(ctx, {
+        selectorOptionId: priorProductId,
+      });
+      if (prior.complete) {
+        for (const name of queuedPlayerNames) {
+          const id = onlyId(prior.playersByName.get(normalizePlayerName(name)));
+          if (id) priorYearPick.set(name, id as Id<"players">);
+        }
+      }
+      console.log(
+        JSON.stringify({
+          msg: "prior_year_product_scan",
+          selectorOptionId: args.selectorOptionId,
+          priorProductId,
+          complete: prior.complete,
+          nodes: prior.stats.nodes,
+          calls: prior.stats.calls,
+          preselected: priorYearPick.size,
+        }),
+      );
+    }
+    // E2 only asks about names that matched nobody in the set's sport: a name
+    // with two or more in-sport rows has two or more namesakes in all sports.
+    const namesakeKeys = Array.from(
+      new Set(
+        queuedPlayerNames
+          .filter((name) => !priorYearPick.has(name) && matchCountByName.get(name) === 0)
+          .map((name) => normalizePlayerName(name))
+          .filter((key) => key.length > 0),
+      ),
+    );
+    const namesakeByKey = new Map<
+      string,
+      { playerId: Id<"players">; sportId: Id<"selectorOptions">; sportValue: string }
+    >();
+    for (let start = 0; start < namesakeKeys.length; start += NAMESAKE_NAMES_PER_CALL) {
+      for (const row of await ctx.runQuery(internal.setHistory.findOnlyNamesakes, {
+        names: namesakeKeys.slice(start, start + NAMESAKE_NAMES_PER_CALL),
+      })) {
+        namesakeByKey.set(row.nameNormalized, row);
+      }
+    }
+    for (const name of queuedPlayerNames) {
+      if (priorYearPick.has(name)) continue;
+      const row = namesakeByKey.get(normalizePlayerName(name));
+      if (!row) continue;
+      preselects.push({
+        name,
+        playerId: row.playerId,
+        sportId: row.sportId,
+        sportValue: row.sportValue,
+        reason: "onlyNamesake",
+      });
+    }
+  }
+
+  /*
+   * NEO-424 (D2) — every auto-linked player's row carries HIS home sport, and
+   * a prior-year preselect names his sport too. One bounded pass over the
+   * distinct ids. A player deleted since the scan cannot be linked: that name
+   * falls back to an ordinary review row, never to a guess.
+   */
+  const idsNeedingSport = Array.from(
+    new Set([
+      ...pendingPlayerLinks.map((link) => link.playerId),
+      ...priorYearPick.values(),
+    ]),
+  );
+  const homeSportById = new Map<
+    string,
+    { sportId: Id<"selectorOptions">; sportValue: string | null }
+  >();
+  for (let start = 0; start < idsNeedingSport.length; start += SET_HISTORY_IDS_PER_CALL) {
+    const slice = idsNeedingSport.slice(start, start + SET_HISTORY_IDS_PER_CALL);
+    for (const row of await ctx.runQuery(internal.setHistory.historyPlayersByIds, { playerIds: slice })) {
+      homeSportById.set(row.playerId as string, {
+        sportId: row.sportId,
+        sportValue: row.sportValue,
+      });
+    }
+  }
+  const autoLinks: Array<
+    | {
+        kind: "player";
+        name: string;
+        playerId: Id<"players">;
+        rowSportId: Id<"selectorOptions">;
+        origin: "setHistory" | "hallOfFame";
+        candidatePlayerIds: Array<Id<"players">>;
+      }
+    | (typeof teamAutoLinks)[number]
+  > = [];
+  for (const link of pendingPlayerLinks) {
+    const home = homeSportById.get(link.playerId as string);
+    if (!home) {
+      unknownPlayers.push(link.name);
+      queuedPlayerNames.push(link.name);
+      args.resolvedNames?.playerIdByNorm.delete(normalizePlayerName(link.name));
+      continue;
+    }
+    autoLinks.push({
+      kind: "player",
+      name: link.name,
+      playerId: link.playerId,
+      rowSportId: home.sportId,
+      origin: link.origin,
+      candidatePlayerIds: link.candidatePlayerIds,
+    });
+  }
+  autoLinks.push(...teamAutoLinks);
+  for (const [name, playerId] of priorYearPick) {
+    const home = homeSportById.get(playerId as string);
+    // A sport with no label cannot be named on the button; see
+    // `findOnlyNamesakes`.
+    if (!home?.sportValue) continue;
+    preselects.push({
+      name,
+      playerId,
+      sportId: home.sportId,
+      sportValue: home.sportValue,
+      reason: "priorYearProduct",
+    });
+  }
+  if (autoLinks.length > 0 || historyCandidates.length > 0 || preselects.length > 0) {
+    // NEO-424 — every automatic answer this gate made, by id and origin, so
+    // the day one goes wrong the affected rows can be found. Never a name.
+    // Listed up to a bound; the counts are always whole.
+    const LOGGED_LINKS = 100;
+    console.log(
+      JSON.stringify({
+        msg: "entity_review_auto_links",
+        selectorOptionId: args.selectorOptionId,
+        sportId: args.sportId,
+        setYear,
+        autoLinks: autoLinks.length,
+        historyPicks: historyCandidates.length,
+        preselects: preselects.length,
+        links: autoLinks.slice(0, LOGGED_LINKS).map((link) =>
+          link.kind === "player"
+            ? {
+                kind: link.kind,
+                origin: link.origin,
+                playerId: link.playerId,
+                rowSportId: link.rowSportId,
+                candidates: link.candidatePlayerIds.length,
+              }
+            : {
+                kind: link.kind,
+                origin: link.origin,
+                teamId: link.teamId,
+                rowSportId: link.rowSportId,
+              },
+        ),
+        preselected: preselects.slice(0, LOGGED_LINKS).map((p) => ({
+          reason: p.reason,
+          playerId: p.playerId,
+          sportId: p.sportId,
+        })),
+      }),
+    );
   }
 
   // NEO-92: kick off the review-wizard batch (background Wikidata preview
@@ -1606,6 +1973,9 @@ async function resolveUnknownsAndStartBatch(
   if (!callerId) throw new Error("Not authenticated");
   // NEO-402 — replaces this operator's record for the set whole, so a re-fetch
   // ("Back to matching", a second sync) never leaves an older answer behind.
+  // NEO-424 — auto-linked names are deliberately absent (D1): this record is
+  // read BEFORE decisions in the commit prelude, so an auto-link written here
+  // would survive the operator's Change.
   await ctx.runMutation(internal.checklistNameResolutions.replaceForFetch, {
     selectorOptionId: args.selectorOptionId,
     createdByUserId: callerId,
@@ -1614,29 +1984,51 @@ async function resolveUnknownsAndStartBatch(
     // simply looked up by the commit, so a short record is harmless.
     players: singleMatchPlayers.slice(0, MAX_STORED_NAME_ANSWERS),
   });
-  const hasUnknowns = unknownPlayers.length > 0 || unknownTeams.length > 0;
-  const openBatchId = hasUnknowns
+  const hasUnknowns =
+    queuedPlayerNames.length > 0 ||
+    unknownTeams.length > 0 ||
+    historyCandidates.length > 0;
+  // NEO-424 (D4) — an auto-link alone opens a batch too: it is a decided row
+  // the operator must be able to see and Change before the commit.
+  const opensBatch = hasUnknowns || autoLinks.length > 0;
+  const openBatchId = opensBatch
     ? null
     : await ctx.runQuery(internal.entityReviewQueue.findOpenBatch, {
         selectorOptionId: args.selectorOptionId,
         createdByUserId: callerId,
       });
-  if (hasUnknowns || openBatchId !== null) {
+  if (opensBatch || openBatchId !== null) {
     batchId = await ctx.runMutation(internal.entityReviewQueue.startBatch, {
       selectorOptionId: args.selectorOptionId,
       createdByUserId: callerId,
       sportId: args.sportId,
-      playerNames: unknownPlayers,
+      // NEO-424 — ordinary rows only. Auto-linked names and history picks
+      // travel in their own lists below and are NOT repeated here; preselects
+      // annotate names that ARE here.
+      playerNames: queuedPlayerNames,
       teamNames: unknownTeams,
       // NEO-296 — omitted when empty so the wire shape is unchanged for a
       // batch where every unknown name has a same-name row already.
       ...(playersWithNoExistingMatch.length > 0
         ? { playersWithNoExistingMatch }
         : {}),
+      // NEO-424 — the gate's facts, each omitted when empty so a fetch with
+      // no history, Hall of Famer or preselect sends exactly what it did.
+      ...(autoLinks.length > 0 ? { autoLinks } : {}),
+      ...(historyCandidates.length > 0 ? { historyCandidates } : {}),
+      ...(preselects.length > 0 ? { preselects } : {}),
     });
   }
 
-  return { unknownPlayers, unknownTeams, ambiguousPlayers, batchId };
+  return {
+    unknownPlayers,
+    unknownTeams,
+    ambiguousPlayers,
+    batchId,
+    // `opensBatch` is true whenever there are auto-links, so a started batch
+    // carries every one of them; with no batch there is nothing to show.
+    autoLinkedCount: batchId !== undefined ? autoLinks.length : 0,
+  };
 }
 
 /**
@@ -15232,6 +15624,12 @@ export const resolveChecklistEntities = action({
     // player/team spelling that already resolved. See listingTitleContext.ts.
     // Optional so the wire change is purely additive; always sent.
     titleContext: v.optional(titleContextValidator),
+    // NEO-424 (D4) — decided auto-link rows (set history, Hall of Fame) the
+    // batch holds, players and teams together. They are in neither unknown
+    // list, so this is what tells the client a batch with no unknowns still
+    // has rows the operator must see before the commit. Optional so the wire
+    // change is purely additive; this action always sends it.
+    autoLinkedCount: v.optional(v.number()),
   }),
   handler: async (ctx, args): Promise<{
     unknownPlayers: string[];
@@ -15239,6 +15637,7 @@ export const resolveChecklistEntities = action({
     ambiguousPlayers?: string[];
     batchId?: string;
     titleContext?: TitleContext;
+    autoLinkedCount?: number;
   }> => {
     await requireAdmin(ctx);
     assertCardBatchWithinLimits(args.cards, "resolveChecklistEntities");
@@ -16132,6 +16531,24 @@ export const commitCardChecklistPrelude = internalMutation({
     for (const row of reviewRows) {
       reviewByKey.set(`${row.kind}:${norm(row.name)}`, row);
     }
+    /**
+     * NEO-424 (D5) — did the operator answer `create` for this player name
+     * while LOOKING AT `playerId`?
+     *
+     * A row's `enrichment.existingCandidates` is the list the wizard showed
+     * (the in-sport rivals; after a Changed set-history link, the history
+     * player and those rivals too). A `create` over a list that held this row
+     * is "none of these, somebody new", so the one match must not swallow it.
+     * A match the list did not hold appeared after the answer and is adopted
+     * as it always was.
+     */
+    const createRejectedSingleMatch = (
+      normalized: string,
+      playerId: Id<"players">,
+    ): boolean =>
+      (reviewByKey.get(`player:${normalized}`)?.enrichment?.existingCandidates ?? []).some(
+        (candidate) => candidate.playerId === playerId,
+      );
 
     /**
      * NEO-335 — has an EARLIER commit of this set ruled this name "not a
@@ -17430,7 +17847,7 @@ export const commitCardChecklistPrelude = internalMutation({
       normalized: string,
       // See `createTeamFromChecklistDecision` — same contract.
       decision: CreateDecision,
-    ): Promise<void> => {
+    ): Promise<boolean> => {
       // decision.action === "create" — seed directly from the wizard's own
       // Wikidata preview lookup (already fetched during review); no more
       // post-commit processEnrichmentQueue scheduling needed for this row.
@@ -17444,6 +17861,24 @@ export const commitCardChecklistPrelude = internalMutation({
        * switched row were raised in that sport.
        */
       const playerSportId = playerReviewRow?.sportId ?? args.sportId;
+      /*
+       * NEO-463 — the backstop. A one-word name that is a fuller-named
+       * player's first or last name ("Walker" beside "Larry Walker") is
+       * written only when the operator confirmed a one-name player.
+       * `recordDecision` and the bulk walk already refuse such a create; a
+       * decision recorded before that rule, or a fuller name committed since,
+       * still reaches here. Nothing is written — no player, and no career team
+       * (checked before any is resolved) — and `false` tells the caller to
+       * report the name unreviewed, so the card commits without that player
+       * and the attention walker shows it. Never a throw: one name must not
+       * cost the operator the whole commit.
+       */
+      if (
+        decision.oneNamePlayer !== true &&
+        (await nameFragmentMatches(ctx, name, playerSportId)).length > 0
+      ) {
+        return false;
+      }
       // Merge the wizard's Wikidata preview career-teams with any the admin
       // added by hand in the review wizard (decision.manualCareerTeams). Both
       // are {name, fromYear, toYear?} — resolve every name to a real team id
@@ -17647,6 +18082,7 @@ export const commitCardChecklistPrelude = internalMutation({
         const created = await ctx.db.get(id);
         if (created) await addPlayerSport(ctx, created, setSportId);
       }
+      return true;
     };
 
     /*
@@ -17726,7 +18162,17 @@ export const commitCardChecklistPrelude = internalMutation({
         const createDecision = reviewByKey.get(`player:${norm(name)}`)?.decision;
         if (createDecision?.action !== "create") continue;
         const already = await sameNamePlayers(ctx, norm(name), args.sportId);
-        if (already.length === 1) continue;
+        // NEO-424 (D5) — one match is adopted by the resolve phase INSTEAD of
+        // creating, unless the operator was shown that very row and answered
+        // "somebody new" anyway. See `createRejectedSingleMatch`.
+        if (
+          already.length === 1 &&
+          !createRejectedSingleMatch(norm(name), already[0]._id)
+        ) {
+          continue;
+        }
+        // NEO-463 — a held fragment writes nothing here; the resolve phase
+        // meets the same decision, holds it again and reports it unreviewed.
         await createPlayerFromDecision(name, norm(name), createDecision);
         continue;
       }
@@ -17763,13 +18209,43 @@ export const commitCardChecklistPrelude = internalMutation({
       const existingMatches =
         sameNamePrefetch.get(normalized) ??
         (await sameNamePlayers(ctx, normalized, args.sportId));
-      if (existingMatches.length === 1) {
+      /*
+       * NEO-424 (D5) — the operator's decision is read BEFORE the exactly-one
+       * fast path, and a decision beats it.
+       *
+       * Before set history, a name with a decision almost never had exactly
+       * one match: it reached the wizard because it had none or several. A
+       * set-history auto-link breaks that. "Bo Jackson" on a baseball insert
+       * may match exactly one baseball row (somebody else), while the set's
+       * base card linked the football Bo Jackson; the gate records that as a
+       * `link` decision, and the fast path would quietly overrule it with the
+       * baseball namesake. The same for an operator who Changed an auto-link
+       * and picked or created someone else. So:
+       *
+       *   link   → honoured below (re-validated there, as always);
+       *   skip   → honoured: "not a person" is an answer, and a row created
+       *            since does not overrule it;
+       *   create → honoured only when the one match is a row the operator was
+       *            SHOWN and passed over (`createRejectedSingleMatch`).
+       *            Otherwise the one match appeared after they answered — a
+       *            colleague created the same person — and adopting it is
+       *            what stops a duplicate, exactly as before.
+       *
+       * No decision: the fast path, unchanged, and that includes the
+       * NEO-402 checklistNameResolutions answer folded into the prefetch.
+       */
+      const decision = reviewByKey.get(`player:${normalized}`)?.decision;
+      const decisionBeatsSingleMatch =
+        decision !== undefined &&
+        (decision.action !== "create" ||
+          (existingMatches.length === 1 &&
+            createRejectedSingleMatch(normalized, existingMatches[0]._id)));
+      if (existingMatches.length === 1 && !decisionBeatsSingleMatch) {
         const existing = existingMatches[0];
         playerIdByName.set(name, existing._id);
         playerNameById.set(existing._id, existing.name);
         continue;
       }
-      const decision = reviewByKey.get(`player:${normalized}`)?.decision;
       // NEO-335 — "not a person" from an EARLIER save of this set (see
       // `isStoredSkip`). An answer, so it holds back the year narrowing below
       // exactly as a skip decision does, and it is not unreviewed.
@@ -17856,6 +18332,23 @@ export const commitCardChecklistPrelude = internalMutation({
           break;
         }
         if (narrowed.playerId) {
+          // NEO-424 — the Hall of Fame tie-break reaches the commit only for a
+          // name with no review row (the gate turns it into a visible decided
+          // row otherwise). Logged beside the gate's
+          // `player_narrowed_by_card_year` line, by id: the trace for "which
+          // cards did this happen to".
+          if (narrowed.viaHallOfFame) {
+            console.log(
+              JSON.stringify({
+                msg: "player_narrowed_by_hall_of_fame",
+                selectorOptionId: args.selectorOptionId,
+                sportId: args.sportId,
+                setYear,
+                playerId: narrowed.playerId,
+                matchCount: existingMatches.length,
+              }),
+            );
+          }
           const picked = existingMatches.find((p) => p._id === narrowed.playerId)!;
           playerIdByName.set(name, picked._id);
           playerNameById.set(picked._id, picked.name);
@@ -17945,7 +18438,13 @@ export const commitCardChecklistPrelude = internalMutation({
         playerNameById.set(priorPlayer.id, priorPlayer.storedName);
         continue;
       }
-      await createPlayerFromDecision(name, normalized, decision);
+      if (!(await createPlayerFromDecision(name, normalized, decision))) {
+        // NEO-463 — held back as a one-word fragment of a fuller-named
+        // player: the card commits without it and the name is reported for
+        // the attention walker, exactly like an unanswered name.
+        unreviewedPlayerNames.push(name);
+        continue;
+      }
       // NEO-402 — this key now has a row the prefetch did not see; a later
       // spelling of it must read again, or it would mint a second one.
       sameNamePrefetch.delete(normalized);

@@ -13,8 +13,11 @@
  * The quantity (D9): how many PLAIN copies of the card sit in the box. A
  * plain line is raw (no grade), in the collector's default condition (or
  * none, stored before NEO-380), with no serial, cost, location or notes, and
- * not up for trade; its pocket or row and its acquired date do not matter. Everything else the card has in the box is read-only after
- * the field ("also here: PSA 9, Raw Mint") and never touched by it.
+ * not up for trade; its pocket or row, its acquired date and whether it has
+ * photos do not matter (NEO-431: a photo alone sets no line apart, so a card
+ * added by hand with photos is the line this field edits). Everything else the
+ * card has in the box is read-only after the field ("also here: PSA 9, Raw
+ * Mint") and never touched by it.
  */
 
 import { boxesOf, systemContainer } from "../data/store";
@@ -91,15 +94,14 @@ export function resolveTargetBox(
 
 /**
  * True when a line is plain: raw in the default condition, nothing else noted
- * about it, no photo, not up for trade (D9). The server's `isPlainLine`
- * (convex/collectionInventory.ts) decides what a quick count may change, so
- * this must read every line the same way: a line it counts here and the
- * server won't touch would be a count the field can never set (NEO-377: a
- * copy with a photo is the collector's own record, never a quick count's).
+ * about it, not up for trade, with or without photos (D9, NEO-431). The
+ * server's `isPlainLine` (convex/collectionInventory.ts) decides what a quick
+ * count may change, so this must read every line the same way: a line it
+ * counts here and the server won't touch would be a count the field can never
+ * set.
  */
 export function isPlainLine(copy: Copy, defaultCondition: Condition = DEFAULT_CONDITION): boolean {
   return (
-    copy.hasPhotos !== true &&
     !copy.graded &&
     (!copy.condition || copy.condition === defaultCondition) &&
     !copy.serialNumber &&
@@ -122,7 +124,7 @@ export function plainQuantity(lines: readonly Copy[], defaultCondition: Conditio
   return lines.reduce((n, c) => (isPlainLine(c, defaultCondition) ? n + c.quantity : n), 0);
 }
 
-/** "PSA 9", "Raw Mint ×3", "Raw 23/50", "Raw for trade", "Raw with photo": one other line, short. */
+/** "PSA 9", "Raw Mint ×3", "Raw 23/50", "Raw for trade", "Raw with notes": one other line, short. */
 function otherLineText(copy: Copy, defaultCondition: Condition): string {
   // The default condition goes unsaid: it is what the field counts.
   const condition = copy.condition !== defaultCondition ? copy.condition : undefined;
@@ -133,8 +135,8 @@ function otherLineText(copy: Copy, defaultCondition: Condition): string {
       : "Raw";
   if (copy.serialNumber) text += ` ${copy.serialNumber}`;
   if (copy.upForTrade) text += " for trade";
-  // Nothing above sets it apart: say what does (its photo, else the details only the drawer shows).
-  else if (!copy.graded && !condition && !copy.serialNumber) text += copy.hasPhotos ? " with photo" : " with notes";
+  // Nothing above sets it apart: the details only the drawer shows do (a photo alone never does).
+  else if (!copy.graded && !condition && !copy.serialNumber) text += " with notes";
   if (copy.quantity > 1) text += ` ×${copy.quantity}`;
   return text;
 }

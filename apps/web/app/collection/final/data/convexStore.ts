@@ -73,6 +73,7 @@ import type {
 import { isOptimisticId, OPTIMISTIC_ID_PREFIX } from "../lineKeys";
 import { finishForVariant } from "./finish";
 import { resizeCopyPhoto } from "@/lib/collection/copy-photo-resize";
+import { uploadWithRetry, type PhotoFileKind } from "@/lib/collection/upload-with-retry";
 import { CardImagesProvider } from "./cardImages";
 
 import {
@@ -1755,11 +1756,10 @@ function withDefaultCondition(local: OptimisticLocalStore, details: RawDetails):
 /**
  * A plain line (NEO-364, D9), the server's `isPlainLine`: raw, in the default
  * condition or none (stored before NEO-380), no other detail recorded, not up
- * for trade.
+ * for trade. Photos do not matter (NEO-431).
  */
 function isPlainRow(r: RawCopy, defaultCondition: Condition = DEFAULT_CONDITION): boolean {
   return (
-    r.hasPhotos !== true &&
     (r.condition === undefined || r.condition === defaultCondition) &&
     r.grading === undefined &&
     r.serialNumber === undefined &&
@@ -1771,12 +1771,22 @@ function isPlainRow(r: RawCopy, defaultCondition: Condition = DEFAULT_CONDITION)
   );
 }
 
+/** Newest first, as the server's `newerLine`: the latest touched, then the later listed. */
+function newestFirst(rows: readonly RawCopy[]): RawCopy[] {
+  return rows
+    .map((r, i) => ({ r, i }))
+    .sort((a, b) => b.r.lastUpdated - a.r.lastUpdated || b.i - a.i)
+    .map(({ r }) => r);
+}
+
 /**
  * `setBoxQuantity` drawn ahead of the server, from the card's loaded rows:
  * the plain lines in the box are set to `quantity`. Raising folds into
- * today's plain unplaced line or draws a new one; lowering takes from the
- * plain lines newest first (a line at 0 goes). The same number changes
- * nothing.
+ * today's plain unplaced line or draws a new one, unless every plain line has
+ * photos: then it stacks onto the newest of those (the server's
+ * `photoLineToRaise`). Lowering takes from the lines without photos, then those
+ * with them, newest first in each (the server's `lowerOrder`; a line at 0
+ * goes). The same number changes nothing.
  */
 function applyBoxQuantity(
   local: OptimisticLocalStore,
@@ -1798,7 +1808,8 @@ function applyBoxQuantity(
   if (quantity > before) {
     const adding = quantity - before;
     const next = { quantity: adding, condition, acquiredOn, homeId: boxId } as RawDetails;
-    const into = rows.find((r) => foldsInto(r, next) && r.quantity + adding <= MAX_LINE_QUANTITY);
+    const photoLine = plain.every((r) => r.hasPhotos === true) ? newestFirst(plain)[0] : undefined;
+    const into = photoLine ?? rows.find((r) => foldsInto(r, next) && r.quantity + adding <= MAX_LINE_QUANTITY);
     if (into) {
       change.before = [into];
       change.after = [{ ...into, quantity: into.quantity + adding, lastUpdated: now }];
@@ -1819,12 +1830,8 @@ function applyBoxQuantity(
     }
   } else {
     let left = before - quantity;
-    // Newest first, as the server's `newerLine`: the latest touched, then the later listed.
-    const newest = plain
-      .map((r, i) => ({ r, i }))
-      .sort((a, b) => b.r.lastUpdated - a.r.lastUpdated || b.i - a.i)
-      .map(({ r }) => r);
-    for (const r of newest) {
+    const ordered = [...newestFirst(plain.filter((r) => !r.hasPhotos)), ...newestFirst(plain.filter((r) => r.hasPhotos))];
+    for (const r of ordered) {
       if (left === 0) break;
       const take = Math.min(left, r.quantity);
       left -= take;
@@ -1838,7 +1845,8 @@ function applyBoxQuantity(
 /**
  * `undoBoxQuantity` drawn ahead of the server: each step of the inverse, in
  * order, on the card's loaded rows. A `restore` folds into an identical
- * line as the server does, or draws line `n` (the step's place).
+ * line as the server does, or draws line `n` (the step's place); one with
+ * photos to take back never folds, and draws a line with photos.
  */
 function applyBoxSteps(
   local: OptimisticLocalStore,
@@ -1858,8 +1866,9 @@ function applyBoxSteps(
         condition: defaultConditionIn(local),
         ...(step.acquiredOn ? { acquiredOn: step.acquiredOn } : {}),
         ...(step.slot !== undefined ? { slot: step.slot } : {}),
+        ...(step.photoIds?.length ? { hasPhotos: true as const } : {}),
         homeId: inverse.boxId,
-      } as RawDetails;
+      } as RawDetails & { hasPhotos?: true };
       const into = rows.find((r) => foldsInto(r, next) && r.quantity + step.quantity <= MAX_LINE_QUANTITY);
       if (into) {
         change.before = [into];
@@ -1939,7 +1948,18 @@ function applyRewrite(local: OptimisticLocalStore, copyId: string, known: KnownC
   });
 }
 
-/** A move (or a placement: a move that stays home), splitting and folding as the server will. */
+/** A home's kind as the loaded shelf has it; `undefined` until the shelf loads. */
+function homeKindIn(local: OptimisticLocalStore, homeId: string): RawContainer["kind"] | undefined {
+  return local.getQuery(api.collectionContainers.list, {})?.find((c) => c._id === homeId)?.kind;
+}
+
+/**
+ * A move (or a placement: a move that stays home), splitting and folding as
+ * the server will. NEO-479: `minPriceCents` is the moving cards' own price
+ * (`null` clears it); left out, they keep theirs, except out of a box into a
+ * binder, where they lose it (the server's Branch B). The price is set before
+ * the twin lookup, so the cards fold only into a line at the same price.
+ */
 function applyMove(
   local: OptimisticLocalStore,
   copyId: string,
@@ -1948,6 +1968,7 @@ function applyMove(
   quantity: number | undefined,
   slot: number | undefined,
   draw: () => RawCopy["_id"] = optimisticId,
+  minPriceCents?: number | null,
 ) {
   const source = rowOf(local, copyId, known);
   if (!source || !known) return;
@@ -1956,6 +1977,14 @@ function applyMove(
   const landed: RawCopy = { ...source, homeId: (toHomeId ?? source.homeId) as RawCopy["homeId"], quantity: moving };
   if (slot === undefined) delete landed.slot;
   else landed.slot = slot;
+  const leavingSale =
+    toHomeId !== undefined &&
+    toHomeId !== source.homeId &&
+    homeKindIn(local, source.homeId) === "box" &&
+    homeKindIn(local, toHomeId) !== undefined &&
+    homeKindIn(local, toHomeId) !== "box";
+  if (typeof minPriceCents === "number") landed.minPriceCents = minPriceCents;
+  else if (minPriceCents === null || leavingSale) delete landed.minPriceCents;
   // NEO-377: photos stay with the line; a part split off has none.
   if (split) delete landed.hasPhotos;
   const twin = cardRows(local, known.cardId).find((r) => r._id !== source._id && foldsInto(r, landed));
@@ -2058,7 +2087,9 @@ function useConvexActions(): CollectionActions {
         );
       }),
       addLineItem: addLineItemBase.withOptimisticUpdate((local, args) =>
-        applyAdd(local, args.cardId, cards.current.get(args.cardId), args.details, true, () => optimisticIdFor(args)),
+        applyAdd(local, args.cardId, cards.current.get(args.cardId), args.details, !args.keepsOwnLine, () =>
+          optimisticIdFor(args),
+        ),
       ),
       restoreCopy: restoreCopyBase.withOptimisticUpdate((local, args) =>
         applyAdd(local, args.cardId, cards.current.get(args.cardId), args.details, false, () => optimisticIdFor(args)),
@@ -2083,8 +2114,15 @@ function useConvexActions(): CollectionActions {
         for (const copyId of args.copyIds) applyRemove(local, copyId, copies.current.get(copyId));
       }),
       moveCopy: moveCopyBase.withOptimisticUpdate((local, args) =>
-        applyMove(local, args.copyId, copies.current.get(args.copyId), args.toHomeId, args.quantity, args.slot, () =>
-          optimisticIdFor(args),
+        applyMove(
+          local,
+          args.copyId,
+          copies.current.get(args.copyId),
+          args.toHomeId,
+          args.quantity,
+          args.slot,
+          () => optimisticIdFor(args),
+          args.minPriceCents,
         ),
       ),
       placeCopy: placeCopyBase.withOptimisticUpdate((local, args) =>
@@ -2270,16 +2308,31 @@ function useConvexActions(): CollectionActions {
         else await m.removeCopy({ copyId: result.copyId });
       };
 
-    /** The undo of a move or a placement: the same cards back where they were. */
-    const undoMove = (copy: Copy, toHomeId: string, slot: number | undefined, r: RawMove) => async () => {
-      knowAs(copy, r.copyId, { homeId: toHomeId, quantity: r.from.quantity, slot });
-      await m.moveCopy({
-        copyId: r.copyId,
-        toHomeId: r.from.homeId,
-        quantity: r.from.quantity,
-        ...(r.from.slot !== undefined ? { slot: r.from.slot } : {}),
-      });
-    };
+    /**
+     * The undo of a move or a placement: the same cards back where they were.
+     * NEO-479: when the move changed the cards' own price, `from.minPriceCents`
+     * holds the one before (`null`: none) and goes back with them. `landedPrice`
+     * is the price the cards carry where they landed (dollars, or none), for
+     * the undo's optimistic row.
+     */
+    const undoMove =
+      (copy: Copy, toHomeId: string, slot: number | undefined, r: RawMove, landedPrice: number | undefined = copy.minPrice) =>
+      async () => {
+        const { minPrice: _before, ...rest } = copy;
+        knowAs(landedPrice === undefined ? rest : { ...rest, minPrice: landedPrice }, r.copyId, {
+          homeId: toHomeId,
+          quantity: r.from.quantity,
+          slot,
+        });
+        const restore = r.from.minPriceCents;
+        await m.moveCopy({
+          copyId: r.copyId,
+          toHomeId: r.from.homeId,
+          quantity: r.from.quantity,
+          ...(r.from.slot !== undefined ? { slot: r.from.slot } : {}),
+          ...(restore !== undefined ? { minPriceCents: restore } : {}),
+        });
+      };
 
     return {
       async addHave(card, homeId) {
@@ -2329,9 +2382,13 @@ function useConvexActions(): CollectionActions {
         };
       },
 
-      async addLineItem(card, details) {
+      async addLineItem(card, details, options) {
         placeCard(card);
-        const result = await m.addLineItem({ cardId: asCard(card.id), details: toRawDetails(details) });
+        const result = await m.addLineItem({
+          cardId: asCard(card.id),
+          details: toRawDetails(details),
+          ...(options?.keepsOwnLine ? { keepsOwnLine: true } : {}),
+        });
         return { copyId: result.copyId, merged: result.merged, undo: undoAdd(card, details.homeId, result) };
       },
 
@@ -2407,8 +2464,26 @@ function useConvexActions(): CollectionActions {
           toHomeId: asHome(toHomeId),
           ...(options?.quantity !== undefined ? { quantity: options.quantity } : {}),
           ...(options?.slot !== undefined ? { slot: options.slot } : {}),
+          // NEO-479 — the cards' own price, in cents; never the common price.
+          ...(options?.minPrice !== undefined ? { minPriceCents: Math.round(options.minPrice * 100) } : {}),
         });
-        return { copyId: r.copyId, folded: r.folded, split: r.split, undo: undoMove(copy, toHomeId, options?.slot, r) };
+        // The price the cards carry where they landed: the one sent, else
+        // theirs, unless the move took it off. Only a move out of a box can
+        // (Branch B), and then `from` records it; into a box, `from` records
+        // an own price that stayed on, for the undo.
+        const recorded = r.from.minPriceCents !== undefined;
+        const landedPrice =
+          options?.minPrice !== undefined
+            ? options.minPrice
+            : copy.homeKind === "box" && recorded
+              ? undefined
+              : copy.minPrice;
+        return {
+          copyId: r.copyId,
+          folded: r.folded,
+          split: r.split,
+          undo: undoMove(copy, toHomeId, options?.slot, r, landedPrice),
+        };
       },
 
       async placeCopy(drawn, slot) {
@@ -2526,6 +2601,7 @@ function useConvexActions(): CollectionActions {
         return {
           before: r.before,
           after: r.after,
+          tookPhotos: r.inverse.steps.some((step) => step.op === "restore" && (step.photoIds?.length ?? 0) > 0),
           undo: async () => {
             // The same number wrote nothing, so there is nothing to put back.
             if (r.inverse.steps.length === 0) return;
@@ -2698,12 +2774,17 @@ function useConvexCopyPhotos(): CopyPhotosExtension {
           imageBytes: resized.image.size,
           thumbBytes: resized.thumb.size,
         });
-        const put = async (url: string, blob: Blob) => {
-          const res = await fetch(url, { method: "PUT", headers: { "content-type": resized.contentType }, body: blob });
-          if (!res.ok) throw new Error("That photo didn't upload. Check your connection and try again.");
-        };
-        await put(started.imageUploadUrl, resized.image);
-        await put(started.thumbUploadUrl, resized.thumb);
+        const put = (url: string, body: Blob, file: PhotoFileKind) =>
+          uploadWithRetry({
+            url,
+            method: "PUT",
+            headers: { "content-type": resized.contentType },
+            body,
+            file,
+            failureMessage: "That photo didn't upload. Check your connection and try again.",
+          });
+        await put(started.imageUploadUrl, resized.image, "image");
+        await put(started.thumbUploadUrl, resized.thumb, "thumb");
         await finishUpload({ photoId: started.photoId });
       },
       async removePhoto(copy, side) {

@@ -4683,6 +4683,141 @@ describe("CardChecklist — NEO-221 D9: Back to matching", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// NEO-424 — a batch whose only names are links the server made on its own
+// (set history, the Hall of Fame tie-break). Those names are left out of
+// `unknownPlayers`/`unknownTeams`, so the "no names" path used to commit them
+// silently. Every auto-link must be seen, and be reversible, in the wizard's
+// Decided list first — so the count the server returns now opens the wizard.
+// ---------------------------------------------------------------------------
+
+describe("CardChecklist — NEO-424: links made for the operator open the wizard", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    state.cards = [];
+    state.variantRow = { value: "Test Set" };
+    state.ancestorChain = twoSidedChain();
+    state.liveCandidates = null;
+    state.teams = [];
+    state.players = [];
+    state.skippedNames = [];
+  });
+
+  /**
+   * One paired card that prints its team, so nothing else would hold the
+   * save: no teamless card (no teams step), no title context (no titles
+   * step), no "AU" (no autograph step). Whatever opens the wizard here is the
+   * names alone.
+   */
+  async function pairTeamedCard() {
+    state.liveCandidates = {
+      ready: 1,
+      total: 1,
+      cards: [
+        {
+          ...streamedCandidate,
+          cardName: "Joe Morgan",
+          players: ["Joe Morgan"],
+          teams: ["Cincinnati Reds"],
+        },
+      ],
+    };
+    mockFetchChecklist.mockImplementation(async () =>
+      publish({
+        success: true,
+        message: "Fetched 1 card",
+        candidateCount: 1,
+        attachedSides: ["bsc", "sportlots"],
+      }),
+    );
+    mockDiffChecklist.mockResolvedValue(NOTHING_TO_REVIEW);
+    mockCommitChecklist.mockResolvedValue({ count: 1 });
+    mockDiscardCandidates.mockResolvedValue(undefined);
+    renderChecklist();
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    });
+    expect(await screen.findByText(/Match Cards/)).toBeTruthy();
+  }
+
+  it("opens the full wizard on a batch with nothing to answer but links made for you, and does not commit", async () => {
+    mockResolveEntities.mockResolvedValue({
+      unknownPlayers: [],
+      unknownTeams: [],
+      batchId: "batch-424",
+      autoLinkedCount: 2,
+    });
+    await pairTeamedCard();
+    await confirmPairing();
+
+    // The full wizard over the batch, not the teams-only entry: its Save step
+    // is where the Decided list, and each link's Change, live.
+    expect(screen.queryByText("Wizard opened teams-only")).toBeNull();
+    expect(mockCommitChecklist).not.toHaveBeenCalled();
+    // The banner says why the save is held, rather than "0 names need a look".
+    expect(
+      screen.getByText("2 names were linked for you. Give them a look before this saves."),
+    ).toBeTruthy();
+
+    // And the wizard's own Confirm is what commits it, batch and all.
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Confirm entity review" }));
+    });
+    await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
+    expect(mockCommitChecklist.mock.calls[0][0].batchId).toBe("batch-424");
+  });
+
+  /**
+   * NEO-221 — the "Back to matching" return trip, where a re-pair resolved
+   * every name, hands back the OPEN batch's id with no unknowns: a batch of
+   * the operator's own decisions. That must keep committing straight away,
+   * which is why the gate reads the auto-link count and never `batchId`.
+   */
+  it("still commits without the wizard when Back to matching comes back with a batch and nothing linked", async () => {
+    mockResolveEntities.mockResolvedValueOnce({
+      unknownPlayers: ["Unknown Guy"],
+      unknownTeams: [],
+      batchId: "batch-424",
+    });
+    await pairTeamedCard();
+    await confirmPairing();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Back to matching" }));
+    });
+    expect(await screen.findByText(/Match Cards/)).toBeTruthy();
+
+    mockResolveEntities.mockResolvedValueOnce({
+      unknownPlayers: [],
+      unknownTeams: [],
+      batchId: "batch-424",
+      autoLinkedCount: 0,
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Confirm card matches"));
+    });
+
+    await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
+    expect(mockCommitChecklist.mock.calls[0][0].batchId).toBe("batch-424");
+    expect(screen.queryByText(/Wizard summary/)).toBeNull();
+  });
+
+  it("reads a missing count as none, as an older server sends it", async () => {
+    mockResolveEntities.mockResolvedValue({
+      unknownPlayers: [],
+      unknownTeams: [],
+      batchId: undefined,
+    });
+    await pairTeamedCard();
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Confirm card matches"));
+    });
+
+    await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
+    expect(screen.queryByText(/Wizard summary/)).toBeNull();
+  });
+});
+
 describe("CardChecklist — NEO-221 D9/D10: aborting the review", () => {
   beforeEach(() => {
     vi.clearAllMocks();

@@ -1,4 +1,4 @@
-import type { CSSProperties, ReactNode } from "react";
+import { useState, type CSSProperties, type ReactNode } from "react";
 import {
   cardLabel,
   getSet,
@@ -156,6 +156,26 @@ function frameBackground(face: Face, primary: string): string {
   return primary;
 }
 
+/** A card's photo, with a quiet tone until it arrives so it never reads as an empty pocket. */
+function CardPicture({ src, dimmed }: { src: string; dimmed: boolean }) {
+  const [settled, setSettled] = useState(false);
+  return (
+    <>
+      {!settled && <span className="nb-card-loading" />}
+      <img
+        src={src}
+        alt=""
+        draggable={false}
+        decoding="async"
+        onLoad={() => setSettled(true)}
+        onError={() => setSettled(true)}
+        className="relative h-full w-full object-contain"
+        style={{ filter: dimmed ? "grayscale(0.9) brightness(0.5)" : undefined }}
+      />
+    </>
+  );
+}
+
 export default function CardFace({
   card,
   model,
@@ -211,14 +231,8 @@ export default function CardFace({
           className="absolute inset-0 overflow-hidden"
           style={{ borderRadius: cq(5), background: "#0b0f1a", boxShadow: "0 6px 18px rgba(0,0,0,0.45)" }}
         >
-          <img
-            src={picture.thumbUrl}
-            alt=""
-            draggable={false}
-            decoding="async"
-            className="h-full w-full object-contain"
-            style={{ filter: need ? "grayscale(0.9) brightness(0.5)" : undefined }}
-          />
+          {/* Keyed: a reused <img> keeps painting the last picture until the new one arrives. */}
+          <CardPicture key={picture.thumbUrl} src={picture.thumbUrl} dimmed={need} />
         </div>
         {serial && (
           <span

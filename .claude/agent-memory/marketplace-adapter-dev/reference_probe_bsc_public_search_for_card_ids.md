@@ -22,6 +22,13 @@ Quirks seen (NEO-345): `teamName` can hold the attribute label ("AU  SN1",
 two spaces) with `playerAttribute` empty; tokens beyond the documented set
 appear live (`FY`, `EXCH`, `MEM`).
 
+Both answers also carry `cardNo`, `setName`, `variant` and `variantName`, so a
+card's public number can be read from a stored BSC ref without a seller token.
+Use that to test an assumption about BSC numbering before building on it
+(NEO-458: one set's Base was bare while its inserts carried the prefix).
+Filter on `sport` and check the player first: search is not sport-scoped, and
+that sample was another sport's set of the same name, not the set in question.
+
 **How to apply:** when a task says "probe BSC for a card with X", search a few
 pages with a relevant `q`, filter the results locally, then fetch
 card-listing for the ids you need. Read-only and unauthenticated; keep it to

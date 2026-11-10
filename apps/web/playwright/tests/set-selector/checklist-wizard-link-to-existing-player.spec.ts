@@ -15,8 +15,11 @@ test(
     // Nothing decided: on a name step x is the decided count plus one (NEO-335).
     await expect(stepCounter(page)).toHaveText(/^Step 1 of [0-9]+$/);
 
-    // Past the team steps, to the first player row.
-    await walkToPlayerRow(page);
+    // Past the team steps, to the first player row that is a truly UNKNOWN
+    // name: `readyToCreate` also walks past a same-name pick step (NEO-475: on
+    // Topps Stars of MLB Network, #7 Chris Young's pick step is pinned before
+    // #1), a preselected suggestion and a held create, each as a skip.
+    await walkToPlayerRow(page, { readyToCreate: true });
     const wizard = reviewWizard(page);
     await expectAccessible(page, { within: wizard, label: "Entity review wizard, player row" });
 

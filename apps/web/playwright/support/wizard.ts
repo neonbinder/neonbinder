@@ -161,22 +161,26 @@ export async function walkToAutographStep(page: Page): Promise<void> {
 
 /**
  * util-fetch-real-set-checklist-to-wizard.yaml: drill to a real set's Base
- * checklist (Topps Big League by default), fetch it from the marketplaces,
- * confirm the card pairing when both marketplaces answered, and land in the
- * entity-review wizard.
+ * checklist (2024 Topps Stars of MLB Network by default, a 10-card set the
+ * seed maps and leaves empty; NEO-475, it was Topps Big League's 310 cards),
+ * fetch it from the marketplaces, confirm the card pairing when both
+ * marketplaces answered, and land in the entity-review wizard.
  *
  * Contract: EXIT the "Tidy up this set" dialog is open and axe-clean, every
  * row undecided ("Step 1 of N"; callers assert that themselves). Live, the
  * pairing session is PARKED behind it ("Back to Match Cards" is offered);
  * with SportLots paused it is the one-marketplace solo path and there is no
- * parked session.
+ * parked session. NEO-475: on the default set the live branch is UNMEASURED
+ * (retargeted while SportLots was paused, so neither the seed's SportLots base
+ * mapping nor this Match Cards pairing has run on it); the first live run must
+ * check both.
  */
 export async function fetchChecklistToWizard(
   page: Page,
   env: FlowEnv,
   target: DrillTarget = {},
 ): Promise<void> {
-  await drillToBaseVariant(page, env, { set: "Topps Big League", ...target });
+  await drillToBaseVariant(page, env, { set: "Topps Stars of MLB Network", ...target });
   await syncChecklistButton(page).click();
 
   const confirmMatches = page.getByRole("button", { name: "Confirm card matches" });
@@ -364,6 +368,56 @@ export function addAsNewStep(page: Page): Locator {
 }
 
 /**
+ * The presented New Player step's create button, in either of its two shapes
+ * (NEO-424, rule E(2)): "Add as New Player" when nothing on file answers to the
+ * name, and "Add as New Player anyway" when exactly one player in some other
+ * sport does (the step then leads with "Link to <name> (<sport>)" and demotes
+ * creating). A spec whose intent is to CREATE the player takes this, the way
+ * `answerStepAsNew` already does for teams and leagues. Contract: a locator,
+ * nothing waited for. A spec that asserts the step's identity (the pick step's
+ * "Create new" lands on exactly "Add as New Player") keeps the exact name.
+ */
+export function addAsNewPlayerButton(page: Page): Locator {
+  return reviewWizard(page).getByRole("button", { name: /^Add as New Player( anyway)?$/ });
+}
+
+/**
+ * Answer the presented New Player step as a CREATE and return once the wizard
+ * has moved off the row (NEO-424). The caller's intent is "this player is
+ * new"; the helper owns the step's two shapes:
+ *  - "Add as New Player": one press records the create.
+ *  - "Add as New Player anyway" (a suggested player leads with "Link to ..."):
+ *    on a row the batch inserted READY with no lookup, that press only OPENS
+ *    the plain New Player step and records nothing, so the helper then waits
+ *    for that step's own "Add as New Player" primary and presses it. On a row
+ *    whose lookup already ran, the press records the create and the walk moves
+ *    on (the counter's x moves), which is checked first so the NEXT row's
+ *    primary is never mistaken for the plain step.
+ * A catalogue refresh that turns a fixture name into a suggestion therefore
+ * changes nothing for the specs that create.
+ *
+ * Contract: ENTRY a player row is presented with a create button on screen
+ * (waited for, 7 s). EXIT the counter has left the step it was on, i.e. one
+ * decision was recorded (a name step's x is the decided count plus one). Pin
+ * y never.
+ */
+export async function answerPlayerAsNew(page: Page): Promise<void> {
+  const wizard = reviewWizard(page);
+  const button = addAsNewPlayerButton(page);
+  await expect(button).toBeVisible();
+  const demoted = /anyway$/.test(((await button.textContent()) ?? "").trim());
+  const { x } = await readStep(page);
+  await button.click();
+  if (demoted) {
+    const plain = wizard.getByRole("button", { name: "Add as New Player", exact: true });
+    const moved = stepCounter(page).filter({ hasNotText: new RegExp(`^Step ${x} of `) });
+    await expect(plain.or(moved).first()).toBeVisible();
+    if (!(await moved.isVisible())) await plain.click();
+  }
+  await expectStepLeft(page, x);
+}
+
+/**
  * The presented New Team / New League step's heading ("New League: Pacific
  * League"). Its accessible name is the step's identity: it goes away exactly
  * when the step does.
@@ -422,6 +476,22 @@ export async function answerStepAsNew(
 }
 
 /**
+ * Wait for the batch's name lookups to land: the footer's "N still looking up —
+ * wait or skip" is gone. A row whose lookup is pending is not presented (a
+ * pending team is never a step), so until this returns the walk can have no
+ * step, no Back and no skip to offer. The lookups run in a deployment-wide
+ * pool shared with every other shard, so under load the wait is real: the
+ * batch-lookups ceiling (`LOOKUPS`), the same one `walkToPlayerRow` waits at.
+ *
+ * Contract: ENTRY the wizard is open. EXIT no "still looking up" line is on
+ * screen. A negative alone passes on a dead page (GUIDE R2), so the caller
+ * follows it with the positive assert for where it expects to be.
+ */
+export async function awaitLookupsSettled(page: Page): Promise<void> {
+  await expect(reviewWizard(page).getByText(/still looking up/)).toBeHidden({ timeout: LOOKUPS });
+}
+
+/**
  * util-wizard-walk-to-player-row(-creating-teams).yaml: move the wizard past
  * every team/league step to the first player row. `creatingTeams: false`
  * skips each team/league step (a skip creates nothing); `true` adds each as
@@ -434,11 +504,25 @@ export async function answerStepAsNew(
  * `Add as New Player` is aria-disabled); the batch-order walk can reach such
  * a player at any time. This walks past each held player as a SKIP (creates
  * nothing; never by unticking the chip) until it stands on a player whose
- * create is live. Link/skip callers leave it off.
+ * create is live. A caller that needs a plain UNKNOWN name to act on (a link
+ * to an existing player) takes it too; skip callers leave it off.
+ *
+ * It passes a preselected player the same way (NEO-424): a name with one
+ * namesake on file, even in another sport, is inserted READY with no lookup,
+ * its primary reads "Link to <name> (<sport>)" and it offers no career editor,
+ * so there is nothing to create on it. A real-name fixture can gain such a row
+ * from seeded data at any time. A skip can land on a team step or a pool wait,
+ * so each one re-runs the pass over the team/league steps.
+ *
+ * And it passes a same-name PICK step (NEO-332, NEO-475): that row is inserted
+ * READY, so it is usually the first settled player and the wizard PINS it
+ * ahead of lower-numbered rows whose lookups land a moment later; it offers no
+ * career editor and its create is "Create new", not "Add as New Player".
  *
  * Contract: ENTRY the wizard is open on a name step. EXIT a player row is
  * presented (its "Skip ... - not a person" is up), lookups drained, and with
- * `readyToCreate` its create is not held.
+ * `readyToCreate` its create is not held and it is neither a preselect nor a
+ * pick step.
  */
 export async function walkToPlayerRow(
   page: Page,
@@ -453,10 +537,9 @@ export async function walkToPlayerRow(
     disabled: false,
   });
 
-  // A pass over the team/league steps; run twice because the lookups of the
-  // rows behind them settle only once the earlier steps are decided.
-  for (let pass = 0; pass < 2; pass++) {
-    await expect(wizard.getByText(/still looking up/)).toBeHidden({ timeout: LOOKUPS });
+  // A pass over the team/league steps, ending on a player row.
+  const passTeamSteps = async (): Promise<void> => {
+    await awaitLookupsSettled(page);
     for (let i = 0; i < 200; i++) {
       await expect(person.or(stepSkip)).toBeVisible({ timeout: LOOKUPS });
       if (await person.isVisible()) break;
@@ -470,26 +553,43 @@ export async function walkToPlayerRow(
       await expect(wizard.getByRole("button", { name, exact: true })).toBeHidden();
     }
     await expect(person).toBeVisible({ timeout: 30_000 });
+  };
+
+  // Twice, because the lookups of the rows behind the team/league steps settle
+  // only once the earlier steps are decided.
+  for (let pass = 0; pass < 2; pass++) {
+    await passTeamSteps();
   }
 
   if (readyToCreate) {
     // The footer line that explains a held create (one node; the chip's own
     // "needs a team decision" lives in the body and is not matched).
     const held = wizard.getByText(/team decisions?, or untick (it|them)\./);
-    // `times` is a runaway guard: a batch whose every remaining player is held
-    // runs out of players and fails the visibility assert below.
+    // Anchored on the trailing "(<sport>)": a plain exact match reads "Link to
+    // <name>" and a pick-step row "Link to <name>, ...".
+    const preselected = wizard.getByRole("button", { name: /^Link to .+ \([^)]+\)$/ });
+    // A same-name PICK step (NEO-332) is inserted READY, so it is often the
+    // first settled player the wizard pins; it offers no career editor and its
+    // create is "Create new", not "Add as New Player": walk past it too.
+    const pickStep = wizard.getByRole("heading", { level: 3, name: /^Which .+ is this\?$/ });
+    // `times` is a runaway guard: a batch whose every remaining player is held,
+    // preselected or a pick step runs out of players and fails the visibility
+    // assert below.
     for (let i = 0; i < 20; i++) {
       await expect(person).toBeVisible();
-      if (!(await held.isVisible())) break;
+      if (!(await held.isVisible()) && !(await preselected.isVisible()) && !(await pickStep.isVisible())) break;
       // Wait for THIS skip to land before looking again: until the decision
-      // round-trips the held row is still up, and a second pass would skip the
+      // round-trips the row is still up, and a second pass would skip the
       // player after it too. On a name step x moving is the decision landing.
       const { x } = await readStep(page);
       await person.click();
       await expectStepLeft(page, x);
+      await passTeamSteps();
     }
     await expect(person).toBeVisible();
     await expect(held, "the player the walk stopped on still holds its create").toBeHidden();
+    await expect(preselected, "the player the walk stopped on is a preselect, with nothing to create").toBeHidden();
+    await expect(pickStep, "the player the walk stopped on is a same-name pick step, with no career editor").toBeHidden();
   }
 }
 
@@ -553,6 +653,10 @@ export async function advanceToSave(page: Page): Promise<void> {
  *   next name step or, if that was the last name, to the first post-name step.
  *   Either footer offers a Back, so this takes "Back to previous decision" or
  *   "Back to previous step".
+ *   The caller WAITS for the walk to have moved before calling this
+ *   (`answerPlayerAsNew`'s `expectStepLeft`, or the live step's group/heading
+ *   `toBeHidden()` after a raw Link click); Back pressed while the decision is
+ *   in flight presents the decision before that row.
  * - `decision` the decision line, matched exactly when a string ("Skipped",
  *   "Added as new", "Linked to Shohei Ohtani") or by the regex given.
  * - `resume: true` presses the panel's "Next", handing the walk back its own

@@ -89,3 +89,9 @@
 - [Neo415 eBay OAuth + deletion webhook](patterns_neo415_ebay_oauth_and_deletion_webhook.md) — nonce/state shape; deletion POST signature; single-flight refresh; raw-body log mask before chunking
 - [CI cross-run queue](patterns_ci_cross_run_queue.md) — gh-api run/job polling mutex: fork runs forge holders (filter head_repository), partial reads fail open, per-repo token budget
 - [Per-owner progress field](patterns_per_owner_progress_field.md) — internal, patch-only, run-id guarded writer; sibling writes in the run must be patch-only too or a mid-run disconnect resurrects the row
+- [Held client store auto-send](patterns_held_client_store_autosend.md) — client readiness vs server refusals; retry key scope; job-start budget not refunded; purge module store on identity change
+- [Patterns neo446 rejected names and copies](patterns_neo446_rejected_names_and_copies.md) — names passing `_name_rejection` are not display-safe; sort on raw names; count live rasters when a pixel ceiling moves
+- [Bundler plugin disable drops cleanup](patterns_bundler_plugin_disable_drops_cleanup.md) — `disable` also drops delete-after-upload; tie build.sourcemap to the gate; local `vercel build` sets VERCEL=1
+- [Address step bundle order](patterns_neo434_address_step_bundle_order.md) — "First import" is a source claim; read the built entry, run a timeline; how to leak-check a real bundle without a token
+- [Neo424 offered-on-stored-row](patterns_neo424_offered_on_stored_row.md) — id relaxation keyed on stored row fields is as narrow as that field's writers; enumerate them (applyLookupResult spread, switchRowSport)
+- [Neo475 body scrubber](patterns_neo475_body_scrubber.md) — run adversarial inputs; x-amzn-* wildcard + unredacted headers; slice-before-redact; free-text kept keys; key names; entities

@@ -17,16 +17,20 @@ export const BINDER_TAB_LOADERS: ReadonlyArray<() => Promise<unknown>> = [
   loadProfilePublic,
 ];
 
-/** A lazy route's element: a quiet line while its chunk loads. */
-export function Deferred({ children }: { children: ReactNode }) {
+/** The quiet line shown while a page's code is on its way. */
+export function LoadingLine() {
   return (
-    <Suspense
-      fallback={
-        <p role="status" className="text-sm text-ink-3">
-          Sleeving the cards…
-        </p>
-      }
-    >
+    <p role="status" className="text-sm text-ink-3">
+      Sleeving the cards…
+    </p>
+  );
+}
+
+/** A lazy route's element: a quiet line while its chunk loads. */
+export function Deferred({ children, fullPage = false }: { children: ReactNode; fullPage?: boolean }) {
+  const line = <LoadingLine />;
+  return (
+    <Suspense fallback={fullPage ? <div className="min-h-screen bg-surface px-4 py-6">{line}</div> : line}>
       {children}
     </Suspense>
   );
@@ -47,7 +51,10 @@ export function PrefetchBinderTabs({
   useEffect(() => {
     const warm = () => {
       for (const load of loaders) {
-        // A failed prefetch is harmless: the route retries when it renders.
+        // A failed prefetch never touches the page in front of the user. The
+        // browser may remember the failure for this document, so the route's
+        // own import can fail later; the boundary's reload recovers that
+        // (chunk-reload.tsx).
         load().catch(() => {});
       }
     };

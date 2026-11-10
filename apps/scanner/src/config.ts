@@ -117,3 +117,11 @@ export async function saveKey(file: string, convexUrl: string, key: string | und
 export function looksLikeCode(raw: string): boolean {
   return /^[A-Za-z0-9]{6}$/.test(raw.replace(/[\s-]/g, ""));
 }
+
+/**
+ * The API key pasted where a code goes: it's still on the clipboard after
+ * sign-in. Never repeat such an answer back; it signs in as the collector.
+ */
+export function looksLikeKey(raw: string): boolean {
+  return /^ak_/i.test(raw) || raw.length >= 20;
+}

@@ -180,8 +180,19 @@ def _load(image_bytes: bytes) -> tuple[np.ndarray, np.ndarray, float]:
     Dividing work-space coordinates by `scale` maps back to `full` — final
     crop pixels are always taken from `full`.
     """
-    im = ImageOps.exif_transpose(Image.open(BytesIO(image_bytes))).convert("RGB")
-    full = cv2.cvtColor(np.array(im), cv2.COLOR_RGB2BGR)
+    # A 65 MP frame is ~260 MB as a Pillow image and ~195 MB as an array, so
+    # each stage is let go as soon as the next exists: transpose in place, and
+    # wrap Pillow's bytes rather than copy them (`cvtColor` reads a read-only
+    # array). The peak is `asarray` itself, where Pillow's `tobytes` holds its
+    # encoded chunks and their join beside the image.
+    im = Image.open(BytesIO(image_bytes))
+    ImageOps.exif_transpose(im, in_place=True)
+    if im.mode != "RGB":
+        im = im.convert("RGB")
+    rgb = np.asarray(im)
+    del im
+    full = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+    del rgb
     h, w = full.shape[:2]
     scale = WORK_LONG / max(h, w)
     if scale < 1:
@@ -758,11 +769,38 @@ def fast_tiered_crop(image_bytes: bytes) -> bytes | None:
     it declines still escalates to this pipeline's BiRefNet pass. This
     function stays identity-only.
     """
+    accepted, _reason = fast_tiered_verdict(image_bytes)
+    return accepted
+
+
+# Reasons `fast_tiered_verdict` returns. "frame" is the only accept.
+FAST_VERDICT_REASONS: tuple[str, ...] = (
+    "frame",
+    "weak",
+    "margin",
+    "crop",
+    "not_card_aspect",
+    "undecodable",
+    "error",
+)
+
+
+def fast_tiered_verdict(image_bytes: bytes) -> tuple[bytes | None, str]:
+    """`fast_tiered_crop` with the reason behind its answer (NEO-399).
+
+    Returns `(image_bytes, "frame")` for the classical identity accept, else
+    `(None, reason)`: `"weak"` / `"margin"` are `should_identity`'s unsettled
+    verdicts, `"crop"` means the classical pass found a card inside the frame,
+    `"not_card_aspect"` that the frame itself is not card-aspect, and
+    `"undecodable"` / `"error"` that the pass could not run. The reason lets
+    the next FAST stage (`frame_content`) follow only the `"weak"` frames;
+    `fast_tiered_crop` keeps the bytes-or-None contract.
+    """
     try:
         full, work, scale = _load(image_bytes)
     except Exception as exc:  # noqa: BLE001
         logger.warning("fast_tiered_crop: cannot open image: %s", exc)
-        return None  # escalate; the full pipeline owns the undecodable path
+        return None, "undecodable"  # escalate; the full pipeline owns the undecodable path
 
     try:
         fh, fw = work.shape[:2]
@@ -771,7 +809,7 @@ def fast_tiered_crop(image_bytes: bytes) -> bytes | None:
             # A frame that is not itself card-aspect is never a pre-cropped
             # card handed back to us — it is a photo with framing to remove.
             logger.info("fast: escalate (frame not card-aspect)")
-            return None
+            return None, "not_card_aspect"
 
         lab_work = cv2.cvtColor(work, cv2.COLOR_BGR2LAB).astype(np.float32)
         bg = border_bg_lab(lab_work)
@@ -782,9 +820,9 @@ def fast_tiered_crop(image_bytes: bytes) -> bytes | None:
         # what BiRefNet is for — so those escalate rather than pass through.
         if identity and reason == "frame":
             logger.info("fast: identity (frame-fill card-aspect frame), skipping BiRefNet")
-            return image_bytes
+            return image_bytes, "frame"
         logger.info("fast: escalate (identity=%s reason=%s)", identity, reason)
-        return None
+        return None, reason if identity else "crop"
     except Exception:
         logger.exception("fast_tiered_crop: classical pass failed; escalating")
-        return None
+        return None, "error"

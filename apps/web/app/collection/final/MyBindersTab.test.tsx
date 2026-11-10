@@ -183,6 +183,59 @@ describe("My Binders", () => {
     expect(screen.getByRole("dialog")).toBeTruthy();
   });
 
+  describe("PageUp and PageDown turn the owner's pages", () => {
+    const WANTS = "/collection?tab=binders&b=binder-want";
+    const onPage = (n: number) => screen.queryByRole("group", { name: new RegExp(`^Page ${n}\\b`) }) !== null;
+    // `hidden`: a dialog may make the page behind it inert.
+    const pagesShown = () => screen.getAllByRole("group", { name: /^Page \d+/, hidden: true }).map((g) => g.getAttribute("aria-label"));
+
+    it("turn the page, and stop at both ends", () => {
+      renderBinders(WANTS);
+      expect(onPage(1)).toBe(true);
+      fireEvent.keyDown(document.body, { key: "PageUp" });
+      expect(onPage(1)).toBe(true);
+      fireEvent.keyDown(document.body, { key: "PageDown" });
+      expect(onPage(2)).toBe(true);
+      const next = screen.getByRole("button", { name: /^Next pages?$/ });
+      for (let i = 0; i < 40 && next.getAttribute("aria-disabled") !== "true"; i++) {
+        fireEvent.keyDown(document.body, { key: "PageDown" });
+      }
+      expect(next.getAttribute("aria-disabled")).toBe("true");
+      const end = pagesShown();
+      fireEvent.keyDown(document.body, { key: "PageDown" });
+      expect(pagesShown()).toEqual(end);
+      fireEvent.keyDown(document.body, { key: "PageUp" });
+      expect(pagesShown()).not.toEqual(end);
+    });
+
+    /** A binder with a page to turn to: the key works here, so a key that does nothing proves the guard. */
+    const openWithRoomToTurn = () => {
+      renderBinders("/collection?tab=binders&b=binder-ohtani-rainbow");
+      const before = pagesShown();
+      fireEvent.keyDown(document.body, { key: "PageDown" });
+      expect(pagesShown()).not.toEqual(before);
+      fireEvent.keyDown(document.body, { key: "PageUp" });
+      expect(pagesShown()).toEqual(before);
+      return before;
+    };
+
+    it("do nothing with a dialog open", () => {
+      const before = openWithRoomToTurn();
+      fireEvent.click(screen.getByRole("button", { name: "Binder settings" }));
+      expect(screen.getByRole("dialog")).toBeTruthy();
+      fireEvent.keyDown(document.body, { key: "PageDown" });
+      expect(pagesShown()).toEqual(before);
+    });
+
+    it("do nothing with focus in a field", () => {
+      const before = openWithRoomToTurn();
+      const field = screen.getByRole("searchbox", { name: "Hunt for one of your cards" });
+      field.focus();
+      fireEvent.keyDown(field, { key: "PageDown" });
+      expect(pagesShown()).toEqual(before);
+    });
+  });
+
   it("a want for a binder opens the add form living in that binder, not Main", () => {
     renderBinders("/collection?tab=binders&b=binder-want");
     fireEvent.click(screen.getByRole("button", { name: /^Next pages?$/ }));

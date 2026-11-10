@@ -1,0 +1,19 @@
+# NEO-399: a second, separate scan of the same Bowe card (slightly smaller
+# frame), the intake E2E's 08-bowe-again-back. Same expectations as
+# tight-scan-no-dpi-bowe-back.
+orient:
+  rotation_degrees: 0
+
+classify:
+  side: back
+  player:
+    contains: Bowe
+  team:
+    contains: Chiefs
+  card_number:
+    equals: '315'
+
+crop:
+  category: tight-scan-no-dpi / white border, back
+  source: frame_content
+  identity: true

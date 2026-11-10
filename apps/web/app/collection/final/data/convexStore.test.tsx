@@ -604,6 +604,19 @@ describe("every write's undo is the inverse write", () => {
     expect(writes()[1]).toEqual({ name: "collection:removeCopy", args: { copyId: "new1" } });
   });
 
+  it("NEO-431: a plain add sends no keepsOwnLine; an add with photos coming does, and its undo removes the line", async () => {
+    calls.answers.set("collection:addLineItem", { copyId: "new1", merged: false });
+    const a = actions();
+    await a.addLineItem(CARD, { quantity: 1, acquiredAt: "2026-11-01", notes: "" });
+    expect(writes()[0].args).not.toHaveProperty("keepsOwnLine");
+    const result = await a.addLineItem(CARD, { quantity: 1, acquiredAt: "2026-11-01", notes: "" }, { keepsOwnLine: true });
+    expect(writes()[1].args).toMatchObject({ cardId: "card1", keepsOwnLine: true });
+    // The answer's id, never a placeholder: `addPhoto` refuses those.
+    expect(result.copyId).toBe("new1");
+    await act(result.undo);
+    expect(writes()[2]).toEqual({ name: "collection:removeCopy", args: { copyId: "new1" } });
+  });
+
   it("Have, folded into a stack: the undo puts the stack back as it was", async () => {
     const previous = { quantity: 1, acquiredOn: "2026-10-23", homeId: "home1" };
     calls.answers.set("collection:addHave", { copyId: "stack1", merged: true, previous });
@@ -1043,6 +1056,40 @@ describe("writes: moves, trade, wants and containers", () => {
     expect(r).toMatchObject({ copyId: "twin", folded: true, split: true });
   });
 
+  it("NEO-479: moveCopy sends the own price in whole cents, never dollars", async () => {
+    calls.answers.set("collection:moveCopy", MOVE_BACK);
+    await actions().moveCopy(COPY, "box1", { minPrice: 0.29 });
+    expect(writes()[0].args).toEqual({ copyId: "copy1", toHomeId: "box1", minPriceCents: 29 });
+    await actions().moveCopy(COPY, "box1", { minPrice: 1.1 });
+    expect(writes()[1].args).toMatchObject({ minPriceCents: 110 });
+  });
+
+  it("NEO-479: a move with no price sends no price key", async () => {
+    calls.answers.set("collection:moveCopy", MOVE_BACK);
+    await actions().moveCopy(COPY, "box1", { quantity: 1 });
+    expect(writes()[0].args).not.toHaveProperty("minPriceCents");
+  });
+
+  it.each([
+    ["a number", 150],
+    ["null (there was none)", null],
+  ])("NEO-479: the undo sends back the price the server recorded: %s", async (_n, before) => {
+    calls.answers.set("collection:moveCopy", { ...MOVE_BACK, from: { homeId: "home1", quantity: 2, minPriceCents: before } });
+    const r = await actions().moveCopy(COPY, "box1", { minPrice: 0.4 });
+    await act(r.undo);
+    expect(writes()[1]).toEqual({
+      name: "collection:moveCopy",
+      args: { copyId: "copy1", toHomeId: "home1", quantity: 2, minPriceCents: before },
+    });
+  });
+
+  it("NEO-479: an undo of a move that changed no price sends no price key", async () => {
+    calls.answers.set("collection:moveCopy", MOVE_BACK);
+    const r = await actions().moveCopy(COPY, "box1");
+    await act(r.undo);
+    expect(writes()[1].args).not.toHaveProperty("minPriceCents");
+  });
+
   it("placeCopy sends the row, null to take it out, and its undo goes back to the previous row", async () => {
     calls.answers.set("collection:placeCopy", { ...MOVE_BACK, from: { homeId: "home1", slot: 1, quantity: 2 } });
     const r = await actions().placeCopy(COPY, null);
@@ -1123,6 +1170,41 @@ describe("writes: moves, trade, wants and containers", () => {
       "collectionContainers:empty",
       "collectionContainers:remove",
     ]);
+  });
+});
+
+describe("optimistic updates: an add with photos coming (NEO-431)", () => {
+  const twin = {
+    _id: "copy1",
+    cardId: "card1",
+    variantId: "base1",
+    setId: "set1",
+    homeId: "home1",
+    quantity: 1,
+    condition: "Excellent",
+    acquiredOn: "2026-11-01",
+    lastUpdated: 1,
+  };
+  const details = { quantity: 1, condition: "Excellent" as const, acquiredAt: "2026-11-01", notes: "", homeId: "home1" };
+
+  it("draws its own row beside an identical one, where a plain add stacks", async () => {
+    local.set("collection:copiesOf", { cardId: "card1" }, [twin]);
+    calls.answers.set("collection:addLineItem", { copyId: "new1", merged: false });
+    const a = renderHook(() => useCollectionActions(), { wrapper }).result.current;
+    void a.addLineItem(CARD, details, { keepsOwnLine: true });
+    const own = local.get("collection:copiesOf", { cardId: "card1" }) as (typeof twin)[];
+    expect(own).toHaveLength(2);
+    expect(own.find((r) => r._id === "copy1")?.quantity).toBe(1);
+    expect(isOptimisticId(own.find((r) => r._id !== "copy1")!._id)).toBe(true);
+    await act(async () => {});
+
+    local.set("collection:copiesOf", { cardId: "card1" }, [twin]);
+    calls.answers.set("collection:addLineItem", { copyId: "copy1", merged: true, previous: { quantity: 1 } });
+    void a.addLineItem(CARD, details);
+    const stacked = local.get("collection:copiesOf", { cardId: "card1" }) as (typeof twin)[];
+    expect(stacked).toHaveLength(1);
+    expect(stacked[0].quantity).toBe(2);
+    await act(async () => {});
   });
 });
 
@@ -1262,6 +1344,83 @@ describe("optimistic updates: a copy is never shown in two places", () => {
     answer();
     await actions().moveCopy(move, BOX, { slot: 3 });
     expect(copiesOf()[0]).toMatchObject({ homeId: BOX, slot: 3 });
+  });
+
+  describe("the move's own price (NEO-479)", () => {
+    const rawIn = (homeId: string) => rowsIn("collection:copiesInContainer", homeId) as { _id: string; quantity: number; minPriceCents?: number }[];
+
+    it("lands the cards in the box at the price typed, in cents", async () => {
+      seed();
+      answer();
+      await actions().moveCopy(move, BOX, { minPrice: 0.4 });
+      expect(rawIn(BOX)[0]).toMatchObject({ _id: "copy1", minPriceCents: 40 });
+    });
+
+    it("a priced split prices only the part in the box; the remainder stays unpriced", async () => {
+      seed();
+      answer({ copyId: "new", split: true, from: { homeId: MAIN, quantity: 2 } });
+      await actions().moveCopy(move, BOX, { quantity: 2, minPrice: 1.5 });
+      expect(rawIn(BOX)[0]).toMatchObject({ quantity: 2, minPriceCents: 150 });
+      expect(rawIn(MAIN)[0]).toMatchObject({ _id: "copy1", quantity: 1 });
+      expect(rawIn(MAIN)[0]).not.toHaveProperty("minPriceCents");
+    });
+
+    it("folds only into a box twin at the same price", async () => {
+      const same = base({ _id: "twin", homeId: BOX, quantity: 1, minPriceCents: 150 });
+      seed([base()], [same]);
+      answer({ copyId: "twin", folded: true });
+      await actions().moveCopy(move, BOX, { minPrice: 1.5 });
+      expect(copiesOf().map((r) => [r._id, r.quantity])).toEqual([["twin", 4]]);
+    });
+
+    it("does not fold into a box twin at another price, or with none", async () => {
+      for (const twinPrice of [{ minPriceCents: 99 }, {}]) {
+        local.clear();
+        seed([base()], [base({ _id: "twin", homeId: BOX, quantity: 1, ...twinPrice })]);
+        answer();
+        await actions().moveCopy(move, BOX, { minPrice: 1.5 });
+        expect(copiesOf().map((r) => r._id).sort()).toEqual(["copy1", "twin"]);
+      }
+    });
+
+    it("a card with its own price keeps it into a box when none is typed", async () => {
+      seed([base({ minPriceCents: 200 })]);
+      answer();
+      await actions().moveCopy({ ...move, minPrice: 2 }, BOX);
+      expect(rawIn(BOX)[0]).toMatchObject({ minPriceCents: 200 });
+    });
+
+    it("taking a priced box line off sale lands it in the binder with no price (Branch B)", async () => {
+      seed([], [base({ homeId: BOX, minPriceCents: 150 })]);
+      answer({ from: { homeId: BOX, quantity: 3, minPriceCents: 150 } });
+      await actions().moveCopy({ ...COPY_AT(BOX), homeKind: "box", minPrice: 1.5 }, MAIN);
+      expect(rawIn(MAIN)[0]).toMatchObject({ _id: "copy1" });
+      expect(rawIn(MAIN)[0]).not.toHaveProperty("minPriceCents");
+    });
+
+    it("the undo of taking off sale puts the price back on the row it sends", async () => {
+      seed([], [base({ homeId: BOX, minPriceCents: 150 })]);
+      answer({ from: { homeId: BOX, quantity: 3, minPriceCents: 150 } });
+      const r = await actions().moveCopy({ ...COPY_AT(BOX), homeKind: "box", minPrice: 1.5 }, MAIN);
+      answer({ from: { homeId: MAIN, quantity: 3 } });
+      await act(r.undo);
+      expect(calls.list.at(-1)).toEqual({
+        name: "collection:moveCopy",
+        args: { copyId: "copy1", toHomeId: BOX, quantity: 3, minPriceCents: 150 },
+      });
+      expect(rawIn(BOX)[0]).toMatchObject({ _id: "copy1", minPriceCents: 150 });
+    });
+
+    it("an undo that restores 'no price' lands the row without one", async () => {
+      seed();
+      answer({ from: { homeId: MAIN, quantity: 3, minPriceCents: null } });
+      const r = await actions().moveCopy(move, BOX, { minPrice: 0.4 });
+      answer({ from: { homeId: BOX, quantity: 3 } });
+      await act(r.undo);
+      expect(calls.list.at(-1)?.args).toMatchObject({ toHomeId: MAIN, minPriceCents: null });
+      expect(rawIn(MAIN)[0]).toMatchObject({ _id: "copy1" });
+      expect(rawIn(MAIN)[0]).not.toHaveProperty("minPriceCents");
+    });
   });
 
   it("placeCopy re-rows the line in its own home and clears the row with null", async () => {
@@ -1560,6 +1719,13 @@ describe("the Inventory list and quick counts (NEO-364)", () => {
       expect(writes()).toHaveLength(1);
     });
 
+    it("says photos went only when the inverse puts some back", async () => {
+      calls.answers.set("collectionInventory:setBoxQuantity", result([{ op: "restore", quantity: 2, photoIds: ["ph1"] }], 2, 0));
+      expect((await actions().setBoxQuantity(CARD, BOX_C, 0)).tookPhotos).toBe(true);
+      calls.answers.set("collectionInventory:setBoxQuantity", result([{ op: "restore", quantity: 2 }], 2, 0));
+      expect((await actions().setBoxQuantity(CARD, BOX_C, 0)).tookPhotos).toBe(false);
+    });
+
     it("refuses a binder, a fraction, a negative and a count past the cap before anything is sent", async () => {
       const a = actions();
       await expect(a.setBoxQuantity(CARD, { ...BOX_C, kind: "binder" }, 1)).rejects.toThrow(/box/i);
@@ -1687,6 +1853,150 @@ describe("the Inventory list and quick counts (NEO-364)", () => {
       expect(copiesOf().map((r) => r._id).sort()).toEqual(["noted", "slab", "trade"]);
     });
 
+    describe("a line with photos (NEO-431)", () => {
+      const photo = (id: string, over: object = {}) => row(id, UNSORTED, { quantity: 1, condition: "Excellent", hasPhotos: true, ...over });
+      const lines = () => copiesOf().map((r) => [r._id, r.quantity]).sort();
+
+      it("with only a photo line in the box, a raise stacks onto it and keeps its photos", async () => {
+        seed([photo("p", { acquiredOn: "2026-10-01" })]);
+        applyBoxQuantity(await store(), "k1", UNSORTED, 3, "2026-10-25", PLACE, draw);
+        expect(copiesOf()).toEqual([expect.objectContaining({ _id: "p", quantity: 3, hasPhotos: true, acquiredOn: "2026-10-01" })]);
+        expect(drawn).toBe(0);
+      });
+
+      it("with two photo lines and nothing else, a raise stacks onto the newest", async () => {
+        seed([photo("old", { lastUpdated: 1 }), photo("new", { lastUpdated: 9 })]);
+        applyBoxQuantity(await store(), "k1", UNSORTED, 3, "2026-10-25", PLACE, draw);
+        expect(lines()).toEqual([["new", 2], ["old", 1]]);
+      });
+
+      it("with a line without photos, a raise folds there and the photo line stays as it was", async () => {
+        seed([photo("p"), row("bare", UNSORTED, { quantity: 1, condition: "Excellent", acquiredOn: "2026-10-25" })]);
+        applyBoxQuantity(await store(), "k1", UNSORTED, 4, "2026-10-25", PLACE, draw);
+        expect(lines()).toEqual([["bare", 3], ["p", 1]]);
+      });
+
+      it("with an older line without photos, a raise draws today's line, never onto the photo line", async () => {
+        seed([photo("p", { acquiredOn: "2026-10-25" }), row("bare", UNSORTED, { quantity: 1, acquiredOn: "2026-10-01" })]);
+        applyBoxQuantity(await store(), "k1", UNSORTED, 3, "2026-10-25", PLACE, draw);
+        expect(lines()).toEqual([["bare", 1], ["drawn1", 1], ["p", 1]]);
+      });
+
+      it("a photo line beside a graded or noted line still takes the raise: only plain lines decide", async () => {
+        seed([photo("p"), row("noted", UNSORTED, { quantity: 1, notes: "ding" })]);
+        applyBoxQuantity(await store(), "k1", UNSORTED, 2, "2026-10-25", PLACE, draw);
+        expect(lines()).toEqual([["noted", 1], ["p", 2]]);
+      });
+
+      it("a lowering takes the lines without photos first, even when the photo line is newer", async () => {
+        seed([row("bare", UNSORTED, { quantity: 2, lastUpdated: 1 }), photo("p", { quantity: 2, lastUpdated: 9 })]);
+        applyBoxQuantity(await store(), "k1", UNSORTED, 3, "2026-10-25", PLACE, draw);
+        expect(lines()).toEqual([["bare", 1], ["p", 2]]);
+        applyBoxQuantity(await store(), "k1", UNSORTED, 2, "2026-10-25", PLACE, draw);
+        expect(lines()).toEqual([["p", 2]]);
+        applyBoxQuantity(await store(), "k1", UNSORTED, 1, "2026-10-25", PLACE, draw);
+        expect(copiesOf()).toEqual([expect.objectContaining({ _id: "p", quantity: 1, hasPhotos: true })]);
+        applyBoxQuantity(await store(), "k1", UNSORTED, 0, "2026-10-25", PLACE, draw);
+        expect(copiesOf()).toEqual([]);
+      });
+
+      it("a lowering takes newest first within each group", async () => {
+        seed([photo("p-old", { lastUpdated: 1 }), photo("p-new", { lastUpdated: 2 }), row("b-old", UNSORTED, { quantity: 1, lastUpdated: 3 }), row("b-new", UNSORTED, { quantity: 1, lastUpdated: 4 })]);
+        applyBoxQuantity(await store(), "k1", UNSORTED, 3, "2026-10-25", PLACE, draw);
+        expect(lines()).toEqual([["b-old", 1], ["p-new", 1], ["p-old", 1]]);
+        applyBoxQuantity(await store(), "k1", UNSORTED, 1, "2026-10-25", PLACE, draw);
+        expect(lines()).toEqual([["p-old", 1]]);
+      });
+
+      it("a photo line with another detail is never counted or touched", async () => {
+        seed([photo("noted", { notes: "ding" })]);
+        applyBoxQuantity(await store(), "k1", UNSORTED, 0, "2026-10-25", PLACE, draw);
+        expect(lines()).toEqual([["noted", 1]]);
+        applyBoxQuantity(await store(), "k1", UNSORTED, 1, "2026-10-25", PLACE, draw);
+        expect(lines()).toEqual([["drawn1", 1], ["noted", 1]]);
+      });
+
+      it("a restore with photos draws a line with photos, never folded into an identical bare line", async () => {
+        seed([row("bare", UNSORTED, { quantity: 1, condition: "Excellent", acquiredOn: "2026-10-01" })]);
+        applyBoxSteps(
+          await store(),
+          { cardId: "k1", boxId: UNSORTED, steps: [{ op: "restore", quantity: 2, acquiredOn: "2026-10-01", photoIds: ["ph1"] }] } as never,
+          PLACE,
+          (n) => `step${n}` as never,
+        );
+        expect(copiesOf().map((r) => [r._id, r.quantity, (r as { hasPhotos?: boolean }).hasPhotos]).sort()).toEqual([
+          ["bare", 1, undefined],
+          ["step0", 2, true],
+        ]);
+      });
+
+      it("adversarial: the undo of a raise onto a photo line sets it back; the redo puts it on again, with no line drawn either way", async () => {
+        seed([photo("p", { quantity: 2 })]);
+        applyBoxQuantity(await store(), "k1", UNSORTED, 5, "2026-10-25", PLACE, draw);
+        expect(lines()).toEqual([["p", 5]]);
+        applyBoxSteps(await store(), { cardId: "k1", boxId: UNSORTED, steps: [{ op: "set", copyId: "p", from: 5, to: 2 }] } as never, PLACE, (n) => `step${n}` as never);
+        expect(lines()).toEqual([["p", 2]]);
+        applyBoxSteps(await store(), { cardId: "k1", boxId: UNSORTED, steps: [{ op: "set", copyId: "p", from: 2, to: 5 }] } as never, PLACE, (n) => `step${n}` as never);
+        expect(lines()).toEqual([["p", 5]]);
+        expect(drawn).toBe(0);
+      });
+
+      it("adversarial: one inverse restoring a bare line and two photo lines of the same date draws two photo lines and folds the bare one", async () => {
+        seed([row("bare", UNSORTED, { quantity: 1, condition: "Excellent", acquiredOn: "2026-10-01" })]);
+        applyBoxSteps(
+          await store(),
+          {
+            cardId: "k1",
+            boxId: UNSORTED,
+            steps: [
+              { op: "restore", quantity: 2, acquiredOn: "2026-10-01" },
+              { op: "restore", quantity: 1, acquiredOn: "2026-10-01", photoIds: ["a"] },
+              { op: "restore", quantity: 3, acquiredOn: "2026-10-01", photoIds: ["b"] },
+            ],
+          } as never,
+          PLACE,
+          (n) => `step${n}` as never,
+        );
+        expect(copiesOf().map((r) => [r._id, r.quantity, (r as { hasPhotos?: boolean }).hasPhotos === true]).sort()).toEqual([
+          ["bare", 3, false],
+          ["step1", 1, true],
+          ["step2", 3, true],
+        ]);
+      });
+
+      it("adversarial: a raise whose total would pass the cap cannot be drawn onto a photo line past it", async () => {
+        seed([photo("p", { quantity: 999 - 1 })]);
+        applyBoxQuantity(await store(), "k1", UNSORTED, 999, "2026-10-25", PLACE, draw);
+        expect(lines()).toEqual([["p", 999]]);
+      });
+
+      it("adversarial: with a legacy photo line (no condition) alone, a raise stacks onto it as the server does", async () => {
+        seed([row("legacy", UNSORTED, { quantity: 1, hasPhotos: true })]);
+        applyBoxQuantity(await store(), "k1", UNSORTED, 2, "2026-10-25", PLACE, draw);
+        expect(lines()).toEqual([["legacy", 2]]);
+        expect(drawn).toBe(0);
+      });
+
+      it("adversarial: equal lastUpdated, two photo lines: the later listed is the newest, for a raise and for a lowering", async () => {
+        seed([photo("first", { lastUpdated: 5 }), photo("second", { lastUpdated: 5 })]);
+        applyBoxQuantity(await store(), "k1", UNSORTED, 3, "2026-10-25", PLACE, draw);
+        expect(lines()).toEqual([["first", 1], ["second", 2]]);
+        applyBoxQuantity(await store(), "k1", UNSORTED, 1, "2026-10-25", PLACE, draw);
+        expect(lines()).toEqual([["first", 1]]);
+      });
+
+      it("a restore without photos never folds into an identical photo line", async () => {
+        seed([photo("p", { acquiredOn: "2026-10-01" })]);
+        applyBoxSteps(
+          await store(),
+          { cardId: "k1", boxId: UNSORTED, steps: [{ op: "restore", quantity: 1, acquiredOn: "2026-10-01" }] } as never,
+          PLACE,
+          (n) => `step${n}` as never,
+        );
+        expect(lines()).toEqual([["p", 1], ["step0", 1]]);
+      });
+    });
+
     it("the same number draws nothing, and an unplaced card draws nothing", async () => {
       seed([row("a", UNSORTED, { quantity: 2 })]);
       const before = local.snapshot();
@@ -1746,6 +2056,12 @@ describe("the Inventory list and quick counts (NEO-364)", () => {
         ]) {
           expect(isPlainRow(row("a", UNSORTED, over) as never), JSON.stringify(over)).toBe(false);
         }
+      });
+
+      it("NEO-431: a photo alone leaves a line plain; a photo and any other detail does not", () => {
+        expect(isPlainRow(row("a", UNSORTED, { hasPhotos: true }) as never)).toBe(true);
+        expect(isPlainRow(row("a", UNSORTED, { hasPhotos: true, notes: "x" }) as never)).toBe(false);
+        expect(isPlainRow(row("a", UNSORTED, { hasPhotos: true, condition: "Mint" }) as never)).toBe(false);
       });
 
       it("NEO-380: a line in the default condition is plain, another condition is not", () => {

@@ -32,4 +32,42 @@ clock stalls them).
   the 5xx for every call to that offer once a retry exists, or it goes green
   for the wrong reason (the retry succeeds through the fake).
 
+- No seam to inject through (a pause inside an `internalAction` tested with
+  `t.action`, args fixed by its validator): in `beforeEach`,
+  `vi.spyOn(globalThis, "setTimeout")`, shorten only calls whose delay equals
+  the exported pause constant, and pass every other delay to the real timer.
+  convex-test keeps running, the pause is still asserted, and recording a
+  counter inside the spy proves where it fell between calls.
+
+- An in-action pause in a suite that already runs `vi.useFakeTimers()` and
+  calls `t.action(...)` directly (not via `finishAllScheduledFunctions`) hangs
+  the action at the 5 s test timeout: nothing advances the fake clock while
+  `t.action` is awaited. `vi.useFakeTimers({ shouldAdvanceTime: true })` lets
+  a sub-second pause elapse in real time while minute-scale `runAfter` passes
+  still wait for `runAllTimers` (NEO-475 card-listing retry,
+  bscTeamEnrichmentQueue NEO-330 block). A jittered pause has no exact delay
+  to match, so a setTimeout spy keyed on the pause RANGE must not overlap
+  another delay in the path (BSC_TEAM_ENRICH_DELAY_MS is 300, inside 250-500).
+- A retry SCHEDULE (several pauses, e.g. `readSheets`' 503 list, NEO-475):
+  export the list, key the setTimeout spy on `list.includes(ms)`, and record
+  `[ms, readsSoFar]` so one assertion pins both the lengths and where each
+  fell. Test the shared-schedule bound (a 503 on two sheets spends it) and
+  that a second call (the read-back) starts its own.
+- The seller adapter's failure sentences are asserted outside the adapter
+  tests too (order poll `lastPollError` in listingSales.test.ts, cleanup
+  error text): grep the whole convex/ tree before changing the copy.
+- Adding a retry changes every "asked N times" count downstream (queue passes
+  x attempts); a "succeeds on a later pass" test must fail every attempt of
+  the first pass or it goes green through the in-action retry.
+
+- An IMMEDIATE retry (no pause, e.g. the BSC profile read's 5 s x 2 rule)
+  needs no seam: prove "no pause" with `vi.useFakeTimers({ toFake:
+  ["setTimeout","setInterval","setImmediate"] })`, await the call without
+  advancing, and assert `vi.getTimerCount() === 0` (a planted pause hangs it
+  red). Prove the per-attempt bound by spying `AbortSignal.timeout` (record
+  `ms`, call the real one): fetch's signal is opaque otherwise.
+- A retry loop ABOVE `send` numbers its attempts through `logFields.attempt`;
+  `send` feeds the recorder `logFields.attempt - 1 + its own 401 count`, so
+  `bsc_seller_call` and `bsc_call_failed` agree per attempt.
+
 Related: [[action-impl-stub-ctx-for-write-failures]], [[hold-runafter0-in-convex-test]].

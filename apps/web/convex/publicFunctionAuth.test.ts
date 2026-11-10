@@ -252,6 +252,10 @@ describe("NEO-212: the entity review + player management surface is admin-gated"
     // twins: its insert branch schedules a pooled Wikidata enrichment, and
     // `wikidataPool` caps concurrency rather than total queued work.
     ["players.findOrCreate", (t, sportId) => t.mutation(api.players.findOrCreate, { name: "Nobody", sportId })],
+    // NEO-463. The picker's and add form's pre-check for a one-word name: it
+    // reads which fuller-named players the word belongs to, behind the same
+    // admin-only editors that write players.
+    ["players.nameFragmentCheck", (t, sportId) => t.query(api.players.nameFragmentCheck, { name: "Walker", sportId })],
     ["teams.resolveNames", (t, sportId) => t.query(api.teams.resolveNames, { names: [], sportId })],
     ["teams.nearMatches", (t, sportId) => t.query(api.teams.nearMatches, { name: "Yankees", sportId })],
     // NEO-284. Advisory as it is, it still reads which OTHER team a proposed
@@ -2670,6 +2674,8 @@ describe("NEO-379: the intake run functions are signed-in, and the reads answer 
       () => t.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId, quantity: 1 }),
       () => t.mutation(api.intakeRuns.answerIntakeRepeat, { runId, pairId, secondCopy: true }),
       () => t.mutation(api.intakeRuns.setIntakeMatchAside, { runId, pairId, setAside: true }),
+      // NEO-446: a loose photo set aside.
+      () => t.mutation(api.intakeRuns.setIntakePhotoAside, { runId, entryIndex: 0, setAside: true }),
       // NEO-427: the Saved tile's Try again.
       () => t.action(api.intakePhotos.retryIntakePhotos, { matchId }),
     ];
@@ -2984,6 +2990,7 @@ describe("NEO-415: eBay connection surface", () => {
     ["credentials.ts", "disconnectEbayAndWithdraw", "internalAction"],
     ["credentials.ts", "verifyEbayNotification", "internalAction"],
     ["listingDrainEbay.ts", "recordEbayLinks", "internalMutation"],
+    ["listingDrain.ts", "recordConditionsPushed", "internalMutation"],
   ])("%s :: %s is declared %s", (file, fn, kind) => {
     const src = readFileSync(join(__dirname, file), "utf8");
     expect(src).toContain(`export const ${fn} = ${kind}({`);
@@ -3010,5 +3017,39 @@ describe("NEO-415: eBay connection surface", () => {
     expect(verify).toBeGreaterThan(0);
     expect(schedule).toBeGreaterThan(verify);
     expect(body.indexOf("ctx.scheduler")).toBe(schedule);
+  });
+});
+
+describe("NEO-475: the BSC call telemetry store is internal, never public", () => {
+  /**
+   * `record` is scheduled by the BSC adapters off the hot path and writes a
+   * `bscCallSummaries` row that is kept forever; `exportRange` reads every row
+   * and is reached only by `npx convex run` from the bsc-health scripts. A
+   * public twin of `record` would be an unauthenticated write into a table
+   * nothing prunes; a public twin of `exportRange` would be an unauthenticated
+   * read of every BSC call's failure samples. Same reading-the-source approach
+   * as the NEO-289 and NEO-322 blocks, for the same reason (convex-test does
+   * not enforce the public/internal boundary).
+   */
+  test.each([
+    ["bscCallStats.ts", "record", "internalMutation"],
+    ["bscCallStats.ts", "exportRange", "internalQuery"],
+  ])("%s :: %s is declared %s", (file, fn, keyword) => {
+    const src = readFileSync(join(__dirname, file), "utf8");
+    expect(src).toContain(`export const ${fn} = ${keyword}({`);
+    expect(src).not.toContain(`export const ${fn} = action(`);
+    expect(src).not.toContain(`export const ${fn} = query(`);
+    expect(src).not.toContain(`export const ${fn} = mutation(`);
+  });
+
+  test("the module imports no public function builder", () => {
+    // A third export added later inherits the module's imports; with only the
+    // internal builders imported, a public one cannot be declared by copying
+    // a neighbour.
+    const src = readFileSync(join(__dirname, "bscCallStats.ts"), "utf8");
+    const serverImport = src.match(/import \{([^}]*)\} from "\.\/_generated\/server";/);
+    expect(serverImport).not.toBeNull();
+    const names = serverImport![1].split(",").map((s) => s.trim()).filter(Boolean);
+    expect(names.sort()).toEqual(["internalMutation", "internalQuery"]);
   });
 });

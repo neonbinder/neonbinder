@@ -51,6 +51,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useReducer, useRef } from "react";
+import { MAX_PRICE_CENTS } from "@/lib/collection/price-cap";
 import {
   binders as seedBinders,
   buildingSetIds as seedBuilding,
@@ -96,6 +97,13 @@ export type DemoCopy = Omit<CopyDetails, "homeId"> & {
   id: CopyId;
   cardId: CardId;
   homeId: ContainerId;
+  /**
+   * The line has photos, as the real `collectionCopies.hasPhotos`. The photos
+   * themselves are object URLs held by the page (`useDemoCopyPhotos`), keyed on
+   * the copy's id, so this only ever lasts as long as the page: `loadState`
+   * drops it.
+   */
+  hasPhotos?: boolean;
 };
 
 /** A container as the demo stores it (counts are derived, never stored). */
@@ -376,7 +384,10 @@ function loadState(storageKey: string): CollectionState {
     const raw = window.sessionStorage.getItem(storageKey);
     if (raw) {
       const parsed = JSON.parse(raw) as CollectionState;
-      if (parsed.version === STATE_VERSION) return parsed;
+      // A reload lost the demo's photos (object URLs), so no stored line has any.
+      if (parsed.version === STATE_VERSION) {
+        return { ...parsed, copies: parsed.copies.map(({ hasPhotos: _gone, ...copy }) => copy) };
+      }
     }
   } catch {
     // Unavailable or corrupt storage: start from the seed.
@@ -404,7 +415,7 @@ function indexOfCopy(state: CollectionState, id: CopyId): number {
   return i;
 }
 
-/** Two line items are the same stack when everything but quantity and date match. */
+/** Two line items are the same stack when everything but quantity and date match. A line with photos is no stack (the server's `isOneOfAKind`). */
 export function sameLineItem(a: Omit<DemoCopy, "id" | "cardId">, b: Omit<DemoCopy, "id" | "cardId">): boolean {
   return (
     a.homeId === b.homeId &&
@@ -418,6 +429,8 @@ export function sameLineItem(a: Omit<DemoCopy, "id" | "cardId">, b: Omit<DemoCop
     !b.graded?.cert &&
     !a.serialNumber &&
     !b.serialNumber &&
+    !a.hasPhotos &&
+    !b.hasPhotos &&
     (a.costBasis ?? null) === (b.costBasis ?? null) &&
     (a.minPrice ?? null) === (b.minPrice ?? null) &&
     (a.location ?? "") === (b.location ?? "") &&
@@ -490,7 +503,7 @@ function checkSlot(state: CollectionState, homeId: ContainerId, slot: number | u
  * A PLAIN line (NEO-364, D9): what quick quantity entry counts and writes. Raw
  * (no grade) in the default condition (NEO-380; the demo has no setting, so
  * `DEFAULT_CONDITION`, or none), no serial, cost, location or notes, not up
- * for trade. Its row (`slot`) and date do not matter.
+ * for trade. Its row (`slot`), date and photos do not matter (NEO-431).
  */
 export function isPlainLine(copy: Omit<DemoCopy, "id" | "cardId">): boolean {
   return (
@@ -541,7 +554,24 @@ export interface MoveOpResult {
   copyId: CopyId;
   folded: boolean;
   split: boolean;
-  from: { homeId: ContainerId; slot?: number; quantity: number };
+  /**
+   * Where the cards came from, for the undo. NEO-479: `minPrice` holds the
+   * cards' own price before the move (`null`: none), there when the move
+   * changed it or took a priced card into a box; the undo sends it back.
+   */
+  from: { homeId: ContainerId; slot?: number; quantity: number; minPrice?: number | null };
+}
+
+/** NEO-479 — a price the copies can carry: dollars in whole cents, zero to the server's cap. */
+function isWholeCentPrice(price: number): boolean {
+  const cents = price * 100;
+  return Number.isFinite(price) && price >= 0 && Math.abs(Math.round(cents) - cents) < 1e-6 && Math.round(cents) <= MAX_PRICE_CENTS;
+}
+
+/** Two prices (dollars, or none) are the same when they are the same number of cents. */
+function samePrice(a: number | undefined, b: number | undefined): boolean {
+  if (a === undefined || b === undefined) return a === b;
+  return Math.round(a * 100) === Math.round(b * 100);
 }
 
 /** What `demoOps.restoreLines` needs to undo a `setBoxQuantity`. */
@@ -557,6 +587,8 @@ export interface BoxQuantityOpResult {
   before: number;
   after: number;
   undo: BoxQuantityUndo;
+  /** A line with photos went with the count (its Undo brings them back). */
+  tookPhotos?: boolean;
 }
 
 export interface RemoveOpResult {
@@ -673,6 +705,18 @@ export const demoOps = {
    * Moves `quantity` (default all) of a copy into `to`, at `slot` when
    * given (else a binder's first open pocket, or its own when it stays in the
    * same binder). Folds into an identical line there; part of a stack splits off.
+   *
+   * NEO-479 (as the server's `moveCopy`): `minPrice` (dollars) is the moving
+   * cards' own price, `null` clears it; left out, they keep the one they
+   * have, except out of a box into a binder, where they lose it. Refuses a
+   * price that isn't whole cents and any price on a move that stays home. A
+   * number into a binder is allowed: it is how an undo hands a card its own
+   * price back. Never touches a common price.
+   *
+   * `from.minPrice` (the price before, `null`: none) is there when the move
+   * changed the price, or when it went into a box from elsewhere carrying a
+   * price of its own: the undo, out of the box with no price, would
+   * otherwise take that price off.
    */
   moveCopy(
     state: CollectionState,
@@ -680,6 +724,7 @@ export const demoOps = {
     to: ContainerId,
     quantity?: number,
     slot?: number,
+    minPrice?: number | null,
   ): OpResult<MoveOpResult> {
     const i = indexOfCopy(state, id);
     const source = state.copies[i];
@@ -688,17 +733,47 @@ export const demoOps = {
     if (dest.system === "want") throw new DemoRefusal("The Want List holds wants, not cards. Want the card instead.");
     if (dest.system === "trade") throw new DemoRefusal("Flag the card Up for Trade instead: it stays where it lives.");
     if (dest.rule) throw new DemoRefusal(`${dest.name} fills itself. Move the card somewhere else.`);
+    if (minPrice !== undefined && to === source.homeId) {
+      throw new DemoRefusal("A price goes with a move into a box. Edit the card to change its price.");
+    }
+    if (typeof minPrice === "number" && !isWholeCentPrice(minPrice)) {
+      throw new DemoRefusal("Price needs to be dollars and cents, like 1.50.");
+    }
     checkSlot(state, to, slot);
+    const moving = Math.min(source.quantity, Math.max(1, Math.floor(quantity ?? source.quantity)));
+    const split = moving < source.quantity;
+    // The moving cards' own price: the one given, else the one they have,
+    // except that coming out of a box into a binder takes it off (Branch B).
+    const fromBox = containerIn(state, source.homeId)?.kind === "box";
+    const leavingSale = fromBox && dest.kind !== "box";
+    const goingOnSale = !fromBox && dest.kind === "box";
+    const price =
+      minPrice === undefined ? (leavingSale ? undefined : source.minPrice) : (minPrice ?? undefined);
+    const priced = samePrice(price, source.minPrice)
+      ? source
+      : (() => {
+          const { minPrice: _was, ...rest } = source;
+          return price === undefined ? rest : { ...rest, minPrice: price };
+        })();
+    // A line's photos travel only with the whole line; a part split off is a
+    // plain stack that may fold (as the server's `moveOne`).
+    const { hasPhotos: _photos, ...withoutPhotos } = priced;
+    const carried = split ? withoutPhotos : priced;
     if (slot === undefined && keepsPockets(dest)) {
       slot =
         to === source.homeId && source.slot !== undefined
           ? source.slot
-          : arrivingPocket(state.copies, source.cardId, clean({ ...source, homeId: to, slot: undefined }), id);
+          : arrivingPocket(state.copies, source.cardId, clean({ ...carried, homeId: to, slot: undefined }), id);
     }
-    const moving = Math.min(source.quantity, Math.max(1, Math.floor(quantity ?? source.quantity)));
-    const split = moving < source.quantity;
-    const from = { homeId: source.homeId, ...(source.slot === undefined ? {} : { slot: source.slot }), quantity: moving };
-    const landed = clean({ ...source, homeId: to, slot, quantity: moving });
+    const from = {
+      homeId: source.homeId,
+      ...(source.slot === undefined ? {} : { slot: source.slot }),
+      quantity: moving,
+      ...(!samePrice(price, source.minPrice) || (goingOnSale && source.minPrice !== undefined)
+        ? { minPrice: source.minPrice ?? null }
+        : {}),
+    };
+    const landed = clean({ ...carried, homeId: to, slot, quantity: moving });
     const twin = state.copies.find((c) => c.id !== id && c.cardId === source.cardId && sameLineItem(c, landed));
     if (!twin && slot !== undefined && pocketHolder(state, to, slot, new Set([id]))) {
       throw new DemoRefusal("That pocket already holds a card.");
@@ -733,6 +808,19 @@ export const demoOps = {
       throw new DemoRefusal("A card in a binder always sits in a pocket. Move it to another pocket instead.");
     }
     return demoOps.moveCopy(state, id, copy.homeId, undefined, slot ?? undefined);
+  },
+
+  /**
+   * Marks whether a line has photos (the photos themselves live with the page).
+   * A line already gone stays gone: its photos wait for the undo that brings it
+   * back, marked as it was.
+   */
+  setHasPhotos(state: CollectionState, id: CopyId, on: boolean): OpResult<null> {
+    const copy = state.copies.find((c) => c.id === id);
+    if (!copy || !!copy.hasPhotos === on) return { state, result: null };
+    const { hasPhotos: _was, ...rest } = copy;
+    const next: DemoCopy = on ? { ...rest, hasPhotos: true } : rest;
+    return { state: { ...state, copies: state.copies.map((c) => (c.id === id ? next : c)) }, result: null };
   },
 
   /** Returns the flag it had. */
@@ -942,11 +1030,13 @@ export const demoOps = {
   /**
    * NEO-364 (D9): sets how many PLAIN copies of `cardId` sit in `boxId` (a
    * box, Unsorted included; never a binder). Raising adds raw copies acquired
-   * `today`, unslotted, folding into today's plain unslotted line. Lowering
-   * takes from the plain lines newest first (a line at 0 goes). The card's
-   * other lines in the box are never touched; the current value writes
-   * nothing. The result's `undo` is what `restoreLines` needs to put exactly
-   * those lines back.
+   * `today`, unslotted, folding into today's plain unslotted line, unless every
+   * plain line has photos: then they stack onto the newest of those (NEO-431).
+   * Lowering takes from the lines without photos, then those with them, newest
+   * first in each (a line at 0 goes). The card's other lines in the box are
+   * never touched; the current value writes nothing. The result's `undo` is
+   * what `restoreLines` needs to put exactly those lines back, photos included
+   * (they wait with the page, keyed on the copy's id).
    */
   setBoxQuantity(
     state: CollectionState,
@@ -967,7 +1057,12 @@ export const demoOps = {
     const before = plain.reduce((n, { copy }) => n + copy.quantity, 0);
     const result = (next: CollectionState, undo: BoxQuantityUndo): OpResult<BoxQuantityOpResult> => ({
       state: next,
-      result: { before, after: quantity, undo },
+      result: {
+        before,
+        after: quantity,
+        undo,
+        ...(undo.was.some(({ copy }) => copy.hasPhotos && !next.copies.some((c) => c.id === copy.id)) ? { tookPhotos: true } : {}),
+      },
     });
     if (before === quantity) return result(state, { was: [], made: [] });
     const was: BoxQuantityUndo["was"] = [];
@@ -975,8 +1070,11 @@ export const demoOps = {
     let copies = [...state.copies];
     if (quantity > before) {
       const adding = quantity - before;
-      // Never past the cap: today's line is part of `before`, so it ends at most at `quantity`.
-      const into = plain.find(({ copy }) => copy.slot === undefined && copy.acquiredAt === today);
+      // Never past the cap: the line is part of `before`, so it ends at most at `quantity`.
+      // The reducer appends each new line, so the last one in the list is the newest.
+      const into = plain.every(({ copy }) => copy.hasPhotos)
+        ? plain[plain.length - 1]
+        : plain.find(({ copy }) => !copy.hasPhotos && copy.slot === undefined && copy.acquiredAt === today);
       if (into) {
         was.push(into);
         copies[into.index] = { ...into.copy, quantity: into.copy.quantity + adding };
@@ -997,8 +1095,10 @@ export const demoOps = {
     } else {
       let taking = before - quantity;
       const gone = new Set<CopyId>();
-      // Newest first: the reducer appends each new line, so the last one in the list.
-      for (const entry of [...plain].reverse()) {
+      // Lines without photos, then those with them. Newest first in each: the
+      // reducer appends each new line, so the last one in the list.
+      const newest = [...plain].reverse();
+      for (const entry of [...newest.filter(({ copy }) => !copy.hasPhotos), ...newest.filter(({ copy }) => copy.hasPhotos)]) {
         if (taking === 0) break;
         const take = Math.min(taking, entry.copy.quantity);
         taking -= take;
@@ -1011,12 +1111,27 @@ export const demoOps = {
     return result({ ...state, copies }, { was, made });
   },
 
-  /** Puts back exactly the lines a `setBoxQuantity` touched: the lines it made go, the ones it changed or took return as they were. */
+  /**
+   * Puts back exactly the lines a `setBoxQuantity` touched: the lines it made go,
+   * the ones it changed or took return as they were. A line still here keeps the
+   * photos it has now, which the count never changed. A line it made that has been
+   * photographed since is refused, as the server refuses to delete it.
+   */
   restoreLines(state: CollectionState, undo: BoxQuantityUndo): OpResult<null> {
     if (undo.was.length === 0 && undo.made.length === 0) return { state, result: null };
     const made = new Set(undo.made);
+    if (state.copies.some((c) => made.has(c.id) && c.hasPhotos)) {
+      throw new DemoRefusal("That count changed since, so it can't be undone. Type the number you want instead.");
+    }
     const was = new Map(undo.was.map((w) => [w.copy.id, w.copy]));
-    const copies = state.copies.filter((c) => !made.has(c.id)).map((c) => was.get(c.id) ?? c);
+    const copies = state.copies
+      .filter((c) => !made.has(c.id))
+      .map((c) => {
+        const back = was.get(c.id);
+        if (!back) return c;
+        const { hasPhotos: _then, ...fields } = back;
+        return c.hasPhotos ? { ...fields, hasPhotos: true } : fields;
+      });
     const present = new Set(copies.map((c) => c.id));
     for (const { copy, index } of [...undo.was].sort((a, b) => a.index - b.index)) {
       if (present.has(copy.id)) continue;

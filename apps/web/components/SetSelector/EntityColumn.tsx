@@ -7,10 +7,6 @@ import NeonButton from "../modules/NeonButton";
 import { CUSTOM_BUTTON_LABEL } from "./control-labels";
 import { useFieldTestClass } from "@/src/hooks/useFieldTestClass";
 import { activateOnEnter } from "@/lib/dom/activate-on-enter";
-import {
-  e2eDiagnostic,
-  holdE2EPressListeners,
-} from "@/lib/observability/e2e-diagnostics";
 import SelectorSyncReviewModal, {
   MAX_DECISIONS_PER_CALL,
   type SelectorSyncSuggestion,
@@ -553,41 +549,6 @@ export default function EntityColumn({
     prevModeRef.current = mode;
   }, [items, mode]);
 
-  // NEO-392: an E2E-only timeline of this column (mount, unmount, every mode
-  // change, and a custom form closed by a parent change), so a red such as "Add custom was clicked and the
-  // form never showed" can be read back from PostHog instead of guessed at.
-  // A no-op outside E2E. Identifiers only: the level, never a typed value.
-  const diagModeRef = useRef(mode);
-  useEffect(() => {
-    e2eDiagnostic("e2e_column", { action: "mount", level: level ?? null, mode });
-    return () =>
-      e2eDiagnostic("e2e_column", { action: "unmount", level: level ?? null });
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- mount/unmount only
-  }, []);
-  // NEO-417: the press recorder is on for as long as any column is mounted.
-  useEffect(() => holdE2EPressListeners(), []);
-  useEffect(() => {
-    if (diagModeRef.current === mode) return;
-    e2eDiagnostic("e2e_column", {
-      action: "mode",
-      level: level ?? null,
-      from: diagModeRef.current,
-      to: mode,
-    });
-    diagModeRef.current = mode;
-  }, [mode, level]);
-
-  // The parent-change reset below closes an open custom form; record when it
-  // does, since that is a form closing without the operator asking.
-  useEffect(() => {
-    if (diagModeRef.current !== "custom") return;
-    e2eDiagnostic("e2e_column", {
-      action: "custom_closed_by_parent_change",
-      level: level ?? null,
-      has_parent: parentId != null,
-    });
-  }, [parentId, level]);
-
   // A different parent is a fresh, untouched context: re-allow auto-sync and
   // require a new first-sync before interaction can freeze the column again.
   useEffect(() => {
@@ -767,21 +728,6 @@ export default function EntityColumn({
         : mode === "sync"
           ? "sync"
           : "idle";
-
-  // NEO-417: what is on screen, which `mode` alone does not say: the idle <->
-  // syncing swap never touches it, and that swap takes "+ Custom" off the page.
-  const diagBranchRef = useRef(branchKey);
-  useEffect(() => {
-    if (diagBranchRef.current === branchKey) return;
-    e2eDiagnostic("e2e_column", {
-      action: "branch",
-      level: level ?? null,
-      from: diagBranchRef.current,
-      to: branchKey,
-      has_interacted: hasInteracted,
-    });
-    diagBranchRef.current = branchKey;
-  }, [branchKey, level, hasInteracted]);
 
   // NEO-260 (a11y) — park focus on ANY branch swap, not just the custom form.
   //
@@ -1599,7 +1545,6 @@ export default function EntityColumn({
     // so it stays an event-handler closure — hoisted, `idleButtons()` itself
     // would read a ref during render (react-hooks/refs).
     const openCustomForm = () => {
-      e2eDiagnostic("e2e_column", { action: "custom_open", level: level ?? null });
       setCustomError(null);
       setCustomStage({ kind: "input" });
       pendingCreateEnterRef.current = false;

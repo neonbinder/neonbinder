@@ -10,7 +10,7 @@
  */
 
 import { render, screen, waitFor } from "@testing-library/react";
-import { MemoryRouter, Route, Routes } from "react-router";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -20,6 +20,7 @@ const mocks = vi.hoisted(() => ({
   seed: vi.fn(),
   seedFailed: vi.fn(),
   seedSavedFailure: vi.fn(),
+  seedLoose: vi.fn(),
 }));
 
 // Plain string tokens for the generated api so `useMutation` can tell the reset
@@ -34,6 +35,7 @@ vi.mock("@/convex/_generated/api", () => ({
       seedMyTestPlaceholderStream: "testing:seedMyTestPlaceholderStream",
       seedMyTestFailedPhotoRun: "testing:seedMyTestFailedPhotoRun",
       seedMyTestSavedPhotoFailureRun: "testing:seedMyTestSavedPhotoFailureRun",
+      seedMyTestLoosePhotosRun: "testing:seedMyTestLoosePhotosRun",
     },
   },
 }));
@@ -47,10 +49,16 @@ vi.mock("convex/react", () => ({
         ? mocks.seedFailed
         : ref === "testing:seedMyTestSavedPhotoFailureRun"
           ? mocks.seedSavedFailure
-          : mocks.seed,
+          : ref === "testing:seedMyTestLoosePhotosRun"
+            ? mocks.seedLoose
+            : mocks.seed,
 }));
 
 import TestingSeedPlaceholderRunPage from "./page";
+
+function ShowSearch() {
+  return <div>placeholder intake {useLocation().search}</div>;
+}
 
 function renderPage(entry = "/testing/seed-placeholder-run") {
   return render(
@@ -62,6 +70,7 @@ function renderPage(entry = "/testing/seed-placeholder-run") {
         />
         <Route path="/pipeline-runs" element={<div>operator view</div>} />
         <Route path="/collection" element={<div>add cards screen</div>} />
+        <Route path="/print/placeholders" element={<ShowSearch />} />
       </Routes>
     </MemoryRouter>,
   );
@@ -81,13 +90,24 @@ describe("TestingSeedPlaceholderRunPage", () => {
     });
     mocks.seedFailed = vi.fn(async () => {
       mocks.calls.push("seedFailed");
-      return { runId: "run123", originalName: "never-read-3f2a1b8c.jpg" };
+      return { runId: "run123", jobId: "job123", originalName: "never-read-3f2a1b8c.jpg" };
     });
     mocks.seedSavedFailure = vi.fn(async () => {
       mocks.calls.push("seedSavedFailure");
       return { runId: "run456", copyId: "copy456" };
     });
+    mocks.seedLoose = vi.fn(async () => {
+      mocks.calls.push("seedLoose");
+      return { runId: "run789" };
+    });
     vi.stubEnv("VITE_CLERK_TESTING_ENABLED", "true");
+  });
+
+  it("NEO-441: with loosePhotos=1, resets, seeds the unpaired photos and opens the run", async () => {
+    renderPage("/testing/seed-placeholder-run?loosePhotos=1");
+    await waitFor(() => expect(screen.getByText("add cards screen")).not.toBeNull());
+    expect(mocks.calls).toEqual(["reset", "seedLoose"]);
+    expect(mocks.seed).not.toHaveBeenCalled();
   });
 
   it.each(["scanGone", "unusable", "error"])(
@@ -111,6 +131,12 @@ describe("TestingSeedPlaceholderRunPage", () => {
     await waitFor(() => expect(screen.getByText("add cards screen")).not.toBeNull());
     expect(mocks.calls).toEqual(["reset", "seedFailed"]);
     expect(mocks.seed).not.toHaveBeenCalled();
+  });
+
+  it("NEO-440: with view=placeholders, opens the seeded batch on the placeholder intake page", async () => {
+    renderPage("/testing/seed-placeholder-run?failedPhoto=1&view=placeholders");
+    await waitFor(() => expect(screen.getByText("placeholder intake ?jobId=job123")).not.toBeNull());
+    expect(mocks.calls).toEqual(["reset", "seedFailed"]);
   });
 
   it("resets the caller's active jobs before seeding the fixture run", async () => {

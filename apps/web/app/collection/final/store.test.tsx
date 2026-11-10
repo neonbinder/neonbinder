@@ -285,6 +285,137 @@ describe("moveCopy: split and fold", () => {
   });
 });
 
+describe("moveCopy: the cards' own price (NEO-479)", () => {
+  /** The same state with `price` as the copy's own price (dollars), or none. */
+  const priced = (s: CollectionState, id: string, price: number | undefined): CollectionState => ({
+    ...s,
+    copies: s.copies.map((c) => {
+      if (c.id !== id) return c;
+      const { minPrice: _was, ...rest } = c;
+      return price === undefined ? rest : { ...rest, minPrice: price };
+    }),
+  });
+
+  it("a whole line into a box with a price carries it, and records no price before", () => {
+    const [s0, copy] = withCopy(initialCollectionState());
+    const { state, result } = demoOps.moveCopy(s0, copy.id, SHOW_BOX_ID, undefined, undefined, 1.5);
+    expect(copyIn(state, copy.id)).toMatchObject({ homeId: SHOW_BOX_ID, minPrice: 1.5 });
+    expect(result.from.minPrice).toBeNull();
+  });
+
+  it("splits a priced sale: only the part in the box is priced, the remainder stays unpriced", () => {
+    const [s0, copy] = withCopy(initialCollectionState(), { quantity: 5 });
+    const { state, result } = demoOps.moveCopy(s0, copy.id, SHOW_BOX_ID, 2, undefined, 0.4);
+    expect(result.split).toBe(true);
+    expect(copyIn(state, result.copyId)).toMatchObject({ homeId: SHOW_BOX_ID, quantity: 2, minPrice: 0.4 });
+    const rest = copyIn(state, copy.id);
+    expect(rest).toMatchObject({ homeId: MAIN_BINDER_ID, quantity: 3 });
+    expect(rest.minPrice).toBeUndefined();
+  });
+
+  it("undoing a priced split leaves one unpriced line again", () => {
+    const [s0, copy] = withCopy(initialCollectionState(), { quantity: 5 });
+    const sold = demoOps.moveCopy(s0, copy.id, SHOW_BOX_ID, 2, undefined, 0.4);
+    const { homeId, quantity, slot, minPrice } = sold.result.from;
+    const back = demoOps.moveCopy(sold.state, sold.result.copyId, homeId, quantity, slot, minPrice);
+    expect(back.state.copies.filter((c) => c.cardId === copy.cardId && c.notes === "t")).toHaveLength(1);
+    const whole = copyIn(back.state, copy.id);
+    expect(whole.quantity).toBe(5);
+    expect(whole.minPrice).toBeUndefined();
+  });
+
+  it("folds into a box twin at the same price, and not into one at another price or none", () => {
+    const park = (price: number | undefined) => {
+      let [s, twin] = withCopy(initialCollectionState(), { notes: "twin", quantity: 1 });
+      s = priced(demoOps.moveCopy(s, twin.id, SHOW_BOX_ID).state, twin.id, price);
+      const [s2, mover] = withCopy(s, { notes: "twin", quantity: 1 });
+      return { twin, ...demoOps.moveCopy(s2, mover.id, SHOW_BOX_ID, undefined, undefined, 2) };
+    };
+    expect(park(2).result).toMatchObject({ folded: true });
+    expect(park(3).result.folded).toBe(false);
+    expect(park(undefined).result.folded).toBe(false);
+  });
+
+  it("a card with its own price into a box with no new price keeps it, and the undo restores it", () => {
+    const [s0, copy] = withCopy(initialCollectionState());
+    const s1 = priced(s0, copy.id, 2);
+    const sold = demoOps.moveCopy(s1, copy.id, SHOW_BOX_ID);
+    expect(copyIn(sold.state, copy.id)).toMatchObject({ homeId: SHOW_BOX_ID, minPrice: 2 });
+    expect(sold.result.from.minPrice).toBe(2);
+    const { homeId, quantity, slot, minPrice } = sold.result.from;
+    const back = demoOps.moveCopy(sold.state, copy.id, homeId, quantity, slot, minPrice);
+    expect(copyIn(back.state, copy.id)).toMatchObject({ homeId: MAIN_BINDER_ID, minPrice: 2 });
+  });
+
+  it("a card with its own price sold at another price: undo puts the old price back", () => {
+    const [s0, copy] = withCopy(initialCollectionState());
+    const s1 = priced(s0, copy.id, 2);
+    const sold = demoOps.moveCopy(s1, copy.id, SHOW_BOX_ID, undefined, undefined, 3);
+    expect(copyIn(sold.state, copy.id).minPrice).toBe(3);
+    expect(sold.result.from.minPrice).toBe(2);
+    const { homeId, quantity, slot, minPrice } = sold.result.from;
+    const back = demoOps.moveCopy(sold.state, copy.id, homeId, quantity, slot, minPrice);
+    expect(copyIn(back.state, copy.id)).toMatchObject({ homeId: MAIN_BINDER_ID, minPrice: 2 });
+  });
+
+  it("taking a priced box line off sale clears its price, and the undo puts it back (Branch B)", () => {
+    const [s0, copy] = withCopy(initialCollectionState());
+    const inBox = priced(demoOps.moveCopy(s0, copy.id, SHOW_BOX_ID).state, copy.id, 1.5);
+    const off = demoOps.moveCopy(inBox, copy.id, SLAB);
+    expect(copyIn(off.state, copy.id).minPrice).toBeUndefined();
+    expect(off.result.from.minPrice).toBe(1.5);
+    const { homeId, quantity, slot, minPrice } = off.result.from;
+    const back = demoOps.moveCopy(off.state, copy.id, homeId, quantity, slot, minPrice);
+    expect(copyIn(back.state, copy.id)).toMatchObject({ homeId: SHOW_BOX_ID, minPrice: 1.5 });
+  });
+
+  it("taking an unpriced box line off sale records no price (nothing changed)", () => {
+    const [s0, copy] = withCopy(initialCollectionState());
+    const inBox = demoOps.moveCopy(s0, copy.id, SHOW_BOX_ID).state;
+    const off = demoOps.moveCopy(inBox, copy.id, SLAB);
+    expect(off.result.from).not.toHaveProperty("minPrice");
+  });
+
+  it("a move between binders with no price leaves the price alone and records none", () => {
+    const [s0, copy] = withCopy(initialCollectionState());
+    const s1 = priced(s0, copy.id, 2);
+    const { state, result } = demoOps.moveCopy(s1, copy.id, SLAB);
+    expect(copyIn(state, copy.id).minPrice).toBe(2);
+    expect(result.from).not.toHaveProperty("minPrice");
+  });
+
+  it.each([["1.234", 1.234], ["negative", -1], ["NaN", Number.NaN], ["past the cap", 100_000_000.01]])(
+    "refuses a price that is not whole cents or is out of range (%s) and writes nothing",
+    (_n, price) => {
+      const [s0, copy] = withCopy(initialCollectionState());
+      const before = JSON.stringify(s0);
+      expect(() => demoOps.moveCopy(s0, copy.id, SHOW_BOX_ID, undefined, undefined, price)).toThrow(/dollars and cents/i);
+      expect(JSON.stringify(s0)).toBe(before);
+    },
+  );
+
+  it("accepts a price at the cap and 0.29 (floats that are whole cents)", () => {
+    const [s0, copy] = withCopy(initialCollectionState());
+    expect(copyIn(demoOps.moveCopy(s0, copy.id, SHOW_BOX_ID, undefined, undefined, 0.29).state, copy.id).minPrice).toBe(0.29);
+    expect(copyIn(demoOps.moveCopy(s0, copy.id, SHOW_BOX_ID, undefined, undefined, 100_000_000).state, copy.id).minPrice).toBe(100_000_000);
+  });
+
+  it("refuses a price on a move that stays home", () => {
+    const [s0, copy] = withCopy(initialCollectionState());
+    expect(() => demoOps.moveCopy(s0, copy.id, MAIN_BINDER_ID, undefined, undefined, 1)).toThrow(DemoRefusal);
+  });
+
+  it("never touches the common prices, with a price, without one, or on undo", () => {
+    const [s0, copy] = withCopy(initialCollectionState());
+    const withCommon = demoOps.setCommonPrice(s0, "some-variant", 0.25).state;
+    const sold = demoOps.moveCopy(withCommon, copy.id, SHOW_BOX_ID, undefined, undefined, 0.4);
+    expect(sold.state.commonPrices).toEqual({ "some-variant": 0.25 });
+    const { homeId, quantity, slot, minPrice } = sold.result.from;
+    const back = demoOps.moveCopy(sold.state, copy.id, homeId, quantity, slot, minPrice);
+    expect(back.state.commonPrices).toEqual({ "some-variant": 0.25 });
+  });
+});
+
 describe("placeCopy", () => {
   it("sets a row in the copy's own home without changing the home", () => {
     const [s0, copy] = withCopy(initialCollectionState(), { homeId: SHOW_BOX_ID });
@@ -639,6 +770,93 @@ describe("setBoxQuantity and restoreLines (NEO-364)", () => {
       const back = demoOps.restoreLines(done.state, done.result.undo).state;
       expect(back.copies).toEqual(s.copies);
     }
+  });
+
+  describe("a line with photos (NEO-431)", () => {
+    const photoLine = (s: CollectionState, over: Partial<CopyDetails> = {}) => {
+      const made = put(s, over);
+      return { state: demoOps.setHasPhotos(made.state, made.result.copyId, true).state, id: made.result.copyId };
+    };
+    const lines = (s: CollectionState) => inBox(s).map((c) => [c.id, c.quantity]);
+
+    it("counts it, and a plain add never stacks onto it", () => {
+      const { state, id } = photoLine(base(), { acquiredAt: TODAY });
+      expect(plainCount(state)).toBe(1);
+      const added = demoOps.addLine(state, CARD, details({ homeId: UNSORTED_BOX_ID, acquiredAt: TODAY }));
+      expect(added.result.merged).toBe(false);
+      expect(copyIn(added.state, id)).toMatchObject({ quantity: 1, hasPhotos: true });
+      expect(inBox(added.state)).toHaveLength(2);
+    });
+
+    it("with only photo lines, a raise stacks onto the newest and keeps its photos", () => {
+      const older = photoLine(base());
+      const newer = photoLine(older.state);
+      const up = demoOps.setBoxQuantity(newer.state, CARD, UNSORTED_BOX_ID, 4, TODAY);
+      expect(up.result).toMatchObject({ before: 2, after: 4 });
+      expect(up.result.undo.made).toEqual([]);
+      expect(copyIn(up.state, newer.id)).toMatchObject({ quantity: 3, hasPhotos: true });
+      expect(copyIn(up.state, older.id).quantity).toBe(1);
+      expect(demoOps.restoreLines(up.state, up.result.undo).state.copies).toEqual(newer.state.copies);
+    });
+
+    it("with a line without photos, a raise folds there or starts today's line, never onto the photo line", () => {
+      const { state, id } = photoLine(put(base(), { acquiredAt: TODAY }).state, { acquiredAt: TODAY });
+      const folded = demoOps.setBoxQuantity(state, CARD, UNSORTED_BOX_ID, 3, TODAY).state;
+      expect(copyIn(folded, id).quantity).toBe(1);
+      expect(plainCount(folded)).toBe(3);
+      expect(inBox(folded)).toHaveLength(2);
+
+      const old = photoLine(put(base(), { acquiredAt: "2026-01-01" }).state, { acquiredAt: TODAY });
+      const fresh = demoOps.setBoxQuantity(old.state, CARD, UNSORTED_BOX_ID, 3, TODAY).state;
+      expect(copyIn(fresh, old.id).quantity).toBe(1);
+      expect(inBox(fresh)).toHaveLength(3);
+    });
+
+    it("a lowering takes the lines without photos first, even when the photo line is newer", () => {
+      const bare = put(base(), { quantity: 2 });
+      const { state, id } = photoLine(bare.state, { quantity: 2 });
+      const once = demoOps.setBoxQuantity(state, CARD, UNSORTED_BOX_ID, 3, TODAY).state;
+      expect(lines(once)).toEqual([[bare.result.copyId, 1], [id, 2]]);
+      const twice = demoOps.setBoxQuantity(once, CARD, UNSORTED_BOX_ID, 1, TODAY).state;
+      expect(lines(twice)).toEqual([[id, 1]]);
+      expect(copyIn(twice, id).hasPhotos).toBe(true);
+    });
+
+    it("a line with photos and another detail is never counted or touched", () => {
+      const { state, id } = photoLine(base(), { notes: "ding" });
+      expect(plainCount(state)).toBe(0);
+      const up = demoOps.setBoxQuantity(state, CARD, UNSORTED_BOX_ID, 1, TODAY).state;
+      expect(copyIn(up, id).quantity).toBe(1);
+      expect(inBox(up)).toHaveLength(2);
+    });
+
+    it("restoreLines brings back a line counted away, same id, marked", () => {
+      const bare = put(base(), {});
+      const { state, id } = photoLine(bare.state);
+      const zero = demoOps.setBoxQuantity(state, CARD, UNSORTED_BOX_ID, 0, TODAY);
+      expect(inBox(zero.state)).toEqual([]);
+      const back = demoOps.restoreLines(zero.state, zero.result.undo).state;
+      expect(back.copies).toEqual(state.copies);
+      expect(copyIn(back, id).hasPhotos).toBe(true);
+    });
+
+    it("a whole line moved keeps its marker; a part split off is a plain stack that may fold", () => {
+      const { state, id } = photoLine(base(), { quantity: 3 });
+      const part = demoOps.moveCopy(state, id, SHOW_BOX_ID, 1);
+      expect(part.result.split).toBe(true);
+      expect(copyIn(part.state, part.result.copyId).hasPhotos).toBeUndefined();
+      expect(copyIn(part.state, id)).toMatchObject({ quantity: 2, hasPhotos: true });
+      const whole = demoOps.moveCopy(part.state, id, SHOW_BOX_ID);
+      expect(whole.result).toMatchObject({ copyId: id, folded: false });
+      expect(copyIn(whole.state, id).hasPhotos).toBe(true);
+    });
+
+    it("setHasPhotos clears the marker, and leaves a line already gone alone", () => {
+      const { state, id } = photoLine(base());
+      expect("hasPhotos" in copyIn(demoOps.setHasPhotos(state, id, false).state, id)).toBe(false);
+      expect(demoOps.setHasPhotos(state, "copy-gone", true).state).toBe(state);
+      expect(demoOps.setHasPhotos(state, id, true).state).toBe(state);
+    });
   });
 
   it("restoreLines of a no-op write returns the same state", () => {

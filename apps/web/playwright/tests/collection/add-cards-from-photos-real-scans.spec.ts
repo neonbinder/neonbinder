@@ -247,14 +247,15 @@ test(
       const editLine = yourCopies.getByRole("button", { name: new RegExp(`^Edit ${escapeRe(short)}, `) });
       await expect(editLine).toHaveCount(lines);
       await editLine.first().click();
-      const photos = yourCopies.getByRole("region", { name: "Photos", exact: true });
+      const editForm = yourCopies.getByRole("form", { name: /^Edit Raw, / });
+      const photos = editForm.getByRole("region", { name: /^Photos of / });
       await expect(photos.getByRole("link", { name: /^Front of .*, full size \(opens a new tab\)$/ })).toBeVisible();
       await expect(photos.getByRole("link", { name: /^Back of .*, full size \(opens a new tab\)$/ })).toBeVisible();
       // One check for the one-line card and one for the two-line card.
       if (number !== "47") {
         await expectAccessible(page, { label: `Card drawer, ${lines === 1 ? "a saved copy" : "two saved copies"} with scanned photos`, within: drawer });
       }
-      await yourCopies.getByRole("form", { name: /^Edit Raw, / }).getByRole("button", { name: "Cancel", exact: true }).click();
+      await editForm.getByRole("button", { name: "Cancel", exact: true }).click();
       // Cancel closes the form: the line's Edit is back, and so is every other line's.
       await expect(editLine).toHaveCount(lines);
       await expect(photos).toBeHidden();

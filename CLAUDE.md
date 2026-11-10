@@ -130,16 +130,20 @@ re-measure before quoting them for Playwright.
 2. **Run the fast local gates.** These cost ~2 min for `apps/web`, ~30s for
    `services/browser` — they are not the expensive part, and they catch most
    breakage without a round trip.
-3. **Run the specs covering the change against dev**, before the first push
-   (below). Bring dev up to date first if it is behind the branch.
+3. **Run the specs covering the change on this worktree's own Convex
+   deployment**, before the first push (below). Seller specs and cloud threads
+   use shared dev instead.
 4. Push and open the PR. CI runs the full suite. On a red spec: **run that one
-   spec locally** against dev again, or against the PR's own preview stack when
-   dev cannot reproduce it (below).
+   spec locally** on your deployment again, or against the PR's own preview
+   stack when your deployment cannot reproduce it (below).
 5. Push again **only once that spec passes locally.** This step is the actual
    cost control — push-and-hope is what burns CI cycles, not the first push.
 6. Watch to green.
-7. Merge via the `pr-close` skill (merge → verify the prod deploy actually
-   reached READY → smoke → Linear → reclaim the worktree).
+7. Join the merge queue (`pr-queue join <pr>`) and merge only when it calls
+   your turn: merge main, one run against it, then the `pr-close` skill
+   (merge → verify the prod deploy actually reached READY → smoke → Linear →
+   reclaim the worktree). One session runs the queue (`pr-queue run`); pushing
+   for testing never waits for it.
 
 #### The fast gates, by area
 
@@ -156,13 +160,120 @@ the E2E harness itself (`apps/web/playwright/support/**`, `playwright.config.ts`
 harness — a change there invalidates every other result, so a green CI run proves
 less than usual.
 
-#### Run your specs against dev before the first push (NEO-390)
+#### Run your specs on your own Convex deployment before the first push (NEO-438)
 
-Jason, 2026-10-29: the specs covering a change run against the **dev Convex
-deployment before the branch is pushed**, and if dev is out of date, bring it up
-to date first. CI is not the first E2E check, and "push, then run the spec
-against the PR preview" puts it first. Dev is shared by every thread and every
-session on Jason's laptop, so these steps keep it moving forward only:
+The specs covering a change run before the branch is pushed: CI is not the first
+E2E check (NEO-390). Each local worktree runs them on its own cloud dev
+deployment, created through
+[Convex agent mode](https://docs.convex.dev/cli/agent-mode), so a reset or a code
+push from one session cannot change another session's run. The local Convex
+backend is not used, because it has no public URL and the app needs live
+integrations. Seller specs and cloud threads are the exceptions (next section).
+
+1. **Bring the branch onto latest main** (`git fetch origin main && git merge
+   origin/main`).
+2. **Once per worktree, create the deployment**, copy the env from your
+   long-lived dev deployment, and push the branch. A fresh worktree's `.env.local`
+   is a copy of the main checkout's, so a push that follows a failed create would
+   land on your long-lived deployment. The block stops first. Run it as written,
+   in its subshell:
+
+   ```bash
+   cd apps/web
+   (
+     set -euo pipefail
+     unset CONVEX_DEPLOYMENT   # an exported value beats .env.local
+     SOURCE=<your long-lived dev deployment's name>
+     npx convex deployment create <team>:<project>:dev/<user>/<worktree> \
+       --type dev --expiration "in 5 days" --select
+     NEW="$(sed -nE 's/^CONVEX_DEPLOYMENT=dev:([a-z0-9-]+).*/\1/p' .env.local)"
+     [ -n "$NEW" ] && [ "$NEW" != "$SOURCE" ]
+     grep -q "^VITE_CONVEX_URL=https://$NEW\.convex\.cloud" .env.local
+     grep -q "^VITE_CONVEX_SITE_URL=https://$NEW\.convex\.site" .env.local
+     # a key or token, not .env.local, would choose the target
+     [ -z "${CONVEX_DEPLOY_KEY:-}${CONVEX_DEPLOYMENT_TOKEN:-}" ]
+     if grep -qE '^CONVEX_(DEPLOY_KEY|DEPLOYMENT_TOKEN)=' .env.local; then exit 1; fi
+     # values go list -> set; never print them
+     npx convex env list --include-values --deployment "$SOURCE" \
+       | npx convex env set --force --deployment "$NEW"
+     npx convex dev --once
+   )
+   ```
+
+   If the deployment already exists, the create fails: use
+   `npx convex deployment select <the same reference>` in its place. If your
+   workspace's own `CLAUDE.md` gives a script for these steps, use it.
+3. **Seed it once**, and after any reset. The bundle is prod reference data, so it
+   stays outside the checkout and is removed afterwards:
+
+   ```bash
+   (
+     set -euo pipefail
+     unset CONVEX_DEPLOYMENT
+     NEW="$(sed -nE 's/^CONVEX_DEPLOYMENT=dev:([a-z0-9-]+).*/\1/p' .env.local)"
+     [ -n "$NEW" ]
+     PAUSED="$(gh variable get NEONBINDER_PAUSED_PLATFORMS)"
+     scratch="$(mktemp -d)"; trap 'rm -rf "$scratch"' EXIT
+     gcloud storage cp "$(gh variable get NEONBINDER_REFERENCE_SEED_URI)" "$scratch/reference-seed.zip"
+     NB_REFERENCE_BUNDLE="$scratch/reference-seed.zip" CONVEX_NAME="$NEW" \
+       E2E_BASELINE_CONFIRM=1 ./e2e-seed-reset.sh
+     npx convex env set --deployment "$NEW" NEONBINDER_PAUSED_PLATFORMS "$PAUSED"
+   )
+   ```
+
+   `CONVEX_NAME` must be the plain deployment name, never a `team:project:...`
+   reference or a word such as `dev`. `gcloud` prints the bundle's location, so
+   don't paste that output into a thread or PR.
+
+4. **Run only the specs covering the change**, against a spare-port Vite:
+
+   ```bash
+   # both shells; the unset keeps a later CLI command from trusting a stale value
+   set -a; . ./.env.local; set +a; unset CONVEX_DEPLOYMENT CONVEX_DEPLOY_KEY CONVEX_DEPLOYMENT_TOKEN
+   # shell 1
+   VITE_DEV_DISABLE_HTTPS=1 npx vite --port 3001 --strictPort
+   # shell 2
+   export APP_URL=http://localhost:3001 WORKER_INDEX=8 \
+     PAUSED_PLATFORMS="$(gh variable get NEONBINDER_PAUSED_PLATFORMS)"
+   npx playwright test --project=setup --retries=0       # once per seed
+   npx playwright test --project=bootstrap --retries=0   # once per seed
+   npx playwright test --project=e2e --no-deps <path-substring>
+   ```
+
+5. **The deployment is yours.** Push new code with `npx convex dev --once` whenever
+   the branch changes, and reset and re-seed as often as a fresh-only spec needs.
+
+What a per-worktree deployment does not separate or cover:
+
+- **Marketplace sellers.** BuySportsCards, SportLots and eBay each have one test
+  seller. Do not connect a seller on your own deployment: every deployment runs
+  the 15-minute sales poll against the seller connected there. `@marketplace-seller`
+  specs run on shared dev or a PR preview (next section).
+- **Saved marketplace logins.** The browser service keys them by Clerk user, not
+  by deployment. Locally, a worker with no `TEST_EMAIL_<n>` falls back to
+  `TEST_EMAIL`, so those workers are one user in every worktree. A reset stays on
+  your deployment, but saved logins are shared. Avoid any worker that has its own
+  `TEST_EMAIL_<n>` while CI is running, because CI signs in as those users.
+- **PR service code.** The deployment calls the dev `services/browser` and
+  `services/preprocess`. A spec covering a change there runs against the PR's
+  preview after the first push.
+- **Single-host integrations.** eBay's OAuth redirect and deletion endpoint are
+  registered to one host, so connecting eBay through the UI does not work here.
+  Buying or tracking a label registers a webhook per deployment on the one dev
+  EasyPost account.
+
+Limits: the deployment expires 5 days after creation because the block passes
+`--expiration`. Always pass it: each deployment holds a full copy of dev's secrets.
+The CLI cannot extend or delete one, so delete it early in the dashboard or create a
+new one after it expires. The env copy is a snapshot: copy it again after your
+long-lived deployment's env changes. A rotated dev secret's old value stays on these
+deployments until they expire or you copy again.
+
+#### Cloud threads and seller specs: shared dev (NEO-390)
+
+Cloud threads cannot create a per-worktree deployment yet, and seller specs need
+the shared sellers. Both run on the shared dev deployment. Everything on it moves
+forward only, because every session and thread shares it:
 
 1. **Bring the branch onto latest main** (`git fetch origin main && git merge
    origin/main`). Never push a branch that is behind main onto dev: that rolls
@@ -179,35 +290,26 @@ session on Jason's laptop, so these steps keep it moving forward only:
    another branch's field), do not delete data and never set
    `schemaValidation: false`. Say so in the thread, push, and run the spec
    against the PR preview instead (next section).
-4. **Run only the specs covering the change**, against a spare-port Vite on dev:
-
-   ```bash
-   cd apps/web
-   VITE_DEV_DISABLE_HTTPS=1 npx vite --port 3001 --strictPort   # .env.local / the env points at dev
-   APP_URL=http://localhost:3001 WORKER_INDEX=8 \
-     npx playwright test --project=e2e --no-deps <path-substring>
-   ```
-
-   Drop `--no-deps` once per session so `bootstrap` gives the account its
-   credentials. Use a test account no other session is using; CI runs 0–7 on
-   previews, never on dev, so 8–11 are the usual picks. Set `PAUSED_PLATFORMS` to
-   dev's `NEONBINDER_PAUSED_PLATFORMS`.
-5. **Dev is not reseeded per run.** It keeps whatever the last run left. A spec
+4. **Run only the specs covering the change**, as in the section above, with
+   `.env.local` or the environment pointing at dev. Workers 8-11 are not four
+   accounts locally: they fall back to one `TEST_EMAIL` user, and `bootstrap` wipes
+   that user's binders, boxes and copies. Only one session at a time can run specs
+   on them, so agree the order in the thread. Set `PAUSED_PLATFORMS` to dev's
+   `NEONBINDER_PAUSED_PLATFORMS`.
+5. **One seller session at a time.** Before a `@marketplace-seller` spec, check that
+   no CI seller job is in progress. CI's seller queue cannot see local runs, so agree
+   the order in the thread.
+6. **Dev is not reseeded per run.** It keeps whatever the last run left. A spec
    that needs a fresh seed (fresh-only, or a precondition such as "this set does
    not exist yet") needs the reset, which wipes dev under every other session:
    say so in the thread before you run it, or run that spec against the PR
    preview instead.
 
-Dev cannot exercise the PR's own `services/browser` or `services/preprocess`
-code (dev Convex calls the dev services). A spec covering a change there runs
-against the PR's preview after the first push.
-
 #### Debugging a red spec against the PR's own services
 
-Use this when dev cannot reproduce a CI red: the PR changes `services/browser`
-or `services/preprocess`, dev refused the branch's schema, or the spec needs a
-freshly seeded deployment. Run a second local Vite on its own port, wired to
-the PR's Convex preview instead of dev, and use that port as `APP_URL`:
+Use this when your own deployment cannot reproduce a CI red, or the PR changes
+`services/browser` or `services/preprocess`. Run a second local Vite on its own
+port, wired to the PR's Convex preview, and use that port as `APP_URL`:
 
 ```bash
 cd apps/web
@@ -288,15 +390,14 @@ npm run test:e2e:typecheck  # typecheck playwright/
 npm run test:e2e:seed    # e2e-baseline.sh reset + the setup (seed) project
 ```
 
-> **The dev Convex deployment is a developer's *personal* deployment, not a shared dev
-> server (NEO-249).** Convex `dev` deployments are per-developer by design, and
-> **nobody deploys to dev from CI** — no workflow pushes it. Sessions push it themselves
-> before running specs locally: "Run your specs against dev before the first push"
-> above (NEO-390) is the order, including bringing dev up to date with
-> `npx convex dev --once`. Every concurrent session (Claude threads included) shares the
-> one dev deployment, so a push brings the branch onto latest main first. Point local
-> Vite at **that PR's Convex preview** only when dev cannot reproduce a CI red — see
-> "Debugging a red spec against the PR's own services" above.
+> **Local work runs on one Convex deployment per worktree (NEO-438).** See
+> "Run your specs on your own Convex deployment before the first push"
+> above. **Nobody deploys to any dev deployment from CI** (NEO-249). A developer's
+> long-lived dev deployment is the env source for those deployments and the shared
+> home of cloud threads and seller specs ("Cloud threads and seller specs: shared dev" above), so a push there brings
+> the branch onto latest main first. Point local Vite at **that PR's Convex preview**
+> only when your own deployment cannot reproduce a CI red — see "Debugging a red spec
+> against the PR's own services" above.
 > `dev-backend.sh`'s behavior is unchanged by this — it still does exactly what its
 > comments say — this is a policy about when to run it, not a code change.
 
@@ -482,7 +583,7 @@ Sensitive credentials are stored in **Google Cloud Secret Manager**, not `.env` 
 
 ## Agents and skills
 
-`.claude/agents/` and `.claude/skills/` in this repo are the **single source** for the specialist agents and the `pr-watch`, `pr-close`, `deps-batch` and `impeccable` skills; there is no other copy. `impeccable` is a vendored third-party skill (its version is in `scripts/VERSION`); its launcher downloads a per-platform engine binary into the user's cache on first run, so `scripts/bin/` is gitignored and never committed. Agent memory under `.claude/agent-memory/<agent>/` is committed and public, so it holds **patterns only** (driver quirks, house conventions, gates that lie) — never a deployment name, account, secret name, internal URL or incident. An agent that learns something operational reports it under *Private notes* for the coordinator instead of saving it. Change an agent or skill through a normal PR.
+`.claude/agents/` and `.claude/skills/` in this repo are the **single source** for the specialist agents and the `pr-watch`, `pr-close`, `pr-queue`, `deps-batch` and `impeccable` skills; there is no other copy. `impeccable` is a vendored third-party skill (its version is in `scripts/VERSION`); its launcher downloads a per-platform engine binary into the user's cache on first run, so `scripts/bin/` is gitignored and never committed. Agent memory under `.claude/agent-memory/<agent>/` is committed and public, so it holds **patterns only** (driver quirks, house conventions, gates that lie) — never a deployment name, account, secret name, internal URL or incident. An agent that learns something operational reports it under *Private notes* for the coordinator instead of saving it. Change an agent or skill through a normal PR.
 
 Agent memory lives at the **repo root** `.claude/agent-memory/<agent>/` and nowhere else. Agents write memory relative to their working directory, so a session started in `apps/web` will happily create `apps/web/.claude/agent-memory/` and then read a much smaller index than a root-level session — the two diverge silently and knowledge is lost rather than shadowed. If you are working under `apps/web`, write memory to the root path explicitly. The `repo-hygiene` job in `pr-pipeline.yml` fails any PR that leaves a `.claude/` directory outside the repo root.
 
@@ -507,7 +608,7 @@ Rules for a cloud thread:
 2. **Run each agent as a `general-purpose` agent briefed with its file.** Tell it to read `.claude/agents/<name>.md` and follow it as its instructions, including its model and effort if your Agent tool takes them, and its memory under `.claude/agent-memory/<name>/`. Never fold an audit into your own turn; the point of the auditors is a read that is not anchored on yours.
 3. **Name what ran in the PR body**: which agent files were run this way, and what each found.
 4. Agent memory the stand-in writes goes to this checkout's `.claude/agent-memory/<name>/`; ship it in the PR like any other change.
-5. **Run the specs against dev before the first push (NEO-385, NEO-390).** CI is not the first check, from a cloud thread either. Follow **Run your specs against dev before the first push**: merge main, push the branch to dev with `npx convex dev --once` if dev is behind, then run each new or changed spec against a spare-port Vite on dev. Do the same before every re-push. The cloud environment carries the dev values Playwright reads (`VITE_CONVEX_URL`, `CONVEX_DEPLOYMENT`, `CLERK_SECRET_KEY`, `VITE_CLERK_PUBLISHABLE_KEY`, `TESTING_ENDPOINT_SECRET`, `VERCEL_AUTOMATION_BYPASS_SECRET`) and allows `*.convex.cloud`, Clerk and `*.vercel.app`, and Chromium is preinstalled, so a signed-in spec runs against dev as it stands (verified 2026-10-29). Pushing functions to dev, `function-spec` and the seed reset also need a dev `CONVEX_DEPLOY_KEY`, the `api.convex.dev` host (the CLI resolves a deploy key there) and `NODE_USE_ENV_PROXY=1` on those CLI commands only (Node's fetch ignores the proxy without it; set environment-wide it has crashed Vite with ECONNRESET, so never export it for Vite). The key must be a **dev**-deployment key: `convex dev --once` pushes to whatever deployment the key names, prod included, so check it before every push without printing it (`case "$CONVEX_DEPLOY_KEY" in dev:*) ;; *) echo "refusing: not a dev key" >&2; exit 1;; esac`). If any is missing, run what you can against dev as it stands, say in the thread which step could not run and which setting is missing, and do not push to find out. Pass those values, and `CONVEX_DEPLOY_KEY`, only through the environment of the command that needs them; never echo, print or `env`-dump them, and never write them into a file, commit, PR body, log or thread message (this repo is public). Before NEO-385, threads fixed specs by trial and error in CI: 65 failures in one week passed only on the next push after a spec edit.
+5. **Run the specs against dev before the first push (NEO-385, NEO-390).** CI is not the first check, from a cloud thread either. Cloud threads stay on shared dev, not a per-worktree deployment. Follow **Cloud threads and seller specs: shared dev**: merge main, push the branch to dev with `npx convex dev --once` if dev is behind, then run each new or changed spec against a spare-port Vite on dev. Do the same before every re-push. The cloud environment carries the dev values Playwright reads (`VITE_CONVEX_URL`, `CONVEX_DEPLOYMENT`, `CLERK_SECRET_KEY`, `VITE_CLERK_PUBLISHABLE_KEY`, `TESTING_ENDPOINT_SECRET`, `VERCEL_AUTOMATION_BYPASS_SECRET`) and allows `*.convex.cloud`, Clerk and `*.vercel.app`, and Chromium is preinstalled, so a signed-in spec runs against dev as it stands (verified 2026-10-29). Pushing functions to dev, `function-spec` and the seed reset also need a dev `CONVEX_DEPLOY_KEY`, the `api.convex.dev` host (the CLI resolves a deploy key there) and `NODE_USE_ENV_PROXY=1` on those CLI commands only (Node's fetch ignores the proxy without it; set environment-wide it has crashed Vite with ECONNRESET, so never export it for Vite). The key must be a **dev**-deployment key: `convex dev --once` pushes to whatever deployment the key names, prod included, so check it before every push without printing it (`case "$CONVEX_DEPLOY_KEY" in dev:*) ;; *) echo "refusing: not a dev key" >&2; exit 1;; esac`). If any is missing, run what you can against dev as it stands, say in the thread which step could not run and which setting is missing, and do not push to find out. Pass those values, and `CONVEX_DEPLOY_KEY`, only through the environment of the command that needs them; never echo, print or `env`-dump them, and never write them into a file, commit, PR body, log or thread message (this repo is public). Before NEO-385, threads fixed specs by trial and error in CI: 65 failures in one week passed only on the next push after a spec edit.
 6. **Never "Re-run failed jobs" on E2E.** It skips the seed, so fresh-only and sole-writer specs fail by design (28 false reds in the week NEO-385 measured). Re-run the whole workflow, or push.
 
 ## CI/CD
@@ -522,7 +623,7 @@ All workflows live in `.github/workflows/`. `pr-pipeline.yml` is the single all-
 - **`browser.yml`** — `services/browser` build + unit tests + the **per-PR browser preview** (builds the image, deploys a `pr-<N>` tagged, **no-traffic** Cloud Run revision on the dev service, runs a real BSC + SportLots login probe against it). **Pre-merge only.**
 - **`browser-deploy.yml`** / **`preprocess-deploy.yml`** — the prod deploy lanes, `workflow_call`-only (invoked by `release.yml`; `workflow_dispatch` is retained for dev-only validation). **Both** dev and prod use blue/green — deploy at 0% under a `sha-<short>` tag, probe/smoke the tagged URL, then one atomic `update-traffic` that promotes *and* drops the tag (NEO-114). There is deliberately **no rollback job**: nothing is promoted until the probe passes, so there is nothing to roll back (NEO-67). Gated on the `BROWSER_DEPLOY_ENABLED` / `PREPROCESS_DEPLOY_ENABLED` repo variables.
 - **`preprocess.yml`** — `services/preprocess` lint + unit tests + the **per-PR preprocess preview** (`pr-<N>` tagged no-traffic revision on the dev service + smoke + sticky PR comment). **Pre-merge only.**
-- **`e2e.yml`** — reusable (`workflow_call`) Playwright suite (`apps/web/playwright/`): two passes, each on a freshly seeded preview (fresh-only and sole-writer specs pass once per seed): `setup` → `seed` (scripted reset + the `setup` project, worker 0) → **`shard-desktop` ×8** (`--project=e2e`) → `seed-mobile` (needs every desktop shard, runs even if desktop has reds; reset + `setup` again) → **`shard-mobile` ×8** (`--project=e2e-mobile`), each shard given an explicit file list by `shard-plan.mjs <N> <i> --project <p>` (longest-first over that project's timings, which the best-effort `timings` job rebuilds beside `seed` from the median of the last few green runs' reports, falling back to the committed `timings.json`; NEO-389; `playwright/project-scope.mjs` lists the few specs one project leaves out) and running the `bootstrap` project for its own test account first (so each pass re-bootstraps after its reset) → beside each pass's shards, a **`seller-desktop`** / **`seller-mobile`** job runs the two marketplace-seller listing specs (`SELLER_SPECS` in `project-scope.mjs`, tag `@marketplace-seller`; no shard plans them) as worker 8, one PR at a time repo-wide behind an in-job queue (`.github/scripts/seller-queue.sh`: polls this repo's other runs' jobs, fails closed, first come first served, never cancels, 60 min cap; `seed-mobile` waits for `seller-desktop` because its reset wipes the preview) because every PR shares one BuySportsCards and one eBay sandbox seller account → the single required **`e2e`** gate (green iff both seeds and every shard and seller job succeeded, no spec failed **and** every planned spec has a passing result on both projects, so a shard that died before reporting fails it); about 20 min wall clock (seed ~4 min + longest spec ~5 min, twice) → a `report` job (the "Playwright E2E" check and a sticky PR comment). Artifacts are failure screenshots and the blob/merged HTML report, which embeds each failure's `error-context.md` ARIA snapshot (accepted: real marketplace passwords never reach the browser) and the sanitised axe JSON; never traces (a trace records Clerk testing tokens, and the repo is public). `setup` also refuses any preview URL that is not this team's `neonbinder-<hash>-neon-binder.vercel.app` and the production Convex deployment. Note it runs on **every** PR including preprocess-only ones — E2E cannot observe preprocess, but no carve-out exists, deliberately: `preprocess.yml` is path-filtered and therefore cannot block a merge, so `e2e` plus `preprocess-test` are what gate a preprocess PR.
+- **`e2e.yml`** — reusable (`workflow_call`) Playwright suite (`apps/web/playwright/`): two passes, each on a freshly seeded preview (fresh-only and sole-writer specs pass once per seed): `setup` → `seed` (scripted reset + the `setup` project, worker 0) → **`shard-desktop` ×8** (`--project=e2e`) → `seed-mobile` (needs every desktop shard, runs even if desktop has reds; reset + `setup` again) → **`shard-mobile` ×8** (`--project=e2e-mobile`), each shard given an explicit file list by `shard-plan.mjs <N> <i> --project <p>` (longest-first over that project's timings, which the best-effort `timings` job rebuilds beside `seed` from the median of the last few green runs' reports, falling back to the committed `timings.json`; NEO-389; `playwright/project-scope.mjs` lists the few specs one project leaves out) and running the `bootstrap` project for its own test account first (so each pass re-bootstraps after its reset) → beside each pass's shards, a **`seller-desktop`** / **`seller-mobile`** job runs the two marketplace-seller listing specs (`SELLER_SPECS` in `project-scope.mjs`, tag `@marketplace-seller`; no shard plans them) as worker 8, one PR at a time repo-wide behind an in-job queue (`.github/scripts/seller-queue.sh`: polls this repo's other runs' jobs, fails closed, first come first served, never cancels, 60 min cap; `seed-mobile` waits for `seller-desktop` because its reset wipes the preview; once its turn comes the job ends every eBay sandbox listing and zeroes the tested sets' BSC rows, NEO-445) because every PR shares one BuySportsCards and one eBay sandbox seller account → the single required **`e2e`** gate (green iff both seeds and every shard and seller job succeeded, no spec failed **and** every planned spec has a passing result on both projects, so a shard that died before reporting fails it); about 20 min wall clock (seed ~4 min + longest spec ~5 min, twice) → a `report` job (the "Playwright E2E" check and a sticky PR comment). Artifacts are failure screenshots and the blob/merged HTML report, which embeds each failure's `error-context.md` ARIA snapshot (accepted: real marketplace passwords never reach the browser) and the sanitised axe JSON; never traces (a trace records Clerk testing tokens, and the repo is public). `setup` also refuses any preview URL that is not this team's `neonbinder-<hash>-neon-binder.vercel.app` and the production Convex deployment. Note it runs on **every** PR including preprocess-only ones — E2E cannot observe preprocess, but no carve-out exists, deliberately: `preprocess.yml` is path-filtered and therefore cannot block a merge, so `e2e` plus `preprocess-test` are what gate a preprocess PR.
 - **`preview-cleanup.yml`** — on PR close, removes the `pr-<N>` Cloud Run tag + image, and deletes the PR's Convex preview. Browser and preprocess get **separate jobs**, because each authenticates as its own deployer SA and `google-github-actions/auth` rewrites ADC in place — a second auth in one job would silently run later steps as the wrong identity. The Convex job finds its target via the PR head SHA's GitHub Deployment record; since NEO-162 it accepts **both** `vercel[bot]` (PRs opened before the cutover) and `github-actions[bot]` (previews built by `web-preview`), so the pre-cutover backlog stays reclaimable.
 - **`refresh-flow-timings.yml`** — weekly, pushes a refreshed `apps/web/playwright/timings.json` (the shard planner's per-spec, per-project timings) to a branch for a maintainer to PR. Since NEO-389 CI rebuilds the timings itself each run, so this only keeps the committed fallback close.
 - **`e2e-repeat.yml`** — manual flakiness sampler (runs the Playwright suite N times).
@@ -533,7 +634,7 @@ The E2E suite is Playwright, in `apps/web/playwright/` (specs under `tests/`, he
 
 **Every PR that changes user-facing behaviour ships a spec that proves the feature live**, and the audit round includes the `test-coverage-auditor` agent, which checks the diff against the suite (and, for a new screen, `/impeccable audit`; see **UI & Styling**). `playwright-e2e-author` writes and debugs specs.
 
-**Run locally** — only the specs covering your change, against dev before the first push (brought up to date first), and against the PR's Convex preview only when dev cannot reproduce a CI red (never the full suite; see the PR loop above):
+**Run locally** — only the specs covering your change, on this worktree's own Convex deployment before the first push, and against the PR's Convex preview only when that deployment cannot reproduce a CI red (never the full suite; see the PR loop above):
 ```bash
 cd apps/web
 npm run test:e2e:list -- --project=e2e     # check a new spec is listed once (once per project)

@@ -1,5 +1,6 @@
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
+import { rejectedSummaryValidator } from "./lib/extractRejections";
 
 /**
  * NEO-356 — the collector's saved theme preference, shared by the schema and
@@ -929,6 +930,9 @@ export const listingProblemReasonValidator = v.union(
  * it (`marketplaceListingSyncs.progress`). NB vocabulary only: the web writes
  * each label from `kind` and NB's condition names; no marketplace value is
  * stored here.
+ *   check    compare the collector's boxes with what is listed: the first step
+ *            of an eBay run, and all of a run that finds nothing to do, so a
+ *            run that sent nothing still says what it did
  *   read     (BSC) read one condition's sheet
  *   send     (BSC) the PUT carrying the changes
  *   confirm  (BSC) read one condition back after the PUT
@@ -944,6 +948,7 @@ export const listingProblemReasonValidator = v.union(
  * NB may still have to zero).
  */
 export const listingSyncStepKindValidator = v.union(
+  v.literal("check"),
   v.literal("read"),
   v.literal("send"),
   v.literal("confirm"),
@@ -1019,6 +1024,77 @@ export const saleItemProblemValidator = v.union(
   v.literal("linkMismatch"),
   v.literal("oversold"),
 );
+
+/**
+ * NEO-475 — why a BuySportsCards call failed, as the telemetry classifies it.
+ *   http         BSC answered with a non-2xx status
+ *   timeout      no response headers before the call's deadline
+ *   body_timeout headers arrived, the body did not before the deadline
+ *   network      the fetch threw (connection reset, DNS, TLS); `errCode` says which
+ *   parse        a 2xx body that would not parse
+ */
+export const bscCallKindValidator = v.union(
+  v.literal("http"),
+  v.literal("timeout"),
+  v.literal("body_timeout"),
+  v.literal("network"),
+  v.literal("parse"),
+);
+
+/**
+ * NEO-475 — one failed BSC call, the `bsc_call_failed` detail line minus its
+ * `msg`. Every string is already scrubbed by the emitter
+ * (`convex/lib/bscCallTelemetry.ts`) and capped again by
+ * `bscCallStats.record`. `headers` is an allowlist of response headers only;
+ * no request header, token, credential or seller id is ever stored.
+ */
+export const bscCallSampleValidator = v.object({
+  op: v.optional(v.string()),
+  pathTemplate: v.optional(v.string()),
+  bscCardId: v.optional(v.string()),
+  kind: bscCallKindValidator,
+  status: v.optional(v.number()),
+  durationMs: v.optional(v.number()),
+  timeoutMs: v.optional(v.number()),
+  attempt: v.optional(v.number()),
+  inflight: v.optional(v.number()),
+  errCode: v.optional(v.string()),
+  headers: v.optional(v.record(v.string(), v.string())),
+  body: v.optional(v.string()),
+  deployment: v.optional(v.string()),
+  at: v.optional(v.number()),
+});
+
+/**
+ * NEO-475 — one action invocation's (or one seller session's) BSC calls,
+ * mergeable with any other: counts add, `maxInflight` and `lat.max` take the
+ * max, `lat.min` the min, and `lat.buckets` add element-wise. The buckets have
+ * FIXED edges (`BSC_LATENCY_BUCKET_EDGES_MS` in `bscCallStats.ts`: ten edges
+ * plus the overflow bucket, so always eleven), which is what lets p50/p95 be
+ * computed across invocations. `deployment` is optional because
+ * `observability.deploymentName()` is undefined off-cloud (tests, local).
+ */
+export const bscCallSummaryFields = {
+  op: v.string(),
+  deployment: v.optional(v.string()),
+  startedAt: v.number(),
+  endedAt: v.number(),
+  calls: v.number(),
+  ok: v.number(),
+  byKind: v.record(v.string(), v.number()),
+  byStatus: v.record(v.string(), v.number()),
+  maxInflight: v.number(),
+  suppressed: v.number(),
+  lat: v.object({
+    min: v.number(),
+    max: v.number(),
+    sum: v.number(),
+    buckets: v.array(v.number()),
+  }),
+  /** At most five failure samples (`bscCallStats.record` caps it). */
+  samples: v.array(bscCallSampleValidator),
+};
+export const bscCallSummaryValidator = v.object(bscCallSummaryFields);
 
 // Using Clerk for authentication - users are identified by Clerk user IDs
 export default defineSchema({
@@ -2723,7 +2799,58 @@ export default defineSchema({
          * primary name matched, which is the norm.
          */
         matchedAlias: v.optional(v.string()),
+        /**
+         * NEO-424 — the candidate's HOME sport label, present on candidates the
+         * batch took from the SET'S OWN HISTORY (a name already linked on a
+         * committed card of this set) rather than from the in-sport name index.
+         *
+         * Set history is not sport-scoped: Bo Jackson linked on the base set's
+         * card is the answer for his parallel too, whatever sport his row is
+         * filed under. So a history candidate can be in another sport, and the
+         * wizard labels it when this differs from the set's sport. Absent on a
+         * candidate `buildExistingPlayerCandidates` found, which is always in
+         * the row's own sport. A label resolved once at insert, never a key.
+         */
+        sportValue: v.optional(v.string()),
       }))),
+      /**
+       * NEO-424, player-only — the ONE existing player the batch suggests for
+       * this name, which the operator still confirms.
+       *
+       * Rule E: a name with no answer in the set's sport and no set history
+       * may still have an obvious candidate — the same name in the prior year
+       * of the same product (`priorYearProduct`), or exactly one player of
+       * that name in ANY sport (`onlyNamesake`). The wizard puts "Link to
+       * <name> (<sportValue>)" first and demotes "Add as New Player anyway".
+       *
+       * `setHistory` / `hallOfFame` are the same suggestion after the operator
+       * pressed Change on a row the batch had AUTO-LINKED (`decision.
+       * autoLinked`): the link is undone, but the player it named is still the
+       * best guess, so it comes back as the primary rather than vanishing.
+       *
+       * Never a decision: nothing is linked until the operator says so. But
+       * like a same-name choice (NEO-332) it holds the Wikidata lookup back —
+       * the row is born `ready` and looked up only when the operator presses
+       * "Add as New Player anyway" (`entityReviewQueue.requestPlayerLookup`),
+       * so no New Team steps are staged ahead of "Link to <name>".
+       * `recordDecision`
+       * accepts a cross-sport link to exactly this `playerId` (and to any
+       * `existingCandidates` entry), re-pointing the row's sport to the
+       * player's home sport — the operator-typed Link to Existing stays
+       * sport-checked.
+       */
+      preselect: v.optional(v.object({
+        playerId: v.id("players"),
+        name: v.string(),
+        sportId: v.id("selectorOptions"),
+        sportValue: v.string(),
+        reason: v.union(
+          v.literal("priorYearProduct"),
+          v.literal("onlyNamesake"),
+          v.literal("setHistory"),
+          v.literal("hallOfFame"),
+        ),
+      })),
       // team-only
       league: v.optional(v.string()),
       // NEO-254, team-only — the league's OWN QID, off the same P118 statement
@@ -2938,6 +3065,15 @@ export default defineSchema({
          * sync ever sets it.
          */
         addSetSport: v.optional(v.boolean()),
+        /**
+         * NEO-463, player-kind only — the operator confirmed a one-word name
+         * ("Walker") that is a fuller-named player's first or last name is a
+         * one-name player, not a piece of that player. Without it a plain
+         * create on such a name is refused by `recordDecision` and held back
+         * (no row written, the name reported unreviewed) by the commit. Stored
+         * only as `true`; absent says nothing was confirmed.
+         */
+        oneNamePlayer: v.optional(v.literal(true)),
       }),
       v.object({
         action: v.literal("link"),
@@ -2995,6 +3131,32 @@ export default defineSchema({
          * See the create variant for the full contract.
          */
         addSetSport: v.optional(v.boolean()),
+        /**
+         * ── NEO-424: a link the BATCH made, not the operator ────────────────
+         *
+         * Rule A: a name already linked on a committed card anywhere in this
+         * set (base, inserts, parallels) to exactly one player is that player
+         * — any sport, no wizard step. Rule D: when no same-name candidate was
+         * active in the set's year and exactly one is a Hall of Famer, that
+         * one. Rule F gives teams rule A.
+         *
+         * Stored as an ordinary link decision on an ordinary review row, NOT
+         * as a `checklistNameResolutions` answer: that fast path runs before
+         * decisions in the commit prelude and would override the operator's
+         * Change. Here the wizard lists it under Decided ("Matched from this
+         * set", "Hall of Famer") with Change, and `clearDecision` turns it back
+         * into a question whose primary is the same player
+         * (`enrichment.preselect`).
+         *
+         * Present only on rows `startBatch` inserted already decided. Any
+         * decision the operator records replaces the whole object, so the flag
+         * cannot outlive the batch's own answer. Never carries `addSetSport`:
+         * an auto-link is a guest link and writes nothing to the player.
+         */
+        autoLinked: v.optional(v.union(
+          v.literal("setHistory"),
+          v.literal("hallOfFame"),
+        )),
       }),
       // NEO-212: "this name is not a person / not a team". Carries no payload —
       // nothing is created, nothing is linked, and the card keeps the raw name
@@ -3447,6 +3609,12 @@ export default defineSchema({
     processedImages: v.optional(v.number()),
     failedImages: v.optional(v.number()),
     rejectedEntries: v.optional(v.number()), // zip members extract declined (not images, too big, etc.)
+    // NEO-446 — why, as a collector can act on it: counts that add up to
+    // `rejectedEntries` and the first few file names (never one that failed
+    // name validation). On the job, not in rows of their own, because a rejected
+    // entry has no work to do and a row would join the counters, the prune and
+    // the lanes. See convex/lib/extractRejections.ts.
+    rejected: v.optional(rejectedSummaryValidator),
     startedAt: v.optional(v.number()), // when the batch was started, not when the job was created
     finishedAt: v.optional(v.number()),
     // Terminal failure detail. `errorCode` is the low-cardinality tag to group
@@ -3675,9 +3843,17 @@ export default defineSchema({
     // (`retryPlaceholderImage`). Capped at PLACEHOLDER_MAX_IMAGE_RETRIES so one
     // photo cannot be sent to the paid services without end.
     retries: v.optional(v.number()),
+    // NEO-446: the collector set this loose photo aside on an intake run
+    // (`setIntakePhotoAside`), usually a side whose partner the zip turned away.
+    // Pairing never picks it up (`computePairingDiff`, and a re-check inside
+    // `applyPairDiffImpl`) and it leaves the Pairing lane. Status and the job's
+    // counters stay as they were, so it never changes how a job is judged. Only
+    // ever on a done or failed row: a restart that re-reads the photo clears it
+    // and one that keeps a done row keeps it, like the row's other user decisions.
+    setAside: v.optional(v.boolean()),
   })
     // The ONLY index this table needs. It answers both "every image of this
-    // job" (prefix `jobId` alone) and "this job's images in zip order", so a
+    // job" (prefix `jobId` alone) and "this job's images in filename order", so a
     // separate `by_job` on `["jobId"]` would be a strict prefix of this one —
     // a second copy of the same index, paid for on every write, that Convex
     // would never choose over this one for anything. Ordered iteration is a
@@ -3760,9 +3936,11 @@ export default defineSchema({
   // defaults. Its `_id` is the `?run=` handle; every function checks
   // `userId === identity.subject` on it.
   //
-  // `variantId` is absent when the collector skipped the set pick; every pair
-  // is then "noVariant" until a variant is picked or pinned. `variantPinned`
-  // marks one chosen mid-run ("these are all from <set>") rather than up front.
+  // NEO-452: every new run starts with a `variantId` (`createIntakeRun` refuses
+  // without one). It stays optional for runs from before that, whose collector
+  // skipped the set pick; every pair of such a run is "noVariant" until a variant
+  // is picked or pinned. `variantPinned` marks one chosen mid-run ("these are all
+  // from <set>") rather than up front.
   intakeRuns: defineTable({
     userId: v.string(),
     jobId: v.string(),
@@ -3875,6 +4053,22 @@ export default defineSchema({
   latencyProbeBeats: defineTable({
     at: v.number(),
   }),
+
+  /**
+   * NEO-475 — BuySportsCards call telemetry, one row per action invocation
+   * (or seller session) that called BSC: the `bsc_call_summary` log line plus
+   * up to five failure samples. Written only through
+   * `ctx.scheduler.runAfter(0, internal.bscCallStats.record, …)`, never on the
+   * call's hot path. Insert-only; rows are kept forever (Jason, 2026-11-09,
+   * decision D3: no prune cron). Deployment-wide operational data, no user
+   * data and no NB catalog data: nothing user-facing reads it, nothing
+   * subscribes to it, and the only reader is the paginated internal
+   * `bscCallStats.exportRange`. Holds no marketplace linkage, so it sits
+   * outside the product invariant entirely.
+   */
+  bscCallSummaries: defineTable(bscCallSummaryFields)
+    // exportRange's `startedAt` window, oldest first, paged.
+    .index("by_startedAt", ["startedAt"]),
 
   /**
    * ── NEO-358: a collector's places to keep cards ───────────────────────────
@@ -4451,7 +4645,7 @@ export default defineSchema({
    *     hourly cap; swept with its objects after an hour.
    *   - `live`: on its copy. Never more than one per (copy, side).
    *   - `detached`: its copy was removed; kept an hour so the Undo can put it
-   *     back (`restoreCopy`), then swept with its objects.
+   *     back (`restoreCopy`, `undoBoxQuantity`), then swept with its objects.
    * All reads and writes go through `convex/copyPhotos.ts`.
    */
   collectionCopyPhotos: defineTable({
@@ -4567,13 +4761,18 @@ export default defineSchema({
    * reader strips it.
    *
    * `conditionsPushed` is every platform condition string NB has ever posted
-   * for this variant (BSC: one sheet per condition). A later run reads the
-   * conditions NB maps to plus these, so a row NB once listed under a
-   * condition it no longer uses is still found and corrected. Only ever grows;
-   * small (BSC has 4 modern and 10 vintage conditions). ABSENT
-   * `lastSuccessAt` means the variant has never synced cleanly, and that run
-   * reads every condition; so does the first run after a Sync press
-   * (`resyncRequestedAt` later than `lastRunAt`, see `listingSync.syncVariant`).
+   * for this variant (BSC: one sheet per condition). Every BSC run reads the
+   * conditions NB's copies map to now plus these, and nothing else, so a row
+   * NB once listed under a condition it no longer uses is still found and
+   * corrected (NEO-475: no run reads the whole era any more, a first sync or
+   * a Sync press included, so stock NB never listed under is left alone). A
+   * run adds the conditions it is about to list under BEFORE its first PUT
+   * (`listingDrain.recordConditionsPushed`), so a run that dies mid-push still
+   * leaves the record; `finishVariant` adds the rest. Only ever grows; small
+   * (BSC has 4 modern and 10 vintage conditions). ABSENT `lastSuccessAt` means
+   * the variant has never synced cleanly. eBay's first run, and its first run
+   * after a Sync press (`resyncRequestedAt` later than `lastRunAt`, see
+   * `listingSync.syncVariant`), reads every card of the variant.
    *
    * `lastError` is an NB-written sentence, truncated by the writer; never a
    * raw platform response body (it can echo the request, and this row is
@@ -4624,8 +4823,9 @@ export default defineSchema({
      * The last Sync press that asked for a full read (`listingSync.syncVariant`
      * does not stamp a press within a minute of this one: that press only runs
      * the drain for a change no recent drain has tried, or is ignored). The
-     * variant's next run reads every condition while this is later than
-     * `lastRunAt` (the claim stamps `lastRunAt`, so one run).
+     * variant's next eBay run reads every card while this is later than
+     * `lastRunAt` (the claim stamps `lastRunAt`, so one run); a BSC run reads
+     * what any run reads (NEO-475).
      */
     resyncRequestedAt: v.optional(v.number()),
     /**
@@ -4634,8 +4834,10 @@ export default defineSchema({
      * writes the plan and flips one step per small write (`working` → `done`),
      * appending steps it learns later and dropping ones the run turns out not
      * to need. The finish drops every step still `waiting`; a failed run ends
-     * with the step it died on `failed`. Kept as the last run's ledger until
-     * the next claim replaces it. Small (a vintage BSC run is ~22 steps).
+     * with the step it died on `failed`; a clean run with nothing to do ends
+     * on its one `check` step (`listingDrain.finishVariant`). Kept as the last
+     * run's ledger until the next claim replaces it. Small (a vintage BSC run
+     * is ~22 steps).
      */
     progress: v.optional(listingSyncProgressValidator),
     lastUpdated: v.number(),
@@ -4738,6 +4940,19 @@ export default defineSchema({
     drainLeaseExpiresAt: v.optional(v.number()),
     /** A kick landed while a drain ran: its release runs the next one at once. */
     drainRequested: v.optional(v.boolean()),
+    /**
+     * NEO-433: the drain run a kick just scheduled, until a run claims. Only
+     * the run handed `drainKickToken` is the one `drainKickFnId` names, and its
+     * claim starts `listingDrain.watchDrainRun` on that function's own record.
+     */
+    drainKickToken: v.optional(v.string()),
+    drainKickFnId: v.optional(v.id("_scheduled_functions")),
+    /**
+     * NEO-433: when the platform recorded the lease holder's function as over
+     * without a release. The lease stands only through the grace after it
+     * (`DRAIN_DEATH_GRACE_MS`); nothing reads the run as running meanwhile.
+     */
+    drainRunDeadAt: v.optional(v.number()),
     /**
      * When the last claimed drain released, whether it succeeded or failed. A
      * refused claim never stamps it. `listingSync.syncVariant` reads it: a row

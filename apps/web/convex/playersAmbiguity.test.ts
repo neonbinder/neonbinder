@@ -603,10 +603,43 @@ describe("NEO-254: applyLookupResult attaches NB's own candidates", () => {
     expect(candidates.map((c) => c.birthYear).sort()).toEqual([1867, 1937]);
     expect(candidates.map((c) => c.careerSummary).sort()).toEqual([
       "Padres 1961–present",
-      "Phillies 1890–1894",
+      "Phillies 1890–94",
     ]);
     // The lookup's own result is preserved alongside them.
     expect(row!.enrichment!.wikidataId).toBe("Q1");
+  });
+
+  test("a candidate with more teams than the line names counts the unread ones in one +N more", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const a = await insertTeam(t, sportId, "Astros", "astros");
+    const b = await insertTeam(t, sportId, "Braves", "braves");
+    const c = await insertTeam(t, sportId, "Cubs", "cubs");
+    const d = await insertTeam(t, sportId, "Dodgers", "dodgers");
+    // Ranked by total seasons: Astros 10, Braves 5, Cubs 3, Dodgers 1. Only
+    // the top two are named; the other two are counted, never read.
+    await insertPlayer(t, sportId, {
+      name: "Bob Allen",
+      nameNormalized: "allen bob",
+      teamYears: [
+        { teamId: d, fromYear: 2000, toYear: 2000 },
+        { teamId: c, fromYear: 2001, toYear: 2003 },
+        { teamId: b, fromYear: 2004, toYear: 2008 },
+        { teamId: a, fromYear: 2009, toYear: 2018 },
+      ],
+    });
+    await insertPlayer(t, sportId, { name: "Bob Allen", nameNormalized: "allen bob" });
+    const rowId = await seedReviewRow(t, sportId, "Bob Allen");
+
+    await t.mutation(internal.entityReviewQueue.applyLookupResult, {
+      id: rowId,
+      status: "ready",
+      enrichment: { wikidataId: "Q1" },
+    });
+
+    const row = await t.run(async (ctx) => ctx.db.get(rowId));
+    const summaries = row!.enrichment!.existingCandidates!.map((c) => c.careerSummary);
+    expect(summaries).toContain("Astros 2009–18 · Braves 2004–08 +2 more");
   });
 
   test("candidates are attached even when the Wikidata lookup found nothing", async () => {

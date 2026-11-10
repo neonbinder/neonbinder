@@ -1,5 +1,18 @@
 import { describe, expect, test } from "vitest";
-import { deriveStage } from "./intake-stage";
+import { deriveStage, waitingHeadline } from "./intake-stage";
+
+describe("waitingHeadline", () => {
+  test.each([
+    [6, 0, "All 6 photos read."],
+    [1, 0, "All 1 photo read."],
+    [6, 2, "4 of 6 photos read. 2 couldn't be."],
+    [2, 1, "1 of 2 photos read. 1 couldn't be."],
+    [6, 6, "Couldn't read any of your 6 photos."],
+    [1, 1, "Couldn't read your photo."],
+  ])("%i photos, %i failed: %s", (total, failed, headline) => {
+    expect(waitingHeadline(total, failed)).toBe(headline);
+  });
+});
 
 const base = { job: null, images: undefined, uploading: false, selectedCount: 0 };
 const img = (status: string) => ({ status });

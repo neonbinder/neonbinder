@@ -282,6 +282,86 @@ those (§3).
 The preview answers from the new entries only after its bundle is rebuilt,
 because the JSON is imported at build time: the next push to the PR.
 
+**NEO-424 entry (2026-11-03): `Kendry Morales` as a Football no-match.** The
+set-history spec (`checklist-wizard-set-history-links-across-variants`) moves
+this real checklist name from Baseball to Football in the wizard and adds him
+there, which re-queues his lookup in Football. He is a baseball player, so the
+Football answer is a no-match, and without a recorded entry the deployment
+would refuse the miss with an error-level log line (NEO-413). Captured by this
+section's method: `lookupPlayerEnrichmentLive("Kendry Morales", <football
+sportConfig>, trace)` from a laptop (`sportQid` `Q41323`, hall of fame
+`Q778412`), which searched twice (`wikidata_search_empty`, then
+`wikidata_search_empty_confirmed`), logged `wikidata_player_no_match`, and
+left `trace.transportFailed` false, so the `null` is a completed search and not
+an outage. One entry, merged per step 5 (only the new key, keys re-sorted).
+
+His FIRST lookup, in Baseball when the wizard opens on his row, is recorded too:
+that live answer is a **hit** (`wikidataId` `Q1185217`, born 1983, three
+undated clubs Minnesota Twins / Seattle Mariners / Toronto Blue Jays, enwiki
+"Kendrys Morales"), captured the same way, and merged as the file's default
+sport (no `sportQid`). Without it the unrecorded Baseball miss is refused at
+error level on every run of the spec. A genuine capture, not a `null`.
+
+The same spec reaches four more lookups, each captured the same way (every
+`transportFailed` false) and merged under step 5: `Michael Brantley` as a
+Football no-match (the FOOTBALL player the spec adds from `/admin/players`; his
+Baseball row is inserted READY and is never looked up), and two historic clubs
+the Peak Performance wizard stages as team steps, as Baseball hits:
+`St. Louis Browns` (`Q504309`, MLB, from 1882) and `Washington Senators`
+(`Q329816`, American League, from 1961). The recorded Wikidata answers are
+Wikidata's own; the wizard still links the Browns to the catalogue's 1902-1953
+row by name.
+
+**NEO-424 entry (2026-11-04): `Rickie Weeks`, Baseball hit and Football
+no-match.** The same spec's prior-year phase (rule E1) adds `Rickie Weeks`, the
+one unknown name on the 2009 insert Career Best Jumbo Jerseys, as a Football
+player, exactly as it does `Kendry Morales`. His FIRST lookup, in Baseball when
+the wizard opens on his row, is a live **hit** (`wikidataId` `Q3431635`, born
+1982, four dated stints with Wikidata ids at clubs the catalogue already holds
+(Milwaukee Brewers, Seattle Mariners, Arizona Diamondbacks, Tampa Bay Rays) and
+three undated clubs, so no career team is staged; enwiki "Rickie Weeks Jr."),
+merged as the file's default sport (no `sportQid`). Moving the row to Football
+re-queues the lookup there, and his Football answer is a **no-match** (`sportQid`
+`Q41323`). Both captured by the method above with `lookupPlayerEnrichmentLive`
+from a laptop; each trace left `transportFailed` false, and the Football search
+ran twice (`wikidata_search_empty`, then `wikidata_search_empty_confirmed`)
+before `wikidata_player_no_match`, so the `null` is a completed search and not
+an outage. Two entries merged per step 5 (only the new keys, keys re-sorted);
+the coverage proof of step 4 reads both as hits. His row on the 2010 insert
+(Peak Performance Relics) is inserted ready as a suggestion and is never looked
+up.
+
+**NEO-475 entry (2026-11-09): three small Baseball sets.** E2E moved to three
+small sets, and each name they stage was captured by the method above with the
+`*Live` bodies from a laptop (Baseball `sportConfig`, five at a time). Every
+kept trace left `transportFailed` false. Each `null` came after two empty
+searches (`wikidata_search_empty`, then `wikidata_search_empty_confirmed`), so
+it is a completed search and not an outage. Sixteen new keys were merged per
+step 5, and the step 4 proof read all 20 lookups below (the 16 plus four
+already recorded) with no miss.
+
+- 2024 Topps Stars of MLB Network: `Lauren Shehadi`, `Robert Flores`,
+  `Brian Kenny`, `Greg Amsinger`, `Lauren Gardner` and `Intentional Talk` (a
+  show, not a person) are all **no-matches**. `Chris Young` is a **hit**
+  (`Q2964905`, the pitcher, born 1979) with six dated MLB stints and no new
+  club.
+- 1996 New Haven Ravens Rally Raffle: `Edgard Velazquez`, `Rodney Pedraza` and
+  the team `New Haven Ravens` are all **no-matches**. ESPN had nothing for the
+  team either. The set's NNO raffle card stages the player name
+  `raffle entry card` (lower case, exactly as the wizard stages it). It is
+  recorded as a **no-match**: a deployment refused it as `not_recorded` until
+  it was.
+- 2024 BBM Rookie Edition Premium: `Gouki Oda` (`Q124097444`) and
+  `Koichi Okumura` (`Q115529958`) are **hits** with undated clubs only, so they
+  stage no career team. `Ryotaro Sawayanagi` (`Q124096978`) is a **hit** with
+  two dated stints: Fukuoka SoftBank Hawks (`Q129164`, already recorded with
+  that id) and `Roki Techno Toyama` (`Q24859605`). The Roki team was recorded
+  with that id as `knownQid`, because a recorded `null` cannot answer a staged
+  team (§1). Its league, `Japan Amateur Baseball Association` (`Q11509291`),
+  was recorded the same way. His first two live searches timed out at 30 s and
+  were dropped. The third answered. `Kota Nishidate`, `Kosuke Kawachi` and
+  `Shuya Yamada` were already recorded.
+
 ## 4b. Other sports, explicit names, and no Wikidata from your machine (2026-10-30)
 
 **Entries for another sport.** The file's `sportQid` is the default sport of

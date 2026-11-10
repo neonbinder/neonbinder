@@ -97,6 +97,42 @@ describe("NearMatchPanel", () => {
     expect(badges[0].getAttribute("aria-hidden")).toBe("true");
   });
 
+  it("NEO-462: orders same-name rows, then alias hits, then close ones, each group in server order", () => {
+    // Supplied in the worst order: close, alias, same-name, interleaved, so
+    // only the three-tier sort (stable within each tier) can produce this.
+    const matches: NearMatch[] = [
+      { _id: "c1", name: "Tony Gwinn", confidence: "close" },
+      {
+        _id: "a1",
+        name: "Tony Gwynn Jr.",
+        confidence: "exact",
+        matchedAlias: "Tony Gwynn",
+      },
+      { _id: "s1", name: "Tony Gwynn", confidence: "exact", birthYear: 1960 },
+      { _id: "c2", name: "Anthony Gwynn", confidence: "close" },
+      { _id: "s2", name: "Tony Gwynn", confidence: "exact", birthYear: 1990 },
+    ];
+    const onPick = vi.fn();
+    render(
+      <NearMatchPanel
+        kind="player"
+        matches={matches}
+        onPick={onPick}
+        pickLabel={(name) => `Open ${name}`}
+      />,
+    );
+    const buttons = screen.getAllByRole("button");
+    expect(buttons.map((b) => b.getAttribute("aria-label"))).toEqual([
+      "Open Tony Gwynn, born 1960 — same name",
+      "Open Tony Gwynn, born 1990 — same name",
+      "Open Tony Gwynn Jr.",
+      "Open Tony Gwinn",
+      "Open Anthony Gwynn",
+    ]);
+    fireEvent.click(buttons[0]);
+    expect(onPick).toHaveBeenCalledWith("s1", "Tony Gwynn");
+  });
+
   it("names the list by kind", () => {
     const { rerender } = render(
       <NearMatchPanel kind="player" matches={[exact]} onPick={vi.fn()} />,
@@ -291,6 +327,57 @@ describe("NearMatchPanel — matchedAlias", () => {
 
     fireEvent.click(screen.getByLabelText("Link to LSU Tigers"));
     expect(onPick).toHaveBeenCalledWith("t1", "LSU Tigers");
+  });
+});
+
+describe("NEO-462 — a player row's facts", () => {
+  const walker: NearMatch = {
+    _id: "p-walker",
+    name: "Walker",
+    confidence: "close",
+    birthYear: 1990,
+    career: {
+      teams: [
+        { name: "Dodgers", spans: [{ fromYear: 2014, toYear: 2019 }] },
+        { name: "Brewers", spans: [{ fromYear: 2020, toYear: 2021 }] },
+      ],
+      moreTeams: 1,
+    },
+  };
+
+  it("prints the written line and speaks it in words in the accessible name", () => {
+    render(<NearMatchPanel kind="player" matches={[walker]} onPick={vi.fn()} />);
+    expect(
+      screen.getByText("b. 1990 · Dodgers 2014–19 · Brewers 2020–21 +1 more"),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("button", {
+        name: "Link to Walker, born 1990, Dodgers 2014 to 2019, Brewers 2020 to 2021, plus 1 more",
+      }),
+    ).toBeTruthy();
+  });
+
+  it("keeps the same-name suffix after the spoken facts", () => {
+    render(
+      <NearMatchPanel
+        kind="player"
+        matches={[{ ...walker, confidence: "exact" }]}
+        onPick={vi.fn()}
+      />,
+    );
+    expect(
+      screen.getByRole("button", {
+        name: "Link to Walker, born 1990, Dodgers 2014 to 2019, Brewers 2020 to 2021, plus 1 more — same name",
+      }),
+    ).toBeTruthy();
+  });
+
+  it("lets the description wrap rather than clip its career tail", () => {
+    // At 200% zoom or in a narrow dialog a truncated line hid the career,
+    // which is the part that tells two Walkers apart (SC 1.4.4 / 1.4.10).
+    render(<NearMatchPanel kind="player" matches={[walker]} onPick={vi.fn()} />);
+    const line = screen.getByText("b. 1990 · Dodgers 2014–19 · Brewers 2020–21 +1 more");
+    expect(line.className).not.toMatch(/(^|\s|:)truncate(\s|$)/);
   });
 });
 

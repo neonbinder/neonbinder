@@ -14,6 +14,7 @@ import {
   useCopiesInVariant,
   useCopiesOf,
   useCopiesOfCards,
+  useCopyPhotos,
   useBuildingSets,
   useDemoExtension,
   useDrill,
@@ -41,6 +42,14 @@ import {
  * The Convex client module is mocked EMPTY: touching it would throw.
  */
 vi.mock("convex/react", () => ({}));
+vi.mock("@/lib/collection/copy-photo-resize", async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  resizeCopyPhoto: vi.fn(async () => ({
+    contentType: "image/jpeg",
+    image: new Blob(["image"], { type: "image/jpeg" }),
+    thumb: new Blob(["thumb"], { type: "image/jpeg" }),
+  })),
+}));
 
 const CHROME = "2024-topps-chrome-baseball";
 const CHROME_BASE = demoVariantId(CHROME, { type: "Base", name: null });
@@ -237,6 +246,91 @@ describe("writing through the contract", () => {
 /** The seed's copies the collection shows: every one not in the Show box (NEO-359). */
 const collectionSeed = () => initialCollectionState().copies.filter((c) => c.homeId !== SHOW_BOX_ID);
 
+describe("a demo line with photos behaves like the real store's (NEO-431)", () => {
+  const file = new File(["x"], "front.jpg", { type: "image/jpeg" });
+  const usePhotoRig = (cardId: string) => {
+    const copies = useCopiesOf(cardId);
+    const ext = useCopyPhotos();
+    return { actions: useCollectionActions(), copies, ext, photos: ext?.usePhotos(copies ?? []) };
+  };
+  const original = { create: URL.createObjectURL, revoke: URL.revokeObjectURL };
+  beforeEach(() => {
+    let n = 0;
+    URL.createObjectURL = vi.fn(() => `blob:demo-${(n += 1)}`);
+    URL.revokeObjectURL = vi.fn();
+  });
+  afterEach(() => {
+    URL.createObjectURL = original.create;
+    URL.revokeObjectURL = original.revoke;
+  });
+  /** A card in Unsorted, one line, with a front photo. */
+  const seeded = async () => {
+    const card = demoCard(initialCollectionState().copies[0].cardId)!;
+    const box = { id: UNSORTED_BOX_ID, kind: "box", name: "Unsorted" } as never;
+    const rendered = renderHook(() => usePhotoRig(card.id), { wrapper });
+    const { result } = rendered;
+    let copyId = "";
+    await act(async () => {
+      copyId = (await result.current.actions.addLineItem(card, { ...emptyCopyDetails(), homeId: UNSORTED_BOX_ID }, { keepsOwnLine: true })).copyId;
+    });
+    const line = () => result.current.copies!.find((c) => c.id === copyId)!;
+    await act(async () => {
+      await result.current.ext!.addPhoto(line(), "front", file);
+    });
+    return { card, box, result, rendered, copyId, line };
+  };
+
+  it("adding a photo marks the line, and taking the last one off clears it", async () => {
+    const { result, line } = await seeded();
+    expect(line().hasPhotos).toBe(true);
+    await act(async () => {
+      await result.current.ext!.removePhoto(line(), "front");
+    });
+    expect(line().hasPhotos).toBeUndefined();
+  });
+
+  it("a plain add never stacks onto the photo line", async () => {
+    const { card, result, copyId, line } = await seeded();
+    let merged = true;
+    await act(async () => {
+      merged = (await result.current.actions.addLineItem(card, { ...emptyCopyDetails(), homeId: UNSORTED_BOX_ID })).merged;
+    });
+    expect(merged).toBe(false);
+    expect(line().quantity).toBe(1);
+    expect(result.current.copies!.filter((c) => c.id !== copyId && c.homeId === UNSORTED_BOX_ID)).toHaveLength(1);
+  });
+
+  it("a raise stacks onto it, a count to 0 takes it, and the Undo brings it back with its photo", async () => {
+    const { card, box, result, copyId, line } = await seeded();
+    await act(async () => {
+      await result.current.actions.setBoxQuantity(card, box, 2);
+    });
+    expect(line()).toMatchObject({ quantity: 2, hasPhotos: true });
+    expect(result.current.photos?.get(copyId)?.front).toBeDefined();
+
+    let undo = async () => {};
+    await act(async () => {
+      undo = (await result.current.actions.setBoxQuantity(card, box, 0)).undo;
+    });
+    expect(line()).toBeUndefined();
+    await act(async () => {
+      await undo();
+    });
+    expect(line()).toMatchObject({ quantity: 2, hasPhotos: true });
+    expect(result.current.photos?.get(copyId)?.front).toBeDefined();
+  });
+
+  it("a reload loses the page's photos, so no stored line stays marked", async () => {
+    const { rendered, card, copyId, line } = await seeded();
+    expect(line().hasPhotos).toBe(true);
+    rendered.unmount();
+    const again = renderHook(() => usePhotoRig(card.id), { wrapper });
+    const stored = again.result.current.copies!.find((c) => c.id === copyId)!;
+    expect(stored.quantity).toBe(1);
+    expect(stored.hasPhotos).toBeUndefined();
+  });
+});
+
 describe("everything I own", () => {
   it("lists every held card once, the newest Have first, with its count", async () => {
     const { result } = renderHook(
@@ -354,6 +448,34 @@ describe("moving a copy through the contract", () => {
     expect(result.current.copies!.find((c) => c.id === stack.id)?.quantity).toBe(4);
   });
 
+  it("NEO-431: keepsOwnLine starts its own line beside a twin, in its own pocket; a plain add still stacks", async () => {
+    const { result } = renderHook(() => useMoveRig(cardId()), { wrapper });
+    const copy = result.current.copies![0];
+    const twin = { ...emptyCopyDetails(), condition: "Mint" as const, notes: "own line", quantity: 1 };
+    const card = demoCard(copy.cardId)!;
+    let plain = "";
+    await act(async () => {
+      plain = (await result.current.actions.addLineItem(card, twin)).copyId;
+    });
+    let own = "";
+    let undo: () => Promise<void> = async () => {};
+    await act(async () => {
+      const r = await result.current.actions.addLineItem(card, twin, { keepsOwnLine: true });
+      expect(r.merged).toBe(false);
+      own = r.copyId;
+      undo = r.undo;
+    });
+    const lineOf = (id: string) => result.current.copies!.find((c) => c.id === id)!;
+    expect(own).not.toBe(plain);
+    expect(lineOf(plain).quantity).toBe(1);
+    expect(lineOf(own).slot).not.toBe(lineOf(plain).slot);
+    await act(async () => {
+      expect(await result.current.actions.addLineItem(card, twin)).toMatchObject({ copyId: plain, merged: true });
+    });
+    await act(undo);
+    expect(result.current.copies!.some((c) => c.id === own)).toBe(false);
+  });
+
   it("folds into an identical line in the destination and the undo splits it back out", async () => {
     const { result } = renderHook(() => useMoveRig(cardId()), { wrapper });
     const copy = result.current.copies![0];
@@ -385,6 +507,43 @@ describe("moving a copy through the contract", () => {
     expect(result.current.copies!.reduce((n, c) => n + c.quantity, 0)).toBe(
       initialCollectionState().copies.filter((c) => c.cardId === copy.cardId).reduce((n, c) => n + c.quantity, 0) + 1,
     );
+  });
+
+  it("NEO-479: a sale with a price prices the cards, and its undo takes the line out of the box with no price left over", async () => {
+    const { result } = renderHook(() => useMoveRig(cardId()), { wrapper });
+    const copy = result.current.copies!.find((c) => c.homeKind !== "box")!;
+    let undo: () => Promise<void> = async () => {};
+    await act(async () => {
+      undo = (await result.current.actions.moveCopy(copy, SHOW_BOX_ID, { minPrice: 1.5 })).undo;
+    });
+    expect(result.current.copies!.find((c) => c.id === copy.id)).toMatchObject({ homeId: SHOW_BOX_ID, minPrice: 1.5 });
+    await act(undo);
+    const back = result.current.copies!.find((c) => c.id === copy.id)!;
+    expect(back.homeId).toBe(copy.homeId);
+    expect(back.minPrice).toBeUndefined();
+  });
+
+  it("NEO-479: taking a priced line off sale clears its price and Undo puts it back", async () => {
+    const { result } = renderHook(() => useMoveRig(cardId()), { wrapper });
+    const copy = result.current.copies!.find((c) => c.homeKind !== "box")!;
+    await act(async () => {
+      await result.current.actions.moveCopy(copy, SHOW_BOX_ID, { minPrice: 1.5 });
+    });
+    const sold = result.current.copies!.find((c) => c.id === copy.id)!;
+    let undo: () => Promise<void> = async () => {};
+    await act(async () => {
+      undo = (await result.current.actions.moveCopy(sold, SLAB)).undo;
+    });
+    expect(result.current.copies!.find((c) => c.id === copy.id)!.minPrice).toBeUndefined();
+    await act(undo);
+    expect(result.current.copies!.find((c) => c.id === copy.id)).toMatchObject({ homeId: SHOW_BOX_ID, minPrice: 1.5 });
+  });
+
+  it("NEO-479: a price that is not whole cents is refused with words to show and moves nothing", async () => {
+    const { result } = renderHook(() => useMoveRig(cardId()), { wrapper });
+    const copy = result.current.copies!.find((c) => c.homeKind !== "box")!;
+    await expect(result.current.actions.moveCopy(copy, SHOW_BOX_ID, { minPrice: 1.234 })).rejects.toThrow(/dollars and cents/i);
+    expect(result.current.copies!.find((c) => c.id === copy.id)!.homeId).toBe(copy.homeId);
   });
 
   it("rejects a move into the Want List with words to show", async () => {

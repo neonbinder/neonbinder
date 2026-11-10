@@ -6,7 +6,7 @@ import NeonButton from "@/components/modules/NeonButton";
 import { ConfirmDialog } from "@/components/modules/confirm-dialog";
 import { api } from "@/convex/_generated/api";
 import { classifyIntake } from "@/lib/placeholders/intake-kind";
-import { deriveStage } from "@/lib/placeholders/intake-stage";
+import { deriveStage, waitingHeadline } from "@/lib/placeholders/intake-stage";
 import { Dropzone } from "./dropzone";
 import { ReviewGrid, type ReviewPair } from "./review-grid";
 import { PrintRun, type PrintablePair } from "./print-run";
@@ -373,13 +373,13 @@ export default function CardIntake() {
               This is the whole answer to "how would a new user know to wait?" */}
           <div className="rounded-lg border border-panel-rule bg-panel p-4 space-y-2 shadow-offset">
             <p role="status" aria-live="polite" className="text-ink-2">
-              {stage === "uploading" && "Sending your photos…"}
+              {stage === "uploading" &&
+                (classifyIntake(files).kind === "zip" ? "Sending your zip…" : "Sending your photos…")}
               {stage === "working" &&
                 (totalCount === 0
                   ? "Getting your photos ready…"
                   : `Reading your cards — ${settledCount} of ${totalCount} done.`)}
-              {stage === "waiting" &&
-                `All ${totalCount} photo${totalCount === 1 ? "" : "s"} read.`}
+              {stage === "waiting" && waitingHeadline(totalCount, failedCount)}
               {stage === "finishing" && "Matching up the last pairs…"}
               {stage === "done" &&
                 `${pairs?.length ?? 0} pair${(pairs?.length ?? 0) === 1 ? "" : "s"} ready to print.`}

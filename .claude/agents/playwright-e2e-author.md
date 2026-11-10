@@ -120,10 +120,12 @@ test-fixtures, test-parallel and test-sharding. Read the installed
    perceivable-only rule before `generator_write_test` or a plain Write.
 3. **Run only the specs you authored or changed**, with `test_run` or
    `npx playwright test <files>` from `apps/web`, against the backend the
-   coordinator names: dev before the first push, brought up to date first
-   (root CLAUDE.md, "Run your specs against dev before the first push"), and
-   the PR's Convex preview only when dev cannot reproduce a red (GUIDE
-   "Running"). Never run the seed's reset on dev unasked. Never run the
+   coordinator names: this worktree's own deployment before the first push
+   (root CLAUDE.md, "Run your specs on your own Convex deployment before the
+   first push"), and the PR's Convex preview only when it cannot reproduce a
+   red (GUIDE "Running"). `@marketplace-seller` specs run on shared dev or a
+   preview, never on your own deployment. Never run the seed's reset on shared
+   dev unasked. Never run the
    full suite locally unless the coordinator says the harness itself changed.
 4. **Diagnose a red run** from its screenshot and `error-context.md` first.
    `test_debug` and `browser_snapshot` at the paused failure show the live

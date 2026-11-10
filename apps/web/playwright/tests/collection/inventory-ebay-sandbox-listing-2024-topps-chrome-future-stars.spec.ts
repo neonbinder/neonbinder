@@ -57,28 +57,34 @@
 // eBay prices is unit-only (convex/listingDrainEbay.test.ts, the item's
 // packageWeightAndSize): the sandbox does not show the item body back, so
 // the spec proves the weight is saved and kept (step 4), not what eBay got.
-//   5. They set a common price, then put one copy each of the first three 1988
-//      Topps Base cards in the box, with a photo on two of them only (eBay
-//      listings need one): the FIRST has a plain quick-count copy and then a
-//      second line from a scanned pair (NEO-427: the oldest copy WITH photos
-//      feeds the listing, so the older photoless line does not hold it; Add
-//      cards, a real scan pair read and matched, the card picked by hand, Save;
-//      the tile says "Photos are in!", the scans ride on the saved copy with no
-//      further action), the SECOND gets a photo by hand in its drawer, the third
-//      none. A photo copy is named "Raw with photo" beside its card's field and
-//      no longer counted by it (the second card reads 0; the first still reads its
-//      plain copy's 1). They press Sync, follow
-//      "See what's syncing" (Back returns), and Sync status reads the eBay
-//      section's set with 2 listed and 1 skipped: the third card is held back,
-//      named, with eBay's no-photo reason. This is the proof the scanner's
-//      photos reach eBay: the first card lists on the photos the save put on it.
-//   6. They turn the box's "Listed on marketplaces" off, Sync again, and the
+//   5. They set a common price, then put copies of the first three 2024 Topps
+//      Chrome Future Stars cards (Insert › Future Stars) in the box, with a
+//      photo on two of them only (eBay listings need one): the FIRST has a plain quick-count copy and then a second line
+//      from a scanned pair (NEO-427: the oldest copy WITH photos feeds the
+//      listing, so the older photoless line does not hold it; Add cards, a real
+//      scan pair read and matched, the card picked by hand, Save; the tile says
+//      "Photos are in!", the scans ride on the saved copy with no further
+//      action), the SECOND gets a photo by hand in its drawer, the third none.
+//      A photo alone sets no line apart (NEO-431): the quick count counts photo
+//      lines and no field names another line beside its number, so the first
+//      card reads 2 (plain + scanned), the second 1 and the third 1. They press
+//      Sync, follow "See what's syncing" (Back returns), and Sync status reads
+//      the eBay section's set with 2 listed and 1 skipped: the third card is
+//      held back, named, with eBay's no-photo reason. This is the proof the
+//      scanner's photos reach eBay: the first card lists on the photos the save
+//      put on it.
+//   6. They turn the box's "Listed on marketplaces" off. NEO-433: Sync status,
+//      left open, shows a run the platform killed read as running, then flip by
+//      itself to the set's last result with the step it was on failed (a seed
+//      hop in a second tab makes the kill; no spec can make the platform do it).
+//      They Sync again, and the
 //      set reads 0 listed, with the two cards taken to 0 and nothing held back.
 //      The Sales tab names eBay (its orders link and its empty state; Back
 //      returns).
 //   6b. NEO-432: a Sync pressed soon after another still runs the changes
-//      queued since (the cron is 15 minutes away). They put the two photoless
-//      copies to 0 in the in-person box (Sync status queues both cards), press
+//      queued since (the cron is 15 minutes away). They take the third card to 0
+//      and the first card's plain copy out by a lower from 2 to 1 in the in-person
+//      box (Sync status queues both cards), press
 //      Sync, and the press answers "Syncing ... now" and the queue empties.
 //      Whether this press, or step 6's, meets a recent press depends on whether
 //      the cron had already made the set's sync record before step 5's press
@@ -89,11 +95,14 @@
 //      synced. Give it a minute" to that press and ran nothing, so either
 //      toast goes red on it. The unit tests pin the branch itself
 //      (`listingSync.test.ts`); this proves it live, in what a collector reads.
-//   7. They tidy up (cards out of the box: the photoless one by its quantity,
-//      the two with a photo through the card drawer's Remove, since a quick
-//      count never changes a copy with a photo (NEO-377); the scan run closed
-//      with "Done adding photos" (the box is in-person by now, so closing it
-//      lists nothing); the common price cleared, the box deleted) and Disconnect eBay (the confirm dialog),
+//   7. They tidy up (cards out of the box: 6b's writes already took the third
+//      by its quantity and the first card's plain copy by a lower, since a lower
+//      takes the photoless line before one with photos and the scanned line
+//      stays; the two lines with a photo then go through
+//      the card drawer's Remove, which also carries the drawer's axe states;
+//      the scan run closed with "Done adding photos" (the box is in-person by
+//      now, so closing it lists nothing); the common price cleared, the box
+//      deleted) and Disconnect eBay (the confirm dialog),
 //      which takes down anything NeonBinder put up on eBay and leaves the
 //      account not connected. The afterEach does the same on a failure.
 //
@@ -119,8 +128,35 @@
 // the copy. A step that needs longer is a finding to report, never a number to
 // raise. The longer waits are the seed hop's one full page load (`LAUNCH_GATE`),
 // the scan pair's crop and read (`PAIR_PROCESSING`, the placeholder pipeline's own
-// exception) and the signed-off "Go live" ceiling at its call. No timer and no
-// cron path: the 15-minute poll is deliberately not exercised.
+// exception) and the signed-off "Go live" ceiling at its call.
+//
+// Two triggers (NEO-433). A set's sync is set going by the press of the
+// checklist's Sync and by the 15-minute sales poll, and the poll can list a
+// stocked box before the press lands. Both orders are real product behaviour,
+// so the spec neither forces the press to win nor turns the poll off; it presses
+// as soon as its last write is in (the slow axe check waits until after the
+// Sync assertions) and holds either order to a hard end state:
+//   - press first: the press sends the cards. The row reads "2 listed, 2
+//     updated, 1 skipped" and its ledger holds "Gathering data" (the run's
+//     check, folded) then List the cards, Set prices and Go live, all done;
+//   - poll first: the poll already listed them, and the press is a full read
+//     that sends nothing. The row reads "2 listed, 1 skipped" with no
+//     "updated", and the ledger is exactly "Gathering data, done" then "Nothing
+//     new to send" (the positive proof the press sent nothing).
+// The line says which order it was, and each order's ledger is asserted hard, so
+// a run whose ledger never shows goes red in either. The in-person press at
+// step 6 has the same two orders (a poll that takes the cards down first).
+//
+// A press is proven to have RUN before either order is read. The row a poll
+// leaves behind looks like a press's own, and the page says "Nothing syncing
+// right now." between two runs, so neither the row nor the idle line is evidence.
+// The press's queued cards are: the press writes them (its toast comes after),
+// and a run's finish clears them in the same write that records its result, but
+// only if the run claimed them (a run under way when the press landed leaves
+// them, and the set goes round again). So the spec walks step by step until the
+// queue holds no card of the set and the platform is idle (`followRunToRest`),
+// and only then reads the row: a press whose run never claims leaves its cards
+// queued and goes red in both orders.
 //
 // Sync's toast. A press that sets a run going toasts "Syncing <title> now.
 // Watch it on Sync status."; both presses assert it before reading the result.
@@ -129,17 +165,19 @@
 // scanner-bed cards (`public/placeholder-fixtures/01-vorkle-*.jpg`), which the fast
 // crop stage takes without waking the heavy model: every intake scan's back
 // escalates, so those would queue behind any other spec's heavy call. They name a
-// player that means nothing in 1988 Topps Baseball, so the card is picked by hand
+// player that means nothing in 2024 Topps Chrome Future Stars, so the card is picked by hand
 // ("Wrong card? Find it"), exactly as the real-scans spec fixes a misread: the pair is
 // the INPUT, the card is the first row of the checklist. The scanner app itself
 // needs a real scanner, so the run is the Add cards photo drop; the save and the
 // photo attach behind it are the same path a scanner run takes.
 //
-// R7/R7a. 1988 Topps Baseball is a registered real set (SET-REGISTRY.md): this
-// spec is the SOLE writer of the sandbox seller account's listings and writes
-// no card, player, team or variant of the set. Its NB writes are the signed-in
-// user's own rows (the eBay connection and setup, a minted box, three box copies
-// (a photo on two, one of them from a scan run), an intake run, the common price,
+// R7/R7a. 2024 Topps Chrome › Insert › Future Stars is a registered real set
+// (SET-REGISTRY.md, provisioned by the seed): this spec is the SOLE writer of
+// the sandbox seller account's listings and writes no card, player, team or
+// variant of the set (NEO-475: moved here from 1988 Topps Base with the
+// BuySportsCards spec). Its NB writes are the signed-in
+// user's own rows (the eBay connection and setup, a minted box, copies of three cards
+// in a box (a photo on two, one of them from a scan run), an intake run, the common price,
 // and every other box set to in-person, which is left that way). It makes NeonBinder's standard payment and returns
 // policies on the sandbox seller's eBay account where it has none ("Set me
 // up"); those stay on eBay and are found again by the next run. It makes no
@@ -152,29 +190,40 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Page } from "@playwright/test";
 import {
-  TOPPS_1988,
+  TOPPS_CHROME_2024_FUTURE_STARS,
   backToBoxes,
-  baseChecklistTitle,
   cardsWord,
+  checklistTitle,
   clearChecklistCommonPrice,
-  collectorCascade,
   createBox,
   deleteOpenBox,
-  drillToCollectorBase,
+  drillToCollectorChecklist,
   emptyBoxCards,
+  expectNothingSent,
+  followRunToEnd,
+  followRunToRest,
   inventoryTabs,
   nameOf,
+  pickIntakeSet,
   putOtherBoxesInPerson,
   quantityField,
+  queueSettled,
   syncRun,
+  walkForCleanup,
 } from "../../support/collection";
 import { expectEbayHookedUp, removeEbayConnection, saveEbayConnection } from "../../support/credentials";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 
 const EBAY = "eBay";
-const TITLE = baseChecklistTitle(TOPPS_1988);
-/** The set as Sync status and the card drawer name it: a Base checklist reads as the set alone. */
-const SET_LABEL = `${TOPPS_1988.year} ${TOPPS_1988.set}`;
+const FUTURE_STARS = TOPPS_CHROME_2024_FUTURE_STARS;
+const TITLE = checklistTitle(FUTURE_STARS);
+/**
+ * The set as Sync status and the card drawer name it. An insert reads as part of
+ * the set's name (`setAndVariantLabel` in convex/lib/listingLabels.ts,
+ * `cardLabel` in app/collection/final/data/labels.ts), so it is the checklist's
+ * own title: "2024 Topps Chrome Future Stars".
+ */
+const SET_LABEL = TITLE;
 const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /** Real card scans the intake specs already commit (about 1000 px wide; eBay wants at least 500). */
@@ -206,7 +255,13 @@ const mustHoldPolicy = (name: string, slot: string) =>
   "NeonBinder no longer makes shipping policies (NEO-423), so add it on the sandbox seller's eBay account by hand " +
   "(see the spec header and SET-REGISTRY.md)";
 
-/** At or above eBay's $0.99 floor, and under $20 (the Cards under $20 slot). */
+/**
+ * At or above eBay's $0.99 floor, and under $20 (the Cards under $20 slot).
+ * NEO-475: NOT the $900 the BuySportsCards spec lists at. eBay's sandbox has no
+ * buyers, and $20 and up is the calculated NB Tracked slot, which the sandbox
+ * cannot rate (publish fails 25007; see the header): the cards must take the
+ * flat NB Free Shipping slot to go up at all.
+ */
 const COMMON_PRICE = "1.00";
 /** A US address, the page's own example ZIP. */
 const SHIPS_FROM = { zip: "53703", city: "Madison", state: "WI" };
@@ -258,12 +313,19 @@ test.afterEach(async ({ context }, testInfo) => {
       if (failed && written.priced) {
         await clean.goto("/inventory?tab=checklists");
         await expect(clean.getByRole("heading", { level: 1, name: "Inventory" })).toBeVisible({ timeout: LAUNCH_GATE });
-        const checklist = await drillToCollectorBase(clean, TOPPS_1988);
+        const checklist = await drillToCollectorChecklist(clean, FUTURE_STARS);
         await clearChecklistCommonPrice(clean, checklist, TITLE, COMMON_PRICE);
         written.priced = false;
       }
     } finally {
       if (written.connected && !written.disconnected) {
+        // Disconnect waits out a run under way, longer than its button's budget, so
+        // the run ends first. A walk that gives up still disconnects: if the run
+        // really won't end, Disconnect refuses, and that red is the honest one.
+        await clean.goto("/inventory?tab=sync");
+        await expect(clean.getByRole("heading", { level: 1, name: "Inventory" })).toBeVisible({ timeout: LAUNCH_GATE });
+        const { platform } = syncStatus(clean);
+        await walkForCleanup(() => followRunToEnd(platform, syncRun(platform, SET_LABEL, EBAY)));
         await removeEbayConnection(clean, { gate: LAUNCH_GATE });
       }
     }
@@ -273,9 +335,10 @@ test.afterEach(async ({ context }, testInfo) => {
 });
 
 test(
-  "Inventory: connecting eBay and finishing its setup lists a box's 1988 Topps Base cards on the eBay sandbox, and an in-person box takes them down",
-  { tag: ["@collection", "@marketplace-seller"] },
-  async ({ page, signIn, env, isMobile }) => {
+  "Inventory: connecting eBay and finishing its setup lists a box's 2024 Topps Chrome Future Stars cards on the eBay sandbox, and an in-person box takes them down",
+  // NEO-453, TEMPORARY: out of the suite (project-scope.mjs). Put @marketplace-seller back with it.
+  { tag: ["@collection"] },
+  async ({ page, context, signIn, env, isMobile }) => {
     // The hook's record of how far this run got starts empty.
     written.connected = false;
     written.disconnected = false;
@@ -567,7 +630,7 @@ test(
     await expect(page.getByRole("heading", { level: 1, name: "Inventory" })).toBeVisible({ timeout: LAUNCH_GATE });
     const adding = page.getByRole("combobox", { name: "Adding to" });
     await expect(adding).toBeVisible();
-    const checklist = await drillToCollectorBase(page, TOPPS_1988);
+    const checklist = await drillToCollectorChecklist(page, FUTURE_STARS);
     const sync = checklist.getByRole("button", { name: `Sync ${TITLE}`, exact: true });
     await adding.selectOption({ label: boxName });
     await expect(adding.getByRole("option", { selected: true })).toHaveText(boxName);
@@ -629,29 +692,17 @@ test(
     // --- The first card then comes from a scanned pair (NEO-427) --------------------
     // Add cards, into this box, in this set: the pair is read and matched, the
     // card is picked by hand (the scan names a number and a player that mean
-    // nothing in 1988 Topps), and Save puts the scans on the copy it makes.
+    // nothing in Future Stars), and Save puts the scans on the copy it makes.
     // Nothing else is done for the photos; the Sync below lists the card on them.
     // "Done adding photos" waits for the tidy-up: closing a run into a listed box
     // lists its cards at once, and this card is meant to list on the Sync press.
     await tabs.getByRole("link", { name: "Add cards", exact: true }).click();
     await expect(page).toHaveURL(/[?&]tab=add/);
     await page.getByRole("combobox", { name: "Put them in this box" }).selectOption({ label: boxName });
-    await page.getByRole("button", { name: "Set: pick one" }).click();
-    const { cascade, drill } = collectorCascade(page, "Sport, year, brand, set and variant");
-    await drill("Sports", TOPPS_1988.sport, "Years");
-    await drill("Years", TOPPS_1988.year, "Brands");
-    await drill("Brands", TOPPS_1988.manufacturer, "Sets");
-    await drill("Sets", TOPPS_1988.set, "Variant Types");
-    // The Base type is the variant: picking it folds the panel back into its button.
-    await cascade
-      .getByRole("listbox", { name: "Variant Types" })
-      .getByRole("option")
-      .filter({ has: page.getByText("Base", { exact: true }) })
-      .click();
-    await expect(page.getByRole("button", { name: `Set: ${TITLE}`, exact: true })).toBeVisible();
-    // The price is set, so the listed box is not held: the zone takes the photos.
+    await pickIntakeSet(page, FUTURE_STARS);
+    // The price is set, so the photos go up on their own (NEO-452: a drop is
+    // held in the browser until the run is ready, and this one already is).
     const dropzone = page.getByLabel("Drag your card photos here, or browse your files");
-    await expect(dropzone).not.toHaveAttribute("aria-disabled", "true");
     await dropzone.setInputFiles(SCAN_PAIR.map((n) => path.join(SCAN_PAIR_FIXTURES, n)));
     await expect(said("Sent 2 photos.")).toBeVisible();
     await expect(page).toHaveURL(/[?&]run=/);
@@ -691,24 +742,22 @@ test(
     await expect(page).toHaveURL(/[?&]tab=checklists/);
     await expect(checklist.getByRole("heading", { level: 3, name: TITLE })).toBeVisible();
     await adding.selectOption({ label: boxName });
-    // The scanned copy is a second line in the box, with its photos: the quick count
-    // still reads the plain copy's 1, and the photo copy is named beside it.
-    await expect(fieldA).toHaveValue("1");
-    await expect(fieldA).toHaveAccessibleDescription(/also here: Raw with photo/);
+    // The scanned copy is a second line in the box, with its photos. A photo
+    // alone sets no line apart (NEO-431), so the quick count counts it with the
+    // plain copy (1 + 1) and no other line is named beside the number.
+    await expect(fieldA).toHaveValue("2");
+    await expect(fieldA).not.toHaveAccessibleDescription(/also here/);
 
     // --- The other two: one copy each by quick count --------------------------------
-    // A copy with a photo is the collector's own record, not a quick count
-    // (NEO-377: the server's quick count never changes it). So once a card's
-    // copy has its photo, the field counts it no more and names it after the
-    // number instead ("also here: Raw with photo", the field's description);
-    // the card without one still reads 1.
-    const expectPhotoCopiesAside = async () => {
-      // The first card: its plain copy counts 1, its scanned copy is named beside it.
-      await expect(fieldA).toHaveValue("1");
-      await expect(fieldA).toHaveAccessibleDescription(/also here: Raw with photo/);
-      await expect(fieldB).toHaveValue("0");
-      await expect(fieldB).toHaveAccessibleDescription(/also here: Raw with photo/);
-      await expect(fieldC).toHaveValue("1");
+    // Once a card's copy has its photo the field still counts it, and names no
+    // other line ("also here: ...", the field's description, no longer exists):
+    // the first card reads 2 (plain + scanned), the second 1 once its hand-added
+    // photo is on, the third 1 without one.
+    const expectPhotoCopiesCounted = async () => {
+      for (const [field, count] of [[fieldA, "2"], [fieldB, "1"], [fieldC, "1"]] as const) {
+        await expect(field).toHaveValue(count);
+        await expect(field).not.toHaveAccessibleDescription(/also here/);
+      }
     };
     await fieldB.fill("1");
     await page.keyboard.press(leaveKey(isMobile));
@@ -738,7 +787,7 @@ test(
       await expect(yourCopies.getByRole("heading", { name: "Your copies (1 line)", exact: true })).toBeVisible();
       const editForm = yourCopies.getByRole("form", { name: /^Edit Raw, / });
       await expect(editForm).toBeVisible();
-      const panel = editForm.getByRole("region", { name: "Photos", exact: true });
+      const panel = editForm.getByRole("region", { name: /^Photos of / });
       await expect(panel.getByText("No front photo yet")).toBeAttached();
       await panel.getByLabel("Front photo file", { exact: true }).setInputFiles(path.join(FIXTURES, photo));
       await expect(panel.getByRole("status")).toHaveText("Front photo saved.");
@@ -770,11 +819,11 @@ test(
       await expect(field).not.toHaveAccessibleDescription(/also here/);
     };
     await attachPhoto(b, HAND_PHOTO, "Card drawer, a boxed copy with its front photo");
-    await expectPhotoCopiesAside();
-    // The box's quantities with the photo copies named beside their fields.
-    await expectAccessible(page, { within: boxList, label: "Inventory checklist, boxed copies with a photo named beside the field" });
 
     // --- Sync: eBay takes the two with photos and holds the third back ---------------------------------
+    // Pressed the moment the last write (the photo above) is in: nothing slow sits
+    // between them, so the 15-minute poll has the narrowest window to list the
+    // box first (the header's two orders; the poll may still win it).
     await sync.click();
     await expect(said(`Syncing ${TITLE} now. Watch it on Sync status.`)).toBeVisible();
     // After the press, a link to the result sits under Sync. It lands on Sync
@@ -787,29 +836,24 @@ test(
     await expect(platform.getByRole("heading", { level: 2, name: EBAY, exact: true })).toBeVisible();
     await expect(platform.getByText("Listing", { exact: true })).toBeVisible();
     // The live eBay round trip, step by step (the run's ledger on Sync status),
-    // each within the standard budget except going live (below): the new run is in view (its ledger under
-    // Running now, or its own result line if it already finished), then the
-    // items, the offers and going live land in turn (no photo uploads: the
-    // sandbox has no picture upload, see the header). The
-    // line is the drain's own count: the two cards with a photo are listed,
-    // the third is the one skipped.
+    // each within the standard budget except going live (below): the new run is
+    // in view (its ledger under Running now), then the walk waits for the step
+    // the run is on to land, again and again, until the press's queued cards are
+    // gone and the platform is idle (header: a press proven to have run). A press that sends walks
+    // (the check,) the items, the offers and going live (no photo uploads: the
+    // sandbox has no picture upload, see the header); a press that lands after
+    // the poll listed the box walks the check alone. The line is the drain's own
+    // count: the two cards with a photo are listed, the third is the one skipped.
     const run = syncRun(platform, SET_LABEL, EBAY);
-    const listedLine = row.getByText(/^2 listed(, \d+ updated)?, 1 skipped$/);
-    await expect(run.underWay(listedLine)).toBeVisible();
-    // Uploading photos is a step only while a picture has to go up, and on the
-    // sandbox none ever does (no picture upload there), so the first step to
-    // land is the items. The "Upload photos" alternative is kept so the same
-    // line reads right against production eBay, where it is the first step.
-    await expect(run.step("Upload photos").or(run.step("List the cards")).first()).toBeVisible();
-    await expect(run.step("List the cards")).toBeVisible();
-    await expect(run.step("Set prices")).toBeVisible();
+    const settled = queueSettled(platform, SET_LABEL);
+    const listedLine = row.getByText(/^2 listed(, 2 updated)?, 1 skipped$/);
     // Going live is the one step with a longer budget, a ceiling Jason signed
-    // off on 2026-11-03 (GUIDE hard rule 2). The step is one eBay publishOffer
+    // off on 2026-11-03 (GUIDE hard rule 3). The step is one eBay publishOffer
     // call per offer, all in parallel, so it lasts as long as the slowest call.
     // Measured on the sandbox: 5.1, 9.0, 9.1 and 10.9 s in CI, 6.1 s on dev;
     // our own work in the step is well under a second. Void it if the step
     // gains any work of ours, or if offers stop publishing in parallel.
-    await expect(run.step("Go live")).toBeVisible({ timeout: 15_000 });
+    await followRunToRest(platform, run, settled, { "Go live": 15_000 });
     await expect(listedLine).toBeVisible();
     await expect(row.getByText(/^Synced /)).toBeVisible();
     // Held back is exactly that one card, with the reason a collector can act on
@@ -818,15 +862,31 @@ test(
     const heldBack = row.getByRole("listitem").filter({ hasText: "eBay listings need a photo. Add one to a copy of this card and it goes up." });
     await expect(heldBack).toHaveCount(1);
     await expect(heldBack).toContainText(c.split(" ")[0]);
-    // Finished, the set's row keeps the run's steps, in run order (so the axe
-    // check below has the ledger showing).
+    // Finished, the set's row keeps the run's steps (R2): every finished run has a
+    // ledger, and its data gathering folds to "Gathering data, done" in both orders.
+    // These asserts come BEFORE the branch, so a row with no ledger is red whichever
+    // order the line names.
     await expect(run.last).toBeVisible();
-    await expect(run.last.getByRole("listitem")).toContainText([/^List the cards, done$/, /^Set prices, done$/, /^Go live, done$/]);
+    await expect(run.gathered()).toBeVisible();
+    const pressSent = / \d+ updated\b/.test((await listedLine.textContent()) ?? "");
+    if (pressSent) {
+      // Press first: the press sent the cards, so the ledger holds the sending steps, in run order.
+      await expect(run.last.getByRole("listitem")).toContainText([/^List the cards, done$/, /^Set prices, done$/, /^Go live, done$/]);
+      await expect(run.nothingNew()).toHaveCount(0);
+    } else {
+      // Poll first: the poll listed the cards (the line's "2 listed" is the proof they are
+      // up); the press read and sent nothing, so the ledger is "Gathering data" then "Nothing new to send".
+      await expectNothingSent(run);
+    }
+    // The ledger is showing (either order), so the axe check has it.
     await expectAccessible(page, { label: "Inventory Sync status, eBay 2 listed, the run's steps done and a card held back for no photo" });
     await page.goBack();
     await expect(page).toHaveURL(/[?&]tab=checklists/);
     await expect(checklist.getByRole("heading", { level: 3, name: TITLE })).toBeVisible();
-    await expectPhotoCopiesAside();
+    await expectPhotoCopiesCounted();
+    // The box's quantities with the copies that have photos counted like any other: the same
+    // field state as before the Sync (the slow whole-page check waits for the press to be done).
+    await expectAccessible(page, { within: boxList, label: "Inventory checklist, boxed copies with their photos counted" });
 
     // --- 6. The box goes in-person: Sync takes both down ----------------------------------
     await page.goto("/inventory?tab=boxes");
@@ -842,22 +902,59 @@ test(
     await expect(said(`${boxName} is in-person only now.`)).toBeVisible();
     await expect(listed).not.toBeChecked();
 
+    // --- 5b. NEO-433: a run the platform killed lets go by itself ---------------------------
+    // No spec can make the platform kill a run, so a second tab's seed hop makes
+    // the state one leaves (/testing/killed-drain: a held lease and a running
+    // record, linked to a scheduled function that really fails, with the real
+    // watcher on it and no grace). This tab sits on Sync status the whole time:
+    // no reload, the row reads as running, then flips by itself with the step
+    // the run was on failed. The press below is the proof the run let go: it
+    // takes the two cards down for real.
+    await tabs.getByRole("link", { name: "Sync status", exact: true }).click();
+    await expect(page).toHaveURL(/[?&]tab=sync/);
+    const killed = syncRun(platform, SET_LABEL, EBAY);
+    const seedTab = await context.newPage();
+    await seedTab.goto(`/testing/killed-drain?platform=ebay&redirect=${encodeURIComponent("/inventory?tab=sync")}`);
+    await expect(killed.running).toBeVisible({ timeout: LAUNCH_GATE });
+    await expect(killed.last.getByRole("listitem", { name: "List the cards, failed", exact: true })).toBeVisible();
+    await expect(killed.running).toHaveCount(0);
+    await expectAccessible(page, { label: "Inventory Sync status, a run the platform killed, its step failed" });
+    await seedTab.close();
+
     await tabs.getByRole("link", { name: "Checklists", exact: true }).click();
     await expect(page).toHaveURL(/[?&]tab=checklists/);
-    await drillToCollectorBase(page, TOPPS_1988);
+    await drillToCollectorChecklist(page, FUTURE_STARS);
     await sync.click();
     await expect(said(`Syncing ${TITLE} now. Watch it on Sync status.`)).toBeVisible();
     await tabs.getByRole("link", { name: "Sync status", exact: true }).click();
     await expect(page).toHaveURL(/[?&]tab=sync/);
     // The live eBay round trip, step by step: the set was 2 listed a minute ago,
     // so the row still shows the LAST run's finished steps until this one claims
-    // the set; gate on the new run (its ledger, or its own result line).
+    // the set: the walk ends only when the press's queued cards are gone and the
+    // platform is idle, so the row read next is a run that started after the
+    // press. The poll can take the cards down before the press does (the
+    // header's two orders): the press is then a full read that sends nothing.
     const takeDown = syncRun(platform, SET_LABEL, EBAY);
     const takenLine = row.getByText(/^0 listed(, \d+ updated)?, 2 taken to 0$/);
-    await expect(takeDown.underWay(takenLine)).toBeVisible();
-    await expect(takeDown.step("Take down cards at 0")).toBeVisible();
-    await expect(takenLine).toBeVisible();
+    await followRunToRest(platform, takeDown, queueSettled(platform, SET_LABEL));
+    await expect(row.getByText(/^Synced /)).toBeVisible();
     await expect(row.getByText(/held back/)).toHaveCount(0);
+    // The ledger is asserted BEFORE the branch (R2), so a row with none is red in either order.
+    await expect(takeDown.last).toBeVisible();
+    await expect(takeDown.gathered()).toBeVisible();
+    const takeDownStep = takeDown.last.getByRole("listitem", { name: "Take down cards at 0, done", exact: true });
+    if (await takeDownStep.isVisible()) {
+      // Press first: the press withdrew the cards.
+      await expect(takenLine).toBeVisible();
+      await expect(takeDown.last.getByRole("listitem")).toContainText([/^Gathering data, done$/, /^Take down cards at 0, done$/]);
+      await expect(takeDown.nothingNew()).toHaveCount(0);
+    } else {
+      // Poll first: the poll already took them down. The line is this run's count, so it
+      // reads "0 listed" with nothing taken: its 0 is the live listings it read, and it
+      // found nothing to withdraw, so the ledger is "Gathering data" then "Nothing new to send".
+      await expect(row.getByText(/^0 listed$/)).toBeVisible();
+      await expectNothingSent(takeDown);
+    }
 
     // The Sales tab names eBay: its orders page is one link away. (No order has
     // come in: the poll is a timer this spec does not wait for.) Back steps to Sync status.
@@ -879,15 +976,24 @@ test(
     await expectAccessible(page, { label: "Inventory Sales, eBay named" });
     await page.goBack();
     await expect(page).toHaveURL(/[?&]tab=sync/);
-    await expect(row.getByText(/^0 listed(, \d+ updated)?, 2 taken to 0$/)).toBeVisible();
+    await expect(row.getByText(/^0 listed(, \d+ updated)?(, 2 taken to 0)?$/)).toBeVisible();
 
     // --- 7. Tidy up through the product: the box's cards, the price, the box, eBay --------
     // Zero before deleting, so no copy falls into the Unsorted box. Same page
-    // since the drill above: the tab link reopens 1988 Topps Base.
+    // since the drill above: the tab link reopens Future Stars.
     await tabs.getByRole("link", { name: "Checklists", exact: true }).click();
     await expect(page).toHaveURL(/[?&]tab=checklists/);
-    // The copies with no photo: a quick count to 0 (the first card's plain copy, the third card).
-    await emptyBoxCards(page, TOPPS_1988, boxName, [a, c], isMobile, "reopened");
+    // The card with no photo: a quick count to 0.
+    await emptyBoxCards(page, FUTURE_STARS, boxName, [c], isMobile, "reopened");
+    // The first card holds two lines, its plain copy and the scanned one. A
+    // lower takes the photoless line first (NEO-431), so a quick count from 2 to
+    // 1 pulls the plain copy and leaves the scanned line, with its photos, as the
+    // card's only one. The status line says no photos went with it.
+    await fieldA.fill("1");
+    await page.keyboard.press(leaveKey(isMobile));
+    await expect(fieldA).toHaveValue("1");
+    await expect(said(new RegExp(`^Pulled 1 of ${escapeRegExp(a)} from ${escapeRegExp(boxName)}\\. 1 left\\.`))).toBeVisible();
+    await expect(fieldA).not.toHaveAccessibleDescription(/also here/);
 
     // --- 6b. NEO-432: a Sync soon after the last one still runs the queued changes ----------------
     // The two writes above landed after step 6's drain finished (its result
@@ -896,11 +1002,13 @@ test(
     // in-person, and any box write queues its card).
     await tabs.getByRole("link", { name: "Sync status", exact: true }).click();
     await expect(page).toHaveURL(/[?&]tab=sync/);
-    const queuedCards = platform.getByRole("list", { name: /^Queued for the next sync/ }).getByRole("listitem");
+    const queuedList = platform.getByRole("list", { name: /^Queued for the next sync/ });
+    const queuedCards = queuedList.getByRole("listitem");
     for (const short of [a, c]) {
       const number = escapeRegExp(short.split(" ")[0]);
       await expect(queuedCards.filter({ hasText: new RegExp(`^${number} .* in ${escapeRegExp(SET_LABEL)}`) })).toHaveCount(1);
     }
+    await expectAccessible(page, { within: queuedList, label: "Inventory Sync status, eBay two cards queued" });
     // The press: taken, not told to wait (the old code said "Give it a minute"
     // whenever the set's record held a press from the last minute).
     await tabs.getByRole("link", { name: "Checklists", exact: true }).click();
@@ -914,14 +1022,13 @@ test(
     // The queue empties, and only then is nothing under way: the run that took
     // the rows is over before step 7 goes on (its writes and the disconnect
     // would otherwise land in the middle of it).
-    await expect(platform.getByText(/^Nothing waiting\./)).toBeVisible();
-    await expect(platform.getByText(/^Nothing syncing right now\./)).toBeVisible();
+    await followRunToRest(platform, takeDown, queueSettled(platform, SET_LABEL));
     await tabs.getByRole("link", { name: "Checklists", exact: true }).click();
     await expect(page).toHaveURL(/[?&]tab=checklists/);
     await expect(checklist.getByRole("heading", { level: 3, name: TITLE })).toBeVisible();
-    // The two cards' photo copies: a quick count can't take them out (see step 5), so
-    // each goes the way a collector removes a copy, from the card's drawer,
-    // the same drawer that added its photo.
+    // The two cards' photo lines: each goes the way a collector removes a copy
+    // they photographed, from the card's drawer (the same drawer that added the
+    // second's photo), which keeps the drawer's editing and removed states under axe.
     await removeOnlyCopy(a, true);
     await removeOnlyCopy(b);
     await clearChecklistCommonPrice(page, checklist, TITLE, COMMON_PRICE);

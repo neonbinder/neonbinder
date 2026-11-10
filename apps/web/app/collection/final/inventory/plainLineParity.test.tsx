@@ -3,7 +3,8 @@
  * `isPlainLine` in targetBox.ts decides what the quick-count field shows and
  * `isPlainLine` in convex/collectionInventory.ts decides what a quick count
  * may change. They drifted once (photos, NEO-377); this table feeds one
- * line, in each side's own shape, through both and asserts they agree.
+ * line, in each side's own shape, through both and asserts they agree. Since
+ * NEO-431 a photo alone sets no line apart, on either side.
  */
 
 import { describe, expect, it } from "vitest";
@@ -11,7 +12,8 @@ import { isPlainLine as serverIsPlainLine } from "../../../../convex/collectionI
 import { isPlainLine as clientIsPlainLine } from "./targetBox";
 import { DEFAULT_CONDITION, type Condition, type Copy } from "../data/types";
 
-type Server = Parameters<typeof serverIsPlainLine>[0];
+/** The server row's fields, plus the photo marker the rule must ignore. */
+type Server = Parameters<typeof serverIsPlainLine>[0] & { hasPhotos?: boolean };
 
 /** One flag, in both shapes: the client Copy fields and the server row fields. */
 interface Flag {
@@ -27,7 +29,15 @@ const FLAGS: Flag[] = [
   { name: "an all-plain row", client: {}, server: {}, plain: true },
   { name: "the default condition set explicitly", client: { condition: DEFAULT_CONDITION }, server: { condition: DEFAULT_CONDITION }, plain: true },
   { name: "no condition at all (stored before NEO-380)", client: { condition: undefined }, server: { condition: undefined }, plain: true },
-  { name: "a photo", client: { hasPhotos: true }, server: { hasPhotos: true }, plain: false },
+  { name: "a photo and nothing else", client: { hasPhotos: true }, server: { hasPhotos: true }, plain: true },
+  { name: "a photo and notes", client: { hasPhotos: true, notes: "creased" }, server: { hasPhotos: true, notes: "creased" }, plain: false },
+  {
+    name: "a photo and a non-default condition",
+    client: { hasPhotos: true, condition: "Mint" },
+    server: { hasPhotos: true, condition: "Mint" },
+    plain: false,
+  },
+  { name: "a photo and up for trade", client: { hasPhotos: true, upForTrade: true }, server: { hasPhotos: true, upForTrade: true }, plain: false },
   { name: "hasPhotos explicitly false", client: { hasPhotos: false }, server: { hasPhotos: false }, plain: true },
   { name: "a non-default condition", client: { condition: "Mint" }, server: { condition: "Mint" }, plain: false },
   {
@@ -80,7 +90,7 @@ describe("plain-line rule: client and server agree (NEO-415)", () => {
 
   it("covers every field the server rule reads", () => {
     const covered = new Set(FLAGS.flatMap((f) => Object.keys(f.server)));
-    for (const field of ["condition", "grading", "serialNumber", "costCents", "minPriceCents", "location", "notes", "upForTrade", "hasPhotos"]) {
+    for (const field of ["condition", "grading", "serialNumber", "costCents", "minPriceCents", "location", "notes", "upForTrade"]) {
       expect(covered.has(field)).toBe(true);
     }
   });

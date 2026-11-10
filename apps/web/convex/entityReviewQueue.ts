@@ -18,7 +18,13 @@ import {
 import { getCurrentUserId, requireAdmin } from "./auth";
 import {
   buildExistingPlayerCandidates,
+  // NEO-424 — the set-history candidates, by id and in any sport.
+  buildExistingPlayerCandidatesForIds,
   isAmbiguousPlayerName,
+  MAX_CANDIDATES_FOR_IDS,
+  // NEO-463 — a one-word name clashing with a fuller-named player.
+  assertNotNameFragment,
+  nameFragmentMatches,
   normalizePlayerName,
   playerBelongsToSport,
 } from "./players";
@@ -68,7 +74,7 @@ import { findSetYearForSelectorOption } from "./lib/selectorAncestry";
 // if either grows, the arithmetic in ENTITY_REVIEW_START_OPS grows with it
 // instead of quietly under-charging.
 import { PLAYER_AMBIGUITY_SCAN_LIMIT } from "../lib/players/name-limits";
-import { CAREER_SUMMARY_MAX_TEAMS } from "../lib/players/career-summary";
+import { PLAYER_DESCRIPTION_MAX_TEAMS } from "../lib/players/player-description";
 
 /**
  * NEO-92: backs the step-through "new players & teams" review wizard that
@@ -90,6 +96,38 @@ import { CAREER_SUMMARY_MAX_TEAMS } from "../lib/players/career-summary";
  * in selectorOptions.ts — even though the blast radius of this table alone is
  * small, there's no reason a non-admin should be able to read/mutate it at all.
  */
+
+/**
+ * NEO-424 — why a review row was born decided: the set's own history named
+ * exactly one player (or team) for the name, or the Hall of Fame tie-break
+ * picked the one Hall of Famer among same-name players nobody else in the set
+ * year could be. Mirrors `entityReviewQueue.decision.autoLinked` in schema.ts.
+ */
+const autoLinkOriginValidator = v.union(
+  v.literal("setHistory"),
+  v.literal("hallOfFame"),
+);
+
+/**
+ * NEO-424 — the one existing player the batch suggests for a name, which the
+ * operator confirms. Mirrors `entityReviewQueue.enrichment.preselect` in
+ * schema.ts, and doubles as the `startBatch` arg's element shape minus the
+ * reasons only `clearDecision` writes.
+ */
+const preselectValidator = v.object({
+  playerId: v.id("players"),
+  name: v.string(),
+  sportId: v.id("selectorOptions"),
+  sportValue: v.string(),
+  reason: v.union(
+    v.literal("priorYearProduct"),
+    v.literal("onlyNamesake"),
+    // An auto-link the operator pressed Change on: the player it named comes
+    // back as the primary. Written only by `clearDecision`.
+    v.literal("setHistory"),
+    v.literal("hallOfFame"),
+  ),
+});
 
 const enrichmentValidator = v.object({
   wikidataId: v.optional(v.string()),
@@ -137,7 +175,15 @@ const enrichmentValidator = v.object({
     // `entityReviewQueue.enrichment.existingCandidates` in schema.ts belongs
     // here in the same edit.
     activeInSetYear: v.optional(v.boolean()),
+    // NEO-424: the candidate's home-sport label, on candidates taken from the
+    // set's own history (which is not sport-scoped). Kept in step with
+    // schema.ts for the reason above.
+    sportValue: v.optional(v.string()),
   }))),
+  // NEO-424, player-only: the one existing player the batch suggests and the
+  // operator confirms (rule E, or the player an undone auto-link named). Kept
+  // in step with schema.ts — see `preselectValidator`.
+  preselect: v.optional(preselectValidator),
   league: v.optional(v.string()),
   // NEO-236: the place part of the team name. Location, not city.
   location: v.optional(v.string()),
@@ -295,6 +341,9 @@ const decisionValidator = v.union(
     // NEO-313: player-kind only — at COMMIT, also add the set's sport to the
     // created player's `playerSports`. Absent is a guest link. See schema.ts.
     addSetSport: v.optional(v.boolean()),
+    // NEO-463: player-kind only — the operator confirmed a one-word name that
+    // clashes with a fuller-named player is a one-name player. See schema.ts.
+    oneNamePlayer: v.optional(v.literal(true)),
   }),
   v.object({
     action: v.literal("link"),
@@ -308,6 +357,9 @@ const decisionValidator = v.union(
     // NEO-313: player-kind only — at COMMIT, also add the set's sport to
     // `linkedPlayerId`'s `playerSports`. Absent is a guest link. See schema.ts.
     addSetSport: v.optional(v.boolean()),
+    // NEO-424: the batch made this link (set history, or the Hall of Fame
+    // tie-break), not the operator. Written only by `startBatch`. See schema.ts.
+    autoLinked: v.optional(autoLinkOriginValidator),
   }),
   // NEO-212: "not a person / not a team" — the card keeps the raw name, and
   // nothing is created or linked. See schema.ts.
@@ -961,6 +1013,61 @@ async function initialEnrichmentFor(
   return existingCandidates.length > 0 ? { existingCandidates } : undefined;
 }
 
+/** NEO-424 — one entry of `enrichment.existingCandidates`. */
+type ExistingCandidate = NonNullable<
+  NonNullable<Doc<"entityReviewQueue">["enrichment"]>["existingCandidates"]
+>[number];
+
+/**
+ * NEO-424 — the candidates for a name the SET'S OWN HISTORY answers, by id,
+ * plus what reading them cost `startBatch`'s budget.
+ *
+ * The rendering is `players.buildExistingPlayerCandidatesForIds` (unit A's),
+ * so a history candidate and an in-sport one cannot disagree about what a
+ * candidate looks like; each comes back with its home sport's `sportValue`.
+ * Order is the caller's — the history player first, then in-sport rivals.
+ *
+ * The charge is the builder's ceiling rather than a count, because it does
+ * not report one: per distinct id (capped at `MAX_CANDIDATES_FOR_IDS`) one
+ * player read, one sport-label read and `PLAYER_DESCRIPTION_MAX_TEAMS` team reads.
+ * Over-charging only pages a batch sooner; under-charging is the NEO-294
+ * failure.
+ */
+async function buildCandidatesForPlayerIds(
+  ctx: MutationCtx,
+  name: string,
+  playerIds: ReadonlyArray<Id<"players">>,
+  opts: { cardYear: number | undefined },
+): Promise<{ candidates: ExistingCandidate[]; ops: number }> {
+  const distinct = Math.min(
+    new Set(playerIds.map((id) => id as string)).size,
+    MAX_CANDIDATES_FOR_IDS,
+  );
+  const candidates = await buildExistingPlayerCandidatesForIds(ctx, playerIds, {
+    name,
+    cardYear: opts.cardYear,
+  });
+  return { candidates, ops: distinct * (2 + PLAYER_DESCRIPTION_MAX_TEAMS) };
+}
+
+/**
+ * NEO-424 — does this row carry candidates the batch took from the set's own
+ * history?
+ *
+ * Those are the only candidates stamped with `sportValue`, and they are not
+ * something the in-sport name index can re-derive: the history player may be
+ * filed under another sport entirely. So the two places that rebuild a row's
+ * candidates from the index — `applyLookupResult` after Create new, and the
+ * bulk create's ambiguity test — must read them off the row instead.
+ */
+function historyCandidatesOf(
+  enrichment: Doc<"entityReviewQueue">["enrichment"] | undefined,
+): ExistingCandidate[] {
+  return (enrichment?.existingCandidates ?? []).filter(
+    (candidate) => candidate.sportValue !== undefined,
+  );
+}
+
 /**
  * NEO-332 — does this enrichment make the row a CHOICE between players we
  * already hold?
@@ -1008,9 +1115,31 @@ export function playerLookupAwaitsCreateNew(
   return (
     row.kind === "player" &&
     row.status === "ready" &&
-    isSameNameChoice(row.enrichment) &&
+    awaitsOperatorBeforeLookup(row.enrichment) &&
     row.enrichment?.wikidataId === undefined
   );
+}
+
+/**
+ * NEO-332 / NEO-424 — does this enrichment put an EXISTING player in front of
+ * the operator before any new one is looked up?
+ *
+ * Two shapes, one rule. A same-name choice (`existingCandidates`) asks "which
+ * of ours is this?"; a preselect (rule E, or an undone auto-link) asks "is it
+ * this one of ours?". Either way the usual answer needs no new person, so
+ * Jason's NEO-332 rule applies to both: "we shouldn't even be querying
+ * wikidata at all in this scenerio because there is no new player to query
+ * the data for." The row is born `ready` with no lookup enqueued, nothing is
+ * staged ahead of the "Link to <name>" step, and the lookup starts only when
+ * the operator says it is someone new — Create new on the pick step, or "Add
+ * as New Player anyway" under a preselect — through `requestPlayerLookup`.
+ *
+ * Derived, like `playerLookupAwaitsCreateNew`: no stored field says "waiting".
+ */
+function awaitsOperatorBeforeLookup(
+  enrichment: Doc<"entityReviewQueue">["enrichment"] | undefined,
+): boolean {
+  return isSameNameChoice(enrichment) || enrichment?.preselect !== undefined;
 }
 
 /**
@@ -1032,7 +1161,7 @@ export function playerLookupAwaitsCreateNew(
  *         index. Paid for EVERY name, ambiguous or not.
  *     … — and when two or more rows already answer to that name, up to
  *         PLAYER_AMBIGUITY_SCAN_LIMIT alias `db.get`s plus
- *         CAREER_SUMMARY_MAX_TEAMS team reads per candidate for the career
+ *         PLAYER_DESCRIPTION_MAX_TEAMS team reads per candidate for the career
  *         summary (the narrowing itself reads no teams here — this caller
  *         passes no `cardTeamNames`).
  *     1 — the insert.
@@ -1102,7 +1231,7 @@ export const ENTITY_REVIEW_START_OPS = 800;
  *
  * `BASE` is the pair of index reads `sameNamePlayers` always performs. `EXTRA`
  * is the ceiling on everything an AMBIGUOUS name adds on top: one `db.get` per
- * alias hit, and `CAREER_SUMMARY_MAX_TEAMS` team reads per candidate for the
+ * alias hit, and `PLAYER_DESCRIPTION_MAX_TEAMS` team reads per candidate for the
  * career summary (deduped by id across candidates, so this over-charges rather
  * than under-charges). Charged after the call, from whether candidates came
  * back — the cheap answer is by far the common one, and charging every name
@@ -1112,7 +1241,7 @@ export const ENTITY_REVIEW_START_OPS = 800;
 const REVIEW_NAME_LOOKUP_OPS = {
   // NEO-313: three index reads now — `players`, `playerSports`, `playerAliases`.
   BASE: 3,
-  EXTRA: PLAYER_AMBIGUITY_SCAN_LIMIT * (CAREER_SUMMARY_MAX_TEAMS + 1),
+  EXTRA: PLAYER_AMBIGUITY_SCAN_LIMIT * (PLAYER_DESCRIPTION_MAX_TEAMS + 1),
 } as const;
 
 export const startBatch = internalMutation({
@@ -1165,6 +1294,65 @@ export const startBatch = internalMutation({
      * before.
      */
     playersWithNoExistingMatch: v.optional(v.array(v.string())),
+    /**
+     * ── NEO-424: FACTS the gate established, never questions ──────────────
+     *
+     * Same contract as `playersWithNoExistingMatch`: the caller
+     * (`resolveUnknownsAndStartBatch`, through `setHistory.ts`) has already
+     * done the reading, in bounded internal queries from its action, and this
+     * mutation only writes what it was told. Every one is optional, so an old
+     * caller, a hand-written call and the continuation (`...args`) all behave
+     * exactly as before — the continuation carries the facts with it, and the
+     * resume path's `existingKeys` dedupe stops a page re-inserting a row the
+     * previous page wrote.
+     *
+     * `autoLinks` — a name the batch ANSWERS (rule A set history, rule D the
+     * Hall of Fame tie-break, rule F a team the card prints). Inserted as a
+     * decided `link` row tagged `autoLinked`, `ready`, with no lookup: one
+     * insert, no `initialEnrichmentFor`. `rowSportId` is the linked player's
+     * HOME sport (D2), so the row's sport and its link agree and nothing is
+     * written to the player at commit. `candidatePlayerIds` (history player
+     * first, then in-sport rivals) is what Change turns back into a pick step;
+     * the candidates are only built when there are two or more, because one
+     * is not a choice (`clearDecision` offers it as the preselect instead).
+     *
+     * `historyCandidates` — a name the set's history links to TWO OR MORE
+     * players. Inserted `ready` carrying those players as candidates (any
+     * sport, each with `sportValue`) and NOT looked up, exactly as a same-name
+     * choice is (NEO-332): the operator's first question is which of them it
+     * is, and Create new starts the lookup.
+     *
+     * `preselects` — rule E: a name with an obvious candidate the operator
+     * still confirms. Stored on `enrichment.preselect` and, like a same-name
+     * choice, inserted `ready` with NO lookup (`awaitsOperatorBeforeLookup`):
+     * there is no new player to look up until the operator presses "Add as
+     * New Player anyway", which goes through `requestPlayerLookup`.
+     *
+     * A name in `autoLinks` ignores any `historyCandidates` or `preselects`
+     * entry for the same key, and a `historyCandidates` name keeps its
+     * preselect. Names are matched by the same normalizers the batch keys on,
+     * so a fact about "J.T. Realmuto" applies to "JT Realmuto".
+     */
+    autoLinks: v.optional(v.array(v.object({
+      kind: v.union(v.literal("player"), v.literal("team")),
+      name: v.string(),
+      playerId: v.optional(v.id("players")),
+      teamId: v.optional(v.id("teams")),
+      rowSportId: v.id("selectorOptions"),
+      origin: autoLinkOriginValidator,
+      candidatePlayerIds: v.optional(v.array(v.id("players"))),
+    }))),
+    historyCandidates: v.optional(v.array(v.object({
+      name: v.string(),
+      playerIds: v.array(v.id("players")),
+    }))),
+    preselects: v.optional(v.array(v.object({
+      name: v.string(),
+      playerId: v.id("players"),
+      sportId: v.id("selectorOptions"),
+      sportValue: v.string(),
+      reason: v.union(v.literal("priorYearProduct"), v.literal("onlyNamesake")),
+    }))),
   },
   returns: v.string(),
   handler: async (ctx, args): Promise<string> => {
@@ -1231,6 +1419,211 @@ export const startBatch = internalMutation({
           ? `league:${normalizeLeagueName(name)}`
           : `team:${normalizeTeamName(name)}`;
 
+    /*
+     * NEO-424 — the gate's facts, keyed exactly like the rows they describe.
+     *
+     * Built from the arguments alone, so the continuation (which re-sends them)
+     * rebuilds the same maps and converges with the page before it. A fact for
+     * a key with nothing to normalise is dropped, as is a malformed auto-link
+     * (a player link without a player, a team link without a team, or a Hall
+     * of Fame team): this is an internal contract, and a broken entry must
+     * cost its one name a wizard step rather than cost the operator the fetch.
+     */
+    type AutoLinkFact = NonNullable<typeof args.autoLinks>[number];
+    type PreselectFact = NonNullable<typeof args.preselects>[number];
+    type FactRow = {
+      kind: "player" | "team";
+      name: string;
+      auto?: AutoLinkFact;
+      historyPlayerIds?: Array<Id<"players">>;
+    };
+    const isBlankKey = (kind: "player" | "team", key: string) =>
+      key.length <= kind.length + 1;
+    /** Rows the facts decide or shape, in the order they were given. */
+    const factRows = new Map<string, FactRow>();
+    let malformedFacts = 0;
+    for (const link of args.autoLinks ?? []) {
+      const wellFormed =
+        link.kind === "player"
+          ? link.playerId !== undefined && link.teamId === undefined
+          : link.teamId !== undefined &&
+            link.playerId === undefined &&
+            link.origin === "setHistory";
+      const key = keyFor(link.kind, link.name);
+      if (!wellFormed || isBlankKey(link.kind, key)) {
+        malformedFacts += 1;
+        continue;
+      }
+      if (!factRows.has(key)) {
+        factRows.set(key, { kind: link.kind, name: link.name, auto: link });
+      }
+    }
+    for (const history of args.historyCandidates ?? []) {
+      const key = keyFor("player", history.name);
+      if (isBlankKey("player", key) || history.playerIds.length === 0) {
+        malformedFacts += 1;
+        continue;
+      }
+      // An auto-link for the same key wins: the batch has an answer, so there
+      // is no choice left to offer.
+      if (factRows.has(key)) continue;
+      factRows.set(key, {
+        kind: "player",
+        name: history.name,
+        historyPlayerIds: history.playerIds,
+      });
+    }
+    const preselectByKey = new Map<string, PreselectFact>();
+    for (const preselect of args.preselects ?? []) {
+      const key = keyFor("player", preselect.name);
+      if (isBlankKey("player", key)) {
+        malformedFacts += 1;
+        continue;
+      }
+      if (factRows.get(key)?.auto) continue;
+      if (!preselectByKey.has(key)) preselectByKey.set(key, preselect);
+    }
+    if (malformedFacts > 0) {
+      // Counts only — never a name (observability.ts).
+      console.warn(
+        JSON.stringify({
+          msg: "entity_review_start_batch_malformed_facts",
+          selectorOptionId: args.selectorOptionId,
+          malformedFacts,
+        }),
+      );
+    }
+    /** Lay a preselect over a row's born-with enrichment, when it has one. */
+    const withPreselect = (
+      key: string,
+      enrichment: Doc<"entityReviewQueue">["enrichment"] | undefined,
+    ): Doc<"entityReviewQueue">["enrichment"] | undefined => {
+      const preselect = preselectByKey.get(key);
+      if (!preselect) return enrichment;
+      return { ...(enrichment ?? {}), preselect };
+    };
+    /**
+     * What this call auto-linked, for one log line at the end: row ids, link
+     * ids and origins — never a name (observability.ts).
+     */
+    const autoLinkLog: Array<{
+      rowId: Id<"entityReviewQueue">;
+      origin: "setHistory" | "hallOfFame";
+      playerId?: Id<"players">;
+      teamId?: Id<"teams">;
+    }> = [];
+    const logAutoLinks = (batchId: string) => {
+      if (autoLinkLog.length === 0) return;
+      console.log(
+        JSON.stringify({
+          msg: "entity_review_auto_linked",
+          selectorOptionId: args.selectorOptionId,
+          batchId,
+          links: autoLinkLog,
+        }),
+      );
+    };
+    /**
+     * NEO-424 — insert one row the gate's facts decide or shape. The caller has
+     * already checked the budget; this charges what it spends.
+     *
+     *   - an AUTO-LINK is born decided and `ready`, in `rowSportId`, and is
+     *     never looked up: one insert, plus the candidate reads when Change
+     *     will need a pick step (two or more players);
+     *   - a HISTORY CHOICE is born `ready` with its candidates and waits for
+     *     Create new, like a same-name choice (NEO-332). If every one of its
+     *     players has gone since the gate read them, it falls back to the
+     *     ordinary new-name row it would otherwise have been.
+     *
+     * Returns whether the row's lookup should be enqueued.
+     */
+    const insertFactRow = async (
+      batchId: string,
+      key: string,
+      fact: FactRow,
+      name: string,
+    ): Promise<{ id: Id<"entityReviewQueue">; enqueue: boolean }> => {
+      const base = {
+        selectorOptionId: args.selectorOptionId,
+        batchId,
+        createdByUserId: args.createdByUserId,
+        kind: fact.kind,
+        name,
+        // NEO-236 — the same slice the resume path stores; see there.
+        nameNormalized: key.slice(fact.kind.length + 1),
+      };
+      if (fact.auto) {
+        const link = fact.auto;
+        let enrichment: Doc<"entityReviewQueue">["enrichment"] | undefined;
+        if (link.kind === "player" && link.playerId !== undefined) {
+          const linkedId = link.playerId;
+          const ids = [
+            linkedId,
+            ...(link.candidatePlayerIds ?? []).filter((id) => id !== linkedId),
+          ];
+          if (ids.length >= 2) {
+            const built = await buildCandidatesForPlayerIds(ctx, name, ids, {
+              cardYear: setYear,
+            });
+            ops += built.ops;
+            if (built.candidates.length >= 2) {
+              enrichment = { existingCandidates: built.candidates };
+            }
+          }
+        }
+        const id = await ctx.db.insert("entityReviewQueue", {
+          ...base,
+          sportId: link.rowSportId,
+          status: "ready",
+          ...(enrichment ? { enrichment } : {}),
+          decision:
+            link.kind === "player"
+              ? { action: "link", linkedPlayerId: link.playerId, autoLinked: link.origin }
+              : { action: "link", linkedTeamId: link.teamId, autoLinked: "setHistory" },
+        });
+        ops += 1;
+        autoLinkLog.push({
+          rowId: id,
+          origin: link.origin,
+          ...(link.playerId ? { playerId: link.playerId } : {}),
+          ...(link.teamId ? { teamId: link.teamId } : {}),
+        });
+        return { id, enqueue: false };
+      }
+
+      const built = await buildCandidatesForPlayerIds(
+        ctx,
+        name,
+        fact.historyPlayerIds ?? [],
+        { cardYear: setYear },
+      );
+      ops += built.ops;
+      if (built.candidates.length === 0) {
+        const born = await initialEnrichmentFor(ctx, "player", name, args.sportId, setYear);
+        ops +=
+          REVIEW_NAME_LOOKUP_OPS.BASE + (born ? REVIEW_NAME_LOOKUP_OPS.EXTRA : 0) + 1;
+        const enrichment = withPreselect(key, born);
+        const awaitsChoice = awaitsOperatorBeforeLookup(enrichment);
+        const id = await ctx.db.insert("entityReviewQueue", {
+          ...base,
+          sportId: args.sportId,
+          status: awaitsChoice ? "ready" : "pending",
+          ...(enrichment ? { enrichment } : {}),
+        });
+        return { id, enqueue: !awaitsChoice };
+      }
+      const id = await ctx.db.insert("entityReviewQueue", {
+        ...base,
+        // The question is asked in the set's sport like any other; a
+        // cross-sport pick re-points it (`recordDecision`, D7).
+        sportId: args.sportId,
+        status: "ready",
+        enrichment: withPreselect(key, { existingCandidates: built.candidates }),
+      });
+      ops += 1;
+      return { id, enqueue: false };
+    };
+
     const existing = await ctx.db
       .query("entityReviewQueue")
       .withIndex("by_selector_option_and_user", (q) =>
@@ -1296,6 +1689,12 @@ export const startBatch = internalMutation({
       for (const name of args.teamNames) {
         const key = keyFor("team", name);
         if (!incoming.has(key)) incoming.set(key, { kind: "team", name });
+      }
+      // NEO-424 — a name the facts answer or shape is incoming too, whether or
+      // not the caller also listed it: otherwise the drop test below would
+      // delete an undecided row for it as "a name no card carries".
+      for (const [key, fact] of factRows) {
+        if (!incoming.has(key)) incoming.set(key, { kind: fact.kind, name: fact.name });
       }
 
       const now = Date.now();
@@ -1471,6 +1870,15 @@ export const startBatch = internalMutation({
           deferred += 1;
           continue;
         }
+        // NEO-424 — a name the gate's facts answer (auto-link) or shape (a
+        // history choice). Same `existingKeys` dedupe as every other insert,
+        // so a row the operator already has — decided or not — is left alone.
+        const fact = factRows.get(key);
+        if (fact) {
+          const inserted = await insertFactRow(batchId, key, fact, name);
+          if (inserted.enqueue) addedIds.push(inserted.id);
+          continue;
+        }
         // NEO-254 — see `initialEnrichmentFor`. A row added by a resume is as
         // liable to be an ambiguous name as one from a fresh batch.
         //
@@ -1478,17 +1886,21 @@ export const startBatch = internalMutation({
         // `playersWithNoExistingMatch`: a name with no matching row has no
         // candidates to find, and the read is charged only when it happens.
         const skipLookup = kind === "player" && noExistingMatch.has(name);
-        const enrichment = skipLookup
+        const bornWith = skipLookup
           ? undefined
           : await initialEnrichmentFor(ctx, kind, name, args.sportId, setYear);
+        // NEO-424 — rule E's suggestion rides on the row. Never a decision,
+        // but it does hold the lookup back (`awaitsOperatorBeforeLookup`).
+        const enrichment = kind === "player" ? withPreselect(key, bornWith) : bornWith;
         ops +=
           (skipLookup ? 0 : REVIEW_NAME_LOOKUP_OPS.BASE) +
-          (enrichment ? REVIEW_NAME_LOOKUP_OPS.EXTRA : 0) +
+          // Charged on what the READ found, not on the preselect it carries.
+          (bornWith ? REVIEW_NAME_LOOKUP_OPS.EXTRA : 0) +
           1;
         // NEO-332 — a same-name choice is born settled and is NOT enqueued;
-        // see `playerLookupAwaitsCreateNew`. Same insert, so the charge above
-        // is unchanged.
-        const awaitsChoice = kind === "player" && isSameNameChoice(enrichment);
+        // see `playerLookupAwaitsCreateNew`. NEO-424 — nor is a preselected
+        // row. Same insert, so the charge above is unchanged.
+        const awaitsChoice = kind === "player" && awaitsOperatorBeforeLookup(enrichment);
         const addedId = await ctx.db.insert("entityReviewQueue", {
           selectorOptionId: args.selectorOptionId,
           batchId,
@@ -1520,6 +1932,7 @@ export const startBatch = internalMutation({
           { rowIds: addedIds },
         );
       }
+      logAutoLinks(batchId);
       await deferRemainder(batchId);
       return batchId;
     }
@@ -1535,26 +1948,34 @@ export const startBatch = internalMutation({
         deferred += 1;
         continue;
       }
+      const key = keyFor("player", name);
+      // NEO-424 — a name the gate's facts answer or shape is inserted by the
+      // fact loop below, once, whatever list(s) it also arrived in.
+      if (factRows.has(key)) continue;
       // NEO-254 — the row knows it is a choice before any lookup runs. See
       // `initialEnrichmentFor` for why that cannot wait for the lookup.
       //
       // NEO-296 — unless the caller already asked; see
       // `playersWithNoExistingMatch`.
       const skipLookup = noExistingMatch.has(name);
-      const enrichment = skipLookup
+      const bornWith = skipLookup
         ? undefined
         : await initialEnrichmentFor(ctx, "player", name, args.sportId, setYear);
+      // NEO-424 — rule E's suggestion rides on the row, and holds its lookup
+      // back until the operator says it is someone new.
+      const enrichment = withPreselect(key, bornWith);
       ops +=
         (skipLookup ? 0 : REVIEW_NAME_LOOKUP_OPS.BASE) +
-        (enrichment ? REVIEW_NAME_LOOKUP_OPS.EXTRA : 0) +
+        (bornWith ? REVIEW_NAME_LOOKUP_OPS.EXTRA : 0) +
         1;
       // NEO-332 — two or more players on file under this name: the operator
       // picks one first, and the lookup waits for Create new. Inserted
       // settled and left out of the enqueue; see
       // `playerLookupAwaitsCreateNew`. Same one insert, so the charge above
       // is unchanged — and when EVERY name is a choice, the pool enqueue
-      // below is not scheduled at all.
-      const awaitsChoice = isSameNameChoice(enrichment);
+      // below is not scheduled at all. NEO-424: a preselected row waits the
+      // same way (`awaitsOperatorBeforeLookup`).
+      const awaitsChoice = awaitsOperatorBeforeLookup(enrichment);
       const insertedId = await ctx.db.insert("entityReviewQueue", {
         selectorOptionId: args.selectorOptionId,
         batchId,
@@ -1576,6 +1997,8 @@ export const startBatch = internalMutation({
         deferred += 1;
         continue;
       }
+      // NEO-424 — a team the card prints that set history answers (rule F).
+      if (factRows.has(keyFor("team", name))) continue;
       ops += 1;
       ids.push(
         await ctx.db.insert("entityReviewQueue", {
@@ -1589,6 +2012,22 @@ export const startBatch = internalMutation({
           status: "pending",
         }),
       );
+    }
+    /*
+     * NEO-424 — the rows the gate's facts decide (auto-links) or shape
+     * (history choices), each once. After the plain names so an ordinary
+     * batch's insertion order — and therefore its walk — is unchanged. Same
+     * budget and the same deferral: a fact this page cannot afford is picked
+     * up by the continuation's resume branch, which carries the facts in
+     * `...args`.
+     */
+    for (const [key, fact] of factRows) {
+      if (ops >= ENTITY_REVIEW_START_OPS) {
+        deferred += 1;
+        continue;
+      }
+      const inserted = await insertFactRow(batchId, key, fact, fact.name);
+      if (inserted.enqueue) ids.push(inserted.id);
     }
     if (ids.length > 0) {
       // NEO-99: hand the rows to the deployment-wide Wikidata pool
@@ -1604,6 +2043,7 @@ export const startBatch = internalMutation({
         { rowIds: ids },
       );
     }
+    logAutoLinks(batchId);
     await deferRemainder(batchId);
     return batchId;
   },
@@ -2791,6 +3231,10 @@ export const recordDecision = mutation({
     // SET's sport to the player's `playerSports` ("he plays baseball too").
     // Meaningful only on a row switched to another sport; see schema.ts.
     addSetSport: v.optional(v.boolean()),
+    // NEO-463, "create"-only and player-kind-only: the operator confirmed a
+    // one-word name that clashes with a fuller-named player is a one-name
+    // player. Without it such a create is refused with PLAYER_NAME_FRAGMENT.
+    oneNamePlayer: v.optional(v.literal(true)),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -2846,6 +3290,20 @@ export const recordDecision = mutation({
     }
 
     if (args.action === "create") {
+      /*
+       * NEO-463 — a one-word player name that is a fuller-named player's first
+       * or last name ("Walker" beside "Larry Walker") is refused unless the
+       * operator confirmed a one-name player. Structured (`data.code ===
+       * "PLAYER_NAME_FRAGMENT"`, with the matches) so the wizard offers the
+       * match or the confirmation. Player rows only; the flag on another kind
+       * is refused like `addSetSport`, as a client bug.
+       */
+      if (args.oneNamePlayer === true && row.kind !== "player") {
+        throw new ConvexError("Only a player can be a one-name player.");
+      }
+      if (row.kind === "player") {
+        await assertNotNameFragment(ctx, row.name, row.sportId, args.oneNamePlayer);
+      }
       // Defense in depth: this is admin-gated, but still validate the shape
       // so a malformed year can never reach the players.teamYears write in
       // commitCardChecklist. Loose bounds — reject nonsense, not history.
@@ -3018,6 +3476,8 @@ export const recordDecision = mutation({
           ...(createLeague ? { createLeague } : {}),
           // NEO-313: stored only when true, like `saveAsAlias`.
           ...(keepAddSetSport ? { addSetSport: true } : {}),
+          // NEO-463: stored only when true; the commit reads it.
+          ...(args.oneNamePlayer === true ? { oneNamePlayer: true as const } : {}),
         },
         lastTouchedAt: Date.now(),
       });
@@ -3030,11 +3490,35 @@ export const recordDecision = mutation({
       }
       const linked = await ctx.db.get(args.linkedPlayerId);
       if (!linked) throw new Error("Linked player not found");
+      /*
+       * NEO-424 (D7) — a player the BATCH offered may be in another sport.
+       *
+       * Set history is not sport-scoped (Bo Jackson on the base set's card is
+       * Bo Jackson on the parallel), and rule E's only namesake is by
+       * definition in another sport. Those players reach the row as its
+       * `existingCandidates` or its `preselect`, and picking one of them is the
+       * operator confirming an answer NB already holds — so it is accepted
+       * across sports, and the row's sport is re-pointed to the player's HOME
+       * sport in the same patch. The row and its link then agree, exactly as an
+       * auto-link row's do (D2), and the commit links the card as a guest
+       * without writing the set's sport onto the player unless the operator
+       * ticked `addSetSport`.
+       *
+       * Anything else — the operator's own Link to Existing search — stays
+       * checked against the row's sport, below. The offered ids are read off
+       * the STORED row, never off the args, so a client cannot widen the set.
+       */
+      const offered =
+        row.enrichment?.preselect?.playerId === linked._id ||
+        (row.enrichment?.existingCandidates ?? []).some(
+          (candidate) => candidate.playerId === linked._id,
+        );
       // NEO-313 — against the ROW's sport, which is the set's unless the
       // operator switched it, and "belongs to" is home sport OR one added in
       // `playerSports`: Bo Jackson (home football, also baseball) links on a
       // baseball step exactly as a baseball-only player does.
-      if (!(await playerBelongsToSport(ctx, linked, row.sportId))) {
+      const belongs = await playerBelongsToSport(ctx, linked, row.sportId);
+      if (!belongs && !offered) {
         // NEO-96: compare ids, but report DISPLAY names — an operator reading
         // "sport (abc123) doesn't match xyz789" learns nothing.
         throw new Error(
@@ -3042,14 +3526,37 @@ export const recordDecision = mutation({
             `doesn't match ${await sportLabel(ctx, row.sportId)}`,
         );
       }
+      const repointedSportId = belongs ? undefined : linked.sportId;
+      // NEO-313 — re-judged against the sport the row ENDS UP in: a cross-sport
+      // pick moves it off the set's sport, which is exactly when "also add the
+      // set's sport" means something.
+      const keepAddSetSportForLink =
+        args.addSetSport === true &&
+        (repointedSportId === undefined
+          ? keepAddSetSport
+          : (await findSportForSelectorOption(ctx, row.selectorOptionId)) !==
+            repointedSportId);
       await ctx.db.patch(args.reviewRowId, {
         decision: {
           action: "link",
           linkedPlayerId: args.linkedPlayerId,
-          ...(keepAddSetSport ? { addSetSport: true } : {}),
+          ...(keepAddSetSportForLink ? { addSetSport: true } : {}),
         },
+        ...(repointedSportId !== undefined ? { sportId: repointedSportId } : {}),
         lastTouchedAt: Date.now(),
       });
+      if (repointedSportId !== undefined) {
+        // Ids only — never the name (observability.ts).
+        console.log(
+          JSON.stringify({
+            msg: "entity_review_offered_link_cross_sport",
+            rowId: row._id,
+            playerId: linked._id,
+            fromSportId: row.sportId,
+            toSportId: repointedSportId,
+          }),
+        );
+      }
       // NEO-332 — the operator picked someone we already hold, so the New
       // Team steps a Create-new lookup staged for a new person go.
       await releaseStepsOfAnsweredChoice(ctx, row);
@@ -3100,6 +3607,97 @@ export const recordDecision = mutation({
     return null;
   },
 });
+
+/**
+ * NEO-424 (D6) — Change on a row the BATCH linked: turn the answer back into
+ * the question it settled, with the same player still the first suggestion.
+ *
+ * An auto-link row was born decided, in the linked player's home sport, and
+ * was never looked up (`startBatch`). Clearing only its decision would leave a
+ * row asked in the wrong sport with nothing to show. So the question is put
+ * back the way it would have been asked without set history:
+ *
+ *   - `sportId` returns to the SET'S sport — the default every row is asked in
+ *     (NEO-313). The operator's cross-sport pick of an offered player
+ *     re-points it again (`recordDecision`, D7).
+ *   - The player it named becomes `enrichment.preselect`, tagged with the
+ *     auto-link's origin, so the wizard leads with "Link to <name>" rather
+ *     than losing the best guess the moment the operator looks at it.
+ *   - Two or more stored candidates (the history player plus the in-sport
+ *     rivals `startBatch` built for exactly this) stay, and the row waits on
+ *     the pick step exactly as a same-name choice does (NEO-332): `ready`,
+ *     no lookup until Create new. One candidate is not a choice; the row
+ *     keeps only the preselect and waits `ready` the same way — no lookup
+ *     until "Add as New Player anyway" (`awaitsOperatorBeforeLookup`).
+ *
+ * A TEAM auto-link (rule F) has no candidates and no preselect field: it goes
+ * back to `pending` in the set's sport and gets the lookup it skipped.
+ *
+ * A linked player deleted since leaves no preselect; the row is then simply a
+ * new name, `pending`, with the same lookup enqueue `switchRowSport` makes — a
+ * LOOKUP for a throwaway review row, not entity enrichment.
+ */
+async function resetAutoLinkedRow(
+  ctx: MutationCtx,
+  row: Doc<"entityReviewQueue">,
+  decision: Extract<NonNullable<Doc<"entityReviewQueue">["decision"]>, { action: "link" }>,
+): Promise<void> {
+  const setSportId =
+    (await findSportForSelectorOption(ctx, row.selectorOptionId)) ?? row.sportId;
+  const origin = decision.autoLinked ?? "setHistory";
+
+  let enrichment: Doc<"entityReviewQueue">["enrichment"] | undefined;
+  let awaitsChoice = false;
+  if (row.kind === "player") {
+    const linked = decision.linkedPlayerId
+      ? await ctx.db.get(decision.linkedPlayerId)
+      : null;
+    const candidates = row.enrichment?.existingCandidates ?? [];
+    const keepCandidates = candidates.length >= 2;
+    enrichment = {
+      ...(keepCandidates ? { existingCandidates: candidates } : {}),
+      ...(linked
+        ? {
+            preselect: {
+              playerId: linked._id,
+              name: linked.name,
+              sportId: linked.sportId,
+              sportValue: await sportLabel(ctx, linked.sportId),
+              reason: origin,
+            },
+          }
+        : {}),
+    };
+    if (Object.keys(enrichment).length === 0) enrichment = undefined;
+    awaitsChoice = awaitsOperatorBeforeLookup(enrichment);
+  }
+
+  await ctx.db.patch(row._id, {
+    decision: undefined,
+    sportId: setSportId,
+    status: awaitsChoice ? "ready" : "pending",
+    enrichment,
+    // NEO-221: operator activity, like every other decision gesture.
+    lastTouchedAt: Date.now(),
+  });
+  if (!awaitsChoice) {
+    await ctx.scheduler.runAfter(0, internal.wikidataPool.enqueueEntityReviewLookups, {
+      rowIds: [row._id],
+    });
+  }
+  // Ids only — never the name (observability.ts).
+  console.log(
+    JSON.stringify({
+      msg: "entity_review_auto_link_cleared",
+      rowId: row._id,
+      kind: row.kind,
+      origin,
+      fromSportId: row.sportId,
+      toSportId: setSportId,
+      lookupDeferred: awaitsChoice,
+    }),
+  );
+}
 
 /**
  * NEO-221 — un-decide one row, so the operator can go back and change a call.
@@ -3154,6 +3752,11 @@ export const clearDecision = mutation({
     const row = await ctx.db.get(args.reviewRowId);
     if (!row) throw new Error("Review row not found");
     assertOwnsRow(row, callerId);
+
+    if (row.decision?.action === "link" && row.decision.autoLinked !== undefined) {
+      await resetAutoLinkedRow(ctx, row, row.decision);
+      return null;
+    }
 
     await ctx.db.patch(args.reviewRowId, {
       decision: undefined,
@@ -3578,7 +4181,15 @@ async function releaseStepsOfAnsweredChoice(
   ctx: MutationCtx,
   row: Doc<"entityReviewQueue">,
 ): Promise<void> {
-  if (row.kind !== "player" || !isSameNameChoice(row.enrichment)) return;
+  // NEO-424 — a row carrying a PRESELECT is the same shape: it is looked up as
+  // a new name (rule E), so its lookup may have staged a new person's career
+  // teams before the operator confirmed the suggested existing player instead.
+  if (
+    row.kind !== "player" ||
+    !awaitsOperatorBeforeLookup(row.enrichment)
+  ) {
+    return;
+  }
   const released = await releaseStagedSteps(ctx, row, { keepDecided: true });
   if (
     released.teamsDeleted +
@@ -3985,16 +4596,38 @@ export type BulkCandidatePage = {
  * path costs nothing beyond the row itself — the same result the old walk
  * reached, since its ambiguity check only ever applied to players.
  */
+async function bulkCandidateVerdict(
+  ctx: QueryCtx | MutationCtx,
+  row: Doc<"entityReviewQueue">,
+  action: BulkAction,
+): Promise<"candidate" | "fragment" | "no"> {
+  if (row.decision) return "no";
+  if (action === "skip") return "candidate";
+  if (row.status === "pending") return "no";
+  if (row.kind !== "player") return "no";
+  // NEO-424 — two or more players this SET already linked the name to is the
+  // NEO-254 choice by other means, and the live index cannot see it when they
+  // sit in other sports. Read off the row: set history is a fact about this
+  // set's committed cards, not a snapshot of the name index going stale.
+  if (historyCandidatesOf(row.enrichment).length > 0) return "no";
+  if (await isAmbiguousPlayerName(ctx, row.name, row.sportId)) return "no";
+  // NEO-463 — a one-word name that is a fuller-named player's first or last
+  // name ("Walker" beside "Larry Walker") is a question, not a new player:
+  // "Add All Remaining as New" leaves it for the operator. A one-word name
+  // with no clash returns no matches without a read beyond the search.
+  // Reported apart from "no" because the search behind it is the expensive
+  // read: the page walk charges a held fragment against its budget.
+  return (await nameFragmentMatches(ctx, row.name, row.sportId)).length === 0
+    ? "candidate"
+    : "fragment";
+}
+
 async function isBulkCandidate(
   ctx: QueryCtx | MutationCtx,
   row: Doc<"entityReviewQueue">,
   action: BulkAction,
 ): Promise<boolean> {
-  if (row.decision) return false;
-  if (action === "skip") return true;
-  if (row.status === "pending") return false;
-  if (row.kind !== "player") return false;
-  return !(await isAmbiguousPlayerName(ctx, row.name, row.sportId));
+  return (await bulkCandidateVerdict(ctx, row, action)) === "candidate";
 }
 
 /**
@@ -4050,13 +4683,24 @@ async function listBulkCandidatesImpl(
    */
   let lastExamined: Doc<"entityReviewQueue"> | undefined;
   let budgetSpent = false;
+  /**
+   * NEO-463 — rows held back as name fragments. Each one cost a bounded
+   * search read (up to `NAME_FRAGMENT_SCAN_LIMIT` rows per term) and decided
+   * nothing, so without a charge a page of fragments would run that search on
+   * every one of its `scan` rows. A held fragment spends the decide budget
+   * like a decided row, so the walk stops after `decide` searches whatever the
+   * holds, and the cursor hands the rest to the next call.
+   */
+  let heldFragments = 0;
   for (const row of rows) {
-    if (ids.length >= page.decide) {
+    if (ids.length + heldFragments >= page.decide) {
       budgetSpent = true;
       break;
     }
     lastExamined = row;
-    if (await isBulkCandidate(ctx, row, args.action)) ids.push(row._id);
+    const verdict = await bulkCandidateVerdict(ctx, row, args.action);
+    if (verdict === "candidate") ids.push(row._id);
+    else if (verdict === "fragment") heldFragments += 1;
   }
   return {
     ids,
@@ -4881,7 +5525,7 @@ export const applyLookupResult = internalMutation({
      * so an ordinary new name stores nothing extra and the wizard renders
      * exactly what it did before.
      */
-    const existingCandidates =
+    const liveCandidates =
       row.kind === "player"
         ? await buildExistingPlayerCandidates(ctx, row.name, row.sportId, {
             // NEO-254: re-derived live rather than read off the row, for the
@@ -4891,17 +5535,37 @@ export const applyLookupResult = internalMutation({
             cardYear: await findSetYearForSelectorOption(ctx, row.selectorOptionId),
           })
         : [];
+    /*
+     * NEO-424 — what the BATCH put on the row survives the lookup.
+     *
+     * The live rebuild above only sees the row's own sport. Candidates taken
+     * from the set's history (`sportValue` set; possibly another sport) and
+     * the rule-E `preselect` cannot be re-derived from the name index, and
+     * dropping them here would take "Link to <name>" away from the operator the
+     * moment the lookup landed — after Create new on a history choice, or
+     * after "Add as New Player anyway" on a preselected row. So
+     * the history candidates lead (they are this set's own evidence), the live
+     * ones follow without repeats, and the preselect is carried over as is.
+     */
+    const historyCandidates = row.kind === "player" ? historyCandidatesOf(row.enrichment) : [];
+    const historyIds = new Set(historyCandidates.map((c) => c.playerId as string));
+    const existingCandidates = [
+      ...historyCandidates,
+      ...liveCandidates.filter((c) => !historyIds.has(c.playerId as string)),
+    ];
+    const preselect = row.kind === "player" ? row.enrichment?.preselect : undefined;
 
     // The enrichment object is only MINTED for candidates when the lookup
     // itself found nothing; a `status: "error"` row with candidates on it is
     // still an error row, and the wizard keys its "No Wikidata match found."
     // on `status`, not on the presence of this object.
-    const enrichment =
+    const looked =
       existingCandidates.length > 0
         ? { ...(args.enrichment ?? {}), existingCandidates }
         : priorTeamAnswer
           ? overlayTeamEnrichment(priorTeamAnswer, args.enrichment)
           : args.enrichment;
+    const enrichment = preselect ? { ...(looked ?? {}), preselect } : looked;
 
     await ctx.db.patch(args.id, {
       status: args.status,

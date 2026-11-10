@@ -29,6 +29,7 @@ import {
   heavyWarmupCount,
 } from "./preprocessCapacity";
 import { preprocessBaselineValidator } from "./lib/preprocessBaseline";
+import { unknownRejectionReasons } from "./lib/extractRejections";
 
 /**
  * Extract is retried inline rather than through the workpool.
@@ -136,11 +137,26 @@ export const runExtract = internalAction({
       return null;
     }
 
-    // Only the three fields the pipeline needs cross the boundary. The wire
-    // shape also carries content_type / size_bytes / reason, which nothing
-    // downstream reads — passing them would put a service-owned shape into a
-    // Convex argument validator and make every additive change on the service
-    // side a breaking one here.
+    // A new reason reads as "unreadable" on the screen, which is safe but vague,
+    // so the operator channel hears about it. Reasons only: an entry name here
+    // may not have passed validation.
+    const unknownReasons = unknownRejectionReasons(entries.entries);
+    if (unknownReasons.length > 0) {
+      console.warn(
+        JSON.stringify({
+          msg: "preprocess_extract_unknown_reject_reason",
+          jobId: args.jobId,
+          reasons: unknownReasons.slice(0, 10),
+        }),
+      );
+    }
+
+    // Only the fields the pipeline needs cross the boundary. The wire shape also
+    // carries content_type / size_bytes, which nothing downstream reads — passing
+    // them would put a service-owned shape into a Convex argument validator and
+    // make every additive change on the service side a breaking one here. `reason`
+    // is a plain string, and an unknown value is handled where it is read
+    // (lib/extractRejections.ts).
     await ctx.runMutation(internal.placeholderPipeline.registerExtractedImages, {
       jobId: args.jobId,
       userId: args.userId,
@@ -148,6 +164,7 @@ export const runExtract = internalAction({
         index: e.index,
         name: e.name,
         accepted: e.accepted,
+        ...(e.reason ? { reason: e.reason } : {}),
       })),
     });
 

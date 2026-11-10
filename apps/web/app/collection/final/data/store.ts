@@ -345,9 +345,11 @@ export interface CollectionActions {
   /**
    * A copy with details (`details.homeId`, else the scope, else Main); the
    * server folds it into an identical line item (never one with a cert or
-   * serial).
+   * serial). NEO-431: `keepsOwnLine` starts a line of its own instead, for an
+   * add whose photos follow it: a line with photos is one of a kind, and the
+   * rule can't see photos that haven't arrived yet.
    */
-  addLineItem(card: Card, details: CopyDetails): Promise<AddResult>;
+  addLineItem(card: Card, details: CopyDetails, options?: { keepsOwnLine?: boolean }): Promise<AddResult>;
   /** Edits a copy in place. Refuses a change of `homeId` (that is `moveCopy`); never folds. */
   updateCopy(copy: Copy, patch: Partial<CopyDetails>): Promise<UpdateResult>;
   /** Deletes the copy; the undo puts the same fields back. */
@@ -364,7 +366,9 @@ export interface CollectionActions {
    * `slot` there when given (else unslotted). Folds into an identical line
    * item there; part of a stack splits off. Refuses the Want List, the Up
    * for Trade pile, a smart binder, and a binder pocket another line item
-   * holds. A copy keeps its Up for Trade flag.
+   * holds. A copy keeps its Up for Trade flag. NEO-479: `options.minPrice`
+   * prices the cards going into a box; out of a box into a binder, they
+   * lose their own price (the undo restores it).
    */
   moveCopy(copy: Copy, toHomeId: ContainerId, options?: MoveOptions): Promise<MoveResult>;
   /**
@@ -439,6 +443,14 @@ export interface MoveOptions {
   quantity?: number;
   /** The pocket or row at the destination. */
   slot?: number;
+  /**
+   * NEO-479 — the moving cards' own price (dollars, whole cents), set as they
+   * go into a box. Leave it out to keep the price they have (or, with none,
+   * the variant's common price, read live). Never writes the common price.
+   * Refused on a move that stays home. A move out of a box into a binder
+   * clears the cards' own price; its undo puts it back.
+   */
+  minPrice?: number;
 }
 
 /** What only the demo has (see the module comment). */
@@ -523,7 +535,7 @@ export interface ListingExtension {
   /**
    * Sync: read this checklist's sheet on every platform the collector lists
    * on and set every card to NB's counts. Resolves with whether it was
-   * queued, or why the server let it pass (just synced, or nothing lists).
+   * queued, or why the server let it pass (already in the works, or nothing lists).
    */
   syncVariant(variantId: VariantId): Promise<SyncVariantResult>;
   /** A box's "Listed on marketplaces". Rejects with the server's words (a binder, say). */
@@ -608,7 +620,7 @@ export function useListing(): ListingExtension | undefined {
 }
 
 /** A store that lists nowhere (the demo, a test's): never syncing, never gated. */
-export const NO_LISTING_GATE: ListingGateView = { syncing: false, applies: false, commonPriceCents: null };
+export const NO_LISTING_GATE: ListingGateView = { syncing: false, applies: false, commonPriceCents: null, variantHasCards: true };
 const noGate = (): ListingGateView => NO_LISTING_GATE;
 
 /**
@@ -642,7 +654,8 @@ function withScope(actions: CollectionActions, scope: ContainerId): CollectionAc
     ...actions,
     addHave: (card, homeId) => actions.addHave(card, homeId ?? scope),
     addMany: (cards, homeId) => actions.addMany(cards, homeId ?? scope),
-    addLineItem: (card, details) => actions.addLineItem(card, details.homeId ? details : { ...details, homeId: scope }),
+    addLineItem: (card, details, options) =>
+      actions.addLineItem(card, details.homeId ? details : { ...details, homeId: scope }, options),
   };
 }
 

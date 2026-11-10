@@ -328,6 +328,8 @@ type Row = {
         /** NEO-284 — whether this link also remembered the row's raw name
          *  as an alias of the linked team. */
         saveAsAlias?: boolean;
+        /** NEO-424 — a link the batch made itself. */
+        autoLinked?: "setHistory" | "hallOfFame";
       }
     | { action: "skip" };
 };
@@ -7273,7 +7275,7 @@ describe("NEO-254: an ambiguous name is a choice, not a promoted primary", () =>
     ).toBeTruthy();
     expect(
       screen.getByRole("button", {
-        name: "Link to Bob Allen, b. 1867 · Phillies 1890–1894",
+        name: "Link to Bob Allen, born 1867, Phillies 1890 to 1894",
       }),
     ).toBeTruthy();
     // The pick step's primary slot is "Create new"; creating is not on it.
@@ -7313,7 +7315,7 @@ describe("NEO-254: an ambiguous name is a choice, not a promoted primary", () =>
 
     fireEvent.click(
       screen.getByRole("button", {
-        name: "Link to Bob Allen, b. 1937 · Padres 1961–present",
+        name: "Link to Bob Allen, born 1937, Padres 1961 to present",
       }),
     );
 
@@ -8545,7 +8547,7 @@ describe("NEO-332: the pick step and the New Player step it opens", () => {
     expect(pickHeading()).toBeNull();
     expect(
       screen.queryByRole("button", {
-        name: "Link to Bob Allen, b. 1867 · Phillies 1890–1894",
+        name: "Link to Bob Allen, born 1867, Phillies 1890 to 1894",
       }),
     ).toBeNull();
     expect(screen.queryByText(/on file under that name/)).toBeNull();
@@ -8735,7 +8737,7 @@ describe("NEO-332: the pick step and the New Player step it opens", () => {
     expect(screen.queryByRole("button", { name: "Create new" })).toBeNull();
     expect(
       screen.queryByRole("button", {
-        name: "Link to Bob Allen, b. 1867 · Phillies 1890–1894",
+        name: "Link to Bob Allen, born 1867, Phillies 1890 to 1894",
       }),
     ).toBeNull();
   });
@@ -8754,7 +8756,7 @@ describe("NEO-332: the pick step and the New Player step it opens", () => {
       ];
       renderWizard();
 
-      expect(screen.getByRole("button", { name: "Link to Bob Allen, b. 1867" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Link to Bob Allen, born 1867" })).toBeTruthy();
       expect(
         screen.getByRole("button", {
           name: "Link to Bob Allen, also known as Robert Allen",
@@ -8770,7 +8772,7 @@ describe("NEO-332: the pick step and the New Player step it opens", () => {
       ];
       renderWizard();
 
-      fireEvent.click(screen.getByRole("button", { name: "Link to Bob Allen, b. 1937" }));
+      fireEvent.click(screen.getByRole("button", { name: "Link to Bob Allen, born 1937" }));
 
       await waitFor(() =>
         expect(mockRecordDecision).toHaveBeenCalledWith(
@@ -8842,7 +8844,7 @@ describe("NEO-332: the pick step and the New Player step it opens", () => {
       renderWizard();
 
       fireEvent.click(
-        screen.getByRole("button", { name: "Link to Bob Allen, b. 1937 · Padres 1961–present" }),
+        screen.getByRole("button", { name: "Link to Bob Allen, born 1937, Padres 1961 to present" }),
       );
       await waitFor(() => expect(mockRecordDecision).toHaveBeenCalledTimes(1));
       fireEvent.click(screen.getByRole("button", { name: "Skip Bob Allen — not a person" }));
@@ -8980,7 +8982,7 @@ describe("NEO-332: the pick step and the New Player step it opens", () => {
       renderWizard();
 
       fireEvent.click(
-        screen.getByRole("button", { name: "Link to Bob Allen, b. 1937 · Padres 1961–present" }),
+        screen.getByRole("button", { name: "Link to Bob Allen, born 1937, Padres 1961 to present" }),
       );
       await waitFor(() => expect(mockRecordDecision).toHaveBeenCalledTimes(1));
 
@@ -9081,7 +9083,7 @@ describe("NEO-332: the pick step and the New Player step it opens", () => {
       currentRows = [rowA, rowB];
       const { rerender } = renderWizard();
       const pick = screen.getByRole("button", {
-        name: "Link to Bob Allen, b. 1937 · Padres 1961–present",
+        name: "Link to Bob Allen, born 1937, Padres 1961 to present",
       });
       act(() => pick.focus());
       fireEvent.click(pick);
@@ -9320,7 +9322,7 @@ describe("NEO-332: the pick step and the New Player step it opens", () => {
       currentRows = [rowA, rowB];
       const { rerender } = renderWizard();
       fireEvent.click(
-        screen.getByRole("button", { name: "Link to Bob Allen, b. 1937 · Padres 1961–present" }),
+        screen.getByRole("button", { name: "Link to Bob Allen, born 1937, Padres 1961 to present" }),
       );
       await waitFor(() => expect(mockRecordDecision).toHaveBeenCalledTimes(1));
       currentRows = [{ ...rowA, decision: youngLink }, rowB];
@@ -9350,7 +9352,7 @@ describe("NEO-332: the pick step and the New Player step it opens", () => {
       currentRows = [rowA, rowB];
       const { rerender } = renderWizard();
       fireEvent.click(
-        screen.getByRole("button", { name: "Link to Bob Allen, b. 1937 · Padres 1961–present" }),
+        screen.getByRole("button", { name: "Link to Bob Allen, born 1937, Padres 1961 to present" }),
       );
       await waitFor(() => expect(mockRecordDecision).toHaveBeenCalledTimes(1));
       currentRows = [{ ...rowA, decision: youngLink }, rowB];
@@ -9399,7 +9401,7 @@ describe("NEO-332: the pick step and the New Player step it opens", () => {
         { _id: "player-young", name: "Bob Allen", confidence: "exact", birthYear: 1937 },
       ];
       const { rerender } = renderWizard();
-      fireEvent.click(screen.getByRole("button", { name: "Link to Bob Allen, b. 1937" }));
+      fireEvent.click(screen.getByRole("button", { name: "Link to Bob Allen, born 1937" }));
       await waitFor(() => expect(mockRecordDecision).toHaveBeenCalledTimes(1));
 
       currentLinkedPlayers = [{ _id: "player-young", name: "Bob Allen" }];
@@ -9665,5 +9667,596 @@ describe("EntityReviewWizard — NEO-330 W6 × NEO-332 pick step", () => {
 
     expect(heading("Other Guy")).toBeNull();
     expect(screen.getByRole("heading", { name: "Which Dan Brown is this?" })).toBeTruthy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-424 — auto-links in the decided list, and the suggested player
+// ---------------------------------------------------------------------------
+
+describe("NEO-424: a link the batch made says why in the decided list", () => {
+  it("reads 'Linked to … · why', with the sport when it is not the set's, each with Change", () => {
+    currentLinkedPlayers = [
+      { _id: "p-shinoda", name: "Mike Shinoda" },
+      { _id: "p-allen", name: "Bob Allen" },
+    ];
+    currentRows = [
+      // The auto-link row sits in the linked player's home sport.
+      makeRow({
+        name: "Mike Shinoda",
+        sportValue: "Non Sport",
+        setSportValue: "Baseball",
+        decision: { action: "link", linkedPlayerId: "p-shinoda", autoLinked: "setHistory" },
+      }),
+      makeRow({
+        name: "Bob Allen",
+        sportValue: "Baseball",
+        setSportValue: "Baseball",
+        decision: { action: "link", linkedPlayerId: "p-allen", autoLinked: "hallOfFame" },
+      }),
+      makeRow({ name: "Somebody Else" }),
+    ];
+    renderWizard();
+
+    // The count keeps a node of its own (the E2E driver opens the list by
+    // its exact text); the note follows it inside the same summary.
+    const count = screen.getByText("Decided (2)");
+    expect(count.closest("summary")?.textContent).toBe("Decided (2) · 2 linked for you");
+    const list = screen.getByRole("list", { name: "Decided names" });
+    expect(list.textContent).toContain(
+      "Linked to Mike Shinoda (Non Sport) · already on another card in this set",
+    );
+    expect(list.textContent).toContain("Linked to Bob Allen · the Hall of Famer");
+    expect(screen.getByRole("button", { name: "Change decision for Mike Shinoda" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Change decision for Bob Allen" })).toBeTruthy();
+  });
+});
+
+describe("NEO-424: a batch that opens with every name linked for you", () => {
+  /**
+   * Six links (one past the list's inline maximum of five) and nothing for
+   * the operator to answer: the batch `resolveUnknownsAndStartBatch` opens
+   * when set history and the Hall of Fame tie-break decide every name. The
+   * parent now opens the wizard for it rather than committing silently, so
+   * the Save step has to carry the review.
+   */
+  const autoLinkedBatch = () => {
+    currentLinkedPlayers = [
+      { _id: "p-morgan", name: "Joe Morgan" },
+      { _id: "p-shinoda", name: "Mike Shinoda" },
+      { _id: "p-a", name: "Player A" },
+      { _id: "p-b", name: "Player B" },
+      { _id: "p-c", name: "Player C" },
+    ];
+    currentLinkedTeams = [{ _id: "team-browns", name: "St. Louis Browns", location: "" }];
+    return [
+      makeRow({
+        name: "Joe Morgan",
+        decision: { action: "link", linkedPlayerId: "p-morgan", autoLinked: "hallOfFame" },
+      }),
+      makeRow({
+        name: "Mike Shinoda",
+        decision: { action: "link", linkedPlayerId: "p-shinoda", autoLinked: "setHistory" },
+      }),
+      makeRow({
+        kind: "team",
+        name: "St. Louis Browns",
+        decision: { action: "link", linkedTeamId: "team-browns", autoLinked: "setHistory" },
+      }),
+      ...["Player A", "Player B", "Player C"].map((name, i) =>
+        makeRow({
+          name,
+          decision: {
+            action: "link",
+            linkedPlayerId: ["p-a", "p-b", "p-c"][i],
+            autoLinked: "setHistory",
+          },
+        }),
+      ),
+    ];
+  };
+
+  it("opens on Save with every link's line, the summary and a Change each, the list expanded", () => {
+    currentRows = autoLinkedBatch();
+    renderWizard();
+
+    expect(screen.getByRole("heading", { name: SAVE_HEADING })).toBeTruthy();
+    // The E2E driver's exact count node, then the note, in one summary.
+    const count = screen.getByText("Decided (6)");
+    const summary = count.closest("summary");
+    expect(summary?.textContent).toBe("Decided (6) · 6 linked for you");
+    // Past five rows the list collapses; not on this batch — it IS the review.
+    expect((summary?.parentElement as HTMLDetailsElement).open).toBe(true);
+
+    const list = screen.getByRole("list", { name: "Decided names" });
+    expect(list.textContent).toContain("Linked to Joe Morgan · the Hall of Famer");
+    expect(list.textContent).toContain(
+      "Linked to Mike Shinoda · already on another card in this set",
+    );
+    expect(list.textContent).toContain(
+      "Linked to St. Louis Browns · already on another card in this set",
+    );
+    for (const who of ["Joe Morgan", "Mike Shinoda", "St. Louis Browns", "Player A"]) {
+      expect(screen.getByRole("button", { name: `Change decision for ${who}` })).toBeTruthy();
+    }
+
+    // Why the dialog is up at all, and the autofocused Save says it too.
+    const intro = screen.getByText(
+      "These names were linked for you. Give them a look before you save.",
+    );
+    const confirm = screen.getByRole("button", { name: CONFIRM_SAVE_NAME });
+    expect(confirm.getAttribute("aria-describedby")).toBe(intro.id);
+    expect(document.activeElement).toBe(confirm);
+  });
+
+  it("reopens a link with Change, through the same clearDecision every decided row uses", async () => {
+    const rows = autoLinkedBatch();
+    currentRows = rows;
+    renderWizard();
+
+    fireEvent.click(screen.getByRole("button", { name: "Change decision for St. Louis Browns" }));
+
+    await waitFor(() =>
+      expect(mockClearDecision).toHaveBeenCalledWith({ reviewRowId: rows[2]._id }),
+    );
+  });
+
+  /**
+   * a11y — the Change pressed is the row's own, and it unmounts the moment
+   * the cleared decision reaches the batch (the row leaves the Decided list).
+   * The row on screen does not change, so the "focus lost on a new step"
+   * park never runs; without its own park focus falls to <body>, outside the
+   * aria-modal dialog.
+   */
+  it("parks focus on the reopened step's heading once Change's clear lands", async () => {
+    const rows = autoLinkedBatch();
+    currentRows = rows;
+    const { rerender } = renderWizard();
+
+    const change = screen.getByRole("button", { name: "Change decision for St. Louis Browns" });
+    act(() => change.focus());
+    fireEvent.click(change);
+    await waitFor(() =>
+      expect(mockClearDecision).toHaveBeenCalledWith({ reviewRowId: rows[2]._id }),
+    );
+
+    // The clear reaches the batch: the row is live again.
+    currentRows = rows.map((r, i) => (i === 2 ? { ...r, decision: undefined } : r));
+    await act(async () => {
+      rerenderWizard(rerender);
+    });
+
+    expect(
+      screen.queryByRole("button", { name: "Change decision for St. Louis Browns" }),
+    ).toBeNull();
+    const heading = screen.getByRole("heading", { level: 3, name: /St\. Louis Browns/ });
+    expect(document.activeElement).toBe(heading);
+  });
+
+  it("reads one link in the singular", () => {
+    currentLinkedPlayers = [{ _id: "p-morgan", name: "Joe Morgan" }];
+    currentRows = [
+      makeRow({
+        name: "Joe Morgan",
+        decision: { action: "link", linkedPlayerId: "p-morgan", autoLinked: "hallOfFame" },
+      }),
+    ];
+    renderWizard();
+
+    expect(screen.getByText("Decided (1)").closest("summary")?.textContent).toBe(
+      "Decided (1) · 1 linked for you",
+    );
+    expect(
+      screen.getByText("This name was linked for you. Give it a look before you save."),
+    ).toBeTruthy();
+  });
+
+  it("keeps a list past 25 collapsed and points the line at it", () => {
+    currentLinkedPlayers = Array.from({ length: 26 }, (_, i) => ({
+      _id: `p-${i}`,
+      name: `Linked Player ${i}`,
+    }));
+    currentRows = Array.from({ length: 26 }, (_, i) =>
+      makeRow({
+        name: `Linked Player ${i}`,
+        decision: { action: "link", linkedPlayerId: `p-${i}`, autoLinked: "setHistory" },
+      }),
+    );
+    renderWizard();
+
+    const summary = screen.getByText("Decided (26)").closest("summary");
+    expect(summary?.textContent).toBe("Decided (26) · 26 linked for you");
+    expect((summary?.parentElement as HTMLDetailsElement).open).toBe(false);
+    const intro = screen.getByText(
+      "These names were linked for you. Open Decided below to give them a look.",
+    );
+    expect(
+      screen.getByRole("button", { name: CONFIRM_SAVE_NAME }).getAttribute("aria-describedby"),
+    ).toBe(intro.id);
+  });
+
+  /**
+   * A "Back to matching" return trip can open on a batch holding the
+   * operator's own decisions beside the links; the line counts the links.
+   */
+  it("counts the links when the list also holds the operator's own decisions", () => {
+    const rows = autoLinkedBatch().slice(0, 3);
+    currentRows = [
+      ...rows,
+      makeRow({ name: "Their Own Pick", decision: { action: "create" } }),
+      makeRow({ name: "Not A Person", decision: { action: "skip" } }),
+    ];
+    renderWizard();
+
+    expect(screen.getByText("Decided (5)").closest("summary")?.textContent).toBe(
+      "Decided (5) · 3 linked for you",
+    );
+    expect(
+      screen.getByText("3 of these names were linked for you. Give them a look before you save."),
+    ).toBeTruthy();
+  });
+
+  it("counts one link among the operator's decisions in the singular", () => {
+    currentLinkedPlayers = [{ _id: "p-morgan", name: "Joe Morgan" }];
+    currentRows = [
+      makeRow({
+        name: "Joe Morgan",
+        decision: { action: "link", linkedPlayerId: "p-morgan", autoLinked: "hallOfFame" },
+      }),
+      makeRow({ name: "Their Own Pick", decision: { action: "create" } }),
+    ];
+    renderWizard();
+
+    expect(
+      screen.getByText("1 of these names was linked for you. Give it a look before you save."),
+    ).toBeTruthy();
+  });
+
+  /**
+   * The latch is the batch's FIRST read. A batch that opened with a name to
+   * answer reaches Save the ordinary way: past five rows the list collapses
+   * as it always has, and there is no "linked for you" line over it — the
+   * summary's note is what says it there.
+   */
+  it("leaves a batch that opened with a name to answer as it was", () => {
+    const rows = autoLinkedBatch();
+    const last = rows[5];
+    currentRows = [...rows.slice(0, 5), { ...last, decision: undefined }];
+    const { rerender } = renderWizard();
+    expect(screen.queryByRole("heading", { name: SAVE_HEADING })).toBeNull();
+
+    currentRows = rows;
+    rerenderWizard(rerender);
+
+    expect(screen.getByRole("heading", { name: SAVE_HEADING })).toBeTruthy();
+    const summary = screen.getByText("Decided (6)").closest("summary");
+    expect((summary?.parentElement as HTMLDetailsElement).open).toBe(false);
+    expect(screen.queryByText(/linked for you\. Give/)).toBeNull();
+    expect(
+      screen.getByRole("button", { name: CONFIRM_SAVE_NAME }).getAttribute("aria-describedby"),
+    ).toBeNull();
+  });
+});
+
+describe("NEO-424: the suggested player is the New Player step's primary", () => {
+  const preselect = {
+    playerId: "p-shinoda",
+    name: "Mike Shinoda",
+    sportId: "sport-nonsport",
+    sportValue: "Non Sport",
+    reason: "onlyNamesake" as const,
+  };
+  const suggestedRow = () =>
+    makeRow({
+      name: "Mike Shinoda",
+      setSportId: "selopt-sport-1" as unknown as Id<"selectorOptions">,
+      setSportValue: "Baseball",
+      enrichment: { preselect },
+    });
+
+  it("offers 'Link to {name} ({sport})' in green and demotes create to a text link", () => {
+    currentRows = [suggestedRow()];
+    renderWizard();
+
+    const link = screen.getByRole("button", { name: "Link to Mike Shinoda (Non Sport)" });
+    expect(link.textContent).toBe("Link to Mike Shinoda (Non Sport)");
+    expect((link as HTMLElement).style.getPropertyValue("--nb-fill")).toBe("var(--neon-green)");
+    expect(screen.getByRole("button", { name: "Add as New Player anyway" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Add as New Player" })).toBeNull();
+    expect(
+      screen.getByText("We've only got one Mike Shinoda (Non Sport) on file. Same one?"),
+    ).toBeTruthy();
+  });
+
+  it("links the suggested player's id on a press", async () => {
+    const row = suggestedRow();
+    currentRows = [row];
+    renderWizard();
+
+    fireEvent.click(screen.getByRole("button", { name: "Link to Mike Shinoda (Non Sport)" }));
+
+    await waitFor(() => {
+      expect(mockRecordDecision).toHaveBeenCalledWith({
+        reviewRowId: row._id,
+        action: "link",
+        linkedPlayerId: "p-shinoda",
+        linkedTeamId: undefined,
+      });
+    });
+  });
+
+  it("'Add as New Player anyway' on a row still waiting for its lookup opens the New Player step", async () => {
+    // The server inserts a preselect row READY with no lookup. "Anyway" is the
+    // Create new press: it requests the lookup, records nothing, and the step
+    // that opens asks nothing about the suggestion.
+    const row = suggestedRow();
+    currentRows = [row];
+    renderWizard();
+
+    fireEvent.click(screen.getByRole("button", { name: "Add as New Player anyway" }));
+
+    await waitFor(() =>
+      expect(mockRequestPlayerLookup).toHaveBeenCalledWith({ reviewRowId: row._id }),
+    );
+    expect(mockRecordDecision).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Add as New Player" })).toBeTruthy();
+    expect(
+      screen.queryByRole("button", { name: "Link to Mike Shinoda (Non Sport)" }),
+    ).toBeNull();
+    expect(screen.queryByRole("button", { name: "Add as New Player anyway" })).toBeNull();
+    expect(
+      screen.queryByText("We've only got one Mike Shinoda (Non Sport) on file. Same one?"),
+    ).toBeNull();
+  });
+
+  it("'Add as New Player anyway' creates once the row's lookup has run", async () => {
+    const row = makeRow({
+      name: "Mike Shinoda",
+      enrichment: { preselect, wikidataId: "Q312051" },
+    });
+    currentRows = [row];
+    renderWizard();
+
+    fireEvent.click(screen.getByRole("button", { name: "Add as New Player anyway" }));
+
+    await waitFor(() => {
+      expect(mockRecordDecision).toHaveBeenCalledWith(
+        expect.objectContaining({ reviewRowId: row._id, action: "create" }),
+      );
+    });
+    expect(mockRequestPlayerLookup).not.toHaveBeenCalled();
+  });
+
+  it("the exact-match 'anyway' still creates, never opens Create new", async () => {
+    const row = makeRow({ name: "Mike Trout" });
+    currentRows = [row];
+    currentNearMatches = [{ _id: "p9", name: "Mike Trout", confidence: "exact" }];
+    renderWizard();
+
+    fireEvent.click(screen.getByRole("button", { name: "Add as New Player anyway" }));
+
+    await waitFor(() => {
+      expect(mockRecordDecision).toHaveBeenCalledWith(
+        expect.objectContaining({ reviewRowId: row._id, action: "create" }),
+      );
+    });
+    expect(mockRequestPlayerLookup).not.toHaveBeenCalled();
+  });
+
+  it("offers no hand-typed career teams until 'anyway' requests the lookup", async () => {
+    currentRows = [suggestedRow()];
+    renderWizard();
+
+    expect(screen.queryByLabelText("Career team name")).toBeNull();
+    expect(screen.queryByText(/Add career team history manually/)).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Add as New Player anyway" }));
+
+    await waitFor(() => expect(screen.getByLabelText("Career team name")).toBeTruthy());
+  });
+
+  it("offers no Decide team on a preselect step still waiting for its lookup", () => {
+    // The server refuses typed staging there, so a control that stages one
+    // would only fail. The same chips with the lookup run offer it.
+    const careerTeams = [{ name: "Quebec Remparts", fromYear: 1969, toYear: 1971 }];
+    currentResolvedNames = [{ name: "Quebec Remparts" }];
+    currentRows = [makeRow({ name: "Mike Shinoda", enrichment: { preselect, careerTeams } })];
+    const { unmount } = renderWizard();
+
+    expect(screen.queryAllByRole("button", { name: "Decide team Quebec Remparts" })).toHaveLength(0);
+    unmount();
+
+    currentRows = [
+      makeRow({
+        name: "Mike Shinoda",
+        enrichment: { preselect, careerTeams, wikidataId: "Q312051" },
+      }),
+    ];
+    renderWizard();
+    expect(
+      screen.getAllByRole("button", { name: "Decide team Quebec Remparts" }).length,
+    ).toBeGreaterThan(0);
+  });
+
+  it("brings the suggestion back when the operator changes the decision", async () => {
+    // Change clears the Create new flag, so the reopened row is the
+    // preselect step again rather than the plain New Player step.
+    const row = suggestedRow();
+    const other = makeRow({ name: "Chester Bennington" });
+    currentRows = [row, other];
+    const { rerender } = renderWizard();
+
+    fireEvent.click(screen.getByRole("button", { name: "Add as New Player anyway" }));
+    await waitFor(() => expect(mockRequestPlayerLookup).toHaveBeenCalled());
+    expect(screen.getByRole("button", { name: "Add as New Player" })).toBeTruthy();
+
+    // The row is decided under the wizard (a bulk add, say), which leaves
+    // this session's Create new flag standing: only Change clears it.
+    currentRows = [{ ...row, decision: { action: "create" } }, other];
+    rerenderWizard(rerender);
+    fireEvent.click(screen.getByRole("button", { name: "Change decision for Mike Shinoda" }));
+    await waitFor(() => expect(mockClearDecision).toHaveBeenCalled());
+
+    currentRows = [row, other];
+    rerenderWizard(rerender);
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "Link to Mike Shinoda (Non Sport)" }),
+      ).toBeTruthy(),
+    );
+  });
+
+  it("gives way to a live exact match in the row's own sport", () => {
+    currentRows = [suggestedRow()];
+    currentNearMatches = [{ _id: "p-local", name: "Mike Shinoda", confidence: "exact" }];
+    renderWizard();
+
+    expect(screen.getByRole("button", { name: "Link to Mike Shinoda" })).toBeTruthy();
+    expect(
+      screen.queryByRole("button", { name: "Link to Mike Shinoda (Non Sport)" }),
+    ).toBeNull();
+  });
+
+  it("gives way to the pick step, whose rows name a candidate's other sport", () => {
+    currentRows = [
+      makeRow({
+        name: "Mike Shinoda",
+        setSportId: "selopt-sport-1" as unknown as Id<"selectorOptions">,
+        setSportValue: "Baseball",
+        enrichment: {
+          preselect,
+          existingCandidates: [
+            {
+              playerId: "p-shinoda",
+              name: "Mike Shinoda",
+              careerSummary: "",
+              sportValue: "Non Sport",
+            },
+            { playerId: "p-local", name: "Mike Shinoda", careerSummary: "", birthYear: 1990 },
+          ],
+        },
+      }),
+    ];
+    renderWizard();
+
+    expect(screen.getByRole("heading", { name: "Which Mike Shinoda is this?" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Link to Mike Shinoda, Non Sport" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Link to Mike Shinoda, born 1990" })).toBeTruthy();
+    expect(
+      screen.queryByRole("button", { name: "Link to Mike Shinoda (Non Sport)" }),
+    ).toBeNull();
+  });
+
+  it("S3: the Link is described by the line that says where the suggestion came from", () => {
+    currentRows = [suggestedRow()];
+    renderWizard();
+
+    const link = screen.getByRole("button", { name: "Link to Mike Shinoda (Non Sport)" });
+    const id = link.getAttribute("aria-describedby");
+    expect(id).toBeTruthy();
+    expect(document.getElementById(id!)?.textContent).toBe(
+      "We've only got one Mike Shinoda (Non Sport) on file. Same one?",
+    );
+  });
+
+  it("N2: shows the suggestion but holds it until the same-name check has answered", async () => {
+    const row = suggestedRow();
+    currentRows = [row];
+    currentNearMatches = undefined;
+    const { rerender } = renderWizard();
+
+    // No "Add as New Player" first paint to flip from…
+    expect(screen.queryByRole("button", { name: "Add as New Player" })).toBeNull();
+    const held = screen.getByRole("button", { name: "Link to Mike Shinoda (Non Sport)" });
+    expect(held.getAttribute("aria-disabled")).toBe("true");
+    fireEvent.click(held);
+    fireEvent.click(screen.getByRole("button", { name: "Add as New Player anyway" }));
+    expect(mockRecordDecision).not.toHaveBeenCalled();
+    expect(mockRequestPlayerLookup).not.toHaveBeenCalled();
+
+    // …and once it answers with nothing better, the same button acts.
+    currentNearMatches = [];
+    rerenderWizard(rerender);
+    const link = screen.getByRole("button", { name: "Link to Mike Shinoda (Non Sport)" });
+    expect(link.getAttribute("aria-disabled")).toBeNull();
+    fireEvent.click(link);
+    await waitFor(() =>
+      expect(mockRecordDecision).toHaveBeenCalledWith(
+        expect.objectContaining({ reviewRowId: row._id, linkedPlayerId: "p-shinoda" }),
+      ),
+    );
+  });
+
+  it("N3: the Link may shrink and wrap, so a long name cannot spill out at 320px", () => {
+    currentRows = [suggestedRow()];
+    renderWizard();
+
+    const link = screen.getByRole("button", { name: "Link to Mike Shinoda (Non Sport)" });
+    for (const cls of ["h-auto", "min-h-8", "max-w-full", "shrink"]) {
+      expect(link.classList.contains(cls)).toBe(true);
+    }
+  });
+
+  describe("S1: the New Player step 'anyway' opens", () => {
+    const openNewPlayerStep = () => {
+      fireEvent.click(screen.getByRole("button", { name: "Add as New Player anyway" }));
+    };
+
+    it("offers Back to the suggestion, which returns to the Link, focuses it and says so", async () => {
+      currentRows = [suggestedRow()];
+      renderWizard();
+      openNewPlayerStep();
+
+      expect(screen.queryByRole("button", { name: "Back to previous decision" })).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: "Back to the suggestion" }));
+
+      const link = screen.getByRole("button", { name: "Link to Mike Shinoda (Non Sport)" });
+      expect(footerStatusText()).toBe("Back at the suggestion.");
+      expect(mockRecordDecision).not.toHaveBeenCalled();
+      await waitFor(() => expect(document.activeElement).toBe(link));
+    });
+
+    it("Escape goes back to the suggestion without a discard confirm", () => {
+      currentRows = [makeRow({ name: "Done", decision: { action: "create" } }), suggestedRow()];
+      renderWizard();
+      openNewPlayerStep();
+
+      fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+
+      expect(screen.getByRole("button", { name: "Link to Mike Shinoda (Non Sport)" })).toBeTruthy();
+      expect(screen.queryByText("Discard 1 decision?")).toBeNull();
+      expect(mockCancelBatch).not.toHaveBeenCalled();
+    });
+
+    it("announces the heading as the New Player step", () => {
+      currentRows = [suggestedRow()];
+      renderWizard();
+      expect(screen.queryByRole("heading", { name: "New Player: Mike Shinoda" })).toBeNull();
+      openNewPlayerStep();
+      expect(screen.getByRole("heading", { name: "New Player: Mike Shinoda" })).toBeTruthy();
+    });
+
+    it("says it is still looking up once the requested lookup puts the row back to pending", () => {
+      const row = suggestedRow();
+      currentRows = [row];
+      const { rerender } = renderWizard();
+      openNewPlayerStep();
+
+      currentRows = [{ ...row, status: "pending" }];
+      rerenderWizard(rerender);
+      expect(
+        screen.getByText("Still looking up details. Add it now, or wait and they'll fill in."),
+      ).toBeTruthy();
+    });
+  });
+
+  it("never turns a team step into a player link", () => {
+    currentRows = [makeRow({ kind: "team", name: "Linkin Park", enrichment: { preselect } })];
+    renderWizard();
+
+    expect(screen.getByRole("button", { name: "Add as New Team" })).toBeTruthy();
+    expect(
+      screen.queryByRole("button", { name: "Link to Mike Shinoda (Non Sport)" }),
+    ).toBeNull();
   });
 });

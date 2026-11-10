@@ -50,6 +50,7 @@ import { api, internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { QueryCtx } from "./_generated/server";
 import { requireAdmin } from "./auth";
+import { stripNbCardNumberPrefix } from "./cardNumberPrefix";
 import { variantTypeKind } from "./variantRole";
 import {
   MAX_INSERT_CARDS_FOR_BUILD,
@@ -140,24 +141,6 @@ type BaseSignature =
   | {
       status: "notParallelType" | "noBase" | "manyBases" | "noCards" | "tooManyCards";
     };
-
-/**
- * A card number with the NB chain's `cardNumberPrefix` taken off the front:
- * the predicate `parallelCardLink`'s `stripPrefix` uses (trimmed,
- * case-insensitive, never down to nothing), but the case of what remains is
- * kept, since the client also shows it.
- */
-export function stripNbCardNumberPrefix(
-  cardNumber: string,
-  prefix: string | undefined,
-): string {
-  const n = cardNumber.trim();
-  const p = prefix?.trim();
-  if (!p) return n;
-  return n.toUpperCase().startsWith(p.toUpperCase()) && n.length > p.length
-    ? n.slice(p.length)
-    : n;
-}
 
 /** The deepest `metadata.cardNumberPrefix` on `row`'s chain, root to row. */
 async function deepestCardNumberPrefix(

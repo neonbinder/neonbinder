@@ -625,18 +625,20 @@ async function recordOf(
  *
  * Answers `ignored: "notListing"` (and writes nothing) when the collector
  * has no saved sign-in on a platform NB has not paused. A press while the
- * variant's run is under way is dropped on that platform: a change landing
- * mid-run keeps its outbox row for a later press or the cron. A press within
- * `RESYNC_THROTTLE_MS` of the last press queues nothing and is not stamped, so
- * it asks for no new full read. It kicks the drain and counts as taken only
- * when the variant has an outbox row waiting and either no drain finished in
- * the last `RESYNC_THROTTLE_MS` or a row on the platform changed after that
- * drain, because such a change (a box flipped to in-person) would otherwise
- * wait for the cron. Otherwise it is dropped: every waiting row was already
- * tried, and a failed run's rows wait out the minute so presses can't re-run
- * them back to back. `queued` is true when at least one platform took the press
- * (queued work, or kicked a drain for a change already queued);
- * `ignored: "throttled"` only when every listing platform dropped it.
+ * variant's run is under way is taken: that run claimed before the press, so
+ * what it reads is fixed, and the queued cards and the stamp send the set round
+ * again in full once it releases. A press within `RESYNC_THROTTLE_MS` of the
+ * last press queues nothing and is not stamped, so it asks for no new full read.
+ * It kicks the drain and counts as taken only when the variant has an outbox row
+ * waiting and either no drain finished in the last `RESYNC_THROTTLE_MS` or a row
+ * on the platform changed after that drain, because such a change (a box flipped
+ * to in-person) would otherwise wait for the cron. Otherwise it is dropped: every
+ * waiting row was already tried, and a failed run's rows wait out the minute so
+ * presses can't re-run them back to back. A first press on a never-synced variant
+ * has no record to stamp, so a second press within the minute can run one more
+ * full read, after which the stamp holds. `queued` is true when at least one
+ * platform took the press (queued work, or kicked a drain for a change already
+ * queued); `ignored: "throttled"` only when every listing platform dropped it.
  * `queued: false` with no reason: nothing to sync here (the set has no card any
  * listing platform can list, or the collector holds no copy of it and never
  * synced it).
@@ -688,8 +690,6 @@ async function syncOnePlatform(
   const now = Date.now();
   const record = await recordOf(ctx, ownerId, variantId, platform);
   if (record) {
-    const running = record.status === "running" && (record.leaseExpiresAt ?? 0) > now;
-    if (running) return "throttled";
     const recent = record.resyncRequestedAt !== undefined && now - record.resyncRequestedAt < RESYNC_THROTTLE_MS;
     if (recent) {
       // A change queued since the last run (a box flipped to in-person) has no
@@ -718,7 +718,8 @@ async function syncOnePlatform(
       return "queued";
     }
   } else {
-    // Never run yet (its first run reads every condition anyway): no record
+    // Never run yet (its first eBay run reads every card anyway; a BSC run reads
+    // the conditions in use plus `conditionsPushed`, NEO-475): no record
     // to stamp. A change queued for the variant in the last minute (a box
     // write, or a press) is not queued again, but the press still runs the
     // drain that syncs it: taken, not dropped.
@@ -742,6 +743,11 @@ async function syncOnePlatform(
   if (written === 0 && (record !== null || holdsCopy)) written = await wakeVariant(ctx, ownerId, platform, variantId);
   if (written === 0) return "nothing";
   if (record) await ctx.db.patch(record._id, { resyncRequestedAt: now, lastUpdated: now });
+  // A run under way claimed before this press, so it keeps what it reads. The
+  // re-queued rows outlive its finish (their `seq` moved), the kick asks it to
+  // run again on release, and the stamp is later than its `lastRunAt`, so that
+  // next run reads the set in full on eBay (every card). On BSC every run reads
+  // the conditions in use plus `conditionsPushed`, press or not (NEO-475).
   await kickListingDrain(ctx, ownerId, platform);
   return "queued";
 }
@@ -956,7 +962,11 @@ async function platformStatus(
   // Running: the owner's drain lease, and the set its run holds now (a
   // running record with a live lease; most recent first).
   const runningRecord = records.find(live) ?? null;
-  const drainLive = state?.drainLeaseToken !== undefined && (state.drainLeaseExpiresAt ?? 0) > now;
+  // A dead run's lease stands through its grace, but nothing is running (NEO-433).
+  const drainLive =
+    state?.drainLeaseToken !== undefined &&
+    (state.drainLeaseExpiresAt ?? 0) > now &&
+    state.drainRunDeadAt === undefined;
   let running: PlatformStatus["running"] = null;
   if (drainLive || runningRecord) {
     const startedAt = drainLive

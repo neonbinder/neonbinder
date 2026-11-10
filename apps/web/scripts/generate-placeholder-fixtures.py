@@ -55,14 +55,15 @@ the card sits in the frame differs:
 
 All three modes are VALIDATED against the real FAST decision without a network,
 from services/preprocess with its venv:
-`app.cropper.tiered.fast_tiered_crop(bytes)` returns the input untouched for an
-identity accept and `None` otherwise; `app.cropper.quad.quad_crop(bytes).reason`
-is "ok" for a quad crop and names the check that declined otherwise. Expected:
-inset -> tiered None, quad "ok"; corner -> tiered None, quad "frame_edge";
-full-bleed -> tiered accept (quad never runs). Re-run both over every output
-directory after any change here, AND after any change to quad.py or tiered.py's
-fast path: a FAST stage that starts settling the cornered set silently stops
-the escalation flow from escalating (NEO-320 did exactly that to the inset set).
+`python scripts/eval_frame_content.py <output directory>` runs the FAST order
+(classical identity, quad crop, frame-content identity) and prints each image's
+final stage. Expected: inset -> `quad`; corner -> `escalate` with quad
+"frame_edge" (the NEO-399 frame-content stage is never consulted after that
+decline); full-bleed -> `frame` (the classical identity; quad never runs).
+Re-run it over every output directory after any change here, AND after any
+change to quad.py, frame_content.py or tiered.py's fast path: a FAST stage that
+starts settling the cornered set silently stops the escalation flow from
+escalating (NEO-320 did exactly that to the inset set).
 Do not regenerate a set to "improve" it — each flow depends on those bytes.
 
 --------------------------------------------------------------------------

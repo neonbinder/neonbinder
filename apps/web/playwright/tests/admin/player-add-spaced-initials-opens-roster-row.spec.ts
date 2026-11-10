@@ -46,7 +46,7 @@ test(
     await expect(
       page.getByRole("button", { name: "Create player J.T. Realmuto anyway" }),
     ).toBeVisible();
-    const open = page.getByRole("button", { name: /^Open J\. T\. Realmuto/ });
+    const open = page.getByRole("button", { name: "Open J. T. Realmuto", exact: true });
     await expect(open).toBeVisible();
     await expect(page.getByRole("button", { name: "Create player J.T. Realmuto", exact: true })).toBeHidden();
     await expectAccessible(page, { label: "Player Management, add form with an existing match" });

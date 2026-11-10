@@ -21,7 +21,13 @@ test(
     await expectAccessible(page, { label: "Placeholder upload, escalating" });
 
     // More escalations than the heavy cap still ALL finish: every photo is read.
-    await expect(page.getByText("All 6 photos read.")).toBeVisible({ timeout: 600_000 });
+    // "Finish the batch" shows once all six have settled, read or failed, so a
+    // failed photo stops the spec here on the headline that names it (NEO-440)
+    // instead of running out the 600 s.
+    await expect(page.getByRole("button", { name: "Finish the batch" })).toBeVisible({
+      timeout: 600_000,
+    });
+    await expect(page.getByText("All 6 photos read.")).toBeVisible();
 
     await page.getByRole("button", { name: "Finish the batch" }).click();
     await expect(page.getByText("Finish this batch?")).toBeVisible();

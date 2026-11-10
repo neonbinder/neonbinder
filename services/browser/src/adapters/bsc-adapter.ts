@@ -84,6 +84,13 @@ const BSC_UA =
 // cache entry that 401s, costing a wasted round trip on every call.
 const TOKEN_TTL_MS = 60 * 60 * 1000;
 
+// NEO-445: BSC's profile call usually answers in a couple of seconds and can
+// stall for 30s before a 503. One attempt gets 5s, headers and body together, and
+// a failed attempt is retried once at once. Worst case about 10s on any path. On
+// dev about 1.5% of valid answers take longer than one attempt allows (NEO-443).
+const BSC_PROFILE_ATTEMPT_TIMEOUT_MS = 5_000;
+const BSC_PROFILE_MAX_ATTEMPTS = 2;
+
 /**
  * The fields we read off the B2C token endpoint, for both the
  * authorization_code and refresh_token grants.
@@ -259,9 +266,17 @@ interface B2CSettings {
   api?: string;
 }
 
+export interface BSCAdapterOptions {
+  /** Limit on one profile attempt, headers and body. Default 5s. */
+  profileAttemptTimeoutMs?: number;
+}
+
 export class BSCAdapter extends BaseAdapter {
-  constructor(page?: Page) {
+  private readonly profileAttemptTimeoutMs: number;
+
+  constructor(page?: Page, opts: BSCAdapterOptions = {}) {
     super(page, "BuySportsCards (BSC)");
+    this.profileAttemptTimeoutMs = opts.profileAttemptTimeoutMs ?? BSC_PROFILE_ATTEMPT_TIMEOUT_MS;
   }
 
   getHomeUrl(): string {
@@ -271,24 +286,79 @@ export class BSCAdapter extends BaseAdapter {
   /**
    * Fetch the authenticated BSC user's marketplace profile. Used both to
    * validate cached tokens and to capture the user's sellerId at login.
-   * Returns null on any non-OK response so callers can choose between
-   * re-authentication and graceful degradation.
+   *
+   * NEO-445: never throws. A timeout, a throw or a 5xx is retried once, at
+   * once; a 4xx is the token being refused and is not. Null means no usable
+   * answer, and each caller decides what that means: on a cached token,
+   * "couldn't validate it"; on a just-issued one, success without the optional
+   * seller fields.
+   *
+   * Callers holding a just-issued token must persist it BEFORE calling this.
+   * On the refresh path the presented token is already dead, so the rotated
+   * one must be stored whatever BSC does here.
    */
   private async fetchSellerProfile(token: string): Promise<{ storeName?: string; sellerId?: string } | null> {
-    const response = await fetch("https://api-prod.buysportscards.com/marketplace/user/profile", {
-      headers: { "Authorization": `Bearer ${token}` },
-    });
-    if (!response.ok) return null;
-    const profile = (await response.json()) as BscProfileResponse;
-    const sellerProfile = profile?.sellerProfile;
-    if (!sellerProfile) {
-      console.warn(`[BSC Adapter] /marketplace/user/profile returned no sellerProfile. Top-level keys:`, Object.keys(profile ?? {}));
-      return {};
+    for (let attempt = 1; attempt <= BSC_PROFILE_MAX_ATTEMPTS; attempt++) {
+      const outcome = await this.attemptSellerProfile(token, attempt);
+      if (outcome !== "retry") return outcome;
     }
-    return {
-      storeName: sellerProfile.sellerStoreName,
-      sellerId: sellerProfile.sellerId,
-    };
+    return null;
+  }
+
+  /**
+   * One profile attempt under profileAttemptTimeoutMs, headers and body, which
+   * logs one line with its status or how it failed.
+   *
+   * SECURITY: these lines never carry the token, the Authorization header, the
+   * response body or a seller id. summarizeFetchError because a fetch error
+   * can quote the Authorization header, which is the token.
+   */
+  private async attemptSellerProfile(
+    token: string,
+    attempt: number,
+  ): Promise<{ storeName?: string; sellerId?: string } | null | "retry"> {
+    const label = `[BSC Adapter] /marketplace/user/profile attempt ${attempt}/${BSC_PROFILE_MAX_ATTEMPTS}`;
+    const startedAt = Date.now();
+    const signal = AbortSignal.timeout(this.profileAttemptTimeoutMs);
+    let status: number | undefined;
+    try {
+      const response = await fetch("https://api-prod.buysportscards.com/marketplace/user/profile", {
+        headers: { "Authorization": `Bearer ${token}` },
+        signal,
+      });
+      status = response.status;
+      if (!response.ok) {
+        console.warn(`${label} answered ${status} in ${Date.now() - startedAt}ms`);
+        return status >= 500 ? "retry" : null;
+      }
+      // Logged after the body is read, so a stalled body logs one timed-out
+      // line rather than an "answered 200" followed by it.
+      const profile = (await response.json()) as BscProfileResponse;
+      console.log(`${label} answered ${status} in ${Date.now() - startedAt}ms`);
+      const sellerProfile = profile?.sellerProfile;
+      if (!sellerProfile) {
+        console.warn(`[BSC Adapter] /marketplace/user/profile returned no sellerProfile. Top-level keys:`, Object.keys(profile ?? {}));
+        return {};
+      }
+      return {
+        storeName: sellerProfile.sellerStoreName,
+        sellerId: sellerProfile.sellerId,
+      };
+    } catch (error) {
+      const elapsedMs = Date.now() - startedAt;
+      if (signal.aborted) {
+        console.warn(
+          `${label} timed out: limit ${this.profileAttemptTimeoutMs}ms, elapsed ${elapsedMs}ms, ` +
+            (status === undefined ? "no response headers" : `status ${status}, body stalled`),
+        );
+      } else {
+        console.warn(
+          `${label} threw after ${elapsedMs}ms` +
+            `${status === undefined ? "" : `, status ${status}`}: ${summarizeFetchError(error)}`,
+        );
+      }
+      return "retry";
+    }
   }
 
   /**
@@ -979,24 +1049,17 @@ export class BSCAdapter extends BaseAdapter {
       credentials.expiresAt > Date.now()
     ) {
       console.log(`[BSC Adapter] Validating cached token for ${this.siteName}...`);
-      // NEO-278: a network throw here (DNS, timeout, ECONNRESET) must be
-      // treated the same as a non-OK response — "couldn't validate this
-      // token" — not allowed to propagate out of login() and skip the
-      // refresh/silent/password fallbacks below. Before this guard, a
-      // transient blip on THIS ONE request turned into a hard failure even
-      // though a live refresh token or SSO cookie could satisfy the login a
-      // moment later.
-      let profile: { storeName?: string; sellerId?: string } | null;
-      try {
-        profile = await this.fetchSellerProfile(credentials.token);
-      } catch (error) {
-        // summarizeFetchError: the Authorization header is the cached token.
-        console.warn(
-          `[BSC Adapter] Cached token validation request threw; treating as invalid:`,
-          summarizeFetchError(error),
-        );
-        profile = null;
-      }
+      // NEO-278: a network failure here (DNS, timeout, ECONNRESET) means the
+      // same as a non-OK answer, "couldn't validate this token", and must not
+      // skip the refresh/silent/password fallbacks below, which can satisfy
+      // the login a moment later.
+      //
+      // NEO-445: when both attempts fail, a token that may be perfectly valid
+      // goes to the refresh below, which rotates it and writes a Secret Manager
+      // version (NEO-115). Accepted, Jason's call 2026-11-05: BSC answers this
+      // in a couple of seconds or fails, and waiting longer spends the caller's
+      // budget on an answer that is not coming.
+      const profile = await this.fetchSellerProfile(credentials.token);
       if (profile) {
         // Log a 4-char prefix only — sellerId is a per-user BSC identifier
         // and full values in Cloud Logging would let log-readers correlate
@@ -1285,7 +1348,7 @@ export class BSCAdapter extends BaseAdapter {
   ): void {
     if (!profile) {
       console.warn(
-        `[BSC Adapter] ${context}: /marketplace/user/profile returned non-OK; storeName + sellerId omitted.`,
+        `[BSC Adapter] ${context}: no usable /marketplace/user/profile answer; storeName + sellerId omitted.`,
       );
       return;
     }

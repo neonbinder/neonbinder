@@ -70,10 +70,11 @@ test(
     await expect(counter).toBeVisible();
     await page.getByRole("button", { name: new RegExp(player) }).click();
     await page.getByRole("button", { name: "Remove sport Baseball" }).click();
-    // The refusal is the feature, not its count. The Venezuelan set's committing
-    // spec runs beside this one and, once he holds Baseball, can resolve one of
-    // its card names to him (support/recorded-names.ts), so a second card may
-    // link him. The exact count is the server's and the unit tests' to pin.
+    // The refusal is the feature, not its count. He is a real person from a
+    // recorded pool (support/recorded-names.ts): any committing checklist that
+    // carries his name and runs beside this one can link a second card to him
+    // once he holds Baseball (until NEO-475 the alias spec's Venezuelan set
+    // could). The exact count is the server's and the unit tests' to pin.
     await expect(
       page.getByText(new RegExp(`[1-9]\\d* cards? in Baseball sets still link to ${player}\\.`)),
     ).toBeVisible();

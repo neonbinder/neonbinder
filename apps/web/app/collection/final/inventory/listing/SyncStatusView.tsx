@@ -26,6 +26,7 @@ import {
   reauthLine,
   reauthLineReadOnly,
   GATHERING_DATA,
+  NOTHING_NEW_TO_SEND,
   STEP_STATE_WORD,
   lastStepsName,
   runStepsName,
@@ -324,28 +325,38 @@ const FOLD_ORDER: readonly SyncStepStatus[] = ["failed", "waiting", "working", "
  * to show just 'Gathering data' and then each of the steps that actually does
  * an update"; the full detail stays on the run going now):
  *
- * - Every read folds into one "Gathering data" line, where the first read
- *   stood. It failed if any read failed; otherwise it wears its least-finished
- *   read's state (done, on a finished row).
+ * - The compare with the boxes and every read fold into one "Gathering data"
+ *   line, where the first of them stood (so a run with nothing to do still
+ *   shows it). It failed if any of them failed; otherwise it wears its
+ *   least-finished one's state (done, on a finished row).
  * - The steps that change something stay, in run order, with their own
  *   labels: Upload photos, Send changes, and eBay's list, price, go live and
  *   take down.
  * - Check-backs are reads too, so they go, except one that failed: a
  *   failure never disappears from the row.
+ * - A clean finished run (`rowStatus` idle, every step done) that only gathered
+ *   says so with a second line, "Nothing new to send". A row in error or still
+ *   running never does, even with every step so far done.
  */
-export function foldedLines(steps: ReadonlyArray<SyncStep>, platform: ListingPlatform): LedgerLine[] {
+export function foldedLines(
+  steps: ReadonlyArray<SyncStep>,
+  platform: ListingPlatform,
+  rowStatus: SyncSetResult["status"] = "idle",
+): LedgerLine[] {
   const labels = stepLabels(steps, platform);
-  const reads = steps.filter((step) => step.kind === "read");
-  const gathered = FOLD_ORDER.find((status) => reads.some((step) => step.status === status)) ?? "done";
+  const gathering = steps.filter((step) => step.kind === "check" || step.kind === "read");
+  const gathered = FOLD_ORDER.find((status) => gathering.some((step) => step.status === status)) ?? "done";
   const lines: LedgerLine[] = [];
   steps.forEach((step, i) => {
-    if (step.kind === "read") {
-      if (step === reads[0]) lines.push({ label: GATHERING_DATA, status: gathered });
+    if (step.kind === "check" || step.kind === "read") {
+      if (step === gathering[0]) lines.push({ label: GATHERING_DATA, status: gathered });
       return;
     }
     if (step.kind === "confirm" && step.status !== "failed") return;
     lines.push({ label: labels[i], status: step.status });
   });
+  const onlyGathered = steps.length > 0 && gathering.length === steps.length && gathered === "done";
+  if (rowStatus === "idle" && onlyGathered) lines.push({ label: NOTHING_NEW_TO_SEND, status: "done" });
   return lines;
 }
 
@@ -601,7 +612,10 @@ export function setLine(set: SyncSetResult, platform: ListingPlatform): string {
   if (set.status === "running") return "Syncing now…";
   if (set.status === "error") {
     const when = set.lastRunAt ? ` ${whenSynced(set.lastRunAt)}` : "";
-    return `Hit a snag${when}: ${set.lastError ?? `${name} didn't answer`}. The next round tries again.`;
+    // NB's error sentences end in their own full stop; drop it before ours. An
+    // empty (or dots-only) error falls back like a missing one.
+    const why = (set.lastError ?? "").replace(/[.\s]+$/, "") || `${name} didn't answer`;
+    return `Hit a snag${when}: ${why}. The next round tries again.`;
   }
   if (set.lastSuccessAt) return `Synced ${whenSynced(set.lastSuccessAt)}.`;
   if (set.lastRunAt) return `Last ran ${whenSynced(set.lastRunAt)}.`;
@@ -674,7 +688,7 @@ function SetRow({
           <span className={set.status === "error" ? "text-neon-pink-text" : "text-ink-2"}>{setLine(set, platform)}</span>
         </p>
         {showSteps && set.steps && set.steps.length > 0 && (
-          <StepLedger lines={foldedLines(set.steps, platform)} name={lastStepsName(set.setLabel, platform)} inline />
+          <StepLedger lines={foldedLines(set.steps, platform, set.status)} name={lastStepsName(set.setLabel, platform)} inline />
         )}
         {counts && <p className="tabular-nums text-ink-3">{counts}</p>}
         {total > 0 && (
