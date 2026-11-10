@@ -444,6 +444,8 @@ function makeCredentialFetch(opts: {
       }
     | 404;
   puts: Array<{ url: string; method: string; body: unknown }>;
+  /** NEO-482: the seller id the browser's login answer carries (BSC logins only read it best-effort). */
+  sellerId?: string;
 }): FetchStub {
   return async (url, init) => {
     const u = String(url);
@@ -469,7 +471,11 @@ function makeCredentialFetch(opts: {
         method,
         body: init?.body ? JSON.parse(String(init.body)) : null,
       });
-      return jsonResponse({ success: true, message: "ok" });
+      return jsonResponse({
+        success: true,
+        message: "ok",
+        ...(opts.sellerId ? { sellerId: opts.sellerId } : {}),
+      });
     }
     // NEO-120: the EasyPost key store — the one credential write that survived
     // NEO-141, easypost-scoped. See services/browser/src/routes/easypost.ts.
@@ -482,54 +488,6 @@ function makeCredentialFetch(opts: {
       return jsonResponse({ success: true, message: "EasyPost key stored" });
     }
     throw new Error(`unexpected fetch: ${method} ${u}`);
-  };
-}
-
-/** The id a "no seller" profile answer still carries; it must never reach a result. */
-const NO_SELLER_PROFILE_ID = "bsc-user-482";
-
-/** BSC's own profile route, where the seller id is read (`fetchBscSellerId`). */
-const BSC_PROFILE_URL = "https://api-prod.buysportscards.com/marketplace/user/profile";
-
-/** The error `AbortSignal.timeout` raises, as `bscSeller.telemetry.test.ts` models it. */
-function timeoutError(): Error {
-  return Object.assign(new Error("The operation was aborted due to timeout"), { name: "TimeoutError" });
-}
-
-/**
- * NEO-482 — a listing-on BSC seed reads the seller id through a BSC seller
- * session: GET /credentials/<key>/token on the browser service (the session's
- * token), then BSC's own `marketplace/user/profile`. Both are answered here
- * and counted; everything else goes to `inner`. `profile` is BSC's answer:
- * a seller id, a profile naming none, or a stall (`AbortSignal.timeout`).
- */
-function withBscSellerProfile(
-  inner: FetchStub,
-  opts: {
-    profile: { sellerId: string } | "no_seller" | "timeout";
-    hits: { token: number; profile: number };
-    /** "unreachable": the token read throws, so the session cannot open. */
-    token?: "ok" | "unreachable";
-  },
-): FetchStub {
-  return async (url, init) => {
-    const u = String(url);
-    if (u.includes("/credentials/buysportscards-credentials-") && u.endsWith("/token")) {
-      opts.hits.token += 1;
-      if (opts.token === "unreachable") throw new TypeError("fetch failed");
-      return jsonResponse({ token: "bsc-session-token", expiresAt: Date.now() + 3_600_000 });
-    }
-    if (u === BSC_PROFILE_URL) {
-      opts.hits.profile += 1;
-      if (opts.profile === "timeout") throw timeoutError();
-      // "no_seller": BSC's profile carries an id of its own, but no seller id.
-      return jsonResponse(
-        opts.profile === "no_seller"
-          ? { id: NO_SELLER_PROFILE_ID, sellerProfile: {} }
-          : { sellerProfile: { sellerId: opts.profile.sellerId } },
-      );
-    }
-    return inner(url, init);
   };
 }
 
@@ -574,7 +532,7 @@ describe("markSiteNeedsReauth", () => {
         .withIndex("by_user", (q) => q.eq("userId", USER_A))
         .first();
       const sl = mine?.siteCredentials?.find((c) => c.site === "sportlots");
-      const bsc = mine?.siteCredentials?.find((c) => c.site === "buysportscards");
+      const bsc = mine?.siteCredentials?.find((c: { site: string }) => c.site === "buysportscards");
       expect(sl?.needsReauth).toBe(true);
       expect(typeof sl?.needsReauthSince).toBe("number");
       // hasCredentials survives: the account is still connected, the session
@@ -1083,13 +1041,8 @@ describe("seedMyTestCredentials — the listing test marker", () => {
     expect((await bscState(t))[0].testListingOff).toBe(true);
     vi.unstubAllGlobals();
     __resetContractCache();
-    // NEO-482: a listing-on BSC seed also reads and saves the seller id.
-    stubFetch(
-      withBscSellerProfile(makeCredentialFetch({ metadata, puts }), {
-        profile: { sellerId: "seller-482" },
-        hits: { token: 0, profile: 0 },
-      }),
-    );
+    // NEO-482: a listing-on BSC seed signs in until the login carries the seller id.
+    stubFetch(makeCredentialFetch({ metadata, puts, sellerId: "seller-482" }));
     expect((await seed(t, true)).seeded).toEqual([{ site: "buysportscards", stored: true }]);
     const [row] = await bscState(t);
     expect(row.testListingOff).toBeUndefined();
@@ -1136,17 +1089,20 @@ describe("seedMyTestCredentials — the listing test marker", () => {
 
 // NEO-482 — a listing-on BSC seed leaves the caller's BSC seller id saved, or
 // says why not. The E2E reset deletes the userProfiles row (and the id with
-// it), the login reads the id only best-effort, and the "already signed in"
-// path never signs in, so without this the first Sync's drain had to read the
-// id inside "Send changes". The seed reads it through a BSC seller session
-// (`openBscSellerSession` → `fetchBscSellerId`, 5 s per attempt, one retry)
-// only when listing is on and no id is stored.
+// it). The id arrives only through a password login: the browser service
+// reads BSC's profile inside the login (best effort, so a stalled read still
+// returns a session with no id) and `credentials.runSiteLogin` saves it. The
+// seed makes no profile read of its own. With no id saved it signs in again
+// (no logout), up to 5 sign-ins and none started after 58 s. With an id
+// already saved it adds nothing to the old behaviour.
 describe("seedMyTestCredentials — NEO-482 seller id", () => {
   beforeEach(() => {
     process.env.NEONBINDER_BROWSER_URL = "http://localhost:9999";
     __resetContractCache();
     process.env.DEV_BSC_USERNAME = BSC_USERNAME;
     process.env.DEV_BSC_PASSWORD = BSC_PASSWORD;
+    process.env.DEV_SPORTLOTS_USERNAME = SL_USERNAME;
+    process.env.DEV_SPORTLOTS_PASSWORD = SL_PASSWORD;
   });
   afterEach(() => {
     vi.unstubAllGlobals();
@@ -1154,38 +1110,76 @@ describe("seedMyTestCredentials — NEO-482 seller id", () => {
     delete process.env.NEONBINDER_BROWSER_URL;
     delete process.env.DEV_BSC_USERNAME;
     delete process.env.DEV_BSC_PASSWORD;
+    delete process.env.DEV_SPORTLOTS_USERNAME;
+    delete process.env.DEV_SPORTLOTS_PASSWORD;
     delete process.env.NEONBINDER_PAUSED_PLATFORMS;
   });
 
   /** The flag-only branch: the stored session is correct and renewable. */
   const SIGNED_IN = { username: BSC_USERNAME } as const;
-  const READ_FAILED =
-    "BuySportsCards seller id not saved: BuySportsCards left NeonBinder hanging with no answer.";
-  const NO_SELLER =
-    "BuySportsCards seller id not saved: BuySportsCards didn't say which seller account this is.";
+  const SELLER = "seller-482";
+  const stalled = (tries: number) =>
+    `BuySportsCards seller id not saved: the profile read stalled on every sign-in (${tries} tries).`;
 
-  const seed = (t: ReturnType<typeof convexTest>, listing?: boolean) =>
+  /** What one browser-service login answers. */
+  type LoginStep = { sellerId?: string } | { fail: string } | "http500" | "throw";
+
+  /**
+   * A browser-service stub that counts logins. Login N answers `steps[N]`
+   * (the last step repeats). `onLogin` runs before each answer, so a test can
+   * move the clock. Any call to a BSC host is recorded in `bscHosts`: the
+   * seed makes no marketplace profile read of its own.
+   */
+  function loginStub(opts: {
+    metadata: { username: string } | 404;
+    steps: LoginStep[];
+    onLogin?: (n: number) => void;
+  }) {
+    const state = { logins: 0, loginUrls: [] as string[], bscHosts: [] as string[], loginBodies: [] as unknown[] };
+    const fetchFn: FetchStub = async (url, init) => {
+      const u = String(url);
+      const method = init?.method ?? "GET";
+      if (u.includes("buysportscards.com")) {
+        state.bscHosts.push(u);
+        throw new Error(`unexpected BSC call: ${u}`);
+      }
+      if (u.includes("/metadata")) {
+        if (opts.metadata === 404) return jsonResponse({ error: "Credentials not found" }, 404);
+        return jsonResponse({ username: opts.metadata.username, hasToken: true, expiresAt: 1_900_000_000_000 });
+      }
+      if (method === "POST" && u.includes("/login/")) {
+        const n = state.logins;
+        state.logins += 1;
+        state.loginUrls.push(u);
+        state.loginBodies.push(init?.body ? JSON.parse(String(init.body)) : null);
+        opts.onLogin?.(n);
+        const step = opts.steps[Math.min(n, opts.steps.length - 1)];
+        if (step === "throw") throw new TypeError("fetch failed");
+        if (step === "http500") return jsonResponse({ error: "boom" }, 500);
+        if ("fail" in step) return jsonResponse({ success: false, message: step.fail });
+        return jsonResponse({ success: true, message: "ok", ...(step.sellerId ? { sellerId: step.sellerId } : {}) });
+      }
+      throw new Error(`unexpected fetch: ${method} ${u}`);
+    };
+    return { state, fetchFn };
+  }
+
+  const seed = (t: ReturnType<typeof convexTest>, listing?: boolean, sites = ["buysportscards"]) =>
     t.withIdentity({ subject: USER_A }).action(api.testing.seedMyTestCredentials, {
-      sites: ["buysportscards"],
+      sites,
       ...(listing !== undefined ? { listing } : {}),
     });
 
-  const sellerIdOf = (t: ReturnType<typeof convexTest>, userId = USER_A) =>
+  const sellerIdOf = (t: ReturnType<typeof convexTest>) =>
     t.run(async (ctx) => {
-      const profile = await ctx.db
-        .query("userProfiles")
-        .withIndex("by_user", (q) => q.eq("userId", userId))
-        .unique();
+      const profile = (await ctx.db.query("userProfiles").collect()).find((r) => r.userId === USER_A);
       return profile?.marketplaceAccountIds?.bscSellerId ?? null;
     });
 
   const bscCredentialEntry = (t: ReturnType<typeof convexTest>) =>
     t.run(async (ctx) => {
-      const profile = await ctx.db
-        .query("userProfiles")
-        .withIndex("by_user", (q) => q.eq("userId", USER_A))
-        .unique();
-      return profile?.siteCredentials?.find((c) => c.site === "buysportscards");
+      const profile = (await ctx.db.query("userProfiles").collect()).find((r) => r.userId === USER_A);
+      return profile?.siteCredentials?.find((c: { site: string }) => c.site === "buysportscards");
     });
 
   const preseedSellerId = (t: ReturnType<typeof convexTest>, accountId: string) =>
@@ -1195,254 +1189,314 @@ describe("seedMyTestCredentials — NEO-482 seller id", () => {
       accountId,
     });
 
-  /** The `bsc_seller_call` log lines for the seller profile read. */
-  const sellerProfileCalls = (spy: ReturnType<typeof vi.spyOn>) =>
-    spy.mock.calls
-      .map(([line]) => String(line))
-      .filter((line) => line.startsWith("{") && line.includes('"bsc_seller_call"'))
-      .map((line) => JSON.parse(line) as Record<string, unknown>)
-      .filter((o) => o.operation === "sellerProfile");
+  /** Spy on both console channels; `lines()` is everything written to either. */
+  function captureConsole() {
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const all = () => [...log.mock.calls, ...error.mock.calls].map((args) => args.map(String).join(" "));
+    const relogins = () =>
+      log.mock.calls
+        .map(([line]) => String(line))
+        .filter((line) => line.startsWith("{") && line.includes('"seed_bsc_relogin"'))
+        .map((line) => JSON.parse(line) as { msg: string; attempt: number; idSaved: boolean; elapsedMs: number });
+    return { all, relogins };
+  }
 
-  /**
-   * `modules` with the two userProfile writers tapped, so a test can see the
-   * order the seed calls them in. convex-test runs a registered function's
-   * `_handler` (validators come from `exportArgs`, kept as they are), so that
-   * is what is wrapped.
-   */
-  const tappedModules = (order: string[]) => ({
-    ...modules,
-    "./userProfile.ts": async () => {
-      const real = (await modules["./userProfile.ts"]()) as Record<string, unknown>;
-      const tap = (name: string) => {
-        const fn = real[name] as { _handler: (ctx: unknown, args: unknown) => unknown };
-        return Object.assign(() => undefined, fn, {
-          _handler: (ctx: unknown, args: unknown) => {
-            order.push(name);
-            return fn._handler(ctx, args);
-          },
-        });
-      };
-      return {
-        ...real,
-        setMarketplaceAccountIdInternal: tap("setMarketplaceAccountIdInternal"),
-        updateSiteCredentialStatus: tap("updateSiteCredentialStatus"),
-      };
-    },
-  });
+  /** Move `Date.now` forward by `ms` per call to `advance`, leaving real time otherwise. */
+  function skewClock() {
+    const realNow = Date.now.bind(Date);
+    let skew = 0;
+    vi.spyOn(Date, "now").mockImplementation(() => realNow() + skew);
+    return (ms: number) => {
+      skew += ms;
+    };
+  }
 
-  test("signed in already, listing on, no id stored: reads the profile once and saves the id before the status write", async () => {
-    const order: string[] = [];
-    const t = convexTest(schema, tappedModules(order));
-    const puts: Array<{ url: string; method: string; body: unknown }> = [];
-    const hits = { token: 0, profile: 0 };
-    stubFetch(
-      withBscSellerProfile(makeCredentialFetch({ metadata: SIGNED_IN, puts }), {
-        profile: { sellerId: "seller-482" },
-        hits,
-      }),
-    );
-    const log = vi.spyOn(console, "log");
+  test("the first login returns the seller id: saved, exactly one login, stored true", async () => {
+    const t = convexTest(schema, modules);
+    const { state, fetchFn } = loginStub({ metadata: 404, steps: [{ sellerId: SELLER }] });
+    stubFetch(fetchFn);
+    const con = captureConsole();
 
-    const result = await seed(t, true);
-    expect(result.seeded).toEqual([{ site: "buysportscards", stored: true }]);
-    // The id is saved, never echoed back in the result.
-    expect(JSON.stringify(result)).not.toContain("seller-482");
+    expect((await seed(t, true)).seeded).toEqual([{ site: "buysportscards", stored: true }]);
 
-    expect(puts).toHaveLength(0); // still the no-login path
-    expect(hits.profile).toBe(1);
-    expect(sellerProfileCalls(log)).toEqual([
-      expect.objectContaining({ operation: "sellerProfile", attempt: 1, outcome: "ok" }),
-    ]);
-    expect(await sellerIdOf(t)).toBe("seller-482");
-    // A listing-on status write starts listing, so the id must already be there.
-    expect(order).toEqual(["setMarketplaceAccountIdInternal", "updateSiteCredentialStatus"]);
+    expect(state.logins).toBe(1);
+    expect(await sellerIdOf(t)).toBe(SELLER);
+    expect(con.relogins()).toEqual([expect.objectContaining({ attempt: 1, idSaved: true })]);
     expect((await bscCredentialEntry(t))?.hasCredentials).toBe(true);
     await drainScheduled(t);
   });
 
-  test("BSC stalls on both attempts: stored false with the read-failed reason, two attempts, no id saved", async () => {
+  test("the first login has no id and the second has it: two logins, saved, the log shows false then true", async () => {
     const t = convexTest(schema, modules);
-    const puts: Array<{ url: string; method: string; body: unknown }> = [];
-    const hits = { token: 0, profile: 0 };
-    stubFetch(
-      withBscSellerProfile(makeCredentialFetch({ metadata: SIGNED_IN, puts }), { profile: "timeout", hits }),
-    );
-    const log = vi.spyOn(console, "log");
+    const { state, fetchFn } = loginStub({ metadata: 404, steps: [{}, { sellerId: SELLER }] });
+    stubFetch(fetchFn);
+    const con = captureConsole();
+
+    expect((await seed(t, true)).seeded).toEqual([{ site: "buysportscards", stored: true }]);
+
+    expect(state.logins).toBe(2);
+    expect(await sellerIdOf(t)).toBe(SELLER);
+    expect(con.relogins().map((l) => [l.msg, l.attempt, l.idSaved])).toEqual([
+      ["seed_bsc_relogin", 1, false],
+      ["seed_bsc_relogin", 2, true],
+    ]);
+    for (const line of con.relogins()) expect(line.elapsedMs).toBeGreaterThanOrEqual(0);
+    await drainScheduled(t);
+  });
+
+  test("every login has no id: exactly five logins, then stored false naming five tries, nothing saved", async () => {
+    const t = convexTest(schema, modules);
+    const { state, fetchFn } = loginStub({ metadata: 404, steps: [{}] });
+    stubFetch(fetchFn);
+    const con = captureConsole();
 
     expect((await seed(t, true)).seeded).toEqual([
-      { site: "buysportscards", stored: false, reason: READ_FAILED },
+      { site: "buysportscards", stored: false, reason: stalled(5) },
     ]);
 
-    expect(hits.profile).toBe(2);
-    expect(sellerProfileCalls(log).map((c) => [c.attempt, c.outcome])).toEqual([
-      [1, "timeout"],
-      [2, "timeout"],
+    expect(state.logins).toBe(5);
+    expect(con.relogins().map((l) => [l.attempt, l.idSaved])).toEqual([
+      [1, false],
+      [2, false],
+      [3, false],
+      [4, false],
+      [5, false],
     ]);
     expect(await sellerIdOf(t)).toBeNull();
-    // The session is closed on the failure path too: its one call summary,
-    // named for the seed, covering both attempts.
-    const summaries = log.mock.calls
-      .map(([line]) => String(line))
-      .filter((line) => line.startsWith("{") && line.includes('"bsc_call_summary"'))
-      .map((line) => JSON.parse(line) as Record<string, unknown>);
-    expect(summaries).toEqual([expect.objectContaining({ op: "seedSellerId", calls: 2, ok: 0 })]);
-    // The stored sign-in is still good; only the id is missing.
+    // The sign-in itself worked, so the credential stays flagged as stored.
     expect((await bscCredentialEntry(t))?.hasCredentials).toBe(true);
     await drainScheduled(t);
   });
 
-  test("the seller session cannot open (token read fails): stored false with the session's reason, no profile read", async () => {
-    // A throwing token read, not a 404: a "Credentials not found" 404 sends
-    // the token read down its self-heal branch, which removes the credential
-    // flag — a different path from the one under test.
+  test("the id turns up on the fifth (last) login: still stored true, five logins", async () => {
     const t = convexTest(schema, modules);
-    const puts: Array<{ url: string; method: string; body: unknown }> = [];
-    const hits = { token: 0, profile: 0 };
-    stubFetch(
-      withBscSellerProfile(makeCredentialFetch({ metadata: SIGNED_IN, puts }), {
-        profile: { sellerId: "seller-482" },
-        hits,
-        token: "unreachable",
-      }),
-    );
-
-    expect((await seed(t, true)).seeded).toEqual([
-      {
-        site: "buysportscards",
-        stored: false,
-        reason:
-          "BuySportsCards seller id not saved: NeonBinder couldn't sign in to BuySportsCards for you. Connect it again under Profile.",
-      },
-    ]);
-
-    expect(hits.token).toBeGreaterThan(0); // the session was attempted
-    expect(hits.profile).toBe(0);
-    expect(await sellerIdOf(t)).toBeNull();
-    expect((await bscCredentialEntry(t))?.hasCredentials).toBe(true);
-    await drainScheduled(t);
-  });
-
-  test("an id already stored: no session, no profile read, the id unchanged", async () => {
-    const t = convexTest(schema, modules);
-    await preseedSellerId(t, "seller-kept");
-    const puts: Array<{ url: string; method: string; body: unknown }> = [];
-    const hits = { token: 0, profile: 0 };
-    stubFetch(
-      withBscSellerProfile(makeCredentialFetch({ metadata: SIGNED_IN, puts }), {
-        profile: { sellerId: "seller-other" },
-        hits,
-      }),
-    );
+    const { state, fetchFn } = loginStub({ metadata: 404, steps: [{}, {}, {}, {}, { sellerId: SELLER }] });
+    stubFetch(fetchFn);
 
     expect((await seed(t, true)).seeded).toEqual([{ site: "buysportscards", stored: true }]);
 
-    expect(hits).toEqual({ token: 0, profile: 0 });
-    expect(await sellerIdOf(t)).toBe("seller-kept");
+    expect(state.logins).toBe(5);
+    expect(await sellerIdOf(t)).toBe(SELLER);
     await drainScheduled(t);
   });
 
-  test("the store branch, the login returned the seller id: no profile read, the login's id kept", async () => {
+  test("the 58 s window stops new sign-ins: fewer than five logins and the stalled reason", async () => {
     const t = convexTest(schema, modules);
-    const hits = { token: 0, profile: 0 };
-    const logins: string[] = [];
-    stubFetch(
-      withBscSellerProfile(
-        async (url, init) => {
-          const u = String(url);
-          const method = init?.method ?? "GET";
-          if (u.includes("/metadata")) return jsonResponse({ error: "Credentials not found" }, 404);
-          if (method === "POST" && u.includes("/login/bsc")) {
-            logins.push(u);
-            return jsonResponse({ success: true, message: "ok", sellerId: "seller-from-login" });
-          }
-          throw new Error(`unexpected fetch: ${method} ${u}`);
-        },
-        { profile: { sellerId: "seller-from-profile" }, hits },
-      ),
-    );
-
-    expect((await seed(t, true)).seeded).toEqual([{ site: "buysportscards", stored: true }]);
-
-    expect(logins).toHaveLength(1);
-    expect(hits).toEqual({ token: 0, profile: 0 });
-    expect(await sellerIdOf(t)).toBe("seller-from-login");
-    await drainScheduled(t);
-  });
-
-  test("the store branch, the login returned no seller id: the seed reads and saves it", async () => {
-    const t = convexTest(schema, modules);
-    const puts: Array<{ url: string; method: string; body: unknown }> = [];
-    const hits = { token: 0, profile: 0 };
-    stubFetch(
-      withBscSellerProfile(makeCredentialFetch({ metadata: 404, puts }), {
-        profile: { sellerId: "seller-482" },
-        hits,
-      }),
-    );
-
-    expect((await seed(t, true)).seeded).toEqual([{ site: "buysportscards", stored: true }]);
-
-    expect(puts).toHaveLength(1);
-    expect(puts[0].url).toContain("/login/bsc");
-    expect(hits.profile).toBe(1);
-    expect(await sellerIdOf(t)).toBe("seller-482");
-    await drainScheduled(t);
-  });
-
-  test("BSC answers with no seller id: stored false with the didn't-say reason, nothing saved", async () => {
-    const t = convexTest(schema, modules);
-    const puts: Array<{ url: string; method: string; body: unknown }> = [];
-    const hits = { token: 0, profile: 0 };
-    stubFetch(
-      withBscSellerProfile(makeCredentialFetch({ metadata: SIGNED_IN, puts }), { profile: "no_seller", hits }),
-    );
+    const advance = skewClock();
+    // Each login "takes" 30 s: after login 2 the seed is at 60 s.
+    const { state, fetchFn } = loginStub({ metadata: 404, steps: [{}], onLogin: () => advance(30_000) });
+    stubFetch(fetchFn);
+    const con = captureConsole();
 
     const result = await seed(t, true);
-    expect(result.seeded).toEqual([{ site: "buysportscards", stored: false, reason: NO_SELLER }]);
-    // Nothing from BSC's answer reaches the reason or the result.
-    expect(JSON.stringify(result)).not.toContain(NO_SELLER_PROFILE_ID);
 
-    // A profile naming no seller is an answer, not a failure: no retry.
-    expect(hits.profile).toBe(1);
-    expect(await sellerIdOf(t)).toBeNull();
+    expect(state.logins).toBe(2);
+    expect(result.seeded).toEqual([{ site: "buysportscards", stored: false, reason: stalled(2) }]);
+    expect(con.relogins().map((l) => l.attempt)).toEqual([1, 2]);
+    expect(con.relogins()[1].elapsedMs).toBeGreaterThanOrEqual(58_000);
     await drainScheduled(t);
   });
 
-  test("a failure reason never carries the session token", async () => {
+  test("a sign-in that finishes inside the window still allows the next one", async () => {
     const t = convexTest(schema, modules);
-    const puts: Array<{ url: string; method: string; body: unknown }> = [];
-    stubFetch(
-      withBscSellerProfile(makeCredentialFetch({ metadata: SIGNED_IN, puts }), {
-        profile: "timeout",
-        hits: { token: 0, profile: 0 },
-      }),
-    );
+    const advance = skewClock();
+    // 10 s each: 4 logins end at 40 s, so the fifth may start.
+    const { state, fetchFn } = loginStub({ metadata: 404, steps: [{}], onLogin: () => advance(10_000) });
+    stubFetch(fetchFn);
 
-    const reason = (await seed(t, true)).seeded[0].reason ?? "";
-    expect(reason).not.toContain("bsc-session-token");
-    expect(reason).not.toContain(BSC_USERNAME);
+    const result = await seed(t, true);
+
+    expect(state.logins).toBe(5);
+    expect(result.seeded[0].reason).toBe(stalled(5));
     await drainScheduled(t);
   });
 
   test.each([
-    ["the flag-only branch", SIGNED_IN],
-    ["the store branch", 404 as const],
-  ])("listing off (%s): no seller session, no profile read", async (_name, metadata) => {
+    ["a non-ok response", "http500" as const],
+    ["a browser success:false", { fail: "BSC refused the sign-in." } as const],
+    ["a thrown request", "throw" as const],
+  ])("%s on the first login stops at once: stored false, one login, no stalled reason", async (_name, step) => {
     const t = convexTest(schema, modules);
-    const puts: Array<{ url: string; method: string; body: unknown }> = [];
-    const hits = { token: 0, profile: 0 };
-    stubFetch(
-      withBscSellerProfile(makeCredentialFetch({ metadata, puts }), {
-        profile: { sellerId: "seller-482" },
-        hits,
-      }),
-    );
+    const { state, fetchFn } = loginStub({ metadata: 404, steps: [step] });
+    stubFetch(fetchFn);
+    const con = captureConsole();
 
-    expect((await seed(t)).seeded).toEqual([{ site: "buysportscards", stored: true }]);
-    expect((await seed(t, false)).seeded).toEqual([{ site: "buysportscards", stored: true }]);
+    const [entry] = (await seed(t, true)).seeded;
 
-    expect(hits).toEqual({ token: 0, profile: 0 });
+    expect(entry.stored).toBe(false);
+    expect(entry.reason).toBeTruthy();
+    expect(entry.reason).not.toContain("seller id not saved");
+    expect(state.logins).toBe(1);
+    expect(con.relogins()).toEqual([]); // the id was never checked
     expect(await sellerIdOf(t)).toBeNull();
+    await drainScheduled(t);
+  });
+
+  test("a success:false login's own message is the reason", async () => {
+    const t = convexTest(schema, modules);
+    const { fetchFn } = loginStub({ metadata: 404, steps: [{ fail: "BSC refused the sign-in." }] });
+    stubFetch(fetchFn);
+    // The same login, called straight, gives the message the seed must pass on.
+    const direct = await t.action(internal.credentials.storeTestCredentials, {
+      userId: USER_A,
+      site: "buysportscards",
+      username: BSC_USERNAME,
+      password: BSC_PASSWORD,
+      listing: true,
+    });
+    expect(direct.success).toBe(false);
+
+    __resetContractCache();
+    const [entry] = (await seed(t, true)).seeded;
+    expect(entry).toEqual({ site: "buysportscards", stored: false, reason: direct.message });
+    await drainScheduled(t);
+  });
+
+  test.each([
+    ["a non-ok response", "http500" as const],
+    ["a browser success:false", { fail: "BSC refused the sign-in." } as const],
+    ["a thrown request", "throw" as const],
+  ])("%s on a later login stops at once: stored false, no further logins", async (_name, step) => {
+    const t = convexTest(schema, modules);
+    const { state, fetchFn } = loginStub({ metadata: 404, steps: [{}, {}, step, {}, {}] });
+    stubFetch(fetchFn);
+    const con = captureConsole();
+
+    const [entry] = (await seed(t, true)).seeded;
+
+    expect(entry.stored).toBe(false);
+    expect(entry.reason).toBeTruthy();
+    expect(entry.reason).not.toContain("seller id not saved");
+    expect(state.logins).toBe(3);
+    expect(con.relogins().map((l) => l.attempt)).toEqual([1, 2]);
+    expect(await sellerIdOf(t)).toBeNull();
+    await drainScheduled(t);
+  });
+
+  test("flag-only branch, id already saved: no login at all, the flag is written, the id is kept", async () => {
+    const t = convexTest(schema, modules);
+    await preseedSellerId(t, "seller-kept");
+    const { state, fetchFn } = loginStub({ metadata: SIGNED_IN, steps: [{ sellerId: "seller-other" }] });
+    stubFetch(fetchFn);
+    const con = captureConsole();
+
+    expect((await seed(t, true)).seeded).toEqual([{ site: "buysportscards", stored: true }]);
+
+    expect(state.logins).toBe(0);
+    expect(con.relogins()).toEqual([]);
+    expect(await sellerIdOf(t)).toBe("seller-kept");
+    expect((await bscCredentialEntry(t))?.hasCredentials).toBe(true);
+    const [row] = await t.run(async (ctx) =>
+      (await ctx.db.query("marketplaceListingStates").collect()).filter((r) => r.ownerId === USER_A),
+    );
+    expect(row.testListingOff).toBeUndefined(); // listing: true clears the marker
+    await drainScheduled(t);
+  });
+
+  test("flag-only branch, no id: a fresh sign-in happens and saves the id", async () => {
+    const t = convexTest(schema, modules);
+    const { state, fetchFn } = loginStub({ metadata: SIGNED_IN, steps: [{ sellerId: SELLER }] });
+    stubFetch(fetchFn);
+
+    expect((await seed(t, true)).seeded).toEqual([{ site: "buysportscards", stored: true }]);
+
+    expect(state.logins).toBe(1);
+    expect(await sellerIdOf(t)).toBe(SELLER);
+    await drainScheduled(t);
+  });
+
+  test("store branch, id already saved: one login, no re-check loop, the id kept", async () => {
+    const t = convexTest(schema, modules);
+    await preseedSellerId(t, "seller-kept");
+    const { state, fetchFn } = loginStub({ metadata: 404, steps: [{}] });
+    stubFetch(fetchFn);
+    const con = captureConsole();
+
+    expect((await seed(t, true)).seeded).toEqual([{ site: "buysportscards", stored: true }]);
+
+    expect(state.logins).toBe(1);
+    expect(con.relogins()).toEqual([]);
+    expect(await sellerIdOf(t)).toBe("seller-kept");
+    await drainScheduled(t);
+  });
+
+  test.each([
+    ["success:false", { fail: "BSC refused the sign-in." } as const],
+    ["a thrown request", "throw" as const],
+  ])("store branch, id already saved, the login fails (%s): stored false with a reason, one login", async (_name, step) => {
+    const t = convexTest(schema, modules);
+    await preseedSellerId(t, "seller-kept");
+    const { state, fetchFn } = loginStub({ metadata: 404, steps: [step] });
+    stubFetch(fetchFn);
+
+    const [entry] = (await seed(t, true)).seeded;
+
+    expect(entry.stored).toBe(false);
+    expect(entry.reason).toBeTruthy();
+    expect(state.logins).toBe(1);
+    expect(await sellerIdOf(t)).toBe("seller-kept");
+    await drainScheduled(t);
+  });
+
+  test("store branch, id already saved, storeTestCredentials itself throws: stored false with the message", async () => {
+    // A throw out of the action (not a result): wrap its handler so the
+    // seed's runAction rejects.
+    const real = (await modules["./credentials.ts"]()) as Record<string, unknown>;
+    const t = convexTest(schema, {
+      ...modules,
+      "./credentials.ts": async () => ({
+        ...real,
+        storeTestCredentials: Object.assign(() => undefined, real.storeTestCredentials as object, {
+          _handler: async () => {
+            throw new Error("store exploded");
+          },
+        }),
+      }),
+    });
+    await preseedSellerId(t, "seller-kept");
+    stubFetch(async () => {
+      throw new Error("no fetch expected");
+    });
+
+    const [entry] = (await seed(t, true)).seeded;
+
+    expect(entry.stored).toBe(false);
+    expect(entry.reason).toContain("store exploded");
+    expect(await sellerIdOf(t)).toBe("seller-kept");
+  });
+
+  test.each([
+    ["listing off (flag-only)", SIGNED_IN, false],
+    ["listing off (store)", 404 as const, false],
+    ["listing unset (store)", 404 as const, undefined],
+  ])("%s: no re-login loop, no seller id read, even with a login that returns no id", async (_name, metadata, listing) => {
+    const t = convexTest(schema, modules);
+    const { state, fetchFn } = loginStub({ metadata, steps: [{}] });
+    stubFetch(fetchFn);
+    const con = captureConsole();
+
+    expect((await seed(t, listing)).seeded).toEqual([{ site: "buysportscards", stored: true }]);
+
+    expect(state.logins).toBe(metadata === 404 ? 1 : 0);
+    expect(con.relogins()).toEqual([]);
+    expect(state.bscHosts).toEqual([]);
+    expect(await sellerIdOf(t)).toBeNull();
+  });
+
+  test("SportLots with listing on: one login at most, no seller id loop", async () => {
+    const t = convexTest(schema, modules);
+    const { state, fetchFn } = loginStub({ metadata: 404, steps: [{}] });
+    stubFetch(fetchFn);
+    const con = captureConsole();
+
+    expect((await seed(t, true, ["sportlots"])).seeded).toEqual([{ site: "sportlots", stored: true }]);
+
+    expect(state.logins).toBe(1);
+    expect(state.loginUrls[0]).toContain("/login/sportlots");
+    expect(con.relogins()).toEqual([]);
+    expect(await sellerIdOf(t)).toBeNull();
+    await drainScheduled(t);
   });
 
   test("BSC paused: skipped first, no browser-service or BSC call, no id", async () => {
@@ -1453,10 +1507,80 @@ describe("seedMyTestCredentials — NEO-482 seller id", () => {
       fetchCalled = true;
       throw new Error(`unexpected fetch: ${init?.method ?? "GET"} ${String(url)}`);
     });
+    const con = captureConsole();
 
     expect((await seed(t, true)).seeded).toEqual([{ site: "buysportscards", stored: false, skipped: true }]);
 
     expect(fetchCalled).toBe(false);
+    expect(con.relogins()).toEqual([]);
+    expect(await sellerIdOf(t)).toBeNull();
+  });
+
+  test("the seed never calls a BSC host itself, on any path", async () => {
+    for (const [metadata, steps] of [
+      [404, [{}]],
+      [SIGNED_IN, [{}]],
+      [404, [{ sellerId: SELLER }]],
+    ] as const) {
+      const t = convexTest(schema, modules);
+      __resetContractCache();
+      const { state, fetchFn } = loginStub({ metadata, steps: [...steps] });
+      stubFetch(fetchFn);
+      await seed(t, true);
+      expect(state.bscHosts).toEqual([]);
+      await drainScheduled(t);
+    }
+  });
+
+  test("no reason or console line carries the seller id, the password or a token", async () => {
+    const SECRET_ID = "seller-secret-id-482";
+    const cases: Array<[string, { username: string } | 404, LoginStep[]]> = [
+      ["saved on login 1", 404, [{ sellerId: SECRET_ID }]],
+      ["saved on login 3", 404, [{}, {}, { sellerId: SECRET_ID }]],
+      ["exhausted", 404, [{}]],
+      ["login fails later", 404, [{}, "http500"]],
+      ["login throws", 404, ["throw"]],
+      ["success:false", SIGNED_IN, [{ fail: "BSC refused the sign-in." }]],
+    ];
+    for (const [, metadata, steps] of cases) {
+      const t = convexTest(schema, modules);
+      __resetContractCache();
+      const { fetchFn } = loginStub({ metadata, steps });
+      stubFetch(fetchFn);
+      const con = captureConsole();
+
+      const result = await seed(t, true);
+
+      const haystack = [JSON.stringify(result), ...con.all()].join("\n");
+      expect(haystack).not.toContain(SECRET_ID);
+      expect(haystack).not.toContain(BSC_PASSWORD);
+      expect(haystack).not.toMatch(/token/i);
+      await drainScheduled(t);
+      vi.restoreAllMocks();
+    }
+  });
+
+  test("the login request carries the dev password only in its body, and the seed result never does", async () => {
+    const t = convexTest(schema, modules);
+    const { state, fetchFn } = loginStub({ metadata: 404, steps: [{ sellerId: SELLER }] });
+    stubFetch(fetchFn);
+
+    const result = await seed(t, true);
+
+    expect(state.loginBodies).toEqual([expect.objectContaining({ username: BSC_USERNAME, password: BSC_PASSWORD })]);
+    expect(JSON.stringify(result)).not.toContain(BSC_PASSWORD);
+    await drainScheduled(t);
+  });
+
+  test("fails closed when TESTING_RESET_SECRET is unset: throws, no login, nothing saved", async () => {
+    const t = convexTest(schema, modules);
+    const { state, fetchFn } = loginStub({ metadata: 404, steps: [{ sellerId: SELLER }] });
+    stubFetch(fetchFn);
+    delete process.env.TESTING_RESET_SECRET;
+
+    await expect(seed(t, true)).rejects.toThrow(/not enabled/i);
+
+    expect(state.logins).toBe(0);
     expect(await sellerIdOf(t)).toBeNull();
   });
 });
@@ -1514,7 +1638,7 @@ describe("seedMyTestCredentials — label-scans fixture", () => {
     expect(row.trackingCode).toHaveLength(31);
     expect(row.trackingStatus).toBe("out_for_delivery");
     expect(row.publicTrackingUrl).toMatch(/^https:\/\//);
-    expect(row.scans?.map((scan) => scan.message)).toEqual([
+    expect(row.scans?.map((scan: { message: string }) => scan.message)).toEqual([
       "Origin Processing Cancellation of Postage",
       "Origin Primary Processing",
       "Destination MMP Processing",
