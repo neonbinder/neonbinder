@@ -3065,6 +3065,15 @@ export default defineSchema({
          * sync ever sets it.
          */
         addSetSport: v.optional(v.boolean()),
+        /**
+         * NEO-463, player-kind only — the operator confirmed a one-word name
+         * ("Walker") that is a fuller-named player's first or last name is a
+         * one-name player, not a piece of that player. Without it a plain
+         * create on such a name is refused by `recordDecision` and held back
+         * (no row written, the name reported unreviewed) by the commit. Stored
+         * only as `true`; absent says nothing was confirmed.
+         */
+        oneNamePlayer: v.optional(v.literal(true)),
       }),
       v.object({
         action: v.literal("link"),
