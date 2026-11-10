@@ -44,3 +44,4 @@
 - [Player match panels: fixture + stored text](player-match-panels-fixture-and-stored-text.md) — prove NearMatchPanel on /admin/players, not the wizard; careerSummary is stored text
 - [Teamless-rows checklist red = BSC lookup stall](checklist-team-spec-red-with-teamless-rows-is-a-bsc-lookup-stall.md) — every row teamless after Saved N = `bsc_card_team_lookup_failures` failed==requested; rerun, not the PR
 - [BSC cold sheet read is per job](bsc-cold-sheet-read-is-per-job-not-per-condition.md) — first read 503s at 30 s whatever the condition; fewer sheets needs a 503-only serial retry beside it
+- [Plan format for the coordinator](feedback_plan_format.md) — ~800 words, verified paths, smallest slice behind a seam
