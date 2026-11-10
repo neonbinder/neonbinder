@@ -19,7 +19,7 @@ from PIL import Image
 
 from app import cropper
 from app.classify import ClassifyResult
-from app.cropper import boxes, haiku_bbox, pil_trim, quad, sam, tiered
+from app.cropper import boxes, frame_content, haiku_bbox, pil_trim, quad, sam, tiered
 from app.cropper.boxes import CropBox
 from app.edit import EditCrop, PhotoEdit, opening_turns, render_edit
 from app.orient import OrientationResult
@@ -299,7 +299,7 @@ class TestCascadeCarriesTheBox:
         changes nothing."""
         _stub_gates(monkeypatch, rotation=90)
         monkeypatch.setattr(cropper.scan_meta, "is_card_sized_scan", lambda _b: None)
-        monkeypatch.setattr(tiered, "fast_tiered_crop", lambda _b: None)
+        monkeypatch.setattr(tiered, "fast_tiered_verdict", lambda _b: (None, "crop"))
         scene = _place(_canvas((1200, 1600)), _card_face(), _rect_corners(600, 800, 500, 700, 7))
         image = _jpeg(scene)
 
@@ -329,12 +329,33 @@ class TestCascadeCarriesTheBox:
     def test_a_classical_identity_carries_the_whole_frame(self, monkeypatch):
         _stub_gates(monkeypatch)
         monkeypatch.setattr(cropper.scan_meta, "is_card_sized_scan", lambda _b: None)
-        monkeypatch.setattr(tiered, "fast_tiered_crop", lambda b: b)
+        monkeypatch.setattr(tiered, "fast_tiered_verdict", lambda b: (b, "frame"))
         monkeypatch.setattr(cropper, "is_plausible_crop", _ok_validator)
 
         result = cropper.crop(image_bytes=_png((250, 350)), precropped_bytes=None)
 
         assert result.source == "tiered"
+        assert result.crop_box == boxes.full_frame(250, 350)
+
+    def test_a_frame_content_identity_carries_the_whole_frame(self, monkeypatch):
+        """NEO-399's stage returns the upload untouched, so its box is the
+        whole frame, like the other two identities."""
+        _stub_gates(monkeypatch)
+        monkeypatch.setattr(cropper.scan_meta, "is_card_sized_scan", lambda _b: None)
+        monkeypatch.setattr(tiered, "fast_tiered_verdict", lambda _b: (None, "weak"))
+        monkeypatch.setattr(quad, "quad_crop", lambda _b: quad.QuadResult(None, "no_quad"))
+        monkeypatch.setattr(
+            frame_content,
+            "frame_content_identity",
+            lambda _b, **_kw: frame_content.FrameContentResult(accepted=True, reason="ok"),
+        )
+        monkeypatch.setattr(cropper, "is_plausible_crop", _ok_validator)
+
+        result = cropper.crop(
+            image_bytes=_png((250, 350)), precropped_bytes=None, escalate_only=True
+        )
+
+        assert result.source == "frame_content"
         assert result.crop_box == boxes.full_frame(250, 350)
 
     def test_a_strategy_win_carries_the_box_it_recorded(self, monkeypatch):
@@ -401,7 +422,7 @@ def _only_strategy(monkeypatch, fn) -> None:
     """Make `tiered` the one strategy, running `fn`, after a declined fast path."""
     monkeypatch.setattr(cropper, "is_plausible_crop", _ok_validator)
     monkeypatch.setattr(cropper.scan_meta, "is_card_sized_scan", lambda _b: None)
-    monkeypatch.setattr(tiered, "fast_tiered_crop", lambda _b: None)
+    monkeypatch.setattr(tiered, "fast_tiered_verdict", lambda _b: (None, "crop"))
     monkeypatch.setattr(quad, "quad_crop", lambda _b: quad.QuadResult(None, "no_quad"))
     monkeypatch.setattr(tiered, "tiered_crop", fn)
     for name in ("pil_trim", "sam", "haiku_bbox"):

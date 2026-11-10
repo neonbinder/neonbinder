@@ -1,0 +1,18 @@
+# NEO-399: tight scan, no usable resolution; the quad declines it as
+# weak_edges rather than no_quad, and FAST settles it by frame content.
+# 2014 Score football, the intake E2E's 05-bell-front. The front prints no
+# card number (the "26" is his jersey), so none is asserted.
+orient:
+  rotation_degrees: 0
+
+classify:
+  side: front
+  player:
+    contains: Bell
+  team:
+    contains: Steelers
+
+crop:
+  category: tight-scan-no-dpi / white border, front
+  source: frame_content
+  identity: true

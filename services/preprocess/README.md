@@ -43,6 +43,12 @@ The resulting design:
   settles a card on a mat or scanner bed in well under a second instead of
   escalating to the HEAVY role's ~40 s BiRefNet pass. It decides on the pixels
   alone and declines on any doubt; see [FAST role: the quad crop](#fast-role-the-quad-crop-neo-320).
+- **Frame-content identity in the FAST role** (NEO-399) — a tight scan with
+  no trustworthy resolution, which the classical pass calls `weak` and the
+  quad stage finds no outline in, is settled from its own pixels (a uniform
+  printed border running to every edge, no card-edge line inside it) and
+  returned untouched, instead of escalating to a BiRefNet pass that returned
+  it untouched anyway; see [FAST role: frame-content identity](#fast-role-frame-content-identity-neo-399).
 - **Orient** — Cloud Vision `DOCUMENT_TEXT_DETECTION` rather than a bundled
   EasyOCR model, keeping ~300MB out of the container.
 - **Classify** — Anthropic Claude Haiku, key from Secret Manager, never baked
@@ -122,7 +128,7 @@ modes — the mode only affects which work the server performs.
 
 | Mode | `image` | `precropped` | What runs | When to use |
 |---|:-:|:-:|---|---|
-| **image-only** | yes | — | Full crop cascade (scan metadata → classical identity → quad → tiered → PIL trim → SAM → Haiku bbox → passthrough) on the original. | Callers with no client-side crop capability. |
+| **image-only** | yes | — | Full crop cascade (scan metadata → classical identity → quad → frame content → tiered → PIL trim → SAM → Haiku bbox → passthrough) on the original. | Callers with no client-side crop capability. |
 | **image + precropped** | yes | yes | Tries the crop first; if rejected, falls back to the full cascade on the original. | Callers that can guess a crop but want a server-side safety net. |
 | **crop-only** | — | yes | Validates the crop; on pass, runs orient + classify on it. On reject, returns 422 so the caller retries with the original. | Bandwidth-constrained callers whose client-side crops are usually good. Skips the 22 MB-per-image upload entirely when the crop passes. |
 
@@ -199,7 +205,8 @@ when `strategy` was supplied, 4 when it was omitted):
 ```
 
 The fast-path stages that run ahead of these in `/process` and
-`/process-entry` (scan metadata, classical identity, and the quad crop) are
+`/process-entry` (scan metadata, classical identity, the quad crop and the
+frame-content identity) are
 not `/crop` strategies; see [FAST role: the quad crop](#fast-role-the-quad-crop-neo-320).
 
 `image_b64` and `error` together describe three outcomes per strategy:
@@ -303,7 +310,7 @@ just want every alternative.
 
 ### FAST role: the quad crop (NEO-320)
 
-With `crop_quality="fast"` (the default) the cascade tries three cheap stages
+With `crop_quality="fast"` (the default) the cascade tries four cheap stages
 before anything that loads a model. The FAST service (`PREPROCESS_ROLE=fast`)
 runs only these and declines the rest to HEAVY with its baseline attached.
 
@@ -312,6 +319,7 @@ runs only these and declines the rest to HEAVY with its baseline attached.
 | 1 | `scan_meta.is_card_sized_scan` | `scan_metadata` | the input, untouched | a frame whose stated resolution measures one card |
 | 2 | `tiered.fast_tiered_crop` | `tiered` | the input, untouched | a card-aspect frame the card fills |
 | 3 | `quad.quad_crop` | `quad` | a new, perspective-corrected crop | one card on a mat or bed, tilted or keystoned |
+| 4 | `frame_content.frame_content_identity` | `frame_content` | the input, untouched | a tight scan with no stated resolution whose printed border runs to every edge (NEO-399) |
 
 The quad stage is an OpenCV take on a Core Image rectangle detector plus
 perspective correction: Canny and background-distance edge maps, convex
@@ -347,6 +355,41 @@ laptop over the evaluation set, most of it decoding the full-resolution
 frame). The constants in `app/cropper/quad.py` were tuned as a set against a
 private labelled set of real phone photos and scanner beds; re-run that
 evaluation rather than adjusting one alone.
+
+### FAST role: frame-content identity (NEO-399)
+
+A tightly auto-cropped scan that records no trustworthy resolution slips
+past all three stages above: `scan_meta` has nothing to read, the classical
+pass finds no background and calls the frame `weak`, and the quad stage finds
+no outline (`no_quad` / `weak_edges`). Such frames used to escalate, and
+HEAVY's ~40 s BiRefNet pass handed them back untouched. The fourth stage
+settles them from the pixels and, like the two identity stages, only ever
+returns the input untouched, through the same validator and text gate (the
+baseline orient is reused, so no extra Vision call).
+
+The cascade consults it only after a `weak` classical verdict and a `no_quad`
+or `weak_edges` quad decline (a quad that offered a crop is never
+second-guessed), and logs `fast: frame content accepted` or `fast: frame
+content declined reason=<check>`. Its own checks, in order:
+
+| Reason | What it refuses | How it is seen |
+|---|---|---|
+| `not_card_aspect` / `aspect` | a frame that is not one card | aspect more than 0.03 / 0.006 off 2.5:3.5 |
+| `ring` | artwork or bed texture at the frame edge | per side, the band 0.6%–1.5% of the short side in from the edge is not at least 95% the frame border's colour |
+| `no_content` | a blank frame, or a card far smaller than it | no row out to 25% differs from the border colour |
+| `edge_in_margin` | a card plus bed | a line parallel to a side between 0.6% and the first content row (a card edge or its shadow), or content that starts across the whole of every side at once (a cut edge on a wood or mat bed) |
+| `inset` | a deep same-colour margin | the first content row on any side is deeper than 6% |
+
+The outer 0.6% of each side is never judged: real tight scans carry a 3–7 px
+scanner sliver along their leading edge. **The bound on extra margin**: a
+visible card edge is declined anywhere beyond that 0.6% (~6 px at 400 dpi).
+An edge with no trace at all (a border the exact colour and texture of the
+bed) is not in the pixels; the 6% inset cap is all that bounds it, so a card
+whose printed border is shallow on every side could carry more than a few px.
+`scripts/eval_frame_content.py` runs the FAST order over any directory with
+resolution metadata stripped and prints every check's numbers; the constants
+were calibrated together with it against a private set of real tight scans
+and synthetic negatives. Re-run it rather than adjusting one alone.
 
 ### Client telemetry (for adopters of crop-only mode)
 
