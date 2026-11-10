@@ -674,6 +674,25 @@ describe("invariant 8 — a listing's team name holds the guess back", () => {
     expect(suggested(groups[1])).toEqual(["Cincinnati Reds"]);
   });
 
+  test("a team the published checklist settled is a data claim: nothing pre-filled over it (NEO-478)", () => {
+    const cards: PreviewCardForTeams[] = [
+      { ...card("1", ["Johnny Bench"]), teamLookup: "checklist" },
+      { ...card("2", ["Johnny Bench"]), teamLookup: "answered" },
+    ];
+    const groups = build(cards, [], {
+      "name:bench johnny": answered([REDS, "Cincinnati Reds"]),
+    });
+    // The claim is part of what a line shares, so the two do not collapse.
+    expect(groups).toHaveLength(2);
+    expect(groups[0].checklistClaim).toBe(true);
+    expect(groups[0].lookupFailed).toBe(false);
+    expect(groups[0].suggestion).toBeNull();
+    // The would-be pre-fill is one more choice, not an answer.
+    expect(labels(groups[0])).toContain("Cincinnati Reds");
+    expect(groups[1].checklistClaim).toBeUndefined();
+    expect(suggested(groups[1])).toEqual(["Cincinnati Reds"]);
+  });
+
   test("the listed string is never written: an answer only ever names a chip", () => {
     const rows = [unruledTeam("Bulls")];
     const groups = build([card("1", ["Johnny Bench"], ["Bulls"])], rows, {

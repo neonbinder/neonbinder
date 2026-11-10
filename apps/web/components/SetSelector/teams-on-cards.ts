@@ -12,6 +12,7 @@ import {
   type TeamPreferenceRank,
 } from "../../convex/lib/teamFill";
 import { teamFullName } from "../../lib/teams/team-name";
+import type { TeamLookupOutcome } from "./checklist-conflict";
 
 export { MAX_CARD_TEAMS };
 
@@ -115,9 +116,11 @@ export interface PreviewCardForTeams {
   /**
    * How the fetch-time team lookup for this card ended. "failed" means the
    * listing's answer never arrived, so no rule may guess a team for it
-   * (invariant 8): the operator picks.
+   * (invariant 8): the operator picks. NEO-478 "checklist" means the
+   * operator's published checklist settled the team — a data claim on the
+   * same terms: no rule may fill a different team over it.
    */
-  teamLookup?: "answered" | "failed";
+  teamLookup?: TeamLookupOutcome;
 }
 
 /** The operator's answer for one card, as the commit reads it. */
@@ -211,6 +214,12 @@ export interface TeamsGroup {
   listedNames: string[];
   /** Invariant 8 — the listing's team lookup failed for these cards. */
   lookupFailed: boolean;
+  /**
+   * NEO-478, invariant 8 — the operator's published checklist is where these
+   * cards' teams came from (`teamLookup: "checklist"`), so nothing is
+   * pre-filled over it. Absent reads as false.
+   */
+  checklistClaim?: boolean;
   /** Server evidence for at least one player (or listed name) has not arrived yet. */
   loading: boolean;
 }
@@ -729,9 +738,14 @@ export function buildTeamsGroups(input: {
     // listing's team claim (invariant 8).
     const listedNames = listedClaims(card, view);
     const lookupFailed = card.teamLookup === "failed";
+    // NEO-478 — a team the operator's published checklist settled is a data
+    // claim exactly like a failed lookup's: the teamless card is the
+    // checklist's answer ("no team"), so no inference may fill one over it.
+    const checklistClaim = card.teamLookup === "checklist";
     const claimKey =
       (listedNames.length > 0 ? `|listed:${listedNames.map(norm).sort().join("|")}` : "") +
-      (lookupFailed ? "|lookup-failed" : "");
+      (lookupFailed ? "|lookup-failed" : "") +
+      (checklistClaim ? "|checklist" : "");
     // No people → no player evidence at all, so every such card (a
     // checklist, a league leaders card, a highlight) shares ONE line, keyed
     // on having no players — never on a card's name. Its listing claims are
@@ -745,6 +759,7 @@ export function buildTeamsGroups(input: {
       existing.cards.push(entry);
       if (groupKey === NO_PLAYERS_GROUP_KEY) {
         existing.lookupFailed ||= lookupFailed;
+        if (checklistClaim) existing.checklistClaim = true;
         for (const name of listedNames) {
           if (existing.listedNames.some((n) => norm(n) === norm(name))) continue;
           existing.listedNames.push(name);
@@ -795,7 +810,7 @@ export function buildTeamsGroups(input: {
         else listedRefs.push(...found.map(refFromServer));
       }
     }
-    if (listedNames.length > 0 || lookupFailed) {
+    if (listedNames.length > 0 || lookupFailed || checklistClaim) {
       // A data claim holds the guess back: nothing is pre-selected, and the
       // would-be pre-fill becomes one more choice.
       choices = [...(suggestion ?? []), ...choices];
@@ -817,6 +832,7 @@ export function buildTeamsGroups(input: {
       suggestion: suggestion && suggestion.length > 0 ? suggestion.map((r) => r.key) : null,
       listedNames: [...listedNames],
       lookupFailed,
+      ...(checklistClaim ? { checklistClaim: true } : {}),
       loading,
     });
   }

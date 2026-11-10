@@ -51,6 +51,9 @@ import UnreviewedNameFixer from "./UnreviewedNameFixer";
  * for a new fixer is additive and breaks no caller. Add fields here as fixers
  * need them rather than casting at a call site.
  */
+/** NEO-345 / NEO-478 — `cardChecklist.teamCheckOutcome`, as the client reads it. */
+export type TeamCheckOutcome = "answered" | "gaveUp" | "checklist";
+
 export type CardChecklistRow = {
   _id: Id<"cardChecklist">;
   cardNumber: string;
@@ -61,10 +64,12 @@ export type CardChecklistRow = {
   /**
    * NEO-345: why the background BSC team check finished, written with every
    * `teamCheckDoneAt` stamp — "answered" (BSC replied) or "gaveUp" (retries
-   * ran out). Absent on a row stamped before the field existed. Read only by
-   * the missing-team fixer's one-line account of the card's case.
+   * ran out); NEO-478 adds "checklist" (the operator's published checklist
+   * settled the team, so BSC was never asked). Absent on a row stamped
+   * before the field existed. Read only by the missing-team fixer's one-line
+   * account of the card's case.
    */
-  teamCheckOutcome?: "answered" | "gaveUp";
+  teamCheckOutcome?: TeamCheckOutcome;
   teamNoneConfirmedAt?: number;
   /**
    * NEO-236: the team name BSC returned that matched no `teams` row.

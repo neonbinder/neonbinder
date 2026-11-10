@@ -46,6 +46,11 @@ import workpool from "@convex-dev/workpool/convex.config";
  * they must not take the instances the run's own processing needs. See
  * convex/intakePhotoPool.ts for the instance and its width.
  *
+ * `bscTeamPool` (PR 451, NEO-487) is the one-slot lane in front of BSC's
+ * public per-card endpoint, for the background team lookups. BSC's edge blocks
+ * an IP for minutes after a 429 and every deployment shares egress IPs, so the
+ * lane is deliberately one wide; see convex/bscTeamPool.ts.
+ *
  * NOTE: adding another pool means adding another `app.use(workpool, {...})`
  * here with a distinct `name`. Constructing a second `Workpool` class instance
  * against the SAME component does not give you a second pool — the component
@@ -58,5 +63,6 @@ app.use(workpool, { name: "fastPreprocessPool" });
 app.use(workpool, { name: "heavyPreprocessPool" });
 app.use(workpool, { name: "wikidataPool" });
 app.use(workpool, { name: "intakePhotoPool" });
+app.use(workpool, { name: "bscTeamPool" });
 
 export default app;

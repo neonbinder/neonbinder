@@ -5514,7 +5514,7 @@ describe("CardChecklist — NEO-312 a parallel row's Sync slot builds instead of
     fireEvent.click(button);
 
     await waitFor(() =>
-      expect(mockBuildParallelChecklist).toHaveBeenCalledWith({ parallelId: VARIANT_ID }),
+      expect(mockBuildParallelChecklist).toHaveBeenCalledWith({ parallelId: VARIANT_ID, waitKey: expect.stringMatching(/^[A-Za-z0-9_-]{1,64}$/) }),
     );
     expect(mockFetchChecklist).not.toHaveBeenCalled();
     expect(screen.queryByText(/Match Cards/)).toBeNull();
@@ -5603,7 +5603,7 @@ describe("CardChecklist — NEO-312 held controls (a11y 1)", () => {
     fireEvent.click(screen.getByRole("button", { name: "Build from Anime" }));
 
     await waitFor(() =>
-      expect(mockBuildParallelChecklist).toHaveBeenCalledWith({ parallelId: VARIANT_ID }),
+      expect(mockBuildParallelChecklist).toHaveBeenCalledWith({ parallelId: VARIANT_ID, waitKey: expect.stringMatching(/^[A-Za-z0-9_-]{1,64}$/) }),
     );
     const addCard = screen.getByLabelText("Open add card form");
     await waitFor(() => expect(addCard.getAttribute("aria-disabled")).toBe("true"));
@@ -5787,7 +5787,7 @@ describe("CardChecklist — NEO-321 a base-parallel row builds from Base (D3)", 
     fireEvent.click(screen.getByRole("button", { name: "Build from Base" }));
 
     await waitFor(() =>
-      expect(mockBuildParallelChecklist).toHaveBeenCalledWith({ parallelId: VARIANT_ID }),
+      expect(mockBuildParallelChecklist).toHaveBeenCalledWith({ parallelId: VARIANT_ID, waitKey: expect.stringMatching(/^[A-Za-z0-9_-]{1,64}$/) }),
     );
     expect(mockFetchChecklist).not.toHaveBeenCalled();
     expect(mockCommitChecklist).not.toHaveBeenCalled();

@@ -1,0 +1,313 @@
+/**
+ * NEO-478 — read a publisher's checklist the operator pasted or chose as a
+ * file into rows of { number, players, teams }.
+ *
+ * Pure and browser-safe: no DOM, no Convex. The dialog previews exactly what
+ * this returns, and the same rows go to `fetchCardChecklist`'s
+ * `publishedChecklist`, which re-checks every limit on the server.
+ *
+ * Two shapes are read:
+ *
+ *  - **CSV / TSV with a header row.** Columns are found by header name (card
+ *    number, player, team, each with several spellings). A cell naming
+ *    several players or teams is split on "/" or ";".
+ *  - **The published line format** a checklist page prints:
+ *      `60 Rhett Lowder - Cincinnati Reds (Future Stars)`
+ *      `11 Alonso/Schwarber/Soto (League Leaders)`
+ *      `34 Team Card - Kansas City Royals`
+ *    The number leads, then the players, then " - " and the team. RC
+ *    markers and bracketed notes are dropped.
+ *
+ * Every non-blank line that does not give a row is listed in `skipped` with
+ * the reason, never dropped silently. A card number is NOT treated as unique
+ * (product rule 7): two rows with the same number are both kept, and the
+ * server's exactly-one guard decides what they can match.
+ */
+
+export type PublishedChecklistRow = {
+  number: string;
+  players: string[];
+  teams: string[];
+};
+
+export type SkippedLine = {
+  /** 1-based line number in the pasted text or file. */
+  line: number;
+  text: string;
+  reason: string;
+};
+
+export type PublishedChecklistParse = {
+  rows: PublishedChecklistRow[];
+  skipped: SkippedLine[];
+  format: "lines" | "csv" | "tsv";
+};
+
+/** The most rows one checklist may carry; the server refuses more. */
+export const PUBLISHED_CHECKLIST_MAX_ROWS = 2000;
+/** The longest card number, player or team name kept; longer is skipped. */
+export const PUBLISHED_CHECKLIST_MAX_NAME = 120;
+
+/** The words a header cell may use for each column, compared folded. */
+const HEADER_SPELLINGS: Record<"number" | "players" | "teams", readonly string[]> = {
+  number: [
+    "#",
+    "no",
+    "num",
+    "number",
+    "card",
+    "card #",
+    "card no",
+    "card num",
+    "card number",
+    "cardnumber",
+    "card_number",
+    "card-number",
+    "checklist #",
+    "checklist number",
+  ],
+  players: [
+    "player",
+    "players",
+    "player(s)",
+    "player name",
+    "player names",
+    "playername",
+    "player_name",
+    "name",
+    "names",
+    "subject",
+    "athlete",
+    "athletes",
+  ],
+  teams: [
+    "team",
+    "teams",
+    "team(s)",
+    "team name",
+    "teamname",
+    "team_name",
+    "club",
+    "franchise",
+  ],
+};
+
+/** "Card No." → "card no". Case, dots and runs of spaces don't count. */
+function foldHeader(cell: string): string {
+  return cell
+    .trim()
+    .toLowerCase()
+    .replace(/\./g, "")
+    .replace(/\s+/g, " ");
+}
+
+function columnOf(header: string): "number" | "players" | "teams" | null {
+  const folded = foldHeader(header);
+  for (const key of ["number", "players", "teams"] as const) {
+    if (HEADER_SPELLINGS[key].includes(folded)) return key;
+  }
+  return null;
+}
+
+/** Split one delimited line, honouring double quotes ("" is a literal quote). */
+export function splitDelimited(line: string, delimiter: "," | "\t"): string[] {
+  const cells: string[] = [];
+  let cell = "";
+  let quoted = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (quoted) {
+      if (ch === '"') {
+        if (line[i + 1] === '"') {
+          cell += '"';
+          i++;
+        } else {
+          quoted = false;
+        }
+      } else {
+        cell += ch;
+      }
+    } else if (ch === '"' && cell.trim() === "") {
+      quoted = true;
+      cell = "";
+    } else if (ch === delimiter) {
+      cells.push(cell);
+      cell = "";
+    } else {
+      cell += ch;
+    }
+  }
+  cells.push(cell);
+  return cells.map((c) => c.trim());
+}
+
+/** "Alonso / Schwarber; Soto" → ["Alonso", "Schwarber", "Soto"]. */
+function splitNames(cell: string): string[] {
+  return cell
+    .split(/[/;]/)
+    .map((name) => name.replace(/\s+/g, " ").trim())
+    .filter((name) => name.length > 0);
+}
+
+/** Bracketed notes — "(Future Stars)", "[SP]", "{photo variation}" — go. */
+function dropBracketed(text: string): string {
+  let out = text;
+  // Repeat so a note inside a note, or two notes, all go.
+  for (let i = 0; i < 4; i++) {
+    const next = out.replace(/\([^()]*\)|\[[^[\]]*\]|\{[^{}]*\}/g, " ");
+    if (next === out) break;
+    out = next;
+  }
+  return out;
+}
+
+/** "RC", "(RC)", "RC," as a whole word go; a name that merely contains "rc" stays. */
+function dropRookieMarkers(text: string): string {
+  return text.replace(/(^|[\s,/;])RC(?=$|[\s,/;])/g, "$1");
+}
+
+/** Player names that are the card's subject, not a person. */
+const NOT_A_PERSON = new Set(["team card", "checklist", "team checklist", "header card"]);
+
+function playersFrom(cell: string): string[] {
+  return splitNames(dropRookieMarkers(dropBracketed(cell))).filter(
+    (name) => !NOT_A_PERSON.has(name.toLowerCase()),
+  );
+}
+
+function teamsFrom(cell: string): string[] {
+  return splitNames(dropRookieMarkers(dropBracketed(cell)));
+}
+
+/** A card number: one token with at least one digit ("60", "BDC-12", "US1", "T-34"). */
+const NUMBER_TOKEN = /^#?([A-Za-z0-9][A-Za-z0-9.-]*)$/;
+
+function cleanNumber(raw: string): string | null {
+  const token = raw.trim().replace(/^#/, "").replace(/[.:]$/, "");
+  if (!token || !/\d/.test(token) || !NUMBER_TOKEN.test(token)) return null;
+  return token;
+}
+
+/** Which limit, if any, a row breaks. */
+function overLimit(row: PublishedChecklistRow): string | null {
+  if (row.number.length > PUBLISHED_CHECKLIST_MAX_NAME) return "Card number is too long";
+  if (row.players.some((p) => p.length > PUBLISHED_CHECKLIST_MAX_NAME)) {
+    return "A player name is too long";
+  }
+  if (row.teams.some((t) => t.length > PUBLISHED_CHECKLIST_MAX_NAME)) {
+    return "A team name is too long";
+  }
+  return null;
+}
+
+/**
+ * The published line format, one line:
+ * `<number> <players>[ - <teams>][ (note)]`.
+ */
+function parseLine(text: string): PublishedChecklistRow | { reason: string } {
+  const match = /^\s*(\S+)\s*(.*)$/.exec(text);
+  const number = match ? cleanNumber(match[1]) : null;
+  if (!match || !number) return { reason: "No card number at the start" };
+  const rest = match[2];
+  // The team follows the LAST spaced dash, so a hyphenated name
+  // ("Jean-Carlos", "Ryu Hyun-jin") stays in one piece.
+  const parts = rest.split(/\s+[-–—]\s+/);
+  const playerPart = parts.length > 1 ? parts.slice(0, -1).join(" - ") : rest;
+  const teamPart = parts.length > 1 ? parts[parts.length - 1] : "";
+  const players = playersFrom(playerPart);
+  const teams = teamsFrom(teamPart);
+  const subject = dropBracketed(playerPart).trim().toLowerCase();
+  if (players.length === 0 && teams.length === 0 && !NOT_A_PERSON.has(subject)) {
+    return { reason: "No player or team after the number" };
+  }
+  return { number, players, teams };
+}
+
+function detectDelimited(firstLine: string): {
+  delimiter: "," | "\t";
+  columns: Array<"number" | "players" | "teams" | null>;
+} | null {
+  for (const delimiter of ["\t", ","] as const) {
+    if (!firstLine.includes(delimiter)) continue;
+    const columns = splitDelimited(firstLine, delimiter).map(columnOf);
+    if (columns.includes("number") && (columns.includes("players") || columns.includes("teams"))) {
+      return { delimiter, columns };
+    }
+  }
+  return null;
+}
+
+/**
+ * Read a pasted or uploaded checklist. Blank lines are not content and are
+ * passed over; every other line is a row or a `skipped` entry.
+ */
+export function parsePublishedChecklist(text: string): PublishedChecklistParse {
+  const lines = text.replace(/^﻿/, "").split(/\r\n|\r|\n/);
+  const firstIndex = lines.findIndex((l) => l.trim() !== "");
+  const rows: PublishedChecklistRow[] = [];
+  const skipped: SkippedLine[] = [];
+  if (firstIndex === -1) return { rows, skipped, format: "lines" };
+
+  const header = detectDelimited(lines[firstIndex]);
+  const format: PublishedChecklistParse["format"] = header
+    ? header.delimiter === "\t"
+      ? "tsv"
+      : "csv"
+    : "lines";
+
+  const keep = (lineIndex: number, raw: string, row: PublishedChecklistRow) => {
+    const tooLong = overLimit(row);
+    if (tooLong) {
+      skipped.push({ line: lineIndex + 1, text: raw, reason: tooLong });
+    } else if (rows.length >= PUBLISHED_CHECKLIST_MAX_ROWS) {
+      skipped.push({
+        line: lineIndex + 1,
+        text: raw,
+        reason: `Past the ${PUBLISHED_CHECKLIST_MAX_ROWS.toLocaleString("en-US")}-row limit`,
+      });
+    } else {
+      rows.push(row);
+    }
+  };
+
+  for (let i = firstIndex + (header ? 1 : 0); i < lines.length; i++) {
+    const raw = lines[i];
+    if (raw.trim() === "") continue;
+    if (!header) {
+      const parsed = parseLine(raw);
+      if ("reason" in parsed) skipped.push({ line: i + 1, text: raw, reason: parsed.reason });
+      else keep(i, raw, parsed);
+      continue;
+    }
+    const cells = splitDelimited(raw, header.delimiter);
+    let number: string | null = null;
+    let numberCell = "";
+    const players: string[] = [];
+    const teams: string[] = [];
+    header.columns.forEach((column, c) => {
+      const cell = cells[c] ?? "";
+      if (column === "number" && numberCell === "") {
+        numberCell = cell;
+        number = cleanNumber(cell);
+      } else if (column === "players") {
+        players.push(...playersFrom(cell));
+      } else if (column === "teams") {
+        teams.push(...teamsFrom(cell));
+      }
+    });
+    if (!number) {
+      skipped.push({
+        line: i + 1,
+        text: raw,
+        reason: numberCell ? "Card number isn't one we can read" : "No card number",
+      });
+      continue;
+    }
+    if (players.length === 0 && teams.length === 0) {
+      skipped.push({ line: i + 1, text: raw, reason: "No player or team on this line" });
+      continue;
+    }
+    keep(i, raw, { number, players, teams });
+  }
+  return { rows, skipped, format };
+}

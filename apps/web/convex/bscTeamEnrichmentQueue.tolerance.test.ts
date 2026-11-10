@@ -1,5 +1,14 @@
 /**
- * NEO-90: isolated from `convex/bscTeamEnrichmentQueue.test.ts` because it
+ * PR 451 (NEO-487): the queue is the `bscTeamPool` lane now, one work item
+ * per card (`runBscTeamCheckItem`). The item reaches BSC through
+ * `resolveBscCardTeamOnce`, a plain function, so the throw is forced one step
+ * earlier: `cardChecklist.getForBscTeamCheck`, the first thing it calls. The
+ * guarantee is unchanged: one card throwing never wedges the lane, and every
+ * card is still asked on every pass and then handed to the operator. The lane
+ * is run by hand, as in the sibling file (convex-test cannot register the
+ * workpool component).
+ *
+ * NEO-90 (original note): isolated from `convex/bscTeamEnrichmentQueue.test.ts` because it
  * needs a file-scoped `vi.mock` of `./adapters/buysportscards` to force
  * `resolveBscCardTeam` to throw — `resolveBscCardTeam`'s real
  * implementation deliberately swallows every externally-triggerable error
@@ -23,26 +32,24 @@ import { internal } from "./_generated/api";
 import schema from "./schema";
 import { BSC_TEAM_CHECK_MAX_PASSES } from "./adapters/buysportscards";
 import { insertTestCard } from "../lib/testing/card-row";
+import { captureBscTeamLane } from "../lib/testing/bsc-team-lane";
 
-vi.mock("./adapters/buysportscards", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("./adapters/buysportscards")>();
-  const { internalAction } = await import("./_generated/server");
+vi.mock("./cardChecklist", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./cardChecklist")>();
+  const { internalQuery } = await import("./_generated/server");
   const { v } = await import("convex/values");
   return {
     ...actual,
-    resolveBscCardTeam: internalAction({
+    getForBscTeamCheck: internalQuery({
       args: { cardChecklistId: v.id("cardChecklist") },
-      returns: v.union(
-        v.literal("answered"),
-        v.literal("notNeeded"),
-        v.literal("failed"),
-      ),
-      handler: async (): Promise<"failed"> => {
+      returns: v.null(),
+      handler: async (): Promise<null> => {
         throw new Error("simulated resolveBscCardTeam failure");
       },
     }),
   };
 });
+
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -69,7 +76,7 @@ describe("processBscTeamEnrichmentQueue — tolerance of a card that throws", ()
   const errorLines: string[] = [];
 
   beforeEach(() => {
-    vi.useFakeTimers();
+    vi.useFakeTimers({ shouldAdvanceTime: true });
     errorLines.length = 0;
     vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => {
       errorLines.push(args.map(String).join(" "));
@@ -133,20 +140,34 @@ describe("processBscTeamEnrichmentQueue — tolerance of a card that throws", ()
       }),
     );
 
-    // With resolveBscCardTeam mocked to always throw, the initial call
-    // (processing cardA) must resolve cleanly (no uncaught rejection) —
-    // the outer try/catch in processBscTeamEnrichmentQueue swallows the
-    // failure and schedules the tail (cardB) to be attempted next.
+    const lane = captureBscTeamLane();
     await expect(
       t.action(internal.adapters.buysportscards.processBscTeamEnrichmentQueue, {
         cardChecklistIds: [cardA, cardB],
       }),
     ).resolves.toBeNull();
 
-    // Draining the reschedule chain (cardB's turn) must ALSO complete
-    // without throwing, even though it fails too — proving the try/catch
-    // shields every card, not just the first, from wedging the queue.
-    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    // Every item must resolve cleanly (no uncaught rejection): the item's own
+    // catch reports the throw as a failed lookup, and its completion queues
+    // the next pass. Run the lane to the end, as the pool would.
+    let ran = 0;
+    while (lane.length > 0 && ran < 20) {
+      lane.sort((x, y) => x.runAt - y.runAt || x.seq - y.seq);
+      const next = lane.shift()!;
+      if (next.runAt > Date.now()) vi.setSystemTime(next.runAt);
+      const returnValue = await t.action(
+        internal.adapters.buysportscards.runBscTeamCheckItem,
+        next.item,
+      );
+      expect(returnValue).toEqual({ outcome: "failed" });
+      await t.mutation(internal.bscTeamPool.onBscTeamCheckComplete, {
+        workId: `work-${next.seq}`,
+        context: next.item,
+        result: { kind: "success", returnValue },
+      } as never);
+      ran += 1;
+    }
+    expect(ran).toBe(2 * BSC_TEAM_CHECK_MAX_PASSES);
 
     // NEO-330 — a throw counts as a failed lookup: each card is retried up to
     // the queue's bound and then handed to the operator. Nothing was ever

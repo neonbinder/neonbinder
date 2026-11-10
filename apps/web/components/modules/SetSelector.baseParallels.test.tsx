@@ -319,6 +319,7 @@ describe("SetSelector — starting from the section (NEO-321)", () => {
     await waitFor(() =>
       expect(mockConvex.action).toHaveBeenCalledWith("buildParallelChecklist", {
         parallelId: "p-a",
+        waitKey: expect.stringMatching(/^[A-Za-z0-9_-]{1,64}$/),
       }),
     );
   });

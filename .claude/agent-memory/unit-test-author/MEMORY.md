@@ -36,4 +36,4 @@
 - [NEO-415 eBay test patterns](reference_neo415_ebay_test_patterns.md) — convex-test ids vs the real SKU/id checks, fake-eBay fetch class, product code moving under you
 - [NEO-452 held intake test patterns](reference_neo452_held_intake_test_patterns.md) — realZone switch, two-frame pick, double-layer guards, aria-disabled "false", break-check by inverse replace
 - [RealAddCardsTab harness](reference_realaddcardstab_test_harness.md) — mocked Dropzone, status-role noise, runExtract fetch stub shape
-- [NEO-482 call-order tap + mutant module](reference_neo482_call_order_tap_and_mutant_module.md) — wrap _handler for mutation order, break-check a builder-owned file via glob swap, BSC session stub routes
+- [NEO-487 lane/wait test patterns](reference_neo487_bsc_lane_wait_test_patterns.md) — stop-rule/cooldown/wait-edge recipes, ledger chain timing, safe shared-worktree mutation runner

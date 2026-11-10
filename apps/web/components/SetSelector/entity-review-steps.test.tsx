@@ -168,6 +168,7 @@ describe("subtitles", () => {
       team: "New team",
       player: "New player",
       pick: "Which player is this?",
+      checklist: "Checklist disagreements",
       teams: "Cards with no team",
       // NEO-345 — placeholder, awaiting Jason's wording.
       autograph: "Autographed cards",

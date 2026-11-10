@@ -1879,86 +1879,160 @@ export async function narrowSameNamePlayersByCardYear(
  * the shape because it is what the logs and the tests read to tell "resolved
  * outright" from "narrowed".
  */
-export const resolveNameForReview = internalQuery({
+/** `resolveNameForReview`'s per-name arguments, shared with the batch. */
+const resolveNameForReviewArgs = {
+  name: v.string(),
+  sportId: v.id("selectorOptions"),
+  /**
+   * NEO-254 — the year of the set this name was read off, and the team names
+   * printed on the same card. Both optional: with neither, several matches
+   * stay several matches and the name goes to a human, which is the
+   * behaviour this query shipped with.
+   */
+  cardYear: v.optional(v.number()),
+  cardTeamNames: v.optional(v.array(v.string())),
+};
+
+const resolveNameForReviewResult = v.object({
+  matchCount: v.number(),
+  playerId: v.optional(v.id("players")),
+  /**
+   * True when `playerId` came from the card-year narrowing rather than from
+   * being the only row of that name. Reported so the caller can log it — an
+   * automatic link made on the strength of a year is exactly the thing an
+   * operator will one day want to audit.
+   */
+  narrowedByCardYear: v.optional(v.boolean()),
+  /**
+   * NEO-424 — WHICH narrowing produced `playerId`, present exactly when
+   * `narrowedByCardYear` is. `"cardYear"` is the year (and team) tie-break,
+   * an inference the gate makes silently and logs; `"hallOfFame"` is rule 6
+   * of `narrowSameNamePlayersByCardYear`, which the gate turns into a
+   * VISIBLE decided row the operator can Change. `narrowedByCardYear` stays
+   * true for both so its existing readers keep their meaning ("not the only
+   * row of that name").
+   */
+  narrowedBy: v.optional(v.union(v.literal("cardYear"), v.literal("hallOfFame"))),
+  /**
+   * NEO-424 — the in-sport rows behind `matchCount`, when there are two or
+   * more (capped like `matchCount`). The set-history gate offers them beside
+   * a history link as the rivals the operator can Change to. Absent for 0
+   * and 1, where `playerId` already says everything.
+   */
+  candidatePlayerIds: v.optional(v.array(v.id("players"))),
+});
+
+type ResolveNameForReviewResult = {
+  matchCount: number;
+  playerId?: Id<"players">;
+  narrowedByCardYear?: boolean;
+  narrowedBy?: "cardYear" | "hallOfFame";
+  candidatePlayerIds?: Array<Id<"players">>;
+};
+
+/**
+ * One name's answer — the body of `resolveNameForReview`, and of every
+ * element of `resolveNamesForReview`, so the batch can never answer a name
+ * differently from the single call.
+ */
+async function resolveOneNameForReview(
+  ctx: QueryCtx,
   args: {
-    name: v.string(),
-    sportId: v.id("selectorOptions"),
-    /**
-     * NEO-254 — the year of the set this name was read off, and the team names
-     * printed on the same card. Both optional: with neither, several matches
-     * stay several matches and the name goes to a human, which is the
-     * behaviour this query shipped with.
-     */
-    cardYear: v.optional(v.number()),
-    cardTeamNames: v.optional(v.array(v.string())),
+    name: string;
+    sportId: Id<"selectorOptions">;
+    cardYear?: number;
+    cardTeamNames?: string[];
   },
-  returns: v.object({
-    matchCount: v.number(),
-    playerId: v.optional(v.id("players")),
-    /**
-     * True when `playerId` came from the card-year narrowing rather than from
-     * being the only row of that name. Reported so the caller can log it — an
-     * automatic link made on the strength of a year is exactly the thing an
-     * operator will one day want to audit.
-     */
-    narrowedByCardYear: v.optional(v.boolean()),
-    /**
-     * NEO-424 — WHICH narrowing produced `playerId`, present exactly when
-     * `narrowedByCardYear` is. `"cardYear"` is the year (and team) tie-break,
-     * an inference the gate makes silently and logs; `"hallOfFame"` is rule 6
-     * of `narrowSameNamePlayersByCardYear`, which the gate turns into a
-     * VISIBLE decided row the operator can Change. `narrowedByCardYear` stays
-     * true for both so its existing readers keep their meaning ("not the only
-     * row of that name").
-     */
-    narrowedBy: v.optional(v.union(v.literal("cardYear"), v.literal("hallOfFame"))),
-    /**
-     * NEO-424 — the in-sport rows behind `matchCount`, when there are two or
-     * more (capped like `matchCount`). The set-history gate offers them beside
-     * a history link as the rivals the operator can Change to. Absent for 0
-     * and 1, where `playerId` already says everything.
-     */
-    candidatePlayerIds: v.optional(v.array(v.id("players"))),
-  }),
-  handler: async (
-    ctx,
-    args,
-  ): Promise<{
-    matchCount: number;
-    playerId?: Id<"players">;
-    narrowedByCardYear?: boolean;
-    narrowedBy?: "cardYear" | "hallOfFame";
-    candidatePlayerIds?: Array<Id<"players">>;
-  }> => {
-    const normalized = normalizePlayerName(args.name);
-    // A name that normalizes to nothing (punctuation only) can never match a
-    // stored key. Reported as no match, so it goes to review rather than being
-    // silently treated as resolved.
-    if (!normalized) return { matchCount: 0 };
-    const candidates = await sameNamePlayers(ctx, normalized, args.sportId);
-    // Only when it is unambiguous. Handing back one id out of several is the
-    // exact thing this query was written to stop.
-    if (candidates.length === 1) {
-      return { matchCount: 1, playerId: candidates[0]._id };
+): Promise<ResolveNameForReviewResult> {
+  const normalized = normalizePlayerName(args.name);
+  // A name that normalizes to nothing (punctuation only) can never match a
+  // stored key. Reported as no match, so it goes to review rather than being
+  // silently treated as resolved.
+  if (!normalized) return { matchCount: 0 };
+  const candidates = await sameNamePlayers(ctx, normalized, args.sportId);
+  // Only when it is unambiguous. Handing back one id out of several is the
+  // exact thing this query was written to stop.
+  if (candidates.length === 1) {
+    return { matchCount: 1, playerId: candidates[0]._id };
+  }
+  if (candidates.length < 2) return { matchCount: candidates.length };
+  const narrowed = await narrowSameNamePlayersByCardYear(ctx, candidates, {
+    cardYear: args.cardYear,
+    cardTeamNames: args.cardTeamNames,
+  });
+  return {
+    matchCount: candidates.length,
+    candidatePlayerIds: candidates.map((player) => player._id),
+    ...(narrowed.playerId
+      ? {
+          playerId: narrowed.playerId,
+          narrowedByCardYear: true,
+          narrowedBy: narrowed.viaHallOfFame
+            ? ("hallOfFame" as const)
+            : ("cardYear" as const),
+        }
+      : {}),
+  };
+}
+
+export const resolveNameForReview = internalQuery({
+  args: resolveNameForReviewArgs,
+  returns: resolveNameForReviewResult,
+  handler: async (ctx, args): Promise<ResolveNameForReviewResult> =>
+    resolveOneNameForReview(ctx, args),
+});
+
+/** How many names one `resolveNamesForReview` call answers, at most. */
+export const RESOLVE_NAMES_FOR_REVIEW_MAX = 25;
+
+/**
+ * NEO-487 — `resolveNameForReview` for up to 25 names in ONE query, so the
+ * gate in `resolveUnknownsAndStartBatch` costs one round trip per slice
+ * rather than one per name (a 900-card set's few hundred names were a few
+ * hundred `runQuery` calls).
+ *
+ * The sport and the card year are the batch's (one set, one sport, one
+ * year); each name carries the teams printed on its own card. The answer is
+ * ALIGNED with `names`: element i is exactly what `resolveNameForReview`
+ * returns for `{ name: names[i].name, sportId, cardYear, cardTeamNames:
+ * names[i].cardTeamNames }`, through the same function. More than 25 names
+ * is refused, never truncated — a silently short answer would leave the
+ * caller's tail of names looking unresolved.
+ */
+export const resolveNamesForReview = internalQuery({
+  args: {
+    sportId: v.id("selectorOptions"),
+    cardYear: v.optional(v.number()),
+    names: v.array(
+      v.object({
+        name: v.string(),
+        cardTeamNames: v.optional(v.array(v.string())),
+      }),
+    ),
+  },
+  returns: v.array(resolveNameForReviewResult),
+  handler: async (ctx, args): Promise<ResolveNameForReviewResult[]> => {
+    if (args.names.length > RESOLVE_NAMES_FOR_REVIEW_MAX) {
+      throw new ConvexError({
+        code: "too_many_names",
+        message: `resolveNamesForReview answers at most ${RESOLVE_NAMES_FOR_REVIEW_MAX} names per call; got ${args.names.length}.`,
+      });
     }
-    if (candidates.length < 2) return { matchCount: candidates.length };
-    const narrowed = await narrowSameNamePlayersByCardYear(ctx, candidates, {
-      cardYear: args.cardYear,
-      cardTeamNames: args.cardTeamNames,
-    });
-    return {
-      matchCount: candidates.length,
-      candidatePlayerIds: candidates.map((player) => player._id),
-      ...(narrowed.playerId
-        ? {
-            playerId: narrowed.playerId,
-            narrowedByCardYear: true,
-            narrowedBy: narrowed.viaHallOfFame
-              ? ("hallOfFame" as const)
-              : ("cardYear" as const),
-          }
-        : {}),
-    };
+    const out: ResolveNameForReviewResult[] = [];
+    // One at a time, in order: each name's reads are small, and a sequential
+    // walk keeps the read set (and the answer's order) exactly the single
+    // call's, repeated.
+    for (const entry of args.names) {
+      out.push(
+        await resolveOneNameForReview(ctx, {
+          name: entry.name,
+          sportId: args.sportId,
+          ...(args.cardYear !== undefined ? { cardYear: args.cardYear } : {}),
+          ...(entry.cardTeamNames !== undefined ? { cardTeamNames: entry.cardTeamNames } : {}),
+        }),
+      );
+    }
+    return out;
   },
 });
 

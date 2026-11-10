@@ -492,7 +492,33 @@ export type BscRecorderOptions = {
   bodyMode?: BscBodyMode;
   /** Test hook: how long a background body read may take. */
   bodyReadDeadlineMs?: number;
+  /**
+   * PR 451 (NEO-487) — told when this recorder starts and stops waiting on BSC:
+   * `waiting: true` when its first call opens (0 → 1 calls in flight), and
+   * `waiting: false` once none has been in flight for {@link waitIdleGraceMs}
+   * (1 → 0, debounced so a `Promise.all` wave or a retry right after a failure
+   * is one wait, not one per call). Never called twice in a row with the same
+   * `waiting`. `flush` closes an open wait at once.
+   *
+   * Synchronous and fire-and-forget: the hook must not throw (a throw is
+   * swallowed) and must do its own I/O off the call's path
+   * (`lib/marketplaceWaitWriter.ts` chains the writes).
+   */
+  onWaitEdge?: (edge: BscWaitEdge) => void;
+  /** Idle grace before a `waiting: false` edge. Default {@link BSC_WAIT_IDLE_GRACE_MS}. */
+  waitIdleGraceMs?: number;
 };
+
+/** PR 451 — the debounce between the last call settling and the wait closing. */
+export const BSC_WAIT_IDLE_GRACE_MS = 500;
+
+/**
+ * PR 451 — one wait edge. `at` is epoch ms: the first call's start on an open
+ * edge, the last call's settle (not the end of the grace) on a close edge.
+ * `accumulatedMs` is the recorder's total closed waiting time, this interval
+ * included on a close edge.
+ */
+export type BscWaitEdge = { waiting: boolean; at: number; accumulatedMs: number };
 
 export type BscCallMeta = {
   /** The BSC path with ids replaced, e.g. `marketplace/card/:id/card-listing`. */
@@ -645,8 +671,65 @@ export function createBscRecorder(op: string, opts: BscRecorderOptions = {}): Bs
   let suppressed = 0;
   let flushed = false;
 
+  // PR 451 — the wait edges (see `onWaitEdge`).
+  const graceMs = Math.max(0, opts.waitIdleGraceMs ?? BSC_WAIT_IDLE_GRACE_MS);
+  let openCalls = 0;
+  let waiting = false;
+  let waitOpenedAt = 0;
+  let lastSettleAt = 0;
+  let waitAccumulatedMs = 0;
+  let closeTimer: ReturnType<typeof setTimeout> | undefined;
+  const emitEdge = (edge: BscWaitEdge): void => {
+    if (!opts.onWaitEdge) return;
+    try {
+      opts.onWaitEdge(edge);
+    } catch {
+      // telemetry never throws into a call
+    }
+  };
+  const closeWait = (): void => {
+    if (closeTimer !== undefined) {
+      clearTimeout(closeTimer);
+      closeTimer = undefined;
+    }
+    if (!waiting) return;
+    waiting = false;
+    const end = Math.max(waitOpenedAt, lastSettleAt || now());
+    waitAccumulatedMs += end - waitOpenedAt;
+    emitEdge({ waiting: false, at: end, accumulatedMs: waitAccumulatedMs });
+  };
+  const waitCallOpened = (at: number): void => {
+    if (!opts.onWaitEdge) return;
+    openCalls += 1;
+    if (closeTimer !== undefined) {
+      // Still inside the grace: the same wait goes on.
+      clearTimeout(closeTimer);
+      closeTimer = undefined;
+      return;
+    }
+    if (waiting) return;
+    waiting = true;
+    waitOpenedAt = at;
+    emitEdge({ waiting: true, at, accumulatedMs: waitAccumulatedMs });
+  };
+  const waitCallSettled = (at: number): void => {
+    if (!opts.onWaitEdge || openCalls <= 0) return;
+    openCalls -= 1;
+    lastSettleAt = at;
+    if (openCalls > 0 || !waiting) return;
+    if (graceMs === 0) {
+      closeWait();
+      return;
+    }
+    closeTimer = setTimeout(() => {
+      closeTimer = undefined;
+      closeWait();
+    }, graceMs);
+  };
+
   const settle = (call: CallState): number => {
     call.durationMs = Math.max(0, now() - call.startedMs);
+    waitCallSettled(call.startedMs + call.durationMs);
     const inflightAtSettle = inflightNow;
     inflightNow = Math.max(0, inflightNow - 1);
     settled += 1;
@@ -718,7 +801,9 @@ export function createBscRecorder(op: string, opts: BscRecorderOptions = {}): Bs
     start(meta) {
       const id = nextId++;
       if (!flushed) {
-        calls.set(id, { meta, startedMs: now(), state: "open" });
+        const startedMs = now();
+        calls.set(id, { meta, startedMs, state: "open" });
+        waitCallOpened(startedMs);
         started += 1;
         inflightNow += 1;
         maxInflight = Math.max(maxInflight, inflightNow);
@@ -797,6 +882,10 @@ export function createBscRecorder(op: string, opts: BscRecorderOptions = {}): Bs
     async flush() {
       if (flushed) return null;
       flushed = true;
+      // PR 451 — whatever is still open (an abandoned call) ends the wait now.
+      if (openCalls > 0) lastSettleAt = now();
+      openCalls = 0;
+      closeWait();
       try {
         await Promise.allSettled(pending);
         // A call that never settled (abandoned action) must not leak the counter.

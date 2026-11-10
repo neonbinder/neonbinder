@@ -82,6 +82,15 @@ import {
 import type { TitleContext } from "../../convex/features/listingInputs";
 // NEO-345: the "Autographed cards" step, between teams and titles.
 import AutographFormatStep from "./AutographFormatStep";
+// NEO-478: the "Checklist says otherwise" step, first, ahead of the names.
+import ChecklistConflictStep, { type ChecklistConflictRow } from "./ChecklistConflictStep";
+import {
+  applyChecklistChoice,
+  checklistConflictIndexes,
+  orphanedReviewRowIds,
+  type ChecklistChoice,
+  type ChecklistConflict,
+} from "./checklist-conflict";
 import {
   autographCardIndexes,
   cardsForTeamsStep,
@@ -464,8 +473,9 @@ export default function EntityReviewWizard({
   saving,
   commitError,
   onDismissCommitError,
-  previewCards,
+  previewCards: incomingPreviewCards,
   onTeamAnswersChange,
+  onChecklistChoicesChange,
   cardsWithSettledTeam,
   cardsWithNoPlayers,
   skippedPlayerNames,
@@ -513,7 +523,17 @@ export default function EntityReviewWizard({
    * With `onTeamAnswersChange`, turns on the teams step ("Cards with no
    * team") before Save; without them there is no teams step.
    */
-  previewCards?: readonly (PreviewCardForTeams & PreviewCardForTitles)[];
+  previewCards?: readonly (PreviewCardForTeams &
+    PreviewCardForTitles & { checklistConflict?: ChecklistConflict })[];
+  /**
+   * NEO-478 — the "Checklist says otherwise" step's answers, positionally
+   * aligned with `previewCards` (undefined = not a disagreement, or not yet
+   * answered). With `previewCards`, turns the step on whenever a card
+   * carries `checklistConflict`. Every answer is REQUIRED: the step cannot be
+   * walked past while a card is unanswered. The parent applies them to the
+   * cards at commit (`applyChecklistChoice`) and stores them nowhere.
+   */
+  onChecklistChoicesChange?: (choices: Array<ChecklistChoice | undefined>) => void;
   /**
    * NEO-335 — every card's team answer, positionally aligned with
    * `previewCards` (undefined = none). The parent holds them in client state
@@ -616,7 +636,97 @@ export default function EntityReviewWizard({
     api.entityReviewQueue.getBatch,
     isOpen && !teamsOnly ? { selectorOptionId, batchId } : "skip",
   );
-  const rows = teamsOnly ? NO_BATCH_ROWS : batchRows;
+  /** Every row in the batch — what "had rows" and "expired" read. */
+  const rawRows = teamsOnly ? NO_BATCH_ROWS : batchRows;
+  /**
+   * NEO-478 — the checklist step's answers, by preview index. Wizard state
+   * like the autograph answer: reported to the parent, stored nowhere.
+   */
+  const [checklistChoices, setChecklistChoices] = useState<Record<number, ChecklistChoice>>({});
+  /**
+   * NEO-478 — the checklist step comes FIRST, before any name, and stays on
+   * screen until the operator presses Next with every card answered. Session
+   * state only: "Back" from the first name (or from a post-review step with no
+   * name before it) returns to it, and the answers are still there.
+   */
+  const [checklistSettled, setChecklistSettled] = useState(false);
+  /**
+   * NEO-478 — the cards the checklist step is about, and the preview cards
+   * every LATER step reads: with each answer applied, so the teams, autograph
+   * and titles steps see the players and teams the operator chose.
+   */
+  const checklistIndexes = useMemo(
+    () =>
+      incomingPreviewCards && onChecklistChoicesChange
+        ? checklistConflictIndexes(incomingPreviewCards)
+        : [],
+    [incomingPreviewCards, onChecklistChoicesChange],
+  );
+  const previewCards = useMemo(() => {
+    if (!incomingPreviewCards || checklistIndexes.length === 0) return incomingPreviewCards;
+    return incomingPreviewCards.map((card, i) => {
+      const choice = checklistChoices[i];
+      return choice ? applyChecklistChoice(card, choice) : card;
+    });
+  }, [incomingPreviewCards, checklistIndexes, checklistChoices]);
+  const checklistRows = useMemo<ChecklistConflictRow[]>(
+    () =>
+      incomingPreviewCards
+        ? checklistIndexes.flatMap((index) => {
+            const card = incomingPreviewCards[index];
+            return card.checklistConflict
+              ? [
+                  {
+                    index,
+                    cardNumber: card.cardNumber,
+                    cardName: card.cardName,
+                    conflict: card.checklistConflict,
+                  },
+                ]
+              : [];
+          })
+        : [],
+    [incomingPreviewCards, checklistIndexes],
+  );
+  const checklistUnansweredCount = checklistIndexes.filter(
+    (i) => checklistChoices[i] === undefined,
+  ).length;
+  /** Reported up as an aligned array, only when the answers change. */
+  const reportedChecklist = useRef<string | null>(null);
+  useEffect(() => {
+    if (!onChecklistChoicesChange || !incomingPreviewCards) return;
+    const aligned = incomingPreviewCards.map((_, i) =>
+      checklistIndexes.includes(i) ? checklistChoices[i] : undefined,
+    );
+    const key = JSON.stringify(aligned);
+    if (reportedChecklist.current === key) return;
+    reportedChecklist.current = key;
+    onChecklistChoicesChange(aligned);
+  }, [checklistChoices, checklistIndexes, incomingPreviewCards, onChecklistChoicesChange]);
+  /**
+   * NEO-478 — the server queues the unknown names on BOTH sides of every
+   * disagreement, so the side the operator turns down leaves rows no card
+   * carries. They are left out of the walk (and the counter, and every list
+   * the wizard reads) rather than asked about. They stay in the batch,
+   * undecided; the commit works from the cards' names and never reads them.
+   * See `orphanedReviewRowIds`.
+   */
+  const orphanedRowIds = useMemo(
+    () =>
+      rawRows && incomingPreviewCards && checklistIndexes.length > 0
+        ? orphanedReviewRowIds(rawRows, incomingPreviewCards, checklistChoices, normalizeEntityName)
+        : null,
+    [rawRows, incomingPreviewCards, checklistIndexes, checklistChoices],
+  );
+  const rows = useMemo(
+    () =>
+      rawRows && orphanedRowIds && orphanedRowIds.size > 0
+        ? rawRows.filter((r) => !orphanedRowIds.has(r._id))
+        : rawRows,
+    [rawRows, orphanedRowIds],
+  );
+  /** NEO-478 — the checklist step is on screen, ahead of the names. */
+  const checklistPending = checklistIndexes.length > 0 && !checklistSettled;
   const recordDecision = useMutation(api.entityReviewQueue.recordDecision);
   const clearDecision = useMutation(api.entityReviewQueue.clearDecision);
   const cancelBatch = useMutation(api.entityReviewQueue.cancelBatch);
@@ -1047,6 +1157,12 @@ export default function EntityReviewWizard({
    * answer here; the parent sends it with the commit and stores it nowhere.
    */
   const [autographAnswer, setAutographAnswer] = useState<AutographFormat | undefined>(undefined);
+  /** NEO-478 — the checklist step's heading; its Next is described by it. */
+  const checklistLeadId = useId();
+  /** NEO-478 — the first unanswered card's first button, focused on arrival. */
+  const checklistChoiceRef = useRef<HTMLButtonElement>(null);
+  const checklistHintId = useId();
+  const [checklistBlockedPressed, setChecklistBlockedPressed] = useState(false);
   /** NEO-345 — the autograph step's question; its Next is described by it. */
   const autographLeadId = useId();
   /** NEO-345 — the autograph step's tab-stop choice, focused while unanswered. */
@@ -1187,13 +1303,17 @@ export default function EntityReviewWizard({
   );
   const outcome = useMemo(() => summarizeDecisions(rows ?? []), [rows]);
   const current = useMemo(
-    () => (nav.rowId ? (rows?.find((r) => r._id === nav.rowId) ?? null) : null),
-    [rows, nav.rowId],
+    () =>
+      // NEO-478 — no name is on screen while the checklist step is.
+      !checklistPending && nav.rowId ? (rows?.find((r) => r._id === nav.rowId) ?? null) : null,
+    [rows, nav.rowId, checklistPending],
   );
   /** The row is decided AND still on screen — the read-only review panel. */
   const reviewingDecided = current?.decision != null;
   // NEO-335: a teams-only review has nothing to decide — it IS the final step.
-  const allDecided = teamsOnly || (total > 0 && decided === total);
+  // NEO-478: a batch whose every row the checklist answers dropped has
+  // nothing left to decide, so it counts the RAW rows for "is there a batch".
+  const allDecided = teamsOnly || ((rawRows?.length ?? 0) > 0 && decided === total);
 
   // ------------------------------------------------------------------------
   // Reads. All unconditional hooks, above the `isOpen` early return.
@@ -1954,8 +2074,8 @@ export default function EntityReviewWizard({
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- one-way latch: a batch that has had rows can never un-have them
-    if (rows && rows.length > 0 && !hadRows) setHadRows(true);
-  }, [rows, hadRows]);
+    if (rawRows && rawRows.length > 0 && !hadRows) setHadRows(true);
+  }, [rawRows, hadRows]);
 
   /**
    * NEO-236 — claim the step `Decide team` just asked to have staged.
@@ -3032,7 +3152,8 @@ export default function EntityReviewWizard({
    *
    * (Above the early return since NEO-335 Phase 2: the step model reads it.)
    */
-  const expired = hadRows && total === 0 && !closing && !saving;
+  // The RAW rows (NEO-478): rows the checklist answers left out are not gone.
+  const expired = hadRows && (rawRows?.length ?? 0) === 0 && !closing && !saving;
 
   // ------------------------------------------------------------------------
   // NEO-335 Phase 2 — the step model: which screen is on, and "Step x of y".
@@ -3125,6 +3246,7 @@ export default function EntityReviewWizard({
     [titleContextForSitting, previewCards, teamAnswersSeen, titleNames, existingCardIndexes],
   );
   const postLive = {
+    checklist: checklistIndexes.length > 0,
     teams: teamsStepCards.length > 0,
     autograph: autographIndexes.length > 0,
     titles: titleIndexes.length > 0,
@@ -3135,15 +3257,20 @@ export default function EntityReviewWizard({
    * Save), whichever step was asked for.
    */
   const autographUnanswered = postLive.autograph && autographAnswer === undefined;
+  /** NEO-478 — the checklist step's answers are required too. */
+  const checklistUnanswered = postLive.checklist && checklistUnansweredCount > 0;
   /** Every name decided and none on screen: the teams / autograph / titles / save steps. */
-  const onPostReview = !expired && current === null && allDecided;
-  const postStep: PostReviewStep | null = onPostReview
-    ? resolvePostReviewStep(
-        requestedPostStep,
-        postLive,
-        autographUnanswered ? "autograph" : undefined,
-      )
-    : null;
+  const onPostReview = !expired && !checklistPending && current === null && allDecided;
+  const postStep: PostReviewStep | null =
+    !expired && checklistPending
+      ? "checklist"
+      : onPostReview
+        ? resolvePostReviewStep(
+            requestedPostStep,
+            postLive,
+            autographUnanswered ? "autograph" : undefined,
+          )
+        : null;
   // Back in the names (Back, Change, Back to review): the post-review steps
   // are walked again from the first when the operator returns to them.
   if (current !== null && requestedPostStep !== null) setRequestedPostStep(null);
@@ -3224,6 +3351,7 @@ export default function EntityReviewWizard({
     isOpen && rows !== undefined && !expired
       ? trackSteps(stepTracker, {
           rows,
+          checklistStep: postLive.checklist,
           teamsStep: postLive.teams,
           autographStep: postLive.autograph,
           titlesStep: postLive.titles,
@@ -3310,7 +3438,12 @@ export default function EntityReviewWizard({
               autographAnswer === undefined
               ? autographChoiceRef.current
               : nextStepButtonRef.current
-            : null;
+            : screenKey === "checklist"
+              ? // NEO-478 — the same rule: the first card still waiting, else Next.
+                checklistUnansweredCount > 0
+                ? checklistChoiceRef.current
+                : nextStepButtonRef.current
+              : null;
     if (screenKey !== "review" && screenKey !== "expired" && !target) return; // not mounted yet
     focusedScreenRef.current = screenKey;
     target?.focus();
@@ -3870,10 +4003,21 @@ export default function EntityReviewWizard({
    * teams → titles → save, passing over a step with nothing in it; Back goes
    * to the step before, or out of them to the last name decided.
    */
-  const previousStep = postStep ? previousPostReviewStep(postStep, postLive) : null;
-  const postStepBackAvailable = previousStep !== null || backTargetId !== null;
+  const previousStep =
+    postStep && postStep !== "checklist" ? previousPostReviewStep(postStep, postLive) : null;
+  /** NEO-478 — the checklist step is first: Back with no name behind returns to it. */
+  const checklistBehind = checklistIndexes.length > 0 && !checklistPending;
+  const postStepBackAvailable =
+    postStep !== "checklist" &&
+    (previousStep !== null || backTargetId !== null || checklistBehind);
   const goToNextStep = () => {
     if (!postStep) return;
+    if (postStep === "checklist") {
+      // NEO-478 — settled: on to the names (or, with none left, the steps after).
+      setRequestedPostStep(null);
+      setChecklistSettled(true);
+      return;
+    }
     const next = nextPostReviewStep(postStep, postLive);
     if (next) setRequestedPostStep(next);
   };
@@ -3883,10 +4027,17 @@ export default function EntityReviewWizard({
       setRequestedPostStep(previousStep);
       return;
     }
-    if (backTargetId) presentDecided(backTargetId);
+    if (backTargetId) {
+      presentDecided(backTargetId);
+      return;
+    }
+    if (checklistBehind) setChecklistSettled(false);
   };
   /** NEO-345 — Next is held while saving, and on an unanswered autograph step. */
-  const nextBlocked = saving || (postStep === "autograph" && autographUnanswered);
+  const nextBlocked =
+    saving ||
+    (postStep === "autograph" && autographUnanswered) ||
+    (postStep === "checklist" && checklistUnanswered);
   /**
    * NEO-345 (a11y) — a press (click, Enter or Space) on Next while the
    * autograph step is unanswered: say why in the step's status line and move
@@ -3894,7 +4045,19 @@ export default function EntityReviewWizard({
    * as it always has.
    */
   const pressBlockedNext = () => {
-    if (saving || postStep !== "autograph" || !autographUnanswered) return;
+    if (saving) return;
+    // NEO-478 — the checklist step's held Next says why the same way.
+    if (postStep === "checklist" && checklistUnanswered) {
+      setChecklistBlockedPressed(true);
+      const firstOpen = checklistRows.find((r) => checklistChoices[r.index] === undefined);
+      if (firstOpen) {
+        document
+          .querySelector<HTMLButtonElement>(`[data-checklist-conflict="${firstOpen.index}"] button`)
+          ?.focus();
+      }
+      return;
+    }
+    if (postStep !== "autograph" || !autographUnanswered) return;
     setAutographBlockedPressed(true);
     autographChoiceRef.current?.focus();
   };
@@ -4310,13 +4473,23 @@ export default function EntityReviewWizard({
           >
             Back to the suggestion
           </button>
+        ) : backTargetId ? (
+          <button
+            type="button"
+            onClick={() => presentDecided(backTargetId)}
+            aria-label="Back to previous decision"
+            className={`${footerFieldClass("btn-back-decision")} ${OUTLINED_BACK_BUTTON_CLASS} -my-2`}
+          >
+            Back
+          </button>
         ) : (
-          backTargetId && (
+          /* NEO-478 — the first name's way back is the checklist step before it. */
+          checklistBehind && (
             <button
               type="button"
-              onClick={() => presentDecided(backTargetId)}
-              aria-label="Back to previous decision"
-              className={`${footerFieldClass("btn-back-decision")} ${OUTLINED_BACK_BUTTON_CLASS} -my-2`}
+              onClick={() => setChecklistSettled(false)}
+              aria-label="Back to previous step"
+              className={`${footerFieldClass("btn-back-step")} ${OUTLINED_BACK_BUTTON_CLASS} -my-2`}
             >
               Back
             </button>
@@ -5612,6 +5785,28 @@ export default function EntityReviewWizard({
               <p id={teamsIntroId} className="text-sm text-ink-2">
                 Pick a team for each card, or leave it for later.
               </p>
+            ) : postStep === "checklist" ? (
+              /*
+                NEO-478 — the "Checklist says otherwise" step: each card the
+                operator's published checklist disagrees with, both answers
+                side by side. Required: Next stays blocked until every card
+                has a pick. The pick is applied to the card on the client.
+              */
+              <ChecklistConflictStep
+                rows={checklistRows}
+                choices={checklistChoices}
+                onChoose={(index, choice) =>
+                  setChecklistChoices((prev) =>
+                    prev[index] === choice ? prev : { ...prev, [index]: choice },
+                  )
+                }
+                onAllAnswered={() => nextStepButtonRef.current?.focus()}
+                disabled={saving}
+                headingId={checklistLeadId}
+                firstOpenRef={checklistChoiceRef}
+                hintId={checklistHintId}
+                showBlockedHint={checklistBlockedPressed}
+              />
             ) : postStep === "autograph" ? (
               /*
                 NEO-345 — the "Autographed cards" step: how this leaf's
@@ -5824,6 +6019,7 @@ export default function EntityReviewWizard({
                 titles steps — those are about cards, and this list is names. */}
             {!expired &&
               decidedRows.length > 0 &&
+              postStep !== "checklist" &&
               postStep !== "teams" &&
               postStep !== "autograph" &&
               postStep !== "titles" && (
@@ -6041,7 +6237,8 @@ export default function EntityReviewWizard({
                   >
                     Cancel (Esc)
                   </NeonButton>
-                  {(postStep === "teams" ||
+                  {(postStep === "checklist" ||
+                    postStep === "teams" ||
                     postStep === "autograph" ||
                     postStep === "titles") && (
                     <NeonButton
@@ -6051,7 +6248,9 @@ export default function EntityReviewWizard({
                       // `footerFieldClass`.
                       className={footerFieldClass("btn-next-step")}
                       aria-describedby={
-                        postStep === "teams"
+                        postStep === "checklist"
+                          ? `${checklistLeadId} ${checklistHintId}`
+                          : postStep === "teams"
                           ? teamsIntroId
                           : postStep === "autograph"
                             ? `${autographLeadId} ${autographHintId}`
@@ -6306,7 +6505,7 @@ export default function EntityReviewWizard({
                 No aria-label on either: the visible text IS the accessible
                 name, and Maestro matches `.*Add remaining players as new.*`.
               */}
-              {!expired && !allDecided && remainingNames > 0 && (
+              {!expired && !allDecided && !checklistPending && remainingNames > 0 && (
                 <div
                   /*
                    * a11y (SC 3.3.1), audit finding: the bulk links yield to the

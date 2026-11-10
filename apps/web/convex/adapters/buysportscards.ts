@@ -3,6 +3,7 @@
 import { action, internalAction, type ActionCtx } from "../_generated/server";
 import { v } from "convex/values";
 import { api, internal } from "../_generated/api";
+import type { Id } from "../_generated/dataModel";
 import { requireAdmin } from "../auth";
 import {
   recordAdapterCall,
@@ -79,6 +80,14 @@ import {
   type BscRecorder,
 } from "../lib/bscCallTelemetry";
 import { flushBscRecorder } from "./bscSeller";
+// PR 451 (NEO-487) — the "Waiting on BuySportsCards…" rows, the deployment-wide
+// card-listing cooldown, and the background team lane's item shapes.
+import { createMarketplaceWaitWriter } from "../lib/marketplaceWaitWriter";
+import { parseRetryAfterMs } from "../marketplaceCooldowns";
+import {
+  bscTeamCheckItemResultValidator,
+  type BscTeamCheckItemResult,
+} from "../bscTeamPool";
 
 // Real BSC filter endpoint (ported from cardlister-server/script-frontend/src/listing-sites/bsc.ts).
 // The earlier www.buysportscards.com URL was a webpage path, not an API — CloudFront returned 403.
@@ -122,7 +131,8 @@ export const BSC_TEAM_LOOKUP_TIMEOUT_MS = 5_000;
 export const BSC_TEAM_LOOKUP_MAX_ATTEMPTS = 2;
 export const BSC_TEAM_LOOKUP_RETRY_PAUSE_MIN_MS = 250;
 export const BSC_TEAM_LOOKUP_RETRY_PAUSE_MAX_MS = 500;
-// Delay between cards in processBscTeamEnrichmentQueue. BSC has no
+// Delay after each card's call on the `bscTeamPool` lane (PR 451; it was the
+// gap between cards in processBscTeamEnrichmentQueue's chain). BSC has no
 // confirmed rate limit, but this stays conservative against the same
 // CDN/bot-detection this file already works around for the bulk
 // endpoint (see bscHeaders below). Much shorter than Wikidata's 3s gap
@@ -136,12 +146,106 @@ const BSC_TEAM_ENRICH_DELAY_MS = 300;
 // after 60s, one after a further 5 min. A card that fails all three is handed
 // to `bscTeamCheck.markBscTeamCheckGivenUp`, which flags it for the operator
 // ("no team on this card yet") and writes no team.
+//
+// PR 451: the ladder now runs on the `bscTeamPool` lane; these mirror
+// `bscTeamPool.BSC_TEAM_CHECK_MAX_PASSES` / `_RETRY_DELAYS_MS` for the
+// callers and tests that read them here.
 export const BSC_TEAM_CHECK_MAX_PASSES = 3;
 export const BSC_TEAM_CHECK_RETRY_DELAYS_MS = [60_000, 300_000] as const;
 // Bounded fan-out for fetchBscCardTeamNames's synchronous per-card lookups
 // during fetchCardChecklist — matches the existing MAX_SL_FAN_OUT=10
 // precedent in selectorOptions.ts for capping concurrent external calls.
 const BSC_TEAM_LOOKUP_CONCURRENCY = 10;
+
+// ── PR 451 (NEO-487): a bounded lookup ─────────────────────────────────────
+//
+// BSC's edge answers 429 (empty body, a few ms) and then blocks the IP for
+// about two minutes, and Convex deployments share egress IPs. So a lookup:
+//   - checks the deployment-wide cooldown (`marketplaceCooldowns`) before
+//     every wave, and makes no call while it is open;
+//   - stops at the first 429: never retried, the lookup-wide flag stops every
+//     card still in its retry pause, and `record429` opens (or keeps) the
+//     window;
+//   - stops after a wave in which EVERY card failed (both attempts of a
+//     timeout or 5xx): BSC is down, and asking the rest only costs time.
+// Cards it never asked come back `success: false, skipped: true`: the caller
+// records them `teamLookup: "failed"`, so the commit queues them for the
+// background lane (`bscTeamPool`), which waits the window out.
+
+/**
+ * PR 451 (D7) — the test-only stall switch. Works only where
+ * `TESTING_RESET_SECRET` is set (dev and previews; never prod) AND
+ * `NEONBINDER_TEST_BSC_STALL_CARD_IDS` holds a comma list of BSC card ids.
+ * Each listed card's `card-listing` attempt fails at once as a TIMEOUT (no
+ * request sent): never a 429, which is BSC's to give.
+ */
+export const TEST_BSC_STALL_ENV = "NEONBINDER_TEST_BSC_STALL_CARD_IDS";
+const MAX_TEST_STALL_IDS = 500;
+export function testStallCardIds(
+  env: Record<string, string | undefined> = process.env,
+): ReadonlySet<string> {
+  if (!env.TESTING_RESET_SECRET) return new Set();
+  const raw = env[TEST_BSC_STALL_ENV];
+  if (!raw) return new Set();
+  return new Set(
+    raw
+      .split(",")
+      .map((id) => id.trim())
+      .filter((id) => /^[A-Za-z0-9_-]{1,64}$/.test(id))
+      .slice(0, MAX_TEST_STALL_IDS),
+  );
+}
+
+/** A lookup's shared stop flag: set by the first 429 any of its cards gets. */
+type BscLookupStop = { rateLimited: boolean; retryAfterMs?: number };
+
+/** The open card-listing cooldown's end, or null. A failed read is "open road". */
+async function cardListingCooldownUntil(
+  ctx: Pick<ActionCtx, "runQuery">,
+): Promise<number | null> {
+  try {
+    const row = await ctx.runQuery(internal.marketplaceCooldowns.get, {
+      platform: "bsc",
+      endpoint: "cardListing",
+    });
+    return row ? row.until : null;
+  } catch (error) {
+    console.warn(
+      JSON.stringify({
+        msg: "bsc_cooldown_read_failed",
+        platform: "bsc",
+        operation: "cardListing",
+        error: error instanceof Error ? error.name : "unknown",
+      }),
+    );
+    return null;
+  }
+}
+
+/** Records a 429; returns the window's end (now + 60 s if the write failed). */
+async function recordCardListing429(
+  ctx: Pick<ActionCtx, "runMutation">,
+  retryAfterMs: number | undefined,
+): Promise<number> {
+  try {
+    const r = await ctx.runMutation(internal.marketplaceCooldowns.record429, {
+      platform: "bsc",
+      endpoint: "cardListing",
+      ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
+    });
+    return r.until;
+  } catch (error) {
+    console.warn(
+      JSON.stringify({
+        msg: "bsc_cooldown_write_failed",
+        platform: "bsc",
+        operation: "cardListing",
+        error: error instanceof Error ? error.name : "unknown",
+      }),
+    );
+    return Date.now() + 60_000;
+  }
+}
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -1810,6 +1914,10 @@ export const fetchBscChecklist = action({
     // card can be attributed to the slot it came from. Omitted → the legacy
     // rule (the queried variantName, else the response's own setName).
     sourceFacet: v.optional(bscFacetValidator),
+    // PR 451 (NEO-487) — the client's run key for "Waiting on
+    // BuySportsCards…" (`marketplaceWaits`). Absent or malformed: nothing is
+    // written. Never sent to BSC.
+    waitKey: v.optional(v.string()),
   },
   returns: v.object({
     success: v.boolean(),
@@ -1850,7 +1958,11 @@ export const fetchBscChecklist = action({
   }),
   handler: async (ctx, args): Promise<BscChecklistResult> => {
     await requireAdmin(ctx);
-    const rec = createBscRecorder("fetchBscChecklist", { deployment: deploymentName() });
+    const waits = createMarketplaceWaitWriter(ctx, args.waitKey, "fetchBscChecklist");
+    const rec = createBscRecorder("fetchBscChecklist", {
+      deployment: deploymentName(),
+      ...(waits ? { onWaitEdge: waits.onWaitEdge } : {}),
+    });
     try {
       const tokenResult: { success: boolean; token?: string; error?: string } = await ctx.runAction(
         internal.adapters.buysportscards.getBscToken,
@@ -1866,9 +1978,10 @@ export const fetchBscChecklist = action({
         };
       }
 
+      const { waitKey: _waitKey, ...checklistArgs } = args;
       return await bscChecklistWithSession(
         ctx,
-        args,
+        checklistArgs,
         { token: tokenResult.token },
         { recorder: rec },
       );
@@ -1884,6 +1997,7 @@ export const fetchBscChecklist = action({
       };
     } finally {
       await flushBscRecorder(ctx, rec);
+      await waits?.drain();
     }
   },
 });
@@ -1914,7 +2028,11 @@ export const fetchBscChecklist = action({
  * slots and caps the batch; the ids are checked again here.
  */
 export const probeBscChecklistBatch = internalAction({
-  args: { requests: v.array(bscProbeRequestValidator) },
+  args: {
+    requests: v.array(bscProbeRequestValidator),
+    // PR 451 (NEO-487) — see `fetchBscChecklist.waitKey`.
+    waitKey: v.optional(v.string()),
+  },
   returns: v.array(bscProbeSummaryValidator),
   handler: async (ctx, args): Promise<BscProbeSummary[]> => {
     await requireAdmin(ctx);
@@ -1973,7 +2091,11 @@ export const probeBscChecklistBatch = internalAction({
     // not reach fails `timeout` without a request (NEO-325).
     const deadlineAt = Date.now() + BSC_PROBE_DEADLINE_MS;
     const results: BscProbeSummary[] = [];
-    const rec = createBscRecorder("probeBscChecklistBatch", { deployment: deploymentName() });
+    const waits = createMarketplaceWaitWriter(ctx, args.waitKey, "probeBscChecklistBatch");
+    const rec = createBscRecorder("probeBscChecklistBatch", {
+      deployment: deploymentName(),
+      ...(waits ? { onWaitEdge: waits.onWaitEdge } : {}),
+    });
     try {
       for (const request of args.requests) {
         try {
@@ -2008,6 +2130,7 @@ export const probeBscChecklistBatch = internalAction({
       }
     } finally {
       await flushBscRecorder(ctx, rec);
+      await waits?.drain();
     }
     log(results, "done");
     return results;
@@ -2079,21 +2202,47 @@ async function fetchBscCardTeamNameRaw(
   bscCardId: string,
   /** NEO-475 — the invocation's call recorder; the caller flushes it. */
   rec?: BscRecorder,
-): Promise<BscCardTeamValue> {
-  for (let attempt = 1; attempt <= BSC_TEAM_LOOKUP_MAX_ATTEMPTS; attempt += 1) {
-    const outcome = await fetchBscCardTeamNameAttempt(bscCardId, attempt, rec);
-    if (outcome.ok) return outcome.value;
-    if (!outcome.retryable) break;
-    if (attempt < BSC_TEAM_LOOKUP_MAX_ATTEMPTS) {
-      await sleep(bscTeamLookupRetryPauseMs());
-    }
-  }
-  return {
+  /**
+   * PR 451 — the lookup's shared stop flag. A 429 sets it (and is never
+   * retried); a card in its retry pause sees it and does not retry.
+   */
+  stop?: BscLookupStop,
+  /** PR 451 (D7) — card ids that fake a timeout. */
+  stallIds: ReadonlySet<string> = testStallCardIds(),
+): Promise<BscCardTeamValue & { rateLimited?: true }> {
+  const failed = {
     teamNames: [],
     rawTeamName: "",
     success: false,
     attributeTokens: [],
   };
+  for (let attempt = 1; attempt <= BSC_TEAM_LOOKUP_MAX_ATTEMPTS; attempt += 1) {
+    if (stop?.rateLimited) break;
+    const outcome = stallIds.has(bscCardId)
+      ? fakeStalledAttempt(bscCardId, attempt)
+      : await fetchBscCardTeamNameAttempt(bscCardId, attempt, rec);
+    if (outcome.ok) return outcome.value;
+    if (outcome.rateLimited) {
+      if (stop && !stop.rateLimited) {
+        stop.rateLimited = true;
+        if (outcome.retryAfterMs !== undefined) stop.retryAfterMs = outcome.retryAfterMs;
+      }
+      return { ...failed, rateLimited: true };
+    }
+    if (!outcome.retryable) break;
+    if (attempt < BSC_TEAM_LOOKUP_MAX_ATTEMPTS) {
+      await sleep(bscTeamLookupRetryPauseMs());
+    }
+  }
+  return failed;
+}
+
+/** PR 451 (D7) — a listed card's attempt: a timeout, at once, with no request. */
+function fakeStalledAttempt(bscCardId: string, attempt: number): BscCardTeamAttempt {
+  console.warn(
+    `[fetchBscCardTeamNameRaw] test stall switch: timeout faked bscCardId=${bscCardId} attempt=${attempt}/${BSC_TEAM_LOOKUP_MAX_ATTEMPTS}`,
+  );
+  return { ok: false, retryable: true };
 }
 
 /** NEO-475 — the pause before the retry: 250-500 ms, jittered. */
@@ -2110,7 +2259,7 @@ export function bscTeamLookupRetryPauseMs(random: () => number = Math.random): n
  */
 type BscCardTeamAttempt =
   | { ok: true; value: BscCardTeamValue }
-  | { ok: false; retryable: boolean };
+  | { ok: false; retryable: boolean; rateLimited?: true; retryAfterMs?: number };
 
 async function fetchBscCardTeamNameAttempt(
   bscCardId: string,
@@ -2139,6 +2288,17 @@ async function fetchBscCardTeamNameAttempt(
       console.warn(
         `[fetchBscCardTeamNameRaw] card-listing fetch failed status=${response.status} bscCardId=${bscCardId} attempt=${attempt}/${BSC_TEAM_LOOKUP_MAX_ATTEMPTS}`,
       );
+      // PR 451 — a 429 is BSC's edge blocking the IP, not an answer about
+      // this card: never retried, and it stops the whole lookup.
+      if (response.status === 429) {
+        const retryAfterMs = parseRetryAfterMs(response.headers.get("retry-after"), Date.now());
+        return {
+          ok: false,
+          retryable: false,
+          rateLimited: true,
+          ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
+        };
+      }
       return { ok: false, retryable: response.status >= 500 };
     }
     const data: unknown = await response.json();
@@ -2261,45 +2421,66 @@ export const resolveBscCardTeam = internalAction({
     ctx,
     args,
   ): Promise<"answered" | "notNeeded" | "failed"> => {
-    const row: { bscCardId: string; needsCheck: boolean } | null =
-      await ctx.runQuery(internal.cardChecklist.getForBscTeamCheck, {
-        cardChecklistId: args.cardChecklistId,
-      });
-    if (!row || !row.needsCheck) return "notNeeded";
-
-    // NEO-475 — the one call is recorded, and its summary goes to the log
-    // only: this runs once per card from the background queue, and a table
-    // row per card would swamp the per-invocation rows the table is for.
-    const rec = createBscRecorder("resolveBscCardTeam", { deployment: deploymentName() });
-    let value: BscCardTeamValue;
-    try {
-      value = await fetchBscCardTeamNameRaw(row.bscCardId, rec);
-    } finally {
-      await flushBscRecorder(undefined, rec);
-    }
-    const { teamNames, rawTeamName, success, attributeTokens, printRun } = value;
-    // The fetch itself failed — leave the row untouched (do NOT distinguish
-    // "no team" from "couldn't check" here; only a successful call is allowed
-    // to mark this done). The queue decides whether to ask again.
-    if (!success) return "failed";
-
-    // NEO-333: both forms. The mutation tries the whole raw string first and
-    // only then the split parts; the raw string is also the unmatched hint.
-    // An empty raw string means BSC had no team on file.
-    //
-    // NEO-345: the card's attribute tokens ride along, so the same answer
-    // fills NB's attributes, print run and flags (fill-empty, never
-    // overwrite: `applyBscAttributeFill`).
-    await ctx.runMutation(internal.cardChecklist.applyBscTeamResolution, {
-      cardChecklistId: args.cardChecklistId,
-      rawTeamName,
-      teamNames,
-      attributeTokens,
-      ...(printRun !== undefined ? { printRun } : {}),
-    });
-    return "answered";
+    const outcome = await resolveBscCardTeamOnce(ctx, args.cardChecklistId);
+    // PR 451 — a 429 has already opened the cooldown; to this caller it is a
+    // call that failed.
+    return typeof outcome === "string" ? outcome : "failed";
   },
 });
+
+/**
+ * The body of `resolveBscCardTeam`, shared with the background lane's work
+ * item (`runBscTeamCheckItem`). PR 451: a 429 is reported apart from a
+ * failure (`{ rateLimited, until }`), after `record429` has opened the
+ * deployment-wide window, so the lane can push the card back without
+ * spending a pass.
+ */
+async function resolveBscCardTeamOnce(
+  ctx: ActionCtx,
+  cardChecklistId: Id<"cardChecklist">,
+): Promise<"answered" | "notNeeded" | "failed" | { rateLimited: true; until: number }> {
+  const row: { bscCardId: string; needsCheck: boolean } | null =
+    await ctx.runQuery(internal.cardChecklist.getForBscTeamCheck, {
+      cardChecklistId,
+    });
+  if (!row || !row.needsCheck) return "notNeeded";
+
+  // NEO-475 — the one call is recorded, and its summary goes to the log
+  // only: this runs once per card from the background queue, and a table
+  // row per card would swamp the per-invocation rows the table is for.
+  const rec = createBscRecorder("resolveBscCardTeam", { deployment: deploymentName() });
+  const stop: BscLookupStop = { rateLimited: false };
+  let value: BscCardTeamValue & { rateLimited?: true };
+  try {
+    value = await fetchBscCardTeamNameRaw(row.bscCardId, rec, stop);
+  } finally {
+    await flushBscRecorder(undefined, rec);
+  }
+  if (value.rateLimited) {
+    return { rateLimited: true, until: await recordCardListing429(ctx, stop.retryAfterMs) };
+  }
+  const { teamNames, rawTeamName, success, attributeTokens, printRun } = value;
+  // The fetch itself failed — leave the row untouched (do NOT distinguish
+  // "no team" from "couldn't check" here; only a successful call is allowed
+  // to mark this done). The queue decides whether to ask again.
+  if (!success) return "failed";
+
+  // NEO-333: both forms. The mutation tries the whole raw string first and
+  // only then the split parts; the raw string is also the unmatched hint.
+  // An empty raw string means BSC had no team on file.
+  //
+  // NEO-345: the card's attribute tokens ride along, so the same answer
+  // fills NB's attributes, print run and flags (fill-empty, never
+  // overwrite: `applyBscAttributeFill`).
+  await ctx.runMutation(internal.cardChecklist.applyBscTeamResolution, {
+    cardChecklistId,
+    rawTeamName,
+    teamNames,
+    attributeTokens,
+    ...(printRun !== undefined ? { printRun } : {}),
+  });
+  return "answered";
+}
 
 /**
  * NEO-335 — one card's answer from the batch lookup below.
@@ -2316,7 +2497,11 @@ export const resolveBscCardTeam = internalAction({
  * NEO-333: the card's team value in BOTH forms, raw and comma split — see
  * `fetchBscCardTeamNameRaw`. A failed lookup carries neither.
  */
-export type BscCardTeamLookup = BscCardTeamValue & { bscCardId: string };
+export type BscCardTeamLookup = BscCardTeamValue & {
+  bscCardId: string;
+  /** PR 451 — never asked; see the validator. */
+  skipped?: true;
+};
 
 const bscCardTeamLookupValidator = v.object({
   bscCardId: v.string(),
@@ -2326,6 +2511,10 @@ const bscCardTeamLookupValidator = v.object({
   // NEO-345 — see `BscCardTeamValue`. Empty on a failed call.
   attributeTokens: v.array(v.string()),
   printRun: v.optional(v.number()),
+  // PR 451 (NEO-487) — this card was never asked: the lookup stopped (a 429,
+  // an open cooldown, or a wave in which every card failed) before its wave.
+  // Always with `success: false`. The caller stops asking, too.
+  skipped: v.optional(v.literal(true)),
 });
 
 /**
@@ -2353,18 +2542,49 @@ const bscCardTeamLookupValidator = v.object({
  * answered entry with both forms empty.
  */
 export const fetchBscCardTeamNames = internalAction({
-  args: { bscCardIds: v.array(v.string()) },
+  args: {
+    bscCardIds: v.array(v.string()),
+    // PR 451 (NEO-487) — see `fetchBscChecklist.waitKey`.
+    waitKey: v.optional(v.string()),
+  },
   returns: v.array(bscCardTeamLookupValidator),
   handler: async (ctx, args): Promise<BscCardTeamLookup[]> => {
     const result: BscCardTeamLookup[] = [];
     const startedAt = Date.now();
     // NEO-475 — one recorder shared by every chunk of this invocation.
-    const rec = createBscRecorder("fetchBscCardTeamNames", { deployment: deploymentName() });
+    const waits = createMarketplaceWaitWriter(ctx, args.waitKey, "fetchBscCardTeamNames");
+    const rec = createBscRecorder("fetchBscCardTeamNames", {
+      deployment: deploymentName(),
+      ...(waits ? { onWaitEdge: waits.onWaitEdge } : {}),
+    });
+    // PR 451 — why the lookup stopped early, if it did (see the note at
+    // `BSC_TEAM_LOOKUP_CONCURRENCY`).
+    let stopped: "cooldown" | "rateLimited" | "waveFailed" | undefined;
+    const stop: BscLookupStop = { rateLimited: false };
+    const stallIds = testStallCardIds();
+    let asked = 0;
     try {
       for (let i = 0; i < args.bscCardIds.length; i += BSC_TEAM_LOOKUP_CONCURRENCY) {
         const chunk = args.bscCardIds.slice(i, i + BSC_TEAM_LOOKUP_CONCURRENCY);
+        if (!stopped && (await cardListingCooldownUntil(ctx)) !== null) {
+          stopped = "cooldown";
+        }
+        if (stopped) {
+          for (const bscCardId of chunk) {
+            result.push({
+              bscCardId,
+              rawTeamName: "",
+              teamNames: [],
+              success: false,
+              attributeTokens: [],
+              skipped: true,
+            });
+          }
+          continue;
+        }
+        asked += chunk.length;
         const results = await Promise.all(
-          chunk.map((bscCardId) => fetchBscCardTeamNameRaw(bscCardId, rec)),
+          chunk.map((bscCardId) => fetchBscCardTeamNameRaw(bscCardId, rec, stop, stallIds)),
         );
         chunk.forEach((bscCardId, idx) => {
           const { rawTeamName, teamNames, success, attributeTokens, printRun } =
@@ -2391,9 +2611,16 @@ export const fetchBscCardTeamNames = internalAction({
                 },
           );
         });
+        if (stop.rateLimited) {
+          stopped = "rateLimited";
+          await recordCardListing429(ctx, stop.retryAfterMs);
+        } else if (results.every((r) => !r.success)) {
+          stopped = "waveFailed";
+        }
       }
     } finally {
       await flushBscRecorder(ctx, rec);
+      await waits?.drain();
     }
     const failed = result.filter((r) => !r.success).length;
     if (failed > 0) {
@@ -2404,7 +2631,9 @@ export const fetchBscCardTeamNames = internalAction({
           platform: "bsc",
           operation: "fetchBscCardTeamNames",
           requested: args.bscCardIds.length,
+          asked,
           failed,
+          ...(stopped ? { stopped } : {}),
           ms: Date.now() - startedAt,
         }),
       );
@@ -2414,21 +2643,13 @@ export const fetchBscCardTeamNames = internalAction({
 });
 
 /**
- * NEO-90: chained serial queue for BSC per-card team lookups — same shape
- * as adapters/wikidata.ts's processEnrichmentQueue. commitCardChecklist
- * hands the ids of newly-touched cards missing team data to this action
- * via `scheduler.runAfter(0, ...)`; it pops one id, resolves it, then
- * reschedules itself with the tail after BSC_TEAM_ENRICH_DELAY_MS. Errors
- * on a single card are caught/logged — the queue moves on rather than
- * abandoning the rest of the set.
- *
- * NEO-330 — a card whose lookup fails (or throws) is carried in `failedIds`
- * to the end of the pass. When the pass drains, those cards get another pass
- * after `BSC_TEAM_CHECK_RETRY_DELAYS_MS[pass - 1]`, up to
- * `BSC_TEAM_CHECK_MAX_PASSES`. A card that fails the last pass is flagged for
- * the operator through `bscTeamCheck.markBscTeamCheckGivenUp` — never given a
- * guessed team. Jason, 2026-10-11: "If a team lookup never returns then the
- * user must select a team."
+ * NEO-90 / PR 451 — the old self-rescheduling team queue, kept with its exact
+ * args for one release as a SHIM: everything it is handed goes onto the
+ * `bscTeamPool` lane (`bscTeamPool.enqueueBscTeamChecks`), which owns the
+ * NEO-330 ladder and the PR 451 push-back now. A chain already scheduled by
+ * the previous deploy lands here and is moved onto the lane, so no card is
+ * dropped across the deploy: `cardChecklistIds` at their pass, `failedIds`
+ * (cards that failed earlier in that pass) at the next one.
  */
 export const processBscTeamEnrichmentQueue = internalAction({
   args: {
@@ -2441,98 +2662,63 @@ export const processBscTeamEnrichmentQueue = internalAction({
   returns: v.null(),
   handler: async (ctx, args): Promise<null> => {
     const pass = args.pass ?? 1;
-    const failedIds = [...(args.failedIds ?? [])];
-    const [head, ...tail] = args.cardChecklistIds;
-
-    if (head) {
-      let outcome: "answered" | "notNeeded" | "failed" = "failed";
-      try {
-        outcome = await ctx.runAction(
-          internal.adapters.buysportscards.resolveBscCardTeam,
-          { cardChecklistId: head },
-        );
-      } catch (error) {
-        // Name only: a thrown mutation error can echo its arguments, which
-        // carry BSC's team value.
-        console.error(
-          `[bsc-team-enrichment-queue] resolveBscCardTeam ${head} failed error=${
-            error instanceof Error ? error.name : "unknown"
-          }`,
-        );
-      }
-      if (outcome === "failed") failedIds.push(head);
+    if (args.cardChecklistIds.length > 0) {
+      await ctx.runMutation(internal.bscTeamPool.enqueueBscTeamChecks, {
+        cardChecklistIds: args.cardChecklistIds,
+        pass,
+      });
     }
-
-    if (tail.length > 0) {
-      await ctx.scheduler.runAfter(
-        BSC_TEAM_ENRICH_DELAY_MS,
-        internal.adapters.buysportscards.processBscTeamEnrichmentQueue,
-        {
-          cardChecklistIds: tail,
-          ...(failedIds.length > 0 ? { failedIds } : {}),
-          ...(pass > 1 ? { pass } : {}),
-        },
-      );
-      return null;
+    const failedIds = args.failedIds ?? [];
+    if (failedIds.length > 0) {
+      await ctx.runMutation(internal.bscTeamPool.enqueueBscTeamChecks, {
+        cardChecklistIds: failedIds,
+        pass: Math.min(pass + 1, BSC_TEAM_CHECK_MAX_PASSES),
+      });
     }
-
-    // The pass has drained. (The "drained" line is kept to the empty call it
-    // always came from.)
-    if (failedIds.length === 0) {
-      if (!head) console.log(`[bsc-team-enrichment-queue] queue drained.`);
-      return null;
+    if (args.cardChecklistIds.length === 0 && failedIds.length === 0) {
+      console.log(`[bsc-team-enrichment-queue] queue drained.`);
     }
-    if (pass < BSC_TEAM_CHECK_MAX_PASSES) {
-      const delayMs = BSC_TEAM_CHECK_RETRY_DELAYS_MS[pass - 1];
-      // Counts and timing only — never a card name.
-      console.warn(
-        JSON.stringify({
-          msg: "bsc_team_check_retry_scheduled",
-          platform: "bsc",
-          operation: "resolveBscCardTeam",
-          failed: failedIds.length,
-          pass,
-          nextPass: pass + 1,
-          delayMs,
-        }),
-      );
-      await ctx.scheduler.runAfter(
-        delayMs,
-        internal.adapters.buysportscards.processBscTeamEnrichmentQueue,
-        { cardChecklistIds: failedIds, pass: pass + 1 },
-      );
-      return null;
-    }
-
-    let flagged = 0;
-    for (const id of failedIds) {
-      try {
-        if (
-          await ctx.runMutation(internal.bscTeamCheck.markBscTeamCheckGivenUp, {
-            cardChecklistId: id,
-          })
-        ) {
-          flagged++;
-        }
-      } catch (error) {
-        console.error(
-          `[bsc-team-enrichment-queue] markBscTeamCheckGivenUp ${id} failed error=${
-            error instanceof Error ? error.name : "unknown"
-          }`,
-        );
-      }
-    }
-    console.warn(
-      JSON.stringify({
-        msg: "bsc_team_check_gave_up",
-        platform: "bsc",
-        operation: "resolveBscCardTeam",
-        failed: failedIds.length,
-        flagged,
-        passes: pass,
-      }),
-    );
     return null;
+  },
+});
+
+/**
+ * PR 451 (NEO-487) — one card on the `bscTeamPool` lane (one slot,
+ * deployment wide). See bscTeamPool.ts for the ladder its completion applies.
+ *
+ *  - an open card-listing cooldown: no call, `deferred` to the window's end;
+ *  - a 429: `record429` opens the window, `deferred` to its end (no pass
+ *    spent);
+ *  - otherwise `resolveBscCardTeam`'s answer.
+ *
+ * Paced `BSC_TEAM_ENRICH_DELAY_MS` after its call (the old chain's gap), so
+ * the one slot never asks faster than the chain did.
+ */
+export const runBscTeamCheckItem = internalAction({
+  args: {
+    cardChecklistId: v.id("cardChecklist"),
+    pass: v.number(),
+    firstQueuedAt: v.number(),
+  },
+  returns: bscTeamCheckItemResultValidator,
+  handler: async (ctx, args): Promise<BscTeamCheckItemResult> => {
+    const until = await cardListingCooldownUntil(ctx);
+    if (until !== null) return { outcome: "deferred", until };
+    let outcome: Awaited<ReturnType<typeof resolveBscCardTeamOnce>> = "failed";
+    try {
+      outcome = await resolveBscCardTeamOnce(ctx, args.cardChecklistId);
+    } catch (error) {
+      // Name only: a thrown mutation error can echo its arguments, which
+      // carry BSC's team value.
+      console.error(
+        `[bsc-team-pool] resolveBscCardTeam ${args.cardChecklistId} failed error=${
+          error instanceof Error ? error.name : "unknown"
+        }`,
+      );
+    }
+    if (outcome !== "notNeeded") await sleep(BSC_TEAM_ENRICH_DELAY_MS);
+    if (typeof outcome !== "string") return { outcome: "deferred", until: outcome.until };
+    return { outcome };
   },
 });
 

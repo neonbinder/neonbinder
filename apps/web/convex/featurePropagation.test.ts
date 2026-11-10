@@ -31,6 +31,11 @@ import { Id } from "./_generated/dataModel";
 import { teamRowFields } from "./lib/teamRow";
 import { teamFullName } from "../lib/teams/team-name";
 import { insertTestCard } from "../lib/testing/card-row";
+import {
+  captureBscTeamLane,
+  runBscTeamLane,
+  type BscTeamLaneItem,
+} from "../lib/testing/bsc-team-lane";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -1392,12 +1397,20 @@ describe("commitCardChecklist wires up BSC per-card team enrichment (NEO-90)", (
     );
   }
 
+  // PR 451 (NEO-487): the commit queues the card on the `bscTeamPool` lane,
+  // a workpool component convex-test cannot register. The pool's enqueue is
+  // captured and the lane run by hand after the drain
+  // (lib/testing/bsc-team-lane.ts); the item's pacing pause elapses in real
+  // time.
+  let lane: BscTeamLaneItem[] = [];
   beforeEach(() => {
-    vi.useFakeTimers();
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    lane = captureBscTeamLane();
   });
   afterEach(() => {
     vi.useRealTimers();
     vi.unstubAllGlobals();
+    vi.restoreAllMocks();
   });
 
   test("a new card with a BSC ref and no team is LINKED to the team BSC names", async () => {
@@ -1453,8 +1466,9 @@ describe("commitCardChecklist wires up BSC per-card team enrichment (NEO-90)", (
       ],
     });
 
-    // Drain the scheduled processBscTeamEnrichmentQueue chain.
+    // Drain the commit's scheduled enqueue, then run the lane it fed.
     await t.finishAllScheduledFunctions(vi.runAllTimers);
+    await runBscTeamLane(t, lane);
 
     // The enrichment called BSC for THIS card and nothing else. Asserting the
     // exact call list (not just "contains") is what makes a stray request from
@@ -1526,6 +1540,7 @@ describe("commitCardChecklist wires up BSC per-card team enrichment (NEO-90)", (
     });
 
     await t.finishAllScheduledFunctions(vi.runAllTimers);
+    await runBscTeamLane(t, lane);
 
     // The lookup still HAPPENED — this is a miss, not a skip.
     expect(fetchedUrls).toEqual([
@@ -1600,6 +1615,7 @@ describe("commitCardChecklist wires up BSC per-card team enrichment (NEO-90)", (
     });
 
     await t.finishAllScheduledFunctions(vi.runAllTimers);
+    await runBscTeamLane(t, lane);
     expect(bscFetchCalled).toBe(false);
 
     const cards = await t.run(async (ctx) =>
@@ -1657,6 +1673,7 @@ describe("commitCardChecklist wires up BSC per-card team enrichment (NEO-90)", (
     });
 
     await t.finishAllScheduledFunctions(vi.runAllTimers);
+    await runBscTeamLane(t, lane);
     expect(bscFetchCalled).toBe(false);
   });
 });
