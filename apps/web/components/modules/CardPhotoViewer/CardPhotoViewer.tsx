@@ -67,12 +67,16 @@ export const VIEWER_WORDS = {
   unsavedEdit: "Unsaved edit. Esc again to toss it, or Save photo.",
   keepOld: "Keep the old photo",
   keys: "Keys: [ and ] turn it, C crops it.",
+  imageUnavailable: "Image unavailable",
 } as const;
 
 /** How long the box holds still before its size is read out. */
 const ANNOUNCE_AFTER_MS = 600;
 
-type Loaded = { state: "loading" } | { state: "ready"; start: EditStart; forUrl: string } | { state: "error" };
+type Loaded = { state: "loading" } | { state: "ready"; start: EditStart } | { state: "error" };
+
+/** How long a read of where an edit starts may take before it counts as failed (Open it again). */
+export const LOAD_TIMEOUT_MS = 20_000;
 
 /** True when focus sits in a text field, where the viewer's letter keys are typing. */
 const typing = (el: EventTarget | null) =>
@@ -110,6 +114,8 @@ export default function CardPhotoViewer({
     [],
   );
   const [heard, setHeard] = useState("");
+  /** The address whose picture failed to draw: "Image unavailable" until the address changes. */
+  const [brokenUrl, setBrokenUrl] = useState<string | null>(null);
 
   // Focus never drops to <body> when the control holding it goes away: a
   // control that unmounts while focused hands focus to the heading (or, for
@@ -145,7 +151,11 @@ export default function CardPhotoViewer({
   // Read where an edit starts when a side opens, and again when its photo
   // changes underneath (a new version landed): an old start would draw on an
   // old picture. Loading is also the server's cue to warm the renderer.
+  // Keyed on the photo's address: "" while that address is still being fetched. The read does not
+  // wait for it (a view-only answer must show even when the picture never comes), and the address
+  // arriving afterwards is the same photo, not a new one, so it reads nothing again.
   const loadFor = useRef<Partial<Record<ViewerSide, string>>>({});
+  const loadToken = useRef<Partial<Record<ViewerSide, number>>>({});
   const mounted = useRef(true);
   useEffect(() => {
     mounted.current = true;
@@ -157,22 +167,43 @@ export default function CardPhotoViewer({
   const [reloads, setReloads] = useState(0);
   useEffect(() => {
     if (!current?.load || current.viewOnly) return;
-    if (!current.imageUrl || loadFor.current[side] === current.imageUrl) return;
+    const key = current.imageUrl ?? "";
+    const was = loadFor.current[side];
+    if (was === key) return;
+    if (was === "") {
+      loadFor.current[side] = key; // the address arrived for the photo already read
+      return;
+    }
     if (hasDraft) return; // never pull the picture out from under a draft
-    const forUrl = current.imageUrl;
     const thisSide = side;
-    loadFor.current[thisSide] = forUrl;
-    // A later load for this side (its photo changed again) wins over this one.
-    const latest = () => mounted.current && loadFor.current[thisSide] === forUrl;
+    loadFor.current[thisSide] = key;
+    const token = (loadToken.current[thisSide] ?? 0) + 1;
+    loadToken.current[thisSide] = token;
+    // A later load for this side (its photo changed again, or Open it again) wins over this one.
+    const latest = () => mounted.current && loadToken.current[thisSide] === token;
     // eslint-disable-next-line react-hooks/set-state-in-effect -- the start is an outside answer, asked for when the side opens
     setLoaded((l) => ({ ...l, [thisSide]: l[thisSide]?.state === "ready" ? l[thisSide] : { state: "loading" } }));
+    // Never a wait without end: an answer that has not come in time counts as a failed read.
+    let settled = false;
+    const fail = () => {
+      settled = true;
+      // Stays failed until the collector asks again (`retryLoad`): never a loop of reads.
+      if (latest()) setLoaded((l) => ({ ...l, [thisSide]: { state: "error" } }));
+    };
+    const timer = setTimeout(() => {
+      if (!settled) fail();
+    }, LOAD_TIMEOUT_MS);
     current.load().then(
       (s) => {
-        if (latest()) setLoaded((l) => ({ ...l, [thisSide]: { state: "ready", start: s, forUrl } }));
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        if (latest()) setLoaded((l) => ({ ...l, [thisSide]: { state: "ready", start: s } }));
       },
       () => {
-        // Stays failed until the collector asks again (`retryLoad`): never a loop of reads.
-        if (latest()) setLoaded((l) => ({ ...l, [thisSide]: { state: "error" } }));
+        if (settled) return;
+        clearTimeout(timer);
+        fail();
       },
     );
   }, [side, current, hasDraft, reloads]);
@@ -441,6 +472,8 @@ export default function CardPhotoViewer({
               srcH={editable.srcH}
               className="absolute inset-0 block h-full w-full"
             />
+          ) : current && (current.imageFailed || (current.imageUrl && brokenUrl === current.imageUrl)) ? (
+            <p className="absolute inset-0 flex items-center justify-center text-sm text-ink-3">{VIEWER_WORDS.imageUnavailable}</p>
           ) : current && !current.imageUrl ? (
             <p className="absolute inset-0 flex items-center justify-center text-sm text-ink-3">Loading the photo…</p>
           ) : current?.imageUrl ? (
@@ -452,6 +485,7 @@ export default function CardPhotoViewer({
               previewKey={current.previewKey}
               chip={false}
               className="absolute inset-0 block h-full w-full object-contain"
+              onError={() => setBrokenUrl(current.imageUrl ?? null)}
             />
           ) : (
             <p className="absolute inset-0 flex items-center justify-center text-sm text-ink-3">No {side} photo yet.</p>

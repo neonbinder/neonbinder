@@ -89,6 +89,7 @@ export function CardPhoto({
   chip = true,
   loading,
   chipId,
+  onError,
 }: {
   src: string;
   alt: string;
@@ -99,6 +100,8 @@ export function CardPhoto({
   /** False on a tile too small for words: the chip's text is said elsewhere. */
   chip?: boolean;
   loading?: "lazy" | "eager";
+  /** The file could not be drawn (gone, or its address expired). */
+  onError?: () => void;
   /**
    * The id of the words for a pending edit, for an opener's `aria-describedby`
    * (its `aria-label` hides what is inside it). With `chip` false the words are
@@ -113,7 +116,7 @@ export function CardPhoto({
   ) : shown ? (
     <ShownImage src={src} alt={alt} edit={shown} className={className} />
   ) : (
-    <img src={src} alt={alt} className={className} decoding="async" loading={loading} draggable={false} />
+    <img src={src} alt={alt} className={className} decoding="async" loading={loading} draggable={false} onError={onError} />
   );
   if (!pending) return picture;
   const words = pending.status === "rendering" ? "Touching it up…" : "Edit didn\u2019t save";

@@ -5,7 +5,7 @@ import { Theme } from "@radix-ui/themes";
 import type { PhotoCrop, PhotoEdit } from "@/lib/photo-edit/geometry";
 import { expectAccessibleInBothModes } from "@/lib/testing/axe";
 import Overlay from "@/app/collection/prototypes/p1/Overlay";
-import CardPhotoViewer, { VIEWER_WORDS } from "./CardPhotoViewer";
+import CardPhotoViewer, { LOAD_TIMEOUT_MS, VIEWER_WORDS } from "./CardPhotoViewer";
 import { CardPhoto } from "./EditedPhoto";
 import { rememberPreview, resetPreviewsForTest } from "./previewStore";
 import { heldPhotoSource, HELD_REASON } from "./sources";
@@ -577,6 +577,66 @@ describe("pending, failure and Undo", () => {
       </Theme>,
     );
     await waitFor(() => expect(front.load).toHaveBeenCalledTimes(3));
+  });
+});
+
+describe("a photo that can't be fetched, or a read that never answers", () => {
+  const SCAN_GONE = "This scan has aged out, so there's nothing left to crop.";
+
+  it("a view-only answer shows its reason while the picture's address is still coming, and a mint that failed says Image unavailable", async () => {
+    const load = vi.fn(async () => ({ mode: "viewOnly" as const, reason: SCAN_GONE }));
+    const view = render(
+      <Theme>
+        <CardPhotoViewer source={{ label: "loose-1.jpg", front: side({ imageUrl: undefined, load }) }} onClose={vi.fn()} />
+      </Theme>,
+    );
+    const dialog = screen.getByRole("dialog");
+    // The read does not wait for the picture.
+    await within(dialog).findByText(SCAN_GONE);
+    expect(load).toHaveBeenCalledTimes(1);
+    view.rerender(
+      <Theme>
+        <CardPhotoViewer source={{ label: "loose-1.jpg", front: side({ imageUrl: undefined, imageFailed: true, load }) }} onClose={vi.fn()} />
+      </Theme>,
+    );
+    expect(within(dialog).getByText(VIEWER_WORDS.imageUnavailable)).toBeTruthy();
+    expect(within(dialog).queryByText("Loading the photo…")).toBeNull();
+    expect(within(dialog).getByText(SCAN_GONE)).toBeTruthy();
+    expect(within(dialog).queryByRole("button", { name: "Save photo" })).toBeNull();
+  });
+
+  it("the address arriving after the read is the same photo: nothing is read again", async () => {
+    const front = side({ imageUrl: undefined });
+    const view = render(
+      <Theme>
+        <CardPhotoViewer source={{ label: "a card", front }} onClose={vi.fn()} />
+      </Theme>,
+    );
+    await within(screen.getByRole("dialog")).findByRole("button", { name: "Crop by hand" });
+    view.rerender(
+      <Theme>
+        <CardPhotoViewer source={{ label: "a card", front: { ...front, imageUrl: "blob:arrived" } }} onClose={vi.fn()} />
+      </Theme>,
+    );
+    expect(front.load).toHaveBeenCalledTimes(1);
+  });
+
+  it("a picture that fails to draw says Image unavailable", async () => {
+    const { dialog } = open({ label: "a card", front: side({ load: undefined }) });
+    const img = within(dialog).getByRole("img", { name: "Front of a card" });
+    fireEvent.error(img);
+    expect(within(dialog).getByText(VIEWER_WORDS.imageUnavailable)).toBeTruthy();
+  });
+
+  it("a read that never answers ends as a failed read with Open it again, never a wait without end", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const load = vi.fn(() => new Promise<never>(() => undefined));
+    const { dialog } = open({ label: "a card", front: side({ load }) });
+    expect(within(dialog).getByText(VIEWER_WORDS.loading)).toBeTruthy();
+    await act(async () => vi.advanceTimersByTime(LOAD_TIMEOUT_MS + 10));
+    expect(within(dialog).queryByText(VIEWER_WORDS.loading)).toBeNull();
+    expect(within(dialog).getByText(VIEWER_WORDS.loadFailed)).toBeTruthy();
+    expect(within(dialog).getByRole("button", { name: "Open it again" })).toBeTruthy();
   });
 });
 

@@ -96,25 +96,43 @@ export interface ScanSideInput {
   image?: ScanImageFacts;
 }
 
-/** A scan's current picture behind a signed GET, minted again when its edit version changes. */
-function useScanUrl(jobId: string, entryIndex: number | undefined, version: number | undefined): string | undefined {
+/** How long a scan's address may take before the viewer says "Image unavailable" instead of waiting. */
+export const MINT_TIMEOUT_MS = 15_000;
+
+/**
+ * A scan's current picture behind a signed GET, minted again when its edit
+ * version changes. `failed` when the mint is refused (the scan is gone) or
+ * takes too long: the viewer then says so rather than wait for ever. A late
+ * answer still wins.
+ */
+function useScanUrl(jobId: string, entryIndex: number | undefined, version: number | undefined): { url?: string; failed: boolean } {
   const mint = useAction(api.adapters.placeholderUploads.createPlaceholderImageDownloadUrl);
-  const [minted, setMinted] = useState<{ key: string; url: string } | null>(null);
+  const [minted, setMinted] = useState<{ key: string; url?: string; failed?: boolean } | null>(null);
   const key = `${jobId}:${entryIndex}:${version ?? 0}`;
   useEffect(() => {
     if (entryIndex === undefined) return;
     let live = true;
+    const timer = setTimeout(() => {
+      if (live) setMinted((m) => (m?.key === key && m.url ? m : { key, failed: true }));
+    }, MINT_TIMEOUT_MS);
     mint({ jobId, entryIndex }).then(
-      (r) => live && setMinted({ key, url: r.url }),
-      () => undefined,
+      (r) => {
+        clearTimeout(timer);
+        if (live) setMinted({ key, url: r.url });
+      },
+      () => {
+        clearTimeout(timer);
+        if (live) setMinted({ key, failed: true });
+      },
     );
     return () => {
       live = false;
+      clearTimeout(timer);
     };
     // `mint` is a new function every render (the Convex action-in-effect loop): keyed on what names the object.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key]);
-  return minted?.key === key ? minted.url : undefined;
+  return minted?.key === key ? { url: minted.url, failed: !!minted.failed && !minted.url } : { failed: false };
 }
 
 /**
@@ -140,16 +158,21 @@ export function useScanPhotoSource({
   const loadSource = useAction(api.photoEdits.photoEditSource);
   const saveScanEdit = useAction(api.photoEdits.saveScanEdit);
   const dismiss = useAction(api.photoEdits.dismissPhotoEditFailure);
-  const frontUrl = useScanUrl(jobId, front?.entryIndex, front?.image?.editVersion);
-  const backUrl = useScanUrl(jobId, back?.entryIndex, back?.image?.editVersion);
+  const frontImage = useScanUrl(jobId, front?.entryIndex, front?.image?.editVersion);
+  const backImage = useScanUrl(jobId, back?.entryIndex, back?.image?.editVersion);
+  const frontUrl = frontImage.url;
+  const backUrl = backImage.url;
+  const frontFailed = frontImage.failed;
+  const backFailed = backImage.failed;
 
   return useMemo(() => {
-    const side = (input: ScanSideInput | undefined, url: string | undefined): PhotoSideSource | undefined => {
+    const side = (input: ScanSideInput | undefined, url: string | undefined, failed: boolean): PhotoSideSource | undefined => {
       if (!input) return undefined;
       const ref = { kind: "scan" as const, jobId, entryIndex: input.entryIndex };
       const pending = asPendingPhotoEdit(input.image?.pendingEdit);
       return {
         imageUrl: url,
+        ...(failed ? { imageFailed: true } : {}),
         previewKey: scanPreviewKey(jobId, input.entryIndex),
         ...(pending ? { pending } : {}),
         ...(viewOnly ? { viewOnly } : {}),
@@ -168,8 +191,8 @@ export function useScanPhotoSource({
         },
       };
     };
-    return { label, front: side(front, frontUrl), back: side(back, backUrl) };
-  }, [jobId, label, front, back, frontUrl, backUrl, viewOnly, loadSource, saveScanEdit, dismiss]);
+    return { label, front: side(front, frontUrl, frontFailed), back: side(back, backUrl, backFailed) };
+  }, [jobId, label, front, back, frontUrl, backUrl, frontFailed, backFailed, viewOnly, loadSource, saveScanEdit, dismiss]);
 }
 
 /** The preview memory's key for a scan, so its tile finds the edit the viewer saved. */

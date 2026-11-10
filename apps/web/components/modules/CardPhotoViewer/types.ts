@@ -44,6 +44,8 @@ export interface EditableStart {
 export interface PhotoSideSource {
   /** The photo as it stands now, full size; undefined while its address is being fetched. */
   imageUrl: string | undefined;
+  /** Its address could not be fetched (the file is gone): the viewer shows "Image unavailable", never a wait. */
+  imageFailed?: boolean;
   /**
    * Show `imageUrl` with this edit drawn over it, not as it is: a picture whose
    * edits are kept as numbers only (the Add cards demo). Absent everywhere a
