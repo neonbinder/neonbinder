@@ -42,6 +42,7 @@ test("Dashboard: empty shelves lead into Add cards on Collection and on Inventor
   await expect(page.getByRole("heading", { level: 1, name: "Welcome back, slugger." })).toBeVisible();
   if (spines <= 16 && (await toInventory.count()) > 0) {
     await expect(toInventory).toBeVisible();
+    await expectAccessible(page, { label: "Dashboard, Inventory shelf starter" });
     await toInventory.click();
     await expect(page).toHaveURL(/\/inventory\?tab=add$/);
     const tabs = page.getByRole("navigation", { name: "Inventory sections" });

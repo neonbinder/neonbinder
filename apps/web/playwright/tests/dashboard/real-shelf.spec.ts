@@ -42,15 +42,24 @@ test("Dashboard shows the collector's own binder shelf", { tag: ["@smoke", "@das
   // set's Base for a whole set, else the variant itself (Jason, round 2).
   const news = page.getByRole("region", { name: "New on NeonBinder" });
   await expect(news).toBeVisible();
-  const chrome = news.getByRole("link", { name: /^2024 Topps Chrome\b/ }).first();
-  await expect(chrome).toHaveAttribute("href", /^\/collection\?tab=checklists&set=[^&]+&type=[^&]+/);
+  // The whole-set tile reads "<set> <sport>, <n> cards" with no variant in its name (a lone
+  // variant's tile would read "2024 Topps Chrome Future Stars Baseball, ..."), so it is the
+  // tile that must open the set's Base.
+  const chrome = news.getByRole("link", { name: /^2024 Topps Chrome Baseball, \d+ cards?/ });
+  await expect(chrome).toBeVisible();
+  await expect(chrome).toHaveAttribute("href", /^\/collection\?tab=checklists&set=[^&]+&type=[^&]+$/);
 
   await expectAccessible(page, { label: "Dashboard" });
 
-  // A real move: the checklist opens, and Back returns to the dashboard.
+  // A real move: the set's Base checklist opens (the Variant Types step reads Base, and the
+  // checklist is "2024 Topps Chrome Base", not an insert or parallel), and Back returns to
+  // the dashboard.
   await chrome.click();
-  await expect(page).toHaveURL(/\/collection\?tab=checklists&set=[^&]+&type=/);
-  await expect(page.getByRole("heading", { level: 3, name: /^2024 Topps Chrome\b/ })).toBeVisible();
+  await expect(page).toHaveURL(/\/collection\?tab=checklists&set=[^&]+&type=[^&]+$/);
+  const base = page.getByRole("region", { name: "2024 Topps Chrome Base", exact: true });
+  await expect(base.getByRole("heading", { level: 3, name: "2024 Topps Chrome Base", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Variant Types: Base, change", exact: true })).toBeVisible();
+  await expect(base.getByRole("button", { name: /^Details for #/ }).first()).toBeVisible();
   await page.goBack();
   await expect(page.getByRole("heading", { level: 1, name: "Welcome back, slugger." })).toBeVisible();
 });
