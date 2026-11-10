@@ -129,7 +129,13 @@ jobs:
       - run: pip install -r requirements-dev.txt
       - run: ruff check .
       - run: ruff format --check .
-      - run: pytest tests/unit --cov=app --cov-report=term-missing --cov-fail-under=80
+      # NEO-484: COVERAGE_CORE=sysmon (see pyproject [tool.coverage.run]) and
+      # --durations so the next slow test shows up in the log. The unit
+      # conftest blocks the real SAM model load; without that, a runner with
+      # torch installed spent ~14 of its ~15 minutes running SAM per test.
+      - run: pytest tests/unit --cov=app --cov-report=term-missing --cov-fail-under=80 --durations=15
+        env:
+          COVERAGE_CORE: sysmon
 
   # ---------------------------------------------------------------------------
   # PR preview path (PRs from branches in this repo).

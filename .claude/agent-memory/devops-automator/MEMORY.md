@@ -13,3 +13,4 @@
 - [Terraform local plan auth](patterns_terraform_local_plan_auth.md) — access-token env when ADC fails; USER_PROJECT_OVERRIDE fixes the prod budget 403; fmt -recursive
 - [Cloud Run Terraform config](patterns_cloud_run_terraform_config.md) — validateOnly API check, gen2 annotation, removed-by-lane env vars as dynamic blocks, no-traffic revision on template change
 - [Workflow + gcloud gotchas](patterns_workflow_gcloud_gotchas.md) — deploy-cloudrun merges env (use --remove-env-vars), checkout after auth deletes creds, logging --freshness ignored ascending, gcr.io list path, index children
+- [CI unit suite slow with heavy deps installed](ci-unit-suite-slow-when-heavy-deps-installed.md) — unguarded model load per test in CI; per-test log gaps find it; sysmon coverage

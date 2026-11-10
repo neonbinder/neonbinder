@@ -579,11 +579,17 @@ jobs:
       && needs.changes.outputs.preprocess == 'true'
       && needs.changes.outputs.deps_only != 'true'
     runs-on: ubuntu-latest
-    # 45, not 20 like wire-browser-url: the preprocess preview image is multi-GB
+    # 90, not 20 like wire-browser-url: the preprocess preview image is multi-GB
     # (torch + baked SAM) and rebuilds with NO layer cache (~20-25 min), and the
     # fast per-PR revision deploys only AFTER deploy-preview — so this parallel
     # job must be able to wait ~25-30 min for both pr-<N> revisions to come up.
-    timeout-minutes: 45
+    # NEO-484: it then also waits for each revision to carry THIS push's sha
+    # (heavy up to 40 min, fast up to 15 more after it), so a second push's
+    # E2E never starts against the previous push's container. The worst case
+    # (every ceiling hit in turn) is far beyond a healthy run's ~30 min; the
+    # job timeout only has to outlast the per-step ceilings so that a stuck
+    # deploy fails at a step with a clear ::error::, not as a cancelled job.
+    timeout-minutes: 90
     # Job-scoped perms: id-token (WIF), contents (checkout). Does NOT need
     # checks/PR-write, and no longer needs deployments:read — NEO-162 replaced
     # the Deployments API poll with a `needs:` on web-preview.
@@ -730,6 +736,34 @@ jobs:
             sleep 10
           done
           echo "::error::pr-${PR} fast preprocess preview never came up — preprocess.yml deploy-preview-fast may have failed."; exit 1
+
+      # NEO-484: the two waits above only prove the pr-<N> URL answers. On a
+      # second-or-later push that is already true of the PREVIOUS push's
+      # revision, so without this E2E (which needs this job) ran against a
+      # stale container while the new image was still building. Hold here, and
+      # so hold E2E, until each revision behind the tag carries this commit's
+      # PREVIEW_SHA. Same script as the crop matrix's guard, so the two cannot
+      # drift. A deploy that never arrives fails this job with an ::error::
+      # (ceilings: heavy 120 x 20s = 40 min, fast 45 x 20s = 15 min after it);
+      # it never falls through to the stale revision. Runs inside the existing
+      # `preprocess == 'true'` job condition, so PRs that do not touch
+      # services/preprocess take no extra wait.
+      - name: Wait for the pr-<N> heavy revision to be built from this commit
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          bash .github/scripts/wait-preprocess-revision.sh \
+            --project neonbinder-dev --service neonbinder-preprocess \
+            --tag "pr-${PR}" --sha "$EXPECTED_SHA" --attempts 120 --interval 20
+
+      - name: Wait for the pr-<N> fast revision to be built from this commit
+        if: steps.host-fast.outputs.exists == 'true'
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          bash .github/scripts/wait-preprocess-revision.sh \
+            --project neonbinder-dev --service neonbinder-preprocess-fast \
+            --tag "pr-${PR}" --sha "$EXPECTED_SHA" --attempts 45 --interval 20
 
       # Point the Convex preview at the pr-<N> preprocess preview(s). Same
       # deploy-key mechanism + read-back verification as wire-browser-url.
@@ -1166,7 +1200,13 @@ jobs:
       - run: pip install -r requirements-dev.txt
       - run: ruff check .
       - run: ruff format --check .
-      - run: pytest tests/unit --cov=app --cov-report=term-missing --cov-fail-under=80
+      # NEO-484: COVERAGE_CORE=sysmon (see pyproject [tool.coverage.run]) and
+      # --durations so the next slow test shows up in the log. The unit
+      # conftest blocks the real SAM model load; without that, a runner with
+      # torch installed spent ~14 of its ~15 minutes running SAM per test.
+      - run: pytest tests/unit --cov=app --cov-report=term-missing --cov-fail-under=80 --durations=15
+        env:
+          COVERAGE_CORE: sysmon
 
   # NEO-309/NEO-310: `node --test` over the ops shell scripts' own test
   # suites. No `npm ci` / package.json involved — these use only Node
@@ -1297,46 +1337,22 @@ jobs:
           echo "SMOKE_INTERNAL_KEY=$KEY" >> "$GITHUB_ENV"
 
       # ── Refuse to test a stale revision (NEO-191) ────────────────────
-      # `wire-preprocess-url` waits only for the pr-<N> URL to stop 404ing.
-      # On the FIRST push that means waiting out the ~25 min image build, but
-      # on any later push the URL already answers — serving the PREVIOUS
-      # push's revision — so it returns in ~30s and everything downstream
-      # would assert against the wrong container. Observed on this PR: a green
-      # matrix in 2m against an image built from the prior commit.
-      #
-      # deploy-preview stamps each revision with PREVIEW_SHA, so wait for the
-      # revision behind the tag to actually be THIS commit. On a first push
-      # this passes on the first poll (wire-preprocess-url already waited);
-      # on a later push it absorbs the remaining build time, which is the
-      # cost of the gate meaning what it says.
+      # `wire-preprocess-url` now holds until the pr-<N> heavy (and fast)
+      # revision carries this commit's PREVIEW_SHA (NEO-484; it used to wait
+      # only for the URL to stop 404ing, which on a later push is true of the
+      # previous push's revision). This re-check costs one poll in the normal
+      # case and is kept on purpose: it is the same script, so the matrix and
+      # E2E can never disagree about what "this commit's revision" means, and
+      # it still guards this job if the wiring job is ever restructured.
       - name: Wait for the pr-<N> revision to be built from this commit
         env:
           PR: ${{ github.event.pull_request.number }}
           EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
+        working-directory: ${{ github.workspace }}
         run: |
-          set -euo pipefail
-          for attempt in $(seq 1 120); do   # ~40 min ceiling; build is ~25
-            # `|| true` on both reads: a transient gcloud/API blip must cost
-            # one poll, not the whole job. Same idiom as the wait loops above.
-            REV=$(gcloud run services describe neonbinder-preprocess \
-              --region=us-central1 --project="$DEV_PROJECT" --format=json 2>/dev/null \
-              | jq -r --arg t "pr-$PR" '.status.traffic[]? | select(.tag==$t) | .revisionName' || true)
-            if [ -n "$REV" ] && [ "$REV" != "null" ]; then
-              ACTUAL=$(gcloud run revisions describe "$REV" \
-                --region=us-central1 --project="$DEV_PROJECT" --format=json 2>/dev/null \
-                | jq -r '.spec.containers[0].env[]? | select(.name=="PREVIEW_SHA") | .value' || true)
-              if [ "$ACTUAL" = "$EXPECTED_SHA" ]; then
-                echo "$REV is built from $EXPECTED_SHA"
-                exit 0
-              fi
-              echo "attempt $attempt/120: $REV has PREVIEW_SHA='${ACTUAL:-<unset>}', want $EXPECTED_SHA — retry in 20s"
-            else
-              echo "attempt $attempt/120: no revision serving tag pr-$PR yet — retry in 20s"
-            fi
-            sleep 20
-          done
-          echo "::error::pr-$PR never served a revision built from $EXPECTED_SHA — preprocess.yml deploy-preview may have failed."
-          exit 1
+          bash .github/scripts/wait-preprocess-revision.sh \
+            --project "$DEV_PROJECT" --service neonbinder-preprocess \
+            --tag "pr-$PR" --sha "$EXPECTED_SHA" --attempts 120 --interval 20
 
       # A cold preview would otherwise spend the first fixture's timeout loading
       # ~930MB of BiRefNet. /warmup is synchronous and idempotent.
