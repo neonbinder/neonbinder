@@ -509,6 +509,43 @@ describe("moving a copy through the contract", () => {
     );
   });
 
+  it("NEO-479: a sale with a price prices the cards, and its undo takes the line out of the box with no price left over", async () => {
+    const { result } = renderHook(() => useMoveRig(cardId()), { wrapper });
+    const copy = result.current.copies!.find((c) => c.homeKind !== "box")!;
+    let undo: () => Promise<void> = async () => {};
+    await act(async () => {
+      undo = (await result.current.actions.moveCopy(copy, SHOW_BOX_ID, { minPrice: 1.5 })).undo;
+    });
+    expect(result.current.copies!.find((c) => c.id === copy.id)).toMatchObject({ homeId: SHOW_BOX_ID, minPrice: 1.5 });
+    await act(undo);
+    const back = result.current.copies!.find((c) => c.id === copy.id)!;
+    expect(back.homeId).toBe(copy.homeId);
+    expect(back.minPrice).toBeUndefined();
+  });
+
+  it("NEO-479: taking a priced line off sale clears its price and Undo puts it back", async () => {
+    const { result } = renderHook(() => useMoveRig(cardId()), { wrapper });
+    const copy = result.current.copies!.find((c) => c.homeKind !== "box")!;
+    await act(async () => {
+      await result.current.actions.moveCopy(copy, SHOW_BOX_ID, { minPrice: 1.5 });
+    });
+    const sold = result.current.copies!.find((c) => c.id === copy.id)!;
+    let undo: () => Promise<void> = async () => {};
+    await act(async () => {
+      undo = (await result.current.actions.moveCopy(sold, SLAB)).undo;
+    });
+    expect(result.current.copies!.find((c) => c.id === copy.id)!.minPrice).toBeUndefined();
+    await act(undo);
+    expect(result.current.copies!.find((c) => c.id === copy.id)).toMatchObject({ homeId: SHOW_BOX_ID, minPrice: 1.5 });
+  });
+
+  it("NEO-479: a price that is not whole cents is refused with words to show and moves nothing", async () => {
+    const { result } = renderHook(() => useMoveRig(cardId()), { wrapper });
+    const copy = result.current.copies!.find((c) => c.homeKind !== "box")!;
+    await expect(result.current.actions.moveCopy(copy, SHOW_BOX_ID, { minPrice: 1.234 })).rejects.toThrow(/dollars and cents/i);
+    expect(result.current.copies!.find((c) => c.id === copy.id)!.homeId).toBe(copy.homeId);
+  });
+
   it("rejects a move into the Want List with words to show", async () => {
     const { result } = renderHook(() => useMoveRig(cardId()), { wrapper });
     await expect(result.current.actions.moveCopy(result.current.copies![0], "binder-want")).rejects.toThrow(/Want List/);

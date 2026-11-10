@@ -1948,7 +1948,18 @@ function applyRewrite(local: OptimisticLocalStore, copyId: string, known: KnownC
   });
 }
 
-/** A move (or a placement: a move that stays home), splitting and folding as the server will. */
+/** A home's kind as the loaded shelf has it; `undefined` until the shelf loads. */
+function homeKindIn(local: OptimisticLocalStore, homeId: string): RawContainer["kind"] | undefined {
+  return local.getQuery(api.collectionContainers.list, {})?.find((c) => c._id === homeId)?.kind;
+}
+
+/**
+ * A move (or a placement: a move that stays home), splitting and folding as
+ * the server will. NEO-479: `minPriceCents` is the moving cards' own price
+ * (`null` clears it); left out, they keep theirs, except out of a box into a
+ * binder, where they lose it (the server's Branch B). The price is set before
+ * the twin lookup, so the cards fold only into a line at the same price.
+ */
 function applyMove(
   local: OptimisticLocalStore,
   copyId: string,
@@ -1957,6 +1968,7 @@ function applyMove(
   quantity: number | undefined,
   slot: number | undefined,
   draw: () => RawCopy["_id"] = optimisticId,
+  minPriceCents?: number | null,
 ) {
   const source = rowOf(local, copyId, known);
   if (!source || !known) return;
@@ -1965,6 +1977,14 @@ function applyMove(
   const landed: RawCopy = { ...source, homeId: (toHomeId ?? source.homeId) as RawCopy["homeId"], quantity: moving };
   if (slot === undefined) delete landed.slot;
   else landed.slot = slot;
+  const leavingSale =
+    toHomeId !== undefined &&
+    toHomeId !== source.homeId &&
+    homeKindIn(local, source.homeId) === "box" &&
+    homeKindIn(local, toHomeId) !== undefined &&
+    homeKindIn(local, toHomeId) !== "box";
+  if (typeof minPriceCents === "number") landed.minPriceCents = minPriceCents;
+  else if (minPriceCents === null || leavingSale) delete landed.minPriceCents;
   // NEO-377: photos stay with the line; a part split off has none.
   if (split) delete landed.hasPhotos;
   const twin = cardRows(local, known.cardId).find((r) => r._id !== source._id && foldsInto(r, landed));
@@ -2094,8 +2114,15 @@ function useConvexActions(): CollectionActions {
         for (const copyId of args.copyIds) applyRemove(local, copyId, copies.current.get(copyId));
       }),
       moveCopy: moveCopyBase.withOptimisticUpdate((local, args) =>
-        applyMove(local, args.copyId, copies.current.get(args.copyId), args.toHomeId, args.quantity, args.slot, () =>
-          optimisticIdFor(args),
+        applyMove(
+          local,
+          args.copyId,
+          copies.current.get(args.copyId),
+          args.toHomeId,
+          args.quantity,
+          args.slot,
+          () => optimisticIdFor(args),
+          args.minPriceCents,
         ),
       ),
       placeCopy: placeCopyBase.withOptimisticUpdate((local, args) =>
@@ -2281,16 +2308,31 @@ function useConvexActions(): CollectionActions {
         else await m.removeCopy({ copyId: result.copyId });
       };
 
-    /** The undo of a move or a placement: the same cards back where they were. */
-    const undoMove = (copy: Copy, toHomeId: string, slot: number | undefined, r: RawMove) => async () => {
-      knowAs(copy, r.copyId, { homeId: toHomeId, quantity: r.from.quantity, slot });
-      await m.moveCopy({
-        copyId: r.copyId,
-        toHomeId: r.from.homeId,
-        quantity: r.from.quantity,
-        ...(r.from.slot !== undefined ? { slot: r.from.slot } : {}),
-      });
-    };
+    /**
+     * The undo of a move or a placement: the same cards back where they were.
+     * NEO-479: when the move changed the cards' own price, `from.minPriceCents`
+     * holds the one before (`null`: none) and goes back with them. `landedPrice`
+     * is the price the cards carry where they landed (dollars, or none), for
+     * the undo's optimistic row.
+     */
+    const undoMove =
+      (copy: Copy, toHomeId: string, slot: number | undefined, r: RawMove, landedPrice: number | undefined = copy.minPrice) =>
+      async () => {
+        const { minPrice: _before, ...rest } = copy;
+        knowAs(landedPrice === undefined ? rest : { ...rest, minPrice: landedPrice }, r.copyId, {
+          homeId: toHomeId,
+          quantity: r.from.quantity,
+          slot,
+        });
+        const restore = r.from.minPriceCents;
+        await m.moveCopy({
+          copyId: r.copyId,
+          toHomeId: r.from.homeId,
+          quantity: r.from.quantity,
+          ...(r.from.slot !== undefined ? { slot: r.from.slot } : {}),
+          ...(restore !== undefined ? { minPriceCents: restore } : {}),
+        });
+      };
 
     return {
       async addHave(card, homeId) {
@@ -2422,8 +2464,26 @@ function useConvexActions(): CollectionActions {
           toHomeId: asHome(toHomeId),
           ...(options?.quantity !== undefined ? { quantity: options.quantity } : {}),
           ...(options?.slot !== undefined ? { slot: options.slot } : {}),
+          // NEO-479 — the cards' own price, in cents; never the common price.
+          ...(options?.minPrice !== undefined ? { minPriceCents: Math.round(options.minPrice * 100) } : {}),
         });
-        return { copyId: r.copyId, folded: r.folded, split: r.split, undo: undoMove(copy, toHomeId, options?.slot, r) };
+        // The price the cards carry where they landed: the one sent, else
+        // theirs, unless the move took it off. Only a move out of a box can
+        // (Branch B), and then `from` records it; into a box, `from` records
+        // an own price that stayed on, for the undo.
+        const recorded = r.from.minPriceCents !== undefined;
+        const landedPrice =
+          options?.minPrice !== undefined
+            ? options.minPrice
+            : copy.homeKind === "box" && recorded
+              ? undefined
+              : copy.minPrice;
+        return {
+          copyId: r.copyId,
+          folded: r.folded,
+          split: r.split,
+          undo: undoMove(copy, toHomeId, options?.slot, r, landedPrice),
+        };
       },
 
       async placeCopy(drawn, slot) {

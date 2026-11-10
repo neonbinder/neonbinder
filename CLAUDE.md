@@ -139,8 +139,11 @@ re-measure before quoting them for Playwright.
 5. Push again **only once that spec passes locally.** This step is the actual
    cost control — push-and-hope is what burns CI cycles, not the first push.
 6. Watch to green.
-7. Merge via the `pr-close` skill (merge → verify the prod deploy actually
-   reached READY → smoke → Linear → reclaim the worktree).
+7. Join the merge queue (`pr-queue join <pr>`) and merge only when it calls
+   your turn: merge main, one run against it, then the `pr-close` skill
+   (merge → verify the prod deploy actually reached READY → smoke → Linear →
+   reclaim the worktree). One session runs the queue (`pr-queue run`); pushing
+   for testing never waits for it.
 
 #### The fast gates, by area
 
@@ -580,7 +583,7 @@ Sensitive credentials are stored in **Google Cloud Secret Manager**, not `.env` 
 
 ## Agents and skills
 
-`.claude/agents/` and `.claude/skills/` in this repo are the **single source** for the specialist agents and the `pr-watch`, `pr-close`, `deps-batch` and `impeccable` skills; there is no other copy. `impeccable` is a vendored third-party skill (its version is in `scripts/VERSION`); its launcher downloads a per-platform engine binary into the user's cache on first run, so `scripts/bin/` is gitignored and never committed. Agent memory under `.claude/agent-memory/<agent>/` is committed and public, so it holds **patterns only** (driver quirks, house conventions, gates that lie) — never a deployment name, account, secret name, internal URL or incident. An agent that learns something operational reports it under *Private notes* for the coordinator instead of saving it. Change an agent or skill through a normal PR.
+`.claude/agents/` and `.claude/skills/` in this repo are the **single source** for the specialist agents and the `pr-watch`, `pr-close`, `pr-queue`, `deps-batch` and `impeccable` skills; there is no other copy. `impeccable` is a vendored third-party skill (its version is in `scripts/VERSION`); its launcher downloads a per-platform engine binary into the user's cache on first run, so `scripts/bin/` is gitignored and never committed. Agent memory under `.claude/agent-memory/<agent>/` is committed and public, so it holds **patterns only** (driver quirks, house conventions, gates that lie) — never a deployment name, account, secret name, internal URL or incident. An agent that learns something operational reports it under *Private notes* for the coordinator instead of saving it. Change an agent or skill through a normal PR.
 
 Agent memory lives at the **repo root** `.claude/agent-memory/<agent>/` and nowhere else. Agents write memory relative to their working directory, so a session started in `apps/web` will happily create `apps/web/.claude/agent-memory/` and then read a much smaller index than a root-level session — the two diverge silently and knowledge is lost rather than shadowed. If you are working under `apps/web`, write memory to the root path explicitly. The `repo-hygiene` job in `pr-pipeline.yml` fails any PR that leaves a `.claude/` directory outside the repo root.
 

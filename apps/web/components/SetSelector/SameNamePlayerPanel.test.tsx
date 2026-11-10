@@ -17,6 +17,7 @@ import SameNamePlayerPanel, {
   candidateDetail,
   candidateLinkLabel,
   candidateOtherSport,
+  candidateSpokenDetail,
   pickStepIntro,
   type SameNameCandidate,
 } from "./SameNamePlayerPanel";
@@ -58,14 +59,59 @@ describe("candidateDetail", () => {
   });
 });
 
+describe("candidateSpokenDetail", () => {
+  it("is null exactly when candidateDetail is", () => {
+    expect(candidateSpokenDetail(bare)).toBeNull();
+    expect(candidateDetail(bare)).toBeNull();
+  });
+
+  it("says the same facts as candidateDetail, in words", () => {
+    expect(candidateSpokenDetail(older)).toBe("born 1867, Phillies 1890 to 1894");
+    expect(
+      candidateSpokenDetail(
+        { ...younger, matchedAlias: "Ron Artest", sportValue: "Basketball" },
+        "Baseball",
+      ),
+    ).toBe("also known as Ron Artest, Basketball, born 1937, Padres 1961 to present");
+  });
+
+  it("never runs an alias through the career grammar", () => {
+    // "b. 2" in an alias is a name, not a birth year.
+    expect(
+      candidateSpokenDetail({ ...bare, matchedAlias: "Bobby b. 2 · Jr" }),
+    ).toBe("also known as Bobby b. 2 · Jr");
+  });
+});
+
 describe("candidateLinkLabel", () => {
   it("puts the distinguishing fact into the accessible name", () => {
     expect(candidateLinkLabel(older, 0, 2)).toBe(
-      "Link to Bob Allen, b. 1867 · Phillies 1890–1894",
+      "Link to Bob Allen, born 1867, Phillies 1890 to 1894",
     );
     expect(candidateLinkLabel(younger, 1, 2)).toBe(
-      "Link to Bob Allen, b. 1937 · Padres 1961–present",
+      "Link to Bob Allen, born 1937, Padres 1961 to present",
     );
+  });
+
+  it("speaks the stored line the way a Possible matches row does (NEO-462)", () => {
+    // The stored careerSummary is the screen's written line: middots, "b.",
+    // two-digit year ranges and "+1 more". None of that may reach the name.
+    const walker: SameNameCandidate = {
+      playerId: "p-walker",
+      name: "Walker",
+      birthYear: 1990,
+      careerSummary: "Dodgers 2014–19 · Brewers 2020–21 +1 more",
+    };
+    expect(candidateLinkLabel(walker, 0, 2)).toBe(
+      "Link to Walker, born 1990, Dodgers 2014 to 2019, Brewers 2020 to 2021, plus 1 more",
+    );
+    expect(
+      candidateLinkLabel(
+        { ...walker, careerSummary: "Mariners 2009–12, 2016–19 · Wisconsin" },
+        0,
+        2,
+      ),
+    ).toBe("Link to Walker, born 1990, Mariners 2009 to 2012 and 2016 to 2019, Wisconsin");
   });
 
   it("falls back to the position when there is no fact to use", () => {
@@ -203,7 +249,7 @@ describe("the on-a-roster-that-year marker", () => {
     // colour, and it leads because it is what settles the choice.
     const label = candidateLinkLabel({ ...younger, activeInSetYear: true }, 1, 2);
     expect(label).toBe(
-      `Link to Bob Allen, ${ACTIVE_IN_SET_YEAR_LABEL}, b. 1937 · Padres 1961–present`,
+      `Link to Bob Allen, ${ACTIVE_IN_SET_YEAR_LABEL}, born 1937, Padres 1961 to present`,
     );
   });
 
@@ -244,6 +290,9 @@ describe("a candidate matched by a former name says so", () => {
       2,
     );
     expect(label).toBe("Link to Bob Allen, also known as Ron Artest");
+    expect(
+      candidateLinkLabel({ ...younger, matchedAlias: "Ron Artest" }, 0, 2),
+    ).toBe("Link to Bob Allen, also known as Ron Artest, born 1937, Padres 1961 to present");
   });
 });
 
@@ -278,7 +327,7 @@ describe("NEO-424 — a candidate from another sport says which", () => {
     expect(candidateDetail(shinoda, "Baseball")).toBe("Non Sport · b. 1977");
     expect(candidateDetail(shinoda)).toBe("b. 1977");
     expect(candidateLinkLabel(shinoda, 0, 2, "Baseball")).toBe(
-      "Link to Mike Shinoda, Non Sport · b. 1977",
+      "Link to Mike Shinoda, Non Sport, born 1977",
     );
   });
 
@@ -293,7 +342,7 @@ describe("NEO-424 — a candidate from another sport says which", () => {
     expect(screen.getByText("Non Sport · b. 1977")).toBeTruthy();
     expect(screen.getByText("b. 1990")).toBeTruthy();
     expect(
-      screen.getByRole("button", { name: "Link to Mike Shinoda, Non Sport · b. 1977" }),
+      screen.getByRole("button", { name: "Link to Mike Shinoda, Non Sport, born 1977" }),
     ).toBeTruthy();
   });
 });

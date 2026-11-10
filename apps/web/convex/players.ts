@@ -28,11 +28,16 @@ import {
   spanCoversCardYear,
   stintCoversYear,
 } from "../lib/players/career-span";
+// NEO-462 — the player description line ("b. 1990 · Dodgers 2014–19 ·
+// Brewers 2020–21 +1 more"): one ranking and one format, shared with the
+// "Possible matches" panel that renders the structured form client-side.
 import {
-  CAREER_SUMMARY_MAX_TEAMS,
-  formatCareerSummary,
-  type CareerSummaryStint,
-} from "../lib/players/career-summary";
+  PLAYER_DESCRIPTION_MAX_TEAMS,
+  careerLine,
+  formatCareerLine,
+  rankCareerTeams,
+  type CareerLine,
+} from "../lib/players/player-description";
 // NEO-212 security review: `Q<digits>` is validated in exactly one place now.
 // See lib/players/wikidata-id.ts for why the render sites needed a chokepoint
 // they could share with the write path.
@@ -63,6 +68,13 @@ import {
 // NEO-296: the bound on the batch id -> row read, with the op arithmetic.
 import { readManyByIds } from "./lib/batchIdReads";
 import { clampSearchQuery } from "./lib/searchQueryClamp";
+// NEO-463: a one-word name that is a fuller-named player's first or last name.
+import {
+  fragmentMatches,
+  isGenerationalSuffix,
+  isSingleToken,
+  nameFragmentTokens,
+} from "../lib/players/name-fragment";
 
 /**
  * The dedup key on `players.nameNormalized`.
@@ -946,6 +958,159 @@ export async function isAmbiguousPlayerName(
   return (await sameNamePlayers(ctx, normalized, sportId)).length > 1;
 }
 
+/** NEO-463 — rows a fragment check reads from `search_name`, per search term. */
+export const NAME_FRAGMENT_SCAN_LIMIT = 32;
+
+/** NEO-463 — the ConvexError `data.code` for a refused one-word name. */
+export const PLAYER_NAME_FRAGMENT = "PLAYER_NAME_FRAGMENT";
+
+/**
+ * NEO-463 — the fuller-named players in this sport that a single-token `name`
+ * is the first or last token of, and whether that list is complete. Empty and
+ * untruncated for a name of two or more tokens.
+ *
+ * Reads the existing `search_name` index (filtered by sport, bounded) and
+ * checks tokens in memory with `fragmentMatches`; the index finds rows that
+ * CONTAIN the word, the helper keeps the ones where it is the first or last
+ * name. Two search texts at most: the word as typed and, when folding changes
+ * it ("José" → "jose"), the folded word, because the search index does not
+ * fold accents the way `entityNameTokens` does. Terms that differ only in
+ * case are one search ("Walker" / "walker"): the index is case-insensitive,
+ * so the second read would return the same rows and double the cost.
+ *
+ * `truncated` is true when any search filled `NAME_FRAGMENT_SCAN_LIMIT`: the
+ * index had more rows than were read, so a common surname ("Smith") may hide
+ * the very player the operator means. The matches found are still a real
+ * clash, so callers refuse on them; they just must not present the list as
+ * the whole answer.
+ *
+ * Home sport only, like `search`'s index leg. A multi-sport member (NEO-313)
+ * is not consulted; the clash this guards is the common one, a surname typed
+ * for a player of the same sport.
+ */
+export async function nameFragmentScan(
+  ctx: QueryCtx | MutationCtx,
+  name: string,
+  sportId: Id<"selectorOptions">,
+): Promise<{
+  matches: Array<{ _id: Id<"players">; name: string; birthYear?: number }>;
+  truncated: boolean;
+}> {
+  const tokens = nameFragmentTokens(name);
+  if (tokens.length !== 1) return { matches: [], truncated: false };
+
+  // The typed word itself, minus a trailing suffix word ("Walker Jr." → "Walker").
+  const words = name.trim().split(/\s+/);
+  const kept =
+    words.length > 1 && isGenerationalSuffix(words[words.length - 1]) ? words.slice(0, -1) : words;
+  const typed = kept.join(" ").replace(/[.,]+$/, "");
+  const terms: string[] = [];
+  const termKeys = new Set<string>();
+  for (const term of [typed, tokens[0]]) {
+    const key = term.toLowerCase();
+    if (term.length === 0 || termKeys.has(key)) continue;
+    termKeys.add(key);
+    terms.push(term);
+  }
+
+  const seen = new Set<string>();
+  const rows: Array<Doc<"players">> = [];
+  let truncated = false;
+  for (const term of terms) {
+    const hits = await ctx.db
+      .query("players")
+      .withSearchIndex("search_name", (q) => q.search("name", term).eq("sportId", sportId))
+      .take(NAME_FRAGMENT_SCAN_LIMIT);
+    if (hits.length >= NAME_FRAGMENT_SCAN_LIMIT) truncated = true;
+    for (const hit of hits) {
+      if (seen.has(hit._id)) continue;
+      seen.add(hit._id);
+      rows.push(hit);
+    }
+  }
+  return {
+    matches: fragmentMatches(name, rows).map((p) => ({
+      _id: p._id,
+      name: p.name,
+      ...(p.birthYear !== undefined ? { birthYear: p.birthYear } : {}),
+    })),
+    truncated,
+  };
+}
+
+/** NEO-463 — `nameFragmentScan`'s matches alone, for callers that only ask "any clash?". */
+export async function nameFragmentMatches(
+  ctx: QueryCtx | MutationCtx,
+  name: string,
+  sportId: Id<"selectorOptions">,
+): Promise<Array<{ _id: Id<"players">; name: string }>> {
+  return (await nameFragmentScan(ctx, name, sportId)).matches;
+}
+
+/**
+ * NEO-463 — refuse a one-word name that clashes with a fuller-named player,
+ * unless the operator said it is a one-name player. Call on an INSERT branch
+ * only: an exact-name link never reaches here.
+ *
+ * The refusal is structured (`data.code`), so callers branch on the code and
+ * never on message text. The matches are names and ids of rows the admin
+ * caller can already search, so returning them leaks nothing. When the read
+ * was truncated the list is withheld (`matches: []`, `truncated: true`) and
+ * the caller falls back to asking for the whole name; the refusal stands.
+ *
+ * The message is fixed text, never the name: it reaches Sentry and the
+ * browser console through Convex's error path, like the length refusals.
+ */
+export async function assertNotNameFragment(
+  ctx: MutationCtx,
+  name: string,
+  sportId: Id<"selectorOptions">,
+  oneNamePlayer: true | undefined,
+): Promise<void> {
+  if (oneNamePlayer === true) return;
+  const { matches, truncated } = await nameFragmentScan(ctx, name, sportId);
+  if (matches.length === 0) return;
+  throw new ConvexError({
+    code: PLAYER_NAME_FRAGMENT,
+    message:
+      "This name matches a fuller player on file. Pick that player, or confirm this is a one-name player.",
+    matches: truncated ? [] : matches,
+    truncated,
+  });
+}
+
+/**
+ * NEO-463 — the picker's and add form's pre-check for a one-word name.
+ * `isFragment` is true only when the name is one token AND clashes; a
+ * mononym with no clash reads `{ isFragment: false, matches: [], truncated: false }`.
+ * A truncated read keeps `isFragment` but withholds the list (`matches: []`).
+ */
+export const nameFragmentCheck = query({
+  args: {
+    name: v.string(),
+    sportId: v.id("selectorOptions"),
+  },
+  returns: v.object({
+    isFragment: v.boolean(),
+    matches: v.array(
+      v.object({ _id: v.id("players"), name: v.string(), birthYear: v.optional(v.number()) }),
+    ),
+    /**
+     * A search read filled its bound, so the list is not the whole answer and
+     * is withheld (`matches: []`): the UI asks for the whole name instead.
+     */
+    truncated: v.boolean(),
+  }),
+  handler: async (ctx, args) => {
+    await requireAdmin(ctx);
+    // Same bounds the writes apply, so a pasted essay never reaches the index.
+    const name = clampSearchQuery(args.name).trim();
+    if (!name || !isSingleToken(name)) return { isFragment: false, matches: [], truncated: false };
+    const { matches, truncated } = await nameFragmentScan(ctx, name, args.sportId);
+    return { isFragment: matches.length > 0, matches: truncated ? [] : matches, truncated };
+  },
+});
+
 /**
  * NEO-254 — pick the one candidate a birth year identifies, if it identifies
  * exactly one.
@@ -1090,6 +1255,13 @@ export const findOrCreate = mutation({
      * this mutation exists for.
      */
     birthYear: v.optional(v.number()),
+    /**
+     * NEO-463 — the operator confirmed a one-word name is a one-name player,
+     * not a piece of a fuller-named player it clashes with. Consulted only on
+     * the insert branch; without it a clashing one-word name is refused with
+     * `data.code === "PLAYER_NAME_FRAGMENT"`.
+     */
+    oneNamePlayer: v.optional(v.literal(true)),
   },
   returns: v.id("players"),
   handler: async (ctx, args): Promise<Id<"players">> => {
@@ -1175,6 +1347,9 @@ export const findOrCreate = mutation({
         `${candidates.length} players are already filed under ${name}. Pick the right one instead of adding another.`,
       );
     }
+
+    // NEO-463 — insert branch only: an exact-name match returned above.
+    await assertNotNameFragment(ctx, name, args.sportId, args.oneNamePlayer);
 
     const id = await ctx.db.insert("players", {
       name,
@@ -1788,6 +1963,38 @@ export const resolveNameForReview = internalQuery({
 });
 
 /**
+ * NEO-462 — a player's career line, ranked by tenure, with ONLY the shown
+ * teams' documents read.
+ *
+ * Every team is ranked from the stints alone (no reads), then at most
+ * `PLAYER_DESCRIPTION_MAX_TEAMS` team names are resolved through `nameCache`,
+ * which the caller shares across every player it renders so a team two
+ * candidates share is read once. The rest of the career is a count, never a
+ * read. A dangling team id renders as "Unknown team" rather than throwing:
+ * this is a disambiguation hint, and one unreadable stint must not cost the
+ * operator the whole candidate. `undefined` for a player with no stints.
+ */
+async function careerLineFor(
+  ctx: QueryCtx | MutationCtx,
+  teamYears: Doc<"players">["teamYears"],
+  currentYear: number,
+  nameCache: Map<string, string>,
+): Promise<CareerLine | undefined> {
+  const ranked = rankCareerTeams(teamYears, currentYear);
+  for (const team of ranked.slice(0, PLAYER_DESCRIPTION_MAX_TEAMS)) {
+    const key = team.teamId as string;
+    if (nameCache.has(key)) continue;
+    const doc = await ctx.db.get(team.teamId);
+    nameCache.set(key, doc?.name ?? "Unknown team");
+  }
+  return careerLine(
+    ranked,
+    (id) => nameCache.get(id as string) ?? "Unknown team",
+    PLAYER_DESCRIPTION_MAX_TEAMS,
+  );
+}
+
+/**
  * NEO-254 — the NB rows already filed under this name, shaped for the review
  * wizard's "which of these is it?" list.
  *
@@ -1803,8 +2010,9 @@ export const resolveNameForReview = internalQuery({
  * at a glance, and it would put the same format in two places.
  *
  * Bounded twice over: at most `PLAYER_AMBIGUITY_SCAN_LIMIT` candidates, and at
- * most `CAREER_SUMMARY_MAX_TEAMS + 1` team reads each, so the worst case is a
- * couple of dozen point lookups inside a mutation that is otherwise a patch.
+ * most `PLAYER_DESCRIPTION_MAX_TEAMS` team reads each (fewer when candidates
+ * share a team), so the worst case is a couple of dozen point lookups inside a
+ * mutation that is otherwise a patch.
  *
  * Exported as a plain function rather than registered as a query: its caller is
  * a mutation, and a mutation cannot `ctx.runQuery` itself.
@@ -1820,8 +2028,11 @@ export async function buildExistingPlayerCandidates(
    * removes one: this list is the operator's evidence, and hiding a candidate
    * because our stint data says he was retired would hide the very row a
    * missing stint makes look wrong.
+   *
+   * `currentYear` (NEO-462) is what an open stint counts through when the
+   * career line ranks teams by tenure; defaults to this year.
    */
-  opts?: { cardYear?: number },
+  opts?: { cardYear?: number; currentYear?: number },
 ): Promise<
   Array<{
     playerId: Id<"players">;
@@ -1851,7 +2062,13 @@ export async function buildExistingPlayerCandidates(
         ).activePlayerIds.map((id) => id as string),
   );
 
-  return await renderExistingPlayerCandidates(ctx, candidates, normalized, activeInSetYear);
+  return await renderExistingPlayerCandidates(
+    ctx,
+    candidates,
+    normalized,
+    activeInSetYear,
+    opts?.currentYear ?? new Date().getFullYear(),
+  );
 }
 
 /** One entry of the wizard's "which of these is it?" list. */
@@ -1883,43 +2100,22 @@ async function renderExistingPlayerCandidates(
   candidates: ReadonlyArray<Doc<"players">>,
   normalized: string,
   activeInSetYear: ReadonlySet<string>,
+  currentYear: number,
   sportValueById?: ReadonlyMap<string, string>,
 ): Promise<ExistingPlayerCandidate[]> {
+  // One cache across every candidate: two same-named men often share a team.
   const teamNameById = new Map<string, string>();
   const results: ExistingPlayerCandidate[] = [];
 
   for (const player of candidates) {
-    // `sortTeamYears` because the summary reads chronologically and nothing
-    // guarantees the stored order (a row written before that sort existed, or
-    // one hand-edited since, can be in any order).
-    const allStints = sortTeamYears(player.teamYears ?? []);
-    // Only the stints that will actually be NAMED are resolved. Each name is a
-    // point lookup, this runs for up to eight candidates, and the rest of the
-    // career is reported as a count rather than read — see `extra` below.
-    const named = allStints.slice(0, CAREER_SUMMARY_MAX_TEAMS);
-    const resolved: CareerSummaryStint[] = [];
-    for (const stint of named) {
-      const key = stint.teamId as string;
-      if (!teamNameById.has(key)) {
-        const team = await ctx.db.get(stint.teamId);
-        // A dangling team id renders as a placeholder rather than throwing:
-        // this is a disambiguation hint, and one unreadable stint must not
-        // cost the operator the whole candidate.
-        teamNameById.set(key, team?.name ?? "Unknown team");
-      }
-      resolved.push({
-        teamName: teamNameById.get(key)!,
-        ...(stint.fromYear !== undefined ? { fromYear: stint.fromYear } : {}),
-        ...(stint.toYear !== undefined ? { toYear: stint.toYear } : {}),
-      });
-    }
+    const careerSummary = formatCareerLine(
+      await careerLineFor(ctx, player.teamYears, currentYear, teamNameById),
+    );
     results.push({
       playerId: player._id,
       name: player.name,
       ...(player.birthYear !== undefined ? { birthYear: player.birthYear } : {}),
-      careerSummary: formatCareerSummary(resolved, {
-        extra: allStints.length - resolved.length,
-      }),
+      careerSummary,
       // Omitted rather than false when it is not known, so the wizard can tell
       // "not that year" from "no year to compare against".
       ...(activeInSetYear.has(player._id as string) ? { activeInSetYear: true } : {}),
@@ -1942,7 +2138,7 @@ async function renderExistingPlayerCandidates(
  * Its callers hand it a set-history answer plus the in-sport rivals: one
  * history player and at most `PLAYER_AMBIGUITY_SCAN_LIMIT` rivals, or the two
  * or three players one set has linked under one name. 16 is headroom over
- * both, and with `CAREER_SUMMARY_MAX_TEAMS + 1` team reads per player keeps
+ * both, and with `PLAYER_DESCRIPTION_MAX_TEAMS` team reads per player keeps
  * the worst case a few dozen point reads inside the mutation that calls it.
  * Ids past it are dropped, in input order (the caller puts its strongest
  * candidate first).
@@ -2004,8 +2200,8 @@ export async function buildExistingPlayerCandidatesForIds(
 
   const active = new Set<string>();
   const { cardYear } = opts ?? {};
+  const currentYear = opts?.currentYear ?? new Date().getFullYear();
   if (cardYear !== undefined && Number.isInteger(cardYear)) {
-    const currentYear = opts?.currentYear ?? new Date().getFullYear();
     for (const player of players) {
       const span = careerSpan(player.teamYears ?? [], currentYear);
       if (span !== null && spanCoversCardYear(span, cardYear, CARD_YEAR_TOLERANCE)) {
@@ -2019,6 +2215,7 @@ export async function buildExistingPlayerCandidatesForIds(
     players,
     opts?.name ? normalizePlayerName(opts.name) : "",
     active,
+    currentYear,
     sportValueById,
   );
 }
@@ -2472,6 +2669,26 @@ export const nearMatches = query({
       birthYear: v.optional(v.number()),
       // NEO-254 — the alias that answered, when it was not the primary name.
       matchedAlias: v.optional(v.string()),
+      // NEO-462 — the player's career, ranked by tenure, for the row's
+      // description line. Structured so the client can style the parts;
+      // `lib/players/player-description.ts` formats it. Omitted for a player
+      // with no stints on file.
+      career: v.optional(
+        v.object({
+          teams: v.array(
+            v.object({
+              name: v.string(),
+              spans: v.array(
+                v.object({
+                  fromYear: v.number(),
+                  toYear: v.optional(v.number()),
+                }),
+              ),
+            }),
+          ),
+          moreTeams: v.number(),
+        }),
+      ),
     }),
   ),
   handler: async (ctx, args) => {
@@ -2501,7 +2718,15 @@ export const nearMatches = query({
     // Keyed by id so the exact hit and a search hit for the same row collapse.
     const candidates = new Map<
       Id<"players">,
-      { _id: Id<"players">; name: string; birthYear?: number; matchedAlias?: string }
+      {
+        _id: Id<"players">;
+        name: string;
+        birthYear?: number;
+        matchedAlias?: string;
+        // NEO-462 — kept so the career line can be built for the rows that
+        // survive the `limit`, without re-reading the player.
+        teamYears?: Doc<"players">["teamYears"];
+      }
     >();
 
     const normalized = normalizePlayerName(name);
@@ -2523,6 +2748,7 @@ export const nearMatches = query({
           _id: row._id,
           name: row.name,
           birthYear: row.birthYear,
+          teamYears: row.teamYears,
           ...(matchedAliasFor(row, normalized)
             ? { matchedAlias: matchedAliasFor(row, normalized)! }
             : {}),
@@ -2554,6 +2780,7 @@ export const nearMatches = query({
         _id: hit._id,
         name: hit.name,
         birthYear: hit.birthYear,
+        teamYears: hit.teamYears,
       });
     }
 
@@ -2575,21 +2802,32 @@ export const nearMatches = query({
       ...row,
       name: row.matchedAlias ?? row.name,
     }));
-    return rankPlayerCandidates(name, ranked)
-      .slice(0, limit)
-      .map(({ index, confidence }) => ({
-        _id: rows[index]._id,
-        name: rows[index].name,
+    const shown = rankPlayerCandidates(name, ranked).slice(0, limit);
+    // NEO-462 — career lines only for the rows that survived the `limit`, and
+    // only their shown teams are read; one cache so a shared team is read once.
+    const currentYear = new Date().getFullYear();
+    const teamNameById = new Map<string, string>();
+    const results = [];
+    for (const { index, confidence } of shown) {
+      const row = rows[index];
+      const career = await careerLineFor(
+        ctx,
+        row.teamYears,
+        currentYear,
+        teamNameById,
+      );
+      results.push({
+        _id: row._id,
+        name: row.name,
         confidence,
         // Omitted rather than sent as `undefined`, matching every other
         // optional field this file returns.
-        ...(rows[index].birthYear !== undefined
-          ? { birthYear: rows[index].birthYear }
-          : {}),
-        ...(rows[index].matchedAlias
-          ? { matchedAlias: rows[index].matchedAlias }
-          : {}),
-      }));
+        ...(row.birthYear !== undefined ? { birthYear: row.birthYear } : {}),
+        ...(row.matchedAlias ? { matchedAlias: row.matchedAlias } : {}),
+        ...(career ? { career } : {}),
+      });
+    }
+    return results;
   },
 });
 
@@ -2993,6 +3231,8 @@ export const createByAdmin = mutation({
      * form shows.
      */
     aliases: v.optional(v.array(v.string())),
+    /** NEO-463 — see the identical arg on `findOrCreate` above. */
+    oneNamePlayer: v.optional(v.literal(true)),
   },
   returns: v.object({
     id: v.id("players"),
@@ -3049,6 +3289,9 @@ export const createByAdmin = mutation({
     const adopted = adoptOrForkOnCreate(candidates, args.birthYear, name);
     // NOT enqueued — see the creation-only note on the insert below.
     if (adopted) return { id: adopted._id, created: false };
+
+    // NEO-463 — insert branch only: an adopted exact-name row returned above.
+    await assertNotNameFragment(ctx, name, args.sportId, args.oneNamePlayer);
 
     // NEO-254 — bounded and de-duplicated. NOT checked for collisions: an
     // alias another player already answers to is allowed, and the card-year

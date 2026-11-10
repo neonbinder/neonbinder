@@ -236,3 +236,26 @@ re-derive it again for this exact pairing.
 notice (`text-[#FFB020]` on the review panel's `bg-gray-900` shell). Not a
 Tailwind token (close to but not `amber-400` #ffb900); computed directly
 since it wasn't in this table yet.
+
+## Role tokens on the NearMatchPanel ground, both themes (NEO-462, 2026-11-07)
+
+Panel = `bg-neon-blue/5` (sRGB alpha blend of #00c2ff) over the caller's
+ground; row hover adds `bg-neon-blue/10` on top. ink-3 dark = Tailwind v4
+slate-400 #90a1b9; ink-3 light = #57516e; neon-blue-text light = #006da6.
+Wizard ground = `bg-raised-deep` (dark #101828, light #ffffff); /admin/players
+add form sits on the page `bg-surface` (dark #0a0a0a, light #f7f8fc).
+
+| Text | Ground | Rest | Row hover |
+|---|---|---|---|
+| ink-3 (dark) | raised-deep + blue/5 | 6.24 | 5.17 |
+| ink-3 (dark) | surface + blue/5 | 7.14 | 6.09 |
+| ink-3 (light) | white + blue/5 | 7.18 | 6.64 |
+| ink-3 (light) | surface + blue/5 | 6.78 | 6.29 |
+| neon-blue-text (light) on badge `bg-neon-blue/20` | white panel | 4.61 | **4.34** |
+| same | surface panel | **4.40** | **4.15** |
+| same, badge `/10` | surface panel | 4.73 | **4.43** |
+| same, no badge fill (outline only) | surface panel | 5.09 | 4.73 |
+
+The "same name" badge (`bg-neon-blue/20 text-neon-blue-text`) fails in LIGHT
+only; dark passes (5.29 / 6.25 at rest). A same-hue tint behind
+neon-blue-text in light always costs contrast — drop the fill, keep a border.

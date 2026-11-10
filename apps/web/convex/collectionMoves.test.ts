@@ -952,3 +952,165 @@ describe("backfillBinderPockets past one run", () => {
     await drainScheduled(s.t);
   });
 });
+
+describe("moveCopy carries the moving cards' own price (NEO-479)", () => {
+  const sell = (s: S, copyId: Id<"collectionCopies">, extra: Record<string, unknown> = {}) =>
+    s.me.mutation(api.collection.moveCopy, { copyId, toHomeId: s.box, ...extra } as never);
+  const commonRows = (s: S) => s.t.run((ctx) => ctx.db.query("variantCommonPrices").collect());
+
+  test("a whole line sold at a price carries it, and the result remembers there was none", async () => {
+    const s = await setup();
+    const { copyId } = await add(s, s.fx.gooden1, { quantity: 3, homeId: s.binderA });
+    const r = await sell(s, copyId, { minPriceCents: 150 });
+    expect(r).toMatchObject({ copyId, split: false, from: { homeId: s.binderA, quantity: 3, minPriceCents: null } });
+    expect((await copies(s.t))[0]).toMatchObject({ _id: copyId, homeId: s.box, minPriceCents: 150 });
+    expect(await commonRows(s)).toEqual([]);
+    await exact(s);
+  });
+
+  test("selling 2 of 3 prices only the box row; the remainder keeps its own price", async () => {
+    const s = await setup();
+    const { copyId } = await add(s, s.fx.gooden1, { quantity: 3, homeId: s.binderA, minPriceCents: 30 });
+    const r = await sell(s, copyId, { quantity: 2, minPriceCents: 150 });
+    expect(r.split).toBe(true);
+    const rows = await copies(s.t);
+    expect(rows.find((x) => x._id === copyId)).toMatchObject({ homeId: s.binderA, quantity: 1, minPriceCents: 30 });
+    expect(rows.find((x) => x._id === r.copyId)).toMatchObject({ homeId: s.box, quantity: 2, minPriceCents: 150 });
+    expect(r.from.minPriceCents).toBe(30);
+    expect(await commonRows(s)).toEqual([]);
+    await exact(s);
+  });
+
+  test("selling 2 of 3 leaves an unpriced remainder unpriced", async () => {
+    const s = await setup();
+    const { copyId } = await add(s, s.fx.gooden1, { quantity: 3, homeId: s.binderA });
+    await sell(s, copyId, { quantity: 2, minPriceCents: 150 });
+    expect((await copies(s.t)).find((x) => x._id === copyId)!.minPriceCents).toBeUndefined();
+  });
+
+  test("cards sold at a price fold into a twin at the same price", async () => {
+    const s = await setup();
+    const twin = await add(s, s.fx.gooden1, { quantity: 2, homeId: s.box, minPriceCents: 150 });
+    const a = await add(s, s.fx.gooden1, { quantity: 1, homeId: s.binderA });
+    const r = await sell(s, a.copyId, { minPriceCents: 150 });
+    expect(r).toMatchObject({ copyId: twin.copyId, folded: true });
+    const rows = await copies(s.t);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ quantity: 3, minPriceCents: 150 });
+  });
+
+  test("cards sold at another price, or at none, do not fold into a priced twin", async () => {
+    const s = await setup();
+    await add(s, s.fx.gooden1, { quantity: 2, homeId: s.box, minPriceCents: 150 });
+    const a = await add(s, s.fx.gooden1, { homeId: s.binderA });
+    const b = await add(s, s.fx.gooden1, { homeId: s.binderB });
+    expect((await sell(s, a.copyId, { minPriceCents: 175 })).folded).toBe(false);
+    expect((await sell(s, b.copyId)).folded).toBe(false);
+    expect(await copies(s.t)).toHaveLength(3);
+  });
+
+  test("undo of a sale of a plain copy puts it back in its binder with no price", async () => {
+    const s = await setup();
+    const { copyId } = await add(s, s.fx.gooden1, { quantity: 2, homeId: s.binderA, slot: 4 });
+    const fwd = await sell(s, copyId, { minPriceCents: 150 });
+    const back = await s.me.mutation(api.collection.moveCopy, {
+      copyId: fwd.copyId, toHomeId: fwd.from.homeId, quantity: fwd.from.quantity, slot: fwd.from.slot,
+      ...(fwd.from.minPriceCents !== undefined ? { minPriceCents: fwd.from.minPriceCents } : {}),
+    });
+    const [row] = await copies(s.t);
+    expect(row).toMatchObject({ _id: back.copyId, homeId: s.binderA, slot: 4, quantity: 2 });
+    expect(row.minPriceCents).toBeUndefined();
+    await exact(s);
+    await tallyIsExact(s);
+  });
+
+  test("a binder copy with its own price sold unchanged remembers it, and the undo restores it", async () => {
+    const s = await setup();
+    const { copyId } = await add(s, s.fx.gooden1, { homeId: s.binderA, minPriceCents: 30 });
+    const fwd = await sell(s, copyId);
+    expect(fwd.from.minPriceCents).toBe(30);
+    expect((await copies(s.t))[0].minPriceCents).toBe(30);
+    await s.me.mutation(api.collection.moveCopy, {
+      copyId: fwd.copyId, toHomeId: fwd.from.homeId, quantity: fwd.from.quantity, minPriceCents: fwd.from.minPriceCents,
+    });
+    expect((await copies(s.t))[0]).toMatchObject({ homeId: s.binderA, minPriceCents: 30 });
+  });
+
+  test("a binder copy with its own price sold at a new price: the undo restores the old one", async () => {
+    const s = await setup();
+    const { copyId } = await add(s, s.fx.gooden1, { homeId: s.binderA, minPriceCents: 30 });
+    const fwd = await sell(s, copyId, { minPriceCents: 60 });
+    expect((await copies(s.t))[0].minPriceCents).toBe(60);
+    expect(fwd.from.minPriceCents).toBe(30);
+    await s.me.mutation(api.collection.moveCopy, {
+      copyId: fwd.copyId, toHomeId: fwd.from.homeId, quantity: fwd.from.quantity, minPriceCents: fwd.from.minPriceCents,
+    });
+    expect((await copies(s.t))[0]).toMatchObject({ homeId: s.binderA, minPriceCents: 30 });
+    expect(await commonRows(s)).toEqual([]);
+  });
+
+  test("a move that changes no price and leaves no price to lose reports none", async () => {
+    const s = await setup();
+    const { copyId } = await add(s, s.fx.gooden1, { homeId: s.binderA });
+    const r = await s.me.mutation(api.collection.moveCopy, { copyId, toHomeId: s.binderB });
+    expect(r.from).not.toHaveProperty("minPriceCents");
+  });
+
+  test("taking a card off sale (box to binder) clears its price, and the undo restores it", async () => {
+    const s = await setup();
+    const { copyId } = await add(s, s.fx.gooden1, { quantity: 2, homeId: s.box, minPriceCents: 150 });
+    const off = await s.me.mutation(api.collection.moveCopy, { copyId, toHomeId: s.binderA });
+    expect(off.from.minPriceCents).toBe(150);
+    expect((await copies(s.t))[0].minPriceCents).toBeUndefined();
+    await s.me.mutation(api.collection.moveCopy, {
+      copyId: off.copyId, toHomeId: off.from.homeId, quantity: off.from.quantity, minPriceCents: off.from.minPriceCents,
+    });
+    expect((await copies(s.t))[0]).toMatchObject({ homeId: s.box, minPriceCents: 150 });
+    await exact(s);
+  });
+
+  test("taking an unpriced box card off sale reports no price", async () => {
+    const s = await setup();
+    const { copyId } = await add(s, s.fx.gooden1, { homeId: s.box });
+    const off = await s.me.mutation(api.collection.moveCopy, { copyId, toHomeId: s.binderA });
+    expect(off.from).not.toHaveProperty("minPriceCents");
+  });
+
+  test("a box-to-box move keeps the price", async () => {
+    const s = await setup();
+    const other = (await s.me.mutation(api.collectionContainers.create, { kind: "box", name: "Back" })).containerId;
+    const { copyId } = await add(s, s.fx.gooden1, { homeId: s.box, minPriceCents: 150 });
+    await s.me.mutation(api.collection.moveCopy, { copyId, toHomeId: other });
+    expect((await copies(s.t))[0]).toMatchObject({ homeId: other, minPriceCents: 150 });
+  });
+
+  test("a number may be sent into a binder (the undo of a sale does)", async () => {
+    const s = await setup();
+    const { copyId } = await add(s, s.fx.gooden1, { homeId: s.binderA });
+    await s.me.mutation(api.collection.moveCopy, { copyId, toHomeId: s.binderB, minPriceCents: 25 });
+    expect((await copies(s.t))[0]).toMatchObject({ homeId: s.binderB, minPriceCents: 25 });
+  });
+
+  test("a price that is not whole cents is refused and nothing is written", async () => {
+    const s = await setup();
+    const { copyId } = await add(s, s.fx.gooden1, { quantity: 2, homeId: s.binderA });
+    const before = await copies(s.t);
+    for (const minPriceCents of [1.5, -1, Number.MAX_SAFE_INTEGER, Number.NaN]) {
+      await expect(sell(s, copyId, { minPriceCents })).rejects.toThrow(/dollar amount/);
+    }
+    expect(await copies(s.t)).toEqual(before);
+    expect(await commonRows(s)).toEqual([]);
+  });
+
+  test("any price on a move within one home is refused, null included", async () => {
+    const s = await setup();
+    const { copyId } = await add(s, s.fx.gooden1, { homeId: s.box, minPriceCents: 150 });
+    const before = await copies(s.t);
+    for (const minPriceCents of [200, null]) {
+      await expect(
+        s.me.mutation(api.collection.moveCopy, { copyId, toHomeId: s.box, minPriceCents }),
+      ).rejects.toThrow(/to another home/);
+    }
+    expect(await copies(s.t)).toEqual(before);
+  });
+});
