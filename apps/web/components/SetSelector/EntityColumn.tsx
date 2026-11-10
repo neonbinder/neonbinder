@@ -33,7 +33,8 @@ import {
   VARIANT_TYPE_RENAME_REFUSED,
 } from "../../convex/variantRole";
 import { siblingTwinSuffixes } from "./marketplace-item-label";
-import { ColumnSyncFailedContext } from "./column-sync-failed";
+import { ColumnSyncFailedContext } from "./column-sync-failed-context";
+import { columnSyncFailedMessage } from "./column-sync-failed";
 
 type Level =
   | "sport"
@@ -1649,10 +1650,15 @@ export default function EntityColumn({
         {/* NEO-445: the retry is the "Sync <X>" button in the row below, which
             forces the same sync. The selector drops its empty line meanwhile
             (`ColumnSyncFailedContext`), so this is the only thing the column
-            says about a failed sync. */}
+            says about a failed sync. It names the column (NEO-450) rather
+            than echoing the server's generic status message, and mounts only
+            on failure so `role="alert"` announces it as it appears. */}
         {syncStatus?.status === "error" && (
-          <div className="p-3 mb-1 bg-notice-danger-bg border border-notice-danger-rule rounded-md text-notice-danger-ink text-sm">
-            {syncStatus.message || "Couldn't sync options."}
+          <div
+            role="alert"
+            className="p-3 mb-1 bg-notice-danger-bg border border-notice-danger-rule rounded-md text-notice-danger-ink text-sm"
+          >
+            {columnSyncFailedMessage(addButtonText.replace(/^Sync /, ""))}
           </div>
         )}
         {/* NEO-211 (plans B + D). `message` is the partial-failure case: one

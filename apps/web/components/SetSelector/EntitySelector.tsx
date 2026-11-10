@@ -17,7 +17,7 @@ import { activateOnEnter } from "@/lib/dom/activate-on-enter";
 import { useComboboxHighlight } from "@/src/hooks/useComboboxHighlight";
 import { scrollRowIntoList } from "./list-scroll";
 import { siblingTwinSuffixes } from "./marketplace-item-label";
-import { ColumnSyncFailedContext } from "./column-sync-failed";
+import { ColumnSyncFailedContext } from "./column-sync-failed-context";
 
 export type SelectorItem = { _id: string; [key: string]: unknown };
 
