@@ -458,13 +458,36 @@ export default function EntityColumn({
   // is handed to the render-time `idleButtons`, and a handler that reaches a
   // ref through `runEnsure` fails react-hooks/refs there.
   const syncScopeKey = `${level ?? ""}:${parentId ?? "root"}`;
+  //
+  // `urgent` also ends once the failure it announced is over: when the status
+  // has been seen as "error" with this flag up (`shown`) and later SETTLES on
+  // something else (no row, or "done": a later sync succeeded), the flag
+  // drops, so a failure some OTHER session's sync stores afterwards reads as
+  // the stored state it is. Two guards keep it off a fresh failure whose
+  // action answered before the status query caught up: `shown` (the status
+  // may still be the pre-retry "done"/no row), and "syncing" never clearing
+  // it (the status may still be the OLD stored error, then pass through
+  // "syncing" before landing on the new one). Same render-time adjustment as
+  // the scope reset.
   const [syncFailure, setSyncFailure] = useState<{
     scope: string;
     attempt: number;
     urgent: boolean;
-  }>({ scope: syncScopeKey, attempt: 0, urgent: false });
+    shown: boolean;
+  }>({ scope: syncScopeKey, attempt: 0, urgent: false, shown: false });
   if (syncFailure.scope !== syncScopeKey) {
-    setSyncFailure({ scope: syncScopeKey, attempt: 0, urgent: false });
+    setSyncFailure({ scope: syncScopeKey, attempt: 0, urgent: false, shown: false });
+  } else if (syncFailure.urgent && syncStatus !== undefined) {
+    const status = syncStatus?.status;
+    if (status === "error" && !syncFailure.shown) {
+      setSyncFailure({ ...syncFailure, shown: true });
+    } else if (
+      status !== "error" &&
+      status !== "syncing" &&
+      syncFailure.shown
+    ) {
+      setSyncFailure({ ...syncFailure, urgent: false, shown: false });
+    }
   }
   const failedAttempt =
     syncFailure.scope === syncScopeKey ? syncFailure.attempt : 0;
@@ -480,12 +503,12 @@ export default function EntityColumn({
       const failed = () =>
         setSyncFailure((prev) =>
           prev.scope === scope
-            ? { scope, attempt: prev.attempt + 1, urgent: true }
+            ? { scope, attempt: prev.attempt + 1, urgent: true, shown: false }
             : prev,
         );
       void ensureOptions(args).then(
         (res) => {
-          if (res.reason === "error") failed();
+          if (res?.reason === "error") failed();
         },
         (err: unknown) => {
           failed();
