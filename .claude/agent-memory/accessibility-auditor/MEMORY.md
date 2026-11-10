@@ -47,3 +47,4 @@
 - [Toggle chip Enter and streaming status NEO-330](toggle-chip-enter-and-streaming-status-neo330.md) — Enter stays a toggle (Ctrl+Enter saves); showToast is a persistent banner; ConfirmDialog children = one named group; streaming status chatter
 - [Required pill group, no words NEO-331](required-pill-group-no-words-neo331.md) — radiogroup+aria-required and focus-the-field on a held primary, zero new copy
 - [Collection store UI NEO-358](collection-store-ui-neo358.md) — collector page: focus loss on unmount, state-in-name toggles, label-in-name, stacked loading statuses
+- [Tab trap offList swallows script focus targets](tab-trap-offlist-swallows-script-focus-targets.md) — Shift+Tab from any tabIndex=-1 target wraps to the last control; name parked targets explicitly (NEO-472)
