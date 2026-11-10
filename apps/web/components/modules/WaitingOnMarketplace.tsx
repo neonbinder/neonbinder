@@ -14,8 +14,17 @@ import { api } from "../../convex/_generated/api";
  *
  * Only while a call is outstanding: the host passes `waitingSince` (from the
  * server's call recorder) only while its own work is still pending, and the
- * line is empty otherwise. The region itself is always mounted, so the first
- * wait is announced as reliably as the rest.
+ * line is empty otherwise. A wait shorter than 1.5 s (`ANNOUNCE_AFTER_MS`)
+ * never shows: a call that answers that quickly is not a wait worth a word,
+ * and a line that flashes on and off is noise for a reader and a screen
+ * reader alike.
+ *
+ * The `role="status"` region itself is ALWAYS mounted and never `hidden` or
+ * `display: none` (a live region that appears together with its text is
+ * often not announced). Idle, it is an empty paragraph with no classes, so it
+ * takes no height. All the layout, the host's `className` included, sits on
+ * an inner wrapper that renders only while waiting. Hosts render this
+ * unconditionally and let it handle its own idle state.
  *
  * ## The seconds
  *
@@ -37,20 +46,31 @@ export function waitingText(marketplace: string): string {
   return `Waiting on ${marketplace}…`;
 }
 
+/** A wait shorter than this is never shown or announced. */
+export const ANNOUNCE_AFTER_MS = 1500;
+
 /**
  * Whole seconds since this client first saw `since`, ticking once a second;
- * 0 when `since` is absent. Every state write is in the timer callback.
+ * `null` while there is no wait, or while it is younger than
+ * `ANNOUNCE_AFTER_MS`. Every state write is in a timer callback.
  */
-function useClientSeconds(since: number | undefined): number {
+function useClientSeconds(since: number | undefined): number | null {
   const [clock, setClock] = useState<{ since: number; at: number; now: number } | null>(null);
   useEffect(() => {
     if (since === undefined) return;
     const at = Date.now();
-    const id = window.setInterval(() => setClock({ since, at, now: Date.now() }), 1000);
-    return () => window.clearInterval(id);
+    const tick = () => setClock({ since, at, now: Date.now() });
+    const show = window.setTimeout(tick, ANNOUNCE_AFTER_MS);
+    const id = window.setInterval(tick, 1000);
+    return () => {
+      window.clearTimeout(show);
+      window.clearInterval(id);
+    };
   }, [since]);
-  if (since === undefined || !clock || clock.since !== since) return 0;
-  return Math.max(0, Math.floor((clock.now - clock.at) / 1000));
+  if (since === undefined || !clock || clock.since !== since) return null;
+  const elapsed = clock.now - clock.at;
+  if (elapsed < ANNOUNCE_AFTER_MS) return null;
+  return Math.floor(elapsed / 1000);
 }
 
 export function WaitingOnMarketplace({
@@ -62,18 +82,14 @@ export function WaitingOnMarketplace({
   waitingSince?: number;
   /** Display name, e.g. "BuySportsCards". */
   marketplace: string;
+  /** Layout for the shown line (margins, indent); never applied while idle. */
   className?: string;
 }) {
   const seconds = useClientSeconds(waitingSince);
-  const waiting = waitingSince !== undefined;
   return (
-    <p
-      role="status"
-      data-marketplace-wait=""
-      className={`items-center gap-2 text-sm text-ink-2 ${waiting ? "flex" : "hidden"} ${className}`}
-    >
-      {waiting && (
-        <>
+    <p role="status" data-marketplace-wait="">
+      {seconds !== null && (
+        <span className={`flex items-center gap-2 text-sm text-ink-2 ${className}`}>
           <span
             aria-hidden="true"
             className="h-2 w-2 shrink-0 rounded-full bg-neon-yellow-text shadow-[0_0_8px_var(--color-neon-yellow)] motion-safe:animate-pulse"
@@ -82,7 +98,7 @@ export function WaitingOnMarketplace({
           <span aria-hidden="true" className="tabular-nums text-ink-3">
             {seconds}s
           </span>
-        </>
+        </span>
       )}
     </p>
   );

@@ -95,3 +95,4 @@
 - [Address step bundle order](patterns_neo434_address_step_bundle_order.md) — "First import" is a source claim; read the built entry, run a timeline; how to leak-check a real bundle without a token
 - [Neo424 offered-on-stored-row](patterns_neo424_offered_on_stored_row.md) — id relaxation keyed on stored row fields is as narrow as that field's writers; enumerate them (applyLookupResult spread, switchRowSport)
 - [Neo475 body scrubber](patterns_neo475_body_scrubber.md) — run adversarial inputs; x-amzn-* wildcard + unredacted headers; slice-before-redact; free-text kept keys; key names; entities
+- [Neo478 operator checklist ingest](patterns_neo478_operator_checklist_ingest.md) — pasted-file ingest: bounds after the gate, quadratic \s+ split, uncapped pair list, CSV injection only with an export

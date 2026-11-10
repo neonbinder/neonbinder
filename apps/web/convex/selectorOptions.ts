@@ -309,6 +309,7 @@ import {
   type ChecklistConflict,
 } from "../lib/checklists/match-published-checklist";
 import { splitMarketplaceTeamNames } from "./adapters/marketplaceNames";
+import { MAX_CHECKLIST_TEAM_TEXTS } from "./checklistCandidates";
 import { isValidWaitKey } from "./lib/marketplaceWaitWriter";
 import {
   cardPlatformDataValidator,
@@ -15556,12 +15557,20 @@ export const fetchCardChecklist = action({
           published.rows,
         );
         // Only a team text with a comma can resolve to something other than
-        // itself (`chooseCandidateTeams`); ask about those, once each.
-        const commaTexts = new Map<string, number>();
+        // itself (`chooseCandidateTeams`); ask about those, once each, and
+        // only the first MAX_CHECKLIST_TEAM_TEXTS distinct ones (the
+        // resolver's read bound). A text past that cap maps to null: its
+        // cards get no checklist team and fall back to the per-card BSC
+        // lookup, like an unmatched card (D2). No error, no new copy.
+        const commaTexts = new Map<string, number | null>();
         const toResolve: Array<{ raw: string; parts: string[] }> = [];
         for (const m of match.matches) {
           for (const t of published.rows[m.rowIndex].teams) {
             if (!t.includes(",") || commaTexts.has(t)) continue;
+            if (toResolve.length >= MAX_CHECKLIST_TEAM_TEXTS) {
+              commaTexts.set(t, null);
+              continue;
+            }
             commaTexts.set(t, toResolve.length);
             toResolve.push({ raw: t, parts: splitMarketplaceTeamNames(t).names });
           }
@@ -15583,7 +15592,7 @@ export const fetchCardChecklist = action({
           let teams: string[] | null = [];
           for (const t of row.teams) {
             const at = commaTexts.get(t);
-            const names = at === undefined ? [t] : resolvedTexts[at];
+            const names = at === undefined ? [t] : at === null ? null : resolvedTexts[at];
             if (!names) {
               teams = null;
               break;
@@ -15647,7 +15656,7 @@ export const fetchCardChecklist = action({
             unmatched: match.unmatchedCardIndices.length,
             conflicts,
             refusedTeams: refused,
-            misreads: match.misreads.length,
+            misreads: match.misreadCount,
           }),
         );
       }

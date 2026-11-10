@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  PUBLISHED_CHECKLIST_MAX_LINE,
   PUBLISHED_CHECKLIST_MAX_NAME,
   PUBLISHED_CHECKLIST_MAX_ROWS,
+  PUBLISHED_CHECKLIST_MAX_TEXT,
   parsePublishedChecklist,
   splitDelimited,
 } from "./parse-published-checklist";
@@ -141,5 +143,80 @@ describe("parsePublishedChecklist — caps", () => {
     expect(out.rows).toHaveLength(PUBLISHED_CHECKLIST_MAX_ROWS);
     expect(out.skipped).toHaveLength(3);
     expect(out.skipped[0].line).toBe(PUBLISHED_CHECKLIST_MAX_ROWS + 1);
+  });
+});
+
+describe("parsePublishedChecklist — adversarial input", () => {
+  // Before the fix, splitting on /\s+[-–—]\s+/ backtracked over a whitespace
+  // run: 100k spaces took ~7 s on the main thread. Each case here must stay
+  // far under that; the bound is loose so a busy CI box cannot flake it.
+  const FAST_MS = 1000;
+  const timed = (text: string) => {
+    const started = performance.now();
+    const out = parsePublishedChecklist(text);
+    return { out, ms: performance.now() - started };
+  };
+
+  it("a 100k-space line between a number and a name is skipped as too long, fast", () => {
+    const line = `1 A${" ".repeat(100_000)}B`;
+    const { out, ms } = timed(`${line}\n2 Fine - Team B`);
+    expect(ms).toBeLessThan(FAST_MS);
+    expect(out.rows.map((r) => r.number)).toEqual(["2"]);
+    expect(out.skipped).toHaveLength(1);
+    expect(out.skipped[0]).toMatchObject({
+      line: 1,
+      reason: `Longer than ${PUBLISHED_CHECKLIST_MAX_LINE.toLocaleString("en-US")} characters`,
+    });
+    // The preview keeps only a short start of the line.
+    expect(out.skipped[0].text.length).toBeLessThanOrEqual(81);
+  });
+
+  it("a line of nothing but 100k spaces is blank, fast", () => {
+    const { out, ms } = timed(`${" ".repeat(100_000)}\n2 Fine - Team B`);
+    expect(ms).toBeLessThan(FAST_MS);
+    expect(out.rows).toHaveLength(1);
+    expect(out.skipped).toEqual([]);
+  });
+
+  it("an over-long first line is skipped, not read as a header", () => {
+    const first = `#,Player,Team${",".repeat(PUBLISHED_CHECKLIST_MAX_LINE)}`;
+    const out = parsePublishedChecklist(`${first}\n2 Fine - Team B`);
+    expect(out.format).toBe("lines");
+    expect(out.skipped.map((s) => s.line)).toEqual([1]);
+    expect(out.rows.map((r) => r.number)).toEqual(["2"]);
+  });
+
+  it("whitespace runs under the line cap still split the team off, fast", () => {
+    const gap = " ".repeat(600);
+    const { out, ms } = timed(`7 Jean-Carlos${gap}Ruiz${gap}-\t${gap}Detroit Tigers`);
+    expect(ms).toBeLessThan(FAST_MS);
+    expect(out.rows).toEqual([
+      { number: "7", players: ["Jean-Carlos Ruiz"], teams: ["Detroit Tigers"] },
+    ]);
+  });
+
+  it("a line exactly at the cap is still read", () => {
+    const pad = " ".repeat(PUBLISHED_CHECKLIST_MAX_LINE - "9 A - T".length);
+    const out = parsePublishedChecklist(`9 A${pad} - T`.slice(0, PUBLISHED_CHECKLIST_MAX_LINE));
+    expect(out.skipped).toEqual([]);
+    expect(out.rows).toHaveLength(1);
+  });
+
+  it("refuses text over the 2 MB cap without parsing any of it", () => {
+    const line = "1 Rhett Lowder - Cincinnati Reds\n";
+    const text = line.repeat(Math.ceil((PUBLISHED_CHECKLIST_MAX_TEXT + 1) / line.length));
+    expect(text.length).toBeGreaterThan(PUBLISHED_CHECKLIST_MAX_TEXT);
+    const { out, ms } = timed(text);
+    expect(ms).toBeLessThan(FAST_MS);
+    expect(out).toEqual({ rows: [], skipped: [], format: "lines", tooBig: true });
+  });
+
+  it("text exactly at the cap is read", () => {
+    const head = "1 Rhett Lowder - Cincinnati Reds\n";
+    const text = head + "\n".repeat(PUBLISHED_CHECKLIST_MAX_TEXT - head.length);
+    expect(text.length).toBe(PUBLISHED_CHECKLIST_MAX_TEXT);
+    const out = parsePublishedChecklist(text);
+    expect(out.tooBig).toBeUndefined();
+    expect(out.rows).toHaveLength(1);
   });
 });

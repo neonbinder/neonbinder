@@ -22,7 +22,10 @@
  *  - The card already carries a team (BSC's bulk parse, or SportLots) and the
  *    row names a different one: `conflict.teams`.
  *  - A card left unmatched whose players appear on a row at a DIFFERENT
- *    number is a likely misread (`misreads`): reported, never paired.
+ *    number is a likely misread (`misreads`): reported, never paired. The
+ *    list holds at most `MAX_CHECKLIST_MISREADS` pairs (a player on many
+ *    rows times many unmatched cards could otherwise reach millions);
+ *    `misreadCount` is always the whole.
  *
  * The card keeps the marketplace's values; the conflict carries both sides
  * for the operator ("Checklist says otherwise").
@@ -65,9 +68,17 @@ export type ChecklistMatchResult = {
   matches: ChecklistCardMatch[];
   /** Cards no row paired with, in card order. */
   unmatchedCardIndices: number[];
-  /** Unmatched cards whose players a row lists under another number. */
+  /**
+   * Unmatched cards whose players a row lists under another number: the
+   * first `MAX_CHECKLIST_MISREADS` pairs, in card then row order.
+   */
   misreads: Array<{ cardIndex: number; rowIndex: number }>;
+  /** Every such pair, including those past the list's cap. */
+  misreadCount: number;
 };
+
+/** The most misread pairs listed; `misreadCount` counts the rest. */
+export const MAX_CHECKLIST_MISREADS = 200;
 
 /**
  * A card number as both sides compare it: trimmed, a leading "#" or "No."
@@ -210,24 +221,41 @@ export function matchPublishedChecklist(
   });
 
   // Likely misreads: an unmatched card whose players a row lists under a
-  // different number. Reported only.
-  const rowsByPlayers = new Map<string, number[]>();
+  // different number. Reported only. Counted per group (the group's rows
+  // less those at the card's own number), so the count costs one pass over
+  // cards and rows however large the cross product is; only the listed pairs
+  // are walked, and the walk stops at the cap. "" stands for a blank number,
+  // which a normalised number never is.
+  const rowsByPlayers = new Map<string, { rows: number[]; byNumber: Map<string, number> }>();
   rows.forEach((r, i) => {
     const k = namesKey(nonEmpty(r.players));
     if (!k) return;
-    const list = rowsByPlayers.get(k);
-    if (list) list.push(i);
-    else rowsByPlayers.set(k, [i]);
+    let group = rowsByPlayers.get(k);
+    if (!group) {
+      group = { rows: [], byNumber: new Map() };
+      rowsByPlayers.set(k, group);
+    }
+    group.rows.push(i);
+    const n = rowNumbers.get(i) ?? "";
+    group.byNumber.set(n, (group.byNumber.get(n) ?? 0) + 1);
   });
   const misreads: ChecklistMatchResult["misreads"] = [];
+  let misreadCount = 0;
   for (const cardIndex of unmatchedCardIndices) {
     const k = namesKey(nonEmpty(cards[cardIndex].players));
     if (!k) continue;
-    const cardNumber = cardNumbers.get(cardIndex);
-    for (const rowIndex of rowsByPlayers.get(k) ?? []) {
-      if (rowNumbers.get(rowIndex) !== cardNumber) misreads.push({ cardIndex, rowIndex });
+    const group = rowsByPlayers.get(k);
+    if (!group) continue;
+    const cardNumber = cardNumbers.get(cardIndex) ?? "";
+    const here = group.rows.length - (group.byNumber.get(cardNumber) ?? 0);
+    misreadCount += here;
+    if (here === 0 || misreads.length >= MAX_CHECKLIST_MISREADS) continue;
+    for (const rowIndex of group.rows) {
+      if ((rowNumbers.get(rowIndex) ?? "") === cardNumber) continue;
+      misreads.push({ cardIndex, rowIndex });
+      if (misreads.length >= MAX_CHECKLIST_MISREADS) break;
     }
   }
 
-  return { matches, unmatchedCardIndices, misreads };
+  return { matches, unmatchedCardIndices, misreads, misreadCount };
 }

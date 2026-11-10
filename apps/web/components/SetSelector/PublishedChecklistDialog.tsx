@@ -96,6 +96,17 @@ export function checklistTeamsLine(matched: number, total: number): string {
   return `Teams from your checklist: ${matched.toLocaleString("en-US")} of ${total.toLocaleString("en-US")} ${total === 1 ? "card" : "cards"}`;
 }
 
+/** The paste box holds text, but no line of it reads as a card. */
+export const NOTHING_READS =
+  "Nothing reads as a card yet. Each line starts with its card number.";
+/** Said when "Use this checklist" is pressed with no rows to use. */
+export const NOTHING_TO_USE = "Nothing to use yet — paste lines that start with a card number.";
+
+/** "3 lines skipped." — the count's second half, when any line was. */
+export function skippedLinesText(n: number): string {
+  return `${n.toLocaleString("en-US")} ${n === 1 ? "line" : "lines"} skipped.`;
+}
+
 const FORMAT_LABEL: Record<PublishedChecklistParse["format"], string> = {
   lines: "checklist lines",
   csv: "CSV",
@@ -129,6 +140,11 @@ export default function PublishedChecklistDialog({
   const [fileNote, setFileNote] = useState<{ tone: "status" | "error"; text: string } | null>(
     null,
   );
+  /**
+   * A press of "Use this checklist" with nothing to use, and the text it was
+   * pressed over: the message stands until the paste changes.
+   */
+  const [blockedFor, setBlockedFor] = useState<string | null>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
   const pasteRef = useRef<HTMLTextAreaElement>(null);
 
@@ -154,7 +170,13 @@ export default function PublishedChecklistDialog({
   }, [restoreFocusRef]);
 
   const applyChecklist = () => {
-    if (!canUse) return;
+    if (!canUse) {
+      // A parse still catching up is not "nothing": the press is just early.
+      if (stale) return;
+      setBlockedFor(text);
+      pasteRef.current?.focus();
+      return;
+    }
     onUse({
       rows: parsed.rows,
       text,
@@ -195,6 +217,9 @@ export default function PublishedChecklistDialog({
       applyChecklist();
     }
   };
+
+  const blocked = blockedFor !== null && blockedFor === text;
+  const unreadable = hasText && !stale && !parsed.tooBig && parsed.rows.length === 0;
 
   const shownRows = parsed.rows.slice(0, PREVIEW_ROWS);
   const shownSkipped = parsed.skipped.slice(0, PREVIEW_SKIPPED);
@@ -259,9 +284,17 @@ export default function PublishedChecklistDialog({
                   .csv, .tsv or .txt — it stays on your computer
                 </span>
               </div>
+              {/* Keyed on the tone, so the role never flips on a mounted
+                  node: an error mounts a fresh alert (announced as it
+                  appears), while idle and "Read list.csv" share one status
+                  region that is always mounted, so its first message is
+                  heard. No explicit aria-live: the role carries the
+                  politeness. Never `empty:hidden`: a live region that is
+                  display:none drops the message that reveals it. */}
               <p
+                key={fileNote?.tone === "error" ? "error" : "status"}
                 role={fileNote?.tone === "error" ? "alert" : "status"}
-                className={`text-xs empty:hidden ${
+                className={`text-xs ${
                   fileNote?.tone === "error" ? "text-neon-pink-text" : "text-ink-2"
                 }`}
               >
@@ -272,13 +305,37 @@ export default function PublishedChecklistDialog({
             {/* Right: what the sync will get. */}
             <div className="flex min-w-0 flex-col gap-3">
               <div className="flex items-baseline justify-between gap-3">
-                <p
-                  id={countId}
-                  className={`text-2xl font-semibold tabular-nums ${
-                    parsed.rows.length > 0 ? "text-neon-green-text" : "text-ink-3"
-                  }`}
-                >
-                  {rowCountText(parsed.rows.length)}
+                {/* ONE always-mounted status region for what the paste
+                    reads as: "248 rows. 3 lines skipped.", or why nothing
+                    does, or why "Use this checklist" did nothing. The paste
+                    box and that button are described by it. */}
+                <p id={countId} role="status" className="min-w-0">
+                  {blocked ? (
+                    <span className="text-sm font-semibold text-neon-pink-text">
+                      {NOTHING_TO_USE}
+                    </span>
+                  ) : unreadable ? (
+                    <span className="text-sm text-neon-pink-text">{NOTHING_READS}</span>
+                  ) : (
+                    <>
+                      <span
+                        className={`text-2xl font-semibold tabular-nums ${
+                          parsed.rows.length > 0 ? "text-neon-green-text" : "text-ink-3"
+                        }`}
+                      >
+                        {rowCountText(parsed.rows.length)}
+                      </span>
+                      <span className="sr-only">.</span>
+                      {hasText && parsed.skipped.length > 0 && (
+                        <>
+                          {" "}
+                          <span className="text-xs text-ink-3">
+                            {skippedLinesText(parsed.skipped.length)}
+                          </span>
+                        </>
+                      )}
+                    </>
+                  )}
                 </p>
                 {hasText && parsed.rows.length > 0 && (
                   <p className="text-xs text-ink-3">Read as {FORMAT_LABEL[parsed.format]}</p>
@@ -339,13 +396,22 @@ export default function PublishedChecklistDialog({
                 </div>
               ) : (
                 <p className="rounded-md border border-dashed border-rule-strong px-3 py-6 text-center text-sm text-ink-3">
-                  {hasText
-                    ? "Nothing here reads as a card yet. Each line starts with its card number."
-                    : "Your rows show up here as you paste."}
+                  {parsed.tooBig ? (
+                    <span role="alert" className="text-neon-pink-text">
+                      Whoa, that&apos;s a lot. A pasted checklist is under 2 MB — paste just this
+                      set&apos;s list.
+                    </span>
+                  ) : hasText ? (
+                    // Why nothing reads is said once, in the status above;
+                    // here, what a line that does read looks like.
+                    "Try a line like “60 Rhett Lowder - Cincinnati Reds”."
+                  ) : (
+                    "Your rows show up here as you paste."
+                  )}
                 </p>
               )}
 
-              {hasText && (
+              {hasText && !parsed.tooBig && (
                 <div>
                   <h3 className="text-sm font-semibold text-ink-2">
                     Skipped lines
@@ -420,7 +486,7 @@ export function PublishedChecklistChip({
         }}
         aria-disabled={disabled || undefined}
         aria-label="Remove the publisher's checklist"
-        className={`rounded-full px-2.5 py-0.5 text-xs font-semibold text-neon-pink-text transition-colors hover:bg-neon-pink/15 focus-outline max-sm:min-h-11 ${
+        className={`min-h-6 rounded-full px-2.5 py-0.5 text-xs font-semibold text-neon-pink-text transition-colors hover:bg-neon-pink/15 focus-outline max-sm:min-h-11 ${
           disabled ? "cursor-not-allowed opacity-60" : ""
         }`}
       >

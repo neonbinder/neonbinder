@@ -23,6 +23,7 @@ import { beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
 import { Id } from "./_generated/dataModel";
+import { MAX_CHECKLIST_TEAM_TEXTS } from "./checklistCandidates";
 
 type BscCard = {
   cardNumber: string;
@@ -370,6 +371,42 @@ describe("fetchCardChecklist with a publisher checklist: fills and disagreements
     expect(mockState.teamLookupCalls).toEqual([["bsc-3"]]);
     expect((await candidates(t)).get("3")?.teamLookup).not.toBe("checklist");
     expect(result.checklistTeams).toEqual({ matched: 0, total: 1 });
+  });
+});
+
+describe("fetchCardChecklist with a publisher checklist: more comma team texts than the resolver takes", () => {
+  test("the first MAX_CHECKLIST_TEAM_TEXTS are resolved; cards past the cap fall back to the BSC lookup, no error", async () => {
+    // One card per distinct comma text, plus two past the cap. Texts are
+    // collected in card order, so cards n and n+1 are the ones left over.
+    const n = MAX_CHECKLIST_TEAM_TEXTS;
+    const total = n + 2;
+    mockState.bscCards = Array.from({ length: total }, (_, i) =>
+      bsc(String(i + 1), { players: [`P${i + 1}`] }),
+    );
+    const { t, result } = await run({
+      rows: Array.from({ length: total }, (_, i) => ({
+        number: String(i + 1),
+        players: [`P${i + 1}`],
+        teams: [`East${i + 1}, West${i + 1}`],
+      })),
+    });
+    expect(result.success).toBe(true);
+    expect(result.checklistTeams).toEqual({ matched: n, total });
+    // Only the two past the cap are looked up, and nothing else.
+    expect(mockState.teamLookupCalls.flat().sort()).toEqual([`bsc-${n + 1}`, `bsc-${n + 2}`]);
+    const rows = await candidates(t);
+    expect(rows.get("1")).toMatchObject({ teams: ["East1", "West1"], teamLookup: "checklist" });
+    expect(rows.get(String(n))).toMatchObject({
+      teams: [`East${n}`, `West${n}`],
+      teamLookup: "checklist",
+    });
+    for (const past of [n + 1, n + 2]) {
+      const row = rows.get(String(past));
+      expect(row?.teamLookup).not.toBe("checklist");
+      // No checklist team was written: the comma text is not on the card.
+      expect(row?.teams ?? []).not.toContain(`East${past}`);
+      expect(row?.checklistConflict).toBeUndefined();
+    }
   });
 });
 

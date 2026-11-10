@@ -41,12 +41,29 @@ export type PublishedChecklistParse = {
   rows: PublishedChecklistRow[];
   skipped: SkippedLine[];
   format: "lines" | "csv" | "tsv";
+  /**
+   * The text was over `PUBLISHED_CHECKLIST_MAX_TEXT` and was not read at all:
+   * `rows` and `skipped` are empty. The dialog says so instead of a preview.
+   */
+  tooBig?: true;
 };
 
 /** The most rows one checklist may carry; the server refuses more. */
 export const PUBLISHED_CHECKLIST_MAX_ROWS = 2000;
 /** The longest card number, player or team name kept; longer is skipped. */
 export const PUBLISHED_CHECKLIST_MAX_NAME = 120;
+/**
+ * The longest line read. A real checklist line is well under 200 characters;
+ * a longer one is skipped with a reason before any pattern runs on it, so a
+ * pasted run of whitespace or junk cannot stall the browser.
+ */
+export const PUBLISHED_CHECKLIST_MAX_LINE = 2000;
+/**
+ * The most text read, in characters: the same 2 MB the file picker allows, so
+ * a paste cannot get past the limit a file is held to. Over it, nothing is
+ * parsed and the result says `tooBig`.
+ */
+export const PUBLISHED_CHECKLIST_MAX_TEXT = 2 * 1024 * 1024;
 
 /** The words a header cell may use for each column, compared folded. */
 const HEADER_SPELLINGS: Record<"number" | "players" | "teams", readonly string[]> = {
@@ -208,10 +225,13 @@ function parseLine(text: string): PublishedChecklistRow | { reason: string } {
   const match = /^\s*(\S+)\s*(.*)$/.exec(text);
   const number = match ? cleanNumber(match[1]) : null;
   if (!match || !number) return { reason: "No card number at the start" };
-  const rest = match[2];
+  // Whitespace runs collapse to one space first: splitting on
+  // `\s+[-–—]\s+` directly backtracks over every run and is quadratic in
+  // its length (100k spaces took seconds on the main thread).
+  const rest = match[2].replace(/\s+/g, " ");
   // The team follows the LAST spaced dash, so a hyphenated name
   // ("Jean-Carlos", "Ryu Hyun-jin") stays in one piece.
-  const parts = rest.split(/\s+[-–—]\s+/);
+  const parts = rest.split(/ [-–—] /);
   const playerPart = parts.length > 1 ? parts.slice(0, -1).join(" - ") : rest;
   const teamPart = parts.length > 1 ? parts[parts.length - 1] : "";
   const players = playersFrom(playerPart);
@@ -242,13 +262,21 @@ function detectDelimited(firstLine: string): {
  * passed over; every other line is a row or a `skipped` entry.
  */
 export function parsePublishedChecklist(text: string): PublishedChecklistParse {
+  if (text.length > PUBLISHED_CHECKLIST_MAX_TEXT) {
+    return { rows: [], skipped: [], format: "lines", tooBig: true };
+  }
   const lines = text.replace(/^﻿/, "").split(/\r\n|\r|\n/);
   const firstIndex = lines.findIndex((l) => l.trim() !== "");
   const rows: PublishedChecklistRow[] = [];
   const skipped: SkippedLine[] = [];
   if (firstIndex === -1) return { rows, skipped, format: "lines" };
 
-  const header = detectDelimited(lines[firstIndex]);
+  // An over-long first line is not a header; it is skipped below like any
+  // other over-long line.
+  const header =
+    lines[firstIndex].length > PUBLISHED_CHECKLIST_MAX_LINE
+      ? null
+      : detectDelimited(lines[firstIndex]);
   const format: PublishedChecklistParse["format"] = header
     ? header.delimiter === "\t"
       ? "tsv"
@@ -273,6 +301,15 @@ export function parsePublishedChecklist(text: string): PublishedChecklistParse {
   for (let i = firstIndex + (header ? 1 : 0); i < lines.length; i++) {
     const raw = lines[i];
     if (raw.trim() === "") continue;
+    if (raw.length > PUBLISHED_CHECKLIST_MAX_LINE) {
+      skipped.push({
+        line: i + 1,
+        // Only the start is kept for the preview; the line itself is junk.
+        text: `${raw.slice(0, 200).replace(/\s+/g, " ").trim().slice(0, 80)}…`,
+        reason: `Longer than ${PUBLISHED_CHECKLIST_MAX_LINE.toLocaleString("en-US")} characters`,
+      });
+      continue;
+    }
     if (!header) {
       const parsed = parseLine(raw);
       if ("reason" in parsed) skipped.push({ line: i + 1, text: raw, reason: parsed.reason });

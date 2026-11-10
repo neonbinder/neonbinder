@@ -3467,18 +3467,25 @@ export default function CardChecklist({
         {/* NEO-487 — "Waiting on BuySportsCards… 12s" while this run's
             fetch is held up by a BSC call. Not while the pairing dialog is
             open: it carries its own, and two copies of one sentence on a
-            page is one too many for a reader and a text locator alike. */}
-        {pairingPhase !== "review" && (
-          <WaitingOnMarketplaceRun
-            runKey={syncWaitKey}
-            active={syncing}
-            marketplace="BuySportsCards"
-            className="mb-3"
-          />
-        )}
+            page is one too many for a reader and a text locator alike.
+            Always mounted (idle while the dialog is open), so its status
+            region exists before it speaks. */}
+        <WaitingOnMarketplaceRun
+          runKey={syncWaitKey}
+          active={syncing && pairingPhase !== "review"}
+          marketplace="BuySportsCards"
+          className="mb-3"
+        />
+        {/* NEO-487 — a parallel row's own "Build from …". This component
+            outlives a move to another row, so a single build started on a
+            parallel can still be in flight when the operator saves an
+            insert and a run of parallels starts. That run's panel (here or
+            in the Base section) carries its own wait line, so this one
+            stands down while a run is going: one wait line on the page,
+            never two copies of the sentence. */}
         <WaitingOnMarketplaceRun
           runKey={buildWaitKey}
-          active={buildWaitKey !== null}
+          active={buildWaitKey !== null && !parallelRun.active}
           marketplace="BuySportsCards"
           className="mb-3"
         />

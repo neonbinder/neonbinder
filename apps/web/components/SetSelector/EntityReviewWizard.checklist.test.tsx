@@ -109,8 +109,8 @@ const counter = () =>
     .map((el) => el.textContent ?? "")
     .find((t) => /^Step \d+ of \d+$/.test(t)) ?? "";
 const NEXT = () => screen.getByRole("button", { name: "Next (Enter)" });
-const keep = () => screen.getByRole("button", { name: "Keep the marketplace's" });
-const use = () => screen.getByRole("button", { name: "Use the checklist's" });
+const keep = () => screen.getByRole("radio", { name: "Keep the marketplace's" });
+const use = () => screen.getByRole("radio", { name: "Use the checklist's" });
 
 beforeEach(() => {
   seq = 0;
@@ -194,8 +194,8 @@ describe("the checklist step in the wizard (NEO-478)", () => {
     fireEvent.click(screen.getByRole("button", { name: "Back to previous step" }));
     expect(screen.getByRole("heading", { name: "Checklist says otherwise" })).toBeTruthy();
     expect(counter()).toMatch(/^Step 1 of \d+$/);
-    expect(use().getAttribute("aria-pressed")).toBe("true");
-    expect(keep().getAttribute("aria-pressed")).toBe("false");
+    expect(use().getAttribute("aria-checked")).toBe("true");
+    expect(keep().getAttribute("aria-checked")).toBe("false");
     // Nothing was reported as unanswered on the way back.
     const last = onChecklistChoicesChange.mock.calls.at(-1)![0] as (ChecklistChoice | undefined)[];
     expect(last).toEqual(["checklist", undefined]);

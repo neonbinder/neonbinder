@@ -13,7 +13,7 @@ import schema from "./schema";
 import { Id } from "./_generated/dataModel";
 // NEO-294 — the page the clear and the write are bounded at, so a
 // deliberately multi-page batch is built from the real number.
-import { CHECKLIST_CANDIDATE_PAGE } from "./checklistCandidates";
+import { CHECKLIST_CANDIDATE_PAGE, MAX_CHECKLIST_TEAM_TEXTS } from "./checklistCandidates";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -1218,5 +1218,26 @@ describe("ready === total marks the end of the team lookups (NEO-341)", () => {
 
     await t.finishAllScheduledFunctions(vi.runAllTimers);
     expect(await readAs(t, ADMIN, id)).toMatchObject({ total: 2, ready: 2 });
+  });
+});
+
+describe("resolveChecklistTeamTexts past its cap (PR 451)", () => {
+  test("resolves the first MAX_CHECKLIST_TEAM_TEXTS texts and answers null for the rest, without throwing", async () => {
+    const t = convexTest(schema, modules);
+    const selectorOptionId = await seedRow(t);
+    // No team rows exist, so each comma text splits on its commas.
+    const texts = Array.from({ length: MAX_CHECKLIST_TEAM_TEXTS + 2 }, (_, i) => ({
+      raw: `Alpha${i}, Beta${i}`,
+      parts: [`Alpha${i}`, `Beta${i}`],
+    }));
+    const out = await t.query(internal.checklistCandidates.resolveChecklistTeamTexts, {
+      selectorOptionId,
+      texts,
+    });
+    expect(out).toHaveLength(MAX_CHECKLIST_TEAM_TEXTS + 2);
+    expect(out[0]).toEqual(["Alpha0", "Beta0"]);
+    const last = MAX_CHECKLIST_TEAM_TEXTS - 1;
+    expect(out[last]).toEqual([`Alpha${last}`, `Beta${last}`]);
+    expect(out.slice(MAX_CHECKLIST_TEAM_TEXTS)).toEqual([null, null]);
   });
 });

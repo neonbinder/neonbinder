@@ -5,6 +5,7 @@
  */
 import { describe, expect, test } from "vitest";
 import {
+  MAX_CHECKLIST_MISREADS,
   matchPublishedChecklist,
   normalizeChecklistNumber,
   stripLetterPrefix,
@@ -107,6 +108,7 @@ describe("matchPublishedChecklist: disagreements and fills", () => {
     expect(r.matches).toEqual([]);
     expect(r.unmatchedCardIndices).toEqual([0]);
     expect(r.misreads).toEqual([{ cardIndex: 0, rowIndex: 0 }]);
+    expect(r.misreadCount).toBe(1);
   });
 
   test("a matched pair whose players differ carries both sides and keeps the pairing", () => {
@@ -151,5 +153,65 @@ describe("matchPublishedChecklist: disagreements and fills", () => {
   test("a card with a team and a row with none is no team conflict", () => {
     const r = matchPublishedChecklist([card("4", ["A"], ["Mets"])], [row("4", ["A"])]);
     expect(r.matches[0].conflict).toBeUndefined();
+  });
+});
+
+describe("matchPublishedChecklist: the misreads list is capped", () => {
+  test("one player on many rows times many unmatched cards lists the cap and counts the whole", () => {
+    // 1,000 unmatched cards and 1,000 rows, all the same player, every number
+    // different on the two sides: a million pairs before the cap.
+    const n = 1000;
+    // Bare numbers that never meet, so neither pass (nor the prefix strip) pairs.
+    const cards = Array.from({ length: n }, (_, i) => card(String(i + 1), ["Shohei Ohtani"]));
+    const rows = Array.from({ length: n }, (_, i) => row(String(n + i + 1), ["Shohei Ohtani"]));
+    const started = performance.now();
+    const r = matchPublishedChecklist(cards, rows);
+    expect(performance.now() - started).toBeLessThan(1000);
+    expect(r.unmatchedCardIndices).toHaveLength(n);
+    expect(r.misreadCount).toBe(n * n);
+    expect(r.misreads).toHaveLength(MAX_CHECKLIST_MISREADS);
+    // Card then row order: the first card's rows first.
+    expect(r.misreads[0]).toEqual({ cardIndex: 0, rowIndex: 0 });
+    expect(r.misreads[MAX_CHECKLIST_MISREADS - 1]).toEqual({
+      cardIndex: 0,
+      rowIndex: MAX_CHECKLIST_MISREADS - 1,
+    });
+  });
+
+  test("rows at the card's own number are neither listed nor counted", () => {
+    // Card 5 and its twin share the number, so neither pairs; the row at 5
+    // is not a misread for them, the row at 9 is.
+    const r = matchPublishedChecklist(
+      [card("5", ["A One"]), card("5", ["A One"])],
+      [row("5", ["A One"]), row("9", ["A One"])],
+    );
+    expect(r.matches).toEqual([]);
+    expect(r.misreads).toEqual([
+      { cardIndex: 0, rowIndex: 1 },
+      { cardIndex: 1, rowIndex: 1 },
+    ]);
+    expect(r.misreadCount).toBe(2);
+  });
+
+  test("under the cap, the list is every pair and the count is its length", () => {
+    const r = matchPublishedChecklist(
+      [card("1", ["A One"]), card("2", ["B Two"])],
+      [row("10", ["A One"]), row("11", ["A One"]), row("20", ["B Two"])],
+    );
+    expect(r.misreads).toEqual([
+      { cardIndex: 0, rowIndex: 0 },
+      { cardIndex: 0, rowIndex: 1 },
+      { cardIndex: 1, rowIndex: 2 },
+    ]);
+    expect(r.misreadCount).toBe(3);
+  });
+
+  test("an unmatched card past the cap still counts", () => {
+    const cards = Array.from({ length: 3 }, (_, i) => card(String(5000 + i), ["P"]));
+    const rows = Array.from({ length: MAX_CHECKLIST_MISREADS }, (_, i) => row(String(i + 1), ["P"]));
+    const r = matchPublishedChecklist(cards, rows);
+    expect(r.misreads).toHaveLength(MAX_CHECKLIST_MISREADS);
+    expect(r.misreads.every((m) => m.cardIndex === 0)).toBe(true);
+    expect(r.misreadCount).toBe(3 * MAX_CHECKLIST_MISREADS);
   });
 });

@@ -7,10 +7,13 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import React from "react";
 import { describe, expect, it, vi } from "vitest";
 import PublishedChecklistDialog, {
+  NOTHING_READS,
+  NOTHING_TO_USE,
   PublishedChecklistChip,
   checklistTeamsLine,
   chipText,
   rowCountText,
+  skippedLinesText,
 } from "./PublishedChecklistDialog";
 
 const PASTE = [
@@ -96,7 +99,86 @@ describe("PublishedChecklistDialog", () => {
     await paste("nothing readable here");
     fireEvent.click(use);
     expect(onUse).not.toHaveBeenCalled();
-    expect(screen.getByText(/Nothing here reads as a card yet/)).toBeTruthy();
+  });
+
+  /** The one status region the count, the bad-paste line and a blocked press share. */
+  const countStatus = () => {
+    const id = box().getAttribute("aria-describedby")!;
+    return document.getElementById(id)!;
+  };
+
+  it("says the row count and the skipped lines in ONE always-mounted status region", async () => {
+    open();
+    const region = countStatus();
+    expect(region.getAttribute("role")).toBe("status");
+    expect(region.textContent).toBe("0 rows.");
+    // The button is described by the same region.
+    expect(screen.getByRole("button", { name: "Use this checklist" }).getAttribute("aria-describedby")).toBe(
+      region.id,
+    );
+    await paste(PASTE);
+    await waitFor(() => expect(countStatus().textContent).toBe("2 rows. 1 line skipped."));
+    // The same node, never remounted: a live region must exist before it speaks.
+    expect(countStatus()).toBe(region);
+    expect(skippedLinesText(3)).toBe("3 lines skipped.");
+    expect(skippedLinesText(1)).toBe("1 line skipped.");
+  });
+
+  it("says why nothing reads in that region, once, not again in the preview", async () => {
+    open();
+    await paste("nothing readable here");
+    await waitFor(() => expect(countStatus().textContent).toBe(NOTHING_READS));
+    expect(NOTHING_READS).toBe("Nothing reads as a card yet. Each line starts with its card number.");
+    expect(screen.getAllByText(/Nothing reads as a card/)).toHaveLength(1);
+    expect(screen.getByText(/Try a line like/)).toBeTruthy();
+  });
+
+  it("a blocked press says so in the region and puts focus in the paste box; typing clears it", async () => {
+    open();
+    const use = screen.getByRole("button", { name: "Use this checklist" });
+    act(() => {
+      use.focus();
+    });
+    fireEvent.click(use);
+    expect(countStatus().textContent).toBe(NOTHING_TO_USE);
+    expect(document.activeElement).toBe(box());
+    // Unreadable text: the press still wins until the paste changes.
+    await paste("nothing readable here");
+    await waitFor(() => expect(countStatus().textContent).toBe(NOTHING_READS));
+    fireEvent.click(use);
+    expect(countStatus().textContent).toBe(NOTHING_TO_USE);
+    await paste("1 A Guy - Team A");
+    await waitFor(() => expect(countStatus().textContent).toBe("1 row."));
+  });
+
+  it("the file note never flips its role on a mounted node, and carries no explicit aria-live", async () => {
+    open();
+    const input = screen.getByLabelText("Choose a file") as HTMLInputElement;
+    // Idle: an empty, always-mounted status region, never display:none.
+    const idle = screen
+      .getAllByRole("status")
+      .find((el) => el.textContent === "" && el !== countStatus())!;
+    expect(idle).toBeTruthy();
+    expect(idle.className).not.toContain("hidden");
+    const good = new File(["9 A Guy - Team A"], "list.txt", { type: "text/plain" });
+    Object.defineProperty(good, "text", { value: async () => "9 A Guy - Team A" });
+    await act(async () => {
+      fireEvent.change(input, { target: { files: [good] } });
+    });
+    // The status line spoke from the SAME node it was idle on.
+    expect(idle.isConnected).toBe(true);
+    expect(idle.textContent).toMatch(/Read list\.txt/);
+    expect(idle.getAttribute("aria-live")).toBeNull();
+    const big = new File(["x"], "huge.csv");
+    Object.defineProperty(big, "size", { value: 3 * 1024 * 1024 });
+    await act(async () => {
+      fireEvent.change(input, { target: { files: [big] } });
+    });
+    // An error is a NEW alert node, not the status one with its role swapped.
+    const alert = screen.getByRole("alert");
+    expect(alert).not.toBe(idle);
+    expect(idle.isConnected).toBe(false);
+    expect(alert.getAttribute("aria-live")).toBeNull();
   });
 
   it("Ctrl+Enter and Cmd+Enter in the paste box use the checklist", async () => {
@@ -158,6 +240,18 @@ describe("PublishedChecklistDialog", () => {
     expect(box().value).toBe("");
   });
 
+  it("refuses a paste over 2 MB with an alert instead of parsing it", async () => {
+    const { onUse } = open();
+    const line = "1 A Guy - Team A\n";
+    await paste(line.repeat(Math.ceil((2 * 1024 * 1024 + 1) / line.length)));
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toMatch(/under 2 MB/));
+    expect(screen.getByText("0 rows")).toBeTruthy();
+    // Nothing was read, so there is no skipped-lines list either.
+    expect(screen.queryByRole("heading", { name: /Skipped lines/ })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Use this checklist" }));
+    expect(onUse).not.toHaveBeenCalled();
+  });
+
   it("puts focus back on the opener when it closes", async () => {
     const opener = document.createElement("button");
     document.body.appendChild(opener);
@@ -191,5 +285,12 @@ describe("the copy helpers and the chip", () => {
     render(<PublishedChecklistChip rowCount={3} onRemove={onRemove} disabled />);
     fireEvent.click(screen.getByRole("button", { name: "Remove the publisher's checklist" }));
     expect(onRemove).not.toHaveBeenCalled();
+  });
+
+  it("Remove is at least a 24px target (WCAG 2.5.8), 44px on a phone", () => {
+    render(<PublishedChecklistChip rowCount={3} onRemove={vi.fn()} />);
+    const remove = screen.getByRole("button", { name: "Remove the publisher's checklist" });
+    expect(remove.className).toContain("min-h-6");
+    expect(remove.className).toContain("max-sm:min-h-11");
   });
 });

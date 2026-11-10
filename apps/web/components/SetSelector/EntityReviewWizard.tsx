@@ -1159,10 +1159,15 @@ export default function EntityReviewWizard({
   const [autographAnswer, setAutographAnswer] = useState<AutographFormat | undefined>(undefined);
   /** NEO-478 — the checklist step's heading; its Next is described by it. */
   const checklistLeadId = useId();
-  /** NEO-478 — the first unanswered card's first button, focused on arrival. */
+  /** NEO-478 — the first unanswered card's first radio, focused on arrival. */
   const checklistChoiceRef = useRef<HTMLButtonElement>(null);
   const checklistHintId = useId();
-  const [checklistBlockedPressed, setChecklistBlockedPressed] = useState(false);
+  /**
+   * NEO-478 (a11y) — how many times Next was pressed while a checklist card
+   * was open. A count, not a flag, so a second blocked press after some
+   * picks says "Pick a side…" again in the step's status line.
+   */
+  const [checklistBlockedPresses, setChecklistBlockedPresses] = useState(0);
   /** NEO-345 — the autograph step's question; its Next is described by it. */
   const autographLeadId = useId();
   /** NEO-345 — the autograph step's tab-stop choice, focused while unanswered. */
@@ -4048,7 +4053,7 @@ export default function EntityReviewWizard({
     if (saving) return;
     // NEO-478 — the checklist step's held Next says why the same way.
     if (postStep === "checklist" && checklistUnanswered) {
-      setChecklistBlockedPressed(true);
+      setChecklistBlockedPresses((n) => n + 1);
       const firstOpen = checklistRows.find((r) => checklistChoices[r.index] === undefined);
       if (firstOpen) {
         document
@@ -5805,7 +5810,7 @@ export default function EntityReviewWizard({
                 headingId={checklistLeadId}
                 firstOpenRef={checklistChoiceRef}
                 hintId={checklistHintId}
-                showBlockedHint={checklistBlockedPressed}
+                showBlockedHint={checklistBlockedPresses}
               />
             ) : postStep === "autograph" ? (
               /*

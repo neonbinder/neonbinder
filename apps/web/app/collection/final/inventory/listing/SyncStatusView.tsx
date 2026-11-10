@@ -291,16 +291,15 @@ function RunningNow({ p, level }: { p: PlatformSyncStatus; level: number }) {
         </div>
       )}
       {/* NEO-487 — "Waiting on BuySportsCards… 12s" while a step's
-          marketplace call is outstanding. Mounted only while it is: this
-          screen keeps ONE always-mounted live line for its run news, and a
-          second, empty one per platform would compete with it. */}
-      {p.running && stepWaitingSince(steps) !== undefined && (
-        <WaitingOnMarketplace
-          waitingSince={stepWaitingSince(steps)}
-          marketplace={name}
-          className="pl-6"
-        />
-      )}
+          marketplace call is outstanding. Always rendered: the line keeps
+          its own status region mounted (empty and zero-height while idle),
+          so the first wait is announced as reliably as the rest. An empty
+          region says nothing, so it never competes with the run line. */}
+      <WaitingOnMarketplace
+        waitingSince={p.running ? stepWaitingSince(steps) : undefined}
+        marketplace={name}
+        className="pl-6"
+      />
     </section>
   );
 }

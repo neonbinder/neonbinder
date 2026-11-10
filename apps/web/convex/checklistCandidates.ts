@@ -902,6 +902,11 @@ export const resolveCandidateTeams = internalMutation({
  *
  * Only texts carrying a comma need asking: any other text splits to itself.
  * Internal: `fetchCardChecklist` calls it from behind its own `requireAdmin`.
+ *
+ * At most `MAX_CHECKLIST_TEAM_TEXTS` texts are resolved, which bounds the
+ * reads. The caller sends no more than that; should it ever send more, the
+ * texts past the cap answer `null` rather than failing the fetch, so their
+ * cards fall back to the per-card BSC lookup like an unmatched card (D2).
  */
 export const MAX_CHECKLIST_TEAM_TEXTS = 500;
 export const resolveChecklistTeamTexts = internalQuery({
@@ -911,16 +916,15 @@ export const resolveChecklistTeamTexts = internalQuery({
   },
   returns: v.array(v.union(v.array(v.string()), v.null())),
   handler: async (ctx, args) => {
-    if (args.texts.length > MAX_CHECKLIST_TEAM_TEXTS) {
-      throw new Error(
-        `resolveChecklistTeamTexts: ${args.texts.length} texts, above the ${MAX_CHECKLIST_TEAM_TEXTS} limit`,
-      );
-    }
     let scope:
       | { sportId: Id<"selectorOptions"> | undefined; setYear: number | undefined }
       | undefined;
     const out: Array<string[] | null> = [];
-    for (const t of args.texts) {
+    for (const [i, t] of args.texts.entries()) {
+      if (i >= MAX_CHECKLIST_TEAM_TEXTS) {
+        out.push(null);
+        continue;
+      }
       const teams = await chooseCandidateTeams(ctx, t.raw, t.parts, async () => {
         if (!scope) {
           scope = {

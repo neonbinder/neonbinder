@@ -131,6 +131,8 @@ vi.mock("../../convex/_generated/api", () => ({
       getParallelsForBuild: "getParallelsForBuild",
       buildParallelChecklist: "buildParallelChecklist",
     },
+    // NEO-487: the "Waiting on BuySportsCards…" lines read this per run key.
+    marketplaceWaits: { forRun: "marketplaceWaits.forRun" },
   },
 }));
 
@@ -386,6 +388,11 @@ const state: {
   }>;
   /** NEO-287: paused credential site keys, as `getPausedPlatforms` returns them. */
   paused: string[];
+  /**
+   * NEO-487: what `marketplaceWaits.forRun` answers for ANY run key.
+   * Undefined (no wait) unless a test sets it.
+   */
+  marketplaceWait?: unknown;
 } = {
   cards: [],
   variantRow: { value: "Test Set" },
@@ -419,6 +426,7 @@ vi.mock("convex/react", () => ({
       return state.players;
     }
     if (ref === "entityReviewSkips.listForSet") return state.skippedNames;
+    if (ref === "marketplaceWaits.forRun") return state.marketplaceWait;
     // CrossListingImportModal's drill-down queries — never exercised here.
     return undefined;
   },
@@ -5784,6 +5792,61 @@ describe("CardChecklist — NEO-312 held controls (a11y 1)", () => {
       buildOne: vi.fn(),
     };
   }
+
+  it("NEO-487: a single build's wait line stands down while a run of parallels shows its own — one line, never two", async () => {
+    state.marketplaceWait = { waitingSince: 1, accumulatedMs: 0 };
+    // An empty parallel: its button builds at once, no rebuild confirm.
+    state.cards = [];
+    try {
+      const pending = new Promise<never>(() => {});
+      const idle: ParallelBuildRunner = {
+        run: null,
+        active: false,
+        inFlight: new Set(),
+        start: vi.fn(),
+        stop: vi.fn(),
+        buildOne: vi.fn(() => pending),
+      };
+      const props = {
+        variantId: VARIANT_ID,
+        sourceChips: {},
+        sourceLabelMaps: { bsc: {}, sportlots: {} },
+        parallelBuild: { role: "parallel" as const, sourceId: INSERT_ROW_ID, sourceValue: "Anime" },
+      };
+      const { rerender } = render(<CardChecklist {...props} parallelRun={idle} />);
+      // This row's own build, held up on the marketplace: its line shows.
+      fireEvent.click(screen.getByRole("button", { name: "Build from Anime" }));
+      await waitFor(() => expect(screen.getAllByText("Waiting on BuySportsCards…")).toHaveLength(1), {
+        timeout: 3000,
+      });
+      // A run of another insert's parallels starts while that build is still
+      // in flight (the operator saved the insert, then came back here). Its
+      // panel carries the run's own wait line; the build's line stands down.
+      const running = hostedRunner({
+        startedFrom: "some-other-insert" as unknown as Id<"selectorOptions">,
+        sourceId: "some-other-insert" as unknown as Id<"selectorOptions">,
+        sourceValue: "Other Insert",
+        sourceKind: "insert",
+        entries: [
+          { id: "other-parallel" as unknown as Id<"selectorOptions">, value: "X", line: { kind: "building" } },
+        ],
+        truncated: false,
+        phase: "running",
+        atIndex: 0,
+        announcement: "",
+        waitKey: "run-key",
+      });
+      rerender(<CardChecklist {...props} parallelRun={{ ...running, buildOne: idle.buildOne }} />);
+      await waitFor(() => expect(screen.getAllByText("Waiting on BuySportsCards…")).toHaveLength(1), {
+        timeout: 3000,
+      });
+      // And it is the panel's line, not the build's.
+      const line = screen.getByText("Waiting on BuySportsCards…");
+      expect(line.closest("section")?.textContent ?? "").toContain("Other Insert");
+    } finally {
+      state.marketplaceWait = undefined;
+    }
+  });
 
   it("a run active on a DIFFERENT insert entirely never holds this checklist", () => {
     const foreign = hostedRunner({

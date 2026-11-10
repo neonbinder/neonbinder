@@ -63,3 +63,4 @@
 - [Testing wired BSC call telemetry](reference_testing_wired_bsc_call_telemetry.md) — flush-once = count bscCallStats scheduled rows; drain flag past the 4 KB clone; backoff spy
 - [NB card numbers are not bare by rule](reference_nb_card_numbers_are_not_bare_by_rule.md) — sync commits BSC cardNo raw despite the comments; strip on both sides; BSC prefixes per variant
 - [Recording hits stage career teams by QID](reference_recording_hits_stage_career_teams_by_qid.md) — fixture hits stage dated clubs looked up with knownQid; null/other QID = refused miss; capture team+league by id
+- [test:unit ignores file args](reference_test_unit_ignores_file_args.md) — `npm run test:unit -- files` runs the whole suite (args hit the verify script); iterate with npx vitest run
