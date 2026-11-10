@@ -478,7 +478,10 @@ describe("smartChecklist", () => {
 });
 
 describe("newSince", () => {
-  test("the collection lines filed or moved after the stamp, newest first; never a box's, never another collector's", async () => {
+  /** Let the wall clock pass a millisecond, so a later write's stamp is strictly later. */
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 3));
+
+  test("the collection lines filed after the stamp, newest first; never a box's, never another collector's", async () => {
     const s = await setup();
     await line(s, s.fx.gooden1, s.fx.baseId, { lastUpdated: NOW - 3 * DAY, filedAt: NOW - 3 * DAY });
     await line(s, s.fx.strawberry2, s.fx.baseId, { lastUpdated: NOW - DAY, filedAt: NOW - DAY });
@@ -495,39 +498,97 @@ describe("newSince", () => {
     });
   });
 
-  test("a line written after the stamp but never moved (an add, an edit, a sale) is not news", async () => {
+  test("a line written after the stamp but not filed since (an edit, a sale) is not news", async () => {
     const s = await setup();
     await line(s, s.fx.gooden1, s.fx.baseId, { lastUpdated: NOW });
     await line(s, s.fx.strawberry2, s.fx.baseId, { lastUpdated: NOW, filedAt: NOW - 3 * DAY });
     expect(await s.me.query(api.dashboard.newSince, { sinceMs: NOW - 2 * DAY })).toEqual({ lines: [], truncated: false });
   });
 
-  test("through the real writes: only filing and moving count, never an add, an edit or a pocket shuffle", async () => {
+  test("through the real writes: any add into a binder is filed, Main included; an edit, a trade flag or a pocket shuffle is not", async () => {
     const s = await setup();
     const mets = await s.t.run((ctx) =>
       ctx.db.insert("collectionContainers", { ownerId: ME.subject, kind: "binder", name: "Mets", lastUpdated: 0 }),
     );
     const since = Date.now() - 1;
-    const news = () => s.me.query(api.dashboard.newSince, { sinceMs: since });
+    const news = async (sinceMs = since) =>
+      (await s.me.query(api.dashboard.newSince, { sinceMs })).lines.map((l) => `${l.homeId}|${l.cardId}`).sort();
+    const filedAtOf = async (id: Id<"collectionCopies">) => (await s.t.run((ctx) => ctx.db.get(id)))?.filedAt;
 
-    // Adds: one into Main, one straight into a binder. Neither is news.
+    // Adds (Jason, 2026-11-10: "adding cards to a binder in any way is filed"):
+    // one into Main, one straight into a binder. Both are news, each in its own home.
     const gooden = await s.me.mutation(api.collection.addHave, { cardId: s.fx.gooden1 });
     const straw = await s.me.mutation(api.collection.addHave, { cardId: s.fx.strawberry2, homeId: mets });
-    expect((await news()).lines).toEqual([]);
+    expect(await news()).toEqual([`${mets}|${s.fx.strawberry2}`, `${s.homes.main}|${s.fx.gooden1}`].sort());
+    const stamped = await filedAtOf(straw.copyId);
+    expect(stamped).toBeGreaterThan(since);
 
-    // An edit, and a pocket shuffle inside the same binder: still nothing.
+    // An edit, a pocket shuffle inside the same binder and a trade flag keep the stamp as it was.
+    await tick();
     await s.me.mutation(api.collection.updateCopy, { copyId: straw.copyId, details: { quantity: 1, notes: "corner ding" } });
     await s.me.mutation(api.collection.placeCopy, { copyId: straw.copyId, slot: 5 });
-    expect((await news()).lines).toEqual([]);
+    await s.me.mutation(api.collection.setTrade, { copyId: straw.copyId, on: true });
+    expect(await filedAtOf(straw.copyId)).toBe(stamped);
+    expect(await news(stamped!)).toEqual([]);
 
-    // Filing Gooden out of Main into the Mets binder is news, in the binder it went to.
+    // A second add that folds into the line files it again.
+    await tick();
+    const again = await s.me.mutation(api.collection.addHave, { cardId: s.fx.gooden1 });
+    expect(again).toMatchObject({ copyId: gooden.copyId, merged: true });
+    expect(await news(stamped!)).toEqual([`${s.homes.main}|${s.fx.gooden1}`]);
+
+    // Filing Gooden out of Main into the Mets binder is news in the binder it went to.
+    await tick();
+    const afterFold = (await filedAtOf(gooden.copyId))!;
     await s.me.mutation(api.collection.moveCopy, { copyId: gooden.copyId, toHomeId: mets });
-    const after = await news();
-    expect(after.lines.map((l) => [l.homeId, l.cardId])).toEqual([[mets, s.fx.gooden1]]);
+    expect(await news(afterFold)).toEqual([`${mets}|${s.fx.gooden1}`]);
+  });
 
-    // A later edit keeps the stamp: the card stays news, and nothing else joins it.
-    await s.me.mutation(api.collection.updateCopy, { copyId: gooden.copyId, details: { quantity: 1, notes: "signed" } });
-    expect((await news()).lines.map((l) => [l.homeId, l.cardId])).toEqual([[mets, s.fx.gooden1]]);
+  test("a part split off inside the same binder keeps its source's stamp; split into another home, it is filed now", async () => {
+    const s = await setup();
+    const mets = await s.t.run((ctx) =>
+      ctx.db.insert("collectionContainers", { ownerId: ME.subject, kind: "binder", name: "Mets", lastUpdated: 0 }),
+    );
+    const added = await s.me.mutation(api.collection.addHaves, { cardIds: [s.fx.gooden1, s.fx.gooden1], homeId: mets });
+    const copyId = added[0].copyId;
+    const stamp = (await s.t.run((ctx) => ctx.db.get(copyId)))!.filedAt!;
+    await tick();
+    const shuffled = await s.me.mutation(api.collection.moveCopy, { copyId, toHomeId: mets, quantity: 1, slot: 7 });
+    expect(shuffled.split).toBe(true);
+    expect((await s.t.run((ctx) => ctx.db.get(shuffled.copyId)))!.filedAt).toBe(stamp);
+    await tick();
+    const toMain = await s.me.mutation(api.collection.moveCopy, { copyId: shuffled.copyId, toHomeId: s.homes.main });
+    expect((await s.t.run((ctx) => ctx.db.get(toMain.copyId)))!.filedAt).toBeGreaterThan(stamp);
+  });
+
+  test("a box raise files cards into the box; taking it back with Undo does not stamp again", async () => {
+    const s = await setup();
+    const raised = await s.me.mutation(api.collectionInventory.setBoxQuantity, {
+      cardId: s.fx.gooden1,
+      boxId: s.homes.box,
+      quantity: 2,
+    });
+    const rows = await s.t.run((ctx) =>
+      ctx.db
+        .query("collectionCopies")
+        .withIndex("by_owner_and_card", (q) => q.eq("ownerId", ME.subject).eq("cardId", s.fx.gooden1))
+        .collect(),
+    );
+    expect(rows).toHaveLength(1);
+    const stamp = rows[0].filedAt!;
+    expect(typeof stamp).toBe("number");
+    // A box is never on the dashboard's binder shelf.
+    expect((await s.me.query(api.dashboard.newSince, { sinceMs: stamp - 1 })).lines).toEqual([]);
+    await tick();
+    const lowered = await s.me.mutation(api.collectionInventory.setBoxQuantity, {
+      cardId: s.fx.gooden1,
+      boxId: s.homes.box,
+      quantity: 1,
+    });
+    expect((await s.t.run((ctx) => ctx.db.get(rows[0]._id)))!.filedAt).toBe(stamp);
+    await s.me.mutation(api.collectionInventory.undoBoxQuantity, { inverse: lowered.inverse });
+    expect((await s.t.run((ctx) => ctx.db.get(rows[0]._id)))!.filedAt).toBe(stamp);
+    expect(raised.after).toBe(2);
   });
 
   test("emptying a binder back to Main moves its cards, so they are news in Main", async () => {
@@ -536,7 +597,8 @@ describe("newSince", () => {
       ctx.db.insert("collectionContainers", { ownerId: ME.subject, kind: "binder", name: "Mets", lastUpdated: 0 }),
     );
     const straw = await s.me.mutation(api.collection.addHave, { cardId: s.fx.strawberry2, homeId: mets });
-    const since = Date.now() - 1;
+    await tick();
+    const since = Date.now();
     expect((await s.me.query(api.dashboard.newSince, { sinceMs: since })).lines).toEqual([]);
     await s.me.mutation(api.collectionContainers.empty, { containerId: mets });
     const lines = (await s.me.query(api.dashboard.newSince, { sinceMs: since })).lines;
@@ -729,8 +791,8 @@ describe("intake", () => {
     expect(out.truncated).toBe(false);
     expect(out.runs).toEqual(
       expect.arrayContaining([
-        { runId: a.runId, homeName: "Main", side: "collection", scans: 4, done: 2 },
-        { runId: b.runId, homeName: "Unsorted", side: "inventory", scans: 1, done: 0 },
+        { runId: a.runId, homeName: "Main", side: "collection", scans: 4, done: 2, lastActivityAt: expect.any(Number) },
+        { runId: b.runId, homeName: "Unsorted", side: "inventory", scans: 1, done: 0, lastActivityAt: expect.any(Number) },
       ]),
     );
     expect(out.guesses.map((g) => g.cardId).sort()).toEqual([s.fx.gooden1, s.fx.strawberry2].sort());
@@ -740,11 +802,15 @@ describe("intake", () => {
   test("a finished run shows for a week, then leaves; an unfinished one stays however old", async () => {
     const s = await setup();
     const old = Date.now() - 30 * DAY;
-    const finishedLately = await run(s, ["saved"], { lastActivityAt: Date.now() - 2 * DAY });
+    const lately = Date.now() - 2 * DAY;
+    const finishedLately = await run(s, ["saved"], { lastActivityAt: lately });
     await run(s, ["saved"], { lastActivityAt: old });
     const stale = await run(s, [null], { lastActivityAt: old });
     const out = await s.me.query(api.dashboard.intake, {});
     expect(out.runs.map((r) => r.runId).sort()).toEqual([finishedLately.runId, stale.runId].sort());
+    // Each run carries its last activity, so two runs into one home read apart on the dashboard.
+    expect(out.runs.find((r) => r.runId === finishedLately.runId)?.lastActivityAt).toBe(lately);
+    expect(out.runs.find((r) => r.runId === stale.runId)?.lastActivityAt).toBe(old);
     expect(out).toMatchObject({ needsYou: 0, unidentified: 1 });
   });
 
@@ -754,7 +820,7 @@ describe("intake", () => {
     const mine = await run(s, [null]);
     await run(s, [s.fx.gooden1], { homeId: s.homes.theirMain });
     const out = await s.me.query(api.dashboard.intake, {});
-    expect(out.runs).toEqual([{ runId: mine.runId, homeName: "Main", side: "collection", scans: 1, done: 0 }]);
+    expect(out.runs).toEqual([{ runId: mine.runId, homeName: "Main", side: "collection", scans: 1, done: 0, lastActivityAt: expect.any(Number) }]);
     expect(out).toMatchObject({ needsYou: 0, unidentified: 1, guesses: [] });
   });
 

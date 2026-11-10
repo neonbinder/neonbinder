@@ -16,8 +16,9 @@
  * - smart binders: the rule in words, and a checklist percent read once from
  *   the binder's stored fits when the rule names a checklist;
  * - "new since your last visit": the visit is stamped on mount
- *   (`dashboard.markVisit`), and the collection lines touched since the
- *   last one fill each binder's `newCards` (subscribed, at most 100 lines).
+ *   (`dashboard.markVisit`), and the collection lines filed (added or moved
+ *   in) since the last one fill each binder's `newCards` (subscribed, at most
+ *   100 lines).
  * Slice 4, also from `convex/dashboard.ts`, each read once on mount:
  * - could fit: each smart binder's cards held in another binder that its
  *   rule takes in, from its stored fits (at most 20 a binder, for the first
@@ -451,7 +452,18 @@ export function runHrefOf(side: IntakeUpload["side"], runId: string): string {
  * the guesses whose card is hydrated, then the ones with none. Nothing open:
  * empty, so the hopper stays hidden.
  */
-export function intakeOf(raw: IntakeRaw | undefined, cards: CardsById | undefined): IntakeInProgress {
+/**
+ * When a run last moved, as its hopper link says it: the time on the day
+ * itself, then "yesterday", then days ago, on this device's calendar.
+ */
+export function lastScanLabel(at: number, now: number): string {
+  const days = daysBetween(localDay(at), localDay(now));
+  if (days <= 0) return `Last scan ${new Date(at).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}`;
+  if (days === 1) return "Last scan yesterday";
+  return `Last scan ${days} days ago`;
+}
+
+export function intakeOf(raw: IntakeRaw | undefined, cards: CardsById | undefined, now: number): IntakeInProgress {
   if (!raw) return NO_INTAKE;
   const total = raw.needsYou + raw.unidentified;
   if (total === 0) return NO_INTAKE;
@@ -470,6 +482,7 @@ export function intakeOf(raw: IntakeRaw | undefined, cards: CardsById | undefine
       done: r.done,
       side: r.side,
       href: runHrefOf(r.side, r.runId),
+      lastScan: lastScanLabel(r.lastActivityAt, now),
     })),
     preview: [...guesses, ...raw.unknown.map((id): IntakeScan => ({ id, guess: null }))],
   };
@@ -695,7 +708,7 @@ export function useRealDashboard(): DashboardData | undefined {
       building: sets,
       smartBinders: smartBindersOf(binders),
       sales: salesDataOf(salesRaw, saleCards, now),
-      intake: intakeOf(intakeRaw, extraCards),
+      intake: intakeOf(intakeRaw, extraCards, now),
     });
   }, [
     containers,

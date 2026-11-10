@@ -14,8 +14,8 @@
  * - `smartChecklist` (read once, one binder per call): how much of a smart
  *   binder's checklist is filed in it, from its stored fits.
  * - `newSince` (subscribed, at most `NEW_SINCE_LINES` + 1 lines): the
- *   collection lines filed or moved since the last visit (never an add or
- *   an edit).
+ *   collection lines filed since the last visit (an add or a move into a
+ *   binder; never an edit).
  * - `markVisit` (mutation): reads the last visit, then stamps this one.
  * - `couldFit` (read once, one smart binder per call): the cards the
  *   collector holds in another binder that the binder's rule takes in, at
@@ -557,11 +557,12 @@ export const smartChecklist = query({
 });
 
 /**
- * The caller's collection lines (never a box's) filed or moved after
- * `sinceMs`, newest first, at most `NEW_SINCE_LINES`: what "since your last
- * visit" shows per binder. Only filing and moving count (Jason, 2026-11-10):
- * a line's `filedAt`, stamped when cards arrive in its home by a move. An
- * add, an edit, a sale or a trade flag is not news here. Subscribed, so it
+ * The caller's collection lines (never a box's) filed after `sinceMs`, newest
+ * first, at most `NEW_SINCE_LINES`: what "since your last visit" shows per
+ * binder, Main included. A line's `filedAt` is stamped whenever cards arrive
+ * in its home, by an add or a move (Jason, 2026-11-10: "adding cards to a
+ * binder in any way is filed"). An edit, a sale, a trade flag or a pocket
+ * shuffle in the same binder is not news here. Subscribed, so it
  * stays small: one indexed range of at most `NEW_SINCE_LINES` + 1 lines and
  * their homes. `truncated`: more lines moved than are listed.
  */
@@ -672,6 +673,8 @@ export const intake = query({
         side: sideValidator,
         scans: v.number(),
         done: v.number(),
+        /** The run's last scan or decision: two runs into one binder read apart by it. */
+        lastActivityAt: v.number(),
       }),
     ),
     guesses: v.array(v.object({ id: v.id("intakeMatches"), cardId: v.id("cardChecklist") })),
@@ -689,7 +692,7 @@ export const intake = query({
     const out = {
       needsYou: 0,
       unidentified: 0,
-      runs: [] as Array<{ runId: Id<"intakeRuns">; homeName: string; side: Side; scans: number; done: number }>,
+      runs: [] as Array<{ runId: Id<"intakeRuns">; homeName: string; side: Side; scans: number; done: number; lastActivityAt: number }>,
       guesses: [] as Array<{ id: Id<"intakeMatches">; cardId: Id<"cardChecklist"> }>,
       unknown: [] as Array<Id<"intakeMatches">>,
       truncated: false,
@@ -714,7 +717,14 @@ export const intake = query({
       if (!intakeRunShows(tally, run.lastActivityAt, now)) continue;
       out.needsYou += tally.needsYou;
       out.unidentified += tally.unidentified;
-      out.runs.push({ runId: run._id, homeName: home.name, side: sideOfContainer(home), scans: tally.scans, done: tally.done });
+      out.runs.push({
+        runId: run._id,
+        homeName: home.name,
+        side: sideOfContainer(home),
+        scans: tally.scans,
+        done: tally.done,
+        lastActivityAt: run.lastActivityAt,
+      });
       for (const g of tally.guesses) {
         if (out.guesses.length < INTAKE_PREVIEW_GUESSES) {
           out.guesses.push({ id: g.id as Id<"intakeMatches">, cardId: g.cardId as Id<"cardChecklist"> });

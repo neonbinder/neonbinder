@@ -86,9 +86,9 @@ describe("the hopper", () => {
     const hopper = screen.getByRole("region", { name: "In the Hopper" });
     expect(within(hopper).getByRole("heading", { name: "18 scans processing" })).toBeTruthy();
     expect(within(hopper).queryByText(/still being identified/)).toBeNull();
-    const shoebox = within(hopper).getByRole("link", { name: "Garage shoebox 6 of 24 scans done Finish on Collection" });
+    const shoebox = within(hopper).getByRole("link", { name: "Garage shoebox 6 of 24 scans done Finish on Collection Last scan 9:14 AM" });
     expect(shoebox.getAttribute("href")).toBe("/demo/collection?tab=add");
-    const show = within(hopper).getByRole("link", { name: "Show pickups 0 of 2 scans done Finish on Inventory" });
+    const show = within(hopper).getByRole("link", { name: "Show pickups 0 of 2 scans done Finish on Inventory Last scan yesterday" });
     expect(show.getAttribute("href")).toBe("/demo/inventory?side=inventory&tab=add");
   });
 
@@ -131,23 +131,47 @@ describe("the hopper", () => {
         total: 1,
         waiting: 0,
         needsYou: 1,
-        uploads: [{ id: "r", name: "Main", scans: 1, done: 0, side: "collection", href: "/collection?tab=add&run=r" }],
+        uploads: [
+          { id: "r", name: "Main", scans: 1, done: 0, side: "collection", href: "/collection?tab=add&run=r", lastScan: "Last scan 3:42 PM" },
+        ],
         preview: [{ id: "s", guess: getDashboard().intake.preview[0].guess }],
       },
     });
     const hopper = screen.getByRole("region", { name: "In the Hopper" });
     expect(within(hopper).queryByText(/processing/)).toBeNull();
-    expect(within(hopper).getByRole("link", { name: "Main 0 of 1 scan done Finish on Collection" }).getAttribute("href")).toBe(
+    expect(within(hopper).getByRole("link", { name: "Main 0 of 1 scan done Finish on Collection Last scan 3:42 PM" }).getAttribute("href")).toBe(
       "/collection?tab=add&run=r",
     );
   });
+
+  it("two runs into one binder read apart by their last scan, and a sorted run says so instead of Finish", () => {
+    const run = { side: "collection" as const, href: "/collection?tab=add&run=a" };
+    draw({
+      ...getDashboard(),
+      intake: {
+        total: 1,
+        waiting: 1,
+        needsYou: 0,
+        uploads: [
+          { ...run, id: "a", name: "Main", scans: 1, done: 0, lastScan: "Last scan 3:42 PM" },
+          { ...run, id: "b", name: "Main", scans: 2, done: 2, href: "/collection?tab=add&run=b", lastScan: "Last scan yesterday" },
+        ],
+        preview: [],
+      },
+    });
+    const hopper = screen.getByRole("region", { name: "In the Hopper" });
+    expect(within(hopper).getByRole("link", { name: "Main 0 of 1 scan done Finish on Collection Last scan 3:42 PM" })).toBeTruthy();
+    expect(
+      within(hopper).getByRole("link", { name: "Main 2 of 2 scans done All sorted. Open on Collection Last scan yesterday" }).getAttribute("href"),
+    ).toBe("/collection?tab=add&run=b");
+  });
 });
 
-describe("summary: since your last visit counts only filing and moving", () => {
-  it("counts the cards filed into each binder since the last visit, not the adds", () => {
+describe("summary: since your last visit counts the cards filed into a binder", () => {
+  it("counts the cards filed into each binder since the last visit", () => {
     const filed = [{ newCards: [{}, {}] }, { newCards: [{}] }] as never;
     expect(summary({ sales: null }, filed, null)).toBe("3 cards filed since your last visit.");
-    // Adds alone (Fresh Pulls) are not news here.
+    // Nothing filed anywhere: the binders are as they were.
     expect(summary({ sales: null }, [{ newCards: [] }] as never, null)).toBe("Your binders are right where you left them.");
   });
 

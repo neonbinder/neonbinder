@@ -26,6 +26,7 @@ import {
   couldFitPreviewIds,
   daysSinceSold,
   intakeOf,
+  lastScanLabel,
   JUST_COMPLETED_DAYS,
   justCompletedOf,
   localDay,
@@ -838,10 +839,11 @@ describe("sales: shipped vs still to ship, and the lines", () => {
 });
 
 describe("the hopper: intakeOf", () => {
+  const NOW = new Date(2026, 10, 9, 15, 0).getTime();
   const raw = (over: Partial<IntakeRaw> = {}): IntakeRaw => ({
     needsYou: 2,
     unidentified: 3,
-    runs: [{ runId: "run-1" as never, homeName: "Main", side: "collection", scans: 9, done: 4 }],
+    runs: [{ runId: "run-1" as never, homeName: "Main", side: "collection", scans: 9, done: 4, lastActivityAt: NOW - 86_400_000 }],
     guesses: [
       { id: "m1" as never, cardId: cardA.id as never },
       { id: "m2" as never, cardId: "gone" as never },
@@ -852,12 +854,14 @@ describe("the hopper: intakeOf", () => {
   });
 
   it("counts every open scan: guesses waiting on a yes, the rest not identified; the preview leads with hydrated guesses", () => {
-    const intake = intakeOf(raw(), cardsAB());
+    const intake = intakeOf(raw(), cardsAB(), NOW);
     expect(intake).toMatchObject({
       total: 5,
       needsYou: 2,
       waiting: 3,
-      uploads: [{ id: "run-1", name: "Main", scans: 9, done: 4, side: "collection", href: "/collection?tab=add&run=run-1" }],
+      uploads: [
+        { id: "run-1", name: "Main", scans: 9, done: 4, side: "collection", href: "/collection?tab=add&run=run-1", lastScan: "Last scan yesterday" },
+      ],
     });
     expect(intake.preview.map((p) => [p.id, p.guess?.id ?? null])).toEqual([
       ["m1", cardA.id],
@@ -870,16 +874,24 @@ describe("the hopper: intakeOf", () => {
     expect(runHrefOf("collection", "abc")).toBe("/collection?tab=add&run=abc");
     expect(runHrefOf("inventory", "abc")).toBe("/inventory?tab=add&run=abc");
     const intake = intakeOf(
-      raw({ runs: [{ runId: "run-2" as never, homeName: "Show box", side: "inventory", scans: 3, done: 0 }] }),
+      raw({ runs: [{ runId: "run-2" as never, homeName: "Show box", side: "inventory", scans: 3, done: 0, lastActivityAt: NOW }] }),
       cardsAB(),
+      NOW,
     );
     expect(intake.uploads.map((u) => [u.side, u.href])).toEqual([["inventory", "/inventory?tab=add&run=run-2"]]);
   });
 
   it("nothing open, or not read yet: empty, so the hopper stays hidden", () => {
     const empty = { total: 0, waiting: 0, needsYou: 0, uploads: [], preview: [] };
-    expect(intakeOf(undefined, cardsAB())).toEqual(empty);
-    expect(intakeOf(raw({ needsYou: 0, unidentified: 0, guesses: [], unknown: [] }), cardsAB())).toEqual(empty);
+    expect(intakeOf(undefined, cardsAB(), NOW)).toEqual(empty);
+    expect(intakeOf(raw({ needsYou: 0, unidentified: 0, guesses: [], unknown: [] }), cardsAB(), NOW)).toEqual(empty);
+  });
+
+  it("each run reads apart by its last scan: a time today, yesterday, then days ago, by the local calendar day", () => {
+    expect(lastScanLabel(NOW - 60_000, NOW)).toMatch(/^Last scan \d{1,2}:\d{2}/);
+    expect(lastScanLabel(new Date(2026, 10, 9, 0, 5).getTime(), NOW)).toMatch(/^Last scan (12|00?):05/);
+    expect(lastScanLabel(new Date(2026, 10, 8, 23, 59).getTime(), NOW)).toBe("Last scan yesterday");
+    expect(lastScanLabel(new Date(2026, 10, 6, 9).getTime(), NOW)).toBe("Last scan 3 days ago");
   });
 });
 
@@ -955,7 +967,7 @@ describe("useRealDashboard: sales to ship, the hopper and what could fit", () =>
     server.intake = {
       needsYou: 1,
       unidentified: 2,
-      runs: [{ runId: "run-1" as never, homeName: "Show box", side: "inventory", scans: 5, done: 2 }],
+      runs: [{ runId: "run-1" as never, homeName: "Show box", side: "inventory", scans: 5, done: 2, lastActivityAt: Date.now() - 3 * 86_400_000 }],
       guesses: [{ id: "m1" as never, cardId: cardA.id as never }],
       unknown: ["m2" as never, "m3" as never],
       truncated: false,
@@ -968,7 +980,7 @@ describe("useRealDashboard: sales to ship, the hopper and what could fit", () =>
     expect(screen.getByText("1 scan needs your yes")).toBeTruthy();
     expect(screen.getByText("2 scans processing")).toBeTruthy();
     expect(screen.queryByText(/still being identified/)).toBeNull();
-    const run = screen.getByRole("link", { name: "Show box 2 of 5 scans done Finish on Inventory" });
+    const run = screen.getByRole("link", { name: /^Show box 2 of 5 scans done Finish on Inventory Last scan \d+ days ago$/ });
     expect(run.getAttribute("href")).toBe("/inventory?tab=add&run=run-1");
   });
 

@@ -1476,6 +1476,10 @@ async function moveCounts(
  * photos follow it is one of a kind (NEO-431), as is a scanned save (NEO-427),
  * but those photos arrive after the add, so the fold rule's photo check
  * (`isOneOfAKind`) can't see them yet.
+ *
+ * NEO-464: every add files cards into a home (Main included: it is a binder),
+ * so the line it lands on takes `filedAt`, whether the add folds or starts a
+ * line (Jason, 2026-11-10: "adding cards to a binder in any way is filed").
  */
 export async function addOne(
   ctx: MutationCtx,
@@ -1512,7 +1516,7 @@ export async function addOne(
       refuse(COLLECTION_ERRORS.limit, `That stack would pass ${MAX_COPY_QUANTITY} copies. Start a new line for the rest.`);
     }
     const previous = detailsOf(into);
-    await ctx.db.patch(into._id, { quantity, lastUpdated: now });
+    await ctx.db.patch(into._id, { quantity, lastUpdated: now, filedAt: now });
     return {
       result: { copyId: into._id, merged: true, previous },
       change: changeOf(into, counted(into), counted({ ...into, quantity })),
@@ -1528,6 +1532,7 @@ export async function addOne(
     ...placeFields(place),
     ...next,
     lastUpdated: now,
+    filedAt: now,
   });
   return {
     result: { copyId, merged: false },
@@ -1641,6 +1646,8 @@ export async function moveCopyCore(
   // NEO-464: cards arriving in another home were filed or moved (the
   // dashboard's "since your last visit"); a pocket shuffle in the same home was not.
   const filed = home._id !== row.homeId ? { filedAt: now } : {};
+  // A part split off in the same home keeps when its cards were filed there.
+  const splitFiled = home._id !== row.homeId ? filed : row.filedAt !== undefined ? { filedAt: row.filedAt } : {};
   const changes: CountChange[] = [];
   let copyId: Id<"collectionCopies">;
   if (into) {
@@ -1674,7 +1681,7 @@ export async function moveCopyCore(
       ...placeFields(row),
       ...next,
       lastUpdated: now,
-      ...filed,
+      ...splitFiled,
     });
     changes.push(changeOf(row, null, counted(next)));
   }

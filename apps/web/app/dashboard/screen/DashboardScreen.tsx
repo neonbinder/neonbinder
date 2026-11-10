@@ -53,8 +53,8 @@ function focusPocket(heading: HTMLHeadingElement | null): void {
 
 /**
  * One line under the greeting: orders to ship (only for an account that
- * sells), the cards filed or moved since the last visit (only filing and
- * moving count: never an add, a sale or an edit), then the closest finish.
+ * sells), the cards filed into a binder since the last visit (an add or a
+ * move; never a sale, an edit or a pocket shuffle), then the closest finish.
  */
 export function summary(
   data: Pick<DashboardData, "sales">,

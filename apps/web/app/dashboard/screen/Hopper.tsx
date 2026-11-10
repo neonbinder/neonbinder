@@ -79,12 +79,16 @@ export default function Hopper({ intake, wanted }: { intake: IntakeInProgress; w
 }
 
 /**
- * One run: its binder or box (the link), how far along it is, and a bar. The
- * link is named by what it shows, line by line ("Main 0 of 1 scan done Finish
- * on Collection"), so two runs into Main still read apart by their progress.
+ * One run: its binder or box (the link), how far along it is, when it last
+ * moved, and a bar. The link is named by what it shows, line by line ("Main 0
+ * of 1 scan done Finish on Collection Last scan 3:42 PM"), so two runs into
+ * Main read apart by their progress and their time. A sorted run says so
+ * instead of asking to be finished.
  */
 function RunLink({ upload: u }: { upload: IntakeUpload }) {
   const screen = SIDE_SCREEN[u.side];
+  // A run stays a week after its last scan is sorted (intakeRunShows): it has nothing left to finish.
+  const finished = u.scans > 0 && u.done >= u.scans;
   return (
     <Link
       to={u.href}
@@ -96,7 +100,10 @@ function RunLink({ upload: u }: { upload: IntakeUpload }) {
           {u.done} of {count(u.scans, "scan")} done
         </span>
       </span>
-      <span className="mt-0.5 block text-ink-3">Finish on {screen}</span>
+      <span className="mt-0.5 flex flex-wrap items-baseline justify-between gap-x-2 text-ink-3">
+        <span>{finished ? `All sorted. Open on ${screen}` : `Finish on ${screen}`}</span>
+        <span className="tabular-nums">{u.lastScan}</span>
+      </span>
       <span aria-hidden="true" className="mt-1 block h-1 overflow-hidden rounded-full bg-chip">
         <span className="block h-full rounded-full bg-neon-blue" style={{ width: `${u.scans > 0 ? (u.done / u.scans) * 100 : 0}%` }} />
       </span>

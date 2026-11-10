@@ -1,8 +1,9 @@
-// R1: a card filed into a binder between two dashboard visits shows on the
+// R1: cards filed into a binder between two dashboard visits show on the
 // signed-in dashboard as news: the summary line under the greeting reads
 // "N cards filed since your last visit." and the binder's spine carries
-// "1 new since your last visit" (NEO-464). Only filing and moving count, so the
-// copy is added to Main first and then moved into a new binder.
+// "2 new since your last visit" (NEO-464). Any way cards arrive in a binder is
+// filing (Jason, 2026-11-10), so the spec files one card each way: one added to
+// Main and then moved into a new binder, one added straight into it.
 //
 // A new visit needs thirty minutes away from the dashboard, so the spec moves
 // its last open back with /testing/backdate-dashboard-visit
@@ -12,9 +13,9 @@
 // exact claim is made on this run's own binder.
 //
 // R7/R7a: writes only the signed-in user's own rows (`collectionContainers`,
-// `collectionCopies`, the profile's dashboard visit) on one card of the seed's
+// `collectionCopies`, the profile's dashboard visit) on two cards of the seed's
 // 2024 Topps Chrome Base, registered in SET-REGISTRY.md; never the set, its
-// cards, players or teams. Self-cleaning: the copy is removed and the binder
+// cards, players or teams. Self-cleaning: the copies are removed and the binder
 // deleted through the UI. The binder's name is a single token minted from
 // `env.ATTEMPT_TOKEN`.
 import { drillToCollectorBase, ordinaryBaseRows, shortNameOf } from "../../support/collection";
@@ -23,7 +24,7 @@ import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtu
 const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 test(
-  "Dashboard: a card filed into a binder since the last visit is news on the next visit",
+  "Dashboard: cards filed into a binder since the last visit, moved or added, are news on the next visit",
   { tag: ["@smoke", "@dashboard"] },
   async ({ page, signIn, env }) => {
     const binder = `Filed${env.ATTEMPT_TOKEN}`;
@@ -54,6 +55,7 @@ test(
     const row = ordinaryBaseRows(checklist).first();
     await expect(row).toBeVisible();
     const card = await shortNameOf(row);
+    const added = await shortNameOf(ordinaryBaseRows(checklist).nth(1));
 
     const drawer = page.getByRole("dialog", {
       name: new RegExp(`^2024 Topps Chrome #${escapeRegExp(card.number)} ${escapeRegExp(card.player)}`),
@@ -76,6 +78,20 @@ test(
     await drawer.getByRole("button", { name: "Close card detail" }).click();
     await expect(drawer).toBeHidden();
 
+    // --- A second copy added straight into the binder (also filing) ---------
+    const addedDrawer = page.getByRole("dialog", {
+      name: new RegExp(`^2024 Topps Chrome #${escapeRegExp(added.number)} ${escapeRegExp(added.player)}`),
+    });
+    await checklist.getByRole("button", { name: `Details for ${added.short}`, exact: true }).click();
+    const addedCopies = addedDrawer.getByRole("region", { name: `Your copies of ${added.short}`, exact: true });
+    await expect(addedCopies.getByText("None yet. Fill in what you know below and add it.")).toBeVisible();
+    const straightIn = addedDrawer.getByRole("form", { name: "Add a copy", exact: true });
+    await straightIn.getByRole("combobox", { name: "Where it lives" }).selectOption({ label: binder });
+    await straightIn.getByRole("button", { name: "Add to collection" }).click();
+    await expect(addedDrawer.getByRole("status").filter({ hasText: `Added ${added.short}, Raw, Excellent` })).toBeVisible();
+    await addedDrawer.getByRole("button", { name: "Close card detail" }).click();
+    await expect(addedDrawer).toBeHidden();
+
     // --- Away for the visit gap, then back: the filing is news --------------
     await page.goto("/testing/backdate-dashboard-visit");
     await expect(page).toHaveURL(/\/dashboard$/);
@@ -83,9 +99,9 @@ test(
     await expect(page.getByText(/\b[\d,]+ cards? filed since your last visit\./)).toBeVisible();
     const spine = page
       .getByRole("list", { name: "Binders on the shelf" })
-      .getByRole("button", { name: `${binder}, 1 card, 1 new since your last visit`, exact: true });
+      .getByRole("button", { name: `${binder}, 2 cards, 2 new since your last visit`, exact: true });
     await expect(spine).toBeVisible();
-    await expectAccessible(page, { label: "Dashboard, a card filed since the last visit" });
+    await expectAccessible(page, { label: "Dashboard, cards filed since the last visit" });
 
     // --- Cleanup through the UI: remove the copy, delete the empty binder ---
     await page.goto("/collection?tab=checklists");
@@ -96,6 +112,11 @@ test(
     await expect(yourCopies.getByText("None yet. Fill in what you know below and add it.")).toBeVisible();
     await drawer.getByRole("button", { name: "Close card detail" }).click();
     await expect(drawer).toBeHidden();
+    await again.getByRole("button", { name: `Details for ${added.short}`, exact: true }).click();
+    await addedCopies.getByRole("button", { name: `Remove ${added.short}, Raw, Excellent`, exact: true }).click();
+    await expect(addedCopies.getByText("None yet. Fill in what you know below and add it.")).toBeVisible();
+    await addedDrawer.getByRole("button", { name: "Close card detail" }).click();
+    await expect(addedDrawer).toBeHidden();
 
     await tabs.getByRole("link", { name: "My Binders", exact: true }).click();
     await expect(page).toHaveURL(/[?&]tab=binders/);

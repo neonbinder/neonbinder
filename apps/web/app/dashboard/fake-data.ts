@@ -513,6 +513,8 @@ export interface IntakeUpload {
   side: "collection" | "inventory";
   /** The Add cards tab on that screen, opened on this run. */
   href: string;
+  /** "Last scan 3:42 PM", "Last scan yesterday": two runs into one binder read apart by it. */
+  lastScan: string;
 }
 
 /** Scans uploaded and not yet in a binder. */
@@ -539,8 +541,24 @@ const INTAKE: IntakeInProgress = {
   // page adds one Want List scan to "Show pickups" (demo/fixture.ts), so there it
   // reads "0 of 3 scans": both numbers are right.
   uploads: [
-    { id: "upload-shoebox", name: "Garage shoebox", scans: 24, done: 6, side: "collection", href: "/demo/collection?tab=add" },
-    { id: "upload-show", name: "Show pickups", scans: 2, done: 0, side: "inventory", href: "/demo/inventory?side=inventory&tab=add" },
+    {
+      id: "upload-shoebox",
+      name: "Garage shoebox",
+      scans: 24,
+      done: 6,
+      side: "collection",
+      href: "/demo/collection?tab=add",
+      lastScan: "Last scan 9:14 AM",
+    },
+    {
+      id: "upload-show",
+      name: "Show pickups",
+      scans: 2,
+      done: 0,
+      side: "inventory",
+      href: "/demo/inventory?side=inventory&tab=add",
+      lastScan: "Last scan yesterday",
+    },
   ],
   preview: [
     { id: "scan-1", guess: pick(SET.udHockey, "Legends", 4) },
