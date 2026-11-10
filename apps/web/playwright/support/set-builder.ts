@@ -38,14 +38,22 @@ export function setBuilderReady(page: Page): Locator {
 
 /**
  * NEO-450: the column's own "Couldn't sync <column> — please try again."
- * alert, shown when its sync failed outright. While it shows on an empty
- * column the idle "No <column> available…" line is hidden, so the empty line
- * is no longer proof the sync ran. The sentence comes from the product's own
- * builder, so it cannot drift from what the column draws. The retry is the
- * column's `Sync <column>` button.
+ * box, shown when its sync failed outright. It is an `alert` when THIS
+ * session's own sync attempt failed, and a `status` when the error is one the
+ * server already held (another session's failed sync, or one stored before
+ * this page loaded); same sentence either way, so this matches both. The
+ * sentence filter keeps it apart from the column's other `status` box (the
+ * sync-done notice). While it shows on an empty column the idle
+ * "No <column> available…" line is hidden, so the empty line is no longer
+ * proof the sync ran. The sentence comes from the product's own builder, so
+ * it cannot drift from what the column draws. The retry is the column's
+ * `Sync <column>` button.
  */
 export function columnSyncError(page: Page, column: Column): Locator {
-  return page.getByRole("alert").filter({ hasText: columnSyncFailedMessage(column) });
+  return page
+    .getByRole("alert")
+    .or(page.getByRole("status"))
+    .filter({ hasText: columnSyncFailedMessage(column) });
 }
 
 export function columnHeading(page: Page, column: Column): Locator {

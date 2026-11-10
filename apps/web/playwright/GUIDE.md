@@ -247,6 +247,15 @@ test("<title states the feature>", { tag: ["@set-selector"] }, async ({ page, si
   `drillToBaseVariant`, `drillToColdManufacturer`, `drillToCustom`,
   `drillToCustomSet`, `customSport`, `readAttachedTwinId`. Overrides are an
   options object: `drillToSet(page, env, { set: "Topps Stars of MLB Network" })`.
+- `support/column-sync-fault.ts`: `faultColumnSyncStatus(page)` (NEO-450), the one
+  WebSocket fault: installed before `signIn`, it sits on the Convex sync socket
+  and makes ONE set-builder column's status query read as a failed sync
+  (`failStatus({ level, parentId })`, the parent id from the set builder's
+  address), until that column's own forced sync is answered by the server.
+  Every other frame passes untouched. It depends on Convex's internal sync
+  protocol (the version is in its header) and throws, naming it, when it
+  finds nothing to fake. No product or Convex hook exists for this, by
+  decision; do not add one.
 - `support/cards.ts`: hand-made card helpers for a worker's own subtree
   (`addCustomCard`, `addCardViaForm`, `openVariant`, `ensureAndSelect`,
   edit/delete button locators).
@@ -667,11 +676,13 @@ spec that drills the year through All Brands) mints the year's `Unknown` row
 and the text disappears, so a drill that waits for "idle text OR my brand"
 hangs on any year another spec has touched (CI run 39587731096, 1996 and 2025
 Baseball). Nor is it proof a sync ran (NEO-450): while a column's sync has
-failed the idle text is hidden and the column shows only its alert,
-`Couldn't sync <column> — please try again.` (role `alert`, the column's
-`Sync <column>` button is the retry). Locate it with `columnSyncError(page,
-column)`, which reads the sentence from the product's own builder; a wait
-that settles on the idle text or the rows also wakes on that alert, then
+failed the idle text is hidden and the column shows only its error,
+`Couldn't sync <column> — please try again.` (role `alert` when this
+session's own sync attempt failed, role `status` for an error the server
+already held; the column's `Sync <column>` button is the retry). Locate it
+with `columnSyncError(page, column)`, which matches either role and reads
+the sentence from the product's own builder; a wait that settles on the idle
+text or the rows also wakes on that error, then
 asserts it hidden, so a failure reds at once and by name instead of as a
 timeout (`selectOrCreate` does this and never hand-makes a row over a failed
 sync). Search for the brand instead and make it on "No matches found"

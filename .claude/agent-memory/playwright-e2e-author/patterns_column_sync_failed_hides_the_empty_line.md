@@ -1,12 +1,14 @@
 ---
 name: column-sync-failed-hides-the-empty-line
-description: NEO-450 — a set-builder column whose sync failed hides its "No <x> available…" line and shows only a role=alert sentence; waits must wake on columnSyncError; derive copy regexes from the product builder via a marker split
+description: NEO-450 — a set-builder column whose sync failed hides its "No <x> available…" line and shows only a sentence (role alert for this session's own failed attempt, status for a stored error); waits must wake on columnSyncError; derive copy regexes from the product builder via a marker split
 metadata:
   type: project
 ---
 
 Since NEO-450 a set-builder column whose own sync failed shows ONLY the
-alert `Couldn't sync <column> — please try again.` (role `alert`, text from
+box `Couldn't sync <column> — please try again.` (role `alert` only when
+THIS session's own attempt failed, role `status` for an error the server
+already held, e.g. a faked one; `columnSyncError` matches both, text from
 `columnSyncFailedMessage` in `components/SetSelector/column-sync-failed.ts`,
 React-free so specs import it). The idle "No <x> available. Sync from
 marketplaces to populate." line is hidden meanwhile, so:
