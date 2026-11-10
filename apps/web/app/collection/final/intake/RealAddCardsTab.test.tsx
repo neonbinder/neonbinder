@@ -59,6 +59,10 @@ const mocks = vi.hoisted(() => {
       common: {} as Record<string, number> | undefined,
       /** What the Cascade stand-in picks when "Pick it" is pressed. */
       pick: { variantId: "v1", title: "1988 Topps Base" },
+      /** NEO-481 — the saved lines' own photos (`copyPhotos.photosOf`). */
+      linePhotos: [] as unknown[],
+      /** NEO-481 — the store's copy-photo extension; undefined = none (the viewer opens view-only). */
+      copyPhotos: undefined as unknown,
       /** The collector's usual condition (Profile → Settings); undefined = none set. */
       usualCondition: "Near Mint" as string | undefined,
     },
@@ -102,6 +106,8 @@ vi.mock("convex/react", () => ({
         return mocks.data.pairs;
       case "intakeRuns.listIntakeMatches":
         return mocks.data.matches;
+      case "copyPhotos.photosOf":
+        return mocks.data.linePhotos;
       default:
         return undefined;
     }
@@ -116,6 +122,7 @@ vi.mock("../data/store", () => ({
   useDefaultCondition: () => mocks.data.usualCondition,
   useListingGate: () => mocks.data.gate,
   useCommonPrices: () => mocks.data.common,
+  useCopyPhotos: () => mocks.data.copyPhotos,
   useCollectionActions: () => ({ setCommonPrice: mocks.setCommon }),
   writeErrorMessage: (e: unknown) => (e instanceof Error ? e.message : "Something went wrong."),
 }));
@@ -167,7 +174,35 @@ vi.mock("../mode", () => ({
     </a>
   ),
 }));
-vi.mock("@/app/print/placeholders/scan-image", () => ({ ScanImage: () => <span>scan</span> }));
+// The shared scan picture has its own test (scan-image.test.tsx). This stand-in
+// keeps its contract: with `onOpen` it is a button named `openLabel`, and it
+// shows which edit it was handed (`pending`) and the version it reads.
+vi.mock("@/app/print/placeholders/scan-image", () => ({
+  ScanImage: ({
+    onOpen,
+    openLabel,
+    pending,
+    version,
+  }: {
+    onOpen?: (from: HTMLElement) => void;
+    openLabel?: string;
+    pending?: { status: string };
+    version?: number;
+  }) =>
+    onOpen ? (
+      <button
+        type="button"
+        aria-label={openLabel}
+        data-pending={pending?.status}
+        data-version={version}
+        onClick={(e) => onOpen(e.currentTarget)}
+      >
+        scan
+      </button>
+    ) : (
+      <span>scan</span>
+    ),
+}));
 // The set pick: the real cascade has its own tests. This one reaches a checklist
 // whenever "Pick it" is pressed, the way the real one does on its last click.
 vi.mock("../catalog/Cascade", () => ({
@@ -183,7 +218,15 @@ vi.mock("../catalog/useDrillState", () => ({
     checklistTitle: mocks.data.pick.title,
   }),
 }));
-vi.mock("../../prototypes/p1/Overlay", () => ({ default: ({ children }: { children: ReactNode }) => <div>{children}</div> }));
+// A dialog in place, without the portal and focus trap (the Overlay's own tests): the
+// tab's keys tell the card drawer's dialog from any other (the photo viewer's) by it.
+vi.mock("../../prototypes/p1/Overlay", () => ({
+  default: ({ children, labelledBy }: { children: ReactNode; labelledBy?: string }) => (
+    <div role="dialog" aria-labelledby={labelledBy}>
+      {children}
+    </div>
+  ),
+}));
 
 let confirm: ReturnType<typeof vi.fn>;
 const notify = vi.fn();
@@ -280,6 +323,8 @@ beforeEach(() => {
   mocks.data.userId = "u1";
   mocks.data.usualCondition = "Near Mint";
   mocks.data.common = {};
+  mocks.data.linePhotos = [];
+  mocks.data.copyPhotos = undefined;
   mocks.data.pick = { variantId: "v1", title: "1988 Topps Base" };
   mocks.realZone.current = false;
   mocks.undo.current = null;
@@ -3466,19 +3511,36 @@ describe("NEO-481: every photo opens the card photo viewer", () => {
     return { runId, ...render(<Tab runId={runId} />) };
   };
   const viewerHeading = (name: string) => screen.queryByRole("heading", { name, level: 2 });
+  /** The open card photo viewer (row D's), found by its heading. */
+  const viewerOf = (heading: string) =>
+    viewerHeading(heading)?.closest<HTMLElement>("[data-card-photo-viewer]") ?? null;
   const closeViewer = () => {
     const heading = viewerHeading(`Front of ${CARD}`) ?? screen.getByRole("heading", { name: /^(Front|Back) of / });
-    const panel = heading.closest("div.space-y-4") as HTMLElement;
+    const panel = heading.closest("[data-card-photo-viewer]") as HTMLElement;
     fireEvent.click(within(panel).getByRole("button", { name: "Close" }));
   };
+  beforeEach(() => {
+    // The viewer mints the scan's address and asks where an edit starts when a side opens.
+    // The api stand-in names only `module.fn`, so the nested adapters path reaches `useAction` as undefined.
+    mocks.mutation(undefined as unknown as string).mockResolvedValue({
+      url: "https://scans.example/scan.jpg",
+    });
+    mocks.mutation("photoEdits.photoEditSource").mockResolvedValue({ mode: "viewOnly", reason: "Just looking." });
+  });
 
-  it("a waiting card's front and back each open the viewer on that side, and Close closes it", () => {
+  it("a waiting card's front and back each open the viewer on that side, and Close closes it", async () => {
     showPair();
     expect(viewerHeading(`Front of ${CARD}`)).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: `Open front of ${CARD}` }));
-    expect(viewerHeading(`Front of ${CARD}`)).toBeTruthy();
+    const front = screen.getByRole("button", { name: `Open front of ${CARD}` });
+    fireEvent.click(front);
+    const viewer = viewerOf(`Front of ${CARD}`);
+    expect(viewer).toBeTruthy();
+    // Both of the pair's scans are in it: it switches sides itself.
+    expect(within(viewer!).getByRole("group", { name: "Which side" })).toBeTruthy();
     closeViewer();
     expect(viewerHeading(`Front of ${CARD}`)).toBeNull();
+    // Focus goes back to the photo that opened it.
+    await waitFor(() => expect(document.activeElement).toBe(front));
     fireEvent.click(screen.getByRole("button", { name: `Open back of ${CARD}` }));
     expect(viewerHeading(`Back of ${CARD}`)).toBeTruthy();
   });
@@ -3491,6 +3553,35 @@ describe("NEO-481: every photo opens the card photo viewer", () => {
     expect(viewerHeading(`Front of ${CARD}`)).toBeTruthy();
     fireEvent.keyDown(yes, { key: "s" });
     expect(mocks.mutation("placeholderPairing.swapPairSides")).not.toHaveBeenCalled();
+    // Nor a key pressed inside the viewer itself.
+    const close = within(viewerOf(`Front of ${CARD}`)!).getByRole("button", { name: "Close" });
+    fireEvent.keyDown(close, { key: "o" });
+    expect(screen.queryByRole("heading", { name: CARD, level: 2 })).toBeNull();
+  });
+
+  it("with the card drawer open, a key from another dialog never reaches the drawer's card", () => {
+    showPair();
+    const yes = screen.getByRole("button", { name: `Yes, save ${CARD}` });
+    yes.focus();
+    fireEvent.keyDown(yes, { key: "o" });
+    const drawer = document.getElementById("intake-drawer-title")?.closest<HTMLElement>('[role="dialog"]');
+    expect(drawer).toBeTruthy();
+    // A dialog the tab didn't open (another screen's viewer, say), over the drawer.
+    const other = document.createElement("div");
+    other.setAttribute("role", "dialog");
+    other.setAttribute("aria-labelledby", "someone-else");
+    const inside = document.createElement("button");
+    other.append(inside);
+    document.body.append(other);
+    try {
+      fireEvent.keyDown(inside, { key: "s" });
+      expect(mocks.mutation("placeholderPairing.swapPairSides")).not.toHaveBeenCalled();
+      // The drawer's own keys still work.
+      fireEvent.keyDown(within(drawer!).getAllByRole("button")[0], { key: "s" });
+      expect(mocks.mutation("placeholderPairing.swapPairSides")).toHaveBeenCalled();
+    } finally {
+      other.remove();
+    }
   });
 
   it("a loose photo opens on its own name; a failed one says Crop by hand, but never one over the pixel ceiling", () => {
@@ -3504,17 +3595,20 @@ describe("NEO-481: every photo opens the card photo viewer", () => {
     });
     render(<Tab runId={runId} />);
     fireEvent.click(screen.getByRole("button", { name: "Open photo scan-0.jpg" }));
-    expect(viewerHeading("scan-0.jpg")).toBeTruthy();
+    const viewer = viewerOf("Front of scan-0.jpg");
+    expect(viewer).toBeTruthy();
+    // A loose photo has no other side yet.
+    expect(within(viewer!).queryByRole("group", { name: "Which side" })).toBeNull();
     cleanup();
     render(<Tab runId={runId} />);
     const crop = screen.getByRole("button", { name: "Crop by hand: scan-1.jpg" });
     expect(crop.textContent).toBe("Crop by hand");
     fireEvent.click(crop);
-    expect(viewerHeading("scan-1.jpg")).toBeTruthy();
+    expect(viewerHeading("Front of scan-1.jpg")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Crop by hand: scan-2.jpg" })).toBeNull();
   });
 
-  it("a Saved tile opens its photo; while its photos are on their way, the viewer says so", () => {
+  it("a Saved tile opens its scans until the line's photos show; while they are on their way, the viewer says so", () => {
     showPair({ savedCopyId: "copy1", savedQuantity: 1, savedAt: 5, photos: "attached" });
     fireEvent.click(screen.getByRole("button", { name: `Open saved photo of ${CARD}` }));
     expect(viewerHeading(`Front of ${CARD}`)).toBeTruthy();
@@ -3523,6 +3617,55 @@ describe("NEO-481: every photo opens the card photo viewer", () => {
     showPair({ savedCopyId: "copy1", savedQuantity: 1, savedAt: 5, photos: "pending" });
     fireEvent.click(screen.getByRole("button", { name: `Open saved photo of ${CARD}` }));
     expect(screen.getByText("Photos are on their way.")).toBeTruthy();
+  });
+
+  describe("a Saved tile with the line's own photos", () => {
+    const urls = { imageUrl: "https://photos.example/image.jpg", thumbUrl: "https://photos.example/thumb.jpg" };
+    const crop = { cx: 5, cy: 7, w: 4, h: 6, angle: 0, srcW: 10, srcH: 14 };
+    const saved = { savedCopyId: "copy1", savedQuantity: 1, savedAt: 5, photos: "attached" };
+
+    it("shows the line's photo and opens the line's photos, through the store's copy-photo source", () => {
+      mocks.data.linePhotos = [{ copyId: "copy1", front: urls, back: urls }];
+      const usePhotoSource = vi.fn((_copy: { id: string }, label: string) => ({
+        label,
+        front: { imageUrl: urls.imageUrl, previewKey: "copy:copy1:front", viewOnly: "Store says hi." },
+      }));
+      mocks.data.copyPhotos = { usePhotoSource };
+      showPair(saved);
+      const open = screen.getByRole("button", { name: `Open saved photo of ${CARD}` });
+      expect(within(open).getByRole("img", { name: `Front of ${CARD}` }).getAttribute("src")).toBe(urls.thumbUrl);
+      fireEvent.click(open);
+      expect(viewerHeading(`Front of ${CARD}`)).toBeTruthy();
+      expect(usePhotoSource).toHaveBeenCalledWith({ id: "copy1" }, CARD, { front: urls, back: urls });
+      expect(screen.getByText("Store says hi.")).toBeTruthy();
+    });
+
+    it("a store with no viewer source opens them to look at only", () => {
+      mocks.data.linePhotos = [{ copyId: "copy1", front: urls }];
+      showPair(saved);
+      fireEvent.click(screen.getByRole("button", { name: `Open saved photo of ${CARD}` }));
+      expect(screen.getByText("These photos can't be turned or cropped here.")).toBeTruthy();
+    });
+
+    it("says on the tile when the line's photo is touching up, and when its edit failed, to open it to try again", () => {
+      mocks.data.linePhotos = [
+        { copyId: "copy1", front: urls, edits: [{ side: "front", status: "rendering", turns: 1, crop, requestedAt: 1 }] },
+      ];
+      showPair(saved);
+      expect(screen.getByText("Touching it up…")).toBeTruthy();
+      cleanup();
+      mocks.data.linePhotos = [
+        {
+          copyId: "copy1",
+          front: urls,
+          edits: [{ side: "front", status: "failed", error: "RENDER_FAILED", turns: 1, crop, requestedAt: 1 }],
+        },
+      ];
+      showPair(saved);
+      expect(
+        screen.getByText("That edit didn't take. Your old photo is still here. Open the front photo to try again."),
+      ).toBeTruthy();
+    });
   });
 
   describe("an edit rendering in the background", () => {
@@ -3534,9 +3677,12 @@ describe("NEO-481: every photo opens the card photo viewer", () => {
       ...extra,
     });
 
-    it("says Touching it up… on the tile, with nothing to press", () => {
-      showPair({}, { images: [{ ...photo(0), pendingEdit: pending({ status: "rendering" }) }, photo(1)] });
-      expect(screen.getByText("Touching it up…")).toBeTruthy();
+    it("hands the thumbnail the edit (its chip says Touching it up…), with nothing to press", () => {
+      showPair({}, { images: [{ ...photo(0), editVersion: 2, pendingEdit: pending({ status: "rendering" }) }, photo(1)] });
+      const front = screen.getByRole("button", { name: `Open front of ${CARD}` });
+      expect(front.dataset.pending).toBe("rendering");
+      expect(front.dataset.version).toBe("2");
+      expect(screen.getByRole("button", { name: `Open back of ${CARD}` }).dataset.pending).toBeUndefined();
       expect(screen.queryByRole("button", { name: /Try again: touch up/ })).toBeNull();
     });
 

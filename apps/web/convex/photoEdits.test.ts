@@ -318,6 +318,42 @@ describe("photoEditSource: a scan", () => {
     });
   });
 
+  test("a scan with no auto crop opens at its own turn on the whole frame (crop by hand)", async () => {
+    const w = await world({ front: { status: "failed", errorCode: "PROCESS_ENTRY_FAILED" } });
+    await w.t.run((ctx) => ctx.db.patch(w.frontId, { autoCrop: undefined }));
+    const source = await w.me.action(api.photoEdits.photoEditSource, { ref: scanRef });
+    expect(source.mode).toBe("original");
+    // rotationDegrees 90 (counter-clockwise) is three clockwise quarter turns, filled by the server.
+    expect(source.edit).toEqual({ turns: 3, crop: null });
+    expect(source.autoCrop).toBeUndefined();
+    expect(source.srcW).toBeUndefined();
+  });
+
+  test("a scan with a hand edit opens on that edit, at its version", async () => {
+    const w = await world();
+    await w.t.run((ctx) => ctx.db.patch(w.frontId, { edit: { ...EDIT, version: 2, editedAt: 1 } }));
+    const source = await w.me.action(api.photoEdits.photoEditSource, { ref: scanRef });
+    expect(source.edit).toEqual(EDIT);
+    expect(source.expectVersion).toBe(2);
+  });
+
+  test("a view-only answer still carries the opening edit", async () => {
+    const saved = await world({ match: { savedAt: 1 } });
+    expect(await saved.me.action(api.photoEdits.photoEditSource, { ref: scanRef })).toMatchObject({
+      mode: "viewOnly",
+      edit: { turns: 3, crop: DONE_FRONT.autoCrop },
+    });
+
+    const gone = await world({ front: { status: "failed", errorCode: "PROCESS_ENTRY_FAILED", rotationDegrees: 0 } });
+    await gone.t.run((ctx) => ctx.db.patch(gone.frontId, { autoCrop: undefined }));
+    bucket.delete(extractedKey(FRONT));
+    expect(await gone.me.action(api.photoEdits.photoEditSource, { ref: scanRef })).toMatchObject({
+      mode: "viewOnly",
+      reason: PHOTO_EDIT_COPY.scanGone,
+      edit: { turns: 0, crop: null },
+    });
+  });
+
   test("another collector's scan is not found, and its original is never looked at", async () => {
     const w = await world();
     await expect(w.them.action(api.photoEdits.photoEditSource, { ref: scanRef })).rejects.toThrow(/isn't in your batch/);

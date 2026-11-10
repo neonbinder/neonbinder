@@ -12,9 +12,12 @@ import {
 } from "../data/store";
 import type { Card, Condition, CopyDetails, Grader } from "../data/types";
 import type { PhotoEdit } from "@/lib/photo-edit/geometry";
+import CardPhotoViewer from "@/components/modules/CardPhotoViewer/CardPhotoViewer";
+import { numbersOnlySide } from "@/components/modules/CardPhotoViewer/sources";
+import type { PhotoSideSource, PhotoSource } from "@/components/modules/CardPhotoViewer/types";
+import { usePhotoViewer } from "@/components/modules/CardPhotoViewer/usePhotoViewer";
 import { usePageApi } from "../pageApi";
 import LoosePile from "./loose";
-import { sideTitle } from "./realLanes";
 import SetButton, { type SetPick } from "./SetButton";
 import {
   STAGE_LABEL,
@@ -39,7 +42,7 @@ import {
   FixTools,
   HomeSelect,
   NeedsYou,
-  PhotoViewerSlot,
+  demoScanUrl,
   PRICE_ATTR,
   PriceField,
   QTY_ATTR,
@@ -145,23 +148,13 @@ export default function AddCardsTab() {
   /** NEO-481 — the collector's turns and crops, by `item:side`: the demo's only copy of them. */
   const [edits, setEdits] = useState<Record<string, PhotoEdit>>({});
   const editOf = (itemId: string, side: "front" | "back") => edits[`${itemId}:${side}`];
-  /** The scan open in the viewer (a dialog: in-view state, never the URL), and the photo clicked. */
-  const [viewing, setViewing] = useState<{ itemId: string; side: "front" | "back" } | null>(null);
-  const viewerOpener = useRef<HTMLElement | null>(null);
+  /** The card open in the viewer (a dialog: in-view state, never the URL); `viewer` puts focus back on the photo clicked. */
+  const viewer = usePhotoViewer();
+  const [viewItemId, setViewItemId] = useState<string | null>(null);
+  const viewing = viewer.side && viewItemId ? { itemId: viewItemId, side: viewer.side } : null;
   const openPhoto = (itemId: string, side: "front" | "back", opener?: HTMLElement) => {
-    viewerOpener.current = opener ?? null;
-    setViewing({ itemId, side });
-  };
-  const closeViewer = () => {
-    setViewing(null);
-    const opener = viewerOpener.current;
-    viewerOpener.current = null;
-    if (opener) {
-      requestAnimationFrame(() => {
-        const fell = !document.activeElement || document.activeElement === document.body;
-        if (opener.isConnected && fell) opener.focus({ preventScroll: true });
-      });
-    }
+    setViewItemId(itemId);
+    viewer.open(side, opener);
   };
 
   const sim = useIntakeSim({ setChosen: setPick !== null, homeId, hadOf });
@@ -278,6 +271,9 @@ export default function AddCardsTab() {
     // The viewer is a dialog with keys of its own: none of these reach past it.
     if (viewing) return;
     const target = e.target as HTMLElement | null;
+    // Nor from any dialog but the card drawer (the viewer, wherever it was opened from).
+    const dialog = target?.closest?.('[role="dialog"]');
+    if (dialog && dialog.getAttribute("aria-labelledby") !== "intake-drawer-title") return;
     const inPrice = !!target?.closest?.(`[${PRICE_ATTR}]`);
     const inQty = inPrice || !!target?.closest?.(`[${QTY_ATTR}]`);
     if (!inQty && target?.closest?.('input, textarea, select, [contenteditable="true"], [role="combobox"]')) return;
@@ -537,25 +533,50 @@ export default function AddCardsTab() {
         (() => {
           const item = find(viewing.itemId);
           if (!item) return null;
-          const key = `${item.id}:${viewing.side}`;
           return (
-            <PhotoViewerSlot
-              target={{
-                kind: "demo",
-                itemId: item.id,
-                side: viewing.side,
-                title: sideTitle(viewing.side, item.match.cardId ? cardTitle(item.match.cardId) : item.front.file),
-                edit: edits[key],
-                onSave: (edit) => setEdits((all) => ({ ...all, [key]: edit })),
-              }}
-              onClose={closeViewer}
-            >
-              <ScanImage item={item} side={viewing.side} size="lg" edit={edits[key]} />
-            </PhotoViewerSlot>
+            <DemoPhotoViewer
+              item={item}
+              label={item.match.cardId ? cardTitle(item.match.cardId) : item.front.file}
+              edits={edits}
+              onSave={(key, edit) => setEdits((all) => ({ ...all, [key]: edit }))}
+              side={viewing.side}
+              onClose={viewer.close}
+            />
           );
         })()}
     </div>
   );
+}
+
+/**
+ * NEO-481 — the card photo viewer on a demo card: the turn and crop are kept
+ * as numbers in the tab (`edits`, by `item:side`) and drawn over the scan,
+ * never uploaded.
+ */
+function DemoPhotoViewer({
+  item,
+  label,
+  edits,
+  onSave,
+  side,
+  onClose,
+}: {
+  item: Item;
+  label: string;
+  edits: Record<string, PhotoEdit>;
+  onSave: (key: string, edit: PhotoEdit) => void;
+  side: "front" | "back";
+  onClose: () => void;
+}) {
+  const sideOf = (s: "front" | "back"): PhotoSideSource | undefined => {
+    const imageUrl = demoScanUrl(item, s);
+    const key = `${item.id}:${s}`;
+    return imageUrl
+      ? numbersOnlySide({ imageUrl, edit: edits[key], previewKey: `demo-intake:${key}`, onSave: (edit) => onSave(key, edit) })
+      : undefined;
+  };
+  const source: PhotoSource = { label, front: sideOf("front"), back: sideOf("back") };
+  return <CardPhotoViewer source={source} initialSide={side} onClose={onClose} />;
 }
 
 /** NEO-481 — a demo scan as a button that opens the viewer, drawn with the collector's edit. */

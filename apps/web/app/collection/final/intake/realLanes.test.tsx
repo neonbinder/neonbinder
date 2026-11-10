@@ -27,14 +27,16 @@ import {
   EDIT_FAILED_LINE,
   EDIT_ORIGINAL_GONE_LINE,
   editStateOf,
+  lineRetryLine,
+  linePhotosOf,
+  loneTarget,
+  pairTarget,
   parseMinPrice,
-  PHOTOS_ON_THEIR_WAY_LINE,
-  previewTurns,
   pricePrefill,
   PRICE_INVALID_LINE,
   PRICE_TOO_HIGH_LINE,
   savedPhotoTarget,
-  scanKey,
+  type RawLinePhotos,
   tilePrice,
 } from "./realLanes";
 import { MAX_PRICE_CENTS } from "@/lib/collection/price-cap";
@@ -699,33 +701,62 @@ describe("NEO-481: a scan's hand edit on the tiles", () => {
     expect(editStateOf({ pendingEdit: pending("failed") })).toEqual({ kind: "failed", line: EDIT_FAILED_LINE });
   });
 
-  test("the thumbnail previews the turn against the pipeline's own crop only", () => {
-    // No rotation by the pipeline: a quarter turn right shows as one.
-    expect(previewTurns({ pendingEdit: pending("rendering") })).toBe(1);
-    // The pipeline turned it 90° counter-clockwise (3 turns clockwise): the edit's 1 is 2 more.
-    expect(previewTurns({ rotationDegrees: 90, pendingEdit: pending("rendering") })).toBe(2);
-    // After an earlier hand edit the shown crop's turns aren't known: no guess.
-    expect(previewTurns({ editVersion: 1, pendingEdit: pending("rendering") })).toBe(0);
-    expect(previewTurns({ pendingEdit: pending("failed") })).toBe(0);
+  test("a line photo's edit says the same words as a scan's", () => {
+    expect(editStateOf({ pendingEdit: { status: "failed", error: "RENDER_FAILED" } })).toEqual({ kind: "failed", line: EDIT_FAILED_LINE });
+    expect(lineRetryLine("back")).toBe("Open the back photo to try again.");
   });
 
-  test("the thumbnail's key moves with the edit version", () => {
-    expect(scanKey(3, undefined)).toBe("3:0");
-    expect(scanKey(3, { editVersion: 2 })).toBe("3:2");
+  test("a pair opens with both its scans, on the side pressed; a loose photo alone", () => {
+    expect(pairTarget({ frontIndex: 4, backIndex: 5 }, "#47 Le'Veon Bell", "back")).toEqual({
+      kind: "scan",
+      label: "#47 Le'Veon Bell",
+      front: 4,
+      back: 5,
+      side: "back",
+    });
+    expect(loneTarget(7, "scan-7.jpg")).toEqual({ kind: "scan", label: "scan-7.jpg", front: 7, side: "front" });
   });
 
-  test("a Saved tile opens the line's photo, view-only while on its way, else the scan", () => {
+  test("a Saved tile opens the line's photos once they show, view-only while on their way, else the scans", () => {
     const card = { _id: "c1", cardNumber: "47", cardName: "Le'Veon Bell" } as IntakeMatchRow["card"];
     const row = (photos: IntakeMatchRow["photos"]) =>
-      ({ photos, savedCopyId: "copy1", frontIndex: 4, card }) as Pick<IntakeMatchRow, "photos" | "savedCopyId" | "frontIndex" | "card">;
-    expect(savedPhotoTarget(row("attached"), "job1")).toEqual({
+      ({ photos, savedCopyId: "copy1", frontIndex: 4, backIndex: 5, card }) as Pick<
+        IntakeMatchRow,
+        "photos" | "savedCopyId" | "frontIndex" | "backIndex" | "card"
+      >;
+    const WAY = "On their way.";
+    expect(savedPhotoTarget(row("attached"), true, WAY)).toEqual({
       kind: "copy",
       copyId: "copy1",
+      label: "#47 Le'Veon Bell",
       side: "front",
-      title: "Front of #47 Le'Veon Bell",
     });
-    expect(savedPhotoTarget(row("pending"), "job1")).toMatchObject({ kind: "scan", entryIndex: 4, viewOnly: PHOTOS_ON_THEIR_WAY_LINE });
-    expect(savedPhotoTarget(row("failed"), "job1")).toMatchObject({ kind: "scan", entryIndex: 4, viewOnly: undefined });
+    // Attached, but the line's photos haven't loaded (or it has none): the scans.
+    expect(savedPhotoTarget(row("attached"), false, WAY)).toEqual({
+      kind: "scan",
+      label: "#47 Le'Veon Bell",
+      front: 4,
+      back: 5,
+      side: "front",
+    });
+    expect(savedPhotoTarget(row("pending"), false, WAY)).toMatchObject({ kind: "scan", front: 4, back: 5, viewOnly: WAY });
+    expect(savedPhotoTarget(row("failed"), false, WAY)).not.toHaveProperty("viewOnly");
+  });
+
+  test("a line's photos carry each side's newest edit in flight", () => {
+    const urls = { imageUrl: "https://p/i", thumbUrl: "https://p/t" };
+    const crop = { cx: 5, cy: 7, w: 4, h: 6, angle: 0, srcW: 10, srcH: 14 };
+    const raw = {
+      copyId: "copy1",
+      front: urls,
+      back: urls,
+      edits: [{ side: "back", status: "failed", error: "RENDER_FAILED", turns: 1, crop, requestedAt: 1 }],
+    } as unknown as RawLinePhotos;
+    expect(linePhotosOf(raw)).toEqual({
+      front: urls,
+      back: { ...urls, pending: { status: "failed", edit: { turns: 1, crop }, error: "RENDER_FAILED" } },
+    });
+    expect(linePhotosOf({ copyId: "copy1", front: urls } as unknown as RawLinePhotos)).toEqual({ front: urls });
   });
 });
 

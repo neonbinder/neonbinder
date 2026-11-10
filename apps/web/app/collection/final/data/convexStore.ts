@@ -2767,7 +2767,7 @@ export function photosOfRow(row: RawCopyPhotos): CopyPhotos {
  * Undo puts back the photo from before this viewer's last save: the save
  * answers with the new edit row, and that row is what Undo names.
  */
-function useConvexCopyPhotoSource(copy: Copy, label: string, photos: CopyPhotos | undefined): PhotoSource {
+function useConvexCopyPhotoSource(copy: Pick<Copy, "id">, label: string, photos: CopyPhotos | undefined): PhotoSource {
   const loadSource = useAction(api.photoEdits.photoEditSource);
   const saveEdit = useAction(api.photoEdits.saveCopyPhotoEdit);
   const undoEdit = useAction(api.photoEdits.undoCopyPhotoEdit);

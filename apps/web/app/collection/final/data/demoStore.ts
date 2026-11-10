@@ -1276,7 +1276,7 @@ function useDemoCopyPhotos(
   );
   /** NEO-481 — the viewer on a demo line: turned and cropped in the browser, never uploaded. */
   const usePhotoSource = useCallback(
-    (copy: Copy, label: string, photos: CopyPhotos | undefined): PhotoSource => {
+    (copy: Pick<Copy, "id">, label: string, photos: CopyPhotos | undefined): PhotoSource => {
       const side = (s: PhotoSide) => {
         const p = photos?.[s];
         return p

@@ -505,9 +505,10 @@ export interface CopyPhotosExtension {
   /**
    * NEO-481 — the card photo viewer's source for one line (turn and crop by
    * hand). A hook: call it from the viewer's own component, mounted only
-   * while the viewer is open. Absent: the line's photos open view-only.
+   * while the viewer is open. Absent: the line's photos open view-only. Only
+   * the line's id is read (Add cards' Saved tiles hold no whole `Copy`).
    */
-  usePhotoSource?(copy: Copy, label: string, photos: CopyPhotos | undefined): PhotoSource;
+  usePhotoSource?(copy: Pick<Copy, "id">, label: string, photos: CopyPhotos | undefined): PhotoSource;
   /**
    * The photo that stands for each of these cards in the collection (the
    * first line with a front, else a back), for `CardFace`

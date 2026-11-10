@@ -3,7 +3,8 @@ import type { api } from "@/convex/_generated/api";
 import type { IntakeReason } from "@/convex/lib/intakeMatch";
 import { ENTRY_TOO_MANY_PIXELS, type RejectedSummary, type RejectionKind } from "@/convex/lib/extractRejections";
 import { MAX_PRICE_CENTS } from "@/lib/collection/price-cap";
-import { openingTurns, type PhotoEdit, type QuarterTurns } from "@/lib/photo-edit/geometry";
+import { asPendingPhotoEdit } from "@/lib/photo-edit/geometry";
+import type { CopyPhotos, PhotoUrls } from "../data/types";
 
 /**
  * NEO-382 — the signed-in intake screen's lanes, worked out from the three
@@ -550,42 +551,80 @@ export function runSummary(s: {
 /* NEO-481: hand edits of a scan, the viewer, and the per-card price    */
 /* ------------------------------------------------------------------ */
 
+/** A side of a card photo. */
+export type PhotoSideName = "front" | "back";
+
 /**
  * NEO-481 — what a photo click on Add cards asks the viewer to open. The
  * server decides per open whether a scan or copy photo can be edited, and from
  * what (`photoEdits.photoEditSource`); `viewOnly` is only the cases this
  * screen already knows can't be (a saved pair whose photos are on their way).
+ *
+ * - `scan`: a pair's two scans (the viewer switches between them), or one
+ *   loose photo (`back` absent). `label` names them in the viewer's heading
+ *   ("Front of <label>").
+ * - `copy`: a saved line's own photos (`copyPhotos`).
+ * - `local`: a photo still being read, shown from this browser.
  */
 export type PhotoViewerTarget =
   | {
       kind: "scan";
-      jobId: string;
-      entryIndex: number;
-      /** "Front of #47 Le'Veon Bell", or the photo's own name for a loose one. */
-      title: string;
+      label: string;
+      front: number;
+      back?: number;
+      side: PhotoSideName;
       /** Set when the screen knows it opens view-only, with the line that says why. */
       viewOnly?: string;
     }
-  | { kind: "copy"; copyId: string; side: "front" | "back"; title: string }
-  | {
-      kind: "demo";
-      itemId: string;
-      side: "front" | "back";
-      title: string;
-      edit: PhotoEdit | undefined;
-      onSave: (edit: PhotoEdit) => void;
-    };
+  | { kind: "copy"; copyId: string; label: string; side: PhotoSideName }
+  /** A photo still uploading or being read: this browser's own copy of it, view-only. */
+  | { kind: "local"; url: string; label: string; side: "front" };
 
-/** The viewer's heading for one side of a card. */
-export function sideTitle(side: "front" | "back", card: string): string {
-  return `${side === "front" ? "Front" : "Back"} of ${card}`;
+/** Said in the viewer on a photo still being read: it has no scan to edit yet. */
+export const STILL_READING_LINE = "Still reading this one. Turn or crop it once it's read.";
+/** Said in the viewer on a saved line's photos where the page can't edit them. */
+export const LINE_VIEW_ONLY_LINE = "These photos can't be turned or cropped here.";
+
+/** Under a Saved tile whose line photo edit failed: the viewer holds Try again. */
+export function lineRetryLine(side: PhotoSideName): string {
+  return `Open the ${side} photo to try again.`;
 }
 
-/** Said in the viewer for a saved pair whose photos haven't reached its line yet. */
-export const PHOTOS_ON_THEIR_WAY_LINE = "Photos are on their way.";
+/** A pair's scans in the viewer, opened on `side`. */
+export function pairTarget(
+  pair: { frontIndex: number; backIndex: number },
+  label: string,
+  side: PhotoSideName,
+): PhotoViewerTarget {
+  return { kind: "scan", label, front: pair.frontIndex, back: pair.backIndex, side };
+}
 
-/** NEO-481 — the fields of a scan's hand edit the lanes read (`listPlaceholderImages`). */
-export type ScanEditView = Partial<Pick<IntakeImage, "editVersion" | "pendingEdit" | "rotationDegrees">>;
+/** One loose photo in the viewer (no pair yet, so no back). */
+export function loneTarget(entryIndex: number, label: string): PhotoViewerTarget {
+  return { kind: "scan", label, front: entryIndex, side: "front" };
+}
+
+/**
+ * What a Saved tile's photo opens: the saved line's own photos once they are
+ * there (`linePhotos`: the line has a photo to show); view-only while they are
+ * on their way (`onTheWay` is what the viewer says); else the scans (the
+ * server says whether they are still there to edit).
+ */
+export function savedPhotoTarget(
+  row: Pick<IntakeMatchRow, "photos" | "savedCopyId" | "frontIndex" | "backIndex" | "card">,
+  linePhotos: boolean,
+  onTheWay: string,
+): PhotoViewerTarget {
+  const label = cardLabel(row.card);
+  if (row.photos === "attached" && row.savedCopyId && linePhotos) {
+    return { kind: "copy", copyId: row.savedCopyId, label, side: "front" };
+  }
+  return {
+    ...pairTarget(row, label, "front"),
+    ...(row.photos === "pending" ? { viewOnly: onTheWay } : {}),
+  };
+}
+
 
 /** Said on a tile while a saved edit renders in the background (the old photo stays up). */
 export const EDIT_RENDERING_LINE = "Touching it up…";
@@ -597,12 +636,18 @@ export const EDIT_ORIGINAL_GONE_LINE =
 
 export type EditState = { kind: "rendering" } | { kind: "failed"; line: string } | null;
 
+/** The part of an edit in flight (a scan's `pendingEdit`, a line photo's `edits` entry) the words come from. */
+export interface EditFlag {
+  status: "rendering" | "failed";
+  error?: string;
+}
+
 /**
  * Where a scan's last edit stands: still rendering, failed (with the words to
  * show beside Try again), or nothing to say. A server reason that is a bare
  * code (`ENTRY_NOT_FOUND`) is never shown as it is.
  */
-export function editStateOf(image: ScanEditView | undefined): EditState {
+export function editStateOf(image: { pendingEdit?: EditFlag | null } | undefined): EditState {
   const pending = image?.pendingEdit;
   if (!pending) return null;
   if (pending.status === "rendering") return { kind: "rendering" };
@@ -610,49 +655,6 @@ export function editStateOf(image: ScanEditView | undefined): EditState {
   if (error === "ENTRY_NOT_FOUND") return { kind: "failed", line: EDIT_ORIGINAL_GONE_LINE };
   if (!error || /^[A-Z][A-Z0-9_]*$/.test(error)) return { kind: "failed", line: EDIT_FAILED_LINE };
   return { kind: "failed", line: error };
-}
-
-/**
- * The quarter turns a tile's thumbnail turns by while an edit renders, so the
- * collector sees the turn at once (a CSS preview, never saved). Only the turn:
- * the thumbnail is the old crop, and a new crop drawn on it would be a guess.
- * Known only against the pipeline's own crop (no earlier hand edit), whose
- * turns come from `rotationDegrees`; otherwise 0.
- */
-export function previewTurns(image: ScanEditView | undefined): QuarterTurns {
-  const pending = image?.pendingEdit;
-  if (!pending || pending.status !== "rendering" || image.editVersion !== undefined) return 0;
-  return ((((pending.turns - openingTurns(image.rotationDegrees)) % 4) + 4) % 4) as QuarterTurns;
-}
-
-/**
- * A scan thumbnail's identity: its entry and the edit version it shows. Used
- * as the thumbnail's React key, so a new version mints a new signed URL.
- * Row D adds the version to `ScanImage`'s own effect key too; this key stays
- * harmless beside it.
- */
-export function scanKey(entryIndex: number, image: ScanEditView | undefined): string {
-  return `${entryIndex}:${image?.editVersion ?? 0}`;
-}
-
-/**
- * What a Saved tile's photo opens: the saved line's own photo once it is
- * there; view-only while it is on its way; else the scan (the server says
- * whether it is still there to edit).
- */
-export function savedPhotoTarget(
-  row: Pick<IntakeMatchRow, "photos" | "savedCopyId" | "frontIndex" | "card">,
-  jobId: string,
-): PhotoViewerTarget {
-  const title = sideTitle("front", cardLabel(row.card));
-  if (row.photos === "attached" && row.savedCopyId) return { kind: "copy", copyId: row.savedCopyId, side: "front", title };
-  return {
-    kind: "scan",
-    jobId,
-    entryIndex: row.frontIndex,
-    title,
-    viewOnly: row.photos === "pending" ? PHOTOS_ON_THEIR_WAY_LINE : undefined,
-  };
 }
 
 /**
@@ -692,4 +694,24 @@ export function tilePrice(text: string, prefill: number | null): { ok: true; own
   if (parsed === "invalid") return { ok: false, line: PRICE_INVALID_LINE };
   if (parsed !== undefined && parsed > MAX_PRICE_CENTS) return { ok: false, line: PRICE_TOO_HIGH_LINE };
   return { ok: true, own: parsed === undefined || parsed === prefill ? undefined : parsed };
+}
+
+/** NEO-481 — a `copyPhotos.photosOf` row: a saved line's photos, with each side's edit in flight. */
+export type RawLinePhotos = FunctionReturnType<typeof api.copyPhotos.photosOf>[number];
+
+/**
+ * A `photosOf` row as the line's photos, the newest edit of each side on it.
+ * Keep in step with `photosOfRow` in `../data/convexStore` (this tab reads the
+ * query itself: it has no `Copy` to ask the store with).
+ */
+export function linePhotosOf(row: RawLinePhotos): CopyPhotos {
+  const side = (s: "front" | "back"): PhotoUrls | undefined => {
+    const urls = row[s];
+    if (!urls) return undefined;
+    const pending = asPendingPhotoEdit(row.edits?.find((e) => e.side === s));
+    return { imageUrl: urls.imageUrl, thumbUrl: urls.thumbUrl, ...(pending ? { pending } : {}) };
+  };
+  const front = side("front");
+  const back = side("back");
+  return { ...(front ? { front } : {}), ...(back ? { back } : {}) };
 }

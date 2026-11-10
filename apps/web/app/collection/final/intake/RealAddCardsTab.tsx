@@ -28,6 +28,14 @@ import { useWarmPreprocess } from "@/src/hooks/useWarmPreprocess";
 import { useLeaveGuard } from "@/src/hooks/useLeaveGuard";
 import { Dropzone } from "@/app/print/placeholders/dropzone";
 import { ScanImage } from "@/app/print/placeholders/scan-image";
+import CardPhotoViewer from "@/components/modules/CardPhotoViewer/CardPhotoViewer";
+import ScanPhotoViewer from "@/components/modules/CardPhotoViewer/ScanPhotoViewer";
+import { CardPhoto } from "@/components/modules/CardPhotoViewer/EditedPhoto";
+import { copyPreviewKey } from "@/components/modules/CardPhotoViewer/convexEdits";
+import { ON_THE_WAY_REASON, viewOnlySource } from "@/components/modules/CardPhotoViewer/sources";
+import type { PhotoSource } from "@/components/modules/CardPhotoViewer/types";
+import { usePhotoViewer } from "@/components/modules/CardPhotoViewer/usePhotoViewer";
+import { asPendingPhotoEdit } from "@/lib/photo-edit/geometry";
 import Overlay from "../../prototypes/p1/Overlay";
 import Cascade from "../catalog/Cascade";
 import { EMPTY_DRILL, type Drill } from "../catalog/drill";
@@ -37,11 +45,13 @@ import {
   useCollectionActions,
   useCommonPrices,
   useContainers,
+  useCopyPhotos,
   useDefaultCondition,
   useListingGate,
   useSide,
   writeErrorMessage,
 } from "../data/store";
+import type { CopyPhotos } from "../data/types";
 import { intakeGateLine, ListingGateNote, SyncStatusLink, useIntakeRunLock } from "../inventory/listing/ListingGate";
 import { usePageApi } from "../pageApi";
 import {
@@ -52,12 +62,16 @@ import {
   EDIT_RENDERING_LINE,
   editStateOf,
   parseMinPrice,
+  LINE_VIEW_ONLY_LINE,
+  lineRetryLine,
+  linePhotosOf,
+  loneTarget,
+  STILL_READING_LINE,
+  pairTarget,
+  type PhotoSideName,
   type PhotoViewerTarget,
-  previewTurns,
   pricePrefill,
   savedPhotoTarget,
-  scanKey,
-  sideTitle,
   tilePrice,
   failedText,
   inNaturalOrder,
@@ -89,7 +103,7 @@ import {
   zipOverLimitLine,
   type Lanes,
 } from "./realLanes";
-import { HomeSelect, PhotoViewerSlot, PRICE_ATTR, PriceInput, QTY_ATTR, RING, StageBadge } from "./ui";
+import { HomeSelect, PRICE_ATTR, PriceInput, QTY_ATTR, RING, StageBadge } from "./ui";
 import { DRAWER_PARAM } from "../drawerParams";
 import { ScannerJoin, SPEECH_AFTER_FOCUS_MS, startRefusal } from "./ScannerJoin";
 import {
@@ -195,6 +209,10 @@ export const RUN_PARAM = "run";
 const TILE_ATTR = "data-intake-tile";
 const REVIEW_HEADING_ID = "intake-needs-you";
 const PAIRING_HEADING_ID = "intake-pairing";
+/** The card drawer's heading: its dialog is the one dialog the page's keys still act in. */
+const DRAWER_TITLE_ID = "intake-drawer-title";
+/** Saved lines whose photos one read asks for (the server's `MAX_PHOTOS_OF`). */
+const MAX_LINE_PHOTOS = 100;
 /** Marks "Done adding photos" for focus moves (a control carries no DOM id). */
 const DONE_ATTR = "data-intake-done";
 
@@ -1650,32 +1668,29 @@ function RunWorkspace({
   const [selected, setSelected] = useState<Id<"placeholderPairs"> | null>(null);
   const [openId, setOpenId] = useState<Id<"placeholderPairs"> | null>(null);
   /**
-   * NEO-481 — the photo open in the viewer (a dialog: in-view state, never the
-   * URL), with the scan the stand-in shows. `viewerOpener` is the photo that
-   * was clicked, for focus to go back to where a click doesn't focus a button.
+   * NEO-481 — the photos open in the viewer (a dialog: in-view state, never
+   * the URL). `viewer` puts focus back on the photo that opened it.
    */
-  const [viewing, setViewing] = useState<{ target: PhotoViewerTarget; entryIndex: number } | null>(null);
-  const viewerOpener = useRef<HTMLElement | null>(null);
-  const openPhoto = (target: PhotoViewerTarget, entryIndex: number, opener?: HTMLElement) => {
-    viewerOpener.current = opener ?? null;
-    setViewing({ target, entryIndex });
+  const viewer = usePhotoViewer();
+  const [viewTarget, setViewTarget] = useState<PhotoViewerTarget | null>(null);
+  const viewing = viewer.side && viewTarget ? viewTarget : null;
+  const openPhoto = (target: PhotoViewerTarget, opener?: HTMLElement) => {
+    setViewTarget(target);
+    viewer.open(target.side, opener);
   };
-  const closeViewer = () => {
-    setViewing(null);
-    const opener = viewerOpener.current;
-    viewerOpener.current = null;
-    if (opener) {
-      requestAnimationFrame(() => {
-        if (opener.isConnected && focusFell()) opener.focus({ preventScroll: true });
-      });
-    }
-  };
-  const scanTarget = (entryIndex: number, title: string): PhotoViewerTarget => ({
-    kind: "scan",
-    jobId: run.jobId,
-    entryIndex,
-    title,
-  });
+  // NEO-481 — the saved lines' own photos, for the Saved tiles (a line with none is absent).
+  const savedCopyIds = useMemo(
+    () => [...new Set(lanes.saved.flatMap((r) => (r.photos === "attached" && r.savedCopyId ? [r.savedCopyId] : [])))].slice(0, MAX_LINE_PHOTOS),
+    [lanes.saved],
+  );
+  const savedKey = savedCopyIds.join(",");
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- `savedKey` is `savedCopyIds`, spelled stably
+  const linePhotoArgs = useMemo(() => (savedCopyIds.length > 0 ? { copyIds: savedCopyIds } : "skip"), [savedKey]);
+  const linePhotoRows = useQuery(api.copyPhotos.photosOf, linePhotoArgs);
+  const linePhotos = useMemo(
+    () => new Map((linePhotoRows ?? []).map((r) => [r.copyId as string, linePhotosOf(r)])),
+    [linePhotoRows],
+  );
   const editNews = useEditNews(images, labels);
   // NEO-481 — each card's own price, on a box run only: a binder card never shows one.
   const priced = run.homeKind === "box";
@@ -1736,7 +1751,7 @@ function RunWorkspace({
   };
   const readFor = (row: IntakeMatchRow) => readOf(byIndex, row.frontIndex, row.backIndex);
   const openFront = (row: IntakeMatchRow, opener?: HTMLElement) =>
-    openPhoto(scanTarget(row.frontIndex, sideTitle("front", tileLabel(row, readFor(row)))), row.frontIndex, opener);
+    openPhoto(pairTarget(row, tileLabel(row, readFor(row)), "front"), opener);
 
   /**
    * NEO-481 — keep a tile's typed price on its row, so a refresh and "Save all
@@ -1797,9 +1812,12 @@ function RunWorkspace({
   // drawer's card; read through a ref so the listener is added once.
   const onKey = (e: KeyboardEvent) => {
     if (e.ctrlKey || e.metaKey || e.altKey) return;
-    // The viewer is a dialog with keys of its own: none of these reach past it.
+    // The viewer is a dialog with keys of its own ([, ], c): none of these reach past it.
     if (viewing) return;
     const target = e.target as HTMLElement | null;
+    // Nor from any dialog but the card drawer (the viewer, a confirm), wherever it was opened from.
+    const dialog = target?.closest?.('[role="dialog"]');
+    if (dialog && dialog.getAttribute("aria-labelledby") !== DRAWER_TITLE_ID) return;
     const inQty = !!target?.closest?.(`[${QTY_ATTR}]`);
     const inPrice = !!target?.closest?.(`[${PRICE_ATTR}]`);
     const inField = inQty || inPrice;
@@ -1810,11 +1828,11 @@ function RunWorkspace({
       fn();
     };
     if (openId) {
-      if (!open || !target?.closest?.('[role="dialog"]')) return;
+      if (!open || !dialog) return;
       if (e.key === "s") run1(() => actions.swap(open));
       else if (e.key === "e") run1(() => openFront(open));
       else if (e.key === "p" && priced) {
-        const field = target.closest('[role="dialog"]')?.querySelector<HTMLInputElement>(`[${PRICE_ATTR}]:not(:disabled)`);
+        const field = dialog.querySelector<HTMLInputElement>(`[${PRICE_ATTR}]:not(:disabled)`);
         if (field) run1(() => field.focus());
       } else if (e.key === "v") run1(() => actions.nextVariation(open));
       else if (e.key === "u") run1(() => closeAndMoveOn(open, () => actions.unpair(open)));
@@ -1969,8 +1987,8 @@ function RunWorkspace({
               <PhotoTile
                 image={i}
                 label={labels.get(i.entryIndex) ?? i.originalName}
-                onOpen={(opener) =>
-                  openPhoto(scanTarget(i.entryIndex, labels.get(i.entryIndex) ?? i.originalName), i.entryIndex, opener)
+                onOpen={(url, opener) =>
+                  openPhoto({ kind: "local", url, label: labels.get(i.entryIndex) ?? i.originalName, side: "front" }, opener)
                 }
               />
             </li>
@@ -1982,7 +2000,7 @@ function RunWorkspace({
             loose={lanes.loose}
             labels={labels}
             onOpen={(image, opener) =>
-              openPhoto(scanTarget(image.entryIndex, labels.get(image.entryIndex) ?? image.originalName), image.entryIndex, opener)
+              openPhoto(loneTarget(image.entryIndex, labels.get(image.entryIndex) ?? image.originalName), opener)
             }
             onSetAside={(image) => setPhotoAside(image, true)}
             onPair={(front, back) =>
@@ -2022,8 +2040,9 @@ function RunWorkspace({
                     entryIndex={p.frontIndex}
                     image={byIndex.get(p.frontIndex)}
                     name={`Open front of ${name}`}
+                    alt={`Front of ${name}`}
                     className="h-14 w-auto rounded"
-                    onOpen={(opener) => openPhoto(scanTarget(p.frontIndex, sideTitle("front", name)), p.frontIndex, opener)}
+                    onOpen={(opener) => openPhoto(pairTarget(p, name, "front"), opener)}
                   />
                   <span className={TILE_WORDS}>
                     <span className="block truncate font-medium text-ink-2">{p.player ?? "Matching…"}</span>
@@ -2073,10 +2092,7 @@ function RunWorkspace({
                 row={row}
                 jobId={run.jobId}
                 images={[byIndex.get(row.frontIndex), byIndex.get(row.backIndex)]}
-                onOpenPhoto={(side, opener) => {
-                  const entryIndex = side === "front" ? row.frontIndex : row.backIndex;
-                  openPhoto(scanTarget(entryIndex, sideTitle(side, tileLabel(row, readFor(row)))), entryIndex, opener);
-                }}
+                onOpenPhoto={(side, opener) => openPhoto(pairTarget(row, tileLabel(row, readFor(row)), side), opener)}
                 price={price}
                 read={readFor(row)}
                 selected={row.pairId === selected}
@@ -2093,20 +2109,18 @@ function RunWorkspace({
           {lanes.saved.map((row) => (
             <li key={row.pairId} className="intake-arrive intake-saved rounded-md">
               <div className={`${TILE_ROW} border-rule`}>
-                {/* TODO(NEO-481): once the saved line's photo is on the match row, show it here
-                    (the plan: the tile shows the line's photo from then on); the scan stands in. */}
-                <ScanThumb
+                <SavedPhoto
+                  row={row}
                   jobId={run.jobId}
-                  entryIndex={row.frontIndex}
                   image={byIndex.get(row.frontIndex)}
-                  name={`Open saved photo of ${cardLabel(row.card)}`}
-                  className="h-14 w-auto rounded"
-                  onOpen={(opener) => openPhoto(savedPhotoTarget(row, run.jobId), row.frontIndex, opener)}
+                  photos={row.savedCopyId ? linePhotos.get(row.savedCopyId) : undefined}
+                  onOpen={(target, opener) => openPhoto(target, opener)}
                 />
                 <span className={TILE_WORDS}>
                   <span className="block truncate font-medium text-ink-2">{cardLabel(row.card)}</span>
                   <span className="block text-neon-green-text">Saved +{row.savedQuantity ?? 1}</span>
                   <PhotoLine row={row} />
+                  <LineEditLine photos={row.savedCopyId ? linePhotos.get(row.savedCopyId) : undefined} />
                 </span>
               </div>
             </li>
@@ -2153,15 +2167,12 @@ function RunWorkspace({
       </div>
 
       {open && (
-        <Overlay labelledBy="intake-drawer-title" onClose={() => setOpenId(null)}>
+        <Overlay labelledBy={DRAWER_TITLE_ID} onClose={() => setOpenId(null)}>
           <Drawer
             row={open}
             run={run}
             images={[byIndex.get(open.frontIndex), byIndex.get(open.backIndex)]}
-            onOpenPhoto={(side, opener) => {
-              const entryIndex = side === "front" ? open.frontIndex : open.backIndex;
-              openPhoto(scanTarget(entryIndex, sideTitle(side, cardLabel(open.card))), entryIndex, opener);
-            }}
+            onOpenPhoto={(side, opener) => openPhoto(pairTarget(open, cardLabel(open.card), side), opener)}
             price={price}
             read={readFor(open)}
             actions={actions}
@@ -2171,17 +2182,24 @@ function RunWorkspace({
           />
         </Overlay>
       )}
-      {/* After the drawer, so it opens over it; Escape closes only the viewer. */}
-      {viewing && (
-        <PhotoViewerSlot target={viewing.target} onClose={closeViewer}>
-          <ScanImage
-            key={scanKey(viewing.entryIndex, byIndex.get(viewing.entryIndex))}
-            jobId={run.jobId}
-            entryIndex={viewing.entryIndex}
-            alt={viewing.target.title}
-            className="max-h-[70vh] w-auto rounded"
-          />
-        </PhotoViewerSlot>
+      {/* After the drawer, so it opens over it; Escape closes only the viewer. Mounted only while open. */}
+      {viewing?.kind === "scan" && (
+        <IntakeScanViewer jobId={run.jobId} target={viewing} byIndex={byIndex} side={viewer.side ?? "front"} onClose={viewer.close} />
+      )}
+      {viewing?.kind === "local" && (
+        <CardPhotoViewer
+          source={viewOnlySource(viewing.label, { front: viewing.url }, STILL_READING_LINE, "reading")}
+          onClose={viewer.close}
+        />
+      )}
+      {viewing?.kind === "copy" && (
+        <LinePhotoViewer
+          copyId={viewing.copyId}
+          label={viewing.label}
+          photos={linePhotos.get(viewing.copyId)}
+          side={viewer.side ?? "front"}
+          onClose={viewer.close}
+        />
       )}
     </div>
   );
@@ -2409,15 +2427,16 @@ interface TilePrice {
 }
 
 /**
- * NEO-481 — a scan's thumbnail as a button that opens the viewer. Keyed by its
- * edit version, so a new version mints a new signed URL. While an edit renders
- * the scanner's sweep runs over it, and it already shows the new turn.
+ * NEO-481 — a scan's thumbnail as a button that opens the viewer (the shared
+ * `ScanImage`). Its edit version mints a new signed URL; while an edit
+ * renders it shows the viewer's preview with "Touching it up…" over it.
  */
 function ScanThumb({
   jobId,
   entryIndex,
   image,
   name,
+  alt,
   className,
   onOpen,
 }: {
@@ -2426,27 +2445,171 @@ function ScanThumb({
   image: IntakeImage | undefined;
   /** The button's name: what it opens ("Open front of #47 Le'Veon Bell"). */
   name: string;
+  /** What the picture is ("Front of #47 Le'Veon Bell"). */
+  alt: string;
   className: string;
   onOpen: (opener: HTMLElement) => void;
 }) {
-  const rendering = editStateOf(image)?.kind === "rendering";
-  const turns = previewTurns(image);
   return (
-    <button
-      type="button"
-      {...{ [THUMB_ATTR]: entryIndex }}
-      aria-label={name}
-      onClick={(e) => onOpen(e.currentTarget)}
-      className={`relative block shrink-0 cursor-zoom-in overflow-hidden rounded ${RING}`}
-    >
-      <span
-        className="block transition-transform duration-300 motion-reduce:transition-none"
-        style={turns ? { transform: `rotate(${turns * 90}deg)${turns % 2 ? " scale(0.714)" : ""}` } : undefined}
+    <span {...{ [THUMB_ATTR]: entryIndex }} className="flex shrink-0">
+      <ScanImage
+        jobId={jobId}
+        entryIndex={entryIndex}
+        alt={alt}
+        className={className}
+        version={image?.editVersion}
+        pending={asPendingPhotoEdit(image?.pendingEdit)}
+        onOpen={onOpen}
+        openLabel={name}
+      />
+    </span>
+  );
+}
+
+/**
+ * NEO-481 — the viewer on a pair's scans (or one loose photo), with the rows
+ * the page already holds, so it follows a pending edit and a new version.
+ */
+function IntakeScanViewer({
+  jobId,
+  target,
+  byIndex,
+  side,
+  onClose,
+}: {
+  jobId: string;
+  target: Extract<PhotoViewerTarget, { kind: "scan" }>;
+  byIndex: ReadonlyMap<number, IntakeImage>;
+  side: PhotoSideName;
+  onClose: () => void;
+}) {
+  const frontImage = byIndex.get(target.front);
+  const backImage = target.back === undefined ? undefined : byIndex.get(target.back);
+  const front = useMemo(() => ({ entryIndex: target.front, image: frontImage }), [target.front, frontImage]);
+  const back = useMemo(
+    () => (target.back === undefined ? undefined : { entryIndex: target.back, image: backImage }),
+    [target.back, backImage],
+  );
+  return (
+    <ScanPhotoViewer
+      jobId={jobId}
+      label={target.label}
+      front={front}
+      back={back}
+      viewOnly={target.viewOnly}
+      initialSide={side}
+      onClose={onClose}
+    />
+  );
+}
+
+/** A saved line's photos when the store has no viewer source (a test's): look, no edits. */
+function useViewOnlyLine(_copy: { id: string }, label: string, photos: CopyPhotos | undefined): PhotoSource {
+  return viewOnlySource(label, { front: photos?.front?.imageUrl, back: photos?.back?.imageUrl }, LINE_VIEW_ONLY_LINE);
+}
+
+/** NEO-481 — the viewer on a saved line's own photos (the collection's copy-photo source). */
+function LinePhotoViewer({
+  copyId,
+  label,
+  photos,
+  side,
+  onClose,
+}: {
+  copyId: string;
+  label: string;
+  photos: CopyPhotos | undefined;
+  side: PhotoSideName;
+  onClose: () => void;
+}) {
+  const ext = useCopyPhotos();
+  // A store either has a viewer source or it does not, for its whole life: the hook order never changes.
+  const usePhotoSourceOf = ext?.usePhotoSource ?? useViewOnlyLine;
+  const copy = useMemo(() => ({ id: copyId }), [copyId]);
+  const source = usePhotoSourceOf(copy, label, photos);
+  return <CardPhotoViewer source={source} initialSide={side} onClose={onClose} />;
+}
+
+/**
+ * NEO-481 — a Saved tile's picture: the saved line's own photo once it is
+ * there (with its edit in flight or failed), else the front scan. Either
+ * opens the viewer on what it shows.
+ */
+function SavedPhoto({
+  row,
+  jobId,
+  image,
+  photos,
+  onOpen,
+}: {
+  row: IntakeMatchRow;
+  jobId: string;
+  image: IntakeImage | undefined;
+  photos: CopyPhotos | undefined;
+  onOpen: (target: PhotoViewerTarget, opener: HTMLElement) => void;
+}) {
+  const card = cardLabel(row.card);
+  const name = `Open saved photo of ${card}`;
+  const side: PhotoSideName = photos?.front ? "front" : "back";
+  const shown = photos?.[side];
+  const target = savedPhotoTarget(row, !!shown, ON_THE_WAY_REASON);
+  if (shown && target.kind === "copy") {
+    return (
+      <button
+        type="button"
+        aria-label={name}
+        className="flex shrink-0 rounded focus-outline"
+        onClick={(e) => onOpen({ ...target, side }, e.currentTarget)}
       >
-        <ScanImage key={scanKey(entryIndex, image)} jobId={jobId} entryIndex={entryIndex} alt="" className={className} />
+        <CardPhoto
+          src={shown.thumbUrl}
+          alt={`${side === "front" ? "Front" : "Back"} of ${card}`}
+          className="h-14 w-auto rounded"
+          pending={shown.pending}
+          previewKey={copyPreviewKey(target.copyId, side)}
+          chip={false}
+        />
+      </button>
+    );
+  }
+  return (
+    <ScanThumb
+      jobId={jobId}
+      entryIndex={row.frontIndex}
+      image={image}
+      name={name}
+      alt={`Front of ${card}`}
+      className="h-14 w-auto rounded"
+      onOpen={(opener) => onOpen(target, opener)}
+    />
+  );
+}
+
+/**
+ * NEO-481 — where a saved line's photo edit stands, under its Saved tile's
+ * words. The viewer holds Try again and Keep the old one, so a failure here
+ * says to open it.
+ */
+function LineEditLine({ photos }: { photos: CopyPhotos | undefined }) {
+  const state = (["front", "back"] as const)
+    .map((side) => ({ side, state: editStateOf({ pendingEdit: photos?.[side]?.pending }) }))
+    .find((s) => s.state);
+  if (!state?.state) return null;
+  if (state.state.kind === "rendering") {
+    return (
+      <span className="mt-0.5 flex items-start gap-1 text-ink-2">
+        <RunGlyph kind="building" tones={PHOTO_TONES} />
+        <span>{EDIT_RENDERING_LINE}</span>
       </span>
-      {rendering && <span aria-hidden="true" className="intake-sweep pointer-events-none absolute inset-0" />}
-    </button>
+    );
+  }
+  return (
+    <span className="mt-0.5 flex items-start gap-1 text-notice-warn-ink">
+      <RunGlyph kind="failed" tones={PHOTO_TONES} />
+      <span>
+        {state.state.line} {lineRetryLine(state.side)}
+      </span>
+    </span>
   );
 }
 
@@ -2454,10 +2617,10 @@ function ScanThumb({
 const THUMB_ATTR = "data-scan-thumb";
 
 /**
- * NEO-481 — where a scan's last hand edit stands, under its tile's words:
- * "Touching it up…" while it renders, or what went wrong with Try again (the
- * same save again) and Keep the old one (drop the failed edit). The old photo
- * stays up throughout. Either press takes its buttons away, so focus that fell
+ * NEO-481 — a scan's failed hand edit, under its tile's words: what went
+ * wrong, with Try again (the same save again) and Keep the old one (drop the
+ * failed edit). The old photo stays up throughout; while an edit renders the
+ * thumbnail says so itself. Either press takes its buttons away, so focus that fell
  * to the page lands on the photo itself.
  */
 function EditLine({ jobId, image, label }: { jobId: string; image: IntakeImage | undefined; label: string }) {
@@ -2468,15 +2631,8 @@ function EditLine({ jobId, image, label }: { jobId: string; image: IntakeImage |
   const [busy, setBusy] = useState(false);
   const edit = image;
   const state = editStateOf(edit);
-  if (!state || !edit) return null;
-  if (state.kind === "rendering") {
-    return (
-      <span className="mt-0.5 flex items-start gap-1 text-ink-2">
-        <RunGlyph kind="building" tones={PHOTO_TONES} />
-        <span>{EDIT_RENDERING_LINE}</span>
-      </span>
-    );
-  }
+  // While it renders, the thumbnail's own chip says so ("Touching it up…").
+  if (!state || !edit || state.kind === "rendering") return null;
   const pending = edit.pendingEdit;
   const press = (box: Element | null, write: () => Promise<unknown>) => {
     if (pressing.current) return;
@@ -2485,7 +2641,7 @@ function EditLine({ jobId, image, label }: { jobId: string; image: IntakeImage |
     write()
       .then(() =>
         requestAnimationFrame(() => {
-          if (focusFell()) box?.querySelector<HTMLElement>(`[${THUMB_ATTR}="${edit.entryIndex}"]`)?.focus();
+          if (focusFell()) box?.querySelector<HTMLElement>(`[${THUMB_ATTR}="${edit.entryIndex}"] button`)?.focus();
         }),
       )
       .catch((e: unknown) => notify(writeErrorMessage(e)))
@@ -2616,8 +2772,8 @@ function PhotoTile({
   image: IntakeImage;
   /** The photo's name for its control (`photoLabels`). */
   label: string;
-  /** NEO-481: open it in the viewer (still reading, so view-only there). */
-  onOpen: (opener: HTMLElement) => void;
+  /** NEO-481: open this browser's copy of it in the viewer (still reading, so view-only there). */
+  onOpen: (url: string, opener: HTMLElement) => void;
 }) {
   const failed = image.status === "failed";
   const local = useContext(LocalPhotos).get(image.originalName);
@@ -2627,7 +2783,7 @@ function PhotoTile({
         <button
           type="button"
           aria-label={`Open photo ${label}`}
-          onClick={(e) => onOpen(e.currentTarget)}
+          onClick={(e) => onOpen(local, e.currentTarget)}
           className={`block shrink-0 cursor-zoom-in rounded ${RING}`}
         >
           <img src={local} alt="" className="h-14 w-10 rounded object-cover" />
@@ -2690,6 +2846,7 @@ function LoosePile({
                 entryIndex={i.entryIndex}
                 image={i}
                 name={`Open photo ${labels.get(i.entryIndex) ?? i.originalName}`}
+                alt={labels.get(i.entryIndex) ?? i.originalName}
                 className="h-14 w-auto rounded"
                 onOpen={(opener) => onOpen(i, opener)}
               />
@@ -2848,6 +3005,7 @@ function ReviewTile({
             entryIndex={row.frontIndex}
             image={images[0]}
             name={`Open front of ${label}`}
+            alt={`Front of ${label}`}
             className="h-24 w-auto rounded"
             onOpen={(opener) => onOpenPhoto("front", opener)}
           />
@@ -2856,6 +3014,7 @@ function ReviewTile({
             entryIndex={row.backIndex}
             image={images[1]}
             name={`Open back of ${label}`}
+            alt={`Back of ${label}`}
             className="h-24 w-auto rounded"
             onOpen={(opener) => onOpenPhoto("back", opener)}
           />
@@ -3144,12 +3303,12 @@ function Drawer({
 }) {
   const [searching, setSearching] = useState(false);
   // A control that took focus with it (a prompt answer, the search): focus goes back to the title.
-  const toTitle = () => requestAnimationFrame(() => document.getElementById("intake-drawer-title")?.focus());
+  const toTitle = () => requestAnimationFrame(() => document.getElementById(DRAWER_TITLE_ID)?.focus());
   const tool = `min-h-11 rounded-md border border-rule bg-button-neutral px-2 py-1 text-xs text-ink-2 hover:bg-button-neutral-hover sm:min-h-8 ${RING}`;
   return (
     <div className="space-y-4 p-5">
       <div className="flex items-start justify-between gap-2">
-        <h2 id="intake-drawer-title" tabIndex={-1} className="m-0 text-xl font-bold text-ink">
+        <h2 id={DRAWER_TITLE_ID} tabIndex={-1} className="m-0 text-xl font-bold text-ink">
           {cardLabel(row.card)}
         </h2>
         <NeonButton size="1" variant="secondary" outline onClick={onClose}>
@@ -3165,6 +3324,7 @@ function Drawer({
           entryIndex={row.frontIndex}
           image={images[0]}
           name={`Open front of ${cardLabel(row.card)}`}
+          alt={`Front of ${cardLabel(row.card)}`}
           className="h-64 w-auto rounded"
           onOpen={(opener) => onOpenPhoto("front", opener)}
         />
@@ -3173,6 +3333,7 @@ function Drawer({
           entryIndex={row.backIndex}
           image={images[1]}
           name={`Open back of ${cardLabel(row.card)}`}
+          alt={`Back of ${cardLabel(row.card)}`}
           className="h-64 w-auto rounded"
           onOpen={(opener) => onOpenPhoto("back", opener)}
         />

@@ -2,8 +2,7 @@ import { useId, useMemo, useState, type CSSProperties, type ReactNode } from "re
 import NeonButton from "@/components/modules/NeonButton";
 import { Input } from "@/components/primitives/Input";
 import CardFace from "../../prototypes/_shared/CardFace";
-import Overlay from "../../prototypes/p1/Overlay";
-import { getCard } from "../../prototypes/_shared/data";
+import { getCard, getTeam, playerNames } from "../../prototypes/_shared/data";
 import {
   COMMON_PRICES,
   DEFAULT_DETAILS,
@@ -20,16 +19,15 @@ import {
   type Stage,
 } from "./sim";
 import type { PhotoEdit } from "@/lib/photo-edit/geometry";
-import type { PhotoViewerTarget } from "./realLanes";
 
 /**
  * NEO-369 — the pieces of the demo's Add cards tab (`./AddCardsTab`): scans,
  * badges, counters, the quantity field, the card picker, the prompts, the
  * fix tools and the detail fields.
  *
- * NEO-481 — two pieces are shared with the signed-in tab (`./RealAddCardsTab`):
- * the per-card price input (`PriceInput`), and the place an Add cards photo
- * click opens the card photo viewer (`PhotoViewerSlot`).
+ * NEO-481 — the per-card price input (`PriceInput`) is shared with the
+ * signed-in tab (`./RealAddCardsTab`); `demoScanUrl` is the demo's picture for
+ * the card photo viewer.
  */
 
 export const RING = "focus-outline";
@@ -421,48 +419,38 @@ export function PriceField({
 }
 
 /* ------------------------------------------------------------------ */
-/* The card photo viewer                                               */
+/* The card photo viewer's demo picture                                */
 /* ------------------------------------------------------------------ */
 
+const XML_ESCAPES: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&apos;" };
+const xml = (text: string) => text.replace(/[&<>"']/g, (c) => XML_ESCAPES[c]);
+
 /**
- * NEO-481 — where Add cards opens the card photo viewer, for every photo on
- * the screen, the demo's too.
- *
- * TODO(NEO-481): wire to row D's `components/modules/CardPhotoViewer` once it
- * lands. Map `target` to its sources (scan → the scan adapter with
- * `{ jobId, entryIndex }`, copy → the copy-photo adapter with
- * `{ copyId, side }`, demo → the demo adapter with `edit`/`onSave`) and render
- * it in place of the stand-in below. Until then this is a view-only stand-in:
- * the heading, the picture the caller hands in, and Close. It is a dialog of
- * its own (Escape closes only it, and focus goes back to the photo).
+ * NEO-481 — a demo scan as a picture the card photo viewer can draw on (an
+ * SVG, 500 x 700 like a card): the demo has no scanned files, only drawn
+ * faces. The front carries the team's colours, the player and the number; the
+ * back is the stats panel `CardBack` draws. Undefined while that side hasn't
+ * been scanned.
  */
-export function PhotoViewerSlot({
-  target,
-  onClose,
-  children,
-}: {
-  target: PhotoViewerTarget;
-  onClose: () => void;
-  /** The stand-in's picture, large. */
-  children: ReactNode;
-}) {
-  const headingId = useId();
-  return (
-    <Overlay labelledBy={headingId} onClose={onClose} variant="drawer">
-      <div className="space-y-4 p-5">
-        <div className="flex items-start justify-between gap-2">
-          <h2 id={headingId} tabIndex={-1} className="m-0 text-xl font-bold text-ink">
-            {target.title}
-          </h2>
-          <NeonButton size="1" variant="secondary" outline onClick={onClose}>
-            Close
-          </NeonButton>
-        </div>
-        {target.kind === "scan" && target.viewOnly && <p className="m-0 text-sm text-ink-2">{target.viewOnly}</p>}
-        <div className="flex justify-center">{children}</div>
-      </div>
-    </Overlay>
-  );
+export function demoScanUrl(item: Item, side: "front" | "back"): string | undefined {
+  const scan = side === "front" ? item.front : item.back;
+  if (!scan) return undefined;
+  const card = item.truth ? getCard(item.truth) : null;
+  const team = card?.teamIds[0] ? getTeam(card.teamIds[0]) : null;
+  const number = xml(card?.cardNumber ?? "?");
+  const body =
+    side === "front"
+      ? `<rect x="18" y="18" width="464" height="664" rx="22" fill="${xml(team?.primary ?? "#1e293b")}"/>
+<rect x="44" y="44" width="412" height="470" rx="10" fill="${xml(team?.secondary ?? "#334155")}" opacity="0.55"/>
+<text x="250" y="590" text-anchor="middle" font-family="system-ui, sans-serif" font-size="38" font-weight="700" fill="#ffffff">${xml(card ? playerNames(card) : scan.file)}</text>
+<text x="250" y="640" text-anchor="middle" font-family="system-ui, sans-serif" font-size="28" fill="#ffffff" opacity="0.85">#${number}</text>`
+      : `<rect x="18" y="18" width="464" height="664" rx="22" fill="#e2e8f0"/>
+<rect x="56" y="60" width="180" height="34" rx="6" fill="#94a3b8"/>
+<text x="444" y="88" text-anchor="end" font-family="system-ui, sans-serif" font-size="30" font-weight="700" fill="#475569">#${number}</text>
+${Array.from({ length: 6 }, (_, i) => `<rect x="56" y="${140 + i * 44}" width="${388 * (0.9 - i * 0.09)}" height="16" rx="4" fill="#cbd5e1"/>`).join("")}
+${Array.from({ length: 8 }, (_, i) => `<rect x="${56 + (i % 4) * 100}" y="${520 + Math.floor(i / 4) * 60}" width="88" height="30" rx="4" fill="#cbd5e1"/>`).join("")}`;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="500" height="700" viewBox="0 0 500 700"><rect width="500" height="700" fill="#0b0f1a"/>${body}</svg>`;
+  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
 }
 
 /* ------------------------------------------------------------------ */

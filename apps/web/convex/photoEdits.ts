@@ -96,7 +96,12 @@ const sourceValidator = v.object({
   mode: v.union(v.literal("original"), v.literal("stored"), v.literal("viewOnly")),
   /** Why the photo opens view-only, in the collector's words. */
   reason: v.optional(v.string()),
-  /** The editor's opening parameters: the current hand edit, else today's output (auto crop + turns). */
+  /**
+   * The editor's opening parameters: the current hand edit, else today's
+   * output (the scan's turn from `rotationDegrees`, and its auto crop or the
+   * whole frame). On every scan answer, view-only too; a stored copy photo
+   * opens on no edit.
+   */
   edit: v.optional(photoEditValidator),
   /** The pipeline's own crop box, for Start over. Original mode only. */
   autoCrop: v.optional(photoEditCropValidator),
@@ -229,12 +234,16 @@ async function sourceOf(
       entryIndex: ref.entryIndex,
     });
     if (!facts) refuse(COLLECTION_ERRORS.notFound, "That photo isn't in your batch.");
-    const pending = facts.pendingEdit ? { pending: facts.pendingEdit } : {};
-    if (facts.saved) return { mode: "viewOnly", reason: PHOTO_EDIT_COPY.savedPair, ...pending };
-    if (facts.block) return { mode: "viewOnly", reason: facts.block, ...pending };
-    if (facts.editsLeft === 0) return { mode: "viewOnly", reason: PHOTO_EDIT_COPY.tooManyEdits, ...pending };
+    // Every answer carries the opening edit (the last hand edit, else the
+    // scan's own turn and auto crop, or the whole frame with none), so the
+    // client never works out the turn from `rotationDegrees` itself.
+    const known = { edit: facts.opening, ...(facts.pendingEdit ? { pending: facts.pendingEdit } : {}) };
+    if (facts.saved) return { mode: "viewOnly", reason: PHOTO_EDIT_COPY.savedPair, ...known };
+    if (facts.block) return { mode: "viewOnly", reason: facts.block, ...known };
+    if (facts.editsLeft === 0) return { mode: "viewOnly", reason: PHOTO_EDIT_COPY.tooManyEdits, ...known };
     const key = await findOriginal(userId, ref.jobId, ref.entryIndex);
-    if (!key) return { mode: "viewOnly", reason: PHOTO_EDIT_COPY.scanGone, ...pending };
+    if (!key) return { mode: "viewOnly", reason: PHOTO_EDIT_COPY.scanGone, ...known };
+    const pending = facts.pendingEdit ? { pending: facts.pendingEdit } : {};
     return { ...(await originalSource(facts, key)), expectVersion: facts.expectVersion, ...pending };
   }
 
