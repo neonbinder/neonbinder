@@ -1406,6 +1406,61 @@ describe("seedMyTestCredentials — NEO-482 seller id", () => {
     await drainScheduled(t);
   });
 
+  test.each([
+    [58_000, 1, "stops at exactly 58000 ms elapsed"],
+    [57_999, 2, "signs in again at 57999 ms elapsed"],
+  ])("deadline boundary: after a stalled login at %i ms, %i login(s) in total (%s)", async (elapsed, logins, _name) => {
+    const t = convexTest(schema, modules);
+    // A frozen clock, so elapsed is exactly what the login advances.
+    let now = Date.now();
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    const { state, fetchFn } = loginStub({
+      metadata: 404,
+      steps: [{}, { sellerId: SELLER }],
+      onLogin: (n) => {
+        if (n === 0) now += elapsed;
+      },
+    });
+    stubFetch(fetchFn);
+
+    const [entry] = (await seed(t, true)).seeded;
+
+    expect(state.logins).toBe(logins);
+    if (logins === 1) {
+      expect(entry).toEqual({ site: "buysportscards", stored: false, reason: stalled(1) });
+      expect(await sellerIdOf(t)).toBeNull();
+    } else {
+      expect(entry).toEqual({ site: "buysportscards", stored: true });
+      expect(await sellerIdOf(t)).toBe(SELLER);
+    }
+    await drainScheduled(t);
+  });
+
+  test("flag-only branch, no id, a stale needsReauth: the fresh sign-in clears it and the listing marker", async () => {
+    const t = convexTest(schema, modules);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("userProfiles", {
+        userId: USER_A,
+        siteCredentials: [
+          { site: "buysportscards", hasCredentials: true, needsReauth: true, needsReauthSince: Date.now() - 1000 },
+        ],
+      });
+    });
+    const { state, fetchFn } = loginStub({ metadata: SIGNED_IN, steps: [{ sellerId: SELLER }] });
+    stubFetch(fetchFn);
+
+    expect((await seed(t, true)).seeded).toEqual([{ site: "buysportscards", stored: true }]);
+
+    expect(state.logins).toBe(1);
+    expect(await sellerIdOf(t)).toBe(SELLER);
+    expect((await bscCredentialEntry(t))?.needsReauth).toBeFalsy(); // cleared (absent), not written as false
+    const [row] = await t.run(async (ctx) =>
+      (await ctx.db.query("marketplaceListingStates").collect()).filter((r) => r.ownerId === USER_A),
+    );
+    expect(row.testListingOff).toBeUndefined();
+    await drainScheduled(t);
+  });
+
   test("store branch, id already saved: one login, no re-check loop, the id kept", async () => {
     const t = convexTest(schema, modules);
     await preseedSellerId(t, "seller-kept");

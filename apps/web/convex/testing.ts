@@ -772,8 +772,12 @@ type SeededSite = { site: string; stored: boolean; skipped?: boolean; reason?: s
  *   heals with time, not with a new session, and our password login is
  *   already a new session each time, so the loop is what buys the time. At
  *   most {@link SEED_BSC_MAX_RELOGINS} re-logins after the first, and none
- *   started once {@link SEED_BSC_RELOGIN_WINDOW_MS} has passed (worst case
- *   about 73 s, inside the hop's 90 s `SEED_SIGN_IN`).
+ *   started once {@link SEED_BSC_RELOGIN_WINDOW_MS} has passed. A stalled
+ *   sign-in takes about 13 s, so the usual worst case is about 73 s, inside
+ *   the hop's 90 s `SEED_SIGN_IN`. The window bounds when a login starts,
+ *   not when it ends: one started near 58 s can run to its own 60 s timeout
+ *   (longer under browser-service 503 retries), and the hop then times out
+ *   instead of printing the reason. Either way the run is red.
  * - a login that fails (`success: false` or a throw) stops at once, with that
  *   login's message as the reason.
  *
