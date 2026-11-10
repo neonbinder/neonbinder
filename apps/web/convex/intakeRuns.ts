@@ -74,8 +74,10 @@ import {
 import { photoUrlsOf } from "./copyPhotos";
 import { intakePhotoPool } from "./intakePhotoPool";
 import { kickOwnerDrains, listsOnMarketplaces } from "./listingOutbox";
-import { ListingGate } from "./listingGate";
+import { commonPriceCentsOf, ListingGate } from "./listingGate";
 import {
+  INTAKE_NEEDS_PRICE,
+  INTAKE_NEEDS_PRICE_LINE,
   intakeNamesFor,
   matchIntakePair,
   normalizeIntakeCardNumber,
@@ -722,6 +724,11 @@ async function requireRunRow(
  * retried request) returns the first save and adds nothing. A repeat must be
  * answered first ("second copy" saves; "same card" sets it aside), so a
  * jammed feeder never counts one card twice.
+ *
+ * NEO-481: into a box, a card with no price (its own, the run's Min price,
+ * or a common price for its set) is refused with `INTAKE_NEEDS_PRICE`. This
+ * is the one save door: Yes, Enter, y, "Save this card" and "Save N matched"
+ * all come here, one card per call.
  */
 export const saveIntakeMatch = mutation({
   args: {
@@ -753,9 +760,18 @@ export const saveIntakeMatch = mutation({
     // A tile's own price is a box run's only: a binder holds no cards for sale,
     // so a row price left on a binder run's tile (one moved, or written before
     // the run moved) is never applied.
-    const home = row.minPriceCents !== undefined ? await ctx.db.get(run.homeId) : null;
-    const rowPrice = row.minPriceCents !== undefined && home?.kind === "box" ? { minPriceCents: row.minPriceCents } : {};
+    const home = await ctx.db.get(run.homeId);
+    const inBox = home?.kind === "box";
+    const rowPrice = row.minPriceCents !== undefined && inBox ? { minPriceCents: row.minPriceCents } : {};
     const d = cleanDefaults({ ...run.defaults, ...rowPrice, ...overrides }) ?? {};
+    // NEO-481 (Jason, 2026-11-10): a card goes in a box with a price, synced
+    // or not: the one above, else the collector's common price for the card's
+    // own set (the price its copy lists at). Refused before anything is written.
+    if (inBox && d.minPriceCents === undefined) {
+      const card = await ctx.db.get(row.cardId);
+      const common = card ? await commonPriceCentsOf(ctx, run.userId, card.selectorOptionId) : null;
+      if (common === null) refuse(INTAKE_NEEDS_PRICE, INTAKE_NEEDS_PRICE_LINE);
+    }
     // NEO-370: the run's price goes on the copy (NEO-378's `minPriceCents`),
     // so a listed box's saves list at it. `addOne` refuses a save into a
     // listed box with no price and no common price (`listingGate.ts`).

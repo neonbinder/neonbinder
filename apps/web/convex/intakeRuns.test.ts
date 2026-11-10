@@ -8,6 +8,7 @@
  */
 
 import { convexTest } from "convex-test";
+import { ConvexError } from "convex/values";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import schema from "./schema";
 import { api, internal } from "./_generated/api";
@@ -19,6 +20,7 @@ import { priceEveryVariant } from "../lib/testing/common-prices";
 import { defaultConditionOf, lineAwaitingScans, MAX_INTAKE_PHOTO_ATTEMPTS } from "./collection";
 import { intakePhotoPool } from "./intakePhotoPool";
 import { INTAKE_SETTLE_SCAN, noteIntakePairsChanged } from "./intakeRuns";
+import { INTAKE_NEEDS_PRICE, INTAKE_NEEDS_PRICE_LINE } from "./lib/intakeMatch";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -62,12 +64,15 @@ async function matchOf(
 
 /**
  * A finished placeholder job of ME's with one manual pair per scan (front at
- * 2i, back at 2i+1), the catalog fixture, and a box of ME's.
+ * 2i, back at 2i+1), the catalog fixture, and a box of ME's. ME has a common
+ * price on every set, so a box save has a price (NEO-481) in the tests whose
+ * subject is something else; `unpriced` takes them away.
  */
 async function world(scans: Scan[]) {
   const t = convexTest(schema, modules);
   harnesses.push(t);
   const fx = await seedCollectionCatalog(t);
+  await priceEveryVariant(t, ME.subject);
   const ids = await t.run(async (ctx) => {
     await ctx.db.insert("placeholderJobs", {
       jobId: JOB,
@@ -157,6 +162,12 @@ async function startLegacyRun(w: Awaited<ReturnType<typeof world>>) {
   await drainScheduled(w.t);
   return runId;
 }
+
+/** ME's common prices, all gone: a box card then has only its own or the run's price. */
+const unpriced = (w: Awaited<ReturnType<typeof world>>) =>
+  w.t.run(async (ctx) => {
+    for (const row of await ctx.db.query("variantCommonPrices").collect()) await ctx.db.delete(row._id);
+  });
 
 const byPair = async (
   w: Awaited<ReturnType<typeof world>>,
@@ -1837,10 +1848,12 @@ describe("NEO-370 — the listing gate on photo intake saves", () => {
       defaults: { minPriceCents: 75 },
     });
     await drainScheduled(w.t);
+    await unpriced(w);
     await w.me.mutation(api.intakeRuns.setIntakeRunDefaults, { runId, defaults: {} });
+    // NEO-481: every box save needs a price, so that rule answers first.
     await expect(
       w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[0], quantity: 1 }),
-    ).rejects.toThrow(/For sale sells on your marketplaces, so cards going in need a price first/);
+    ).rejects.toThrow(/Price it first/);
     expect(await w.t.run((ctx) => ctx.db.query("collectionCopies").collect())).toEqual([]);
     // A per-card price answers it too.
     await w.me.mutation(api.intakeRuns.saveIntakeMatch, {
@@ -1850,11 +1863,105 @@ describe("NEO-370 — the listing gate on photo intake saves", () => {
       details: { minPriceCents: 30 },
     });
   });
+});
 
-  test("a collector who syncs nowhere saves into a box with no price, as before", async () => {
-    const w = await world([{ number: "1", players: ["Doc Gooden"] }]);
-    const runId = await startRun(w, w.fx.baseId);
-    await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[0], quantity: 1 });
+describe("NEO-481 — a card goes in a box with a price (Jason, 2026-11-10)", () => {
+  type W = Awaited<ReturnType<typeof world>>;
+  const save = (w: W, runId: Id<"intakeRuns">, pairId: Id<"placeholderPairs">, minPriceCents?: number) =>
+    w.me.mutation(api.intakeRuns.saveIntakeMatch, {
+      runId,
+      pairId,
+      quantity: 1,
+      ...(minPriceCents !== undefined ? { details: { minPriceCents } } : {}),
+    });
+  const copies = (w: W) => w.t.run((ctx) => ctx.db.query("collectionCopies").collect());
+  /** A box run with no Min price, for a collector with no common price, who syncs nowhere. */
+  const bare = async (scans: Scan[] = [{ number: "1", players: ["Doc Gooden"] }]) => {
+    const w = await world(scans);
+    await unpriced(w);
+    return { w, runId: await startRun(w, w.fx.baseId) };
+  };
+
+  test("no price anywhere: refused in the screen's words and code, writing nothing, though nothing syncs", async () => {
+    const { w, runId } = await bare();
+    const err = await save(w, runId, w.pairIds[0]).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ConvexError);
+    expect((err as ConvexError<{ code: string; message: string }>).data).toEqual({
+      code: INTAKE_NEEDS_PRICE,
+      message: INTAKE_NEEDS_PRICE_LINE,
+    });
+    expect(await copies(w)).toEqual([]);
+    expect((await byPair(w, runId)).get(w.pairIds[0])?.savedAt).toBeUndefined();
+  });
+
+  test("the tile's own price saves it, at that price", async () => {
+    const { w, runId } = await bare();
+    await w.me.mutation(api.intakeRuns.setIntakeMatchPrice, { runId, pairId: w.pairIds[0], priceCents: 300 });
+    await save(w, runId, w.pairIds[0]);
+    expect((await copies(w)).map((c) => c.minPriceCents)).toEqual([300]);
+  });
+
+  test("a price typed at the save saves it", async () => {
+    const { w, runId } = await bare();
+    await save(w, runId, w.pairIds[0], 0);
+    expect((await copies(w)).map((c) => c.minPriceCents)).toEqual([0]);
+  });
+
+  test("the run's Min price saves it", async () => {
+    const { w, runId } = await bare();
+    await w.me.mutation(api.intakeRuns.setIntakeRunDefaults, { runId, defaults: { minPriceCents: 150 } });
+    await save(w, runId, w.pairIds[0]);
+    expect((await copies(w)).map((c) => c.minPriceCents)).toEqual([150]);
+  });
+
+  test("a common price set after the refusal saves it, with nothing retyped, and the copy keeps none of its own", async () => {
+    const { w, runId } = await bare();
+    await expect(save(w, runId, w.pairIds[0])).rejects.toThrow(/Price it first/);
+    await priceEveryVariant(w.t, ME.subject, 40);
+    await save(w, runId, w.pairIds[0]);
+    // The copy lists at the common price; it is never written onto the copy.
+    expect((await copies(w)).map((c) => c.minPriceCents)).toEqual([undefined]);
+  });
+
+  test("only the card's own set's common price counts", async () => {
+    const { w, runId } = await bare();
+    await w.t.run((ctx) =>
+      ctx.db.insert("variantCommonPrices", { ownerId: ME.subject, variantId: w.fx.goldId, priceCents: 40, lastUpdated: 0 }),
+    );
+    await expect(save(w, runId, w.pairIds[0])).rejects.toThrow(/Price it first/);
+  });
+
+  test("another collector's common price never counts", async () => {
+    const { w, runId } = await bare();
+    await priceEveryVariant(w.t, THEM.subject, 40);
+    await expect(save(w, runId, w.pairIds[0])).rejects.toThrow(/Price it first/);
+  });
+
+  test("an in-person box is held to it too", async () => {
+    const { w, runId } = await bare();
+    await w.t.run((ctx) => ctx.db.patch(w.boxId, { listedOnMarketplaces: false }));
+    await expect(save(w, runId, w.pairIds[0])).rejects.toThrow(/Price it first/);
+  });
+
+  test("a binder card saves with no price at all", async () => {
+    const { w, runId } = await bare();
+    await w.t.run((ctx) => ctx.db.patch(w.boxId, { kind: "binder" }));
+    await save(w, runId, w.pairIds[0]);
+    expect(await copies(w)).toHaveLength(1);
+  });
+
+  test("Save all, one card at a time: the priced card saves, the unpriced one waits on its tile", async () => {
+    const { w, runId } = await bare([
+      { number: "1", players: ["Doc Gooden"] },
+      { number: "2", players: ["Darryl Strawberry"] },
+    ]);
+    await w.me.mutation(api.intakeRuns.setIntakeMatchPrice, { runId, pairId: w.pairIds[0], priceCents: 200 });
+    const results = await Promise.allSettled(w.pairIds.map((pairId) => save(w, runId, pairId)));
+    expect(results.map((r) => r.status)).toEqual(["fulfilled", "rejected"]);
+    const rows = await byPair(w, runId);
+    expect(rows.get(w.pairIds[0])?.savedAt).toBeDefined();
+    expect(rows.get(w.pairIds[1])?.savedAt).toBeUndefined();
+    expect((await copies(w)).map((c) => c.cardId)).toEqual([w.fx.gooden1]);
   });
 });
 
@@ -1882,6 +1989,7 @@ describe("NEO-481 — a box run tile's own price", () => {
   test("with no run price, the prefill is the common price, which is only ever read", async () => {
     const w = await world([{ number: "1", players: ["Doc Gooden"] }]);
     const runId = await startRun(w, w.fx.baseId);
+    await unpriced(w);
     await priceEveryVariant(w.t, ME.subject, 75);
     const commons = () => w.t.run((ctx) => ctx.db.query("variantCommonPrices").collect());
     const before = await commons();

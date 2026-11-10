@@ -319,3 +319,25 @@ export function intakeNamesFor(
   }
   return [...names];
 }
+
+/**
+ * NEO-481 (Jason, 2026-11-10) — a card saved into a box carries a price: its
+ * tile's own, else the run's Min price, else the collector's common price for
+ * the card's set. With none of them the save is refused, whether or not the
+ * collector syncs. A binder card never carries one, so a binder save is never
+ * held. The server refuses with this code (`intakeRuns.saveIntakeMatch`); the
+ * screen reads the same code to send the collector to the card's Price field.
+ */
+export const INTAKE_NEEDS_PRICE = "INTAKE_NEEDS_PRICE";
+
+/** The refusal's words, and the line under an unpriced card's Price field. */
+export const INTAKE_NEEDS_PRICE_LINE = "Price it first: type a price, or set a common price.";
+
+/** The price a box save goes in at, cents, in the order above; null when it has none. */
+export function intakeSavePriceCents(
+  ownCents: number | undefined,
+  runMinCents: number | undefined,
+  commonCents: number | null | undefined,
+): number | null {
+  return ownCents ?? runMinCents ?? commonCents ?? null;
+}

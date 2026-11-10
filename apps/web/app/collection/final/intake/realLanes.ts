@@ -1,6 +1,11 @@
 import type { FunctionReturnType } from "convex/server";
 import type { api } from "@/convex/_generated/api";
-import type { IntakeReason } from "@/convex/lib/intakeMatch";
+import {
+  INTAKE_NEEDS_PRICE,
+  INTAKE_NEEDS_PRICE_LINE,
+  intakeSavePriceCents,
+  type IntakeReason,
+} from "@/convex/lib/intakeMatch";
 import { ENTRY_TOO_MANY_PIXELS, type RejectedSummary, type RejectionKind } from "@/convex/lib/extractRejections";
 import { MAX_PRICE_CENTS } from "@/lib/collection/price-cap";
 import { asPendingPhotoEdit } from "@/lib/photo-edit/geometry";
@@ -686,6 +691,33 @@ export function pricePrefill(runMinCents: number | undefined, commonDollars: num
   if (runMinCents !== undefined) return runMinCents;
   return typeof commonDollars === "number" ? Math.round(commonDollars * 100) : null;
 }
+
+/**
+ * NEO-481 (Jason, 2026-11-10) — a box card's save needs a price: `ownCents`
+ * (typed at the save, else kept on the tile), else the run's Min price, else
+ * the common price for the run's set. True when it has none, so the save
+ * waits. The server holds the same rule (`intakeRuns.saveIntakeMatch`).
+ */
+export function waitsForPrice(
+  ownCents: number | undefined,
+  runMinCents: number | undefined,
+  commonDollars: number | null | undefined,
+): boolean {
+  return intakeSavePriceCents(ownCents, runMinCents, pricePrefill(undefined, commonDollars)) === null;
+}
+
+/** The server refused a save for want of a price (`INTAKE_NEEDS_PRICE`). */
+export function isNeedsPriceRefusal(error: unknown): boolean {
+  const data = (error as { data?: unknown } | null)?.data;
+  return !!data && typeof data === "object" && (data as { code?: unknown }).code === INTAKE_NEEDS_PRICE;
+}
+
+/** "Save N matched" left cards behind for want of a price. */
+export function waitingForPriceLine(n: number): string {
+  return `${n === 1 ? "1 card waits" : `${n} cards wait`} for a price. Type one on the card, or set a common price.`;
+}
+
+export { INTAKE_NEEDS_PRICE_LINE };
 
 /** A price that doesn't parse. */
 export const PRICE_INVALID_LINE = "That price doesn't look right. Try something like 1.50.";

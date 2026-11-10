@@ -20,7 +20,13 @@ import { MemoryRouter, useLocation, useNavigate, useSearchParams } from "react-r
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PageApiContext, type PageApi } from "../pageApi";
 import { DRAWER_PARAM } from "../drawerParams";
-import { LEAVE_INTAKE_LINE, PHOTO_NEWS_QUIET_MS, RUN_CLOSED_LINE } from "./realLanes";
+import {
+  INTAKE_NEEDS_PRICE_LINE,
+  LEAVE_INTAKE_LINE,
+  PHOTO_NEWS_QUIET_MS,
+  RUN_CLOSED_LINE,
+  waitingForPriceLine,
+} from "./realLanes";
 import RealAddCardsTab from "./RealAddCardsTab";
 import { SPEECH_AFTER_FOCUS_MS } from "./ScannerJoin";
 import { intakeGateLine, SYNC_STATUS_LINK } from "../inventory/listing/ListingGate";
@@ -3920,6 +3926,142 @@ describe("NEO-481: every photo opens the card photo viewer", () => {
       await waitFor(() =>
         expect(save()).toHaveBeenCalledWith({ runId, pairId: "pair1", quantity: 1, details: { minPriceCents: 275 } }),
       );
+    });
+
+    describe("a box card saves with a price (Jason, 2026-11-10)", () => {
+      const WAIT = INTAKE_NEEDS_PRICE_LINE;
+      const yes = () => screen.getByRole("button", { name: `Yes, save ${CARD}` });
+      const focusLands = () => waitFor(() => expect(document.activeElement).toBe(priceField()));
+
+      it("with no Min price and no common price the card says so under its price, tied to the field and to Yes", async () => {
+        const { container, rerender, runId } = boxWithMin(undefined);
+        const line = screen.getByText(WAIT);
+        expect(priceField()!.getAttribute("aria-describedby")?.split(" ")).toContain(line.id);
+        expect(yes().getAttribute("aria-disabled")).toBe("true");
+        expect(yes().getAttribute("aria-describedby")).toBe(line.id);
+        await expectAccessibleInBothModes(container, {
+          label: "Intake, a box card waiting for a price",
+          rerender: () => rerender(<Tab runId={runId} />),
+        });
+      });
+
+      it("Yes, y and Enter in the count save nothing and send focus to the card's price", async () => {
+        boxWithMin(undefined);
+        fireEvent.click(yes());
+        await focusLands();
+        yes().focus();
+        fireEvent.keyDown(yes(), { key: "y" });
+        await focusLands();
+        const count = screen.getByRole("textbox", { name: "Count" });
+        count.focus();
+        fireEvent.keyDown(count, { key: "Enter" });
+        await focusLands();
+        expect(save()).not.toHaveBeenCalled();
+      });
+
+      it("Enter on a blank price keeps focus there and saves nothing; a typed price saves at it", async () => {
+        const { runId } = boxWithMin(undefined);
+        const field = priceField()!;
+        field.focus();
+        fireEvent.keyDown(field, { key: "Enter" });
+        await focusLands();
+        expect(save()).not.toHaveBeenCalled();
+        fireEvent.change(field, { target: { value: "0.75" } });
+        fireEvent.keyDown(field, { key: "Enter" });
+        await waitFor(() =>
+          expect(save()).toHaveBeenCalledWith({ runId, pairId: "pair1", quantity: 1, details: { minPriceCents: 75 } }),
+        );
+      });
+
+      it("a price typed and left, then Yes, saves: the kept price counts before the row comes back with it", async () => {
+        const { runId } = boxWithMin(undefined);
+        const field = priceField()!;
+        fireEvent.focus(field);
+        fireEvent.change(field, { target: { value: "1.25" } });
+        fireEvent.blur(field);
+        expect(screen.queryByText(WAIT)).toBeNull();
+        fireEvent.click(yes());
+        await waitFor(() => expect(save()).toHaveBeenCalledWith({ runId, pairId: "pair1", quantity: 1 }));
+        expect(setPrice()).toHaveBeenCalledWith({ runId, pairId: "pair1", priceCents: 125 });
+      });
+
+      it("the card's own kept price, the run's Min price or a common price each lift it", () => {
+        boxWithMin(undefined, { minPriceCents: 300 });
+        expect(screen.queryByText(WAIT)).toBeNull();
+        cleanup();
+        boxWithMin(0);
+        expect(screen.queryByText(WAIT)).toBeNull();
+        expect(yes().getAttribute("aria-disabled")).toBe("false");
+      });
+
+      it("a common price set while the card waits lifts it with nothing retyped", async () => {
+        const { rerender, runId } = boxWithMin(undefined);
+        expect(screen.getByText(WAIT)).toBeTruthy();
+        mocks.data.common = { v1: 0.4 };
+        rerender(<Tab runId={runId} />);
+        expect(screen.queryByText(WAIT)).toBeNull();
+        fireEvent.click(yes());
+        await waitFor(() => expect(save()).toHaveBeenCalledWith({ runId, pairId: "pair1", quantity: 1 }));
+      });
+
+      it("says nothing while the common price is still on its way; the server judges", () => {
+        mocks.data.common = undefined;
+        boxWithMin(undefined);
+        expect(screen.queryByText(WAIT)).toBeNull();
+      });
+
+      it("a binder card never waits for a price", async () => {
+        const { runId } = showPair();
+        expect(screen.queryByText(WAIT)).toBeNull();
+        fireEvent.click(yes());
+        await waitFor(() => expect(save()).toHaveBeenCalledWith({ runId, pairId: "pair1", quantity: 1 }));
+      });
+
+      it("the drawer's Save this card waits too, and sends focus to the drawer's price", async () => {
+        boxWithMin(undefined);
+        fireEvent.click(screen.getByRole("button", { name: `Review ${CARD}` }));
+        const dialog = screen.getByRole("dialog");
+        const saveCard = within(dialog).getByRole("button", { name: "Save this card" });
+        const drawerPrice = within(dialog).getByRole("textbox", { name: `Price, ${CARD}` });
+        const line = within(dialog).getByText(WAIT);
+        expect(saveCard.getAttribute("aria-disabled")).toBe("true");
+        expect(saveCard.getAttribute("aria-describedby")).toBe(line.id);
+        fireEvent.click(saveCard);
+        await waitFor(() => expect(document.activeElement).toBe(drawerPrice));
+        expect(screen.getByRole("dialog")).toBeTruthy();
+        expect(save()).not.toHaveBeenCalled();
+      });
+
+      it("a refusal from the server for want of a price says so and sends focus to the price", async () => {
+        const { runId } = boxWithMin(150);
+        save().mockRejectedValueOnce(Object.assign(new Error(WAIT), { data: { code: "INTAKE_NEEDS_PRICE", message: WAIT } }));
+        fireEvent.click(yes());
+        await waitFor(() => expect(notify).toHaveBeenCalledWith(WAIT));
+        await focusLands();
+        expect(save()).toHaveBeenCalledWith({ runId, pairId: "pair1", quantity: 1 });
+      });
+
+      it("Save N matched saves the priced cards, says how many wait, and lands on the first waiting price", async () => {
+        const runId = freshRunId();
+        setRun(runId, { images: [photo(0), photo(1), photo(2), photo(3)], homeKind: "box" });
+        mocks.data.pairs = [
+          { frontIndex: 0, backIndex: 1 },
+          { frontIndex: 2, backIndex: 3 },
+        ];
+        const other = { _id: "card2", cardNumber: "48", cardName: "Antonio Brown" };
+        mocks.data.matches = [
+          reviewRow({ minPriceCents: 200 }),
+          reviewRow({ _id: "match2", pairId: "pair2", frontIndex: 2, backIndex: 3, cardId: "card2", card: other }),
+        ];
+        render(<Tab runId={runId} />);
+        fireEvent.click(screen.getByRole("button", { name: "Save 2 matched" }));
+        await waitFor(() => expect(save()).toHaveBeenCalledTimes(1));
+        expect(save()).toHaveBeenCalledWith({ runId, pairId: "pair1", quantity: 1 });
+        expect(notify).toHaveBeenCalledWith(waitingForPriceLine(1));
+        await waitFor(() =>
+          expect(document.activeElement).toBe(screen.getByRole("textbox", { name: "Price, #48 Antonio Brown" })),
+        );
+      });
     });
   });
 });

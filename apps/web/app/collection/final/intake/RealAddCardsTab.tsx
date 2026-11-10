@@ -72,7 +72,11 @@ import {
   type PhotoSideName,
   type PhotoViewerTarget,
   pressEnterIn,
+  INTAKE_NEEDS_PRICE_LINE,
+  isNeedsPriceRefusal,
   pricePrefill,
+  waitingForPriceLine,
+  waitsForPrice,
   savedPhotoTarget,
   tilePrice,
   failedText,
@@ -1719,7 +1723,40 @@ function RunWorkspace({
   // NEO-481 — each card's own price, on a box run only: a binder card never shows one.
   const priced = run.homeKind === "box";
   const commonPrices = useCommonPrices(priced && run.variantId ? [run.variantId] : null);
-  const prefill = pricePrefill(run.defaults?.minPriceCents, run.variantId ? commonPrices?.[run.variantId] : undefined);
+  const commonDollars = run.variantId ? commonPrices?.[run.variantId] : undefined;
+  const prefill = pricePrefill(run.defaults?.minPriceCents, commonDollars);
+  /**
+   * NEO-481 — the price a tile kept (`keepPrice`) as the screen knows it before
+   * the row comes back with it, so a price typed and then Yes clicked saves.
+   * Keyed by the card too: a price set for one card never carries to another.
+   * null is "back to the default".
+   */
+  const [kept, setKept] = useState<Record<string, number | null>>({});
+  const keptKey = (row: IntakeMatchRow) => `${row.pairId}:${row.cardId ?? ""}`;
+  const ownPrice = (row: IntakeMatchRow) => {
+    const key = keptKey(row);
+    return key in kept ? (kept[key] ?? undefined) : row.minPriceCents;
+  };
+  // The common price is still on its way: let the server judge, say nothing yet.
+  const pricesLoading = run.defaults?.minPriceCents === undefined && !!run.variantId && commonPrices === undefined;
+  /**
+   * NEO-481 (Jason, 2026-11-10) — a box card saves with a price: typed at the
+   * save, else kept on the tile, else the run's Min price, else the common
+   * price. A common price set anywhere counts as soon as it lands.
+   */
+  const waitsAt = (own: number | undefined) =>
+    priced && !pricesLoading && waitsForPrice(own, run.defaults?.minPriceCents, commonDollars);
+  const waits = (row: IntakeMatchRow, priceCents?: number) => waitsAt(priceCents ?? ownPrice(row));
+  /** Send the collector to the card's Price field: the open drawer's, else its tile's. */
+  const toPrice = (pairId: Id<"placeholderPairs">) =>
+    requestAnimationFrame(() => {
+      const field =
+        document.querySelector<HTMLInputElement>(`[role="dialog"] [${PRICE_ATTR}="${pairId}"]:not(:disabled)`) ??
+        document.querySelector<HTMLInputElement>(`[${PRICE_ATTR}="${pairId}"]:not(:disabled)`);
+      if (!field) return;
+      field.scrollIntoView({ block: "nearest" });
+      field.focus({ preventScroll: true });
+    });
   /** Counts typed but not saved yet, per pair. */
   const [counts, setCounts] = useState<Record<string, number>>({});
   const saving = useRef(new Set<string>());
@@ -1743,10 +1780,21 @@ function RunWorkspace({
   const canSave = (row: IntakeMatchRow) => !!row.cardId && !(row.repeatOfPairId && !row.repeatIsSecondCopy);
   const actions: RowActions = {
     save: (row, total, priceCents) => {
-      if (!canSave(row)) return notify(whyNotSave(row));
-      if (saving.current.has(row.pairId)) return;
+      if (!canSave(row)) {
+        notify(whyNotSave(row));
+        return true;
+      }
+      if (saving.current.has(row.pairId)) return true;
       const quantity = (total ?? counts[row.pairId] ?? proposedCount(row)) - row.haveHere;
-      if (quantity < 1) return notify("The count must go up by at least one to save.");
+      if (quantity < 1) {
+        notify("The count must go up by at least one to save.");
+        return true;
+      }
+      // NEO-481: no price, no save. The line under the Price field says why.
+      if (waits(row, priceCents)) {
+        toPrice(row.pairId);
+        return false;
+      }
       saving.current.add(row.pairId);
       // NEO-481: a price typed on the tile wins at the save (the server's own
       // order: this, then the row's kept price, then the run's Min price).
@@ -1756,8 +1804,12 @@ function RunWorkspace({
         quantity,
         ...(priceCents !== undefined ? { details: { minPriceCents: priceCents } } : {}),
       })
-        .catch(fail)
+        .catch((e: unknown) => {
+          if (isNeedsPriceRefusal(e)) toPrice(row.pairId);
+          fail(e);
+        })
         .finally(() => saving.current.delete(row.pairId));
+      return true;
     },
     setCount: (row, total) => setCounts((c) => ({ ...c, [row.pairId]: total })),
     count: (row) => counts[row.pairId] ?? proposedCount(row),
@@ -1793,6 +1845,8 @@ function RunWorkspace({
     if (typed.own !== row.minPriceCents) {
       void setMatchPrice({ runId: run._id, pairId: row.pairId, priceCents: typed.own ?? null }).catch(fail);
     }
+    const key = keptKey(row);
+    if (kept[key] !== (typed.own ?? null)) setKept((k) => ({ ...k, [key]: typed.own ?? null }));
     return typed;
   };
   /** Enter (or y) in a tile's price: keep it and save the card at it. True when it saved. */
@@ -1801,10 +1855,15 @@ function RunWorkspace({
       notify(whyNotSave(row));
       return false;
     }
-    const kept = keepPrice(row, text);
-    if (!kept) return false;
-    actions.save(row, undefined, kept.own);
-    return true;
+    const typed = keepPrice(row, text);
+    if (!typed) return false;
+    // A blank here (or the default) with no default to fall back on leaves the
+    // card waiting, focus where it is. The kept price above lands a render later.
+    if (typed.own === undefined && waitsAt(undefined)) {
+      toPrice(row.pairId);
+      return false;
+    }
+    return actions.save(row, undefined, typed.own);
   };
   const price: TilePrice | undefined = priced ? { prefill, keep: keepPrice, enter: savePriced } : undefined;
 
@@ -1880,8 +1939,7 @@ function RunWorkspace({
       // what's wrong under it), keeps it and saves the card.
       if (inPrice && target) return void pressEnterIn(target);
       const typed = inQty ? Number.parseInt((target as HTMLInputElement).value, 10) : NaN;
-      actions.save(row, Number.isFinite(typed) ? typed : undefined);
-      focusTile(after(row.pairId), inQty);
+      if (actions.save(row, Number.isFinite(typed) ? typed : undefined)) focusTile(after(row.pairId), inQty);
     });
     else if (key === "o") run1(() => setOpenId(row.pairId));
     else if (key === "e") run1(() => openFront(row));
@@ -2090,7 +2148,15 @@ function RunWorkspace({
               className="mb-2"
               disabled={matched.length === 0}
               onClick={() => {
-                matched.forEach((r) => actions.save(r));
+                // NEO-481: the priced cards save; the rest wait, said, with focus on the first one's price.
+                const waiting = matched.filter((r) => waits(r));
+                matched.filter((r) => !waiting.includes(r)).forEach((r) => actions.save(r));
+                if (waiting.length > 0) {
+                  notify(waitingForPriceLine(waiting.length));
+                  setSelected(waiting[0].pairId);
+                  toPrice(waiting[0].pairId);
+                  return;
+                }
                 focusTile(review.find((r) => !matched.includes(r))?.pairId ?? null, false);
               }}
             >
@@ -2124,6 +2190,7 @@ function RunWorkspace({
                   )
                 }
                 price={price}
+                waitsForPrice={canSave(row) && waits(row)}
                 read={readFor(row)}
                 selected={row.pairId === selected}
                 actions={actions}
@@ -2211,6 +2278,7 @@ function RunWorkspace({
               )
             }
             price={price}
+            waitsForPrice={canSave(open) && waits(open)}
             read={readFor(open)}
             actions={actions}
             canSave={canSave(open)}
@@ -2441,8 +2509,11 @@ function PhotoLine({ row }: { row: IntakeMatchRow }) {
 }
 
 interface RowActions {
-  /** `priceCents`: this card's own price (NEO-481), else the row's kept one, else the run's. */
-  save: (row: IntakeMatchRow, total?: number, priceCents?: number) => void;
+  /**
+   * `priceCents`: this card's own price (NEO-481), else the row's kept one, else the run's.
+   * False when the card waits for a price: focus went to its Price field, so the caller leaves it there.
+   */
+  save: (row: IntakeMatchRow, total?: number, priceCents?: number) => boolean;
   setCount: (row: IntakeMatchRow, total: number) => void;
   count: (row: IntakeMatchRow) => number;
   pick: (row: IntakeMatchRow, cardId: Id<"cardChecklist"> | null) => void;
@@ -3042,6 +3113,7 @@ function ReviewTile({
   images,
   onOpenPhoto,
   price,
+  waitsForPrice,
   read,
   selected,
   actions,
@@ -3057,6 +3129,8 @@ function ReviewTile({
   onOpenPhoto: (side: "front" | "back", opener: HTMLElement) => void;
   /** NEO-481: the card's own price, on a box run only. */
   price: TilePrice | undefined;
+  /** NEO-481: a box card with no price anywhere; it can't be saved yet. */
+  waitsForPrice: boolean;
   read: PairRead;
   selected: boolean;
   actions: RowActions;
@@ -3067,6 +3141,8 @@ function ReviewTile({
 }) {
   const label = tileLabel(row, read);
   const reasonId = useId();
+  const waitId = useId();
+  const waiting = price && waitsForPrice ? { id: waitId, line: INTAKE_NEEDS_PRICE_LINE } : null;
   return (
     <article aria-label={label} className={`rounded-md border-2 bg-surface p-2 ${edge(row, selected)}`}>
       <div className="flex flex-wrap gap-2">
@@ -3113,14 +3189,13 @@ function ReviewTile({
           size="1"
           variant="primary"
           // aria-disabled keeps it reachable, so its reason can be heard.
-          aria-disabled={!canSave}
-          aria-describedby={canSave ? undefined : reasonId}
+          aria-disabled={!canSave || !!waiting}
+          aria-describedby={!canSave ? reasonId : waiting ? waiting.id : undefined}
           aria-keyshortcuts="y"
           aria-label={`Yes, save ${label}`}
           onClick={(e) => {
             e.stopPropagation();
-            actions.save(row);
-            if (canSave) onSaved();
+            if (actions.save(row) && canSave) onSaved();
           }}
         >
           Yes
@@ -3135,6 +3210,7 @@ function ReviewTile({
             cardLabel={label}
             cents={row.minPriceCents ?? price.prefill}
             disabled={!row.cardId}
+            waiting={waiting}
             onCommit={(text) => price.keep(row, text)}
             onEnter={(text) => {
               if (price.enter(row, text)) onSaved();
@@ -3247,12 +3323,14 @@ function CountField({
           if (e.key === "Enter") {
             e.preventDefault();
             const n = Number.parseInt(shown, 10);
+            let went = true;
             if (Number.isFinite(n)) {
               actions.setCount(row, n);
-              actions.save(row, n);
+              went = actions.save(row, n);
             }
             setDraft(null);
-            onEnter?.();
+            // A card waiting for a price keeps it: focus went to the card's Price field.
+            if (went) onEnter?.();
           } else if (e.key === "Escape") {
             // Undo the typing only; inside the drawer this must not close it too.
             if (draft !== null) e.stopPropagation();
@@ -3352,6 +3430,7 @@ function Drawer({
   images,
   onOpenPhoto,
   price,
+  waitsForPrice,
   read,
   actions,
   canSave,
@@ -3365,6 +3444,8 @@ function Drawer({
   onOpenPhoto: (side: "front" | "back", opener: HTMLElement) => void;
   /** NEO-481: the card's own price, on a box run only. */
   price: TilePrice | undefined;
+  /** NEO-481: a box card with no price anywhere; it can't be saved yet. */
+  waitsForPrice: boolean;
   read: PairRead;
   actions: RowActions;
   canSave: boolean;
@@ -3373,6 +3454,8 @@ function Drawer({
   onMoveOn: (act: () => void) => void;
 }) {
   const [searching, setSearching] = useState(false);
+  const waitId = useId();
+  const waiting = price && waitsForPrice ? { id: waitId, line: INTAKE_NEEDS_PRICE_LINE } : null;
   // A control that took focus with it (a prompt answer, the search): focus goes back to the title.
   const toTitle = () => requestAnimationFrame(() => document.getElementById(DRAWER_TITLE_ID)?.focus());
   const tool = `min-h-11 rounded-md border border-rule bg-button-neutral px-2 py-1 text-xs text-ink-2 hover:bg-button-neutral-hover sm:min-h-8 ${RING}`;
@@ -3460,6 +3543,7 @@ function Drawer({
             cardLabel={cardLabel(row.card)}
             cents={row.minPriceCents ?? price.prefill}
             disabled={!row.cardId}
+            waiting={waiting}
             onCommit={(text) => price.keep(row, text)}
             onEnter={(text) => {
               if (price.enter(row, text)) onMoveOn(() => {});
@@ -3468,10 +3552,11 @@ function Drawer({
         )}
         <NeonButton
           variant="primary"
-          aria-disabled={!canSave}
+          aria-disabled={!canSave || !!waiting}
+          aria-describedby={canSave && waiting ? waiting.id : undefined}
           onClick={() => {
-            if (!canSave) return actions.save(row);
-            onMoveOn(() => actions.save(row));
+            if (!canSave) return void actions.save(row);
+            if (actions.save(row)) onMoveOn(() => {});
           }}
         >
           Save this card

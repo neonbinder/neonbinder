@@ -310,12 +310,17 @@ export function QtyField({ item, sim, onEnter }: { item: Item; sim: IntakeSim; o
  * The caller owns what the text means (`onCommit` and `onEnter` get it raw), so
  * each side parses it its own way. Its name is "Price, <card>": a column of
  * tiles has one per card.
+ *
+ * `waiting` (the signed-in tab, NEO-481): the card can't be saved until it has
+ * a price, said under the field with the caller's id, so the card's save
+ * control can point at the same words.
  */
 export function PriceInput({
   owner,
   cardLabel,
   cents,
   disabled = false,
+  waiting,
   onCommit,
   onEnter,
 }: {
@@ -326,6 +331,8 @@ export function PriceInput({
   /** What the field shows while nobody is typing in it; null shows blank. */
   cents: number | null;
   disabled?: boolean;
+  /** The card waits for a price: the line under the field, and its id. */
+  waiting?: { id: string; line: string } | null;
   /** Focus left with a change: keep it, don't save. Only ever handed a price (or a blank). */
   onCommit: (text: string) => void;
   /** Enter: keep it and save the card. Only ever handed a price (or a blank). */
@@ -384,7 +391,7 @@ export function PriceInput({
           className={`w-16 rounded-md border bg-field px-2 py-1 text-right tabular-nums text-ink max-sm:min-h-11 ${
             problem ? "border-notice-danger-ink" : "border-field-rule"
           } ${RING}`}
-          aria-describedby={problem ? `${errorId} ${id}-hint` : `${id}-hint`}
+          aria-describedby={[problem ? errorId : null, waiting ? waiting.id : null, `${id}-hint`].filter(Boolean).join(" ")}
           aria-keyshortcuts="p"
         />
         <span id={`${id}-hint`} className="sr-only">
@@ -394,6 +401,11 @@ export function PriceInput({
       {problem && (
         <span id={errorId} role="alert" className="max-w-48 text-xs text-notice-danger-ink">
           {problem}
+        </span>
+      )}
+      {waiting && (
+        <span id={waiting.id} className="max-w-48 text-xs text-notice-warn-ink">
+          {waiting.line}
         </span>
       )}
     </div>

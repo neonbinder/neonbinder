@@ -1,5 +1,8 @@
 import { describe, expect, test } from "vitest";
 import {
+  isNeedsPriceRefusal,
+  waitingForPriceLine,
+  waitsForPrice,
   canRetryPhoto,
   cardLabel,
   columnsClear,
@@ -787,5 +790,27 @@ describe("NEO-481: a box-run tile's own price", () => {
     expect(parseMinPrice("$1,250.5")).toBe(125050);
     expect(parseMinPrice(" ")).toBeUndefined();
     expect(parseMinPrice("abc")).toBe("invalid");
+  });
+});
+
+describe("NEO-481 — a box card waits for a price", () => {
+  test("its own price, else the run's Min price, else the common price; zero is a price", () => {
+    expect(waitsForPrice(undefined, undefined, undefined)).toBe(true);
+    expect(waitsForPrice(undefined, undefined, null)).toBe(true);
+    expect(waitsForPrice(0, undefined, undefined)).toBe(false);
+    expect(waitsForPrice(undefined, 0, undefined)).toBe(false);
+    expect(waitsForPrice(undefined, undefined, 0.4)).toBe(false);
+  });
+
+  test("only the server's no-price refusal reads as one", () => {
+    expect(isNeedsPriceRefusal({ data: { code: "INTAKE_NEEDS_PRICE", message: "x" } })).toBe(true);
+    expect(isNeedsPriceRefusal({ data: { code: "LISTING_NEEDS_DETAILS", message: "x" } })).toBe(false);
+    expect(isNeedsPriceRefusal(new Error("Price it first"))).toBe(false);
+    expect(isNeedsPriceRefusal(null)).toBe(false);
+  });
+
+  test("Save all says how many wait, one or many", () => {
+    expect(waitingForPriceLine(1)).toBe("1 card waits for a price. Type one on the card, or set a common price.");
+    expect(waitingForPriceLine(3)).toBe("3 cards wait for a price. Type one on the card, or set a common price.");
   });
 });
