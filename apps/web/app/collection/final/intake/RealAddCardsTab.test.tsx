@@ -2979,6 +2979,21 @@ describe("NEO-446: setting a loose photo aside", () => {
       await waitFor(() => expect(notify).toHaveBeenCalledWith("That photo was set aside. Bring it back to pair it."));
     });
 
+    it("NEO-484: a press from a stale tab on a photo found not to be an image says so", async () => {
+      retryMutation().mockResolvedValueOnce({ retried: false, reason: "not an image" });
+      openWith([unread(0, "a.jpg")]);
+      fireEvent.click(screen.getByRole("button", { name: "Try again: a.jpg" }));
+      await waitFor(() => expect(notify).toHaveBeenCalledWith("That's not a photo we can open. Send a fresh one."));
+    });
+
+    it("NEO-484: a photo that is not an image offers no Try again and says why", () => {
+      openWith([{ ...unread(0, "a.jpg"), errorCode: "ENTRY_UNDECODABLE" }]);
+      expect(screen.queryByRole("button", { name: "Try again: a.jpg" })).toBeNull();
+      expect(document.getElementById("loose-why-0")?.textContent).toBe(
+        "That's not a photo we can open. Send a fresh one.",
+      );
+    });
+
     it("tells photos of one file name apart, on the button and in the line", async () => {
       retryMutation().mockResolvedValueOnce({ retried: true });
       openWith([unread(0, "image.jpg"), unread(1, "image.jpg")]);

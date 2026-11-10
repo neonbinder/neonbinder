@@ -7,6 +7,7 @@ import {
   failedText,
   inNaturalOrder,
   MAX_PHOTO_RETRIES,
+  PHOTO_NOT_A_PHOTO_LINE,
   photoLabels,
   photoLine,
   photoNews,
@@ -654,5 +655,22 @@ describe("NEO-446: runNotice", () => {
     test("a stream run is judged the same way once it has images", () => {
       expect(runNotice(job({ mode: "stream", rejectedEntries: 1 }))?.problem).toBe(true);
     });
+  });
+});
+
+describe("NEO-484: a photo that is not an image", () => {
+  const line = "That's not a photo we can open. Send a fresh one.";
+
+  test("is never offered Try again, whatever its try count", () => {
+    expect(canRetryPhoto({ status: "failed", errorCode: "ENTRY_UNDECODABLE" })).toBe(false);
+    expect(canRetryPhoto({ status: "failed", errorCode: "ENTRY_UNDECODABLE", retries: 0 })).toBe(false);
+    // A plain failure at the same try count is still offered one.
+    expect(canRetryPhoto({ status: "failed", errorCode: "PROCESS_ENTRY_FAILED", retries: 0 })).toBe(true);
+  });
+
+  test("says it is not a photo and what to do, retry offered or not", () => {
+    expect(PHOTO_NOT_A_PHOTO_LINE).toBe(line);
+    expect(failedText({ errorCode: "ENTRY_UNDECODABLE" }, false)).toBe(line);
+    expect(failedText({ errorCode: "ENTRY_UNDECODABLE" }, true)).toBe(line);
   });
 });
