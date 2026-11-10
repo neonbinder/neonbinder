@@ -40,6 +40,9 @@ gate run if an earlier one failed.
 ### 2. Pre-flight — confirm the PR is actually ready
 `gh pr view <PR> --json state,mergeStateStatus,statusCheckRollup,title,headRefName,url,mergeable`
 - Not `OPEN` → stop, report the actual state (don't act on an already-merged/closed PR).
+- Merges to production go through the `pr-queue` skill: merge only during this
+  PR's turn (a `PR-QUEUE YOUR TURN` message). Not called yet → join the queue
+  instead of merging.
 - Any check not green → stop. Tell the user to fix it or run `/pr-watch <PR>` first;
   do not merge a red PR.
 - `mergeable != MERGEABLE` → stop, report the conflict.
