@@ -334,13 +334,13 @@ export function saleLinesOf(items: readonly SaleItemFacts[]): {
  * per set; anything else (none, or a set breaking that rule) is null: never
  * a guess at which one is the base.
  */
-async function baseOf(ctx: Ctx, setId: Id<"selectorOptions">): Promise<OptionRow | null> {
+async function baseOf(ctx: Ctx, setId: Id<"selectorOptions">): Promise<{ base: OptionRow | null; read: number }> {
   const types = await ctx.db
     .query("selectorOptions")
     .withIndex("by_level_and_parent", (q) => q.eq("level", "variantType").eq("parentId", setId))
     .take(MAX_DRILL_ITEMS);
   const bases = types.filter((t) => variantTypeKind(t) === "base");
-  return bases.length === 1 ? bases[0] : null;
+  return { base: bases.length === 1 ? bases[0] : null, read: types.length };
 }
 
 /** A base type's regular cards (no image variation), in checklist order. */
@@ -410,8 +410,10 @@ const completionValidator = v.object({
  * only the sets of the newest `RECENT_LINES` lines touched since `sinceMs`
  * are checked, at most `COMPLETION_SETS` of them. A set whose stored base
  * count is more than the distinct cards held is skipped before its
- * checklist is read; each checklist is read at most once, and the whole
- * call stops at `COMPLETION_READ_BUDGET` documents.
+ * checklist is read; each checklist is read at most once, and only while
+ * the budget still holds a whole variant's cards (`MAX_VARIANT_CARDS`). The
+ * whole call stops at `COMPLETION_READ_BUDGET` documents, the type lists
+ * read to find each Base counted.
  */
 export const justCompleted = query({
   args: { sinceMs: v.number() },
@@ -435,7 +437,9 @@ export const justCompleted = query({
     const out: Array<typeof completionValidator.type> = [];
     for (const setId of setIds) {
       if (budget <= 0) break;
-      const base = await baseOf(ctx, setId);
+      const found = await baseOf(ctx, setId);
+      budget -= found.read;
+      const base = found.base;
       if (!base) continue;
       const held = await baseLines(ctx, ownerId, setId, base._id, sides);
       budget -= held.read;
@@ -443,7 +447,9 @@ export const justCompleted = query({
       const distinct = new Set(held.lines.map((l) => l.cardId as string)).size;
       const stored = typeof base.nonVariationCardCount === "number" ? base.nonVariationCardCount : null;
       if (stored !== null && distinct < stored) continue;
-      if (budget <= 0) break;
+      // The checklist read can take a whole variant's cards: only start it when
+      // the budget still holds that many.
+      if (budget < MAX_VARIANT_CARDS + 1) continue;
       const checklist = await baseCards(ctx, base._id);
       budget -= checklist.read;
       if (checklist.truncated) continue;
@@ -491,7 +497,7 @@ export const setBoard = query({
     const setId = ctx.db.normalizeId("selectorOptions", args.setId);
     const set = setId ? await ctx.db.get(setId) : null;
     if (!setId || !set || set.level !== "setName") return null;
-    const base = await baseOf(ctx, setId);
+    const { base } = await baseOf(ctx, setId);
     if (!base) return null;
     const checklist = await baseCards(ctx, base._id);
     const held = await baseLines(ctx, ownerId, setId, base._id, new HomeSides(ctx, ownerId));
@@ -695,7 +701,8 @@ export const intake = query({
         break;
       }
       const home = await ctx.db.get(run.homeId);
-      if (!home) continue;
+      // A run names its home by id; only the caller's own home's name is ever returned.
+      if (!home || home.ownerId !== userId) continue;
       const cap = Math.min(INTAKE_RUN_ROWS, budget);
       const rows = await ctx.db
         .query("intakeMatches")

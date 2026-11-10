@@ -86,10 +86,42 @@ describe("the hopper", () => {
     const hopper = screen.getByRole("region", { name: "In the Hopper" });
     expect(within(hopper).getByRole("heading", { name: "18 scans processing" })).toBeTruthy();
     expect(within(hopper).queryByText(/still being identified/)).toBeNull();
-    const shoebox = within(hopper).getByRole("link", { name: "Garage shoebox, 6 of 24 scans done. Finish on Collection" });
+    const shoebox = within(hopper).getByRole("link", { name: "Garage shoebox 6 of 24 scans done Finish on Collection" });
     expect(shoebox.getAttribute("href")).toBe("/demo/collection?tab=add");
-    const show = within(hopper).getByRole("link", { name: "Show pickups, 0 of 2 scans done. Finish on Inventory" });
+    const show = within(hopper).getByRole("link", { name: "Show pickups 0 of 2 scans done Finish on Inventory" });
     expect(show.getAttribute("href")).toBe("/demo/inventory?side=inventory&tab=add");
+  });
+
+  it("draws one empty sleeve per scan processing, six at most, then the rest as +N more, all hidden from a reader", () => {
+    const { container } = draw(getDashboard());
+    const hopper = screen.getByRole("region", { name: "In the Hopper" });
+    // 18 processing: six sleeves and "+12 more".
+    expect(within(hopper).getAllByRole("img", { name: "Scan processing", hidden: true })).toHaveLength(6);
+    expect(within(hopper).getByText("+12 more").closest("[aria-hidden='true']")).not.toBeNull();
+    // The strip names nothing of its own: the h3 is the one name for it.
+    expect(within(hopper).queryAllByRole("img")).toHaveLength(0);
+    expect(container.querySelector("[role='img'][aria-label$='scans processing']")).toBeNull();
+  });
+
+  it("a short pile is exactly as deep as the count, with no +N", () => {
+    const intake = getDashboard().intake;
+    draw({ ...getDashboard(), intake: { ...intake, total: intake.needsYou + 3, waiting: 3 } });
+    const hopper = screen.getByRole("region", { name: "In the Hopper" });
+    expect(within(hopper).getByRole("heading", { name: "3 scans processing" })).toBeTruthy();
+    expect(within(hopper).getAllByRole("img", { name: "Scan processing", hidden: true })).toHaveLength(3);
+    expect(within(hopper).queryByText(/more$/)).toBeNull();
+  });
+
+  it("a run link is named by what it shows, with no aria-label of its own", () => {
+    draw(getDashboard());
+    const hopper = screen.getByRole("region", { name: "In the Hopper" });
+    for (const link of within(hopper).getAllByRole("link")) expect(link.getAttribute("aria-label")).toBeNull();
+  });
+
+  it("the runs' scans not yet done add up to the hopper's total", () => {
+    const { intake } = getDashboard();
+    expect(intake.uploads.reduce((n, u) => n + u.scans - u.done, 0)).toBe(intake.total);
+    expect(intake.waiting + intake.needsYou).toBe(intake.total);
   });
 
   it("a run with only yeses left still links to its run", () => {
@@ -105,7 +137,7 @@ describe("the hopper", () => {
     });
     const hopper = screen.getByRole("region", { name: "In the Hopper" });
     expect(within(hopper).queryByText(/processing/)).toBeNull();
-    expect(within(hopper).getByRole("link", { name: "Main, 0 of 1 scan done. Finish on Collection" }).getAttribute("href")).toBe(
+    expect(within(hopper).getByRole("link", { name: "Main 0 of 1 scan done Finish on Collection" }).getAttribute("href")).toBe(
       "/collection?tab=add&run=r",
     );
   });

@@ -3,6 +3,7 @@ import { Link, useNavigate } from "react-router";
 import { SignUpButton } from "@clerk/clerk-react";
 import { BrandMark } from "@/components/primitives/BrandMark";
 import NeonButton from "@/components/modules/NeonButton";
+import { useDocumentTitle } from "@/src/hooks/useDocumentTitle";
 
 /**
  * The Collection Tracking feature page, one of the landing's marketing pages
@@ -11,6 +12,7 @@ import NeonButton from "@/components/modules/NeonButton";
  */
 
 export default function CollectionTrackingPage() {
+  useDocumentTitle("Collection Tracking · Neon Binder");
   const navigate = useNavigate();
   const header = (
     <header className="sticky top-0 z-10 bg-surface p-4 border-b-2 border-rule flex flex-row justify-between items-center">

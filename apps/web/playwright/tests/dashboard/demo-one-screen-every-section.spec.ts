@@ -42,8 +42,8 @@ test(
     await expectAccessible(page, { label: "Dashboard demo" });
 
     // A run going into a box is finished on Inventory's Add cards tab, and Back comes home.
-    const run = hopper.getByRole("link", { name: /^Show pickups, \d+ of \d+ scans? done\. Finish on Inventory$/ });
-    await expect(hopper.getByRole("link", { name: /^Garage shoebox, .* Finish on Collection$/ })).toBeVisible();
+    const run = hopper.getByRole("link", { name: /^Show pickups \d+ of \d+ scans? done Finish on Inventory$/ });
+    await expect(hopper.getByRole("link", { name: /^Garage shoebox \d+ of \d+ scans? done Finish on Collection$/ })).toBeVisible();
     await run.click();
     await expect(page).toHaveURL(/\/demo\/inventory\?(.*&)?tab=add/);
     await expect(page.getByLabel("Put them in this box")).toBeVisible();

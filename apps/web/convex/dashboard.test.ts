@@ -406,6 +406,16 @@ describe("setBoard", () => {
     });
   });
 
+  test("another collector's copy lights nothing on mine, and mine nothing on theirs", async () => {
+    const s = await setup();
+    await line(s, s.fx.gooden1, s.fx.baseId, { homeId: s.homes.theirMain, ownerId: THEM.subject, lastUpdated: NOW });
+    await line(s, s.fx.strawberry2, s.fx.baseId, { lastUpdated: NOW });
+    const lit = async (who: S["me"]) =>
+      (await who.query(api.dashboard.setBoard, { setId: s.fx.setId }))!.cards.filter((c) => c.owned).map((c) => c.cardId);
+    expect(await lit(s.me)).toEqual([s.fx.strawberry2]);
+    expect(await lit(s.them)).toEqual([s.fx.gooden1]);
+  });
+
   test("null for an id that is not a set", async () => {
     const s = await setup();
     expect(await s.me.query(api.dashboard.setBoard, { setId: s.fx.baseId })).toBeNull();
@@ -736,6 +746,16 @@ describe("intake", () => {
     const out = await s.me.query(api.dashboard.intake, {});
     expect(out.runs.map((r) => r.runId).sort()).toEqual([finishedLately.runId, stale.runId].sort());
     expect(out).toMatchObject({ needsYou: 0, unidentified: 1 });
+  });
+
+  test("a run whose home is another collector's never names that home", async () => {
+    const s = await setup();
+    // A run row can only point at the caller's own home through the app; pin the read anyway.
+    const mine = await run(s, [null]);
+    await run(s, [s.fx.gooden1], { homeId: s.homes.theirMain });
+    const out = await s.me.query(api.dashboard.intake, {});
+    expect(out.runs).toEqual([{ runId: mine.runId, homeName: "Main", side: "collection", scans: 1, done: 0 }]);
+    expect(out).toMatchObject({ needsYou: 0, unidentified: 1, guesses: [] });
   });
 
   test("nothing in intake, and another collector's runs are theirs: all zero", async () => {

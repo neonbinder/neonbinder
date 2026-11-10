@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { Link } from "react-router";
-import { ArrowUturnLeftIcon, UserPlusIcon } from "@heroicons/react/24/outline";
+import { ArrowUturnLeftIcon } from "@heroicons/react/24/outline";
 import BinderLayout from "@/src/layouts/binder-layout";
 import NeonButton from "@/components/modules/NeonButton";
 import { NAV_ITEMS, type NavItem } from "@/components/modules/binder-tabs";
@@ -9,10 +9,10 @@ import { NAV_ITEMS, type NavItem } from "@/components/modules/binder-tabs";
  * NEO-464 — the dashboard demo is one app, the signed-in shell (header,
  * staircase, mobile menu, content column, scroll headroom) on fake data, for
  * anyone logged out. Its tabs are the shell's own Dashboard, Collection and
- * Inventory, pointed at the demo's pages, plus the two ways out of the demo:
- * Sign up free, and Back to the tour.
+ * Inventory, pointed at the demo's pages, plus Back to the tour.
  *
- * The header keeps "Sign up free" where the account controls are signed out.
+ * The header keeps "Sign up free" where the account controls are signed out,
+ * on every width; it is the demo's one sign-up link, so the tabs carry none.
  */
 
 const BASE = "/demo";
@@ -31,7 +31,6 @@ export function useDemoNavItems(): NavItem[] {
       shellTab("Dashboard", BASE, true),
       shellTab("Collection", `${BASE}/collection`),
       shellTab("Inventory", `${BASE}/inventory?side=inventory`),
-      { label: "Sign up free", path: "/sign-up", icon: UserPlusIcon, hueClass: "tab-hue-green" },
       { label: "Back to the tour", path: "/", icon: ArrowUturnLeftIcon, hueClass: "tab-hue-purple" },
     ];
   }, []);

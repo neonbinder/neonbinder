@@ -100,7 +100,7 @@ function OrderRow({ order }: { order: UnshippedSale }) {
         <span aria-hidden="true" className="cb-numeral cb-glow text-4xl sm:text-5xl">
           {order.daysSinceSold}
         </span>
-        <span aria-hidden="true" className="mt-1 text-[0.6875rem] font-semibold leading-tight">
+        <span aria-hidden="true" className="mt-1 text-xs font-semibold leading-tight">
           {order.daysSinceSold === 0 ? "today" : order.daysSinceSold === 1 ? "day" : "days"}
         </span>
       </div>

@@ -535,6 +535,9 @@ const INTAKE: IntakeInProgress = {
   waiting: 18,
   needsYou: 2,
   // The demo's runs are pretend, so each opens the demo's Add cards tab on its side.
+  // The runs' scans not yet done add up to `total` (24 - 6 + 2 = 20). The /demo
+  // page adds one Want List scan to "Show pickups" (demo/fixture.ts), so there it
+  // reads "0 of 3 scans": both numbers are right.
   uploads: [
     { id: "upload-shoebox", name: "Garage shoebox", scans: 24, done: 6, side: "collection", href: "/demo/collection?tab=add" },
     { id: "upload-show", name: "Show pickups", scans: 2, done: 0, side: "inventory", href: "/demo/inventory?side=inventory&tab=add" },

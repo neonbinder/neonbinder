@@ -137,7 +137,7 @@ export default function PocketPage({ binder, page, onPage }: PocketPageProps) {
 /** A pocket's caption: the full title, three lines on screen, all of it for a reader. */
 function PocketCaption({ title, need = false }: { title: string; need?: boolean }) {
   return (
-    <span title={title} className={`mt-1 line-clamp-3 break-words text-[11px] leading-tight ${need ? "text-ink-3" : "text-ink-2"}`}>
+    <span title={title} className={`mt-1 line-clamp-3 break-words text-xs leading-tight ${need ? "text-ink-3" : "text-ink-2"}`}>
       {need && <span className="font-semibold">Need: </span>}
       {title}
     </span>

@@ -162,8 +162,14 @@
 }
 .cb-spine-count {
   flex: none;
-  font-size: 10px;
+  /* 12px is the floor for read text; a count wider than a slim spine is cut
+     at its edge (the spine's name carries the whole count for a reader). */
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  font-size: 12px;
   font-weight: 700;
+  letter-spacing: -0.02em;
   font-variant-numeric: tabular-nums;
 }
 
@@ -196,8 +202,8 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  width: 38px;
-  height: 38px;
+  width: 42px;
+  height: 42px;
   border-radius: 9999px;
   background: var(--neon-green);
   color: var(--on-neon-green);
@@ -213,26 +219,21 @@
   font-variant-numeric: tabular-nums;
 }
 .cb-sticker small {
-  font-size: 9px;
+  font-size: 12px;
   font-weight: 700;
 }
-/* On a phone the spines are slim, so the sticker shrinks to stay over its own. */
+/* On a phone the spines are slim: the sticker overhangs its own a little and
+   sits higher, so it covers no more of the name than the old smaller one did.
+   It takes no pointer, so it covers nothing a finger needs, and its type stays
+   at the 12px floor. */
 @media (max-width: 639.98px) {
   .cb-sticker {
-    top: -12px;
-    width: 30px;
-    height: 30px;
+    top: -22px;
+    width: 38px;
+    height: 38px;
   }
   .cb-sticker b {
-    font-size: 11px;
-  }
-  .cb-sticker small {
-    font-size: 8px;
-  }
-}
-@media (min-width: 640px) {
-  .cb-spine-count {
-    font-size: 11px;
+    font-size: 12px;
   }
 }
 
@@ -320,7 +321,7 @@
   border-radius: 4px;
   background: var(--neon-green);
   color: var(--on-neon-green);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 800;
   border: 1px solid #000;
 }

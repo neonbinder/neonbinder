@@ -421,7 +421,7 @@ describe("just completed: the last 10 days", () => {
   });
 });
 
-describe("useRealDashboard: slice 2 sections", () => {
+describe("useRealDashboard: the Want List chase, the trade pile and boxes held off the marketplaces", () => {
   const shelf = () => [
     container({ id: "main", system: "main", name: "Main", count: { copies: 3, lines: 3 } }),
     container({ id: "want", system: "want", name: "Want List", count: { copies: 2, lines: 2 } }),
@@ -491,7 +491,7 @@ describe("the empty shelf", () => {
     expect(screen.queryByRole("link", { name: "Add a card on Collection" })).toBeNull();
   });
 
-  it("with no wants, no trade pile and no in-person box, draws what slice 1 drew: the empty chase, no Odds and Ends, no Needs a Look", () => {
+  it("with no wants, no trade pile and no in-person box: the empty chase, no Odds and Ends, no Needs a Look", () => {
     const data = realDashboardData({ binders: [main], summary: SUMMARY, wantList: [], tradePile: { count: 0, cards: [] }, unlistedBoxes: [] });
     expect(data).toEqual(realDashboardData({ binders: [main], summary: SUMMARY }));
     render(<DashboardScreen data={data} />, { wrapper: wrapper("/dashboard") });
@@ -650,7 +650,7 @@ describe("smart binders", () => {
   });
 });
 
-describe("useRealDashboard: slice 3 sections", () => {
+describe("useRealDashboard: set boards, the finished-set cheer, smart binders and what is new", () => {
   const shelf = () => [
     container({ id: "main", system: "main", name: "Main", count: { copies: 3, lines: 3 } }),
     container({
@@ -696,7 +696,7 @@ describe("useRealDashboard: slice 3 sections", () => {
     expect(main.pockets.slice(0, 2).map((p) => (p.kind === "card" ? p.isNew : null))).toEqual([true, false]);
   });
 
-  it("with nothing built, finished, smart or new, draws exactly what slice 2 drew", () => {
+  it("with nothing built, finished, smart or new: no board, no cheer, no smart binder, no news", () => {
     store.containers = [container({ id: "main", system: "main", name: "Main", count: { copies: 3, lines: 3 } })];
     store.summary = SUMMARY;
     server.since = null;
@@ -914,7 +914,7 @@ describe("could fit: couldFitByBinder", () => {
   });
 });
 
-describe("useRealDashboard: slice 4 sections", () => {
+describe("useRealDashboard: sales to ship, the hopper and what could fit", () => {
   const smartShelf = () => [
     container({ id: "main", system: "main", name: "Main", count: { copies: 3, lines: 3 } }),
     container({
@@ -968,7 +968,7 @@ describe("useRealDashboard: slice 4 sections", () => {
     expect(screen.getByText("1 scan needs your yes")).toBeTruthy();
     expect(screen.getByText("2 scans processing")).toBeTruthy();
     expect(screen.queryByText(/still being identified/)).toBeNull();
-    const run = screen.getByRole("link", { name: "Show box, 2 of 5 scans done. Finish on Inventory" });
+    const run = screen.getByRole("link", { name: "Show box 2 of 5 scans done Finish on Inventory" });
     expect(run.getAttribute("href")).toBe("/inventory?tab=add&run=run-1");
   });
 
@@ -1017,7 +1017,7 @@ describe("useRealDashboard: slice 4 sections", () => {
     expect(screen.getByText("Not matched to a card yet")).toBeTruthy();
   });
 
-  it("with no sales, no scans and nothing that could fit, draws exactly what slice 3 drew", () => {
+  it("with no sales, no scans and nothing that could fit: no Out the Door, no hopper, no could-fit strip", () => {
     store.containers = [container({ id: "main", system: "main", name: "Main", count: { copies: 3, lines: 3 } })];
     store.summary = SUMMARY;
     server.since = null;

@@ -17,7 +17,7 @@ test(
     await page.goto("/binder-tracking");
     await expect(page).toHaveURL(/\/demo$/);
     await expect(page.getByRole("region", { name: "Demo controls" })).toBeVisible();
-    await expect(page.getByRole("link", { name: "Sign up free" }).first()).toBeVisible();
+    await expect(page.getByRole("link", { name: "Sign up free" })).toBeVisible();
     await expectAccessible(page, { label: "Demo dashboard, reached from the old address" });
 
     // The redirect replaced the old address, so Back goes to the page before it.

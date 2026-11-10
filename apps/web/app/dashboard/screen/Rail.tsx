@@ -77,16 +77,16 @@ export function OddsAndEnds({ boxes, trade }: { boxes: UnlistedBox[]; trade: Tra
       <RailHeading id="cb-odds-heading">Odds and Ends</RailHeading>
       <ul className="space-y-2 text-sm">
         {boxes.map((b) => (
-          <li key={b.id} className="flex justify-between gap-2">
-            <span className="truncate text-ink-2">{b.name}</span>
+          <li key={b.id} className="flex flex-wrap justify-between gap-x-2 gap-y-0.5">
+            <span className="min-w-0 break-words text-ink-2">{b.name}</span>
             <span className="shrink-0 tabular-nums text-ink">
               {b.unlisted === 1 ? "1 card not listed" : `${b.unlisted} cards not listed`}
             </span>
           </li>
         ))}
         {trade.count > 0 && (
-          <li className="flex justify-between gap-2">
-            <span className="truncate text-ink-2">Trade pile</span>
+          <li className="flex flex-wrap justify-between gap-x-2 gap-y-0.5">
+            <span className="min-w-0 break-words text-ink-2">Trade pile</span>
             <span className="shrink-0 tabular-nums text-ink">
               {trade.count === 1 ? "1 card up for trade" : `${trade.count} cards up for trade`}
             </span>

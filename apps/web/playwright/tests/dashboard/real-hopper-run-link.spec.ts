@@ -30,7 +30,7 @@ test(
     await expectAccessible(page, { label: "Dashboard with a scan in the hopper" });
 
     // The run is in Main, a binder, so it is finished on Collection.
-    const run = hopper.getByRole("link", { name: /^Main, 0 of 1 scan done\. Finish on Collection$/ });
+    const run = hopper.getByRole("link", { name: /^Main 0 of 1 scan done Finish on Collection$/ });
     await run.click();
     await expect(page).toHaveURL(new RegExp(`/collection\\?tab=add&run=${runId}$`));
     // The run screen shows: its workspace carries a Pairing column, which the tab shows only for an open run.

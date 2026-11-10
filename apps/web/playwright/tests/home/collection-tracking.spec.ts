@@ -9,6 +9,8 @@ test("Collection Tracking Feature Page", { tag: ["@marketing", "@home"] }, async
   // The Collection Tracking card in the landing grid leads to its feature page.
   await page.getByRole("button", { name: /Collection Tracking/ }).click();
   await expect(page).toHaveURL(/\/collection-tracking$/);
+  // The tab is named for the page, not the app's shared default.
+  await expect(page).toHaveTitle("Collection Tracking · Neon Binder");
 
   // Four feature sections.
   await expect(page.getByText("Snap & Upload")).toBeVisible();

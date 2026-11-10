@@ -118,7 +118,7 @@ export function BlockHeading({ id, children, note }: { id: string; children: str
 /** A rail panel's heading: smaller, with a note on the right. */
 export function RailHeading({ id, children, note }: { id: string; children: string; note?: string }) {
   return (
-    <div className="mb-3 flex flex-wrap items-baseline justify-between gap-x-3">
+    <div className="mb-3 flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5">
       <h2 id={id} className="text-lg font-bold text-ink">
         {children}
       </h2>
