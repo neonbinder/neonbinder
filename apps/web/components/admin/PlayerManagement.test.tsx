@@ -818,16 +818,17 @@ describe("PlayerManagement — the add form", () => {
       target: { value: "Ken Griffey Jr." },
     });
 
-    // EXACTLY ONE `Open Ken Griffey Jr.` control. The promoted primary IS the
-    // exact panel row, so that row is filtered out of the panel — two controls
-    // sharing one accessible name is ambiguous to a screen reader reading the
-    // list and to a Maestro `tapOn` matching by it. Same rule the wizard
-    // already applies to `Link to {name}`.
+    // EXACTLY ONE `Open Ken Griffey Jr.` control: the primary. NEO-462 keeps
+    // the exact row in the panel too, but its name ends `— same name`, so two
+    // controls never share one accessible name.
     await waitFor(() =>
       expect(
         screen.getAllByRole("button", { name: "Open Ken Griffey Jr." }),
       ).toHaveLength(1),
     );
+    expect(
+      screen.getByRole("button", { name: "Open Ken Griffey Jr. — same name" }),
+    ).toBeTruthy();
     expect(
       screen.getByLabelText("Create player Ken Griffey Jr. anyway"),
     ).toBeTruthy();
@@ -2032,7 +2033,7 @@ describe("PlayerManagement — an enrichment landing under an open panel", () =>
 // ---------------------------------------------------------------------------
 
 describe("PlayerManagement — accessibility", () => {
-  it("filters the promoted exact row out of the panel but keeps the others", async () => {
+  it("NEO-462: lists the promoted exact row first in the panel, under a name of its own", async () => {
     nearMatches = [
       { _id: "p-griffey", name: "Ken Griffey Jr.", confidence: "exact" },
       { _id: "p-griffey-sr", name: "Ken Griffey", confidence: "close" },
@@ -2043,15 +2044,110 @@ describe("PlayerManagement — accessibility", () => {
       target: { value: "Ken Griffey Jr." },
     });
 
-    // The promoted row appears exactly once, as the primary button...
+    // The primary keeps the bare name, and is the only control that has it...
     await waitFor(() =>
       expect(
         screen.getAllByRole("button", { name: "Open Ken Griffey Jr." }),
       ).toHaveLength(1),
     );
-    // ...and a genuinely different player is still listed for the operator.
-    expect(screen.getByText("Possible matches")).toBeTruthy();
-    expect(screen.getByLabelText("Open Ken Griffey")).toBeTruthy();
+    // ...the same man is ALSO the first row of the list, tagged same name...
+    const list = screen.getByRole("list", { name: "Possible player matches" });
+    const rows = within(list).getAllByRole("button");
+    expect(rows.map((b) => b.getAttribute("aria-label"))).toEqual([
+      "Open Ken Griffey Jr. — same name",
+      "Open Ken Griffey",
+    ]);
+    // ...and picking that row opens him, as the primary would.
+    fireEvent.click(rows[0]);
+    expect(mockCreateByAdmin).not.toHaveBeenCalled();
+    expect(
+      screen.getByRole("heading", { level: 3, name: "Ken Griffey Jr." }),
+    ).toBeTruthy();
+  });
+
+  it("NEO-462: the Tony Gwynn case lists both men, the one typed first, each described", async () => {
+    // What Jason saw on the preview: the alias hit was the only row, and the
+    // real Tony Gwynn sat on a bare green button that did not read as an option.
+    // The server sends the alias row FIRST here, to prove the panel and the
+    // primary both put the same-name man ahead of it regardless.
+    nearMatches = [
+      {
+        _id: "p-gwynn-jr",
+        name: "Tony Gwynn Jr.",
+        confidence: "exact",
+        matchedAlias: "Tony Gwynn",
+        birthYear: 1982,
+        career: {
+          teams: [{ name: "Brewers", spans: [{ fromYear: 2006, toYear: 2008 }] }],
+          moreTeams: 0,
+        },
+      },
+      {
+        _id: "p-gwynn",
+        name: "Tony Gwynn",
+        confidence: "exact",
+        birthYear: 1960,
+        career: {
+          teams: [{ name: "Padres", spans: [{ fromYear: 1982, toYear: 2001 }] }],
+          moreTeams: 0,
+        },
+      },
+    ];
+    const { container } = render(<PlayerManagement />);
+    openAddForm(container);
+    fireEvent.change(screen.getByLabelText("New player name"), {
+      target: { value: "Tony Gwynn" },
+    });
+
+    const primary = await screen.findByRole("button", { name: "Open Tony Gwynn" });
+    expect(primary.textContent).toBe("Open Tony Gwynn");
+
+    const list = screen.getByRole("list", { name: "Possible player matches" });
+    const names = within(list)
+      .getAllByRole("button")
+      .map((b) => b.getAttribute("aria-label"));
+    expect(names).toEqual([
+      "Open Tony Gwynn, born 1960, Padres 1982 to 2001 — same name",
+      "Open Tony Gwynn Jr., born 1982, Brewers 2006 to 2008",
+    ]);
+    // Never the primary's name on a row.
+    expect(names).not.toContain("Open Tony Gwynn");
+    // The row shows what the primary does not: who he is.
+    expect(within(list).getByText(/b\. 1960/)).toBeTruthy();
+
+    // Enter on the primary opens the man whose name was typed.
+    fireEvent.click(primary);
+    expect(mockCreateByAdmin).not.toHaveBeenCalled();
+    expect(lastArgs("players.getByIdParam")).toEqual({ id: "p-gwynn" });
+  });
+
+  it("NEO-462: an alias-only, fact-less primary row still reads differently from the primary", async () => {
+    // The one row the panel adds nothing to: an alias hit (no same-name tag)
+    // with nothing on file. It says what its second line shows.
+    nearMatches = [
+      {
+        _id: "p-metta",
+        name: "Metta World Peace",
+        confidence: "exact",
+        matchedAlias: "Ron Artest",
+      },
+    ];
+    const { container } = render(<PlayerManagement />);
+    openAddForm(container);
+    fireEvent.change(screen.getByLabelText("New player name"), {
+      target: { value: "Ron Artest" },
+    });
+
+    await waitFor(() =>
+      expect(
+        screen.getAllByRole("button", { name: "Open Metta World Peace" }),
+      ).toHaveLength(1),
+    );
+    expect(
+      screen.getByRole("button", {
+        name: "Open Metta World Peace, nothing on file yet",
+      }),
+    ).toBeTruthy();
   });
 
   it("keeps focus on the primary action when an exact match arrives", async () => {
@@ -2478,8 +2574,12 @@ describe("NEO-254: birth year", () => {
     // The panel appends its own "— same name" tag to an exact row's
     // accessible name (NEO-212: a warning only sighted operators receive is
     // not a warning). Uniqueness holds with or without it.
+    // NEO-462 — BOTH men are rows, the primary's included, in server order.
     expect(
-      screen.getByRole("button", { name: "Open Bob Allen, b. 1975 — same name" }),
+      screen.getByRole("button", { name: "Open Bob Allen, born 1960 — same name" }),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Open Bob Allen, born 1975 — same name" }),
     ).toBeTruthy();
     // The ambiguous label is gone entirely — including from the promoted
     // primary, which would otherwise not say which man it opens.
@@ -2489,8 +2589,8 @@ describe("NEO-254: birth year", () => {
       .getAllByRole("button")
       .map((b) => b.getAttribute("aria-label") ?? b.textContent ?? "")
       .filter((n) => n.startsWith("Open Bob Allen"));
-    expect(openNames).toHaveLength(2);
-    expect(new Set(openNames).size).toBe(2);
+    expect(openNames).toHaveLength(3);
+    expect(new Set(openNames).size).toBe(3);
 
     // And the E2E-targeted create control is untouched.
     expect(
@@ -2517,9 +2617,55 @@ describe("NEO-254: birth year", () => {
         }),
       ).toBeTruthy(),
     );
+    // NEO-462 — the primary's own row is listed too; the tag keeps it apart.
+    expect(
+      screen.getByRole("button", {
+        name: "Open Bob Allen, no birth year (1 of 2) — same name",
+      }),
+    ).toBeTruthy();
     expect(
       screen.getByRole("button", {
         name: "Open Bob Allen, no birth year (2 of 2) — same name",
+      }),
+    ).toBeTruthy();
+  });
+
+  it("NEO-462: a fact-less panel row keeps its label; a row with only teams speaks them", async () => {
+    // The panel speaks a row's facts itself, so a row WITH facts gets the
+    // bare `Open {name}` (no birth year said twice); a row with none keeps
+    // the "no birth year" label so it never reads as a prefix of the primary.
+    nearMatches = [
+      { _id: "p-old", name: "Bob Allen", confidence: "exact", birthYear: 1960 },
+      { _id: "p-bare", name: "Bob Allen", confidence: "exact" },
+      {
+        _id: "p-teams",
+        name: "Bob Allen",
+        confidence: "exact",
+        career: {
+          teams: [{ name: "Padres", spans: [{ fromYear: 1961 }] }],
+          moreTeams: 0,
+        },
+      },
+    ];
+    const { container } = render(<PlayerManagement />);
+    openAddForm(container);
+    fireEvent.change(screen.getByLabelText("New player name"), {
+      target: { value: "Bob Allen" },
+    });
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "Open Bob Allen, b. 1960" }),
+      ).toBeTruthy(),
+    );
+    expect(
+      screen.getByRole("button", {
+        name: "Open Bob Allen, no birth year (2 of 3) — same name",
+      }),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("button", {
+        name: "Open Bob Allen, Padres 1961 to present — same name",
       }),
     ).toBeTruthy();
   });
@@ -2546,7 +2692,16 @@ describe("NEO-254: birth year", () => {
         screen.getAllByRole("button", { name: "Open Ken Griffey Jr." }),
       ).toHaveLength(1),
     );
-    expect(screen.queryByText(/b\. 1969/)).toBeNull();
+    // The primary's TEXT is the bare label too; the year is the panel row's
+    // to show (NEO-462 keeps that row in the list, described).
+    expect(
+      screen.getByRole("button", { name: "Open Ken Griffey Jr." }).textContent,
+    ).toBe("Open Ken Griffey Jr.");
+    expect(
+      screen.getByRole("button", {
+        name: "Open Ken Griffey Jr., born 1969 — same name",
+      }),
+    ).toBeTruthy();
   });
 
   it("omits the key entirely when the field is left blank", async () => {

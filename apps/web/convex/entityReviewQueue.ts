@@ -74,7 +74,7 @@ import { findSetYearForSelectorOption } from "./lib/selectorAncestry";
 // if either grows, the arithmetic in ENTITY_REVIEW_START_OPS grows with it
 // instead of quietly under-charging.
 import { PLAYER_AMBIGUITY_SCAN_LIMIT } from "../lib/players/name-limits";
-import { CAREER_SUMMARY_MAX_TEAMS } from "../lib/players/career-summary";
+import { PLAYER_DESCRIPTION_MAX_TEAMS } from "../lib/players/player-description";
 
 /**
  * NEO-92: backs the step-through "new players & teams" review wizard that
@@ -1029,7 +1029,7 @@ type ExistingCandidate = NonNullable<
  *
  * The charge is the builder's ceiling rather than a count, because it does
  * not report one: per distinct id (capped at `MAX_CANDIDATES_FOR_IDS`) one
- * player read, one sport-label read and `CAREER_SUMMARY_MAX_TEAMS` team reads.
+ * player read, one sport-label read and `PLAYER_DESCRIPTION_MAX_TEAMS` team reads.
  * Over-charging only pages a batch sooner; under-charging is the NEO-294
  * failure.
  */
@@ -1047,7 +1047,7 @@ async function buildCandidatesForPlayerIds(
     name,
     cardYear: opts.cardYear,
   });
-  return { candidates, ops: distinct * (2 + CAREER_SUMMARY_MAX_TEAMS) };
+  return { candidates, ops: distinct * (2 + PLAYER_DESCRIPTION_MAX_TEAMS) };
 }
 
 /**
@@ -1161,7 +1161,7 @@ function awaitsOperatorBeforeLookup(
  *         index. Paid for EVERY name, ambiguous or not.
  *     … — and when two or more rows already answer to that name, up to
  *         PLAYER_AMBIGUITY_SCAN_LIMIT alias `db.get`s plus
- *         CAREER_SUMMARY_MAX_TEAMS team reads per candidate for the career
+ *         PLAYER_DESCRIPTION_MAX_TEAMS team reads per candidate for the career
  *         summary (the narrowing itself reads no teams here — this caller
  *         passes no `cardTeamNames`).
  *     1 — the insert.
@@ -1231,7 +1231,7 @@ export const ENTITY_REVIEW_START_OPS = 800;
  *
  * `BASE` is the pair of index reads `sameNamePlayers` always performs. `EXTRA`
  * is the ceiling on everything an AMBIGUOUS name adds on top: one `db.get` per
- * alias hit, and `CAREER_SUMMARY_MAX_TEAMS` team reads per candidate for the
+ * alias hit, and `PLAYER_DESCRIPTION_MAX_TEAMS` team reads per candidate for the
  * career summary (deduped by id across candidates, so this over-charges rather
  * than under-charges). Charged after the call, from whether candidates came
  * back — the cheap answer is by far the common one, and charging every name
@@ -1241,7 +1241,7 @@ export const ENTITY_REVIEW_START_OPS = 800;
 const REVIEW_NAME_LOOKUP_OPS = {
   // NEO-313: three index reads now — `players`, `playerSports`, `playerAliases`.
   BASE: 3,
-  EXTRA: PLAYER_AMBIGUITY_SCAN_LIMIT * (CAREER_SUMMARY_MAX_TEAMS + 1),
+  EXTRA: PLAYER_AMBIGUITY_SCAN_LIMIT * (PLAYER_DESCRIPTION_MAX_TEAMS + 1),
 } as const;
 
 export const startBatch = internalMutation({

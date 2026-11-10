@@ -421,16 +421,18 @@ test(
     await expectAccessible(page, { within: wizard, label: "Entity review wizard, Hall of Famers linked" });
 
     // Change on Joe Morgan: the pick step lists BOTH namesakes; the Hall of
-    // Famer (b. 1943) is linked again by hand and read back off its own row.
+    // Famer (born 1943 in the row's accessible name) is linked again by hand and read back off its own row.
     await decidedRow(MORGAN).getByRole("button", { name: `Change decision for ${MORGAN}` }).click();
     await expect(wizard.getByRole("heading", { level: 3, name: `Which ${MORGAN} is this?` })).toBeVisible();
     const namesakes = wizard
       .getByRole("list", { name: "Players already filed under this name" })
       .getByRole("button", { name: new RegExp(`^Link to ${MORGAN}, `) });
     await expect(namesakes).toHaveCount(2);
-    await wizard.getByRole("button", { name: new RegExp(`^Link to ${MORGAN}, b\\. 1943`) }).click();
+    await wizard.getByRole("button", { name: new RegExp(`^Link to ${MORGAN}, born 1943`) }).click();
     // As above: the pick step's heading goes only once the link has landed and the walk moved.
     await expect(wizard.getByRole("heading", { level: 3, name: `Which ${MORGAN} is this?` })).toBeHidden();
+    // The decision line is written text, not a control name: it keeps "b. 1943"
+    // (only the pick row's accessible name speaks "born").
     await readBackDecision(page, new RegExp(`^Linked to ${MORGAN}, b\\. 1943`), { resume: true });
 
     // The St. Louis Browns: LINKED to the catalogue's row of that exact name
