@@ -1,7 +1,8 @@
-import { useId, useMemo, useState, type ReactNode } from "react";
+import { useId, useMemo, useState, type CSSProperties, type ReactNode } from "react";
 import NeonButton from "@/components/modules/NeonButton";
 import { Input } from "@/components/primitives/Input";
 import CardFace from "../../prototypes/_shared/CardFace";
+import Overlay from "../../prototypes/p1/Overlay";
 import { getCard } from "../../prototypes/_shared/data";
 import {
   COMMON_PRICES,
@@ -18,11 +19,17 @@ import {
   type ScanSide,
   type Stage,
 } from "./sim";
+import type { PhotoEdit } from "@/lib/photo-edit/geometry";
+import type { PhotoViewerTarget } from "./realLanes";
 
 /**
  * NEO-369 — the pieces of the demo's Add cards tab (`./AddCardsTab`): scans,
  * badges, counters, the quantity field, the card picker, the prompts, the
  * fix tools and the detail fields.
+ *
+ * NEO-481 — two pieces are shared with the signed-in tab (`./RealAddCardsTab`):
+ * the per-card price input (`PriceInput`), and the place an Add cards photo
+ * click opens the card photo viewer (`PhotoViewerSlot`).
  */
 
 export const RING = "focus-outline";
@@ -62,16 +69,32 @@ const SIZE_WIDTH = { sm: "4.5rem", md: "7.5rem", lg: "13rem" } as const;
  * cropped it shows the raw scan (tilted, with bed margin) under a sweep; a
  * failed read is blurred; rotation is applied as the user rotates.
  */
+/**
+ * The demo keeps an edit as CSS, never a new file (it has no backend): the
+ * crop's centre is moved to the middle, the box is turned upright, and it is
+ * scaled up to fill the frame. Turns are applied by the caller, on the outer box.
+ */
+export function cropTransform(crop: PhotoEdit["crop"]): string | undefined {
+  if (!crop || crop.w <= 0 || crop.h <= 0) return undefined;
+  const dx = (0.5 - crop.cx / crop.srcW) * 100;
+  const dy = (0.5 - crop.cy / crop.srcH) * 100;
+  const scale = Math.min(crop.srcW / crop.w, crop.srcH / crop.h);
+  return `scale(${scale}) rotate(${-crop.angle}deg) translate(${dx}%, ${dy}%)`;
+}
+
 export function ScanImage({
   item,
   side,
   size = "md",
   stage,
+  edit,
 }: {
   item: Item;
   side: "front" | "back";
   size?: keyof typeof SIZE_WIDTH;
   stage?: Stage;
+  /** NEO-481 — the collector's turn and crop from the viewer, drawn as CSS (demo only). */
+  edit?: PhotoEdit;
 }) {
   const scan: ScanSide | null = side === "front" ? item.front : item.back;
   const width = SIZE_WIDTH[size];
@@ -88,23 +111,42 @@ export function ScanImage({
   }
   const card = item.truth ? getCard(item.truth) : null;
   const label = `${side === "front" ? "Front" : "Back"} scan, ${scan.file}`;
+  const face =
+    side === "front" && card ? <CardFace card={card} size="fill" /> : <CardBack number={card?.cardNumber ?? "?"} width="100%" />;
+  // An odd number of quarter turns lays the card on its side: the box goes
+  // landscape, and the card inside is sized in the box's turned terms.
+  const sideways = !raw && !!edit && edit.turns % 2 === 1;
+  const turned: CSSProperties | undefined =
+    !raw && edit
+      ? sideways
+        ? {
+            position: "absolute",
+            left: "50%",
+            top: "50%",
+            width: "71.4286%",
+            transform: `translate(-50%, -50%) rotate(${edit.turns * 90}deg)`,
+          }
+        : { transform: `rotate(${edit.turns * 90}deg)` }
+      : undefined;
   return (
     <figure className="m-0 flex flex-col items-center gap-1">
       <div
         role="img"
         aria-label={label}
         className={`relative overflow-hidden rounded-md ${raw ? "bg-field p-[6%]" : ""}`}
-        style={{ width: raw ? `calc(${width} * 1.12)` : width }}
+        style={{ width: raw ? `calc(${width} * 1.12)` : width, aspectRatio: sideways ? "3.5 / 2.5" : undefined }}
       >
         <div
           className={`transition-transform duration-500 ease-out motion-reduce:transition-none ${scan.failed ? "blur-[3px]" : ""}`}
-          style={{ transform: `rotate(${scan.rotation + (raw ? -4 : 0)}deg)` }}
+          style={turned ?? { transform: `rotate(${scan.rotation + (raw ? -4 : 0)}deg)` }}
           aria-hidden="true"
         >
-          {side === "front" && card ? (
-            <CardFace card={card} size="fill" />
+          {!raw && edit?.crop ? (
+            <div className="overflow-hidden">
+              <div style={{ transform: cropTransform(edit.crop) }}>{face}</div>
+            </div>
           ) : (
-            <CardBack number={card?.cardNumber ?? "?"} width="100%" />
+            face
           )}
         </div>
         {raw && <span aria-hidden="true" className="intake-sweep pointer-events-none absolute inset-0" />}
@@ -271,9 +313,88 @@ export function QtyField({ item, sim, onEnter }: { item: Item; sim: IntakeSim; o
 }
 
 /**
- * The card's lowest price, beside its quantity (Jason, 2026-10-28): p jumps
- * here. It starts at the run's default; Enter keeps the price, saves the card
- * and moves on, the way Enter in the quantity does.
+ * NEO-481 — the card's own lowest price, beside its count: shared by the demo
+ * (`PriceField`) and the signed-in box-run tiles. `p` jumps here (the tab's
+ * keys). Enter keeps the price and saves the card; Escape puts back what it
+ * showed (and, while there is typing to undo, stops there, so a drawer stays
+ * open). Leaving the field with a change keeps the price without saving. Only
+ * digits and a point type here: any other key is left to the tab's shortcuts,
+ * so a letter acts on this card instead of landing in the box.
+ *
+ * The caller owns what the text means (`onCommit` and `onEnter` get it raw), so
+ * each side parses it its own way. Its name is "Price, <card>": a column of
+ * tiles has one per card.
+ */
+export function PriceInput({
+  owner,
+  cardLabel,
+  cents,
+  disabled = false,
+  onCommit,
+  onEnter,
+}: {
+  /** Marks the field (`PRICE_ATTR`), so `p` can find this card's. */
+  owner: string;
+  /** The tile's name, for the field's own ("Price, #47 Le'Veon Bell"). */
+  cardLabel: string;
+  /** What the field shows while nobody is typing in it; null shows blank. */
+  cents: number | null;
+  disabled?: boolean;
+  /** Focus left with a change: keep it, don't save. */
+  onCommit: (text: string) => void;
+  /** Enter: keep it and save the card. */
+  onEnter: (text: string) => void;
+}) {
+  const id = useId();
+  const [draft, setDraft] = useState<string | null>(null);
+  const shown = draft ?? (cents === null ? "" : (cents / 100).toFixed(2));
+  return (
+    <div className="flex items-center gap-1 text-sm">
+      <label htmlFor={id} className="whitespace-nowrap text-ink-3">
+        Price $
+      </label>
+      <Input
+        bare
+        id={id}
+        {...{ [PRICE_ATTR]: owner }}
+        aria-label={`Price, ${cardLabel}`}
+        inputMode="decimal"
+        value={shown}
+        disabled={disabled}
+        onChange={(e) => setDraft(e.target.value.replace(/[^\d.]/g, ""))}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            setDraft(null);
+            onEnter(shown);
+          } else if (e.key === "Escape") {
+            if (draft !== null) e.stopPropagation();
+            setDraft(null);
+          } else if (e.key.length === 1 && !/[\d.]/.test(e.key) && !e.ctrlKey && !e.metaKey && !e.altKey) {
+            e.preventDefault();
+          }
+        }}
+        onFocus={(e) => e.currentTarget.select()}
+        onBlur={() => {
+          if (draft === null) return;
+          setDraft(null);
+          onCommit(draft);
+        }}
+        className={`w-16 rounded-md border border-field-rule bg-field px-2 py-1 text-right tabular-nums text-ink ${RING}`}
+        aria-describedby={`${id}-hint`}
+        aria-keyshortcuts="p"
+      />
+      <span id={`${id}-hint`} className="sr-only">
+        Enter keeps the price, saves and moves to the next card.
+      </span>
+    </div>
+  );
+}
+
+/**
+ * The demo's price field (Jason, 2026-10-28): it starts at the run's default,
+ * and Enter keeps the price, saves the card and moves on, the way Enter in the
+ * quantity does.
  */
 export function PriceField({
   item,
@@ -286,49 +407,61 @@ export function PriceField({
   defaults: Details;
   onEnter?: (priceCents: number | null) => void;
 }) {
-  const id = useId();
-  const cents = effectiveDetails(item, defaults).priceCents;
-  const [draft, setDraft] = useState<string | null>(null);
-  const shown = draft ?? (cents === null ? "" : (cents / 100).toFixed(2));
   const parse = (text: string): number | null => (text ? Math.round(Number(text) * 100) : null);
   return (
-    <div className="flex items-center gap-1 text-sm">
-      <label htmlFor={id} className="whitespace-nowrap text-ink-3">
-        Price $
-      </label>
-      <Input
-        bare
-        id={id}
-        {...{ [PRICE_ATTR]: item.id }}
-        inputMode="decimal"
-        value={shown}
-        disabled={!item.match.cardId}
-        onChange={(e) => setDraft(e.target.value.replace(/[^\d.]/g, ""))}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") {
-            e.preventDefault();
-            setDraft(null);
-            onEnter?.(parse(shown));
-          } else if (e.key === "Escape") {
-            setDraft(null);
-          } else if (e.key.length === 1 && !/[\d.]/.test(e.key) && !e.ctrlKey && !e.metaKey && !e.altKey) {
-            e.preventDefault();
-          }
-        }}
-        onFocus={(e) => e.currentTarget.select()}
-        onBlur={() => {
-          if (draft === null) return;
-          sim.actions.setDetails(item.id, { priceCents: parse(draft) });
-          setDraft(null);
-        }}
-        className={`w-16 rounded-md border border-field-rule bg-field px-2 py-1 text-right tabular-nums text-ink ${RING}`}
-        aria-describedby={`${id}-hint`}
-        aria-keyshortcuts="p"
-      />
-      <span id={`${id}-hint`} className="sr-only">
-        Enter keeps the price, saves and moves to the next card.
-      </span>
-    </div>
+    <PriceInput
+      owner={item.id}
+      cardLabel={cardTitle(item.match.cardId)}
+      cents={effectiveDetails(item, defaults).priceCents}
+      disabled={!item.match.cardId}
+      onCommit={(text) => sim.actions.setDetails(item.id, { priceCents: parse(text) })}
+      onEnter={(text) => onEnter?.(parse(text))}
+    />
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* The card photo viewer                                               */
+/* ------------------------------------------------------------------ */
+
+/**
+ * NEO-481 — where Add cards opens the card photo viewer, for every photo on
+ * the screen, the demo's too.
+ *
+ * TODO(NEO-481): wire to row D's `components/modules/CardPhotoViewer` once it
+ * lands. Map `target` to its sources (scan → the scan adapter with
+ * `{ jobId, entryIndex }`, copy → the copy-photo adapter with
+ * `{ copyId, side }`, demo → the demo adapter with `edit`/`onSave`) and render
+ * it in place of the stand-in below. Until then this is a view-only stand-in:
+ * the heading, the picture the caller hands in, and Close. It is a dialog of
+ * its own (Escape closes only it, and focus goes back to the photo).
+ */
+export function PhotoViewerSlot({
+  target,
+  onClose,
+  children,
+}: {
+  target: PhotoViewerTarget;
+  onClose: () => void;
+  /** The stand-in's picture, large. */
+  children: ReactNode;
+}) {
+  const headingId = useId();
+  return (
+    <Overlay labelledBy={headingId} onClose={onClose} variant="drawer">
+      <div className="space-y-4 p-5">
+        <div className="flex items-start justify-between gap-2">
+          <h2 id={headingId} tabIndex={-1} className="m-0 text-xl font-bold text-ink">
+            {target.title}
+          </h2>
+          <NeonButton size="1" variant="secondary" outline onClick={onClose}>
+            Close
+          </NeonButton>
+        </div>
+        {target.kind === "scan" && target.viewOnly && <p className="m-0 text-sm text-ink-2">{target.viewOnly}</p>}
+        <div className="flex justify-center">{children}</div>
+      </div>
+    </Overlay>
   );
 }
 

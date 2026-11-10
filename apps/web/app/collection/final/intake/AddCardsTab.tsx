@@ -11,8 +11,10 @@ import {
   writeErrorMessage,
 } from "../data/store";
 import type { Card, Condition, CopyDetails, Grader } from "../data/types";
+import type { PhotoEdit } from "@/lib/photo-edit/geometry";
 import { usePageApi } from "../pageApi";
 import LoosePile from "./loose";
+import { sideTitle } from "./realLanes";
 import SetButton, { type SetPick } from "./SetButton";
 import {
   STAGE_LABEL,
@@ -37,6 +39,7 @@ import {
   FixTools,
   HomeSelect,
   NeedsYou,
+  PhotoViewerSlot,
   PRICE_ATTR,
   PriceField,
   QTY_ATTR,
@@ -67,8 +70,14 @@ import "./intake.css";
  * - Enter in a quantity saves that card and moves to the next quantity down
  *   the column.
  * - A selected card (green, in any lane) takes the CLI's keys: the fix tools
- *   (r R c C s x X u), y for yes, o to open it, j/k and h/l to move. In a
- *   quantity field only digits type; a letter is that card's shortcut.
+ *   (r R c C s x X u), y for yes, o to open it, e to open its front photo,
+ *   j/k and h/l to move. In a quantity field only digits type; a letter is
+ *   that card's shortcut.
+ *
+ * NEO-481: every scan opens the card photo viewer, as on the signed-in tab.
+ * The demo has no backend, so a turn or crop saved there is kept in this
+ * tab's state and drawn as CSS on the scan (`ScanImage`'s `edit`), never a new
+ * file. A box run's cards carry their own price; a binder's never do.
  */
 
 const LANES: { stages: Stage[]; label: string }[] = [
@@ -88,7 +97,8 @@ const KEY_HELP: { keys: string; does: string }[] = [
   { keys: "h l", does: "lane left, right" },
   { keys: "y", does: "yes, save it" },
   { keys: "o", does: "open it" },
-  { keys: "p", does: "jump to its price" },
+  { keys: "e", does: "open its front photo to turn or crop" },
+  { keys: "p", does: "jump to its price (boxes)" },
   ...FIX_TOOLS.map((t) => ({ keys: t.key, does: t.label.toLowerCase() })),
   { keys: "Enter", does: "in a quantity: save, next card" },
 ];
@@ -132,6 +142,27 @@ export default function AddCardsTab() {
   const [panel, setPanel] = useState<null | "set" | "defaults">(null);
   const [openId, setOpenId] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  /** NEO-481 — the collector's turns and crops, by `item:side`: the demo's only copy of them. */
+  const [edits, setEdits] = useState<Record<string, PhotoEdit>>({});
+  const editOf = (itemId: string, side: "front" | "back") => edits[`${itemId}:${side}`];
+  /** The scan open in the viewer (a dialog: in-view state, never the URL), and the photo clicked. */
+  const [viewing, setViewing] = useState<{ itemId: string; side: "front" | "back" } | null>(null);
+  const viewerOpener = useRef<HTMLElement | null>(null);
+  const openPhoto = (itemId: string, side: "front" | "back", opener?: HTMLElement) => {
+    viewerOpener.current = opener ?? null;
+    setViewing({ itemId, side });
+  };
+  const closeViewer = () => {
+    setViewing(null);
+    const opener = viewerOpener.current;
+    viewerOpener.current = null;
+    if (opener) {
+      requestAnimationFrame(() => {
+        const fell = !document.activeElement || document.activeElement === document.body;
+        if (opener.isConnected && fell) opener.focus({ preventScroll: true });
+      });
+    }
+  };
 
   const sim = useIntakeSim({ setChosen: setPick !== null, homeId, hadOf });
 
@@ -244,6 +275,8 @@ export default function AddCardsTab() {
   // through a ref, so the listener is added once.
   const onKey = (e: KeyboardEvent) => {
     if (e.ctrlKey || e.metaKey || e.altKey) return;
+    // The viewer is a dialog with keys of its own: none of these reach past it.
+    if (viewing) return;
     const target = e.target as HTMLElement | null;
     const inPrice = !!target?.closest?.(`[${PRICE_ATTR}]`);
     const inQty = inPrice || !!target?.closest?.(`[${QTY_ATTR}]`);
@@ -308,8 +341,15 @@ export default function AddCardsTab() {
       return;
     }
     if (key === "p") {
+      const field = document.querySelector<HTMLInputElement>(`[${PRICE_ATTR}="${selected.id}"]:not(:disabled)`);
+      if (!field) return;
       e.preventDefault();
-      document.querySelector<HTMLInputElement>(`[${PRICE_ATTR}="${selected.id}"]:not(:disabled)`)?.focus();
+      field.focus();
+      return;
+    }
+    if (key === "e") {
+      e.preventDefault();
+      openPhoto(selected.id, "front");
       return;
     }
     const tool = FIX_TOOLS.find((t) => t.key === key);
@@ -452,11 +492,18 @@ export default function AddCardsTab() {
                         onOpen={() => setOpenId(i.id)}
                         onYes={() => yesClicked(i.id)}
                         onEnter={() => nextQty(i.id)}
-                        onPriceEnter={(cents) => savePriced(i.id, cents)}
+                        onPriceEnter={kind === "box" ? (cents) => savePriced(i.id, cents) : undefined}
                         defaults={setup.defaults}
+                        editOf={editOf}
+                        onOpenPhoto={(side, opener) => openPhoto(i.id, side, opener)}
                       />
                     ) : (
-                      <MiniTile item={i} selected={i.id === selectedId} />
+                      <MiniTile
+                        item={i}
+                        selected={i.id === selectedId}
+                        edit={editOf(i.id, "front")}
+                        onOpenPhoto={(opener) => openPhoto(i.id, "front", opener)}
+                      />
                     )}
                   </li>
                 ))}
@@ -480,10 +527,61 @@ export default function AddCardsTab() {
             homes={homes}
             kind={kind}
             onClose={closeDrawer}
+            editOf={editOf}
+            onOpenPhoto={(side, opener) => openPhoto(open.id, side, opener)}
           />
         </Overlay>
       )}
+      {/* After the drawer, so it opens over it; Escape closes only the viewer. */}
+      {viewing &&
+        (() => {
+          const item = find(viewing.itemId);
+          if (!item) return null;
+          const key = `${item.id}:${viewing.side}`;
+          return (
+            <PhotoViewerSlot
+              target={{
+                kind: "demo",
+                itemId: item.id,
+                side: viewing.side,
+                title: sideTitle(viewing.side, item.match.cardId ? cardTitle(item.match.cardId) : item.front.file),
+                edit: edits[key],
+                onSave: (edit) => setEdits((all) => ({ ...all, [key]: edit })),
+              }}
+              onClose={closeViewer}
+            >
+              <ScanImage item={item} side={viewing.side} size="lg" edit={edits[key]} />
+            </PhotoViewerSlot>
+          );
+        })()}
     </div>
+  );
+}
+
+/** NEO-481 — a demo scan as a button that opens the viewer, drawn with the collector's edit. */
+function PhotoButton({
+  item,
+  side,
+  size,
+  edit,
+  onOpen,
+}: {
+  item: Item;
+  side: "front" | "back";
+  size: "sm" | "md" | "lg";
+  edit: PhotoEdit | undefined;
+  onOpen: (opener: HTMLElement) => void;
+}) {
+  const card = item.match.cardId ? cardTitle(item.match.cardId) : (side === "front" ? item.front : item.back)?.file;
+  return (
+    <button
+      type="button"
+      aria-label={`Open ${side} of ${card ?? "this scan"}`}
+      onClick={(e) => onOpen(e.currentTarget)}
+      className={`block shrink-0 cursor-zoom-in rounded-md ${RING}`}
+    >
+      <ScanImage item={item} side={side} size={size} edit={edit} />
+    </button>
   );
 }
 
@@ -495,16 +593,23 @@ function edge(item: Item, selected: boolean): string {
   return band === "none" ? "border-neon-pink-text" : band === "check" ? "border-notice-warn-rule" : "border-rule";
 }
 
-function MiniTile({ item, selected }: { item: Item; selected: boolean }) {
+function MiniTile({
+  item,
+  selected,
+  edit,
+  onOpenPhoto,
+}: {
+  item: Item;
+  selected: boolean;
+  edit: PhotoEdit | undefined;
+  onOpenPhoto: (opener: HTMLElement) => void;
+}) {
   const title = item.stage === "saved" ? cardTitle(item.match.cardId) : (item.read.player ?? "Reading…");
+  // The scan opens the viewer; the words beside it select the card.
   return (
-    <button
-      type="button"
-      aria-pressed={selected}
-      className={`flex w-full items-center gap-2 rounded-md border-2 bg-surface p-1.5 text-left ${edge(item, selected)} ${RING}`}
-    >
-      <ScanImage item={item} side="front" size="sm" />
-      <span className="min-w-0 text-xs">
+    <div className={`flex w-full items-center gap-2 rounded-md border-2 bg-surface p-1.5 ${edge(item, selected)}`}>
+      <PhotoButton item={item} side="front" size="sm" edit={edit} onOpen={onOpenPhoto} />
+      <button type="button" aria-pressed={selected} className={`min-w-0 flex-1 self-stretch rounded-sm text-left text-xs ${RING}`}>
         <span className="block truncate font-medium text-ink-2">{title}</span>
         <span className="block text-ink-3">
           {item.stage === "saved"
@@ -513,8 +618,8 @@ function MiniTile({ item, selected }: { item: Item; selected: boolean }) {
               ? `#${item.read.number}`
               : item.front.file}
         </span>
-      </span>
-    </button>
+      </button>
+    </div>
   );
 }
 
@@ -533,6 +638,8 @@ function ReviewTile({
   onEnter,
   onPriceEnter,
   defaults,
+  editOf,
+  onOpenPhoto,
 }: {
   item: Item;
   sim: IntakeSim;
@@ -540,15 +647,18 @@ function ReviewTile({
   onOpen: () => void;
   onYes: () => void;
   onEnter: () => void;
-  onPriceEnter: (priceCents: number | null) => void;
+  /** NEO-481: a box run's price field; absent for a binder, which never shows a price. */
+  onPriceEnter: ((priceCents: number | null) => void) | undefined;
   defaults: Details;
+  editOf: (itemId: string, side: "front" | "back") => PhotoEdit | undefined;
+  onOpenPhoto: (side: "front" | "back", opener: HTMLElement) => void;
 }) {
   return (
     <div className={`rounded-md border-2 bg-surface p-2 ${edge(item, selected)}`}>
       <div className="flex gap-2">
         <div className="flex shrink-0 gap-1">
-          <ScanImage item={item} side="front" size="sm" />
-          <ScanImage item={item} side="back" size="sm" />
+          <PhotoButton item={item} side="front" size="sm" edit={editOf(item.id, "front")} onOpen={(o) => onOpenPhoto("front", o)} />
+          <PhotoButton item={item} side="back" size="sm" edit={editOf(item.id, "back")} onOpen={(o) => onOpenPhoto("back", o)} />
         </div>
         <div className="min-w-0 flex-1 space-y-1">
           <p className="m-0 truncate text-sm font-semibold text-ink">{cardTitle(item.match.cardId)}</p>
@@ -574,7 +684,7 @@ function ReviewTile({
           Review
         </NeonButton>
         <QtyField item={item} sim={sim} onEnter={onEnter} />
-        <PriceField item={item} sim={sim} defaults={defaults} onEnter={onPriceEnter} />
+        {onPriceEnter && <PriceField item={item} sim={sim} defaults={defaults} onEnter={onPriceEnter} />}
       </div>
     </div>
   );
@@ -587,6 +697,8 @@ function Drawer({
   homes,
   kind,
   onClose,
+  editOf,
+  onOpenPhoto,
 }: {
   item: Item;
   sim: IntakeSim;
@@ -594,6 +706,8 @@ function Drawer({
   homes: { id: string; name: string }[];
   kind: "binder" | "box";
   onClose: () => void;
+  editOf: (itemId: string, side: "front" | "back") => PhotoEdit | undefined;
+  onOpenPhoto: (side: "front" | "back", opener: HTMLElement) => void;
 }) {
   const [picking, setPicking] = useState(false);
   const details = effectiveDetails(item, setup.defaults);
@@ -609,8 +723,8 @@ function Drawer({
       </div>
       <BandBadge item={item} />
       <div className="flex gap-3">
-        <ScanImage item={item} side="front" size="lg" />
-        <ScanImage item={item} side="back" size="lg" />
+        <PhotoButton item={item} side="front" size="lg" edit={editOf(item.id, "front")} onOpen={(o) => onOpenPhoto("front", o)} />
+        <PhotoButton item={item} side="back" size="lg" edit={editOf(item.id, "back")} onOpen={(o) => onOpenPhoto("back", o)} />
       </div>
       <NeedsYou item={item} sim={sim} onPick={() => setPicking(true)} />
       {picking ? (

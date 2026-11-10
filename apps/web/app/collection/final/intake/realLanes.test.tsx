@@ -24,7 +24,20 @@ import {
   type IntakeImage,
   type IntakeMatchRow,
   type IntakePair,
+  EDIT_FAILED_LINE,
+  EDIT_ORIGINAL_GONE_LINE,
+  editStateOf,
+  parseMinPrice,
+  PHOTOS_ON_THEIR_WAY_LINE,
+  previewTurns,
+  pricePrefill,
+  PRICE_INVALID_LINE,
+  PRICE_TOO_HIGH_LINE,
+  savedPhotoTarget,
+  scanKey,
+  tilePrice,
 } from "./realLanes";
+import { MAX_PRICE_CENTS } from "@/lib/collection/price-cap";
 
 /** NEO-382 — every photo of a run sits in exactly one lane. */
 
@@ -654,5 +667,94 @@ describe("NEO-446: runNotice", () => {
     test("a stream run is judged the same way once it has images", () => {
       expect(runNotice(job({ mode: "stream", rejectedEntries: 1 }))?.problem).toBe(true);
     });
+  });
+});
+
+describe("NEO-481: a scan's hand edit on the tiles", () => {
+  const pending = (status: "rendering" | "failed", error?: string) => ({
+    status,
+    error,
+    turns: 1 as const,
+    crop: null,
+    version: 2,
+    requestedAt: 1,
+  });
+
+  test("nothing to say without a pending edit; rendering while it renders", () => {
+    expect(editStateOf(undefined)).toBeNull();
+    expect(editStateOf({})).toBeNull();
+    expect(editStateOf({ pendingEdit: pending("rendering") })).toEqual({ kind: "rendering" });
+  });
+
+  test("a failed render says the server's words, never a bare code", () => {
+    expect(editStateOf({ pendingEdit: pending("failed", "That crop is too small to read.") })).toEqual({
+      kind: "failed",
+      line: "That crop is too small to read.",
+    });
+    expect(editStateOf({ pendingEdit: pending("failed", "ENTRY_NOT_FOUND") })).toEqual({
+      kind: "failed",
+      line: EDIT_ORIGINAL_GONE_LINE,
+    });
+    expect(editStateOf({ pendingEdit: pending("failed", "RENDER_FAILED") })).toEqual({ kind: "failed", line: EDIT_FAILED_LINE });
+    expect(editStateOf({ pendingEdit: pending("failed") })).toEqual({ kind: "failed", line: EDIT_FAILED_LINE });
+  });
+
+  test("the thumbnail previews the turn against the pipeline's own crop only", () => {
+    // No rotation by the pipeline: a quarter turn right shows as one.
+    expect(previewTurns({ pendingEdit: pending("rendering") })).toBe(1);
+    // The pipeline turned it 90° counter-clockwise (3 turns clockwise): the edit's 1 is 2 more.
+    expect(previewTurns({ rotationDegrees: 90, pendingEdit: pending("rendering") })).toBe(2);
+    // After an earlier hand edit the shown crop's turns aren't known: no guess.
+    expect(previewTurns({ editVersion: 1, pendingEdit: pending("rendering") })).toBe(0);
+    expect(previewTurns({ pendingEdit: pending("failed") })).toBe(0);
+  });
+
+  test("the thumbnail's key moves with the edit version", () => {
+    expect(scanKey(3, undefined)).toBe("3:0");
+    expect(scanKey(3, { editVersion: 2 })).toBe("3:2");
+  });
+
+  test("a Saved tile opens the line's photo, view-only while on its way, else the scan", () => {
+    const card = { _id: "c1", cardNumber: "47", cardName: "Le'Veon Bell" } as IntakeMatchRow["card"];
+    const row = (photos: IntakeMatchRow["photos"]) =>
+      ({ photos, savedCopyId: "copy1", frontIndex: 4, card }) as Pick<IntakeMatchRow, "photos" | "savedCopyId" | "frontIndex" | "card">;
+    expect(savedPhotoTarget(row("attached"), "job1")).toEqual({
+      kind: "copy",
+      copyId: "copy1",
+      side: "front",
+      title: "Front of #47 Le'Veon Bell",
+    });
+    expect(savedPhotoTarget(row("pending"), "job1")).toMatchObject({ kind: "scan", entryIndex: 4, viewOnly: PHOTOS_ON_THEIR_WAY_LINE });
+    expect(savedPhotoTarget(row("failed"), "job1")).toMatchObject({ kind: "scan", entryIndex: 4, viewOnly: undefined });
+  });
+});
+
+describe("NEO-481: a box-run tile's own price", () => {
+  test("starts at the run's Min price, else the common price (dollars), else blank", () => {
+    expect(pricePrefill(150, 0.4)).toBe(150);
+    expect(pricePrefill(undefined, 0.4)).toBe(40);
+    expect(pricePrefill(undefined, null)).toBeNull();
+    expect(pricePrefill(undefined, undefined)).toBeNull();
+  });
+
+  test("blank, or the price it started at, is the default: nothing to keep", () => {
+    expect(tilePrice("", 150)).toEqual({ ok: true, own: undefined });
+    expect(tilePrice("1.50", 150)).toEqual({ ok: true, own: undefined });
+    expect(tilePrice("$1.5", 150)).toEqual({ ok: true, own: undefined });
+    expect(tilePrice("2.50", 150)).toEqual({ ok: true, own: 250 });
+    expect(tilePrice("0.40", null)).toEqual({ ok: true, own: 40 });
+  });
+
+  test("refuses what isn't a price, and anything past the cap", () => {
+    expect(tilePrice("1.2.3", 150)).toEqual({ ok: false, line: PRICE_INVALID_LINE });
+    expect(tilePrice("1.234", 150)).toEqual({ ok: false, line: PRICE_INVALID_LINE });
+    expect(tilePrice(String(MAX_PRICE_CENTS / 100), 150)).toEqual({ ok: true, own: MAX_PRICE_CENTS });
+    expect(tilePrice(String(MAX_PRICE_CENTS / 100 + 1), 150)).toEqual({ ok: false, line: PRICE_TOO_HIGH_LINE });
+  });
+
+  test("parseMinPrice still reads the Min price field the same way", () => {
+    expect(parseMinPrice("$1,250.5")).toBe(125050);
+    expect(parseMinPrice(" ")).toBeUndefined();
+    expect(parseMinPrice("abc")).toBe("invalid");
   });
 });

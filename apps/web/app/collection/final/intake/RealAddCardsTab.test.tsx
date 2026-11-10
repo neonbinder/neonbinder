@@ -14,7 +14,7 @@
  * collector's own; and "See what's syncing" after Done.
  */
 
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { useEffect, type ReactNode, type Ref } from "react";
 import { MemoryRouter, useLocation, useNavigate, useSearchParams } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -2739,9 +2739,12 @@ describe("NEO-441: the Pairing column's button says what it needs next", () => {
     setRun(runId, { images: Array.from({ length: count }, (_, i) => photo(i)) });
     return { runId, ...render(<Tab runId={runId} />) };
   };
-  // The tile, not its Set aside (NEO-446) or Try again button, which name the photo too.
+  // The tile, not its Set aside (NEO-446), Try again, or photo and Crop by hand (NEO-481)
+  // buttons, which name the photo too.
   const tile = (entryIndex: number) =>
-    screen.getByRole("button", { name: new RegExp(`^(?!Set aside |Try again: ).*scan-${entryIndex}\\.jpg`) });
+    screen.getByRole("button", {
+      name: new RegExp(`^(?!Set aside |Try again: |Open photo |Crop by hand: ).*scan-${entryIndex}\\.jpg`),
+    });
   const pick = (entryIndex: number) => fireEvent.click(tile(entryIndex));
   const button = (name: string) => screen.getByRole<HTMLButtonElement>("button", { name });
   const anyPairButton = () => screen.queryByRole("button", { name: new RegExp(`^(${SELECT_TWO}|${SELECT_PARTNER}|${PAIR})$`) });
@@ -2834,7 +2837,7 @@ describe("NEO-441: the Pairing column's button says what it needs next", () => {
 
   it("does not show with one photo in the pile", async () => {
     pile(1);
-    await screen.findByRole("button", { name: /^(?!Set aside |Try again: ).*scan-0\.jpg/ });
+    await screen.findByRole("button", { name: /^(?!Set aside |Try again: |Open photo |Crop by hand: ).*scan-0\.jpg/ });
     expect(anyPairButton()).toBeNull();
   });
 
@@ -3430,6 +3433,229 @@ describe("NEO-446: the run's line, the zip wording and Start a new run", () => {
       mocks.data.job = null;
       render(<Screen initial="/collection/final/intake" />);
       expect(document.activeElement).not.toBe(zoneInput());
+    });
+  });
+});
+
+describe("NEO-481: every photo opens the card photo viewer", () => {
+  const CARD = "#47 Le'Veon Bell";
+  const reviewRow = (extra: Record<string, unknown> = {}) => ({
+    _id: "match1",
+    pairId: "pair1",
+    frontIndex: 0,
+    backIndex: 1,
+    cardId: "card1",
+    card: { _id: "card1", cardNumber: "47", cardName: "Le'Veon Bell" },
+    candidates: [],
+    variations: [],
+    band: "matched",
+    reason: "numberAndPlayer",
+    confidence: 97,
+    haveHere: 0,
+    ...extra,
+  });
+  /** One pair waiting in Needs you (or Saved, with `savedAt`), on a binder or box run. */
+  const showPair = (
+    extra: Record<string, unknown> = {},
+    { homeKind = "binder", images = [photo(0), photo(1)] }: { homeKind?: "binder" | "box"; images?: unknown[] } = {},
+  ) => {
+    const runId = freshRunId();
+    setRun(runId, { images, homeKind });
+    mocks.data.pairs = [{ frontIndex: 0, backIndex: 1 }];
+    mocks.data.matches = [reviewRow(extra)];
+    return { runId, ...render(<Tab runId={runId} />) };
+  };
+  const viewerHeading = (name: string) => screen.queryByRole("heading", { name, level: 2 });
+  const closeViewer = () => {
+    const heading = viewerHeading(`Front of ${CARD}`) ?? screen.getByRole("heading", { name: /^(Front|Back) of / });
+    const panel = heading.closest("div.space-y-4") as HTMLElement;
+    fireEvent.click(within(panel).getByRole("button", { name: "Close" }));
+  };
+
+  it("a waiting card's front and back each open the viewer on that side, and Close closes it", () => {
+    showPair();
+    expect(viewerHeading(`Front of ${CARD}`)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: `Open front of ${CARD}` }));
+    expect(viewerHeading(`Front of ${CARD}`)).toBeTruthy();
+    closeViewer();
+    expect(viewerHeading(`Front of ${CARD}`)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: `Open back of ${CARD}` }));
+    expect(viewerHeading(`Back of ${CARD}`)).toBeTruthy();
+  });
+
+  it("e on the selected card opens its front, and the tab's keys stop while the viewer is open", () => {
+    showPair();
+    const yes = screen.getByRole("button", { name: `Yes, save ${CARD}` });
+    yes.focus();
+    fireEvent.keyDown(yes, { key: "e" });
+    expect(viewerHeading(`Front of ${CARD}`)).toBeTruthy();
+    fireEvent.keyDown(yes, { key: "s" });
+    expect(mocks.mutation("placeholderPairing.swapPairSides")).not.toHaveBeenCalled();
+  });
+
+  it("a loose photo opens on its own name; a failed one says Crop by hand, but never one over the pixel ceiling", () => {
+    const runId = freshRunId();
+    setRun(runId, {
+      images: [
+        photo(0),
+        { entryIndex: 1, originalName: "scan-1.jpg", status: "failed", errorCode: "PHOTO_TIMED_OUT", retries: 0 },
+        { entryIndex: 2, originalName: "scan-2.jpg", status: "failed", errorCode: "ENTRY_TOO_MANY_PIXELS", retries: 0 },
+      ],
+    });
+    render(<Tab runId={runId} />);
+    fireEvent.click(screen.getByRole("button", { name: "Open photo scan-0.jpg" }));
+    expect(viewerHeading("scan-0.jpg")).toBeTruthy();
+    cleanup();
+    render(<Tab runId={runId} />);
+    const crop = screen.getByRole("button", { name: "Crop by hand: scan-1.jpg" });
+    expect(crop.textContent).toBe("Crop by hand");
+    fireEvent.click(crop);
+    expect(viewerHeading("scan-1.jpg")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Crop by hand: scan-2.jpg" })).toBeNull();
+  });
+
+  it("a Saved tile opens its photo; while its photos are on their way, the viewer says so", () => {
+    showPair({ savedCopyId: "copy1", savedQuantity: 1, savedAt: 5, photos: "attached" });
+    fireEvent.click(screen.getByRole("button", { name: `Open saved photo of ${CARD}` }));
+    expect(viewerHeading(`Front of ${CARD}`)).toBeTruthy();
+    expect(screen.queryByText("Photos are on their way.")).toBeNull();
+    cleanup();
+    showPair({ savedCopyId: "copy1", savedQuantity: 1, savedAt: 5, photos: "pending" });
+    fireEvent.click(screen.getByRole("button", { name: `Open saved photo of ${CARD}` }));
+    expect(screen.getByText("Photos are on their way.")).toBeTruthy();
+  });
+
+  describe("an edit rendering in the background", () => {
+    const pending = (extra: Record<string, unknown>) => ({
+      turns: 1,
+      crop: null,
+      version: 2,
+      requestedAt: 1,
+      ...extra,
+    });
+
+    it("says Touching it up… on the tile, with nothing to press", () => {
+      showPair({}, { images: [{ ...photo(0), pendingEdit: pending({ status: "rendering" }) }, photo(1)] });
+      expect(screen.getByText("Touching it up…")).toBeTruthy();
+      expect(screen.queryByRole("button", { name: /Try again: touch up/ })).toBeNull();
+    });
+
+    it("a failed render says why, Try again saves the same edit again, and Keep the old one drops it", async () => {
+      const save = mocks.mutation("photoEdits.saveScanEdit");
+      const dismiss = mocks.mutation("photoEdits.dismissPhotoEditFailure");
+      const { runId } = showPair(
+        {},
+        {
+          images: [
+            { ...photo(0), editVersion: 1, pendingEdit: pending({ status: "failed", error: "ENTRY_NOT_FOUND" }) },
+            photo(1),
+          ],
+        },
+      );
+      expect(screen.getByText(/The original scan just aged out/)).toBeTruthy();
+      expect(screen.queryByText("ENTRY_NOT_FOUND")).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: `Try again: touch up the front of ${CARD}` }));
+      await waitFor(() =>
+        expect(save).toHaveBeenCalledWith({
+          jobId: `job-${runId}`,
+          entryIndex: 0,
+          edit: { turns: 1, crop: null },
+          expectVersion: 1,
+        }),
+      );
+      fireEvent.click(screen.getByRole("button", { name: `Keep the old one: the front of ${CARD}` }));
+      await waitFor(() =>
+        expect(dismiss).toHaveBeenCalledWith({ ref: { kind: "scan", jobId: `job-${runId}`, entryIndex: 0 } }),
+      );
+    });
+  });
+
+  describe("the per-card price (box runs only)", () => {
+    const priceField = () => screen.queryByRole<HTMLInputElement>("textbox", { name: `Price, ${CARD}` });
+    const setPrice = () => mocks.mutation("intakeRuns.setIntakeMatchPrice");
+    const save = () => mocks.mutation("intakeRuns.saveIntakeMatch");
+    const boxWithMin = (minPriceCents?: number, extra: Record<string, unknown> = {}) => {
+      const view = showPair(extra, { homeKind: "box" });
+      mocks.data.run = { ...(mocks.data.run as object), defaults: minPriceCents === undefined ? undefined : { minPriceCents } };
+      view.rerender(<Tab runId={view.runId} />);
+      return view;
+    };
+
+    it("a binder's cards never show a price; the count is still there", () => {
+      showPair();
+      expect(screen.getByRole("textbox", { name: "Count" })).toBeTruthy();
+      expect(priceField()).toBeNull();
+    });
+
+    it("a box's cards start at the run's Min price, else the common price", () => {
+      boxWithMin(150);
+      expect(priceField()?.value).toBe("1.50");
+      cleanup();
+      mocks.data.common = { v1: 0.4 };
+      boxWithMin(undefined);
+      expect(priceField()?.value).toBe("0.40");
+    });
+
+    it("shows the card's own kept price over the default", () => {
+      boxWithMin(150, { minPriceCents: 325 });
+      expect(priceField()?.value).toBe("3.25");
+    });
+
+    it("p jumps to the selected card's price", () => {
+      boxWithMin(150);
+      const yes = screen.getByRole("button", { name: `Yes, save ${CARD}` });
+      yes.focus();
+      fireEvent.keyDown(yes, { key: "p" });
+      expect(document.activeElement).toBe(priceField());
+    });
+
+    it("Enter keeps a new price on the card and saves it at that price, never a common price", async () => {
+      const { runId } = boxWithMin(150);
+      const field = priceField()!;
+      fireEvent.change(field, { target: { value: "2.50" } });
+      fireEvent.keyDown(field, { key: "Enter" });
+      await waitFor(() =>
+        expect(save()).toHaveBeenCalledWith({ runId, pairId: "pair1", quantity: 1, details: { minPriceCents: 250 } }),
+      );
+      expect(setPrice()).toHaveBeenCalledWith({ runId, pairId: "pair1", priceCents: 250 });
+      expect(mocks.setCommon).not.toHaveBeenCalled();
+    });
+
+    it("Enter on the price it started at, or a blank, writes nothing and saves at the default", async () => {
+      const { runId } = boxWithMin(150);
+      fireEvent.keyDown(priceField()!, { key: "Enter" });
+      await waitFor(() => expect(save()).toHaveBeenCalledWith({ runId, pairId: "pair1", quantity: 1 }));
+      expect(setPrice()).not.toHaveBeenCalled();
+      cleanup();
+      save().mockClear();
+      const second = boxWithMin(150);
+      fireEvent.change(priceField()!, { target: { value: "" } });
+      fireEvent.keyDown(priceField()!, { key: "Enter" });
+      await waitFor(() => expect(save()).toHaveBeenCalledWith({ runId: second.runId, pairId: "pair1", quantity: 1 }));
+      expect(setPrice()).not.toHaveBeenCalled();
+    });
+
+    it("going back to the default clears a kept price rather than writing the default down", async () => {
+      const { runId } = boxWithMin(150, { minPriceCents: 325 });
+      const field = priceField()!;
+      fireEvent.focus(field);
+      fireEvent.change(field, { target: { value: "1.50" } });
+      fireEvent.blur(field);
+      await waitFor(() => expect(setPrice()).toHaveBeenCalledWith({ runId, pairId: "pair1", priceCents: null }));
+      expect(save()).not.toHaveBeenCalled();
+    });
+
+    it("Escape puts back what it showed; a price that doesn't parse says so and saves nothing", () => {
+      boxWithMin(150);
+      const field = priceField()!;
+      fireEvent.change(field, { target: { value: "9" } });
+      fireEvent.keyDown(field, { key: "Escape" });
+      expect(field.value).toBe("1.50");
+      fireEvent.change(field, { target: { value: "1.2.3" } });
+      fireEvent.keyDown(field, { key: "Enter" });
+      expect(notify).toHaveBeenCalledWith("That price doesn't look right. Try something like 1.50.");
+      expect(save()).not.toHaveBeenCalled();
+      expect(setPrice()).not.toHaveBeenCalled();
     });
   });
 });

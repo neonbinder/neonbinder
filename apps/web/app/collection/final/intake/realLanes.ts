@@ -2,6 +2,8 @@ import type { FunctionReturnType } from "convex/server";
 import type { api } from "@/convex/_generated/api";
 import type { IntakeReason } from "@/convex/lib/intakeMatch";
 import { ENTRY_TOO_MANY_PIXELS, type RejectedSummary, type RejectionKind } from "@/convex/lib/extractRejections";
+import { MAX_PRICE_CENTS } from "@/lib/collection/price-cap";
+import { openingTurns, type PhotoEdit, type QuarterTurns } from "@/lib/photo-edit/geometry";
 
 /**
  * NEO-382 — the signed-in intake screen's lanes, worked out from the three
@@ -542,4 +544,152 @@ export function runSummary(s: {
       : `Everything is read. ${s.waiting} waiting for you, ${s.saved} saved.`;
   }
   return `${s.saved} saved.${note}`;
+}
+
+/* ------------------------------------------------------------------ */
+/* NEO-481: hand edits of a scan, the viewer, and the per-card price    */
+/* ------------------------------------------------------------------ */
+
+/**
+ * NEO-481 — what a photo click on Add cards asks the viewer to open. The
+ * server decides per open whether a scan or copy photo can be edited, and from
+ * what (`photoEdits.photoEditSource`); `viewOnly` is only the cases this
+ * screen already knows can't be (a saved pair whose photos are on their way).
+ */
+export type PhotoViewerTarget =
+  | {
+      kind: "scan";
+      jobId: string;
+      entryIndex: number;
+      /** "Front of #47 Le'Veon Bell", or the photo's own name for a loose one. */
+      title: string;
+      /** Set when the screen knows it opens view-only, with the line that says why. */
+      viewOnly?: string;
+    }
+  | { kind: "copy"; copyId: string; side: "front" | "back"; title: string }
+  | {
+      kind: "demo";
+      itemId: string;
+      side: "front" | "back";
+      title: string;
+      edit: PhotoEdit | undefined;
+      onSave: (edit: PhotoEdit) => void;
+    };
+
+/** The viewer's heading for one side of a card. */
+export function sideTitle(side: "front" | "back", card: string): string {
+  return `${side === "front" ? "Front" : "Back"} of ${card}`;
+}
+
+/** Said in the viewer for a saved pair whose photos haven't reached its line yet. */
+export const PHOTOS_ON_THEIR_WAY_LINE = "Photos are on their way.";
+
+/** NEO-481 — the fields of a scan's hand edit the lanes read (`listPlaceholderImages`). */
+export type ScanEditView = Partial<Pick<IntakeImage, "editVersion" | "pendingEdit" | "rotationDegrees">>;
+
+/** Said on a tile while a saved edit renders in the background (the old photo stays up). */
+export const EDIT_RENDERING_LINE = "Touching it up…";
+/** Said when the render failed and the server gave no reason a collector can read. */
+export const EDIT_FAILED_LINE = "That edit didn't take. Your old photo is still here.";
+/** The render found the scan's original gone (`ENTRY_NOT_FOUND`): the plan's own words. */
+export const EDIT_ORIGINAL_GONE_LINE =
+  "The original scan just aged out. Your crop wasn't saved; open it again to crop the saved photo.";
+
+export type EditState = { kind: "rendering" } | { kind: "failed"; line: string } | null;
+
+/**
+ * Where a scan's last edit stands: still rendering, failed (with the words to
+ * show beside Try again), or nothing to say. A server reason that is a bare
+ * code (`ENTRY_NOT_FOUND`) is never shown as it is.
+ */
+export function editStateOf(image: ScanEditView | undefined): EditState {
+  const pending = image?.pendingEdit;
+  if (!pending) return null;
+  if (pending.status === "rendering") return { kind: "rendering" };
+  const error = pending.error?.trim();
+  if (error === "ENTRY_NOT_FOUND") return { kind: "failed", line: EDIT_ORIGINAL_GONE_LINE };
+  if (!error || /^[A-Z][A-Z0-9_]*$/.test(error)) return { kind: "failed", line: EDIT_FAILED_LINE };
+  return { kind: "failed", line: error };
+}
+
+/**
+ * The quarter turns a tile's thumbnail turns by while an edit renders, so the
+ * collector sees the turn at once (a CSS preview, never saved). Only the turn:
+ * the thumbnail is the old crop, and a new crop drawn on it would be a guess.
+ * Known only against the pipeline's own crop (no earlier hand edit), whose
+ * turns come from `rotationDegrees`; otherwise 0.
+ */
+export function previewTurns(image: ScanEditView | undefined): QuarterTurns {
+  const pending = image?.pendingEdit;
+  if (!pending || pending.status !== "rendering" || image.editVersion !== undefined) return 0;
+  return ((((pending.turns - openingTurns(image.rotationDegrees)) % 4) + 4) % 4) as QuarterTurns;
+}
+
+/**
+ * A scan thumbnail's identity: its entry and the edit version it shows. Used
+ * as the thumbnail's React key, so a new version mints a new signed URL.
+ * Row D adds the version to `ScanImage`'s own effect key too; this key stays
+ * harmless beside it.
+ */
+export function scanKey(entryIndex: number, image: ScanEditView | undefined): string {
+  return `${entryIndex}:${image?.editVersion ?? 0}`;
+}
+
+/**
+ * What a Saved tile's photo opens: the saved line's own photo once it is
+ * there; view-only while it is on its way; else the scan (the server says
+ * whether it is still there to edit).
+ */
+export function savedPhotoTarget(
+  row: Pick<IntakeMatchRow, "photos" | "savedCopyId" | "frontIndex" | "card">,
+  jobId: string,
+): PhotoViewerTarget {
+  const title = sideTitle("front", cardLabel(row.card));
+  if (row.photos === "attached" && row.savedCopyId) return { kind: "copy", copyId: row.savedCopyId, side: "front", title };
+  return {
+    kind: "scan",
+    jobId,
+    entryIndex: row.frontIndex,
+    title,
+    viewOnly: row.photos === "pending" ? PHOTOS_ON_THEIR_WAY_LINE : undefined,
+  };
+}
+
+/**
+ * The Min price field's text as cents: blank is none (`undefined`), "$1,250.5"
+ * is 125050; anything else, or more than two decimals, is "invalid".
+ */
+export function parseMinPrice(text: string): number | undefined | "invalid" {
+  const t = text.trim().replace(/[$,\s]/g, "");
+  if (t === "") return undefined;
+  if (!/^\d+(\.\d{0,2})?$|^\.\d{1,2}$/.test(t)) return "invalid";
+  return Math.round(Number(t) * 100);
+}
+
+/**
+ * NEO-481 — what a box-run tile's price starts at: the run's Min price, else
+ * the collector's common price for the set (in dollars, as the store answers
+ * it). Null when there is neither.
+ */
+export function pricePrefill(runMinCents: number | undefined, commonDollars: number | null | undefined): number | null {
+  if (runMinCents !== undefined) return runMinCents;
+  return typeof commonDollars === "number" ? Math.round(commonDollars * 100) : null;
+}
+
+/** A price that doesn't parse. */
+export const PRICE_INVALID_LINE = "That price doesn't look right. Try something like 1.50.";
+/** A price past the cap. */
+export const PRICE_TOO_HIGH_LINE = "Whoa, that's more than any card sells for. Try a lower price.";
+
+/**
+ * NEO-481 — a tile's typed price, as the row should keep it. `own` undefined
+ * is "the run's default": blank, or the same as what the field started at, so
+ * the default is never frozen onto the copy. Only ever this card's own price;
+ * a common price is never written from a tile.
+ */
+export function tilePrice(text: string, prefill: number | null): { ok: true; own: number | undefined } | { ok: false; line: string } {
+  const parsed = parseMinPrice(text);
+  if (parsed === "invalid") return { ok: false, line: PRICE_INVALID_LINE };
+  if (parsed !== undefined && parsed > MAX_PRICE_CENTS) return { ok: false, line: PRICE_TOO_HIGH_LINE };
+  return { ok: true, own: parsed === undefined || parsed === prefill ? undefined : parsed };
 }
