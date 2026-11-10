@@ -750,7 +750,11 @@ export const saveIntakeMatch = mutation({
     const overrides = Object.fromEntries(
       Object.entries(args.details ?? {}).filter(([, value]) => value !== undefined),
     );
-    const rowPrice = row.minPriceCents !== undefined ? { minPriceCents: row.minPriceCents } : {};
+    // A tile's own price is a box run's only: a binder holds no cards for sale,
+    // so a row price left on a binder run's tile (one moved, or written before
+    // the run moved) is never applied.
+    const home = row.minPriceCents !== undefined ? await ctx.db.get(run.homeId) : null;
+    const rowPrice = row.minPriceCents !== undefined && home?.kind === "box" ? { minPriceCents: row.minPriceCents } : {};
     const d = cleanDefaults({ ...run.defaults, ...rowPrice, ...overrides }) ?? {};
     // NEO-370: the run's price goes on the copy (NEO-378's `minPriceCents`),
     // so a listed box's saves list at it. `addOne` refuses a save into a
@@ -813,6 +817,10 @@ export const setIntakeMatchPrice = mutation({
     const row = await requireRunRow(ctx, run, args.pairId);
     if (row.savedAt !== undefined) {
       refuse(COLLECTION_ERRORS.invalid, "That card is already saved. Change its price on the card.");
+    }
+    const home = args.priceCents !== null ? await ctx.db.get(run.homeId) : null;
+    if (args.priceCents !== null && home?.kind !== "box") {
+      refuse(COLLECTION_ERRORS.invalid, "Only cards going in a box get a price here.");
     }
     if (args.priceCents !== null && !isPriceCents(args.priceCents)) {
       refuse(COLLECTION_ERRORS.invalid, "Price needs to be a dollar amount of zero or more.");

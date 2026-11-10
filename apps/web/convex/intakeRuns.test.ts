@@ -1930,6 +1930,31 @@ describe("NEO-481 — a box run tile's own price", () => {
     expect(await priceOf(w, runId, pairId)).toBeUndefined();
   });
 
+  test("a binder run takes no tile price, and a row price left on one is never applied", async () => {
+    const w = await world([{ number: "1", players: ["Doc Gooden"] }]);
+    const runId = await startRun(w, w.fx.baseId);
+    const pairId = w.pairIds[0];
+    // A price written while the run's home was a box, then the home became a binder.
+    await w.me.mutation(api.intakeRuns.setIntakeMatchPrice, { runId, pairId, priceCents: 400 });
+    await w.t.run((ctx) => ctx.db.patch(w.boxId, { kind: "binder" }));
+    await expect(w.me.mutation(api.intakeRuns.setIntakeMatchPrice, { runId, pairId, priceCents: 500 })).rejects.toThrow(
+      /in a box get a price/,
+    );
+    expect(await priceOf(w, runId, pairId)).toBe(400);
+    await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId, quantity: 1 });
+    expect((await copyOf(w, w.fx.gooden1))?.minPriceCents).toBeUndefined();
+  });
+
+  test("a binder run's tile price can still be cleared", async () => {
+    const w = await world([{ number: "1", players: ["Doc Gooden"] }]);
+    const runId = await startRun(w, w.fx.baseId);
+    const pairId = w.pairIds[0];
+    await w.me.mutation(api.intakeRuns.setIntakeMatchPrice, { runId, pairId, priceCents: 400 });
+    await w.t.run((ctx) => ctx.db.patch(w.boxId, { kind: "binder" }));
+    await w.me.mutation(api.intakeRuns.setIntakeMatchPrice, { runId, pairId, priceCents: null });
+    expect(await priceOf(w, runId, pairId)).toBeUndefined();
+  });
+
   test("a saved tile, a bad price, and another collector's run are refused", async () => {
     const w = await world([{ number: "1", players: ["Doc Gooden"] }]);
     const runId = await startRun(w, w.fx.baseId);

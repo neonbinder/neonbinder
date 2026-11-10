@@ -670,13 +670,13 @@ export async function commitEditedPhoto(
     return { ok: false, error: "This photo changed while it was being touched up. Open it again to edit the new one." };
   }
   const now = Date.now();
-  // The commit stamps both rows with one `since`: that pairing is how Undo
-  // finds the row an edit replaced (`undoEditedPhoto`).
   await ctx.db.patch(live._id, { status: "replaced", since: now });
   await ctx.db.patch(photo._id, {
     status: "live",
     side: live.side,
     since: now,
+    // Undo's target, cleared by the Undo so an edit is undone once (`undoEditedPhoto`).
+    replacesPhotoId: live._id,
     contentType: args.contentType,
     imageBytes: args.imageBytes,
     thumbBytes: args.thumbBytes,
@@ -690,8 +690,10 @@ export async function commitEditedPhoto(
 
 /**
  * The Undo of an edit, inside the hour its replaced row lives: the edit row
- * goes back to `replaced` and the row it replaced comes back live, on the
- * side the edit sits now. Refused once anything else changed that side.
+ * goes back to `replaced` and the row it replaced (`replacesPhotoId`) comes
+ * back live, on the side the edit sits now. The edit row's pointer is cleared
+ * with it, so an undone edit can't be undone again (no toggling forever).
+ * Refused once anything else changed that side, or the replaced row is gone.
  */
 export async function undoEditedPhoto(
   ctx: MutationCtx,
@@ -703,15 +705,13 @@ export async function undoEditedPhoto(
   if (!copy || copy.ownerId !== args.ownerId) refuse(COLLECTION_ERRORS.notFound, "That copy isn't in your collection.");
   const edited = await ctx.db.get(args.photoId);
   if (!edited || edited.ownerId !== args.ownerId || edited.copyId !== copy._id) return nothing();
-  if (edited.status !== "live" || edited.source !== "edit") return nothing();
-  const replaced = await ctx.db
-    .query("collectionCopyPhotos")
-    .withIndex("by_copy_and_status", (q) => q.eq("copyId", copy._id).eq("status", "replaced"))
-    .take(50);
-  const previous = replaced.find((row) => row.since === edited.since && row._id !== edited._id);
-  if (!previous) return nothing();
+  if (edited.status !== "live" || edited.source !== "edit" || !edited.replacesPhotoId) return nothing();
+  const previous = await ctx.db.get(edited.replacesPhotoId);
+  if (!previous || previous.status !== "replaced" || previous.copyId !== copy._id || previous.ownerId !== args.ownerId) {
+    return nothing();
+  }
   const now = Date.now();
-  await ctx.db.patch(edited._id, { status: "replaced", since: now });
+  await ctx.db.patch(edited._id, { status: "replaced", since: now, replacesPhotoId: undefined });
   await ctx.db.patch(previous._id, { status: "live", side: edited.side, since: now });
   await queueIfHomeLists(ctx, args.ownerId, copy);
   return null;

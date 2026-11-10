@@ -13,7 +13,14 @@ import { convexTest } from "convex-test";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
-import { PLACEHOLDER_MAX_IMAGE_EDITS, MAX_COPY_PHOTO_EDITS_PER_HOUR } from "./lib/photoEdit";
+import {
+  MAX_COPY_PHOTO_EDITS_PER_HOUR,
+  MAX_PHOTO_EDIT_RENDERS_IN_FLIGHT,
+  MAX_PHOTO_EDIT_RENDERS_PER_HOUR,
+  PHOTO_EDIT_RENDER_STALE_MS,
+  PHOTO_EDIT_TICKET_WINDOW_MS,
+  PLACEHOLDER_MAX_IMAGE_EDITS,
+} from "./lib/photoEdit";
 import { PHOTO_EDIT_COPY } from "./photoEditRows";
 import schema from "./schema";
 import { drainScheduled } from "../lib/testing/drain-scheduled";
@@ -52,7 +59,8 @@ vi.mock("@google-cloud/storage", () => {
     async exists() {
       return [bucket.has(this.name)];
     }
-    async getSignedUrl() {
+    async getSignedUrl(options: { expires: number }) {
+      signedExpiries.push(options.expires);
       return [`https://storage.example/${this.name}`];
     }
   }
@@ -77,6 +85,8 @@ let scanRenders: ScanRender[];
 let bytesRenders: Array<{ edit: unknown; imageBytes: number }>;
 let puts: Array<{ key: string; body: string }>;
 let r2Gets: string[];
+let warmups: number;
+let signedExpiries: number[];
 let onScanRender: (body: ScanRender) => Response;
 
 const json = (status: number, body: unknown) =>
@@ -109,6 +119,8 @@ beforeEach(() => {
   bytesRenders = [];
   puts = [];
   r2Gets = [];
+  warmups = 0;
+  signedExpiries = [];
   onScanRender = renderOk({
     players: ["Dwight Gooden"],
     team: "Mets",
@@ -131,7 +143,10 @@ beforeEach(() => {
   vi.stubGlobal("fetch", (async (input: string | URL | Request, init?: RequestInit) => {
     const request = input instanceof Request ? input : new Request(input, init);
     const url = new URL(request.url);
-    if (url.pathname === "/warmup") return json(200, { status: "warm" });
+    if (url.pathname === "/warmup") {
+      warmups += 1;
+      return json(200, { status: "warm" });
+    }
     if (url.pathname === "/render-edit") {
       if ((request.headers.get("content-type") ?? "").startsWith("multipart/form-data")) {
         const form = await request.formData();
@@ -599,39 +614,40 @@ describe("commitScanEdit: re-checks what the reserve saw", () => {
   });
 });
 
-describe("saved copies", () => {
-  async function copyWorld(opts: { scan?: boolean } = {}) {
-    const w = await world({ match: null });
-    const { copyId, photoId, token } = await w.t.run(async (ctx) => {
-      const copyId = await ctx.db.insert("collectionCopies", {
-        ownerId: OWNER,
-        cardId: w.fx.gooden1,
-        variantId: w.fx.baseId,
-        setId: w.fx.setId,
-        homeId: w.homeId,
-        quantity: 1,
-        hasPhotos: true,
-        lastUpdated: 0,
-      });
-      const token = "b".repeat(32);
-      const photoId = await ctx.db.insert("collectionCopyPhotos", {
-        ownerId: OWNER,
-        copyId,
-        side: "front",
-        token,
-        contentType: "image/jpeg",
-        imageBytes: 100,
-        thumbBytes: 10,
-        status: "live",
-        since: 1,
-        ...(opts.scan ? { source: "intake" as const, scan: { jobId: JOB, entryIndex: FRONT } } : {}),
-      });
-      return { copyId, photoId, token };
+async function copyWorld(opts: { scan?: boolean } = {}) {
+  const w = await world({ match: null });
+  const { copyId, photoId, token } = await w.t.run(async (ctx) => {
+    const copyId = await ctx.db.insert("collectionCopies", {
+      ownerId: OWNER,
+      cardId: w.fx.gooden1,
+      variantId: w.fx.baseId,
+      setId: w.fx.setId,
+      homeId: w.homeId,
+      quantity: 1,
+      hasPhotos: true,
+      lastUpdated: 0,
     });
-    const rows = () => w.t.run((ctx) => ctx.db.query("collectionCopyPhotos").collect());
-    return { ...w, copyId, photoId, token, rows };
-  }
-  const copyRef = (copyId: Id<"collectionCopies">) => ({ kind: "copy" as const, copyId, side: "front" as const });
+    const token = "b".repeat(32);
+    const photoId = await ctx.db.insert("collectionCopyPhotos", {
+      ownerId: OWNER,
+      copyId,
+      side: "front",
+      token,
+      contentType: "image/jpeg",
+      imageBytes: 100,
+      thumbBytes: 10,
+      status: "live",
+      since: 1,
+      ...(opts.scan ? { source: "intake" as const, scan: { jobId: JOB, entryIndex: FRONT } } : {}),
+    });
+    return { copyId, photoId, token };
+  });
+  const rows = () => w.t.run((ctx) => ctx.db.query("collectionCopyPhotos").collect());
+  return { ...w, copyId, photoId, token, rows };
+}
+const copyRef = (copyId: Id<"collectionCopies">) => ({ kind: "copy" as const, copyId, side: "front" as const });
+
+describe("saved copies", () => {
 
   test("a hand photo opens on the stored image; its edit renders from the bytes and replaces the live photo", async () => {
     const w = await copyWorld();
@@ -747,5 +763,273 @@ describe("saved copies", () => {
     });
     expect(await w.t.query(internal.copyPhotos.pendingUpload, { ownerId: OWNER, photoId })).toBeNull();
     await drainScheduled(w.t);
+  });
+});
+
+describe("security C1: render tickets hold each collector to a rate and an in-flight count", () => {
+  const tickets = (w: Awaited<ReturnType<typeof world>>) =>
+    w.t.run((ctx) => ctx.db.query("photoEditTickets").collect());
+  const seedTickets = (w: Awaited<ReturnType<typeof world>>, n: number, fields: { ageMs: number; settled?: boolean; ownerId?: string }) =>
+    w.t.run(async (ctx) => {
+      const now = Date.now();
+      for (let i = 0; i < n; i++) {
+        await ctx.db.insert("photoEditTickets", {
+          ownerId: fields.ownerId ?? OWNER,
+          createdAt: now - fields.ageMs,
+          ...(fields.settled ? { settledAt: now } : {}),
+        });
+      }
+    });
+  const saveScan = (w: Awaited<ReturnType<typeof world>>) =>
+    w.me.action(api.photoEdits.saveScanEdit, { jobId: JOB, entryIndex: FRONT, edit: EDIT, expectVersion: 0 });
+
+  test("a save takes a ticket; the commit settles it", async () => {
+    const w = await world();
+    await saveScan(w);
+    const [taken] = await tickets(w);
+    expect(taken).toMatchObject({ ownerId: OWNER });
+    expect(taken.settledAt).toBeUndefined();
+    await drainScheduled(w.t);
+    expect((await tickets(w))[0].settledAt).toBeGreaterThan(0);
+  });
+
+  test("a failed render settles its ticket too", async () => {
+    const w = await world();
+    onScanRender = () => json(422, { error_code: "INVALID_EDIT", detail: "x" });
+    await saveScan(w);
+    await drainScheduled(w.t);
+    expect((await tickets(w))[0].settledAt).toBeGreaterThan(0);
+  });
+
+  test("an hour's worth of renders refuses the next save, scan or copy, and writes nothing", async () => {
+    const w = await world();
+    await seedTickets(w, MAX_PHOTO_EDIT_RENDERS_PER_HOUR, { ageMs: 10 * 60 * 1000, settled: true });
+    await expect(saveScan(w)).rejects.toThrow(PHOTO_EDIT_COPY.tooManyRenders);
+    expect((await w.image())?.edits).toBeUndefined();
+    expect(await tickets(w)).toHaveLength(MAX_PHOTO_EDIT_RENDERS_PER_HOUR);
+    expect(scanRenders).toEqual([]);
+
+    const c = await copyWorld();
+    await seedTickets(c, MAX_PHOTO_EDIT_RENDERS_PER_HOUR, { ageMs: 10 * 60 * 1000, settled: true });
+    await expect(
+      c.me.action(api.photoEdits.saveCopyPhotoEdit, {
+        copyId: c.copyId,
+        side: "front",
+        edit: { turns: 2, crop: null },
+        expectToken: c.token,
+        mode: "stored",
+      }),
+    ).rejects.toThrow(PHOTO_EDIT_COPY.tooManyRenders);
+    expect(await c.rows()).toHaveLength(1);
+  });
+
+  test("tickets older than the hour, and another collector's, do not count", async () => {
+    const w = await world();
+    await seedTickets(w, MAX_PHOTO_EDIT_RENDERS_PER_HOUR, { ageMs: PHOTO_EDIT_TICKET_WINDOW_MS + 1000, settled: true });
+    await seedTickets(w, MAX_PHOTO_EDIT_RENDERS_PER_HOUR, { ageMs: 1000, settled: true, ownerId: OTHER });
+    await expect(saveScan(w)).resolves.toEqual({ version: 1 });
+  });
+
+  test("too many renders in flight refuses the next; stale or settled ones don't hold it", async () => {
+    const w = await world();
+    await seedTickets(w, MAX_PHOTO_EDIT_RENDERS_IN_FLIGHT, { ageMs: 1000 });
+    await expect(saveScan(w)).rejects.toThrow(PHOTO_EDIT_COPY.tooManyInFlight);
+    expect((await w.image())?.pendingEdit).toBeUndefined();
+
+    const stale = await world();
+    await seedTickets(stale, MAX_PHOTO_EDIT_RENDERS_IN_FLIGHT, { ageMs: PHOTO_EDIT_RENDER_STALE_MS + 1000 });
+    await seedTickets(stale, MAX_PHOTO_EDIT_RENDERS_IN_FLIGHT, { ageMs: 1000, settled: true });
+    await expect(saveScan(stale)).resolves.toEqual({ version: 1 });
+
+    const c = await copyWorld();
+    await seedTickets(c, MAX_PHOTO_EDIT_RENDERS_IN_FLIGHT, { ageMs: 1000 });
+    await expect(
+      c.me.action(api.photoEdits.saveCopyPhotoEdit, {
+        copyId: c.copyId,
+        side: "front",
+        edit: { turns: 2, crop: null },
+        expectToken: c.token,
+        mode: "stored",
+      }),
+    ).rejects.toThrow(PHOTO_EDIT_COPY.tooManyInFlight);
+  });
+
+  test("the hourly sweep drops tickets older than the hour, and only those", async () => {
+    const w = await world();
+    await seedTickets(w, 3, { ageMs: PHOTO_EDIT_TICKET_WINDOW_MS + 1000, settled: true });
+    await seedTickets(w, 2, { ageMs: 1000 });
+    await w.t.mutation(internal.photoEditRows.sweepPhotoEditTickets, {});
+    expect(await tickets(w)).toHaveLength(2);
+  });
+});
+
+describe("security C3: another collector's photos", () => {
+  test("saving a scan edit is refused and writes nothing", async () => {
+    const w = await world();
+    await expect(
+      w.them.action(api.photoEdits.saveScanEdit, { jobId: JOB, entryIndex: FRONT, edit: EDIT, expectVersion: 0 }),
+    ).rejects.toThrow(/isn't in your batch/);
+    const row = await w.image();
+    expect(row?.edits).toBeUndefined();
+    expect(row?.pendingEdit).toBeUndefined();
+    expect(await w.t.run((ctx) => ctx.db.query("photoEditTickets").collect())).toEqual([]);
+  });
+
+  test.each(["stored", "original"] as const)("saving a copy edit (%s) is refused and writes nothing", async (mode) => {
+    const w = await copyWorld({ scan: true });
+    await expect(
+      w.them.action(api.photoEdits.saveCopyPhotoEdit, {
+        copyId: w.copyId,
+        side: "front",
+        edit: EDIT,
+        expectToken: w.token,
+        mode,
+      }),
+    ).rejects.toThrow(/isn't in your collection/);
+    expect(await w.rows()).toHaveLength(1);
+    expect((await w.image())?.edits).toBeUndefined();
+    expect(await w.t.run((ctx) => ctx.db.query("photoEditTickets").collect())).toEqual([]);
+    await drainScheduled(w.t);
+    expect(scanRenders).toEqual([]);
+    expect(bytesRenders).toEqual([]);
+  });
+
+  test("an Undo of their edit is refused and nothing moves", async () => {
+    const w = await copyWorld();
+    const { photoId } = await w.me.action(api.photoEdits.saveCopyPhotoEdit, {
+      copyId: w.copyId,
+      side: "front",
+      edit: { turns: 1, crop: null },
+      expectToken: w.token,
+      mode: "stored",
+    });
+    await drainScheduled(w.t);
+    const before = await w.rows();
+    await expect(w.them.action(api.photoEdits.undoCopyPhotoEdit, { copyId: w.copyId, photoId })).rejects.toThrow(
+      /isn't in your collection/,
+    );
+    expect(await w.rows()).toEqual(before);
+  });
+
+  test("dismissing their failures (scan or copy) clears nothing", async () => {
+    const w = await copyWorld();
+    const failed = { ...EDIT, version: 1, requestedAt: 1, status: "failed" as const, error: "x" };
+    const editRowId = await w.t.run(async (ctx) => {
+      await ctx.db.patch(w.frontId, { edits: 1, pendingEdit: failed });
+      return await ctx.db.insert("collectionCopyPhotos", {
+        ownerId: OWNER,
+        copyId: w.copyId,
+        side: "front",
+        token: "d".repeat(32),
+        contentType: "image/jpeg",
+        imageBytes: 0,
+        thumbBytes: 0,
+        status: "pending",
+        since: Date.now(),
+        source: "edit",
+        pendingEdit: { ...failed, version: 0 },
+      });
+    });
+    await w.them.action(api.photoEdits.dismissPhotoEditFailure, { ref: scanRef });
+    await w.them.action(api.photoEdits.dismissPhotoEditFailure, { ref: copyRef(w.copyId) });
+    expect((await w.image())?.pendingEdit?.status).toBe("failed");
+    expect((await w.t.run((ctx) => ctx.db.get(editRowId)))?.pendingEdit?.status).toBe("failed");
+  });
+
+  test("opening their copy's photo shows nothing of it", async () => {
+    const w = await copyWorld({ scan: true });
+    const source = await w.them.action(api.photoEdits.photoEditSource, { ref: copyRef(w.copyId) });
+    expect(source.mode).toBe("viewOnly");
+    expect(source.sourceUrl).toBeUndefined();
+    expect(source.expectToken).toBeUndefined();
+    expect(source.edit).toBeUndefined();
+    expect(signedExpiries).toEqual([]);
+  });
+});
+
+describe("security notes", () => {
+  test("N1: the original's signed URL lives 15 minutes", async () => {
+    const w = await world();
+    const before = Date.now();
+    await w.me.action(api.photoEdits.photoEditSource, { ref: scanRef });
+    expect(signedExpiries).toHaveLength(1);
+    expect(signedExpiries[0] - before).toBeLessThanOrEqual(15 * 60 * 1000 + 1000);
+    expect(signedExpiries[0] - before).toBeGreaterThan(14 * 60 * 1000);
+  });
+
+  test("N2: the renderer warm-up is debounced deployment-wide", async () => {
+    const w = await world();
+    const c = await copyWorld();
+    await w.me.action(api.photoEdits.photoEditSource, { ref: scanRef });
+    await w.me.action(api.photoEdits.photoEditSource, { ref: scanRef });
+    await drainScheduled(w.t);
+    expect(warmups).toBe(1);
+    // A view-only open never warms.
+    await c.them.action(api.photoEdits.photoEditSource, { ref: copyRef(c.copyId) });
+    await drainScheduled(c.t);
+    expect(warmups).toBe(1);
+  });
+
+  test("N3: a landed edit points at the photo it replaced; Undo clears it, so it can't toggle", async () => {
+    const w = await copyWorld();
+    const { photoId } = await w.me.action(api.photoEdits.saveCopyPhotoEdit, {
+      copyId: w.copyId,
+      side: "front",
+      edit: { turns: 1, crop: null },
+      expectToken: w.token,
+      mode: "stored",
+    });
+    await drainScheduled(w.t);
+    const edited = () => w.t.run((ctx) => ctx.db.get(photoId));
+    expect((await edited())?.replacesPhotoId).toBe(w.photoId);
+    await w.me.action(api.photoEdits.undoCopyPhotoEdit, { copyId: w.copyId, photoId });
+    expect((await edited())?.replacesPhotoId).toBeUndefined();
+    // Even if it came back live by another path, with no pointer it can't be undone.
+    await w.t.run(async (ctx) => {
+      await ctx.db.patch(w.photoId, { status: "replaced" });
+      await ctx.db.patch(photoId, { status: "live" });
+    });
+    await expect(w.me.action(api.photoEdits.undoCopyPhotoEdit, { copyId: w.copyId, photoId })).rejects.toThrow(
+      /can't be undone/,
+    );
+  });
+
+  test("N6: a copy render checks the scan's key parts before touching the bucket or the service", async () => {
+    const w = await copyWorld({ scan: true });
+    const { photoId } = await w.t.run(async (ctx) => {
+      const id = await ctx.db.insert("collectionCopyPhotos", {
+        ownerId: OWNER,
+        copyId: w.copyId,
+        side: "front",
+        token: "e".repeat(32),
+        contentType: "image/jpeg",
+        imageBytes: 0,
+        thumbBytes: 0,
+        status: "pending",
+        since: Date.now(),
+        source: "edit",
+        pendingEdit: { ...EDIT, version: 1, requestedAt: Date.now(), status: "rendering" as const },
+      });
+      return { photoId: id };
+    });
+    await w.t.action(internal.photoEdits.renderCopyEdit, {
+      ownerId: OWNER,
+      photoId,
+      token: "e".repeat(32),
+      expectToken: w.token,
+      liveContentType: "image/jpeg",
+      edit: EDIT,
+      scan: {
+        imageId: w.frontId,
+        jobId: "../../other-user",
+        entryIndex: FRONT,
+        version: 1,
+        expectVersion: 0,
+        imageStatus: "done",
+      },
+    });
+    expect(scanRenders).toEqual([]);
+    expect(puts).toEqual([]);
+    expect((await w.t.run((ctx) => ctx.db.get(photoId)))?.pendingEdit?.status).toBe("failed");
   });
 });

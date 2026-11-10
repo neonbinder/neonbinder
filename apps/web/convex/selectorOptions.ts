@@ -9780,7 +9780,7 @@ export const resetIntakeRunsBatch = internalMutation({
 });
 
 /**
- * Internal: drain `placeholderPairs`, `placeholderImages`, then `placeholderJobs`,
+ * Internal: drain `photoEditTickets`, `placeholderPairs`, `placeholderImages`, then `placeholderJobs`,
  * looped by `runSetBuilderReset` after the intake runs that read them. NEO-427.
  * Every account's, armed like every batch here. Jobs last, so a pair or image
  * never outlives the job that owns it.
@@ -9795,6 +9795,8 @@ export const resetPlaceholderJobsBatch = internalMutation({
     assertResetArmed();
     let room = RESET_BATCH_SIZE;
     for (const table of [
+      // NEO-481 — hand photo edit render tickets (per owner, an hour's worth).
+      "photoEditTickets",
       "placeholderPairs",
       "placeholderImages",
       "placeholderJobs",

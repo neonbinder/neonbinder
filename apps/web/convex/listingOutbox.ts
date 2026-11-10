@@ -406,12 +406,21 @@ async function upsertOutboxRow(
     )
     .unique();
   // NEO-481: the flag only ever goes on; a later upsert without it keeps it.
-  const flag = refreshPhotos ? { refreshPhotos: true as const } : {};
+  // A new photo change starts the refresh's tries again (`refreshAttempts`).
+  const flag = refreshPhotos ? { refreshPhotos: true as const, refreshAttempts: undefined } : {};
   if (existing) {
     await ctx.db.patch(existing._id, { seq: existing.seq + 1, changedAt: now, variantId, ...flag });
     return;
   }
-  await ctx.db.insert("listingOutbox", { ownerId, platform, cardId, variantId, seq: 1, changedAt: now, ...flag });
+  await ctx.db.insert("listingOutbox", {
+    ownerId,
+    platform,
+    cardId,
+    variantId,
+    seq: 1,
+    changedAt: now,
+    ...(refreshPhotos ? { refreshPhotos: true as const } : {}),
+  });
 }
 
 /** What a kick did, for tests and logs. */

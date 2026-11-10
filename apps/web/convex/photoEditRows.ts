@@ -43,8 +43,12 @@ import {
 import { noteIntakePairsChanged } from "./intakeRuns";
 import { ENTRY_TOO_MANY_PIXELS } from "./lib/extractRejections";
 import {
+  EDIT_WARMUP_WINDOW_MS,
+  MAX_PHOTO_EDIT_RENDERS_IN_FLIGHT,
+  MAX_PHOTO_EDIT_RENDERS_PER_HOUR,
   openingTurns,
   PHOTO_EDIT_RENDER_STALE_MS,
+  PHOTO_EDIT_TICKET_WINDOW_MS,
   photoEditOf,
   photoEditProblem,
   PLACEHOLDER_MAX_IMAGE_EDITS,
@@ -87,7 +91,83 @@ export const PHOTO_EDIT_COPY = {
   agedOutMidSave: "The original scan just aged out. Your crop wasn't saved; open it again to crop the saved photo.",
   renderFailed: "We couldn't make that edit just now. Try again.",
   unusable: "We couldn't make a photo from that crop. Try a different crop.",
+  tooManyRenders: "Whoa, that's a lot of photo edits for one hour. Take a breather and try again in a bit.",
+  tooManyInFlight: "Hang tight, a few of your edits are still being made. Try again once they land.",
 } as const;
+
+// ───────────────────────────────────────────────────────────────────────────
+// Render tickets: the per-owner rate and in-flight limits (security C1)
+// ───────────────────────────────────────────────────────────────────────────
+
+/**
+ * Take a render ticket for this owner, or refuse. More than
+ * `MAX_PHOTO_EDIT_RENDERS_PER_HOUR` renders in the last hour, or
+ * `MAX_PHOTO_EDIT_RENDERS_IN_FLIGHT` unsettled ones newer than the stale
+ * window, is refused. A ticket whose render was lost (a crashed action never
+ * settles it) stops counting as in flight once it goes stale, so a collector
+ * is never stuck behind it; it still counts toward the hour.
+ */
+async function takeRenderTicket(ctx: MutationCtx, ownerId: string, now: number): Promise<Id<"photoEditTickets">> {
+  const recent = await ctx.db
+    .query("photoEditTickets")
+    .withIndex("by_owner_and_created", (q) => q.eq("ownerId", ownerId).gt("createdAt", now - PHOTO_EDIT_TICKET_WINDOW_MS))
+    .take(MAX_PHOTO_EDIT_RENDERS_PER_HOUR);
+  if (recent.length >= MAX_PHOTO_EDIT_RENDERS_PER_HOUR) refuse(COLLECTION_ERRORS.limit, PHOTO_EDIT_COPY.tooManyRenders);
+  const inFlight = recent.filter((t) => t.settledAt === undefined && now - t.createdAt < PHOTO_EDIT_RENDER_STALE_MS);
+  if (inFlight.length >= MAX_PHOTO_EDIT_RENDERS_IN_FLIGHT) refuse(COLLECTION_ERRORS.limit, PHOTO_EDIT_COPY.tooManyInFlight);
+  return await ctx.db.insert("photoEditTickets", { ownerId, createdAt: now });
+}
+
+/** The render this ticket stood for has committed or failed. */
+async function settleTicket(ctx: MutationCtx, ticketId: Id<"photoEditTickets"> | undefined): Promise<void> {
+  if (!ticketId) return;
+  const ticket = await ctx.db.get(ticketId);
+  if (ticket && ticket.settledAt === undefined) await ctx.db.patch(ticket._id, { settledAt: Date.now() });
+}
+
+const SWEEP_PAGE = 500;
+
+/** Hourly: drop tickets older than the rate window. Pages itself. */
+export const sweepPhotoEditTickets = internalMutation({
+  args: {},
+  returns: v.null(),
+  handler: async (ctx) => {
+    const old = await ctx.db
+      .query("photoEditTickets")
+      .withIndex("by_created", (q) => q.lt("createdAt", Date.now() - PHOTO_EDIT_TICKET_WINDOW_MS))
+      .take(SWEEP_PAGE);
+    for (const ticket of old) await ctx.db.delete(ticket._id);
+    if (old.length === SWEEP_PAGE) await ctx.scheduler.runAfter(0, internal.photoEditRows.sweepPhotoEditTickets, {});
+    return null;
+  },
+});
+
+/** The edit renderer's warm-up row in `preprocessWarmupState` (its timestamp field is shared with the heavy row's). */
+export const EDIT_WARMUP_STATE_KEY = "editRendererWarmup";
+
+/**
+ * Deployment-wide debounce of the edit renderer's FAST warm-up (security N2),
+ * the way `enqueueHeavyWarmups` holds the heavy one: only the first open in
+ * any `EDIT_WARMUP_WINDOW_MS` schedules it, however many collectors open the
+ * viewer. Read and write of the one row are in this transaction, so OCC lets
+ * one caller through per window.
+ */
+export const claimEditWarmup = internalMutation({
+  args: {},
+  returns: v.boolean(),
+  handler: async (ctx) => {
+    const now = Date.now();
+    const state = await ctx.db
+      .query("preprocessWarmupState")
+      .withIndex("by_key", (q) => q.eq("key", EDIT_WARMUP_STATE_KEY))
+      .unique();
+    if (state && now - state.heavyWarmEnqueuedAt < EDIT_WARMUP_WINDOW_MS) return false;
+    if (state) await ctx.db.patch(state._id, { heavyWarmEnqueuedAt: now });
+    else await ctx.db.insert("preprocessWarmupState", { key: EDIT_WARMUP_STATE_KEY, heavyWarmEnqueuedAt: now });
+    await ctx.scheduler.runAfter(0, internal.photoEdits.warmEditRenderer, {});
+    return true;
+  },
+});
 
 // ───────────────────────────────────────────────────────────────────────────
 // Shared reads
@@ -282,6 +362,7 @@ export const reserveScanEdit = internalMutation({
     // A pair the collector picked by hand or set aside is never matched again,
     // so its crop is rendered without the paid re-read.
     const classify = !(match?.byUser || match?.setAside);
+    const ticketId = await takeRenderTicket(ctx, args.userId, now);
     await ctx.db.patch(image._id, {
       edits: version,
       pendingEdit: { ...photoEditOf(args.edit), version, requestedAt: now, status: "rendering" },
@@ -297,6 +378,7 @@ export const reserveScanEdit = internalMutation({
       imageStatus: image.status,
       ...(image.settledAt !== undefined ? { settledAt: image.settledAt } : {}),
       classify,
+      ticketId,
     });
     return { version };
   },
@@ -344,9 +426,11 @@ export const commitScanEdit = internalMutation({
     settledAt: v.optional(v.number()),
     /** The service's classify fields, untouched; narrowed here. Absent = render only. */
     classified: v.optional(v.any()),
+    ticketId: v.optional(v.id("photoEditTickets")),
   },
   returns: v.union(v.null(), v.string()),
   handler: async (ctx, args) => {
+    await settleTicket(ctx, args.ticketId);
     const image = await ctx.db.get(args.imageId);
     const blocked = await scanCommitBlock(ctx, image, args);
     if (blocked || !image) {
@@ -416,9 +500,15 @@ export const commitScanEdit = internalMutation({
 
 /** The render failed: the scan keeps its old photo and says why. */
 export const failScanEdit = internalMutation({
-  args: { imageId: v.id("placeholderImages"), version: v.number(), error: v.string() },
+  args: {
+    imageId: v.id("placeholderImages"),
+    version: v.number(),
+    error: v.string(),
+    ticketId: v.optional(v.id("photoEditTickets")),
+  },
   returns: v.null(),
   handler: async (ctx, args) => {
+    await settleTicket(ctx, args.ticketId);
     await failScan(ctx, args.imageId, args.version, args.error);
     return null;
   },
@@ -470,6 +560,9 @@ export const reserveCopyEdit = internalMutation({
         ...(image.settledAt !== undefined ? { settledAt: image.settledAt } : {}),
       };
     }
+    // Both modes render on the service (scan form or bytes form): one ticket.
+    // A refusal anywhere below rolls it back with the rest of the reserve.
+    const ticketId = await takeRenderTicket(ctx, args.userId, now);
     const { photoId, token, live } = await reserveEditPhoto(ctx, {
       ownerId: args.userId,
       copyId: args.copyId,
@@ -485,6 +578,7 @@ export const reserveCopyEdit = internalMutation({
       liveContentType: live.contentType,
       edit: photoEditOf(args.edit),
       ...(scan ? { scan } : {}),
+      ticketId,
     });
     return { photoId };
   },
@@ -513,9 +607,11 @@ export const commitCopyEdit = internalMutation({
         settledAt: v.optional(v.number()),
       }),
     ),
+    ticketId: v.optional(v.id("photoEditTickets")),
   },
   returns: v.union(v.null(), v.string()),
   handler: async (ctx, args) => {
+    await settleTicket(ctx, args.ticketId);
     const photo = await ctx.db.get(args.photoId);
     if (!photo?.pendingEdit) return PHOTO_EDIT_COPY.changedElsewhere;
     const image = args.scan ? await ctx.db.get(args.scan.imageId) : null;
@@ -554,9 +650,10 @@ export const commitCopyEdit = internalMutation({
 
 /** The render failed: the copy keeps its live photo and the edit row says why. */
 export const failCopyEdit = internalMutation({
-  args: { photoId: v.id("collectionCopyPhotos"), error: v.string() },
+  args: { photoId: v.id("collectionCopyPhotos"), error: v.string(), ticketId: v.optional(v.id("photoEditTickets")) },
   returns: v.null(),
   handler: async (ctx, args) => {
+    await settleTicket(ctx, args.ticketId);
     await failEditedPhoto(ctx, args.photoId, args.error);
     return null;
   },

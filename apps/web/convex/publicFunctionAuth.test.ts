@@ -2393,6 +2393,8 @@ describe("NEO-358: the collection and its catalog reads require a signed-in call
     ["photoEditRows.ts", "failCopyEdit", "internalMutation"],
     ["photoEditRows.ts", "undoCopyEdit", "internalMutation"],
     ["photoEditRows.ts", "dismissFailure", "internalMutation"],
+    ["photoEditRows.ts", "sweepPhotoEditTickets", "internalMutation"],
+    ["photoEditRows.ts", "claimEditWarmup", "internalMutation"],
     ["photoEdits.ts", "renderScanEdit", "internalAction"],
     ["photoEdits.ts", "renderCopyEdit", "internalAction"],
     ["photoEdits.ts", "warmEditRenderer", "internalAction"],

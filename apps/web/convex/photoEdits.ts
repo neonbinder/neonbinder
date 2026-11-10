@@ -72,8 +72,8 @@ const imageStatusValidator = v.union(
   v.literal("failed"),
 );
 
-/** How long the original's signed read URL works: the editor's session. */
-const SOURCE_URL_TTL_MS = 30 * 60 * 1000;
+/** How long the original's signed read URL works: the house standard for a signed read. */
+const SOURCE_URL_TTL_MS = 15 * 60 * 1000;
 /** Waits between tries at the service: a cold instance can answer 429 while it starts. */
 const RENDER_RETRY_DELAYS_MS = [2_000, 8_000];
 /** One file's PUT to R2, retries included. */
@@ -216,7 +216,8 @@ export const photoEditSource = action({
   handler: async (ctx, args): Promise<PhotoSource> => {
     const userId = await requireSignedIn(ctx);
     const source = await sourceOf(ctx, userId, args.ref);
-    if (source.mode !== "viewOnly") await ctx.scheduler.runAfter(0, internal.photoEdits.warmEditRenderer, {});
+    // Debounced deployment-wide (`claimEditWarmup`): one warm-up a minute, however many open.
+    if (source.mode !== "viewOnly") await ctx.runMutation(internal.photoEditRows.claimEditWarmup, {});
     return source;
   },
 });
@@ -404,6 +405,8 @@ const scanRenderArgs = {
   imageStatus: imageStatusValidator,
   settledAt: v.optional(v.number()),
   classify: v.boolean(),
+  /** The render ticket (`photoEditTickets`) the commit or failure settles. */
+  ticketId: v.optional(v.id("photoEditTickets")),
 };
 
 /**
@@ -430,6 +433,7 @@ export const renderScanEdit = internalAction({
         imageStatus: args.imageStatus,
         ...(args.settledAt !== undefined ? { settledAt: args.settledAt } : {}),
         ...(classified ? { classified } : {}),
+        ...(args.ticketId ? { ticketId: args.ticketId } : {}),
       });
     } catch (err) {
       console.warn(`[renderScanEdit] ${args.imageId} v${args.version}: ${messageOf(err)}`);
@@ -437,6 +441,7 @@ export const renderScanEdit = internalAction({
         imageId: args.imageId,
         version: args.version,
         error: failureWords(err, PHOTO_EDIT_COPY.scanGone),
+        ...(args.ticketId ? { ticketId: args.ticketId } : {}),
       });
     }
     return null;
@@ -489,11 +494,13 @@ export const renderCopyEdit = internalAction({
         settledAt: v.optional(v.number()),
       }),
     ),
+    ticketId: v.optional(v.id("photoEditTickets")),
   },
   returns: v.null(),
   handler: async (ctx, args): Promise<null> => {
+    const ticket = args.ticketId ? { ticketId: args.ticketId } : {};
     const fail = async (error: string) => {
-      await ctx.runMutation(internal.photoEditRows.failCopyEdit, { photoId: args.photoId, error });
+      await ctx.runMutation(internal.photoEditRows.failCopyEdit, { photoId: args.photoId, error, ...ticket });
     };
     const config = r2Config();
     if (!config) {
@@ -504,6 +511,8 @@ export const renderCopyEdit = internalAction({
       let sizes: { image: Uint8Array<ArrayBuffer>; thumb: Uint8Array<ArrayBuffer>; contentType: "image/jpeg" | "image/webp" };
       if (args.scan) {
         const scan = args.scan;
+        // Every part of the GCS keys below is checked first (security N6).
+        checkKeyParts(args.ownerId, scan.jobId, scan.entryIndex);
         await renderScan(ctx, {
           jobId: scan.jobId,
           userId: args.ownerId,
@@ -549,6 +558,7 @@ export const renderCopyEdit = internalAction({
         contentType: sizes.contentType,
         imageBytes: sizes.image.byteLength,
         thumbBytes: sizes.thumb.byteLength,
+        ...ticket,
         ...(args.scan
           ? {
               scan: {

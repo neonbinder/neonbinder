@@ -4710,6 +4710,24 @@ export default defineSchema({
    *     back (`restoreCopy`, `undoBoxQuantity`), then swept with its objects.
    * All reads and writes go through `convex/copyPhotos.ts`.
    */
+  /**
+   * ── NEO-481: one row per hand photo edit sent to the renderer ───────────
+   *
+   * Renders run on the shared preprocess service outside the capacity-pinned
+   * pipeline pool, so each owner is held to a rate (renders an hour) and a
+   * number in flight (`settledAt` unset, newer than the stale window). The
+   * reserve inserts one; the commit or the failure settles it. Rows older
+   * than an hour are swept hourly (`photoEditRows.sweepPhotoEditTickets`).
+   */
+  photoEditTickets: defineTable({
+    ownerId: v.string(),
+    createdAt: v.number(),
+    settledAt: v.optional(v.number()),
+  })
+    .index("by_owner_and_created", ["ownerId", "createdAt"])
+    // The hourly sweep.
+    .index("by_created", ["createdAt"]),
+
   collectionCopyPhotos: defineTable({
     ownerId: v.string(),
     copyId: v.id("collectionCopies"),
@@ -4735,6 +4753,9 @@ export default defineSchema({
     // NEO-481 — on a `pending` edit row only: the edit being rendered in the
     // background, or the reason its render failed (Try again re-saves).
     pendingEdit: v.optional(pendingPhotoEditValidator),
+    // NEO-481 — on a landed edit row: the photo it replaced, while Undo can
+    // still put that one back. Undo clears it, so an edit is undone once.
+    replacesPhotoId: v.optional(v.id("collectionCopyPhotos")),
   })
     .index("by_copy_and_status", ["copyId", "status"])
     // The per-account test reset.
@@ -4807,6 +4828,13 @@ export default defineSchema({
      * takes it away.
      */
     refreshPhotos: v.optional(v.literal(true)),
+    /**
+     * NEO-481 — BSC runs that tried this card's photo refresh and could not
+     * finish it. At `MAX_PHOTO_REFRESH_ATTEMPTS` the drain drops the refresh
+     * and records a listing problem, so a refresh that keeps failing never
+     * retries forever. A new photo change starts the count again.
+     */
+    refreshAttempts: v.optional(v.number()),
   })
     // The hook's upsert (all three, `.unique()`), and nothing else.
     .index("by_owner_platform_card", ["ownerId", "platform", "cardId"])

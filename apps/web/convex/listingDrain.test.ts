@@ -39,15 +39,17 @@ import {
   DRAIN_LEASE_MS,
   DRAIN_WATCH_TICK_MS,
   drainOwnerImpl,
+  MAX_PHOTO_REFRESH_ATTEMPTS,
   MAX_PHOTO_UPLOADS_PER_VARIANT,
   MAX_PROGRESS_STEPS,
+  PHOTO_REFRESH_GAVE_UP_DETAIL,
   ProgressLedger,
   readSheets,
   rejectedPushDetail,
   settleSteps,
   type DrainCtx,
 } from "./listingDrain";
-import { kickOwnerDrains } from "./listingOutbox";
+import { enqueueListingCards, kickOwnerDrains } from "./listingOutbox";
 import { BSC_SELLER_COPY, BSC_SELLER_TIMEOUTS_MS, type BscSellerSession } from "./adapters/bscSeller";
 import { EBAY_TIMEOUTS_MS } from "./adapters/ebaySeller";
 import { cancelScheduled } from "../lib/testing/drain-scheduled";
@@ -3075,6 +3077,46 @@ describe("NEO-481: a photo refresh reaches a BSC row that already shows a seller
     await run(s);
 
     expect(fetched).toEqual(["copy-photos/tok-front-1/image.jpg"]);
+  });
+
+  test("security N4: a refresh that keeps failing gives up after its last try, with a problem on the record", async () => {
+    const s = await setup();
+    const { v, bsc, copyId, card } = await listedWithSellerPhotos(s, ["front"]);
+    await shoot(s, copyId, "front", "tok-front-2");
+    await flag(s, card, v.variantId);
+    const failingRun = () =>
+      drainOwnerImpl(stubCtx(s.t), { ownerId: OWNER, platform: "bsc" }, { fetchPhoto: async () => null });
+
+    for (let tried = 1; tried < MAX_PHOTO_REFRESH_ATTEMPTS; tried++) {
+      await failingRun();
+      expect(await outbox(s)).toEqual([
+        expect.objectContaining({ cardId: card, refreshPhotos: true, refreshAttempts: tried }),
+      ]);
+      expect((await record(s, v.variantId))?.problems).toEqual([]);
+    }
+    await failingRun();
+
+    expect(await outbox(s)).toEqual([]);
+    expect(bsc.puts).toEqual([]);
+    expect(await record(s, v.variantId)).toMatchObject({
+      status: "idle",
+      problems: [{ cardId: card, reason: "rejected", detail: PHOTO_REFRESH_GAVE_UP_DETAIL }],
+    });
+  });
+
+  test("security N4: a new photo change starts the refresh's tries again", async () => {
+    const s = await setup();
+    const { v, copyId, card } = await listedWithSellerPhotos(s, ["front"]);
+    await shoot(s, copyId, "front", "tok-front-2");
+    await flag(s, card, v.variantId);
+    for (let i = 0; i < 2; i++) {
+      await drainOwnerImpl(stubCtx(s.t), { ownerId: OWNER, platform: "bsc" }, { fetchPhoto: async () => null });
+    }
+    expect((await outbox(s))[0]).toMatchObject({ refreshAttempts: 2 });
+    await s.t.run((ctx) => enqueueListingCards(ctx, { ownerId: OWNER, cardIds: [card], refreshPhotos: true }));
+    const [row] = await outbox(s);
+    expect(row.refreshPhotos).toBe(true);
+    expect(row.refreshAttempts).toBeUndefined();
   });
 
   test("past the per-variant upload cap, the flagged rows not reached stay queued and the rest clear", async () => {

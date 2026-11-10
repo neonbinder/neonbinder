@@ -139,6 +139,14 @@ export const COPY_PAGE_SIZE = 500;
 export const MAX_PHOTO_UPLOADS_PER_VARIANT = 40;
 /** The sync record keeps at most this many problems (`problemsTotal` is exact). */
 export const MAX_STORED_PROBLEMS = 200;
+/**
+ * NEO-481 — BSC runs that may try one card's photo refresh before the drain
+ * gives up on it: the flag is dropped and a listing problem says so.
+ */
+export const MAX_PHOTO_REFRESH_ATTEMPTS = 5;
+/** The problem a refresh that gave up leaves on the Sync status tab. */
+export const PHOTO_REFRESH_GAVE_UP_DETAIL =
+  "NeonBinder couldn't send this card's new photo after several tries. Edit or replace the photo to try again.";
 const MAX_DETAIL = 160;
 const MAX_ERROR = 300;
 
@@ -502,6 +510,8 @@ const snapshotRowValidator = v.object({
   currentVariantId: v.union(v.id("selectorOptions"), v.null()),
   /** NEO-481: a photo of the card changed; BSC uploads it even over a seller photo. */
   refreshPhotos: v.optional(v.literal(true)),
+  /** NEO-481: runs that could not finish that refresh so far. */
+  refreshAttempts: v.optional(v.number()),
 });
 export type SnapshotRow = typeof snapshotRowValidator.type;
 
@@ -552,6 +562,7 @@ export const outboxSnapshot = internalQuery({
         seq: row.seq,
         currentVariantId: card ? card.selectorOptionId : null,
         ...(row.refreshPhotos === true ? { refreshPhotos: true as const } : {}),
+        ...(row.refreshAttempts !== undefined ? { refreshAttempts: row.refreshAttempts } : {}),
       });
     }
     return out;
@@ -748,12 +759,21 @@ export const finishVariant = internalMutation({
     ),
     /** NEO-415: the run's ledger as the drainer holds it (settled here; absent keeps the stored one, settled). */
     progress: v.optional(v.array(listingSyncStepValidator)),
+    /** NEO-481: kept rows whose photo refresh this run could not finish; each counts one more try. */
+    refreshTried: v.optional(v.array(v.object({ rowId: v.id("listingOutbox"), seq: v.number() }))),
   },
   returns: v.object({ cleared: v.number(), repointed: v.number(), recorded: v.boolean() }),
   handler: async (ctx, args) => {
     const now = Date.now();
     let cleared = 0;
     let repointed = 0;
+    for (const { rowId, seq } of args.refreshTried ?? []) {
+      const row = await ctx.db.get(rowId);
+      // At the seq the run read: a change since (a new photo) starts the count again.
+      if (row && row.seq === seq && row.ownerId === args.ownerId && row.refreshPhotos === true) {
+        await ctx.db.patch(rowId, { refreshAttempts: (row.refreshAttempts ?? 0) + 1 });
+      }
+    }
     for (const { rowId, seq } of args.clear) {
       const row = await ctx.db.get(rowId);
       if (row && row.seq === seq && row.ownerId === args.ownerId) {
@@ -1547,6 +1567,12 @@ export function settleRows(snapshot: readonly SnapshotRow[], variantId: Id<"sele
     refreshCardIds: new Set(mine.filter((r) => r.refreshPhotos === true).map((r) => r.cardId as string)),
     /** Row ids of `mine` by card, so a refresh this run could not finish keeps its row. */
     mineRowOfCard: new Map(mine.map((r) => [r.cardId as string, r.rowId as string])),
+    /** NEO-481: each refreshed card's row, its seq, and the tries it has had. */
+    refreshRowOfCard: new Map(
+      mine
+        .filter((r) => r.refreshPhotos === true)
+        .map((r) => [r.cardId as string, { rowId: r.rowId, seq: r.seq, attempts: r.refreshAttempts ?? 0 }]),
+    ),
     gone: gone.map(({ rowId, seq }) => ({ rowId, seq })),
     repoint: moved.map(({ rowId, seq, currentVariantId }) => ({
       rowId,
@@ -1602,6 +1628,9 @@ async function syncVariant(
   // could not finish (the upload cap, a fetch or an upload that failed) stays
   // queued, flag and all, for the next run, as eBay keeps a card queued.
   const keepRowIds = new Set<string>();
+  // ...and each such row's try is counted, on an ok finish only (a run that
+  // failed as a whole tried nothing for one card in particular).
+  const refreshTried: Array<{ rowId: Id<"listingOutbox">; seq: number }> = [];
   const finish = async (outcome: FinishOutcome, clearMine: boolean): Promise<unknown> =>
     await ctx.runMutation(internal.listingDrain.finishVariant, {
       ownerId,
@@ -1612,6 +1641,7 @@ async function syncVariant(
       clear: clearMine ? [...rows.mine.filter((r) => !keepRowIds.has(r.rowId)), ...rows.gone] : rows.gone,
       repoint: rows.repoint,
       progress: ledger.steps(),
+      ...(clearMine && refreshTried.length > 0 ? { refreshTried } : {}),
     });
 
   const input = await ctx.runQuery(internal.listingDrain.variantSyncInput, { ownerId, variantId });
@@ -1785,9 +1815,18 @@ async function syncVariant(
     },
   });
   if (!photoKeys.ok) return await fail(photoKeys.failure);
+  // A refresh this run could not finish stays queued for the next, until its
+  // last try: then the flag goes with the row and the Sync status tab says so.
+  const refreshGaveUp: string[] = [];
   for (const cardId of photoKeys.refreshPending) {
+    const refreshRow = rows.refreshRowOfCard.get(cardId);
+    if (refreshRow && refreshRow.attempts + 1 >= MAX_PHOTO_REFRESH_ATTEMPTS) {
+      refreshGaveUp.push(cardId);
+      continue;
+    }
     const rowId = rows.mineRowOfCard.get(cardId);
     if (rowId !== undefined) keepRowIds.add(rowId);
+    if (refreshRow) refreshTried.push({ rowId: refreshRow.rowId, seq: refreshRow.seq });
   }
 
   const plan = photoKeys.value.size > 0 ? planBscSheet({ ...planInput, photoKeys: photoKeys.value }) : plan1;
@@ -1795,6 +1834,13 @@ async function syncVariant(
   const problems: StoredProblem[] = [...foldProblems, ...plan.problems]
     .map((p) => toStoredProblem(p, cardIds))
     .filter((p): p is StoredProblem => p !== null);
+  for (const cardId of refreshGaveUp) {
+    problems.push({
+      ...(cardIds.has(cardId) ? { cardId: cardId as Id<"cardChecklist"> } : {}),
+      reason: "rejected",
+      detail: PHOTO_REFRESH_GAVE_UP_DETAIL,
+    });
+  }
 
   // Conditions NB holds a listed row under (pushed now or already matching).
   const blockedCards = new Set(plan.problems.map((p) => p.cardId).filter((id): id is string => id !== undefined));

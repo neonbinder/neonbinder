@@ -22,6 +22,22 @@ export const MAX_COPY_PHOTO_EDITS_PER_HOUR = 60;
  * was lost (a crashed action), and the collector must not be stuck behind it.
  */
 export const PHOTO_EDIT_RENDER_STALE_MS = 3 * 60 * 1000;
+/**
+ * Renders one collector may send the preprocess service in an hour, scans and
+ * copies together (`photoEditTickets`). Renders run outside the
+ * capacity-pinned pipeline pool, so this is what keeps one account from
+ * starving everyone's batches.
+ */
+export const MAX_PHOTO_EDIT_RENDERS_PER_HOUR = 60;
+/** Renders one collector may have in flight at once (unsettled, not stale). */
+export const MAX_PHOTO_EDIT_RENDERS_IN_FLIGHT = 4;
+/** The rate window, and how long a ticket is kept before the sweep. */
+export const PHOTO_EDIT_TICKET_WINDOW_MS = 60 * 60 * 1000;
+/**
+ * The deployment-wide window in which a second edit-renderer warm-up is
+ * skipped: the fast warm-up's own fetch budget, the longest one can be in flight.
+ */
+export const EDIT_WARMUP_WINDOW_MS = 60_000;
 /** The largest source side we accept a crop frame for (a 64 MP scan is ~8000 px). */
 export const MAX_EDIT_SOURCE_SIDE = 50_000;
 

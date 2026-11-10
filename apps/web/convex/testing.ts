@@ -121,6 +121,13 @@ export const resetMyTestState = mutation({
     }
     // NEO-377 — their photos and files, live or waiting on an Undo.
     await dropOwnerPhotos(ctx, userId);
+    // NEO-481 — their photo edit render tickets, so a rerun inside the hour
+    // starts with the full rate and in-flight allowance.
+    const editTickets = await ctx.db
+      .query("photoEditTickets")
+      .withIndex("by_owner_and_created", (q) => q.eq("ownerId", userId))
+      .collect();
+    for (const row of editTickets) await ctx.db.delete(row._id);
 
     // NEO-359 — wants may name a container as their binder, so they go
     // before the containers too.
