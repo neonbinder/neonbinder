@@ -209,7 +209,7 @@
         "type": "object"
       },
       "ExtractEntry": {
-        "description": "One archive member's outcome, in zip order.\n\n`index` is the member's ordinal among non-ignored zip members and\npreserves zip order \u2014 downstream pairing in Convex reads it as scan\norder, so it is load-bearing, not cosmetic. Callers only ever hold\n`{job_id, user_id, index}`; there is deliberately no object key or path\nhere (the service derives keys \u2014 see `ExtractRequest`).\n\nAccepted entries carry the sniffed `content_type` and `size_bytes` of the\nbytes actually stored (post EXIF normalisation); rejected ones carry a\nstable machine `reason` instead and never fail the archive.",
+        "description": "One archive member's outcome, in natural filename order.\n\n`index` is the member's ordinal among non-ignored zip members, after the\nnatural filename sort in `zipsafe.iter_zip_members` \u2014 downstream pairing\nin Convex reads it as scan order, so it is load-bearing, not cosmetic.\nCallers only ever hold `{job_id, user_id, index}`; there is deliberately no\nobject key or path here (the service derives keys \u2014 see `ExtractRequest`).\n\nAccepted entries carry the sniffed `content_type` and `size_bytes` of the\nbytes actually stored (post EXIF normalisation); rejected ones carry a\nstable machine `reason` instead and never fail the archive.",
         "properties": {
           "accepted": {
             "title": "Accepted",
@@ -290,7 +290,7 @@
         "type": "object"
       },
       "ExtractResponse": {
-        "description": "Response body for POST /extract.\n\n`entries` has one row per non-ignored zip member, in zip order.\n`accepted_count + rejected_count == len(entries)`.",
+        "description": "Response body for POST /extract.\n\n`entries` has one row per non-ignored zip member, in natural filename order.\n`accepted_count + rejected_count == len(entries)`.",
         "properties": {
           "accepted_count": {
             "title": "Accepted Count",

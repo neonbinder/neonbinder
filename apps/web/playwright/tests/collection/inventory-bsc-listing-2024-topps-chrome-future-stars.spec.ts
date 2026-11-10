@@ -14,12 +14,20 @@
 //      start syncing the way a save does (the seed hop with listing=on) and
 //      Profile reads "Listing your boxes on BuySportsCards since ...".
 //   2b. The listing gate (price before stocking): with no common price the
-//      listed box is held. The checklist says why and the + for a card is off,
-//      and photo intake holds its drop zone with the same reason and a "Set a
-//      Min price" button (nothing is uploaded). Setting the common price lifts
-//      the checklist's hold. ("Done adding photos" also shows "See what's
-//      syncing", but that path needs a real upload through preprocess and
-//      Vision, so it is covered by unit tests only.)
+//      listed box is held. The checklist says why and the + for a card is off.
+//      Photo intake (NEO-452) says nothing until a set is picked (the zone is
+//      open and not aria-disabled); picking the set shows the same warning once
+//      with its "Set a Min price" button, opens Defaults and puts the keyboard
+//      on the Min price. Photos dropped then wait in the browser, "waiting on a
+//      price", and nothing is uploaded (no run on the URL). Setting the Min
+//      price with them still waiting sends them on their own ("Sent 2
+//      photos.", a run on the URL; Done closes it), and New run blanks the Min
+//      price so a drop waits on the price again; Remove photos empties the tray. This is the only live proof of the warning, because it
+//      needs a real listing state (a box that lists, a syncing sign-in, no common
+//      price). Setting the common price lifts the checklist's hold. ("Done
+//      adding photos" also shows "See what's syncing", but that path needs a
+//      real upload through preprocess and Vision, so it is covered by unit tests
+//      only.)
 //   2c. NEO-432: a photo on a BINDER copy never queues a card. With listing on,
 //      they give a third card a copy in their Main binder (Collection), attach a
 //      front photo through the copy drawer, swap it to the back and remove it,
@@ -28,9 +36,10 @@
 //      is never listed, so step 3's queue holds exactly the box's two cards and
 //      NOT this one (asserted by name). The unit tests prove the gate
 //      (`copyPhotos.test.ts`); this proves it live, in the queue a collector reads.
-//   3. They put one copy each of the first two 1988 Topps Base cards in their
-//      box; Sync status queues the two cards; they press the checklist's Sync,
-//      follow "See what's syncing" to Sync status (Back returns), and Sync
+//   3. They put one copy each of the first two 2024 Topps Chrome Future Stars
+//      cards (Insert › Future Stars) in their box; Sync status queues the two
+//      cards; they press the checklist's Sync, follow "See what's syncing" to
+//      Sync status (Back returns), and Sync
 //      status reads the set synced with 2 listed, nothing held back.
 //      Admin -> Sync Status shows the same set for this collector, read-only.
 //   4. They turn the box's "Listed on marketplaces" off, Sync again, and the
@@ -93,23 +102,30 @@
 // "Gathering data" item, the double-checks are dropped, the send stays. A wait
 // for a read or a confirm therefore goes through `readLanded` / `confirmLanded`
 // (the running item, or the folded row if the run ended first), never a bare
-// `step`. How many sheets a run reads is NOT fixed by this fixture: a
-// run reads every sheet only on a set's first run, when the press asks for a
-// full read (stamped unless it falls within a minute of the last press or lands
-// on a run already under way) or when the caller says so (`full`); otherwise
-// it reads only the sheets NB has cards in or pushed to before
-// (`syncVariant`'s `fullRead`). The spec reruns on the same seed and its
-// cleanup Sync runs on a failure, so a run here can be either. Both Syncs
-// therefore assert what every run holds, in order: a read, the send, a
-// confirm. Which condition the confirm names is the account's default
-// condition, not this spec's feature.
+// `step`. NEO-475: a run reads only the sheets NB needs: the conditions its
+// copies sit in now, plus any it has listed in before (so a row NB once pushed
+// is still found and zeroed). Every copy this spec makes sits at the default
+// condition, Excellent, so a run reads the one Excellent sheet. This spec does
+// NOT assert the read count: the finished row folds the reads into "Gathering
+// data", which names no condition, and the running ledger can end inside any
+// one wait. The count is proven by the unit tests (`listingDrain.test.ts`) and
+// the drain's `conditionsRead` telemetry. The live proof here is the flow: the
+// copies are listed, then the takedown Sync still finds the Excellent row it
+// pushed and zeroes it. Both Syncs assert what every run holds, in order: a
+// read, the send, a confirm.
 //
 // Sync's toast. A press that sets a run going toasts "Syncing <title> now.
 // Watch it on Sync status."; both presses assert it before reading the result.
 //
-// R7/R7a. 1988 Topps Baseball is a registered real set (SET-REGISTRY.md): this
-// spec is the SOLE writer of its BSC quantities and writes no card, player,
-// team or variant of the set. Its NB writes are the signed-in user's own rows
+// R7/R7a. 2024 Topps Chrome › Insert › Future Stars is a registered real set
+// (SET-REGISTRY.md, provisioned by the seed): this spec is the SOLE writer of
+// its BSC quantities and writes no card, player, team or variant of the set.
+// NEO-475: it moved here from 1988 Topps Base, whose 792-card BSC sheet reads
+// ran 6-8 s and drifted past BSC's 30 s gateway; this insert has 20 cards.
+// Both are modern on BSC (vintage ends at 1980, convex/lib/bscConditions.ts),
+// so the copies still sit at Excellent and a run reads the one Excellent
+// sheet. The cards list at a $900 common price (`PRICE`) so no real buyer takes
+// one. Its NB writes are the signed-in user's own rows
 // (the sign-in removed and saved again, a minted box, two box copies, one
 // binder copy with a photo that is removed again, the common price, and every
 // other box set to in-person, which is left that way). The
@@ -122,21 +138,23 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Locator, Page } from "@playwright/test";
 import {
-  TOPPS_1988,
+  TOPPS_CHROME_2024_FUTURE_STARS,
   backToBoxes,
-  baseChecklistTitle,
   cardsWord,
+  checklistTitle,
   createBox,
   deleteOpenBox,
   clearChecklistCommonPrice,
-  drillToCollectorBase,
+  drillToCollectorChecklist,
   emptyBoxCards,
   expectNothingSent,
   followRunToRest,
   goViaShell,
+  intakeDropzone,
   inventoryTabs,
   nameOf,
   ordinaryBaseRows,
+  pickIntakeSet,
   putOtherBoxesInPerson,
   quantityField,
   queueSettled,
@@ -150,14 +168,36 @@ import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtu
 /** The Send step's label. */
 const SEND = "Send changes to BuySportsCards";
 const BSC = "BuySportsCards";
-const TITLE = baseChecklistTitle(TOPPS_1988);
-/** The set as Sync status names it: a Base checklist reads as the set alone. */
-const SET_LABEL = `${TOPPS_1988.year} ${TOPPS_1988.set}`;
+const FUTURE_STARS = TOPPS_CHROME_2024_FUTURE_STARS;
+const TITLE = checklistTitle(FUTURE_STARS);
+/**
+ * The set as Sync status and the card drawer name it. An insert reads as part of
+ * the set's name (`setAndVariantLabel` in convex/lib/listingLabels.ts,
+ * `cardLabel` in app/collection/final/data/labels.ts), so it is the checklist's
+ * own title: "2024 Topps Chrome Future Stars".
+ */
+const SET_LABEL = TITLE;
+/**
+ * The common price the cards list at, as typed, as the toast and the line read it,
+ * and as the field reads it once saved. These are real cards on a real seller
+ * account, and a killed run can leave them for sale until a later run takes them
+ * down, so the price is far above what any buyer pays and under BSC's $999
+ * ceiling (`checkBscPrice`, `BSC_MAX_PRICE_CENTS`); Jason, 2026-11-09, as the
+ * 2026 Bowman Chrome prefix spec does. The Add cards Min price (2b) uses it too:
+ * that run saves nothing, but a copy it did save would list at it.
+ */
+const PRICE = "900";
+const PRICE_SHOWN = "$900.00";
+const PRICE_IN_FIELD = "900.00";
 const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /** A committed intake scan (about 1000 px wide), attached through the copy drawer's Photos box. It is never listed: its copy lives in a binder. */
 const BINDER_PHOTO = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "fixtures", "intake", "05-bell-front.jpg");
 
+/** Two committed intake scans (a front and its back): dropped on Add cards to wait for a price. They are removed from the tray, never sent. */
+const HELD_PHOTOS = ["01-mcfadden-front.jpg", "02-mcfadden-back.jpg"].map((n) =>
+  path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "fixtures", "intake", n),
+);
 
 /**
  * A BSC read step's longer budget, a ceiling Jason signed off on 2026-11-05
@@ -183,7 +223,7 @@ async function openBinderLine(checklist: Locator, short: string) {
   const yourCopies = drawer.getByRole("region", { name: `Your copies of ${short}`, exact: true });
   const form = yourCopies.getByRole("form", { name: "Edit Raw, Excellent", exact: true });
   await expect(form).toBeVisible();
-  return { drawer, yourCopies, form, panel: form.getByRole("region", { name: "Photos", exact: true }) };
+  return { drawer, yourCopies, form, panel: form.getByRole("region", { name: /^Photos of / }) };
 }
 
 /** NEO-432: remove the card's one binder copy through its open drawer (Escape closes the form first, as a collector does), then close the drawer. */
@@ -230,6 +270,8 @@ const written: {
   removed?: boolean;
   stopped?: boolean;
   priced?: boolean;
+  /** NEO-452: the Add cards run the held photos started, until the body closes it. */
+  runUrl?: string;
 } = {};
 
 /** The key that leaves a quantity field: Tab on a desktop, Enter on a phone. */
@@ -293,7 +335,7 @@ const clearCommonPrice = (page: Page, checklist: Locator, was: string) =>
 
 /** On the Inventory Checklists tab: set both cards' quantities in `box` to 0 (see `emptyBoxCards`). */
 const emptyBox = (page: Page, box: string, cards: readonly string[], isMobile: boolean, arrival: "fresh" | "reopened") =>
-  emptyBoxCards(page, TOPPS_1988, box, cards, isMobile, arrival);
+  emptyBoxCards(page, FUTURE_STARS, box, cards, isMobile, arrival);
 
 // Pass or fail, the worker ends connected to BSC and NOT listing. On a failure
 // the touched BSC rows are first brought to 0 on a SECOND page (the failing page
@@ -307,6 +349,17 @@ test.afterEach(async ({ context, isMobile }, testInfo) => {
   let cleanupFailure: unknown;
   try {
     try {
+      // NEO-452: the Add cards run the held photos started, closed so it never holds
+      // one of the account's two active-batch slots. The body clears `runUrl` the
+      // moment it has pressed Done, so a run still named here is open: its Done
+      // button is the one thing to wait for (7 s) and press.
+      if (failed && written.runUrl) {
+        await clean.goto(written.runUrl);
+        await expect(clean.getByRole("heading", { level: 1, name: "Inventory" })).toBeVisible({ timeout: LAUNCH_GATE });
+        await clean.getByRole("button", { name: "Done adding photos" }).click();
+        await expect(clean.getByText("This run's photos are all in. To add more, start a new run.")).toBeVisible();
+        written.runUrl = undefined;
+      }
       // The cards are NB's zero from here on: quantities 0 in the box, then a
       // full Sync of the set, and the result waited for. A pass already proved it.
       if (failed && written.started && written.box && written.cards) {
@@ -340,7 +393,7 @@ test.afterEach(async ({ context, isMobile }, testInfo) => {
         if (failed && written.binderCard) {
           await clean.goto("/collection?tab=checklists");
           await expect(clean.getByRole("heading", { level: 1, name: "Collection" })).toBeVisible({ timeout: LAUNCH_GATE });
-          const binderList = await drillToCollectorBase(clean, TOPPS_1988);
+          const binderList = await drillToCollectorChecklist(clean, FUTURE_STARS);
           await binderList.getByRole("combobox", { name: "Binder" }).selectOption({ label: "Main" });
           await removeBinderLine(binderList, written.binderCard, await openBinderLine(binderList, written.binderCard));
           written.binderCard = undefined;
@@ -353,8 +406,8 @@ test.afterEach(async ({ context, isMobile }, testInfo) => {
           if (failed && written.priced) {
             await clean.goto("/inventory?tab=checklists");
             await expect(clean.getByRole("heading", { level: 1, name: "Inventory" })).toBeVisible({ timeout: LAUNCH_GATE });
-            const checklist = await drillToCollectorBase(clean, TOPPS_1988);
-            await clearCommonPrice(clean, checklist, "0.25");
+            const checklist = await drillToCollectorChecklist(clean, FUTURE_STARS);
+            await clearCommonPrice(clean, checklist, PRICE_IN_FIELD);
             written.priced = false;
           }
         } finally {
@@ -372,7 +425,7 @@ test.afterEach(async ({ context, isMobile }, testInfo) => {
 });
 
 test(
-  "Inventory: Sync lists a box's 1988 Topps Base cards on BuySportsCards and an in-person box takes them off",
+  "Inventory: Sync lists a box's 2024 Topps Chrome Future Stars cards on BuySportsCards and an in-person box takes them off",
   { tag: ["@collection", "@marketplace-seller"] },
   async ({ page, signIn, env, isMobile }) => {
     // The hook's record of how far this run got starts empty.
@@ -383,6 +436,7 @@ test(
     written.removed = false;
     written.stopped = false;
     written.priced = false;
+    written.runUrl = undefined;
     const boxName = `Bsc${env.ATTEMPT_TOKEN}`;
     const said = (text: string | RegExp) => page.getByRole("status").filter({ hasText: text });
     const tabs = inventoryTabs(page);
@@ -419,7 +473,7 @@ test(
     // the Profile's BuySportsCards panel says so too.
     await tabs.getByRole("link", { name: "Checklists", exact: true }).click();
     await expect(page).toHaveURL(/[?&]tab=checklists/);
-    const checklist = await drillToCollectorBase(page, TOPPS_1988);
+    const checklist = await drillToCollectorChecklist(page, FUTURE_STARS);
     const sync = checklist.getByRole("button", { name: `Sync ${TITLE}`, exact: true });
     // Shown, but inert (aria-disabled keeps it in the tab order): its reason is its description.
     await expect(sync).toBeVisible();
@@ -486,7 +540,7 @@ test(
     await expect(page.getByRole("heading", { level: 1, name: "Collection" })).toBeVisible();
     await page.getByRole("navigation", { name: "Collection sections" }).getByRole("link", { name: "Checklists", exact: true }).click();
     await expect(page).toHaveURL(/[?&]tab=checklists/);
-    const binderList = await drillToCollectorBase(page, TOPPS_1988);
+    const binderList = await drillToCollectorChecklist(page, FUTURE_STARS);
     const { short: binderCard } = await shortNameOf(ordinaryBaseRows(binderList).last());
     await binderList.getByRole("combobox", { name: "Binder" }).selectOption({ label: "Main" });
     const haveBinderOff = binderList.getByRole("button", { name: `Have ${binderCard}`, exact: true, pressed: false });
@@ -519,12 +573,12 @@ test(
     // Listing is not a switch any more: it is the saved sign-in and the boxes.
     await expect(page.getByRole("switch", { name: /^List on / })).toHaveCount(0);
 
-    // --- The 1988 Topps Base checklist, adding to the box ----------------------
+    // --- The 2024 Topps Chrome Future Stars checklist, adding to the box -------
     await tabs.getByRole("link", { name: "Checklists", exact: true }).click();
     await expect(page).toHaveURL(/[?&]tab=checklists/);
     const adding = page.getByRole("combobox", { name: "Adding to" });
     await expect(adding).toBeVisible();
-    await drillToCollectorBase(page, TOPPS_1988);
+    await drillToCollectorChecklist(page, FUTURE_STARS);
     await adding.selectOption({ label: boxName });
     await expect(adding.getByRole("option", { selected: true })).toHaveText(boxName);
     const boxList = checklist.getByRole("list", { name: `Quantities in ${boxName}` });
@@ -555,26 +609,68 @@ test(
     await expect(addOneOfA).toBeDisabled();
     await expectAccessible(page, { label: "Checklist, listed box held until a common price is set" });
 
-    // Photo intake holds the same box: the drop zone is held with its reason
-    // and a button to the missing field. Nothing is uploaded.
+    // Photo intake (NEO-452): with no set picked there is no price to ask for,
+    // so the box says nothing yet and the zone is open.
     await tabs.getByRole("link", { name: "Add cards", exact: true }).click();
     await expect(page).toHaveURL(/[?&]tab=add/);
     await page.getByRole("combobox", { name: "Put them in this box" }).selectOption({ label: boxName });
-    const intakeLine = `Price tag first! ${boxName} sells on your marketplaces, so give these cards a price in Defaults (or pick a set with a common price) before you send photos.`;
-    await expect(page.getByText(intakeLine, { exact: true })).toBeVisible();
-    await expect(page.getByText("Set a price, then drop your photos", { exact: true })).toBeVisible();
-    const dropzone = page.getByLabel("Drag your card photos here, or browse your files");
-    await expect(dropzone).toHaveAttribute("aria-disabled", "true");
-    await expect(dropzone).toHaveAccessibleDescription(intakeLine);
-    await expectAccessible(page, { label: "Add cards, listed box held until a price is set" });
-    // The button opens Defaults with the Min price field focused.
-    await page.getByRole("button", { name: "Set a Min price", exact: true }).click();
-    await expect(page.getByRole("textbox", { name: "Min price", exact: true })).toBeFocused();
-    await expectAccessible(page, { label: "Add cards, Defaults open on Min price while held" });
-    // Back steps to the held checklist, still adding to the box.
-    await page.goBack();
+    await expect(page.getByRole("button", { name: "Set: pick one", exact: true })).toBeVisible();
+    const dropzone = intakeDropzone(page);
+    await expect(dropzone).toBeVisible();
+    await expect(dropzone).not.toHaveAttribute("aria-disabled", "true");
+    await expect(page.getByText(/^Price tag first!/)).toHaveCount(0);
+    // Picking the set shows the warning once, opens Defaults and focuses the Min price.
+    await pickIntakeSet(page, FUTURE_STARS);
+    const intakeLine = `Price tag first! ${boxName} sells on your marketplaces and ${TITLE} has no price yet. Set one in Defaults and your photos go up.`;
+    // The note is the zone's description (the sr-only copy in the status line is
+    // a second match for the text, so the note is read through what points at it).
+    await expect(dropzone).toHaveAccessibleDescription(new RegExp(escapeRegExp(intakeLine)));
+    await expect(page.getByRole("button", { name: "Set a Min price", exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: /^Defaults: / })).toHaveAttribute("aria-expanded", "true");
+    const minPrice = page.getByRole("textbox", { name: "Min price", exact: true });
+    await expect(minPrice).toBeFocused();
+    await expect(minPrice).toHaveAccessibleDescription(new RegExp(escapeRegExp(intakeLine)));
+    await expectAccessible(page, { label: "Add cards, listed box with no price, Defaults open on Min price" });
+    // Photos dropped now wait for the price: a tray says so, and nothing goes up.
+    await dropzone.setInputFiles(HELD_PHOTOS);
+    const waitingTray = said("2 photos waiting on a price.");
+    await expect(waitingTray).toBeVisible();
+    // The zone's description holds the hint too, so the words are read inside it.
+    await expect(dropzone).toHaveAccessibleDescription(new RegExp(escapeRegExp(`${intakeLine} 2 photos waiting on a price.`)));
+    await expect(page.getByText("Sending your photos…")).toHaveCount(0);
+    await expect(page).not.toHaveURL(/[?&]run=/);
+    await expectAccessible(page, { label: "Add cards, photos waiting on a price" });
+    // The central promise: the price is set with the photos still waiting, and
+    // they go up on their own (no Start button): the tray empties, the status line
+    // says "Sent 2 photos." and the run is on the URL.
+    await minPrice.fill(PRICE);
+    await page.keyboard.press("Enter");
+    await expect(said("Sent 2 photos.")).toBeVisible();
+    await expect(page).toHaveURL(/[?&]run=/);
+    written.runUrl = page.url();
+    await expect(waitingTray).toHaveCount(0);
+    // Close the run so its batch slot frees (its photos keep being read; nothing is saved).
+    await page.getByRole("button", { name: "Done adding photos" }).click();
+    written.runUrl = undefined;
+    await expect(page.getByText("This run's photos are all in. To add more, start a new run.")).toBeVisible();
+    // New run: the Min price is blank again, and a drop waits on the price again.
+    await page.getByRole("button", { name: "New run", exact: true }).click();
+    await expect(page).not.toHaveURL(/[?&]run=/);
+    const defaultsButton = page.getByRole("button", { name: /^Defaults: / });
+    // The button's name carries the Min price when there is one: none is left.
+    await expect(defaultsButton).toHaveAccessibleName(/^Defaults: [^,]+$/);
+    await dropzone.setInputFiles(HELD_PHOTOS);
+    await expect(waitingTray).toBeVisible();
+    await expect(page).not.toHaveURL(/[?&]run=/);
+    // Remove photos empties the tray, and the keyboard lands on the drop zone.
+    await page.getByRole("button", { name: "Remove photos", exact: true }).click();
+    await expect(waitingTray).toHaveCount(0);
+    await expect(dropzone).toBeFocused();
+    // Back to the checklist through the tab, which reopens it where it was left.
+    await tabs.getByRole("link", { name: "Checklists", exact: true }).click();
     await expect(page).toHaveURL(/[?&]tab=checklists/);
     await expect(checklist.getByRole("heading", { level: 3, name: TITLE })).toBeVisible();
+    await adding.selectOption({ label: boxName });
     await expect(adding.getByRole("option", { selected: true })).toHaveText(boxName);
     await expect(gateNote).toBeVisible();
 
@@ -583,10 +679,10 @@ test(
     await checklist.getByRole("button", { name: `Set a common price for ${TITLE}`, exact: true }).click();
     const priceField = checklist.getByRole("textbox", { name: "Common price", exact: true });
     await expect(priceField).toBeFocused();
-    await priceField.fill("0.25");
+    await priceField.fill(PRICE);
     await page.keyboard.press("Enter");
-    await expect(said(`Common price for ${TITLE} is $0.25`)).toBeVisible();
-    await expect(checklist.getByText("$0.25", { exact: true })).toBeVisible();
+    await expect(said(`Common price for ${TITLE} is ${PRICE_SHOWN}`)).toBeVisible();
+    await expect(checklist.getByText(PRICE_SHOWN, { exact: true })).toBeVisible();
     written.priced = true;
     await expect(gateNote).toBeHidden();
     await expect(addOneOfA).toBeEnabled();
@@ -681,9 +777,8 @@ test(
     // The live BSC round trip, one step per wait (see "Waits" above): the walk
     // waits for the step the run is on to land, again and again, until the
     // press's queued cards are gone and the platform is idle (header: a press
-    // proven to have run; the sheet reads are serial and how many there are is
-    // not fixed, see "The ledger's steps" above). Only then is the set's row
-    // read, and it is a run that started after the press, finished.
+    // proven to have run). Only then is the set's row read, and it is a run
+    // that started after the press, finished.
     // The line is the drain's own count: 2 rows on BSC show NB's stock after the
     // read-back (2 updated, or none when BSC already showed them); "skipped"
     // would be a held-back card.
@@ -763,7 +858,7 @@ test(
 
     await tabs.getByRole("link", { name: "Checklists", exact: true }).click();
     await expect(page).toHaveURL(/[?&]tab=checklists/);
-    await drillToCollectorBase(page, TOPPS_1988);
+    await drillToCollectorChecklist(page, FUTURE_STARS);
     await sync.click();
     await expect(said(`Syncing ${TITLE} now. Watch it on Sync status.`)).toBeVisible();
     await tabs.getByRole("link", { name: "Sync status", exact: true }).click();
@@ -772,8 +867,8 @@ test(
     // so the row still shows the LAST run's finished steps until this one
     // claims the set: the walk ends only when the press's queued cards are gone
     // and the platform is idle, so the row read next is a run that started after
-    // the press, finished. How many sheets it reads is not fixed (see "The
-    // ledger's steps" above), so one data-gathering step is the assertion.
+    // the press, finished. The reads fold into one data-gathering step on the
+    // finished row (see "The ledger's steps" above), so that is the assertion.
     const takeDown = syncRun(platform, SET_LABEL, BSC);
     const takenLine = row.getByText(/^0 listed(, \d+ updated)?, 2 taken to 0$/);
     await followRunToRest(platform, takeDown, queueSettled(platform, SET_LABEL), bscReadCeiling);
@@ -808,9 +903,9 @@ test(
     // Zero before deleting, so no copy falls into the Unsorted box (a listed one).
     await tabs.getByRole("link", { name: "Checklists", exact: true }).click();
     await expect(page).toHaveURL(/[?&]tab=checklists/);
-    // Same page since the drill above: the tab link reopens 1988 Topps Base.
+    // Same page since the drill above: the tab link reopens Future Stars.
     await emptyBox(page, boxName, [a, b], isMobile, "reopened");
-    await clearCommonPrice(page, checklist, "0.25");
+    await clearCommonPrice(page, checklist, PRICE_IN_FIELD);
     written.priced = false;
 
     await tabs.getByRole("link", { name: "My Boxes", exact: true }).click();

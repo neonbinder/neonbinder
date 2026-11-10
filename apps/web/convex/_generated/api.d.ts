@@ -47,6 +47,7 @@ import type * as binderRules from "../binderRules.js";
 import type * as brandRehome from "../brandRehome.js";
 import type * as brandView from "../brandView.js";
 import type * as browserAudience from "../browserAudience.js";
+import type * as bscCallStats from "../bscCallStats.js";
 import type * as bscFacets from "../bscFacets.js";
 import type * as bscTeamCheck from "../bscTeamCheck.js";
 import type * as bulkLoad from "../bulkLoad.js";
@@ -96,6 +97,7 @@ import type * as leagues from "../leagues.js";
 import type * as lib_baseMatchProbe from "../lib/baseMatchProbe.js";
 import type * as lib_batchIdReads from "../lib/batchIdReads.js";
 import type * as lib_bscAttributeTokens from "../lib/bscAttributeTokens.js";
+import type * as lib_bscCallTelemetry from "../lib/bscCallTelemetry.js";
 import type * as lib_bscConditions from "../lib/bscConditions.js";
 import type * as lib_bscHttp from "../lib/bscHttp.js";
 import type * as lib_bscMoney from "../lib/bscMoney.js";
@@ -108,6 +110,7 @@ import type * as lib_easypostWebhookSignature from "../lib/easypostWebhookSignat
 import type * as lib_ebayEnv from "../lib/ebayEnv.js";
 import type * as lib_ebayListing from "../lib/ebayListing.js";
 import type * as lib_entityNearMatch from "../lib/entityNearMatch.js";
+import type * as lib_extractRejections from "../lib/extractRejections.js";
 import type * as lib_googleIdTokenVerify from "../lib/googleIdTokenVerify.js";
 import type * as lib_intakeMatch from "../lib/intakeMatch.js";
 import type * as lib_listingCopyOrder from "../lib/listingCopyOrder.js";
@@ -239,6 +242,7 @@ declare const fullApi: ApiFromModules<{
   brandRehome: typeof brandRehome;
   brandView: typeof brandView;
   browserAudience: typeof browserAudience;
+  bscCallStats: typeof bscCallStats;
   bscFacets: typeof bscFacets;
   bscTeamCheck: typeof bscTeamCheck;
   bulkLoad: typeof bulkLoad;
@@ -288,6 +292,7 @@ declare const fullApi: ApiFromModules<{
   "lib/baseMatchProbe": typeof lib_baseMatchProbe;
   "lib/batchIdReads": typeof lib_batchIdReads;
   "lib/bscAttributeTokens": typeof lib_bscAttributeTokens;
+  "lib/bscCallTelemetry": typeof lib_bscCallTelemetry;
   "lib/bscConditions": typeof lib_bscConditions;
   "lib/bscHttp": typeof lib_bscHttp;
   "lib/bscMoney": typeof lib_bscMoney;
@@ -300,6 +305,7 @@ declare const fullApi: ApiFromModules<{
   "lib/ebayEnv": typeof lib_ebayEnv;
   "lib/ebayListing": typeof lib_ebayListing;
   "lib/entityNearMatch": typeof lib_entityNearMatch;
+  "lib/extractRejections": typeof lib_extractRejections;
   "lib/googleIdTokenVerify": typeof lib_googleIdTokenVerify;
   "lib/intakeMatch": typeof lib_intakeMatch;
   "lib/listingCopyOrder": typeof lib_listingCopyOrder;

@@ -1037,6 +1037,10 @@ jobs:
       # convex/*.test.ts files whose convex-test generics do not typecheck
       # under tsc (they are typechecked and run by vitest in web-unit).
       - run: npm run typecheck
+      # NEO-434: builds with Sentry on and no token, and reads the entry chunk.
+      # Not a `postbuild`: a preview build compiles Sentry out, so it has nothing
+      # to compare, and E2E runs against that build.
+      - run: npm run check:entry-order
 
   web-unit:
     name: Unit & component tests (vitest, apps/web)
@@ -1397,6 +1401,58 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: ./scripts/check-capacity-parity.sh
+
+  # NEO-475: BSC call-health report from this run's Convex logs. Advisory only:
+  # NOT in ci-gate's needs, continue-on-error, no secrets. Runs only when e2e
+  # actually ran (the logs come from its convex-logs-* artifacts). The report is
+  # built from log content alone and prints no deployment names (the artifact is
+  # public).
+  bsc-health:
+    name: BSC health report
+    needs: [e2e]
+    if: always() && needs.e2e.result != 'skipped'
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: |
+            apps/web/scripts/bsc-health
+            apps/web/.nvmrc
+          sparse-checkout-cone-mode: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: apps/web/.nvmrc
+      - name: Download Convex log artifacts
+        continue-on-error: true
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: convex-logs-*
+          merge-multiple: false
+          path: ${{ runner.temp }}/convex-logs
+      - name: Build report
+        run: |
+          set -euo pipefail
+          OUT="${RUNNER_TEMP}/bsc-health"
+          LOGS="${RUNNER_TEMP}/convex-logs"
+          mkdir -p "$OUT"
+          if [ -d "$LOGS" ] && [ -n "$(find "$LOGS" -type f -name '*.jsonl*' -print -quit)" ]; then
+            node apps/web/scripts/bsc-health/report.mjs \
+              --in "$LOGS" --out "$OUT" --env "ci-run-${{ github.run_id }}"
+            cat "$OUT/summary.md" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No convex-logs-* artifacts were found for this run, so there is no BSC health report." | tee "$OUT/summary.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Upload report
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bsc-health-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/bsc-health
+          retention-days: 90
 
   ci-gate:
     name: CI Gate

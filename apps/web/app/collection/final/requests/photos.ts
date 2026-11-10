@@ -1,4 +1,5 @@
 import type { Id } from "@/convex/_generated/dataModel";
+import { uploadWithRetry } from "@/lib/collection/upload-with-retry";
 
 /** What the server takes (`collectionRequests.checkPhoto`): a photo type, at most 10 MB. */
 export const MAX_PHOTO_BYTES = 10 * 1024 * 1024;
@@ -20,12 +21,14 @@ export async function uploadPhoto(
   file: File,
 ): Promise<Id<"_storage">> {
   const url = await generateUploadUrl();
-  const res = await fetch(url, {
+  const res = await uploadWithRetry({
+    url,
     method: "POST",
     headers: { "Content-Type": file.type },
     body: file,
+    file: "image",
+    failureMessage: "That photo didn't upload. Try adding it again.",
   });
-  if (!res.ok) throw new Error("That photo didn't upload. Try adding it again.");
   const { storageId } = (await res.json()) as { storageId: Id<"_storage"> };
   return storageId;
 }

@@ -20,6 +20,7 @@ const mocks = vi.hoisted(() => ({
   seed: vi.fn(),
   seedFailed: vi.fn(),
   seedSavedFailure: vi.fn(),
+  seedLoose: vi.fn(),
 }));
 
 // Plain string tokens for the generated api so `useMutation` can tell the reset
@@ -34,6 +35,7 @@ vi.mock("@/convex/_generated/api", () => ({
       seedMyTestPlaceholderStream: "testing:seedMyTestPlaceholderStream",
       seedMyTestFailedPhotoRun: "testing:seedMyTestFailedPhotoRun",
       seedMyTestSavedPhotoFailureRun: "testing:seedMyTestSavedPhotoFailureRun",
+      seedMyTestLoosePhotosRun: "testing:seedMyTestLoosePhotosRun",
     },
   },
 }));
@@ -47,7 +49,9 @@ vi.mock("convex/react", () => ({
         ? mocks.seedFailed
         : ref === "testing:seedMyTestSavedPhotoFailureRun"
           ? mocks.seedSavedFailure
-          : mocks.seed,
+          : ref === "testing:seedMyTestLoosePhotosRun"
+            ? mocks.seedLoose
+            : mocks.seed,
 }));
 
 import TestingSeedPlaceholderRunPage from "./page";
@@ -92,7 +96,18 @@ describe("TestingSeedPlaceholderRunPage", () => {
       mocks.calls.push("seedSavedFailure");
       return { runId: "run456", copyId: "copy456" };
     });
+    mocks.seedLoose = vi.fn(async () => {
+      mocks.calls.push("seedLoose");
+      return { runId: "run789" };
+    });
     vi.stubEnv("VITE_CLERK_TESTING_ENABLED", "true");
+  });
+
+  it("NEO-441: with loosePhotos=1, resets, seeds the unpaired photos and opens the run", async () => {
+    renderPage("/testing/seed-placeholder-run?loosePhotos=1");
+    await waitFor(() => expect(screen.getByText("add cards screen")).not.toBeNull());
+    expect(mocks.calls).toEqual(["reset", "seedLoose"]);
+    expect(mocks.seed).not.toHaveBeenCalled();
   });
 
   it.each(["scanGone", "unusable", "error"])(

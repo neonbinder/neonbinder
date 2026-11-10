@@ -12,6 +12,8 @@
  *     another way (NEO-373) and needs neither here: the drain holds it back
  *     as `graded`, never as `noPrice` or `noCondition`.
  *
+ * `intakeRunReadiness` adds what only photo intake asks for: a set.
+ *
  * NB data only: nothing here reads a marketplace value.
  */
 
@@ -56,4 +58,32 @@ export function listingReadiness(input: ListingReadinessInput): ListingReadiness
   const needsPrice = listingFloorCents(input.ownPriceCents, input.commonPriceCents) === null;
   const needsCondition = !hasListingCondition(input.condition);
   return { ready: !needsPrice && !needsCondition, needsPrice, needsCondition };
+}
+
+export interface IntakeRunReadinessInput extends ListingReadinessInput {
+  /** The run has a set to match its cards in: the collector's pick, or the open run's variant. */
+  hasVariant: boolean;
+}
+
+export interface IntakeRunReadiness extends ListingReadiness {
+  /** No set yet. Every new run needs one, listed or not (`intakeRuns.createIntakeRun`). */
+  needsSet: boolean;
+}
+
+/**
+ * NEO-452 — what an Add cards run still needs before its photos may go up. The
+ * listing rule above plus a set, which every new run needs wherever it files.
+ * With no set there is no common price to look up yet, so it never says a price
+ * is missing: the set comes first, and the price question follows the pick.
+ */
+export function intakeRunReadiness(input: IntakeRunReadinessInput): IntakeRunReadiness {
+  const { needsPrice, needsCondition } = listingReadiness(input);
+  const needsSet = !input.hasVariant;
+  const priceMissing = needsPrice && input.hasVariant;
+  return {
+    ready: !needsSet && !priceMissing && !needsCondition,
+    needsSet,
+    needsPrice: priceMissing,
+    needsCondition,
+  };
 }

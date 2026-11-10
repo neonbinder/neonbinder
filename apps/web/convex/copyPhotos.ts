@@ -34,8 +34,12 @@
  * the hourly cap, which counts hand uploads only; a job's entry cap bounds them.
  *
  * A line with photos never folds (`isOneOfAKind`), so photos are never merged
- * into another line. Removing the copy DETACHES its photos (`detachPhotos`) so
- * the Undo can put them back (`reattachPhotos`, from `restoreCopy`).
+ * into another line. The one way more copies join a line with photos is a
+ * quick count's raise (NEO-431, `collectionInventory.ts`), and they share its
+ * photos. Removing the copy, or counting it away, DETACHES its photos
+ * (`detachPhotos`) so the Undo can put them back (`reattachPhotos`, from
+ * `restoreCopy` and `undoBoxQuantity`). Such an Undo runs once: a photo already
+ * live again refuses the replay, where a swept one lets the line come back bare.
  * `sweepCopyPhotos` (hourly) deletes pending, detached and replaced rows over
  * an hour old, with their objects.
  *
@@ -205,25 +209,34 @@ export async function detachPhotos(
   return photos.map((photo) => photo._id);
 }
 
+const PHOTOS_ALREADY_BACK = "Those photos are already back on a line, so there's nothing to undo.";
+
 /**
  * The Undo of a remove: put the caller's detached photos onto the restored
- * line. One already swept, not the caller's, or not detached is skipped.
+ * line. One already swept, not the caller's, pending or replaced is skipped.
+ * One of the caller's that is already live means this Undo already ran (a
+ * double click, a retried request) or was forged: that is refused, and the
+ * throw takes the line just put back with it, so a replay writes nothing.
+ * Returns whether any went back.
  */
 export async function reattachPhotos(
   ctx: MutationCtx,
   ownerId: string,
   photoIds: ReadonlyArray<Id<"collectionCopyPhotos">>,
   copyId: Id<"collectionCopies">,
-): Promise<void> {
+): Promise<boolean> {
   const seen = new Set<Side>();
   const now = Date.now();
   for (const id of photoIds.slice(0, 2)) {
     const photo = await ctx.db.get(id);
-    if (!photo || photo.ownerId !== ownerId || photo.status !== "detached" || seen.has(photo.side)) continue;
+    if (!photo || photo.ownerId !== ownerId) continue;
+    if (photo.status === "live") refuse(COLLECTION_ERRORS.invalid, PHOTOS_ALREADY_BACK);
+    if (photo.status !== "detached" || seen.has(photo.side)) continue;
     seen.add(photo.side);
     await ctx.db.patch(photo._id, { copyId, status: "live", since: now });
   }
   if (seen.size > 0) await ctx.db.patch(copyId, { hasPhotos: true });
+  return seen.size > 0;
 }
 
 /** Every one of an owner's photos, any status (the per-account test reset). */

@@ -10,9 +10,14 @@ import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
 import { __resetContractCache } from "./credentials";
-import { bscConditionsForEra, bscEraForYear } from "./lib/bscConditions";
+import { bscConditionFor, bscConditionsForEra, bscEraForYear, type BscEra } from "./lib/bscConditions";
 import { planBscSheet } from "./lib/bscSheetPlan";
-import { BSC_FIRST_READ_RETRY_PAUSE_MS } from "./testingSellerCleanup";
+import { DEFAULT_CONDITION } from "./collection";
+import {
+  BSC_CLEANUP_SHEET_RETRY_PAUSES_MS,
+  MAX_CHAIN_SIBLINGS,
+  SELLER_SPEC_SETS,
+} from "./testingSellerCleanup";
 import { drainScheduled } from "../lib/testing/drain-scheduled";
 
 const modules = (import.meta as unknown as {
@@ -23,9 +28,13 @@ const BROWSER = "http://localhost:9999";
 const EBAY_HOST = "api.sandbox.ebay.com";
 const BSC_HOST = "api-prod.buysportscards.com";
 const OWNER = "user_e2esellercleanup";
-const ERA = bscConditionsForEra(bscEraForYear("1988") as "modern" | "vintage") as readonly string[];
-const COND = ERA[0];
-const OTHER_COND = ERA[1];
+const ERA = bscConditionsForEra(bscEraForYear("2024") as BscEra) as readonly string[];
+/** The condition a spec's copy lists in (NB's default), the only sheet the cleanup clears (NEO-475). */
+const COND: string = bscConditionFor(DEFAULT_CONDITION, bscEraForYear("2024") as BscEra);
+/** The seed's set the seller specs list on, as the cleanup names it in a failure. */
+const FS = "2024 Topps Topps Chrome Future Stars";
+/** A condition of the same era no spec lists in: never read. */
+const OTHER_COND = ERA.find((c) => c !== COND) as string;
 
 type T = ReturnType<typeof convexTest>;
 
@@ -70,8 +79,8 @@ let putTakes: boolean;
 let sheetAnswer: Response | null;
 /** One entry per sheet read, in order, used up as they arrive: a status, a failure with no status, or null for the real sheet. */
 let sheetScript: Array<number | "network" | "timeout" | null>;
-/** How many sheet reads had reached BSC at each retry pause. */
-let firstReadPauses: number[];
+/** Each retry pause: its length, and how many sheet reads had reached BSC when it started. */
+let retryPauses: Array<[number, number]>;
 let browserCalls: Array<{ method: string; path: string }>;
 let ebayCalls: number;
 let bscCalls: number;
@@ -101,13 +110,13 @@ beforeEach(() => {
   putTakes = true;
   sheetAnswer = null;
   sheetScript = [];
-  firstReadPauses = [];
-  // The retry pause, and only that: 10 real seconds per test would outlast the
-  // test's own timeout. Faking the clock instead would stall convex-test.
+  retryPauses = [];
+  // The retry pauses, and only those: 10-60 real seconds per test would outlast
+  // the test's own timeout. Faking the clock instead would stall convex-test.
   const realSetTimeout = globalThis.setTimeout;
   vi.spyOn(globalThis, "setTimeout").mockImplementation(((handler: (...args: unknown[]) => void, ms?: number, ...rest: unknown[]) => {
-    if (ms !== BSC_FIRST_READ_RETRY_PAUSE_MS) return realSetTimeout(handler, ms, ...rest);
-    firstReadPauses.push(sheetReads.length);
+    if (ms === undefined || !BSC_CLEANUP_SHEET_RETRY_PAUSES_MS.includes(ms)) return realSetTimeout(handler, ms, ...rest);
+    retryPauses.push([ms, sheetReads.length]);
     return realSetTimeout(handler, 0, ...rest);
   }) as typeof setTimeout);
   browserCalls = [];
@@ -224,11 +233,27 @@ afterEach(() => {
   delete process.env.NEONBINDER_BROWSER_URL;
 });
 
-/** The real set's chain, BSC slots and all, plus another set the cleanup must not read. */
-async function seedSet(t: T) {
-  return await t.run(async (ctx) => {
+/** BSC slugs of the rows `seedSet` made, for asserting which row a sheet read was scoped to. */
+let seeded: { futureStars: string; otherInsert: string; parallelFutureStars: string | null };
+
+type SeedShape = {
+  /** Titles of the set's Insert-kind variant types; the first holds the inserts. Default one, "Insert". */
+  insertTypes?: string[];
+  /** Future Stars rows under the first Insert type. Default 1. */
+  futureStars?: number;
+  /** A "Future Stars" row under the set's Parallel type, which the walk must never pick. */
+  futureStarsUnderParallel?: boolean;
+};
+
+/**
+ * The seed's 2024 Topps Chrome chain, BSC slots and all (Base, Insert › Future
+ * Stars and a sibling insert, Parallel › a parallel), plus another set the
+ * cleanup must not read.
+ */
+async function seedSet(t: T, shape: SeedShape = {}) {
+  seeded = await t.run(async (ctx) => {
     const add = async (
-      level: "sport" | "year" | "manufacturer" | "setName" | "variantType",
+      level: "sport" | "year" | "manufacturer" | "setName" | "variantType" | "insert",
       value: string,
       parentId?: Id<"selectorOptions">,
       facets?: Record<string, string>,
@@ -244,21 +269,35 @@ async function seedSet(t: T) {
         lastUpdated: 0,
       } as never);
     const sport = await add("sport", "Baseball");
-    const year = await add("year", "1988", sport);
+    const year = await add("year", "2024", sport);
     const brand = await add("manufacturer", "Topps", year);
-    const set = await add("setName", "Topps", brand);
+    const set = await add("setName", "Topps Chrome", brand);
     await add("variantType", "Base", set, { b0: "variant" });
-    await add("variantType", "Insert", set, { b0: "variant" });
-    const traded = await add("setName", "Traded", brand);
-    await add("variantType", "Base", traded, { b0: "variant" });
+    const insertTypes: Id<"selectorOptions">[] = [];
+    for (const title of shape.insertTypes ?? ["Insert"]) insertTypes.push(await add("variantType", title, set, { b0: "variant" }));
+    const inserts = insertTypes[0];
+    if (inserts !== undefined) {
+      for (let i = 0; i < (shape.futureStars ?? 1); i++) await add("insert", "Future Stars", inserts, { b0: "variantName" });
+      await add("insert", "Stars of MLB", inserts, { b0: "variantName" });
+    }
+    const parallels = await add("variantType", "Parallel", set, { b0: "variant" });
+    await add("insert", "Gold Wave Refractors", parallels, { b0: "variantName" });
+    if (shape.futureStarsUnderParallel) await add("insert", "Future Stars", parallels, { b0: "variantName" });
+    const other = await add("setName", "Topps", brand);
+    await add("variantType", "Base", other, { b0: "variant" });
+    return {
+      futureStars: `slug-Future Stars-${inserts}`,
+      otherInsert: `slug-Stars of MLB-${inserts}`,
+      parallelFutureStars: shape.futureStarsUnderParallel ? `slug-Future Stars-${parallels}` : null,
+    };
   });
 }
 
 const clear = async (t: T) => await t.action(internal.testingSellerCleanup.clearSellerAccounts, {});
 
-async function ready() {
+async function ready(shape: SeedShape = {}) {
   const t = convexTest(schema, modules);
-  await seedSet(t);
+  await seedSet(t, shape);
   return t;
 }
 
@@ -289,7 +328,7 @@ describe("what it refuses", () => {
     const t = convexTest(schema, modules);
     pages = [{ inventoryItems: [item(sku("a"))] }];
     offers.set(sku("a"), { offerId: "O1", status: "PUBLISHED" });
-    await expect(clear(t)).rejects.toThrow(/BuySportsCards: no 1988 Topps Topps Base.*seed/);
+    await expect(clear(t)).rejects.toThrow(new RegExp(`BuySportsCards: no ${FS} on this deployment: did the seed run\\?`));
     expect(withdrawals).toEqual(["O1"]);
     expect(bscCalls).toBe(0);
     expect(browserCalls.some((c) => c.path === "/login/bsc")).toBe(false);
@@ -301,7 +340,7 @@ describe("what it refuses", () => {
     await t.run(async (ctx) => {
       await ctx.db.insert("selectorOptions", { level: "sport", value: "Baseball", platformData: {}, isCustom: false, children: [], lastUpdated: 0 } as never);
     });
-    await expect(clear(t)).rejects.toThrow(/BuySportsCards: no 1988 Topps Topps Base/);
+    await expect(clear(t)).rejects.toThrow(new RegExp(`BuySportsCards: ${FS} can't be told apart: its sport row`));
     expect(bscCalls).toBe(0);
     await drainScheduled(t);
   });
@@ -591,7 +630,7 @@ describe("eBay", () => {
 });
 
 describe("BuySportsCards", () => {
-  test("takes every row above 0 to 0, across conditions, and leaves rows at 0 out of the PUT", async () => {
+  test("takes every row above 0 in the spec's condition to 0, leaves rows at 0 out of the PUT, and never reads another condition", async () => {
     const t = await ready();
     sheet = [
       row("p1", "bsc-1", COND, 2),
@@ -602,26 +641,130 @@ describe("BuySportsCards", () => {
     const r = await clear(t);
     expect(puts).toHaveLength(1);
     expect(puts[0].sellerId).toBe("seller-1");
-    expect(puts[0].listings.map((l) => [l.productId, l.availableQuantity]).sort()).toEqual([["p1", 0], ["p3", 0]]);
-    expect(r.bsc).toEqual({ outcome: "clean", rows: 3, unreadableRows: 0, listed: 2, zeroed: 2, twinKeys: 0, twinKeysRemaining: 0 });
+    expect(puts[0].listings.map((l) => [l.productId, l.availableQuantity])).toEqual([["p1", 0]]);
+    expect(r.bsc).toEqual({ outcome: "clean", rows: 2, unreadableRows: 0, listed: 1, zeroed: 1, twinKeys: 0, twinKeysRemaining: 0, skippedSets: 1 });
     expect(sheet.find((s) => s.productId === "slab")?.availableQuantity).toBe(3);
+    // NEO-475: a condition no spec lists in is not read, so it is left as it is.
+    expect(sheet.find((s) => s.productId === "p3")?.availableQuantity).toBe(1);
+    expect(sheetReads.map((c) => c.condition)).not.toContain(OTHER_COND);
     await drainScheduled(t);
   });
 
-  test("reads only the Base of the tested set, every condition of its era, one at a time, and reads back only what it touched", async () => {
+  test("every spec set clears NB's default condition in its era, and nothing else", () => {
+    expect(COND).toBe("excellent");
+    for (const set of SELLER_SPEC_SETS) {
+      expect(set.conditions).toEqual([bscConditionFor(DEFAULT_CONDITION, bscEraForYear(set.year) as BscEra)]);
+    }
+  });
+
+  test("a spec condition of the other era fails the job before any sign-in, naming it", async () => {
+    const t = await ready();
+    const spec = SELLER_SPEC_SETS[0] as { conditions: readonly string[] };
+    const kept = spec.conditions;
+    spec.conditions = ["ex"];
+    try {
+      await expect(clear(t)).rejects.toThrow(new RegExp(`BuySportsCards: ${FS} is modern on BuySportsCards, but its spec conditions include ex`));
+    } finally {
+      spec.conditions = kept;
+    }
+    expect(bscCalls).toBe(0);
+    expect(browserCalls.some((c) => c.path === "/login/bsc")).toBe(false);
+    await drainScheduled(t);
+  });
+
+  test("reads only Future Stars of the tested set, only the spec's condition, one at a time, and reads back only what it touched", async () => {
     const t = await ready();
     sheet = [row("p1", "bsc-1", COND, 1)];
     await clear(t);
     expect(maxReadsInFlight).toBe(1);
-    expect(sheetReads.map((c) => c.condition)).toEqual([...ERA, COND]);
-    const baseSlug = await t.run(async (ctx) => {
-      const base = (await ctx.db.query("selectorOptions").collect()).filter((o) => o.level === "variantType" && o.value === "Base");
-      const set = await Promise.all(base.map(async (o) => ({ o, parent: await ctx.db.get(o.parentId as Id<"selectorOptions">) })));
-      return set.find((s) => s.parent?.value === "Topps")?.o.platformData?.bsc?.b0;
-    });
-    expect(baseSlug).toBeTruthy();
-    for (const read of sheetReads) expect(read.filters.variant).toEqual([baseSlug]);
+    expect(sheetReads.map((c) => c.condition)).toEqual([COND, COND]);
+    for (const read of sheetReads) expect(read.filters.variantName).toEqual([seeded.futureStars]);
     await drainScheduled(t);
+  });
+
+  describe("the insert the specs list on (NEO-475)", () => {
+    const lookup = (t: T, scope: { parallel?: string; insert?: string }) =>
+      t.query(internal.testingSellerCleanup.variantOf, {
+        sport: "Baseball",
+        year: "2024",
+        manufacturer: "Topps",
+        setName: "Topps Chrome",
+        ...scope,
+      });
+    const futureStarsId = (t: T, parentTitle: string) =>
+      t.run(async (ctx) => {
+        const rows = await ctx.db.query("selectorOptions").collect();
+        const parent = rows.find((r) => r.level === "variantType" && r.value === parentTitle);
+        return rows.find((r) => r.level === "insert" && r.value === "Future Stars" && r.parentId === parent?._id)?._id;
+      });
+
+    test("walks the set's Insert type to the named insert", async () => {
+      const t = await ready();
+      expect(await lookup(t, { insert: "Future Stars" })).toEqual({ kind: "found", id: await futureStarsId(t, "Insert") });
+    });
+
+    test("an Insert type titled in the plural is the same kind", async () => {
+      const t = await ready({ insertTypes: ["Inserts"] });
+      expect(await lookup(t, { insert: "Future Stars" })).toEqual({ kind: "found", id: await futureStarsId(t, "Inserts") });
+    });
+
+    test("a row of that name under the Parallel type is never the insert", async () => {
+      const t = await ready({ insertTypes: [], futureStarsUnderParallel: true });
+      expect(await lookup(t, { insert: "Future Stars" })).toEqual({ kind: "absent" });
+      // The same row, asked for as a parallel, is found: the type decides, not the name.
+      expect(await lookup(t, { parallel: "Future Stars" })).toEqual({ kind: "found", id: await futureStarsId(t, "Parallel") });
+    });
+
+    test("never reads the parallel of the same name, nor a sibling insert", async () => {
+      const t = await ready({ futureStarsUnderParallel: true });
+      sheet = [row("p1", "bsc-1", COND, 1)];
+      const r = await clear(t);
+      expect(r.bsc).toMatchObject({ outcome: "clean", zeroed: 1 });
+      const scopes = sheetReads.map((c) => c.filters.variantName?.[0]);
+      expect(scopes).toContain(seeded.futureStars);
+      expect(scopes).not.toContain(seeded.parallelFutureStars);
+      expect(scopes).not.toContain(seeded.otherInsert);
+      await drainScheduled(t);
+    });
+
+    test("a parallel and an insert at once throws: never one picked", async () => {
+      const t = await ready();
+      await expect(lookup(t, { parallel: "Gold Wave Refractors", insert: "Future Stars" })).rejects.toThrow(/a parallel and an insert/);
+    });
+
+    test("a missing Future Stars fails the job before any sign-in: the seed builds it", async () => {
+      const t = await ready({ futureStars: 0 });
+      pages = [{ inventoryItems: [item(sku("a"))] }];
+      offers.set(sku("a"), { offerId: "O1", status: "PUBLISHED" });
+      await expect(clear(t)).rejects.toThrow(new RegExp(`BuySportsCards: no ${FS} on this deployment: did the seed run\\?`));
+      expect(withdrawals).toEqual(["O1"]);
+      expect(bscCalls).toBe(0);
+      expect(browserCalls.some((c) => c.path === "/login/bsc")).toBe(false);
+      expect(logged.filter((l) => l.includes("seller_cleanup_set_absent"))).toEqual([]);
+      await drainScheduled(t);
+    });
+
+    test("a set with no Insert type fails the same way", async () => {
+      const t = await ready({ insertTypes: [] });
+      await expect(clear(t)).rejects.toThrow(new RegExp(`BuySportsCards: no ${FS} on this deployment`));
+      expect(bscCalls).toBe(0);
+      await drainScheduled(t);
+    });
+
+    test("two Future Stars rows fail the job before any sign-in, naming the insert row", async () => {
+      const t = await ready({ futureStars: 2 });
+      await expect(clear(t)).rejects.toThrow(new RegExp(`BuySportsCards: ${FS} can't be told apart: its insert row`));
+      expect(bscCalls).toBe(0);
+      expect(browserCalls.some((c) => c.path === "/login/bsc")).toBe(false);
+      await drainScheduled(t);
+    });
+
+    test("two Insert types fail it too, naming the variant type row", async () => {
+      const t = await ready({ insertTypes: ["Insert", "Inserts"] });
+      await expect(clear(t)).rejects.toThrow(new RegExp(`BuySportsCards: ${FS} can't be told apart: its variantType row`));
+      expect(bscCalls).toBe(0);
+      await drainScheduled(t);
+    });
   });
 
   test("zeroes both copies of a twin like any other row: the planner's refusal never blocks this write", async () => {
@@ -657,10 +800,10 @@ describe("BuySportsCards", () => {
 
   test("a twin already at 0 sends no PUT and is still reported", async () => {
     const t = await ready();
-    sheet = [row("twin-a", "bsc-1", OTHER_COND, 0), row("twin-b", "bsc-1", OTHER_COND, 0)];
+    sheet = [row("twin-a", "bsc-1", COND, 0), row("twin-b", "bsc-1", COND, 0)];
     const r = await clear(t);
     expect(puts).toEqual([]);
-    expect(r.bsc).toEqual({ outcome: "clean", rows: 2, unreadableRows: 0, listed: 0, zeroed: 0, twinKeys: 1, twinKeysRemaining: 1 });
+    expect(r.bsc).toEqual({ outcome: "clean", rows: 2, unreadableRows: 0, listed: 0, zeroed: 0, twinKeys: 1, twinKeysRemaining: 1, skippedSets: 1 });
     await drainScheduled(t);
   });
 
@@ -670,6 +813,204 @@ describe("BuySportsCards", () => {
     const r = await clear(t);
     expect(puts).toEqual([]);
     expect(r.bsc).toMatchObject({ outcome: "clean", listed: 0, zeroed: 0 });
+    await drainScheduled(t);
+  });
+
+  // NEO-458: 2026 Bowman Chrome is built by its own spec, in-flow, so the seller
+  // jobs' start-clean pass meets a deployment that does not have it yet.
+  test("a set its spec builds itself is skipped when this deployment has not built it, and the seed's set is still cleared", async () => {
+    const t = await ready();
+    sheet = [row("p1", "bsc-1", COND, 1)];
+    const r = await clear(t);
+    expect(r.bsc).toMatchObject({ outcome: "clean", listed: 1, zeroed: 1, skippedSets: 1 });
+    expect(sheetReads.map((c) => c.condition)).toEqual([COND, COND]);
+    const absent = logged.filter((l) => l.includes("seller_cleanup_set_absent"));
+    expect(absent).toHaveLength(1);
+    expect(JSON.parse(absent[0])).toMatchObject({ set: "Football 2026 Bowman Bowman Chrome" });
+    await drainScheduled(t);
+  });
+
+  describe("how far the spec's own set got", () => {
+    /** As much of 2026 Bowman's chain as a test asks for, BSC slots on every row unless told. */
+    const seedBowman = async (
+      t: T,
+      shape: { parallelType?: boolean; chromes?: number; chromeHasScope?: boolean; footballs?: number; otherParallels?: number },
+    ) =>
+      await t.run(async (ctx) => {
+        const add = async (
+          level: "sport" | "year" | "manufacturer" | "setName" | "variantType" | "insert",
+          value: string,
+          parentId?: Id<"selectorOptions">,
+          facets?: Record<string, string>,
+          noScope?: boolean,
+        ) =>
+          await ctx.db.insert("selectorOptions", {
+            level,
+            value,
+            platformData: noScope ? {} : { bsc: { b0: `slug-${value}-${parentId ?? "root"}` } },
+            ...(facets && !noScope ? { platformFacets: { bsc: facets } } : {}),
+            isCustom: false,
+            children: [],
+            ...(parentId ? { parentId } : {}),
+            lastUpdated: 0,
+          } as never);
+        const sport = await add("sport", "Football");
+        for (let i = 1; i < (shape.footballs ?? 1); i++) await add("sport", "Football");
+        const year = await add("year", "2026", sport);
+        const brand = await add("manufacturer", "Bowman", year);
+        const set = await add("setName", "Bowman", brand);
+        await add("variantType", "Base", set, { b0: "variant" });
+        if (!shape.parallelType) return;
+        const parallels = await add("variantType", "Parallel", set, { b0: "variant" });
+        for (let i = 0; i < (shape.otherParallels ?? 0); i++) await add("insert", `Other ${i}`, parallels, { b0: "variantName" });
+        for (let i = 0; i < (shape.chromes ?? 0); i++) {
+          await add("insert", "Chrome", parallels, { b0: "variantName" }, shape.chromeHasScope === false);
+        }
+      });
+    const signedIn = () => browserCalls.some((c) => c.path === "/login/bsc");
+
+    test("two Chrome rows fail the job before any sign-in: never skipped as absent, never one picked", async () => {
+      const t = await ready();
+      await seedBowman(t, { parallelType: true, chromes: 2 });
+      pages = [{ inventoryItems: [item(sku("a"))] }];
+      offers.set(sku("a"), { offerId: "O1", status: "PUBLISHED" });
+      await expect(clear(t)).rejects.toThrow(/BuySportsCards: 2026 Bowman Bowman Chrome can't be told apart: its insert row/);
+      expect(withdrawals).toEqual(["O1"]);
+      expect(bscCalls).toBe(0);
+      expect(signedIn()).toBe(false);
+      expect(logged.filter((l) => l.includes("seller_cleanup_set_absent"))).toEqual([]);
+      await drainScheduled(t);
+    });
+
+    test("two rows higher up the chain fail it too", async () => {
+      const t = await ready();
+      await seedBowman(t, { footballs: 2 });
+      await expect(clear(t)).rejects.toThrow(/BuySportsCards: 2026 Bowman Bowman Chrome can't be told apart: its sport row/);
+      expect(bscCalls).toBe(0);
+      await drainScheduled(t);
+    });
+
+    test("a level read to the limit fails: a row past it could be Chrome, or a second one", async () => {
+      const t = await ready();
+      await seedBowman(t, { parallelType: true, otherParallels: MAX_CHAIN_SIBLINGS });
+      await expect(clear(t)).rejects.toThrow(/BuySportsCards: 2026 Bowman Bowman Chrome can't be told apart: its insert row/);
+      expect(bscCalls).toBe(0);
+      await drainScheduled(t);
+    });
+
+    test("an absent Chrome is skipped and counted", async () => {
+      const t = await ready();
+      await seedBowman(t, { parallelType: true, chromes: 0 });
+      sheet = [row("p1", "bsc-1", COND, 1)];
+      const r = await clear(t);
+      expect(r.bsc).toMatchObject({ outcome: "clean", zeroed: 1, skippedSets: 1 });
+      await drainScheduled(t);
+    });
+
+    test("a partial chain, the set there and its Parallel type not yet, is skipped and counted", async () => {
+      const t = await ready();
+      await seedBowman(t, {});
+      sheet = [row("p1", "bsc-1", COND, 1)];
+      const r = await clear(t);
+      expect(r.bsc).toMatchObject({ outcome: "clean", zeroed: 1, skippedSets: 1 });
+      expect(logged.filter((l) => l.includes("seller_cleanup_set_absent"))).toHaveLength(1);
+      await drainScheduled(t);
+    });
+
+    test("a Chrome row with no BSC scope fails the job, naming it", async () => {
+      const t = await ready();
+      await seedBowman(t, { parallelType: true, chromes: 1, chromeHasScope: false });
+      await expect(clear(t)).rejects.toThrow(/BuySportsCards: 2026 Bowman Bowman Chrome has no BuySportsCards scope \(noScope\)/);
+      expect(bscCalls).toBe(0);
+      expect(signedIn()).toBe(false);
+      await drainScheduled(t);
+    });
+
+    test("a Future Stars row with no BSC id of its own fails the job though its Insert type and set carry BSC ids: nothing is borrowed from above", async () => {
+      const t = await ready();
+      await t.run(async (ctx) => {
+        const rows = (await ctx.db.query("selectorOptions").collect()).filter((r) => r.level === "insert" && r.value === "Future Stars");
+        expect(rows).toHaveLength(1);
+        const parent = await ctx.db.get(rows[0].parentId as Id<"selectorOptions">);
+        expect(parent?.platformFacets).toMatchObject({ bsc: { b0: "variant" } });
+        await ctx.db.patch(rows[0]._id, { platformData: {}, platformFacets: undefined } as never);
+      });
+      pages = [{ inventoryItems: [item(sku("a"))] }];
+      offers.set(sku("a"), { offerId: "O1", status: "PUBLISHED" });
+      await expect(clear(t)).rejects.toThrow(new RegExp(`BuySportsCards: ${FS} has no BuySportsCards scope \\(noScope\\)`));
+      expect(withdrawals).toEqual(["O1"]);
+      expect(bscCalls).toBe(0);
+      expect(sheetReads).toEqual([]);
+      expect(puts).toEqual([]);
+      expect(signedIn()).toBe(false);
+      expect(browserCalls.some((c) => c.path.includes("bsc"))).toBe(false);
+      await drainScheduled(t);
+    });
+
+    test("Chrome there: read, and nothing counted as skipped", async () => {
+      const t = await ready();
+      await seedBowman(t, { parallelType: true, chromes: 1 });
+      const r = await clear(t);
+      expect(r.bsc).toMatchObject({ outcome: "clean", skippedSets: 0 });
+      expect(logged.filter((l) => l.includes("seller_cleanup_set_absent"))).toEqual([]);
+      await drainScheduled(t);
+    });
+
+    test("paused BuySportsCards reads no set, so it counts none as skipped", async () => {
+      vi.stubEnv("NEONBINDER_PAUSED_PLATFORMS", "buysportscards");
+      const t = await ready();
+      const r = await clear(t);
+      expect(r.bsc).toMatchObject({ outcome: "paused", skippedSets: 0 });
+      await drainScheduled(t);
+    });
+
+    test("the seller_cleanup log line carries the skipped count", async () => {
+      const t = await ready();
+      await clear(t);
+      const line = logged.find((l) => l.includes('"seller_cleanup"') && l.includes('"bsc"'));
+      expect(JSON.parse(line as string)).toMatchObject({ outcome: "clean", skippedSets: 1 });
+      await drainScheduled(t);
+    });
+  });
+
+  test("a built parallel's own row is read and zeroed, after the seed's Future Stars, and never its sibling parallel", async () => {
+    const t = await ready();
+    const slugs = await t.run(async (ctx) => {
+      const add = async (
+        level: "sport" | "year" | "manufacturer" | "setName" | "variantType" | "insert",
+        value: string,
+        parentId?: Id<"selectorOptions">,
+        facets?: Record<string, string>,
+      ) =>
+        await ctx.db.insert("selectorOptions", {
+          level,
+          value,
+          platformData: { bsc: { b0: `slug-${value}-${parentId ?? "root"}` } },
+          ...(facets ? { platformFacets: { bsc: facets } } : {}),
+          isCustom: false,
+          children: [],
+          ...(parentId ? { parentId } : {}),
+          lastUpdated: 0,
+        } as never);
+      const sport = await add("sport", "Football");
+      const year = await add("year", "2026", sport);
+      const brand = await add("manufacturer", "Bowman", year);
+      const set = await add("setName", "Bowman", brand);
+      await add("variantType", "Base", set, { b0: "variant" });
+      const parallels = await add("variantType", "Parallel", set, { b0: "variant" });
+      const chrome = await add("insert", "Chrome", parallels, { b0: "variantName" });
+      await add("insert", "Chrome Aqua Refractor", parallels, { b0: "variantName" });
+      return { chrome: `slug-Chrome-${parallels}`, other: `slug-Chrome Aqua Refractor-${parallels}`, chromeId: chrome };
+    });
+    sheet = [row("p1", "bsc-1", COND, 2)];
+    const r = await clear(t);
+    // Two sets read, each its own sheets one at a time; both zeroed (the stub's sheet answers every read).
+    expect(maxReadsInFlight).toBe(1);
+    expect(r.bsc).toMatchObject({ outcome: "clean", zeroed: 1, skippedSets: 0 });
+    const chromeReads = sheetReads.filter((c) => c.filters.variantName?.[0] === slugs.chrome);
+    expect(chromeReads.length).toBeGreaterThan(0);
+    expect(sheetReads.filter((c) => c.filters.variantName?.[0] === slugs.other)).toEqual([]);
+    expect(sheetReads.filter((c) => c.filters.variantName?.[0] === seeded.futureStars).length).toBeGreaterThan(0);
     await drainScheduled(t);
   });
 
@@ -691,42 +1032,51 @@ describe("BuySportsCards", () => {
     await drainScheduled(t);
   });
 
-  test("a 503 on the first read gets one more try after the pause, and the job comes out clean", async () => {
+  test("a 503 on the first read is read again after the first pause, and the job comes out clean", async () => {
     const t = await ready();
     sheet = [row("p1", "bsc-1", COND, 1)];
     sheetScript = [503];
     const r = await clear(t);
-    // One extra read, of the sheet that answered 503, then the usual reads and the read-back.
-    expect(sheetReads.map((c) => c.condition)).toEqual([COND, ...ERA, COND]);
-    expect(firstReadPauses).toEqual([1]);
+    // The sheet that answered 503 again, then the read-back.
+    expect(sheetReads.map((c) => c.condition)).toEqual([COND, COND, COND]);
+    expect(retryPauses).toEqual([[10_000, 1]]);
     expect(maxReadsInFlight).toBe(1);
-    expect(r.bsc).toEqual({ outcome: "clean", rows: 1, unreadableRows: 0, listed: 1, zeroed: 1, twinKeys: 0, twinKeysRemaining: 0 });
+    expect(r.bsc).toEqual({ outcome: "clean", rows: 1, unreadableRows: 0, listed: 1, zeroed: 1, twinKeys: 0, twinKeysRemaining: 0, skippedSets: 1 });
     expect(sheet[0].availableQuantity).toBe(0);
+    const retries = logged.filter((l) => l.startsWith('{"msg":"bsc_sheet_retry"')).map((l) => JSON.parse(l) as Record<string, unknown>);
+    expect(retries).toEqual([expect.objectContaining({ pauseMs: 10_000, attempt: 2, outcome: "ok" })]);
     await drainScheduled(t);
   });
 
-  test("a 503 part-way through the first read starts it again, and counts each row once", async () => {
+  test("BSC cold for three tries: 10 s, 30 s and 60 s apart, one read at a time, then clean", async () => {
     const t = await ready();
-    sheet = [row("p1", "bsc-1", COND, 1), row("p2", "bsc-2", OTHER_COND, 1)];
-    sheetScript = [null, 503];
+    sheet = [row("p1", "bsc-1", COND, 1)];
+    sheetScript = [503, 503, 503];
     const r = await clear(t);
-    expect(sheetReads.map((c) => c.condition)).toEqual([COND, OTHER_COND, ...ERA, COND, OTHER_COND]);
-    expect(firstReadPauses).toEqual([2]);
+    expect(BSC_CLEANUP_SHEET_RETRY_PAUSES_MS).toEqual([10_000, 30_000, 60_000]);
+    expect(retryPauses).toEqual([
+      [10_000, 1],
+      [30_000, 2],
+      [60_000, 3],
+    ]);
+    expect(sheetReads.map((c) => c.condition)).toEqual([COND, COND, COND, COND, COND]);
     expect(maxReadsInFlight).toBe(1);
-    expect(r.bsc).toMatchObject({ outcome: "clean", rows: 2, listed: 2, zeroed: 2, twinKeys: 0 });
+    expect(r.bsc).toMatchObject({ outcome: "clean", listed: 1, zeroed: 1 });
     await drainScheduled(t);
   });
 
-  test("503 twice fails the job with the same words after exactly two reads, and eBay's result is not lost", async () => {
+  test("503 on every try fails the job in NB's words after the last pause, and eBay's result is not lost", async () => {
     const t = await ready();
     pages = [{ inventoryItems: [item(sku("a"))] }];
     offers.set(sku("a"), { offerId: "O1", status: "PUBLISHED" });
     sheet = [row("p1", "bsc-1", COND, 1)];
-    // A third read would find the real sheet and the job would pass.
-    sheetScript = [503, 503];
-    await expect(clear(t)).rejects.toThrow(/BuySportsCards: could not read the sheets: BuySportsCards answered 503 to sheetRead\./);
-    expect(sheetReads.map((c) => c.condition)).toEqual([COND, COND]);
-    expect(firstReadPauses).toEqual([1]);
+    // A fifth read would find the real sheet and the job would pass.
+    sheetScript = [503, 503, 503, 503];
+    await expect(clear(t)).rejects.toThrow(
+      /BuySportsCards: could not read the sheets: BuySportsCards was snoozing and didn't wake up in time\./,
+    );
+    expect(sheetReads.map((c) => c.condition)).toEqual([COND, COND, COND, COND]);
+    expect(retryPauses.map(([ms]) => ms)).toEqual([10_000, 30_000, 60_000]);
     expect(puts).toEqual([]);
     expect(withdrawals).toEqual(["O1"]);
     expect(deletes).toEqual([sku("a")]);
@@ -736,28 +1086,29 @@ describe("BuySportsCards", () => {
   });
 
   test.each([
-    [500, /answered 500 to sheetRead/],
-    [502, /answered 502 to sheetRead/],
-    [504, /answered 504 to sheetRead/],
+    [500, /fumbled that one \(error 500\)/],
+    [502, /fumbled that one \(error 502\)/],
+    [504, /fumbled that one \(error 504\)/],
     ["network", /couldn't reach BuySportsCards/],
-    ["timeout", /took too long to answer/],
+    ["timeout", /left NeonBinder hanging with no answer/],
   ] as const)("%s on the first read fails at once, with no pause and no second read", async (answer, words) => {
     const t = await ready();
     sheet = [row("p1", "bsc-1", COND, 1)];
     sheetScript = [answer];
     await expect(clear(t)).rejects.toThrow(words);
     expect(sheetReads).toHaveLength(1);
-    expect(firstReadPauses).toEqual([]);
+    expect(retryPauses).toEqual([]);
     await drainScheduled(t);
   });
 
-  test("a 503 on the read-back gets no retry: only the first read has one", async () => {
+  test("the read-back has its own schedule: a 503 there is read again after the first pause", async () => {
     const t = await ready();
     sheet = [row("p1", "bsc-1", COND, 1)];
-    sheetScript = [...ERA.map(() => null), 503];
-    await expect(clear(t)).rejects.toThrow(/BuySportsCards: could not read the sheets back: BuySportsCards answered 503 to sheetRead\./);
-    expect(sheetReads.map((c) => c.condition)).toEqual([...ERA, COND]);
-    expect(firstReadPauses).toEqual([]);
+    sheetScript = [null, 503];
+    const r = await clear(t);
+    expect(sheetReads.map((c) => c.condition)).toEqual([COND, COND, COND]);
+    expect(retryPauses).toEqual([[10_000, 2]]);
+    expect(r.bsc).toMatchObject({ outcome: "clean", zeroed: 1 });
     await drainScheduled(t);
   });
 });
@@ -806,6 +1157,23 @@ describe("what it leaves behind", () => {
     const r = await clear(t);
     expect([r.ebay.outcome, r.bsc.outcome]).toEqual(["clean", "clean"]);
     expect(logged.join("\n")).toContain("seller_cleanup_session_left");
+    await drainScheduled(t);
+  });
+});
+
+describe("NEO-475: one BSC call summary per cleanup", () => {
+  test("the BuySportsCards session is flushed once, named clearSellerAccounts, counting every BSC call", async () => {
+    const t = await ready();
+    sheet = [row("p1", "bsc-1", COND, 2)];
+    await clear(t);
+    expect(bscCalls).toBeGreaterThan(1);
+    const summaries = logged
+      .filter((l) => l.startsWith('{"msg":"bsc_call_summary"'))
+      .map((l) => JSON.parse(l) as Record<string, unknown>);
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0]).toMatchObject({ op: "clearSellerAccounts", calls: bscCalls, ok: bscCalls });
+    const scheduled = await t.run(async (ctx) => ctx.db.system.query("_scheduled_functions").collect());
+    expect(scheduled.filter((f) => f.name.includes("bscCallStats"))).toHaveLength(1);
     await drainScheduled(t);
   });
 });

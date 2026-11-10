@@ -99,6 +99,7 @@ import { bscOrderDisposition, chooseCopiesToLower, type BscOrder } from "./lib/b
 import { parseListingSku } from "./lib/listingSku";
 import {
   BSC_ORDER_PAGE_SIZE,
+  closeBscSellerSession,
   openBscSellerSession,
   readBscOrder,
   readBscOrderHistory,
@@ -815,96 +816,100 @@ async function pollOwnerSteps(
   standDown: () => void,
 ): Promise<PollReport> {
   if (args.platform === "ebay") return await pollEbaySteps(ctx, args, input, report, finish, standDown);
-  const opened = await openBscSellerSession(ctx, args.ownerId);
+  const opened = await openBscSellerSession(ctx, args.ownerId, { op: "pollOwner" });
   if (!opened.ok) return await finish(undefined, opened.failure);
   const session = opened.value;
+  try {
+    const storedStatus = new Map(input.stored.map((s) => [s.orderId, s.status]));
+    const toFetch = new Map<string, number | null>(); // orderId → history date
+    let newest = input.cursorAt;
+    let reachedCursor = false;
 
-  const storedStatus = new Map(input.stored.map((s) => [s.orderId, s.status]));
-  const toFetch = new Map<string, number | null>(); // orderId → history date
-  let newest = input.cursorAt;
-  let reachedCursor = false;
-
-  for (let page = 0; page < MAX_HISTORY_PAGES; page += 1) {
-    const history = await readBscOrderHistory(ctx, session, page);
-    if (!history.ok) return await finish(undefined, history.failure);
-    for (const summary of history.value.orders) {
-      if (summary.orderDateMs === null) continue;
-      if (summary.orderDateMs < input.cursorAt) {
-        reachedCursor = true;
-        // An older stored order whose status moved still gets re-read.
+    for (let page = 0; page < MAX_HISTORY_PAGES; page += 1) {
+      const history = await readBscOrderHistory(ctx, session, page);
+      if (!history.ok) return await finish(undefined, history.failure);
+      for (const summary of history.value.orders) {
+        if (summary.orderDateMs === null) continue;
+        if (summary.orderDateMs < input.cursorAt) {
+          reachedCursor = true;
+          // An older stored order whose status moved still gets re-read.
+          const was = storedStatus.get(summary.orderId);
+          if (was !== undefined && summary.status !== null && summary.status !== was) {
+            toFetch.set(summary.orderId, summary.orderDateMs);
+          }
+          continue;
+        }
+        newest = Math.max(newest, summary.orderDateMs);
         const was = storedStatus.get(summary.orderId);
-        if (was !== undefined && summary.status !== null && summary.status !== was) {
+        if (was === undefined || summary.status === null || summary.status !== was) {
           toFetch.set(summary.orderId, summary.orderDateMs);
         }
+      }
+      if (reachedCursor || history.value.orders.length + history.value.unreadable < BSC_ORDER_PAGE_SIZE) {
+        reachedCursor = true;
+        break;
+      }
+    }
+
+    // Stored orders not final yet that the pages did not show: re-read a few.
+    let refreshed = 0;
+    for (const s of input.stored) {
+      if (refreshed >= MAX_OPEN_ORDER_REFRESH) break;
+      if (isFinalOrderStatus(s.status) || toFetch.has(s.orderId)) continue;
+      toFetch.set(s.orderId, s.orderDate);
+      refreshed += 1;
+    }
+
+    // `failed` holds the cursor back (the poll is redone); `note` is reported
+    // and does not (a retry would see the same thing).
+    let failed: BscSellerFailure | null = null;
+    let note: string | null = null;
+    for (const [orderId, historyDate] of toFetch) {
+      const detail = await readBscOrder(ctx, session, orderId);
+      report.ordersRead += 1;
+      if (!detail.ok) {
+        const f = detail.failure;
+        const permanent =
+          (f.kind === "http" && f.httpStatus !== undefined && f.httpStatus >= 400 && f.httpStatus < 500 && f.httpStatus !== 429) ||
+          f.kind === "bad_response";
+        if (permanent) note = `One BuySportsCards order couldn't be read (${f.message})`;
+        else failed = f;
+        if (f.kind === "signed_out") break;
         continue;
       }
-      newest = Math.max(newest, summary.orderDateMs);
-      const was = storedStatus.get(summary.orderId);
-      if (was === undefined || summary.status === null || summary.status !== was) {
-        toFetch.set(summary.orderId, summary.orderDateMs);
+      const order = projectBscOrder(detail.value, historyDate);
+      if (order.items.length > MAX_SALE_ITEMS) {
+        note = `Order ${order.orderNo} has more lines than NeonBinder takes in one order, so none of it was applied.`;
+        continue;
+      }
+      if (detail.value.unreadableItems > 0) {
+        note = `Order ${order.orderNo} has ${detail.value.unreadableItems} line(s) NeonBinder can't read; the rest were applied.`;
+      }
+      const recorded = await ctx.runMutation(internal.listingSales.recordOrder, { ...args, order });
+      // The row was put to sleep under the poll: stand down, write nothing more.
+      if (recorded.saleId === null) {
+        standDown();
+        return report;
+      }
+      report.ordersStored += 1;
+      for (let i = 0; i < recorded.toApply.length; i += SALE_ITEMS_PER_APPLY) {
+        const r = await ctx.runMutation(internal.listingSales.applySaleItems, {
+          ownerId: args.ownerId,
+          saleId: recorded.saleId,
+          indexes: recorded.toApply.slice(i, i + SALE_ITEMS_PER_APPLY),
+        });
+        report.linesApplied += r.applied;
       }
     }
-    if (reachedCursor || history.value.orders.length + history.value.unreadable < BSC_ORDER_PAGE_SIZE) {
-      reachedCursor = true;
-      break;
-    }
-  }
 
-  // Stored orders not final yet that the pages did not show: re-read a few.
-  let refreshed = 0;
-  for (const s of input.stored) {
-    if (refreshed >= MAX_OPEN_ORDER_REFRESH) break;
-    if (isFinalOrderStatus(s.status) || toFetch.has(s.orderId)) continue;
-    toFetch.set(s.orderId, s.orderDate);
-    refreshed += 1;
+    // The cursor moves only past a complete read: history back to the cursor,
+    // every order stored.
+    const complete = reachedCursor && failed === null;
+    return await finish(complete ? newest : undefined, failed ?? note);
+  } finally {
+    // NEO-475: the session's BSC call summary, once per poll. Never throws.
+    await closeBscSellerSession(ctx, session);
   }
-
-  // `failed` holds the cursor back (the poll is redone); `note` is reported
-  // and does not (a retry would see the same thing).
-  let failed: BscSellerFailure | null = null;
-  let note: string | null = null;
-  for (const [orderId, historyDate] of toFetch) {
-    const detail = await readBscOrder(ctx, session, orderId);
-    report.ordersRead += 1;
-    if (!detail.ok) {
-      const f = detail.failure;
-      const permanent =
-        (f.kind === "http" && f.httpStatus !== undefined && f.httpStatus >= 400 && f.httpStatus < 500 && f.httpStatus !== 429) ||
-        f.kind === "bad_response";
-      if (permanent) note = `One BuySportsCards order couldn't be read (${f.message})`;
-      else failed = f;
-      if (f.kind === "signed_out") break;
-      continue;
-    }
-    const order = projectBscOrder(detail.value, historyDate);
-    if (order.items.length > MAX_SALE_ITEMS) {
-      note = `Order ${order.orderNo} has more lines than NeonBinder takes in one order, so none of it was applied.`;
-      continue;
-    }
-    if (detail.value.unreadableItems > 0) {
-      note = `Order ${order.orderNo} has ${detail.value.unreadableItems} line(s) NeonBinder can't read; the rest were applied.`;
-    }
-    const recorded = await ctx.runMutation(internal.listingSales.recordOrder, { ...args, order });
-    // The row was put to sleep under the poll: stand down, write nothing more.
-    if (recorded.saleId === null) {
-      standDown();
-      return report;
-    }
-    report.ordersStored += 1;
-    for (let i = 0; i < recorded.toApply.length; i += SALE_ITEMS_PER_APPLY) {
-      const r = await ctx.runMutation(internal.listingSales.applySaleItems, {
-        ownerId: args.ownerId,
-        saleId: recorded.saleId,
-        indexes: recorded.toApply.slice(i, i + SALE_ITEMS_PER_APPLY),
-      });
-      report.linesApplied += r.applied;
-    }
-  }
-
-  // The cursor moves only past a complete read: history back to the cursor,
-  // every order stored.
-  const complete = reachedCursor && failed === null;
-  return await finish(complete ? newest : undefined, failed ?? note);
 }
 
 /** eBay orders projected for `recordOrder`: NB's SKU lines only (a seller's other eBay sales are not NB's). */

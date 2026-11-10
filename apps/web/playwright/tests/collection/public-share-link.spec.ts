@@ -173,7 +173,7 @@ test(
     await rawCopies.getByRole("button", { name: `Edit ${raw.short}, Raw, Excellent`, exact: true }).click();
     const photoPanel = rawCopies
       .getByRole("form", { name: "Edit Raw, Excellent", exact: true })
-      .getByRole("region", { name: "Photos", exact: true });
+      .getByRole("region", { name: /^Photos of / });
     await photoPanel.getByLabel("Front photo file", { exact: true }).setInputFiles(photoFile("front.jpg"));
     await expect(photoPanel.getByRole("status")).toHaveText("Front photo saved.");
     await photoPanel.getByLabel("Back photo file", { exact: true }).setInputFiles(photoFile("back.jpg"));

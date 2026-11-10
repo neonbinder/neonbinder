@@ -73,6 +73,7 @@ import type {
 import { isOptimisticId, OPTIMISTIC_ID_PREFIX } from "../lineKeys";
 import { finishForVariant } from "./finish";
 import { resizeCopyPhoto } from "@/lib/collection/copy-photo-resize";
+import { uploadWithRetry, type PhotoFileKind } from "@/lib/collection/upload-with-retry";
 import { CardImagesProvider } from "./cardImages";
 
 import {
@@ -1760,11 +1761,10 @@ function withDefaultCondition(local: OptimisticLocalStore, details: RawDetails):
 /**
  * A plain line (NEO-364, D9), the server's `isPlainLine`: raw, in the default
  * condition or none (stored before NEO-380), no other detail recorded, not up
- * for trade.
+ * for trade. Photos do not matter (NEO-431).
  */
 function isPlainRow(r: RawCopy, defaultCondition: Condition = DEFAULT_CONDITION): boolean {
   return (
-    r.hasPhotos !== true &&
     (r.condition === undefined || r.condition === defaultCondition) &&
     r.grading === undefined &&
     r.serialNumber === undefined &&
@@ -1776,12 +1776,22 @@ function isPlainRow(r: RawCopy, defaultCondition: Condition = DEFAULT_CONDITION)
   );
 }
 
+/** Newest first, as the server's `newerLine`: the latest touched, then the later listed. */
+function newestFirst(rows: readonly RawCopy[]): RawCopy[] {
+  return rows
+    .map((r, i) => ({ r, i }))
+    .sort((a, b) => b.r.lastUpdated - a.r.lastUpdated || b.i - a.i)
+    .map(({ r }) => r);
+}
+
 /**
  * `setBoxQuantity` drawn ahead of the server, from the card's loaded rows:
  * the plain lines in the box are set to `quantity`. Raising folds into
- * today's plain unplaced line or draws a new one; lowering takes from the
- * plain lines newest first (a line at 0 goes). The same number changes
- * nothing.
+ * today's plain unplaced line or draws a new one, unless every plain line has
+ * photos: then it stacks onto the newest of those (the server's
+ * `photoLineToRaise`). Lowering takes from the lines without photos, then those
+ * with them, newest first in each (the server's `lowerOrder`; a line at 0
+ * goes). The same number changes nothing.
  */
 function applyBoxQuantity(
   local: OptimisticLocalStore,
@@ -1803,7 +1813,8 @@ function applyBoxQuantity(
   if (quantity > before) {
     const adding = quantity - before;
     const next = { quantity: adding, condition, acquiredOn, homeId: boxId } as RawDetails;
-    const into = rows.find((r) => foldsInto(r, next) && r.quantity + adding <= MAX_LINE_QUANTITY);
+    const photoLine = plain.every((r) => r.hasPhotos === true) ? newestFirst(plain)[0] : undefined;
+    const into = photoLine ?? rows.find((r) => foldsInto(r, next) && r.quantity + adding <= MAX_LINE_QUANTITY);
     if (into) {
       change.before = [into];
       change.after = [{ ...into, quantity: into.quantity + adding, lastUpdated: now }];
@@ -1824,12 +1835,8 @@ function applyBoxQuantity(
     }
   } else {
     let left = before - quantity;
-    // Newest first, as the server's `newerLine`: the latest touched, then the later listed.
-    const newest = plain
-      .map((r, i) => ({ r, i }))
-      .sort((a, b) => b.r.lastUpdated - a.r.lastUpdated || b.i - a.i)
-      .map(({ r }) => r);
-    for (const r of newest) {
+    const ordered = [...newestFirst(plain.filter((r) => !r.hasPhotos)), ...newestFirst(plain.filter((r) => r.hasPhotos))];
+    for (const r of ordered) {
       if (left === 0) break;
       const take = Math.min(left, r.quantity);
       left -= take;
@@ -1843,7 +1850,8 @@ function applyBoxQuantity(
 /**
  * `undoBoxQuantity` drawn ahead of the server: each step of the inverse, in
  * order, on the card's loaded rows. A `restore` folds into an identical
- * line as the server does, or draws line `n` (the step's place).
+ * line as the server does, or draws line `n` (the step's place); one with
+ * photos to take back never folds, and draws a line with photos.
  */
 function applyBoxSteps(
   local: OptimisticLocalStore,
@@ -1863,8 +1871,9 @@ function applyBoxSteps(
         condition: defaultConditionIn(local),
         ...(step.acquiredOn ? { acquiredOn: step.acquiredOn } : {}),
         ...(step.slot !== undefined ? { slot: step.slot } : {}),
+        ...(step.photoIds?.length ? { hasPhotos: true as const } : {}),
         homeId: inverse.boxId,
-      } as RawDetails;
+      } as RawDetails & { hasPhotos?: true };
       const into = rows.find((r) => foldsInto(r, next) && r.quantity + step.quantity <= MAX_LINE_QUANTITY);
       if (into) {
         change.before = [into];
@@ -2063,7 +2072,9 @@ function useConvexActions(): CollectionActions {
         );
       }),
       addLineItem: addLineItemBase.withOptimisticUpdate((local, args) =>
-        applyAdd(local, args.cardId, cards.current.get(args.cardId), args.details, true, () => optimisticIdFor(args)),
+        applyAdd(local, args.cardId, cards.current.get(args.cardId), args.details, !args.keepsOwnLine, () =>
+          optimisticIdFor(args),
+        ),
       ),
       restoreCopy: restoreCopyBase.withOptimisticUpdate((local, args) =>
         applyAdd(local, args.cardId, cards.current.get(args.cardId), args.details, false, () => optimisticIdFor(args)),
@@ -2334,9 +2345,13 @@ function useConvexActions(): CollectionActions {
         };
       },
 
-      async addLineItem(card, details) {
+      async addLineItem(card, details, options) {
         placeCard(card);
-        const result = await m.addLineItem({ cardId: asCard(card.id), details: toRawDetails(details) });
+        const result = await m.addLineItem({
+          cardId: asCard(card.id),
+          details: toRawDetails(details),
+          ...(options?.keepsOwnLine ? { keepsOwnLine: true } : {}),
+        });
         return { copyId: result.copyId, merged: result.merged, undo: undoAdd(card, details.homeId, result) };
       },
 
@@ -2531,6 +2546,7 @@ function useConvexActions(): CollectionActions {
         return {
           before: r.before,
           after: r.after,
+          tookPhotos: r.inverse.steps.some((step) => step.op === "restore" && (step.photoIds?.length ?? 0) > 0),
           undo: async () => {
             // The same number wrote nothing, so there is nothing to put back.
             if (r.inverse.steps.length === 0) return;
@@ -2703,12 +2719,17 @@ function useConvexCopyPhotos(): CopyPhotosExtension {
           imageBytes: resized.image.size,
           thumbBytes: resized.thumb.size,
         });
-        const put = async (url: string, blob: Blob) => {
-          const res = await fetch(url, { method: "PUT", headers: { "content-type": resized.contentType }, body: blob });
-          if (!res.ok) throw new Error("That photo didn't upload. Check your connection and try again.");
-        };
-        await put(started.imageUploadUrl, resized.image);
-        await put(started.thumbUploadUrl, resized.thumb);
+        const put = (url: string, body: Blob, file: PhotoFileKind) =>
+          uploadWithRetry({
+            url,
+            method: "PUT",
+            headers: { "content-type": resized.contentType },
+            body,
+            file,
+            failureMessage: "That photo didn't upload. Check your connection and try again.",
+          });
+        await put(started.imageUploadUrl, resized.image, "image");
+        await put(started.thumbUploadUrl, resized.thumb, "thumb");
         await finishUpload({ photoId: started.photoId });
       },
       async removePhoto(copy, side) {

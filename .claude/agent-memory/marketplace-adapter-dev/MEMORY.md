@@ -13,7 +13,7 @@
 - [Sync action `message` is log-only](reference_sync_action_message_is_log_only.md) — legacy *Form components render it but `useEnsureSync` columns never mount them; the status row is the only surface
 - [Marketplace bucket words leak into set names](reference_marketplace_bucket_words_leak_into_set_names.md) — "Other ONIT Athlete …" is stored as the NB name; start-anchored matchers miss it; fix at the adapter boundary, never widen the matcher
 - [Convex op budget: count writes, not items](reference_convex_op_budget_count_writes_not_items.md) — count ops at the call sites; budgeting writes makes a truncated call finishable by replaying the same list; a shared dry run must pay the write cost
-- [Stub ctx for an action's write failures](reference_action_impl_stub_ctx_for_write_failures.md) — plain *Impl + Pick<ActionCtx> stub; forward to t.query/t.mutation and throw on the Nth chunk for resume tests; adapters are no-throw
+- [Stub ctx for an action's write failures](reference_action_impl_stub_ctx_for_write_failures.md) — plain *Impl + Pick<ActionCtx> stub; forward to t.query/t.mutation and throw on the Nth chunk for resume tests; adapters are no-throw; add a recording scheduler
 - [Workpool retry semantics](reference_workpool_retry_semantics.md) — every throw retries unless NonRetryableError; onComplete only after the final attempt; error arrives as a string
 - [Convex test files are not typechecked](reference_convex_test_files_are_not_typechecked.md) — convex tsconfig excludes *.test.ts and eslint skips .ts; typecheck new tests with a scratch tsconfig
 - [Store loops fall through to insert](reference_store_loops_fall_through_to_insert.md) — a new MatchOutcome kind becomes a NEW ROW in both stores until each gets an explicit branch
@@ -60,3 +60,6 @@
 - [Unstub globals before real timers](reference_unstub_globals_before_real_timers.md) — stubGlobal(setTimeout) after useFakeTimers: undo it first or the fake stays and the network guard's afterAll times out
 - [New pool enqueue breaks convex-test](reference_new_pool_enqueue_breaks_convex_test.md) — every test through that mutation throws Component not registered; spy on the instance in beforeEach
 - [eBay inventory offset is a page number](reference_ebay_inventory_offset_is_a_page_number.md) — unlike getOrders; follow the next link, fail on an unreadable one
+- [Testing wired BSC call telemetry](reference_testing_wired_bsc_call_telemetry.md) — flush-once = count bscCallStats scheduled rows; drain flag past the 4 KB clone; backoff spy
+- [NB card numbers are not bare by rule](reference_nb_card_numbers_are_not_bare_by_rule.md) — sync commits BSC cardNo raw despite the comments; strip on both sides; BSC prefixes per variant
+- [Recording hits stage career teams by QID](reference_recording_hits_stage_career_teams_by_qid.md) — fixture hits stage dated clubs looked up with knownQid; null/other QID = refused miss; capture team+league by id

@@ -238,8 +238,9 @@ tokens sorted: "Wayne Gretzky" → `gretzky wayne`) on `players` /
 | `checklist-wizard-skip-commits-and-unskip` | Hockey 1995 Tulsa Oilers CHL | unknown player rows to skip (measured 16) |
 | `checklist-wizard-career-team-commits` | Hockey 1995 Memphis RiverKings CHL | 1 unknown player row |
 | `checklist-wizard-skip-not-a-person` | Hockey 1995 Fort Worth Fire CHL | 2 unknown player rows (one per-row skip, one left for the footer skip) |
-| `checklist-wizard-link-team-saves-alias` | Baseball 1996 Line Up Venezuelan Winter League | team steps for both "Navegantes del Magallanes" and "Tigres de Aragua"; exactly one Baseball team "Pittsburgh Crawfords" with no aliases; lookups settling well inside the flow's 180 s ceiling (measured ~144 s) |
-| `checklist-wizard-career-team-entry`, `-link-to-existing-player`, `-back-to-matching-resumes-decisions` | Baseball 2024 Topps Big League | the player rows and link target each header names |
+| `checklist-wizard-link-team-saves-alias` | Baseball 1996 New Haven Ravens Rally Raffle (NEO-475) | a team step for "New Haven Ravens" (no catalogue team of the name); unknown player rows left for "Skip remaining names"; lookups settling inside the flow's 180 s ceiling |
+| `checklist-wizard-career-team-entry`, `-link-to-existing-player`, `-back-to-matching-resumes-decisions` | Baseball 2024 Topps Stars of MLB Network (NEO-475) | the player rows and link target each header names (first player row #1 Lauren Shehadi) |
+| `checklist-wizard-same-name-pick-step` | Baseball 2024 BBM Rookie Edition Premium (NEO-475) | exactly one catalogue Baseball "Shuya Yamada", undated, whose stint starts after 2024; RP01 and RP02 still resolving to one player each |
 | `admin/player-live-wikidata-enrichment` | — | its live-proof name absent from `players` and `playerAliases` (README, "Enrichment fixtures") |
 | `setup.yaml` | Baseball 2024 Topps Chrome | its drain finishes; a new same-name player panel is handled by the drain's link step |
 

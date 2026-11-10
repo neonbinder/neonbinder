@@ -88,6 +88,7 @@ import {
   type NbVariantCard,
 } from "./lib/bscSheetPlan";
 import {
+  closeBscSellerSession,
   fetchBscSellerId,
   isBscSellerId,
   openBscSellerSession,
@@ -107,6 +108,14 @@ export const DRAIN_BUDGET_MS = 4 * 60 * 1000;
 export const DRAIN_LEASE_MS = 12 * 60 * 1000;
 /** A variant's lease on its sync record (the same reasoning). */
 export const VARIANT_LEASE_MS = 12 * 60 * 1000;
+/**
+ * NEO-475 — the waits before a 503'd sheet read is tried again, shared by the
+ * whole `readSheets` call (two retries at most, in this order). BSC's gateway
+ * answers 503 after ~30 s while its seller API is cold, mostly on a session's
+ * first read, and can take minutes to warm. Kept short on purpose (Jason):
+ * the drain runs again on the next kick.
+ */
+export const BSC_SHEET_RETRY_PAUSES_MS: readonly number[] = [10_000, 30_000];
 /** NEO-433: how often `watchDrainRun` reads the platform's record of a held run. */
 export const DRAIN_WATCH_TICK_MS = 30 * 1000;
 /**
@@ -579,8 +588,10 @@ export const drainHeld = internalQuery({
  * Claims one variant's sync record (made on its first sync). A `running`
  * record whose lease has not run out belongs to another run: stand down.
  * `fullReadRequested`: a Sync was pressed since the record's last run
- * (`resyncRequestedAt` later than `lastRunAt`), so this run reads every
- * condition; the claim stamps `lastRunAt`, so only this one run does.
+ * (`resyncRequestedAt` later than `lastRunAt`); the claim stamps `lastRunAt`,
+ * so only this one run sees it. eBay reads every card of the variant on it;
+ * BuySportsCards ignores it (NEO-475: a BSC run always reads the conditions
+ * in use plus `conditionsPushed`, never the whole era).
  */
 export const claimVariant = internalMutation({
   args: {
@@ -645,6 +656,41 @@ export const claimVariant = internalMutation({
       fullReadRequested,
       conditionsPushed: record.conditionsPushed,
     };
+  },
+});
+
+/**
+ * NEO-475 — adds conditions to a variant's `conditionsPushed` before the run
+ * sends anything under them, so a run that dies after a PUT (and never
+ * reaches `finishVariant`) still leaves the record a later run reads and
+ * zeroes from (product rule 5: a listing NB made is never lost track of).
+ * Only while this run holds the variant's lease; false otherwise, and then
+ * the run must not send.
+ */
+export const recordConditionsPushed = internalMutation({
+  args: {
+    ownerId: v.string(),
+    platform: listingPlatformValidator,
+    variantId: v.id("selectorOptions"),
+    leaseToken: v.string(),
+    conditions: v.array(v.string()),
+  },
+  returns: v.boolean(),
+  handler: async (ctx, args) => {
+    const record = await ctx.db
+      .query("marketplaceListingSyncs")
+      .withIndex("by_owner_variant_platform", (q) =>
+        q.eq("ownerId", args.ownerId).eq("variantId", args.variantId).eq("platform", args.platform),
+      )
+      .unique();
+    if (!record || record.status !== "running" || record.leaseToken !== args.leaseToken) return false;
+    const pushed = new Set(record.conditionsPushed);
+    const before = pushed.size;
+    for (const c of args.conditions) pushed.add(c);
+    if (pushed.size !== before) {
+      await ctx.db.patch(record._id, { conditionsPushed: [...pushed], lastUpdated: Date.now() });
+    }
+    return true;
   },
 });
 
@@ -922,8 +968,10 @@ export class ProgressLedger {
 /**
  * The read (or confirm) steps of some BSC condition sheets, in read order:
  * one per sheet NB has a condition name for (era order), then one step for
- * every sheet NB lists nothing under (a full read's leftovers; their names
- * are BSC's and are never shown). `order` is the sheets in that order.
+ * every sheet NB lists nothing under (their names are BSC's and are never
+ * shown). `order` is the sheets in that order. Since NEO-475 no run reads the
+ * whole era, so that last step is defensive: it is reached only by a stored
+ * `conditionsPushed` key NB has no name for in the era. Kept, and tested.
  */
 export function bscSheetSteps(
   kind: "read" | "confirm",
@@ -1009,6 +1057,8 @@ const variantInputValidator = v.union(
     setId: v.union(v.id("selectorOptions"), v.null()),
     commonPriceCents: v.union(v.number(), v.null()),
     sellerId: v.union(v.string(), v.null()),
+    /** Every `cardNumberPrefix` on the variant's chain (`planBscSheet`). */
+    cardNumberPrefixes: v.array(v.string()),
   }),
 );
 export type VariantInput = typeof variantInputValidator.type;
@@ -1016,7 +1066,8 @@ export type VariantInput = typeof variantInputValidator.type;
 /**
  * The variant's BSC scope (from its slot ids, the checklist gate's own rule:
  * `resolvableSides` with `leafGate`, then `resolveBscFacetFilters`), its era
- * (from NB's year row), its set, the owner's common price and BSC seller id.
+ * (from NB's year row), its set, the owner's common price and BSC seller id,
+ * and the card-number prefixes its chain carries.
  */
 export const variantSyncInput = internalQuery({
   args: { ownerId: v.string(), variantId: v.id("selectorOptions") },
@@ -1025,6 +1076,7 @@ export const variantSyncInput = internalQuery({
     const leaf = await ctx.db.get(args.variantId);
     if (!leaf) return { kind: "gone" };
     const chain: Array<ResolvableRow & { id: Id<"selectorOptions"> }> = [];
+    const cardNumberPrefixes: string[] = [];
     let cursor: Doc<"selectorOptions"> | null = leaf;
     for (let depth = 0; cursor && depth < 16; depth += 1) {
       chain.unshift({
@@ -1034,6 +1086,7 @@ export const variantSyncInput = internalQuery({
         platformData: cursor.platformData ?? {},
         platformFacets: cursor.platformFacets,
       });
+      if (cursor.metadata?.cardNumberPrefix) cardNumberPrefixes.push(cursor.metadata.cardNumberPrefix);
       cursor = cursor.parentId ? await ctx.db.get(cursor.parentId) : null;
     }
     const resolution = resolvableSides(chain, { bscScope: "checklist", leafGate: true });
@@ -1068,6 +1121,7 @@ export const variantSyncInput = internalQuery({
       setId,
       commonPriceCents,
       sellerId: sellerId !== null && isBscSellerId(sellerId) ? sellerId : null,
+      cardNumberPrefixes,
     };
   },
 });
@@ -1276,7 +1330,11 @@ export interface DrainOptions {
   now?: () => number;
   /** Fetches one R2 object's bytes; the real one signs with `lib/r2`. */
   fetchPhoto?: (key: string, maxBytes: number) => Promise<ArrayBuffer | null>;
-  /** The wait before an eBay publish's one busy retry (`publishOffer`); tests pass one that returns at once. */
+  /**
+   * The wait before a retry: an eBay publish's one busy retry (`publishOffer`)
+   * and a BSC sheet read's 503 retries (`readSheets`, NEO-475). Tests pass one
+   * that returns at once.
+   */
   pause?: (ms: number) => Promise<void>;
 }
 
@@ -1343,6 +1401,8 @@ export async function drainOwnerImpl(
   const startedAt = now();
   const leaseToken = newToken();
   const report: DrainReport = { claimed: false, variants: [], stoppedFor: "done" };
+  // NEO-475: condition sheets this run began reading (the run log's `conditionsRead`).
+  const tally = { conditionsRead: 0 };
 
   const claim = await ctx.runMutation(internal.listingDrain.claimDrain, {
     ownerId: args.ownerId,
@@ -1367,8 +1427,11 @@ export async function drainOwnerImpl(
   let next: "continue" | "done" | "stop" = "done";
   const fullQueue = [...new Set(args.fullVariantIds ?? [])];
   let opened: SessionResult | null = null;
+  // NEO-475: the open session, closed (its call summary flushed) in `finally`.
+  const held: { session?: BscSellerSession } = {};
   const getSession = async (): Promise<SessionResult> => {
-    opened ??= await openBscSellerSession(ctx, args.ownerId);
+    opened ??= await openBscSellerSession(ctx, args.ownerId, { op: "drainOwner" });
+    if (opened.ok) held.session = opened.value;
     return opened;
   };
   // The seller account this run's PUTs name, checked once per run.
@@ -1411,7 +1474,7 @@ export async function drainOwnerImpl(
       }
       if (variantId === null) continue;
       done.add(variantId);
-      const result = await syncVariant(ctx, { ...args, variantId, full, leaseToken }, getSession, bindSeller, opts);
+      const result = await syncVariant(ctx, { ...args, variantId, leaseToken }, getSession, bindSeller, opts, tally);
       report.variants.push({ variantId, result: result.kind });
       if (result.kind === "sellerConflict") {
         report.stoppedFor = "sellerConflict";
@@ -1434,13 +1497,18 @@ export async function drainOwnerImpl(
       }
     }
   } finally {
-    await ctx.runMutation(internal.listingDrain.releaseDrain, {
-      ownerId: args.ownerId,
-      platform: args.platform,
-      leaseToken,
-      next,
-      ...(fullQueue.length > 0 ? { leftoverFullVariantIds: fullQueue } : {}),
-    });
+    try {
+      await ctx.runMutation(internal.listingDrain.releaseDrain, {
+        ownerId: args.ownerId,
+        platform: args.platform,
+        leaseToken,
+        next,
+        ...(fullQueue.length > 0 ? { leftoverFullVariantIds: fullQueue } : {}),
+      });
+    } finally {
+      // NEO-475: the session's BSC call summary, once per run. Never throws.
+      if (held.session) await closeBscSellerSession(ctx, held.session);
+    }
   }
   console.log(
     JSON.stringify({
@@ -1448,6 +1516,7 @@ export async function drainOwnerImpl(
       platform: args.platform,
       operation: "drainOwner",
       variants: report.variants.length,
+      conditionsRead: tally.conditionsRead,
       stoppedFor: report.stoppedFor,
       durationMs: now() - startedAt,
     }),
@@ -1483,12 +1552,12 @@ async function syncVariant(
     ownerId: string;
     platform: Platform;
     variantId: Id<"selectorOptions">;
-    full: boolean;
     leaseToken: string;
   },
   getSession: () => Promise<SessionResult>,
   bindSeller: (accountId: string) => Promise<"bound" | "conflict" | "off">,
   opts: DrainOptions,
+  tally: { conditionsRead: number },
 ): Promise<VariantResult> {
   const { ownerId, platform, variantId, leaseToken } = args;
   const snapshot = await ctx.runQuery(internal.listingDrain.outboxSnapshot, { ownerId, platform, variantId });
@@ -1597,18 +1666,17 @@ async function syncVariant(
     commonPriceCents: input.commonPriceCents,
   });
 
-  // Which condition sheets to read: every condition of the era on a full
-  // read (first sync, or the first run after a Sync press), else the targets' plus every condition NB
-  // has pushed before (so a row NB once listed is still found and zeroed).
-  const fullRead = args.full || claim.lastSuccessAt === null || claim.fullReadRequested;
-  const conditions = fullRead
-    ? [...bscConditionsForEra(era)]
-    : [
-        ...new Set([
-          ...fold.targets.map((t) => t.bscCondition),
-          ...claim.conditionsPushed.filter((c) => isBscConditionOfEra(c, era)),
-        ]),
-      ];
+  // Which condition sheets to read (NEO-475, Jason 2026-11-09): the targets'
+  // conditions plus every condition NB has pushed before (so a row NB once
+  // listed is still found and zeroed), on every run: a first sync and a Sync
+  // press included. Never the whole era: a collector's own BSC stock under a
+  // condition NB never listed in for this variant is left as it is.
+  const conditions = [
+    ...new Set([
+      ...fold.targets.map((t) => t.bscCondition as string),
+      ...claim.conditionsPushed.filter((c) => isBscConditionOfEra(c, era)),
+    ]),
+  ];
 
   const cardIds = new Set(cards.map((c) => c.cardId as string));
   const foldProblems = fold.problems;
@@ -1659,13 +1727,31 @@ async function syncVariant(
   };
 
   // Read every sheet that matters, one at a time, ticking each condition off.
-  const sheet = await readSheets(ctx, session, input.requests, reads.order, (c) => ledger.start(reads.keyOf(c)));
+  const retry = { pausesMs: BSC_SHEET_RETRY_PAUSES_MS, ...(opts.pause ? { pause: opts.pause } : {}) };
+  const sheet = await readSheets(
+    ctx,
+    session,
+    input.requests,
+    reads.order,
+    async (c) => {
+      tally.conditionsRead += 1;
+      await ledger.start(reads.keyOf(c));
+    },
+    retry,
+  );
   if (!sheet.ok) return await fail(sheet.failure);
 
   // Seller id for the PUT.
   let sellerId = input.sellerId;
 
-  const plan1 = planBscSheet({ sheetRows: sheet.sheet, conditionsRead: conditions, targets: fold.targets, cards });
+  const planInput = {
+    sheetRows: sheet.sheet,
+    conditionsRead: conditions,
+    targets: fold.targets,
+    cards,
+    cardNumberPrefixes: input.cardNumberPrefixes,
+  };
+  const plan1 = planBscSheet(planInput);
 
   // Seller photos for rows that still show BSC's image and whose group has a copy with one.
   const photoKeys = await uploadPhotos(ctx, session, {
@@ -1682,15 +1768,7 @@ async function syncVariant(
   });
   if (!photoKeys.ok) return await fail(photoKeys.failure);
 
-  const plan = photoKeys.value.size > 0
-    ? planBscSheet({
-        sheetRows: sheet.sheet,
-        conditionsRead: conditions,
-        targets: fold.targets,
-        cards,
-        photoKeys: photoKeys.value,
-      })
-    : plan1;
+  const plan = photoKeys.value.size > 0 ? planBscSheet({ ...planInput, photoKeys: photoKeys.value }) : plan1;
 
   const problems: StoredProblem[] = [...foldProblems, ...plan.problems]
     .map((p) => toStoredProblem(p, cardIds))
@@ -1744,6 +1822,26 @@ async function syncVariant(
       await finish({ kind: "error", error: SELLER_CONFLICT_ERROR, problems: problems.slice(0, MAX_STORED_PROBLEMS), problemsTotal: problems.length }, false);
       return { kind: "sellerConflict" };
     }
+    // NEO-475: the conditions this run lists under go on the record BEFORE
+    // the first PUT. Reads are no longer the whole era, so a run that dies
+    // after a PUT must still leave a later run reading (and able to zero)
+    // what it sent. Zeroes need no entry: their condition was read, so it is
+    // in use or already recorded.
+    const sendingUnder = [...new Set(plan.puts.filter((p) => p.kind === "set").map((p) => p.condition as string))];
+    if (sendingUnder.length > 0) {
+      const recorded = await ctx.runMutation(internal.listingDrain.recordConditionsPushed, {
+        ownerId,
+        platform,
+        variantId,
+        leaseToken,
+        conditions: sendingUnder,
+      });
+      // The variant's lease is gone (another run took it): send nothing.
+      if (!recorded) {
+        await finish({ kind: "error", error: "Listing on BuySportsCards stopped part-way through." }, false);
+        return { kind: "error" };
+      }
+    }
     let putFailure: BscSellerFailure | null = null;
     for (const chunk of plan.chunks) {
       // Stopped mid-variant: push nothing more ("what the platform lists
@@ -1772,8 +1870,13 @@ async function syncVariant(
     if (putFailure) ledger.fail("send");
 
     // Confirm by reading back every condition the push touched.
-    const back = await readSheets(ctx, session, input.requests, confirms.order, (c) =>
-      ledger.start(confirms.keyOf(c)),
+    const back = await readSheets(
+      ctx,
+      session,
+      input.requests,
+      confirms.order,
+      (c) => ledger.start(confirms.keyOf(c)),
+      retry,
     );
     if (!back.ok) return await fail(back.failure, problems);
     const after = new Map<string, number>();
@@ -1838,6 +1941,15 @@ export function distinctCards(problems: readonly StoredProblem[]): number {
  * `duplicate_sheet_row` and nothing listed or came down. Serial reads never
  * showed it. Keep this loop serial unless BSC is shown to answer overlapping
  * sheet reads for one seller correctly.
+ *
+ * NEO-475 — `retry.pausesMs`: a read BSC answers 503 is tried again, the same
+ * condition and filters, after the next pause of the list; the list is shared
+ * by the whole call (each pause is used once), so the waits are bounded
+ * however many sheets there are. Still one read at a time: the retry starts
+ * only after the 503 has answered and the pause has run, and the reads go on
+ * from the condition that failed. Nothing else is retried here: a timeout or
+ * any other status fails the call, and a 401 keeps `send`'s own one refresh.
+ * Each retry logs one `bsc_sheet_retry` line (pause, attempt, outcome; no ids).
  */
 export async function readSheets(
   ctx: DrainCtx,
@@ -1846,13 +1958,27 @@ export async function readSheets(
   conditions: readonly string[],
   /** NEO-415: awaited before a condition's first read (the ledger's step write); keeps the reads serial. */
   onCondition?: (condition: string) => Promise<void>,
+  retry?: { pausesMs: readonly number[]; pause?: (ms: number) => Promise<void> },
 ): Promise<{ ok: true; sheet: NarrowedBscSheet } | { ok: false; failure: BscSellerFailure }> {
   const sheets: NarrowedBscSheet[] = [];
   const seenProducts = new Set<string>();
+  const pauses = retry?.pausesMs ?? [];
+  const pause = retry?.pause ?? realPause;
+  let pausesUsed = 0;
   for (const condition of conditions) {
     await onCondition?.(condition);
     for (const filters of requests) {
-      const r = await readBscSellerSheet(ctx, session, { filters, condition });
+      let attempt = 1;
+      let r = await readBscSellerSheet(ctx, session, { filters, condition, attempt });
+      while (!r.ok && isColdSheetAnswer(r.failure) && pausesUsed < pauses.length) {
+        const pauseMs = pauses[pausesUsed];
+        pausesUsed += 1;
+        attempt += 1;
+        await pause(pauseMs);
+        const startedAt = Date.now();
+        r = await readBscSellerSheet(ctx, session, { filters, condition, attempt });
+        logSheetRetry(pauseMs, attempt, r, Date.now() - startedAt);
+      }
       if (!r.ok) return { ok: false, failure: r.failure };
       const rows: BscSheetRow[] = [];
       for (const row of r.value.rows) {
@@ -1867,6 +1993,32 @@ export async function readSheets(
     }
   }
   return { ok: true, sheet: joinNarrowedSheets(sheets) };
+}
+
+/** A 503 from BSC's gateway: the seller API was cold. The only answer `readSheets` retries. */
+function isColdSheetAnswer(failure: BscSellerFailure): boolean {
+  return failure.kind === "http" && failure.httpStatus === 503;
+}
+
+function realPause(ms: number): Promise<void> {
+  return new Promise<void>((resolve) => setTimeout(resolve, ms));
+}
+
+/** One line per sheet retry: the wait, which attempt, and how it went. No ids, no seller data. */
+function logSheetRetry(
+  pauseMs: number,
+  attempt: number,
+  r: BscSellerResult<NarrowedBscSheet>,
+  durationMs: number,
+): void {
+  const outcome = r.ok
+    ? "ok"
+    : r.failure.kind === "http" && r.failure.httpStatus !== undefined
+      ? `http_${r.failure.httpStatus}`
+      : r.failure.kind;
+  console.log(
+    JSON.stringify({ msg: "bsc_sheet_retry", platform: "bsc", operation: "sheetRead", pauseMs, attempt, outcome, durationMs }),
+  );
 }
 
 /**
@@ -1948,9 +2100,9 @@ async function uploadPhotos(
 
 /**
  * The scheduled entry (`listingOutbox.kickListingDrain` schedules it; this
- * module reschedules it to continue). `fullVariantIds` asks for a full
- * re-read (every condition of the era) of those variants first, outbox rows
- * or not.
+ * module reschedules it to continue). `fullVariantIds` asks for those
+ * variants to run first, outbox rows or not (a Sync press). On BSC that run
+ * reads what any run reads (NEO-475); eBay reads every card of them.
  */
 export const drainOwner = internalAction({
   args: {

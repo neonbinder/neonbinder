@@ -132,6 +132,55 @@ describe("CopyButton, variant=icon", () => {
     expect(screen.getByRole("status").className).toContain("sr-only");
   });
 
+  it("takes the section's hue, teal by default, and a failure stays pink in either", async () => {
+    writeText.mockRejectedValue(new Error("denied"));
+    const icon = (tone?: "teal" | "blue") =>
+      render(
+        <CopyButton
+          value="x"
+          variant="icon"
+          tone={tone}
+          copyLabel={`Copy ${tone ?? "default"}`}
+          copiedMessage="Copied"
+          failedMessage="Copy failed"
+        />,
+      );
+    icon();
+    icon("blue");
+    const teal = screen.getByRole("button", { name: "Copy default" });
+    const blue = screen.getByRole("button", { name: "Copy blue" });
+    expect(teal.className).toContain("text-neon-teal-text");
+    expect(teal.className).not.toContain("text-neon-blue-text");
+    expect(blue.className).toContain("text-neon-blue-text");
+    expect(blue.className).not.toContain("text-neon-teal-text");
+    fireEvent.click(blue);
+    await screen.findByText("Copy failed");
+    expect(blue.className).toContain("text-neon-pink-text");
+    expect(blue.className).not.toContain("text-neon-blue-text");
+  });
+
+  it("the touch size is 44px on a phone and 32px from sm up, with no change to the row's height", () => {
+    render(
+      <CopyButton value="x" variant="icon" size="touch" copyLabel="Copy touch" copiedMessage="Copied" failedMessage="Copy failed" />,
+    );
+    const button = screen.getByRole("button", { name: "Copy touch" });
+    expect(button.className).toContain("h-11 w-11 -my-1.5 sm:my-0 sm:h-8 sm:w-8");
+    expect(button.querySelector("svg")?.getAttribute("class")).toContain("h-5 w-5");
+  });
+
+  it("the other sizes keep their boxes, at every width", () => {
+    const sized = (size: "sm" | "md") => (
+      <CopyButton value="x" variant="icon" size={size} copyLabel={`Copy ${size}`} copiedMessage="Copied" failedMessage="Copy failed" />
+    );
+    render(sized("sm"));
+    render(sized("md"));
+    const small = screen.getByRole("button", { name: "Copy sm" }).className;
+    const medium = screen.getByRole("button", { name: "Copy md" }).className;
+    expect(small).toContain("h-6 w-6");
+    expect(medium).toContain("h-8 w-8");
+    expect(`${small} ${medium}`).not.toMatch(/h-11|-my-|sm:/);
+  });
+
   it("shows the failure, because it is the instruction the user must follow", async () => {
     writeText.mockRejectedValue(new Error("denied"));
     renderIcon();
