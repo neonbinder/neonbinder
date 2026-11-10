@@ -215,11 +215,6 @@ def detect_orientation(
 
     if response.error.message:
         raise RuntimeError(f"vision api error: {response.error.message}")
-    if (
-        __import__("os").environ.get("PARITY_STAGE")
-        or "PYTEST_CURRENT_TEST" not in __import__("os").environ
-    ):
-        raise RuntimeError("NEO484-THROW-V")  # T1, revert before merge
 
     # text_annotations[0] is the full-document bounding poly; word-level
     # entries start at index 1. An image with no text returns an empty list.
