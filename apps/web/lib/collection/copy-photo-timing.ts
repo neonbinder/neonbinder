@@ -12,6 +12,12 @@
  * and, under E2E only, the same numbers as a PostHog diagnostic event (NEO-392).
  * It carries timings, sizes, statuses and try outcomes: never a URL, a token or
  * a photo id.
+ *
+ * A photo held in the add form is saved after the new line's own write
+ * (`addLineItem`), and its resize starts at the Add press, beside that write.
+ * Such a save carries the write's time (`addLineItemMs`), so the line covers
+ * the whole wait from the press, and its `resize` phase is only what was left
+ * of the resize once the write had answered.
  */
 
 import { e2eDiagnostic } from "@/lib/observability/e2e-diagnostics";
@@ -34,7 +40,14 @@ export interface CopyPhotoPutTiming {
 
 export interface CopyPhotoSaveTiming {
   outcome: "saved" | "failed";
+  /** The photo's own save, from `addPhoto` to done. Excludes `addLineItemMs`. */
   totalMs: number;
+  /**
+   * On a photo held in the add form: ms from the Add press until the new
+   * line's write answered, which the collector waited through before this
+   * save began. Absent on any other save.
+   */
+  addLineItemMs?: number;
   /** Each phase that ran, in ms. A phase that never started is absent. */
   phases: Partial<Record<CopyPhotoPhase, number>>;
   puts: CopyPhotoPutTiming[];
@@ -46,10 +59,15 @@ export interface CopyPhotoSaveTiming {
   errorStatus?: number | null;
 }
 
-/** Whether a save is worth reporting: slow, retried or failed. */
+/**
+ * Whether a save is worth reporting: slow, retried or failed. Slow counts the
+ * add's write before it too, since the collector waited through both.
+ */
 export function shouldReportCopyPhotoTiming(timing: CopyPhotoSaveTiming): boolean {
   return (
-    timing.outcome === "failed" || timing.totalMs > SLOW_SAVE_MS || timing.puts.some((put) => put.tries.length > 1)
+    timing.outcome === "failed" ||
+    (timing.addLineItemMs ?? 0) + timing.totalMs > SLOW_SAVE_MS ||
+    timing.puts.some((put) => put.tries.length > 1)
   );
 }
 
@@ -71,6 +89,7 @@ export function flattenCopyPhotoTiming(
     start_upload_ms: timing.phases.startUpload ?? null,
     finish_upload_ms: timing.phases.finishUpload ?? null,
   };
+  if (timing.addLineItemMs !== undefined) flat.add_line_item_ms = timing.addLineItemMs;
   for (const put of timing.puts) {
     flat[`${put.file}_ms`] = put.ms;
     flat[`${put.file}_bytes`] = put.bytes;
@@ -109,10 +128,14 @@ export interface CopyPhotoTimer {
 
 const defaultClock = () => (typeof performance !== "undefined" ? performance.now() : Date.now());
 
-/** Starts timing one save now. */
+/**
+ * Starts timing one save now. `addLineItemMs`: on a photo held in the add
+ * form, how long the add's own write took before this save began.
+ */
 export function startCopyPhotoTimer(
   clock: () => number = defaultClock,
   report: (timing: CopyPhotoSaveTiming) => void = reportCopyPhotoTiming,
+  addLineItemMs?: number,
 ): CopyPhotoTimer {
   const began = clock();
   const phases: Partial<Record<CopyPhotoPhase, number>> = {};
@@ -148,7 +171,13 @@ export function startCopyPhotoTimer(
       }
     },
     finish(outcome, error) {
-      const timing: CopyPhotoSaveTiming = { outcome, totalMs: since(began), phases, puts };
+      const timing: CopyPhotoSaveTiming = {
+        outcome,
+        totalMs: since(began),
+        ...(addLineItemMs !== undefined ? { addLineItemMs: Math.round(addLineItemMs) } : {}),
+        phases,
+        puts,
+      };
       if (outcome === "failed") {
         if (failedAt) timing.failedAt = failedAt;
         if (error instanceof Error) timing.errorName = error.name;

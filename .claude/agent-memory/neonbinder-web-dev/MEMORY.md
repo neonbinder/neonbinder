@@ -188,3 +188,5 @@
 - [dnd-kit droppables in their own scroll pane](reference_dndkit_droppables_in_their_own_scroll_pane.md) — two-pane drags need no measuring config (Rect tracks its pane's scroll); what autoscroll scrolls; grid-rows-1 + min-h-0
 - [react-hooks/refs flags helper arguments](reference_react_hooks_refs_flags_helper_arguments.md) — a ref-reading closure passed INTO renderRow() trips the lint; build it in the JSX prop instead
 - [dnd-kit disabled draggable is aria-disabled](reference_dndkit_disabled_draggable_is_aria_disabled.md) — useDraggable({disabled}) spreads aria-disabled onto the row and disables its nested buttons for AT and Playwright; override after the spread
+- [canvas.toBlob waits ~1 s in the app page](reference_canvas_toblob_waits_a_second_in_the_app_page.md) — each encode ~1000 ms under Playwright Chromium (idle deadline) after a write; encode at pick time, concurrently
+- [vitest spies handle returned promises](reference_vitest_spies_handle_returned_promises.md) — a vi.fn rejection is never unhandled; an unhandled-rejection test through a mock can't go red

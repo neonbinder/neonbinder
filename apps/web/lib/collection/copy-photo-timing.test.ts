@@ -64,6 +64,11 @@ describe("copy photo timing (NEO-466)", () => {
       expect(shouldReportCopyPhotoTiming(timing({ outcome: "failed", totalMs: 5 }))).toBe(true);
     });
 
+    it("counts the add's write toward slow: a quick photo after a slow add is reported", () => {
+      expect(shouldReportCopyPhotoTiming(timing({ totalMs: 1_000, addLineItemMs: SLOW_SAVE_MS - 1_000 }))).toBe(false);
+      expect(shouldReportCopyPhotoTiming(timing({ totalMs: 1_000, addLineItemMs: SLOW_SAVE_MS - 999 }))).toBe(true);
+    });
+
     it("writes one console line and one diagnostic when it reports", () => {
       reportCopyPhotoTiming(timing({ outcome: "failed", failedAt: "put", errorName: "PhotoUploadError", errorStatus: null }));
       expect(warn).toHaveBeenCalledTimes(1);
@@ -114,6 +119,11 @@ describe("copy photo timing (NEO-466)", () => {
         error_name: "PhotoUploadError",
         error_status: null,
       });
+    });
+
+    it("carries the add's write as add_line_item_ms, and leaves it out of a save that had none", () => {
+      expect(flattenCopyPhotoTiming(timing({ addLineItemMs: 2300 })).add_line_item_ms).toBe(2300);
+      expect(flattenCopyPhotoTiming(timing())).not.toHaveProperty("add_line_item_ms");
     });
 
     it("leaves a phase that never ran as null", () => {
@@ -184,6 +194,14 @@ describe("copy photo timing (NEO-466)", () => {
       const done = startCopyPhotoTimer(() => 0, () => {}).finish("saved");
       expect(done).not.toHaveProperty("errorName");
       expect(done).not.toHaveProperty("failedAt");
+    });
+
+    it("records the add's write it was given, rounded, without counting it in totalMs", () => {
+      const { clock, tick } = makeClock();
+      const timer = startCopyPhotoTimer(clock, () => {}, 2300.4);
+      tick(900);
+      expect(timer.finish("saved")).toMatchObject({ totalMs: 900, addLineItemMs: 2300 });
+      expect(startCopyPhotoTimer(() => 0, () => {}).finish("saved")).not.toHaveProperty("addLineItemMs");
     });
 
     it("still returns the record when the reporter throws", () => {

@@ -2286,6 +2286,92 @@ describe("addPhoto uploads both files side by side (NEO-466)", () => {
       expect(timingLines()).toEqual([expect.objectContaining({ outcome: "failed", failedAt: "resize" })]);
     });
 
+    it("reuses a resize preparePhoto started, once, and carries the add's write in the timing line", async () => {
+      const { resizeCopyPhoto } = await import("@/lib/collection/copy-photo-resize");
+      vi.mocked(resizeCopyPhoto).mockClear();
+      actionAnswers.set("copyPhotos:startUpload", {
+        photoId: "photo1",
+        imageUploadUrl: PRIMARY.image,
+        thumbUploadUrl: PRIMARY.thumb,
+      });
+      actionAnswers.set("copyPhotos:finishUpload", () => null);
+      const xhrs = installFakeXhr();
+      const { result } = renderHook(() => useCopyPhotos(), { wrapper });
+      const file = new File(["x"], "held.jpg", { type: "image/jpeg" });
+      result.current!.preparePhoto!(file);
+      result.current!.preparePhoto!(file);
+      expect(resizeCopyPhoto).toHaveBeenCalledTimes(1);
+      const saving = result.current!.addPhoto(COPY, "front", file, { addLineItemMs: 5000 });
+      await vi.waitFor(() => expect(xhrs.all).toHaveLength(2));
+      xhrs.all.forEach((x) => x.respond(200));
+      await saving;
+      expect(resizeCopyPhoto).toHaveBeenCalledTimes(1);
+      // Slow only because of the add's write: still reported, with it named.
+      expect(timingLines()).toEqual([expect.objectContaining({ outcome: "saved", addLineItemMs: 5000 })]);
+      // Used once: a later save of the same file resizes afresh.
+      const again = result.current!.addPhoto(COPY, "front", file);
+      await vi.waitFor(() => expect(xhrs.all).toHaveLength(4));
+      xhrs.all.slice(2).forEach((x) => x.respond(200));
+      await again;
+      expect(resizeCopyPhoto).toHaveBeenCalledTimes(2);
+    });
+
+    it("a photo replaced before its save: the save uses the replacement's resize, never the first one's", async () => {
+      const { resizeCopyPhoto } = await import("@/lib/collection/copy-photo-resize");
+      const made = new Map<string, Blob>();
+      vi.mocked(resizeCopyPhoto).mockClear();
+      vi.mocked(resizeCopyPhoto).mockImplementation(async (file: File) => {
+        const image = new Blob([`image of ${file.name}`], { type: "image/jpeg" });
+        made.set(file.name, image);
+        return { contentType: "image/jpeg", image, thumb: new Blob(["thumb"], { type: "image/jpeg" }) };
+      });
+      try {
+        actionAnswers.set("copyPhotos:startUpload", {
+          photoId: "photo1",
+          imageUploadUrl: PRIMARY.image,
+          thumbUploadUrl: PRIMARY.thumb,
+        });
+        actionAnswers.set("copyPhotos:finishUpload", () => null);
+        const xhrs = installFakeXhr();
+        const { result } = renderHook(() => useCopyPhotos(), { wrapper });
+        const first = new File(["a"], "first.jpg", { type: "image/jpeg" });
+        const second = new File(["b"], "second.jpg", { type: "image/jpeg" });
+        result.current!.preparePhoto!(first);
+        result.current!.preparePhoto!(second);
+        const saving = result.current!.addPhoto(COPY, "front", second);
+        await vi.waitFor(() => expect(xhrs.all).toHaveLength(2));
+        expect(byUrl(xhrs, "/image").sentBody).toBe(made.get("second.jpg"));
+        xhrs.all.forEach((x) => x.respond(200));
+        await saving;
+        // One resize each, at prepare time; the save made none of its own.
+        expect(vi.mocked(resizeCopyPhoto).mock.calls.map(([f]) => f.name)).toEqual(["first.jpg", "second.jpg"]);
+      } finally {
+        vi.mocked(resizeCopyPhoto).mockReset();
+        vi.mocked(resizeCopyPhoto).mockImplementation(async () => ({
+          contentType: "image/jpeg",
+          image: new Blob(["image"], { type: "image/jpeg" }),
+          thumb: new Blob(["thumb"], { type: "image/jpeg" }),
+        }));
+      }
+    });
+
+    it("a prepared resize that fails surfaces at the save, with its own message, failing at resize", async () => {
+      // No unhandled-rejection check here: vitest's spy observes every promise
+      // a mock returns, so a mocked rejection is never unhandled either way.
+      const { resizeCopyPhoto } = await import("@/lib/collection/copy-photo-resize");
+      vi.mocked(resizeCopyPhoto).mockRejectedValueOnce(new Error("That file isn't a photo this browser can open."));
+      const startCalls: unknown[] = [];
+      actionAnswers.set("copyPhotos:startUpload", (a: unknown) => startCalls.push(a));
+      const { result } = renderHook(() => useCopyPhotos(), { wrapper });
+      const file = new File(["x"], "bad.heic", { type: "image/heic" });
+      result.current!.preparePhoto!(file);
+      // The rejection lands before anything awaits it.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await expect(result.current!.addPhoto(COPY, "front", file)).rejects.toThrow("That file isn't a photo this browser can open.");
+      expect(startCalls).toEqual([]);
+      expect(timingLines()).toEqual([expect.objectContaining({ outcome: "failed", failedAt: "resize" })]);
+    });
+
     it("a save that needed a retry and then succeeded logs exactly one timing line, outcome saved", async () => {
       vi.useFakeTimers();
       const { xhrs, saving } = begin();
