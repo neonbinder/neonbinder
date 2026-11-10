@@ -45,3 +45,15 @@ instead of Back avoids only the Back half; the team step still has to
 arrive. The teams-first yield itself is Jason's NEO-236 design and the
 FIFO-across-operators fairness is a multi-operator product question; neither
 is something to change for a test.
+
+**Third facet, after "Add remaining players as new" (NEO-462, 2026-11-08).**
+While the bulk add waits on pending lookups the footer reads "Adding N more
+as their lookups finish…" (`autoAddPending`), NOT "still looking up", so
+`awaitLookupsSettled` / `/still looking up/` passes straight through it. The
+2026 Bowman Chrome seller spec (NEO-458) copied the seed's bulk-add loop but
+dropped its 240 s ceiling, so its first wait is 7 s: green when the pool is
+idle (bulk add ~1 s after the press), red when another shard's ~250-name
+batch holds the FIFO (bulk add 9 s after the press). Its four names are
+fixture-refused (instant no-match), so the wait is pure queue time, not a
+lookup. Any loop after the bulk press needs the LOOKUPS ceiling on its first
+wait, or a settle on `/as their lookups finish|still looking up/`.
