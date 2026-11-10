@@ -1,9 +1,10 @@
 // R1: cards filed into a binder between two dashboard visits show on the
 // signed-in dashboard as news: the summary line under the greeting reads
 // "N cards filed since your last visit." and the binder's spine carries
-// "2 new since your last visit" (NEO-464). Any way cards arrive in a binder is
-// filing (Jason, 2026-11-10), so the spec files one card each way: one added to
-// Main and then moved into a new binder, one added straight into it.
+// "2 new since your last visit" (NEO-464), and both cards stand in Fresh Pulls.
+// Any way cards arrive in a binder is filing (Jason, 2026-11-10), so the spec
+// files one card each way: one added to Main and then moved into a new binder,
+// one added straight into it.
 //
 // A new visit needs thirty minutes away from the dashboard, so the spec moves
 // its last open back with /testing/backdate-dashboard-visit
@@ -101,6 +102,15 @@ test(
       .getByRole("list", { name: "Binders on the shelf" })
       .getByRole("button", { name: `${binder}, 2 cards, 2 new since your last visit`, exact: true });
     await expect(spine).toBeVisible();
+
+    // Fresh Pulls shows both, whichever way each came in (moved in, added straight in).
+    const pulls = page.getByRole("region", { name: "Fresh Pulls" });
+    await expect(pulls).toBeVisible();
+    // Each tile is a figure named by the card's full listing title (the player, then the number).
+    for (const c of [card, added]) {
+      const title = new RegExp(`^2024 Topps Chrome (?=.*${escapeRegExp(c.player)})(?=.*#${escapeRegExp(c.number)}\\b)`);
+      await expect(pulls.getByRole("figure", { name: title }).first()).toBeVisible();
+    }
     await expectAccessible(page, { label: "Dashboard, cards filed since the last visit" });
 
     // --- Cleanup through the UI: remove the copy, delete the empty binder ---

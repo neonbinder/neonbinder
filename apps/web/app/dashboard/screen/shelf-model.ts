@@ -9,6 +9,7 @@
  * a source of its own.
  */
 
+import type { ContainerLabel } from "@/app/collection/final/data/types";
 import type { DashCard } from "../dash-card";
 
 /** One pocket on a page: a card you have, or an empty pocket (naming the card it waits for, when known). */
@@ -38,7 +39,12 @@ export interface ShelfBinder {
   couldFitTotal?: { count: number; more: boolean };
   /** Only when a smart binder's rule names a checklist. */
   checklist: { have: number; total: number; percent: number } | null;
-  /** The spine's vinyl and the stripe above its label. */
+  /**
+   * The spine label it wears on My Binders: the collector's own, else the
+   * default (`labelOf`), so a binder looks the same on both shelves.
+   */
+  label: ContainerLabel;
+  /** The label's colours, for the pieces that echo a spine (a could-fit strip's swatch). */
   vinyl: string;
   stripe: string;
   /**
@@ -54,9 +60,6 @@ export interface ShelfBinder {
 }
 
 export const POCKETS_PER_PAGE = 9;
-
-/** House vinyl for a binder with no colours of its own (Main, or a binder with no label). */
-export const HOUSE_VINYL = { vinyl: "#1f2a44", stripe: "#00c2ff" };
 
 /**
  * The shelf's order, which is also how the capped shelf picks its binders:

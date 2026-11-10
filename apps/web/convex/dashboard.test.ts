@@ -16,6 +16,7 @@ import schema from "./schema";
 import {
   COULD_FIT_CARDS,
   INTAKE_RECENT_MS,
+  NEW_SETS_SHOWN,
   SALE_LINES,
   SALES_SHOWN,
   STAMP_MIN_MS,
@@ -24,7 +25,6 @@ import {
   baseCompletion,
   intakeRunShows,
   intakeRunTally,
-  isDealer,
   nextVisit,
   ruleNamesChecklist,
   saleLinesOf,
@@ -207,16 +207,6 @@ describe("intakeRunShows", () => {
     expect(intakeRunShows({ scans: 4, done: 4 }, NOW_MS - INTAKE_RECENT_MS, NOW_MS)).toBe(true);
     expect(intakeRunShows({ scans: 4, done: 4 }, NOW_MS - INTAKE_RECENT_MS - 1, NOW_MS)).toBe(false);
     expect(intakeRunShows({ scans: 0, done: 0 }, NOW_MS, NOW_MS)).toBe(false);
-  });
-});
-
-describe("isDealer", () => {
-  test("any listing platform connected, or any order, whichever platform", () => {
-    expect(isDealer([false, false], false)).toBe(false);
-    expect(isDealer([], false)).toBe(false);
-    expect(isDealer([false, true], false)).toBe(true);
-    expect(isDealer([true, false], false)).toBe(true);
-    expect(isDealer([false, false], true)).toBe(true);
   });
 });
 
@@ -544,6 +534,22 @@ describe("newSince", () => {
     expect(await news(afterFold)).toEqual([`${mets}|${s.fx.gooden1}`]);
   });
 
+  test("Fresh Pulls' read: cards added on Collection (a full line, a pasted range) are in the window, newest first", async () => {
+    const s = await setup();
+    const windowStart = Date.now() - 14 * DAY;
+    const variations = await s.t.run((ctx) =>
+      ctx.db.insert("collectionContainers", { ownerId: ME.subject, kind: "binder", name: "Variations", lastUpdated: 0 }),
+    );
+    await s.me.mutation(api.collection.addLineItem, { cardId: s.fx.gooden1, details: { quantity: 1 } });
+    await tick();
+    await s.me.mutation(api.collection.addHaves, { cardIds: [s.fx.strawberry2, s.fx.gold1], homeId: variations });
+    const { lines } = await s.me.query(api.dashboard.newSince, { sinceMs: windowStart });
+    const read = lines.map((l) => `${l.homeId}|${l.cardId}`);
+    // The pasted range came in last, so it leads (its two lines share a moment); the Main add follows.
+    expect(read.slice(0, 2).sort()).toEqual([`${variations}|${s.fx.gold1}`, `${variations}|${s.fx.strawberry2}`].sort());
+    expect(read.slice(2)).toEqual([`${s.homes.main}|${s.fx.gooden1}`]);
+  });
+
   test("a part split off inside the same binder keeps its source's stamp; split into another home, it is filed now", async () => {
     const s = await setup();
     const mets = await s.t.run((ctx) =>
@@ -604,6 +610,94 @@ describe("newSince", () => {
     const lines = (await s.me.query(api.dashboard.newSince, { sinceMs: since })).lines;
     expect(lines.map((l) => [l.homeId, l.cardId])).toEqual([[s.homes.main, s.fx.strawberry2]]);
     expect(straw.copyId).toBeDefined();
+  });
+});
+
+describe("newSets", () => {
+  /** A set under `parentId` with one Base of `n` cards, all written now (after everything before it). */
+  async function setWithCards(s: S, name: string, n: number, parentId = s.fx.topps86Id) {
+    return s.t.run(async (ctx) => {
+      const setId = await ctx.db.insert("selectorOptions", {
+        level: "setName",
+        value: name,
+        parentId,
+        platformData: {},
+        children: [],
+        lastUpdated: 0,
+      } as never);
+      const baseId = await ctx.db.insert("selectorOptions", {
+        level: "variantType",
+        value: "Base",
+        parentId: setId,
+        platformData: {},
+        children: [],
+        lastUpdated: 0,
+      } as never);
+      const cards: Id<"cardChecklist">[] = [];
+      for (let i = 0; i < n; i++) {
+        cards.push(
+          await ctx.db.insert("cardChecklist", {
+            selectorOptionId: baseId,
+            cardNumber: String(i + 1),
+            cardName: `Player ${i + 1}`,
+            listingTitle: `${name} #${i + 1}`,
+            sportId: s.fx.sportId,
+            platformData: {},
+            sortOrder: i,
+            lastUpdated: 0,
+          } as never),
+        );
+      }
+      return { setId, baseId, cards };
+    });
+  }
+
+  test("the sets whose cards landed last, newest first, one entry a set, each with its count and Base cover card", async () => {
+    const s = await setup();
+    // A set row made after everything, with no card: a marketplace's list of sets. Never news.
+    await s.t.run((ctx) =>
+      ctx.db.insert("selectorOptions", {
+        level: "setName",
+        value: "Empty Set",
+        parentId: s.fx.toppsId,
+        platformData: {},
+        children: [],
+        lastUpdated: 0,
+      } as never),
+    );
+    await s.t.run((ctx) => ctx.db.patch(s.fx.setId, { subtreeCardCount: 5 }));
+    // Its cards land after Topps Chrome's, a whole checklist of them: one step, one entry.
+    const traded = await setWithCards(s, "Topps Traded Update", 30);
+    const out = await s.me.query(api.dashboard.newSets, {});
+    expect(out.map((n) => n.set.name)).toEqual(["Topps Traded Update", "Topps Chrome"]);
+    // Never counted: null. Its Base's first card is the cover.
+    expect(out[0]).toMatchObject({ cardCount: null, coverCardId: traded.cards[0] });
+    expect(out[0].set).toMatchObject({ season: "1986", manufacturer: { name: "Topps" }, sport: { name: "Baseball" } });
+    // Topps Chrome: its inserts and parallel are the same set, so it comes once; its Base's first card is the cover.
+    expect(out[1]).toMatchObject({ cardCount: 5, coverCardId: s.fx.gooden1 });
+    expect(out[1].addedAt).toBeLessThan(out[0].addedAt);
+  });
+
+  test("a set known to hold no cards is passed over", async () => {
+    const s = await setup();
+    const hidden = await setWithCards(s, "Pulled Set", 1);
+    await s.t.run((ctx) => ctx.db.patch(hidden.setId, { subtreeCardCount: 0 }));
+    const out = await s.me.query(api.dashboard.newSets, {});
+    expect(out.map((n) => n.set.name)).toEqual(["Topps Chrome"]);
+  });
+
+  test("the same for every collector, and capped", async () => {
+    const s = await setup();
+    for (let i = 0; i < NEW_SETS_SHOWN + 2; i++) await setWithCards(s, `Set ${i}`, 2);
+    const mine = await s.me.query(api.dashboard.newSets, {});
+    expect(mine).toHaveLength(NEW_SETS_SHOWN);
+    expect(mine[0].set.name).toBe(`Set ${NEW_SETS_SHOWN + 1}`);
+    expect(await s.them.query(api.dashboard.newSets, {})).toEqual(mine);
+  });
+
+  test("an empty catalog: nothing", async () => {
+    const t = convexTest(schema, modules);
+    expect(await t.withIdentity(ME).query(api.dashboard.newSets, {})).toEqual([]);
   });
 });
 
@@ -874,19 +968,20 @@ describe("sales", () => {
     await expect(s.t.query(api.dashboard.sales, {})).rejects.toThrow(/Not authenticated/);
   });
 
-  test("no listing platform connected and no order: does not sell, so no sales section", async () => {
-    const s = await setup();
-    await s.t.run((ctx) => ctx.db.insert("userProfiles", { userId: ME.subject, siteCredentials: [{ site: "sportlots", hasCredentials: true }] }));
-    await order(s, { orderNo: "THEIRS", status: "READY_TO_SHIP", orderDate: NOW, ownerId: THEM.subject });
-    expect(await s.me.query(api.dashboard.sales, {})).toEqual({ dealer: false, orders: [], more: false });
-  });
-
-  test("a listing platform connected and no sales: a dealer with nothing to ship", async () => {
-    for (const site of ["buysportscards", "ebay"]) {
+  test("no order stored: no sales section, whatever platforms are connected", async () => {
+    // Jason, 2026-11-10: a widget shows for what the collector has, never for a login configured.
+    for (const site of ["sportlots", "buysportscards", "ebay"]) {
       const s = await setup();
       await connect(s, site);
-      expect(await s.me.query(api.dashboard.sales, {})).toEqual({ dealer: true, orders: [], more: false });
+      await order(s, { orderNo: "THEIRS", status: "READY_TO_SHIP", orderDate: NOW, ownerId: THEM.subject });
+      expect(await s.me.query(api.dashboard.sales, {})).toEqual({ dealer: false, orders: [], more: false });
     }
+  });
+
+  test("an order stored, every one shipped: a dealer with nothing to ship", async () => {
+    const s = await setup();
+    await order(s, { orderNo: "B-9", status: "SHIPPED", orderDate: NOW - DAY });
+    expect(await s.me.query(api.dashboard.sales, {})).toEqual({ dealer: true, orders: [], more: false });
   });
 
   test("an order stored makes a dealer; shipped and cancelled orders are not to ship; newest first", async () => {

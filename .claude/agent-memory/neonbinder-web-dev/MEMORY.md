@@ -140,7 +140,7 @@
 - [Radix scale overrides lose to Radix](reference_radix_scale_overrides_lose_to_radix.md) — Radix sets --green-9/--focus-8 on the Theme element, so html-level remaps never reach it; set them there, probe computed values
 - [vitest CSS ?raw import is empty](reference_vitest_css_raw_import_is_empty.md) — CSS imports stub to ""; read stylesheets with readFileSync(join(__dirname, ...))
 - [data-theme="dark" scopes a subtree](reference_data_theme_dark_scopes_a_subtree.md) — pin roles dark for one scene (spin shelf, /u storefronts); light signatures still match; waitForURL glob matches query
-- [Local screenshot script gotchas](reference_local_screenshot_script_gotchas.md) — sign-in redirect fools waitForURL; missing Convex fn; hand-set data-theme misreads livery; oklch colours
+- [Local screenshot script gotchas](reference_local_screenshot_script_gotchas.md) — sign-in redirect fools waitForURL; missing Convex fn; hand-set data-theme misreads livery; oklch colours; tall element shots cut (fullPage+clip)
 - [Unlayered CSS beats Tailwind utilities](reference_unlayered_css_beats_tailwind_utilities.md) — feature stylesheets are unlayered and outrank @utility/@layer rules; strip legacy colours before adding a signature class
 - [Render a component from its unit test](reference_render_a_component_from_its_unit_test.md) — dump happy-dom markup via a scratch vitest config (sequence.hooks "list"), render with real CSS; for screens the backend cannot serve
 - [Printed output is a srcdoc capture](reference_printed_output_is_srcdoc_capture.md) — prove print unchanged by hooking the print iframe srcdoc / QR popup, not page screenshots
@@ -188,3 +188,4 @@
 - [react-hooks/refs flags helper arguments](reference_react_hooks_refs_flags_helper_arguments.md) — a ref-reading closure passed INTO renderRow() trips the lint; build it in the JSX prop instead
 - [dnd-kit disabled draggable is aria-disabled](reference_dndkit_disabled_draggable_is_aria_disabled.md) — useDraggable({disabled}) spreads aria-disabled onto the row and disables its nested buttons for AT and Playwright; override after the spread
 - [convex-test same-ms stamps](reference_convex_test_same_ms_stamps.md) — back-to-back mutations share a Date.now() ms; await a 3 ms setTimeout before a strict-gt stamp assertion
+- [Newest set rows are empty](reference_newest_set_rows_are_empty.md) — "newest sets" by set-row creation finds only empties; walk newest cards per variant, read once

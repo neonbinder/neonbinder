@@ -34,7 +34,10 @@ import { demoCard } from "@/app/collection/final/data/demoStore";
 import { compareCardNumbers } from "@/app/collection/final/data/labels";
 import type { CardId, SetId, VariantKind } from "@/app/collection/final/data/types";
 import { toDash, type DashCard } from "./dash-card";
-import { HOUSE_VINYL, type Pocket, type ShelfBinder } from "./screen/shelf-model";
+import { DEFAULT_SPINE_FONT_ID } from "@/lib/print/spine-fonts";
+import { labelOf, PLAIN_LABEL } from "@/app/collection/final/binders/label";
+import type { ContainerLabel } from "@/app/collection/final/data/types";
+import type { Pocket, ShelfBinder } from "./screen/shelf-model";
 import {
   binderCards,
   binderCopies,
@@ -45,6 +48,7 @@ import {
   evaluateRule,
   getCard as getFixtureCard,
   getSet as getFixtureSet,
+  getSport as getFixtureSport,
   myCopies,
   type Binder,
   type BinderRule,
@@ -603,11 +607,49 @@ const TRADE_PILE: TradePile = (() => {
 // The whole page
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// New on NeonBinder: the catalog's newest sets
+// ---------------------------------------------------------------------------
+
+/** A set new to NB's catalog. The same news for every collector. */
+export interface NewSet {
+  /** The set's id: its checklist opens on `?set=`. */
+  id: string;
+  /** Season, brand and name: "2024 Topps Chrome". */
+  label: string;
+  /** "Baseball"; null when the set sits under no sport. */
+  sport: string | null;
+  /** Every card in the set; null when never counted. */
+  cardCount: number | null;
+  /** The first card of its Base, drawn as the set's cover; null when it has none yet. */
+  cover: DashCard | null;
+}
+
+/** A demo set as news: its first Base card as the cover, every card counted. */
+function newSet(setId: SetId): NewSet {
+  const set = getFixtureSet(setId);
+  const inSet = fixtureCards.filter((c) => c.setId === setId);
+  const first = inSet.find((c) => c.variantPath.name === null && c.variation === null);
+  const cover = first ? dashCard(first.id) : null;
+  return {
+    id: setId,
+    label: cover?.setLabel ?? `${set.season} ${set.name}`,
+    sport: getFixtureSport(set.sportId).name,
+    cardCount: inSet.length,
+    cover,
+  };
+}
+
+/** Newest first. */
+const NEW_SETS: NewSet[] = [SET.chrome, SET.score, SET.udHockey, SET.finest, SET.topps, SET.contenders].map(newSet);
+
 export interface DashboardData {
-  /** null when the account does not sell (no listing platform, no order): no sales section at all. */
+  /** null when the account has no order stored: no sales section at all. */
   sales: SalesData | null;
-  /** Newest batch first. */
+  /** Newest batch first. Empty: no Fresh Pulls section. */
   additions: AdditionBatch[];
+  /** New on NeonBinder, newest first: the catalog's news, shown to every collector. */
+  newSets: NewSet[];
   /** Ranked by fewest cards needed. */
   building: BuildingSet[];
   /** The checklist just finished, or null. */
@@ -625,9 +667,10 @@ export interface DashboardData {
   /**
    * For a greeting line: how big the collection is. No values. `exact`
    * false: the store could count only part of it, so `cards` is a floor
-   * (absent reads as exact).
+   * (absent reads as exact). `boxes`: how many boxes they have; none (or
+   * absent) and the third shelf carries the way into Inventory's Add cards.
    */
-  totals: { cards: number; binders: number; exact?: boolean };
+  totals: { cards: number; binders: number; boxes?: number; exact?: boolean };
   /**
    * The binders on the shelf, each with its pockets already laid out. The
    * signed-in page supplies them from the collection store; absent (the
@@ -644,6 +687,7 @@ const SMART = smartBinders();
 const DASHBOARD: DashboardData = {
   sales: SALES,
   additions: ADDITIONS,
+  newSets: NEW_SETS,
   building: BUILDING,
   justCompleted: JUST_COMPLETED,
   smartBinders: SMART,
@@ -651,7 +695,7 @@ const DASHBOARD: DashboardData = {
   intake: INTAKE,
   unlistedBoxes: UNLISTED_BOXES,
   tradePile: TRADE_PILE,
-  totals: { cards: CARD_COUNT, binders: BINDER_COUNT },
+  totals: { cards: CARD_COUNT, binders: BINDER_COUNT, boxes: UNLISTED_BOXES.length },
 };
 
 /** The fake collector's dashboard, every section filled. Built once at load: the same object every call. */
@@ -690,7 +734,7 @@ const EXTRA_RULES: Record<string, BinderRule> = {
   [FINEST_BINDER.id]: FINEST_BINDER.rule,
 };
 
-function liveryOf(cards: DashCard[]): { vinyl: string; stripe: string } {
+function liveryOf(cards: DashCard[]): Pick<ShelfBinder, "label" | "vinyl" | "stripe"> {
   const tally = new Map<string, { n: number; primary: string; secondary: string }>();
   for (const c of cards) {
     const team = c.card.teams[0];
@@ -701,7 +745,13 @@ function liveryOf(cards: DashCard[]): { vinyl: string; stripe: string } {
   }
   let best: { n: number; primary: string; secondary: string } | null = null;
   for (const t of tally.values()) if (!best || t.n > best.n) best = t;
-  return best ? { vinyl: best.primary, stripe: best.secondary } : HOUSE_VINYL;
+  // A binder of one team's cards wears that team, as My Binders' default does for a smart binder.
+  return worn(best ? { background: best.primary, text: best.secondary, fontId: DEFAULT_SPINE_FONT_ID } : PLAIN_LABEL);
+}
+
+/** A label, and its colours as the spine's vinyl and stripe. */
+function worn(label: ContainerLabel): Pick<ShelfBinder, "label" | "vinyl" | "stripe"> {
+  return { label, vinyl: label.background, stripe: label.text };
 }
 
 /** Distinct cards of a list of copies, in the order given. */
@@ -843,7 +893,7 @@ export function bindersOf(data: DashboardData): ShelfBinder[] {
     newCards: fresh.get("Main") ?? [],
     couldFit: [],
     checklist: null,
-    ...HOUSE_VINYL,
+    ...worn(labelOf({ kind: "binder", system: "main" })),
   };
 
   const manual: BareBinder[] = seedBinders

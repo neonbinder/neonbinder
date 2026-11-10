@@ -1,6 +1,6 @@
-import { render, renderHook, screen } from "@testing-library/react";
+import { fireEvent, render, renderHook, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
-import { MemoryRouter } from "react-router";
+import { MemoryRouter, useLocation } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cards as fixtureCards } from "@/app/collection/prototypes/_shared/data";
 import { binderPages } from "@/app/collection/final/binders/model";
@@ -10,12 +10,14 @@ import { RUN_PARAM } from "@/app/collection/final/intake/RealAddCardsTab";
 import { toDash } from "../dash-card";
 import { bindersOf as demoBindersOf, getDashboard } from "../fake-data";
 import DashboardScreen from "../screen/DashboardScreen";
-import { HOUSE_VINYL, pageCount, POCKETS_PER_PAGE, shelfOrder } from "../screen/shelf-model";
+import { pageCount, POCKETS_PER_PAGE, shelfOrder } from "../screen/shelf-model";
+import { labelOf, PLAIN_LABEL } from "@/app/collection/final/binders/label";
 import { SHELF_CAP } from "../screen/Shelf";
 import { NEED_NAMED } from "../screen/Boards";
-import type { CompletionRaw, CouldFitRaw, IntakeRaw, NewSinceRaw, SalesRaw, SetBoardRaw } from "./useDashboardServer";
+import type { CompletionRaw, CouldFitRaw, IntakeRaw, NewSetRaw, NewSinceRaw, SalesRaw, SetBoardRaw } from "./useDashboardServer";
 import {
   ADD_CARDS_RUN_PARAM,
+  boxesInUseOf,
   BOARD_SETS,
   buildingSetOf,
   CHASE_CAP,
@@ -25,6 +27,10 @@ import {
   couldFitByBinder,
   couldFitPreviewIds,
   daysSinceSold,
+  FRESH_PULLS_CARDS,
+  freshPullIds,
+  freshPullsOf,
+  freshPullsWindowStart,
   intakeOf,
   lastScanLabel,
   JUST_COMPLETED_DAYS,
@@ -32,6 +38,8 @@ import {
   localDay,
   namedNeedsOf,
   newCardsByHome,
+  newSetsOf,
+  pullDayLabel,
   smartBindersOf,
   pocketsOfPages,
   realDashboardData,
@@ -76,6 +84,9 @@ const server = vi.hoisted(() => ({
   couldFitAsked: [] as (readonly string[] | null)[],
   intake: undefined as IntakeRaw | undefined,
   sales: undefined as SalesRaw | undefined,
+  pulls: undefined as NewSinceRaw | undefined,
+  pullsAsked: [] as number[],
+  newSets: undefined as NewSetRaw[] | undefined,
 }));
 
 vi.mock("./useDashboardServer", () => ({
@@ -96,6 +107,11 @@ vi.mock("./useDashboardServer", () => ({
   },
   useIntakeRaw: () => server.intake,
   useSalesRaw: () => server.sales,
+  useFreshPullLines: (sinceMs: number) => {
+    server.pullsAsked.push(sinceMs);
+    return server.pulls;
+  },
+  useNewSets: () => server.newSets,
 }));
 
 vi.mock("@/app/collection/final/data/store", async (importOriginal) => {
@@ -187,6 +203,9 @@ beforeEach(() => {
   server.couldFitAsked = [];
   server.intake = undefined;
   server.sales = NOT_A_DEALER;
+  server.pulls = undefined;
+  server.pullsAsked = [];
+  server.newSets = undefined;
 });
 
 afterEach(() => {
@@ -222,13 +241,17 @@ describe("shelfBinderOf: a container as a spine", () => {
       container({ id: "b1", name: "Packers", label: { background: "#203731", text: "#ffb612", fontId: "x" }, count: { copies: 7, lines: 5 } }),
     );
     expect(b).toMatchObject({ kind: "manual", ruleText: null, cardCount: 7, vinyl: "#203731", stripe: "#ffb612" });
+    expect(b.label).toEqual({ background: "#203731", text: "#ffb612", fontId: "x" });
     expect(b.newCards).toEqual([]);
     expect(b.pockets).toEqual([]);
   });
 
-  it("falls back to the house vinyl, and reads a not-yet-counted binder as 0", () => {
-    const b = shelfBinderOf(container({ id: "main", system: "main", name: "Main" }));
-    expect(b).toMatchObject({ cardCount: 0, vinyl: HOUSE_VINYL.vinyl, stripe: HOUSE_VINYL.stripe });
+  it("wears My Binders' default label when it has none (Main its green, any other the plain one), and reads a not-yet-counted binder as 0", () => {
+    const main = shelfBinderOf(container({ id: "main", system: "main", name: "Main" }));
+    expect(main.cardCount).toBe(0);
+    expect(main.label).toEqual(labelOf({ kind: "binder", system: "main" }));
+    expect(main.vinyl).toBe(main.label.background);
+    expect(shelfBinderOf(container({ id: "b2", name: "Plain" })).label).toEqual(PLAIN_LABEL);
   });
 
   it("is a smart spine, its rule in words, when the binder has a rule", () => {
@@ -268,7 +291,7 @@ describe("useRealDashboard", () => {
       container({ id: "main", system: "main", name: "Main", count: { copies: 3, lines: 3 } }),
       container({ id: "want", system: "want", name: "Want List" }),
       container({ id: "trade", system: "trade", name: "Up for Trade" }),
-      container({ id: "unsorted", system: "unsorted", kind: "box", name: "Unsorted" }),
+      container({ id: "unsorted", system: "unsorted", kind: "box", name: "Unsorted", count: { copies: 0, lines: 0 } }),
       container({ id: "box", kind: "box", name: "Show box" }),
       container({ id: "binder-1", name: "Packers" }),
     ];
@@ -276,7 +299,8 @@ describe("useRealDashboard", () => {
     const { result } = renderHook(() => useRealDashboard(), { wrapper: wrapper("/dashboard") });
     const data = result.current!;
     expect(data.binders?.map((b) => b.id)).toEqual(["main", "binder-1"]);
-    expect(data.totals).toEqual({ cards: 2, binders: 2, exact: true });
+    // The Show box is in use (Unsorted, empty, is not): the third shelf carries no starter.
+    expect(data.totals).toEqual({ cards: 2, binders: 2, boxes: 1, exact: true });
     expect(data.sales).toBeNull();
     // Nothing open: no copies read.
     expect(store.copiesAsked.every((id) => id === null)).toBe(true);
@@ -475,21 +499,90 @@ describe("useRealDashboard: the Want List chase, the trade pile and boxes held o
   });
 });
 
+describe("boxesInUseOf: the boxes that end the Inventory starter", () => {
+  it("counts a box the collector made, and Unsorted only once a card is in it (or its count is unknown)", () => {
+    const unsorted = (count: Container["count"]) => container({ id: "u", system: "unsorted", kind: "box", name: "Unsorted", count });
+    expect(boxesInUseOf([container({ id: "main", system: "main", name: "Main" }), unsorted({ copies: 0, lines: 0 })])).toBe(0);
+    expect(boxesInUseOf([unsorted({ copies: 2, lines: 1 })])).toBe(1);
+    expect(boxesInUseOf([unsorted(null)])).toBe(1);
+    expect(boxesInUseOf([unsorted({ copies: 0, lines: 0 }), container({ id: "b", kind: "box", name: "Show box", count: { copies: 0, lines: 0 } })])).toBe(1);
+  });
+});
+
 describe("the empty shelf", () => {
   const main = shelfBinderOf(container({ id: "main", system: "main", name: "Main" }));
 
-  it("says how to fill it when the collection holds no card, linking to Collection", () => {
+  it("with only Main and no box: shelf 2 leads into Collection's Add cards, shelf 3 into Inventory's", () => {
     const data = realDashboardData({ binders: [main], summary: { copies: 0, cards: 0, exact: true, offBuild: 0 } });
     render(<DashboardScreen data={data} />, { wrapper: wrapper("/dashboard") });
     expect(screen.getByRole("heading", { name: "Your binders" })).toBeTruthy();
-    expect(screen.getByRole("link", { name: "Add a card on Collection" }).getAttribute("href")).toBe("/collection");
     expect(screen.getByRole("button", { name: /^Main, 0 cards/ })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Add cards to your collection" }).getAttribute("href")).toBe("/collection?tab=add");
+    expect(screen.getByRole("link", { name: "Add cards to your inventory" }).getAttribute("href")).toBe("/inventory?tab=add");
+    // The starters say it now; the old line is gone.
+    expect(screen.queryByRole("link", { name: "Add a card on Collection" })).toBeNull();
+    // Each stands on its own shelf, read out (not the aria-hidden room left in the case).
+    const shelves = screen.getByRole("list", { name: "Binders on the shelf" });
+    expect(shelves.querySelectorAll(":scope > li").length).toBe(3);
   });
 
-  it("says nothing of the kind once a card is in", () => {
+  it("draws the design `?starter=` asks for (a by default), under the same names", () => {
     const data = realDashboardData({ binders: [main], summary: SUMMARY });
-    render(<DashboardScreen data={data} />, { wrapper: wrapper("/dashboard") });
-    expect(screen.queryByRole("link", { name: "Add a card on Collection" })).toBeNull();
+    const { unmount } = render(<DashboardScreen data={data} />, { wrapper: wrapper("/dashboard") });
+    expect(screen.getByText("Fresh pages. Zero cards.")).toBeTruthy();
+    expect(screen.getByText("Five rows. All empty.")).toBeTruthy();
+    unmount();
+    const b = render(<DashboardScreen data={data} />, { wrapper: wrapper("/dashboard?starter=b") });
+    expect(screen.getByText("We all have a shoebox.")).toBeTruthy();
+    expect(screen.getByText("That to-list pile won't list itself.")).toBeTruthy();
+    b.unmount();
+    render(<DashboardScreen data={data} />, { wrapper: wrapper("/dashboard?starter=c") });
+    expect(screen.getByText("Got a hit? Show it off.")).toBeTruthy();
+    expect(screen.getByText("Every dealer starts with a dollar box.")).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Add cards to your collection" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Add cards to your inventory" })).toBeTruthy();
+  });
+
+  it("once there is a box, shelf 3 carries nothing", () => {
+    render(<DashboardScreen data={realDashboardData({ binders: [main], summary: SUMMARY, boxes: 1 })} />, {
+      wrapper: wrapper("/dashboard"),
+    });
+    expect(screen.getByRole("link", { name: "Add cards to your collection" })).toBeTruthy();
+    expect(screen.queryByRole("link", { name: "Add cards to your inventory" })).toBeNull();
+  });
+
+  it("a full first shelf leaves shelf 2 holding binders, so no Collection starter", () => {
+    const nine = [main, ...Array.from({ length: 8 }, (_, i) => shelfBinderOf(container({ id: `b${i}`, name: `Binder ${i}` })))];
+    render(<DashboardScreen data={realDashboardData({ binders: nine, summary: SUMMARY })} />, { wrapper: wrapper("/dashboard") });
+    expect(screen.queryByRole("link", { name: "Add cards to your collection" })).toBeNull();
+    expect(screen.getByRole("link", { name: "Add cards to your inventory" })).toBeTruthy();
+  });
+
+  it("with no binder open, the first one stands shut beside the shelf, and opening it pushes `?binder=`", async () => {
+    const seen: string[] = [];
+    function Probe() {
+      const { search } = useLocation();
+      seen.push(search);
+      return null;
+    }
+    render(
+      <MemoryRouter initialEntries={["/dashboard"]}>
+        <DashboardScreen data={realDashboardData({ binders: [main], summary: SUMMARY })} />
+        <Probe />
+      </MemoryRouter>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Crack open Main" }));
+    expect(seen.at(-1)).toBe("?binder=main");
+  });
+
+  it("an open binder with no card in it stays shut, with the way to fill it", () => {
+    render(<DashboardScreen data={realDashboardData({ binders: [main], summary: SUMMARY })} />, {
+      wrapper: wrapper("/dashboard?binder=main"),
+    });
+    expect(screen.getByRole("heading", { level: 3, name: "Main" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Fill this binder" }).getAttribute("href")).toBe("/collection?tab=add");
+    expect(screen.queryByRole("list", { name: /^Main, page/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Crack open Main" })).toBeNull();
   });
 
   it("with no wants, no trade pile and no in-person box: the empty chase, no Odds and Ends, no Needs a Look", () => {
@@ -835,6 +928,90 @@ describe("sales: shipped vs still to ship, and the lines", () => {
     expect(saleCardIdsOf({ dealer: true, orders: [saleRaw({ lines: [{ quantity: 1 }, { cardId: cardB.id as never, quantity: 1 }] })], more: false })).toEqual([
       cardB.id,
     ]);
+  });
+});
+
+describe("Fresh Pulls: freshPullsOf", () => {
+  // Wednesday 2026-11-11, 3 PM local.
+  const NOW = new Date(2026, 10, 11, 15).getTime();
+  const at = (daysBack: number, hour = 10) => new Date(2026, 10, 11 - daysBack, hour).getTime();
+  const cards = new Map([
+    [cardA.id, cardA],
+    [cardB.id, cardB],
+  ]) as never;
+  const homes = new Map([
+    ["main", "Main"],
+    ["var", "Variations"],
+  ]);
+  const line = (homeId: string, cardId: string, filedAt: number) => ({ homeId, cardId, filedAt }) as never;
+
+  it("looks back two weeks from local midnight, today included", () => {
+    expect(freshPullsWindowStart(NOW)).toBe(new Date(2026, 10, 11 - 13).getTime());
+  });
+
+  it("names a day the way a collector says it: Today, Yesterday, the weekday, then Last <weekday>", () => {
+    expect(pullDayLabel(at(0), NOW)).toBe("Today");
+    expect(pullDayLabel(at(1), NOW)).toBe("Yesterday");
+    expect(pullDayLabel(at(2), NOW)).toBe("Monday");
+    expect(pullDayLabel(at(8), NOW)).toBe("Last Tuesday");
+  });
+
+  it("one batch a day, newest first, each card once per binder, every way it came in; a home off the shelf is left out", () => {
+    const batches = freshPullsOf(
+      [
+        line("var", cardB.id, at(0, 14)),
+        line("main", cardA.id, at(0, 13)),
+        line("main", cardA.id, at(0, 12)),
+        line("gone", cardB.id, at(0, 11)),
+        line("main", cardB.id, at(3)),
+      ],
+      cards,
+      homes,
+      at(2),
+      NOW,
+    );
+    expect(batches.map((b) => [b.whenLabel, b.cards.map((c) => `${c.id}@${c.binderName}`), b.sinceLastVisit])).toEqual([
+      ["Today", [`${cardB.id}@Variations`, `${cardA.id}@Main`], true],
+      ["Sunday", [`${cardB.id}@Main`], false],
+    ]);
+    expect(batches[0].binders).toEqual([
+      { name: "Variations", count: 1 },
+      { name: "Main", count: 1 },
+    ]);
+  });
+
+  it("nothing filed, or cards not hydrated yet: no batches, so no section", () => {
+    expect(freshPullsOf([], cards, homes, null, NOW)).toEqual([]);
+    expect(freshPullsOf([line("main", cardA.id, at(0))], undefined, homes, null, NOW)).toEqual([]);
+    expect(freshPullIds([])).toBeNull();
+    expect(freshPullIds(Array.from({ length: FRESH_PULLS_CARDS + 5 }, () => line("main", cardA.id, at(0))))).toHaveLength(
+      FRESH_PULLS_CARDS,
+    );
+  });
+
+  it("the first visit ever: every batch is new", () => {
+    expect(freshPullsOf([line("main", cardA.id, at(4))], cards, homes, null, NOW)[0].sinceLastVisit).toBe(true);
+    expect(freshPullsOf([line("main", cardA.id, at(4))], cards, homes, undefined, NOW)[0].sinceLastVisit).toBe(false);
+  });
+});
+
+describe("New on NeonBinder: newSetsOf", () => {
+  it("labels each set the collector's way, with its sport and count; the cover once hydrated", () => {
+    const raw = [
+      {
+        set: { _id: "s1", name: "Topps Chrome", season: "2024", sport: { _id: "sp", name: "Baseball" }, year: null, manufacturer: null },
+        cardCount: 220,
+        coverCardId: cardA.id,
+        addedAt: 2,
+      },
+      { set: { _id: "s2", name: "Traded", season: "1986", sport: null, year: null, manufacturer: null }, cardCount: null, coverCardId: null, addedAt: 1 },
+    ] as never;
+    expect(newSetsOf(raw, new Map([[cardA.id, cardA]]) as never).map((n) => [n.id, n.label, n.sport, n.cardCount, n.cover?.id ?? null])).toEqual([
+      ["s1", "2024 Topps Chrome", "Baseball", 220, cardA.id],
+      ["s2", "1986 Traded", null, null, null],
+    ]);
+    expect(newSetsOf(raw, undefined)[0].cover).toBeNull();
+    expect(newSetsOf(undefined, undefined)).toEqual([]);
   });
 });
 

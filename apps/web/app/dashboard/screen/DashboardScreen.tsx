@@ -1,14 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef } from "react";
-import { Link, useSearchParams } from "react-router";
+import { useSearchParams } from "react-router";
 import { bindersOf, type DashboardData } from "../fake-data";
 import { BlockHeading, count } from "./bits";
 import Hopper from "./Hopper";
 import Boards, { boardItems } from "./Boards";
 import CouldFit from "./CouldFit";
-import PocketPage, { PocketTitle, WaitingPage, WaitingTitle } from "./PocketPage";
+import { ClosedCover, EmptyCover } from "./Cover";
+import NewOnNeonBinder from "./NewOnNeonBinder";
+import PocketPage, { PocketTitle, WaitingTitle } from "./PocketPage";
 import { Chase, FreshPulls } from "./Pulls";
 import { FillingUp, OddsAndEnds } from "./Rail";
 import Shelf from "./Shelf";
+import { CollectionStarter, InventoryStarter, starterKeyOf } from "./Starters";
 import { pageCount, shelfOrder, type ShelfBinder } from "./shelf-model";
 import { NeedsALook, needsALook, OutTheDoor } from "./ToDo";
 import "./combined.css";
@@ -29,19 +32,29 @@ import "./combined.css";
  *        Out the Door shows only for an account that sells; the boards only
  *        when a set is being built.
  *   3. Your binders: three shelves of eight (24, "Show all N binders" past
- *      that) on the left, the open pocket page on the right, one height.
+ *      that) on the left, the open pocket page on the right, one height. An
+ *      empty second shelf carries the way into Collection's Add cards, an
+ *      empty third one Inventory's until there is a box (`Starters`). With
+ *      no binder open, the first stands shut beside them (`Cover`); an open
+ *      one with nothing in it stays shut.
  *   4. Could fit your smart binders.
  *   5. The Chase and Fresh Pulls; a rail of Binders Filling Up and Odds and Ends.
+ *   6. New on NeonBinder, the catalog's newest sets. Shown to everyone: it
+ *      leads instead (right under the greeting) when nothing else is up top.
  *
  * View state lives in the URL, set functionally so other params survive:
  * - `binder=<id>`: the open binder. Opening and closing one is going
  *   somewhere, so it PUSHES: Back closes it again.
  * - `pg=<n>`: its page (1-based). A page turn REPLACES.
  * - `open=…`: disclosures (see `useOpen`). They REPLACE.
+ * - `starter=a|b|c`: which shelf-starter designs to draw (default a), for
+ *   Jason's pick; removed once he has.
  */
 
 const BINDER_PARAM = "binder";
 const PAGE_PARAM = "pg";
+/** Which shelf-starter designs show, for Jason to pick (a, b or c); goes once he has. */
+const STARTER_PARAM = "starter";
 const POCKET_ID = "cb-pocket";
 
 /** Into the open pocket page: its heading takes focus, and the page scrolls to it (no glide when motion is reduced). */
@@ -189,6 +202,22 @@ export default function DashboardScreen({ data }: { data: DashboardData }) {
         {look}
       </div>
     ) : null;
+  // The catalog's news shows for everyone; with nothing else up top, it leads.
+  const news = <NewOnNeonBinder sets={data.newSets} />;
+  const newsLeads = !lead && !side;
+
+  // An empty shelf carries a way in: shelf 2 to Collection's Add cards while it holds no binder,
+  // shelf 3 to Inventory's until the collector has a box.
+  const design = starterKeyOf(params.get(STARTER_PARAM));
+  const hasBoxes = (data.totals.boxes ?? 0) > 0;
+  const starter = (row: number) => {
+    if (row === 1) return <CollectionStarter design={design} />;
+    if (row === 2 && !hasBoxes) return <InventoryStarter design={design} />;
+    return null;
+  };
+  // An open binder with nothing in it stays shut: no pages to turn.
+  const openEmpty = open !== null && open.cardCount === 0 && !open.checklist;
+
   const band = lead && side ? (shipLeads ? "lg:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)]" : "lg:grid-cols-[minmax(0,1fr)_22rem]") : "";
 
   return (
@@ -197,6 +226,8 @@ export default function DashboardScreen({ data }: { data: DashboardData }) {
         <h1 className="text-3xl font-extrabold tracking-tight text-ink sm:text-4xl">Welcome back, slugger.</h1>
         <p className="mt-2 max-w-prose text-base text-ink-2">{summary(data, binders, closest)}</p>
       </header>
+
+      {newsLeads && news}
 
       {(lead || side) && (
         <div className={lead ? `grid gap-8 lg:items-start ${band}` : "max-w-2xl"}>
@@ -214,23 +245,28 @@ export default function DashboardScreen({ data }: { data: DashboardData }) {
           <div className="grid gap-x-8 gap-y-4 xl:grid-cols-[minmax(0,1fr)_29rem] xl:items-stretch">
             <div className="min-w-0 xl:col-start-1 xl:row-start-1">
               <BlockHeading id="cb-binders-heading">Your binders</BlockHeading>
-              {data.totals.cards === 0 && (
-                <p className="mt-1 text-sm text-ink-2">
-                  <Link to="/collection" className="rounded-sm font-semibold text-neon-blue-text underline underline-offset-2 focus-outline">
-                    Add a card on Collection
-                  </Link>{" "}
-                  to fill the shelf.
-                </p>
-              )}
             </div>
             <div className="dash-shelves min-w-0 xl:col-start-1 xl:row-start-2">
-              <Shelf binders={binders} openId={openId} pocketId={POCKET_ID} onOpen={openBinder} onClose={closeBinder} />
+              <Shelf
+                binders={binders}
+                openId={openId}
+                pocketId={POCKET_ID}
+                onOpen={openBinder}
+                onClose={closeBinder}
+                starter={starter}
+              />
             </div>
             <div className="min-w-0 xl:col-start-2 xl:row-start-1">
               {open ? <PocketTitle binder={open} headingRef={headingRef} /> : <WaitingTitle />}
             </div>
             <div id={POCKET_ID} className="flex min-w-0 scroll-mt-24 flex-col xl:col-start-2 xl:row-start-2">
-              {open ? <PocketPage key={open.id} binder={open} page={page} onPage={turnPage} /> : <WaitingPage />}
+              {!open ? (
+                <ClosedCover binder={binders[0]} onOpen={openBinder} />
+              ) : openEmpty ? (
+                <EmptyCover key={open.id} binder={open} />
+              ) : (
+                <PocketPage key={open.id} binder={open} page={page} onPage={turnPage} />
+              )}
             </div>
           </div>
         </section>
@@ -248,6 +284,8 @@ export default function DashboardScreen({ data }: { data: DashboardData }) {
           <OddsAndEnds boxes={data.unlistedBoxes} trade={data.tradePile} />
         </div>
       </div>
+
+      {!newsLeads && news}
     </div>
   );
 }

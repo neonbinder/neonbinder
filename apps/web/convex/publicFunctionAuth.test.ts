@@ -2231,6 +2231,7 @@ describe("NEO-358: the collection and its catalog reads require a signed-in call
     ["dashboard.couldFit", (t) => t.query(api.dashboard.couldFit, { containerId: NOT_AN_ID })],
     ["dashboard.intake", (t) => t.query(api.dashboard.intake, {})],
     ["dashboard.sales", (t) => t.query(api.dashboard.sales, {})],
+    ["dashboard.newSets", (t) => t.query(api.dashboard.newSets, {})],
   ];
 
   test.each(SIGNED_IN_GATED)("%s rejects an anonymous caller", async (_name, call) => {

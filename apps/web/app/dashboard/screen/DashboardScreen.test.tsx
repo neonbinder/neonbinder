@@ -44,6 +44,7 @@ describe("DashboardScreen: one screen, sections by data", () => {
       "Fresh Pulls",
       "Binders Filling Up",
       "Odds and Ends",
+      "New on NeonBinder",
     ]) {
       expect(heading(name), name).not.toBeNull();
     }
@@ -77,6 +78,66 @@ describe("DashboardScreen: one screen, sections by data", () => {
     expect(heading("Your binders")).not.toBeNull();
     // The trade pile still fills Odds and Ends.
     expect(heading("Odds and Ends")).not.toBeNull();
+  });
+});
+
+describe("New on NeonBinder", () => {
+  it("shows every collector the newest sets, each opening its checklist; below their own sections when they have some", () => {
+    const data = getDashboard();
+    draw(data);
+    const news = screen.getByRole("region", { name: "New on NeonBinder" });
+    const links = within(news).getAllByRole("link");
+    expect(links).toHaveLength(data.newSets.length);
+    const first = data.newSets[0];
+    expect(within(news).getByRole("link", { name: new RegExp(`^${first.label}`) }).getAttribute("href")).toBe(
+      `/demo/collection?tab=checklists&set=${encodeURIComponent(first.id)}`,
+    );
+    expect(before(heading("Odds and Ends")!, heading("New on NeonBinder")!)).toBe(true);
+  });
+
+  it("leads, right under the greeting, when nothing else is up top", () => {
+    const data = getDashboard();
+    // Plain binders only (no checklist to put on a board), nothing being built, nothing to ship or look at.
+    const plain = bindersOf(data).filter((b) => !b.checklist);
+    draw({ ...data, binders: plain, sales: null, intake: NO_INTAKE, unlistedBoxes: [], building: [] });
+    expect(heading("On the Bubble")).toBeNull();
+    expect(before(heading("New on NeonBinder")!, heading("Your binders")!)).toBe(true);
+  });
+
+  it("no new sets: no section", () => {
+    draw({ ...getDashboard(), newSets: [] });
+    expect(heading("New on NeonBinder")).toBeNull();
+  });
+});
+
+describe("the chase and fresh pulls", () => {
+  it("nothing filed lately: no Fresh Pulls at all", () => {
+    draw({ ...getDashboard(), additions: [] });
+    expect(heading("Fresh Pulls")).toBeNull();
+    expect(screen.queryByText(/No new cards yet/)).toBeNull();
+  });
+
+  it("an empty Want List keeps the chase, with the star and the way to a checklist", () => {
+    draw({ ...getDashboard(), wantList: [] });
+    const chase = screen.getByRole("region", { name: "The Chase" });
+    expect(within(chase).getByText(/Your Want List is empty/)).toBeTruthy();
+    expect(within(chase).getByRole("link", { name: "any checklist" }).getAttribute("href")).toBe("/demo/collection?tab=checklists");
+  });
+});
+
+describe("the open binder's place", () => {
+  it("with none open, the first binder on the shelf stands shut there, one button to open it", () => {
+    draw(getDashboard());
+    const first = screen.getByRole("list", { name: "Shelf 1" }).querySelector("button")!;
+    const name = first.getAttribute("aria-label")!.split(",")[0];
+    // Its own words, apart from the rail's "Open <binder>".
+    expect(screen.getByRole("button", { name: `Crack open ${name}` })).toBeTruthy();
+  });
+
+  it("the demo's shelf is full past the first shelf and it has boxes: no starter stands", () => {
+    draw(getDashboard());
+    expect(screen.queryByRole("link", { name: "Add cards to your collection" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "Add cards to your inventory" })).toBeNull();
   });
 });
 

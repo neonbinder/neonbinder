@@ -148,20 +148,3 @@ function PocketCaption({ title, need = false }: { title: string; need?: boolean 
 export function WaitingTitle() {
   return <p className="text-sm text-ink-3">Pull a binder off the shelf and it opens right here.</p>;
 }
-
-/**
- * No binder open: the same page, dashed and empty, as tall as the shelves
- * beside it, saying how to fill it. Stacked (below xl), just the line.
- */
-export function WaitingPage() {
-  // The wrapper hides it on a phone: `.cb-page`'s own display would beat a utility on it.
-  return (
-    <div aria-hidden="true" className="flex h-full min-w-0 flex-1 max-xl:hidden">
-      <div className="cb-page cb-page--waiting cb-page--fill w-full">
-        {Array.from({ length: POCKETS_PER_PAGE }, (_, i) => (
-          <span key={i} className="cb-pocket" />
-        ))}
-      </div>
-    </div>
-  );
-}

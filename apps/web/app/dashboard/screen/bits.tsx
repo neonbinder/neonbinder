@@ -9,6 +9,16 @@ import { MARKETPLACES, type DashCard, type Marketplace } from "../fake-data";
  * quiet section heading.
  */
 
+/**
+ * A link into Collection or Inventory: the demo's own copy from the demo
+ * (`/demo`), the collector's from the signed-in page. A real page, so a
+ * click pushes.
+ */
+export function sideHref(pathname: string, side: "collection" | "inventory", query: Record<string, string>): string {
+  const base = `${pathname.startsWith("/demo") ? "/demo" : ""}/${side}`;
+  return `${base}?${new URLSearchParams(query)}`;
+}
+
 /** "1 card", "5 cards". */
 export function count(n: number, one: string, many = `${one}s`): string {
   return `${n} ${n === 1 ? one : many}`;

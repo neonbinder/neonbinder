@@ -26,16 +26,18 @@
  * - the hopper: what is still in intake across the recent runs
  *   (`dashboard.intake`; photos still being processed are not counted),
  *   each run linking to the Add cards tab that finishes it;
- * - the sales section: the account sells (a listing platform connected, or
- *   any order), and its newest orders still to ship (`dashboard.sales`, at
+ * - the sales section: the account sells (at least one order stored; a
+ *   connected login alone never shows it), and its newest orders still to ship (`dashboard.sales`, at
  *   most 10), shown oldest first. "Shipped" is the platform's own status:
  *   NB keeps no shipped state; an unpaid order, or one in a status NB does
  *   not know, is never one to ship.
- * Still empty, never faked: Fresh Pulls.
+ * - Fresh Pulls: the cards filed in the last two weeks, however they came in
+ *   (the same read as the news, from the window's start; subscribed);
+ * - New on NeonBinder: the sets whose cards landed last (read once).
  *
  * Shelf rows are the collector's binders: Main and their own, never a box,
  * the Want List or the trade pile (`bindersOf` in the store). Spines wear
- * the binder's own label colours, else the house vinyl. Only the open
+ * the label the binder wears on My Binders (`labelOf`). Only the open
  * binder (`?binder=<id>`, pushed by the screen) reads its copies.
  */
 
@@ -43,6 +45,7 @@ import { useMemo, useState } from "react";
 import { useSearchParams } from "react-router";
 import { useCardMap } from "@/app/collection/final/binders/hooks";
 import { binderPages, type CardsById, type PageModel } from "@/app/collection/final/binders/model";
+import { labelOf } from "@/app/collection/final/binders/label";
 import { describeSmartRule } from "@/app/collection/final/binders/RuleBuilder";
 import { setLabel } from "@/app/collection/final/data/labels";
 import {
@@ -56,16 +59,28 @@ import {
   useTradeCopies,
   useWants,
 } from "@/app/collection/final/data/store";
-import type { Card, CardId, CollectionSummary, Container, ContainerCopies, SetRef, Want } from "@/app/collection/final/data/types";
+import type {
+  Card,
+  CardId,
+  CollectionSummary,
+  Container,
+  ContainerCopies,
+  ContainerLabel,
+  SetRef,
+  Want,
+} from "@/app/collection/final/data/types";
 import { toDash, type DashCard } from "../dash-card";
 import {
   daysAgoLabel,
+  type AddedCard,
+  type AdditionBatch,
   type BuildingSet,
   type CompletedSet,
   type DashboardData,
   type IntakeInProgress,
   type IntakeScan,
   type IntakeUpload,
+  type NewSet,
   type SaleLine,
   type SalesData,
   type SmartBinderSummary,
@@ -76,11 +91,13 @@ import {
 } from "../fake-data";
 import { NEED_NAMED } from "../screen/Boards";
 import { COULD_FIT_PREVIEW } from "../screen/CouldFit";
-import { HOUSE_VINYL, type Pocket, type ShelfBinder } from "../screen/shelf-model";
+import type { Pocket, ShelfBinder } from "../screen/shelf-model";
 import {
   useCouldFit,
+  useFreshPullLines,
   useIntakeRaw,
   useJustCompletedRaw,
+  useNewSets,
   useNewSince,
   useSalesRaw,
   useSetBoards,
@@ -89,6 +106,7 @@ import {
   type CompletionRaw,
   type CouldFitRaw,
   type IntakeRaw,
+  type NewSetRaw,
   type NewSinceRaw,
   type SalesRaw,
   type SetBoardRaw,
@@ -146,6 +164,11 @@ export interface CouldFitCards {
  * until the store has counted it. A checklist count and could-fit cards
  * show only on a smart binder.
  */
+/** A label, and its colours as the spine's vinyl and stripe. */
+function labelled(label: ContainerLabel): Pick<ShelfBinder, "label" | "vinyl" | "stripe"> {
+  return { label, vinyl: label.background, stripe: label.text };
+}
+
 export function shelfBinderOf(container: Container, pockets: Pocket[] = [], extras: SpineExtras = {}): ShelfBinder {
   const smart = !!container.smartRule;
   const list = smart && extras.checklist && extras.checklist.total > 0 ? extras.checklist : null;
@@ -159,8 +182,7 @@ export function shelfBinderOf(container: Container, pockets: Pocket[] = [], extr
     couldFit: smart ? (extras.couldFit?.cards ?? []) : [],
     ...(smart && extras.couldFit ? { couldFitTotal: { count: extras.couldFit.count, more: extras.couldFit.more } } : {}),
     checklist: list ? { have: list.have, total: list.total, percent: percentOf(list.have, list.total) } : null,
-    vinyl: container.label?.background ?? HOUSE_VINYL.vinyl,
-    stripe: container.label?.text ?? HOUSE_VINYL.stripe,
+    ...labelled(labelOf(container)),
     pockets,
     checklistCards: null,
   };
@@ -208,6 +230,16 @@ export function tradePileOf(trade: Container | undefined, listed: ContainerCopie
   if (count === 0) return NO_TRADE;
   const ids = listed ? listed.copies.slice(0, TRADE_PREVIEW).map((c) => c.cardId) : [];
   return { count, cards: cards ? dashCardsOf(ids, cards) : [] };
+}
+
+/**
+ * The boxes the collector is using: any box they made, and Unsorted once a
+ * card is in it. Unsorted is made on first use by the store, so an empty
+ * one is not a box they have; a count not yet known reads as in use.
+ */
+export function boxesInUseOf(containers: readonly Container[]): number {
+  return boxesOf(containers).filter((box) => box.system !== "unsorted" || box.count === null || box.count.copies > 0)
+    .length;
 }
 
 /**
@@ -300,6 +332,97 @@ export function justCompletedOf(done: readonly CompletedChecklist[], today: stri
     cards: newest.cards,
     whenLabel: daysAgoLabel(daysBetween(newest.completedOn, today)),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Fresh Pulls: the cards filed lately, however they came in
+// ---------------------------------------------------------------------------
+
+/** Fresh Pulls looks back this many calendar days, today included. */
+export const FRESH_PULLS_DAYS = 14;
+/** At most this many of the newest filed lines are drawn (and hydrated). */
+export const FRESH_PULLS_CARDS = 48;
+
+/** The first instant Fresh Pulls covers: local midnight, `FRESH_PULLS_DAYS - 1` days before `now`'s day. */
+export function freshPullsWindowStart(now: number): number {
+  const d = new Date(now);
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate() - (FRESH_PULLS_DAYS - 1)).getTime();
+}
+
+const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+
+/** A pull's day, relative, never a date: "Today", "Yesterday", "Tuesday", then "Last Tuesday". */
+export function pullDayLabel(at: number, now: number): string {
+  const days = daysBetween(localDay(at), localDay(now));
+  if (days <= 0) return "Today";
+  if (days === 1) return "Yesterday";
+  const weekday = WEEKDAYS[new Date(at).getDay()];
+  return days < 7 ? weekday : `Last ${weekday}`;
+}
+
+/**
+ * Fresh Pulls from the filed lines (newest first): one batch a day, newest
+ * day first, each card once per binder, in the binders the shelf names (a
+ * line whose home is not on it is left out). Every way a card arrives in a
+ * binder counts (Jason, 2026-11-10: "adding cards to a binder in any way is
+ * filed"): a scan, an add on Collection, a pasted range, a move. A card not
+ * hydrated yet waits. `since`: the last visit (null on the first, so every
+ * batch is new; undefined while it loads, so none is).
+ */
+export function freshPullsOf(
+  lines: NewSinceRaw["lines"],
+  cards: CardsById | undefined,
+  homeNames: ReadonlyMap<string, string>,
+  since: number | null | undefined,
+  now: number,
+): AdditionBatch[] {
+  if (!cards) return [];
+  const byDay = new Map<string, { at: number; cards: AddedCard[]; seen: Set<string>; binders: Map<string, number>; fresh: boolean }>();
+  for (const line of lines.slice(0, FRESH_PULLS_CARDS)) {
+    const binderName = homeNames.get(line.homeId);
+    const card = cards.get(line.cardId);
+    if (!binderName || !card) continue;
+    const day = localDay(line.filedAt);
+    let batch = byDay.get(day);
+    if (!batch) {
+      batch = { at: line.filedAt, cards: [], seen: new Set(), binders: new Map(), fresh: false };
+      byDay.set(day, batch);
+    }
+    const key = `${line.cardId}@${line.homeId}`;
+    if (batch.seen.has(key)) continue;
+    batch.seen.add(key);
+    batch.cards.push({ ...toDash(card), binderName });
+    batch.binders.set(binderName, (batch.binders.get(binderName) ?? 0) + 1);
+    if (since === null || (typeof since === "number" && line.filedAt > since)) batch.fresh = true;
+  }
+  return [...byDay.entries()].map(([day, b]) => ({
+    id: `pulls-${day}`,
+    whenLabel: pullDayLabel(b.at, now),
+    daysAgo: Math.max(0, daysBetween(day, localDay(now))),
+    cards: b.cards,
+    binders: [...b.binders.entries()].map(([name, count]) => ({ name, count })),
+    sinceLastVisit: b.fresh,
+  }));
+}
+
+/** The ids Fresh Pulls draws: the newest `FRESH_PULLS_CARDS` lines' cards. */
+export function freshPullIds(lines: NewSinceRaw["lines"] | undefined): CardId[] | null {
+  if (!lines || lines.length === 0) return null;
+  return lines.slice(0, FRESH_PULLS_CARDS).map((l) => l.cardId as CardId);
+}
+
+/** New on NeonBinder from its read: each set, its cover card once hydrated (until then, none). */
+export function newSetsOf(raw: readonly NewSetRaw[] | undefined, cards: CardsById | undefined): NewSet[] {
+  return (raw ?? []).map((n) => {
+    const cover = n.coverCardId ? cards?.get(n.coverCardId as CardId) : undefined;
+    return {
+      id: n.set._id,
+      label: setLabel(n.set),
+      sport: n.set.sport?.name ?? null,
+      cardCount: n.cardCount,
+      cover: cover ? toDash(cover) : null,
+    };
+  });
 }
 
 /** `YYYY-MM-DD` of an instant, on this device's calendar. */
@@ -560,6 +683,11 @@ export interface DashboardExtras {
   /** Null or absent: the account does not sell, so no sales section. */
   sales?: SalesData | null;
   intake?: IntakeInProgress;
+  /** Fresh Pulls, newest day first; absent or empty, no Fresh Pulls section. */
+  additions?: AdditionBatch[];
+  newSets?: NewSet[];
+  /** How many boxes the collector has (Unsorted counts once it exists); absent reads as none. */
+  boxes?: number;
 }
 
 /** The whole page from the shelf, the summary and the extras. Pure: the hook below only gathers its inputs. */
@@ -567,7 +695,8 @@ export function realDashboardData(input: { binders: ShelfBinder[]; summary: Coll
   const { binders, summary } = input;
   return {
     sales: input.sales ?? null,
-    additions: [],
+    additions: input.additions ?? [],
+    newSets: input.newSets ?? [],
     building: input.building ?? [],
     justCompleted: input.justCompleted ?? null,
     smartBinders: input.smartBinders ?? [],
@@ -575,7 +704,7 @@ export function realDashboardData(input: { binders: ShelfBinder[]; summary: Coll
     intake: input.intake ?? NO_INTAKE,
     unlistedBoxes: input.unlistedBoxes ?? [],
     tradePile: input.tradePile ?? NO_TRADE,
-    totals: { cards: summary.cards, binders: binders.length, exact: summary.exact },
+    totals: { cards: summary.cards, binders: binders.length, boxes: input.boxes ?? 0, exact: summary.exact },
     binders,
   };
 }
@@ -639,6 +768,16 @@ export function useRealDashboard(): DashboardData | undefined {
   // Since the last visit: stamped on mount, then the lines touched since.
   const since = useVisitSince();
   const fresh = useNewSince(since);
+  // Fresh Pulls: the last two weeks' filings, subscribed, so an add shows at once.
+  const pulls = useFreshPullLines(useMemo(() => freshPullsWindowStart(now), [now]));
+  const pullCards = useCardMap(useMemo(() => freshPullIds(pulls?.lines), [pulls]));
+  // New on NeonBinder: the catalog's newest sets, each with its cover card.
+  const newSetsRaw = useNewSets();
+  const coverIds = useMemo(() => {
+    const ids = (newSetsRaw ?? []).flatMap((n) => (n.coverCardId ? [n.coverCardId as CardId] : []));
+    return ids.length > 0 ? ids : null;
+  }, [newSetsRaw]);
+  const coverCards = useCardMap(coverIds);
 
   // The board's sets, the completions and the smart binders' checklists: each read once.
   const boardSets = useMemo(() => building?.slice(0, BOARD_SETS), [building]);
@@ -704,13 +843,21 @@ export function useRealDashboard(): DashboardData | undefined {
       wantList: wantCardsOf(chase, containers, chaseCards),
       tradePile: tradePileOf(trade, tradeListed, tradeCards),
       unlistedBoxes: unlistedBoxesOf(containers),
+      boxes: boxesInUseOf(containers),
       justCompleted: justCompletedOf(done, localDay(now)),
       building: sets,
       smartBinders: smartBindersOf(binders),
       sales: salesDataOf(salesRaw, saleCards, now),
       intake: intakeOf(intakeRaw, extraCards, now),
+      additions: freshPullsOf(pulls?.lines ?? [], pullCards, new Map(shelf.map((c) => [c.id, c.name])), since, now),
+      newSets: newSetsOf(newSetsRaw, coverCards),
     });
   }, [
+    pulls,
+    pullCards,
+    since,
+    newSetsRaw,
+    coverCards,
     containers,
     shelf,
     summary,

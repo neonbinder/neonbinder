@@ -4,7 +4,8 @@
 // everything, so every section shows, an order waiting to ship leads, and the
 // Hopper's processing scans link each run to the Add cards tab that finishes
 // it (here, the demo's Inventory side). Signed out, fake data, read-only (R7).
-// The panels the screen opens (a binder's pocket page, an order's cards) are
+// With no binder open, the first stands shut where the pocket page opens; its
+// cover opens it. The panels the screen opens (a binder's pocket page, an order's cards) are
 // checked for accessibility OPEN, as well as the closed page: the open state is
 // what a keyboard or screen-reader user spends their time in. Needs a Look has
 // nothing to open (a plain list), so there is no open state of it to check.
@@ -25,7 +26,7 @@ test(
 
     // Every section the fake collector's data fills.
     const section = (name: string) => page.getByRole("heading", { level: 2, name, exact: true });
-    for (const name of ["Out the Door", "In the Hopper", "Needs a Look", "On the Bubble", "Your binders", "Odds and Ends"]) {
+    for (const name of ["Out the Door", "In the Hopper", "Needs a Look", "On the Bubble", "Your binders", "Odds and Ends", "New on NeonBinder"]) {
       await expect(section(name), name).toBeVisible();
     }
 
@@ -60,10 +61,12 @@ test(
     await expect(orders.getByRole("button", { name: /^Hide the cards/, expanded: true }).first()).toBeVisible();
     await expectAccessible(page, { within: orders, label: "Dashboard demo, an order opened" });
 
-    // A binder opens to a pocket page: check the opened page.
+    // With none open, the first binder on the shelf stands shut beside it; its cover
+    // opens it to a pocket page, as its spine would: check the opened page.
     const shelf = page.getByRole("list", { name: "Binders on the shelf" });
     const spine = shelf.getByRole("button", { name: /^.+, \d+ cards?, / }).first();
-    await spine.click();
+    await expect(spine).toHaveAttribute("aria-expanded", "false");
+    await page.getByRole("button", { name: /^Crack open / }).click();
     await expect(spine).toHaveAttribute("aria-expanded", "true");
     const pocketPage = page.getByRole("list", { name: /, page 1 of \d+$/ });
     await expect(pocketPage).toBeVisible();

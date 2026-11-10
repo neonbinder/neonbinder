@@ -1,16 +1,18 @@
-import { useSyncExternalStore, type CSSProperties } from "react";
+import { useSyncExternalStore, type CSSProperties, type ReactNode } from "react";
 import { ChevronDownIcon } from "@heroicons/react/24/outline";
 import { useOpen } from "./useOpen";
+import SpineLabel, { SpineFontFaces } from "@/app/collection/final/binders/SpineLabel";
 import type { ShelfBinder } from "./shelf-model";
 
 /**
  * NEO-464 combined dashboard, block 4 — every binder on three shelves of
  * eight, regular and smart together (Jason: "we don't need to separate
- * regular from smart binders"). A spine wears its card count at the foot and,
- * when cards were filed in it since the last visit, a green "N new" sticker
- * on top. A smart binder's spine has a hatched band (it has a rule); one whose
- * rule names a checklist also wears a meter up the label's edge and its
- * percent.
+ * regular from smart binders"). A spine wears My Binders' own label
+ * (`SpineLabel`: the label's colour, the name lettered big down it, the count
+ * on a white sticker at the foot) and, when cards were filed in it since the
+ * last visit, a green "N new" sticker on top. A smart binder wears the same
+ * "Smart" chip as on My Binders; one whose rule names a checklist also wears
+ * a meter up the spine's edge.
  *
  * The three shelves hold SHELF_CAP binders, picked in `shelfOrder` (most new
  * first, then the fullest). Fewer and they all stand, with the space left
@@ -76,14 +78,14 @@ function Spine({
   onClose: () => void;
 }) {
   const fresh = binder.newCards.length;
+  const width = spineWidth(binder.cardCount, narrow);
   const style = {
-    "--vinyl": binder.vinyl,
-    "--stripe": binder.stripe,
+    "--vinyl": binder.label.background,
     "--i": index,
     // On a phone, never wider than an eighth of the shelf's content box (less its 7 gaps of 4px): eight fit at 320px.
     width: narrow
-      ? `min(${spineWidth(binder.cardCount, narrow)}px, calc((100cqw - 28px) / ${PER_SHELF}))`
-      : `calc(${spineWidth(binder.cardCount, narrow)}px * var(--spine-scale, 1))`,
+      ? `min(${width}px, calc((100cqw - 28px) / ${PER_SHELF}))`
+      : `calc(${width}px * var(--spine-scale, 1))`,
   } as CSSProperties;
   return (
     <button
@@ -103,17 +105,22 @@ function Spine({
           <small>new</small>
         </span>
       )}
-      {binder.kind === "smart" && <span className="cb-hatch" aria-hidden="true" />}
-      <span className="cb-spine-label" aria-hidden="true">
-        <span className="cb-spine-name">{binder.name}</span>
-        {binder.checklist && <span className="cb-spine-count">{binder.checklist.percent}%</span>}
-        <span className="cb-spine-count">{binder.cardCount}</span>
-        {binder.checklist && (
-          <span className="cb-spine-meter">
-            <span style={{ height: `${binder.checklist.percent}%` }} />
-          </span>
-        )}
-      </span>
+      <SpineLabel
+        name={binder.name}
+        label={binder.label}
+        spineWidth={width}
+        count={binder.cardCount}
+        badge={
+          binder.kind === "smart" ? (
+            <span className="rounded-sm bg-neon-purple px-1 text-[10px] font-bold leading-4 text-on-neon-purple">Smart</span>
+          ) : null
+        }
+      />
+      {binder.checklist && (
+        <span className="cb-spine-meter" aria-hidden="true">
+          <span style={{ height: `${binder.checklist.percent}%` }} />
+        </span>
+      )}
     </button>
   );
 }
@@ -126,9 +133,15 @@ interface ShelfProps {
   pocketId: string;
   onOpen: (id: string) => void;
   onClose: () => void;
+  /**
+   * What stands on an empty shelf, by its 0-based row (1 is the second shelf).
+   * A row with something on it is shown at every width and read out; one with
+   * nothing is only the room left in the case beside the pocket page.
+   */
+  starter?: (row: number) => ReactNode;
 }
 
-export default function Shelf({ binders, openId, pocketId, onOpen, onClose }: ShelfProps) {
+export default function Shelf({ binders, openId, pocketId, onOpen, onClose, starter }: ShelfProps) {
   const narrow = useNarrow();
   const [showAll, toggleAll] = useOpen("shelf");
   // An open binder past the cap (a pasted link) brings the whole case down, so its spine shows.
@@ -143,6 +156,7 @@ export default function Shelf({ binders, openId, pocketId, onOpen, onClose }: Sh
 
   return (
     <div className="flex h-full min-w-0 flex-col">
+      <SpineFontFaces />
       <ul aria-label="Binders on the shelf" className="flex flex-1 flex-col justify-between gap-3">
         {shelves.map((row, r) => (
           <li key={row[0].id}>
@@ -164,13 +178,25 @@ export default function Shelf({ binders, openId, pocketId, onOpen, onClose }: Sh
             <div className="cb-ledge shelf-ledge" aria-hidden="true" />
           </li>
         ))}
-        {/* Only beside the pocket page (xl), where the case keeps its height; stacked, an empty shelf is just a gap. */}
-        {Array.from({ length: empty }, (_, i) => (
-          <li key={`empty-${i}`} aria-hidden="true" className="max-xl:hidden">
-            <div className="cb-shelf" />
-            <div className="cb-ledge shelf-ledge" />
-          </li>
-        ))}
+        {Array.from({ length: empty }, (_, i) => {
+          const row = shelves.length + i;
+          const piece = starter?.(row);
+          if (piece) {
+            return (
+              <li key={`starter-${row}`}>
+                <div className="cb-shelf cb-shelf--starter">{piece}</div>
+                <div className="cb-ledge shelf-ledge" aria-hidden="true" />
+              </li>
+            );
+          }
+          // Only beside the pocket page (xl), where the case keeps its height; stacked, an empty shelf is just a gap.
+          return (
+            <li key={`empty-${row}`} aria-hidden="true" className="max-xl:hidden">
+              <div className="cb-shelf" />
+              <div className="cb-ledge shelf-ledge" />
+            </li>
+          );
+        })}
       </ul>
       {overflow && (
         <button

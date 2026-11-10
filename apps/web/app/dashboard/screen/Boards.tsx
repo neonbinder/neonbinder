@@ -3,6 +3,7 @@ import { Link, useLocation } from "react-router";
 import CardFace from "@/app/collection/prototypes/_shared/CardFace";
 import NeonButton from "@/components/modules/NeonButton";
 import type { BuildingSet, CompletedSet, DashCard } from "../fake-data";
+import { sideHref } from "./bits";
 import { checklistOf, type ShelfBinder } from "./shelf-model";
 import "@/app/collection/final/cards/cards.css";
 
@@ -169,8 +170,7 @@ export default function Boards({
  * click pushes.
  */
 function wallLink(setId: string, pathname: string): string {
-  const collection = pathname.startsWith("/demo") ? "/demo/collection" : "/collection";
-  return `${collection}?${new URLSearchParams({ tab: "cards", set: setId })}`;
+  return sideHref(pathname, "collection", { tab: "cards", set: setId });
 }
 
 /** The board's title: the whole board is its hit area (the `after:` inset). */

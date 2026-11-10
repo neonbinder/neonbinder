@@ -7,13 +7,14 @@
  * query stays small"):
  * - read ONCE on mount (`useConvex().query`): the completions, each set
  *   board's base checklist, each smart binder's checklist count and the
- *   cards that could fit it, what is still in intake, and the sales (the
- *   sales section's gate and the orders to ship). Each walks a checklist, a binder's
- *   fits, a run's match rows or the order history, so none is ever
- *   subscribed. They refresh
+ *   cards that could fit it, what is still in intake, the sales (the
+ *   sales section's gate and the orders to ship) and New on NeonBinder. Each
+ *   walks a checklist, a binder's fits, a run's match rows, the order
+ *   history or the catalog's newest cards, so none is ever subscribed. They refresh
  *   when the dashboard is opened again, or when the sets or binders asked
  *   for change.
- * - subscribed: "new since your last visit" (at most 100 lines).
+ * - subscribed: "new since your last visit" and Fresh Pulls' last two weeks
+ *   (the same read, at most 100 lines each).
  * - the visit stamp: one mutation on mount, which answers the previous visit
  *   before it stamps this one.
  */
@@ -30,6 +31,7 @@ export type NewSinceRaw = FunctionReturnType<typeof api.dashboard.newSince>;
 export type CouldFitRaw = NonNullable<FunctionReturnType<typeof api.dashboard.couldFit>>;
 export type IntakeRaw = FunctionReturnType<typeof api.dashboard.intake>;
 export type SalesRaw = FunctionReturnType<typeof api.dashboard.sales>;
+export type NewSetRaw = FunctionReturnType<typeof api.dashboard.newSets>[number];
 
 /**
  * Run `read` once per `key` (null: not yet), keep its answer, and drop an
@@ -83,6 +85,25 @@ export function useVisitSince(): number | null | undefined {
 /** The collection lines touched since `sinceMs` (subscribed, bounded); skipped while `sinceMs` is not known. */
 export function useNewSince(sinceMs: number | null | undefined): NewSinceRaw | undefined {
   return useQuery(api.dashboard.newSince, typeof sinceMs === "number" ? { sinceMs } : "skip");
+}
+
+/**
+ * Fresh Pulls: the collection lines filed since `sinceMs` (the start of its
+ * window, not the visit), subscribed, so an add shows at once. The same read
+ * as `useNewSince`, kept apart so each answers on its own.
+ */
+export function useFreshPullLines(sinceMs: number): NewSinceRaw | undefined {
+  return useQuery(api.dashboard.newSince, { sinceMs });
+}
+
+/**
+ * New on NeonBinder: the sets whose cards landed last, read once. It walks
+ * the newest cards, so a subscription would re-run on every card added
+ * anywhere in the catalog.
+ */
+export function useNewSets(): NewSetRaw[] | undefined {
+  const convex = useConvex();
+  return useReadOnce("new-sets", () => convex.query(api.dashboard.newSets, {}), []);
 }
 
 /** The base checklists finished at or after `sinceMs`, read once. */

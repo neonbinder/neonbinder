@@ -1,13 +1,16 @@
 import { ChevronDownIcon } from "@heroicons/react/24/outline";
+import { StarIcon } from "@heroicons/react/24/solid";
+import { Link, useLocation } from "react-router";
 import CardFace from "@/app/collection/prototypes/_shared/CardFace";
 import type { AdditionBatch, DashCard, WantCard } from "../fake-data";
-import { CardTitle, WANT_RING, WantFlag } from "./bits";
+import { CardTitle, sideHref, WANT_RING, WantFlag } from "./bits";
 import { useOpen } from "./useOpen";
 
 /**
  * NEO-464 combined dashboard, block 6 left column (from prototype 2): the
  * chase (the Want List's top cards, top chase first), then fresh pulls in the
- * batches they came in, newest first. Every card is captioned with its full
+ * batches they came in, newest first (any card filed into a binder in the
+ * last 14 days, however it got there; none and the section is not drawn). Every card is captioned with its full
  * listing title; a pull that is on the Want List wears a dashed yellow
  * border and says so (Jason, review item 5).
  */
@@ -42,7 +45,7 @@ export function Chase({ wants }: { wants: WantCard[] }) {
         <p className="text-sm text-ink-3">Top of your Want List.</p>
       </div>
       {wants.length === 0 ? (
-        <p className="text-ink-2">Your Want List is empty. Star a card on any checklist to start the hunt.</p>
+        <ChaseEmpty />
       ) : (
         <ol className="grid grid-cols-3 gap-x-3 gap-y-5 sm:grid-cols-5">
           {wants.map((w, i) => (
@@ -66,7 +69,38 @@ export function Chase({ wants }: { wants: WantCard[] }) {
   );
 }
 
+/**
+ * No wants yet: three empty sleeves waiting, the front one carrying the Want
+ * List's star, and the way to fill them.
+ */
+function ChaseEmpty() {
+  const { pathname } = useLocation();
+  return (
+    <div className="flex flex-col gap-5 sm:flex-row sm:items-center">
+      <div aria-hidden="true" className="cb-chase-empty">
+        <span className="cb-chase-ghost" />
+        <span className="cb-chase-ghost" />
+        <span className="cb-chase-ghost">
+          <StarIcon className="cb-chase-star" />
+        </span>
+      </div>
+      <p className="max-w-[26rem] text-ink-2">
+        Your Want List is empty. Star a card on{" "}
+        <Link
+          to={sideHref(pathname, "collection", { tab: "checklists" })}
+          className="rounded-sm font-semibold text-neon-blue-text underline underline-offset-2 focus-outline"
+        >
+          any checklist
+        </Link>{" "}
+        to start the hunt.
+      </p>
+    </div>
+  );
+}
+
+/** What came in lately, newest batch first. Nothing new: no section at all. */
 export function FreshPulls({ batches, wanted }: { batches: AdditionBatch[]; wanted: Set<string> }) {
+  if (batches.length === 0) return null;
   const firstOld = batches.findIndex((b) => !b.sinceLastVisit);
   return (
     <section aria-labelledby="cb-pulls-heading" className="space-y-5">
@@ -76,22 +110,18 @@ export function FreshPulls({ batches, wanted }: { batches: AdditionBatch[]; want
         </h2>
         <p className="text-sm text-ink-3">Newest first.</p>
       </div>
-      {batches.length === 0 ? (
-        <p className="text-ink-2">No new cards yet. Scan a stack and they land here.</p>
-      ) : (
-        batches.map((b, i) => (
-          <div key={b.id} className="space-y-5">
-            {i === firstOld && i > 0 && (
-              <p className="flex items-center gap-3 text-xs text-ink-3">
-                <span aria-hidden="true" className="h-px flex-1 bg-rule" />
-                Before your last visit
-                <span aria-hidden="true" className="h-px flex-1 bg-rule" />
-              </p>
-            )}
-            <Batch batch={b} wanted={wanted} />
-          </div>
-        ))
-      )}
+      {batches.map((b, i) => (
+        <div key={b.id} className="space-y-5">
+          {i === firstOld && i > 0 && (
+            <p className="flex items-center gap-3 text-xs text-ink-3">
+              <span aria-hidden="true" className="h-px flex-1 bg-rule" />
+              Before your last visit
+              <span aria-hidden="true" className="h-px flex-1 bg-rule" />
+            </p>
+          )}
+          <Batch batch={b} wanted={wanted} />
+        </div>
+      ))}
     </section>
   );
 }

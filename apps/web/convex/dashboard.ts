@@ -23,13 +23,15 @@
  * - `intake` (read once): what is still in intake across the collector's
  *   recent runs, counted from their match rows, each run with the side its
  *   home is on (a binder's run finishes on Collection, a box's on Inventory).
+ * - `newSets` (subscribed, a few rows): the catalog's newest sets, the same
+ *   for everyone (New on NeonBinder).
  * - `sales` (read once): whether the account sells (the sales section shows), and
  *   its newest orders still to ship, at most `SALES_SHOWN`.
  *
  * NB data only, except `sales`: an order's status is the platform's own word
  * (NB keeps no shipped state), read through `listingSales.awaitingShipment`.
- * The sales gate never names a platform: any listing platform connected,
- * or any order stored.
+ * The sales gate never names a platform, and never reads a login: it shows
+ * for an account with at least one order stored.
  */
 
 import { v } from "convex/values";
@@ -39,10 +41,9 @@ import { mutation, query } from "./_generated/server";
 import { requireSignedIn } from "./auth";
 import { MAX_CANDIDATES, parallelReader } from "./binderRules";
 import { HomeSides, MAX_VARIANT_COPIES, copyCardIdValidator, sideOfContainer, sideValidator, type Side } from "./collection";
-import { MAX_DRILL_ITEMS, MAX_VARIANT_CARDS } from "./collectionCatalog";
-import { CatalogReader } from "./lib/catalogView";
+import { MAX_DRILL_ITEMS, MAX_VARIANT_CARDS, hiddenAsEmpty } from "./collectionCatalog";
+import { CatalogReader, setRefValidator } from "./lib/catalogView";
 import { awaitingShipment } from "./listingSales";
-import { LISTING_PLATFORMS, listingCredentialOf } from "./listingOutbox";
 import { listingPlatformValidator, saleItemProblemValidator } from "./schema";
 import { variantTypeKind } from "./variantRole";
 import { MAX_SORTED_LINES, type StoredRule } from "../lib/collection/binder-rule";
@@ -97,6 +98,12 @@ export const SALES_SCAN = 100;
 export const SALES_SHOWN = 10;
 /** Lines of one order returned (the rest are counted). */
 export const SALE_LINES = 12;
+/** New on NeonBinder: how many of the catalog's newest sets it shows. */
+export const NEW_SETS_SHOWN = 6;
+/** How many variants' worth of newest cards it steps back through to find them. */
+export const NEW_SETS_HOPS = 100;
+/** A new set's variant types read to find its Base, for the cover card. */
+export const NEW_SET_TYPES = 25;
 
 // ───────────────────────────────────────────────────────────────────────────
 // Pure rules (tested in dashboard.test.ts)
@@ -284,14 +291,6 @@ export function intakeRunTally(rows: readonly IntakeRowFacts[]): IntakeRunTally 
 export function intakeRunShows(tally: Pick<IntakeRunTally, "scans" | "done">, lastActivityAt: number, now: number): boolean {
   if (tally.scans === 0) return false;
   return tally.done < tally.scans || now - lastActivityAt <= INTAKE_RECENT_MS;
-}
-
-/**
- * The sales section's gate: the account sells when it has a listing
- * platform connected or any order stored. Which platform never matters.
- */
-export function isDealer(connected: readonly boolean[], anyOrder: boolean): boolean {
-  return anyOrder || connected.some(Boolean);
 }
 
 type SaleItemFacts = Pick<Doc<"marketplaceSales">["items"][number], "cardId" | "quantity" | "problem" | "shortBy">;
@@ -751,8 +750,10 @@ const saleLineValidator = v.object({
  * Whether the caller sells, and the newest of their orders still to ship.
  * Read once on mount.
  *
- * `dealer` (the sales section shows): a listing platform connected (any of
- * `LISTING_PLATFORMS`, which one never matters) or any order stored. Still
+ * `dealer` (the sales section shows): at least one order stored, on any
+ * platform. A sign-in or a connected platform alone never shows it (Jason,
+ * 2026-11-10: each widget shows for what the collector has, "no criteria
+ * based simply on whether or not you have a login configured"). Still
  * to ship: `listingSales.awaitingShipment`, the platform's own status word,
  * since NB keeps no shipped state of its own. Bounded: the newest
  * `SALES_SCAN` orders, at most `SALES_SHOWN` returned, newest first, each
@@ -784,13 +785,7 @@ export const sales = query({
       .withIndex("by_owner_date", (q) => q.eq("ownerId", ownerId))
       .order("desc")
       .take(SALES_SCAN + 1);
-    const connected: boolean[] = [];
-    if (rows.length === 0) {
-      for (const platform of LISTING_PLATFORMS) {
-        connected.push((await listingCredentialOf(ctx, ownerId, platform)).hasCredentials);
-      }
-    }
-    if (!isDealer(connected, rows.length > 0)) return { dealer: false, orders: [], more: false };
+    if (rows.length === 0) return { dealer: false, orders: [], more: false };
     const toShip = rows.slice(0, SALES_SCAN).filter((row) => awaitingShipment(row.platform, row.status));
     return {
       dealer: true,
@@ -804,6 +799,80 @@ export const sales = query({
       })),
       more: toShip.length > SALES_SHOWN || rows.length > SALES_SCAN,
     };
+  },
+});
+
+/**
+ * New on NeonBinder: the sets whose checklists landed in the catalog most
+ * recently, newest first. Catalog news, the same for every collector, so it
+ * shows for everyone (Jason, 2026-11-10). Each comes with its card count and
+ * a cover card: the first card of its Base, when the set has exactly one.
+ *
+ * Read from the cards, not the set rows: most set rows are made long before
+ * any card (a marketplace's list of sets), so the newest set rows are almost
+ * all empty. The newest card names a variant, so its set; the walk then
+ * steps past every card of that variant (back to the variant's oldest card,
+ * found on `by_selector_option`, whose last key is `_creationTime`) and asks
+ * again. A set known to hold no cards, or seen already, is passed over.
+ *
+ * Bounded: at most `NEW_SETS_HOPS` steps of two cards and a set's chain, then
+ * for each of the `NEW_SETS_SHOWN` kept its variant types and one card. The
+ * dashboard reads it once on load, not subscribed: every card added anywhere
+ * would re-run it.
+ */
+export const newSets = query({
+  args: {},
+  returns: v.array(
+    v.object({
+      set: setRefValidator,
+      /** Every card in the set; null when it was never counted. */
+      cardCount: v.union(v.number(), v.null()),
+      coverCardId: v.union(v.id("cardChecklist"), v.null()),
+      /** When its newest card landed. */
+      addedAt: v.number(),
+    }),
+  ),
+  handler: async (ctx) => {
+    await requireSignedIn(ctx);
+    const reader = new CatalogReader(ctx);
+    const out = [];
+    const seen = new Set<string>();
+    let before: number | null = null;
+    for (let hop = 0; hop < NEW_SETS_HOPS && out.length < NEW_SETS_SHOWN; hop++) {
+      const below = before;
+      const card = await ctx.db
+        .query("cardChecklist")
+        .withIndex("by_creation_time", (q) => (below === null ? q : q.lt("_creationTime", below)))
+        .order("desc")
+        .first();
+      if (!card) break;
+      const oldest = await ctx.db
+        .query("cardChecklist")
+        .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", card.selectorOptionId))
+        .first();
+      before = Math.min(card._creationTime, oldest?._creationTime ?? card._creationTime);
+
+      const set = await reader.setRef(card.selectorOptionId);
+      if (!set || seen.has(set._id)) continue;
+      seen.add(set._id);
+      const row = await reader.row(set._id);
+      if (!row || hiddenAsEmpty(row)) continue;
+      const types = await ctx.db
+        .query("selectorOptions")
+        .withIndex("by_level_and_parent", (q) => q.eq("level", "variantType").eq("parentId", set._id))
+        .take(NEW_SET_TYPES);
+      const bases = types.filter((t) => variantTypeKind(t) === "base");
+      const cover =
+        bases.length === 1
+          ? await ctx.db
+              .query("cardChecklist")
+              .withIndex("by_selector_option_and_sort", (q) => q.eq("selectorOptionId", bases[0]._id))
+              .first()
+          : null;
+      const count = typeof row.subtreeCardCount === "number" ? row.subtreeCardCount : null;
+      out.push({ set, cardCount: count, coverCardId: cover?._id ?? null, addedAt: card._creationTime });
+    }
+    return out;
   },
 });
 
