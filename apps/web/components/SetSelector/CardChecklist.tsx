@@ -2298,6 +2298,14 @@ export default function CardChecklist({
         notes.push(TEAMS_LATE_NOTICE);
         teamsLateRef.current = false;
       }
+      // NEO-478 — the publisher's checklist did its job on this run: say so
+      // on the line the cards land with too. A run that needs no question
+      // commits straight away, and this banner replaces the sync line that
+      // carried it first, so without this the operator never sees it.
+      // Reset by the next sync, never by this one.
+      if (checklistTeamsRef.current) {
+        notes.push(`${checklistTeamsRef.current}.`);
+      }
       const committedText = [
         discardError
           ? `Saved ${result.count} cards. (Could not clear staged candidates.)`

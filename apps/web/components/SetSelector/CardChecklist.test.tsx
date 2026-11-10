@@ -1705,9 +1705,8 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
     });
 
     it("renders 'Teams from your checklist: N of M cards' from checklistTeams while the wizard is open", async () => {
-      // The line rides on the sync banner; a run that commits with no
-      // question replaces the banner with "Saved N cards.", so the line is
-      // read where the run stops: on a card the wizard has to settle.
+      // The line rides on the sync banner, read here where the run stops: on
+      // a card the wizard has to settle. (The auto-commit case is below.)
       const conflictBatch = {
         ...arrivedBatch,
         cards: slCandidates.map((card, i) =>
@@ -1723,10 +1722,23 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
       expect(liveRegionText()).toContain("Teams from your checklist: 1 of 2 cards");
     });
 
+    it("keeps 'Teams from your checklist: N of M cards' on the saved line when the run commits with no question", async () => {
+      // No disagreement, no unknown names: the run commits straight away and
+      // "Saved N cards." replaces the sync line — the checklist line rides on.
+      const { rerender } = renderChecklist();
+      await addChecklist();
+      await syncWith(rerender, arrivedBatch, { checklistTeams: { matched: 2, total: 2 } });
+      await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(liveRegionText()).toMatch(/Saved \d+ cards\./));
+      expect(liveRegionText()).toContain("Teams from your checklist: 2 of 2 cards");
+      expect(screen.queryByText("Wizard opened teams-only")).toBeNull();
+    });
+
     it("says nothing about checklist teams when the fetch reports none", async () => {
       const { rerender } = renderChecklist();
       await syncWith(rerender, arrivedBatch);
       await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalled());
+      await waitFor(() => expect(liveRegionText()).toMatch(/Saved \d+ cards\./));
       expect(liveRegionText()).not.toContain("Teams from your checklist");
     });
 
