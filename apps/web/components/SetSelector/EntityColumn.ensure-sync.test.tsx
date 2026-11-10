@@ -98,15 +98,21 @@ describe("EntityColumn — ensureSync new path (NEO-47)", () => {
     expect(queryByText("legacy-form")).toBeNull();
   });
 
-  it("status=error raises the column-named alert but keeps + Custom available (not stranded)", async () => {
+  it("status=error shows the column-named failure box but keeps + Custom available (not stranded)", async () => {
     state.items = [];
     state.status = { status: "error", message: "Couldn't sync options." };
     const { getByText } = renderVT();
     await act(async () => {});
-    // NEO-450: the alert names the column; the server's message is not echoed.
-    expect(screen.getByRole("alert").textContent).toBe(
-      columnSyncFailedMessage("Variant Types"),
-    );
+    // NEO-450: the box names the column (the server's message is not echoed)
+    // and describes its retry. A stored error with no failed attempt from this
+    // session is a polite status, not an alert.
+    const id = screen
+      .getByRole("button", { name: "Sync Variant Types" })
+      .getAttribute("aria-describedby");
+    const box = document.getElementById(id ?? "");
+    expect(box?.textContent).toBe(columnSyncFailedMessage("Variant Types"));
+    expect(box?.getAttribute("role")).toBe("status");
+    expect(screen.queryByRole("alert")).toBeNull();
     expect(getByText("+ Custom")).toBeTruthy();
   });
 

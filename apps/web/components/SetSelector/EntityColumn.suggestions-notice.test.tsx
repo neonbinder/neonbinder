@@ -367,9 +367,14 @@ describe("EntityColumn — unlink notice (NEO-211 plan D)", () => {
     it("leaves a total failure on the error path, with Retry semantics intact", async () => {
       state.status = { status: "error", message: "Couldn't sync options." };
       await renderColumn();
-      expect(screen.getByRole("alert").textContent).toBe(
-        columnSyncFailedMessage("Sets"),
-      );
+      // NEO-450: stored, not this session's failure, so the box is a status
+      // reached through the Sync button it describes.
+      const id = screen
+        .getByRole("button", { name: "Sync Sets" })
+        .getAttribute("aria-describedby");
+      const box = document.getElementById(id ?? "");
+      expect(box?.textContent).toBe(columnSyncFailedMessage("Sets"));
+      expect(box?.getAttribute("role")).toBe("status");
       // An error row is not dismissable — Sync is the way out.
       expect(screen.queryByLabelText("Dismiss Sets notice")).toBeNull();
     });
