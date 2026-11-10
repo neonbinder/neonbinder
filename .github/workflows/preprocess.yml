@@ -174,6 +174,7 @@ jobs:
       - name: Build and push preview image
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
           # `.` is the JOB's working-directory (services/preprocess), so the
@@ -190,8 +191,22 @@ jobs:
           #
           # DEV_PREVIEW_IMAGE, not DEV_IMAGE — previews live in their own
           # package so they cannot consume the deploy keep-window (NEO-130).
-          docker build -t "$DEV_PREVIEW_IMAGE:pr-$PR_NUMBER" .
-          docker push "$DEV_PREVIEW_IMAGE:pr-$PR_NUMBER"
+          #
+          # NEO-484: --provenance=false --sbom=false. Since 2026-11-08 the
+          # runner's builder pushes an OCI index + image + attestation by
+          # default, and Cloud Run pins the UNTAGGED image child, which only
+          # the parent index keeps from the untagged cleanup policy. One plain
+          # manifest per push is one version per push, tagged.
+          #
+          # The revision label is how preprocess-mask-parity (pr-pipeline.yml)
+          # tells this push's image from the previous push's under the same
+          # pr-<N> tag before it pins the digest.
+          REF="$DEV_PREVIEW_IMAGE:pr-$PR_NUMBER"
+          docker build --provenance=false --sbom=false \
+            --label "org.opencontainers.image.revision=$HEAD_SHA" \
+            -t "$REF" .
+          docker push "$REF"
+          bash "$GITHUB_WORKSPACE/.github/scripts/image-push-report.sh" "$REF"
 
       - name: Deploy tagged no-traffic preview to dev Cloud Run
         uses: google-github-actions/deploy-cloudrun@2028e2d7d30a78c6910e0632e48dd561b064884d # v3.0.1
@@ -200,10 +215,13 @@ jobs:
           region: us-central1
           image: gcr.io/neonbinder-dev/neonbinder-preprocess-preview:pr-${{ github.event.pull_request.number }}
           project_id: neonbinder-dev
-          # env_vars is REPLACE-semantics for plain env vars, so every plain var
-          # terraform sets on the service must be repeated here or the deploy
-          # drops it. Secret-backed vars (INTERNAL_API_KEY, ANTHROPIC_API_KEY)
-          # are managed separately via --set-secrets and are NOT affected.
+          # env_vars MERGES: the action passes --update-env-vars, so the listed
+          # vars are set and every other var on the service template carries
+          # over, including one the previous deploy of ANY lane left behind
+          # (NEO-484 found a preview's PREVIEW_SHA on the serving dev
+          # revision). Secret-backed vars (INTERNAL_API_KEY, ANTHROPIC_API_KEY)
+          # carry over the same way. A var this lane must NOT have is removed
+          # explicitly in `flags` and asserted after the deploy.
           # GCS_PLACEHOLDER_BUCKET (NEO-170 Phase D) names the dev
           # placeholder-uploads bucket — must match
           # apps/web/convex/adapters/placeholderUploads.ts's Convex-side env
@@ -222,6 +240,10 @@ jobs:
           # waits only for that URL to stop 404ing, which on any second-or-later
           # push is already true of the stale revision — so it passed in ~30s and
           # everything downstream tested the old container. Observed on PR #193.
+          #
+          # PREPROCESS_DEV_CACHE_BUCKET (NEO-484) is removed: a preview must
+          # never use the dev result cache. The app also refuses it on a
+          # tagged host (G3); this removal is G2, and the checks below are G5.
           env_vars: |
             ENVIRONMENT=dev
             GOOGLE_CLOUD_PROJECT=neonbinder-dev
@@ -233,7 +255,10 @@ jobs:
           # Without this, a tagged no-traffic revision inherits whatever
           # --max-instances the PREVIOUS deploy of this service happened to
           # set (or the terraform default), never this workflow's own value.
-          flags: "--max-instances=${{ env.PREVIEW_HEAVY_MAX_INSTANCES }} --no-cpu-boost"
+          # NEO-484: gen2 matches terraform's template annotation; passing it
+          # here keeps a preview off gen1 whatever the template last held.
+          # No probe flags: the template's startup probe carries over.
+          flags: "--max-instances=${{ env.PREVIEW_HEAVY_MAX_INSTANCES }} --no-cpu-boost --execution-environment=gen2 --remove-env-vars=PREPROCESS_DEV_CACHE_BUCKET"
 
       - id: capture
         name: Capture preview URL
@@ -252,6 +277,17 @@ jobs:
           echo "preview_url=$TAGGED_URL" >> "$GITHUB_OUTPUT"
           echo "preview_tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "Preview URL: $TAGGED_URL"
+
+      # NEO-484 G5: assert what landed, since env vars merge across lanes.
+      - name: Assert the preview revision's env
+        env:
+          PR: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          bash "$GITHUB_WORKSPACE/.github/scripts/preprocess-revision-check.sh" env \
+            --project "$DEV_PROJECT" --service "$SERVICE" --tag "pr-$PR" \
+            --absent PREPROCESS_DEV_CACHE_BUCKET --equals "PREVIEW_SHA=$HEAD_SHA" \
+            --exec-env gen2
 
   preview-smoke:
     name: Smoke the preview
@@ -330,6 +366,16 @@ jobs:
           SMOKE_ID_TOKEN: ${{ steps.probe-token.outputs.id_token }}
         run: pytest tests/smoke -v
 
+      # NEO-484 G5: a preview must report the dev cache off. Runs after the
+      # smoke so the instance the smoke woke answers at once.
+      - name: Assert /health reports the dev cache off
+        env:
+          PREVIEW_URL: ${{ needs.deploy-preview.outputs.preview_url }}
+          PROBE_TOKEN: ${{ steps.probe-token.outputs.id_token }}
+        run: |
+          bash "$GITHUB_WORKSPACE/.github/scripts/preprocess-revision-check.sh" health \
+            --url "$PREVIEW_URL" --expect-prefix "off:"
+
   # ---------------------------------------------------------------------------
   # Fast-service preview lane (NEO-175 Phase D).
   #
@@ -353,8 +399,10 @@ jobs:
   #     can never fail this job or the PR preview overall; the result still
   #     surfaces in the sticky comment below.
   #
-  # No env_vars input: terraform owns every var on this service, same as the
-  # deploy lane.
+  # env_vars MERGES (see deploy-preview): terraform's vars carry over. This
+  # lane adds PREVIEW_SHA, so a consumer can tell this push's fast revision
+  # from the previous one's, and removes PREPROCESS_DEV_CACHE_BUCKET (NEO-484
+  # G2), then asserts both after the deploy.
   # ---------------------------------------------------------------------------
   deploy-preview-fast:
     name: Deploy per-PR Cloud Run preview (fast service) if it exists
@@ -383,6 +431,13 @@ jobs:
       preview_url: ${{ steps.capture.outputs.preview_url }}
       preview_tag: ${{ steps.capture.outputs.preview_tag }}
     steps:
+      # First, before auth: checkout cleans the workspace, which would delete
+      # the credentials file the auth action writes there.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+
       - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with:
           workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER_PREPROCESS_DEV }}
@@ -413,10 +468,13 @@ jobs:
           # rather than DEV_IMAGE.
           image: gcr.io/neonbinder-dev/neonbinder-preprocess-preview:pr-${{ github.event.pull_request.number }}
           project_id: neonbinder-dev
+          env_vars: |
+            PREVIEW_SHA=${{ github.event.pull_request.head.sha }}
           no_traffic: true
           tag: pr-${{ github.event.pull_request.number }}
           # NEO-299: see deploy-preview's identical comment above.
-          flags: "--max-instances=${{ env.PREVIEW_FAST_MAX_INSTANCES }}"
+          # NEO-484: gen2 (S0b passed on n=10), and no dev cache on a preview.
+          flags: "--max-instances=${{ env.PREVIEW_FAST_MAX_INSTANCES }} --execution-environment=gen2 --remove-env-vars=PREPROCESS_DEV_CACHE_BUCKET"
 
       - id: capture
         name: Capture fast preview URL
@@ -436,6 +494,19 @@ jobs:
           echo "preview_url=$TAGGED_URL" >> "$GITHUB_OUTPUT"
           echo "preview_tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "Fast preview URL: $TAGGED_URL"
+
+      # NEO-484 G5. This job has no checkout, so the check script comes from a
+      # sparse checkout of .github/scripts only.
+      - name: Assert the fast preview revision's env
+        if: steps.guard.outputs.exists == 'true'
+        env:
+          PR: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          bash .github/scripts/preprocess-revision-check.sh env \
+            --project "$DEV_PROJECT" --service "$FAST_SERVICE" --tag "pr-$PR" \
+            --absent PREPROCESS_DEV_CACHE_BUCKET --equals "PREVIEW_SHA=$HEAD_SHA" \
+            --exec-env gen2
 
   preview-smoke-fast:
     name: Ping the fast preview
@@ -510,7 +581,9 @@ jobs:
             "$TAGGED_URL/health")
           BODY=$(cat /tmp/health.json 2>/dev/null || true)
           echo "status=$STATUS body=$BODY"
-          if [ "$STATUS" = "200" ] && [ "$BODY" = '{"status":"ok"}' ]; then
+          # NEO-484: /health gained dev_cache, so match the status field, not
+          # the whole body.
+          if [ "$STATUS" = "200" ] && jq -e '.status == "ok"' /tmp/health.json >/dev/null 2>&1; then
             echo "passed=true" >> "$GITHUB_OUTPUT"
           else
             echo "::warning::fast preview /health ping failed (status=$STATUS body=$BODY) — not blocking the PR."
@@ -543,6 +616,17 @@ jobs:
           export SMOKE_INTERNAL_KEY="$KEY"
           pytest tests/smoke -m fast_safe -v
           echo "passed=true" >> "$GITHUB_OUTPUT"
+
+      # NEO-484 G5: a preview must report the dev cache off. Not
+      # continue-on-error: a preview that could use the cache is a config bug,
+      # not a flake.
+      - name: Assert /health reports the dev cache off
+        env:
+          TAGGED_URL: ${{ needs.deploy-preview-fast.outputs.preview_url }}
+          PROBE_TOKEN: ${{ steps.probe-token.outputs.id_token }}
+        run: |
+          bash .github/scripts/preprocess-revision-check.sh health \
+            --url "$TAGGED_URL" --expect-prefix "off:"
 
       - id: verdict
         name: Combine ping + functional smoke

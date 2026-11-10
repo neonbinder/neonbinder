@@ -76,3 +76,18 @@ updates:
       # ~190MB CPU wheel for the ~2.5GB CUDA build, in an image that already
       # bakes ~375MB of SAM weights. Bump torch by hand, keeping the suffix.
       - dependency-name: "torch"
+      # NEO-484: rembg left the runtime (the heavy service runs BiRefNet
+      # through onnxruntime directly). rembg 2.0.78 and the packages its
+      # removal dropped now live only in tests/parity/requirements-oracle.txt,
+      # the frozen ORACLE the mask-parity job compares our transcription
+      # against. Bumping any of them changes the oracle, not the product, so
+      # they move only by hand, with the goldens regenerated. Add any other
+      # package that is pinned ONLY in that file here too.
+      - dependency-name: "rembg"
+      - dependency-name: "pymatting"
+      - dependency-name: "numba"
+      - dependency-name: "llvmlite"
+      - dependency-name: "scipy"
+      - dependency-name: "scikit-image"
+      - dependency-name: "pooch"
+      - dependency-name: "jsonschema"
